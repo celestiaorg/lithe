@@ -141,11 +141,20 @@ pub(crate) fn codegen(checked: &Checked, shape: &Shape) -> Result<Built, Error> 
             needs,
         })
     };
-    let cached = build(Plan {
+    let cached_plan = Plan {
         cache_slots: true,
         ..plan.clone()
-    })?;
-    let plain = build(plan)?;
+    };
+    // The two builds are independent, and each is most of a compile.
+    let (cached, plain) = std::thread::scope(|s| {
+        let cached = std::thread::Builder::new()
+            .stack_size(64 << 20)
+            .spawn_scoped(s, || build(cached_plan))
+            .expect("spawn a codegen thread");
+        let plain = build(plan);
+        (cached.join().unwrap_or_else(|e| std::panic::resume_unwind(e)), plain)
+    });
+    let (cached, plain) = (cached?, plain?);
     Ok(if plain.runtime.len() < cached.runtime.len() {
         plain
     } else {

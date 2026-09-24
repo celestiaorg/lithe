@@ -276,16 +276,19 @@ impl Planner<'_> {
         }
     }
 
+    fn part_shape(&self, idx: &[usize]) -> Shape {
+        Shape {
+            keep: Some(sels(self.entries, idx)),
+            forward: Vec::new(),
+            parts: Vec::new(),
+            part: true,
+            opts: self.opts.clone(),
+        }
+    }
+
     fn part(&mut self, idx: &[usize]) -> Result<Option<&Built>, Error> {
         if !self.parts.contains_key(idx) {
-            let shape = Shape {
-                keep: Some(sels(self.entries, idx)),
-                forward: Vec::new(),
-                parts: Vec::new(),
-                part: true,
-                opts: self.opts.clone(),
-            };
-            let built = self.measure(&shape)?;
+            let built = self.measure(&self.part_shape(idx))?;
             self.parts.insert(idx.to_vec(), built);
         }
         Ok(self.parts[idx].as_ref())
@@ -293,6 +296,34 @@ impl Planner<'_> {
 
     fn fits(&mut self, idx: &[usize]) -> Result<bool, Error> {
         Ok(self.part(idx)?.is_some())
+    }
+
+    /// `fits` for each set, compiling the ones not seen yet in parallel.
+    fn fits_all(&mut self, sets: &[Vec<usize>]) -> Result<Vec<bool>, Error> {
+        let new: Vec<&Vec<usize>> = sets
+            .iter()
+            .filter(|idx| !self.parts.contains_key(*idx))
+            .collect();
+        let this = &*self;
+        let built: Vec<_> = std::thread::scope(|s| {
+            let handles: Vec<_> = new
+                .iter()
+                .map(|idx| {
+                    std::thread::Builder::new()
+                        .stack_size(64 << 20)
+                        .spawn_scoped(s, move || this.measure(&this.part_shape(idx)))
+                        .expect("spawn a codegen thread")
+                })
+                .collect();
+            handles
+                .into_iter()
+                .map(|h| h.join().unwrap_or_else(|e| std::panic::resume_unwind(e)))
+                .collect()
+        });
+        for (idx, built) in new.into_iter().zip(built) {
+            self.parts.insert(idx.clone(), built?);
+        }
+        Ok(sets.iter().map(|idx| self.parts[idx].is_some()).collect())
     }
 
     /// Fills parts with whole groups in order. A group that does not fit in the current part
@@ -314,14 +345,32 @@ impl Planner<'_> {
                 current = idx.clone();
                 continue;
             }
-            for &one in idx {
-                let mut grown = current.clone();
-                grown.push(one);
-                if self.fits(&grown)? {
-                    current = grown;
-                    continue;
+            // Each probe is a full build, so the longest prefix that still fits is found by
+            // searching several prefix lengths at once. Code only grows with entrypoints, so
+            // this matches adding one at a time.
+            let ways = std::thread::available_parallelism().map_or(1, |n| (n.get() / 2).max(1));
+            let mut rest = &idx[..];
+            while !rest.is_empty() {
+                let (mut lo, mut hi) = (0, rest.len());
+                while lo < hi {
+                    let mut probes: Vec<usize> = (1..=ways)
+                        .map(|j| lo + ((hi - lo) * j).div_ceil(ways + 1))
+                        .collect();
+                    probes.dedup();
+                    let sets: Vec<Vec<usize>> = probes
+                        .iter()
+                        .map(|&m| [&current[..], &rest[..m]].concat())
+                        .collect();
+                    for (m, ok) in probes.into_iter().zip(self.fits_all(&sets)?) {
+                        if !ok {
+                            hi = m - 1;
+                            break;
+                        }
+                        lo = m;
+                    }
                 }
-                if !self.fits(&[one])? {
+                if lo == 0 && current.is_empty() {
+                    let one = rest[0];
                     let shape = Shape {
                         keep: Some(sels(self.entries, &[one])),
                         part: true,
@@ -339,8 +388,11 @@ impl Planner<'_> {
                         ),
                     ));
                 }
-                placed.push(std::mem::take(&mut current));
-                current = vec![one];
+                current.extend(&rest[..lo]);
+                rest = &rest[lo..];
+                if !rest.is_empty() {
+                    placed.push(std::mem::take(&mut current));
+                }
             }
         }
         if !current.is_empty() {

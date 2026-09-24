@@ -17,3 +17,7 @@ lto = "fat"
 codegen-units = 1
 panic = "abort"
 strip = true
+
+# The optimizer passes are too slow to run unoptimized: debug builds take minutes per contract.
+[profile.dev]
+opt-level = 2

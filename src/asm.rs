@@ -241,7 +241,11 @@ fn leading_zeros(w: Word) -> u32 {
 fn inst_len(inst: &Inst) -> usize {
     match inst {
         Op(_) => 1,
-        Push(w) => encode_push(*w).len(),
+        Push(w) => {
+            // The passes ask for the same constants' lengths over and over.
+            thread_local!(static LENS: std::cell::RefCell<HashMap<Word, usize>> = Default::default());
+            LENS.with(|lens| *lens.borrow_mut().entry(*w).or_insert_with(|| encode_push(*w).len()))
+        }
         Label(_) => 0,
         PushLabel(_) | Mem(_) => 3,
     }
@@ -808,10 +812,14 @@ fn dup_constants(code: &mut [Inst]) -> bool {
 fn merge_tails(code: &mut Vec<Inst>) -> bool {
     let segs = segments(code);
     let mut best: Option<(usize, usize, usize, usize)> = None;
-    let mut by_last: HashMap<Inst, Vec<usize>> = HashMap::new();
+    // A segment ends in a one-byte exit, so a tail worth sharing is at least two long.
+    let mut by_last: HashMap<(Inst, Inst), Vec<usize>> = HashMap::new();
     for (k, seg) in segs.iter().enumerate() {
-        if seg.start <= seg.end {
-            by_last.entry(code[seg.end]).or_default().push(k);
+        if seg.start < seg.end {
+            by_last
+                .entry((code[seg.end - 1], code[seg.end]))
+                .or_default()
+                .push(k);
         }
     }
     for group in by_last.values() {
@@ -997,20 +1005,27 @@ fn outline_once(code: &mut Vec<Inst>) -> bool {
     }
     // Best run so far: saved bytes, start of one copy, length, the starts it replaces.
     let mut best: Option<(i64, usize, usize, Vec<usize>, (usize, usize))> = None;
+    let mut hashed: Vec<(u64, usize)> = Vec::with_capacity(n);
+    // A run repeats only if the run one shorter does, so each length need only look at
+    // the starts that repeated at the length before.
+    let mut cands: Vec<usize> = (0..n).collect();
     for len in 1..=MAX_OUTLINE.min(n) {
-        let mut groups: HashMap<u64, Vec<usize>> = HashMap::new();
-        for i in 0..=n - len {
-            if breaks[i + len] != breaks[i] || code[i] == Op(JUMPI) {
+        hashed.clear();
+        for &i in &cands {
+            if i + len > n || breaks[i + len] != breaks[i] || code[i] == Op(JUMPI) {
                 continue;
             }
             let h = prefix[i + len].wrapping_sub(prefix[i].wrapping_mul(pow[len]));
-            groups.entry(h).or_default().push(i);
+            hashed.push((h, i));
         }
-        for starts in groups.values() {
+        hashed.sort_unstable();
+        cands.clear();
+        for starts in hashed.chunk_by(|a, b| a.0 == b.0) {
             if starts.len() < 2 {
                 continue;
             }
-            let first = starts[0];
+            cands.extend(starts.iter().map(|&(_, i)| i));
+            let first = starts[0].1;
             let run_bytes = size[first + len] - size[first];
             // Cheapest a helper can be: no stack shuffling at all.
             let upper = starts.len() * run_bytes;
@@ -1020,7 +1035,7 @@ fn outline_once(code: &mut Vec<Inst>) -> bool {
             }
             let mut picked = Vec::new();
             let mut next_free = 0;
-            for &s in starts {
+            for &(_, s) in starts {
                 if s >= next_free && code[s..s + len] == code[first..first + len] {
                     picked.push(s);
                     next_free = s + len;

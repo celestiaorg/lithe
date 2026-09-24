@@ -432,94 +432,128 @@ fn emit_dir(
     opts: &Options,
 ) -> Result<DirOutput, Error> {
     let files = lithe_sources(dir)?;
-    let mut wrote = Vec::new();
-    let mut failed = Vec::new();
-    let mut notes = Vec::new();
-    for path in files {
-        let units = match modules::load_units(&path) {
-            Ok(units) => units,
+    // Files compile independently, so they share the machine; the output keeps file order.
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let done = std::sync::Mutex::new(Vec::new());
+    let workers = std::thread::available_parallelism().map_or(1, |n| n.get());
+    std::thread::scope(|s| {
+        for _ in 0..workers.min(files.len()) {
+            std::thread::Builder::new()
+                .stack_size(64 << 20)
+                .spawn_scoped(s, || loop {
+                    let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    let Some(path) = files.get(i) else { break };
+                    let out = emit_file(path, out_dir, artifact, opts);
+                    done.lock().unwrap_or_else(|e| e.into_inner()).push((i, out));
+                })
+                .expect("spawn a compile thread");
+        }
+    });
+    let mut done = done.into_inner().unwrap_or_else(|e| e.into_inner());
+    done.sort_by_key(|(i, _)| *i);
+    let mut all = DirOutput {
+        wrote: Vec::new(),
+        failed: Vec::new(),
+        notes: Vec::new(),
+    };
+    for (_, out) in done {
+        all.wrote.extend(out.wrote);
+        all.failed.extend(out.failed);
+        all.notes.extend(out.notes);
+    }
+    Ok(all)
+}
+
+fn emit_file(
+    path: &std::path::Path,
+    out_dir: &std::path::Path,
+    artifact: bool,
+    opts: &Options,
+) -> DirOutput {
+    let mut out = DirOutput {
+        wrote: Vec::new(),
+        failed: Vec::new(),
+        notes: Vec::new(),
+    };
+    let units = match modules::load_units(path) {
+        Ok(units) => units,
+        Err(error) => {
+            out.failed.push(SourceError {
+                path: path.display().to_string(),
+                error,
+            });
+            return out;
+        }
+    };
+    let Some(folder) = contract_dir(out_dir, path) else {
+        out.failed.push(SourceError {
+            path: path.display().to_string(),
+            error: error(0, 0, "missing file name"),
+        });
+        return out;
+    };
+    if let Err(err) = std::fs::create_dir_all(&folder) {
+        out.failed.push(SourceError {
+            path: path.display().to_string(),
+            error: error(0, 0, err.to_string()),
+        });
+        return out;
+    }
+    for prog in units {
+        let contract = artifact_contract_name(&prog, path);
+        let prepared = match finish(prog, &contract, opts) {
+            Ok(prepared) => prepared,
             Err(error) => {
-                failed.push(SourceError {
+                out.failed.push(SourceError {
                     path: path.display().to_string(),
                     error,
                 });
                 continue;
             }
         };
-        let Some(folder) = contract_dir(out_dir, &path) else {
-            failed.push(SourceError {
-                path: path.display().to_string(),
-                error: error(0, 0, "missing file name"),
-            });
-            continue;
+        let file_name = if artifact {
+            format!("{contract}.json")
+        } else {
+            format!("{contract}.abi.json")
         };
-        if let Err(err) = std::fs::create_dir_all(&folder) {
-            failed.push(SourceError {
-                path: path.display().to_string(),
-                error: error(0, 0, err.to_string()),
-            });
-            continue;
-        }
-        for prog in units {
-            let contract = artifact_contract_name(&prog, &path);
-            let prepared = match finish(prog, &contract, opts) {
-                Ok(prepared) => prepared,
+        let dest = folder.join(file_name);
+        let body = if artifact {
+            match foundry_artifact(&prepared, &contract) {
+                Ok(body) => body,
                 Err(error) => {
-                    failed.push(SourceError {
+                    out.failed.push(SourceError {
                         path: path.display().to_string(),
                         error,
                     });
                     continue;
                 }
-            };
-            let file_name = if artifact {
-                format!("{contract}.json")
-            } else {
-                format!("{contract}.abi.json")
-            };
-            let dest = folder.join(file_name);
-            let body = if artifact {
-                match foundry_artifact(&prepared, &contract) {
-                    Ok(body) => body,
-                    Err(error) => {
-                        failed.push(SourceError {
-                            path: path.display().to_string(),
-                            error,
-                        });
-                        continue;
-                    }
-                }
-            } else {
-                prepared.abi.clone()
-            };
-            if let Err(err) = std::fs::write(&dest, body) {
-                failed.push(SourceError {
-                    path: path.display().to_string(),
-                    error: error(0, 0, err.to_string()),
-                });
-                continue;
             }
-            wrote.push(dest);
-            if !artifact {
-                continue;
-            }
-            if let Some(note) = split_note(&prepared) {
-                notes.push(format!("{}: {note}", path.display()));
-            }
-            match write_parts(&folder, &contract, &prepared) {
-                Ok(paths) => wrote.extend(paths),
-                Err(err) => failed.push(SourceError {
-                    path: path.display().to_string(),
-                    error: error(0, 0, err.to_string()),
-                }),
-            }
+        } else {
+            prepared.abi.clone()
+        };
+        if let Err(err) = std::fs::write(&dest, body) {
+            out.failed.push(SourceError {
+                path: path.display().to_string(),
+                error: error(0, 0, err.to_string()),
+            });
+            continue;
+        }
+        out.wrote.push(dest);
+        if !artifact {
+            continue;
+        }
+        if let Some(note) = split_note(&prepared) {
+            out.notes.push(format!("{}: {note}", path.display()));
+        }
+        match write_parts(&folder, &contract, &prepared) {
+            Ok(paths) => out.wrote.extend(paths),
+            Err(err) => out.failed.push(SourceError {
+                path: path.display().to_string(),
+                error: error(0, 0, err.to_string()),
+            }),
         }
     }
-    Ok(DirOutput {
-        wrote,
-        failed,
-        notes,
-    })
+    out
 }
 
 /// Writes `<Contract>.parts/<n>.json` for each part, replacing what an earlier build left.
