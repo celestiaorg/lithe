@@ -1,0 +1,98 @@
+---
+title: "Cryptography"
+description: "ECDSA recovery, EIP-712 typed data, and Merkle proofs."
+---
+
+# Cryptography
+
+## `ECDSA`
+
+`std/crypto/ecdsa.lithe`. Recovers the signer of a hash, and rejects what the `ecrecover` precompile silently accepts: an `s` in the upper half of the curve order, which would give a second valid signature, and a zero recovered address.
+
+| Function | |
+| --- | --- |
+| `recover(hash, v, r, s) : address` | |
+| `recover_signature(hash, signature : bytes) : address` | a 65-byte signature: `r`, `s`, then `v` |
+| `recover_compact(hash, r, vs) : address` | an EIP-2098 64-byte signature |
+| `to_eth_signed_message_hash(message)` | the hash that `eth_sign` signs for a 32-byte message |
+
+The errors are OpenZeppelin's: `ECDSAInvalidSignature`, `ECDSAInvalidSignatureLength`, and `ECDSAInvalidSignatureS`.
+
+## `EIP712`
+
+`std/crypto/eip712.lithe`. Hashes typed structured data under a domain of name, version, chain id, and contract address. `init` records the name and version; the chain id and address are read when a hash is made, so the domain stays right after a fork.
+
+```lithe
+import "std/crypto/eip712.lithe";
+import "std/crypto/ecdsa.lithe";
+
+contract Mailbox is {
+  use EIP712;
+  use ECDSA;
+
+  error Not_signed_by of address;
+
+  storage is record {
+    delivered : map(bytes32, bool);
+  }
+
+  deploy() is {
+    EIP712.init("Mailbox", "1");
+  }
+
+  (* keccak256("Mail(address to,bytes32 contents)") *)
+  pure function mail_typehash() : bytes32 is
+    0x61fcdad8d6cdaff589c739197c58cd35a410b9521bd145efa1f6b7213a4384b8
+
+  external function deliver(
+    const from : address;
+    const contents : bytes32;
+    const v : uint8;
+    const r : bytes32;
+    const s : bytes32
+  )
+    raises Not_signed_by | ECDSAInvalidSignature | ECDSAInvalidSignatureS
+  is {
+    const digest : bytes32 := EIP712.hash_typed_data(
+      Crypto.keccak256(Abi.encode(mail_typehash(), Evm.sender(), contents))
+    );
+    assert(ECDSA.recover(digest, v, r, s) = from, Not_signed_by(from));
+    storage.delivered[digest] := true;
+  }
+
+  external view function DOMAIN_SEPARATOR is EIP712.domain_separator;
+}
+```
+
+## `Merkle`
+
+`std/crypto/merkle.lithe`. Verifies a leaf against a Merkle root. Pairs are hashed in sorted order, as in OpenZeppelin's `MerkleProof` and the `@openzeppelin/merkle-tree` library, so trees built with that library verify unchanged.
+
+A proof is `bytes`: the sibling hashes from the leaf up, 32 bytes each, concatenated. A proof whose length isn't a multiple of 32 raises `MerkleProofInvalidLength`.
+
+```lithe
+import "std/crypto/merkle.lithe";
+
+contract Allowlist is {
+  use Merkle;
+
+  storage is record {
+    root : bytes32;
+    joined : map(address, bool);
+  }
+
+  deploy(const root : bytes32) is {
+    storage.root := root;
+  }
+
+  external function join(const proof : bytes) : bool
+    raises MerkleProofInvalidLength
+  is {
+    const leaf : bytes32 := Crypto.keccak256(Abi.encode(Evm.sender()));
+    const allowed : bool := Merkle.verify(proof, storage.root, leaf);
+    if allowed then {
+      storage.joined[Evm.sender()] := true;
+    }
+  } with allowed
+}
+```

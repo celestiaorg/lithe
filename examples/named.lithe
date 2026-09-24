@@ -1,0 +1,21 @@
+(* Two ERC-7201 domains. Each field lives at the domain root plus its offset. *)
+
+storage settings at "example.settings" is record {
+  fee : nat;
+  paused : bool;
+}
+
+storage treasury at "example.treasury" is record {
+  recipient : address;
+  saved : wei;
+}
+
+external function configure(const fee : nat; const recipient : address) is {
+  settings.fee := fee;
+  settings.paused := true;
+  treasury.recipient := recipient;
+  treasury.saved := 2eth;
+}
+
+external view function fee() : nat is
+  settings.fee

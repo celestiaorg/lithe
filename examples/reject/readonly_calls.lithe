@@ -1,0 +1,14 @@
+storage is record {
+  count : nat;
+}
+
+view function peek() : nat is
+  mid()
+
+view function mid() : nat is {
+  bump();
+} with storage.count
+
+function bump() is {
+  storage.count := storage.count + 1n;
+}

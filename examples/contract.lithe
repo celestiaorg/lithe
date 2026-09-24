@@ -1,0 +1,17 @@
+contract Vault upgradeable is {
+
+error Not_owner;
+
+storage is record {
+  owner : address;
+}
+
+upgrade guard is {
+  assert(Evm.sender() = storage.owner, Not_owner);
+}
+
+external function claim() is {
+  storage.owner := Evm.sender();
+}
+
+}

@@ -1,0 +1,3 @@
+payable function go() is {
+  skip
+}

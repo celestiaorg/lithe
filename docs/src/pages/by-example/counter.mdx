@@ -1,0 +1,39 @@
+---
+title: "Counter"
+description: "Read, increment, and decrement a stored number."
+---
+
+# Counter
+
+A first stateful contract. `nat` is an unsigned 256-bit integer and `1n` is a `nat` literal.
+
+```lithe [counter.lithe]
+storage is record {
+  count : nat;
+}
+
+external view function get() : nat is
+  storage.count
+
+external function inc() is {
+  storage.count := storage.count + 1n;
+}
+
+(* `nat` never goes negative. Decrementing zero reverts with Panic(0x11). *)
+external function dec() is {
+  storage.count := storage.count - 1n;
+}
+```
+
+Try it:
+
+```bash
+lithe compile counter.lithe     # creation bytecode
+lithe footprint counter.lithe   # what each entrypoint reads and writes
+```
+
+```text
+inc   writes: count            during defers: callable
+dec   writes: count            during defers: callable
+get   reads: count             during defers: callable
+```

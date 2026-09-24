@@ -1,0 +1,38 @@
+(* `deploy` runs once, in the creation code, on the ABI-encoded arguments appended to it,
+   like a Solidity constructor. It can write storage and emit events, but cannot call
+   other contracts: the contract has no code until it returns. *)
+
+error Fee_too_high of nat;
+
+storage is record {
+  owner : address;
+  fee_bps : nat;
+  name : string;
+}
+
+event Configured of record {
+  indexed owner : address;
+  fee_bps : nat;
+}
+
+deploy(const owner : address; const fee_bps : nat; const name : string)
+  raises Fee_too_high
+is {
+  assert(fee_bps <= 1000n, Fee_too_high(fee_bps));
+  storage.owner := owner;
+  storage.fee_bps := fee_bps;
+  storage.name := name;
+  emit Configured {
+    owner = owner;
+    fee_bps = fee_bps;
+  };
+}
+
+external view function owner() : address is
+  storage.owner
+
+external view function fee_bps() : nat is
+  storage.fee_bps
+
+external view function name() : string is
+  storage.name

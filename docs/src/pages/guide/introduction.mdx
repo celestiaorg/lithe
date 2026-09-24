@@ -1,0 +1,97 @@
+---
+title: "Introduction"
+description: "What Lithe is, the problems it solves, and how it differs from Solidity."
+---
+
+# Introduction
+
+Lithe is a smart-contract language for the EVM. It compiles to ordinary EVM bytecode with standard function selectors, custom errors, events, and Solidity-compatible storage, so wallets, explorers, RPCs, and Solidity contracts work with it unchanged.
+
+What makes Lithe different is its execution model, not its syntax:
+
+> Smart contracts should be easier to reason about than the machine they run on.
+
+The EVM lets a contract do almost anything, in any order: call arbitrary code halfway through an update, let that code call back in, and fail with an untyped revert. Most of the security problems in production contracts come from those freedoms. Solidity leaves them open and manages them by convention: checks-effects-interactions, reentrancy guards, careful storage gaps. Lithe closes them in the language.
+
+## A functional state transition with imperative syntax
+
+Every Lithe entrypoint computes one state transition:
+
+```text
+(arguments, storage, read-only chain state)
+    ->
+(new storage, events, deferred calls)
+    or one of the entrypoint's declared errors
+```
+
+You still write ordinary imperative code, with `const`, `var`, `if`, and assignments. The compiler handles the plumbing. It does restrict what the code can do:
+
+| Construct | Meaning |
+| --- | --- |
+| `storage.x := v` | Change persistent state. Always qualified, so every write is visible. |
+| `query c.f(...)` | Read another contract now, through `STATICCALL`. The EVM guarantees it cannot change state. |
+| `emit E { ... }` | Log an event. |
+| `defer c.f(...)` | Call another contract after this transition finishes. A callee never sees half-updated state. |
+| `fail E` / `assert(c, E)` | Revert with a declared, typed error. |
+
+```lithe
+interface Oracle is {
+  query price(asset : address) : nat;
+}
+
+interface Token is {
+  call transfer(to : address; amount : nat) : bool;
+}
+
+error Too_cheap of nat;
+
+storage is record {
+  oracle : Oracle;
+  token : Token;
+  sold : nat;
+}
+
+external function sell(const asset : address; const amount : nat)
+  raises Too_cheap
+is {
+  const price : nat := query storage.oracle.price(asset);
+  assert(price >= 100n, Too_cheap(price));
+  storage.sold := storage.sold + amount;
+  defer storage.token.transfer(Evm.sender(), amount * price);
+}
+```
+
+Reading `sell`, you know exactly what it can do. It reads the oracle, it may fail with `Too_cheap`, it writes `sold`, and after all of that it asks the token to transfer. The compiler knows too, and it can print that summary for every entrypoint. See [Inspecting contracts](/tooling/inspection).
+
+## Design principles
+
+**Effects are explicit.** State writes, external reads, events, and external calls each have their own syntax. None of them can hide inside an ordinary-looking expression.
+
+**External state changes are deferred.** A call that can change another contract's state is scheduled with `defer` and runs after the local transition. Classic reentrancy, where a callee re-enters while the caller's state is inconsistent, cannot be written. For protocols that also need to serialize calls, `nonreentrant` is a single keyword backed by transient storage.
+
+**Failure is part of the interface.** Errors are declared types. Every external function lists what it can raise, and the compiler rejects the program if the list is incomplete. String reverts do not exist.
+
+**Declared effects are checked.** A `pure` function reads only its arguments, and a `view` never writes. The compiler proves both. The keyword on a function is a guarantee, not documentation.
+
+**Storage has a stable identity.** The default storage record lays out exactly as the equivalent Solidity contract does. Named domains live at ERC-7201 roots, so modules and upgrades cannot collide.
+
+**Composition is explicit.** Modules replace inheritance. A contract chooses, by name, every function it exposes. Nothing becomes public because a parent declared it.
+
+**Execution context is namespaced.** There is no `msg.sender`. Context is `Evm.sender()`, hashing is `Crypto.keccak256(...)`, and encoding is `Abi.encode(...)`, so dependencies on the environment are easy to find.
+
+## Smaller output
+
+The restrictions pay off in the output too. On a benchmark suite of real contracts, including OpenZeppelin's ERC-20 and ERC-721 and Synthetix's `StakingRewards`, Lithe's runtime bytecode is about 31% smaller than the best optimized `solc` build. Storage, logs, and return data are identical. See [Bytecode size and gas](/guide/performance).
+
+## Built for humans and machines
+
+Code is now written and attacked at machine speed. AI systems generate contracts, and AI systems search deployed bytecode for exploits. A language that leans on the author remembering the right patterns does not hold up well under that pressure.
+
+Lithe gives authors, whether human or AI, fewer dangerous choices. It gives auditors, whether human or AI, compiler-derived facts to work from. `lithe analysis` emits every entrypoint's reads, writes, events, deferred calls, and errors as JSON. [Why now](/guide/why-now) covers where smart-contract losses actually come from, and which of them Lithe prevents.
+
+## Where to go next
+
+- [Installation and first contract](/guide/getting-started): build the compiler and deploy a counter.
+- [The transition model](/guide/transition-model): what happens, in order, when an entrypoint runs.
+- [Coming from Solidity](/guide/coming-from-solidity): a side-by-side cheat sheet.
+- [Lithe by Example](/by-example): short, complete programs for common tasks.

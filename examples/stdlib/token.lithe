@@ -1,0 +1,93 @@
+(* An ERC-20 token from the standard library: burnable, with ERC-2612 permits, and an
+   owner who may mint and pause. Transfers check the pause in the contract's own
+   `transfer` and `transferFrom`, so the base module's behavior never changes silently. *)
+
+import "std/token/erc20_permit.lithe";
+import "std/token/erc20_burnable.lithe";
+import "std/access/ownable.lithe";
+import "std/security/pausable.lithe";
+
+contract Token is {
+  use ERC20;
+  use ERC20Burnable;
+  use EIP712;
+  use ECDSA;
+  use Nonces;
+  use ERC20Permit;
+  use Ownable;
+  use Pausable;
+
+  storage is record {
+    cap : nat;
+  }
+
+  error ERC20ExceededCap of record {
+    increasedSupply : nat;
+    cap : nat;
+  }
+
+  deploy()
+    raises OwnableInvalidOwner
+  is {
+    ERC20.init("Lithe Token", "LTK");
+    EIP712.init("Lithe Token", "1");
+    Ownable.init(Evm.sender());
+    storage.cap := 1_000_000n * 1_000_000_000_000_000_000n;
+  }
+
+  external view function name is ERC20.name;
+  external view function symbol is ERC20.symbol;
+  external pure function decimals is ERC20.decimals;
+  external view function totalSupply is ERC20.total_supply;
+  external view function balanceOf is ERC20.balance_of;
+  external view function allowance is ERC20.allowance;
+  external function approve is ERC20.approve;
+  external function burn is ERC20Burnable.burn;
+  external function burnFrom is ERC20Burnable.burn_from;
+  external function permit is ERC20Permit.permit;
+  external view function nonces is Nonces.nonces;
+  external view function DOMAIN_SEPARATOR is EIP712.domain_separator;
+  external view function owner is Ownable.owner;
+  external function transferOwnership is Ownable.transfer_ownership;
+  external function renounceOwnership is Ownable.renounce_ownership;
+  external view function paused is Pausable.paused;
+
+  external function transfer(const to : address; const value : nat) : bool
+    raises EnforcedPause | ERC20InvalidSender | ERC20InvalidReceiver | ERC20InsufficientBalance
+  is {
+    Pausable.require_not_paused();
+    ERC20.move(Evm.sender(), to, value);
+  } with true
+
+  external function transferFrom(const from : address; const to : address; const value : nat) : bool
+    raises EnforcedPause | ERC20InsufficientAllowance | ERC20InvalidApprover | ERC20InvalidSpender
+      | ERC20InvalidSender | ERC20InvalidReceiver | ERC20InsufficientBalance
+  is {
+    Pausable.require_not_paused();
+    ERC20.spend_allowance(from, Evm.sender(), value);
+    ERC20.move(from, to, value);
+  } with true
+
+  external function mint(const to : address; const value : nat)
+    raises OwnableUnauthorizedAccount | ERC20ExceededCap | ERC20InvalidReceiver | ERC20InsufficientBalance
+  is {
+    Ownable.check_owner();
+    const supply : nat := ERC20.total_supply() + value;
+    assert(supply <= storage.cap, ERC20ExceededCap { increasedSupply = supply; cap = storage.cap; });
+    ERC20.mint(to, value);
+  }
+
+  external function pause()
+    raises OwnableUnauthorizedAccount | EnforcedPause
+  is {
+    Ownable.check_owner();
+    Pausable.pause();
+  }
+
+  external function unpause()
+    raises OwnableUnauthorizedAccount | ExpectedPause
+  is {
+    Ownable.check_owner();
+    Pausable.unpause();
+  }
+}

@@ -1,0 +1,44 @@
+---
+title: "Interfaces and queries"
+description: "Typed interfaces and synchronous read-only calls."
+---
+
+# Interfaces and queries
+
+An interface describes another contract. `query` methods are read-only and can be called immediately with `query`, which compiles to `STATICCALL`.
+
+```lithe [interfaces.lithe]
+(* An interface types another contract. `query` methods are read-only and run
+   now, through STATICCALL. `call` methods change state and can only be deferred. *)
+
+interface Oracle is {
+  query price(asset : address) : nat;
+  query decimals() : uint8;
+}
+
+error Stale_price of nat;
+
+storage is record {
+  oracle : Oracle;
+  last_price : nat;
+}
+
+(* An interface value is an address in the ABI. *)
+external function set_oracle(const oracle : Oracle) is {
+  storage.oracle := oracle;
+}
+
+external function refresh(const asset : address)
+  raises Stale_price
+is {
+  const price : nat := query storage.oracle.price(asset);
+  assert(price > 0n, Stale_price(price));
+  storage.last_price := price;
+}
+
+external view function quote(const asset : address; const amount : nat) : nat is
+  amount * query storage.oracle.price(asset)
+```
+
+- `query storage.oracle.price(asset)` returns a `nat` right away. The EVM guarantees the oracle can't change state during the call.
+- `quote` is an `external view` that queries. Queries are allowed in views, but not in pure functions.

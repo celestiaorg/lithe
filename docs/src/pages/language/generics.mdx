@@ -1,0 +1,114 @@
+---
+title: "Generics"
+description: "Generic functions and generic modules, specialized at compile time."
+---
+
+# Generics
+
+Lithe's generics are specialized at compile time. Each instantiation compiles to code for its concrete types, with no runtime dispatch and no casts.
+
+## Generic functions
+
+Type parameters come in parentheses before the value parameters:
+
+```lithe
+storage is record {
+  a : address;
+}
+
+pure function pick(T)(const first : T; const second : T; const use_first : bool) : T is {
+  var chosen : T := second;
+  if use_first then { chosen := first; }
+} with chosen
+
+external view function owner_or(const other : address; const flag : bool) : address is
+  pick(storage.a, other, flag)
+```
+
+Type arguments are inferred from the call. Every argument for `T` must have the same type:
+
+```text
+type parameter `T` is both `address` and `nat`
+```
+
+## Generic modules
+
+A module can take type parameters. Its types and functions can use them, and a use such as `Set(address)` names one specialization:
+
+:::code-group
+
+```lithe [main.lithe]
+import "./lib/set.lithe";
+
+type order_id is bytes32;
+
+storage is record {
+  admins : Set(address);
+  filled : Set(order_id);
+}
+
+external function add_admin(const who : address) is {
+  Set.add(storage.admins, who);
+}
+
+external view function is_admin(const who : address) : bool is
+  Set.contains(storage.admins, who)
+
+external function fill(const id : bytes32) is {
+  Set.add(storage.filled, order_id(id));
+}
+```
+
+```lithe [lib/set.lithe]
+(* Membership set. One mapping, no enumeration. *)
+
+module Set(T : map_key) is {
+  type self is map(T, bool);
+
+  view function contains(const set : self; const value : T) : bool is
+    set[value]
+
+  function add(const set : self; const value : T) is {
+    set[value] := true;
+  }
+
+  function remove(const set : self; const value : T) is {
+    set[value] := false;
+  }
+}
+```
+
+:::
+
+- `Set(address)` is a type. Here it is `map(address, bool)`, so it can be stored.
+- `Set.add(storage.admins, who)` calls the specialization picked by the argument's type.
+- `Set(order_id)` and `Set(bytes32)` are different types, because [nominal types](/language/types#nominal-types) stay distinct in generics too.
+- A module's other types are reached through a specialization: `SetEnumerable(address).iterator`.
+
+## Constraints
+
+A type parameter can carry a constraint that the compiler checks at each use. The only constraint today is `map_key`, which accepts types that can key a `map`: integers, `bool`, `address`, `bytesN`, `wei`, `timestamp`, and nominal types over them.
+
+```lithe rejects
+module Set(T : map_key) is {
+  type self is map(T, bool);
+
+  function add(const set : self; const value : T) is {
+    set[value] := true;
+  }
+}
+
+storage is record {
+  names : Set(string);
+}
+
+external function go() is { skip }
+```
+
+```text
+type `string` does not satisfy `map_key`
+```
+
+## Storage parameters
+
+A generic module function that takes a storage value, such as `const set : self`, receives a reference to that storage location, not a copy. `Set.add(storage.admins, who)` writes to `storage.admins`. That is how collection modules work without owning a named domain of their own.

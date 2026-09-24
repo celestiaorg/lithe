@@ -1,0 +1,792 @@
+use crate::word::Word;
+
+#[derive(Debug, Clone)]
+pub(crate) struct Program {
+    pub uses: Vec<UseDecl>,
+    pub types: Vec<TypeDecl>,
+    pub errors: Vec<ErrorDecl>,
+    pub error_sets: Vec<ErrorSetDecl>,
+    pub events: Vec<EventDecl>,
+    pub interfaces: Vec<InterfaceDecl>,
+    pub funcs: Vec<Func>,
+    pub domains: Vec<DomainDecl>,
+    pub modules: Vec<ModuleDecl>,
+    pub compose: Vec<NameAt>,
+    pub promotions: Vec<Promotion>,
+    pub upgradeable: bool,
+    pub guard: Option<GuardDecl>,
+    /// Set when the file names its contract. An implicit file leaves this empty;
+    /// tooling may still label artifacts from the file name.
+    pub contract_name: Option<String>,
+    pub contract_line: u32,
+    pub contract_col: u32,
+    /// Further contracts from the same file. One bytecode uses a single contract.
+    pub siblings: Vec<Program>,
+    /// The other contracts of the file, which this one may `defer create`.
+    pub peers: Vec<Program>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct DomainDecl {
+    pub line: u32,
+    pub col: u32,
+    pub origin: String,
+    pub name: String,
+    pub id: String,
+    pub ty: TypeRef,
+    /// `Some` when this domain is declared inside a module.
+    pub owner: Option<String>,
+    /// `transient storage`: kept for the transaction only, in `TLOAD`/`TSTORE` slots.
+    pub transient: bool,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct TypeParam {
+    pub line: u32,
+    pub col: u32,
+    pub name: String,
+    /// Compiler-known constraint, currently `map_key`.
+    pub constraint: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct ModuleDecl {
+    pub line: u32,
+    pub col: u32,
+    pub origin: String,
+    pub name: String,
+    pub params: Vec<TypeParam>,
+    pub requires: Vec<NameAt>,
+    pub domains: Vec<DomainDecl>,
+    pub types: Vec<TypeDecl>,
+    pub errors: Vec<ErrorDecl>,
+    pub error_sets: Vec<ErrorSetDecl>,
+    pub events: Vec<EventDecl>,
+    pub funcs: Vec<Func>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct Promotion {
+    pub line: u32,
+    pub col: u32,
+    pub kind: ItemKind,
+    pub payable: bool,
+    pub nonreentrant: bool,
+    pub external_pure: bool,
+    /// The name the contract exposes it under.
+    pub name: String,
+    pub module: String,
+    pub func: String,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct GuardDecl {
+    pub line: u32,
+    pub col: u32,
+    pub stmts: Vec<Stmt>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct UseDecl {
+    pub line: u32,
+    pub col: u32,
+    pub path: String,
+    pub alias: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct TypeDecl {
+    pub line: u32,
+    pub col: u32,
+    pub private: bool,
+    pub origin: String,
+    pub name: String,
+    pub ty: TypeRef,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct ErrorDecl {
+    pub line: u32,
+    pub col: u32,
+    pub private: bool,
+    pub origin: String,
+    pub name: String,
+    pub payload: Option<TypeRef>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct ErrorSetDecl {
+    pub line: u32,
+    pub col: u32,
+    pub name: String,
+    pub members: Vec<NameAt>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct NameAt {
+    pub line: u32,
+    pub col: u32,
+    pub name: String,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct EventDecl {
+    pub line: u32,
+    pub col: u32,
+    pub private: bool,
+    pub origin: String,
+    pub name: String,
+    pub fields: Vec<FieldRef>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct InterfaceDecl {
+    pub line: u32,
+    pub col: u32,
+    pub origin: String,
+    pub name: String,
+    pub methods: Vec<IfaceMethod>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct IfaceMethod {
+    pub line: u32,
+    pub col: u32,
+    pub query: bool,
+    pub name: String,
+    pub params: Vec<(String, TypeRef)>,
+    pub ret: TypeRef,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ItemKind {
+    /// `function`: internal and stateful.
+    Function,
+    /// `view function`: internal and read-only.
+    Readonly,
+    /// `pure function`: internal. The result depends only on explicit inputs.
+    Pure,
+    /// `external function`: a state transition.
+    Entry,
+    /// `external view function`, or `external pure function` with `external_pure`.
+    View,
+    Migrate,
+    /// `deploy`: runs once, when the contract is created or, if upgradeable, its proxy is.
+    Deploy,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) enum TypeRef {
+    Name {
+        line: u32,
+        col: u32,
+        name: String,
+    },
+    Record {
+        line: u32,
+        col: u32,
+        fields: Vec<FieldRef>,
+    },
+    Variant {
+        line: u32,
+        col: u32,
+        variants: Vec<VariantRef>,
+    },
+    List {
+        line: u32,
+        col: u32,
+        elem: Box<TypeRef>,
+        /// `None` is a dynamic list. `Some(n)` is a fixed list of length `n`.
+        len: Option<u32>,
+    },
+    Option {
+        line: u32,
+        col: u32,
+        elem: Box<TypeRef>,
+    },
+    Map {
+        line: u32,
+        col: u32,
+        key: Box<TypeRef>,
+        val: Box<TypeRef>,
+    },
+    Tuple {
+        line: u32,
+        col: u32,
+        elems: Vec<TypeRef>,
+    },
+    Pair {
+        line: u32,
+        col: u32,
+        left: Box<TypeRef>,
+        right: Box<TypeRef>,
+    },
+    /// `Set(address)` or `SetEnumerable(address).iterator`.
+    Apply {
+        line: u32,
+        col: u32,
+        name: String,
+        args: Vec<TypeRef>,
+        member: Option<String>,
+    },
+    /// A type parameter already bound to a concrete type.
+    Hole {
+        id: usize,
+    },
+}
+
+impl TypeRef {
+    pub(crate) fn line(&self) -> u32 {
+        match self {
+            Self::Name { line, .. }
+            | Self::Record { line, .. }
+            | Self::Variant { line, .. }
+            | Self::List { line, .. }
+            | Self::Option { line, .. }
+            | Self::Map { line, .. }
+            | Self::Tuple { line, .. }
+            | Self::Pair { line, .. }
+            | Self::Apply { line, .. } => *line,
+            Self::Hole { .. } => 0,
+        }
+    }
+
+    pub(crate) fn col(&self) -> u32 {
+        match self {
+            Self::Name { col, .. }
+            | Self::Record { col, .. }
+            | Self::Variant { col, .. }
+            | Self::List { col, .. }
+            | Self::Option { col, .. }
+            | Self::Map { col, .. }
+            | Self::Tuple { col, .. }
+            | Self::Pair { col, .. }
+            | Self::Apply { col, .. } => *col,
+            Self::Hole { .. } => 0,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct FieldRef {
+    pub line: u32,
+    pub col: u32,
+    pub name: String,
+    pub ty: TypeRef,
+    /// Set on an event field. Other records leave this false.
+    pub indexed: bool,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct VariantRef {
+    pub line: u32,
+    pub col: u32,
+    pub name: String,
+    pub payload: Option<TypeRef>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct Func {
+    pub line: u32,
+    pub col: u32,
+    pub kind: ItemKind,
+    pub private: bool,
+    pub origin: String,
+    pub name: String,
+    pub type_params: Vec<TypeParam>,
+    pub params: Vec<Param>,
+    pub ret: Option<TypeRef>,
+    pub ret_ty: usize,
+    pub payable: bool,
+    pub nonreentrant: bool,
+    /// An `external pure function`: dispatched like a view, checked as pure.
+    pub external_pure: bool,
+    pub raises: Option<Raises>,
+    /// Effective error set: the declared set, or the inferred set when `raises` is omitted.
+    pub errors: Vec<usize>,
+    pub stmts: Vec<Stmt>,
+    pub tail: Option<Expr>,
+    /// `Some` when this function was declared inside a module.
+    pub module: Option<String>,
+    pub requires: Vec<String>,
+    /// The module a contract promoted this function from, with `external function f is M.f`.
+    pub promoted: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct Raises {
+    pub line: u32,
+    pub col: u32,
+    pub parts: Vec<NameAt>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct Param {
+    pub line: u32,
+    pub col: u32,
+    pub mutable: bool,
+    pub name: String,
+    pub ty: TypeRef,
+    pub ty_id: usize,
+    pub sym: Option<usize>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) enum Stmt {
+    Const {
+        line: u32,
+        col: u32,
+        name: String,
+        /// Element names when this binding is `const (a, b) : (T, U)`.
+        parts: Vec<String>,
+        ty: TypeRef,
+        expr: Expr,
+        sym: Option<usize>,
+        part_syms: Vec<usize>,
+    },
+    Var {
+        line: u32,
+        col: u32,
+        name: String,
+        ty: TypeRef,
+        expr: Expr,
+        sym: Option<usize>,
+    },
+    Assign {
+        line: u32,
+        col: u32,
+        path: Vec<String>,
+        index: Option<Expr>,
+        /// Keys after the first, for a map of maps: `m[a][b] := v`.
+        keys: Vec<Expr>,
+        /// Fields of a record stored in a map: `m[k].a.b := v`.
+        fields: Vec<String>,
+        expr: Expr,
+        root: Option<usize>,
+        leaf: u32,
+    },
+    If {
+        line: u32,
+        col: u32,
+        cond: Expr,
+        then_body: Vec<Stmt>,
+        else_body: Vec<Stmt>,
+    },
+    Assert {
+        line: u32,
+        col: u32,
+        cond: Expr,
+        reason: Raised,
+    },
+    Fail {
+        line: u32,
+        col: u32,
+        reason: Raised,
+    },
+    Call {
+        line: u32,
+        col: u32,
+        expr: Expr,
+    },
+    Skip {
+        line: u32,
+        col: u32,
+    },
+    Emit {
+        line: u32,
+        col: u32,
+        name: String,
+        fields: Vec<(String, Expr)>,
+    },
+    Defer {
+        line: u32,
+        col: u32,
+        expr: Expr,
+        value: Option<Expr>,
+        /// What runs after the call returns: a later, separate transition phase.
+        then: Option<Box<Then>>,
+    },
+    /// `for x : T in xs do { ... }` or `for i : T in lo .. hi do { ... }`. The number of
+    /// iterations is fixed when the loop starts; `until` ends it early.
+    For {
+        line: u32,
+        col: u32,
+        /// The index name of `(i, x)`, if the loop binds one. `_` binds nothing.
+        index: Option<String>,
+        /// The element or counter name. `_` binds nothing.
+        name: String,
+        /// The declared type of `name`, or of `(index, name)` as a tuple.
+        ty: TypeRef,
+        iter: ForIter,
+        until: Option<Expr>,
+        bound: Option<Expr>,
+        body: Vec<Stmt>,
+        /// The loop counter. The checker binds it, under the index name or a hidden one.
+        counter: Option<usize>,
+        /// The element binding of a list loop.
+        elem: Option<usize>,
+        /// A hidden local holding the number to count to: `hi`, or the list's length.
+        limit: Option<usize>,
+        /// `xs[counter]`, typed by the checker, for a list loop.
+        elem_init: Option<Expr>,
+        /// The list's length, typed by the checker, for a dynamic list loop.
+        length: Option<Expr>,
+        /// `bound` as a number, set by the checker.
+        cap: Option<u64>,
+        /// A hidden local holding the list when it is not a name, field, or element.
+        list: Option<usize>,
+        /// Every local the loop declares, counter and element included. A deferred call
+        /// inside the loop snapshots those its continuation reads.
+        declared: Vec<usize>,
+    },
+    /// `(a, b) := expr;` assigns each element of a tuple to a `var`.
+    AssignTuple {
+        line: u32,
+        col: u32,
+        names: Vec<String>,
+        expr: Expr,
+        syms: Vec<usize>,
+    },
+}
+
+#[derive(Debug, Clone)]
+pub(crate) enum ForIter {
+    /// `lo .. hi`, half-open.
+    Range { lo: Expr, hi: Expr },
+    /// The elements of a list, in order.
+    List(Expr),
+}
+
+/// `then (result : T) { ... }` on a deferred call. The call separates two complete
+/// transitions; this is the second, and it receives the call's result.
+#[derive(Debug, Clone)]
+pub(crate) struct Then {
+    pub line: u32,
+    pub col: u32,
+    /// One name, the names of a tuple pattern, or none when the result is not bound.
+    pub names: Vec<String>,
+    pub tuple: bool,
+    pub ty: Option<TypeRef>,
+    pub stmts: Vec<Stmt>,
+    /// The checker's symbols for `names`, in order.
+    pub syms: Vec<usize>,
+    /// The call's declared return type, set by the checker.
+    pub ret: usize,
+    /// `| Error(reason : bytes) -> { ... }`: runs as its own phase when the call reverts,
+    /// with the revert data. Without it, a failed call reverts the transaction.
+    pub error: Option<Box<Then>>,
+}
+
+impl Then {
+    /// The success continuation, then the failure one when the call is recoverable.
+    pub(crate) fn arms(&self) -> impl Iterator<Item = &Then> {
+        std::iter::once(self).chain(self.error.as_deref())
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct Raised {
+    pub line: u32,
+    pub col: u32,
+    pub name: String,
+    pub form: RaisedForm,
+    pub index: Option<usize>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) enum RaisedForm {
+    Unit,
+    Positional(Expr),
+    Fields(Vec<(String, Expr)>),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum BinOp {
+    Add,
+    Sub,
+    Mul,
+    Div,
+    Mod,
+    BitAnd,
+    BitOr,
+    BitXor,
+    Shl,
+    Shr,
+    Eq,
+    Neq,
+    Lt,
+    Gt,
+    Le,
+    Ge,
+    And,
+    Or,
+    Cons,
+}
+
+impl BinOp {
+    pub(crate) fn is_cmp(self) -> bool {
+        matches!(
+            self,
+            Self::Eq | Self::Neq | Self::Lt | Self::Gt | Self::Le | Self::Ge
+        )
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum UnOp {
+    Not,
+    Neg,
+    BitNot,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Builtin {
+    Sender,
+    Value,
+    Calldata,
+    Selector,
+    TxOrigin,
+    TxGasPrice,
+    BlockNumber,
+    BlockTimestamp,
+    BlockCoinbase,
+    BlockBaseFee,
+    ChainId,
+    BlockPrevrandao,
+    BlockGasLimit,
+    BlockHash,
+    BlobHash,
+    SelfAddr,
+    Balance,
+    CodeSize,
+    CodeHash,
+    GasLeft,
+    Keccak256,
+    Sha256,
+    Ripemd160,
+    Ecrecover,
+    AbiEncode,
+    AbiDecode,
+    AbiEncodePacked,
+    AbiEncodeSelector,
+    AbiEncodeSignature,
+    AbiEncodeCall,
+    BytesConcat,
+    StringConcat,
+    NatDivRem,
+    /// `Bytes.word(b, offset)`: the 32 bytes of `b` starting at `offset`, as a `bytes32`.
+    BytesWord,
+    /// `Nat.mul_div(a, b, d)`: `a * b / d` without overflow in the product.
+    NatMulDiv,
+    NatMulMod,
+    NatAddMod,
+    IntDivRem,
+    Transfer,
+    /// `create Contract(args)`: the arguments go to its `deploy`; `base` holds the
+    /// `CREATE2` salt, if any.
+    Create,
+    Cast,
+    Some,
+    None,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) enum Lit {
+    Nat(Word),
+    Int(Word),
+    Wei(Word),
+    Duration(Word),
+    Bool(bool),
+    Str(String),
+    Unit,
+    Nil,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) enum Expr {
+    Lit {
+        line: u32,
+        col: u32,
+        lit: Lit,
+        ty: usize,
+    },
+    Ident {
+        line: u32,
+        col: u32,
+        name: String,
+        sym: Option<usize>,
+        builtin: Option<Builtin>,
+        ty: usize,
+    },
+    Field {
+        line: u32,
+        col: u32,
+        base: Box<Expr>,
+        name: String,
+        root: Option<usize>,
+        leaf: u32,
+        ty: usize,
+    },
+    Index {
+        line: u32,
+        col: u32,
+        base: Box<Expr>,
+        index: Box<Expr>,
+        root: Option<usize>,
+        leaf: u32,
+        ty: usize,
+    },
+    Call {
+        line: u32,
+        col: u32,
+        name: String,
+        args: Vec<Expr>,
+        base: Option<Box<Expr>>,
+        callee: Option<usize>,
+        builtin: Option<Builtin>,
+        iface: Option<usize>,
+        method: Option<usize>,
+        ty: usize,
+    },
+    Query {
+        line: u32,
+        col: u32,
+        expr: Box<Expr>,
+        ty: usize,
+    },
+    Case {
+        line: u32,
+        col: u32,
+        scrut: Box<Expr>,
+        arms: Vec<Arm>,
+        ty: usize,
+    },
+    Unary {
+        line: u32,
+        col: u32,
+        op: UnOp,
+        expr: Box<Expr>,
+        ty: usize,
+    },
+    Binary {
+        line: u32,
+        col: u32,
+        op: BinOp,
+        left: Box<Expr>,
+        right: Box<Expr>,
+        ty: usize,
+    },
+    Pair {
+        line: u32,
+        col: u32,
+        left: Box<Expr>,
+        right: Box<Expr>,
+        ty: usize,
+    },
+    Tuple {
+        line: u32,
+        col: u32,
+        elems: Vec<Expr>,
+        ty: usize,
+    },
+    List {
+        line: u32,
+        col: u32,
+        elems: Vec<Expr>,
+        ty: usize,
+    },
+    Record {
+        line: u32,
+        col: u32,
+        fields: Vec<(String, Expr)>,
+        ty: usize,
+    },
+}
+
+impl Expr {
+    pub(crate) fn line(&self) -> u32 {
+        match self {
+            Self::Lit { line, .. }
+            | Self::Ident { line, .. }
+            | Self::Field { line, .. }
+            | Self::Index { line, .. }
+            | Self::Call { line, .. }
+            | Self::Query { line, .. }
+            | Self::Case { line, .. }
+            | Self::Unary { line, .. }
+            | Self::Binary { line, .. }
+            | Self::Pair { line, .. }
+            | Self::Tuple { line, .. }
+            | Self::List { line, .. }
+            | Self::Record { line, .. } => *line,
+        }
+    }
+
+    pub(crate) fn col(&self) -> u32 {
+        match self {
+            Self::Lit { col, .. }
+            | Self::Ident { col, .. }
+            | Self::Field { col, .. }
+            | Self::Index { col, .. }
+            | Self::Call { col, .. }
+            | Self::Query { col, .. }
+            | Self::Case { col, .. }
+            | Self::Unary { col, .. }
+            | Self::Binary { col, .. }
+            | Self::Pair { col, .. }
+            | Self::Tuple { col, .. }
+            | Self::List { col, .. }
+            | Self::Record { col, .. } => *col,
+        }
+    }
+
+    pub(crate) fn ty(&self) -> usize {
+        match self {
+            Self::Lit { ty, .. }
+            | Self::Ident { ty, .. }
+            | Self::Field { ty, .. }
+            | Self::Index { ty, .. }
+            | Self::Call { ty, .. }
+            | Self::Query { ty, .. }
+            | Self::Case { ty, .. }
+            | Self::Unary { ty, .. }
+            | Self::Binary { ty, .. }
+            | Self::Pair { ty, .. }
+            | Self::Tuple { ty, .. }
+            | Self::List { ty, .. }
+            | Self::Record { ty, .. } => *ty,
+        }
+    }
+
+    pub(crate) fn set_ty(&mut self, id: usize) {
+        match self {
+            Self::Lit { ty, .. }
+            | Self::Ident { ty, .. }
+            | Self::Field { ty, .. }
+            | Self::Index { ty, .. }
+            | Self::Call { ty, .. }
+            | Self::Query { ty, .. }
+            | Self::Case { ty, .. }
+            | Self::Unary { ty, .. }
+            | Self::Binary { ty, .. }
+            | Self::Pair { ty, .. }
+            | Self::Tuple { ty, .. }
+            | Self::List { ty, .. }
+            | Self::Record { ty, .. } => *ty = id,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct Arm {
+    pub line: u32,
+    pub col: u32,
+    pub ctor: String,
+    pub bind: Option<String>,
+    pub bind_sym: Option<usize>,
+    /// Names from `Some((q, r))`.
+    pub tuple_names: Vec<String>,
+    pub tuple_syms: Vec<usize>,
+    pub stmts: Vec<Stmt>,
+    pub expr: Expr,
+}

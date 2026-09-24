@@ -1,0 +1,54 @@
+---
+title: "Collections"
+description: "Sets, enumerable sets, bitmaps, and queues in storage."
+---
+
+# Collections
+
+A collection lives in storage. A collection function takes the collection as its first argument, as a storage path such as `storage.members`, and reads and writes it in place.
+
+```lithe
+import "std/collections/set.lithe";
+import "std/collections/set_enumerable.lithe";
+import "std/collections/bitmap.lithe";
+import "std/collections/queue.lithe";
+
+contract Airdrop is {
+  use Bitmap;
+
+  storage is record {
+    admins : Set(address);
+    holders : SetEnumerable(address);
+    claimed : bitmap;
+    waiting : Queue(address);
+  }
+
+  external function claim(const index : nat) is {
+    if not Bitmap.get(storage.claimed, index) then {
+      Bitmap.set(storage.claimed, index);
+      SetEnumerable.add(storage.holders, Evm.sender());
+    }
+  }
+
+  external function wait() is {
+    Queue.push(storage.waiting, Evm.sender());
+  }
+
+  external view function holder_count() : nat is
+    SetEnumerable.length(storage.holders)
+
+  external view function is_admin(const who : address) : bool is
+    Set.contains(storage.admins, who)
+}
+```
+
+| Module | Type | Functions |
+| --- | --- | --- |
+| `Set(T)` | a map from `T` to `bool` | `contains`, `add`, `remove` |
+| `SetEnumerable(T)` | a list and an index map | `contains`, `add`, `remove`, `length`, `at` |
+| `Bitmap` | `bitmap`, 256 flags a slot | `get`, `set`, `unset`, `set_to` |
+| `Queue(T)` | a map and two counters | `push`, `pop`, `front`, `back`, `at`, `length`, `is_empty` |
+
+- `Set` and `SetEnumerable` take a `map_key`: an integer, `bool`, `address`, `bytesN`, or a nominal type over one. `SetEnumerable` costs more to write, because it keeps a list as well as the map.
+- `remove` in `SetEnumerable` moves the last element into the gap, so order isn't kept.
+- `Queue.pop` leaves the element in storage, because a generic `T` has no zero value to write back.

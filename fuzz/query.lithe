@@ -1,0 +1,79 @@
+(* Fuzz target: bodies that query, so storage goes through the image. Shared functions
+   read and write it, asserts read it for their errors, and branches follow the query.
+   Address 2 is the SHA-256 precompile, which answers any query with a word. *)
+
+error Not_owner of address;
+error Too_big of record {
+  have : nat;
+  limit : nat;
+}
+
+interface Oracle is {
+  query price(amount : nat) : nat;
+}
+
+storage is record {
+  owner : address;
+  ready : bool;
+  a : nat;
+  b : nat;
+  c : nat;
+  small : uint8;
+  total : nat;
+  seen : map(address, nat);
+}
+
+event Moved of record {
+  indexed who : address;
+  amount : nat;
+}
+
+view function check_owner()
+  raises Not_owner
+is {
+  assert(storage.owner = Evm.sender() or not storage.ready, Not_owner(storage.owner));
+}
+
+function bump(const k : nat) is {
+  storage.a := storage.a + k % 1000n;
+  storage.b := storage.b + storage.a;
+  storage.seen[Evm.sender()] := storage.seen[Evm.sender()] + 1n;
+}
+
+external function claim() is {
+  storage.owner := Evm.sender();
+  storage.ready := true;
+}
+
+external function refresh(const o : Oracle; const k : nat)
+  raises Not_owner | Too_big
+is {
+  check_owner();
+  bump(k);
+  const p : nat := query o.price(k);
+  if p % 2n = 0n then {
+    storage.c := p % 100000n;
+  } else {
+    storage.small := uint8(p % 200n);
+    bump(p % 7n);
+  }
+  assert(storage.b < 1000000000n, Too_big { have = storage.b; limit = storage.total; });
+  storage.total := storage.total + 1n;
+  emit Moved {
+    who = Evm.sender();
+    amount = storage.c;
+  };
+}
+
+external function poke(const k : nat)
+  raises Not_owner
+is {
+  check_owner();
+  bump(k);
+}
+
+external view function state() : (nat, nat, nat, uint8, nat) is
+  (storage.a, storage.b, storage.c, storage.small, storage.total)
+
+external view function seen(const who : address) : nat is
+  storage.seen[who]

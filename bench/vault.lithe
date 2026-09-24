@@ -1,0 +1,70 @@
+(* Benchmark: an ETH vault with pausing and withdrawals. Mirrors vault.sol. *)
+
+error Not_owner;
+error Paused;
+
+error Insufficient of record {
+  available : wei;
+  required : wei;
+}
+
+event Deposited of record {
+  indexed who : address;
+  amount : wei;
+}
+
+event Withdrawn of record {
+  indexed who : address;
+  amount : wei;
+}
+
+storage is record {
+  owner : address;
+  paused : bool;
+  deposits : map(address, wei);
+}
+
+deploy() is {
+  storage.owner := Evm.sender();
+}
+
+external payable function deposit()
+  raises Paused
+is {
+  assert(not storage.paused, Paused);
+  storage.deposits[Evm.sender()] := storage.deposits[Evm.sender()] + Evm.value();
+  emit Deposited {
+    who = Evm.sender();
+    amount = Evm.value();
+  };
+}
+
+external function withdraw(const amount : wei)
+  raises Paused | Insufficient
+is {
+  assert(not storage.paused, Paused);
+  const have : wei := storage.deposits[Evm.sender()];
+  assert(
+    have >= amount,
+    Insufficient {
+      available = have;
+      required = amount;
+    }
+  );
+  storage.deposits[Evm.sender()] := have - amount;
+  emit Withdrawn {
+    who = Evm.sender();
+    amount = amount;
+  };
+  defer Evm.transfer(Evm.sender(), amount);
+}
+
+external function set_paused(const flag : bool)
+  raises Not_owner
+is {
+  assert(Evm.sender() = storage.owner, Not_owner);
+  storage.paused := flag;
+}
+
+external view function deposit_of(const who : address) : wei is
+  storage.deposits[who]

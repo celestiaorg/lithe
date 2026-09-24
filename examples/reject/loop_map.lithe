@@ -1,0 +1,9 @@
+storage is record {
+  balances : map(address, nat);
+}
+
+external function go() is {
+  for who : address in storage.balances do {
+    skip
+  }
+}

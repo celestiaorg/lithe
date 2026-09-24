@@ -1,0 +1,13 @@
+(* CREATE2 addresses: where `defer create C() with salt = s` lands, given the hash of C's
+   creation code, arguments included. *)
+
+module Create2 is {
+  pure function compute_address(const salt : bytes32; const init_code_hash : bytes32; const deployer : address) : address is {
+    const marker : bytes1 := 0xff;
+    const hash : bytes32 := Crypto.keccak256(Abi.encode_packed(marker, deployer, salt, init_code_hash));
+  } with address(uint160(nat(hash) & ((1n << 160n) - 1n)))
+
+  (* Where this contract would create it. *)
+  view function compute_address_here(const salt : bytes32; const init_code_hash : bytes32) : address is
+    compute_address(salt, init_code_hash, Evm.self())
+}

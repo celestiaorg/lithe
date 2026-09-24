@@ -1,0 +1,331 @@
+---
+title: "Queries and deferred calls"
+description: "Interfaces, synchronous read-only queries, deferred state-changing calls, and ether transfers."
+---
+
+# Queries and deferred calls
+
+Lithe splits external interaction into two constructs that cannot be confused:
+
+| | `query` | `defer` |
+| --- | --- | --- |
+| Runs | now, in the middle of the transition | after the transition commits |
+| Compiles to | `STATICCALL` | `CALL` |
+| Can change state | no, and the EVM enforces it | yes |
+| Result | an ordinary value | available in a [continuation](/language/continuations) |
+| Allowed in | `view` and stateful functions | stateful functions |
+
+## Interfaces
+
+An interface describes another contract. Each method is either a `query`, which is read-only, or a `call`, which may change state:
+
+```lithe fragment
+interface IERC20 is {
+  query balanceOf(owner : address) : nat;
+  query allowance(owner : address; spender : address) : nat;
+  call transfer(to : address; amount : nat) : bool;
+  call transferFrom(from : address; to : address; amount : nat) : bool;
+}
+```
+
+Method names and parameter types form the ABI signature exactly as written: `transferFrom(address,address,uint256)`. A method that returns nothing declares `: unit`. Arguments and results can be strings, bytes, and lists as well as words, for both kinds of method.
+
+A value of an interface type is a contract address. It is an `address` in the ABI and in storage. Convert between the two with `IERC20(addr)` and `address(token)`. Interface values usually arrive as parameters and are kept in storage:
+
+```lithe fragment
+storage is record {
+  token : IERC20;
+}
+
+external function init(const token : IERC20) is {
+  storage.token := token;
+}
+```
+
+Interfaces can be declared at the top level, or inside a contract or module.
+
+## `query`
+
+`query target.method(args)` is an expression. It runs the call immediately through `STATICCALL`, decodes the result, and continues:
+
+```lithe
+interface Oracle is {
+  query price(asset : address) : nat;
+}
+
+error Price_too_low of nat;
+
+storage is record {
+  oracle : Oracle;
+  floor : nat;
+}
+
+external view function price(const asset : address) : nat is
+  query storage.oracle.price(asset)
+
+external function check(const asset : address)
+  raises Price_too_low
+is {
+  const p : nat := query storage.oracle.price(asset);
+  assert(p >= storage.floor, Price_too_low(p));
+  storage.floor := p;
+}
+```
+
+`STATICCALL` means the callee, and everything it calls, cannot modify state, emit logs, or send ether. If it tries, or reverts, the transaction reverts, unless you match the query's outcome with `case query ... of { | Ok(v) -> ... | Error(e) -> ... }`. See [Recovering from failed calls](/language/continuations#recovering-from-failed-calls).
+
+You cannot `query` a `call` method, or `defer` a `query` method:
+
+```lithe rejects
+interface X is {
+  call f() : nat;
+}
+
+storage is record {
+  x : X;
+  n : nat;
+}
+
+external function a() is {
+  storage.n := query storage.x.f();
+}
+```
+
+```text
+query expects a read-only method
+```
+
+## `defer`
+
+`defer target.method(args);` records a state-changing call. It runs after the transition's storage writes and events, in the order the `defer`s ran:
+
+```lithe
+interface Token is {
+  call transfer(to : address; amount : nat) : bool;
+}
+
+storage is record {
+  token : Token;
+  paid : map(address, nat);
+}
+
+external nonreentrant function pay(const to : address; const amount : nat) is {
+  storage.paid[to] := storage.paid[to] + amount;
+  defer storage.token.transfer(to, amount);
+}
+```
+
+The target, arguments, and value are **evaluated at the `defer`**, and the call itself happens later. A `defer` inside an `if` runs only if that branch ran.
+
+Deferred calls forward all remaining gas. If a deferred call reverts, the whole transaction reverts, unless its continuation has [`Ok` and `Error` arms](/language/continuations#recovering-from-failed-calls). When a [continuation](/language/continuations) binds the call's result, the result is decoded and checked first, and a malformed result reverts.
+
+### Sending ether with a call
+
+Attach ether with `with value = amount`. The amount is a `nat` number of wei:
+
+```lithe
+interface Pool is {
+  call deposit(beneficiary : address) : unit;
+}
+
+storage is record {
+  pool : Pool;
+}
+
+external payable nonreentrant function forward() is {
+  defer storage.pool.deposit(Evm.sender()) with value = nat(Evm.value());
+}
+```
+
+## `Evm.transfer`
+
+`defer Evm.transfer(to, amount)` sends plain ether. `to` is an address or an interface value, and `amount` is `wei`:
+
+```lithe
+error Insufficient;
+
+storage is record {
+  balances : map(address, wei);
+}
+
+external nonreentrant function withdraw(const amount : wei)
+  raises Insufficient
+is {
+  const have : wei := storage.balances[Evm.sender()];
+  assert(have >= amount, Insufficient);
+  storage.balances[Evm.sender()] := have - amount;
+  defer Evm.transfer(Evm.sender(), amount);
+}
+```
+
+The transfer forwards all remaining gas, like Solidity's `call{value: ...}("")`, and reverts the transaction if the recipient rejects it. It is always deferred.
+
+## `create`
+
+`defer create Name()` deploys another contract defined in the same file. A continuation receives the new contract's address:
+
+```lithe
+contract Factory is {
+  storage is record {
+    last : address;
+  }
+
+  external function open() is {
+    defer create Vault() then (vault : address) {
+      storage.last := vault;
+    };
+  }
+}
+
+contract Vault is {
+  storage is record {
+    owner : address;
+  }
+
+  external view function owner() : address is
+    storage.owner
+}
+```
+
+The created contract's code is embedded in the factory's bytecode. A file with several contracts builds one bytecode per contract, so compile it as a directory with `lithe compile directory`.
+
+### Passing arguments
+
+Arguments after the contract's name go to its [`deploy`](/language/deploy), which runs as the contract is created. They are checked against `deploy`'s parameters, and the continuation runs after `deploy` has finished:
+
+```lithe
+contract Factory is {
+  storage is record {
+    vaults : map(address, address);
+  }
+
+  external function open(const cap : nat) is {
+    defer create Vault(Evm.sender(), cap) then (vault : address) {
+      storage.vaults[Evm.sender()] := vault;
+    };
+  }
+}
+
+contract Vault is {
+  storage is record {
+    owner : address;
+    cap : nat;
+  }
+
+  deploy(const owner : address; const cap : nat) is {
+    storage.owner := owner;
+    storage.cap := cap;
+  }
+
+  external view function owner() : address is
+    storage.owner
+}
+```
+
+The arguments are ABI-encoded and appended to the creation code, as Solidity does for `new Vault(owner, cap)`. A contract without `deploy` takes no arguments:
+
+```lithe rejects
+contract Factory is {
+  storage is record {
+    last : address;
+  }
+
+  external function open() is {
+    defer create Vault(Evm.sender());
+  }
+}
+
+contract Vault is {
+  storage is record {
+    owner : address;
+  }
+
+  external view function owner() : address is
+    storage.owner
+}
+```
+
+```text
+`Vault` has no `deploy` parameters, so it takes no arguments
+```
+
+### Value and salt
+
+`with value = amount` sends ether to the new contract. The amount is a `nat` number of wei, as for [calls](#sending-ether-with-a-call). A contract whose `deploy` is not `payable` rejects the value, and the creation fails.
+
+`with salt = s` takes a `bytes32` and deploys with `CREATE2`. The address then depends only on the factory, the salt, and the created contract's creation code, arguments included, so it can be computed before deployment. Without a salt, `create` uses `CREATE`, and the address depends on the factory's nonce.
+
+To give both options, put them in braces:
+
+```lithe
+contract Factory is {
+  storage is record {
+    last : address;
+  }
+
+  external payable function open_funded() is {
+    defer create Vault() with value = nat(Evm.value());
+  }
+
+  external function open_at(const salt : bytes32) is {
+    defer create Vault() with salt = salt then (vault : address) {
+      storage.last := vault;
+    };
+  }
+
+  external payable function open_funded_at(const salt : bytes32) is {
+    defer create Vault() with { value = nat(Evm.value()); salt = salt; } then (vault : address) {
+      storage.last := vault;
+    };
+  }
+}
+
+contract Vault is {
+  storage is record {
+    owner : address;
+  }
+
+  external view function owner() : address is
+    storage.owner
+}
+```
+
+### When creation fails
+
+A creation fails if the factory cannot pay the value, if the salted address is already taken, if the created contract's `deploy` reverts, or if its code does not fit. A failed creation reverts the transaction, unless the continuation has [`Ok` and `Error` arms](/language/continuations#recovering-from-failed-calls):
+
+```lithe
+contract Factory is {
+  storage is record {
+    last : address;
+    failed : nat;
+  }
+
+  external function open_at(const salt : bytes32) is {
+    defer create Vault() with salt = salt then {
+      | Ok(vault : address) -> {
+          storage.last := vault;
+        }
+      | Error(_) -> {
+          storage.failed := storage.failed + 1n;
+        }
+    };
+  }
+}
+
+contract Vault is {
+  storage is record {
+    owner : address;
+  }
+
+  external view function owner() : address is
+    storage.owner
+}
+```
+
+## What cannot be written
+
+- An inline state-changing call. `token.transfer(...)` without `defer` is not an expression.
+- A `query` in a `pure` function, or a `defer` in a `view`.
+- A `query` or `defer` in a [migration](/language/upgrades).
+- Low-level `call`, `delegatecall`, or raw calldata calls.

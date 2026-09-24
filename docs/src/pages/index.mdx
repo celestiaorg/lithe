@@ -1,0 +1,119 @@
+---
+title: "Lithe"
+description: "A secure-by-construction smart-contract language for the EVM."
+layout: minimal
+showOutline: false
+---
+
+import { Card, Cards, HomePage } from "vocs";
+
+<HomePage.Root>
+  <HomePage.Logo />
+  <HomePage.Tagline>Secure contracts by construction.</HomePage.Tagline>
+  <HomePage.Description>
+    Lithe is a smart-contract language for the EVM. Entrypoints are state transitions
+    with explicit effects, typed failures, and deterministic storage. The compiler
+    enforces the security rules that Solidity leaves to convention.
+  </HomePage.Description>
+  <HomePage.Buttons>
+    <HomePage.Button href="/guide/getting-started" variant="accent">Get started</HomePage.Button>
+    <HomePage.Button href="/by-example">Lithe by Example</HomePage.Button>
+  </HomePage.Buttons>
+</HomePage.Root>
+
+```lithe
+error Insufficient_balance of record {
+  available : wei;
+  required : wei;
+}
+
+event Withdrawn of record {
+  indexed account : address;
+  amount : wei;
+}
+
+storage is record {
+  balances : map(address, wei);
+}
+
+external payable function deposit() is {
+  storage.balances[Evm.sender()] := storage.balances[Evm.sender()] + Evm.value();
+}
+
+external function withdraw(const amount : wei)
+  raises Insufficient_balance
+is {
+  const balance : wei := storage.balances[Evm.sender()];
+  assert(
+    balance >= amount,
+    Insufficient_balance { available = balance; required = amount; }
+  );
+  storage.balances[Evm.sender()] := balance - amount;
+  emit Withdrawn { account = Evm.sender(); amount = amount; };
+  defer Evm.transfer(Evm.sender(), amount);
+}
+```
+
+## Why now
+
+Smart contracts are now written with AI and attacked with AI. In Anthropic's [SCONE-bench](https://www.anthropic.com/research/smart-contracts), AI agents produced working exploits for **51%** of 405 real exploited contracts, and scanning a new contract for bugs cost about **$1.22**.
+
+The bugs that lose the most money are not exotic. In 2024, **access-control flaws caused about two thirds** of smart-contract losses: a missing caller check, an open initializer, an unguarded upgrade. Reentrancy caused under 3%. Lithe turns these conventions into compiler rules, so neither the developer nor the model has to remember them.
+
+<HomePage.Buttons>
+  <HomePage.Button href="/guide/why-now" variant="accent">Why now</HomePage.Button>
+  <HomePage.Button href="/guide/why-not-solidity">Why not Solidity?</HomePage.Button>
+</HomePage.Buttons>
+
+## What you get
+
+<Cards>
+  <Card
+    title="External calls are deferred"
+    description="A state-changing call to another contract runs after your entrypoint has finished its own work, so a callee never sees half-updated state."
+    to="/language/effects"
+    icon="lucide:clock-arrow-down"
+  />
+  <Card
+    title="Typed, declared failures"
+    description="Errors are types. Every external function lists the errors it can raise in `raises`, and the compiler checks that the list is complete."
+    to="/language/errors"
+    icon="lucide:shield-alert"
+  />
+  <Card
+    title="Checked effects"
+    description="`pure`, `view`, and stateful functions are verified against their bodies. A view cannot write storage, emit, or defer."
+    to="/language/functions"
+    icon="lucide:scan-eye"
+  />
+  <Card
+    title="Deterministic storage"
+    description="The default storage lays out exactly as Solidity's does. Named domains sit at ERC-7201 roots and survive upgrades and refactors."
+    to="/language/storage"
+    icon="lucide:database"
+  />
+  <Card
+    title="Modules, not inheritance"
+    description="Modules own their storage and functions. A contract says which functions it exposes, so nothing becomes public by accident."
+    to="/language/modules"
+    icon="lucide:blocks"
+  />
+  <Card
+    title="Built-in upgrades"
+    description="`upgradeable` compiles to UUPS. The upgrade guard and one-time migrations are part of the language."
+    to="/language/upgrades"
+    icon="lucide:arrow-up-circle"
+  />
+  <Card
+    title="About 30% smaller bytecode"
+    description="Across real contracts, including OpenZeppelin tokens and Synthetix staking, Lithe emits about 31% less runtime code than optimized `solc`, with identical storage, logs, and return data."
+    to="/guide/performance"
+    icon="lucide:minimize-2"
+  />
+  <Card
+    title="Contracts you can inspect"
+    description="The compiler reports what every entrypoint reads, writes, emits, defers, and raises, as text for reviewers or JSON for tools."
+    to="/tooling/inspection"
+    icon="lucide:list-tree"
+  />
+</Cards>

@@ -1,0 +1,56 @@
+(* Benchmark: string and bytes storage. Mirrors registry.sol. *)
+
+event Renamed of record {
+  indexed label : string;
+}
+
+event Tagged of record {
+  indexed who : address;
+  tag : bytes4;
+  level : uint8;
+}
+
+storage is record {
+  name : string;
+  blob : bytes;
+  updates : nat;
+  tag : bytes4;
+  level : uint8;
+}
+
+external function rename(const n : string) is {
+  storage.name := n;
+  storage.updates := storage.updates + 1n;
+  emit Renamed {
+    label = n;
+  };
+}
+
+external function set_blob(const b : bytes) is {
+  storage.blob := b;
+}
+
+external view function name() : string is
+  storage.name
+
+external view function blob() : bytes is
+  storage.blob
+
+external view function digest() : bytes32 is
+  Crypto.keccak256(storage.blob)
+
+external function set_tag(const t : bytes4; const level : uint8) is {
+  storage.tag := t;
+  storage.level := level;
+  emit Tagged {
+    who = Evm.sender();
+    tag = t;
+    level = level;
+  };
+}
+
+external view function tag() : bytes4 is
+  storage.tag
+
+external view function level() : uint8 is
+  storage.level

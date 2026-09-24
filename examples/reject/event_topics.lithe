@@ -1,0 +1,12 @@
+event Foo of record {
+  indexed a : nat;
+  indexed b : nat;
+  indexed c : nat;
+  indexed d : nat;
+}
+
+storage is record {
+  n : nat;
+}
+
+external function go() is { skip }

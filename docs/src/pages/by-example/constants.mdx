@@ -1,0 +1,41 @@
+---
+title: "Constants"
+description: "Named constants as pure functions, and built-in bounds."
+---
+
+# Constants
+
+Lithe has no `constant` declaration. A pure function with no parameters is a named constant, and the compiler folds it to a literal.
+
+```lithe [constants.lithe]
+(* A constant is a pure function of no arguments. It compiles to the literal. *)
+
+storage is record {
+  fee_bps : nat;
+}
+
+pure function max_fee_bps() : nat is
+  1_000n
+
+pure function denominator() : nat is
+  10_000n
+
+error Fee_too_high of nat;
+
+external function set_fee(const fee_bps : nat)
+  raises Fee_too_high
+is {
+  assert(fee_bps <= max_fee_bps(), Fee_too_high(fee_bps));
+  storage.fee_bps := fee_bps;
+}
+
+external view function fee_on(const amount : nat) : nat is
+  amount * storage.fee_bps / denominator()
+
+(* Built-in constants take their width from context. *)
+external pure function limits() : (nat, uint16, int, address) is
+  (Nat.max, Nat.max, Int.max, Address.zero)
+```
+
+- `1_000n` uses `_` as a digit separator.
+- `Nat.max` is `type(uint256).max`, or the maximum of whatever width the context expects. Here `limits` returns it both as a `nat` and as a `uint16`.

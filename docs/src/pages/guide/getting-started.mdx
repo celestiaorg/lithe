@@ -1,0 +1,112 @@
+---
+title: "Installation and first contract"
+description: "Build the Lithe compiler, write a contract, compile it, and deploy it to a local chain."
+---
+
+# Installation and first contract
+
+## Build the compiler
+
+Lithe is written in Rust. Build it from the repository root with a recent stable toolchain:
+
+```bash
+cargo build --release
+```
+
+The compiler is now at `target/release/lithe`. Put it on your `PATH`, or call it by path:
+
+```bash
+export PATH="$PWD/target/release:$PATH"
+lithe
+```
+
+Run with no arguments, `lithe` prints its commands. See [Command line](/tooling/cli) for the full list.
+
+## Write a contract
+
+A Lithe file is a contract. Create `counter.lithe`:
+
+```lithe [counter.lithe]
+(* Comments are written like this, and they nest. *)
+
+storage is record {
+  count : nat;
+}
+
+external view function get() : nat is
+  storage.count
+
+external function inc() is {
+  storage.count := storage.count + 1n;
+}
+
+external function dec() is {
+  storage.count := storage.count - 1n;
+}
+```
+
+A few things to notice:
+
+- **`storage is record`** declares the contract's persistent state. Every contract has one, and every access is qualified as `storage.count`.
+- **`nat`** is an unsigned 256-bit integer. `1n` is a `nat` literal. Arithmetic is checked, so `dec` on zero reverts with `Panic(0x11)`, the same panic Solidity uses.
+- **`external`** puts a function in the ABI. `external view` promises the function never writes, and the compiler checks the promise.
+- **`:=`** assigns. **`=`** compares.
+- A function body is a block `{ ... }` or a single expression.
+
+## Compile
+
+```bash
+lithe compile counter.lithe
+```
+
+This prints the contract's creation bytecode as hex. Generate its ABI with:
+
+```bash
+lithe abi counter.lithe
+```
+
+To build every `.lithe` file in a directory into Foundry-style artifacts under `./out`, pass the directory:
+
+```bash
+lithe compile src
+```
+
+## Deploy and call
+
+The output of `lithe compile` is creation code, so any deployment tool can use it. With [Foundry](https://getfoundry.sh) and a local `anvil`:
+
+```bash
+anvil &
+
+KEY=0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80
+cast send --private-key $KEY --create $(lithe compile counter.lithe)
+# contractAddress 0x5FbDB2315678afecb367f032d93F642f64180aa3
+
+cast send --private-key $KEY 0x5FbDB2315678afecb367f032d93F642f64180aa3 "inc()"
+cast call 0x5FbDB2315678afecb367f032d93F642f64180aa3 "get()(uint256)"
+# 1
+```
+
+Calling `dec()` twice from here reverts with `panic: arithmetic underflow or overflow (0x11)`.
+
+## See what the compiler knows
+
+Because effects are explicit, the compiler can summarize each entrypoint:
+
+```bash
+lithe footprint counter.lithe
+```
+
+```text
+inc   writes: count            during defers: callable
+dec   writes: count            during defers: callable
+get   reads: count             during defers: callable
+```
+
+[Inspecting contracts](/tooling/inspection) covers `footprint`, `abi-tree`, `analysis`, `errors`, and `storage`.
+
+## Next steps
+
+- Read [The transition model](/guide/transition-model) to understand `query`, `emit`, and `defer`.
+- Browse [Lithe by Example](/by-example).
+- Keep the [Built-ins](/language/builtins) reference open while you write.

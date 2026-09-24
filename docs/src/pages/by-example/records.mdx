@@ -1,0 +1,53 @@
+---
+title: "Records"
+description: "Structs: declaring, constructing, storing, and updating fields."
+---
+
+# Records
+
+A record is a struct. Record literals use `{ field = value; }`, and stored records can be updated one field at a time.
+
+```lithe [records.lithe]
+(* Records are structs. Storage lays them out exactly as Solidity would. *)
+
+type todo is record {
+  priority : uint8;
+  done : bool;
+}
+
+type point is record {
+  x : uint128;
+  y : uint128;
+}
+
+storage is record {
+  todos : map(nat, todo);
+  count : nat;
+  origin : point;
+}
+
+external function add(const priority : uint8) is {
+  storage.todos[storage.count] := { priority = priority; done = false; };
+  storage.count := storage.count + 1n;
+}
+
+(* Write one field of a record stored in a map. *)
+external function toggle(const id : nat) is {
+  storage.todos[id].done := not storage.todos[id].done;
+}
+
+external view function get(const id : nat) : todo is
+  storage.todos[id]
+
+external function move(const x : uint128; const y : uint128) is {
+  storage.origin.x := x;
+  storage.origin.y := y;
+}
+
+external view function x() : uint128 is
+  storage.origin.x
+```
+
+- A record literal takes its type from context: a storage slot, an annotation, or a parameter.
+- `get` returns a record, which the ABI flattens into named outputs `(uint8 priority, bool done)`, like a Solidity struct getter.
+- Records inside maps must be made of word-sized fields, with no `string` or `bytes`.

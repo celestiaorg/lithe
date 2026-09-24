@@ -1,0 +1,22 @@
+module Pausable is {
+  function require_unpaused() is {
+    skip
+  }
+}
+
+module Guarded is {
+  function go() is {
+    Pausable.require_unpaused();
+  }
+}
+
+contract Token is {
+  storage is record {
+    n : nat;
+  }
+
+  use Pausable;
+  use Guarded;
+
+  external function go is Guarded.go;
+}

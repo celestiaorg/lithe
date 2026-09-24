@@ -1,0 +1,118 @@
+(* Bitwise operators, truncating division, and positional tuples. *)
+
+storage is record {
+  q : nat;
+  r : nat;
+  sq : int;
+  sr : int;
+  rem_nat : nat;
+  div_int : int;
+  rem_int : int;
+  masked : nat;
+  flags : nat;
+  toggled : nat;
+  inverted : nat;
+  shifted : nat;
+  back : nat;
+  uq : uint32;
+  ur : uint32;
+  narrow_shift : uint8;
+  narrow_not : uint8;
+  sar : int;
+  half : nat;
+  rest : nat;
+  pair_amount : nat;
+  nested_flag : bool;
+  payment : (address, nat);
+}
+
+view function split(const amount : nat) : (nat, nat) is
+  (amount / 2, amount % 2)
+
+external function run(const amount : nat) is {
+  const (q, r) : (nat, nat) := Nat.div_rem(7, 3);
+  storage.q := q;
+  storage.r := r;
+  const (sq, sr) : (int, int) := Int.div_rem(-7, 3);
+  storage.sq := sq;
+  storage.sr := sr;
+  storage.rem_nat := 7 % 3;
+  storage.div_int := -7 / 3;
+  storage.rem_int := -7 % 3;
+  const masked : nat := 0xff & 0x0f;
+  storage.masked := masked;
+  const flags : nat := 1 | 2;
+  storage.flags := flags;
+  const toggled : nat := flags ^ 0xff;
+  storage.toggled := toggled;
+  const inverted : nat := ~0;
+  storage.inverted := inverted;
+  const shifted : nat := 1 << 8;
+  storage.shifted := shifted;
+  const back : nat := 256 >> 8;
+  storage.back := back;
+  const a : uint32 := 10;
+  const b : uint32 := 3;
+  const (uq, ur) : (uint32, uint32) := Nat.div_rem(a, b);
+  storage.uq := uq;
+  storage.ur := ur;
+  const narrow_shift : uint8 := 1 << 8;
+  storage.narrow_shift := narrow_shift;
+  const narrow_not : uint8 := ~0;
+  storage.narrow_not := narrow_not;
+  const neg : int := -8;
+  storage.sar := neg >> 1;
+  const (half, rest) : (nat, nat) := split(amount);
+  storage.half := half;
+  storage.rest := rest;
+  const pair : (address, nat) := (Evm.sender(), amount);
+  const (who, pair_amount) : (address, nat) := pair;
+  storage.pair_amount := pair_amount;
+  const nested : (nat, (address, bool)) := (1, (Evm.sender(), true));
+  const (n, inner) : (nat, (address, bool)) := nested;
+  const (acct, flag) : (address, bool) := inner;
+  storage.nested_flag := flag;
+  storage.payment := (who, amount);
+}
+
+external function mod_zero() is {
+  const q : nat := 1 % 0;
+  skip
+}
+
+external function min_div() is {
+  const min : int := 1 << 255;
+  const q : int := min / -1;
+  skip
+}
+
+external function min_mod() is {
+  const min : int := 1 << 255;
+  const r : int := min % -1;
+  skip
+}
+
+external view function quote() : (nat, nat) is
+  (2, 1)
+
+external view function payee() : (nat, address) is
+  (7, Evm.sender())
+
+external view function nested_quote() : (nat, (address, bool)) is
+  (1, (Evm.self(), true))
+
+external view function sum_some() : nat is {
+  const wrapped : option((nat, nat)) := Some((4, 5));
+} with case wrapped of
+{
+| Some((q, r)) -> q + r
+| None -> 0
+}
+
+external view function mask_some() : nat is {
+  const wrapped : option(nat) := Some(0xff);
+} with case wrapped of
+{
+| Some(n) -> n & 0x0f
+| None -> 0
+}

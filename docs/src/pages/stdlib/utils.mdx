@@ -1,0 +1,56 @@
+---
+title: "Utilities"
+description: "CREATE2 addresses, nonces, and checkpointed history."
+---
+
+# Utilities
+
+## `Create2`
+
+`std/utils/create2.lithe`. `compute_address(salt, init_code_hash, deployer)` is where a `CREATE2` from `deployer` lands, and `compute_address_here(salt, init_code_hash)` is where [`defer create`](/language/effects#create) with that salt would put a contract from this one. `init_code_hash` is the hash of the created contract's creation code, with its [`deploy`](/language/deploy) arguments appended.
+
+## `Nonces`
+
+`std/utils/nonce.lithe`. Per-account counters that only move forward, for replay protection: each signed message names the next nonce, and using it moves the counter on.
+
+| Function | |
+| --- | --- |
+| `nonces(owner) : nat` | the next nonce |
+| `use_nonce(owner) : nat` | returns the next nonce and moves the counter on |
+| `use_checked_nonce(owner, nonce)` | the same, raising `InvalidAccountNonce` unless `nonce` is the next one |
+
+## `Checkpoints`
+
+`std/utils/checkpoint.lithe`. A history of values, each from a key onward, such as a block number or a timestamp: voting power, balances at a snapshot, or any value you need to read as of the past. A `trace` holds `checkpoint`s of a `uint48` key and a `uint208` value, one per storage slot.
+
+```lithe
+import "std/utils/checkpoint.lithe";
+
+contract Supply is {
+  use Checkpoints;
+
+  storage is record {
+    history : trace;
+    total : nat;
+  }
+
+  external function grow(const amount : nat)
+    raises CheckpointUnorderedInsertion
+  is {
+    storage.total := storage.total + amount;
+    Checkpoints.push(storage.history, uint48(Evm.block_number()), uint208(storage.total));
+  }
+
+  external view function total_at(const block : nat) : nat is
+    nat(Checkpoints.upper_lookup(storage.history, uint48(block)))
+}
+```
+
+A lookup is a binary search over the sorted history, so it costs a few reads however long the history is.
+
+| Function | |
+| --- | --- |
+| `push(history, key, value)` | keys must not go down; a second push at the newest key replaces its value |
+| `latest(history)` | the newest value, or zero |
+| `length(history)`, `at(history, i)` | the checkpoints, oldest first |
+| `upper_lookup(history, key)` | the value as of `key`: the last checkpoint at or before it, or zero |

@@ -1,0 +1,45 @@
+---
+title: "Transient storage"
+description: "Transaction-scoped state with TLOAD and TSTORE."
+---
+
+# Transient storage
+
+Transient storage is shared by every call in a transaction and cleared when the transaction ends. Here a lender records an active loan that the borrower can read back during its callback.
+
+```lithe [transient-storage.lithe]
+(* Transient storage (EIP-1153) lasts for one transaction: shared by every call in
+   it, cleared when it ends, and cheap. It is read and written with TLOAD/TSTORE. *)
+
+interface Callback is {
+  call on_flash(amount : nat) : unit;
+}
+
+error Not_in_flash;
+
+transient storage flash is record {
+  active : bool;
+  lent : nat;
+}
+
+storage is record {
+  total_lent : nat;
+}
+
+external function lend(const to : Callback; const amount : nat) is {
+  flash.active := true;
+  flash.lent := amount;
+  storage.total_lent := storage.total_lent + amount;
+  defer to.on_flash(amount);
+}
+
+(* Called back by the borrower during `lend`'s deferred call. *)
+external view function current_loan() : nat
+  raises Not_in_flash
+is {
+  assert(flash.active, Not_in_flash);
+} with flash.lent
+```
+
+- Transient storage never appears in the storage layout or the upgrade layout.
+- For locks, prefer `nonreentrant`, which already uses transient storage.

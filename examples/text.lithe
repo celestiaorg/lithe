@@ -1,0 +1,21 @@
+(* Short strings and dynamic bytes. The slot is Solidity's short form. *)
+
+storage is record {
+  name : string;
+  blob : bytes;
+}
+
+external function remember() is {
+  storage.name := "Lithe";
+  storage.blob := 0x616263;
+}
+
+external function label(const name : string) is {
+  storage.name := name;
+}
+
+external view function name() : string is
+  storage.name
+
+external view function blob() : bytes is
+  storage.blob

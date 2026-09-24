@@ -1,0 +1,81 @@
+---
+title: "Standard library"
+description: "Audited-once building blocks shipped with the compiler: access control, tokens, collections, math, cryptography, and interfaces."
+---
+
+# Standard library
+
+The standard library ships inside the compiler. Import a module with a path that starts with `std/`:
+
+```lithe
+import "std/token/erc20.lithe";
+import "std/access/ownable.lithe";
+
+contract Token is {
+  use ERC20;
+  use Ownable;
+
+  storage is record {
+    minted : nat;
+  }
+
+  deploy()
+    raises OwnableInvalidOwner
+  is {
+    ERC20.init("Token", "TKN");
+    Ownable.init(Evm.sender());
+  }
+
+  external view function balanceOf is ERC20.balance_of;
+  external function transfer is ERC20.transfer;
+
+  external function mint(const to : address; const value : nat)
+    raises OwnableUnauthorizedAccount | ERC20InvalidReceiver | ERC20InsufficientBalance
+  is {
+    Ownable.check_owner();
+    ERC20.mint(to, value);
+    storage.minted := storage.minted + value;
+  }
+}
+```
+
+Every module follows the ordinary rules for [modules](/language/modules):
+
+- **Module functions are internal.** A contract exposes what it wants, either by promotion (`external function transfer is ERC20.transfer;`) or by writing its own entrypoint. A promotion can rename: module functions are `snake_case`, and a token promotes them under the standard's ABI names, `balanceOf` from `ERC20.balance_of`.
+- **Each module owns its storage**, at an ERC-7201 root named `lithe.std.<module>`: `lithe.std.erc20`, `lithe.std.ownable`, and so on. Contracts don't redeclare a module's schema, and two modules never collide.
+- **Extensions add behavior, and never change a base module silently.** A pause, a cap, or a fee is written in the contract's own `transfer`, around the module's pieces.
+- **Errors and events match OpenZeppelin's**, so wallets, explorers, and indexers decode them as they already do.
+
+## Modules
+
+| Path | Modules | |
+| --- | --- | --- |
+| `std/access/ownable.lithe` | `Ownable` | [Access control](/stdlib/access) |
+| `std/access/ownable_two_step.lithe` | `Ownable2Step` | |
+| `std/access/access_control.lithe` | `AccessControl` | |
+| `std/security/pausable.lithe` | `Pausable` | |
+| `std/token/erc20.lithe` | `ERC20` | [Tokens](/stdlib/tokens) |
+| `std/token/erc20_burnable.lithe` | `ERC20Burnable` | |
+| `std/token/erc20_permit.lithe` | `ERC20Permit` | |
+| `std/token/erc721.lithe` | `ERC721` | |
+| `std/collections/set.lithe` | `Set(T)` | [Collections](/stdlib/collections) |
+| `std/collections/set_enumerable.lithe` | `SetEnumerable(T)` | |
+| `std/collections/bitmap.lithe` | `Bitmap` | |
+| `std/collections/queue.lithe` | `Queue(T)` | |
+| `std/math/math.lithe` | `Math` | [Math](/stdlib/math) |
+| `std/math/safe_cast.lithe` | `SafeCast` | |
+| `std/math/fixed_point.lithe` | `FixedPoint` | |
+| `std/crypto/ecdsa.lithe` | `ECDSA` | [Cryptography](/stdlib/crypto) |
+| `std/crypto/eip712.lithe` | `EIP712` | |
+| `std/crypto/merkle.lithe` | `Merkle` | |
+| `std/utils/create2.lithe` | `Create2` | [Utilities](/stdlib/utils) |
+| `std/utils/nonce.lithe` | `Nonces` | |
+| `std/utils/checkpoint.lithe` | `Checkpoints` | |
+| `std/interfaces/*.lithe` | `IERC165`, `IERC20`, `IERC20Permit`, `IERC721`, `IERC721Receiver`, `IERC1155`, `IERC1155Receiver`, `IERC1271`, `IERC4626` | [Interfaces](/stdlib/interfaces) |
+
+## What isn't here
+
+- **A reentrancy guard.** [`nonreentrant`](/language/reentrancy) is a language feature, and deferred calls already run after a transition's own effects.
+- **Byte and arithmetic primitives.** `Bytes.concat`, `Bytes.word`, `Nat.mul_div`, and the rest are [built-ins](/language/builtins), because the compiler does them better than a library could.
+- **ERC-1155.** Not yet. The interface, batch methods included, is in `std/interfaces/erc1155.lithe`.
+- **Applications**, such as AMMs, lending markets, or auctions. They are too opinionated for a foundation.

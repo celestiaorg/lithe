@@ -1,0 +1,139 @@
+(* Benchmark: OpenZeppelin's wizard NFT, upgradeable, burnable, pausable, and ownable,
+   built from modules. Mirrors erc721.sol, which imports OpenZeppelin. *)
+
+import "./lib/initializable.lithe";
+import "./lib/ownable.lithe";
+import "./lib/pausable.lithe";
+import "./lib/erc721.lithe";
+
+contract BenchNFT is {
+  use Initializable;
+  use Ownable;
+  use Pausable;
+  use ERC721;
+
+  (* Initializable's bookkeeping matches the `initializer` modifier on Solidity's
+     constructor, so storage and events stay the same. *)
+  deploy(const initialOwner : address)
+    raises InvalidInitialization | OwnableInvalidOwner
+  is {
+    Initializable.begin();
+    ERC721.init("Bench NFT", "BNFT");
+    Ownable.init(initialOwner);
+    Initializable.finish();
+  }
+
+  external pure function supportsInterface is ERC721.supportsInterface;
+
+  external view function balanceOf is ERC721.balanceOf;
+
+  external view function ownerOf is ERC721.ownerOf;
+
+  external view function name is ERC721.name;
+
+  external view function symbol is ERC721.symbol;
+
+  external view function tokenURI is ERC721.tokenURI;
+
+  external view function getApproved is ERC721.getApproved;
+
+  external view function isApprovedForAll is ERC721.isApprovedForAll;
+
+  external view function owner is Ownable.owner;
+
+  external view function paused is Pausable.paused;
+
+  (* `ERC721Pausable` checks the pause inside every ownership update. *)
+  function update(const to : address; const tokenId : nat; const auth : address) : address
+    raises EnforcedPause | ERC721NonexistentToken | ERC721InsufficientApproval
+  is {
+    Pausable.require_not_paused();
+  } with ERC721.update(to, tokenId, auth)
+
+  function transfer_from(const from : address; const to : address; const tokenId : nat)
+    raises ERC721InvalidReceiver | ERC721IncorrectOwner | EnforcedPause
+      | ERC721NonexistentToken | ERC721InsufficientApproval
+  is {
+    assert(to <> Address.zero, ERC721InvalidReceiver(Address.zero));
+    const previous : address := update(to, tokenId, Evm.sender());
+    assert(
+      previous = from,
+      ERC721IncorrectOwner { sender = from; tokenId = tokenId; owner = previous; }
+    );
+  }
+
+  external function approve(const to : address; const tokenId : nat)
+    raises ERC721NonexistentToken | ERC721InvalidApprover
+  is {
+    ERC721.approve_as(to, tokenId, Evm.sender());
+  }
+
+  external function setApprovalForAll(const operator : address; const approved : bool)
+    raises ERC721InvalidApprover | ERC721InvalidOperator
+  is {
+    ERC721.set_approval_for_all(Evm.sender(), operator, approved);
+  }
+
+  external function transferFrom(const from : address; const to : address; const tokenId : nat)
+    raises ERC721InvalidReceiver | ERC721IncorrectOwner | EnforcedPause
+      | ERC721NonexistentToken | ERC721InsufficientApproval
+  is {
+    transfer_from(from, to, tokenId);
+  }
+
+  external function safeTransferFrom(const from : address; const to : address; const tokenId : nat)
+    raises ERC721InvalidReceiver | ERC721IncorrectOwner | EnforcedPause
+      | ERC721NonexistentToken | ERC721InsufficientApproval
+  is {
+    transfer_from(from, to, tokenId);
+    ERC721.check_received(Evm.sender(), from, to, tokenId, "");
+  }
+
+  external function safeTransferFrom(
+    const from : address;
+    const to : address;
+    const tokenId : nat;
+    const data : bytes
+  )
+    raises ERC721InvalidReceiver | ERC721IncorrectOwner | EnforcedPause
+      | ERC721NonexistentToken | ERC721InsufficientApproval
+  is {
+    transfer_from(from, to, tokenId);
+    ERC721.check_received(Evm.sender(), from, to, tokenId, data);
+  }
+
+  external function burn(const tokenId : nat)
+    raises EnforcedPause | ERC721NonexistentToken | ERC721InsufficientApproval
+  is {
+    const previous : address := update(Address.zero, tokenId, Evm.sender());
+  }
+
+  external function safeMint(const to : address; const tokenId : nat)
+    raises OwnableUnauthorizedAccount | ERC721InvalidReceiver | ERC721InvalidSender
+      | EnforcedPause | ERC721NonexistentToken | ERC721InsufficientApproval
+  is {
+    Ownable.check_owner();
+    assert(to <> Address.zero, ERC721InvalidReceiver(Address.zero));
+    const previous : address := update(to, tokenId, Address.zero);
+    assert(previous = Address.zero, ERC721InvalidSender(Address.zero));
+    ERC721.check_received(Evm.sender(), Address.zero, to, tokenId, "");
+  }
+
+  external function pause()
+    raises OwnableUnauthorizedAccount | EnforcedPause
+  is {
+    Ownable.check_owner();
+    Pausable.pause();
+  }
+
+  external function unpause()
+    raises OwnableUnauthorizedAccount | ExpectedPause
+  is {
+    Ownable.check_owner();
+    Pausable.unpause();
+  }
+
+  external function transferOwnership is Ownable.transferOwnership;
+
+  external function renounceOwnership is Ownable.renounceOwnership;
+}

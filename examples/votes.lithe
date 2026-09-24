@@ -1,0 +1,48 @@
+(* An extension module owns new storage and reads the base module through its namespace. *)
+
+module ERC20 is {
+  storage erc20 at "lithe.std.erc20" is record {
+    balances : map(address, nat);
+    total_supply : nat;
+  }
+
+  function mint(const account : address; const amount : nat) is {
+    erc20.balances[account] := erc20.balances[account] + amount;
+    erc20.total_supply := erc20.total_supply + amount;
+  }
+
+  view function balance_of(const account : address) : nat is
+    erc20.balances[account]
+
+  view function total() : nat is
+    erc20.total_supply
+}
+
+module ERC20Votes is {
+  requires ERC20;
+
+  storage votes at "lithe.std.erc20.votes" is record {
+    delegates : map(address, address);
+  }
+
+  function delegate(const account : address; const delegatee : address) is {
+    const balance : nat := ERC20.erc20.balances[account];
+    votes.delegates[account] := delegatee;
+  }
+}
+
+contract Token is {
+  use ERC20;
+  use ERC20Votes;
+
+  external function mint is ERC20.mint;
+
+  external view function balance_of is ERC20.balance_of;
+
+  external view function total is ERC20.total;
+
+  external function delegate is ERC20Votes.delegate;
+
+  external view function total_supply() : nat is
+    ERC20.erc20.total_supply
+}

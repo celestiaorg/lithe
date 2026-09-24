@@ -1,0 +1,45 @@
+---
+title: "Nominal types"
+description: "New types over existing representations, for domain safety at no runtime cost."
+---
+
+# Nominal types
+
+`type token_id is nat` declares a new type that is stored and encoded as a `nat`, but that the type checker keeps apart from `nat` and from every other type over `nat`.
+
+```lithe [nominal-types.lithe]
+(* `type x is T` makes a new type with T's representation. It does not mix with T,
+   or with other types over T, without an explicit conversion. *)
+
+type basis_points is uint16;
+type token_id is nat;
+type order_id is bytes32;
+
+storage is record {
+  fee : basis_points;
+  owners : map(token_id, address);
+}
+
+external function set_fee(const fee : basis_points) is {
+  storage.fee := fee;
+}
+
+external function claim(const id : token_id) is {
+  storage.owners[id] := Evm.sender();
+}
+
+(* Convert out with the underlying type's name, and in with the new type's name. *)
+external view function fee_on(const amount : nat) : nat is
+  amount * nat(uint16(storage.fee)) / 10_000n
+
+external pure function next(const id : token_id) : token_id is
+  token_id(nat(id) + 1n)
+```
+
+Binding a raw `nat` to a `token_id` is a compile error:
+
+```text
+initializer type does not match its annotation
+```
+
+Integer literals take on nominal types directly: `const fee : basis_points := 500;`.

@@ -1,0 +1,90 @@
+---
+title: "English auction"
+description: "Ascending bids with pull-based refunds."
+---
+
+# English auction
+
+Each bid must beat the current highest. Outbid bidders withdraw their refunds themselves.
+
+```lithe [english-auction.lithe]
+(* Highest bid wins. Outbid bidders withdraw their own refunds: sending them
+   inside `bid` would let one bidder's failing receiver block everyone else. *)
+
+error Not_seller;
+error Already_started;
+error Not_started;
+error Ended;
+error Not_ended;
+error Bid_too_low of record {
+  bid : wei;
+  highest : wei;
+}
+error Already_settled;
+
+event Bid of record {
+  indexed bidder : address;
+  amount : wei;
+}
+
+event Settled of record {
+  indexed winner : address;
+  amount : wei;
+}
+
+storage is record {
+  seller : address;
+  ends_at : timestamp;
+  highest_bidder : address;
+  highest_bid : wei;
+  settled : bool;
+  refunds : map(address, wei);
+}
+
+external function start(const reserve : wei; const duration : nat)
+  raises Already_started
+is {
+  assert(storage.seller = Address.zero, Already_started);
+  storage.seller := Evm.sender();
+  storage.highest_bid := reserve;
+  storage.ends_at := Evm.block_timestamp() + duration;
+}
+
+external payable function bid()
+  raises Not_started | Ended | Bid_too_low
+is {
+  assert(storage.seller <> Address.zero, Not_started);
+  assert(Evm.block_timestamp() < storage.ends_at, Ended);
+  assert(
+    Evm.value() > storage.highest_bid,
+    Bid_too_low { bid = Evm.value(); highest = storage.highest_bid; }
+  );
+  if storage.highest_bidder <> Address.zero then {
+    storage.refunds[storage.highest_bidder] :=
+      storage.refunds[storage.highest_bidder] + storage.highest_bid;
+  }
+  storage.highest_bidder := Evm.sender();
+  storage.highest_bid := Evm.value();
+  emit Bid { bidder = Evm.sender(); amount = Evm.value(); };
+}
+
+external nonreentrant function withdraw() is {
+  const amount : wei := storage.refunds[Evm.sender()];
+  storage.refunds[Evm.sender()] := 0wei;
+  defer Evm.transfer(Evm.sender(), amount);
+}
+
+external nonreentrant function settle()
+  raises Not_ended | Already_settled
+is {
+  assert(Evm.block_timestamp() >= storage.ends_at, Not_ended);
+  assert(not storage.settled, Already_settled);
+  storage.settled := true;
+  emit Settled { winner = storage.highest_bidder; amount = storage.highest_bid; };
+  if storage.highest_bidder <> Address.zero then {
+    defer Evm.transfer(storage.seller, storage.highest_bid);
+  }
+}
+```
+
+Refunds are pulled, not pushed. If `bid` sent the previous bidder's refund itself, a bidder whose receiver always reverts could block every later bid.

@@ -1,0 +1,56 @@
+---
+title: "Verifying signatures"
+description: "ecrecover with the EIP-191 prefix and replay protection."
+---
+
+# Verifying signatures
+
+Recover the signer of an `eth_sign` signature and act on it once. The signed message includes the contract's address and a nonce, so a signature can't be replayed here or against another contract.
+
+```lithe [signatures.lithe]
+(* Verify an off-chain signature, then act on it once. The signer signs
+   keccak256(abi.encode(contract, to, amount, nonce)) with `eth_sign`, which adds the
+   EIP-191 prefix "\x19Ethereum Signed Message:\n32". *)
+
+error Invalid_signature;
+error Nonce_used of nat;
+
+storage is record {
+  signer : address;
+  used : map(nat, bool);
+  credited : map(address, nat);
+}
+
+external function init(const signer : address) is {
+  storage.signer := signer;
+}
+
+view function message_hash(const to : address; const amount : nat; const nonce : nat) : bytes32 is
+  Crypto.keccak256(Abi.encode(Evm.self(), to, amount, nonce))
+
+pure function eth_signed(const hash : bytes32) : bytes32 is {
+  const prefix : bytes := 0x19457468657265756d205369676e6564204d6573736167653a0a3332;
+} with Crypto.keccak256(Abi.encode_packed(prefix, hash))
+
+external function claim(
+  const to : address;
+  const amount : nat;
+  const nonce : nat;
+  const v : uint8;
+  const r : bytes32;
+  const s : bytes32
+)
+  raises Invalid_signature | Nonce_used
+is {
+  assert(not storage.used[nonce], Nonce_used(nonce));
+  const digest : bytes32 := eth_signed(message_hash(to, amount, nonce));
+  const recovered : address := Crypto.ecrecover(digest, v, r, s);
+  assert(recovered <> Address.zero and recovered = storage.signer, Invalid_signature);
+  storage.used[nonce] := true;
+  storage.credited[to] := storage.credited[to] + amount;
+}
+```
+
+- The EIP-191 prefix is written as hex bytes, because Lithe strings have no `\n` escape.
+- `ecrecover` returns `Address.zero` for an invalid signature, so check for it explicitly.
+- For production use, also reject high-`s` signatures, which are malleable.

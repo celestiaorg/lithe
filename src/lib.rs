@@ -1,0 +1,978 @@
+//! Lithe compiler: functional state transitions, imperative syntax, effects after storage is written.
+
+mod asm;
+mod ast;
+mod check;
+mod gen;
+mod hash;
+mod keccak;
+mod lex;
+mod modules;
+mod parse;
+mod route;
+mod split;
+mod word;
+
+use std::fmt;
+
+pub use split::{Options, DEPLOYER, SIZE_LIMIT};
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Error {
+    pub line: u32,
+    pub column: u32,
+    pub message: String,
+}
+
+impl fmt::Display for Error {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.line == 0 {
+            f.write_str(&self.message)
+        } else {
+            write!(f, "{}:{}: {}", self.line, self.column, self.message)
+        }
+    }
+}
+
+impl std::error::Error for Error {}
+
+#[must_use]
+pub fn compile(src: &str) -> Result<Vec<u8>, Error> {
+    Ok(prepare(src)?.code)
+}
+
+pub fn abi_tree(src: &str) -> Result<String, Error> {
+    let prog = parse::parse(src)?;
+    let checked = check::check(prog)?;
+    Ok(route::render(&checked.routes, None))
+}
+
+/// Warnings about deferred calls that can re-enter an unprotected entry.
+/// An empty string means the program compiled cleanly with nothing to report.
+pub fn warnings(src: &str) -> Result<String, Error> {
+    let prog = parse::parse(src)?;
+    if !prog.uses.is_empty() {
+        let decl = &prog.uses[0];
+        return Err(error(
+            decl.line,
+            decl.col,
+            "`import` requires compiling a file",
+        ));
+    }
+    let checked = check::check(prog)?;
+    Ok(route::reentry_warnings(&checked) + &checked.warnings.concat())
+}
+
+pub fn errors(src: &str) -> Result<String, Error> {
+    let prog = parse::parse(src)?;
+    let checked = check::check(prog)?;
+    route::render_errors(&checked)
+}
+
+/// Solidity JSON ABI for `cast`, Foundry, and ethers.
+pub fn abi(src: &str) -> Result<String, Error> {
+    Ok(prepare(src)?.abi)
+}
+
+/// An ABI, and its method ids.
+type PartAbi = (String, Vec<(String, [u8; 4])>);
+
+struct Prepared {
+    name: String,
+    /// The router's creation code: for a contract that fits, the whole contract's.
+    code: Vec<u8>,
+    runtime: Vec<u8>,
+    abi: String,
+    methods: Vec<(String, [u8; 4])>,
+    split: split::Split,
+    /// Each part's ABI and method ids.
+    part_abis: Vec<PartAbi>,
+    upgradeable: bool,
+}
+
+fn prepare(src: &str) -> Result<Prepared, Error> {
+    let prog = parse::parse(src)?;
+    if !prog.uses.is_empty() {
+        let decl = &prog.uses[0];
+        return Err(error(
+            decl.line,
+            decl.col,
+            "`import` requires compiling a file",
+        ));
+    }
+    let name = prog.contract_name.clone().unwrap_or_else(|| "Contract".to_string());
+    finish(prog, &name, &Options::default())
+}
+
+/// Every contract a source defines, by name, each compiled with the others it may create.
+pub fn compile_contracts(src: &str) -> Result<Vec<(Option<String>, Vec<u8>)>, Error> {
+    modules::split_units(parse::parse(src)?)
+        .into_iter()
+        .map(|unit| {
+            let name = unit.contract_name.clone();
+            let label = name.clone().unwrap_or_else(|| "Contract".to_string());
+            Ok((name, finish(unit, &label, &Options::default())?.code))
+        })
+        .collect()
+}
+
+/// The contract's creation code. For a split contract, the router's.
+pub fn compile_file(path: &std::path::Path) -> Result<Vec<u8>, Error> {
+    Ok(prepare_file(path, &Options::default())?.code)
+}
+
+/// What `lithe compile file.lithe` prints, and a note when the contract was split.
+pub struct Compiled {
+    pub text: String,
+    pub note: Option<String>,
+}
+
+/// The creation code as hex. When something must be deployed first, because the contract
+/// is split or creates one that is, the deployment plan as JSON instead.
+pub fn compile_file_with(path: &std::path::Path, opts: &Options) -> Result<Compiled, Error> {
+    let prepared = prepare_file(path, opts)?;
+    let note = split_note(&prepared);
+    let text = if prepared.split.prerequisites().is_empty() {
+        format!("0x{}", hex(&prepared.code))
+    } else {
+        plan_json(&prepared, opts, None)
+    };
+    Ok(Compiled { text, note })
+}
+
+pub fn abi_file(path: &std::path::Path) -> Result<String, Error> {
+    Ok(prepare_file(path, &Options::default())?.abi)
+}
+
+pub fn abi_tree_file(path: &std::path::Path) -> Result<String, Error> {
+    abi_tree_file_with(path, &Options::default())
+}
+
+/// Each entrypoint's dispatch tree, with the part it runs in when the contract is split.
+pub fn abi_tree_file_with(path: &std::path::Path, opts: &Options) -> Result<String, Error> {
+    let prog = modules::load(path)?;
+    let name = artifact_contract_name(&prog, path);
+    let checked = check::check(prog)?;
+    let parts = part_names(&checked, &name, opts)?;
+    Ok(route::render(&checked.routes, parts.as_ref()))
+}
+
+/// Where each selector runs, by part name, when the contract is split. Inspection reports
+/// what it can: code that does not build has no parts to show.
+fn part_names(
+    checked: &check::Checked,
+    name: &str,
+    opts: &Options,
+) -> Result<Option<std::collections::HashMap<[u8; 4], String>>, Error> {
+    let Ok(built) = split::build(checked, name, opts) else {
+        return Ok(None);
+    };
+    if built.parts.is_empty() {
+        return Ok(None);
+    }
+    let mut out = std::collections::HashMap::new();
+    for entry in &built.entries {
+        out.insert(entry.sel, "router".to_string());
+    }
+    for part in &built.parts {
+        for entry in &part.entries {
+            out.insert(entry.sel, part.name.clone());
+        }
+    }
+    Ok(Some(out))
+}
+
+pub fn warnings_file(path: &std::path::Path) -> Result<String, Error> {
+    let checked = check::check(modules::load(path)?)?;
+    Ok(route::reentry_warnings(&checked) + &checked.warnings.concat())
+}
+
+/// Each external function's footprint: its writes, events, deferred calls, and errors.
+pub fn footprint_file(path: &std::path::Path) -> Result<String, Error> {
+    footprint_file_with(path, &Options::default())
+}
+
+/// Footprints, with the part each entrypoint runs in when the contract is split.
+pub fn footprint_file_with(path: &std::path::Path, opts: &Options) -> Result<String, Error> {
+    let prog = modules::load(path)?;
+    let name = artifact_contract_name(&prog, path);
+    let checked = check::check(prog)?;
+    let parts = part_names(&checked, &name, opts)?;
+    Ok(route::render_footprints(&checked, parts.as_ref()))
+}
+
+/// Footprints as JSON, with each state access marked `storage` or `transient`.
+pub fn analysis_file(path: &std::path::Path) -> Result<String, Error> {
+    let checked = check::check(modules::load(path)?)?;
+    Ok(route::render_analysis(&checked))
+}
+
+pub fn analysis(src: &str) -> Result<String, Error> {
+    let checked = check::check(parse::parse(src)?)?;
+    Ok(route::render_analysis(&checked))
+}
+
+pub fn footprint(src: &str) -> Result<String, Error> {
+    let checked = check::check(parse::parse(src)?)?;
+    Ok(route::render_footprints(&checked, None))
+}
+
+pub fn errors_file(path: &std::path::Path) -> Result<String, Error> {
+    let checked = check::check(modules::load(path)?)?;
+    route::render_errors(&checked)
+}
+
+/// The same program without the optimizer, for checking that optimization preserves behavior.
+#[cfg(test)]
+pub(crate) fn compile_file_unoptimized(path: &std::path::Path) -> Result<Vec<u8>, Error> {
+    gen::codegen_unoptimized(check::check(modules::load(path)?)?)
+}
+
+fn prepare_file(path: &std::path::Path, opts: &Options) -> Result<Prepared, Error> {
+    let prog = modules::load(path)?;
+    let name = artifact_contract_name(&prog, path);
+    finish(prog, &name, opts)
+}
+
+fn finish(prog: ast::Program, name: &str, opts: &Options) -> Result<Prepared, Error> {
+    let checked = check::check(prog)?;
+    let abi = route::render_abi(&checked)?;
+    let methods = route::method_ids(&checked)?;
+    let split = split::build(&checked, name, opts)?;
+    let mut part_abis = Vec::new();
+    for part in &split.parts {
+        let keep: std::collections::HashSet<[u8; 4]> =
+            part.entries.iter().map(|entry| entry.sel).collect();
+        let abi = route::render_abi_only(&checked, Some(&keep))?;
+        let ids = methods
+            .iter()
+            .filter(|(_, sel)| keep.contains(sel))
+            .cloned()
+            .collect();
+        part_abis.push((abi, ids));
+    }
+    Ok(Prepared {
+        name: name.to_string(),
+        code: split.creation.clone(),
+        runtime: split.runtime.clone(),
+        abi,
+        methods,
+        split,
+        part_abis,
+        upgradeable: checked.prog.upgradeable,
+    })
+}
+
+/// `note: ...` when the contract had to be split.
+fn split_note(prepared: &Prepared) -> Option<String> {
+    let parts = prepared.split.parts.len();
+    if parts == 0 {
+        return None;
+    }
+    let size = match prepared.split.whole {
+        Some(n) => format!("{} bytes", split::thousands(n)),
+        None => "over 65,535 bytes".to_string(),
+    };
+    Some(format!(
+        "note: `{}` is {size}; split into a router and {parts} part{}",
+        prepared.name,
+        if parts == 1 { "" } else { "s" }
+    ))
+}
+
+/// The transactions that deploy a contract, in order: each part through the `CREATE2`
+/// factory, then the router. An upgradeable router is created through the factory too, so
+/// its address is known. `upgrade` adds the proxy's `upgradeToAndCall`.
+fn plan_json(prepared: &Prepared, opts: &Options, upgrade: Option<(&str, &str)>) -> String {
+    let deployer = checksum(&opts.deployer);
+    let mut out = String::from("{\n  \"parts\": [");
+    let parts = prepared.split.prerequisites();
+    for (i, part) in parts.iter().enumerate() {
+        out.push_str(if i == 0 { "\n" } else { ",\n" });
+        out.push_str(&format!(
+            "    {{\n      \"name\": {},\n      \"address\": \"{}\",\n      \"to\": \"{deployer}\",\n      \"data\": \"0x{}{}\"\n    }}",
+            json_string(&part.name),
+            checksum(&part.address),
+            "00".repeat(32),
+            hex(&part.init)
+        ));
+    }
+    out.push_str(if parts.is_empty() { "],\n" } else { "\n  ],\n" });
+    out.push_str("  \"router\": {\n");
+    if prepared.upgradeable {
+        out.push_str(&format!(
+            "    \"address\": \"{}\",\n    \"to\": \"{deployer}\",\n    \"data\": \"0x{}{}\",\n",
+            checksum(&split::create2(&opts.deployer, &prepared.code)),
+            "00".repeat(32),
+            hex(&prepared.code)
+        ));
+    }
+    out.push_str(&format!(
+        "    \"bytecode\": \"0x{}\"\n  }}",
+        hex(&prepared.code)
+    ));
+    if let Some((proxy, data)) = upgrade {
+        out.push_str(&format!(
+            ",\n  \"upgrade\": {{\n    \"to\": {},\n    \"data\": \"{data}\"\n  }}",
+            json_string(proxy)
+        ));
+    }
+    out.push_str("\n}\n");
+    out
+}
+
+/// An address with its EIP-55 checksum.
+fn checksum(address: &[u8; 20]) -> String {
+    let lower = hex(address);
+    let hash = keccak::keccak256(lower.as_bytes());
+    let mut out = String::from("0x");
+    for (i, ch) in lower.chars().enumerate() {
+        let nibble = (hash[i / 2] >> if i % 2 == 0 { 4 } else { 0 }) & 0xf;
+        if ch.is_ascii_alphabetic() && nibble >= 8 {
+            out.push(ch.to_ascii_uppercase());
+        } else {
+            out.push(ch);
+        }
+    }
+    out
+}
+
+/// The router and each part: size against the limit, and the entrypoints each runs, by group.
+pub fn parts_file(path: &std::path::Path, opts: &Options) -> Result<String, Error> {
+    let prog = modules::load(path)?;
+    let name = artifact_contract_name(&prog, path);
+    let checked = check::check(prog)?;
+    let built = split::build(&checked, &name, opts)?;
+    let router = if built.parts.is_empty() {
+        gen::entrypoints(&checked)?
+    } else {
+        built.entries.clone()
+    };
+    let limit = split::thousands(opts.size_limit);
+    let mut out = format!(
+        "router  {} / {limit}\n",
+        split::thousands(built.runtime.len())
+    );
+    out.push_str(&group_lines(&router, &name));
+    for (i, part) in built.parts.iter().enumerate() {
+        out.push_str(&format!(
+            "\npart {}  {}  {} / {limit}\n",
+            i + 1,
+            checksum(&part.address),
+            split::thousands(part.runtime.len())
+        ));
+        out.push_str(&group_lines(&part.entries, &name));
+    }
+    Ok(out)
+}
+
+/// `  Group: a, b` for each group, in the order they first appear.
+fn group_lines(entries: &[gen::Entrypoint], contract: &str) -> String {
+    let mut groups: Vec<(&gen::Group, Vec<&str>)> = Vec::new();
+    for entry in entries {
+        match groups.iter_mut().find(|(group, _)| *group == &entry.group) {
+            Some((_, names)) => names.push(&entry.name),
+            None => groups.push((&entry.group, vec![&entry.name])),
+        }
+    }
+    let mut out = String::new();
+    for (group, names) in groups {
+        out.push_str(&format!(
+            "  {}: {}\n",
+            split::label(group, contract),
+            names.join(", ")
+        ));
+    }
+    out
+}
+
+pub struct SourceError {
+    pub path: String,
+    pub error: Error,
+}
+
+impl fmt::Display for SourceError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}: {}", self.path, self.error)
+    }
+}
+
+pub struct DirOutput {
+    pub wrote: Vec<std::path::PathBuf>,
+    pub failed: Vec<SourceError>,
+    /// A note for each contract that was split.
+    pub notes: Vec<String>,
+}
+
+/// Compile every `.lithe` file directly in `dir` into Foundry-style artifacts.
+/// `examples/bank.lithe` becomes `out/bank.lithe/bank.json`.
+pub fn compile_dir(dir: &std::path::Path, out_dir: &std::path::Path) -> Result<DirOutput, Error> {
+    compile_dir_with(dir, out_dir, &Options::default())
+}
+
+/// Artifacts, with a split contract's parts in `<Contract>.parts/<n>.json`.
+pub fn compile_dir_with(
+    dir: &std::path::Path,
+    out_dir: &std::path::Path,
+    opts: &Options,
+) -> Result<DirOutput, Error> {
+    emit_dir(dir, out_dir, true, opts)
+}
+
+/// Write a bare ABI file for every `.lithe` file directly in `dir`.
+/// `examples/bank.lithe` becomes `out/bank.lithe/bank.abi.json`.
+pub fn abi_dir(dir: &std::path::Path, out_dir: &std::path::Path) -> Result<DirOutput, Error> {
+    emit_dir(dir, out_dir, false, &Options::default())
+}
+
+fn emit_dir(
+    dir: &std::path::Path,
+    out_dir: &std::path::Path,
+    artifact: bool,
+    opts: &Options,
+) -> Result<DirOutput, Error> {
+    let files = lithe_sources(dir)?;
+    let mut wrote = Vec::new();
+    let mut failed = Vec::new();
+    let mut notes = Vec::new();
+    for path in files {
+        let units = match modules::load_units(&path) {
+            Ok(units) => units,
+            Err(error) => {
+                failed.push(SourceError {
+                    path: path.display().to_string(),
+                    error,
+                });
+                continue;
+            }
+        };
+        let Some(folder) = contract_dir(out_dir, &path) else {
+            failed.push(SourceError {
+                path: path.display().to_string(),
+                error: error(0, 0, "missing file name"),
+            });
+            continue;
+        };
+        if let Err(err) = std::fs::create_dir_all(&folder) {
+            failed.push(SourceError {
+                path: path.display().to_string(),
+                error: error(0, 0, err.to_string()),
+            });
+            continue;
+        }
+        for prog in units {
+            let contract = artifact_contract_name(&prog, &path);
+            let prepared = match finish(prog, &contract, opts) {
+                Ok(prepared) => prepared,
+                Err(error) => {
+                    failed.push(SourceError {
+                        path: path.display().to_string(),
+                        error,
+                    });
+                    continue;
+                }
+            };
+            let file_name = if artifact {
+                format!("{contract}.json")
+            } else {
+                format!("{contract}.abi.json")
+            };
+            let dest = folder.join(file_name);
+            let body = if artifact {
+                match foundry_artifact(&prepared, &contract) {
+                    Ok(body) => body,
+                    Err(error) => {
+                        failed.push(SourceError {
+                            path: path.display().to_string(),
+                            error,
+                        });
+                        continue;
+                    }
+                }
+            } else {
+                prepared.abi.clone()
+            };
+            if let Err(err) = std::fs::write(&dest, body) {
+                failed.push(SourceError {
+                    path: path.display().to_string(),
+                    error: error(0, 0, err.to_string()),
+                });
+                continue;
+            }
+            wrote.push(dest);
+            if !artifact {
+                continue;
+            }
+            if let Some(note) = split_note(&prepared) {
+                notes.push(format!("{}: {note}", path.display()));
+            }
+            match write_parts(&folder, &contract, &prepared) {
+                Ok(paths) => wrote.extend(paths),
+                Err(err) => failed.push(SourceError {
+                    path: path.display().to_string(),
+                    error: error(0, 0, err.to_string()),
+                }),
+            }
+        }
+    }
+    Ok(DirOutput {
+        wrote,
+        failed,
+        notes,
+    })
+}
+
+/// Writes `<Contract>.parts/<n>.json` for each part, replacing what an earlier build left.
+fn write_parts(
+    folder: &std::path::Path,
+    contract: &str,
+    prepared: &Prepared,
+) -> std::io::Result<Vec<std::path::PathBuf>> {
+    let dir = folder.join(format!("{contract}.parts"));
+    if dir.is_dir() {
+        std::fs::remove_dir_all(&dir)?;
+    }
+    let mut wrote = Vec::new();
+    if prepared.split.parts.is_empty() {
+        return Ok(wrote);
+    }
+    std::fs::create_dir_all(&dir)?;
+    for (i, (part, (abi, methods))) in prepared
+        .split
+        .parts
+        .iter()
+        .zip(&prepared.part_abis)
+        .enumerate()
+    {
+        let mut out = String::from("{\n  \"abi\": ");
+        out.push_str(&reindent(abi.trim_end()));
+        out.push_str(",\n  \"bytecode\": ");
+        write_bytecode(&mut out, &part.init);
+        out.push_str(",\n  \"deployedBytecode\": ");
+        write_bytecode(&mut out, &part.runtime);
+        out.push_str(",\n  \"methodIdentifiers\": ");
+        write_methods(&mut out, methods);
+        out.push_str(&format!(
+            ",\n  \"address\": \"{}\",\n  \"contractName\": ",
+            checksum(&part.address)
+        ));
+        out.push_str(&json_string(&part.name));
+        out.push_str("\n}\n");
+        let dest = dir.join(format!("{}.json", i + 1));
+        std::fs::write(&dest, out)?;
+        wrote.push(dest);
+    }
+    Ok(wrote)
+}
+
+fn contract_dir(out_dir: &std::path::Path, source: &std::path::Path) -> Option<std::path::PathBuf> {
+    let name = source.file_name()?;
+    Some(out_dir.join(name))
+}
+
+fn artifact_contract_name(prog: &ast::Program, source: &std::path::Path) -> String {
+    if let Some(name) = &prog.contract_name {
+        return name.clone();
+    }
+    let stem = source
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .unwrap_or("contract");
+    let mut chars = stem.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+        None => "Contract".to_string(),
+    }
+}
+
+fn foundry_artifact(prepared: &Prepared, contract: &str) -> Result<String, Error> {
+    let mut out = String::from("{\n  \"abi\": ");
+    out.push_str(&reindent(prepared.abi.trim_end()));
+    out.push_str(",\n  \"bytecode\": ");
+    write_bytecode(&mut out, &prepared.code);
+    out.push_str(",\n  \"deployedBytecode\": ");
+    write_bytecode(&mut out, &prepared.runtime);
+    out.push_str(",\n  \"methodIdentifiers\": ");
+    write_methods(&mut out, &prepared.methods);
+    if !prepared.split.parts.is_empty() {
+        out.push_str(",\n  \"parts\": [");
+        for (i, part) in prepared.split.parts.iter().enumerate() {
+            out.push_str(if i == 0 { "\n" } else { ",\n" });
+            let sels: Vec<String> = part
+                .entries
+                .iter()
+                .map(|entry| format!("\"{}\"", hex(&entry.sel)))
+                .collect();
+            out.push_str(&format!(
+                "    {{\n      \"name\": {},\n      \"address\": \"{}\",\n      \"selectors\": [{}]\n    }}",
+                json_string(&part.name),
+                checksum(&part.address),
+                sels.join(", ")
+            ));
+        }
+        out.push_str("\n  ]");
+    }
+    out.push_str(",\n  \"contractName\": ");
+    out.push_str(&json_string(contract));
+    out.push_str("\n}\n");
+    Ok(out)
+}
+
+fn reindent(text: &str) -> String {
+    let mut lines = text.lines();
+    let Some(first) = lines.next() else {
+        return "[]".to_string();
+    };
+    let mut out = first.to_string();
+    for line in lines {
+        out.push_str("\n  ");
+        out.push_str(line);
+    }
+    out
+}
+
+fn write_bytecode(out: &mut String, code: &[u8]) {
+    out.push_str("{\n    \"object\": \"0x");
+    out.push_str(&hex(code));
+    out.push_str("\",\n    \"sourceMap\": \"\",\n    \"linkReferences\": {}\n  }");
+}
+
+fn write_methods(out: &mut String, methods: &[(String, [u8; 4])]) {
+    if methods.is_empty() {
+        out.push_str("{}");
+        return;
+    }
+    out.push_str("{\n");
+    for (i, (sig, sel)) in methods.iter().enumerate() {
+        out.push_str("    ");
+        out.push_str(&json_string(sig));
+        out.push_str(": \"");
+        for byte in sel {
+            out.push_str(&format!("{byte:02x}"));
+        }
+        out.push('"');
+        if i + 1 != methods.len() {
+            out.push(',');
+        }
+        out.push('\n');
+    }
+    out.push_str("  }");
+}
+
+fn json_string(text: &str) -> String {
+    let mut out = String::from("\"");
+    for ch in text.chars() {
+        match ch {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            ch => out.push(ch),
+        }
+    }
+    out.push('"');
+    out
+}
+
+fn lithe_sources(dir: &std::path::Path) -> Result<Vec<std::path::PathBuf>, Error> {
+    let entries =
+        std::fs::read_dir(dir).map_err(|err| error(0, 0, format!("{}: {err}", dir.display())))?;
+    let mut files = Vec::new();
+    for entry in entries {
+        let entry = entry.map_err(|err| error(0, 0, format!("{}: {err}", dir.display())))?;
+        let path = entry.path();
+        if path.extension().and_then(|ext| ext.to_str()) == Some("lithe") && path.is_file() {
+            files.push(path);
+        }
+    }
+    files.sort();
+    if files.is_empty() {
+        return Err(error(0, 0, format!("no .lithe files in {}", dir.display())));
+    }
+    Ok(files)
+}
+
+fn hex(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        out.push(HEX[(byte >> 4) as usize] as char);
+        out.push(HEX[(byte & 0xf) as usize] as char);
+    }
+    out
+}
+
+pub fn storage_layout(path: &std::path::Path) -> Result<String, Error> {
+    let checked = check::check(modules::load(path)?)?;
+    Ok(format_layout(&checked.layout) + &format_transient(&checked.transient_layout))
+}
+
+pub fn storage_diff(before: &std::path::Path, after: &std::path::Path) -> Result<String, Error> {
+    let old = check::check(modules::load(before)?)?;
+    let new = check::check(modules::load(after)?)?;
+    Ok(format_diff(&old.layout, &new.layout))
+}
+
+/// The storage comparison, and when either version is split, which parts the upgrade
+/// deploys: a part whose address the old version already uses is reused.
+pub fn upgrade_check(
+    before: &std::path::Path,
+    after: &std::path::Path,
+    opts: &Options,
+) -> Result<String, Error> {
+    let diff = storage_diff(before, after)?;
+    let old = prepare_file(before, opts)?;
+    let new = prepare_file(after, opts)?;
+    if old.split.parts.is_empty() && new.split.parts.is_empty() {
+        return Ok(diff);
+    }
+    let had: std::collections::HashSet<[u8; 20]> =
+        old.split.parts.iter().map(|part| part.address).collect();
+    let mut rows = vec![(
+        "router".to_string(),
+        if old.runtime == new.runtime {
+            "unchanged"
+        } else {
+            "changed"
+        },
+        String::new(),
+    )];
+    for (i, part) in new.split.parts.iter().enumerate() {
+        rows.push((
+            format!("part {}", i + 1),
+            if had.contains(&part.address) {
+                "unchanged"
+            } else {
+                "new"
+            },
+            checksum(&part.address),
+        ));
+    }
+    let width = rows.iter().map(|(label, _, _)| label.len()).max().unwrap_or(0);
+    let mut section = String::from("parts\n");
+    for (label, status, address) in rows {
+        let line = format!("  {label:width$}  {status:9}  {address}");
+        section.push_str(line.trim_end());
+        section.push('\n');
+    }
+    section.push('\n');
+    // The verdict stays last.
+    let body = diff.trim_end_matches('\n');
+    let (head, verdict) = body.rsplit_once('\n').unwrap_or(("", body));
+    let head = if head.is_empty() {
+        String::new()
+    } else {
+        format!("{head}\n")
+    };
+    Ok(format!("{head}{section}{verdict}\n"))
+}
+
+/// What `lithe upgrade` prints: the proxy's `upgradeToAndCall`. For a split contract, the
+/// deployment plan with it, and the new router's `CREATE2` address when `implementation` is
+/// not given.
+pub fn upgrade_plan(
+    proxy: &str,
+    path: &std::path::Path,
+    migrate: &str,
+    implementation: Option<&str>,
+    args: &[String],
+    opts: &Options,
+) -> Result<String, Error> {
+    let prepared = prepare_file(path, opts)?;
+    if prepared.split.prerequisites().is_empty() {
+        let Some(implementation) = implementation else {
+            return Err(error(0, 0, "upgrade requires --impl <address>"));
+        };
+        let data = upgrade_calldata(path, migrate, implementation, args)?;
+        return Ok(format!("to: {proxy}\ndata: {data}\n"));
+    }
+    let router = checksum(&split::create2(&opts.deployer, &prepared.code));
+    let data = upgrade_calldata(path, migrate, implementation.unwrap_or(&router), args)?;
+    Ok(plan_json(&prepared, opts, Some((proxy, &data))))
+}
+
+pub fn upgrade_calldata(
+    path: &std::path::Path,
+    migrate: &str,
+    implementation: &str,
+    args: &[String],
+) -> Result<String, Error> {
+    let checked = check::check(modules::load(path)?)?;
+    if !checked.prog.upgradeable {
+        return Err(error(1, 1, "contract is not upgradeable"));
+    }
+    let Some(func) = checked
+        .prog
+        .funcs
+        .iter()
+        .find(|func| func.kind == ast::ItemKind::Migrate && func.name == migrate)
+    else {
+        return Err(error(1, 1, format!("unknown migration `{migrate}`")));
+    };
+    if args.len() != func.params.len() {
+        return Err(error(
+            func.line,
+            func.col,
+            format!("`{migrate}` expects {} arguments", func.params.len()),
+        ));
+    }
+    let mut parts = Vec::new();
+    let mut words = Vec::new();
+    for (param, arg) in func.params.iter().zip(args) {
+        let fields = check::abi_fields(&checked.types, param.ty_id, &param.name)?;
+        if fields.len() != 1 {
+            return Err(error(
+                param.line,
+                param.col,
+                "migration arguments must be a single word",
+            ));
+        }
+        parts.push(fields[0].ty.clone());
+        words.push(parse_word(arg)?);
+    }
+    let inner_sig = format!("{migrate}({})", parts.join(","));
+    let mut inner = keccak::selector(&inner_sig).to_vec();
+    for word in words {
+        inner.extend_from_slice(&word.to_be_bytes());
+    }
+    let mut data = keccak::selector("upgradeToAndCall(address,bytes)").to_vec();
+    data.extend_from_slice(&parse_word(implementation)?.to_be_bytes());
+    let mut offset = [0u8; 32];
+    offset[31] = 64;
+    data.extend_from_slice(&offset);
+    let mut len = [0u8; 32];
+    let size = inner.len() as u64;
+    len[24..].copy_from_slice(&size.to_be_bytes());
+    data.extend_from_slice(&len);
+    data.extend_from_slice(&inner);
+    let pad = (32 - inner.len() % 32) % 32;
+    data.extend(std::iter::repeat(0).take(pad));
+    Ok(format!("0x{}", hex(&data)))
+}
+
+fn format_layout(layout: &[check::DomainLayout]) -> String {
+    let mut out = String::new();
+    for domain in layout {
+        out.push_str(&domain.name);
+        if domain.id.is_empty() {
+            out.push('\n');
+        } else {
+            out.push_str(&format!(" \"{}\"\n", domain.id));
+        }
+        out.push_str(&format!("  root: {}\n", word_hex(domain.root)));
+        let width = domain
+            .fields
+            .iter()
+            .map(|(name, ty)| name.len() + ty.len() + 2)
+            .max()
+            .unwrap_or(0);
+        for ((name, ty), place) in domain.fields.iter().zip(&domain.places) {
+            let field = format!("{name}: {ty}");
+            out.push_str(&format!("  {field:width$}  {place}\n"));
+        }
+        out.push('\n');
+    }
+    if out.is_empty() {
+        out.push_str("no storage domains\n");
+    }
+    out
+}
+
+/// Transient storage is listed apart: it has no root, lives for one transaction, and is
+/// never part of the upgradeable layout.
+fn format_transient(layout: &[check::DomainLayout]) -> String {
+    let mut out = String::new();
+    for domain in layout {
+        if domain.name == "transient" {
+            out.push_str("transient\n");
+        } else {
+            out.push_str(&format!("transient {}\n", domain.name));
+        }
+        let width = domain
+            .fields
+            .iter()
+            .map(|(name, ty)| name.len() + ty.len() + 2)
+            .max()
+            .unwrap_or(0);
+        for ((name, ty), place) in domain.fields.iter().zip(&domain.places) {
+            let field = format!("{name}: {ty}");
+            out.push_str(&format!("  {field:width$}  transient {place}\n"));
+        }
+        out.push('\n');
+    }
+    out
+}
+
+fn format_diff(before: &[check::DomainLayout], after: &[check::DomainLayout]) -> String {
+    let mut out = String::new();
+    let mut compatible = true;
+    for domain in after {
+        let old = before
+            .iter()
+            .find(|item| item.id == domain.id && item.name == domain.name);
+        out.push_str(&domain.name);
+        out.push('\n');
+        let Some(old) = old else {
+            out.push_str("  added\n\n");
+            continue;
+        };
+        let shared = old.fields.len().min(domain.fields.len());
+        for index in 0..shared {
+            let (old_name, old_ty) = &old.fields[index];
+            let (new_name, new_ty) = &domain.fields[index];
+            if old_name == new_name && old_ty == new_ty {
+                out.push_str(&format!("  {new_name} unchanged\n"));
+            } else {
+                compatible = false;
+                out.push_str(&format!("  {old_name} changed -> {new_name}\n"));
+            }
+        }
+        for (name, _) in old.fields.iter().skip(shared) {
+            compatible = false;
+            out.push_str(&format!("  {name} removed\n"));
+        }
+        for (name, _) in domain.fields.iter().skip(shared) {
+            out.push_str(&format!("  {name} added\n"));
+        }
+        out.push('\n');
+    }
+    for domain in before {
+        if after
+            .iter()
+            .any(|item| item.id == domain.id && item.name == domain.name)
+        {
+            continue;
+        }
+        compatible = false;
+        out.push_str(&domain.name);
+        out.push_str(" removed\n\n");
+    }
+    out.push_str(if compatible {
+        "compatible\n"
+    } else {
+        "incompatible\n"
+    });
+    out
+}
+
+fn parse_word(text: &str) -> Result<word::Word, Error> {
+    let word = if let Some(hex) = text.strip_prefix("0x") {
+        word::Word::from_hex(hex)
+    } else {
+        word::Word::from_dec(text)
+    };
+    word.ok_or_else(|| error(0, 0, format!("cannot encode `{text}`")))
+}
+
+fn word_hex(word: word::Word) -> String {
+    format!("0x{}", hex(&word.to_be_bytes()))
+}
+
+pub(crate) fn error(line: u32, column: u32, message: impl Into<String>) -> Error {
+    Error {
+        line,
+        column,
+        message: message.into(),
+    }
+}
+
+#[cfg(test)]
+mod evm;

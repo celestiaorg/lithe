@@ -1,0 +1,60 @@
+(* A first-in, first-out queue. Pushing and popping each touch one element and a
+   counter, however long the queue is. Popping leaves the element in storage: a generic
+   `T` has no zero value to write back.
+
+     storage is record {
+       pending : Queue(address);
+     }
+
+     Queue.push(storage.pending, Evm.sender());
+     const next : address := Queue.pop(storage.pending); *)
+
+module Queue(T) is {
+  type self is record {
+    items : map(nat, T);
+    head : nat;
+    tail : nat;
+  }
+
+  error QueueEmpty;
+  error QueueOutOfBounds of nat;
+
+  view function length(const q : self) : nat is
+    q.tail - q.head
+
+  view function is_empty(const q : self) : bool is
+    q.tail = q.head
+
+  (* The element `index` places from the front. *)
+  view function at(const q : self; const index : nat) : T
+    raises QueueOutOfBounds
+  is {
+    assert(index < q.tail - q.head, QueueOutOfBounds(index));
+  } with q.items[q.head + index]
+
+  view function front(const q : self) : T
+    raises QueueEmpty
+  is {
+    assert(q.tail > q.head, QueueEmpty);
+  } with q.items[q.head]
+
+  view function back(const q : self) : T
+    raises QueueEmpty
+  is {
+    assert(q.tail > q.head, QueueEmpty);
+  } with q.items[q.tail - 1n]
+
+  function push(const q : self; const value : T) is {
+    q.items[q.tail] := value;
+    q.tail := q.tail + 1n;
+  }
+
+  (* Removes and returns the front element. *)
+  function pop(const q : self) : T
+    raises QueueEmpty
+  is {
+    assert(q.tail > q.head, QueueEmpty);
+    const value : T := q.items[q.head];
+    q.head := q.head + 1n;
+  } with value
+}

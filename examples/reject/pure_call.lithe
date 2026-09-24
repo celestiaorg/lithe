@@ -1,0 +1,9 @@
+storage is record {
+  n : nat;
+}
+
+view function peek() : nat is
+  storage.n
+
+pure function wrapped() : nat is
+  peek()

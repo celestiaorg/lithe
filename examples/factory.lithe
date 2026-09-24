@@ -1,0 +1,61 @@
+(* A factory deploys another contract of this file with `defer create`. The arguments go
+   to the created contract's `deploy`, which runs before the continuation receives the
+   new address. *)
+
+contract Factory is {
+  storage is record {
+    vaults : map(address, address);
+    failed : nat;
+  }
+
+  external function open() is {
+    defer create Vault(Evm.sender()) then (vault : address) {
+      storage.vaults[Evm.sender()] := vault;
+    };
+  }
+
+  (* CREATE2: the address depends only on this factory, the salt, and Vault's creation
+     code, which includes the arguments. *)
+  external function open_at(const salt : bytes32) is {
+    defer create Vault(Evm.sender()) with salt = salt then (vault : address) {
+      storage.vaults[Evm.sender()] := vault;
+    };
+  }
+
+  (* Funds the new vault; a failed creation is counted instead of reverting. *)
+  external payable function open_funded() is {
+    defer create Vault(Evm.sender()) with value = nat(Evm.value()) then {
+      | Ok(vault : address) -> {
+          storage.vaults[Evm.sender()] := vault;
+        }
+      | Error(_) -> {
+          storage.failed := storage.failed + 1n;
+        }
+    };
+  }
+
+  (* Both options together: a funded vault at a salted address. *)
+  external payable function open_funded_at(const salt : bytes32) is {
+    defer create Vault(Evm.sender()) with { value = nat(Evm.value()); salt = salt; }
+      then (vault : address) {
+        storage.vaults[Evm.sender()] := vault;
+      };
+  }
+
+  external view function vault_of(const who : address) : address is
+    storage.vaults[who]
+}
+
+contract Vault is {
+  storage is record {
+    owner : address;
+  }
+
+  (* `payable`: a factory may fund the vault as it creates it. *)
+  payable deploy(const owner : address) is {
+    storage.owner := owner;
+  }
+
+  external view function owner() : address is
+    storage.owner
+}

@@ -1,0 +1,70 @@
+---
+title: "Recovering from failed calls"
+description: "Lithe's try/catch: Ok and Error arms on deferred calls, transfers, and queries."
+---
+
+# Recovering from failed calls
+
+By default, a failed external call reverts the whole transaction. To handle the failure instead, match the outcome with `Ok` and `Error` arms. A deferred call matches in its continuation, and a `query` matches with `case`.
+
+```lithe [try-catch.lithe]
+interface Oracle is {
+  query price(asset : address) : nat;
+}
+
+interface Hook is {
+  call on_payout(amount : nat) : bool;
+}
+
+event Payout_failed of record {
+  indexed to : address;
+  amount : wei;
+}
+
+storage is record {
+  oracle : Oracle;
+  last_good_price : nat;
+  hook : Hook;
+  hook_failures : nat;
+  unpaid : map(address, wei);
+}
+
+(* A query's outcome is available now, so it matches with an ordinary `case`. *)
+external function refresh(const asset : address) is {
+  const price : nat := case query storage.oracle.price(asset) of {
+  | Ok(p) -> p
+  | Error(_) -> storage.last_good_price
+  };
+  storage.last_good_price := price;
+}
+
+(* A deferred call's outcome arrives in its continuation. `Error` binds the raw
+   revert data. *)
+external nonreentrant function notify(const amount : nat) is {
+  defer storage.hook.on_payout(amount) then {
+    | Ok(accepted : bool) -> {
+        skip
+      }
+    | Error(reason : bytes) -> {
+        storage.hook_failures := storage.hook_failures + 1n;
+      }
+  };
+}
+
+(* A transfer that fails is recorded for later, instead of blocking the caller.
+   `Ok` has no binding because a transfer returns nothing. *)
+external payable nonreentrant function pay(const to : address) is {
+  defer Evm.transfer(to, Evm.value()) then {
+    | Ok -> { skip }
+    | Error(_) -> {
+        storage.unpaid[to] := storage.unpaid[to] + Evm.value();
+        emit Payout_failed { to = to; amount = Evm.value(); };
+      }
+  };
+}
+```
+
+- Both arms are required. With neither, the call is not recoverable, and a failure reverts.
+- The first phase's writes stay whichever arm runs. Only the failed call's own effects are undone.
+- A call that succeeds but returns data that doesn't decode as the declared type still reverts. That's a broken interface, not an `Error`.
+- See [Continuations](/language/continuations#recovering-from-failed-calls) for the full rules.

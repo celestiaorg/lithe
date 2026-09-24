@@ -1,0 +1,17 @@
+storage is record {
+  n : nat;
+}
+
+external function go() is {
+  skip
+}
+
+contract Foo is {
+  storage is record {
+    n : nat;
+  }
+
+  external function go() is {
+    skip
+  }
+}

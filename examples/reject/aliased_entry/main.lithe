@@ -1,0 +1,9 @@
+import "./child.lithe" as Child;
+
+storage is record {
+  n : nat;
+}
+
+external function run() is {
+  skip
+}

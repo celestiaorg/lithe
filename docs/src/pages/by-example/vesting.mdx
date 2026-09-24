@@ -1,0 +1,61 @@
+---
+title: "Vesting"
+description: "Linear release of ether to a beneficiary."
+---
+
+# Vesting
+
+Ether sent to the contract vests linearly between `start` and `start + duration`. Anyone can call `release`, and the funds always go to the beneficiary.
+
+```lithe [vesting.lithe]
+(* Ether vests linearly to a beneficiary between `start` and `start + duration`.
+   Anyone can trigger a release; the funds only ever go to the beneficiary. *)
+
+error Already_initialized;
+
+event Released of record {
+  amount : wei;
+}
+
+storage is record {
+  beneficiary : address;
+  start : timestamp;
+  duration : nat;
+  released : wei;
+}
+
+external function init(const beneficiary : address; const start : timestamp; const duration : nat)
+  raises Already_initialized
+is {
+  assert(storage.beneficiary = Address.zero, Already_initialized);
+  storage.beneficiary := beneficiary;
+  storage.start := start;
+  storage.duration := duration;
+}
+
+external payable function fund() is {
+  skip
+}
+
+view function vested_at(const time : timestamp) : wei is {
+  const total : wei := Evm.balance(Evm.self()) + storage.released;
+  var vested : wei := 0wei;
+  if time >= storage.start + storage.duration then {
+    vested := total;
+  } else {
+    if time > storage.start then {
+      vested := wei(nat(total) * (time - storage.start) / storage.duration);
+    }
+  }
+} with vested
+
+external view function releasable() : wei is
+  vested_at(Evm.block_timestamp()) - storage.released
+
+external nonreentrant function release() is {
+  const amount : wei := vested_at(Evm.block_timestamp()) - storage.released;
+  storage.released := storage.released + amount;
+  emit Released { amount = amount; };
+  defer Evm.transfer(storage.beneficiary, amount);
+}
+```

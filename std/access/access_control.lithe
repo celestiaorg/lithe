@@ -1,0 +1,138 @@
+(* Role-based access control, like OpenZeppelin's `AccessControl`. A role is a `role`, a
+   distinct type over `bytes32`, so a role can't be passed where some other hash is meant.
+   Each role has an admin role whose members grant and revoke it; the default admin role
+   is `role(0x00...)` and administers itself.
+
+     pure function minter() : role is role(0x9f2df0fed2c77648de5860a4cc508cd0818c85b8b8a1ab4ceeef8d981c8956a6)
+
+     deploy(const admin : address) is {
+       AccessControl.grant(AccessControl.default_admin_role(), admin);
+     }
+
+     external function mint(const to : address; const amount : nat)
+       raises AccessControlUnauthorizedAccount
+     is {
+       AccessControl.check_role(minter());
+       ...
+     }
+
+     external view function hasRole is AccessControl.has_role;
+     external view function getRoleAdmin is AccessControl.get_role_admin;
+     external function grantRole is AccessControl.grant_role;
+     external function revokeRole is AccessControl.revoke_role;
+     external function renounceRole is AccessControl.renounce_role; *)
+
+module AccessControl is {
+  type role is bytes32;
+
+  storage access at "lithe.std.access_control" is record {
+    members : map(role, map(address, bool));
+    admins : map(role, role);
+  }
+
+  error AccessControlUnauthorizedAccount of record {
+    account : address;
+    neededRole : bytes32;
+  }
+
+  error AccessControlBadConfirmation;
+
+  event RoleAdminChanged of record {
+    indexed role : bytes32;
+    indexed previousAdminRole : bytes32;
+    indexed newAdminRole : bytes32;
+  }
+
+  event RoleGranted of record {
+    indexed role : bytes32;
+    indexed account : address;
+    indexed sender : address;
+  }
+
+  event RoleRevoked of record {
+    indexed role : bytes32;
+    indexed account : address;
+    indexed sender : address;
+  }
+
+  pure function default_admin_role() : role is
+    role(0x0000000000000000000000000000000000000000000000000000000000000000)
+
+  view function has_role(const r : role; const account : address) : bool is
+    access.members[r][account]
+
+  view function get_role_admin(const r : role) : role is
+    access.admins[r]
+
+  view function check_role(const r : role)
+    raises AccessControlUnauthorizedAccount
+  is {
+    check_role_of(r, Evm.sender());
+  }
+
+  view function check_role_of(const r : role; const account : address)
+    raises AccessControlUnauthorizedAccount
+  is {
+    assert(
+      access.members[r][account],
+      AccessControlUnauthorizedAccount { account = account; neededRole = bytes32(r); }
+    );
+  }
+
+  function grant_role(const r : role; const account : address)
+    raises AccessControlUnauthorizedAccount
+  is {
+    check_role(access.admins[r]);
+    grant(r, account);
+  }
+
+  function revoke_role(const r : role; const account : address)
+    raises AccessControlUnauthorizedAccount
+  is {
+    check_role(access.admins[r]);
+    revoke(r, account);
+  }
+
+  (* An account gives up its own role. `confirmation` must be the caller, so a role
+     can't be renounced by mistake on another account's behalf. *)
+  function renounce_role(const r : role; const confirmation : address)
+    raises AccessControlBadConfirmation
+  is {
+    assert(confirmation = Evm.sender(), AccessControlBadConfirmation);
+    revoke(r, confirmation);
+  }
+
+  (* Grants without checking the caller, for `deploy` and the contract's own rules.
+     Granting a role an account already has changes nothing and logs nothing. *)
+  function grant(const r : role; const account : address) is {
+    if not access.members[r][account] then {
+      access.members[r][account] := true;
+      emit RoleGranted {
+        role = bytes32(r);
+        account = account;
+        sender = Evm.sender();
+      };
+    }
+  }
+
+  function revoke(const r : role; const account : address) is {
+    if access.members[r][account] then {
+      access.members[r][account] := false;
+      emit RoleRevoked {
+        role = bytes32(r);
+        account = account;
+        sender = Evm.sender();
+      };
+    }
+  }
+
+  function set_role_admin(const r : role; const admin : role) is {
+    const previous : role := access.admins[r];
+    access.admins[r] := admin;
+    emit RoleAdminChanged {
+      role = bytes32(r);
+      previousAdminRole = bytes32(previous);
+      newAdminRole = bytes32(admin);
+    };
+  }
+}

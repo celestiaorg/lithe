@@ -1,0 +1,91 @@
+(* Deferred calls with continuations. A continuation is a new transition phase: the
+   call runs after the earlier phase's effects are applied, and its result is decoded
+   and checked before the continuation reads storage again. Continuations run
+   depth-first, right after the call they follow. *)
+
+type swap_result is record {
+  amount_out : nat;
+  fee : nat;
+}
+
+interface Exchange is {
+  call swap(amount_in : nat) : swap_result;
+}
+
+interface Vault is {
+  call deposit(amount : nat) : nat;
+  call withdraw(shares : nat) : (nat, nat);
+}
+
+interface Token is {
+  call transfer(to : address; amount : nat) : unit;
+}
+
+type order is record {
+  status : uint8;
+  amount_out : nat;
+  shares : nat;
+}
+
+error AlreadyPlaced of nat;
+
+event Executed of record {
+  indexed id : nat;
+  amount_out : nat;
+  fee : nat;
+}
+
+storage is record {
+  exchange : Exchange;
+  vault : Vault;
+  orders : map(nat, order);
+  principal : nat;
+  earned : nat;
+  paid_out : bool;
+}
+
+external function init(const exchange : Exchange; const vault : Vault) is {
+  storage.exchange := exchange;
+  storage.vault := vault;
+}
+
+(* The exchange sees the order as pending. The continuation binds the swap's result,
+   marks the order complete, and deposits the proceeds, whose shares arrive in a
+   nested continuation. *)
+external nonreentrant function execute(const id : nat; const amount_in : nat)
+  raises AlreadyPlaced
+is {
+  assert(storage.orders[id].status = uint8(0), AlreadyPlaced(id));
+  storage.orders[id].status := uint8(1);
+  defer storage.exchange.swap(amount_in)
+    then (result : swap_result) {
+      storage.orders[id].status := uint8(2);
+      storage.orders[id].amount_out := result.amount_out;
+      emit Executed { id = id; amount_out = result.amount_out; fee = result.fee; };
+      defer storage.vault.deposit(result.amount_out)
+        then (shares : nat) {
+          storage.orders[id].shares := shares;
+        };
+    };
+}
+
+(* A tuple result destructures in the binding. *)
+external nonreentrant function redeem(const id : nat) is {
+  defer storage.vault.withdraw(storage.orders[id].shares)
+    then ((principal, earned) : (nat, nat)) {
+      storage.orders[id].status := uint8(3);
+      storage.principal := storage.principal + principal;
+      storage.earned := storage.earned + earned;
+    };
+}
+
+(* A call that returns nothing can still be followed, to sequence effects after it. *)
+external nonreentrant function pay(const token : Token; const to : address; const amount : nat) is {
+  storage.paid_out := false;
+  defer token.transfer(to, amount)
+    then {
+      storage.paid_out := true;
+    };
+}
+
+external view function order_of(const id : nat) : order is storage.orders[id]

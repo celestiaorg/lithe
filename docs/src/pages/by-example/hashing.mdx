@@ -1,0 +1,45 @@
+---
+title: "Hashing"
+description: "keccak256 and a commit-reveal game."
+---
+
+# Hashing
+
+`Crypto.keccak256` hashes `bytes` or `string`. To hash several values, encode them first.
+
+```lithe [hashing.lithe]
+(* A commit-reveal guessing game. `Crypto.keccak256` hashes `bytes` or `string`;
+   encode several values with `Abi.encode` first, since `encode_packed` of
+   adjacent dynamic values can collide. *)
+
+error Wrong_guess;
+error Already_solved;
+
+event Solved of record {
+  indexed by : address;
+}
+
+storage is record {
+  answer_hash : bytes32;
+  solved : bool;
+}
+
+external function set_puzzle(const answer_hash : bytes32) is {
+  storage.answer_hash := answer_hash;
+  storage.solved := false;
+}
+
+external pure function hash_answer(const answer : string; const salt : bytes32) : bytes32 is
+  Crypto.keccak256(Abi.encode(answer, salt))
+
+external function solve(const answer : string; const salt : bytes32)
+  raises Wrong_guess | Already_solved
+is {
+  assert(not storage.solved, Already_solved);
+  assert(Crypto.keccak256(Abi.encode(answer, salt)) = storage.answer_hash, Wrong_guess);
+  storage.solved := true;
+  emit Solved { by = Evm.sender(); };
+}
+```
+
+Prefer `Abi.encode` over `Abi.encode_packed` when hashing several values. With packed encoding, `("ab", "c")` and `("a", "bc")` produce the same bytes.

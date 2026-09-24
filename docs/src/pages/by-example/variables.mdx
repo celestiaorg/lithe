@@ -1,0 +1,46 @@
+---
+title: "Variables"
+description: "Locals, storage, transient storage, and execution context."
+---
+
+# Variables
+
+Solidity has local, state, and global variables. Lithe has locals, two kinds of storage, and the `Evm` module.
+
+```lithe [variables.lithe]
+(* Three lifetimes: locals last for the call, transient storage for the
+   transaction, storage forever. *)
+
+storage is record {
+  total : nat;
+  last_caller : address;
+}
+
+transient storage is record {
+  calls_this_tx : nat;
+}
+
+external function track(const amount : nat) is {
+  (* `const` is immutable. Every local binding names its type. *)
+  const caller : address := Evm.sender();
+
+  (* `var` can be reassigned with `:=`. *)
+  var bonus : nat := 0n;
+  if amount > 100n then {
+    bonus := 1n;
+  }
+
+  (* Contract state is always qualified: `storage.` or `transient.` *)
+  storage.total := storage.total + amount + bonus;
+  storage.last_caller := caller;
+  transient.calls_this_tx := transient.calls_this_tx + 1n;
+}
+
+(* Execution context comes from `Evm`, not magic globals. *)
+external view function context() : (address, nat, timestamp) is
+  (Evm.sender(), Evm.block_number(), Evm.block_timestamp())
+```
+
+- Every local binding names its type: `const caller : address := ...`. There is no inference for bindings.
+- `transient` storage is cleared at the end of every transaction. See [Transient storage](/by-example/transient-storage).
+- `Evm.sender()`, `Evm.block_number()`, and the rest of the context are listed in [Built-ins](/language/builtins).

@@ -1,0 +1,15 @@
+(* Value and time units. A duration added to Evm.block_timestamp() is a timestamp. *)
+
+storage is record {
+  price : wei;
+  wait : nat;
+  unlock_at : timestamp;
+  elapsed : nat;
+}
+
+external function set() is {
+  storage.price := 20gwei + 1wei;
+  storage.wait := 1hours + 30minutes + 15seconds;
+  storage.unlock_at := Evm.block_timestamp() + 2days;
+  storage.elapsed := storage.unlock_at - Evm.block_timestamp();
+}

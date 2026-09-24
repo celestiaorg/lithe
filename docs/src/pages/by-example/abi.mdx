@@ -1,0 +1,47 @@
+---
+title: "ABI encode and decode"
+description: "Encoding, decoding, packed encoding, and calldata."
+---
+
+# ABI encode and decode
+
+`Abi` provides Solidity's encoding helpers.
+
+```lithe [abi.lithe]
+(* `Abi` mirrors Solidity's `abi.*` helpers. *)
+
+interface Token is {
+  call transfer(to : address; amount : nat) : bool;
+}
+
+storage is record {
+  last : bytes;
+}
+
+external pure function encode(const to : address; const amount : nat) : bytes is
+  Abi.encode(to, amount)
+
+external pure function decode(const data : bytes) : nat is
+  Abi.decode(data, nat)
+
+external pure function packed(const tag : string; const who : address) : bytes is
+  Abi.encode_packed(tag, who)
+
+(* Calldata for `transfer(address,uint256)`, three ways. *)
+external pure function by_selector(const to : address; const amount : nat) : bytes is
+  Abi.encode_with_selector(0xa9059cbb, to, amount)
+
+external pure function by_signature(const to : address; const amount : nat) : bytes is
+  Abi.encode_with_signature("transfer(address,uint256)", to, amount)
+
+external pure function by_call(const to : address; const amount : nat) : bytes is
+  Abi.encode_call(Token.transfer, to, amount)
+
+(* The raw calldata of the current call. *)
+external function remember() is {
+  storage.last := Evm.calldata();
+}
+```
+
+- `Abi.decode` takes a type name as its second argument.
+- `by_selector`, `by_signature`, and `by_call` produce identical bytes. Only `encode_call` checks the arguments against the method's parameter types.

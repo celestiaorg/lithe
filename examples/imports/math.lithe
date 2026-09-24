@@ -1,0 +1,5 @@
+private view function hidden(const x : nat) : nat is
+  x + 1n
+
+view function add_one(const x : nat) : nat is
+  hidden(x)

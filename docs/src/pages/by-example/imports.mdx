@@ -1,0 +1,52 @@
+---
+title: "Imports"
+description: "Splitting code across files."
+---
+
+# Imports
+
+`import` brings in another file's declarations. A plain import makes names available directly. `as` keeps them behind a prefix.
+
+:::code-group
+
+```lithe [main.lithe]
+(* A plain import brings names in directly. `as` keeps them behind a prefix. *)
+import "./lib/math.lithe";
+import "./lib/fees.lithe" as Fees;
+
+storage is record {
+  fee : Fees.basis_points;
+  cap : nat;
+}
+
+external function configure(const fee : Fees.basis_points; const cap : nat) is {
+  storage.fee := fee;
+  storage.cap := cap;
+}
+
+external view function charge(const amount : nat) : nat is
+  min(Fees.apply(storage.fee, amount), storage.cap)
+```
+
+```lithe [lib/math.lithe]
+pure function min(const a : nat; const b : nat) : nat is {
+  var smaller : nat := b;
+  if a < b then { smaller := a; }
+} with smaller
+```
+
+```lithe [lib/fees.lithe]
+type basis_points is uint16;
+
+pure function apply(const fee : basis_points; const amount : nat) : nat is
+  amount * nat(uint16(fee)) / 10_000n
+
+(* `private` stays inside this file. *)
+private pure function unused() : nat is
+  0n
+```
+
+:::
+
+- Imports come before every other declaration, and paths are relative to the importing file.
+- `private` declarations, like `unused`, are invisible to importers.

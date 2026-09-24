@@ -1,0 +1,88 @@
+(* Fuzz target: functions called from many places, so they compile once. *)
+
+error Over of nat;
+
+storage is record {
+  owner : address;
+  totals : map(address, nat);
+  limit : nat;
+  last : nat;
+  spare : option(nat);
+  pair : (nat, nat);
+  flag : bool;
+}
+
+pure function clamp(const x : nat; const hi : nat) : nat is {
+  var out : nat := x;
+  if x > hi then {
+    out := hi;
+  } else {
+    skip
+  }
+} with out
+
+function add_to(const who : address; const amount : nat) : nat
+  raises Over
+is {
+  const next : nat := storage.totals[who] + amount;
+  assert(next < 1000000n, Over(next));
+  storage.totals[who] := next;
+  if next > storage.limit then {
+    storage.limit := next;
+  } else {
+    storage.last := next;
+  }
+} with next
+
+pure function split(const x : nat) : (nat, nat) is
+  (x / 3, x % 3)
+
+view function spare_or(const d : nat) : nat is
+  case storage.spare of
+  {
+  | Some(v) -> v + d
+  | None -> d + 1n
+  }
+
+function touch(const x : nat) is {
+  if x % 2n = 0n then {
+    storage.flag := true;
+  } else {
+    storage.spare := Some(x);
+  }
+}
+
+external function one(const who : address; const amount : nat)
+  raises Over
+is {
+  const got : nat := add_to(who, clamp(amount, 5000n));
+  touch(got);
+  storage.pair := split(got);
+}
+
+external function two(const a : address; const b : address; const amount : nat)
+  raises Over
+is {
+  const x : nat := add_to(a, amount);
+  const y : nat := add_to(b, clamp(x, 700n));
+  touch(y);
+  const (q, r) : (nat, nat) := split(x + y);
+  storage.last := q + r + spare_or(q);
+}
+
+external function three(const amount : nat) is {
+  touch(amount);
+  touch(amount + 1n);
+  storage.last := spare_or(clamp(amount, 9n)) + clamp(amount, 3n);
+}
+
+external function reset() is {
+  storage.spare := None;
+  touch(storage.last);
+}
+
+external view function peek(const who : address; const d : nat) : nat is
+  storage.totals[who] + spare_or(d) + spare_or(7n)
+
+external view function parts(const x : nat) : (nat, nat) is
+  split(x)

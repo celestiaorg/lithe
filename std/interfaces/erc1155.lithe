@@ -1,0 +1,16 @@
+(* ERC-1155 multi-tokens, their metadata URI, and the receiver callbacks. *)
+
+interface IERC1155 is {
+  query balanceOf(account : address; id : nat) : nat;
+  query balanceOfBatch(accounts : list(address); ids : list(nat)) : list(nat);
+  query isApprovedForAll(account : address; operator : address) : bool;
+  query uri(id : nat) : string;
+  call setApprovalForAll(operator : address; approved : bool) : unit;
+  call safeTransferFrom(from : address; to : address; id : nat; value : nat; data : bytes) : unit;
+  call safeBatchTransferFrom(from : address; to : address; ids : list(nat); values : list(nat); data : bytes) : unit;
+}
+
+interface IERC1155Receiver is {
+  call onERC1155Received(operator : address; from : address; id : nat; value : nat; data : bytes) : bytes4;
+  call onERC1155BatchReceived(operator : address; from : address; ids : list(nat); values : list(nat); data : bytes) : bytes4;
+}

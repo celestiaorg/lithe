@@ -1,0 +1,21 @@
+(* ERC-721 tokens, their metadata extension, and the receiver callback.
+   `safeTransferFrom` is the four-argument form; pass empty `data` for the three-argument
+   one. *)
+
+interface IERC721 is {
+  query balanceOf(owner : address) : nat;
+  query ownerOf(tokenId : nat) : address;
+  query getApproved(tokenId : nat) : address;
+  query isApprovedForAll(owner : address; operator : address) : bool;
+  query name() : string;
+  query symbol() : string;
+  query tokenURI(tokenId : nat) : string;
+  call approve(to : address; tokenId : nat) : unit;
+  call setApprovalForAll(operator : address; approved : bool) : unit;
+  call transferFrom(from : address; to : address; tokenId : nat) : unit;
+  call safeTransferFrom(from : address; to : address; tokenId : nat; data : bytes) : unit;
+}
+
+interface IERC721Receiver is {
+  call onERC721Received(operator : address; from : address; tokenId : nat; data : bytes) : bytes4;
+}

@@ -1,0 +1,7 @@
+import "std/collections/set.lithe";
+
+storage is record {
+  names : Set(string);
+}
+
+external function go() is { skip }

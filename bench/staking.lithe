@@ -1,0 +1,242 @@
+(* Benchmark: Synthetix's StakingRewards, on the same Ownable and Initializable
+   modules as the token. Mirrors staking.sol, which imports OpenZeppelin.
+   Token transfers are deferred, so they run after the staking contract's own effects. *)
+
+import "./lib/initializable.lithe";
+import "./lib/ownable.lithe";
+
+contract StakingRewards is {
+  use Initializable;
+  use Ownable;
+
+  interface IERC20 is {
+    call transfer(to : address; value : nat) : bool;
+    call transferFrom(from : address; to : address; value : nat) : bool;
+    query balanceOf(account : address) : nat;
+  }
+
+  storage is record {
+    rewardsToken : IERC20;
+    stakingToken : IERC20;
+    periodFinish : timestamp;
+    rewardRate : nat;
+    rewardsDuration : nat;
+    lastUpdateTime : timestamp;
+    rewardPerTokenStored : nat;
+    userRewardPerTokenPaid : map(address, nat);
+    rewards : map(address, nat);
+    totalSupply : nat;
+    balances : map(address, nat);
+  }
+
+  error CannotStakeZero;
+  error CannotWithdrawZero;
+  error RewardTooHigh;
+  error RewardPeriodActive;
+
+  event RewardAdded of record {
+    reward : nat;
+  }
+
+  event Staked of record {
+    indexed user : address;
+    amount : nat;
+  }
+
+  event Withdrawn of record {
+    indexed user : address;
+    amount : nat;
+  }
+
+  event RewardPaid of record {
+    indexed user : address;
+    reward : nat;
+  }
+
+  event RewardsDurationUpdated of record {
+    newDuration : nat;
+  }
+
+  (* Initializable's bookkeeping matches the `initializer` modifier on Solidity's
+     constructor, so storage and events stay the same. *)
+  deploy(const owner_ : address; const rewardsToken_ : IERC20; const stakingToken_ : IERC20)
+    raises InvalidInitialization | OwnableInvalidOwner
+  is {
+    Initializable.begin();
+    Ownable.init(owner_);
+    storage.rewardsToken := rewardsToken_;
+    storage.stakingToken := stakingToken_;
+    storage.rewardsDuration := 604800n;
+    Initializable.finish();
+  }
+
+  view function last_time_reward_applicable() : timestamp is {
+    var applicable : timestamp := Evm.block_timestamp();
+    if storage.periodFinish < applicable then {
+      applicable := storage.periodFinish;
+    }
+  } with applicable
+
+  view function reward_per_token() : nat is {
+    var per : nat := storage.rewardPerTokenStored;
+    if storage.totalSupply <> 0n then {
+      per := storage.rewardPerTokenStored
+        + (last_time_reward_applicable() - storage.lastUpdateTime)
+          * storage.rewardRate * 1000000000000000000n / storage.totalSupply;
+    }
+  } with per
+
+  view function earned_by(const account : address) : nat is
+    storage.balances[account] * (reward_per_token() - storage.userRewardPerTokenPaid[account])
+      / 1000000000000000000n + storage.rewards[account]
+
+  function update_reward(const account : address) is {
+    storage.rewardPerTokenStored := reward_per_token();
+    storage.lastUpdateTime := last_time_reward_applicable();
+    if account <> Address.zero then {
+      storage.rewards[account] := earned_by(account);
+      storage.userRewardPerTokenPaid[account] := storage.rewardPerTokenStored;
+    }
+  }
+
+  function withdraw_as_sender(const amount : nat)
+    raises CannotWithdrawZero
+  is {
+    update_reward(Evm.sender());
+    assert(amount <> 0n, CannotWithdrawZero);
+    storage.totalSupply := storage.totalSupply - amount;
+    storage.balances[Evm.sender()] := storage.balances[Evm.sender()] - amount;
+    emit Withdrawn {
+      user = Evm.sender();
+      amount = amount;
+    };
+    defer storage.stakingToken.transfer(Evm.sender(), amount);
+  }
+
+  function reward_sender() is {
+    update_reward(Evm.sender());
+    const reward : nat := storage.rewards[Evm.sender()];
+    if reward > 0n then {
+      storage.rewards[Evm.sender()] := 0n;
+      emit RewardPaid {
+        user = Evm.sender();
+        reward = reward;
+      };
+      defer storage.rewardsToken.transfer(Evm.sender(), reward);
+    }
+  }
+
+  external nonreentrant function stake(const amount : nat)
+    raises CannotStakeZero
+  is {
+    update_reward(Evm.sender());
+    assert(amount <> 0n, CannotStakeZero);
+    storage.totalSupply := storage.totalSupply + amount;
+    storage.balances[Evm.sender()] := storage.balances[Evm.sender()] + amount;
+    emit Staked {
+      user = Evm.sender();
+      amount = amount;
+    };
+    defer storage.stakingToken.transferFrom(Evm.sender(), Evm.self(), amount);
+  }
+
+  external nonreentrant function withdraw(const amount : nat)
+    raises CannotWithdrawZero
+  is {
+    withdraw_as_sender(amount);
+  }
+
+  external nonreentrant function getReward() is {
+    reward_sender();
+  }
+
+  external nonreentrant function exit()
+    raises CannotWithdrawZero
+  is {
+    withdraw_as_sender(storage.balances[Evm.sender()]);
+    reward_sender();
+  }
+
+  external function notifyRewardAmount(const reward : nat)
+    raises OwnableUnauthorizedAccount | RewardTooHigh
+  is {
+    Ownable.check_owner();
+    update_reward(Address.zero);
+    if Evm.block_timestamp() >= storage.periodFinish then {
+      storage.rewardRate := reward / storage.rewardsDuration;
+    } else {
+      const remaining : nat := storage.periodFinish - Evm.block_timestamp();
+      const leftover : nat := remaining * storage.rewardRate;
+      storage.rewardRate := (reward + leftover) / storage.rewardsDuration;
+    }
+    const balance : nat := query storage.rewardsToken.balanceOf(Evm.self());
+    assert(storage.rewardRate <= balance / storage.rewardsDuration, RewardTooHigh);
+    storage.lastUpdateTime := Evm.block_timestamp();
+    storage.periodFinish := Evm.block_timestamp() + storage.rewardsDuration;
+    emit RewardAdded {
+      reward = reward;
+    };
+  }
+
+  external function setRewardsDuration(const duration : nat)
+    raises OwnableUnauthorizedAccount | RewardPeriodActive
+  is {
+    Ownable.check_owner();
+    assert(Evm.block_timestamp() > storage.periodFinish, RewardPeriodActive);
+    storage.rewardsDuration := duration;
+    emit RewardsDurationUpdated {
+      newDuration = duration;
+    };
+  }
+
+  external view function owner is Ownable.owner;
+
+  external function transferOwnership is Ownable.transferOwnership;
+
+  external function renounceOwnership is Ownable.renounceOwnership;
+
+  external view function rewardsToken() : IERC20 is
+    storage.rewardsToken
+
+  external view function stakingToken() : IERC20 is
+    storage.stakingToken
+
+  external view function periodFinish() : timestamp is
+    storage.periodFinish
+
+  external view function rewardRate() : nat is
+    storage.rewardRate
+
+  external view function rewardsDuration() : nat is
+    storage.rewardsDuration
+
+  external view function lastUpdateTime() : timestamp is
+    storage.lastUpdateTime
+
+  external view function rewardPerTokenStored() : nat is
+    storage.rewardPerTokenStored
+
+  external view function userRewardPerTokenPaid(const account : address) : nat is
+    storage.userRewardPerTokenPaid[account]
+
+  external view function rewards(const account : address) : nat is
+    storage.rewards[account]
+
+  external view function totalSupply() : nat is
+    storage.totalSupply
+
+  external view function balanceOf(const account : address) : nat is
+    storage.balances[account]
+
+  external view function lastTimeRewardApplicable() : timestamp is
+    last_time_reward_applicable()
+
+  external view function rewardPerToken() : nat is
+    reward_per_token()
+
+  external view function earned(const account : address) : nat is
+    earned_by(account)
+
+  external view function getRewardForDuration() : nat is
+    storage.rewardRate * storage.rewardsDuration
+}

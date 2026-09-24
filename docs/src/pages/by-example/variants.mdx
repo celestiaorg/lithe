@@ -1,0 +1,58 @@
+---
+title: "Variants"
+description: "Closed sets of cases with payloads, matched exhaustively."
+---
+
+# Variants
+
+A variant type lists every case a value can take, and each case may carry a payload. In Lithe today, variants shape entrypoints: an external function that takes a variant becomes one ABI function per case.
+
+```lithe [variants.lithe]
+(* A variant type is a closed set of cases. A case may carry a payload.
+   An external function that takes a variant becomes one ABI function per case:
+   this contract exposes `deposit(uint256)`, `send(address,uint256)`, and `reset()`. *)
+
+type send_params is record {
+  to : address;
+  amount : nat;
+}
+
+type action is
+  | Deposit of nat
+  | Send of send_params
+  | Reset
+
+error Insufficient of nat;
+
+storage is record {
+  balances : map(address, nat);
+}
+
+(* `case` must handle every case; leaving one out is a compile error.
+   Each arm binds the case's payload. *)
+external function main(const action : action)
+  raises Insufficient
+is
+  case action of {
+  | Deposit(amount) -> {
+      storage.balances[Evm.sender()] := storage.balances[Evm.sender()] + amount;
+    }
+  | Send(p) -> {
+      const have : nat := storage.balances[Evm.sender()];
+      assert(have >= p.amount, Insufficient(have));
+      storage.balances[Evm.sender()] := have - p.amount;
+      storage.balances[p.to] := storage.balances[p.to] + p.amount;
+    }
+  | Reset -> {
+      storage.balances[Evm.sender()] := 0n;
+    }
+  }
+
+external view function balance_of(const who : address) : nat is
+  storage.balances[who]
+```
+
+- `case` must cover every case. Delete the `Reset` arm and the compiler reports ``missing case arm `Reset` ``.
+- A record payload becomes named ABI parameters, so `Send` is `send(address to, uint256 amount)`.
+- Variants cannot yet be constructed in expressions or stored. For stored states, use a small integer code. The [Multi-sig wallet](/by-example/multisig) uses booleans, and the [Order executor](/by-example/order-executor) uses a `uint8` status.
+- See [Dispatch](/by-example/dispatch) for nesting and guards.

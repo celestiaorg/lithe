@@ -1,0 +1,41 @@
+---
+title: "Options"
+description: "Optional values with Some and None."
+---
+
+# Options
+
+`option(T)` is either `Some(value)` or `None`. Unlike a zero value, it can tell "not set" apart from "set to zero".
+
+```lithe [options.lithe]
+(* `option(T)` is `Some(value)` or `None`. Match it with `case`. *)
+
+storage is record {
+  admin : option(address);
+}
+
+external function appoint() is {
+  storage.admin := Some(Evm.sender());
+}
+
+external function resign() is {
+  storage.admin := None;
+}
+
+external view function admin_or(const fallback : address) : address is
+  case storage.admin of {
+  | Some(who) -> who
+  | None -> fallback
+  }
+
+external view function has_admin() : bool is
+  case storage.admin of {
+  | Some(who) -> true
+  | None -> false
+  }
+```
+
+- An option must be matched with `case` before its value can be used.
+- `option(address)` is one storage slot. `None` is zero, so an unset field reads as `None`.
+- Options work anywhere a value does except the ABI: in maps, lists, tuples, records, `var`s, transient storage, and function results. They also compare with `=`. See [where options work](/language/types#where-options-work).
+- Options can't cross the ABI. Expose views that return plain values.

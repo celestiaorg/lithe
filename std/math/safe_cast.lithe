@@ -1,0 +1,21 @@
+(* Checked conversions between `nat` and `int`. A conversion to a narrower integer, such
+   as `uint128(x)`, is already checked by the language and panics when the value doesn't
+   fit; only `nat(x)` and `int(x)` between the signed and unsigned 256-bit types
+   reinterpret the bits. These check instead. Errors match OpenZeppelin's `SafeCast`. *)
+
+module SafeCast is {
+  error SafeCastOverflowedIntToUint of int;
+  error SafeCastOverflowedUintToInt of nat;
+
+  pure function to_nat(const x : int) : nat
+    raises SafeCastOverflowedIntToUint
+  is {
+    assert(x >= 0, SafeCastOverflowedIntToUint(x));
+  } with nat(x)
+
+  pure function to_int(const x : nat) : int
+    raises SafeCastOverflowedUintToInt
+  is {
+    assert(x <= nat(Int.max), SafeCastOverflowedUintToInt(x));
+  } with int(x)
+}

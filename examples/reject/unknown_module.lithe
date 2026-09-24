@@ -1,0 +1,11 @@
+contract Token is {
+  storage is record {
+    n : nat;
+  }
+
+  use Missing;
+
+  external function go() is {
+    skip
+  }
+}

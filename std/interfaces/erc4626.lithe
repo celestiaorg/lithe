@@ -1,0 +1,21 @@
+(* ERC-4626 tokenized vaults. Shares are an ERC-20; `asset` is the token they are shares
+   of. *)
+
+interface IERC4626 is {
+  query asset() : address;
+  query totalAssets() : nat;
+  query convertToShares(assets : nat) : nat;
+  query convertToAssets(shares : nat) : nat;
+  query maxDeposit(receiver : address) : nat;
+  query previewDeposit(assets : nat) : nat;
+  query maxMint(receiver : address) : nat;
+  query previewMint(shares : nat) : nat;
+  query maxWithdraw(owner : address) : nat;
+  query previewWithdraw(assets : nat) : nat;
+  query maxRedeem(owner : address) : nat;
+  query previewRedeem(shares : nat) : nat;
+  call deposit(assets : nat; receiver : address) : nat;
+  call mint(shares : nat; receiver : address) : nat;
+  call withdraw(assets : nat; receiver : address; owner : address) : nat;
+  call redeem(shares : nat; receiver : address; owner : address) : nat;
+}

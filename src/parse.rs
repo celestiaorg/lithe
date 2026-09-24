@@ -1,0 +1,2537 @@
+//! Recursive descent for declarations and statements. Pratt parser for expressions.
+
+use crate::ast::*;
+use crate::error;
+use crate::lex::{self, Kind, Token};
+use crate::Error;
+
+pub(crate) fn parse(src: &str) -> Result<Program, Error> {
+    let toks = lex::tokenize(src)?;
+    Parser { src, toks, i: 0 }.program()
+}
+
+enum StorageItem {
+    Default(TypeDecl),
+    Named(DomainDecl),
+}
+
+enum Item {
+    Func(Func),
+    Promotion(Promotion),
+}
+
+struct Deco {
+    kind: ItemKind,
+    payable: bool,
+    nonreentrant: bool,
+    external_pure: bool,
+}
+
+impl Deco {
+    fn of(kind: ItemKind) -> Self {
+        Deco {
+            kind,
+            payable: false,
+            nonreentrant: false,
+            external_pure: false,
+        }
+    }
+}
+
+struct Parser<'a> {
+    src: &'a str,
+    toks: Vec<Token>,
+    i: usize,
+}
+
+fn path_expr(line: u32, col: u32, path: &[String]) -> Expr {
+    let mut expr = Expr::Ident {
+        line,
+        col,
+        name: path[0].clone(),
+        sym: None,
+        builtin: None,
+        ty: 0,
+    };
+    for name in path.iter().skip(1) {
+        expr = Expr::Field {
+            line,
+            col,
+            base: Box::new(expr),
+            name: name.clone(),
+            root: None,
+            leaf: 0,
+            ty: 0,
+        };
+    }
+    expr
+}
+
+struct Body {
+    line: u32,
+    col: u32,
+    name: Option<String>,
+    types: Vec<TypeDecl>,
+    errors: Vec<ErrorDecl>,
+    error_sets: Vec<ErrorSetDecl>,
+    events: Vec<EventDecl>,
+    interfaces: Vec<InterfaceDecl>,
+    funcs: Vec<Func>,
+    domains: Vec<DomainDecl>,
+    compose: Vec<NameAt>,
+    promotions: Vec<Promotion>,
+    upgradeable: bool,
+    guard: Option<GuardDecl>,
+}
+
+impl Body {
+    fn new(line: u32, col: u32, name: Option<String>) -> Self {
+        Self {
+            line,
+            col,
+            name,
+            types: Vec::new(),
+            errors: Vec::new(),
+            error_sets: Vec::new(),
+            events: Vec::new(),
+            interfaces: Vec::new(),
+            funcs: Vec::new(),
+            domains: Vec::new(),
+            compose: Vec::new(),
+            promotions: Vec::new(),
+            upgradeable: false,
+            guard: None,
+        }
+    }
+
+    fn into_program(self, modules: Vec<ModuleDecl>, uses: Vec<UseDecl>) -> Program {
+        let named = self.name.is_some();
+        Program {
+            uses,
+            types: self.types,
+            errors: self.errors,
+            error_sets: self.error_sets,
+            events: self.events,
+            interfaces: self.interfaces,
+            funcs: self.funcs,
+            domains: self.domains,
+            modules,
+            compose: self.compose,
+            promotions: self.promotions,
+            upgradeable: self.upgradeable,
+            guard: self.guard,
+            contract_name: self.name,
+            contract_line: if named { self.line } else { 0 },
+            contract_col: if named { self.col } else { 0 },
+            siblings: Vec::new(),
+            peers: Vec::new(),
+        }
+    }
+}
+
+impl<'a> Parser<'a> {
+    fn program(&mut self) -> Result<Program, Error> {
+        let mut uses = Vec::new();
+        let mut modules = Vec::new();
+        let mut shared_interfaces = Vec::new();
+        let mut implicit = Body::new(1, 1, None);
+        let mut explicit = Vec::new();
+        let mut saw_implicit = false;
+        while self.kind() == Kind::Import {
+            uses.push(self.use_decl()?);
+        }
+        while self.kind() != Kind::Eof {
+            if self.kind() == Kind::Semi {
+                self.bump();
+                continue;
+            }
+            match self.kind() {
+                Kind::Module => modules.push(self.module_decl()?),
+                Kind::Interface => shared_interfaces.push(self.interface_decl()?),
+                Kind::Contract => {
+                    if saw_implicit {
+                        let (line, col) = self.at();
+                        self.bump();
+                        let name = self.ident()?;
+                        return Err(error(
+                            line,
+                            col,
+                            format!(
+                                "explicit `contract {name}` cannot share a file with top-level contract declarations"
+                            ),
+                        ));
+                    }
+                    let body = self.contract_body()?;
+                    if explicit.iter().any(|have: &Body| have.name == body.name) {
+                        return Err(error(
+                            body.line,
+                            body.col,
+                            format!(
+                                "contract `{}` is already declared",
+                                body.name.as_deref().unwrap_or("")
+                            ),
+                        ));
+                    }
+                    explicit.push(body);
+                }
+                Kind::End => {
+                    return Err(self.err("`end` no longer closes a contract or module; use `}`"));
+                }
+                Kind::Private => {
+                    self.bump();
+                    if matches!(self.kind(), Kind::Module | Kind::Contract | Kind::Interface) {
+                        return Err(self.err(match self.kind() {
+                            Kind::Module => "a module cannot be private",
+                            Kind::Contract => "a contract cannot be private",
+                            _ => "an interface cannot be private",
+                        }));
+                    }
+                    self.bare_decl(&mut implicit, &mut explicit, &mut saw_implicit, true)?;
+                }
+                _ => {
+                    self.bare_decl(&mut implicit, &mut explicit, &mut saw_implicit, false)?;
+                }
+            }
+        }
+        if explicit.is_empty() {
+            implicit.interfaces.extend(shared_interfaces);
+            return Ok(implicit.into_program(modules, uses));
+        }
+        let mut programs = Vec::new();
+        for (index, mut body) in explicit.into_iter().enumerate() {
+            body.interfaces.extend(shared_interfaces.clone());
+            let unit_uses = if index == 0 { uses.clone() } else { Vec::new() };
+            programs.push(body.into_program(modules.clone(), unit_uses));
+        }
+        let mut main = programs.remove(0);
+        main.siblings = programs;
+        Ok(main)
+    }
+
+    fn bare_decl(
+        &mut self,
+        implicit: &mut Body,
+        explicit: &[Body],
+        saw_implicit: &mut bool,
+        private: bool,
+    ) -> Result<(), Error> {
+        if !explicit.is_empty() {
+            let (line, col) = self.at();
+            return Err(error(
+                line,
+                col,
+                "this file uses explicit contracts\nmove this declaration inside a contract",
+            ));
+        }
+        *saw_implicit = true;
+        self.take_decl(private, implicit)
+    }
+
+    fn contract_body(&mut self) -> Result<Body, Error> {
+        let (line, col) = self.at();
+        self.want(Kind::Contract)?;
+        let name = self.ident()?;
+        let mut body = Body::new(line, col, Some(name));
+        if self.kind() == Kind::Upgradeable {
+            body.upgradeable = true;
+            self.bump();
+        }
+        self.want(Kind::Is)?;
+        self.want(Kind::LBrace)?;
+        while self.kind() != Kind::RBrace && self.kind() != Kind::Eof {
+            if self.kind() == Kind::Semi {
+                self.bump();
+                continue;
+            }
+            if self.kind() == Kind::End {
+                return Err(self.err("close this contract with `}`"));
+            }
+            if self.kind() == Kind::Module {
+                return Err(self.err("declare a module outside the contract"));
+            }
+            if self.kind() == Kind::Contract {
+                return Err(self.err("a contract cannot contain another contract"));
+            }
+            let private = self.kind() == Kind::Private;
+            if private {
+                self.bump();
+                if self.kind() == Kind::Module {
+                    return Err(self.err("declare a module outside the contract"));
+                }
+                if self.kind() == Kind::Contract {
+                    return Err(self.err("a contract cannot contain another contract"));
+                }
+            }
+            self.take_decl(private, &mut body)?;
+        }
+        self.want(Kind::RBrace)?;
+        Ok(body)
+    }
+
+    fn take_decl(&mut self, private: bool, body: &mut Body) -> Result<(), Error> {
+        match self.kind() {
+            Kind::Type => {
+                let mut decl = self.type_decl()?;
+                decl.private = private;
+                body.types.push(decl);
+            }
+            Kind::ErrorKw => {
+                let mut decl = self.error_decl()?;
+                decl.private = private;
+                body.errors.push(decl);
+            }
+            Kind::ErrorsKw if private => {
+                return Err(self.err("an error set cannot be private"));
+            }
+            Kind::ErrorsKw => body.error_sets.push(self.error_set_decl()?),
+            Kind::Event => {
+                let mut decl = self.event_decl()?;
+                decl.private = private;
+                body.events.push(decl);
+            }
+            Kind::Interface if private => {
+                return Err(self.err("an interface cannot be private"));
+            }
+            Kind::Interface => body.interfaces.push(self.interface_decl()?),
+            Kind::External
+            | Kind::Payable
+            | Kind::Nonreentrant
+            | Kind::View
+            | Kind::Pure
+            | Kind::Function => {
+                let deco = self.header()?;
+                if private && matches!(deco.kind, ItemKind::Entry | ItemKind::View) {
+                    return Err(self.err("an external function cannot be private"));
+                }
+                if private && deco.kind == ItemKind::Deploy {
+                    return Err(self.err("`deploy` cannot be private"));
+                }
+                match self.item(deco, private)? {
+                    Item::Func(func) => body.funcs.push(func),
+                    Item::Promotion(promo) => body.promotions.push(promo),
+                }
+            }
+            Kind::Deploy if private => {
+                return Err(self.err("`deploy` cannot be private"));
+            }
+            Kind::Deploy => match self.item(Deco::of(ItemKind::Deploy), false)? {
+                Item::Func(func) => body.funcs.push(func),
+                Item::Promotion(_) => unreachable!("`deploy` has no name to promote"),
+            },
+            Kind::Migrate if private => {
+                return Err(self.err("a migration cannot be private"));
+            }
+            Kind::Migrate => match self.item(Deco::of(ItemKind::Migrate), false)? {
+                Item::Func(func) => body.funcs.push(func),
+                Item::Promotion(_) => {
+                    return Err(self.err("only an external function can promote a module function"));
+                }
+            },
+            Kind::Upgradeable if private => {
+                return Err(self.err("`upgradeable` cannot be private"));
+            }
+            Kind::Upgradeable => {
+                if body.upgradeable {
+                    return Err(self.err("`upgradeable` is already set"));
+                }
+                body.upgradeable = true;
+                self.bump();
+            }
+            Kind::Upgrade if private => {
+                return Err(self.err("an upgrade guard cannot be private"));
+            }
+            Kind::Upgrade => body.guard = Some(self.guard_decl()?),
+            Kind::Module => return Err(self.err("declare a module outside the contract")),
+            Kind::Use if private => return Err(self.err("`use` cannot be private")),
+            Kind::Use => body.compose.push(self.compose_use()?),
+            Kind::Contract => {
+                return Err(self.err("a contract cannot contain another contract"));
+            }
+            Kind::Ident if !private && self.slice() == "storage" => match self.storage_decl()? {
+                StorageItem::Default(decl) => body.types.push(decl),
+                StorageItem::Named(decl) => body.domains.push(decl),
+            },
+            Kind::Ident if !private && self.slice() == "transient" => {
+                let decl = self.transient_decl()?;
+                body.domains.push(decl);
+            }
+            _ => {
+                return Err(self.err(format!("expected a declaration, found {}", self.found())));
+            }
+        }
+        Ok(())
+    }
+
+    fn compose_use(&mut self) -> Result<NameAt, Error> {
+        let (line, col) = self.at();
+        self.want(Kind::Use)?;
+        let name = self.ident()?;
+        if self.kind() == Kind::Semi {
+            self.bump();
+        }
+        Ok(NameAt { line, col, name })
+    }
+
+    fn module_decl(&mut self) -> Result<ModuleDecl, Error> {
+        let (line, col) = self.at();
+        self.want(Kind::Module)?;
+        let name = self.ident()?;
+        let params = if self.kind() == Kind::LParen {
+            self.type_param_list()?
+        } else {
+            Vec::new()
+        };
+        self.want(Kind::Is)?;
+        self.want(Kind::LBrace)?;
+        let mut requires: Vec<NameAt> = Vec::new();
+        let mut domains: Vec<DomainDecl> = Vec::new();
+        let mut types = Vec::new();
+        let mut errors = Vec::new();
+        let mut error_sets = Vec::new();
+        let mut events = Vec::new();
+        let mut funcs = Vec::new();
+        while self.kind() != Kind::RBrace && self.kind() != Kind::Eof {
+            if self.kind() == Kind::Semi {
+                self.bump();
+                continue;
+            }
+            if self.kind() == Kind::End {
+                return Err(self.err("close this module with `}`"));
+            }
+            if self.kind() == Kind::Private {
+                return Err(self.err("module functions cannot be private"));
+            }
+            match self.kind() {
+                Kind::Requires => {
+                    self.bump();
+                    let (rline, rcol) = self.at();
+                    let required = self.ident()?;
+                    if requires.iter().any(|have| have.name == required) {
+                        return Err(error(
+                            rline,
+                            rcol,
+                            format!("module `{name}` requires `{required}` more than once"),
+                        ));
+                    }
+                    if self.kind() == Kind::Semi {
+                        self.bump();
+                    }
+                    requires.push(NameAt {
+                        line: rline,
+                        col: rcol,
+                        name: required,
+                    });
+                }
+                Kind::Import => {
+                    return Err(self
+                        .err("declare storage in the module: `storage name at \"id\" is record`"));
+                }
+                Kind::Ident if matches!(self.slice(), "storage" | "transient") => {
+                    let mut decl = if self.slice() == "transient" {
+                        let decl = self.transient_decl()?;
+                        if decl.name == "transient" {
+                            return Err(error(
+                                decl.line,
+                                decl.col,
+                                "a module names its transient storage: `transient storage name is record`",
+                            ));
+                        }
+                        decl
+                    } else {
+                        let StorageItem::Named(decl) = self.storage_decl()? else {
+                            return Err(self.err(
+                                "a module declares named storage: `storage name at \"id\" is record`",
+                            ));
+                        };
+                        decl
+                    };
+                    if domains.iter().any(|have| have.name == decl.name) {
+                        return Err(error(
+                            decl.line,
+                            decl.col,
+                            format!(
+                                "module `{name}` declares storage `{}` more than once",
+                                decl.name
+                            ),
+                        ));
+                    }
+                    decl.owner = Some(name.clone());
+                    if self.kind() == Kind::Semi {
+                        self.bump();
+                    }
+                    domains.push(decl);
+                }
+                Kind::Type => types.push(self.type_decl()?),
+                Kind::ErrorKw => errors.push(self.error_decl()?),
+                Kind::ErrorsKw => error_sets.push(self.error_set_decl()?),
+                Kind::Event => events.push(self.event_decl()?),
+                Kind::External
+                | Kind::Payable
+                | Kind::Nonreentrant
+                | Kind::View
+                | Kind::Pure
+                | Kind::Function => {
+                    let deco = self.header()?;
+                    if deco.payable || matches!(deco.kind, ItemKind::Entry | ItemKind::View) {
+                        return Err(self.err(
+                            "a module function cannot be external; the contract exposes it with `external function name is Module.name`",
+                        ));
+                    }
+                    funcs.push(self.module_func(deco)?);
+                }
+                Kind::Module => {
+                    return Err(self.err("a module cannot contain another module"));
+                }
+                Kind::Use => {
+                    return Err(self.err("use a module from the contract"));
+                }
+                Kind::Contract => {
+                    return Err(self.err("a module cannot contain a contract"));
+                }
+                _ => {
+                    return Err(self.err(format!("expected a declaration, found {}", self.found())));
+                }
+            }
+        }
+        self.want(Kind::RBrace)?;
+        let require_names: Vec<String> = requires.iter().map(|s| s.name.clone()).collect();
+        for func in &mut funcs {
+            func.module = Some(name.clone());
+            func.requires = require_names.clone();
+        }
+        Ok(ModuleDecl {
+            line,
+            col,
+            origin: String::new(),
+            name,
+            params,
+            requires,
+            domains,
+            types,
+            errors,
+            error_sets,
+            events,
+            funcs,
+        })
+    }
+
+    fn looks_like_type_params(&self) -> bool {
+        self.kind() == Kind::LParen
+            && self
+                .toks
+                .get(self.i + 1)
+                .is_some_and(|tok| tok.kind == Kind::Ident)
+    }
+
+    fn type_param_list(&mut self) -> Result<Vec<TypeParam>, Error> {
+        self.want(Kind::LParen)?;
+        if self.kind() == Kind::RParen {
+            return Err(self.err("expected a type parameter"));
+        }
+        let mut params: Vec<TypeParam> = Vec::new();
+        loop {
+            let (line, col) = self.at();
+            let name = self.ident()?;
+            if params.iter().any(|param| param.name == name) {
+                return Err(error(
+                    line,
+                    col,
+                    format!("duplicate type parameter `{name}`"),
+                ));
+            }
+            let constraint = if self.kind() == Kind::Colon {
+                self.bump();
+                Some(self.ident()?)
+            } else {
+                None
+            };
+            params.push(TypeParam {
+                line,
+                col,
+                name,
+                constraint,
+            });
+            if self.kind() == Kind::Comma {
+                self.bump();
+                if self.kind() == Kind::RParen {
+                    break;
+                }
+                continue;
+            }
+            break;
+        }
+        self.want(Kind::RParen)?;
+        Ok(params)
+    }
+
+    fn module_func(&mut self, deco: Deco) -> Result<Func, Error> {
+        match self.item(deco, false)? {
+            Item::Func(func) => Ok(func),
+            Item::Promotion(_) => Err(self.err("promote a module function from the contract")),
+        }
+    }
+
+    fn slice(&self) -> &str {
+        let tok = &self.toks[self.i];
+        &self.src[tok.start..tok.end]
+    }
+
+    fn storage_decl(&mut self) -> Result<StorageItem, Error> {
+        let (line, col) = self.at();
+        self.bump();
+        if self.kind() == Kind::Is {
+            self.bump();
+            let ty = self.ty()?;
+            return Ok(StorageItem::Default(TypeDecl {
+                line,
+                col,
+                private: false,
+                origin: String::new(),
+                name: "storage".to_string(),
+                ty,
+            }));
+        }
+        let name = self.ident()?;
+        self.want(Kind::AtKw)?;
+        if self.kind() != Kind::String {
+            return Err(self.err("storage domain expects a string id"));
+        }
+        let id = self.tok().string.clone().unwrap_or_default();
+        self.bump();
+        self.want(Kind::Is)?;
+        let ty = self.ty()?;
+        Ok(StorageItem::Named(DomainDecl {
+            line,
+            col,
+            origin: String::new(),
+            name,
+            id,
+            ty,
+            owner: None,
+            transient: false,
+        }))
+    }
+
+    /// `transient storage name is record { ... }`, or `transient storage is ...`, which is
+    /// reached as `transient`. Transient storage has no id: it never outlives the transaction.
+    fn transient_decl(&mut self) -> Result<DomainDecl, Error> {
+        let (line, col) = self.at();
+        self.bump();
+        if self.kind() != Kind::Ident || self.slice() != "storage" {
+            return Err(self.err(format!("expected `storage`, found {}", self.found())));
+        }
+        self.bump();
+        let name = if self.kind() == Kind::Is {
+            "transient".to_string()
+        } else {
+            self.ident()?
+        };
+        self.want(Kind::Is)?;
+        let ty = self.ty()?;
+        Ok(DomainDecl {
+            line,
+            col,
+            origin: String::new(),
+            name,
+            id: String::new(),
+            ty,
+            owner: None,
+            transient: true,
+        })
+    }
+
+    fn guard_decl(&mut self) -> Result<GuardDecl, Error> {
+        let (line, col) = self.at();
+        self.want(Kind::Upgrade)?;
+        if self.kind() != Kind::Ident || self.slice() != "guard" {
+            return Err(self.err("expected `guard`"));
+        }
+        self.bump();
+        self.want(Kind::Is)?;
+        let stmts = self.block()?;
+        Ok(GuardDecl { line, col, stmts })
+    }
+
+    fn type_decl(&mut self) -> Result<TypeDecl, Error> {
+        let (line, col) = self.at();
+        self.want(Kind::Type)?;
+        let name = self.ident()?;
+        if name == "storage" {
+            return Err(self.err("declare contract storage as `storage is record`"));
+        }
+        self.want(Kind::Is)?;
+        let ty = self.ty()?;
+        Ok(TypeDecl {
+            line,
+            col,
+            private: false,
+            origin: String::new(),
+            name,
+            ty,
+        })
+    }
+
+    fn error_decl(&mut self) -> Result<ErrorDecl, Error> {
+        let (line, col) = self.at();
+        self.want(Kind::ErrorKw)?;
+        let name = self.ident()?;
+        let payload = if self.kind() == Kind::Of {
+            self.bump();
+            Some(self.ty()?)
+        } else {
+            None
+        };
+        Ok(ErrorDecl {
+            line,
+            col,
+            private: false,
+            origin: String::new(),
+            name,
+            payload,
+        })
+    }
+
+    fn error_set_decl(&mut self) -> Result<ErrorSetDecl, Error> {
+        let (line, col) = self.at();
+        self.want(Kind::ErrorsKw)?;
+        let name = self.ident()?;
+        self.want(Kind::Is)?;
+        if self.kind() == Kind::Pipe {
+            self.bump();
+        }
+        let mut members = Vec::new();
+        if self.kind() != Kind::Ident {
+            return Err(self.err("error set needs a member"));
+        }
+        loop {
+            let (mline, mcol) = self.at();
+            members.push(NameAt {
+                line: mline,
+                col: mcol,
+                name: self.ident()?,
+            });
+            if self.kind() == Kind::Pipe {
+                self.bump();
+                continue;
+            }
+            break;
+        }
+        Ok(ErrorSetDecl {
+            line,
+            col,
+            name,
+            members,
+        })
+    }
+
+    fn event_decl(&mut self) -> Result<EventDecl, Error> {
+        let (line, col) = self.at();
+        self.want(Kind::Event)?;
+        let name = self.ident()?;
+        self.want(Kind::Of)?;
+        let ty = self.record_ty(true)?;
+        let TypeRef::Record { fields, .. } = ty else {
+            return Err(error(line, col, "event must be a record"));
+        };
+        Ok(EventDecl {
+            line,
+            col,
+            private: false,
+            origin: String::new(),
+            name,
+            fields,
+        })
+    }
+
+    fn interface_decl(&mut self) -> Result<InterfaceDecl, Error> {
+        let (line, col) = self.at();
+        self.want(Kind::Interface)?;
+        let name = self.ident()?;
+        self.want(Kind::Is)?;
+        self.want(Kind::LBrace)?;
+        let mut methods = Vec::new();
+        while self.kind() != Kind::RBrace && self.kind() != Kind::Eof {
+            if self.kind() == Kind::Semi {
+                self.bump();
+                continue;
+            }
+            methods.push(self.iface_method()?);
+        }
+        self.want(Kind::RBrace)?;
+        if methods.is_empty() {
+            return Err(error(line, col, "interface needs a method"));
+        }
+        Ok(InterfaceDecl {
+            line,
+            col,
+            origin: String::new(),
+            name,
+            methods,
+        })
+    }
+
+    fn iface_method(&mut self) -> Result<IfaceMethod, Error> {
+        let (line, col) = self.at();
+        let query = match self.kind() {
+            Kind::Query => {
+                self.bump();
+                true
+            }
+            Kind::CallKw => {
+                self.bump();
+                false
+            }
+            _ => {
+                return Err(self.err(format!(
+                    "expected `query` or `call`, found {}",
+                    self.found()
+                )))
+            }
+        };
+        let name = self.ident()?;
+        self.want(Kind::LParen)?;
+        let mut params = Vec::new();
+        if self.kind() != Kind::RParen {
+            loop {
+                let pname = self.ident()?;
+                self.want(Kind::Colon)?;
+                let ty = self.ty()?;
+                params.push((pname, ty));
+                if self.kind() == Kind::Semi {
+                    self.bump();
+                    if self.kind() == Kind::RParen {
+                        break;
+                    }
+                    continue;
+                }
+                break;
+            }
+        }
+        self.want(Kind::RParen)?;
+        self.want(Kind::Colon)?;
+        let ret = self.ty()?;
+        Ok(IfaceMethod {
+            line,
+            col,
+            query,
+            name,
+            params,
+            ret,
+        })
+    }
+
+    fn ty(&mut self) -> Result<TypeRef, Error> {
+        let left = self.ty_primary()?;
+        if self.kind() == Kind::Star {
+            let (line, col) = (left.line(), left.col());
+            self.bump();
+            let right = self.ty()?;
+            Ok(TypeRef::Pair {
+                line,
+                col,
+                left: Box::new(left),
+                right: Box::new(right),
+            })
+        } else {
+            Ok(left)
+        }
+    }
+
+    fn ty_primary(&mut self) -> Result<TypeRef, Error> {
+        let (line, col) = self.at();
+        match self.kind() {
+            Kind::List => self.list_ty(line, col),
+            Kind::LParen => self.tuple_ty(line, col),
+            Kind::Record => self.record_ty(false),
+            Kind::Pipe => self.variant_ty(),
+            Kind::Ident => {
+                let mut name = self.ident()?;
+                if self.kind() == Kind::LParen {
+                    return self.generic(&name, line, col);
+                }
+                if self.kind() == Kind::Dot {
+                    self.bump();
+                    let rest = self.ident()?;
+                    name = format!("{name}.{rest}");
+                }
+                Ok(TypeRef::Name { line, col, name })
+            }
+            Kind::Unit => Err(self.err("expected type `unit`, found value `Unit`")),
+            _ => Err(self.err(format!("expected a type, found {}", self.found()))),
+        }
+    }
+
+    fn generic(&mut self, name: &str, line: u32, col: u32) -> Result<TypeRef, Error> {
+        match name {
+            "option" => self.one_arg(|elem| TypeRef::Option {
+                line,
+                col,
+                elem: Box::new(elem),
+            }),
+            "map" => {
+                self.want(Kind::LParen)?;
+                let key = self.ty()?;
+                self.want(Kind::Comma)?;
+                let val = self.ty()?;
+                self.want(Kind::RParen)?;
+                Ok(TypeRef::Map {
+                    line,
+                    col,
+                    key: Box::new(key),
+                    val: Box::new(val),
+                })
+            }
+            _ => {
+                self.want(Kind::LParen)?;
+                let mut args = vec![self.ty()?];
+                while self.kind() == Kind::Comma {
+                    self.bump();
+                    if self.kind() == Kind::RParen {
+                        break;
+                    }
+                    args.push(self.ty()?);
+                }
+                self.want(Kind::RParen)?;
+                let member = if self.kind() == Kind::Dot {
+                    self.bump();
+                    Some(self.ident()?)
+                } else {
+                    None
+                };
+                Ok(TypeRef::Apply {
+                    line,
+                    col,
+                    name: name.to_string(),
+                    args,
+                    member,
+                })
+            }
+        }
+    }
+
+    fn tuple_ty(&mut self, line: u32, col: u32) -> Result<TypeRef, Error> {
+        self.want(Kind::LParen)?;
+        let mut elems = vec![self.ty()?];
+        if self.kind() != Kind::Comma {
+            return Err(self.err("a tuple needs at least two elements"));
+        }
+        while self.kind() == Kind::Comma {
+            self.bump();
+            elems.push(self.ty()?);
+        }
+        self.want(Kind::RParen)?;
+        Ok(TypeRef::Tuple { line, col, elems })
+    }
+
+    fn one_arg(&mut self, make: impl FnOnce(TypeRef) -> TypeRef) -> Result<TypeRef, Error> {
+        self.want(Kind::LParen)?;
+        let elem = self.ty()?;
+        self.want(Kind::RParen)?;
+        Ok(make(elem))
+    }
+
+    fn list_ty(&mut self, line: u32, col: u32) -> Result<TypeRef, Error> {
+        self.bump();
+        self.want(Kind::LParen)?;
+        let elem = self.ty()?;
+        let len = if self.kind() == Kind::Comma {
+            self.bump();
+            Some(self.list_len()?)
+        } else {
+            None
+        };
+        self.want(Kind::RParen)?;
+        Ok(TypeRef::List {
+            line,
+            col,
+            elem: Box::new(elem),
+            len,
+        })
+    }
+
+    fn list_len(&mut self) -> Result<u32, Error> {
+        let (line, col) = self.at();
+        let word = match self.kind() {
+            Kind::Int | Kind::Nat => self.tok().word,
+            _ => return Err(self.err(format!("expected a list length, found {}", self.found()))),
+        };
+        self.bump();
+        if word.0[1] != 0 || word.0[2] != 0 || word.0[3] != 0 || word.0[0] == 0 || word.0[0] > 1024
+        {
+            return Err(error(line, col, "list length must be from 1 to 1024"));
+        }
+        Ok(word.0[0] as u32)
+    }
+
+    fn record_ty(&mut self, event: bool) -> Result<TypeRef, Error> {
+        let (line, col) = self.at();
+        self.want(Kind::Record)?;
+        self.want(Kind::LBrace)?;
+        let mut fields = Vec::new();
+        while self.kind() != Kind::RBrace && self.kind() != Kind::Eof {
+            if self.kind() == Kind::Semi {
+                self.bump();
+                continue;
+            }
+            let indexed = if self.kind() == Kind::Indexed {
+                if !event {
+                    return Err(self.err("`indexed` is only valid on an event field"));
+                }
+                self.bump();
+                true
+            } else {
+                false
+            };
+            let (fline, fcol) = self.at();
+            let name = self.ident()?;
+            self.want(Kind::Colon)?;
+            let ty = self.ty()?;
+            if self.kind() == Kind::Indexed {
+                return Err(self.err("write `indexed` before the field name"));
+            }
+            fields.push(FieldRef {
+                line: fline,
+                col: fcol,
+                name,
+                ty,
+                indexed,
+            });
+            if self.kind() == Kind::Semi {
+                self.bump();
+            }
+        }
+        self.want(Kind::RBrace)?;
+        Ok(TypeRef::Record { line, col, fields })
+    }
+
+    fn variant_ty(&mut self) -> Result<TypeRef, Error> {
+        let (line, col) = self.at();
+        let mut variants = Vec::new();
+        if self.kind() != Kind::Pipe {
+            return Err(self.err(format!("expected `|`, found {}", self.found())));
+        }
+        while self.kind() == Kind::Pipe {
+            self.bump();
+            let (vline, vcol) = self.at();
+            let name = self.ident()?;
+            let payload = if self.kind() == Kind::Of {
+                self.bump();
+                Some(self.ty_primary()?)
+            } else {
+                None
+            };
+            variants.push(VariantRef {
+                line: vline,
+                col: vcol,
+                name,
+                payload,
+            });
+        }
+        Ok(TypeRef::Variant {
+            line,
+            col,
+            variants,
+        })
+    }
+
+    fn use_decl(&mut self) -> Result<UseDecl, Error> {
+        let (line, col) = self.at();
+        self.want(Kind::Import)?;
+        if self.kind() != Kind::String {
+            return Err(self.err("`import` expects a path string"));
+        }
+        let path = self.tok().string.clone().unwrap_or_default();
+        self.bump();
+        let alias = if self.kind() == Kind::As {
+            self.bump();
+            Some(self.ident()?)
+        } else {
+            None
+        };
+        if self.kind() == Kind::Semi {
+            self.bump();
+        }
+        Ok(UseDecl {
+            line,
+            col,
+            path,
+            alias,
+        })
+    }
+
+    /// `[external [payable] [nonreentrant]] [view | pure] function`, in that order.
+    fn header(&mut self) -> Result<Deco, Error> {
+        // Each keyword's place in the fixed order: visibility, payability, reentrancy, effect.
+        let mut seen: Vec<(u8, Kind)> = Vec::new();
+        loop {
+            let rank = match self.kind() {
+                Kind::External => 0,
+                Kind::Payable => 1,
+                Kind::Nonreentrant => 2,
+                Kind::View | Kind::Pure => 3,
+                _ => break,
+            };
+            if seen.iter().any(|&(r, _)| r == rank) {
+                return Err(self.err(format!("{} is already set", self.found())));
+            }
+            seen.push((rank, self.kind()));
+            self.bump();
+            if rank == 2 && self.kind() == Kind::LParen {
+                return Err(self.err("named nonreentrant domains are not supported"));
+            }
+        }
+        let has = |k: Kind| seen.iter().any(|&(_, have)| have == k);
+        let (external, payable) = (has(Kind::External), has(Kind::Payable));
+        if self.kind() == Kind::Deploy {
+            if seen.iter().any(|&(_, k)| k != Kind::Payable) {
+                return Err(self.err("`deploy` takes only `payable`"));
+            }
+            return Ok(Deco {
+                payable,
+                ..Deco::of(ItemKind::Deploy)
+            });
+        }
+        let nonreentrant = has(Kind::Nonreentrant);
+        let effect = seen.iter().find(|&&(r, _)| r == 3).map(|&(_, k)| k);
+        if nonreentrant && !external {
+            return Err(self.err(
+                "nonreentrant functions must be external; write `external nonreentrant function`",
+            ));
+        }
+        if seen.windows(2).any(|w| w[0].0 > w[1].0) {
+            let mut words: Vec<&str> = Vec::new();
+            if external {
+                words.push("external");
+            }
+            if payable {
+                words.push("payable");
+            }
+            if nonreentrant {
+                words.push("nonreentrant");
+            }
+            match effect {
+                Some(Kind::View) => words.push("view"),
+                Some(Kind::Pure) => words.push("pure"),
+                _ => {}
+            }
+            words.push("function");
+            return Err(self.err(format!(
+                "keywords out of order; write `{}`",
+                words.join(" ")
+            )));
+        }
+        if payable && !external {
+            return Err(
+                self.err("payable functions must be external; write `external payable function`")
+            );
+        }
+        if payable && effect.is_some() {
+            return Err(self.err("payable functions must be stateful"));
+        }
+        if nonreentrant && effect == Some(Kind::Pure) {
+            return Err(self.err("a pure function reads no state, so it cannot be nonreentrant"));
+        }
+        if self.kind() != Kind::Function {
+            return Err(self.err(format!("expected `function`, found {}", self.found())));
+        }
+        let kind = match (external, effect) {
+            (true, None) => ItemKind::Entry,
+            (true, Some(_)) => ItemKind::View,
+            (false, None) => ItemKind::Function,
+            (false, Some(Kind::View)) => ItemKind::Readonly,
+            (false, Some(_)) => ItemKind::Pure,
+        };
+        Ok(Deco {
+            kind,
+            payable,
+            nonreentrant,
+            external_pure: external && effect == Some(Kind::Pure),
+        })
+    }
+
+    fn item(&mut self, deco: Deco, private: bool) -> Result<Item, Error> {
+        let Deco {
+            kind,
+            payable,
+            nonreentrant,
+            external_pure,
+        } = deco;
+        let (line, col) = self.at();
+        self.bump();
+        let name = if kind == ItemKind::Deploy {
+            "deploy".to_string()
+        } else {
+            self.ident()?
+        };
+        // `external function name is Module.func` exposes a module function.
+        if self.kind() == Kind::Is
+            && self.peek_kind(1) == Kind::Ident
+            && self.peek_kind(2) == Kind::Dot
+        {
+            if !matches!(kind, ItemKind::Entry | ItemKind::View) {
+                return Err(self.err("only an external function can promote a module function"));
+            }
+            self.bump();
+            let module = self.ident()?;
+            self.want(Kind::Dot)?;
+            let func = self.ident()?;
+            if matches!(
+                self.kind(),
+                Kind::LParen | Kind::Is | Kind::Colon | Kind::Raises
+            ) {
+                return Err(self.err("a promotion has no parameters or body"));
+            }
+            if self.kind() == Kind::Semi {
+                self.bump();
+            }
+            return Ok(Item::Promotion(Promotion {
+                line,
+                col,
+                kind,
+                payable,
+                nonreentrant,
+                external_pure,
+                name,
+                module,
+                func,
+            }));
+        }
+        let type_params = if self.looks_like_type_params() {
+            self.type_param_list()?
+        } else {
+            Vec::new()
+        };
+        self.want(Kind::LParen)?;
+        let mut params = Vec::new();
+        if self.kind() != Kind::RParen {
+            loop {
+                let (pline, pcol) = self.at();
+                let mutable = match self.kind() {
+                    Kind::Var => {
+                        self.bump();
+                        true
+                    }
+                    Kind::Const => {
+                        self.bump();
+                        false
+                    }
+                    _ => {
+                        return Err(
+                            self.err(format!("expected `const` or `var`, found {}", self.found()))
+                        )
+                    }
+                };
+                let pname = self.ident()?;
+                self.want(Kind::Colon)?;
+                let ty = self.ty()?;
+                params.push(Param {
+                    line: pline,
+                    col: pcol,
+                    mutable,
+                    name: pname,
+                    ty,
+                    ty_id: 0,
+                    sym: None,
+                });
+                if self.kind() == Kind::Semi {
+                    self.bump();
+                    if self.kind() == Kind::RParen {
+                        break;
+                    }
+                    continue;
+                }
+                break;
+            }
+        }
+        self.want(Kind::RParen)?;
+        let ret = match kind {
+            ItemKind::View => {
+                self.want(Kind::Colon)?;
+                Some(self.ty()?)
+            }
+            ItemKind::Function | ItemKind::Readonly | ItemKind::Pure
+                if self.kind() == Kind::Colon =>
+            {
+                self.bump();
+                Some(self.ty()?)
+            }
+            ItemKind::Function | ItemKind::Readonly | ItemKind::Pure => None,
+            // An entry may return a value to its caller, after its effects have run.
+            ItemKind::Entry if self.kind() == Kind::Colon => {
+                self.bump();
+                Some(self.ty()?)
+            }
+            ItemKind::Entry => None,
+            ItemKind::Migrate => {
+                if self.kind() == Kind::Colon {
+                    return Err(self.err("a migration does not declare a return type"));
+                }
+                None
+            }
+            ItemKind::Deploy => {
+                if self.kind() == Kind::Colon {
+                    return Err(self.err("`deploy` does not declare a return type"));
+                }
+                None
+            }
+        };
+        let raises = if self.kind() == Kind::Raises {
+            Some(self.raises_clause()?)
+        } else {
+            None
+        };
+        self.want(Kind::Is)?;
+        let (stmts, tail) = self.item_body()?;
+        Ok(Item::Func(Func {
+            line,
+            col,
+            kind,
+            private,
+            origin: String::new(),
+            name,
+            type_params,
+            params,
+            ret,
+            ret_ty: 0,
+            payable,
+            nonreentrant,
+            external_pure,
+            raises,
+            errors: Vec::new(),
+            stmts,
+            tail,
+            module: None,
+            requires: Vec::new(),
+            promoted: None,
+        }))
+    }
+
+    fn raises_clause(&mut self) -> Result<Raises, Error> {
+        let (line, col) = self.at();
+        self.want(Kind::Raises)?;
+        if self.kind() == Kind::Ident && self.lexeme() == "none" {
+            let (nline, ncol) = self.at();
+            self.bump();
+            if self.kind() == Kind::Pipe {
+                return Err(error(
+                    nline,
+                    ncol,
+                    "`none` cannot be combined with other errors",
+                ));
+            }
+            return Ok(Raises {
+                line,
+                col,
+                parts: Vec::new(),
+            });
+        }
+        let mut parts = Vec::new();
+        loop {
+            let (pline, pcol) = self.at();
+            let name = self.ident()?;
+            if name == "none" {
+                return Err(error(
+                    pline,
+                    pcol,
+                    "`none` cannot be combined with other errors",
+                ));
+            }
+            parts.push(NameAt {
+                line: pline,
+                col: pcol,
+                name,
+            });
+            if self.kind() == Kind::Pipe {
+                self.bump();
+                continue;
+            }
+            break;
+        }
+        if parts.is_empty() {
+            return Err(error(line, col, "`raises` needs an error"));
+        }
+        Ok(Raises { line, col, parts })
+    }
+
+    fn item_body(&mut self) -> Result<(Vec<Stmt>, Option<Expr>), Error> {
+        if self.kind() == Kind::LBrace && !self.brace_is_record() {
+            let stmts = self.block()?;
+            if self.kind() == Kind::With {
+                self.bump();
+                Ok((stmts, Some(self.expr()?)))
+            } else {
+                Ok((stmts, None))
+            }
+        } else {
+            Ok((Vec::new(), Some(self.expr()?)))
+        }
+    }
+
+    fn arm_body(&mut self) -> Result<(Vec<Stmt>, Expr), Error> {
+        if self.kind() == Kind::LBrace && !self.brace_is_record() {
+            let (line, col) = self.at();
+            let stmts = self.block()?;
+            Ok((
+                stmts,
+                Expr::Lit {
+                    line,
+                    col,
+                    lit: Lit::Unit,
+                    ty: 0,
+                },
+            ))
+        } else {
+            Ok((Vec::new(), self.expr()?))
+        }
+    }
+
+    /// `{ name = ... }` is a record. `{ name := ... }` and other statements are blocks.
+    fn brace_is_record(&self) -> bool {
+        if self.kind() != Kind::LBrace {
+            return false;
+        }
+        let Some(next) = self.toks.get(self.i + 1) else {
+            return false;
+        };
+        if next.kind != Kind::Ident {
+            return false;
+        }
+        self.toks
+            .get(self.i + 2)
+            .is_some_and(|tok| tok.kind == Kind::Eq)
+    }
+
+    fn block(&mut self) -> Result<Vec<Stmt>, Error> {
+        self.want(Kind::LBrace)?;
+        let mut stmts = Vec::new();
+        while self.kind() != Kind::RBrace && self.kind() != Kind::Eof {
+            if self.kind() == Kind::Semi {
+                self.bump();
+                continue;
+            }
+            stmts.push(self.stmt()?);
+        }
+        self.want(Kind::RBrace)?;
+        Ok(stmts)
+    }
+
+    fn stmt(&mut self) -> Result<Stmt, Error> {
+        let (line, col) = self.at();
+        match self.kind() {
+            Kind::Const => {
+                self.bump();
+                let (name, parts) = if self.kind() == Kind::LParen {
+                    self.bump();
+                    let mut names = vec![self.ident()?];
+                    if self.kind() != Kind::Comma {
+                        return Err(self.err("a tuple pattern needs at least two names"));
+                    }
+                    while self.kind() == Kind::Comma {
+                        self.bump();
+                        names.push(self.ident()?);
+                    }
+                    self.want(Kind::RParen)?;
+                    (String::new(), names)
+                } else {
+                    (self.ident()?, Vec::new())
+                };
+                let ty = self.binding_ty()?;
+                self.want(Kind::Assign)?;
+                let expr = self.expr()?;
+                Ok(Stmt::Const {
+                    line,
+                    col,
+                    name,
+                    parts,
+                    ty,
+                    expr,
+                    sym: None,
+                    part_syms: Vec::new(),
+                })
+            }
+            Kind::Var => {
+                self.bump();
+                let name = self.ident()?;
+                let ty = self.binding_ty()?;
+                self.want(Kind::Assign)?;
+                let expr = self.expr()?;
+                Ok(Stmt::Var {
+                    line,
+                    col,
+                    name,
+                    ty,
+                    expr,
+                    sym: None,
+                })
+            }
+            Kind::If => {
+                self.bump();
+                let cond = self.expr()?;
+                self.want(Kind::Then)?;
+                let then_body = self.block()?;
+                let else_body = if self.kind() == Kind::Else {
+                    self.bump();
+                    self.block()?
+                } else {
+                    Vec::new()
+                };
+                Ok(Stmt::If {
+                    line,
+                    col,
+                    cond,
+                    then_body,
+                    else_body,
+                })
+            }
+            Kind::Assert => {
+                self.bump();
+                self.want(Kind::LParen)?;
+                let cond = self.expr()?;
+                self.want(Kind::Comma)?;
+                let reason = self.reason()?;
+                self.want(Kind::RParen)?;
+                Ok(Stmt::Assert {
+                    line,
+                    col,
+                    cond,
+                    reason,
+                })
+            }
+            Kind::Case => {
+                let expr = self.case_expr()?;
+                Ok(Stmt::Call { line, col, expr })
+            }
+            Kind::Fail => {
+                self.bump();
+                Ok(Stmt::Fail {
+                    line,
+                    col,
+                    reason: self.raised()?,
+                })
+            }
+            Kind::Failwith => return Err(self.err("errors must be typed; use `fail`")),
+            Kind::SkipKw => {
+                self.bump();
+                Ok(Stmt::Skip { line, col })
+            }
+            Kind::Emit => self.emit_stmt(line, col),
+            Kind::Defer => self.defer_stmt(line, col),
+            Kind::For => self.for_stmt(line, col),
+            Kind::LParen => self.assign_tuple(line, col),
+            Kind::Ident => self.assign_or_call(line, col),
+            _ => Err(self.err(format!("expected a statement, found {}", self.found()))),
+        }
+    }
+
+    /// `for x : T in xs [until c] [bound n] do { ... }`, or over `lo .. hi`, or with
+    /// `(i, x) : (nat, T)` to bind the index too.
+    fn for_stmt(&mut self, line: u32, col: u32) -> Result<Stmt, Error> {
+        self.want(Kind::For)?;
+        let (index, name) = if self.kind() == Kind::LParen {
+            self.bump();
+            let index = self.ident()?;
+            self.want(Kind::Comma)?;
+            let name = self.ident()?;
+            self.want(Kind::RParen)?;
+            (Some(index), name)
+        } else {
+            (None, self.ident()?)
+        };
+        let ty = self.binding_ty()?;
+        self.want(Kind::In)?;
+        let first = self.expr()?;
+        let iter = if self.kind() == Kind::DotDot {
+            self.bump();
+            let hi = self.expr()?;
+            ForIter::Range { lo: first, hi }
+        } else {
+            ForIter::List(first)
+        };
+        let until = if self.kind() == Kind::Until {
+            self.bump();
+            Some(self.expr()?)
+        } else {
+            None
+        };
+        let bound = if self.kind() == Kind::Bound {
+            self.bump();
+            Some(self.expr()?)
+        } else {
+            None
+        };
+        self.want(Kind::Do)?;
+        let body = self.block()?;
+        Ok(Stmt::For {
+            line,
+            col,
+            index,
+            name,
+            ty,
+            iter,
+            until,
+            bound,
+            body,
+            counter: None,
+            elem: None,
+            limit: None,
+            elem_init: None,
+            length: None,
+            cap: None,
+            list: None,
+            declared: Vec::new(),
+        })
+    }
+
+    /// `(a, b) := expr;`
+    fn assign_tuple(&mut self, line: u32, col: u32) -> Result<Stmt, Error> {
+        self.want(Kind::LParen)?;
+        let mut names = vec![self.ident()?];
+        if self.kind() != Kind::Comma {
+            return Err(self.err("a tuple assignment needs at least two names"));
+        }
+        while self.kind() == Kind::Comma {
+            self.bump();
+            names.push(self.ident()?);
+        }
+        self.want(Kind::RParen)?;
+        self.want(Kind::Assign)?;
+        let expr = self.expr()?;
+        Ok(Stmt::AssignTuple {
+            line,
+            col,
+            names,
+            expr,
+            syms: Vec::new(),
+        })
+    }
+
+    fn binding_ty(&mut self) -> Result<TypeRef, Error> {
+        if self.kind() != Kind::Colon {
+            return Err(self.err("local bindings require a type"));
+        }
+        self.bump();
+        self.ty()
+    }
+
+    fn emit_stmt(&mut self, line: u32, col: u32) -> Result<Stmt, Error> {
+        self.want(Kind::Emit)?;
+        let name = self.ident()?;
+        self.want(Kind::LBrace)?;
+        let fields = self.named_fields()?;
+        Ok(Stmt::Emit {
+            line,
+            col,
+            name,
+            fields,
+        })
+    }
+
+    fn defer_stmt(&mut self, line: u32, col: u32) -> Result<Stmt, Error> {
+        self.want(Kind::Defer)?;
+        let create = self.kind() == Kind::Create;
+        let mut expr = if create {
+            // `create Vault(args)`: a contract of the same file, given its `deploy` arguments.
+            self.bump();
+            let (cline, ccol) = self.at();
+            let name = self.ident()?;
+            self.want(Kind::LParen)?;
+            let args = self.args()?;
+            let mut call = self.call(cline, ccol, name, args, None);
+            if let Expr::Call { builtin, .. } = &mut call {
+                *builtin = Some(Builtin::Create);
+            }
+            call
+        } else {
+            self.expr()?
+        };
+        let (value, salt) = if self.kind() == Kind::With {
+            self.bump();
+            self.with_options()?
+        } else {
+            (None, None)
+        };
+        if let Some(salt) = salt {
+            let (Expr::Call { base, .. }, true) = (&mut expr, create) else {
+                return Err(error(
+                    salt.line(),
+                    salt.col(),
+                    "`salt` is only for `create`",
+                ));
+            };
+            *base = Some(Box::new(salt));
+        }
+        let then = if self.kind() == Kind::Then {
+            Some(Box::new(self.then_clause()?))
+        } else {
+            None
+        };
+        Ok(Stmt::Defer {
+            line,
+            col,
+            expr,
+            value,
+            then,
+        })
+    }
+
+    /// `then { ... }`, `then (name : T) { ... }`, or `then ((a, b) : (T, U)) { ... }`.
+    /// `then (name : T) { ... }`, `then { ... }`, or the recoverable form
+    /// `then { | Ok(name : T) -> { ... } | Error(reason : bytes) -> { ... } }`.
+    fn then_clause(&mut self) -> Result<Then, Error> {
+        let (line, col) = self.at();
+        self.want(Kind::Then)?;
+        if self.kind() == Kind::LBrace && self.peek_kind(1) == Kind::Pipe {
+            return self.recover_arms(line, col);
+        }
+        let (names, tuple, ty) = self.then_binding()?;
+        let stmts = self.block()?;
+        Ok(Then {
+            line,
+            col,
+            names,
+            tuple,
+            ty,
+            stmts,
+            syms: Vec::new(),
+            ret: 0,
+            error: None,
+        })
+    }
+
+    /// `(name : T)` or `((a, b) : T)`, or nothing. `(_)` binds nothing.
+    fn then_binding(&mut self) -> Result<(Vec<String>, bool, Option<TypeRef>), Error> {
+        let mut names = Vec::new();
+        let mut tuple = false;
+        let mut ty = None;
+        if self.kind() == Kind::LParen {
+            self.bump();
+            if self.kind() == Kind::LParen {
+                self.bump();
+                tuple = true;
+                loop {
+                    names.push(self.ident()?);
+                    if self.kind() != Kind::Comma {
+                        break;
+                    }
+                    self.bump();
+                }
+                self.want(Kind::RParen)?;
+            } else {
+                names.push(self.ident()?);
+            }
+            if names == ["_"] && self.kind() == Kind::RParen {
+                self.bump();
+                return Ok((Vec::new(), false, None));
+            }
+            if self.kind() != Kind::Colon {
+                return Err(self.err("a continuation result needs a type: `then (name : type)`"));
+            }
+            self.bump();
+            ty = Some(self.ty()?);
+            self.want(Kind::RParen)?;
+            if names == ["_"] {
+                names.clear();
+            }
+        }
+        Ok((names, tuple, ty))
+    }
+
+    fn recover_arms(&mut self, line: u32, col: u32) -> Result<Then, Error> {
+        self.want(Kind::LBrace)?;
+        let mut ok: Option<Then> = None;
+        let mut failed: Option<Then> = None;
+        while self.kind() != Kind::RBrace && self.kind() != Kind::Eof {
+            if self.kind() == Kind::Semi {
+                self.bump();
+                continue;
+            }
+            self.want(Kind::Pipe)?;
+            let (aline, acol) = self.at();
+            let ctor = self.ident()?;
+            let (names, tuple, ty) = self.then_binding()?;
+            self.want(Kind::Arrow)?;
+            let stmts = self.block()?;
+            let arm = Then {
+                line: aline,
+                col: acol,
+                names,
+                tuple,
+                ty,
+                stmts,
+                syms: Vec::new(),
+                ret: 0,
+                error: None,
+            };
+            let slot = match ctor.as_str() {
+                "Ok" => &mut ok,
+                "Error" => &mut failed,
+                _ => {
+                    return Err(error(
+                        aline,
+                        acol,
+                        format!("a call's outcome is `Ok` or `Error`, not `{ctor}`"),
+                    ))
+                }
+            };
+            if slot.is_some() {
+                return Err(error(aline, acol, format!("duplicate arm `{ctor}`")));
+            }
+            *slot = Some(arm);
+        }
+        self.want(Kind::RBrace)?;
+        let (Some(mut ok), Some(failed)) = (ok, failed) else {
+            return Err(error(
+                line,
+                col,
+                "a recoverable call needs both `Ok` and `Error` arms",
+            ));
+        };
+        ok.line = line;
+        ok.col = col;
+        ok.error = Some(Box::new(failed));
+        Ok(ok)
+    }
+
+    /// `with value = x`, `with salt = s`, or both in braces: `with { value = x; salt = s }`.
+    fn with_options(&mut self) -> Result<(Option<Expr>, Option<Expr>), Error> {
+        let mut options = (None, None);
+        if self.kind() == Kind::LBrace {
+            self.bump();
+            while self.kind() != Kind::RBrace && self.kind() != Kind::Eof {
+                if self.kind() == Kind::Semi {
+                    self.bump();
+                    continue;
+                }
+                self.with_option(&mut options)?;
+            }
+            self.want(Kind::RBrace)?;
+        } else {
+            self.with_option(&mut options)?;
+        }
+        Ok(options)
+    }
+
+    fn with_option(&mut self, options: &mut (Option<Expr>, Option<Expr>)) -> Result<(), Error> {
+        let name = self.ident()?;
+        self.want(Kind::Eq)?;
+        let expr = self.expr()?;
+        let slot = match name.as_str() {
+            "value" => &mut options.0,
+            "salt" => &mut options.1,
+            _ => return Err(self.err(format!("unknown `with` option `{name}`"))),
+        };
+        if slot.is_some() {
+            return Err(self.err(format!("duplicate `{name}`")));
+        }
+        *slot = Some(expr);
+        Ok(())
+    }
+
+    fn assign_or_call(&mut self, line: u32, col: u32) -> Result<Stmt, Error> {
+        let name = self.ident()?;
+        if self.kind() == Kind::LParen {
+            self.bump();
+            let args = self.args()?;
+            return Ok(Stmt::Call {
+                line,
+                col,
+                expr: self.call(line, col, name, args, None),
+            });
+        }
+        let mut path = vec![name];
+        while self.kind() == Kind::Dot {
+            self.bump();
+            let (fline, fcol) = self.at();
+            let field = self.ident()?;
+            if self.kind() == Kind::LParen {
+                self.bump();
+                let args = self.args()?;
+                let base = path_expr(line, col, &path);
+                return Ok(Stmt::Call {
+                    line,
+                    col,
+                    expr: self.call(fline, fcol, field, args, Some(base)),
+                });
+            }
+            path.push(field);
+        }
+        let mut keys = Vec::new();
+        while self.kind() == Kind::LBrack {
+            self.bump();
+            keys.push(self.expr()?);
+            self.want(Kind::RBrack)?;
+        }
+        let mut fields = Vec::new();
+        while !keys.is_empty() && self.kind() == Kind::Dot {
+            self.bump();
+            fields.push(self.ident()?);
+        }
+        let index = if keys.is_empty() {
+            None
+        } else {
+            Some(keys.remove(0))
+        };
+        self.want(Kind::Assign)?;
+        let expr = self.expr()?;
+        Ok(Stmt::Assign {
+            line,
+            col,
+            path,
+            index,
+            keys,
+            fields,
+            expr,
+            root: None,
+            leaf: 0,
+        })
+    }
+
+    fn reason(&mut self) -> Result<Raised, Error> {
+        if self.kind() == Kind::String {
+            return Err(self.err("errors must be typed"));
+        }
+        self.raised()
+    }
+
+    fn raised(&mut self) -> Result<Raised, Error> {
+        let (line, col) = self.at();
+        let name = self.ident()?;
+        let form = if self.kind() == Kind::LParen {
+            self.bump();
+            let expr = self.expr()?;
+            self.want(Kind::RParen)?;
+            RaisedForm::Positional(expr)
+        } else if self.kind() == Kind::LBrace {
+            self.bump();
+            RaisedForm::Fields(self.named_fields()?)
+        } else {
+            RaisedForm::Unit
+        };
+        Ok(Raised {
+            line,
+            col,
+            name,
+            form,
+            index: None,
+        })
+    }
+
+    /// Pratt parser. Binding power rises with precedence.
+    /// Comparisons are non-associative; `#` is right-associative.
+    fn expr(&mut self) -> Result<Expr, Error> {
+        self.expr_bp(0)
+    }
+
+    fn expr_bp(&mut self, min_bp: u8) -> Result<Expr, Error> {
+        let mut left = self.prefix()?;
+        loop {
+            if self.kind() == Kind::Pipe && self.pipe_starts_arm() {
+                break;
+            }
+            let Some((op, lbp, rbp)) = infix(self.kind()) else {
+                break;
+            };
+            if lbp < min_bp {
+                break;
+            }
+            if lbp == min_bp && op.is_cmp() {
+                return Err(self.err("comparisons cannot be chained"));
+            }
+            let (line, col) = left.line_col();
+            self.bump();
+            let right = self.expr_bp(rbp)?;
+            left = Expr::Binary {
+                line,
+                col,
+                op,
+                left: Box::new(left),
+                right: Box::new(right),
+                ty: 0,
+            };
+        }
+        Ok(left)
+    }
+
+    fn prefix(&mut self) -> Result<Expr, Error> {
+        let (line, col) = self.at();
+        match self.kind() {
+            Kind::Tilde => {
+                self.bump();
+                let expr = self.expr_bp(PREFIX_BP)?;
+                Ok(Expr::Unary {
+                    line,
+                    col,
+                    op: UnOp::BitNot,
+                    expr: Box::new(expr),
+                    ty: 0,
+                })
+            }
+            Kind::Not => {
+                self.bump();
+                let expr = self.expr_bp(PREFIX_BP)?;
+                Ok(Expr::Unary {
+                    line,
+                    col,
+                    op: UnOp::Not,
+                    expr: Box::new(expr),
+                    ty: 0,
+                })
+            }
+            Kind::Minus => {
+                self.bump();
+                let expr = self.expr_bp(PREFIX_BP)?;
+                Ok(Expr::Unary {
+                    line,
+                    col,
+                    op: UnOp::Neg,
+                    expr: Box::new(expr),
+                    ty: 0,
+                })
+            }
+            Kind::Query => {
+                self.bump();
+                let expr = self.primary()?;
+                Ok(Expr::Query {
+                    line,
+                    col,
+                    expr: Box::new(expr),
+                    ty: 0,
+                })
+            }
+            _ => self.primary(),
+        }
+    }
+
+    fn primary(&mut self) -> Result<Expr, Error> {
+        let (line, col) = self.at();
+        match self.kind() {
+            Kind::Nat => {
+                let lit = Lit::Nat(self.tok().word);
+                self.bump();
+                Ok(Expr::Lit {
+                    line,
+                    col,
+                    lit,
+                    ty: 0,
+                })
+            }
+            Kind::Int => {
+                let lit = Lit::Int(self.tok().word);
+                self.bump();
+                Ok(Expr::Lit {
+                    line,
+                    col,
+                    lit,
+                    ty: 0,
+                })
+            }
+            Kind::WeiLit => {
+                let lit = Lit::Wei(self.tok().word);
+                self.bump();
+                Ok(Expr::Lit {
+                    line,
+                    col,
+                    lit,
+                    ty: 0,
+                })
+            }
+            Kind::DurationLit => {
+                let lit = Lit::Duration(self.tok().word);
+                self.bump();
+                Ok(Expr::Lit {
+                    line,
+                    col,
+                    lit,
+                    ty: 0,
+                })
+            }
+            Kind::True => {
+                self.bump();
+                Ok(Expr::Lit {
+                    line,
+                    col,
+                    lit: Lit::Bool(true),
+                    ty: 0,
+                })
+            }
+            Kind::False => {
+                self.bump();
+                Ok(Expr::Lit {
+                    line,
+                    col,
+                    lit: Lit::Bool(false),
+                    ty: 0,
+                })
+            }
+            Kind::Unit => {
+                self.bump();
+                Ok(Expr::Lit {
+                    line,
+                    col,
+                    lit: Lit::Unit,
+                    ty: 0,
+                })
+            }
+            Kind::Nil => {
+                self.bump();
+                Ok(Expr::Lit {
+                    line,
+                    col,
+                    lit: Lit::Nil,
+                    ty: 0,
+                })
+            }
+            Kind::String => {
+                let s = self.tok().string.clone().unwrap_or_default();
+                self.bump();
+                Ok(Expr::Lit {
+                    line,
+                    col,
+                    lit: Lit::Str(s),
+                    ty: 0,
+                })
+            }
+            Kind::Case => self.case_expr(),
+            Kind::LBrace => self.record_expr(line, col),
+            Kind::LBrack => self.list_expr(line, col),
+            Kind::LParen => {
+                self.bump();
+                let first = self.expr()?;
+                if self.kind() == Kind::Comma {
+                    let mut elems = vec![first];
+                    while self.kind() == Kind::Comma {
+                        self.bump();
+                        elems.push(self.expr()?);
+                    }
+                    self.want(Kind::RParen)?;
+                    Ok(Expr::Tuple {
+                        line,
+                        col,
+                        elems,
+                        ty: 0,
+                    })
+                } else {
+                    self.want(Kind::RParen)?;
+                    Ok(first)
+                }
+            }
+            Kind::Ident => {
+                let name = self.ident()?;
+                self.postfix(Expr::Ident {
+                    line,
+                    col,
+                    name,
+                    sym: None,
+                    builtin: None,
+                    ty: 0,
+                })
+            }
+            _ => Err(self.err(format!("expected an expression, found {}", self.found()))),
+        }
+    }
+
+    fn postfix(&mut self, mut e: Expr) -> Result<Expr, Error> {
+        loop {
+            if self.kind() == Kind::LBrack {
+                let (iline, icol) = self.at();
+                self.bump();
+                let index = self.expr()?;
+                self.want(Kind::RBrack)?;
+                e = Expr::Index {
+                    line: iline,
+                    col: icol,
+                    base: Box::new(e),
+                    index: Box::new(index),
+                    root: None,
+                    leaf: 0,
+                    ty: 0,
+                };
+                continue;
+            }
+            if self.kind() == Kind::LParen {
+                let Expr::Ident {
+                    name, line, col, ..
+                } = &e
+                else {
+                    break;
+                };
+                let (name, line, col) = (name.clone(), *line, *col);
+                self.bump();
+                let args = self.args()?;
+                e = self.call(line, col, name, args, None);
+                continue;
+            }
+            if self.kind() != Kind::Dot {
+                break;
+            }
+            self.bump();
+            let (fline, fcol) = self.at();
+            let name = self.ident()?;
+            if self.kind() == Kind::LParen {
+                self.bump();
+                let args = self.args()?;
+                e = self.call(fline, fcol, name, args, Some(e));
+            } else {
+                e = Expr::Field {
+                    line: fline,
+                    col: fcol,
+                    base: Box::new(e),
+                    name,
+                    root: None,
+                    leaf: 0,
+                    ty: 0,
+                };
+            }
+        }
+        Ok(e)
+    }
+
+    fn call(&self, line: u32, col: u32, name: String, args: Vec<Expr>, base: Option<Expr>) -> Expr {
+        Expr::Call {
+            line,
+            col,
+            name,
+            args,
+            base: base.map(Box::new),
+            callee: None,
+            builtin: None,
+            iface: None,
+            method: None,
+            ty: 0,
+        }
+    }
+
+    fn args(&mut self) -> Result<Vec<Expr>, Error> {
+        let mut args = Vec::new();
+        if self.kind() == Kind::RParen {
+            self.bump();
+            return Ok(args);
+        }
+        loop {
+            args.push(self.expr()?);
+            if self.kind() == Kind::Comma {
+                self.bump();
+                continue;
+            }
+            break;
+        }
+        self.want(Kind::RParen)?;
+        Ok(args)
+    }
+
+    fn named_fields(&mut self) -> Result<Vec<(String, Expr)>, Error> {
+        let mut fields = Vec::new();
+        while self.kind() != Kind::RBrace && self.kind() != Kind::Eof {
+            if self.kind() == Kind::Semi {
+                self.bump();
+                continue;
+            }
+            if self.kind() == Kind::Indexed {
+                return Err(self.err("`indexed` belongs on the event declaration"));
+            }
+            let name = self.ident()?;
+            self.want(Kind::Eq)?;
+            let expr = self.expr()?;
+            fields.push((name, expr));
+            if self.kind() == Kind::Semi {
+                self.bump();
+            }
+        }
+        self.want(Kind::RBrace)?;
+        Ok(fields)
+    }
+
+    fn record_expr(&mut self, line: u32, col: u32) -> Result<Expr, Error> {
+        self.want(Kind::LBrace)?;
+        let fields = self.named_fields()?;
+        Ok(Expr::Record {
+            line,
+            col,
+            fields,
+            ty: 0,
+        })
+    }
+
+    fn list_expr(&mut self, line: u32, col: u32) -> Result<Expr, Error> {
+        self.want(Kind::LBrack)?;
+        let mut elems = Vec::new();
+        if self.kind() != Kind::RBrack {
+            loop {
+                elems.push(self.expr()?);
+                if self.kind() == Kind::Comma {
+                    self.bump();
+                    if self.kind() == Kind::RBrack {
+                        break;
+                    }
+                    continue;
+                }
+                break;
+            }
+        }
+        self.want(Kind::RBrack)?;
+        Ok(Expr::List {
+            line,
+            col,
+            elems,
+            ty: 0,
+        })
+    }
+
+    fn case_expr(&mut self) -> Result<Expr, Error> {
+        let (line, col) = self.at();
+        self.want(Kind::Case)?;
+        let scrut = self.expr()?;
+        self.want(Kind::Of)?;
+        self.want(Kind::LBrace)?;
+        let mut arms = Vec::new();
+        while self.kind() != Kind::RBrace && self.kind() != Kind::Eof {
+            if self.kind() == Kind::Semi {
+                self.bump();
+                continue;
+            }
+            if self.kind() != Kind::Pipe {
+                return Err(self.err(format!("expected `|`, found {}", self.found())));
+            }
+            self.bump();
+            let (aline, acol) = self.at();
+            let ctor = self.ident()?;
+            let (bind, tuple_names) = if self.kind() == Kind::LParen {
+                self.bump();
+                if self.kind() == Kind::LParen {
+                    self.bump();
+                    let mut names = vec![self.ident()?];
+                    if self.kind() != Kind::Comma {
+                        return Err(self.err("a tuple pattern needs at least two names"));
+                    }
+                    while self.kind() == Kind::Comma {
+                        self.bump();
+                        names.push(self.ident()?);
+                    }
+                    self.want(Kind::RParen)?;
+                    self.want(Kind::RParen)?;
+                    (None, names)
+                } else {
+                    let name = self.ident()?;
+                    self.want(Kind::RParen)?;
+                    (Some(name), Vec::new())
+                }
+            } else {
+                (None, Vec::new())
+            };
+            self.want(Kind::Arrow)?;
+            let (stmts, expr) = self.arm_body()?;
+            arms.push(Arm {
+                line: aline,
+                col: acol,
+                ctor,
+                bind,
+                bind_sym: None,
+                tuple_names,
+                tuple_syms: Vec::new(),
+                stmts,
+                expr,
+            });
+        }
+        if arms.is_empty() {
+            return Err(self.err("expected at least one case arm"));
+        }
+        self.want(Kind::RBrace)?;
+        Ok(Expr::Case {
+            line,
+            col,
+            scrut: Box::new(scrut),
+            arms,
+            ty: 0,
+        })
+    }
+
+    fn ident(&mut self) -> Result<String, Error> {
+        if self.kind() == Kind::AtKw {
+            self.bump();
+            return Ok("at".to_string());
+        }
+        if self.kind() != Kind::Ident {
+            return Err(self.err(format!("expected identifier, found {}", self.found())));
+        }
+        let name = self.lexeme().to_string();
+        self.bump();
+        Ok(name)
+    }
+
+    fn kind(&self) -> Kind {
+        self.toks[self.i].kind
+    }
+
+    fn peek_kind(&self, ahead: usize) -> Kind {
+        self.toks
+            .get(self.i + ahead)
+            .map_or(Kind::Eof, |tok| tok.kind)
+    }
+
+    /// `| Name ->` and `| Name(...) ->` close a case arm. Other pipes are bitwise or.
+    fn pipe_starts_arm(&self) -> bool {
+        let mut i = self.i + 1;
+        if self.toks.get(i).map(|tok| tok.kind) != Some(Kind::Ident) {
+            return false;
+        }
+        i += 1;
+        if self.toks.get(i).map(|tok| tok.kind) == Some(Kind::Arrow) {
+            return true;
+        }
+        if self.toks.get(i).map(|tok| tok.kind) != Some(Kind::LParen) {
+            return false;
+        }
+        let mut depth = 0i32;
+        loop {
+            let Some(tok) = self.toks.get(i) else {
+                return false;
+            };
+            match tok.kind {
+                Kind::LParen => depth += 1,
+                Kind::RParen => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return self.toks.get(i + 1).map(|tok| tok.kind) == Some(Kind::Arrow);
+                    }
+                }
+                Kind::Eof => return false,
+                _ => {}
+            }
+            i += 1;
+        }
+    }
+
+    fn tok(&self) -> &Token {
+        &self.toks[self.i]
+    }
+
+    fn at(&self) -> (u32, u32) {
+        (self.tok().line, self.tok().col)
+    }
+
+    fn bump(&mut self) {
+        if self.i + 1 < self.toks.len() {
+            self.i += 1;
+        }
+    }
+
+    fn want(&mut self, k: Kind) -> Result<(), Error> {
+        if self.kind() == k {
+            self.bump();
+            Ok(())
+        } else {
+            Err(self.err(format!(
+                "expected {}, found {}",
+                lex::kind_name(k),
+                self.found()
+            )))
+        }
+    }
+
+    fn lexeme(&self) -> &str {
+        let t = self.tok();
+        self.src.get(t.start..t.end).unwrap_or("")
+    }
+
+    fn found(&self) -> String {
+        if self.kind() == Kind::Eof {
+            "end of file".to_string()
+        } else if self.kind() == Kind::Ident || self.kind() == Kind::Nat || self.kind() == Kind::Int
+        {
+            format!("`{}`", self.lexeme())
+        } else if self.kind() == Kind::String {
+            format!("`{}`", self.lexeme())
+        } else {
+            lex::kind_name(self.kind()).to_string()
+        }
+    }
+
+    fn err(&self, message: impl Into<String>) -> Error {
+        let (line, col) = self.at();
+        error(line, col, message)
+    }
+}
+
+const PREFIX_BP: u8 = 21;
+
+fn infix(k: Kind) -> Option<(BinOp, u8, u8)> {
+    // Looser to tighter: boolean, comparison, bitwise, cons, shift, add, mul.
+    // Comparisons stay non-associative. `#` stays right-associative.
+    // Bitwise binds tighter than comparison, so `flags & mask = 0` is `(flags & mask) = 0`.
+    Some(match k {
+        Kind::Or => (BinOp::Or, 1, 2),
+        Kind::And => (BinOp::And, 3, 4),
+        Kind::Eq => (BinOp::Eq, 5, 5),
+        Kind::Neq => (BinOp::Neq, 5, 5),
+        Kind::Lt => (BinOp::Lt, 5, 5),
+        Kind::Gt => (BinOp::Gt, 5, 5),
+        Kind::Le => (BinOp::Le, 5, 5),
+        Kind::Ge => (BinOp::Ge, 5, 5),
+        Kind::Pipe => (BinOp::BitOr, 7, 8),
+        Kind::Caret => (BinOp::BitXor, 9, 10),
+        Kind::Amp => (BinOp::BitAnd, 11, 12),
+        Kind::Hash => (BinOp::Cons, 13, 13),
+        Kind::Shl => (BinOp::Shl, 15, 16),
+        Kind::Shr => (BinOp::Shr, 15, 16),
+        Kind::Plus => (BinOp::Add, 17, 18),
+        Kind::Minus => (BinOp::Sub, 17, 18),
+        Kind::Star => (BinOp::Mul, 19, 20),
+        Kind::Slash => (BinOp::Div, 19, 20),
+        Kind::Percent => (BinOp::Mod, 19, 20),
+        _ => return None,
+    })
+}
+
+trait LineCol {
+    fn line_col(&self) -> (u32, u32);
+}
+
+impl LineCol for Expr {
+    fn line_col(&self) -> (u32, u32) {
+        (self.line(), self.col())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse;
+
+    #[test]
+    fn chained_comparison_points_at_the_operator() {
+        let src = "function f (const a : nat) : nat is\n  1n = 2n = 3n\n";
+        let err = parse(src).expect_err("chained comparison");
+        assert_eq!(err.line, 2);
+        assert!(
+            err.message.contains("comparisons cannot be chained"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn unterminated_comment_uses_the_opening_line() {
+        let src = "(*\ncomment\n";
+        let err = parse(src).expect_err("comment");
+        assert_eq!(err.line, 1);
+        assert_eq!(err.column, 1);
+        assert_eq!(err.message, "unterminated comment");
+    }
+
+    #[test]
+    fn comment_newlines_do_not_stick_the_next_token() {
+        let src = "(*\ncomment\n*)\n$$\n";
+        let err = parse(src).expect_err("dollar");
+        assert_eq!(err.line, 4);
+        assert!(err.message.contains("unexpected character `$`"), "{err}");
+    }
+
+    #[test]
+    fn unit_value_is_not_the_unit_type() {
+        let src = "type t is Unit\n";
+        let err = parse(src).expect_err("Unit");
+        assert!(
+            err.message
+                .contains("expected type `unit`, found value `Unit`"),
+            "{err}"
+        );
+    }
+}

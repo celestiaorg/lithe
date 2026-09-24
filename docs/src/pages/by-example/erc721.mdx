@@ -1,0 +1,192 @@
+---
+title: "ERC-721 NFT"
+description: "Ownership, approvals, operators, safe transfers with receiver checks, mint, and burn."
+---
+
+# ERC-721 NFT
+
+ERC-721 with ERC-6093 errors, including `safeTransferFrom` and its receiver check.
+
+```lithe [erc721.lithe]
+(* ERC-721: ownership, approvals, operators, safe and unsafe transfers, mint, and burn. *)
+
+interface ERC721Receiver is {
+  call onERC721Received(operator : address; from : address; tokenId : nat; data : bytes) : bytes4;
+}
+
+error ERC721NonexistentToken of nat;
+error ERC721InvalidReceiver of address;
+error ERC721InsufficientApproval of record {
+  operator : address;
+  tokenId : nat;
+}
+error ERC721InvalidSender of address;
+error ERC721InvalidOwner of address;
+error AlreadyMinted of nat;
+error NotMinter of address;
+
+event Transfer of record {
+  indexed from : address;
+  indexed to : address;
+  indexed tokenId : nat;
+}
+
+event Approval of record {
+  indexed owner : address;
+  indexed approved : address;
+  indexed tokenId : nat;
+}
+
+event ApprovalForAll of record {
+  indexed owner : address;
+  indexed operator : address;
+  approved : bool;
+}
+
+storage is record {
+  minter : address;
+  owners : map(nat, address);
+  balances : map(address, nat);
+  approvals : map(nat, address);
+  operators : map(address, map(address, bool));
+}
+
+external function init() is {
+  storage.minter := Evm.sender();
+}
+
+view function owner_of(const id : nat) : address
+  raises ERC721NonexistentToken
+is {
+  const owner : address := storage.owners[id];
+  assert(owner <> Address.zero, ERC721NonexistentToken(id));
+} with owner
+
+external view function ownerOf(const tokenId : nat) : address
+  raises ERC721NonexistentToken
+is
+  owner_of(tokenId)
+
+external view function balanceOf(const owner : address) : nat
+  raises ERC721InvalidOwner
+is {
+  assert(owner <> Address.zero, ERC721InvalidOwner(owner));
+} with storage.balances[owner]
+
+external view function getApproved(const tokenId : nat) : address
+  raises ERC721NonexistentToken
+is {
+  const owner : address := owner_of(tokenId);
+} with storage.approvals[tokenId]
+
+external view function isApprovedForAll(const owner : address; const operator : address) : bool is
+  storage.operators[owner][operator]
+
+external function approve(const to : address; const tokenId : nat)
+  raises ERC721NonexistentToken | ERC721InsufficientApproval
+is {
+  const owner : address := owner_of(tokenId);
+  assert(
+    Evm.sender() = owner or storage.operators[owner][Evm.sender()],
+    ERC721InsufficientApproval { operator = Evm.sender(); tokenId = tokenId; }
+  );
+  storage.approvals[tokenId] := to;
+  emit Approval { owner = owner; approved = to; tokenId = tokenId; };
+}
+
+external function setApprovalForAll(const operator : address; const approved : bool) is {
+  storage.operators[Evm.sender()][operator] := approved;
+  emit ApprovalForAll { owner = Evm.sender(); operator = operator; approved = approved; };
+}
+
+function move(const from : address; const to : address; const tokenId : nat)
+  raises ERC721NonexistentToken | ERC721InsufficientApproval | ERC721InvalidSender | ERC721InvalidReceiver
+is {
+  assert(to <> Address.zero, ERC721InvalidReceiver(to));
+  const owner : address := owner_of(tokenId);
+  assert(owner = from, ERC721InvalidSender(from));
+  const caller : address := Evm.sender();
+  assert(
+    caller = owner or storage.approvals[tokenId] = caller or storage.operators[owner][caller],
+    ERC721InsufficientApproval { operator = caller; tokenId = tokenId; }
+  );
+  storage.approvals[tokenId] := Address.zero;
+  storage.balances[from] := storage.balances[from] - 1n;
+  storage.balances[to] := storage.balances[to] + 1n;
+  storage.owners[tokenId] := to;
+  emit Transfer { from = from; to = to; tokenId = tokenId; };
+}
+
+(* A contract receiver must answer with `onERC721Received`'s selector. The call runs
+   after the transfer's effects. A receiver that answers wrongly, or reverts without a
+   reason, is rejected; one that reverts with a reason has it passed on unchanged.
+   Either reverts the whole transfer. *)
+function check_received(const from : address; const to : address; const tokenId : nat; const data : bytes)
+  raises ERC721InvalidReceiver
+is {
+  if Evm.code_size(to) > 0n then {
+    defer ERC721Receiver(to).onERC721Received(Evm.sender(), from, tokenId, data) then {
+      | Ok(answer : bytes4) -> {
+          assert(answer = 0x150b7a02, ERC721InvalidReceiver(to));
+        }
+      | Error(reason : bytes) -> {
+          if reason.length = 0n then {
+            fail ERC721InvalidReceiver(to);
+          }
+          fail reason;
+        }
+    };
+  }
+}
+
+external function transferFrom(const from : address; const to : address; const tokenId : nat)
+  raises ERC721NonexistentToken | ERC721InsufficientApproval | ERC721InvalidSender | ERC721InvalidReceiver
+is {
+  move(from, to, tokenId);
+}
+
+external nonreentrant function safeTransferFrom(const from : address; const to : address; const tokenId : nat)
+  raises ERC721NonexistentToken | ERC721InsufficientApproval | ERC721InvalidSender | ERC721InvalidReceiver
+is {
+  move(from, to, tokenId);
+  check_received(from, to, tokenId, "");
+}
+
+external nonreentrant function safeTransferFrom(
+  const from : address;
+  const to : address;
+  const tokenId : nat;
+  const data : bytes
+)
+  raises ERC721NonexistentToken | ERC721InsufficientApproval | ERC721InvalidSender | ERC721InvalidReceiver
+is {
+  move(from, to, tokenId);
+  check_received(from, to, tokenId, data);
+}
+
+external function mint(const to : address; const tokenId : nat)
+  raises NotMinter | AlreadyMinted | ERC721InvalidReceiver
+is {
+  assert(Evm.sender() = storage.minter, NotMinter(Evm.sender()));
+  assert(to <> Address.zero, ERC721InvalidReceiver(to));
+  assert(storage.owners[tokenId] = Address.zero, AlreadyMinted(tokenId));
+  storage.owners[tokenId] := to;
+  storage.balances[to] := storage.balances[to] + 1n;
+  emit Transfer { from = Address.zero; to = to; tokenId = tokenId; };
+}
+
+external function burn(const tokenId : nat)
+  raises ERC721NonexistentToken | ERC721InsufficientApproval
+is {
+  const owner : address := owner_of(tokenId);
+  assert(Evm.sender() = owner, ERC721InsufficientApproval { operator = Evm.sender(); tokenId = tokenId; });
+  storage.approvals[tokenId] := Address.zero;
+  storage.balances[owner] := storage.balances[owner] - 1n;
+  storage.owners[tokenId] := Address.zero;
+  emit Transfer { from = owner; to = Address.zero; tokenId = tokenId; };
+}
+```
+
+- `safeTransferFrom` is overloaded, as the standard requires: `safeTransferFrom(address,address,uint256)` and `safeTransferFrom(address,address,uint256,bytes)`.
+- `ERC721Receiver(to)` turns the recipient's address into an interface value, so the receiver hook can be deferred.
+- The hook is a [recoverable call](/by-example/try-catch). A receiver that reverts becomes a typed `ERC721InvalidReceiver` error instead of an opaque failure.

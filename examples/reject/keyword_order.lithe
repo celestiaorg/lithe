@@ -1,0 +1,2 @@
+view external function go() : nat is
+  0n

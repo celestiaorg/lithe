@@ -1,0 +1,76 @@
+---
+title: "Why now"
+description: "Smart contracts are now written and attacked by AI. Where the money is actually lost, and what Lithe changes about it."
+---
+
+# Why now
+
+Smart-contract security used to be limited by human speed. Humans wrote the code, humans reviewed it, and humans found the bugs, first as auditors and then as attackers. AI now works on both sides, and it is getting faster.
+
+## Attackers are automated
+
+In late 2025, Anthropic's [SCONE-bench](https://www.anthropic.com/research/smart-contracts) tested AI agents on 405 smart contracts that had been exploited in the wild between 2020 and 2025:
+
+- The agents produced working exploits for **51%** of them, worth **$550.1 million** in simulated stolen funds.
+- Scanning a freshly deployed contract for exploitable bugs cost an average of **$1.22**.
+- The simulated revenue from these exploits **doubled roughly every 1.3 months** over the preceding year.
+- Pointed at recently deployed contracts with no known exploits, agents found new, exploitable vulnerabilities.
+
+Once finding a bug costs about a dollar, every deployed contract gets scanned, continuously. The gap between a bug going live and a bug being exploited shrinks toward zero.
+
+## So are builders
+
+Much new contract code is now written with AI assistance. A model can produce plausible code quickly, but plausible is the problem. A missing access check, an external call placed before a state update, or an initializer anyone can call all look fine, compile fine, and pass a happy-path test.
+
+Asking the model to be more careful doesn't fix this. The fix is a language in which the dangerous version is not valid code, and a compiler that reports, precisely, what the code actually does.
+
+## Where the money is actually lost
+
+The famous bugs are not the expensive ones.
+
+**Most stolen value is off-chain.** Chainalysis counted [$3.4 billion stolen in 2025](https://www.chainalysis.com/blog/crypto-hacking-stolen-funds-2026/). A single incident, [Bybit](https://www.nccgroup.com/research/in-depth-technical-analysis-of-the-bybit-hack/), accounted for about $1.5 billion of it. Attackers compromised a developer machine at the Safe\{Wallet\} team and altered the web interface, so the exchange's signers approved what looked like a routine transfer. It was a `delegatecall` that replaced their multisig's implementation. Compromised keys and infrastructure dominate the totals, and no programming language protects keys.
+
+**Among smart-contract bugs, access control dominates.** OWASP's [Smart Contract Top 10 (2025)](https://scs.owasp.org/sctop10/archive/2025/Top10:2025/) analyzed 149 incidents from 2024, totaling $1.42 billion. **Access-control flaws caused $953 million, about two thirds.** Logic errors caused $63 million, and reentrancy $35 million. The [2026 edition](https://scs.owasp.org/sctop10/), based on 122 incidents and $905 million of 2025 losses, ranks them:
+
+1. Access control
+2. Business logic
+3. Price oracle manipulation
+4. Flash-loan-facilitated attacks
+5. Lack of input validation
+6. Unchecked external calls
+7. Arithmetic errors (rounding and precision)
+8. Reentrancy
+9. Integer overflow and underflow
+10. Proxy and upgradeability
+
+Reentrancy, the textbook smart-contract bug, is eighth. The expensive failures are mundane: a function that should have checked the caller and didn't, an initializer left open, an upgrade path nobody guarded.
+
+## What Lithe changes, category by category
+
+Some of these classes Lithe removes, some it makes visible, and some no language can touch.
+
+| Category | What Lithe does | What remains your job |
+| --- | --- | --- |
+| **Access control** | Nothing becomes public by accident: a module function reaches the ABI only through an explicit `external function f is Module.f`. [Dispatch groups](/language/dispatch) give every action in a group the group's guard, with no way to add an action without it. `lithe abi-tree` lists each entrypoint's guards and storage writes, so a reviewer, a CI job, or an AI can check that every entrypoint that writes `owner` also checks the sender. | Choosing the right condition. A wrong check still compiles. |
+| **Proxy and upgradeability** | An upgradeable contract must declare an `upgrade guard`. Migrations run only inside `upgradeToAndCall` and are never callable again, so there is no reinitializer to leave open. Named storage sits at ERC-7201 roots, and `lithe upgrade-check` compares layouts. There is no `delegatecall`, so a contract's code can change only through its guard. | Protecting the keys that pass the guard. |
+| **Unchecked external calls** | A failed call reverts unless you handle it with explicit [`Ok` and `Error` arms](/language/continuations#recovering-from-failed-calls). Return data is decoded and type-checked. There is no low-level `call`. | Nothing. |
+| **Reentrancy** | State-changing calls are [deferred](/language/effects) until the transition commits, so a callee never sees half-updated state. The compiler warns about every entrypoint that could be re-entered while its calls run, and `nonreentrant` is one keyword backed by transient storage. | Deciding which functions must serialize. |
+| **Integer overflow** | All arithmetic and narrowing conversions are checked, and there is no `unchecked` block. | Nothing. |
+| **Input validation** | Every parameter is typed and range-checked at ABI decode. [Nominal types](/language/types#nominal-types) keep a `token_id` from being passed as an `amount`. | Domain rules, such as "amount must be nonzero". |
+| **Oracle manipulation, flash loans** | Every external read is a visible `query`, listed per entrypoint by `lithe abi-tree`. | Economic design. No language prevents a bad price source. |
+| **Business logic, rounding** | Effects are explicit and summarized, and errors are typed and declared, so reviews and diffs are about behavior rather than plumbing. | Getting the logic right. |
+| **Key and infrastructure compromise** | Out of scope. | Operational security. |
+
+The pattern: Lithe turns the conventions that auditors check by hand, such as "is this guarded?", "is this initializer protected?", "does this call's failure get handled?", and "can this be re-entered?", into compile errors or compiler output.
+
+## The compiler becomes part of the security boundary
+
+Moving checks into the compiler concentrates trust in the compiler. In 2023, a bug in the Vyper compiler's reentrancy lock let attackers take about $70 million from Curve pools. The lesson isn't to avoid compiler-enforced safety. It's that the compiler has to be tested like the security component it is. Lithe's benchmark suite deploys every contract next to its Solidity equivalent and checks that return data, logs, and every storage slot agree. See [Bytecode size and gas](/guide/performance).
+
+## Built for AI on both sides
+
+- **For AI that writes code**, the compiler is the guardrail. Errors state what's wrong and what to write instead, for example ``external function `go` reads `Evm.value()`; write `external payable function` ``, which is exactly what an agent loop needs. The semantic surface is small, with one function form, one way to call out, and one way to fail.
+- **For AI that reviews code**, the compiler provides facts instead of guesses. `lithe analysis` emits every entrypoint's reads, writes, deferred calls, events, and errors as JSON, and `lithe abi-tree` adds its guards and queries.
+- **For AI that reads docs**, this site publishes `/llms.txt` and `/llms-full.txt`, and every page is available as markdown. Every code example is compiled when the site is built, so what a model learns here is current.
+
+Continue with [Why not Solidity?](/guide/why-not-solidity)

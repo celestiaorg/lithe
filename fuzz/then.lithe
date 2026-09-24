@@ -1,0 +1,114 @@
+(* Fuzz target: deferred calls with continuations. Each continuation is a new phase that
+   re-reads storage, may emit and defer again, and runs right after its call returns.
+   The interpreter answers 0xcd with the call's own arguments, 0x2 with them as `bytes`,
+   and 0x1 with one malformed byte. `text` echoes an ABI string whose length may run past
+   the data. *)
+
+error Too_small of nat;
+
+interface Exchange is {
+  call swap(amount : nat) : nat;
+  call narrow(amount : nat) : uint8;
+  call split(a : nat; b : nat) : (nat, nat);
+  call text(offset : nat; len : nat; data : nat) : string;
+  call digest(amount : nat) : string;
+  call poke() : unit;
+}
+
+storage is record {
+  status : nat;
+  out : nat;
+  small : uint8;
+  a : nat;
+  b : nat;
+  name : string;
+  steps : nat;
+  paid : nat;
+  seen : map(address, nat);
+}
+
+event Executed of record {
+  indexed who : address;
+  amount_out : nat;
+}
+
+external function execute(const ex : Exchange; const amount : nat)
+  raises Too_small
+is {
+  const before : nat := storage.out;
+  storage.status := 1n;
+  defer ex.swap(amount % 1000n)
+    then (result : nat) {
+      assert(result >= before % 7n, Too_small(result));
+      storage.status := storage.status + 1n;
+      storage.out := result;
+      storage.seen[Evm.sender()] := storage.seen[Evm.sender()] + result;
+      emit Executed { who = Evm.sender(); amount_out = result; };
+    };
+  storage.steps := storage.steps + 1n;
+}
+
+external function narrow(const ex : Exchange; const amount : nat) is {
+  defer ex.narrow(amount)
+    then (small : uint8) {
+      storage.small := small;
+    };
+}
+
+external function split(const ex : Exchange; const a : nat; const b : nat) is {
+  defer ex.split(a, b)
+    then ((x, y) : (nat, nat)) {
+      storage.a := x;
+      storage.b := y;
+    };
+}
+
+external function chain(const ex : Exchange; const amount : nat) is {
+  const op : operation := ex.swap(amount % 100n);
+  defer ex.poke();
+  defer op
+    then (first : nat) {
+      storage.out := first;
+      defer ex.swap(first + 1n)
+        then (second : nat) {
+          storage.a := second + storage.out;
+        };
+      defer ex.poke()
+        then {
+          storage.steps := storage.steps + 10n;
+        };
+    };
+  defer ex.poke()
+    then {
+      storage.b := storage.a;
+    };
+}
+
+external function rename(const ex : Exchange; const len : nat; const data : nat) is {
+  defer ex.text(32n, len % 40n, data)
+    then (name : string) {
+      storage.name := name;
+    };
+}
+
+external function hashed(const ex : Exchange; const amount : nat) is {
+  defer ex.digest(amount)
+    then (name : string) {
+      storage.name := name;
+      storage.steps := storage.steps + 1n;
+    };
+}
+
+external function fund(const ex : Exchange; const amount : nat) is {
+  defer ex.swap(amount % 5n)
+    with value = amount % 5n
+    then (got : nat) {
+      storage.paid := storage.paid + got;
+    };
+}
+
+external view function status() : nat is storage.status
+
+external view function out() : nat is storage.out
+
+external view function name() : string is storage.name

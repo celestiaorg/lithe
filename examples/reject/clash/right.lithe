@@ -1,0 +1,2 @@
+view function calculate_fee(const amount : nat) : nat is
+  amount

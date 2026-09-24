@@ -1,0 +1,73 @@
+---
+title: "Dutch auction"
+description: "A price that falls over time."
+---
+
+# Dutch auction
+
+The price falls linearly from a start price to a floor. The first buyer to pay the current price wins, and any overpayment is refunded in the same transaction.
+
+```lithe [dutch-auction.lithe]
+(* The price falls linearly from a start price to a floor. The first buyer at or
+   above the current price wins, and any overpayment is returned. *)
+
+error Already_started;
+error Sold;
+error Too_low of record {
+  paid : wei;
+  price : wei;
+}
+
+event Bought of record {
+  indexed buyer : address;
+  price : wei;
+}
+
+storage is record {
+  seller : address;
+  start_price : wei;
+  floor : wei;
+  started_at : timestamp;
+  duration : nat;
+  sold : bool;
+}
+
+external function start(const start_price : wei; const floor : wei; const duration : nat)
+  raises Already_started
+is {
+  assert(storage.seller = Address.zero, Already_started);
+  storage.seller := Evm.sender();
+  storage.start_price := start_price;
+  storage.floor := floor;
+  storage.started_at := Evm.block_timestamp();
+  storage.duration := duration;
+}
+
+view function current_price() : wei is {
+  const elapsed : nat := Evm.block_timestamp() - storage.started_at;
+  var price : wei := storage.floor;
+  if elapsed < storage.duration then {
+    const spread : nat := nat(storage.start_price - storage.floor);
+    price := storage.start_price - wei(spread * elapsed / storage.duration);
+  }
+} with price
+
+external view function price() : wei is
+  current_price()
+
+external payable nonreentrant function buy()
+  raises Sold | Too_low
+is {
+  assert(not storage.sold, Sold);
+  const price : wei := current_price();
+  assert(Evm.value() >= price, Too_low { paid = Evm.value(); price = price; });
+  storage.sold := true;
+  emit Bought { buyer = Evm.sender(); price = price; };
+  defer Evm.transfer(storage.seller, price);
+  if Evm.value() > price then {
+    defer Evm.transfer(Evm.sender(), Evm.value() - price);
+  }
+}
+```
+
+Both transfers are deferred, and they run in order after `sold` is set: first the seller is paid, then the buyer is refunded.

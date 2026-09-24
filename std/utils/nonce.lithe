@@ -1,0 +1,33 @@
+(* Per-account counters that only move forward, for replay protection: each signed
+   message names the next nonce, and using it moves the counter on. Matches
+   OpenZeppelin's `Nonces`.
+
+     external view function nonces is Nonces.nonces; *)
+
+module Nonces is {
+  storage nonce_state at "lithe.std.nonces" is record {
+    counts : map(address, nat);
+  }
+
+  error InvalidAccountNonce of record {
+    account : address;
+    currentNonce : nat;
+  }
+
+  view function nonces(const owner : address) : nat is
+    nonce_state.counts[owner]
+
+  (* Returns the current nonce and moves the counter on. *)
+  function use_nonce(const owner : address) : nat is {
+    const current : nat := nonce_state.counts[owner];
+    nonce_state.counts[owner] := current + 1n;
+  } with current
+
+  (* Like `use_nonce`, when the caller names the nonce it expects. *)
+  function use_checked_nonce(const owner : address; const nonce : nat)
+    raises InvalidAccountNonce
+  is {
+    const current : nat := use_nonce(owner);
+    assert(current = nonce, InvalidAccountNonce { account = owner; currentNonce = current; });
+  }
+}

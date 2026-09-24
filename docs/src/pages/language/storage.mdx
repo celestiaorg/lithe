@@ -1,0 +1,156 @@
+---
+title: "Storage"
+description: "Default storage, named ERC-7201 domains, transient storage, and storage layout."
+---
+
+# Storage
+
+Lithe has three kinds of state, and each has a different lifetime:
+
+| Kind | Declared as | Accessed as | Lasts |
+| --- | --- | --- | --- |
+| Locals | `const` / `var` | `name` | the current call |
+| Transient storage | `transient storage [name] is record { ... }` | `transient.x` / `name.x` | the current transaction |
+| Storage | `storage [name at "id"] is record { ... }` | `storage.x` / `name.x` | forever |
+
+State is always accessed through a qualified path. A reviewer can always tell a storage read from a local.
+
+## Default storage
+
+Every contract declares one default storage record:
+
+```lithe
+storage is record {
+  owner : address;
+  paused : bool;
+  total : nat;
+  balances : map(address, nat);
+}
+
+external function claim() is {
+  storage.owner := Evm.sender();
+}
+```
+
+The default record starts at slot 0 and is laid out **exactly** as Solidity lays out the equivalent state variables. Values smaller than 32 bytes pack into shared slots in declaration order. Maps, dynamic lists, `string`, and `bytes` use Solidity's hashing and short-string encoding, and records and tuples pack like structs. A Lithe contract and the equivalent Solidity contract produce identical storage, slot for slot.
+
+Print the layout with `lithe storage`:
+
+```bash
+lithe storage vault.lithe
+```
+
+```text
+storage
+  root: 0x0000000000000000000000000000000000000000000000000000000000000000
+  owner: address                   slot 0, offset 0, 20 bytes
+  paused: bool                     slot 0, offset 20, 1 byte
+  total: uint256                   slot 1
+  balances: map(address, uint256)  slot 2
+```
+
+## Named storage
+
+A named domain has its own ERC-7201 root, derived from its id string:
+
+```lithe
+storage settings at "vault.settings" is record {
+  fee_bps : nat;
+  treasury : address;
+}
+
+storage stats at "vault.stats" is record {
+  volume : nat;
+}
+
+storage is record {
+  owner : address;
+}
+
+external function configure(const fee_bps : nat; const treasury : address) is {
+  settings.fee_bps := fee_bps;
+  settings.treasury := treasury;
+}
+
+external function trade(const amount : nat) is {
+  stats.volume := stats.volume + amount;
+}
+```
+
+A named domain is accessed by its name: `settings.fee_bps`. Its root is `keccak256(abi.encode(uint256(keccak256(id)) - 1)) & ~0xff`, the ERC-7201 formula, so it matches Solidity's `@custom:storage-location erc7201:vault.settings`. Within a domain, fields are laid out like the default record, starting at the root.
+
+Named domains are how modules own state, and how storage stays stable across upgrades. Adding a domain or reordering domains never moves anything else. Two domains with the same id in one contract are a compile error.
+
+## Transient storage
+
+Transient storage ([EIP-1153](https://eips.ethereum.org/EIPS/eip-1153)) is shared by every call in a transaction and cleared when the transaction ends. It is read with `TLOAD` and written with `TSTORE`, which is much cheaper than storage.
+
+```lithe
+error Busy;
+
+transient storage is record {
+  entered : bool;
+}
+
+transient storage scratch is record {
+  touched : map(address, nat);
+}
+
+storage is record {
+  total : nat;
+}
+
+external function run(const amount : nat)
+  raises Busy
+is {
+  assert(not transient.entered, Busy);
+  transient.entered := true;
+  scratch.touched[Evm.sender()] := scratch.touched[Evm.sender()] + amount;
+  storage.total := storage.total + amount;
+}
+```
+
+The default transient record is accessed as `transient.x`, and a named one as `name.x`. Transient storage is never part of the persistent layout or the upgrade layout, and it has no ERC-7201 id. Use it for flags and bookkeeping that only need to live for one transaction. For reentrancy locks, use [`nonreentrant`](/language/reentrancy), which is built on transient storage already.
+
+## What storage can hold
+
+| Type | In storage |
+| --- | --- |
+| integers, `bool`, `address`, `bytesN`, `wei`, `timestamp`, interfaces | yes |
+| `string`, `bytes` | yes |
+| records, tuples | yes, packed |
+| `list(T)`, `list(T, n)` | yes, for word-sized `T` or a fixed-size option |
+| `map(K, V)` | yes. `V` is a word, a map, an option, or a fixed-size record |
+| `option(T)` | yes. One slot when `T` is narrower than 32 bytes. Otherwise a tag slot, then `T`'s slots |
+| variants | no |
+
+Solidity has no options, so their layout is Lithe's own. See [Options](/language/types#representation).
+
+## Reading and writing
+
+A missing map key, an unwritten field, and an unwritten list slot all read as zero. Writing zero clears a slot, and there is no `delete`.
+
+You can write one field of a stored record, or a whole record into a map entry:
+
+```lithe
+type order is record {
+  status : uint8;
+  amount : nat;
+}
+
+storage is record {
+  orders : map(nat, order);
+}
+
+external function place(const id : nat; const amount : nat) is {
+  storage.orders[id] := { status = uint8(1); amount = amount; };
+}
+
+external function fill(const id : nat) is {
+  storage.orders[id].status := uint8(2);
+}
+```
+
+## When writes land
+
+Within a transition, reads see earlier writes, as you would expect. Writes are committed before events are logged and before any deferred call runs. A deferred callee, or anything it calls, always sees your transition's final state. See [The transition model](/guide/transition-model).

@@ -1,0 +1,43 @@
+---
+title: "Visibility"
+description: "External, internal, and private functions."
+---
+
+# Visibility
+
+`external` functions form the contract's ABI. Everything else is internal. `private` hides a declaration from files that import this one.
+
+```lithe [visibility.lithe]
+(* `external` functions are the contract's ABI. They cannot call each other; share
+   logic through internal functions instead. Internal functions are callable
+   from anywhere in the program. `private` hides a declaration from importing files. *)
+
+storage is record {
+  value : nat;
+}
+
+private pure function double(const n : nat) : nat is
+  n * 2n
+
+function store(const n : nat) is {
+  storage.value := double(n);
+}
+
+external function set(const n : nat) is {
+  store(n);
+}
+
+external function set_twice(const n : nat) is {
+  store(n);
+  store(storage.value);
+}
+
+external view function get() : nat is
+  storage.value
+```
+
+Calling an external function from inside the contract is an error:
+
+```text
+external function `set` cannot be called from inside the contract; move the shared logic into an internal function
+```

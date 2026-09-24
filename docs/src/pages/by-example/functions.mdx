@@ -1,0 +1,47 @@
+---
+title: "Functions"
+description: "Parameters, results, blocks with with, mutable parameters, and tuples."
+---
+
+# Functions
+
+Functions take `;`-separated parameters and return their result with `with`, or as a single expression.
+
+```lithe [functions.lithe]
+storage is record {
+  total : nat;
+}
+
+(* Internal functions are called from the contract only. A body is a block;
+   `with` gives the result. *)
+pure function add(const a : nat; const b : nat) : nat is
+  a + b
+
+(* A block runs first, then the `with` expression is the result. *)
+pure function hypot_squared(const a : nat; const b : nat) : nat is {
+  const aa : nat := a * a;
+  const bb : nat := b * b;
+} with add(aa, bb)
+
+(* Parameters are `const` unless declared `var`. Parameters are separated by `;`. *)
+pure function clamp(var x : nat; const lo : nat; const hi : nat) : nat is {
+  if x < lo then { x := lo; }
+  if x > hi then { x := hi; }
+} with x
+
+(* A function with no result returns `unit`, so it has no `: type`. *)
+function bump(const by : nat) is {
+  storage.total := storage.total + by;
+}
+
+external function run(const a : nat; const b : nat) is {
+  bump(clamp(hypot_squared(a, b), 1n, 1_000n));
+}
+
+(* Several results are a tuple. *)
+external view function stats() : (nat, bool) is
+  (storage.total, storage.total > 100n)
+```
+
+- `var` parameters can be reassigned inside the body. Callers are unaffected.
+- A function with no result type returns `unit` and is called as a statement: `bump(...);`.

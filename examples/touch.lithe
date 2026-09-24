@@ -1,0 +1,25 @@
+(* Record the current time. Only the guard may change storage. *)
+
+error Not_guard;
+
+storage is record {
+  updated : timestamp;
+  guard : address;
+}
+
+external function touch()
+  raises Not_guard
+is {
+  assert(Evm.sender() = storage.guard, Not_guard);
+  storage.updated := Evm.block_timestamp();
+}
+
+external function set_guard(const who : address)
+  raises Not_guard
+is {
+  assert(Evm.sender() = storage.guard, Not_guard);
+  storage.guard := who;
+}
+
+external view function updated() : timestamp is
+  storage.updated

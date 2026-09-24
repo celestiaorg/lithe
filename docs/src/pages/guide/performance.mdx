@@ -1,0 +1,63 @@
+---
+title: "Bytecode size and gas"
+description: "Lithe contracts compile to about 29% smaller bytecode than equivalent optimized Solidity, with the same storage, logs, and return data."
+---
+
+# Bytecode size and gas
+
+Lithe's restrictions make its programs easier to compile, as well as easier to review. Across the benchmark suite, Lithe's runtime bytecode is **about 29% smaller** than the best of three optimized `solc` builds of the equivalent Solidity. Each contract comes in 20–37% smaller.
+
+## Runtime bytecode
+
+Runtime bytecode size in bytes. Smaller is better. `solc` is 0.8.36, and each column is one optimizer configuration:
+
+| contract | lithe | solc ir r1 | solc ir r200 | solc r200 | lithe vs best solc |
+|----------|-------|------------|--------------|-----------|--------------------|
+| counter  | 190   | 301        | 306          | 378       | -36.9%             |
+| erc20    | 2361  | 3090       | 3135         | 3056      | -22.7%             |
+| erc721   | 3378  | 4759       | 4837         | 5055      | -29.0%             |
+| exchange | 487   | 614        | 615          | 850       | -20.7%             |
+| executor | 1002  | 1335       | 1336         | 1606      | -24.9%             |
+| layout   | 779   | 1093       | 1094         | 1447      | -28.7%             |
+| math     | 469   | 672        | 672          | 1063      | -30.2%             |
+| receiver | 524   | 691        | 737          | 885       | -24.2%             |
+| records  | 1272  | 1994       | 2033         | 2715      | -36.2%             |
+| registry | 1092  | 1777       | 1834         | 1529      | -28.6%             |
+| staking  | 2373  | 3256       | 3263         | 3352      | -27.1%             |
+| token    | 406   | 539        | 544          | 736       | -24.7%             |
+| vault    | 441   | 605        | 607          | 850       | -27.1%             |
+| **total** | **14774** | 20726  | 21013        | 23522     | **-28.7%**         |
+
+The builds are `--via-ir` with 1 and 200 optimizer runs, and the legacy pipeline with 200 runs. All are compiled `--no-cbor-metadata`, so metadata doesn't count against Solidity.
+
+Smaller code means cheaper deployment, and more room under the EIP-170 contract size limit of 24,576 bytes. A contract that still doesn't fit is [split into a router and parts](/tooling/size-limit). Deployment gas falls with it: about 16% for `counter`, 19% for the ERC-20, and 22% for `staking`. Each contract is set up as it deploys, by a `deploy` in Lithe and a constructor in Solidity, with the same arguments.
+
+## Gas per transaction
+
+Execution gas is roughly even. Most transactions land within a couple of percent of the best `solc` build, some cheaper and some more expensive. Storage writes dominate the cost of most transactions, and both compilers write the same slots.
+
+## The comparison is like for like
+
+The benchmark contracts are real programs, not microbenchmarks:
+
+- **erc20**: OpenZeppelin's wizard token, burnable, pausable, and ownable, on the upgradeable contracts deployed without a proxy
+- **erc721**: OpenZeppelin's wizard NFT with the same extensions, plus `safeTransferFrom` against a receiver contract
+- **staking**: Synthetix's `StakingRewards` on OpenZeppelin's `Ownable` and `Initializable`
+- **executor** and **exchange**: calls whose results feed continuations
+- **records** and **layout**: packed records, fixed lists, and tuples in storage
+
+Each Solidity version uses OpenZeppelin where the original does. The benchmark deploys every build of every contract to a local chain and replays the same transactions against each one. It then checks that **statuses, return data, logs, and every storage slot** agree across all four builds. Lithe lays out storage exactly as Solidity does, so the raw slots have to match byte for byte.
+
+## Reproducing
+
+The benchmark needs [Foundry](https://getfoundry.sh) (`anvil` and `cast`) and `solc`. Set `SOLC` to pick a specific binary. From the repository root:
+
+```bash
+cargo build --release
+python3 bench/run.py            # every contract
+python3 bench/run.py erc20      # one contract
+```
+
+The Lithe and Solidity sources are side by side in `bench/`: `erc20.lithe` next to `erc20.sol`, and so on.
+
+These numbers come from the compiler version this site was built with. Rerun the benchmark for current figures.

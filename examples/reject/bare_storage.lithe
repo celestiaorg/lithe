@@ -1,0 +1,7 @@
+storage is record {
+  paid : nat;
+}
+
+external function pay(const to : address) is {
+  paid := paid + Evm.value();
+}

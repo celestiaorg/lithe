@@ -1,0 +1,125 @@
+---
+title: "Deployment"
+description: "Setting up a contract as it is created, with deploy, and initializing an upgradeable contract's proxy."
+---
+
+# Deployment
+
+A `deploy` declaration runs once, when the contract is created. It plays the part of a Solidity constructor:
+
+```lithe
+error Fee_too_high of nat;
+
+storage is record {
+  owner : address;
+  fee_bps : nat;
+}
+
+event Configured of record {
+  indexed owner : address;
+  fee_bps : nat;
+}
+
+deploy(const owner : address; const fee_bps : nat)
+  raises Fee_too_high
+is {
+  assert(fee_bps <= 1000n, Fee_too_high(fee_bps));
+  storage.owner := owner;
+  storage.fee_bps := fee_bps;
+  emit Configured {
+    owner = owner;
+    fee_bps = fee_bps;
+  };
+}
+
+external view function owner() : address is
+  storage.owner
+```
+
+- A contract has at most one `deploy`. Without one, the contract starts with every field at zero.
+- `deploy` can read its arguments and the `Evm` context, write storage, emit events, and raise errors. A raised error reverts the deployment.
+- It cannot `query` or `defer`. The contract has no code until `deploy` returns, so no one can call it back, and a continuation would have nothing to return to.
+- It declares no return type. The deployment returns the contract's code.
+- It cannot be called afterwards, and it is not in the ABI as a function.
+- An imported file cannot have a `deploy`. It belongs to the contract being compiled.
+
+## Arguments
+
+The arguments are ABI-encoded and appended to the creation code, as with a Solidity constructor. The ABI lists them as a `constructor` entry, so Foundry, ethers, and viem deploy a Lithe contract as they would a Solidity one:
+
+```bash
+forge create Vault --constructor-args 0xOwner 30
+```
+
+Malformed or missing arguments revert the deployment. To deploy from another contract, pass the arguments to [`defer create`](/language/effects#passing-arguments).
+
+## Ether
+
+`payable deploy` accepts ether sent with the deployment, and may read `Evm.value()`. A plain `deploy` rejects ether:
+
+```lithe
+storage is record {
+  seeded : wei;
+}
+
+payable deploy() is {
+  storage.seeded := Evm.value();
+}
+
+external view function seeded() : wei is
+  storage.seeded
+```
+
+```lithe rejects
+storage is record {
+  seeded : wei;
+}
+
+deploy() is {
+  storage.seeded := Evm.value();
+}
+
+external view function seeded() : wei is
+  storage.seeded
+```
+
+```text
+`deploy` reads `Evm.value()`; write `payable deploy`
+```
+
+## Upgradeable contracts
+
+An [upgradeable](/language/upgrades) contract lives behind a proxy. Its creation code only creates the implementation, whose storage nobody uses. So in an upgradeable contract, `deploy` sets up the **proxy** instead:
+
+```lithe
+upgradeable
+
+error Not_owner;
+
+storage is record {
+  owner : address;
+  cap : nat;
+}
+
+upgrade guard is {
+  assert(Evm.sender() = storage.owner, Not_owner);
+}
+
+deploy(const owner : address; const cap : nat) is {
+  storage.owner := owner;
+  storage.cap := cap;
+}
+
+external view function cap() : nat is
+  storage.cap
+```
+
+Here `deploy` compiles to an entrypoint, `deploy(address,uint256)`. The proxy's constructor calls it, as OpenZeppelin's `ERC1967Proxy(implementation, data)` does with `data`. It runs against the proxy's storage, in the same transaction that creates the proxy, so no one can initialize the proxy first:
+
+```solidity
+new ERC1967Proxy(implementation, abi.encodeCall(Vault.deploy, (owner, cap)));
+```
+
+It runs only while the proxy has no code yet, which is only during the proxy's own creation. Called any other way, through a deployed proxy or on the implementation itself, it reverts. It needs no "initialized" flag in storage.
+
+Later versions keep their `deploy` for new proxies. To set up new state in proxies that already exist, use a [`migrate`](/language/upgrades#migrations) instead.

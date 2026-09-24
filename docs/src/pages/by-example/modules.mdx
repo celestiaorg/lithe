@@ -1,0 +1,100 @@
+---
+title: "Modules"
+description: "Composition in place of inheritance."
+---
+
+# Modules
+
+Modules own their storage, errors, events, and functions. A contract `use`s modules and exposes exactly the functions it chooses, by promotion or by wrapping.
+
+```lithe [modules.lithe]
+(* Modules replace inheritance. A module owns its storage, errors, events, and
+   functions. A contract `use`s modules and chooses exactly which functions to
+   expose. Nothing becomes public by accident. *)
+
+module Ownable is {
+  storage ownable at "example.ownable" is record {
+    owner : address;
+  }
+
+  error Not_owner;
+
+  view function owner() : address is
+    ownable.owner
+
+  view function only_owner()
+    raises Not_owner
+  is {
+    assert(Evm.sender() = ownable.owner, Not_owner);
+  }
+
+  function claim() is {
+    ownable.owner := Evm.sender();
+  }
+}
+
+module Pausable is {
+  storage pausable at "example.pausable" is record {
+    paused : bool;
+  }
+
+  error Paused;
+
+  view function paused() : bool is
+    pausable.paused
+
+  view function when_not_paused()
+    raises Paused
+  is {
+    assert(not pausable.paused, Paused);
+  }
+
+  function set_paused(const paused : bool) is {
+    pausable.paused := paused;
+  }
+}
+
+(* A module that builds on another says so with `requires`. *)
+module Admin is {
+  requires Ownable;
+  requires Pausable;
+
+  function pause()
+    raises Not_owner
+  is {
+    Ownable.only_owner();
+    Pausable.set_paused(true);
+  }
+}
+
+contract Vault is {
+  use Ownable;
+  use Pausable;
+  use Admin;
+
+  storage is record {
+    total : nat;
+  }
+
+  (* Promote a module function into the ABI as-is. *)
+  external view function owner is Ownable.owner;
+  external view function paused is Pausable.paused;
+  external function claim is Ownable.claim;
+  external function pause is Admin.pause;
+
+  (* Or wrap it. Outside its module, module storage is `Module.domain.field`. *)
+  external function deposit(const amount : nat)
+    raises Paused
+  is {
+    Pausable.when_not_paused();
+    storage.total := storage.total + amount;
+  }
+
+  external view function is_paused() : bool is
+    Pausable.pausable.paused
+}
+```
+
+- `requires` declares a module's dependencies. A contract that uses `Admin` must also use `Ownable` and `Pausable`.
+- Each module's storage sits at its own ERC-7201 root, so modules never collide.
+- Outside its module, storage is written as `Pausable.pausable.paused`.

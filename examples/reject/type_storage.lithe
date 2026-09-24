@@ -1,0 +1,7 @@
+type storage is record {
+  n : nat;
+}
+
+external function go() is {
+  skip
+}

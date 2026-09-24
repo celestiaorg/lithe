@@ -1,0 +1,5 @@
+storage is record {
+  indexed n : nat;
+}
+
+external function go() is { skip }

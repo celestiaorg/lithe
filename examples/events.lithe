@@ -1,0 +1,40 @@
+(* Indexed fields are topics. A string or a fixed list is stored as a hash. *)
+
+event Transfer of record {
+  indexed from : address;
+  indexed to : address;
+  amount : nat;
+}
+
+event Note of record {
+  indexed memo : string;
+  amount : nat;
+}
+
+event Tagged of record {
+  indexed flag : bool;
+  indexed ids : list(nat, 2);
+  amount : nat;
+}
+
+storage is record {
+  paid : nat;
+}
+
+external function pay(const to : address; const amount : nat) is {
+  emit Transfer {
+    from = Evm.sender();
+    to = to;
+    amount = amount;
+  };
+  emit Note {
+    memo = "hi";
+    amount = amount;
+  };
+  emit Tagged {
+    flag = true;
+    ids = [7n, 8n];
+    amount = amount;
+  };
+  storage.paid := amount;
+}

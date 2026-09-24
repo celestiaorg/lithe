@@ -1,0 +1,118 @@
+(* Benchmark: OpenZeppelin's wizard token, upgradeable, burnable, pausable, and
+   ownable, built from modules. Mirrors erc20.sol, which imports OpenZeppelin. *)
+
+import "./lib/initializable.lithe";
+import "./lib/ownable.lithe";
+import "./lib/pausable.lithe";
+import "./lib/erc20.lithe";
+
+contract BenchToken is {
+  use Initializable;
+  use Ownable;
+  use Pausable;
+  use ERC20;
+
+  (* Initializable's bookkeeping matches the `initializer` modifier on Solidity's
+     constructor, so storage and events stay the same. *)
+  deploy(const initialOwner : address)
+    raises InvalidInitialization | OwnableInvalidOwner
+  is {
+    Initializable.begin();
+    ERC20.init("Bench Token", "BENCH");
+    Ownable.init(initialOwner);
+    Initializable.finish();
+  }
+
+  external view function name is ERC20.name;
+
+  external view function symbol is ERC20.symbol;
+
+  external view function decimals is ERC20.decimals;
+
+  external view function totalSupply is ERC20.totalSupply;
+
+  external view function balanceOf is ERC20.balanceOf;
+
+  external view function allowance is ERC20.allowance;
+
+  external view function owner is Ownable.owner;
+
+  external view function paused is Pausable.paused;
+
+  (* `ERC20Pausable` checks the pause inside every balance update. *)
+  function update(const from : address; const to : address; const value : nat)
+    raises EnforcedPause | ERC20InsufficientBalance
+  is {
+    Pausable.require_not_paused();
+    ERC20.update(from, to, value);
+  }
+
+  external function transfer(const to : address; const value : nat) : bool
+    raises ERC20InvalidSender | ERC20InvalidReceiver | EnforcedPause | ERC20InsufficientBalance
+  is {
+    ERC20.check_transfer(Evm.sender(), to);
+    update(Evm.sender(), to, value);
+  } with true
+
+  external function approve(const spender : address; const value : nat) : bool
+    raises ERC20InvalidApprover | ERC20InvalidSpender
+  is {
+    ERC20.approve_as(Evm.sender(), spender, value, true);
+  } with true
+
+  external function transferFrom(const from : address; const to : address; const value : nat) : bool
+    raises ERC20InsufficientAllowance | ERC20InvalidApprover | ERC20InvalidSpender
+      | ERC20InvalidSender | ERC20InvalidReceiver | EnforcedPause | ERC20InsufficientBalance
+  is {
+    ERC20.spend_allowance(from, Evm.sender(), value);
+    ERC20.check_transfer(from, to);
+    update(from, to, value);
+  } with true
+
+  external function burn(const value : nat)
+    raises ERC20InvalidSender | EnforcedPause | ERC20InsufficientBalance
+  is {
+    update(Evm.sender(), Address.zero, value);
+  }
+
+  external function burnFrom(const account : address; const value : nat)
+    raises ERC20InsufficientAllowance | ERC20InvalidApprover | ERC20InvalidSpender
+      | ERC20InvalidSender | EnforcedPause | ERC20InsufficientBalance
+  is {
+    ERC20.spend_allowance(account, Evm.sender(), value);
+    assert(
+      account <> Address.zero,
+      ERC20InvalidSender(Address.zero)
+    );
+    update(account, Address.zero, value);
+  }
+
+  external function mint(const to : address; const amount : nat)
+    raises OwnableUnauthorizedAccount | ERC20InvalidReceiver | EnforcedPause | ERC20InsufficientBalance
+  is {
+    Ownable.check_owner();
+    assert(
+      to <> Address.zero,
+      ERC20InvalidReceiver(Address.zero)
+    );
+    update(Address.zero, to, amount);
+  }
+
+  external function pause()
+    raises OwnableUnauthorizedAccount | EnforcedPause
+  is {
+    Ownable.check_owner();
+    Pausable.pause();
+  }
+
+  external function unpause()
+    raises OwnableUnauthorizedAccount | ExpectedPause
+  is {
+    Ownable.check_owner();
+    Pausable.unpause();
+  }
+
+  external function transferOwnership is Ownable.transferOwnership;
+
+  external function renounceOwnership is Ownable.renounceOwnership;
+}

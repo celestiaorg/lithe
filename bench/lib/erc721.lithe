@@ -1,0 +1,198 @@
+(* The ERC-721 core, like OpenZeppelin's `ERC721Upgradeable`: same storage, errors,
+   events, and order of checks. Extensions compose these pieces explicitly. *)
+
+interface ERC721Receiver is {
+  call onERC721Received(operator : address; from : address; tokenId : nat; data : bytes) : bytes4;
+}
+
+module ERC721 is {
+  storage erc721 at "openzeppelin.storage.ERC721" is record {
+    name : string;
+    symbol : string;
+    owners : map(nat, address);
+    balances : map(address, nat);
+    tokenApprovals : map(nat, address);
+    operatorApprovals : map(address, map(address, bool));
+  }
+
+  error ERC721InvalidOwner of address;
+  error ERC721NonexistentToken of nat;
+
+  error ERC721IncorrectOwner of record {
+    sender : address;
+    tokenId : nat;
+    owner : address;
+  }
+
+  error ERC721InvalidSender of address;
+  error ERC721InvalidReceiver of address;
+
+  error ERC721InsufficientApproval of record {
+    operator : address;
+    tokenId : nat;
+  }
+
+  error ERC721InvalidApprover of address;
+  error ERC721InvalidOperator of address;
+
+  event Transfer of record {
+    indexed from : address;
+    indexed to : address;
+    indexed tokenId : nat;
+  }
+
+  event Approval of record {
+    indexed owner : address;
+    indexed approved : address;
+    indexed tokenId : nat;
+  }
+
+  event ApprovalForAll of record {
+    indexed owner : address;
+    indexed operator : address;
+    approved : bool;
+  }
+
+  function init(const n : string; const s : string) is {
+    erc721.name := n;
+    erc721.symbol := s;
+  }
+
+  (* ERC-721, its metadata extension, and ERC-165 itself. *)
+  pure function supportsInterface(const interfaceId : bytes4) : bool is
+    (interfaceId = 0x80ac58cd) or (interfaceId = 0x5b5e139f) or (interfaceId = 0x01ffc9a7)
+
+  view function balanceOf(const owner : address) : nat
+    raises ERC721InvalidOwner
+  is {
+    assert(owner <> Address.zero, ERC721InvalidOwner(Address.zero));
+  } with erc721.balances[owner]
+
+  view function ownerOf(const tokenId : nat) : address
+    raises ERC721NonexistentToken
+  is
+    require_owned(tokenId)
+
+  view function name() : string is
+    erc721.name
+
+  view function symbol() : string is
+    erc721.symbol
+
+  (* Without a base URI, an existing token's URI is empty. *)
+  view function tokenURI(const tokenId : nat) : string
+    raises ERC721NonexistentToken
+  is {
+    const owner : address := require_owned(tokenId);
+  } with ""
+
+  view function getApproved(const tokenId : nat) : address
+    raises ERC721NonexistentToken
+  is {
+    const owner : address := require_owned(tokenId);
+  } with erc721.tokenApprovals[tokenId]
+
+  view function isApprovedForAll(const owner : address; const operator : address) : bool is
+    erc721.operatorApprovals[owner][operator]
+
+  view function require_owned(const tokenId : nat) : address
+    raises ERC721NonexistentToken
+  is {
+    const owner : address := erc721.owners[tokenId];
+    assert(owner <> Address.zero, ERC721NonexistentToken(tokenId));
+  } with owner
+
+  view function check_authorized(const owner : address; const spender : address; const tokenId : nat)
+    raises ERC721NonexistentToken | ERC721InsufficientApproval
+  is {
+    const authorized : bool := spender <> Address.zero
+      and (owner = spender
+        or erc721.operatorApprovals[owner][spender]
+        or erc721.tokenApprovals[tokenId] = spender);
+    if not authorized then {
+      assert(owner <> Address.zero, ERC721NonexistentToken(tokenId));
+      fail ERC721InsufficientApproval { operator = spender; tokenId = tokenId; };
+    }
+  }
+
+  (* Moves, mints (`to` from zero), or burns (`to` is zero); returns the previous owner.
+     A nonzero `auth` must be allowed to move the token. *)
+  function update(const to : address; const tokenId : nat; const auth : address) : address
+    raises ERC721NonexistentToken | ERC721InsufficientApproval
+  is {
+    const from : address := erc721.owners[tokenId];
+    if auth <> Address.zero then {
+      check_authorized(from, auth, tokenId);
+    }
+    if from <> Address.zero then {
+      erc721.tokenApprovals[tokenId] := Address.zero;
+      erc721.balances[from] := erc721.balances[from] - 1n;
+    }
+    if to <> Address.zero then {
+      erc721.balances[to] := erc721.balances[to] + 1n;
+    }
+    erc721.owners[tokenId] := to;
+    emit Transfer {
+      from = from;
+      to = to;
+      tokenId = tokenId;
+    };
+  } with from
+
+  function approve_as(const to : address; const tokenId : nat; const auth : address)
+    raises ERC721NonexistentToken | ERC721InvalidApprover
+  is {
+    const owner : address := require_owned(tokenId);
+    assert(
+      auth = Address.zero or owner = auth or erc721.operatorApprovals[owner][auth],
+      ERC721InvalidApprover(auth)
+    );
+    emit Approval {
+      owner = owner;
+      approved = to;
+      tokenId = tokenId;
+    };
+    erc721.tokenApprovals[tokenId] := to;
+  }
+
+  function set_approval_for_all(const owner : address; const operator : address; const approved : bool)
+    raises ERC721InvalidApprover | ERC721InvalidOperator
+  is {
+    assert(owner <> Address.zero, ERC721InvalidApprover(Address.zero));
+    assert(operator <> Address.zero, ERC721InvalidOperator(operator));
+    erc721.operatorApprovals[owner][operator] := approved;
+    emit ApprovalForAll {
+      owner = owner;
+      operator = operator;
+      approved = approved;
+    };
+  }
+
+  (* Like `ERC721Utils.checkOnERC721Received`: a contract receiver must answer with the
+     selector. The call runs after the transfer's effects, as in Solidity. A receiver that
+     reverts without a reason is invalid; its own reason is passed on unchanged. *)
+  function check_received(
+    const operator : address;
+    const from : address;
+    const to : address;
+    const tokenId : nat;
+    const data : bytes
+  )
+    raises ERC721InvalidReceiver
+  is {
+    if Evm.code_size(to) > 0n then {
+      const receiver : ERC721Receiver := ERC721Receiver(to);
+      defer receiver.onERC721Received(operator, from, tokenId, data) then {
+        | Ok(answer : bytes4) -> {
+            assert(answer = 0x150b7a02, ERC721InvalidReceiver(to));
+          }
+        | Error(reason : bytes) -> {
+            if reason.length = 0n then {
+              fail ERC721InvalidReceiver(to);
+            }
+            fail reason;
+          }
+      };
+    }
+  }
+}

@@ -1,0 +1,105 @@
+(* Fuzz target: records stored in maps, laid out like Solidity structs from the value's
+   slot. Fields pack, a nested record starts a new slot, and a map of maps holds records
+   too. Reads and writes go field by field or a whole record at a time. `priced` queries,
+   so its storage goes through the journal; `set_price` does the same work directly.
+   Address 2 is the SHA-256 precompile, which answers any query with a word. *)
+
+type inner is record {
+  flag : bool;
+  delta : int16;
+}
+
+type order is record {
+  status : uint8;
+  owner : address;
+  amount : nat;
+  small : uint32;
+  inner : inner;
+  last : uint64;
+}
+
+type pair is record {
+  a : uint128;
+  b : uint128;
+}
+
+error Missing of nat;
+
+interface Oracle is {
+  query price(amount : nat) : nat;
+}
+
+event Placed of record {
+  indexed id : nat;
+  amount : nat;
+  status : uint8;
+}
+
+storage is record {
+  count : nat;
+  orders : map(nat, order);
+  pairs : map(address, map(nat, pair));
+  tail : uint8;
+}
+
+external function place(const id : nat; const amount : nat; const small : uint32; const delta : int16) is {
+  storage.orders[id] := {
+    status = uint8(1);
+    owner = Evm.sender();
+    amount = amount;
+    small = small;
+    inner = { flag = true; delta = delta; };
+    last = uint64(7);
+  };
+  storage.count := storage.count + 1n;
+  emit Placed { id = id; amount = storage.orders[id].amount; status = storage.orders[id].status; };
+}
+
+external function bump(const id : nat; const by : nat)
+  raises Missing
+is {
+  assert(storage.orders[id].status > uint8(0), Missing(id));
+  storage.orders[id].status := storage.orders[id].status + uint8(1);
+  storage.orders[id].amount := storage.orders[id].amount + by;
+  storage.orders[id].inner.delta := storage.orders[id].inner.delta - int16(1);
+  storage.orders[id].last := storage.orders[id].last + uint64(1);
+  storage.tail := storage.orders[id].status;
+}
+
+external function copy(const src : nat; const dst : nat) is {
+  const o : order := storage.orders[src];
+  storage.orders[dst] := o;
+  storage.orders[dst].inner := { flag = not o.inner.flag; delta = o.inner.delta; };
+}
+
+external function pair_set(const k : nat; const a : uint128; const b : uint128) is {
+  storage.pairs[Evm.sender()][k] := { a = a; b = b; };
+  storage.pairs[Evm.sender()][k + 1n].b := b;
+}
+
+function reprice(const id : nat; const p : nat) is {
+  storage.orders[id].amount := storage.orders[id].amount + p % 1000n;
+  storage.orders[id].status := uint8(p % 200n);
+  storage.orders[id].inner := { flag = p % 2n = 0n; delta = int16(-5); };
+  storage.orders[id + 1n] := storage.orders[id];
+  storage.orders[id + 1n].last := uint64(p % 99n);
+  storage.tail := storage.orders[id].status;
+}
+
+external function priced(const o : Oracle; const id : nat) is {
+  reprice(id, query o.price(id));
+}
+
+external function set_price(const id : nat; const p : nat) is {
+  reprice(id, p);
+}
+
+external view function probe(const o : Oracle; const id : nat) : nat is query o.price(id)
+
+external view function order_of(const id : nat) : order is storage.orders[id]
+
+external view function status_of(const id : nat) : uint8 is storage.orders[id].status
+
+external view function delta_of(const id : nat) : int16 is storage.orders[id].inner.delta
+
+external view function pair_of(const who : address; const k : nat) : pair is storage.pairs[who][k]

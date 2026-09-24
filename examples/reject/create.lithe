@@ -1,0 +1,18 @@
+contract Factory is {
+  storage is record {
+    last : address;
+  }
+
+  external function open() is {
+    defer create Vault(Evm.sender());
+  }
+}
+
+contract Vault is {
+  storage is record {
+    owner : address;
+  }
+
+  external view function owner() : address is
+    storage.owner
+}

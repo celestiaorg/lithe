@@ -1,0 +1,62 @@
+---
+title: "Upgradeable contract"
+description: "UUPS upgrades with a guard and a one-time migration."
+---
+
+# Upgradeable contract
+
+`upgradeable` compiles the contract as a UUPS implementation for an ERC-1967 proxy. `deploy` initializes the proxy as it is created. The upgrade guard authorizes `upgradeToAndCall`, and a `migrate` runs once, inside the upgrade that installs this version.
+
+```lithe [upgradeable.lithe]
+(* `upgradeable` compiles to a UUPS implementation (ERC-1967). `deploy` is the proxy's
+   initializer: the proxy's constructor calls it. The upgrade guard authorizes
+   `upgradeToAndCall`; a `migrate` runs once, inside the upgrade that installs this
+   version, and is never callable on its own. *)
+
+upgradeable
+
+error Not_owner;
+
+storage is record {
+  owner : address;
+}
+
+storage settings at "vault.settings" is record {
+  fee : nat;
+  treasury : address;
+}
+
+upgrade guard is {
+  assert(Evm.sender() = storage.owner, Not_owner);
+}
+
+migrate init_settings(const fee : nat; const treasury : address) is {
+  settings.fee := fee;
+  settings.treasury := treasury;
+}
+
+deploy(const owner : address) is {
+  storage.owner := owner;
+}
+
+external view function fee() : nat is
+  settings.fee
+```
+
+Deploy the implementation, then a proxy whose constructor calls `deploy`:
+
+```solidity
+new ERC1967Proxy(implementation, abi.encodeCall(Vault.deploy, (owner)));
+```
+
+Build the upgrade transaction:
+
+```bash
+lithe upgrade 0xProxy upgradeable.lithe --migrate init_settings --impl 0xNewImpl --args 30 0xTreasury
+```
+
+Check storage compatibility against the previous version:
+
+```bash
+lithe upgrade-check v1.lithe upgradeable.lithe
+```

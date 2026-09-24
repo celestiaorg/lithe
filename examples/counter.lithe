@@ -1,0 +1,73 @@
+(* Counter. Owner and public actions share one dispatcher and become separate ABI entrypoints. *)
+
+error Invalid_owner_access;
+
+storage is record {
+  count : nat;
+  owner : address;
+}
+
+event Count_changed of record {
+  old_count : nat;
+  new_count : nat;
+}
+
+type owner_action is
+  | Reset
+
+type public_action is
+  | Increment of nat
+
+type action is
+  | Owner_action of owner_action
+  | Public_action of public_action
+
+function add(const n : nat) is {
+  if n > 0n then {
+    const old_count : nat := storage.count;
+
+    storage.count := storage.count + n;
+
+    emit Count_changed {
+      old_count = old_count;
+      new_count = storage.count;
+    };
+  }
+}
+
+function owner_main(const action : owner_action)
+  raises Invalid_owner_access
+is {
+  assert(Evm.sender() = storage.owner, Invalid_owner_access);
+}
+with case action of
+{
+| Reset -> {
+    const old_count : nat := storage.count;
+
+    storage.count := 0n;
+
+    emit Count_changed {
+      old_count = old_count;
+      new_count = 0n;
+    };
+  }
+}
+
+function public_main(const action : public_action) is
+  case action of
+  {
+  | Increment(n) -> add(n)
+  }
+
+external function main(const action : action)
+  raises Invalid_owner_access
+is
+  case action of
+  {
+  | Owner_action(a) -> owner_main(a)
+  | Public_action(a) -> public_main(a)
+  }
+
+external view function get_count() : nat is
+  storage.count

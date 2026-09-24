@@ -1,0 +1,67 @@
+(* Parentheses group and call. Brackets list and index. Braces group records, blocks, and case arms. *)
+
+error Too_small of record {
+  amount : nat;
+}
+
+event Paid of record {
+  amount : nat;
+}
+
+type payment is record {
+  recipient : address;
+  amount : nat;
+  expires_at : timestamp;
+}
+
+storage is record {
+  paid : nat;
+}
+
+type action is
+  | Pay of nat
+  | Stop
+
+external view function first_admin() : address is {
+  const alice : address := 0x01;
+  const bob : address := 0x02;
+  const carol : address := 0x03;
+  const admins : list(address) := [
+    alice,
+    bob,
+    carol
+  ];
+  const first : address := admins[0];
+} with first
+
+external view function admin_count() : nat is {
+  const alice : address := 0x01;
+  const bob : address := 0x02;
+  const admins : list(address) := [alice, bob];
+} with admins.length
+
+external view function second() : nat is {
+  const nums : list(nat, 3) := [1n, 2n, 4n];
+  const n : nat := nums[1];
+} with n
+
+external view function owed() : nat is {
+  const account : address := Evm.sender();
+  const payment : payment := {
+    amount = 9n;
+    expires_at = Evm.block_timestamp();
+    recipient = account;
+  };
+} with payment.amount
+
+external function main(const action : action)
+  raises Too_small
+is
+  case action of {
+    | Pay(n) -> {
+        assert(n > 0n, Too_small { amount = n });
+        storage.paid := storage.paid + n;
+        emit Paid { amount = n };
+      }
+    | Stop -> { skip }
+  }

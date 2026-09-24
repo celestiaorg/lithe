@@ -1,0 +1,45 @@
+---
+title: "Ether and time units"
+description: "wei, gwei, eth, and durations, with typed arithmetic."
+---
+
+# Ether and time units
+
+Ether amounts are `wei`. Points in time are `timestamp`. Durations such as `1days` add to timestamps, and subtracting two timestamps gives a number of seconds.
+
+```lithe [units.lithe]
+storage is record {
+  price : wei;
+  unlock_at : timestamp;
+}
+
+external function configure() is {
+  (* Ether units produce `wei`. *)
+  storage.price := 1eth + 500gwei + 7wei;
+
+  (* Time units produce durations; adding one to a timestamp gives a timestamp. *)
+  storage.unlock_at := Evm.block_timestamp() + 1days + 12hours + 30minutes;
+}
+
+external view function seconds_left() : nat is {
+  var left : nat := 0n;
+  if Evm.block_timestamp() < storage.unlock_at then {
+    (* timestamp - timestamp is a plain nat of seconds. *)
+    left := storage.unlock_at - Evm.block_timestamp();
+  }
+} with left
+
+external pure function one_week() : nat is
+  7days
+
+(* `wei` scales by literals, and converts to `nat` explicitly. *)
+external view function double_price() : wei is
+  storage.price * 2
+
+external view function price_in_wei() : nat is
+  nat(storage.price)
+```
+
+- `1eth + 500gwei + 7wei` is a `wei` value.
+- `Evm.block_timestamp() + 1days` is a `timestamp`. A `nat` can't be stored in a `timestamp` field by accident.
+- Convert out explicitly with `nat(price)`.

@@ -1,0 +1,39 @@
+---
+title: "If / else"
+description: "Conditionals, nested branches, and choosing a value."
+---
+
+# If / else
+
+`if cond then { ... } else { ... }` is a statement. There is no ternary operator and no `else if`. Nest an `if` inside `else`.
+
+```lithe [if-else.lithe]
+(* `if` is a statement. `else if` is written as an `if` inside the `else` block. *)
+
+storage is record {
+  checks : nat;
+}
+
+external pure function classify(const x : nat) : nat is {
+  var size : nat := 0n;
+  if x < 10n then {
+    size := 1n;
+  } else {
+    if x < 100n then {
+      size := 2n;
+    } else {
+      size := 3n;
+    }
+  }
+} with size
+
+(* For a value that depends on a condition, bind a `var` and assign in each branch. *)
+external pure function min(const a : nat; const b : nat) : nat is {
+  var smaller : nat := b;
+  if a < b then {
+    smaller := a;
+  }
+} with smaller
+```
+
+To produce a value conditionally, bind a `var` and assign it in the branches, then return it with `with`.

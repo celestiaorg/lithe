@@ -1,0 +1,65 @@
+(* Lists and strings through other contracts: as query arguments and answers, as deferred
+   call arguments and results, and decoded from bytes. *)
+
+interface Echo is {
+  query same(xs : list(nat)) : list(nat);
+  query named(s : string) : string;
+  call keep(xs : list(address)) : list(address);
+}
+
+type nums is list(nat);
+
+storage is record {
+  got : list(nat);
+  kept : list(address);
+  label : string;
+  total : nat;
+}
+
+external function ask(const e : Echo; const xs : list(nat)) is {
+  const back : list(nat) := query e.same(xs);
+  storage.got := back;
+}
+
+external function ask_name(const e : Echo; const s : string) is {
+  storage.label := query e.named(s);
+}
+
+external function send(const e : Echo; const xs : list(address)) is {
+  defer e.keep(xs) then (back : list(address)) {
+    storage.kept := back;
+  };
+}
+
+external function ask_case(const e : Echo; const xs : list(nat)) is {
+  case query e.same(xs) of {
+    | Ok(back) -> {
+        storage.total := back.length;
+      }
+    | Error(_) -> {
+        storage.total := 99n;
+      }
+  }
+}
+
+external pure function decoded_length(const data : bytes) : nat is {
+  const xs : nums := Abi.decode(data, nums);
+} with xs.length
+
+external function counted(const n : nat) : list(nat) is {
+  var out : list(nat) := [];
+  out[0n] := n;
+  out[1n] := n + 1n;
+} with out
+
+external view function got() : list(nat) is
+  storage.got
+
+external view function kept() : list(address) is
+  storage.kept
+
+external view function label() : string is
+  storage.label
+
+external view function total() : nat is
+  storage.total

@@ -1,0 +1,18 @@
+(* Widths, nominal wrappers, value units, and time. *)
+
+type basis_points is uint16;
+type discount_rate is uint16;
+
+storage is record {
+  paid : wei;
+  updated : timestamp;
+  fee : basis_points;
+}
+
+external function quote(const fee : basis_points) is {
+  const discount : discount_rate := discount_rate(uint16(fee));
+  const _kept : discount_rate := discount;
+  storage.fee := fee;
+  storage.paid := 1eth;
+  storage.updated := Evm.block_timestamp() + 1days;
+}

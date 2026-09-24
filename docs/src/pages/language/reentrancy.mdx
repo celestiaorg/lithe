@@ -1,0 +1,100 @@
+---
+title: "Reentrancy"
+description: "What deferral prevents, what it does not, the compiler's reentrancy warnings, and nonreentrant."
+---
+
+# Reentrancy
+
+## What deferral prevents
+
+The classic reentrancy bug is a callee re-entering while the caller's state is half-updated:
+
+```solidity
+function withdraw() external {
+    uint256 amount = balances[msg.sender];
+    msg.sender.call{value: amount}("");   // re-enters here...
+    balances[msg.sender] = 0;             // ...before this runs
+}
+```
+
+In Lithe, this cannot be written. A `defer` always runs after the transition commits, so the callee sees `balances[sender] = 0` whatever order the source uses.
+
+## What deferral does not prevent
+
+After your transition commits, a deferred callee can still call back into your contract. It can call any external function, including the one that is running. A second call might start before your later deferred calls or continuations have run. That is sometimes harmless and sometimes a protocol bug, so the compiler reports it.
+
+## Reentrancy warnings
+
+For every entrypoint that defers calls, the compiler lists the stateful entrypoints that could re-enter while those calls run:
+
+```lithe
+interface Hook is {
+  call cancel() : unit;
+}
+
+storage is record {
+  status : nat;
+  extra : nat;
+}
+
+external function settle(const hook : Hook) is {
+  storage.status := 1n;
+  defer hook.cancel();
+}
+
+external function cancel() is {
+  storage.extra := 2n;
+}
+```
+
+```text
+12:10: warning: `settle` performs deferred external operations and may
+be re-entered through `cancel`
+
+consider `nonreentrant` if the protocol requires serialized
+external-effect execution
+```
+
+## `nonreentrant`
+
+`external nonreentrant function` takes the contract's reentrancy lock:
+
+```lithe
+interface Hook is {
+  call cancel() : unit;
+}
+
+storage is record {
+  status : nat;
+}
+
+external nonreentrant function settle(const hook : Hook) is {
+  storage.status := 1n;
+  defer hook.cancel();
+}
+
+external nonreentrant function cancel() is {
+  storage.status := 2n;
+}
+
+external view function status() : nat is
+  storage.status
+```
+
+The rules:
+
+- There is **one lock per contract**. All `nonreentrant` functions share it.
+- A `nonreentrant` function reverts if the lock is held, and holds it for its whole run, including its deferred calls and continuations.
+- Any function that defers calls, `nonreentrant` or not, holds the lock while its deferred calls run. A callee therefore cannot enter a `nonreentrant` function through it.
+- `view` and `pure` functions are never locked. They cannot change state, so they are always safe to call back into.
+- The lock lives in [transient storage](/language/storage#transient-storage), so it is cheap and clears itself when the transaction ends.
+
+`lithe footprint` shows each entrypoint's status in its last column:
+
+```text
+settle   writes: status      defers: hook.cancel      during defers: rejected
+cancel   writes: status                               during defers: rejected
+status   reads: status                                during defers: callable
+```
+
+`nonreentrant` applies only to stateful external functions. Named or separate locks are not supported. When you need a finer-grained lock, build it from transient storage.

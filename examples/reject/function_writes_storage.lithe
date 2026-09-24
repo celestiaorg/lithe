@@ -1,0 +1,7 @@
+storage is record {
+  count : nat;
+}
+
+view function bad() : nat is {
+  storage.count := 1n
+} with storage.count

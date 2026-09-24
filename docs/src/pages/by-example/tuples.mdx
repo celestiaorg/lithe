@@ -1,0 +1,31 @@
+---
+title: "Tuples"
+description: "Grouping values by position, returning several values, and destructuring."
+---
+
+# Tuples
+
+Tuples group values by position. Use them to return several values, and destructure them with `const (a, b) : (T, U) := ...`.
+
+```lithe [tuples.lithe]
+storage is record {
+  (* Tuples can be stored, and pack like a struct. *)
+  pair : (uint32, address);
+}
+
+pure function split(const amount : nat) : (nat, nat) is
+  (amount / 2n, amount % 2n)
+
+external function run(const amount : nat) is {
+  (* Destructure a tuple into names. *)
+  const (half, rest) : (nat, nat) := split(amount);
+  storage.pair := (uint32(half + rest), Evm.sender());
+}
+
+(* Several return values are a tuple. *)
+external view function info() : (uint32, address) is
+  storage.pair
+
+external pure function div_rem(const a : nat; const b : nat) : (nat, nat) is
+  Nat.div_rem(a, b)
+```

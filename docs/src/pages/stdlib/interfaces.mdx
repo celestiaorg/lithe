@@ -1,0 +1,36 @@
+---
+title: "Interfaces"
+description: "Interface declarations for common ERC standards, for typed queries and deferred calls."
+---
+
+# Interfaces
+
+`std/interfaces` declares the common standards as [interfaces](/language/effects#interfaces), for typed `query` and `defer` against other contracts.
+
+```lithe
+import "std/interfaces/erc20.lithe";
+
+error Too_little of nat;
+
+storage is record {
+  token : IERC20;
+}
+
+external function pay(const to : address; const amount : nat)
+  raises Too_little
+is {
+  const balance : nat := query storage.token.balanceOf(Evm.self());
+  assert(balance >= amount, Too_little(balance));
+  defer storage.token.transfer(to, amount);
+}
+```
+
+| File | Interfaces |
+| --- | --- |
+| `std/interfaces/erc165.lithe` | `IERC165` |
+| `std/interfaces/erc20.lithe` | `IERC20`, `IERC20Permit` |
+| `std/interfaces/erc721.lithe` | `IERC721`, `IERC721Receiver` |
+| `std/interfaces/erc1155.lithe` | `IERC1155`, `IERC1155Receiver` |
+| `std/interfaces/erc1271.lithe` | `IERC1271` |
+| `std/interfaces/erc4626.lithe` | `IERC4626` |
+

@@ -1,0 +1,79 @@
+(* Benchmark: records stored in maps, which must land in the same slots and bytes as
+   Solidity's structs in mappings. Mirrors records.sol, and fuzz/records.lithe. *)
+
+type inner is record {
+  flag : bool;
+  delta : int16;
+}
+
+type order is record {
+  status : uint8;
+  owner : address;
+  amount : nat;
+  small : uint32;
+  inner : inner;
+  last : uint64;
+}
+
+type pair is record {
+  a : uint128;
+  b : uint128;
+}
+
+error Missing of nat;
+
+event Placed of record {
+  indexed id : nat;
+  amount : nat;
+  status : uint8;
+}
+
+storage is record {
+  count : nat;
+  orders : map(nat, order);
+  pairs : map(address, map(nat, pair));
+  tail : uint8;
+}
+
+external function place(const id : nat; const amount : nat; const small : uint32; const delta : int16) is {
+  storage.orders[id] := {
+    status = uint8(1);
+    owner = Evm.sender();
+    amount = amount;
+    small = small;
+    inner = { flag = true; delta = delta; };
+    last = uint64(7);
+  };
+  storage.count := storage.count + 1n;
+  emit Placed { id = id; amount = storage.orders[id].amount; status = storage.orders[id].status; };
+}
+
+external function bump(const id : nat; const by : nat)
+  raises Missing
+is {
+  assert(storage.orders[id].status > uint8(0), Missing(id));
+  storage.orders[id].status := storage.orders[id].status + uint8(1);
+  storage.orders[id].amount := storage.orders[id].amount + by;
+  storage.orders[id].inner.delta := storage.orders[id].inner.delta - int16(1);
+  storage.orders[id].last := storage.orders[id].last + uint64(1);
+  storage.tail := storage.orders[id].status;
+}
+
+external function copy(const src : nat; const dst : nat) is {
+  const o : order := storage.orders[src];
+  storage.orders[dst] := o;
+  storage.orders[dst].inner := { flag = not o.inner.flag; delta = o.inner.delta; };
+}
+
+external function pair_set(const k : nat; const a : uint128; const b : uint128) is {
+  storage.pairs[Evm.sender()][k] := { a = a; b = b; };
+  storage.pairs[Evm.sender()][k + 1n].b := b;
+}
+
+external view function order_of(const id : nat) : order is storage.orders[id]
+
+external view function status_of(const id : nat) : uint8 is storage.orders[id].status
+
+external view function delta_of(const id : nat) : int16 is storage.orders[id].inner.delta
+
+external view function pair_of(const who : address; const k : nat) : pair is storage.pairs[who][k]

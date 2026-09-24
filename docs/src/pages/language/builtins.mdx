@@ -1,0 +1,179 @@
+---
+title: "Built-ins"
+description: "Reference for the Evm, Crypto, Abi, Nat, Int, and Address modules, options, and conversions."
+---
+
+# Built-ins
+
+Lithe has no magic globals. Execution context comes from `Evm`, hashing from `Crypto`, and encoding from `Abi`. Every call names where its value comes from, so a search for `Evm.` finds every place a contract depends on its environment.
+
+## `Evm`
+
+Execution context. Readable in `view` and stateful functions, and not in `pure` functions.
+
+### Message
+
+| Built-in | Type | Solidity |
+| --- | --- | --- |
+| `Evm.sender()` | `address` | `msg.sender` |
+| `Evm.value()` | `wei` | `msg.value`. Only in `payable` functions |
+| `Evm.calldata()` | `bytes` | `msg.data` |
+| `Evm.selector()` | `bytes4` | `msg.sig` |
+
+### Transaction
+
+| Built-in | Type | Solidity |
+| --- | --- | --- |
+| `Evm.tx_origin()` | `address` | `tx.origin`. Do not use for authorization |
+| `Evm.tx_gas_price()` | `wei` | `tx.gasprice` |
+
+### Block
+
+| Built-in | Type | Solidity |
+| --- | --- | --- |
+| `Evm.block_number()` | `nat` | `block.number` |
+| `Evm.block_timestamp()` | `timestamp` | `block.timestamp` |
+| `Evm.block_coinbase()` | `address` | `block.coinbase` |
+| `Evm.block_base_fee()` | `wei` | `block.basefee` |
+| `Evm.block_prevrandao()` | `bytes32` | `block.prevrandao` |
+| `Evm.block_gas_limit()` | `nat` | `block.gaslimit` |
+| `Evm.chain_id()` | `nat` | `block.chainid` |
+| `Evm.block_hash(n : nat)` | `bytes32` | `blockhash(n)` |
+| `Evm.blob_hash(i : nat)` | `bytes32` | `blobhash(i)` |
+
+### Accounts
+
+| Built-in | Type | Solidity |
+| --- | --- | --- |
+| `Evm.self()` | `address` | `address(this)` |
+| `Evm.balance(a : address)` | `wei` | `a.balance` |
+| `Evm.code_size(a : address)` | `nat` | `a.code.length` |
+| `Evm.code_hash(a : address)` | `bytes32` | `a.codehash` |
+| `Evm.gas_left()` | `nat` | `gasleft()` |
+
+### Sending ether
+
+| Built-in | Type | Solidity |
+| --- | --- | --- |
+| `Evm.transfer(to : address, amount : wei)` | `operation` | `payable(to).call{value: amount}("")` |
+
+`Evm.transfer` builds an operation, so it is only valid after `defer`, in a stateful function: `defer Evm.transfer(to, amount);`. See [Queries and deferred calls](/language/effects#evmtransfer).
+
+Reading `Evm.value()` outside a `payable` function is an error, so a function cannot rely on ether it could never receive:
+
+```lithe rejects
+storage is record {
+  n : nat;
+}
+
+external function go() is {
+  const x : wei := Evm.value();
+  skip
+}
+```
+
+```text
+external function `go` reads `Evm.value()`; write `external payable function`
+```
+
+## `Crypto`
+
+Hash functions and signature recovery. Usable in `pure` functions.
+
+| Built-in | Type | Solidity |
+| --- | --- | --- |
+| `Crypto.keccak256(x : bytes \| string)` | `bytes32` | `keccak256(x)` |
+| `Crypto.sha256(x : bytes \| string)` | `bytes32` | `sha256(x)` |
+| `Crypto.ripemd160(x : bytes \| string)` | `bytes20` | `ripemd160(x)` |
+| `Crypto.ecrecover(hash : bytes32, v : nat, r : bytes32, s : bytes32)` | `address` | `ecrecover(...)` |
+
+To hash several values, encode them first: `Crypto.keccak256(Abi.encode(a, b))`.
+
+## `Abi`
+
+ABI encoding and decoding. Usable in `pure` functions.
+
+| Built-in | Type | Solidity |
+| --- | --- | --- |
+| `Abi.encode(a, b, ...)` | `bytes` | `abi.encode(a, b, ...)` |
+| `Abi.encode_packed(a, b, ...)` | `bytes` | `abi.encodePacked(a, b, ...)` |
+| `Abi.encode_with_selector(sel : bytes4, a, ...)` | `bytes` | `abi.encodeWithSelector(sel, a, ...)` |
+| `Abi.encode_with_signature(sig : string, a, ...)` | `bytes` | `abi.encodeWithSignature(sig, a, ...)` |
+| `Abi.encode_call(Interface.method, a, ...)` | `bytes` | `abi.encodeCall(I.method, (a, ...))`. Arguments are type-checked |
+| `Abi.decode(data : bytes, T)` | `T` | `abi.decode(data, (T))` |
+
+`Abi.decode` takes a type name as its second argument: `Abi.decode(data, nat)`. A word, a string, bytes, or a list can be decoded; name a list type first, as `type ids is list(nat);`, then `Abi.decode(data, ids)`. Malformed data reverts.
+
+```lithe
+storage is record {
+  digest : bytes32;
+}
+
+external function commit(const amount : nat; const salt : bytes32) is {
+  storage.digest := Crypto.keccak256(Abi.encode(Evm.sender(), amount, salt));
+}
+
+external pure function round_trip(const n : nat) : nat is
+  Abi.decode(Abi.encode(n), nat)
+
+external pure function transfer_call(const to : address; const amount : nat) : bytes is
+  Abi.encode_with_signature("transfer(address,uint256)", to, amount)
+```
+
+## `Bytes` and `String`
+
+| Built-in | Type | Solidity |
+| --- | --- | --- |
+| `Bytes.concat(a, b, ...)` | `bytes` | `bytes.concat(a, b, ...)`. Arguments are `bytes` or `bytesN` |
+| `Bytes.word(b : bytes, offset : nat)` | `bytes32` | the 32 bytes at `offset`. `Panic(0x32)` if they run past the end |
+| `String.concat(a, b, ...)` | `string` | `string.concat(a, b, ...)` |
+
+```lithe
+storage is record {
+  greeting : string;
+}
+
+external function greet(const name : string) is {
+  storage.greeting := String.concat("hello, ", name, "!");
+}
+
+external pure function tagged(const tag : bytes4; const data : bytes) : bytes is
+  Bytes.concat(tag, data)
+```
+
+## `Nat`, `Int`, and `Address`
+
+Constants take their width from the type the context expects. With no expected type, they are 256-bit.
+
+| Built-in | Type | Solidity |
+| --- | --- | --- |
+| `Nat.max` | `nat`, or the expected unsigned type | `type(uint256).max` |
+| `Int.min`, `Int.max` | `int`, or the expected signed type | `type(int256).min`, `.max` |
+| `Address.zero` | `address` | `address(0)` |
+| `Nat.div_rem(a, b)` | `(T, T)` | `(a / b, a % b)` |
+| `Nat.mul_div(a, b, d : nat)` | `nat` | `Math.mulDiv(a, b, d)`: `a * b / d` with the product in 512 bits. `Panic(0x11)` if the result doesn't fit, `Panic(0x12)` if `d` is zero |
+| `Nat.mul_mod(a, b, d : nat)`, `Nat.add_mod(a, b, d : nat)` | `nat` | `mulmod(a, b, d)`, `addmod(a, b, d)`, without overflow. `Panic(0x12)` if `d` is zero |
+| `Int.div_rem(a, b)` | `(T, T)` | `(a / b, a % b)`, truncating |
+
+```lithe
+storage is record {
+  cap : uint8;
+}
+
+external function reset() is {
+  storage.cap := Nat.max;
+}
+
+external pure function bounds() : (int16, int16) is
+  (Int.min, Int.max)
+```
+
+Here `storage.cap := Nat.max` stores 255, because the target is a `uint8`.
+
+## `Some` and `None`
+
+`Some(x)` and `None` build [options](/language/types#options).
+
+## Conversions
+
+A type name used as a function converts to it: `nat(x)`, `uint8(n)`, `int(n)`, `address(b)`, `bytes20(a)`, `wei(n)`, `timestamp(n)`, and the names of your own nominal types. See [Conversions](/language/types#conversions).

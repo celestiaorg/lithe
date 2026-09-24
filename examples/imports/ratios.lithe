@@ -1,0 +1,4 @@
+type basis_points is uint16;
+
+view function apply(const fee : basis_points; const amount : nat) : nat is
+  amount

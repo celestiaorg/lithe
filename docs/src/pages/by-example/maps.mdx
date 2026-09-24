@@ -1,0 +1,39 @@
+---
+title: "Maps"
+description: "Mappings, nested mappings, defaults, and deletion."
+---
+
+# Maps
+
+`map(K, V)` is a Solidity mapping. It lives in storage, every key starts at zero, and keys cannot be enumerated.
+
+```lithe [maps.lithe]
+storage is record {
+  balances : map(address, nat);
+  (* Maps nest: owner -> spender -> amount. *)
+  allowances : map(address, map(address, nat));
+}
+
+(* A missing key reads as the zero value. *)
+external view function balance_of(const who : address) : nat is
+  storage.balances[who]
+
+external function set_balance(const amount : nat) is {
+  storage.balances[Evm.sender()] := amount;
+}
+
+(* Deleting is writing the zero value. *)
+external function clear() is {
+  storage.balances[Evm.sender()] := 0n;
+}
+
+external function approve(const spender : address; const amount : nat) is {
+  storage.allowances[Evm.sender()][spender] := amount;
+}
+
+external view function allowance(const owner : address; const spender : address) : nat is
+  storage.allowances[owner][spender]
+```
+
+- There is no `delete`. Write the zero value.
+- Map keys are single words: integers, `bool`, `address`, `bytesN`, and nominal types over them. Values can be words, maps, or records of words.

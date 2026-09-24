@@ -1,0 +1,227 @@
+---
+title: "Statements"
+description: "Bindings, assignment, if, for loops, assert and fail, emit, defer, and skip."
+---
+
+# Statements
+
+A block is a sequence of statements in braces, each ending with `;`:
+
+| Statement | Form |
+| --- | --- |
+| Immutable binding | `const name : type := expr;` |
+| Tuple binding | `const (a, b) : (t, u) := expr;` |
+| Mutable binding | `var name : type := expr;` |
+| Assignment | `name := expr;`, `storage.path := expr;` |
+| Call | `f(args);`, `Module.f(args);` |
+| Conditional | `if cond then { ... } else { ... }` |
+| Loop | `for x : T in xs [until cond] [bound n] do { ... }`, or over `lo .. hi` |
+| Tuple assignment | `(a, b) := expr;` |
+| Assertion | `assert(cond, Error);` |
+| Failure | `fail Error;` |
+| Event | `emit Event { field = value; };` |
+| Deferred call | `defer target.method(args);`, with optional `with value = v` and `then (...) { ... }` |
+| No-op | `skip` |
+
+## Bindings
+
+`const` binds a value that never changes. `var` binds a value that `:=` can reassign. Every binding states its type, and names cannot shadow other names in scope.
+
+```lithe
+storage is record {
+  total : nat;
+}
+
+external function add(const a : nat; const b : nat) is {
+  const sum : nat := a + b;
+  var bonus : nat := 0n;
+  if sum > 100n then {
+    bonus := 1n;
+  }
+  storage.total := storage.total + sum + bonus;
+}
+```
+
+```lithe rejects
+storage is record {
+  count : nat;
+}
+
+external function go() is {
+  const taken := storage.count;
+}
+```
+
+```text
+local bindings require a type
+```
+
+## Assignment
+
+`:=` writes a local `var`, a mutable parameter, or a storage location. Storage locations are always qualified:
+
+| Target | Example |
+| --- | --- |
+| default storage | `storage.count := 1n;` |
+| a map entry | `storage.balances[who] := 0n;` |
+| a nested map entry | `storage.allowances[owner][spender] := n;` |
+| a field of a stored record | `storage.orders[id].status := uint8(2);` |
+| named storage | `config.fee := 30n;` |
+| a module's storage, from outside it | `Ledger.ledger.total := 0n;` |
+
+An unqualified storage name is an error:
+
+```lithe rejects
+storage is record {
+  paid : nat;
+}
+
+external function pay(const to : address) is {
+  paid := paid + 1n;
+}
+```
+
+```text
+storage field `paid` must be qualified as `storage.paid`
+```
+
+## `if`
+
+```lithe fragment
+if balance >= amount then {
+  storage.balance := balance - amount;
+} else {
+  fail Insufficient;
+}
+```
+
+The condition must be a `bool`. Both branches are blocks. There is no `else if`: nest another `if` inside the `else` block.
+
+## `assert` and `fail`
+
+`assert(cond, Error)` reverts with `Error` when `cond` is false. `fail Error` reverts unconditionally. Both take a declared error, never a string:
+
+```lithe fragment
+assert(Evm.sender() = storage.owner, Not_owner);
+assert(amount <= limit, Too_large(amount));
+fail Insufficient_balance { available = have; required = amount; };
+```
+
+The error must appear in the function's `raises` clause, or be inferable for an internal function. See [Errors](/language/errors).
+
+## `emit` and `defer`
+
+`emit` records an event and `defer` records an external call. Both are statements. See [Events](/language/events) and [Queries and deferred calls](/language/effects).
+
+## `skip`
+
+`skip` does nothing. It is useful for an empty branch or body:
+
+```lithe fragment
+| Stop -> { skip }
+```
+
+## `for`
+
+A `for` loop runs its body once per element of a list, or once per number in a half-open range. The number of iterations is fixed when the loop starts, so the gas a loop can use is visible in the source:
+
+```lithe
+storage is record {
+  owners : list(address, 3);
+  is_owner : map(address, bool);
+  total : nat;
+}
+
+external function mark() is {
+  for owner : address in storage.owners do {
+    storage.is_owner[owner] := true;
+  }
+}
+
+external function triangle(const n : nat) is {
+  var acc : nat := 0n;
+  for i : nat in 0n .. n do {
+    acc := acc + i;
+  }
+  storage.total := acc;
+}
+```
+
+| Form | Iterates |
+| --- | --- |
+| `for x : T in xs do { ... }` | each element of a list, fixed or dynamic, in storage or local |
+| `for (i, x) : (nat, T) in xs do { ... }` | each element with its index |
+| `for i : T in lo .. hi do { ... }` | each integer from `lo` up to, not including, `hi` |
+
+The loop variables are `const`, bound afresh each iteration, and typed like every other binding. `_` binds nothing. A range's ends have the loop variable's type, which can be any integer type. Maps cannot be iterated: keep an [enumerable set](/by-example/iterable-set).
+
+The count is read once, at entry. A dynamic list that the body appends to does not extend the loop. There is no `while`.
+
+### `until`
+
+`until cond` is checked before each iteration, including the first, and ends the loop when it is true. It is the only early exit:
+
+```lithe fragment
+var hit : nat := 0n;
+for (i, who) : (nat, address) in storage.members until hit <> 0n do {
+  if who = target then {
+    hit := i + 1n;
+  }
+}
+```
+
+### `bound`
+
+`bound n` caps the number of iterations at a number fixed when the contract is compiled. A longer list, or a wider range, reverts with `Panic(0x01)` before the loop starts:
+
+```lithe fragment
+for who : address in storage.members bound 50 do {
+  storage.is_member[who] := true;
+}
+```
+
+A loop over a storage list, or a range whose ends come from storage, can grow with the contract's state until an entrypoint no longer fits in a block. The compiler warns about such a loop unless it carries a `bound`:
+
+```text
+warning: the number of iterations depends on storage, so this
+loop's gas grows as the collection grows and can exceed the block limit
+
+consider `bound N` to cap it
+```
+
+A loop over a parameter is not warned about: the caller chose its size and pays for it. A fixed list's length is in its type.
+
+### Effects in a loop
+
+`emit`, `defer`, `query`, and continuations all work inside a loop. A `defer` records one call per iteration, in order, and a `then` block sees the bindings of the iteration that deferred it:
+
+```lithe fragment
+for (i, amount) : (nat, nat) in amounts do {
+  defer storage.exchange.swap(amount) then (out : nat) {
+    storage.results[i] := out;
+  };
+}
+```
+
+## Tuple assignment
+
+`(a, b) := expr;` assigns each element of a tuple to a `var`, at once, so two values can be stepped together:
+
+```lithe fragment
+var x : nat := a;
+var y : nat := b;
+for _ : nat in 0n .. 256n until y = 0n do {
+  (x, y) := (y, x % y);
+}
+```
+
+## Function bodies
+
+A function body is one of:
+
+- an expression: `is a + b`
+- a block: `is { ... }`
+- a block followed by a result: `is { ... } with expr`
+- a guard block followed by a `case`: `is { ... } with case x of { ... }`
+
+Names bound in the block are in scope in the `with` expression.

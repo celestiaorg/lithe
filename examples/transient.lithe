@@ -1,0 +1,66 @@
+(* Transient storage lasts for the transaction: shared across calls, gone when it ends,
+   and read and written with TLOAD / TSTORE. Storage persists; locals last for the call. *)
+
+error Already_processing;
+error Not_settling;
+
+module Settlement is {
+  transient storage execution is record {
+    active : bool;
+    depth : uint8;
+  }
+
+  function begin() is {
+    execution.active := true;
+    execution.depth := execution.depth + uint8(1);
+  }
+
+  view function active() : bool is
+    execution.active
+}
+
+interface Me is {
+  call confirm() : unit;
+}
+
+transient storage scratch is record {
+  processing : bool;
+  pending : nat;
+  touched : map(address, nat);
+}
+
+transient storage is record {
+  locked : bool;
+}
+
+storage is record {
+  processed : nat;
+  confirmed : nat;
+}
+
+use Settlement;
+
+external function process(const me : Me; const amount : nat)
+  raises Already_processing
+is {
+  assert(not scratch.processing, Already_processing);
+  scratch.processing := true;
+  scratch.pending := amount;
+  scratch.touched[Evm.sender()] := scratch.touched[Evm.sender()] + amount;
+  transient.locked := true;
+  Settlement.begin();
+  storage.processed := storage.processed + amount;
+  defer me.confirm();
+}
+
+(* Called back during `process`'s deferred call, it sees that transaction's scratch. *)
+external function confirm()
+  raises Not_settling
+is {
+  assert(Settlement.execution.active, Not_settling);
+  storage.confirmed := storage.confirmed + scratch.pending;
+}
+
+external view function processing() : bool is scratch.processing
+
+external view function settling() : bool is Settlement.active()

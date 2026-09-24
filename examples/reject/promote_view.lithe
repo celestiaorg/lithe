@@ -1,0 +1,15 @@
+module Ledger is {
+  function transfer(const amount : nat) is {
+    skip
+  }
+}
+
+contract Token is {
+  storage is record {
+    n : nat;
+  }
+
+  use Ledger;
+
+  external view function transfer is Ledger.transfer;
+}

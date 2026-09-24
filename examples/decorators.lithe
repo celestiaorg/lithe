@@ -1,0 +1,33 @@
+(* One function form. Decorators classify visibility and effects. *)
+
+storage is record {
+  count : nat;
+  paid : wei;
+}
+
+view function doubled(const n : nat) : nat is
+  n + n
+
+function stamp(const n : nat) : nat is {
+  storage.count := n;
+} with storage.count
+
+function bump(const n : nat) is {
+  storage.count := storage.count + doubled(n);
+}
+
+external view function count() : nat is
+  storage.count
+
+external function set(const n : nat) is {
+  const saved : nat := stamp(n);
+  skip
+}
+
+external function add(const n : nat) is {
+  bump(n);
+}
+
+external payable function deposit() is {
+  storage.paid := storage.paid + Evm.value();
+}

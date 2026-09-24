@@ -1,0 +1,52 @@
+---
+title: "Named storage"
+description: "ERC-7201 storage domains."
+---
+
+# Named storage
+
+Named domains live at ERC-7201 roots derived from their id strings. They never collide with each other or with the default record, and they survive upgrades and refactors.
+
+```lithe [named-storage.lithe]
+(* A named storage domain lives at an ERC-7201 root derived from its id, so
+   its slots never collide with other domains and survive upgrades and
+   refactors. The default `storage` record starts at slot 0, like Solidity. *)
+
+storage is record {
+  count : nat;
+}
+
+storage config at "example.config" is record {
+  fee : nat;
+  treasury : address;
+}
+
+storage stats at "example.stats" is record {
+  volume : nat;
+  users : map(address, bool);
+}
+
+(* A named domain is accessed by its name, not `storage.` *)
+external function configure(const fee : nat; const treasury : address) is {
+  config.fee := fee;
+  config.treasury := treasury;
+}
+
+external function trade(const amount : nat) is {
+  storage.count := storage.count + 1n;
+  stats.volume := stats.volume + amount;
+  stats.users[Evm.sender()] := true;
+}
+
+external view function fee() : nat is
+  config.fee
+```
+
+`lithe storage named-storage.lithe` prints each domain's root and slots:
+
+```text
+config "example.config"
+  root: 0x6169440e53b52b8b82649b9dc5d8cd0b3a6620a5608957f4eba1e677ed793300
+  fee: uint256       slot 0
+  treasury: address  slot 1, offset 0, 20 bytes
+```

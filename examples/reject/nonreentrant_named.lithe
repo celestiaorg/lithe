@@ -1,0 +1,5 @@
+storage is record {
+  n : nat;
+}
+
+external nonreentrant("settlement") function go() is { skip }

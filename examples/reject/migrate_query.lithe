@@ -1,0 +1,19 @@
+upgradeable
+
+error Denied;
+
+interface Reader is {
+  query read() : nat;
+}
+
+storage is record {
+  n : nat;
+}
+
+upgrade guard is {
+  assert(true, Denied);
+}
+
+migrate init(const source : Reader) is {
+  storage.n := query source.read();
+}

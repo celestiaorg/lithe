@@ -1,0 +1,34 @@
+(* Merkle proof verification, compatible with OpenZeppelin's `MerkleProof` and the
+   `@openzeppelin/merkle-tree` library: each pair of nodes is hashed in sorted order.
+
+   A proof is `bytes`: the sibling hashes, 32 bytes each, from the leaf up, as
+   `concat(proof)` off-chain. A proof whose length is not a multiple of 32 raises
+   `MerkleProofInvalidLength`. *)
+
+module Merkle is {
+  error MerkleProofInvalidLength of nat;
+
+  pure function verify(const proof : bytes; const root : bytes32; const leaf : bytes32) : bool
+    raises MerkleProofInvalidLength
+  is
+    process_proof(proof, leaf) = root
+
+  (* The root that `proof` leads to from `leaf`: one level up per node. *)
+  pure function process_proof(const proof : bytes; const leaf : bytes32) : bytes32
+    raises MerkleProofInvalidLength
+  is {
+    assert(proof.length % 32n = 0n, MerkleProofInvalidLength(proof.length));
+    var node : bytes32 := leaf;
+    for level : nat in 0n .. proof.length / 32n do {
+      node := hash_pair(node, Bytes.word(proof, level * 32n));
+    }
+  } with node
+
+  (* The parent of two nodes, whichever order they come in. *)
+  pure function hash_pair(const a : bytes32; const b : bytes32) : bytes32 is {
+    var pair : bytes32 := Crypto.keccak256(Abi.encode_packed(b, a));
+    if nat(a) < nat(b) then {
+      pair := Crypto.keccak256(Abi.encode_packed(a, b));
+    }
+  } with pair
+}

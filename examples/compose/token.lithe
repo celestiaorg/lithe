@@ -1,0 +1,7 @@
+import "./ledger.lithe";
+
+contract Token is {
+  use Ledger;
+
+  external function ping is Ledger.ping;
+}

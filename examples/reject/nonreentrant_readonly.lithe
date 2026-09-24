@@ -1,0 +1,8 @@
+storage is record {
+  n : nat;
+}
+
+view nonreentrant function calculate() : nat is
+  storage.n
+
+external function go() is { skip }

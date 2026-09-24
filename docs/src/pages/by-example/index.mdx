@@ -1,0 +1,83 @@
+---
+title: "Lithe by Example"
+description: "Short, complete Lithe programs for common smart-contract tasks, each checked against the compiler."
+---
+
+# Lithe by Example
+
+Short, complete programs that show Lithe's syntax and idioms, in the spirit of [Solidity by Example](https://solidity-by-example.org). Each one is a whole contract that you can compile with `lithe compile`. The docs build compiles every example, so none of them can fall out of date.
+
+New to Lithe? Read [Introduction](/guide/introduction) and [The transition model](/guide/transition-model) first, then work through the Basics in order.
+
+## Basics
+
+- [Hello world](/by-example/hello-world): The smallest useful Lithe contract.
+- [Counter](/by-example/counter): Read, increment, and decrement a stored number.
+- [Primitive types](/by-example/primitive-types): Booleans, integers of every width, addresses, bytes, strings, and semantic types.
+- [Variables](/by-example/variables): Locals, storage, transient storage, and execution context.
+- [Constants](/by-example/constants): Named constants as pure functions, and built-in bounds.
+- [Reading and writing state](/by-example/state): Views read storage; stateful functions write it.
+- [Ether and time units](/by-example/units): wei, gwei, eth, and durations, with typed arithmetic.
+- [If / else](/by-example/if-else): Conditionals, nested branches, and choosing a value.
+- [Loops](/by-example/loops): For loops over lists and ranges, with until and bound.
+
+## Data
+
+- [Maps](/by-example/maps): Mappings, nested mappings, defaults, and deletion.
+- [Lists](/by-example/lists): Dynamic and fixed-length lists in storage and memory.
+- [Variants](/by-example/variants): Closed sets of cases with payloads, matched exhaustively.
+- [Records](/by-example/records): Structs: declaring, constructing, storing, and updating fields.
+- [Tuples](/by-example/tuples): Grouping values by position, returning several values, and destructuring.
+- [Options](/by-example/options): Optional values with Some and None.
+- [Nominal types](/by-example/nominal-types): New types over existing representations, for domain safety at no runtime cost.
+
+## Functions
+
+- [Functions](/by-example/functions): Parameters, results, blocks with with, mutable parameters, and tuples.
+- [View and pure](/by-example/view-and-pure): Declared effects, checked by the compiler.
+- [Visibility](/by-example/visibility): External, internal, and private functions.
+- [Errors](/by-example/errors): Declaring errors, raising them, and declaring what a function raises.
+- [Guards](/by-example/guards): Access control shared by groups of entrypoints, instead of modifiers.
+- [Events](/by-example/events): Declaring, indexing, and emitting events.
+- [Initialization](/by-example/initialization): Setting up a contract as it is deployed.
+
+## Ether and calls
+
+- [Payable](/by-example/payable): Accepting ether.
+- [Sending ether](/by-example/sending-ether): Deferred transfers and why ordering is safe.
+- [Interfaces and queries](/by-example/interfaces): Typed interfaces and synchronous read-only calls.
+- [Calling other contracts](/by-example/calling-contracts): Deferred state-changing calls, with ether attached.
+- [Using call results](/by-example/continuations): Continuations that run after a deferred call returns.
+- [Recovering from failed calls](/by-example/try-catch): Lithe's try/catch: Ok and Error arms on deferred calls, transfers, and queries.
+- [Reentrancy](/by-example/reentrancy): What deferral prevents, and serializing with nonreentrant.
+
+## Contracts and modules
+
+- [Modules](/by-example/modules): Composition in place of inheritance.
+- [Imports](/by-example/imports): Splitting code across files.
+- [Generic modules](/by-example/generics): Type-parameterized collections, specialized at compile time.
+- [Named storage](/by-example/named-storage): ERC-7201 storage domains.
+- [Transient storage](/by-example/transient-storage): Transaction-scoped state with TLOAD and TSTORE.
+- [Dispatch](/by-example/dispatch): Nested action groups flattened into a normal ABI.
+- [Upgradeable contract](/by-example/upgradeable): UUPS upgrades with a guard and a one-time migration.
+
+## Encoding and crypto
+
+- [ABI encode and decode](/by-example/abi): Encoding, decoding, packed encoding, and calldata.
+- [Hashing](/by-example/hashing): keccak256 and a commit-reveal game.
+- [Verifying signatures](/by-example/signatures): ecrecover with the EIP-191 prefix and replay protection.
+
+## Applications
+
+- [Ether wallet](/by-example/ether-wallet): Anyone can deposit; only the owner can withdraw.
+- [ERC-20 token](/by-example/erc20): A complete ERC-20 with owner minting and ERC-6093 errors.
+- [ERC-721 NFT](/by-example/erc721): Ownership, approvals, operators, transfers, mint, and burn.
+- [Multi-sig wallet](/by-example/multisig): Submit, confirm, revoke, and execute ether payments with 2-of-3 approval.
+- [Iterable set](/by-example/iterable-set): Enumerate members without loops.
+- [Escrow](/by-example/escrow): A buyer, a seller, and an arbiter.
+- [Crowdfund](/by-example/crowdfund): Pledge toward a goal, then claim or refund.
+- [English auction](/by-example/english-auction): Ascending bids with pull-based refunds.
+- [Dutch auction](/by-example/dutch-auction): A price that falls over time.
+- [Time lock](/by-example/time-lock): Queue payments with a delay before they can execute.
+- [Vesting](/by-example/vesting): Linear release of ether to a beneficiary.
+- [Order executor](/by-example/order-executor): Swap, then deposit the proceeds, with chained continuations.

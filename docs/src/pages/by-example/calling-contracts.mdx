@@ -1,0 +1,52 @@
+---
+title: "Calling other contracts"
+description: "Deferred state-changing calls, with ether attached."
+---
+
+# Calling other contracts
+
+A call that changes another contract's state is deferred with `defer`. It runs after this entrypoint's writes and events. Use `with value = ...` to attach ether.
+
+```lithe [calling-contracts.lithe]
+(* A state-changing call to another contract is deferred: it runs after this
+   entrypoint's writes and events, never in the middle of them. *)
+
+interface Token is {
+  query balanceOf(owner : address) : nat;
+  call transfer(to : address; amount : nat) : bool;
+}
+
+interface Pool is {
+  call deposit(beneficiary : address) : unit;
+}
+
+error Empty;
+
+storage is record {
+  token : Token;
+  pool : Pool;
+  swept : nat;
+}
+
+external function init(const token : Token; const pool : Pool) is {
+  storage.token := token;
+  storage.pool := pool;
+}
+
+external function sweep(const to : address)
+  raises Empty
+is {
+  const held : nat := query storage.token.balanceOf(Evm.self());
+  assert(held > 0n, Empty);
+  storage.swept := storage.swept + held;
+  defer storage.token.transfer(to, held);
+}
+
+(* Attach ether with `with value = ...`. The value is a `nat` of wei. *)
+external payable function forward() is {
+  defer storage.pool.deposit(Evm.sender()) with value = nat(Evm.value());
+}
+```
+
+- The arguments are evaluated at the `defer`, so `held` is the balance read at that point.
+- The compiler warns that `sweep` and `forward` could be re-entered while their calls run. Add `nonreentrant` where that matters.

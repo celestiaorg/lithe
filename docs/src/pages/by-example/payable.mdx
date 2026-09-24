@@ -1,0 +1,36 @@
+---
+title: "Payable"
+description: "Accepting ether."
+---
+
+# Payable
+
+Only `external payable` functions accept ether. Every other entrypoint rejects a call that carries ether, and `Evm.value()` can only be read in a payable function.
+
+```lithe [payable.lithe]
+(* Only `external payable` functions accept ether. Every other entrypoint rejects
+   a call with value before its body runs, and reading `Evm.value()` outside a
+   payable function is a compile error. *)
+
+event Deposit of record {
+  indexed from : address;
+  amount : wei;
+}
+
+storage is record {
+  deposits : map(address, wei);
+}
+
+external payable function deposit() is {
+  storage.deposits[Evm.sender()] := storage.deposits[Evm.sender()] + Evm.value();
+  emit Deposit { from = Evm.sender(); amount = Evm.value(); };
+}
+
+external view function balance() : wei is
+  Evm.balance(Evm.self())
+
+external view function deposited(const who : address) : wei is
+  storage.deposits[who]
+```
+
+There is no `receive` or `fallback`. A plain ether transfer with no calldata reverts. Callers send ether to a payable entrypoint such as `deposit()`.

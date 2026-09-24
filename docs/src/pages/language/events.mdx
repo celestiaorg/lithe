@@ -1,0 +1,83 @@
+---
+title: "Events"
+description: "Declaring events, indexed fields, and emitting."
+---
+
+# Events
+
+An event is a record type that can be logged. Declare it with `event`, and log it with `emit`:
+
+```lithe
+event Transfer of record {
+  indexed from : address;
+  indexed to : address;
+  amount : nat;
+}
+
+storage is record {
+  balances : map(address, nat);
+}
+
+external function send(const to : address; const amount : nat) is {
+  storage.balances[Evm.sender()] := storage.balances[Evm.sender()] - amount;
+  storage.balances[to] := storage.balances[to] + amount;
+  emit Transfer { from = Evm.sender(); to = to; amount = amount; };
+}
+```
+
+Events compile to standard EVM logs. The first topic is the event signature's hash, so `Transfer` above is the ERC-20 `Transfer(address,address,uint256)` event.
+
+## Indexed fields
+
+`indexed` fields become topics that clients can filter on. An event can have at most three:
+
+```lithe rejects
+event Foo of record {
+  indexed a : nat;
+  indexed b : nat;
+  indexed c : nat;
+  indexed d : nat;
+}
+
+storage is record {
+  n : nat;
+}
+
+external function go() is { skip }
+```
+
+```text
+event `Foo` declares 4 indexed fields
+```
+
+A field that isn't indexed can hold any ABI value: a string, bytes, or a list goes in the log's data, ABI-encoded after the other fields.
+
+As in Solidity, an indexed `string`, `bytes`, or list is logged as its `keccak256` hash:
+
+```lithe
+event Renamed of record {
+  indexed name : string;
+  by : address;
+}
+
+storage is record {
+  name : string;
+}
+
+external function rename(const name : string) is {
+  storage.name := name;
+  emit Renamed { name = name; by = Evm.sender(); };
+}
+```
+
+`indexed` belongs on the declaration only. It is an error on an `emit`, and on any record that is not an event.
+
+## Emitting
+
+`emit Name { field = value; ... }` names every field. An event with no fields is declared `event Name of record {}` and emitted as `emit Name {};`.
+
+Events are recorded where `emit` runs and logged in source order after the transition's storage writes, before any deferred call. `emit` requires a stateful function, and a `view` cannot emit.
+
+## Events in modules
+
+A module's events are part of the module. Contracts that use the module log them under the same signatures, so a standard module's `Transfer` is the standard `Transfer`.

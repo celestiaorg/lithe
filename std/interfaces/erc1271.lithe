@@ -1,0 +1,6 @@
+(* ERC-1271: signatures made by contracts. A valid signature answers with the selector
+   `0x1626ba7e`. *)
+
+interface IERC1271 is {
+  query isValidSignature(hash : bytes32; signature : bytes) : bytes4;
+}

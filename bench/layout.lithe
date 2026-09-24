@@ -1,0 +1,64 @@
+(* Benchmark: packed fixed lists, records, and tuples. Mirrors layout.sol slot for slot. *)
+
+type pos is record {
+  x : uint16;
+  y : uint16;
+  live : bool;
+}
+
+storage is record {
+  small : uint8;
+  levels : list(uint8, 40);
+  flags : list(bool, 5);
+  deltas : list(int16, 3);
+  spot : pos;
+  pair : (uint32, address);
+  tail : uint64;
+  total : nat;
+}
+
+external function set_level(const i : nat; const v : uint8) is {
+  storage.levels[i] := v;
+}
+
+external function set_flag(const i : nat; const f : bool) is {
+  storage.flags[i] := f;
+}
+
+external function set_delta(const i : nat; const d : int16) is {
+  storage.deltas[i] := d;
+}
+
+external function place(const x : uint16; const y : uint16) is {
+  storage.spot.x := x;
+  storage.spot.y := y;
+  storage.spot.live := true;
+}
+
+external function set_pair(const a : uint32; const who : address) is {
+  storage.pair := (a, who);
+}
+
+external function bump(const t : uint64) is {
+  storage.tail := t;
+  storage.small := storage.small + 1;
+  storage.total := storage.total + 1n;
+}
+
+external view function level(const i : nat) : uint8 is
+  storage.levels[i]
+
+external view function flag(const i : nat) : bool is
+  storage.flags[i]
+
+external view function delta(const i : nat) : int16 is
+  storage.deltas[i]
+
+external view function spot() : (uint16, uint16, bool) is
+  (storage.spot.x, storage.spot.y, storage.spot.live)
+
+external view function pair() : (uint32, address) is
+  storage.pair
+
+external view function small() : uint8 is
+  storage.small

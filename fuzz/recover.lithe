@@ -1,0 +1,90 @@
+(* Fuzz target: recoverable external calls. A deferred call's `Error` arm runs as its own
+   phase with the revert data; a query's outcome picks a `case` arm in the transition.
+   The interpreter answers 0xcd with the call's own arguments, reverts at 0xee with them as
+   the revert data, and answers 0x1 with one malformed byte; other addresses fail queries. *)
+
+error Unavailable;
+
+interface Ext is {
+  call swap(amount : nat) : nat;
+  call notify(id : nat) : unit;
+  query price(asset : nat) : nat;
+  query small(asset : nat) : uint8;
+}
+
+storage is record {
+  status : nat;
+  out : nat;
+  failures : nat;
+  notified : bool;
+  price : nat;
+  small : uint8;
+  reason : bytes;
+}
+
+external function execute(const ex : Ext; const amount : nat) is {
+  storage.status := 1n;
+  defer ex.swap(amount) then {
+    | Ok(result : nat) -> {
+        storage.status := 2n;
+        storage.out := result;
+      }
+    | Error(reason : bytes) -> {
+        storage.status := 3n;
+        storage.reason := reason;
+        storage.failures := storage.failures + 1n;
+      }
+  };
+}
+
+external function ping(const ex : Ext; const id : nat) is {
+  defer ex.notify(id) then {
+    | Ok -> {
+        storage.notified := true;
+      }
+    | Error(_) -> {
+        storage.notified := false;
+      }
+  };
+}
+
+external function read(const ex : Ext; const asset : nat)
+  raises Unavailable
+is {
+  case query ex.price(asset) of {
+    | Ok(price) -> {
+        storage.price := price;
+      }
+    | Error(_) -> {
+        fail Unavailable;
+      }
+  }
+}
+
+external function read_small(const ex : Ext; const asset : nat) is {
+  case query ex.small(asset) of {
+    | Ok(value) -> {
+        storage.small := value;
+      }
+    | Error(reason) -> {
+        storage.reason := reason;
+      }
+  }
+}
+
+(* A plain query reverts on failure, and on an answer that does not fit its type. *)
+external function read_plain(const ex : Ext; const asset : nat) is {
+  const value : uint8 := query ex.small(asset);
+  storage.small := value;
+}
+
+(* The same, with the query issued before the write that precedes it. *)
+external function read_early(const ex : Ext; const asset : nat) is {
+  storage.status := 9n;
+  const value : uint8 := query ex.small(asset);
+  storage.small := value;
+}
+
+external view function status() : nat is storage.status
+
+external view function reason() : bytes is storage.reason

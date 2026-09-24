@@ -1,0 +1,2 @@
+external payable view function go() : nat is
+  0n

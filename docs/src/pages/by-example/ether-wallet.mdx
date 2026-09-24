@@ -1,0 +1,47 @@
+---
+title: "Ether wallet"
+description: "Anyone can deposit; only the owner can withdraw."
+---
+
+# Ether wallet
+
+A minimal wallet: deposits are open to anyone, and withdrawals are limited to the owner.
+
+```lithe [ether-wallet.lithe]
+(* Anyone can send ether in. Only the owner can take it out. *)
+
+error Not_owner;
+error Already_initialized;
+error Insufficient of wei;
+
+event Deposit of record {
+  indexed from : address;
+  amount : wei;
+}
+
+storage is record {
+  owner : address;
+}
+
+external function init()
+  raises Already_initialized
+is {
+  assert(storage.owner = Address.zero, Already_initialized);
+  storage.owner := Evm.sender();
+}
+
+external payable function deposit() is {
+  emit Deposit { from = Evm.sender(); amount = Evm.value(); };
+}
+
+external function withdraw(const amount : wei)
+  raises Not_owner | Insufficient
+is {
+  assert(Evm.sender() = storage.owner, Not_owner);
+  assert(Evm.balance(Evm.self()) >= amount, Insufficient(Evm.balance(Evm.self())));
+  defer Evm.transfer(storage.owner, amount);
+}
+
+external view function balance() : wei is
+  Evm.balance(Evm.self())
+```

@@ -1,0 +1,130 @@
+---
+title: "Generic modules"
+description: "Type-parameterized collections, specialized at compile time."
+---
+
+# Generic modules
+
+A generic module like `Set(T : map_key)` is specialized for each element type it is used with. `Set(order_id)` and `Set(address)` are distinct types with their own code.
+
+:::code-group
+
+```lithe [generics.lithe]
+(* Generic modules specialize at compile time: no runtime cost, no casts.
+   `Set(T : map_key)` accepts any type that can key a map. *)
+
+import "./lib/set.lithe";
+import "./lib/set_enumerable.lithe";
+
+type order_id is bytes32;
+
+storage is record {
+  admins : Set(address);
+  orders : Set(order_id);
+  members : SetEnumerable(address);
+}
+
+(* Functions can be generic too. *)
+pure function first(T)(const a : T; const b : T) : T is
+  a
+
+external function add_admin(const who : address) is {
+  Set.add(storage.admins, who);
+}
+
+external view function is_admin(const who : address) : bool is
+  Set.contains(storage.admins, who)
+
+(* `Set(order_id)` is not `Set(bytes32)`: the element type is checked. *)
+external function track(const id : bytes32) is {
+  Set.add(storage.orders, order_id(id));
+}
+
+external function join() is {
+  SetEnumerable.add(storage.members, first(Evm.sender(), Evm.tx_origin()));
+}
+
+external view function member_count() : nat is
+  SetEnumerable.length(storage.members)
+
+external view function member_at(const i : nat) : address
+  raises Out_of_bounds
+is
+  SetEnumerable.at(storage.members, i)
+```
+
+```lithe [lib/set.lithe]
+(* Membership set. One mapping, no enumeration. *)
+
+module Set(T : map_key) is {
+  type self is map(T, bool);
+
+  view function contains(const set : self; const value : T) : bool is
+    set[value]
+
+  function add(const set : self; const value : T) is {
+    set[value] := true;
+  }
+
+  function remove(const set : self; const value : T) is {
+    set[value] := false;
+  }
+}
+```
+
+```lithe [lib/set_enumerable.lithe]
+(* Membership plus enumeration. The list and the index map are both stored. *)
+
+module SetEnumerable(T : map_key) is {
+  type self is record {
+    values : list(T);
+    indexes : map(T, nat);
+    count : nat;
+  }
+
+  type iterator is record {
+    index : nat;
+  }
+
+  error Out_of_bounds;
+
+  view function contains(const items : self; const value : T) : bool is
+    items.indexes[value] > 0n
+
+  view function length(const items : self) : nat is
+    items.count
+
+  view function at(const items : self; const index : nat) : T
+    raises Out_of_bounds
+  is {
+    assert(index < items.count, Out_of_bounds);
+  } with items.values[index]
+
+  function add(const items : self; const value : T) is {
+    if items.indexes[value] = 0n then {
+      items.values[items.count] := value;
+      items.count := items.count + 1n;
+      items.indexes[value] := items.count;
+    }
+  }
+
+  function remove(const items : self; const value : T) is {
+    const found : nat := items.indexes[value];
+    if found = 0n then {
+      skip
+    } else {
+      const last : nat := items.count - 1n;
+      const moved : T := items.values[last];
+      items.values[found - 1n] := moved;
+      items.indexes[moved] := found;
+      items.indexes[value] := 0n;
+      items.count := last;
+    }
+  }
+}
+```
+
+:::
+
+- `Set.add(storage.admins, who)` works on the storage location it is given. The set module owns no storage of its own.
+- `map_key` limits `T` to types that can key a map. `Set(string)` is rejected.

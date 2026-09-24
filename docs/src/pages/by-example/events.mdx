@@ -1,0 +1,46 @@
+---
+title: "Events"
+description: "Declaring, indexing, and emitting events."
+---
+
+# Events
+
+Events are records declared with `event`. `indexed` fields become topics.
+
+```lithe [events.lithe]
+(* Events are records. `indexed` fields become topics; at most three per event. *)
+
+event Transfer of record {
+  indexed from : address;
+  indexed to : address;
+  amount : nat;
+}
+
+(* An indexed string or list is logged as its keccak256 hash, as in Solidity. *)
+event Renamed of record {
+  indexed name : string;
+  by : address;
+}
+
+event Ping of record {}
+
+storage is record {
+  name : string;
+}
+
+external function send(const to : address; const amount : nat) is {
+  emit Transfer { from = Evm.sender(); to = to; amount = amount; };
+}
+
+external function rename(const name : string) is {
+  storage.name := name;
+  emit Renamed { name = name; by = Evm.sender(); };
+}
+
+external function ping() is {
+  emit Ping {};
+}
+```
+
+- Events are logged after the transition's storage writes, in the order they were emitted.
+- At most three fields can be `indexed`.

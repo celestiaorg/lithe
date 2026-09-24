@@ -1,0 +1,25 @@
+(* Holders burn their own tokens, or tokens they are allowed to spend. Like OpenZeppelin's
+   `ERC20Burnable`.
+
+     external function burn is ERC20Burnable.burn;
+     external function burnFrom is ERC20Burnable.burn_from; *)
+
+import "std/token/erc20.lithe";
+
+module ERC20Burnable is {
+  requires ERC20;
+
+  function burn(const value : nat)
+    raises ERC20InvalidSender | ERC20InsufficientBalance
+  is {
+    ERC20.burn(Evm.sender(), value);
+  }
+
+  function burn_from(const account : address; const value : nat)
+    raises ERC20InsufficientAllowance | ERC20InvalidApprover | ERC20InvalidSpender
+      | ERC20InvalidSender | ERC20InsufficientBalance
+  is {
+    ERC20.spend_allowance(account, Evm.sender(), value);
+    ERC20.burn(account, value);
+  }
+}

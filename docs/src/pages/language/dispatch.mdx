@@ -1,0 +1,142 @@
+---
+title: "Entrypoint dispatch"
+description: "Variant dispatchers, ABI flattening, and shared guards in place of modifiers."
+---
+
+# Entrypoint dispatch
+
+Solidity puts access control on each function with modifiers such as `onlyOwner`. That makes it easy to forget one. Lithe can group entrypoints by who may call them, write the check once for the group, and still produce an ordinary flat ABI.
+
+## A variant parameter becomes several ABI functions
+
+When an external function takes a [variant](/language/types#variants), the compiler exposes **one ABI function per case**, and does not expose the dispatcher itself:
+
+```lithe
+type action is
+  | Deposit of nat
+  | Withdraw of nat
+  | Reset
+
+error Insufficient of nat;
+
+storage is record {
+  balances : map(address, nat);
+}
+
+external function main(const action : action)
+  raises Insufficient
+is
+  case action of {
+  | Deposit(amount) -> {
+      storage.balances[Evm.sender()] := storage.balances[Evm.sender()] + amount;
+    }
+  | Withdraw(amount) -> {
+      const have : nat := storage.balances[Evm.sender()];
+      assert(have >= amount, Insufficient(have));
+      storage.balances[Evm.sender()] := have - amount;
+    }
+  | Reset -> { storage.balances[Evm.sender()] := 0n; }
+  }
+```
+
+This contract's ABI is `deposit(uint256)`, `withdraw(uint256)`, and `reset()`. There is no `main`, and callers never encode a variant.
+
+| Case | ABI function |
+| --- | --- |
+| name | the case name with its first letter lowercased: `Set_fee` becomes `set_fee`, and `SetFee` becomes `setFee` |
+| no payload | no parameters |
+| a single value | one parameter, named after the arm's binding |
+| a record | one parameter per field, with the field names |
+
+`case` must cover every case, and each entrypoint's `raises` includes only what its own path can raise.
+
+## Groups and guards
+
+Cases can carry other variants. A function that handles a group can run a **guard** before matching. The guard is a block placed before `with case`:
+
+```lithe
+error Not_owner;
+error Paused;
+
+type owner_action is
+  | Set_fee of nat
+  | Pause
+
+type user_action is
+  | Deposit of nat
+
+type action is
+  | Owner of owner_action
+  | User of user_action
+
+storage is record {
+  owner : address;
+  paused : bool;
+  fee : nat;
+  deposits : map(address, nat);
+}
+
+function owner_main(const action : owner_action)
+  raises Not_owner
+is {
+  assert(Evm.sender() = storage.owner, Not_owner);
+}
+with case action of {
+| Set_fee(fee) -> { storage.fee := fee; }
+| Pause -> { storage.paused := true; }
+}
+
+function user_main(const action : user_action)
+  raises Paused
+is {
+  assert(not storage.paused, Paused);
+}
+with case action of {
+| Deposit(amount) -> {
+    storage.deposits[Evm.sender()] := storage.deposits[Evm.sender()] + amount;
+  }
+}
+
+external function main(const action : action)
+  raises Not_owner | Paused
+is
+  case action of {
+  | Owner(a) -> owner_main(a)
+  | User(a) -> user_main(a)
+  }
+```
+
+The ABI is flat: `set_fee(uint256)`, `pause()`, and `deposit(uint256)`. Each entrypoint runs the guards on its path through the tree. Here `set_fee` checks the owner, `deposit` checks the pause flag, and `set_fee` does not check the pause flag. To add an owner-only action, add a case to `owner_action`. It cannot be added without the guard.
+
+## Inspecting the tree
+
+`lithe abi-tree` prints each flattened entrypoint with its path, guards, and effects:
+
+```text
+set_fee
+  path:
+    main -> owner_main -> set_fee
+
+  calls:
+    none
+
+  guards:
+    - Evm.sender() = storage.owner
+
+  storage reads:
+    - storage.owner
+
+  storage writes:
+    - storage.fee
+
+  ...
+
+  raises:
+    - NotOwner()
+```
+
+## Rules
+
+- Routing must be static. A dispatcher is a guard block plus a `case`, and it cannot choose a branch from storage or other runtime state.
+- Every flattened entrypoint must be unique. A case `Deposit of nat` and an `external function deposit(const x : nat)` collide as `deposit(uint256)`.
+- Variant values exist only along a dispatch path. They cannot yet be constructed, stored, or returned.

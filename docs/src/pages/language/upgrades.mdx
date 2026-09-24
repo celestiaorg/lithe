@@ -1,0 +1,152 @@
+---
+title: "Upgrades and migrations"
+description: "UUPS upgradeable contracts, upgrade guards, migrations, and storage compatibility checks."
+---
+
+# Upgrades and migrations
+
+Upgradeability is built into the language. You don't hand-write proxy logic, reserve implementation slots, or add storage gaps.
+
+## Upgradeable contracts
+
+Mark a file `upgradeable`, and give it an **upgrade guard**:
+
+```lithe
+upgradeable
+
+error Not_owner;
+
+storage is record {
+  owner : address;
+}
+
+upgrade guard is {
+  assert(Evm.sender() = storage.owner, Not_owner);
+}
+
+external function claim() is {
+  storage.owner := Evm.sender();
+}
+```
+
+For an explicit contract, write `contract Vault upgradeable is { ... }`.
+
+The compiler produces a [UUPS](https://eips.ethereum.org/EIPS/eip-1822) implementation for an [ERC-1967](https://eips.ethereum.org/EIPS/eip-1967) proxy. It adds two entrypoints:
+
+| Entrypoint | Behavior |
+| --- | --- |
+| `proxiableUUID()` | returns the ERC-1967 implementation slot |
+| `upgradeToAndCall(address, bytes)` | runs the upgrade guard, stores the new implementation, then runs the migration encoded in `bytes`, if any |
+
+The guard is required. An upgradeable contract without one, or a guard in a contract that is not upgradeable, is a compile error:
+
+```lithe rejects
+upgradeable
+
+storage is record {
+  n : nat;
+}
+
+external function go() is {
+  skip
+}
+```
+
+```text
+upgradeable contract requires an upgrade guard
+```
+
+## Deploying
+
+Deploy the implementation, then deploy a standard ERC-1967 proxy, such as OpenZeppelin's `ERC1967Proxy`, that points at it. Give the proxy's constructor a call to the contract's [`deploy`](/language/deploy#upgradeable-contracts) as its data, and the proxy is initialized in the same transaction that creates it. Wallets and explorers treat the proxy as they treat any UUPS contract.
+
+## Migrations
+
+A new version often needs to set up new state. A `migrate` function runs **once, atomically, inside the upgrade** that installs its version:
+
+```lithe
+upgradeable
+
+error Not_owner;
+
+storage is record {
+  owner : address;
+}
+
+storage settings at "vault.settings" is record {
+  fee_bps : nat;
+  treasury : address;
+}
+
+upgrade guard is {
+  assert(Evm.sender() = storage.owner, Not_owner);
+}
+
+migrate init_settings(const fee_bps : nat; const treasury : address) is {
+  settings.fee_bps := fee_bps;
+  settings.treasury := treasury;
+}
+
+external view function fee_bps() : nat is
+  settings.fee_bps
+```
+
+- A migration can be called only from `upgradeToAndCall`. Called directly, it reverts, because the upgrade sets a transient flag that the migration checks.
+- It is not in the ABI as a normal function. Nobody can call it after the upgrade.
+- It cannot `query` or `defer`. An upgrade should only change your own state.
+- Every field starts at zero, so a migration is needed only to set non-zero values.
+
+`lithe upgrade` builds the upgrade transaction's calldata:
+
+```bash
+lithe upgrade 0xProxy vault.lithe --migrate init_settings --impl 0xNewImpl --args 30 0xTreasury
+```
+
+```text
+to: 0xProxy
+data: 0x4f1ef286...
+```
+
+## Storage compatibility
+
+An upgrade must not move existing state. `lithe upgrade-check` compares two versions' storage layouts:
+
+```bash
+lithe upgrade-check v1.lithe v2.lithe
+```
+
+```text
+storage
+  owner unchanged
+
+settings
+  fee unchanged
+  paused unchanged
+  treasury added
+
+compatible
+```
+
+Reordering or retyping a field moves data, and is reported as incompatible:
+
+```text
+settings
+  fee changed -> paused
+  paused changed -> fee
+
+incompatible
+```
+
+| Change | Result |
+| --- | --- |
+| add a field at the end of a record | compatible |
+| add a new named domain | compatible |
+| reorder, retype, or insert fields before existing ones | incompatible |
+
+Named domains help here. Each domain sits at its own ERC-7201 root, so adding a domain, or growing one, never shifts another. Put new state in new domains, or at the end of existing ones.
+
+`upgrade-check` reports; it does not block. Run it in CI and fail the build when it prints `incompatible`.
+
+## Contracts over the size limit
+
+An upgradeable contract over the 24,576-byte limit is split into a router and parts. The router is the implementation behind the proxy, and it keeps the upgrade guard and `upgradeToAndCall`. Upgrades work exactly as above. A contract that grows past the limit upgrades into a split implementation behind the same proxy, with the same storage. See [Contract size limit](/tooling/size-limit#upgrades).

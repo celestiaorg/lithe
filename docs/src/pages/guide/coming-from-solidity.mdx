@@ -1,0 +1,179 @@
+---
+title: "Coming from Solidity"
+description: "A side-by-side mapping of Solidity concepts and syntax to Lithe."
+---
+
+# Coming from Solidity
+
+Lithe targets the same EVM and the same ABI as Solidity, and its storage layout is slot-for-slot compatible. Most concepts carry over, with different syntax and a few deliberate omissions.
+
+## The same contract, twice
+
+:::code-group
+
+```solidity [Vault.sol]
+contract Vault {
+    error Insufficient(uint256 available, uint256 required);
+    event Withdrawn(address indexed who, uint256 amount);
+
+    mapping(address => uint256) public deposits;
+
+    function deposit() external payable {
+        deposits[msg.sender] += msg.value;
+    }
+
+    function withdraw(uint256 amount) external {
+        uint256 have = deposits[msg.sender];
+        if (have < amount) revert Insufficient(have, amount);
+        deposits[msg.sender] = have - amount;
+        emit Withdrawn(msg.sender, amount);
+        (bool ok, ) = msg.sender.call{value: amount}("");
+        require(ok);
+    }
+}
+```
+
+```lithe [vault.lithe]
+error Insufficient of record {
+  available : wei;
+  required : wei;
+}
+
+event Withdrawn of record {
+  indexed who : address;
+  amount : wei;
+}
+
+storage is record {
+  deposits : map(address, wei);
+}
+
+external view function deposits(const who : address) : wei is
+  storage.deposits[who]
+
+external payable function deposit() is {
+  storage.deposits[Evm.sender()] := storage.deposits[Evm.sender()] + Evm.value();
+}
+
+external function withdraw(const amount : wei)
+  raises Insufficient
+is {
+  const have : wei := storage.deposits[Evm.sender()];
+  assert(have >= amount, Insufficient { available = have; required = amount; });
+  storage.deposits[Evm.sender()] := have - amount;
+  emit Withdrawn { who = Evm.sender(); amount = amount; };
+  defer Evm.transfer(Evm.sender(), amount);
+}
+```
+
+:::
+
+Both contracts have the same ABI, the same error selector, the same event topic, and the same storage slots.
+
+## Syntax
+
+| Solidity | Lithe |
+| --- | --- |
+| `// comment`, `/* comment */` | `(* comment *)`, nestable |
+| `x = y;` | `x := y;` |
+| `a == b`, `a != b` | `a = b`, `a <> b` |
+| `&&`, `\|\|`, `!` | `and`, `or`, `not` |
+| `uint256 x = 1;` | `const x : nat := 1n;` |
+| a local you reassign | `var x : nat := 0n;` |
+| `true`, `false` | `true`, `false` |
+| `if (c) { } else if (d) { }` | `if c then { } else { if d then { } }` |
+| `for (uint i = 0; i < n; i++)` | `for i : nat in 0n .. n do { }`. See [Loops](/by-example/loops) |
+| `for (uint i = 0; i < xs.length; i++)` | `for (i, x) : (nat, T) in xs do { }` |
+| `while (cond)` | none. `for ... until cond bound n do { }` |
+| `break` | `until` |
+| `return x;` | `... is { ... } with x` |
+| `struct S { uint a; }` | `type s is record { a : nat; }` |
+| `S({a: 1})` | `{ a = 1n; }` |
+| `enum E { A, B }` | `type e is \| A \| B`. See [Variants](/language/types#variants) |
+| `uint[]`, `uint[3]` | `list(nat)`, `list(nat, 3)` |
+| `mapping(address => uint)` | `map(address, nat)` |
+| `address(0)` | `Address.zero` |
+| `type(uint256).max` | `Nat.max` |
+| `1 ether`, `1 days` | `1eth`, `1days` |
+
+## Functions
+
+| Solidity | Lithe |
+| --- | --- |
+| `function f() external` | `external function f() is { ... }` |
+| `function f() external view returns (uint)` | `external view function f() : nat is ...` |
+| `function f() external pure returns (uint)` | `external pure function f() : nat is ...` |
+| `function f() external payable` | `external payable function f() is { ... }` |
+| `function f() internal` | `function f() is { ... }` |
+| `function f() internal view` | `view function f() : nat is ...` |
+| `function f() private` | `private function f() is { ... }` (private to the file) |
+| `public` state variable getter | write an `external view function` |
+| `modifier onlyOwner` | a guard function, or a [dispatch group](/language/dispatch) |
+| `nonReentrant` (OpenZeppelin) | `external nonreentrant function` |
+| `constructor(...)` | `deploy(...) is { ... }`. See [Deployment](/language/deploy) |
+| `new Vault(a, b)` | `defer create Vault(a, b)`. See [`create`](/language/effects#create) |
+| `initializer` (OpenZeppelin, upgradeable) | `deploy`, in an `upgradeable` contract. See [Deployment](/language/deploy#upgradeable-contracts) |
+| `receive()` / `fallback()` | none. Ether is accepted only by `payable` entrypoints |
+| function overloading | external functions only, with different parameter types |
+
+## Globals
+
+| Solidity | Lithe |
+| --- | --- |
+| `msg.sender` | `Evm.sender()` |
+| `msg.value` | `Evm.value()` (only in `payable` functions) |
+| `msg.data`, `msg.sig` | `Evm.calldata()`, `Evm.selector()` |
+| `tx.origin`, `tx.gasprice` | `Evm.tx_origin()`, `Evm.tx_gas_price()` |
+| `block.timestamp`, `block.number` | `Evm.block_timestamp()`, `Evm.block_number()` |
+| `block.chainid`, `block.basefee` | `Evm.chain_id()`, `Evm.block_base_fee()` |
+| `address(this)` | `Evm.self()` |
+| `addr.balance` | `Evm.balance(addr)` |
+| `gasleft()` | `Evm.gas_left()` |
+| `keccak256(x)` | `Crypto.keccak256(x)` |
+| `ecrecover(h, v, r, s)` | `Crypto.ecrecover(h, v, r, s)` |
+| `abi.encode(...)` | `Abi.encode(...)` |
+| `abi.decode(data, (uint))` | `Abi.decode(data, nat)` |
+
+The full list is in [Built-ins](/language/builtins).
+
+## Errors
+
+| Solidity | Lithe |
+| --- | --- |
+| `error NotOwner();` | `error Not_owner;` |
+| `error TooSmall(uint256);` | `error Too_small of nat;` |
+| `error Low(uint256 have, uint256 want);` | `error Low of record { have : nat; want : nat; }` |
+| `if (!c) revert NotOwner();` | `assert(c, Not_owner);` |
+| `revert NotOwner();` | `fail Not_owner;` |
+| `require(c, "message")` | not allowed. Errors are typed |
+| (nothing) | `raises Not_owner \| Too_small`, checked by the compiler |
+
+Lithe error names are converted to PascalCase in the ABI, so `Not_owner` becomes `NotOwner()` with the selector Solidity would compute.
+
+## External calls
+
+| Solidity | Lithe |
+| --- | --- |
+| `interface IERC20 { ... }` | `interface IERC20 is { query ...; call ...; }` |
+| `token.balanceOf(a)` (view) | `query token.balanceOf(a)` |
+| `token.transfer(to, n)` | `defer token.transfer(to, n)` |
+| `pool.deposit{value: v}(a)` | `defer pool.deposit(a) with value = v` |
+| `payable(to).transfer(v)`, `.call{value: v}("")` | `defer Evm.transfer(to, v)` |
+| `uint r = pool.swap(x); use(r);` | `defer pool.swap(x) then (r : nat) { ... }` |
+| `try c.f() returns (r) { } catch { }` | `defer c.f() then { \| Ok(r : T) -> { } \| Error(e : bytes) -> { } }` |
+| `try` on a view call | `case query c.f() of { \| Ok(r) -> ... \| Error(e) -> ... }` |
+| `new C(...)`, `create2` | not yet supported |
+| `delegatecall` | none. Use modules, or `upgradeable` for proxies |
+
+## Inheritance and libraries
+
+| Solidity | Lithe |
+| --- | --- |
+| `contract A is B, C` | `contract A is { use B; use C; ... }` |
+| inherited public functions | exposed only by name: `external function f is B.f;` |
+| `super.f()` | call the module function directly: `B.f()` |
+| `library L` | a `module`, or plain functions in an imported file |
+| `using L for T` | none. Call `L.f(x)` |
+| ERC-7201 `@custom:storage-location` | `storage name at "id" is record { ... }` |
+| OpenZeppelin UUPS | `upgradeable` plus an `upgrade guard` |
+| `initializer` / `reinitializer` | `migrate` functions, run by `upgradeToAndCall` |

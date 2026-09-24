@@ -1,0 +1,179 @@
+---
+title: "Continuations"
+description: "Using the result of a deferred call with then, and the phase rules that keep transitions sound."
+---
+
+# Continuations
+
+A deferred call runs after the transition that defers it. So how do you use its result? Attach a continuation with `then`:
+
+```lithe
+interface Exchange is {
+  call swap(amount_in : nat) : nat;
+}
+
+event Swapped of record {
+  indexed id : nat;
+  amount_out : nat;
+}
+
+type order is record {
+  status : uint8;
+  amount_out : nat;
+}
+
+storage is record {
+  exchange : Exchange;
+  orders : map(nat, order);
+}
+
+external nonreentrant function execute(const id : nat; const amount_in : nat) is {
+  storage.orders[id].status := uint8(1);
+  defer storage.exchange.swap(amount_in)
+    then (amount_out : nat) {
+      storage.orders[id].status := uint8(2);
+      storage.orders[id].amount_out := amount_out;
+      emit Swapped { id = id; amount_out = amount_out; };
+    };
+}
+```
+
+## Phases
+
+A continuation is a **new transition phase**:
+
+1. The first phase runs: it marks the order pending and records the swap.
+2. It commits. The exchange runs and sees the order as pending, with the first phase's state final and consistent.
+3. The swap's result is decoded and checked against its declared type.
+4. The continuation runs as its own phase. It reads storage again, so it sees anything the exchange changed, and then it writes, emits, and may defer more calls.
+
+Continuations run depth-first: a continuation's own deferred calls, and their continuations, finish before the next call deferred by the phase above it.
+
+## Binding the result
+
+| Form | Use |
+| --- | --- |
+| `then { ... }` | run after the call and ignore its result |
+| `then (x : T) { ... }` | bind the result |
+| `then ((a, b) : (T, U)) { ... }` | destructure a tuple result |
+
+The binding's type must match the method's declared return type.
+
+```lithe
+interface Vault is {
+  call withdraw(shares : nat) : (nat, nat);
+  call deposit(amount : nat) : nat;
+}
+
+storage is record {
+  vault : Vault;
+  principal : nat;
+  earned : nat;
+  shares : nat;
+}
+
+external nonreentrant function redeem(const shares : nat) is {
+  defer storage.vault.withdraw(shares)
+    then ((principal, earned) : (nat, nat)) {
+      storage.principal := storage.principal + principal;
+      storage.earned := storage.earned + earned;
+      defer storage.vault.deposit(earned)
+        then (new_shares : nat) {
+          storage.shares := storage.shares + new_shares;
+        };
+    };
+}
+```
+
+## What crosses a phase boundary
+
+A continuation can use the enclosing function's parameters and `const` bindings. They are values and cannot have changed. It cannot use a `var` from an earlier phase, because the external call sits between the two phases:
+
+```lithe rejects
+interface Exchange is {
+  call swap(amount : nat) : nat;
+}
+
+storage is record {
+  left : nat;
+}
+
+external nonreentrant function execute(const ex : Exchange; const amount : nat) is {
+  var remaining : nat := amount;
+  defer ex.swap(amount)
+    then (out : nat) {
+      storage.left := remaining + out;
+    };
+}
+```
+
+```text
+`remaining` is a `var` of an earlier phase; mutable locals do not cross an external call
+```
+
+Storage is never carried across: a continuation always reads current storage.
+
+## Failure
+
+If the call reverts, the transaction reverts, including the first phase. A continuation can `assert` and `fail` like any other code, and its errors count toward the enclosing function's `raises`.
+
+## Recovering from failed calls
+
+To handle a failed call instead of reverting, give the continuation an `Ok` arm and an `Error` arm:
+
+```lithe
+interface Registry is {
+  call notify(id : nat) : bool;
+}
+
+storage is record {
+  registry : Registry;
+  notified : map(nat, bool);
+  failures : nat;
+  last_error : bytes;
+}
+
+external nonreentrant function publish(const id : nat) is {
+  defer storage.registry.notify(id) then {
+    | Ok(accepted : bool) -> {
+        storage.notified[id] := accepted;
+      }
+    | Error(reason : bytes) -> {
+        storage.failures := storage.failures + 1n;
+        storage.last_error := reason;
+      }
+  };
+}
+```
+
+- `Ok(x : T)` binds the decoded result. For a method that returns `unit`, write `Ok` with no binding.
+- `Error(reason : bytes)` binds the raw revert data, and `Error(_)` ignores it.
+- `fail reason` reverts with exactly those bytes, passing the callee's failure on unchanged. It is not one of the contract's declared errors. `reason.length` is its length in bytes, so `if reason.length = 0n then { fail My_error; } fail reason;` replaces only an empty reason.
+- Both arms are required: ``a recoverable call needs both `Ok` and `Error` arms``.
+- Each arm is a new phase, like any continuation. The failed call's own effects are undone, but the first phase's writes stay.
+- A call that succeeds but returns data that does not decode as `T` still reverts the transaction. It is not an `Error`.
+
+`defer Evm.transfer(to, amount)` recovers the same way, with `Ok` and `Error(_)` arms.
+
+A `query` recovers with an ordinary `case`, because its result is available immediately:
+
+```lithe
+interface Oracle is {
+  query price(asset : address) : nat;
+}
+
+storage is record {
+  oracle : Oracle;
+  fallback_price : nat;
+}
+
+external view function price_or_fallback(const asset : address) : nat is
+  case query storage.oracle.price(asset) of {
+  | Ok(price) -> price
+  | Error(_) -> storage.fallback_price
+  }
+```
+
+## Continuations and reentrancy
+
+While the call runs, your contract can be re-entered. Declare functions with continuations `nonreentrant` unless you have a reason not to, so that no other `nonreentrant` function can run between the phases. See [Reentrancy](/language/reentrancy).

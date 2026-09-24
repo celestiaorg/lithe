@@ -1,0 +1,107 @@
+---
+title: "Imports"
+description: "Splitting a program across files with import, aliases, and private declarations."
+---
+
+# Imports
+
+`import` brings another file's declarations into this one. Imports come first in a file, before any other declaration. Paths are relative to the importing file, except those that start with `std/`, which name a module of the [standard library](/stdlib), built into the compiler.
+
+:::code-group
+
+```lithe [main.lithe]
+import "./lib/math.lithe";
+import "./lib/fees.lithe" as Fees;
+
+storage is record {
+  fee : Fees.basis_points;
+  cap : nat;
+}
+
+external function configure(const fee : Fees.basis_points; const cap : nat) is {
+  storage.fee := fee;
+  storage.cap := cap;
+}
+
+external view function charge(const amount : nat) : nat is
+  min(Fees.apply(storage.fee, amount), storage.cap)
+```
+
+```lithe [lib/math.lithe]
+pure function min(const a : nat; const b : nat) : nat is {
+  var smaller : nat := b;
+  if a < b then { smaller := a; }
+} with smaller
+```
+
+```lithe [lib/fees.lithe]
+type basis_points is uint16;
+
+pure function apply(const fee : basis_points; const amount : nat) : nat is
+  amount * nat(uint16(fee)) / 10_000n
+
+private pure function unused() : nat is
+  0n
+```
+
+:::
+
+## Plain and aliased imports
+
+A plain import, `import "./lib/math.lithe";`, makes the file's names available directly, as `min`. Two plain imports that define the same name are an error when the name is used:
+
+```text
+ambiguous symbol `calculate_fee`
+```
+
+An aliased import, `import "./lib/fees.lithe" as Fees;`, keeps the file's names behind the alias: `Fees.apply`, `Fees.basis_points`. Aliases avoid clashes, and they make it obvious at each use where a name comes from.
+
+## What a file can export
+
+An imported file can declare types, errors, events, internal functions, interfaces, and modules. Its `private` declarations stay inside it:
+
+```text
+unknown function `hidden`
+```
+
+Entrypoints belong to the contract, not to libraries. An aliased import cannot bring in `external` functions, and a library file should not declare `storage`. Put state in a [module](/language/modules) with named storage, and have the contract `use` it.
+
+## Importing modules
+
+The usual way to share code is a module in its own file:
+
+:::code-group
+
+```lithe [token.lithe]
+import "./lib/ledger.lithe";
+
+contract Token is {
+  use Ledger;
+
+  external function mint is Ledger.mint;
+  external view function balance_of is Ledger.balance_of;
+}
+```
+
+```lithe [lib/ledger.lithe]
+module Ledger is {
+  storage ledger at "example.ledger" is record {
+    balances : map(address, nat);
+  }
+
+  view function balance_of(const who : address) : nat is
+    ledger.balances[who]
+
+  function mint(const to : address; const amount : nat) is {
+    ledger.balances[to] := ledger.balances[to] + amount;
+  }
+}
+```
+
+:::
+
+## Rules
+
+- Imports must come before every other declaration.
+- Import cycles are rejected: `cyclic module dependency detected`.
+- Every file is loaded once, however many files import it.

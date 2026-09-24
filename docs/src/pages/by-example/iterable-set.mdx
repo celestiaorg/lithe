@@ -1,0 +1,58 @@
+---
+title: "Iterable set"
+description: "Enumerate members without loops."
+---
+
+# Iterable set
+
+Maps can't be enumerated. To list members, keep a list and an index map in sync. This is the pattern behind the generic `SetEnumerable` module.
+
+```lithe [iterable-set.lithe]
+(* Maps cannot be iterated. When you need to list members, keep an enumerable set:
+   a list for order plus an index map for membership, updated together. Removal
+   swaps the last member into the gap, so it costs the same for any member. *)
+
+error Out_of_range of nat;
+
+storage is record {
+  members : list(address);
+  count : nat;
+  (* index + 1, so that 0 means absent *)
+  positions : map(address, nat);
+}
+
+external view function contains(const who : address) : bool is
+  storage.positions[who] > 0n
+
+external function join() is {
+  if storage.positions[Evm.sender()] = 0n then {
+    storage.members[storage.count] := Evm.sender();
+    storage.count := storage.count + 1n;
+    storage.positions[Evm.sender()] := storage.count;
+  }
+}
+
+external function leave() is {
+  const position : nat := storage.positions[Evm.sender()];
+  if position > 0n then {
+    const last : address := storage.members[storage.count - 1n];
+    storage.members[position - 1n] := last;
+    storage.positions[last] := position;
+    storage.positions[Evm.sender()] := 0n;
+    storage.count := storage.count - 1n;
+  }
+}
+
+external view function length() : nat is
+  storage.count
+
+(* Clients page through members one index at a time. *)
+external view function at(const i : nat) : address
+  raises Out_of_range
+is {
+  assert(i < storage.count, Out_of_range(i));
+} with storage.members[i]
+```
+
+- `join` and `leave` cost the same no matter how many members there are.
+- Off-chain clients enumerate with `length()` and `at(i)`.

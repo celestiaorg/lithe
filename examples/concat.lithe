@@ -1,0 +1,20 @@
+(* `String.concat` joins strings; `Bytes.concat` joins `bytes` and `bytesN` values. *)
+
+storage is record {
+  greeting : string;
+  blob : bytes;
+}
+
+external function greet(const name : string) is {
+  storage.greeting := String.concat("hello, ", name, "!");
+}
+
+external function tag(const data : bytes) is {
+  storage.blob := Bytes.concat(0xcafe, data, storage.blob);
+}
+
+external view function greeting() : string is
+  storage.greeting
+
+external view function blob() : bytes is
+  storage.blob

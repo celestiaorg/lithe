@@ -1,0 +1,29 @@
+(* Booleans packed 256 to a storage slot, for claims, processed ids, and other flags over
+   dense indexes. Setting a neighbor's flag costs a warm write instead of a fresh slot.
+
+     storage is record {
+       claimed : bitmap;
+     } *)
+
+module Bitmap is {
+  type bitmap is map(nat, nat);
+
+  view function get(const bits : bitmap; const index : nat) : bool is
+    (bits[index >> 8n] >> (index & 255n)) & 1n = 1n
+
+  function set(const bits : bitmap; const index : nat) is {
+    bits[index >> 8n] := bits[index >> 8n] | (1n << (index & 255n));
+  }
+
+  function unset(const bits : bitmap; const index : nat) is {
+    bits[index >> 8n] := bits[index >> 8n] & ~(1n << (index & 255n));
+  }
+
+  function set_to(const bits : bitmap; const index : nat; const value : bool) is {
+    if value then {
+      set(bits, index);
+    } else {
+      unset(bits, index);
+    }
+  }
+}

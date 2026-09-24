@@ -1,0 +1,13 @@
+error Denied;
+
+storage is record {
+  n : nat;
+}
+
+upgrade guard is {
+  assert(true, Denied);
+}
+
+external function go() is {
+  skip
+}

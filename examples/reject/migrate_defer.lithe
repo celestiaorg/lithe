@@ -1,0 +1,15 @@
+upgradeable
+
+error Denied;
+
+storage is record {
+  n : nat;
+}
+
+upgrade guard is {
+  assert(true, Denied);
+}
+
+migrate init(const to : address) is {
+  defer Evm.transfer(to, 1wei);
+}

@@ -1,0 +1,106 @@
+(* Benchmark: an order executor that consumes call results. Each continuation is a new
+   phase after its call returns; the order is marked pending before the exchange runs.
+   Mirrors executor.sol, which assigns the results inline. *)
+
+type swap_result is record {
+  amount_out : nat;
+  fee : nat;
+}
+
+interface Exchange is {
+  call swap(amount_in : nat; min_out : nat) : swap_result;
+  call deposit(amount : nat) : nat;
+  call split(shares : nat) : (nat, nat);
+}
+
+type order is record {
+  status : uint8;
+  amount_in : nat;
+  amount_out : nat;
+  shares : nat;
+}
+
+error AlreadyExecuted of nat;
+error NotComplete of nat;
+error TooLittle of record {
+  amount_out : nat;
+  floor : nat;
+}
+
+event Executed of record {
+  indexed id : nat;
+  amount_out : nat;
+  fee : nat;
+}
+
+event Deposited of record {
+  indexed id : nat;
+  shares : nat;
+}
+
+storage is record {
+  exchange : Exchange;
+  floor : nat;
+  executed : nat;
+  total_out : nat;
+  left : nat;
+  right : nat;
+  orders : map(nat, order);
+}
+
+deploy(const exchange : Exchange; const floor : nat) is {
+  storage.exchange := exchange;
+  storage.floor := floor;
+}
+
+external function execute(const id : nat; const amount_in : nat; const min_out : nat)
+  raises AlreadyExecuted | TooLittle
+is {
+  assert(storage.orders[id].status = uint8(0), AlreadyExecuted(id));
+  storage.orders[id].status := uint8(1);
+  storage.orders[id].amount_in := amount_in;
+  defer storage.exchange.swap(amount_in, min_out)
+    then (result : swap_result) {
+      assert(
+        result.amount_out >= storage.floor,
+        TooLittle { amount_out = result.amount_out; floor = storage.floor; }
+      );
+      storage.orders[id].status := uint8(2);
+      storage.orders[id].amount_out := result.amount_out;
+      storage.executed := storage.executed + 1n;
+      storage.total_out := storage.total_out + result.amount_out;
+      emit Executed { id = id; amount_out = result.amount_out; fee = result.fee; };
+    };
+}
+
+external function execute_and_deposit(const id : nat; const amount_in : nat)
+  raises AlreadyExecuted | TooLittle
+is {
+  assert(storage.orders[id].status = uint8(0), AlreadyExecuted(id));
+  storage.orders[id].status := uint8(1);
+  storage.orders[id].amount_in := amount_in;
+  defer storage.exchange.swap(amount_in, 0n)
+    then (result : swap_result) {
+      storage.orders[id].status := uint8(2);
+      storage.orders[id].amount_out := result.amount_out;
+      defer storage.exchange.deposit(result.amount_out)
+        then (shares : nat) {
+          storage.orders[id].shares := shares;
+          emit Deposited { id = id; shares = shares; };
+        };
+    };
+}
+
+external function unwind(const id : nat)
+  raises NotComplete
+is {
+  assert(storage.orders[id].status = uint8(2), NotComplete(id));
+  defer storage.exchange.split(storage.orders[id].shares)
+    then ((a, b) : (nat, nat)) {
+      storage.orders[id].status := uint8(3);
+      storage.left := storage.left + a;
+      storage.right := storage.right + b;
+    };
+}
+
+external view function order_of(const id : nat) : order is storage.orders[id]

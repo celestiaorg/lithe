@@ -1,0 +1,10 @@
+type tiny is uint8;
+
+storage is record {
+  n : nat;
+}
+
+external function go() is {
+  const x : tiny := 300;
+  skip
+}

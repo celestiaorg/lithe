@@ -1,0 +1,76 @@
+(* Execution context is Evm.*, hashes are Crypto.*, encoding is Abi.*. *)
+
+interface Target is {
+  call foo(amount : nat) : unit;
+}
+
+storage is record {
+  caller : address;
+  paid : wei;
+  time : timestamp;
+  number : nat;
+  chain : nat;
+  mine : address;
+  bal : wei;
+  sel : bytes4;
+  origin : address;
+  price : wei;
+  coin : address;
+  fee : wei;
+  rand : bytes32;
+  limit : nat;
+  codesz : nat;
+  codehash : bytes32;
+  bhash : bytes32;
+  blob : bytes32;
+  gas : nat;
+  digest : bytes32;
+  sha : bytes32;
+  ripe : bytes20;
+  round : nat;
+  packed : bytes;
+}
+
+external payable function take() is {
+  storage.caller := Evm.sender();
+  storage.paid := Evm.value();
+  storage.time := Evm.block_timestamp();
+  storage.number := Evm.block_number();
+  storage.chain := Evm.chain_id();
+  storage.mine := Evm.self();
+  storage.bal := Evm.balance(Evm.self());
+  storage.sel := Evm.selector();
+  storage.origin := Evm.tx_origin();
+  storage.price := Evm.tx_gas_price();
+  storage.coin := Evm.block_coinbase();
+  storage.fee := Evm.block_base_fee();
+  storage.rand := Evm.block_prevrandao();
+  storage.limit := Evm.block_gas_limit();
+  storage.codesz := Evm.code_size(Evm.self());
+  storage.codehash := Evm.code_hash(Evm.self());
+  storage.bhash := Evm.block_hash(1n);
+  storage.blob := Evm.blob_hash(0n);
+  storage.gas := Evm.gas_left();
+  const raw : bytes := 0x616263;
+  storage.digest := Crypto.keccak256(raw);
+  storage.sha := Crypto.sha256(raw);
+  storage.ripe := Crypto.ripemd160(raw);
+  const encoded : bytes := Abi.encode(7n);
+  storage.round := Abi.decode(encoded, nat);
+  storage.packed := Abi.encode_packed(Evm.sender());
+}
+
+external view function payload() : bytes is
+  Evm.calldata()
+
+external view function framed() : bytes is
+  Abi.encode_with_selector(0xaabbccdd, 7n)
+
+external view function signed() : bytes is
+  Abi.encode_with_signature("foo(uint256)", 7n)
+
+external view function called() : bytes is
+  Abi.encode_call(Target.foo, 7n)
+
+external view function recovered() : address is
+  Crypto.ecrecover(0x0, 0n, 0x0, 0x0)

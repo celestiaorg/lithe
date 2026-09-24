@@ -1,0 +1,64 @@
+(* Benchmark: dynamic arrays through the ABI, storage, events, and encoding. Mirrors
+   lists.sol. *)
+
+storage is record {
+  saved : list(nat);
+  owners : list(address);
+}
+
+event Batch of record {
+  indexed who : address;
+  ids : list(nat);
+  note : string;
+}
+
+event Tagged of record {
+  indexed tags : list(bytes4);
+  count : nat;
+}
+
+external function save(const xs : list(nat)) is {
+  storage.saved := xs;
+}
+
+external function push(const x : nat) is {
+  storage.saved[storage.saved.length] := x;
+}
+
+external function set_owners(const owners : list(address)) is {
+  storage.owners := owners;
+}
+
+external view function saved() : list(nat) is
+  storage.saved
+
+external view function owners() : list(address) is
+  storage.owners
+
+external view function owner_at(const i : nat) : address is
+  storage.owners[i]
+
+external pure function first(const xs : list(nat)) : nat is
+  xs[0]
+
+external pure function echo(const xs : list(bytes4)) : list(bytes4) is
+  xs
+
+external pure function pair(const a : nat; const b : nat) : list(nat) is {
+  var out : list(nat) := [a];
+  out[1n] := b;
+} with out
+
+external function announce(const ids : list(nat); const note : string) is {
+  emit Batch { who = Evm.sender(); ids = ids; note = note; };
+}
+
+external function tag(const tags : list(bytes4)) is {
+  emit Tagged { tags = tags; count = tags.length; };
+}
+
+external pure function same(const a : list(nat); const b : list(nat)) : bool is
+  a = b
+
+external pure function encoded(const xs : list(nat); const tag : bytes4) : bytes is
+  Abi.encode(tag, xs)

@@ -1,0 +1,38 @@
+---
+title: "Initialization"
+description: "Setting up a contract as it is deployed."
+---
+
+# Initialization
+
+`deploy` runs once, as the contract is created, on the arguments passed with the deployment. It is Lithe's constructor.
+
+```lithe [initialization.lithe]
+(* `deploy` runs once, in the creation code, on the deployment's arguments. Nobody can
+   call it later, so there is no "already initialized" flag to keep. *)
+
+error Cap_is_zero;
+
+storage is record {
+  owner : address;
+  cap : nat;
+}
+
+deploy(const owner : address; const cap : nat)
+  raises Cap_is_zero
+is {
+  assert(cap > 0n, Cap_is_zero);
+  storage.owner := owner;
+  storage.cap := cap;
+}
+
+external view function owner() : address is
+  storage.owner
+
+external view function cap() : nat is
+  storage.cap
+```
+
+- Deploy it like a Solidity contract: the arguments are ABI-encoded after the creation code, and the ABI has a `constructor` entry for them.
+- `deploy` can write storage and emit events, but cannot `query` or `defer`. See [Deployment](/language/deploy).
+- In an [upgradeable](/by-example/upgradeable) contract, `deploy` initializes the proxy, as the proxy is created. Later versions set up new state with `migrate`.

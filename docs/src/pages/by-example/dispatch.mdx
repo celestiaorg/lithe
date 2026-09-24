@@ -1,0 +1,106 @@
+---
+title: "Dispatch"
+description: "Nested action groups flattened into a normal ABI."
+---
+
+# Dispatch
+
+Group actions by role, attach one guard per group, and let the compiler flatten the tree into ordinary ABI functions. Each flattened function carries every guard on its path.
+
+```lithe [dispatch.lithe]
+(* A variant parameter with nested groups becomes a flat ABI. This contract exposes
+   `mint(address,uint256)`, `set_minter(address)`, `transfer(address,uint256)`, and
+   `burn(uint256)`. Each carries the guards on its path through the tree. *)
+
+error Not_admin;
+error Not_minter;
+
+type mint_params is record {
+  to : address;
+  amount : nat;
+}
+
+type transfer_params is record {
+  to : address;
+  amount : nat;
+}
+
+type admin_action is
+  | Set_minter of address
+
+type minter_action is
+  | Mint of mint_params
+
+type holder_action is
+  | Transfer of transfer_params
+  | Burn of nat
+
+type action is
+  | Admin of admin_action
+  | Minter of minter_action
+  | Holder of holder_action
+
+storage is record {
+  admin : address;
+  minter : address;
+  balances : map(address, nat);
+}
+
+function admin_main(const action : admin_action)
+  raises Not_admin
+is {
+  assert(Evm.sender() = storage.admin, Not_admin);
+}
+with case action of {
+| Set_minter(who) -> { storage.minter := who; }
+}
+
+function minter_main(const action : minter_action)
+  raises Not_minter
+is {
+  assert(Evm.sender() = storage.minter, Not_minter);
+}
+with case action of {
+| Mint(p) -> { storage.balances[p.to] := storage.balances[p.to] + p.amount; }
+}
+
+function holder_main(const action : holder_action) is
+  case action of {
+  | Transfer(p) -> {
+      storage.balances[Evm.sender()] := storage.balances[Evm.sender()] - p.amount;
+      storage.balances[p.to] := storage.balances[p.to] + p.amount;
+    }
+  | Burn(amount) -> {
+      storage.balances[Evm.sender()] := storage.balances[Evm.sender()] - amount;
+    }
+  }
+
+external function main(const action : action)
+  raises Not_admin | Not_minter
+is
+  case action of {
+  | Admin(a) -> admin_main(a)
+  | Minter(a) -> minter_main(a)
+  | Holder(a) -> holder_main(a)
+  }
+
+external function init() is {
+  storage.admin := Evm.sender();
+}
+```
+
+`lithe abi-tree dispatch.lithe` shows each entrypoint's path and guards:
+
+```text
+mint
+  path:
+    main -> minter_main -> mint
+
+  calls:
+    none
+
+  guards:
+    - Evm.sender() = storage.minter
+
+  ...
+```

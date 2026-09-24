@@ -1,0 +1,51 @@
+---
+title: "Reentrancy"
+description: "What deferral prevents, and serializing with nonreentrant."
+---
+
+# Reentrancy
+
+Deferral means a callee never sees half-written state. It can still call back in before your later deferred calls finish. The compiler warns about those paths, and `nonreentrant` closes them.
+
+```lithe [reentrancy.lithe]
+(* Deferred calls run after local work, so a callee never sees half-written state.
+   It can still call back in before later deferred calls run. The compiler warns
+   about every such path; `nonreentrant` closes it with one transient lock shared
+   by all nonreentrant functions, held until the deferred calls finish. *)
+
+interface Hook is {
+  call notify(amount : nat) : unit;
+}
+
+storage is record {
+  hook : Hook;
+  total : nat;
+}
+
+external function set_hook(const hook : Hook) is {
+  storage.hook := hook;
+}
+
+external nonreentrant function add(const amount : nat) is {
+  storage.total := storage.total + amount;
+  defer storage.hook.notify(amount);
+}
+
+(* While `add`'s hook runs, calling `reset` reverts. *)
+external nonreentrant function reset() is {
+  storage.total := 0n;
+}
+
+(* Views are always callable during deferred calls. *)
+external view function total() : nat is
+  storage.total
+```
+
+`lithe footprint` shows which entrypoints are locked while deferred calls run:
+
+```text
+set_hook   writes: hook                                during defers: callable
+add        writes: total      defers: hook.notify      during defers: rejected
+reset      writes: total                               during defers: rejected
+total      reads: total                                during defers: callable
+```

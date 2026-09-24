@@ -1,0 +1,10 @@
+(* Record the amount received, then transfer it. Storage is written before the call. *)
+
+storage is record {
+  paid : wei;
+}
+
+external payable function pay(const to : address) is {
+  storage.paid := storage.paid + Evm.value();
+  defer Evm.transfer(to, Evm.value());
+}

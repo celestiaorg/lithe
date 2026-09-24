@@ -1,0 +1,121 @@
+---
+title: "The transition model"
+description: "What happens, and in what order, when a Lithe entrypoint runs."
+---
+
+# The transition model
+
+A Lithe entrypoint is a function from the current state to a new state:
+
+```text
+Arguments × Storage × ReadOnlyChainState  ->  Storage × Events × DeferredCalls
+```
+
+You write it imperatively. The compiler turns it into a transition that runs in a fixed order.
+
+## The phases of a call
+
+When a transaction calls an external function:
+
+1. **Dispatch.** The selector picks the function and the ABI arguments are decoded and range-checked. A non-`payable` function rejects any call that carries ether.
+2. **Lock check.** A `nonreentrant` function reverts if the contract's reentrancy lock is held.
+3. **Compute.** The body runs. It may read and write storage, read the `Evm` context, run `query` calls, and `emit` and `defer`. Events and deferred calls are **recorded** when reached. Their arguments are evaluated at that point, but nothing outside the contract runs yet, except the read-only queries.
+4. **Commit.** Storage writes are applied.
+5. **Events.** Recorded events are logged in source order.
+6. **Deferred calls.** Recorded calls run in source order. While they run, the lock is held, so no `nonreentrant` function can be entered.
+7. **Continuations.** A deferred call with a `then` block decodes its result and runs the block as a new transition, depth-first, before the next deferred call.
+8. **Return.** The function's return value, if it has one, goes back to the caller.
+
+If anything fails, the whole transaction reverts: a failed `assert`, an arithmetic panic, or a deferred call that reverts. Storage, events, and every earlier call are undone together. The exception is a call you recover from explicitly, with `Ok` and `Error` arms. See [Recovering from failed calls](/language/continuations#recovering-from-failed-calls).
+
+## Why defer?
+
+In Solidity, an external call hands control to the callee in the middle of your function:
+
+```solidity
+balances[msg.sender] -= amount;
+token.transfer(msg.sender, amount);   // arbitrary code runs here
+totalWithdrawn += amount;             // ...and may have re-entered before this
+```
+
+In Lithe, the call is a value that runs later:
+
+```lithe
+interface Token is {
+  call transfer(to : address; amount : nat) : bool;
+}
+
+storage is record {
+  token : Token;
+  balances : map(address, nat);
+  total_withdrawn : nat;
+}
+
+external nonreentrant function withdraw(const amount : nat) is {
+  storage.balances[Evm.sender()] := storage.balances[Evm.sender()] - amount;
+  defer storage.token.transfer(Evm.sender(), amount);
+  storage.total_withdrawn := storage.total_withdrawn + amount;
+}
+```
+
+The transfer runs after both writes, wherever the `defer` appears in the body. When the token contract gets control, `withdraw`'s transition is already complete and consistent. Checks-effects-interactions is how the language works, not something you have to remember.
+
+## Queries are synchronous and read-only
+
+Sometimes you need another contract's answer before you can finish computing, such as an oracle price or a token balance. That is a `query`:
+
+```lithe fragment
+const price : nat := query storage.oracle.price(asset);
+```
+
+A query compiles to `STATICCALL`, so the EVM itself guarantees that nothing in the callee's call tree changes state. Only interface methods declared with `query` can be queried, and only methods declared with `call` can be deferred. Neither can be used as the other.
+
+## Continuations: using a call's result
+
+A deferred call's result does not exist during the transition that defers it. To use the result, attach a continuation:
+
+```lithe
+interface Exchange is {
+  call swap(amount_in : nat) : nat;
+}
+
+storage is record {
+  exchange : Exchange;
+  received : nat;
+}
+
+external nonreentrant function swap(const amount_in : nat) is {
+  defer storage.exchange.swap(amount_in)
+    then (amount_out : nat) {
+      storage.received := storage.received + amount_out;
+    };
+}
+```
+
+The continuation is a **new phase**. It runs after the swap returns, with storage re-read, and it has its own writes, events, and deferred calls. `const` values from the earlier phase are visible in it because they cannot change. A `var` from the earlier phase is not, because the call boundary sits between them. See [Continuations](/language/continuations).
+
+## Reentrancy is still possible, and visible
+
+Deferring removes mid-update reentrancy, but a callee can still call back into your contract before your *later* deferred calls run. The compiler warns about every entrypoint where that can happen, and names the functions it could be re-entered through:
+
+```text
+12:10: warning: `settle` performs deferred external operations and may
+be re-entered through `cancel`
+
+consider `nonreentrant` if the protocol requires serialized
+external-effect execution
+```
+
+Mark the functions that must not interleave `nonreentrant`, and they share one lock that is held until the deferred calls finish. See [Reentrancy](/language/reentrancy).
+
+## What an entrypoint cannot do
+
+These are compile errors, not lint warnings:
+
+- write storage, emit, or defer from a `view` function
+- read storage or the `Evm` context from a `pure` function
+- `defer` or `query` inside a migration
+- raise an error the signature does not declare
+- read a storage field without qualifying it (`storage.x`, `domain.x`, or `Module.domain.x`)
+- call an `external` function from inside the contract
+- revert with a string

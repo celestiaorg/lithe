@@ -1,0 +1,64 @@
+(* Single-owner access control. Set the first owner with `init`, usually from `deploy`,
+   and guard owner-only functions with `check_owner`. Errors and events match
+   OpenZeppelin's `Ownable`.
+
+   Promote what the contract exposes:
+
+     external view function owner is Ownable.owner;
+     external function transferOwnership is Ownable.transfer_ownership;
+     external function renounceOwnership is Ownable.renounce_ownership; *)
+
+module Ownable is {
+  storage ownable at "lithe.std.ownable" is record {
+    owner : address;
+  }
+
+  error OwnableUnauthorizedAccount of address;
+  error OwnableInvalidOwner of address;
+
+  event OwnershipTransferred of record {
+    indexed previousOwner : address;
+    indexed newOwner : address;
+  }
+
+  view function owner() : address is
+    ownable.owner
+
+  view function check_owner()
+    raises OwnableUnauthorizedAccount
+  is {
+    assert(ownable.owner = Evm.sender(), OwnableUnauthorizedAccount(Evm.sender()));
+  }
+
+  function init(const initial_owner : address)
+    raises OwnableInvalidOwner
+  is {
+    assert(initial_owner <> Address.zero, OwnableInvalidOwner(Address.zero));
+    set_owner(initial_owner);
+  }
+
+  (* Moves ownership without any check. *)
+  function set_owner(const new_owner : address) is {
+    const previous : address := ownable.owner;
+    ownable.owner := new_owner;
+    emit OwnershipTransferred {
+      previousOwner = previous;
+      newOwner = new_owner;
+    };
+  }
+
+  function transfer_ownership(const new_owner : address)
+    raises OwnableUnauthorizedAccount | OwnableInvalidOwner
+  is {
+    check_owner();
+    assert(new_owner <> Address.zero, OwnableInvalidOwner(Address.zero));
+    set_owner(new_owner);
+  }
+
+  function renounce_ownership()
+    raises OwnableUnauthorizedAccount
+  is {
+    check_owner();
+    set_owner(Address.zero);
+  }
+}

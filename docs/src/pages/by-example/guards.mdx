@@ -1,0 +1,81 @@
+---
+title: "Guards"
+description: "Access control shared by groups of entrypoints, instead of modifiers."
+---
+
+# Guards
+
+Solidity uses modifiers like `onlyOwner`, applied one function at a time. In Lithe, you group entrypoints under a dispatcher and write the guard once for the group, and the ABI stays flat.
+
+```lithe [guards.lithe]
+(* Solidity writes `onlyOwner` modifiers. Lithe groups guarded actions under one
+   dispatcher. The guard runs in the dispatcher's body, before `with case`, and
+   every case under it inherits it. The ABI still gets one function per case:
+   `set_fee(uint256)`, `pause()`, `deposit(uint256)`. *)
+
+error Not_owner;
+error Paused;
+
+storage is record {
+  owner : address;
+  paused : bool;
+  fee : nat;
+  deposits : map(address, nat);
+}
+
+type owner_action is
+  | Set_fee of nat
+  | Pause
+
+type user_action is
+  | Deposit of nat
+
+type action is
+  | Owner of owner_action
+  | User of user_action
+
+function owner_main(const action : owner_action)
+  raises Not_owner
+is {
+  assert(Evm.sender() = storage.owner, Not_owner);
+}
+with case action of {
+| Set_fee(fee) -> { storage.fee := fee; }
+| Pause -> { storage.paused := true; }
+}
+
+function user_main(const action : user_action)
+  raises Paused
+is {
+  assert(not storage.paused, Paused);
+}
+with case action of {
+| Deposit(amount) -> {
+    storage.deposits[Evm.sender()] := storage.deposits[Evm.sender()] + amount;
+  }
+}
+
+external function main(const action : action)
+  raises Not_owner | Paused
+is
+  case action of {
+  | Owner(a) -> owner_main(a)
+  | User(a) -> user_main(a)
+  }
+
+(* A guard can also be a plain internal function called first. *)
+view function only_owner() raises Not_owner is {
+  assert(Evm.sender() = storage.owner, Not_owner);
+}
+
+external function set_owner(const owner : address)
+  raises Not_owner
+is {
+  only_owner();
+  storage.owner := owner;
+}
+```
+
+- `set_fee` and `pause` inherit the owner check, and `deposit` inherits the pause check. A new owner action added to `owner_action` gets the guard automatically.
+- `lithe abi-tree guards.lithe` prints each entrypoint's guards.
+- A plain internal function called first, like `only_owner`, works too. See [Entrypoint dispatch](/language/dispatch).

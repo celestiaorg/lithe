@@ -1,0 +1,187 @@
+---
+title: "Functions"
+description: "Function kinds, effects, parameters, results, and the rules the compiler checks."
+---
+
+# Functions
+
+There is one function form. Keywords in front of `function` set its visibility and what it is allowed to do:
+
+```lithe fragment
+[private] [external] [payable] [nonreentrant] [view | pure] function name(params) [: type] [raises errors] is body
+```
+
+## Kinds
+
+| Declaration | Visible | May do |
+| --- | --- | --- |
+| `pure function` | internal | compute from its arguments |
+| `view function` | internal | also read storage, read `Evm` context, `query` |
+| `function` | internal | also write storage, `emit`, `defer` |
+| `external pure function` | ABI (`pure`) | like `pure function` |
+| `external view function` | ABI (`view`) | like `view function` |
+| `external function` | ABI (`nonpayable`) | like `function` |
+| `external payable function` | ABI (`payable`) | also accept ether and read `Evm.value()` |
+| `external nonreentrant function` | ABI | holds the [reentrancy lock](/language/reentrancy) |
+
+Two declarations are not functions and run once each: [`deploy`](/language/deploy), when the contract is created, and [`migrate`](/language/upgrades#migrations), inside an upgrade.
+
+The compiler checks each body against its declared kind, including everything the body calls:
+
+```lithe rejects
+storage is record {
+  count : nat;
+}
+
+external view function bad() : nat is {
+  storage.count := 1n
+} with storage.count
+```
+
+```text
+declared effect is weaker than the body's: external view function `bad` writes storage
+```
+
+```lithe rejects
+pure function who() : address is
+  Evm.sender()
+```
+
+```text
+declared effect is weaker than the body's: pure function `who` reads `Evm.sender`
+```
+
+A `view` that calls a stateful function, a `pure` function that calls a `view`, and a `view` that emits or defers are all rejected the same way.
+
+Keywords must appear in this order: `external`, then `payable` and/or `nonreentrant`, then `view` or `pure`. `payable` and `nonreentrant` apply only to stateful external functions. The compiler says what it expected:
+
+```lithe rejects
+external payable view function go() : nat is
+  0n
+```
+
+```text
+payable functions must be stateful
+```
+
+## Parameters
+
+Parameters are separated by `;`. Each is `const` (immutable) or `var` (reassignable within the body):
+
+```lithe
+storage is record {
+  n : nat;
+}
+
+pure function clamp(var x : nat; const lo : nat; const hi : nat) : nat is {
+  if x < lo then { x := lo; }
+  if x > hi then { x := hi; }
+} with x
+
+external function set(const x : nat) is {
+  storage.n := clamp(x, 1n, 100n);
+}
+```
+
+Arguments are separated by `,`.
+
+## Results
+
+A function with a result declares `: type`. The body is an expression, or a block followed by `with` and the result:
+
+```lithe
+storage is record {
+  count : nat;
+}
+
+pure function double(const n : nat) : nat is
+  n * 2n
+
+external function bump() : nat is {
+  storage.count := storage.count + 1n;
+} with double(storage.count)
+```
+
+A function without `: type` returns `unit`. `external view` and `external pure` functions must have a result. An `external` stateful function can return one too. The value goes back to the caller after the function's deferred calls have run.
+
+Several results are a tuple: `: (nat, address)`. A record result is flattened into named ABI outputs.
+
+## Errors
+
+`raises` lists the errors a function can raise, separated by `|`. External functions must declare them. Internal functions may leave `raises` off and have their errors inferred. `raises none` states that a function never raises a declared error. See [Errors](/language/errors).
+
+## Overloading
+
+External functions can share a name when their parameter types differ, because each gets its own ABI selector:
+
+```lithe
+storage is record {
+  total : nat;
+}
+
+external function add(const a : nat) is {
+  storage.total := storage.total + a;
+}
+
+external function add(const a : nat; const b : nat) is {
+  storage.total := storage.total + a + b;
+}
+```
+
+These are `add(uint256)` and `add(uint256,uint256)`. Two external functions with the same signature are a duplicate entrypoint. Internal functions cannot be overloaded.
+
+## Calling functions
+
+- Internal functions can call each other and are called with `f(args)`.
+- External functions cannot be called from inside the contract. Share logic through internal functions.
+- A module's functions are called as `Module.f(args)`.
+- A function with no result is called as a statement: `f(args);`.
+
+```lithe rejects
+storage is record {
+  n : nat;
+}
+
+external function g() is { skip }
+
+external function f() is {
+  g();
+}
+```
+
+```text
+external function `g` cannot be called from inside the contract
+```
+
+## Generic functions
+
+A function can take type parameters, written in parentheses before its value parameters. Every use is specialized at compile time:
+
+```lithe
+storage is record {
+  owner : address;
+}
+
+pure function first(T)(const a : T; const b : T) : T is
+  a
+
+external view function pick(const other : address) : address is
+  first(storage.owner, other)
+```
+
+See [Generics](/language/generics) for generic modules.
+
+## Promoting module functions
+
+A contract can expose a module function directly:
+
+```lithe fragment
+external function transfer is Token.transfer;
+external view function balance_of is Token.balance_of;
+```
+
+A promotion takes its signature and errors from the module function. It must use the same kind: a stateful module function cannot be promoted as `view`. See [Modules and contracts](/language/modules).
+
+## `private`
+
+`private` hides a declaration from files that [import](/language/imports) this one. It applies to internal functions, types, errors, and events. An external function cannot be private.

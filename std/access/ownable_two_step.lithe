@@ -1,0 +1,55 @@
+(* Two-step ownership transfer on top of `Ownable`: the owner proposes, and the new owner
+   accepts. A mistyped address can't take ownership, because it never accepts. Matches
+   OpenZeppelin's `Ownable2Step`.
+
+     external view function owner is Ownable.owner;
+     external view function pendingOwner is Ownable2Step.pending_owner;
+     external function transferOwnership is Ownable2Step.transfer_ownership;
+     external function acceptOwnership is Ownable2Step.accept_ownership;
+     external function renounceOwnership is Ownable2Step.renounce_ownership; *)
+
+import "std/access/ownable.lithe";
+
+module Ownable2Step is {
+  requires Ownable;
+
+  storage ownable2step at "lithe.std.ownable2step" is record {
+    pending : address;
+  }
+
+  event OwnershipTransferStarted of record {
+    indexed previousOwner : address;
+    indexed newOwner : address;
+  }
+
+  view function pending_owner() : address is
+    ownable2step.pending
+
+  (* Proposes `new_owner`. Proposing the zero address cancels a pending transfer. *)
+  function transfer_ownership(const new_owner : address)
+    raises OwnableUnauthorizedAccount
+  is {
+    Ownable.check_owner();
+    ownable2step.pending := new_owner;
+    emit OwnershipTransferStarted {
+      previousOwner = Ownable.owner();
+      newOwner = new_owner;
+    };
+  }
+
+  function accept_ownership()
+    raises OwnableUnauthorizedAccount
+  is {
+    assert(ownable2step.pending = Evm.sender(), OwnableUnauthorizedAccount(Evm.sender()));
+    ownable2step.pending := Address.zero;
+    Ownable.set_owner(Evm.sender());
+  }
+
+  function renounce_ownership()
+    raises OwnableUnauthorizedAccount
+  is {
+    Ownable.check_owner();
+    ownable2step.pending := Address.zero;
+    Ownable.set_owner(Address.zero);
+  }
+}

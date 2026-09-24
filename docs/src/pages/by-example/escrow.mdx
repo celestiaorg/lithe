@@ -1,0 +1,72 @@
+---
+title: "Escrow"
+description: "A buyer, a seller, and an arbiter."
+---
+
+# Escrow
+
+The buyer funds the escrow. The arbiter either releases the funds to the seller or refunds the buyer.
+
+```lithe [escrow.lithe]
+(* The buyer funds the escrow. The arbiter releases it to the seller, or refunds
+   the buyer. *)
+
+error Not_buyer;
+error Not_arbiter;
+error Already_funded;
+error Not_funded;
+
+event Released of record {
+  amount : wei;
+}
+
+event Refunded of record {
+  amount : wei;
+}
+
+storage is record {
+  buyer : address;
+  seller : address;
+  arbiter : address;
+  amount : wei;
+  funded : bool;
+}
+
+external payable function fund(const seller : address; const arbiter : address)
+  raises Already_funded
+is {
+  assert(not storage.funded, Already_funded);
+  storage.buyer := Evm.sender();
+  storage.seller := seller;
+  storage.arbiter := arbiter;
+  storage.amount := Evm.value();
+  storage.funded := true;
+}
+
+view function settle_check() raises Not_arbiter | Not_funded is {
+  assert(Evm.sender() = storage.arbiter, Not_arbiter);
+  assert(storage.funded, Not_funded);
+}
+
+external nonreentrant function release()
+  raises Not_arbiter | Not_funded
+is {
+  settle_check();
+  const amount : wei := storage.amount;
+  storage.funded := false;
+  storage.amount := 0wei;
+  emit Released { amount = amount; };
+  defer Evm.transfer(storage.seller, amount);
+}
+
+external nonreentrant function refund()
+  raises Not_arbiter | Not_funded
+is {
+  settle_check();
+  const amount : wei := storage.amount;
+  storage.funded := false;
+  storage.amount := 0wei;
+  emit Refunded { amount = amount; };
+  defer Evm.transfer(storage.buyer, amount);
+}
+```

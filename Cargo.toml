@@ -1,0 +1,19 @@
+[package]
+name = "lithe"
+version = "0.1.0"
+edition = "2021"
+description = "Lithe, a functional state-transition language for the EVM"
+license = "MIT"
+
+[dependencies]
+logos = "0.15"
+
+[[bin]]
+name = "lithe"
+path = "src/main.rs"
+
+[profile.release]
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = true

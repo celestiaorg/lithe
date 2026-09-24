@@ -1,0 +1,40 @@
+---
+title: "Sending ether"
+description: "Deferred transfers and why ordering is safe."
+---
+
+# Sending ether
+
+`defer Evm.transfer(to, amount)` sends ether after the transition's own work is done. The transfer runs after the balance update, even though it appears first in the source.
+
+```lithe [sending-ether.lithe]
+(* `defer Evm.transfer(to, amount)` sends ether after this call's own work is done.
+   It forwards all remaining gas and reverts the transaction if the transfer fails. *)
+
+error Insufficient of record {
+  available : wei;
+  required : wei;
+}
+
+storage is record {
+  balances : map(address, wei);
+}
+
+external payable function deposit() is {
+  storage.balances[Evm.sender()] := storage.balances[Evm.sender()] + Evm.value();
+}
+
+external nonreentrant function withdraw(const amount : wei)
+  raises Insufficient
+is {
+  const have : wei := storage.balances[Evm.sender()];
+  assert(have >= amount, Insufficient { available = have; required = amount; });
+  (* The write lands before the transfer runs, whatever order you write them in. *)
+  defer Evm.transfer(Evm.sender(), amount);
+  storage.balances[Evm.sender()] := have - amount;
+}
+```
+
+- The recipient can't observe or exploit a half-updated balance, because there is none.
+- A transfer forwards all remaining gas, and reverts the transaction if the recipient rejects it.
+- `nonreentrant` stops the recipient from calling `withdraw` again before this call finishes. See [Reentrancy](/by-example/reentrancy).

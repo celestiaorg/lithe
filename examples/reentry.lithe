@@ -1,0 +1,19 @@
+(* A deferred call can re-enter before later effects run. This program warns. *)
+
+interface Hook is {
+  call cancel() : unit;
+}
+
+storage is record {
+  status : nat;
+  extra : nat;
+}
+
+external function settle(const hook : Hook) is {
+  storage.status := 1n;
+  defer hook.cancel();
+}
+
+external function cancel() is {
+  storage.extra := 2n;
+}

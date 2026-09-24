@@ -1,0 +1,108 @@
+(* Loops. The number of iterations is fixed when the loop starts: a range, or a list's
+   length. `until` ends a loop early. `bound n` caps the count, and a longer list panics. *)
+
+interface Exchange is {
+  call swap(amount : nat) : nat;
+}
+
+event Paid of record {
+  indexed to : address;
+  amount : wei;
+}
+
+storage is record {
+  total : nat;
+  gcd : nat;
+  found : nat;
+  members : list(address);
+  is_member : map(address, bool);
+  exchange : Exchange;
+  results : map(nat, nat);
+  paid : nat;
+}
+
+(* A range is half-open: 0 <= i < n. *)
+external function triangle(const n : nat) is {
+  var acc : nat := 0n;
+  for i : nat in 0n .. n do {
+    acc := acc + i;
+  }
+  storage.total := acc;
+}
+
+(* A fixed list's length is in its type. `(i, x)` binds the index too. *)
+external function weighted(const xs : list(nat, 3)) is {
+  var acc : nat := 0n;
+  for (i, x) : (nat, nat) in xs do {
+    acc := acc + x * (i + 1n);
+  }
+  storage.total := acc;
+}
+
+external function join(const who : address) is {
+  storage.members[storage.members.length] := who;
+}
+
+(* A storage list can grow, so its loop carries a bound. Past it, the call panics. *)
+external function mark_all() is {
+  for who : address in storage.members bound 4 do {
+    storage.is_member[who] := true;
+  }
+}
+
+(* `until` is checked before each iteration, so the search stops once it has found. *)
+external function find(const target : address) is {
+  var hit : nat := 0n;
+  for (i, who) : (nat, address) in storage.members until hit <> 0n bound 4 do {
+    if who = target then {
+      hit := i + 1n;
+    }
+  }
+  storage.found := hit;
+}
+
+(* A tuple assignment steps two `var`s at once. *)
+external function euclid(const a : nat; const b : nat) is {
+  var x : nat := a;
+  var y : nat := b;
+  for _ : nat in 0n .. 256n until y = 0n do {
+    (x, y) := (y, x % y);
+  }
+  storage.gcd := x;
+}
+
+(* Effects in a loop: one event and one deferred transfer per recipient. *)
+external function pay(const tos : list(address, 2); const amounts : list(nat, 2)) is {
+  for (i, to) : (nat, address) in tos do {
+    const amount : wei := wei(amounts[i]);
+    storage.paid := storage.paid + amounts[i];
+    emit Paid { to = to; amount = amount; };
+    defer Evm.transfer(to, amount);
+  }
+}
+
+external function set_exchange(const exchange : Exchange) is {
+  storage.exchange := exchange;
+}
+
+(* A continuation in a loop sees that iteration's bindings. *)
+external nonreentrant function swap_all(const amounts : list(nat, 2)) is {
+  for (i, amount) : (nat, nat) in amounts do {
+    defer storage.exchange.swap(amount) then (out : nat) {
+      storage.results[i] := out;
+    };
+  }
+}
+
+external function grid(const n : nat) is {
+  var acc : nat := 0n;
+  for i : nat in 0n .. n do {
+    for j : nat in 0n .. n do {
+      acc := acc + i * j;
+    }
+  }
+  storage.total := acc;
+}
+
+external view function total() : nat is
+  storage.total

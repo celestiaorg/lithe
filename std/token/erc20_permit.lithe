@@ -1,0 +1,61 @@
+(* ERC-2612: approvals by signature, so an account can approve without a transaction of
+   its own. Like OpenZeppelin's `ERC20Permit`. The EIP-712 domain's name is usually the
+   token's name, and its version "1":
+
+     deploy() is {
+       ERC20.init("My Token", "MTK");
+       EIP712.init("My Token", "1");
+     }
+
+     external function permit is ERC20Permit.permit;
+     external view function nonces is Nonces.nonces;
+     external view function DOMAIN_SEPARATOR is EIP712.domain_separator; *)
+
+import "std/token/erc20.lithe";
+import "std/crypto/eip712.lithe";
+import "std/crypto/ecdsa.lithe";
+import "std/utils/nonce.lithe";
+
+module ERC20Permit is {
+  requires ERC20;
+  requires EIP712;
+  requires ECDSA;
+  requires Nonces;
+
+  error ERC2612ExpiredSignature of nat;
+
+  error ERC2612InvalidSigner of record {
+    signer : address;
+    owner : address;
+  }
+
+  (* keccak256("Permit(address owner,address spender,uint256 value,uint256 nonce,uint256 deadline)") *)
+  pure function permit_typehash() : bytes32 is
+    0x6e71edae12b1b97f4d1f60370fef10105fa2faae0126114a169c64845d6126c9
+
+  function permit(
+    const owner : address;
+    const spender : address;
+    const value : nat;
+    const deadline : nat;
+    const v : uint8;
+    const r : bytes32;
+    const s : bytes32
+  )
+    raises ERC2612ExpiredSignature | ERC2612InvalidSigner | ECDSAInvalidSignature
+      | ECDSAInvalidSignatureS | ERC20InvalidApprover | ERC20InvalidSpender
+  is {
+    assert(nat(Evm.block_timestamp()) <= deadline, ERC2612ExpiredSignature(deadline));
+    const struct_hash : bytes32 := Crypto.keccak256(Abi.encode(
+      permit_typehash(),
+      owner,
+      spender,
+      value,
+      Nonces.use_nonce(owner),
+      deadline
+    ));
+    const signer : address := ECDSA.recover(EIP712.hash_typed_data(struct_hash), v, r, s);
+    assert(signer = owner, ERC2612InvalidSigner { signer = signer; owner = owner; });
+    ERC20.approve_as(owner, spender, value, true);
+  }
+}

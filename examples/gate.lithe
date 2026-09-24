@@ -1,0 +1,23 @@
+(* Withdraw the contract balance only while the gate is open and the caller is the owner. *)
+
+error Not_owner;
+error Closed;
+
+storage is record {
+  open : bool;
+  owner : address;
+}
+
+external function set_open(const flag : bool)
+  raises Not_owner
+is {
+  assert(Evm.sender() = storage.owner, Not_owner);
+  storage.open := flag;
+}
+
+external function withdraw(const to : address)
+  raises Closed
+is {
+  assert(storage.open and Evm.sender() = storage.owner, Closed);
+  defer Evm.transfer(to, Evm.balance(Evm.self()));
+}

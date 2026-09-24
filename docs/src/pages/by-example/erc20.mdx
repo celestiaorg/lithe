@@ -1,0 +1,122 @@
+---
+title: "ERC-20 token"
+description: "A complete ERC-20 with owner minting and ERC-6093 errors."
+---
+
+# ERC-20 token
+
+A standard fungible token. Function, event, and error names match the ERC-20 and ERC-6093 specifications, so wallets, explorers, and other contracts treat it like any other ERC-20.
+
+```lithe [erc20.lithe]
+(* A complete ERC-20 with an owner who can mint. Names match the standard exactly,
+   and errors follow OpenZeppelin's ERC-6093 conventions. *)
+
+error ERC20InsufficientBalance of record {
+  sender : address;
+  balance : nat;
+  needed : nat;
+}
+
+error ERC20InsufficientAllowance of record {
+  spender : address;
+  allowance : nat;
+  needed : nat;
+}
+
+error ERC20InvalidReceiver of address;
+error OwnableUnauthorizedAccount of address;
+error AlreadyInitialized;
+
+event Transfer of record {
+  indexed from : address;
+  indexed to : address;
+  value : nat;
+}
+
+event Approval of record {
+  indexed owner : address;
+  indexed spender : address;
+  value : nat;
+}
+
+storage is record {
+  owner : address;
+  name : string;
+  symbol : string;
+  total_supply : nat;
+  balances : map(address, nat);
+  allowances : map(address, map(address, nat));
+}
+
+external function initialize(const name : string; const symbol : string)
+  raises AlreadyInitialized
+is {
+  assert(storage.owner = Address.zero, AlreadyInitialized);
+  storage.owner := Evm.sender();
+  storage.name := name;
+  storage.symbol := symbol;
+}
+
+external view function name() : string is storage.name
+external view function symbol() : string is storage.symbol
+external pure function decimals() : uint8 is 18
+external view function totalSupply() : nat is storage.total_supply
+external view function balanceOf(const account : address) : nat is storage.balances[account]
+
+external view function allowance(const owner : address; const spender : address) : nat is
+  storage.allowances[owner][spender]
+
+function move(const from : address; const to : address; const value : nat)
+  raises ERC20InsufficientBalance | ERC20InvalidReceiver
+is {
+  assert(to <> Address.zero, ERC20InvalidReceiver(to));
+  const balance : nat := storage.balances[from];
+  assert(
+    balance >= value,
+    ERC20InsufficientBalance { sender = from; balance = balance; needed = value; }
+  );
+  storage.balances[from] := balance - value;
+  storage.balances[to] := storage.balances[to] + value;
+  emit Transfer { from = from; to = to; value = value; };
+}
+
+external function transfer(const to : address; const value : nat) : bool
+  raises ERC20InsufficientBalance | ERC20InvalidReceiver
+is {
+  move(Evm.sender(), to, value);
+} with true
+
+external function approve(const spender : address; const value : nat) : bool is {
+  storage.allowances[Evm.sender()][spender] := value;
+  emit Approval { owner = Evm.sender(); spender = spender; value = value; };
+} with true
+
+external function transferFrom(const from : address; const to : address; const value : nat) : bool
+  raises ERC20InsufficientAllowance | ERC20InsufficientBalance | ERC20InvalidReceiver
+is {
+  const allowed : nat := storage.allowances[from][Evm.sender()];
+  (* An allowance of Nat.max never decreases, as in OpenZeppelin. *)
+  if allowed < Nat.max then {
+    assert(
+      allowed >= value,
+      ERC20InsufficientAllowance { spender = Evm.sender(); allowance = allowed; needed = value; }
+    );
+    storage.allowances[from][Evm.sender()] := allowed - value;
+  }
+  move(from, to, value);
+} with true
+
+external function mint(const to : address; const value : nat)
+  raises OwnableUnauthorizedAccount | ERC20InvalidReceiver
+is {
+  assert(Evm.sender() = storage.owner, OwnableUnauthorizedAccount(Evm.sender()));
+  assert(to <> Address.zero, ERC20InvalidReceiver(to));
+  storage.total_supply := storage.total_supply + value;
+  storage.balances[to] := storage.balances[to] + value;
+  emit Transfer { from = Address.zero; to = to; value = value; };
+}
+```
+
+- `transferFrom` treats an allowance of `Nat.max` as infinite, like OpenZeppelin.
+- `move` is internal and shared by `transfer` and `transferFrom`, and its errors flow into both.
+- For a modular version, move the balances into a `module ERC20` with named storage. The [Modules](/by-example/modules) example shows the pattern.

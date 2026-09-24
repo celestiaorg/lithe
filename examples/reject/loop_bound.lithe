@@ -1,0 +1,9 @@
+storage is record {
+  members : list(address);
+}
+
+external function go(const cap : nat) is {
+  for who : address in storage.members bound cap do {
+    skip
+  }
+}

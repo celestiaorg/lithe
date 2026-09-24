@@ -1,0 +1,49 @@
+(* Generic sets specialize at compile time. Set(order_id) is not Set(bytes32). *)
+
+import "std/collections/set.lithe";
+import "std/collections/set_enumerable.lithe";
+
+type order_id is bytes32;
+type address_set is Set(address);
+type cursor is SetEnumerable(address).iterator;
+
+storage is record {
+  admins : address_set;
+  validators : SetEnumerable(address);
+  orders : Set(order_id);
+}
+
+pure function identity(T)(const value : T) : T is
+  value
+
+external view function is_admin(const account : address) : bool is
+  Set.contains(storage.admins, account)
+
+external function grant(const account : address) is {
+  Set.add(storage.admins, identity(account));
+}
+
+external function revoke(const account : address) is {
+  Set.remove(storage.admins, account);
+}
+
+external view function validator_count() : nat is
+  SetEnumerable.length(storage.validators)
+
+external view function validator_at(const index : nat) : address
+  raises Out_of_bounds
+is
+  SetEnumerable.at(storage.validators, index)
+
+external function add_validator(const account : address) is {
+  SetEnumerable.add(storage.validators, account);
+}
+
+external function drop_validator(const account : address) is {
+  SetEnumerable.remove(storage.validators, account);
+}
+
+external function track(const id : bytes32) is {
+  const order : order_id := order_id(id);
+  Set.add(storage.orders, order);
+}

@@ -1,0 +1,73 @@
+(* Fuzz target: arithmetic on every width with caller-chosen operands. *)
+
+storage is record {
+  a8 : uint8;
+  i8 : int8;
+  i16 : int16;
+  n : nat;
+  z : int;
+  u32 : uint32;
+  b : bool;
+  c : bool;
+}
+
+external function add8(const x : uint8; const y : uint8) is { storage.a8 := x + y; }
+external function sub8(const x : uint8; const y : uint8) is { storage.a8 := x - y; }
+external function mul8(const x : uint8; const y : uint8) is { storage.a8 := x * y; }
+external function div8(const x : uint8; const y : uint8) is { storage.a8 := x / y; }
+external function mod8(const x : uint8; const y : uint8) is { storage.a8 := x % y; }
+external function shl8(const x : uint8; const y : nat) is { storage.a8 := x << y; }
+external function shr8(const x : uint8; const y : nat) is { storage.a8 := x >> y; }
+external function sadd8(const x : int8; const y : int8) is { storage.i8 := x + y; }
+external function ssub8(const x : int8; const y : int8) is { storage.i8 := x - y; }
+external function smul8(const x : int8; const y : int8) is { storage.i8 := x * y; }
+external function sdiv8(const x : int8; const y : int8) is { storage.i8 := x / y; }
+external function smod8(const x : int8; const y : int8) is { storage.i8 := x % y; }
+external function sshl16(const x : int16; const y : nat) is { storage.i16 := x << y; }
+external function sshr16(const x : int16; const y : nat) is { storage.i16 := x >> y; }
+external function nadd(const x : nat; const y : nat) is { storage.n := x + y; }
+external function nsub(const x : nat; const y : nat) is { storage.n := x - y; }
+external function nmul(const x : nat; const y : nat) is { storage.n := x * y; }
+external function ndiv(const x : nat; const y : nat) is { storage.n := x / y; }
+external function nmod(const x : nat; const y : nat) is { storage.n := x % y; }
+external function nshl(const x : nat; const y : nat) is { storage.n := x << y; }
+external function nshr(const x : nat; const y : nat) is { storage.n := x >> y; }
+external function zadd(const x : int; const y : int) is { storage.z := x + y; }
+external function zsub(const x : int; const y : int) is { storage.z := x - y; }
+external function zmul(const x : int; const y : int) is { storage.z := x * y; }
+external function zdiv(const x : int; const y : int) is { storage.z := x / y; }
+external function zmod(const x : int; const y : int) is { storage.z := x % y; }
+external function zshr(const x : int; const y : nat) is { storage.z := x >> y; }
+external function zneg(const x : int) is { storage.z := -x; }
+external function ncmp(const x : nat; const y : nat) is {
+  storage.b := x < y;
+  storage.c := (x >= y) and not (x = y);
+}
+external function zcmp(const x : int; const y : int) is {
+  storage.b := x <= y;
+  storage.c := (x > y) or (x <> y);
+}
+external function bits(const x : nat; const y : nat) is {
+  storage.n := (x & y) | (x ^ ~y);
+}
+external function bits8(const x : uint8) is { storage.a8 := ~x; }
+external function narrow(const x : nat) is { storage.u32 := uint32(x); }
+external function mix(const x : uint32; const y : uint32; const k : nat) is {
+  const s : uint32 := x + y;
+  const d : uint32 := s / 3;
+  storage.u32 := d * 2;
+  storage.n := storage.n + k;
+  if k > 10n then {
+    storage.b := true;
+  } else {
+    storage.c := true;
+  }
+}
+external view function nquot(const x : nat; const y : nat) : nat is x / y + x % y
+external view function zquot(const x : int; const y : int) : int is x / y - x % y
+external view function get_a8() : uint8 is storage.a8
+external view function get_i8() : int8 is storage.i8
+external view function get_i16() : int16 is storage.i16
+external view function get_u32() : uint32 is storage.u32
+external view function get_flags() : (bool, bool) is (storage.b, storage.c)
+external view function get_n() : nat is storage.n

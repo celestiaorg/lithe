@@ -1,0 +1,49 @@
+(* Benchmark: a fixed-price exchange whose state-changing calls return values.
+   Mirrors exchange.sol. The executor consumes the results in continuations. *)
+
+type swap_result is record {
+  amount_out : nat;
+  fee : nat;
+}
+
+error Slippage of record {
+  amount_out : nat;
+  min_out : nat;
+}
+
+event Swapped of record {
+  indexed trader : address;
+  amount_in : nat;
+  amount_out : nat;
+}
+
+storage is record {
+  volume : nat;
+  fees : nat;
+  total_shares : nat;
+  shares : map(address, nat);
+}
+
+external function swap(const amount_in : nat; const min_out : nat) : swap_result
+  raises Slippage
+is {
+  const fee : nat := amount_in * 3n / 1000n;
+  const amount_out : nat := (amount_in - fee) * 2n;
+  assert(amount_out >= min_out, Slippage { amount_out = amount_out; min_out = min_out; });
+  storage.volume := storage.volume + amount_in;
+  storage.fees := storage.fees + fee;
+  emit Swapped { trader = Evm.sender(); amount_in = amount_in; amount_out = amount_out; };
+  const result : swap_result := { amount_out = amount_out; fee = fee; };
+} with result
+
+external function deposit(const amount : nat) : nat is {
+  const minted : nat := amount * 10n;
+  storage.total_shares := storage.total_shares + minted;
+  storage.shares[Evm.sender()] := storage.shares[Evm.sender()] + minted;
+} with minted
+
+external function split(const shares : nat) : (nat, nat) is {
+  storage.total_shares := storage.total_shares - shares;
+} with (shares / 3n, shares - shares / 3n)
+
+external view function shares_of(const who : address) : nat is storage.shares[who]

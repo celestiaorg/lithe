@@ -1,0 +1,20 @@
+(* ERC-20 tokens, and their metadata extension. *)
+
+interface IERC20 is {
+  query totalSupply() : nat;
+  query balanceOf(account : address) : nat;
+  query allowance(owner : address; spender : address) : nat;
+  query name() : string;
+  query symbol() : string;
+  query decimals() : uint8;
+  call transfer(to : address; value : nat) : bool;
+  call approve(spender : address; value : nat) : bool;
+  call transferFrom(from : address; to : address; value : nat) : bool;
+}
+
+(* ERC-2612: approvals by signature. *)
+interface IERC20Permit is {
+  query nonces(owner : address) : nat;
+  query DOMAIN_SEPARATOR() : bytes32;
+  call permit(owner : address; spender : address; value : nat; deadline : nat; v : uint8; r : bytes32; s : bytes32) : unit;
+}

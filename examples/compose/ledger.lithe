@@ -1,0 +1,9 @@
+module Ledger is {
+  storage ledger at "lithe.compose" is record {
+    n : nat;
+  }
+
+  function ping(const n : nat) is {
+    ledger.n := n;
+  }
+}

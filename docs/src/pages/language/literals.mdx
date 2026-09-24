@@ -1,0 +1,129 @@
+---
+title: "Literals and units"
+description: "Number, hex, string, boolean, list, record, and tuple literals, and ether and time units."
+---
+
+# Literals and units
+
+## Integers
+
+```lithe fragment
+42          (* an integer literal: its type comes from context *)
+42n         (* a nat *)
+-42         (* an int *)
+1_000_000n  (* underscores separate digits *)
+0xff        (* hexadecimal *)
+```
+
+An unsuffixed literal takes the type its context expects: a binding's annotation, an assignment's target, a parameter, or a return type. It must fit that type. `const x : uint8 := 300;` is a compile error:
+
+```lithe rejects
+type tiny is uint8;
+
+storage is record {
+  n : nat;
+}
+
+external function go() is {
+  const x : tiny := 300;
+  skip
+}
+```
+
+```text
+literal 300 does not fit type `tiny`
+```
+
+The suffix `n` fixes a literal's type to `nat`. In a comparison, an unsuffixed literal takes the type of the other side, so `level > 3` works for a `uint8`.
+
+## Ether units
+
+`wei`, `gwei`, and `eth` suffixes produce values of type `wei`:
+
+```lithe fragment
+1wei          (* 1 *)
+20gwei        (* 20 * 10^9 *)
+1eth          (* 10^18 *)
+1eth + 500gwei
+```
+
+## Time units
+
+`seconds`, `minutes`, `hours`, and `days` produce durations. A duration adds to a `timestamp` and is also usable as a `nat` number of seconds:
+
+```lithe
+storage is record {
+  deadline : timestamp;
+  period : nat;
+}
+
+external function start() is {
+  storage.deadline := Evm.block_timestamp() + 1days + 12hours;
+  storage.period := 30minutes;
+}
+```
+
+## Hex literals
+
+A `0x...` literal can be an integer, an `address`, a `bytesN`, or `bytes`, depending on context. A `bytesN` literal shorter than `N` bytes is left-aligned and padded, as in Solidity.
+
+```lithe
+storage is record {
+  selector : bytes4;
+  blob : bytes;
+  owner : address;
+  mask : nat;
+}
+
+external function set() is {
+  storage.selector := 0xa9059cbb;
+  storage.blob := 0x616263;
+  storage.owner := 0x00000000000000000000000000000000000000ab;
+  storage.mask := 0xff;
+}
+```
+
+## Strings
+
+String literals are double-quoted. A backslash makes the next character literal, so `\"` is a quote and `\\` is a backslash. There are no other escapes, and a string cannot span lines.
+
+```lithe fragment
+"Hello, world!"
+"say \"hi\""
+```
+
+## Booleans and unit
+
+`true` and `false` are the two `bool` values. `Unit` is the single value of type `unit`.
+
+## Aggregate literals
+
+| Literal | Type |
+| --- | --- |
+| `{ amount = 1n; to = who; }` | a record, whose type comes from context |
+| `(1n, who)` | a tuple, `(nat, address)` |
+| `[1n, 2n, 3n]` | a list, `list(nat)` or `list(nat, 3)` |
+| `Some(x)`, `None` | an option |
+
+```lithe
+type payment is record {
+  to : address;
+  amount : nat;
+}
+
+storage is record {
+  payments : map(nat, payment);
+}
+
+external function pay(const id : nat; const to : address) is {
+  const p : payment := { to = to; amount = 5n; };
+  storage.payments[id] := p;
+}
+
+external pure function pair() : (nat, bool) is
+  (1n, true)
+
+external pure function sum3() : nat is {
+  const xs : list(nat, 3) := [1n, 2n, 3n];
+} with xs[0] + xs[1] + xs[2]
+```

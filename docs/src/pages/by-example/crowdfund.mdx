@@ -1,0 +1,76 @@
+---
+title: "Crowdfund"
+description: "Pledge toward a goal, then claim or refund."
+---
+
+# Crowdfund
+
+Backers pledge ether before a deadline. If the goal is reached, the creator claims everything. Otherwise each backer takes back their own pledge.
+
+```lithe [crowdfund.lithe]
+(* Pledge ether toward a goal before a deadline. If the goal is met, the creator
+   claims the funds. If not, each backer takes their pledge back. *)
+
+error Already_started;
+error Ended;
+error Not_ended;
+error Goal_not_met;
+error Goal_met;
+error Not_creator;
+error Already_claimed;
+error Nothing_pledged;
+
+event Pledged of record {
+  indexed backer : address;
+  amount : wei;
+}
+
+storage is record {
+  creator : address;
+  goal : wei;
+  deadline : timestamp;
+  raised : wei;
+  claimed : bool;
+  pledges : map(address, wei);
+}
+
+external function launch(const goal : wei; const duration : nat)
+  raises Already_started
+is {
+  assert(storage.creator = Address.zero, Already_started);
+  storage.creator := Evm.sender();
+  storage.goal := goal;
+  storage.deadline := Evm.block_timestamp() + duration;
+}
+
+external payable function pledge()
+  raises Ended
+is {
+  assert(Evm.block_timestamp() < storage.deadline, Ended);
+  storage.pledges[Evm.sender()] := storage.pledges[Evm.sender()] + Evm.value();
+  storage.raised := storage.raised + Evm.value();
+  emit Pledged { backer = Evm.sender(); amount = Evm.value(); };
+}
+
+external nonreentrant function claim()
+  raises Not_creator | Not_ended | Goal_not_met | Already_claimed
+is {
+  assert(Evm.sender() = storage.creator, Not_creator);
+  assert(Evm.block_timestamp() >= storage.deadline, Not_ended);
+  assert(storage.raised >= storage.goal, Goal_not_met);
+  assert(not storage.claimed, Already_claimed);
+  storage.claimed := true;
+  defer Evm.transfer(storage.creator, storage.raised);
+}
+
+external nonreentrant function refund()
+  raises Not_ended | Goal_met | Nothing_pledged
+is {
+  assert(Evm.block_timestamp() >= storage.deadline, Not_ended);
+  assert(storage.raised < storage.goal, Goal_met);
+  const amount : wei := storage.pledges[Evm.sender()];
+  assert(amount > 0wei, Nothing_pledged);
+  storage.pledges[Evm.sender()] := 0wei;
+  defer Evm.transfer(Evm.sender(), amount);
+}
+```

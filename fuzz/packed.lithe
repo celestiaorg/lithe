@@ -1,0 +1,79 @@
+(* Fuzz target: packed storage. Narrow lists under random indices, records, tuples,
+   several writes to one packed slot, and strings that grow and shrink. *)
+
+type pos is record {
+  x : uint16;
+  y : uint16;
+  live : bool;
+}
+
+storage is record {
+  small : uint8;
+  levels : list(uint8, 40);
+  flags : list(bool, 5);
+  deltas : list(int16, 3);
+  spot : pos;
+  pair : (uint32, address);
+  tail : uint64;
+  owner : address;
+  ready : bool;
+  name : string;
+  total : nat;
+}
+
+external function set_level(const i : nat; const v : uint8) is {
+  storage.levels[i] := v;
+  storage.small := v;
+}
+
+external function set_flag(const i : nat; const f : bool) is {
+  storage.flags[i] := f;
+  if f then {
+    storage.ready := true;
+  }
+}
+
+external function set_delta(const i : nat; const d : int16) is {
+  storage.deltas[i] := d;
+  storage.deltas[0] := d;
+}
+
+external function place(const x : uint16; const y : uint16) is {
+  storage.spot.x := x;
+  storage.spot.y := y;
+  storage.spot.live := x > y;
+  storage.small := storage.small + 1;
+}
+
+external function set_pair(const a : uint32; const who : address) is {
+  storage.pair := (a, who);
+  storage.owner := who;
+  storage.ready := not storage.ready;
+}
+
+external function rename(const n : string; const t : uint64) is {
+  storage.name := n;
+  storage.tail := t;
+  storage.total := storage.total + 1n;
+}
+
+external view function level(const i : nat) : uint8 is
+  storage.levels[i]
+
+external view function flag(const i : nat) : bool is
+  storage.flags[i]
+
+external view function delta(const i : nat) : int16 is
+  storage.deltas[i]
+
+external view function spot() : (uint16, uint16, bool) is
+  (storage.spot.x, storage.spot.y, storage.spot.live)
+
+external view function pair() : (uint32, address) is
+  storage.pair
+
+external view function status() : (uint8, address, bool, uint64, nat) is
+  (storage.small, storage.owner, storage.ready, storage.tail, storage.total)
+
+external view function name() : string is
+  storage.name

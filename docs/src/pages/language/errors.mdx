@@ -1,0 +1,202 @@
+---
+title: "Errors"
+description: "Typed errors, raises clauses, error sets, inference, and panics."
+---
+
+# Errors
+
+Lithe has no string reverts. Every intentional failure is a declared error type, and every external function declares the errors it can raise. The compiler checks that nothing is missing.
+
+## Declaring errors
+
+Errors take one of three forms:
+
+```lithe
+(* No payload. In the ABI: Unauthorized() *)
+error Unauthorized;
+
+(* One value. In the ABI: TooLarge(uint256) *)
+error Too_large of nat;
+
+(* Named fields. In the ABI: InsufficientBalance(uint256 available, uint256 required) *)
+error Insufficient_balance of record {
+  available : nat;
+  required : nat;
+}
+
+storage is record {
+  n : nat;
+}
+
+external function check(const n : nat)
+  raises Too_large
+is {
+  assert(n <= 100n, Too_large(n));
+  storage.n := n;
+}
+```
+
+Each error compiles to a Solidity custom error. The ABI name is the declared name in PascalCase, so `Insufficient_balance` becomes `InsufficientBalance`, with the selector Solidity would compute. Payloads are words, or records of words. Two errors whose ABI names collide, such as `Not_owner` and `NotOwner`, are rejected.
+
+## Raising errors
+
+`assert` raises when its condition is false. `fail` always raises. The error is written the way it was declared:
+
+```lithe
+error Unauthorized;
+error Too_large of nat;
+error Insufficient_balance of record {
+  available : nat;
+  required : nat;
+}
+
+storage is record {
+  owner : address;
+  balances : map(address, nat);
+}
+
+external function withdraw(const amount : nat)
+  raises Unauthorized | Too_large | Insufficient_balance
+is {
+  assert(Evm.sender() = storage.owner, Unauthorized);
+  assert(amount <= 1_000_000n, Too_large(amount));
+  const have : nat := storage.balances[Evm.sender()];
+  if have < amount then {
+    fail Insufficient_balance { available = have; required = amount; };
+  }
+  storage.balances[Evm.sender()] := have - amount;
+}
+```
+
+## `raises`
+
+An external function must list every error its body can raise, directly or through the functions it calls:
+
+```lithe rejects
+error Not_owner;
+error Closed;
+
+storage is record {
+  owner : address;
+  open : bool;
+}
+
+external function go()
+  raises Not_owner
+is {
+  assert(Evm.sender() = storage.owner, Not_owner);
+  assert(storage.open, Closed);
+}
+```
+
+```text
+external function `go` may raise `Closed`
+```
+
+If `raises` is missing entirely, the compiler says what it inferred:
+
+```text
+7:10: external function `go` must declare its errors
+
+inferred:
+  Not_owner
+```
+
+A function's ABI, its `raises` clause, and the output of `lithe errors` therefore always agree. Callers and auditors can rely on the full set of failures.
+
+Internal functions may leave `raises` off. Their errors are inferred and propagate to their callers:
+
+```lithe
+error Not_owner;
+
+storage is record {
+  owner : address;
+  value : nat;
+}
+
+view function only_owner() is {
+  assert(Evm.sender() = storage.owner, Not_owner);
+}
+
+external function set(const value : nat)
+  raises Not_owner
+is {
+  only_owner();
+  storage.value := value;
+}
+```
+
+`raises none` declares that a function raises no declared errors. Panics are still possible.
+
+## Error sets
+
+Name a group of errors once and reuse it:
+
+```lithe
+error Paused;
+error Too_small of nat;
+error Insufficient of nat;
+
+errors withdraw_errors is
+  | Paused
+  | Too_small
+  | Insufficient
+
+storage is record {
+  paused : bool;
+  balance : nat;
+}
+
+external function withdraw(const amount : nat)
+  raises withdraw_errors
+is {
+  assert(not storage.paused, Paused);
+  assert(amount >= 10n, Too_small(amount));
+  assert(storage.balance >= amount, Insufficient(storage.balance));
+  storage.balance := storage.balance - amount;
+}
+```
+
+A `raises` clause can mix sets and errors: `raises withdraw_errors | Not_owner`. Sets cannot contain other sets.
+
+## Panics
+
+Some failures are not declared errors. They are violated invariants, and they revert with Solidity's `Panic(uint256)`:
+
+| Code | Cause |
+| --- | --- |
+| `0x11` | arithmetic overflow or underflow, or a narrowing conversion out of range |
+| `0x12` | division or remainder by zero |
+| `0x32` | list index out of range |
+
+A failed `query` or deferred call also reverts the transaction, unless the code recovers from it with `Ok` and `Error` arms. The ABI decoder reverts on malformed calldata, and a non-payable function reverts if it receives ether. None of these appear in `raises`.
+
+## Inspecting errors
+
+`lithe errors` lists every entrypoint's errors, and every error's selector, fields, and raisers:
+
+```bash
+lithe errors bank.lithe
+```
+
+```text
+withdraw(uint256)
+
+  Paused()
+  InvalidAmount(uint256)
+  InsufficientBalance(uint256,uint256)
+
+...
+
+InsufficientBalance(uint256,uint256)
+
+selector:
+  0xcf479181
+
+fields:
+  available : uint256
+  required : uint256
+
+raised by:
+  withdraw(uint256)
+```

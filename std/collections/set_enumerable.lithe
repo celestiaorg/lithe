@@ -1,0 +1,49 @@
+(* Membership plus enumeration. The list and the index map are both stored. *)
+
+module SetEnumerable(T : map_key) is {
+  type self is record {
+    values : list(T);
+    indexes : map(T, nat);
+    count : nat;
+  }
+
+  type iterator is record {
+    index : nat;
+  }
+
+  error Out_of_bounds;
+
+  view function contains(const items : self; const value : T) : bool is
+    items.indexes[value] > 0n
+
+  view function length(const items : self) : nat is
+    items.count
+
+  view function at(const items : self; const index : nat) : T
+    raises Out_of_bounds
+  is {
+    assert(index < items.count, Out_of_bounds);
+  } with items.values[index]
+
+  function add(const items : self; const value : T) is {
+    if items.indexes[value] = 0n then {
+      items.values[items.count] := value;
+      items.count := items.count + 1n;
+      items.indexes[value] := items.count;
+    }
+  }
+
+  function remove(const items : self; const value : T) is {
+    const found : nat := items.indexes[value];
+    if found = 0n then {
+      skip
+    } else {
+      const last : nat := items.count - 1n;
+      const moved : T := items.values[last];
+      items.values[found - 1n] := moved;
+      items.indexes[moved] := found;
+      items.indexes[value] := 0n;
+      items.count := last;
+    }
+  }
+}

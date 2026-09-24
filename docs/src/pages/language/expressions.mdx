@@ -1,0 +1,133 @@
+---
+title: "Expressions and operators"
+description: "Arithmetic, comparison, boolean, and bitwise operators, precedence, and case expressions."
+---
+
+# Expressions and operators
+
+## Operators
+
+| Operator | Meaning | Operands |
+| --- | --- | --- |
+| `+` `-` `*` | add, subtract, multiply (checked) | two values of the same numeric type |
+| `/` `%` | divide, remainder (truncating; checked) | two values of the same numeric type |
+| `-x` | negate | `int` types |
+| `=` `<>` | equal, not equal (`=/=` also means not equal) | two values of the same type |
+| `<` `<=` `>` `>=` | ordered comparison | numeric types, `wei`, `timestamp` |
+| `and` `or` `not` | boolean logic | `bool` |
+| `&` `\|` `^` `~` | bitwise and, or, xor, not | integers of the same type |
+| `<<` `>>` | shift left, right (arithmetic for signed types) | integers |
+
+`^` is xor. There is no exponent operator.
+
+### Precedence
+
+From tightest to loosest:
+
+| Level | Operators | Associativity |
+| --- | --- | --- |
+| 1 | prefix `-`, `not`, `~` | |
+| 2 | `*` `/` `%` | left |
+| 3 | `+` `-` | left |
+| 4 | `<<` `>>` | left |
+| 5 | `&` | left |
+| 6 | `^` | left |
+| 7 | `\|` | left |
+| 8 | `=` `<>` `<` `<=` `>` `>=` | none: `a < b < c` is an error |
+| 9 | `and` | left |
+| 10 | `or` | left |
+
+Bitwise operators bind tighter than comparisons, so `flags & mask = 0n` means `(flags & mask) = 0n`. Prefix operators bind tightest, so `not a = b` means `(not a) = b` and fails to type-check. Write `a <> b` or `not (a = b)`.
+
+## Arithmetic
+
+Every arithmetic operation is checked against its type's width:
+
+| Failure | Result |
+| --- | --- |
+| overflow or underflow | `Panic(0x11)` |
+| division or remainder by zero | `Panic(0x12)` |
+| `Int.min / -1` | `Panic(0x11)` |
+
+Division truncates toward zero, so `-7 / 3` is `-2` and `-7 % 3` is `-1`. To get both results at once, use `Nat.div_rem(a, b)` or `Int.div_rem(a, b)`, which return a tuple.
+
+Shifts do not overflow. Bits shifted past a type's width are dropped, so for a `uint8`, `1 << 8` is `0`. `~` flips bits within the type's width, so for a `uint8`, `~0` is `255`.
+
+```lithe
+storage is record {
+  q : nat;
+  r : nat;
+  masked : nat;
+  narrow : uint8;
+}
+
+external function run(const a : nat; const b : nat) is {
+  const (q, r) : (nat, nat) := Nat.div_rem(a, b);
+  storage.q := q;
+  storage.r := r;
+  storage.masked := (a >> 8) & 0xff;
+  const x : uint8 := ~0;
+  storage.narrow := x ^ 0x0f;
+}
+```
+
+## Field access, indexing, and calls
+
+| Expression | Meaning |
+| --- | --- |
+| `r.field` | a record field |
+| `xs[i]`, `m[k]`, `m[a][b]` | a list element or map entry |
+| `xs.length` | the length of a dynamic list |
+| `f(a, b)` | call an internal function |
+| `Module.f(a)` | call a module's function |
+| `Evm.sender()` | call a built-in |
+| `query c.f(a)` | call an external contract's read-only method |
+
+Storage paths can be as deep as the types allow: `storage.orders[id].inner.delta`.
+
+## `case` expressions
+
+`case` matches a variant or option and yields a value. Every case must be handled. There is no wildcard.
+
+```lithe
+storage is record {
+  limit : option(nat);
+}
+
+external view function limit_or(const fallback : nat) : nat is
+  case storage.limit of {
+  | Some(n) -> n
+  | None -> fallback
+  }
+```
+
+A `case` can be a function's whole body, the `with` result after a block, or the initializer of a `const`. Payloads bind to names, and tuple payloads destructure: `| Some((a, b)) -> a + b`.
+
+In a stateful function, an arm can be a block of statements instead of a value. This is how [dispatchers](/language/dispatch) are written:
+
+```lithe fragment
+external function main(const action : action) is
+  case action of {
+  | Deposit(amount) -> {
+      storage.total := storage.total + amount;
+    }
+  | Reset -> { storage.total := 0n; }
+  }
+```
+
+## `if` is a statement
+
+There is no `if` expression and no ternary operator. To choose a value, bind a `var` and assign it in each branch:
+
+```lithe
+storage is record {
+  n : nat;
+}
+
+external pure function max(const a : nat; const b : nat) : nat is {
+  var larger : nat := a;
+  if b > a then {
+    larger := b;
+  }
+} with larger
+```

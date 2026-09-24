@@ -1,0 +1,10 @@
+import "./left.lithe";
+import "./right.lithe";
+
+storage is record {
+  n : nat;
+}
+
+external function go() is {
+  skip
+}

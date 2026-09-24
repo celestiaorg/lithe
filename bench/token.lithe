@@ -1,0 +1,64 @@
+(* Benchmark: a minimal token with owner minting. Mirrors token.sol. *)
+
+error Not_owner;
+
+error Insufficient_balance of record {
+  available : nat;
+  required : nat;
+}
+
+event Transfer of record {
+  indexed from : address;
+  indexed to : address;
+  amount : nat;
+}
+
+storage is record {
+  owner : address;
+  total : nat;
+  balances : map(address, nat);
+}
+
+deploy() is {
+  storage.owner := Evm.sender();
+}
+
+external function mint(const to : address; const amount : nat)
+  raises Not_owner
+is {
+  assert(Evm.sender() = storage.owner, Not_owner);
+  storage.balances[to] := storage.balances[to] + amount;
+  storage.total := storage.total + amount;
+  emit Transfer {
+    from = Address.zero;
+    to = to;
+    amount = amount;
+  };
+}
+
+external function transfer(const to : address; const amount : nat)
+  raises Insufficient_balance
+is {
+  const from : address := Evm.sender();
+  const have : nat := storage.balances[from];
+  assert(
+    have >= amount,
+    Insufficient_balance {
+      available = have;
+      required = amount;
+    }
+  );
+  storage.balances[from] := have - amount;
+  storage.balances[to] := storage.balances[to] + amount;
+  emit Transfer {
+    from = from;
+    to = to;
+    amount = amount;
+  };
+}
+
+external view function balance_of(const who : address) : nat is
+  storage.balances[who]
+
+external view function total_supply() : nat is
+  storage.total

@@ -1,0 +1,234 @@
+---
+title: "Modules and contracts"
+description: "Modules own storage, errors, events, and functions. Contracts compose modules and choose what to expose."
+---
+
+# Modules and contracts
+
+Lithe has no inheritance. Reusable behavior lives in **modules**, and a **contract** composes modules explicitly.
+
+## Modules
+
+A module groups storage, types, errors, events, and internal functions under one name:
+
+```lithe fragment
+module Ownable is {
+  storage ownable at "example.ownable" is record {
+    owner : address;
+  }
+
+  error Not_owner;
+
+  event Ownership_transferred of record {
+    indexed previous : address;
+    indexed next : address;
+  }
+
+  view function owner() : address is
+    ownable.owner
+
+  view function only_owner()
+    raises Not_owner
+  is {
+    assert(Evm.sender() = ownable.owner, Not_owner);
+  }
+
+  function transfer_ownership(const next : address)
+    raises Not_owner
+  is {
+    only_owner();
+    emit Ownership_transferred { previous = ownable.owner; next = next; };
+    ownable.owner := next;
+  }
+}
+```
+
+- A module's storage must be **named**. Inside the module it is `ownable.owner`. Everywhere else it is qualified with the module's name: `Ownable.ownable.owner`.
+- A module's functions are internal. A module cannot declare `external` functions. The contract decides what is exposed.
+- A module's errors and events keep their names, so contracts that use the module raise and log them under the standard signatures.
+
+## Contracts
+
+A contract `use`s modules and exposes their functions, either by **promotion** or by **wrapping**:
+
+```lithe
+module Counter is {
+  storage counter at "example.counter" is record {
+    count : nat;
+  }
+
+  view function count() : nat is
+    counter.count
+
+  function bump(const by : nat) is {
+    counter.count := counter.count + by;
+  }
+}
+
+contract App is {
+  use Counter;
+
+  storage is record {
+    calls : nat;
+  }
+
+  (* Promotion exposes the module function as-is. *)
+  external view function count is Counter.count;
+
+  (* Wrapping adds behavior around it. *)
+  external function bump(const by : nat) is {
+    storage.calls := storage.calls + 1n;
+    Counter.bump(by);
+  }
+
+  external view function current() : nat is
+    Counter.counter.count
+}
+```
+
+Nothing is exposed implicitly. If a module adds a function, no contract gains an entrypoint until it asks for one. Two promotions with the same name are an error, and promotion never picks a winner.
+
+## Dependencies between modules
+
+A module that calls another module, or reads its storage, declares it with `requires`. A contract that uses the dependent module must also use every module it requires:
+
+```lithe
+module Pausable is {
+  storage pausable at "example.pausable" is record {
+    paused : bool;
+  }
+
+  error Paused;
+
+  view function when_not_paused()
+    raises Paused
+  is {
+    assert(not pausable.paused, Paused);
+  }
+
+  function pause() is {
+    pausable.paused := true;
+  }
+}
+
+module Ledger is {
+  requires Pausable;
+
+  storage ledger at "example.ledger" is record {
+    balances : map(address, nat);
+  }
+
+  error Insufficient of nat;
+
+  function transfer(const to : address; const amount : nat)
+    raises Paused | Insufficient
+  is {
+    Pausable.when_not_paused();
+    const have : nat := ledger.balances[Evm.sender()];
+    assert(have >= amount, Insufficient(have));
+    ledger.balances[Evm.sender()] := have - amount;
+    ledger.balances[to] := ledger.balances[to] + amount;
+  }
+
+  (* Reading a required module's storage is allowed. *)
+  view function frozen() : bool is
+    Pausable.pausable.paused
+}
+
+contract Token is {
+  use Pausable;
+  use Ledger;
+
+  storage is record {
+    admin : address;
+  }
+
+  external function transfer is Ledger.transfer;
+  external function pause is Pausable.pause;
+  external view function frozen is Ledger.frozen;
+}
+```
+
+```lithe rejects
+module Ledger is {
+  storage ledger at "lithe.ledger" is record {
+    n : nat;
+  }
+
+  function set(const n : nat) is {
+    ledger.n := n;
+  }
+}
+
+module Guarded is {
+  requires Ledger;
+
+  function set(const n : nat) is {
+    Ledger.set(n);
+  }
+}
+
+contract Token is {
+  use Guarded;
+
+  external function set is Guarded.set;
+}
+```
+
+```text
+module `Guarded` requires `Ledger`
+```
+
+## Qualified storage
+
+Outside its module, a module's storage is always written with the module's name, so a reviewer can see whose state is being touched:
+
+```lithe rejects
+module Ledger is {
+  storage ledger at "lithe.ledger" is record {
+    n : nat;
+  }
+
+  function set(const n : nat) is {
+    ledger.n := n;
+  }
+}
+
+contract Token is {
+  use Ledger;
+
+  external function go(const n : nat) is {
+    ledger.n := n;
+  }
+}
+```
+
+```text
+storage `ledger` belongs to `Ledger`; write `Ledger.ledger`
+```
+
+Reaching into a module's storage like this is allowed, but calling the module's functions is usually clearer, because they maintain its invariants. Because every module's storage sits at its own ERC-7201 root, modules compose without slot collisions. Two modules that claim the same storage id are rejected.
+
+## Extension modules
+
+An extension adds behavior and its own storage on top of a base module, without changing the base:
+
+```lithe fragment
+module ERC20Votes is {
+  requires ERC20;
+
+  storage votes at "lithe.std.erc20.votes" is record {
+    delegates : map(address, address);
+  }
+
+  function delegate(const delegatee : address) is {
+    votes.delegates[Evm.sender()] := delegatee;
+  }
+}
+```
+
+The contract that uses `ERC20` and `ERC20Votes` decides whether a transfer should also move votes, and says so in its own `transfer`. An extension cannot silently change the base's behavior.
+
+## Modules in other files
+
+Modules are usually written in their own files and brought in with `import`. See [Imports](/language/imports). Modules can also take type parameters. See [Generics](/language/generics).

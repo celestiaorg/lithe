@@ -1,0 +1,111 @@
+(* Modules compose by name. Each module owns the storage it declares. *)
+
+module Ledger is {
+  storage ledger at "lithe.ledger" is record {
+    balances : map(address, nat);
+  }
+
+  error Insufficient_balance of record {
+    available : nat;
+    required : nat;
+  }
+
+  event Transfer of record {
+    indexed from : address;
+    indexed to : address;
+    amount : nat;
+  }
+
+  view function balance_of(const account : address) : nat is
+    ledger.balances[account]
+
+  function mint(const account : address; const amount : nat) is {
+    ledger.balances[account] := ledger.balances[account] + amount;
+  }
+
+  function transfer(const to : address; const amount : nat)
+    raises Insufficient_balance
+  is {
+    const sender : address := Evm.sender();
+    const balance : nat := ledger.balances[sender];
+    assert(
+      balance >= amount,
+      Insufficient_balance {
+        available = balance;
+        required = amount;
+      }
+    );
+    ledger.balances[sender] := balance - amount;
+    ledger.balances[to] := ledger.balances[to] + amount;
+    emit Transfer {
+      from = sender;
+      to = to;
+      amount = amount;
+    };
+  }
+}
+
+module Pausable is {
+  storage settings at "lithe.settings" is record {
+    paused : bool;
+  }
+
+  error Paused;
+
+  view function is_paused() : bool is
+    settings.paused
+
+  function pause() is {
+    settings.paused := true;
+  }
+
+  function require_unpaused()
+    raises Paused
+  is {
+    assert(not settings.paused, Paused);
+  }
+}
+
+module Guarded is {
+  requires Ledger;
+  requires Pausable;
+
+  function transfer(const to : address; const amount : nat)
+    raises Paused | Insufficient_balance
+  is {
+    Pausable.require_unpaused();
+    Ledger.transfer(to, amount);
+  }
+}
+
+contract Token is {
+  use Ledger;
+  use Pausable;
+  use Guarded;
+
+  external view function balance_of is Ledger.balance_of;
+
+  external view function is_paused is Pausable.is_paused;
+
+  external view function flag() : bool is
+    Pausable.settings.paused
+
+  external function mint is Ledger.mint;
+
+  external function transfer is Ledger.transfer;
+
+  external function pause is Pausable.pause;
+
+  external function guarded_transfer(const to : address; const amount : nat)
+    raises Paused | Insufficient_balance
+  is {
+    Pausable.require_unpaused();
+    Ledger.transfer(to, amount);
+  }
+
+  external function safe_transfer(const to : address; const amount : nat)
+    raises Paused | Insufficient_balance
+  is {
+    Guarded.transfer(to, amount);
+  }
+}

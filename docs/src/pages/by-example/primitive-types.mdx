@@ -1,0 +1,52 @@
+---
+title: "Primitive types"
+description: "Booleans, integers of every width, addresses, bytes, strings, and semantic types."
+---
+
+# Primitive types
+
+Lithe's primitive types map directly onto ABI types. Nothing converts implicitly: each width is its own type, and `wei` and `timestamp` don't mix with `nat`.
+
+```lithe [primitive-types.lithe]
+storage is record {
+  flag : bool;
+  (* `nat` is uint256, `int` is int256. *)
+  amount : nat;
+  delta : int;
+  (* Fixed widths are distinct types, from 8 to 256 bits. *)
+  small : uint8;
+  offset : int16;
+  owner : address;
+  (* Fixed-size and dynamic byte strings. *)
+  tag : bytes4;
+  hash : bytes32;
+  blob : bytes;
+  name : string;
+  (* Semantic types: both are uint256 in the ABI, but neither mixes with `nat`. *)
+  price : wei;
+  deadline : timestamp;
+}
+
+external function fill() is {
+  storage.flag := true;
+  storage.amount := 1_000n;
+  storage.delta := -42;
+  storage.small := 255;
+  storage.offset := -300;
+  storage.owner := Evm.sender();
+  storage.tag := 0xa9059cbb;
+  storage.hash := Crypto.keccak256("abc");
+  storage.blob := 0x616263;
+  storage.name := "Lithe";
+  storage.price := 3gwei;
+  storage.deadline := Evm.block_timestamp() + 1days;
+}
+
+(* Bounds come from the type the context expects. *)
+external pure function bounds() : (uint8, int16, nat) is
+  (Nat.max, Int.min, Nat.max)
+```
+
+- Unsuffixed literals like `255` and `-300` take their type from context and must fit it.
+- `Nat.max` and `Int.min` take their width from context too, which is why `bounds` returns 255, -32768, and 2²⁵⁶-1.
+- See [Types](/language/types) for the full list.

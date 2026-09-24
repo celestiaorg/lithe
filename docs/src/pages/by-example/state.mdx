@@ -1,0 +1,37 @@
+---
+title: "Reading and writing state"
+description: "Views read storage; stateful functions write it."
+---
+
+# Reading and writing state
+
+State is read and written through `storage.`. A function's keyword says whether it may write, and the compiler holds it to that.
+
+```lithe [state.lithe]
+storage is record {
+  value : nat;
+  updated_by : address;
+}
+
+(* A stateful external function may write storage. *)
+external function set(const value : nat) is {
+  storage.value := value;
+  storage.updated_by := Evm.sender();
+}
+
+(* A view may read storage but never write it. The compiler checks. *)
+external view function get() : nat is
+  storage.value
+
+(* Stateful functions can return a value too, after their writes. *)
+external function swap(const value : nat) : nat is {
+  const old : nat := storage.value;
+  storage.value := value;
+} with old
+```
+
+Try making `get` write storage:
+
+```text
+declared effect is weaker than the body's: external view function `get` writes storage
+```

@@ -1,0 +1,83 @@
+(* Access control from the standard library: roles for minting and pausing, and an owner
+   handed over in two steps. A role is a `role`, so a stray `bytes32` can't be passed
+   where a role is meant. *)
+
+import "std/access/ownable_two_step.lithe";
+import "std/access/access_control.lithe";
+import "std/security/pausable.lithe";
+
+contract Registry is {
+  use Ownable;
+  use Ownable2Step;
+  use AccessControl;
+  use Pausable;
+
+  storage is record {
+    entries : map(address, nat);
+  }
+
+  (* keccak256("MINTER_ROLE") *)
+  pure function minter() : role is
+    role(0x9f2df0fed2c77648de5860a4cc508cd0818c85b8b8a1ab4ceeef8d981c8956a6)
+
+  (* keccak256("PAUSER_ROLE") *)
+  pure function pauser() : role is
+    role(0x65d7a28e3265b37a6474929f336521b332c1681b933f6cb9f3376673440d862a)
+
+  deploy()
+    raises OwnableInvalidOwner
+  is {
+    Ownable.init(Evm.sender());
+    AccessControl.grant(AccessControl.default_admin_role(), Evm.sender());
+    AccessControl.grant(minter(), Evm.sender());
+  }
+
+  external view function owner is Ownable.owner;
+  external view function pendingOwner is Ownable2Step.pending_owner;
+  external function transferOwnership is Ownable2Step.transfer_ownership;
+  external function acceptOwnership is Ownable2Step.accept_ownership;
+  external function renounceOwnership is Ownable2Step.renounce_ownership;
+  external view function hasRole is AccessControl.has_role;
+  external view function getRoleAdmin is AccessControl.get_role_admin;
+  external function grantRole is AccessControl.grant_role;
+  external function revokeRole is AccessControl.revoke_role;
+  external function renounceRole is AccessControl.renounce_role;
+  external view function paused is Pausable.paused;
+
+  external function record_entry(const account : address; const amount : nat)
+    raises AccessControlUnauthorizedAccount | EnforcedPause
+  is {
+    AccessControl.check_role(minter());
+    Pausable.require_not_paused();
+    storage.entries[account] := storage.entries[account] + amount;
+  }
+
+  external view function entry(const account : address) : nat is
+    storage.entries[account]
+
+  (* The owner decides who may pause. *)
+  external function set_pauser(const account : address; const allowed : bool)
+    raises OwnableUnauthorizedAccount
+  is {
+    Ownable.check_owner();
+    if allowed then {
+      AccessControl.grant(pauser(), account);
+    } else {
+      AccessControl.revoke(pauser(), account);
+    }
+  }
+
+  external function pause()
+    raises AccessControlUnauthorizedAccount | EnforcedPause
+  is {
+    AccessControl.check_role(pauser());
+    Pausable.pause();
+  }
+
+  external function unpause()
+    raises AccessControlUnauthorizedAccount | ExpectedPause
+  is {
+    AccessControl.check_role(pauser());
+    Pausable.unpause();
+  }
+}

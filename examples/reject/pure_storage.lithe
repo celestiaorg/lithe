@@ -1,0 +1,6 @@
+storage is record {
+  balance : nat;
+}
+
+pure function balance() : nat is
+  storage.balance

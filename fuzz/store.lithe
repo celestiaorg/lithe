@@ -1,0 +1,146 @@
+(* Fuzz target: collections, options, records, and dynamic values in storage. *)
+
+error Too_big of nat;
+error Bad_pair of record {
+  left : nat;
+  right : nat;
+}
+
+type point is record {
+  x : nat;
+  y : nat;
+}
+
+storage is record {
+  owner : address;
+  balances : map(address, nat);
+  allowed : map(nat, bool);
+  ids : list(nat);
+  slots : list(nat, 4);
+  admin : option(address);
+  spot : point;
+  name : string;
+  blob : bytes;
+  count : nat;
+  pair : (nat, nat);
+}
+
+event Moved of record {
+  indexed who : address;
+  amount : nat;
+  total : nat;
+}
+
+event Named of record {
+  indexed label : string;
+  size : nat;
+}
+
+function bump(const k : nat) : nat is {
+  storage.count := storage.count + k;
+} with storage.count
+
+function credit(const who : address; const amount : nat) is {
+  storage.balances[who] := storage.balances[who] + amount;
+  emit Moved {
+    who = who;
+    amount = amount;
+    total = storage.balances[who];
+  };
+}
+
+external function deposit(const who : address; const amount : nat)
+  raises Too_big
+is {
+  assert(amount < 1000000n, Too_big(amount));
+  credit(who, amount);
+  credit(Evm.sender(), 1n);
+  const c : nat := bump(amount);
+  if c > 50n then {
+    storage.allowed[c] := true;
+  } else {
+    skip
+  }
+}
+
+external function move(const src : address; const dst : address; const amount : nat) is {
+  const have : nat := storage.balances[src];
+  storage.balances[src] := have - amount;
+  storage.balances[dst] := storage.balances[dst] + amount;
+  const t : nat := bump(1n);
+}
+
+external function push(const v : nat) is {
+  storage.ids[storage.count] := v;
+  const t : nat := bump(1n);
+}
+
+external function set_slot(const i : nat; const v : nat) is {
+  storage.slots[i] := v;
+}
+
+external view function get_slot(const i : nat) : nat is
+  storage.slots[i]
+
+external view function get_id(const i : nat) : nat is
+  storage.ids[i]
+
+external function appoint(const who : address) is {
+  if who = Evm.sender() then {
+    storage.admin := None;
+  } else {
+    storage.admin := Some(who);
+  }
+}
+
+external view function admin_or(const d : address) : address is
+  case storage.admin of
+  {
+  | Some(who) -> who
+  | None -> d
+  }
+
+external function place(const x : nat; const y : nat)
+  raises Bad_pair
+is {
+  assert(x <> y, Bad_pair { left = x; right = y; });
+  storage.spot.x := x;
+  storage.spot.y := y;
+  storage.pair := (y, x);
+}
+
+external view function spot_sum() : nat is
+  storage.spot.x + storage.spot.y
+
+external view function pair() : (nat, nat) is
+  storage.pair
+
+external function rename(const n : string) is {
+  storage.name := n;
+  emit Named {
+    label = n;
+    size = 1n;
+  };
+}
+
+external function reblob(const b : bytes) is {
+  storage.blob := b;
+}
+
+external view function name() : string is
+  storage.name
+
+external view function blob() : bytes is
+  storage.blob
+
+external view function digest() : bytes32 is
+  Crypto.keccak256(storage.blob)
+
+external view function balance(const who : address) : nat is
+  storage.balances[who]
+
+external view function allowed(const k : nat) : bool is
+  storage.allowed[k]
+
+external view function owner() : address is
+  storage.owner

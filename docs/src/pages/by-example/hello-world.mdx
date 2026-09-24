@@ -1,0 +1,30 @@
+---
+title: "Hello world"
+description: "The smallest useful Lithe contract."
+---
+
+# Hello world
+
+A Lithe file is a contract. It declares its persistent state as one `storage` record and exposes `external` functions.
+
+```lithe [hello-world.lithe]
+(* A file is a contract. Its persistent state is one record. *)
+
+storage is record {
+  greeting : string;
+}
+
+external function set_greeting(const greeting : string) is {
+  storage.greeting := greeting;
+}
+
+external view function greeting() : string is
+  storage.greeting
+
+external pure function hello() : string is
+  "Hello, world!"
+```
+
+- `storage.greeting` is the only way to reach the stored field. Storage access is always qualified.
+- `external view` functions read state, and `external pure` functions read nothing but their arguments. The compiler checks both.
+- A function body can be a single expression, as in `greeting` and `hello`, or a block `{ ... }`.

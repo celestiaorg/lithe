@@ -1,0 +1,80 @@
+(* Arithmetic helpers over `nat`. Everything is checked: a result that doesn't fit, or a
+   division by zero, panics as ordinary arithmetic does. For `a * b / d` without overflow
+   in the product, use the built-in `Nat.mul_div`. *)
+
+module Math is {
+  error MathInvalidRange of record {
+    low : nat;
+    high : nat;
+  }
+
+  pure function min(const a : nat; const b : nat) : nat is {
+    var smaller : nat := b;
+    if a < b then {
+      smaller := a;
+    }
+  } with smaller
+
+  pure function max(const a : nat; const b : nat) : nat is {
+    var larger : nat := b;
+    if a > b then {
+      larger := a;
+    }
+  } with larger
+
+  (* `x` limited to `[low, high]`. *)
+  pure function clamp(const x : nat; const low : nat; const high : nat) : nat
+    raises MathInvalidRange
+  is {
+    assert(low <= high, MathInvalidRange { low = low; high = high; });
+  } with min(max(x, low), high)
+
+  (* The mean, rounded down, without overflow in `a + b`. *)
+  pure function average(const a : nat; const b : nat) : nat is
+    (a & b) + ((a ^ b) >> 1n)
+
+  (* `a / b` rounded up. Panics when `b` is zero, even for `a = 0`. *)
+  pure function ceil_div(const a : nat; const b : nat) : nat is {
+    var q : nat := a / b;
+    if a % b > 0n then {
+      q := q + 1n;
+    }
+  } with q
+
+  (* `a * b / d` rounded up, with the product kept in 512 bits. *)
+  pure function mul_div_up(const a : nat; const b : nat; const d : nat) : nat is {
+    var q : nat := Nat.mul_div(a, b, d);
+    if Nat.mul_mod(a, b, d) > 0n then {
+      q := q + 1n;
+    }
+  } with q
+
+  (* The integer square root, rounded down. A first guess within a factor of two of the
+     root, from the bit length of `a`, then six Newton steps, each doubling the correct
+     bits: enough for all 256. *)
+  pure function sqrt(const a : nat) : nat is {
+    var result : nat := a;
+    if a > 1n then {
+      var rest : nat := a;
+      var guess : nat := 1n;
+      if rest >= 1n << 128n then { rest := rest >> 128n; guess := guess << 64n; }
+      if rest >= 1n << 64n then { rest := rest >> 64n; guess := guess << 32n; }
+      if rest >= 1n << 32n then { rest := rest >> 32n; guess := guess << 16n; }
+      if rest >= 1n << 16n then { rest := rest >> 16n; guess := guess << 8n; }
+      if rest >= 1n << 8n then { rest := rest >> 8n; guess := guess << 4n; }
+      if rest >= 1n << 4n then { rest := rest >> 4n; guess := guess << 2n; }
+      if rest >= 1n << 2n then { guess := guess << 1n; }
+      guess := (3n * guess) >> 1n;
+      guess := (guess + a / guess) >> 1n;
+      guess := (guess + a / guess) >> 1n;
+      guess := (guess + a / guess) >> 1n;
+      guess := (guess + a / guess) >> 1n;
+      guess := (guess + a / guess) >> 1n;
+      guess := (guess + a / guess) >> 1n;
+      if guess > a / guess then {
+        guess := guess - 1n;
+      }
+      result := guess;
+    }
+  } with result
+}

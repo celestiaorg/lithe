@@ -1,0 +1,14 @@
+(* Read a nat with query, store it, then transfer. The static call runs first. *)
+
+interface Reader is {
+  query read() : nat;
+}
+
+storage is record {
+  paid : nat;
+}
+
+external function grab(const to : Reader) is {
+  storage.paid := query to.read() + 1n;
+  defer Evm.transfer(to, 1wei);
+}

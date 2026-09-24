@@ -1,0 +1,10 @@
+type basis_points is uint16;
+
+storage is record {
+  n : nat;
+}
+
+external function go() is {
+  const fee : basis_points := 500n;
+  skip
+}

@@ -1,0 +1,25 @@
+module Ledger is {
+  storage ledger at "lithe.ledger" is record {
+    n : nat;
+  }
+
+  function peek() : bool is
+    Pausable.settings.paused
+}
+
+module Pausable is {
+  storage settings at "lithe.settings" is record {
+    paused : bool;
+  }
+
+  function pause() is {
+    settings.paused := true;
+  }
+}
+
+contract Token is {
+  use Ledger;
+  use Pausable;
+
+  external function pause is Pausable.pause;
+}

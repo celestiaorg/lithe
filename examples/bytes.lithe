@@ -1,0 +1,14 @@
+(* Fixed bytes, hex literals, and an explicit address conversion. *)
+
+storage is record {
+  tag : bytes4;
+  hash : bytes32;
+  who : address;
+}
+
+external function set() is {
+  storage.tag := 0xa9059cbb;
+  storage.hash := 0x11;
+  const raw : bytes20 := 0x00000000000000000000000000000000000000ab;
+  storage.who := address(raw);
+}

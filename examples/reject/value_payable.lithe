@@ -1,0 +1,8 @@
+storage is record {
+  n : nat;
+}
+
+external function go() is {
+  const x : wei := Evm.value();
+  skip
+}

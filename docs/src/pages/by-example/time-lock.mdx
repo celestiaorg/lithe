@@ -1,0 +1,92 @@
+---
+title: "Time lock"
+description: "Queue payments with a delay before they can execute."
+---
+
+# Time lock
+
+The admin queues a payment for a future time, and it can execute only after a minimum delay and before a grace period ends. Watchers get time to react before it runs.
+
+```lithe [time-lock.lithe]
+(* Payments are queued with a delay, so anyone watching has time to react before
+   they execute. The admin can cancel a queued payment. *)
+
+error Not_admin;
+error Delay_too_short of nat;
+error Not_queued of bytes32;
+error Too_early of record {
+  now : timestamp;
+  eta : timestamp;
+}
+error Stale of bytes32;
+
+event Queued of record {
+  indexed id : bytes32;
+  to : address;
+  value : wei;
+  eta : timestamp;
+}
+
+event Executed of record {
+  indexed id : bytes32;
+}
+
+event Cancelled of record {
+  indexed id : bytes32;
+}
+
+storage is record {
+  admin : address;
+  queued : map(bytes32, bool);
+}
+
+pure function min_delay() : nat is 2days
+pure function grace_period() : nat is 14days
+
+external function init() is {
+  storage.admin := Evm.sender();
+}
+
+view function only_admin() raises Not_admin is {
+  assert(Evm.sender() = storage.admin, Not_admin);
+}
+
+external pure function payment_id(const to : address; const value : wei; const eta : timestamp) : bytes32 is
+  Crypto.keccak256(Abi.encode(to, value, eta))
+
+external function queue(const to : address; const value : wei; const eta : timestamp) : bytes32
+  raises Not_admin | Delay_too_short
+is {
+  only_admin();
+  assert(eta >= Evm.block_timestamp() + min_delay(), Delay_too_short(min_delay()));
+  const id : bytes32 := Crypto.keccak256(Abi.encode(to, value, eta));
+  storage.queued[id] := true;
+  emit Queued { id = id; to = to; value = value; eta = eta; };
+} with id
+
+external function cancel(const id : bytes32)
+  raises Not_admin | Not_queued
+is {
+  only_admin();
+  assert(storage.queued[id], Not_queued(id));
+  storage.queued[id] := false;
+  emit Cancelled { id = id; };
+}
+
+external nonreentrant function execute(const to : address; const value : wei; const eta : timestamp)
+  raises Not_admin | Not_queued | Too_early | Stale
+is {
+  only_admin();
+  const id : bytes32 := Crypto.keccak256(Abi.encode(to, value, eta));
+  assert(storage.queued[id], Not_queued(id));
+  assert(Evm.block_timestamp() >= eta, Too_early { now = Evm.block_timestamp(); eta = eta; });
+  assert(Evm.block_timestamp() <= eta + grace_period(), Stale(id));
+  storage.queued[id] := false;
+  emit Executed { id = id; };
+  defer Evm.transfer(to, value);
+}
+
+external payable function fund() is {
+  skip
+}
+```

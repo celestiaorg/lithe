@@ -1,0 +1,50 @@
+---
+title: "View and pure"
+description: "Declared effects, checked by the compiler."
+---
+
+# View and pure
+
+Each function declares how much it may do: `pure` reads only its arguments, `view` also reads state, and a plain `function` may also write, emit, and defer. The compiler checks each body, and everything it calls, against the declaration.
+
+```lithe [view-and-pure.lithe]
+(* Every function declares its effect. The compiler checks that the body does
+   no more than it says.
+
+     pure function      reads only its arguments
+     view function      also reads storage and the Evm context
+     function           also writes storage, emits events, and defers calls *)
+
+storage is record {
+  rate_bps : nat;
+}
+
+pure function fee(const amount : nat; const rate_bps : nat) : nat is
+  amount * rate_bps / 10_000n
+
+view function current_fee(const amount : nat) : nat is
+  fee(amount, storage.rate_bps)
+
+function set_rate(const rate_bps : nat) is {
+  storage.rate_bps := rate_bps;
+}
+
+(* `external` exposes a function in the ABI. External views are `view` in the ABI,
+   external pure functions are `pure`. *)
+external pure function quote(const amount : nat; const rate_bps : nat) : nat is
+  fee(amount, rate_bps)
+
+external view function preview(const amount : nat) : nat is
+  current_fee(amount)
+
+external function configure(const rate_bps : nat) is {
+  set_rate(rate_bps);
+}
+```
+
+Violations are compile errors that name what went wrong:
+
+```text
+declared effect is weaker than the body's: pure function `who` reads `Evm.sender`
+declared effect is weaker than the body's: view function `peek` calls `mid`, which is stateful
+```

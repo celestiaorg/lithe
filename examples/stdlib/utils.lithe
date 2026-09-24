@@ -1,0 +1,95 @@
+(* The standard library's math, crypto, and utility modules and its collections, each
+   behind an entrypoint. *)
+
+import "std/math/math.lithe";
+import "std/math/safe_cast.lithe";
+import "std/math/fixed_point.lithe";
+import "std/crypto/ecdsa.lithe";
+import "std/crypto/eip712.lithe";
+import "std/crypto/merkle.lithe";
+import "std/utils/create2.lithe";
+import "std/utils/nonce.lithe";
+import "std/utils/checkpoint.lithe";
+import "std/collections/bitmap.lithe";
+import "std/collections/queue.lithe";
+import "std/collections/set.lithe";
+import "std/collections/set_enumerable.lithe";
+
+contract Utils is {
+  use Math;
+  use SafeCast;
+  use FixedPoint;
+  use ECDSA;
+  use EIP712;
+  use Merkle;
+  use Create2;
+  use Nonces;
+  use Checkpoints;
+  use Bitmap;
+
+  storage is record {
+    claimed : bitmap;
+    history : trace;
+    pending : Queue(address);
+    members : Set(address);
+    listed : SetEnumerable(address);
+  }
+
+  deploy() is {
+    EIP712.init("Utils", "1");
+  }
+
+  external pure function sqrt(const a : nat) : nat is Math.sqrt(a)
+  external pure function average(const a : nat; const b : nat) : nat is Math.average(a, b)
+  external pure function ceil_div(const a : nat; const b : nat) : nat is Math.ceil_div(a, b)
+  external pure function mul_div_up(const a : nat; const b : nat; const d : nat) : nat is Math.mul_div_up(a, b, d)
+  external pure function clamp(const x : nat; const lo : nat; const hi : nat) : nat
+    raises MathInvalidRange
+  is Math.clamp(x, lo, hi)
+  external pure function to_nat(const x : int) : nat
+    raises SafeCastOverflowedIntToUint
+  is SafeCast.to_nat(x)
+  external pure function wad_mul(const a : nat; const b : nat) : nat is nat(FixedPoint.wad_mul(wad(a), wad(b)))
+  external pure function recover(const hash : bytes32; const signature : bytes) : address
+    raises ECDSAInvalidSignature | ECDSAInvalidSignatureLength | ECDSAInvalidSignatureS
+  is ECDSA.recover_signature(hash, signature)
+  external view function domain() : bytes32 is EIP712.domain_separator()
+  external pure function root(const proof : bytes; const leaf : bytes32) : bytes32
+    raises MerkleProofInvalidLength
+  is Merkle.process_proof(proof, leaf)
+  external view function predict(const salt : bytes32; const code_hash : bytes32) : address is Create2.compute_address_here(salt, code_hash)
+  external function use_nonce(const owner : address) : nat is Nonces.use_nonce(owner)
+  external function claim(const index : nat) is { Bitmap.set(storage.claimed, index); }
+  external view function is_claimed(const index : nat) : bool is Bitmap.get(storage.claimed, index)
+  external function checkpoint_value(const value : nat)
+    raises CheckpointUnorderedInsertion
+  is {
+    Checkpoints.push(storage.history, uint48(Evm.block_number()), uint208(value));
+  }
+  external view function value_at(const key : nat) : nat is
+    nat(Checkpoints.upper_lookup(storage.history, uint48(key)))
+  external function enqueue() is { Queue.push(storage.pending, Evm.sender()); }
+  external view function queued() : nat is Queue.length(storage.pending)
+  external function join() is { Set.add(storage.members, Evm.sender()); SetEnumerable.add(storage.listed, Evm.sender()); }
+  external view function member(const who : address) : bool is Set.contains(storage.members, who)
+  external view function listed_count() : nat is SetEnumerable.length(storage.listed)
+  external view function verify(const proof : bytes; const root_hash : bytes32; const leaf : bytes32) : bool
+    raises MerkleProofInvalidLength
+  is Merkle.verify(proof, root_hash, leaf)
+  external pure function create2_address(const salt : bytes32; const code_hash : bytes32; const deployer : address) : address is Create2.compute_address(salt, code_hash, deployer)
+  external pure function eth_message(const hash : bytes32) : bytes32 is ECDSA.to_eth_signed_message_hash(hash)
+  external pure function recover_vrs(const hash : bytes32; const v : uint8; const r : bytes32; const s : bytes32) : address
+    raises ECDSAInvalidSignature | ECDSAInvalidSignatureS
+  is ECDSA.recover(hash, v, r, s)
+  external pure function to_int(const x : nat) : int
+    raises SafeCastOverflowedUintToInt
+  is SafeCast.to_int(x)
+  external pure function apply_bps(const amount : nat; const bps : nat) : nat is FixedPoint.apply_bps(amount, bps)
+  external pure function wad_div(const a : nat; const b : nat) : nat is nat(FixedPoint.wad_div(wad(a), wad(b)))
+  external view function checkpoints() : nat is Checkpoints.length(storage.history)
+  external view function latest() : nat is nat(Checkpoints.latest(storage.history))
+  external function unclaim(const index : nat) is { Bitmap.unset(storage.claimed, index); }
+  external function dequeue() : address
+    raises QueueEmpty
+  is Queue.pop(storage.pending)
+}

@@ -1,0 +1,79 @@
+(* A history of values, each from a key onward: a block number or a timestamp. Pushes
+   come in key order, so the history is sorted, and a lookup finds the value as of a
+   key by binary search.
+
+     storage is record {
+       supply : trace;
+     }
+
+     Checkpoints.push(storage.supply, uint48(Evm.block_number()), uint208(total));
+     const then : uint208 := Checkpoints.upper_lookup(storage.supply, uint48(block)); *)
+
+module Checkpoints is {
+  type checkpoint is record {
+    key : uint48;
+    value : uint208;
+  }
+
+  (* Each checkpoint packs into one slot, as OpenZeppelin's `Checkpoint208` does. *)
+  type trace is record {
+    items : map(nat, checkpoint);
+    count : nat;
+  }
+
+  error CheckpointUnorderedInsertion;
+  error CheckpointOutOfBounds of nat;
+
+  view function length(const history : trace) : nat is
+    history.count
+
+  view function at(const history : trace; const index : nat) : checkpoint
+    raises CheckpointOutOfBounds
+  is {
+    assert(index < history.count, CheckpointOutOfBounds(index));
+  } with history.items[index]
+
+  (* The newest value, or zero before the first push. *)
+  view function latest(const history : trace) : uint208 is {
+    var value : uint208 := 0;
+    if history.count > 0n then {
+      value := history.items[history.count - 1n].value;
+    }
+  } with value
+
+  (* Records `value` from `key` on. A second push at the newest key replaces its value. *)
+  function push(const history : trace; const key : uint48; const value : uint208)
+    raises CheckpointUnorderedInsertion
+  is {
+    const count : nat := history.count;
+    if count > 0n and history.items[count - 1n].key = key then {
+      history.items[count - 1n].value := value;
+    } else {
+      if count > 0n then {
+        assert(history.items[count - 1n].key < key, CheckpointUnorderedInsertion);
+      }
+      history.items[count] := { key = key; value = value; };
+      history.count := count + 1n;
+    }
+  }
+
+  (* The value as of `key`: that of the last checkpoint at or before it, or zero if there
+     is none. A binary search over the sorted history: `low` is the first checkpoint that
+     might be after `key`, so the halving ends within 256 steps for any count. *)
+  view function upper_lookup(const history : trace; const key : uint48) : uint208 is {
+    var low : nat := 0n;
+    var high : nat := history.count;
+    for _ : nat in 0n .. 256n until low = high do {
+      const mid : nat := (low + high) / 2n;
+      if history.items[mid].key > key then {
+        high := mid;
+      } else {
+        low := mid + 1n;
+      }
+    }
+    var value : uint208 := 0;
+    if low > 0n then {
+      value := history.items[low - 1n].value;
+    }
+  } with value
+}

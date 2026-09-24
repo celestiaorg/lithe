@@ -1,0 +1,26 @@
+module Alpha is {
+  storage foo at "lithe.std.foo" is record {
+    n : nat;
+  }
+
+  function go() is {
+    foo.n := 1n;
+  }
+}
+
+module Beta is {
+  storage bar at "lithe.std.foo" is record {
+    n : address;
+  }
+
+  function go() is {
+    skip
+  }
+}
+
+contract Token is {
+  use Alpha;
+  use Beta;
+
+  external function go is Alpha.go;
+}

@@ -1,0 +1,64 @@
+(* An emergency stop. Pausing is policy, so the contract decides who may pause and which
+   functions stop: each checks `require_not_paused` itself. Errors and events match
+   OpenZeppelin's `Pausable`.
+
+     external view function paused is Pausable.paused;
+
+     external function pause()
+       raises OwnableUnauthorizedAccount | EnforcedPause
+     is {
+       Ownable.check_owner();
+       Pausable.pause();
+     } *)
+
+module Pausable is {
+  storage pausable at "lithe.std.pausable" is record {
+    paused : bool;
+  }
+
+  error EnforcedPause;
+  error ExpectedPause;
+
+  event Paused of record {
+    account : address;
+  }
+
+  event Unpaused of record {
+    account : address;
+  }
+
+  view function paused() : bool is
+    pausable.paused
+
+  view function require_not_paused()
+    raises EnforcedPause
+  is {
+    assert(not pausable.paused, EnforcedPause);
+  }
+
+  view function require_paused()
+    raises ExpectedPause
+  is {
+    assert(pausable.paused, ExpectedPause);
+  }
+
+  function pause()
+    raises EnforcedPause
+  is {
+    require_not_paused();
+    pausable.paused := true;
+    emit Paused {
+      account = Evm.sender();
+    };
+  }
+
+  function unpause()
+    raises ExpectedPause
+  is {
+    require_paused();
+    pausable.paused := false;
+    emit Unpaused {
+      account = Evm.sender();
+    };
+  }
+}

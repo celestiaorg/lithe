@@ -1,0 +1,22 @@
+(* Fixed widths stay distinct from nat. Narrowing and overflow are checked. *)
+
+storage is record {
+  small : uint8;
+  wide : uint64;
+  delta : int;
+}
+
+external function fill() is {
+  const small : uint8 := 10;
+  storage.small := small + 1;
+  storage.wide := 1000;
+  storage.delta := -5;
+}
+
+external function clip(const raw : nat) is {
+  storage.small := uint8(raw);
+}
+
+external function overflow(const a : uint8; const b : uint8) is {
+  storage.small := a + b;
+}

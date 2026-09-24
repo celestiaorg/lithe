@@ -1,0 +1,69 @@
+---
+title: "Using call results"
+description: "Continuations that run after a deferred call returns."
+---
+
+# Using call results
+
+A deferred call's result arrives after the transition that deferred it. `then (result : T) { ... }` runs a continuation with the decoded result, as a new phase that can write, emit, and defer again.
+
+```lithe [continuations.lithe]
+(* A deferred call can be followed by a continuation with `then`. The continuation
+   runs after the call returns, receives its decoded result, and is a new phase of
+   the transition: it may write storage, emit, and defer again. *)
+
+interface Exchange is {
+  call swap(amount_in : nat) : nat;
+  call split(amount : nat) : (nat, nat);
+}
+
+error Already_filled of nat;
+
+event Filled of record {
+  indexed id : nat;
+  amount_out : nat;
+}
+
+type order is record {
+  status : uint8;
+  amount_out : nat;
+}
+
+storage is record {
+  exchange : Exchange;
+  orders : map(nat, order);
+  left : nat;
+  right : nat;
+}
+
+external function init(const exchange : Exchange) is {
+  storage.exchange := exchange;
+}
+
+external nonreentrant function fill(const id : nat; const amount_in : nat)
+  raises Already_filled
+is {
+  assert(storage.orders[id].status = uint8(0), Already_filled(id));
+  (* The exchange sees this order as pending while it runs. *)
+  storage.orders[id].status := uint8(1);
+  defer storage.exchange.swap(amount_in)
+    then (amount_out : nat) {
+      storage.orders[id].status := uint8(2);
+      storage.orders[id].amount_out := amount_out;
+      emit Filled { id = id; amount_out = amount_out; };
+    };
+}
+
+(* A tuple result destructures in the binding. *)
+external nonreentrant function split(const amount : nat) is {
+  defer storage.exchange.split(amount)
+    then ((a, b) : (nat, nat)) {
+      storage.left := storage.left + a;
+      storage.right := storage.right + b;
+    };
+}
+```
+
+- Parameters and `const` values are visible in the continuation. A `var` from the first phase is not.
+- If the swap reverts, the whole transaction reverts, including the first phase's writes. To handle the failure instead, see [Recovering from failed calls](/by-example/try-catch).
+- See [Continuations](/language/continuations) and the [Order executor](/by-example/order-executor).

@@ -1,0 +1,152 @@
+(* The ERC-20 core, like OpenZeppelin's `ERC20Upgradeable`: same storage, errors,
+   events, and order of checks. Extensions compose these pieces explicitly. *)
+
+module ERC20 is {
+  storage erc20 at "openzeppelin.storage.ERC20" is record {
+    balances : map(address, nat);
+    allowances : map(address, map(address, nat));
+    totalSupply : nat;
+    name : string;
+    symbol : string;
+  }
+
+  error ERC20InsufficientBalance of record {
+    sender : address;
+    balance : nat;
+    needed : nat;
+  }
+
+  error ERC20InvalidSender of address;
+  error ERC20InvalidReceiver of address;
+
+  error ERC20InsufficientAllowance of record {
+    spender : address;
+    allowance : nat;
+    needed : nat;
+  }
+
+  error ERC20InvalidApprover of address;
+  error ERC20InvalidSpender of address;
+
+  event Transfer of record {
+    indexed from : address;
+    indexed to : address;
+    value : nat;
+  }
+
+  event Approval of record {
+    indexed owner : address;
+    indexed spender : address;
+    value : nat;
+  }
+
+  view function name() : string is
+    erc20.name
+
+  view function symbol() : string is
+    erc20.symbol
+
+  view function decimals() : uint8 is
+    18
+
+  view function totalSupply() : nat is
+    erc20.totalSupply
+
+  view function balanceOf(const account : address) : nat is
+    erc20.balances[account]
+
+  view function allowance(const owner : address; const spender : address) : nat is
+    erc20.allowances[owner][spender]
+
+  function init(const n : string; const s : string) is {
+    erc20.name := n;
+    erc20.symbol := s;
+  }
+
+  (* Moves, mints (`from` is zero), or burns (`to` is zero). *)
+  function update(const from : address; const to : address; const value : nat)
+    raises ERC20InsufficientBalance
+  is {
+    if from = Address.zero then {
+      erc20.totalSupply := erc20.totalSupply + value;
+    } else {
+      const fromBalance : nat := erc20.balances[from];
+      assert(
+        fromBalance >= value,
+        ERC20InsufficientBalance {
+          sender = from;
+          balance = fromBalance;
+          needed = value;
+        }
+      );
+      erc20.balances[from] := fromBalance - value;
+    }
+    if to = Address.zero then {
+      erc20.totalSupply := erc20.totalSupply - value;
+    } else {
+      erc20.balances[to] := erc20.balances[to] + value;
+    }
+    emit Transfer {
+      from = from;
+      to = to;
+      value = value;
+    };
+  }
+
+  view function check_transfer(const from : address; const to : address)
+    raises ERC20InvalidSender | ERC20InvalidReceiver
+  is {
+    assert(
+      from <> Address.zero,
+      ERC20InvalidSender(Address.zero)
+    );
+    assert(
+      to <> Address.zero,
+      ERC20InvalidReceiver(Address.zero)
+    );
+  }
+
+  function approve_as(
+    const owner : address;
+    const spender : address;
+    const value : nat;
+    const announce : bool
+  )
+    raises ERC20InvalidApprover | ERC20InvalidSpender
+  is {
+    assert(
+      owner <> Address.zero,
+      ERC20InvalidApprover(Address.zero)
+    );
+    assert(
+      spender <> Address.zero,
+      ERC20InvalidSpender(Address.zero)
+    );
+    erc20.allowances[owner][spender] := value;
+    if announce then {
+      emit Approval {
+        owner = owner;
+        spender = spender;
+        value = value;
+      };
+    }
+  }
+
+  (* An unlimited allowance is never spent down. *)
+  function spend_allowance(const owner : address; const spender : address; const value : nat)
+    raises ERC20InsufficientAllowance | ERC20InvalidApprover | ERC20InvalidSpender
+  is {
+    const current : nat := erc20.allowances[owner][spender];
+    if current < Nat.max then {
+      assert(
+        current >= value,
+        ERC20InsufficientAllowance {
+          spender = spender;
+          allowance = current;
+          needed = value;
+        }
+      );
+      approve_as(owner, spender, current - value, false);
+    }
+  }
+}

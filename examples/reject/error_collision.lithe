@@ -1,0 +1,10 @@
+error Not_owner;
+error NotOwner;
+
+storage is record {
+  count : nat;
+}
+
+external function go() is {
+  skip
+}
