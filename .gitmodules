@@ -1,0 +1,6 @@
+[submodule "bench/vendor/openzeppelin-contracts"]
+	path = bench/vendor/openzeppelin-contracts
+	url = https://github.com/OpenZeppelin/openzeppelin-contracts.git
+[submodule "bench/vendor/openzeppelin-contracts-upgradeable"]
+	path = bench/vendor/openzeppelin-contracts-upgradeable
+	url = https://github.com/OpenZeppelin/openzeppelin-contracts-upgradeable.git
