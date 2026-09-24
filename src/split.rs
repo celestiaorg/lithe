@@ -3,6 +3,9 @@
 //! `CREATE2` through a factory, so their addresses are known here and built into the router.
 
 use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::OnceLock;
 
 use crate::check::Checked;
 use crate::gen::{self, Built, Entrypoint, Group};
@@ -108,8 +111,25 @@ impl Split {
     }
 }
 
-/// Compiles a contract, splitting it when it does not fit.
+/// Compiles a contract, splitting it when it does not fit. A build this compiler already did
+/// for the same program and options is read back from the cache instead.
 pub(crate) fn build(checked: &Checked, name: &str, opts: &Options) -> Result<Split, Error> {
+    let path = cache_path(checked, name, opts);
+    if let Some(split) = path
+        .as_deref()
+        .and_then(|path| std::fs::read(path).ok())
+        .and_then(|bytes| decode(&bytes))
+    {
+        return Ok(split);
+    }
+    let split = build_uncached(checked, name, opts)?;
+    if let Some(path) = path {
+        store(&path, &encode(&split));
+    }
+    Ok(split)
+}
+
+fn build_uncached(checked: &Checked, name: &str, opts: &Options) -> Result<Split, Error> {
     let whole_shape = Shape {
         opts: opts.clone(),
         ..Shape::default()
@@ -526,4 +546,173 @@ pub(crate) fn address_word(address: [u8; 20]) -> Word {
     let mut word = [0u8; 32];
     word[12..].copy_from_slice(&address);
     Word::from_be_bytes(word)
+}
+
+/// Where a build is cached: `$LITHE_CACHE_DIR`, else `$XDG_CACHE_HOME/lithe`, else
+/// `~/.cache/lithe`, keyed by the compiler's own bytes, the program, and the options. An empty
+/// `LITHE_CACHE_DIR` turns the cache off.
+/// simplify: entries are never evicted; delete the directory to reclaim the space.
+fn cache_path(checked: &Checked, name: &str, opts: &Options) -> Option<PathBuf> {
+    if cfg!(test) {
+        return None;
+    }
+    static COMPILER: OnceLock<Option<[u8; 32]>> = OnceLock::new();
+    let compiler = COMPILER.get_or_init(|| {
+        let exe = std::env::current_exe().and_then(std::fs::read).ok()?;
+        Some(keccak256(&exe))
+    });
+    let compiler = (*compiler)?;
+    let dir = match std::env::var_os("LITHE_CACHE_DIR") {
+        Some(dir) if dir.is_empty() => return None,
+        Some(dir) => PathBuf::from(dir),
+        None => match std::env::var_os("XDG_CACHE_HOME").filter(|dir| !dir.is_empty()) {
+            Some(dir) => PathBuf::from(dir).join("lithe"),
+            None => PathBuf::from(std::env::var_os("HOME")?).join(".cache/lithe"),
+        },
+    };
+    let mut key = compiler.to_vec();
+    key.extend_from_slice(&checked.fingerprint);
+    key.extend_from_slice(format!("{name}\0{opts:?}").as_bytes());
+    Some(dir.join(crate::hex(&keccak256(&key))))
+}
+
+/// Writes an entry aside and renames it into place, so no reader sees half of one. The cache
+/// only saves time, so a failure to write it is not an error.
+fn store(path: &Path, bytes: &[u8]) {
+    static NEXT: AtomicUsize = AtomicUsize::new(0);
+    let Some(dir) = path.parent() else { return };
+    let tmp = path.with_extension(format!(
+        "{}-{}.tmp",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    ));
+    let written = std::fs::create_dir_all(dir)
+        .and_then(|_| std::fs::write(&tmp, bytes))
+        .and_then(|_| std::fs::rename(&tmp, path));
+    if written.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+}
+
+fn encode(split: &Split) -> Vec<u8> {
+    let mut out = Vec::new();
+    put_bytes(&mut out, &split.creation);
+    put_bytes(&mut out, &split.runtime);
+    put_entries(&mut out, &split.entries);
+    put_parts(&mut out, &split.parts);
+    put_parts(&mut out, &split.needs);
+    put_len(&mut out, split.whole.map_or(0, |n| n + 1));
+    out
+}
+
+fn put_len(out: &mut Vec<u8>, n: usize) {
+    out.extend_from_slice(&(n as u64).to_le_bytes());
+}
+
+fn put_bytes(out: &mut Vec<u8>, bytes: &[u8]) {
+    put_len(out, bytes.len());
+    out.extend_from_slice(bytes);
+}
+
+fn put_entries(out: &mut Vec<u8>, entries: &[Entrypoint]) {
+    put_len(out, entries.len());
+    for entry in entries {
+        out.extend_from_slice(&entry.sel);
+        put_bytes(out, entry.name.as_bytes());
+        match &entry.group {
+            Group::Upgrade => put_len(out, 0),
+            Group::Contract => put_len(out, 1),
+            Group::Module(module) => {
+                put_len(out, 2);
+                put_bytes(out, module.as_bytes());
+            }
+        }
+    }
+}
+
+fn put_parts(out: &mut Vec<u8>, parts: &[Part]) {
+    put_len(out, parts.len());
+    for part in parts {
+        put_bytes(out, part.name.as_bytes());
+        out.extend_from_slice(&part.address);
+        put_bytes(out, &part.init);
+        put_bytes(out, &part.runtime);
+        put_entries(out, &part.entries);
+        put_parts(out, &part.needs);
+    }
+}
+
+/// Reads back what `encode` wrote. Anything else, such as a truncated file, is `None`.
+fn decode(bytes: &[u8]) -> Option<Split> {
+    let mut r = Reader(bytes);
+    let split = Split {
+        creation: r.bytes()?,
+        runtime: r.bytes()?,
+        entries: r.entries()?,
+        parts: r.parts()?,
+        needs: r.parts()?,
+        whole: r.len()?.checked_sub(1),
+    };
+    r.0.is_empty().then_some(split)
+}
+
+struct Reader<'a>(&'a [u8]);
+
+impl Reader<'_> {
+    fn take(&mut self, n: usize) -> Option<&[u8]> {
+        if n > self.0.len() {
+            return None;
+        }
+        let (head, rest) = self.0.split_at(n);
+        self.0 = rest;
+        Some(head)
+    }
+
+    fn array<const N: usize>(&mut self) -> Option<[u8; N]> {
+        self.take(N)?.try_into().ok()
+    }
+
+    fn len(&mut self) -> Option<usize> {
+        usize::try_from(u64::from_le_bytes(self.array()?)).ok()
+    }
+
+    fn bytes(&mut self) -> Option<Vec<u8>> {
+        let n = self.len()?;
+        Some(self.take(n)?.to_vec())
+    }
+
+    fn string(&mut self) -> Option<String> {
+        String::from_utf8(self.bytes()?).ok()
+    }
+
+    fn entries(&mut self) -> Option<Vec<Entrypoint>> {
+        (0..self.len()?)
+            .map(|_| {
+                let sel = self.array()?;
+                let name = self.string()?;
+                let group = match self.len()? {
+                    0 => Group::Upgrade,
+                    1 => Group::Contract,
+                    2 => Group::Module(self.string()?),
+                    _ => return None,
+                };
+                Some(Entrypoint { sel, name, group })
+            })
+            .collect()
+    }
+
+    fn parts(&mut self) -> Option<Vec<Part>> {
+        (0..self.len()?)
+            .map(|_| {
+                Some(Part {
+                    name: self.string()?,
+                    address: self.array()?,
+                    init: self.bytes()?,
+                    runtime: self.bytes()?,
+                    entries: self.entries()?,
+                    needs: self.parts()?,
+                })
+            })
+            .collect()
+    }
 }

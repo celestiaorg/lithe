@@ -146,6 +146,9 @@ pub(crate) struct Checked {
     pub routes: Vec<crate::route::Route>,
     /// Warnings the checker found, such as stale values captured by a continuation.
     pub warnings: Vec<String>,
+    /// A hash of the program as it came in, which is everything a build depends on besides
+    /// the compiler and its options.
+    pub fingerprint: [u8; 32],
 }
 
 impl Checked {
@@ -687,6 +690,7 @@ fn several_contracts(prog: &Program) -> Error {
 }
 
 pub(crate) fn check(mut prog: Program) -> Result<Checked, Error> {
+    let fingerprint = crate::keccak::keccak256(format!("{prog:?}").as_bytes());
     if !prog.siblings.is_empty() {
         return Err(several_contracts(&prog));
     }
@@ -1107,6 +1111,7 @@ pub(crate) fn check(mut prog: Program) -> Result<Checked, Error> {
         errors: c.errors,
         routes: Vec::new(),
         warnings: std::mem::take(&mut c.warnings),
+        fingerprint,
     };
     let routes = crate::route::discover(&checked)?;
     Ok(Checked { routes, ..checked })

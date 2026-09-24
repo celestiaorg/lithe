@@ -260,6 +260,7 @@ compile, parts, abi-tree, footprint, upgrade, and upgrade-check also take
        --split <auto|off>            split a contract over the limit, default auto
        --create2-deployer <address>  the CREATE2 factory for parts
 
-directory commands write to ./out"
+directory commands write to ./out
+builds are cached in ~/.cache/lithe; set LITHE_CACHE_DIR to move it, or empty to turn it off"
     );
 }
