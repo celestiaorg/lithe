@@ -1,0 +1,86 @@
+{
+  "name": "lithe",
+  "scopeName": "source.lithe",
+  "fileTypes": ["lithe"],
+  "patterns": [
+    { "include": "#comment" },
+    { "include": "#string" },
+    { "include": "#number" },
+    { "include": "#effect" },
+    { "include": "#keyword" },
+    { "include": "#type" },
+    { "include": "#constant" },
+    { "include": "#module" },
+    { "include": "#function-call" },
+    { "include": "#operator" }
+  ],
+  "repository": {
+    "comment": {
+      "name": "comment.block.lithe",
+      "begin": "\\(\\*",
+      "end": "\\*\\)",
+      "patterns": [{ "include": "#comment" }]
+    },
+    "string": {
+      "name": "string.quoted.double.lithe",
+      "begin": "\"",
+      "end": "\"",
+      "patterns": [
+        { "name": "constant.character.escape.lithe", "match": "\\\\." }
+      ]
+    },
+    "number": {
+      "patterns": [
+        { "name": "constant.numeric.hex.lithe", "match": "\\b0x[0-9a-fA-F_]+\\b" },
+        {
+          "name": "constant.numeric.lithe",
+          "match": "\\b[0-9][0-9_]*(n|eth|gwei|wei|seconds|minutes|hours|days)?\\b"
+        }
+      ]
+    },
+    "effect": {
+      "name": "keyword.control.effect.lithe",
+      "match": "\\b(query|emit|defer|fail|failwith|assert)\\b"
+    },
+    "keyword": {
+      "patterns": [
+        {
+          "name": "keyword.control.lithe",
+          "match": "\\b(if|then|else|for|in|do|until|bound|case|of|with|skip|is|end)\\b"
+        },
+        {
+          "name": "keyword.other.declaration.lithe",
+          "match": "\\b(type|record|function|event|error|errors|interface|module|contract|storage|transient|guard|import|use|requires|migrate|deploy|upgrade|upgradeable|at|as|call|create|const|var)\\b"
+        },
+        {
+          "name": "storage.modifier.lithe",
+          "match": "\\b(external|view|pure|payable|nonreentrant|private|indexed|raises)\\b"
+        },
+        {
+          "name": "keyword.operator.word.lithe",
+          "match": "\\b(and|or|not)\\b"
+        }
+      ]
+    },
+    "type": {
+      "name": "support.type.lithe",
+      "match": "\\b(unit|bool|nat|int|u?int(8|16|24|32|40|48|56|64|72|80|88|96|104|112|120|128|136|144|152|160|168|176|184|192|200|208|216|224|232|240|248|256)|address|string|bytes([1-9]|[12][0-9]|3[0-2])?|wei|timestamp|operation|list|map|option)\\b"
+    },
+    "constant": {
+      "name": "constant.language.lithe",
+      "match": "\\b(true|false|Unit|nil|Some|None)\\b"
+    },
+    "module": {
+      "name": "entity.name.namespace.lithe",
+      "match": "\\b(Evm|Crypto|Abi|Bytes|String)\\b"
+    },
+    "function-call": {
+      "match": "\\b([a-z_][A-Za-z0-9_]*)\\s*(?=\\()",
+      "captures": { "1": { "name": "entity.name.function.lithe" } }
+    },
+    "operator": {
+      "name": "keyword.operator.lithe",
+      "match": ":=|->|\\.\\.|<>|=/=|<=|>=|<<|>>|#|@|[-+*/%&^~|<>=]"
+    }
+  }
+}

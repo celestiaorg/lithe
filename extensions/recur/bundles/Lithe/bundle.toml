@@ -1,0 +1,19 @@
+[bundle]
+id = "lithe"
+name = "Lithe"
+version = "0.1.0"
+
+[[grammar]]
+id = "lithe.grammar"
+scopeName = "source.lithe"
+path = "syntaxes/lithe.tmLanguage.json"
+language = "lithe"
+fileTypes = ["lithe"]
+
+[[languageData]]
+id = "lithe.language-data"
+scopeName = "source.lithe"
+blockCommentStart = "(*"
+blockCommentEnd = "*)"
+increaseIndentPattern = "[{\\[(]\\s*$"
+decreaseIndentPattern = "^\\s*[}\\])]"
