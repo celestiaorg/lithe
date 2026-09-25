@@ -1,5 +1,5 @@
 import { defineConfig } from "vocs/config";
-import lithe from "../syntaxes/lithe.tmLanguage.json" with { type: "json" };
+import lithe from "../extensions/lithe.tmLanguage.json" with { type: "json" };
 
 const guide = [
   {
