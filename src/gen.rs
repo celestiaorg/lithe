@@ -413,6 +413,8 @@ enum Sub {
     /// head is at `pos`, with Solidity's bounds checked: the offset and the length fit in 64
     /// bits, and every element is inside calldata.
     ListHead,
+    /// `[pos, ret]` becomes the `bytes` or `string` argument whose head is at `pos`.
+    DecodeDynamic,
     /// `[data, file_safe, no_padding, ret]` becomes `data` in base64, as a string.
     Base64Encode,
     /// `[data, ret]` becomes the bytes a base64 string encodes.
@@ -497,6 +499,8 @@ struct Gen<'a> {
     lists_in_order: bool,
     /// Some external function is `nonreentrant`, so every defer window must be marked.
     any_nonreentrant: bool,
+    /// This code decodes more than one `bytes` or `string` argument, so they share a helper.
+    share_dynamic: bool,
     code: Vec<Inst>,
     next_label: u32,
     spaces: Vec<Space>,
@@ -599,6 +603,7 @@ impl<'a> Gen<'a> {
             direct: false,
             lists_in_order: true,
             any_nonreentrant: false,
+            share_dynamic: false,
             code: Vec::new(),
             next_label: 0,
             spaces: Vec::new(),
@@ -1274,6 +1279,7 @@ impl<'a> Gen<'a> {
                     Sub::StoreList(..) => (3, 0),
                     Sub::QueuePush => (3, 1),
                     Sub::ListHead => (1, 1),
+                    Sub::DecodeDynamic => (1, 1),
                     Sub::Base64Encode => (3, 1),
                     Sub::Base64Decode => (1, 1),
                 };
@@ -1454,6 +1460,18 @@ impl<'a> Gen<'a> {
         for &(sel, part) in &shape.forward {
             targets.push((stubs[part], Target::Forward { sel }));
         }
+        let decoded: usize = targets
+            .iter()
+            .filter_map(|(_, target)| match target {
+                Target::Entry { index, .. } => self.checked.routes[*index].direct,
+                Target::View { func, .. }
+                | Target::Migrate { func, .. }
+                | Target::Deploy { func, .. } => Some(*func),
+                _ => None,
+            })
+            .map(|func| self.dynamic_params(func))
+            .sum();
+        self.share_dynamic = decoded > 1;
         self.dispatcher(&targets)?;
         for (label, target) in targets {
             match target {
@@ -1877,6 +1895,7 @@ impl<'a> Gen<'a> {
     /// runtime code.
     fn emit_init(&mut self, func: usize, runtime: Vec<u8>) -> Result<(), Error> {
         self.init = true;
+        self.share_dynamic = self.dynamic_params(func) > 1;
         let shape = self.shape;
         for &part in &shape.parts {
             self.push_word(part);
@@ -2985,13 +3004,44 @@ impl<'a> Gen<'a> {
     }
 
 
-    /// Up to 31 bytes pack into the word. Longer values are copied into a blob.
+    fn dynamic_params(&self, func: usize) -> usize {
+        self.checked.prog.funcs[func]
+            .params
+            .iter()
+            .filter(|p| {
+                p.sym.is_some_and(|sym| !self.checked.syms[sym].storage)
+                    && !self.list_value(p.ty_id)
+                    && self.is_dynamic(p.ty_id)
+            })
+            .count()
+    }
+
     fn decode_dynamic(&mut self, sym: usize, head: u32) -> Result<(), Error> {
+        self.push_u64(u64::from(4 + head * 32));
+        if self.share_dynamic {
+            self.call_sub(Sub::DecodeDynamic);
+        } else {
+            self.dynamic_arg()?;
+        }
+        self.mstore_off(self.local[sym]);
+        Ok(())
+    }
+
+    fn sub_decode_dynamic(&mut self) -> Result<(), Error> {
+        self.op(SWAP1);
+        self.dynamic_arg()?;
+        self.op(SWAP1);
+        self.op(JUMP);
+        Ok(())
+    }
+
+    /// `[pos]` becomes the `bytes` or `string` argument whose head is at `pos`. Up to 31
+    /// bytes pack into the word. Longer values are copied into a blob.
+    fn dynamic_arg(&mut self) -> Result<(), Error> {
         let short = self.fresh();
         let done = self.fresh();
         // Solidity's bounds: the offset and the length fit in 64 bits, the length word is
         // inside calldata, and so is every data byte.
-        self.push_u64(u64::from(4 + head * 32));
         self.cd_load();
         self.op(DUP1);
         self.push_u64(64);
@@ -3046,12 +3096,20 @@ impl<'a> Gen<'a> {
         self.push_u64(32);
         self.op(ADD);
         self.cd_load();
+        // Past the first `len` bytes the word holds padding or the next argument.
+        self.op(PUSH0);
+        self.op(NOT);
+        self.op(DUP1 + 2);
+        self.push_u64(3);
+        self.op(SHL);
+        self.op(SHR);
+        self.op(NOT);
+        self.op(AND);
         self.op(SWAP1);
         self.push_u64(2);
         self.op(MUL);
         self.op(OR);
         self.jumpdest(done);
-        self.mstore_off(self.local[sym]);
         Ok(())
     }
 
@@ -9604,6 +9662,7 @@ impl<'a> Gen<'a> {
                 }
                 Sub::QueuePush => self.sub_queue_push()?,
                 Sub::ListHead => self.sub_list_head()?,
+                Sub::DecodeDynamic => self.sub_decode_dynamic()?,
                 Sub::Base64Encode => self.sub_base64_encode(),
                 Sub::Base64Decode => self.sub_base64_decode(),
             }

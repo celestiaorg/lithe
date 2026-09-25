@@ -18,6 +18,10 @@ storage is record {
   level : uint8;
 }
 
+deploy(const n : string) is {
+  storage.name := n;
+}
+
 external function rename(const n : string) is {
   storage.name := n;
   storage.updates := storage.updates + 1n;
@@ -27,6 +31,11 @@ external function rename(const n : string) is {
 }
 
 external function set_blob(const b : bytes) is {
+  storage.blob := b;
+}
+
+external function set_both(const n : string; const b : bytes) is {
+  storage.name := n;
   storage.blob := b;
 }
 

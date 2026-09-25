@@ -228,6 +228,20 @@ SCENARIOS = {
         ("send", "A", "set_blob(bytes)", ["0x" + "cd" * 40], None),
         ("send", "A", "set_blob(bytes)", ["0x" + "ef" * 5], None),
         ("call", "A", "blob()", [], None),
+        # Two dynamic arguments in one call: empty, short, at 31 and 32 bytes, and long.
+        ("send", "A", "set_both(string,bytes)", ["", "0x0102"], None),
+        ("call", "A", "name()", [], None),
+        ("call", "A", "blob()", [], None),
+        ("send", "A", "set_both(string,bytes)", ["hi", "0x"], None),
+        ("send", "A", "set_both(string,bytes)", ["x" * 31, "0x" + "ab" * 32], None),
+        ("send", "A", "set_both(string,bytes)", [LONG, "0x" + "cd" * 31], None),
+        ("call", "A", "name()", [], None),
+        ("call", "A", "blob()", [], None),
+        # The padding after short data need not be zero.
+        ("send", "A", raw("set_both(string,bytes)", word(0x40), word(0x80),
+                          word(2), "6869" + "ff" * 30, word(1), "ab" + "ff" * 31), [], None),
+        ("call", "A", "name()", [], None),
+        ("call", "A", "blob()", [], None),
     ],
 }
 
@@ -364,6 +378,30 @@ def erc721_steps():
 
 
 SUITES = {
+    "registry": {
+        "deploy": [("registry", "registry", "(string)", ["registry"])],
+        "steps": [(k, s, "registry", sig, a, v) for k, s, sig, a, v in SCENARIOS["registry"]],
+    },
+    # Constructor arguments decoded together, then a function's lone argument.
+    "profile": {
+        "deploy": [
+            ("profile", "profile", "(string,bytes)", ["", "0x0102"]),
+            ("short", "profile", "(string,bytes)", ["alice", "0x"]),
+            ("long", "profile", "(string,bytes)", [LONG, "0x" + "ab" * 40]),
+        ],
+        "steps": [
+            *[("call", "A", role, view, [], None)
+              for role in ["profile", "short", "long"] for view in ["name()", "avatar()"]],
+            ("send", "A", "profile", "set_bio(string)", [""], None),
+            ("send", "A", "profile", "set_bio(string)", ["hi"], None),
+            ("send", "A", "profile", "set_bio(string)", ["x" * 31], None),
+            ("send", "A", "profile", "set_bio(string)", ["x" * 32], None),
+            ("send", "A", "profile", "set_bio(string)", [LONG], None),
+            ("call", "A", "profile", "bio()", [], None),
+            ("send", "A", "profile", raw("set_bio(string)", word(0x20), word(2), "6869" + "ff" * 30), [], None),
+            ("call", "A", "profile", "bio()", [], None),
+        ],
+    },
     "erc20": {"deploy": [("token", "erc20", "(address)", [ADDR["A"]])], "steps": erc20_steps("token")},
     "erc721": {
         "deploy": [("nft", "erc721", "(address)", [ADDR["A"]]), ("receiver", "receiver")],

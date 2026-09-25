@@ -8575,6 +8575,53 @@ interface IAdd is {
     }
 }
 
+/// A short `bytes` or `string` argument keeps only its own bytes from the word after its
+/// length, which may be padding or the next argument.
+#[test]
+fn short_dynamic_arguments_ignore_what_follows() {
+    let src = "\
+storage is record { n : nat; }
+external pure function bb(const a : bytes; const b : bytes) : (nat, nat) is (a.length, b.length)
+external pure function bbs(const a : bytes; const b : bytes; const s : string) : (nat, nat, nat) is (a.length, b.length, s.length)
+external pure function sb(const s : string; const b : bytes) : (nat, nat) is (s.length, b.length)
+external pure function copy(const a : bytes; const s : string) : bytes is a
+";
+    let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
+    let w = Word::from_u64;
+    let run = |data: &[u8]| {
+        let out = exec(&runtime, data, HashMap::new(), w(7), w(0), w(0)).expect("run");
+        assert!(!out.reverted);
+        out.returndata
+    };
+    let words = |ns: &[u64]| ns.iter().flat_map(|&n| w(n).to_be_bytes()).collect::<Vec<u8>>();
+    let hello = || Arg::B(b"hello".to_vec());
+    for (sig, args, want) in [
+        ("bb(bytes,bytes)", vec![Arg::B(vec![]), Arg::B(vec![1, 2])], vec![0, 2]),
+        ("bbs(bytes,bytes,string)", vec![Arg::B(vec![1]), Arg::B(vec![]), hello()], vec![1, 0, 5]),
+        ("sb(string,bytes)", vec![Arg::B(vec![]), Arg::B(vec![1, 2])], vec![0, 2]),
+    ] {
+        assert_eq!(run(&encode_args(sig, &args)), words(&want), "{sig}");
+    }
+    assert_eq!(
+        abi_string_value(&run(&encode_args("copy(bytes,string)", &[Arg::B(vec![]), hello()]))),
+        b""
+    );
+    let mut dirty = encode_args("copy(bytes,string)", &[Arg::B(vec![0xab]), hello()]);
+    dirty[4 + 64 + 32 + 1..4 + 64 + 64].fill(0xff);
+    assert_eq!(abi_string_value(&run(&dirty)), [0xab]);
+
+    // A lone argument is decoded inline rather than by the shared helper.
+    let src = "\
+storage is record { n : nat; }
+external pure function echo(const a : bytes; const n : nat) : bytes is a
+";
+    let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
+    let mut dirty = encode_args("echo(bytes,uint256)", &[Arg::B(vec![0xab]), Arg::W(w(7))]);
+    dirty[4 + 64 + 32 + 1..].fill(0xff);
+    let out = exec(&runtime, &dirty, HashMap::new(), w(7), w(0), w(0)).expect("run");
+    assert_eq!(abi_string_value(&out.returndata), [0xab]);
+}
+
 fn base64_reference(data: &[u8], file_safe: bool, no_padding: bool) -> Vec<u8> {
     let mut alphabet = *b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     if file_safe {
@@ -8671,4 +8718,3 @@ contract T is {
     let out = run(&abi_string("text(string)", b"lithe?>"));
     assert_eq!(abi_string_value(&out.returndata), b"bGl0aGU_Pg");
 }
-

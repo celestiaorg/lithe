@@ -12,6 +12,10 @@ contract Registry {
     bytes4 _tag;
     uint8 _level;
 
+    constructor(string memory n) {
+        _name = n;
+    }
+
     function rename(string calldata n) external {
         _name = n;
         updates += 1;
@@ -19,6 +23,11 @@ contract Registry {
     }
 
     function set_blob(bytes calldata b) external {
+        _blob = b;
+    }
+
+    function set_both(string calldata n, bytes calldata b) external {
+        _name = n;
         _blob = b;
     }
 

@@ -1,0 +1,26 @@
+(* Benchmark: string and bytes arguments to a constructor, and a lone one to a
+   function. Mirrors profile.sol. *)
+
+storage is record {
+  name : string;
+  avatar : bytes;
+  bio : string;
+}
+
+deploy(const name : string; const avatar : bytes) is {
+  storage.name := name;
+  storage.avatar := avatar;
+}
+
+external function set_bio(const bio : string) is {
+  storage.bio := bio;
+}
+
+external view function name() : string is
+  storage.name
+
+external view function avatar() : bytes is
+  storage.avatar
+
+external view function bio() : string is
+  storage.bio
