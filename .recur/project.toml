@@ -1,0 +1,8 @@
+# Recur project settings: setup, teardown, named runs, app URL, env, and files to copy.
+# Safe to commit and share. Keep secrets in gitignored dotenv for the app to load;
+# Recur copies them via copy_files and does not export them.
+setup_cmd = 'git submodule update --init --recursive'
+teardown_cmd = ''
+app_url = ''
+env = ''
+copy_files = ''
