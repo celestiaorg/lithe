@@ -4927,6 +4927,19 @@ impl Checker {
                 for arg in args.iter_mut() {
                     self.check_expr_as(arg, None)?;
                     self.encodable(arg)?;
+                    // As in Solidity, packing has no layout for a list of dynamic values.
+                    let ty = peel_id(&self.types, arg.ty());
+                    let elem = self.types[ty].elem.map(|e| peel_id(&self.types, e));
+                    if kind == Builtin::AbiEncodePacked
+                        && self.list_value(ty)
+                        && elem.is_some_and(|e| self.is_dyn_ty(e))
+                    {
+                        return Err(error(
+                            arg.line(),
+                            arg.col(),
+                            format!("`{call}` cannot pack a list of strings or bytes"),
+                        ));
+                    }
                 }
             }
             Builtin::AbiEncodeSelector => {

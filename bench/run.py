@@ -281,6 +281,68 @@ SCENARIOS = {
         ("send", "A", raw("save(uint256[])", word(0x20), word(3), word(1)), [], None),
         ("send", "A", raw("set_owners(address[])", word(0x20), word(1), word(1 << 160)), [], None),
     ],
+    "texts": [
+        ("send", "A", "save(bytes[])", ["[0x0102,0x" + "cd" * 40 + ",0x]"], None),
+        ("call", "A", "saved()", [], None),
+        ("call", "A", "saved_at(uint256)", ["1"], None),
+        ("call", "A", "saved_at(uint256)", ["3"], None),
+        ("send", "A", "push(bytes)", ["0x" + "ef" * 33], None),
+        ("send", "A", "set_at(uint256,bytes)", ["1", "0x09"], None),
+        ("call", "A", "joined()", [], None),
+        # Shorter lists and values leave no data behind in the slots they no longer use.
+        ("send", "A", "save(bytes[])", ["[0x" + "ab" * 31 + "]"], None),
+        ("call", "A", "saved()", [], None),
+        ("send", "A", "save(bytes[])", ["[]"], None),
+        ("send", "A", "set_names(string[])", ["[" + LONG + ",hi,]"], None),
+        ("call", "A", "names()", [], None),
+        ("send", "A", "set_names(string[])", ["[x]"], None),
+        ("send", "A", "label(uint256,string)", ["7", LONG], None),
+        ("call", "A", "label_of(uint256)", ["7"], None),
+        ("send", "A", "label(uint256,string)", ["7", "short"], None),
+        ("call", "A", "label_of(uint256)", ["7"], None),
+        ("call", "A", "label_of(uint256)", ["8"], None),
+        ("call", "A", "first(bytes[])", ["[0x0102,0x030405]"], None),
+        ("call", "A", "concat_all(bytes[])", ["[0x0102,0x030405,0x" + "cd" * 40 + "]"], None),
+        ("call", "A", "echo(string[])", ["[" + LONG + ",ab,]"], None),
+        ("call", "A", "pair(bytes,bytes)", ["0x0102", "0x" + "cd" * 40], None),
+        # An empty value is its length alone, not the word that follows it.
+        ("call", "A", "left(bytes,bytes)", ["0x", "0x010203"], None),
+        ("call", "A", "same(bytes[],bytes[])", ["[0x0102,0x]", "[0x0102,0x]"], None),
+        ("call", "A", "same(bytes[],bytes[])", ["[0x0102,0x]", "[0x0102,0x00]"], None),
+        ("call", "A", "encoded(uint256,string[])", ["7", "[" + LONG + ",hi]"], None),
+        ("call", "A", "decoded(bytes)", ["0x" + word(0x20) + word(2) + word(0x40) + word(0x80) + word(2) + "0102" + "00" * 30 + word(0)], None),
+        # An element's offset past the data, and its length past the data.
+        ("send", "A", raw("save(bytes[])", word(0x20), word(1), word(0x1000)), [], None),
+        ("send", "A", raw("save(bytes[])", word(0x20), word(1), word(0x20), word(64)), [], None),
+        ("call", "A", "decoded(bytes)", ["0x" + word(0x20) + word(1) + word(0x1000)], None),
+        # Abi.decode reads a word or a string from calldata or memory, and rejects data
+        # too short for its head, dirty bits, and offsets or lengths past the data.
+        ("call", "A", "small_of(bytes)", ["0x" + word(7)], None),
+        ("call", "A", "small_of(bytes)", ["0x" + word(256)], None),
+        ("call", "A", "small_of(bytes)", ["0x07"], None),
+        ("call", "A", "text_of(bytes)", ["0x" + word(0x20) + word(2) + "6869" + "00" * 30], None),
+        ("call", "A", "text_of(bytes)", ["0x" + word(0x20) + word(40) + "ab" * 40 + "00" * 24], None),
+        ("call", "A", "text_of(bytes)", ["0x" + word(0x20) + word(1000)], None),
+        ("call", "A", "text_of(bytes)", ["0x" + word(0x1000)], None),
+        ("call", "A", "addr_mem(bytes)", ["0x" + word(0xabc)], None),
+        ("call", "A", "addr_mem(bytes)", ["0x" + word(1 << 160)], None),
+        ("call", "A", "addr_mem(bytes)", ["0x"], None),
+        ("call", "A", "text_mem(bytes)", ["0x" + word(0x20) + word(40) + "ab" * 40 + "00" * 24], None),
+        ("call", "A", "text_mem(bytes)", ["0x" + word(0x40) + word(0) + word(3) + "616263" + "00" * 29], None),
+        ("call", "A", "text_mem(bytes)", ["0x" + word(0x20) + word(33) + "ab" * 32], None),
+        ("call", "A", "names_mem(bytes)", ["0x" + word(0x20) + word(2) + word(0x40) + word(0x80) + word(2) + "6869" + "00" * 30 + word(0)], None),
+        ("call", "A", "names_mem(bytes)", ["0x" + word(0x20) + word(2) + word(0x40)], None),
+        # A decoded short string compares, measures, and stores like any other.
+        ("call", "A", "same_text(string,bytes)", ["hi", "0x" + word(0x20) + word(2) + "6869" + "00" * 30], None),
+        ("call", "A", "same_text(string,bytes)", [LONG, "0x" + word(0x20) + word(len(LONG)) + LONG.encode().hex() + "00" * (-len(LONG) % 32)], None),
+        ("call", "A", "same_text(string,bytes)", ["ho", "0x" + word(0x20) + word(2) + "6869" + "00" * 30], None),
+        ("call", "A", "empty_text(bytes)", ["0x" + word(0x20) + word(0)], None),
+        ("send", "A", "keep_text(uint256,bytes)", ["9", "0x" + word(0x20) + word(40) + "ab" * 40 + "00" * 24], None),
+        ("send", "A", "keep_text(uint256,bytes)", ["9", "0x" + word(0x20) + word(2) + "6869" + "00" * 30], None),
+        ("call", "A", "label_of(uint256)", ["9"], None),
+        ("call", "A", "note()", [], None),
+        ("call", "A", "selector_only()", [], None),
+    ],
     "loops": [
         ("call", "A", "sum(uint256[])", ["[1,2,3,4,5]"], None),
         ("call", "A", "sum(uint256[])", ["[]"], None),
@@ -540,7 +602,31 @@ def erc721_steps():
     ]
 
 
+def blobs(*items):
+    """The ABI encoding of a `bytes[]` value, as `abi.encode` lays it out."""
+    head, tail = word(len(items)), ""
+    for item in items:
+        head += word(32 * len(items) + len(tail) // 2)
+        tail += word(len(item) // 2) + item + "00" * (-(len(item) // 2) % 32)
+    return "0x" + word(0x20) + head + tail
+
+
 SUITES = {
+    # Lists of strings through query and `defer`, and a payload decoded by a contract
+    # another contract calls: no calldata floor price hides that call's gas.
+    "relay": {
+        "deploy": [("texts", "texts"), ("relay", "relay")],
+        "steps": [
+            ("send", "A", "relay", "ask(address,string[])", ["$texts", "[" + LONG + ",hi,]"], None),
+            ("call", "A", "relay", "names()", [], None),
+            ("send", "A", "relay", "send(address,string[])", ["$texts", "[x," + LONG + "]"], None),
+            ("call", "A", "relay", "kept()", [], None),
+            ("send", "A", "relay", "unpack(address,bytes)", ["$texts", blobs("ab" * 2048, "cd" * 2048)], None),
+            ("send", "A", "relay", "unpack(address,bytes)", ["$texts", blobs("ab" * 16384, "cd" * 16384)], None),
+            ("call", "A", "relay", "count()", [], None),
+            ("send", "A", "relay", "unpack(address,bytes)", ["$texts", "0x" + word(0x20) + word(1) + word(0x1000)], None),
+        ],
+    },
     "registry": {
         "deploy": [("registry", "registry", "(string)", ["registry"])],
         "steps": [(k, s, "registry", sig, a, v) for k, s, sig, a, v in SCENARIOS["registry"]],

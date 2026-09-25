@@ -368,6 +368,12 @@ struct Plan {
     outline: std::collections::HashSet<usize>,
     /// Whether stored strings are written, and read, through one shared helper each.
     shared_bytes: (bool, bool),
+    /// Whether `string` and `bytes` arguments are decoded by one shared helper.
+    shared_decode: bool,
+    /// Whether decoded strings are built by one shared helper per source, and strings
+    /// compared by one shared helper.
+    shared_value: [bool; 3],
+    shared_eq: bool,
     /// Whether queued deferred calls share one helper to allocate and link their nodes.
     queue_helper: bool,
     /// Queues with one `defer` site, by their words' address: their nodes carry no site
@@ -383,6 +389,15 @@ struct FuncSub {
     writes: std::collections::BTreeSet<u32>,
     journal_stores: bool,
     leaves: usize,
+}
+
+/// Where ABI-encoded data is decoded from: memory or calldata, given the words holding
+/// the data's address and length, or the last call's return data.
+#[derive(Clone, Copy)]
+enum Src {
+    Mem(i32, i32),
+    Cd(i32, i32),
+    Ret,
 }
 
 /// Helpers compiled once and reached with a return address on the stack.
@@ -405,8 +420,8 @@ enum Sub {
     /// elements of the given type.
     DecodeList(usize),
     /// `[n, base, ret]` becomes a copy of the `n` elements stored from slot `base`: the
-    /// words per element, whether the slots are transient, whether the body is direct, and
-    /// whether the elements are strings or bytes.
+    /// words per element, whether the slots are transient, whether the body is direct,
+    /// and whether each element is a `string` or `bytes` value.
     LoadList(u32, bool, bool, bool),
     /// `[ptr, old, base, ret]` writes a list over `old` stored elements from slot `base`.
     StoreList(u32, bool, bool, bool),
@@ -426,12 +441,30 @@ enum Sub {
     RevertAbi,
     /// `[word, ret]` becomes a blob of the bytes a short word packs.
     ShortBlob,
-    /// `[pos, ret]` becomes the `bytes` or `string` argument whose head is at `pos`.
-    DecodeDynamic,
+    /// `[ptr, ret]` becomes a list of strings or bytes ABI-encoded: a blob's data, the
+    /// length word, each element's offset, then each element's length and padded bytes.
+    BlobsAbi,
+    /// `[pos, ret]` becomes the `string` or `bytes` argument whose head is at `pos`.
+    DecodeBytes,
+    /// `[a, b, ret]` becomes whether two lists of strings or bytes are equal.
+    BlobsEq,
+    /// `[a, b, ret]` becomes whether two strings or bytes values hold the same bytes.
+    BytesEq,
+    /// `[at, len, ret]` becomes a `string` or `bytes` value of the bytes at `at`, in
+    /// memory, calldata, or the return data.
+    BytesValue(SrcKind),
     /// `[data, file_safe, no_padding, ret]` becomes `data` in base64, as a string.
     Base64Encode,
     /// `[data, ret]` becomes the bytes a base64 string encodes.
     Base64Decode,
+}
+
+/// Where a helper copies bytes from.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum SrcKind {
+    Mem,
+    Cd,
+    Ret,
 }
 
 /// A deferred call whose target, value, and calldata were captured at the `defer`.
@@ -512,8 +545,6 @@ struct Gen<'a> {
     lists_in_order: bool,
     /// Some external function is `nonreentrant`, so every defer window must be marked.
     any_nonreentrant: bool,
-    /// This code decodes more than one `bytes` or `string` argument, so they share a helper.
-    share_dynamic: bool,
     code: Vec<Inst>,
     next_label: u32,
     spaces: Vec<Space>,
@@ -545,6 +576,11 @@ struct Gen<'a> {
     code_end: Word,
     /// Stored string writes and reads in direct bodies, and a leaf the helpers compile for.
     bytes_sites: (usize, usize),
+    /// `string` and `bytes` arguments decoded so far.
+    decode_sites: usize,
+    /// Strings built from decoded bytes so far, per source, and strings compared.
+    value_sites: [usize; 3],
+    eq_sites: usize,
     /// `defer` sites inside loops, whose calls are queued.
     queued_sites: usize,
     /// How many sites each queue, by its words' address, gathered.
@@ -557,6 +593,9 @@ struct Gen<'a> {
     /// List parameters left in calldata: each local holds its length word's position.
     /// A parameter stays there when it is only walked by `for` and asked for its length.
     cd_lists: std::collections::HashSet<usize>,
+    /// `bytes` and `string` parameters left in calldata for `Abi.decode`: each local holds
+    /// its length word's position.
+    cd_bytes: std::collections::HashSet<usize>,
     /// Calldata lists whose elements are checked as loops read them.
     cd_lazy: std::collections::HashSet<usize>,
     bytes_rep: Option<(usize, u32)>,
@@ -624,7 +663,6 @@ impl<'a> Gen<'a> {
             direct: false,
             lists_in_order: true,
             any_nonreentrant: false,
-            share_dynamic: false,
             code: Vec::new(),
             next_label: 0,
             spaces: Vec::new(),
@@ -647,10 +685,14 @@ impl<'a> Gen<'a> {
             code_args: 0,
             code_end: Word::from_u64(0),
             bytes_sites: (0, 0),
+            decode_sites: 0,
+            value_sites: [0; 3],
+            eq_sites: 0,
             queued_sites: 0,
             queue_sites: HashMap::new(),
             trusted_index: false,
             cd_lists: std::collections::HashSet::new(),
+            cd_bytes: std::collections::HashSet::new(),
             cd_lazy: std::collections::HashSet::new(),
             slot_hint: None,
             bytes_rep: None,
@@ -837,6 +879,9 @@ impl<'a> Gen<'a> {
             cache_slots: false,
             outline,
             shared_bytes,
+            shared_decode: self.decode_sites >= 2,
+            shared_value: self.value_sites.map(|n| n >= 2),
+            shared_eq: self.eq_sites >= 2,
             queue_helper: self.queued_sites >= 2,
             single_queues: self
                 .queue_sites
@@ -1308,7 +1353,11 @@ impl<'a> Gen<'a> {
                     Sub::ListHead => (1, 1),
                     Sub::RevertAbi => (3, 0),
                     Sub::ShortBlob => (1, 1),
-                    Sub::DecodeDynamic => (1, 1),
+                    Sub::BlobsAbi => (1, 1),
+                    Sub::DecodeBytes => (1, 1),
+                    Sub::BlobsEq => (2, 1),
+                    Sub::BytesEq => (2, 1),
+                    Sub::BytesValue(_) => (2, 1),
                     Sub::Base64Encode => (3, 1),
                     Sub::Base64Decode => (1, 1),
                 };
@@ -1327,7 +1376,12 @@ impl<'a> Gen<'a> {
             .chain(
                 self.subs
                     .iter()
-                    .filter(|(sub, _, _)| matches!(sub, Sub::StoreBytes | Sub::LoadBytes))
+                    .filter(|(sub, _, _)| {
+                        matches!(
+                            sub,
+                            Sub::StoreBytes | Sub::LoadBytes
+                        )
+                    })
                     .map(|&(_, label, _)| label),
             )
             .collect();
@@ -1489,18 +1543,6 @@ impl<'a> Gen<'a> {
         for &(sel, part) in &shape.forward {
             targets.push((stubs[part], Target::Forward { sel }));
         }
-        let decoded: usize = targets
-            .iter()
-            .filter_map(|(_, target)| match target {
-                Target::Entry { index, .. } => self.checked.routes[*index].direct,
-                Target::View { func, .. }
-                | Target::Migrate { func, .. }
-                | Target::Deploy { func, .. } => Some(*func),
-                _ => None,
-            })
-            .map(|func| self.dynamic_params(func))
-            .sum();
-        self.share_dynamic = decoded > 1;
         self.dispatcher(&targets)?;
         for (label, target) in targets {
             match target {
@@ -1924,7 +1966,6 @@ impl<'a> Gen<'a> {
     /// runtime code.
     fn emit_init(&mut self, func: usize, runtime: Vec<u8>) -> Result<(), Error> {
         self.init = true;
-        self.share_dynamic = self.dynamic_params(func) > 1;
         let shape = self.shape;
         for &part in &shape.parts {
             self.push_word(part);
@@ -2737,8 +2778,16 @@ impl<'a> Gen<'a> {
             })
             .sum();
         self.check_head(head_words)?;
+        let init_sites = params
+            .iter()
+            .filter_map(|p| p.sym.filter(|&sym| !self.checked.syms[sym].storage).map(|sym| (p, sym)))
+            .filter(|(p, sym)| {
+                self.is_dynamic(p.ty_id) && !self.list_value(p.ty_id) && !self.only_decoded(func, *sym)
+            })
+            .count();
         let mut head = 0u32;
         self.cd_lists.clear();
+        self.cd_bytes.clear();
         self.cd_lazy.clear();
         for p in params {
             let Some(sym) = p.sym else { continue };
@@ -2750,6 +2799,7 @@ impl<'a> Gen<'a> {
             // function always runs checks each one as it reads it. Checking them all up
             // front costs as much as decoding, so such a list is decoded instead.
             let in_place = self.list_value(p.ty_id)
+                && !self.is_dynamic(self.peel_nominal(elem))
                 && self.stays_in_calldata(func, sym)
                 && (!self.needs_check(elem) || self.walked_whole(func, sym));
             if in_place {
@@ -2764,8 +2814,23 @@ impl<'a> Gen<'a> {
             } else if self.list_value(p.ty_id) {
                 self.decode_list(sym, head, p.ty_id)?;
                 head += 1;
+            } else if self.is_dynamic(p.ty_id) && self.only_decoded(func, sym) {
+                // Checked as decoding it would be, and read in place.
+                self.push_u64(u64::from(4 + head * 32));
+                self.cd_load();
+                self.op(DUP1);
+                self.push_u64(64);
+                self.op(SHR);
+                self.revert_if_true()?;
+                self.push_u64(4);
+                self.op(ADD);
+                self.blob_bounds()?;
+                self.op(POP);
+                self.mstore_off(self.local[sym]);
+                self.cd_bytes.insert(sym);
+                head += 1;
             } else if self.is_dynamic(p.ty_id) {
-                self.decode_dynamic(sym, head)?;
+                self.decode_dynamic(sym, head, init_sites)?;
                 head += 1;
             } else {
                 let n = self.checked.types[p.ty_id].words;
@@ -2774,6 +2839,35 @@ impl<'a> Gen<'a> {
             }
         }
         Ok(())
+    }
+
+    /// Whether a parameter is only ever the data `Abi.decode` reads, so it can stay in
+    /// calldata.
+    fn only_decoded(&self, func: usize, sym: usize) -> bool {
+        let (uses, decoded) = (std::cell::Cell::new(0), std::cell::Cell::new(0));
+        let count = |node: Node<'_>| {
+            match node {
+                Node::Expr(Expr::Ident { sym: Some(s), .. }) if *s == sym => uses.set(uses.get() + 1),
+                Node::Expr(Expr::Call {
+                    builtin: Some(Builtin::AbiDecode),
+                    args,
+                    ..
+                }) if matches!(args.first(), Some(Expr::Ident { sym: Some(s), .. }) if *s == sym) => {
+                    decoded.set(decoded.get() + 1)
+                }
+                Node::Stmt(Stmt::Assign { root: Some(s), .. }) if *s == sym => uses.set(usize::MAX / 2),
+                _ => {}
+            }
+            false
+        };
+        let f = &self.checked.prog.funcs[func];
+        for st in &f.stmts {
+            self.stmt_any(st, &count, &mut Vec::new());
+        }
+        if let Some(tail) = &f.tail {
+            self.expr_any(tail, &count, &mut Vec::new());
+        }
+        decoded.get() > 0 && uses.get() == decoded.get()
     }
 
     /// Whether a list parameter is only walked by `for` loops and asked for its length, so
@@ -2975,7 +3069,9 @@ impl<'a> Gen<'a> {
         self.alloc_list(1)?;
         let word = self.peel_nominal(elem);
         let t = &self.checked.types[word];
-        let whole = t.words == 1
+        let dynamic = self.is_dynamic(word);
+        let whole = !dynamic
+            && t.words == 1
             && matches!(
                 t.kind,
                 TyKind::Nat | TyKind::Int | TyKind::Wei | TyKind::Timestamp | TyKind::Bytes
@@ -3010,8 +3106,19 @@ impl<'a> Gen<'a> {
             self.op(DUP1 + 4);
             self.op(ADD);
             self.cd_load();
-            self.check_word(word, &|g: &mut Self| g.op(DUP1))?;
-            self.align_decoded(word);
+            if dynamic {
+                // An element's offset counts from the first element's head word.
+                self.op(DUP1);
+                self.push_u64(64);
+                self.op(SHR);
+                self.revert_if_true()?;
+                self.op(DUP1 + 4);
+                self.op(ADD);
+                self.decode_blob()?;
+            } else {
+                self.check_word(word, &|g: &mut Self| g.op(DUP1))?;
+                self.align_decoded(word);
+            }
             self.op(DUP1 + 1);
             self.push_u64(32);
             self.op(MUL);
@@ -3037,40 +3144,27 @@ impl<'a> Gen<'a> {
     }
 
 
-    fn dynamic_params(&self, func: usize) -> usize {
-        self.checked.prog.funcs[func]
-            .params
-            .iter()
-            .filter(|p| {
-                p.sym.is_some_and(|sym| !self.checked.syms[sym].storage)
-                    && !self.list_value(p.ty_id)
-                    && self.is_dynamic(p.ty_id)
-            })
-            .count()
-    }
-
-    fn decode_dynamic(&mut self, sym: usize, head: u32) -> Result<(), Error> {
+    /// Up to 31 bytes pack into the word. Longer values are copied into a blob. Creation
+    /// code decodes only `deploy`'s arguments, so it counts its own.
+    fn decode_dynamic(&mut self, sym: usize, head: u32, init_sites: usize) -> Result<(), Error> {
+        self.decode_sites += 1;
         self.push_u64(u64::from(4 + head * 32));
-        if self.share_dynamic {
-            self.call_sub(Sub::DecodeDynamic);
+        let shared = if self.init {
+            init_sites >= 2
         } else {
-            self.dynamic_arg()?;
+            self.plan.shared_decode
+        };
+        if shared {
+            self.call_sub(Sub::DecodeBytes);
+        } else {
+            self.decode_bytes_arg()?;
         }
         self.mstore_off(self.local[sym]);
         Ok(())
     }
 
-    fn sub_decode_dynamic(&mut self) -> Result<(), Error> {
-        self.op(SWAP1);
-        self.dynamic_arg()?;
-        self.op(SWAP1);
-        self.op(JUMP);
-        Ok(())
-    }
-
-    /// `[pos]` becomes the `bytes` or `string` argument whose head is at `pos`. The value
-    /// is copied into a blob.
-    fn dynamic_arg(&mut self) -> Result<(), Error> {
+    /// `[pos]` becomes the `string` or `bytes` argument whose head is at `pos`.
+    fn decode_bytes_arg(&mut self) -> Result<(), Error> {
         // Solidity's bounds: the offset and the length fit in 64 bits, the length word is
         // inside calldata, and so is every data byte.
         self.cd_load();
@@ -3080,6 +3174,13 @@ impl<'a> Gen<'a> {
         self.revert_if_true()?;
         self.push_u64(4);
         self.op(ADD);
+        self.decode_blob()
+    }
+
+    /// `[pos]` becomes `[pos, len]` for the calldata length word at `pos`, with Solidity's
+    /// bounds: the length word is inside calldata, the length fits in 64 bits, and so
+    /// does every data byte.
+    fn blob_bounds(&mut self) -> Result<(), Error> {
         self.op(DUP1);
         self.push_u64(31);
         self.op(ADD);
@@ -3100,10 +3201,15 @@ impl<'a> Gen<'a> {
         self.op(ADD);
         self.cd_size();
         self.op(LT);
-        self.revert_if_true()?;
-        // [data offset, len]
+        self.revert_if_true()
+    }
+
+    /// `[pos]` becomes a `bytes` or `string` value decoded from the length word at `pos`,
+    /// copied into a blob.
+    fn decode_blob(&mut self) -> Result<(), Error> {
+        self.blob_bounds()?;
+        // [data offset, len] becomes [header, len, data + 32, header + 32]
         self.alloc_blob()?;
-        // [data offset, header] becomes [header, len, data + 32, header + 32]
         self.op(DUP1);
         self.op(MLOAD);
         self.op(SWAP1);
@@ -3598,7 +3704,7 @@ impl<'a> Gen<'a> {
                 if self.list_value(ty) {
                     self.compile_value(expr)?;
                     if self.checked.syms[root].storage {
-                        return self.store_list(root, *leaf, self.list_k(ty));
+                        return self.store_list(root, *leaf, self.list_k(ty), self.list_dyn(ty));
                     }
                     self.mstore_off(self.local[root]);
                     return Ok(());
@@ -3913,6 +4019,10 @@ impl<'a> Gen<'a> {
     }
 
     /// A dynamic list held as a value: a pointer to its length, then its elements.
+    fn list_elem(&self, ty: usize) -> usize {
+        self.checked.types[self.peel_nominal(ty)].elem.unwrap_or(0)
+    }
+
     fn list_value(&self, ty: usize) -> bool {
         let id = self.peel_nominal(ty);
         self.checked.types[id].kind == TyKind::List && self.checked.types[id].bits == 0
@@ -3921,6 +4031,17 @@ impl<'a> Gen<'a> {
     /// Words per element of a list type.
     fn list_k(&self, ty: usize) -> u32 {
         self.list_stride(self.peel_nominal(ty))
+    }
+
+    /// A `list(string)` or `list(bytes)`: each element is a dynamic word.
+    fn list_dyn(&self, ty: usize) -> bool {
+        let id = self.peel_nominal(ty);
+        let elem = self.checked.types[id].elem.unwrap_or(0);
+        self.stored_dyn(elem)
+    }
+
+    fn stored_dyn(&self, ty: usize) -> bool {
+        self.is_dynamic(self.peel_nominal(ty))
     }
 
     /// A word of memory for one site's intermediate value.
@@ -3979,7 +4100,7 @@ impl<'a> Gen<'a> {
     fn compile_list_value(&mut self, e: &Expr) -> Result<bool, Error> {
         let k = self.list_k(e.ty());
         if let Some((sym, leaf)) = self.stored_place(e) {
-            self.load_stored_list(sym, leaf, k)?;
+            self.load_stored_list(sym, leaf, k, self.list_dyn(e.ty()))?;
             return Ok(true);
         }
         match e {
@@ -4072,11 +4193,10 @@ impl<'a> Gen<'a> {
     }
 
     /// Pushes a copy of a stored list.
-    fn load_stored_list(&mut self, sym: usize, leaf: u32, k: u32) -> Result<(), Error> {
+    fn load_stored_list(&mut self, sym: usize, leaf: u32, k: u32, bytes: bool) -> Result<(), Error> {
         let transient = self
             .checked
             .transient_leaf(self.checked.syms[sym].slot + leaf);
-        let bytes = self.bytes_elem(self.type_at(self.checked.syms[sym].ty, leaf));
         self.mload(self.addr(sym, leaf));
         self.stored_list_base(sym, leaf);
         self.call_sub(Sub::LoadList(k, transient, self.direct, bytes));
@@ -4129,7 +4249,7 @@ impl<'a> Gen<'a> {
 
 
     /// `[ptr]`: writes the list to a stored list, clearing the slots it no longer uses.
-    fn store_list(&mut self, sym: usize, leaf: u32, k: u32) -> Result<(), Error> {
+    fn store_list(&mut self, sym: usize, leaf: u32, k: u32, bytes: bool) -> Result<(), Error> {
         let transient = self
             .checked
             .transient_leaf(self.checked.syms[sym].slot + leaf);
@@ -4149,7 +4269,6 @@ impl<'a> Gen<'a> {
                 body.journal_stores = true;
             }
         }
-        let bytes = self.bytes_elem(self.type_at(self.checked.syms[sym].ty, leaf));
         self.call_sub(Sub::StoreList(k, transient, self.direct, bytes));
         Ok(())
     }
@@ -4233,6 +4352,23 @@ impl<'a> Gen<'a> {
 
     /// `[ptr]`: returns the list ABI-encoded, `bytesN` elements moved to the high bytes.
     fn return_list(&mut self, elem: usize) -> Result<(), Error> {
+        if self.is_dynamic(self.peel_nominal(elem)) {
+            // [header, size + 32]: the offset word goes over the blob's length.
+            self.call_sub(Sub::BlobsAbi);
+            self.push_u64(32);
+            self.op(SWAP1);
+            self.op(SUB);
+            self.op(DUP1);
+            self.op(MLOAD);
+            self.push_u64(32);
+            self.op(ADD);
+            self.op(SWAP1);
+            self.push_u64(32);
+            self.op(DUP1 + 1);
+            self.op(MSTORE);
+            self.op(RETURN);
+            return Ok(());
+        }
         let list = self.temp();
         self.mstore_off(list);
         self.align_list_for_abi(list, elem)?;
@@ -4557,18 +4693,41 @@ impl<'a> Gen<'a> {
             ..
         } = e
         {
-            // A long string's word points at its bytes, so values compare by their hashes.
-            let list = self.list_value(left.ty());
-            if list || self.is_dynamic(left.ty()) {
-                for side in [left, right] {
-                    self.compile_value(side)?;
-                    if list {
-                        self.list_hash(self.list_k(left.ty()));
-                    } else {
+            if self.is_dynamic(self.peel_nominal(left.ty())) {
+                self.eq_sites += 1;
+                if self.plan.shared_eq {
+                    self.compile_value(left)?;
+                    self.compile_value(right)?;
+                    self.call_sub(Sub::BytesEq);
+                } else {
+                    for side in [left, right] {
+                        self.compile_value(side)?;
                         self.bytes_span();
                         self.op(KECCAK);
                     }
+                    self.op(EQ);
                 }
+                if *op == BinOp::Neq {
+                    self.op(ISZERO);
+                }
+                return Ok(());
+            }
+            if self.list_value(left.ty()) {
+                let elem = self.list_elem(left.ty());
+                if self.is_dynamic(self.peel_nominal(elem)) {
+                    self.compile_value(left)?;
+                    self.compile_value(right)?;
+                    self.call_sub(Sub::BlobsEq);
+                    if *op == BinOp::Neq {
+                        self.op(ISZERO);
+                    }
+                    return Ok(());
+                }
+                let k = self.list_k(left.ty());
+                self.compile_value(left)?;
+                self.list_hash(k);
+                self.compile_value(right)?;
+                self.list_hash(k);
                 self.op(EQ);
                 if *op == BinOp::Neq {
                     self.op(ISZERO);
@@ -5120,6 +5279,21 @@ impl<'a> Gen<'a> {
     }
 
     fn compile_abi_encode(&mut self, args: &[Expr], selector: Option<&Expr>) -> Result<(), Error> {
+        // With no arguments the encoding is empty, or a selector alone.
+        if args.is_empty() {
+            match selector {
+                Some(sel) => {
+                    self.compile_value(sel)?;
+                    self.push_u64(224);
+                    self.op(SHL);
+                    self.push_u64(8);
+                    self.op(OR);
+                    self.call_sub(Sub::ShortBlob);
+                }
+                None => self.op(PUSH0),
+            }
+            return Ok(());
+        }
         let values = self.blob_parts(args)?;
         let parts: Vec<(i32, usize)> = values
             .iter()
@@ -5148,7 +5322,9 @@ impl<'a> Gen<'a> {
             if list(self, ty) {
                 let elem = self.checked.types[self.peel_nominal(ty)].elem.unwrap_or(0);
                 let t = &self.checked.types[self.peel_nominal(elem)];
-                if t.kind == TyKind::Bytes && t.bits > 0 && t.bits < 32 {
+                if (t.kind == TyKind::Bytes && t.bits > 0 && t.bits < 32)
+                    || self.is_dynamic(self.peel_nominal(elem))
+                {
                     let copy = self.temp();
                     self.mload(at);
                     self.abi_ready_list(elem)?;
@@ -5174,11 +5350,7 @@ impl<'a> Gen<'a> {
                 self.op(ADD);
             } else if list(self, ty) {
                 self.mload(at);
-                self.op(MLOAD);
-                self.push_u64(32);
-                self.op(MUL);
-                self.push_u64(32);
-                self.op(ADD);
+                self.abi_list_size(self.list_elem(ty));
                 self.op(ADD);
             }
         }
@@ -5238,11 +5410,7 @@ impl<'a> Gen<'a> {
             } else {
                 // [cursor, ptr]: the length word and the elements are laid out as in the ABI.
                 self.op(DUP1);
-                self.op(MLOAD);
-                self.push_u64(32);
-                self.op(MUL);
-                self.push_u64(32);
-                self.op(ADD);
+                self.abi_list_size(self.list_elem(ty));
                 self.op(SWAP1);
                 self.op(DUP1 + 1);
                 self.op(SWAP1);
@@ -5277,9 +5445,14 @@ impl<'a> Gen<'a> {
         self.append_mem_at_len(false)
     }
 
-    /// `[ptr]` becomes a list whose elements are ABI words: a copy with `bytesN` elements
-    /// moved to the high bytes, or the list itself when they already are.
+    /// `[ptr]` becomes a list laid out as in the ABI: a copy with `bytesN` elements moved to
+    /// the high bytes, strings and bytes encoded after their offsets, or the list itself
+    /// when its elements are already ABI words.
     fn abi_ready_list(&mut self, elem: usize) -> Result<(), Error> {
+        if self.is_dynamic(self.peel_nominal(elem)) {
+            self.call_sub(Sub::BlobsAbi);
+            return Ok(());
+        }
         let t = &self.checked.types[self.peel_nominal(elem)];
         if !(t.kind == TyKind::Bytes && t.bits > 0 && t.bits < 32) {
             return Ok(());
@@ -5289,6 +5462,213 @@ impl<'a> Gen<'a> {
         self.mstore_off(copy);
         self.align_list_for_abi(copy, elem)?;
         self.mload(copy);
+        Ok(())
+    }
+
+    /// `[ptr]`, a list `abi_ready_list` made, becomes its encoding's size in bytes.
+    fn abi_list_size(&mut self, elem: usize) {
+        if self.is_dynamic(self.peel_nominal(elem)) {
+            self.push_u64(32);
+            self.op(SWAP1);
+            self.op(SUB);
+            self.op(MLOAD);
+        } else {
+            self.op(MLOAD);
+            self.push_u64(32);
+            self.op(MUL);
+            self.push_u64(32);
+            self.op(ADD);
+        }
+    }
+
+    /// `[a, b]` becomes whether they hold the same bytes.
+    fn bytes_eq(&mut self) {
+        self.eq_sites += 1;
+        if self.plan.shared_eq {
+            self.call_sub(Sub::BytesEq);
+        } else {
+            self.bytes_eq_body(false);
+        }
+    }
+
+    fn sub_bytes_eq(&mut self) {
+        self.bytes_eq_body(true);
+    }
+
+    fn bytes_eq_body(&mut self, sub: bool) {
+        // [b, a]: equal values hash their bytes alike, and different lengths hash apart.
+        if sub {
+            self.op(SWAP1 + 1);
+        }
+        self.bytes_span();
+        self.op(KECCAK);
+        self.op(SWAP1);
+        self.bytes_span();
+        self.op(KECCAK);
+        self.op(EQ);
+        if sub {
+            self.op(SWAP1);
+            self.op(JUMP);
+        }
+    }
+
+    fn sub_blobs_eq(&mut self) -> Result<(), Error> {
+        let (top, equal, differ) = (self.fresh(), self.fresh(), self.fresh());
+        // [ret, b, a, i]
+        self.op(SWAP1 + 1);
+        self.op(PUSH0);
+        self.op(DUP1 + 1);
+        self.op(MLOAD);
+        self.op(DUP1 + 3);
+        self.op(MLOAD);
+        self.op(EQ);
+        self.op(ISZERO);
+        self.push_label(differ);
+        self.op(JUMPI);
+        self.jumpdest(top);
+        self.op(DUP1 + 1);
+        self.op(MLOAD);
+        self.op(DUP1 + 1);
+        self.op(LT);
+        self.op(ISZERO);
+        self.push_label(equal);
+        self.op(JUMPI);
+        self.op(DUP1);
+        self.push_u64(32);
+        self.op(MUL);
+        self.push_u64(32);
+        self.op(ADD);
+        self.op(DUP1);
+        self.op(DUP1 + 3);
+        self.op(ADD);
+        self.op(MLOAD);
+        self.op(SWAP1);
+        self.op(DUP1 + 4);
+        self.op(ADD);
+        self.op(MLOAD);
+        self.bytes_eq();
+        self.op(ISZERO);
+        self.push_label(differ);
+        self.op(JUMPI);
+        self.push_u64(1);
+        self.op(ADD);
+        self.push_label(top);
+        self.op(JUMP);
+        self.jumpdest(equal);
+        self.op(POP);
+        self.op(POP);
+        self.op(POP);
+        self.push_u64(1);
+        self.op(SWAP1);
+        self.op(JUMP);
+        self.jumpdest(differ);
+        self.op(POP);
+        self.op(POP);
+        self.op(POP);
+        self.op(PUSH0);
+        self.op(SWAP1);
+        self.op(JUMP);
+        Ok(())
+    }
+
+    fn sub_blobs_abi(&mut self) -> Result<(), Error> {
+        let (top, done) = (self.fresh(), self.fresh());
+        // The blob grows in place past the heap, then claims what it wrote: nothing
+        // allocates while it is written.
+        self.op(SWAP1);
+        self.op(PUSH0);
+        self.alloc_blob()?;
+        // [ret, list, header, tail, i]: `tail` counts from the first head word.
+        self.op(DUP1 + 1);
+        self.op(MLOAD);
+        self.op(DUP1);
+        self.op(DUP1 + 2);
+        self.push_u64(32);
+        self.op(ADD);
+        self.op(MSTORE);
+        self.push_u64(32);
+        self.op(MUL);
+        self.op(PUSH0);
+        self.jumpdest(top);
+        self.op(DUP1 + 3);
+        self.op(MLOAD);
+        self.op(DUP1 + 1);
+        self.op(LT);
+        self.op(ISZERO);
+        self.push_label(done);
+        self.op(JUMPI);
+        self.op(DUP1 + 1);
+        self.op(DUP1 + 1);
+        self.push_u64(32);
+        self.op(MUL);
+        self.op(DUP1 + 4);
+        self.op(ADD);
+        self.push_u64(64);
+        self.op(ADD);
+        self.op(MSTORE);
+        self.op(DUP1);
+        self.push_u64(32);
+        self.op(MUL);
+        self.op(DUP1 + 4);
+        self.op(ADD);
+        self.push_u64(32);
+        self.op(ADD);
+        self.op(MLOAD);
+        self.bytes_span();
+        // [.., tail, i, len, data]
+        self.op(DUP1 + 1);
+        self.op(DUP1 + 4);
+        self.op(DUP1 + 6);
+        self.op(ADD);
+        self.push_u64(64);
+        self.op(ADD);
+        self.op(MSTORE);
+        self.op(DUP1 + 1);
+        self.op(SWAP1);
+        self.op(DUP1 + 4);
+        self.op(DUP1 + 6);
+        self.op(ADD);
+        self.push_u64(96);
+        self.op(ADD);
+        self.op(MCOPY);
+        self.push_u64(63);
+        self.op(ADD);
+        self.push_u64(31);
+        self.op(NOT);
+        self.op(AND);
+        self.op(DUP1 + 2);
+        self.op(ADD);
+        self.op(SWAP1 + 1);
+        self.op(POP);
+        self.push_u64(1);
+        self.op(ADD);
+        self.push_label(top);
+        self.op(JUMP);
+        self.jumpdest(done);
+        // [ret, list, header, size]: the length word and heads, then the tails.
+        self.op(POP);
+        self.push_u64(32);
+        self.op(ADD);
+        self.op(DUP1);
+        self.op(DUP1 + 2);
+        self.op(MSTORE);
+        self.push_u64(63);
+        self.op(ADD);
+        self.push_u64(31);
+        self.op(NOT);
+        self.op(AND);
+        self.op(DUP1 + 1);
+        self.op(ADD);
+        self.push_mem(self.blob_base);
+        self.op(SWAP1);
+        self.op(SUB);
+        self.mstore_off(self.blob_ptr);
+        self.op(SWAP1);
+        self.op(POP);
+        self.push_u64(32);
+        self.op(ADD);
+        self.op(SWAP1);
+        self.op(JUMP);
         Ok(())
     }
 
@@ -5324,6 +5704,19 @@ impl<'a> Gen<'a> {
     }
 
     fn compile_abi_signature(&mut self, sig: &Expr, args: &[Expr]) -> Result<(), Error> {
+        if args.is_empty() {
+            self.compile_value(sig)?;
+            self.bytes_span();
+            self.op(KECCAK);
+            self.push_u64(224);
+            self.op(SHR);
+            self.push_u64(224);
+            self.op(SHL);
+            self.push_u64(8);
+            self.op(OR);
+            self.call_sub(Sub::ShortBlob);
+            return Ok(());
+        }
         self.compile_abi_encode(args, None)?;
         self.push_u64(1);
         self.op(SHR);
@@ -5354,56 +5747,128 @@ impl<'a> Gen<'a> {
     }
 
     fn compile_abi_decode(&mut self, data: &Expr, ty: usize) -> Result<(), Error> {
-        self.compile_value(data)?;
-        if self.list_value(ty) {
-            let (len, at) = (self.temp(), self.temp());
+        let in_calldata =
+            matches!(data, Expr::Ident { sym: Some(sym), .. } if self.cd_bytes.contains(sym));
+        let word = self.peel_nominal(ty);
+        if !in_calldata && !self.list_value(ty) && !self.is_dynamic(word) {
+            // [len, data]: data shorter than a word reverts, as in Solidity.
+            self.compile_value(data)?;
             self.bytes_span();
-            self.mstore_off(at);
-            self.mstore_off(len);
-            let elem = self.checked.types[self.peel_nominal(ty)].elem.unwrap_or(0);
-            return self.decode_list_from(Some((at, len)), elem);
-        }
-        if self.is_dynamic(ty) {
-            self.bytes_span();
-            self.op(MLOAD);
-            self.op(DUP1);
-            self.mload(self.scratch_b);
-            self.op(ADD);
-            self.op(MLOAD);
-            self.mstore_off(self.scratch_c);
-            self.op(POP);
-            self.mload(self.scratch_b);
-            self.mload(self.scratch_c);
+            self.op(SWAP1);
             self.push_u64(32);
-            self.op(ADD);
-            self.op(ADD);
-            self.mload(self.scratch_c);
-            self.copy_span_to_blob()?;
+            self.op(GT);
+            self.revert_if_true()?;
+            self.op(MLOAD);
+            self.check_word(word, &|g: &mut Self| g.op(DUP1))?;
+            self.align_decoded(word);
             return Ok(());
         }
-        self.bytes_span();
-        self.op(MLOAD);
-        self.op(SWAP1);
-        self.op(POP);
+        let (len, at) = (self.temp(), self.temp());
+        let src = match data {
+            Expr::Ident { sym: Some(sym), .. } if self.cd_bytes.contains(sym) => {
+                self.mload(self.local[*sym]);
+                self.op(DUP1);
+                self.cd_load();
+                self.mstore_off(len);
+                self.push_u64(32);
+                self.op(ADD);
+                self.mstore_off(at);
+                Src::Cd(at, len)
+            }
+            _ => {
+                self.compile_value(data)?;
+                self.bytes_span();
+                self.mstore_off(at);
+                self.mstore_off(len);
+                Src::Mem(at, len)
+            }
+        };
+        if self.list_value(ty) {
+            let elem = self.checked.types[self.peel_nominal(ty)].elem.unwrap_or(0);
+            return self.decode_list_from(src, elem);
+        }
+        // Data shorter than its head reverts, as in Solidity.
+        self.push_u64(32);
+        self.src_size(src);
+        self.op(LT);
+        self.revert_if_true()?;
+        let ty = self.peel_nominal(ty);
+        if self.is_dynamic(ty) {
+            return self.decode_bytes_from(src);
+        }
+        self.check_word(ty, &|g: &mut Self| {
+            g.op(PUSH0);
+            g.src_word(src);
+        })?;
+        self.op(PUSH0);
+        self.src_word(src);
         self.align_decoded(ty);
         Ok(())
     }
 
-    /// Stack: `[len, data]` with `data` on top becomes a tagged blob of that span.
-    fn copy_span_to_blob(&mut self) -> Result<(), Error> {
-        self.op(SWAP1);
-        self.mstore_off(self.scratch_c);
-        self.mstore_off(self.scratch_b);
-        self.mload(self.scratch_c);
-        self.alloc_blob()?;
-        self.mstore_off(self.scratch_a);
-        self.mload(self.scratch_c);
-        self.mload(self.scratch_b);
-        self.mload(self.scratch_a);
+    /// Pushes the `string` or `bytes` value encoded in `src`, with Solidity's bounds: its
+    /// offset and length fit in 64 bits, and every byte is inside the data.
+    fn decode_bytes_from(&mut self, src: Src) -> Result<(), Error> {
+        self.op(PUSH0);
+        self.src_word(src);
+        self.op(DUP1);
+        self.push_u64(64);
+        self.op(SHR);
+        self.revert_if_true()?;
+        self.op(DUP1);
         self.push_u64(32);
         self.op(ADD);
-        self.op(MCOPY);
-        self.mload(self.scratch_a);
+        self.src_size(src);
+        self.op(LT);
+        self.revert_if_true()?;
+        self.op(DUP1);
+        self.src_word(src);
+        self.op(DUP1);
+        self.push_u64(64);
+        self.op(SHR);
+        self.revert_if_true()?;
+        self.op(DUP1);
+        self.op(DUP1 + 2);
+        self.op(ADD);
+        self.push_u64(32);
+        self.op(ADD);
+        self.src_size(src);
+        self.op(LT);
+        self.revert_if_true()?;
+        self.op(SWAP1);
+        self.push_u64(32);
+        self.op(ADD);
+        self.src_origin(src);
+        self.op(SWAP1);
+        self.bytes_value_from(src)
+    }
+
+    /// `[at, len]` becomes a `string` or `bytes` value of the `len` bytes at `at`, a
+    /// position from `src_origin`, copied into a blob.
+    fn bytes_value_from(&mut self, src: Src) -> Result<(), Error> {
+        let kind = match src {
+            Src::Mem(..) => SrcKind::Mem,
+            Src::Cd(..) => SrcKind::Cd,
+            Src::Ret => SrcKind::Ret,
+        };
+        self.value_sites[kind as usize] += 1;
+        if !self.plan.shared_value[kind as usize] {
+            return self.bytes_value(src);
+        }
+        self.call_sub(Sub::BytesValue(kind));
+        Ok(())
+    }
+
+    /// `bytes_value_from`'s body: it only copies, so the data's words are not needed.
+    fn bytes_value(&mut self, src: Src) -> Result<(), Error> {
+        self.op(DUP1);
+        self.alloc_blob()?;
+        // [at, len, header] becomes [header] with the bytes copied.
+        self.op(SWAP1 + 1);
+        self.op(DUP1 + 2);
+        self.push_u64(32);
+        self.op(ADD);
+        self.src_copy(src);
         self.tag_blob();
         Ok(())
     }
@@ -5998,30 +6463,7 @@ impl<'a> Gen<'a> {
     }
 
     fn finish_packed(&mut self) -> Result<(), Error> {
-        let long = self.fresh();
-        let done = self.fresh();
-        self.op(DUP1);
-        self.op(MLOAD);
-        self.push_u64(32);
-        self.op(SWAP1);
-        self.op(LT);
-        self.op(ISZERO);
-        self.push_label(long);
-        self.op(JUMPI);
-        self.op(DUP1);
-        self.push_u64(32);
-        self.op(ADD);
-        self.op(MLOAD);
-        self.op(SWAP1);
-        self.op(MLOAD);
-        self.push_u64(2);
-        self.op(MUL);
-        self.op(OR);
-        self.push_label(done);
-        self.op(JUMP);
-        self.jumpdest(long);
         self.tag_blob();
-        self.jumpdest(done);
         Ok(())
     }
 
@@ -7251,7 +7693,8 @@ impl<'a> Gen<'a> {
     /// The answer must be long enough and hold a value of the declared type, or the
     /// transition reverts.
     /// Joins string or bytes values, in order. Every value is computed once, then copied
-    /// into one blob.
+    /// into one blob; a result of at most 31 bytes is packed into its word, as all short
+    /// values are.
     fn compile_concat(&mut self, args: &[Expr]) -> Result<(), Error> {
         let mut parts = Vec::new();
         for arg in args {
@@ -7263,29 +7706,15 @@ impl<'a> Gen<'a> {
             let fixed = (t.kind == TyKind::Bytes && t.bits > 0).then_some(t.bits);
             parts.push((at, fixed));
         }
-        self.op(PUSH0);
-        for &(at, fixed) in &parts {
-            match fixed {
-                Some(n) => self.push_u64(u64::from(n)),
-                None => {
-                    self.mload(at);
-                    self.bytes_span();
-                    self.op(POP);
-                }
-            }
-            self.op(ADD);
-        }
-        self.return_sites += 1;
-        let total = self.region(Region::Returned(self.return_sites), 32);
+        // The result grows in place past the heap, then claims what it wrote: the parts
+        // are already evaluated, so nothing allocates meanwhile.
+        self.push_mem(self.blob_base);
+        self.mload(self.blob_ptr);
+        self.op(ADD);
         self.op(DUP1);
-        self.mstore_off(total);
-        self.alloc_blob()?;
-        self.return_sites += 1;
-        let blob = self.region(Region::Returned(self.return_sites), 32);
-        self.mstore_off(blob);
+        self.mstore_off(self.scratch_a);
         self.return_sites += 1;
         let cursor = self.region(Region::Returned(self.return_sites), 32);
-        self.mload(blob);
         self.push_u64(32);
         self.op(ADD);
         self.mstore_off(cursor);
@@ -7317,7 +7746,17 @@ impl<'a> Gen<'a> {
             }
             self.mstore_off(cursor);
         }
-        self.mload(blob);
+        // The length is how far the cursor moved.
+        self.mload(cursor);
+        self.mload(self.scratch_a);
+        self.push_u64(32);
+        self.op(ADD);
+        self.op(SWAP1);
+        self.op(SUB);
+        self.mload(self.scratch_a);
+        self.op(MSTORE);
+        self.claim_blob();
+        self.mload(self.scratch_a);
         self.tag_blob();
         Ok(())
     }
@@ -7352,7 +7791,7 @@ impl<'a> Gen<'a> {
         result?;
         if self.list_value(ty) {
             let elem = self.checked.types[self.peel_nominal(ty)].elem.unwrap_or(0);
-            return self.decode_list_from(None, elem);
+            return self.decode_list_from(Src::Ret, elem);
         }
         if self.is_dynamic(ty) {
             return self.returned_bytes_value();
@@ -7417,7 +7856,7 @@ impl<'a> Gen<'a> {
             Some(sym) if dynamic => {
                 if self.list_value(ty) {
                     let elem = self.checked.types[self.peel_nominal(ty)].elem.unwrap_or(0);
-                    self.decode_list_from(None, elem)?;
+                    self.decode_list_from(Src::Ret, elem)?;
                 } else {
                     self.returned_bytes_value()?;
                 }
@@ -7688,25 +8127,33 @@ impl<'a> Gen<'a> {
                 self.compile_value(arg)?;
                 self.abi_ready_list(elem)?;
                 self.mstore_off(kept);
-                dynamic.push((word, kept, true));
+                dynamic.push((word, kept, Some(elem)));
             } else if self.is_dynamic(arg.ty()) {
                 let kept = self.arena_alloc(1);
                 self.compile_value(arg)?;
                 self.mstore_off(kept);
-                dynamic.push((word, kept, false));
+                dynamic.push((word, kept, None));
             } else {
                 self.encode_args(std::slice::from_ref(arg), head_buf + word as i32 * 32)?;
             }
             word += words;
         }
         // Size: the selector and head, then a length word and padded bytes for each.
-        self.push_u64(4 + u64::from(head) * 32 + 32 * dynamic.len() as u64);
+        let sized = dynamic
+            .iter()
+            .filter(|(_, _, list)| list.is_some_and(|e| self.is_dynamic(self.peel_nominal(e))))
+            .count();
+        self.push_u64(4 + u64::from(head) * 32 + 32 * (dynamic.len() - sized) as u64);
         for &(_, kept, list) in &dynamic {
             self.mload(kept);
-            if list {
-                self.op(MLOAD);
-                self.push_u64(32);
-                self.op(MUL);
+            if let Some(elem) = list {
+                if self.is_dynamic(self.peel_nominal(elem)) {
+                    self.abi_list_size(elem);
+                } else {
+                    self.op(MLOAD);
+                    self.push_u64(32);
+                    self.op(MUL);
+                }
                 self.op(ADD);
                 continue;
             }
@@ -7735,7 +8182,24 @@ impl<'a> Gen<'a> {
         for &(at, kept, list) in &dynamic {
             self.mload(cursor);
             self.mstore_off(head_buf + at as i32 * 32);
-            if list {
+            if let Some(elem) = list.filter(|&e| self.is_dynamic(self.peel_nominal(e))) {
+                // The encoding, already laid out as in the ABI.
+                self.mload(kept);
+                self.abi_list_size(elem);
+                self.op(DUP1);
+                self.mload(kept);
+                self.mload(slot);
+                self.push_u64(36);
+                self.op(ADD);
+                self.mload(cursor);
+                self.op(ADD);
+                self.op(MCOPY);
+                self.mload(cursor);
+                self.op(ADD);
+                self.mstore_off(cursor);
+                continue;
+            }
+            if list.is_some() {
                 // The length word, then the elements, each already an ABI word.
                 self.mload(kept);
                 self.op(MLOAD);
@@ -8401,7 +8865,7 @@ impl<'a> Gen<'a> {
         let ret = then.ret;
         if self.list_value(ret) {
             let elem = self.checked.types[self.peel_nominal(ret)].elem.unwrap_or(0);
-            self.decode_list_from(None, elem)?;
+            self.decode_list_from(Src::Ret, elem)?;
             self.mstore_off(self.local[then.syms[0]]);
             return Ok(());
         }
@@ -8528,30 +8992,69 @@ impl<'a> Gen<'a> {
         Ok(())
     }
 
+    /// The length of the data `src` holds.
+    fn src_size(&mut self, src: Src) {
+        match src {
+            Src::Mem(_, len) | Src::Cd(_, len) => self.mload(len),
+            Src::Ret => self.op(RETURNDATASIZE),
+        }
+    }
+
+    /// `[off]` becomes where that offset into the data is in memory, calldata, or the
+    /// return data.
+    fn src_origin(&mut self, src: Src) {
+        if let Src::Mem(data, _) | Src::Cd(data, _) = src {
+            self.mload(data);
+            self.op(ADD);
+        }
+    }
+
+    /// `[at]`, a position from `src_origin`, becomes the word there.
+    fn src_load(&mut self, src: Src) {
+        match src {
+            Src::Mem(..) => self.op(MLOAD),
+            Src::Cd(..) => self.cd_load(),
+            Src::Ret => {
+                self.push_u64(32);
+                self.op(SWAP1);
+                self.push_mem(self.hash_buf);
+                self.op(RETURNDATACOPY);
+                self.mload(self.hash_buf);
+            }
+        }
+    }
+
+    /// `[off]` becomes the data's word at that offset.
+    fn src_word(&mut self, src: Src) {
+        self.src_origin(src);
+        self.src_load(src);
+    }
+
+    /// `[size, at, dest]` copies `size` bytes from a position from `src_origin` to memory.
+    fn src_copy(&mut self, src: Src) {
+        match src {
+            Src::Mem(..) => self.op(MCOPY),
+            Src::Cd(..) => self.cd_copy(),
+            Src::Ret => self.op(RETURNDATACOPY),
+        }
+    }
+
     /// Pushes a `T[]` value ABI-decoded from the last call's return data, or, given the
     /// words holding an encoding's data address and length, from memory. The bounds are
     /// Solidity's, and every element must hold a value of its type.
-    fn decode_list_from(&mut self, memory: Option<(i32, i32)>, elem: usize) -> Result<(), Error> {
+    fn decode_list_from(&mut self, src: Src, elem: usize) -> Result<(), Error> {
         let (off, n, list, zero) = (self.temp(), self.temp(), self.temp(), self.temp());
-        let size = |g: &mut Self| match memory {
-            Some((_, len)) => g.mload(len),
-            None => g.op(RETURNDATASIZE),
-        };
+        let size = |g: &mut Self| g.src_size(src);
         let word = |g: &mut Self, at: i32| -> Result<(), Error> {
-            match memory {
-                Some((data, _)) => {
-                    g.mload(at);
-                    g.mload(data);
-                    g.op(ADD);
-                    g.op(MLOAD);
-                }
-                None => {
-                    g.push_u64(32);
-                    g.mload(at);
-                    g.push_mem(g.hash_buf);
-                    g.op(RETURNDATACOPY);
-                    g.mload(g.hash_buf);
-                }
+            if let Src::Ret = src {
+                g.push_u64(32);
+                g.mload(at);
+                g.push_mem(g.hash_buf);
+                g.op(RETURNDATACOPY);
+                g.mload(g.hash_buf);
+            } else {
+                g.mload(at);
+                g.src_word(src);
             }
             Ok(())
         };
@@ -8601,23 +9104,98 @@ impl<'a> Gen<'a> {
         self.mload(off);
         self.push_u64(32);
         self.op(ADD);
-        match memory {
-            Some((data, _)) => {
-                self.mload(data);
-                self.op(ADD);
-                self.mload(list);
-                self.push_u64(32);
-                self.op(ADD);
-                self.op(MCOPY);
-            }
-            None => {
-                self.mload(list);
-                self.push_u64(32);
-                self.op(ADD);
-                self.op(RETURNDATACOPY);
-            }
-        }
+        self.src_origin(src);
+        self.mload(list);
+        self.push_u64(32);
+        self.op(ADD);
+        self.src_copy(src);
         let word_ty = self.peel_nominal(elem);
+        if self.is_dynamic(word_ty) {
+            // Each head word is an offset from the first; its length word and bytes are
+            // inside the data, and each value is copied into a blob of its own.
+            // [end, base, slot, stop]: where the data ends and the heads start, as
+            // addresses in memory or offsets in the return data, and the list's slots.
+            let (top, done) = (self.fresh(), self.fresh());
+            self.src_size(src);
+            self.src_origin(src);
+            self.mload(off);
+            self.src_origin(src);
+            self.push_u64(32);
+            self.op(ADD);
+            self.mload(list);
+            self.push_u64(32);
+            self.op(ADD);
+            self.op(DUP1);
+            self.mload(n);
+            self.push_u64(32);
+            self.op(MUL);
+            self.op(ADD);
+            self.jumpdest(top);
+            self.op(DUP1);
+            self.op(DUP1 + 2);
+            self.op(LT);
+            self.op(ISZERO);
+            self.push_label(done);
+            self.op(JUMPI);
+            self.branch += 1;
+            self.op(DUP1 + 1);
+            self.op(MLOAD);
+            self.op(DUP1);
+            self.push_u64(64);
+            self.op(SHR);
+            self.revert_if_true()?;
+            self.op(DUP1 + 3);
+            self.op(ADD);
+            // [.., pos]: the element's length word.
+            self.op(DUP1);
+            self.push_u64(32);
+            self.op(ADD);
+            self.op(DUP1 + 5);
+            self.op(LT);
+            self.revert_if_true()?;
+            if let Src::Ret = src {
+                self.push_u64(32);
+                self.op(DUP1 + 1);
+                self.push_mem(self.hash_buf);
+                self.op(RETURNDATACOPY);
+                self.mload(self.hash_buf);
+            } else {
+                self.op(DUP1);
+                self.src_load(src);
+            }
+            self.op(DUP1);
+            self.push_u64(64);
+            self.op(SHR);
+            self.revert_if_true()?;
+            self.op(DUP1);
+            self.op(DUP1 + 2);
+            self.op(ADD);
+            self.push_u64(32);
+            self.op(ADD);
+            self.op(DUP1 + 6);
+            self.op(LT);
+            self.revert_if_true()?;
+            self.op(SWAP1);
+            self.push_u64(32);
+            self.op(ADD);
+            self.op(SWAP1);
+            self.bytes_value_from(src)?;
+            self.op(DUP1 + 2);
+            self.op(MSTORE);
+            self.op(SWAP1);
+            self.push_u64(32);
+            self.op(ADD);
+            self.op(SWAP1);
+            self.branch -= 1;
+            self.push_label(top);
+            self.op(JUMP);
+            self.jumpdest(done);
+            for _ in 0..4 {
+                self.op(POP);
+            }
+            self.mload(list);
+            return Ok(());
+        }
         let t = &self.checked.types[word_ty];
         let whole =
             matches!(
@@ -10197,10 +10775,16 @@ impl<'a> Gen<'a> {
         self.push_u64(1);
         self.op(SHR);
         self.op(MLOAD);
+        // A blob under 32 bytes is stored packed, so it keeps none.
+        self.op(DUP1);
+        self.push_u64(31);
+        self.op(LT);
+        self.op(SWAP1);
         self.push_u64(31);
         self.op(ADD);
         self.push_u64(5);
         self.op(SHR);
+        self.op(MUL);
         self.jumpdest(keep);
         // The old value's data slots: `ceil(len / 32)` when it is long, else none.
         self.op(DUP1 + 3);
@@ -10407,7 +10991,27 @@ impl<'a> Gen<'a> {
                 Sub::ListHead => self.sub_list_head()?,
                 Sub::RevertAbi => self.sub_revert_abi(),
                 Sub::ShortBlob => self.sub_short_blob()?,
-                Sub::DecodeDynamic => self.sub_decode_dynamic()?,
+                Sub::BlobsAbi => self.sub_blobs_abi()?,
+                Sub::BlobsEq => self.sub_blobs_eq()?,
+                Sub::BytesEq => self.sub_bytes_eq(),
+                Sub::BytesValue(kind) => {
+                    let src = match kind {
+                        SrcKind::Mem => Src::Mem(0, 0),
+                        SrcKind::Cd => Src::Cd(0, 0),
+                        SrcKind::Ret => Src::Ret,
+                    };
+                    self.op(SWAP1 + 1);
+                    self.op(SWAP1);
+                    self.bytes_value(src)?;
+                    self.op(SWAP1);
+                    self.op(JUMP);
+                }
+                Sub::DecodeBytes => {
+                    self.op(SWAP1);
+                    self.decode_bytes_arg()?;
+                    self.op(SWAP1);
+                    self.op(JUMP);
+                }
                 Sub::Base64Encode => self.sub_base64_encode(),
                 Sub::Base64Decode => self.sub_base64_decode(),
             }

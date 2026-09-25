@@ -1,0 +1,42 @@
+(* Benchmark: lists of strings and bytes through another contract, as query arguments
+   and answers and as deferred calls and their results, and a payload decoded by a
+   contract that another contract calls. Mirrors relay.sol; calls texts. *)
+
+interface Texts is {
+  view function echo(xs : list(string)) : list(string);
+  view function decoded(data : bytes) : list(bytes);
+}
+
+interface Keeper is {
+  function echo(xs : list(string)) : list(string);
+}
+
+storage is record {
+  names : list(string);
+  kept : list(string);
+  count : nat;
+}
+
+external function ask(const t : Texts; const xs : list(string)) is {
+  storage.names := query t.echo(xs);
+}
+
+external function send(const k : Keeper; const xs : list(string)) is {
+  defer k.echo(xs) then (back : list(string)) {
+    storage.kept := back;
+  };
+}
+
+external function unpack(const t : Texts; const payload : bytes) is {
+  const xs : list(bytes) := query t.decoded(payload);
+  storage.count := xs.length;
+}
+
+external view function names() : list(string) is
+  storage.names
+
+external view function kept() : list(string) is
+  storage.kept
+
+external view function count() : nat is
+  storage.count
