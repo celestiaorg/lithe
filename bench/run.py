@@ -16,6 +16,7 @@ import binascii
 import gzip
 import json
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -26,7 +27,6 @@ import time
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 BENCH = os.path.join(ROOT, "bench")
 LITHE = os.path.join(ROOT, "target", "release", "lithe")
-RPC = "http://127.0.0.1:8599"
 # anvil's first two default accounts.
 KEYS = {
     "A": "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80",
@@ -78,6 +78,101 @@ SCENARIOS = {
         ("send", "A", raw("mint(address,uint256)", word(1 << 160), word(1)), [], None),
         ("call", "A", "balance_of(address)", [ADDR["A"]], None),
         ("call", "A", "total_supply()", [], None),
+    ],
+    # Reverting calls compare the ABI-encoded error payloads byte for byte; sends give gas.
+    "traits": [
+        ("send", "A", "mint(uint256)", ["3"], None),
+        ("send", "A", "tag(uint256,string)", ["1", "Background"], None),
+        ("send", "A", "tag(uint256,string)", ["1", ""], None),
+        ("call", "A", "tag(uint256,string)", ["1", ""], None),
+        ("send", "A", "tag(uint256,string)", ["9", "Background"], None),
+        ("call", "A", "tag(uint256,string)", ["9", "Background"], None),
+        ("call", "A", "tag(uint256,string)", ["9", LONG], None),
+        ("call", "A", "background(uint256)", ["2"], None),
+        ("call", "A", "background(uint256)", ["3"], None),
+        ("call", "A", "check(uint256[])", ["[0,1,2]"], None),
+        ("call", "A", "check(uint256[])", ["[0,5,1]"], None),
+        ("call", "A", "check(uint256[])", ["[]"], None),
+    ],
+    "shapes": [
+        ("send", "A", "add(uint256)", ["0"], None),
+        ("call", "A", "add(uint256)", ["0"], None),
+        ("send", "B", "add(uint256)", ["3"], None),
+        ("call", "B", "add(uint256)", ["3"], None),
+        ("send", "A", "add(uint256)", ["5"], None),
+        ("send", "A", "buy(uint256,string)", ["2", "Widget"], None),
+        ("send", "A", "buy(uint256,string)", ["9", "Widget"], None),
+        ("call", "A", "buy(uint256,string)", ["9", "Widget"], None),
+        ("call", "A", "buy(uint256,string)", ["9", LONG], None),
+        ("call", "A", "buy(uint256,string)", ["1", ""], None),
+        ("call", "A", "buy(uint256,string)", ["1", "x" * 41], None),
+        ("call", "A", "buy_all(uint256[],string)", ["[]", "nothing to buy"], None),
+        ("call", "A", "buy_all(uint256[],string)", ["[1,2,3,4,5]", LONG], None),
+        ("send", "A", "buy_all(uint256[],string)", ["[1,9]", "n"], None),
+        ("call", "A", "buy_all(uint256[],string)", ["[1,9]", "n"], None),
+        ("call", "A", "buy_all(uint256[],string)", ["[0,1]", LONG], None),
+        ("send", "A", "buy_all(uint256[],string)", ["[1,2]", "ok"], None),
+        ("call", "A", "load(bytes)", ["0x"], None),
+        ("send", "A", "load(bytes)", ["0xdeadbeef"], None),
+        ("call", "B", "load(bytes)", ["0xdeadbeef"], None),
+        ("call", "A", "load(bytes)", ["0x" + "ab" * 65], None),
+        ("call", "A", "compare(string,string)", ["abc", "abc"], None),
+        ("call", "A", "compare(string,string)", ["abc", "abd"], None),
+        ("call", "A", "compare(string,string)", [LONG, "x"], None),
+        ("call", "A", "compare(string,string)", ["", ""], None),
+    ],
+    # Every reason is a literal of at most 31 bytes, one of them exactly 31.
+    "reasons": [
+        ("send", "A", "deposit(uint256)", ["100"], None),
+        ("send", "A", "deposit(uint256)", ["0"], None),
+        ("call", "A", "deposit(uint256)", ["0"], None),
+        ("call", "A", "deposit(uint256)", ["5000"], None),
+        ("send", "A", "withdraw(uint256)", ["500"], None),
+        ("call", "A", "withdraw(uint256)", ["500"], None),
+        ("send", "A", "withdraw(uint256)", ["50"], None),
+        ("call", "A", "transfer(address,uint256)", ["0x0000000000000000000000000000000000000000", "1"], None),
+        ("call", "A", "transfer(address,uint256)", [ADDR["A"], "1"], None),
+        ("send", "A", "transfer(address,uint256)", [ADDR["B"], "10"], None),
+        ("send", "B", "set_limit(uint256)", ["5"], None),
+        ("call", "B", "set_limit(uint256)", ["5"], None),
+        ("call", "A", "set_limit(uint256)", ["0"], None),
+        ("call", "A", "set_limit(uint256)", ["2000000"], None),
+        ("send", "A", "set_limit(uint256)", ["2000"], None),
+        ("call", "A", "pause(bool)", ["false"], None),
+        ("send", "A", "pause(bool)", ["true"], None),
+        ("send", "A", "deposit(uint256)", ["1"], None),
+        ("call", "A", "deposit(uint256)", ["1"], None),
+        ("call", "A", "balance_of(address)", ["0x0000000000000000000000000000000000000000"], None),
+        ("call", "A", "balance_of(address)", [ADDR["A"]], None),
+    ],
+    # Names cross one word: empty, 31 bytes, 32 bytes, and several words.
+    "strings": [
+        ("send", "A", "rename(string)", ["Short"], None),
+        ("send", "A", "rename(string)", ["Short"], None),
+        ("call", "A", "rename(string)", ["Short"], None),
+        ("send", "A", "rename(string)", [LONG], None),
+        ("call", "A", "rename(string)", [LONG], None),
+        ("send", "B", "rename(string)", ["Other"], None),
+        ("call", "B", "rename(string)", ["Other"], None),
+        ("call", "A", "rename(string)", ["n" * 101], None),
+        ("send", "A", "describe(string)", ["a description that is well past one word in length"], None),
+        ("call", "B", "describe(string)", ["x"], None),
+        ("call", "A", "describe(string)", ["d" * 201], None),
+        ("call", "A", "description()", [], None),
+        ("call", "A", "name()", [], None),
+        ("call", "A", "title(string)", ["Dr."], None),
+        ("call", "A", "title(string)", [LONG], None),
+        ("call", "A", "require_name(string)", ["nope"], None),
+        ("call", "A", "require_name(string)", [LONG], None),
+        ("send", "A", "rename(string)", ["a" * 31], None),
+        ("call", "A", "name()", [], None),
+        ("send", "A", "describe(string)", ["short"], None),
+        ("call", "A", "description()", [], None),
+        ("send", "A", "rename(string)", ["b" * 32], None),
+        ("call", "A", "name()", [], None),
+        ("send", "A", "rename(string)", [""], None),
+        ("call", "A", "name()", [], None),
+        ("call", "B", "describe(string)", ["x"], None),
     ],
     "vault": [
         ("send", "A", "deposit()", [], "1ether"),
@@ -610,19 +705,25 @@ class Chain:
     """One anvil per build. Every chain replays the same transactions from the same
     accounts, so contracts land at the same addresses, and blocks get the same times."""
 
-    def __init__(self, port):
-        self.rpc = f"http://127.0.0.1:{port}"
-        self.proc = subprocess.Popen(["anvil", "--port", str(port), "--silent"],
-                                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    def __init__(self):
+        # Port 0 lets the OS pick a free port, so runs in other checkouts never share a chain.
+        self.log = tempfile.TemporaryFile("w+")
+        self.proc = subprocess.Popen(["anvil", "--port", "0"], stdout=self.log,
+                                     stderr=subprocess.DEVNULL)
         for _ in range(100):
-            if run(["cast", "block-number", "--rpc-url", self.rpc], check=False).returncode == 0:
+            self.log.seek(0)
+            listening = re.search(r"Listening on (\S+)", self.log.read())
+            if listening:
+                self.rpc = f"http://{listening[1]}"
                 return
             time.sleep(0.1)
+        self.stop()
         raise RuntimeError("anvil did not start")
 
     def stop(self):
         self.proc.send_signal(signal.SIGTERM)
         self.proc.wait()
+        self.log.close()
 
     def at(self, stamp):
         run(["cast", "rpc", "--rpc-url", self.rpc, "evm_setNextBlockTimestamp", str(stamp)])
@@ -653,9 +754,11 @@ class Chain:
         base = ["--rpc-url", self.rpc, "--from", ADDR[sender], to, sig, *args]
         out = run(["cast", "call", *base], check=False)
         if out.returncode != 0:
-            # Keep only the revert data; the rest of the message names the contract.
+            # Keep only the revert data; the rest of the message names the contract. A custom
+            # error's message starts with its selector, so take the whole `data:` field.
             text = out.stderr.strip()
-            data = text[text.find("0x"):].split()[0] if "0x" in text else "revert"
+            full = re.search(r'data: "(0x[0-9a-fA-F]*)"', text)
+            data = full[1] if full else text[text.find("0x"):].split()[0] if "0x" in text else "revert"
             return {"result": "revert " + data.strip('",)'), "gas": None}
         gas = run(["cast", "estimate", *base], check=False)
         return {"result": out.stdout.strip(), "gas": int(gas.stdout) if gas.returncode == 0 else None}
@@ -716,7 +819,7 @@ def main():
     print("\nGas per transaction (lower is better); views are estimates\n")
     for name in wanted:
         suite = suites()[name]
-        chains = {b: Chain(8600 + i) for i, b in enumerate(order)}
+        chains = {b: Chain() for b in order}
         try:
             mismatches += replay(name, suite, code, order, chains)
         finally:

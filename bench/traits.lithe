@@ -1,0 +1,45 @@
+(* Benchmark: token traits whose errors carry strings and lists. Mirrors traits.sol. *)
+
+error Empty_trait of string;
+error Attribute_not_found of record {
+  tokenId : nat;
+  traitType : string;
+}
+error Not_minted of list(nat);
+
+storage is record {
+  minted : nat;
+  tagged : nat;
+}
+
+external function mint(const count : nat) is {
+  storage.minted := storage.minted + count;
+}
+
+external function tag(const token_id : nat; const trait_type : string)
+  raises Empty_trait | Attribute_not_found
+is {
+  assert(trait_type.length > 0n, Empty_trait("trait type is empty"));
+  assert(
+    token_id < storage.minted,
+    Attribute_not_found { tokenId = token_id; traitType = trait_type; }
+  );
+  storage.tagged := token_id;
+}
+
+external view function background(const token_id : nat) : nat
+  raises Attribute_not_found
+is {
+  assert(
+    token_id < storage.minted,
+    Attribute_not_found { tokenId = token_id; traitType = "Background"; }
+  );
+} with token_id
+
+external view function check(const ids : list(nat)) : nat
+  raises Not_minted
+is {
+  for id : nat in ids do {
+    assert(id < storage.minted, Not_minted(ids));
+  }
+} with ids.length

@@ -1,0 +1,81 @@
+(* Benchmark: errors of several shapes, strings and lists among words, each raised from
+   more than one place. Mirrors shapes.sol. *)
+
+error Unauthorized of record {
+  caller : address;
+  role : string;
+}
+error Out_of_range of record {
+  value : nat;
+  min : nat;
+  max : nat;
+}
+error Unknown_item of record {
+  id : nat;
+  name : string;
+}
+error Bad_items of list(nat);
+error Bad_batch of record {
+  reason : string;
+  ids : list(nat);
+}
+error Bad_data of bytes;
+error Mismatch of record {
+  expected : string;
+  actual : string;
+}
+
+storage is record {
+  owner : address;
+  items : nat;
+  sold : nat;
+}
+
+deploy() is {
+  storage.owner := Evm.sender();
+}
+
+external function add(const count : nat)
+  raises Unauthorized | Out_of_range
+is {
+  assert(Evm.sender() = storage.owner, Unauthorized { caller = Evm.sender(); role = "owner"; });
+  assert(count > 0n and count <= 10n, Out_of_range { value = count; min = 1n; max = 10n; });
+  storage.items := storage.items + count;
+}
+
+external function buy(const id : nat; const name : string)
+  raises Unknown_item | Out_of_range | Mismatch
+is {
+  assert(id < storage.items, Unknown_item { id = id; name = name; });
+  assert(name.length <= 40n, Out_of_range { value = name.length; min = 0n; max = 40n; });
+  assert(name.length > 0n, Mismatch { expected = "a name"; actual = name; });
+  storage.sold := storage.sold + 1n;
+}
+
+external function buy_all(const ids : list(nat); const note : string)
+  raises Bad_items | Bad_batch | Unknown_item
+is {
+  assert(ids.length > 0n, Bad_batch { reason = note; ids = ids; });
+  assert(ids.length <= 4n, Bad_batch { reason = "batch too large"; ids = ids; });
+  for id : nat in ids do {
+    assert(id < storage.items, Bad_items(ids));
+  }
+  assert(ids[0] > 0n, Unknown_item { id = 0n; name = note; });
+  storage.sold := storage.sold + ids.length;
+}
+
+external function load(const data : bytes)
+  raises Bad_data | Unauthorized | Bad_items
+is {
+  assert(Evm.sender() = storage.owner, Unauthorized { caller = Evm.sender(); role = "loader"; });
+  assert(data.length > 0n, Bad_data(data));
+  assert(data.length <= 64n, Bad_items([data.length, 64n]));
+  storage.sold := storage.sold + data.length;
+}
+
+external view function compare(const expected : string; const actual : string) : nat
+  raises Mismatch | Bad_data
+is {
+  assert(expected = actual, Mismatch { expected = expected; actual = actual; });
+  assert(expected.length > 0n, Bad_data(0xff));
+} with expected.length

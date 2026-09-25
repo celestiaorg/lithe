@@ -200,6 +200,23 @@ fn encode_depth(w: Word, depth: u8) -> Vec<u8> {
             consider(c);
         }
     }
+    // Zero bytes between two nonzero parts, as in a short string's data and length, can
+    // be skipped by pushing each part and joining them with `OR`.
+    let b = w.to_be_bytes();
+    let (mut run, mut at, mut len) = (0, 0, 0);
+    for i in 0..32 {
+        run = if b[i] == 0 { run + 1 } else { 0 };
+        if run > len && b[..i].iter().any(|x| *x != 0) && b[i + 1..].iter().any(|x| *x != 0) {
+            (at, len) = (i + 1, run);
+        }
+    }
+    if len >= 4 {
+        let low = w.bitand(Word::from_u64(0).not().shr(8 * at as u32));
+        let mut c = encode_depth(w.bitxor(low), depth - 1);
+        c.extend(encode_depth(low, depth - 1));
+        c.push(OR);
+        consider(c);
+    }
     best
 }
 

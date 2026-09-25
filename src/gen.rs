@@ -72,6 +72,7 @@ const CHAINID: u8 = 0x46;
 const BASEFEE: u8 = 0x48;
 const BLOBHASH: u8 = 0x49;
 const MCOPY: u8 = 0x5e;
+const MSIZE: u8 = 0x59;
 const POP: u8 = 0x50;
 const MLOAD: u8 = 0x51;
 const MSTORE: u8 = 0x52;
@@ -329,6 +330,8 @@ enum Region {
     Arena(usize),
     /// One `emit`'s data words, laid out just before its log.
     Log(usize),
+    /// An encoded error's head words, before they join its tails.
+    ErrorHead,
     /// A call's return data, or an argument built in place, for one site.
     Returned(usize),
     /// A record read out of a map or about to be written to one, for one site.
@@ -419,6 +422,10 @@ enum Sub {
     /// head is at `pos`, with Solidity's bounds checked: the offset and the length fit in 64
     /// bits, and every element is inside calldata.
     ListHead,
+    /// Jumped to, not called: `[size, kinds, sel]` reverts with an encoded error.
+    RevertAbi,
+    /// `[word, ret]` becomes a blob of the bytes a short word packs.
+    ShortBlob,
     /// `[pos, ret]` becomes the `bytes` or `string` argument whose head is at `pos`.
     DecodeDynamic,
     /// `[data, file_safe, no_padding, ret]` becomes `data` in base64, as a string.
@@ -584,6 +591,11 @@ struct Gen<'a> {
     compiling: Vec<usize>,
     fails: Vec<(Option<u64>, u32)>,
     subs: Vec<(Sub, u32, bool)>,
+    /// The payloads some encoded error reverts with: 1 for string or bytes values, 2 for
+    /// lists, and 4 for string literals, which reach it still packed in their words.
+    revert_kinds: u64,
+    /// Where an encoded error's head words wait for the helper that reverts with them.
+    revert_head: Option<i32>,
     /// Runtime branches around the code being compiled.
     branch: u32,
     body: Option<Body>,
@@ -663,6 +675,8 @@ impl<'a> Gen<'a> {
             compiling: Vec::new(),
             fails: Vec::new(),
             subs: Vec::new(),
+            revert_kinds: 0,
+            revert_head: None,
             branch: 0,
             body: None,
             bodies: 0,
@@ -1292,6 +1306,8 @@ impl<'a> Gen<'a> {
                     Sub::StoreSlotBytes(..) => (2, 0),
                     Sub::QueuePush => (3, 1),
                     Sub::ListHead => (1, 1),
+                    Sub::RevertAbi => (3, 0),
+                    Sub::ShortBlob => (1, 1),
                     Sub::DecodeDynamic => (1, 1),
                     Sub::Base64Encode => (3, 1),
                     Sub::Base64Decode => (1, 1),
@@ -3052,11 +3068,9 @@ impl<'a> Gen<'a> {
         Ok(())
     }
 
-    /// `[pos]` becomes the `bytes` or `string` argument whose head is at `pos`. Up to 31
-    /// bytes pack into the word. Longer values are copied into a blob.
+    /// `[pos]` becomes the `bytes` or `string` argument whose head is at `pos`. The value
+    /// is copied into a blob.
     fn dynamic_arg(&mut self) -> Result<(), Error> {
-        let short = self.fresh();
-        let done = self.fresh();
         // Solidity's bounds: the offset and the length fit in 64 bits, the length word is
         // inside calldata, and so is every data byte.
         self.cd_load();
@@ -3088,11 +3102,6 @@ impl<'a> Gen<'a> {
         self.op(LT);
         self.revert_if_true()?;
         // [data offset, len]
-        self.op(DUP1);
-        self.push_u64(32);
-        self.op(GT);
-        self.push_label(short);
-        self.op(JUMPI);
         self.alloc_blob()?;
         // [data offset, header] becomes [header, len, data + 32, header + 32]
         self.op(DUP1);
@@ -3106,27 +3115,6 @@ impl<'a> Gen<'a> {
         self.op(ADD);
         self.cd_copy();
         self.tag_blob();
-        self.push_label(done);
-        self.op(JUMP);
-        self.jumpdest(short);
-        self.op(SWAP1);
-        self.push_u64(32);
-        self.op(ADD);
-        self.cd_load();
-        // Past the first `len` bytes the word holds padding or the next argument.
-        self.op(PUSH0);
-        self.op(NOT);
-        self.op(DUP1 + 2);
-        self.push_u64(3);
-        self.op(SHL);
-        self.op(SHR);
-        self.op(NOT);
-        self.op(AND);
-        self.op(SWAP1);
-        self.push_u64(2);
-        self.op(MUL);
-        self.op(OR);
-        self.jumpdest(done);
         Ok(())
     }
 
@@ -3161,29 +3149,11 @@ impl<'a> Gen<'a> {
         self.op(SUB);
         self.op(RETURN);
         self.jumpdest(short);
-        self.mstore_off(self.scratch_val);
-        self.mload(self.scratch_val);
-        self.push_u64(0xff);
-        self.op(AND);
-        self.push_u64(2);
-        self.op(SWAP1);
-        self.op(DIV);
+        // The empty value: its offset, then a zero length.
         self.mstore_off(self.ret_scratch + 32);
-        self.mload(self.scratch_val);
-        self.push_u64(0xff);
-        self.op(NOT);
-        self.op(AND);
-        self.mstore_off(self.ret_scratch + 64);
         self.push_u64(32);
         self.mstore_off(self.ret_scratch);
-        // The offset and the length, then one data word unless the value is empty.
-        self.mload(self.ret_scratch + 32);
-        self.op(ISZERO);
-        self.op(ISZERO);
-        self.push_u64(5);
-        self.op(SHL);
         self.push_u64(64);
-        self.op(ADD);
         self.push_mem(self.ret_scratch);
         self.op(RETURN);
     }
@@ -4587,12 +4557,18 @@ impl<'a> Gen<'a> {
             ..
         } = e
         {
-            if self.list_value(left.ty()) {
-                let k = self.list_k(left.ty());
-                self.compile_value(left)?;
-                self.list_hash(k);
-                self.compile_value(right)?;
-                self.list_hash(k);
+            // A long string's word points at its bytes, so values compare by their hashes.
+            let list = self.list_value(left.ty());
+            if list || self.is_dynamic(left.ty()) {
+                for side in [left, right] {
+                    self.compile_value(side)?;
+                    if list {
+                        self.list_hash(self.list_k(left.ty()));
+                    } else {
+                        self.bytes_span();
+                        self.op(KECCAK);
+                    }
+                }
                 self.op(EQ);
                 if *op == BinOp::Neq {
                     self.op(ISZERO);
@@ -4608,7 +4584,7 @@ impl<'a> Gen<'a> {
                 }
                 Lit::Int(w) => {
                     if self.is_dynamic(*ty) {
-                        self.push_word(dyn_from_word(*w));
+                        self.push_short(dyn_from_word(*w));
                     } else {
                         self.push_word(*w);
                     }
@@ -4618,7 +4594,7 @@ impl<'a> Gen<'a> {
                     if s.len() > 31 {
                         return Err(error(*line, *col, "a string must be at most 31 bytes"));
                     }
-                    self.push_word(Word::short_dyn(s.as_bytes()));
+                    self.push_short(Word::short_dyn(s.as_bytes()));
                     Ok(())
                 }
                 Lit::Bool(b) => {
@@ -4780,7 +4756,7 @@ impl<'a> Gen<'a> {
                 if *op == BinOp::Cons {
                     return Err(error(*line, *col, "`#` is not a word"));
                 }
-                // A string or bytes word is zero exactly when the value is empty.
+                // A string or bytes value is empty when its word is zero or its blob's length is.
                 if let (
                     BinOp::Gt | BinOp::Neq | BinOp::Eq,
                     Expr::Field { base, name, .. },
@@ -4797,6 +4773,12 @@ impl<'a> Gen<'a> {
                             self.header_length();
                         } else {
                             self.compile_value(base)?;
+                            // The word times its blob's length; the zero word reads scratch.
+                            self.op(DUP1);
+                            self.push_u64(1);
+                            self.op(SHR);
+                            self.op(MLOAD);
+                            self.op(MUL);
                         }
                         self.op(ISZERO);
                         if *op != BinOp::Eq {
@@ -5050,15 +5032,7 @@ impl<'a> Gen<'a> {
     }
 
     fn compile_calldata(&mut self) -> Result<(), Error> {
-        let short = self.fresh();
-        let done = self.fresh();
         self.op(CALLDATASIZE);
-        self.op(DUP1);
-        self.push_u64(32);
-        self.op(SWAP1);
-        self.op(LT);
-        self.push_label(short);
-        self.op(JUMPI);
         self.alloc_blob()?;
         self.mstore_off(self.scratch_a);
         self.op(CALLDATASIZE);
@@ -5069,17 +5043,6 @@ impl<'a> Gen<'a> {
         self.op(CALLDATACOPY);
         self.mload(self.scratch_a);
         self.tag_blob();
-        self.push_label(done);
-        self.op(JUMP);
-        self.jumpdest(short);
-        self.op(POP);
-        self.push_u64(0);
-        self.op(CALLDATALOAD);
-        self.op(CALLDATASIZE);
-        self.push_u64(2);
-        self.op(MUL);
-        self.op(OR);
-        self.jumpdest(done);
         Ok(())
     }
 
@@ -5518,6 +5481,40 @@ impl<'a> Gen<'a> {
         self.op(JUMP);
     }
 
+    /// `[word, ret]`: the bytes in the high part of `word`, twice their count in its low
+    /// byte, become a tagged blob.
+    fn sub_short_blob(&mut self) -> Result<(), Error> {
+        self.op(SWAP1);
+        self.op(DUP1);
+        self.push_u64(0xff);
+        self.op(AND);
+        self.op(SWAP1);
+        self.op(DUP1 + 1);
+        self.op(XOR);
+        self.op(SWAP1);
+        self.push_u64(1);
+        self.op(SHR);
+        self.alloc_blob()?;
+        // [ret, data, header]
+        self.op(SWAP1);
+        self.op(DUP1 + 1);
+        self.push_u64(32);
+        self.op(ADD);
+        self.op(MSTORE);
+        self.tag_blob();
+        self.op(SWAP1);
+        self.op(JUMP);
+        Ok(())
+    }
+
+    /// A packed short string becomes its value: a blob, or the zero word when it is empty.
+    fn push_short(&mut self, w: Word) {
+        self.push_word(w);
+        if !w.is_zero() {
+            self.call_sub(Sub::ShortBlob);
+        }
+    }
+
     /// Header pointer on the stack becomes `(ptr << 1) | 1`.
     fn tag_blob(&mut self) {
         self.push_u64(1);
@@ -5818,8 +5815,7 @@ impl<'a> Gen<'a> {
         self.op(JUMP);
     }
 
-    /// `[out, len]`, with `len` stored at `out`, becomes the value: its data word with the
-    /// length in the low byte when it is short, else the tagged blob.
+    /// `[out, len]`, with `len` stored at `out`, becomes the tagged blob.
     fn short_or_blob(&mut self, short: u32, done: u32) {
         self.push_u64(32);
         self.op(DUP1 + 1);
@@ -5838,6 +5834,7 @@ impl<'a> Gen<'a> {
         self.op(ADD);
         self.op(MLOAD);
         self.op(OR);
+        self.call_sub(Sub::ShortBlob);
         self.jumpdest(done);
     }
 
@@ -5869,21 +5866,8 @@ impl<'a> Gen<'a> {
         self.push_label(done);
         self.op(JUMP);
         self.jumpdest(short);
-        self.mstore_off(self.scratch_val);
-        self.mload(self.scratch_val);
-        self.push_u64(0xff);
-        self.op(AND);
-        self.push_u64(2);
-        self.op(SWAP1);
-        self.op(DIV);
-        self.mstore_off(self.scratch_c);
-        self.mload(self.scratch_val);
-        self.push_u64(0xff);
-        self.op(NOT);
-        self.op(AND);
-        self.mstore_off(self.hash_buf);
-        self.mload(self.scratch_c);
-        self.push_mem(self.hash_buf);
+        // Only the empty value is a word: its length and data address are both zero.
+        self.op(PUSH0);
         self.jumpdest(done);
     }
 
@@ -6171,6 +6155,8 @@ impl<'a> Gen<'a> {
         self.push_label(done);
         self.op(JUMP);
         self.jumpdest(short);
+        // A packed slot, empty or not, becomes a blob.
+        self.call_sub(Sub::ShortBlob);
         self.jumpdest(done);
         Ok(())
     }
@@ -6200,6 +6186,32 @@ impl<'a> Gen<'a> {
         self.push_u64(1);
         self.op(SHR);
         self.mstore_off(self.scratch_a);
+        // Up to 31 bytes are stored packed in the slot, as Solidity lays them out: the
+        // first data word, whose padding is zero, unless the blob is empty and has none.
+        let long = self.fresh();
+        self.mload(self.scratch_a);
+        self.op(MLOAD);
+        self.op(DUP1);
+        self.push_u64(31);
+        self.op(LT);
+        self.push_label(long);
+        self.op(JUMPI);
+        self.mload(self.scratch_a);
+        self.push_u64(32);
+        self.op(ADD);
+        self.op(MLOAD);
+        self.op(DUP1 + 1);
+        self.op(ISZERO);
+        self.op(ISZERO);
+        self.op(MUL);
+        self.op(SWAP1);
+        self.push_u64(1);
+        self.op(SHL);
+        self.op(OR);
+        self.push_label(short);
+        self.op(JUMP);
+        self.jumpdest(long);
+        self.op(POP);
         self.mload(self.scratch_a);
         self.op(MLOAD);
         self.push_u64(1);
@@ -6754,6 +6766,12 @@ impl<'a> Gen<'a> {
 
     /// Arguments are computed first. Then the error is laid out from byte 28 and reverted.
     fn revert_error(&mut self, sel: [u8; 4], args: &[&Expr]) -> Result<(), Error> {
+        if args
+            .iter()
+            .any(|arg| self.is_dynamic(arg.ty()) || self.list_value(arg.ty()))
+        {
+            return self.revert_encoded(sel, args);
+        }
         for arg in args {
             self.compile_value(arg)?;
             self.fit_static_word(arg.ty());
@@ -6769,6 +6787,227 @@ impl<'a> Gen<'a> {
         self.push_u64(28);
         self.op(REVERT);
         Ok(())
+    }
+
+    /// The head words wait in a region of their own, and a shared helper reverts with them
+    /// and the tails.
+    fn revert_encoded(&mut self, sel: [u8; 4], args: &[&Expr]) -> Result<(), Error> {
+        let mut kinds = Word::from_u64(0);
+        for (i, arg) in args.iter().enumerate() {
+            let ty = self.peel_nominal(arg.ty());
+            // A literal string stays packed in its word; the helper lays it out.
+            let packed = match arg {
+                Expr::Lit { lit, .. } if self.is_dynamic(ty) => match lit {
+                    Lit::Str(s) => Some(Word::short_dyn(s.as_bytes())),
+                    Lit::Int(w) => Some(dyn_from_word(*w)),
+                    _ => None,
+                },
+                _ => None,
+            }
+            .filter(|w| !w.is_zero());
+            if let Some(w) = packed {
+                self.push_word(w);
+            } else {
+                self.compile_value(arg)?;
+            }
+            let kind = if packed.is_some() {
+                self.revert_kinds |= 4;
+                1
+            } else if self.is_dynamic(ty) {
+                self.revert_kinds |= 1;
+                1
+            } else if self.list_value(ty) {
+                let elem = self.checked.types[ty].elem.unwrap_or(0);
+                self.abi_ready_list(elem)?;
+                2
+            } else {
+                self.fit_static_word(ty);
+                0
+            };
+            self.revert_kinds |= kind & 2;
+            kinds = kinds.bitor(Word::from_u64(kind).shl(2 * i as u32));
+        }
+        let head = self.error_head();
+        for i in (0..args.len()).rev() {
+            self.mstore_off(head + 32 * i as i32);
+        }
+        self.push_u64(32 * args.len() as u64);
+        self.push_word(kinds);
+        self.push_selector(sel);
+        let label = self.sub_label(Sub::RevertAbi);
+        self.push_label(label);
+        self.op(JUMP);
+        Ok(())
+    }
+
+    fn error_head(&mut self) -> i32 {
+        match self.revert_head {
+            Some(head) => head,
+            None => {
+                let head = self.region(Region::ErrorHead, 0);
+                self.revert_head = Some(head);
+                head
+            }
+        }
+    }
+
+    /// `[size, kinds, sel]`: an error's head words fill `size` bytes of the error head, and
+    /// `kinds` has two bits per word: 1 for a string or bytes, which a literal passes still
+    /// packed in its word, and 2 for a list. The head goes
+    /// past all memory in use, after the selector, each such word becomes its tail's offset,
+    /// and the tails follow the head. Only the kinds some error uses get code.
+    fn sub_revert_abi(&mut self) {
+        let (top, next, tail) = (self.fresh(), self.fresh(), self.fresh());
+        let (blobs, lists, packed) = (
+            self.revert_kinds & 1 != 0,
+            self.revert_kinds & 2 != 0,
+            self.revert_kinds & 4 != 0,
+        );
+        let text = blobs || packed;
+        let head = self.error_head();
+        // Memory past `MSIZE` holds nothing and reads as zeros, so the padding is clean. A
+        // region nothing has touched yet may lie past it too, so none is written from here on.
+        self.op(MSIZE);
+        self.op(SWAP1);
+        self.op(DUP1 + 1);
+        self.op(MSTORE);
+        self.push_u64(32);
+        self.op(ADD);
+        self.op(SWAP1 + 1);
+        self.op(DUP1);
+        self.push_mem(head);
+        self.op(DUP1 + 4);
+        self.op(MCOPY);
+        self.op(DUP1 + 2);
+        self.op(ADD);
+        self.op(DUP1 + 2);
+        // [head, kinds, cursor, word]: the next tail goes at `cursor`.
+        self.jumpdest(top);
+        self.op(DUP1 + 2);
+        self.push_u64(3);
+        self.op(AND);
+        self.op(ISZERO);
+        self.push_label(next);
+        self.op(JUMPI);
+        self.op(DUP1);
+        self.op(MLOAD);
+        self.op(DUP1 + 4);
+        self.op(DUP1 + 3);
+        self.op(SUB);
+        self.op(DUP1 + 2);
+        self.op(MSTORE);
+        // Each tail is already laid out somewhere as its length word and then its data:
+        // [.., word, value] becomes [.., word, from, bytes].
+        let list = self.fresh();
+        if text && lists {
+            self.op(DUP1 + 3);
+            self.push_u64(2);
+            self.op(AND);
+            self.push_label(list);
+            self.op(JUMPI);
+        }
+        if text && !blobs {
+            self.packed_tail();
+            if lists {
+                self.push_label(tail);
+                self.op(JUMP);
+            }
+        } else if text {
+            let long = self.fresh();
+            self.op(DUP1);
+            self.push_u64(1);
+            self.op(AND);
+            self.push_label(long);
+            self.op(JUMPI);
+            if packed {
+                self.packed_tail();
+            } else {
+                // Only the empty value is a word; past `MSIZE` its zero length is in place.
+                self.op(POP);
+                self.op(DUP1 + 1);
+                self.push_u64(32);
+            }
+            self.push_label(tail);
+            self.op(JUMP);
+            self.jumpdest(long);
+            self.push_u64(1);
+            self.op(SHR);
+            self.op(DUP1);
+            self.op(MLOAD);
+            self.push_u64(32);
+            self.op(ADD);
+            if lists {
+                self.push_label(tail);
+                self.op(JUMP);
+            }
+        }
+        if lists {
+            self.jumpdest(list);
+            self.op(DUP1);
+            self.op(MLOAD);
+            self.push_u64(5);
+            self.op(SHL);
+            self.push_u64(32);
+            self.op(ADD);
+        }
+        self.jumpdest(tail);
+        self.op(DUP1);
+        self.op(SWAP1 + 1);
+        self.op(DUP1 + 4);
+        self.op(MCOPY);
+        self.push_u64(31);
+        self.op(ADD);
+        self.push_u64(31);
+        self.op(NOT);
+        self.op(AND);
+        self.op(DUP1 + 2);
+        self.op(ADD);
+        self.op(SWAP1 + 1);
+        self.op(POP);
+        self.jumpdest(next);
+        self.push_u64(32);
+        self.op(ADD);
+        self.op(SWAP1 + 1);
+        self.push_u64(2);
+        self.op(SHR);
+        self.op(SWAP1 + 1);
+        self.op(DUP1 + 2);
+        self.push_label(top);
+        self.op(JUMPI);
+        // [head, 0, cursor, word] reverts with everything from the selector to the cursor.
+        self.op(DUP1 + 3);
+        self.push_u64(4);
+        self.op(SWAP1);
+        self.op(SUB);
+        self.op(DUP1);
+        self.op(DUP1 + 3);
+        self.op(SUB);
+        self.op(SWAP1);
+        self.op(REVERT);
+    }
+
+    /// `[.., cursor, word, packed]`: a packed string, or the empty value, is laid out at the
+    /// cursor, then copied onto itself.
+    fn packed_tail(&mut self) {
+        self.op(DUP1);
+        self.push_u64(0xff);
+        self.op(AND);
+        self.op(SWAP1);
+        self.op(DUP1 + 1);
+        self.op(XOR);
+        self.op(DUP1 + 3);
+        self.push_u64(32);
+        self.op(ADD);
+        self.op(MSTORE);
+        self.push_u64(1);
+        self.op(SHR);
+        self.op(DUP1);
+        self.op(DUP1 + 3);
+        self.op(MSTORE);
+        self.push_u64(32);
+        self.op(ADD);
+        self.op(DUP1 + 2);
+        self.op(SWAP1);
     }
 
     fn static_view(&mut self) -> Result<(), Error> {
@@ -7012,8 +7251,7 @@ impl<'a> Gen<'a> {
     /// The answer must be long enough and hold a value of the declared type, or the
     /// transition reverts.
     /// Joins string or bytes values, in order. Every value is computed once, then copied
-    /// into one blob; a result of at most 31 bytes is packed into its word, as all short
-    /// values are.
+    /// into one blob.
     fn compile_concat(&mut self, args: &[Expr]) -> Result<(), Error> {
         let mut parts = Vec::new();
         for arg in args {
@@ -7079,27 +7317,8 @@ impl<'a> Gen<'a> {
             }
             self.mstore_off(cursor);
         }
-        let short = self.fresh();
-        let done = self.fresh();
-        self.push_u64(32);
-        self.mload(total);
-        self.op(LT);
-        self.push_label(short);
-        self.op(JUMPI);
         self.mload(blob);
         self.tag_blob();
-        self.push_label(done);
-        self.op(JUMP);
-        self.jumpdest(short);
-        self.mload(blob);
-        self.push_u64(32);
-        self.op(ADD);
-        self.op(MLOAD);
-        self.mload(total);
-        self.push_u64(2);
-        self.op(MUL);
-        self.op(OR);
-        self.jumpdest(done);
         Ok(())
     }
 
@@ -8159,16 +8378,7 @@ impl<'a> Gen<'a> {
     /// The last call's revert data as `bytes`: packed in the word when short, copied to a
     /// blob when not.
     fn revert_data_value(&mut self) -> Result<(), Error> {
-        let short = self.fresh();
-        let done = self.fresh();
-        self.return_sites += 1;
-        let buf = self.region(Region::Returned(self.return_sites), 32);
         self.op(RETURNDATASIZE);
-        self.op(DUP1);
-        self.push_u64(32);
-        self.op(GT);
-        self.push_label(short);
-        self.op(JUMPI);
         // [len] becomes the blob `[len, data...]`.
         self.alloc_blob()?;
         self.op(DUP1);
@@ -8179,21 +8389,6 @@ impl<'a> Gen<'a> {
         self.op(ADD);
         self.op(RETURNDATACOPY);
         self.tag_blob();
-        self.push_label(done);
-        self.op(JUMP);
-        // [len]: the bytes left-aligned in the word, twice the length in the low byte.
-        self.jumpdest(short);
-        self.op(PUSH0);
-        self.mstore_off(buf);
-        self.op(DUP1);
-        self.op(PUSH0);
-        self.push_mem(buf);
-        self.op(RETURNDATACOPY);
-        self.push_u64(2);
-        self.op(MUL);
-        self.mload(buf);
-        self.op(OR);
-        self.jumpdest(done);
         Ok(())
     }
 
@@ -8268,8 +8463,6 @@ impl<'a> Gen<'a> {
 
     /// Pushes the string or bytes value the last call returned, ABI-decoded and checked.
     fn returned_bytes_value(&mut self) -> Result<(), Error> {
-        let short = self.fresh();
-        let done = self.fresh();
         self.return_sites += 1;
         let buf = self.region(Region::Returned(self.return_sites), 32);
         self.push_u64(32);
@@ -8310,11 +8503,6 @@ impl<'a> Gen<'a> {
         self.op(RETURNDATASIZE);
         self.op(LT);
         self.revert_if_true()?;
-        self.op(DUP1);
-        self.push_u64(32);
-        self.op(GT);
-        self.push_label(short);
-        self.op(JUMPI);
         // Long: copy into a blob.
         self.alloc_blob()?;
         // [offset, header]
@@ -8337,26 +8525,6 @@ impl<'a> Gen<'a> {
         // [header, len, offset + 32, header + 32]
         self.op(RETURNDATACOPY);
         self.tag_blob();
-        self.push_label(done);
-        self.op(JUMP);
-        // Short: the bytes packed into the word, the length in the low byte.
-        self.jumpdest(short);
-        self.op(PUSH0);
-        self.mstore_off(buf);
-        // [offset, len]
-        self.op(DUP1);
-        self.op(SWAP1 + 1);
-        self.push_u64(32);
-        self.op(ADD);
-        // [len, len, offset + 32]
-        self.push_mem(buf);
-        self.op(RETURNDATACOPY);
-        // [len]
-        self.push_u64(2);
-        self.op(MUL);
-        self.mload(buf);
-        self.op(OR);
-        self.jumpdest(done);
         Ok(())
     }
 
@@ -9992,6 +10160,7 @@ impl<'a> Gen<'a> {
         self.jumpdest(short);
         self.op(SWAP1);
         self.op(POP);
+        self.call_sub(Sub::ShortBlob);
         self.op(SWAP1);
         self.op(JUMP);
         Ok(())
@@ -10000,7 +10169,8 @@ impl<'a> Gen<'a> {
     /// `[value, slot, ret]` becomes `[]`. Data slots the old value used past the new one's
     /// are zeroed first, as Solidity does.
     fn sub_store_slot_bytes(&mut self, transient: bool) {
-        let (keep, clear, cleared, short, top, done) = (
+        let (keep, clear, cleared, short, long, top, done) = (
+            self.fresh(),
             self.fresh(),
             self.fresh(),
             self.fresh(),
@@ -10080,6 +10250,28 @@ impl<'a> Gen<'a> {
         self.op(SHR);
         self.op(DUP1);
         self.op(MLOAD);
+        self.op(DUP1);
+        self.push_u64(31);
+        self.op(LT);
+        self.push_label(long);
+        self.op(JUMPI);
+        // [ret, slot, base, ptr, len]. A short blob, empty included, packs into the slot.
+        self.op(SWAP1);
+        self.push_u64(32);
+        self.op(ADD);
+        self.op(MLOAD);
+        self.op(DUP1 + 1);
+        self.op(ISZERO);
+        self.op(ISZERO);
+        self.op(MUL);
+        self.op(SWAP1);
+        self.push_u64(1);
+        self.op(SHL);
+        self.op(OR);
+        self.op(SWAP1);
+        self.push_label(short);
+        self.op(JUMP);
+        self.jumpdest(long);
         self.push_u64(1);
         self.op(SHL);
         self.push_u64(1);
@@ -10131,15 +10323,19 @@ impl<'a> Gen<'a> {
     }
 
     /// Calls a shared helper. The return label goes on the stack above its inputs.
-    fn call_sub(&mut self, sub: Sub) {
-        let label = match self.subs.iter().find(|(have, _, _)| *have == sub) {
+    fn sub_label(&mut self, sub: Sub) -> u32 {
+        match self.subs.iter().find(|(have, _, _)| *have == sub) {
             Some(&(_, label, _)) => label,
             None => {
                 let label = self.fresh();
                 self.subs.push((sub, label, false));
                 label
             }
-        };
+        }
+    }
+
+    fn call_sub(&mut self, sub: Sub) {
+        let label = self.sub_label(sub);
         let ret = self.fresh();
         self.push_label(ret);
         self.push_label(label);
@@ -10209,6 +10405,8 @@ impl<'a> Gen<'a> {
                 }
                 Sub::QueuePush => self.sub_queue_push()?,
                 Sub::ListHead => self.sub_list_head()?,
+                Sub::RevertAbi => self.sub_revert_abi(),
+                Sub::ShortBlob => self.sub_short_blob()?,
                 Sub::DecodeDynamic => self.sub_decode_dynamic()?,
                 Sub::Base64Encode => self.sub_base64_encode(),
                 Sub::Base64Decode => self.sub_base64_decode(),
@@ -10824,6 +11022,7 @@ impl<'a> Gen<'a> {
     }
 
     fn is_dynamic(&self, ty: usize) -> bool {
+        let ty = self.peel_nominal(ty);
         match self.checked.types[ty].kind {
             TyKind::String => true,
             TyKind::Bytes => self.checked.types[ty].bits == 0,

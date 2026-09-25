@@ -24,6 +24,15 @@ error Insufficient_balance of record {
   required : nat;
 }
 
+(* Strings, bytes, and lists too. In the ABI: UnknownKey(string) *)
+error Unknown_key of string;
+
+(* In the ABI: AttributeNotFound(uint256 tokenId, string traitType) *)
+error Attribute_not_found of record {
+  tokenId : nat;
+  traitType : string;
+}
+
 storage is record {
   n : nat;
 }
@@ -34,9 +43,16 @@ is {
   assert(n <= 100n, Too_large(n));
   storage.n := n;
 }
+
+external function lookup(const token_id : nat)
+  raises Unknown_key | Attribute_not_found
+is {
+  assert(token_id > 0n, Unknown_key("token 0"));
+  assert(token_id <= storage.n, Attribute_not_found { tokenId = token_id; traitType = "Background"; });
+}
 ```
 
-Each error compiles to a Solidity custom error. The ABI name is the declared name in PascalCase, so `Insufficient_balance` becomes `InsufficientBalance`, with the selector Solidity would compute. Payloads are words, or records of words. Two errors whose ABI names collide, such as `Not_owner` and `NotOwner`, are rejected.
+Each error compiles to a Solidity custom error. The ABI name is the declared name in PascalCase, so `Insufficient_balance` becomes `InsufficientBalance`, with the selector Solidity would compute. Payloads are words, strings, bytes, lists, or records of them, ABI-encoded as Solidity would. Two errors whose ABI names collide, such as `Not_owner` and `NotOwner`, are rejected.
 
 ## Raising errors
 

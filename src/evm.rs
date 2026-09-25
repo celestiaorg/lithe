@@ -498,6 +498,7 @@ fn exec_state(
                     pc = dest;
                 }
             }
+            0x59 => stack.push(Word::from_u64(mem.len().div_ceil(32) as u64 * 32)),
             0x5a => stack.push(Word::from_u64(1_000_000)),
             0x5b => {}
             0x5e => {
@@ -7194,6 +7195,88 @@ external function f(const note : string; const ids : list(nat)) is {
         .find(|d| d.starts_with("log"))
         .expect("log detail");
     assert!(log.ends_with(&hex(&want)), "{log}");
+}
+
+#[test]
+fn error_payloads_encode_strings_and_lists() {
+    let src = include_str!("../examples/errors.lithe");
+    let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
+    let w = Word::from_u64;
+    // A string argument: its head points past the token id, and it pads to whole words.
+    let text = |s: &[u8]| {
+        let mut out = w(s.len() as u64).to_be_bytes().to_vec();
+        out.extend_from_slice(s);
+        out.resize(32 + s.len().div_ceil(32) * 32, 0);
+        out
+    };
+    let attribute = |id: u64, trait_type: &[u8]| {
+        let mut data = selector("attribute(uint256,string)").to_vec();
+        data.extend_from_slice(&w(id).to_be_bytes());
+        data.extend_from_slice(&w(64).to_be_bytes());
+        data.extend(text(trait_type));
+        call_raw(&runtime, &data)
+    };
+    let out = attribute(99, b"Eyes");
+    assert!(out.reverted);
+    let mut want = selector("AttributeNotFound(uint256,string,uint256[])").to_vec();
+    for word in [99u64, 96, 160] {
+        want.extend_from_slice(&w(word).to_be_bytes());
+    }
+    want.extend(text(b"Background"));
+    want.extend(abi_array(&[w(7)]));
+    assert_eq!(hex(&out.returndata), hex(&want));
+    for trait_type in [&b"Eyes"[..], b"", b"a trait type longer than one word"] {
+        let out = attribute(0, trait_type);
+        assert!(out.reverted);
+        let mut want = selector("UnknownTrait(string)").to_vec();
+        want.extend_from_slice(&w(32).to_be_bytes());
+        want.extend(text(trait_type));
+        assert_eq!(hex(&out.returndata), hex(&want), "{trait_type:?}");
+    }
+}
+
+/// Strings compare by their bytes, whichever form each is held in.
+#[test]
+fn strings_compare_by_content() {
+    let src = "\
+storage is record { name : string; }
+external function set(const name : string) is { storage.name := name; }
+external view function same(const name : string) : bool is name = storage.name
+external view function differ(const a : string; const b : string) : bool is a =/= b
+";
+    let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
+    let w = Word::from_u64;
+    let text = |s: &[u8]| {
+        let mut out = w(s.len() as u64).to_be_bytes().to_vec();
+        out.extend_from_slice(s);
+        out.resize(32 + s.len().div_ceil(32) * 32, 0);
+        out
+    };
+    let one = |sig: &str, s: &[u8]| {
+        let mut data = selector(sig).to_vec();
+        data.extend_from_slice(&w(32).to_be_bytes());
+        data.extend(text(s));
+        data
+    };
+    let two = |a: &[u8], b: &[u8]| {
+        let mut data = selector("differ(string,string)").to_vec();
+        data.extend_from_slice(&w(64).to_be_bytes());
+        data.extend_from_slice(&w(64 + text(a).len() as u64).to_be_bytes());
+        data.extend(text(a));
+        data.extend(text(b));
+        call_raw(&runtime, &data).returndata
+    };
+    let run = |data: Vec<u8>, storage| exec(&runtime, &data, storage, w(1), w(0), w(0)).unwrap();
+    let long = b"a string that is well past thirty one bytes long";
+    for s in [&b""[..], b"short", long] {
+        let set = run(one("set(string)", s), HashMap::new());
+        let out = run(one("same(string)", s), set.storage.clone());
+        assert_eq!(out.returndata, w(1).to_be_bytes(), "{s:?}");
+        let other = run(one("same(string)", b"other"), set.storage);
+        assert_eq!(other.returndata, w(0).to_be_bytes(), "{s:?}");
+        assert_eq!(two(s, s), w(0).to_be_bytes(), "{s:?}");
+    }
+    assert_eq!(two(long, &long[..47]), w(1).to_be_bytes());
 }
 
 /// Every standard library file compiles inside a contract that imports it.

@@ -2121,6 +2121,7 @@ impl Checker {
     }
 
     fn is_dyn_ty(&self, id: usize) -> bool {
+        let id = peel_id(&self.types, id);
         match self.types[id].kind {
             TyKind::String => true,
             TyKind::Bytes => self.types[id].bits == 0,
@@ -2141,8 +2142,9 @@ impl Checker {
         ),
         Error,
     > {
-        if self.is_dyn_ty(id) {
-            return Err(error(line, col, "error fields must be single words"));
+        if self.is_dyn_ty(id) || self.abi_list(id) {
+            let abi = abi_parts(&self.types, id)?.remove(0);
+            return Ok((Some(id), Vec::new(), vec![(None, abi)]));
         }
         match self.types[id].kind {
             TyKind::Unit => Ok((None, Vec::new(), Vec::new())),
@@ -2165,8 +2167,13 @@ impl Checker {
                 let mut field_tys = Vec::new();
                 let mut fields = Vec::new();
                 for f in &self.types[id].fields {
-                    if self.types[f.ty].words != 1 {
-                        return Err(error(line, col, "error fields must be single words"));
+                    let word = self.types[f.ty].words == 1 && !self.list_value(f.ty);
+                    if !word && !self.is_dyn_ty(f.ty) && !self.abi_list(f.ty) {
+                        return Err(error(
+                            line,
+                            col,
+                            "error fields must be words, strings, bytes, or lists",
+                        ));
                     }
                     let abi = abi_parts(&self.types, f.ty)?
                         .into_iter()
@@ -2180,7 +2187,7 @@ impl Checker {
             _ => Err(error(
                 line,
                 col,
-                "error payload must be a word or a record of words",
+                "error payload must be a word, string, bytes, list, or a record of them",
             )),
         }
     }
@@ -2681,7 +2688,7 @@ impl Checker {
         match &mut raised.form {
             RaisedForm::Unit if payload.is_none() => {}
             RaisedForm::Positional(expr) if payload.is_some() && !record => {
-                self.check_expr(expr)?;
+                self.check_expr_as(expr, payload)?;
                 if !self.same(expr.ty(), payload.unwrap_or(TY_UNIT)) {
                     return Err(error(
                         expr.line(),
@@ -2706,7 +2713,7 @@ impl Checker {
                             format!("expected error field `{ename}`"),
                         ));
                     }
-                    self.check_expr(expr)?;
+                    self.check_expr_as(expr, Some(ety))?;
                     if !self.same(expr.ty(), ety) {
                         return Err(error(
                             raised.line,

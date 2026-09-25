@@ -143,6 +143,7 @@ The full list is in [Built-ins](/language/builtins).
 | `error NotOwner();` | `error Not_owner;` |
 | `error TooSmall(uint256);` | `error Too_small of nat;` |
 | `error Low(uint256 have, uint256 want);` | `error Low of record { have : nat; want : nat; }` |
+| `error Missing(string key, uint256[] ids);` | `error Missing of record { key : string; ids : list(nat); }` |
 | `if (!c) revert NotOwner();` | `assert(c, Not_owner);` |
 | `revert NotOwner();` | `fail Not_owner;` |
 | `require(c, "message")` | not allowed. Errors are typed |

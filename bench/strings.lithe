@@ -1,0 +1,64 @@
+(* Benchmark: strings short and long, from calldata and storage: stored, returned, joined,
+   compared, logged, and carried by errors. Mirrors strings.sol. *)
+
+error Name_taken of record {
+  name : string;
+  owner : address;
+}
+error Too_long of record {
+  name : string;
+  limit : nat;
+}
+error Not_owner of record {
+  caller : address;
+  name : string;
+}
+
+event Renamed of record {
+  indexed who : address;
+  old_name : string;
+  new_name : string;
+}
+
+storage is record {
+  owner : address;
+  name : string;
+  description : string;
+}
+
+deploy() is {
+  storage.owner := Evm.sender();
+}
+
+external function rename(const name : string)
+  raises Not_owner | Name_taken | Too_long
+is {
+  assert(Evm.sender() = storage.owner, Not_owner { caller = Evm.sender(); name = storage.name; });
+  assert(name =/= storage.name, Name_taken { name = name; owner = storage.owner; });
+  assert(name.length <= 100n, Too_long { name = name; limit = 100n; });
+  emit Renamed { who = Evm.sender(); old_name = storage.name; new_name = name; };
+  storage.name := name;
+}
+
+external function describe(const text : string)
+  raises Not_owner | Too_long
+is {
+  assert(Evm.sender() = storage.owner, Not_owner { caller = Evm.sender(); name = storage.name; });
+  assert(text.length <= 200n, Too_long { name = text; limit = 200n; });
+  storage.description := String.concat(storage.name, ": ", text);
+}
+
+external view function name() : string is
+  storage.name
+
+external view function description() : string is
+  storage.description
+
+external view function title(const prefix : string) : string is
+  String.concat(prefix, " ", storage.name)
+
+external view function require_name(const name : string) : bool
+  raises Not_owner
+is {
+  assert(name = storage.name, Not_owner { caller = Evm.sender(); name = storage.name; });
+} with true
