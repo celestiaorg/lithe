@@ -5512,60 +5512,55 @@ impl<'a> Gen<'a> {
         }
     }
 
+    /// `[a, b, ret]` becomes `[eq]`: the lengths match, and each pair of elements holds
+    /// the same bytes, compared from the last element down.
     fn sub_blobs_eq(&mut self) -> Result<(), Error> {
         let (top, equal, differ) = (self.fresh(), self.fresh(), self.fresh());
-        // [ret, b, a, i]
         self.op(SWAP1 + 1);
-        self.op(PUSH0);
+        // [ret, b, a]
+        self.op(DUP1);
+        self.op(MLOAD);
+        self.op(DUP1 + 2);
+        self.op(MLOAD);
         self.op(DUP1 + 1);
-        self.op(MLOAD);
-        self.op(DUP1 + 3);
-        self.op(MLOAD);
         self.op(EQ);
         self.op(ISZERO);
         self.push_label(differ);
         self.op(JUMPI);
+        self.push_u64(5);
+        self.op(SHL);
+        // [ret, b, a, off]
         self.jumpdest(top);
-        self.op(DUP1 + 1);
-        self.op(MLOAD);
-        self.op(DUP1 + 1);
-        self.op(LT);
+        self.op(DUP1);
         self.op(ISZERO);
         self.push_label(equal);
         self.op(JUMPI);
-        self.op(DUP1);
-        self.push_u64(32);
-        self.op(MUL);
-        self.push_u64(32);
-        self.op(ADD);
-        self.op(DUP1);
-        self.op(DUP1 + 3);
+        self.op(DUP1 + 1);
+        self.op(DUP1 + 1);
         self.op(ADD);
         self.op(MLOAD);
-        self.op(SWAP1);
-        self.op(DUP1 + 4);
+        self.op(DUP1 + 3);
+        self.op(DUP1 + 2);
         self.op(ADD);
         self.op(MLOAD);
         self.bytes_eq();
         self.op(ISZERO);
         self.push_label(differ);
         self.op(JUMPI);
-        self.push_u64(1);
-        self.op(ADD);
+        self.push_u64(32);
+        self.op(SWAP1);
+        self.op(SUB);
         self.push_label(top);
         self.op(JUMP);
-        self.jumpdest(equal);
-        self.op(POP);
-        self.op(POP);
-        self.op(POP);
-        self.push_u64(1);
-        self.op(SWAP1);
-        self.op(JUMP);
+        // [ret, b, a, off]: off is 0 when every pair matched.
         self.jumpdest(differ);
         self.op(POP);
+        self.push_u64(1);
+        self.jumpdest(equal);
+        self.op(ISZERO);
+        self.op(SWAP1 + 1);
         self.op(POP);
         self.op(POP);
-        self.op(PUSH0);
         self.op(SWAP1);
         self.op(JUMP);
         Ok(())
@@ -11434,7 +11429,7 @@ impl<'a> Gen<'a> {
     /// Reverts when the word `load` pushes has bits its type cannot hold, as Solidity's
     /// decoder does for calldata and return data alike.
     fn check_word(&mut self, ty: usize, load: &dyn Fn(&mut Self)) -> Result<(), Error> {
-        let t = &self.checked.types[ty];
+        let t = &self.checked.types[self.peel_nominal(ty)];
         let (kind, bits) = (t.kind, t.bits);
         match kind {
             TyKind::Nat if bits > 0 && bits < 256 => {

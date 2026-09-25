@@ -1,0 +1,42 @@
+(* Strings and bytes compare by content, however long and wherever they are held.
+   So do lists of them, and nominal wrappers of them. *)
+
+type label is string;
+
+storage is record {
+  name : string;
+  names : list(string);
+}
+
+external function remember(const name : string; const other : string) is {
+  storage.name := name;
+  storage.names := [name, other];
+}
+
+external view function are_names(const name : string; const other : string) : bool is
+  storage.names = [name, other]
+
+external view function is_name(const name : string) : bool is
+  storage.name = name
+
+external pure function same_pair(const a : string; const b : string; const c : string; const d : string) : bool is {
+  const left : list(string) := [a, b];
+  const right : list(string) := [c, d];
+} with left = right
+
+external pure function pair_is_one(const a : string; const b : string; const c : string) : bool is {
+  const pair : list(string) := [a, b];
+  const one : list(string) := [c];
+} with pair = one
+
+external pure function same_bytes(const a : bytes; const b : bytes) : bool is
+  a = b
+
+external pure function differ(const a : string; const b : string) : bool is
+  a <> b
+
+external pure function same_label(const a : label; const b : label) : bool is
+  a = b
+
+external pure function echo_label(const a : label) : label is
+  a

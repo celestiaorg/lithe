@@ -4482,6 +4482,15 @@ fn types_reject_implicit_conversions() {
         slot(&out.storage, 1),
         Word::from_u64(1_700_000_000 + 86_400)
     );
+    install_mocks();
+    let echo = Word::from_u64(0xcd);
+    for sig in ["fee_from(address,uint256)", "has_fee(address,uint256)"] {
+        let out = call(&runtime, sig, &[echo, Word::from_u64(500)]);
+        assert!(!out.reverted, "{sig}");
+        assert!(call(&runtime, sig, &[echo, Word::from_u64(70_000)]).reverted, "{sig}");
+    }
+    let out = call(&runtime, "fee_from(address,uint256)", &[echo, Word::from_u64(500)]);
+    assert_eq!(load_bytes(&out.returndata, 0), Word::from_u64(500));
 }
 
 #[test]
@@ -7199,6 +7208,76 @@ fn dynamic_lists_cross_the_abi() {
     assert_eq!(load_bytes(&run(&mut l, data).returndata, 0), w(0));
     let out = run(&mut l, list("sum2(uint256[])", &[w(20), w(22)]));
     assert_eq!(load_bytes(&out.returndata, 0), w(42));
+}
+
+/// `Abi.decode` answers the encoded `bytes` or `string`, short or long, and reverts on
+/// data too short for its value or a word too wide for its type.
+#[test]
+fn abi_decode_checks_what_it_reads() {
+    install_mocks();
+    let mut c = Session::new("examples/abi_decode.lithe");
+    let long = b"a value long enough to need a blob of its own".to_vec();
+    for value in [vec![], vec![1, 2], vec![7; 31], vec![7; 32], long] {
+        let encoded = encode_args("", &[Arg::B(value.clone())])[4..].to_vec();
+        for (sig, arg) in [
+            ("round_bytes(bytes)", value.clone()),
+            ("round_string(string)", value.clone()),
+            ("to_bytes(bytes)", encoded),
+        ] {
+            assert!(c.send(0, sig, &[Arg::B(arg)]), "{sig} {value:?}");
+            assert_eq!(abi_string_value(&c.returned()), value, "{sig}");
+        }
+    }
+    let word = |n: u64| Word::from_u64(n).to_be_bytes().to_vec();
+    let past = [word(32), word(33), vec![0; 32]].concat();
+    assert!(!c.send(0, "to_bytes(bytes)", &[Arg::B(past)]));
+    assert_eq!(
+        c.word("to_small(bytes)", &[Arg::B(word(200))]),
+        Word::from_u64(200)
+    );
+    assert!(!c.send(0, "to_small(bytes)", &[Arg::B(word(256))]));
+    assert!(!c.send(0, "to_small(bytes)", &[Arg::B(word(200)[..31].to_vec())]));
+    assert!(!c.send(0, "to_small(bytes)", &[Arg::B(vec![])]));
+}
+
+/// Strings, bytes, lists of them, and nominal strings compare by content.
+#[test]
+fn strings_and_bytes_compare_by_content() {
+    install_mocks();
+    let mut c = Session::new("examples/equality.lithe");
+    let yes = Word::from_u64(1);
+    let no = Word::from_u64(0);
+    let b = |v: &[u8]| Arg::B(v.to_vec());
+    let long = b"a name long enough to need a blob of its own".as_slice();
+    let longer = b"a name long enough to need a blob of its owN".as_slice();
+    assert!(c.send(0, "remember(string,string)", &[b(long), b(b"short")]));
+    let names = "are_names(string,string)";
+    assert_eq!(c.word(names, &[b(long), b(b"short")]), yes);
+    assert_eq!(c.word(names, &[b(longer), b(b"short")]), no);
+    assert_eq!(c.word(names, &[b(b"short"), b(long)]), no);
+    assert_eq!(c.word("is_name(string)", &[b(long)]), yes);
+    assert_eq!(c.word("is_name(string)", &[b(longer)]), no);
+    assert_eq!(c.word("is_name(string)", &[b(b"short")]), no);
+    let pair = "same_pair(string,string,string,string)";
+    assert_eq!(c.word(pair, &[b(long), b(b"short"), b(long), b(b"short")]), yes);
+    assert_eq!(c.word(pair, &[b(long), b(b"short"), b(longer), b(b"short")]), no);
+    assert_eq!(c.word(pair, &[b(long), b(b"short"), b(long), b(b"shorT")]), no);
+    let one = "pair_is_one(string,string,string)";
+    assert_eq!(c.word(one, &[b(long), b(long), b(long)]), no);
+    for (x, y, want) in [
+        (long, long, yes),
+        (long, longer, no),
+        (b"\x01\x02".as_slice(), b"\x01\x02".as_slice(), yes),
+        (b"".as_slice(), b"".as_slice(), yes),
+        (b"".as_slice(), b"\x00".as_slice(), no),
+    ] {
+        assert_eq!(c.word("same_bytes(bytes,bytes)", &[b(x), b(y)]), want);
+        assert_eq!(c.word("same_label(string,string)", &[b(x), b(y)]), want);
+        let differ = if want == yes { no } else { yes };
+        assert_eq!(c.word("differ(string,string)", &[b(x), b(y)]), differ);
+    }
+    assert!(c.send(0, "echo_label(string)", &[b(long)]));
+    assert_eq!(abi_string_value(&c.returned()), long);
 }
 
 /// Lists and strings as query arguments and answers, as deferred-call arguments and
