@@ -320,6 +320,9 @@ pub(crate) struct Func {
     pub promoted: Option<String>,
     /// On an entrypoint that `external use` declares: the module function it runs.
     pub declares: Option<String>,
+    /// On an entrypoint that `external use` declares: the named interface it comes from.
+    /// `None` for the inline interface.
+    pub interface: Option<String>,
     /// On a module's external function: how it was declared. It is checked as an internal
     /// function, which the entrypoints that declare it call.
     pub exported: Option<Exported>,

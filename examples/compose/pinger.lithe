@@ -1,0 +1,18 @@
+(* Calls a ledger through its interface: `ping` is deferred, and `pinged` is read with
+   `query`. Any contract that has `ILedger`, such as `Token`, can be passed in. *)
+
+import "./iledger.lithe";
+
+contract Pinger is {
+  storage is record {
+    relayed : nat;
+  }
+
+  external function relay(const ledger : ILedger; const n : nat) is {
+    storage.relayed := storage.relayed + 1n;
+    defer ledger.ping(n);
+  }
+
+  external view function last(const ledger : ILedger) : nat is
+    query ledger.pinged()
+}

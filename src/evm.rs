@@ -1794,7 +1794,7 @@ const REJECT_RULES: &[(&str, &str)] = &[
     ),
     (
         "reject/declare_mismatch.lithe",
-        "`balance` does not match its declaration in module `Ledger`",
+        "module `Ledger` does not have the contract's inline interface: `balance` is stateful in the inline interface and `view` in `Ledger`",
     ),
     (
         "reject/declare_body.lithe",
@@ -2112,7 +2112,7 @@ external use Math is {
     let err = compile(declared).expect_err("pure is not a view");
     assert!(
         err.to_string()
-            .contains("`double` does not match its declaration in module `Math`"),
+            .contains("module `Math` does not have the contract's inline interface: `double` is `view` in the inline interface and `pure` in `Math`"),
         "{err}"
     );
 
@@ -2648,27 +2648,27 @@ external use Vault_ops is {{
     for (exposed, want) in [
         (
             "  view function withdraw(amount : wei) : wei raises Too_much;",
-            "`withdraw` does not match its declaration in module `Vault_ops`",
+            "`withdraw` returns `wei` in the inline interface and nothing in `Vault_ops`",
         ),
         (
             "  function deposit();",
-            "`deposit` does not match its declaration in module `Vault_ops`\n\n  module:   payable function deposit()\n  contract: function deposit()",
+            "module `Vault_ops` does not have the contract's inline interface: `deposit` is `payable` in `Vault_ops` but not in the inline interface\n\n  interface:  function deposit()\n  module:     payable function deposit()",
         ),
         (
             "  view function fee(amount : wei) : wei;",
-            "`fee` does not match its declaration in module `Vault_ops`",
+            "`fee` is `view` in the inline interface and `pure` in `Vault_ops`",
         ),
         (
             "  view function deposit_of(account : address) : wei;",
-            "contract: view function deposit_of(account : address) : wei",
+            "parameter 1 of `deposit_of` is `account` in the inline interface and `who` in `Vault_ops`",
         ),
         (
             "  view function deposit_of(who : address) : nat;",
-            "`deposit_of` does not match its declaration in module `Vault_ops`",
+            "`deposit_of` returns `nat` in the inline interface and `wei` in `Vault_ops`",
         ),
         (
             "  function withdraw(amount : wei);",
-            "external function `withdraw` must declare its errors",
+            "`withdraw` raises `Too_much` in `Vault_ops`, and the inline interface lists no errors",
         ),
         (
             "  function withdraw(amount : wei) raises Too_much | Other;",
@@ -2676,11 +2676,11 @@ external use Vault_ops is {{
         ),
         (
             "  function take(amount : wei) raises Too_much;",
-            "`Vault_ops.take` is not external",
+            "`Vault_ops.take` is an internal function; declare it `external` in `Vault_ops` to offer it",
         ),
         (
             "  function missing();",
-            "module `Vault_ops` has no external function `missing`",
+            "module `Vault_ops` does not have the contract's inline interface: it has no external `missing`",
         ),
         (
             "  external function withdraw(amount : wei) raises Too_much;",
@@ -6290,6 +6290,39 @@ contract Token is {
             .unwrap_or(Word::from_u64(0)),
         Word::from_u64(7)
     );
+    let pinged = exec(
+        &imported,
+        &word_data("pinged()", &[]),
+        ping.storage.clone(),
+        Word::from_u64(1),
+        Word::from_u64(0),
+        Word::from_u64(0),
+    )
+    .expect("pinged");
+    assert_eq!(load_bytes(&pinged.returndata, 0), Word::from_u64(7));
+    // `Token` has `ILedger`, so it answers for its ERC-165 id.
+    let ledger_id = u32::from_be_bytes(selector("ping(uint256)")) ^ u32::from_be_bytes(selector("pinged()"));
+    let supports = call(
+        &imported,
+        "supportsInterface(bytes4)",
+        &[Word::from_u64(u64::from(ledger_id)).shl(224)],
+    );
+    assert_eq!(load_bytes(&supports.returndata, 0), Word::from_u64(1));
+    let pinger_path =
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples/compose/pinger.lithe");
+    install_mocks();
+    let pinger = deploy(&crate::compile_file(&pinger_path).expect("pinger")).expect("deploy");
+    let relay = exec(
+        &pinger,
+        &word_data("relay(address,uint256)", &[Word::from_u64(0xcd), Word::from_u64(9)]),
+        HashMap::new(),
+        Word::from_u64(1),
+        Word::from_u64(0),
+        Word::from_u64(0),
+    )
+    .expect("relay");
+    assert!(!relay.reverted, "{}", pretty(&relay.returndata));
+    assert!(relay.detail.join("\n").contains(&hex(&selector("ping(uint256)"))));
 
     let votes_path =
         std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples/votes.lithe");
@@ -8514,7 +8547,7 @@ interface IAdd is {
         ),
         (
             src.replace("pure function version() : nat;", "view function version() : nat;"),
-            "`version` does not match its declaration in module `Vault`",
+            "`version` is `view` in the inline interface and `pure` in `Vault`",
         ),
         (
             src.replace("  pure function version() : nat;\n}", "  pure function version() : nat;\n}, {\n  view function total() : nat;\n}"),

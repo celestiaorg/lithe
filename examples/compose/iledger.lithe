@@ -1,0 +1,7 @@
+(* What a ledger offers. `Token` exposes `Ledger` through it, and `Pinger` calls any
+   contract that has it. *)
+
+interface ILedger is {
+  function ping(n : nat);
+  view function pinged() : nat;
+}

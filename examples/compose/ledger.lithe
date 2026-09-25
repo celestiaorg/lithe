@@ -6,4 +6,7 @@ module Ledger is {
   external function ping(const n : nat) is {
     ledger.n := n;
   }
+
+  external view function pinged() : nat is
+    ledger.n
 }

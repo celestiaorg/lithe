@@ -134,10 +134,10 @@ contract Token is {
 ```
 
 ```text
-`balance` does not match its declaration in module `Ledger`
+module `Ledger` does not have the contract's inline interface: `balance` is stateful in the inline interface and `view` in `Ledger`
 
-  module:   view function balance() : nat
-  contract: function balance() : nat
+  interface:  function balance() : nat
+  module:     view function balance() : nat
 ```
 
 An interface never adds behavior, so its methods have no body. To change what an external does, leave it out of the contract's interfaces, and write the contract's own external instead. A module's externals are not functions: nothing inside the contract calls them. Put shared logic in an internal function that the external and the contract both call.

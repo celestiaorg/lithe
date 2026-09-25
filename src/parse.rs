@@ -1338,6 +1338,7 @@ impl<'a> Parser<'a> {
             requires: Vec::new(),
             promoted: None,
             declares: None,
+            interface: None,
             exported: None,
         })
     }

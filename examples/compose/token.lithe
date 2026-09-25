@@ -1,7 +1,6 @@
 import "./ledger.lithe";
+import "./iledger.lithe";
 
 contract Token is {
-  external use Ledger is {
-    function ping(n : nat);
-  }
+  external use Ledger is ILedger;
 }

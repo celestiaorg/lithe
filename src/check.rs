@@ -564,7 +564,13 @@ fn compose(prog: &mut Program) -> Result<(), Error> {
                     format!("unknown interface `{}`", named.name),
                 ));
             };
-            members.extend(iface.methods.iter().cloned());
+            // Each member speaks for the interface where the contract names it.
+            members.extend(iface.methods.iter().cloned().map(|mut member| {
+                member.interface = Some(named.name.clone());
+                member.line = named.line;
+                member.col = named.col;
+                member
+            }));
         }
         members.extend(exposed.decls.iter().cloned());
         for decl in members {
@@ -600,14 +606,40 @@ fn declared_entry(prog: &Program, module: &str, decl: Func) -> Result<Func, Erro
     let impl_ = match candidates.as_slice() {
         [] => {
             let internal = format!("{module}.{}", decl.name);
-            let msg = if prog.funcs.iter().any(|func| func.name == internal) {
+            let hint = if prog.funcs.iter().any(|func| func.name == internal) {
                 format!(
-                    "`{internal}` is not external; `external use` declares only a module's external functions"
+                    "`{internal}` is an internal function; declare it `external` in `{module}` to offer it"
                 )
             } else {
-                format!("module `{module}` has no external function `{}`", decl.name)
+                let offered: Vec<String> = prog
+                    .funcs
+                    .iter()
+                    .filter_map(|func| {
+                        let exported = func.exported.as_ref()?;
+                        (func.module.as_deref() == Some(module))
+                            .then(|| format!("  {}", header_text(func, &exported.name)))
+                    })
+                    .collect();
+                let list = if offered.is_empty() {
+                    format!("`{module}` has no external functions")
+                } else {
+                    format!("`{module}`'s externals:\n{}", offered.join("\n"))
+                };
+                format!(
+                    "{list}\n\nadd `{}` to `{module}` as an external, or expose `{module}` through an interface without it",
+                    decl.name
+                )
             };
-            return Err(error(decl.line, decl.col, msg));
+            return Err(error(
+                decl.line,
+                decl.col,
+                format!(
+                    "{}: it has no external `{}`\n\n  interface:  {}\n\n{hint}",
+                    lacks(module, &decl),
+                    decl.name,
+                    header_text(&decl, &decl.name)
+                ),
+            ));
         }
         [one] => *one,
         several => {
@@ -619,11 +651,11 @@ fn declared_entry(prog: &Program, module: &str, decl: Func) -> Result<Func, Erro
                 Some(func) => *func,
                 None => {
                     let mut msg = format!(
-                        "no external `{}` of module `{module}` takes ({})
-
-the module declares:",
+                        "{}: no overload of its `{}` takes ({})\n\n  interface:  {}\n\n`{module}`'s overloads:",
+                        lacks(module, &decl),
                         decl.name,
-                        shape.join(", ")
+                        shape.join(", "),
+                        header_text(&decl, &decl.name)
                     );
                     for func in several {
                         msg.push_str(&format!("\n  {}", header_text(func, &decl.name)));
@@ -665,21 +697,39 @@ pub(crate) fn module_transient_slot(qualified: &str) -> u64 {
     u64::from(u16::from_be_bytes([hash[0], hash[1]]) | 0x8000)
 }
 
-fn declaration_mismatch(decl: &Func, impl_: &Func) -> String {
+/// `module `M` does not have interface `I``, or the inline interface, as an error begins.
+fn lacks(module: &str, decl: &Func) -> String {
+    match &decl.interface {
+        Some(iface) => format!("module `{module}` does not have interface `{iface}`"),
+        None => format!("module `{module}` does not have the contract's inline interface"),
+    }
+}
+
+/// Where an interface's method and the module's external differ: `reason` says how, and both
+/// headers follow.
+fn interface_mismatch(decl: &Func, impl_: &Func, reason: &str) -> String {
     let module = impl_.module.as_deref().unwrap_or("");
     let name = impl_
         .exported
         .as_ref()
         .map_or(decl.name.as_str(), |exported| exported.name.as_str());
     format!(
-        "`{}` does not match its declaration in module `{module}`\n\n  module:   {}\n  contract: {}",
-        decl.name,
-        header_text(impl_, name),
-        header_text(decl, &decl.name)
+        "{}: {reason}\n\n  interface:  {}\n  module:     {}",
+        lacks(module, decl),
+        header_text(decl, &decl.name),
+        header_text(impl_, name)
     )
 }
 
-/// A function's header as written, for diagnostics: `view function f(const a : nat) : nat`.
+/// How the interface is named in a reason: `` `I` ``, or the inline interface.
+fn iface_label(decl: &Func) -> String {
+    match &decl.interface {
+        Some(iface) => format!("`{iface}`"),
+        None => "the inline interface".to_string(),
+    }
+}
+
+/// A function's header as an interface writes it, for diagnostics: `view function f(a : nat) : nat`.
 pub(crate) fn header_text(func: &Func, name: &str) -> String {
     let header = Header::of(func, name);
     let mut out = format!("{}({})", header.head, header.params.join("; "));
@@ -1401,6 +1451,7 @@ fn erc165_func(line: u32, col: u32, origin: &str, ids: &[u32]) -> Func {
         requires: Vec::new(),
         promoted: None,
         declares: None,
+        interface: None,
         exported: None,
     }
 }
@@ -2743,7 +2794,8 @@ impl Checker {
                     .copied()
                     .filter(|id| !declared.contains(id))
                     .collect();
-                if !extra.is_empty() {
+                // An interface's method is held to its module's external instead.
+                if !extra.is_empty() && funcs[i].declares.is_none() {
                     return Err(error(
                         line,
                         col,
@@ -2755,6 +2807,8 @@ impl Checker {
                 kind,
                 ItemKind::Entry | ItemKind::View | ItemKind::Migrate | ItemKind::Deploy
             ) && !inferred.is_empty()
+                // An interface's method is held to its module's external instead.
+                && funcs[i].declares.is_none()
             {
                 return Err(error(
                     line,
@@ -2803,23 +2857,53 @@ impl Checker {
             if same {
                 continue;
             }
-            let mut msg = declaration_mismatch(decl, impl_);
-            if want != have {
-                let names = |ids: &[usize]| -> String {
-                    let names: Vec<&str> =
-                        ids.iter().map(|&id| self.errors[id].name.as_str()).collect();
-                    if names.is_empty() {
-                        "none".to_string()
-                    } else {
-                        names.join(" | ")
-                    }
-                };
-                msg.push_str(&format!(
-                    "\n\nthe module raises {}; the declaration raises {}",
-                    names(&want),
-                    names(&have)
-                ));
-            }
+            let label = iface_label(decl);
+            let module = format!("`{}`", impl_.module.as_deref().unwrap_or(""));
+            let effect = |kind: ItemKind, pure: bool| match kind {
+                ItemKind::View if pure => "`pure`",
+                ItemKind::View => "`view`",
+                _ => "stateful",
+            };
+            let names = |ids: &[usize]| -> String {
+                let names: Vec<String> = ids
+                    .iter()
+                    .map(|&id| format!("`{}`", self.errors[id].name))
+                    .collect();
+                if names.is_empty() {
+                    "nothing".to_string()
+                } else {
+                    names.join(", ")
+                }
+            };
+            let reason = if exported.kind != decl.kind || exported.external_pure != decl.external_pure {
+                format!(
+                    "`{}` is {} in {label} and {} in {module}",
+                    decl.name,
+                    effect(decl.kind, decl.external_pure),
+                    effect(exported.kind, exported.external_pure)
+                )
+            } else if exported.payable != decl.payable {
+                let (yes, no) = if decl.payable { (&label, &module) } else { (&module, &label) };
+                format!("`{}` is `payable` in {yes} but not in {no}", decl.name)
+            } else if want != have {
+                let missing: Vec<usize> = want.iter().copied().filter(|id| !have.contains(id)).collect();
+                let extra: Vec<usize> = have.iter().copied().filter(|id| !want.contains(id)).collect();
+                let mut parts = Vec::new();
+                if !missing.is_empty() {
+                    parts.push(format!("{module} raises {} that {label} doesn't list", names(&missing)));
+                }
+                if !extra.is_empty() {
+                    parts.push(format!("{label} lists {} that {module} doesn't raise", names(&extra)));
+                }
+                format!("`{}` raises different errors: {}", decl.name, parts.join(", and "))
+            } else {
+                format!(
+                    "`{}` raises {} in {module}, and {label} lists no errors",
+                    decl.name,
+                    names(&want)
+                )
+            };
+            let msg = interface_mismatch(decl, impl_, &reason);
             return Err(error(decl.line, decl.col, msg));
         }
         Ok(())
@@ -2838,19 +2922,64 @@ impl Checker {
             // The entrypoint runs the external's body under the declared names, so they
             // must match before the body is checked.
             let (a, b) = (&self.sigs[i], &self.sigs[j]);
-            let same = a.params.len() == b.params.len()
-                && a.params.iter().zip(&b.params).all(|(x, y)| self.same(x.0, y.0))
-                && decl
-                    .params
-                    .iter()
-                    .zip(&funcs[j].params)
-                    .all(|(x, y)| x.name == y.name)
-                && self.same(a.ret, b.ret);
-            if !same {
+            let impl_ = &funcs[j];
+            let label = iface_label(decl);
+            let module = format!("`{}`", impl_.module.as_deref().unwrap_or(""));
+            // Types as the source spells them.
+            let shown = |ty: Option<&TypeRef>| match ty {
+                Some(ty) => format!("`{}`", shape_ty(ty)),
+                None => "nothing".to_string(),
+            };
+            let mut reason = None;
+            if a.params.len() != b.params.len() {
+                reason = Some(format!(
+                    "`{}` takes {} parameters in {label} and {} in {module}",
+                    decl.name,
+                    a.params.len(),
+                    b.params.len()
+                ));
+            }
+            for (k, ((x, y), (p, q))) in a
+                .params
+                .iter()
+                .zip(&b.params)
+                .zip(decl.params.iter().zip(&impl_.params))
+                .enumerate()
+            {
+                if reason.is_some() {
+                    break;
+                }
+                if p.name != q.name {
+                    reason = Some(format!(
+                        "parameter {} of `{}` is `{}` in {label} and `{}` in {module}",
+                        k + 1,
+                        decl.name,
+                        p.name,
+                        q.name
+                    ));
+                } else if !self.same(x.0, y.0) {
+                    reason = Some(format!(
+                        "parameter `{}` of `{}` is {} in {label} and {} in {module}",
+                        p.name,
+                        decl.name,
+                        shown(Some(&p.ty)),
+                        shown(Some(&q.ty))
+                    ));
+                }
+            }
+            if reason.is_none() && !self.same(a.ret, b.ret) {
+                reason = Some(format!(
+                    "`{}` returns {} in {label} and {} in {module}",
+                    decl.name,
+                    shown(decl.ret.as_ref()),
+                    shown(impl_.ret.as_ref())
+                ));
+            }
+            if let Some(reason) = reason {
                 return Err(error(
                     decl.line,
                     decl.col,
-                    declaration_mismatch(decl, &funcs[j]),
+                    interface_mismatch(decl, impl_, &reason),
                 ));
             }
         }
