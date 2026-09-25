@@ -402,10 +402,16 @@ enum Sub {
     /// elements of the given type.
     DecodeList(usize),
     /// `[n, base, ret]` becomes a copy of the `n` elements stored from slot `base`: the
-    /// words per element, whether the slots are transient, and whether the body is direct.
-    LoadList(u32, bool, bool),
+    /// words per element, whether the slots are transient, whether the body is direct, and
+    /// whether the elements are strings or bytes.
+    LoadList(u32, bool, bool, bool),
     /// `[ptr, old, base, ret]` writes a list over `old` stored elements from slot `base`.
-    StoreList(u32, bool, bool),
+    StoreList(u32, bool, bool, bool),
+    /// `[slot, ret]` becomes the string or bytes value stored at a computed slot: whether
+    /// the slot is transient, and whether the body is direct.
+    LoadSlotBytes(bool, bool),
+    /// `[value, slot, ret]` writes a string or bytes value to a computed slot.
+    StoreSlotBytes(bool, bool),
     /// `[queue, site, size, ret]` becomes a new node of `size` bytes for `site`, linked at
     /// the end of the list whose head and tail words are at `queue`.
     QueuePush,
@@ -584,6 +590,9 @@ struct Gen<'a> {
     bodies: usize,
     /// The locals declared by each enclosing loop, innermost last.
     loop_syms: Vec<Vec<usize>>,
+    /// Loop elements from a stored string list that are only asked for their length:
+    /// each holds its slot's word, not a copy of the string.
+    header_locals: std::collections::HashSet<usize>,
     /// The counters of the enclosing loops: each is below its limit while its loop runs.
     loop_counters: Vec<usize>,
 }
@@ -658,6 +667,7 @@ impl<'a> Gen<'a> {
             body: None,
             bodies: 0,
             loop_syms: Vec::new(),
+            header_locals: std::collections::HashSet::new(),
             loop_counters: Vec::new(),
         };
         let leaves = g.checked.leaves as u32;
@@ -1278,6 +1288,8 @@ impl<'a> Gen<'a> {
                     Sub::DecodeList(_) => (1, 1),
                     Sub::LoadList(..) => (2, 1),
                     Sub::StoreList(..) => (3, 0),
+                    Sub::LoadSlotBytes(..) => (1, 1),
+                    Sub::StoreSlotBytes(..) => (2, 0),
                     Sub::QueuePush => (3, 1),
                     Sub::ListHead => (1, 1),
                     Sub::DecodeDynamic => (1, 1),
@@ -3345,6 +3357,20 @@ impl<'a> Gen<'a> {
                         }
                     }
                 }
+                if let (Some(e), Some((_, _, true))) = (*elem, direct_list) {
+                    if self.is_dynamic(self.peel_nominal(self.checked.syms[e].ty)) {
+                        let mut other = false;
+                        for st in body.iter() {
+                            self.stmt_uses(st, e, &mut other);
+                        }
+                        if let Some(c) = until {
+                            self.expr_uses(c, e, &mut other);
+                        }
+                        if !other {
+                            self.header_locals.insert(e);
+                        }
+                    }
+                }
                 let list_base = self.temp();
                 if let Some((sym, leaf, true)) = direct_list {
                     self.stored_list_base(sym, leaf);
@@ -3419,7 +3445,10 @@ impl<'a> Gen<'a> {
                             if storage {
                                 self.mload(list_base);
                                 self.op(ADD);
-                                self.journal_load();
+                                self.load_slot(
+                                    self.is_dynamic(self.peel_nominal(self.checked.syms[elem].ty))
+                                        && !self.header_locals.contains(&elem),
+                                );
                             } else {
                                 self.push_u64(32);
                                 self.op(MUL);
@@ -3567,7 +3596,7 @@ impl<'a> Gen<'a> {
                     self.compile_value(expr)?;
                     let all: Vec<&Expr> = std::iter::once(first).chain(keys).collect();
                     self.push_map_slot(root, *leaf, &all)?;
-                    self.journal_store();
+                    self.store_slot(self.is_dynamic(self.peel_nominal(expr.ty())));
                     return Ok(());
                 }
                 if index.is_some() {
@@ -4077,13 +4106,14 @@ impl<'a> Gen<'a> {
         let transient = self
             .checked
             .transient_leaf(self.checked.syms[sym].slot + leaf);
+        let bytes = self.bytes_elem(self.type_at(self.checked.syms[sym].ty, leaf));
         self.mload(self.addr(sym, leaf));
         self.stored_list_base(sym, leaf);
-        self.call_sub(Sub::LoadList(k, transient, self.direct));
+        self.call_sub(Sub::LoadList(k, transient, self.direct, bytes));
         Ok(())
     }
 
-    fn sub_load_list(&mut self, k: u32, transient: bool) -> Result<(), Error> {
+    fn sub_load_list(&mut self, k: u32, transient: bool, bytes: bool) -> Result<(), Error> {
         // [n, base, ret] becomes [ret, base, list, total, j].
         let (top, done) = (self.fresh(), self.fresh());
         self.op(SWAP1 + 1);
@@ -4104,7 +4134,7 @@ impl<'a> Gen<'a> {
         self.op(DUP1 + 4);
         self.op(ADD);
         self.transient_slot = transient;
-        self.journal_load();
+        self.load_slot(bytes);
         self.op(DUP1 + 1);
         self.push_u64(32);
         self.op(MUL);
@@ -4149,11 +4179,12 @@ impl<'a> Gen<'a> {
                 body.journal_stores = true;
             }
         }
-        self.call_sub(Sub::StoreList(k, transient, self.direct));
+        let bytes = self.bytes_elem(self.type_at(self.checked.syms[sym].ty, leaf));
+        self.call_sub(Sub::StoreList(k, transient, self.direct, bytes));
         Ok(())
     }
 
-    fn sub_store_list(&mut self, k: u32, transient: bool) -> Result<(), Error> {
+    fn sub_store_list(&mut self, k: u32, transient: bool, bytes: bool) -> Result<(), Error> {
         // [ptr, old, base, ret] becomes [ret, base, ptr, old total, total, j].
         let (top, done, clear, cleared) = (self.fresh(), self.fresh(), self.fresh(), self.fresh());
         self.op(SWAP1 + 2);
@@ -4185,7 +4216,7 @@ impl<'a> Gen<'a> {
         self.op(DUP1 + 6);
         self.op(ADD);
         self.transient_slot = transient;
-        self.journal_store();
+        self.store_slot(bytes);
         self.push_u64(1);
         self.op(ADD);
         self.push_label(top);
@@ -4204,7 +4235,7 @@ impl<'a> Gen<'a> {
         self.op(DUP1 + 6);
         self.op(ADD);
         self.transient_slot = transient;
-        self.journal_store();
+        self.store_slot(bytes);
         self.push_u64(1);
         self.op(ADD);
         self.push_label(clear);
@@ -4639,6 +4670,10 @@ impl<'a> Gen<'a> {
                     self.op(RETURNDATASIZE);
                     return Ok(());
                 }
+                if self.string_header(base)? {
+                    self.header_length();
+                    return Ok(());
+                }
                 self.compile_value(base)?;
                 self.bytes_span();
                 self.op(POP);
@@ -4705,7 +4740,7 @@ impl<'a> Gen<'a> {
                 ..
             } if matches!(base.as_ref(), Expr::Index { .. }) => {
                 self.map_chain(e)?;
-                self.journal_load();
+                self.load_slot(self.is_dynamic(self.peel_nominal(e.ty())));
                 Ok(())
             }
             Expr::Index {
@@ -4715,7 +4750,7 @@ impl<'a> Gen<'a> {
                 line,
                 col,
                 ..
-            } => self.compile_index_read(*sid, *leaf, index, *line, *col),
+            } => self.compile_index_read(*sid, *leaf, index, *line, *col, false),
             Expr::Unary { op, expr, .. } => {
                 self.compile_value(expr)?;
                 match op {
@@ -4758,6 +4793,8 @@ impl<'a> Gen<'a> {
                     if name == "length" && self.is_dynamic(base.ty()) && zero.is_zero() {
                         if self.is_returned(base) {
                             self.op(RETURNDATASIZE);
+                        } else if self.string_header(base)? {
+                            self.header_length();
                         } else {
                             self.compile_value(base)?;
                         }
@@ -9186,6 +9223,7 @@ impl<'a> Gen<'a> {
         }
     }
 
+    /// `header` leaves a stored string's slot word instead of the string.
     fn compile_index_read(
         &mut self,
         sym: usize,
@@ -9193,6 +9231,7 @@ impl<'a> Gen<'a> {
         index: &Expr,
         line: u32,
         col: u32,
+        header: bool,
     ) -> Result<(), Error> {
         let ty = self.type_at(self.checked.syms[sym].ty, leaf);
         match self.checked.types[ty].kind {
@@ -9217,12 +9256,12 @@ impl<'a> Gen<'a> {
                 self.mstore_off(self.scratch_a);
                 self.list_bounds(sym, leaf, false)?;
                 self.list_slot(sym, leaf);
-                self.journal_load();
+                self.load_slot(self.bytes_elem(ty) && !header);
                 Ok(())
             }
             TyKind::Map => {
                 self.push_map_slot(sym, leaf, &[index])?;
-                self.journal_load();
+                self.load_slot(self.bytes_elem(ty) && !header);
                 Ok(())
             }
             _ => Err(error(line, col, "this value cannot be indexed")),
@@ -9278,7 +9317,7 @@ impl<'a> Gen<'a> {
                 self.mark_dirty(sym, leaf);
                 self.stored_list_base(sym, leaf);
                 self.op(ADD);
-                self.journal_store();
+                self.store_slot(self.bytes_elem(ty));
                 Ok(())
             }
             TyKind::List => {
@@ -9287,7 +9326,7 @@ impl<'a> Gen<'a> {
                 self.mstore_off(self.scratch_a);
                 self.list_bounds(sym, leaf, true)?;
                 self.list_slot(sym, leaf);
-                self.journal_store();
+                self.store_slot(self.bytes_elem(ty));
                 Ok(())
             }
             TyKind::Map if reads_slot(value, sym, leaf, index) => {
@@ -9304,13 +9343,13 @@ impl<'a> Gen<'a> {
                 result?;
                 self.mload(at);
                 self.transient_slot = transient;
-                self.journal_store();
+                self.store_slot(self.bytes_elem(ty));
                 Ok(())
             }
             TyKind::Map => {
                 self.compile_value(value)?;
                 self.push_map_slot(sym, leaf, &[index])?;
-                self.journal_store();
+                self.store_slot(self.bytes_elem(ty));
                 Ok(())
             }
             _ => Err(error(
@@ -9806,6 +9845,291 @@ impl<'a> Gen<'a> {
         self.call_sub(Sub::JournalStore);
     }
 
+    /// Whether a stored list's elements, or a map's values, are strings or bytes.
+    fn bytes_elem(&self, ty: usize) -> bool {
+        let t = &self.checked.types[self.peel_nominal(ty)];
+        t.elem
+            .or(t.right)
+            .is_some_and(|e| self.is_dynamic(self.peel_nominal(e)))
+    }
+
+    /// Pushes the slot word of a stored string or bytes value, if `e` is one, for reading
+    /// its length without copying it.
+    fn string_header(&mut self, e: &Expr) -> Result<bool, Error> {
+        match e {
+            Expr::Ident { sym: Some(s), .. } if self.header_locals.contains(s) => {
+                self.mload(self.local[*s]);
+            }
+            Expr::Field {
+                root: Some(sid),
+                leaf,
+                ..
+            } if self.checked.syms[*sid].storage && self.map_place(e).is_none() => {
+                self.mload(self.addr(*sid, *leaf));
+            }
+            Expr::Index {
+                root: Some(sid),
+                base,
+                ..
+            } if self.checked.syms[*sid].storage && matches!(base.as_ref(), Expr::Index { .. }) => {
+                self.map_chain(e)?;
+                self.journal_load();
+            }
+            Expr::Index {
+                root: Some(sid),
+                leaf,
+                index,
+                line,
+                col,
+                ..
+            } if self.checked.syms[*sid].storage
+                && self.checked.types[self.type_at(self.checked.syms[*sid].ty, *leaf)].bits == 0 =>
+            {
+                self.compile_index_read(*sid, *leaf, index, *line, *col, true)?;
+            }
+            _ => return Ok(false),
+        }
+        Ok(true)
+    }
+
+    /// A slot word of a string or bytes value becomes its length: `word / 2`, of the low
+    /// byte alone when the value is short.
+    fn header_length(&mut self) {
+        self.op(DUP1);
+        self.push_u64(1);
+        self.op(AND);
+        self.op(PUSH0);
+        self.op(SUB);
+        self.push_u64(0x7f);
+        self.op(OR);
+        self.op(SWAP1);
+        self.push_u64(1);
+        self.op(SHR);
+        self.op(AND);
+    }
+
+    /// `[slot]` becomes the value stored there. A string or bytes value keeps Solidity's
+    /// layout: a long one has its length in the slot and its data from `keccak(slot)`.
+    fn load_slot(&mut self, bytes: bool) {
+        if !bytes {
+            return self.journal_load();
+        }
+        let transient = std::mem::take(&mut self.transient_slot);
+        self.call_sub(Sub::LoadSlotBytes(transient, self.direct));
+    }
+
+    /// `[value, slot]` writes the value there, as `load_slot` reads it.
+    fn store_slot(&mut self, bytes: bool) {
+        if !bytes {
+            return self.journal_store();
+        }
+        let transient = std::mem::take(&mut self.transient_slot);
+        if !self.direct && !transient {
+            if let Some(body) = self.body_mut() {
+                body.journal_stores = true;
+            }
+        }
+        self.call_sub(Sub::StoreSlotBytes(transient, self.direct));
+    }
+
+    /// `[slot, ret]` becomes `[value]`.
+    fn sub_load_slot_bytes(&mut self, transient: bool) -> Result<(), Error> {
+        let (short, top, done) = (self.fresh(), self.fresh(), self.fresh());
+        self.op(SWAP1);
+        self.op(DUP1);
+        self.transient_slot = transient;
+        self.journal_load();
+        // [ret, slot, word]
+        self.op(DUP1);
+        self.push_u64(1);
+        self.op(AND);
+        self.op(ISZERO);
+        self.push_label(short);
+        self.op(JUMPI);
+        self.push_u64(1);
+        self.op(SHR);
+        self.alloc_blob()?;
+        self.op(SWAP1);
+        self.mstore_off(self.hash_buf);
+        self.push_u64(32);
+        self.push_mem(self.hash_buf);
+        self.op(KECCAK);
+        self.op(PUSH0);
+        // [ret, ptr, base, i] while `32 * i < len`
+        self.jumpdest(top);
+        self.op(DUP1 + 2);
+        self.op(MLOAD);
+        self.op(DUP1 + 1);
+        self.push_u64(5);
+        self.op(SHL);
+        self.op(LT);
+        self.op(ISZERO);
+        self.push_label(done);
+        self.op(JUMPI);
+        self.op(DUP1);
+        self.op(DUP1 + 2);
+        self.op(ADD);
+        self.transient_slot = transient;
+        self.journal_load();
+        self.op(DUP1 + 1);
+        self.push_u64(5);
+        self.op(SHL);
+        self.op(DUP1 + 4);
+        self.op(ADD);
+        self.push_u64(32);
+        self.op(ADD);
+        self.op(MSTORE);
+        self.push_u64(1);
+        self.op(ADD);
+        self.push_label(top);
+        self.op(JUMP);
+        self.jumpdest(done);
+        self.op(POP);
+        self.op(POP);
+        self.tag_blob();
+        self.op(SWAP1);
+        self.op(JUMP);
+        self.jumpdest(short);
+        self.op(SWAP1);
+        self.op(POP);
+        self.op(SWAP1);
+        self.op(JUMP);
+        Ok(())
+    }
+
+    /// `[value, slot, ret]` becomes `[]`. Data slots the old value used past the new one's
+    /// are zeroed first, as Solidity does.
+    fn sub_store_slot_bytes(&mut self, transient: bool) {
+        let (keep, clear, cleared, short, top, done) = (
+            self.fresh(),
+            self.fresh(),
+            self.fresh(),
+            self.fresh(),
+            self.fresh(),
+            self.fresh(),
+        );
+        self.op(SWAP1 + 1);
+        self.op(DUP1 + 1);
+        self.mstore_off(self.hash_buf);
+        self.push_u64(32);
+        self.push_mem(self.hash_buf);
+        self.op(KECCAK);
+        // [ret, slot, value, base, kept slots]
+        self.op(PUSH0);
+        self.op(DUP1 + 2);
+        self.push_u64(1);
+        self.op(AND);
+        self.op(ISZERO);
+        self.push_label(keep);
+        self.op(JUMPI);
+        self.op(POP);
+        self.op(DUP1 + 1);
+        self.push_u64(1);
+        self.op(SHR);
+        self.op(MLOAD);
+        self.push_u64(31);
+        self.op(ADD);
+        self.push_u64(5);
+        self.op(SHR);
+        self.jumpdest(keep);
+        // The old value's data slots: `ceil(len / 32)` when it is long, else none.
+        self.op(DUP1 + 3);
+        self.transient_slot = transient;
+        self.journal_load();
+        self.op(DUP1);
+        self.push_u64(1);
+        self.op(AND);
+        self.op(SWAP1);
+        self.push_u64(1);
+        self.op(SHR);
+        self.push_u64(31);
+        self.op(ADD);
+        self.push_u64(5);
+        self.op(SHR);
+        self.op(MUL);
+        self.op(SWAP1);
+        // [ret, slot, value, base, old slots, i]
+        self.jumpdest(clear);
+        self.op(DUP1 + 1);
+        self.op(DUP1 + 1);
+        self.op(LT);
+        self.op(ISZERO);
+        self.push_label(cleared);
+        self.op(JUMPI);
+        self.op(PUSH0);
+        self.op(DUP1 + 1);
+        self.op(DUP1 + 4);
+        self.op(ADD);
+        self.transient_slot = transient;
+        self.journal_store();
+        self.push_u64(1);
+        self.op(ADD);
+        self.push_label(clear);
+        self.op(JUMP);
+        self.jumpdest(cleared);
+        self.op(POP);
+        self.op(POP);
+        self.op(DUP1 + 1);
+        self.push_u64(1);
+        self.op(AND);
+        self.op(ISZERO);
+        self.push_label(short);
+        self.op(JUMPI);
+        self.op(SWAP1);
+        self.push_u64(1);
+        self.op(SHR);
+        self.op(DUP1);
+        self.op(MLOAD);
+        self.push_u64(1);
+        self.op(SHL);
+        self.push_u64(1);
+        self.op(OR);
+        self.op(DUP1 + 3);
+        self.transient_slot = transient;
+        self.journal_store();
+        self.op(PUSH0);
+        // [ret, slot, base, ptr, i] while `32 * i < len`
+        self.jumpdest(top);
+        self.op(DUP1 + 1);
+        self.op(MLOAD);
+        self.op(DUP1 + 1);
+        self.push_u64(5);
+        self.op(SHL);
+        self.op(LT);
+        self.op(ISZERO);
+        self.push_label(done);
+        self.op(JUMPI);
+        self.op(DUP1);
+        self.push_u64(5);
+        self.op(SHL);
+        self.op(DUP1 + 2);
+        self.op(ADD);
+        self.push_u64(32);
+        self.op(ADD);
+        self.op(MLOAD);
+        self.op(DUP1 + 1);
+        self.op(DUP1 + 4);
+        self.op(ADD);
+        self.transient_slot = transient;
+        self.journal_store();
+        self.push_u64(1);
+        self.op(ADD);
+        self.push_label(top);
+        self.op(JUMP);
+        self.jumpdest(done);
+        for _ in 0..4 {
+            self.op(POP);
+        }
+        self.op(JUMP);
+        self.jumpdest(short);
+        // [ret, slot, value, base]
+        self.op(POP);
+        self.op(SWAP1);
+        self.transient_slot = transient;
+        self.journal_store();
+        self.op(JUMP);
+    }
+
     /// Calls a shared helper. The return label goes on the stack above its inputs.
     fn call_sub(&mut self, sub: Sub) {
         let label = match self.subs.iter().find(|(have, _, _)| *have == sub) {
@@ -9855,17 +10179,28 @@ impl<'a> Gen<'a> {
                 Sub::LoadBytes => self.bytes_helper(false)?,
                 Sub::MulDiv => self.sub_mul_div()?,
                 Sub::DecodeList(elem) => self.sub_decode_list(elem)?,
-                Sub::LoadList(k, transient, direct) => {
+                Sub::LoadList(k, transient, direct, bytes) => {
                     let was = std::mem::replace(&mut self.direct, direct);
-                    let result = self.sub_load_list(k, transient);
+                    let result = self.sub_load_list(k, transient, bytes);
                     self.direct = was;
                     result?;
                 }
-                Sub::StoreList(k, transient, direct) => {
+                Sub::StoreList(k, transient, direct, bytes) => {
                     let was = std::mem::replace(&mut self.direct, direct);
-                    let result = self.sub_store_list(k, transient);
+                    let result = self.sub_store_list(k, transient, bytes);
                     self.direct = was;
                     result?;
+                }
+                Sub::LoadSlotBytes(transient, direct) => {
+                    let was = std::mem::replace(&mut self.direct, direct);
+                    let result = self.sub_load_slot_bytes(transient);
+                    self.direct = was;
+                    result?;
+                }
+                Sub::StoreSlotBytes(transient, direct) => {
+                    let was = std::mem::replace(&mut self.direct, direct);
+                    self.sub_store_slot_bytes(transient);
+                    self.direct = was;
                 }
                 Sub::RevertData => {
                     self.revert_data_value()?;

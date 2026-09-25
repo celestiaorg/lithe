@@ -1,0 +1,55 @@
+(* Benchmark: strings and bytes as map values and list elements. Mirrors names.sol. *)
+
+storage is record {
+  names : map(nat, string);
+  blobs : map(bytes32, bytes);
+  labels : map(address, map(nat, string));
+  notes : list(string);
+}
+
+external function set_name(const id : nat; const n : string) is {
+  storage.names[id] := n;
+}
+
+external view function name(const id : nat) : string is
+  storage.names[id]
+
+external function set_blob(const key : bytes32; const b : bytes) is {
+  storage.blobs[key] := b;
+}
+
+external view function blob(const key : bytes32) : bytes is
+  storage.blobs[key]
+
+external function set_label(const id : nat; const l : string) is {
+  storage.labels[Evm.sender()][id] := l;
+}
+
+external view function label(const who : address; const id : nat) : string is
+  storage.labels[who][id]
+
+external function add_note(const n : string) is {
+  storage.notes[storage.notes.length] := n;
+}
+
+external function set_note(const i : nat; const n : string) is {
+  storage.notes[i] := n;
+}
+
+external view function note(const i : nat) : string is
+  storage.notes[i]
+
+external function set_notes(const a : string; const b : string) is {
+  storage.notes := [a, b];
+}
+
+external view function note_copy(const i : nat) : string is {
+  const ns : list(string) := storage.notes;
+} with ns[i]
+
+external view function notes_length() : nat is {
+  var total : nat := 0n;
+  for n : string in storage.notes bound 8 do {
+    total := total + n.length;
+  }
+} with total

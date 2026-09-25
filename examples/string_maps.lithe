@@ -1,0 +1,49 @@
+(* Strings and bytes as map values and list elements, of any length. Each is laid out as
+   Solidity lays out `mapping(K => string)` and `string[]`: up to 31 bytes in the slot,
+   longer values as a length there and data from `keccak(slot)`. *)
+
+storage is record {
+  bios : map(address, string);
+  files : map(bytes32, bytes);
+  titles : map(address, map(nat, string));
+  log : list(string);
+}
+
+external function set_bio(const bio : string) is {
+  storage.bios[Evm.sender()] := bio;
+}
+
+external view function bio(const who : address) : string is
+  storage.bios[who]
+
+external function store(const data : bytes) is {
+  storage.files[Crypto.keccak256(data)] := data;
+}
+
+external view function file(const hash : bytes32) : bytes is
+  storage.files[hash]
+
+external function set_title(const id : nat; const title : string) is {
+  storage.titles[Evm.sender()][id] := title;
+}
+
+external view function title(const who : address; const id : nat) : string is
+  storage.titles[who][id]
+
+external function append(const entry : string) is {
+  storage.log[storage.log.length] := entry;
+}
+
+external function amend(const i : nat; const entry : string) is {
+  storage.log[i] := entry;
+}
+
+external view function entry(const i : nat) : string is
+  storage.log[i]
+
+external view function logged() : nat is {
+  var total : nat := 0n;
+  for e : string in storage.log bound 16 do {
+    total := total + e.length;
+  }
+} with total

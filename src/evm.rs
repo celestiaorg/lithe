@@ -8714,6 +8714,232 @@ interface IAdd is {
     }
 }
 
+/// A `bytes` or `string` of any length round-trips as a map value or a list element, laid
+/// out as Solidity lays it out, and a shorter value clears the data slots it no longer uses.
+#[test]
+fn long_strings_round_trip_in_maps_and_lists() {
+    let src = "\
+interface Me is { view function peek() : nat; }
+storage is record {
+  m : map(bytes32, bytes); s : map(nat, string); mm : map(nat, map(nat, string));
+  l : list(string); one : bytes; n : nat;
+}
+external view function peek() : nat is storage.n
+external function put(const k : nat; const d : bytes) is { storage.m[bytes32(k)] := d; }
+external view function get(const k : nat) : bytes is storage.m[bytes32(k)]
+external function put_s(const k : nat; const d : string) is { storage.s[k] := d; }
+external view function get_s(const k : nat) : string is storage.s[k]
+external function put_mm(const k : nat; const d : string) is { storage.mm[k][2n] := d; }
+external view function get_mm(const k : nat) : string is storage.mm[k][2n]
+external function put_l(const k : nat; const d : string) is {
+  if storage.l.length = 0n then { storage.l[storage.l.length] := d; } else { storage.l[k] := d; }
+}
+external view function get_l(const k : nat) : string is storage.l[k]
+external function put_all(const k : nat; const d : string) is {
+  var xs : list(string) := storage.l;
+  xs[k] := d;
+  storage.l := xs;
+}
+external view function get_all(const k : nat) : string is {
+  const xs : list(string) := storage.l;
+} with xs[k]
+external function put_j(const me : Me; const k : nat; const d : bytes) is {
+  storage.n := storage.n + 1n;
+  storage.m[bytes32(k)] := d;
+  storage.n := query me.peek();
+  storage.n := storage.m[bytes32(k)].length;
+}
+external view function get_j(const k : nat) : bytes is storage.m[bytes32(k)]
+external view function total() : nat is {
+  var n : nat := 0n;
+  for x : string in storage.l do { n := n + x.length; }
+} with n
+";
+    let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
+    let w = Word::from_u64;
+    let me = w(0x1000);
+    let lens = [0usize, 31, 32, 40, 61, 64, 100, 20, 33, 0];
+    for (put, get, ty) in [
+        ("put", "get", "bytes"),
+        ("put_s", "get_s", "string"),
+        ("put_mm", "get_mm", "string"),
+        ("put_l", "get_l", "string"),
+        ("put_all", "get_all", "string"),
+        ("put_j", "get_j", "bytes"),
+    ] {
+        let mut storage = HashMap::new();
+        for len in lens {
+            let data: Vec<u8> = (0..len as u8).map(|i| i ^ 0xa5).collect();
+            let (sig, mut args) = match put {
+                "put_j" => ("put_j(address,uint256,bytes)".to_string(), vec![Arg::W(me)]),
+                _ => (format!("{put}(uint256,{ty})"), vec![]),
+            };
+            args.extend([Arg::W(w(0)), Arg::B(data.clone())]);
+            let out = exec(
+                &runtime,
+                &encode_args(&sig, &args),
+                storage,
+                w(7),
+                w(0),
+                w(0),
+            )
+            .expect(put);
+            assert!(!out.reverted, "{put} {len}: {}", pretty(&out.returndata));
+            storage = out.storage;
+            let read = |sig: &str| {
+                let got = exec(
+                    &runtime,
+                    &word_data(sig, &[w(0)]),
+                    storage.clone(),
+                    w(7),
+                    w(0),
+                    w(0),
+                )
+                .expect(sig);
+                assert!(!got.reverted, "{sig} {len}: {}", pretty(&got.returndata));
+                got.returndata
+            };
+            assert_eq!(
+                abi_string_value(&read(&format!("{get}(uint256)"))),
+                data,
+                "{get} {len}"
+            );
+            if put == "put_j" {
+                assert_eq!(
+                    slot(&storage, 5),
+                    w(len as u64),
+                    "put_j reads its write {len}"
+                );
+            }
+            if put == "put_l" {
+                assert_eq!(
+                    load_bytes(&read("total()"), 0),
+                    w(len as u64),
+                    "total {len}"
+                );
+            }
+            if put == "put" {
+                let head = keccak256(&[0u8; 64]);
+                let slot = |k: [u8; 32]| {
+                    storage
+                        .get(&Word::from_be_bytes(k))
+                        .copied()
+                        .unwrap_or(w(0))
+                };
+                if len < 32 {
+                    assert_eq!(slot(head), Word::short_dyn(&data), "header {len}");
+                } else {
+                    assert_eq!(slot(head), w(2 * len as u64 + 1), "header {len}");
+                    let first = Word::from_be_bytes(data[..32].try_into().unwrap());
+                    assert_eq!(slot(keccak256(&head)), first, "data {len}");
+                }
+            }
+        }
+        let used: Vec<_> = storage.iter().filter(|(_, v)| **v != w(0)).collect();
+        assert!(used.len() <= 2, "{put} leaves stale slots: {used:?}");
+    }
+}
+
+/// `examples/string_maps.lithe` keeps long values in maps and lists.
+#[test]
+fn string_maps_example_keeps_long_values() {
+    let runtime = deploy(&compile(include_str!("../examples/string_maps.lithe")).expect("compile"))
+        .expect("deploy");
+    let w = Word::from_u64;
+    let mut storage = HashMap::new();
+    let mut send = |sig: &str, args: &[Arg]| {
+        let out = exec(&runtime, &encode_args(sig, args), storage.clone(), w(7), w(0), w(0))
+            .expect(sig);
+        assert!(!out.reverted, "{sig}: {}", pretty(&out.returndata));
+        storage = out.storage;
+        out.returndata
+    };
+    let file = vec![0x42u8; 70];
+    let entries = [vec![b'a'; 45], vec![b'b'; 3], vec![b'c'; 100]];
+    send("store(bytes)", &[Arg::B(file.clone())]);
+    for e in &entries {
+        send("append(string)", &[Arg::B(e.clone())]);
+    }
+    send("amend(uint256,string)", &[Arg::W(w(2)), Arg::B(vec![b'd'; 33])]);
+    let hash = Word::from_be_bytes(keccak256(&file));
+    assert_eq!(abi_string_value(&send("file(bytes32)", &[Arg::W(hash)])), file);
+    assert_eq!(abi_string_value(&send("entry(uint256)", &[Arg::W(w(0))])), entries[0]);
+    assert_eq!(abi_string_value(&send("entry(uint256)", &[Arg::W(w(2))])), vec![b'd'; 33]);
+    assert_eq!(load_bytes(&send("logged()", &[]), 0), w(45 + 3 + 33));
+}
+
+/// `.length` of a stored string or bytes value reads only its slot, and agrees with the
+/// value's length at every size, in a body that writes in place and in one that journals.
+#[test]
+fn stored_string_lengths_read_the_slot() {
+    let src = "\
+interface Me is { view function peek() : nat; }
+storage is record {
+  one : bytes; m : map(nat, string); mm : map(nat, map(nat, bytes)); l : list(string); n : nat;
+}
+external view function peek() : nat is storage.n
+external function put(const d : bytes; const t : string) is {
+  storage.one := d;
+  storage.m[1n] := t;
+  storage.mm[1n][2n] := d;
+  storage.l[storage.l.length] := t;
+}
+external view function lengths() : (nat, nat, nat, nat, nat, bool) is {
+  var total : nat := 0n;
+  for s : string in storage.l do { total := total + s.length; }
+} with (storage.one.length, storage.m[1n].length, storage.mm[1n][2n].length,
+  storage.l[storage.l.length - 1n].length, total, storage.m[1n].length = 0n)
+external view function last() : string is {
+  var last : string := \"\";
+  for s : string in storage.l do { if s.length > 0n then { last := s; } }
+} with last
+external function journaled(const me : Me) is {
+  storage.n := storage.n + 1n;
+  storage.n := query me.peek();
+  storage.n := storage.one.length + storage.m[1n].length + storage.mm[1n][2n].length;
+}
+";
+    let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
+    let w = Word::from_u64;
+    let mut storage = HashMap::new();
+    let mut total = 0;
+    for len in [0usize, 1, 31, 32, 33, 64, 127, 128, 200, 5] {
+        let out = exec(
+            &runtime,
+            &encode_args("put(bytes,string)", &[Arg::B(vec![0x61; len]), Arg::B(vec![0x62; len])]),
+            storage,
+            w(7),
+            w(0),
+            w(0),
+        )
+        .expect("put");
+        assert!(!out.reverted, "put {len}: {}", pretty(&out.returndata));
+        storage = out.storage;
+        total += len;
+        let got = exec(&runtime, &word_data("lengths()", &[]), storage.clone(), w(7), w(0), w(0))
+            .expect("lengths");
+        let words: Vec<Word> = (0..6).map(|i| load_bytes(&got.returndata, 32 * i)).collect();
+        let n = w(len as u64);
+        assert_eq!(words, [n, n, n, n, w(total as u64), w((len == 0) as u64)], "{len}");
+        if len > 0 {
+            let got = exec(&runtime, &word_data("last()", &[]), storage.clone(), w(7), w(0), w(0))
+                .expect("last");
+            assert_eq!(abi_string_value(&got.returndata), vec![0x62; len], "last {len}");
+        }
+        let out = exec(
+            &runtime,
+            &word_data("journaled(address)", &[w(0x1000)]),
+            storage.clone(),
+            w(7),
+            w(0),
+            w(0),
+        )
+        .expect("journaled");
+        assert!(!out.reverted, "journaled {len}: {}", pretty(&out.returndata));
+        assert_eq!(slot(&out.storage, 4), w(3 * len as u64), "journaled {len}");
+    }
+}
+
 /// A short `bytes` or `string` argument keeps only its own bytes from the word after its
 /// length, which may be padding or the next argument.
 #[test]
