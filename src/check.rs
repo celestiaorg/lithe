@@ -193,7 +193,6 @@ struct FnSig {
     params: Vec<(usize, bool)>,
     ret: usize,
     kind: ItemKind,
-    effectful: bool,
 }
 
 struct Checker {
@@ -1219,8 +1218,7 @@ pub(crate) fn check(mut prog: Program) -> Result<Checked, Error> {
     c.pieces = vec![Vec::new(); nfuncs];
     c.declared = vec![None; nfuncs];
     let mut names = HashSet::new();
-    let effects = effectful_flags(&prog.funcs);
-    for (f, effectful) in prog.funcs.iter().zip(effects) {
+    for f in &prog.funcs {
         // External functions may share a name: nothing inside calls them, and each
         // overload's ABI signature must still differ.
         let external = matches!(f.kind, ItemKind::Entry | ItemKind::View);
@@ -1230,7 +1228,7 @@ pub(crate) fn check(mut prog: Program) -> Result<Checked, Error> {
         if !names.insert(f.name.clone()) && (!external || clash) {
             return Err(error(f.line, f.col, format!("duplicate name `{}`", f.name)));
         }
-        c.prepare_sig(f, effectful)?;
+        c.prepare_sig(f)?;
     }
     c.match_declared_types(&prog.funcs)?;
     for module in &prog.modules {
@@ -2187,7 +2185,7 @@ impl Checker {
         }
     }
 
-    fn prepare_sig(&mut self, f: &Func, effectful: bool) -> Result<(), Error> {
+    fn prepare_sig(&mut self, f: &Func) -> Result<(), Error> {
         let mut params = Vec::with_capacity(f.params.len());
         for p in &f.params {
             let id = self.build(&p.ty)?;
@@ -2202,7 +2200,6 @@ impl Checker {
             params,
             ret,
             kind: f.kind,
-            effectful,
         });
         Ok(())
     }
@@ -3172,6 +3169,23 @@ impl Checker {
     }
 
     /// The body does something its declared effect does not allow.
+    /// A callee's own body is checked against its declared kind, so the kind alone says
+    /// what calling it does.
+    fn callee_effect(&self, line: u32, col: u32, name: &str, kind: ItemKind) -> Result<(), Error> {
+        if self.is_pure() && kind != ItemKind::Pure {
+            return Err(self.weaker(line, col, &format!("calls `{name}`, which is not pure")));
+        }
+        if matches!(self.kind, ItemKind::View | ItemKind::Readonly)
+            && matches!(
+                kind,
+                ItemKind::Function | ItemKind::Entry | ItemKind::Migrate | ItemKind::Deploy
+            )
+        {
+            return Err(self.weaker(line, col, &format!("calls `{name}`, which is stateful")));
+        }
+        Ok(())
+    }
+
     fn weaker(&self, line: u32, col: u32, did: &str) -> Error {
         let declared = if self.external_pure {
             "external pure function"
@@ -4474,13 +4488,7 @@ impl Checker {
                 }
                 let sig_kind = self.sigs[idx].kind;
                 let sig_ret = self.sigs[idx].ret;
-                let effectful = self.sigs[idx].effectful;
                 let params = self.sigs[idx].params.clone();
-                let stateful = effectful
-                    || matches!(
-                        sig_kind,
-                        ItemKind::Function | ItemKind::Entry | ItemKind::Migrate | ItemKind::Deploy
-                    );
                 if matches!(sig_kind, ItemKind::Entry | ItemKind::View) {
                     return Err(error(
                         *line,
@@ -4491,20 +4499,7 @@ impl Checker {
                         ),
                     ));
                 }
-                if self.is_pure() && sig_kind != ItemKind::Pure {
-                    return Err(self.weaker(
-                        *line,
-                        *col,
-                        &format!("calls `{name}`, which is not pure"),
-                    ));
-                }
-                if matches!(self.kind, ItemKind::View | ItemKind::Readonly) && stateful {
-                    return Err(self.weaker(
-                        *line,
-                        *col,
-                        &format!("calls `{name}`, which is stateful"),
-                    ));
-                }
+                self.callee_effect(*line, *col, name, sig_kind)?;
                 if args.len() != params.len() {
                     return Err(error(
                         *line,
@@ -6256,6 +6251,7 @@ impl Checker {
                 return Err(error(arg.line(), arg.col(), "argument has the wrong type"));
             }
         }
+        self.callee_effect(line, col, &target.qualified, self.sigs[idx].kind)?;
         *args = kept_args;
         *callee = Some(idx);
         *ty = self.sigs[idx].ret;
@@ -6322,12 +6318,7 @@ impl Checker {
             func.requires.clear();
         }
         let idx = self.work.len();
-        let effectful = {
-            let mut funcs = self.work.clone();
-            funcs.push(func.clone());
-            effectful_flags(&funcs).pop().unwrap_or(false)
-        };
-        self.prepare_sig(&func, effectful)?;
+        self.prepare_sig(&func)?;
         self.work.push(func.clone());
         self.pieces.push(Vec::new());
         self.declared.push(None);
@@ -7915,170 +7906,6 @@ fn retired_builtin(name: &str) -> Option<&'static str> {
         "chain_id" => "Evm.chain_id()",
         _ => return None,
     })
-}
-
-fn effectful_flags(funcs: &[Func]) -> Vec<bool> {
-    fn walk(f: &Func, funcs: &[Func], stack: &mut Vec<usize>, index: usize) -> bool {
-        if stack.contains(&index) {
-            return false;
-        }
-        if matches!(
-            f.kind,
-            ItemKind::Function | ItemKind::Entry | ItemKind::Migrate | ItemKind::Deploy
-        ) {
-            return true;
-        }
-        stack.push(index);
-        let hit = stmts_effect(&f.stmts, funcs, stack)
-            || f.tail
-                .as_ref()
-                .is_some_and(|e| expr_effect(e, funcs, stack));
-        stack.pop();
-        hit
-    }
-    fn reason_effect(reason: &Raised, funcs: &[Func], stack: &mut Vec<usize>) -> bool {
-        match &reason.form {
-            RaisedForm::Unit => false,
-            RaisedForm::Positional(expr) => expr_effect(expr, funcs, stack),
-            RaisedForm::Fields(fields) => fields.iter().any(|(_, e)| expr_effect(e, funcs, stack)),
-        }
-    }
-    fn stmts_effect(stmts: &[Stmt], funcs: &[Func], stack: &mut Vec<usize>) -> bool {
-        stmts_effect_in(stmts, funcs, stack, &mut Vec::new())
-    }
-    /// `vars` are the locals declared so far. Assigning one of them changes nothing outside.
-    fn stmts_effect_in(
-        stmts: &[Stmt],
-        funcs: &[Func],
-        stack: &mut Vec<usize>,
-        vars: &mut Vec<String>,
-    ) -> bool {
-        let outer = vars.len();
-        let hit = stmts.iter().any(|s| {
-            if let Stmt::Var { name, .. } = s {
-                vars.push(name.clone());
-            }
-            stmt_effect(s, funcs, stack, vars)
-        });
-        vars.truncate(outer);
-        hit
-    }
-    fn stmt_effect(
-        s: &Stmt,
-        funcs: &[Func],
-        stack: &mut Vec<usize>,
-        vars: &mut Vec<String>,
-    ) -> bool {
-        match s {
-            Stmt::Assign {
-                path,
-                index: None,
-                expr,
-                ..
-            } if path.len() == 1 && vars.contains(&path[0]) => expr_effect(expr, funcs, stack),
-            Stmt::Assign { .. } | Stmt::Emit { .. } | Stmt::Defer { .. } => true,
-            Stmt::Const { expr, .. } | Stmt::Var { expr, .. } => expr_effect(expr, funcs, stack),
-            Stmt::If {
-                cond,
-                then_body,
-                else_body,
-                ..
-            } => {
-                expr_effect(cond, funcs, stack)
-                    || stmts_effect_in(then_body, funcs, stack, vars)
-                    || stmts_effect_in(else_body, funcs, stack, vars)
-            }
-            Stmt::Assert { cond, reason, .. } => {
-                expr_effect(cond, funcs, stack) || reason_effect(reason, funcs, stack)
-            }
-            Stmt::Fail { reason, .. } => reason_effect(reason, funcs, stack),
-            Stmt::Call { expr, .. } => expr_effect(expr, funcs, stack),
-            Stmt::AssignTuple { names, expr, .. } if names.iter().all(|n| vars.contains(n)) => {
-                expr_effect(expr, funcs, stack)
-            }
-            Stmt::AssignTuple { .. } => true,
-            Stmt::For {
-                iter,
-                until,
-                body,
-                ..
-            } => {
-                let iter_hit = match iter {
-                    ForIter::Range { lo, hi } => {
-                        expr_effect(lo, funcs, stack) || expr_effect(hi, funcs, stack)
-                    }
-                    ForIter::List(xs) => expr_effect(xs, funcs, stack),
-                };
-                iter_hit
-                    || until.as_ref().is_some_and(|c| expr_effect(c, funcs, stack))
-                    || stmts_effect_in(body, funcs, stack, vars)
-            }
-            Stmt::Skip { .. } => false,
-        }
-    }
-    fn expr_effect(e: &Expr, funcs: &[Func], stack: &mut Vec<usize>) -> bool {
-        match e {
-            Expr::Query { .. } => false,
-            Expr::Call {
-                name, args, base, ..
-            } => {
-                if let Some(base) = base {
-                    if let Expr::Ident { name: module, .. } = base.as_ref() {
-                        if matches!(
-                            module.as_str(),
-                            "Evm" | "Crypto" | "Abi" | "Nat" | "Int" | "Bytes" | "String"
-                        ) {
-                            return args.iter().any(|a| expr_effect(a, funcs, stack));
-                        }
-                        let qualified = format!("{module}.{name}");
-                        if let Some(i) = funcs.iter().position(|f| f.name == qualified) {
-                            if walk(&funcs[i], funcs, stack, i) {
-                                return true;
-                            }
-                        }
-                    }
-                }
-                if name == "transfer"
-                    && matches!(base.as_deref(), Some(Expr::Ident { name: m, .. }) if m == "Evm")
-                {
-                    return true;
-                }
-                if let Some(i) = funcs.iter().position(|f| f.name == *name) {
-                    if walk(&funcs[i], funcs, stack, i) {
-                        return true;
-                    }
-                }
-                args.iter().any(|a| expr_effect(a, funcs, stack))
-                    || base.as_ref().is_some_and(|b| expr_effect(b, funcs, stack))
-            }
-            Expr::Case { scrut, arms, .. } => {
-                expr_effect(scrut, funcs, stack)
-                    || arms.iter().any(|a| {
-                        stmts_effect(&a.stmts, funcs, stack) || expr_effect(&a.expr, funcs, stack)
-                    })
-            }
-            Expr::Unary { expr, .. } => expr_effect(expr, funcs, stack),
-            Expr::Binary { left, right, .. } | Expr::Pair { left, right, .. } => {
-                expr_effect(left, funcs, stack) || expr_effect(right, funcs, stack)
-            }
-            Expr::Tuple { elems, .. } | Expr::List { elems, .. } => {
-                elems.iter().any(|elem| expr_effect(elem, funcs, stack))
-            }
-            Expr::Record { fields, .. } => fields
-                .iter()
-                .any(|(_, expr)| expr_effect(expr, funcs, stack)),
-            Expr::Field { base, .. } => expr_effect(base, funcs, stack),
-            Expr::Index { base, index, .. } => {
-                expr_effect(base, funcs, stack) || expr_effect(index, funcs, stack)
-            }
-            Expr::Lit { .. } | Expr::Ident { .. } => false,
-        }
-    }
-    funcs
-        .iter()
-        .enumerate()
-        .map(|(i, f)| walk(f, funcs, &mut Vec::new(), i))
-        .collect()
 }
 
 fn require_payable(funcs: &[Func]) -> Result<(), Error> {

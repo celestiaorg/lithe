@@ -1769,7 +1769,11 @@ const REJECT_RULES: &[(&str, &str)] = &[
     ),
     (
         "reject/readonly_calls.lithe",
-        "declared effect is weaker than the body's: view function `peek` calls `mid`, which is stateful",
+        "declared effect is weaker than the body's: view function `mid` calls `bump`, which is stateful",
+    ),
+    (
+        "reject/view_list_writer.lithe",
+        "declared effect is weaker than the body's: external view function `get` calls `bump`, which is stateful",
     ),
     (
         "reject/pure_storage.lithe",
