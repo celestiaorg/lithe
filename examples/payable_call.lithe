@@ -1,0 +1,30 @@
+(* Forward ether to another contract with the call. The interface says which methods take
+   value: `payable function deposit` does, `balanceOf` is read with `query`, and
+   `withdraw` is an ordinary state-changing call. *)
+
+interface Vault is {
+  view function balanceOf(owner : address) : nat;
+  payable function deposit(owner : address);
+  function withdraw(amount : nat);
+}
+
+storage is record {
+  vault : Vault;
+  forwarded : wei;
+}
+
+external function init(const vault : Vault) is {
+  storage.vault := vault;
+}
+
+external payable function forward() is {
+  storage.forwarded := storage.forwarded + Evm.value();
+  defer storage.vault.deposit(Evm.sender()) with value = nat(Evm.value());
+}
+
+external function take(const amount : nat) is {
+  defer storage.vault.withdraw(amount);
+}
+
+external view function held() : nat is
+  query storage.vault.balanceOf(Evm.self())

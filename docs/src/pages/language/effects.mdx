@@ -28,7 +28,18 @@ interface IERC20 is {
 }
 ```
 
-Method names and parameter types form the ABI signature exactly as written: `transferFrom(address,address,uint256)`. Parameters are `name : type`. A method with no result leaves it out, and a method may list the errors it raises with `raises`. Only a `payable function` accepts value. Arguments and results can be strings, bytes, and lists as well as words. A method can be overloaded; a call picks the overload whose parameters its arguments match.
+Method names and parameter types form the ABI signature exactly as written: `transferFrom(address,address,uint256)`. Parameters are `name : type`. A method with no result leaves it out, and a method may list the errors it raises with `raises`. Arguments and results can be strings, bytes, and lists as well as words. A method can be overloaded; a call picks the overload whose parameters its arguments match.
+
+A method's keywords are its ABI `stateMutability`, and say how it can be called:
+
+| Method | ABI | Called with |
+| --- | --- | --- |
+| `view function` | `view` | `query` |
+| `pure function` | `pure` | `query` |
+| `function` | `nonpayable` | `defer` |
+| `payable function` | `payable` | `defer`, with or without [`with value`](#sending-ether-with-a-call) |
+
+Declare a method `payable` when the contract it describes accepts ether with the call, as its own ABI says.
 
 A `query` reads one word, a string, bytes, or a list, and a deferred call's result reaches its continuation as a static value, a string, bytes, or a list. An interface can describe any ABI; these limits apply where a method is called.
 
@@ -125,7 +136,7 @@ Deferred calls forward all remaining gas. If a deferred call reverts, the whole 
 
 ### Sending ether with a call
 
-Attach ether with `with value = amount`. The amount is a `nat` number of wei:
+Attach ether with `with value = amount`. The amount is a `nat` number of wei. Only a method its interface declares `payable function` takes value:
 
 ```lithe
 interface Pool is {
@@ -139,6 +150,26 @@ storage is record {
 external payable nonreentrant function forward() is {
   defer storage.pool.deposit(Evm.sender()) with value = nat(Evm.value());
 }
+```
+
+Sending value to any other method is an error, because the callee would reject it:
+
+```lithe rejects
+interface Pool is {
+  function deposit(beneficiary : address);
+}
+
+storage is record {
+  pool : Pool;
+}
+
+external payable function forward() is {
+  defer storage.pool.deposit(Evm.sender()) with value = nat(Evm.value());
+}
+```
+
+```text
+`deposit` is not payable; declare it `payable function deposit` in its interface to send value
 ```
 
 ## `Evm.transfer`

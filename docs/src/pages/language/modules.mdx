@@ -109,7 +109,7 @@ A method is an external's header as an interface writes it: no `external`, `name
 
 - the name and parameter types pick one external. An overloaded external is exposed once for each overload the interfaces list
 - the parameter names and result must match
-- the effect must match: `view`, `pure`, or stateful. So must `payable`
+- the effect must match: `view`, `pure`, or stateful. So must `payable`: a module's `external payable function` is exposed as `payable function`
 - `raises` must list the same errors. A named error set counts as its members
 
 `nonreentrant`, and whether a parameter is `const` or `var`, are how the module defines the external, so an interface doesn't repeat them. A module appears in one `external use`, which lists all its interfaces. For part of an interface, declare the part inline, or as an interface of its own.

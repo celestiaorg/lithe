@@ -1,0 +1,11 @@
+interface Vault is {
+  function deposit(owner : address);
+}
+
+storage is record {
+  vault : Vault;
+}
+
+external payable function forward() is {
+  defer storage.vault.deposit(Evm.sender()) with value = nat(Evm.value());
+}
