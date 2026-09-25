@@ -47,3 +47,31 @@ external function track(const id : bytes32) is {
   const order : order_id := order_id(id);
   Set.add(storage.orders, order);
 }
+
+(* A module passes its own storage to a generic module the same way. *)
+module Watchlist is {
+  storage watchlist at "lithe.watchlist" is record {
+    watched : SetEnumerable(address);
+  }
+
+  external function watch(const account : address) is {
+    SetEnumerable.add(watchlist.watched, account);
+  }
+
+  external function unwatch(const account : address) is {
+    SetEnumerable.remove(watchlist.watched, account);
+  }
+
+  external view function is_watched(const account : address) : bool is
+    SetEnumerable.contains(watchlist.watched, account)
+
+  external view function watched_count() : nat is
+    SetEnumerable.length(watchlist.watched)
+}
+
+external use Watchlist is {
+  function watch(account : address);
+  function unwatch(account : address);
+  view function is_watched(account : address) : bool;
+  view function watched_count() : nat;
+}

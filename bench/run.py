@@ -218,6 +218,19 @@ SCENARIOS = {
         ("call", "A", "decode(string)", ["Pz8_-,A"], None),
         ("call", "A", "decode(string)", [base64.b64encode(bytes(range(256)) * 4).decode()], None),
     ],
+    # A module passes its own namespaced storage to a generic module, once per key type.
+    "tally": [
+        ("send", "A", "vote(bytes32,uint256)", ["0x" + "01" * 32, "3"], None),
+        ("send", "B", "vote(bytes32,uint256)", ["0x" + "01" * 32, "5"], None),
+        ("send", "A", "vote(bytes32,uint256)", ["0x" + "02" * 32, "7"], None),
+        ("send", "B", "vote(bytes32,uint256)", ["0x" + "02" * 32, "0"], None),
+        ("send", "B", "vote(bytes32,uint256)", ["0x" + "03" * 32, str(2**256 - 1)], None),
+        ("call", "A", "votes_of(address)", [ADDR["A"]], None),
+        ("call", "A", "votes_of(address)", [ADDR["B"]], None),
+        ("call", "A", "votes_for(bytes32)", ["0x" + "01" * 32], None),
+        ("call", "A", "votes_for(bytes32)", ["0x" + "03" * 32], None),
+        ("call", "A", "total_votes()", [], None),
+    ],
     "registry": [
         ("send", "A", "rename(string)", ["hello"], None),
         ("call", "A", "name()", [], None),

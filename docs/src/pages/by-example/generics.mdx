@@ -51,6 +51,25 @@ external view function member_at(const i : nat) : address
   raises Out_of_bounds
 is
   SetEnumerable.at(storage.members, i)
+
+(* A module passes its own storage to a generic module the same way. *)
+module Watchlist is {
+  storage watchlist at "lithe.watchlist" is record {
+    watched : SetEnumerable(address);
+  }
+
+  external function watch(const who : address) is {
+    SetEnumerable.add(watchlist.watched, who);
+  }
+
+  external view function watched_count() : nat is
+    SetEnumerable.length(watchlist.watched)
+}
+
+external use Watchlist is {
+  function watch(who : address);
+  view function watched_count() : nat;
+}
 ```
 
 ```lithe [lib/set.lithe]
@@ -127,4 +146,5 @@ module SetEnumerable(T : map_key) is {
 :::
 
 - `Set.add(storage.admins, who)` works on the storage location it is given. The set module owns no storage of its own.
+- `Watchlist` hands `watchlist.watched`, from its own storage, to `SetEnumerable` just as the contract hands over `storage.members`.
 - `map_key` limits `T` to types that can key a map. `Set(string)` is rejected.

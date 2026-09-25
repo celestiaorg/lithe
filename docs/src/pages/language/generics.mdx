@@ -112,3 +112,5 @@ type `string` does not satisfy `map_key`
 ## Storage parameters
 
 A generic module function that takes a storage value, such as `const set : self`, receives a reference to that storage location, not a copy. `Set.add(storage.admins, who)` writes to `storage.admins`. That is how collection modules work without owning a named domain of their own.
+
+A module passes its own storage the same way. Inside a module that declares `storage roles`, `Set.add(roles.admins, who)` writes to `roles.admins`.

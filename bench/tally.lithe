@@ -1,0 +1,54 @@
+(* Benchmark: a module keeps generic tallies in its own namespaced storage and passes
+   them to a generic module. Mirrors tally.sol. *)
+
+module Tally(K : map_key) is {
+  type self is record {
+    counts : map(K, nat);
+    total : nat;
+  }
+
+  view function count(const tally : self; const key : K) : nat is
+    tally.counts[key]
+
+  view function total(const tally : self) : nat is
+    tally.total
+
+  function add(const tally : self; const key : K; const n : nat) is {
+    tally.counts[key] := tally.counts[key] + n;
+    tally.total := tally.total + n;
+  }
+}
+
+module Votes is {
+  storage votes at "bench.votes" is record {
+    by_voter : Tally(address);
+    by_topic : Tally(bytes32);
+  }
+
+  error Zero_weight;
+
+  external function vote(const topic : bytes32; const weight : nat)
+    raises Zero_weight
+  is {
+    assert(weight > 0n, Zero_weight);
+    Tally.add(votes.by_voter, Evm.sender(), weight);
+    Tally.add(votes.by_topic, topic, weight);
+  }
+
+  external view function votes_of(const voter : address) : nat is
+    Tally.count(votes.by_voter, voter)
+
+  external view function votes_for(const topic : bytes32) : nat is
+    Tally.count(votes.by_topic, topic)
+
+  external view function total_votes() : nat is
+    Tally.total(votes.by_topic)
+}
+
+external use Votes is {
+  function vote(topic : bytes32; weight : nat)
+    raises Zero_weight;
+  view function votes_of(voter : address) : nat;
+  view function votes_for(topic : bytes32) : nat;
+  view function total_votes() : nat;
+}

@@ -7095,7 +7095,7 @@ fn path_expr(line: u32, col: u32, path: &[String]) -> Expr {
 
 fn storage_path(expr: &Expr) -> Option<Vec<String>> {
     match expr {
-        Expr::Ident { name, .. } => Some(vec![name.clone()]),
+        Expr::Ident { name, .. } => Some(name.split('.').map(str::to_string).collect()),
         Expr::Field { base, name, .. } => {
             let mut path = storage_path(base)?;
             path.push(name.clone());

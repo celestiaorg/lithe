@@ -2382,6 +2382,42 @@ fn generics_specialize_sets() {
     let tracked = call(&runtime, "track(bytes32)", &[Word::from_u64(9)]);
     assert!(!tracked.reverted, "{}", pretty(&tracked.returndata));
 
+    let mut state = tracked.storage.clone();
+    for (sig, args) in [
+        ("watch(address)", alice),
+        ("watch(address)", bob),
+        ("unwatch(address)", alice),
+    ] {
+        let sent = exec(
+            &runtime,
+            &word_data(sig, &[args]),
+            state,
+            caller,
+            Word::from_u64(0),
+            Word::from_u64(0),
+        )
+        .expect(sig);
+        assert!(!sent.reverted, "{sig}: {}", pretty(&sent.returndata));
+        state = sent.storage;
+    }
+    for (sig, args, want) in [
+        ("watched_count()", vec![], 1),
+        ("is_watched(address)", vec![alice], 0),
+        ("is_watched(address)", vec![bob], 1),
+        ("validator_count()", vec![], 0),
+    ] {
+        let got = exec(
+            &runtime,
+            &word_data(sig, &args),
+            state.clone(),
+            caller,
+            Word::from_u64(0),
+            Word::from_u64(0),
+        )
+        .expect(sig);
+        assert_eq!(load_bytes(&got.returndata, 0), Word::from_u64(want), "{sig}");
+    }
+
     let mixed = r#"
 module Set(T : map_key) is {
   type self is map(T, bool);
