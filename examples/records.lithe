@@ -1,0 +1,56 @@
+(* Records as values: returned by functions, read field by field, and stored whole. *)
+
+type range is record {
+  low : nat;
+  high : nat;
+}
+
+type quote is record {
+  filled : bool;
+  price : nat;
+  band : range;
+}
+
+storage is record {
+  last : quote;
+  quotes : map(nat, quote);
+}
+
+pure function span(const mid : nat) : range is { low = mid; high = mid * 2n; }
+
+pure function quote_at(const price : nat) : quote is {
+  filled = true;
+  price = price;
+  band = { low = price + 1n; high = price + 2n; };
+}
+
+external view function spread(const price : nat) : nat is {
+  const a : quote := quote_at(price);
+  const b : quote := quote_at(price + 100n);
+} with a.price + a.band.high + b.price
+
+(* A field of a call's result, without naming the record first. *)
+external view function low_plus(const price : nat) : nat is
+  quote_at(price).band.low + quote_at(price + 10n).price
+
+external view function span_high(const mid : nat) : nat is span(mid).high
+
+external view function quote_of(const price : nat) : quote is quote_at(price)
+
+external function save(const price : nat) is {
+  storage.last := quote_at(price);
+  storage.quotes[price] := quote_at(price);
+}
+
+(* Every field on the right reads `storage.last` as it was before the write. *)
+external function flip() is {
+  storage.last := {
+    filled = storage.last.filled;
+    price = storage.last.band.low;
+    band = { low = storage.last.price; high = storage.last.band.high; };
+  };
+}
+
+external view function last() : nat is storage.last.price * 1000n + storage.last.band.low
+
+external view function high_of(const price : nat) : nat is storage.quotes[price].band.high

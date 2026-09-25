@@ -3347,6 +3347,8 @@ impl Checker {
                 self.check_expr_as(expr, Some(value_ty))?;
                 if self.types[value_ty].kind != TyKind::Option
                     && self.types[value_ty].kind != TyKind::Tuple
+                    && !(self.types[value_ty].kind == TyKind::Record
+                        && is_static_value(&self.types, value_ty))
                     && !is_word(self.types[value_ty].kind)
                     && !self.list_value(value_ty)
                     && !(map_value && is_stored_aggregate(&self.types, value_ty))
@@ -3958,6 +3960,32 @@ impl Checker {
                     return Ok(());
                 }
                 Err(self.unbound(*line, *col, name))
+            }
+            // A field of a value no name holds, such as a call's result.
+            Expr::Field {
+                base,
+                name,
+                ty,
+                line,
+                col,
+                ..
+            } if !is_named(base) => {
+                self.check_expr(base)?;
+                let rec = &self.types[peel_id(&self.types, base.ty())];
+                let dynamic = matches!(rec.kind, TyKind::String | TyKind::List | TyKind::Bytes)
+                    && rec.bits == 0;
+                if dynamic && name == "length" {
+                    *ty = TY_NAT;
+                    return Ok(());
+                }
+                if rec.kind != TyKind::Record {
+                    return Err(error(*line, *col, "field access on a non-record"));
+                }
+                let Some(f) = rec.fields.iter().find(|f| f.name == *name) else {
+                    return Err(error(*line, *col, format!("no field `{name}`")));
+                };
+                *ty = f.ty;
+                Ok(())
             }
             Expr::Field { .. } | Expr::Index { .. } => {
                 let p = self.place(e)?;
@@ -7074,6 +7102,15 @@ fn storage_path(expr: &Expr) -> Option<Vec<String>> {
             Some(path)
         }
         _ => None,
+    }
+}
+
+/// Whether a field or index chain starts at a name, so it is a place.
+fn is_named(expr: &Expr) -> bool {
+    match expr {
+        Expr::Ident { .. } | Expr::Index { .. } => true,
+        Expr::Field { base, .. } => is_named(base),
+        _ => false,
     }
 }
 

@@ -593,6 +593,8 @@ fn rewrite(w: &[Inst]) -> Option<(usize, Vec<Inst>)> {
             Some((2, vec![Op(POP); pops]))
         }
         [Op(SWAP1), Op(POP), Op(POP), ..] => Some((3, vec![Op(POP), Op(POP)])),
+        // Nothing reads MSIZE, so a load has no effect but its value.
+        [Op(MLOAD), Op(POP), ..] => Some((2, vec![Op(POP)])),
         // A copy stored, then the original dropped: store the original.
         [Op(DUP1), c, Op(MSTORE | SSTORE), Op(POP), ..] if is_const(c) => Some((
             4,
@@ -626,6 +628,9 @@ fn rewrite(w: &[Inst]) -> Option<(usize, Vec<Inst>)> {
         [Push(o), Op(SWAP1), Op(DIV), ..] if *o == one => Some((3, vec![])),
         [Push(a), Op(MSTORE), Push(b), Op(MLOAD), ..] if a == b => {
             Some((4, vec![Op(DUP1), Push(*a), Op(MSTORE)]))
+        }
+        [Push(a), Op(MSTORE), Op(POP), Push(b), Op(MLOAD), ..] if a == b => {
+            Some((5, vec![Op(DUP1), Push(*a), Op(MSTORE), Op(SWAP1), Op(POP)]))
         }
         [Push(a), Op(MLOAD), Push(b), Op(MLOAD), ..] if a == b => {
             Some((4, vec![Push(*a), Op(MLOAD), Op(DUP1)]))

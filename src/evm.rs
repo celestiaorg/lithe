@@ -3011,6 +3011,109 @@ fn options_work_as_values() {
     assert_eq!(read(&pair, "pair_or()", &[]), n(1008));
 }
 
+/// A function's record result binds to a name, has its fields read, and is stored whole.
+#[test]
+fn record_results_are_values() {
+    let src = include_str!("../examples/records.lithe");
+    let rt = deploy(&compile(src).expect("compile")).expect("deploy");
+    let n = Word::from_u64;
+    let empty = HashMap::new();
+    let read = |st: &HashMap<Word, Word>, sig: &str, args: &[Word]| read_ok(&rt, st, sig, args);
+    assert_eq!(read(&empty, "spread(uint256)", &[n(5)]), n(5 + 7 + 105));
+    assert_eq!(read(&empty, "low_plus(uint256)", &[n(5)]), n(6 + 15));
+    assert_eq!(read(&empty, "span_high(uint256)", &[n(4)]), n(8));
+    let quote = run_ok(&rt, &empty, "quote_of(uint256)", &[n(3)]).returndata;
+    let words: Vec<Word> = (0..4).map(|i| load_bytes(&quote, i * 32)).collect();
+    assert_eq!(words, [n(1), n(3), n(4), n(5)]);
+    let saved = run_ok(&rt, &empty, "save(uint256)", &[n(7)]).storage;
+    assert_eq!(read(&saved, "last()", &[]), n(7008));
+    assert_eq!(read(&saved, "high_of(uint256)", &[n(7)]), n(9));
+    let flipped = run_ok(&rt, &saved, "flip()", &[]).storage;
+    assert_eq!(read(&flipped, "last()", &[]), n(8007));
+}
+
+/// Record results in transient storage, in a body whose writes wait for a query, as
+/// arguments, and through calls that return another call's record.
+#[test]
+fn record_results_everywhere() {
+    install_mocks();
+    let src = r#"
+interface Echo is {
+  view function echo(n : nat) : nat;
+}
+
+type inner is record { a : nat; b : int16; }
+type v is record { ok : bool; d : int16; i : inner; }
+
+storage is record { r : v; k : nat; }
+
+transient storage t is record { r : v; }
+
+pure function mk(const n : nat; const d : int16) : v is {
+  ok = true;
+  d = d;
+  i = { a = n; b = d - int16(1); };
+}
+
+pure function wrap(const n : nat) : v is mk(n + 1n, int16(-3))
+
+pure function total(const x : v) : nat is x.i.a
+
+external function later(const e : Echo; const n : nat) is {
+  storage.r := mk(n, int16(-2));
+  storage.k := query e.echo(storage.r.i.a);
+}
+
+external function flash(const n : nat) : int16 is {
+  t.r := mk(n, int16(-7));
+} with t.r.d + t.r.i.b
+
+external view function chain(const n : nat) : nat is
+  wrap(n).i.a + total(mk(n, int16(0))) + total({ ok = false; d = int16(0); i = { a = 5n; b = int16(0); }; })
+
+external view function neg() : int16 is wrap(1n).i.b
+
+external view function r_d() : int16 is storage.r.d
+
+external view function r_b() : int16 is storage.r.i.b
+
+external view function k() : nat is storage.k
+
+pure function once(const n : nat) : v is {
+  ok = false;
+  d = int16(-9);
+  i = { a = n * 2n; b = int16(4); };
+}
+
+external view function once_d(const n : nat) : int16 is int16(1) + once(n).d
+"#;
+    let rt = deploy(&compile(src).expect("compile")).expect("deploy");
+    let n = Word::from_u64;
+    let neg = |v: u64| n(v).wrapping_neg();
+    let empty = HashMap::new();
+    let read = |st: &HashMap<Word, Word>, sig: &str, args: &[Word]| read_ok(&rt, st, sig, args);
+    assert_eq!(read(&empty, "chain(uint256)", &[n(4)]), n(5 + 4 + 5));
+    assert_eq!(read(&empty, "neg()", &[]), neg(4));
+    assert_eq!(read(&empty, "flash(uint256)", &[n(1)]), neg(15));
+    let later = run_ok(&rt, &empty, "later(address,uint256)", &[n(0xcd), n(6)]).storage;
+    assert_eq!(read(&later, "k()", &[]), n(6));
+    assert_eq!(read(&later, "r_d()", &[]), neg(2));
+    assert_eq!(read(&later, "r_b()", &[]), neg(3));
+    assert_eq!(read(&empty, "once_d(uint256)", &[n(2)]), neg(8));
+    let overflow = exec(
+        &rt,
+        &word_data("once_d(uint256)", &[n(0).not()]),
+        empty.clone(),
+        n(1),
+        n(0),
+        n(0),
+    );
+    assert!(
+        overflow.expect("once_d").reverted,
+        "an unread field still fails"
+    );
+}
+
 /// A missing map key reads as `None`, so a map of options tells "never set" from zero.
 /// Options also sit in records held by maps, and in transient storage and its maps.
 #[test]

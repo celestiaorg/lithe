@@ -46,8 +46,19 @@ external function move(const x : uint128; const y : uint128) is {
 
 external view function x() : uint128 is
   storage.origin.x
+
+(* A function can return a record, like any other value. *)
+pure function swapped(const p : point) : point is { x = p.y; y = p.x; }
+
+external function reflect() is {
+  storage.origin := swapped(storage.origin);
+}
+
+external view function reflected_x() : uint128 is
+  swapped(storage.origin).x
 ```
 
 - A record literal takes its type from context: a storage slot, an annotation, or a parameter.
 - `get` returns a record, which the ABI flattens into named outputs `(uint8 priority, bool done)`, like a Solidity struct getter.
 - Records inside maps must be made of word-sized fields, with no `string` or `bytes`.
+- `swapped` returns a record. `reflect` stores the whole result at once, and `reflected_x` reads one field straight off the call. A whole-record store builds the new value before writing any of it, so `swapped` sees the old `origin`.

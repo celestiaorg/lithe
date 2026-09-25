@@ -690,7 +690,8 @@ impl<'a> Gen<'a> {
             let returned = matches!(f.kind, ItemKind::Entry | ItemKind::View)
                 && is_static_aggregate(&g.checked.types, f.ret_ty);
             let option = ret.kind == TyKind::Option && ret.words > 1;
-            if (ret.kind == TyKind::Tuple || returned || option) && ret.words > 0 {
+            let aggregate = matches!(ret.kind, TyKind::Tuple | TyKind::Record);
+            if (aggregate || returned || option) && ret.words > 0 {
                 let words = ret.words;
                 *slot = g.region(Region::FnRet(i), words * 32);
             }
@@ -2282,11 +2283,15 @@ impl<'a> Gen<'a> {
             if let Node::Stmt(Stmt::Assign {
                 root: Some(sym),
                 leaf,
+                expr,
                 ..
             }) = node
             {
                 if self.checked.syms[*sym].storage {
-                    let ty = self.type_at(self.checked.syms[*sym].ty, *leaf);
+                    let ty = match self.checked.types[expr.ty()].kind {
+                        TyKind::Record => expr.ty(),
+                        _ => self.type_at(self.checked.syms[*sym].ty, *leaf),
+                    };
                     let n = self.checked.types[ty].words.max(1);
                     written.borrow_mut().push((*sym, *leaf, n));
                 }
@@ -3568,14 +3573,21 @@ impl<'a> Gen<'a> {
                 if index.is_some() {
                     return self.compile_index_write(root, *leaf, index.as_ref().unwrap(), expr);
                 }
-                let ty = self.type_at(self.checked.syms[root].ty, *leaf);
+                // A record shares its first leaf with its first field, so the value says which.
+                let ty = match self.checked.types[expr.ty()].kind {
+                    TyKind::Record => expr.ty(),
+                    _ => self.type_at(self.checked.syms[root].ty, *leaf),
+                };
                 if self.checked.types[ty].kind == TyKind::Option {
                     return self.compile_option_store(root, *leaf, expr);
                 }
+                if self.checked.types[ty].kind == TyKind::Record {
+                    return self.assign_record(root, *leaf, expr, ty);
+                }
                 if self.checked.types[ty].kind == TyKind::Tuple {
                     let addr = self.addr(root, *leaf);
-                    self.write_words(expr, addr)?;
                     let n = self.checked.types[ty].words;
+                    self.write_words(expr, addr)?;
                     for i in 0..n {
                         self.mark_dirty(root, *leaf + i);
                     }
@@ -3607,6 +3619,78 @@ impl<'a> Gen<'a> {
             Stmt::Defer {
                 expr, value, then, ..
             } => self.compile_defer(expr, value.as_ref(), then.as_deref()),
+        }
+    }
+
+    /// A whole record written to a named place. Every word is on the stack before the first
+    /// is written, so the value may read the record it replaces.
+    fn assign_record(
+        &mut self,
+        root: usize,
+        leaf: u32,
+        expr: &Expr,
+        ty: usize,
+    ) -> Result<(), Error> {
+        let n = self.checked.types[ty].words;
+        if !self.push_record_words(expr)? {
+            let src = self.value_addr(expr)?;
+            for i in 0..n {
+                self.mload(src + i as i32 * 32);
+            }
+        }
+        if self.direct && self.checked.syms[root].storage {
+            self.store_record_slots(self.checked.syms[root].slot + leaf, n);
+            return Ok(());
+        }
+        let addr = self.addr(root, leaf);
+        for i in (0..n).rev() {
+            self.mstore_off(addr + i as i32 * 32);
+            self.mark_dirty(root, leaf + i);
+        }
+        Ok(())
+    }
+
+    /// Stores the `n` words on the stack, the last on top, over the leaves from `first`.
+    /// A stored record starts a slot and fills every slot it reaches, so each slot's words
+    /// are joined and written whole, with nothing read first.
+    fn store_record_slots(&mut self, first: u32, n: u32) {
+        let mut end = n;
+        while end > 0 {
+            let key = self.checked.leaf_keys[(first + end - 1) as usize];
+            // Transient leaves hold whole words, one to a slot, as `mstore_off` writes them.
+            if self.checked.transient_leaf(first + end - 1) {
+                self.push_word(key);
+                self.op(TSTORE);
+                end -= 1;
+                continue;
+            }
+            let start = (0..end)
+                .rev()
+                .take_while(|&j| self.checked.leaf_keys[(first + j) as usize] == key)
+                .last()
+                .unwrap_or(end - 1);
+            for j in (start..end).rev() {
+                if j + 1 < end {
+                    self.op(SWAP1);
+                }
+                let pack = self.checked.leaf_pack[(first + j) as usize];
+                if !pack.is_full() {
+                    if pack.signed {
+                        self.push_word(byte_mask(pack.width));
+                        self.op(AND);
+                    }
+                    if pack.offset > 0 {
+                        self.push_u64(u64::from(pack.offset) * 8);
+                        self.op(SHL);
+                    }
+                }
+                if j + 1 < end {
+                    self.op(OR);
+                }
+            }
+            self.push_word(key);
+            self.op(SSTORE);
+            end = start;
         }
     }
 
@@ -3646,9 +3730,14 @@ impl<'a> Gen<'a> {
             return Ok(());
         }
         let n = self.checked.types[ty].words;
-        self.return_sites += 1;
-        let buf = self.region(Region::Stored(self.return_sites), n * 32);
-        self.write_field(expr, buf, ty)?;
+        let buf = if self.checked.types[ty].kind == TyKind::Record {
+            self.value_addr(expr)?
+        } else {
+            self.return_sites += 1;
+            let buf = self.region(Region::Stored(self.return_sites), n * 32);
+            self.write_field(expr, buf, ty)?;
+            buf
+        };
         slot(self)?;
         self.store_value(value, start, n, buf);
         Ok(())
@@ -3780,8 +3869,14 @@ impl<'a> Gen<'a> {
 
     fn write_record(&mut self, expr: &Expr, dst: i32, ty: usize) -> Result<(), Error> {
         let Expr::Record { fields, .. } = expr else {
-            let src = self.value_addr(expr)?;
             let n = self.checked.types[ty].words;
+            if self.push_record_words(expr)? {
+                for i in (0..n).rev() {
+                    self.mstore_off(dst + i as i32 * 32);
+                }
+                return Ok(());
+            }
+            let src = self.value_addr(expr)?;
             self.copy_words(src, dst, n);
             return Ok(());
         };
@@ -4235,6 +4330,14 @@ impl<'a> Gen<'a> {
             let f = &self.checked.prog.funcs[idx];
             return Err(error(f.line, f.col, "recursion is not supported"));
         }
+        self.bind_params(idx, args)?;
+        if self.plan.outline.contains(&idx) {
+            return self.call_func(idx);
+        }
+        self.inline_body(idx, |g| g.func_body(idx))
+    }
+
+    fn bind_params(&mut self, idx: usize, args: &[Expr]) -> Result<(), Error> {
         let params = self.checked.prog.funcs[idx].params.clone();
         let mut stacked: Vec<(usize, u32)> = Vec::new();
         for (arg, param) in args.iter().zip(&params) {
@@ -4248,7 +4351,7 @@ impl<'a> Gen<'a> {
             }
             if n == 1 {
                 self.compile_value(arg)?;
-            } else {
+            } else if !self.push_record_words(arg)? {
                 let src = self.value_addr(arg)?;
                 for i in 0..n {
                     self.mload(src + i as i32 * 32);
@@ -4262,18 +4365,80 @@ impl<'a> Gen<'a> {
                 self.mstore_off(base + i as i32 * 32);
             }
         }
-        if self.plan.outline.contains(&idx) {
-            return self.call_func(idx);
-        }
+        Ok(())
+    }
+
+    /// Compiles a call's body in place, noting its size for the outlining plan.
+    fn inline_body(
+        &mut self,
+        idx: usize,
+        body: impl FnOnce(&mut Self) -> Result<(), Error>,
+    ) -> Result<(), Error> {
         let start = self.code.len();
         self.compiling.push(idx);
-        let result = self.func_body(idx);
+        let result = body(self);
         self.compiling.pop();
         let bytes: usize = self.code[start..].iter().map(inst_bytes).sum();
         let entry = self.inlined.entry(idx).or_insert((0, 0));
         entry.0 += 1;
         entry.1 = entry.1.max(bytes);
         result
+    }
+
+    /// Whether a record's words can each be computed onto the stack: a literal of one-word
+    /// values, or an inlined call that ends in one.
+    fn stack_record(&self, e: &Expr, seen: &mut Vec<usize>) -> bool {
+        match e {
+            Expr::Record { ty, .. } => {
+                let mut parts = Vec::new();
+                record_words(&self.checked.types, e, *ty, &mut parts)
+                    && parts.len() == self.checked.types[*ty].words as usize
+                    && parts.iter().all(|p| self.stack_value(p.ty()))
+            }
+            Expr::Call {
+                callee: Some(idx), ..
+            } if self.checked.types[e.ty()].kind == TyKind::Record
+                && !self.plan.outline.contains(idx)
+                && !self.compiling.contains(idx)
+                && !seen.contains(idx) =>
+            {
+                seen.push(*idx);
+                let tail = self.checked.prog.funcs[*idx].tail.as_ref();
+                tail.is_some_and(|t| self.stack_record(t, seen))
+            }
+            _ => false,
+        }
+    }
+
+    /// Pushes a record's words, the last on top, if `stack_record` allows it.
+    fn push_record_words(&mut self, e: &Expr) -> Result<bool, Error> {
+        if !self.stack_record(e, &mut Vec::new()) {
+            return Ok(false);
+        }
+        match e {
+            Expr::Call {
+                callee: Some(idx),
+                args,
+                ..
+            } => {
+                let idx = *idx;
+                self.bind_params(idx, args)?;
+                let f = &self.checked.prog.funcs[idx];
+                let (stmts, tail) = (f.stmts.clone(), f.tail.clone().expect("checked"));
+                self.inline_body(idx, |g| {
+                    g.compile_stmts(&stmts)?;
+                    g.push_record_words(&tail).map(|_| ())
+                })?;
+            }
+            _ => {
+                let mut parts = Vec::new();
+                record_words(&self.checked.types, e, e.ty(), &mut parts);
+                for part in parts {
+                    self.compile_value(part)?;
+                }
+            }
+        }
+        Ok(true)
     }
 
     /// Statements, then the tail: one word on the stack, a tuple in `fn_ret`, or nothing.
@@ -4286,6 +4451,8 @@ impl<'a> Gen<'a> {
             let tret = &self.checked.types[ret];
             if tret.kind == TyKind::Tuple {
                 self.write_words(tail, self.fn_ret[idx])?;
+            } else if tret.kind == TyKind::Record {
+                self.write_value(tail, self.fn_ret[idx], ret)?;
             } else if tret.kind == TyKind::Option && tret.words > 1 {
                 self.write_option(tail, self.fn_ret[idx], ret)?;
             } else if tret.words == 1 {
@@ -4300,7 +4467,8 @@ impl<'a> Gen<'a> {
     fn func_leaves(&self, idx: usize) -> usize {
         let f = &self.checked.prog.funcs[idx];
         let tret = &self.checked.types[f.ret_ty];
-        usize::from(f.tail.is_some() && tret.kind != TyKind::Tuple && tret.words == 1)
+        let aggregate = matches!(tret.kind, TyKind::Tuple | TyKind::Record);
+        usize::from(f.tail.is_some() && !aggregate && tret.words == 1)
     }
 
     /// Calls a function compiled once. Its arguments are already in its parameters.
@@ -4484,6 +4652,33 @@ impl<'a> Gen<'a> {
                 let layout = self.value_layout(value);
                 self.map_chain(index)?;
                 self.load_value_word(&layout, start);
+                Ok(())
+            }
+            Expr::Field {
+                root: None,
+                line,
+                col,
+                ty,
+                ..
+            } => {
+                if !self.stack_value(*ty) {
+                    return Err(error(*line, *col, "expected a word"));
+                }
+                if let Some((record, word)) = self.stack_field(e) {
+                    // Every word is computed, since any may fail; only the one read stays.
+                    let n = self.checked.types[record.ty()].words;
+                    self.push_record_words(record)?;
+                    for _ in word + 1..n {
+                        self.op(POP);
+                    }
+                    for _ in 0..word {
+                        self.op(SWAP1);
+                        self.op(POP);
+                    }
+                    return Ok(());
+                }
+                let src = self.value_addr(e)?;
+                self.mload(src);
                 Ok(())
             }
             Expr::Field {
@@ -8659,6 +8854,23 @@ impl<'a> Gen<'a> {
                 self.write_value(e, buf, ty)?;
                 Ok(buf)
             }
+            Expr::Field {
+                root: None,
+                base,
+                name,
+                line,
+                col,
+                ..
+            } => {
+                let src = self.value_addr(base)?;
+                let rec = &self.checked.types[self.peel_nominal(base.ty())];
+                let field = rec
+                    .fields
+                    .iter()
+                    .find(|f| f.name == *name)
+                    .ok_or_else(|| error(*line, *col, format!("no field `{name}`")))?;
+                Ok(src + field.slot as i32 * 32)
+            }
             _ => self.addr_expr(e),
         }
     }
@@ -10141,6 +10353,26 @@ impl<'a> Gen<'a> {
         }
     }
 
+    /// For a field read off a record that `stack_record` allows: the record, and the word.
+    fn stack_field<'e>(&self, e: &'e Expr) -> Option<(&'e Expr, u32)> {
+        let Expr::Field {
+            root: None,
+            base,
+            name,
+            ..
+        } = e
+        else {
+            return None;
+        };
+        let rec = &self.checked.types[self.peel_nominal(base.ty())];
+        let slot = rec.fields.iter().find(|f| f.name == *name)?.slot;
+        if self.stack_record(base, &mut Vec::new()) {
+            return Some((base, slot));
+        }
+        let (record, word) = self.stack_field(base)?;
+        Some((record, word + slot))
+    }
+
     /// The storage leaf behind an image address, if it is one.
     fn image_leaf(&self, addr: i32) -> Option<u32> {
         let leaves = self.checked.leaves as i32;
@@ -10531,6 +10763,42 @@ fn wrap_init_checked(runtime: &[u8], parts: &[Word]) -> Result<Vec<u8>, Error> {
 
 /// Whether two expressions name the same value: the same local, literal, field, element,
 /// or context read, with no call that could differ between evaluations.
+/// The one-word values of a record literal, nested literals included, in word order.
+/// False when a field is missing or is some other multi-word value.
+fn record_words<'e>(
+    types: &[crate::check::RType],
+    expr: &'e Expr,
+    ty: usize,
+    out: &mut Vec<&'e Expr>,
+) -> bool {
+    let Expr::Record { fields, .. } = expr else {
+        return false;
+    };
+    let mut layout: Vec<_> = types[ty].fields.iter().collect();
+    layout.sort_by_key(|f| f.slot);
+    layout.iter().all(|field| {
+        let Some((_, value)) = fields.iter().find(|(name, _)| *name == field.name) else {
+            return false;
+        };
+        if out.len() != field.slot as usize {
+            return false;
+        }
+        match value {
+            Expr::Record { .. } => {
+                let mut inner = Vec::new();
+                let ok = record_words(types, value, field.ty, &mut inner);
+                out.extend(inner);
+                ok
+            }
+            _ if types[field.ty].words == 1 => {
+                out.push(value);
+                true
+            }
+            _ => false,
+        }
+    })
+}
+
 fn same_expr(a: &Expr, b: &Expr) -> bool {
     match (a, b) {
         (Expr::Ident { sym: Some(x), .. }, Expr::Ident { sym: Some(y), .. }) => x == y,

@@ -33,6 +33,22 @@ storage is record {
   orders : map(nat, order);
   pairs : map(address, map(nat, pair));
   tail : uint8;
+  head : pair;
+  top : order;
+}
+
+pure function fresh(const owner : address; const amount : nat; const delta : int16) : order is {
+  status = uint8(2);
+  owner = owner;
+  amount = amount;
+  small = uint32(5);
+  inner = { flag = delta < int16(0); delta = delta; };
+  last = uint64(9);
+}
+
+pure function split(const total : uint128) : pair is {
+  a = total / uint128(2);
+  b = total - total / uint128(2);
 }
 
 external function place(const id : nat; const amount : nat; const small : uint32; const delta : int16) is {
@@ -69,6 +85,34 @@ external function pair_set(const k : nat; const a : uint128; const b : uint128) 
   storage.pairs[Evm.sender()][k] := { a = a; b = b; };
   storage.pairs[Evm.sender()][k + 1n].b := b;
 }
+
+(* A function's record result, stored whole outside a map and inside one. *)
+external function head_set(const total : uint128) is {
+  storage.head := split(total);
+  storage.pairs[Evm.sender()][0n] := split(total + uint128(1));
+}
+
+(* The new value is built from the old one before any of it is written. *)
+external function head_swap() is {
+  storage.head := { a = storage.head.b; b = storage.head.a; };
+}
+
+external view function odd_of(const total : uint128) : uint128 is {
+  const p : pair := split(total);
+} with p.b - split(total).a
+
+(* Whole records over packed slots: from a map entry, and from a function. *)
+external function promote(const id : nat) is {
+  storage.top := storage.orders[id];
+}
+
+external function reset_top(const amount : nat; const delta : int16) is {
+  storage.top := fresh(Evm.sender(), amount, delta);
+}
+
+external view function top_order() : order is storage.top
+
+external view function head_pair() : pair is storage.head
 
 external view function order_of(const id : nat) : order is storage.orders[id]
 

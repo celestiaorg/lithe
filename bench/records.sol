@@ -30,6 +30,16 @@ contract Records {
     mapping(uint256 => Order) orders;
     mapping(address => mapping(uint256 => Pair)) pairs;
     uint8 tail;
+    Pair head;
+    Order top;
+
+    function fresh(address owner, uint256 amount, int16 delta) internal pure returns (Order memory) {
+        return Order(2, owner, amount, 5, Inner(delta < 0, delta), 9);
+    }
+
+    function split(uint128 total) internal pure returns (Pair memory) {
+        return Pair(total / 2, total - total / 2);
+    }
 
     function place(uint256 id, uint256 amount, uint32 small, int16 delta) external {
         orders[id] = Order(1, msg.sender, amount, small, Inner(true, delta), 7);
@@ -56,6 +66,36 @@ contract Records {
     function pair_set(uint256 k, uint128 a, uint128 b) external {
         pairs[msg.sender][k] = Pair(a, b);
         pairs[msg.sender][k + 1].b = b;
+    }
+
+    function head_set(uint128 total) external {
+        head = split(total);
+        pairs[msg.sender][0] = split(total + 1);
+    }
+
+    function head_swap() external {
+        head = Pair(head.b, head.a);
+    }
+
+    function odd_of(uint128 total) external pure returns (uint128) {
+        Pair memory p = split(total);
+        return p.b - split(total).a;
+    }
+
+    function promote(uint256 id) external {
+        top = orders[id];
+    }
+
+    function reset_top(uint256 amount, int16 delta) external {
+        top = fresh(msg.sender, amount, delta);
+    }
+
+    function top_order() external view returns (Order memory) {
+        return top;
+    }
+
+    function head_pair() external view returns (Pair memory) {
+        return head;
     }
 
     function order_of(uint256 id) external view returns (Order memory) {
