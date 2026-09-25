@@ -8,9 +8,32 @@ import "std/security/pausable.lithe";
 
 contract Registry is {
   use Ownable;
-  use Ownable2Step;
-  use AccessControl;
-  use Pausable;
+
+  external use Ownable2Step is {
+    view function owner() : address;
+    view function pendingOwner() : address;
+    function transferOwnership(newOwner : address)
+      raises OwnableUnauthorizedAccount;
+    function acceptOwnership()
+      raises OwnableUnauthorizedAccount;
+    function renounceOwnership()
+      raises OwnableUnauthorizedAccount;
+  }
+
+  external use AccessControl is {
+    view function hasRole(role : role; account : address) : bool;
+    view function getRoleAdmin(role : role) : role;
+    function grantRole(role : role; account : address)
+      raises AccessControlUnauthorizedAccount;
+    function revokeRole(role : role; account : address)
+      raises AccessControlUnauthorizedAccount;
+    function renounceRole(role : role; callerConfirmation : address)
+      raises AccessControlBadConfirmation;
+  }
+
+  external use Pausable is {
+    view function paused() : bool;
+  }
 
   storage is record {
     entries : map(address, nat);
@@ -31,18 +54,6 @@ contract Registry is {
     AccessControl.grant(AccessControl.default_admin_role(), Evm.sender());
     AccessControl.grant(minter(), Evm.sender());
   }
-
-  external view function owner is Ownable.owner;
-  external view function pendingOwner is Ownable2Step.pending_owner;
-  external function transferOwnership is Ownable2Step.transfer_ownership;
-  external function acceptOwnership is Ownable2Step.accept_ownership;
-  external function renounceOwnership is Ownable2Step.renounce_ownership;
-  external view function hasRole is AccessControl.has_role;
-  external view function getRoleAdmin is AccessControl.get_role_admin;
-  external function grantRole is AccessControl.grant_role;
-  external function revokeRole is AccessControl.revoke_role;
-  external function renounceRole is AccessControl.renounce_role;
-  external view function paused is Pausable.paused;
 
   external function record_entry(const account : address; const amount : nat)
     raises AccessControlUnauthorizedAccount | EnforcedPause

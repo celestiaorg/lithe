@@ -348,8 +348,8 @@ An [interface](/language/effects#interfaces) is a type whose values are contract
 
 ```lithe fragment
 interface Token is {
-  query balanceOf(owner : address) : nat;
-  call transfer(to : address; amount : nat) : bool;
+  view function balanceOf(owner : address) : nat;
+  function transfer(to : address; amount : nat) : bool;
 }
 
 storage is record {

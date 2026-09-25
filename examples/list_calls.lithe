@@ -2,9 +2,9 @@
    call arguments and results, and decoded from bytes. *)
 
 interface Echo is {
-  query same(xs : list(nat)) : list(nat);
-  query named(s : string) : string;
-  call keep(xs : list(address)) : list(address);
+  view function same(xs : list(nat)) : list(nat);
+  view function named(s : string) : string;
+  function keep(xs : list(address)) : list(address);
 }
 
 type nums is list(nat);

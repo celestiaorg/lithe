@@ -7,12 +7,12 @@
 error Too_small of nat;
 
 interface Exchange is {
-  call swap(amount : nat) : nat;
-  call narrow(amount : nat) : uint8;
-  call split(a : nat; b : nat) : (nat, nat);
-  call text(offset : nat; len : nat; data : nat) : string;
-  call digest(amount : nat) : string;
-  call poke() : unit;
+  payable function swap(amount : nat) : nat;
+  function narrow(amount : nat) : uint8;
+  function split(a : nat; b : nat) : (nat, nat);
+  function text(offset : nat; len : nat; data : nat) : string;
+  function digest(amount : nat) : string;
+  function poke();
 }
 
 storage is record {

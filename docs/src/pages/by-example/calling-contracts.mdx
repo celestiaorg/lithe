@@ -12,12 +12,12 @@ A call that changes another contract's state is deferred with `defer`. It runs a
    entrypoint's writes and events, never in the middle of them. *)
 
 interface Token is {
-  query balanceOf(owner : address) : nat;
-  call transfer(to : address; amount : nat) : bool;
+  view function balanceOf(owner : address) : nat;
+  function transfer(to : address; amount : nat) : bool;
 }
 
 interface Pool is {
-  call deposit(beneficiary : address) : unit;
+  payable function deposit(beneficiary : address);
 }
 
 error Empty;

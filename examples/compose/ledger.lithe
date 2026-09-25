@@ -3,7 +3,7 @@ module Ledger is {
     n : nat;
   }
 
-  function ping(const n : nat) is {
+  external function ping(const n : nat) is {
     ledger.n := n;
   }
 }

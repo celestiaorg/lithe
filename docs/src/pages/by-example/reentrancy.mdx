@@ -14,7 +14,7 @@ Deferral means a callee never sees half-written state. It can still call back in
    by all nonreentrant functions, held until the deferred calls finish. *)
 
 interface Hook is {
-  call notify(amount : nat) : unit;
+  function notify(amount : nat);
 }
 
 storage is record {

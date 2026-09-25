@@ -11,6 +11,7 @@ description: "Ownable, two-step ownership, role-based access control, and pausin
 
 | Function | |
 | --- | --- |
+| `owner`, `transferOwnership`, `renounceOwnership` | the externals of OpenZeppelin's `Ownable` |
 | `owner() : address` | the owner |
 | `check_owner()` | raises `OwnableUnauthorizedAccount` unless the caller is the owner |
 | `init(initial_owner)` | sets the first owner; raises `OwnableInvalidOwner` for the zero address |
@@ -20,14 +21,24 @@ description: "Ownable, two-step ownership, role-based access control, and pausin
 
 ## `Ownable2Step`
 
-`std/access/ownable_two_step.lithe`, on top of `Ownable`. The owner proposes a new owner, who must accept. An address that can't accept, because it was mistyped, never takes ownership.
+`std/access/ownable_two_step.lithe`, on top of `Ownable`. The owner proposes a new owner, who must accept. An address that can't accept, because it was mistyped, never takes ownership. Its externals are all of OpenZeppelin's `Ownable2Step`, `owner` included, so a contract declares them from `Ownable2Step` and only uses `Ownable`.
 
 ```lithe
 import "std/access/ownable_two_step.lithe";
 
 contract Vault is {
   use Ownable;
-  use Ownable2Step;
+
+  external use Ownable2Step is {
+    view function owner() : address;
+    view function pendingOwner() : address;
+    function transferOwnership(newOwner : address)
+      raises OwnableUnauthorizedAccount;
+    function acceptOwnership()
+      raises OwnableUnauthorizedAccount;
+    function renounceOwnership()
+      raises OwnableUnauthorizedAccount;
+  }
 
   storage is record {
     limit : nat;
@@ -38,12 +49,6 @@ contract Vault is {
   is {
     Ownable.init(Evm.sender());
   }
-
-  external view function owner is Ownable.owner;
-  external view function pendingOwner is Ownable2Step.pending_owner;
-  external function transferOwnership is Ownable2Step.transfer_ownership;
-  external function acceptOwnership is Ownable2Step.accept_ownership;
-  external function renounceOwnership is Ownable2Step.renounce_ownership;
 
   external function set_limit(const limit : nat)
     raises OwnableUnauthorizedAccount
@@ -62,7 +67,15 @@ contract Vault is {
 import "std/access/access_control.lithe";
 
 contract Minter is {
-  use AccessControl;
+  external use AccessControl is {
+    view function hasRole(role : role; account : address) : bool;
+    function grantRole(role : role; account : address)
+      raises AccessControlUnauthorizedAccount;
+    function revokeRole(role : role; account : address)
+      raises AccessControlUnauthorizedAccount;
+    function renounceRole(role : role; callerConfirmation : address)
+      raises AccessControlBadConfirmation;
+  }
 
   storage is record {
     minted : map(address, nat);
@@ -76,11 +89,6 @@ contract Minter is {
     AccessControl.grant(AccessControl.default_admin_role(), Evm.sender());
   }
 
-  external view function hasRole is AccessControl.has_role;
-  external function grantRole is AccessControl.grant_role;
-  external function revokeRole is AccessControl.revoke_role;
-  external function renounceRole is AccessControl.renounce_role;
-
   external function mint(const to : address; const amount : nat)
     raises AccessControlUnauthorizedAccount
   is {
@@ -92,6 +100,7 @@ contract Minter is {
 
 | Function | |
 | --- | --- |
+| `hasRole`, `getRoleAdmin`, `grantRole`, `revokeRole`, `renounceRole` | the externals of OpenZeppelin's `AccessControl` |
 | `has_role(r, account) : bool` | |
 | `get_role_admin(r) : role` | the default admin role, until `set_role_admin` changes it |
 | `check_role(r)`, `check_role_of(r, account)` | raise `AccessControlUnauthorizedAccount` |
@@ -105,6 +114,7 @@ contract Minter is {
 
 | Function | |
 | --- | --- |
+| `paused` | the external; pausing and unpausing are the contract's own entrypoints |
 | `paused() : bool` | |
 | `require_not_paused()`, `require_paused()` | raise `EnforcedPause` and `ExpectedPause` |
 | `pause()`, `unpause()` | no access check of their own |

@@ -9,11 +9,11 @@ By default, a failed external call reverts the whole transaction. To handle the 
 
 ```lithe [try-catch.lithe]
 interface Oracle is {
-  query price(asset : address) : nat;
+  view function price(asset : address) : nat;
 }
 
 interface Hook is {
-  call on_payout(amount : nat) : bool;
+  function on_payout(amount : nat) : bool;
 }
 
 event Payout_failed of record {

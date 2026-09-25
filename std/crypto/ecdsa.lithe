@@ -3,10 +3,11 @@
    order, which would make a second valid signature from the first, and a recovered
    zero address. *)
 
+error ECDSAInvalidSignature;
+error ECDSAInvalidSignatureLength of nat;
+error ECDSAInvalidSignatureS of bytes32;
+
 module ECDSA is {
-  error ECDSAInvalidSignature;
-  error ECDSAInvalidSignatureLength of nat;
-  error ECDSAInvalidSignatureS of bytes32;
 
   pure function half_order() : nat is
     nat(0x7fffffffffffffffffffffffffffffff5d576e7357a4501ddfe92f46681b20a0)

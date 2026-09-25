@@ -148,6 +148,7 @@ fn load_inner(path: &Path, stack: &mut Vec<Frame>) -> Result<Program, Error> {
     merged.contract_name = contract_name;
     merged.contract_line = contract_line;
     merged.contract_col = contract_col;
+    merged.origin = origin.clone();
     let mut linked = Vec::new();
     for mut sibling in siblings {
         hide_private(&mut sibling);
@@ -159,6 +160,7 @@ fn load_inner(path: &Path, stack: &mut Vec<Frame>) -> Result<Program, Error> {
         unit.contract_name = name;
         unit.contract_line = line;
         unit.contract_col = col;
+        unit.origin = origin.clone();
         linked.push(unit);
     }
     merged.siblings = linked;
@@ -185,7 +187,7 @@ fn empty() -> Program {
         domains: Vec::new(),
         modules: Vec::new(),
         compose: Vec::new(),
-        promotions: Vec::new(),
+        exposes: Vec::new(),
         upgradeable: false,
         guard: None,
         contract_name: None,
@@ -193,6 +195,8 @@ fn empty() -> Program {
         contract_col: 0,
         siblings: Vec::new(),
         peers: Vec::new(),
+        origin: String::new(),
+        erc165: true,
     }
 }
 
@@ -227,6 +231,9 @@ fn stamp(prog: &mut Program, origin: &str) {
     for decl in &mut prog.events {
         decl.origin = origin.to_string();
     }
+    for decl in &mut prog.error_sets {
+        decl.origin = origin.to_string();
+    }
     for func in &mut prog.funcs {
         func.origin = origin.to_string();
     }
@@ -235,6 +242,11 @@ fn stamp(prog: &mut Program, origin: &str) {
     }
     for decl in &mut prog.interfaces {
         decl.origin = origin.to_string();
+    }
+    for exposed in &mut prog.exposes {
+        for func in &mut exposed.decls {
+            func.origin = origin.to_string();
+        }
     }
     for module in &mut prog.modules {
         module.origin = origin.to_string();
@@ -245,6 +257,9 @@ fn stamp(prog: &mut Program, origin: &str) {
             decl.origin = origin.to_string();
         }
         for decl in &mut module.events {
+            decl.origin = origin.to_string();
+        }
+        for decl in &mut module.error_sets {
             decl.origin = origin.to_string();
         }
         for func in &mut module.funcs {
@@ -315,12 +330,10 @@ fn hide_private(prog: &mut Program) {
     }
     for iface in &mut prog.interfaces {
         for method in &mut iface.methods {
-            for (_, ty) in &mut method.params {
-                rewrite_ty(ty, &map);
-            }
-            rewrite_ty(&mut method.ret, &map);
+            rewrite_header(method, &map);
         }
     }
+    rewrite_exposes(&mut prog.exposes, &map);
     for func in &mut prog.funcs {
         if let Some(name) = map.get(&func.name).cloned() {
             func.name = name;
@@ -348,6 +361,36 @@ fn hide_private(prog: &mut Program) {
 
 fn mangled(origin: &str, name: &str) -> String {
     format!("{}::{name}", file_label(Path::new(origin)))
+}
+
+/// A header's types and errors, for an interface member or a declaration.
+fn rewrite_header(func: &mut Func, map: &HashMap<String, String>) {
+    for param in &mut func.params {
+        rewrite_ty(&mut param.ty, map);
+    }
+    if let Some(ret) = &mut func.ret {
+        rewrite_ty(ret, map);
+    }
+    if let Some(raises) = &mut func.raises {
+        for member in &mut raises.parts {
+            if let Some(name) = map.get(&member.name) {
+                member.name = name.clone();
+            }
+        }
+    }
+}
+
+fn rewrite_exposes(exposes: &mut [ExternalUse], map: &HashMap<String, String>) {
+    for exposed in exposes {
+        for iface in &mut exposed.interfaces {
+            if let Some(name) = map.get(&iface.name) {
+                iface.name = name.clone();
+            }
+        }
+        for decl in &mut exposed.decls {
+            rewrite_header(decl, map);
+        }
+    }
 }
 
 fn rewrite_ty(ty: &mut TypeRef, map: &HashMap<String, String>) {
@@ -576,6 +619,36 @@ fn absorb(
         let (line, col) = at(via, 1, 1);
         return Err(error(line, col, "an imported file cannot have `deploy`"));
     }
+    // A contract's interface is written in the contract: an imported file exposes nothing.
+    if via.is_some() {
+        if let Some(exposed) = src.exposes.first() {
+            let (line, col) = at(via, exposed.line, exposed.col);
+            return Err(error(
+                line,
+                col,
+                format!(
+                    "an imported file cannot `external use {}`; the contract declares what it exposes",
+                    exposed.module
+                ),
+            ));
+        }
+        if let Some(func) = src
+            .funcs
+            .iter()
+            .find(|f| matches!(f.kind, ItemKind::Entry | ItemKind::View | ItemKind::Migrate))
+        {
+            let (line, col) = at(via, func.line, func.col);
+            return Err(error(
+                line,
+                col,
+                format!(
+                    "an imported file cannot declare {} `{}`; declare it in a module, and expose it from the contract",
+                    kind_name(func.kind),
+                    func.name
+                ),
+            ));
+        }
+    }
     if alias.is_some() && !src.domains.is_empty() {
         let (line, col) = at(via, src.domains[0].line, src.domains[0].col);
         return Err(error(
@@ -600,33 +673,6 @@ fn absorb(
     src.interfaces
         .retain(|decl| !present.contains(&decl.origin));
     if alias.is_some() {
-        if !src.promotions.is_empty() {
-            let promo = &src.promotions[0];
-            let (line, col) = at(via, promo.line, promo.col);
-            return Err(error(
-                line,
-                col,
-                format!(
-                    "aliased import exports {} `{}`",
-                    kind_name(promo.kind),
-                    promo.name
-                ),
-            ));
-        }
-        for func in &src.funcs {
-            if !func.private && matches!(func.kind, ItemKind::Entry | ItemKind::View) {
-                let (line, col) = at(via, func.line, func.col);
-                return Err(error(
-                    line,
-                    col,
-                    format!(
-                        "aliased import exports {} `{}`",
-                        kind_name(func.kind),
-                        func.name
-                    ),
-                ));
-            }
-        }
         let alias = alias.unwrap();
         let mut map = HashMap::new();
         for decl in &src.types {
@@ -682,12 +728,10 @@ fn hide_names(prog: &mut Program, map: &HashMap<String, String>) {
     }
     for iface in &mut prog.interfaces {
         for method in &mut iface.methods {
-            for (_, ty) in &mut method.params {
-                rewrite_ty(ty, map);
-            }
-            rewrite_ty(&mut method.ret, map);
+            rewrite_header(method, map);
         }
     }
+    rewrite_exposes(&mut prog.exposes, map);
     for func in &mut prog.funcs {
         for param in &mut func.params {
             rewrite_ty(&mut param.ty, map);
@@ -848,13 +892,21 @@ fn absorb_decls(
         }
         dst.modules.push(module);
     }
+    let mut own = std::collections::HashSet::new();
     for use_ in src.compose {
+        if via.is_none() && !own.insert(use_.name.clone()) {
+            return Err(error(
+                use_.line,
+                use_.col,
+                format!("module `{}` is already used", use_.name),
+            ));
+        }
         if dst.compose.iter().any(|have| have.name == use_.name) {
             continue;
         }
         dst.compose.push(use_);
     }
-    dst.promotions.extend(src.promotions);
+    dst.exposes.extend(src.exposes);
     if via.is_none() {
         dst.upgradeable = src.upgradeable;
         dst.guard = src.guard;

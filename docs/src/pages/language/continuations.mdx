@@ -9,7 +9,7 @@ A deferred call runs after the transition that defers it. So how do you use its 
 
 ```lithe
 interface Exchange is {
-  call swap(amount_in : nat) : nat;
+  function swap(amount_in : nat) : nat;
 }
 
 event Swapped of record {
@@ -61,8 +61,8 @@ The binding's type must match the method's declared return type.
 
 ```lithe
 interface Vault is {
-  call withdraw(shares : nat) : (nat, nat);
-  call deposit(amount : nat) : nat;
+  function withdraw(shares : nat) : (nat, nat);
+  function deposit(amount : nat) : nat;
 }
 
 storage is record {
@@ -91,7 +91,7 @@ A continuation can use the enclosing function's parameters and `const` bindings.
 
 ```lithe rejects
 interface Exchange is {
-  call swap(amount : nat) : nat;
+  function swap(amount : nat) : nat;
 }
 
 storage is record {
@@ -123,7 +123,7 @@ To handle a failed call instead of reverting, give the continuation an `Ok` arm 
 
 ```lithe
 interface Registry is {
-  call notify(id : nat) : bool;
+  function notify(id : nat) : bool;
 }
 
 storage is record {
@@ -159,7 +159,7 @@ A `query` recovers with an ordinary `case`, because its result is available imme
 
 ```lithe
 interface Oracle is {
-  query price(asset : address) : nat;
+  view function price(asset : address) : nat;
 }
 
 storage is record {

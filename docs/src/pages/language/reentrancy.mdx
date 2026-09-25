@@ -29,7 +29,7 @@ For every entrypoint that defers calls, the compiler lists the stateful entrypoi
 
 ```lithe
 interface Hook is {
-  call cancel() : unit;
+  function cancel();
 }
 
 storage is record {
@@ -61,7 +61,7 @@ external-effect execution
 
 ```lithe
 interface Hook is {
-  call cancel() : unit;
+  function cancel();
 }
 
 storage is record {

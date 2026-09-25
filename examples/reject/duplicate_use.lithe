@@ -12,5 +12,7 @@ contract Token is {
   use Ledger;
   use Ledger;
 
-  external function go is Ledger.go;
+  external function go() is {
+    Ledger.go();
+  }
 }

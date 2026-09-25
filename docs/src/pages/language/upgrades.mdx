@@ -149,4 +149,4 @@ Named domains help here. Each domain sits at its own ERC-7201 root, so adding a 
 
 ## Contracts over the size limit
 
-An upgradeable contract over the 24,576-byte limit is split into a router and parts. The router is the implementation behind the proxy, and it keeps the upgrade guard and `upgradeToAndCall`. Upgrades work exactly as above. A contract that grows past the limit upgrades into a split implementation behind the same proxy, with the same storage. See [Contract size limit](/tooling/size-limit#upgrades).
+An upgradeable contract over the 24,576-byte limit runs the modules it exposes from their facets. The router is the implementation behind the proxy, and it keeps the upgrade guard, `upgradeToAndCall`, and every migration. Upgrades work exactly as above. A contract that grows past the limit upgrades into a split implementation behind the same proxy, with the same storage. See [Contract size limit](/tooling/size-limit#upgrades).

@@ -7,17 +7,18 @@ use crate::Error;
 
 pub(crate) fn parse(src: &str) -> Result<Program, Error> {
     let toks = lex::tokenize(src)?;
-    Parser { src, toks, i: 0 }.program()
+    Parser {
+        src,
+        toks,
+        i: 0,
+        declaring: false,
+    }
+    .program()
 }
 
 enum StorageItem {
     Default(TypeDecl),
     Named(DomainDecl),
-}
-
-enum Item {
-    Func(Func),
-    Promotion(Promotion),
 }
 
 struct Deco {
@@ -42,6 +43,8 @@ struct Parser<'a> {
     src: &'a str,
     toks: Vec<Token>,
     i: usize,
+    /// Inside `external use M is { ... }`: functions are external and have no body.
+    declaring: bool,
 }
 
 fn path_expr(line: u32, col: u32, path: &[String]) -> Expr {
@@ -79,7 +82,7 @@ struct Body {
     funcs: Vec<Func>,
     domains: Vec<DomainDecl>,
     compose: Vec<NameAt>,
-    promotions: Vec<Promotion>,
+    exposes: Vec<ExternalUse>,
     upgradeable: bool,
     guard: Option<GuardDecl>,
 }
@@ -98,7 +101,7 @@ impl Body {
             funcs: Vec::new(),
             domains: Vec::new(),
             compose: Vec::new(),
-            promotions: Vec::new(),
+            exposes: Vec::new(),
             upgradeable: false,
             guard: None,
         }
@@ -117,7 +120,7 @@ impl Body {
             domains: self.domains,
             modules,
             compose: self.compose,
-            promotions: self.promotions,
+            exposes: self.exposes,
             upgradeable: self.upgradeable,
             guard: self.guard,
             contract_name: self.name,
@@ -125,6 +128,8 @@ impl Body {
             contract_col: if named { self.col } else { 0 },
             siblings: Vec::new(),
             peers: Vec::new(),
+            origin: String::new(),
+            erc165: true,
         }
     }
 }
@@ -293,6 +298,28 @@ impl<'a> Parser<'a> {
                 return Err(self.err("an interface cannot be private"));
             }
             Kind::Interface => body.interfaces.push(self.interface_decl()?),
+            Kind::External if self.peek_kind(1) == Kind::Use => {
+                if private {
+                    return Err(self.err("`external use` cannot be private"));
+                }
+                let exposed = self.external_use()?;
+                if body.exposes.iter().any(|have| have.module == exposed.module) {
+                    return Err(error(
+                        exposed.line,
+                        exposed.col,
+                        format!(
+                            "`external use {}` appears twice; list all its interfaces in one",
+                            exposed.module
+                        ),
+                    ));
+                }
+                body.compose.push(NameAt {
+                    line: exposed.line,
+                    col: exposed.col,
+                    name: exposed.module.clone(),
+                });
+                body.exposes.push(exposed);
+            }
             Kind::External
             | Kind::Payable
             | Kind::Nonreentrant
@@ -306,27 +333,16 @@ impl<'a> Parser<'a> {
                 if private && deco.kind == ItemKind::Deploy {
                     return Err(self.err("`deploy` cannot be private"));
                 }
-                match self.item(deco, private)? {
-                    Item::Func(func) => body.funcs.push(func),
-                    Item::Promotion(promo) => body.promotions.push(promo),
-                }
+                body.funcs.push(self.item(deco, private)?);
             }
             Kind::Deploy if private => {
                 return Err(self.err("`deploy` cannot be private"));
             }
-            Kind::Deploy => match self.item(Deco::of(ItemKind::Deploy), false)? {
-                Item::Func(func) => body.funcs.push(func),
-                Item::Promotion(_) => unreachable!("`deploy` has no name to promote"),
-            },
+            Kind::Deploy => body.funcs.push(self.item(Deco::of(ItemKind::Deploy), false)?),
             Kind::Migrate if private => {
                 return Err(self.err("a migration cannot be private"));
             }
-            Kind::Migrate => match self.item(Deco::of(ItemKind::Migrate), false)? {
-                Item::Func(func) => body.funcs.push(func),
-                Item::Promotion(_) => {
-                    return Err(self.err("only an external function can promote a module function"));
-                }
-            },
+            Kind::Migrate => body.funcs.push(self.item(Deco::of(ItemKind::Migrate), false)?),
             Kind::Upgradeable if private => {
                 return Err(self.err("`upgradeable` cannot be private"));
             }
@@ -360,6 +376,61 @@ impl<'a> Parser<'a> {
             }
         }
         Ok(())
+    }
+
+    /// `external use M is I, J, { ... }`: the interfaces whose members the contract exposes
+    /// from `M`, named or inline. Each member is one of `M`'s externals.
+    fn external_use(&mut self) -> Result<ExternalUse, Error> {
+        let (line, col) = self.at();
+        self.want(Kind::External)?;
+        self.want(Kind::Use)?;
+        let module = self.ident()?;
+        self.want(Kind::Is)?;
+        let mut interfaces = Vec::new();
+        let mut decls = None;
+        loop {
+            if self.kind() == Kind::LBrace {
+                let (bline, bcol) = self.at();
+                if decls.is_some() {
+                    return Err(error(
+                        bline,
+                        bcol,
+                        "`external use` has one inline interface; put its members together",
+                    ));
+                }
+                let members = self.interface_body()?;
+                if members.is_empty() {
+                    return Err(error(bline, bcol, "an inline interface needs a method"));
+                }
+                decls = Some(members);
+            } else {
+                let (iline, icol) = self.at();
+                let mut name = self.ident()?;
+                while self.kind() == Kind::Dot {
+                    self.bump();
+                    name = format!("{name}.{}", self.ident()?);
+                }
+                interfaces.push(NameAt {
+                    line: iline,
+                    col: icol,
+                    name,
+                });
+            }
+            if self.kind() != Kind::Comma {
+                break;
+            }
+            self.bump();
+        }
+        if self.kind() == Kind::Semi {
+            self.bump();
+        }
+        Ok(ExternalUse {
+            line,
+            col,
+            module,
+            interfaces,
+            decls: decls.unwrap_or_default(),
+        })
     }
 
     fn compose_use(&mut self) -> Result<NameAt, Error> {
@@ -472,18 +543,16 @@ impl<'a> Parser<'a> {
                 | Kind::Pure
                 | Kind::Function => {
                     let deco = self.header()?;
-                    if deco.payable || matches!(deco.kind, ItemKind::Entry | ItemKind::View) {
-                        return Err(self.err(
-                            "a module function cannot be external; the contract exposes it with `external function name is Module.name`",
-                        ));
-                    }
-                    funcs.push(self.module_func(deco)?);
+                    funcs.push(self.item(deco, false)?);
                 }
                 Kind::Module => {
                     return Err(self.err("a module cannot contain another module"));
                 }
                 Kind::Use => {
                     return Err(self.err("use a module from the contract"));
+                }
+                Kind::Deploy | Kind::Migrate | Kind::Upgrade => {
+                    return Err(self.err(format!("{} belongs to the contract", self.found())));
                 }
                 Kind::Contract => {
                     return Err(self.err("a module cannot contain a contract"));
@@ -562,13 +631,6 @@ impl<'a> Parser<'a> {
         }
         self.want(Kind::RParen)?;
         Ok(params)
-    }
-
-    fn module_func(&mut self, deco: Deco) -> Result<Func, Error> {
-        match self.item(deco, false)? {
-            Item::Func(func) => Ok(func),
-            Item::Promotion(_) => Err(self.err("promote a module function from the contract")),
-        }
     }
 
     fn slice(&self) -> &str {
@@ -719,6 +781,7 @@ impl<'a> Parser<'a> {
         Ok(ErrorSetDecl {
             line,
             col,
+            origin: String::new(),
             name,
             members,
         })
@@ -748,16 +811,7 @@ impl<'a> Parser<'a> {
         self.want(Kind::Interface)?;
         let name = self.ident()?;
         self.want(Kind::Is)?;
-        self.want(Kind::LBrace)?;
-        let mut methods = Vec::new();
-        while self.kind() != Kind::RBrace && self.kind() != Kind::Eof {
-            if self.kind() == Kind::Semi {
-                self.bump();
-                continue;
-            }
-            methods.push(self.iface_method()?);
-        }
-        self.want(Kind::RBrace)?;
+        let methods = self.interface_body()?;
         if methods.is_empty() {
             return Err(error(line, col, "interface needs a method"));
         }
@@ -770,54 +824,40 @@ impl<'a> Parser<'a> {
         })
     }
 
-    fn iface_method(&mut self) -> Result<IfaceMethod, Error> {
-        let (line, col) = self.at();
-        let query = match self.kind() {
-            Kind::Query => {
-                self.bump();
-                true
-            }
-            Kind::CallKw => {
-                self.bump();
-                false
-            }
-            _ => {
-                return Err(self.err(format!(
-                    "expected `query` or `call`, found {}",
-                    self.found()
-                )))
-            }
-        };
-        let name = self.ident()?;
-        self.want(Kind::LParen)?;
-        let mut params = Vec::new();
-        if self.kind() != Kind::RParen {
-            loop {
-                let pname = self.ident()?;
-                self.want(Kind::Colon)?;
-                let ty = self.ty()?;
-                params.push((pname, ty));
+    /// `{ view function f(a : T) : R raises E; ... }`: external function headers, with no
+    /// bodies, for an `interface` or inline in `external use`.
+    fn interface_body(&mut self) -> Result<Vec<Func>, Error> {
+        self.want(Kind::LBrace)?;
+        let mut methods = Vec::new();
+        self.declaring = true;
+        let result = (|| {
+            while self.kind() != Kind::RBrace && self.kind() != Kind::Eof {
                 if self.kind() == Kind::Semi {
                     self.bump();
-                    if self.kind() == Kind::RParen {
-                        break;
-                    }
                     continue;
                 }
-                break;
+                if !matches!(
+                    self.kind(),
+                    Kind::External
+                        | Kind::Payable
+                        | Kind::Nonreentrant
+                        | Kind::View
+                        | Kind::Pure
+                        | Kind::Function
+                ) {
+                    return Err(self.err(format!(
+                        "an interface declares functions, found {}",
+                        self.found()
+                    )));
+                }
+                let deco = self.header()?;
+                methods.push(self.item(deco, false)?);
             }
-        }
-        self.want(Kind::RParen)?;
-        self.want(Kind::Colon)?;
-        let ret = self.ty()?;
-        Ok(IfaceMethod {
-            line,
-            col,
-            query,
-            name,
-            params,
-            ret,
-        })
+            self.want(Kind::RBrace)
+        })();
+        self.declaring = false;
+        result?;
+        Ok(methods)
     }
 
     fn ty(&mut self) -> Result<TypeRef, Error> {
@@ -1074,6 +1114,14 @@ impl<'a> Parser<'a> {
             if seen.iter().any(|&(r, _)| r == rank) {
                 return Err(self.err(format!("{} is already set", self.found())));
             }
+            if rank == 0 && self.declaring {
+                return Err(self.err("an interface's methods are external; drop `external`"));
+            }
+            if rank == 2 && self.declaring {
+                return Err(self.err(
+                    "`nonreentrant` is not part of an interface; it belongs to the function's definition",
+                ));
+            }
             seen.push((rank, self.kind()));
             self.bump();
             if rank == 2 && self.kind() == Kind::LParen {
@@ -1081,7 +1129,7 @@ impl<'a> Parser<'a> {
             }
         }
         let has = |k: Kind| seen.iter().any(|&(_, have)| have == k);
-        let (external, payable) = (has(Kind::External), has(Kind::Payable));
+        let (external, payable) = (has(Kind::External) || self.declaring, has(Kind::Payable));
         if self.kind() == Kind::Deploy {
             if seen.iter().any(|&(_, k)| k != Kind::Payable) {
                 return Err(self.err("`deploy` takes only `payable`"));
@@ -1100,7 +1148,7 @@ impl<'a> Parser<'a> {
         }
         if seen.windows(2).any(|w| w[0].0 > w[1].0) {
             let mut words: Vec<&str> = Vec::new();
-            if external {
+            if external && !self.declaring {
                 words.push("external");
             }
             if payable {
@@ -1149,7 +1197,7 @@ impl<'a> Parser<'a> {
         })
     }
 
-    fn item(&mut self, deco: Deco, private: bool) -> Result<Item, Error> {
+    fn item(&mut self, deco: Deco, private: bool) -> Result<Func, Error> {
         let Deco {
             kind,
             payable,
@@ -1163,40 +1211,8 @@ impl<'a> Parser<'a> {
         } else {
             self.ident()?
         };
-        // `external function name is Module.func` exposes a module function.
-        if self.kind() == Kind::Is
-            && self.peek_kind(1) == Kind::Ident
-            && self.peek_kind(2) == Kind::Dot
-        {
-            if !matches!(kind, ItemKind::Entry | ItemKind::View) {
-                return Err(self.err("only an external function can promote a module function"));
-            }
-            self.bump();
-            let module = self.ident()?;
-            self.want(Kind::Dot)?;
-            let func = self.ident()?;
-            if matches!(
-                self.kind(),
-                Kind::LParen | Kind::Is | Kind::Colon | Kind::Raises
-            ) {
-                return Err(self.err("a promotion has no parameters or body"));
-            }
-            if self.kind() == Kind::Semi {
-                self.bump();
-            }
-            return Ok(Item::Promotion(Promotion {
-                line,
-                col,
-                kind,
-                payable,
-                nonreentrant,
-                external_pure,
-                name,
-                module,
-                func,
-            }));
-        }
-        let type_params = if self.looks_like_type_params() {
+        // An interface's `f(a : T)` has parameters, never type parameters.
+        let type_params = if !self.declaring && self.looks_like_type_params() {
             self.type_param_list()?
         } else {
             Vec::new()
@@ -1207,6 +1223,14 @@ impl<'a> Parser<'a> {
             loop {
                 let (pline, pcol) = self.at();
                 let mutable = match self.kind() {
+                    // An interface's parameters are values in the ABI: `name : type`.
+                    Kind::Var | Kind::Const if self.declaring => {
+                        return Err(self.err(format!(
+                            "an interface's parameters are `name : type`, without {}",
+                            self.found()
+                        )));
+                    }
+                    _ if self.declaring => false,
                     Kind::Var => {
                         self.bump();
                         true
@@ -1280,9 +1304,19 @@ impl<'a> Parser<'a> {
         } else {
             None
         };
-        self.want(Kind::Is)?;
-        let (stmts, tail) = self.item_body()?;
-        Ok(Item::Func(Func {
+        let (stmts, tail) = if self.declaring {
+            if self.kind() == Kind::Is {
+                return Err(self.err(
+                    "an interface's methods have no body; to wrap a module's function, write an external of the contract's own",
+                ));
+            }
+            self.want(Kind::Semi)?;
+            (Vec::new(), None)
+        } else {
+            self.want(Kind::Is)?;
+            self.item_body()?
+        };
+        Ok(Func {
             line,
             col,
             kind,
@@ -1303,7 +1337,9 @@ impl<'a> Parser<'a> {
             module: None,
             requires: Vec::new(),
             promoted: None,
-        }))
+            declares: None,
+            exported: None,
+        })
     }
 
     fn raises_clause(&mut self) -> Result<Raises, Error> {

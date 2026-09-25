@@ -64,7 +64,7 @@ An imported file can declare types, errors, events, internal functions, interfac
 unknown function `hidden`
 ```
 
-Entrypoints belong to the contract, not to libraries. An aliased import cannot bring in `external` functions, and a library file should not declare `storage`. Put state in a [module](/language/modules) with named storage, and have the contract `use` it.
+Entrypoints belong to the contract, not to libraries. An imported file cannot declare `external` functions of its own or `external use` a module: a library offers externals from its modules, and the contract declares the ones it exposes. A library file should not declare `storage`. Put state in a [module](/language/modules) with named storage, and have the contract `use` it.
 
 ## Importing modules
 
@@ -76,10 +76,10 @@ The usual way to share code is a module in its own file:
 import "./lib/ledger.lithe";
 
 contract Token is {
-  use Ledger;
-
-  external function mint is Ledger.mint;
-  external view function balance_of is Ledger.balance_of;
+  external use Ledger is {
+    function mint(to : address; amount : nat);
+    view function balance_of(who : address) : nat;
+  }
 }
 ```
 
@@ -89,10 +89,10 @@ module Ledger is {
     balances : map(address, nat);
   }
 
-  view function balance_of(const who : address) : nat is
+  external view function balance_of(const who : address) : nat is
     ledger.balances[who]
 
-  function mint(const to : address; const amount : nat) is {
+  external function mint(const to : address; const amount : nat) is {
     ledger.balances[to] := ledger.balances[to] + amount;
   }
 }

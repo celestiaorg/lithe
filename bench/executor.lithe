@@ -8,9 +8,9 @@ type swap_result is record {
 }
 
 interface Exchange is {
-  call swap(amount_in : nat; min_out : nat) : swap_result;
-  call deposit(amount : nat) : nat;
-  call split(shares : nat) : (nat, nat);
+  function swap(amount_in : nat; min_out : nat) : swap_result;
+  function deposit(amount : nat) : nat;
+  function split(shares : nat) : (nat, nat);
 }
 
 type order is record {

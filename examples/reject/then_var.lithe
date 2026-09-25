@@ -1,7 +1,7 @@
 (* A `var` belongs to the phase that made it. It does not cross an external call. *)
 
 interface Exchange is {
-  call swap(amount : nat) : nat;
+  function swap(amount : nat) : nat;
 }
 
 storage is record {

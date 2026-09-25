@@ -1,21 +1,16 @@
 (* The ERC-20 token standard. Errors and events match OpenZeppelin's `ERC20`, and so does
    the order of its checks. Set the name and symbol with `init`, usually from `deploy`.
 
-   A token promotes the standard functions under their ABI names:
+   The module's externals are the standard's, and a token exposes them by naming its
+   interfaces. A contract that has them answers for them in `supportsInterface`:
 
-     external view function name is ERC20.name;
-     external view function symbol is ERC20.symbol;
-     external view function decimals is ERC20.decimals;
-     external view function totalSupply is ERC20.total_supply;
-     external view function balanceOf is ERC20.balance_of;
-     external view function allowance is ERC20.allowance;
-     external function transfer is ERC20.transfer;
-     external function approve is ERC20.approve;
-     external function transferFrom is ERC20.transfer_from;
+     external use ERC20 is IERC20, IERC20Metadata;
 
    Every balance change goes through `update`. To add a rule, such as a pause, the
    contract writes its own `transfer` and `transferFrom` around `move` and
    `spend_allowance`: an extension never changes these functions silently. *)
+
+import "std/interfaces/erc20.lithe";
 
 module ERC20 is {
   storage erc20 at "lithe.std.erc20" is record {
@@ -25,24 +20,6 @@ module ERC20 is {
     name : string;
     symbol : string;
   }
-
-  error ERC20InsufficientBalance of record {
-    sender : address;
-    balance : nat;
-    needed : nat;
-  }
-
-  error ERC20InvalidSender of address;
-  error ERC20InvalidReceiver of address;
-
-  error ERC20InsufficientAllowance of record {
-    spender : address;
-    allowance : nat;
-    needed : nat;
-  }
-
-  error ERC20InvalidApprover of address;
-  error ERC20InvalidSpender of address;
 
   event Transfer of record {
     indexed from : address;
@@ -177,4 +154,38 @@ module ERC20 is {
       approve_as(owner, spender, current - value, false);
     }
   }
+
+  external view function name() : string is
+    erc20.name
+
+  external view function symbol() : string is
+    erc20.symbol
+
+  external view function decimals() : uint8 is
+    18
+
+  external view function totalSupply() : nat is
+    erc20.total_supply
+
+  external view function balanceOf(const account : address) : nat is
+    erc20.balances[account]
+
+  external view function allowance(const owner : address; const spender : address) : nat is
+    erc20.allowances[owner][spender]
+
+  external function transfer(const to : address; const value : nat) : bool
+    raises ERC20InvalidSender | ERC20InvalidReceiver | ERC20InsufficientBalance
+  is
+    transfer(to, value)
+
+  external function approve(const spender : address; const value : nat) : bool
+    raises ERC20InvalidApprover | ERC20InvalidSpender
+  is
+    approve(spender, value)
+
+  external function transferFrom(const from : address; const to : address; const value : nat) : bool
+    raises ERC20InsufficientAllowance | ERC20InvalidApprover | ERC20InvalidSpender
+      | ERC20InvalidSender | ERC20InvalidReceiver | ERC20InsufficientBalance
+  is
+    transfer_from(from, to, value)
 }

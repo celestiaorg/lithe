@@ -40,22 +40,22 @@ module ERC20 is {
     value : nat;
   }
 
-  view function name() : string is
+  external view function name() : string is
     erc20.name
 
-  view function symbol() : string is
+  external view function symbol() : string is
     erc20.symbol
 
-  view function decimals() : uint8 is
+  external view function decimals() : uint8 is
     18
 
-  view function totalSupply() : nat is
+  external view function totalSupply() : nat is
     erc20.totalSupply
 
-  view function balanceOf(const account : address) : nat is
+  external view function balanceOf(const account : address) : nat is
     erc20.balances[account]
 
-  view function allowance(const owner : address; const spender : address) : nat is
+  external view function allowance(const owner : address; const spender : address) : nat is
     erc20.allowances[owner][spender]
 
   function init(const n : string; const s : string) is {

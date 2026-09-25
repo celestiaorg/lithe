@@ -42,7 +42,7 @@ In Lithe, the call is a value that runs later:
 
 ```lithe
 interface Token is {
-  call transfer(to : address; amount : nat) : bool;
+  function transfer(to : address; amount : nat) : bool;
 }
 
 storage is record {
@@ -68,7 +68,7 @@ Sometimes you need another contract's answer before you can finish computing, su
 const price : nat := query storage.oracle.price(asset);
 ```
 
-A query compiles to `STATICCALL`, so the EVM itself guarantees that nothing in the callee's call tree changes state. Only interface methods declared with `query` can be queried, and only methods declared with `call` can be deferred. Neither can be used as the other.
+A query compiles to `STATICCALL`, so the EVM itself guarantees that nothing in the callee's call tree changes state. Only `view` and `pure` interface methods can be queried, and only the others can be deferred. Neither can be used as the other.
 
 ## Continuations: using a call's result
 
@@ -76,7 +76,7 @@ A deferred call's result does not exist during the transition that defers it. To
 
 ```lithe
 interface Exchange is {
-  call swap(amount_in : nat) : nat;
+  function swap(amount_in : nat) : nat;
 }
 
 storage is record {

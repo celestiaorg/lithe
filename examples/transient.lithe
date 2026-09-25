@@ -20,7 +20,7 @@ module Settlement is {
 }
 
 interface Me is {
-  call confirm() : unit;
+  function confirm();
 }
 
 transient storage scratch is record {

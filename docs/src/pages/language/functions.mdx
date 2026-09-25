@@ -171,16 +171,19 @@ external view function pick(const other : address) : address is
 
 See [Generics](/language/generics) for generic modules.
 
-## Promoting module functions
+## Module externals
 
-A contract can expose a module function directly:
+A module can declare external functions, and a contract exposes them by declaring each one's header in `external use`:
 
 ```lithe fragment
-external function transfer is Token.transfer;
-external view function balance_of is Token.balance_of;
+external use Token is {
+  function transfer(to : address; amount : nat)
+    raises Insufficient_balance;
+  view function balance_of(account : address) : nat;
+}
 ```
 
-A promotion takes its signature and errors from the module function. It must use the same kind: a stateful module function cannot be promoted as `view`. See [Modules and contracts](/language/modules).
+A declaration has no body, and must match the module's external exactly: the same effect, `payable` and `nonreentrant`, parameters, result, and errors. See [Modules and contracts](/language/modules#exposing-a-modules-externals).
 
 ## `private`
 

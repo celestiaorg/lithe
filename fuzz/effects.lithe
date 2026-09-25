@@ -4,13 +4,13 @@ error Not_owner;
 error Low of nat;
 
 interface Oracle is {
-  query price() : nat;
-  query quote(amount : nat) : nat;
+  view function price() : nat;
+  view function quote(amount : nat) : nat;
 }
 
 interface Sink is {
-  call deposit(amount : nat) : unit;
-  call ping() : unit;
+  function deposit(amount : nat);
+  function ping();
 }
 
 storage is record {

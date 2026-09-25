@@ -86,7 +86,9 @@ pub(crate) struct Sym {
 
 #[derive(Clone)]
 pub(crate) struct IfaceMethod {
+    /// A `view` or `pure` method, read with `query`. Others are deferred calls.
     pub query: bool,
+    pub payable: bool,
     pub name: String,
     pub params: Vec<usize>,
     pub ret: usize,
@@ -149,6 +151,9 @@ pub(crate) struct Checked {
     /// A hash of the program as it came in, which is everything a build depends on besides
     /// the compiler and its options.
     pub fingerprint: [u8; 32],
+    /// The program as it came in, before its modules were composed. A module's facet is
+    /// built from it.
+    pub source: Program,
 }
 
 impl Checked {
@@ -396,6 +401,22 @@ fn compose(prog: &mut Program) -> Result<(), Error> {
             ));
         }
     }
+    for module in prog.modules.iter().filter(|module| !module.params.is_empty()) {
+        if let Some(func) = module
+            .funcs
+            .iter()
+            .find(|func| matches!(func.kind, ItemKind::Entry | ItemKind::View))
+        {
+            return Err(error(
+                func.line,
+                func.col,
+                format!(
+                    "generic module `{}` cannot declare external functions",
+                    module.name
+                ),
+            ));
+        }
+    }
     publish_generic(prog)?;
     let mut used = HashMap::new();
     for use_ in &prog.compose {
@@ -502,8 +523,29 @@ fn compose(prog: &mut Program) -> Result<(), Error> {
             }
             prog.events.push(decl);
         }
+        let mut exported = 0;
         for mut func in module.funcs {
-            func.name = format!("{}.{}", module.name, func.name);
+            if matches!(func.kind, ItemKind::Entry | ItemKind::View) {
+                func.exported = Some(Exported {
+                    name: func.name.clone(),
+                    kind: func.kind,
+                    payable: func.payable,
+                    nonreentrant: func.nonreentrant,
+                    external_pure: func.external_pure,
+                });
+                func.kind = match func.kind {
+                    ItemKind::View if func.external_pure => ItemKind::Pure,
+                    ItemKind::View => ItemKind::Readonly,
+                    _ => ItemKind::Function,
+                };
+                func.payable = false;
+                func.nonreentrant = false;
+                func.external_pure = false;
+                func.name = exported_name(&module.name, &func.name, exported);
+                exported += 1;
+            } else {
+                func.name = format!("{}.{}", module.name, func.name);
+            }
             prog.funcs.push(func);
         }
         for mut domain in module.domains {
@@ -511,158 +553,192 @@ fn compose(prog: &mut Program) -> Result<(), Error> {
             prog.domains.push(domain);
         }
     }
-    let promotions = std::mem::take(&mut prog.promotions);
-    let mut promoted = HashMap::new();
-    for promo in promotions {
-        let qualified = format!("{}.{}", promo.module, promo.func);
-        if !used.contains_key(&promo.module) {
-            return Err(error(
-                promo.line,
-                promo.col,
-                format!("module `{}` is not used", promo.module),
-            ));
-        }
-        let found = prog
-            .funcs
-            .iter()
-            .find(|func| func.name == qualified)
-            .map(|src| {
-                (
-                    src.kind,
-                    src.ret.clone(),
-                    src.raises.clone(),
-                    src.params.clone(),
-                    src.origin.clone(),
-                )
-            });
-        let Some((src_kind, ret, raises, params, origin)) = found else {
-            return Err(error(
-                promo.line,
-                promo.col,
-                format!("module `{}` has no function `{}`", promo.module, promo.func),
-            ));
-        };
-        // The promotion restates the module function's effect; it may only add `payable`.
-        let said = match (promo.kind, promo.external_pure) {
-            (ItemKind::View, true) => ItemKind::Pure,
-            (ItemKind::View, false) => ItemKind::Readonly,
-            _ => ItemKind::Function,
-        };
-        if said != src_kind {
-            let word = |kind: ItemKind| match kind {
-                ItemKind::Pure => "pure",
-                ItemKind::Readonly => "view",
-                _ => "stateful",
+    let exposes = std::mem::take(&mut prog.exposes);
+    for exposed in &exposes {
+        let mut members = Vec::new();
+        for named in &exposed.interfaces {
+            let Some(iface) = prog.interfaces.iter().find(|iface| iface.name == named.name) else {
+                return Err(error(
+                    named.line,
+                    named.col,
+                    format!("unknown interface `{}`", named.name),
+                ));
             };
-            return Err(error(
-                promo.line,
-                promo.col,
+            members.extend(iface.methods.iter().cloned());
+        }
+        members.extend(exposed.decls.iter().cloned());
+        for decl in members {
+            let entry = declared_entry(prog, &exposed.module, decl)?;
+            prog.funcs.push(entry);
+        }
+    }
+    prog.exposes = exposes;
+    Ok(())
+}
+
+/// The internal function a module's external becomes: `M.name#k`, which no source can name.
+/// Only the entrypoints that declare it call it.
+fn exported_name(module: &str, name: &str, k: usize) -> String {
+    format!("{module}.{name}#{k}")
+}
+
+/// The entrypoint for one declaration in `external use M is { ... }`: it has the declared
+/// header, and runs `M`'s external of the same signature. The checker holds the two headers
+/// equal once their types are known.
+fn declared_entry(prog: &Program, module: &str, decl: Func) -> Result<Func, Error> {
+    let candidates: Vec<&Func> = prog
+        .funcs
+        .iter()
+        .filter(|func| {
+            func.module.as_deref() == Some(module)
+                && func
+                    .exported
+                    .as_ref()
+                    .is_some_and(|exported| exported.name == decl.name)
+        })
+        .collect();
+    let impl_ = match candidates.as_slice() {
+        [] => {
+            let internal = format!("{module}.{}", decl.name);
+            let msg = if prog.funcs.iter().any(|func| func.name == internal) {
                 format!(
-                    "`{}` is exposed as {}, but `{qualified}` is declared {}",
-                    promo.name,
-                    word(said),
-                    word(src_kind)
-                ),
-            ));
+                    "`{internal}` is not external; `external use` declares only a module's external functions"
+                )
+            } else {
+                format!("module `{module}` has no external function `{}`", decl.name)
+            };
+            return Err(error(decl.line, decl.col, msg));
         }
-        if promo.kind == ItemKind::View && ret.is_none() {
-            return Err(error(
-                promo.line,
-                promo.col,
-                format!("cannot expose `{qualified}` as a view; it returns nothing"),
-            ));
+        [one] => *one,
+        several => {
+            let shape: Vec<String> = decl.params.iter().map(|p| shape_ty(&p.ty)).collect();
+            let found = several.iter().find(|func| {
+                func.params.iter().map(|p| shape_ty(&p.ty)).collect::<Vec<_>>() == shape
+            });
+            match found {
+                Some(func) => *func,
+                None => {
+                    let mut msg = format!(
+                        "no external `{}` of module `{module}` takes ({})
+
+the module declares:",
+                        decl.name,
+                        shape.join(", ")
+                    );
+                    for func in several {
+                        msg.push_str(&format!("\n  {}", header_text(func, &decl.name)));
+                    }
+                    return Err(error(decl.line, decl.col, msg));
+                }
+            }
         }
-        // External overloads may come from different module functions; the dispatcher
-        // still rejects two with the same ABI signature.
-        let overload = promo.kind == ItemKind::Entry || promo.kind == ItemKind::View;
-        if let Some(prev) = promoted.get(&promo.name).filter(|_| !overload) {
-            return Err(error(
-                promo.line,
-                promo.col,
-                format!(
-                    "`{}` is already promoted from `{prev}`; promotion does not choose a winner",
-                    promo.name
-                ),
-            ));
+    };
+    // The entrypoint runs the external's own body, in its module's scope: the same code
+    // whether the module is compiled into the contract or into its facet. How the body
+    // treats its parameters, and `nonreentrant`, are the definition's, not the interface's.
+    let mut params = decl.params.clone();
+    for (param, own) in params.iter_mut().zip(&impl_.params) {
+        param.mutable = own.mutable;
+    }
+    let nonreentrant = impl_
+        .exported
+        .as_ref()
+        .is_some_and(|exported| exported.nonreentrant);
+    Ok(Func {
+        stmts: impl_.stmts.clone(),
+        tail: impl_.tail.clone(),
+        module: impl_.module.clone(),
+        requires: impl_.requires.clone(),
+        promoted: Some(module.to_string()),
+        declares: Some(impl_.name.clone()),
+        params,
+        nonreentrant,
+        ..decl
+    })
+}
+
+/// Where a module's transient record starts: two bytes of a hash of its name, with the top
+/// bit set, above the contract's own transient slots. Two bytes keep each access one byte
+/// longer than a small slot; two records that overlap in one contract are an error.
+pub(crate) fn module_transient_slot(qualified: &str) -> u64 {
+    let hash = crate::keccak::keccak256(format!("lithe.transient.{qualified}").as_bytes());
+    u64::from(u16::from_be_bytes([hash[0], hash[1]]) | 0x8000)
+}
+
+fn declaration_mismatch(decl: &Func, impl_: &Func) -> String {
+    let module = impl_.module.as_deref().unwrap_or("");
+    let name = impl_
+        .exported
+        .as_ref()
+        .map_or(decl.name.as_str(), |exported| exported.name.as_str());
+    format!(
+        "`{}` does not match its declaration in module `{module}`\n\n  module:   {}\n  contract: {}",
+        decl.name,
+        header_text(impl_, name),
+        header_text(decl, &decl.name)
+    )
+}
+
+/// A function's header as written, for diagnostics: `view function f(const a : nat) : nat`.
+pub(crate) fn header_text(func: &Func, name: &str) -> String {
+    let header = Header::of(func, name);
+    let mut out = format!("{}({})", header.head, header.params.join("; "));
+    out.push_str(&header.ret);
+    if !header.raises.is_empty() {
+        out.push_str(&format!(" raises {}", header.raises.join(" | ")));
+    }
+    out
+}
+
+/// A function's header as an interface writes it, in pieces: `view function f`, its
+/// parameters, ` : T`, and its errors.
+pub(crate) struct Header {
+    pub head: String,
+    pub params: Vec<String>,
+    pub ret: String,
+    pub raises: Vec<String>,
+}
+
+impl Header {
+    pub(crate) fn of(func: &Func, name: &str) -> Self {
+        // An interface's form: what the ABI and the errors say, not `nonreentrant` or how
+        // the body treats its parameters.
+        let (kind, payable, external_pure) = match &func.exported {
+            Some(exported) => (exported.kind, exported.payable, exported.external_pure),
+            None => (func.kind, func.payable, func.external_pure),
+        };
+        let mut head = String::new();
+        if payable {
+            head.push_str("payable ");
         }
-        if prog.funcs.iter().any(|func| {
-            func.name == promo.name
-                && !(overload && matches!(func.kind, ItemKind::Entry | ItemKind::View))
-        }) {
-            return Err(error(
-                promo.line,
-                promo.col,
-                format!("public name `{}` is already declared", promo.name),
-            ));
+        match kind {
+            ItemKind::View if external_pure => head.push_str("pure "),
+            ItemKind::View => head.push_str("view "),
+            _ => {}
         }
-        promoted.insert(promo.name.clone(), promo.module.clone());
-        let args = params
+        head.push_str(&format!("function {name}"));
+        let params = func
+            .params
             .iter()
-            .map(|param| Expr::Ident {
-                line: promo.line,
-                col: promo.col,
-                name: param.name.clone(),
-                sym: None,
-                builtin: None,
-                ty: 0,
-            })
+            .map(|p| format!("{} : {}", p.name, shape_ty(&p.ty)))
             .collect();
-        let call = Expr::Call {
-            line: promo.line,
-            col: promo.col,
-            name: qualified,
-            args,
-            base: None,
-            callee: None,
-            builtin: None,
-            iface: None,
-            method: None,
-            ty: 0,
-        };
-        let (stmts, tail) = if ret.is_some() {
-            (Vec::new(), Some(call))
-        } else {
-            (
-                vec![Stmt::Call {
-                    line: promo.line,
-                    col: promo.col,
-                    expr: call,
-                }],
-                None,
-            )
-        };
-        let params = params
-            .into_iter()
-            .map(|mut param| {
-                param.sym = None;
-                param.ty_id = 0;
-                param
-            })
+        let ret = func
+            .ret
+            .as_ref()
+            .map(|ret| format!(" : {}", shape_ty(ret)))
+            .unwrap_or_default();
+        let raises = func
+            .raises
+            .iter()
+            .flat_map(|raises| raises.parts.iter().map(|p| p.name.clone()))
             .collect();
-        prog.funcs.push(Func {
-            line: promo.line,
-            col: promo.col,
-            kind: promo.kind,
-            private: false,
-            origin,
-            name: promo.name,
-            type_params: Vec::new(),
+        Self {
+            head,
             params,
             ret,
-            ret_ty: 0,
-            payable: promo.payable,
-            nonreentrant: promo.nonreentrant,
-            external_pure: promo.external_pure,
             raises,
-            errors: Vec::new(),
-            stmts,
-            tail,
-            module: None,
-            requires: Vec::new(),
-            promoted: Some(promo.module.clone()),
-        });
+        }
     }
-    Ok(())
 }
 
 fn several_contracts(prog: &Program) -> Error {
@@ -694,6 +770,7 @@ pub(crate) fn check(mut prog: Program) -> Result<Checked, Error> {
     if !prog.siblings.is_empty() {
         return Err(several_contracts(&prog));
     }
+    let source = prog.clone();
     compose(&mut prog)?;
     let mut generic_fns = Vec::new();
     prog.funcs.retain(|func| {
@@ -982,9 +1059,13 @@ pub(crate) fn check(mut prog: Program) -> Result<Checked, Error> {
         )?);
     }
     // Transient storage comes after every persistent leaf, one transient slot per word.
-    // Slots 0 and 1 are the compiler's upgrade gate and reentrancy lock.
+    // Slots 0 and 1 are the compiler's upgrade gate and reentrancy lock. The contract's own
+    // records follow them; a module's record starts at a slot derived from its name, so it
+    // is the same in every contract that uses the module, and in its facet.
     let transient_from = leaf_keys.len();
     let mut transient_layout = Vec::new();
+    let mut module_slots: Vec<(u64, u64, String)> = Vec::new();
+    let mut next_own = 2u64;
     for decl in domains.iter().filter(|decl| decl.transient) {
         let qualified = match &decl.owner {
             Some(module) => format!("{module}.{}", decl.name),
@@ -1008,8 +1089,30 @@ pub(crate) fn check(mut prog: Program) -> Result<Checked, Error> {
         layout(&mut c.types, ty);
         check_transient_shape(&c.types, ty, &decl.name)?;
         let start = leaf_keys.len();
-        for i in 0..c.types[ty].words as usize {
-            leaf_keys.push(Word::from_u64((2 + start - transient_from + i) as u64));
+        let words = c.types[ty].words as u64;
+        let base = match &decl.owner {
+            Some(_) => {
+                let base = module_transient_slot(&qualified);
+                if let Some((_, _, other)) = module_slots
+                    .iter()
+                    .find(|(at, len, _)| base < at + len && *at < base + words.max(1))
+                {
+                    return Err(error(
+                        decl.line,
+                        decl.col,
+                        format!("transient storage `{qualified}` overlaps `{other}`; rename one"),
+                    ));
+                }
+                module_slots.push((base, words.max(1), qualified.clone()));
+                base
+            }
+            None => {
+                next_own += words;
+                next_own - words
+            }
+        };
+        for i in 0..words {
+            leaf_keys.push(Word::from_u64(base + i));
             leaf_pack.push(Pack::FULL);
         }
         c.domain_binds.push(BoundDomain {
@@ -1030,6 +1133,13 @@ pub(crate) fn check(mut prog: Program) -> Result<Checked, Error> {
     let leaves = leaf_keys.len();
     c.register_events(&prog)?;
     c.register_errors(&prog)?;
+    for iface in &prog.interfaces {
+        for member in &iface.methods {
+            if let Some(raises) = &member.raises {
+                c.resolve_raises(raises)?;
+            }
+        }
+    }
 
     let mut prog = prog;
     // A function that takes a map or a dynamic list reads and writes the storage it is
@@ -1072,6 +1182,7 @@ pub(crate) fn check(mut prog: Program) -> Result<Checked, Error> {
         }
         c.prepare_sig(f, effectful)?;
     }
+    c.match_declared_types(&prog.funcs)?;
     for module in &prog.modules {
         c.known_modules.insert(module.name.clone());
     }
@@ -1091,9 +1202,29 @@ pub(crate) fn check(mut prog: Program) -> Result<Checked, Error> {
     prog.funcs = c.work;
     c.work = Vec::new();
     c.solve_errors(&mut prog.funcs)?;
+    c.match_declarations(&prog.funcs)?;
     require_payable(&prog.funcs)?;
     if let Some(guard) = &mut prog.guard {
         c.check_guard(guard)?;
+    }
+    // Each interface the program knows, by the selectors and results of its methods, to find
+    // the ones the contract has.
+    let mut known: Vec<(String, Vec<([u8; 4], Vec<String>)>)> = Vec::new();
+    for iface in &prog.interfaces {
+        let Some(methods) = c.named.get(&iface.name).and_then(|id| c.ifaces.get(id)) else {
+            continue;
+        };
+        let mut sigs = Vec::new();
+        for method in methods {
+            let hash = crate::keccak::keccak256(method.sig.as_bytes());
+            let ret = if method.ret == TY_UNIT {
+                Vec::new()
+            } else {
+                abi_parts(&c.types, method.ret).unwrap_or_default()
+            };
+            sigs.push(([hash[0], hash[1], hash[2], hash[3]], ret));
+        }
+        known.push((iface.name.clone(), sigs));
     }
     let checked = Checked {
         prog,
@@ -1112,9 +1243,166 @@ pub(crate) fn check(mut prog: Program) -> Result<Checked, Error> {
         routes: Vec::new(),
         warnings: std::mem::take(&mut c.warnings),
         fingerprint,
+        source,
     };
     let routes = crate::route::discover(&checked)?;
-    Ok(Checked { routes, ..checked })
+    supports_interface(Checked { routes, ..checked }, &known)
+}
+
+/// ERC-165. Every contract answers `supportsInterface(bytes4)`: true for ERC-165 itself, and
+/// for each interface the program knows that the contract has. A contract has an interface
+/// when it dispatches every one of its methods, with the same result; nothing says so. An
+/// interface's id is the XOR of its methods' selectors. The contract is checked again with
+/// the function added. One that writes its own keeps it.
+fn supports_interface(
+    checked: Checked,
+    known: &[(String, Vec<([u8; 4], Vec<String>)>)],
+) -> Result<Checked, Error> {
+    if !checked.prog.erc165 {
+        return Ok(checked);
+    }
+    let funcs = &checked.prog.funcs;
+    let ret_of = |func: usize| -> Vec<String> {
+        if funcs[func].ret_ty == TY_UNIT {
+            Vec::new()
+        } else {
+            abi_parts(&checked.types, funcs[func].ret_ty).unwrap_or_default()
+        }
+    };
+    let mut have: Vec<([u8; 4], Option<Vec<String>>)> = Vec::new();
+    for route in &checked.routes {
+        let func = route.direct.or_else(|| {
+            let top = route.path.first()?;
+            funcs
+                .iter()
+                .position(|f| f.kind == ItemKind::Entry && &f.name == top)
+        });
+        have.push((route.sel, func.map(ret_of)));
+    }
+    for (i, func) in funcs.iter().enumerate() {
+        if func.kind == ItemKind::View {
+            let sig = crate::route::view_sig(&checked, func)?;
+            let hash = crate::keccak::keccak256(sig.as_bytes());
+            have.push(([hash[0], hash[1], hash[2], hash[3]], Some(ret_of(i))));
+        }
+    }
+    let own_sel = {
+        let hash = crate::keccak::keccak256(b"supportsInterface(bytes4)");
+        [hash[0], hash[1], hash[2], hash[3]]
+    };
+    let mut ids = vec![0x01ff_c9a7u32];
+    let mut names = Vec::new();
+    for (name, methods) in known {
+        let has = methods.iter().all(|(sel, ret)| {
+            have.iter()
+                .any(|(s, r)| s == sel && r.as_ref().is_none_or(|r| r == ret))
+        });
+        if !has {
+            continue;
+        }
+        let id = methods
+            .iter()
+            .fold(0u32, |xor, (sel, _)| xor ^ u32::from_be_bytes(*sel));
+        if !ids.contains(&id) {
+            ids.push(id);
+            names.push(format!("`{name}`"));
+        }
+    }
+    if have.iter().any(|(sel, _)| *sel == own_sel) {
+        let (line, col) = funcs
+            .iter()
+            .find(|func| func.name == "supportsInterface")
+            .map_or((1, 1), |func| (func.line, func.col));
+        let mut checked = checked;
+        if !names.is_empty() {
+            checked.warnings.push(format!(
+                "{line}:{col}: warning: the contract writes its own `supportsInterface`, so the compiler does not answer for {}, which the contract has\n\nanswer for them there, or remove it to have them answered\n",
+                names.join(", ")
+            ));
+        }
+        return Ok(checked);
+    }
+    let (line, col) = (checked.prog.contract_line.max(1), checked.prog.contract_col.max(1));
+    let mut source = checked.source.clone();
+    source.erc165 = false;
+    source.funcs.push(erc165_func(line, col, &source.origin, &ids));
+    let mut again = check(source)?;
+    again.source.erc165 = true;
+    Ok(again)
+}
+
+/// `external pure function supportsInterface(const interfaceId : bytes4) : bool`, true for
+/// exactly `ids`.
+fn erc165_func(line: u32, col: u32, origin: &str, ids: &[u32]) -> Func {
+    let ident = || Expr::Ident {
+        line,
+        col,
+        name: "interfaceId".to_string(),
+        sym: None,
+        builtin: None,
+        ty: 0,
+    };
+    let test = |id: u32| Expr::Binary {
+        line,
+        col,
+        op: BinOp::Eq,
+        left: Box::new(ident()),
+        right: Box::new(Expr::Lit {
+            line,
+            col,
+            lit: Lit::Int(Word::from_u64(u64::from(id))),
+            ty: 0,
+        }),
+        ty: 0,
+    };
+    let tail = ids
+        .iter()
+        .skip(1)
+        .fold(test(ids[0]), |acc, &id| Expr::Binary {
+            line,
+            col,
+            op: BinOp::Or,
+            left: Box::new(acc),
+            right: Box::new(test(id)),
+            ty: 0,
+        });
+    let name = |name: &str| TypeRef::Name {
+        line,
+        col,
+        name: name.to_string(),
+    };
+    Func {
+        line,
+        col,
+        kind: ItemKind::View,
+        private: false,
+        origin: origin.to_string(),
+        name: "supportsInterface".to_string(),
+        type_params: Vec::new(),
+        params: vec![Param {
+            line,
+            col,
+            mutable: false,
+            name: "interfaceId".to_string(),
+            ty: name("bytes4"),
+            ty_id: 0,
+            sym: None,
+        }],
+        ret: Some(name("bool")),
+        ret_ty: 0,
+        payable: false,
+        nonreentrant: false,
+        external_pure: true,
+        raises: None,
+        errors: Vec::new(),
+        stmts: Vec::new(),
+        tail: Some(tail),
+        module: None,
+        requires: Vec::new(),
+        promoted: None,
+        declares: None,
+        exported: None,
+    }
 }
 
 const TY_UNIT: usize = 0;
@@ -1554,16 +1842,10 @@ impl Checker {
             let mut methods = Vec::new();
             let mut seen = HashSet::new();
             for m in &iface.methods {
-                if !seen.insert(m.name.clone()) {
-                    return Err(error(
-                        m.line,
-                        m.col,
-                        format!("duplicate method `{}`", m.name),
-                    ));
-                }
                 let mut params = Vec::new();
                 let mut abi = Vec::new();
-                for (_, ty) in &m.params {
+                for p in &m.params {
+                    let ty = &p.ty;
                     let pid = self.build(ty)?;
                     // Strings, bytes, and lists go after the head, ABI-encoded.
                     let part = if self.is_dyn_ty(pid) || self.abi_list(pid) {
@@ -1583,33 +1865,24 @@ impl Checker {
                     abi.push(part);
                     params.push(pid);
                 }
-                let ret = self.build(&m.ret)?;
-                let dynamic_ret = self.is_dyn_ty(ret) || self.abi_list(ret);
-                if m.query && self.types[ret].words != 1 && !dynamic_ret {
-                    return Err(error(
-                        m.ret.line(),
-                        m.ret.col(),
-                        "query returns a single word, a string, bytes, or a list",
-                    ));
+                let sig = format!("{}({})", m.name, abi.join(","));
+                if !seen.insert(sig.clone()) {
+                    return Err(error(m.line, m.col, format!("duplicate method `{sig}`")));
                 }
-                // A `call` result reaches a continuation.
-                if !m.query
-                    && ret != TY_UNIT
-                    && static_abi(&self.types, ret).is_none()
-                    && !dynamic_ret
-                {
-                    return Err(error(
-                        m.ret.line(),
-                        m.ret.col(),
-                        "a call returns a static value, a string, bytes, or a list",
-                    ));
+                let ret = match &m.ret {
+                    Some(ty) => self.build(ty)?,
+                    None => TY_UNIT,
+                };
+                if m.kind == ItemKind::View && ret == TY_UNIT {
+                    return Err(error(m.line, m.col, "a view method returns a value"));
                 }
                 methods.push(IfaceMethod {
-                    query: m.query,
+                    query: m.kind == ItemKind::View,
+                    payable: m.payable,
                     name: m.name.clone(),
                     params,
                     ret,
-                    sig: format!("{}({})", m.name, abi.join(",")),
+                    sig,
                 });
             }
             self.ifaces.insert(id, methods);
@@ -2455,8 +2728,14 @@ impl Checker {
         }
         for i in 0..n {
             let inferred = expand(&self.pieces[i], &effective);
-            let kind = funcs[i].kind;
-            let name = funcs[i].name.clone();
+            // A module's external declares its errors as any external does.
+            let (kind, name) = match &funcs[i].exported {
+                Some(exported) => (
+                    exported.kind,
+                    format!("{}.{}", funcs[i].module.as_deref().unwrap_or(""), exported.name),
+                ),
+                None => (funcs[i].kind, funcs[i].name.clone()),
+            };
             let (line, col) = (funcs[i].line, funcs[i].col);
             if let Some(declared) = &self.declared[i] {
                 let extra: Vec<usize> = inferred
@@ -2486,6 +2765,94 @@ impl Checker {
                 effective[i] = inferred;
             }
             funcs[i].errors = effective[i].clone();
+        }
+        Ok(())
+    }
+
+    /// Each declaration in `external use M is { ... }` restates `M`'s external exactly: its
+    /// effect, `payable`, `nonreentrant`, parameters, result, and errors.
+    fn match_declarations(&self, funcs: &[Func]) -> Result<(), Error> {
+        for decl in funcs {
+            let Some(target) = &decl.declares else {
+                continue;
+            };
+            let Some(impl_) = funcs.iter().find(|func| &func.name == target) else {
+                continue;
+            };
+            let Some(exported) = &impl_.exported else {
+                continue;
+            };
+            let same_params = decl.params.len() == impl_.params.len()
+                && decl
+                    .params
+                    .iter()
+                    .zip(&impl_.params)
+                    .all(|(a, b)| a.name == b.name && self.same(a.ty_id, b.ty_id));
+            let mut want: Vec<usize> = impl_.errors.clone();
+            let mut have: Vec<usize> = decl.errors.clone();
+            want.sort_unstable();
+            have.sort_unstable();
+            let same = exported.kind == decl.kind
+                && exported.payable == decl.payable
+                && exported.external_pure == decl.external_pure
+                && same_params
+                && decl.ret.is_some() == impl_.ret.is_some()
+                && self.same(decl.ret_ty, impl_.ret_ty)
+                && want == have
+                && (decl.raises.is_some() || impl_.raises.is_none());
+            if same {
+                continue;
+            }
+            let mut msg = declaration_mismatch(decl, impl_);
+            if want != have {
+                let names = |ids: &[usize]| -> String {
+                    let names: Vec<&str> =
+                        ids.iter().map(|&id| self.errors[id].name.as_str()).collect();
+                    if names.is_empty() {
+                        "none".to_string()
+                    } else {
+                        names.join(" | ")
+                    }
+                };
+                msg.push_str(&format!(
+                    "\n\nthe module raises {}; the declaration raises {}",
+                    names(&want),
+                    names(&have)
+                ));
+            }
+            return Err(error(decl.line, decl.col, msg));
+        }
+        Ok(())
+    }
+
+    /// Before any body is checked: a declaration takes and returns the types its module
+    /// external does, so the entrypoint's call to it type-checks.
+    fn match_declared_types(&self, funcs: &[Func]) -> Result<(), Error> {
+        for (i, decl) in funcs.iter().enumerate() {
+            let Some(target) = &decl.declares else {
+                continue;
+            };
+            let Some(j) = funcs.iter().position(|func| &func.name == target) else {
+                continue;
+            };
+            // The entrypoint runs the external's body under the declared names, so they
+            // must match before the body is checked.
+            let (a, b) = (&self.sigs[i], &self.sigs[j]);
+            let same = a.params.len() == b.params.len()
+                && a.params.iter().zip(&b.params).all(|(x, y)| self.same(x.0, y.0))
+                && decl
+                    .params
+                    .iter()
+                    .zip(&funcs[j].params)
+                    .all(|(x, y)| x.name == y.name)
+                && self.same(a.ret, b.ret);
+            if !same {
+                return Err(error(
+                    decl.line,
+                    decl.col,
+                    declaration_mismatch(decl, &funcs[j]),
+                ));
+            }
         }
         Ok(())
     }
@@ -3255,6 +3622,24 @@ impl Checker {
                     if self.types[v.ty()].kind != TyKind::Nat {
                         return Err(error(*line, *col, "`value` must be nat"));
                     }
+                    // Only a payable method accepts value.
+                    if let Expr::Call {
+                        iface: Some(bid),
+                        method: Some(mi),
+                        name,
+                        ..
+                    } = &*expr
+                    {
+                        if !self.ifaces[bid][*mi].payable {
+                            return Err(error(
+                                *line,
+                                *col,
+                                format!(
+                                    "`{name}` is not payable; declare it `payable function {name}` in its interface to send value"
+                                ),
+                            ));
+                        }
+                    }
                 }
                 if let Some(then) = then {
                     then.ret = self.op_return(*line, *col, expr)?;
@@ -3686,6 +4071,18 @@ impl Checker {
                         {
                             *name = qualified;
                             *base = None;
+                        } else if self
+                            .fn_names
+                            .iter()
+                            .any(|n| n.starts_with(&format!("{qualified}#")))
+                        {
+                            return Err(error(
+                                *line,
+                                *col,
+                                format!(
+                                    "external function `{qualified}` cannot be called from inside the contract; move the shared logic into an internal function"
+                                ),
+                            ));
                         }
                     }
                 }
@@ -3713,29 +4110,86 @@ impl Checker {
                         .get(&bid)
                         .cloned()
                         .ok_or_else(|| error(*line, *col, "unknown interface"))?;
-                    let Some((mi, m)) = methods.iter().enumerate().find(|(_, m)| m.name == *name)
-                    else {
+                    let named: Vec<usize> = (0..methods.len())
+                        .filter(|&i| methods[i].name == *name)
+                        .collect();
+                    if named.is_empty() {
                         return Err(error(*line, *col, format!("unknown method `{name}`")));
+                    }
+                    let fitting: Vec<usize> = named
+                        .iter()
+                        .copied()
+                        .filter(|&i| methods[i].params.len() == args.len())
+                        .collect();
+                    let mi = match fitting.as_slice() {
+                        [] => {
+                            return Err(error(
+                                *line,
+                                *col,
+                                format!(
+                                    "`{name}` expects {} arguments",
+                                    methods[named[0]].params.len()
+                                ),
+                            ));
+                        }
+                        [one] => {
+                            let params = methods[*one].params.clone();
+                            for (arg, pty) in args.iter_mut().zip(params) {
+                                self.check_expr_as(arg, Some(pty))?;
+                                if !self.same(arg.ty(), pty) {
+                                    return Err(error(
+                                        arg.line(),
+                                        arg.col(),
+                                        "argument has the wrong type",
+                                    ));
+                                }
+                            }
+                            *one
+                        }
+                        // Overloads with as many parameters: the arguments' types choose.
+                        several => {
+                            for arg in args.iter_mut() {
+                                self.check_expr(arg)?;
+                            }
+                            let found = several.iter().copied().find(|&i| {
+                                methods[i]
+                                    .params
+                                    .iter()
+                                    .zip(args.iter())
+                                    .all(|(&p, arg)| self.same(arg.ty(), p))
+                            });
+                            let Some(found) = found else {
+                                return Err(error(
+                                    *line,
+                                    *col,
+                                    format!("no overload of `{name}` takes these arguments"),
+                                ));
+                            };
+                            found
+                        }
                     };
-                    if args.len() != m.params.len() {
+                    let m = &methods[mi];
+                    let query = m.query;
+                    let ret = m.ret;
+                    let dynamic_ret = self.is_dyn_ty(ret) || self.abi_list(ret);
+                    if query && self.types[ret].words != 1 && !dynamic_ret {
                         return Err(error(
                             *line,
                             *col,
-                            format!("`{name}` expects {} arguments", m.params.len()),
+                            "a query returns a single word, a string, bytes, or a list",
                         ));
                     }
-                    let params = m.params.clone();
-                    let query = m.query;
-                    let ret = m.ret;
-                    for (arg, pty) in args.iter_mut().zip(params) {
-                        self.check_expr_as(arg, Some(pty))?;
-                        if !self.same(arg.ty(), pty) {
-                            return Err(error(
-                                arg.line(),
-                                arg.col(),
-                                "argument has the wrong type",
-                            ));
-                        }
+                    // A call's result reaches a continuation.
+                    if !query
+                        && ret != TY_UNIT
+                        && static_abi(&self.types, ret).is_none()
+                        && !dynamic_ret
+                    {
+                        return Err(error(
+                            *line,
+                            *col,
+                            "a call returns a static value, a string, bytes, or a list",
+                        ));
                     }
                     *iface = Some(bid);
                     *method = Some(mi);
@@ -3848,9 +4302,34 @@ impl Checker {
                             ));
                         }
                     }
+                    let qualified = match &self.module_name {
+                        Some(module) if !name.contains('.') => format!("{module}.{name}"),
+                        _ => name.clone(),
+                    };
+                    let exported = format!("{qualified}#");
+                    if self.fn_names.iter().any(|n| n.starts_with(&exported)) {
+                        return Err(error(
+                            *line,
+                            *col,
+                            format!(
+                                "external function `{qualified}` cannot be called from inside the contract; move the shared logic into an internal function"
+                            ),
+                        ));
+                    }
                     return Err(error(*line, *col, format!("unknown function `{name}`")));
                 };
                 if let Some(mine) = self.module_name.clone() {
+                    // A module is closed over what it requires: the code it runs never
+                    // depends on the contract that uses it.
+                    if !name.contains('.') {
+                        return Err(error(
+                            *line,
+                            *col,
+                            format!(
+                                "module `{mine}` cannot call `{name}`, which belongs to no module; move it into `{mine}` or a module it requires"
+                            ),
+                        ));
+                    }
                     if let Some((other, _)) = name.split_once('.') {
                         if other != mine
                             && self.known_modules.contains(other)

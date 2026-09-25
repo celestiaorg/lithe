@@ -3,7 +3,7 @@ upgradeable
 error Denied;
 
 interface Reader is {
-  query read() : nat;
+  view function read() : nat;
 }
 
 storage is record {

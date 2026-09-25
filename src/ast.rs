@@ -12,7 +12,8 @@ pub(crate) struct Program {
     pub domains: Vec<DomainDecl>,
     pub modules: Vec<ModuleDecl>,
     pub compose: Vec<NameAt>,
-    pub promotions: Vec<Promotion>,
+    /// `external use M is { ... }`: the module externals the contract exposes.
+    pub exposes: Vec<ExternalUse>,
     pub upgradeable: bool,
     pub guard: Option<GuardDecl>,
     /// Set when the file names its contract. An implicit file leaves this empty;
@@ -24,6 +25,10 @@ pub(crate) struct Program {
     pub siblings: Vec<Program>,
     /// The other contracts of the file, which this one may `defer create`.
     pub peers: Vec<Program>,
+    /// The file the contract is written in, as its declarations' `origin` names it.
+    pub origin: String,
+    /// Answer ERC-165's `supportsInterface` for the interfaces `external use` names.
+    pub erc165: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -65,18 +70,28 @@ pub(crate) struct ModuleDecl {
     pub funcs: Vec<Func>,
 }
 
+/// `external use M is I, J, { ... }`: the contract uses `M` and exposes the members of the
+/// interfaces it names and of its inline one. Each member is one of `M`'s externals.
 #[derive(Debug, Clone)]
-pub(crate) struct Promotion {
+pub(crate) struct ExternalUse {
     pub line: u32,
     pub col: u32,
+    pub module: String,
+    pub interfaces: Vec<NameAt>,
+    /// The inline interface's members.
+    pub decls: Vec<Func>,
+}
+
+/// What a module's external function was declared as, before it became the internal
+/// function that the contracts exposing it call.
+#[derive(Debug, Clone)]
+pub(crate) struct Exported {
+    /// Its name in the ABI.
+    pub name: String,
     pub kind: ItemKind,
     pub payable: bool,
     pub nonreentrant: bool,
     pub external_pure: bool,
-    /// The name the contract exposes it under.
-    pub name: String,
-    pub module: String,
-    pub func: String,
 }
 
 #[derive(Debug, Clone)]
@@ -118,6 +133,7 @@ pub(crate) struct ErrorDecl {
 pub(crate) struct ErrorSetDecl {
     pub line: u32,
     pub col: u32,
+    pub origin: String,
     pub name: String,
     pub members: Vec<NameAt>,
 }
@@ -145,17 +161,8 @@ pub(crate) struct InterfaceDecl {
     pub col: u32,
     pub origin: String,
     pub name: String,
-    pub methods: Vec<IfaceMethod>,
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct IfaceMethod {
-    pub line: u32,
-    pub col: u32,
-    pub query: bool,
-    pub name: String,
-    pub params: Vec<(String, TypeRef)>,
-    pub ret: TypeRef,
+    /// Each method's header, with no body: `view function f(a : T) : R raises E;`.
+    pub methods: Vec<Func>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -309,8 +316,13 @@ pub(crate) struct Func {
     /// `Some` when this function was declared inside a module.
     pub module: Option<String>,
     pub requires: Vec<String>,
-    /// The module a contract promoted this function from, with `external function f is M.f`.
+    /// On an entrypoint that `external use M` declares: `M`, whose external it runs.
     pub promoted: Option<String>,
+    /// On an entrypoint that `external use` declares: the module function it runs.
+    pub declares: Option<String>,
+    /// On a module's external function: how it was declared. It is checked as an internal
+    /// function, which the entrypoints that declare it call.
+    pub exported: Option<Exported>,
 }
 
 #[derive(Debug, Clone)]

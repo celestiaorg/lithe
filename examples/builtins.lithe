@@ -1,7 +1,7 @@
 (* Execution context is Evm.*, hashes are Crypto.*, encoding is Abi.*. *)
 
 interface Target is {
-  call foo(amount : nat) : unit;
+  function foo(amount : nat);
 }
 
 storage is record {

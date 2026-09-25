@@ -17,18 +17,22 @@ Lithe splits external interaction into two constructs that cannot be confused:
 
 ## Interfaces
 
-An interface describes another contract. Each method is either a `query`, which is read-only, or a `call`, which may change state:
+An interface describes a contract's external functions. Each method is a function header with no body: `view` or `pure` methods are read with `query`, and the others are called with `defer`:
 
 ```lithe fragment
 interface IERC20 is {
-  query balanceOf(owner : address) : nat;
-  query allowance(owner : address; spender : address) : nat;
-  call transfer(to : address; amount : nat) : bool;
-  call transferFrom(from : address; to : address; amount : nat) : bool;
+  view function balanceOf(owner : address) : nat;
+  view function allowance(owner : address; spender : address) : nat;
+  function transfer(to : address; amount : nat) : bool;
+  function transferFrom(from : address; to : address; amount : nat) : bool;
 }
 ```
 
-Method names and parameter types form the ABI signature exactly as written: `transferFrom(address,address,uint256)`. A method that returns nothing declares `: unit`. Arguments and results can be strings, bytes, and lists as well as words, for both kinds of method.
+Method names and parameter types form the ABI signature exactly as written: `transferFrom(address,address,uint256)`. Parameters are `name : type`. A method with no result leaves it out, and a method may list the errors it raises with `raises`. Only a `payable function` accepts value. Arguments and results can be strings, bytes, and lists as well as words. A method can be overloaded; a call picks the overload whose parameters its arguments match.
+
+A `query` reads one word, a string, bytes, or a list, and a deferred call's result reaches its continuation as a static value, a string, bytes, or a list. An interface can describe any ABI; these limits apply where a method is called.
+
+The same interfaces say what a contract exposes from a module: `external use M is I` declares every method of `I`. See [Modules and contracts](/language/modules#exposing-a-modules-externals).
 
 A value of an interface type is a contract address. It is an `address` in the ABI and in storage. Convert between the two with `IERC20(addr)` and `address(token)`. Interface values usually arrive as parameters and are kept in storage:
 
@@ -50,7 +54,7 @@ Interfaces can be declared at the top level, or inside a contract or module.
 
 ```lithe
 interface Oracle is {
-  query price(asset : address) : nat;
+  view function price(asset : address) : nat;
 }
 
 error Price_too_low of nat;
@@ -74,11 +78,11 @@ is {
 
 `STATICCALL` means the callee, and everything it calls, cannot modify state, emit logs, or send ether. If it tries, or reverts, the transaction reverts, unless you match the query's outcome with `case query ... of { | Ok(v) -> ... | Error(e) -> ... }`. See [Recovering from failed calls](/language/continuations#recovering-from-failed-calls).
 
-You cannot `query` a `call` method, or `defer` a `query` method:
+You cannot `query` a stateful method, or `defer` a `view` one:
 
 ```lithe rejects
 interface X is {
-  call f() : nat;
+  function f() : nat;
 }
 
 storage is record {
@@ -101,7 +105,7 @@ query expects a read-only method
 
 ```lithe
 interface Token is {
-  call transfer(to : address; amount : nat) : bool;
+  function transfer(to : address; amount : nat) : bool;
 }
 
 storage is record {
@@ -125,7 +129,7 @@ Attach ether with `with value = amount`. The amount is a `nat` number of wei:
 
 ```lithe
 interface Pool is {
-  call deposit(beneficiary : address) : unit;
+  payable function deposit(beneficiary : address);
 }
 
 storage is record {

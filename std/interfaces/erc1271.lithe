@@ -2,5 +2,5 @@
    `0x1626ba7e`. *)
 
 interface IERC1271 is {
-  query isValidSignature(hash : bytes32; signature : bytes) : bytes4;
+  view function isValidSignature(hash : bytes32; signature : bytes) : bytes4;
 }

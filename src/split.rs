@@ -1,12 +1,15 @@
-//! Contracts over the code size limit. The compiler keeps what fits in a router and puts the
-//! rest in parts, which the router reaches with `delegatecall`. Parts are deployed with
-//! `CREATE2` through a factory, so their addresses are known here and built into the router.
+//! Contracts over the code size limit. What a contract writes itself stays in a router; a
+//! module it exposes with `external use` can move into that module's facet, which the router
+//! reaches with `delegatecall`. A facet is built from its module alone, so every contract that
+//! exposes the module shares it. Facets are deployed with `CREATE2` through a factory, so
+//! their addresses are known here and built into the router.
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock};
 
+use crate::ast::{ExternalUse, Func, ItemKind, ModuleDecl, NameAt, Program, TypeDecl, TypeRef};
 use crate::check::Checked;
 use crate::gen::{self, Built, Entrypoint, Group};
 use crate::keccak::keccak256;
@@ -23,91 +26,119 @@ pub const DEPLOYER: [u8; 20] = [
     0x26, 0xc0, 0xb4, 0x95, 0x6c,
 ];
 
+/// When a contract's exposed modules run from their facets.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SplitMode {
+    /// Never: a contract over the limit is an error.
+    Off,
+    /// When the contract is over the limit: the modules that save the most move first, until
+    /// the router fits.
+    Auto,
+    /// Always, for every exposed module, so that contracts share the same facets.
+    All,
+}
+
 /// How contracts are fitted to the size limit.
 #[derive(Clone, Debug)]
 pub struct Options {
-    /// The most runtime code the router or any part may have. Creation code may have twice
+    /// The most runtime code the router or any facet may have. Creation code may have twice
     /// this, as EIP-3860 allows.
     pub size_limit: usize,
-    /// Split a contract over the limit. Without it, such a contract is an error.
-    pub split: bool,
-    /// The `CREATE2` factory parts are deployed through.
+    pub split: SplitMode,
+    /// The `CREATE2` factory facets are deployed through.
     pub deployer: [u8; 20],
+    /// Generate ERC-165's `supportsInterface` for the interfaces `external use` names.
+    pub erc165: bool,
 }
 
 impl Default for Options {
     fn default() -> Self {
         Self {
             size_limit: SIZE_LIMIT,
-            split: true,
+            split: SplitMode::Auto,
             deployer: DEPLOYER,
+            erc165: true,
         }
     }
 }
 
-/// What one build compiles: every entrypoint, or a router's or a part's share.
+/// What one build compiles: every entrypoint, or a router's share.
 #[derive(Clone, Default)]
 pub(crate) struct Shape {
     /// The selectors this code runs itself. `None` runs every one.
     pub keep: Option<HashSet<[u8; 4]>>,
-    /// Selectors forwarded to a part, by the part's index.
+    /// Selectors forwarded to a facet, by the facet's index.
     pub forward: Vec<([u8; 4], usize)>,
-    /// The parts' addresses.
+    /// The facets' addresses.
     pub parts: Vec<Word>,
-    /// A part: its creation code only copies it, since `deploy` belongs to the router.
+    /// A facet: its creation code only copies it, since it has no `deploy`.
     pub part: bool,
     pub opts: Options,
 }
 
-/// A part: its name, its `CREATE2` address, its code, and the entrypoints it runs.
+/// A module's facet: the module's name, its `CREATE2` address, its code, and every external
+/// the module declares, whichever of them a router forwards.
 #[derive(Clone)]
-pub(crate) struct Part {
+pub(crate) struct Facet {
     pub name: String,
     pub address: [u8; 20],
     pub init: Vec<u8>,
     pub runtime: Vec<u8>,
     pub entries: Vec<Entrypoint>,
-    /// Parts of contracts this part creates.
-    pub needs: Vec<Part>,
+    pub abi: String,
+    pub methods: Vec<(String, [u8; 4])>,
+    /// Facets of contracts this facet creates.
+    pub needs: Vec<Facet>,
 }
 
-/// A contract as it deploys: the router's code, and its parts. A contract that fits has no
-/// parts, and its router is exactly the code an unsplit build produces.
+/// A contract as it deploys: the router's code, and the facets it forwards to. A contract
+/// that fits has none, and its router is exactly the code an unsplit build produces.
 pub(crate) struct Split {
     pub creation: Vec<u8>,
     pub runtime: Vec<u8>,
-    /// The entrypoints the router runs itself, when it has parts.
+    /// The entrypoints the router runs itself, when it has facets.
     pub entries: Vec<Entrypoint>,
-    pub parts: Vec<Part>,
-    /// Parts of contracts the router creates.
-    pub needs: Vec<Part>,
-    /// The unsplit runtime's size, when it had to split and could be assembled at all.
+    /// The entrypoints the router forwards to a facet, grouped under the facet's module.
+    pub routed: Vec<Entrypoint>,
+    pub facets: Vec<Facet>,
+    /// Facets of contracts the router creates.
+    pub needs: Vec<Facet>,
+    /// The unsplit runtime's size, when it did not fit and could be assembled at all.
     pub whole: Option<usize>,
 }
 
 impl Split {
-    /// Everything to deploy before the router: the parts of what it creates, then its own,
+    /// Everything to deploy before the router: the facets of what it creates, then its own,
     /// each address once.
-    pub(crate) fn prerequisites(&self) -> Vec<Part> {
-        let mut out: Vec<Part> = Vec::new();
+    pub(crate) fn prerequisites(&self) -> Vec<Facet> {
+        let mut out: Vec<Facet> = Vec::new();
         let mut seen = HashSet::new();
-        let mut add = |part: &Part, out: &mut Vec<Part>| {
-            if seen.insert(part.address) {
-                out.push(part.clone());
+        let mut add = |facet: &Facet, out: &mut Vec<Facet>| {
+            if seen.insert(facet.address) {
+                out.push(facet.clone());
             }
         };
         for need in &self.needs {
             add(need, &mut out);
         }
-        for part in &self.parts {
-            for need in &part.needs {
+        for facet in &self.facets {
+            for need in &facet.needs {
                 add(need, &mut out);
             }
         }
-        for part in &self.parts {
-            add(part, &mut out);
+        for facet in &self.facets {
+            add(facet, &mut out);
         }
         out
+    }
+
+    /// The contract's selectors the router forwards to `facet`.
+    pub(crate) fn forwarded(&self, facet: &Facet) -> Vec<Entrypoint> {
+        self.routed
+            .iter()
+            .filter(|entry| matches!(&entry.group, Group::Module(m) if m == &facet.name))
+            .cloned()
+            .collect()
     }
 }
 
@@ -130,116 +161,173 @@ pub(crate) fn build(checked: &Checked, name: &str, opts: &Options) -> Result<Spl
 }
 
 fn build_uncached(checked: &Checked, name: &str, opts: &Options) -> Result<Split, Error> {
-    let whole_shape = Shape {
-        opts: opts.clone(),
-        ..Shape::default()
-    };
-    let whole = match gen::codegen(checked, &whole_shape) {
-        Ok(built) if fits(&built, opts.size_limit) => {
-            return Ok(Split {
-                creation: built.code,
-                runtime: built.runtime,
-                entries: Vec::new(),
-                parts: Vec::new(),
-                needs: built.needs,
-                whole: None,
-            });
-        }
-        Ok(built) => Some(built.runtime.len()),
-        Err(err) if too_large(&err) => None,
-        Err(err) => return Err(err),
-    };
     let entries = gen::entrypoints(checked)?;
-    let groups = groups(checked, &entries);
-    if !opts.split {
-        return Err(oversized(checked, name, opts, &entries, &groups, whole));
-    }
-    let mut planner = Planner {
-        checked,
-        opts,
-        entries: &entries,
-        parts: HashMap::new(),
-    };
-    let (pinned, rest): (Vec<_>, Vec<_>) = groups
-        .into_iter()
-        .partition(|(group, _)| *group == Group::Upgrade);
-    let pinned: Vec<usize> = pinned.into_iter().flat_map(|(_, idx)| idx).collect();
-    // The router takes whole groups, in order, while the next still fits. Measured with
-    // every other selector forwarded to one stand-in part at the widest address.
-    let wide = Word::from_be_bytes([0xff; 32]).shr(96);
-    let mut take = 0;
-    while take < rest.len() {
-        let keep = router_keep(&pinned, &rest[..=take]);
-        let forward = entries
-            .iter()
-            .enumerate()
-            .filter(|(i, _)| !keep.contains(i))
-            .map(|(_, entry)| (entry.sel, 0))
-            .collect();
-        let shape = Shape {
-            keep: Some(sels(&entries, &keep)),
-            forward,
-            parts: vec![wide],
-            part: false,
+    let modules = exposed(checked, &entries);
+    let mut whole = None;
+    if opts.split != SplitMode::All || modules.is_empty() {
+        let whole_shape = Shape {
             opts: opts.clone(),
+            ..Shape::default()
         };
-        if planner.measure(&shape)?.is_none() {
-            break;
-        }
-        take += 1;
-    }
-    // The real parts can need more stubs than the stand-in did. Then the router gives
-    // back its last group, and the parts are packed again.
-    loop {
-        let placed = planner.pack(&rest[take..], name)?;
-        let keep = router_keep(&pinned, &rest[..take]);
-        let mut forward = Vec::new();
-        let mut addresses = Vec::new();
-        for (i, part) in placed.iter().enumerate() {
-            for entry in &part.entries {
-                forward.push((entry.sel, i));
+        match gen::codegen(checked, &whole_shape) {
+            Ok(built) if fits(&built, opts.size_limit) => {
+                return Ok(Split {
+                    creation: built.code,
+                    runtime: built.runtime,
+                    entries: Vec::new(),
+                    routed: Vec::new(),
+                    facets: Vec::new(),
+                    needs: built.needs,
+                    whole: None,
+                });
             }
-            addresses.push(address_word(part.address));
+            Ok(built) => whole = Some(built.runtime.len()),
+            Err(err) if too_large(&err) => {}
+            Err(err) => return Err(err),
         }
-        let shape = Shape {
-            keep: Some(sels(&entries, &keep)),
-            forward,
-            parts: addresses,
-            part: false,
-            opts: opts.clone(),
-        };
-        if let Some(router) = planner.measure(&shape)? {
-            return Ok(Split {
-                creation: router.code,
-                runtime: router.runtime,
-                entries: keep.iter().map(|&i| entries[i].clone()).collect(),
-                parts: placed,
-                needs: router.needs,
-                whole,
-            });
+        if opts.split == SplitMode::Off || modules.is_empty() {
+            let mut err = oversized(checked, name, opts, &entries, whole);
+            if opts.split != SplitMode::Off {
+                err.message.push_str(
+                    "\n\nonly a module exposed with `external use` can move out of the contract; its own entrypoints stay in the router",
+                );
+            }
+            return Err(err);
         }
-        if take == 0 {
-            let built = gen::codegen(checked, &shape).ok();
-            return Err(error(
-                0,
-                0,
-                format!("contract `{name}`'s router {}", too_big(built.as_ref(), opts)),
-            ));
+    }
+    let facets = parallel(&modules, |module| facet(checked, module, opts))?;
+    let router = |chosen: &[usize]| -> Result<Option<Built>, Error> {
+        measure(checked, &router_shape(&entries, &facets, chosen, opts), opts)
+    };
+    let chosen: Vec<usize> = match opts.split {
+        SplitMode::All => (0..facets.len()).collect(),
+        _ => {
+            // Each module's saving on its own decides the order; the one that saves the most
+            // moves first, and more follow until the router fits.
+            let alone: Vec<Option<usize>> = parallel(&(0..facets.len()).collect::<Vec<_>>(), |&i| {
+                let shape = router_shape(&entries, &facets, &[i], opts);
+                Ok(match gen::codegen(checked, &shape) {
+                    Ok(built) => Some(built.runtime.len()),
+                    Err(err) if too_large(&err) => None,
+                    Err(err) => return Err(err),
+                })
+            })?;
+            let mut order: Vec<usize> = (0..facets.len()).collect();
+            order.sort_by_key(|&i| (alone[i].unwrap_or(usize::MAX), facets[i].name.clone()));
+            let mut chosen = Vec::new();
+            for i in order {
+                chosen.push(i);
+                if router(&chosen)?.is_some() {
+                    break;
+                }
+            }
+            chosen.sort_unstable();
+            chosen
         }
-        take -= 1;
+    };
+    let Some(built) = router(&chosen)? else {
+        let shape = router_shape(&entries, &facets, &chosen, opts);
+        let built = gen::codegen(checked, &shape).ok();
+        return Err(error(
+            0,
+            0,
+            format!(
+                "contract `{name}` does not fit with every exposed module in its facet: its router {}\n\nwhat the contract writes itself stays in the router; move entrypoints into modules and expose them with `external use`",
+                too_big(built.as_ref(), opts)
+            ),
+        ));
+    };
+    let (routed, entries): (Vec<Entrypoint>, Vec<Entrypoint>) = entries
+        .into_iter()
+        .partition(|entry| is_module(entry, &chosen, &facets));
+    Ok(Split {
+        creation: built.code,
+        runtime: built.runtime,
+        entries,
+        routed,
+        facets: chosen.iter().map(|&i| facets[i].clone()).collect(),
+        needs: built.needs,
+        whole,
+    })
+}
+
+fn is_module(entry: &Entrypoint, chosen: &[usize], facets: &[Facet]) -> bool {
+    matches!(&entry.group, Group::Module(m) if chosen.iter().any(|&i| &facets[i].name == m))
+}
+
+/// The modules whose externals the contract declares, in `use` order.
+fn exposed(checked: &Checked, entries: &[Entrypoint]) -> Vec<String> {
+    checked
+        .prog
+        .compose
+        .iter()
+        .map(|module| module.name.clone())
+        .filter(|module| {
+            entries
+                .iter()
+                .any(|entry| matches!(&entry.group, Group::Module(m) if m == module))
+        })
+        .collect()
+}
+
+/// The router with the modules in `chosen` forwarded to their facets.
+fn router_shape(entries: &[Entrypoint], facets: &[Facet], chosen: &[usize], opts: &Options) -> Shape {
+    let mut keep = HashSet::new();
+    let mut forward = Vec::new();
+    for entry in entries {
+        let to = chosen
+            .iter()
+            .position(|&i| matches!(&entry.group, Group::Module(m) if m == &facets[i].name));
+        match to {
+            Some(k) => forward.push((entry.sel, k)),
+            None => {
+                keep.insert(entry.sel);
+            }
+        }
+    }
+    Shape {
+        keep: Some(keep),
+        forward,
+        parts: chosen
+            .iter()
+            .map(|&i| address_word(facets[i].address))
+            .collect(),
+        part: false,
+        opts: opts.clone(),
     }
 }
 
-/// The router's entrypoints, in dispatch order.
-fn router_keep(pinned: &[usize], groups: &[(Group, Vec<usize>)]) -> Vec<usize> {
-    let mut keep: Vec<usize> = pinned.to_vec();
-    keep.extend(groups.iter().flat_map(|(_, idx)| idx.iter().copied()));
-    keep.sort_unstable();
-    keep
+/// Runs `f` on each item on its own thread, keeping the order.
+fn parallel<T: Sync, R: Send>(
+    items: &[T],
+    f: impl Fn(&T) -> Result<R, Error> + Sync,
+) -> Result<Vec<R>, Error> {
+    let f = &f;
+    std::thread::scope(|s| {
+        let handles: Vec<_> = items
+            .iter()
+            .map(|item| {
+                std::thread::Builder::new()
+                    .stack_size(64 << 20)
+                    .spawn_scoped(s, move || f(item))
+                    .expect("spawn a codegen thread")
+            })
+            .collect();
+        handles
+            .into_iter()
+            .map(|h| h.join().unwrap_or_else(|e| std::panic::resume_unwind(e)))
+            .collect()
+    })
 }
 
-fn sels(entries: &[Entrypoint], idx: &[usize]) -> HashSet<[u8; 4]> {
-    idx.iter().map(|&i| entries[i].sel).collect()
+/// Compiles `shape`, or `None` when the code does not fit.
+fn measure(checked: &Checked, shape: &Shape, opts: &Options) -> Result<Option<Built>, Error> {
+    match gen::codegen(checked, shape) {
+        Ok(built) if fits(&built, opts.size_limit) => Ok(Some(built)),
+        Ok(_) => Ok(None),
+        Err(err) if too_large(&err) => Ok(None),
+        Err(err) => Err(err),
+    }
 }
 
 fn fits(built: &Built, limit: usize) -> bool {
@@ -251,17 +339,150 @@ fn too_large(err: &Error) -> bool {
     err.line == 0 && err.message == "contract too large"
 }
 
-/// The groups in placement order: upgrade machinery, the contract's own functions, then
-/// each module in `use` order. Entrypoints keep dispatch order within a group.
+/// A module's facet. It is built from the module and the modules it requires, and nothing of
+/// the contract, so every contract that exposes the module gets the same code at the same
+/// address.
+fn facet(checked: &Checked, module: &str, opts: &Options) -> Result<Facet, Error> {
+    let prog = facet_program(&checked.source, module);
+    let key = (keccak256(format!("{prog:?}\0{opts:?}").as_bytes()), module.to_string());
+    static BUILT: OnceLock<Mutex<HashMap<([u8; 32], String), Facet>>> = OnceLock::new();
+    let memo = BUILT.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Some(facet) = memo.lock().ok().and_then(|memo| memo.get(&key).cloned()) {
+        return Ok(facet);
+    }
+    // A module that leans on something only the contract declares can't be built alone.
+    let checked = crate::check::check(prog).map_err(|err| Error {
+        message: format!(
+            "module `{module}`'s facet is built from the module alone: {}",
+            err.message
+        ),
+        ..err
+    })?;
+    let shape = Shape {
+        part: true,
+        opts: opts.clone(),
+        ..Shape::default()
+    };
+    let built = match measure(&checked, &shape, opts)? {
+        Some(built) => built,
+        None => {
+            let built = gen::codegen(&checked, &shape).ok();
+            return Err(error(
+                0,
+                0,
+                format!("module `{module}`'s facet {}", too_big(built.as_ref(), opts)),
+            ));
+        }
+    };
+    let facet = Facet {
+        name: module.to_string(),
+        address: create2(&opts.deployer, &built.code),
+        init: built.code,
+        runtime: built.runtime,
+        entries: gen::entrypoints(&checked)?,
+        abi: crate::route::render_abi(&checked)?,
+        methods: crate::route::method_ids(&checked)?,
+        needs: built.needs,
+    };
+    if let Ok(mut memo) = memo.lock() {
+        memo.insert(key, facet.clone());
+    }
+    Ok(facet)
+}
+
+/// The program a module's facet is built from: the module, what it requires in a fixed order,
+/// and every one of its externals declared. Everything the contract's own file declares
+/// outside its modules is gone; what imported files declare stays, for their modules.
+pub(crate) fn facet_program(source: &Program, module: &str) -> Program {
+    let mut prog = source.clone();
+    let own = source.origin.as_str();
+    prog.funcs.clear();
+    prog.domains.clear();
+    prog.exposes.clear();
+    prog.types.retain(|decl| decl.name != "storage" && decl.origin != own);
+    prog.errors.retain(|decl| decl.origin != own);
+    prog.error_sets.retain(|decl| decl.origin != own);
+    prog.events.retain(|decl| decl.origin != own);
+    prog.interfaces.retain(|decl| decl.origin != own);
+    prog.types.push(TypeDecl {
+        line: 0,
+        col: 0,
+        private: false,
+        origin: String::new(),
+        name: "storage".to_string(),
+        ty: TypeRef::Record {
+            line: 0,
+            col: 0,
+            fields: Vec::new(),
+        },
+    });
+    let mut order = Vec::new();
+    closure(&prog.modules, module, &mut order);
+    prog.compose = order
+        .into_iter()
+        .filter(|name| name != module)
+        .map(|name| NameAt {
+            line: 0,
+            col: 0,
+            name,
+        })
+        .collect();
+    if let Some(decl) = prog.modules.iter().find(|decl| decl.name == module) {
+        prog.compose.push(NameAt {
+            line: decl.line,
+            col: decl.col,
+            name: module.to_string(),
+        });
+        prog.exposes.push(ExternalUse {
+            line: decl.line,
+            col: decl.col,
+            module: module.to_string(),
+            interfaces: Vec::new(),
+            decls: decl
+                .funcs
+                .iter()
+                .filter(|func| matches!(func.kind, ItemKind::Entry | ItemKind::View))
+                .map(|func| Func {
+                    stmts: Vec::new(),
+                    tail: None,
+                    ..func.clone()
+                })
+                .collect(),
+        });
+    }
+    prog.upgradeable = false;
+    prog.guard = None;
+    // The router answers ERC-165; a facet never sees the call.
+    prog.erc165 = false;
+    prog.contract_name = Some(module.to_string());
+    prog.siblings.clear();
+    prog
+}
+
+/// `module` after everything it requires, each once, required modules in name order.
+fn closure(modules: &[ModuleDecl], module: &str, out: &mut Vec<String>) {
+    if out.iter().any(|name| name == module) {
+        return;
+    }
+    let Some(decl) = modules.iter().find(|decl| decl.name == module) else {
+        return;
+    };
+    let mut requires: Vec<&str> = decl.requires.iter().map(|r| r.name.as_str()).collect();
+    requires.sort_unstable();
+    for required in requires {
+        closure(modules, required, out);
+    }
+    if !out.iter().any(|name| name == module) {
+        out.push(module.to_string());
+    }
+}
+
+/// The groups in the order they are listed: upgrade machinery, the contract's own functions,
+/// then each module in `use` order. Entrypoints keep dispatch order within a group.
 fn groups(checked: &Checked, entries: &[Entrypoint]) -> Vec<(Group, Vec<usize>)> {
     let mut order = vec![Group::Upgrade, Group::Contract];
     for module in &checked.prog.compose {
         order.push(Group::Module(module.name.clone()));
-    }
-    for entry in entries {
-        if !order.contains(&entry.group) {
-            order.push(entry.group.clone());
-        }
     }
     order
         .into_iter()
@@ -277,173 +498,12 @@ fn groups(checked: &Checked, entries: &[Entrypoint]) -> Vec<(Group, Vec<usize>)>
         .collect()
 }
 
-struct Planner<'a> {
-    checked: &'a Checked,
-    opts: &'a Options,
-    entries: &'a [Entrypoint],
-    /// Each part compiled so far, by its entrypoints: `None` when it does not fit.
-    parts: HashMap<Vec<usize>, Option<Built>>,
-}
-
-impl Planner<'_> {
-    /// Compiles `shape`, or `None` when the code does not fit.
-    fn measure(&self, shape: &Shape) -> Result<Option<Built>, Error> {
-        match gen::codegen(self.checked, shape) {
-            Ok(built) if fits(&built, self.opts.size_limit) => Ok(Some(built)),
-            Ok(_) => Ok(None),
-            Err(err) if too_large(&err) => Ok(None),
-            Err(err) => Err(err),
-        }
-    }
-
-    fn part_shape(&self, idx: &[usize]) -> Shape {
-        Shape {
-            keep: Some(sels(self.entries, idx)),
-            forward: Vec::new(),
-            parts: Vec::new(),
-            part: true,
-            opts: self.opts.clone(),
-        }
-    }
-
-    fn part(&mut self, idx: &[usize]) -> Result<Option<&Built>, Error> {
-        if !self.parts.contains_key(idx) {
-            let built = self.measure(&self.part_shape(idx))?;
-            self.parts.insert(idx.to_vec(), built);
-        }
-        Ok(self.parts[idx].as_ref())
-    }
-
-    fn fits(&mut self, idx: &[usize]) -> Result<bool, Error> {
-        Ok(self.part(idx)?.is_some())
-    }
-
-    /// `fits` for each set, compiling the ones not seen yet in parallel.
-    fn fits_all(&mut self, sets: &[Vec<usize>]) -> Result<Vec<bool>, Error> {
-        let new: Vec<&Vec<usize>> = sets
-            .iter()
-            .filter(|idx| !self.parts.contains_key(*idx))
-            .collect();
-        let this = &*self;
-        let built: Vec<_> = std::thread::scope(|s| {
-            let handles: Vec<_> = new
-                .iter()
-                .map(|idx| {
-                    std::thread::Builder::new()
-                        .stack_size(64 << 20)
-                        .spawn_scoped(s, move || this.measure(&this.part_shape(idx)))
-                        .expect("spawn a codegen thread")
-                })
-                .collect();
-            handles
-                .into_iter()
-                .map(|h| h.join().unwrap_or_else(|e| std::panic::resume_unwind(e)))
-                .collect()
-        });
-        for (idx, built) in new.into_iter().zip(built) {
-            self.parts.insert(idx.clone(), built?);
-        }
-        Ok(sets.iter().map(|idx| self.parts[idx].is_some()).collect())
-    }
-
-    /// Fills parts with whole groups in order. A group that does not fit in the current part
-    /// starts the next one; a group that fits in no part is split by entrypoint.
-    fn pack(&mut self, groups: &[(Group, Vec<usize>)], name: &str) -> Result<Vec<Part>, Error> {
-        let mut placed: Vec<Vec<usize>> = Vec::new();
-        let mut current: Vec<usize> = Vec::new();
-        for (_, idx) in groups {
-            if !current.is_empty() {
-                let mut grown = current.clone();
-                grown.extend(idx);
-                if self.fits(&grown)? {
-                    current = grown;
-                    continue;
-                }
-                placed.push(std::mem::take(&mut current));
-            }
-            if self.fits(idx)? {
-                current = idx.clone();
-                continue;
-            }
-            // Each probe is a full build, so the longest prefix that still fits is found by
-            // searching several prefix lengths at once. Code only grows with entrypoints, so
-            // this matches adding one at a time.
-            let ways = std::thread::available_parallelism().map_or(1, |n| (n.get() / 2).max(1));
-            let mut rest = &idx[..];
-            while !rest.is_empty() {
-                let (mut lo, mut hi) = (0, rest.len());
-                while lo < hi {
-                    let mut probes: Vec<usize> = (1..=ways)
-                        .map(|j| lo + ((hi - lo) * j).div_ceil(ways + 1))
-                        .collect();
-                    probes.dedup();
-                    let sets: Vec<Vec<usize>> = probes
-                        .iter()
-                        .map(|&m| [&current[..], &rest[..m]].concat())
-                        .collect();
-                    for (m, ok) in probes.into_iter().zip(self.fits_all(&sets)?) {
-                        if !ok {
-                            hi = m - 1;
-                            break;
-                        }
-                        lo = m;
-                    }
-                }
-                if lo == 0 && current.is_empty() {
-                    let one = rest[0];
-                    let shape = Shape {
-                        keep: Some(sels(self.entries, &[one])),
-                        part: true,
-                        opts: self.opts.clone(),
-                        ..Shape::default()
-                    };
-                    let built = gen::codegen(self.checked, &shape).ok();
-                    return Err(error(
-                        0,
-                        0,
-                        format!(
-                            "entrypoint `{}` {}",
-                            self.entries[one].name,
-                            too_big(built.as_ref(), self.opts)
-                        ),
-                    ));
-                }
-                current.extend(&rest[..lo]);
-                rest = &rest[lo..];
-                if !rest.is_empty() {
-                    placed.push(std::mem::take(&mut current));
-                }
-            }
-        }
-        if !current.is_empty() {
-            placed.push(current);
-        }
-        let (deployer, entries) = (self.opts.deployer, self.entries);
-        let mut parts = Vec::new();
-        for (i, idx) in placed.into_iter().enumerate() {
-            let built = self
-                .part(&idx)?
-                .ok_or_else(|| error(0, 0, "internal: a placed part does not fit"))?;
-            parts.push(Part {
-                name: format!("{name}.{}", i + 1),
-                address: create2(&deployer, &built.code),
-                init: built.code.clone(),
-                runtime: built.runtime.clone(),
-                entries: idx.iter().map(|&e| entries[e].clone()).collect(),
-                needs: built.needs.clone(),
-            });
-        }
-        Ok(parts)
-    }
-}
-
-/// With splitting off: the size, and what each group adds to it.
+/// A contract over the limit that cannot split: its size, and what each group adds to it.
 fn oversized(
     checked: &Checked,
     name: &str,
     opts: &Options,
     entries: &[Entrypoint],
-    groups: &[(Group, Vec<usize>)],
     whole: Option<usize>,
 ) -> Error {
     let limit = thousands(opts.size_limit);
@@ -454,17 +514,23 @@ fn oversized(
             format!("contract `{name}` is over 65,535 bytes; the limit is {limit}"),
         );
     };
-    let mut rows: Vec<(String, usize)> = Vec::new();
-    for (group, idx) in groups {
-        let rest: Vec<usize> = (0..entries.len()).filter(|i| !idx.contains(i)).collect();
+    let groups = groups(checked, entries);
+    let rows = parallel(&groups, |(group, idx)| {
+        let keep: HashSet<[u8; 4]> = entries
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| !idx.contains(i))
+            .map(|(_, entry)| entry.sel)
+            .collect();
         let shape = Shape {
-            keep: Some(sels(entries, &rest)),
+            keep: Some(keep),
             opts: opts.clone(),
             ..Shape::default()
         };
         let without = gen::codegen(checked, &shape).map_or(0, |built| built.runtime.len());
-        rows.push((label(group, name), whole.saturating_sub(without)));
-    }
+        Ok((label(group, name), whole.saturating_sub(without)))
+    });
+    let mut rows = rows.unwrap_or_default();
     rows.sort_by_key(|row| std::cmp::Reverse(row.1));
     let attributed: usize = rows.iter().map(|(_, n)| n).sum();
     rows.push((
@@ -492,19 +558,16 @@ fn too_big(built: Option<&Built>, opts: &Options) -> String {
     let limit = opts.size_limit;
     match built {
         Some(built) if built.runtime.len() <= limit => format!(
-            "has {} bytes of creation code on its own; the limit is {}",
+            "has {} bytes of creation code; the limit is {}",
             thousands(built.code.len()),
             thousands(2 * limit)
         ),
         Some(built) => format!(
-            "is {} bytes on its own; the limit is {}",
+            "is {} bytes; the limit is {}",
             thousands(built.runtime.len()),
             thousands(limit)
         ),
-        None => format!(
-            "is over 65,535 bytes on its own; the limit is {}",
-            thousands(limit)
-        ),
+        None => format!("is over 65,535 bytes; the limit is {}", thousands(limit)),
     }
 }
 
@@ -599,8 +662,9 @@ fn encode(split: &Split) -> Vec<u8> {
     put_bytes(&mut out, &split.creation);
     put_bytes(&mut out, &split.runtime);
     put_entries(&mut out, &split.entries);
-    put_parts(&mut out, &split.parts);
-    put_parts(&mut out, &split.needs);
+    put_entries(&mut out, &split.routed);
+    put_facets(&mut out, &split.facets);
+    put_facets(&mut out, &split.needs);
     put_len(&mut out, split.whole.map_or(0, |n| n + 1));
     out
 }
@@ -630,15 +694,21 @@ fn put_entries(out: &mut Vec<u8>, entries: &[Entrypoint]) {
     }
 }
 
-fn put_parts(out: &mut Vec<u8>, parts: &[Part]) {
-    put_len(out, parts.len());
-    for part in parts {
-        put_bytes(out, part.name.as_bytes());
-        out.extend_from_slice(&part.address);
-        put_bytes(out, &part.init);
-        put_bytes(out, &part.runtime);
-        put_entries(out, &part.entries);
-        put_parts(out, &part.needs);
+fn put_facets(out: &mut Vec<u8>, facets: &[Facet]) {
+    put_len(out, facets.len());
+    for facet in facets {
+        put_bytes(out, facet.name.as_bytes());
+        out.extend_from_slice(&facet.address);
+        put_bytes(out, &facet.init);
+        put_bytes(out, &facet.runtime);
+        put_entries(out, &facet.entries);
+        put_bytes(out, facet.abi.as_bytes());
+        put_len(out, facet.methods.len());
+        for (sig, sel) in &facet.methods {
+            put_bytes(out, sig.as_bytes());
+            out.extend_from_slice(sel);
+        }
+        put_facets(out, &facet.needs);
     }
 }
 
@@ -649,8 +719,9 @@ fn decode(bytes: &[u8]) -> Option<Split> {
         creation: r.bytes()?,
         runtime: r.bytes()?,
         entries: r.entries()?,
-        parts: r.parts()?,
-        needs: r.parts()?,
+        routed: r.entries()?,
+        facets: r.facets()?,
+        needs: r.facets()?,
         whole: r.len()?.checked_sub(1),
     };
     r.0.is_empty().then_some(split)
@@ -701,16 +772,20 @@ impl Reader<'_> {
             .collect()
     }
 
-    fn parts(&mut self) -> Option<Vec<Part>> {
+    fn facets(&mut self) -> Option<Vec<Facet>> {
         (0..self.len()?)
             .map(|_| {
-                Some(Part {
+                Some(Facet {
                     name: self.string()?,
                     address: self.array()?,
                     init: self.bytes()?,
                     runtime: self.bytes()?,
                     entries: self.entries()?,
-                    needs: self.parts()?,
+                    abi: self.string()?,
+                    methods: (0..self.len()?)
+                        .map(|_| Some((self.string()?, self.array()?)))
+                        .collect::<Option<_>>()?,
+                    needs: self.facets()?,
                 })
             })
             .collect()

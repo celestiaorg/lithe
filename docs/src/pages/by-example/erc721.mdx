@@ -11,7 +11,7 @@ ERC-721 with ERC-6093 errors, including `safeTransferFrom` and its receiver chec
 (* ERC-721: ownership, approvals, operators, safe and unsafe transfers, mint, and burn. *)
 
 interface ERC721Receiver is {
-  call onERC721Received(operator : address; from : address; tokenId : nat; data : bytes) : bytes4;
+  function onERC721Received(operator : address; from : address; tokenId : nat; data : bytes) : bytes4;
 }
 
 error ERC721NonexistentToken of nat;

@@ -170,7 +170,7 @@ Lithe error names are converted to PascalCase in the ABI, so `Not_owner` becomes
 | Solidity | Lithe |
 | --- | --- |
 | `contract A is B, C` | `contract A is { use B; use C; ... }` |
-| inherited public functions | exposed only by name: `external function f is B.f;` |
+| inherited public functions | a module's externals, each declared in `external use B is { ... }` |
 | `super.f()` | call the module function directly: `B.f()` |
 | `library L` | a `module`, or plain functions in an imported file |
 | `using L for T` | none. Call `L.f(x)` |

@@ -2,7 +2,9 @@
    message names the next nonce, and using it moves the counter on. Matches
    OpenZeppelin's `Nonces`.
 
-     external view function nonces is Nonces.nonces; *)
+     external use Nonces is {
+       view function nonces(owner : address) : nat;
+     } *)
 
 module Nonces is {
   storage nonce_state at "lithe.std.nonces" is record {
@@ -15,6 +17,9 @@ module Nonces is {
   }
 
   view function nonces(const owner : address) : nat is
+    nonce_state.counts[owner]
+
+  external view function nonces(const owner : address) : nat is
     nonce_state.counts[owner]
 
   (* Returns the current nonce and moves the counter on. *)

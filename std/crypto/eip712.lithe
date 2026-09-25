@@ -8,7 +8,13 @@
 
      const digest : bytes32 := EIP712.hash_typed_data(
        Crypto.keccak256(Abi.encode(mail_typehash(), from, to, contents_hash))
-     ); *)
+     );
+
+   and exposes the domain separator for signers:
+
+     external use EIP712 is {
+       view function DOMAIN_SEPARATOR() : bytes32;
+     } *)
 
 module EIP712 is {
   storage eip712 at "lithe.std.eip712" is record {
@@ -41,4 +47,7 @@ module EIP712 is {
   pure function to_typed_data_hash(const domain : bytes32; const struct_hash : bytes32) : bytes32 is {
     const prefix : bytes2 := 0x1901;
   } with Crypto.keccak256(Abi.encode_packed(prefix, domain, struct_hash))
+
+  external view function DOMAIN_SEPARATOR() : bytes32 is
+    domain_separator()
 }

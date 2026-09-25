@@ -16,7 +16,7 @@ module Pausable is {
     account : address;
   }
 
-  view function paused() : bool is
+  external view function paused() : bool is
     pausable.paused
 
   view function require_not_paused()

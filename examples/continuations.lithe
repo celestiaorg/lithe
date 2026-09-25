@@ -9,16 +9,16 @@ type swap_result is record {
 }
 
 interface Exchange is {
-  call swap(amount_in : nat) : swap_result;
+  function swap(amount_in : nat) : swap_result;
 }
 
 interface Vault is {
-  call deposit(amount : nat) : nat;
-  call withdraw(shares : nat) : (nat, nat);
+  function deposit(amount : nat) : nat;
+  function withdraw(shares : nat) : (nat, nat);
 }
 
 interface Token is {
-  call transfer(to : address; amount : nat) : unit;
+  function transfer(to : address; amount : nat);
 }
 
 type order is record {

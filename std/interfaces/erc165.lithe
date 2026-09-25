@@ -1,5 +1,5 @@
 (* ERC-165: interface detection. *)
 
 interface IERC165 is {
-  query supportsInterface(interfaceId : bytes4) : bool;
+  view function supportsInterface(interfaceId : bytes4) : bool;
 }

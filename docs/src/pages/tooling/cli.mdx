@@ -14,7 +14,8 @@ lithe abi-tree file.lithe
 lithe footprint file.lithe
 lithe analysis file.lithe
 lithe errors file.lithe
-lithe parts file.lithe
+lithe facets file.lithe
+lithe stubs file.lithe Module
 lithe storage file.lithe
 lithe storage old.lithe new.lithe
 lithe upgrade-check old.lithe new.lithe
@@ -25,13 +26,14 @@ Commands that read one file need a file with exactly one contract. Errors and wa
 
 ## Size flags
 
-`compile`, `parts`, `footprint`, `abi-tree`, `upgrade`, and `upgrade-check` also take these flags, anywhere after the command:
+`compile`, `abi`, `facets`, `footprint`, `abi-tree`, `upgrade`, and `upgrade-check` also take these flags, anywhere after the command:
 
 | Flag | Default | Meaning |
 | --- | --- | --- |
-| `--size-limit <bytes>` | `24576` | the most runtime code the router or any part may have |
-| `--split <auto\|off>` | `auto` | split a contract over the limit, or make it an error |
-| `--create2-deployer <address>` | `0x4e59b44847b379578588920cA78FbF26c0B4956C` | the `CREATE2` factory parts are deployed through |
+| `--size-limit <bytes>` | `24576` | the most runtime code the router or any facet may have |
+| `--split <auto\|off\|all>` | `auto` | run exposed modules from their facets when the contract is over the limit, never, or always |
+| `--create2-deployer <address>` | `0x4e59b44847b379578588920cA78FbF26c0B4956C` | the `CREATE2` factory facets are deployed through |
+| `--erc165 <on\|off>` | `on` | generate `supportsInterface` for ERC-165 and the interfaces the contract has. See [ERC-165](/language/modules#erc-165) |
 
 See [Contract size limit](/tooling/size-limit).
 
@@ -45,7 +47,7 @@ Prints the contract's creation bytecode as `0x`-prefixed hex, which is ready to 
 cast send --private-key $KEY --create $(lithe compile counter.lithe)
 ```
 
-A contract over the size limit is split into a router and parts. Then it prints a JSON deployment plan instead: each part's `CREATE2` transaction, then the router's creation code. It also prints a note on stderr. A contract that creates a split contract prints a plan too, because those parts must exist first. See [Deploying](/tooling/size-limit#deploying).
+A contract over the size limit runs the modules it exposes from their facets. Then it prints a JSON deployment plan instead: each facet's `CREATE2` transaction, then the router's creation code. It also prints a note on stderr. A contract that creates a split contract prints a plan too, because those facets must exist first. See [Deploying](/tooling/size-limit#deploying).
 
 ### `lithe compile directory`
 
@@ -63,7 +65,7 @@ Compiles every `.lithe` file under the directory, and writes one Foundry-style a
 
 It prints each path it writes. It keeps going after a failing file, reports every failure, and exits `1` if any file failed. Files that define several contracts are fine in this mode.
 
-A split contract's artifact has the whole contract's ABI and a `parts` field listing each part's name, address, and selectors. Each part is written to `./out/<file>/<Contract>.parts/<n>.json`.
+A split contract's artifact has the whole contract's ABI and a `facets` field listing each facet's module, address, and the selectors the router forwards to it. Each facet is written once, to `./out/facets/<Module>.json`, however many contracts use it.
 
 ### `lithe abi file.lithe` / `lithe abi directory`
 
@@ -80,7 +82,8 @@ These commands summarize what each entrypoint does. See [Inspecting contracts](/
 | `lithe analysis file.lithe` | the same facts as JSON, for tools |
 | `lithe errors file.lithe` | each entrypoint's errors, and each error's selector, fields, and raisers |
 | `lithe storage file.lithe` | the storage and transient layout, slot by slot |
-| `lithe parts file.lithe` | the router and each part: size against the limit, and the entrypoints each runs |
+| `lithe facets file.lithe` | the router and each facet: size against the limit, and the entrypoints each runs |
+| `lithe stubs file.lithe Module` | the `external use` block that declares every external a module has |
 
 ## Upgrades
 
@@ -88,7 +91,7 @@ These commands summarize what each entrypoint does. See [Inspecting contracts](/
 
 Compares the storage layouts of two versions field by field, and ends with `compatible` or `incompatible`. See [Upgrades](/language/upgrades#storage-compatibility).
 
-When either version is split, `upgrade-check` also lists the parts the new version deploys, and which of them the old version already has. See [Upgrades](/tooling/size-limit#upgrades).
+When either version is split, `upgrade-check` also lists the facets the new version uses, and which of them the old version already has. See [Upgrades](/tooling/size-limit#upgrades).
 
 ### `lithe upgrade`
 
@@ -102,7 +105,7 @@ Prints the `to` address and the calldata for `upgradeToAndCall(newImpl, migratio
 cast send --private-key $KEY 0xProxy 0x4f1ef286...
 ```
 
-For a split contract, it prints the deployment plan with an `upgrade` entry holding the proxy's call. Deploy the parts and the router first. `--impl` is optional here: it defaults to the router's `CREATE2` address from the plan.
+For a split contract, it prints the deployment plan with an `upgrade` entry holding the proxy's call. Deploy the facets and the router first. `--impl` is optional here: it defaults to the router's `CREATE2` address from the plan.
 
 ## Warnings
 

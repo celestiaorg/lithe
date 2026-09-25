@@ -5,7 +5,7 @@ module Pausable is {
 }
 
 module Guarded is {
-  function go() is {
+  external function go() is {
     Pausable.require_unpaused();
   }
 }
@@ -16,7 +16,8 @@ contract Token is {
   }
 
   use Pausable;
-  use Guarded;
 
-  external function go is Guarded.go;
+  external use Guarded is {
+    function go();
+  }
 }

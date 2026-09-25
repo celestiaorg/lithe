@@ -36,11 +36,11 @@ You still write ordinary imperative code, with `const`, `var`, `if`, and assignm
 
 ```lithe
 interface Oracle is {
-  query price(asset : address) : nat;
+  view function price(asset : address) : nat;
 }
 
 interface Token is {
-  call transfer(to : address; amount : nat) : bool;
+  function transfer(to : address; amount : nat) : bool;
 }
 
 error Too_cheap of nat;

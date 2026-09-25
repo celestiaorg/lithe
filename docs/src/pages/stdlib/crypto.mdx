@@ -20,14 +20,17 @@ The errors are OpenZeppelin's: `ECDSAInvalidSignature`, `ECDSAInvalidSignatureLe
 
 ## `EIP712`
 
-`std/crypto/eip712.lithe`. Hashes typed structured data under a domain of name, version, chain id, and contract address. `init` records the name and version; the chain id and address are read when a hash is made, so the domain stays right after a fork.
+`std/crypto/eip712.lithe`. Hashes typed structured data under a domain of name, version, chain id, and contract address. `init` records the name and version; the chain id and address are read when a hash is made, so the domain stays right after a fork. Its one external is `DOMAIN_SEPARATOR`.
 
 ```lithe
 import "std/crypto/eip712.lithe";
 import "std/crypto/ecdsa.lithe";
 
 contract Mailbox is {
-  use EIP712;
+  external use EIP712 is {
+    view function DOMAIN_SEPARATOR() : bytes32;
+  }
+
   use ECDSA;
 
   error Not_signed_by of address;
@@ -59,8 +62,6 @@ contract Mailbox is {
     assert(ECDSA.recover(digest, v, r, s) = from, Not_signed_by(from));
     storage.delivered[digest] := true;
   }
-
-  external view function DOMAIN_SEPARATOR is EIP712.domain_separator;
 }
 ```
 

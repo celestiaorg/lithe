@@ -4,19 +4,10 @@
    `token_uri` checks the token exists and answers the empty string, as OpenZeppelin's
    does without a base URI, so a contract with URIs writes its own `tokenURI`.
 
-     external pure function supportsInterface is ERC721.supports_interface;
-     external view function name is ERC721.name;
-     external view function symbol is ERC721.symbol;
-     external view function tokenURI is ERC721.token_uri;
-     external view function balanceOf is ERC721.balance_of;
-     external view function ownerOf is ERC721.owner_of;
-     external view function getApproved is ERC721.get_approved;
-     external view function isApprovedForAll is ERC721.is_approved_for_all;
-     external function approve is ERC721.approve;
-     external function setApprovalForAll is ERC721.set_approval_for_all;
-     external function transferFrom is ERC721.transfer_from;
-     external function safeTransferFrom is ERC721.safe_transfer_from;
-     external function safeTransferFrom is ERC721.safe_transfer_from_with_data;
+     external use ERC721 is IERC721, IERC721Metadata;
+
+   A contract that has the interfaces answers for them in the `supportsInterface` the
+   compiler generates.
 
    Every ownership change goes through `update`, like OpenZeppelin's `_update`. The safe
    transfers call the receiver in a deferred call, after the transfer's own effects, and
@@ -33,26 +24,6 @@ module ERC721 is {
     token_approvals : map(nat, address);
     operator_approvals : map(address, map(address, bool));
   }
-
-  error ERC721InvalidOwner of address;
-  error ERC721NonexistentToken of nat;
-
-  error ERC721IncorrectOwner of record {
-    sender : address;
-    tokenId : nat;
-    owner : address;
-  }
-
-  error ERC721InvalidSender of address;
-  error ERC721InvalidReceiver of address;
-
-  error ERC721InsufficientApproval of record {
-    operator : address;
-    tokenId : nat;
-  }
-
-  error ERC721InvalidApprover of address;
-  error ERC721InvalidOperator of address;
 
   event Transfer of record {
     indexed from : address;
@@ -276,4 +247,61 @@ module ERC721 is {
     const previous : address := update(Address.zero, tokenId, Address.zero);
     assert(previous <> Address.zero, ERC721NonexistentToken(tokenId));
   }
+
+  external view function name() : string is
+    erc721.name
+
+  external view function symbol() : string is
+    erc721.symbol
+
+  external view function tokenURI(const tokenId : nat) : string
+    raises ERC721NonexistentToken
+  is
+    token_uri(tokenId)
+
+  external view function balanceOf(const owner : address) : nat
+    raises ERC721InvalidOwner
+  is
+    balance_of(owner)
+
+  external view function ownerOf(const tokenId : nat) : address
+    raises ERC721NonexistentToken
+  is
+    require_owned(tokenId)
+
+  external view function getApproved(const tokenId : nat) : address
+    raises ERC721NonexistentToken
+  is
+    get_approved(tokenId)
+
+  external view function isApprovedForAll(const owner : address; const operator : address) : bool is
+    erc721.operator_approvals[owner][operator]
+
+  external function approve(const to : address; const tokenId : nat)
+    raises ERC721NonexistentToken | ERC721InvalidApprover
+  is
+    approve(to, tokenId)
+
+  external function setApprovalForAll(const operator : address; const approved : bool)
+    raises ERC721InvalidApprover | ERC721InvalidOperator
+  is
+    set_approval_for_all(operator, approved)
+
+  external function transferFrom(const from : address; const to : address; const tokenId : nat)
+    raises ERC721InvalidReceiver | ERC721IncorrectOwner | ERC721NonexistentToken
+      | ERC721InsufficientApproval
+  is
+    transfer_from(from, to, tokenId)
+
+  external function safeTransferFrom(const from : address; const to : address; const tokenId : nat)
+    raises ERC721InvalidReceiver | ERC721IncorrectOwner | ERC721NonexistentToken
+      | ERC721InsufficientApproval
+  is
+    safe_transfer_from(from, to, tokenId)
+
+  external function safeTransferFrom(const from : address; const to : address; const tokenId : nat; const data : bytes)
+    raises ERC721InvalidReceiver | ERC721IncorrectOwner | ERC721NonexistentToken
+      | ERC721InsufficientApproval
+  is
+    safe_transfer_from_with_data(from, to, tokenId, data)
 }

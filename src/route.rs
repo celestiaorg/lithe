@@ -111,7 +111,7 @@ pub(crate) fn render(routes: &[Route], parts: Option<&HashMap<[u8; 4], String>>)
         out.push_str(&r.path.join(" -> "));
         out.push_str("\n\n");
         if let Some(part) = parts.and_then(|parts| parts.get(&r.sel)) {
-            out.push_str("  part:\n    ");
+            out.push_str("  runs in:\n    ");
             out.push_str(part);
             out.push_str("\n\n");
         }
@@ -1204,14 +1204,15 @@ fn fmt_expr(e: &Expr) -> String {
 /// One line per external function: what it writes, emits, defers, and raises, with
 /// its continuations counted in. A view shows what it reads instead. The last column
 /// says whether it can run while a transition is still running its deferred calls.
-/// One line per entrypoint. `parts` adds where each selector runs when the contract is split.
+/// One line per entrypoint. `parts` adds where each selector runs, `router` or a facet's
+/// module, when the contract is split.
 pub(crate) fn render_footprints(
     checked: &Checked,
     parts: Option<&HashMap<[u8; 4], String>>,
 ) -> String {
     let part = |sel: [u8; 4]| -> Vec<(&str, Vec<String>)> {
         match parts.and_then(|parts| parts.get(&sel)) {
-            Some(part) => vec![("part", vec![part.clone()])],
+            Some(part) => vec![("runs in", vec![part.clone()])],
             None => Vec::new(),
         }
     };
@@ -1434,8 +1435,8 @@ pub(crate) fn render_abi(checked: &Checked) -> Result<String, Error> {
     render_abi_only(checked, None)
 }
 
-/// The ABI of the functions `keep` names, with every event and error. A part's ABI: it has
-/// no constructor, since `deploy` runs in the router.
+/// The ABI of the functions `keep` names, with every event and error, and with the
+/// constructor only when every function is kept.
 pub(crate) fn render_abi_only(
     checked: &Checked,
     keep: Option<&std::collections::HashSet<[u8; 4]>>,
@@ -1732,7 +1733,7 @@ pub(crate) fn method_ids(checked: &Checked) -> Result<Vec<(String, [u8; 4])>, Er
 }
 
 /// A view's ABI signature, as its selector is computed.
-fn view_sig(checked: &Checked, func: &Func) -> Result<String, Error> {
+pub(crate) fn view_sig(checked: &Checked, func: &Func) -> Result<String, Error> {
     let mut parts = Vec::new();
     for param in &func.params {
         if param.ty_id == checked.storage || checked.types[param.ty_id].kind == TyKind::Unit {

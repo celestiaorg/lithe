@@ -11,13 +11,13 @@ module Ledger is {
 module Guarded is {
   requires Ledger;
 
-  function set(const n : nat) is {
+  external function set(const n : nat) is {
     Ledger.set(n);
   }
 }
 
 contract Token is {
-  use Guarded;
-
-  external function set is Guarded.set;
+  external use Guarded is {
+    function set(n : nat);
+  }
 }

@@ -11,7 +11,7 @@ description: "Encoding, decoding, packed encoding, and calldata."
 (* `Abi` mirrors Solidity's `abi.*` helpers. *)
 
 interface Token is {
-  call transfer(to : address; amount : nat) : bool;
+  function transfer(to : address; amount : nat) : bool;
 }
 
 storage is record {

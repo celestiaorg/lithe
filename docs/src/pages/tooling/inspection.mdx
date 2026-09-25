@@ -94,7 +94,7 @@ set_pause   writes: paused                           raises: NotOwner           
 
 `during defers` says whether the entrypoint can run while another transition's deferred calls are running: `callable`, or `rejected` for a `nonreentrant` function. See [Reentrancy](/language/reentrancy).
 
-When the contract is [split](/tooling/size-limit), each line ends with the part that runs the entrypoint, such as `part: Token.2`, or `part: router`. `abi-tree` shows the same as a `part:` section.
+When the contract is [split](/tooling/size-limit), each line ends with where the entrypoint runs: the facet of a module, such as `runs in: ERC20`, or `runs in: router`. `abi-tree` shows the same as a `runs in:` section.
 
 ## `abi-tree`
 

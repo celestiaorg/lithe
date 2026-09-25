@@ -15,7 +15,7 @@ description: "CREATE2 addresses, nonces, and checkpointed history."
 
 | Function | |
 | --- | --- |
-| `nonces(owner) : nat` | the next nonce |
+| `nonces(owner) : nat` | the next nonce; also an external |
 | `use_nonce(owner) : nat` | returns the next nonce and moves the counter on |
 | `use_checked_nonce(owner, nonce)` | the same, raising `InvalidAccountNonce` unless `nonce` is the next one |
 

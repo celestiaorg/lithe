@@ -13,8 +13,8 @@ A deferred call's result arrives after the transition that deferred it. `then (r
    the transition: it may write storage, emit, and defer again. *)
 
 interface Exchange is {
-  call swap(amount_in : nat) : nat;
-  call split(amount : nat) : (nat, nat);
+  function swap(amount_in : nat) : nat;
+  function split(amount : nat) : (nat, nat);
 }
 
 error Already_filled of nat;

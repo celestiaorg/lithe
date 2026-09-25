@@ -7,9 +7,7 @@
        EIP712.init("My Token", "1");
      }
 
-     external function permit is ERC20Permit.permit;
-     external view function nonces is Nonces.nonces;
-     external view function DOMAIN_SEPARATOR is EIP712.domain_separator; *)
+     external use ERC20Permit is IERC20Permit; *)
 
 import "std/token/erc20.lithe";
 import "std/crypto/eip712.lithe";
@@ -21,13 +19,6 @@ module ERC20Permit is {
   requires EIP712;
   requires ECDSA;
   requires Nonces;
-
-  error ERC2612ExpiredSignature of nat;
-
-  error ERC2612InvalidSigner of record {
-    signer : address;
-    owner : address;
-  }
 
   (* keccak256("Permit(address owner,address spender,uint256 value,uint256 nonce,uint256 deadline)") *)
   pure function permit_typehash() : bytes32 is
@@ -58,4 +49,24 @@ module ERC20Permit is {
     assert(signer = owner, ERC2612InvalidSigner { signer = signer; owner = owner; });
     ERC20.approve_as(owner, spender, value, true);
   }
+
+  external function permit(
+    const owner : address;
+    const spender : address;
+    const value : nat;
+    const deadline : nat;
+    const v : uint8;
+    const r : bytes32;
+    const s : bytes32
+  )
+    raises ERC2612ExpiredSignature | ERC2612InvalidSigner | ECDSAInvalidSignature
+      | ECDSAInvalidSignatureS | ERC20InvalidApprover | ERC20InvalidSpender
+  is
+    permit(owner, spender, value, deadline, v, r, s)
+
+  external view function nonces(const owner : address) : nat is
+    Nonces.nonces(owner)
+
+  external view function DOMAIN_SEPARATOR() : bytes32 is
+    EIP712.domain_separator()
 }

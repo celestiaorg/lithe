@@ -30,7 +30,7 @@ Runtime bytecode size in bytes. Smaller is better. `solc` is 0.8.36, and each co
 
 The builds are `--via-ir` with 1 and 200 optimizer runs, and the legacy pipeline with 200 runs. All are compiled `--no-cbor-metadata`, so metadata doesn't count against Solidity.
 
-Smaller code means cheaper deployment, and more room under the EIP-170 contract size limit of 24,576 bytes. A contract that still doesn't fit is [split into a router and parts](/tooling/size-limit). Deployment gas falls with it: about 16% for `counter`, 19% for the ERC-20, and 22% for `staking`. Each contract is set up as it deploys, by a `deploy` in Lithe and a constructor in Solidity, with the same arguments.
+Smaller code means cheaper deployment, and more room under the EIP-170 contract size limit of 24,576 bytes. A contract that still doesn't fit [runs its modules from shared facets](/tooling/size-limit). Deployment gas falls with it: about 16% for `counter`, 19% for the ERC-20, and 22% for `staking`. Each contract is set up as it deploys, by a `deploy` in Lithe and a constructor in Solidity, with the same arguments.
 
 ## Gas per transaction
 
@@ -58,6 +58,6 @@ python3 bench/run.py            # every contract
 python3 bench/run.py erc20      # one contract
 ```
 
-The Lithe and Solidity sources are side by side in `bench/`: `erc20.lithe` next to `erc20.sol`, and so on.
+The Lithe and Solidity sources are side by side in `bench/`: `erc20.lithe` next to `erc20.sol`, and so on. Lithe contracts are built with `--erc165 off`, because the Solidity ones answer ERC-165 only where they implement it; `erc721` writes its own `supportsInterface` in both languages.
 
 These numbers come from the compiler version this site was built with. Rerun the benchmark for current figures.

@@ -12,14 +12,15 @@ module Pausable is {
     paused : bool;
   }
 
-  function pause() is {
+  external function pause() is {
     settings.paused := true;
   }
 }
 
 contract Token is {
   use Ledger;
-  use Pausable;
 
-  external function pause is Pausable.pause;
+  external use Pausable is {
+    function pause();
+  }
 }

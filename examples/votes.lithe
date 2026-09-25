@@ -6,15 +6,15 @@ module ERC20 is {
     total_supply : nat;
   }
 
-  function mint(const account : address; const amount : nat) is {
+  external function mint(const account : address; const amount : nat) is {
     erc20.balances[account] := erc20.balances[account] + amount;
     erc20.total_supply := erc20.total_supply + amount;
   }
 
-  view function balance_of(const account : address) : nat is
+  external view function balance_of(const account : address) : nat is
     erc20.balances[account]
 
-  view function total() : nat is
+  external view function total() : nat is
     erc20.total_supply
 }
 
@@ -25,23 +25,22 @@ module ERC20Votes is {
     delegates : map(address, address);
   }
 
-  function delegate(const account : address; const delegatee : address) is {
+  external function delegate(const account : address; const delegatee : address) is {
     const balance : nat := ERC20.erc20.balances[account];
     votes.delegates[account] := delegatee;
   }
 }
 
 contract Token is {
-  use ERC20;
-  use ERC20Votes;
+  external use ERC20 is {
+    function mint(account : address; amount : nat);
+    view function balance_of(account : address) : nat;
+    view function total() : nat;
+  }
 
-  external function mint is ERC20.mint;
-
-  external view function balance_of is ERC20.balance_of;
-
-  external view function total is ERC20.total;
-
-  external function delegate is ERC20Votes.delegate;
+  external use ERC20Votes is {
+    function delegate(account : address; delegatee : address);
+  }
 
   external view function total_supply() : nat is
     ERC20.erc20.total_supply

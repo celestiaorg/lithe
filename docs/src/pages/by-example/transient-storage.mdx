@@ -12,7 +12,7 @@ Transient storage is shared by every call in a transaction and cleared when the 
    it, cleared when it ends, and cheap. It is read and written with TLOAD/TSTORE. *)
 
 interface Callback is {
-  call on_flash(amount : nat) : unit;
+  function on_flash(amount : nat);
 }
 
 error Not_in_flash;

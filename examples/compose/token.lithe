@@ -1,7 +1,7 @@
 import "./ledger.lithe";
 
 contract Token is {
-  use Ledger;
-
-  external function ping is Ledger.ping;
+  external use Ledger is {
+    function ping(n : nat);
+  }
 }

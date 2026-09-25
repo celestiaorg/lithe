@@ -1,0 +1,14 @@
+module Ledger is {
+  storage ledger at "lithe.ledger" is record {
+    n : nat;
+  }
+
+  external view function balance() : nat is
+    ledger.n
+}
+
+contract Token is {
+  external use Ledger is {
+    function balance() : nat;
+  }
+}

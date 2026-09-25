@@ -5,15 +5,15 @@ description: "Typed interfaces and synchronous read-only calls."
 
 # Interfaces and queries
 
-An interface describes another contract. `query` methods are read-only and can be called immediately with `query`, which compiles to `STATICCALL`.
+An interface describes another contract as function headers. `view` methods are read-only and can be called immediately with `query`, which compiles to `STATICCALL`.
 
 ```lithe [interfaces.lithe]
-(* An interface types another contract. `query` methods are read-only and run
-   now, through STATICCALL. `call` methods change state and can only be deferred. *)
+(* An interface types another contract. `view` methods are read-only and run
+   now, through STATICCALL. Other methods change state and can only be deferred. *)
 
 interface Oracle is {
-  query price(asset : address) : nat;
-  query decimals() : uint8;
+  view function price(asset : address) : nat;
+  view function decimals() : uint8;
 }
 
 error Stale_price of nat;

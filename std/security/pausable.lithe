@@ -2,7 +2,9 @@
    functions stop: each checks `require_not_paused` itself. Errors and events match
    OpenZeppelin's `Pausable`.
 
-     external view function paused is Pausable.paused;
+     external use Pausable is {
+       view function paused() : bool;
+     }
 
      external function pause()
        raises OwnableUnauthorizedAccount | EnforcedPause
@@ -61,4 +63,7 @@ module Pausable is {
       account = Evm.sender();
     };
   }
+
+  external view function paused() : bool is
+    pausable.paused
 }

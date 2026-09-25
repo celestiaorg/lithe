@@ -1,0 +1,16 @@
+module Ledger is {
+  storage ledger at "lithe.ledger" is record {
+    n : nat;
+  }
+
+  external function bump() is {
+    ledger.n := ledger.n + hook();
+  }
+}
+
+pure function hook() : nat is
+  1n
+
+external use Ledger is {
+  function bump();
+}

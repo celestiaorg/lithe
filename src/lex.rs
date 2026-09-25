@@ -136,8 +136,6 @@ enum Raw {
     Defer,
     #[token("end")]
     End,
-    #[token("call")]
-    CallKw,
     #[token("create")]
     Create,
     #[token("const")]
@@ -441,7 +439,6 @@ pub(crate) enum Kind {
     Emit,
     Defer,
     End,
-    CallKw,
     Create,
     Const,
     Var,
@@ -577,7 +574,6 @@ pub(crate) fn tokenize(src: &str) -> Result<Vec<Token>, Error> {
             Raw::Emit => (Kind::Emit, Word::from_u64(0), None),
             Raw::Defer => (Kind::Defer, Word::from_u64(0), None),
             Raw::End => (Kind::End, Word::from_u64(0), None),
-            Raw::CallKw => (Kind::CallKw, Word::from_u64(0), None),
             Raw::Create => (Kind::Create, Word::from_u64(0), None),
             Raw::Const => (Kind::Const, Word::from_u64(0), None),
             Raw::Var => (Kind::Var, Word::from_u64(0), None),
@@ -701,7 +697,6 @@ pub(crate) fn kind_name(k: Kind) -> &'static str {
         Kind::Emit => "`emit`",
         Kind::Defer => "`defer`",
         Kind::End => "`end`",
-        Kind::CallKw => "`call`",
         Kind::Create => "`create`",
         Kind::Const => "`const`",
         Kind::Var => "`var`",

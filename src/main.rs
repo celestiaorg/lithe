@@ -8,7 +8,7 @@ fn main() {
     // Size and splitting flags apply wherever code is built and placed.
     let opts = if matches!(
         cmd.as_str(),
-        "compile" | "parts" | "abi-tree" | "footprint" | "upgrade" | "upgrade-check"
+        "compile" | "abi" | "facets" | "abi-tree" | "footprint" | "upgrade" | "upgrade-check"
     ) {
         match options(&mut args) {
             Ok(opts) => opts,
@@ -20,12 +20,22 @@ fn main() {
     } else {
         lithe::Options::default()
     };
+    if cmd == "stubs" && args.len() == 2 {
+        match lithe::stubs_file(std::path::Path::new(&args[0]), &args[1]) {
+            Ok(text) => print!("{text}"),
+            Err(err) => {
+                eprintln!("{err}");
+                std::process::exit(1);
+            }
+        }
+        std::process::exit(0);
+    }
     if matches!(cmd.as_str(), "storage" | "upgrade-check" | "upgrade") {
         tool(&cmd, &args, &opts);
     }
     if !matches!(
         cmd.as_str(),
-        "compile" | "abi" | "abi-tree" | "footprint" | "analysis" | "errors" | "parts"
+        "compile" | "abi" | "abi-tree" | "footprint" | "analysis" | "errors" | "facets"
     ) || args.len() != 1
     {
         usage();
@@ -46,7 +56,11 @@ fn main() {
                 std::path::Path::new("out"),
                 &opts,
             ),
-            "abi" => lithe::abi_dir(std::path::Path::new(&path), std::path::Path::new("out")),
+            "abi" => lithe::abi_dir_with(
+                std::path::Path::new(&path),
+                std::path::Path::new("out"),
+                &opts,
+            ),
             cmd => {
                 eprintln!("{cmd} reads one file");
                 std::process::exit(2);
@@ -57,12 +71,12 @@ fn main() {
     let file = std::path::Path::new(&path);
     let mut note = None;
     let result = match cmd.as_str() {
-        "abi" => lithe::abi_file(file),
+        "abi" => lithe::abi_file_with(file, &opts),
         "abi-tree" => lithe::abi_tree_file_with(file, &opts),
         "footprint" => lithe::footprint_file_with(file, &opts),
         "analysis" => lithe::analysis_file(file),
         "errors" => lithe::errors_file(file),
-        "parts" => lithe::parts_file(file, &opts),
+        "facets" => lithe::facets_file(file, &opts),
         _ => lithe::compile_file_with(file, &opts).map(|compiled| {
             note = compiled.note;
             compiled.text
@@ -108,10 +122,19 @@ fn options(args: &mut Vec<String>) -> Result<lithe::Options, String> {
                     .ok_or_else(|| format!("--size-limit: `{value}` is not a number of bytes"))?;
             }
             "--split" => match it.next().as_deref() {
-                Some("auto") => opts.split = true,
-                Some("off") => opts.split = false,
-                Some(other) => return Err(format!("--split takes `auto` or `off`, not `{other}`")),
-                None => return Err("--split takes `auto` or `off`".to_string()),
+                Some("auto") => opts.split = lithe::SplitMode::Auto,
+                Some("off") => opts.split = lithe::SplitMode::Off,
+                Some("all") => opts.split = lithe::SplitMode::All,
+                Some(other) => {
+                    return Err(format!("--split takes `auto`, `off`, or `all`, not `{other}`"))
+                }
+                None => return Err("--split takes `auto`, `off`, or `all`".to_string()),
+            },
+            "--erc165" => match it.next().as_deref() {
+                Some("on") => opts.erc165 = true,
+                Some("off") => opts.erc165 = false,
+                Some(other) => return Err(format!("--erc165 takes `on` or `off`, not `{other}`")),
+                None => return Err("--erc165 takes `on` or `off`".to_string()),
             },
             "--create2-deployer" => {
                 let value = it.next().ok_or("--create2-deployer needs an address")?;
@@ -251,14 +274,19 @@ usage: lithe compile file.lithe
        lithe errors file.lithe
        lithe storage file.lithe
        lithe storage old.lithe new.lithe
-       lithe parts file.lithe
+       lithe facets file.lithe
+       lithe stubs file.lithe Module
        lithe upgrade-check old.lithe new.lithe
        lithe upgrade 0xProxy file.lithe --migrate name [--impl 0xImpl] --args ...
 
-compile, parts, abi-tree, footprint, upgrade, and upgrade-check also take
+compile, abi, facets, abi-tree, footprint, upgrade, and upgrade-check also take
        --size-limit <bytes>          largest runtime code, default 24576
-       --split <auto|off>            split a contract over the limit, default auto
-       --create2-deployer <address>  the CREATE2 factory for parts
+       --split <auto|off|all>        run exposed modules from their facets: when the
+                                     contract is over the limit (auto, the default),
+                                     never (off), or always (all)
+       --create2-deployer <address>  the CREATE2 factory for facets
+       --erc165 <on|off>             answer supportsInterface for the interfaces
+                                     `external use` names, default on
 
 directory commands write to ./out
 builds are cached in ~/.cache/lithe; set LITHE_CACHE_DIR to move it, or empty to turn it off"

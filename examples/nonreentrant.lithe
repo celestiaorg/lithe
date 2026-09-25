@@ -1,8 +1,8 @@
 (* One lock covers every `nonreentrant` function until deferred calls finish. *)
 
 interface Hook is {
-  call cancel() : unit;
-  call ping() : unit;
+  function cancel();
+  function ping();
 }
 
 storage is record {

@@ -4,7 +4,7 @@
 import "std/token/erc721.lithe";
 
 contract Collection is {
-  use ERC721;
+  external use ERC721 is IERC721, IERC721Metadata;
 
   storage is record {
     next_id : nat;
@@ -13,20 +13,6 @@ contract Collection is {
   deploy() is {
     ERC721.init("Lithe Collection", "LCOL");
   }
-
-  external pure function supportsInterface is ERC721.supports_interface;
-  external view function name is ERC721.name;
-  external view function symbol is ERC721.symbol;
-  external view function tokenURI is ERC721.token_uri;
-  external view function balanceOf is ERC721.balance_of;
-  external view function ownerOf is ERC721.owner_of;
-  external view function getApproved is ERC721.get_approved;
-  external view function isApprovedForAll is ERC721.is_approved_for_all;
-  external function approve is ERC721.approve;
-  external function setApprovalForAll is ERC721.set_approval_for_all;
-  external function transferFrom is ERC721.transfer_from;
-  external function safeTransferFrom is ERC721.safe_transfer_from;
-  external function safeTransferFrom is ERC721.safe_transfer_from_with_data;
 
   external function mint() : nat
     raises ERC721InvalidReceiver | ERC721InvalidSender | ERC721NonexistentToken | ERC721InsufficientApproval

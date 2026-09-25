@@ -6,10 +6,10 @@
 error Unavailable;
 
 interface Ext is {
-  call swap(amount : nat) : nat;
-  call notify(id : nat) : unit;
-  query price(asset : nat) : nat;
-  query small(asset : nat) : uint8;
+  function swap(amount : nat) : nat;
+  function notify(id : nat);
+  view function price(asset : nat) : nat;
+  view function small(asset : nat) : uint8;
 }
 
 storage is record {

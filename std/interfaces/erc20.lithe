@@ -1,20 +1,68 @@
-(* ERC-20 tokens, and their metadata extension. *)
+(* ERC-20 tokens, their metadata extension, and ERC-2612 permits, with the errors of
+   ERC-6093 that OpenZeppelin raises. Each interface is exactly its standard's functions,
+   so its ERC-165 id is the standard's. *)
+
+import "std/crypto/ecdsa.lithe";
+
+error ERC20InsufficientBalance of record {
+  sender : address;
+  balance : nat;
+  needed : nat;
+}
+
+error ERC20InvalidSender of address;
+
+error ERC20InvalidReceiver of address;
+
+error ERC20InsufficientAllowance of record {
+  spender : address;
+  allowance : nat;
+  needed : nat;
+}
+
+error ERC20InvalidApprover of address;
+
+error ERC20InvalidSpender of address;
+
+error ERC2612ExpiredSignature of nat;
+
+error ERC2612InvalidSigner of record {
+  signer : address;
+  owner : address;
+}
 
 interface IERC20 is {
-  query totalSupply() : nat;
-  query balanceOf(account : address) : nat;
-  query allowance(owner : address; spender : address) : nat;
-  query name() : string;
-  query symbol() : string;
-  query decimals() : uint8;
-  call transfer(to : address; value : nat) : bool;
-  call approve(spender : address; value : nat) : bool;
-  call transferFrom(from : address; to : address; value : nat) : bool;
+  view function totalSupply() : nat;
+  view function balanceOf(account : address) : nat;
+  view function allowance(owner : address; spender : address) : nat;
+  function transfer(to : address; value : nat) : bool
+    raises ERC20InvalidSender | ERC20InvalidReceiver | ERC20InsufficientBalance;
+  function approve(spender : address; value : nat) : bool
+    raises ERC20InvalidApprover | ERC20InvalidSpender;
+  function transferFrom(from : address; to : address; value : nat) : bool
+    raises ERC20InsufficientAllowance | ERC20InvalidApprover | ERC20InvalidSpender
+      | ERC20InvalidSender | ERC20InvalidReceiver | ERC20InsufficientBalance;
+}
+
+interface IERC20Metadata is {
+  view function name() : string;
+  view function symbol() : string;
+  view function decimals() : uint8;
 }
 
 (* ERC-2612: approvals by signature. *)
 interface IERC20Permit is {
-  query nonces(owner : address) : nat;
-  query DOMAIN_SEPARATOR() : bytes32;
-  call permit(owner : address; spender : address; value : nat; deadline : nat; v : uint8; r : bytes32; s : bytes32) : unit;
+  function permit(
+    owner : address;
+    spender : address;
+    value : nat;
+    deadline : nat;
+    v : uint8;
+    r : bytes32;
+    s : bytes32
+  )
+    raises ERC2612ExpiredSignature | ERC2612InvalidSigner | ECDSAInvalidSignature
+      | ECDSAInvalidSignatureS | ERC20InvalidApprover | ERC20InvalidSpender;
+  view function nonces(owner : address) : nat;
+  view function DOMAIN_SEPARATOR() : bytes32;
 }

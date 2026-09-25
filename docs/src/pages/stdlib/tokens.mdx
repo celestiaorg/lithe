@@ -7,13 +7,13 @@ description: "ERC-20 with burning and permits, and ERC-721."
 
 ## `ERC20`
 
-`std/token/erc20.lithe`. The ERC-20 standard, with OpenZeppelin's errors, events, and order of checks. A token promotes the standard functions under their ABI names:
+`std/token/erc20.lithe`. The ERC-20 standard, with OpenZeppelin's errors, events, and order of checks. The module's externals are the standard's, and a token exposes them by naming the standard's interfaces from [`std/interfaces`](/stdlib/interfaces). A contract that has an interface answers for it in [`supportsInterface`](/language/modules#erc-165):
 
 ```lithe
 import "std/token/erc20.lithe";
 
 contract Token is {
-  use ERC20;
+  external use ERC20 is IERC20, IERC20Metadata;
 
   storage is record {
     minter : address;
@@ -25,24 +25,15 @@ contract Token is {
     ERC20.init("Token", "TKN");
     ERC20.mint(Evm.sender(), supply);
   }
-
-  external view function name is ERC20.name;
-  external view function symbol is ERC20.symbol;
-  external pure function decimals is ERC20.decimals;
-  external view function totalSupply is ERC20.total_supply;
-  external view function balanceOf is ERC20.balance_of;
-  external view function allowance is ERC20.allowance;
-  external function transfer is ERC20.transfer;
-  external function approve is ERC20.approve;
-  external function transferFrom is ERC20.transfer_from;
 }
 ```
 
 | Function | |
 | --- | --- |
+| `name`, `symbol`, `decimals`, `totalSupply`, `balanceOf`, `allowance`, `transfer`, `approve`, `transferFrom` | the standard's externals |
 | `init(name, symbol)` | |
 | `name()`, `symbol()`, `decimals()`, `total_supply()`, `balance_of(a)`, `allowance(o, s)` | views; `decimals` is 18 |
-| `transfer(to, value)`, `approve(spender, value)`, `transfer_from(from, to, value)` | the standard's entrypoints, for promotion |
+| `transfer(to, value)`, `approve(spender, value)`, `transfer_from(from, to, value)` | what the standard's entrypoints do, for a contract's own entrypoints to call |
 | `move(from, to, value)` | a checked transfer between two accounts |
 | `mint(account, value)`, `burn(account, value)` | |
 | `update(from, to, value)` | every balance change; `from` zero mints, `to` zero burns |
@@ -62,21 +53,29 @@ is {
 
 ## `ERC20Burnable`
 
-`std/token/erc20_burnable.lithe`. `burn(value)` burns the caller's tokens, and `burn_from(account, value)` spends an allowance to burn someone else's.
+`std/token/erc20_burnable.lithe`. The externals `burn(value)` burns the caller's tokens, and `burnFrom(account, value)` spends an allowance to burn someone else's. The internal `burn` and `burn_from` do the same for a contract's own entrypoints.
 
 ## `ERC20Permit`
 
-`std/token/erc20_permit.lithe`. ERC-2612: approvals signed off-chain, so a holder can approve without paying for a transaction. It uses [`EIP712`](/stdlib/crypto#eip712), [`ECDSA`](/stdlib/crypto#ecdsa), and [`Nonces`](/stdlib/utils#nonces), and a contract uses all four:
+`std/token/erc20_permit.lithe`. ERC-2612: approvals signed off-chain, so a holder can approve without paying for a transaction. It uses [`EIP712`](/stdlib/crypto#eip712), [`ECDSA`](/stdlib/crypto#ecdsa), and [`Nonces`](/stdlib/utils#nonces), and a contract uses all four. Its externals are the whole of ERC-2612, `IERC20Permit`: `permit`, `nonces`, and `DOMAIN_SEPARATOR`.
 
 ```lithe
 import "std/token/erc20_permit.lithe";
 
 contract Token is {
-  use ERC20;
   use EIP712;
   use ECDSA;
   use Nonces;
-  use ERC20Permit;
+
+  external use ERC20 is {
+    view function balanceOf(account : address) : nat;
+    view function allowance(owner : address; spender : address) : nat;
+    function transferFrom(from : address; to : address; value : nat) : bool
+      raises ERC20InsufficientAllowance | ERC20InvalidApprover | ERC20InvalidSpender
+        | ERC20InvalidSender | ERC20InvalidReceiver | ERC20InsufficientBalance;
+  }
+
+  external use ERC20Permit is IERC20Permit;
 
   storage is record {
     supply_cap : nat;
@@ -86,13 +85,6 @@ contract Token is {
     ERC20.init("Token", "TKN");
     EIP712.init("Token", "1");
   }
-
-  external view function balanceOf is ERC20.balance_of;
-  external view function allowance is ERC20.allowance;
-  external function transferFrom is ERC20.transfer_from;
-  external function permit is ERC20Permit.permit;
-  external view function nonces is Nonces.nonces;
-  external view function DOMAIN_SEPARATOR is EIP712.domain_separator;
 }
 ```
 
@@ -104,7 +96,7 @@ contract Token is {
 import "std/token/erc721.lithe";
 
 contract Collection is {
-  use ERC721;
+  external use ERC721 is IERC721, IERC721Metadata;
 
   storage is record {
     next_id : nat;
@@ -113,17 +105,6 @@ contract Collection is {
   deploy() is {
     ERC721.init("Collection", "COL");
   }
-
-  external pure function supportsInterface is ERC721.supports_interface;
-  external view function balanceOf is ERC721.balance_of;
-  external view function ownerOf is ERC721.owner_of;
-  external view function getApproved is ERC721.get_approved;
-  external view function isApprovedForAll is ERC721.is_approved_for_all;
-  external function approve is ERC721.approve;
-  external function setApprovalForAll is ERC721.set_approval_for_all;
-  external function transferFrom is ERC721.transfer_from;
-  external function safeTransferFrom is ERC721.safe_transfer_from;
-  external function safeTransferFrom is ERC721.safe_transfer_from_with_data;
 
   external function mint() : nat
     raises ERC721InvalidReceiver | ERC721InvalidSender | ERC721NonexistentToken | ERC721InsufficientApproval
@@ -135,4 +116,4 @@ contract Collection is {
 }
 ```
 
-Both `safeTransferFrom` overloads are promoted under one name, because their ABI signatures differ. `token_uri` checks that the token exists and answers the empty string, as OpenZeppelin's does without a base URI; a collection with URIs writes its own `tokenURI`.
+`IERC721` has both `safeTransferFrom` overloads, one for each ABI signature, and a collection that has it and `IERC721Metadata` answers `supportsInterface` for `0x80ac58cd` and `0x5b5e139f`. `token_uri` checks that the token exists and answers the empty string, as OpenZeppelin's does without a base URI; a collection with URIs writes its own `tokenURI`.

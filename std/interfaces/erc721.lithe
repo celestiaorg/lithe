@@ -1,21 +1,60 @@
-(* ERC-721 tokens, their metadata extension, and the receiver callback.
-   `safeTransferFrom` is the four-argument form; pass empty `data` for the three-argument
-   one. *)
+(* ERC-721 tokens, their metadata extension, and the receiver callback, with the errors of
+   ERC-6093 that OpenZeppelin raises. Each interface is exactly its standard's functions,
+   so its ERC-165 id is the standard's: `0x80ac58cd` and `0x5b5e139f`. *)
+
+error ERC721InvalidOwner of address;
+
+error ERC721NonexistentToken of nat;
+
+error ERC721IncorrectOwner of record {
+  sender : address;
+  tokenId : nat;
+  owner : address;
+}
+
+error ERC721InvalidSender of address;
+
+error ERC721InvalidReceiver of address;
+
+error ERC721InsufficientApproval of record {
+  operator : address;
+  tokenId : nat;
+}
+
+error ERC721InvalidApprover of address;
+
+error ERC721InvalidOperator of address;
 
 interface IERC721 is {
-  query balanceOf(owner : address) : nat;
-  query ownerOf(tokenId : nat) : address;
-  query getApproved(tokenId : nat) : address;
-  query isApprovedForAll(owner : address; operator : address) : bool;
-  query name() : string;
-  query symbol() : string;
-  query tokenURI(tokenId : nat) : string;
-  call approve(to : address; tokenId : nat) : unit;
-  call setApprovalForAll(operator : address; approved : bool) : unit;
-  call transferFrom(from : address; to : address; tokenId : nat) : unit;
-  call safeTransferFrom(from : address; to : address; tokenId : nat; data : bytes) : unit;
+  view function balanceOf(owner : address) : nat
+    raises ERC721InvalidOwner;
+  view function ownerOf(tokenId : nat) : address
+    raises ERC721NonexistentToken;
+  view function getApproved(tokenId : nat) : address
+    raises ERC721NonexistentToken;
+  view function isApprovedForAll(owner : address; operator : address) : bool;
+  function approve(to : address; tokenId : nat)
+    raises ERC721NonexistentToken | ERC721InvalidApprover;
+  function setApprovalForAll(operator : address; approved : bool)
+    raises ERC721InvalidApprover | ERC721InvalidOperator;
+  function transferFrom(from : address; to : address; tokenId : nat)
+    raises ERC721InvalidReceiver | ERC721IncorrectOwner | ERC721NonexistentToken
+      | ERC721InsufficientApproval;
+  function safeTransferFrom(from : address; to : address; tokenId : nat)
+    raises ERC721InvalidReceiver | ERC721IncorrectOwner | ERC721NonexistentToken
+      | ERC721InsufficientApproval;
+  function safeTransferFrom(from : address; to : address; tokenId : nat; data : bytes)
+    raises ERC721InvalidReceiver | ERC721IncorrectOwner | ERC721NonexistentToken
+      | ERC721InsufficientApproval;
+}
+
+interface IERC721Metadata is {
+  view function name() : string;
+  view function symbol() : string;
+  view function tokenURI(tokenId : nat) : string
+    raises ERC721NonexistentToken;
 }
 
 interface IERC721Receiver is {
-  call onERC721Received(operator : address; from : address; tokenId : nat; data : bytes) : bytes4;
+  function onERC721Received(operator : address; from : address; tokenId : nat; data : bytes) : bytes4;
 }

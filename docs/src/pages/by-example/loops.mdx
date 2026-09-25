@@ -12,7 +12,7 @@ description: "For loops over lists and ranges, with until and bound."
    length. `until` ends a loop early. `bound n` caps the count, and a longer list panics. *)
 
 interface Exchange is {
-  call swap(amount : nat) : nat;
+  function swap(amount : nat) : nat;
 }
 
 event Paid of record {

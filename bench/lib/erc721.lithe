@@ -2,7 +2,7 @@
    events, and order of checks. Extensions compose these pieces explicitly. *)
 
 interface ERC721Receiver is {
-  call onERC721Received(operator : address; from : address; tokenId : nat; data : bytes) : bytes4;
+  function onERC721Received(operator : address; from : address; tokenId : nat; data : bytes) : bytes4;
 }
 
 module ERC721 is {
@@ -59,40 +59,40 @@ module ERC721 is {
   }
 
   (* ERC-721, its metadata extension, and ERC-165 itself. *)
-  pure function supportsInterface(const interfaceId : bytes4) : bool is
+  external pure function supportsInterface(const interfaceId : bytes4) : bool is
     (interfaceId = 0x80ac58cd) or (interfaceId = 0x5b5e139f) or (interfaceId = 0x01ffc9a7)
 
-  view function balanceOf(const owner : address) : nat
+  external view function balanceOf(const owner : address) : nat
     raises ERC721InvalidOwner
   is {
     assert(owner <> Address.zero, ERC721InvalidOwner(Address.zero));
   } with erc721.balances[owner]
 
-  view function ownerOf(const tokenId : nat) : address
+  external view function ownerOf(const tokenId : nat) : address
     raises ERC721NonexistentToken
   is
     require_owned(tokenId)
 
-  view function name() : string is
+  external view function name() : string is
     erc721.name
 
-  view function symbol() : string is
+  external view function symbol() : string is
     erc721.symbol
 
   (* Without a base URI, an existing token's URI is empty. *)
-  view function tokenURI(const tokenId : nat) : string
+  external view function tokenURI(const tokenId : nat) : string
     raises ERC721NonexistentToken
   is {
     const owner : address := require_owned(tokenId);
   } with ""
 
-  view function getApproved(const tokenId : nat) : address
+  external view function getApproved(const tokenId : nat) : address
     raises ERC721NonexistentToken
   is {
     const owner : address := require_owned(tokenId);
   } with erc721.tokenApprovals[tokenId]
 
-  view function isApprovedForAll(const owner : address; const operator : address) : bool is
+  external view function isApprovedForAll(const owner : address; const operator : address) : bool is
     erc721.operatorApprovals[owner][operator]
 
   view function require_owned(const tokenId : nat) : address

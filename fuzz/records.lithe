@@ -26,7 +26,7 @@ type pair is record {
 error Missing of nat;
 
 interface Oracle is {
-  query price(amount : nat) : nat;
+  view function price(amount : nat) : nat;
 }
 
 event Placed of record {

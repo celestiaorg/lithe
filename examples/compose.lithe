@@ -1,4 +1,5 @@
-(* Modules compose by name. Each module owns the storage it declares. *)
+(* Modules compose by name. Each module owns the storage it declares, and declares the
+   external functions a contract may expose. *)
 
 module Ledger is {
   storage ledger at "lithe.ledger" is record {
@@ -16,10 +17,10 @@ module Ledger is {
     amount : nat;
   }
 
-  view function balance_of(const account : address) : nat is
+  external view function balance_of(const account : address) : nat is
     ledger.balances[account]
 
-  function mint(const account : address; const amount : nat) is {
+  external function mint(const account : address; const amount : nat) is {
     ledger.balances[account] := ledger.balances[account] + amount;
   }
 
@@ -43,6 +44,11 @@ module Ledger is {
       amount = amount;
     };
   }
+
+  external function transfer(const to : address; const amount : nat)
+    raises Insufficient_balance
+  is
+    transfer(to, amount)
 }
 
 module Pausable is {
@@ -52,10 +58,10 @@ module Pausable is {
 
   error Paused;
 
-  view function is_paused() : bool is
+  external view function is_paused() : bool is
     settings.paused
 
-  function pause() is {
+  external function pause() is {
     settings.paused := true;
   }
 
@@ -79,22 +85,22 @@ module Guarded is {
 }
 
 contract Token is {
-  use Ledger;
-  use Pausable;
   use Guarded;
 
-  external view function balance_of is Ledger.balance_of;
+  external use Ledger is {
+    view function balance_of(account : address) : nat;
+    function mint(account : address; amount : nat);
+    function transfer(to : address; amount : nat)
+      raises Insufficient_balance;
+  }
 
-  external view function is_paused is Pausable.is_paused;
+  external use Pausable is {
+    view function is_paused() : bool;
+    function pause();
+  }
 
   external view function flag() : bool is
     Pausable.settings.paused
-
-  external function mint is Ledger.mint;
-
-  external function transfer is Ledger.transfer;
-
-  external function pause is Pausable.pause;
 
   external function guarded_transfer(const to : address; const amount : nat)
     raises Paused | Insufficient_balance

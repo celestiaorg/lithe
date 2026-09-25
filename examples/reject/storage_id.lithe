@@ -3,7 +3,7 @@ module Alpha is {
     n : nat;
   }
 
-  function go() is {
+  external function go() is {
     foo.n := 1n;
   }
 }
@@ -19,8 +19,9 @@ module Beta is {
 }
 
 contract Token is {
-  use Alpha;
-  use Beta;
+  external use Alpha is {
+    function go();
+  }
 
-  external function go is Alpha.go;
+  use Beta;
 }

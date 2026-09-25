@@ -2,20 +2,20 @@
    of. *)
 
 interface IERC4626 is {
-  query asset() : address;
-  query totalAssets() : nat;
-  query convertToShares(assets : nat) : nat;
-  query convertToAssets(shares : nat) : nat;
-  query maxDeposit(receiver : address) : nat;
-  query previewDeposit(assets : nat) : nat;
-  query maxMint(receiver : address) : nat;
-  query previewMint(shares : nat) : nat;
-  query maxWithdraw(owner : address) : nat;
-  query previewWithdraw(assets : nat) : nat;
-  query maxRedeem(owner : address) : nat;
-  query previewRedeem(shares : nat) : nat;
-  call deposit(assets : nat; receiver : address) : nat;
-  call mint(shares : nat; receiver : address) : nat;
-  call withdraw(assets : nat; receiver : address; owner : address) : nat;
-  call redeem(shares : nat; receiver : address; owner : address) : nat;
+  view function asset() : address;
+  view function totalAssets() : nat;
+  view function convertToShares(assets : nat) : nat;
+  view function convertToAssets(shares : nat) : nat;
+  view function maxDeposit(receiver : address) : nat;
+  view function previewDeposit(assets : nat) : nat;
+  view function maxMint(receiver : address) : nat;
+  view function previewMint(shares : nat) : nat;
+  view function maxWithdraw(owner : address) : nat;
+  view function previewWithdraw(assets : nat) : nat;
+  view function maxRedeem(owner : address) : nat;
+  view function previewRedeem(shares : nat) : nat;
+  function deposit(assets : nat; receiver : address) : nat;
+  function mint(shares : nat; receiver : address) : nat;
+  function withdraw(assets : nat; receiver : address; owner : address) : nat;
+  function redeem(shares : nat; receiver : address; owner : address) : nat;
 }

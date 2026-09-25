@@ -1,103 +1,103 @@
 ---
 title: "Contract size limit"
-description: "Contracts over EIP-170's 24,576-byte limit are split into a router and parts, with no source changes."
+description: "Contracts over EIP-170's 24,576-byte limit run the modules they expose from shared facets."
 ---
 
 # Contract size limit
 
-[EIP-170](https://eips.ethereum.org/EIPS/eip-170) caps deployed code at 24,576 bytes. When a contract is over the limit, the compiler splits it into a **router** and one or more **parts**. You don't change any source. Callers still see one contract: one address, one ABI, and the same return data, logs, and errors.
+[EIP-170](https://eips.ethereum.org/EIPS/eip-170) caps deployed code at 24,576 bytes. When a contract is over the limit, the compiler moves the modules it exposes with [`external use`](/language/modules#exposing-a-modules-externals) into **facets**, and keeps the rest in a **router**. Callers still see one contract: one address, one ABI, and the same return data, logs, and errors.
 
 A contract that fits compiles exactly as it always does, byte for byte.
 
 ## How a split contract works
 
 ```text
-caller ──call──▶ router ──delegatecall──▶ part 1 · part 2 · ...
+caller ──call──▶ router ──delegatecall──▶ ERC20 facet · ERC20Permit facet · ...
 ```
 
-The router keeps as many entrypoints as fit, and hands each of the other selectors to the part that runs it. Parts run with `delegatecall`, so they use the router's storage, balance, and address. Nothing about storage changes: module storage stays at its ERC-7201 root, and the default record stays at slot 0. Events are logged from the router's address, and a part's errors reach the caller unchanged.
+The router runs what the contract writes itself, its upgrade machinery, and any exposed module that stays inline. For every selector a moved module provides, it forwards the call to that module's facet with `delegatecall`, so the facet uses the router's storage, balance, and address. Nothing about storage changes: module storage stays at its ERC-7201 root, and the default record stays at slot 0. Events are logged from the router's address, and a facet's errors reach the caller unchanged.
 
-This is safe because nothing in a Lithe contract depends on which code is running. Every part is compiled from the same contract, so it has the same storage layout, transient storage, and `nonreentrant` lock. Module functions are compiled into each part that uses them, so parts never call each other. Continuations run in the frame that deferred the call.
+A facet is built from its module alone: the module's externals, and the modules it `requires`. None of the contract is in it, so it doesn't matter which contract exposes the module, which of its externals the contract declares, or what else the contract does. **Every contract that exposes the same module gets the same facet at the same address**, so ten collections built on the same modules deploy each facet once. A facet changes, and moves to a new address, only when its module or a module it requires changes.
 
-## Where entrypoints go
+This is safe because a module never depends on the contract that uses it: its storage is its own, it can call only the modules it requires, and a module's transient storage sits at a slot derived from its name. Continuations run in the frame that deferred the call.
 
-Entrypoints are placed in groups:
+## Which modules move
 
-| Entrypoint | Group |
-| --- | --- |
-| `external function x is M.f` | the module `M` |
-| written in the contract, a `migrate`, or an upgradeable contract's `deploy` | the contract |
-| `proxiableUUID`, `upgradeToAndCall` | always the router |
+Only a module the contract exposes with `external use` can move. What the contract writes itself always stays in the router, so a contract over the limit that exposes no modules is an error.
 
-The router takes the contract's group, then each module's group in `use` order, until the next group doesn't fit. Entrypoints in the router pay nothing extra per call. The remaining groups fill parts in the same order. A group that doesn't fit in the current part starts a new one. A group that doesn't fit in any part is split into its entrypoints. Placement depends only on the source and the flags, so a build always produces the same parts.
+With `--split auto`, the default, the compiler first builds the whole contract. If it fits, that's the output. If not, it moves the module that saves the most bytes into its facet, then the next, until the router fits. With `--split all`, every exposed module runs from its facet even when the contract fits, so a set of contracts shares the same facets however large each one is.
 
-`lithe parts` shows the placement:
+`lithe facets` shows what runs where:
 
 ```bash
-lithe parts token.lithe
+lithe facets token.lithe --size-limit 2000
 ```
 
 ```text
-router  161 / 500
+router  1,989 / 2,000
+  Token: transfer, transferFrom, mint, pause, unpause
+  ERC20Burnable: burn, burnFrom
+  Ownable: transferOwnership, renounceOwnership, owner
+  Pausable: paused
 
-part 1  0x995142bb0A829AfDb6dC92D05D8D9395b12FA5Ca  426 / 500
-  Token: guarded_transfer, safe_transfer, flag
+facet ERC20  0x2a69b5859Bd3dd4D83693b9CE6b60D29101A1fe0  1,438 / 2,000
+  approve, name, symbol, decimals, totalSupply, balanceOf, allowance
+  (2 more externals this contract does not declare)
 
-part 2  0x3447969d9eEDD2491a9720a4c5b92Ee983fB7e4A  460 / 500
-  Ledger: mint, transfer, balance_of
-  Pausable: pause, is_paused
+facet ERC20Permit  0xCf7c2a6CeB11CBFAE62cEbE5D4268776a3E7CcE1  1,233 / 2,000
+  permit, nonces, DOMAIN_SEPARATOR
 ```
 
-That output was produced with `--size-limit 500`, to split a small contract. `lithe footprint` and `lithe abi-tree` also show each entrypoint's part when the contract is split.
+That output is the [standard-library token](/stdlib/tokens), built with `--size-limit 2000` so that it splits. A facet holds every external its module declares; the router forwards only the ones the contract declares, so the others can't be reached through it. `lithe footprint` and `lithe abi-tree` also show where each entrypoint runs when the contract is split.
 
 ## Deploying
 
-Each part is deployed with `CREATE2` through the deterministic deployment proxy at `0x4e59b44847b379578588920cA78FbF26c0B4956C`, the same factory Foundry uses, with a zero salt. So a part's address depends only on its code. The compiler knows every address in advance and builds them into the router. The router can only ever reach the exact code it was compiled against.
+Each facet is deployed with `CREATE2` through the deterministic deployment proxy at `0x4e59b44847b379578588920cA78FbF26c0B4956C`, the same factory Foundry uses, with a zero salt. So a facet's address depends only on its code. The compiler knows every address in advance and builds them into the router. The router can only ever reach the exact code it was compiled against.
 
 For a split contract, `lithe compile` prints the deployment plan instead of bytecode, with a note on stderr:
 
 ```text
-note: `Token` is 602 bytes; split into a router and 2 parts
+note: `Token` is 3,395 bytes; `ERC20`, `ERC20Permit` run from their facets
 ```
 
 ```json
 {
-  "parts": [
+  "facets": [
     {
-      "name": "Token.1",
-      "address": "0x995142bb0A829AfDb6dC92D05D8D9395b12FA5Ca",
+      "name": "ERC20",
+      "address": "0x2a69b5859Bd3dd4D83693b9CE6b60D29101A1fe0",
       "to": "0x4e59b44847b379578588920cA78FbF26c0B4956C",
       "data": "0x0000…"
     },
     …
   ],
   "router": {
-    "bytecode": "0x73…"
+    "bytecode": "0x34…"
   }
 }
 ```
 
-Send each part's `data` to its `to`, in order, then deploy the router's `bytecode` as you would any creation code, with its `deploy` arguments appended. Skip a part whose address already has code: `CREATE2` can't deploy to it twice, and it is already the right code. The router's creation code checks that every part has code, and reverts if one is missing.
+Send each facet's `data` to its `to`, in order, then deploy the router's `bytecode` as you would any creation code, with its `deploy` arguments appended. Skip a facet whose address already has code, because another contract already deployed it: `CREATE2` can't deploy to it twice, and it is already the right code. The router's creation code checks that every facet has code, and reverts if one is missing.
 
 An upgradeable router is listed with its own `address`, `to`, and `data`, so it can be deployed through the factory too, at an address known in advance.
 
-A contract that creates a split contract with `defer create` lists that contract's parts in its plan as well. They must exist before it creates anything.
+A contract that creates a split contract with `defer create` lists that contract's facets in its plan as well. They must exist before it creates anything.
 
-`lithe compile directory` writes the router's artifact to `out/<file>/<Contract>.json` as usual. Its ABI is the whole contract's, because that is what callers use, and it gains a `parts` field listing each part's name, address, and selectors. Each part gets its own artifact at `out/<file>/<Contract>.parts/<n>.json`.
+`lithe compile directory` writes the router's artifact to `out/<file>/<Contract>.json` as usual. Its ABI is the whole contract's, because that is what callers use, and it gains a `facets` field listing each facet's module, address, and the selectors the router forwards to it. Each facet gets one artifact, `out/facets/<Module>.json`, shared by every contract in the directory that uses it.
 
 ## Upgrades
 
-An upgradeable contract's router is the implementation behind its ERC-1967 proxy. Its upgrade guard is the only way to change code, and an upgrade is still one `upgradeToAndCall`. Parts are deployed first, and deploying them changes nothing until the proxy points at the new router. A `migrate` that lands in a part still runs inside the upgrade.
+An upgradeable contract's router is the implementation behind its ERC-1967 proxy. Its upgrade guard is the only way to change code, and an upgrade is still one `upgradeToAndCall`. Facets are deployed first, and deploying them changes nothing until the proxy points at the new router. `migrate` always runs in the router, inside the upgrade.
 
 A contract that grows past the limit upgrades into a split implementation behind the same proxy, at the same address, with the same storage. The reverse works too.
 
-Every upgrade of a split contract deploys a new router, because the router has its parts' addresses built in. A part whose code didn't change keeps its address and is reused. `lithe upgrade-check` shows which parts are reused:
+Every upgrade of a split contract deploys a new router, because the router has its facets' addresses built in. A facet whose module didn't change keeps its address and is reused. `lithe upgrade-check` shows which facets are reused:
 
 ```text
-parts
-  router  changed
-  part 1  unchanged  0x995142bb0A829AfDb6dC92D05D8D9395b12FA5Ca
-  part 2  new        0x88a0…
+facets
+  router       changed
+  ERC20        unchanged  0x2a69b5859Bd3dd4D83693b9CE6b60D29101A1fe0
+  ERC20Permit  new        0x88a0…
 
 compatible
 ```
@@ -106,24 +106,29 @@ For a split contract, `lithe upgrade` prints the deployment plan with the proxy'
 
 ## Cost
 
-A call to an entrypoint in a part costs one extra `delegatecall`, measured at about 2,700 gas: the part's address is cold, and the calldata and return data are copied once more. Entrypoints in the router cost nothing extra. Each part carries its own dispatcher and a copy of any helpers it uses, so a split contract deploys more bytes in total than the unsplit build would have.
+A call to an entrypoint in a facet costs one extra `delegatecall`, measured at about 2,700 gas: the facet's address is cold, and the calldata and return data are copied once more. Entrypoints in the router cost nothing extra. Each facet carries its own dispatcher and a copy of the modules it requires, so a single split contract deploys more bytes in total than its unsplit build would have. Contracts that share facets deploy them once.
 
 ## Flags
 
 | Flag | Default | Meaning |
 | --- | --- | --- |
-| `--size-limit <bytes>` | `24576` | the most runtime code the router or any part may have. Creation code may have twice this, as EIP-3860 allows |
-| `--split <auto\|off>` | `auto` | `off` makes a contract over the limit an error |
-| `--create2-deployer <address>` | `0x4e59…956C` | the `CREATE2` factory parts are deployed through, for chains where it lives elsewhere |
+| `--size-limit <bytes>` | `24576` | the most runtime code the router or any facet may have. Creation code may have twice this, as EIP-3860 allows |
+| `--split <auto\|off\|all>` | `auto` | when exposed modules run from their facets: when the contract is over the limit, never, or always |
+| `--create2-deployer <address>` | `0x4e59…956C` | the `CREATE2` factory facets are deployed through, for chains where it lives elsewhere |
 
-`compile`, `parts`, `footprint`, `abi-tree`, `upgrade`, and `upgrade-check` take them. With `--split off`, a contract over the limit fails with what each group adds to its size:
+`compile`, `facets`, `footprint`, `abi-tree`, `upgrade`, and `upgrade-check` take them. With `--split off`, a contract over the limit fails with what each module and the contract's own code add to its size:
 
 ```text
-contract `Token` is 602 bytes; the limit is 500
-  Token                       142
-  Ledger                      122
-  Pausable                     56
-  (dispatch and shared code)  282
+contract `Token` is 3,395 bytes; the limit is 2,000
+  ERC20Permit                 1,077
+  Token                         606
+  ERC20                         596
+  Ownable                       264
+  ERC20Burnable                 174
+  Pausable                       42
+  (dispatch and shared code)    636
 ```
 
-A contract is also an error when no split can fit it: when a single entrypoint is over the limit on its own, or when the router's upgrade machinery is.
+A contract is also an error when splitting can't fit it: when a module's facet is over the limit on its own, or when the router is, with every exposed module moved out. Then move more of the contract's entrypoints into modules.
+
+`lithe stubs file.lithe Module` prints the `external use` block that declares every external a module has, to copy into a contract and trim.

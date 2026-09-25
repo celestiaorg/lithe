@@ -1,11 +1,11 @@
 ---
 title: "Interfaces"
-description: "Interface declarations for common ERC standards, for typed queries and deferred calls."
+description: "Interface declarations for common ERC standards: for typed queries and deferred calls, and for what a contract exposes."
 ---
 
 # Interfaces
 
-`std/interfaces` declares the common standards as [interfaces](/language/effects#interfaces), for typed `query` and `defer` against other contracts.
+`std/interfaces` declares the common standards as [interfaces](/language/effects#interfaces), for typed `query` and `defer` against other contracts, and for exposing a module's externals with [`external use`](/language/modules#exposing-a-modules-externals). Each interface is exactly its standard's functions, so its ERC-165 id is the standard's. The ERC-20 and ERC-721 files also declare the errors of ERC-6093 that OpenZeppelin, and the standard library's tokens, raise.
 
 ```lithe
 import "std/interfaces/erc20.lithe";
@@ -28,9 +28,9 @@ is {
 | File | Interfaces |
 | --- | --- |
 | `std/interfaces/erc165.lithe` | `IERC165` |
-| `std/interfaces/erc20.lithe` | `IERC20`, `IERC20Permit` |
-| `std/interfaces/erc721.lithe` | `IERC721`, `IERC721Receiver` |
-| `std/interfaces/erc1155.lithe` | `IERC1155`, `IERC1155Receiver` |
+| `std/interfaces/erc20.lithe` | `IERC20`, `IERC20Metadata`, `IERC20Permit` |
+| `std/interfaces/erc721.lithe` | `IERC721`, `IERC721Metadata`, `IERC721Receiver` |
+| `std/interfaces/erc1155.lithe` | `IERC1155`, `IERC1155MetadataURI`, `IERC1155Receiver` |
 | `std/interfaces/erc1271.lithe` | `IERC1271` |
 | `std/interfaces/erc4626.lithe` | `IERC4626` |
 

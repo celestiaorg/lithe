@@ -468,9 +468,11 @@ def solc(path, flags):
 
 
 def lithe_builds():
-    """Each pair's creation code and runtime size, from the Foundry-style artifacts."""
+    """Each pair's creation code and runtime size, from the Foundry-style artifacts. The
+    Solidity contracts answer ERC-165 only where they implement it, so Lithe's generated
+    `supportsInterface` is off; a contract that writes its own, as `erc721` does, keeps it."""
     out = tempfile.mkdtemp()
-    subprocess.run([LITHE, "compile", BENCH], cwd=out, check=True, capture_output=True)
+    subprocess.run([LITHE, "compile", "--erc165", "off", BENCH], cwd=out, check=True, capture_output=True)
     builds = {}
     for entry in os.listdir(os.path.join(out, "out")):
         folder = os.path.join(out, "out", entry)

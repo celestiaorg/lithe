@@ -9,7 +9,7 @@ error Too_big of record {
 }
 
 interface Oracle is {
-  query price(amount : nat) : nat;
+  view function price(amount : nat) : nat;
 }
 
 storage is record {

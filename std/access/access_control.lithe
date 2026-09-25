@@ -16,11 +16,16 @@
        ...
      }
 
-     external view function hasRole is AccessControl.has_role;
-     external view function getRoleAdmin is AccessControl.get_role_admin;
-     external function grantRole is AccessControl.grant_role;
-     external function revokeRole is AccessControl.revoke_role;
-     external function renounceRole is AccessControl.renounce_role; *)
+     external use AccessControl is {
+       view function hasRole(role : role; account : address) : bool;
+       view function getRoleAdmin(role : role) : role;
+       function grantRole(role : role; account : address)
+         raises AccessControlUnauthorizedAccount;
+       function revokeRole(role : role; account : address)
+         raises AccessControlUnauthorizedAccount;
+       function renounceRole(role : role; callerConfirmation : address)
+         raises AccessControlBadConfirmation;
+     } *)
 
 module AccessControl is {
   type role is bytes32;
@@ -135,4 +140,25 @@ module AccessControl is {
       newAdminRole = bytes32(admin);
     };
   }
+
+  external view function hasRole(const role : role; const account : address) : bool is
+    has_role(role, account)
+
+  external view function getRoleAdmin(const role : role) : role is
+    get_role_admin(role)
+
+  external function grantRole(const role : role; const account : address)
+    raises AccessControlUnauthorizedAccount
+  is
+    grant_role(role, account)
+
+  external function revokeRole(const role : role; const account : address)
+    raises AccessControlUnauthorizedAccount
+  is
+    revoke_role(role, account)
+
+  external function renounceRole(const role : role; const callerConfirmation : address)
+    raises AccessControlBadConfirmation
+  is
+    renounce_role(role, callerConfirmation)
 }

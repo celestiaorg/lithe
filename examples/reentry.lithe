@@ -1,7 +1,7 @@
 (* A deferred call can re-enter before later effects run. This program warns. *)
 
 interface Hook is {
-  call cancel() : unit;
+  function cancel();
 }
 
 storage is record {

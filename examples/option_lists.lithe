@@ -46,7 +46,7 @@ external view function locals(const i : nat; const k : nat) : nat is {
   + (case sm[i] of { | Some(v) -> nat(v) | None -> 9 })
 
 interface Oracle is {
-  query price(amount : nat) : nat;
+  view function price(amount : nat) : nat;
 }
 
 (* A query that reads a value written before it keeps storage in the image. *)

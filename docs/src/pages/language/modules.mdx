@@ -1,6 +1,6 @@
 ---
 title: "Modules and contracts"
-description: "Modules own storage, errors, events, and functions. Contracts compose modules and choose what to expose."
+description: "Modules own storage, errors, events, and functions, and declare the externals a contract may expose. Contracts compose modules and declare their whole interface."
 ---
 
 # Modules and contracts
@@ -9,7 +9,7 @@ Lithe has no inheritance. Reusable behavior lives in **modules**, and a **contra
 
 ## Modules
 
-A module groups storage, types, errors, events, and internal functions under one name:
+A module groups storage, types, errors, events, and functions under one name:
 
 ```lithe fragment
 module Ownable is {
@@ -44,12 +44,12 @@ module Ownable is {
 ```
 
 - A module's storage must be **named**. Inside the module it is `ownable.owner`. Everywhere else it is qualified with the module's name: `Ownable.ownable.owner`.
-- A module's functions are internal. A module cannot declare `external` functions. The contract decides what is exposed.
+- A module's functions are internal. A module may also declare `external` functions: the interface it offers. A contract exposes them only by declaring them. See [Exposing a module's externals](#exposing-a-modules-externals).
 - A module's errors and events keep their names, so contracts that use the module raise and log them under the standard signatures.
 
 ## Contracts
 
-A contract `use`s modules and exposes their functions, either by **promotion** or by **wrapping**:
+A contract `use`s modules, and exposes what a module offers in one of two ways: by **declaring** the module's externals, or by **wrapping** its functions in externals of its own.
 
 ```lithe
 module Counter is {
@@ -57,25 +57,30 @@ module Counter is {
     count : nat;
   }
 
-  view function count() : nat is
-    counter.count
-
   function bump(const by : nat) is {
     counter.count := counter.count + by;
+  }
+
+  (* The interface the module offers. *)
+  external view function count() : nat is
+    counter.count
+
+  external function reset() is {
+    counter.count := 0n;
   }
 }
 
 contract App is {
-  use Counter;
+  (* Declaring exposes the module's externals as they are. *)
+  external use Counter is {
+    view function count() : nat;
+  }
 
   storage is record {
     calls : nat;
   }
 
-  (* Promotion exposes the module function as-is. *)
-  external view function count is Counter.count;
-
-  (* Wrapping adds behavior around it. *)
+  (* Wrapping adds behavior around a module's functions. *)
   external function bump(const by : nat) is {
     storage.calls := storage.calls + 1n;
     Counter.bump(by);
@@ -86,11 +91,68 @@ contract App is {
 }
 ```
 
-Nothing is exposed implicitly. If a module adds a function, no contract gains an entrypoint until it asks for one. Two promotions with the same name are an error, and promotion never picks a winner.
+`App` exposes `count`, `bump`, and `current`. It doesn't declare `reset`, so `reset` is not part of its interface. Nothing is exposed implicitly: every entrypoint a contract has is written in the contract, and if a module adds an external, no contract gains an entrypoint until it declares it.
+
+## Exposing a module's externals
+
+`external use M is ...` uses `M`, as `use M` does, and names the [interfaces](/language/effects#interfaces) whose methods the contract exposes from `M`: named ones, an inline one in braces, or both. Each method must be one of `M`'s externals:
+
+```lithe fragment
+external use ERC20 is IERC20, IERC20Metadata;
+
+external use ERC20Permit is IERC20Permit, {
+  view function nonces(owner : address) : nat;
+}
+```
+
+A method is an external's header as an interface writes it: no `external`, `name : type` parameters, and `;` in place of the body. It must match the module's external:
+
+- the name and parameter types pick one external. An overloaded external is exposed once for each overload the interfaces list
+- the parameter names and result must match
+- the effect must match: `view`, `pure`, or stateful. So must `payable`
+- `raises` must list the same errors. A named error set counts as its members
+
+`nonreentrant`, and whether a parameter is `const` or `var`, are how the module defines the external, so an interface doesn't repeat them. A module appears in one `external use`, which lists all its interfaces. For part of an interface, declare the part inline, or as an interface of its own.
+
+A declaration that differs is an error that shows both headers:
+
+```lithe rejects
+module Ledger is {
+  storage ledger at "example.ledger" is record {
+    n : nat;
+  }
+
+  external view function balance() : nat is
+    ledger.n
+}
+
+contract Token is {
+  external use Ledger is {
+    function balance() : nat;
+  }
+}
+```
+
+```text
+`balance` does not match its declaration in module `Ledger`
+
+  module:   view function balance() : nat
+  contract: function balance() : nat
+```
+
+An interface never adds behavior, so its methods have no body. To change what an external does, leave it out of the contract's interfaces, and write the contract's own external instead. A module's externals are not functions: nothing inside the contract calls them. Put shared logic in an internal function that the external and the contract both call.
+
+When a contract is over the [size limit](/tooling/size-limit), a module it exposes can run from the module's **facet**, compiled from the module alone and shared by every contract that exposes it. The interfaces' methods are what the router forwards to it. `lithe stubs file.lithe M` prints an `external use` block with every external `M` has.
+
+## ERC-165
+
+Every contract answers ERC-165's `supportsInterface(bytes4)`: true for ERC-165 itself, and for each interface the program declares or imports that the contract has. A contract has an interface when it dispatches every one of the interface's methods, with the same result, whether they come from `external use` or from its own externals. Nothing says a contract has an interface; it just does, as with Go's interfaces. An interface's id is the XOR of its methods' selectors, so the standard library's `IERC721`, for example, answers for `0x80ac58cd`. Inline interfaces have no name, and no id of their own.
+
+A contract that writes its own `supportsInterface` keeps it, and the compiler warns when there are interfaces it has that the compiler would have answered for. `--erc165 off` turns the generated function off; it costs about 43 bytes, and a few more for each interface the contract has.
 
 ## Dependencies between modules
 
-A module that calls another module, or reads its storage, declares it with `requires`. A contract that uses the dependent module must also use every module it requires:
+A module that calls another module, or reads its storage, declares it with `requires`. A contract that uses the dependent module must also use every module it requires. A module can call only its own functions and those of the modules it requires, never a function of the contract that uses it, so its code is the same in every contract:
 
 ```lithe
 module Pausable is {
@@ -106,7 +168,7 @@ module Pausable is {
     assert(not pausable.paused, Paused);
   }
 
-  function pause() is {
+  external function pause() is {
     pausable.paused := true;
   }
 }
@@ -120,7 +182,7 @@ module Ledger is {
 
   error Insufficient of nat;
 
-  function transfer(const to : address; const amount : nat)
+  external function transfer(const to : address; const amount : nat)
     raises Paused | Insufficient
   is {
     Pausable.when_not_paused();
@@ -131,21 +193,24 @@ module Ledger is {
   }
 
   (* Reading a required module's storage is allowed. *)
-  view function frozen() : bool is
+  external view function frozen() : bool is
     Pausable.pausable.paused
 }
 
 contract Token is {
-  use Pausable;
-  use Ledger;
+  external use Pausable is {
+    function pause();
+  }
+
+  external use Ledger is {
+    function transfer(to : address; amount : nat)
+      raises Paused | Insufficient;
+    view function frozen() : bool;
+  }
 
   storage is record {
     admin : address;
   }
-
-  external function transfer is Ledger.transfer;
-  external function pause is Pausable.pause;
-  external view function frozen is Ledger.frozen;
 }
 ```
 
@@ -163,15 +228,15 @@ module Ledger is {
 module Guarded is {
   requires Ledger;
 
-  function set(const n : nat) is {
+  external function set(const n : nat) is {
     Ledger.set(n);
   }
 }
 
 contract Token is {
-  use Guarded;
-
-  external function set is Guarded.set;
+  external use Guarded is {
+    function set(n : nat);
+  }
 }
 ```
 

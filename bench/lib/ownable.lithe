@@ -13,7 +13,7 @@ module Ownable is {
     indexed newOwner : address;
   }
 
-  view function owner() : address is
+  external view function owner() : address is
     ownable.owner
 
   view function check_owner()
@@ -41,7 +41,7 @@ module Ownable is {
     };
   }
 
-  function transferOwnership(const newOwner : address)
+  external function transferOwnership(const newOwner : address)
     raises OwnableUnauthorizedAccount | OwnableInvalidOwner
   is {
     check_owner();
@@ -52,7 +52,7 @@ module Ownable is {
     set_owner(newOwner);
   }
 
-  function renounceOwnership()
+  external function renounceOwnership()
     raises OwnableUnauthorizedAccount
   is {
     check_owner();

@@ -2,11 +2,15 @@
    and guard owner-only functions with `check_owner`. Errors and events match
    OpenZeppelin's `Ownable`.
 
-   Promote what the contract exposes:
+   A contract exposes what it needs of the standard interface:
 
-     external view function owner is Ownable.owner;
-     external function transferOwnership is Ownable.transfer_ownership;
-     external function renounceOwnership is Ownable.renounce_ownership; *)
+     external use Ownable is {
+       view function owner() : address;
+       function transferOwnership(newOwner : address)
+         raises OwnableUnauthorizedAccount | OwnableInvalidOwner;
+       function renounceOwnership()
+         raises OwnableUnauthorizedAccount;
+     } *)
 
 module Ownable is {
   storage ownable at "lithe.std.ownable" is record {
@@ -61,4 +65,17 @@ module Ownable is {
     check_owner();
     set_owner(Address.zero);
   }
+
+  external view function owner() : address is
+    ownable.owner
+
+  external function transferOwnership(const newOwner : address)
+    raises OwnableUnauthorizedAccount | OwnableInvalidOwner
+  is
+    transfer_ownership(newOwner)
+
+  external function renounceOwnership()
+    raises OwnableUnauthorizedAccount
+  is
+    renounce_ownership()
 }

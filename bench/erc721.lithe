@@ -8,9 +8,33 @@ import "./lib/erc721.lithe";
 
 contract BenchNFT is {
   use Initializable;
-  use Ownable;
-  use Pausable;
-  use ERC721;
+
+  external use ERC721 is {
+    pure function supportsInterface(interfaceId : bytes4) : bool;
+    view function balanceOf(owner : address) : nat
+      raises ERC721InvalidOwner;
+    view function ownerOf(tokenId : nat) : address
+      raises ERC721NonexistentToken;
+    view function name() : string;
+    view function symbol() : string;
+    view function tokenURI(tokenId : nat) : string
+      raises ERC721NonexistentToken;
+    view function getApproved(tokenId : nat) : address
+      raises ERC721NonexistentToken;
+    view function isApprovedForAll(owner : address; operator : address) : bool;
+  }
+
+  external use Ownable is {
+    view function owner() : address;
+    function transferOwnership(newOwner : address)
+      raises OwnableUnauthorizedAccount | OwnableInvalidOwner;
+    function renounceOwnership()
+      raises OwnableUnauthorizedAccount;
+  }
+
+  external use Pausable is {
+    view function paused() : bool;
+  }
 
   (* Initializable's bookkeeping matches the `initializer` modifier on Solidity's
      constructor, so storage and events stay the same. *)
@@ -22,26 +46,6 @@ contract BenchNFT is {
     Ownable.init(initialOwner);
     Initializable.finish();
   }
-
-  external pure function supportsInterface is ERC721.supportsInterface;
-
-  external view function balanceOf is ERC721.balanceOf;
-
-  external view function ownerOf is ERC721.ownerOf;
-
-  external view function name is ERC721.name;
-
-  external view function symbol is ERC721.symbol;
-
-  external view function tokenURI is ERC721.tokenURI;
-
-  external view function getApproved is ERC721.getApproved;
-
-  external view function isApprovedForAll is ERC721.isApprovedForAll;
-
-  external view function owner is Ownable.owner;
-
-  external view function paused is Pausable.paused;
 
   (* `ERC721Pausable` checks the pause inside every ownership update. *)
   function update(const to : address; const tokenId : nat; const auth : address) : address
@@ -132,8 +136,4 @@ contract BenchNFT is {
     Ownable.check_owner();
     Pausable.unpause();
   }
-
-  external function transferOwnership is Ownable.transferOwnership;
-
-  external function renounceOwnership is Ownable.renounceOwnership;
 }

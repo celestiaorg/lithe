@@ -16,7 +16,7 @@ use crate::check::{
 };
 use crate::error;
 use crate::keccak::selector;
-use crate::split::{Part, Shape};
+use crate::split::{Facet, Shape};
 use crate::word::Word;
 use crate::Error;
 
@@ -102,12 +102,12 @@ const TOPIC_WORDS: u32 = 8;
 /// A memory address before layout is `(region + 1) << REGION_SHIFT | offset`.
 const REGION_SHIFT: u32 = 16;
 
-/// Compiled code: the creation code, the runtime code it deploys, and the parts of
+/// Compiled code: the creation code, the runtime code it deploys, and the facets of
 /// contracts it creates, which must be deployed before it can create them.
 pub(crate) struct Built {
     pub code: Vec<u8>,
     pub runtime: Vec<u8>,
-    pub needs: Vec<Part>,
+    pub needs: Vec<Facet>,
 }
 
 /// The creation code, and the runtime code it deploys, for the entrypoints `shape` keeps.
@@ -163,7 +163,7 @@ pub(crate) fn codegen(checked: &Checked, shape: &Shape) -> Result<Built, Error> 
 }
 
 /// The creation code for a runtime: a `deploy` compiled around it, or a plain copy. A
-/// router's creation code first checks that each of its parts has code. A part's is always
+/// router's creation code first checks that each of its facets has code. A facet's is always
 /// a plain copy: `deploy` belongs to the router.
 fn creation(
     checked: &Checked,
@@ -171,7 +171,7 @@ fn creation(
     runtime: Vec<u8>,
     optimize: bool,
     shape: &Shape,
-) -> Result<(Vec<u8>, Vec<Part>), Error> {
+) -> Result<(Vec<u8>, Vec<Facet>), Error> {
     let mut g = Gen::new(checked, plan.clone(), shape)?;
     let Some(func) = g
         .deploy_func()
@@ -241,14 +241,15 @@ pub(crate) fn codegen_unoptimized(checked: Checked) -> Result<Vec<u8>, Error> {
     Ok(creation(&checked, &Plan::default(), runtime, false, &shape)?.0)
 }
 
-/// Which part of a split contract an entrypoint's code belongs with.
+/// What an entrypoint's code belongs with: the router, or the facet of the module it
+/// comes from.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub(crate) enum Group {
     /// `proxiableUUID` and `upgradeToAndCall`, which always stay in the router.
     Upgrade,
     /// Functions written in the contract itself, its migrations, and its `deploy`.
     Contract,
-    /// Functions a contract promotes from a module.
+    /// A module external the contract declares with `external use`.
     Module(String),
 }
 
@@ -469,10 +470,10 @@ struct Body {
 struct Gen<'a> {
     checked: &'a Checked,
     plan: Plan,
-    /// Which entrypoints this code runs, and which it forwards to parts.
+    /// Which entrypoints this code runs, and which it forwards to facets.
     shape: &'a Shape,
     /// Parts of the contracts this code creates.
-    needs: Vec<Part>,
+    needs: Vec<Facet>,
     /// Inlined calls per function, and the most bytes one inlined body took.
     inlined: HashMap<usize, (usize, usize)>,
     funcs: HashMap<(usize, bool), FuncSub>,
@@ -1433,7 +1434,7 @@ impl<'a> Gen<'a> {
         if let Some(keep) = &shape.keep {
             targets.retain(|(_, target)| keep.contains(&target.sel()));
         }
-        // Every selector forwarded to one part jumps to that part's stub.
+        // Every selector forwarded to one facet jumps to that facet's stub.
         let stubs: Vec<u32> = shape.parts.iter().map(|_| self.fresh()).collect();
         for &(sel, part) in &shape.forward {
             targets.push((stubs[part], Target::Forward { sel }));
@@ -1458,8 +1459,8 @@ impl<'a> Gen<'a> {
         Ok(())
     }
 
-    /// A router's stubs, one per part, each pushing its part's address, then the code they
-    /// share: `delegatecall` the part with the whole calldata, and return or revert with
+    /// A router's stubs, one per facet, each pushing its facet's address, then the code they
+    /// share: `delegatecall` the facet with the whole calldata, and return or revert with
     /// whatever it did. The selector is still on the stack below the address.
     fn forwarder(&mut self, stubs: &[u32]) {
         let go = self.fresh();
@@ -9981,7 +9982,7 @@ enum Target {
     Deploy { func: usize, sel: [u8; 4] },
     Proxiable { sel: [u8; 4] },
     Upgrade { sel: [u8; 4] },
-    /// A selector a router hands to one of its parts.
+    /// A selector a router hands to one of its facets.
     Forward { sel: [u8; 4] },
 }
 
