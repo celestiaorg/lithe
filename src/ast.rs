@@ -591,6 +591,14 @@ pub(crate) enum Builtin {
     NatDivRem,
     /// `Bytes.word(b, offset)`: the 32 bytes of `b` starting at `offset`, as a `bytes32`.
     BytesWord,
+    /// `Base64.encode(data)`: RFC 4648 base64, padded, as a `string`.
+    Base64Encode,
+    /// `Base64.encode_url(data)`: the URL and filename safe alphabet, unpadded.
+    Base64EncodeUrl,
+    /// `Base64.encode_with(data, file_safe, no_padding)`.
+    Base64EncodeWith,
+    /// `Base64.decode(data)`: the bytes a base64 string encodes, in either alphabet.
+    Base64Decode,
     /// `Nat.mul_div(a, b, d)`: `a * b / d` without overflow in the product.
     NatMulDiv,
     NatMulMod,

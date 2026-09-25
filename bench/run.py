@@ -11,6 +11,7 @@ Needs `anvil` and `cast` (Foundry) and solc. `SOLC` overrides the solc binary.
 Run from the repository root: `python3 bench/run.py [name ...]`.
 """
 
+import base64
 import binascii
 import gzip
 import json
@@ -186,6 +187,20 @@ SCENARIOS = {
         ("call", "A", "hash_chain(bytes32,uint256)", ["0x" + "11" * 32, "20"], None),
         ("send", "A", "payout(address[])", ["[" + ADDR["B"] + ",0x0000000000000000000000000000000000000003]"], "1ether"),
         ("send", "A", "payout(address[])", ["[]"], "1"),
+    ],
+    "base64": [
+        ("call", "A", "encode(bytes)", ["0x"], None),
+        ("call", "A", "encode(bytes)", ["0x66"], None),
+        ("call", "A", "encode(bytes)", ["0x" + "ab" * 20], None),
+        ("call", "A", "encode(bytes)", ["0x" + "ab" * 32], None),
+        ("call", "A", "encode(bytes)", ["0x" + "5a" * 100], None),
+        ("call", "A", "encode(bytes)", ["0x" + "c3" * 1000], None),
+        ("call", "A", "encode_with(bytes,bool,bool)", ["0x" + "fb" * 50, "true", "true"], None),
+        ("call", "A", "encode_with(bytes,bool,bool)", ["0x" + "fb" * 50, "false", "true"], None),
+        ("call", "A", "decode(string)", ["Zm9vYmFy"], None),
+        ("call", "A", "decode(string)", ["Zm9vYg=="], None),
+        ("call", "A", "decode(string)", ["Pz8_-,A"], None),
+        ("call", "A", "decode(string)", [base64.b64encode(bytes(range(256)) * 4).decode()], None),
     ],
     "registry": [
         ("send", "A", "rename(string)", ["hello"], None),

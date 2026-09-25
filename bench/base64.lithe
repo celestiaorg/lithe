@@ -1,0 +1,14 @@
+(* Benchmark: base64 with the `Base64` built-ins. Mirrors base64.sol. *)
+
+contract Base64Bench is {
+  storage is record {}
+
+  external pure function encode(const data : bytes) : string is
+    Base64.encode(data)
+
+  external pure function encode_with(const data : bytes; const file_safe : bool; const no_padding : bool) : string is
+    Base64.encode_with(data, file_safe, no_padding)
+
+  external pure function decode(const data : string) : bytes is
+    Base64.decode(data)
+}

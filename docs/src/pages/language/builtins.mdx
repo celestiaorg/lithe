@@ -1,6 +1,6 @@
 ---
 title: "Built-ins"
-description: "Reference for the Evm, Crypto, Abi, Nat, Int, and Address modules, options, and conversions."
+description: "Reference for the Evm, Crypto, Abi, Base64, Nat, Int, and Address modules, options, and conversions."
 ---
 
 # Built-ins
@@ -78,7 +78,7 @@ external function `go` reads `Evm.value()`; write `external payable function`
 
 ## `Crypto`
 
-Hash functions and signature recovery. Usable in `pure` functions.
+Hash functions and signature recovery. Usable in any function, `pure` ones included.
 
 | Built-in | Type | Solidity |
 | --- | --- | --- |
@@ -91,7 +91,7 @@ To hash several values, encode them first: `Crypto.keccak256(Abi.encode(a, b))`.
 
 ## `Abi`
 
-ABI encoding and decoding. Usable in `pure` functions.
+ABI encoding and decoding. Usable in any function, `pure` ones included.
 
 | Built-in | Type | Solidity |
 | --- | --- | --- |
@@ -139,6 +139,28 @@ external function greet(const name : string) is {
 
 external pure function tagged(const tag : bytes4; const data : bytes) : bytes is
   Bytes.concat(tag, data)
+```
+
+## `Base64`
+
+RFC 4648 base64, with the same algorithm and lookup tables as Solady's `Base64`. Usable in any function, `pure` ones included. `data` is `bytes` or `string`.
+
+| Built-in | Type | Solidity |
+| --- | --- | --- |
+| `Base64.encode(data)` | `string` | `Base64.encode(data)`: the standard alphabet, padded with `=` |
+| `Base64.encode_url(data)` | `string` | `Base64.encode(data, true, true)`: `-` and `_` for `+` and `/`, no padding |
+| `Base64.encode_with(data, file_safe : bool, no_padding : bool)` | `string` | `Base64.encode(data, fileSafe, noPadding)` |
+| `Base64.decode(data)` | `bytes` | `Base64.decode(data)`: either alphabet, padded or not, and `,` for 63 as in RFC 3501 |
+
+Like Solady's, `Base64.decode` does not check its input: other characters decode to unspecified bytes.
+
+```lithe
+storage is record {
+  n : nat;
+}
+
+external pure function contractURI() : string is
+  String.concat("data:application/json;base64,", Base64.encode("{\"name\":\"Badge\"}"))
 ```
 
 ## `Nat`, `Int`, and `Address`

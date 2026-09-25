@@ -4692,7 +4692,7 @@ impl Checker {
         let Some(kind) = module_builtin(module, name) else {
             if matches!(
                 module.as_str(),
-                "Evm" | "Crypto" | "Abi" | "Bytes" | "String"
+                "Evm" | "Crypto" | "Abi" | "Bytes" | "String" | "Base64"
             ) {
                 return Err(error(
                     line,
@@ -4847,6 +4847,30 @@ impl Checker {
                         args[1].col(),
                         "an offset must be `nat`",
                     ));
+                }
+            }
+            Builtin::Base64Encode
+            | Builtin::Base64EncodeUrl
+            | Builtin::Base64EncodeWith
+            | Builtin::Base64Decode => {
+                need(args.len(), if kind == Builtin::Base64EncodeWith { 3 } else { 1 })?;
+                self.check_expr(&mut args[0])?;
+                if !self.is_dyn_ty(args[0].ty()) {
+                    return Err(error(
+                        args[0].line(),
+                        args[0].col(),
+                        format!("`{call}` expects `bytes` or `string`"),
+                    ));
+                }
+                for arg in args.iter_mut().skip(1) {
+                    self.check_expr_as(arg, Some(TY_BOOL))?;
+                    if !self.same(arg.ty(), TY_BOOL) {
+                        return Err(error(
+                            arg.line(),
+                            arg.col(),
+                            format!("`{call}` takes `bool` flags"),
+                        ));
+                    }
                 }
             }
             Builtin::NatMulDiv | Builtin::NatMulMod | Builtin::NatAddMod => {
@@ -5088,6 +5112,10 @@ impl Checker {
         Ok(match kind {
             Builtin::NatMulDiv | Builtin::NatMulMod | Builtin::NatAddMod => TY_NAT,
             Builtin::BytesWord => self.bytes_n(32)?,
+            Builtin::Base64Encode | Builtin::Base64EncodeUrl | Builtin::Base64EncodeWith => {
+                TY_STRING
+            }
+            Builtin::Base64Decode => self.bytes_n(0)?,
             Builtin::Sender
             | Builtin::TxOrigin
             | Builtin::BlockCoinbase
@@ -7885,6 +7913,10 @@ fn module_builtin(module: &str, name: &str) -> Option<Builtin> {
         ("Abi", "encode_call") => Builtin::AbiEncodeCall,
         ("Bytes", "concat") => Builtin::BytesConcat,
         ("Bytes", "word") => Builtin::BytesWord,
+        ("Base64", "encode") => Builtin::Base64Encode,
+        ("Base64", "encode_url") => Builtin::Base64EncodeUrl,
+        ("Base64", "encode_with") => Builtin::Base64EncodeWith,
+        ("Base64", "decode") => Builtin::Base64Decode,
         ("String", "concat") => Builtin::StringConcat,
         ("Nat", "div_rem") => Builtin::NatDivRem,
         ("Nat", "mul_div") => Builtin::NatMulDiv,

@@ -307,6 +307,13 @@ fn exec_state(
                 let a = pop(&mut stack)?;
                 stack.push(a.not());
             }
+            0x1a => {
+                let i = pop(&mut stack)?;
+                let x = pop(&mut stack)?;
+                let small = i.0[1] | i.0[2] | i.0[3] == 0 && i.0[0] < 32;
+                let b = if small { x.to_be_bytes()[i.0[0] as usize] } else { 0 };
+                stack.push(Word::from_u64(u64::from(b)));
+            }
             0x1b | 0x1c | 0x1d => {
                 let sh = pop(&mut stack)?;
                 let v = pop(&mut stack)?;
@@ -443,6 +450,11 @@ fn exec_state(
                 let off = word_usize(pop(&mut stack)?)?;
                 let val = pop(&mut stack)?;
                 write_mem(&mut mem, off, &val.to_be_bytes());
+            }
+            0x53 => {
+                let off = word_usize(pop(&mut stack)?)?;
+                let val = pop(&mut stack)?;
+                write_mem(&mut mem, off, &val.to_be_bytes()[31..]);
             }
             0x54 => {
                 let slot = pop(&mut stack)?;
@@ -8562,3 +8574,101 @@ interface IAdd is {
         assert!(err.to_string().contains(want), "{want}: {err}");
     }
 }
+
+fn base64_reference(data: &[u8], file_safe: bool, no_padding: bool) -> Vec<u8> {
+    let mut alphabet = *b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    if file_safe {
+        alphabet[62] = b'-';
+        alphabet[63] = b'_';
+    }
+    let mut out = Vec::new();
+    for chunk in data.chunks(3) {
+        let mut b = [0u8; 3];
+        b[..chunk.len()].copy_from_slice(chunk);
+        let n = u32::from(b[0]) << 16 | u32::from(b[1]) << 8 | u32::from(b[2]);
+        for k in 0..4 {
+            if k <= chunk.len() {
+                out.push(alphabet[(n >> (18 - 6 * k) & 63) as usize]);
+            } else if !no_padding {
+                out.push(b'=');
+            }
+        }
+    }
+    out
+}
+
+/// `Base64` matches RFC 4648 at every length around the word boundaries,
+/// in both alphabets, and its short results are ordinary short values.
+#[test]
+fn base64_encodes_and_decodes() {
+    let src = r#"
+contract T is {
+  storage is record {
+    last : string;
+  }
+
+  external pure function enc(const data : bytes; const file_safe : bool; const no_padding : bool) : string is
+    Base64.encode_with(data, file_safe, no_padding)
+
+  external pure function dec(const data : string) : bytes is
+    Base64.decode(data)
+
+  external pure function same(const data : bytes) : bool is
+    Crypto.keccak256(Base64.decode(Base64.encode(data))) = Crypto.keccak256(data)
+    and Crypto.keccak256(Base64.encode(data)) = Crypto.keccak256(Base64.encode_with(data, false, false))
+
+  external pure function text(const s : string) : string is
+    Base64.encode_url(s)
+
+  external function keep(const data : bytes) is {
+    storage.last := Base64.encode(data);
+  }
+
+  external view function last() : string is
+    storage.last
+}
+"#;
+    let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
+    let with_flags = |sig: &str, data: &[u8], a: bool, b: bool| {
+        let mut c = selector(sig).to_vec();
+        for word in [96, u64::from(a), u64::from(b), data.len() as u64] {
+            c.extend_from_slice(&Word::from_u64(word).to_be_bytes());
+        }
+        c.extend_from_slice(data);
+        c.resize(c.len() + (32 - data.len() % 32) % 32, 0);
+        c
+    };
+    let run = |calldata: &[u8]| {
+        let out = exec(&runtime, calldata, HashMap::new(), Word::from_u64(1), Word::from_u64(0), Word::from_u64(0))
+            .expect("exec");
+        assert!(!out.reverted, "{}", pretty(&out.returndata));
+        out
+    };
+    let mut seed = 0x9e37_79b9_7f4a_7c15u64;
+    for len in 0..70 {
+        let data: Vec<u8> = (0..len)
+            .map(|_| {
+                seed ^= seed << 13;
+                seed ^= seed >> 7;
+                seed ^= seed << 17;
+                seed as u8
+            })
+            .collect();
+        for (file_safe, no_padding) in [(false, false), (false, true), (true, false), (true, true)] {
+            let want = base64_reference(&data, file_safe, no_padding);
+            let out = run(&with_flags("enc(bytes,bool,bool)", &data, file_safe, no_padding));
+            assert_eq!(abi_string_value(&out.returndata), want, "len {len} {file_safe} {no_padding}");
+            let back = run(&abi_string("dec(string)", &want));
+            assert_eq!(abi_string_value(&back.returndata), data, "decode len {len}");
+        }
+        let same = run(&abi_string("same(bytes)", &data));
+        assert_eq!(load_bytes(&same.returndata, 0), Word::from_u64(1), "len {len}");
+        let kept = run(&abi_string("keep(bytes)", &data));
+        let last = exec(&runtime, &selector("last()"), kept.storage, Word::from_u64(1), Word::from_u64(0), Word::from_u64(0))
+            .expect("last");
+        assert_eq!(abi_string_value(&last.returndata), base64_reference(&data, false, false));
+    }
+    let out = run(&abi_string("text(string)", b"lithe?>"));
+    assert_eq!(abi_string_value(&out.returndata), b"bGl0aGU_Pg");
+}
+

@@ -44,6 +44,7 @@ const NOT: u8 = 0x19;
 const SHL: u8 = 0x1b;
 const SHR: u8 = 0x1c;
 const SAR: u8 = 0x1d;
+const BYTE: u8 = 0x1a;
 const ADDRESS: u8 = 0x30;
 const BALANCE: u8 = 0x31;
 const ORIGIN: u8 = 0x32;
@@ -74,6 +75,7 @@ const MCOPY: u8 = 0x5e;
 const POP: u8 = 0x50;
 const MLOAD: u8 = 0x51;
 const MSTORE: u8 = 0x52;
+const MSTORE8: u8 = 0x53;
 const SLOAD: u8 = 0x54;
 const SSTORE: u8 = 0x55;
 const TLOAD: u8 = 0x5c;
@@ -331,6 +333,9 @@ enum Region {
     Returned(usize),
     /// A record read out of a map or about to be written to one, for one site.
     Stored(usize),
+    /// The base64 lookup tables. Always placed at address zero, so a table index is its
+    /// own address.
+    Base64,
 }
 
 /// Which bodies touch a region. Two regions can share memory when no body touches both.
@@ -408,6 +413,10 @@ enum Sub {
     /// head is at `pos`, with Solidity's bounds checked: the offset and the length fit in 64
     /// bits, and every element is inside calldata.
     ListHead,
+    /// `[data, file_safe, no_padding, ret]` becomes `data` in base64, as a string.
+    Base64Encode,
+    /// `[data, ret]` becomes the bytes a base64 string encodes.
+    Base64Decode,
 }
 
 /// A deferred call whose target, value, and calldata were captured at the `defer`.
@@ -508,6 +517,7 @@ struct Gen<'a> {
     scratch_val: i32,
     /// Where a shared string helper keeps the slot it was given.
     key_scratch: i32,
+    base64_tbl: i32,
     /// `Nat.mul_div`'s five words.
     mul_div_buf: i32,
     /// Creation code: arguments are read from a copy of what follows the code, not calldata.
@@ -605,6 +615,7 @@ impl<'a> Gen<'a> {
             scratch_to: 0,
             scratch_val: 0,
             key_scratch: 0,
+            base64_tbl: 0,
             mul_div_buf: 0,
             init: false,
             code_args: 0,
@@ -704,6 +715,7 @@ impl<'a> Gen<'a> {
         g.journal_base = g.region(Region::Journal, MAX_JOURNAL as u32 * 64);
         g.blob_ptr = g.region(Region::BlobPtr, 32);
         g.blob_base = g.region(Region::Blob, 0);
+        g.base64_tbl = g.region(Region::Base64, 0);
         Ok(g)
     }
 
@@ -1262,6 +1274,8 @@ impl<'a> Gen<'a> {
                     Sub::StoreList(..) => (3, 0),
                     Sub::QueuePush => (3, 1),
                     Sub::ListHead => (1, 1),
+                    Sub::Base64Encode => (3, 1),
+                    Sub::Base64Decode => (1, 1),
                 };
                 (label, effect)
             })
@@ -1380,6 +1394,7 @@ impl<'a> Gen<'a> {
                 .then(sb.heat.cmp(&sa.heat))
                 .then(a.cmp(&b))
         });
+        order.sort_by_key(|&i| self.spaces[i].region != Region::Base64);
         let clash = |x: &Users, y: &Users| match (x, y) {
             (Users::Bodies(a), Users::Bodies(b)) => a.intersection(b).next().is_some(),
             (Users::Nobody, _) | (_, Users::Nobody) => false,
@@ -4678,6 +4693,28 @@ impl<'a> Gen<'a> {
                 self.op(SWAP1);
                 self.op(POP);
             }
+            Builtin::Base64Encode
+            | Builtin::Base64EncodeUrl
+            | Builtin::Base64EncodeWith
+            | Builtin::Base64Decode => {
+                for arg in args {
+                    self.compile_value(arg)?;
+                }
+                let flags = match b {
+                    Builtin::Base64Encode => Some(0),
+                    Builtin::Base64EncodeUrl => Some(1),
+                    _ => None,
+                };
+                if let Some(flag) = flags {
+                    self.push_u64(flag);
+                    self.push_u64(flag);
+                }
+                self.call_sub(if b == Builtin::Base64Decode {
+                    Sub::Base64Decode
+                } else {
+                    Sub::Base64Encode
+                });
+            }
             Builtin::NatMulDiv => {
                 for arg in args {
                     self.compile_value(arg)?;
@@ -5202,6 +5239,316 @@ impl<'a> Gen<'a> {
     /// A bytes or string word becomes `[len, data]` with `data` on top.
     fn bytes_span(&mut self) {
         self.call_sub(Sub::BytesSpan);
+    }
+
+    /// Solady's `Base64.encode`: each round turns three bytes into four characters, looked
+    /// up in a table whose byte for index `i` sits at `i + 31`, so `MLOAD(i)` ends in it.
+    /// The word after the data is zeroed while the rounds read past its end, then restored.
+    fn sub_base64_encode(&mut self) {
+        const ALPHABET: &[u8; 64] =
+            b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        let t = self.base64_tbl;
+        let [empty, round, short, done] = std::array::from_fn(|_| self.fresh());
+        // [data, file_safe, no_padding, ret]. `0x0670` turns "+/" into "-_".
+        self.op(SWAP1 + 1);
+        self.push_u64(0x0670);
+        self.op(MUL);
+        self.push_word(Word::from_be_bytes(ALPHABET[32..].try_into().unwrap()));
+        self.op(XOR);
+        self.push_mem(t + 0x3f);
+        self.op(MSTORE);
+        self.push_word(Word::from_be_bytes(ALPHABET[..32].try_into().unwrap()));
+        self.push_mem(t + 0x1f);
+        self.op(MSTORE);
+        self.op(SWAP1 + 1);
+        self.bytes_span();
+        // [no_padding, ret, len, data]
+        self.op(DUP1 + 1);
+        self.op(ISZERO);
+        self.push_label(empty);
+        self.op(JUMPI);
+        self.op(DUP1 + 1);
+        self.op(DUP1 + 1);
+        self.op(ADD);
+        self.push_u64(3);
+        self.push_u64(2);
+        self.op(DUP1 + 4);
+        self.op(ADD);
+        self.op(DIV);
+        self.push_u64(2);
+        self.op(SHL);
+        self.op(DUP1);
+        self.call_sub(Sub::AllocBlob);
+        // [no_padding, ret, len, data, data_end, size, out]
+        self.op(SWAP1 + 2);
+        self.op(DUP1 + 3);
+        self.push_u64(32);
+        self.op(ADD);
+        self.op(SWAP1 + 1);
+        self.op(DUP1 + 2);
+        self.op(ADD);
+        self.op(DUP1 + 3);
+        self.op(MLOAD);
+        self.op(PUSH0);
+        self.op(DUP1 + 5);
+        self.op(MSTORE);
+        self.op(SWAP1 + 2);
+        self.op(SWAP1);
+        self.op(SWAP1 + 1);
+        // [no_padding, ret, len, out, data_end, saved, end, ptr, data]
+        self.jumpdest(round);
+        self.op(DUP1);
+        self.op(MLOAD);
+        for (k, shift) in [250u64, 244, 238, 232].into_iter().enumerate() {
+            if k < 3 {
+                self.op(DUP1);
+            }
+            self.push_u64(shift);
+            self.op(SHR);
+            if k > 0 {
+                self.push_u64(63);
+                self.op(AND);
+            }
+            self.op(MLOAD);
+            self.push_mem(t + k as i32);
+            self.op(MSTORE8);
+        }
+        self.push_mem(t);
+        self.op(MLOAD);
+        self.op(DUP1 + 2);
+        self.op(MSTORE);
+        self.push_u64(3);
+        self.op(ADD);
+        self.op(SWAP1);
+        self.push_u64(4);
+        self.op(ADD);
+        self.op(SWAP1);
+        self.op(DUP1 + 2);
+        self.op(DUP1 + 2);
+        self.op(LT);
+        self.push_label(round);
+        self.op(JUMPI);
+        self.op(POP);
+        self.op(POP);
+        self.op(SWAP1 + 1);
+        self.op(MSTORE);
+        // [no_padding, ret, len, out, end]. Pad with `[0, 2, 1][len % 3]` '='s, then zero
+        // what follows the string, dropping the padding if asked.
+        self.push_u64(3);
+        self.op(DUP1 + 3);
+        self.op(MOD);
+        self.push_u64(2);
+        self.op(DIV);
+        self.push_u64(0x3d3d);
+        self.push_u64(240);
+        self.op(SHL);
+        self.op(DUP1 + 1);
+        self.op(DUP1 + 3);
+        self.op(SUB);
+        self.op(MSTORE);
+        self.op(DUP1 + 5);
+        self.op(MUL);
+        self.op(PUSH0);
+        self.op(DUP1 + 1);
+        self.op(DUP1 + 3);
+        self.op(SUB);
+        self.op(MSTORE);
+        self.op(SWAP1);
+        self.op(SUB);
+        self.push_u64(32);
+        self.op(DUP1 + 2);
+        self.op(ADD);
+        self.op(SWAP1);
+        self.op(SUB);
+        self.op(DUP1);
+        self.op(DUP1 + 2);
+        self.op(MSTORE);
+        self.short_or_blob(short, done);
+        // [no_padding, ret, len, result]
+        self.op(SWAP1 + 2);
+        self.op(POP);
+        self.op(POP);
+        self.op(JUMP);
+        self.jumpdest(empty);
+        self.op(POP);
+        self.op(SWAP1 + 1);
+        self.op(POP);
+        self.op(JUMP);
+    }
+
+    /// Solady's `Base64.decode`, which accepts both alphabets, with or without padding, and
+    /// ',' for 63 as RFC 3501 does, and does not reject other characters. Each round turns four characters into three bytes
+    /// through a table at their own addresses: the byte at a character's address is its
+    /// six bits, shifted up two. The table's top byte, at `[`, is `0xfc`, so its last word
+    /// doubles as the mask for those bits.
+    fn sub_base64_decode(&mut self) {
+        let mut table = [0u8; 0x80];
+        for (i, c) in b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+            .iter()
+            .enumerate()
+        {
+            table[*c as usize] = (i as u8) << 2;
+        }
+        table[b'-' as usize] = 62 << 2;
+        table[b'_' as usize] = 63 << 2;
+        table[b',' as usize] = 63 << 2;
+        table[b'[' as usize] = 0xfc;
+        let word = |at: usize| Word::from_be_bytes(table[at..at + 32].try_into().unwrap());
+        let t = self.base64_tbl;
+        let [empty, unpadded, sized, round, short, done] = std::array::from_fn(|_| self.fresh());
+        self.op(SWAP1);
+        self.bytes_span();
+        // [ret, len, data]
+        self.op(DUP1 + 1);
+        self.op(ISZERO);
+        self.push_label(empty);
+        self.op(JUMPI);
+        self.push_u64(3);
+        self.op(DUP1 + 2);
+        self.push_u64(2);
+        self.op(SHR);
+        self.op(MUL);
+        self.push_u64(3);
+        self.op(DUP1 + 3);
+        self.op(AND);
+        self.op(DUP1);
+        self.push_label(unpadded);
+        self.op(JUMPI);
+        // A length that is a multiple of four may end in one or two '='s.
+        self.op(POP);
+        self.push_u64(0x3d3d);
+        self.push_u64(2);
+        self.op(DUP1 + 4);
+        self.op(DUP1 + 4);
+        self.op(ADD);
+        self.op(SUB);
+        self.op(MLOAD);
+        self.push_u64(240);
+        self.op(SHR);
+        self.op(XOR);
+        self.op(DUP1);
+        self.push_u64(30);
+        self.op(BYTE);
+        self.op(ISZERO);
+        self.op(SWAP1);
+        self.push_u64(31);
+        self.op(BYTE);
+        self.op(ISZERO);
+        self.op(ADD);
+        self.op(SWAP1);
+        self.op(SUB);
+        self.push_label(sized);
+        self.op(JUMP);
+        self.jumpdest(unpadded);
+        self.op(ADD);
+        self.push_u64(1);
+        self.op(SWAP1);
+        self.op(SUB);
+        self.jumpdest(sized);
+        // [ret, len, data, size]
+        self.op(DUP1);
+        self.call_sub(Sub::AllocBlob);
+        let mask = word(0x5b);
+        self.push_word(mask);
+        self.op(DUP1);
+        self.push_mem(t + 0x5b);
+        self.op(MSTORE);
+        self.push_word(word(0x3b));
+        self.push_mem(t + 0x3b);
+        self.op(MSTORE);
+        self.push_word(word(0x1a));
+        self.push_mem(t + 0x1a);
+        self.op(MSTORE);
+        self.op(DUP1 + 1);
+        self.push_u64(32);
+        self.op(ADD);
+        self.op(DUP1);
+        self.op(DUP1 + 4);
+        self.op(ADD);
+        self.op(SWAP1);
+        self.op(DUP1 + 5);
+        // [ret, len, data, size, out, mask, end, ptr, data]
+        self.jumpdest(round);
+        self.op(DUP1);
+        self.op(MLOAD);
+        self.op(DUP1);
+        self.push_u64(3);
+        self.op(BYTE);
+        self.op(MLOAD);
+        self.push_u64(6);
+        self.op(SHR);
+        for k in [2u64, 1] {
+            self.op(DUP1 + 1);
+            self.push_u64(k);
+            self.op(BYTE);
+            self.op(MLOAD);
+            self.op(DUP1 + 6);
+            self.op(AND);
+            self.op(OR);
+            self.push_u64(6);
+            self.op(SHR);
+        }
+        self.op(SWAP1);
+        self.op(PUSH0);
+        self.op(BYTE);
+        self.op(MLOAD);
+        self.op(DUP1 + 5);
+        self.op(AND);
+        self.op(OR);
+        self.op(DUP1 + 2);
+        self.op(MSTORE);
+        self.push_u64(4);
+        self.op(ADD);
+        self.op(SWAP1);
+        self.push_u64(3);
+        self.op(ADD);
+        self.op(SWAP1);
+        self.op(DUP1 + 2);
+        self.op(DUP1 + 2);
+        self.op(LT);
+        self.push_label(round);
+        self.op(JUMPI);
+        self.op(POP);
+        self.op(POP);
+        self.op(PUSH0);
+        self.op(SWAP1);
+        self.op(MSTORE);
+        self.op(POP);
+        self.op(SWAP1);
+        self.short_or_blob(short, done);
+        // [ret, len, data, result]
+        self.op(SWAP1 + 1);
+        self.op(POP);
+        self.op(POP);
+        self.op(SWAP1);
+        self.op(JUMP);
+        self.jumpdest(empty);
+        self.op(POP);
+        self.op(SWAP1);
+        self.op(JUMP);
+    }
+
+    /// `[out, len]`, with `len` stored at `out`, becomes the value: its data word with the
+    /// length in the low byte when it is short, else the tagged blob.
+    fn short_or_blob(&mut self, short: u32, done: u32) {
+        self.push_u64(32);
+        self.op(DUP1 + 1);
+        self.op(LT);
+        self.push_label(short);
+        self.op(JUMPI);
+        self.op(POP);
+        self.tag_blob();
+        self.push_label(done);
+        self.op(JUMP);
+        self.jumpdest(short);
+        self.push_u64(1);
+        self.op(SHL);
+        self.op(SWAP1);
+        self.push_u64(32);
+        self.op(ADD);
+        self.op(MLOAD);
+        self.op(OR);
+        self.jumpdest(done);
     }
 
     /// `[word, ret]` becomes `[len, data]`.
@@ -9257,6 +9604,8 @@ impl<'a> Gen<'a> {
                 }
                 Sub::QueuePush => self.sub_queue_push()?,
                 Sub::ListHead => self.sub_list_head()?,
+                Sub::Base64Encode => self.sub_base64_encode(),
+                Sub::Base64Decode => self.sub_base64_decode(),
             }
         }
     }
