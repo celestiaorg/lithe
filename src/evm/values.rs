@@ -1704,3 +1704,630 @@ external view function size() : nat is
     let size = run(word_data("size()", &[]), out.storage);
     assert_eq!(load_bytes(&size.returndata, 0), one);
 }
+
+/// A variant with no payloads is its case's index: one byte of storage, `uint8` in the ABI.
+/// One with fixed-size payloads is its tag, then the words of its largest payload.
+#[test]
+fn stored_variants_track_states() {
+    let src = r#"
+type fill is record {
+  amount_out : nat;
+  at : uint64;
+}
+
+type order_status is
+  | New
+  | Pending
+  | Filled of fill
+  | Unwound
+
+type mode is
+  | Open
+  | Paused
+  | Closed
+
+type order is record {
+  owner : address;
+  status : order_status;
+}
+
+error AlreadyPlaced of nat;
+error NotComplete of nat;
+
+storage is record {
+  mode : mode;
+  flag : bool;
+  orders : map(nat, order);
+  history : list(order_status);
+  last : option(mode);
+}
+
+external function set_mode(const m : mode) is {
+  storage.mode := m;
+  storage.flag := true;
+  storage.last := Some(m);
+}
+
+external view function get_mode() : mode is storage.mode
+external view function is_open() : bool is storage.mode = Open
+external view function mode_code() : uint8 is uint8(storage.mode)
+external view function mode_name() : nat is
+  case storage.mode of { | Open -> 10 | Paused -> 20 | Closed -> 30 }
+external view function last_code() : nat is
+  case storage.last of { | Some(m) -> nat(uint8(m)) | None -> 99 }
+
+external function place(const id : nat) raises AlreadyPlaced is {
+  assert(storage.orders[id].status = New, AlreadyPlaced(id));
+  storage.orders[id].owner := Evm.sender();
+  storage.orders[id].status := Pending;
+}
+
+external function fill_order(const id : nat; const out : nat) is {
+  storage.orders[id].status := Filled({ amount_out = out; at = uint64(7) });
+  storage.history[storage.history.length] := storage.orders[id].status;
+}
+
+external function unwind(const id : nat) is {
+  storage.orders[id].status := Unwound;
+}
+
+external view function amount(const id : nat) : nat raises NotComplete is
+  case storage.orders[id].status of {
+  | Filled(f) -> f.amount_out
+  | New | Pending | Unwound -> fail NotComplete(id);
+  }
+
+external view function stage(const id : nat) : nat is
+  case storage.orders[id].status of {
+  | New -> 0
+  | Pending -> 1
+  | Filled | Unwound -> 2
+  }
+
+external view function first_fill() : nat is
+  case storage.history[0] of {
+  | Filled(f) -> f.amount_out + nat(f.at)
+  | New | Pending | Unwound -> 0
+  }
+"#;
+    let layout = leaves(src);
+    let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
+    let w = Word::from_u64;
+    let fails = |st: &HashMap<Word, Word>, sig: &str, args: &[Word]| {
+        exec(&runtime, &word_data(sig, args), st.clone(), w(1), w(0), w(0))
+            .expect("run")
+            .reverted
+    };
+
+    let mut st = HashMap::new();
+    assert_eq!(read_ok(&runtime, &st, "last_code()", &[]), w(99));
+    assert!(fails(&st, "set_mode(uint8)", &[w(3)]), "a mode past the last case");
+    st = run_ok(&runtime, &st, "set_mode(uint8)", &[w(2)]).storage;
+    // `mode` and `flag` share slot 0: a byte each.
+    assert_eq!(st.get(&w(0)).copied(), Some(w(0x0102)));
+    assert_eq!(layout.get(&st, 0), w(2));
+    assert_eq!(read_ok(&runtime, &st, "get_mode()", &[]), w(2));
+    assert_eq!(read_ok(&runtime, &st, "mode_code()", &[]), w(2));
+    assert_eq!(read_ok(&runtime, &st, "mode_name()", &[]), w(30));
+    assert_eq!(read_ok(&runtime, &st, "is_open()", &[]), w(0));
+    assert_eq!(read_ok(&runtime, &st, "last_code()", &[]), w(2));
+    st = run_ok(&runtime, &st, "set_mode(uint8)", &[w(0)]).storage;
+    assert_eq!(read_ok(&runtime, &st, "is_open()", &[]), w(1));
+    assert_eq!(read_ok(&runtime, &st, "mode_name()", &[]), w(10));
+    assert_eq!(read_ok(&runtime, &st, "last_code()", &[]), w(0));
+
+    assert_eq!(read_ok(&runtime, &st, "stage(uint256)", &[w(1)]), w(0));
+    st = run_ok(&runtime, &st, "place(uint256)", &[w(1)]).storage;
+    assert!(fails(&st, "place(uint256)", &[w(1)]), "placed twice");
+    assert_eq!(read_ok(&runtime, &st, "stage(uint256)", &[w(1)]), w(1));
+    assert!(fails(&st, "amount(uint256)", &[w(1)]), "pending has no amount");
+    st = run_ok(&runtime, &st, "fill_order(uint256,uint256)", &[w(1), w(42)]).storage;
+    assert_eq!(read_ok(&runtime, &st, "stage(uint256)", &[w(1)]), w(2));
+    assert_eq!(read_ok(&runtime, &st, "amount(uint256)", &[w(1)]), w(42));
+    assert_eq!(read_ok(&runtime, &st, "first_fill()", &[]), w(49));
+    assert!(fails(&st, "place(uint256)", &[w(1)]), "a filled order is placed");
+    st = run_ok(&runtime, &st, "unwind(uint256)", &[w(1)]).storage;
+    assert_eq!(read_ok(&runtime, &st, "stage(uint256)", &[w(1)]), w(2));
+    assert!(fails(&st, "amount(uint256)", &[w(1)]), "unwound has no amount");
+    // Unwinding cleared the payload words the fill had written.
+    assert_eq!(read_ok(&runtime, &st, "first_fill()", &[]), w(49));
+    let slot = map_key(w(1), w(1));
+    let payload = slot.wrapping_add(w(2));
+    assert_eq!(st.get(&payload).copied().unwrap_or(w(0)), w(0));
+}
+
+/// Variant values as locals, results, map values, list elements, option payloads, and
+/// transient storage, compared whole or against one case.
+#[test]
+fn variant_values_work_everywhere() {
+    let src = r#"
+type status is
+  | Idle
+  | Busy of nat
+  | Done of (nat, bool)
+
+type light is | Red | Amber | Green
+
+storage is record {
+  by_id : map(nat, status);
+  lights : list(light, 3);
+  maybe : option(status);
+  n : nat;
+}
+
+transient storage scratch is record {
+  s : status;
+  l : light;
+}
+
+pure function next(const l : light) : light is
+  case l of { | Red -> Green | Green -> Amber | Amber -> Red }
+
+pure function weight(const s : status) : nat is
+  case s of {
+  | Idle -> 0
+  | Busy(n) -> n
+  | Done((n, ok)) -> n * 2
+  }
+
+pure function bump(const s : status) : status is
+  case s of {
+  | Idle -> Busy(1)
+  | Busy(n) -> Busy(n + 1)
+  | Done(d) -> Done(d)
+  }
+
+external function step(const id : nat) is {
+  const s : status := bump(storage.by_id[id]);
+  storage.by_id[id] := s;
+  scratch.s := s;
+  storage.maybe := Some(s);
+  storage.n := weight(scratch.s);
+}
+
+external function finish(const id : nat; const ok : bool) is {
+  storage.by_id[id] := Done(weight(storage.by_id[id]), ok);
+}
+
+external function cycle(const i : nat) is {
+  storage.lights[i] := next(storage.lights[i]);
+  scratch.l := storage.lights[i];
+  storage.n := nat(uint8(scratch.l));
+}
+
+external view function weight_of(const id : nat) : nat is weight(storage.by_id[id])
+external view function same(const a : nat; const b : nat) : bool is storage.by_id[a] = storage.by_id[b]
+external view function idle(const id : nat) : bool is storage.by_id[id] = Idle
+external view function busy_one(const id : nat) : bool is storage.by_id[id] <> Busy(1)
+external view function light_at(const i : nat) : light is storage.lights[i]
+external view function maybe_weight() : nat is
+  case storage.maybe of { | Some(s) -> weight(s) | None -> 999 }
+external view function n() : nat is storage.n
+"#;
+    let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
+    let w = Word::from_u64;
+    let mut st = HashMap::new();
+    assert_eq!(read_ok(&runtime, &st, "maybe_weight()", &[]), w(999));
+    assert_eq!(read_ok(&runtime, &st, "idle(uint256)", &[w(5)]), w(1));
+    st = run_ok(&runtime, &st, "step(uint256)", &[w(5)]).storage;
+    assert_eq!(read_ok(&runtime, &st, "idle(uint256)", &[w(5)]), w(0));
+    assert_eq!(read_ok(&runtime, &st, "busy_one(uint256)", &[w(5)]), w(0));
+    assert_eq!(read_ok(&runtime, &st, "n()", &[]), w(1));
+    st = run_ok(&runtime, &st, "step(uint256)", &[w(5)]).storage;
+    st = run_ok(&runtime, &st, "step(uint256)", &[w(5)]).storage;
+    assert_eq!(read_ok(&runtime, &st, "busy_one(uint256)", &[w(5)]), w(1));
+    assert_eq!(read_ok(&runtime, &st, "weight_of(uint256)", &[w(5)]), w(3));
+    assert_eq!(read_ok(&runtime, &st, "maybe_weight()", &[]), w(3));
+    assert_eq!(read_ok(&runtime, &st, "n()", &[]), w(3));
+    assert_eq!(read_ok(&runtime, &st, "same(uint256,uint256)", &[w(5), w(6)]), w(0));
+    st = run_ok(&runtime, &st, "finish(uint256,bool)", &[w(5), w(1)]).storage;
+    assert_eq!(read_ok(&runtime, &st, "weight_of(uint256)", &[w(5)]), w(6));
+    st = run_ok(&runtime, &st, "step(uint256)", &[w(5)]).storage;
+    assert_eq!(read_ok(&runtime, &st, "weight_of(uint256)", &[w(5)]), w(6));
+    st = run_ok(&runtime, &st, "finish(uint256,bool)", &[w(6), w(1)]).storage;
+    assert_eq!(read_ok(&runtime, &st, "same(uint256,uint256)", &[w(5), w(6)]), w(0));
+    st = run_ok(&runtime, &st, "step(uint256)", &[w(7)]).storage;
+    st = run_ok(&runtime, &st, "step(uint256)", &[w(7)]).storage;
+    st = run_ok(&runtime, &st, "step(uint256)", &[w(7)]).storage;
+    st = run_ok(&runtime, &st, "finish(uint256,bool)", &[w(7), w(1)]).storage;
+    assert_eq!(read_ok(&runtime, &st, "same(uint256,uint256)", &[w(5), w(7)]), w(1));
+
+    assert_eq!(read_ok(&runtime, &st, "light_at(uint256)", &[w(1)]), w(0));
+    st = run_ok(&runtime, &st, "cycle(uint256)", &[w(1)]).storage;
+    assert_eq!(read_ok(&runtime, &st, "light_at(uint256)", &[w(1)]), w(2));
+    assert_eq!(read_ok(&runtime, &st, "n()", &[]), w(2));
+    st = run_ok(&runtime, &st, "cycle(uint256)", &[w(1)]).storage;
+    assert_eq!(read_ok(&runtime, &st, "light_at(uint256)", &[w(1)]), w(1));
+    assert_eq!(read_ok(&runtime, &st, "light_at(uint256)", &[w(0)]), w(0));
+}
+
+#[test]
+fn variant_values_are_checked() {
+    let rejects = |src: &str, want: &str| {
+        let err = compile(src).expect_err(want);
+        assert!(err.to_string().contains(want), "{err}");
+    };
+    let base = "type mode is | Open | Closed\ntype st is | Idle | Busy of nat\ntype act is | Put of bytes | Stop\nstorage is record { m : mode; s : st; }\n";
+    let with = |body: &str| format!("{base}{body}");
+    rejects(
+        &with("external view function f() : nat is case storage.m of { | Open -> 1 }"),
+        "missing case arm `Closed`",
+    );
+    rejects(
+        &with("external view function f() : nat is case storage.s of { | Idle | Busy(n) -> 1 }"),
+        "every case of an arm must bind the same names",
+    );
+    rejects(
+        "type st is | A of nat | B of bool\nstorage is record { s : st; }\nexternal view function f() : nat is case storage.s of { | A(n) | B(n) -> 1 }",
+        "`A` and `B` carry different payloads",
+    );
+    rejects(
+        "type st is | A of string | B\nstorage is record { s : st; t : st; }\nexternal view function f() : bool is storage.s = storage.t",
+        "compares only with a case that has no payload",
+    );
+    rejects(&with("external function f() is { storage.m := 1; }"), "`mode` is a variant");
+    rejects(
+        &with("external function f() is { storage.m := mode(uint8(1)); }"),
+        "cannot convert to `mode`",
+    );
+    rejects(
+        &with("external function f() is { storage.m := storage.m | Closed; }"),
+        "expects two integers",
+    );
+    rejects(&with("external function f() is { storage.s := Busy; }"), "`Busy` carries a payload");
+    rejects(&with("external function f() is { storage.s := Idle(1); }"), "`Idle` has no payload");
+    rejects(
+        &with("external function f(const s : st) is { storage.s := s; }"),
+        "a variant with a payload cannot be an ABI value",
+    );
+    rejects(
+        &with("external view function f() : st is storage.s"),
+        "variants with payloads cannot be ABI values",
+    );
+    rejects(
+        "type act is | Put of map(nat, nat) | Stop\nstorage is record { n : nat; }\nexternal function f() is { const a : act := Stop; }",
+        "only dispatches entrypoints",
+    );
+    rejects(
+        &format!("type other is | Open | Shut\n{base}external view function f() : bool is Open = Open"),
+        "annotate which type is meant",
+    );
+}
+
+/// A variant with no payloads crosses the ABI as a `uint8` whose value names a case, and
+/// a dispatch arm with several cases gives each its own selector.
+#[test]
+fn variants_cross_the_abi_as_case_indexes() {
+    let src = r#"
+type admin is
+  | Pause
+  | Unpause
+  | Halt
+
+type mode is | On | Off
+
+error Bad of mode;
+
+storage is record {
+  paused : bool;
+  counts : map(mode, nat);
+}
+
+external function main(const a : admin) is
+  case a of {
+  | Pause | Halt -> { storage.paused := true; }
+  | Unpause -> { storage.paused := false; }
+  }
+
+external function bump(const m : mode) raises Bad is {
+  assert(m <> Off, Bad(m));
+  storage.counts[m] := storage.counts[m] + 1n;
+}
+
+external view function paused() : bool is storage.paused
+external view function count(const m : mode) : nat is storage.counts[m]
+external pure function decoded(const data : bytes) : mode is Abi.decode(data, mode)
+external pure function ons(const ms : list(mode)) : nat is {
+  var n : nat := 0n;
+  for m : mode in ms do {
+    if m = On then { n := n + 1n; }
+  }
+} with n
+"#;
+    let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
+    let w = Word::from_u64;
+    let mut st = run_ok(&runtime, &HashMap::new(), "halt()", &[]).storage;
+    assert_eq!(read_ok(&runtime, &st, "paused()", &[]), w(1));
+    st = run_ok(&runtime, &st, "unpause()", &[]).storage;
+    assert_eq!(read_ok(&runtime, &st, "paused()", &[]), w(0));
+    st = run_ok(&runtime, &st, "bump(uint8)", &[w(0)]).storage;
+    assert_eq!(read_ok(&runtime, &st, "count(uint8)", &[w(0)]), w(1));
+    let bad = call(&runtime, "bump(uint8)", &[w(1)]);
+    assert!(bad.reverted);
+    assert_eq!(&bad.returndata[..4], &selector("Bad(uint8)"));
+    assert_eq!(load_bytes(&bad.returndata, 4), w(1));
+    assert!(call(&runtime, "bump(uint8)", &[w(2)]).reverted, "past the last case");
+    assert!(call(&runtime, "count(uint8)", &[w(256)]).reverted, "wider than a byte");
+    let decode = |n: u64| {
+        let data = encode_args("decoded(bytes)", &[Arg::B(w(n).to_be_bytes().to_vec())]);
+        exec(&runtime, &data, HashMap::new(), w(1), w(0), w(0)).expect("run")
+    };
+    assert_eq!(load_bytes(&decode(1).returndata, 0), w(1));
+    assert!(decode(2).reverted, "decoded past the last case");
+    let ons = |xs: &[u64]| {
+        let mut data = selector("ons(uint8[])").to_vec();
+        for word in [32, xs.len() as u64].iter().chain(xs) {
+            data.extend_from_slice(&w(*word).to_be_bytes());
+        }
+        exec(&runtime, &data, HashMap::new(), w(1), w(0), w(0)).expect("run")
+    };
+    assert_eq!(load_bytes(&ons(&[0, 1, 0]).returndata, 0), w(2));
+    assert!(ons(&[0, 2]).reverted, "an element past the last case");
+}
+
+
+/// A variant's tag and the payload words narrower than a slot share its first slot.
+#[test]
+fn stored_variants_pack() {
+    let src = r#"
+type fill is record { amount_out : nat; at : uint64; }
+type status is | New | Filled of fill
+type small is | Empty | Stamp of uint64 | Flag of bool | Delta of int16 | Who of address
+storage is record {
+  s : status;
+  t : small;
+}
+external function fill(const out : nat) is { storage.s := Filled({ amount_out = out; at = uint64(9) }); }
+external function delta(const d : int16) is { storage.t := Delta(d); }
+external function who() is { storage.t := Who(Evm.sender()); }
+external view function at() : nat is case storage.s of { | Filled(f) -> nat(f.at) + f.amount_out | New -> 0 }
+external view function d() : int is
+  case storage.t of { | Delta(d) -> int(d) | Empty | Stamp | Flag | Who -> 0 }
+external view function is_who() : bool is
+  case storage.t of { | Who(a) -> a = Evm.sender() | Empty | Stamp | Flag | Delta -> false }
+"#;
+    let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
+    let w = Word::from_u64;
+    let st = run_ok(&runtime, &HashMap::new(), "fill(uint256)", &[w(40)]).storage;
+    // Slot 0: the tag, 1, and `at`, 9, from byte 1. Slot 1: `amount_out`.
+    assert_eq!(st.get(&w(0)).copied(), Some(w(0x0901)));
+    assert_eq!(st.get(&w(1)).copied(), Some(w(40)));
+    assert_eq!(read_ok(&runtime, &st, "at()", &[]), w(49));
+    let minus_two = w(2).not().wrapping_add(w(1));
+    let st = run_ok(&runtime, &st, "delta(int16)", &[minus_two]).storage;
+    assert_eq!(read_ok(&runtime, &st, "d()", &[]), minus_two);
+    assert!(!st.contains_key(&w(3)), "`t` is one slot");
+    let st = run_ok(&runtime, &st, "who()", &[]).storage;
+    assert_eq!(read_ok(&runtime, &st, "is_who()", &[]), w(1));
+    assert_eq!(read_ok(&runtime, &st, "d()", &[]), w(0));
+}
+
+/// Payloads may hold strings, bytes, and lists. An arm may bind the same payload of
+/// several cases.
+#[test]
+fn variants_hold_dynamic_payloads() {
+    let src = r#"
+type memo is record { who : address; text : string; }
+type job is
+  | Idle
+  | Queued of string
+  | Tagged of memo
+  | Batch of list(nat)
+  | Held of string
+  | Count of uint64
+
+storage is record {
+  cur : job;
+  jobs : map(nat, job);
+}
+
+external function queue(const id : nat; const why : string) is { storage.jobs[id] := Queued(why); }
+external function hold(const id : nat; const why : string) is { storage.jobs[id] := Held(why); }
+external function tag(const id : nat; const text : string) is {
+  storage.jobs[id] := Tagged({ who = Evm.sender(); text = text; });
+  storage.cur := storage.jobs[id];
+}
+external function batch(const id : nat; const xs : list(nat)) is { storage.jobs[id] := Batch(xs); }
+external function clear(const id : nat) is { storage.jobs[id] := Idle; }
+
+external view function why(const id : nat) : string is
+  case storage.jobs[id] of {
+  | Queued(s) | Held(s) -> s
+  | Tagged(m) -> m.text
+  | Idle | Batch | Count -> ""
+  }
+external view function total(const id : nat) : nat is {
+  var t : nat := 0n;
+  case storage.jobs[id] of {
+  | Batch(xs) -> { for x : nat in xs do { t := t + x; } }
+  | Count(n) -> { t := nat(n); }
+  | Idle | Queued | Tagged | Held -> { skip; }
+  };
+} with t
+external view function idle(const id : nat) : bool is storage.jobs[id] = Idle
+external view function cur_text() : string is
+  case storage.cur of { | Tagged(m) -> m.text | Idle | Queued | Batch | Held | Count -> "none" }
+"#;
+    let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
+    let w = Word::from_u64;
+    let send = |st: &HashMap<Word, Word>, sig: &str, args: &[Arg]| {
+        let out = exec(&runtime, &encode_args(sig, args), st.clone(), w(1), w(0), w(0)).expect("run");
+        assert!(!out.reverted, "{sig}: {}", pretty(&out.returndata));
+        out.storage
+    };
+    let text = |st: &HashMap<Word, Word>, sig: &str, args: &[Word]| {
+        abi_string_value(&run_ok(&runtime, st, sig, args).returndata)
+    };
+    let long = b"a reason longer than thirty-one bytes, stored past its slot".to_vec();
+    let mut st = send(&HashMap::new(), "queue(uint256,string)", &[Arg::W(w(1)), Arg::B(long.clone())]);
+    assert_eq!(text(&st, "why(uint256)", &[w(1)]), long);
+    assert_eq!(read_ok(&runtime, &st, "idle(uint256)", &[w(1)]), w(0));
+    st = send(&st, "hold(uint256,string)", &[Arg::W(w(1)), Arg::B(b"short".to_vec())]);
+    assert_eq!(text(&st, "why(uint256)", &[w(1)]), b"short".to_vec());
+    st = send(&st, "tag(uint256,string)", &[Arg::W(w(2)), Arg::B(b"tagged".to_vec())]);
+    assert_eq!(text(&st, "why(uint256)", &[w(2)]), b"tagged".to_vec());
+    assert_eq!(text(&st, "cur_text()", &[]), b"tagged".to_vec());
+    let mut data = selector("batch(uint256,uint256[])").to_vec();
+    for word in [3, 64, 3, 5, 6, 7] {
+        data.extend_from_slice(&w(word).to_be_bytes());
+    }
+    let out = exec(&runtime, &data, st.clone(), w(1), w(0), w(0)).expect("run");
+    assert!(!out.reverted);
+    st = out.storage;
+    assert_eq!(read_ok(&runtime, &st, "total(uint256)", &[w(3)]), w(18));
+    assert_eq!(text(&st, "why(uint256)", &[w(3)]), Vec::<u8>::new());
+    // Clearing an entry clears the strings and lists its cases stored.
+    let before = st.values().filter(|v| !v.is_zero()).count();
+    for id in 1..=3 {
+        st = send(&st, "clear(uint256)", &[Arg::W(w(id))]);
+        assert_eq!(read_ok(&runtime, &st, "idle(uint256)", &[w(id)]), w(1));
+    }
+    let left = st.values().filter(|v| !v.is_zero()).count();
+    assert!(left < before, "{before} -> {left}");
+    assert_eq!(text(&st, "cur_text()", &[]), b"tagged".to_vec());
+}
+
+/// A stored record that holds a string or a list is written whole, field by field.
+#[test]
+fn stored_records_with_dynamic_fields_are_written_whole() {
+    let src = r#"
+type note is record { tag : uint8; memo : string; ids : list(nat); }
+storage is record {
+  one : note;
+  by : map(nat, note);
+}
+external function set(const k : nat; const m : string) is {
+  const n : note := { tag = uint8(7); memo = m; ids = [1n, 2n, 3n]; };
+  storage.one := n;
+  storage.by[k] := storage.one;
+}
+external view function memo(const k : nat) : string is storage.by[k].memo
+external view function sum(const k : nat) : nat is {
+  const n : note := storage.by[k];
+} with n.ids[0] + n.ids[2] + nat(n.tag)
+"#;
+    let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
+    let w = Word::from_u64;
+    let data = encode_args("set(uint256,string)", &[Arg::W(w(4)), Arg::B(b"hi".to_vec())]);
+    let out = exec(&runtime, &data, HashMap::new(), w(1), w(0), w(0)).expect("run");
+    assert!(!out.reverted, "{}", pretty(&out.returndata));
+    assert_eq!(abi_string_value(&run_ok(&runtime, &out.storage, "memo(uint256)", &[w(4)]).returndata), b"hi".to_vec());
+    assert_eq!(read_ok(&runtime, &out.storage, "sum(uint256)", &[w(4)]), w(11));
+}
+
+/// A stored record read whole loads its strings and lists, and a list field of a local
+/// record indexes through its own pointer.
+#[test]
+fn records_read_their_dynamic_fields() {
+    let w = Word::from_u64;
+    let base = "type note is record { tag : uint8; memo : string; ids : list(nat); }\nstorage is record { one : note; }\nexternal function set() is { storage.one.memo := \"hey\"; storage.one.ids := [1n, 2n, 3n]; }\n";
+    for (view, want) in [
+        ("external view function s() : nat is { const n : note := storage.one; } with n.ids[2]", 3),
+        ("external view function s() : nat is { const n : note := storage.one; } with n.memo.length", 3),
+        ("external view function s() : nat is { const n : note := { tag = uint8(1); memo = \"\"; ids = [4n, 5n, 6n]; }; } with n.ids[2]", 6),
+    ] {
+        let runtime = deploy(&compile(&format!("{base}{view}")).expect("compile")).expect("deploy");
+        let st = run_ok(&runtime, &HashMap::new(), "set()", &[]).storage;
+        assert_eq!(read_ok(&runtime, &st, "s()", &[]), w(want), "{view}");
+    }
+}
+
+/// Writing a case clears the strings and lists another case stored.
+#[test]
+fn variant_cases_clear_each_others_payloads() {
+    let w = Word::from_u64;
+    let src = r#"
+type review is
+  | Draft
+  | Rejected of string
+  | Withdrawn of string
+  | Approved of list(address)
+
+storage is record {
+  reviews : map(nat, review);
+}
+
+external function reject(const id : nat; const why : string) is {
+  storage.reviews[id] := Rejected(why);
+}
+
+external function withdraw(const id : nat; const why : string) is {
+  storage.reviews[id] := Withdrawn(why);
+}
+
+external function approve(const id : nat; const by : list(address)) is {
+  storage.reviews[id] := Approved(by);
+}
+
+external view function reason(const id : nat) : string is
+  case storage.reviews[id] of {
+  | Rejected(why) | Withdrawn(why) -> why
+  | Draft | Approved -> ""
+  }
+
+external view function approvals(const id : nat) : nat is
+  case storage.reviews[id] of {
+  | Approved(by) -> by.length
+  | Draft | Rejected | Withdrawn -> 0
+  }
+
+external function draft(const id : nat) is { storage.reviews[id] := Draft; }
+"#;
+    let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
+    let run = |st: &HashMap<Word, Word>, data: Vec<u8>| {
+        let out = exec(&runtime, &data, st.clone(), w(1), w(0), w(0)).expect("run");
+        assert!(!out.reverted, "{}", pretty(&out.returndata));
+        out.storage
+    };
+    let used = |st: &HashMap<Word, Word>| st.values().filter(|v| !v.is_zero()).count();
+    let mut data = selector("approve(uint256,address[])").to_vec();
+    for word in [1, 64, 3, 5, 6, 7] {
+        data.extend_from_slice(&w(word).to_be_bytes());
+    }
+    // The tag, the length, and three elements.
+    let st = run(&HashMap::new(), data);
+    assert_eq!(used(&st), 5);
+    assert_eq!(read_ok(&runtime, &st, "approvals(uint256)", &[w(1)]), w(3));
+    // The tag, and a 40-byte string's length slot and two data slots.
+    let st = run(&st, encode_args("reject(uint256,string)", &[Arg::W(w(1)), Arg::B(vec![b'x'; 40])]));
+    assert_eq!(used(&st), 4);
+    assert_eq!(read_ok(&runtime, &st, "approvals(uint256)", &[w(1)]), w(0));
+    let st = run(&st, encode_args("withdraw(uint256,string)", &[Arg::W(w(1)), Arg::B(b"late".to_vec())]));
+    assert_eq!(abi_string_value(&run_ok(&runtime, &st, "reason(uint256)", &[w(1)]).returndata), b"late".to_vec());
+    let st = run(&st, encode_args("draft(uint256)", &[Arg::W(w(1))]));
+    assert_eq!(used(&st), 0);
+}
+
+/// A variant's first case and a `case`'s first arm may leave out their `|`.
+#[test]
+fn opening_pipes_are_optional() {
+    let src = r#"
+type phase is Open | Paused | Closed
+type one is Only of nat
+type multi is
+  | X
+  | Y of nat
+error Shut;
+storage is record { phase : phase; fee : nat; m : multi; }
+external function set(const p : phase) is { storage.phase := p; storage.fee := 5n; storage.m := Y(9n); }
+external view function fee() : nat raises Shut is
+  case storage.phase of { Open | Paused -> storage.fee | Closed -> fail Shut }
+external view function y() : nat is case storage.m of { X -> 0 | Y(n) -> n }
+external pure function only(const n : nat) : nat is {
+  const o : one := Only(n);
+} with case o of { Only(k) -> k }
+"#;
+    let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
+    let w = Word::from_u64;
+    let st = run_ok(&runtime, &HashMap::new(), "set(uint8)", &[w(1)]).storage;
+    assert_eq!(read_ok(&runtime, &st, "fee()", &[]), w(5));
+    assert_eq!(read_ok(&runtime, &st, "y()", &[]), w(9));
+    assert_eq!(read_ok(&runtime, &st, "only(uint256)", &[w(4)]), w(4));
+    let st = run_ok(&runtime, &st, "set(uint8)", &[w(2)]).storage;
+    assert!(exec(&runtime, &word_data("fee()", &[]), st, w(1), w(0), w(0)).expect("run").reverted);
+    let err = compile(
+        "type phase is Open | Closed\nstorage is record { p : phase; }\nexternal view function f() : nat is case storage.p of { Open -> 1 Closed -> 2 }",
+    )
+    .expect_err("arms after the first need `|`");
+    assert!(err.to_string().contains("expected `|`"), "{err}");
+}

@@ -482,7 +482,7 @@ impl Checker {
                 self.expect_kind(line, col, args[1].ty(), TyKind::Wei)?;
                 self.forbid_effect(line, col, "create an operation")?;
             }
-            Builtin::Create | Builtin::Cast | Builtin::Some | Builtin::None => {
+            Builtin::Create | Builtin::Cast | Builtin::Some | Builtin::None | Builtin::Ctor(_) => {
                 return Err(error(line, col, "internal: not a module built-in"));
             }
         }
@@ -600,7 +600,8 @@ impl Checker {
             | Builtin::Wrapping(..)
             | Builtin::Cast
             | Builtin::Some
-            | Builtin::None => TY_UNIT,
+            | Builtin::None
+            | Builtin::Ctor(_) => TY_UNIT,
             Builtin::Transfer | Builtin::Create => TY_OPERATION,
         })
     }

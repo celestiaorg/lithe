@@ -359,7 +359,7 @@ impl<'a> Gen<'a> {
                 self.op(ADD);
                 self.decode_blob()?;
             } else {
-                self.check_word(word, &|g: &mut Self| g.op(DUP1))?;
+                self.check_word(elem, &|g: &mut Self| g.op(DUP1))?;
                 self.align_decoded(word);
             }
             self.op(DUP1 + 1);
@@ -608,6 +608,9 @@ impl<'a> Gen<'a> {
 
     /// Whether a decoded word of this type can hold bits its type cannot.
     fn needs_check(&self, ty: usize) -> bool {
+        if self.enum_cases(ty).is_some() {
+            return true;
+        }
         let t = &self.checked.types[self.peel_nominal(ty)];
         match t.kind {
             TyKind::Nat | TyKind::Int => t.bits > 0 && t.bits < 256,
@@ -718,6 +721,8 @@ impl<'a> Gen<'a> {
                     }
                 }
             }
+            // A variant keeps its type: its cases bound the word, not its `uint8`.
+            _ if self.enum_cases(ty).is_some() => out.push(Some(ty)),
             _ if t.words == 1 && self.is_word_ty(id) => out.push(Some(id)),
             _ => out.extend(std::iter::repeat(None).take(t.words as usize)),
         }
@@ -734,6 +739,12 @@ impl<'a> Gen<'a> {
     /// Reverts when the word `load` pushes has bits its type cannot hold, as Solidity's
     /// decoder does for calldata and return data alike.
     pub(super) fn check_word(&mut self, ty: usize, load: &dyn Fn(&mut Self)) -> Result<(), Error> {
+        if let Some(cases) = self.enum_cases(ty) {
+            load(self);
+            self.push_u64(cases as u64 - 1);
+            self.op(LT);
+            return self.revert_if_true();
+        }
         let t = &self.checked.types[self.peel_nominal(ty)];
         let (kind, bits) = (t.kind, t.bits);
         match kind {
@@ -768,5 +779,19 @@ impl<'a> Gen<'a> {
             _ => return Ok(()),
         }
         self.revert_if_true()
+    }
+
+    /// How many cases a variant with no payloads has, through any nominal types over it.
+    pub(super) fn enum_cases(&self, mut ty: usize) -> Option<usize> {
+        loop {
+            let t = &self.checked.types[ty];
+            if t.kind != TyKind::Nominal {
+                return None;
+            }
+            if !t.variants.is_empty() {
+                return Some(t.variants.len());
+            }
+            ty = t.elem?;
+        }
     }
 }

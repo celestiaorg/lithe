@@ -1189,6 +1189,10 @@ impl<'a> Gen<'a> {
                 builtin: Some(Builtin::None),
                 ..
             }
+            | Expr::Call {
+                builtin: Some(Builtin::Ctor(_)),
+                ..
+            }
             | Expr::Case { .. }
             | Expr::Tuple { .. }
             | Expr::Record { .. } => {
@@ -1217,6 +1221,38 @@ impl<'a> Gen<'a> {
                     .find(|f| f.name == *name)
                     .ok_or_else(|| error(*line, *col, format!("no field `{name}`")))?;
                 Ok(src + field.slot as i32 * 32)
+            }
+            // A stored record with strings, bytes, or lists: each field read as itself.
+            Expr::Ident { sym: Some(sym), .. } | Expr::Field { root: Some(sym), .. }
+                if self.checked.syms[*sym].storage
+                    && self.checked.types[e.ty()].kind == TyKind::Record
+                    && !crate::check::is_static_value(&self.checked.types, e.ty()) =>
+            {
+                let ty = e.ty();
+                self.return_sites += 1;
+                let buf = self.region(Region::Stored(self.return_sites), self.checked.types[ty].words * 32);
+                let leaf = match e {
+                    Expr::Field { leaf, .. } => *leaf,
+                    _ => 0,
+                };
+                let fields: Vec<(String, u32, usize)> = self.checked.types[ty]
+                    .fields
+                    .iter()
+                    .map(|f| (f.name.clone(), f.slot, f.ty))
+                    .collect();
+                for (name, slot, fty) in fields {
+                    let field = Expr::Field {
+                        line: e.line(),
+                        col: e.col(),
+                        base: Box::new(e.clone()),
+                        name,
+                        root: Some(*sym),
+                        leaf: leaf + slot,
+                        ty: fty,
+                    };
+                    self.write_value(&field, buf + slot as i32 * 32, fty)?;
+                }
+                Ok(buf)
             }
             _ => self.addr_expr(e),
         }
@@ -1276,7 +1312,7 @@ impl<'a> Gen<'a> {
                 Ok(())
             }
             TyKind::List if !self.checked.syms[sym].storage => {
-                self.compile_memory_list_read(sym, index)
+                self.compile_memory_list_read(sym, leaf, index)
             }
             TyKind::List => {
                 self.compile_value(index)?;
@@ -1324,7 +1360,7 @@ impl<'a> Gen<'a> {
             }
             TyKind::List if !self.checked.syms[sym].storage => {
                 self.compile_value(value)?;
-                self.heap_element(sym, index, 1, true)?;
+                self.heap_element(self.addr(sym, leaf), index, 1, true)?;
                 self.op(MSTORE);
                 Ok(())
             }

@@ -21,8 +21,14 @@ interface Token is {
   function transfer(to : address; amount : nat);
 }
 
+type order_status is
+  | New
+  | Pending
+  | Complete
+  | Redeemed
+
 type order is record {
-  status : uint8;
+  status : order_status;
   amount_out : nat;
   shares : nat;
 }
@@ -55,11 +61,11 @@ external function init(const exchange : Exchange; const vault : Vault) is {
 external nonreentrant function execute(const id : nat; const amount_in : nat)
   raises AlreadyPlaced
 is {
-  assert(storage.orders[id].status = uint8(0), AlreadyPlaced(id));
-  storage.orders[id].status := uint8(1);
+  assert(storage.orders[id].status = New, AlreadyPlaced(id));
+  storage.orders[id].status := Pending;
   defer storage.exchange.swap(amount_in)
     then (result : swap_result) {
-      storage.orders[id].status := uint8(2);
+      storage.orders[id].status := Complete;
       storage.orders[id].amount_out := result.amount_out;
       emit Executed { id = id; amount_out = result.amount_out; fee = result.fee; };
       defer storage.vault.deposit(result.amount_out)
@@ -73,7 +79,7 @@ is {
 external nonreentrant function redeem(const id : nat) is {
   defer storage.vault.withdraw(storage.orders[id].shares)
     then ((principal, earned) : (nat, nat)) {
-      storage.orders[id].status := uint8(3);
+      storage.orders[id].status := Redeemed;
       storage.principal := storage.principal + principal;
       storage.earned := storage.earned + earned;
     };

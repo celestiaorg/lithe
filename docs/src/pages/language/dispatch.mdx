@@ -41,6 +41,8 @@ is
 
 This contract's ABI is `deposit(uint256)`, `withdraw(uint256)`, and `reset()`. There is no `main`, and callers never encode a variant.
 
+A function dispatches when its first parameter is a variant and its body is a `case` on it, after any `const`s and `assert`s. Any other external function takes a variant with no payloads as a `uint8`, and a variant with payloads not at all.
+
 | Case | ABI function |
 | --- | --- |
 | name | the case name with its first letter lowercased: `Set_fee` becomes `set_fee`, and `SetFee` becomes `setFee` |

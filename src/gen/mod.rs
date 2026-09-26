@@ -12,7 +12,8 @@ use std::collections::HashMap;
 use crate::asm::{self, Inst};
 use crate::ast::*;
 use crate::check::{
-    is_static_aggregate, is_stored_aggregate, option_flip, Checked, Flip, Pack, TyKind,
+    is_enum, is_static_aggregate, is_stored_aggregate, is_sum, option_flip, Checked, Flip, Pack,
+    TyKind, TAG_FIELD,
 };
 use crate::error;
 use crate::keccak::selector;
@@ -683,7 +684,6 @@ struct Gen<'a> {
     blob_base: i32,
     fn_ret: Vec<i32>,
     tuple_buf: i32,
-    known: HashMap<usize, usize>,
     compiling: Vec<usize>,
     fails: Vec<(Option<u64>, u32)>,
     /// Constant raises, each compiled once: its key, its block, and the raise.

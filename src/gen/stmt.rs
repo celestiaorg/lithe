@@ -254,7 +254,7 @@ impl<'a> Gen<'a> {
                             self.op(ADD);
                             self.cd_load();
                             if self.cd_lazy.contains(&list) {
-                                self.check_word(word, &|g: &mut Self| g.op(DUP1))?;
+                                self.check_word(self.checked.syms[elem].ty, &|g: &mut Self| g.op(DUP1))?;
                             }
                             self.align_decoded(word);
                             self.mstore_off(self.local[elem]);
@@ -335,6 +335,16 @@ impl<'a> Gen<'a> {
                 self.jumpdest(ok);
                 Ok(())
             }
+            // A block the checker made, such as a stored record written field by field.
+            Stmt::If {
+                cond: Expr::Lit {
+                    lit: Lit::Bool(true),
+                    ..
+                },
+                then_body,
+                else_body,
+                ..
+            } if else_body.is_empty() => self.compile_stmts(then_body),
             Stmt::If {
                 cond,
                 then_body,
@@ -870,6 +880,14 @@ impl<'a> Gen<'a> {
     }
 
     pub(super) fn write_record(&mut self, expr: &Expr, dst: i32, ty: usize) -> Result<(), Error> {
+        if let Expr::Call {
+            builtin: Some(Builtin::Ctor(k)),
+            args,
+            ..
+        } = expr
+        {
+            return self.write_ctor(*k, args.first(), dst, ty);
+        }
         let Expr::Record { fields, .. } = expr else {
             let n = self.checked.types[ty].words;
             if self.push_record_words(expr)? {

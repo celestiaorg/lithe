@@ -230,89 +230,91 @@ fn walk(
             )?;
             continue;
         }
-        let name = abi_name(&arm.ctor);
-        let payload = payload_of(checked, scrut, &arm.ctor);
-        let inputs = match payload {
-            Some(ty) if checked.types[ty].kind != TyKind::Unit => {
-                abi_fields(&checked.types, ty, arm.bind.as_deref().unwrap_or(""))?
+        for ctor in &arm.ctors {
+            let name = abi_name(ctor);
+            let payload = payload_of(checked, scrut, ctor);
+            let inputs = match payload {
+                Some(ty) if checked.types[ty].kind != TyKind::Unit => {
+                    abi_fields(&checked.types, ty, arm.bind.as_deref().unwrap_or(""))?
+                }
+                _ => Vec::new(),
+            };
+            let sig = format!(
+                "{name}({})",
+                inputs
+                    .iter()
+                    .map(|field| field.ty.clone())
+                    .collect::<Vec<_>>()
+                    .join(",")
+            );
+            if seen.iter().any(|s| s == &sig) {
+                return Err(error(
+                    arm.line,
+                    arm.col,
+                    format!("duplicate entrypoint `{sig}`"),
+                ));
             }
-            _ => Vec::new(),
-        };
-        let sig = format!(
-            "{name}({})",
-            inputs
-                .iter()
-                .map(|field| field.ty.clone())
-                .collect::<Vec<_>>()
-                .join(",")
-        );
-        if seen.iter().any(|s| s == &sig) {
-            return Err(error(
-                arm.line,
-                arm.col,
-                format!("duplicate entrypoint `{sig}`"),
-            ));
+            seen.push(sig.clone());
+            let mut leaf_path = path.clone();
+            leaf_path.push(name.clone());
+            let tail = match &arm.expr {
+                Expr::Lit { lit: Lit::Unit, .. } => None,
+                other => Some(other.clone()),
+            };
+            let raises = collect_raises(checked, guards, &arm.stmts, tail.as_ref());
+            let mut calls = Vec::new();
+            let mut reads = Vec::new();
+            let mut writes = Vec::new();
+            let mut queries = Vec::new();
+            let mut events = Vec::new();
+            let mut operations = Vec::new();
+            let mut followed = Vec::new();
+            let mut phases = Vec::new();
+            collect(
+                checked,
+                guards,
+                &arm.stmts,
+                tail.as_ref(),
+                &mut calls,
+                &mut reads,
+                &mut writes,
+                &mut queries,
+                &mut events,
+                &mut operations,
+                &mut followed,
+                &mut phases,
+            );
+            routes.push(Route {
+                name,
+                sel: selector(&sig),
+                sig,
+                bind: arm.bind_sym,
+                guards: guards.to_vec(),
+                stmts: arm.stmts.clone(),
+                tail,
+                direct: None,
+                path: leaf_path,
+                calls,
+                reads,
+                guard_txt: guards
+                    .iter()
+                    .filter_map(|s| match s {
+                        Stmt::Assert { cond, .. } => Some(fmt_expr(cond)),
+                        _ => None,
+                    })
+                    .collect(),
+                writes,
+                queries,
+                events,
+                operations,
+                outputs: Vec::new(),
+                raises,
+                inputs,
+                payable,
+                nonreentrant,
+                phases,
+            });
         }
-        seen.push(sig.clone());
-        let mut leaf_path = path.clone();
-        leaf_path.push(name.clone());
-        let tail = match &arm.expr {
-            Expr::Lit { lit: Lit::Unit, .. } => None,
-            other => Some(other.clone()),
-        };
-        let raises = collect_raises(checked, guards, &arm.stmts, tail.as_ref());
-        let mut calls = Vec::new();
-        let mut reads = Vec::new();
-        let mut writes = Vec::new();
-        let mut queries = Vec::new();
-        let mut events = Vec::new();
-        let mut operations = Vec::new();
-        let mut followed = Vec::new();
-        let mut phases = Vec::new();
-        collect(
-            checked,
-            guards,
-            &arm.stmts,
-            tail.as_ref(),
-            &mut calls,
-            &mut reads,
-            &mut writes,
-            &mut queries,
-            &mut events,
-            &mut operations,
-            &mut followed,
-            &mut phases,
-        );
-        routes.push(Route {
-            name,
-            sel: selector(&sig),
-            sig,
-            bind: arm.bind_sym,
-            guards: guards.to_vec(),
-            stmts: arm.stmts.clone(),
-            tail,
-            direct: None,
-            path: leaf_path,
-            calls,
-            reads,
-            guard_txt: guards
-                .iter()
-                .filter_map(|s| match s {
-                    Stmt::Assert { cond, .. } => Some(fmt_expr(cond)),
-                    _ => None,
-                })
-                .collect(),
-            writes,
-            queries,
-            events,
-            operations,
-            outputs: Vec::new(),
-            raises,
-            inputs,
-            payable,
-            nonreentrant,
-            phases,
-        });
     }
     Ok(())
 }
@@ -539,11 +541,11 @@ fn stmt_case(types: &[RType], stmts: &[Stmt]) -> bool {
 fn expr_case(types: &[RType], e: &Expr) -> bool {
     let expr = |e: &Expr| expr_case(types, e);
     match e {
-        // An outcome case branches on a query, and an option case on a value: neither
-        // on the ABI.
+        // An outcome case branches on a query, and an option or variant value case on a
+        // value: none on the ABI. A variant with a dynamic payload has no values.
         Expr::Case { scrut, arms, .. }
             if matches!(scrut.as_ref(), Expr::Query { .. })
-                || types[scrut.ty()].kind == TyKind::Option =>
+                || types[scrut.ty()].kind != TyKind::Variant =>
         {
             expr(scrut)
                 || arms
@@ -671,6 +673,10 @@ fn walk_stmt(checked: &Checked, s: &Stmt, fx: &mut Effects<'_>) {
         } => {
             let mut parts = path.clone();
             parts.extend(fields.iter().map(|(_, name)| name.clone()));
+            // A variant's words are written as the variant.
+            if let Some(hidden) = parts.iter().position(|part| part.starts_with('#')) {
+                parts.truncate(hidden);
+            }
             let label = parts.join(".");
             let label = match root {
                 Some(sym) => space_label(checked, *sym, slot_label(fx, *sym, label)),

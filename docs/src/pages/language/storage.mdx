@@ -122,7 +122,7 @@ The default transient record is accessed as `transient.x`, and a named one as `n
 | `list(T)`, `list(T, n)` | yes, for word-sized `T` or a fixed-size record, tuple, or option. A record element packs like a struct in a Solidity array |
 | `map(K, V)` | yes. `V` is a word, a map, a list, an option, or a record, which may hold maps, lists, and strings itself |
 | `option(T)` | yes. One slot when `T` is narrower than 32 bytes. Otherwise a tag slot, then `T`'s slots |
-| variants | no |
+| variants | yes. One byte when no case has a payload, packed. Otherwise laid out as a record: the case's index packed with the narrow payload words, then the rest. See [Variants](/language/types#representation-1) |
 
 Solidity has no options, so their layout is Lithe's own. See [Options](/language/types#representation).
 
@@ -130,7 +130,7 @@ Solidity has no options, so their layout is Lithe's own. See [Options](/language
 
 A missing map key, an unwritten field, and an unwritten list slot all read as zero. Writing zero clears a slot, and there is no `delete`.
 
-You can write one field of a stored record, or a whole fixed-size record into a field or a map entry:
+You can write one field of a stored record, or a whole record into a field or a map entry. A record that holds strings, bytes, or lists writes each of them as its own type does:
 
 ```lithe
 type order is record {

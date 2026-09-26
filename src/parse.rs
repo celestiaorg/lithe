@@ -738,7 +738,12 @@ impl<'a> Parser<'a> {
             return Err(self.err("declare contract storage as `storage is record`"));
         }
         self.want(Kind::Is)?;
-        let ty = self.ty()?;
+        // `Open | Closed` or `Open of nat`: a variant without its opening `|`.
+        let ty = if self.kind() == Kind::Ident && matches!(self.peek_kind(1), Kind::Pipe | Kind::Of) {
+            self.variant_ty()?
+        } else {
+            self.ty()?
+        };
         Ok(TypeDecl {
             line,
             col,
@@ -1046,11 +1051,10 @@ impl<'a> Parser<'a> {
     fn variant_ty(&mut self) -> Result<TypeRef, Error> {
         let (line, col) = self.at();
         let mut variants = Vec::new();
-        if self.kind() != Kind::Pipe {
-            return Err(self.err(format!("expected `|`, found {}", self.found())));
-        }
-        while self.kind() == Kind::Pipe {
+        if self.kind() == Kind::Pipe {
             self.bump();
+        }
+        loop {
             let (vline, vcol) = self.at();
             let name = self.ident()?;
             let payload = if self.kind() == Kind::Of {
@@ -1065,6 +1069,10 @@ impl<'a> Parser<'a> {
                 name,
                 payload,
             });
+            if self.kind() != Kind::Pipe {
+                break;
+            }
+            self.bump();
         }
         Ok(TypeRef::Variant {
             line,
@@ -1400,6 +1408,20 @@ impl<'a> Parser<'a> {
     }
 
     fn arm_body(&mut self) -> Result<(Vec<Stmt>, Expr), Error> {
+        if self.kind() == Kind::Fail {
+            let (line, col) = self.at();
+            self.bump();
+            let reason = self.raised()?;
+            return Ok((
+                vec![Stmt::Fail { reason }],
+                Expr::Lit {
+                    line,
+                    col,
+                    lit: Lit::Unit,
+                    ty: 0,
+                },
+            ));
+        }
         if self.kind() == Kind::LBrace && !self.brace_is_record() {
             let (line, col) = self.at();
             let stmts = self.block()?;
@@ -2325,41 +2347,38 @@ impl<'a> Parser<'a> {
                 self.bump();
                 continue;
             }
-            if self.kind() != Kind::Pipe {
+            // The first arm's `|` is optional: `{ Open | Paused -> 1 | Closed -> 2 }`.
+            if self.kind() == Kind::Pipe {
+                self.bump();
+            } else if !arms.is_empty() {
                 return Err(self.err(format!("expected `|`, found {}", self.found())));
             }
-            self.bump();
             let (aline, acol) = self.at();
-            let ctor = self.ident()?;
-            let (bind, tuple_names) = if self.kind() == Kind::LParen {
-                self.bump();
-                if self.kind() == Kind::LParen {
-                    self.bump();
-                    let mut names = vec![self.ident()?];
-                    if self.kind() != Kind::Comma {
-                        return Err(self.err("a tuple pattern needs at least two names"));
-                    }
-                    while self.kind() == Kind::Comma {
-                        self.bump();
-                        names.push(self.ident()?);
-                    }
-                    self.want(Kind::RParen)?;
-                    self.want(Kind::RParen)?;
-                    (None, names)
-                } else {
-                    let name = self.ident()?;
-                    self.want(Kind::RParen)?;
-                    (Some(name), Vec::new())
+            let mut ctors = Vec::new();
+            let mut patterns = Vec::new();
+            loop {
+                ctors.push(self.ident()?);
+                patterns.push(self.arm_pattern()?);
+                if self.kind() != Kind::Pipe {
+                    break;
                 }
-            } else {
-                (None, Vec::new())
-            };
+                self.bump();
+            }
+            // `| A(x) | B(x) ->`: every case of the arm binds the same names.
+            if patterns.iter().any(|p| p != &patterns[0]) {
+                return Err(error(
+                    aline,
+                    acol,
+                    "every case of an arm must bind the same names",
+                ));
+            }
+            let (bind, tuple_names) = patterns.swap_remove(0);
             self.want(Kind::Arrow)?;
             let (stmts, expr) = self.arm_body()?;
             arms.push(Arm {
                 line: aline,
                 col: acol,
-                ctor,
+                ctors,
                 bind,
                 bind_sym: None,
                 tuple_names,
@@ -2379,6 +2398,31 @@ impl<'a> Parser<'a> {
             arms,
             ty: 0,
         })
+    }
+
+    /// What a case arm binds: `(x)`, `((a, b))`, or nothing.
+    fn arm_pattern(&mut self) -> Result<(Option<String>, Vec<String>), Error> {
+        if self.kind() != Kind::LParen {
+            return Ok((None, Vec::new()));
+        }
+        self.bump();
+        if self.kind() == Kind::LParen {
+            self.bump();
+            let mut names = vec![self.ident()?];
+            if self.kind() != Kind::Comma {
+                return Err(self.err("a tuple pattern needs at least two names"));
+            }
+            while self.kind() == Kind::Comma {
+                self.bump();
+                names.push(self.ident()?);
+            }
+            self.want(Kind::RParen)?;
+            self.want(Kind::RParen)?;
+            return Ok((None, names));
+        }
+        let name = self.ident()?;
+        self.want(Kind::RParen)?;
+        Ok((Some(name), Vec::new()))
     }
 
     fn ident(&mut self) -> Result<String, Error> {
@@ -2411,29 +2455,29 @@ impl<'a> Parser<'a> {
             return false;
         }
         i += 1;
-        if self.toks.get(i).map(|tok| tok.kind) == Some(Kind::Arrow) {
-            return true;
-        }
-        if self.toks.get(i).map(|tok| tok.kind) != Some(Kind::LParen) {
-            return false;
-        }
-        let mut depth = 0i32;
+        let kind = |i: usize| self.toks.get(i).map(|tok| tok.kind);
         loop {
-            let Some(tok) = self.toks.get(i) else {
-                return false;
-            };
-            match tok.kind {
-                Kind::LParen => depth += 1,
-                Kind::RParen => {
-                    depth -= 1;
+            if kind(i) == Some(Kind::LParen) {
+                let mut depth = 0i32;
+                loop {
+                    match kind(i) {
+                        Some(Kind::LParen) => depth += 1,
+                        Some(Kind::RParen) => depth -= 1,
+                        None | Some(Kind::Eof) => return false,
+                        _ => {}
+                    }
+                    i += 1;
                     if depth == 0 {
-                        return self.toks.get(i + 1).map(|tok| tok.kind) == Some(Kind::Arrow);
+                        break;
                     }
                 }
-                Kind::Eof => return false,
-                _ => {}
             }
-            i += 1;
+            // `| A(x) | B(x) ->`: an arm for several constructors.
+            if kind(i) == Some(Kind::Pipe) && kind(i + 1) == Some(Kind::Ident) {
+                i += 2;
+                continue;
+            }
+            return kind(i) == Some(Kind::Arrow);
         }
     }
 

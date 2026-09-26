@@ -698,6 +698,9 @@ impl<'a> Gen<'a> {
                 };
                 Ok(vec![format!("{}[{len}]", inner[0])])
             }
+            TyKind::Record if is_sum(&self.checked.types, ty) => {
+                Err(error(1, 1, "a variant with a payload cannot be an ABI value"))
+            }
             TyKind::Record => {
                 let mut out = Vec::new();
                 for f in &self.checked.types[ty].fields {

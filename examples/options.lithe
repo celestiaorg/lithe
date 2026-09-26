@@ -21,13 +21,13 @@ storage is record {
 }
 
 pure function bump(const o : option(nat)) : option(nat) is
-  case o of { | Some(v) -> Some(v + 1) | None -> None }
+  case o of { Some(v) -> Some(v + 1) | None -> None }
 
 pure function or_zero(const o : option(nat)) : nat is
-  case o of { | Some(v) -> v | None -> 0 }
+  case o of { Some(v) -> v | None -> 0 }
 
 pure function first_some(const a : option(nat); const b : option(nat)) : option(nat) is
-  case a of { | Some(v) -> Some(v) | None -> b }
+  case a of { Some(v) -> Some(v) | None -> b }
 
 pure function split(const k : nat) : (option(nat), nat) is
   (Some(k * 2), k)
@@ -42,13 +42,13 @@ external function pick(const k : nat) is {
     skip
   }
   storage.last := bump(o);
-  storage.flag := case s of { | Some(v) -> true | None -> false };
+  storage.flag := case s of { Some(v) -> true | None -> false };
 }
 
 external view function last_or() : nat is or_zero(storage.last)
 
 external view function via_case(const k : nat) : nat is
-  case bump(Some(k)) of { | Some(v) -> v | None -> 0 }
+  case bump(Some(k)) of { Some(v) -> v | None -> 0 }
 
 external view function direct_args(const k : nat) : nat is
   or_zero(first_some(None, Some(k))) + or_zero(first_some(Some(1n), None))
@@ -66,36 +66,36 @@ external view function eqs(const k : nat) : nat is {
 } with score
 
 external view function inferred(const k : nat) : nat is
-  case Some(k) of { | Some(v) -> v + 1 | None -> 0 }
+  case Some(k) of { Some(v) -> v + 1 | None -> 0 }
 
 external view function tuples(const k : nat) : nat is {
   const (o, n) : (option(nat), nat) := split(k);
   const t : (option(uint8), option(nat), nat) := (Some(uint8(2)), None, 3n);
   const (p, q, r) : (option(uint8), option(nat), nat) := t;
-} with or_zero(o) + n + (case p of { | Some(v) -> nat(v) | None -> 0 }) + or_zero(q) + r
+} with or_zero(o) + n + (case p of { Some(v) -> nat(v) | None -> 0 }) + or_zero(q) + r
 
 external view function records(const k : nat) : nat is {
   const s : slot := { held = Some(k); small = None; n = 4n; };
-} with (case s.held of { | Some(v) -> v | None -> 0 }) + (case s.small of { | Some(v) -> 1000 | None -> 0 }) + s.n
+} with (case s.held of { Some(v) -> v | None -> 0 }) + (case s.small of { Some(v) -> 1000 | None -> 0 }) + s.n
 
 external function set_pos(const x : nat; const y : nat) is {
   storage.pos := Some({ x = x; y = y; });
 }
 external view function pos_sum() : nat is
-  case storage.pos of { | Some(p) -> p.x + p.y | None -> 0 }
+  case storage.pos of { Some(p) -> p.x + p.y | None -> 0 }
 
 external function set_deep(const k : nat) is {
   storage.deep := Some(Some(k));
   storage.deep8 := Some(None);
 }
 external view function deep_or() : nat is
-  case storage.deep of { | Some(inner) -> (case inner of { | Some(v) -> v | None -> 1 }) | None -> 2 }
+  case storage.deep of { Some(inner) -> (case inner of { Some(v) -> v | None -> 1 }) | None -> 2 }
 external view function deep8_or() : nat is
-  case storage.deep8 of { | Some(inner) -> (case inner of { | Some(v) -> nat(v) | None -> 1 }) | None -> 2 }
+  case storage.deep8 of { Some(inner) -> (case inner of { Some(v) -> nat(v) | None -> 1 }) | None -> 2 }
 
 external function set_pair(const k : nat) is {
   storage.pair := (Some(k), Some(Evm.sender()));
 }
 external view function pair_or() : nat is {
   const (a, b) : (option(nat), option(address)) := storage.pair;
-} with or_zero(a) + (case b of { | Some(w) -> 1000 | None -> 0 })
+} with or_zero(a) + (case b of { Some(w) -> 1000 | None -> 0 })

@@ -1,8 +1,8 @@
 use super::*;
 
 impl<'a> Gen<'a> {
-    pub(super) fn compile_memory_list_read(&mut self, sym: usize, index: &Expr) -> Result<(), Error> {
-        self.list_element_start(sym, 0, index, false)?;
+    pub(super) fn compile_memory_list_read(&mut self, sym: usize, leaf: u32, index: &Expr) -> Result<(), Error> {
+        self.list_element_start(sym, leaf, index, false)?;
         self.op(MLOAD);
         Ok(())
     }
@@ -133,6 +133,18 @@ impl<'a> Gen<'a> {
             }
             Expr::Ident { sym: Some(sym), .. } => {
                 self.mload(self.local[*sym]);
+                if self.checked.syms[*sym].mutable {
+                    self.copy_list(k)?;
+                }
+                Ok(true)
+            }
+            // A list field of a record a local holds.
+            Expr::Field {
+                root: Some(sym),
+                leaf,
+                ..
+            } if !self.checked.syms[*sym].storage => {
+                self.mload(self.addr(*sym, *leaf));
                 if self.checked.syms[*sym].mutable {
                     self.copy_list(k)?;
                 }
@@ -490,7 +502,7 @@ impl<'a> Gen<'a> {
             return Ok(None);
         }
         let k = self.list_k(self.checked.syms[sym].ty);
-        self.heap_element(sym, index, u64::from(k), false)?;
+        self.heap_element(self.local[sym], index, u64::from(k), false)?;
         if offset > 0 {
             self.push_u64(u64::from(offset) * 32);
             self.op(ADD);
@@ -507,7 +519,7 @@ impl<'a> Gen<'a> {
         let k = self.list_k(self.checked.syms[sym].ty);
         self.return_sites += 1;
         let buf = self.region(Region::Stored(self.return_sites), n * 32);
-        self.heap_element(sym, index, u64::from(k), false)?;
+        self.heap_element(self.local[sym], index, u64::from(k), false)?;
         for j in 0..n {
             if j + 1 < n {
                 self.op(DUP1);
@@ -532,7 +544,7 @@ impl<'a> Gen<'a> {
         let k = self.list_k(self.checked.syms[sym].ty);
         if n == 1 && self.stack_value(ty) {
             self.compile_value(expr)?;
-            self.heap_element(sym, index, u64::from(k), false)?;
+            self.heap_element(self.local[sym], index, u64::from(k), false)?;
             if offset > 0 {
                 self.push_u64(u64::from(offset) * 32);
                 self.op(ADD);
@@ -548,7 +560,7 @@ impl<'a> Gen<'a> {
             self.write_value(expr, buf, ty)?;
             buf
         };
-        self.heap_element(sym, index, u64::from(k), false)?;
+        self.heap_element(self.local[sym], index, u64::from(k), false)?;
         for j in 0..n {
             if j + 1 < n {
                 self.op(DUP1);
@@ -615,7 +627,7 @@ impl<'a> Gen<'a> {
             return Ok(true);
         }
         if bits == 0 {
-            return self.heap_element(sym, index, k, write);
+            return self.heap_element(self.addr(sym, leaf), index, k, write);
         }
         self.compile_value(index)?;
         let start = self.addr(sym, leaf);
@@ -720,9 +732,10 @@ impl<'a> Gen<'a> {
 
     /// Pushes the address of element `index` of a list value. A write at the length appends:
     /// the list moves to a blob one element longer.
+    /// `at` holds the list's pointer.
     pub(super) fn heap_element(
         &mut self,
-        sym: usize,
+        at: i32,
         index: &Expr,
         k: u64,
         write: bool,
@@ -730,7 +743,7 @@ impl<'a> Gen<'a> {
         let (i, list) = (self.temp(), self.temp());
         self.compile_value(index)?;
         self.mstore_off(i);
-        self.mload(self.local[sym]);
+        self.mload(at);
         self.mstore_off(list);
         if write {
             let skip = self.fresh();
@@ -762,7 +775,7 @@ impl<'a> Gen<'a> {
             self.op(MCOPY);
             self.op(DUP1);
             self.mstore_off(list);
-            self.mstore_off(self.local[sym]);
+            self.mstore_off(at);
             self.jumpdest(skip);
         } else if !self.trusted_index {
             self.mload(i);

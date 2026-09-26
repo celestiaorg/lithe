@@ -375,7 +375,73 @@ type action is
   | Close
 ```
 
-In the current compiler, variants describe **entrypoint dispatch**. An external function that takes a variant exposes one ABI function per case, and matches on it with `case`. The compiler checks that the match covers every case. Variant values cannot yet be constructed in expressions or stored. See [Entrypoint dispatch](/language/dispatch).
+The first `|` is optional, so a short variant fits on one line: `type phase is Open | Paused | Closed`. Written one case per line, the leading `|` keeps the cases aligned.
+
+A case is written by name, with its payload in parentheses: `Close`, `Deposit(5n)`. A variant is the natural type for stored state, and `case` has to handle every one of its cases:
+
+```lithe
+type fill is record {
+  amount_out : nat;
+  at : uint64;
+}
+
+type order_status is
+  | New
+  | Pending
+  | Filled of fill
+  | Unwound
+
+type order is record {
+  owner : address;
+  status : order_status;
+}
+
+error AlreadyPlaced of nat;
+error NotComplete of nat;
+
+storage is record {
+  orders : map(nat, order);
+}
+
+external function place(const id : nat) raises AlreadyPlaced is {
+  assert(storage.orders[id].status = New, AlreadyPlaced(id));
+  storage.orders[id].owner := Evm.sender();
+  storage.orders[id].status := Pending;
+}
+
+external function settle(const id : nat; const out : nat) is {
+  storage.orders[id].status := Filled({ amount_out = out; at = uint64(Evm.block_timestamp()); });
+}
+
+external view function amount_out(const id : nat) : nat raises NotComplete is
+  case storage.orders[id].status of {
+  | Filled(f) -> f.amount_out
+  | New | Pending | Unwound -> fail NotComplete(id)
+  }
+```
+
+- `| New | Pending | Unwound ->` is one arm for several cases. Listing the cases instead of using a wildcard keeps the match exhaustive: adding a case to `order_status` makes every `case` that doesn't handle it a compile error.
+- An arm for several cases binds a payload when each case binds the same names and carries the same payload type: `| Queued(reason) | Held(reason) -> reason`. Written without names, `| Filled | Unwound ->`, it ignores the payloads.
+- An arm that fails has no value, so it fits a `case` of any type.
+- A case name is resolved from the type the context expects. With no expected type, it must belong to only one variant in scope.
+- `=` and `<>` compare two variants of the same type. Comparing with a case that has no payload, like `status = New`, reads only the tag. A variant whose payloads hold a string, bytes, or a list compares only that way.
+- A variant value can be a local, a parameter or result of an internal function, a storage field, a map value, or a record field. With fixed-size payloads, it can also be a list element or an option's payload. It isn't a number: there is no arithmetic, no ordering, no integer literal, and no `order_status(n)`. `uint8(m)` gives a variant's case index when it has no payloads.
+
+### Representation
+
+A variant with **no payloads** is its case's index, from 0, like a Solidity `enum`. It takes one byte in storage and packs with the fields around it, and it's a `uint8` in the ABI. A decoded value past the last case reverts, as Solidity's decoder does. A variant has at most 256 cases.
+
+A variant **with payloads** starts a slot, as a record does. The case's index takes its first byte. The cases share their payloads' words by position: the first word of every payload lives in one place, the second in another, and so on. A position whose words are all narrower than a slot is stored as the narrowest integer that holds each of them, and these pack after the index, low bytes first. A position that is a whole word in any case takes a slot. The other cases leave a position zero. The layout above keeps `status` at `keccak256(id . slot) + 1`: the index and `at` share that slot, and `amount_out` takes the next. A variant whose payloads are all narrow, such as `Empty | Stamp of uint64 | Who of address`, is one slot.
+
+A payload may hold a string, bytes, or a list. Each such word keeps a slot of its own, shared only with the same type at the same position in another case, and stored as that type is. Writing another case clears it. Such a variant can't be a list element, an option's payload, or transient storage, as a record holding a string can't.
+
+A variant with payloads has no ABI form, as an option doesn't, so it can't be an external parameter or result, an event field, or an error payload.
+
+A new map entry or an unwritten field reads as the first case, so put the initial state first.
+
+### Variants in entrypoint dispatch
+
+An external function whose body is a `case` on its variant parameter exposes one ABI function per case instead of taking the variant. A variant whose payload holds a map only shapes entrypoints and has no values. See [Entrypoint dispatch](/language/dispatch).
 
 ## Nominal types
 

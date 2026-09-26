@@ -141,6 +141,9 @@ pub(crate) struct AbiField {
 }
 
 pub(crate) fn abi_fields(types: &[RType], ty: usize, name: &str) -> Result<Vec<AbiField>, Error> {
+    if is_sum(types, ty) {
+        return Err(error(1, 1, "a variant with a payload cannot be an ABI value"));
+    }
     match types[ty].kind {
         TyKind::Unit => Ok(Vec::new()),
         TyKind::Nominal => {
@@ -261,6 +264,9 @@ pub(crate) fn event_input(types: &[RType], field: &EventField) -> Result<AbiFiel
 
 fn event_abi(types: &[RType], name: &str, ty: usize, indexed: bool) -> Result<AbiField, Error> {
     let id = peel_id(types, ty);
+    if is_sum(types, id) {
+        return Err(error(1, 1, "a variant with a payload cannot be an ABI value"));
+    }
     match types[id].kind {
         TyKind::Record | TyKind::Tuple => {
             let mut components = Vec::new();
@@ -285,6 +291,9 @@ fn event_abi(types: &[RType], name: &str, ty: usize, indexed: bool) -> Result<Ab
 
 pub(super) fn event_sig_type(types: &[RType], ty: usize) -> Result<String, Error> {
     let id = peel_id(types, ty);
+    if is_sum(types, id) {
+        return Err(error(1, 1, "a variant with a payload cannot be an ABI value"));
+    }
     match types[id].kind {
         TyKind::Record | TyKind::Tuple => {
             let mut parts = Vec::new();
@@ -395,11 +404,14 @@ pub(crate) fn abi_record(types: &[RType], ty: usize) -> bool {
         && abi_fields(types, id, "").is_ok()
 }
 
-/// Whether an option appears anywhere in a value, which keeps it out of the ABI.
+/// Whether an option or a variant with a payload appears anywhere in a value, which keeps
+/// it out of the ABI.
 pub(crate) fn has_option(types: &[RType], ty: usize) -> bool {
-    let t = &types[peel_id(types, ty)];
+    let id = peel_id(types, ty);
+    let t = &types[id];
     match t.kind {
         TyKind::Option => true,
+        TyKind::Record if is_sum(types, id) => true,
         TyKind::Record | TyKind::Tuple => t.fields.iter().any(|f| has_option(types, f.ty)),
         TyKind::List => t.elem.is_some_and(|e| has_option(types, e)),
         _ => false,
@@ -420,6 +432,7 @@ pub(crate) fn static_abi(types: &[RType], ty: usize) -> Option<String> {
     let id = peel_id(types, ty);
     let t = &types[id];
     match t.kind {
+        TyKind::Record if is_sum(types, id) => None,
         TyKind::Record | TyKind::Tuple => {
             let parts: Option<Vec<String>> =
                 t.fields.iter().map(|f| static_abi(types, f.ty)).collect();

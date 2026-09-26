@@ -87,6 +87,8 @@ pub(crate) struct RField {
 pub(crate) struct RVariant {
     pub name: String,
     pub payload: Option<usize>,
+    /// In a variant with payloads: the word of the value that holds each payload word.
+    pub at: Vec<u32>,
 }
 
 pub(crate) struct RType {
@@ -907,6 +909,19 @@ fn is_word(k: TyKind) -> bool {
             | TyKind::String
             | TyKind::Nominal
     )
+}
+
+/// The field of a variant with payloads that holds its case's index.
+pub(crate) const TAG_FIELD: &str = "#tag";
+
+/// A variant with no payloads, held as its case's index.
+pub(crate) fn is_enum(types: &[RType], ty: usize) -> bool {
+    types[ty].kind == TyKind::Nominal && !types[ty].variants.is_empty()
+}
+
+/// A variant with fixed-size payloads, held as a record of its tag and payload words.
+pub(crate) fn is_sum(types: &[RType], ty: usize) -> bool {
+    types[ty].kind == TyKind::Record && !types[ty].variants.is_empty()
 }
 
 fn peel_id(types: &[RType], ty: usize) -> usize {

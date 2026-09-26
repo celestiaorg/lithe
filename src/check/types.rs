@@ -476,14 +476,196 @@ impl Checker {
                     built.push(RVariant {
                         name: v.name.clone(),
                         payload,
+                        at: Vec::new(),
                     });
                 }
-                self.types[id].variants = built;
-                self.types[id].laid = true;
-                self.types[id].words = 0;
+                if built.len() > 256 {
+                    return Err(error(
+                        ty.line(),
+                        ty.col(),
+                        "a variant has at most 256 cases",
+                    ));
+                }
+                self.lower_variant(id, built);
                 Ok(())
             }
             _ => Ok(()),
+        }
+    }
+
+    /// A variant with no payloads is its case's index as a `uint8`. One with payloads is a
+    /// record: the tag, then the payload words its cases share by position. Scalar words
+    /// at one position share a field, the narrowest integer that holds every case's, and
+    /// those narrow enough go first to pack with the tag. A string, bytes, or list word
+    /// shares a field only with the same type at the same position. Other cases leave a
+    /// field zero, or empty. A payload that holds a map only shapes entrypoints.
+    fn lower_variant(&mut self, id: usize, mut built: Vec<RVariant>) {
+        let uint8 = self.named["uint8"];
+        let index = |variants: Vec<RVariant>| RType {
+            elem: Some(uint8),
+            bits: 8,
+            variants,
+            ..prim(TyKind::Nominal, 1)
+        };
+        if built.iter().all(|v| v.payload.is_none()) {
+            self.types[id] = index(built);
+            return;
+        }
+        if !built
+            .iter()
+            .filter_map(|v| v.payload)
+            .all(|p| self.record_field_ok(p))
+        {
+            self.types[id].variants = built;
+            self.types[id].laid = true;
+            self.types[id].words = 0;
+            return;
+        }
+        // Per position: the widest unsigned and signed bytes of its scalars, `None` once
+        // one is a whole word. Then each dynamic type seen at a position.
+        let mut scalars: Vec<Option<Option<(u8, u8)>>> = Vec::new();
+        let mut dynamic: Vec<(usize, usize)> = Vec::new();
+        // Per case, per payload word: a scalar position, or an index into `dynamic`.
+        let mut homes: Vec<Vec<Result<usize, usize>>> = Vec::new();
+        for v in &built {
+            let mut leaves = Vec::new();
+            if let Some(p) = v.payload {
+                word_leaves(&self.types, p, &mut leaves);
+            }
+            let mut home = Vec::new();
+            for (j, leaf) in leaves.into_iter().enumerate() {
+                if scalars.len() <= j {
+                    scalars.push(None);
+                }
+                match leaf {
+                    Some(t) if self.dynamic_word(t) => {
+                        let k = match dynamic.iter().position(|&(at, d)| at == j && self.same(d, t)) {
+                            Some(k) => k,
+                            None => {
+                                dynamic.push((j, t));
+                                dynamic.len() - 1
+                            }
+                        };
+                        home.push(Err(k));
+                    }
+                    leaf => {
+                        let width = leaf.and_then(|l| narrow_width(&self.types, l));
+                        scalars[j] = Some(match (scalars[j], width) {
+                            (None, Some((w, false))) => Some((w, 0)),
+                            (None, Some((w, true))) => Some((0, w)),
+                            (Some(Some((u, s))), Some((w, false))) => Some((u.max(w), s)),
+                            (Some(Some((u, s))), Some((w, true))) => Some((u, s.max(w))),
+                            _ => None,
+                        });
+                        home.push(Ok(j));
+                    }
+                }
+            }
+            homes.push(home);
+        }
+        let scalar_ty = |width: Option<(u8, u8)>| match width {
+            Some((u, 0)) => self.named[&format!("uint{}", u32::from(u) * 8)],
+            // An unsigned value fits a signed word one byte wider than itself.
+            Some((u, s)) if s.max(u + 1) < 32 => {
+                self.named[&format!("int{}", u32::from(s.max(u + 1)) * 8)]
+            }
+            _ => TY_NAT,
+        };
+        let tag = self.types.len();
+        self.types.push(index(
+            built
+                .iter()
+                .map(|v| RVariant {
+                    name: v.name.clone(),
+                    payload: None,
+                    at: Vec::new(),
+                })
+                .collect(),
+        ));
+        let field = |name: String, ty: usize| RField {
+            name,
+            ty,
+            slot: 0,
+            n_leaf: 0,
+        };
+        let mut fields = vec![field(TAG_FIELD.to_string(), tag)];
+        let used: Vec<(usize, usize)> = scalars
+            .iter()
+            .enumerate()
+            .filter_map(|(j, width)| width.map(|w| (j, scalar_ty(w))))
+            .collect();
+        let narrow = |ty: usize| narrow_width(&self.types, ty).is_some();
+        for &(j, ty) in used.iter().filter(|(_, ty)| narrow(*ty)).chain(used.iter().filter(|(_, ty)| !narrow(*ty))) {
+            fields.push(field(format!("#{j}"), ty));
+        }
+        for (k, &(j, ty)) in dynamic.iter().enumerate() {
+            fields.push(field(format!("#{j}~{k}"), ty));
+        }
+        self.types[id] = RType {
+            kind: TyKind::Record,
+            fields,
+            laid: false,
+            ..prim(TyKind::Record, 0)
+        };
+        layout(&mut self.types, id);
+        let slot_of = |name: String| {
+            self.types[id]
+                .fields
+                .iter()
+                .find(|f| f.name == name)
+                .map_or(0, |f| f.slot)
+        };
+        for (v, home) in built.iter_mut().zip(homes) {
+            v.at = home
+                .into_iter()
+                .map(|h| match h {
+                    Ok(j) => slot_of(format!("#{j}")),
+                    Err(k) => slot_of(format!("#{}~{k}", dynamic[k].0)),
+                })
+                .collect();
+        }
+        self.types[id].variants = built;
+    }
+
+    /// A payload word held behind a pointer: a string, `bytes`, or a dynamic list.
+    fn dynamic_word(&self, ty: usize) -> bool {
+        let t = &self.types[peel_id(&self.types, ty)];
+        matches!(t.kind, TyKind::String | TyKind::List | TyKind::Bytes) && t.bits == 0
+    }
+
+    /// The variant type and case index a constructor name refers to: a case of the type
+    /// the context expects, or else of the one declared variant that has it.
+    pub(super) fn ctor(&self, line: u32, col: u32, name: &str) -> Result<Option<(usize, usize)>, Error> {
+        if self.lookup(name).is_some() {
+            return Ok(None);
+        }
+        let case_of = |ty: usize| self.types[ty].variants.iter().position(|v| v.name == name);
+        if let Some(k) = self.expect.and_then(case_of) {
+            return Ok(self.expect.map(|expect| (expect, k)));
+        }
+        let mut owners: Vec<(&String, usize)> = self
+            .named
+            .iter()
+            .filter(|(_, &ty)| case_of(ty).is_some())
+            .map(|(n, &ty)| (n, ty))
+            .collect();
+        owners.sort();
+        owners.dedup_by_key(|(_, ty)| *ty);
+        match owners.as_slice() {
+            [] => Ok(None),
+            [(_, ty)] => Ok(Some((*ty, case_of(*ty).unwrap_or(0)))),
+            _ => Err(error(
+                line,
+                col,
+                format!(
+                    "`{name}` is a case of {}; annotate which type is meant",
+                    owners
+                        .iter()
+                        .map(|(n, _)| format!("`{n}`"))
+                        .collect::<Vec<_>>()
+                        .join(" and ")
+                ),
+            )),
         }
     }
 
@@ -716,7 +898,9 @@ impl Checker {
             (TyKind::Nominal, TyKind::Nominal) => false,
             (TyKind::Address, TyKind::Interface) | (TyKind::Interface, TyKind::Address) => true,
             (TyKind::Nominal, _) => self.types[src].elem == Some(target),
-            (_, TyKind::Nominal) => self.types[target].elem == Some(src),
+            (_, TyKind::Nominal) => {
+                self.types[target].variants.is_empty() && self.types[target].elem == Some(src)
+            }
             _ => {
                 self.numeric_word(src) && self.numeric_word(target)
                     || self.address_bytes(src, target)
@@ -759,9 +943,11 @@ impl Checker {
         addr && bytes20
     }
 
+    /// The type a nominal type is declared over. A variant's cases stay themselves: they
+    /// are not numbers.
     pub(super) fn peel(&self, id: usize) -> usize {
         match self.types[id].kind {
-            TyKind::Nominal => self.types[id]
+            TyKind::Nominal if self.types[id].variants.is_empty() => self.types[id]
                 .elem
                 .map(|under| self.peel(under))
                 .unwrap_or(id),
@@ -979,6 +1165,17 @@ fn builtin_type_name(name: &str) -> bool {
 }
 
 pub(super) fn display_ty(types: &[RType], ty: usize) -> String {
+    if is_enum(types, ty) || is_sum(types, ty) {
+        let cases: Vec<String> = types[ty]
+            .variants
+            .iter()
+            .map(|v| match v.payload {
+                Some(p) => format!("{} of {}", v.name, display_ty(types, p)),
+                None => v.name.clone(),
+            })
+            .collect();
+        return format!("variant({})", cases.join(" | "));
+    }
     match types[ty].kind {
         TyKind::Nominal => types[ty]
             .elem
@@ -1072,5 +1269,25 @@ pub(crate) fn shape_ty(ty: &TypeRef) -> String {
             }
         }
         TypeRef::Hole { id } => format!("t{id}"),
+    }
+}
+
+/// The type of each word of a static value, `None` for a word that is not a scalar of its
+/// own, such as an option's.
+fn word_leaves(types: &[RType], ty: usize, out: &mut Vec<Option<usize>>) {
+    let t = &types[peel_id(types, ty)];
+    match t.kind {
+        TyKind::Record | TyKind::Tuple => {
+            for field in &t.fields {
+                word_leaves(types, field.ty, out);
+            }
+        }
+        TyKind::List if t.bits > 0 => {
+            for _ in 0..t.bits {
+                word_leaves(types, t.elem.unwrap_or(TY_NAT), out);
+            }
+        }
+        TyKind::Option => out.extend(std::iter::repeat(None).take(t.words as usize)),
+        _ => out.push(Some(ty)),
     }
 }

@@ -315,6 +315,9 @@ impl<'a> Gen<'a> {
                 {
                     return self.compile_option_eq(left, right, *op == BinOp::Neq);
                 }
+                if matches!(op, BinOp::Eq | BinOp::Neq) && is_sum(&self.checked.types, left.ty()) {
+                    return self.compile_sum_eq(left, right, *op == BinOp::Neq);
+                }
                 self.compile_value(left)?;
                 self.compile_value(right)?;
                 // A loop counter is below its limit, so one more always fits its type.
@@ -448,6 +451,9 @@ impl<'a> Gen<'a> {
             }
             Builtin::NatDivRem | Builtin::IntDivRem => {
                 return Err(error(line, col, "div_rem returns a tuple"));
+            }
+            Builtin::Ctor(_) => {
+                return Err(error(line, col, "a variant with payloads is not a word"));
             }
             Builtin::NatToString | Builtin::IntToString => {
                 self.compile_value(&args[0])?;
@@ -1067,6 +1073,15 @@ impl<'a> Gen<'a> {
         self.is_word_ty(ty) || self.flip(ty).is_some()
     }
 
+    /// An arm's statements, then its value. An arm that ends in `fail` has none.
+    pub(super) fn run_arm(&mut self, arm: &crate::ast::Arm, sink: Sink) -> Result<(), Error> {
+        self.compile_stmts(&arm.stmts)?;
+        if arm.fails() {
+            return Ok(());
+        }
+        self.arm_result(&arm.expr, sink)
+    }
+
     /// Where an arm's value goes: on the stack, or written to memory.
     pub(super) fn arm_result(&mut self, e: &Expr, sink: Sink) -> Result<(), Error> {
         match sink {
@@ -1094,24 +1109,209 @@ impl<'a> Gen<'a> {
         if let Expr::Query { expr: call, .. } = scrut {
             return self.compile_query_case(call, scrut.ty(), arms, line, col, sink);
         }
-        if self.checked.types[scrut.ty()].kind == TyKind::Option {
+        let sty = scrut.ty();
+        if self.checked.types[sty].kind == TyKind::Option {
             return self.compile_option_case(scrut, arms, line, col, sink);
         }
-        let Expr::Ident { sym: Some(sid), .. } = scrut else {
-            return Err(error(line, col, "case is not on a parameter"));
-        };
-        let Some(&ctor) = self.known.get(sid) else {
-            return Err(error(line, col, "case is not on a dispatched variant"));
-        };
-        let vname = self.checked.types[scrut.ty()].variants[ctor].name.clone();
-        let Some(arm) = arms.iter().find(|a| a.ctor == vname).cloned() else {
-            return Err(error(line, col, "missing dispatched arm"));
-        };
-        if let Some(sym) = arm.bind_sym {
-            self.decode_sym(sym)?;
+        if is_enum(&self.checked.types, sty) {
+            self.compile_value(scrut)?;
+            return self.compile_tag_case(sty, arms, None, sink);
         }
-        self.compile_stmts(&arm.stmts)?;
-        self.arm_result(&arm.expr, sink)
+        if !is_sum(&self.checked.types, sty) {
+            return Err(error(line, col, "case is not on a dispatched variant"));
+        }
+        // Without a binding only the tag matters, so only the tag is read.
+        if arms.iter().all(|arm| arm.bind_sym.is_none() && arm.tuple_syms.is_empty()) {
+            self.compile_value(&self.tag_of(scrut))?;
+            return self.compile_tag_case(sty, arms, None, sink);
+        }
+        let src = self.value_addr(scrut)?;
+        self.mload(src);
+        self.compile_tag_case(sty, arms, Some(src), sink)
+    }
+
+    /// The tag of a variant with payloads, as the field it is.
+    pub(super) fn tag_of(&self, value: &Expr) -> Expr {
+        let (root, leaf) = match value {
+            Expr::Ident { sym, .. } => (*sym, 0),
+            Expr::Field { root, leaf, .. } | Expr::Index { root, leaf, .. } => (*root, *leaf),
+            _ => (None, 0),
+        };
+        Expr::Field {
+            line: value.line(),
+            col: value.col(),
+            base: Box::new(value.clone()),
+            name: TAG_FIELD.to_string(),
+            root,
+            leaf,
+            ty: self.checked.types[value.ty()].fields[0].ty,
+        }
+    }
+
+    /// `case` on a variant's tag, which is on the stack. The arm with the most cases runs
+    /// when no other matches, so it needs no test. A lone test consumes the tag; otherwise
+    /// each arm drops it. `src` holds the value, when an arm binds its payload.
+    fn compile_tag_case(
+        &mut self,
+        vty: usize,
+        arms: &[crate::ast::Arm],
+        src: Option<i32>,
+        sink: Sink,
+    ) -> Result<(), Error> {
+        let index = |name: &str| {
+            self.checked.types[vty]
+                .variants
+                .iter()
+                .position(|v| v.name == name)
+                .unwrap_or(0)
+        };
+        let widest = (0..arms.len())
+            .rev()
+            .max_by_key(|&i| arms[i].ctors.len())
+            .unwrap_or(0);
+        let tests: Vec<(usize, usize)> = (0..arms.len())
+            .filter(|&i| i != widest)
+            .flat_map(|i| arms[i].ctors.iter().map(move |c| (i, c)))
+            .map(|(i, c)| (i, index(c)))
+            .collect();
+        let lone = tests.len() == 1;
+        let labels: Vec<u32> = arms.iter().map(|_| self.fresh()).collect();
+        let end = self.fresh();
+        for &(arm, k) in &tests {
+            if !lone {
+                self.op(DUP1);
+            }
+            if k == 0 {
+                self.op(ISZERO);
+            } else {
+                self.push_u64(k as u64);
+                self.op(EQ);
+            }
+            self.push_label(labels[arm]);
+            self.op(JUMPI);
+        }
+        self.branch += 1;
+        let order = std::iter::once(widest).chain((0..arms.len()).filter(|&i| i != widest));
+        for (n, i) in order.enumerate() {
+            let arm = &arms[i];
+            if n > 0 {
+                self.jumpdest(labels[i]);
+            }
+            if !lone {
+                self.op(POP);
+            }
+            if let Some(src) = src {
+                let payload = arm
+                    .ctors
+                    .first()
+                    .and_then(|c| self.checked.types[vty].variants[index(c)].payload);
+                if let Some(payload) = payload {
+                    let first = arm.ctors.first().map_or(0, |c| index(c));
+                    let at = self.checked.types[vty].variants[first].at.clone();
+                    let copy = |g: &mut Self, first: u32, n: u32, dst: i32| {
+                        for j in 0..n {
+                            g.mload(src + at[(first + j) as usize] as i32 * 32);
+                            g.mstore_off(dst + j as i32 * 32);
+                        }
+                    };
+                    if !arm.tuple_syms.is_empty() {
+                        let fields: Vec<(u32, u32)> = self.checked.types[payload]
+                            .fields
+                            .iter()
+                            .map(|field| (field.slot, field.n_leaf.max(1)))
+                            .collect();
+                        for (bind, (slot, n)) in arm.tuple_syms.iter().zip(fields) {
+                            copy(self, slot, n, self.local[*bind]);
+                        }
+                    } else if let Some(bind) = arm.bind_sym {
+                        let n = self.checked.types[payload].words.max(1);
+                        copy(self, 0, n, self.local[bind]);
+                    }
+                }
+            }
+            self.run_arm(arm, sink)?;
+            if n + 1 < arms.len() {
+                self.push_label(end);
+                self.op(JUMP);
+            }
+        }
+        self.branch -= 1;
+        self.jumpdest(end);
+        Ok(())
+    }
+
+    /// Writes a variant with payloads: its tag, its case's payload, and zero in the words
+    /// that payload leaves.
+    pub(super) fn write_ctor(&mut self, k: usize, payload: Option<&Expr>, dst: i32, ty: usize) -> Result<(), Error> {
+        let at = self.checked.types[ty].variants[k].at.clone();
+        let used = at.len();
+        if let Some(arg) = payload {
+            let in_order = at.iter().enumerate().all(|(j, &w)| w as usize == j + 1);
+            if in_order || used == 1 {
+                self.write_value(arg, dst + at[0] as i32 * 32, arg.ty())?;
+            } else {
+                self.return_sites += 1;
+                let buf = self.region(Region::Stored(self.return_sites), used as u32 * 32);
+                self.write_value(arg, buf, arg.ty())?;
+                for (j, &w) in at.iter().enumerate() {
+                    self.mload(buf + j as i32 * 32);
+                    self.mstore_off(dst + w as i32 * 32);
+                }
+            }
+        }
+        // The words this case leaves: zero, or an empty string, bytes, or list.
+        let rest: Vec<(u32, usize)> = self.checked.types[ty].fields[1..]
+            .iter()
+            .filter(|f| !at.contains(&f.slot))
+            .map(|f| (f.slot, f.ty))
+            .collect();
+        for (slot, fty) in rest {
+            let at = dst + slot as i32 * 32;
+            let (line, col) = (0, 0);
+            if self.list_value(fty) {
+                let empty = Expr::List { line, col, elems: Vec::new(), ty: fty };
+                self.write_value(&empty, at, fty)?;
+            } else if self.is_dynamic(self.peel_nominal(fty)) {
+                let empty = Expr::Lit { line, col, lit: Lit::Str(String::new()), ty: fty };
+                self.write_value(&empty, at, fty)?;
+            } else {
+                self.op(PUSH0);
+                self.mstore_off(at);
+            }
+        }
+        self.push_u64(k as u64);
+        self.mstore_off(dst);
+        Ok(())
+    }
+
+    /// `=` or `<>` on variants with payloads. Words a case leaves are zero, so equal values
+    /// have equal words, and against a case with no payload only the tag matters.
+    fn compile_sum_eq(&mut self, left: &Expr, right: &Expr, neq: bool) -> Result<(), Error> {
+        let bare = |e: &Expr| match e {
+            Expr::Call {
+                builtin: Some(Builtin::Ctor(k)),
+                args,
+                ..
+            } if args.is_empty() => Some(*k),
+            _ => None,
+        };
+        let Some((other, k)) = bare(right)
+            .map(|k| (left, k))
+            .or_else(|| bare(left).map(|k| (right, k)))
+        else {
+            return self.compile_option_eq(left, right, neq);
+        };
+        self.compile_value(&self.tag_of(other))?;
+        if k == 0 {
+            self.op(ISZERO);
+        } else {
+            self.push_u64(k as u64);
+            self.op(EQ);
+        }
+        if neq {
+            self.op(ISZERO);
+        }
+        Ok(())
     }
 
     fn compile_option_case(
@@ -1122,8 +1322,8 @@ impl<'a> Gen<'a> {
         col: u32,
         sink: Sink,
     ) -> Result<(), Error> {
-        let some = arms.iter().find(|arm| arm.ctor == "Some");
-        let none = arms.iter().find(|arm| arm.ctor == "None");
+        let some = arms.iter().find(|arm| arm.ctors.iter().any(|c| c == "Some"));
+        let none = arms.iter().find(|arm| arm.ctors.iter().any(|c| c == "None"));
         let (Some(some), Some(none)) = (some, none) else {
             return Err(error(line, col, "option case needs `Some` and `None`"));
         };
@@ -1153,13 +1353,11 @@ impl<'a> Gen<'a> {
             let n = self.checked.types[self.checked.syms[bind].ty].words.max(1);
             self.copy_words(src + 32, self.local[bind], n);
         }
-        self.compile_stmts(&some.stmts)?;
-        self.arm_result(&some.expr, sink)?;
+        self.run_arm(some, sink)?;
         self.push_label(end_l);
         self.op(JUMP);
         self.jumpdest(none_l);
-        self.compile_stmts(&none.stmts)?;
-        self.arm_result(&none.expr, sink)?;
+        self.run_arm(none, sink)?;
         self.branch -= 1;
         self.jumpdest(end_l);
         Ok(())
@@ -1190,16 +1388,14 @@ impl<'a> Gen<'a> {
             self.apply_flip(flip);
             self.mstore_off(self.local[sym]);
         }
-        self.compile_stmts(&some.stmts)?;
-        self.arm_result(&some.expr, sink)?;
+        self.run_arm(some, sink)?;
         self.push_label(end_l);
         self.op(JUMP);
         self.jumpdest(none_l);
         if bind.is_some() {
             self.op(POP);
         }
-        self.compile_stmts(&none.stmts)?;
-        self.arm_result(&none.expr, sink)?;
+        self.run_arm(none, sink)?;
         self.branch -= 1;
         self.jumpdest(end_l);
         Ok(())

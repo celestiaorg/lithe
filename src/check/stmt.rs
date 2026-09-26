@@ -2,6 +2,9 @@ use super::*;
 
 impl Checker {
     pub(super) fn check_stmt(&mut self, s: &mut Stmt) -> Result<(), Error> {
+        if let Some(split) = self.split_assign(s) {
+            *s = split;
+        }
         match s {
             Stmt::Const {
                 line,
@@ -832,7 +835,7 @@ impl Checker {
         if !self.syms[place.sym].mutable {
             return Err(error(line, col, "cannot assign to a const"));
         }
-        if self.storage_only(value_ty) && !self.list_value(value_ty) {
+        if self.holds_map(value_ty) {
             return Err(error(line, col, "only a single field can be assigned"));
         }
         self.check_expr_as(expr, Some(value_ty))?;
@@ -846,6 +849,82 @@ impl Checker {
         *leaf = place.leaf;
         *target = Some(Box::new(place_expr));
         Ok(())
+    }
+
+    /// A storage field holding a record with strings, bytes, or lists is written one field
+    /// at a time: `p := v` becomes `const t := v; p.a := t.a; ...`, in a block of its own.
+    /// Past a key, such a record is written whole.
+    fn split_assign(&self, s: &Stmt) -> Option<Stmt> {
+        let Stmt::Assign {
+            line,
+            col,
+            path,
+            index: None,
+            expr,
+            root: None,
+            ..
+        } = s
+        else {
+            return None;
+        };
+        let (line, col) = (*line, *col);
+        let place = self.lookup_path(line, col, path).ok()?;
+        if !self.syms[place.sym].storage {
+            return None;
+        }
+        let ty = place.ty;
+        let t = &self.types[ty];
+        if t.kind != TyKind::Record || is_static_value(&self.types, ty) || self.holds_map(ty) {
+            return None;
+        }
+        let temp = format!("#set{}", self.syms.len());
+        let mut stmts = vec![Stmt::Const {
+            line,
+            col,
+            name: temp.clone(),
+            parts: Vec::new(),
+            ty: TypeRef::Hole { id: ty },
+            expr: expr.clone(),
+            sym: None,
+            part_syms: Vec::new(),
+        }];
+        for field in &t.fields {
+            let mut path = path.clone();
+            path.push(field.name.clone());
+            stmts.push(Stmt::Assign {
+                line,
+                col,
+                path,
+                index: None,
+                keys: Vec::new(),
+                fields: Vec::new(),
+                expr: path_expr(line, col, &[temp.clone(), field.name.clone()]),
+                root: None,
+                leaf: 0,
+                target: None,
+            });
+        }
+        Some(Stmt::If {
+            line,
+            col,
+            cond: Expr::Lit {
+                line,
+                col,
+                lit: Lit::Bool(true),
+                ty: 0,
+            },
+            then_body: stmts,
+            else_body: Vec::new(),
+        })
+    }
+
+    fn holds_map(&self, ty: usize) -> bool {
+        let t = &self.types[peel_id(&self.types, ty)];
+        match t.kind {
+            TyKind::Map => true,
+            TyKind::Record | TyKind::Tuple => t.fields.iter().any(|f| self.holds_map(f.ty)),
+            _ => false,
+        }
     }
 
     pub(super) fn walk_fields(

@@ -63,7 +63,7 @@ impl Checker {
                 .as_ref()
                 .map(|t| (t.line(), t.col()))
                 .unwrap_or((f.line, f.col));
-            return Err(error(line, col, "an option cannot be an ABI value"));
+            return Err(error(line, col, "options and variants with payloads cannot be ABI values"));
         }
         let aggregate = is_static_aggregate(&self.types, ret) || abi_record(&self.types, ret);
         if f.kind == ItemKind::View

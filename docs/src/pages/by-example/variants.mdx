@@ -5,7 +5,7 @@ description: "Closed sets of cases with payloads, matched exhaustively."
 
 # Variants
 
-A variant type lists every case a value can take, and each case may carry a payload. In Lithe today, variants shape entrypoints: an external function that takes a variant becomes one ABI function per case.
+A variant type lists every case a value can take, and each case may carry a payload. Variants shape entrypoints, where an external function that takes a variant becomes one ABI function per case, and they hold state, where `case` makes every reader handle every state.
 
 ```lithe [variants.lithe]
 (* A variant type is a closed set of cases. A case may carry a payload.
@@ -54,5 +54,89 @@ external view function balance_of(const who : address) : nat is
 
 - `case` must cover every case. Delete the `Reset` arm and the compiler reports ``missing case arm `Reset` ``.
 - A record payload becomes named ABI parameters, so `Send` is `send(address to, uint256 amount)`.
-- Variants cannot yet be constructed in expressions or stored. For stored states, use a small integer code. The [Multi-sig wallet](/by-example/multisig) uses booleans, and the [Order executor](/by-example/order-executor) uses a `uint8` status.
 - See [Dispatch](/by-example/dispatch) for nesting and guards.
+
+## Stored state
+
+A variant value is written by naming its case. A variant with no payloads is one byte in storage and a `uint8` in the ABI, like a Solidity `enum`:
+
+```lithe [market.lithe]
+type phase is
+  | Open
+  | Paused
+  | Settled of nat
+
+error NotOpen;
+error NotSettled;
+
+storage is record {
+  phase : phase;
+  bids : map(address, nat);
+}
+
+external function bid(const amount : nat) raises NotOpen is {
+  assert(storage.phase = Open, NotOpen);
+  storage.bids[Evm.sender()] := storage.bids[Evm.sender()] + amount;
+}
+
+external function pause() is {
+  storage.phase := Paused;
+}
+
+external function settle(const price : nat) is {
+  storage.phase := Settled(price);
+}
+
+(* `| Open | Paused ->` is one arm for both, and still exhaustive: a new case
+   is a compile error here until it is handled. *)
+external view function price() : nat raises NotSettled is
+  case storage.phase of {
+  | Settled(p) -> p
+  | Open | Paused -> fail NotSettled
+  }
+```
+
+- `Settled` carries a price, so `phase` is a tag slot and a payload slot. Without it, `phase` would take one byte.
+- A new contract reads `phase` as `Open`, the first case.
+- The [Order executor](/by-example/order-executor) keeps each order's status as a variant.
+
+Payloads may hold strings, bytes, and lists. One arm can bind the payload of several cases when they carry the same type:
+
+```lithe [review.lithe]
+type review is
+  | Draft
+  | Rejected of string
+  | Withdrawn of string
+  | Approved of list(address)
+
+storage is record {
+  reviews : map(nat, review);
+}
+
+external function reject(const id : nat; const why : string) is {
+  storage.reviews[id] := Rejected(why);
+}
+
+external function withdraw(const id : nat; const why : string) is {
+  storage.reviews[id] := Withdrawn(why);
+}
+
+external function approve(const id : nat; const by : list(address)) is {
+  storage.reviews[id] := Approved(by);
+}
+
+external view function reason(const id : nat) : string is
+  case storage.reviews[id] of {
+  | Rejected(why) | Withdrawn(why) -> why
+  | Draft | Approved -> ""
+  }
+
+external view function approvals(const id : nat) : nat is
+  case storage.reviews[id] of {
+  | Approved(by) -> by.length
+  | Draft | Rejected | Withdrawn -> 0
+  }
+```
+
+- `Rejected` and `Withdrawn` keep their reason in the same slot, so either case reads it the same way.
+- Writing `Approved` clears a stored reason, and writing `Draft` clears both.

@@ -9,15 +9,15 @@ storage is record {
 }
 
 pure function or_zero(const o : option(nat)) : nat is
-  case o of { | Some(v) -> v | None -> 0 }
+  case o of { Some(v) -> v | None -> 0 }
 
 external function put_small(const i : nat; const v : uint8) is { storage.small[i] := Some(v); }
 external function put_wide(const i : nat; const v : nat) is { storage.wide[i] := Some(v); }
 external function clear_wide(const i : nat) is { storage.wide[i] := None; }
 external view function small_at(const i : nat) : nat is
-  case storage.small[i] of { | Some(v) -> nat(v) | None -> 1000 }
+  case storage.small[i] of { Some(v) -> nat(v) | None -> 1000 }
 external view function wide_at(const i : nat) : nat is
-  case storage.wide[i] of { | Some(v) -> v | None -> 1000 }
+  case storage.wide[i] of { Some(v) -> v | None -> 1000 }
 external view function wide_len() : nat is storage.wide.length
 
 external function put_fixed(const i : nat; const v : nat) is {
@@ -27,9 +27,9 @@ external function put_fixed(const i : nat; const v : nat) is {
 }
 external function clear_fixed(const i : nat) is { storage.fixed[i] := None; }
 external view function fixed_at(const i : nat) : nat is
-  case storage.fixed[i] of { | Some(v) -> v | None -> 1000 }
+  case storage.fixed[i] of { Some(v) -> v | None -> 1000 }
 external view function fixed8_at(const i : nat) : nat is
-  case storage.fixed8[i] of { | Some(b) -> (case Some(b) of { | Some(x) -> 1 | None -> 0 }) | None -> 1000 }
+  case storage.fixed8[i] of { Some(b) -> (case Some(b) of { Some(x) -> 1 | None -> 0 }) | None -> 1000 }
 external view function fixed_passed(const i : nat) : nat is or_zero(storage.fixed[i])
 external view function fixed_is_none(const i : nat) : bool is storage.fixed[i] = None
 
@@ -42,8 +42,8 @@ external view function locals(const i : nat; const k : nat) : nat is {
   const fx : list(option(nat), 3) := [Some(k), None, Some(k + 1)];
   const dy : list(option(nat)) := [None, Some(k * 2)];
   const sm : list(option(uint8), 2) := [Some(uint8(4)), None];
-} with or_zero(fx[i]) * 1000 + (case dy[i] of { | Some(v) -> v | None -> 7 }) * 10
-  + (case sm[i] of { | Some(v) -> nat(v) | None -> 9 })
+} with or_zero(fx[i]) * 1000 + (case dy[i] of { Some(v) -> v | None -> 7 }) * 10
+  + (case sm[i] of { Some(v) -> nat(v) | None -> 9 })
 
 interface Oracle is {
   view function price(amount : nat) : nat;
@@ -54,7 +54,7 @@ external function put_fixed_image(const o : Oracle; const i : nat; const v : nat
   storage.after := v;
   storage.fixed[i] := Some(v);
   const p : nat := query o.price(storage.after);
-  storage.after := p - p + (case storage.fixed[i] of { | Some(x) -> x | None -> 1000 });
+  storage.after := p - p + (case storage.fixed[i] of { Some(x) -> x | None -> 1000 });
 }
 external function move_fixed_image(const o : Oracle; const from : nat; const to : nat) is {
   storage.after := from;

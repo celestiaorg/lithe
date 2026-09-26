@@ -103,6 +103,27 @@ external view function limit_or(const fallback : nat) : nat is
 
 A `case` can be a function's whole body, the `with` result after a block, or the initializer of a `const`. Payloads bind to names, and tuple payloads destructure: `| Some((a, b)) -> a + b`.
 
+The first arm's `|` is optional, so a short match fits on one line: `case p of { Open | Paused -> 1 | Closed -> 0 }`. Every later arm starts with `|`.
+
+One arm can cover several cases, `| New | Pending -> 0`. It binds a payload when each case binds the same names and carries the same payload type, `| Queued(why) | Held(why) -> why`. An arm can also be `fail E`, which fits any other arm's type:
+
+```lithe
+type phase is Open | Paused | Closed
+
+error Shut;
+
+storage is record {
+  phase : phase;
+  fee : nat;
+}
+
+external view function fee() : nat raises Shut is
+  case storage.phase of {
+  | Open | Paused -> storage.fee
+  | Closed -> fail Shut
+  }
+```
+
 In a stateful function, an arm can be a block of statements instead of a value. This is how [dispatchers](/language/dispatch) are written:
 
 ```lithe fragment

@@ -473,7 +473,7 @@ impl<'a> Gen<'a> {
             self.op(GT);
             self.revert_if_true()?;
             self.op(MLOAD);
-            self.check_word(word, &|g: &mut Self| g.op(DUP1))?;
+            self.check_word(ty, &|g: &mut Self| g.op(DUP1))?;
             self.align_decoded(word);
             return Ok(());
         }
@@ -506,8 +506,7 @@ impl<'a> Gen<'a> {
         self.src_size(src);
         self.op(LT);
         self.revert_if_true()?;
-        let ty = self.peel_nominal(ty);
-        if self.is_dynamic(ty) {
+        if self.is_dynamic(self.peel_nominal(ty)) {
             return self.decode_bytes_from(src);
         }
         self.check_word(ty, &|g: &mut Self| {

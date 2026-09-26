@@ -425,6 +425,9 @@ pub(super) fn domain_layout(
 
 fn storage_shape(types: &[RType], ty: usize) -> Result<String, Error> {
     let id = peel_id(types, ty);
+    if is_enum(types, ty) || is_sum(types, id) {
+        return Ok(display_ty(types, ty));
+    }
     match types[id].kind {
         TyKind::Map | TyKind::List | TyKind::Option => Ok(display_ty(types, id)),
         TyKind::Record => {

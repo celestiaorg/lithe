@@ -13,8 +13,14 @@ interface Exchange is {
   function split(shares : nat) : (nat, nat);
 }
 
+type order_status is
+  | New
+  | Pending
+  | Complete
+  | Unwound
+
 type order is record {
-  status : uint8;
+  status : order_status;
   amount_in : nat;
   amount_out : nat;
   shares : nat;
@@ -56,8 +62,8 @@ deploy(const exchange : Exchange; const floor : nat) is {
 external function execute(const id : nat; const amount_in : nat; const min_out : nat)
   raises AlreadyExecuted | TooLittle
 is {
-  assert(storage.orders[id].status = uint8(0), AlreadyExecuted(id));
-  storage.orders[id].status := uint8(1);
+  assert(storage.orders[id].status = New, AlreadyExecuted(id));
+  storage.orders[id].status := Pending;
   storage.orders[id].amount_in := amount_in;
   defer storage.exchange.swap(amount_in, min_out)
     then (result : swap_result) {
@@ -65,7 +71,7 @@ is {
         result.amount_out >= storage.floor,
         TooLittle { amount_out = result.amount_out; floor = storage.floor; }
       );
-      storage.orders[id].status := uint8(2);
+      storage.orders[id].status := Complete;
       storage.orders[id].amount_out := result.amount_out;
       storage.executed := storage.executed + 1n;
       storage.total_out := storage.total_out + result.amount_out;
@@ -76,12 +82,12 @@ is {
 external function execute_and_deposit(const id : nat; const amount_in : nat)
   raises AlreadyExecuted | TooLittle
 is {
-  assert(storage.orders[id].status = uint8(0), AlreadyExecuted(id));
-  storage.orders[id].status := uint8(1);
+  assert(storage.orders[id].status = New, AlreadyExecuted(id));
+  storage.orders[id].status := Pending;
   storage.orders[id].amount_in := amount_in;
   defer storage.exchange.swap(amount_in, 0n)
     then (result : swap_result) {
-      storage.orders[id].status := uint8(2);
+      storage.orders[id].status := Complete;
       storage.orders[id].amount_out := result.amount_out;
       defer storage.exchange.deposit(result.amount_out)
         then (shares : nat) {
@@ -94,10 +100,10 @@ is {
 external function unwind(const id : nat)
   raises NotComplete
 is {
-  assert(storage.orders[id].status = uint8(2), NotComplete(id));
+  assert(storage.orders[id].status = Complete, NotComplete(id));
   defer storage.exchange.split(storage.orders[id].shares)
     then ((a, b) : (nat, nat)) {
-      storage.orders[id].status := uint8(3);
+      storage.orders[id].status := Unwound;
       storage.left := storage.left + a;
       storage.right := storage.right + b;
     };

@@ -71,7 +71,6 @@ impl<'a> Gen<'a> {
             blob_base: 0,
             fn_ret: Vec::new(),
             tuple_buf: 0,
-            known: HashMap::new(),
             compiling: Vec::new(),
             fails: Vec::new(),
             raises: Vec::new(),
@@ -270,7 +269,7 @@ impl<'a> Gen<'a> {
                 Expr::Call { builtin, iface, .. } => {
                     iface.is_some() || *builtin == Some(Builtin::Transfer)
                 }
-                Expr::Case { scrut, .. } => self.checked.types[scrut.ty()].kind != TyKind::Option,
+                Expr::Case { scrut, .. } => self.checked.types[scrut.ty()].kind == TyKind::Variant,
                 _ => false,
             },
         };

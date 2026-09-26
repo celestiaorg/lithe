@@ -615,6 +615,8 @@ pub(crate) enum Builtin {
     Cast,
     Some,
     None,
+    /// A variant constructor, by its index in the variant's cases.
+    Ctor(usize),
 }
 
 #[derive(Debug, Clone)]
@@ -782,7 +784,8 @@ impl Expr {
 pub(crate) struct Arm {
     pub line: u32,
     pub col: u32,
-    pub ctor: String,
+    /// `| A | B -> ...` lists both. An arm with several binds no payload.
+    pub ctors: Vec<String>,
     pub bind: Option<String>,
     pub bind_sym: Option<usize>,
     /// Names from `Some((q, r))`.
@@ -790,4 +793,12 @@ pub(crate) struct Arm {
     pub tuple_syms: Vec<usize>,
     pub stmts: Vec<Stmt>,
     pub expr: Expr,
+}
+
+impl Arm {
+    /// The arm's block ends in `fail`, so it produces no value.
+    pub(crate) fn fails(&self) -> bool {
+        matches!(self.stmts.last(), Some(Stmt::Fail { .. }))
+            && matches!(self.expr, Expr::Lit { lit: Lit::Unit, .. })
+    }
 }

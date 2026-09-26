@@ -89,7 +89,8 @@ Both contracts have the same ABI, the same error selector, the same event topic,
 | `return x;` | `... is { ... } with x` |
 | `struct S { uint a; }` | `type s is record { a : nat; }` |
 | `S({a: 1})` | `{ a = 1n; }` |
-| `enum E { A, B }` | `type e is \| A \| B`. See [Variants](/language/types#variants) |
+| `enum E { A, B }` | `type e is A \| B`, and cases may carry payloads. See [Variants](/language/types#variants) |
+| `e == E.A` | `e = A` |
 | `uint[]`, `uint[3]` | `list(nat)`, `list(nat, 3)` |
 | `mapping(address => uint)` | `map(address, nat)` |
 | `address(0)` | `Address.zero` |
@@ -163,7 +164,7 @@ Lithe error names are converted to PascalCase in the ABI, so `Not_owner` becomes
 | `payable(to).transfer(v)`, `.call{value: v}("")` | `defer Evm.transfer(to, v)` |
 | `uint r = pool.swap(x); use(r);` | `defer pool.swap(x) then (r : nat) { ... }` |
 | `try c.f() returns (r) { } catch { }` | `defer c.f() then { \| Ok(r : T) -> { } \| Error(e : bytes) -> { } }` |
-| `try` on a view call | `case query c.f() of { \| Ok(r) -> ... \| Error(e) -> ... }` |
+| `try` on a view call | `case query c.f() of { Ok(r) -> ... \| Error(e) -> ... }` |
 | `new C{salt: s}(...)` | `defer create C(...) with salt = s`. See [`create`](/language/effects#create) |
 | `type(C).creationCode` | `Evm.creation_code(C)` |
 | `token.call(...)` accepting empty return data | a result of `option(T)`: `None` when nothing comes back. See [Optional results](/language/effects#optional-results) |

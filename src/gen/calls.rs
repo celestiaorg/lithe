@@ -104,7 +104,7 @@ impl<'a> Gen<'a> {
         else {
             return Err(error(line, col, "query expects an interface method"));
         };
-        let arm = |name: &str| arms.iter().find(|arm| arm.ctor == name).cloned();
+        let arm = |name: &str| arms.iter().find(|arm| arm.ctors.iter().any(|c| c == name)).cloned();
         let (Some(ok), Some(failed)) = (arm("Ok"), arm("Error")) else {
             return Err(error(
                 line,
@@ -156,16 +156,14 @@ impl<'a> Gen<'a> {
             }
             None => {}
         }
-        self.compile_stmts(&ok.stmts)?;
-        self.arm_result(&ok.expr, sink)?;
+        self.run_arm(&ok, sink)?;
         self.push_label(end);
         self.op(JUMP);
         self.jumpdest(failed_l);
         if let Some(sym) = failed.bind_sym {
             self.revert_data(sym)?;
         }
-        self.compile_stmts(&failed.stmts)?;
-        self.arm_result(&failed.expr, sink)?;
+        self.run_arm(&failed, sink)?;
         self.branch -= 1;
         self.jumpdest(end);
         Ok(())
@@ -1603,7 +1601,7 @@ impl<'a> Gen<'a> {
                 g.push_u64(32);
                 g.op(ADD);
                 g.mstore_off(at);
-                g.check_word(word_ty, &|g: &mut Self| {
+                g.check_word(elem, &|g: &mut Self| {
                     g.mload(at);
                     g.op(MLOAD);
                 })?;

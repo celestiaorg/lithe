@@ -113,7 +113,7 @@ is {
 }
 ```
 
-`STATICCALL` means the callee, and everything it calls, cannot modify state, emit logs, or send ether. If it tries, or reverts, the transaction reverts, unless you match the query's outcome with `case query ... of { | Ok(v) -> ... | Error(e) -> ... }`. See [Recovering from failed calls](/language/continuations#recovering-from-failed-calls).
+`STATICCALL` means the callee, and everything it calls, cannot modify state, emit logs, or send ether. If it tries, or reverts, the transaction reverts, unless you match the query's outcome with `case query ... of { Ok(v) -> ... | Error(e) -> ... }`. See [Recovering from failed calls](/language/continuations#recovering-from-failed-calls).
 
 You cannot `query` a stateful method, or `defer` a `view` one:
 

@@ -27,6 +27,10 @@ impl Checker {
             *e = constant;
             return Ok(());
         }
+        if let Some(value) = self.bare_ctor(e)? {
+            *e = value;
+            return Ok(());
+        }
         match e {
             Expr::Lit { lit, ty, line, col } => {
                 *ty = match lit {
@@ -208,16 +212,8 @@ impl Checker {
                             }
                         )
                     };
-                    let ctor = |e: &Expr| match e {
-                        Expr::Ident {
-                            name, sym: None, ..
-                        } => name == "None",
-                        Expr::Call {
-                            name, base: None, ..
-                        } => name == "Some",
-                        _ => false,
-                    };
-                    if (literal(left) && !literal(right)) || (ctor(left) && !ctor(right)) {
+                    let (lc, rc) = (self.names_ctor(left), self.names_ctor(right));
+                    if (literal(left) && !literal(right)) || (lc && !rc) {
                         self.check_expr_as(right, None)?;
                         self.check_expr_as(left, Some(right.ty()))?;
                     } else {
@@ -232,6 +228,20 @@ impl Checker {
                     self.check_expr(right)?;
                 }
                 *ty = self.check_bin(*line, *col, *op, left.ty(), right.ty())?;
+                let bare = |e: &Expr| {
+                    matches!(e, Expr::Call { builtin: Some(Builtin::Ctor(_)), args, .. } if args.is_empty())
+                };
+                if is_sum(&self.types, left.ty())
+                    && !is_static_value(&self.types, left.ty())
+                    && !bare(left)
+                    && !bare(right)
+                {
+                    return Err(error(
+                        *line,
+                        *col,
+                        "a variant holding strings, bytes, or lists compares only with a case that has no payload",
+                    ));
+                }
                 Ok(())
             }
             Expr::Tuple {
@@ -526,6 +536,41 @@ impl Checker {
                     *ty = TY_OPERATION;
                     return Ok(());
                 }
+                if base.is_none() && !self.fn_names.iter().any(|n| n == name) {
+                    if let Some((vty, k)) = self.ctor(*line, *col, name)? {
+                        self.value_variant(*line, *col, vty)?;
+                        let Some(payload) = self.types[vty].variants[k].payload else {
+                            return Err(error(*line, *col, format!("`{name}` has no payload")));
+                        };
+                        let arity = self.types[payload].fields.len();
+                        if args.len() > 1
+                            && self.types[payload].kind == TyKind::Tuple
+                            && args.len() == arity
+                        {
+                            let elems = std::mem::take(args);
+                            args.push(Expr::Tuple {
+                                line: elems[0].line(),
+                                col: elems[0].col(),
+                                elems,
+                                ty: 0,
+                            });
+                        }
+                        if args.len() != 1 {
+                            return Err(error(*line, *col, format!("`{name}` takes one payload")));
+                        }
+                        self.check_expr_as(&mut args[0], Some(payload))?;
+                        if !self.same(args[0].ty(), payload) {
+                            return Err(error(
+                                args[0].line(),
+                                args[0].col(),
+                                "payload has the wrong type",
+                            ));
+                        }
+                        *builtin = Some(Builtin::Ctor(k));
+                        *ty = vty;
+                        return Ok(());
+                    }
+                }
                 if base.is_none()
                     && args.len() == 1
                     && !self.fn_names.iter().any(|n| n == name)
@@ -677,7 +722,7 @@ impl Checker {
                         ("None".to_string(), None),
                         ("Some".to_string(), self.types[sty].elem),
                     ]
-                } else if self.types[sty].kind == TyKind::Variant {
+                } else if !self.types[sty].variants.is_empty() {
                     self.types[sty]
                         .variants
                         .iter()
@@ -689,20 +734,42 @@ impl Checker {
                 let mut seen = HashSet::new();
                 let mut result = None;
                 for arm in arms.iter_mut() {
-                    if !seen.insert(arm.ctor.clone()) {
-                        return Err(error(
-                            arm.line,
-                            arm.col,
-                            format!("duplicate arm `{}`", arm.ctor),
-                        ));
+                    let binds = arm.bind.is_some() || !arm.tuple_names.is_empty();
+                    let mut payload: &Option<usize> = &None;
+                    for (i, ctor) in arm.ctors.iter().enumerate() {
+                        if !seen.insert(ctor.clone()) {
+                            return Err(error(
+                                arm.line,
+                                arm.col,
+                                format!("duplicate arm `{ctor}`"),
+                            ));
+                        }
+                        let Some((_, found)) = variants.iter().find(|(n, _)| n == ctor) else {
+                            return Err(error(
+                                arm.line,
+                                arm.col,
+                                format!("unknown constructor `{ctor}`"),
+                            ));
+                        };
+                        let same = match (payload, found) {
+                            (Some(a), Some(b)) => self.same(*a, *b),
+                            (a, b) => a.is_none() && b.is_none(),
+                        };
+                        if i > 0 && binds && !same {
+                            return Err(error(
+                                arm.line,
+                                arm.col,
+                                format!(
+                                    "`{}` and `{ctor}` carry different payloads, so one arm cannot bind both",
+                                    arm.ctors[0]
+                                ),
+                            ));
+                        }
+                        if i == 0 {
+                            payload = found;
+                        }
                     }
-                    let Some((_, payload)) = variants.iter().find(|(n, _)| n == &arm.ctor) else {
-                        return Err(error(
-                            arm.line,
-                            arm.col,
-                            format!("unknown constructor `{}`", arm.ctor),
-                        ));
-                    };
+                    let shared = arm.ctors.len() > 1;
                     let parent = self.scope;
                     self.scope = self.push_scope(parent);
                     if !arm.tuple_names.is_empty() {
@@ -750,7 +817,7 @@ impl Checker {
                         }
                         match (payload, &arm.bind) {
                             (None, None) => {}
-                            (Some(_), None) if outcome => {}
+                            (Some(_), None) if outcome || shared => {}
                             (None, Some(_)) => {
                                 return Err(error(
                                     arm.line,
@@ -783,12 +850,15 @@ impl Checker {
                     }
                     self.check_expr(&mut arm.expr)?;
                     let at = arm.expr.ty();
-                    if let Some(prev) = result {
-                        if !self.same(prev, at) {
-                            return Err(error(arm.line, arm.col, "case arms have different types"));
+                    // An arm that fails has no value, so it fits any other arm's type.
+                    if !arm.fails() {
+                        if let Some(prev) = result {
+                            if !self.same(prev, at) {
+                                return Err(error(arm.line, arm.col, "case arms have different types"));
+                            }
+                        } else {
+                            result = Some(at);
                         }
-                    } else {
-                        result = Some(at);
                     }
                     self.scope = parent;
                 }
@@ -801,6 +871,91 @@ impl Checker {
                 Ok(())
             }
         }
+    }
+
+    /// A constructor named without a payload: a variant with no payloads holds its case's
+    /// index, and one with payloads builds its record.
+    fn bare_ctor(&self, e: &Expr) -> Result<Option<Expr>, Error> {
+        let Expr::Ident {
+            name,
+            line,
+            col,
+            sym: None,
+            ..
+        } = e
+        else {
+            return Ok(None);
+        };
+        let Some((vty, k)) = self.ctor(*line, *col, name)? else {
+            return Ok(None);
+        };
+        self.value_variant(*line, *col, vty)?;
+        if self.types[vty].variants[k].payload.is_some() {
+            return Err(error(
+                *line,
+                *col,
+                format!("`{name}` carries a payload; write `{name}(...)`"),
+            ));
+        }
+        Ok(Some(if is_enum(&self.types, vty) {
+            Expr::Lit {
+                line: *line,
+                col: *col,
+                lit: Lit::Int(Word::from_u64(k as u64)),
+                ty: vty,
+            }
+        } else {
+            Expr::Call {
+                line: *line,
+                col: *col,
+                name: name.clone(),
+                args: Vec::new(),
+                base: None,
+                callee: None,
+                builtin: Some(Builtin::Ctor(k)),
+                iface: None,
+                method: None,
+                ty: vty,
+            }
+        }))
+    }
+
+    /// Rejects building a value of a variant whose payloads are not all fixed-size.
+    fn value_variant(&self, line: u32, col: u32, vty: usize) -> Result<(), Error> {
+        if self.types[vty].kind == TyKind::Variant {
+            return Err(error(
+                line,
+                col,
+                format!(
+                    "`{}` has a payload of dynamic size, so it only dispatches entrypoints; a variant value needs fixed-size payloads",
+                    self.type_name(vty)
+                ),
+            ));
+        }
+        Ok(())
+    }
+
+    /// Whether an unchecked expression is a constructor, which takes its type from the
+    /// other side of a comparison.
+    fn names_ctor(&self, e: &Expr) -> bool {
+        let (name, bare) = match e {
+            Expr::Ident {
+                name, sym: None, ..
+            } => (name, true),
+            Expr::Call {
+                name, base: None, ..
+            } => (name, false),
+            _ => return false,
+        };
+        if name == if bare { "None" } else { "Some" } {
+            return true;
+        }
+        self.lookup(name).is_none()
+            && (bare || !self.fn_names.iter().any(|n| n == name))
+            && self
+                .named
+                .values()
+                .any(|&ty| self.types[ty].variants.iter().any(|v| &v.name == name))
     }
 
     /// `Nat.max`, `Int.min`, `Int.max`, and `Address.zero`, as literals. A bound takes
@@ -869,6 +1024,13 @@ impl Checker {
         digits: Option<u8>,
         expect: usize,
     ) -> Result<usize, Error> {
+        if is_enum(&self.types, expect) {
+            return Err(error(
+                line,
+                col,
+                format!("`{}` is a variant; write one of its cases", self.type_name(expect)),
+            ));
+        }
         let peeled = self.peel(expect);
         if self.types[peeled].kind == TyKind::Bytes && digits.is_some_and(|d| d % 2 == 1) {
             return Err(error(
@@ -987,6 +1149,16 @@ impl Checker {
                 }
                 Ok(TY_BOOL)
             }
+            BinOp::Eq | BinOp::Neq if is_sum(&self.types, l) => {
+                if !self.same(l, r) {
+                    return Err(error(
+                        line,
+                        col,
+                        "comparison expects two values of the same type",
+                    ));
+                }
+                Ok(TY_BOOL)
+            }
             BinOp::Eq | BinOp::Neq if self.list_value(l) => {
                 if !self.same(l, r) {
                     return Err(error(
@@ -1058,7 +1230,7 @@ impl Checker {
         self.types[id].kind == TyKind::List && self.types[id].bits == 0
     }
 
-    fn record_field_ok(&self, ty: usize) -> bool {
+    pub(super) fn record_field_ok(&self, ty: usize) -> bool {
         match self.types[ty].kind {
             TyKind::Record | TyKind::Tuple => self.types[ty]
                 .fields
