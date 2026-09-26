@@ -916,14 +916,24 @@ fn absorb_decls(
     }
     for func in src.funcs {
         let public_name = publish(&func.name, func.private, alias);
-        // Overloads of an external function share its name; the checker compares them.
+        // Overloads share a name, all external or all internal, and differ in their
+        // parameter types; the checker compares the types themselves.
         let external = |kind: ItemKind| matches!(kind, ItemKind::Entry | ItemKind::View);
-        let overload = external(func.kind)
-            && dst
-                .funcs
+        let shape = |f: &Func| {
+            f.params
                 .iter()
-                .filter(|have| have.name == public_name)
-                .all(|have| external(have.kind));
+                .map(|p| crate::check::shape_ty(&p.ty))
+                .collect::<Vec<_>>()
+        };
+        let mut same = dst
+            .funcs
+            .iter()
+            .filter(|have| have.name == public_name)
+            .peekable();
+        let overload = (external(func.kind) || same.peek().is_some())
+            && same.all(|have| {
+                external(have.kind) == external(func.kind) && shape(have) != shape(&func)
+            });
         if !overload {
             ensure_free(dst, &public_name, &func.origin, via, func.line, func.col)?;
         }

@@ -1863,6 +1863,14 @@ const REJECT_RULES: &[(&str, &str)] = &[
         "reject/require_call.lithe",
         "module `Guarded` calls `Pausable` but does not require it",
     ),
+    (
+        "reject/overload_duplicate.lithe",
+        "duplicate function `scale(nat)`",
+    ),
+    (
+        "reject/overload_mismatch.lithe",
+        "no overload of `scale` takes these arguments",
+    ),
 ];
 
 fn reject_root(rel: &str) -> bool {
@@ -10058,6 +10066,219 @@ external function go(const t : Pinger) is {
         ),
     ] {
         let bad = format!("{src}\n{iface}\n");
+        let err = compile(&bad).expect_err(want);
+        assert!(err.to_string().contains(want), "{want}: {err}");
+    }
+}
+
+/// `examples/overloads.lithe`: arguments pick among internal overloads by count and type,
+/// storage-taking ones included, and external overloads are separate entrypoints.
+#[test]
+fn overloads_example_picks_by_arguments() {
+    let runtime = deploy(&compile(include_str!("../examples/overloads.lithe")).expect("compile"))
+        .expect("deploy");
+    let sender = Word::from_u64(7);
+    let send = |storage: HashMap<Word, Word>, sig: &str, args: &[Word]| {
+        let out = exec(
+            &runtime,
+            &word_data(sig, args),
+            storage,
+            sender,
+            Word::from_u64(0),
+            Word::from_u64(0),
+        )
+        .expect(sig);
+        assert!(!out.reverted, "{sig}: {}", pretty(&out.returndata));
+        out
+    };
+    let w = Word::from_u64;
+    let out = send(HashMap::new(), "deposit(uint256)", &[w(10_000)]);
+    let out = send(
+        out.storage,
+        "deposit(uint256,uint256)",
+        &[w(10_000), w(100)],
+    );
+    let out = send(out.storage, "stake(uint256)", &[w(500)]);
+    for (sig, args, want) in [
+        ("balance_of(address)", vec![sender], 9_970 + 9_900),
+        ("staked_of(address)", vec![sender], 500),
+        ("total()", vec![], 9_970 + 9_900),
+    ] {
+        let read = send(out.storage.clone(), sig, &args);
+        assert_eq!(load_bytes(&read.returndata, 0), w(want), "{sig}");
+    }
+}
+
+/// A function that takes a map is compiled once for every map of the type it is given: the
+/// call passes the map's slot. Transient maps get a copy of their own, a map passed on
+/// stays the same map, and each call reaches only the map it names.
+#[test]
+fn map_parameters_share_one_copy() {
+    install_mocks();
+    let src = r#"
+storage is record {
+  a : map(address, nat);
+  b : map(address, nat);
+  nested : map(address, map(address, nat));
+  names : map(address, string);
+}
+
+transient storage scratch is record {
+  t : map(address, nat);
+}
+
+function bump(const m : map(address, nat); const by : nat) is {
+  m[Evm.sender()] := m[Evm.sender()] + by;
+}
+
+function bump_twice(const m : map(address, nat)) is {
+  bump(m, 1n);
+  bump(m, 1n);
+}
+
+function put(const m : map(address, map(address, nat)); const k : address; const v : nat) is {
+  m[Evm.sender()][k] := v;
+}
+
+function name(const m : map(address, string); const v : string) is {
+  m[Evm.sender()] := v;
+}
+
+external function go(const k : address) : nat is {
+  bump(storage.a, 5n);
+  bump(storage.b, 7n);
+  bump_twice(storage.a);
+  bump(scratch.t, 100n);
+  bump(scratch.t, 1n);
+  put(storage.nested, k, 9n);
+  name(storage.names, String.concat("a string that is well ", "past thirty one bytes long"));
+} with storage.a[Evm.sender()] * 1000000n + storage.b[Evm.sender()] * 1000n
+  + scratch.t[Evm.sender()]
+
+external view function a_of(const who : address) : nat is storage.a[who]
+external view function b_of(const who : address) : nat is storage.b[who]
+external view function nested_of(const who : address; const k : address) : nat is
+  storage.nested[who][k]
+external view function name_of(const who : address) : string is storage.names[who]
+"#;
+    let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
+    let w = Word::from_u64;
+    let (me, k) = (w(7), w(0xcd));
+    let run = |storage: HashMap<Word, Word>, sig: &str, args: &[Word]| {
+        let out = exec(&runtime, &word_data(sig, args), storage, me, w(0), w(0)).expect(sig);
+        assert!(!out.reverted, "{sig}: {}", pretty(&out.returndata));
+        out
+    };
+    let out = run(HashMap::new(), "go(address)", &[k]);
+    assert_eq!(
+        load_bytes(&out.returndata, 0),
+        w(7 * 1_000_000 + 7 * 1000 + 101)
+    );
+    for (sig, args, want) in [
+        ("a_of(address)", vec![me], 7),
+        ("b_of(address)", vec![me], 7),
+        ("nested_of(address,address)", vec![me, k], 9),
+    ] {
+        let read = run(out.storage.clone(), sig, &args);
+        assert_eq!(load_bytes(&read.returndata, 0), w(want), "{sig}");
+    }
+    let named = run(out.storage.clone(), "name_of(address)", &[me]);
+    assert!(
+        named.returndata.windows(10).any(|win| win == b"a string t"),
+        "{}",
+        pretty(&named.returndata)
+    );
+    let checked = crate::check::check(crate::parse::parse(src).expect("parse")).expect("check");
+    let copies = checked
+        .prog
+        .funcs
+        .iter()
+        .filter(|f| f.name == "bump" || f.name.starts_with("bump#"))
+        .count();
+    assert_eq!(copies, 2, "one copy for persistent maps, one for transient");
+    let footprint = crate::footprint(src).expect("footprint");
+    for map in ["a", "b", "nested", "names", "transient scratch.t"] {
+        assert!(footprint.contains(map), "{map}: {footprint}");
+    }
+}
+
+/// Internal functions overload as external ones do: a call picks the overload by how many
+/// arguments it passes, then by their types. Overloads may be generic or take storage.
+#[test]
+fn internal_functions_overload() {
+    let src = r#"
+module Tally is {
+  pure function score(const x : nat) : nat is x * 2n
+  pure function score(const x : bool) : nat is 7n
+}
+
+module Pair(T) is {
+  pure function first(const a : T; const b : T) : T is a
+  pure function first(const a : T; const b : T; const c : T) : T is c
+}
+
+use Tally;
+
+storage is record {
+  total : nat;
+  seen : map(address, nat);
+}
+
+pure function pick(const x : nat) : nat is x + 1n
+pure function pick(const x : nat; const y : nat) : nat is x + y
+pure function pick(const x : bool) : nat is 100n
+pure function same(T)(const x : T) : T is x
+pure function same(T)(const x : T; const y : T) : T is y
+
+function bump(const m : map(address, nat)) is {
+  m[Evm.sender()] := 5n;
+}
+
+function bump(const x : nat) is {
+  storage.total := storage.total + x;
+}
+
+external function go(const a : nat) : nat is {
+  bump(storage.seen);
+  bump(a);
+} with pick(a) + pick(a, 10n) + pick(true) + same(a) + same(a, 1n) + Tally.score(a) + Tally.score(true)
+  + Pair.first(a, 2n) + Pair.first(a, 2n, 3n) + storage.seen[Evm.sender()] + storage.total
+"#;
+    let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
+    let out = call(&runtime, "go(uint256)", &[Word::from_u64(4)]);
+    assert!(!out.reverted, "{}", pretty(&out.returndata));
+    // 5 + 14 + 100 + 4 + 1 + 8 + 7 + 4 + 3 + 5 + 4
+    assert_eq!(load_bytes(&out.returndata, 0), Word::from_u64(155));
+    for (bad, want) in [
+        ("pick(a, 1n, 2n)", "no overload of `pick` takes 3 arguments"),
+        (
+            "pick(Evm.sender())",
+            "no overload of `pick` takes these arguments",
+        ),
+        (
+            "same(a, true)",
+            "type parameter `T` is both `nat` and `bool`",
+        ),
+    ] {
+        let bad = src.replace("pick(a) +", &format!("{bad} +"));
+        let err = compile(&bad).expect_err(want);
+        assert!(err.to_string().contains(want), "{want}: {err}");
+    }
+    for (extra, want) in [
+        (
+            "pure function pick(const y : nat) : nat is y",
+            "duplicate function `pick(nat)`",
+        ),
+        (
+            "external function pick(const y : address) is { skip; }",
+            "duplicate name `pick`",
+        ),
+        (
+            "pure function same(const x : nat) : nat is x\nexternal pure function g() : nat is same(1n)",
+            "more than one overload of `same` takes these arguments",
+        ),
+    ] {
+        let bad = format!("{src}\n{extra}\n");
         let err = compile(&bad).expect_err(want);
         assert!(err.to_string().contains(want), "{want}: {err}");
     }

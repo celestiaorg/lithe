@@ -93,6 +93,7 @@ const byExample = [
     text: "Functions",
     items: [
       { text: "Functions", link: "/by-example/functions" },
+      { text: "Overloading", link: "/by-example/overloading" },
       { text: "View and pure", link: "/by-example/view-and-pure" },
       { text: "Visibility", link: "/by-example/visibility" },
       { text: "Errors", link: "/by-example/errors" },

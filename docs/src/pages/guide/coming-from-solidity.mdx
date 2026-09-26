@@ -115,7 +115,7 @@ Both contracts have the same ABI, the same error selector, the same event topic,
 | `new Vault(a, b)` | `defer create Vault(a, b)`. See [`create`](/language/effects#create) |
 | `initializer` (OpenZeppelin, upgradeable) | `deploy`, in an `upgradeable` contract. See [Deployment](/language/deploy#upgradeable-contracts) |
 | `receive()` / `fallback()` | none. Ether is accepted only by `payable` entrypoints |
-| function overloading | external functions only, with different parameter types |
+| function overloading | the same: overloads differ in their parameter types |
 
 ## Globals
 

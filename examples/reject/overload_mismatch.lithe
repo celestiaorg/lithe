@@ -1,0 +1,14 @@
+type shares is nat;
+
+storage is record {
+  n : nat;
+}
+
+pure function scale(const x : nat) : nat is
+  x * 2n
+
+pure function scale(const x : shares) : nat is
+  nat(x) * 3n
+
+external pure function f() : nat is
+  scale(true)

@@ -1,0 +1,9 @@
+storage is record {
+  n : nat;
+}
+
+pure function scale(const x : nat) : nat is
+  x * 2n
+
+pure function scale(const y : nat) : nat is
+  y * 3n

@@ -592,8 +592,11 @@ struct Effects<'a> {
     queries: &'a mut Vec<String>,
     events: &'a mut Vec<String>,
     operations: &'a mut Vec<String>,
-    followed: &'a mut Vec<usize>,
+    /// Each function followed, with the stored maps its map parameters stand for.
+    followed: &'a mut Vec<(usize, Vec<String>)>,
     phases: &'a mut Vec<Phase>,
+    /// The stored map each map parameter in scope stands for.
+    slots: Vec<(usize, String)>,
 }
 
 fn collect(
@@ -607,7 +610,7 @@ fn collect(
     queries: &mut Vec<String>,
     events: &mut Vec<String>,
     operations: &mut Vec<String>,
-    followed: &mut Vec<usize>,
+    followed: &mut Vec<(usize, Vec<String>)>,
     phases: &mut Vec<Phase>,
 ) {
     let mut fx = Effects {
@@ -619,6 +622,7 @@ fn collect(
         operations,
         followed,
         phases,
+        slots: Vec::new(),
     };
     for s in guards {
         walk_stmt(checked, s, &mut fx);
@@ -669,7 +673,7 @@ fn walk_stmt(checked: &Checked, s: &Stmt, fx: &mut Effects<'_>) {
             parts.extend(fields.iter().map(|(_, name)| name.clone()));
             let label = parts.join(".");
             let label = match root {
-                Some(sym) => space_label(checked, *sym, label),
+                Some(sym) => space_label(checked, *sym, slot_label(fx, *sym, label)),
                 None => label,
             };
             push(fx.writes, label);
@@ -797,6 +801,7 @@ fn walk_arm(checked: &Checked, after: String, then: &Then, fx: &mut Effects<'_>)
         operations: &mut phase.operations,
         followed: fx.followed,
         phases: &mut nested,
+        slots: fx.slots.clone(),
     };
     for s in &then.stmts {
         walk_stmt(checked, s, &mut inner);
@@ -840,18 +845,47 @@ fn walk_expr(checked: &Checked, e: &Expr, fx: &mut Effects<'_>) {
             ..
         } => {
             push(fx.calls, checked.prog.funcs[*idx].name.clone());
-            if !fx.followed.contains(idx) {
-                fx.followed.push(*idx);
-                let f = &checked.prog.funcs[*idx];
+            let f = &checked.prog.funcs[*idx];
+            let slots: Vec<(usize, String)> = f
+                .params
+                .iter()
+                .zip(args)
+                .filter_map(|(param, arg)| {
+                    let sym = param
+                        .sym
+                        .filter(|sym| checked.slot_syms.contains_key(sym))?;
+                    let label = match arg {
+                        Expr::Ident {
+                            sym: Some(root), ..
+                        }
+                        | Expr::Field {
+                            root: Some(root), ..
+                        } => slot_label(fx, *root, storage_label(arg)),
+                        _ => storage_label(arg),
+                    };
+                    Some((sym, label))
+                })
+                .collect();
+            let key = (*idx, slots.iter().map(|(_, label)| label.clone()).collect());
+            if !fx.followed.contains(&key) {
+                fx.followed.push(key);
+                let outer = std::mem::replace(&mut fx.slots, slots);
                 for s in &f.stmts {
                     walk_stmt(checked, s, fx);
                 }
                 if let Some(tail) = &f.tail {
                     walk_expr(checked, tail, fx);
                 }
+                fx.slots = outer;
             }
-            for a in args {
-                walk_expr(checked, a, fx);
+            // A map passed on is a place, not a read: the callee's own accesses count.
+            for (a, param) in args.iter().zip(&f.params) {
+                if !param
+                    .sym
+                    .is_some_and(|sym| checked.slot_syms.contains_key(&sym))
+                {
+                    walk_expr(checked, a, fx);
+                }
             }
             if let Some(b) = base {
                 walk_expr(checked, b, fx);
@@ -876,7 +910,7 @@ fn walk_expr(checked: &Checked, e: &Expr, fx: &mut Effects<'_>) {
         }
         Expr::Unary { expr, .. } => walk_expr(checked, expr, fx),
         Expr::Field { .. } | Expr::Index { .. } => {
-            note_storage(checked, e, fx.reads);
+            note_storage(checked, e, fx);
             walk_keys(checked, e, fx);
         }
         Expr::Binary { left, right, .. } | Expr::Pair { left, right, .. } => {
@@ -1110,7 +1144,7 @@ fn push(xs: &mut Vec<String>, item: String) {
     }
 }
 
-fn note_storage(checked: &Checked, expr: &Expr, reads: &mut Vec<String>) {
+fn note_storage(checked: &Checked, expr: &Expr, fx: &mut Effects<'_>) {
     let sym = match expr {
         Expr::Field {
             root: Some(sym), ..
@@ -1121,7 +1155,19 @@ fn note_storage(checked: &Checked, expr: &Expr, reads: &mut Vec<String>) {
         _ => return,
     };
     if checked.syms.get(sym).is_some_and(|sym| sym.storage) {
-        push(reads, space_label(checked, sym, storage_label(expr)));
+        let label = slot_label(fx, sym, storage_label(expr));
+        push(fx.reads, space_label(checked, sym, label));
+    }
+}
+
+/// A label rooted at a map parameter, rooted instead at the stored map it stands for.
+fn slot_label(fx: &Effects<'_>, sym: usize, label: String) -> String {
+    let Some((_, base)) = fx.slots.iter().find(|(have, _)| *have == sym) else {
+        return label;
+    };
+    match label.split_once('.') {
+        Some((_, rest)) => format!("{base}.{rest}"),
+        None => base.clone(),
     }
 }
 

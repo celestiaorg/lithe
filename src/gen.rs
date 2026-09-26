@@ -133,6 +133,7 @@ pub(crate) fn codegen(checked: &Checked, shape: &Shape) -> Result<Built, Error> 
         if asm::outline(&mut code) {
             asm::optimize(&mut code);
         }
+        asm::tail_calls(&mut code, &g.func_leaves_by_label());
         asm::hoist(&mut code);
         let runtime = place_data(&code, &g.data)?;
         let mut needs = std::mem::take(&mut g.needs);
@@ -193,6 +194,7 @@ fn creation(
         if asm::outline(&mut code) {
             asm::optimize(&mut code);
         }
+        asm::tail_calls(&mut code, &g.func_leaves_by_label());
         asm::hoist(&mut code);
     }
     Ok((place_data(&code, &g.data)?, g.needs))
@@ -631,6 +633,12 @@ struct Gen<'a> {
     bytes_rep: Option<(usize, u32)>,
     /// A leaf whose slot is read from memory instead of pushed, inside a shared helper.
     dyn_key: Option<(u32, i32)>,
+    /// Map parameters of an inlined call, bound to the stored map the call passes: the
+    /// body reaches it as if it named the map. An outlined body reads the slot instead.
+    slot_binds: HashMap<usize, (usize, u32)>,
+    /// Temporaries of shared code. Each serves one site, so only the code that made it
+    /// names it, and it can live on the stack as a body's words do.
+    shared_temps: std::collections::HashSet<usize>,
     /// The slot on the stack is a transient map entry's, for the next load or store.
     transient_slot: bool,
     /// Creation code of contracts this one creates, appended after its own code: each
@@ -737,6 +745,8 @@ impl<'a> Gen<'a> {
             slot_hint: None,
             bytes_rep: None,
             dyn_key: None,
+            slot_binds: HashMap::new(),
+            shared_temps: std::collections::HashSet::new(),
             transient_slot: false,
             data: Vec::new(),
             peer_built: HashMap::new(),
@@ -776,7 +786,7 @@ impl<'a> Gen<'a> {
         let mut local = vec![-1; g.checked.syms.len()];
         for (i, slot) in local.iter_mut().enumerate() {
             let sym = &g.checked.syms[i];
-            if sym.storage {
+            if sym.storage && !g.checked.slot_syms.contains_key(&i) {
                 continue;
             }
             let w = if sym.span > 0 {
@@ -1362,6 +1372,11 @@ impl<'a> Gen<'a> {
         }
     }
 
+    /// Each compiled function's label, and how many words it returns on the stack.
+    fn func_leaves_by_label(&self) -> HashMap<u32, usize> {
+        self.funcs.values().map(|f| (f.label, f.leaves)).collect()
+    }
+
     /// Moves memory words that only one body uses, and whose address never escapes, onto the stack.
     fn promote(&mut self) {
         let mask = (1u32 << REGION_SHIFT) - 1;
@@ -1378,7 +1393,11 @@ impl<'a> Gen<'a> {
             .spaces
             .iter()
             .zip(&escapes)
-            .map(|(space, escaped)| !escaped && matches!(space.users, Users::Bodies(_)))
+            .enumerate()
+            .map(|(ix, (space, escaped))| {
+                !escaped
+                    && (matches!(space.users, Users::Bodies(_)) || self.shared_temps.contains(&ix))
+            })
             .collect();
         let tracked = |addr: u32| spaces[(addr >> REGION_SHIFT) as usize - 1];
         self.read_calldata(&tracked);
@@ -4467,7 +4486,11 @@ impl<'a> Gen<'a> {
     /// A word of memory for one site's intermediate value.
     fn temp(&mut self) -> i32 {
         self.return_sites += 1;
-        self.region(Region::Returned(self.return_sites), 32)
+        let at = self.region(Region::Returned(self.return_sites), 32);
+        if self.shared {
+            self.shared_temps.insert((at >> REGION_SHIFT) as usize - 1);
+        }
+        at
     }
 
     /// `[n]` becomes `[ptr]`: a fresh list of `n` zeroed elements, `k` words each.
@@ -4963,6 +4986,19 @@ impl<'a> Gen<'a> {
         let later = later.into_inner();
         for (arg, param) in args.iter().zip(&params) {
             let Some(sym) = param.sym else { continue };
+            if self.checked.slot_syms.contains_key(&sym) {
+                match self.stored_map(arg).filter(|_| inline) {
+                    Some(place) => {
+                        self.slot_binds.insert(sym, place);
+                    }
+                    None => {
+                        self.slot_binds.remove(&sym);
+                        self.push_map_base(arg)?;
+                        stacked.push((sym, 1));
+                    }
+                }
+                continue;
+            }
             if self.checked.syms[sym].storage {
                 continue;
             }
@@ -10288,6 +10324,7 @@ impl<'a> Gen<'a> {
 
     /// The slot of a leaf that has one to itself: a map, list, or string root.
     fn leaf_key(&self, sym: usize, leaf: u32) -> Word {
+        debug_assert!(!self.checked.slot_syms.contains_key(&sym));
         let slot = self.checked.syms[sym].slot + leaf;
         debug_assert!(self.checked.leaf_pack[slot as usize].is_full());
         self.checked.leaf_keys[slot as usize]
@@ -11972,9 +12009,7 @@ impl<'a> Gen<'a> {
             }
             TyKind::Map if reads_slot(value, sym, leaf, index) => {
                 // `m[k] := f(m[k])`: the slot is hashed once and kept for both accesses.
-                let transient = self
-                    .checked
-                    .transient_leaf(self.checked.syms[sym].slot + leaf);
+                let transient = self.checked.sym_leaf_transient(sym, leaf);
                 let at = self.temp();
                 self.hash_map_slot(sym, leaf, &[index])?;
                 self.mstore_off(at);
@@ -12316,9 +12351,7 @@ impl<'a> Gen<'a> {
     /// Pushes the slot of `m[k1][k2]...`. When every key is fixed for the rest of the body,
     /// the slot is hashed once and kept for later accesses the hash reaches on every path.
     fn push_map_slot(&mut self, sym: usize, leaf: u32, keys: &[&Expr]) -> Result<(), Error> {
-        let transient = self
-            .checked
-            .transient_leaf(self.checked.syms[sym].slot + leaf);
+        let transient = self.checked.sym_leaf_transient(sym, leaf);
         let result = self.hash_map_slot(sym, leaf, keys);
         // The access right after the slot is to transient storage.
         self.transient_slot = transient;
@@ -12333,7 +12366,11 @@ impl<'a> Gen<'a> {
                 return Ok(());
             }
         }
+        let (sym, leaf) = self.place_of(sym, leaf);
         let mut deps = Vec::new();
+        if self.checked.slot_syms.contains_key(&sym) {
+            deps.push(sym);
+        }
         let names: Option<Vec<String>> =
             keys.iter().map(|k| self.fixed_key(k, &mut deps)).collect();
         let cache = names.map(|names| (sym, leaf, names));
@@ -12434,12 +12471,54 @@ impl<'a> Gen<'a> {
     }
 
     fn map_slot(&mut self, sym: usize, leaf: u32) {
+        let (sym, leaf) = self.place_of(sym, leaf);
         self.mstore_off(self.hash_buf);
-        self.push_word(self.leaf_key(sym, leaf));
+        if self.checked.slot_syms.contains_key(&sym) {
+            self.mload(self.local[sym]);
+        } else {
+            self.push_word(self.leaf_key(sym, leaf));
+        }
         self.mstore_off(self.hash_buf + 32);
         self.push_u64(64);
         self.push_mem(self.hash_buf);
         self.op(KECCAK);
+    }
+
+    /// The stored map an argument names, if it is known here: a map of storage, or a map
+    /// parameter bound to one.
+    fn stored_map(&self, arg: &Expr) -> Option<(usize, u32)> {
+        match arg {
+            Expr::Ident { sym: Some(sym), .. } => self.slot_binds.get(sym).copied(),
+            Expr::Field {
+                root: Some(sym),
+                leaf,
+                ..
+            } if !self.checked.slot_syms.contains_key(sym) => Some((*sym, *leaf)),
+            _ => None,
+        }
+    }
+
+    /// Pushes the slot of the map an argument names: a stored map, or a map parameter.
+    fn push_map_base(&mut self, arg: &Expr) -> Result<(), Error> {
+        if let Some((sym, leaf)) = self.stored_map(arg) {
+            self.push_leaf_key(self.checked.syms[sym].slot + leaf);
+            return Ok(());
+        }
+        match arg {
+            Expr::Ident { sym: Some(sym), .. } if self.checked.slot_syms.contains_key(sym) => {
+                self.mload(self.local[*sym]);
+                Ok(())
+            }
+            other => Err(error(other.line(), other.col(), "expected a stored map")),
+        }
+    }
+
+    /// Where a map parameter's accesses go when its call is inlined.
+    fn place_of(&self, sym: usize, leaf: u32) -> (usize, u32) {
+        match self.slot_binds.get(&sym) {
+            Some(&(root, at)) => (root, at + leaf),
+            None => (sym, leaf),
+        }
     }
 
     fn list_slot(&mut self, sym: usize, leaf: u32) {
@@ -13982,6 +14061,29 @@ fn same_expr(a: &Expr, b: &Expr) -> bool {
                 ..
             },
         ) => x == y && xs.len() == ys.len() && xs.iter().zip(ys).all(|(p, q)| same_expr(p, q)),
+        // Fixed for the whole call, as `fixed_key` treats them: `Evm.sender()` and the like.
+        (
+            Expr::Call {
+                builtin: Some(x),
+                callee: None,
+                args: xs,
+                ..
+            },
+            Expr::Call {
+                builtin: Some(y),
+                callee: None,
+                args: ys,
+                ..
+            },
+        ) => {
+            x == y
+                && xs.is_empty()
+                && ys.is_empty()
+                && matches!(
+                    x,
+                    Builtin::Sender | Builtin::SelfAddr | Builtin::TxOrigin | Builtin::Value
+                )
+        }
         _ => false,
     }
 }

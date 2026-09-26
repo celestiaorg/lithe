@@ -624,6 +624,7 @@ fn rewrite(w: &[Inst]) -> Option<(usize, Vec<Inst>)> {
                 }),
             ],
         )),
+        [Op(d), Op(e), ..] if d == e && (0x81..=0x8f).contains(d) => dup_pair_stored(w),
         [a, b, Op(SWAP1), ..] if is_const(a) && is_const(b) => Some((3, vec![*b, *a])),
         [Op(SWAP1), Op(op), ..] if is_commutative(*op) => Some((2, vec![Op(*op)])),
         [Op(SWAP1), Op(op), ..] if swapped(*op).is_some() => Some((2, vec![Op(swapped(*op)?)])),
@@ -675,6 +676,45 @@ fn rewrite(w: &[Inst]) -> Option<(usize, Vec<Inst>)> {
         }
         _ => None,
     }
+}
+
+/// `DUPk DUPk`, then `k` stores to constant addresses and two `POP`s: the copies are
+/// stored and the originals dropped. Storing the originals instead, the `k - 2` words
+/// above them first, needs no copies. The stores change order, so their words must not
+/// overlap.
+fn dup_pair_stored(w: &[Inst]) -> Option<(usize, Vec<Inst>)> {
+    let Op(d) = w[0] else { return None };
+    let k = (d - 0x7f) as usize;
+    let n = 2 + 2 * k + 2;
+    let window = w.get(..n)?;
+    let mut stores = Vec::with_capacity(k);
+    for pair in window[2..2 + 2 * k].chunks(2) {
+        match pair {
+            [Push(at), Op(MSTORE)] => stores.push(*at),
+            _ => return None,
+        }
+    }
+    if window[n - 2..] != [Op(POP), Op(POP)] {
+        return None;
+    }
+    let small = |w: &Word| {
+        let b = w.to_be_bytes();
+        b[..24]
+            .iter()
+            .all(|x| *x == 0)
+            .then(|| u64::from_be_bytes(b[24..].try_into().expect("8 bytes")))
+    };
+    let apart = |a: &Word, b: &Word| (small(a)?.abs_diff(small(b)?) >= 32).then_some(());
+    for (i, a) in stores.iter().enumerate() {
+        for b in &stores[i + 1..] {
+            apart(a, b)?;
+        }
+    }
+    let mut out = Vec::with_capacity(2 * k);
+    for at in stores[2..].iter().chain(&stores[..2]) {
+        out.extend([Push(*at), Op(MSTORE)]);
+    }
+    Some((n, out))
 }
 
 fn peephole(code: &mut Vec<Inst>) -> bool {
@@ -1542,6 +1582,26 @@ fn hold(
         edits.push((q, 0, vec![Op(POP)]));
     }
     Some(edits)
+}
+
+/// A call to a compiled function right before returning what it returns becomes a jump:
+/// the function takes nothing from the stack, so it returns to the caller's caller.
+pub(crate) fn tail_calls(code: &mut Vec<Inst>, funcs: &HashMap<u32, usize>) {
+    let mut i = 0;
+    while i + 4 < code.len() {
+        if let [PushLabel(r), PushLabel(f), Op(JUMP), Label(at), rest @ ..] = &code[i..] {
+            let returns = match funcs.get(f) {
+                Some(0) => matches!(rest, [Op(JUMP), ..]),
+                Some(1) => matches!(rest, [Op(SWAP1), Op(JUMP), ..]),
+                _ => false,
+            };
+            if r == at && returns {
+                code.remove(i);
+                continue;
+            }
+        }
+        i += 1;
+    }
 }
 
 /// Labels of exits that revert: whatever was stored before reaching one is undone.

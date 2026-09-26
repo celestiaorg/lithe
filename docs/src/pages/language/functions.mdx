@@ -128,7 +128,25 @@ external function add(const a : nat; const b : nat) is {
 }
 ```
 
-These are `add(uint256)` and `add(uint256,uint256)`. Two external functions with the same signature are a duplicate entrypoint. Internal functions cannot be overloaded.
+These are `add(uint256)` and `add(uint256,uint256)`. Two external functions with the same signature are a duplicate entrypoint.
+
+Internal functions overload the same way, generic ones and ones that take storage included:
+
+```lithe
+storage is record {
+  total : nat;
+}
+
+pure function double(const a : nat) : nat is a * 2n
+
+pure function double(const a : bool) : nat is 0n
+
+external function add(const a : nat) is {
+  storage.total := storage.total + double(a) + double(true);
+}
+```
+
+A call picks the overload that takes as many arguments as it passes. If several do, the argument types choose, and literals keep their own types: `1n` is a `nat`. Overloads of one name are all internal or all external, and no two take the same parameter types.
 
 ## Calling functions
 

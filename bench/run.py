@@ -418,6 +418,21 @@ SCENARIOS = {
         ("call", "A", "decode(string)", ["Pz8_-,A"], None),
         ("call", "A", "decode(string)", [base64.b64encode(bytes(range(256)) * 4).decode()], None),
     ],
+    # Overloads picked by argument count and type, some writing the map they are given.
+    "overloads": [
+        ("send", "A", "deposit(uint256)", ["10000"], None),
+        ("send", "B", "deposit(uint256,uint256)", ["10000", "100"], None),
+        ("send", "A", "deposit(uint256,uint256)", ["10000", "10001"], None),
+        ("send", "A", "stake(uint256)", ["500"], None),
+        ("send", "A", "transfer(address,uint256)", [ADDR["B"], "70"], None),
+        ("send", "B", "transfer(address,uint256)", [ADDR["A"], "99999"], None),
+        ("send", "A", "transfer_staked(address,uint256)", [ADDR["B"], "200"], None),
+        ("send", "B", "transfer_staked(address,uint256)", [ADDR["A"], "201"], None),
+        ("call", "A", "balance_of(address)", [ADDR["A"]], None),
+        ("call", "A", "balance_of(address)", [ADDR["B"]], None),
+        ("call", "A", "staked_of(address)", [ADDR["B"]], None),
+        ("call", "A", "total()", [], None),
+    ],
     # A module passes its own namespaced storage to a generic module, once per key type.
     "tally": [
         ("send", "A", "vote(bytes32,uint256)", ["0x" + "01" * 32, "3"], None),

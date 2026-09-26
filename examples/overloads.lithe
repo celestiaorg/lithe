@@ -1,0 +1,55 @@
+(* Functions overload, internal and external alike. The number of arguments picks one;
+   when several take as many, the argument types pick. *)
+
+type shares is nat;
+
+storage is record {
+  balances : map(address, nat);
+  staked : map(address, nat);
+  total : nat;
+}
+
+(* One argument or two. One overload can call another. *)
+pure function fee(const amount : nat) : nat is
+  fee(amount, 30n)
+
+pure function fee(const amount : nat; const bps : nat) : nat is
+  amount * bps / 10_000n
+
+(* An overload can take storage: it writes the map it is given. *)
+function credit(const ledger : map(address, nat); const to : address; const amount : nat) is {
+  ledger[to] := ledger[to] + amount;
+}
+
+function credit(const to : address; const amount : nat) is {
+  credit(storage.balances, to, amount);
+  storage.total := storage.total + amount;
+}
+
+(* `shares` is its own type, so a `shares` argument picks this overload. *)
+function credit(const to : address; const amount : shares) is {
+  credit(storage.staked, to, nat(amount));
+}
+
+(* External overloads are separate entrypoints: `deposit(uint256)` and
+   `deposit(uint256,uint256)`. *)
+external function deposit(const amount : nat) is {
+  credit(Evm.sender(), amount - fee(amount));
+}
+
+external function deposit(const amount : nat; const bps : nat) is {
+  credit(Evm.sender(), amount - fee(amount, bps));
+}
+
+external function stake(const amount : nat) is {
+  credit(Evm.sender(), shares(amount));
+}
+
+external view function balance_of(const who : address) : nat is
+  storage.balances[who]
+
+external view function staked_of(const who : address) : nat is
+  storage.staked[who]
+
+external view function total() : nat is
+  storage.total

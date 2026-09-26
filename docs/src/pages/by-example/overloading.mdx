@@ -1,0 +1,71 @@
+---
+title: "Overloading"
+description: "Functions that share a name, picked by their arguments."
+---
+
+# Overloading
+
+Internal and external functions can share a name when their parameter types differ. A call picks the overload that takes as many arguments as it passes, and when several do, the one whose parameter types the arguments match.
+
+```lithe [overloads.lithe]
+(* Functions overload, internal and external alike. The number of arguments picks one;
+   when several take as many, the argument types pick. *)
+
+type shares is nat;
+
+storage is record {
+  balances : map(address, nat);
+  staked : map(address, nat);
+  total : nat;
+}
+
+(* One argument or two. One overload can call another. *)
+pure function fee(const amount : nat) : nat is
+  fee(amount, 30n)
+
+pure function fee(const amount : nat; const bps : nat) : nat is
+  amount * bps / 10_000n
+
+(* An overload can take storage: it writes the map it is given. *)
+function credit(const ledger : map(address, nat); const to : address; const amount : nat) is {
+  ledger[to] := ledger[to] + amount;
+}
+
+function credit(const to : address; const amount : nat) is {
+  credit(storage.balances, to, amount);
+  storage.total := storage.total + amount;
+}
+
+(* `shares` is its own type, so a `shares` argument picks this overload. *)
+function credit(const to : address; const amount : shares) is {
+  credit(storage.staked, to, nat(amount));
+}
+
+(* External overloads are separate entrypoints: `deposit(uint256)` and
+   `deposit(uint256,uint256)`. *)
+external function deposit(const amount : nat) is {
+  credit(Evm.sender(), amount - fee(amount));
+}
+
+external function deposit(const amount : nat; const bps : nat) is {
+  credit(Evm.sender(), amount - fee(amount, bps));
+}
+
+external function stake(const amount : nat) is {
+  credit(Evm.sender(), shares(amount));
+}
+
+external view function balance_of(const who : address) : nat is
+  storage.balances[who]
+
+external view function staked_of(const who : address) : nat is
+  storage.staked[who]
+
+external view function total() : nat is
+  storage.total
+```
+
+- Overloads of one name are all internal or all external, and no two take the same parameter types.
+- A nominal type like `shares` is its own type, so it tells overloads apart from `nat`.
+- When the argument types decide, literals keep their own types: `1n` is a `nat`. Convert a value to pick another overload.
+- Generic functions and functions of a module overload the same way.

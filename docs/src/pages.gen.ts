@@ -40,6 +40,7 @@ type Page =
   | { path: '/by-example/nominal-types'; render: 'static' }
   | { path: '/by-example/options'; render: 'static' }
   | { path: '/by-example/order-executor'; render: 'static' }
+  | { path: '/by-example/overloading'; render: 'static' }
   | { path: '/by-example/payable'; render: 'static' }
   | { path: '/by-example/primitive-types'; render: 'static' }
   | { path: '/by-example/records'; render: 'static' }

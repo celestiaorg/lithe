@@ -154,6 +154,8 @@ pub(crate) struct Checked {
     /// The program as it came in, before its modules were composed. A module's facet is
     /// built from it.
     pub source: Program,
+    /// Map parameters that hold their map's slot, and whether that map is transient.
+    pub slot_syms: HashMap<usize, bool>,
     /// The ERC-165 ids the contract answers for: ERC-165's, then each interface `supports`
     /// lists.
     pub interface_ids: Vec<u32>,
@@ -164,6 +166,9 @@ pub(crate) struct Checked {
 impl Checked {
     /// Whether a storage symbol is transient storage rather than persistent storage.
     pub(crate) fn is_transient(&self, sym: usize) -> bool {
+        if let Some(&transient) = self.slot_syms.get(&sym) {
+            return transient;
+        }
         let info = &self.syms[sym];
         info.storage
             && self.transient_from < self.leaves
@@ -172,6 +177,14 @@ impl Checked {
 
     pub(crate) fn transient_leaf(&self, leaf: u32) -> bool {
         leaf as usize >= self.transient_from
+    }
+
+    /// Whether a leaf of a storage symbol is transient, for a map parameter as well.
+    pub(crate) fn sym_leaf_transient(&self, sym: usize, leaf: u32) -> bool {
+        match self.slot_syms.get(&sym) {
+            Some(&transient) => transient,
+            None => self.transient_leaf(self.syms[sym].slot + leaf),
+        }
     }
 }
 
@@ -253,6 +266,8 @@ struct Checker {
     used_modules: HashSet<String>,
     modules: Vec<ModuleDecl>,
     generic_fns: Vec<Func>,
+    /// Each overloaded internal function's name, and the names its overloads go by.
+    overloads: HashMap<String, Vec<String>>,
     work: Vec<Func>,
     /// Instantiated `Module(args).member` type ids. An empty member is `self`.
     inst: HashMap<(String, String, Vec<usize>), usize>,
@@ -264,6 +279,11 @@ struct Checker {
     /// Checking a module function's copy for storage paths passed in: where each starts,
     /// `storage` or another module, which the copy may then use.
     spec_places: Vec<String>,
+    /// Map parameters that hold their map's slot, and whether that map is transient.
+    slot_syms: HashMap<usize, bool>,
+    /// The map parameters of the copy about to be checked, and whether each map is transient.
+    slot_params: Vec<(String, bool)>,
+    transient_from: usize,
 }
 
 #[derive(Clone)]
@@ -597,6 +617,61 @@ fn exported_name(module: &str, name: &str, k: usize) -> String {
     format!("{module}.{name}#{k}")
 }
 
+/// Internal functions that share a name become `f@1`, `f@2`, ..., which no source can name;
+/// a call picks one by its arguments. A name an external also has stays, to be a duplicate.
+fn name_overloads(
+    funcs: &mut [Func],
+    prefix: &str,
+    overloads: &mut HashMap<String, Vec<String>>,
+) -> Result<(), Error> {
+    let internal = |kind: ItemKind| {
+        matches!(
+            kind,
+            ItemKind::Function | ItemKind::Readonly | ItemKind::Pure
+        )
+    };
+    let shape = |func: &Func| {
+        func.params
+            .iter()
+            .map(|p| shape_ty(&p.ty))
+            .collect::<Vec<_>>()
+    };
+    let mut groups: Vec<(String, Vec<usize>)> = Vec::new();
+    for (i, func) in funcs.iter().enumerate() {
+        match groups.iter_mut().find(|(name, _)| *name == func.name) {
+            Some((_, members)) => members.push(i),
+            None => groups.push((func.name.clone(), vec![i])),
+        }
+    }
+    for (name, members) in groups {
+        if members.len() < 2 || !members.iter().all(|&i| internal(funcs[i].kind)) {
+            continue;
+        }
+        for (k, &i) in members.iter().enumerate() {
+            let own = shape(&funcs[i]);
+            if members[..k].iter().any(|&j| shape(&funcs[j]) == own) {
+                return Err(error(
+                    funcs[i].line,
+                    funcs[i].col,
+                    format!("duplicate function `{name}({})`", own.join(", ")),
+                ));
+            }
+        }
+        let mut names = Vec::new();
+        for (k, &i) in members.iter().enumerate() {
+            funcs[i].name = format!("{name}@{}", k + 1);
+            names.push(format!("{prefix}{}", funcs[i].name));
+        }
+        overloads.insert(format!("{prefix}{name}"), names);
+    }
+    Ok(())
+}
+
+/// The name a function has in source, without the suffix an overload or a copy adds.
+fn source_name(name: &str) -> &str {
+    name.split(['@', '#']).next().unwrap_or(name)
+}
+
 /// The entrypoint for one declaration in `use M exposing { ... }`: it has the declared
 /// header, and runs `M`'s external of the same signature. The checker holds the two headers
 /// equal once their types are known.
@@ -831,6 +906,12 @@ pub(crate) fn check(mut prog: Program) -> Result<Checked, Error> {
     }
     let source = prog.clone();
     compose(&mut prog)?;
+    let mut overloads = HashMap::new();
+    name_overloads(&mut prog.funcs, "", &mut overloads)?;
+    for module in prog.modules.iter_mut().filter(|m| !m.params.is_empty()) {
+        let prefix = format!("{}.", module.name);
+        name_overloads(&mut module.funcs, &prefix, &mut overloads)?;
+    }
     let mut generic_fns = Vec::new();
     prog.funcs.retain(|func| {
         if func.type_params.is_empty() {
@@ -897,12 +978,16 @@ pub(crate) fn check(mut prog: Program) -> Result<Checked, Error> {
         used_modules: HashSet::new(),
         modules: prog.modules.clone(),
         generic_fns,
+        overloads,
         work: Vec::new(),
         inst: HashMap::new(),
         specs: HashMap::new(),
         busy: Vec::new(),
         spec_module: None,
         spec_places: Vec::new(),
+        slot_syms: HashMap::new(),
+        slot_params: Vec::new(),
+        transient_from: 0,
     };
     c.types.push(prim(TyKind::Unit, 0));
     c.types.push(prim(TyKind::Bool, 1));
@@ -1124,6 +1209,7 @@ pub(crate) fn check(mut prog: Program) -> Result<Checked, Error> {
     // records follow them; a module's record starts at a slot derived from its name, so it
     // is the same in every contract that uses the module, and in its facet.
     let transient_from = leaf_keys.len();
+    c.transient_from = transient_from;
     let mut transient_layout = Vec::new();
     let mut module_slots: Vec<(u64, u64, String)> = Vec::new();
     let mut next_own = 2u64;
@@ -1204,8 +1290,9 @@ pub(crate) fn check(mut prog: Program) -> Result<Checked, Error> {
 
     let mut prog = prog;
     // A function that takes a map or a dynamic list reads and writes the storage it is
-    // given, so each call site with its own storage path gets its own copy, as a generic
-    // module's functions do.
+    // given, so it is copied for what it is given, as a generic module's functions are. A
+    // map is reached through its slot alone, so one copy serves every map of its type; any
+    // other storage gets a copy per storage path.
     let mut templates = Vec::new();
     for func in std::mem::take(&mut prog.funcs) {
         let internal = matches!(
@@ -1317,6 +1404,7 @@ pub(crate) fn check(mut prog: Program) -> Result<Checked, Error> {
         warnings: std::mem::take(&mut c.warnings),
         fingerprint,
         source,
+        slot_syms: c.slot_syms,
         interface_ids: Vec::new(),
         asks_interfaces: c.asks_interfaces,
     };
@@ -2567,13 +2655,14 @@ impl Checker {
         self.scope = scope;
         self.kind = f.kind;
         self.external_pure = f.external_pure;
-        self.fn_name = f.name.clone();
+        self.fn_name = source_name(&f.name).to_string();
         self.once = match f.kind {
             ItemKind::Migrate => Some("migrate"),
             ItemKind::Deploy => Some("deploy"),
             _ => None,
         };
         self.bind_storage(f.line, f.col)?;
+        let slot_params = std::mem::take(&mut self.slot_params);
         for p in &mut f.params {
             let id = self.build(&p.ty)?;
             p.ty_id = id;
@@ -2587,13 +2676,20 @@ impl Checker {
             if f.kind == ItemKind::View && self.types[id].kind == TyKind::Operation {
                 return Err(error(p.line, p.col, "view cannot take an operation"));
             }
+            let by_slot = slot_params
+                .iter()
+                .find(|(name, _)| *name == p.name)
+                .map(|&(_, transient)| transient);
             let sym = self.add_sym(Sym {
                 ty: id,
-                mutable: p.mutable,
-                storage: false,
+                mutable: p.mutable || by_slot.is_some(),
+                storage: by_slot.is_some(),
                 slot: 0,
-                span: 0,
+                span: u32::from(by_slot.is_some()),
             });
+            if let Some(transient) = by_slot {
+                self.slot_syms.insert(sym, transient);
+            }
             p.sym = Some(sym);
             self.define(p.line, p.col, &p.name, sym)?;
         }
@@ -2844,7 +2940,7 @@ impl Checker {
                     exported.kind,
                     format!("{}.{}", funcs[i].module.as_deref().unwrap_or(""), exported.name),
                 ),
-                None => (funcs[i].kind, funcs[i].name.clone()),
+                None => (funcs[i].kind, source_name(&funcs[i].name).to_string()),
             };
             let (line, col) = (funcs[i].line, funcs[i].col);
             if let Some(declared) = &self.declared[i] {
@@ -3234,6 +3330,7 @@ impl Checker {
     /// A callee's own body is checked against its declared kind, so the kind alone says
     /// what calling it does.
     fn callee_effect(&self, line: u32, col: u32, name: &str, kind: ItemKind) -> Result<(), Error> {
+        let name = source_name(name);
         if self.is_pure() && kind != ItemKind::Pure {
             return Err(self.weaker(line, col, &format!("calls `{name}`, which is not pure")));
         }
@@ -4322,6 +4419,7 @@ impl Checker {
                 line,
                 col,
             } => {
+                self.pick_overload(*line, *col, base, name, args)?;
                 if let Some(target) = self.generic_call(base, name) {
                     return self.specialize(*line, *col, target, args, callee, ty);
                 }
@@ -4600,7 +4698,8 @@ impl Checker {
                             *line,
                             *col,
                             format!(
-                                "module `{mine}` cannot call `{name}`, which belongs to no module; move it into `{mine}` or a module it requires"
+                                "module `{mine}` cannot call `{}`, which belongs to no module; move it into `{mine}` or a module it requires",
+                                source_name(name)
                             ),
                         ));
                     }
@@ -6540,6 +6639,135 @@ impl Checker {
         None
     }
 
+    /// Among overloads, the one taking as many arguments as the call passes, or of several,
+    /// the one whose parameters the arguments' types match. The call is renamed to it.
+    fn pick_overload(
+        &mut self,
+        line: u32,
+        col: u32,
+        base: &Option<Box<Expr>>,
+        name: &mut String,
+        args: &mut [Expr],
+    ) -> Result<(), Error> {
+        let keys = match base.as_deref() {
+            Some(Expr::Ident { name: alias, .. }) => vec![format!("{alias}.{name}")],
+            Some(_) => return Ok(()),
+            None => [&self.module_name, &self.spec_module]
+                .into_iter()
+                .flatten()
+                .map(|module| format!("{module}.{name}"))
+                .chain([name.clone()])
+                .collect(),
+        };
+        let Some(group) = keys.iter().find_map(|key| self.overloads.get(key)).cloned() else {
+            return Ok(());
+        };
+        let candidates: Vec<(String, Overload)> = group
+            .into_iter()
+            .map(|full| {
+                let overload = self.overload(&full);
+                (full, overload)
+            })
+            .filter(|(_, overload)| overload.arity() == args.len())
+            .collect();
+        let chosen = match candidates.as_slice() {
+            [] => {
+                let n = args.len();
+                let s = if n == 1 { "" } else { "s" };
+                return Err(error(
+                    line,
+                    col,
+                    format!("no overload of `{name}` takes {n} argument{s}"),
+                ));
+            }
+            [(full, _)] => full.clone(),
+            several => {
+                let saved = self.expect;
+                self.expect = None;
+                for arg in args.iter_mut() {
+                    self.check_expr(arg)?;
+                }
+                self.expect = saved;
+                let mut fitting = Vec::new();
+                for (full, overload) in several {
+                    if self.fits(overload, args) {
+                        fitting.push(full.clone());
+                    }
+                }
+                match fitting.as_slice() {
+                    [one] => one.clone(),
+                    [] => {
+                        return Err(error(
+                            line,
+                            col,
+                            format!("no overload of `{name}` takes these arguments"),
+                        ));
+                    }
+                    _ => {
+                        return Err(error(
+                            line,
+                            col,
+                            format!("more than one overload of `{name}` takes these arguments"),
+                        ));
+                    }
+                }
+            }
+        };
+        let suffix = &chosen[chosen.rfind('@').unwrap_or(chosen.len())..];
+        name.push_str(suffix);
+        Ok(())
+    }
+
+    /// An overload's parameters. A template is looked up first: a copy made of it takes its name.
+    fn overload(&self, full: &str) -> Overload {
+        if let Some(func) = self.generic_fns.iter().find(|func| func.name == full) {
+            return Overload::Template(None, func.clone());
+        }
+        if let Some((module, own)) = full.rsplit_once('.') {
+            if let Some(index) = self.generic_module(module) {
+                if let Some(func) = self.modules[index]
+                    .funcs
+                    .iter()
+                    .find(|func| func.name == own)
+                {
+                    return Overload::Template(Some(index), func.clone());
+                }
+            }
+        }
+        let i = self
+            .fn_names
+            .iter()
+            .position(|n| n == full)
+            .expect("an overload is a function");
+        Overload::Sig(self.sigs[i].params.iter().map(|(ty, _)| *ty).collect())
+    }
+
+    fn fits(&mut self, overload: &Overload, args: &[Expr]) -> bool {
+        match overload {
+            Overload::Sig(params) => params
+                .iter()
+                .zip(args)
+                .all(|(&param, arg)| self.same(arg.ty(), param)),
+            Overload::Template(module, func) => {
+                let params = match module {
+                    Some(index) => self.modules[*index].params.clone(),
+                    None => func.type_params.clone(),
+                };
+                let mut env = HashMap::new();
+                for (param, arg) in func.params.iter().zip(args) {
+                    let (line, col) = (arg.line(), arg.col());
+                    if self
+                        .unify(&param.ty, arg.ty(), *module, &params, &mut env, line, col)
+                        .is_err()
+                    {
+                        return false;
+                    }
+                }
+                true
+            }
+        }
+    }
+
     fn generic_module(&self, name: &str) -> Option<usize> {
         self.modules
             .iter()
@@ -6626,6 +6854,7 @@ impl Checker {
         let mut places = Vec::new();
         let mut shapes = Vec::new();
         let mut keep = Vec::new();
+        let mut slots = Vec::new();
         let mut hidden = Vec::new();
         for (param, arg) in template.params.iter().zip(args.iter()) {
             let concrete = self.build_subst(&param.ty, target.module, &env)?;
@@ -6646,6 +6875,13 @@ impl Checker {
                         arg.col(),
                         format!("pass a storage path to `{}`", param.name),
                     ));
+                }
+                // A map is reached through its slot alone, so one copy serves every map of
+                // the type: the call passes the slot.
+                if let Some(transient) = self.map_slot_transient(concrete, arg) {
+                    slots.push((param.name.clone(), transient));
+                    keep.push(param.clone());
+                    continue;
                 }
                 // The same place, however its name was written, shares one copy.
                 let named = match path.first() {
@@ -6686,6 +6922,9 @@ impl Checker {
                 sym: None,
             });
         }
+        for (name, transient) in &slots {
+            key.push_str(&format!("\u{1}{name}:{transient}"));
+        }
         let idx = if let Some(idx) = self.specs.get(&key).copied() {
             idx
         } else {
@@ -6693,7 +6932,9 @@ impl Checker {
                 return Err(error(line, col, "recursion is not supported"));
             }
             self.busy.push(key.clone());
+            let saved = std::mem::replace(&mut self.slot_params, slots);
             let made = self.monomorphize(&target, &template, &env, &places, &keep);
+            self.slot_params = saved;
             self.busy.pop();
             let idx = made?;
             self.specs.insert(key, idx);
@@ -6726,6 +6967,25 @@ impl Checker {
         *ty = self.sigs[idx].ret;
         self.note_call(idx);
         Ok(())
+    }
+
+    /// For a map argument, whether the map is transient: a stored map named by its path, or a
+    /// map parameter passed on.
+    fn map_slot_transient(&self, ty: usize, arg: &Expr) -> Option<bool> {
+        if self.types[peel_id(&self.types, ty)].kind != TyKind::Map {
+            return None;
+        }
+        match arg {
+            Expr::Ident { sym: Some(sym), .. } => self.slot_syms.get(sym).copied(),
+            Expr::Field {
+                root: Some(sym),
+                leaf,
+                ..
+            } if !self.slot_syms.contains_key(sym) => {
+                Some((self.syms[*sym].slot + leaf) as usize >= self.transient_from)
+            }
+            _ => None,
+        }
     }
 
     fn template(&self, target: &GenericCall) -> Result<Func, Error> {
@@ -7119,6 +7379,20 @@ impl Checker {
             .into_iter()
             .next()
             .unwrap_or_else(|| display_ty(&self.types, id))
+    }
+}
+
+enum Overload {
+    Sig(Vec<usize>),
+    Template(Option<usize>, Func),
+}
+
+impl Overload {
+    fn arity(&self) -> usize {
+        match self {
+            Overload::Sig(params) => params.len(),
+            Overload::Template(_, func) => func.params.len(),
+        }
     }
 }
 
@@ -7807,7 +8081,7 @@ fn display_ty(types: &[RType], ty: usize) -> String {
     }
 }
 
-fn shape_ty(ty: &TypeRef) -> String {
+pub(crate) fn shape_ty(ty: &TypeRef) -> String {
     match ty {
         TypeRef::Name { name, .. } => name.clone(),
         TypeRef::Record { fields, .. } => {
