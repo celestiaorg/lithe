@@ -177,7 +177,7 @@ fn dispatcher(f: &Func) -> Option<&Expr> {
     for s in &f.stmts {
         if !matches!(
             s,
-            Stmt::Assert { .. } | Stmt::Skip { .. } | Stmt::Const { .. }
+            Stmt::Assert { .. } | Stmt::Skip | Stmt::Const { .. }
         ) {
             return None;
         }
@@ -532,7 +532,7 @@ fn stmt_case(types: &[RType], stmts: &[Stmt]) -> bool {
                 || until.iter().chain(bound).chain(elem_init).chain(length).any(expr)
                 || stmt_case(types, body)
         }
-        Stmt::Skip { .. } => false,
+        Stmt::Skip => false,
     })
 }
 
@@ -552,7 +552,7 @@ fn expr_case(types: &[RType], e: &Expr) -> bool {
         }
         Expr::Case { .. } => true,
         Expr::Query { expr: e, .. } | Expr::Unary { expr: e, .. } => expr(e),
-        Expr::Binary { left, right, .. } | Expr::Pair { left, right, .. } => {
+        Expr::Binary { left, right, .. } => {
             expr(left) || expr(right)
         }
         Expr::Tuple { elems, .. } | Expr::List { elems, .. } => elems.iter().any(expr),
@@ -750,7 +750,7 @@ fn walk_stmt(checked: &Checked, s: &Stmt, fx: &mut Effects<'_>) {
                 walk_stmt(checked, s, fx);
             }
         }
-        Stmt::Skip { .. } => {}
+        Stmt::Skip => {}
     }
 }
 
@@ -913,7 +913,7 @@ fn walk_expr(checked: &Checked, e: &Expr, fx: &mut Effects<'_>) {
             note_storage(checked, e, fx);
             walk_keys(checked, e, fx);
         }
-        Expr::Binary { left, right, .. } | Expr::Pair { left, right, .. } => {
+        Expr::Binary { left, right, .. } => {
             walk_expr(checked, left, fx);
             walk_expr(checked, right, fx);
         }
@@ -1025,7 +1025,7 @@ fn raise_stmt(checked: &Checked, stmt: &Stmt, ids: &mut Vec<usize>) {
                 raise_stmt(checked, stmt, ids);
             }
         }
-        Stmt::Skip { .. } => {}
+        Stmt::Skip => {}
     }
 }
 
@@ -1077,7 +1077,7 @@ fn raise_expr(checked: &Checked, expr: &Expr, ids: &mut Vec<usize>) {
             raise_expr(checked, base, ids);
             raise_expr(checked, index, ids);
         }
-        Expr::Binary { left, right, .. } | Expr::Pair { left, right, .. } => {
+        Expr::Binary { left, right, .. } => {
             raise_expr(checked, left, ids);
             raise_expr(checked, right, ids);
         }

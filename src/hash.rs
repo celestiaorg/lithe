@@ -136,7 +136,6 @@ pub(crate) fn ripemd160(data: &[u8]) -> [u8; 20] {
 
 /// Signs `hash` with private key `key` and nonce `k`: `(v, r, s)`, with `s` in the lower
 /// half of the curve order, as wallets sign.
-#[cfg(test)]
 pub(crate) fn sign(hash: Word, key: Word, k: Word) -> (u8, Word, Word) {
     let n = order();
     let point = mul(k, generator());
@@ -153,7 +152,6 @@ pub(crate) fn sign(hash: Word, key: Word, k: Word) -> (u8, Word, Word) {
 }
 
 /// The Ethereum address of private key `key`.
-#[cfg(test)]
 pub(crate) fn address_of(key: Word) -> Word {
     let point = mul(key, generator());
     let mut buf = [0u8; 64];

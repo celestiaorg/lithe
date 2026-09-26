@@ -1,0 +1,563 @@
+use super::*;
+
+#[test]
+fn keccak_matches_ethereum() {
+    let empty = keccak256(b"");
+    assert_eq!(
+        hex(&empty),
+        "c5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470"
+    );
+    assert_eq!(hex(&selector("transfer(address,uint256)")), "a9059cbb");
+}
+
+#[test]
+fn counter_enforces_storage_and_sender() {
+    let init = compile(COUNTER).expect("compile");
+    let runtime = deploy(&init).expect("deploy");
+    let owner = Word::from_u64(0xab);
+    let mut storage = HashMap::new();
+    storage.insert(Word::from_u64(1), owner);
+
+    let inc = exec(
+        &runtime,
+        &word_data("increment(uint256)", &[Word::from_u64(5)]),
+        storage.clone(),
+        owner,
+        Word::from_u64(0),
+        Word::from_u64(0),
+    )
+    .expect("inc");
+    assert!(!inc.reverted, "{}", pretty(&inc.returndata));
+    assert_eq!(slot(&inc.storage, 0), Word::from_u64(5));
+    assert_eq!(trace_kinds(&inc.trace), ["sstore", "log"]);
+
+    let zero = exec(
+        &runtime,
+        &word_data("increment(uint256)", &[Word::from_u64(0)]),
+        storage.clone(),
+        owner,
+        Word::from_u64(0),
+        Word::from_u64(0),
+    )
+    .expect("zero");
+    assert!(!zero.reverted, "{}", pretty(&zero.returndata));
+    assert!(zero.trace.is_empty());
+
+    let mut full = storage.clone();
+    full.insert(Word::from_u64(0), Word::from_u64(0).not());
+    let overflow = exec(
+        &runtime,
+        &word_data("increment(uint256)", &[Word::from_u64(1)]),
+        full.clone(),
+        owner,
+        Word::from_u64(0),
+        Word::from_u64(0),
+    )
+    .expect("overflow");
+    assert!(overflow.reverted);
+    assert_eq!(slot(&overflow.storage, 0), Word::from_u64(0).not());
+    assert!(overflow.returndata.starts_with(&selector("Panic(uint256)")));
+    assert_eq!(load_bytes(&overflow.returndata, 4), Word::from_u64(0x11));
+
+    let denied = exec(
+        &runtime,
+        &word_data("reset()", &[]),
+        storage.clone(),
+        Word::from_u64(0xcd),
+        Word::from_u64(0),
+        Word::from_u64(0),
+    )
+    .expect("denied");
+    assert!(denied.reverted);
+    assert_eq!(denied.returndata, selector("InvalidOwnerAccess()").to_vec());
+    assert_eq!(slot(&denied.storage, 0), Word::from_u64(0));
+
+    let mut seeded = storage;
+    seeded.insert(Word::from_u64(0), Word::from_u64(9));
+    let reset = exec(
+        &runtime,
+        &word_data("reset()", &[]),
+        seeded,
+        owner,
+        Word::from_u64(0),
+        Word::from_u64(0),
+    )
+    .expect("reset");
+    assert!(!reset.reverted, "{}", pretty(&reset.returndata));
+    assert_eq!(slot(&reset.storage, 0), Word::from_u64(0));
+
+    let view = exec(
+        &runtime,
+        &word_data("get_count()", &[]),
+        {
+            let mut s = HashMap::new();
+            s.insert(Word::from_u64(0), Word::from_u64(42));
+            s
+        },
+        owner,
+        Word::from_u64(0),
+        Word::from_u64(0),
+    )
+    .expect("view");
+    assert!(!view.reverted, "{}", pretty(&view.returndata));
+    assert_eq!(load_bytes(&view.returndata, 0), Word::from_u64(42));
+    assert!(view.trace.is_empty());
+}
+
+#[test]
+fn rejected_programs_name_the_rule() {
+    let err = compile(BARE_STORAGE).expect_err("bare storage");
+    assert!(
+        err.to_string()
+            .contains("storage field `paid` must be qualified as `storage.paid`"),
+        "{err}"
+    );
+    let err = compile(VIEW_WRITES).expect_err("view");
+    assert!(
+        err.to_string().contains("declared effect is weaker than the body's: external view function `bad` writes storage"),
+        "{err}"
+    );
+
+    let err = compile(FUNCTION_WRITES).expect_err("function");
+    assert!(
+        err.to_string().contains(
+            "declared effect is weaker than the body's: view function `bad` writes storage"
+        ),
+        "{err}"
+    );
+    let err = crate::compile_contracts(CREATE).expect_err("create");
+    assert!(
+        err.to_string()
+            .contains("`Vault` has no `deploy` parameters, so it takes no arguments"),
+        "{err}"
+    );
+    let err = compile(UNDECLARED_ERROR).expect_err("undeclared");
+    assert!(
+        err.to_string()
+            .contains("external function `go` must declare its errors"),
+        "{err}"
+    );
+    assert!(err.to_string().contains("Not_owner"), "{err}");
+    let err = compile(ERROR_MISMATCH).expect_err("mismatch");
+    assert!(
+        err.to_string()
+            .contains("external function `go` may raise `Closed`"),
+        "{err}"
+    );
+    assert!(err.to_string().contains("declared:"), "{err}");
+    assert!(err.to_string().contains("inferred:"), "{err}");
+    let err = compile(STRING_ERROR).expect_err("string");
+    assert!(err.to_string().contains("errors must be typed"), "{err}");
+    let err = compile(UNTYPED_BINDING).expect_err("untyped");
+    assert!(
+        err.to_string().contains("local bindings require a type"),
+        "{err}"
+    );
+    let err = compile(ERROR_COLLISION).expect_err("collision");
+    assert!(
+        err.to_string()
+            .contains("error selector `NotOwner()` collides with `NotOwner()`"),
+        "{err}"
+    );
+}
+
+#[test]
+fn storage_is_written_before_calls() {
+    let runtime = deploy(&compile(PAY).expect("compile")).expect("deploy");
+    let to = Word::from_u64(2);
+    let out = exec(
+        &runtime,
+        &word_data("pay(address)", &[to]),
+        HashMap::new(),
+        Word::from_u64(0xab),
+        Word::from_u64(10),
+        Word::from_u64(10),
+    )
+    .expect("pay");
+    assert!(!out.reverted, "{}", pretty(&out.returndata));
+    assert_eq!(slot(&out.storage, 0), Word::from_u64(10));
+    assert_eq!(out.balances.get(&to).copied(), Some(Word::from_u64(10)));
+    let sstore_at = out
+        .trace
+        .iter()
+        .position(|e| matches!(e, Ev::SStore { .. }));
+    let call_at = out.trace.iter().position(|e| matches!(e, Ev::Call { .. }));
+    assert!(sstore_at < call_at, "{:?}", out.trace);
+}
+
+#[test]
+fn static_call_runs_before_storage_is_written() {
+    let runtime = deploy(&compile(GRAB).expect("compile")).expect("deploy");
+    assert!(runtime.contains(&0xfa), "missing STATICCALL");
+    let to = Word::from_u64(1);
+    let out = exec(
+        &runtime,
+        &word_data("grab(address)", &[to]),
+        HashMap::new(),
+        Word::from_u64(0xab),
+        Word::from_u64(0),
+        Word::from_u64(1),
+    )
+    .expect("grab");
+    assert!(!out.reverted, "{}", pretty(&out.returndata));
+    assert_eq!(slot(&out.storage, 0), Word::from_u64(8));
+    assert_eq!(trace_kinds(&out.trace), ["static", "sstore", "call"]);
+}
+
+#[test]
+fn touch_records_time_for_the_guard() {
+    let runtime = deploy(&compile(TOUCH).expect("compile")).expect("deploy");
+    let guard = Word::from_u64(0xab);
+    let mut storage = HashMap::new();
+    storage.insert(Word::from_u64(1), guard);
+
+    let denied = exec(
+        &runtime,
+        &word_data("touch()", &[]),
+        storage.clone(),
+        Word::from_u64(0xcd),
+        Word::from_u64(0),
+        Word::from_u64(0),
+    )
+    .expect("denied");
+    assert!(denied.reverted);
+    assert_eq!(denied.returndata, selector("NotGuard()").to_vec());
+    assert!(denied.storage.get(&Word::from_u64(0)).is_none());
+
+    let touched = exec(
+        &runtime,
+        &word_data("touch()", &[]),
+        storage.clone(),
+        guard,
+        Word::from_u64(0),
+        Word::from_u64(0),
+    )
+    .expect("touch");
+    assert!(!touched.reverted, "{}", pretty(&touched.returndata));
+    assert_eq!(slot(&touched.storage, 0), Word::from_u64(1_700_000_000));
+    assert!(touched.trace.iter().all(|e| !matches!(e, Ev::Call { .. })));
+
+    let next = Word::from_u64(0xcd);
+    let moved = exec(
+        &runtime,
+        &word_data("set_guard(address)", &[next]),
+        storage,
+        guard,
+        Word::from_u64(0),
+        Word::from_u64(0),
+    )
+    .expect("set guard");
+    assert!(!moved.reverted, "{}", pretty(&moved.returndata));
+    assert_eq!(slot(&moved.storage, 1), next);
+
+    let view = exec(
+        &runtime,
+        &word_data("updated()", &[]),
+        touched.storage,
+        guard,
+        Word::from_u64(0),
+        Word::from_u64(0),
+    )
+    .expect("view");
+    assert_eq!(
+        load_bytes(&view.returndata, 0),
+        Word::from_u64(1_700_000_000)
+    );
+    assert!(view.trace.is_empty());
+}
+
+#[test]
+fn gate_pays_out_only_when_open() {
+    let layout = leaves(GATE);
+    let runtime = deploy(&compile(GATE).expect("compile")).expect("deploy");
+    let owner = Word::from_u64(0xab);
+    let to = Word::from_u64(2);
+    let mut storage = HashMap::new();
+    layout.put(&mut storage, 1, owner);
+
+    let closed = exec(
+        &runtime,
+        &word_data("withdraw(address)", &[to]),
+        storage.clone(),
+        owner,
+        Word::from_u64(0),
+        Word::from_u64(10),
+    )
+    .expect("closed");
+    assert!(closed.reverted);
+    assert_eq!(closed.returndata, selector("Closed()").to_vec());
+    assert!(closed.trace.iter().all(|e| !matches!(e, Ev::Call { .. })));
+    assert!(closed.balances.get(&to).is_none());
+
+    let denied = exec(
+        &runtime,
+        &word_data("set_open(bool)", &[Word::from_u64(1)]),
+        storage.clone(),
+        Word::from_u64(0xcd),
+        Word::from_u64(0),
+        Word::from_u64(0),
+    )
+    .expect("denied");
+    assert!(denied.reverted);
+    assert_eq!(denied.returndata, selector("NotOwner()").to_vec());
+
+    let opened = exec(
+        &runtime,
+        &word_data("set_open(bool)", &[Word::from_u64(1)]),
+        storage.clone(),
+        owner,
+        Word::from_u64(0),
+        Word::from_u64(0),
+    )
+    .expect("open");
+    assert!(!opened.reverted, "{}", pretty(&opened.returndata));
+    assert_eq!(layout.get(&opened.storage, 0), Word::from_u64(1));
+
+    let paid = exec(
+        &runtime,
+        &word_data("withdraw(address)", &[to]),
+        opened.storage,
+        owner,
+        Word::from_u64(0),
+        Word::from_u64(10),
+    )
+    .expect("withdraw");
+    assert!(!paid.reverted, "{}", pretty(&paid.returndata));
+    assert_eq!(paid.balances.get(&to).copied(), Some(Word::from_u64(10)));
+    assert!(paid.trace.iter().any(|e| matches!(e, Ev::Call { .. })));
+}
+
+#[test]
+fn typed_errors_revert_with_custom_error_data() {
+    let layout = leaves(BANK);
+    let runtime = deploy(&compile(BANK).expect("compile")).expect("deploy");
+    let owner = Word::from_u64(0xab);
+    let mut storage = HashMap::new();
+    layout.put(&mut storage, 0, owner);
+    layout.put(&mut storage, 2, Word::from_u64(3));
+
+    let paused = {
+        let mut s = storage.clone();
+        layout.put(&mut s, 1, Word::from_u64(1));
+        s
+    };
+    let denied = exec(
+        &runtime,
+        &word_data("withdraw(uint256)", &[Word::from_u64(1)]),
+        paused,
+        owner,
+        Word::from_u64(0),
+        Word::from_u64(0),
+    )
+    .expect("paused");
+    assert!(denied.reverted);
+    assert_eq!(denied.returndata, selector("Paused()").to_vec());
+    assert!(denied.trace.is_empty());
+
+    let zero = exec(
+        &runtime,
+        &word_data("withdraw(uint256)", &[Word::from_u64(0)]),
+        storage.clone(),
+        owner,
+        Word::from_u64(0),
+        Word::from_u64(0),
+    )
+    .expect("zero");
+    assert!(zero.reverted);
+    assert!(zero
+        .returndata
+        .starts_with(&selector("InvalidAmount(uint256)")));
+    assert_eq!(load_bytes(&zero.returndata, 4), Word::from_u64(0));
+
+    let short = exec(
+        &runtime,
+        &word_data("withdraw(uint256)", &[Word::from_u64(5)]),
+        storage.clone(),
+        owner,
+        Word::from_u64(0),
+        Word::from_u64(0),
+    )
+    .expect("short");
+    assert!(short.reverted);
+    assert!(short
+        .returndata
+        .starts_with(&selector("InsufficientBalance(uint256,uint256)")));
+    assert_eq!(load_bytes(&short.returndata, 4), Word::from_u64(3));
+    assert_eq!(load_bytes(&short.returndata, 36), Word::from_u64(5));
+    assert_eq!(layout.get(&short.storage, 2), Word::from_u64(3));
+
+    let paid = exec(
+        &runtime,
+        &word_data("withdraw(uint256)", &[Word::from_u64(2)]),
+        storage.clone(),
+        owner,
+        Word::from_u64(0),
+        Word::from_u64(0),
+    )
+    .expect("paid");
+    assert!(!paid.reverted, "{}", pretty(&paid.returndata));
+    assert_eq!(layout.get(&paid.storage, 2), Word::from_u64(1));
+    assert_eq!(trace_kinds(&paid.trace), ["sstore", "log"]);
+
+    let stranger = exec(
+        &runtime,
+        &word_data("set_pause(bool)", &[Word::from_u64(1)]),
+        storage.clone(),
+        Word::from_u64(0xcd),
+        Word::from_u64(0),
+        Word::from_u64(0),
+    )
+    .expect("stranger");
+    assert!(stranger.reverted);
+    assert_eq!(stranger.returndata, selector("NotOwner()").to_vec());
+    assert_eq!(layout.get(&stranger.storage, 1), Word::from_u64(0));
+
+    let closed = exec(
+        &runtime,
+        &word_data("set_pause(bool)", &[Word::from_u64(1)]),
+        storage,
+        owner,
+        Word::from_u64(0),
+        Word::from_u64(0),
+    )
+    .expect("close");
+    assert!(!closed.reverted, "{}", pretty(&closed.returndata));
+    assert_eq!(layout.get(&closed.storage, 1), Word::from_u64(1));
+}
+
+#[test]
+fn division_by_zero_is_a_panic() {
+    let src = "\
+storage is record {
+  count : nat;
+}
+
+external function boom(const n : nat) is {
+  storage.count := n / 0n;
+}
+";
+    let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
+    let out = exec(
+        &runtime,
+        &word_data("boom(uint256)", &[Word::from_u64(1)]),
+        HashMap::new(),
+        Word::from_u64(1),
+        Word::from_u64(0),
+        Word::from_u64(0),
+    )
+    .expect("boom");
+    assert!(out.reverted);
+    assert!(out.returndata.starts_with(&selector("Panic(uint256)")));
+    assert_eq!(load_bytes(&out.returndata, 4), Word::from_u64(0x12));
+}
+
+#[test]
+fn dispatch_errors_follow_the_path() {
+    let tree = crate::abi_tree(DISPATCH_ERRORS).expect("abi-tree");
+    assert_eq!(
+        tree,
+        "\
+reset
+  path:
+    main -> owner_main -> reset
+
+  calls:
+    none
+
+  guards:
+    - Evm.sender() = storage.owner
+
+  storage reads:
+    - storage.owner
+
+  storage writes:
+    - storage.count
+
+  queries:
+    none
+
+  events:
+    none
+
+  operations:
+    none
+
+  raises:
+    - NotOwner()
+
+increment
+  path:
+    main -> public_main -> increment
+
+  calls:
+    none
+
+  guards:
+    none
+
+  storage reads:
+    - storage.count
+
+  storage writes:
+    - storage.count
+
+  queries:
+    none
+
+  events:
+    none
+
+  operations:
+    none
+
+  raises:
+    none
+"
+    );
+
+    let report = crate::errors(BANK).expect("errors");
+    assert!(
+        report.contains(
+            "\
+withdraw(uint256)
+
+  Paused()
+  InvalidAmount(uint256)
+  InsufficientBalance(uint256,uint256)
+"
+        ),
+        "{report}"
+    );
+    assert!(
+        report.contains(
+            "\
+set_pause(bool)
+
+  NotOwner()
+"
+        ),
+        "{report}"
+    );
+    let sel = hex(&selector("InsufficientBalance(uint256,uint256)"));
+    assert!(
+        report.contains(&format!("selector:\n  0x{sel}\n")),
+        "{report}"
+    );
+    assert!(
+        report.contains(
+            "\
+fields:
+  available : uint256
+  required : uint256
+
+raised by:
+  withdraw(uint256)
+"
+        ),
+        "{report}"
+    );
+    assert!(
+        report.contains("raised by:\n  set_pause(bool)\n"),
+        "{report}"
+    );
+}

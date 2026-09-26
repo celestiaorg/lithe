@@ -222,12 +222,6 @@ pub(crate) enum TypeRef {
         col: u32,
         elems: Vec<TypeRef>,
     },
-    Pair {
-        line: u32,
-        col: u32,
-        left: Box<TypeRef>,
-        right: Box<TypeRef>,
-    },
     /// `Set(address)` or `SetEnumerable(address).iterator`.
     Apply {
         line: u32,
@@ -252,7 +246,6 @@ impl TypeRef {
             | Self::Option { line, .. }
             | Self::Map { line, .. }
             | Self::Tuple { line, .. }
-            | Self::Pair { line, .. }
             | Self::Apply { line, .. } => *line,
             Self::Hole { .. } => 0,
         }
@@ -267,7 +260,6 @@ impl TypeRef {
             | Self::Option { col, .. }
             | Self::Map { col, .. }
             | Self::Tuple { col, .. }
-            | Self::Pair { col, .. }
             | Self::Apply { col, .. } => *col,
             Self::Hole { .. } => 0,
         }
@@ -330,8 +322,6 @@ pub(crate) struct Func {
 
 #[derive(Debug, Clone)]
 pub(crate) struct Raises {
-    pub line: u32,
-    pub col: u32,
     pub parts: Vec<NameAt>,
 }
 
@@ -398,8 +388,6 @@ pub(crate) enum Stmt {
         reason: Raised,
     },
     Fail {
-        line: u32,
-        col: u32,
         reason: Raised,
     },
     Call {
@@ -407,10 +395,7 @@ pub(crate) enum Stmt {
         col: u32,
         expr: Expr,
     },
-    Skip {
-        line: u32,
-        col: u32,
-    },
+    Skip,
     Emit {
         line: u32,
         col: u32,
@@ -718,13 +703,6 @@ pub(crate) enum Expr {
         right: Box<Expr>,
         ty: usize,
     },
-    Pair {
-        line: u32,
-        col: u32,
-        left: Box<Expr>,
-        right: Box<Expr>,
-        ty: usize,
-    },
     Tuple {
         line: u32,
         col: u32,
@@ -757,7 +735,6 @@ impl Expr {
             | Self::Case { line, .. }
             | Self::Unary { line, .. }
             | Self::Binary { line, .. }
-            | Self::Pair { line, .. }
             | Self::Tuple { line, .. }
             | Self::List { line, .. }
             | Self::Record { line, .. } => *line,
@@ -775,7 +752,6 @@ impl Expr {
             | Self::Case { col, .. }
             | Self::Unary { col, .. }
             | Self::Binary { col, .. }
-            | Self::Pair { col, .. }
             | Self::Tuple { col, .. }
             | Self::List { col, .. }
             | Self::Record { col, .. } => *col,
@@ -793,30 +769,12 @@ impl Expr {
             | Self::Case { ty, .. }
             | Self::Unary { ty, .. }
             | Self::Binary { ty, .. }
-            | Self::Pair { ty, .. }
             | Self::Tuple { ty, .. }
             | Self::List { ty, .. }
             | Self::Record { ty, .. } => *ty,
         }
     }
 
-    pub(crate) fn set_ty(&mut self, id: usize) {
-        match self {
-            Self::Lit { ty, .. }
-            | Self::Ident { ty, .. }
-            | Self::Field { ty, .. }
-            | Self::Index { ty, .. }
-            | Self::Call { ty, .. }
-            | Self::Query { ty, .. }
-            | Self::Case { ty, .. }
-            | Self::Unary { ty, .. }
-            | Self::Binary { ty, .. }
-            | Self::Pair { ty, .. }
-            | Self::Tuple { ty, .. }
-            | Self::List { ty, .. }
-            | Self::Record { ty, .. } => *ty = id,
-        }
-    }
 }
 
 #[derive(Debug, Clone)]

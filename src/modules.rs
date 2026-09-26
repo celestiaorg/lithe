@@ -468,10 +468,6 @@ fn rewrite_ty(ty: &mut TypeRef, map: &HashMap<String, String>) {
             rewrite_ty(key, map);
             rewrite_ty(val, map);
         }
-        TypeRef::Pair { left, right, .. } => {
-            rewrite_ty(left, map);
-            rewrite_ty(right, map);
-        }
         TypeRef::Tuple { elems, .. } => {
             for elem in elems {
                 rewrite_ty(elem, map);
@@ -587,7 +583,7 @@ fn rewrite_stmts(stmts: &mut [Stmt], map: &HashMap<String, String>) {
                 }
                 rewrite_stmts(body, map);
             }
-            Stmt::Skip { .. } => {}
+            Stmt::Skip => {}
         }
     }
 }
@@ -639,7 +635,7 @@ fn rewrite_expr(expr: &mut Expr, map: &HashMap<String, String>) {
                 rewrite_expr(&mut arm.expr, map);
             }
         }
-        Expr::Binary { left, right, .. } | Expr::Pair { left, right, .. } => {
+        Expr::Binary { left, right, .. } => {
             rewrite_expr(left, map);
             rewrite_expr(right, map);
         }

@@ -4,6 +4,7 @@ mod asm;
 mod ast;
 mod check;
 mod gen;
+#[cfg(test)]
 mod hash;
 mod keccak;
 mod lex;

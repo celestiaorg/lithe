@@ -877,23 +877,6 @@ impl<'a> Parser<'a> {
     }
 
     fn ty(&mut self) -> Result<TypeRef, Error> {
-        let left = self.ty_primary()?;
-        if self.kind() == Kind::Star {
-            let (line, col) = (left.line(), left.col());
-            self.bump();
-            let right = self.ty()?;
-            Ok(TypeRef::Pair {
-                line,
-                col,
-                left: Box::new(left),
-                right: Box::new(right),
-            })
-        } else {
-            Ok(left)
-        }
-    }
-
-    fn ty_primary(&mut self) -> Result<TypeRef, Error> {
         let (line, col) = self.at();
         match self.kind() {
             Kind::List => self.list_ty(line, col),
@@ -1072,7 +1055,7 @@ impl<'a> Parser<'a> {
             let name = self.ident()?;
             let payload = if self.kind() == Kind::Of {
                 self.bump();
-                Some(self.ty_primary()?)
+                Some(self.ty()?)
             } else {
                 None
             };
@@ -1372,11 +1355,7 @@ impl<'a> Parser<'a> {
                     "`none` cannot be combined with other errors",
                 ));
             }
-            return Ok(Raises {
-                line,
-                col,
-                parts: Vec::new(),
-            });
+            return Ok(Raises { parts: Vec::new() });
         }
         let mut parts = Vec::new();
         loop {
@@ -1403,7 +1382,7 @@ impl<'a> Parser<'a> {
         if parts.is_empty() {
             return Err(error(line, col, "`raises` needs an error"));
         }
-        Ok(Raises { line, col, parts })
+        Ok(Raises { parts })
     }
 
     fn item_body(&mut self) -> Result<(Vec<Stmt>, Option<Expr>), Error> {
@@ -1557,15 +1536,13 @@ impl<'a> Parser<'a> {
             Kind::Fail => {
                 self.bump();
                 Ok(Stmt::Fail {
-                    line,
-                    col,
                     reason: self.raised()?,
                 })
             }
             Kind::Failwith => return Err(self.err("errors must be typed; use `fail`")),
             Kind::SkipKw => {
                 self.bump();
-                Ok(Stmt::Skip { line, col })
+                Ok(Stmt::Skip)
             }
             Kind::Emit => self.emit_stmt(line, col),
             Kind::Defer => self.defer_stmt(line, col),
