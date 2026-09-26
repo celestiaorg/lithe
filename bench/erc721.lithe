@@ -9,32 +9,11 @@ import "./lib/erc721.lithe";
 contract BenchNFT is {
   use Initializable;
 
-  external use ERC721 is {
-    pure function supportsInterface(interfaceId : bytes4) : bool;
-    view function balanceOf(owner : address) : nat
-      raises ERC721InvalidOwner;
-    view function ownerOf(tokenId : nat) : address
-      raises ERC721NonexistentToken;
-    view function name() : string;
-    view function symbol() : string;
-    view function tokenURI(tokenId : nat) : string
-      raises ERC721NonexistentToken;
-    view function getApproved(tokenId : nat) : address
-      raises ERC721NonexistentToken;
-    view function isApprovedForAll(owner : address; operator : address) : bool;
-  }
+  use ERC721 exposing IERC721Views, IERC721Metadata;
+  use Ownable exposing IOwnable;
+  use Pausable exposing IPausable;
 
-  external use Ownable is {
-    view function owner() : address;
-    function transferOwnership(newOwner : address)
-      raises OwnableUnauthorizedAccount | OwnableInvalidOwner;
-    function renounceOwnership()
-      raises OwnableUnauthorizedAccount;
-  }
-
-  external use Pausable is {
-    view function paused() : bool;
-  }
+  supports IERC721, IERC721Metadata;
 
   (* Initializable's bookkeeping matches the `initializer` modifier on Solidity's
      constructor, so storage and events stay the same. *)

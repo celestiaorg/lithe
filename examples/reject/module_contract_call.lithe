@@ -11,6 +11,6 @@ module Ledger is {
 pure function hook() : nat is
   1n
 
-external use Ledger is {
+use Ledger exposing {
   function bump();
 }

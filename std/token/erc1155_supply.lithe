@@ -1,0 +1,93 @@
+(* Supply tracking for ERC-1155, like OpenZeppelin's `ERC1155Supply`: each id's total, and
+   the total of every id. Only mints and burns change a supply, so a contract mints and
+   burns through this module, and transfers through `ERC1155`.
+
+     use ERC1155Supply exposing IERC1155Supply; *)
+
+import "std/token/erc1155.lithe";
+
+module ERC1155Supply is {
+  requires ERC1155;
+
+  storage erc1155_supply at "lithe.std.erc1155_supply" is record {
+    total_supply : map(nat, nat);
+    total_supply_all : nat;
+  }
+
+  view function total_supply(const id : nat) : nat is
+    erc1155_supply.total_supply[id]
+
+  view function total_supply_all() : nat is
+    erc1155_supply.total_supply_all
+
+  view function exists(const id : nat) : bool is
+    erc1155_supply.total_supply[id] > 0n
+
+  (* `ERC1155.update`, then the supplies it changes. *)
+  function update(const from : address; const to : address; const ids : list(nat); const values : list(nat))
+    raises ERC1155InvalidArrayLength | ERC1155InsufficientBalance
+  is {
+    ERC1155.update(from, to, ids, values);
+    if from = Address.zero then {
+      var minted : nat := 0n;
+      for (i, id) : (nat, nat) in ids do {
+        erc1155_supply.total_supply[id] := erc1155_supply.total_supply[id] + values[i];
+        minted := minted + values[i];
+      }
+      erc1155_supply.total_supply_all := erc1155_supply.total_supply_all + minted;
+    }
+    if to = Address.zero then {
+      var burned : nat := 0n;
+      for (i, id) : (nat, nat) in ids do {
+        erc1155_supply.total_supply[id] := erc1155_supply.total_supply[id] - values[i];
+        burned := burned + values[i];
+      }
+      erc1155_supply.total_supply_all := erc1155_supply.total_supply_all - burned;
+    }
+  }
+
+  function mint(const to : address; const id : nat; const value : nat; const data : bytes)
+    raises ERC1155InvalidReceiver | ERC1155InvalidArrayLength | ERC1155InsufficientBalance
+  is {
+    assert(to <> Address.zero, ERC1155InvalidReceiver(Address.zero));
+    update(Address.zero, to, [id], [value]);
+    ERC1155.check_received(Address.zero, to, id, value, data);
+  }
+
+  function mint_batch(const to : address; const ids : list(nat); const values : list(nat); const data : bytes)
+    raises ERC1155InvalidReceiver | ERC1155InvalidArrayLength | ERC1155InsufficientBalance
+  is {
+    assert(to <> Address.zero, ERC1155InvalidReceiver(Address.zero));
+    update(Address.zero, to, ids, values);
+    ERC1155.check_batch_received(Address.zero, to, ids, values, data);
+  }
+
+  function burn(const from : address; const id : nat; const value : nat)
+    raises ERC1155InvalidSender | ERC1155InvalidArrayLength | ERC1155InsufficientBalance
+  is {
+    assert(from <> Address.zero, ERC1155InvalidSender(Address.zero));
+    update(from, Address.zero, [id], [value]);
+  }
+
+  function burn_batch(const from : address; const ids : list(nat); const values : list(nat))
+    raises ERC1155InvalidSender | ERC1155InvalidArrayLength | ERC1155InsufficientBalance
+  is {
+    assert(from <> Address.zero, ERC1155InvalidSender(Address.zero));
+    update(from, Address.zero, ids, values);
+  }
+
+  external view function totalSupply(const id : nat) : nat is
+    erc1155_supply.total_supply[id]
+
+  external view function totalSupply() : nat is
+    erc1155_supply.total_supply_all
+
+  external view function exists(const id : nat) : bool is
+    exists(id)
+}
+
+interface IERC1155Supply is {
+  view function totalSupply(id : nat) : nat;
+  view function totalSupply() : nat;
+  view function exists(id : nat) : bool;
+}

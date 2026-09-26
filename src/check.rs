@@ -154,6 +154,11 @@ pub(crate) struct Checked {
     /// The program as it came in, before its modules were composed. A module's facet is
     /// built from it.
     pub source: Program,
+    /// The ERC-165 ids the contract answers for: ERC-165's, then each interface `supports`
+    /// lists.
+    pub interface_ids: Vec<u32>,
+    /// Some function calls `Abi.supports_interface`.
+    pub asks_interfaces: bool,
 }
 
 impl Checked {
@@ -239,6 +244,10 @@ struct Checker {
     warned: HashSet<(usize, usize)>,
     warnings: Vec<String>,
     module_name: Option<String>,
+    /// Checking the value of `List.pop(xs)`'s assignment, the only place it may appear.
+    popping: bool,
+    /// Some function calls `Abi.supports_interface`.
+    asks_interfaces: bool,
     requires: Vec<String>,
     known_modules: HashSet<String>,
     used_modules: HashSet<String>,
@@ -252,8 +261,9 @@ struct Checker {
     busy: Vec<String>,
     /// Generic module whose body is currently being specialized.
     spec_module: Option<String>,
-    /// Checking a module function's copy for storage paths that start at `storage`.
-    spec_places: bool,
+    /// Checking a module function's copy for storage paths passed in: where each starts,
+    /// `storage` or another module, which the copy may then use.
+    spec_places: Vec<String>,
 }
 
 #[derive(Clone)]
@@ -587,7 +597,7 @@ fn exported_name(module: &str, name: &str, k: usize) -> String {
     format!("{module}.{name}#{k}")
 }
 
-/// The entrypoint for one declaration in `external use M is { ... }`: it has the declared
+/// The entrypoint for one declaration in `use M exposing { ... }`: it has the declared
 /// header, and runs `M`'s external of the same signature. The checker holds the two headers
 /// equal once their types are known.
 fn declared_entry(prog: &Program, module: &str, decl: Func) -> Result<Func, Error> {
@@ -880,6 +890,8 @@ pub(crate) fn check(mut prog: Program) -> Result<Checked, Error> {
         warnings: Vec::new(),
         fn_name: String::new(),
         module_name: None,
+        popping: false,
+        asks_interfaces: false,
         requires: Vec::new(),
         known_modules: HashSet::new(),
         used_modules: HashSet::new(),
@@ -890,7 +902,7 @@ pub(crate) fn check(mut prog: Program) -> Result<Checked, Error> {
         specs: HashMap::new(),
         busy: Vec::new(),
         spec_module: None,
-        spec_places: false,
+        spec_places: Vec::new(),
     };
     c.types.push(prim(TyKind::Unit, 0));
     c.types.push(prim(TyKind::Bool, 1));
@@ -1255,13 +1267,26 @@ pub(crate) fn check(mut prog: Program) -> Result<Checked, Error> {
     if let Some(guard) = &mut prog.guard {
         c.check_guard(guard)?;
     }
-    // Each interface the program knows, by the selectors and results of its methods, to find
-    // the ones the contract has.
-    let mut known: Vec<(String, Vec<([u8; 4], Vec<String>)>)> = Vec::new();
-    for iface in &prog.interfaces {
-        let Some(methods) = c.named.get(&iface.name).and_then(|id| c.ifaces.get(id)) else {
-            continue;
-        };
+    // Each interface `supports` lists, by the signatures, selectors, and results of its
+    // methods.
+    let mut known: Vec<Supported> = Vec::new();
+    for (i, named) in prog.supports.iter().enumerate() {
+        if prog.supports[..i].iter().any(|have| have.name == named.name) {
+            return Err(error(
+                named.line,
+                named.col,
+                format!("`supports` lists `{}` twice", named.name),
+            ));
+        }
+        let methods = prog
+            .interfaces
+            .iter()
+            .any(|iface| iface.name == named.name)
+            .then(|| c.named.get(&named.name).and_then(|id| c.ifaces.get(id)))
+            .flatten()
+            .ok_or_else(|| {
+                error(named.line, named.col, format!("unknown interface `{}`", named.name))
+            })?;
         let mut sigs = Vec::new();
         for method in methods {
             let hash = crate::keccak::keccak256(method.sig.as_bytes());
@@ -1270,9 +1295,9 @@ pub(crate) fn check(mut prog: Program) -> Result<Checked, Error> {
             } else {
                 abi_parts(&c.types, method.ret).unwrap_or_default()
             };
-            sigs.push(([hash[0], hash[1], hash[2], hash[3]], ret));
+            sigs.push((method.sig.clone(), [hash[0], hash[1], hash[2], hash[3]], ret));
         }
-        known.push((iface.name.clone(), sigs));
+        known.push((named.clone(), sigs));
     }
     let checked = Checked {
         prog,
@@ -1292,21 +1317,23 @@ pub(crate) fn check(mut prog: Program) -> Result<Checked, Error> {
         warnings: std::mem::take(&mut c.warnings),
         fingerprint,
         source,
+        interface_ids: Vec::new(),
+        asks_interfaces: c.asks_interfaces,
     };
     let routes = crate::route::discover(&checked)?;
     supports_interface(Checked { routes, ..checked }, &known)
 }
 
-/// ERC-165. Every contract answers `supportsInterface(bytes4)`: true for ERC-165 itself, and
-/// for each interface the program knows that the contract has. A contract has an interface
-/// when it dispatches every one of its methods, with the same result; nothing says so. An
-/// interface's id is the XOR of its methods' selectors. The contract is checked again with
-/// the function added. One that writes its own keeps it.
-fn supports_interface(
-    checked: Checked,
-    known: &[(String, Vec<([u8; 4], Vec<String>)>)],
-) -> Result<Checked, Error> {
-    if !checked.prog.erc165 {
+/// A `supports` entry, and each of its methods' signature, selector, and ABI result.
+type Supported = (NameAt, Vec<(String, [u8; 4], Vec<String>)>);
+
+/// ERC-165. A contract with `supports` answers `supportsInterface(bytes4)`: true for ERC-165
+/// itself, and for each interface it lists. It must have each one: dispatch every one of its
+/// methods, with the same result. An interface's id is the XOR of its methods' selectors.
+/// The contract is checked again with the function added. One that writes its own keeps it,
+/// and answers for the list with `Abi.supports_interface`.
+fn supports_interface(mut checked: Checked, known: &[Supported]) -> Result<Checked, Error> {
+    if known.is_empty() && !checked.asks_interfaces {
         return Ok(checked);
     }
     let funcs = &checked.prog.funcs;
@@ -1339,43 +1366,68 @@ fn supports_interface(
         [hash[0], hash[1], hash[2], hash[3]]
     };
     let mut ids = vec![0x01ff_c9a7u32];
-    let mut names = Vec::new();
-    for (name, methods) in known {
-        let has = methods.iter().all(|(sel, ret)| {
-            have.iter()
-                .any(|(s, r)| s == sel && r.as_ref().is_none_or(|r| r == ret))
-        });
-        if !has {
-            continue;
+    for (named, methods) in known {
+        let mut missing = Vec::new();
+        for (sig, sel, ret) in methods {
+            let found: Vec<&Option<Vec<String>>> =
+                have.iter().filter(|(s, _)| s == sel).map(|(_, r)| r).collect();
+            if found.iter().any(|r| r.as_ref().is_none_or(|r| r == ret)) {
+                continue;
+            }
+            missing.push(match found.iter().find_map(|r| r.as_ref()) {
+                Some(got) => format!(
+                    "  {sig}, which returns ({}), not ({})",
+                    got.join(","),
+                    ret.join(",")
+                ),
+                None => format!("  {sig}"),
+            });
+        }
+        if !missing.is_empty() {
+            return Err(error(
+                named.line,
+                named.col,
+                format!(
+                    "the contract supports `{}` but does not dispatch:\n{}\n\nexpose them from a module with `use M exposing`, or write them as externals",
+                    named.name,
+                    missing.join("\n")
+                ),
+            ));
         }
         let id = methods
             .iter()
-            .fold(0u32, |xor, (sel, _)| xor ^ u32::from_be_bytes(*sel));
+            .fold(0u32, |xor, (_, sel, _)| xor ^ u32::from_be_bytes(*sel));
         if !ids.contains(&id) {
             ids.push(id);
-            names.push(format!("`{name}`"));
         }
     }
+    checked.interface_ids = ids.clone();
     if have.iter().any(|(sel, _)| *sel == own_sel) {
-        let (line, col) = funcs
-            .iter()
-            .find(|func| func.name == "supportsInterface")
-            .map_or((1, 1), |func| (func.line, func.col));
-        let mut checked = checked;
-        if !names.is_empty() {
-            checked.warnings.push(format!(
-                "{line}:{col}: warning: the contract writes its own `supportsInterface`, so the compiler does not answer for {}, which the contract has\n\nanswer for them there, or remove it to have them answered\n",
-                names.join(", ")
+        if !known.is_empty() && !checked.asks_interfaces {
+            let (line, col) = checked
+                .prog
+                .funcs
+                .iter()
+                .find(|func| func.name == "supportsInterface")
+                .map_or((1, 1), |func| (func.line, func.col));
+            return Err(error(
+                line,
+                col,
+                "the contract writes its own `supportsInterface`, which does not answer for the interfaces `supports` lists\n\nanswer for them there, with `Abi.supports_interface`, or remove it to have them answered",
             ));
         }
         return Ok(checked);
     }
+    if known.is_empty() {
+        return Ok(checked);
+    }
     let (line, col) = (checked.prog.contract_line.max(1), checked.prog.contract_col.max(1));
     let mut source = checked.source.clone();
-    source.erc165 = false;
+    let supports = std::mem::take(&mut source.supports);
     source.funcs.push(erc165_func(line, col, &source.origin, &ids));
     let mut again = check(source)?;
-    again.source.erc165 = true;
+    again.source.supports = supports;
+    again.interface_ids = ids;
     Ok(again)
 }
 
@@ -1723,11 +1775,10 @@ fn check_storage_shape(types: &[RType], id: usize, at: &str) -> Result<(), Error
                 ));
             };
             word_storage(types, key, at)?;
-            if types[val].kind == TyKind::Map {
-                return check_storage_shape(types, val, at);
-            }
-            if is_stored_aggregate(types, val) || types[peel_id(types, val)].kind == TyKind::Option
-            {
+            if matches!(
+                types[peel_id(types, val)].kind,
+                TyKind::Map | TyKind::List | TyKind::Record | TyKind::Tuple | TyKind::Option
+            ) {
                 return check_storage_shape(types, val, at);
             }
             word_storage(types, val, at)
@@ -1750,9 +1801,11 @@ fn check_storage_shape(types: &[RType], id: usize, at: &str) -> Result<(), Error
                     format!("storage field `{at}` cannot hold this type"),
                 ));
             }
-            // A list of options, or an option holding a record, tuple, fixed list, or option.
+            // A list of options, records, or tuples, or an option holding a record, tuple,
+            // fixed list, or option.
             let inner = types[peel_id(types, elem)].kind;
             if inner == TyKind::Option
+                || (types[id].kind == TyKind::List && matches!(inner, TyKind::Record | TyKind::Tuple))
                 || (types[id].kind == TyKind::Option
                     && matches!(inner, TyKind::Record | TyKind::Tuple | TyKind::List)
                     && is_static_value(types, elem))
@@ -2320,13 +2373,15 @@ impl Checker {
                 let e = self.build(elem)?;
                 let bits = len.unwrap_or(0) as u16;
                 let operations = self.types[e].kind == TyKind::Operation && bits == 0;
-                let option =
-                    self.types[e].kind == TyKind::Option && is_static_value(&self.types, e);
-                if !(operations || self.single_word(e) || option) {
+                let fixed = matches!(
+                    self.types[peel_id(&self.types, e)].kind,
+                    TyKind::Option | TyKind::Record | TyKind::Tuple
+                ) && is_static_value(&self.types, e);
+                if !(operations || self.single_word(e) || fixed) {
                     return Err(error(
                         *line,
                         *col,
-                        "list elements must be a single word or a fixed-size option",
+                        "list elements must be a single word or a fixed-size record, tuple, or option",
                     ));
                 }
                 let id = self.alloc(TyKind::List, Some(e), None, None, bits);
@@ -2354,16 +2409,16 @@ impl Checker {
             } => {
                 let k = self.build(key)?;
                 let v = self.build(val)?;
-                // A map may hold maps: each level is a slot hashed from the one before.
-                // A record value is laid out like a Solidity struct from its slot.
-                let nested = self.types[v].kind == TyKind::Map;
-                let record = is_stored_aggregate(&self.types, v)
+                // A map may hold maps and lists: each level is a slot hashed from the one
+                // before. A record value is laid out like a Solidity struct from its slot.
+                let nested = matches!(self.types[v].kind, TyKind::Map | TyKind::List);
+                let record = matches!(self.types[peel_id(&self.types, v)].kind, TyKind::Record | TyKind::Tuple)
                     || (self.types[v].kind == TyKind::Option && is_static_value(&self.types, v));
                 if !self.single_word(k) || !(self.single_word(v) || nested || record) {
                     return Err(error(
                         *line,
                         *col,
-                        "map keys must be a single word; values a word, a map, or a fixed-size record or option",
+                        "map keys must be a single word; values a word, a map, a list, a record, or a fixed-size option",
                     ));
                 }
                 let id = self.alloc(TyKind::Map, None, Some(k), Some(v), 0);
@@ -2555,7 +2610,7 @@ impl Checker {
                 .unwrap_or((f.line, f.col));
             return Err(error(line, col, "an option cannot be an ABI value"));
         }
-        let aggregate = is_static_aggregate(&self.types, ret);
+        let aggregate = is_static_aggregate(&self.types, ret) || abi_record(&self.types, ret);
         if f.kind == ItemKind::View
             && !is_word(self.types[ret].kind)
             && !aggregate
@@ -2827,7 +2882,7 @@ impl Checker {
         Ok(())
     }
 
-    /// Each declaration in `external use M is { ... }` restates `M`'s external exactly: its
+    /// Each declaration in `use M exposing { ... }` restates `M`'s external exactly: its
     /// effect, `payable`, `nonreentrant`, parameters, result, and errors.
     fn match_declarations(&self, funcs: &[Func]) -> Result<(), Error> {
         for decl in funcs {
@@ -2992,7 +3047,7 @@ impl Checker {
 
     fn bind_storage(&mut self, line: u32, col: u32) -> Result<(), Error> {
         self.domain_syms.clear();
-        if (self.module_name.is_none() || self.spec_places) && self.lookup("storage").is_none() {
+        if (self.module_name.is_none() || !self.spec_places.is_empty()) && self.lookup("storage").is_none() {
             let sym = self.add_sym(Sym {
                 ty: self.storage,
                 mutable: true,
@@ -3323,8 +3378,13 @@ impl Checker {
                 expr,
                 root,
                 leaf,
+                target,
             } => {
+                let written = path.clone();
                 let place = self.lookup_path(*line, *col, path)?;
+                if index.is_some() && self.deep_assign(place.ty, keys.len() + 1, fields) {
+                    return self.check_deep_assign(*line, *col, &written, index, keys, fields, expr, root, leaf, target);
+                }
                 if let Some(owner) = self
                     .domain_syms
                     .iter()
@@ -3349,7 +3409,8 @@ impl Checker {
                     if !map_value {
                         return Err(error(*line, *col, "only a record in a map has fields here"));
                     }
-                    value_ty = self.walk_fields(*line, *col, value_ty, 0, fields)?.0;
+                    let names: Vec<String> = fields.iter().map(|(_, name)| name.clone()).collect();
+                    value_ty = self.walk_fields(*line, *col, value_ty, 0, &names)?.0;
                 }
                 self.check_expr_as(expr, Some(value_ty))?;
                 if self.types[value_ty].kind != TyKind::Option
@@ -3423,6 +3484,32 @@ impl Checker {
                 self.check_reason(reason)
             }
             Stmt::Fail { reason, .. } => self.check_reason(reason),
+            Stmt::Call { expr, line, col } if is_list_pop(expr) => {
+                let (line, col) = (*line, *col);
+                let Expr::Call { args, .. } = expr else {
+                    unreachable!()
+                };
+                let Some(path) = args.first().and_then(place_path) else {
+                    return self.check_deep_pop(line, col, s);
+                };
+                let expr = std::mem::replace(expr, Expr::Lit { line, col, lit: Lit::Unit, ty: 0 });
+                *s = Stmt::Assign {
+                    line,
+                    col,
+                    path,
+                    index: None,
+                    keys: Vec::new(),
+                    fields: Vec::new(),
+                    expr,
+                    root: None,
+                    leaf: 0,
+                    target: None,
+                };
+                self.popping = true;
+                let checked = self.check_stmt(s);
+                self.popping = false;
+                checked
+            }
             Stmt::Call { expr, line, col } => {
                 self.check_expr(expr)?;
                 if expr.ty() != TY_UNIT {
@@ -3914,10 +4001,7 @@ impl Checker {
                     Lit::Wei(_) => TY_WEI,
                     Lit::Duration(_) => TY_NAT,
                     Lit::Bool(_) => TY_BOOL,
-                    Lit::Str(s) => {
-                        if s.len() > 31 {
-                            return Err(error(*line, *col, "a string must be at most 31 bytes"));
-                        }
+                    Lit::Str(_) => {
                         // A literal also spells `bytes` where the context expects them.
                         let bytes = self.named["bytes"];
                         if self.expect.is_some_and(|t| self.peel(t) == bytes) {
@@ -4349,7 +4433,19 @@ impl Checker {
                     let m = &methods[mi];
                     let query = m.query;
                     let ret = m.ret;
-                    let dynamic_ret = self.is_dyn_ty(ret) || self.abi_list(ret);
+                    // An optional result is `None` when the callee returns no data.
+                    let optional = (self.types[ret].kind == TyKind::Option)
+                        .then(|| self.types[ret].elem)
+                        .flatten();
+                    let answer = optional.unwrap_or(ret);
+                    let dynamic_ret = self.is_dyn_ty(answer) || self.abi_list(answer);
+                    if optional.is_some() && dynamic_ret {
+                        return Err(error(
+                            *line,
+                            *col,
+                            "an optional result must be a static value",
+                        ));
+                    }
                     if query && self.types[ret].words != 1 && !dynamic_ret {
                         return Err(error(
                             *line,
@@ -4360,7 +4456,7 @@ impl Checker {
                     // A call's result reaches a continuation.
                     if !query
                         && ret != TY_UNIT
-                        && static_abi(&self.types, ret).is_none()
+                        && static_abi(&self.types, answer).is_none()
                         && !dynamic_ret
                     {
                         return Err(error(
@@ -4391,7 +4487,7 @@ impl Checker {
                         return Err(error(
                             *line,
                             *col,
-                            format!("`{name}` is not another contract of this file"),
+                            format!("`{name}` is not another contract of this file or its imports"),
                         ));
                     };
                     if let Some(salt) = base {
@@ -4727,7 +4823,7 @@ impl Checker {
         let Some(kind) = module_builtin(module, name) else {
             if matches!(
                 module.as_str(),
-                "Evm" | "Crypto" | "Abi" | "Bytes" | "String" | "Base64"
+                "Evm" | "Crypto" | "Abi" | "Bytes" | "String" | "Base64" | "List"
             ) {
                 return Err(error(
                     line,
@@ -4861,6 +4957,34 @@ impl Checker {
                 }
                 let arg_ty = args[0].ty();
                 *ty = self.tuple_of(&[arg_ty, arg_ty]);
+                *builtin = Some(kind);
+                return Ok(());
+            }
+            Builtin::Wrapping(_, signed) => {
+                need(args.len(), 2)?;
+                let want = if signed { TyKind::Int } else { TyKind::Nat };
+                let elem = self
+                    .expect
+                    .filter(|&id| self.types[self.peel(id)].kind == want);
+                self.check_expr_as(&mut args[0], elem)?;
+                let arg_ty = args[0].ty();
+                self.check_expr_as(&mut args[1], Some(arg_ty))?;
+                if !self.same(args[0].ty(), args[1].ty()) {
+                    return Err(error(
+                        line,
+                        col,
+                        format!("`{call}` expects two values of the same type"),
+                    ));
+                }
+                if self.types[self.peel(arg_ty)].kind != want {
+                    let msg = if signed {
+                        format!("`{call}` expects a signed integer")
+                    } else {
+                        format!("`{call}` expects an unsigned integer")
+                    };
+                    return Err(error(line, col, msg));
+                }
+                *ty = arg_ty;
                 *builtin = Some(kind);
                 return Ok(());
             }
@@ -5033,6 +5157,26 @@ impl Checker {
                     self.encodable(arg)?;
                 }
             }
+            Builtin::CreationCode => {
+                need(args.len(), 1)?;
+                let Expr::Ident { name: contract, .. } = &args[0] else {
+                    return Err(error(
+                        args[0].line(),
+                        args[0].col(),
+                        format!("`{call}` takes the name of a contract"),
+                    ));
+                };
+                if !self.peers.iter().any(|(n, _)| n == contract) {
+                    return Err(error(
+                        args[0].line(),
+                        args[0].col(),
+                        format!("`{contract}` is not another contract of this file or its imports"),
+                    ));
+                }
+                *builtin = Some(kind);
+                *ty = self.bytes_n(0)?;
+                return Ok(());
+            }
             Builtin::AbiDecode => {
                 need(args.len(), 2)?;
                 self.check_expr(&mut args[0])?;
@@ -5075,6 +5219,54 @@ impl Checker {
                         ));
                     }
                 }
+            }
+            Builtin::NatToString | Builtin::IntToString => {
+                need(args.len(), 1)?;
+                self.check_expr(&mut args[0])?;
+                let signed = kind == Builtin::IntToString;
+                let peeled = self.types[self.peel(args[0].ty())].kind;
+                if peeled != if signed { TyKind::Int } else { TyKind::Nat } {
+                    return Err(error(
+                        args[0].line(),
+                        args[0].col(),
+                        format!(
+                            "`{call}` expects {} integer",
+                            if signed { "a signed" } else { "an unsigned" }
+                        ),
+                    ));
+                }
+            }
+            Builtin::ListPop => {
+                need(args.len(), 1)?;
+                if !std::mem::take(&mut self.popping) {
+                    return Err(error(line, col, format!("`{call}` is a statement")));
+                }
+                self.check_expr(&mut args[0])?;
+                let list = self.peel(args[0].ty());
+                if !self.list_value(list) {
+                    return Err(error(
+                        args[0].line(),
+                        args[0].col(),
+                        format!("`{call}` expects a dynamic list"),
+                    ));
+                }
+                *builtin = Some(kind);
+                *ty = args[0].ty();
+                return Ok(());
+            }
+            // The contract's interfaces are known once it is checked, and a module's code is
+            // the same in every contract that uses it.
+            Builtin::AbiSupportsInterface => {
+                need(args.len(), 1)?;
+                if self.module_name.is_some() {
+                    return Err(error(
+                        line,
+                        col,
+                        format!("`{call}` answers for the contract, so only the contract's own functions can call it"),
+                    ));
+                }
+                self.check_word_arg(&mut args[0], self.bytes_n(4)?)?;
+                self.asks_interfaces = true;
             }
             Builtin::Transfer => {
                 need(args.len(), 2)?;
@@ -5192,11 +5384,15 @@ impl Checker {
             | Builtin::AbiEncodeSelector
             | Builtin::AbiEncodeSignature
             | Builtin::AbiEncodeCall
+            | Builtin::CreationCode
             | Builtin::BytesConcat => self.bytes_n(0)?,
-            Builtin::StringConcat => TY_STRING,
+            Builtin::StringConcat | Builtin::NatToString | Builtin::IntToString => TY_STRING,
+            Builtin::AbiSupportsInterface => TY_BOOL,
+            Builtin::ListPop => TY_UNIT,
             Builtin::AbiDecode
             | Builtin::NatDivRem
             | Builtin::IntDivRem
+            | Builtin::Wrapping(..)
             | Builtin::Cast
             | Builtin::Some
             | Builtin::None => TY_UNIT,
@@ -5512,16 +5708,19 @@ impl Checker {
                         "comparison expects two values of the same type",
                     ));
                 }
+                // Addresses and `bytesN` order as unsigned numbers, as in Solidity.
+                let fixed_bytes = lk == TyKind::Bytes && self.types[l].bits > 0;
                 if matches!(op, BinOp::Lt | BinOp::Gt | BinOp::Le | BinOp::Ge)
+                    && !fixed_bytes
                     && !matches!(
                         lk,
-                        TyKind::Nat | TyKind::Int | TyKind::Wei | TyKind::Timestamp
+                        TyKind::Nat | TyKind::Int | TyKind::Wei | TyKind::Timestamp | TyKind::Address
                     )
                 {
                     return Err(error(
                         line,
                         col,
-                        "ordered comparison expects a numeric type",
+                        "ordered comparison expects a number, an address, or a `bytesN`",
                     ));
                 }
                 Ok(TY_BOOL)
@@ -5556,6 +5755,7 @@ impl Checker {
                 .iter()
                 .all(|field| self.record_field_ok(field.ty)),
             TyKind::Option => is_static_value(&self.types, ty),
+            TyKind::List => self.list_value(ty),
             kind => is_word(kind),
         }
     }
@@ -5643,7 +5843,7 @@ impl Checker {
                 return Err(error(
                     expr.line(),
                     expr.col(),
-                    format!("record field `{name}` must be a word, record, or tuple"),
+                    format!("record field `{name}` must be a word, list, record, or tuple"),
                 ));
             }
             self.check_expr_as(expr, Some(*fty))?;
@@ -5816,12 +6016,12 @@ impl Checker {
                 col,
             } => {
                 let p = self.place(base)?;
-                if matches!(base.as_ref(), Expr::Index { .. })
-                    && self.types[p.ty].kind != TyKind::Map
-                {
+                let kind = self.types[p.ty].kind;
+                if matches!(base.as_ref(), Expr::Index { .. }) && !matches!(kind, TyKind::Map | TyKind::List) {
                     return Err(error(*line, *col, "only a map of maps takes more keys"));
                 }
-                let in_map = self.types[p.ty].kind == TyKind::Map;
+                // Past a key or an index, fields are found from the value's slot, not a leaf.
+                let in_map = matches!(kind, TyKind::Map | TyKind::List) || p.in_map;
                 let elem = self.indexed(*line, *col, p.sym, p.ty, index)?;
                 *root = Some(p.sym);
                 *leaf = p.leaf;
@@ -6026,6 +6226,7 @@ impl Checker {
             if mine != module
                 && self.known_modules.contains(module)
                 && !self.requires.iter().any(|req| req == module)
+                && !self.spec_places.iter().any(|root| root == module)
             {
                 return Err(error(
                     line,
@@ -6051,6 +6252,156 @@ impl Checker {
             ));
         }
         Err(error(line, col, format!("unknown module `{module}`")))
+    }
+
+    /// Whether an assignment's keys and fields reach past what a map of maps, a map's
+    /// fixed-size record, or one list element can: a list inside a map or a record, a
+    /// record element of a list, or a map inside a map's record.
+    fn deep_assign(&self, ty: usize, n_keys: usize, fields: &[(usize, String)]) -> bool {
+        if fields.iter().any(|(at, _)| *at < n_keys) {
+            return true;
+        }
+        let mut ty = peel_id(&self.types, ty);
+        for i in 0..n_keys {
+            let t = &self.types[ty];
+            match t.kind {
+                TyKind::List if i == 0 => {
+                    let elem = peel_id(&self.types, t.elem.unwrap_or(TY_UNIT));
+                    return n_keys > 1 || matches!(self.types[elem].kind, TyKind::Record | TyKind::Tuple);
+                }
+                TyKind::Map => ty = peel_id(&self.types, t.right.unwrap_or(TY_UNIT)),
+                _ => return true,
+            }
+        }
+        match self.types[ty].kind {
+            TyKind::List => true,
+            TyKind::Record | TyKind::Tuple => !is_static_value(&self.types, ty),
+            _ => false,
+        }
+    }
+
+    /// `List.pop(m[k].xs)`: a list past a key or an index, popped through the place the
+    /// argument names. It becomes an assignment of the pop to that place.
+    fn check_deep_pop(&mut self, line: u32, col: u32, s: &mut Stmt) -> Result<(), Error> {
+        let Stmt::Call { expr, .. } = s else {
+            return Ok(());
+        };
+        let Expr::Call { args, .. } = expr else {
+            return Ok(());
+        };
+        let Some(arg) = args.first_mut() else {
+            return Err(error(line, col, "`List.pop` takes a list variable or a stored list"));
+        };
+        if !matches!(arg, Expr::Index { .. } | Expr::Field { .. }) {
+            return Err(error(line, col, "`List.pop` takes a list variable or a stored list"));
+        }
+        let place = self.place(arg)?;
+        if !self.syms[place.sym].storage || !self.list_value(place.ty) {
+            return Err(error(line, col, "`List.pop` takes a list variable or a stored list"));
+        }
+        if matches!(self.kind, ItemKind::View | ItemKind::Readonly | ItemKind::Pure) {
+            return Err(self.weaker(line, col, "writes storage"));
+        }
+        let target = arg.clone();
+        let (found, named) = place_keys(&target);
+        let path = place_path(named).unwrap_or_default();
+        let mut found = found.into_iter();
+        let expr = std::mem::replace(expr, Expr::Lit { line, col, lit: Lit::Unit, ty: 0 });
+        let Expr::Call { mut args, name, base, ty, line: cline, col: ccol, .. } = expr else {
+            return Ok(());
+        };
+        args[0] = target.clone();
+        *s = Stmt::Assign {
+            line,
+            col,
+            path,
+            index: found.next(),
+            keys: found.collect(),
+            fields: Vec::new(),
+            expr: Expr::Call {
+                line: cline,
+                col: ccol,
+                name,
+                args,
+                base,
+                callee: None,
+                builtin: Some(Builtin::ListPop),
+                iface: None,
+                method: None,
+                ty,
+            },
+            root: Some(place.sym),
+            leaf: place.leaf,
+            target: Some(Box::new(target)),
+        };
+        Ok(())
+    }
+
+    /// Checks an assignment `deep_assign` finds as its place written out as an expression,
+    /// and keeps the checked keys, so that walks over the statement see them.
+    #[allow(clippy::too_many_arguments)]
+    fn check_deep_assign(
+        &mut self,
+        line: u32,
+        col: u32,
+        path: &[String],
+        index: &mut Option<Expr>,
+        keys: &mut Vec<Expr>,
+        fields: &[(usize, String)],
+        expr: &mut Expr,
+        root: &mut Option<usize>,
+        leaf: &mut u32,
+        target: &mut Option<Box<Expr>>,
+    ) -> Result<(), Error> {
+        let mut all: Vec<Expr> = index.take().into_iter().chain(keys.drain(..)).collect();
+        let mut place_expr = path_expr(line, col, path);
+        let mut named = fields.iter().peekable();
+        for (i, key) in all.drain(..).enumerate() {
+            place_expr = Expr::Index {
+                line,
+                col,
+                base: Box::new(place_expr),
+                index: Box::new(key),
+                root: None,
+                leaf: 0,
+                ty: 0,
+            };
+            while let Some((_, name)) = named.next_if(|(at, _)| *at == i + 1) {
+                place_expr = Expr::Field {
+                    line,
+                    col,
+                    base: Box::new(place_expr),
+                    name: name.clone(),
+                    root: None,
+                    leaf: 0,
+                    ty: 0,
+                };
+            }
+        }
+        let place = self.place(&mut place_expr)?;
+        let value_ty = place.ty;
+        if self.syms[place.sym].storage
+            && matches!(self.kind, ItemKind::View | ItemKind::Readonly | ItemKind::Pure)
+        {
+            return Err(self.weaker(line, col, "writes storage"));
+        }
+        if !self.syms[place.sym].mutable {
+            return Err(error(line, col, "cannot assign to a const"));
+        }
+        if self.storage_only(value_ty) && !self.list_value(value_ty) {
+            return Err(error(line, col, "only a single field can be assigned"));
+        }
+        self.check_expr_as(expr, Some(value_ty))?;
+        if !self.same(expr.ty(), value_ty) {
+            return Err(error(line, col, "assignment type does not match the field"));
+        }
+        let mut found = place_keys(&place_expr).0.into_iter();
+        *index = found.next();
+        *keys = found.collect();
+        *root = Some(place.sym);
+        *leaf = place.leaf;
+        *target = Some(Box::new(place_expr));
+        Ok(())
     }
 
     fn walk_fields(
@@ -6204,6 +6555,11 @@ impl Checker {
         callee: &mut Option<usize>,
         ty: &mut usize,
     ) -> Result<(), Error> {
+        // A call checked again, as another specialized call's argument is, keeps its copy.
+        if let Some(idx) = *callee {
+            *ty = self.sigs[idx].ret;
+            return Ok(());
+        }
         let template = self.template(&target)?;
         if args.len() != template.params.len() {
             let n = template.params.len();
@@ -6217,27 +6573,36 @@ impl Checker {
                 ),
             ));
         }
-        let saved_expect = self.expect;
-        self.expect = None;
-        for arg in args.iter_mut() {
-            self.check_expr(arg)?;
-        }
-        self.expect = saved_expect;
         let params = match target.module {
             Some(index) => self.modules[index].params.clone(),
             None => template.type_params.clone(),
         };
+        // A literal takes its type from its parameter, once the other arguments have
+        // settled the type parameters that parameter names.
+        let literal =
+            |arg: &Expr| matches!(arg, Expr::Lit { .. } | Expr::List { .. } | Expr::Record { .. });
         let mut env = HashMap::new();
-        for (param, arg) in template.params.iter().zip(args.iter()) {
-            self.unify(
-                &param.ty,
-                arg.ty(),
-                target.module,
-                &params,
-                &mut env,
-                arg.line(),
-                arg.col(),
-            )?;
+        for pass in [false, true] {
+            for (param, arg) in template.params.iter().zip(args.iter_mut()) {
+                if literal(arg) != pass {
+                    continue;
+                }
+                let expect = if pass {
+                    self.build_subst(&param.ty, target.module, &env).ok()
+                } else {
+                    None
+                };
+                self.check_expr_as(arg, expect)?;
+                self.unify(
+                    &param.ty,
+                    arg.ty(),
+                    target.module,
+                    &params,
+                    &mut env,
+                    arg.line(),
+                    arg.col(),
+                )?;
+            }
         }
         for param in &params {
             if !env.contains_key(&param.name) {
@@ -6259,13 +6624,15 @@ impl Checker {
             }
         }
         let mut places = Vec::new();
+        let mut shapes = Vec::new();
         let mut keep = Vec::new();
+        let mut hidden = Vec::new();
         for (param, arg) in template.params.iter().zip(args.iter()) {
             let concrete = self.build_subst(&param.ty, target.module, &env)?;
             let in_storage = storage_root(arg)
                 .is_some_and(|sym| self.syms.get(sym).is_some_and(|sym| sym.storage));
             if self.storage_only(concrete) && !(self.list_value(concrete) && !in_storage) {
-                let Some(path) = storage_path(arg) else {
+                let Some(path) = storage_path(arg, &param.name, &mut hidden) else {
                     return Err(error(
                         arg.line(),
                         arg.col(),
@@ -6280,6 +6647,20 @@ impl Checker {
                         format!("pass a storage path to `{}`", param.name),
                     ));
                 }
+                // The same place, however its name was written, shares one copy.
+                let named = match path.first() {
+                    Some(Seg::Field(first)) if self.known_modules.contains(first) => 2,
+                    _ => 1,
+                };
+                let mut shape = format!("{}", root.unwrap_or(0));
+                for seg in &path[named..] {
+                    match seg {
+                        Seg::Field(name) => shape.push_str(name),
+                        Seg::Key(_) => shape.push_str("[]"),
+                    }
+                    shape.push('.');
+                }
+                shapes.push(shape);
                 places.push((param.name.clone(), path));
             } else {
                 keep.push(param.clone());
@@ -6290,9 +6671,20 @@ impl Checker {
             key.push('\u{1}');
             key.push_str(&env[&param.name].to_string());
         }
-        for (_, path) in &places {
+        for shape in &shapes {
             key.push('\u{1}');
-            key.push_str(&path.join("."));
+            key.push_str(shape);
+        }
+        for (name, arg) in &hidden {
+            keep.push(Param {
+                line: arg.line(),
+                col: arg.col(),
+                mutable: false,
+                name: name.clone(),
+                ty: TypeRef::Hole { id: arg.ty() },
+                ty_id: 0,
+                sym: None,
+            });
         }
         let idx = if let Some(idx) = self.specs.get(&key).copied() {
             idx
@@ -6317,6 +6709,7 @@ impl Checker {
             }
             kept_args.push(arg);
         }
+        kept_args.extend(hidden.into_iter().map(|(_, arg)| arg));
         let sig_params = self.sigs[idx].params.clone();
         if kept_args.len() != sig_params.len() {
             return Err(error(line, col, "argument has the wrong type"));
@@ -6364,7 +6757,7 @@ impl Checker {
         target: &GenericCall,
         template: &Func,
         env: &HashMap<String, usize>,
-        places: &[(String, Vec<String>)],
+        places: &[(String, Vec<Seg>)],
         keep: &[Param],
     ) -> Result<usize, Error> {
         let mut func = template.clone();
@@ -6409,11 +6802,17 @@ impl Checker {
             module_name: self.module_name.clone(),
             requires: self.requires.clone(),
             spec_module: self.spec_module.clone(),
-            spec_places: self.spec_places,
+            spec_places: self.spec_places.clone(),
         };
         self.cur_fn = idx;
         self.spec_module = target.module.map(|index| self.modules[index].name.clone());
-        self.spec_places = !places.is_empty();
+        self.spec_places = places
+            .iter()
+            .filter_map(|(_, path)| match path.first() {
+                Some(Seg::Field(root)) => Some(root.clone()),
+                _ => None,
+            })
+            .collect();
         let checked = self.check_func(&mut func);
         self.scope = saved.scope;
         self.kind = saved.kind;
@@ -6740,7 +7139,7 @@ struct CheckSave {
     module_name: Option<String>,
     requires: Vec<String>,
     spec_module: Option<String>,
-    spec_places: bool,
+    spec_places: Vec<String>,
 }
 
 fn builtin_type_name(name: &str) -> bool {
@@ -6937,28 +7336,38 @@ fn subst_expr_types(
     Ok(())
 }
 
-fn rewrite_place(func: &mut Func, name: &str, path: &[String]) {
+/// A step of the storage path a call passes for a storage parameter. A key names the
+/// hidden parameter that carries the caller's key into the specialized copy, so the key is
+/// evaluated once, at the call.
+#[derive(Clone)]
+enum Seg {
+    Field(String),
+    Key(String),
+}
+
+fn rewrite_place(func: &mut Func, name: &str, path: &[Seg]) {
     rewrite_stmts(&mut func.stmts, name, path);
     if let Some(tail) = &mut func.tail {
         rewrite_expr(tail, name, path);
     }
 }
 
-fn rewrite_stmts(stmts: &mut [Stmt], name: &str, path: &[String]) {
+fn rewrite_stmts(stmts: &mut [Stmt], name: &str, path: &[Seg]) {
     for stmt in stmts {
         match stmt {
             Stmt::Const { expr, .. } | Stmt::Var { expr, .. } => rewrite_expr(expr, name, path),
             Stmt::Assign {
+                line,
+                col,
                 path: dest,
                 index,
                 keys,
+                fields,
                 expr,
                 ..
             } => {
                 if dest.first().is_some_and(|head| head == name) {
-                    let mut next = path.to_vec();
-                    next.extend(dest.iter().skip(1).cloned());
-                    *dest = next;
+                    rewrite_dest(*line, *col, path, dest, index, keys, fields);
                 }
                 if let Some(index) = index {
                     rewrite_expr(index, name, path);
@@ -7029,7 +7438,7 @@ fn rewrite_stmts(stmts: &mut [Stmt], name: &str, path: &[String]) {
     }
 }
 
-fn rewrite_raised(reason: &mut Raised, name: &str, path: &[String]) {
+fn rewrite_raised(reason: &mut Raised, name: &str, path: &[Seg]) {
     match &mut reason.form {
         RaisedForm::Unit => {}
         RaisedForm::Positional(expr) => rewrite_expr(expr, name, path),
@@ -7041,7 +7450,7 @@ fn rewrite_raised(reason: &mut Raised, name: &str, path: &[String]) {
     }
 }
 
-fn rewrite_expr(expr: &mut Expr, name: &str, path: &[String]) {
+fn rewrite_expr(expr: &mut Expr, name: &str, path: &[Seg]) {
     match expr {
         Expr::Ident {
             name: ident,
@@ -7049,7 +7458,7 @@ fn rewrite_expr(expr: &mut Expr, name: &str, path: &[String]) {
             col,
             ..
         } if ident == name => {
-            *expr = path_expr(*line, *col, path);
+            *expr = seg_expr(*line, *col, path);
         }
         Expr::Field { base, .. } => rewrite_expr(base, name, path),
         Expr::Index { base, index, .. } => {
@@ -7090,6 +7499,45 @@ fn rewrite_expr(expr: &mut Expr, name: &str, path: &[String]) {
     }
 }
 
+fn is_list_pop(expr: &Expr) -> bool {
+    matches!(expr, Expr::Call { name, base: Some(base), .. }
+        if name == "pop" && matches!(base.as_ref(), Expr::Ident { name, .. } if name == "List"))
+}
+
+/// The keys of a place, first to last, and the named part before the first of them:
+/// `m[k].a[j]` has `k` and `j`, after `m`.
+fn place_keys(expr: &Expr) -> (Vec<Expr>, &Expr) {
+    let mut keys = Vec::new();
+    let mut at = expr;
+    let mut named = expr;
+    loop {
+        match at {
+            Expr::Index { base, index, .. } => {
+                keys.push(index.as_ref().clone());
+                at = base;
+                named = base;
+            }
+            Expr::Field { base, .. } => at = base,
+            _ => break,
+        }
+    }
+    keys.reverse();
+    (keys, named)
+}
+
+/// The names of a place written as a path, `a.b.c`, with no index.
+fn place_path(expr: &Expr) -> Option<Vec<String>> {
+    match expr {
+        Expr::Ident { name, .. } => Some(vec![name.clone()]),
+        Expr::Field { base, name, .. } => {
+            let mut path = place_path(base)?;
+            path.push(name.clone());
+            Some(path)
+        }
+        _ => None,
+    }
+}
+
 fn path_expr(line: u32, col: u32, path: &[String]) -> Expr {
     let mut expr = Expr::Ident {
         line,
@@ -7113,16 +7561,121 @@ fn path_expr(line: u32, col: u32, path: &[String]) -> Expr {
     expr
 }
 
-fn storage_path(expr: &Expr) -> Option<Vec<String>> {
+/// A storage path's name and fields, then its keys, each after the steps before it.
+/// `keys` collects each key's hidden parameter and the caller's key, in order.
+fn storage_path(expr: &Expr, param: &str, keys: &mut Vec<(String, Expr)>) -> Option<Vec<Seg>> {
     match expr {
-        Expr::Ident { name, .. } => Some(name.split('.').map(str::to_string).collect()),
+        Expr::Ident { name, .. } => Some(name.split('.').map(|s| Seg::Field(s.to_string())).collect()),
         Expr::Field { base, name, .. } => {
-            let mut path = storage_path(base)?;
-            path.push(name.clone());
+            let mut path = storage_path(base, param, keys)?;
+            path.push(Seg::Field(name.clone()));
+            Some(path)
+        }
+        Expr::Index { base, index, .. } => {
+            let mut path = storage_path(base, param, keys)?;
+            let hidden = format!("${param}{}", keys.len());
+            keys.push((hidden.clone(), index.as_ref().clone()));
+            path.push(Seg::Key(hidden));
             Some(path)
         }
         _ => None,
     }
+}
+
+fn seg_expr(line: u32, col: u32, path: &[Seg]) -> Expr {
+    let mut expr: Option<Expr> = None;
+    for seg in path {
+        expr = Some(match (seg, expr) {
+            (Seg::Field(name), None) => Expr::Ident {
+                line,
+                col,
+                name: name.clone(),
+                sym: None,
+                builtin: None,
+                ty: 0,
+            },
+            (Seg::Field(name), Some(base)) => Expr::Field {
+                line,
+                col,
+                base: Box::new(base),
+                name: name.clone(),
+                root: None,
+                leaf: 0,
+                ty: 0,
+            },
+            (Seg::Key(name), base) => Expr::Index {
+                line,
+                col,
+                base: Box::new(base.expect("a path starts with a name")),
+                index: Box::new(Expr::Ident {
+                    line,
+                    col,
+                    name: name.clone(),
+                    sym: None,
+                    builtin: None,
+                    ty: 0,
+                }),
+                root: None,
+                leaf: 0,
+                ty: 0,
+            },
+        });
+    }
+    expr.expect("a path has a name")
+}
+
+/// An assignment through a storage parameter, written onto the path the caller passed:
+/// its fields and keys come first, then the assignment's own.
+fn rewrite_dest(
+    line: u32,
+    col: u32,
+    path: &[Seg],
+    dest: &mut Vec<String>,
+    index: &mut Option<Expr>,
+    keys: &mut Vec<Expr>,
+    fields: &mut Vec<(usize, String)>,
+) {
+    let key = |name: &str| Expr::Ident {
+        line,
+        col,
+        name: name.to_string(),
+        sym: None,
+        builtin: None,
+        ty: 0,
+    };
+    let rest: Vec<String> = dest.drain(1..).collect();
+    dest.clear();
+    let mut steps = path.iter();
+    let mut added = Vec::new();
+    let mut named = Vec::new();
+    for seg in steps.by_ref() {
+        match seg {
+            Seg::Field(name) => dest.push(name.clone()),
+            Seg::Key(name) => {
+                added.push(key(name));
+                break;
+            }
+        }
+    }
+    if added.is_empty() {
+        dest.extend(rest);
+        return;
+    }
+    for seg in steps {
+        match seg {
+            Seg::Field(name) => named.push((added.len(), name.clone())),
+            Seg::Key(name) => added.push(key(name)),
+        }
+    }
+    named.extend(rest.into_iter().map(|name| (added.len(), name)));
+    let shift = added.len();
+    named.extend(fields.drain(..).map(|(at, name)| (at + shift, name)));
+    added.extend(index.take());
+    added.append(keys);
+    let mut added = added.into_iter();
+    *index = added.next();
+    *keys = added.collect();
+    *fields = named;
 }
 
 /// Whether a field or index chain starts at a name, so it is a place.
@@ -7675,19 +8228,32 @@ pub(crate) fn abi_fields(types: &[RType], ty: usize, name: &str) -> Result<Vec<A
             let Some(elem) = types[ty].elem else {
                 return Err(error(1, 1, "this type cannot be an ABI value"));
             };
-            let inner = abi_parts(types, elem)?;
-            if inner.len() != 1 {
-                return Err(error(1, 1, "list elements must be a single ABI value"));
-            }
             let len = if types[ty].bits == 0 {
                 String::new()
             } else {
                 types[ty].bits.to_string()
             };
+            // A list of records is a Solidity array of structs: each element a tuple.
+            if types[peel_id(types, elem)].kind == TyKind::Record {
+                let tuple = event_abi(types, "", elem, false)?;
+                let Some(canon) = static_abi(types, elem).filter(|_| !has_option(types, elem)) else {
+                    return Err(error(1, 1, "this type cannot be an ABI value"));
+                };
+                return Ok(vec![AbiField {
+                    name: name.to_string(),
+                    ty: format!("{canon}[{len}]"),
+                    components: tuple.components,
+                    indexed: false,
+                }]);
+            }
+            let inner = abi_fields(types, elem, "")?;
+            if inner.len() != 1 {
+                return Err(error(1, 1, "list elements must be a single ABI value"));
+            }
             Ok(vec![AbiField {
                 name: name.to_string(),
-                ty: format!("{}[{len}]", inner[0]),
-                components: Vec::new(),
+                ty: format!("{}[{len}]", inner[0].ty),
+                components: inner[0].components.clone(),
                 indexed: false,
             }])
         }
@@ -7862,6 +8428,16 @@ pub(crate) fn is_stored_aggregate(types: &[RType], ty: usize) -> bool {
     }
 }
 
+/// A record with strings, bytes, or lists among its fields, which the ABI carries as the
+/// values of its fields in order, each dynamic one after an offset.
+pub(crate) fn abi_record(types: &[RType], ty: usize) -> bool {
+    let id = peel_id(types, ty);
+    types[id].kind == TyKind::Record
+        && !is_static_value(types, id)
+        && !has_option(types, id)
+        && abi_fields(types, id, "").is_ok()
+}
+
 /// Whether an option appears anywhere in a value, which keeps it out of the ABI.
 pub(crate) fn has_option(types: &[RType], ty: usize) -> bool {
     let t = &types[peel_id(types, ty)];
@@ -7956,6 +8532,7 @@ fn module_builtin(module: &str, name: &str) -> Option<Builtin> {
         ("Evm", "balance") => Builtin::Balance,
         ("Evm", "code_size") => Builtin::CodeSize,
         ("Evm", "code_hash") => Builtin::CodeHash,
+        ("Evm", "creation_code") => Builtin::CreationCode,
         ("Evm", "gas_left") => Builtin::GasLeft,
         ("Evm", "transfer") => Builtin::Transfer,
         ("Crypto", "keccak256") => Builtin::Keccak256,
@@ -7980,6 +8557,18 @@ fn module_builtin(module: &str, name: &str) -> Option<Builtin> {
         ("Nat", "mul_mod") => Builtin::NatMulMod,
         ("Nat", "add_mod") => Builtin::NatAddMod,
         ("Int", "div_rem") => Builtin::IntDivRem,
+        ("Nat", "to_string") => Builtin::NatToString,
+        ("Int", "to_string") => Builtin::IntToString,
+        ("List", "pop") => Builtin::ListPop,
+        ("Abi", "supports_interface") => Builtin::AbiSupportsInterface,
+        ("Nat" | "Int", "wrapping_add" | "wrapping_sub" | "wrapping_mul") => Builtin::Wrapping(
+            match name {
+                "wrapping_add" => BinOp::Add,
+                "wrapping_sub" => BinOp::Sub,
+                _ => BinOp::Mul,
+            },
+            module == "Int",
+        ),
         _ => return None,
     })
 }

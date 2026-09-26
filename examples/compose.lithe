@@ -87,14 +87,14 @@ module Guarded is {
 contract Token is {
   use Guarded;
 
-  external use Ledger is {
+  use Ledger exposing {
     view function balance_of(account : address) : nat;
     function mint(account : address; amount : nat);
     function transfer(to : address; amount : nat)
       raises Insufficient_balance;
   }
 
-  external use Pausable is {
+  use Pausable exposing {
     view function is_paused() : bool;
     function pause();
   }

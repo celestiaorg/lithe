@@ -1,0 +1,185 @@
+(* Enumeration of every token and of each owner's tokens: ERC-721's enumeration extension,
+   like OpenZeppelin's `ERC721Enumerable`. A removed token's place goes to the last token,
+   so enumerations are unordered.
+
+   The lists follow every ownership change that goes through this module's `update`, so an
+   enumerable collection moves tokens only through it: its transfers, mints, and burns are
+   this module's, and it exposes the transfers from here rather than from `ERC721`:
+
+     use ERC721 exposing IERC721Metadata, IERC721Views, IERC721Approvals;
+
+     use ERC721Enumerable exposing IERC721Enumerable, {
+       function transferFrom(from : address; to : address; tokenId : nat)
+         raises ERC721InvalidReceiver | ERC721IncorrectOwner | ERC721NonexistentToken
+           | ERC721InsufficientApproval;
+       ...
+     } *)
+
+import "std/token/erc721.lithe";
+
+module ERC721Enumerable is {
+  requires ERC721;
+
+  storage erc721_enumerable at "lithe.std.erc721.enumerable" is record {
+    owned_tokens : map(address, map(nat, nat));
+    owned_tokens_index : map(nat, nat);
+    all_tokens : list(nat);
+    all_tokens_index : map(nat, nat);
+  }
+
+  view function total_supply() : nat is
+    erc721_enumerable.all_tokens.length
+
+  view function token_by_index(const index : nat) : nat
+    raises ERC721OutOfBoundsIndex
+  is {
+    assert(
+      index < erc721_enumerable.all_tokens.length,
+      ERC721OutOfBoundsIndex { owner = Address.zero; index = index; }
+    );
+  } with erc721_enumerable.all_tokens[index]
+
+  view function token_of_owner_by_index(const owner : address; const index : nat) : nat
+    raises ERC721InvalidOwner | ERC721OutOfBoundsIndex
+  is {
+    assert(
+      index < ERC721.balance_of(owner),
+      ERC721OutOfBoundsIndex { owner = owner; index = index; }
+    );
+  } with erc721_enumerable.owned_tokens[owner][index]
+
+  (* `ERC721.update`, then the enumerations follow the token. *)
+  function update(const to : address; const tokenId : nat; const auth : address) : address
+    raises ERC721NonexistentToken | ERC721InsufficientApproval
+  is {
+    const previous : address := ERC721.update(to, tokenId, auth);
+    if previous = Address.zero then {
+      add_to_all(tokenId);
+    } else {
+      if previous <> to then {
+        remove_from_owner(previous, tokenId);
+      }
+    }
+    if to = Address.zero then {
+      remove_from_all(tokenId);
+    } else {
+      if previous <> to then {
+        add_to_owner(to, tokenId);
+      }
+    }
+  } with previous
+
+  function add_to_owner(const to : address; const tokenId : nat) is {
+    const length : nat := ERC721.erc721.balances[to] - 1n;
+    erc721_enumerable.owned_tokens[to][length] := tokenId;
+    erc721_enumerable.owned_tokens_index[tokenId] := length;
+  }
+
+  function add_to_all(const tokenId : nat) is {
+    erc721_enumerable.all_tokens_index[tokenId] := erc721_enumerable.all_tokens.length;
+    erc721_enumerable.all_tokens[erc721_enumerable.all_tokens.length] := tokenId;
+  }
+
+  function remove_from_owner(const from : address; const tokenId : nat) is {
+    const last_index : nat := ERC721.erc721.balances[from];
+    const index : nat := erc721_enumerable.owned_tokens_index[tokenId];
+    if index <> last_index then {
+      const last_id : nat := erc721_enumerable.owned_tokens[from][last_index];
+      erc721_enumerable.owned_tokens[from][index] := last_id;
+      erc721_enumerable.owned_tokens_index[last_id] := index;
+    }
+    erc721_enumerable.owned_tokens_index[tokenId] := 0n;
+    erc721_enumerable.owned_tokens[from][last_index] := 0n;
+  }
+
+  function remove_from_all(const tokenId : nat) is {
+    const last_index : nat := erc721_enumerable.all_tokens.length - 1n;
+    const index : nat := erc721_enumerable.all_tokens_index[tokenId];
+    const last_id : nat := erc721_enumerable.all_tokens[last_index];
+    erc721_enumerable.all_tokens[index] := last_id;
+    erc721_enumerable.all_tokens_index[last_id] := index;
+    erc721_enumerable.all_tokens_index[tokenId] := 0n;
+    List.pop(erc721_enumerable.all_tokens);
+  }
+
+  function transfer_from(const from : address; const to : address; const tokenId : nat)
+    raises ERC721InvalidReceiver | ERC721IncorrectOwner | ERC721NonexistentToken | ERC721InsufficientApproval
+  is {
+    assert(to <> Address.zero, ERC721InvalidReceiver(Address.zero));
+    const previous : address := update(to, tokenId, Evm.sender());
+    assert(
+      previous = from,
+      ERC721IncorrectOwner { sender = from; tokenId = tokenId; owner = previous; }
+    );
+  }
+
+  (* The three-argument `safeTransferFrom`. *)
+  function safe_transfer_from(const from : address; const to : address; const tokenId : nat)
+    raises ERC721InvalidReceiver | ERC721IncorrectOwner | ERC721NonexistentToken | ERC721InsufficientApproval
+  is {
+    transfer_from(from, to, tokenId);
+    ERC721.check_received(Evm.sender(), from, to, tokenId, "");
+  }
+
+  (* The four-argument `safeTransferFrom`, passing `data` to the receiver. *)
+  function safe_transfer_from_with_data(const from : address; const to : address; const tokenId : nat; const data : bytes)
+    raises ERC721InvalidReceiver | ERC721IncorrectOwner | ERC721NonexistentToken | ERC721InsufficientApproval
+  is {
+    transfer_from(from, to, tokenId);
+    ERC721.check_received(Evm.sender(), from, to, tokenId, data);
+  }
+
+  function mint(const to : address; const tokenId : nat)
+    raises ERC721InvalidReceiver | ERC721InvalidSender | ERC721NonexistentToken | ERC721InsufficientApproval
+  is {
+    assert(to <> Address.zero, ERC721InvalidReceiver(Address.zero));
+    const previous : address := update(to, tokenId, Address.zero);
+    assert(previous = Address.zero, ERC721InvalidSender(Address.zero));
+  }
+
+  (* Mints, then checks that a contract receiver accepts the token. *)
+  function safe_mint(const to : address; const tokenId : nat; const data : bytes)
+    raises ERC721InvalidReceiver | ERC721InvalidSender | ERC721NonexistentToken | ERC721InsufficientApproval
+  is {
+    mint(to, tokenId);
+    ERC721.check_received(Evm.sender(), Address.zero, to, tokenId, data);
+  }
+
+  function burn(const tokenId : nat)
+    raises ERC721NonexistentToken | ERC721InsufficientApproval
+  is {
+    const previous : address := update(Address.zero, tokenId, Address.zero);
+    assert(previous <> Address.zero, ERC721NonexistentToken(tokenId));
+  }
+
+  external view function totalSupply() : nat is
+    total_supply()
+
+  external view function tokenByIndex(const index : nat) : nat
+    raises ERC721OutOfBoundsIndex
+  is
+    token_by_index(index)
+
+  external view function tokenOfOwnerByIndex(const owner : address; const index : nat) : nat
+    raises ERC721InvalidOwner | ERC721OutOfBoundsIndex
+  is
+    token_of_owner_by_index(owner, index)
+
+  external function transferFrom(const from : address; const to : address; const tokenId : nat)
+    raises ERC721InvalidReceiver | ERC721IncorrectOwner | ERC721NonexistentToken
+      | ERC721InsufficientApproval
+  is
+    transfer_from(from, to, tokenId)
+
+  external function safeTransferFrom(const from : address; const to : address; const tokenId : nat)
+    raises ERC721InvalidReceiver | ERC721IncorrectOwner | ERC721NonexistentToken
+      | ERC721InsufficientApproval
+  is
+    safe_transfer_from(from, to, tokenId)
+
+  external function safeTransferFrom(const from : address; const to : address; const tokenId : nat; const data : bytes)
+    raises ERC721InvalidReceiver | ERC721IncorrectOwner | ERC721NonexistentToken
+      | ERC721InsufficientApproval
+  is
+    safe_transfer_from_with_data(from, to, tokenId, data)
+}

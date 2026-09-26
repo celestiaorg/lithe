@@ -8,13 +8,7 @@ import "./lib/ownable.lithe";
 contract StakingRewards is {
   use Initializable;
 
-  external use Ownable is {
-    view function owner() : address;
-    function transferOwnership(newOwner : address)
-      raises OwnableUnauthorizedAccount | OwnableInvalidOwner;
-    function renounceOwnership()
-      raises OwnableUnauthorizedAccount;
-  }
+  use Ownable exposing IOwnable;
 
   interface IERC20 is {
     function transfer(to : address; value : nat) : bool;

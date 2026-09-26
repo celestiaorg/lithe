@@ -1,0 +1,275 @@
+(* Voting power from balances, ERC-5805 with ERC-6372's block-number clock, like
+   OpenZeppelin's `ERC20Votes`. A holder's balance counts as votes for the account it
+   delegates to, itself included, and nothing until it delegates. Each delegate's votes,
+   and the total supply, are checkpointed by block, so a governor reads them as of a past
+   block. The supply is capped at what a checkpoint holds, `2^208 - 1`.
+
+   The votes follow every balance change that goes through this module's `update`, so a
+   token with votes moves balances only through it: its transfers, mints, and burns are
+   this module's, and it exposes the transfers from here rather than from `ERC20`. A token
+   with its own rules for a balance change, such as a pause, writes `ERC20.update`, its
+   rules, then `transfer_voting_units` itself.
+
+     use ERC20 exposing IERC20Metadata, IERC20Views, IERC20Approvals;
+
+     use ERC20Votes exposing IERC6372, IVotes, IVotesCheckpoints, {
+       function transfer(to : address; value : nat) : bool
+         raises ...;
+     } *)
+
+import "std/token/erc20.lithe";
+import "std/crypto/eip712.lithe";
+import "std/interfaces/erc5805.lithe";
+
+module ERC20Votes is {
+  requires ERC20;
+  requires EIP712;
+  requires ECDSA;
+  requires Nonces;
+  requires Checkpoints;
+
+  storage erc20_votes at "lithe.std.erc20.votes" is record {
+    delegatee : map(address, address);
+    delegate_checkpoints : map(address, trace);
+    total_checkpoints : trace;
+  }
+
+  error ERC20ExceededSafeSupply of record {
+    increasedSupply : nat;
+    cap : nat;
+  }
+
+  event DelegateChanged of record {
+    indexed delegator : address;
+    indexed fromDelegate : address;
+    indexed toDelegate : address;
+  }
+
+  event DelegateVotesChanged of record {
+    indexed delegate : address;
+    previousVotes : nat;
+    newVotes : nat;
+  }
+
+  view function clock() : uint48 is
+    uint48(Evm.block_number())
+
+  (* A past block, checked: a lookup at the current block could still change. *)
+  view function past(const timepoint : nat) : uint48
+    raises ERC5805FutureLookup
+  is {
+    const now : uint48 := clock();
+    assert(timepoint < nat(now), ERC5805FutureLookup { timepoint = timepoint; clock = now; });
+  } with uint48(timepoint)
+
+  view function get_votes(const account : address) : nat is
+    nat(Checkpoints.latest(erc20_votes.delegate_checkpoints[account]))
+
+  view function get_past_votes(const account : address; const timepoint : nat) : nat
+    raises ERC5805FutureLookup
+  is
+    nat(Checkpoints.upper_lookup_recent(erc20_votes.delegate_checkpoints[account], past(timepoint)))
+
+  view function get_past_total_supply(const timepoint : nat) : nat
+    raises ERC5805FutureLookup
+  is
+    nat(Checkpoints.upper_lookup_recent(erc20_votes.total_checkpoints, past(timepoint)))
+
+  view function delegates(const account : address) : address is
+    erc20_votes.delegatee[account]
+
+  view function num_checkpoints(const account : address) : uint32 is
+    uint32(Checkpoints.length(erc20_votes.delegate_checkpoints[account]))
+
+  view function checkpoint_at(const account : address; const pos : uint32) : checkpoint is
+    Checkpoints.at(erc20_votes.delegate_checkpoints[account], nat(pos))
+
+  (* `account`'s votes go to `delegatee` from now on, all of its balance at once. *)
+  function delegate(const account : address; const delegatee : address)
+    raises CheckpointUnorderedInsertion
+  is {
+    const previous : address := erc20_votes.delegatee[account];
+    erc20_votes.delegatee[account] := delegatee;
+    emit DelegateChanged {
+      delegator = account;
+      fromDelegate = previous;
+      toDelegate = delegatee;
+    };
+    move_delegate_votes(previous, delegatee, ERC20.balance_of(account));
+  }
+
+  (* keccak256("Delegation(address delegatee,uint256 nonce,uint256 expiry)") *)
+  function delegate_by_sig(
+    const delegatee : address;
+    const nonce : nat;
+    const expiry : nat;
+    const v : uint8;
+    const r : bytes32;
+    const s : bytes32
+  )
+    raises VotesExpiredSignature | ECDSAInvalidSignature | ECDSAInvalidSignatureS | InvalidAccountNonce
+      | CheckpointUnorderedInsertion
+  is {
+    assert(nat(Evm.block_timestamp()) <= expiry, VotesExpiredSignature(expiry));
+    const struct_hash : bytes32 := Crypto.keccak256(Abi.encode(
+      0xe48329057bfd03d55e49b547132e39cffd9c1820ad7b9d4c5307691425d15adf,
+      delegatee,
+      nonce,
+      expiry
+    ));
+    const signer : address := ECDSA.recover(EIP712.hash_typed_data(struct_hash), v, r, s);
+    Nonces.use_checked_nonce(signer, nonce);
+    delegate(signer, delegatee);
+  }
+
+  (* `ERC20.update`, then the votes follow the tokens. *)
+  function update(const from : address; const to : address; const value : nat)
+    raises ERC20InsufficientBalance | ERC20ExceededSafeSupply | CheckpointUnorderedInsertion
+  is {
+    ERC20.update(from, to, value);
+    transfer_voting_units(from, to, value);
+  }
+
+  (* After a balance change: a mint checks the supply still fits a checkpoint, then the
+     total and the delegates' votes move with the tokens. *)
+  function transfer_voting_units(const from : address; const to : address; const value : nat)
+    raises ERC20ExceededSafeSupply | CheckpointUnorderedInsertion
+  is {
+    if from = Address.zero then {
+      const supply : nat := ERC20.total_supply();
+      const cap : uint208 := Nat.max;
+      assert(supply <= nat(cap), ERC20ExceededSafeSupply { increasedSupply = supply; cap = nat(cap); });
+      Checkpoints.push(
+        erc20_votes.total_checkpoints,
+        clock(),
+        Checkpoints.latest(erc20_votes.total_checkpoints) + uint208(value)
+      );
+    }
+    if to = Address.zero then {
+      Checkpoints.push(
+        erc20_votes.total_checkpoints,
+        clock(),
+        Checkpoints.latest(erc20_votes.total_checkpoints) - uint208(value)
+      );
+    }
+    move_delegate_votes(erc20_votes.delegatee[from], erc20_votes.delegatee[to], value);
+  }
+
+  function move_delegate_votes(const from : address; const to : address; const amount : nat)
+    raises CheckpointUnorderedInsertion
+  is {
+    if from <> to and amount > 0n then {
+      if from <> Address.zero then {
+        const previous : uint208 := Checkpoints.latest(erc20_votes.delegate_checkpoints[from]);
+        const next : uint208 := previous - uint208(amount);
+        Checkpoints.push(erc20_votes.delegate_checkpoints[from], clock(), next);
+        emit DelegateVotesChanged { delegate = from; previousVotes = nat(previous); newVotes = nat(next); };
+      }
+      if to <> Address.zero then {
+        const previous : uint208 := Checkpoints.latest(erc20_votes.delegate_checkpoints[to]);
+        const next : uint208 := previous + uint208(amount);
+        Checkpoints.push(erc20_votes.delegate_checkpoints[to], clock(), next);
+        emit DelegateVotesChanged { delegate = to; previousVotes = nat(previous); newVotes = nat(next); };
+      }
+    }
+  }
+
+  (* A transfer between two real accounts. *)
+  function move(const from : address; const to : address; const value : nat)
+    raises ERC20InvalidSender | ERC20InvalidReceiver | ERC20InsufficientBalance
+      | ERC20ExceededSafeSupply | CheckpointUnorderedInsertion
+  is {
+    assert(from <> Address.zero, ERC20InvalidSender(Address.zero));
+    assert(to <> Address.zero, ERC20InvalidReceiver(Address.zero));
+    update(from, to, value);
+  }
+
+  function mint(const account : address; const value : nat)
+    raises ERC20InvalidReceiver | ERC20InsufficientBalance | ERC20ExceededSafeSupply
+      | CheckpointUnorderedInsertion
+  is {
+    assert(account <> Address.zero, ERC20InvalidReceiver(Address.zero));
+    update(Address.zero, account, value);
+  }
+
+  function burn(const account : address; const value : nat)
+    raises ERC20InvalidSender | ERC20InsufficientBalance | ERC20ExceededSafeSupply
+      | CheckpointUnorderedInsertion
+  is {
+    assert(account <> Address.zero, ERC20InvalidSender(Address.zero));
+    update(account, Address.zero, value);
+  }
+
+  external view function clock() : uint48 is
+    clock()
+
+  external view function CLOCK_MODE() : string
+    raises ERC6372InconsistentClock
+  is {
+    assert(clock() = uint48(Evm.block_number()), ERC6372InconsistentClock);
+  } with "mode=blocknumber&from=default"
+
+  external view function getVotes(const account : address) : nat is
+    get_votes(account)
+
+  external view function getPastVotes(const account : address; const timepoint : nat) : nat
+    raises ERC5805FutureLookup
+  is
+    get_past_votes(account, timepoint)
+
+  external view function getPastTotalSupply(const timepoint : nat) : nat
+    raises ERC5805FutureLookup
+  is
+    get_past_total_supply(timepoint)
+
+  external view function delegates(const account : address) : address is
+    delegates(account)
+
+  external view function numCheckpoints(const account : address) : uint32 is
+    num_checkpoints(account)
+
+  external view function checkpoints(const account : address; const pos : uint32) : checkpoint is
+    checkpoint_at(account, pos)
+
+  external function delegate(const delegatee : address)
+    raises CheckpointUnorderedInsertion
+  is {
+    delegate(Evm.sender(), delegatee);
+  }
+
+  external function delegateBySig(
+    const delegatee : address;
+    const nonce : nat;
+    const expiry : nat;
+    const v : uint8;
+    const r : bytes32;
+    const s : bytes32
+  )
+    raises VotesExpiredSignature | ECDSAInvalidSignature | ECDSAInvalidSignatureS | InvalidAccountNonce
+      | CheckpointUnorderedInsertion
+  is {
+    delegate_by_sig(delegatee, nonce, expiry, v, r, s);
+  }
+
+  external function transfer(const to : address; const value : nat) : bool
+    raises ERC20InvalidSender | ERC20InvalidReceiver | ERC20InsufficientBalance
+      | ERC20ExceededSafeSupply | CheckpointUnorderedInsertion
+  is {
+    move(Evm.sender(), to, value);
+  } with true
+
+  external function transferFrom(const from : address; const to : address; const value : nat) : bool
+    raises ERC20InsufficientAllowance | ERC20InvalidApprover | ERC20InvalidSpender
+      | ERC20InvalidSender | ERC20InvalidReceiver | ERC20InsufficientBalance
+      | ERC20ExceededSafeSupply | CheckpointUnorderedInsertion
+  is {
+    ERC20.spend_allowance(from, Evm.sender(), value);
+    move(from, to, value);
+  } with true
+}
+
+(* OpenZeppelin's checkpoint views, which ERC-5805 leaves out. *)
+interface IVotesCheckpoints is {
+  view function numCheckpoints(account : address) : uint32;
+  view function checkpoints(account : address; pos : uint32) : checkpoint;
+}

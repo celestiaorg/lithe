@@ -19,7 +19,7 @@ module Beta is {
 }
 
 contract Token is {
-  external use Alpha is {
+  use Alpha exposing {
     function go();
   }
 

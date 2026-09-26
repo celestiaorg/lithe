@@ -2,13 +2,17 @@
    the order of its checks. Set the name and symbol with `init`, usually from `deploy`.
 
    The module's externals are the standard's, and a token exposes them by naming its
-   interfaces. A contract that has them answers for them in `supportsInterface`:
+   interfaces, and announces them through ERC-165 with `supports`:
 
-     external use ERC20 is IERC20, IERC20Metadata;
+     use ERC20 exposing IERC20, IERC20Metadata;
+     supports IERC20, IERC20Metadata;
 
    Every balance change goes through `update`. To add a rule, such as a pause, the
    contract writes its own `transfer` and `transferFrom` around `move` and
-   `spend_allowance`: an extension never changes these functions silently. *)
+   `spend_allowance`: an extension never changes these functions silently. It exposes the
+   rest of `IERC20` as `IERC20Views` and `IERC20Approvals`:
+
+     use ERC20 exposing IERC20Metadata, IERC20Views, IERC20Approvals; *)
 
 import "std/interfaces/erc20.lithe";
 
@@ -188,4 +192,16 @@ module ERC20 is {
       | ERC20InvalidSender | ERC20InvalidReceiver | ERC20InsufficientBalance
   is
     transfer_from(from, to, value)
+}
+
+(* `IERC20` without its transfers and approvals, for a token that writes its own. *)
+interface IERC20Views is {
+  view function totalSupply() : nat;
+  view function balanceOf(account : address) : nat;
+  view function allowance(owner : address; spender : address) : nat;
+}
+
+interface IERC20Approvals is {
+  function approve(spender : address; value : nat) : bool
+    raises ERC20InvalidApprover | ERC20InvalidSpender;
 }

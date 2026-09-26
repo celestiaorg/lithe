@@ -27,7 +27,7 @@ import "std/crypto/eip712.lithe";
 import "std/crypto/ecdsa.lithe";
 
 contract Mailbox is {
-  external use EIP712 is {
+  use EIP712 exposing {
     view function DOMAIN_SEPARATOR() : bytes32;
   }
 

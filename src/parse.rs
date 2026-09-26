@@ -43,7 +43,7 @@ struct Parser<'a> {
     src: &'a str,
     toks: Vec<Token>,
     i: usize,
-    /// Inside `external use M is { ... }`: functions are external and have no body.
+    /// Inside `use M exposing { ... }`: functions are external and have no body.
     declaring: bool,
 }
 
@@ -82,7 +82,8 @@ struct Body {
     funcs: Vec<Func>,
     domains: Vec<DomainDecl>,
     compose: Vec<NameAt>,
-    exposes: Vec<ExternalUse>,
+    exposes: Vec<Exposing>,
+    supports: Vec<NameAt>,
     upgradeable: bool,
     guard: Option<GuardDecl>,
 }
@@ -102,6 +103,7 @@ impl Body {
             domains: Vec::new(),
             compose: Vec::new(),
             exposes: Vec::new(),
+            supports: Vec::new(),
             upgradeable: false,
             guard: None,
         }
@@ -121,6 +123,7 @@ impl Body {
             modules,
             compose: self.compose,
             exposes: self.exposes,
+            supports: self.supports,
             upgradeable: self.upgradeable,
             guard: self.guard,
             contract_name: self.name,
@@ -129,7 +132,6 @@ impl Body {
             siblings: Vec::new(),
             peers: Vec::new(),
             origin: String::new(),
-            erc165: true,
         }
     }
 }
@@ -298,28 +300,6 @@ impl<'a> Parser<'a> {
                 return Err(self.err("an interface cannot be private"));
             }
             Kind::Interface => body.interfaces.push(self.interface_decl()?),
-            Kind::External if self.peek_kind(1) == Kind::Use => {
-                if private {
-                    return Err(self.err("`external use` cannot be private"));
-                }
-                let exposed = self.external_use()?;
-                if body.exposes.iter().any(|have| have.module == exposed.module) {
-                    return Err(error(
-                        exposed.line,
-                        exposed.col,
-                        format!(
-                            "`external use {}` appears twice; list all its interfaces in one",
-                            exposed.module
-                        ),
-                    ));
-                }
-                body.compose.push(NameAt {
-                    line: exposed.line,
-                    col: exposed.col,
-                    name: exposed.module.clone(),
-                });
-                body.exposes.push(exposed);
-            }
             Kind::External
             | Kind::Payable
             | Kind::Nonreentrant
@@ -359,9 +339,38 @@ impl<'a> Parser<'a> {
             Kind::Upgrade => body.guard = Some(self.guard_decl()?),
             Kind::Module => return Err(self.err("declare a module outside the contract")),
             Kind::Use if private => return Err(self.err("`use` cannot be private")),
-            Kind::Use => body.compose.push(self.compose_use()?),
+            Kind::Use => {
+                let (line, col) = self.at();
+                self.bump();
+                let module = self.ident()?;
+                if self.kind() == Kind::Ident && self.slice() == "exposing" {
+                    self.bump();
+                    let exposed = self.use_exposing(line, col, module.clone())?;
+                    if body.exposes.iter().any(|have| have.module == module) {
+                        return Err(error(
+                            line,
+                            col,
+                            format!(
+                                "`use {module} exposing` appears twice; list all its interfaces in one"
+                            ),
+                        ));
+                    }
+                    body.exposes.push(exposed);
+                } else if self.kind() == Kind::Semi {
+                    self.bump();
+                }
+                body.compose.push(NameAt {
+                    line,
+                    col,
+                    name: module,
+                });
+            }
             Kind::Contract => {
                 return Err(self.err("a contract cannot contain another contract"));
+            }
+            Kind::Ident if !private && self.slice() == "supports" => {
+                let names = self.supports_list()?;
+                body.supports.extend(names);
             }
             Kind::Ident if !private && self.slice() == "storage" => match self.storage_decl()? {
                 StorageItem::Default(decl) => body.types.push(decl),
@@ -378,14 +387,9 @@ impl<'a> Parser<'a> {
         Ok(())
     }
 
-    /// `external use M is I, J, { ... }`: the interfaces whose members the contract exposes
-    /// from `M`, named or inline. Each member is one of `M`'s externals.
-    fn external_use(&mut self) -> Result<ExternalUse, Error> {
-        let (line, col) = self.at();
-        self.want(Kind::External)?;
-        self.want(Kind::Use)?;
-        let module = self.ident()?;
-        self.want(Kind::Is)?;
+    /// `exposing I, J, { ... }` after `use M`: the interfaces whose members the contract
+    /// exposes from `M`, named or inline. Each member is one of `M`'s externals.
+    fn use_exposing(&mut self, line: u32, col: u32, module: String) -> Result<Exposing, Error> {
         let mut interfaces = Vec::new();
         let mut decls = None;
         loop {
@@ -395,7 +399,7 @@ impl<'a> Parser<'a> {
                     return Err(error(
                         bline,
                         bcol,
-                        "`external use` has one inline interface; put its members together",
+                        "`use ... exposing` has one inline interface; put its members together",
                     ));
                 }
                 let members = self.interface_body()?;
@@ -404,17 +408,7 @@ impl<'a> Parser<'a> {
                 }
                 decls = Some(members);
             } else {
-                let (iline, icol) = self.at();
-                let mut name = self.ident()?;
-                while self.kind() == Kind::Dot {
-                    self.bump();
-                    name = format!("{name}.{}", self.ident()?);
-                }
-                interfaces.push(NameAt {
-                    line: iline,
-                    col: icol,
-                    name,
-                });
+                interfaces.push(self.interface_name()?);
             }
             if self.kind() != Kind::Comma {
                 break;
@@ -424,7 +418,7 @@ impl<'a> Parser<'a> {
         if self.kind() == Kind::Semi {
             self.bump();
         }
-        Ok(ExternalUse {
+        Ok(Exposing {
             line,
             col,
             module,
@@ -433,12 +427,34 @@ impl<'a> Parser<'a> {
         })
     }
 
-    fn compose_use(&mut self) -> Result<NameAt, Error> {
-        let (line, col) = self.at();
-        self.want(Kind::Use)?;
-        let name = self.ident()?;
+    /// `supports I, J`: the named interfaces the contract announces through ERC-165.
+    fn supports_list(&mut self) -> Result<Vec<NameAt>, Error> {
+        self.bump();
+        let mut names = Vec::new();
+        loop {
+            if self.kind() == Kind::LBrace {
+                return Err(self.err(
+                    "`supports` lists named interfaces; declare this one with `interface` and name it",
+                ));
+            }
+            names.push(self.interface_name()?);
+            if self.kind() != Kind::Comma {
+                break;
+            }
+            self.bump();
+        }
         if self.kind() == Kind::Semi {
             self.bump();
+        }
+        Ok(names)
+    }
+
+    fn interface_name(&mut self) -> Result<NameAt, Error> {
+        let (line, col) = self.at();
+        let mut name = self.ident()?;
+        while self.kind() == Kind::Dot {
+            self.bump();
+            name = format!("{name}.{}", self.ident()?);
         }
         Ok(NameAt { line, col, name })
     }
@@ -825,7 +841,7 @@ impl<'a> Parser<'a> {
     }
 
     /// `{ view function f(a : T) : R raises E; ... }`: external function headers, with no
-    /// bodies, for an `interface` or inline in `external use`.
+    /// bodies, for an `interface` or inline in `use M exposing`.
     fn interface_body(&mut self) -> Result<Vec<Func>, Error> {
         self.want(Kind::LBrace)?;
         let mut methods = Vec::new();
@@ -1893,15 +1909,16 @@ impl<'a> Parser<'a> {
             path.push(field);
         }
         let mut keys = Vec::new();
-        while self.kind() == Kind::LBrack {
+        let mut fields = Vec::new();
+        while self.kind() == Kind::LBrack || (!keys.is_empty() && self.kind() == Kind::Dot) {
+            if self.kind() == Kind::Dot {
+                self.bump();
+                fields.push((keys.len(), self.ident()?));
+                continue;
+            }
             self.bump();
             keys.push(self.expr()?);
             self.want(Kind::RBrack)?;
-        }
-        let mut fields = Vec::new();
-        while !keys.is_empty() && self.kind() == Kind::Dot {
-            self.bump();
-            fields.push(self.ident()?);
         }
         let index = if keys.is_empty() {
             None
@@ -1920,6 +1937,7 @@ impl<'a> Parser<'a> {
             expr,
             root: None,
             leaf: 0,
+            target: None,
         })
     }
 

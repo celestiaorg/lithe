@@ -1,12 +1,13 @@
 (* Single-owner access control, like OpenZeppelin's `OwnableUpgradeable`. *)
 
+error OwnableUnauthorizedAccount of address;
+
+error OwnableInvalidOwner of address;
+
 module Ownable is {
   storage ownable at "openzeppelin.storage.Ownable" is record {
     owner : address;
   }
-
-  error OwnableUnauthorizedAccount of address;
-  error OwnableInvalidOwner of address;
 
   event OwnershipTransferred of record {
     indexed previousOwner : address;
@@ -58,4 +59,12 @@ module Ownable is {
     check_owner();
     set_owner(Address.zero);
   }
+}
+
+interface IOwnable is {
+  view function owner() : address;
+  function transferOwnership(newOwner : address)
+    raises OwnableUnauthorizedAccount | OwnableInvalidOwner;
+  function renounceOwnership()
+    raises OwnableUnauthorizedAccount;
 }

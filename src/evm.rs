@@ -27,6 +27,8 @@ thread_local! {
     static DEPLOYED: std::cell::RefCell<HashMap<Word, (Vec<u8>, HashMap<Word, Word>)>> =
         std::cell::RefCell::new(HashMap::new());
     static NONCE: std::cell::Cell<u64> = const { std::cell::Cell::new(1) };
+    /// The block number `NUMBER` answers, for tests of a history by block.
+    static BLOCK: std::cell::Cell<u64> = const { std::cell::Cell::new(100) };
     /// The code of the account each enclosing `delegatecall` into a created contract runs
     /// in, innermost last. That code, not the running code, is what the account's size,
     /// hash, and calls to itself see.
@@ -97,6 +99,9 @@ fn install_mocks() {
     fn malformed(_: &[u8]) -> Result<Vec<u8>, Vec<u8>> {
         Ok(vec![1])
     }
+    fn quiet(_: &[u8]) -> Result<Vec<u8>, Vec<u8>> {
+        Ok(Vec::new())
+    }
     MOCKS.with(|m| {
         let mut m = m.borrow_mut();
         m.insert(Word::from_u64(0xcd), echo as Mock);
@@ -104,6 +109,7 @@ fn install_mocks() {
         m.insert(Word::from_u64(1), malformed as Mock);
         m.insert(Word::from_u64(0xee), refuse as Mock);
         m.insert(Word::from_u64(0xef), silent as Mock);
+        m.insert(Word::from_u64(0xce), quiet as Mock);
     });
 }
 
@@ -367,6 +373,9 @@ fn exec_state(
                     } else {
                         account_code(code).len() as u64
                     }
+                } else if MOCKS.with(|m| m.borrow().contains_key(&addr)) {
+                    // A mock stands in for a contract.
+                    1
                 } else {
                     DEPLOYED.with(|d| d.borrow().get(&addr).map_or(0, |(c, _)| c.len() as u64))
                 };
@@ -425,7 +434,7 @@ fn exec_state(
                 write_mem(&mut mem, dest, &data);
             }
             0x42 => stack.push(Word::from_u64(1_700_000_000)),
-            0x43 => stack.push(Word::from_u64(100)),
+            0x43 => stack.push(Word::from_u64(BLOCK.with(|b| b.get()))),
             0x44 => stack.push(Word::from_u64(0x1234)),
             0x45 => stack.push(Word::from_u64(30_000_000)),
             0x46 => stack.push(Word::from_u64(1)),
@@ -1865,7 +1874,7 @@ fn is_program(src: &str) -> bool {
     src.lines().any(|line| {
         // A module's own externals are indented; only the contract's make a program.
         line.starts_with("external ")
-            || line.starts_with("  external use ")
+            || (line.trim_start().starts_with("use ") && line.contains(" exposing"))
             || line.starts_with("upgradeable")
             || line.starts_with("contract ")
             || line.starts_with("migrate ")
@@ -2122,7 +2131,7 @@ module Math is {
 
 storage is record { n : nat; }
 
-external use Math is {
+use Math exposing {
   view function double(n : nat) : nat;
 }
 "#;
@@ -2569,9 +2578,246 @@ fn records_in_maps_lay_out_like_solidity_structs() {
         let err = compile(&program(body)).expect_err(want);
         assert!(err.to_string().contains(want), "{want}: {err}");
     }
-    let dynamic = "type r is record { a : string; }\nstorage is record { m : map(nat, r); }\nexternal function f() is { skip; }\n";
-    let err = compile(dynamic).expect_err("string in a map value");
-    assert!(err.to_string().contains("a fixed-size record"), "{err}");
+}
+
+/// Lists of records, lists and records in maps, and maps in a map's records, at the slots
+/// Solidity gives them, read and written directly, through the journal, whole, and through
+/// a function given a map's entry.
+#[test]
+fn nested_storage_lays_out_like_solidity() {
+    let src = include_str!("../examples/nested_storage.lithe");
+    let rt = deploy(&compile(src).expect("compile")).expect("deploy");
+    let n = Word::from_u64;
+    let at = |st: &HashMap<Word, Word>, key: Word| st.get(&key).copied().unwrap_or(n(0));
+    let elems = |slot: Word| Word::from_be_bytes(keccak256(&slot.to_be_bytes()));
+    let point = |key: u64, value: u64| n(value).shl(48).wrapping_add(n(key));
+    let run = |st: &HashMap<Word, Word>, sig: &str, args: &[Word]| run_ok(&rt, st, sig, args).storage;
+    let read = |st: &HashMap<Word, Word>, sig: &str, args: &[Word]| read_ok(&rt, st, sig, args);
+    let call = |st: &HashMap<Word, Word>, data: Vec<u8>| {
+        exec(&rt, &data, st.clone(), n(1), n(0), n(0)).expect("exec")
+    };
+    let reverts = |st: &HashMap<Word, Word>, sig: &str, args: &[Word]| call(st, word_data(sig, args)).reverted;
+
+    let st = run(&HashMap::new(), "note(address,uint48,uint208)", &[n(2), n(10), n(5)]);
+    let st = run(&st, "note(address,uint48,uint208)", &[n(2), n(10), n(7)]);
+    let st = run(&st, "note(address,uint48,uint208)", &[n(3), n(11), n(1)]);
+    let st = run(&st, "record_total(uint48,uint208)", &[n(12), n(100)]);
+    assert_eq!(slot(&st, 0), n(3));
+    let total = elems(n(0));
+    assert_eq!(at(&st, total), point(10, 12));
+    assert_eq!(at(&st, total.wrapping_add(n(1))), point(11, 13));
+    assert_eq!(at(&st, total.wrapping_add(n(2))), point(12, 100));
+    let history = |who: u64| map_key(n(who), n(1));
+    assert_eq!(at(&st, history(2)), n(1));
+    assert_eq!(at(&st, elems(history(2))), point(10, 7));
+    assert_eq!(at(&st, elems(history(3))), point(11, 1));
+    assert_eq!(read(&st, "total_count()", &[]), n(3));
+    let out = run_ok(&rt, &st, "total_at(uint256)", &[n(1)]).returndata;
+    assert_eq!((load_bytes(&out, 0), load_bytes(&out, 32)), (n(11), n(13)));
+    assert!(reverts(&st, "total_at(uint256)", &[n(3)]));
+    assert_eq!(read(&st, "history_value(address,uint256)", &[n(2), n(0)]), n(7));
+    assert_eq!(read(&st, "newest(address)", &[n(3)]), n(1));
+    assert_eq!(read(&st, "newest(address)", &[n(9)]), n(0));
+    assert_eq!(read(&st, "history_count(address)", &[n(9)]), n(0));
+    assert!(reverts(&st, "history_value(address,uint256)", &[n(9), n(0)]));
+
+    let popped = run(&st, "pop(address)", &[n(2)]);
+    assert_eq!(at(&popped, history(2)), n(0));
+    assert_eq!(at(&popped, elems(history(2))), n(0));
+    assert_eq!(slot(&popped, 0), n(2));
+    assert_eq!(at(&popped, total.wrapping_add(n(2))), n(0));
+    assert!(reverts(&popped, "pop(address)", &[n(2)]));
+    let st = run(&st, "bump(address,uint256)", &[n(2), n(0)]);
+    assert_eq!(at(&st, elems(history(2))), point(10, 8));
+    assert!(reverts(&st, "bump(address,uint256)", &[n(2), n(1)]));
+    let copied = run(&st, "copy_history(address,address)", &[n(2), n(5)]);
+    assert_eq!(at(&copied, history(5)), n(1));
+    assert_eq!(at(&copied, elems(history(5))), point(10, 8));
+    // A shorter list clears the slots it no longer uses.
+    let restarted = run(&st, "restart_total(address)", &[n(3)]);
+    assert_eq!(slot(&restarted, 0), n(1));
+    assert_eq!(at(&restarted, total), point(11, 1));
+    assert_eq!(at(&restarted, total.wrapping_add(n(1))), n(0));
+    assert_eq!(at(&restarted, total.wrapping_add(n(2))), n(0));
+
+    // Through the journal: a query first, then the same pushes land in the same slots.
+    let priced = run(&st, "note_priced(address,address,uint48)", &[n(2), n(3), n(11)]);
+    assert_eq!(at(&priced, elems(history(3))), point(11, 77));
+    let priced = run(&priced, "note_priced(address,address,uint48)", &[n(2), n(3), n(12)]);
+    assert_eq!(at(&priced, history(3)), n(2));
+    assert_eq!(at(&priced, elems(history(3)).wrapping_add(n(1))), point(12, 77));
+    let role1 = map_key(n(1), n(2));
+    assert_eq!(at(&priced, map_key(n(3), role1)), n(1));
+
+    let role = n(0xabc);
+    let st = run(&st, "grant(bytes32,address)", &[role, n(2)]);
+    let st = run(&st, "set_admin(bytes32,bytes32)", &[role, n(0xdef)]);
+    let base = map_key(role, n(2));
+    assert_eq!(at(&st, map_key(n(2), base)), n(1));
+    assert_eq!(at(&st, base.wrapping_add(n(1))), n(0xdef));
+    assert_eq!(read(&st, "member(bytes32,address)", &[role, n(2)]), n(1));
+    assert_eq!(read(&st, "member(bytes32,address)", &[role, n(3)]), n(0));
+    assert_eq!(read(&st, "admin(bytes32)", &[role]), n(0xdef));
+
+    let named = call(&st, encode_args("name(uint256,string)", &[Arg::W(n(7)), Arg::B(b"alice".to_vec())]));
+    assert!(!named.reverted);
+    let account = map_key(n(7), n(3));
+    let mut short = [0u8; 32];
+    short[..5].copy_from_slice(b"alice");
+    short[31] = 10;
+    assert_eq!(at(&named.storage, account), Word::from_be_bytes(short));
+    let long = "a name well past thirty one bytes long".as_bytes();
+    let renamed = call(&named.storage, encode_args("name(uint256,string)", &[Arg::W(n(7)), Arg::B(long.to_vec())]));
+    assert_eq!(at(&renamed.storage, account), n(long.len() as u64 * 2 + 1));
+    assert_eq!(read(&renamed.storage, "name_length(uint256)", &[n(7)]), n(long.len() as u64));
+    let out = run_ok(&rt, &renamed.storage, "name_of(uint256)", &[n(7)]).returndata;
+    assert_eq!(&out[64..64 + long.len()], long);
+    let st = run(&named.storage, "tag(uint256,uint256)", &[n(7), n(42)]);
+    let st = run(&st, "tag(uint256,uint256)", &[n(7), n(43)]);
+    let tags = account.wrapping_add(n(1));
+    assert_eq!(at(&st, tags), n(2));
+    assert_eq!(at(&st, elems(tags).wrapping_add(n(1))), n(43));
+    let out = run_ok(&rt, &st, "tags(uint256)", &[n(7)]).returndata;
+    let words: Vec<Word> = (0..4).map(|i| load_bytes(&out, i * 32)).collect();
+    assert_eq!(words, [n(32), n(2), n(42), n(43)]);
+
+    let set = |st: &HashMap<Word, Word>, xs: &[u64]| {
+        let mut args = vec![n(2), n(64), n(xs.len() as u64)];
+        args.extend(xs.iter().map(|x| n(*x)));
+        run(st, "set_counts(address,uint256[])", &args)
+    };
+    let counted = set(&st, &[1, 2, 3]);
+    let counts = map_key(n(2), n(4));
+    assert_eq!(at(&counted, counts), n(3));
+    assert_eq!(at(&counted, elems(counts).wrapping_add(n(2))), n(3));
+    let counted = set(&counted, &[9]);
+    assert_eq!(at(&counted, counts), n(1));
+    assert_eq!(at(&counted, elems(counts)), n(9));
+    assert_eq!(at(&counted, elems(counts).wrapping_add(n(1))), n(0));
+    let out = run_ok(&rt, &counted, "counts(address)", &[n(2)]).returndata;
+    assert_eq!((load_bytes(&out, 32), load_bytes(&out, 64)), (n(1), n(9)));
+
+    assert_eq!(read(&HashMap::new(), "locals(uint208)", &[n(9)]), n(10_001_012));
+
+    // A fixed list of records from slot 5, each element a slot, directly and in the image.
+    let fixed = run(&HashMap::new(), "set_fixed(uint256,uint48,uint208)", &[n(1), n(4), n(9)]);
+    assert_eq!(slot(&fixed, 6), point(4, 10));
+    let fixed = run(&fixed, "set_fixed_priced(address,uint256,uint48)", &[n(2), n(1), n(8)]);
+    assert_eq!(slot(&fixed, 6), point(8, 15));
+    let fixed = run(&fixed, "set_fixed_priced(address,uint256,uint48)", &[n(2), n(2), n(3)]);
+    assert_eq!(slot(&fixed, 7), point(3, 5));
+    let out = run_ok(&rt, &fixed, "fixed_at(uint256)", &[n(1)]).returndata;
+    assert_eq!((load_bytes(&out, 0), load_bytes(&out, 32)), (n(8), n(15)));
+    assert_eq!(read(&fixed, "fixed_key(uint256)", &[n(2)]), n(3));
+    assert!(reverts(&fixed, "fixed_at(uint256)", &[n(3)]));
+    assert!(reverts(&fixed, "set_fixed_priced(address,uint256,uint48)", &[n(2), n(3), n(1)]));
+
+    // A record with strings in a map, from slot `keccak(id . 8)`: the name, the age, then
+    // the inner record's slots.
+    let long = b"a biography well past thirty one bytes".to_vec();
+    let carded = call(
+        &HashMap::new(),
+        encode_args(
+            "set_card(uint256,string,string)",
+            &[Arg::W(n(4)), Arg::B(b"bo".to_vec()), Arg::B(long.clone())],
+        ),
+    );
+    assert!(!carded.reverted, "{}", pretty(&carded.returndata));
+    let card = map_key(n(4), n(8));
+    let mut short = [0u8; 32];
+    short[..2].copy_from_slice(b"bo");
+    short[31] = 4;
+    assert_eq!(at(&carded.storage, card), Word::from_be_bytes(short));
+    assert_eq!(at(&carded.storage, card.wrapping_add(n(1))), n(3));
+    assert_eq!(at(&carded.storage, card.wrapping_add(n(2))), n(long.len() as u64 * 2 + 1));
+    assert_eq!(at(&carded.storage, card.wrapping_add(n(3))), n(9));
+    let out = run_ok(&rt, &carded.storage, "card_of(uint256)", &[n(4)]).returndata;
+    let words: Vec<Word> = (0..4).map(|i| load_bytes(&out, i * 32)).collect();
+    assert_eq!(words, [n(128), n(3), n(192), n(9)]);
+    assert_eq!(&out[128..160], &n(2).to_be_bytes());
+    assert_eq!(&out[160..162], b"bo");
+    assert_eq!(&out[224..224 + long.len()], &long[..]);
+}
+
+/// Lists of records cross the ABI as Solidity's arrays of structs: each element's words
+/// inline, `bytesN` fields high, each field checked when decoded.
+#[test]
+fn record_lists_cross_the_abi() {
+    let src = include_str!("../examples/record_lists.lithe");
+    let rt = deploy(&compile(src).expect("compile")).expect("deploy");
+    let n = Word::from_u64;
+    let call = |st: &HashMap<Word, Word>, data: Vec<u8>| {
+        exec(&rt, &data, st.clone(), n(1), n(0), n(0)).expect("exec")
+    };
+    // `(k, v)[]` as calldata: the offset, the length, then each element's words.
+    let args = |sig: &str, elems: &[&[Word]]| {
+        let mut data = selector(sig).to_vec();
+        data.extend(n(32).to_be_bytes());
+        data.extend(n(elems.len() as u64).to_be_bytes());
+        for elem in elems {
+            for word in *elem {
+                data.extend(word.to_be_bytes());
+            }
+        }
+        data
+    };
+    let flat = |elems: &[&[Word]]| {
+        let mut out = n(32).to_be_bytes().to_vec();
+        out.extend(n(elems.len() as u64).to_be_bytes());
+        for elem in elems {
+            for word in *elem {
+                out.extend(word.to_be_bytes());
+            }
+        }
+        out
+    };
+    let pts: &[&[Word]] = &[&[n(1), n(2)], &[n(3), n(4)]];
+    let set = call(&HashMap::new(), args("set_all((uint48,uint208)[])", pts));
+    assert!(!set.reverted, "{}", pretty(&set.returndata));
+    let base = Word::from_be_bytes(keccak256(&n(0).to_be_bytes()));
+    assert_eq!(slot(&set.storage, 0), n(2));
+    assert_eq!(set.storage[&base.wrapping_add(n(1))], n(4).shl(48).wrapping_add(n(3)));
+    let data = set.detail.iter().find(|d| d.starts_with("log")).expect("log detail");
+    assert!(data.contains(&hex(&flat(pts))), "{data}");
+    let st = set.storage;
+    assert_eq!(call(&st, word_data("all()", &[])).returndata, flat(pts));
+    let mut encoded = n(32).to_be_bytes().to_vec();
+    encoded.extend(n(32 * 6).to_be_bytes());
+    encoded.extend(flat(pts));
+    assert_eq!(call(&st, word_data("encoded()", &[])).returndata, encoded);
+    let decoded = call(&st, encode_args("decoded(bytes)", &[Arg::B(flat(pts))]));
+    assert_eq!(load_bytes(&decoded.returndata, 0), n(2002));
+    // Data too short for its elements does not decode.
+    let short = &flat(pts)[..32 * 5];
+    assert!(call(&st, encode_args("decoded(bytes)", &[Arg::B(short.to_vec())])).reverted);
+    let refused = call(&st, word_data("refuse()", &[]));
+    assert!(refused.reverted);
+    let mut want = selector("Rejected((uint48,uint208)[])").to_vec();
+    want.extend(flat(pts));
+    assert_eq!(refused.returndata, want);
+
+    let tag = |b: [u8; 4]| {
+        let mut w = [0u8; 32];
+        w[..4].copy_from_slice(&b);
+        Word::from_be_bytes(w)
+    };
+    let minus5 = n(0).wrapping_sub(n(5));
+    let tags: &[&[Word]] = &[&[tag([0xde, 0xad, 0xbe, 0xef]), n(1), minus5], &[tag([1, 2, 3, 4]), n(0), n(7)]];
+    let tagged = call(&st, args("set_tags((bytes4,bool,int16)[])", tags));
+    assert!(!tagged.reverted, "{}", pretty(&tagged.returndata));
+    let out = call(&tagged.storage, word_data("tag_at(uint256)", &[n(1)]));
+    assert_eq!(load_bytes(&out.returndata, 0), tag([1, 2, 3, 4]));
+    assert_eq!(call(&tagged.storage, word_data("tags()", &[])).returndata, flat(tags));
+    for bad in [
+        [tag([1, 2, 3, 4]), n(2), n(7)],
+        [tag([1, 2, 3, 4]).wrapping_add(n(1)), n(0), n(7)],
+        [tag([1, 2, 3, 4]), n(0), n(1 << 15)],
+    ] {
+        assert!(call(&st, args("set_tags((bytes4,bool,int16)[])", &[&bad])).reverted);
+    }
+    let mut missing = args("set_all((uint48,uint208)[])", pts);
+    missing.truncate(missing.len() - 32);
+    assert!(call(&st, missing).reverted);
 }
 
 #[test]
@@ -2667,7 +2913,7 @@ module Vault_ops is {{
   external pure function fee(const amount : wei) : wei is amount / 100wei
   external view function hidden() : wei is 0wei
 }}
-external use Vault_ops is {{
+use Vault_ops exposing {{
 {exposed}
 }}
 "
@@ -2753,8 +2999,8 @@ external use Vault_ops is {{
     }
     // A module's external is not a function the contract can call.
     let src = good.replace(
-        "external use Vault_ops is {",
-        "external function again(const amount : wei) raises Too_much is Vault_ops.withdraw(amount)\nexternal use Vault_ops is {",
+        "use Vault_ops exposing {",
+        "external function again(const amount : wei) raises Too_much is Vault_ops.withdraw(amount)\nuse Vault_ops exposing {",
     );
     let err = compile(&src).expect_err("an external is not callable");
     assert!(
@@ -3692,14 +3938,169 @@ fn strings_and_dynamic_bytes_use_short_slots() {
     .expect("label");
     assert!(!labeled.reverted, "{}", pretty(&labeled.returndata));
     assert_eq!(slot(&labeled.storage, 0), Word::short_dyn(b"Hi"));
+}
 
-    let long = "storage is record { x : nat; }\nexternal function f() is {\n  const s : string := \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\";\n}\n";
-    let err = compile(long).expect_err("long string");
-    assert!(
-        err.to_string()
-            .contains("a string must be at most 31 bytes"),
-        "{err}"
+/// A literal longer than a word is copied from the code into a blob, in creation code
+/// ahead of the constructor's arguments, and works wherever a short one does. Its hash
+/// is a constant.
+#[test]
+fn long_string_literals() {
+    const EDGE: &str = "abcdefghijklmnopqrstuvwxyz012345";
+    const LONG: &str = "https://items.example/api/item/{id}.json?with=a&long=query";
+    const REASON: &str = "a reason that is longer than one word";
+    let src = format!(
+        "\
+error Refused of string;
+storage is record {{ note : string; n : nat; blob : bytes; }}
+deploy(const n : nat) is {{
+  storage.note := \"{EDGE}\";
+  storage.n := n;
+}}
+external view function note() : string is storage.note
+external pure function long() : string is \"{LONG}\"
+external pure function hash() : bytes32 is Crypto.keccak256(\"{LONG}\")
+external pure function same(const s : string) : bool is s = \"{LONG}\"
+external function keep() is {{
+  storage.blob := \"{LONG}\";
+}}
+external function refuse() raises Refused is {{
+  fail Refused(\"{REASON}\");
+}}
+"
     );
+    let mut init = compile(&src).expect("compile");
+    init.extend_from_slice(&Word::from_u64(7).to_be_bytes());
+    let made = construct(&init, Word::from_u64(1), Word::from_u64(0)).expect("construct");
+    assert!(!made.reverted, "{}", pretty(&made.returndata));
+    assert_eq!(slot(&made.storage, 1), Word::from_u64(7));
+    let runtime = made.returndata;
+    let run = |data: &[u8], storage: HashMap<Word, Word>| {
+        exec(&runtime, data, storage, Word::from_u64(1), Word::from_u64(0), Word::from_u64(0))
+            .expect("exec")
+    };
+    let note = run(&word_data("note()", &[]), made.storage.clone());
+    assert_eq!(note.returndata, abi_string("f()", EDGE.as_bytes())[4..]);
+    let long = run(&word_data("long()", &[]), HashMap::new());
+    assert_eq!(long.returndata, abi_string("f()", LONG.as_bytes())[4..]);
+    let hash = run(&word_data("hash()", &[]), HashMap::new());
+    assert_eq!(hash.returndata, crate::keccak::keccak256(LONG.as_bytes()));
+    for (text, want) in [(LONG, 1), (EDGE, 0)] {
+        let same = run(&abi_string("same(string)", text.as_bytes()), HashMap::new());
+        assert_eq!(load_bytes(&same.returndata, 0), Word::from_u64(want), "{text}");
+    }
+    let kept = run(&word_data("keep()", &[]), HashMap::new());
+    assert_eq!(slot(&kept.storage, 2), Word::from_u64(2 * LONG.len() as u64 + 1));
+    let data = keccak_word(&Word::from_u64(2).to_be_bytes());
+    let mut first = [0u8; 32];
+    first.copy_from_slice(&LONG.as_bytes()[..32]);
+    assert_eq!(kept.storage.get(&data).copied(), Some(Word::from_be_bytes(first)));
+    let refused = run(&word_data("refuse()", &[]), HashMap::new());
+    assert!(refused.reverted);
+    assert_eq!(refused.returndata, abi_string("Refused(string)", REASON.as_bytes()));
+}
+
+/// A list literal passed to a function whose list parameter could be a stored list takes
+/// its type from the parameter, as it does for any other function.
+#[test]
+fn list_literal_arguments() {
+    let src = "\
+storage is record { n : nat; }
+function sum(const xs : list(nat)) : nat is {
+  var total : nat := 0n;
+  for x : nat in xs do {
+    total := total + x;
+  }
+} with total
+function keep(const xs : list(uint8)) is {
+  storage.n := nat(xs[1]);
+}
+external function f(const a : nat) is {
+  storage.n := sum([a, a + 1n, 3n]);
+}
+external function g() is {
+  keep([4, 5]);
+}
+";
+    let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
+    let f = call(&runtime, "f(uint256)", &[Word::from_u64(10)]);
+    assert!(!f.reverted, "{}", pretty(&f.returndata));
+    assert_eq!(slot(&f.storage, 0), Word::from_u64(24));
+    let g = call(&runtime, "g()", &[]);
+    assert!(!g.reverted, "{}", pretty(&g.returndata));
+    assert_eq!(slot(&g.storage, 0), Word::from_u64(5));
+}
+
+/// Addresses and `bytesN` order as unsigned numbers, as Solidity orders them; dynamic
+/// values and booleans don't order.
+#[test]
+fn addresses_and_fixed_bytes_order() {
+    let src = "\
+storage is record { n : nat; }
+external pure function lt(const a : address; const b : address) : bool is a < b
+external pure function ge(const a : bytes2; const b : bytes2) : bool is a >= b
+";
+    let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
+    let w = Word::from_u64;
+    let hi = |n: u64| Word::from_u64(n).shl(240);
+    for (sig, a, b, want) in [
+        ("lt(address,address)", w(1), w(2), 1),
+        ("lt(address,address)", w(2), w(2), 0),
+        ("lt(address,address)", w(3), w(2), 0),
+        ("ge(bytes2,bytes2)", hi(0x0102), hi(0x0101), 1),
+        ("ge(bytes2,bytes2)", hi(0x0102), hi(0x0102), 1),
+        ("ge(bytes2,bytes2)", hi(0x00ff), hi(0x0100), 0),
+    ] {
+        let out = call(&runtime, sig, &[a, b]);
+        assert!(!out.reverted, "{sig}: {}", pretty(&out.returndata));
+        assert_eq!(load_bytes(&out.returndata, 0), w(want), "{sig} {a:?} {b:?}");
+    }
+    for ty in ["bool", "string"] {
+        let src = format!(
+            "storage is record {{ n : nat; }}\nexternal pure function f(const a : {ty}; const b : {ty}) : bool is a < b\n"
+        );
+        let err = compile(&src).expect_err(ty);
+        assert!(err.to_string().contains("ordered comparison expects"), "{ty}: {err}");
+    }
+}
+
+/// `Nat.wrapping_*` and `Int.wrapping_*` wrap to the operands' width instead of
+/// panicking, as Solidity's `unchecked` arithmetic does.
+#[test]
+fn wrapping_arithmetic() {
+    let src = "\
+storage is record { n : nat; }
+external pure function add(const a : nat; const b : nat) : nat is Nat.wrapping_add(a, b)
+external pure function sub32(const a : uint32; const b : uint32) : uint32 is Nat.wrapping_sub(a, b)
+external pure function mul8(const a : uint8; const b : uint8) : uint8 is Nat.wrapping_mul(a, b)
+external pure function add8(const a : uint8) : uint8 is Nat.wrapping_add(a, 1)
+external pure function sub16(const a : int16; const b : int16) : int16 is Int.wrapping_sub(a, b)
+external pure function mul(const a : int; const b : int) : int is Int.wrapping_mul(a, b)
+";
+    let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
+    let max = Word::from_u64(0).not();
+    let w = Word::from_u64;
+    let neg = |n: u64| Word::from_u64(0).wrapping_sub(Word::from_u64(n));
+    let cases: &[(&str, Vec<Word>, Word)] = &[
+        ("add(uint256,uint256)", vec![max, w(3)], w(2)),
+        ("add(uint256,uint256)", vec![w(4), w(3)], w(7)),
+        ("sub32(uint32,uint32)", vec![w(1), w(3)], w(0xffff_fffe)),
+        ("sub32(uint32,uint32)", vec![w(9), w(3)], w(6)),
+        ("mul8(uint8,uint8)", vec![w(16), w(17)], w(16)),
+        ("add8(uint8)", vec![w(255)], w(0)),
+        ("sub16(int16,int16)", vec![neg(32768), w(1)], w(32767)),
+        ("sub16(int16,int16)", vec![w(32767), neg(1)], neg(32768)),
+        ("mul(int256,int256)", vec![max.shr(1), w(2)], neg(2)),
+    ];
+    for (sig, args, want) in cases {
+        let out = call(&runtime, sig, args);
+        assert!(!out.reverted, "{sig}: {}", pretty(&out.returndata));
+        assert_eq!(load_bytes(&out.returndata, 0), *want, "{sig} {args:?}");
+    }
+    let err = compile(
+        "storage is record { n : nat; }\nexternal pure function f(const a : int8) : int8 is Nat.wrapping_add(a, a)\n",
+    )
+    .expect_err("signed");
+    assert!(err.to_string().contains("expects an unsigned integer"), "{err}");
 }
 
 /// Sending ether is `Evm.transfer`, like every other built-in reached through its module.
@@ -4137,25 +4538,6 @@ const BANK_ABI: &str = r#"[
     "name": "set_pause",
     "outputs": [],
     "stateMutability": "nonpayable",
-    "type": "function"
-  },
-  {
-    "inputs": [
-      {
-        "internalType": "bytes4",
-        "name": "interfaceId",
-        "type": "bytes4"
-      }
-    ],
-    "name": "supportsInterface",
-    "outputs": [
-      {
-        "internalType": "bool",
-        "name": "",
-        "type": "bool"
-      }
-    ],
-    "stateMutability": "pure",
     "type": "function"
   },
   {
@@ -4977,6 +5359,182 @@ external function ping() is {
     assert!(!passed.reverted, "{}", pretty(&passed.returndata));
     assert_eq!(slot(&passed.storage, 0), Word::from_u64(3));
     assert_eq!(slot(&passed.storage, 1), Word::from_u64(2));
+}
+
+/// An `option(T)` result is `None` when the callee returns no data, as tokens that return
+/// nothing from `transfer` do, and `Some` of the decoded value otherwise.
+#[test]
+fn optional_results() {
+    install_mocks();
+    let src = "\
+interface Echo is {
+  function flag(value : nat) : option(bool);
+  function amount(value : nat) : option(nat);
+  view function peek(value : nat) : option(bool);
+}
+storage is record { seen : nat; got : nat; peeked : nat; failed : nat; }
+pure function high(const b : bool) : nat is {
+  var n : nat := 2n;
+  if b then {
+    n := 3n;
+  }
+} with n
+pure function rank(const ok : option(bool)) : nat is
+  case ok of {
+  | None -> 1n
+  | Some(b) -> high(b)
+  }
+external function flag(const e : Echo; const v : nat) is {
+  defer e.flag(v) then (ok : option(bool)) {
+    storage.seen := rank(ok);
+  };
+}
+external function amount(const e : Echo; const v : nat) is {
+  defer e.amount(v) then {
+    | Ok(n : option(nat)) -> {
+        storage.got := case n of { | Some(x) -> x + 1n | None -> 1n };
+      }
+    | Error(_) -> {
+        storage.failed := 1n;
+      }
+  };
+}
+external function peek(const e : Echo; const v : nat) is {
+  storage.peeked := rank(query e.peek(v));
+}
+external function try_peek(const e : Echo; const v : nat) is {
+  storage.peeked := case query e.peek(v) of {
+  | Ok(ok) -> rank(ok)
+  | Error(_) -> 9n
+  };
+}
+";
+    let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
+    let w = Word::from_u64;
+    // (function, target, argument, the slot it writes, what it holds, or None to revert)
+    let cases: &[(&str, u64, u64, u64, Option<u64>)] = &[
+        ("flag", 0xce, 0, 0, Some(1)),
+        ("flag", 0xcd, 0, 0, Some(2)),
+        ("flag", 0xcd, 1, 0, Some(3)),
+        ("flag", 0xcd, 2, 0, None),
+        ("flag", 1, 0, 0, None),
+        ("amount", 0xce, 0, 1, Some(1)),
+        ("amount", 0xcd, 41, 1, Some(42)),
+        ("amount", 1, 0, 1, None),
+        ("amount", 0xef, 0, 3, Some(1)),
+        ("peek", 0xce, 0, 2, Some(1)),
+        ("peek", 0xcd, 1, 2, Some(3)),
+        ("peek", 0xcd, 2, 2, None),
+        ("peek", 1, 0, 2, None),
+        ("try_peek", 0xce, 0, 2, Some(1)),
+        ("try_peek", 0xcd, 0, 2, Some(2)),
+        ("try_peek", 0xef, 0, 2, Some(9)),
+    ];
+    for &(name, target, arg, at, want) in cases {
+        let sig = format!("{name}(address,uint256)");
+        let out = call(&runtime, &sig, &[w(target), w(arg)]);
+        match want {
+            Some(want) => {
+                assert!(!out.reverted, "{sig} {target:#x} {arg}: {}", pretty(&out.returndata));
+                assert_eq!(slot(&out.storage, at), w(want), "{sig} {target:#x} {arg}");
+            }
+            None => assert!(out.reverted, "{sig} {target:#x} {arg}"),
+        }
+    }
+    let err = compile(
+        "interface E is { function f() : option(string); }\nstorage is record { e : E; }\nexternal function go() is { defer storage.e.f() then (s : option(string)) { skip }; }\n",
+    )
+    .expect_err("dynamic payload");
+    assert!(err.to_string().contains("an optional result must be a static value"), "{err}");
+}
+
+/// As in Solidity, a call to an account without code fails when nothing else would catch
+/// it: a method with no result, or a result nothing decodes. An optional result is `None`.
+#[test]
+fn calls_to_accounts_without_code_fail() {
+    install_mocks();
+    let src = "\
+interface Hook is {
+  function ping();
+  function count() : nat;
+  function maybe() : option(bool);
+}
+storage is record { n : nat; }
+external function ping(const h : Hook) is { defer h.ping(); }
+external function count(const h : Hook) is { defer h.count(); }
+external function ignore(const h : Hook) is { defer h.count() then { storage.n := 1n; }; }
+external function maybe(const h : Hook) is { defer h.maybe(); }
+";
+    let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
+    let (quiet, answers, nobody) = (Word::from_u64(0xce), Word::from_u64(2), Word::from_u64(0x4242));
+    for sig in ["ping(address)", "maybe(address)"] {
+        let out = call(&runtime, sig, &[quiet]);
+        assert!(!out.reverted, "{sig}: {}", pretty(&out.returndata));
+    }
+    for sig in ["count(address)", "ignore(address)"] {
+        assert!(!call(&runtime, sig, &[answers]).reverted, "{sig}");
+        assert!(call(&runtime, sig, &[quiet]).reverted, "{sig} with no return data");
+    }
+    for sig in ["ping(address)", "count(address)", "ignore(address)"] {
+        let out = call(&runtime, sig, &[nobody]);
+        assert!(out.reverted && out.returndata.is_empty(), "{sig}");
+    }
+    assert!(!call(&runtime, "maybe(address)", &[nobody]).reverted);
+}
+
+/// A file that imports a file of contracts can create them. `Evm.creation_code` is the
+/// code `create` runs, so a `CREATE2` address is known before the contract exists.
+#[test]
+fn imported_contracts_are_created() {
+    let dir = std::env::temp_dir().join(format!("lithe-imported-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("dir");
+    let child = "\
+contract Child is {
+  storage is record { n : nat; }
+  deploy() is {
+    storage.n := 5n;
+  }
+  external view function n() : nat is storage.n
+}
+";
+    let maker = "\
+import \"./child.lithe\";
+contract Maker is {
+  storage is record { last : address; }
+  external function make(const salt : bytes32) : bytes32 is {
+    defer create Child() with salt = salt then (child : address) {
+      storage.last := child;
+    };
+  } with Crypto.keccak256(Evm.creation_code(Child))
+  external pure function code() : bytes is Evm.creation_code(Child)
+}
+";
+    std::fs::write(dir.join("child.lithe"), child).expect("child");
+    std::fs::write(dir.join("maker.lithe"), maker).expect("maker");
+    let child_code = crate::compile_file(&dir.join("child.lithe")).expect("child");
+    let runtime = deploy(&crate::compile_file(&dir.join("maker.lithe")).expect("maker")).expect("deploy");
+    let code = call(&runtime, "code()", &[]);
+    assert!(!code.reverted, "{}", pretty(&code.returndata));
+    assert_eq!(abi_string_value(&code.returndata), child_code);
+    let salt = Word::from_u64(0x5a17);
+    let made = call(&runtime, "make(bytes32)", &[salt]);
+    assert!(!made.reverted, "{}", pretty(&made.returndata));
+    assert_eq!(made.returndata, crate::keccak::keccak256(&child_code));
+    let at = slot(&made.storage, 0);
+    assert_eq!(at, created_address(Word::from_u64(0x1000), Some(salt), &child_code));
+    let (_, storage) = DEPLOYED.with(|d| d.borrow().get(&at).cloned()).expect("created");
+    assert_eq!(slot(&storage, 0), Word::from_u64(5));
+
+    for (from, to, want) in [
+        ("import \"./child.lithe\";", "import \"./child.lithe\" as C;", "defines contracts; import it without an alias"),
+        ("contract Maker is {", "contract Child is {", "contract `Child` is already declared in `./child.lithe`"),
+        ("Evm.creation_code(Child))", "Evm.creation_code(Nope))", "`Nope` is not another contract of this file or its imports"),
+    ] {
+        std::fs::write(dir.join("bad.lithe"), maker.replacen(from, to, 1)).expect("bad");
+        let err = crate::compile_file(&dir.join("bad.lithe")).expect_err(want);
+        assert!(err.to_string().contains(want), "{want}: {err}");
+    }
+    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -5947,7 +6505,7 @@ contract Vault is {
     for (body, want) in [
         (
             "defer create Missing();",
-            "`Missing` is not another contract of this file",
+            "`Missing` is not another contract of this file or its imports",
         ),
         (
             "defer create Other(1n);",
@@ -6616,14 +7174,6 @@ contract Token is {
     )
     .expect("pinged");
     assert_eq!(load_bytes(&pinged.returndata, 0), Word::from_u64(7));
-    // `Token` has `ILedger`, so it answers for its ERC-165 id.
-    let ledger_id = u32::from_be_bytes(selector("ping(uint256)")) ^ u32::from_be_bytes(selector("pinged()"));
-    let supports = call(
-        &imported,
-        "supportsInterface(bytes4)",
-        &[Word::from_u64(u64::from(ledger_id)).shl(224)],
-    );
-    assert_eq!(load_bytes(&supports.returndata, 0), Word::from_u64(1));
     let pinger_path =
         std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples/compose/pinger.lithe");
     install_mocks();
@@ -7992,6 +8542,111 @@ fn stdlib_math_crypto_and_collections() {
     assert_eq!(u.word("listed_count()", &[]), Word::from_u64(2));
 }
 
+/// `std/token/erc20_votes.lithe` with roles, a pause, a cap, and permits: votes follow
+/// delegation and every balance change, and the history answers as of past blocks.
+#[test]
+fn stdlib_governance_token() {
+    let at = |block: u64| BLOCK.with(|b| b.set(block));
+    at(100);
+    let mut t = Session::new("examples/stdlib/governance_token.lithe");
+    let votes = |t: &mut Session, who: u64| t.word("getVotes(address)", &[w(who)]);
+    let past = |t: &mut Session, who: u64, block: u64| {
+        t.word("getPastVotes(address,uint256)", &[w(who), w(block)])
+    };
+    assert!(t.send(1, "mint(address,uint256)", &[w(2), w(1000)]));
+    assert!(!t.send(2, "mint(address,uint256)", &[w(2), w(1)]));
+    t.reverted_with("AccessControlUnauthorizedAccount(address,bytes32)");
+    // Votes count once delegated.
+    assert_eq!(votes(&mut t, 2), Word::from_u64(0));
+    assert!(t.send(2, "delegate(address)", &[w(2)]));
+    assert_eq!(votes(&mut t, 2), Word::from_u64(1000));
+    assert_eq!(t.word("delegates(address)", &[w(2)]), Word::from_u64(2));
+    for block in 101..=108 {
+        at(block);
+        assert!(t.send(2, "transfer(address,uint256)", &[w(3), w(10)]));
+    }
+    assert_eq!(votes(&mut t, 2), Word::from_u64(920));
+    assert_eq!(votes(&mut t, 3), Word::from_u64(0));
+    assert_eq!(t.word("numCheckpoints(address)", &[w(2)]), Word::from_u64(9));
+    assert!(t.send(0, "checkpoints(address,uint32)", &[w(2), w(3)]));
+    let point = t.returned();
+    assert_eq!(
+        (load_bytes(&point, 0), load_bytes(&point, 32)),
+        (Word::from_u64(103), Word::from_u64(970))
+    );
+    assert!(!t.send(0, "checkpoints(address,uint32)", &[w(2), w(9)]));
+    at(120);
+    for (block, want) in [(99, 0), (100, 1000), (101, 990), (104, 960), (107, 930), (108, 920), (119, 920)] {
+        assert_eq!(past(&mut t, 2, block), Word::from_u64(want), "block {block}");
+    }
+    assert!(!t.send(0, "getPastVotes(address,uint256)", &[w(2), w(120)]));
+    t.reverted_with("ERC5805FutureLookup(uint256,uint48)");
+    assert_eq!(t.word("getPastTotalSupply(uint256)", &[w(100)]), Word::from_u64(1000));
+    assert_eq!(t.word("clock()", &[]), Word::from_u64(120));
+
+    // A delegate moves its votes; burning and minting move the total.
+    assert!(t.send(3, "delegate(address)", &[w(2)]));
+    assert_eq!(votes(&mut t, 2), Word::from_u64(1000));
+    assert!(t.send(2, "burn(uint256)", &[w(100)]));
+    assert_eq!(votes(&mut t, 2), Word::from_u64(900));
+    at(121);
+    assert_eq!(t.word("getPastTotalSupply(uint256)", &[w(120)]), Word::from_u64(900));
+
+    // The pause stops every balance change, delegation doesn't.
+    assert!(t.send(1, "pause()", &[]));
+    assert!(!t.send(2, "transfer(address,uint256)", &[w(3), w(1)]));
+    t.reverted_with("EnforcedPause()");
+    assert!(!t.send(1, "mint(address,uint256)", &[w(2), w(1)]));
+    t.reverted_with("EnforcedPause()");
+    assert!(t.send(2, "delegate(address)", &[w(3)]));
+    assert!(t.send(1, "unpause()", &[]));
+    let cap = Word::from_hex("084595161401484a000000").unwrap();
+    assert!(!t.send(1, "mint(address,uint256)", &[w(2), Arg::W(cap)]));
+    t.reverted_with("ERC20ExceededCap(uint256,uint256)");
+
+    // Delegation by signature, against the domain.
+    let mut domain = Vec::new();
+    for word in [
+        keccak_word(b"EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)"),
+        keccak_word(b"Lithe Governance"),
+        keccak_word(b"1"),
+        Word::from_u64(1),
+        Word::from_u64(0x1000),
+    ] {
+        domain.extend_from_slice(&word.to_be_bytes());
+    }
+    let domain = keccak_word(&domain);
+    assert_eq!(t.word("DOMAIN_SEPARATOR()", &[]), domain);
+    let key = Word::from_u64(0xb0b);
+    let signer = crate::hash::address_of(key);
+    assert!(t.send(1, "mint(address,uint256)", &[Arg::W(signer), w(50)]));
+    let delegation = |nonce: u64, expiry: u64| {
+        let mut data = Vec::new();
+        for word in [
+            keccak_word(b"Delegation(address delegatee,uint256 nonce,uint256 expiry)"),
+            Word::from_u64(5),
+            Word::from_u64(nonce),
+            Word::from_u64(expiry),
+        ] {
+            data.extend_from_slice(&word.to_be_bytes());
+        }
+        let mut digest = vec![0x19, 0x01];
+        digest.extend_from_slice(&domain.to_be_bytes());
+        digest.extend_from_slice(&keccak_word(&data).to_be_bytes());
+        keccak_word(&digest)
+    };
+    let expiry = 1_700_000_100;
+    let (v, r, s) = crate::hash::sign(delegation(0, expiry), key, Word::from_u64(0x5eed));
+    let args = [w(5), w(0), w(expiry), w(u64::from(v)), Arg::W(r), Arg::W(s)];
+    let sig = "delegateBySig(address,uint256,uint256,uint8,bytes32,bytes32)";
+    assert!(t.send(9, sig, &args), "{}", pretty(&t.returned()));
+    assert_eq!(t.word("delegates(address)", &[Arg::W(signer)]), Word::from_u64(5));
+    assert_eq!(votes(&mut t, 5), Word::from_u64(50));
+    assert!(!t.send(9, sig, &args));
+    t.reverted_with("InvalidAccountNonce(address,uint256)");
+    at(100);
+}
+
 /// `std/access` and `std/security`: roles with admins, two-step ownership, and a pause
 /// only a pauser may pull.
 #[test]
@@ -8107,6 +8762,168 @@ fn stdlib_erc721() {
     );
 }
 
+/// `std/token/erc1155` with its supply extension: minting, approvals, transfers, burning,
+/// and the totals they keep.
+#[test]
+fn stdlib_erc1155() {
+    let mut t = Session::new("examples/stdlib/multi_token.lithe");
+    let uri = t.send(0, "uri(uint256)", &[w(1)]);
+    assert!(uri);
+    assert_eq!(
+        t.returned(),
+        abi_string("f()", b"https://items.example/api/item/{id}.json")[4..]
+    );
+    let mint = "mint(address,uint256,uint256,bytes)";
+    assert!(!t.send(2, mint, &[w(2), w(1), w(100), Arg::B(vec![])]));
+    t.reverted_with("OwnableUnauthorizedAccount(address)");
+    assert!(t.send(1, mint, &[w(2), w(1), w(100), Arg::B(vec![])]));
+    assert_eq!(t.word("balanceOf(address,uint256)", &[w(2), w(1)]), Word::from_u64(100));
+    let transfer = "safeTransferFrom(address,address,uint256,uint256,bytes)";
+    assert!(!t.send(4, transfer, &[w(2), w(3), w(1), w(30), Arg::B(vec![])]));
+    t.reverted_with("ERC1155MissingApprovalForAll(address,address)");
+    assert!(t.send(2, transfer, &[w(2), w(3), w(1), w(30), Arg::B(vec![])]));
+    assert_eq!(t.word("balanceOf(address,uint256)", &[w(3), w(1)]), Word::from_u64(30));
+    assert!(t.send(3, "setApprovalForAll(address,bool)", &[w(4), w(1)]));
+    let burn = "burn(address,uint256,uint256)";
+    assert!(t.send(4, burn, &[w(3), w(1), w(10)]));
+    assert!(!t.send(3, burn, &[w(3), w(1), w(100)]));
+    t.reverted_with("ERC1155InsufficientBalance(address,uint256,uint256,uint256)");
+    assert_eq!(t.word("totalSupply(uint256)", &[w(1)]), Word::from_u64(90));
+    assert_eq!(t.word("totalSupply()", &[]), Word::from_u64(90));
+    assert_eq!(t.word("exists(uint256)", &[w(1)]), Word::from_u64(1));
+    assert_eq!(t.word("exists(uint256)", &[w(2)]), Word::from_u64(0));
+    let id = |sel: u64| Arg::W(Word::from_u64(sel).shl(224));
+    for (sel, want) in [(0xd9b67a26, 1), (0x0e89341c, 1), (0x80ac58cd, 0)] {
+        assert_eq!(
+            t.word("supportsInterface(bytes4)", &[id(sel)]),
+            Word::from_u64(want)
+        );
+    }
+}
+
+/// `std/token`'s ERC-721 extensions together: enumerations through mints, transfers, and
+/// burns, a URI per token under a base, royalties, the pause, and ERC-165 for all of them.
+#[test]
+fn stdlib_collectible() {
+    let mut n = Session::new("examples/stdlib/collectible.lithe");
+    trait Low {
+        fn low(self) -> u64;
+    }
+    impl Low for Word {
+        fn low(self) -> u64 {
+            u64::from_be_bytes(self.to_be_bytes()[24..].try_into().unwrap())
+        }
+    }
+    let string = |s: &str| Arg::B(s.as_bytes().to_vec());
+    let text = |n: &mut Session, sig: &str, args: &[Arg]| {
+        assert!(n.send(0, sig, args), "{sig}: {}", pretty(&n.returned()));
+        abi_string_value(&n.returned())
+    };
+    assert!(!n.send(2, "safeMint(address,string)", &[w(2), string("x.json")]));
+    n.reverted_with("OwnableUnauthorizedAccount(address)");
+    for (to, uri) in [(2, "zero.json"), (3, ""), (2, "two.json"), (2, "three.json")] {
+        assert!(n.send(1, "safeMint(address,string)", &[w(to), string(uri)]));
+    }
+    assert_eq!(load_bytes(&n.returned(), 0), Word::from_u64(3));
+    assert_eq!(text(&mut n, "tokenURI(uint256)", &[w(0)]), b"ipfs://lithe-collectibles/zero.json");
+    assert_eq!(text(&mut n, "tokenURI(uint256)", &[w(1)]), b"ipfs://lithe-collectibles/1");
+    assert!(!n.send(0, "tokenURI(uint256)", &[w(9)]));
+    n.reverted_with("ERC721NonexistentToken(uint256)");
+    assert_eq!(n.word("totalSupply()", &[]), Word::from_u64(4));
+    let owned = |n: &mut Session, who: u64| -> Vec<u64> {
+        let count = n.word("balanceOf(address)", &[w(who)]).low();
+        (0..count)
+            .map(|i| n.word("tokenOfOwnerByIndex(address,uint256)", &[w(who), w(i)]).low())
+            .collect()
+    };
+    assert_eq!(owned(&mut n, 2), [0, 2, 3]);
+    // The owner's last token takes the place of the one that leaves.
+    assert!(n.send(2, "transferFrom(address,address,uint256)", &[w(2), w(3), w(0)]));
+    assert_eq!(owned(&mut n, 2), [3, 2]);
+    assert_eq!(owned(&mut n, 3), [1, 0]);
+    assert!(!n.send(0, "tokenOfOwnerByIndex(address,uint256)", &[w(3), w(2)]));
+    n.reverted_with("ERC721OutOfBoundsIndex(address,uint256)");
+    assert!(n.send(3, "burn(uint256)", &[w(1)]));
+    let all: Vec<u64> = (0..3).map(|i| n.word("tokenByIndex(uint256)", &[w(i)]).low()).collect();
+    assert_eq!(all, [0, 3, 2]);
+    assert!(!n.send(0, "tokenByIndex(uint256)", &[w(3)]));
+    n.reverted_with("ERC721OutOfBoundsIndex(address,uint256)");
+    // Royalties: the creator's default, then a token's own.
+    let royalty = |n: &mut Session, id: u64| {
+        assert!(n.send(0, "royaltyInfo(uint256,uint256)", &[w(id), w(10_000)]));
+        (load_bytes(&n.returned(), 0).low(), load_bytes(&n.returned(), 32).low())
+    };
+    assert_eq!(royalty(&mut n, 2), (1, 500));
+    assert!(n.send(1, "setTokenRoyalty(uint256,address,uint96)", &[w(2), w(9), w(1000)]));
+    assert_eq!(royalty(&mut n, 2), (9, 1000));
+    assert!(!n.send(1, "setTokenRoyalty(uint256,address,uint96)", &[w(2), w(9), w(10_001)]));
+    n.reverted_with("ERC2981InvalidTokenRoyalty(uint256,uint256,uint256)");
+    assert!(n.send(1, "resetTokenRoyalty(uint256)", &[w(2)]));
+    assert_eq!(royalty(&mut n, 2), (1, 500));
+    // The pause stops transfers, mints, and burns.
+    assert!(n.send(1, "pause()", &[]));
+    assert!(!n.send(2, "transferFrom(address,address,uint256)", &[w(2), w(3), w(2)]));
+    n.reverted_with("EnforcedPause()");
+    assert!(!n.send(1, "safeMint(address,string)", &[w(2), string("")]));
+    n.reverted_with("EnforcedPause()");
+    assert!(n.send(1, "unpause()", &[]));
+    assert!(n.send(2, "transferFrom(address,address,uint256)", &[w(2), w(3), w(2)]));
+    // A `bytes4` argument sits in the high bytes of its word.
+    let id = |sel: u64| Arg::W(Word::from_u64(sel).shl(224));
+    for (sel, want) in [
+        (0x80ac58cd, 1),
+        (0x5b5e139f, 1),
+        (0x780e9d63, 1),
+        (0x2a55205a, 1),
+        (0x49064906, 1),
+        (0x01ffc9a7, 1),
+        (0xffffffff, 0),
+    ] {
+        assert_eq!(n.word("supportsInterface(bytes4)", &[id(sel)]), Word::from_u64(want), "{sel:#x}");
+    }
+}
+
+/// examples/uniswap_v2: the factory creates a pair where `pairFor` says it will be, and
+/// the pair knows its tokens.
+#[test]
+fn uniswap_v2_example_creates_pairs() {
+    let w = Word::from_u64;
+    let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let mut init = crate::compile_file(&root.join("examples/uniswap_v2/factory.lithe")).expect("factory");
+    init.extend_from_slice(&w(1).to_be_bytes());
+    let made = construct(&init, w(1), w(0)).expect("construct");
+    assert!(!made.reverted, "{}", pretty(&made.returndata));
+    let (runtime, mut storage) = (made.returndata, made.storage);
+    let mut run = |sig: &str, args: &[Word], keep: bool| {
+        let out = exec(&runtime, &word_data(sig, args), storage.clone(), w(1), w(0), w(0)).expect(sig);
+        if keep && !out.reverted {
+            storage = out.storage.clone();
+        }
+        out
+    };
+    let (a, b) = (w(0x2222), w(0x1111));
+    let predicted = load_bytes(&run("pairFor(address,address)", &[a, b], false).returndata, 0);
+    let created = run("createPair(address,address)", &[a, b], true);
+    assert!(!created.reverted, "{}", pretty(&created.returndata));
+    assert_eq!(load_bytes(&created.returndata, 0), predicted);
+    assert_eq!(load_bytes(&run("getPair(address,address)", &[b, a], false).returndata, 0), predicted);
+    assert_eq!(load_bytes(&run("allPairsLength()", &[], false).returndata, 0), w(1));
+    let (code, pair) = DEPLOYED.with(|d| d.borrow().get(&predicted).cloned()).expect("pair");
+    for (sig, want) in [("token0()", b), ("token1()", a), ("factory()", w(0x1000))] {
+        let out = exec(&code, &word_data(sig, &[]), pair.clone(), w(1), w(0), w(0)).expect(sig);
+        assert_eq!(load_bytes(&out.returndata, 0), want, "{sig}");
+    }
+    for (args, err) in [
+        ([a, b], "PairExists()"),
+        ([a, a], "IdenticalAddresses()"),
+        ([a, w(0)], "ZeroAddress()"),
+    ] {
+        let out = run("createPair(address,address)", &args, false);
+        assert!(out.reverted);
+        assert_eq!(out.returndata, selector(err), "{err}");
+    }
+}
+
 /// Deploys a split build: each prerequisite facet at its `CREATE2` address, then the router.
 /// Returns the router's runtime.
 fn deploy_split(split: &crate::split::Split) -> Vec<u8> {
@@ -8218,7 +9035,7 @@ migrate init(const fee : nat) is {
   settings.fee := fee;
 }
 
-external use Counter is {
+use Counter exposing {
   function bump(by : nat);
   view function count() : nat;
 }
@@ -8337,7 +9154,7 @@ fn routers_need_their_facets() {
           external view function sum() : nat is m.a + m.b\n\
         }\n\
         storage is record { n : nat; }\n\
-        external use M is {\n\
+        use M exposing {\n\
           function set_a(v : nat);\n\
           view function sum() : nat;\n\
         }\n";
@@ -8404,14 +9221,14 @@ contract Pair is {{
     total : nat;
   }}
 
-  external use Alpha is {{
+  use Alpha exposing {{
     function alpha_add(a : nat; b : nat);
     function alpha_mix(a : nat; b : nat; c : nat)
       raises Alpha_zero;
     view function alpha() : nat;
   }}
 
-  external use Beta is {{
+  use Beta exposing {{
     function beta_add(a : nat; b : nat);
     view function beta() : nat;
   }}
@@ -8450,7 +9267,7 @@ contract Other is {{
 
   use Beta;
 
-  external use Alpha is {{
+  use Alpha exposing {{
     view function alpha() : nat;
   }}
 
@@ -8544,7 +9361,7 @@ fn split_errors_say_what_cannot_move() {
         .err()
         .expect("nothing can move")
         .to_string();
-    assert!(err.contains("only a module exposed with `external use` can move"), "{err}");
+    assert!(err.contains("only a module exposed with `use M exposing` can move"), "{err}");
     // Small enough for the facet, but not for the router with everything else.
     let split = crate::split::build(&checked, "Vault", &all_facets()).expect("split");
     let facet = split.facets[0].runtime.len().max(split.facets[0].init.len().div_ceil(2));
@@ -8576,12 +9393,12 @@ fn module_transient_storage_has_one_slot() {
             .expect("Lock.lock")
     };
     let a = checked_src(&format!(
-        "{module}storage is record {{ n : nat; }}\nexternal use Lock is {{ function enter(); }}\n"
+        "{module}storage is record {{ n : nat; }}\nuse Lock exposing {{ function enter(); }}\n"
     ));
     let b = checked_src(&format!(
         "{module}storage is record {{ n : nat; }}\n\
          transient storage is record {{ busy : bool; count : nat; more : nat; }}\n\
-         external use Lock is {{ function enter(); }}\n\
+         use Lock exposing {{ function enter(); }}\n\
          external function go() is {{ transient.busy := true; }}\n"
     ));
     let facet = crate::check::check(crate::split::facet_program(&a.source, "Lock")).expect("facet");
@@ -8636,7 +9453,7 @@ contract Vault is {
     storage.owner := owner;
   }
 
-  external use Folds is {
+  use Folds exposing {
     function fold(a : nat; b : nat; c : nat);
     function fold2(a : nat; b : nat; c : nat);
     function fold3(a : nat; b : nat; c : nat);
@@ -8740,7 +9557,7 @@ fn split_tooling_output() {
     assert_eq!(note, "note: `Pair` `Alpha`, `Beta` run from their facets");
     let facets = crate::facets_file(&pair, &opts).expect("facets");
     assert!(facets.starts_with("router  "), "{facets}");
-    assert!(facets.contains("  Pair: mix, supportsInterface\n"), "{facets}");
+    assert!(facets.contains("  Pair: mix\n"), "{facets}");
     assert!(facets.contains("\nfacet Alpha  0x"), "{facets}");
     assert!(facets.contains("\n  alpha_add, alpha_mix, alpha\n"), "{facets}");
     let unsplit = crate::facets_file(&pair, &crate::Options::default()).expect("facets");
@@ -8769,7 +9586,7 @@ fn split_tooling_output() {
     let stubs = crate::stubs_file(&pair, "Alpha").expect("stubs");
     assert_eq!(
         stubs,
-        "external use Alpha is {\n  function alpha_add(a : nat; b : nat);\n  function alpha_mix(a : nat; b : nat; c : nat)\n    raises Alpha_zero;\n  view function alpha() : nat;\n}\n"
+        "use Alpha exposing {\n  function alpha_add(a : nat; b : nat);\n  function alpha_mix(a : nat; b : nat; c : nat)\n    raises Alpha_zero;\n  view function alpha() : nat;\n}\n"
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -8785,12 +9602,12 @@ fn compile_temp(name: &str, src: &str, opts: &crate::Options) -> Result<Vec<u8>,
     out
 }
 
-fn abi_temp(name: &str, src: &str, opts: &crate::Options) -> String {
+fn abi_temp(name: &str, src: &str) -> String {
     let dir = std::env::temp_dir().join(format!("lithe-{name}-{}", std::process::id()));
     std::fs::create_dir_all(&dir).expect("dir");
     let path = dir.join("main.lithe");
     std::fs::write(&path, src).expect("write");
-    let abi = crate::abi_file_with(&path, opts).expect("abi");
+    let abi = crate::abi_file(&path).expect("abi");
     let _ = std::fs::remove_dir_all(&dir);
     abi
 }
@@ -8807,78 +9624,374 @@ module Uris is {
 }
 
 contract T is {
-  external use ERC20 is IERC20, IERC20Metadata;
-  external use Uris is IERC1155MetadataURI;
+  use ERC20 exposing IERC20, IERC20Metadata;
+  use Uris exposing IERC1155MetadataURI;
+  supports IERC20, IERC20Metadata, IERC1155MetadataURI;
   storage is record {}
 }
 "#;
 
-/// A contract that names interfaces answers ERC-165 for each: an interface's id is the XOR of
-/// its methods' selectors, and the standard interfaces give the standard ids.
+fn supports_answers(runtime: &[u8], cases: &[(u64, u64)]) {
+    for &(sel, want) in cases {
+        let out = call(runtime, "supportsInterface(bytes4)", &[Word::from_u64(sel).shl(224)]);
+        assert!(!out.reverted, "{sel:#x}");
+        assert_eq!(load_bytes(&out.returndata, 0), Word::from_u64(want), "{sel:#x}");
+    }
+}
+
+/// A contract answers ERC-165 for ERC-165 itself and each interface `supports` lists: an
+/// interface's id is the XOR of its methods' selectors, and the standard interfaces give the
+/// standard ids.
 #[test]
-fn erc165_answers_for_named_interfaces() {
+fn erc165_answers_for_supported_interfaces() {
     let init = compile_temp("erc165", ERC165_SRC, &crate::Options::default()).expect("compile");
     let runtime = deploy(&init).expect("deploy");
-    let id = |sel: u64| Word::from_u64(sel).shl(224);
-    for (sel, want) in [
-        (0x01ffc9a7, 1),
-        (0x36372b07, 1),
-        (0xa219a025, 1),
-        (0x0e89341c, 1),
-        (0x80ac58cd, 0),
-        (0xffffffff, 0),
-    ] {
-        let out = call(&runtime, "supportsInterface(bytes4)", &[id(sel)]);
-        assert!(!out.reverted);
-        assert_eq!(load_bytes(&out.returndata, 0), Word::from_u64(want), "{sel:#x}");
-    }
-    let off = crate::Options {
-        erc165: false,
-        ..crate::Options::default()
-    };
-    assert!(!abi_temp("erc165-off", ERC165_SRC, &off).contains("supportsInterface"));
-    // A contract has an interface when it dispatches every method, however it gets them:
-    // here `uri` comes from an inline interface, and `IERC20` from `ERC20`'s own externals.
-    let inline = ERC165_SRC.replace(
-        "external use Uris is IERC1155MetadataURI;",
-        "external use Uris is { view function uri(id : nat) : string; }",
+    supports_answers(
+        &runtime,
+        &[
+            (0x01ffc9a7, 1),
+            (0x36372b07, 1),
+            (0xa219a025, 1),
+            (0x0e89341c, 1),
+            (0x80ac58cd, 0),
+            (0xffffffff, 0),
+        ],
     );
-    let inline = inline.replace(
-        "external use ERC20 is IERC20, IERC20Metadata;",
-        "external use ERC20 is IERC20;",
-    );
+    // The contract has what it lists however it dispatches the methods: here `uri` comes
+    // from an inline interface.
+    let inline = ERC165_SRC
+        .replace(
+            "use Uris exposing IERC1155MetadataURI;",
+            "use Uris exposing { view function uri(id : nat) : string; }",
+        )
+        .replace(
+            "supports IERC20, IERC20Metadata, IERC1155MetadataURI;",
+            "supports IERC20, IERC1155MetadataURI;",
+        );
     let runtime = deploy(&compile_temp("erc165-inline", &inline, &crate::Options::default()).expect("inline"))
         .expect("deploy");
-    for (sel, want) in [(0x36372b07, 1), (0x0e89341c, 1), (0xa219a025, 0)] {
-        let out = call(&runtime, "supportsInterface(bytes4)", &[id(sel)]);
-        assert_eq!(load_bytes(&out.returndata, 0), Word::from_u64(want), "{sel:#x}");
-    }
-    // Every contract answers for ERC-165 itself.
+    supports_answers(&runtime, &[(0x01ffc9a7, 1), (0x36372b07, 1), (0x0e89341c, 1), (0xa219a025, 0)]);
+    // Without `supports`, nothing is announced: the contract has no `supportsInterface`.
+    let none = ERC165_SRC.replace("  supports IERC20, IERC20Metadata, IERC1155MetadataURI;\n", "");
+    assert!(!abi_temp("erc165-none", &none).contains("supportsInterface"));
     let plain = compile("storage is record { n : nat; }\nexternal function f() is { storage.n := 1n; }\n")
         .expect("plain");
     let runtime = deploy(&plain).expect("deploy");
-    let out = call(&runtime, "supportsInterface(bytes4)", &[id(0x01ffc9a7)]);
-    assert_eq!(load_bytes(&out.returndata, 0), Word::from_u64(1));
-    // A contract that writes its own is left alone, with a warning.
-    let own = ERC165_SRC.replace(
+    assert!(call(&runtime, "supportsInterface(bytes4)", &[Word::from_u64(0x01ffc9a7).shl(224)]).reverted);
+}
+
+/// `supports` names interfaces the contract has, each once, and a contract that writes its
+/// own `supportsInterface` answers for them with `Abi.supports_interface`.
+#[test]
+fn supports_rejects_what_the_contract_cannot_announce() {
+    let err = |src: String| {
+        compile_temp("erc165-err", &src, &crate::Options::default())
+            .expect_err("rejected")
+            .to_string()
+    };
+    let missing = err(ERC165_SRC.replace(
+        "use ERC20 exposing IERC20, IERC20Metadata;",
+        "use ERC20 exposing IERC20;",
+    ));
+    assert!(
+        missing.contains("the contract supports `IERC20Metadata` but does not dispatch:\n  name()\n  symbol()\n  decimals()\n"),
+        "{missing}"
+    );
+    let inline = err(ERC165_SRC.replace(
+        "supports IERC20, IERC20Metadata, IERC1155MetadataURI;",
+        "supports IERC20, { view function name() : string; };",
+    ));
+    assert!(inline.contains("`supports` lists named interfaces"), "{inline}");
+    let twice = err(ERC165_SRC.replace(
+        "supports IERC20, IERC20Metadata, IERC1155MetadataURI;",
+        "supports IERC20, IERC20Metadata;\n  supports IERC20;",
+    ));
+    assert!(twice.contains("`supports` lists `IERC20` twice"), "{twice}");
+    let unknown = err(ERC165_SRC.replace("supports IERC20,", "supports IERC20, IERC7777,"));
+    assert!(unknown.contains("unknown interface `IERC7777`"), "{unknown}");
+    let own = err(ERC165_SRC.replace(
         "storage is record {}",
         "storage is record {}\n  external pure function supportsInterface(const interfaceId : bytes4) : bool is interfaceId = 0x01ffc9a7",
+    ));
+    assert!(
+        own.contains("the contract writes its own `supportsInterface`, which does not answer for the interfaces `supports` lists"),
+        "{own}"
     );
-    let dir = std::env::temp_dir().join(format!("lithe-erc165-own-{}", std::process::id()));
+}
+
+/// `Abi.supports_interface` is the generated answer, for a contract that writes its own
+/// `supportsInterface` to add an id no interface derives, such as ERC-4906's.
+#[test]
+fn own_supports_interface_extends_the_generated_answer() {
+    let own = ERC165_SRC.replace(
+        "storage is record {}",
+        "storage is record {}\n  external pure function supportsInterface(const interfaceId : bytes4) : bool is\n    interfaceId = 0x49064906 or Abi.supports_interface(interfaceId)",
+    );
+    let dir = std::env::temp_dir().join(format!("lithe-erc165-extend-{}", std::process::id()));
     std::fs::create_dir_all(&dir).expect("dir");
     let path = dir.join("main.lithe");
     std::fs::write(&path, &own).expect("write");
-    let warnings = crate::warnings_file(&path).expect("warnings");
-    assert!(
-        warnings.contains("the contract writes its own `supportsInterface`, so the compiler does not answer for `IERC20`, `IERC20Metadata`, `IERC1155MetadataURI`, which the contract has"),
-        "{warnings}"
+    assert_eq!(crate::warnings_file(&path).expect("warnings"), "");
+    let runtime = deploy(&crate::compile_file(&path).expect("compile")).expect("deploy");
+    supports_answers(
+        &runtime,
+        &[
+            (0x49064906, 1),
+            (0x01ffc9a7, 1),
+            (0x36372b07, 1),
+            (0xa219a025, 1),
+            (0x0e89341c, 1),
+            (0x80ac58cd, 0),
+            (0xffffffff, 0),
+        ],
     );
     let _ = std::fs::remove_dir_all(&dir);
+    // Without `supports`, it answers for ERC-165 alone.
+    let bare = own.replace("  supports IERC20, IERC20Metadata, IERC1155MetadataURI;\n", "");
+    let runtime = deploy(&compile_temp("erc165-bare", &bare, &crate::Options::default()).expect("bare"))
+        .expect("deploy");
+    supports_answers(&runtime, &[(0x49064906, 1), (0x01ffc9a7, 1), (0x36372b07, 0)]);
+    // It answers for the contract, so a module's code cannot depend on it.
+    let err = compile(
+        "module M is {\n  pure function has(const id : bytes4) : bool is Abi.supports_interface(id)\n}\ncontract T is {\n  use M;\n  storage is record {}\n  external pure function f(const id : bytes4) : bool is M.has(id)\n}\n",
+    )
+    .expect_err("module");
+    assert!(err.to_string().contains("only the contract's own functions"), "{err}");
+}
+
+/// `Nat.to_string` and `Int.to_string` write decimal, as OpenZeppelin's `Strings` does,
+/// at every width, the extremes included.
+#[test]
+fn integers_convert_to_decimal_strings() {
+    let src = r#"
+storage is record {
+  uri : string;
+}
+
+external pure function nat(const n : nat) : string is
+  Nat.to_string(n)
+
+external pure function int(const n : int) : string is
+  Int.to_string(n)
+
+external pure function small(const n : uint8; const m : int8) : string is
+  String.concat(Nat.to_string(n), "/", Int.to_string(m))
+
+external function keep(const n : nat) is {
+  storage.uri := String.concat("ipfs://base/", Nat.to_string(n));
+}
+
+external view function uri() : string is
+  storage.uri
+"#;
+    let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
+    let max = Word::from_u64(0).wrapping_sub(Word::from_u64(1));
+    let nat = |n: Word| abi_string_value(&call(&runtime, "nat(uint256)", &[n]).returndata);
+    for n in [0u64, 1, 9, 10, 99, 100, 12345, u64::MAX] {
+        assert_eq!(nat(Word::from_u64(n)), n.to_string().into_bytes());
+    }
+    assert_eq!(
+        nat(max),
+        b"115792089237316195423570985008687907853269984665640564039457584007913129639935"
+    );
+    let int = |n: Word| abi_string_value(&call(&runtime, "int(int256)", &[n]).returndata);
+    let neg = |n: u64| Word::from_u64(0).wrapping_sub(Word::from_u64(n));
+    assert_eq!(int(Word::from_u64(0)), b"0");
+    assert_eq!(int(Word::from_u64(42)), b"42");
+    assert_eq!(int(neg(1)), b"-1");
+    assert_eq!(int(neg(1000)), b"-1000");
+    assert_eq!(
+        int(Word::from_u64(1).shl(255)),
+        b"-57896044618658097711785492504343953926634992332820282019728792003956564819968"
+    );
+    assert_eq!(
+        int(max.shr(1)),
+        b"57896044618658097711785492504343953926634992332820282019728792003956564819967"
+    );
+    let out = call(&runtime, "small(uint8,int8)", &[Word::from_u64(255), neg(128)]);
+    assert_eq!(abi_string_value(&out.returndata), b"255/-128");
+    let kept = call(&runtime, "keep(uint256)", &[Word::from_u64(7)]);
+    let uri = exec(&runtime, &selector("uri()"), kept.storage, Word::from_u64(1), Word::from_u64(0), Word::from_u64(0))
+        .expect("uri");
+    assert_eq!(abi_string_value(&uri.returndata), b"ipfs://base/7");
+    let err = compile("storage is record { n : nat; }\nexternal pure function f(const n : int) : string is Nat.to_string(n)\n")
+        .expect_err("signed");
+    assert!(err.to_string().contains("expects an unsigned integer"), "{err}");
+}
+
+/// `List.pop` drops the last element of a stored list, clearing its slots as Solidity's
+/// `pop` does, whether the elements are words, strings, or options, or of a list value.
+/// An empty list panics with `0x31`.
+#[test]
+fn list_pop_drops_the_last_element() {
+    let src = r#"
+module Bag is {
+  storage bag at "t.bag" is record {
+    items : list(nat);
+  }
+
+  function drop() is {
+    List.pop(bag.items);
+  }
+}
+
+contract T is {
+  use Bag;
+
+  storage is record {
+    ids : list(nat);
+    names : list(string);
+    limits : list(option(nat));
+  }
+
+  external function push(const n : nat) is {
+    storage.ids[storage.ids.length] := n;
+    storage.names[storage.names.length] := String.concat("a string that is well past", " thirty one bytes long");
+    storage.limits[storage.limits.length] := Some(n);
+    Bag.bag.items[Bag.bag.items.length] := n;
+  }
+
+  external function pop() is {
+    List.pop(storage.ids);
+    List.pop(storage.names);
+    List.pop(storage.limits);
+    Bag.drop();
+  }
+
+  (* Solidity's swap and pop. *)
+  external function remove(const i : nat) is {
+    const last : nat := storage.ids[storage.ids.length - 1n];
+    storage.ids[i] := last;
+    List.pop(storage.ids);
+  }
+
+  external view function ids() : list(nat) is
+    storage.ids
+
+  external view function counts() : (nat, nat, nat, nat) is
+    (storage.ids.length, storage.names.length, storage.limits.length, Bag.bag.items.length)
+
+  external pure function trim(const xs : list(nat)) : list(nat) is {
+    var ys : list(nat) := xs;
+    List.pop(ys);
+    ys[ys.length] := 9n;
+    List.pop(ys);
+  } with ys
+}
+"#;
+    let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
+    let one = Word::from_u64(1);
+    let zero = Word::from_u64(0);
+    let run = |data: Vec<u8>, storage: HashMap<Word, Word>| {
+        exec(&runtime, &data, storage, one, zero, zero).expect("run")
+    };
+    let mut storage = HashMap::new();
+    for n in [10u64, 20, 30] {
+        let out = run(word_data("push(uint256)", &[Word::from_u64(n)]), storage);
+        assert!(!out.reverted, "{}", pretty(&out.returndata));
+        storage = out.storage;
+    }
+    let filled = storage.clone();
+    let out = run(word_data("pop()", &[]), storage);
+    assert!(!out.reverted, "{}", pretty(&out.returndata));
+    storage = out.storage;
+    let counts = run(word_data("counts()", &[]), storage.clone());
+    for k in 0..4 {
+        assert_eq!(load_bytes(&counts.returndata, 32 * k), Word::from_u64(2));
+    }
+    // Every slot the third element held is zero again, and only those changed.
+    let changed: Vec<&Word> = filled
+        .iter()
+        .filter(|(slot, value)| storage.get(*slot).copied().unwrap_or_default() != **value)
+        .map(|(slot, _)| slot)
+        .collect();
+    let lengths = changed
+        .iter()
+        .filter(|slot| storage.get(**slot).copied().unwrap_or_default() == Word::from_u64(2))
+        .count();
+    assert_eq!(lengths, 4);
+    // Three lengths, the module's length, one word each for `ids` and `items`, the string's
+    // slot and its two data slots, and the option's tag and payload.
+    assert_eq!(changed.len(), 11, "{changed:?}");
+    let out = run(word_data("remove(uint256)", &[zero]), storage);
+    assert!(!out.reverted, "{}", pretty(&out.returndata));
+    let ids = run(word_data("ids()", &[]), out.storage.clone());
+    assert_eq!(load_bytes(&ids.returndata, 32), one);
+    assert_eq!(load_bytes(&ids.returndata, 64), Word::from_u64(20));
+    let out = run(word_data("remove(uint256)", &[zero]), out.storage);
+    let out = run(word_data("pop()", &[]), out.storage);
+    assert!(out.reverted);
+    assert!(out.returndata.starts_with(&selector("Panic(uint256)")));
+    assert_eq!(load_bytes(&out.returndata, 4), Word::from_u64(0x31));
+    let mut trim = selector("trim(uint256[])").to_vec();
+    for w in [32u64, 3, 1, 2, 3] {
+        trim.extend_from_slice(&Word::from_u64(w).to_be_bytes());
+    }
+    let out = run(trim, HashMap::new());
+    assert!(!out.reverted, "{}", pretty(&out.returndata));
+    assert_eq!(load_bytes(&out.returndata, 32), Word::from_u64(2));
+    assert_eq!(load_bytes(&out.returndata, 96), Word::from_u64(2));
+    for (body, want) in [
+        ("const x : nat := List.pop(storage.ids);", "`List.pop` is a statement"),
+        ("List.pop(storage.fixed);", "`List.pop` expects a dynamic list"),
+        ("List.pop(storage.ids[0n]);", "takes a list variable or a stored list"),
+    ] {
+        let src = format!(
+            "storage is record {{ ids : list(nat); fixed : list(nat, 3); }}\nexternal function f() is {{ {body} }}\n"
+        );
+        let err = compile(&src).expect_err(body);
+        assert!(err.to_string().contains(want), "{body}: {err}");
+    }
+    let err = compile("storage is record { ids : list(nat); }\nexternal view function f() : nat is { List.pop(storage.ids); } with 0n\n")
+        .expect_err("view");
+    assert!(err.to_string().contains("writes storage"), "{err}");
+    // A generic module pops a list in the storage its caller passes.
+    let generic = r#"
+module Stack(T : map_key) is {
+  type self is record {
+    items : list(T);
+  }
+
+  function push(const s : self; const value : T) is {
+    s.items[s.items.length] := value;
+  }
+
+  function pop(const s : self) : T is {
+    const top : T := s.items[s.items.length - 1n];
+    List.pop(s.items);
+  } with top
+}
+
+storage is record {
+  stack : Stack(nat);
+}
+
+external function push(const n : nat) is {
+  Stack.push(storage.stack, n);
+}
+
+external function pop() : nat is {
+  const top : nat := Stack.pop(storage.stack);
+} with top
+
+external view function size() : nat is
+  storage.stack.items.length
+"#;
+    let runtime = deploy(&compile(generic).expect("generic")).expect("deploy");
+    let run = |data: Vec<u8>, storage: HashMap<Word, Word>| {
+        exec(&runtime, &data, storage, one, zero, zero).expect("run")
+    };
+    let out = run(word_data("push(uint256)", &[Word::from_u64(4)]), HashMap::new());
+    let out = run(word_data("push(uint256)", &[Word::from_u64(5)]), out.storage);
+    let out = run(word_data("pop()", &[]), out.storage);
+    assert_eq!(load_bytes(&out.returndata, 0), Word::from_u64(5));
+    let size = run(word_data("size()", &[]), out.storage);
+    assert_eq!(load_bytes(&size.returndata, 0), one);
 }
 
 /// An interface is a list of function headers. The same list names what a contract calls and
 /// what it exposes: overloads resolve by their arguments, only a `payable` method takes value,
-/// and `external use` combines named interfaces with an inline one.
+/// and `use M exposing` combines named interfaces with an inline one.
 #[test]
 fn interfaces_are_function_headers() {
     install_mocks();
@@ -8950,7 +10063,7 @@ external function go(const t : Pinger) is {
     }
 }
 
-/// `external use M is I, J, { ... }` exposes every member of each: the interfaces and the
+/// `use M exposing I, J, { ... }` exposes every member of each: the interfaces and the
 /// inline one. The module's definition keeps `nonreentrant` and how it treats its parameters.
 #[test]
 fn external_use_combines_interfaces() {
@@ -8977,7 +10090,7 @@ interface IAdd is {
 }
 "#;
     let src = format!(
-        "{module}\nexternal use Vault is ITotal, IAdd, {{\n  pure function version() : nat;\n}}\n"
+        "{module}\nuse Vault exposing ITotal, IAdd, {{\n  pure function version() : nat;\n}}\n"
     );
     let runtime = deploy(&compile(&src).expect("compile")).expect("deploy");
     let add = exec(
@@ -9010,8 +10123,8 @@ interface IAdd is {
             "unknown interface `IMissing`",
         ),
         (
-            format!("{src}external use Vault is ITotal;\n"),
-            "`external use Vault` appears twice; list all its interfaces in one",
+            format!("{src}use Vault exposing ITotal;\n"),
+            "`use Vault exposing` appears twice; list all its interfaces in one",
         ),
         (
             src.replace("pure function version() : nat;", "view function version() : nat;"),
@@ -9019,7 +10132,7 @@ interface IAdd is {
         ),
         (
             src.replace("  pure function version() : nat;\n}", "  pure function version() : nat;\n}, {\n  view function total() : nat;\n}"),
-            "`external use` has one inline interface",
+            "`use ... exposing` has one inline interface",
         ),
     ] {
         let err = compile(&bad).expect_err(want);

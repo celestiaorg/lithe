@@ -665,7 +665,9 @@ fn walk_stmt(checked: &Checked, s: &Stmt, fx: &mut Effects<'_>) {
             root,
             ..
         } => {
-            let label = [path.as_slice(), fields].concat().join(".");
+            let mut parts = path.clone();
+            parts.extend(fields.iter().map(|(_, name)| name.clone()));
+            let label = parts.join(".");
             let label = match root {
                 Some(sym) => space_label(checked, *sym, label),
                 None => label,
@@ -1677,7 +1679,10 @@ fn write_params(out: &mut String, params: &[AbiField], event: bool, indent: &str
             out.push_str(&json_str(&param.ty));
             out.push('\n');
         } else {
-            out.push_str("\"tuple\",\n");
+            // An array of tuples keeps its dimensions after `tuple`.
+            let dims = param.ty.rfind(')').map_or("", |at| &param.ty[at + 1..]);
+            out.push_str(&json_str(&format!("tuple{dims}")));
+            out.push_str(",\n");
             out.push_str(indent);
             out.push_str("    \"components\": ");
             write_params(out, &param.components, false, &format!("{indent}    "));

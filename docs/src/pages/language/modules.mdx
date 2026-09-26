@@ -72,7 +72,7 @@ module Counter is {
 
 contract App is {
   (* Declaring exposes the module's externals as they are. *)
-  external use Counter is {
+  use Counter exposing {
     view function count() : nat;
   }
 
@@ -95,12 +95,12 @@ contract App is {
 
 ## Exposing a module's externals
 
-`external use M is ...` uses `M`, as `use M` does, and names the [interfaces](/language/effects#interfaces) whose methods the contract exposes from `M`: named ones, an inline one in braces, or both. Each method must be one of `M`'s externals:
+`use M exposing ...` uses `M`, as `use M` does, and names the [interfaces](/language/effects#interfaces) whose methods the contract exposes from `M`: named ones, an inline one in braces, or both. Each method must be one of `M`'s externals:
 
 ```lithe fragment
-external use ERC20 is IERC20, IERC20Metadata;
+use ERC20 exposing IERC20, IERC20Metadata;
 
-external use ERC20Permit is IERC20Permit, {
+use ERC20Permit exposing IERC20Permit, {
   view function nonces(owner : address) : nat;
 }
 ```
@@ -112,7 +112,7 @@ A method is an external's header as an interface writes it: no `external`, `name
 - the effect must match: `view`, `pure`, or stateful. So must `payable`: a module's `external payable function` is exposed as `payable function`
 - `raises` must list the same errors. A named error set counts as its members
 
-`nonreentrant`, and whether a parameter is `const` or `var`, are how the module defines the external, so an interface doesn't repeat them. A module appears in one `external use`, which lists all its interfaces. For part of an interface, declare the part inline, or as an interface of its own.
+`nonreentrant`, and whether a parameter is `const` or `var`, are how the module defines the external, so an interface doesn't repeat them. A module appears in one `use M exposing`, which lists all its interfaces. For part of an interface, declare the part inline, or as an interface of its own.
 
 A declaration that differs is an error that shows both headers:
 
@@ -127,7 +127,7 @@ module Ledger is {
 }
 
 contract Token is {
-  external use Ledger is {
+  use Ledger exposing {
     function balance() : nat;
   }
 }
@@ -142,13 +142,45 @@ module `Ledger` does not have the contract's inline interface: `balance` is stat
 
 An interface never adds behavior, so its methods have no body. To change what an external does, leave it out of the contract's interfaces, and write the contract's own external instead. A module's externals are not functions: nothing inside the contract calls them. Put shared logic in an internal function that the external and the contract both call.
 
-When a contract is over the [size limit](/tooling/size-limit), a module it exposes can run from the module's **facet**, compiled from the module alone and shared by every contract that exposes it. The interfaces' methods are what the router forwards to it. `lithe stubs file.lithe M` prints an `external use` block with every external `M` has.
+When a contract is over the [size limit](/tooling/size-limit), a module it exposes can run from the module's **facet**, compiled from the module alone and shared by every contract that exposes it. The interfaces' methods are what the router forwards to it. `lithe stubs file.lithe M` prints a `use M exposing` block with every external `M` has.
 
 ## ERC-165
 
-Every contract answers ERC-165's `supportsInterface(bytes4)`: true for ERC-165 itself, and for each interface the program declares or imports that the contract has. A contract has an interface when it dispatches every one of the interface's methods, with the same result, whether they come from `external use` or from its own externals. Nothing says a contract has an interface; it just does, as with Go's interfaces. An interface's id is the XOR of its methods' selectors, so the standard library's `IERC721`, for example, answers for `0x80ac58cd`. Inline interfaces have no name, and no id of their own.
+A contract announces interfaces through ERC-165 with `supports`, which lists named interfaces:
 
-A contract that writes its own `supportsInterface` keeps it, and the compiler warns when there are interfaces it has that the compiler would have answered for. `--erc165 off` turns the generated function off; it costs about 43 bytes, and a few more for each interface the contract has.
+```lithe fragment
+use ERC721 exposing IERC721, IERC721Metadata;
+supports IERC721, IERC721Metadata;
+```
+
+The compiler then generates `supportsInterface(bytes4)`, true for ERC-165 itself, `0x01ffc9a7`, and for each interface listed. An interface's id is the XOR of its methods' selectors, so the standard library's `IERC721`, for example, answers for `0x80ac58cd`. The contract must have each interface it lists: dispatch every one of its methods, with the same result, whether they come from `use ... exposing` or from its own externals. A method it lacks is an error that names it:
+
+```lithe rejects
+import "std/token/erc721.lithe";
+
+contract Collection is {
+  use ERC721 exposing IERC721, IERC721Name;
+  supports IERC721, IERC721Metadata;
+}
+```
+
+```text
+the contract supports `IERC721Metadata` but does not dispatch:
+  tokenURI(uint256)
+
+expose them from a module with `use M exposing`, or write them as externals
+```
+
+Only the contract says what it announces. A contract without `supports` has no `supportsInterface`, so interfaces that only group externals cost nothing and announce no ids. Inline interfaces have no name, and no id, so `supports` can't list them, and it lists each interface once. `supports` goes in the contract, or at the top level of a file with one contract; an imported file can't declare it.
+
+A contract can write its own `supportsInterface`, to add an id no methods derive, such as ERC-4906's `0x49064906`. `Abi.supports_interface(id)` answers for ERC-165 and what `supports` lists, as the generated function would:
+
+```lithe fragment
+external pure function supportsInterface(const interfaceId : bytes4) : bool is
+  interfaceId = 0x49064906 or Abi.supports_interface(interfaceId)
+```
+
+A contract with its own `supportsInterface` and `supports` must call `Abi.supports_interface`, or the list would announce nothing. Only the contract's own functions call it: a module's code is the same in every contract.
 
 ## Dependencies between modules
 
@@ -198,11 +230,11 @@ module Ledger is {
 }
 
 contract Token is {
-  external use Pausable is {
+  use Pausable exposing {
     function pause();
   }
 
-  external use Ledger is {
+  use Ledger exposing {
     function transfer(to : address; amount : nat)
       raises Paused | Insufficient;
     view function frozen() : bool;
@@ -234,7 +266,7 @@ module Guarded is {
 }
 
 contract Token is {
-  external use Guarded is {
+  use Guarded exposing {
     function set(n : nat);
   }
 }

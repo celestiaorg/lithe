@@ -94,6 +94,7 @@ Both contracts have the same ABI, the same error selector, the same event topic,
 | `mapping(address => uint)` | `map(address, nat)` |
 | `address(0)` | `Address.zero` |
 | `type(uint256).max` | `Nat.max` |
+| `unchecked { a + b }` | `Nat.wrapping_add(a, b)`, and `wrapping_sub`, `wrapping_mul` |
 | `1 ether`, `1 days` | `1eth`, `1days` |
 
 ## Functions
@@ -163,7 +164,9 @@ Lithe error names are converted to PascalCase in the ABI, so `Not_owner` becomes
 | `uint r = pool.swap(x); use(r);` | `defer pool.swap(x) then (r : nat) { ... }` |
 | `try c.f() returns (r) { } catch { }` | `defer c.f() then { \| Ok(r : T) -> { } \| Error(e : bytes) -> { } }` |
 | `try` on a view call | `case query c.f() of { \| Ok(r) -> ... \| Error(e) -> ... }` |
-| `new C(...)`, `create2` | not yet supported |
+| `new C{salt: s}(...)` | `defer create C(...) with salt = s`. See [`create`](/language/effects#create) |
+| `type(C).creationCode` | `Evm.creation_code(C)` |
+| `token.call(...)` accepting empty return data | a result of `option(T)`: `None` when nothing comes back. See [Optional results](/language/effects#optional-results) |
 | `delegatecall` | none. Use modules, or `upgradeable` for proxies |
 
 ## Inheritance and libraries
@@ -171,7 +174,8 @@ Lithe error names are converted to PascalCase in the ABI, so `Not_owner` becomes
 | Solidity | Lithe |
 | --- | --- |
 | `contract A is B, C` | `contract A is { use B; use C; ... }` |
-| inherited public functions | a module's externals, each declared in `external use B is { ... }` |
+| inherited public functions | a module's externals, exposed with `use B exposing I, { ... }` |
+| `ERC165` and `supportsInterface` overrides | `supports I, J;`, and the compiler writes `supportsInterface`. See [ERC-165](/language/modules#erc-165) |
 | `super.f()` | call the module function directly: `B.f()` |
 | `library L` | a `module`, or plain functions in an imported file |
 | `using L for T` | none. Call `L.f(x)` |

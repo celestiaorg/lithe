@@ -1,5 +1,5 @@
 //! Contracts over the code size limit. What a contract writes itself stays in a router; a
-//! module it exposes with `external use` can move into that module's facet, which the router
+//! module it exposes with `use M exposing` can move into that module's facet, which the router
 //! reaches with `delegatecall`. A facet is built from its module alone, so every contract that
 //! exposes the module shares it. Facets are deployed with `CREATE2` through a factory, so
 //! their addresses are known here and built into the router.
@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Mutex, OnceLock};
 
-use crate::ast::{ExternalUse, Func, ItemKind, ModuleDecl, NameAt, Program, TypeDecl, TypeRef};
+use crate::ast::{Exposing, Func, ItemKind, ModuleDecl, NameAt, Program, TypeDecl, TypeRef};
 use crate::check::Checked;
 use crate::gen::{self, Built, Entrypoint, Group};
 use crate::keccak::keccak256;
@@ -47,8 +47,6 @@ pub struct Options {
     pub split: SplitMode,
     /// The `CREATE2` factory facets are deployed through.
     pub deployer: [u8; 20],
-    /// Generate ERC-165's `supportsInterface` for the interfaces `external use` names.
-    pub erc165: bool,
 }
 
 impl Default for Options {
@@ -57,7 +55,6 @@ impl Default for Options {
             size_limit: SIZE_LIMIT,
             split: SplitMode::Auto,
             deployer: DEPLOYER,
-            erc165: true,
         }
     }
 }
@@ -189,7 +186,7 @@ fn build_uncached(checked: &Checked, name: &str, opts: &Options) -> Result<Split
             let mut err = oversized(checked, name, opts, &entries, whole);
             if opts.split != SplitMode::Off {
                 err.message.push_str(
-                    "\n\nonly a module exposed with `external use` can move out of the contract; its own entrypoints stay in the router",
+                    "\n\nonly a module exposed with `use M exposing` can move out of the contract; its own entrypoints stay in the router",
                 );
             }
             return Err(err);
@@ -232,7 +229,7 @@ fn build_uncached(checked: &Checked, name: &str, opts: &Options) -> Result<Split
             0,
             0,
             format!(
-                "contract `{name}` does not fit with every exposed module in its facet: its router {}\n\nwhat the contract writes itself stays in the router; move entrypoints into modules and expose them with `external use`",
+                "contract `{name}` does not fit with every exposed module in its facet: its router {}\n\nwhat the contract writes itself stays in the router; move entrypoints into modules and expose them with `use M exposing`",
                 too_big(built.as_ref(), opts)
             ),
         ));
@@ -433,7 +430,7 @@ pub(crate) fn facet_program(source: &Program, module: &str) -> Program {
             col: decl.col,
             name: module.to_string(),
         });
-        prog.exposes.push(ExternalUse {
+        prog.exposes.push(Exposing {
             line: decl.line,
             col: decl.col,
             module: module.to_string(),
@@ -453,7 +450,7 @@ pub(crate) fn facet_program(source: &Program, module: &str) -> Program {
     prog.upgradeable = false;
     prog.guard = None;
     // The router answers ERC-165; a facet never sees the call.
-    prog.erc165 = false;
+    prog.supports.clear();
     prog.contract_name = Some(module.to_string());
     prog.siblings.clear();
     prog

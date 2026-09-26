@@ -28,6 +28,8 @@ Lithe is statically typed. Every local binding names its type, and nothing conve
 
 Arithmetic on every integer type is checked. Overflow, underflow, and narrowing out of range revert with `Panic(0x11)`, and division by zero reverts with `Panic(0x12)`, as in Solidity. Each fixed width is its own type: a `uint8` does not mix with a `uint16` or a `nat` without an explicit conversion.
 
+Where wrapping is the point, as for a price accumulator meant to overflow, name it: `Nat.wrapping_add`, `Nat.wrapping_sub`, and `Nat.wrapping_mul` take two values of one unsigned type and keep the result's low bits, as Solidity's `unchecked` arithmetic does. `Int.wrapping_*` do the same for signed types. See [Built-ins](/language/builtins#nat-int-and-address).
+
 ```lithe
 storage is record {
   small : uint8;
@@ -111,6 +113,30 @@ external function grow(const id : nat; const extra : nat) is {
 
 A record literal is `{ field = value; ... }`. It takes its type from where it is used, such as a binding's annotation, a storage field, or a parameter. In the ABI, a record parameter or return value is flattened into its fields, like a Solidity getter for a struct.
 
+A record's fields can be strings, bytes, and dynamic lists too. An external function that returns such a record returns its fields in order, each dynamic one after an offset, as a Solidity function with several results does:
+
+```lithe
+type domain is record {
+  fields : bytes1;
+  name : string;
+  chainId : nat;
+  extensions : list(nat);
+}
+
+storage is record {
+  name : string;
+}
+
+external view function eip712Domain() : domain is {
+  const extensions : list(nat) := [];
+} with {
+  fields = 0x0f;
+  name = storage.name;
+  chainId = Evm.chain_id();
+  extensions = extensions;
+}
+```
+
 ## Tuples
 
 Tuples group values by position. Destructure them in a `const` binding:
@@ -145,9 +171,34 @@ external pure function third() : nat is {
 ```
 
 - `xs[i]` reads and `xs[i] := v` writes. Writing to a dynamic list at index `length` appends.
+- `List.pop(xs);` drops a dynamic list's last element. A stored list clears the element's slots, as Solidity's `pop` does. An empty list reverts with `Panic(0x31)`.
 - `xs.length` is the length of a dynamic list.
 - Any other index past the end reverts with `Panic(0x32)`.
-- Elements are single words or fixed-size [options](#options).
+- Elements are single words, or fixed-size records, tuples, or [options](#options).
+
+A list of records is a Solidity array of structs. In storage each element starts a slot and packs its fields as a struct does, so a record of a `uint48` and a `uint208` takes one slot. A field of an element reads and writes in place:
+
+```lithe
+type checkpoint is record {
+  key : uint48;
+  value : uint208;
+}
+
+storage is record {
+  history : list(checkpoint);
+}
+
+external function note(const value : uint208) is {
+  storage.history[storage.history.length] := { key = uint48(Evm.block_number()); value = value; };
+}
+
+external function bump(const i : nat) is {
+  storage.history[i].value := storage.history[i].value + 1;
+}
+
+external view function all() : list(checkpoint) is
+  storage.history
+```
 
 A dynamic list is also a value. It can be a parameter or a result, a `const` or a `var`, and it moves to and from storage whole:
 
@@ -169,7 +220,7 @@ external pure function pair(const a : nat; const b : nat) : list(nat) is {
 } with out
 ```
 
-- In the ABI, `list(T)` is `T[]` and `list(T, n)` is `T[n]`. A list argument is checked as Solidity checks one: its offset and length must lie inside the calldata, and each element must hold a value of its type.
+- In the ABI, `list(T)` is `T[]` and `list(T, n)` is `T[n]`, and a list of records is an array of tuples, `(uint48,uint208)[]`. A list argument is checked as Solidity checks one: its offset and length must lie inside the calldata, and each element must hold a value of its type.
 - Assigning a list to storage replaces the stored list, and clears the slots a shorter list no longer uses.
 - Reading a stored list as a value copies it. So does reading a `var`'s list, so two names never share one list: changing a `var` can't change anything else.
 - `a = b` compares two lists element by element.
@@ -188,7 +239,32 @@ storage is record {
 storage.allowances[owner][spender] := amount;
 ```
 
-Keys must be single-word values: integers, `bool`, `address`, `bytesN`, `wei`, `timestamp`, or nominal types over them. Values are words, nested maps, [options](#options), or fixed-size records.
+Keys must be single-word values: integers, `bool`, `address`, `bytesN`, `wei`, `timestamp`, or nominal types over them. Values are words, maps, lists, records, or [options](#options). A record value may hold maps, lists, and strings of its own, as a Solidity struct in a mapping does, and each sits at the slot Solidity gives it:
+
+```lithe
+type role is record {
+  members : map(address, bool);
+  admin : bytes32;
+}
+
+storage is record {
+  roles : map(bytes32, role);
+  deposits : map(address, list(nat));
+}
+
+external function grant(const r : bytes32; const who : address) is {
+  storage.roles[r].members[who] := true;
+}
+
+external function deposit(const amount : nat) is {
+  storage.deposits[Evm.sender()][storage.deposits[Evm.sender()].length] := amount;
+}
+
+external view function deposits(const who : address) : list(nat) is
+  storage.deposits[who]
+```
+
+A map's list, or a list inside a map's record, is a list in every way: it can be read and written whole, indexed, appended to, and popped with `List.pop`.
 
 ## Options
 

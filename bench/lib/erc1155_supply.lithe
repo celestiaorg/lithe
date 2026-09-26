@@ -1,0 +1,46 @@
+(* Supply tracking for ERC-1155, like OpenZeppelin's `ERC1155SupplyUpgradeable`: each id's
+   total and the total of all ids. Call `update` after `ERC1155.update`. *)
+
+module ERC1155Supply is {
+  storage erc1155Supply at "openzeppelin.storage.ERC1155Supply" is record {
+    totalSupply : map(nat, nat);
+    totalSupplyAll : nat;
+  }
+
+  external view function totalSupply(const id : nat) : nat is
+    erc1155Supply.totalSupply[id]
+
+  external view function totalSupply() : nat is
+    erc1155Supply.totalSupplyAll
+
+  external view function exists(const id : nat) : bool is
+    erc1155Supply.totalSupply[id] > 0n
+
+  (* A burn can't take more than was minted, so its totals can't underflow. *)
+  function update(const from : address; const to : address; const ids : list(nat); const values : list(nat)) is {
+    if from = Address.zero then {
+      var minted : nat := 0n;
+      for (i, id) : (nat, nat) in ids do {
+        const value : nat := values[i];
+        erc1155Supply.totalSupply[id] := erc1155Supply.totalSupply[id] + value;
+        minted := minted + value;
+      }
+      erc1155Supply.totalSupplyAll := erc1155Supply.totalSupplyAll + minted;
+    }
+    if to = Address.zero then {
+      var burned : nat := 0n;
+      for (i, id) : (nat, nat) in ids do {
+        const value : nat := values[i];
+        erc1155Supply.totalSupply[id] := erc1155Supply.totalSupply[id] - value;
+        burned := burned + value;
+      }
+      erc1155Supply.totalSupplyAll := erc1155Supply.totalSupplyAll - burned;
+    }
+  }
+}
+
+interface IERC1155Supply is {
+  view function totalSupply(id : nat) : nat;
+  view function totalSupply() : nat;
+  view function exists(id : nat) : bool;
+}

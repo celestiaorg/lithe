@@ -1,0 +1,25 @@
+(* ERC-3156 flash loans: the lender, and the borrower it lends to, with the errors
+   OpenZeppelin's `ERC20FlashMint` raises. A borrower answers with
+   `keccak256("ERC3156FlashBorrower.onFlashLoan")`. *)
+
+import "std/interfaces/erc20.lithe";
+
+error ERC3156UnsupportedToken of address;
+
+error ERC3156ExceededMaxLoan of nat;
+
+error ERC3156InvalidReceiver of address;
+
+interface IERC3156FlashBorrower is {
+  function onFlashLoan(initiator : address; token : address; amount : nat; fee : nat; data : bytes) : bytes32;
+}
+
+interface IERC3156FlashLender is {
+  view function maxFlashLoan(token : address) : nat;
+  view function flashFee(token : address; amount : nat) : nat
+    raises ERC3156UnsupportedToken;
+  function flashLoan(receiver : IERC3156FlashBorrower; token : address; amount : nat; data : bytes) : bool
+    raises ERC3156ExceededMaxLoan | ERC3156UnsupportedToken | ERC3156InvalidReceiver
+      | ERC20InsufficientAllowance | ERC20InvalidApprover | ERC20InvalidSpender
+      | ERC20InvalidReceiver | ERC20InvalidSender | ERC20InsufficientBalance;
+}

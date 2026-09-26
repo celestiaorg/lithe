@@ -11,7 +11,7 @@ description: "Ownable, two-step ownership, role-based access control, and pausin
 
 | Function | |
 | --- | --- |
-| `owner`, `transferOwnership`, `renounceOwnership` | the externals of OpenZeppelin's `Ownable` |
+| `owner`, `transferOwnership`, `renounceOwnership` | the externals of OpenZeppelin's `Ownable`, `IOwnable` |
 | `owner() : address` | the owner |
 | `check_owner()` | raises `OwnableUnauthorizedAccount` unless the caller is the owner |
 | `init(initial_owner)` | sets the first owner; raises `OwnableInvalidOwner` for the zero address |
@@ -21,7 +21,7 @@ description: "Ownable, two-step ownership, role-based access control, and pausin
 
 ## `Ownable2Step`
 
-`std/access/ownable_two_step.lithe`, on top of `Ownable`. The owner proposes a new owner, who must accept. An address that can't accept, because it was mistyped, never takes ownership. Its externals are all of OpenZeppelin's `Ownable2Step`, `owner` included, so a contract declares them from `Ownable2Step` and only uses `Ownable`.
+`std/access/ownable_two_step.lithe`, on top of `Ownable`. The owner proposes a new owner, who must accept. An address that can't accept, because it was mistyped, never takes ownership. Its externals are all of OpenZeppelin's `Ownable2Step`, `owner` included, as `IOwnable2Step`, so a contract exposes them from `Ownable2Step` and only uses `Ownable`.
 
 ```lithe
 import "std/access/ownable_two_step.lithe";
@@ -29,16 +29,7 @@ import "std/access/ownable_two_step.lithe";
 contract Vault is {
   use Ownable;
 
-  external use Ownable2Step is {
-    view function owner() : address;
-    view function pendingOwner() : address;
-    function transferOwnership(newOwner : address)
-      raises OwnableUnauthorizedAccount;
-    function acceptOwnership()
-      raises OwnableUnauthorizedAccount;
-    function renounceOwnership()
-      raises OwnableUnauthorizedAccount;
-  }
+  use Ownable2Step exposing IOwnable2Step;
 
   storage is record {
     limit : nat;
@@ -61,13 +52,13 @@ contract Vault is {
 
 ## `AccessControl`
 
-`std/access/access_control.lithe`. Roles, each with an admin role whose members grant and revoke it. A role is a `role`, a [nominal type](/language/types#nominal-types) over `bytes32`, so a stray hash can't be passed where a role is meant. In the ABI, a role is a `bytes32`.
+`std/access/access_control.lithe`. Roles, each with an admin role whose members grant and revoke it. A role is a `role`, a [nominal type](/language/types#nominal-types) over `bytes32`, so a stray hash can't be passed where a role is meant. In the ABI, a role is a `bytes32`, so the file's `IAccessControl` is OpenZeppelin's, and a contract that exposes it can announce it with [`supports`](/language/modules#erc-165).
 
 ```lithe
 import "std/access/access_control.lithe";
 
 contract Minter is {
-  external use AccessControl is {
+  use AccessControl exposing {
     view function hasRole(role : role; account : address) : bool;
     function grantRole(role : role; account : address)
       raises AccessControlUnauthorizedAccount;
@@ -100,7 +91,7 @@ contract Minter is {
 
 | Function | |
 | --- | --- |
-| `hasRole`, `getRoleAdmin`, `grantRole`, `revokeRole`, `renounceRole` | the externals of OpenZeppelin's `AccessControl` |
+| `hasRole`, `getRoleAdmin`, `grantRole`, `revokeRole`, `renounceRole` | the externals of OpenZeppelin's `AccessControl`, `IAccessControl` |
 | `has_role(r, account) : bool` | |
 | `get_role_admin(r) : role` | the default admin role, until `set_role_admin` changes it |
 | `check_role(r)`, `check_role_of(r, account)` | raise `AccessControlUnauthorizedAccount` |
@@ -114,7 +105,7 @@ contract Minter is {
 
 | Function | |
 | --- | --- |
-| `paused` | the external; pausing and unpausing are the contract's own entrypoints |
+| `paused` | the external, `IPausable`; pausing and unpausing are the contract's own entrypoints |
 | `paused() : bool` | |
 | `require_not_paused()`, `require_paused()` | raise `EnforcedPause` and `ExpectedPause` |
 | `pause()`, `unpause()` | no access check of their own |

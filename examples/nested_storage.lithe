@@ -1,0 +1,179 @@
+(* Storage nests as Solidity's does: lists of records, lists and records inside maps, and
+   maps inside a map's records, each at the slot Solidity gives it. A function that takes
+   stored data works on a map's entry as on a named field. *)
+
+type checkpoint is record {
+  key : uint48;
+  value : uint208;
+}
+
+type role is record {
+  members : map(address, bool);
+  admin : bytes32;
+}
+
+type card is record {
+  name : string;
+  age : uint8;
+  inner : record { bio : string; score : uint16; };
+}
+
+type account is record {
+  name : string;
+  tags : list(nat);
+}
+
+storage is record {
+  total : list(checkpoint);
+  history : map(address, list(checkpoint));
+  roles : map(bytes32, role);
+  accounts : map(nat, account);
+  counts : map(address, list(nat));
+  fixed : list(checkpoint, 3);
+  cards : map(nat, card);
+}
+
+(* The newest value, or zero. *)
+view function latest(const points : list(checkpoint)) : uint208 is {
+  var value : uint208 := 0;
+  if points.length > 0n then {
+    value := points[points.length - 1n].value;
+  }
+} with value
+
+(* A second push at the newest key replaces its value. *)
+function push(const points : list(checkpoint); const key : uint48; const value : uint208) is {
+  const count : nat := points.length;
+  if count > 0n and points[count - 1n].key = key then {
+    points[count - 1n].value := value;
+  } else {
+    points[count] := { key = key; value = value; };
+  }
+}
+
+external function record_total(const key : uint48; const value : uint208) is {
+  push(storage.total, key, value);
+}
+
+external function note(const who : address; const key : uint48; const value : uint208) is {
+  push(storage.history[who], key, value);
+  push(storage.total, key, latest(storage.total) + value);
+}
+
+external view function total_count() : nat is
+  storage.total.length
+
+external view function total_at(const i : nat) : checkpoint is
+  storage.total[i]
+
+external view function history_count(const who : address) : nat is
+  storage.history[who].length
+
+external view function history_value(const who : address; const i : nat) : nat is
+  nat(storage.history[who][i].value)
+
+external view function newest(const who : address) : nat is
+  nat(latest(storage.history[who]))
+
+external function bump(const who : address; const i : nat) is {
+  storage.history[who][i].value := storage.history[who][i].value + 1;
+}
+
+(* The whole history, read and written as a list. *)
+external function copy_history(const from : address; const to : address) is {
+  storage.history[to] := storage.history[from];
+}
+
+external function restart_total(const who : address) is {
+  storage.total := storage.history[who];
+}
+
+external function grant(const r : bytes32; const who : address) is {
+  storage.roles[r].members[who] := true;
+}
+
+external function set_admin(const r : bytes32; const admin : bytes32) is {
+  storage.roles[r].admin := admin;
+}
+
+external view function member(const r : bytes32; const who : address) : bool is
+  storage.roles[r].members[who]
+
+external view function admin(const r : bytes32) : bytes32 is
+  storage.roles[r].admin
+
+external function name(const id : nat; const name : string) is {
+  storage.accounts[id].name := name;
+}
+
+external function tag(const id : nat; const t : nat) is {
+  storage.accounts[id].tags[storage.accounts[id].tags.length] := t;
+}
+
+external view function name_of(const id : nat) : string is
+  storage.accounts[id].name
+
+external view function name_length(const id : nat) : nat is
+  storage.accounts[id].name.length
+
+external view function tags(const id : nat) : list(nat) is
+  storage.accounts[id].tags
+
+external function set_counts(const who : address; const xs : list(nat)) is {
+  storage.counts[who] := xs;
+}
+
+external view function counts(const who : address) : list(nat) is
+  storage.counts[who]
+
+(* A local list of records, element fields read and written in place. *)
+external pure function locals(const k : uint208) : nat is {
+  var points : list(checkpoint) := [{ key = 1; value = 2; }, { key = 3; value = 4; }];
+  points[1n].value := k;
+  points[2n] := { key = 5; value = k + 1; };
+  const last : checkpoint := points[2n];
+} with nat(points[1n].value) + nat(points[0n].key) * 1000 + nat(last.value) * 1000000 + points.length
+
+interface Oracle is {
+  view function price(amount : nat) : nat;
+}
+
+(* A query makes the body work on an image of storage; computed slots go through the
+   journal and land the same. *)
+external function note_priced(const o : Oracle; const who : address; const key : uint48) is {
+  const p : nat := query o.price(1n);
+  push(storage.history[who], key, uint208(p - p + 77n));
+  storage.roles[0x0000000000000000000000000000000000000000000000000000000000000001].members[who] := p = p;
+}
+
+external function set_fixed(const i : nat; const key : uint48; const value : uint208) is {
+  storage.fixed[i] := { key = key; value = value; };
+  storage.fixed[i].value := storage.fixed[i].value + 1;
+}
+
+(* In the image, a fixed list's elements are leaves: written, read back, and flushed. *)
+external function set_fixed_priced(const o : Oracle; const i : nat; const key : uint48) is {
+  const p : nat := query o.price(1n);
+  storage.fixed[i].key := key;
+  storage.fixed[i].value := uint208(p - p + 5n) + storage.fixed[i].value;
+}
+
+external view function fixed_at(const i : nat) : checkpoint is
+  storage.fixed[i]
+
+external view function fixed_key(const i : nat) : nat is
+  nat(storage.fixed[i].key)
+
+(* Popping clears the last element's slot, in a map's list as in a named one. *)
+external function pop(const who : address) is {
+  List.pop(storage.history[who]);
+  List.pop(storage.total);
+}
+
+(* A record with strings, read and written whole: each string at its own slot. *)
+external function set_card(const id : nat; const name : string; const bio : string) is {
+  storage.cards[id] := { name = name; age = 3; inner = { bio = bio; score = 9; }; };
+}
+
+external view function card_of(const id : nat) : card is
+  storage.cards[id]

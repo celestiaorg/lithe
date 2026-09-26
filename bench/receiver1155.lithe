@@ -1,0 +1,73 @@
+(* Benchmark: an ERC-1155 receiver that records each delivery. Mirrors receiver1155.sol.
+   In mode 1 it answers with the wrong selector; in mode 2 it refuses with a reason; in
+   mode 3 it reverts without one. *)
+
+error Refused of nat;
+
+storage is record {
+  last_operator : address;
+  last_from : address;
+  last_ids : list(nat);
+  last_values : list(nat);
+  last_data : bytes;
+  calls : nat;
+  mode : nat;
+}
+
+external function set_mode(const m : nat) is {
+  storage.mode := m;
+}
+
+function keep(
+  const operator : address;
+  const from : address;
+  const ids : list(nat);
+  const values : list(nat);
+  const data : bytes
+)
+  raises Refused
+is {
+  assert(storage.mode <> 2n, Refused(ids.length));
+  if storage.mode = 3n then {
+    const nothing : bytes := "";
+    fail nothing;
+  }
+  storage.last_operator := operator;
+  storage.last_from := from;
+  storage.last_ids := ids;
+  storage.last_values := values;
+  storage.last_data := data;
+  storage.calls := storage.calls + 1n;
+}
+
+external function onERC1155Received(
+  const operator : address;
+  const from : address;
+  const id : nat;
+  const value : nat;
+  const data : bytes
+) : bytes4
+  raises Refused
+is {
+  keep(operator, from, [id], [value], data);
+  var answer : bytes4 := 0xf23a6e61;
+  if storage.mode = 1n then {
+    answer := 0xdeadbeef;
+  }
+} with answer
+
+external function onERC1155BatchReceived(
+  const operator : address;
+  const from : address;
+  const ids : list(nat);
+  const values : list(nat);
+  const data : bytes
+) : bytes4
+  raises Refused
+is {
+  keep(operator, from, ids, values, data);
+  var answer : bytes4 := 0xbc197c81;
+  if storage.mode = 1n then {
+    answer := 0xdeadbeef;
+  }
+} with answer

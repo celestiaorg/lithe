@@ -8,7 +8,7 @@ module Ledger is {
 }
 
 contract Token is {
-  external use Ledger is {
+  use Ledger exposing {
     function balance() : nat;
   }
 }

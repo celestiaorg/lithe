@@ -4,10 +4,11 @@
    `token_uri` checks the token exists and answers the empty string, as OpenZeppelin's
    does without a base URI, so a contract with URIs writes its own `tokenURI`.
 
-     external use ERC721 is IERC721, IERC721Metadata;
+     use ERC721 exposing IERC721, IERC721Metadata;
+     supports IERC721, IERC721Metadata;
 
-   A contract that has the interfaces answers for them in the `supportsInterface` the
-   compiler generates.
+   A collection that writes its own transfers or `tokenURI` exposes the rest as
+   `IERC721Views`, `IERC721Name`, and `IERC721Approvals`.
 
    Every ownership change goes through `update`, like OpenZeppelin's `_update`. The safe
    transfers call the receiver in a deferred call, after the transfer's own effects, and
@@ -304,4 +305,28 @@ module ERC721 is {
       | ERC721InsufficientApproval
   is
     safe_transfer_from_with_data(from, to, tokenId, data)
+}
+
+(* `IERC721` without its transfers and approvals, for a collection that writes its own. *)
+interface IERC721Views is {
+  view function balanceOf(owner : address) : nat
+    raises ERC721InvalidOwner;
+  view function ownerOf(tokenId : nat) : address
+    raises ERC721NonexistentToken;
+  view function getApproved(tokenId : nat) : address
+    raises ERC721NonexistentToken;
+  view function isApprovedForAll(owner : address; operator : address) : bool;
+}
+
+interface IERC721Approvals is {
+  function approve(to : address; tokenId : nat)
+    raises ERC721NonexistentToken | ERC721InvalidApprover;
+  function setApprovalForAll(operator : address; approved : bool)
+    raises ERC721InvalidApprover | ERC721InvalidOperator;
+}
+
+(* `IERC721Metadata` without `tokenURI`, for a collection with URIs of its own. *)
+interface IERC721Name is {
+  view function name() : string;
+  view function symbol() : string;
 }

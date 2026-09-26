@@ -17,7 +17,7 @@ contract Token is {
 
   use Pausable;
 
-  external use Guarded is {
+  use Guarded exposing {
     function go();
   }
 }

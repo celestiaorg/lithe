@@ -1,0 +1,69 @@
+(* A URI per token, like OpenZeppelin's `ERC721URIStorage`. `token_uri` joins the base URI
+   the collection passes with the token's own URI, or with its id when it has none; with
+   no base, it is the token's own URI alone. Setting a token's URI logs ERC-4906's
+   `MetadataUpdate`.
+
+   ERC-4906's ERC-165 id is fixed by the standard rather than derived from functions, so
+   the collection answers for it in its own `supportsInterface`, and for what its
+   `supports` lists with `Abi.supports_interface`:
+
+     external view function tokenURI(const tokenId : nat) : string
+       raises ERC721NonexistentToken
+     is
+       ERC721URIStorage.token_uri(tokenId, "ipfs://collection/")
+
+     external pure function supportsInterface(const interfaceId : bytes4) : bool is
+       ERC721URIStorage.supports_interface(interfaceId) or Abi.supports_interface(interfaceId) *)
+
+import "std/token/erc721.lithe";
+
+module ERC721URIStorage is {
+  requires ERC721;
+
+  storage erc721_uri_storage at "lithe.std.erc721.uri_storage" is record {
+    token_uris : map(nat, string);
+  }
+
+  event MetadataUpdate of record {
+    tokenId : nat;
+  }
+
+  event BatchMetadataUpdate of record {
+    fromTokenId : nat;
+    toTokenId : nat;
+  }
+
+  (* ERC-4906. *)
+  pure function supports_interface(const interfaceId : bytes4) : bool is
+    interfaceId = 0x49064906
+
+  view function token_uri(const tokenId : nat; const base : string) : string
+    raises ERC721NonexistentToken
+  is {
+    const owner : address := ERC721.require_owned(tokenId);
+    const own : string := erc721_uri_storage.token_uris[tokenId];
+    var uri : string := own;
+    if base.length > 0n then {
+      if own.length > 0n then {
+        uri := String.concat(base, own);
+      } else {
+        uri := String.concat(base, Nat.to_string(tokenId));
+      }
+    }
+  } with uri
+
+  function set_token_uri(const tokenId : nat; const uri : string) is {
+    erc721_uri_storage.token_uris[tokenId] := uri;
+    emit MetadataUpdate {
+      tokenId = tokenId;
+    };
+  }
+
+  (* For a change that reaches many tokens' URIs at once, such as a new base URI. *)
+  function announce_update(const fromTokenId : nat; const toTokenId : nat) is {
+    emit BatchMetadataUpdate {
+      fromTokenId = fromTokenId;
+      toTokenId = toTokenId;
+    };
+  }
+}

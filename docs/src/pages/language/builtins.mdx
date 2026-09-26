@@ -1,6 +1,6 @@
 ---
 title: "Built-ins"
-description: "Reference for the Evm, Crypto, Abi, Base64, Nat, Int, and Address modules, options, and conversions."
+description: "Reference for the Evm, Crypto, Abi, Bytes, String, Base64, List, Nat, Int, and Address modules, options, and conversions."
 ---
 
 # Built-ins
@@ -50,6 +50,7 @@ Execution context. Readable in `view` and stateful functions, and not in `pure` 
 | `Evm.code_size(a : address)` | `nat` | `a.code.length` |
 | `Evm.code_hash(a : address)` | `bytes32` | `a.codehash` |
 | `Evm.gas_left()` | `nat` | `gasleft()` |
+| `Evm.creation_code(C)` | `bytes` | `type(C).creationCode`, for a contract `C` that [`defer create`](/language/effects#create) can create. Usable in `pure` functions, and its hash is a constant |
 
 ### Sending ether
 
@@ -101,6 +102,7 @@ ABI encoding and decoding. Usable in any function, `pure` ones included.
 | `Abi.encode_with_signature(sig : string, a, ...)` | `bytes` | `abi.encodeWithSignature(sig, a, ...)` |
 | `Abi.encode_call(Interface.method, a, ...)` | `bytes` | `abi.encodeCall(I.method, (a, ...))`. Arguments are type-checked |
 | `Abi.decode(data : bytes, T)` | `T` | `abi.decode(data, (T))` |
+| `Abi.supports_interface(id : bytes4)` | `bool` | whether `id` is ERC-165's or one `supports` lists, as the generated `supportsInterface` answers. See [ERC-165](/language/modules#erc-165) |
 
 `Abi.decode` takes a type name as its second argument: `Abi.decode(data, nat)`. A word, a string, bytes, or a list can be decoded; name a list type first, as `type ids is list(nat);`, then `Abi.decode(data, ids)`. Malformed data reverts.
 
@@ -163,6 +165,25 @@ external pure function contractURI() : string is
   String.concat("data:application/json;base64,", Base64.encode("{\"name\":\"Badge\"}"))
 ```
 
+## `List`
+
+| Built-in | Type | Solidity |
+| --- | --- | --- |
+| `List.pop(xs)` | statement | `xs.pop()`: drops a dynamic list's last element. `Panic(0x31)` if it is empty |
+
+`xs` is a stored list or a `var`, and `List.pop(xs);` is a statement: it writes `xs` as an assignment would, so a `view` function cannot pop a stored list. A stored list clears the element's slots. To remove an element from the middle, move the last one into its place first:
+
+```lithe
+storage is record {
+  ids : list(nat);
+}
+
+external function remove(const i : nat) is {
+  storage.ids[i] := storage.ids[storage.ids.length - 1n];
+  List.pop(storage.ids);
+}
+```
+
 ## `Nat`, `Int`, and `Address`
 
 Constants take their width from the type the context expects. With no expected type, they are 256-bit.
@@ -175,11 +196,20 @@ Constants take their width from the type the context expects. With no expected t
 | `Nat.div_rem(a, b)` | `(T, T)` | `(a / b, a % b)` |
 | `Nat.mul_div(a, b, d : nat)` | `nat` | `Math.mulDiv(a, b, d)`: `a * b / d` with the product in 512 bits. `Panic(0x11)` if the result doesn't fit, `Panic(0x12)` if `d` is zero |
 | `Nat.mul_mod(a, b, d : nat)`, `Nat.add_mod(a, b, d : nat)` | `nat` | `mulmod(a, b, d)`, `addmod(a, b, d)`, without overflow. `Panic(0x12)` if `d` is zero |
+| `Nat.wrapping_add(a, b)`, `Nat.wrapping_sub(a, b)`, `Nat.wrapping_mul(a, b)` | `T`, the unsigned type of both | `unchecked { a + b }` and the like: the result modulo 2^N for `T`'s N bits |
+| `Int.wrapping_add(a, b)`, `Int.wrapping_sub(a, b)`, `Int.wrapping_mul(a, b)` | `T`, the signed type of both | the same for signed types, in two's complement |
 | `Int.div_rem(a, b)` | `(T, T)` | `(a / b, a % b)`, truncating |
+| `Nat.to_string(n)` | `string` | `Strings.toString(n)`: an unsigned integer of any width in decimal |
+| `Int.to_string(n)` | `string` | `Strings.toStringSigned(n)`: a signed integer in decimal, `-` first when negative |
 
 ```lithe
 storage is record {
   cap : uint8;
+  label : string;
+}
+
+external function name(const id : nat) is {
+  storage.label := String.concat("token #", Nat.to_string(id));
 }
 
 external function reset() is {
@@ -188,9 +218,12 @@ external function reset() is {
 
 external pure function bounds() : (int16, int16) is
   (Int.min, Int.max)
+
+external pure function elapsed(const later : uint32; const earlier : uint32) : uint32 is
+  Nat.wrapping_sub(later, earlier)
 ```
 
-Here `storage.cap := Nat.max` stores 255, because the target is a `uint8`.
+Here `storage.cap := Nat.max` stores 255, because the target is a `uint8`, and `elapsed(1, 3)` is 4294967294: the difference wraps to 32 bits.
 
 ## `Some` and `None`
 

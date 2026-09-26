@@ -114,3 +114,5 @@ type `string` does not satisfy `map_key`
 A generic module function that takes a storage value, such as `const set : self`, receives a reference to that storage location, not a copy. `Set.add(storage.admins, who)` writes to `storage.admins`. That is how collection modules work without owning a named domain of their own.
 
 A module passes its own storage the same way. Inside a module that declares `storage roles`, `Set.add(roles.admins, who)` writes to `roles.admins`.
+
+The storage can be a map's entry, or anything past one: `Checkpoints.push(votes.history[account], key, value)` works on `account`'s history. Each key is computed once, at the call.

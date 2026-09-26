@@ -12,7 +12,7 @@ import "std/token/erc20.lithe";
 import "std/access/ownable.lithe";
 
 contract Token is {
-  external use ERC20 is {
+  use ERC20 exposing {
     view function balanceOf(account : address) : nat;
     function transfer(to : address; value : nat) : bool
       raises ERC20InvalidSender | ERC20InvalidReceiver | ERC20InsufficientBalance;
@@ -43,7 +43,7 @@ contract Token is {
 
 Every module follows the ordinary rules for [modules](/language/modules):
 
-- **Modules declare the standard interfaces; contracts choose what to expose.** A module's internal functions are `snake_case`, and its externals carry the standard's ABI names: `ERC20.balance_of` is internal, and `balanceOf` is an external of `IERC20`, which a token exposes with `external use ERC20 is IERC20`. A contract that needs different behavior writes its own entrypoint instead. `lithe stubs file.lithe ERC20` prints a module's whole block.
+- **Modules declare the standard interfaces; contracts choose what to expose.** A module's internal functions are `snake_case`, and its externals carry the standard's ABI names: `ERC20.balance_of` is internal, and `balanceOf` is an external of `IERC20`, which a token exposes with `use ERC20 exposing IERC20`, and announces through ERC-165 with `supports IERC20`. A contract that needs different behavior writes its own entrypoint instead, and exposes the rest with the interfaces the module's file declares for its parts, such as `IERC20Views`, `IOwnable`, and `IPausable`; only whole standards are in `std/interfaces`. `lithe stubs file.lithe ERC20` prints a module's whole block.
 - **Each module owns its storage**, at an ERC-7201 root named `lithe.std.<module>`: `lithe.std.erc20`, `lithe.std.ownable`, and so on. Contracts don't redeclare a module's schema, and two modules never collide.
 - **Extensions add behavior, and never change a base module silently.** A pause, a cap, or a fee is written in the contract's own `transfer`, around the module's pieces.
 - **Errors and events match OpenZeppelin's**, so wallets, explorers, and indexers decode them as they already do.
@@ -59,7 +59,13 @@ Every module follows the ordinary rules for [modules](/language/modules):
 | `std/token/erc20.lithe` | `ERC20` | [Tokens](/stdlib/tokens) |
 | `std/token/erc20_burnable.lithe` | `ERC20Burnable` | |
 | `std/token/erc20_permit.lithe` | `ERC20Permit` | |
+| `std/token/erc20_capped.lithe` | `ERC20Capped` | |
+| `std/token/erc20_votes.lithe` | `ERC20Votes` | |
+| `std/token/erc20_flash_mint.lithe` | `ERC20FlashMint` | |
 | `std/token/erc721.lithe` | `ERC721` | |
+| `std/token/erc721_enumerable.lithe` | `ERC721Enumerable` | |
+| `std/token/erc721_uri_storage.lithe` | `ERC721URIStorage` | |
+| `std/token/erc2981.lithe` | `ERC2981` | |
 | `std/collections/set.lithe` | `Set(T)` | [Collections](/stdlib/collections) |
 | `std/collections/set_enumerable.lithe` | `SetEnumerable(T)` | |
 | `std/collections/bitmap.lithe` | `Bitmap` | |
@@ -73,7 +79,7 @@ Every module follows the ordinary rules for [modules](/language/modules):
 | `std/utils/create2.lithe` | `Create2` | [Utilities](/stdlib/utils) |
 | `std/utils/nonce.lithe` | `Nonces` | |
 | `std/utils/checkpoint.lithe` | `Checkpoints` | |
-| `std/interfaces/*.lithe` | `IERC165`, `IERC20`, `IERC20Metadata`, `IERC20Permit`, `IERC721`, `IERC721Metadata`, `IERC721Receiver`, `IERC1155`, `IERC1155MetadataURI`, `IERC1155Receiver`, `IERC1271`, `IERC4626` | [Interfaces](/stdlib/interfaces) |
+| `std/interfaces/*.lithe` | `IERC165`, `IERC20`, `IERC20Metadata`, `IERC20Permit`, `IERC721`, `IERC721Metadata`, `IERC721Enumerable`, `IERC721Receiver`, `IERC1155`, `IERC1155MetadataURI`, `IERC1155Receiver`, `IERC1271`, `IERC2981`, `IERC3156FlashLender`, `IERC3156FlashBorrower`, `IERC4626`, `IERC6372`, `IVotes` | [Interfaces](/stdlib/interfaces) |
 
 ## What isn't here
 

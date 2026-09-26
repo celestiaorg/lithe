@@ -1,0 +1,366 @@
+(* Uniswap v2's pair: a constant-product market between two tokens, whose liquidity is
+   the standard library's ERC-20 with ERC-2612 permits. The reserves share one slot with
+   the time they were last updated, and the price accumulators wrap, as Uniswap's do.
+   factory.lithe creates one pair per two tokens.
+
+   Tokens go out before the pair checks what came in, so a swap can lend first: the
+   check runs in the continuation of the last call. Each entry point holds the lock until
+   its calls and their continuations finish. *)
+
+import "std/token/erc20_permit.lithe";
+import "std/math/math.lithe";
+import "./interfaces.lithe";
+
+contract UniswapV2Pair is {
+  use EIP712;
+  use ECDSA;
+  use Nonces;
+  use Math;
+
+  use ERC20 exposing IERC20, IERC20Metadata;
+  use ERC20Permit exposing IERC20Permit;
+  supports IERC20, IERC20Metadata, IERC20Permit;
+
+  (* One slot, written at once. *)
+  type reserves is record {
+    reserve0 : uint112;
+    reserve1 : uint112;
+    block_timestamp_last : uint32;
+  }
+
+  storage is record {
+    factory : IUniswapV2Factory;
+    token0 : Token;
+    token1 : Token;
+    reserves : reserves;
+    price0_cumulative_last : nat;
+    price1_cumulative_last : nat;
+    k_last : nat;
+  }
+
+  error Forbidden;
+  error Overflow;
+  error Insufficient_liquidity_minted;
+  error Insufficient_liquidity_burned;
+  error Insufficient_output_amount;
+  error Insufficient_liquidity;
+  error Invalid_to;
+  error Insufficient_input_amount;
+  error K;
+  error Transfer_failed;
+
+  event Mint of record {
+    indexed sender : address;
+    amount0 : nat;
+    amount1 : nat;
+  }
+
+  event Burn of record {
+    indexed sender : address;
+    amount0 : nat;
+    amount1 : nat;
+    indexed to : address;
+  }
+
+  event Swap of record {
+    indexed sender : address;
+    amount0In : nat;
+    amount1In : nat;
+    amount0Out : nat;
+    amount1Out : nat;
+    indexed to : address;
+  }
+
+  event Sync of record {
+    reserve0 : uint112;
+    reserve1 : uint112;
+  }
+
+  deploy() is {
+    ERC20.init("Uniswap V2", "UNI-V2");
+    EIP712.init("Uniswap V2", "1");
+    storage.factory := IUniswapV2Factory(Evm.sender());
+  }
+
+  (* Liquidity locked by the first deposit, so the pool never empties. It goes to an
+     address no one holds: the ERC-20 module keeps the zero address for mints and burns. *)
+  pure function minimum_liquidity() : nat is
+    1000n
+
+  pure function locked() : address is
+    0x000000000000000000000000000000000000dEaD
+
+  external pure function MINIMUM_LIQUIDITY() : nat is
+    minimum_liquidity()
+
+  external view function factory() : IUniswapV2Factory is
+    storage.factory
+
+  external view function token0() : Token is
+    storage.token0
+
+  external view function token1() : Token is
+    storage.token1
+
+  external view function getReserves() : (uint112, uint112, uint32) is
+    (storage.reserves.reserve0, storage.reserves.reserve1, storage.reserves.block_timestamp_last)
+
+  external view function price0CumulativeLast() : nat is
+    storage.price0_cumulative_last
+
+  external view function price1CumulativeLast() : nat is
+    storage.price1_cumulative_last
+
+  external view function kLast() : nat is
+    storage.k_last
+
+  external function initialize(const token0 : Token; const token1 : Token)
+    raises Forbidden
+  is {
+    assert(Evm.sender() = address(storage.factory), Forbidden);
+    storage.token0 := token0;
+    storage.token1 := token1;
+  }
+
+  function safe_transfer(const token : Token; const to : address; const value : nat) is {
+    defer token.transfer(to, value) then {
+      | Ok(ok : option(bool)) -> {
+          assert(ok <> Some(false), Transfer_failed);
+        }
+      | Error(_) -> {
+          fail Transfer_failed;
+        }
+    };
+  }
+
+  (* The reserves become the balances. On the first update in a block, each price, a
+     UQ112x112 fixed-point ratio of the reserves, accrues for the time since the last. *)
+  function update(const balance0 : nat; const balance1 : nat; const reserve0 : uint112; const reserve1 : uint112)
+    raises Overflow
+  is {
+    const most : uint112 := Nat.max;
+    assert(balance0 <= nat(most) and balance1 <= nat(most), Overflow);
+    const block_timestamp : uint32 := uint32(nat(Evm.block_timestamp()) % 4294967296n);
+    const time_elapsed : uint32 := Nat.wrapping_sub(block_timestamp, storage.reserves.block_timestamp_last);
+    if time_elapsed > 0 and reserve0 <> 0 and reserve1 <> 0 then {
+      storage.price0_cumulative_last := Nat.wrapping_add(
+        storage.price0_cumulative_last,
+        (nat(reserve1) << 112n) / nat(reserve0) * nat(time_elapsed)
+      );
+      storage.price1_cumulative_last := Nat.wrapping_add(
+        storage.price1_cumulative_last,
+        (nat(reserve0) << 112n) / nat(reserve1) * nat(time_elapsed)
+      );
+    }
+    storage.reserves := {
+      reserve0 = uint112(balance0);
+      reserve1 = uint112(balance1);
+      block_timestamp_last = block_timestamp;
+    };
+    emit Sync { reserve0 = storage.reserves.reserve0; reserve1 = storage.reserves.reserve1; };
+  }
+
+  (* With a fee recipient, mints it a sixth of the growth in sqrt(k) since the last
+     deposit or withdrawal. Without one, forgets k. *)
+  function mint_fee(const fee_to : address; const reserve0 : uint112; const reserve1 : uint112) : bool is {
+    const fee_on : bool := fee_to <> Address.zero;
+    const k_last : nat := storage.k_last;
+    if fee_on then {
+      if k_last <> 0n then {
+        const root_k : nat := Math.sqrt(nat(reserve0) * nat(reserve1));
+        const root_k_last : nat := Math.sqrt(k_last);
+        if root_k > root_k_last then {
+          const liquidity : nat := ERC20.total_supply() * (root_k - root_k_last)
+            / (root_k * 5n + root_k_last);
+          if liquidity > 0n then {
+            ERC20.mint(fee_to, liquidity);
+          }
+        }
+      }
+    } else {
+      if k_last <> 0n then {
+        storage.k_last := 0n;
+      }
+    }
+  } with fee_on
+
+  (* Mints liquidity for what was sent in since the last update. *)
+  external nonreentrant function mint(const to : address) : nat
+    raises Insufficient_liquidity_minted | Overflow | ERC20InvalidReceiver | ERC20InsufficientBalance
+  is {
+    const reserve0 : uint112 := storage.reserves.reserve0;
+    const reserve1 : uint112 := storage.reserves.reserve1;
+    const balance0 : nat := query storage.token0.balanceOf(Evm.self());
+    const balance1 : nat := query storage.token1.balanceOf(Evm.self());
+    const amount0 : nat := balance0 - nat(reserve0);
+    const amount1 : nat := balance1 - nat(reserve1);
+    const fee_on : bool := mint_fee(query storage.factory.feeTo(), reserve0, reserve1);
+    const total_supply : nat := ERC20.total_supply();
+    var liquidity : nat := 0n;
+    if total_supply = 0n then {
+      liquidity := Math.sqrt(amount0 * amount1) - minimum_liquidity();
+      ERC20.mint(locked(), minimum_liquidity());
+    } else {
+      liquidity := Math.min(amount0 * total_supply / nat(reserve0), amount1 * total_supply / nat(reserve1));
+    }
+    assert(liquidity > 0n, Insufficient_liquidity_minted);
+    ERC20.mint(to, liquidity);
+    update(balance0, balance1, reserve0, reserve1);
+    if fee_on then {
+      storage.k_last := nat(storage.reserves.reserve0) * nat(storage.reserves.reserve1);
+    }
+    emit Mint { sender = Evm.sender(); amount0 = amount0; amount1 = amount1; };
+  } with liquidity
+
+  (* Burns the liquidity sent in, and sends out its share of each token. *)
+  external nonreentrant function burn(const to : address) : (nat, nat)
+    raises Insufficient_liquidity_burned | Transfer_failed | Overflow | ERC20InvalidSender
+      | ERC20InvalidReceiver | ERC20InsufficientBalance
+  is {
+    const reserve0 : uint112 := storage.reserves.reserve0;
+    const reserve1 : uint112 := storage.reserves.reserve1;
+    const token0 : Token := storage.token0;
+    const token1 : Token := storage.token1;
+    const balance0 : nat := query token0.balanceOf(Evm.self());
+    const balance1 : nat := query token1.balanceOf(Evm.self());
+    const liquidity : nat := ERC20.balance_of(Evm.self());
+    const fee_on : bool := mint_fee(query storage.factory.feeTo(), reserve0, reserve1);
+    const total_supply : nat := ERC20.total_supply();
+    const amount0 : nat := liquidity * balance0 / total_supply;
+    const amount1 : nat := liquidity * balance1 / total_supply;
+    assert(amount0 > 0n and amount1 > 0n, Insufficient_liquidity_burned);
+    ERC20.burn(Evm.self(), liquidity);
+    safe_transfer(token0, to, amount0);
+    defer token1.transfer(to, amount1) then {
+      | Ok(ok : option(bool)) -> {
+          assert(ok <> Some(false), Transfer_failed);
+          update(query token0.balanceOf(Evm.self()), query token1.balanceOf(Evm.self()), reserve0, reserve1);
+          if fee_on then {
+            storage.k_last := nat(storage.reserves.reserve0) * nat(storage.reserves.reserve1);
+          }
+          emit Burn { sender = Evm.sender(); amount0 = amount0; amount1 = amount1; to = to; };
+        }
+      | Error(_) -> {
+          fail Transfer_failed;
+        }
+    };
+  } with (amount0, amount1)
+
+  (* What came in is what the balances hold beyond the reserves left after the outputs.
+     Less a 0.3% fee on it, the balances must keep k. *)
+  function settle_swap(
+    const balance0 : nat;
+    const balance1 : nat;
+    const amount0Out : nat;
+    const amount1Out : nat;
+    const to : address;
+    const reserve0 : uint112;
+    const reserve1 : uint112
+  )
+    raises Insufficient_input_amount | K | Overflow
+  is {
+    const left0 : nat := nat(reserve0) - amount0Out;
+    const left1 : nat := nat(reserve1) - amount1Out;
+    var amount0In : nat := 0n;
+    if balance0 > left0 then {
+      amount0In := balance0 - left0;
+    }
+    var amount1In : nat := 0n;
+    if balance1 > left1 then {
+      amount1In := balance1 - left1;
+    }
+    assert(amount0In > 0n or amount1In > 0n, Insufficient_input_amount);
+    const adjusted0 : nat := balance0 * 1000n - amount0In * 3n;
+    const adjusted1 : nat := balance1 * 1000n - amount1In * 3n;
+    assert(adjusted0 * adjusted1 >= nat(reserve0) * nat(reserve1) * 1000000n, K);
+    update(balance0, balance1, reserve0, reserve1);
+    emit Swap {
+      sender = Evm.sender();
+      amount0In = amount0In;
+      amount1In = amount1In;
+      amount0Out = amount0Out;
+      amount1Out = amount1Out;
+      to = to;
+    };
+  }
+
+  (* Sends the outputs, then, with data, calls `to` back, which may pay for them there.
+     The last of those calls settles. *)
+  external nonreentrant function swap(const amount0Out : nat; const amount1Out : nat; const to : address; const data : bytes)
+    raises Insufficient_output_amount | Insufficient_liquidity | Invalid_to | Insufficient_input_amount
+      | K | Transfer_failed | Overflow
+  is {
+    assert(amount0Out > 0n or amount1Out > 0n, Insufficient_output_amount);
+    const reserve0 : uint112 := storage.reserves.reserve0;
+    const reserve1 : uint112 := storage.reserves.reserve1;
+    assert(amount0Out < nat(reserve0) and amount1Out < nat(reserve1), Insufficient_liquidity);
+    const token0 : Token := storage.token0;
+    const token1 : Token := storage.token1;
+    assert(to <> address(token0) and to <> address(token1), Invalid_to);
+    if amount0Out > 0n and (amount1Out > 0n or data.length > 0n) then {
+      safe_transfer(token0, to, amount0Out);
+    }
+    if data.length > 0n then {
+      if amount1Out > 0n then {
+        safe_transfer(token1, to, amount1Out);
+      }
+      defer IUniswapV2Callee(to).uniswapV2Call(Evm.sender(), amount0Out, amount1Out, data) then {
+        settle_swap(
+          query token0.balanceOf(Evm.self()),
+          query token1.balanceOf(Evm.self()),
+          amount0Out,
+          amount1Out,
+          to,
+          reserve0,
+          reserve1
+        );
+      };
+    } else {
+      var last : Token := token0;
+      var amount : nat := amount0Out;
+      if amount1Out > 0n then {
+        last := token1;
+        amount := amount1Out;
+      }
+      defer last.transfer(to, amount) then {
+        | Ok(ok : option(bool)) -> {
+            assert(ok <> Some(false), Transfer_failed);
+            settle_swap(
+              query token0.balanceOf(Evm.self()),
+              query token1.balanceOf(Evm.self()),
+              amount0Out,
+              amount1Out,
+              to,
+              reserve0,
+              reserve1
+            );
+          }
+        | Error(_) -> {
+            fail Transfer_failed;
+          }
+      };
+    }
+  }
+
+  (* Sends `to` whatever the balances hold beyond the reserves. *)
+  external nonreentrant function skim(const to : address)
+    raises Transfer_failed
+  is {
+    const token0 : Token := storage.token0;
+    const token1 : Token := storage.token1;
+    safe_transfer(token0, to, query token0.balanceOf(Evm.self()) - nat(storage.reserves.reserve0));
+    safe_transfer(token1, to, query token1.balanceOf(Evm.self()) - nat(storage.reserves.reserve1));
+  }
+
+  (* Makes the reserves what the balances hold. *)
+  external nonreentrant function sync()
+    raises Overflow
+  is {
+    update(
+      query storage.token0.balanceOf(Evm.self()),
+      query storage.token1.balanceOf(Evm.self()),
+      storage.reserves.reserve0,
+      storage.reserves.reserve1
+    );
+  }
+}

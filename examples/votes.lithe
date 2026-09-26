@@ -32,13 +32,13 @@ module ERC20Votes is {
 }
 
 contract Token is {
-  external use ERC20 is {
+  use ERC20 exposing {
     function mint(account : address; amount : nat);
     view function balance_of(account : address) : nat;
     view function total() : nat;
   }
 
-  external use ERC20Votes is {
+  use ERC20Votes exposing {
     function delegate(account : address; delegatee : address);
   }
 

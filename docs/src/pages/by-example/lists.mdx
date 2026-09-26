@@ -21,6 +21,10 @@ external function append(const value : nat) is {
   storage.items[storage.items.length] := value;
 }
 
+external function drop() is {
+  List.pop(storage.items);
+}
+
 external view function get(const i : nat) : nat
   raises Out_of_range
 is {
@@ -45,5 +49,6 @@ external pure function count() : nat is {
 ```
 
 - Append by writing at index `length`. Any other index past the end reverts with `Panic(0x32)`.
+- `List.pop` drops the last element. An empty list reverts with `Panic(0x31)`.
 - `get` checks the bound itself, to raise a typed error instead of a panic.
 - Fixed lists can be ABI parameters (`address[3]`). Dynamic lists cannot yet.

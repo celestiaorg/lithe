@@ -1,0 +1,37 @@
+(* A URI per token, like OpenZeppelin's `ERC721URIStorageUpgradeable`: same storage and
+   ERC-4906 event. A token's URI is the base URI with its own suffix, or with its id when
+   it has none. *)
+
+module ERC721URIStorage is {
+  requires ERC721;
+
+  storage erc721_uri_storage at "openzeppelin.storage.ERC721URIStorage" is record {
+    tokenURIs : map(nat, string);
+  }
+
+  event MetadataUpdate of record {
+    tokenId : nat;
+  }
+
+  function set_token_uri(const tokenId : nat; const uri : string) is {
+    erc721_uri_storage.tokenURIs[tokenId] := uri;
+    emit MetadataUpdate {
+      tokenId = tokenId;
+    };
+  }
+
+  view function token_uri(const tokenId : nat; const base : string) : string
+    raises ERC721NonexistentToken
+  is {
+    const owner : address := ERC721.require_owned(tokenId);
+    const suffix : string := erc721_uri_storage.tokenURIs[tokenId];
+    var uri : string := suffix;
+    if base.length > 0n then {
+      if suffix.length > 0n then {
+        uri := String.concat(base, suffix);
+      } else {
+        uri := String.concat(base, Nat.to_string(tokenId));
+      }
+    }
+  } with uri
+}

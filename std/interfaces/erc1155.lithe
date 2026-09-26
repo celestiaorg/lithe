@@ -1,13 +1,45 @@
-(* ERC-1155 multi-tokens, their metadata URI, and the receiver callbacks. Each interface is
-   exactly its standard's functions, so its ERC-165 id is the standard's. *)
+(* ERC-1155 multi-tokens, their metadata URI, and the receiver callbacks, with the errors of
+   ERC-6093 that OpenZeppelin raises. Each interface is exactly its standard's functions,
+   so its ERC-165 id is the standard's: `0xd9b67a26` and `0x0e89341c`. *)
+
+error ERC1155InsufficientBalance of record {
+  sender : address;
+  balance : nat;
+  needed : nat;
+  tokenId : nat;
+}
+
+error ERC1155InvalidSender of address;
+
+error ERC1155InvalidReceiver of address;
+
+error ERC1155MissingApprovalForAll of record {
+  operator : address;
+  owner : address;
+}
+
+error ERC1155InvalidApprover of address;
+
+error ERC1155InvalidOperator of address;
+
+error ERC1155InvalidArrayLength of record {
+  idsLength : nat;
+  valuesLength : nat;
+}
 
 interface IERC1155 is {
   view function balanceOf(account : address; id : nat) : nat;
-  view function balanceOfBatch(accounts : list(address); ids : list(nat)) : list(nat);
+  view function balanceOfBatch(accounts : list(address); ids : list(nat)) : list(nat)
+    raises ERC1155InvalidArrayLength;
   view function isApprovedForAll(account : address; operator : address) : bool;
-  function setApprovalForAll(operator : address; approved : bool);
-  function safeTransferFrom(from : address; to : address; id : nat; value : nat; data : bytes);
-  function safeBatchTransferFrom(from : address; to : address; ids : list(nat); values : list(nat); data : bytes);
+  function setApprovalForAll(operator : address; approved : bool)
+    raises ERC1155InvalidApprover | ERC1155InvalidOperator;
+  function safeTransferFrom(from : address; to : address; id : nat; value : nat; data : bytes)
+    raises ERC1155MissingApprovalForAll | ERC1155InvalidReceiver | ERC1155InvalidSender
+      | ERC1155InvalidArrayLength | ERC1155InsufficientBalance;
+  function safeBatchTransferFrom(from : address; to : address; ids : list(nat); values : list(nat); data : bytes)
+    raises ERC1155MissingApprovalForAll | ERC1155InvalidReceiver | ERC1155InvalidSender
+      | ERC1155InvalidArrayLength | ERC1155InsufficientBalance;
 }
 
 interface IERC1155MetadataURI is {

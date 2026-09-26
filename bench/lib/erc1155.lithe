@@ -1,0 +1,237 @@
+(* The ERC-1155 core, like OpenZeppelin's `ERC1155Upgradeable`: same storage, errors,
+   events, and order of checks. Extensions compose these pieces explicitly. *)
+
+interface ERC1155Receiver is {
+  function onERC1155Received(operator : address; from : address; id : nat; value : nat; data : bytes) : bytes4;
+  function onERC1155BatchReceived(
+    operator : address;
+    from : address;
+    ids : list(nat);
+    values : list(nat);
+    data : bytes
+  ) : bytes4;
+}
+
+error ERC1155InsufficientBalance of record {
+  sender : address;
+  balance : nat;
+  needed : nat;
+  tokenId : nat;
+}
+
+error ERC1155InvalidSender of address;
+
+error ERC1155InvalidReceiver of address;
+
+error ERC1155MissingApprovalForAll of record {
+  operator : address;
+  owner : address;
+}
+
+error ERC1155InvalidApprover of address;
+
+error ERC1155InvalidOperator of address;
+
+error ERC1155InvalidArrayLength of record {
+  idsLength : nat;
+  valuesLength : nat;
+}
+
+module ERC1155 is {
+  storage erc1155 at "openzeppelin.storage.ERC1155" is record {
+    balances : map(nat, map(address, nat));
+    operatorApprovals : map(address, map(address, bool));
+    uri : string;
+  }
+
+  event TransferSingle of record {
+    indexed operator : address;
+    indexed from : address;
+    indexed to : address;
+    id : nat;
+    value : nat;
+  }
+
+  event TransferBatch of record {
+    indexed operator : address;
+    indexed from : address;
+    indexed to : address;
+    ids : list(nat);
+    values : list(nat);
+  }
+
+  event ApprovalForAll of record {
+    indexed account : address;
+    indexed operator : address;
+    approved : bool;
+  }
+
+  function set_uri(const newuri : string) is {
+    erc1155.uri := newuri;
+  }
+
+  (* One URI for every id; clients substitute the id for `{id}`. *)
+  external view function uri(const id : nat) : string is
+    erc1155.uri
+
+  external view function balanceOf(const account : address; const id : nat) : nat is
+    erc1155.balances[id][account]
+
+  external view function balanceOfBatch(const accounts : list(address); const ids : list(nat)) : list(nat)
+    raises ERC1155InvalidArrayLength
+  is {
+    assert(
+      accounts.length = ids.length,
+      ERC1155InvalidArrayLength { idsLength = ids.length; valuesLength = accounts.length; }
+    );
+    var balances : list(nat) := [];
+    for (i, account) : (nat, address) in accounts do {
+      balances[i] := erc1155.balances[ids[i]][account];
+    }
+  } with balances
+
+  external view function isApprovedForAll(const account : address; const operator : address) : bool is
+    erc1155.operatorApprovals[account][operator]
+
+  view function check_authorized(const operator : address; const owner : address)
+    raises ERC1155MissingApprovalForAll
+  is {
+    assert(
+      owner = operator or erc1155.operatorApprovals[owner][operator],
+      ERC1155MissingApprovalForAll { operator = operator; owner = owner; }
+    );
+  }
+
+  (* Moves, mints (`from` is zero), or burns (`to` is zero) each `values[i]` of `ids[i]`.
+     One id logs `TransferSingle`, any other count `TransferBatch`. *)
+  function update(const from : address; const to : address; const ids : list(nat); const values : list(nat))
+    raises ERC1155InvalidArrayLength | ERC1155InsufficientBalance
+  is {
+    assert(
+      ids.length = values.length,
+      ERC1155InvalidArrayLength { idsLength = ids.length; valuesLength = values.length; }
+    );
+    for (i, id) : (nat, nat) in ids do {
+      const value : nat := values[i];
+      if from <> Address.zero then {
+        const fromBalance : nat := erc1155.balances[id][from];
+        assert(
+          fromBalance >= value,
+          ERC1155InsufficientBalance { sender = from; balance = fromBalance; needed = value; tokenId = id; }
+        );
+        erc1155.balances[id][from] := fromBalance - value;
+      }
+      if to <> Address.zero then {
+        erc1155.balances[id][to] := erc1155.balances[id][to] + value;
+      }
+    }
+    if ids.length = 1n then {
+      emit TransferSingle {
+        operator = Evm.sender();
+        from = from;
+        to = to;
+        id = ids[0];
+        value = values[0];
+      };
+    } else {
+      emit TransferBatch {
+        operator = Evm.sender();
+        from = from;
+        to = to;
+        ids = ids;
+        values = values;
+      };
+    }
+  }
+
+  (* Like `ERC1155Utils.checkOnERC1155Received`: a contract receiver must answer with the
+     hook's selector. The call runs after the update's effects, as in Solidity. A receiver
+     that reverts without a reason is invalid; its own reason is passed on unchanged. A burn
+     has no receiver to ask. *)
+  function check_received(const from : address; const to : address; const id : nat; const value : nat; const data : bytes)
+    raises ERC1155InvalidReceiver
+  is {
+    if Evm.code_size(to) > 0n then {
+      const receiver : ERC1155Receiver := ERC1155Receiver(to);
+      defer receiver.onERC1155Received(Evm.sender(), from, id, value, data) then {
+        | Ok(answer : bytes4) -> {
+            assert(answer = 0xf23a6e61, ERC1155InvalidReceiver(to));
+          }
+        | Error(reason : bytes) -> {
+            if reason.length = 0n then {
+              fail ERC1155InvalidReceiver(to);
+            }
+            fail reason;
+          }
+      };
+    }
+  }
+
+  (* `checkOnERC1155BatchReceived`, which every batch asks, even of one id. *)
+  function check_batch_received(
+    const from : address;
+    const to : address;
+    const ids : list(nat);
+    const values : list(nat);
+    const data : bytes
+  )
+    raises ERC1155InvalidReceiver
+  is {
+    if Evm.code_size(to) > 0n then {
+      const receiver : ERC1155Receiver := ERC1155Receiver(to);
+      defer receiver.onERC1155BatchReceived(Evm.sender(), from, ids, values, data) then {
+        | Ok(answer : bytes4) -> {
+            assert(answer = 0xbc197c81, ERC1155InvalidReceiver(to));
+          }
+        | Error(reason : bytes) -> {
+            if reason.length = 0n then {
+              fail ERC1155InvalidReceiver(to);
+            }
+            fail reason;
+          }
+      };
+    }
+  }
+
+  function set_approval_for_all(const owner : address; const operator : address; const approved : bool)
+    raises ERC1155InvalidApprover | ERC1155InvalidOperator
+  is {
+    assert(owner <> Address.zero, ERC1155InvalidApprover(Address.zero));
+    assert(operator <> Address.zero, ERC1155InvalidOperator(Address.zero));
+    erc1155.operatorApprovals[owner][operator] := approved;
+    emit ApprovalForAll {
+      account = owner;
+      operator = operator;
+      approved = approved;
+    };
+  }
+}
+
+(* The whole standard, for `supports`. *)
+interface IERC1155 is {
+  view function balanceOf(account : address; id : nat) : nat;
+  view function balanceOfBatch(accounts : list(address); ids : list(nat)) : list(nat)
+    raises ERC1155InvalidArrayLength;
+  view function isApprovedForAll(account : address; operator : address) : bool;
+  function setApprovalForAll(operator : address; approved : bool)
+    raises ERC1155InvalidApprover | ERC1155InvalidOperator;
+  function safeTransferFrom(from : address; to : address; id : nat; value : nat; data : bytes)
+    raises ERC1155MissingApprovalForAll | ERC1155InvalidReceiver | ERC1155InvalidSender
+      | ERC1155InvalidArrayLength | ERC1155InsufficientBalance;
+  function safeBatchTransferFrom(from : address; to : address; ids : list(nat); values : list(nat); data : bytes)
+    raises ERC1155MissingApprovalForAll | ERC1155InvalidReceiver | ERC1155InvalidSender
+      | ERC1155InvalidArrayLength | ERC1155InsufficientBalance;
+}
+
+(* IERC1155's views. Transfers are each token's own, since its extensions hook every
+   balance update. *)
+interface IERC1155Views is {
+  view function balanceOf(account : address; id : nat) : nat;
+  view function balanceOfBatch(accounts : list(address); ids : list(nat)) : list(nat)
+    raises ERC1155InvalidArrayLength;
+  view function isApprovedForAll(account : address; operator : address) : bool;
+}
+
+interface IERC1155MetadataURI is {
+  view function uri(id : nat) : string;
+}

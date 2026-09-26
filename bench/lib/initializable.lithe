@@ -1,13 +1,13 @@
 (* One-time initialization, like OpenZeppelin's `Initializable` for a top-level
    `initializer`. The storage lives where OpenZeppelin keeps it. *)
 
+error InvalidInitialization;
+
 module Initializable is {
   storage initializable at "openzeppelin.storage.Initializable" is record {
     initialized : uint64;
     initializing : bool;
   }
-
-  error InvalidInitialization;
 
   event Initialized of record {
     version : uint64;

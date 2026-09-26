@@ -45,10 +45,12 @@ module Votes is {
     Tally.total(votes.by_topic)
 }
 
-external use Votes is {
+interface ITally is {
   function vote(topic : bytes32; weight : nat)
     raises Zero_weight;
   view function votes_of(voter : address) : nat;
   view function votes_for(topic : bytes32) : nat;
   view function total_votes() : nat;
 }
+
+use Votes exposing ITally;

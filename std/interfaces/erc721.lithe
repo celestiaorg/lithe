@@ -1,6 +1,7 @@
-(* ERC-721 tokens, their metadata extension, and the receiver callback, with the errors of
-   ERC-6093 that OpenZeppelin raises. Each interface is exactly its standard's functions,
-   so its ERC-165 id is the standard's: `0x80ac58cd` and `0x5b5e139f`. *)
+(* ERC-721 tokens, their metadata and enumeration extensions, and the receiver callback,
+   with the errors of ERC-6093 that OpenZeppelin raises. Each interface is exactly its
+   standard's functions, so its ERC-165 id is the standard's: `0x80ac58cd`, `0x5b5e139f`,
+   and `0x780e9d63`. *)
 
 error ERC721InvalidOwner of address;
 
@@ -53,6 +54,20 @@ interface IERC721Metadata is {
   view function symbol() : string;
   view function tokenURI(tokenId : nat) : string
     raises ERC721NonexistentToken;
+}
+
+(* OpenZeppelin's, for an index past the end of an enumeration. *)
+error ERC721OutOfBoundsIndex of record {
+  owner : address;
+  index : nat;
+}
+
+interface IERC721Enumerable is {
+  view function totalSupply() : nat;
+  view function tokenOfOwnerByIndex(owner : address; index : nat) : nat
+    raises ERC721InvalidOwner | ERC721OutOfBoundsIndex;
+  view function tokenByIndex(index : nat) : nat
+    raises ERC721OutOfBoundsIndex;
 }
 
 interface IERC721Receiver is {

@@ -1,19 +1,20 @@
 ---
 title: "Tokens"
-description: "ERC-20 with burning and permits, and ERC-721."
+description: "ERC-20 with burning, permits, a cap, votes, and flash loans, ERC-721 with enumeration, per-token URIs, and royalties, and ERC-1155 with supply tracking."
 ---
 
 # Tokens
 
 ## `ERC20`
 
-`std/token/erc20.lithe`. The ERC-20 standard, with OpenZeppelin's errors, events, and order of checks. The module's externals are the standard's, and a token exposes them by naming the standard's interfaces from [`std/interfaces`](/stdlib/interfaces). A contract that has an interface answers for it in [`supportsInterface`](/language/modules#erc-165):
+`std/token/erc20.lithe`. The ERC-20 standard, with OpenZeppelin's errors, events, and order of checks. The module's externals are the standard's, and a token exposes them by naming the standard's interfaces from [`std/interfaces`](/stdlib/interfaces), and announces them through ERC-165 with [`supports`](/language/modules#erc-165):
 
 ```lithe
 import "std/token/erc20.lithe";
 
 contract Token is {
-  external use ERC20 is IERC20, IERC20Metadata;
+  use ERC20 exposing IERC20, IERC20Metadata;
+  supports IERC20, IERC20Metadata;
 
   storage is record {
     minter : address;
@@ -40,7 +41,7 @@ contract Token is {
 | `approve_as(owner, spender, value, announce)` | sets an allowance, logging `Approval` if `announce` |
 | `spend_allowance(owner, spender, value)` | an allowance of `Nat.max` is never spent down |
 
-To add a rule, write the entrypoint yourself around `move` and `spend_allowance`:
+To add a rule, write the entrypoint yourself around `move` and `spend_allowance`, and expose the rest of `IERC20` as `IERC20Views`, its views, and `IERC20Approvals`, its `approve`, which the file declares:
 
 ```lithe fragment
 external function transfer(const to : address; const value : nat) : bool
@@ -51,9 +52,14 @@ is {
 } with true
 ```
 
+```lithe fragment
+use ERC20 exposing IERC20Metadata, IERC20Views, IERC20Approvals;
+supports IERC20, IERC20Metadata;
+```
+
 ## `ERC20Burnable`
 
-`std/token/erc20_burnable.lithe`. The externals `burn(value)` burns the caller's tokens, and `burnFrom(account, value)` spends an allowance to burn someone else's. The internal `burn` and `burn_from` do the same for a contract's own entrypoints.
+`std/token/erc20_burnable.lithe`. The externals, `IERC20Burnable`: `burn(value)` burns the caller's tokens, and `burnFrom(account, value)` spends an allowance to burn someone else's. The internal `burn` and `burn_from` do the same for a contract's own entrypoints.
 
 ## `ERC20Permit`
 
@@ -67,7 +73,7 @@ contract Token is {
   use ECDSA;
   use Nonces;
 
-  external use ERC20 is {
+  use ERC20 exposing {
     view function balanceOf(account : address) : nat;
     view function allowance(owner : address; spender : address) : nat;
     function transferFrom(from : address; to : address; value : nat) : bool
@@ -75,7 +81,7 @@ contract Token is {
         | ERC20InvalidSender | ERC20InvalidReceiver | ERC20InsufficientBalance;
   }
 
-  external use ERC20Permit is IERC20Permit;
+  use ERC20Permit exposing IERC20Permit;
 
   storage is record {
     supply_cap : nat;
@@ -88,6 +94,113 @@ contract Token is {
 }
 ```
 
+## `ERC20Capped`
+
+`std/token/erc20_capped.lithe`. A ceiling on the supply, like OpenZeppelin's `ERC20Capped`. `init(cap)` sets it once, usually from `deploy`, and a zero cap raises `ERC20InvalidCap`. Minting is the contract's own, so it checks the cap after each mint with `check(supply)`, which raises `ERC20ExceededCap`. The external is `cap()`, `IERC20Capped`.
+
+```lithe
+import "std/token/erc20_capped.lithe";
+
+contract Token is {
+  use ERC20 exposing IERC20, IERC20Metadata;
+
+  use ERC20Capped exposing IERC20Capped;
+
+  deploy()
+    raises ERC20InvalidCap
+  is {
+    ERC20.init("Token", "TKN");
+    ERC20Capped.init(1_000_000n);
+  }
+
+  external function mint(const to : address; const value : nat)
+    raises ERC20InvalidReceiver | ERC20InsufficientBalance | ERC20ExceededCap
+  is {
+    ERC20.mint(to, value);
+    ERC20Capped.check(ERC20.total_supply());
+  }
+}
+```
+
+## `ERC20Votes`
+
+`std/token/erc20_votes.lithe`. Voting power from balances, like OpenZeppelin's `ERC20Votes`: ERC-5805, with ERC-6372's clock in block numbers. A holder's balance counts as votes for the account it delegates to, itself included, and for no one until it delegates. Each delegate's votes and the total supply are [checkpointed](/stdlib/utils#checkpoints) by block, so a governor reads them as of a past block, and the supply is capped at what a checkpoint holds, `2^208 - 1`. Delegation can be signed off-chain, with [`EIP712`](/stdlib/crypto#eip712), [`ECDSA`](/stdlib/crypto#ecdsa), and [`Nonces`](/stdlib/utils#nonces), so a contract uses those, `Checkpoints`, and `Math` too. The storage is laid out as OpenZeppelin's `Votes`, under its own id.
+
+The votes follow every balance change that goes through the module's `update`, so a token with votes moves balances only through it. Its `transfer` and `transferFrom` externals, and its `move`, `mint`, and `burn`, all do. A token with rules of its own for a balance change, such as a pause or a cap, writes `ERC20.update`, its rules, then `transfer_voting_units`, in OpenZeppelin's order:
+
+```lithe
+import "std/token/erc20_votes.lithe";
+import "std/security/pausable.lithe";
+
+contract Token is {
+  use EIP712;
+  use ECDSA;
+  use Nonces;
+  use Checkpoints;
+  use Math;
+  use Pausable;
+
+  use ERC20 exposing IERC20Metadata, {
+    view function balanceOf(account : address) : nat;
+  }
+
+  use ERC20Votes exposing IERC6372, IVotes;
+
+  deploy() is {
+    ERC20.init("Token", "TKN");
+    EIP712.init("Token", "1");
+  }
+
+  function update(const from : address; const to : address; const value : nat)
+    raises EnforcedPause | ERC20InsufficientBalance | ERC20ExceededSafeSupply
+      | CheckpointUnorderedInsertion
+  is {
+    Pausable.require_not_paused();
+    ERC20.update(from, to, value);
+    ERC20Votes.transfer_voting_units(from, to, value);
+  }
+
+  external function transfer(const to : address; const value : nat) : bool
+    raises ERC20InvalidReceiver | EnforcedPause | ERC20InsufficientBalance
+      | ERC20ExceededSafeSupply | CheckpointUnorderedInsertion
+  is {
+    assert(to <> Address.zero, ERC20InvalidReceiver(Address.zero));
+    update(Evm.sender(), to, value);
+  } with true
+}
+```
+
+| Function | |
+| --- | --- |
+| `clock`, `CLOCK_MODE`, `getVotes`, `getPastVotes`, `getPastTotalSupply`, `delegates`, `delegate`, `delegateBySig` | ERC-5805's externals, `IERC6372` and `IVotes` |
+| `numCheckpoints(account)`, `checkpoints(account, pos)` | a delegate's history, oldest first, `IVotesCheckpoints` |
+| `transfer`, `transferFrom` | the standard's transfers, moving votes |
+| `get_votes(a)`, `get_past_votes(a, block)`, `get_past_total_supply(block)` | views; a block that isn't past yet raises `ERC5805FutureLookup` |
+| `delegate(account, delegatee)`, `delegate_by_sig(...)` | delegation, for a contract's own entrypoints |
+| `update(from, to, value)` | `ERC20.update`, then `transfer_voting_units` |
+| `transfer_voting_units(from, to, value)` | the votes and total follow a balance change; a mint past `2^208 - 1` raises `ERC20ExceededSafeSupply` |
+| `move`, `mint`, `burn` | as `ERC20`'s, through `update` |
+
+## `ERC20FlashMint`
+
+`std/token/erc20_flash_mint.lithe`. ERC-3156 flash loans of the token itself, like OpenZeppelin's `ERC20FlashMint`, with no fee. `flashLoan` mints the loan to the borrower, calls its `onFlashLoan` in a [deferred call](/language/effects), then, in the continuation, checks its answer, spends its allowance to the token, and burns the loan. A borrower's own failure passes through unchanged. The externals are ERC-3156's lender, `IERC3156FlashLender`:
+
+```lithe
+import "std/token/erc20_flash_mint.lithe";
+
+contract Token is {
+  use ERC20 exposing IERC20, IERC20Metadata;
+
+  use ERC20FlashMint exposing IERC3156FlashLender;
+
+  deploy() is {
+    ERC20.init("Token", "TKN");
+  }
+}
+```
+
+`flashLoan` mints and burns with `ERC20`. A token whose balance changes follow other rules, such as votes or a pause, writes its own `flashLoan` around `check_loan(token, amount)`, which returns the fee, and `repay(receiver, answer, amount, fee)`, with its own mint and burn, and exposes the rest as `IERC3156FlashLenderViews`. `examples/stdlib/governance_token.lithe` does, with roles, a pause, a cap, permits, and votes.
+
 ## `ERC721`
 
 `std/token/erc721.lithe`. The ERC-721 standard and its metadata extension, with OpenZeppelin's errors, events, and order of checks. The safe transfers and `safe_mint` call the receiver in a [deferred call](/language/effects), after the transfer's own effects, and pass on a receiver's revert reason unchanged.
@@ -96,7 +209,8 @@ contract Token is {
 import "std/token/erc721.lithe";
 
 contract Collection is {
-  external use ERC721 is IERC721, IERC721Metadata;
+  use ERC721 exposing IERC721, IERC721Metadata;
+  supports IERC721, IERC721Metadata;
 
   storage is record {
     next_id : nat;
@@ -116,4 +230,156 @@ contract Collection is {
 }
 ```
 
-`IERC721` has both `safeTransferFrom` overloads, one for each ABI signature, and a collection that has it and `IERC721Metadata` answers `supportsInterface` for `0x80ac58cd` and `0x5b5e139f`. `token_uri` checks that the token exists and answers the empty string, as OpenZeppelin's does without a base URI; a collection with URIs writes its own `tokenURI`.
+`IERC721` has both `safeTransferFrom` overloads, one for each ABI signature, and `supports` answers for it and `IERC721Metadata` with `0x80ac58cd` and `0x5b5e139f`. `token_uri` checks that the token exists and answers the empty string, as OpenZeppelin's does without a base URI; a collection with URIs writes its own `tokenURI`. A collection that writes its own transfers or `tokenURI` exposes the rest with the file's `IERC721Views`, `IERC721Name` (`name` and `symbol`), and `IERC721Approvals`, and still lists the standards in `supports`.
+
+## `ERC721Enumerable`
+
+`std/token/erc721_enumerable.lithe`. ERC-721's enumeration extension, `IERC721Enumerable`: every token, and each owner's tokens, by index, like OpenZeppelin's `ERC721Enumerable`. A token that leaves a list gives its place to the list's last token, so the order changes as tokens move.
+
+The lists follow the ownership changes that go through the module's own `update`, so an enumerable collection moves tokens only through `ERC721Enumerable`: it exposes the transfers from it rather than from `ERC721`, and mints and burns with its functions. `ERC721` still provides the rest of the standard:
+
+```lithe
+import "std/token/erc721_enumerable.lithe";
+
+contract Collection is {
+  use ERC721 exposing IERC721Metadata, {
+    view function balanceOf(owner : address) : nat
+      raises ERC721InvalidOwner;
+    view function ownerOf(tokenId : nat) : address
+      raises ERC721NonexistentToken;
+    view function getApproved(tokenId : nat) : address
+      raises ERC721NonexistentToken;
+    view function isApprovedForAll(owner : address; operator : address) : bool;
+    function approve(to : address; tokenId : nat)
+      raises ERC721NonexistentToken | ERC721InvalidApprover;
+    function setApprovalForAll(operator : address; approved : bool)
+      raises ERC721InvalidApprover | ERC721InvalidOperator;
+  }
+
+  use ERC721Enumerable exposing IERC721Enumerable, {
+    function transferFrom(from : address; to : address; tokenId : nat)
+      raises ERC721InvalidReceiver | ERC721IncorrectOwner | ERC721NonexistentToken
+        | ERC721InsufficientApproval;
+    function safeTransferFrom(from : address; to : address; tokenId : nat)
+      raises ERC721InvalidReceiver | ERC721IncorrectOwner | ERC721NonexistentToken
+        | ERC721InsufficientApproval;
+    function safeTransferFrom(from : address; to : address; tokenId : nat; data : bytes)
+      raises ERC721InvalidReceiver | ERC721IncorrectOwner | ERC721NonexistentToken
+        | ERC721InsufficientApproval;
+  }
+
+  storage is record {
+    next_id : nat;
+  }
+
+  deploy() is {
+    ERC721.init("Collection", "COL");
+  }
+
+  external function mint() : nat
+    raises ERC721InvalidReceiver | ERC721InvalidSender | ERC721NonexistentToken | ERC721InsufficientApproval
+  is {
+    const id : nat := storage.next_id;
+    storage.next_id := id + 1n;
+    ERC721Enumerable.safe_mint(Evm.sender(), id, "");
+  } with id
+}
+```
+
+| Function | |
+| --- | --- |
+| `totalSupply`, `tokenByIndex`, `tokenOfOwnerByIndex`, `transferFrom`, `safeTransferFrom` | the externals; an index past the end raises `ERC721OutOfBoundsIndex` |
+| `total_supply()`, `token_by_index(i)`, `token_of_owner_by_index(owner, i)` | views |
+| `update(to, tokenId, auth)` | `ERC721.update`, then the lists follow the token |
+| `transfer_from`, `safe_transfer_from`, `safe_transfer_from_with_data`, `mint`, `safe_mint`, `burn` | as `ERC721`'s, through `update` |
+
+## `ERC721URIStorage`
+
+`std/token/erc721_uri_storage.lithe`. A URI for each token, like OpenZeppelin's `ERC721URIStorage`. `token_uri(tokenId, base)` is the base with the token's own URI, the base with the token's id when it has none, or the token's own URI when the base is empty, and raises `ERC721NonexistentToken` for a token that doesn't exist. `set_token_uri(tokenId, uri)` logs ERC-4906's `MetadataUpdate`, and `announce_update(from, to)` its `BatchMetadataUpdate`, for a change to many tokens at once.
+
+ERC-4906's ERC-165 id, `0x49064906`, is fixed by the standard, not derived from functions, so a collection answers for it in its own `supportsInterface`, and for what its `supports` lists with [`Abi.supports_interface`](/language/modules#erc-165):
+
+```lithe fragment
+external view function tokenURI(const tokenId : nat) : string
+  raises ERC721NonexistentToken
+is
+  ERC721URIStorage.token_uri(tokenId, "ipfs://collection/")
+
+external pure function supportsInterface(const interfaceId : bytes4) : bool is
+  ERC721URIStorage.supports_interface(interfaceId) or Abi.supports_interface(interfaceId)
+```
+
+## `ERC2981`
+
+`std/token/erc2981.lithe`. NFT royalties, ERC-2981, like OpenZeppelin's `ERC2981`: a default royalty, and a royalty for a token that takes its place. A fee is a fraction of 10000, and the royalty on a sale is `salePrice * fee / 10000`, rounded down. Its external is `IERC2981`'s `royaltyInfo`, from `std/interfaces/erc2981.lithe`, which also declares the errors for a fee over 10000 or a zero receiver.
+
+| Function | |
+| --- | --- |
+| `royaltyInfo(tokenId, salePrice)` | the external: the receiver and the amount |
+| `royalty_info(tokenId, salePrice)` | the same, as a view |
+| `set_default_royalty(receiver, fee)`, `delete_default_royalty()` | |
+| `set_token_royalty(tokenId, receiver, fee)`, `reset_token_royalty(tokenId)` | a token's own royalty, and back to the default |
+
+`examples/stdlib/collectible.lithe` puts the three together with `Ownable` and `Pausable`: an enumerable collection with per-token URIs under a base, royalties, and an owner who mints, pauses, and sets royalties.
+
+## `ERC1155`
+
+`std/token/erc1155.lithe`. The ERC-1155 multi-token standard and its metadata URI extension, with OpenZeppelin's errors, events, and order of checks. One URI serves every id, and clients substitute the id for `{id}` in it; set it with `set_uri`, from `deploy` and whenever it changes. Every balance change goes through `update`, which logs `TransferSingle` for one id and `TransferBatch` for any other count. The safe transfers and mints call the receiver's `onERC1155Received`, or `onERC1155BatchReceived` for a batch even of one id, in a [deferred call](/language/effects) after the update's own effects, and pass on a receiver's revert reason unchanged. A burn asks no receiver.
+
+```lithe
+import "std/token/erc1155.lithe";
+import "std/access/ownable.lithe";
+
+contract Items is {
+  use Ownable;
+  use ERC1155 exposing IERC1155, IERC1155MetadataURI;
+  supports IERC1155, IERC1155MetadataURI;
+
+  deploy()
+    raises OwnableInvalidOwner
+  is {
+    ERC1155.set_uri("https://items.example/api/item/{id}.json");
+    Ownable.init(Evm.sender());
+  }
+
+  external function mint(const to : address; const id : nat; const value : nat; const data : bytes)
+    raises OwnableUnauthorizedAccount | ERC1155InvalidReceiver | ERC1155InvalidArrayLength
+      | ERC1155InsufficientBalance
+  is {
+    Ownable.check_owner();
+    ERC1155.mint(to, id, value, data);
+  }
+}
+```
+
+`supports` answers for `IERC1155` and `IERC1155MetadataURI` with `0xd9b67a26` and `0x0e89341c`.
+
+| Function | |
+| --- | --- |
+| `balanceOf`, `balanceOfBatch`, `isApprovedForAll`, `setApprovalForAll`, `safeTransferFrom`, `safeBatchTransferFrom`, `uri` | the standard's externals |
+| `set_uri(uri)`, `uri()` | the URI of every id |
+| `balance_of(account, id)`, `balance_of_batch(accounts, ids)`, `is_approved_for_all(account, operator)` | views |
+| `check_authorized(operator, owner)` | `operator` is `owner`, or approved for all of its tokens |
+| `update(from, to, ids, values)` | every balance change; `from` zero mints, `to` zero burns |
+| `check_received(from, to, id, value, data)`, `check_batch_received(from, to, ids, values, data)` | ask a contract receiver to accept |
+| `move(from, to, ids, values)` | a checked transfer between two accounts, asking no receiver |
+| `safe_transfer_from`, `safe_batch_transfer_from` | what the standard's transfers do, for a contract's own entrypoints to call |
+| `mint(to, id, value, data)`, `mint_batch(to, ids, values, data)` | mint, then ask the receiver |
+| `burn(from, id, value)`, `burn_batch(from, ids, values)` | |
+| `approve_all_as(owner, operator, approved)`, `set_approval_for_all(operator, approved)` | |
+
+To burn as OpenZeppelin's `ERC1155Burnable` does, a contract writes the entrypoint around `check_authorized`:
+
+```lithe fragment
+external function burn(const account : address; const id : nat; const value : nat)
+  raises ERC1155MissingApprovalForAll | ERC1155InvalidSender | ERC1155InvalidArrayLength
+    | ERC1155InsufficientBalance
+is {
+  ERC1155.check_authorized(Evm.sender(), account);
+  ERC1155.burn(account, id, value);
+}
+```
+
+## `ERC1155Supply`
+
+`std/token/erc1155_supply.lithe`. Each id's total supply and the total of every id, like OpenZeppelin's `ERC1155Supply`. Only mints and burns change a supply, so a contract mints and burns with this module's `mint`, `mint_batch`, `burn`, and `burn_batch`, which go through its `update`, and transfers with `ERC1155`'s. Its externals are `IERC1155Supply`: `totalSupply(id)`, `totalSupply()`, and `exists(id)`; the views `total_supply(id)`, `total_supply_all()`, and `exists(id)` answer the same inside the contract. `examples/stdlib/multi_token.lithe` is a collection built on both.

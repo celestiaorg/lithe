@@ -1,0 +1,113 @@
+(* Role-based access control, like OpenZeppelin's `AccessControlUpgradeable`. Each role
+   has its members and an admin role whose members grant and revoke it; the default admin
+   role is zero and administers itself. *)
+
+error AccessControlUnauthorizedAccount of record {
+  account : address;
+  neededRole : bytes32;
+}
+
+error AccessControlBadConfirmation;
+
+module AccessControl is {
+  type roleData is record {
+    hasRole : map(address, bool);
+    adminRole : bytes32;
+  }
+
+  storage access at "openzeppelin.storage.AccessControl" is record {
+    roles : map(bytes32, roleData);
+  }
+
+  event RoleAdminChanged of record {
+    indexed role : bytes32;
+    indexed previousAdminRole : bytes32;
+    indexed newAdminRole : bytes32;
+  }
+
+  event RoleGranted of record {
+    indexed role : bytes32;
+    indexed account : address;
+    indexed sender : address;
+  }
+
+  event RoleRevoked of record {
+    indexed role : bytes32;
+    indexed account : address;
+    indexed sender : address;
+  }
+
+  pure function default_admin_role() : bytes32 is
+    0x0000000000000000000000000000000000000000000000000000000000000000
+
+  external view function hasRole(const role : bytes32; const account : address) : bool is
+    access.roles[role].hasRole[account]
+
+  external view function getRoleAdmin(const role : bytes32) : bytes32 is
+    access.roles[role].adminRole
+
+  view function check_role(const role : bytes32)
+    raises AccessControlUnauthorizedAccount
+  is {
+    assert(
+      access.roles[role].hasRole[Evm.sender()],
+      AccessControlUnauthorizedAccount { account = Evm.sender(); neededRole = role; }
+    );
+  }
+
+  (* Granting a role an account already has changes nothing and logs nothing. *)
+  function grant(const role : bytes32; const account : address) is {
+    if not access.roles[role].hasRole[account] then {
+      access.roles[role].hasRole[account] := true;
+      emit RoleGranted {
+        role = role;
+        account = account;
+        sender = Evm.sender();
+      };
+    }
+  }
+
+  function revoke(const role : bytes32; const account : address) is {
+    if access.roles[role].hasRole[account] then {
+      access.roles[role].hasRole[account] := false;
+      emit RoleRevoked {
+        role = role;
+        account = account;
+        sender = Evm.sender();
+      };
+    }
+  }
+
+  external function grantRole(const role : bytes32; const account : address)
+    raises AccessControlUnauthorizedAccount
+  is {
+    check_role(access.roles[role].adminRole);
+    grant(role, account);
+  }
+
+  external function revokeRole(const role : bytes32; const account : address)
+    raises AccessControlUnauthorizedAccount
+  is {
+    check_role(access.roles[role].adminRole);
+    revoke(role, account);
+  }
+
+  (* `callerConfirmation` must be the caller, so a role can't be renounced by mistake. *)
+  external function renounceRole(const role : bytes32; const callerConfirmation : address)
+    raises AccessControlBadConfirmation
+  is {
+    assert(callerConfirmation = Evm.sender(), AccessControlBadConfirmation);
+    revoke(role, callerConfirmation);
+  }
+}
+
+interface IAccessControl is {
+  view function hasRole(role : bytes32; account : address) : bool;
+  view function getRoleAdmin(role : bytes32) : bytes32;
+  function grantRole(role : bytes32; account : address)
+    raises AccessControlUnauthorizedAccount;
+  function revokeRole(role : bytes32; account : address)
+    raises AccessControlUnauthorizedAccount;
+  function renounceRole(role : bytes32; callerConfirmation : address)
+    raises AccessControlBadConfirmation;
+}

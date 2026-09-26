@@ -16,31 +16,23 @@
        ...
      }
 
-     external use AccessControl is {
-       view function hasRole(role : role; account : address) : bool;
-       view function getRoleAdmin(role : role) : role;
-       function grantRole(role : role; account : address)
-         raises AccessControlUnauthorizedAccount;
-       function revokeRole(role : role; account : address)
-         raises AccessControlUnauthorizedAccount;
-       function renounceRole(role : role; callerConfirmation : address)
-         raises AccessControlBadConfirmation;
-     } *)
+     use AccessControl exposing IAccessControl;
+     supports IAccessControl; *)
+
+type role is bytes32;
+
+error AccessControlUnauthorizedAccount of record {
+  account : address;
+  neededRole : bytes32;
+}
+
+error AccessControlBadConfirmation;
 
 module AccessControl is {
-  type role is bytes32;
-
   storage access at "lithe.std.access_control" is record {
     members : map(role, map(address, bool));
     admins : map(role, role);
   }
-
-  error AccessControlUnauthorizedAccount of record {
-    account : address;
-    neededRole : bytes32;
-  }
-
-  error AccessControlBadConfirmation;
 
   event RoleAdminChanged of record {
     indexed role : bytes32;
@@ -161,4 +153,17 @@ module AccessControl is {
     raises AccessControlBadConfirmation
   is
     renounce_role(role, callerConfirmation)
+}
+
+(* OpenZeppelin's `IAccessControl`. A `role` is a `bytes32` in the ABI, so its ERC-165 id is
+   OpenZeppelin's, `0x7965db0b`. *)
+interface IAccessControl is {
+  view function hasRole(role : role; account : address) : bool;
+  view function getRoleAdmin(role : role) : role;
+  function grantRole(role : role; account : address)
+    raises AccessControlUnauthorizedAccount;
+  function revokeRole(role : role; account : address)
+    raises AccessControlUnauthorizedAccount;
+  function renounceRole(role : role; callerConfirmation : address)
+    raises AccessControlBadConfirmation;
 }

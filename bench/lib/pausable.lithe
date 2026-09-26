@@ -1,12 +1,13 @@
 (* An emergency stop, like OpenZeppelin's `PausableUpgradeable`. *)
 
+error EnforcedPause;
+
+error ExpectedPause;
+
 module Pausable is {
   storage pausable at "openzeppelin.storage.Pausable" is record {
     paused : bool;
   }
-
-  error EnforcedPause;
-  error ExpectedPause;
 
   event Paused of record {
     account : address;
@@ -44,4 +45,8 @@ module Pausable is {
       account = Evm.sender();
     };
   }
+}
+
+interface IPausable is {
+  view function paused() : bool;
 }

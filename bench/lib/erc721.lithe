@@ -5,6 +5,29 @@ interface ERC721Receiver is {
   function onERC721Received(operator : address; from : address; tokenId : nat; data : bytes) : bytes4;
 }
 
+error ERC721InvalidOwner of address;
+
+error ERC721NonexistentToken of nat;
+
+error ERC721IncorrectOwner of record {
+  sender : address;
+  tokenId : nat;
+  owner : address;
+}
+
+error ERC721InvalidSender of address;
+
+error ERC721InvalidReceiver of address;
+
+error ERC721InsufficientApproval of record {
+  operator : address;
+  tokenId : nat;
+}
+
+error ERC721InvalidApprover of address;
+
+error ERC721InvalidOperator of address;
+
 module ERC721 is {
   storage erc721 at "openzeppelin.storage.ERC721" is record {
     name : string;
@@ -14,26 +37,6 @@ module ERC721 is {
     tokenApprovals : map(nat, address);
     operatorApprovals : map(address, map(address, bool));
   }
-
-  error ERC721InvalidOwner of address;
-  error ERC721NonexistentToken of nat;
-
-  error ERC721IncorrectOwner of record {
-    sender : address;
-    tokenId : nat;
-    owner : address;
-  }
-
-  error ERC721InvalidSender of address;
-  error ERC721InvalidReceiver of address;
-
-  error ERC721InsufficientApproval of record {
-    operator : address;
-    tokenId : nat;
-  }
-
-  error ERC721InvalidApprover of address;
-  error ERC721InvalidOperator of address;
 
   event Transfer of record {
     indexed from : address;
@@ -57,10 +60,6 @@ module ERC721 is {
     erc721.name := n;
     erc721.symbol := s;
   }
-
-  (* ERC-721, its metadata extension, and ERC-165 itself. *)
-  external pure function supportsInterface(const interfaceId : bytes4) : bool is
-    (interfaceId = 0x80ac58cd) or (interfaceId = 0x5b5e139f) or (interfaceId = 0x01ffc9a7)
 
   external view function balanceOf(const owner : address) : nat
     raises ERC721InvalidOwner
@@ -195,4 +194,53 @@ module ERC721 is {
       };
     }
   }
+}
+
+(* The whole standard, for `supports`. *)
+interface IERC721 is {
+  view function balanceOf(owner : address) : nat
+    raises ERC721InvalidOwner;
+  view function ownerOf(tokenId : nat) : address
+    raises ERC721NonexistentToken;
+  view function getApproved(tokenId : nat) : address
+    raises ERC721NonexistentToken;
+  view function isApprovedForAll(owner : address; operator : address) : bool;
+  function approve(to : address; tokenId : nat)
+    raises ERC721NonexistentToken | ERC721InvalidApprover;
+  function setApprovalForAll(operator : address; approved : bool)
+    raises ERC721InvalidApprover | ERC721InvalidOperator;
+  function transferFrom(from : address; to : address; tokenId : nat)
+    raises ERC721InvalidReceiver | ERC721IncorrectOwner | ERC721NonexistentToken
+      | ERC721InsufficientApproval;
+  function safeTransferFrom(from : address; to : address; tokenId : nat)
+    raises ERC721InvalidReceiver | ERC721IncorrectOwner | ERC721NonexistentToken
+      | ERC721InsufficientApproval;
+  function safeTransferFrom(from : address; to : address; tokenId : nat; data : bytes)
+    raises ERC721InvalidReceiver | ERC721IncorrectOwner | ERC721NonexistentToken
+      | ERC721InsufficientApproval;
+}
+
+(* IERC721's views. Transfers are each token's own, since its extensions hook every
+   ownership update. *)
+interface IERC721Views is {
+  view function balanceOf(owner : address) : nat
+    raises ERC721InvalidOwner;
+  view function ownerOf(tokenId : nat) : address
+    raises ERC721NonexistentToken;
+  view function getApproved(tokenId : nat) : address
+    raises ERC721NonexistentToken;
+  view function isApprovedForAll(owner : address; operator : address) : bool;
+}
+
+(* IERC721Metadata without `tokenURI`, for a token that builds its own URIs. *)
+interface IERC721Name is {
+  view function name() : string;
+  view function symbol() : string;
+}
+
+interface IERC721Metadata is {
+  view function name() : string;
+  view function symbol() : string;
+  view function tokenURI(tokenId : nat) : string
+    raises ERC721NonexistentToken;
 }

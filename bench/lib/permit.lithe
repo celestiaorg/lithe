@@ -1,0 +1,69 @@
+(* ERC-2612 approvals by signature, like OpenZeppelin's `ERC20PermitUpgradeable`. *)
+
+import "std/crypto/ecdsa.lithe";
+import "./erc20.lithe";
+import "./eip712.lithe";
+import "./nonces.lithe";
+
+error ERC2612ExpiredSignature of nat;
+
+error ERC2612InvalidSigner of record {
+  signer : address;
+  owner : address;
+}
+
+module ERC20Permit is {
+  requires ERC20;
+  requires EIP712;
+  requires ECDSA;
+  requires Nonces;
+
+  (* keccak256("Permit(address owner,address spender,uint256 value,uint256 nonce,uint256 deadline)") *)
+  external function permit(
+    const owner : address;
+    const spender : address;
+    const value : nat;
+    const deadline : nat;
+    const v : uint8;
+    const r : bytes32;
+    const s : bytes32
+  )
+    raises ERC2612ExpiredSignature | ECDSAInvalidSignature | ECDSAInvalidSignatureS
+      | ERC2612InvalidSigner | ERC20InvalidApprover | ERC20InvalidSpender
+  is {
+    assert(nat(Evm.block_timestamp()) <= deadline, ERC2612ExpiredSignature(deadline));
+    const struct_hash : bytes32 := Crypto.keccak256(Abi.encode(
+      0x6e71edae12b1b97f4d1f60370fef10105fa2faae0126114a169c64845d6126c9,
+      owner,
+      spender,
+      value,
+      Nonces.use_nonce(owner),
+      deadline
+    ));
+    const signer : address := ECDSA.recover(EIP712.hash_typed_data(struct_hash), v, r, s);
+    assert(signer = owner, ERC2612InvalidSigner { signer = signer; owner = owner; });
+    ERC20.approve_as(owner, spender, value, true);
+  }
+
+  external view function nonces(const owner : address) : nat is
+    Nonces.nonce_state.nonces[owner]
+
+  external view function DOMAIN_SEPARATOR() : bytes32 is
+    EIP712.domain_separator()
+}
+
+interface IERC20Permit is {
+  function permit(
+    owner : address;
+    spender : address;
+    value : nat;
+    deadline : nat;
+    v : uint8;
+    r : bytes32;
+    s : bytes32
+  )
+    raises ERC2612ExpiredSignature | ECDSAInvalidSignature | ECDSAInvalidSignatureS
+      | ERC2612InvalidSigner | ERC20InvalidApprover | ERC20InvalidSpender;
+  view function nonces(owner : address) : nat;
+  view function DOMAIN_SEPARATOR() : bytes32;
+}

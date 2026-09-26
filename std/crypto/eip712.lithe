@@ -12,7 +12,7 @@
 
    and exposes the domain separator for signers:
 
-     external use EIP712 is {
+     use EIP712 exposing {
        view function DOMAIN_SEPARATOR() : bytes32;
      } *)
 

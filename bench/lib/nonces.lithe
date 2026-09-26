@@ -1,0 +1,28 @@
+(* Per-account counters for replay protection, like OpenZeppelin's `NoncesUpgradeable`. *)
+
+error InvalidAccountNonce of record {
+  account : address;
+  currentNonce : nat;
+}
+
+module Nonces is {
+  storage nonce_state at "openzeppelin.storage.Nonces" is record {
+    nonces : map(address, nat);
+  }
+
+  external view function nonces(const owner : address) : nat is
+    nonce_state.nonces[owner]
+
+  (* Returns the current nonce and moves the counter on. *)
+  function use_nonce(const owner : address) : nat is {
+    const current : nat := nonce_state.nonces[owner];
+    nonce_state.nonces[owner] := current + 1n;
+  } with current
+
+  function use_checked_nonce(const owner : address; const nonce : nat)
+    raises InvalidAccountNonce
+  is {
+    const current : nat := use_nonce(owner);
+    assert(nonce = current, InvalidAccountNonce { account = owner; currentNonce = current; });
+  }
+}

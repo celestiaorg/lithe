@@ -7,7 +7,7 @@ description: "CREATE2 addresses, nonces, and checkpointed history."
 
 ## `Create2`
 
-`std/utils/create2.lithe`. `compute_address(salt, init_code_hash, deployer)` is where a `CREATE2` from `deployer` lands, and `compute_address_here(salt, init_code_hash)` is where [`defer create`](/language/effects#create) with that salt would put a contract from this one. `init_code_hash` is the hash of the created contract's creation code, with its [`deploy`](/language/deploy) arguments appended.
+`std/utils/create2.lithe`. `compute_address(salt, init_code_hash, deployer)` is where a `CREATE2` from `deployer` lands, and `compute_address_here(salt, init_code_hash)` is where [`defer create`](/language/effects#create) with that salt would put a contract from this one. `init_code_hash` is the hash of the created contract's creation code, with its [`deploy`](/language/deploy) arguments appended: `Crypto.keccak256(Evm.creation_code(C))` for a contract `C` without arguments, a constant.
 
 ## `Nonces`
 
@@ -21,12 +21,13 @@ description: "CREATE2 addresses, nonces, and checkpointed history."
 
 ## `Checkpoints`
 
-`std/utils/checkpoint.lithe`. A history of values, each from a key onward, such as a block number or a timestamp: voting power, balances at a snapshot, or any value you need to read as of the past. A `trace` holds `checkpoint`s of a `uint48` key and a `uint208` value, one per storage slot.
+`std/utils/checkpoint.lithe`. A history of values, each from a key onward, such as a block number or a timestamp: voting power, balances at a snapshot, or any value you need to read as of the past. A `trace` holds a list of `checkpoint`s, each a `uint48` key and a `uint208` value in one storage slot, laid out as OpenZeppelin's `Checkpoints.Trace208`. A trace can be a storage field or a map's value, and each function takes either: `Checkpoints.latest(storage.votes[account])`.
 
 ```lithe
 import "std/utils/checkpoint.lithe";
 
 contract Supply is {
+  use Math;
   use Checkpoints;
 
   storage is record {
@@ -52,5 +53,6 @@ A lookup is a binary search over the sorted history, so it costs a few reads how
 | --- | --- |
 | `push(history, key, value)` | keys must not go down; a second push at the newest key replaces its value |
 | `latest(history)` | the newest value, or zero |
-| `length(history)`, `at(history, i)` | the checkpoints, oldest first |
+| `length(history)`, `at(history, i)` | the checkpoints, oldest first; `at` past the end panics, as a list index does |
 | `upper_lookup(history, key)` | the value as of `key`: the last checkpoint at or before it, or zero |
+| `upper_lookup_recent(history, key)` | the same, faster for a recent key: it checks the newest square root of the history first |

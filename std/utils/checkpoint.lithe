@@ -1,43 +1,45 @@
 (* A history of values, each from a key onward: a block number or a timestamp. Pushes
    come in key order, so the history is sorted, and a lookup finds the value as of a
-   key by binary search.
+   key by binary search. A `trace` is laid out as OpenZeppelin's `Checkpoints.Trace208`:
+   a list of checkpoints, each a `uint48` key and a `uint208` value in one slot.
 
      storage is record {
        supply : trace;
+       votes : map(address, trace);
      }
 
      Checkpoints.push(storage.supply, uint48(Evm.block_number()), uint208(total));
-     const then : uint208 := Checkpoints.upper_lookup(storage.supply, uint48(block)); *)
+     const then : uint208 := Checkpoints.upper_lookup(storage.votes[account], uint48(block)); *)
+
+import "std/math/math.lithe";
+
+error CheckpointUnorderedInsertion;
+
+type checkpoint is record {
+  key : uint48;
+  value : uint208;
+}
 
 module Checkpoints is {
-  type checkpoint is record {
-    key : uint48;
-    value : uint208;
-  }
+  requires Math;
 
-  (* Each checkpoint packs into one slot, as OpenZeppelin's `Checkpoint208` does. *)
   type trace is record {
-    items : map(nat, checkpoint);
-    count : nat;
+    checkpoints : list(checkpoint);
   }
-
-  error CheckpointUnorderedInsertion;
-  error CheckpointOutOfBounds of nat;
 
   view function length(const history : trace) : nat is
-    history.count
+    history.checkpoints.length
 
-  view function at(const history : trace; const index : nat) : checkpoint
-    raises CheckpointOutOfBounds
-  is {
-    assert(index < history.count, CheckpointOutOfBounds(index));
-  } with history.items[index]
+  (* Panics past the end, as a list index does. *)
+  view function at(const history : trace; const index : nat) : checkpoint is
+    history.checkpoints[index]
 
   (* The newest value, or zero before the first push. *)
   view function latest(const history : trace) : uint208 is {
+    const count : nat := history.checkpoints.length;
     var value : uint208 := 0;
-    if history.count > 0n then {
-      value := history.items[history.count - 1n].value;
+    if count > 0n then {
+      value := history.checkpoints[count - 1n].value;
     }
   } with value
 
@@ -45,35 +47,63 @@ module Checkpoints is {
   function push(const history : trace; const key : uint48; const value : uint208)
     raises CheckpointUnorderedInsertion
   is {
-    const count : nat := history.count;
-    if count > 0n and history.items[count - 1n].key = key then {
-      history.items[count - 1n].value := value;
+    const count : nat := history.checkpoints.length;
+    var replace : bool := false;
+    if count > 0n then {
+      const last : checkpoint := history.checkpoints[count - 1n];
+      assert(last.key <= key, CheckpointUnorderedInsertion);
+      replace := last.key = key;
+    }
+    if replace then {
+      history.checkpoints[count - 1n].value := value;
     } else {
-      if count > 0n then {
-        assert(history.items[count - 1n].key < key, CheckpointUnorderedInsertion);
-      }
-      history.items[count] := { key = key; value = value; };
-      history.count := count + 1n;
+      history.checkpoints[count] := { key = key; value = value; };
     }
   }
 
+  (* The first checkpoint in `[low, high)` after `key`, or `high`. The halving ends
+     within 256 steps for any count. *)
+  view function upper_search(const history : trace; const key : uint48; const low : nat; const high : nat) : nat is {
+    var lo : nat := low;
+    var hi : nat := high;
+    for _ : nat in 0n .. 256n until lo = hi do {
+      const mid : nat := (lo + hi) / 2n;
+      if history.checkpoints[mid].key > key then {
+        hi := mid;
+      } else {
+        lo := mid + 1n;
+      }
+    }
+  } with hi
+
   (* The value as of `key`: that of the last checkpoint at or before it, or zero if there
-     is none. A binary search over the sorted history: `low` is the first checkpoint that
-     might be after `key`, so the halving ends within 256 steps for any count. *)
+     is none. *)
   view function upper_lookup(const history : trace; const key : uint48) : uint208 is {
+    const pos : nat := upper_search(history, key, 0n, history.checkpoints.length);
+    var value : uint208 := 0;
+    if pos > 0n then {
+      value := history.checkpoints[pos - 1n].value;
+    }
+  } with value
+
+  (* `upper_lookup` for a key that is likely recent: it first checks the last square root
+     of the history, then searches only the part the key is in. *)
+  view function upper_lookup_recent(const history : trace; const key : uint48) : uint208 is {
+    const count : nat := history.checkpoints.length;
     var low : nat := 0n;
-    var high : nat := history.count;
-    for _ : nat in 0n .. 256n until low = high do {
-      const mid : nat := (low + high) / 2n;
-      if history.items[mid].key > key then {
+    var high : nat := count;
+    if count > 5n then {
+      const mid : nat := count - Math.sqrt(count);
+      if key < history.checkpoints[mid].key then {
         high := mid;
       } else {
         low := mid + 1n;
       }
     }
+    const pos : nat := upper_search(history, key, low, high);
     var value : uint208 := 0;
-    if low > 0n then {
-      value := history.items[low - 1n].value;
+    if pos > 0n then {
+      value := history.checkpoints[pos - 1n].value;
     }
   } with value
 }

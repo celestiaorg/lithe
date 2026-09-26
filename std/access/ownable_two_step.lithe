@@ -3,16 +3,7 @@
    OpenZeppelin's `Ownable2Step`, whose whole interface this module exposes:
 
      use Ownable;
-     external use Ownable2Step is {
-       view function owner() : address;
-       view function pendingOwner() : address;
-       function transferOwnership(newOwner : address)
-         raises OwnableUnauthorizedAccount;
-       function acceptOwnership()
-         raises OwnableUnauthorizedAccount;
-       function renounceOwnership()
-         raises OwnableUnauthorizedAccount;
-     } *)
+     use Ownable2Step exposing IOwnable2Step; *)
 
 import "std/access/ownable.lithe";
 
@@ -79,4 +70,15 @@ module Ownable2Step is {
     raises OwnableUnauthorizedAccount
   is
     renounce_ownership()
+}
+
+interface IOwnable2Step is {
+  view function owner() : address;
+  view function pendingOwner() : address;
+  function transferOwnership(newOwner : address)
+    raises OwnableUnauthorizedAccount;
+  function acceptOwnership()
+    raises OwnableUnauthorizedAccount;
+  function renounceOwnership()
+    raises OwnableUnauthorizedAccount;
 }

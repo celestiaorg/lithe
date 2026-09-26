@@ -1,0 +1,59 @@
+(* An ERC-1155 collection of game items from the standard library, with supply tracking.
+   The owner mints and sets the URI; holders, and operators they approve, burn. *)
+
+import "std/token/erc1155_supply.lithe";
+import "std/access/ownable.lithe";
+
+contract Items is {
+  use ERC1155 exposing IERC1155, IERC1155MetadataURI;
+  use ERC1155Supply exposing IERC1155Supply;
+  use Ownable exposing IOwnable;
+
+  supports IERC1155, IERC1155MetadataURI;
+
+  deploy()
+    raises OwnableInvalidOwner
+  is {
+    ERC1155.set_uri("https://items.example/api/item/{id}.json");
+    Ownable.init(Evm.sender());
+  }
+
+  external function mint(const to : address; const id : nat; const value : nat; const data : bytes)
+    raises OwnableUnauthorizedAccount | ERC1155InvalidReceiver | ERC1155InvalidArrayLength
+      | ERC1155InsufficientBalance
+  is {
+    Ownable.check_owner();
+    ERC1155Supply.mint(to, id, value, data);
+  }
+
+  external function mintBatch(const to : address; const ids : list(nat); const values : list(nat); const data : bytes)
+    raises OwnableUnauthorizedAccount | ERC1155InvalidReceiver | ERC1155InvalidArrayLength
+      | ERC1155InsufficientBalance
+  is {
+    Ownable.check_owner();
+    ERC1155Supply.mint_batch(to, ids, values, data);
+  }
+
+  external function burn(const account : address; const id : nat; const value : nat)
+    raises ERC1155MissingApprovalForAll | ERC1155InvalidSender | ERC1155InvalidArrayLength
+      | ERC1155InsufficientBalance
+  is {
+    ERC1155.check_authorized(Evm.sender(), account);
+    ERC1155Supply.burn(account, id, value);
+  }
+
+  external function burnBatch(const account : address; const ids : list(nat); const values : list(nat))
+    raises ERC1155MissingApprovalForAll | ERC1155InvalidSender | ERC1155InvalidArrayLength
+      | ERC1155InsufficientBalance
+  is {
+    ERC1155.check_authorized(Evm.sender(), account);
+    ERC1155Supply.burn_batch(account, ids, values);
+  }
+
+  external function setURI(const uri : string)
+    raises OwnableUnauthorizedAccount
+  is {
+    Ownable.check_owner();
+    ERC1155.set_uri(uri);
+  }
+}

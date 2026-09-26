@@ -7,7 +7,7 @@
        EIP712.init("My Token", "1");
      }
 
-     external use ERC20Permit is IERC20Permit; *)
+     use ERC20Permit exposing IERC20Permit; *)
 
 import "std/token/erc20.lithe";
 import "std/crypto/eip712.lithe";

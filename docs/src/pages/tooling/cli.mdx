@@ -33,7 +33,6 @@ Commands that read one file need a file with exactly one contract. Errors and wa
 | `--size-limit <bytes>` | `24576` | the most runtime code the router or any facet may have |
 | `--split <auto\|off\|all>` | `auto` | run exposed modules from their facets when the contract is over the limit, never, or always |
 | `--create2-deployer <address>` | `0x4e59b44847b379578588920cA78FbF26c0B4956C` | the `CREATE2` factory facets are deployed through |
-| `--erc165 <on\|off>` | `on` | generate `supportsInterface` for ERC-165 and the interfaces the contract has. See [ERC-165](/language/modules#erc-165) |
 
 See [Contract size limit](/tooling/size-limit).
 
@@ -83,7 +82,7 @@ These commands summarize what each entrypoint does. See [Inspecting contracts](/
 | `lithe errors file.lithe` | each entrypoint's errors, and each error's selector, fields, and raisers |
 | `lithe storage file.lithe` | the storage and transient layout, slot by slot |
 | `lithe facets file.lithe` | the router and each facet: size against the limit, and the entrypoints each runs |
-| `lithe stubs file.lithe Module` | the `external use` block that declares every external a module has |
+| `lithe stubs file.lithe Module` | the `use Module exposing` block that declares every external a module has |
 
 ## Upgrades
 

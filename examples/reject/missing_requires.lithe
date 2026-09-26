@@ -17,7 +17,7 @@ module Guarded is {
 }
 
 contract Token is {
-  external use Guarded is {
+  use Guarded exposing {
     function set(n : nat);
   }
 }

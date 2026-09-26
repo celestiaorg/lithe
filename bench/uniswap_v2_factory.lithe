@@ -1,0 +1,94 @@
+(* Benchmark: Uniswap v2-core's UniswapV2Factory. Mirrors uniswap_v2_factory.sol. It
+   creates uniswap_v2_pair.lithe's pair with CREATE2, so it knows the pair's address before
+   the pair exists, from the hash of the pair's creation code. *)
+
+import "./uniswap_v2_pair.lithe";
+import "std/utils/create2.lithe";
+
+contract UniswapV2Factory is {
+  use Create2;
+
+  interface IUniswapV2Pair is {
+    function initialize(token0 : address; token1 : address);
+  }
+
+  storage is record {
+    feeTo : address;
+    feeToSetter : address;
+    getPair : map(address, map(address, address));
+    allPairs : list(address);
+  }
+
+  (* `require(condition, "reason")`. *)
+  error Error of string;
+
+  event PairCreated of record {
+    indexed token0 : address;
+    indexed token1 : address;
+    pair : address;
+    length : nat;
+  }
+
+  deploy(const feeToSetter : address) is {
+    storage.feeToSetter := feeToSetter;
+  }
+
+  external view function feeTo() : address is
+    storage.feeTo
+
+  external view function feeToSetter() : address is
+    storage.feeToSetter
+
+  external view function getPair(const tokenA : address; const tokenB : address) : address is
+    storage.getPair[tokenA][tokenB]
+
+  external view function allPairs(const index : nat) : address is
+    storage.allPairs[index]
+
+  external view function allPairsLength() : nat is
+    storage.allPairs.length
+
+  external function createPair(const tokenA : address; const tokenB : address) : address
+    raises Error
+  is {
+    assert(tokenA <> tokenB, Error("UniswapV2: IDENTICAL_ADDRESSES"));
+    var token0 : address := tokenB;
+    var token1 : address := tokenA;
+    if tokenA < tokenB then {
+      token0 := tokenA;
+      token1 := tokenB;
+    }
+    assert(token0 <> Address.zero, Error("UniswapV2: ZERO_ADDRESS"));
+    assert(storage.getPair[token0][token1] = Address.zero, Error("UniswapV2: PAIR_EXISTS"));
+    const salt : bytes32 := Crypto.keccak256(Abi.encode_packed(token0, token1));
+    const pair : address := Create2.compute_address_here(
+      salt,
+      Crypto.keccak256(Evm.creation_code(UniswapV2Pair))
+    );
+    defer create UniswapV2Pair() with salt = salt;
+    defer IUniswapV2Pair(pair).initialize(token0, token1);
+    storage.getPair[token0][token1] := pair;
+    storage.getPair[token1][token0] := pair;
+    storage.allPairs[storage.allPairs.length] := pair;
+    emit PairCreated {
+      token0 = token0;
+      token1 = token1;
+      pair = pair;
+      length = storage.allPairs.length;
+    };
+  } with pair
+
+  external function setFeeTo(const feeTo : address)
+    raises Error
+  is {
+    assert(Evm.sender() = storage.feeToSetter, Error("UniswapV2: FORBIDDEN"));
+    storage.feeTo := feeTo;
+  }
+
+  external function setFeeToSetter(const feeToSetter : address)
+    raises Error
+  is {
+    assert(Evm.sender() = storage.feeToSetter, Error("UniswapV2: FORBIDDEN"));
+    storage.feeToSetter := feeToSetter;
+  }
+}

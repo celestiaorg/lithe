@@ -12,8 +12,10 @@ pub(crate) struct Program {
     pub domains: Vec<DomainDecl>,
     pub modules: Vec<ModuleDecl>,
     pub compose: Vec<NameAt>,
-    /// `external use M is { ... }`: the module externals the contract exposes.
-    pub exposes: Vec<ExternalUse>,
+    /// `use M exposing { ... }`: the module externals the contract exposes.
+    pub exposes: Vec<Exposing>,
+    /// `supports I, J`: the interfaces the contract announces through ERC-165.
+    pub supports: Vec<NameAt>,
     pub upgradeable: bool,
     pub guard: Option<GuardDecl>,
     /// Set when the file names its contract. An implicit file leaves this empty;
@@ -27,8 +29,6 @@ pub(crate) struct Program {
     pub peers: Vec<Program>,
     /// The file the contract is written in, as its declarations' `origin` names it.
     pub origin: String,
-    /// Answer ERC-165's `supportsInterface` for the interfaces `external use` names.
-    pub erc165: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -70,10 +70,10 @@ pub(crate) struct ModuleDecl {
     pub funcs: Vec<Func>,
 }
 
-/// `external use M is I, J, { ... }`: the contract uses `M` and exposes the members of the
+/// `use M exposing I, J, { ... }`: the contract uses `M` and exposes the members of the
 /// interfaces it names and of its inline one. Each member is one of `M`'s externals.
 #[derive(Debug, Clone)]
-pub(crate) struct ExternalUse {
+pub(crate) struct Exposing {
     pub line: u32,
     pub col: u32,
     pub module: String,
@@ -316,11 +316,11 @@ pub(crate) struct Func {
     /// `Some` when this function was declared inside a module.
     pub module: Option<String>,
     pub requires: Vec<String>,
-    /// On an entrypoint that `external use M` declares: `M`, whose external it runs.
+    /// On an entrypoint that `use M exposing` declares: `M`, whose external it runs.
     pub promoted: Option<String>,
-    /// On an entrypoint that `external use` declares: the module function it runs.
+    /// On an entrypoint that `use M exposing` declares: the module function it runs.
     pub declares: Option<String>,
-    /// On an entrypoint that `external use` declares: the named interface it comes from.
+    /// On an entrypoint that `use M exposing` declares: the named interface it comes from.
     /// `None` for the inline interface.
     pub interface: Option<String>,
     /// On a module's external function: how it was declared. It is checked as an internal
@@ -374,11 +374,15 @@ pub(crate) enum Stmt {
         index: Option<Expr>,
         /// Keys after the first, for a map of maps: `m[a][b] := v`.
         keys: Vec<Expr>,
-        /// Fields of a record stored in a map: `m[k].a.b := v`.
-        fields: Vec<String>,
+        /// Fields after the first key, each with how many keys come before it:
+        /// `m[k].a[j].b := v` has `(1, a)` and `(2, b)`.
+        fields: Vec<(usize, String)>,
         expr: Expr,
         root: Option<usize>,
         leaf: u32,
+        /// The place as an expression, when it lies past a list or a map's list or
+        /// record: `m[k].a[j] := v`. The checker fills it in.
+        target: Option<Box<Expr>>,
     },
     If {
         line: u32,
@@ -604,6 +608,21 @@ pub(crate) enum Builtin {
     NatMulMod,
     NatAddMod,
     IntDivRem,
+    /// `Nat.to_string(n)`: an unsigned integer in decimal, as a `string`.
+    NatToString,
+    /// `Int.to_string(n)`: a signed integer in decimal, with a `-` when negative.
+    IntToString,
+    /// `List.pop(xs)`: drops a dynamic list's last element. Checked into an assignment of
+    /// the list, `xs := List.pop(xs)`, so it writes what an assignment writes.
+    ListPop,
+    /// `Abi.supports_interface(id)`: whether `id` is ERC-165's or one the contract's
+    /// `supports` lists, as the `supportsInterface` the compiler generates answers.
+    AbiSupportsInterface,
+    /// `Evm.creation_code(C)`: the creation code `create C(...)` runs, before its arguments.
+    CreationCode,
+    /// `Nat.wrapping_add(a, b)`, `Int.wrapping_mul(a, b)`, and so on: the operation on two
+    /// values of one integer type, wrapped to its width instead of checked. `true` is `Int`.
+    Wrapping(BinOp, bool),
     Transfer,
     /// `create Contract(args)`: the arguments go to its `deploy`; `base` holds the
     /// `CREATE2` salt, if any.

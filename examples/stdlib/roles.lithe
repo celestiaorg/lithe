@@ -9,31 +9,11 @@ import "std/security/pausable.lithe";
 contract Registry is {
   use Ownable;
 
-  external use Ownable2Step is {
-    view function owner() : address;
-    view function pendingOwner() : address;
-    function transferOwnership(newOwner : address)
-      raises OwnableUnauthorizedAccount;
-    function acceptOwnership()
-      raises OwnableUnauthorizedAccount;
-    function renounceOwnership()
-      raises OwnableUnauthorizedAccount;
-  }
+  use Ownable2Step exposing IOwnable2Step;
+  use AccessControl exposing IAccessControl;
+  use Pausable exposing IPausable;
 
-  external use AccessControl is {
-    view function hasRole(role : role; account : address) : bool;
-    view function getRoleAdmin(role : role) : role;
-    function grantRole(role : role; account : address)
-      raises AccessControlUnauthorizedAccount;
-    function revokeRole(role : role; account : address)
-      raises AccessControlUnauthorizedAccount;
-    function renounceRole(role : role; callerConfirmation : address)
-      raises AccessControlBadConfirmation;
-  }
-
-  external use Pausable is {
-    view function paused() : bool;
-  }
+  supports IAccessControl;
 
   storage is record {
     entries : map(address, nat);

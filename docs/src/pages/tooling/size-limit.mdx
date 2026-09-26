@@ -5,7 +5,7 @@ description: "Contracts over EIP-170's 24,576-byte limit run the modules they ex
 
 # Contract size limit
 
-[EIP-170](https://eips.ethereum.org/EIPS/eip-170) caps deployed code at 24,576 bytes. When a contract is over the limit, the compiler moves the modules it exposes with [`external use`](/language/modules#exposing-a-modules-externals) into **facets**, and keeps the rest in a **router**. Callers still see one contract: one address, one ABI, and the same return data, logs, and errors.
+[EIP-170](https://eips.ethereum.org/EIPS/eip-170) caps deployed code at 24,576 bytes. When a contract is over the limit, the compiler moves the modules it exposes with [`use M exposing`](/language/modules#exposing-a-modules-externals) into **facets**, and keeps the rest in a **router**. Callers still see one contract: one address, one ABI, and the same return data, logs, and errors.
 
 A contract that fits compiles exactly as it always does, byte for byte.
 
@@ -23,7 +23,7 @@ This is safe because a module never depends on the contract that uses it: its st
 
 ## Which modules move
 
-Only a module the contract exposes with `external use` can move. What the contract writes itself always stays in the router, so a contract over the limit that exposes no modules is an error.
+Only a module the contract exposes with `use M exposing` can move. What the contract writes itself always stays in the router, so a contract over the limit that exposes no modules is an error.
 
 With `--split auto`, the default, the compiler first builds the whole contract. If it fits, that's the output. If not, it moves the module that saves the most bytes into its facet, then the next, until the router fits. With `--split all`, every exposed module runs from its facet even when the contract fits, so a set of contracts shares the same facets however large each one is.
 
@@ -131,4 +131,4 @@ contract `Token` is 3,395 bytes; the limit is 2,000
 
 A contract is also an error when splitting can't fit it: when a module's facet is over the limit on its own, or when the router is, with every exposed module moved out. Then move more of the contract's entrypoints into modules.
 
-`lithe stubs file.lithe Module` prints the `external use` block that declares every external a module has, to copy into a contract and trim.
+`lithe stubs file.lithe Module` prints the `use Module exposing` block that declares every external a module has, to copy into a contract and trim.

@@ -1,0 +1,68 @@
+(* ERC-2981 royalties, like OpenZeppelin's `ERC2981`: a default royalty, and a royalty per
+   token that takes its place. Fees are fractions of 10000, basis points, and a royalty is
+   `salePrice * fee / 10000`, rounded down. Marketplaces read it; nothing enforces it.
+
+     use ERC2981 exposing IERC2981; *)
+
+import "std/interfaces/erc2981.lithe";
+
+module ERC2981 is {
+  type royalty is record {
+    receiver : address;
+    fraction : uint96;
+  }
+
+  storage erc2981 at "lithe.std.erc2981" is record {
+    default_royalty : royalty;
+    token_royalties : map(nat, royalty);
+  }
+
+  pure function fee_denominator() : uint96 is
+    10000
+
+  view function royalty_info(const tokenId : nat; const salePrice : nat) : (address, nat) is {
+    var receiver : address := erc2981.token_royalties[tokenId].receiver;
+    var fraction : uint96 := erc2981.token_royalties[tokenId].fraction;
+    if receiver = Address.zero then {
+      receiver := erc2981.default_royalty.receiver;
+      fraction := erc2981.default_royalty.fraction;
+    }
+  } with (receiver, salePrice * nat(fraction) / nat(fee_denominator()))
+
+  function set_default_royalty(const receiver : address; const fee : uint96)
+    raises ERC2981InvalidDefaultRoyalty | ERC2981InvalidDefaultRoyaltyReceiver
+  is {
+    assert(
+      fee <= fee_denominator(),
+      ERC2981InvalidDefaultRoyalty { numerator = nat(fee); denominator = nat(fee_denominator()); }
+    );
+    assert(receiver <> Address.zero, ERC2981InvalidDefaultRoyaltyReceiver(Address.zero));
+    erc2981.default_royalty := { receiver = receiver; fraction = fee; };
+  }
+
+  function delete_default_royalty() is {
+    erc2981.default_royalty := { receiver = Address.zero; fraction = 0; };
+  }
+
+  function set_token_royalty(const tokenId : nat; const receiver : address; const fee : uint96)
+    raises ERC2981InvalidTokenRoyalty | ERC2981InvalidTokenRoyaltyReceiver
+  is {
+    assert(
+      fee <= fee_denominator(),
+      ERC2981InvalidTokenRoyalty { tokenId = tokenId; numerator = nat(fee); denominator = nat(fee_denominator()); }
+    );
+    assert(
+      receiver <> Address.zero,
+      ERC2981InvalidTokenRoyaltyReceiver { tokenId = tokenId; receiver = Address.zero; }
+    );
+    erc2981.token_royalties[tokenId] := { receiver = receiver; fraction = fee; };
+  }
+
+  (* The token falls back to the default royalty. *)
+  function reset_token_royalty(const tokenId : nat) is {
+    erc2981.token_royalties[tokenId] := { receiver = Address.zero; fraction = 0; };
+  }
+
+  external view function royaltyInfo(const tokenId : nat; const salePrice : nat) : (address, nat) is
+    royalty_info(tokenId, salePrice)
+}

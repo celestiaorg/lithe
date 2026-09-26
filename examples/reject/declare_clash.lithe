@@ -15,11 +15,11 @@ contract Token is {
     n : nat;
   }
 
-  external use Ledger is {
+  use Ledger exposing {
     function transfer(amount : nat);
   }
 
-  external use Other is {
+  use Other exposing {
     function transfer(amount : nat);
   }
 }

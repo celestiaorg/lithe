@@ -252,7 +252,7 @@ pub(crate) enum Group {
     Upgrade,
     /// Functions written in the contract itself, its migrations, and its `deploy`.
     Contract,
-    /// A module external the contract declares with `external use`.
+    /// A module external the contract declares with `use M exposing`.
     Module(String),
 }
 
@@ -374,11 +374,15 @@ struct Plan {
     /// compared by one shared helper.
     shared_value: [bool; 3],
     shared_eq: bool,
+    /// Whether unsigned checked multiplications share one helper.
+    shared_mul: bool,
     /// Whether queued deferred calls share one helper to allocate and link their nodes.
     queue_helper: bool,
     /// Queues with one `defer` site, by their words' address: their nodes carry no site
     /// number, and their walk needs no dispatch.
     single_queues: std::collections::HashSet<i32>,
+    /// Constant raises with several sites, which share one block.
+    shared_raises: std::collections::HashSet<String>,
 }
 
 /// A function compiled once. Calls merge what it reads and writes into their body.
@@ -416,6 +420,8 @@ enum Sub {
     RevertData,
     /// `[x, y, d, ret]` becomes `x * y / d`, with the product kept in 512 bits.
     MulDiv,
+    /// `[a, b, ret]` becomes `a * b`, or panics on overflow.
+    CheckedMul,
     /// `[head, ret]` becomes a list decoded from the calldata argument at `head`, its
     /// elements of the given type.
     DecodeList(usize),
@@ -425,6 +431,11 @@ enum Sub {
     LoadList(u32, bool, bool, bool),
     /// `[ptr, old, base, ret]` writes a list over `old` stored elements from slot `base`.
     StoreList(u32, bool, bool, bool),
+    /// `LoadList` for records whose fields share slots: the element type, whether the
+    /// slots are transient, and whether the body is direct.
+    LoadRecords(usize, bool, bool),
+    /// `StoreList` for records whose fields share slots.
+    StoreRecords(usize, bool, bool),
     /// `[slot, ret]` becomes the string or bytes value stored at a computed slot: whether
     /// the slot is transient, and whether the body is direct.
     LoadSlotBytes(bool, bool),
@@ -457,6 +468,8 @@ enum Sub {
     Base64Encode,
     /// `[data, ret]` becomes the bytes a base64 string encodes.
     Base64Decode,
+    /// `[n, ret]` becomes `n` in decimal, as a string: signed or unsigned.
+    DecimalString(bool),
 }
 
 /// Where a helper copies bytes from.
@@ -479,6 +492,11 @@ struct OpSite {
     /// code, its length, and the words of the `CREATE2` salt and encoded arguments, if any.
     create: Option<(Word, u64, Option<i32>, Option<i32>)>,
     fired: Option<i32>,
+    /// A method with no result, whose call to an account without code would succeed: as
+    /// in Solidity, the account must have code.
+    needs_code: bool,
+    /// The bytes of return data a result nothing decodes must have, as in Solidity.
+    unread: u64,
     /// The phase that runs when the call returns, with its result.
     then: Option<Then>,
     /// The arena words the `defer` captured: where they start, and how many. A queued
@@ -522,6 +540,15 @@ struct Body {
     queued: bool,
     /// The list's head, tail, and cursor words, in the arena.
     queue: i32,
+}
+
+/// A storage place past a key or an index, with its slot on the stack: its type, where
+/// a narrow word sits in the slot, and whether the slot is transient.
+#[derive(Clone, Copy)]
+struct Deep {
+    ty: usize,
+    pack: Pack,
+    transient: bool,
 }
 
 struct Gen<'a> {
@@ -581,6 +608,7 @@ struct Gen<'a> {
     /// Strings built from decoded bytes so far, per source, and strings compared.
     value_sites: [usize; 3],
     eq_sites: usize,
+    mul_sites: usize,
     /// `defer` sites inside loops, whose calls are queued.
     queued_sites: usize,
     /// How many sites each queue, by its words' address, gathered.
@@ -598,6 +626,8 @@ struct Gen<'a> {
     cd_bytes: std::collections::HashSet<usize>,
     /// Calldata lists whose elements are checked as loops read them.
     cd_lazy: std::collections::HashSet<usize>,
+    /// Static parameters of the entrypoint being compiled, decoded from calldata.
+    cd_words: std::collections::HashSet<usize>,
     bytes_rep: Option<(usize, u32)>,
     /// A leaf whose slot is read from memory instead of pushed, inside a shared helper.
     dyn_key: Option<(u32, i32)>,
@@ -606,6 +636,10 @@ struct Gen<'a> {
     /// Creation code of contracts this one creates, appended after its own code: each
     /// one's placeholder, its bytes, and its contract's name.
     data: Vec<(Word, Vec<u8>, String)>,
+    /// Creation code of the contracts this one creates or hashes, by name.
+    peer_built: HashMap<String, Vec<u8>>,
+    /// Long literals among `data`, by their padded bytes.
+    literals: HashMap<Vec<u8>, Word>,
     /// An `Error` binding read straight from the return data: its phase only measures it
     /// or raises it again, and makes no call that would replace it.
     returned: Option<usize>,
@@ -629,6 +663,10 @@ struct Gen<'a> {
     known: HashMap<usize, usize>,
     compiling: Vec<usize>,
     fails: Vec<(Option<u64>, u32)>,
+    /// Constant raises, each compiled once: its key, its block, and the raise.
+    raises: Vec<(String, u32, Raised)>,
+    /// Sites of each constant raise, for the plan.
+    raise_sites: HashMap<String, usize>,
     subs: Vec<(Sub, u32, bool)>,
     /// The payloads some encoded error reverts with: 1 for string or bytes values, 2 for
     /// lists, and 4 for string literals, which reach it still packed in their words.
@@ -688,17 +726,21 @@ impl<'a> Gen<'a> {
             decode_sites: 0,
             value_sites: [0; 3],
             eq_sites: 0,
+            mul_sites: 0,
             queued_sites: 0,
             queue_sites: HashMap::new(),
             trusted_index: false,
             cd_lists: std::collections::HashSet::new(),
             cd_bytes: std::collections::HashSet::new(),
             cd_lazy: std::collections::HashSet::new(),
+            cd_words: std::collections::HashSet::new(),
             slot_hint: None,
             bytes_rep: None,
             dyn_key: None,
             transient_slot: false,
             data: Vec::new(),
+            peer_built: HashMap::new(),
+            literals: HashMap::new(),
             returned: None,
             slot_cache: HashMap::new(),
             cache_words: Vec::new(),
@@ -716,6 +758,8 @@ impl<'a> Gen<'a> {
             known: HashMap::new(),
             compiling: Vec::new(),
             fails: Vec::new(),
+            raises: Vec::new(),
+            raise_sites: HashMap::new(),
             subs: Vec::new(),
             revert_kinds: 0,
             revert_head: None,
@@ -882,12 +926,20 @@ impl<'a> Gen<'a> {
             shared_decode: self.decode_sites >= 2,
             shared_value: self.value_sites.map(|n| n >= 2),
             shared_eq: self.eq_sites >= 2,
+            // A call costs 8 bytes to the 18 of the check inlined.
+            shared_mul: self.mul_sites >= 3,
             queue_helper: self.queued_sites >= 2,
             single_queues: self
                 .queue_sites
                 .iter()
                 .filter(|(_, &n)| n == 1)
                 .map(|(&q, _)| q)
+                .collect(),
+            shared_raises: self
+                .raise_sites
+                .iter()
+                .filter(|(_, &n)| n >= 2)
+                .map(|(key, _)| key.clone())
                 .collect(),
         }
     }
@@ -1344,9 +1396,10 @@ impl<'a> Gen<'a> {
                     Sub::LoadBytes => (1, 1),
                     Sub::RevertData => (0, 1),
                     Sub::MulDiv => (3, 1),
+                    Sub::CheckedMul => (2, 1),
                     Sub::DecodeList(_) => (1, 1),
-                    Sub::LoadList(..) => (2, 1),
-                    Sub::StoreList(..) => (3, 0),
+                    Sub::LoadList(..) | Sub::LoadRecords(..) => (2, 1),
+                    Sub::StoreList(..) | Sub::StoreRecords(..) => (3, 0),
                     Sub::LoadSlotBytes(..) => (1, 1),
                     Sub::StoreSlotBytes(..) => (2, 0),
                     Sub::QueuePush => (3, 1),
@@ -1360,6 +1413,7 @@ impl<'a> Gen<'a> {
                     Sub::BytesValue(_) => (2, 1),
                     Sub::Base64Encode => (3, 1),
                     Sub::Base64Decode => (1, 1),
+                    Sub::DecimalString(_) => (1, 1),
                 };
                 (label, effect)
             })
@@ -1464,13 +1518,15 @@ impl<'a> Gen<'a> {
 
     /// Places every used region, hottest first. Regions no body shares can overlap.
     fn resolve(&mut self) -> Result<Vec<Inst>, Error> {
-        for space in &mut self.spaces {
-            space.heat = 0;
-        }
+        let mask = (1u32 << REGION_SHIFT) - 1;
+        let mut offsets: Vec<Vec<u64>> = vec![Vec::new(); self.spaces.len()];
         for inst in &self.code {
             if let Inst::Mem(addr) = inst {
-                self.spaces[(addr >> REGION_SHIFT) as usize - 1].heat += 1;
+                offsets[(addr >> REGION_SHIFT) as usize - 1].push(u64::from(addr & mask));
             }
+        }
+        for (space, offs) in self.spaces.iter_mut().zip(&offsets) {
+            space.heat = offs.len() as u64;
         }
         let mut order: Vec<usize> = (0..self.spaces.len())
             .filter(|&i| self.spaces[i].heat > 0 && self.spaces[i].region != Region::Blob)
@@ -1484,38 +1540,119 @@ impl<'a> Gen<'a> {
                 .then(a.cmp(&b))
         });
         order.sort_by_key(|&i| self.spaces[i].region != Region::Base64);
-        let clash = |x: &Users, y: &Users| match (x, y) {
+        let clashes = |x: &Users, y: &Users| match (x, y) {
             (Users::Bodies(a), Users::Bodies(b)) => a.intersection(b).next().is_some(),
             (Users::Nobody, _) | (_, Users::Nobody) => false,
             _ => true,
         };
-        let mut base = vec![0u64; self.spaces.len()];
-        let mut placed: Vec<(u64, u64, usize)> = Vec::new();
-        let mut top = 0u64;
-        for &i in &order {
-            let len = words(&self.spaces[i]) * 32;
-            let mut at = 0u64;
-            loop {
-                let hit = placed.iter().find(|(start, end, j)| {
-                    at < *end
-                        && *start < at + len
-                        && clash(&self.spaces[i].users, &self.spaces[*j].users)
-                });
-                match hit {
-                    Some((_, end, _)) => at = *end,
-                    None => break,
+        let n = self.spaces.len();
+        let mut clash = vec![false; n * n];
+        for &a in &order {
+            for &b in &order {
+                clash[a * n + b] = clashes(&self.spaces[a].users, &self.spaces[b].users);
+            }
+        }
+        let lens: Vec<u64> = self.spaces.iter().map(|s| words(s) * 32).collect();
+        // Each region goes to the lowest address no clashing region already holds.
+        let place = |order: &[usize]| -> (Vec<u64>, u64) {
+            let mut base = vec![0u64; n];
+            let mut placed: Vec<(u64, u64, usize)> = Vec::new();
+            let mut top = 0u64;
+            for &i in order {
+                let len = lens[i];
+                let mut at = 0u64;
+                while let Some((_, end, _)) = placed
+                    .iter()
+                    .find(|&&(start, end, j)| at < end && start < at + len && clash[i * n + j])
+                {
+                    at = *end;
+                }
+                base[i] = at;
+                top = top.max(at + len);
+                placed.push((at, at + len, i));
+            }
+            (base, top)
+        };
+        // Memory a body touches costs it gas to expand: the highest end among its regions.
+        let bodies: Vec<usize> = self
+            .spaces
+            .iter()
+            .filter_map(|s| match &s.users {
+                Users::Bodies(ids) => Some(ids.iter().copied()),
+                _ => None,
+            })
+            .flatten()
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        let used = order.clone();
+        let peaks = |base: &[u64]| -> Vec<u64> {
+            let mut peak = vec![0u64; bodies.len() + 1];
+            for &i in &used {
+                let end = base[i] + lens[i];
+                match &self.spaces[i].users {
+                    Users::Bodies(ids) => {
+                        for id in ids {
+                            let b = bodies.binary_search(id).expect("listed");
+                            peak[b] = peak[b].max(end);
+                        }
+                    }
+                    Users::Nobody => {}
+                    Users::Everyone => {
+                        for p in &mut peak {
+                            *p = (*p).max(end);
+                        }
+                    }
                 }
             }
-            base[i] = at;
-            top = top.max(at + len);
-            placed.push((at, at + len, i));
+            peak
+        };
+        let push = |a: u64| u64::from(a != 0) + u64::from(64 - a.leading_zeros()).div_ceil(8);
+        let cost = |base: &[u64]| -> u64 {
+            (0..n).map(|i| offsets[i].iter().map(|&o| push(base[i] + o)).sum::<u64>()).sum()
+        };
+        // Hot words are worth the most below 0x100, where a one-byte push reaches them. A
+        // region only its bodies use can share that space with other bodies' regions, so the
+        // order by heat alone can waste it: move a region to the front or back when that shrinks
+        // the pushes and grows no body's memory.
+        let pinned = order.first().map_or(0, |&i| usize::from(self.spaces[i].region == Region::Base64));
+        let (mut base, mut top) = place(&order);
+        let mut best = cost(&base);
+        let peak = peaks(&base);
+        // Regions code shared between bodies uses never move up: any body may touch them.
+        let start = base.clone();
+        let shared: Vec<usize> = used
+            .iter()
+            .copied()
+            .filter(|&i| self.spaces[i].users == Users::Everyone)
+            .collect();
+        for _ in 0..4 {
+            let mut better = false;
+            for k in pinned..order.len() {
+                for to_front in [true, false] {
+                    let mut trial = order.clone();
+                    let i = trial.remove(k);
+                    if to_front {
+                        trial.insert(pinned, i);
+                    } else {
+                        trial.push(i);
+                    }
+                    let (b, t) = place(&trial);
+                    let c = cost(&b);
+                    if c < best && peaks(&b).iter().zip(&peak).all(|(p, q)| p <= q) && shared.iter().all(|&j| b[j] <= start[j]) {
+                        (order, base, top, best, better) = (trial, b, t, c, true);
+                    }
+                }
+            }
+            if !better {
+                break;
+            }
         }
         for (i, space) in self.spaces.iter().enumerate() {
             if space.region == Region::Blob {
                 base[i] = top;
             }
         }
-        let mask = (1u32 << REGION_SHIFT) - 1;
         let mut out = Vec::with_capacity(self.code.len());
         for inst in std::mem::take(&mut self.code) {
             out.push(match inst {
@@ -1558,6 +1695,7 @@ impl<'a> Gen<'a> {
         if !stubs.is_empty() {
             self.forwarder(&stubs);
         }
+        self.emit_raises()?;
         self.emit_subs()?;
         self.emit_fails();
         Ok(())
@@ -1778,6 +1916,7 @@ impl<'a> Gen<'a> {
         // What a direct entry returns: a word held on the stack through the epilogue, or
         // a tuple in its return buffer. Either goes back after every effect has run.
         let mut returns: Option<(usize, usize)> = None;
+        let mut record = None;
         if let Some(func) = route.direct {
             self.decode_params(func)?;
             let f = &self.checked.prog.funcs[func];
@@ -1787,6 +1926,11 @@ impl<'a> Gen<'a> {
             match tail {
                 Some(tail) if declared && is_static_aggregate(&self.checked.types, ret) => {
                     self.write_words(&tail, self.fn_ret[func])?;
+                    returns = Some((func, ret));
+                }
+                Some(tail) if declared && crate::check::abi_record(&self.checked.types, ret) => {
+                    let at = self.value_addr(&tail)?;
+                    record = Some(at);
                     returns = Some((func, ret));
                 }
                 Some(tail) if declared => {
@@ -1837,6 +1981,9 @@ impl<'a> Gen<'a> {
             self.release_nonreentrant();
         }
         match returns {
+            Some((_, ret)) if record.is_some() => {
+                self.return_record(record.unwrap_or(0), ret)?;
+            }
             Some((func, ret)) if is_static_aggregate(&self.checked.types, ret) => {
                 self.return_tuple(func, ret);
             }
@@ -1891,7 +2038,10 @@ impl<'a> Gen<'a> {
             .ok_or_else(|| error(1, 1, "view is missing a value"))?;
         self.compile_stmts(&stmts)?;
         let ret = self.checked.prog.funcs[func].ret_ty;
-        if self.list_value(ret) {
+        if crate::check::abi_record(&self.checked.types, ret) {
+            let at = self.value_addr(&tail)?;
+            self.return_record(at, ret)?;
+        } else if self.list_value(ret) {
             self.compile_value(&tail)?;
             let elem = self.checked.types[self.peel_nominal(ret)].elem.unwrap_or(0);
             self.return_list(elem)?;
@@ -2014,6 +2164,7 @@ impl<'a> Gen<'a> {
         self.op(CODECOPY);
         self.op(PUSH0);
         self.op(RETURN);
+        self.emit_raises()?;
         self.emit_subs()?;
         self.emit_fails();
         Ok(())
@@ -2347,6 +2498,8 @@ impl<'a> Gen<'a> {
     fn hoistable(&self, stmts: &[Stmt]) -> Vec<((u32, u32), Expr)> {
         let mut picks = Vec::new();
         let mut defined = Vec::new();
+        // Constants bound to a settled value, which a query issued early reads in their place.
+        let mut known: HashMap<usize, Expr> = HashMap::new();
         let written = std::cell::RefCell::new(Vec::new());
         let record = |node: Node<'_>| {
             if let Node::Stmt(Stmt::Assign {
@@ -2375,31 +2528,18 @@ impl<'a> Gen<'a> {
             {
                 break;
             }
-            if let Stmt::Const {
-                expr:
-                    Expr::Query {
-                        expr: call,
-                        line,
-                        col,
-                        ty: qty,
-                    },
-                ..
+            let mut found = Vec::new();
+            if let Stmt::Const { expr, .. } | Stmt::Var { expr, .. } | Stmt::Call { expr, .. } = st {
+                eager_queries(expr, &mut false, &mut found);
             }
-            | Stmt::Var {
-                expr:
-                    Expr::Query {
-                        expr: call,
-                        line,
-                        col,
-                        ty: qty,
-                    },
-                ..
-            } = st
-            {
-                // An answer or argument in a blob isn't kept for later.
+            for (line, col, call, qty) in found {
+                // An answer or argument in a blob isn't kept for later, nor is an optional
+                // answer, which depends on the return data's size.
                 let dynamic = |ty: usize| self.is_dynamic(ty) || self.list_value(ty);
-                let blob = dynamic(*qty)
-                    || matches!(call.as_ref(), Expr::Call { args, .. } if args.iter().any(|a| dynamic(a.ty())));
+                let optional = self.checked.types[qty].kind == TyKind::Option;
+                let blob = dynamic(qty)
+                    || optional
+                    || matches!(call, Expr::Call { args, .. } if args.iter().any(|a| dynamic(a.ty())));
                 if let (
                     Expr::Call {
                         base: Some(base),
@@ -2408,15 +2548,20 @@ impl<'a> Gen<'a> {
                         ..
                     },
                     false,
-                ) = (call.as_ref(), blob)
+                ) = (call, blob)
                 {
                     let written = written.borrow();
                     if std::iter::once(base.as_ref())
                         .chain(args)
-                        .all(|e| self.settled(e, &defined, &written))
+                        .all(|e| self.settled(e, &defined, &written, &known))
                     {
-                        picks.push(((*line, *col), call.as_ref().clone()));
+                        picks.push(((line, col), substitute(call, &known)));
                     }
+                }
+            }
+            if let Stmt::Const { sym: Some(sym), expr, .. } = st {
+                if self.settled(expr, &defined, &written.borrow(), &known) {
+                    known.insert(*sym, substitute(expr, &known));
                 }
             }
             if let Stmt::Const { sym: Some(sym), .. } | Stmt::Var { sym: Some(sym), .. } = st {
@@ -2428,7 +2573,13 @@ impl<'a> Gen<'a> {
     }
 
     /// Whether `e` has the same value, and cannot fail, at the start of the body.
-    fn settled(&self, e: &Expr, defined: &[usize], written: &[(usize, u32, u32)]) -> bool {
+    fn settled(
+        &self,
+        e: &Expr,
+        defined: &[usize],
+        written: &[(usize, u32, u32)],
+        known: &HashMap<usize, Expr>,
+    ) -> bool {
         fn plain(e: &Expr) -> bool {
             match e {
                 Expr::Field { base, .. } => plain(base),
@@ -2444,7 +2595,17 @@ impl<'a> Gen<'a> {
                 ..
             } => {
                 let info = &self.checked.syms[*sym];
-                !info.storage && !info.mutable && !defined.contains(sym)
+                known.contains_key(sym) || (!info.storage && !info.mutable && !defined.contains(sym))
+            }
+            Expr::Call {
+                builtin: Some(Builtin::Cast),
+                args,
+                ty,
+                ..
+            } if args.len() == 1
+                && matches!(self.checked.types[*ty].kind, TyKind::Address | TyKind::Interface) =>
+            {
+                self.settled(&args[0], defined, written, known)
             }
             Expr::Call {
                 builtin: Some(b),
@@ -2494,22 +2655,15 @@ impl<'a> Gen<'a> {
         let writes = |node: Node<'_>| matches!(node, Node::Stmt(Stmt::Assign { root: Some(sym), .. }) if checked.syms[*sym].storage && !checked.is_transient(*sym));
         for st in stmts {
             if !pending.is_empty() {
-                let at = match st {
-                    Stmt::Const {
-                        expr: Expr::Query { line, col, .. },
-                        ..
-                    }
-                    | Stmt::Var {
-                        expr: Expr::Query { line, col, .. },
-                        ..
-                    } => Some((*line, *col)),
-                    _ => None,
-                };
-                if let Some(i) = pending.iter().position(|(have, _)| Some(*have) == at) {
-                    pending.remove(i);
-                } else if self.stmt_any(st, &writes, &mut Vec::new()) {
+                if self.stmt_any(st, &writes, &mut Vec::new()) {
                     let picks = std::mem::take(pending);
                     self.issue_queries(&picks)?;
+                } else {
+                    let mut here = Vec::new();
+                    if let Stmt::Const { expr, .. } | Stmt::Var { expr, .. } | Stmt::Call { expr, .. } = st {
+                        eager_queries(expr, &mut false, &mut here);
+                    }
+                    pending.retain(|(at, _)| !here.iter().any(|q| (q.0, q.1) == *at));
                 }
             }
             self.compile_stmt(st)?;
@@ -2789,6 +2943,7 @@ impl<'a> Gen<'a> {
         self.cd_lists.clear();
         self.cd_bytes.clear();
         self.cd_lazy.clear();
+        self.cd_words.clear();
         for p in params {
             let Some(sym) = p.sym else { continue };
             if self.checked.syms[sym].storage {
@@ -2799,6 +2954,7 @@ impl<'a> Gen<'a> {
             // function always runs checks each one as it reads it. Checking them all up
             // front costs as much as decoding, so such a list is decoded instead.
             let in_place = self.list_value(p.ty_id)
+                && self.list_k(p.ty_id) == 1
                 && !self.is_dynamic(self.peel_nominal(elem))
                 && self.stays_in_calldata(func, sym)
                 && (!self.needs_check(elem) || self.walked_whole(func, sym));
@@ -2835,6 +2991,7 @@ impl<'a> Gen<'a> {
             } else {
                 let n = self.checked.types[p.ty_id].words;
                 self.decode_words(sym, p.ty_id, 4 + u64::from(head) * 32)?;
+                self.cd_words.insert(sym);
                 head += n;
             }
         }
@@ -3050,13 +3207,16 @@ impl<'a> Gen<'a> {
     }
 
     fn sub_decode_list(&mut self, elem: usize) -> Result<(), Error> {
+        if self.elem_words(elem) > 1 {
+            return self.sub_decode_records(elem);
+        }
         // [pos, ret] becomes [ret, off], then [ret, src, n]. The checks are shared with
         // lists read in place when the program has any; otherwise they live here.
         self.op(SWAP1);
         if self.subs.iter().any(|(sub, _, _)| *sub == Sub::ListHead) {
             self.call_sub(Sub::ListHead);
         } else {
-            self.list_head_checks()?;
+            self.list_head_checks(1)?;
         }
         self.op(DUP1);
         self.cd_load();
@@ -3143,6 +3303,106 @@ impl<'a> Gen<'a> {
         Ok(())
     }
 
+
+    /// `DecodeList` for records and tuples: every word copied, then each checked against
+    /// its field's type, as Solidity's decoder checks a struct's members.
+    fn sub_decode_records(&mut self, elem: usize) -> Result<(), Error> {
+        let k = self.elem_words(elem);
+        // [pos, ret] becomes [ret, off, n, list].
+        self.op(SWAP1);
+        self.list_head_checks(k)?;
+        self.op(DUP1);
+        self.cd_load();
+        self.op(DUP1);
+        self.alloc_list(k)?;
+        // [ret, off, list, bytes, src, dst]
+        self.op(SWAP1);
+        self.push_u64(32 * u64::from(k));
+        self.op(MUL);
+        self.op(DUP1 + 2);
+        self.push_u64(32);
+        self.op(ADD);
+        self.op(DUP1 + 2);
+        self.push_u64(32);
+        self.op(ADD);
+        self.cd_copy();
+        self.check_elements(elem)?;
+        // [ret, off, list]
+        self.op(SWAP1);
+        self.op(POP);
+        self.op(SWAP1);
+        self.op(JUMP);
+        Ok(())
+    }
+
+    /// `[list]` stays: each element's words are checked against their types, and `bytesN`
+    /// words move to the low bytes, as decoding leaves them.
+    fn check_elements(&mut self, elem: usize) -> Result<(), Error> {
+        let k = u64::from(self.elem_words(elem));
+        let mut types = Vec::new();
+        self.word_types(elem, &mut types);
+        let checked: Vec<(u64, usize)> = types
+            .iter()
+            .enumerate()
+            .filter_map(|(j, t)| t.map(|t| (j as u64, t)))
+            .filter(|&(_, t)| self.needs_check(t))
+            .collect();
+        if checked.is_empty() {
+            return Ok(());
+        }
+        let (top, done) = (self.fresh(), self.fresh());
+        // [list, end, at]: the end of the elements, and the element being checked.
+        self.op(DUP1);
+        self.op(MLOAD);
+        self.push_u64(32 * k);
+        self.op(MUL);
+        self.op(DUP1 + 1);
+        self.op(ADD);
+        self.push_u64(32);
+        self.op(ADD);
+        self.op(DUP1 + 1);
+        self.push_u64(32);
+        self.op(ADD);
+        self.jumpdest(top);
+        self.op(DUP1 + 1);
+        self.op(DUP1 + 1);
+        self.op(LT);
+        self.op(ISZERO);
+        self.push_label(done);
+        self.op(JUMPI);
+        self.branch += 1;
+        for &(j, t) in &checked {
+            self.check_word(t, &|g: &mut Self| {
+                g.op(DUP1);
+                if j > 0 {
+                    g.push_u64(32 * j);
+                    g.op(ADD);
+                }
+                g.op(MLOAD);
+            })?;
+            if self.abi_shift(t) > 0 {
+                self.op(DUP1);
+                if j > 0 {
+                    self.push_u64(32 * j);
+                    self.op(ADD);
+                }
+                self.op(DUP1);
+                self.op(MLOAD);
+                self.align_decoded(t);
+                self.op(SWAP1);
+                self.op(MSTORE);
+            }
+        }
+        self.branch -= 1;
+        self.push_u64(32 * k);
+        self.op(ADD);
+        self.push_label(top);
+        self.op(JUMP);
+        self.jumpdest(done);
+        self.op(POP);
+        self.op(POP);
+        Ok(())
+    }
 
     /// Up to 31 bytes pack into the word. Longer values are copied into a blob. Creation
     /// code decodes only `deploy`'s arguments, so it counts its own.
@@ -3274,7 +3534,14 @@ impl<'a> Gen<'a> {
     fn compile_stmt(&mut self, s: &Stmt) -> Result<(), Error> {
         match s {
             Stmt::Skip { .. } => Ok(()),
-            Stmt::Fail { reason, .. } => self.compile_raised(reason),
+            Stmt::Fail { reason, .. } => match self.constant_raise(reason) {
+                Some(label) => {
+                    self.push_label(label);
+                    self.op(JUMP);
+                    Ok(())
+                }
+                None => self.compile_raised(reason),
+            },
             Stmt::Call { expr, .. } => self.compile_effect(expr),
             Stmt::AssignTuple { expr, syms, .. } => {
                 // Word locals take a tuple literal straight off the stack, last first.
@@ -3568,6 +3835,13 @@ impl<'a> Gen<'a> {
                 Ok(())
             }
             Stmt::Assert { cond, reason, .. } => {
+                if let Some(label) = self.constant_raise(reason) {
+                    self.compile_value(cond)?;
+                    self.op(ISZERO);
+                    self.push_label(label);
+                    self.op(JUMPI);
+                    return Ok(());
+                }
                 let ok = self.fresh();
                 let bad = self.fresh();
                 self.compile_value(cond)?;
@@ -3649,11 +3923,57 @@ impl<'a> Gen<'a> {
                 leaf,
                 line,
                 col,
+                target,
                 ..
             } => {
                 let Some(root) = *root else {
                     return Err(error(*line, *col, "unbound assignment"));
                 };
+                if let Expr::Call {
+                    builtin: Some(Builtin::ListPop),
+                    ..
+                } = expr
+                {
+                    if let Some(target) = target {
+                        return self.deep_pop(target);
+                    }
+                    return self.compile_pop(root, *leaf);
+                }
+                if let Some(target) = target {
+                    if let Some((sym, leaf, index, offset, ty)) = self.image_elem(target) {
+                        let n = self.checked.types[ty].words;
+                        let buf = if n == 1 && self.stack_value(ty) {
+                            self.compile_value(expr)?;
+                            None
+                        } else {
+                            Some(self.value_addr(expr)?)
+                        };
+                        self.image_elem_start(sym, leaf, index, offset, Some(n))?;
+                        let Some(buf) = buf else {
+                            self.op(MSTORE);
+                            return Ok(());
+                        };
+                        for j in 0..n {
+                            if j + 1 < n {
+                                self.op(DUP1);
+                            }
+                            self.mload(buf + j as i32 * 32);
+                            self.op(SWAP1);
+                            if j > 0 {
+                                self.push_u64(u64::from(j) * 32);
+                                self.op(ADD);
+                            }
+                            self.op(MSTORE);
+                        }
+                        return Ok(());
+                    }
+                    if self.checked.syms[root].storage && self.deep(target) {
+                        return self.deep_assign(target, expr);
+                    }
+                    if self.local_elem(target).is_some() {
+                        return self.local_elem_assign(target, expr);
+                    }
+                }
                 if let Some(first) = index {
                     let mut value = self.type_at(self.checked.syms[root].ty, *leaf);
                     for _ in 0..=keys.len() {
@@ -3725,6 +4045,106 @@ impl<'a> Gen<'a> {
                 expr, value, then, ..
             } => self.compile_defer(expr, value.as_ref(), then.as_deref()),
         }
+    }
+
+    /// `List.pop(xs)`: the length drops by one, and a stored list clears the element's
+    /// slots, as Solidity's `pop` does. An empty list panics with `0x31`.
+    fn compile_pop(&mut self, root: usize, leaf: u32) -> Result<(), Error> {
+        let len_addr = self.addr(root, leaf);
+        if !self.checked.syms[root].storage {
+            self.mload(len_addr);
+            self.op(DUP1);
+            self.op(MLOAD);
+            self.op(DUP1);
+            self.op(ISZERO);
+            self.revert_if_panic(0x31)?;
+            self.push_u64(1);
+            self.op(SWAP1);
+            self.op(SUB);
+            self.op(SWAP1);
+            self.op(MSTORE);
+            return Ok(());
+        }
+        let ty = self.type_at(self.checked.syms[root].ty, leaf);
+        let (k, bytes) = (self.elem_slots(self.list_elem(ty)), self.list_dyn(ty));
+        let transient = self
+            .checked
+            .transient_leaf(self.checked.syms[root].slot + leaf);
+        self.mload(len_addr);
+        self.op(DUP1);
+        self.op(ISZERO);
+        self.revert_if_panic(0x31)?;
+        self.push_u64(1);
+        self.op(SWAP1);
+        self.op(SUB);
+        self.op(DUP1);
+        self.mstore_off(len_addr);
+        self.mark_dirty(root, leaf);
+        if k > 1 {
+            self.push_u64(k);
+            self.op(MUL);
+        }
+        self.stored_list_base(root, leaf);
+        self.op(ADD);
+        for j in 0..k {
+            if j + 1 < k {
+                self.op(DUP1);
+            }
+            if j > 0 {
+                self.push_u64(j);
+                self.op(ADD);
+            }
+            self.op(PUSH0);
+            self.op(SWAP1);
+            self.transient_slot = transient;
+            self.store_slot(bytes);
+        }
+        Ok(())
+    }
+
+    /// `List.pop(m[k].xs)` for a list whose length is at a computed slot.
+    fn deep_pop(&mut self, target: &Expr) -> Result<(), Error> {
+        let elem = self.list_elem(target.ty());
+        let (slots, bytes) = (self.elem_slots(elem), self.stored_dyn(elem));
+        let p = self.deep_slot(target, false)?;
+        // [slot, len - 1]
+        self.op(DUP1);
+        self.transient_slot = p.transient;
+        self.journal_load();
+        self.op(DUP1);
+        self.op(ISZERO);
+        self.revert_if_panic(0x31)?;
+        self.push_u64(1);
+        self.op(SWAP1);
+        self.op(SUB);
+        self.op(DUP1);
+        self.op(DUP1 + 2);
+        self.transient_slot = p.transient;
+        self.journal_store();
+        if slots > 1 {
+            self.push_u64(slots);
+            self.op(MUL);
+        }
+        self.op(SWAP1);
+        self.mstore_off(self.hash_buf);
+        self.push_u64(32);
+        self.push_mem(self.hash_buf);
+        self.op(KECCAK);
+        self.op(ADD);
+        for j in 0..slots {
+            if j + 1 < slots {
+                self.op(DUP1);
+            }
+            if j > 0 {
+                self.push_u64(j);
+                self.op(ADD);
+            }
+            self.op(PUSH0);
+            self.op(SWAP1);
+            self.transient_slot = p.transient;
+            self.store_slot(bytes);
+        }
+        Ok(())
     }
 
     /// A whole record written to a named place. Every word is on the stack before the first
@@ -3808,12 +4228,12 @@ impl<'a> Gen<'a> {
         leaf: u32,
         first: &Expr,
         keys: &[Expr],
-        fields: &[String],
+        fields: &[(usize, String)],
         value: usize,
         expr: &Expr,
     ) -> Result<(), Error> {
         let (mut ty, mut start) = (value, 0);
-        for name in fields {
+        for (_, name) in fields {
             let rec = &self.checked.types[self.peel_nominal(ty)];
             let field = rec
                 .fields
@@ -4199,6 +4619,11 @@ impl<'a> Gen<'a> {
             .transient_leaf(self.checked.syms[sym].slot + leaf);
         self.mload(self.addr(sym, leaf));
         self.stored_list_base(sym, leaf);
+        let elem = self.list_elem(self.type_at(self.checked.syms[sym].ty, leaf));
+        if !self.plain_elem(elem) {
+            self.load_list_sub(elem, transient);
+            return Ok(());
+        }
         self.call_sub(Sub::LoadList(k, transient, self.direct, bytes));
         Ok(())
     }
@@ -4263,6 +4688,11 @@ impl<'a> Gen<'a> {
         self.mstore_off(len_addr);
         self.mark_dirty(sym, leaf);
         self.stored_list_base(sym, leaf);
+        let elem = self.list_elem(self.type_at(self.checked.syms[sym].ty, leaf));
+        if !self.plain_elem(elem) {
+            self.store_list_sub(elem, transient);
+            return Ok(());
+        }
         // The helper journals its stores, so this body's loads must read the journal too.
         if !self.direct && !transient {
             if let Some(body) = self.body_mut() {
@@ -4380,7 +4810,7 @@ impl<'a> Gen<'a> {
         self.op(MSTORE);
         self.mload(list);
         self.op(MLOAD);
-        self.push_u64(32);
+        self.push_u64(32 * u64::from(self.elem_words(elem)));
         self.op(MUL);
         self.push_u64(64);
         self.op(ADD);
@@ -4395,11 +4825,11 @@ impl<'a> Gen<'a> {
     /// Shifts a list's `bytesN` elements, in place, to where the ABI keeps them. Other
     /// elements are already ABI words.
     fn align_list_for_abi(&mut self, list: i32, elem: usize) -> Result<(), Error> {
-        let t = &self.checked.types[self.peel_nominal(elem)];
-        if !(t.kind == TyKind::Bytes && t.bits > 0 && t.bits < 32) {
+        let shifts = self.elem_shifts(elem);
+        if shifts.is_empty() {
             return Ok(());
         }
-        let shift = u64::from((32 - t.bits) * 8);
+        let k = u64::from(self.elem_words(elem));
         let (zero, n) = (self.temp(), self.temp());
         self.op(PUSH0);
         self.mstore_off(zero);
@@ -4408,20 +4838,43 @@ impl<'a> Gen<'a> {
         self.mstore_off(n);
         self.words_loop(zero, n, &mut |g, j| {
             g.mload(j);
-            g.push_u64(32);
+            g.push_u64(32 * k);
             g.op(MUL);
             g.mload(list);
             g.op(ADD);
-            g.push_u64(32);
-            g.op(ADD);
-            g.op(DUP1);
-            g.op(MLOAD);
-            g.push_u64(shift);
-            g.op(SHL);
-            g.op(SWAP1);
-            g.op(MSTORE);
+            for (i, &(at, shift)) in shifts.iter().enumerate() {
+                if i + 1 < shifts.len() {
+                    g.op(DUP1);
+                }
+                g.push_u64(32 + 32 * u64::from(at));
+                g.op(ADD);
+                g.op(DUP1);
+                g.op(MLOAD);
+                g.push_u64(u64::from(shift));
+                g.op(SHL);
+                g.op(SWAP1);
+                g.op(MSTORE);
+            }
             Ok(())
         })
+    }
+
+    /// Words an element of a list takes in memory and in the ABI.
+    fn elem_words(&self, elem: usize) -> u32 {
+        self.checked.types[self.peel_nominal(elem)].words.max(1)
+    }
+
+    /// The words of a list element the ABI keeps in their high bytes, `bytesN` below 32
+    /// bytes, and how far each moves.
+    fn elem_shifts(&self, elem: usize) -> Vec<(u32, u32)> {
+        let mut types = Vec::new();
+        self.word_types(elem, &mut types);
+        types
+            .iter()
+            .enumerate()
+            .filter_map(|(i, t)| t.map(|t| (i as u32, self.abi_shift(t))))
+            .filter(|&(_, shift)| shift > 0)
+            .collect()
     }
 
     fn copy_words(&mut self, src: i32, dst: i32, n: u32) {
@@ -4467,16 +4920,47 @@ impl<'a> Gen<'a> {
             let f = &self.checked.prog.funcs[idx];
             return Err(error(f.line, f.col, "recursion is not supported"));
         }
-        self.bind_params(idx, args)?;
-        if self.plan.outline.contains(&idx) {
+        let inline = !self.plan.outline.contains(&idx);
+        let aliased = self.bind_params(idx, args, inline)?;
+        if !inline {
             return self.call_func(idx);
         }
-        self.inline_body(idx, |g| g.func_body(idx))
+        let result = self.inline_body(idx, |g| g.func_body(idx));
+        self.unalias(aliased);
+        result
     }
 
-    fn bind_params(&mut self, idx: usize, args: &[Expr]) -> Result<(), Error> {
+    /// Stores each argument in its parameter's words. An inlined call instead reads an
+    /// entrypoint's constant parameter from its word, which later reads from calldata, when
+    /// it is passed as a constant parameter. Returns the parameters it aliased, with their
+    /// own words.
+    fn bind_params(&mut self, idx: usize, args: &[Expr], inline: bool) -> Result<Vec<(usize, i32)>, Error> {
         let params = self.checked.prog.funcs[idx].params.clone();
         let mut stacked: Vec<(usize, u32)> = Vec::new();
+        let mut aliased = Vec::new();
+        let alias_ok = inline && self.loop_syms.is_empty();
+        // A continuation is compiled after the body, when the alias is gone.
+        let later = std::cell::RefCell::new(Vec::new());
+        if alias_ok {
+            let conts = |node: Node<'_>| {
+                if let Node::Stmt(Stmt::Defer { then: Some(then), .. }) = node {
+                    for arm in then.arms() {
+                        for st in &arm.stmts {
+                            self.stmt_syms(st, &mut later.borrow_mut());
+                        }
+                    }
+                }
+                false
+            };
+            let f = &self.checked.prog.funcs[idx];
+            for st in &f.stmts {
+                self.stmt_any(st, &conts, &mut Vec::new());
+            }
+            if let Some(tail) = &f.tail {
+                self.expr_any(tail, &conts, &mut Vec::new());
+            }
+        }
+        let later = later.into_inner();
         for (arg, param) in args.iter().zip(&params) {
             let Some(sym) = param.sym else { continue };
             if self.checked.syms[sym].storage {
@@ -4485,6 +4969,18 @@ impl<'a> Gen<'a> {
             let n = self.checked.types[param.ty_id].words;
             if n == 0 {
                 continue;
+            }
+            if let Expr::Ident { sym: Some(from), builtin: None, .. } = arg {
+                let info = &self.checked.syms[*from];
+                let plain = self.cd_words.contains(from)
+                    && !info.mutable
+                    && self.checked.types[info.ty].words == n;
+                if alias_ok && plain && !self.checked.syms[sym].mutable && !later.contains(&sym) {
+                    aliased.push((sym, self.local[sym]));
+                    self.local[sym] = self.local[*from];
+                    self.slot_cache.retain(|_, (_, deps)| !deps.contains(&sym));
+                    continue;
+                }
             }
             if n == 1 {
                 self.compile_value(arg)?;
@@ -4502,7 +4998,14 @@ impl<'a> Gen<'a> {
                 self.mstore_off(base + i as i32 * 32);
             }
         }
-        Ok(())
+        Ok(aliased)
+    }
+
+    fn unalias(&mut self, aliased: Vec<(usize, i32)>) {
+        for (sym, word) in aliased.into_iter().rev() {
+            self.local[sym] = word;
+            self.slot_cache.retain(|_, (_, deps)| !deps.contains(&sym));
+        }
     }
 
     /// Compiles a call's body in place, noting its size for the outlining plan.
@@ -4559,13 +5062,15 @@ impl<'a> Gen<'a> {
                 ..
             } => {
                 let idx = *idx;
-                self.bind_params(idx, args)?;
+                let aliased = self.bind_params(idx, args, true)?;
                 let f = &self.checked.prog.funcs[idx];
                 let (stmts, tail) = (f.stmts.clone(), f.tail.clone().expect("checked"));
-                self.inline_body(idx, |g| {
+                let result = self.inline_body(idx, |g| {
                     g.compile_stmts(&stmts)?;
                     g.push_record_words(&tail).map(|_| ())
-                })?;
+                });
+                self.unalias(aliased);
+                result?;
             }
             _ => {
                 let mut parts = Vec::new();
@@ -4668,6 +5173,19 @@ impl<'a> Gen<'a> {
     }
 
     fn compile_value(&mut self, e: &Expr) -> Result<(), Error> {
+        if self.deep(e) {
+            return self.deep_read(e);
+        }
+        if let Some(()) = self.local_elem_read(e)? {
+            return Ok(());
+        }
+        if let Some((sym, leaf, index, offset, ty)) = self.image_elem(e) {
+            if self.stack_value(ty) {
+                self.image_elem_start(sym, leaf, index, offset, None)?;
+                self.op(MLOAD);
+                return Ok(());
+            }
+        }
         if self.list_value(e.ty()) && self.compile_list_value(e)? {
             return Ok(());
         }
@@ -4749,10 +5267,8 @@ impl<'a> Gen<'a> {
                     }
                     Ok(())
                 }
+                Lit::Str(s) if s.len() > 31 => self.push_long(s.as_bytes()),
                 Lit::Str(s) => {
-                    if s.len() > 31 {
-                        return Err(error(*line, *col, "a string must be at most 31 bytes"));
-                    }
                     self.push_short(Word::short_dyn(s.as_bytes()));
                     Ok(())
                 }
@@ -5104,6 +5620,25 @@ impl<'a> Gen<'a> {
             Builtin::NatDivRem | Builtin::IntDivRem => {
                 return Err(error(line, col, "div_rem returns a tuple"));
             }
+            Builtin::NatToString | Builtin::IntToString => {
+                self.compile_value(&args[0])?;
+                self.call_sub(Sub::DecimalString(b == Builtin::IntToString));
+            }
+            Builtin::ListPop => {
+                return Err(error(line, col, "`List.pop` is a statement"));
+            }
+            Builtin::AbiSupportsInterface => {
+                self.compile_value(&args[0])?;
+                self.op(PUSH0);
+                for id in self.checked.interface_ids.clone() {
+                    self.op(DUP1 + 1);
+                    self.push_u64(u64::from(id));
+                    self.op(EQ);
+                    self.op(OR);
+                }
+                self.op(SWAP1);
+                self.op(POP);
+            }
             // Reading past the end panics with `0x32`, as an array index out of bounds does.
             Builtin::BytesWord => {
                 self.compile_value(&args[0])?;
@@ -5151,6 +5686,41 @@ impl<'a> Gen<'a> {
                     self.compile_value(arg)?;
                 }
                 self.call_sub(Sub::MulDiv);
+            }
+            Builtin::CreationCode => {
+                let name = self.creation_code_of(&args[0], line, col)?;
+                let (marker, len) = self.peer_code(name, line, col)?;
+                self.push_u64(len);
+                self.alloc_blob()?;
+                self.push_u64(len);
+                self.push_word(marker);
+                self.op(DUP1 + 2);
+                self.push_u64(32);
+                self.op(ADD);
+                self.op(CODECOPY);
+                self.tag_blob();
+            }
+            Builtin::Wrapping(op, signed) => {
+                self.compile_value(&args[0])?;
+                self.compile_value(&args[1])?;
+                match op {
+                    BinOp::Add => self.op(ADD),
+                    BinOp::Mul => self.op(MUL),
+                    _ => {
+                        self.op(SWAP1);
+                        self.op(SUB);
+                    }
+                }
+                let bits = u32::from(self.checked.types[self.peel_nominal(args[0].ty())].bits);
+                if bits != 0 && bits < 256 {
+                    if signed {
+                        self.push_u64(u64::from(bits / 8 - 1));
+                        self.op(SIGNEXTEND);
+                    } else {
+                        self.push_word(Word::from_u64(0).not().shr(256 - bits));
+                        self.op(AND);
+                    }
+                }
             }
             Builtin::NatMulMod | Builtin::NatAddMod => {
                 for arg in args {
@@ -5206,6 +5776,27 @@ impl<'a> Gen<'a> {
     }
 
     fn compile_hash(&mut self, args: &[Expr], precompile: Option<u64>) -> Result<(), Error> {
+        // The hash of a literal, or of a contract's creation code, is a constant.
+        if precompile.is_none() {
+            let constant = match &args[0] {
+                Expr::Lit { lit: Lit::Str(s), .. } => Some(s.as_bytes().to_vec()),
+                Expr::Call {
+                    builtin: Some(Builtin::CreationCode),
+                    args: inner,
+                    line,
+                    col,
+                    ..
+                } => {
+                    let name = self.creation_code_of(&inner[0], *line, *col)?;
+                    Some(self.peer_creation(name, *line, *col)?)
+                }
+                _ => None,
+            };
+            if let Some(bytes) = constant {
+                self.push_word(Word::from_be_bytes(crate::keccak::keccak256(&bytes)));
+                return Ok(());
+            }
+        }
         // `keccak256(Abi.encode(a, b))` over static words hashes them from a buffer of its
         // own, with no blob: the idiom behind struct hashes, domain separators, and proofs.
         if let (
@@ -5321,10 +5912,7 @@ impl<'a> Gen<'a> {
         for &(at, ty) in parts {
             if list(self, ty) {
                 let elem = self.checked.types[self.peel_nominal(ty)].elem.unwrap_or(0);
-                let t = &self.checked.types[self.peel_nominal(elem)];
-                if (t.kind == TyKind::Bytes && t.bits > 0 && t.bits < 32)
-                    || self.is_dynamic(self.peel_nominal(elem))
-                {
+                if !self.elem_shifts(elem).is_empty() || self.is_dynamic(self.peel_nominal(elem)) {
                     let copy = self.temp();
                     self.mload(at);
                     self.abi_ready_list(elem)?;
@@ -5437,7 +6025,7 @@ impl<'a> Gen<'a> {
         }
         self.mload(list);
         self.op(MLOAD);
-        self.push_u64(32);
+        self.push_u64(32 * u64::from(self.elem_words(elem)));
         self.op(MUL);
         self.mload(list);
         self.push_u64(32);
@@ -5453,11 +6041,10 @@ impl<'a> Gen<'a> {
             self.call_sub(Sub::BlobsAbi);
             return Ok(());
         }
-        let t = &self.checked.types[self.peel_nominal(elem)];
-        if !(t.kind == TyKind::Bytes && t.bits > 0 && t.bits < 32) {
+        if self.elem_shifts(elem).is_empty() {
             return Ok(());
         }
-        self.copy_list(1)?;
+        self.copy_list(self.elem_words(elem))?;
         let copy = self.temp();
         self.mstore_off(copy);
         self.align_list_for_abi(copy, elem)?;
@@ -5474,7 +6061,7 @@ impl<'a> Gen<'a> {
             self.op(MLOAD);
         } else {
             self.op(MLOAD);
-            self.push_u64(32);
+            self.push_u64(32 * u64::from(self.elem_words(elem)));
             self.op(MUL);
             self.push_u64(32);
             self.op(ADD);
@@ -5975,6 +6562,55 @@ impl<'a> Gen<'a> {
         }
     }
 
+    /// A literal too long for one word becomes a blob copied from the code, where its
+    /// bytes sit zero-padded to whole words, so the blob's last word is clean.
+    fn push_long(&mut self, bytes: &[u8]) -> Result<(), Error> {
+        let mut padded = bytes.to_vec();
+        padded.resize(bytes.len().div_ceil(32) * 32, 0);
+        let len = padded.len() as u64;
+        let marker = self.embed(padded);
+        self.copy_long(bytes.len() as u64, len, marker)
+    }
+
+    /// A long literal only a revert reads: the helper copies just its bytes to where
+    /// everything past them is clean, so the code holds no padding.
+    fn push_long_unpadded(&mut self, bytes: &[u8]) -> Result<(), Error> {
+        let mut padded = bytes.to_vec();
+        padded.resize(bytes.len().div_ceil(32) * 32, 0);
+        let (len, marker) = match self.literals.get(&padded) {
+            Some(&marker) => (padded.len() as u64, marker),
+            None => (bytes.len() as u64, self.embed(bytes.to_vec())),
+        };
+        self.copy_long(bytes.len() as u64, len, marker)
+    }
+
+    fn copy_long(&mut self, bytes: u64, len: u64, marker: Word) -> Result<(), Error> {
+        self.push_u64(bytes);
+        self.alloc_blob()?;
+        self.push_u64(len);
+        self.push_word(marker);
+        self.op(DUP1 + 2);
+        self.push_u64(32);
+        self.op(ADD);
+        self.op(CODECOPY);
+        self.tag_blob();
+        Ok(())
+    }
+
+    /// Where `bytes` are appended to the code, once however often they are used. Creation
+    /// code keeps them ahead of its end, where its arguments begin.
+    fn embed(&mut self, bytes: Vec<u8>) -> Word {
+        if let Some(&marker) = self.literals.get(&bytes) {
+            return marker;
+        }
+        let marker = self.data_marker();
+        let end = self.init.then(|| self.data.iter().position(|(m, ..)| *m == self.code_end));
+        let at = end.flatten().unwrap_or(self.data.len());
+        self.data.insert(at, (marker, bytes.clone(), String::new()));
+        self.literals.insert(bytes, marker);
+        marker
+    }
+
     /// Header pointer on the stack becomes `(ptr << 1) | 1`.
     fn tag_blob(&mut self) {
         self.push_u64(1);
@@ -5986,6 +6622,99 @@ impl<'a> Gen<'a> {
     /// A bytes or string word becomes `[len, data]` with `data` on top.
     fn bytes_span(&mut self) {
         self.call_sub(Sub::BytesSpan);
+    }
+
+    /// Counts the digits, then writes them from the end, a `-` first when negative.
+    fn sub_decimal_string(&mut self, signed: bool) -> Result<(), Error> {
+        let [count, counted, fill] = std::array::from_fn(|_| self.fresh());
+        self.op(SWAP1);
+        if signed {
+            // [ret, n] becomes [ret, neg, |n|]: `(n ^ -neg) + neg`.
+            self.op(DUP1);
+            self.push_u64(255);
+            self.op(SHR);
+            self.op(DUP1);
+            self.op(PUSH0);
+            self.op(SUB);
+            self.op(DUP1 + 2);
+            self.op(XOR);
+            self.op(DUP1 + 1);
+            self.op(ADD);
+            self.op(SWAP1 + 1);
+            self.op(POP);
+            self.op(SWAP1);
+        }
+        self.push_u64(1);
+        if signed {
+            self.op(DUP1 + 2);
+            self.op(ADD);
+        }
+        self.op(DUP1 + 1);
+        // [n, len, t] while `t >= 10`
+        self.jumpdest(count);
+        self.push_u64(10);
+        self.op(DUP1 + 1);
+        self.op(LT);
+        self.push_label(counted);
+        self.op(JUMPI);
+        self.push_u64(10);
+        self.op(SWAP1);
+        self.op(DIV);
+        self.op(SWAP1);
+        self.push_u64(1);
+        self.op(ADD);
+        self.op(SWAP1);
+        self.push_label(count);
+        self.op(JUMP);
+        self.jumpdest(counted);
+        self.op(POP);
+        self.op(DUP1);
+        self.alloc_blob()?;
+        self.op(SWAP1);
+        self.op(DUP1 + 1);
+        self.op(ADD);
+        self.push_u64(32);
+        self.op(ADD);
+        // [n, ptr, end]: one digit per round, from the last, until `n` is zero.
+        self.jumpdest(fill);
+        self.push_u64(1);
+        self.op(SWAP1);
+        self.op(SUB);
+        self.push_u64(10);
+        self.op(DUP1 + 3);
+        self.op(MOD);
+        self.push_u64(48);
+        self.op(ADD);
+        self.op(DUP1 + 1);
+        self.op(MSTORE8);
+        self.op(SWAP1 + 1);
+        self.push_u64(10);
+        self.op(SWAP1);
+        self.op(DIV);
+        self.op(SWAP1 + 1);
+        self.op(DUP1 + 2);
+        self.push_label(fill);
+        self.op(JUMPI);
+        self.op(POP);
+        self.op(SWAP1);
+        self.op(POP);
+        if signed {
+            let positive = self.fresh();
+            self.op(SWAP1);
+            self.op(ISZERO);
+            self.push_label(positive);
+            self.op(JUMPI);
+            self.push_u64(0x2d);
+            self.op(DUP1 + 1);
+            self.push_u64(32);
+            self.op(ADD);
+            self.op(MSTORE8);
+            self.jumpdest(positive);
+        }
+        self.tag_blob();
+        self.op(SWAP1);
+        self.op(JUMP);
+        Ok(())
     }
 
     /// Solady's `Base64.encode`: each round turns three bytes into four characters, looked
@@ -6851,6 +7580,14 @@ impl<'a> Gen<'a> {
         match op {
             BinOp::Add => self.checked_add(signed),
             BinOp::Sub => self.checked_sub(signed),
+            BinOp::Mul if !signed => {
+                self.mul_sites += 1;
+                if self.plan.shared_mul {
+                    self.call_sub(Sub::CheckedMul);
+                    return Ok(());
+                }
+                self.checked_mul(false)
+            }
             BinOp::Mul => self.checked_mul(signed),
             BinOp::Div => self.checked_div(signed),
             BinOp::Mod => self.checked_mod(signed),
@@ -7145,6 +7882,47 @@ impl<'a> Gen<'a> {
         label
     }
 
+    /// A raise whose payload is all literals, as `require(cond, "reason")`'s is: one block
+    /// per distinct error, which every site that raises it jumps to.
+    fn constant_raise(&mut self, raised: &Raised) -> Option<u32> {
+        let index = raised.index?;
+        let args: Vec<&Expr> = match &raised.form {
+            RaisedForm::Unit => Vec::new(),
+            RaisedForm::Positional(expr) => vec![expr],
+            RaisedForm::Fields(fields) => fields.iter().map(|(_, expr)| expr).collect(),
+        };
+        let mut key = index.to_string();
+        for arg in args {
+            let Expr::Lit { lit, ty, .. } = arg else {
+                return None;
+            };
+            key.push_str(&format!(" {lit:?}:{ty}"));
+        }
+        // The first build counts the sites; one site keeps its raise inline.
+        *self.raise_sites.entry(key.clone()).or_default() += 1;
+        if !self.plan.shared_raises.contains(&key) {
+            return None;
+        }
+        if let Some(&(_, label, _)) = self.raises.iter().find(|(have, ..)| *have == key) {
+            return Some(label);
+        }
+        let label = self.fresh();
+        self.raises.push((key, label, raised.clone()));
+        Some(label)
+    }
+
+    /// The shared blocks of constant raises, ahead of the helpers they call.
+    fn emit_raises(&mut self) -> Result<(), Error> {
+        for (_, label, raised) in std::mem::take(&mut self.raises) {
+            self.jumpdest(label);
+            self.failing += 1;
+            let result = self.compile_raised(&raised);
+            self.failing -= 1;
+            result?;
+        }
+        Ok(())
+    }
+
     fn emit_fails(&mut self) {
         for (panic, label) in std::mem::take(&mut self.fails) {
             self.jumpdest(label);
@@ -7205,6 +7983,12 @@ impl<'a> Gen<'a> {
     fn revert_error(&mut self, sel: [u8; 4], args: &[&Expr]) -> Result<(), Error> {
         if args
             .iter()
+            .any(|arg| self.list_value(arg.ty()) && self.list_k(arg.ty()) > 1)
+        {
+            return self.revert_parts(sel, args);
+        }
+        if args
+            .iter()
             .any(|arg| self.is_dynamic(arg.ty()) || self.list_value(arg.ty()))
         {
             return self.revert_encoded(sel, args);
@@ -7226,6 +8010,32 @@ impl<'a> Gen<'a> {
         Ok(())
     }
 
+    /// A payload with a list of records, encoded as `Abi.encode` would, after the selector.
+    fn revert_parts(&mut self, sel: [u8; 4], args: &[&Expr]) -> Result<(), Error> {
+        let mut parts = Vec::with_capacity(args.len());
+        for arg in args {
+            let at = self.temp();
+            self.compile_value(arg)?;
+            self.mstore_off(at);
+            parts.push((at, arg.ty()));
+        }
+        self.encode_parts(&parts)?;
+        self.mload(self.scratch_a);
+        self.mstore_off(self.scratch_b);
+        self.push_u64(u64::from(u32::from_be_bytes(sel)));
+        self.mstore_off(self.scratch_val);
+        self.prepend_saved_selector()?;
+        self.push_u64(1);
+        self.op(SHR);
+        self.op(DUP1);
+        self.op(MLOAD);
+        self.op(SWAP1);
+        self.push_u64(32);
+        self.op(ADD);
+        self.op(REVERT);
+        Ok(())
+    }
+
     /// The head words wait in a region of their own, and a shared helper reverts with them
     /// and the tails.
     fn revert_encoded(&mut self, sel: [u8; 4], args: &[&Expr]) -> Result<(), Error> {
@@ -7235,17 +8045,19 @@ impl<'a> Gen<'a> {
             // A literal string stays packed in its word; the helper lays it out.
             let packed = match arg {
                 Expr::Lit { lit, .. } if self.is_dynamic(ty) => match lit {
-                    Lit::Str(s) => Some(Word::short_dyn(s.as_bytes())),
+                    Lit::Str(s) if s.len() <= 31 => Some(Word::short_dyn(s.as_bytes())),
                     Lit::Int(w) => Some(dyn_from_word(*w)),
                     _ => None,
                 },
                 _ => None,
             }
             .filter(|w| !w.is_zero());
-            if let Some(w) = packed {
-                self.push_word(w);
-            } else {
-                self.compile_value(arg)?;
+            match (packed, arg) {
+                (Some(w), _) => self.push_word(w),
+                (None, Expr::Lit { lit: Lit::Str(s), .. }) if self.is_dynamic(ty) => {
+                    self.push_long_unpadded(s.as_bytes())?
+                }
+                _ => self.compile_value(arg)?,
             }
             let kind = if packed.is_some() {
                 self.revert_kinds |= 4;
@@ -7781,9 +8593,20 @@ impl<'a> Gen<'a> {
         let sig = self.checked.ifaces[iface][*method].sig.clone();
         let sel = selector(&sig);
         self.in_query = true;
-        let result = self.static_call(base, sel, args);
+        let result = if self.checked.types[ty].kind == TyKind::Option {
+            self.query_call(base, sel, args, self.ret_scratch).and_then(|()| {
+                self.op(ISZERO);
+                self.revert_if_true()?;
+                self.returned_option_word(ty)
+            })
+        } else {
+            self.static_call(base, sel, args)
+        };
         self.in_query = false;
         result?;
+        if self.checked.types[ty].kind == TyKind::Option {
+            return Ok(());
+        }
         if self.list_value(ty) {
             let elem = self.checked.types[self.peel_nominal(ty)].elem.unwrap_or(0);
             return self.decode_list_from(Src::Ret, elem);
@@ -7794,6 +8617,35 @@ impl<'a> Gen<'a> {
         let at = self.ret_scratch;
         self.check_word(ty, &|g: &mut Self| g.mload(at))?;
         self.mload(at);
+        Ok(())
+    }
+
+    /// The one-word option a query answered, from its first word at `ret_scratch`: `None`
+    /// when it returned no data, and otherwise `Some` of the word, checked as the payload.
+    fn returned_option_word(&mut self, oty: usize) -> Result<(), Error> {
+        let elem = self.checked.types[oty].elem.unwrap_or(0);
+        let Some(flip) = self.flip(oty) else {
+            return Err(error(0, 0, "internal: a query's option takes one word"));
+        };
+        let (none, done) = (self.fresh(), self.fresh());
+        self.op(RETURNDATASIZE);
+        self.op(ISZERO);
+        self.push_label(none);
+        self.op(JUMPI);
+        self.push_u64(32);
+        self.op(RETURNDATASIZE);
+        self.op(LT);
+        self.revert_if_true()?;
+        let at = self.ret_scratch;
+        self.check_word(elem, &|g: &mut Self| g.mload(at))?;
+        self.mload(at);
+        self.align_decoded(elem);
+        self.apply_flip(flip);
+        self.push_label(done);
+        self.op(JUMP);
+        self.jumpdest(none);
+        self.op(PUSH0);
+        self.jumpdest(done);
         Ok(())
     }
 
@@ -7837,17 +8689,24 @@ impl<'a> Gen<'a> {
         self.op(ISZERO);
         self.push_label(failed_l);
         self.op(JUMPI);
-        self.push_u64(32);
-        self.op(RETURNDATASIZE);
-        self.op(LT);
-        self.revert_if_true()?;
+        let optional = self.checked.types[ty].kind == TyKind::Option;
+        if optional {
+            self.returned_option_word(ty)?;
+        } else {
+            self.push_u64(32);
+            self.op(RETURNDATASIZE);
+            self.op(LT);
+            self.revert_if_true()?;
+        }
         let dynamic = self.is_dynamic(ty) || self.list_value(ty);
-        if !dynamic {
+        if !dynamic && !optional {
             let at = self.ret_scratch;
             self.check_word(ty, &|g: &mut Self| g.mload(at))?;
         }
         self.branch += 1;
         match ok.bind_sym {
+            Some(sym) if optional => self.mstore_off(self.local[sym]),
+            None if optional => self.op(POP),
             Some(sym) if dynamic => {
                 if self.list_value(ty) {
                     let elem = self.checked.types[self.peel_nominal(ty)].elem.unwrap_or(0);
@@ -7930,6 +8789,8 @@ impl<'a> Gen<'a> {
                     dynamic: false,
                     create: Some((marker, len, salt_at, args_at)),
                     fired: None,
+                    needs_code: false,
+                    unread: 0,
                     then: then.cloned(),
                     record: (0, 0),
                     captures: self.loop_captures(then),
@@ -7960,6 +8821,8 @@ impl<'a> Gen<'a> {
                     dynamic: false,
                     create: None,
                     fired: None,
+                    needs_code: false,
+                    unread: 0,
                     then: then.cloned(),
                     record: (0, 0),
                     captures: self.loop_captures(then),
@@ -8007,6 +8870,9 @@ impl<'a> Gen<'a> {
                     dynamic,
                     create: None,
                     fired: None,
+                    needs_code: self.checked.types[self.checked.ifaces[iface][*method].ret].kind
+                        == TyKind::Unit,
+                    unread: self.unread_result(self.checked.ifaces[iface][*method].ret, then),
                     then: then.cloned(),
                     record: (0, 0),
                     captures: self.loop_captures(then),
@@ -8146,7 +9012,7 @@ impl<'a> Gen<'a> {
                     self.abi_list_size(elem);
                 } else {
                     self.op(MLOAD);
-                    self.push_u64(32);
+                    self.push_u64(32 * u64::from(self.elem_words(elem)));
                     self.op(MUL);
                 }
                 self.op(ADD);
@@ -8194,8 +9060,8 @@ impl<'a> Gen<'a> {
                 self.mstore_off(cursor);
                 continue;
             }
-            if list.is_some() {
-                // The length word, then the elements, each already an ABI word.
+            if let Some(elem) = list {
+                // The length word, then the elements, each already ABI words.
                 self.mload(kept);
                 self.op(MLOAD);
                 self.mload(slot);
@@ -8206,7 +9072,7 @@ impl<'a> Gen<'a> {
                 self.op(MSTORE);
                 self.mload(kept);
                 self.op(MLOAD);
-                self.push_u64(32);
+                self.push_u64(32 * u64::from(self.elem_words(elem)));
                 self.op(MUL);
                 self.op(DUP1);
                 self.mload(kept);
@@ -8588,12 +9454,32 @@ impl<'a> Gen<'a> {
         Ok(())
     }
 
+    /// The return data a call's result needs when nothing decodes it: its head, so that
+    /// a call to an account without code fails, as Solidity's does. None when the
+    /// result is optional, decoded, or nothing.
+    fn unread_result(&self, ret: usize, then: Option<&Then>) -> u64 {
+        let t = &self.checked.types[ret];
+        let unread = then.is_none_or(|then| then.names.is_empty());
+        match t.kind {
+            TyKind::Unit | TyKind::Option => 0,
+            _ if !unread => 0,
+            _ if self.is_dynamic(ret) || self.list_value(ret) => 32,
+            _ => u64::from(t.words) * 32,
+        }
+    }
+
     /// One captured call: the call itself, then its continuation. `skip` is where the
     /// code after the call continues.
     fn replay_op(&mut self, op: &OpSite, skip: u32) -> Result<(), Error> {
         if let Some((marker, len, salt, args)) = op.create {
             self.emit_create(marker, len, salt, args, op.value);
             return self.finish_create(op, skip);
+        }
+        if op.needs_code {
+            self.mload(op.to);
+            self.op(EXTCODESIZE);
+            self.op(ISZERO);
+            self.revert_if_true()?;
         }
         self.op(PUSH0);
         self.op(PUSH0);
@@ -8648,6 +9534,12 @@ impl<'a> Gen<'a> {
                 self.op(ISZERO);
                 self.revert_if_true()?;
             }
+        }
+        if op.unread > 0 {
+            self.push_u64(op.unread);
+            self.op(RETURNDATASIZE);
+            self.op(LT);
+            self.revert_if_true()?;
         }
         if let Some(then) = &op.then {
             self.decode_returned(then)?;
@@ -8747,8 +9639,9 @@ impl<'a> Gen<'a> {
         }
     }
 
-    /// The creation code of another contract of this file, compiled once. Its place in
-    /// this code is a placeholder word until the code's length is known.
+    /// The creation code of another contract of this file or its imports, embedded once.
+    /// Its place in this code is a placeholder word until the code's length is known.
+    /// Creation code keeps it ahead of its end, where its arguments begin.
     fn peer_code(&mut self, name: &str, line: u32, col: u32) -> Result<(Word, u64), Error> {
         if let Some((marker, code)) = self
             .data
@@ -8757,6 +9650,20 @@ impl<'a> Gen<'a> {
             .map(|(m, c, _)| (*m, c.len()))
         {
             return Ok((marker, code as u64));
+        }
+        let code = self.peer_creation(name, line, col)?;
+        let marker = self.data_marker();
+        let len = code.len() as u64;
+        let end = self.init.then(|| self.data.iter().position(|(m, ..)| *m == self.code_end));
+        let at = end.flatten().unwrap_or(self.data.len());
+        self.data.insert(at, (marker, code, name.to_string()));
+        Ok((marker, len))
+    }
+
+    /// A peer's creation code, compiled once however often it is embedded or hashed.
+    fn peer_creation(&mut self, name: &str, line: u32, col: u32) -> Result<Vec<u8>, Error> {
+        if let Some(code) = self.peer_built.get(name) {
+            return Ok(code.clone());
         }
         let own = self.checked.prog.contract_name.clone();
         let peers = &self.checked.prog.peers;
@@ -8767,23 +9674,31 @@ impl<'a> Gen<'a> {
             return Err(error(
                 line,
                 col,
-                format!("`{name}` is not another contract of this file"),
+                format!("`{name}` is not another contract of this file or its imports"),
             ));
         };
-        // A created contract may create the others, but never itself or its creator.
+        // A created contract of this file may create the others, but never itself or its
+        // creator. An imported one keeps what its own file lets it create.
         let mut unit = peer.clone();
-        unit.peers = peers
-            .iter()
-            .filter(|p| p.contract_name.as_deref() != Some(name) && p.contract_name != own)
-            .cloned()
-            .collect();
+        if peer.origin == self.checked.prog.origin {
+            unit.peers = peers
+                .iter()
+                .filter(|p| p.contract_name.as_deref() != Some(name) && p.contract_name != own)
+                .cloned()
+                .collect();
+        }
         let built = crate::split::build(&crate::check::check(unit)?, name, &self.shape.opts)?;
         self.needs.extend(built.prerequisites());
-        let code = built.creation;
-        let marker = self.data_marker();
-        let len = code.len() as u64;
-        self.data.push((marker, code, name.to_string()));
-        Ok((marker, len))
+        self.peer_built.insert(name.to_string(), built.creation.clone());
+        Ok(built.creation)
+    }
+
+    /// The contract `Evm.creation_code` names.
+    fn creation_code_of<'e>(&self, name: &'e Expr, line: u32, col: u32) -> Result<&'e str, Error> {
+        match name {
+            Expr::Ident { name, .. } => Ok(name),
+            _ => Err(error(line, col, "`Evm.creation_code` takes the name of a contract")),
+        }
     }
 
     /// Whether an `Error` phase uses its binding only as `reason.length` or `fail reason`,
@@ -8867,17 +9782,10 @@ impl<'a> Gen<'a> {
         if self.is_dynamic(ret) {
             return self.decode_returned_bytes(then.syms[0]);
         }
+        if self.checked.types[ret].kind == TyKind::Option {
+            return self.decode_returned_option(ret, self.local[then.syms[0]]);
+        }
         let words = self.checked.types[ret].words;
-        self.return_sites += 1;
-        let buf = self.region(Region::Returned(self.return_sites), words * 32);
-        self.push_u64(u64::from(words) * 32);
-        self.op(RETURNDATASIZE);
-        self.op(LT);
-        self.revert_if_true()?;
-        self.push_u64(u64::from(words) * 32);
-        self.op(PUSH0);
-        self.push_mem(buf);
-        self.op(RETURNDATACOPY);
         // Where each word goes: the one name, or the tuple element that holds it.
         let mut dest = Vec::new();
         if then.tuple {
@@ -8896,8 +9804,56 @@ impl<'a> Gen<'a> {
                 dest.push((i, self.local[then.syms[0]] + i as i32 * 32));
             }
         }
+        self.decode_returned_words(ret, dest)
+    }
+
+    /// An optional result at `at`: `None` when the call returned no data, and otherwise
+    /// `Some` of the payload, decoded and checked as any result is.
+    fn decode_returned_option(&mut self, oty: usize, at: i32) -> Result<(), Error> {
+        let elem = self.checked.types[oty].elem.unwrap_or(0);
+        let (none, done) = (self.fresh(), self.fresh());
+        self.op(RETURNDATASIZE);
+        self.op(ISZERO);
+        self.push_label(none);
+        self.op(JUMPI);
+        if let Some(flip) = self.flip(oty) {
+            self.decode_returned_words(elem, vec![(0, at)])?;
+            self.mload(at);
+            self.apply_flip(flip);
+            self.mstore_off(at);
+        } else {
+            let words = self.checked.types[elem].words;
+            let dest = (0..words).map(|i| (i, at + 32 + i as i32 * 32)).collect();
+            self.decode_returned_words(elem, dest)?;
+            self.push_u64(1);
+            self.mstore_off(at);
+        }
+        self.push_label(done);
+        self.op(JUMP);
+        self.jumpdest(none);
+        for i in 0..self.checked.types[oty].words {
+            self.op(PUSH0);
+            self.mstore_off(at + i as i32 * 32);
+        }
+        self.jumpdest(done);
+        Ok(())
+    }
+
+    /// Copies the return data's words of `ty` and stores each, checked, where `dest` says.
+    fn decode_returned_words(&mut self, ty: usize, dest: Vec<(u32, i32)>) -> Result<(), Error> {
+        let words = self.checked.types[ty].words;
+        self.return_sites += 1;
+        let buf = self.region(Region::Returned(self.return_sites), words * 32);
+        self.push_u64(u64::from(words) * 32);
+        self.op(RETURNDATASIZE);
+        self.op(LT);
+        self.revert_if_true()?;
+        self.push_u64(u64::from(words) * 32);
+        self.op(PUSH0);
+        self.push_mem(buf);
+        self.op(RETURNDATACOPY);
         let mut types = Vec::new();
-        self.word_types(ret, &mut types);
+        self.word_types(ty, &mut types);
         for (word, at) in dest {
             let from = buf + word as i32 * 32;
             if let Some(Some(t)) = types.get(word as usize) {
@@ -9080,8 +10036,9 @@ impl<'a> Gen<'a> {
         self.op(SHR);
         self.revert_if_true()?;
         // Every element inside the data.
+        let k = self.elem_words(elem);
         self.mload(n);
-        self.push_u64(32);
+        self.push_u64(32 * u64::from(k));
         self.op(MUL);
         self.mload(off);
         self.op(ADD);
@@ -9091,10 +10048,10 @@ impl<'a> Gen<'a> {
         self.op(LT);
         self.revert_if_true()?;
         self.mload(n);
-        self.alloc_list(1)?;
+        self.alloc_list(k)?;
         self.mstore_off(list);
         self.mload(n);
-        self.push_u64(32);
+        self.push_u64(32 * u64::from(k));
         self.op(MUL);
         self.mload(off);
         self.push_u64(32);
@@ -9189,6 +10146,11 @@ impl<'a> Gen<'a> {
                 self.op(POP);
             }
             self.mload(list);
+            return Ok(());
+        }
+        if k > 1 {
+            self.mload(list);
+            self.check_elements(elem)?;
             return Ok(());
         }
         let t = &self.checked.types[word_ty];
@@ -9512,15 +10474,924 @@ impl<'a> Gen<'a> {
         self.journal_store();
     }
 
+    /// Whether a stored place lies past a key or an index the older paths don't reach: a
+    /// list inside a map or a record, a record element of a list, or a map inside a map's
+    /// record. Such a place has no leaf; its slot is computed.
+    fn deep(&self, e: &Expr) -> bool {
+        let root = match e {
+            Expr::Field { root, .. } | Expr::Index { root, .. } => *root,
+            _ => None,
+        };
+        if !root.is_some_and(|sym| self.checked.syms[sym].storage) {
+            return false;
+        }
+        // Each step from the root: a field's name, or `None` for an index, with the type
+        // it steps from.
+        let mut steps = Vec::new();
+        let mut at = e;
+        loop {
+            match at {
+                Expr::Field { base, name, .. } => {
+                    steps.push((Some(name.as_str()), base.ty()));
+                    at = base;
+                }
+                Expr::Index { base, .. } => {
+                    steps.push((None, base.ty()));
+                    at = base;
+                }
+                _ => break,
+            }
+        }
+        steps.reverse();
+        let Some(first) = steps.iter().position(|(name, _)| name.is_none()) else {
+            return false;
+        };
+        let types = &self.checked.types;
+        let kind = |ty: usize| types[self.peel_nominal(ty)].kind;
+        // A stored fixed list's elements are leaves of the image, which a body that has
+        // one reads and writes instead of their slots.
+        if !self.direct && kind(steps[first].1) == TyKind::List && types[self.peel_nominal(steps[first].1)].bits > 0 {
+            return false;
+        }
+        let rest = &steps[first + 1..];
+        let length_only = |rest: &[(Option<&str>, usize)]| {
+            matches!(rest, [(Some("length"), ty)] if self.is_dynamic(*ty))
+        };
+        if kind(steps[first].1) == TyKind::List {
+            let elem = self.list_elem(steps[first].1);
+            return matches!(kind(elem), TyKind::Record | TyKind::Tuple)
+                || !(rest.is_empty() || length_only(rest));
+        }
+        let keys = rest.iter().take_while(|(name, ty)| name.is_none() && kind(*ty) == TyKind::Map).count();
+        let after = &rest[keys..];
+        let value = after.first().map_or(e.ty(), |(_, ty)| *ty);
+        let vkind = kind(value);
+        if after.is_empty() {
+            return vkind == TyKind::List
+                || (matches!(vkind, TyKind::Record | TyKind::Tuple)
+                    && !crate::check::is_static_value(types, value));
+        }
+        if length_only(after) {
+            return false;
+        }
+        !(is_stored_aggregate(types, value) && after.iter().all(|(name, _)| name.is_some()))
+    }
+
+    /// A stored place with a leaf of its own: a name, or fields of one.
+    fn static_place(&self, e: &Expr) -> Option<(usize, u32)> {
+        match e {
+            Expr::Ident { sym: Some(sym), .. } if self.checked.syms[*sym].storage => Some((*sym, 0)),
+            Expr::Field {
+                root: Some(sym),
+                leaf,
+                base,
+                ..
+            } if self.checked.syms[*sym].storage
+                && (matches!(base.as_ref(), Expr::Ident { sym: None, .. })
+                    || self.static_place(base).is_some()) =>
+            {
+                Some((*sym, *leaf))
+            }
+            _ => None,
+        }
+    }
+
+    /// Keys into a stored map with a leaf of its own, the map's first key last.
+    fn map_prefix<'e>(&self, e: &'e Expr) -> Option<(usize, u32, Vec<&'e Expr>)> {
+        let mut keys = Vec::new();
+        let mut at = e;
+        while let Expr::Index { base, index, .. } = at {
+            if self.checked.types[self.peel_nominal(base.ty())].kind != TyKind::Map {
+                return None;
+            }
+            keys.push(index.as_ref());
+            at = base;
+            if let Some((sym, leaf)) = self.static_place(at) {
+                keys.reverse();
+                return Some((sym, leaf, keys));
+            }
+        }
+        None
+    }
+
+    /// The slots a list element takes: several for a record or an option with a tag word.
+    fn elem_slots(&self, elem: usize) -> u64 {
+        let id = self.peel_nominal(elem);
+        match self.checked.types[id].kind {
+            TyKind::Record | TyKind::Tuple | TyKind::Option | TyKind::List
+                if self.checked.types[id].words > 1 || self.checked.types[id].kind != TyKind::Option =>
+            {
+                self.value_layout(id).last().map_or(1, |(off, _)| off + 1)
+            }
+            _ => 1,
+        }
+    }
+
+    /// Whether a list element's words each fill a slot, so `LoadList` and `StoreList`
+    /// copy it word for word.
+    fn plain_elem(&self, elem: usize) -> bool {
+        let id = self.peel_nominal(elem);
+        !matches!(self.checked.types[id].kind, TyKind::Record | TyKind::Tuple)
+            || self
+                .value_layout(id)
+                .iter()
+                .enumerate()
+                .all(|(i, (off, pack))| *off == i as u64 && pack.is_full())
+    }
+
+    /// Pushes the slot of a stored place `deep` finds. `grow` lets an index at a list's
+    /// length append to it.
+    fn deep_slot(&mut self, e: &Expr, grow: bool) -> Result<Deep, Error> {
+        let ty = e.ty();
+        if let Some((sym, leaf)) = self.static_place(e) {
+            // A map, list, string, or fixed list starts a slot of its own.
+            let at = self.checked.syms[sym].slot + leaf;
+            let transient = self.checked.transient_leaf(at);
+            self.push_word(self.checked.leaf_keys[at as usize]);
+            return Ok(Deep { ty, pack: Pack::FULL, transient });
+        }
+        match e {
+            Expr::Index { base, index, .. } => {
+                let bty = self.peel_nominal(base.ty());
+                if self.checked.types[bty].kind == TyKind::Map {
+                    if let Some((sym, leaf, keys)) = self.map_prefix(e) {
+                        let transient = self.checked.transient_leaf(self.checked.syms[sym].slot + leaf);
+                        self.push_map_slot(sym, leaf, &keys)?;
+                        self.transient_slot = false;
+                        return Ok(Deep { ty, pack: Pack::FULL, transient });
+                    }
+                    let p = self.deep_slot(base, false)?;
+                    self.compile_value(index)?;
+                    self.nested_slot();
+                    return Ok(Deep { ty, pack: Pack::FULL, transient: p.transient });
+                }
+                let stride = self.elem_slots(ty);
+                let bits = self.checked.types[bty].bits;
+                if bits > 0 {
+                    let p = self.deep_slot(base, false)?;
+                    self.compile_value(index)?;
+                    self.bounds_index(u64::from(bits), false)?;
+                    if stride > 1 {
+                        self.push_u64(stride);
+                        self.op(MUL);
+                    }
+                    self.op(ADD);
+                    return Ok(Deep { ty, pack: Pack::FULL, transient: p.transient });
+                }
+                if let Some((sym, leaf)) = self.static_place(base) {
+                    // A stored list's length is a leaf of the image.
+                    let transient = self.checked.transient_leaf(self.checked.syms[sym].slot + leaf);
+                    self.compile_value(index)?;
+                    self.mstore_off(self.scratch_a);
+                    self.list_bounds(sym, leaf, grow)?;
+                    self.stored_list_base(sym, leaf);
+                    self.mload(self.scratch_a);
+                    if stride > 1 {
+                        self.push_u64(stride);
+                        self.op(MUL);
+                    }
+                    self.op(ADD);
+                    return Ok(Deep { ty, pack: Pack::FULL, transient });
+                }
+                // [slot, i, length], all on the stack, so that every such index is the
+                // same code and can be shared.
+                let p = self.deep_slot(base, false)?;
+                self.compile_value(index)?;
+                self.op(DUP1 + 1);
+                self.transient_slot = p.transient;
+                self.journal_load();
+                if grow {
+                    // `xs[xs.length] := v` appends: the length grows by one.
+                    let skip = self.fresh();
+                    self.op(DUP1);
+                    self.op(DUP1 + 2);
+                    self.op(EQ);
+                    self.op(ISZERO);
+                    self.push_label(skip);
+                    self.op(JUMPI);
+                    self.push_u64(1);
+                    self.op(ADD);
+                    self.op(DUP1);
+                    self.op(DUP1 + 3);
+                    self.transient_slot = p.transient;
+                    self.branch += 1;
+                    self.journal_store();
+                    self.branch -= 1;
+                    self.jumpdest(skip);
+                }
+                self.op(DUP1 + 1);
+                self.op(SWAP1);
+                self.op(GT);
+                self.op(ISZERO);
+                self.revert_if_panic(0x32)?;
+                self.op(SWAP1);
+                self.mstore_off(self.hash_buf);
+                self.push_u64(32);
+                self.push_mem(self.hash_buf);
+                self.op(KECCAK);
+                self.op(SWAP1);
+                if stride > 1 {
+                    self.push_u64(stride);
+                    self.op(MUL);
+                }
+                self.op(ADD);
+                Ok(Deep { ty, pack: Pack::FULL, transient: p.transient })
+            }
+            Expr::Field { base, name, line, col, .. } => {
+                let p = self.deep_slot(base, false)?;
+                let rty = self.peel_nominal(base.ty());
+                let field = self.checked.types[rty]
+                    .fields
+                    .iter()
+                    .find(|f| f.name == *name)
+                    .ok_or_else(|| error(*line, *col, format!("no field `{name}`")))?;
+                let (slot, fty) = (field.slot, field.ty);
+                let (off, pack) = self.value_layout(rty)[slot as usize];
+                if off > 0 {
+                    self.push_u64(off);
+                    self.op(ADD);
+                }
+                let narrow = crate::check::narrow_width(&self.checked.types, fty).is_some();
+                Ok(Deep {
+                    ty: fty,
+                    pack: if narrow { pack } else { Pack::FULL },
+                    transient: p.transient,
+                })
+            }
+            other => Err(error(other.line(), other.col(), "this value is not in storage")),
+        }
+    }
+
+    /// Pushes the word a place `deep` finds holds: a word, a string or bytes value, a
+    /// list, or a list's length.
+    fn deep_read(&mut self, e: &Expr) -> Result<(), Error> {
+        if let Expr::Field { base, name, .. } = e {
+            if name == "length" && (self.list_value(base.ty()) || self.is_dynamic(base.ty())) {
+                let p = self.deep_slot(base, false)?;
+                self.transient_slot = p.transient;
+                self.journal_load();
+                if self.is_dynamic(base.ty()) {
+                    self.header_length();
+                }
+                return Ok(());
+            }
+        }
+        let ty = e.ty();
+        let p = self.deep_slot(e, false)?;
+        if self.list_value(ty) {
+            return self.deep_load_list(p);
+        }
+        self.transient_slot = p.transient;
+        if self.is_dynamic(ty) {
+            self.load_slot(true);
+            return Ok(());
+        }
+        if !self.stack_value(ty) {
+            return Err(error(e.line(), e.col(), "expected a word"));
+        }
+        self.journal_load();
+        self.unpack(p.pack);
+        Ok(())
+    }
+
+    /// `[slot]` of a stored list becomes a copy of it.
+    fn deep_load_list(&mut self, p: Deep) -> Result<(), Error> {
+        let elem = self.list_elem(p.ty);
+        self.op(DUP1);
+        self.transient_slot = p.transient;
+        self.journal_load();
+        self.op(SWAP1);
+        self.mstore_off(self.hash_buf);
+        self.push_u64(32);
+        self.push_mem(self.hash_buf);
+        self.op(KECCAK);
+        self.load_list_sub(elem, p.transient);
+        Ok(())
+    }
+
+    /// `[n, base]` becomes a copy of the `n` elements stored from slot `base`.
+    fn load_list_sub(&mut self, elem: usize, transient: bool) {
+        if self.plain_elem(elem) {
+            let k = self.checked.types[self.peel_nominal(elem)].words.max(1);
+            let bytes = self.stored_dyn(elem);
+            self.call_sub(Sub::LoadList(k, transient, self.direct, bytes));
+        } else {
+            self.call_sub(Sub::LoadRecords(self.peel_nominal(elem), transient, self.direct));
+        }
+    }
+
+    /// `[ptr, old, base]` writes a list over `old` stored elements from slot `base`.
+    fn store_list_sub(&mut self, elem: usize, transient: bool) {
+        if !self.direct && !transient {
+            if let Some(body) = self.body_mut() {
+                body.journal_stores = true;
+            }
+        }
+        if self.plain_elem(elem) {
+            let k = self.checked.types[self.peel_nominal(elem)].words.max(1);
+            let bytes = self.stored_dyn(elem);
+            self.call_sub(Sub::StoreList(k, transient, self.direct, bytes));
+        } else {
+            self.call_sub(Sub::StoreRecords(self.peel_nominal(elem), transient, self.direct));
+        }
+    }
+
+    /// The memory holding a record, tuple, or option a place `deep` finds, read into a buffer.
+    fn deep_value_addr(&mut self, e: &Expr) -> Result<i32, Error> {
+        let p = self.deep_slot(e, false)?;
+        let n = self.checked.types[p.ty].words;
+        if !crate::check::is_static_value(&self.checked.types, p.ty) {
+            return self.deep_load_record(p);
+        }
+        Ok(self.load_layout(p.ty, 0, n, p.transient))
+    }
+
+    /// The type of each word of a stored record, nested records' words in place.
+    fn record_leaves(&self, ty: usize, out: &mut Vec<usize>) {
+        let id = self.peel_nominal(ty);
+        let t = &self.checked.types[id];
+        match t.kind {
+            TyKind::Record | TyKind::Tuple => {
+                for field in &t.fields {
+                    self.record_leaves(field.ty, out);
+                }
+            }
+            TyKind::List if t.bits > 0 => {
+                for _ in 0..t.bits {
+                    self.record_leaves(t.elem.unwrap_or(0), out);
+                }
+            }
+            _ => out.extend(std::iter::repeat(id).take(t.words.max(1) as usize)),
+        }
+    }
+
+    /// `[slot]` of a stored record with strings, bytes, or lists among its fields: each
+    /// word read as its own kind, into a buffer.
+    fn deep_load_record(&mut self, p: Deep) -> Result<i32, Error> {
+        let layout = self.value_layout(p.ty);
+        let mut leaves = Vec::new();
+        self.record_leaves(p.ty, &mut leaves);
+        self.return_sites += 1;
+        let buf = self.region(Region::Stored(self.return_sites), leaves.len() as u32 * 32);
+        let slot = self.temp();
+        self.mstore_off(slot);
+        for (j, &leaf) in leaves.iter().enumerate() {
+            let (off, pack) = layout[j];
+            self.mload(slot);
+            if off > 0 {
+                self.push_u64(off);
+                self.op(ADD);
+            }
+            if self.list_value(leaf) {
+                self.deep_load_list(Deep { ty: leaf, pack, transient: p.transient })?;
+            } else {
+                self.transient_slot = p.transient;
+                if self.is_dynamic(leaf) {
+                    self.load_slot(true);
+                } else {
+                    self.journal_load();
+                    self.unpack(pack);
+                }
+            }
+            self.mstore_off(buf + j as i32 * 32);
+        }
+        Ok(buf)
+    }
+
+    /// `[slot]` of a stored record with strings, bytes, or lists among its fields: writes
+    /// the record at `buf`, the words that share a slot joined first.
+    fn deep_store_record(&mut self, p: Deep, buf: i32) -> Result<(), Error> {
+        let layout = self.value_layout(p.ty);
+        let mut leaves = Vec::new();
+        self.record_leaves(p.ty, &mut leaves);
+        let slot = self.temp();
+        self.mstore_off(slot);
+        let mut j = 0;
+        while j < leaves.len() {
+            let (off, _) = layout[j];
+            let at = |g: &mut Self| {
+                g.mload(slot);
+                if off > 0 {
+                    g.push_u64(off);
+                    g.op(ADD);
+                }
+            };
+            let leaf = leaves[j];
+            if self.list_value(leaf) {
+                let old = self.temp();
+                at(self);
+                self.transient_slot = p.transient;
+                self.journal_load();
+                self.mstore_off(old);
+                self.mload(buf + j as i32 * 32);
+                self.op(DUP1);
+                self.op(MLOAD);
+                at(self);
+                self.transient_slot = p.transient;
+                self.journal_store();
+                self.mload(old);
+                at(self);
+                self.mstore_off(self.hash_buf);
+                self.push_u64(32);
+                self.push_mem(self.hash_buf);
+                self.op(KECCAK);
+                self.store_list_sub(self.list_elem(leaf), p.transient);
+                j += 1;
+                continue;
+            }
+            if self.is_dynamic(leaf) {
+                self.mload(buf + j as i32 * 32);
+                at(self);
+                self.transient_slot = p.transient;
+                self.store_slot(true);
+                j += 1;
+                continue;
+            }
+            let end = (j..leaves.len())
+                .find(|&x| layout[x].0 != off || self.list_value(leaves[x]) || self.is_dynamic(leaves[x]))
+                .unwrap_or(leaves.len());
+            for x in j..end {
+                let pack = layout[x].1;
+                self.mload(buf + x as i32 * 32);
+                if !pack.is_full() {
+                    if pack.signed {
+                        self.push_word(byte_mask(pack.width));
+                        self.op(AND);
+                    }
+                    if pack.offset > 0 {
+                        self.push_u64(u64::from(pack.offset) * 8);
+                        self.op(SHL);
+                    }
+                }
+                if x > j {
+                    self.op(OR);
+                }
+            }
+            at(self);
+            self.transient_slot = p.transient;
+            self.journal_store();
+            j = end;
+        }
+        Ok(())
+    }
+
+    /// `target := expr` for a place `deep` finds. The value is computed before the slot, so
+    /// it may read the place it replaces. An index at a list's length appends.
+    fn deep_assign(&mut self, target: &Expr, expr: &Expr) -> Result<(), Error> {
+        let ty = target.ty();
+        let grow = matches!(target, Expr::Index { base, .. } if self.list_value(base.ty()));
+        if self.list_value(ty) {
+            self.compile_value(expr)?;
+            let p = self.deep_slot(target, false)?;
+            let (list, slot) = (self.temp(), self.temp());
+            self.mstore_off(slot);
+            self.mstore_off(list);
+            self.mload(list);
+            self.mload(slot);
+            self.transient_slot = p.transient;
+            self.journal_load();
+            self.mload(list);
+            self.op(MLOAD);
+            self.mload(slot);
+            self.transient_slot = p.transient;
+            self.journal_store();
+            self.mload(slot);
+            self.mstore_off(self.hash_buf);
+            self.push_u64(32);
+            self.push_mem(self.hash_buf);
+            self.op(KECCAK);
+            self.store_list_sub(self.list_elem(ty), p.transient);
+            return Ok(());
+        }
+        if self.is_dynamic(ty) || self.stack_value(ty) {
+            self.compile_value(expr)?;
+            let p = self.deep_slot(target, grow)?;
+            if self.is_dynamic(ty) {
+                self.transient_slot = p.transient;
+                self.store_slot(true);
+                return Ok(());
+            }
+            if p.pack.is_full() {
+                self.transient_slot = p.transient;
+                self.journal_store();
+                return Ok(());
+            }
+            // [value, slot]: `old ^ ((old ^ (v << s)) & m)`, as `sstore_leaf` does.
+            let shift = u32::from(p.pack.offset) * 8;
+            self.op(SWAP1);
+            if shift > 0 {
+                self.push_u64(u64::from(shift));
+                self.op(SHL);
+            }
+            self.op(DUP1 + 1);
+            self.transient_slot = p.transient;
+            self.journal_load();
+            self.op(SWAP1);
+            self.op(DUP1 + 1);
+            self.op(XOR);
+            self.push_word(byte_mask(p.pack.width).shl(shift));
+            self.op(AND);
+            self.op(XOR);
+            self.op(SWAP1);
+            self.transient_slot = p.transient;
+            self.journal_store();
+            return Ok(());
+        }
+        let n = self.checked.types[ty].words;
+        let buf = if self.checked.types[self.peel_nominal(ty)].kind == TyKind::Record {
+            self.value_addr(expr)?
+        } else {
+            self.return_sites += 1;
+            let buf = self.region(Region::Stored(self.return_sites), n * 32);
+            self.write_value(expr, buf, ty)?;
+            buf
+        };
+        let p = self.deep_slot(target, grow)?;
+        if !crate::check::is_static_value(&self.checked.types, ty) {
+            return self.deep_store_record(p, buf);
+        }
+        self.transient_slot = p.transient;
+        self.store_value(self.peel_nominal(ty), 0, n, buf);
+        Ok(())
+    }
+
+    fn sub_load_records(&mut self, elem: usize, transient: bool) -> Result<(), Error> {
+        let layout = self.value_layout(elem);
+        let k = self.checked.types[elem].words;
+        let slots = self.elem_slots(elem);
+        let (top, done) = (self.fresh(), self.fresh());
+        // [n, base, ret] becomes [ret, base, list, n, i].
+        self.op(SWAP1 + 1);
+        self.op(DUP1);
+        self.alloc_list(k)?;
+        self.op(SWAP1);
+        self.op(PUSH0);
+        self.jumpdest(top);
+        self.op(DUP1 + 1);
+        self.op(DUP1 + 1);
+        self.op(LT);
+        self.op(ISZERO);
+        self.push_label(done);
+        self.op(JUMPI);
+        // [.., i, slot, dst]: the element's first slot, and where its words go.
+        self.op(DUP1);
+        self.push_u64(slots);
+        self.op(MUL);
+        self.op(DUP1 + 4);
+        self.op(ADD);
+        self.op(DUP1 + 1);
+        self.push_u64(32 * u64::from(k));
+        self.op(MUL);
+        self.op(DUP1 + 4);
+        self.op(ADD);
+        self.push_u64(32);
+        self.op(ADD);
+        let mut j = 0;
+        while j < layout.len() {
+            let off = layout[j].0;
+            let end = (j..layout.len()).find(|&x| layout[x].0 != off).unwrap_or(layout.len());
+            self.op(DUP1 + 1);
+            if off > 0 {
+                self.push_u64(off);
+                self.op(ADD);
+            }
+            self.transient_slot = transient;
+            self.journal_load();
+            // [.., dst, word]
+            for x in j..end {
+                if x + 1 < end {
+                    self.op(DUP1);
+                }
+                self.unpack(layout[x].1);
+                self.op(DUP1 + 2 - usize::from(x + 1 == end) as u8);
+                if x > 0 {
+                    self.push_u64(32 * x as u64);
+                    self.op(ADD);
+                }
+                self.op(MSTORE);
+            }
+            j = end;
+        }
+        self.op(POP);
+        self.op(POP);
+        self.push_u64(1);
+        self.op(ADD);
+        self.push_label(top);
+        self.op(JUMP);
+        self.jumpdest(done);
+        self.op(POP);
+        self.op(POP);
+        self.op(SWAP1 + 1);
+        self.op(SWAP1);
+        self.op(POP);
+        self.op(JUMP);
+        Ok(())
+    }
+
+    fn sub_store_records(&mut self, elem: usize, transient: bool) {
+        let layout = self.value_layout(elem);
+        let k = self.checked.types[elem].words;
+        let slots = self.elem_slots(elem);
+        let (top, done, clear, cleared) = (self.fresh(), self.fresh(), self.fresh(), self.fresh());
+        // [ptr, old, base, ret] becomes [ret, old, base, ptr, n, i].
+        self.op(SWAP1 + 2);
+        self.op(DUP1);
+        self.op(MLOAD);
+        self.op(PUSH0);
+        self.jumpdest(top);
+        self.op(DUP1 + 1);
+        self.op(DUP1 + 1);
+        self.op(LT);
+        self.op(ISZERO);
+        self.push_label(done);
+        self.op(JUMPI);
+        // [.., i, src, slot]: where the element's words are, and its first slot.
+        self.op(DUP1);
+        self.push_u64(32 * u64::from(k));
+        self.op(MUL);
+        self.op(DUP1 + 3);
+        self.op(ADD);
+        self.push_u64(32);
+        self.op(ADD);
+        self.op(DUP1 + 1);
+        self.push_u64(slots);
+        self.op(MUL);
+        self.op(DUP1 + 5);
+        self.op(ADD);
+        let mut j = 0;
+        while j < layout.len() {
+            let off = layout[j].0;
+            let end = (j..layout.len()).find(|&x| layout[x].0 != off).unwrap_or(layout.len());
+            for x in j..end {
+                let pack = layout[x].1;
+                self.op(DUP1 + 1 + usize::from(x > j) as u8);
+                if x > 0 {
+                    self.push_u64(32 * x as u64);
+                    self.op(ADD);
+                }
+                self.op(MLOAD);
+                if !pack.is_full() {
+                    if pack.signed {
+                        self.push_word(byte_mask(pack.width));
+                        self.op(AND);
+                    }
+                    if pack.offset > 0 {
+                        self.push_u64(u64::from(pack.offset) * 8);
+                        self.op(SHL);
+                    }
+                }
+                if x > j {
+                    self.op(OR);
+                }
+            }
+            // [.., src, slot, word]
+            self.op(DUP1 + 1);
+            if off > 0 {
+                self.push_u64(off);
+                self.op(ADD);
+            }
+            self.transient_slot = transient;
+            self.journal_store();
+            j = end;
+        }
+        self.op(POP);
+        self.op(POP);
+        self.push_u64(1);
+        self.op(ADD);
+        self.push_label(top);
+        self.op(JUMP);
+        self.jumpdest(done);
+        // [ret, old, base, ptr, n, i]: the slots a shorter list no longer uses, from
+        // `n * slots` to `old * slots`.
+        self.op(POP);
+        self.push_u64(slots);
+        self.op(MUL);
+        self.op(DUP1 + 3);
+        self.push_u64(slots);
+        self.op(MUL);
+        self.jumpdest(clear);
+        self.op(DUP1);
+        self.op(DUP1 + 2);
+        self.op(LT);
+        self.op(ISZERO);
+        self.push_label(cleared);
+        self.op(JUMPI);
+        self.op(PUSH0);
+        self.op(DUP1 + 2);
+        self.op(DUP1 + 5);
+        self.op(ADD);
+        self.transient_slot = transient;
+        self.journal_store();
+        self.op(SWAP1);
+        self.push_u64(1);
+        self.op(ADD);
+        self.op(SWAP1);
+        self.push_label(clear);
+        self.op(JUMP);
+        self.jumpdest(cleared);
+        for _ in 0..5 {
+            self.op(POP);
+        }
+        self.op(JUMP);
+    }
+
+    /// A field of an element of a stored fixed list of records, in a body that works on the
+    /// image: the list, its first leaf, the index, and the field's first word and type
+    /// within the element.
+    fn image_elem<'e>(&self, e: &'e Expr) -> Option<(usize, u32, &'e Expr, u32, usize)> {
+        if self.direct {
+            return None;
+        }
+        let mut at = e;
+        let mut offset = 0;
+        while let Expr::Field { base, name, .. } = at {
+            let rec = &self.checked.types[self.peel_nominal(base.ty())];
+            let field = rec.fields.iter().find(|f| f.name == *name)?;
+            offset += field.slot;
+            at = base;
+        }
+        if std::ptr::eq(at, e) {
+            return None;
+        }
+        let Expr::Index { base, index, .. } = at else {
+            return None;
+        };
+        let (sym, leaf) = self.static_place(base)?;
+        let t = &self.checked.types[self.peel_nominal(base.ty())];
+        (t.kind == TyKind::List && t.bits > 0).then_some((sym, leaf, index.as_ref(), offset, e.ty()))
+    }
+
+    /// Pushes where `image_elem`'s field sits in the image. A write of `n` words marks
+    /// them dirty.
+    fn image_elem_start(
+        &mut self,
+        sym: usize,
+        leaf: u32,
+        index: &Expr,
+        offset: u32,
+        write: Option<u32>,
+    ) -> Result<(), Error> {
+        let lty = self.type_at(self.checked.syms[sym].ty, leaf);
+        let bits = u64::from(self.checked.types[lty].bits);
+        let k = u64::from(self.list_stride(lty));
+        let first = self.checked.syms[sym].slot + leaf;
+        self.read_list(sym, leaf);
+        self.compile_value(index)?;
+        self.bounds_index(bits, write.is_some())?;
+        if let Some(words) = write {
+            let len = self.checked.types[lty].words;
+            if let Some(body) = self.body_mut() {
+                body.writes.extend(first..first + len);
+            }
+            self.op(DUP1);
+            self.push_u64(k * 32);
+            self.op(MUL);
+            self.push_mem(self.dirty + (first + offset) as i32 * 32);
+            self.op(ADD);
+            for j in 0..words {
+                if j + 1 < words {
+                    self.op(DUP1);
+                }
+                if j > 0 {
+                    self.push_u64(u64::from(j) * 32);
+                    self.op(ADD);
+                }
+                self.push_u64(1);
+                self.op(SWAP1);
+                self.op(MSTORE);
+            }
+        }
+        self.push_u64(k * 32);
+        self.op(MUL);
+        self.push_mem(self.addr(sym, leaf) + offset as i32 * 32);
+        self.op(ADD);
+        Ok(())
+    }
+
+    /// A field of an element of a local list of records, `xs[i].a.b`: the list, the index,
+    /// and the field's first word and type within the element.
+    fn local_elem<'e>(&self, e: &'e Expr) -> Option<(usize, &'e Expr, u32, usize)> {
+        let mut at = e;
+        let mut offset = 0;
+        while let Expr::Field { base, name, .. } = at {
+            let rec = &self.checked.types[self.peel_nominal(base.ty())];
+            let field = rec.fields.iter().find(|f| f.name == *name)?;
+            offset += field.slot;
+            at = base;
+        }
+        if std::ptr::eq(at, e) {
+            return None;
+        }
+        match at {
+            Expr::Index { base, index, .. } => match base.as_ref() {
+                Expr::Ident { sym: Some(sym), .. }
+                    if !self.checked.syms[*sym].storage && self.list_value(base.ty()) =>
+                {
+                    Some((*sym, index.as_ref(), offset, e.ty()))
+                }
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    fn local_elem_read(&mut self, e: &Expr) -> Result<Option<()>, Error> {
+        let Some((sym, index, offset, ty)) = self.local_elem(e) else {
+            return Ok(None);
+        };
+        if !self.stack_value(ty) {
+            return Ok(None);
+        }
+        let k = self.list_k(self.checked.syms[sym].ty);
+        self.heap_element(sym, index, u64::from(k), false)?;
+        if offset > 0 {
+            self.push_u64(u64::from(offset) * 32);
+            self.op(ADD);
+        }
+        self.op(MLOAD);
+        Ok(Some(()))
+    }
+
+    fn local_elem_addr(&mut self, e: &Expr) -> Result<Option<i32>, Error> {
+        let Some((sym, index, offset, ty)) = self.local_elem(e) else {
+            return Ok(None);
+        };
+        let n = self.checked.types[ty].words;
+        let k = self.list_k(self.checked.syms[sym].ty);
+        self.return_sites += 1;
+        let buf = self.region(Region::Stored(self.return_sites), n * 32);
+        self.heap_element(sym, index, u64::from(k), false)?;
+        for j in 0..n {
+            if j + 1 < n {
+                self.op(DUP1);
+            }
+            let at = (offset + j) * 32;
+            if at > 0 {
+                self.push_u64(u64::from(at));
+                self.op(ADD);
+            }
+            self.op(MLOAD);
+            self.mstore_off(buf + j as i32 * 32);
+        }
+        Ok(Some(buf))
+    }
+
+    /// `xs[i].a := v` for a local list of records: the element's words are written in place.
+    fn local_elem_assign(&mut self, target: &Expr, expr: &Expr) -> Result<(), Error> {
+        let Some((sym, index, offset, ty)) = self.local_elem(target) else {
+            return Ok(());
+        };
+        let n = self.checked.types[ty].words;
+        let k = self.list_k(self.checked.syms[sym].ty);
+        if n == 1 && self.stack_value(ty) {
+            self.compile_value(expr)?;
+            self.heap_element(sym, index, u64::from(k), false)?;
+            if offset > 0 {
+                self.push_u64(u64::from(offset) * 32);
+                self.op(ADD);
+            }
+            self.op(MSTORE);
+            return Ok(());
+        }
+        let buf = if self.checked.types[self.peel_nominal(ty)].kind == TyKind::Record {
+            self.value_addr(expr)?
+        } else {
+            self.return_sites += 1;
+            let buf = self.region(Region::Stored(self.return_sites), n * 32);
+            self.write_value(expr, buf, ty)?;
+            buf
+        };
+        self.heap_element(sym, index, u64::from(k), false)?;
+        for j in 0..n {
+            if j + 1 < n {
+                self.op(DUP1);
+            }
+            self.mload(buf + j as i32 * 32);
+            self.op(SWAP1);
+            let at = (offset + j) * 32;
+            if at > 0 {
+                self.push_u64(u64::from(at));
+                self.op(ADD);
+            }
+            self.op(MSTORE);
+        }
+        Ok(())
+    }
+
     /// Reads words `start..start + n` of the map value at `index` into a buffer, one
     /// load per slot.
     fn load_value(&mut self, index: &Expr, value: usize, start: u32, n: u32) -> Result<i32, Error> {
-        self.return_sites += 1;
-        let buf = self.region(Region::Stored(self.return_sites), n * 32);
-        let layout = self.value_layout(value);
         self.map_chain(index)?;
         // Every slot of a value in a transient map is transient, not just the first.
         let transient = std::mem::take(&mut self.transient_slot);
+        Ok(self.load_layout(value, start, n, transient))
+    }
+
+    /// `[slot]` of a stored value: reads its words `start..start + n` into a buffer.
+    fn load_layout(&mut self, value: usize, start: u32, n: u32, transient: bool) -> i32 {
+        self.return_sites += 1;
+        let buf = self.region(Region::Stored(self.return_sites), n * 32);
+        let layout = self.value_layout(value);
         let mut i = 0;
         while i < n {
             let off = layout[(start + i) as usize].0;
@@ -9544,7 +11415,7 @@ impl<'a> Gen<'a> {
             i = end;
         }
         self.op(POP);
-        Ok(buf)
+        buf
     }
 
     /// `[slot]` of a map value: writes words `start..start + n` from `buf`. The words
@@ -9589,6 +11460,30 @@ impl<'a> Gen<'a> {
 
     /// The memory holding a value to copy. A record in a map is read into a buffer.
     fn value_addr(&mut self, e: &Expr) -> Result<i32, Error> {
+        if self.deep(e) {
+            return self.deep_value_addr(e);
+        }
+        if let Some(at) = self.local_elem_addr(e)? {
+            return Ok(at);
+        }
+        if let Some((sym, leaf, index, offset, ty)) = self.image_elem(e) {
+            let n = self.checked.types[ty].words;
+            self.return_sites += 1;
+            let buf = self.region(Region::Stored(self.return_sites), n * 32);
+            self.image_elem_start(sym, leaf, index, offset, None)?;
+            for j in 0..n {
+                if j + 1 < n {
+                    self.op(DUP1);
+                }
+                if j > 0 {
+                    self.push_u64(u64::from(j) * 32);
+                    self.op(ADD);
+                }
+                self.op(MLOAD);
+                self.mstore_off(buf + j as i32 * 32);
+            }
+            return Ok(buf);
+        }
         if let Some((index, value, start)) = self.map_place(e) {
             let n = self.checked.types[e.ty()].words;
             return self.load_value(index, value, start, n);
@@ -9753,6 +11648,11 @@ impl<'a> Gen<'a> {
             TyKind::Option => self.write_option(expr, dst, ty),
             TyKind::Record => self.write_record(expr, dst, ty),
             TyKind::Tuple => self.write_words(expr, dst),
+            TyKind::List if self.list_value(ty) => {
+                self.compile_value(expr)?;
+                self.mstore_off(dst);
+                Ok(())
+            }
             TyKind::List => self.write_list(expr, dst, ty),
             _ => {
                 self.compile_value(expr)?;
@@ -10362,10 +12262,6 @@ impl<'a> Gen<'a> {
         let len_addr = self.addr(sym, leaf);
         self.mload(len_addr);
         self.mstore_off(self.scratch_c);
-        self.mload(self.scratch_c);
-        self.mload(self.scratch_a);
-        self.op(GT);
-        self.revert_if_panic(0x32)?;
         if !grow {
             self.mload(self.scratch_c);
             self.mload(self.scratch_a);
@@ -10374,6 +12270,10 @@ impl<'a> Gen<'a> {
             self.revert_if_panic(0x32)?;
             return Ok(());
         }
+        self.mload(self.scratch_c);
+        self.mload(self.scratch_a);
+        self.op(GT);
+        self.revert_if_panic(0x32)?;
         let skip = self.fresh();
         self.mload(self.scratch_a);
         self.mload(self.scratch_c);
@@ -10953,6 +12853,12 @@ impl<'a> Gen<'a> {
                 Sub::StoreBytes => self.bytes_helper(true)?,
                 Sub::LoadBytes => self.bytes_helper(false)?,
                 Sub::MulDiv => self.sub_mul_div()?,
+                Sub::CheckedMul => {
+                    self.op(SWAP1 + 1);
+                    self.checked_mul(false)?;
+                    self.op(SWAP1);
+                    self.op(JUMP);
+                }
                 Sub::DecodeList(elem) => self.sub_decode_list(elem)?,
                 Sub::LoadList(k, transient, direct, bytes) => {
                     let was = std::mem::replace(&mut self.direct, direct);
@@ -10965,6 +12871,17 @@ impl<'a> Gen<'a> {
                     let result = self.sub_store_list(k, transient, bytes);
                     self.direct = was;
                     result?;
+                }
+                Sub::LoadRecords(elem, transient, direct) => {
+                    let was = std::mem::replace(&mut self.direct, direct);
+                    let result = self.sub_load_records(elem, transient);
+                    self.direct = was;
+                    result?;
+                }
+                Sub::StoreRecords(elem, transient, direct) => {
+                    let was = std::mem::replace(&mut self.direct, direct);
+                    self.sub_store_records(elem, transient);
+                    self.direct = was;
                 }
                 Sub::LoadSlotBytes(transient, direct) => {
                     let was = std::mem::replace(&mut self.direct, direct);
@@ -11009,6 +12926,7 @@ impl<'a> Gen<'a> {
                 }
                 Sub::Base64Encode => self.sub_base64_encode(),
                 Sub::Base64Decode => self.sub_base64_decode(),
+                Sub::DecimalString(signed) => self.sub_decimal_string(signed)?,
             }
         }
     }
@@ -11027,14 +12945,15 @@ impl<'a> Gen<'a> {
     /// `[pos, ret]` becomes `[off]`, the position of the list's length word.
     fn sub_list_head(&mut self) -> Result<(), Error> {
         self.op(SWAP1);
-        self.list_head_checks()?;
+        self.list_head_checks(1)?;
         self.op(SWAP1);
         self.op(JUMP);
         Ok(())
     }
 
-    /// `[pos]` becomes `[off]`: the list's length word, with Solidity's bounds checked.
-    fn list_head_checks(&mut self) -> Result<(), Error> {
+    /// `[pos]` becomes `[off]`: the list's length word, with Solidity's bounds checked for
+    /// elements of `k` words.
+    fn list_head_checks(&mut self, k: u32) -> Result<(), Error> {
         self.cd_load();
         self.op(DUP1);
         self.push_u64(64);
@@ -11056,7 +12975,7 @@ impl<'a> Gen<'a> {
         self.op(SHR);
         self.revert_if_true()?;
         // [ret, off, n]: the elements end inside calldata.
-        self.push_u64(32);
+        self.push_u64(32 * u64::from(k));
         self.op(MUL);
         self.op(DUP1 + 1);
         self.op(ADD);
@@ -11572,6 +13491,34 @@ impl<'a> Gen<'a> {
         self.op(RETURN);
     }
 
+    /// Returns a record held at `at` whose fields include strings, bytes, or lists: its
+    /// fields ABI-encoded in order, as the values of a Solidity function's results.
+    fn return_record(&mut self, at: i32, ty: usize) -> Result<(), Error> {
+        let mut parts = Vec::new();
+        self.record_parts(at, ty, &mut parts);
+        self.encode_parts(&parts)?;
+        self.mload(self.scratch_a);
+        self.op(DUP1);
+        self.op(MLOAD);
+        self.op(SWAP1);
+        self.push_u64(32);
+        self.op(ADD);
+        self.op(RETURN);
+        Ok(())
+    }
+
+    /// Each ABI value of a record at `at`, nested records flattened into their fields.
+    fn record_parts(&self, at: i32, ty: usize, parts: &mut Vec<(i32, usize)>) {
+        let id = self.peel_nominal(ty);
+        if !matches!(self.checked.types[id].kind, TyKind::Record | TyKind::Tuple) {
+            parts.push((at, ty));
+            return;
+        }
+        for field in &self.checked.types[id].fields {
+            self.record_parts(at + field.slot as i32 * 32, field.ty, parts);
+        }
+    }
+
     /// Returns the word on the stack. Memory is abandoned, so word 0 is free.
     fn return_word(&mut self) {
         self.op(PUSH0);
@@ -11719,7 +13666,10 @@ impl<'a> Gen<'a> {
                 let Some(elem) = self.checked.types[ty].elem else {
                     return Err(error(1, 1, "this type cannot be an entrypoint argument"));
                 };
-                let inner = self.abi_types(elem)?;
+                let inner = match crate::check::static_abi(&self.checked.types, elem) {
+                    Some(tuple) if self.checked.types[self.peel_nominal(elem)].kind == TyKind::Record => vec![tuple],
+                    _ => self.abi_types(elem)?,
+                };
                 if inner.len() != 1 {
                     return Err(error(1, 1, "list elements must be a single ABI value"));
                 }
@@ -11892,6 +13842,70 @@ fn wrap_init_checked(runtime: &[u8], parts: &[Word]) -> Result<Vec<u8>, Error> {
     }
     code.extend_from_slice(runtime);
     Ok(code)
+}
+
+/// `e` with each constant in `known` replaced by the value it was bound to.
+fn substitute(e: &Expr, known: &HashMap<usize, Expr>) -> Expr {
+    if let Expr::Ident { sym: Some(sym), .. } = e {
+        if let Some(value) = known.get(sym) {
+            return value.clone();
+        }
+    }
+    let mut out = e.clone();
+    if let Expr::Call { base, args, .. } = &mut out {
+        if let Some(base) = base {
+            **base = substitute(base, known);
+        }
+        for arg in args {
+            *arg = substitute(arg, known);
+        }
+    }
+    out
+}
+
+/// The queries an expression always runs, before any function it calls has run: its
+/// answer, and the arguments of calls and operators that evaluate every operand.
+fn eager_queries<'e>(e: &'e Expr, called: &mut bool, out: &mut Vec<(u32, u32, &'e Expr, usize)>) {
+    match e {
+        Expr::Query { expr, line, col, ty } => {
+            if !*called {
+                out.push((*line, *col, expr.as_ref(), *ty));
+            }
+        }
+        Expr::Call {
+            callee: Some(_),
+            args,
+            ..
+        } => {
+            for a in args {
+                eager_queries(a, called, out);
+            }
+            *called = true;
+        }
+        Expr::Call {
+            builtin: Some(Builtin::Cast),
+            args,
+            ..
+        } => {
+            for a in args {
+                eager_queries(a, called, out);
+            }
+        }
+        Expr::Binary {
+            op, left, right, ..
+        } if !matches!(op, BinOp::And | BinOp::Or) => {
+            eager_queries(left, called, out);
+            eager_queries(right, called, out);
+        }
+        Expr::Unary { expr, .. } => eager_queries(expr, called, out),
+        Expr::Tuple { elems, .. } => {
+            for x in elems {
+                eager_queries(x, called, out);
+            }
+        }
+        // Anything else may run code first, or only sometimes.
+        _ => *called = true,
+    }
 }
 
 /// Whether two expressions name the same value: the same local, literal, field, element,

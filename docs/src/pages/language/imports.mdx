@@ -64,7 +64,9 @@ An imported file can declare types, errors, events, internal functions, interfac
 unknown function `hidden`
 ```
 
-Entrypoints belong to the contract, not to libraries. An imported file cannot declare `external` functions of its own or `external use` a module: a library offers externals from its modules, and the contract declares the ones it exposes. A library file should not declare `storage`. Put state in a [module](/language/modules) with named storage, and have the contract `use` it.
+A file of contracts can be imported too, without an alias. Its contracts don't join this file's, but this file's contracts can [`defer create`](/language/effects#contracts-from-other-files) them. Nothing else in the file comes with them.
+
+Entrypoints belong to the contract, not to libraries. An imported file cannot declare `external` functions of its own, `use` a module `exposing` its externals, or declare `supports`: a library offers externals from its modules, and the contract declares the ones it exposes and announces. A library file should not declare `storage`. Put state in a [module](/language/modules) with named storage, and have the contract `use` it.
 
 ## Importing modules
 
@@ -76,7 +78,7 @@ The usual way to share code is a module in its own file:
 import "./lib/ledger.lithe";
 
 contract Token is {
-  external use Ledger is {
+  use Ledger exposing {
     function mint(to : address; amount : nat);
     view function balance_of(who : address) : nat;
   }

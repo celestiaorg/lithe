@@ -4,7 +4,8 @@
 import "std/token/erc721.lithe";
 
 contract Collection is {
-  external use ERC721 is IERC721, IERC721Metadata;
+  use ERC721 exposing IERC721, IERC721Metadata;
+  supports IERC721, IERC721Metadata;
 
   storage is record {
     next_id : nat;

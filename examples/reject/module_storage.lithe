@@ -20,7 +20,7 @@ module Pausable is {
 contract Token is {
   use Ledger;
 
-  external use Pausable is {
+  use Pausable exposing {
     function pause();
   }
 }

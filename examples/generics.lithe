@@ -69,7 +69,7 @@ module Watchlist is {
     SetEnumerable.length(watchlist.watched)
 }
 
-external use Watchlist is {
+use Watchlist exposing {
   function watch(account : address);
   function unwatch(account : address);
   view function is_watched(account : address) : bool;

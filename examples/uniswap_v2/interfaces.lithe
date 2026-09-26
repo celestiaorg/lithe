@@ -1,0 +1,21 @@
+(* What the pair and the factory call each other, their tokens, and a flash swap's
+   borrower through. *)
+
+(* A token's `transfer` may return nothing, as some do: `None`. Only `Some(false)` is a
+   refusal. *)
+interface Token is {
+  view function balanceOf(owner : address) : nat;
+  function transfer(to : address; value : nat) : option(bool);
+}
+
+interface IUniswapV2Factory is {
+  view function feeTo() : address;
+}
+
+interface IUniswapV2Pair is {
+  function initialize(token0 : Token; token1 : Token);
+}
+
+interface IUniswapV2Callee is {
+  function uniswapV2Call(sender : address; amount0 : nat; amount1 : nat; data : bytes);
+}

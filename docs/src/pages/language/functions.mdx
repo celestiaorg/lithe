@@ -104,7 +104,7 @@ external function bump() : nat is {
 
 A function without `: type` returns `unit`. `external view` and `external pure` functions must have a result. An `external` stateful function can return one too. The value goes back to the caller after the function's deferred calls have run.
 
-Several results are a tuple: `: (nat, address)`. A record result is flattened into named ABI outputs.
+Several results are a tuple: `: (nat, address)`. A record result is flattened into named ABI outputs, strings, bytes, and lists among them.
 
 ## Errors
 
@@ -133,7 +133,7 @@ These are `add(uint256)` and `add(uint256,uint256)`. Two external functions with
 ## Calling functions
 
 - Internal functions can call each other and are called with `f(args)`.
-- External functions cannot be called from inside the contract. Share logic through internal functions.
+- External functions cannot be called from inside the contract. An external function is a whole [transition](/guide/transition-model): its storage writes, events, and deferred calls happen after its body finishes, so it can't run partway through another function's body. Share logic through internal functions.
 - A module's functions are called as `Module.f(args)`.
 - A function with no result is called as a statement: `f(args);`.
 
@@ -173,10 +173,10 @@ See [Generics](/language/generics) for generic modules.
 
 ## Module externals
 
-A module can declare external functions, and a contract exposes them by declaring each one's header in `external use`:
+A module can declare external functions, and a contract exposes them by declaring each one's header in `use M exposing`:
 
 ```lithe fragment
-external use Token is {
+use Token exposing {
   function transfer(to : address; amount : nat)
     raises Insufficient_balance;
   view function balance_of(account : address) : nat;

@@ -43,7 +43,33 @@ Declare a method `payable` when the contract it describes accepts ether with the
 
 A `query` reads one word, a string, bytes, or a list, and a deferred call's result reaches its continuation as a static value, a string, bytes, or a list. An interface can describe any ABI; these limits apply where a method is called.
 
-The same interfaces say what a contract exposes from a module: `external use M is I` declares every method of `I`. See [Modules and contracts](/language/modules#exposing-a-modules-externals).
+### Optional results
+
+Some contracts return nothing where their interface promises a value: older tokens return nothing from `transfer`. Declare such a result `option(T)`. No return data is `None`, and anything else is decoded as `T`, checked as any result is, and is `Some`:
+
+```lithe
+interface Token is {
+  function transfer(to : address; value : nat) : option(bool);
+}
+
+error Transfer_failed;
+
+storage is record {
+  token : Token;
+}
+
+external nonreentrant function pay(const to : address; const value : nat)
+  raises Transfer_failed
+is {
+  defer storage.token.transfer(to, value) then (ok : option(bool)) {
+    assert(ok <> Some(false), Transfer_failed);
+  };
+}
+```
+
+This is Solidity's `(bool ok, bytes memory data) = token.call(...)` followed by `data.length == 0 || abi.decode(data, (bool))`. `T` is a static value, and a queried one is a single word. An option is not an ABI value, so an optional result can't be one a contract exposes.
+
+The same interfaces say what a contract exposes from a module: `use M exposing I` declares every method of `I`. See [Modules and contracts](/language/modules#exposing-a-modules-externals). And `supports I` announces `I` through ERC-165, with the XOR of its methods' selectors as its id. See [ERC-165](/language/modules#erc-165).
 
 A value of an interface type is a contract address. It is an `address` in the ABI and in storage. Convert between the two with `IERC20(addr)` and `address(token)`. Interface values usually arrive as parameters and are kept in storage:
 
@@ -134,6 +160,8 @@ The target, arguments, and value are **evaluated at the `defer`**, and the call 
 
 Deferred calls forward all remaining gas. If a deferred call reverts, the whole transaction reverts, unless its continuation has [`Ok` and `Error` arms](/language/continuations#recovering-from-failed-calls). When a [continuation](/language/continuations) binds the call's result, the result is decoded and checked first, and a malformed result reverts.
 
+A call to an account with no code succeeds on the EVM, so as in Solidity it is checked. A method without a result reverts before the call when the account has no code, and a result nothing decodes must still be as long as its head words. An [optional result](#optional-results) may be missing.
+
 ### Sending ether with a call
 
 Attach ether with `with value = amount`. The amount is a `nat` number of wei. Only a method its interface declares `payable function` takes value:
@@ -197,7 +225,7 @@ The transfer forwards all remaining gas, like Solidity's `call{value: ...}("")`,
 
 ## `create`
 
-`defer create Name()` deploys another contract defined in the same file. A continuation receives the new contract's address:
+`defer create Name()` deploys another contract defined in the same file, or in a file it [imports](#contracts-from-other-files). A continuation receives the new contract's address:
 
 ```lithe
 contract Factory is {
@@ -223,6 +251,45 @@ contract Vault is {
 ```
 
 The created contract's code is embedded in the factory's bytecode. A file with several contracts builds one bytecode per contract, so compile it as a directory with `lithe compile directory`.
+
+### Contracts from other files
+
+A file that imports a file of contracts can create them. The imported contracts stay that file's own, each built from it, and `lithe compile directory` writes each once:
+
+:::code-group
+
+```lithe [factory.lithe]
+import "./vault.lithe";
+
+contract Factory is {
+  storage is record {
+    vaults : map(address, address);
+  }
+
+  external function open() is {
+    defer create Vault(Evm.sender()) then (vault : address) {
+      storage.vaults[Evm.sender()] := vault;
+    };
+  }
+}
+```
+
+```lithe [vault.lithe]
+contract Vault is {
+  storage is record {
+    owner : address;
+  }
+
+  deploy(const owner : address) is {
+    storage.owner := owner;
+  }
+
+  external view function owner() : address is
+    storage.owner
+}
+```
+
+:::
 
 ### Passing arguments
 
@@ -289,6 +356,34 @@ contract Vault is {
 `with value = amount` sends ether to the new contract. The amount is a `nat` number of wei, as for [calls](#sending-ether-with-a-call). A contract whose `deploy` is not `payable` rejects the value, and the creation fails.
 
 `with salt = s` takes a `bytes32` and deploys with `CREATE2`. The address then depends only on the factory, the salt, and the created contract's creation code, arguments included, so it can be computed before deployment. Without a salt, `create` uses `CREATE`, and the address depends on the factory's nonce.
+
+`Evm.creation_code(Name)` is the creation code `create` runs, before the arguments it appends. Its hash is a constant, so a factory knows where a `CREATE2` lands before the contract exists, and can return the address from the transition that creates it:
+
+```lithe
+import "std/utils/create2.lithe";
+
+contract Factory is {
+  use Create2;
+
+  storage is record {
+    count : nat;
+  }
+
+  external function open(const salt : bytes32) : address is {
+    defer create Vault() with salt = salt;
+    storage.count := storage.count + 1n;
+  } with Create2.compute_address_here(salt, Crypto.keccak256(Evm.creation_code(Vault)))
+}
+
+contract Vault is {
+  storage is record {
+    owner : address;
+  }
+
+  external view function owner() : address is
+    storage.owner
+}
+```
 
 To give both options, put them in braces:
 

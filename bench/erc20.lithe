@@ -9,26 +9,9 @@ import "./lib/erc20.lithe";
 contract BenchToken is {
   use Initializable;
 
-  external use ERC20 is {
-    view function name() : string;
-    view function symbol() : string;
-    view function decimals() : uint8;
-    view function totalSupply() : nat;
-    view function balanceOf(account : address) : nat;
-    view function allowance(owner : address; spender : address) : nat;
-  }
-
-  external use Ownable is {
-    view function owner() : address;
-    function transferOwnership(newOwner : address)
-      raises OwnableUnauthorizedAccount | OwnableInvalidOwner;
-    function renounceOwnership()
-      raises OwnableUnauthorizedAccount;
-  }
-
-  external use Pausable is {
-    view function paused() : bool;
-  }
+  use ERC20 exposing IERC20Views, IERC20Metadata;
+  use Ownable exposing IOwnable;
+  use Pausable exposing IPausable;
 
   (* Initializable's bookkeeping matches the `initializer` modifier on Solidity's
      constructor, so storage and events stay the same. *)

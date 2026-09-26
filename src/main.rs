@@ -71,7 +71,7 @@ fn main() {
     let file = std::path::Path::new(&path);
     let mut note = None;
     let result = match cmd.as_str() {
-        "abi" => lithe::abi_file_with(file, &opts),
+        "abi" => lithe::abi_file(file),
         "abi-tree" => lithe::abi_tree_file_with(file, &opts),
         "footprint" => lithe::footprint_file_with(file, &opts),
         "analysis" => lithe::analysis_file(file),
@@ -129,12 +129,6 @@ fn options(args: &mut Vec<String>) -> Result<lithe::Options, String> {
                     return Err(format!("--split takes `auto`, `off`, or `all`, not `{other}`"))
                 }
                 None => return Err("--split takes `auto`, `off`, or `all`".to_string()),
-            },
-            "--erc165" => match it.next().as_deref() {
-                Some("on") => opts.erc165 = true,
-                Some("off") => opts.erc165 = false,
-                Some(other) => return Err(format!("--erc165 takes `on` or `off`, not `{other}`")),
-                None => return Err("--erc165 takes `on` or `off`".to_string()),
             },
             "--create2-deployer" => {
                 let value = it.next().ok_or("--create2-deployer needs an address")?;
@@ -285,8 +279,6 @@ compile, abi, facets, abi-tree, footprint, upgrade, and upgrade-check also take
                                      contract is over the limit (auto, the default),
                                      never (off), or always (all)
        --create2-deployer <address>  the CREATE2 factory for facets
-       --erc165 <on|off>             answer supportsInterface for the interfaces
-                                     `external use` names, default on
 
 directory commands write to ./out
 builds are cached in ~/.cache/lithe; set LITHE_CACHE_DIR to move it, or empty to turn it off"

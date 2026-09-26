@@ -1,0 +1,36 @@
+(* A ceiling on the supply, like OpenZeppelin's `ERC20CappedUpgradeable`. The token checks
+   it after every mint. *)
+
+error ERC20ExceededCap of record {
+  increasedSupply : nat;
+  cap : nat;
+}
+
+error ERC20InvalidCap of nat;
+
+module ERC20Capped is {
+  storage capped at "openzeppelin.storage.ERC20Capped" is record {
+    cap : nat;
+  }
+
+  external view function cap() : nat is
+    capped.cap
+
+  function init(const cap : nat)
+    raises ERC20InvalidCap
+  is {
+    assert(cap > 0n, ERC20InvalidCap(0n));
+    capped.cap := cap;
+  }
+
+  view function check_cap(const supply : nat)
+    raises ERC20ExceededCap
+  is {
+    const cap : nat := capped.cap;
+    assert(supply <= cap, ERC20ExceededCap { increasedSupply = supply; cap = cap; });
+  }
+}
+
+interface IERC20Capped is {
+  view function cap() : nat;
+}

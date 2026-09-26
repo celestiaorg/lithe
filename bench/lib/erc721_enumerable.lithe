@@ -1,0 +1,104 @@
+(* Enumeration of every token and of each owner's tokens, like OpenZeppelin's
+   `ERC721EnumerableUpgradeable`: same storage, errors, and swap-and-pop removal, so the
+   order of the enumerations matches. Every ownership change goes through `update`. *)
+
+error ERC721OutOfBoundsIndex of record {
+  owner : address;
+  index : nat;
+}
+
+module ERC721Enumerable is {
+  requires ERC721;
+
+  storage erc721_enumerable at "openzeppelin.storage.ERC721Enumerable" is record {
+    ownedTokens : map(address, map(nat, nat));
+    ownedTokensIndex : map(nat, nat);
+    allTokens : list(nat);
+    allTokensIndex : map(nat, nat);
+  }
+
+  external view function totalSupply() : nat is
+    erc721_enumerable.allTokens.length
+
+  external view function tokenByIndex(const index : nat) : nat
+    raises ERC721OutOfBoundsIndex
+  is {
+    assert(
+      index < erc721_enumerable.allTokens.length,
+      ERC721OutOfBoundsIndex { owner = Address.zero; index = index; }
+    );
+  } with erc721_enumerable.allTokens[index]
+
+  external view function tokenOfOwnerByIndex(const owner : address; const index : nat) : nat
+    raises ERC721InvalidOwner | ERC721OutOfBoundsIndex
+  is {
+    assert(owner <> Address.zero, ERC721InvalidOwner(Address.zero));
+    assert(
+      index < ERC721.erc721.balances[owner],
+      ERC721OutOfBoundsIndex { owner = owner; index = index; }
+    );
+  } with erc721_enumerable.ownedTokens[owner][index]
+
+  (* `ERC721.update`, then the enumerations follow the token. *)
+  function update(const to : address; const tokenId : nat; const auth : address) : address
+    raises ERC721NonexistentToken | ERC721InsufficientApproval
+  is {
+    const previous : address := ERC721.update(to, tokenId, auth);
+    if previous = Address.zero then {
+      add_to_all(tokenId);
+    } else {
+      if previous <> to then {
+        remove_from_owner(previous, tokenId);
+      }
+    }
+    if to = Address.zero then {
+      remove_from_all(tokenId);
+    } else {
+      if previous <> to then {
+        add_to_owner(to, tokenId);
+      }
+    }
+  } with previous
+
+  function add_to_owner(const to : address; const tokenId : nat) is {
+    const length : nat := ERC721.erc721.balances[to] - 1n;
+    erc721_enumerable.ownedTokens[to][length] := tokenId;
+    erc721_enumerable.ownedTokensIndex[tokenId] := length;
+  }
+
+  function add_to_all(const tokenId : nat) is {
+    erc721_enumerable.allTokensIndex[tokenId] := erc721_enumerable.allTokens.length;
+    erc721_enumerable.allTokens[erc721_enumerable.allTokens.length] := tokenId;
+  }
+
+  (* The owner's last token moves into the removed token's place. *)
+  function remove_from_owner(const from : address; const tokenId : nat) is {
+    const lastTokenIndex : nat := ERC721.erc721.balances[from];
+    const tokenIndex : nat := erc721_enumerable.ownedTokensIndex[tokenId];
+    if tokenIndex <> lastTokenIndex then {
+      const lastTokenId : nat := erc721_enumerable.ownedTokens[from][lastTokenIndex];
+      erc721_enumerable.ownedTokens[from][tokenIndex] := lastTokenId;
+      erc721_enumerable.ownedTokensIndex[lastTokenId] := tokenIndex;
+    }
+    erc721_enumerable.ownedTokensIndex[tokenId] := 0n;
+    erc721_enumerable.ownedTokens[from][lastTokenIndex] := 0n;
+  }
+
+  function remove_from_all(const tokenId : nat) is {
+    const lastTokenIndex : nat := erc721_enumerable.allTokens.length - 1n;
+    const tokenIndex : nat := erc721_enumerable.allTokensIndex[tokenId];
+    const lastTokenId : nat := erc721_enumerable.allTokens[lastTokenIndex];
+    erc721_enumerable.allTokens[tokenIndex] := lastTokenId;
+    erc721_enumerable.allTokensIndex[lastTokenId] := tokenIndex;
+    erc721_enumerable.allTokensIndex[tokenId] := 0n;
+    List.pop(erc721_enumerable.allTokens);
+  }
+}
+
+interface IERC721Enumerable is {
+  view function totalSupply() : nat;
+  view function tokenByIndex(index : nat) : nat
+    raises ERC721OutOfBoundsIndex;
+  view function tokenOfOwnerByIndex(owner : address; index : nat) : nat
+    raises ERC721InvalidOwner | ERC721OutOfBoundsIndex;
+}

@@ -1,0 +1,77 @@
+(* Lists of records through the ABI: Solidity's arrays of structs, as arguments and
+   results, in `Abi.encode` and `Abi.decode`, in events and errors, and in calls to other
+   contracts. Each element's fields are checked as Solidity's decoder checks them. *)
+
+type point is record {
+  key : uint48;
+  value : uint208;
+}
+
+type tagged is record {
+  tag : bytes4;
+  ok : bool;
+  n : int16;
+}
+
+type points is list(point);
+
+interface Points is {
+  view function all() : list(point);
+  function take(xs : list(point)) : nat;
+}
+
+event Pushed of record {
+  indexed who : address;
+  points : list(point);
+}
+
+error Rejected of list(point);
+
+storage is record {
+  points : list(point);
+  tagged : list(tagged);
+  taken : nat;
+}
+
+external function set_all(const xs : list(point)) is {
+  storage.points := xs;
+  emit Pushed { who = Evm.sender(); points = xs; };
+}
+
+external view function all() : list(point) is
+  storage.points
+
+external function set_tags(const xs : list(tagged)) is {
+  storage.tagged := xs;
+}
+
+external view function tags() : list(tagged) is
+  storage.tagged
+
+external view function tag_at(const i : nat) : bytes4 is
+  storage.tagged[i].tag
+
+external view function encoded() : bytes is
+  Abi.encode(storage.points)
+
+external pure function decoded(const data : bytes) : nat is {
+  const xs : points := Abi.decode(data, points);
+} with xs.length * 1000 + nat(xs[0n].value)
+
+external view function asked(const other : Points) : nat is {
+  const xs : list(point) := query other.all();
+} with xs.length
+
+external function take(const xs : list(point)) : nat is {
+  storage.taken := xs.length;
+} with xs.length
+
+external function hand_over(const other : Points) is {
+  defer other.take(storage.points);
+}
+
+external view function refuse() : nat
+  raises Rejected
+is {
+  fail Rejected(storage.points);
+} with 0n

@@ -1,0 +1,163 @@
+(* A governance token from the standard library: minting and pausing by role, a supply cap,
+   burning, ERC-2612 permits, ERC-5805 votes with delegation by signature, and ERC-3156
+   flash loans. Every balance change goes through `update`: the pause, the move, the cap on
+   a mint, then the votes, in OpenZeppelin's order. So each transfer, mint, burn, and flash
+   loan moves votes, and none of them runs while the token is paused. *)
+
+import "std/token/erc20_votes.lithe";
+import "std/token/erc20_permit.lithe";
+import "std/token/erc20_capped.lithe";
+import "std/token/erc20_flash_mint.lithe";
+import "std/access/access_control.lithe";
+import "std/security/pausable.lithe";
+
+contract GovernanceToken is {
+  use ECDSA;
+  use Nonces;
+  use Math;
+  use Checkpoints;
+
+  use EIP712;
+
+  use ERC20 exposing IERC20Metadata, IERC20Views, IERC20Approvals;
+  use ERC20Permit exposing IERC20Permit;
+  use ERC20Votes exposing IERC6372, IVotes, IVotesCheckpoints;
+  use ERC20Capped exposing IERC20Capped;
+  use ERC20FlashMint exposing IERC3156FlashLenderViews;
+  use AccessControl exposing IAccessControl;
+  use Pausable exposing IPausable;
+
+  supports IERC20, IERC20Metadata, IERC20Permit, IERC6372, IVotes, IERC3156FlashLender,
+    IAccessControl;
+
+  (* keccak256("MINTER_ROLE") *)
+  pure function minter() : role is
+    role(0x9f2df0fed2c77648de5860a4cc508cd0818c85b8b8a1ab4ceeef8d981c8956a6)
+
+  (* keccak256("PAUSER_ROLE") *)
+  pure function pauser() : role is
+    role(0x65d7a28e3265b37a6474929f336521b332c1681b933f6cb9f3376673440d862a)
+
+  (* The deployer administers the roles, and holds both to begin with. *)
+  deploy()
+    raises ERC20InvalidCap
+  is {
+    ERC20.init("Lithe Governance", "LGOV");
+    EIP712.init("Lithe Governance", "1");
+    ERC20Capped.init(10_000_000n * 1_000_000_000_000_000_000n);
+    AccessControl.grant(AccessControl.default_admin_role(), Evm.sender());
+    AccessControl.grant(minter(), Evm.sender());
+    AccessControl.grant(pauser(), Evm.sender());
+  }
+
+  function update(const from : address; const to : address; const value : nat)
+    raises EnforcedPause | ERC20InsufficientBalance | ERC20ExceededCap | ERC20ExceededSafeSupply
+      | CheckpointUnorderedInsertion
+  is {
+    Pausable.require_not_paused();
+    ERC20.update(from, to, value);
+    if from = Address.zero then {
+      ERC20Capped.check(ERC20.total_supply());
+    }
+    ERC20Votes.transfer_voting_units(from, to, value);
+  }
+
+  function mint_to(const to : address; const value : nat)
+    raises ERC20InvalidReceiver | EnforcedPause | ERC20InsufficientBalance | ERC20ExceededCap
+      | ERC20ExceededSafeSupply | CheckpointUnorderedInsertion
+  is {
+    assert(to <> Address.zero, ERC20InvalidReceiver(Address.zero));
+    update(Address.zero, to, value);
+  }
+
+  function burn_from(const account : address; const value : nat)
+    raises ERC20InvalidSender | EnforcedPause | ERC20InsufficientBalance | ERC20ExceededCap
+      | ERC20ExceededSafeSupply | CheckpointUnorderedInsertion
+  is {
+    assert(account <> Address.zero, ERC20InvalidSender(Address.zero));
+    update(account, Address.zero, value);
+  }
+
+  external function transfer(const to : address; const value : nat) : bool
+    raises ERC20InvalidSender | ERC20InvalidReceiver | EnforcedPause | ERC20InsufficientBalance
+      | ERC20ExceededCap | ERC20ExceededSafeSupply | CheckpointUnorderedInsertion
+  is {
+    assert(to <> Address.zero, ERC20InvalidReceiver(Address.zero));
+    update(Evm.sender(), to, value);
+  } with true
+
+  external function transferFrom(const from : address; const to : address; const value : nat) : bool
+    raises ERC20InsufficientAllowance | ERC20InvalidApprover | ERC20InvalidSpender
+      | ERC20InvalidSender | ERC20InvalidReceiver | EnforcedPause | ERC20InsufficientBalance
+      | ERC20ExceededCap | ERC20ExceededSafeSupply | CheckpointUnorderedInsertion
+  is {
+    ERC20.spend_allowance(from, Evm.sender(), value);
+    assert(from <> Address.zero, ERC20InvalidSender(Address.zero));
+    assert(to <> Address.zero, ERC20InvalidReceiver(Address.zero));
+    update(from, to, value);
+  } with true
+
+  external function burn(const value : nat)
+    raises ERC20InvalidSender | EnforcedPause | ERC20InsufficientBalance | ERC20ExceededCap
+      | ERC20ExceededSafeSupply | CheckpointUnorderedInsertion
+  is {
+    burn_from(Evm.sender(), value);
+  }
+
+  external function burnFrom(const account : address; const value : nat)
+    raises ERC20InsufficientAllowance | ERC20InvalidApprover | ERC20InvalidSpender
+      | ERC20InvalidSender | EnforcedPause | ERC20InsufficientBalance | ERC20ExceededCap
+      | ERC20ExceededSafeSupply | CheckpointUnorderedInsertion
+  is {
+    ERC20.spend_allowance(account, Evm.sender(), value);
+    burn_from(account, value);
+  }
+
+  external function mint(const to : address; const value : nat)
+    raises AccessControlUnauthorizedAccount | ERC20InvalidReceiver | EnforcedPause
+      | ERC20InsufficientBalance | ERC20ExceededCap | ERC20ExceededSafeSupply
+      | CheckpointUnorderedInsertion
+  is {
+    AccessControl.check_role(minter());
+    mint_to(to, value);
+  }
+
+  external function pause()
+    raises AccessControlUnauthorizedAccount | EnforcedPause
+  is {
+    AccessControl.check_role(pauser());
+    Pausable.pause();
+  }
+
+  external function unpause()
+    raises AccessControlUnauthorizedAccount | ExpectedPause
+  is {
+    AccessControl.check_role(pauser());
+    Pausable.unpause();
+  }
+
+  (* The loan is minted through `update`, so it counts toward the cap and moves votes. *)
+  external function flashLoan(
+    const receiver : IERC3156FlashBorrower;
+    const token : address;
+    const amount : nat;
+    const data : bytes
+  ) : bool
+    raises ERC3156ExceededMaxLoan | ERC3156UnsupportedToken | ERC3156InvalidReceiver
+      | ERC20InsufficientAllowance | ERC20InvalidApprover | ERC20InvalidSpender
+      | ERC20InvalidReceiver | ERC20InvalidSender | EnforcedPause | ERC20InsufficientBalance
+      | ERC20ExceededCap | ERC20ExceededSafeSupply | CheckpointUnorderedInsertion
+  is {
+    const fee : nat := ERC20FlashMint.check_loan(token, amount);
+    mint_to(address(receiver), amount);
+    defer receiver.onFlashLoan(Evm.sender(), token, amount, fee, data) then {
+      | Ok(answer : bytes32) -> {
+          ERC20FlashMint.repay(address(receiver), answer, amount, fee);
+          burn_from(address(receiver), amount + fee);
+        }
+      | Error(reason : bytes) -> {
+          fail reason;
+        }
+    };
+  } with true
+}

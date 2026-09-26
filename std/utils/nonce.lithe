@@ -2,18 +2,18 @@
    message names the next nonce, and using it moves the counter on. Matches
    OpenZeppelin's `Nonces`.
 
-     external use Nonces is {
+     use Nonces exposing {
        view function nonces(owner : address) : nat;
      } *)
+
+error InvalidAccountNonce of record {
+  account : address;
+  currentNonce : nat;
+}
 
 module Nonces is {
   storage nonce_state at "lithe.std.nonces" is record {
     counts : map(address, nat);
-  }
-
-  error InvalidAccountNonce of record {
-    account : address;
-    currentNonce : nat;
   }
 
   view function nonces(const owner : address) : nat is

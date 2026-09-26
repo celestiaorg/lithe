@@ -1,0 +1,109 @@
+(* Uniswap v2's factory: one pair per two tokens, created with CREATE2 from pair.lithe.
+   The salt is the sorted tokens, so anyone can compute a pair's address from its tokens
+   and the hash of the pair's creation code, before or after it exists. *)
+
+import "./pair.lithe";
+import "./interfaces.lithe";
+import "std/utils/create2.lithe";
+
+contract UniswapV2Factory is {
+  use Create2;
+
+  storage is record {
+    fee_to : address;
+    fee_to_setter : address;
+    pairs : map(address, map(address, address));
+    all_pairs : list(address);
+  }
+
+  error Identical_addresses;
+  error Zero_address;
+  error Pair_exists;
+  error Forbidden;
+
+  event PairCreated of record {
+    indexed token0 : address;
+    indexed token1 : address;
+    pair : address;
+    length : nat;
+  }
+
+  deploy(const fee_to_setter : address) is {
+    storage.fee_to_setter := fee_to_setter;
+  }
+
+  pure function sorted(const tokenA : address; const tokenB : address) : (address, address)
+    raises Identical_addresses | Zero_address
+  is {
+    assert(tokenA <> tokenB, Identical_addresses);
+    var token0 : address := tokenB;
+    var token1 : address := tokenA;
+    if tokenA < tokenB then {
+      token0 := tokenA;
+      token1 := tokenB;
+    }
+    assert(token0 <> Address.zero, Zero_address);
+  } with (token0, token1)
+
+  pure function salt(const token0 : address; const token1 : address) : bytes32 is
+    Crypto.keccak256(Abi.encode_packed(token0, token1))
+
+  (* Where the pair of two sorted tokens is, or will be. *)
+  view function pair_for(const token0 : address; const token1 : address) : address is
+    Create2.compute_address_here(salt(token0, token1), Crypto.keccak256(Evm.creation_code(UniswapV2Pair)))
+
+  external view function feeTo() : address is
+    storage.fee_to
+
+  external view function feeToSetter() : address is
+    storage.fee_to_setter
+
+  external view function getPair(const tokenA : address; const tokenB : address) : address is
+    storage.pairs[tokenA][tokenB]
+
+  external view function allPairs(const index : nat) : address is
+    storage.all_pairs[index]
+
+  external view function allPairsLength() : nat is
+    storage.all_pairs.length
+
+  (* UniswapV2Library's `pairFor`, without the storage read. *)
+  external view function pairFor(const tokenA : address; const tokenB : address) : address
+    raises Identical_addresses | Zero_address
+  is {
+    const (token0, token1) : (address, address) := sorted(tokenA, tokenB);
+  } with pair_for(token0, token1)
+
+  external function createPair(const tokenA : address; const tokenB : address) : address
+    raises Identical_addresses | Zero_address | Pair_exists
+  is {
+    const (token0, token1) : (address, address) := sorted(tokenA, tokenB);
+    assert(storage.pairs[token0][token1] = Address.zero, Pair_exists);
+    const pair : address := pair_for(token0, token1);
+    defer create UniswapV2Pair() with salt = salt(token0, token1);
+    defer IUniswapV2Pair(pair).initialize(Token(token0), Token(token1));
+    storage.pairs[token0][token1] := pair;
+    storage.pairs[token1][token0] := pair;
+    storage.all_pairs[storage.all_pairs.length] := pair;
+    emit PairCreated {
+      token0 = token0;
+      token1 = token1;
+      pair = pair;
+      length = storage.all_pairs.length;
+    };
+  } with pair
+
+  external function setFeeTo(const fee_to : address)
+    raises Forbidden
+  is {
+    assert(Evm.sender() = storage.fee_to_setter, Forbidden);
+    storage.fee_to := fee_to;
+  }
+
+  external function setFeeToSetter(const fee_to_setter : address)
+    raises Forbidden
+  is {
+    assert(Evm.sender() = storage.fee_to_setter, Forbidden);
+    storage.fee_to_setter := fee_to_setter;
+  }
+}

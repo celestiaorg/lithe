@@ -109,6 +109,12 @@ fn load_inner(path: &Path, stack: &mut Vec<Frame>) -> Result<Program, Error> {
         label,
     });
     let mut imports = empty();
+    // Contracts of imported files, which this file's contracts may create.
+    let mut contracts: Vec<Program> = Vec::new();
+    let own_names: Vec<&String> = std::iter::once(&contract_name)
+        .chain(siblings.iter().map(|s| &s.contract_name))
+        .flatten()
+        .collect();
     for decl in &uses {
         let child_path = import_path(&canon, &decl.path);
         if let Some(start) = child_canon(&child_path)
@@ -130,17 +136,30 @@ fn load_inner(path: &Path, stack: &mut Vec<Frame>) -> Result<Program, Error> {
                 err
             }
         })?;
-        if !child.siblings.is_empty() {
-            return Err(error(
-                decl.line,
-                decl.col,
-                format!(
-                    "cannot import `{}`; it defines more than one contract",
-                    decl.path
-                ),
-            ));
+        if child.contract_name.is_some() {
+            if decl.alias.is_some() {
+                return Err(error(
+                    decl.line,
+                    decl.col,
+                    format!("`{}` defines contracts; import it without an alias", decl.path),
+                ));
+            }
+            for unit in split_units(child) {
+                if let Some(name) = unit.contract_name.as_ref().filter(|n| own_names.contains(n)) {
+                    return Err(error(
+                        decl.line,
+                        decl.col,
+                        format!("contract `{name}` is already declared in `{}`", decl.path),
+                    ));
+                }
+                add_peer(&mut contracts, unit, decl.line, decl.col)?;
+            }
+            continue;
         }
         absorb(&mut imports, child, decl.alias.as_deref(), Some(decl))?;
+    }
+    for peer in std::mem::take(&mut imports.peers) {
+        add_peer(&mut contracts, peer, 1, 1)?;
     }
     hide_private(&mut own);
     let mut merged = imports.clone();
@@ -149,6 +168,7 @@ fn load_inner(path: &Path, stack: &mut Vec<Frame>) -> Result<Program, Error> {
     merged.contract_line = contract_line;
     merged.contract_col = contract_col;
     merged.origin = origin.clone();
+    merged.peers = contracts.clone();
     let mut linked = Vec::new();
     for mut sibling in siblings {
         hide_private(&mut sibling);
@@ -161,11 +181,33 @@ fn load_inner(path: &Path, stack: &mut Vec<Frame>) -> Result<Program, Error> {
         unit.contract_line = line;
         unit.contract_col = col;
         unit.origin = origin.clone();
+        unit.peers = contracts.clone();
         linked.push(unit);
     }
     merged.siblings = linked;
     stack.pop();
     Ok(merged)
+}
+
+/// Adds an imported contract, once however many paths import its file.
+fn add_peer(peers: &mut Vec<Program>, peer: Program, line: u32, col: u32) -> Result<(), Error> {
+    if let Some(have) = peers.iter().find(|p| p.contract_name == peer.contract_name) {
+        if have.origin == peer.origin {
+            return Ok(());
+        }
+        return Err(error(
+            line,
+            col,
+            format!(
+                "contract `{}` is declared in both `{}` and `{}`",
+                peer.contract_name.as_deref().unwrap_or(""),
+                file_label(Path::new(&have.origin)),
+                file_label(Path::new(&peer.origin))
+            ),
+        ));
+    }
+    peers.push(peer);
+    Ok(())
 }
 
 fn child_canon(path: &Path) -> Option<PathBuf> {
@@ -188,6 +230,7 @@ fn empty() -> Program {
         modules: Vec::new(),
         compose: Vec::new(),
         exposes: Vec::new(),
+        supports: Vec::new(),
         upgradeable: false,
         guard: None,
         contract_name: None,
@@ -196,7 +239,6 @@ fn empty() -> Program {
         siblings: Vec::new(),
         peers: Vec::new(),
         origin: String::new(),
-        erc165: true,
     }
 }
 
@@ -204,18 +246,21 @@ pub(crate) fn load_units(path: &Path) -> Result<Vec<Program>, Error> {
     Ok(split_units(load(path)?))
 }
 
-/// One program per contract, each knowing the others it may create.
+/// One program per contract, each knowing the others it may create: the rest of its file,
+/// and the contracts its file imports.
 pub(crate) fn split_units(mut prog: Program) -> Vec<Program> {
     let rest = std::mem::take(&mut prog.siblings);
     let mut units = vec![prog];
     units.extend(rest);
     let all = units.clone();
     for (i, unit) in units.iter_mut().enumerate() {
+        let imported = std::mem::take(&mut unit.peers);
         unit.peers = all
             .iter()
             .enumerate()
             .filter(|&(j, _)| j != i)
             .map(|(_, peer)| peer.clone())
+            .chain(imported)
             .collect();
     }
     units
@@ -333,7 +378,7 @@ fn hide_private(prog: &mut Program) {
             rewrite_header(method, &map);
         }
     }
-    rewrite_exposes(&mut prog.exposes, &map);
+    rewrite_exposes(prog, &map);
     for func in &mut prog.funcs {
         if let Some(name) = map.get(&func.name).cloned() {
             func.name = name;
@@ -380,8 +425,9 @@ fn rewrite_header(func: &mut Func, map: &HashMap<String, String>) {
     }
 }
 
-fn rewrite_exposes(exposes: &mut [ExternalUse], map: &HashMap<String, String>) {
-    for exposed in exposes {
+/// The interfaces `use M exposing` and `supports` name, and the inline one's headers.
+fn rewrite_exposes(prog: &mut Program, map: &HashMap<String, String>) {
+    for exposed in &mut prog.exposes {
         for iface in &mut exposed.interfaces {
             if let Some(name) = map.get(&iface.name) {
                 iface.name = name.clone();
@@ -389,6 +435,11 @@ fn rewrite_exposes(exposes: &mut [ExternalUse], map: &HashMap<String, String>) {
         }
         for decl in &mut exposed.decls {
             rewrite_header(decl, map);
+        }
+    }
+    for iface in &mut prog.supports {
+        if let Some(name) = map.get(&iface.name) {
+            iface.name = name.clone();
         }
     }
 }
@@ -627,9 +678,17 @@ fn absorb(
                 line,
                 col,
                 format!(
-                    "an imported file cannot `external use {}`; the contract declares what it exposes",
+                    "an imported file cannot `use {} exposing`; the contract declares what it exposes",
                     exposed.module
                 ),
+            ));
+        }
+        if let Some(iface) = src.supports.first() {
+            let (line, col) = at(via, iface.line, iface.col);
+            return Err(error(
+                line,
+                col,
+                "an imported file cannot declare `supports`; the contract declares what it supports",
             ));
         }
         if let Some(func) = src
@@ -659,6 +718,10 @@ fn absorb(
                 src.domains[0].name
             ),
         ));
+    }
+    for peer in std::mem::take(&mut src.peers) {
+        let (line, col) = at(via, 1, 1);
+        add_peer(&mut dst.peers, peer, line, col)?;
     }
     let present = origins_of(dst);
     if via.is_some() && module_already_present(&src, &present) {
@@ -731,7 +794,7 @@ fn hide_names(prog: &mut Program, map: &HashMap<String, String>) {
             rewrite_header(method, map);
         }
     }
-    rewrite_exposes(&mut prog.exposes, map);
+    rewrite_exposes(prog, map);
     for func in &mut prog.funcs {
         for param in &mut func.params {
             rewrite_ty(&mut param.ty, map);
@@ -907,6 +970,7 @@ fn absorb_decls(
         dst.compose.push(use_);
     }
     dst.exposes.extend(src.exposes);
+    dst.supports.extend(src.supports);
     if via.is_none() {
         dst.upgradeable = src.upgradeable;
         dst.guard = src.guard;

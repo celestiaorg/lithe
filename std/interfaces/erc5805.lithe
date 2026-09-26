@@ -1,0 +1,36 @@
+(* ERC-5805 votes with delegation, and ERC-6372's clock, with the errors OpenZeppelin's
+   `Votes` raises. Each interface is exactly its standard's functions. A token's votes
+   are checkpointed, so pushing one can fail as `Checkpoints` does. *)
+
+import "std/crypto/ecdsa.lithe";
+import "std/utils/nonce.lithe";
+import "std/utils/checkpoint.lithe";
+
+error VotesExpiredSignature of nat;
+
+error ERC6372InconsistentClock;
+
+error ERC5805FutureLookup of record {
+  timepoint : nat;
+  clock : uint48;
+}
+
+interface IERC6372 is {
+  view function clock() : uint48;
+  view function CLOCK_MODE() : string
+    raises ERC6372InconsistentClock;
+}
+
+interface IVotes is {
+  view function getVotes(account : address) : nat;
+  view function getPastVotes(account : address; timepoint : nat) : nat
+    raises ERC5805FutureLookup;
+  view function getPastTotalSupply(timepoint : nat) : nat
+    raises ERC5805FutureLookup;
+  view function delegates(account : address) : address;
+  function delegate(delegatee : address)
+    raises CheckpointUnorderedInsertion;
+  function delegateBySig(delegatee : address; nonce : nat; expiry : nat; v : uint8; r : bytes32; s : bytes32)
+    raises VotesExpiredSignature | ECDSAInvalidSignature | ECDSAInvalidSignatureS | InvalidAccountNonce
+      | CheckpointUnorderedInsertion;
+}

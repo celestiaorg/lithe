@@ -1,0 +1,51 @@
+(* A ceiling on the supply, like OpenZeppelin's `ERC20Capped`. Minting is the contract's own,
+   so it checks the cap after each mint:
+
+     external function mint(const to : address; const value : nat)
+       raises ERC20InvalidReceiver | ERC20InsufficientBalance | ERC20ExceededCap
+     is {
+       ERC20.mint(to, value);
+       ERC20Capped.check(ERC20.total_supply());
+     }
+
+     use ERC20Capped exposing IERC20Capped; *)
+
+import "std/token/erc20.lithe";
+
+module ERC20Capped is {
+  storage erc20_capped at "lithe.std.erc20.capped" is record {
+    cap : nat;
+  }
+
+  error ERC20ExceededCap of record {
+    increasedSupply : nat;
+    cap : nat;
+  }
+
+  error ERC20InvalidCap of nat;
+
+  (* The cap is set once, usually from `deploy`, and can't be zero. *)
+  function init(const cap : nat)
+    raises ERC20InvalidCap
+  is {
+    assert(cap > 0n, ERC20InvalidCap(0n));
+    erc20_capped.cap := cap;
+  }
+
+  view function cap() : nat is
+    erc20_capped.cap
+
+  view function check(const supply : nat)
+    raises ERC20ExceededCap
+  is {
+    const cap : nat := erc20_capped.cap;
+    assert(supply <= cap, ERC20ExceededCap { increasedSupply = supply; cap = cap; });
+  }
+
+  external view function cap() : nat is
+    erc20_capped.cap
+}
+
+interface IERC20Capped is {
+  view function cap() : nat;
+}

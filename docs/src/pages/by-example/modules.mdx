@@ -70,16 +70,16 @@ module Admin is {
 contract Vault is {
   (* Declare a module's externals to expose them as they are. Each declaration
      restates the external's header, so the contract lists its whole interface. *)
-  external use Ownable is {
+  use Ownable exposing {
     view function owner() : address;
     function claim();
   }
 
-  external use Pausable is {
+  use Pausable exposing {
     view function paused() : bool;
   }
 
-  external use Admin is {
+  use Admin exposing {
     function pause()
       raises Not_owner;
   }
@@ -103,7 +103,7 @@ contract Vault is {
 ```
 
 - `requires` declares a module's dependencies. A contract that uses `Admin` must also use `Ownable` and `Pausable`.
-- A declaration in `external use` must match the module's external exactly: its effect, parameters, result, and errors. It has no body.
+- A declaration in `use M exposing` must match the module's external exactly: its effect, parameters, result, and errors. It has no body.
 - A module's externals it doesn't declare are not part of the contract.
 - Each module's storage sits at its own ERC-7201 root, so modules never collide.
 - Outside its module, storage is written as `Pausable.pausable.paused`.

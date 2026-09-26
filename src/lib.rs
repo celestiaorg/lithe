@@ -138,11 +138,7 @@ pub fn compile_file_with(path: &std::path::Path, opts: &Options) -> Result<Compi
 /// The ABI needs the checked program, not its code: a contract over the size limit that
 /// can't be split still has one.
 pub fn abi_file(path: &std::path::Path) -> Result<String, Error> {
-    abi_file_with(path, &Options::default())
-}
-
-pub fn abi_file_with(path: &std::path::Path, opts: &Options) -> Result<String, Error> {
-    route::render_abi(&check::check(with_opts(modules::load(path)?, opts))?)
+    route::render_abi(&check::check(modules::load(path)?)?)
 }
 
 pub fn abi_tree_file(path: &std::path::Path) -> Result<String, Error> {
@@ -151,7 +147,7 @@ pub fn abi_tree_file(path: &std::path::Path) -> Result<String, Error> {
 
 /// Each entrypoint's dispatch tree, with the facet it runs in when the contract is split.
 pub fn abi_tree_file_with(path: &std::path::Path, opts: &Options) -> Result<String, Error> {
-    let prog = with_opts(modules::load(path)?, opts);
+    let prog = modules::load(path)?;
     let name = artifact_contract_name(&prog, path);
     let checked = check::check(prog)?;
     let parts = part_names(&checked, &name, opts)?;
@@ -193,7 +189,7 @@ pub fn footprint_file(path: &std::path::Path) -> Result<String, Error> {
 
 /// Footprints, with the facet each entrypoint runs in when the contract is split.
 pub fn footprint_file_with(path: &std::path::Path, opts: &Options) -> Result<String, Error> {
-    let prog = with_opts(modules::load(path)?, opts);
+    let prog = modules::load(path)?;
     let name = artifact_contract_name(&prog, path);
     let checked = check::check(prog)?;
     let parts = part_names(&checked, &name, opts)?;
@@ -233,17 +229,8 @@ fn prepare_file(path: &std::path::Path, opts: &Options) -> Result<Prepared, Erro
     finish(prog, &name, opts)
 }
 
-/// A program with the options that change what it contains, not just how it is built.
-fn with_opts(mut prog: ast::Program, opts: &Options) -> ast::Program {
-    prog.erc165 = opts.erc165;
-    for peer in &mut prog.peers {
-        peer.erc165 = opts.erc165;
-    }
-    prog
-}
-
 fn finish(prog: ast::Program, name: &str, opts: &Options) -> Result<Prepared, Error> {
-    let checked = check::check(with_opts(prog, opts))?;
+    let checked = check::check(prog)?;
     let abi = route::render_abi(&checked)?;
     let methods = route::method_ids(&checked)?;
     let split = split::build(&checked, name, opts)?;
@@ -339,7 +326,7 @@ fn checksum(address: &[u8; 20]) -> String {
 
 /// The router and each facet: size against the limit, and the entrypoints each runs, by group.
 pub fn facets_file(path: &std::path::Path, opts: &Options) -> Result<String, Error> {
-    let prog = with_opts(modules::load(path)?, opts);
+    let prog = modules::load(path)?;
     let name = artifact_contract_name(&prog, path);
     let checked = check::check(prog)?;
     let built = split::build(&checked, &name, opts)?;
@@ -375,14 +362,14 @@ pub fn facets_file(path: &std::path::Path, opts: &Options) -> Result<String, Err
     Ok(out)
 }
 
-/// The `external use` block that exposes every external `module` declares, for a contract to
+/// The `use M exposing` block that exposes every external `module` declares, for a contract to
 /// copy and trim.
 pub fn stubs_file(path: &std::path::Path, module: &str) -> Result<String, Error> {
     let prog = modules::load(path)?;
     let Some(decl) = prog.modules.iter().find(|decl| decl.name == module) else {
         return Err(error(0, 0, format!("unknown module `{module}`")));
     };
-    let mut out = format!("external use {module} is {{\n");
+    let mut out = format!("use {module} exposing {{\n");
     let externals: Vec<&ast::Func> = decl
         .funcs
         .iter()
