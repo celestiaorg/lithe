@@ -29,7 +29,8 @@ import time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 BENCH = os.path.join(ROOT, "bench")
-LITHE = os.path.join(ROOT, "target", "release", "lithe")
+# Through cargo so the bench always measures the compiler in this tree.
+LITHE = ["cargo", "run", "--release", "--quiet", "--manifest-path", os.path.join(ROOT, "Cargo.toml"), "--"]
 # anvil's first two default accounts.
 KEYS = {
     "A": "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80",
@@ -1428,7 +1429,9 @@ def lithe_builds():
     """Each pair's creation code, runtime size, and function signatures, from the
     Foundry-style artifacts."""
     out = tempfile.mkdtemp()
-    subprocess.run([LITHE, "compile", BENCH], cwd=out, check=True, capture_output=True)
+    result = subprocess.run([*LITHE, "compile", BENCH], cwd=out, capture_output=True, text=True)
+    if result.returncode:
+        sys.exit(result.stderr)
     builds = {}
     for entry in os.listdir(os.path.join(out, "out")):
         folder = os.path.join(out, "out", entry)
