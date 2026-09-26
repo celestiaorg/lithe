@@ -34,7 +34,7 @@ storage is record {
 }
 
 (* The newest value, or zero. *)
-view function latest(const points : list(checkpoint)) : uint208 is {
+view function latest(storage points : list(checkpoint)) : uint208 is {
   var value : uint208 := 0;
   if points.length > 0n then {
     value := points[points.length - 1n].value;
@@ -42,7 +42,7 @@ view function latest(const points : list(checkpoint)) : uint208 is {
 } with value
 
 (* A second push at the newest key replaces its value. *)
-function push(const points : list(checkpoint); const key : uint48; const value : uint208) is {
+function push(storage points : list(checkpoint); const key : uint48; const value : uint208) is {
   const count : nat := points.length;
   if count > 0n and points[count - 1n].key = key then {
     points[count - 1n].value := value;

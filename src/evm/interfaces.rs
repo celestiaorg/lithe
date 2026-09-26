@@ -298,20 +298,20 @@ transient storage scratch is record {
   t : map(address, nat);
 }
 
-function bump(const m : map(address, nat); const by : nat) is {
+function bump(storage m : map(address, nat); const by : nat) is {
   m[Evm.sender()] := m[Evm.sender()] + by;
 }
 
-function bump_twice(const m : map(address, nat)) is {
+function bump_twice(storage m : map(address, nat)) is {
   bump(m, 1n);
   bump(m, 1n);
 }
 
-function put(const m : map(address, map(address, nat)); const k : address; const v : nat) is {
+function put(storage m : map(address, map(address, nat)); const k : address; const v : nat) is {
   m[Evm.sender()][k] := v;
 }
 
-function name(const m : map(address, string); const v : string) is {
+function name(storage m : map(address, string); const v : string) is {
   m[Evm.sender()] := v;
 }
 
@@ -373,6 +373,72 @@ external view function name_of(const who : address) : string is storage.names[wh
     }
 }
 
+/// A `storage` parameter is a reference to the storage its caller passes, whatever its type.
+/// A `const` one is a value: a stored list passed to it is copied, and a map can't be one.
+#[test]
+fn storage_parameters_write_in_place() {
+    let src = r#"
+storage is record {
+  total : nat;
+  items : list(nat);
+}
+
+function bump(storage n : nat) is {
+  n := n + 1n;
+}
+
+function push(storage xs : list(nat); const v : nat) is {
+  xs[xs.length] := v;
+}
+
+function last(const xs : list(nat)) : nat is
+  xs[xs.length - 1n]
+
+external function go() : nat is {
+  bump(storage.total);
+  bump(storage.total);
+  push(storage.items, 7n);
+} with storage.total * 100n + last(storage.items)
+"#;
+    let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
+    let w = Word::from_u64;
+    let out = exec(
+        &runtime,
+        &word_data("go()", &[]),
+        HashMap::new(),
+        w(1),
+        w(0),
+        w(0),
+    )
+    .expect("go");
+    assert!(!out.reverted, "{}", pretty(&out.returndata));
+    assert_eq!(load_bytes(&out.returndata, 0), w(207));
+    let footprint = crate::footprint(src).expect("footprint");
+    assert!(footprint.contains("writes: total, items"), "{footprint}");
+
+    for (src, want) in [
+        (
+            "storage is record { n : nat; }\nfunction bump(storage n : nat) is { n := n + 1n; }\nexternal function go() is { var k : nat := 0n; bump(k); }\n",
+            "pass a storage path to `n`",
+        ),
+        (
+            "storage is record { m : map(address, nat); }\nfunction f(const m : map(address, nat)) is { skip }\nexternal function go() is { f(storage.m); }\n",
+            "declare it `storage m`",
+        ),
+        (
+            "storage is record { xs : list(nat); }\nfunction f(const xs : list(nat)) is { xs[0n] := 1n; }\nexternal function go() is { f(storage.xs); }\n",
+            "cannot assign to a const",
+        ),
+        (
+            "external function go(storage n : nat) is { skip }\n",
+            "its parameters are values",
+        ),
+    ] {
+        let err = compile(src).expect_err(want);
+        assert!(err.message.contains(want), "{want}: {}", err.message);
+    }
+}
+
 /// Internal functions overload as external ones do: a call picks the overload by how many
 /// arguments it passes, then by their types. Overloads may be generic or take storage.
 #[test]
@@ -401,7 +467,7 @@ pure function pick(const x : bool) : nat is 100n
 pure function same(T)(const x : T) : T is x
 pure function same(T)(const x : T; const y : T) : T is y
 
-function bump(const m : map(address, nat)) is {
+function bump(storage m : map(address, nat)) is {
   m[Evm.sender()] := 5n;
 }
 

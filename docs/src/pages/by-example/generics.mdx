@@ -78,14 +78,14 @@ use Watchlist exposing {
 module Set(T : map_key) is {
   type self is map(T, bool);
 
-  view function contains(const set : self; const value : T) : bool is
+  view function contains(storage set : self; const value : T) : bool is
     set[value]
 
-  function add(const set : self; const value : T) is {
+  function add(storage set : self; const value : T) is {
     set[value] := true;
   }
 
-  function remove(const set : self; const value : T) is {
+  function remove(storage set : self; const value : T) is {
     set[value] := false;
   }
 }
@@ -107,19 +107,19 @@ module SetEnumerable(T : map_key) is {
 
   error Out_of_bounds;
 
-  view function contains(const items : self; const value : T) : bool is
+  view function contains(storage items : self; const value : T) : bool is
     items.indexes[value] > 0n
 
-  view function length(const items : self) : nat is
+  view function length(storage items : self) : nat is
     items.count
 
-  view function at(const items : self; const index : nat) : T
+  view function at(storage items : self; const index : nat) : T
     raises Out_of_bounds
   is {
     assert(index < items.count, Out_of_bounds);
   } with items.values[index]
 
-  function add(const items : self; const value : T) is {
+  function add(storage items : self; const value : T) is {
     if items.indexes[value] = 0n then {
       items.values[items.count] := value;
       items.count := items.count + 1n;
@@ -127,7 +127,7 @@ module SetEnumerable(T : map_key) is {
     }
   }
 
-  function remove(const items : self; const value : T) is {
+  function remove(storage items : self; const value : T) is {
     const found : nat := items.indexes[value];
     if found = 0n then {
       skip

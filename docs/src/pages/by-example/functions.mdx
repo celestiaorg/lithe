@@ -44,4 +44,5 @@ external view function stats() : (nat, bool) is
 ```
 
 - `var` parameters can be reassigned inside the body. Callers are unaffected.
+- `storage` parameters are references to the storage a caller passes, which the function may write. See [Parameters](/language/functions#parameters).
 - A function with no result type returns `unit` and is called as a statement: `bump(...);`.

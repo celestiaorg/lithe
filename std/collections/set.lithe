@@ -3,14 +3,14 @@
 module Set(T : map_key) is {
   type self is map(T, bool);
 
-  view function contains(const set : self; const value : T) : bool is
+  view function contains(storage set : self; const value : T) : bool is
     set[value]
 
-  function add(const set : self; const value : T) is {
+  function add(storage set : self; const value : T) is {
     set[value] := true;
   }
 
-  function remove(const set : self; const value : T) is {
+  function remove(storage set : self; const value : T) is {
     set[value] := false;
   }
 }

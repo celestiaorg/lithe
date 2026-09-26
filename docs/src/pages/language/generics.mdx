@@ -65,14 +65,14 @@ external function fill(const id : bytes32) is {
 module Set(T : map_key) is {
   type self is map(T, bool);
 
-  view function contains(const set : self; const value : T) : bool is
+  view function contains(storage set : self; const value : T) : bool is
     set[value]
 
-  function add(const set : self; const value : T) is {
+  function add(storage set : self; const value : T) is {
     set[value] := true;
   }
 
-  function remove(const set : self; const value : T) is {
+  function remove(storage set : self; const value : T) is {
     set[value] := false;
   }
 }
@@ -93,7 +93,7 @@ A type parameter can carry a constraint that the compiler checks at each use. Th
 module Set(T : map_key) is {
   type self is map(T, bool);
 
-  function add(const set : self; const value : T) is {
+  function add(storage set : self; const value : T) is {
     set[value] := true;
   }
 }
@@ -111,7 +111,7 @@ type `string` does not satisfy `map_key`
 
 ## Storage parameters
 
-A generic module function that takes a storage value, such as `const set : self`, receives a reference to that storage location, not a copy. `Set.add(storage.admins, who)` writes to `storage.admins`. That is how collection modules work without owning a named domain of their own.
+A module function that declares a `storage` parameter, such as `storage set : self`, receives a reference to that storage location, not a copy, and may write it. A `const` parameter is always a value. `Set.add(storage.admins, who)` writes to `storage.admins`. That is how collection modules work without owning a named domain of their own.
 
 A module passes its own storage the same way. Inside a module that declares `storage roles`, `Set.add(roles.admins, who)` writes to `roles.admins`.
 

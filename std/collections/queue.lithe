@@ -19,38 +19,38 @@ module Queue(T) is {
   error QueueEmpty;
   error QueueOutOfBounds of nat;
 
-  view function length(const q : self) : nat is
+  view function length(storage q : self) : nat is
     q.tail - q.head
 
-  view function is_empty(const q : self) : bool is
+  view function is_empty(storage q : self) : bool is
     q.tail = q.head
 
   (* The element `index` places from the front. *)
-  view function at(const q : self; const index : nat) : T
+  view function at(storage q : self; const index : nat) : T
     raises QueueOutOfBounds
   is {
     assert(index < q.tail - q.head, QueueOutOfBounds(index));
   } with q.items[q.head + index]
 
-  view function front(const q : self) : T
+  view function front(storage q : self) : T
     raises QueueEmpty
   is {
     assert(q.tail > q.head, QueueEmpty);
   } with q.items[q.head]
 
-  view function back(const q : self) : T
+  view function back(storage q : self) : T
     raises QueueEmpty
   is {
     assert(q.tail > q.head, QueueEmpty);
   } with q.items[q.tail - 1n]
 
-  function push(const q : self; const value : T) is {
+  function push(storage q : self; const value : T) is {
     q.items[q.tail] := value;
     q.tail := q.tail + 1n;
   }
 
   (* Removes and returns the front element. *)
-  function pop(const q : self) : T
+  function pop(storage q : self) : T
     raises QueueEmpty
   is {
     assert(q.tail > q.head, QueueEmpty);

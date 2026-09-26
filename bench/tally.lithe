@@ -7,13 +7,13 @@ module Tally(K : map_key) is {
     total : nat;
   }
 
-  view function count(const tally : self; const key : K) : nat is
+  view function count(storage tally : self; const key : K) : nat is
     tally.counts[key]
 
-  view function total(const tally : self) : nat is
+  view function total(storage tally : self) : nat is
     tally.total
 
-  function add(const tally : self; const key : K; const n : nat) is {
+  function add(storage tally : self; const key : K; const n : nat) is {
     tally.counts[key] := tally.counts[key] + n;
     tally.total := tally.total + n;
   }

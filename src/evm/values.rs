@@ -1668,11 +1668,11 @@ module Stack(T : map_key) is {
     items : list(T);
   }
 
-  function push(const s : self; const value : T) is {
+  function push(storage s : self; const value : T) is {
     s.items[s.items.length] := value;
   }
 
-  function pop(const s : self) : T is {
+  function pop(storage s : self) : T is {
     const top : T := s.items[s.items.length - 1n];
     List.pop(s.items);
   } with top

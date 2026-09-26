@@ -303,9 +303,20 @@ impl Checker {
         let mut hidden = Vec::new();
         for (param, arg) in template.params.iter().zip(args.iter()) {
             let concrete = self.build_subst(&param.ty, target.module, &env)?;
-            let in_storage = storage_root(arg)
-                .is_some_and(|sym| self.syms.get(sym).is_some_and(|sym| sym.storage));
-            if self.storage_only(concrete) && !(self.list_value(concrete) && !in_storage) {
+            if !param.storage && self.holds_map(concrete) {
+                return Err(error(
+                    arg.line(),
+                    arg.col(),
+                    format!(
+                        "`{}` takes `{}` : {}, which lives only in storage: declare it `storage {}`",
+                        source_name(&target.qualified),
+                        param.name,
+                        self.ty_label(concrete),
+                        param.name
+                    ),
+                ));
+            }
+            if param.storage {
                 let Some(path) = storage_path(arg, &param.name, &mut hidden) else {
                     return Err(error(
                         arg.line(),
@@ -361,6 +372,7 @@ impl Checker {
                 line: arg.line(),
                 col: arg.col(),
                 mutable: false,
+                storage: false,
                 name: name.clone(),
                 ty: TypeRef::Hole { id: arg.ty() },
                 ty_id: 0,

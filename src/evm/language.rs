@@ -427,7 +427,7 @@ fn generics_specialize_sets() {
     let mixed = r#"
 module Set(T : map_key) is {
   type self is map(T, bool);
-  function add(const set : self; const value : T) is {
+  function add(storage set : self; const value : T) is {
     set[value] := true;
   }
 }

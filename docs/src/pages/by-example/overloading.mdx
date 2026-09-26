@@ -27,7 +27,7 @@ pure function fee(const amount : nat; const bps : nat) : nat is
   amount * bps / 10_000n
 
 (* An overload can take storage: it writes the map it is given. *)
-function credit(const ledger : map(address, nat); const to : address; const amount : nat) is {
+function credit(storage ledger : map(address, nat); const to : address; const amount : nat) is {
   ledger[to] := ledger[to] + amount;
 }
 

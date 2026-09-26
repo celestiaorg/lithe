@@ -1124,6 +1124,18 @@ impl Checker {
         }
     }
 
+    pub(super) fn holds_map(&self, ty: usize) -> bool {
+        let id = peel_id(&self.types, ty);
+        match self.types[id].kind {
+            TyKind::Map => true,
+            TyKind::Record | TyKind::Tuple => self.types[id]
+                .fields
+                .iter()
+                .any(|field| self.holds_map(field.ty)),
+            _ => false,
+        }
+    }
+
     pub(super) fn ty_label(&self, id: usize) -> String {
         let mut names: Vec<String> = self
             .named

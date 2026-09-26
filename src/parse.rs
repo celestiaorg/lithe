@@ -600,12 +600,11 @@ impl<'a> Parser<'a> {
         })
     }
 
+    /// `(T, U)` names type parameters; `(storage s : T)` opens the parameters.
     fn looks_like_type_params(&self) -> bool {
         self.kind() == Kind::LParen
-            && self
-                .toks
-                .get(self.i + 1)
-                .is_some_and(|tok| tok.kind == Kind::Ident)
+            && self.peek_kind(1) == Kind::Ident
+            && self.peek_kind(2) != Kind::Ident
     }
 
     fn type_param_list(&mut self) -> Result<Vec<TypeParam>, Error> {
@@ -1229,7 +1228,10 @@ impl<'a> Parser<'a> {
         if self.kind() != Kind::RParen {
             loop {
                 let (pline, pcol) = self.at();
-                let mutable = match self.kind() {
+                let storage_mode = self.kind() == Kind::Ident
+                    && self.slice() == "storage"
+                    && self.peek_kind(1) == Kind::Ident;
+                let (mutable, storage) = match self.kind() {
                     // An interface's parameters are values in the ABI: `name : type`.
                     Kind::Var | Kind::Const if self.declaring => {
                         return Err(self.err(format!(
@@ -1237,19 +1239,29 @@ impl<'a> Parser<'a> {
                             self.found()
                         )));
                     }
-                    _ if self.declaring => false,
+                    _ if self.declaring && storage_mode => {
+                        return Err(self.err(
+                            "an interface's parameters are `name : type`, without `storage`",
+                        ));
+                    }
+                    _ if self.declaring => (false, false),
                     Kind::Var => {
                         self.bump();
-                        true
+                        (true, false)
                     }
                     Kind::Const => {
                         self.bump();
-                        false
+                        (false, false)
+                    }
+                    _ if storage_mode => {
+                        self.bump();
+                        (false, true)
                     }
                     _ => {
-                        return Err(
-                            self.err(format!("expected `const` or `var`, found {}", self.found()))
-                        )
+                        return Err(self.err(format!(
+                            "expected `const`, `var`, or `storage`, found {}",
+                            self.found()
+                        )))
                     }
                 };
                 let pname = self.ident()?;
@@ -1259,6 +1271,7 @@ impl<'a> Parser<'a> {
                     line: pline,
                     col: pcol,
                     mutable,
+                    storage,
                     name: pname,
                     ty,
                     ty_id: 0,
@@ -1275,6 +1288,21 @@ impl<'a> Parser<'a> {
             }
         }
         self.want(Kind::RParen)?;
+        if !matches!(
+            kind,
+            ItemKind::Function | ItemKind::Readonly | ItemKind::Pure
+        ) {
+            if let Some(p) = params.iter().find(|p| p.storage) {
+                return Err(error(
+                    p.line,
+                    p.col,
+                    format!(
+                        "`{}` is called from outside, so its parameters are values: take `{}` as `const` or `var`",
+                        name, p.name
+                    ),
+                ));
+            }
+        }
         let ret = match kind {
             ItemKind::View => {
                 self.want(Kind::Colon)?;

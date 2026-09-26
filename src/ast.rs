@@ -330,6 +330,9 @@ pub(crate) struct Param {
     pub line: u32,
     pub col: u32,
     pub mutable: bool,
+    /// `storage name : T`: a reference to the storage the caller passes, which the
+    /// function may write.
+    pub storage: bool,
     pub name: String,
     pub ty: TypeRef,
     pub ty_id: usize,

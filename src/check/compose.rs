@@ -761,6 +761,7 @@ fn erc165_func(line: u32, col: u32, origin: &str, ids: &[u32]) -> Func {
             line,
             col,
             mutable: false,
+            storage: false,
             name: "interfaceId".to_string(),
             ty: name("bytes4"),
             ty_id: 0,

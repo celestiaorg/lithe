@@ -15,7 +15,7 @@ pure function fee(const amount : nat) : nat is
 pure function fee(const amount : nat; const bps : nat) : nat is
   amount * bps / 10_000n
 
-function credit(const ledger : map(address, nat); const to : address; const amount : nat) is {
+function credit(storage ledger : map(address, nat); const to : address; const amount : nat) is {
   ledger[to] := ledger[to] + amount;
 }
 
@@ -28,7 +28,7 @@ function credit(const to : address; const amount : shares) is {
   credit(storage.staked, to, nat(amount));
 }
 
-function move(const ledger : map(address, nat); const to : address; const amount : nat) is {
+function move(storage ledger : map(address, nat); const to : address; const amount : nat) is {
   ledger[Evm.sender()] := ledger[Evm.sender()] - amount;
   credit(ledger, to, amount);
 }

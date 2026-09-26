@@ -726,7 +726,7 @@ pub(crate) fn check(mut prog: Program) -> Result<Checked, Error> {
         if internal {
             for p in &func.params {
                 let id = c.build(&p.ty)?;
-                storage_param |= c.storage_only(id);
+                storage_param |= p.storage || c.storage_only(id);
             }
         }
         if storage_param {

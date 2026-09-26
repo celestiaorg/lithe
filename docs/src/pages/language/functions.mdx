@@ -66,7 +66,7 @@ payable functions must be stateful
 
 ## Parameters
 
-Parameters are separated by `;`. Each is `const` (immutable) or `var` (reassignable within the body):
+Parameters are separated by `;`. Each is `const` (a value that never changes), `var` (a value reassignable within the body), or `storage` (a reference to storage the function may write):
 
 ```lithe
 storage is record {
@@ -84,6 +84,30 @@ external function set(const x : nat) is {
 ```
 
 Arguments are separated by `,`.
+
+A `storage` parameter is passed a storage path, and the function reads and writes that storage in place. A map, or a record holding one, lives only in storage, so it is always a `storage` parameter. Other types can be either: `const xs : list(nat)` is a copy, `storage xs : list(nat)` is the stored list itself. Only internal functions take `storage` parameters. The writes show up in the calling entrypoint's [`footprint`](/tooling/inspection#footprint):
+
+```lithe
+storage is record {
+  balances : map(address, nat);
+  total : nat;
+}
+
+function credit(storage ledger : map(address, nat); const to : address; const amount : nat) is {
+  ledger[to] := ledger[to] + amount;
+}
+
+external function mint(const to : address; const amount : nat) is {
+  credit(storage.balances, to, amount);
+  storage.total := storage.total + amount;
+}
+```
+
+Passing a local where a `storage` parameter is expected is an error:
+
+```text
+pass a storage path to `ledger`
+```
 
 ## Results
 
