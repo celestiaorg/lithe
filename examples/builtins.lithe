@@ -73,4 +73,4 @@ external view function called() : bytes is
   Abi.encode_call(Target.foo, 7n)
 
 external view function recovered() : address is
-  Crypto.ecrecover(0x0, 0n, 0x0, 0x0)
+  Crypto.ecrecover(0x00, 0n, 0x00, 0x00)

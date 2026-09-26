@@ -88,9 +88,9 @@ impl<'a> Gen<'a> {
                     self.push_word(*w);
                     Ok(())
                 }
-                Lit::Int(w) => {
+                Lit::Int(w, digits) => {
                     if self.is_dynamic(*ty) {
-                        self.push_short(dyn_from_word(*w));
+                        self.push_short(dyn_from_word(*w, *digits));
                     } else {
                         self.push_word(*w);
                     }
@@ -265,7 +265,7 @@ impl<'a> Gen<'a> {
                     BinOp::Gt | BinOp::Neq | BinOp::Eq,
                     Expr::Field { base, name, .. },
                     Expr::Lit {
-                        lit: Lit::Nat(zero) | Lit::Int(zero),
+                        lit: Lit::Nat(zero) | Lit::Int(zero, _),
                         ..
                     },
                 ) = (op, left.as_ref(), right.as_ref())
@@ -320,7 +320,7 @@ impl<'a> Gen<'a> {
                 // A loop counter is below its limit, so one more always fits its type.
                 if *op == BinOp::Add
                     && matches!(left.as_ref(), Expr::Ident { sym: Some(c), .. } if self.loop_counters.contains(c))
-                    && matches!(right.as_ref(), Expr::Lit { lit: Lit::Nat(w) | Lit::Int(w), .. } if *w == Word::from_u64(1))
+                    && matches!(right.as_ref(), Expr::Lit { lit: Lit::Nat(w) | Lit::Int(w, _), .. } if *w == Word::from_u64(1))
                 {
                     self.op(ADD);
                     return Ok(());

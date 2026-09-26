@@ -113,7 +113,7 @@ impl<'a> Gen<'a> {
                 // stack word, and a test against zero.
                 let down = !mirrored
                     && matches!(iter, ForIter::Range { lo, .. }
-                        if matches!(lo, Expr::Lit { lit: Lit::Nat(w) | Lit::Int(w), .. } if w.is_zero()));
+                        if matches!(lo, Expr::Lit { lit: Lit::Nat(w) | Lit::Int(w, _), .. } if w.is_zero()));
                 match iter {
                     ForIter::Range { hi, .. } if down => {
                         self.compile_value(hi)?;

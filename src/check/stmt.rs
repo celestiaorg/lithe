@@ -325,7 +325,7 @@ impl Checker {
                 if let Some(b) = bound {
                     let n = match b {
                         Expr::Lit {
-                            lit: Lit::Nat(w) | Lit::Int(w),
+                            lit: Lit::Nat(w) | Lit::Int(w, _),
                             ..
                         } if w.0[1..] == [0; 3] => w.0[0],
                         _ => return Err(error(b.line(), b.col(), "`bound` must be a number")),

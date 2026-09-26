@@ -193,7 +193,7 @@ impl<'a> Gen<'a> {
             let packed = match arg {
                 Expr::Lit { lit, .. } if self.is_dynamic(ty) => match lit {
                     Lit::Str(s) if s.len() <= 31 => Some(Word::short_dyn(s.as_bytes())),
-                    Lit::Int(w) => Some(dyn_from_word(*w)),
+                    Lit::Int(w, digits) => Some(dyn_from_word(*w, *digits)),
                     _ => None,
                 },
                 _ => None,

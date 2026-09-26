@@ -755,9 +755,12 @@ fn byte_mask(width: u8) -> Word {
     Word::from_u64(0).not().shr(256 - u32::from(width) * 8)
 }
 
-fn dyn_from_word(w: Word) -> Word {
+fn dyn_from_word(w: Word, digits: Option<u8>) -> Word {
     let be = w.to_be_bytes();
-    let start = be.iter().position(|b| *b != 0).unwrap_or(32);
+    let start = match digits {
+        Some(d) => 32 - usize::from(d / 2),
+        None => be.iter().position(|b| *b != 0).unwrap_or(32),
+    };
     Word::short_dyn(&be[start..])
 }
 

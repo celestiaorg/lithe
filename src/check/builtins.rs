@@ -334,7 +334,7 @@ impl Checker {
                 args[0] = Expr::Lit {
                     line,
                     col,
-                    lit: Lit::Int(Word::from_u64(u64::from(u32::from_be_bytes(sel)))),
+                    lit: Lit::Int(Word::from_u64(u64::from(u32::from_be_bytes(sel))), None),
                     ty: self.bytes_n(4)?,
                 };
                 *builtin = Some(Builtin::AbiEncodeSelector);

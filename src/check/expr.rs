@@ -31,9 +31,9 @@ impl Checker {
             Expr::Lit { lit, ty, line, col } => {
                 *ty = match lit {
                     Lit::Nat(_) => TY_NAT,
-                    Lit::Int(w) => {
+                    Lit::Int(w, digits) => {
                         if let Some(expect) = self.expect {
-                            self.adopt_literal(*line, *col, *w, expect)?
+                            self.adopt_literal(*line, *col, *w, *digits, expect)?
                         } else {
                             TY_NAT
                         }
@@ -203,7 +203,7 @@ impl Checker {
                         matches!(
                             e,
                             Expr::Lit {
-                                lit: Lit::Int(_),
+                                lit: Lit::Int(..),
                                 ..
                             }
                         )
@@ -854,7 +854,7 @@ impl Checker {
             }
         };
         Ok(Some(Expr::Lit {
-            lit: Lit::Int(word),
+            lit: Lit::Int(word, None),
             ty,
             line: *line,
             col: *col,
@@ -866,14 +866,25 @@ impl Checker {
         line: u32,
         col: u32,
         word: Word,
+        digits: Option<u8>,
         expect: usize,
     ) -> Result<usize, Error> {
         let peeled = self.peel(expect);
+        if self.types[peeled].kind == TyKind::Bytes && digits.is_some_and(|d| d % 2 == 1) {
+            return Err(error(
+                line,
+                col,
+                format!(
+                    "hex literal for `{}` must have an even number of digits",
+                    self.type_name(expect)
+                ),
+            ));
+        }
         let bits = self.types[peeled].bits;
         let ok = match self.types[peeled].kind {
             TyKind::Nat | TyKind::Wei | TyKind::Timestamp => fits_unsigned(word, bits),
             TyKind::Int => fits_signed(word, bits),
-            TyKind::Bytes => byte_len(word) <= u32::from(if bits == 0 { 31 } else { bits }),
+            TyKind::Bytes => digits.map_or(byte_len(word), |d| u32::from(d / 2)) <= u32::from(if bits == 0 { 31 } else { bits }),
             TyKind::Address => byte_len(word) <= 20,
             _ => false,
         };

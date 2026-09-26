@@ -2048,7 +2048,11 @@ impl<'a> Parser<'a> {
                 })
             }
             Kind::Int => {
-                let lit = Lit::Int(self.tok().word);
+                let digits = self
+                    .slice()
+                    .strip_prefix("0x")
+                    .map(|d| d.bytes().filter(|b| *b != b'_').count() as u8);
+                let lit = Lit::Int(self.tok().word, digits);
                 self.bump();
                 Ok(Expr::Lit {
                     line,

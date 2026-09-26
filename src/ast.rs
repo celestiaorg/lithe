@@ -620,7 +620,8 @@ pub(crate) enum Builtin {
 #[derive(Debug, Clone)]
 pub(crate) enum Lit {
     Nat(Word),
-    Int(Word),
+    /// Hex literals keep how many digits were written.
+    Int(Word, Option<u8>),
     Wei(Word),
     Duration(Word),
     Bool(bool),

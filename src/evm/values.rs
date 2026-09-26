@@ -840,6 +840,47 @@ fn indexed_events_split_topics_and_data() {
 }
 
 #[test]
+fn hex_literals_keep_their_written_width_as_bytes() {
+    let src = "\
+error Bad_data of bytes;
+storage is record { n : nat; }
+external pure function zero() : bytes is 0x00
+external pure function one() : bytes is 0x0001
+external pure function ff() : bytes is 0x0000_00ff
+external pure function reject() : nat raises Bad_data is { assert(false, Bad_data(0x00)); } with 0n
+";
+    let abi_bytes = |data: &[u8]| abi_string("x()", data)[4..].to_vec();
+    let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
+    for (sig, want) in [
+        ("zero()", &[0u8][..]),
+        ("one()", &[0, 1]),
+        ("ff()", &[0, 0, 0, 0xff]),
+    ] {
+        let out = call(&runtime, sig, &[]);
+        assert!(!out.reverted, "{sig}");
+        assert_eq!(out.returndata, abi_bytes(want), "{sig}");
+    }
+    let out = call(&runtime, "reject()", &[]);
+    assert!(out.reverted);
+    assert_eq!(&out.returndata[4..], abi_bytes(&[0]));
+
+    let err = compile(
+        "storage is record { n : nat; }\nexternal pure function f() : bytes4 is 0x0012345678\n",
+    )
+    .expect_err("too wide");
+    assert!(err.to_string().contains("does not fit type `bytes4`"), "{err}");
+    for ty in ["bytes", "bytes4"] {
+        let err = compile(&format!(
+            "storage is record {{ n : nat; }}\nexternal pure function f() : {ty} is 0x123\n"
+        ))
+        .expect_err("odd digits");
+        assert!(err.to_string().contains("even number of digits"), "{err}");
+    }
+    compile("storage is record { n : nat; }\nexternal pure function f() : nat is 0x123\n")
+        .expect("odd digits as a number");
+}
+
+#[test]
 fn strings_and_dynamic_bytes_use_short_slots() {
     let src = include_str!("../../examples/text.lithe");
     let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
