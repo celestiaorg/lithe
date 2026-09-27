@@ -141,7 +141,7 @@ is {
   assert(owners.length = ids.length, ArrayLengthsMismatch);
   var balances : list(nat) := [];
   for (i, owner) : (nat, address) in owners do {
-    balances[i] := storage.balances[owner][ids[i]];
+    List.push(balances, storage.balances[owner][ids[i]]);
   }
 } with balances
 

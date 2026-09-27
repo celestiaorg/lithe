@@ -567,7 +567,7 @@ external pure function built(const a : nat) : list(list(nat)) is [[a, a + 1n], [
 external pure function names(const items : list(item)) : list(string) is {
   var out : list(string) := [];
   for it : item in items do {
-    out[out.length] := it.name;
+    List.push(out, it.name);
   }
 } with out
 external pure function tag(const items : list(item); const i : nat; const j : nat) : nat is items[i].tags[j]

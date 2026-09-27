@@ -19,7 +19,7 @@ external function set_notes(const xs : list(string)) is {
 }
 
 external function add_note(const x : string) is {
-  storage.notes[storage.notes.length] := x;
+  List.push(storage.notes, x);
 }
 
 external view function notes() : list(string) is

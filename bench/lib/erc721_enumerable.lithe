@@ -68,7 +68,7 @@ module ERC721Enumerable is {
 
   function add_to_all(const tokenId : nat) is {
     erc721_enumerable.allTokensIndex[tokenId] := erc721_enumerable.allTokens.length;
-    erc721_enumerable.allTokens[erc721_enumerable.allTokens.length] := tokenId;
+    List.push(erc721_enumerable.allTokens, tokenId);
   }
 
   (* The owner's last token moves into the removed token's place. *)

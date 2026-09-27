@@ -40,7 +40,7 @@ external function weighted(const xs : list(nat, 3)) is {
 }
 
 external function join(const who : address) is {
-  storage.members[storage.members.length] := who;
+  List.push(storage.members, who);
 }
 
 (* A storage list can grow, so its loop carries a bound. Past it, the call panics. *)

@@ -388,7 +388,7 @@ function bump(storage n : nat) is {
 }
 
 function push(storage xs : list(nat); const v : nat) is {
-  xs[xs.length] := v;
+  List.push(xs, v);
 }
 
 function last(const xs : list(nat)) : nat is

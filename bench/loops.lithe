@@ -29,7 +29,7 @@ external function airdrop(const tos : list(address); const amount : nat) is {
 }
 
 external function join(const who : address) is {
-  storage.owners[storage.owners.length] := who;
+  List.push(storage.owners, who);
 }
 
 external function mark_all() is {

@@ -16,7 +16,7 @@ external function deposit(const amount : nat) is {
 }
 
 external function note() is {
-  storage.ids[0n] := Evm.sender();
+  List.push(storage.ids, Evm.sender());
 }
 
 external view function first() : address is

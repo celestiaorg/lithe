@@ -57,7 +57,7 @@ module Checkpoints is {
     if replace then {
       history.checkpoints[count - 1n].value := value;
     } else {
-      history.checkpoints[count] := { key = key; value = value; };
+      List.push(history.checkpoints, { key = key; value = value; });
     }
   }
 

@@ -39,7 +39,7 @@ storage is record {
 external pure function legs(const orders : list(order)) : list(list(nat)) is {
   var out : list(list(nat)) := [];
   for o : order in orders do {
-    out[out.length] := o.legs;
+    List.push(out, o.legs);
   }
 } with out
 

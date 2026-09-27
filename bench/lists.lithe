@@ -22,7 +22,7 @@ external function save(const xs : list(nat)) is {
 }
 
 external function push(const x : nat) is {
-  storage.saved[storage.saved.length] := x;
+  List.push(storage.saved, x);
 }
 
 external function set_owners(const owners : list(address)) is {
@@ -46,7 +46,7 @@ external pure function echo(const xs : list(bytes4)) : list(bytes4) is
 
 external pure function pair(const a : nat; const b : nat) : list(nat) is {
   var out : list(nat) := [a];
-  out[1n] := b;
+  List.push(out, b);
 } with out
 
 external function announce(const ids : list(nat); const note : string) is {

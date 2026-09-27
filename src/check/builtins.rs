@@ -473,6 +473,7 @@ impl Checker {
                 *ty = args[0].ty();
                 return Ok(());
             }
+            Builtin::ListPush => return Err(error(line, col, format!("`{call}` is a statement"))),
             // The contract's interfaces are known once it is checked, and a module's code is
             // the same in every contract that uses it.
             Builtin::AbiSupportsInterface => {
@@ -721,7 +722,7 @@ impl Checker {
             | Builtin::BytesConcat => self.bytes_n(0)?,
             Builtin::StringConcat | Builtin::NatToString | Builtin::IntToString => TY_STRING,
             Builtin::AbiSupportsInterface => TY_BOOL,
-            Builtin::ListPop => TY_UNIT,
+            Builtin::ListPop | Builtin::ListPush => TY_UNIT,
             Builtin::Precompile(_) => TY_UNIT,
             Builtin::AbiDecode
             | Builtin::NatDivRem
@@ -834,6 +835,7 @@ fn module_builtin(module: &str, name: &str) -> Option<Builtin> {
         ("Nat", "from_bits") => Builtin::FromBits(false),
         ("Int", "from_bits") => Builtin::FromBits(true),
         ("List", "pop") => Builtin::ListPop,
+        ("List", "push") => Builtin::ListPush,
         ("Abi", "supports_interface") => Builtin::AbiSupportsInterface,
         ("Nat" | "Int", "wrapping_add" | "wrapping_sub" | "wrapping_mul") => Builtin::Wrapping(
             match name {

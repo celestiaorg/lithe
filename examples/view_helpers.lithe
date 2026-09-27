@@ -13,7 +13,7 @@ storage is record {
 view function all() : list(address) is {
   var out : list(address) := [];
   for i : nat in 0n .. storage.n bound 16 do {
-    out[i] := storage.xs[i];
+    List.push(out, storage.xs[i]);
   }
 } with out
 

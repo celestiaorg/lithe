@@ -98,7 +98,6 @@ module SetEnumerable(T : map_key) is {
   type self is record {
     values : list(T);
     indexes : map(T, nat);
-    count : nat;
   }
 
   type iterator is record {
@@ -111,19 +110,18 @@ module SetEnumerable(T : map_key) is {
     items.indexes[value] > 0n
 
   view function length(storage items : self) : nat is
-    items.count
+    items.values.length
 
   view function at(storage items : self; const index : nat) : T
     raises Out_of_bounds
   is {
-    assert(index < items.count, Out_of_bounds);
+    assert(index < items.values.length, Out_of_bounds);
   } with items.values[index]
 
   function add(storage items : self; const value : T) is {
     if items.indexes[value] = 0n then {
-      items.values[items.count] := value;
-      items.count := items.count + 1n;
-      items.indexes[value] := items.count;
+      List.push(items.values, value);
+      items.indexes[value] := items.values.length;
     }
   }
 
@@ -132,12 +130,11 @@ module SetEnumerable(T : map_key) is {
     if found = 0n then {
       skip
     } else {
-      const last : nat := items.count - 1n;
-      const moved : T := items.values[last];
+      const moved : T := items.values[items.values.length - 1n];
       items.values[found - 1n] := moved;
       items.indexes[moved] := found;
       items.indexes[value] := 0n;
-      items.count := last;
+      List.pop(items.values);
     }
   }
 }

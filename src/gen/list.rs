@@ -2,7 +2,7 @@ use super::*;
 
 impl<'a> Gen<'a> {
     pub(super) fn compile_memory_list_read(&mut self, sym: usize, leaf: u32, index: &Expr) -> Result<(), Error> {
-        self.list_element_start(sym, leaf, index, false)?;
+        self.list_element_start(sym, leaf, index, false, false)?;
         self.op(MLOAD);
         Ok(())
     }
@@ -604,6 +604,7 @@ impl<'a> Gen<'a> {
         leaf: u32,
         index: &Expr,
         write: bool,
+        grow: bool,
     ) -> Result<bool, Error> {
         let lty = self.type_at(self.checked.syms[sym].ty, leaf);
         let k = u64::from(self.list_stride(lty));
@@ -614,7 +615,7 @@ impl<'a> Gen<'a> {
             // `keccak(slot) + index * k`, as Solidity lays out an array of structs.
             self.compile_value(index)?;
             self.mstore_off(self.scratch_a);
-            self.list_bounds(sym, leaf, write)?;
+            self.list_bounds(sym, leaf, grow)?;
             self.push_word(self.leaf_key(sym, leaf));
             self.mstore_off(self.hash_buf);
             self.push_u64(32);
@@ -627,7 +628,7 @@ impl<'a> Gen<'a> {
             return Ok(true);
         }
         if bits == 0 {
-            return self.heap_element(self.addr(sym, leaf), index, k, write);
+            return self.heap_element(self.addr(sym, leaf), index, k, grow);
         }
         self.compile_value(index)?;
         let start = self.addr(sym, leaf);
@@ -679,7 +680,7 @@ impl<'a> Gen<'a> {
         if self.checked.types[lty].bits > 0 && !self.direct {
             self.read_list(sym, leaf);
         }
-        let slot = self.list_element_start(sym, leaf, index, false)?;
+        let slot = self.list_element_start(sym, leaf, index, false, false)?;
         for j in 0..k {
             if j + 1 < k {
                 self.op(DUP1);
@@ -705,6 +706,7 @@ impl<'a> Gen<'a> {
         leaf: u32,
         index: &Expr,
         value: &Expr,
+        push: bool,
     ) -> Result<(), Error> {
         let lty = self.type_at(self.checked.syms[sym].ty, leaf);
         let ety = self.checked.types[lty].elem.unwrap_or(0);
@@ -712,7 +714,7 @@ impl<'a> Gen<'a> {
         self.return_sites += 1;
         let buf = self.region(Region::Stored(self.return_sites), k * 32);
         self.write_value(value, buf, ety)?;
-        let slot = self.list_element_start(sym, leaf, index, true)?;
+        let slot = self.list_element_start(sym, leaf, index, true, push)?;
         for j in 0..k {
             self.mload(buf + j as i32 * 32);
             self.op(DUP1 + 1);
@@ -730,35 +732,22 @@ impl<'a> Gen<'a> {
         Ok(())
     }
 
-    /// Pushes the address of element `index` of a list value. A write at the length appends:
-    /// the list moves to a blob one element longer.
+    /// Pushes the address of element `index` of a list value. A push appends: the list
+    /// moves to a blob one element longer.
     /// `at` holds the list's pointer.
     pub(super) fn heap_element(
         &mut self,
         at: i32,
         index: &Expr,
         k: u64,
-        write: bool,
+        grow: bool,
     ) -> Result<bool, Error> {
         let (i, list) = (self.temp(), self.temp());
         self.compile_value(index)?;
         self.mstore_off(i);
         self.mload(at);
         self.mstore_off(list);
-        if write {
-            let skip = self.fresh();
-            self.mload(i);
-            self.mload(list);
-            self.op(MLOAD);
-            self.op(LT);
-            self.revert_if_panic(0x32)?;
-            self.mload(list);
-            self.op(MLOAD);
-            self.mload(i);
-            self.op(EQ);
-            self.op(ISZERO);
-            self.push_label(skip);
-            self.op(JUMPI);
+        if grow {
             self.mload(i);
             self.push_u64(1);
             self.op(ADD);
@@ -776,7 +765,6 @@ impl<'a> Gen<'a> {
             self.op(DUP1);
             self.mstore_off(list);
             self.mstore_off(at);
-            self.jumpdest(skip);
         } else if !self.trusted_index {
             self.mload(i);
             self.mload(list);
@@ -838,34 +826,17 @@ impl<'a> Gen<'a> {
         }
         let len_addr = self.addr(sym, leaf);
         self.mload(len_addr);
-        self.mstore_off(self.scratch_c);
-        if !grow {
-            self.mload(self.scratch_c);
-            self.mload(self.scratch_a);
-            self.op(LT);
-            self.op(ISZERO);
-            self.revert_if_panic(0x32)?;
+        if grow {
+            // A push: the index is the length, which grows by one.
+            self.push_u64(1);
+            self.op(ADD);
+            self.mstore_off(len_addr);
+            self.mark_dirty(sym, leaf);
             return Ok(());
         }
-        self.mload(self.scratch_c);
         self.mload(self.scratch_a);
-        self.op(GT);
-        self.revert_if_panic(0x32)?;
-        let skip = self.fresh();
-        self.mload(self.scratch_a);
-        self.mload(self.scratch_c);
-        self.op(EQ);
+        self.op(LT);
         self.op(ISZERO);
-        self.push_label(skip);
-        self.op(JUMPI);
-        self.mload(self.scratch_c);
-        self.push_u64(1);
-        self.op(ADD);
-        self.mstore_off(len_addr);
-        self.branch += 1;
-        self.mark_dirty(sym, leaf);
-        self.branch -= 1;
-        self.jumpdest(skip);
-        Ok(())
+        self.revert_if_panic(0x32)
     }
 }

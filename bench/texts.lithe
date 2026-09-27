@@ -21,7 +21,7 @@ external function save(const xs : list(bytes)) is {
 }
 
 external function push(const x : bytes) is {
-  storage.saved[storage.saved.length] := x;
+  List.push(storage.saved, x);
 }
 
 external function set_at(const i : nat; const x : bytes) is {

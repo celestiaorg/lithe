@@ -393,7 +393,7 @@ fn dynamic_lists_cross_the_abi() {
     }
     assert_eq!(slot(&l.storage, 0), w(1));
 
-    // A `var` grows by writing at its length.
+    // A `var` grows with `List.push`.
     let out = run(&mut l, word_data("build(uint256,uint256)", &[w(4), w(6)]));
     let mut want = w(32).to_be_bytes().to_vec();
     want.extend(abi_array(&[w(10), w(6)]));
@@ -818,7 +818,7 @@ storage is record { bs : list(bytes); ss : list(string); }
 external pure function echo(const xs : list(bytes)) : list(bytes) is xs
 external pure function build(const a : bytes; const b : bytes) : list(bytes) is {
   var out : list(bytes) := [a];
-  out[1n] := b;
+  List.push(out, b);
 } with out
 external pure function enc(const xs : list(bytes)) : bytes is Abi.encode(xs)
 external pure function enc2(const k : nat; const xs : list(string)) : bytes is Abi.encode(k, xs)

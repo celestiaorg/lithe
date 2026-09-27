@@ -396,6 +396,9 @@ pub(crate) enum Stmt {
         /// The place as an expression, when it lies past a list or a map's list or
         /// record: `m[k].a[j] := v`. The checker fills it in.
         target: Option<Box<Expr>>,
+        /// `List.push(xs, v)`, checked into `xs[xs.length] := v`: the one write that may
+        /// land past the end, growing the list by one.
+        push: bool,
     },
     If {
         line: u32,
@@ -628,6 +631,9 @@ pub(crate) enum Builtin {
     /// `List.pop(xs)`: drops a dynamic list's last element. Checked into an assignment of
     /// the list, `xs := List.pop(xs)`, so it writes what an assignment writes.
     ListPop,
+    /// `List.push(xs, v)`: appends to a dynamic list. Checked into an assignment at the
+    /// list's length that grows it.
+    ListPush,
     /// `Abi.supports_interface(id)`: whether `id` is ERC-165's or one the contract's
     /// `supports` lists, as the `supportsInterface` the compiler generates answers.
     AbiSupportsInterface,

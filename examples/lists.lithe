@@ -26,7 +26,7 @@ external pure function echo(const xs : list(bytes4)) : list(bytes4) is
 
 external pure function build(const a : nat; const b : nat) : list(nat) is {
   var out : list(nat) := [a];
-  out[1n] := b;
+  List.push(out, b);
   out[0n] := a + b;
 } with out
 

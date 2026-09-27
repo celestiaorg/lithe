@@ -77,7 +77,7 @@ module ERC721Enumerable is {
 
   function add_to_all(const tokenId : nat) is {
     erc721_enumerable.all_tokens_index[tokenId] := erc721_enumerable.all_tokens.length;
-    erc721_enumerable.all_tokens[erc721_enumerable.all_tokens.length] := tokenId;
+    List.push(erc721_enumerable.all_tokens, tokenId);
   }
 
   function remove_from_owner(const from : address; const tokenId : nat) is {

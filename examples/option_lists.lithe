@@ -11,8 +11,8 @@ storage is record {
 pure function or_zero(const o : option(nat)) : nat is
   case o of { Some(v) -> v | None -> 0 }
 
-external function put_small(const i : nat; const v : uint8) is { storage.small[i] := Some(v); }
-external function put_wide(const i : nat; const v : nat) is { storage.wide[i] := Some(v); }
+external function push_small(const v : uint8) is { List.push(storage.small, Some(v)); }
+external function push_wide(const v : nat) is { List.push(storage.wide, Some(v)); }
 external function clear_wide(const i : nat) is { storage.wide[i] := None; }
 external view function small_at(const i : nat) : nat is
   case storage.small[i] of { Some(v) -> nat(v) | None -> 1000 }

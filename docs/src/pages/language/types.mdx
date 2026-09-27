@@ -210,7 +210,7 @@ storage is record {
 }
 
 external function push(const value : nat) is {
-  storage.history[storage.history.length] := value;
+  List.push(storage.history, value);
   storage.top3[0n] := Evm.sender();
 }
 
@@ -219,10 +219,11 @@ external pure function third() : nat is {
 } with primes[2]
 ```
 
-- `xs[i]` reads and `xs[i] := v` writes. Writing to a dynamic list at index `length` appends.
+- `xs[i]` reads and `xs[i] := v` writes.
+- `List.push(xs, v);` appends `v` to a dynamic list, reading and writing its length.
 - `List.pop(xs);` drops a dynamic list's last element. A stored list clears the element's slots, as Solidity's `pop` does. An empty list reverts with `Panic(0x31)`.
 - `xs.length` is the length of a dynamic list.
-- Any other index past the end reverts with `Panic(0x32)`.
+- An index past the end, read or written, reverts with `Panic(0x32)`.
 - Elements can be any value: words, strings, bytes, records, tuples, fixed-size [options](#options), and other lists, to any depth. `list(list(nat))` is `uint256[][]`, and a list of records with strings is an array of tuples, `(string,uint256[])[]`.
 - Indexes and fields chain: `grid[i][j]`, `items[i].tags[j]`, and `grid[i].length`. Each index is checked against its own list's length.
 
@@ -239,7 +240,7 @@ storage is record {
 }
 
 external function note(const value : uint208) is {
-  storage.history[storage.history.length] := { key = uint48(Evm.block_number()); value = value; };
+  List.push(storage.history, { key = uint48(Evm.block_number()); value = value; });
 }
 
 external function bump(const i : nat) is {
@@ -266,7 +267,7 @@ external view function saved() : list(nat) is
 
 external pure function pair(const a : nat; const b : nat) : list(nat) is {
   var out : list(nat) := [a];
-  out[1n] := b;
+  List.push(out, b);
 } with out
 ```
 
@@ -307,14 +308,14 @@ external function grant(const r : bytes32; const who : address) is {
 }
 
 external function deposit(const amount : nat) is {
-  storage.deposits[Evm.sender()][storage.deposits[Evm.sender()].length] := amount;
+  List.push(storage.deposits[Evm.sender()], amount);
 }
 
 external view function deposits(const who : address) : list(nat) is
   storage.deposits[who]
 ```
 
-A map's list, or a list inside a map's record, is a list in every way: it can be read and written whole, indexed, appended to, and popped with `List.pop`.
+A map's list, or a list inside a map's record, is a list in every way: it can be read and written whole, indexed, and pushed to and popped with `List.push` and `List.pop`.
 
 ## Options
 

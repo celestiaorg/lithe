@@ -454,14 +454,14 @@ fn options_live_in_lists() {
     let at = |st: &HashMap<Word, Word>, key: Word| st.get(&key).copied().unwrap_or(n(0));
     let elems = |slot: u64| Word::from_be_bytes(keccak256(&n(slot).to_be_bytes()));
 
-    let small = run(&empty, "put_small(uint256,uint8)", &[n(0), n(0)]);
+    let small = run(&empty, "push_small(uint8)", &[n(0)]);
     assert_eq!(slot(&small, 0), n(1));
     assert_eq!(at(&small, elems(0)), n(0).not());
     assert_eq!(read(&small, "small_at(uint256)", &[n(0)]), n(0));
     assert!(reverts(&small, "small_at(uint256)", &[n(1)]));
 
-    let wide = run(&empty, "put_wide(uint256,uint256)", &[n(0), n(5)]);
-    let wide = run(&wide, "put_wide(uint256,uint256)", &[n(1), n(0)]);
+    let wide = run(&empty, "push_wide(uint256)", &[n(5)]);
+    let wide = run(&wide, "push_wide(uint256)", &[n(0)]);
     assert_eq!(slot(&wide, 1), n(2));
     let base = elems(1);
     assert_eq!(
@@ -472,7 +472,7 @@ fn options_live_in_lists() {
     assert_eq!(at(&wide, base.wrapping_add(n(3))), n(0));
     assert_eq!(read(&wide, "wide_at(uint256)", &[n(0)]), n(5));
     assert_eq!(read(&wide, "wide_at(uint256)", &[n(1)]), n(0));
-    assert!(reverts(&wide, "put_wide(uint256,uint256)", &[n(3), n(1)]));
+    assert!(reverts(&wide, "clear_wide(uint256)", &[n(2)]));
     let cleared = run(&wide, "clear_wide(uint256)", &[n(0)]);
     assert_eq!(read(&cleared, "wide_at(uint256)", &[n(0)]), n(1000));
     assert_eq!(read(&cleared, "wide_len()", &[]), n(2));
@@ -1577,10 +1577,10 @@ contract T is {
   }
 
   external function push(const n : nat) is {
-    storage.ids[storage.ids.length] := n;
-    storage.names[storage.names.length] := String.concat("a string that is well past", " thirty one bytes long");
-    storage.limits[storage.limits.length] := Some(n);
-    Bag.bag.items[Bag.bag.items.length] := n;
+    List.push(storage.ids, n);
+    List.push(storage.names, String.concat("a string that is well past", " thirty one bytes long"));
+    List.push(storage.limits, Some(n));
+    List.push(Bag.bag.items, n);
   }
 
   external function pop() is {
@@ -1606,7 +1606,7 @@ contract T is {
   external pure function trim(const xs : list(nat)) : list(nat) is {
     var ys : list(nat) := xs;
     List.pop(ys);
-    ys[ys.length] := 9n;
+    List.push(ys, 9n);
     List.pop(ys);
   } with ys
 }
@@ -1685,7 +1685,7 @@ module Stack(T : map_key) is {
   }
 
   function push(storage s : self; const value : T) is {
-    s.items[s.items.length] := value;
+    List.push(s.items, value);
   }
 
   function pop(storage s : self) : T is {
@@ -1719,6 +1719,95 @@ external view function size() : nat is
     assert_eq!(load_bytes(&out.returndata, 0), Word::from_u64(5));
     let size = run(word_data("size()", &[]), out.storage);
     assert_eq!(load_bytes(&size.returndata, 0), one);
+}
+
+/// `List.push` is the only write that grows a list: an index write at the length panics
+/// with `0x32` like any other past the end, in storage, past a key, and in memory.
+#[test]
+fn list_push_is_the_only_growing_write() {
+    let src = r#"
+type pair is record {
+  a : nat;
+  b : nat;
+}
+
+storage is record {
+  ids : list(nat);
+  pairs : list(pair);
+  by : map(address, list(nat));
+}
+
+external function push(const n : nat) is {
+  List.push(storage.ids, n);
+  List.push(storage.pairs, { a = n; b = n + 1n; });
+  List.push(storage.by[Evm.sender()], n);
+}
+
+external function set_id(const i : nat) is { storage.ids[i] := 7n; }
+external function set_pair(const i : nat) is { storage.pairs[i] := { a = 7n; b = 7n; }; }
+external function set_by(const i : nat) is { storage.by[Evm.sender()][i] := 7n; }
+
+external view function sums() : (nat, nat, nat) is {
+  var s : nat := 0n;
+  for x : nat in storage.ids do { s := s + x; }
+  var p : nat := 0n;
+  for q : pair in storage.pairs do { p := p + q.a + q.b; }
+  var m : nat := 0n;
+  for x : nat in storage.by[Evm.sender()] do { m := m + x; }
+} with (s, p, m)
+
+external pure function local(const i : nat) : nat is {
+  var xs : list(nat) := [];
+  List.push(xs, 5n);
+  var ps : list(pair) := [];
+  List.push(ps, { a = 1n; b = 2n; });
+  xs[i] := 6n;
+  ps[i] := { a = 3n; b = 4n; };
+} with xs[0n] + ps[0n].a + xs.length * 10n
+"#;
+    let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
+    let w = Word::from_u64;
+    let run = |data: Vec<u8>, storage: HashMap<Word, Word>| {
+        exec(&runtime, &data, storage, w(1), w(0), w(0)).expect("run")
+    };
+    let panics = |out: &Outcome| {
+        out.reverted
+            && out.returndata.starts_with(&selector("Panic(uint256)"))
+            && load_bytes(&out.returndata, 4) == w(0x32)
+    };
+    let mut storage = HashMap::new();
+    for n in [10u64, 20] {
+        let out = run(word_data("push(uint256)", &[w(n)]), storage);
+        assert!(!out.reverted, "{}", pretty(&out.returndata));
+        storage = out.storage;
+    }
+    let sums = run(word_data("sums()", &[]), storage.clone());
+    let got: Vec<Word> = (0..3).map(|k| load_bytes(&sums.returndata, 32 * k)).collect();
+    assert_eq!(got, [w(30), w(62), w(30)]);
+    for sig in ["set_id(uint256)", "set_pair(uint256)", "set_by(uint256)"] {
+        let out = run(word_data(sig, &[w(1)]), storage.clone());
+        assert!(!out.reverted, "{sig}: {}", pretty(&out.returndata));
+        assert!(panics(&run(word_data(sig, &[w(2)]), storage.clone())), "{sig}");
+    }
+    let out = run(word_data("local(uint256)", &[w(0)]), HashMap::new());
+    assert_eq!(load_bytes(&out.returndata, 0), w(19));
+    assert!(panics(&run(word_data("local(uint256)", &[w(1)]), HashMap::new())));
+    for (body, want) in [
+        ("const x : nat := List.push(storage.ids, 1n);", "`List.push` is a statement"),
+        ("List.push(storage.fixed, 1n);", "`List.push` expects a dynamic list"),
+        ("List.push(storage.ids);", "`List.push` expects 2 arguments"),
+        ("List.push(storage.ids, true);", "does not match"),
+        ("storage.ids.length := 1n;", "`List.push` grows a list"),
+    ] {
+        let src = format!(
+            "storage is record {{ ids : list(nat); fixed : list(nat, 3); }}\nexternal function f() is {{ {body} }}\n"
+        );
+        let err = compile(&src).expect_err(body);
+        assert!(err.to_string().contains(want), "{body}: {err}");
+    }
+    let err = compile("storage is record { ids : list(nat); }\nexternal view function f() : nat is { List.push(storage.ids, 1n); } with 0n\n")
+        .expect_err("view");
+    assert!(err.to_string().contains("writes storage"), "{err}");
 }
 
 /// A variant with no payloads is its case's index: one byte of storage, `uint8` in the ABI.
@@ -1780,7 +1869,7 @@ external function place(const id : nat) raises AlreadyPlaced is {
 
 external function fill_order(const id : nat; const out : nat) is {
   storage.orders[id].status := Filled({ amount_out = out; at = uint64(7) });
-  storage.history[storage.history.length] := storage.orders[id].status;
+  List.push(storage.history, storage.orders[id].status);
 }
 
 external function unwind(const id : nat) is {

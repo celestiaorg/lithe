@@ -208,9 +208,10 @@ external pure function contractURI() : string is
 
 | Built-in | Type | Solidity |
 | --- | --- | --- |
+| `List.push(xs, v)` | statement | `xs.push(v)`: appends `v` to a dynamic list |
 | `List.pop(xs)` | statement | `xs.pop()`: drops a dynamic list's last element. `Panic(0x31)` if it is empty |
 
-`xs` is a stored list or a `var`, and `List.pop(xs);` is a statement: it writes `xs` as an assignment would, so a `view` function cannot pop a stored list. A stored list clears the element's slots. To remove an element from the middle, move the last one into its place first:
+`xs` is a stored list or a `var`, and `List.push(xs, v);` and `List.pop(xs);` are statements: they write `xs` as an assignment would, so a `view` function cannot push to or pop a stored list. A stored list clears the element's slots. To remove an element from the middle, move the last one into its place first:
 
 ```lithe
 storage is record {

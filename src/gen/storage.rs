@@ -445,29 +445,19 @@ impl<'a> Gen<'a> {
                 self.transient_slot = p.transient;
                 self.journal_load();
                 if grow {
-                    // `xs[xs.length] := v` appends: the length grows by one.
-                    let skip = self.fresh();
-                    self.op(DUP1);
-                    self.op(DUP1 + 2);
-                    self.op(EQ);
-                    self.op(ISZERO);
-                    self.push_label(skip);
-                    self.op(JUMPI);
+                    // A push: the index is the length, which grows by one.
                     self.push_u64(1);
                     self.op(ADD);
-                    self.op(DUP1);
-                    self.op(DUP1 + 3);
+                    self.op(DUP1 + 2);
                     self.transient_slot = p.transient;
-                    self.branch += 1;
                     self.journal_store();
-                    self.branch -= 1;
-                    self.jumpdest(skip);
+                } else {
+                    self.op(DUP1 + 1);
+                    self.op(SWAP1);
+                    self.op(GT);
+                    self.op(ISZERO);
+                    self.revert_if_panic(0x32)?;
                 }
-                self.op(DUP1 + 1);
-                self.op(SWAP1);
-                self.op(GT);
-                self.op(ISZERO);
-                self.revert_if_panic(0x32)?;
                 self.op(SWAP1);
                 self.mstore_off(self.hash_buf);
                 self.push_u64(32);
@@ -720,10 +710,9 @@ impl<'a> Gen<'a> {
     }
 
     /// `target := expr` for a place `deep` finds. The value is computed before the slot, so
-    /// it may read the place it replaces. An index at a list's length appends.
-    pub(super) fn deep_assign(&mut self, target: &Expr, expr: &Expr) -> Result<(), Error> {
+    /// it may read the place it replaces. A push appends.
+    pub(super) fn deep_assign(&mut self, target: &Expr, expr: &Expr, grow: bool) -> Result<(), Error> {
         let ty = target.ty();
-        let grow = matches!(target, Expr::Index { base, .. } if self.list_value(base.ty()));
         if self.list_value(ty) {
             self.compile_value(expr)?;
             let p = self.deep_slot(target, false)?;
@@ -1337,10 +1326,11 @@ impl<'a> Gen<'a> {
         leaf: u32,
         index: &Expr,
         value: &Expr,
+        push: bool,
     ) -> Result<(), Error> {
         let ty = self.type_at(self.checked.syms[sym].ty, leaf);
         if self.checked.types[ty].kind == TyKind::List && self.list_stride(ty) > 1 {
-            return self.store_list_element(sym, leaf, index, value);
+            return self.store_list_element(sym, leaf, index, value, push);
         }
         match self.checked.types[ty].kind {
             TyKind::List if self.checked.types[ty].bits > 0 => {
@@ -1360,16 +1350,13 @@ impl<'a> Gen<'a> {
             }
             TyKind::List if !self.checked.syms[sym].storage => {
                 self.compile_value(value)?;
-                self.heap_element(self.addr(sym, leaf), index, 1, true)?;
+                self.heap_element(self.addr(sym, leaf), index, 1, push)?;
                 self.op(MSTORE);
                 Ok(())
             }
-            TyKind::List
-                if matches!(index, Expr::Field { name, root: Some(r), leaf: l, .. }
-                    if name == "length" && *r == sym && *l == leaf) =>
-            {
-                // `xs[xs.length] := v` appends: the length grows by one and the value goes
-                // to the slot after the last element, with no bounds to check.
+            TyKind::List if push => {
+                // The length grows by one and the value goes to the slot after the last
+                // element, with no bounds to check.
                 let len_addr = self.addr(sym, leaf);
                 self.compile_value(value)?;
                 self.mload(len_addr);
@@ -1387,7 +1374,7 @@ impl<'a> Gen<'a> {
                 self.compile_value(value)?;
                 self.compile_value(index)?;
                 self.mstore_off(self.scratch_a);
-                self.list_bounds(sym, leaf, true)?;
+                self.list_bounds(sym, leaf, false)?;
                 self.list_slot(sym, leaf);
                 self.store_slot(self.bytes_elem(ty));
                 Ok(())

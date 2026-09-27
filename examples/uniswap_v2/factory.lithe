@@ -84,7 +84,7 @@ contract UniswapV2Factory is {
     defer IUniswapV2Pair(pair).initialize(Token(token0), Token(token1));
     storage.pairs[token0][token1] := pair;
     storage.pairs[token1][token0] := pair;
-    storage.all_pairs[storage.all_pairs.length] := pair;
+    List.push(storage.all_pairs, pair);
     emit PairCreated {
       token0 = token0;
       token1 = token1;

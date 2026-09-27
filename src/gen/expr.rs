@@ -528,8 +528,8 @@ impl<'a> Gen<'a> {
                 self.call_sub(Sub::DecimalString(b == Builtin::IntToString));
             }
             Builtin::FromBits(_) => self.compile_value(&args[0])?,
-            Builtin::ListPop => {
-                return Err(error(line, col, "`List.pop` is a statement"));
+            Builtin::ListPop | Builtin::ListPush => {
+                return Err(error(line, col, "`List.pop` and `List.push` are statements"));
             }
             Builtin::AbiSupportsInterface => {
                 self.compile_value(&args[0])?;

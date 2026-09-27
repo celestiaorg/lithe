@@ -119,6 +119,7 @@ impl Checker {
                 root,
                 leaf,
                 target,
+                ..
             } => {
                 let written = path.clone();
                 let place = self.lookup_path(*line, *col, path)?;
@@ -224,7 +225,11 @@ impl Checker {
                 self.check_reason(reason)
             }
             Stmt::Fail { reason, .. } => self.check_reason(reason),
-            Stmt::Call { expr, line, col } if is_list_pop(expr) => {
+            Stmt::Call { expr, line, col } if is_list_call(expr, "push") => {
+                let (line, col) = (*line, *col);
+                self.check_push(line, col, s)
+            }
+            Stmt::Call { expr, line, col } if is_list_call(expr, "pop") => {
                 let (line, col) = (*line, *col);
                 let Expr::Call { args, .. } = expr else {
                     unreachable!()
@@ -244,6 +249,7 @@ impl Checker {
                     root: None,
                     leaf: 0,
                     target: None,
+                    push: false,
                 };
                 self.popping = true;
                 let checked = self.check_stmt(s);
@@ -740,6 +746,50 @@ impl Checker {
         }
     }
 
+    /// `List.push(xs, v)` becomes `xs[xs.length] := v`, marked as the write that grows `xs`.
+    fn check_push(&mut self, line: u32, col: u32, s: &mut Stmt) -> Result<(), Error> {
+        let Stmt::Call { expr: Expr::Call { args, .. }, .. } = s else {
+            return Ok(());
+        };
+        if args.len() != 2 {
+            return Err(error(line, col, "`List.push` expects 2 arguments"));
+        }
+        let (list, value) = (args[0].clone(), args[1].clone());
+        let Some((path, mut keys, fields)) = assign_parts(&list) else {
+            return Err(error(line, col, "`List.push` takes a list variable or a stored list"));
+        };
+        let place = self.place(&mut list.clone())?;
+        if !self.list_value(place.ty) {
+            return Err(error(list.line(), list.col(), "`List.push` expects a dynamic list"));
+        }
+        if !keys.is_empty() && !self.syms[place.sym].storage {
+            return Err(error(line, col, "`List.push` takes a list variable or a stored list"));
+        }
+        keys.push(Expr::Field {
+            line,
+            col,
+            base: Box::new(list),
+            name: "length".into(),
+            root: None,
+            leaf: 0,
+            ty: 0,
+        });
+        *s = Stmt::Assign {
+            line,
+            col,
+            path,
+            index: Some(keys.remove(0)),
+            keys,
+            fields,
+            expr: value,
+            root: None,
+            leaf: 0,
+            target: None,
+            push: true,
+        };
+        self.check_stmt(s)
+    }
+
     /// `List.pop(m[k].xs)`: a list past a key or an index, popped through the place the
     /// argument names. It becomes an assignment of the pop to that place.
     fn check_deep_pop(&mut self, line: u32, col: u32, s: &mut Stmt) -> Result<(), Error> {
@@ -793,6 +843,7 @@ impl Checker {
             root: Some(place.sym),
             leaf: place.leaf,
             target: Some(Box::new(target)),
+            push: false,
         };
         Ok(())
     }
@@ -915,6 +966,7 @@ impl Checker {
                 root: None,
                 leaf: 0,
                 target: None,
+                push: false,
             });
         }
         Some(Stmt::If {
@@ -942,7 +994,7 @@ impl Checker {
         for name in names {
             let rec = &self.types[ty];
             if rec.kind == TyKind::List && rec.bits == 0 && name == "length" {
-                return Err(error(line, col, "assign an element to grow a list"));
+                return Err(error(line, col, "`List.push` grows a list"));
             }
             if rec.kind != TyKind::Record {
                 return Err(error(line, col, format!("`{name}` is not a record field")));
@@ -957,7 +1009,30 @@ impl Checker {
     }
 }
 
-fn is_list_pop(expr: &Expr) -> bool {
+fn is_list_call(expr: &Expr, method: &str) -> bool {
     matches!(expr, Expr::Call { name, base: Some(base), .. }
-        if name == "pop" && matches!(base.as_ref(), Expr::Ident { name, .. } if name == "List"))
+        if name == method && matches!(base.as_ref(), Expr::Ident { name, .. } if name == "List"))
+}
+
+/// A place split as the parser splits an assignment to it: `a.b[i].c[j]` is the path
+/// `a.b`, the keys `i` and `j`, and the field `c` after one key.
+fn assign_parts(e: &Expr) -> Option<(Vec<String>, Vec<Expr>, Vec<(usize, String)>)> {
+    match e {
+        Expr::Ident { name, .. } => Some((vec![name.clone()], Vec::new(), Vec::new())),
+        Expr::Field { base, name, .. } => {
+            let (mut path, keys, mut fields) = assign_parts(base)?;
+            if keys.is_empty() {
+                path.push(name.clone());
+            } else {
+                fields.push((keys.len(), name.clone()));
+            }
+            Some((path, keys, fields))
+        }
+        Expr::Index { base, index, .. } => {
+            let (path, mut keys, fields) = assign_parts(base)?;
+            keys.push(index.as_ref().clone());
+            Some((path, keys, fields))
+        }
+        _ => None,
+    }
 }

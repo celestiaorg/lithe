@@ -86,7 +86,7 @@ module ERC1155 is {
     );
     var balances : list(nat) := [];
     for (i, account) : (nat, address) in accounts do {
-      balances[i] := erc1155.balances[ids[i]][account];
+      List.push(balances, erc1155.balances[ids[i]][account]);
     }
   } with balances
 

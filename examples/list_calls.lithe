@@ -48,8 +48,8 @@ external pure function decoded_length(const data : bytes) : nat is {
 
 external function counted(const n : nat) : list(nat) is {
   var out : list(nat) := [];
-  out[0n] := n;
-  out[1n] := n + 1n;
+  List.push(out, n);
+  List.push(out, n + 1n);
 } with out
 
 external view function got() : list(nat) is

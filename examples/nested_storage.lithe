@@ -47,7 +47,7 @@ function push(storage points : list(checkpoint); const key : uint48; const value
   if count > 0n and points[count - 1n].key = key then {
     points[count - 1n].value := value;
   } else {
-    points[count] := { key = key; value = value; };
+    List.push(points, { key = key; value = value; });
   }
 }
 
@@ -107,7 +107,7 @@ external function name(const id : nat; const name : string) is {
 }
 
 external function tag(const id : nat; const t : nat) is {
-  storage.accounts[id].tags[storage.accounts[id].tags.length] := t;
+  List.push(storage.accounts[id].tags, t);
 }
 
 external view function name_of(const id : nat) : string is
@@ -130,7 +130,7 @@ external view function counts(const who : address) : list(nat) is
 external pure function locals(const k : uint208) : nat is {
   var points : list(checkpoint) := [{ key = 1; value = 2; }, { key = 3; value = 4; }];
   points[1n].value := k;
-  points[2n] := { key = 5; value = k + 1; };
+  List.push(points, { key = 5; value = k + 1; });
   const last : checkpoint := points[2n];
 } with nat(points[1n].value) + nat(points[0n].key) * 1000 + nat(last.value) * 1000000 + points.length
 

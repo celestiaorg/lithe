@@ -2137,6 +2137,7 @@ impl<'a> Parser<'a> {
             root: None,
             leaf: 0,
             target: None,
+            push: false,
         })
     }
 

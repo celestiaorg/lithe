@@ -29,7 +29,7 @@ external view function label(const who : address; const id : nat) : string is
   storage.labels[who][id]
 
 external function add_note(const n : string) is {
-  storage.notes[storage.notes.length] := n;
+  List.push(storage.notes, n);
 }
 
 external function set_note(const i : nat; const n : string) is {

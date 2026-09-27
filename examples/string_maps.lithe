@@ -31,7 +31,7 @@ external view function title(const who : address; const id : nat) : string is
   storage.titles[who][id]
 
 external function append(const entry : string) is {
-  storage.log[storage.log.length] := entry;
+  List.push(storage.log, entry);
 }
 
 external function amend(const i : nat; const entry : string) is {

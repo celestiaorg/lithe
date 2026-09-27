@@ -387,12 +387,12 @@ external view function get_s(const k : nat) : string is storage.s[k]
 external function put_mm(const k : nat; const d : string) is { storage.mm[k][2n] := d; }
 external view function get_mm(const k : nat) : string is storage.mm[k][2n]
 external function put_l(const k : nat; const d : string) is {
-  if storage.l.length = 0n then { storage.l[storage.l.length] := d; } else { storage.l[k] := d; }
+  if storage.l.length = 0n then { List.push(storage.l, d); } else { storage.l[k] := d; }
 }
 external view function get_l(const k : nat) : string is storage.l[k]
 external function put_all(const k : nat; const d : string) is {
   var xs : list(string) := storage.l;
-  xs[k] := d;
+  if xs.length = 0n then { List.push(xs, d); } else { xs[k] := d; }
   storage.l := xs;
 }
 external view function get_all(const k : nat) : string is {
@@ -537,7 +537,7 @@ external function put(const d : bytes; const t : string) is {
   storage.one := d;
   storage.m[1n] := t;
   storage.mm[1n][2n] := d;
-  storage.l[storage.l.length] := t;
+  List.push(storage.l, t);
 }
 external view function lengths() : (nat, nat, nat, nat, nat, bool) is {
   var total : nat := 0n;

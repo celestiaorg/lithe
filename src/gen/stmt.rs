@@ -436,6 +436,7 @@ impl<'a> Gen<'a> {
                 line,
                 col,
                 target,
+                push,
                 ..
             } => {
                 let Some(root) = *root else {
@@ -480,7 +481,7 @@ impl<'a> Gen<'a> {
                         return Ok(());
                     }
                     if self.checked.syms[root].storage && self.deep(target) {
-                        return self.deep_assign(target, expr);
+                        return self.deep_assign(target, expr, *push);
                     }
                     if self.local_elem(target).is_some() {
                         return self.local_elem_assign(target, expr);
@@ -508,7 +509,7 @@ impl<'a> Gen<'a> {
                     return Ok(());
                 }
                 if index.is_some() {
-                    return self.compile_index_write(root, *leaf, index.as_ref().unwrap(), expr);
+                    return self.compile_index_write(root, *leaf, index.as_ref().unwrap(), expr, *push);
                 }
                 // A record shares its first leaf with its first field, so the value says which.
                 let ty = match self.checked.types[expr.ty()].kind {

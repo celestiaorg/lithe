@@ -21,7 +21,7 @@ is {
   for o : order in os do {
     assert(o.legs.length > 0n, Rejected(o.id));
     storage.notes[o.id] := o.note;
-    ids[ids.length] := o.id;
+    List.push(ids, o.id);
   }
   storage.placed := storage.placed + os.length;
 } with ids
