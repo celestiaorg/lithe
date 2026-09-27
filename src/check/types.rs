@@ -866,7 +866,17 @@ impl Checker {
         ty: &mut usize,
     ) -> Result<(), Error> {
         let target = self.named[name];
-        self.check_expr_as(&mut args[0], Some(target))?;
+        // A number literal converts as the unsigned integer of the target's width: `bytes32(0x11)` is 17.
+        let width = match self.types[target].kind {
+            TyKind::Bytes if self.types[target].bits > 0 => Some(u32::from(self.types[target].bits) * 8),
+            TyKind::Address => Some(160),
+            _ => None,
+        };
+        let expect = match (&args[0], width) {
+            (Expr::Lit { lit: Lit::Int(..), .. }, Some(bits)) => self.named[&format!("uint{bits}")],
+            _ => target,
+        };
+        self.check_expr_as(&mut args[0], Some(expect))?;
         let src = args[0].ty();
         if self.same(src, target) || self.cast_ok(src, target) {
             *builtin = Some(Builtin::Cast);

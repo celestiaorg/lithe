@@ -1035,6 +1035,21 @@ impl Checker {
             ));
         }
         let bits = self.types[peeled].bits;
+        let width = match self.types[peeled].kind {
+            TyKind::Bytes if bits > 0 => Some(u32::from(bits) * 2),
+            TyKind::Address => Some(40),
+            _ => None,
+        };
+        if let Some(width) = width.filter(|w| !word.is_zero() && digits.map(u32::from) != Some(*w)) {
+            return Err(error(
+                line,
+                col,
+                format!(
+                    "`{}` literal needs {width} hex digits",
+                    self.type_name(expect)
+                ),
+            ));
+        }
         let ok = match self.types[peeled].kind {
             TyKind::Nat | TyKind::Wei | TyKind::Timestamp => fits_unsigned(word, bits),
             TyKind::Int => fits_signed(word, bits),

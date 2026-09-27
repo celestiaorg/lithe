@@ -728,7 +728,7 @@ fn erc165_func(line: u32, col: u32, origin: &str, ids: &[u32]) -> Func {
         right: Box::new(Expr::Lit {
             line,
             col,
-            lit: Lit::Int(Word::from_u64(u64::from(id)), None),
+            lit: Lit::Int(Word::from_u64(u64::from(id)), Some(8)),
             ty: 0,
         }),
         ty: 0,

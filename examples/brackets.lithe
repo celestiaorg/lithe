@@ -23,9 +23,9 @@ type action is
   | Stop
 
 external view function first_admin() : address is {
-  const alice : address := 0x01;
-  const bob : address := 0x02;
-  const carol : address := 0x03;
+  const alice : address := 0x0000000000000000000000000000000000000001;
+  const bob : address := 0x0000000000000000000000000000000000000002;
+  const carol : address := 0x0000000000000000000000000000000000000003;
   const admins : list(address) := [
     alice,
     bob,
@@ -35,8 +35,8 @@ external view function first_admin() : address is {
 } with first
 
 external view function admin_count() : nat is {
-  const alice : address := 0x01;
-  const bob : address := 0x02;
+  const alice : address := 0x0000000000000000000000000000000000000001;
+  const bob : address := 0x0000000000000000000000000000000000000002;
   const admins : list(address) := [alice, bob];
 } with admins.length
 

@@ -8,7 +8,7 @@ storage is record {
 
 external function set() is {
   storage.tag := 0xa9059cbb;
-  storage.hash := 0x11;
+  storage.hash := bytes32(0x11);
   const raw : bytes20 := 0x00000000000000000000000000000000000000ab;
   storage.who := address(raw);
 }

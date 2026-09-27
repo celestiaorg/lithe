@@ -65,7 +65,7 @@ external function start() is {
 
 ## Hex literals
 
-A `0x...` literal can be an integer, an `address`, a `bytesN`, or `bytes`, depending on context. A `bytesN` literal shorter than `N` bytes is left-aligned and padded, as in Solidity. As bytes, a literal is exactly the bytes written, leading zeros included, so its digits must come in pairs: `0x0001` is two bytes, and `0x123` is an error. A literal wider than its `bytesN` is an error too.
+A `0x...` literal can be an integer, an `address`, a `bytesN`, or `bytes`, depending on context. A `bytesN` literal is written at its full width, two digits per byte, and an `address` literal at 40 digits: as a `bytes32`, `0x11` is an error. Zero is the one exception, since it has no alignment to get wrong. To make a number a `bytesN` or `address`, convert it: `bytes32(0x11)` is `0x00…0011`, and `address(0x01)` is `0x00…0001`. As bytes, a literal is exactly the bytes written, leading zeros included, so its digits must come in pairs: `0x0001` is two bytes, and `0x123` is an error.
 
 ```lithe
 storage is record {

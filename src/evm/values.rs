@@ -772,7 +772,7 @@ external view function go() : nat is {
     let past = "\
 storage is record { n : nat; }
 external view function go() : address is {
-  const alice : address := 0x01;
+  const alice : address := 0x0000000000000000000000000000000000000001;
   const admins : list(address) := [alice];
 } with admins[1]
 ";
@@ -868,7 +868,23 @@ external pure function reject() : nat raises Bad_data is { assert(false, Bad_dat
         "storage is record { n : nat; }\nexternal pure function f() : bytes4 is 0x0012345678\n",
     )
     .expect_err("too wide");
-    assert!(err.to_string().contains("does not fit type `bytes4`"), "{err}");
+    assert!(err.to_string().contains("`bytes4` literal needs 8 hex digits"), "{err}");
+    for (ty, lit, want) in [
+        ("bytes32", "0x11", "`bytes32` literal needs 64 hex digits"),
+        ("bytes4", "17", "`bytes4` literal needs 8 hex digits"),
+        ("address", "0x01", "`address` literal needs 40 hex digits"),
+        ("bytes1", "0x0000", "does not fit type `bytes1`"),
+    ] {
+        let err = compile(&format!(
+            "storage is record {{ n : nat; }}\nexternal pure function f() : {ty} is {lit}\n"
+        ))
+        .expect_err(lit);
+        assert!(err.to_string().contains(want), "{err}");
+    }
+    for (ty, lit) in [("bytes32", "0x00"), ("address", "0"), ("bytes32", "bytes32(0x11)"), ("address", "address(0x01)")] {
+        compile(&format!("storage is record {{ n : nat; }}\nexternal pure function f() : {ty} is {lit}\n"))
+            .expect(lit);
+    }
     for ty in ["bytes", "bytes4"] {
         let err = compile(&format!(
             "storage is record {{ n : nat; }}\nexternal pure function f() : {ty} is 0x123\n"
