@@ -144,6 +144,40 @@ is {
 
 `raises none` declares that a function raises no declared errors. Panics are still possible.
 
+## Forwarded failures
+
+A failed call's revert data can be passed on unchanged with `forward reason`, where `reason` is the `bytes` from its [`Error` arm](/language/continuations#recovering-from-failed-calls). ERC-721's and ERC-1155's safe transfers require it. The data is not one of the contract's errors, so a function that forwards lists `forwarded` in its `raises`, and so does every function that calls it:
+
+```lithe
+error Rejected;
+
+interface Receiver is {
+  function accept(amount : nat) : bool;
+}
+
+storage is record {
+  receiver : Receiver;
+}
+
+external function notify(const amount : nat)
+  raises Rejected | forwarded
+is {
+  defer storage.receiver.accept(amount) then {
+    | Ok(accepted : bool) -> {
+        assert(accepted, Rejected);
+      }
+    | Error(reason : bytes) -> {
+        if reason.length = 0n then {
+          fail Rejected;
+        }
+        forward reason;
+      }
+  };
+}
+```
+
+`fail` takes only declared errors, and `forward` only `bytes`. `lithe errors` lists `forwarded` with the function's other errors. `forwarded` is not an error name.
+
 ## Error sets
 
 Name a group of errors once and reuse it:

@@ -20,7 +20,7 @@ contract Items is {
 
   external function mint(const to : address; const id : nat; const value : nat; const data : bytes)
     raises OwnableUnauthorizedAccount | ERC1155InvalidReceiver | ERC1155InvalidArrayLength
-      | ERC1155InsufficientBalance
+      | ERC1155InsufficientBalance | forwarded
   is {
     Ownable.check_owner();
     ERC1155Supply.mint(to, id, value, data);
@@ -28,7 +28,7 @@ contract Items is {
 
   external function mintBatch(const to : address; const ids : list(nat); const values : list(nat); const data : bytes)
     raises OwnableUnauthorizedAccount | ERC1155InvalidReceiver | ERC1155InvalidArrayLength
-      | ERC1155InsufficientBalance
+      | ERC1155InsufficientBalance | forwarded
   is {
     Ownable.check_owner();
     ERC1155Supply.mint_batch(to, ids, values, data);

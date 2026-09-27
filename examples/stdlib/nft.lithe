@@ -16,7 +16,7 @@ contract Collection is {
   }
 
   external function mint() : nat
-    raises ERC721InvalidReceiver | ERC721InvalidSender | ERC721NonexistentToken | ERC721InsufficientApproval
+    raises ERC721InvalidReceiver | ERC721InvalidSender | ERC721NonexistentToken | ERC721InsufficientApproval | forwarded
   is {
     const id : nat := storage.next_id;
     storage.next_id := id + 1n;

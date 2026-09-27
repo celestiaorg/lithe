@@ -148,7 +148,7 @@ external nonreentrant function publish(const id : nat) is {
 
 - `Ok(x : T)` binds the decoded result. For a method that returns `unit`, write `Ok` with no binding.
 - `Error(reason : bytes)` binds the raw revert data, and `Error(_)` ignores it.
-- `fail reason` reverts with exactly those bytes, passing the callee's failure on unchanged. It is not one of the contract's declared errors. `reason.length` is its length in bytes, so `if reason.length = 0n then { fail My_error; } fail reason;` replaces only an empty reason.
+- `forward reason` reverts with exactly those bytes, passing the callee's failure on unchanged. It is not one of the contract's declared errors, so the function [raises `forwarded`](/language/errors#forwarded-failures). `reason.length` is its length in bytes, so `if reason.length = 0n then { fail My_error; } forward reason;` replaces only an empty reason.
 - Both arms are required: ``a recoverable call needs both `Ok` and `Error` arms``.
 - Each arm is a new phase, like any continuation. The failed call's own effects are undone, but the first phase's writes stay.
 - A call that succeeds but returns data that does not decode as `T` still reverts the transaction. It is not an `Error`.

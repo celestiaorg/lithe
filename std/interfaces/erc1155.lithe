@@ -36,10 +36,10 @@ interface IERC1155 is {
     raises ERC1155InvalidApprover | ERC1155InvalidOperator;
   function safeTransferFrom(from : address; to : address; id : nat; value : nat; data : bytes)
     raises ERC1155MissingApprovalForAll | ERC1155InvalidReceiver | ERC1155InvalidSender
-      | ERC1155InvalidArrayLength | ERC1155InsufficientBalance;
+      | ERC1155InvalidArrayLength | ERC1155InsufficientBalance | forwarded;
   function safeBatchTransferFrom(from : address; to : address; ids : list(nat); values : list(nat); data : bytes)
     raises ERC1155MissingApprovalForAll | ERC1155InvalidReceiver | ERC1155InvalidSender
-      | ERC1155InvalidArrayLength | ERC1155InsufficientBalance;
+      | ERC1155InvalidArrayLength | ERC1155InsufficientBalance | forwarded;
 }
 
 interface IERC1155MetadataURI is {

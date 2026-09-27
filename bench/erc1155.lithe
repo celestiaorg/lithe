@@ -80,7 +80,7 @@ contract BenchMultiToken is {
     const data : bytes
   )
     raises ERC1155MissingApprovalForAll | ERC1155InvalidReceiver | ERC1155InvalidSender | EnforcedPause
-      | ERC1155InvalidArrayLength | ERC1155InsufficientBalance
+      | ERC1155InvalidArrayLength | ERC1155InsufficientBalance | forwarded
   is {
     transfer(from, to, [id], [value]);
     ERC1155.check_received(from, to, id, value, data);
@@ -94,7 +94,7 @@ contract BenchMultiToken is {
     const data : bytes
   )
     raises ERC1155MissingApprovalForAll | ERC1155InvalidReceiver | ERC1155InvalidSender | EnforcedPause
-      | ERC1155InvalidArrayLength | ERC1155InsufficientBalance
+      | ERC1155InvalidArrayLength | ERC1155InsufficientBalance | forwarded
   is {
     transfer(from, to, ids, values);
     ERC1155.check_batch_received(from, to, ids, values, data);
@@ -116,7 +116,7 @@ contract BenchMultiToken is {
 
   external function mint(const account : address; const id : nat; const amount : nat; const data : bytes)
     raises OwnableUnauthorizedAccount | ERC1155InvalidReceiver | EnforcedPause
-      | ERC1155InvalidArrayLength | ERC1155InsufficientBalance
+      | ERC1155InvalidArrayLength | ERC1155InsufficientBalance | forwarded
   is {
     mint_to(account, [id], [amount]);
     ERC1155.check_received(Address.zero, account, id, amount, data);
@@ -124,7 +124,7 @@ contract BenchMultiToken is {
 
   external function mintBatch(const to : address; const ids : list(nat); const amounts : list(nat); const data : bytes)
     raises OwnableUnauthorizedAccount | ERC1155InvalidReceiver | EnforcedPause
-      | ERC1155InvalidArrayLength | ERC1155InsufficientBalance
+      | ERC1155InvalidArrayLength | ERC1155InsufficientBalance | forwarded
   is {
     mint_to(to, ids, amounts);
     ERC1155.check_batch_received(Address.zero, to, ids, amounts, data);

@@ -114,7 +114,7 @@ is {
 (* A contract receiver must answer with the selector. One that reverts without a reason
    does not implement it; its own reason passes through unchanged. *)
 function check_received(const from : address; const to : address; const id : nat; const data : bytes)
-  raises TransferToNonERC721ReceiverImplementer
+  raises TransferToNonERC721ReceiverImplementer | forwarded
 is {
   if Evm.code_size(to) > 0n then {
     defer ERC721Receiver(to).onERC721Received(Evm.sender(), from, id, data) then {
@@ -125,7 +125,7 @@ is {
           if reason.length = 0n then {
             fail TransferToNonERC721ReceiverImplementer;
           }
-          fail reason;
+          forward reason;
         }
     };
   }
@@ -185,7 +185,7 @@ is
 
 external payable function safeTransferFrom(const from : address; const to : address; const id : nat)
   raises TokenDoesNotExist | TransferFromIncorrectOwner | NotOwnerNorApproved
-    | TransferToZeroAddress | AccountBalanceOverflow | TransferToNonERC721ReceiverImplementer
+    | TransferToZeroAddress | AccountBalanceOverflow | TransferToNonERC721ReceiverImplementer | forwarded
 is {
   transfer_from(from, to, id);
   check_received(from, to, id, "");
@@ -193,7 +193,7 @@ is {
 
 external payable function safeTransferFrom(const from : address; const to : address; const id : nat; const data : bytes)
   raises TokenDoesNotExist | TransferFromIncorrectOwner | NotOwnerNorApproved
-    | TransferToZeroAddress | AccountBalanceOverflow | TransferToNonERC721ReceiverImplementer
+    | TransferToZeroAddress | AccountBalanceOverflow | TransferToNonERC721ReceiverImplementer | forwarded
 is {
   transfer_from(from, to, id);
   check_received(from, to, id, data);
@@ -206,7 +206,7 @@ is
 
 external function safeMint(const to : address; const id : nat; const data : bytes)
   raises TokenAlreadyExists | TransferToZeroAddress | AccountBalanceOverflow
-    | TransferToNonERC721ReceiverImplementer
+    | TransferToNonERC721ReceiverImplementer | forwarded
 is {
   mint_to(to, id);
   check_received(Address.zero, to, id, data);

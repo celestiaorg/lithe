@@ -47,7 +47,7 @@ module ERC1155Supply is {
   }
 
   function mint(const to : address; const id : nat; const value : nat; const data : bytes)
-    raises ERC1155InvalidReceiver | ERC1155InvalidArrayLength | ERC1155InsufficientBalance
+    raises ERC1155InvalidReceiver | ERC1155InvalidArrayLength | ERC1155InsufficientBalance | forwarded
   is {
     assert(to <> Address.zero, ERC1155InvalidReceiver(Address.zero));
     update(Address.zero, to, [id], [value]);
@@ -55,7 +55,7 @@ module ERC1155Supply is {
   }
 
   function mint_batch(const to : address; const ids : list(nat); const values : list(nat); const data : bytes)
-    raises ERC1155InvalidReceiver | ERC1155InvalidArrayLength | ERC1155InsufficientBalance
+    raises ERC1155InvalidReceiver | ERC1155InvalidArrayLength | ERC1155InsufficientBalance | forwarded
   is {
     assert(to <> Address.zero, ERC1155InvalidReceiver(Address.zero));
     update(Address.zero, to, ids, values);

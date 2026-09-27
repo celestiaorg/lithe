@@ -197,6 +197,17 @@ pub(crate) struct Checked {
     pub peer_builds: std::sync::Mutex<Vec<PeerBuild>>,
 }
 
+/// `forwarded` in a `raises` clause: raw revert data passed on with `forward`. It is no
+/// declared error, so it indexes nothing in `Checked::errors`.
+pub(crate) const FORWARDED: usize = usize::MAX;
+
+impl Checked {
+    /// How a report names a raised error: its ABI signature, or `forwarded`.
+    pub(crate) fn raise_sig(&self, id: usize) -> String {
+        self.errors.get(id).map_or_else(|| "forwarded".to_string(), |e| e.abi_sig.clone())
+    }
+}
+
 /// A peer's name, the options it was built with, its creation code and prerequisites.
 pub(crate) type PeerBuild = (String, crate::Options, Vec<u8>, Vec<crate::split::Facet>);
 

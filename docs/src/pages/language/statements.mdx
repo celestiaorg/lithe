@@ -18,7 +18,7 @@ A block is a sequence of statements in braces, each ending with `;`:
 | Loop | `for x : T in xs [until cond] [bound n] do { ... }`, or over `lo .. hi` |
 | Tuple assignment | `(a, b) := expr;` |
 | Assertion | `assert(cond, Error);` |
-| Failure | `fail Error;` |
+| Failure | `fail Error;`, or `forward reason;` for a failed call's `bytes` |
 | Event | `emit Event { field = value; };` |
 | Deferred call | `defer target.method(args);`, with optional `with value = v` and `then (...) { ... }` |
 | No-op | `skip` |
@@ -108,6 +108,8 @@ fail Insufficient_balance { available = have; required = amount; };
 ```
 
 The error must appear in the function's `raises` clause, or be inferable for an internal function. See [Errors](/language/errors).
+
+`forward reason` reverts with the `bytes` in `reason` exactly, to pass a failed call's revert data on. The function raises `forwarded`. See [Forwarded failures](/language/errors#forwarded-failures).
 
 ## `emit` and `defer`
 

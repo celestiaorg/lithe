@@ -1384,7 +1384,7 @@ impl<'a> Gen<'a> {
         }
     }
 
-    /// Whether an `Error` phase uses its binding only as `reason.length` or `fail reason`,
+    /// Whether an `Error` phase uses its binding only as `reason.length` or `forward reason`,
     /// and makes no query and no call with a continuation, so the revert data can stay in
     /// the return data.
     fn reads_only_returned(&self, phase: &Then, sym: usize) -> bool {

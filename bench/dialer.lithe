@@ -22,7 +22,7 @@ storage is record {
 
 (* The answer's ids are kept; a `Rejected(id)` refusal keeps its id, which follows the
    four bytes of its selector. Any other failure passes on unchanged. *)
-external nonreentrant function place(const book : address; const os : list(order)) is {
+external nonreentrant function place(const book : address; const os : list(order)) raises forwarded is {
   defer Evm.call(book, Abi.encode_call(Book.place, os)) then {
   | Ok(answer : bytes) -> {
       storage.ids := Abi.decode(answer, ids);
@@ -30,7 +30,7 @@ external nonreentrant function place(const book : address; const os : list(order
   | Error(reason : bytes) -> {
       (* `Rejected(uint256)`'s selector is 0x94064f91. *)
       if reason.length <> 36n or nat(Bytes.word(reason, 0n)) >> 224n <> 0x94064f91 then {
-        fail reason;
+        forward reason;
       }
       storage.refused := nat(Bytes.word(reason, 4n));
     }

@@ -169,7 +169,7 @@ module ERC721 is {
     const tokenId : nat;
     const data : bytes
   )
-    raises ERC721InvalidReceiver
+    raises ERC721InvalidReceiver | forwarded
   is {
     if Evm.code_size(to) > 0n then {
       const receiver : IERC721Receiver := IERC721Receiver(to);
@@ -181,7 +181,7 @@ module ERC721 is {
             if reason.length = 0n then {
               fail ERC721InvalidReceiver(to);
             }
-            fail reason;
+            forward reason;
           }
       };
     }
@@ -212,7 +212,7 @@ module ERC721 is {
 
   (* The three-argument `safeTransferFrom`. *)
   function safe_transfer_from(const from : address; const to : address; const tokenId : nat)
-    raises ERC721InvalidReceiver | ERC721IncorrectOwner | ERC721NonexistentToken | ERC721InsufficientApproval
+    raises ERC721InvalidReceiver | ERC721IncorrectOwner | ERC721NonexistentToken | ERC721InsufficientApproval | forwarded
   is {
     transfer_from(from, to, tokenId);
     check_received(Evm.sender(), from, to, tokenId, "");
@@ -220,7 +220,7 @@ module ERC721 is {
 
   (* The four-argument `safeTransferFrom`, passing `data` to the receiver. *)
   function safe_transfer_from_with_data(const from : address; const to : address; const tokenId : nat; const data : bytes)
-    raises ERC721InvalidReceiver | ERC721IncorrectOwner | ERC721NonexistentToken | ERC721InsufficientApproval
+    raises ERC721InvalidReceiver | ERC721IncorrectOwner | ERC721NonexistentToken | ERC721InsufficientApproval | forwarded
   is {
     transfer_from(from, to, tokenId);
     check_received(Evm.sender(), from, to, tokenId, data);
@@ -236,7 +236,7 @@ module ERC721 is {
 
   (* Mints, then checks that a contract receiver accepts the token. *)
   function safe_mint(const to : address; const tokenId : nat; const data : bytes)
-    raises ERC721InvalidReceiver | ERC721InvalidSender | ERC721NonexistentToken | ERC721InsufficientApproval
+    raises ERC721InvalidReceiver | ERC721InvalidSender | ERC721NonexistentToken | ERC721InsufficientApproval | forwarded
   is {
     mint(to, tokenId);
     check_received(Evm.sender(), Address.zero, to, tokenId, data);
@@ -296,13 +296,13 @@ module ERC721 is {
 
   external function safeTransferFrom(const from : address; const to : address; const tokenId : nat)
     raises ERC721InvalidReceiver | ERC721IncorrectOwner | ERC721NonexistentToken
-      | ERC721InsufficientApproval
+      | ERC721InsufficientApproval | forwarded
   is
     safe_transfer_from(from, to, tokenId)
 
   external function safeTransferFrom(const from : address; const to : address; const tokenId : nat; const data : bytes)
     raises ERC721InvalidReceiver | ERC721IncorrectOwner | ERC721NonexistentToken
-      | ERC721InsufficientApproval
+      | ERC721InsufficientApproval | forwarded
   is
     safe_transfer_from_with_data(from, to, tokenId, data)
 }

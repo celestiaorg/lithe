@@ -518,6 +518,8 @@ pub(crate) struct Raised {
     pub name: String,
     pub form: RaisedForm,
     pub index: Option<usize>,
+    /// `forward name`: the raw `bytes` in `name` are the whole revert.
+    pub forward: bool,
 }
 
 #[derive(Debug, Clone)]

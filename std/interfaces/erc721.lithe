@@ -43,10 +43,10 @@ interface IERC721 is {
       | ERC721InsufficientApproval;
   function safeTransferFrom(from : address; to : address; tokenId : nat)
     raises ERC721InvalidReceiver | ERC721IncorrectOwner | ERC721NonexistentToken
-      | ERC721InsufficientApproval;
+      | ERC721InsufficientApproval | forwarded;
   function safeTransferFrom(from : address; to : address; tokenId : nat; data : bytes)
     raises ERC721InvalidReceiver | ERC721IncorrectOwner | ERC721NonexistentToken
-      | ERC721InsufficientApproval;
+      | ERC721InsufficientApproval | forwarded;
 }
 
 interface IERC721Metadata is {

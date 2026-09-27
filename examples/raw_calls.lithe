@@ -36,14 +36,14 @@ is {
 
 (* One call per target, in order. A failed call passes its revert data on unchanged. *)
 external nonreentrant function batch(const targets : list(address); const calls : list(bytes))
-  raises Not_owner | Mismatched_lengths
+  raises Not_owner | Mismatched_lengths | forwarded
 is {
   assert(Evm.sender() = storage.owner, Not_owner);
   assert(targets.length = calls.length, Mismatched_lengths);
   for (i, target) : (nat, address) in targets do {
     defer Evm.call(target, calls[i]) then {
     | Ok -> { skip }
-    | Error(reason : bytes) -> { fail reason; }
+    | Error(reason : bytes) -> { forward reason; }
     };
   }
 }

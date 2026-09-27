@@ -21,10 +21,10 @@ view function price(const asset : address) : nat is {
   var p : nat := 0n;
   case query storage.oracle.price(asset) of {
   | Ok(v) -> { p := v; }
-  | Error(reason) -> { fail reason; }
+  | Error(reason) -> { forward reason; }
   };
 } with p
 
 external view function listed() : list(address) is all()
 
-external view function price_of(const asset : address) : nat is price(asset)
+external view function price_of(const asset : address) : nat raises forwarded is price(asset)

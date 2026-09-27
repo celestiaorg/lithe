@@ -66,7 +66,7 @@ contract BenchNFT is {
 
   external function safeTransferFrom(const from : address; const to : address; const tokenId : nat)
     raises ERC721InvalidReceiver | ERC721IncorrectOwner | EnforcedPause
-      | ERC721NonexistentToken | ERC721InsufficientApproval
+      | ERC721NonexistentToken | ERC721InsufficientApproval | forwarded
   is {
     transfer_from(from, to, tokenId);
     ERC721.check_received(Evm.sender(), from, to, tokenId, "");
@@ -79,7 +79,7 @@ contract BenchNFT is {
     const data : bytes
   )
     raises ERC721InvalidReceiver | ERC721IncorrectOwner | EnforcedPause
-      | ERC721NonexistentToken | ERC721InsufficientApproval
+      | ERC721NonexistentToken | ERC721InsufficientApproval | forwarded
   is {
     transfer_from(from, to, tokenId);
     ERC721.check_received(Evm.sender(), from, to, tokenId, data);
@@ -93,7 +93,7 @@ contract BenchNFT is {
 
   external function safeMint(const to : address; const tokenId : nat)
     raises OwnableUnauthorizedAccount | ERC721InvalidReceiver | ERC721InvalidSender
-      | EnforcedPause | ERC721NonexistentToken | ERC721InsufficientApproval
+      | EnforcedPause | ERC721NonexistentToken | ERC721InsufficientApproval | forwarded
   is {
     Ownable.check_owner();
     assert(to <> Address.zero, ERC721InvalidReceiver(Address.zero));

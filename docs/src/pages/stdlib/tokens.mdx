@@ -221,7 +221,7 @@ contract Collection is {
   }
 
   external function mint() : nat
-    raises ERC721InvalidReceiver | ERC721InvalidSender | ERC721NonexistentToken | ERC721InsufficientApproval
+    raises ERC721InvalidReceiver | ERC721InvalidSender | ERC721NonexistentToken | ERC721InsufficientApproval | forwarded
   is {
     const id : nat := storage.next_id;
     storage.next_id := id + 1n;
@@ -262,10 +262,10 @@ contract Collection is {
         | ERC721InsufficientApproval;
     function safeTransferFrom(from : address; to : address; tokenId : nat)
       raises ERC721InvalidReceiver | ERC721IncorrectOwner | ERC721NonexistentToken
-        | ERC721InsufficientApproval;
+        | ERC721InsufficientApproval | forwarded;
     function safeTransferFrom(from : address; to : address; tokenId : nat; data : bytes)
       raises ERC721InvalidReceiver | ERC721IncorrectOwner | ERC721NonexistentToken
-        | ERC721InsufficientApproval;
+        | ERC721InsufficientApproval | forwarded;
   }
 
   storage is record {
@@ -277,7 +277,7 @@ contract Collection is {
   }
 
   external function mint() : nat
-    raises ERC721InvalidReceiver | ERC721InvalidSender | ERC721NonexistentToken | ERC721InsufficientApproval
+    raises ERC721InvalidReceiver | ERC721InvalidSender | ERC721NonexistentToken | ERC721InsufficientApproval | forwarded
   is {
     const id : nat := storage.next_id;
     storage.next_id := id + 1n;
@@ -344,7 +344,7 @@ contract Items is {
 
   external function mint(const to : address; const id : nat; const value : nat; const data : bytes)
     raises OwnableUnauthorizedAccount | ERC1155InvalidReceiver | ERC1155InvalidArrayLength
-      | ERC1155InsufficientBalance
+      | ERC1155InsufficientBalance | forwarded
   is {
     Ownable.check_owner();
     ERC1155.mint(to, id, value, data);

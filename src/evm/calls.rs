@@ -1149,7 +1149,41 @@ external function total() is {
     expect_bytes(&st, sbase.wrapping_add(w(1)), short);
 }
 
-/// `fail reason` re-raises raw revert data unchanged, whether it stays in the return data
+/// `forward` is the only way to revert with raw bytes, and `raises forwarded` declares it,
+/// for the forwarding function and every caller it passes the failure through.
+#[test]
+fn forwarded_is_declared() {
+    let src = |raises: &str, arm: &str| {
+        format!(
+            "\
+interface Ext is {{ function swap(n : nat) : nat; }}
+storage is record {{ n : nat; }}
+function relay(const ex : Ext) is {{
+  defer ex.swap(1n) then {{
+    | Ok(r : nat) -> {{ skip }}
+    | Error(reason : bytes) -> {{ {arm} }}
+  }};
+}}
+external function go(const ex : Ext){raises} is relay(ex)
+"
+        )
+    };
+    let errors = crate::errors(&src(" raises forwarded", "forward reason;")).expect("declared");
+    assert!(errors.contains("go(address)\n\n  forwarded\n"), "{errors}");
+    for (raises, arm, want) in [
+        ("", "forward reason;", "must declare its errors\n\ninferred:\n  forwarded"),
+        (" raises none", "forward reason;", "may raise `forwarded`"),
+        (" raises forwarded", "fail reason;", "unknown error `reason`"),
+        (" raises forwarded", "const n : nat := 1n; forward n;", "`forward` passes on a `bytes` value"),
+    ] {
+        let err = compile(&src(raises, arm)).expect_err(want);
+        assert!(err.message.contains(want), "{want}: {}", err.message);
+    }
+    let err = compile("error forwarded;\nstorage is record { n : nat; }\nexternal function f() is { skip }\n").expect_err("reserved");
+    assert!(err.message.contains("`forwarded` is not an error name"), "{}", err.message);
+}
+
+/// `forward reason` re-raises raw revert data unchanged, whether it stays in the return data
 /// or was copied into a value first.
 #[test]
 fn raw_revert_data_passes_through() {
@@ -1159,23 +1193,23 @@ error Silent;
 interface Ext is { function swap(n : nat) : nat; }
 storage is record { out : nat; kept : bytes; size : nat; }
 external function relay(const ex : Ext; const n : nat)
-  raises Silent
+  raises Silent | forwarded
 is {
   defer ex.swap(n) then {
     | Ok(r : nat) -> { storage.out := r; }
     | Error(reason : bytes) -> {
         if reason.length = 0n then { fail Silent; }
-        fail reason;
+        forward reason;
       }
   };
 }
-external function keep(const ex : Ext; const n : nat) is {
+external function keep(const ex : Ext; const n : nat) raises forwarded is {
   defer ex.swap(n) then {
     | Ok(r : nat) -> { storage.out := r; }
     | Error(reason : bytes) -> {
         storage.kept := reason;
         storage.size := reason.length;
-        if reason.length > 20n then { fail reason; }
+        if reason.length > 20n then { forward reason; }
       }
   };
 }

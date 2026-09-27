@@ -506,7 +506,7 @@ is {
 }
 ```
 
-A raw call fails and recovers as any other does. Without `Ok` and `Error` arms, a failed call reverts the transaction; with them, `Error(reason : bytes)` gets the revert data, and `fail reason` passes it on:
+A raw call fails and recovers as any other does. Without `Ok` and `Error` arms, a failed call reverts the transaction; with them, `Error(reason : bytes)` gets the revert data, and [`forward reason`](/language/errors#forwarded-failures) passes it on:
 
 ```lithe
 storage is record {

@@ -46,14 +46,14 @@ is {
 
 (* One call per target, in order. A failed call passes its revert data on unchanged. *)
 external nonreentrant function batch(const targets : list(address); const calls : list(bytes))
-  raises Not_owner | Mismatched_lengths
+  raises Not_owner | Mismatched_lengths | forwarded
 is {
   assert(Evm.sender() = storage.owner, Not_owner);
   assert(targets.length = calls.length, Mismatched_lengths);
   for (i, target) : (nat, address) in targets do {
     defer Evm.call(target, calls[i]) then {
     | Ok -> { skip }
-    | Error(reason : bytes) -> { fail reason; }
+    | Error(reason : bytes) -> { forward reason; }
     };
   }
 }
@@ -68,7 +68,7 @@ external view function nonce() : nat is
 
 - `execute` bumps `nonce` before the target runs: the deferred call sees the wallet's state already written.
 - The continuation's `result` is the return data exactly as it came back. Read it with `Abi.decode` when you know its shape.
-- In `batch`, a failed call reverts the whole batch with the target's own revert data, through `fail reason`.
+- In `batch`, a failed call reverts the whole batch with the target's own revert data, through `forward reason`, so it raises `forwarded`.
 - `Evm.static_call` reaches precompiles, whose input is not ABI-encoded. Address `0x…02` is SHA-256.
 - `payable receive` lets the wallet hold the ether it sends.
 

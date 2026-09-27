@@ -25,12 +25,12 @@ function keep(
   const values : list(nat);
   const data : bytes
 )
-  raises Refused
+  raises Refused | forwarded
 is {
   assert(storage.mode <> 2n, Refused(ids.length));
   if storage.mode = 3n then {
     const nothing : bytes := "";
-    fail nothing;
+    forward nothing;
   }
   storage.last_operator := operator;
   storage.last_from := from;
@@ -47,7 +47,7 @@ external function onERC1155Received(
   const value : nat;
   const data : bytes
 ) : bytes4
-  raises Refused
+  raises Refused | forwarded
 is {
   keep(operator, from, [id], [value], data);
   var answer : bytes4 := 0xf23a6e61;
@@ -63,7 +63,7 @@ external function onERC1155BatchReceived(
   const values : list(nat);
   const data : bytes
 ) : bytes4
-  raises Refused
+  raises Refused | forwarded
 is {
   keep(operator, from, ids, values, data);
   var answer : bytes4 := 0xbc197c81;

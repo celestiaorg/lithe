@@ -70,10 +70,10 @@ external function try_call(const to : address; const data : bytes) is {
     }
   };
 }
-external function must(const to : address; const data : bytes) is {
+external function must(const to : address; const data : bytes) raises forwarded is {
   defer Evm.call(to, data) then {
   | Ok -> { skip }
-  | Error(reason : bytes) -> { fail reason; }
+  | Error(reason : bytes) -> { forward reason; }
   };
 }
 ";

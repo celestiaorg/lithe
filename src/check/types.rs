@@ -215,8 +215,8 @@ impl Checker {
     pub(super) fn register_errors(&mut self, prog: &Program) -> Result<(), Error> {
         let mut seen = HashSet::new();
         for err in &prog.errors {
-            if err.name == "none" {
-                return Err(error(err.line, err.col, "`none` is not an error name"));
+            if err.name == "none" || err.name == "forwarded" {
+                return Err(error(err.line, err.col, format!("`{}` is not an error name", err.name)));
             }
             if !seen.insert(err.name.clone()) {
                 return Err(error(
@@ -257,6 +257,9 @@ impl Checker {
         }
         let mut set_names = HashSet::new();
         for set in &prog.error_sets {
+            if set.name == "forwarded" {
+                return Err(error(set.line, set.col, "`forwarded` is not an error set name"));
+            }
             if !set_names.insert(set.name.clone()) || seen.contains(&set.name) {
                 return Err(error(
                     set.line,

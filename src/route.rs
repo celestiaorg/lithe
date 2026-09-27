@@ -408,7 +408,7 @@ fn direct(checked: &Checked, idx: usize, f: &Func, seen: &mut Vec<String>) -> Re
         raises: f
             .errors
             .iter()
-            .map(|i| checked.errors[*i].abi_sig.clone())
+            .map(|i| checked.raise_sig(*i))
             .collect(),
         inputs,
         outputs: if f.ret.is_some() {
@@ -1007,7 +1007,7 @@ fn collect_raises(
         raise_expr(checked, expr, &mut ids);
     }
     ids.iter()
-        .map(|id| checked.errors[*id].abi_sig.clone())
+        .map(|id| checked.raise_sig(*id))
         .collect()
 }
 
@@ -1082,6 +1082,9 @@ fn raise_stmt(checked: &Checked, stmt: &Stmt, ids: &mut Vec<usize>) {
 fn raise_reason(checked: &Checked, reason: &Raised, ids: &mut Vec<usize>) {
     if let Some(index) = reason.index {
         push_id(ids, index);
+    }
+    if reason.forward {
+        push_id(ids, crate::check::FORWARDED);
     }
     match &reason.form {
         RaisedForm::Unit => {}
@@ -1401,7 +1404,7 @@ pub(crate) fn render_footprints(
         let raises: Vec<String> = f
             .errors
             .iter()
-            .map(|i| checked.errors[*i].abi_sig.clone())
+            .map(|i| checked.raise_sig(*i))
             .collect();
         let mut fields = vec![
             ("reads", bare(&reads)),
@@ -1541,7 +1544,7 @@ pub(crate) fn render_analysis(checked: &Checked) -> String {
         let raises: Vec<String> = f
             .errors
             .iter()
-            .map(|i| checked.errors[*i].abi_sig.clone())
+            .map(|i| checked.raise_sig(*i))
             .collect();
         entries.push(format!(
             "  {{\n    \"name\": {},\n    \"effect\": \"{}\",\n    \"payable\": false,\n    \"nonreentrant\": {},\n    \"reads\": {},\n    \"writes\": [],\n    \"emits\": [],\n    \"defers\": [],\n    \"raises\": {}\n  }}",
@@ -1912,7 +1915,7 @@ pub(crate) fn render_errors(checked: &Checked) -> Result<String, Error> {
         let raises = func
             .errors
             .iter()
-            .map(|id| checked.errors[*id].abi_sig.clone())
+            .map(|id| checked.raise_sig(*id))
             .collect();
         blocks.push((sig, raises));
     }

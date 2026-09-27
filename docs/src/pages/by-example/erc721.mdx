@@ -122,7 +122,7 @@ is {
    reason, is rejected; one that reverts with a reason has it passed on unchanged.
    Either reverts the whole transfer. *)
 function check_received(const from : address; const to : address; const tokenId : nat; const data : bytes)
-  raises ERC721InvalidReceiver
+  raises ERC721InvalidReceiver | forwarded
 is {
   if Evm.code_size(to) > 0n then {
     defer ERC721Receiver(to).onERC721Received(Evm.sender(), from, tokenId, data) then {
@@ -133,7 +133,7 @@ is {
           if reason.length = 0n then {
             fail ERC721InvalidReceiver(to);
           }
-          fail reason;
+          forward reason;
         }
     };
   }
@@ -146,7 +146,7 @@ is {
 }
 
 external nonreentrant function safeTransferFrom(const from : address; const to : address; const tokenId : nat)
-  raises ERC721NonexistentToken | ERC721InsufficientApproval | ERC721InvalidSender | ERC721InvalidReceiver
+  raises ERC721NonexistentToken | ERC721InsufficientApproval | ERC721InvalidSender | ERC721InvalidReceiver | forwarded
 is {
   move(from, to, tokenId);
   check_received(from, to, tokenId, "");
@@ -158,7 +158,7 @@ external nonreentrant function safeTransferFrom(
   const tokenId : nat;
   const data : bytes
 )
-  raises ERC721NonexistentToken | ERC721InsufficientApproval | ERC721InvalidSender | ERC721InvalidReceiver
+  raises ERC721NonexistentToken | ERC721InsufficientApproval | ERC721InvalidSender | ERC721InvalidReceiver | forwarded
 is {
   move(from, to, tokenId);
   check_received(from, to, tokenId, data);
@@ -189,4 +189,4 @@ is {
 
 - `safeTransferFrom` is overloaded, as the standard requires: `safeTransferFrom(address,address,uint256)` and `safeTransferFrom(address,address,uint256,bytes)`.
 - `ERC721Receiver(to)` turns the recipient's address into an interface value, so the receiver hook can be deferred.
-- The hook is a [recoverable call](/by-example/try-catch). A receiver that reverts becomes a typed `ERC721InvalidReceiver` error instead of an opaque failure.
+- The hook is a [recoverable call](/by-example/try-catch). A receiver that reverts without a reason becomes a typed `ERC721InvalidReceiver` error; one with a reason has it [forwarded](/language/errors#forwarded-failures), so the safe transfers raise `forwarded`.

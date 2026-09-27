@@ -146,7 +146,7 @@ contract GovernanceToken is {
     raises ERC3156ExceededMaxLoan | ERC3156UnsupportedToken | ERC3156InvalidReceiver
       | ERC20InsufficientAllowance | ERC20InvalidApprover | ERC20InvalidSpender
       | ERC20InvalidReceiver | ERC20InvalidSender | EnforcedPause | ERC20InsufficientBalance
-      | ERC20ExceededCap | ERC20ExceededSafeSupply | CheckpointUnorderedInsertion
+      | ERC20ExceededCap | ERC20ExceededSafeSupply | CheckpointUnorderedInsertion | forwarded
   is {
     const fee : nat := ERC20FlashMint.check_loan(token, amount);
     mint_to(address(receiver), amount);
@@ -156,7 +156,7 @@ contract GovernanceToken is {
           burn_from(address(receiver), amount + fee);
         }
       | Error(reason : bytes) -> {
-          fail reason;
+          forward reason;
         }
     };
   } with true

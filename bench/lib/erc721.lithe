@@ -177,7 +177,7 @@ module ERC721 is {
     const tokenId : nat;
     const data : bytes
   )
-    raises ERC721InvalidReceiver
+    raises ERC721InvalidReceiver | forwarded
   is {
     if Evm.code_size(to) > 0n then {
       const receiver : ERC721Receiver := ERC721Receiver(to);
@@ -189,7 +189,7 @@ module ERC721 is {
             if reason.length = 0n then {
               fail ERC721InvalidReceiver(to);
             }
-            fail reason;
+            forward reason;
           }
       };
     }

@@ -149,7 +149,7 @@ module ERC1155 is {
      that reverts without a reason is invalid; its own reason is passed on unchanged. A burn
      has no receiver to ask. *)
   function check_received(const from : address; const to : address; const id : nat; const value : nat; const data : bytes)
-    raises ERC1155InvalidReceiver
+    raises ERC1155InvalidReceiver | forwarded
   is {
     if Evm.code_size(to) > 0n then {
       const receiver : ERC1155Receiver := ERC1155Receiver(to);
@@ -161,7 +161,7 @@ module ERC1155 is {
             if reason.length = 0n then {
               fail ERC1155InvalidReceiver(to);
             }
-            fail reason;
+            forward reason;
           }
       };
     }
@@ -175,7 +175,7 @@ module ERC1155 is {
     const values : list(nat);
     const data : bytes
   )
-    raises ERC1155InvalidReceiver
+    raises ERC1155InvalidReceiver | forwarded
   is {
     if Evm.code_size(to) > 0n then {
       const receiver : ERC1155Receiver := ERC1155Receiver(to);
@@ -187,7 +187,7 @@ module ERC1155 is {
             if reason.length = 0n then {
               fail ERC1155InvalidReceiver(to);
             }
-            fail reason;
+            forward reason;
           }
       };
     }

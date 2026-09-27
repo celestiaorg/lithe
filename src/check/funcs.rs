@@ -158,6 +158,10 @@ impl Checker {
         }
         let mut out = Vec::new();
         for part in &raises.parts {
+            if part.name == "forwarded" {
+                push_unique(&mut out, FORWARDED);
+                continue;
+            }
             if let Some((_, members)) = self.error_sets.iter().find(|(name, _)| name == &part.name)
             {
                 for &idx in members {
@@ -194,13 +198,13 @@ impl Checker {
     }
 
     fn check_raised(&mut self, raised: &mut Raised) -> Result<(), Error> {
-        let Some(idx) = self.errors.iter().position(|e| e.name == raised.name) else {
-            // `fail reason` with a `bytes` value reverts with exactly those bytes, as a
-            // foreign contract's revert data is passed on. It is no declared error.
+        if raised.forward {
+            // `forward reason` reverts with exactly the bytes in `reason`, as a foreign
+            // contract's revert data is passed on. It raises `forwarded`.
             let raw = self
                 .lookup(&raised.name)
                 .filter(|&sym| self.peel(self.syms[sym].ty) == self.named["bytes"]);
-            if let (Some(_), RaisedForm::Unit) = (raw, &raised.form) {
+            if raw.is_some() {
                 let mut expr = Expr::Ident {
                     line: raised.line,
                     col: raised.col,
@@ -211,8 +215,12 @@ impl Checker {
                 };
                 self.check_expr(&mut expr)?;
                 raised.form = RaisedForm::Positional(expr);
+                self.note_error(FORWARDED);
                 return Ok(());
             }
+            return Err(error(raised.line, raised.col, "`forward` passes on a `bytes` value"));
+        }
+        let Some(idx) = self.errors.iter().position(|e| e.name == raised.name) else {
             return Err(error(
                 raised.line,
                 raised.col,
@@ -420,7 +428,7 @@ impl Checker {
             let names = |ids: &[usize]| -> String {
                 let names: Vec<String> = ids
                     .iter()
-                    .map(|&id| format!("`{}`", self.errors[id].name))
+                    .map(|&id| format!("`{}`", err_name(&self.errors, id)))
                     .collect();
                 if names.is_empty() {
                     "nothing".to_string()
@@ -833,7 +841,7 @@ fn raise_mismatch(
 ) -> String {
     let extras: Vec<String> = extra
         .iter()
-        .map(|id| format!("`{}`", errors[*id].name))
+        .map(|id| format!("`{}`", err_name(errors, *id)))
         .collect();
     let mut msg = format!("{} may raise {}", describe(kind, name), extras.join(", "));
     msg.push_str("\n\ndeclared:\n");
@@ -842,24 +850,28 @@ fn raise_mismatch(
     } else {
         for id in declared {
             msg.push_str("  ");
-            msg.push_str(&errors[*id].name);
+            msg.push_str(err_name(errors, *id));
             msg.push('\n');
         }
     }
     msg.push_str("\ninferred:\n");
     for id in inferred {
         msg.push_str("  ");
-        msg.push_str(&errors[*id].name);
+        msg.push_str(err_name(errors, *id));
         msg.push('\n');
     }
     msg
+}
+
+fn err_name(errors: &[ErrInfo], id: usize) -> &str {
+    errors.get(id).map_or("forwarded", |e| &e.name)
 }
 
 fn must_declare(errors: &[ErrInfo], kind: ItemKind, name: &str, inferred: &[usize]) -> String {
     let mut msg = format!("{} must declare its errors\n\ninferred:\n", describe(kind, name));
     for id in inferred {
         msg.push_str("  ");
-        msg.push_str(&errors[*id].name);
+        msg.push_str(err_name(errors, *id));
         msg.push('\n');
     }
     msg

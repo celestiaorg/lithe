@@ -56,7 +56,7 @@ contract Collectible is {
 
   external function safeTransferFrom(const from : address; const to : address; const tokenId : nat)
     raises EnforcedPause | ERC721InvalidReceiver | ERC721IncorrectOwner | ERC721NonexistentToken
-      | ERC721InsufficientApproval
+      | ERC721InsufficientApproval | forwarded
   is {
     Pausable.require_not_paused();
     ERC721Enumerable.safe_transfer_from(from, to, tokenId);
@@ -64,7 +64,7 @@ contract Collectible is {
 
   external function safeTransferFrom(const from : address; const to : address; const tokenId : nat; const data : bytes)
     raises EnforcedPause | ERC721InvalidReceiver | ERC721IncorrectOwner | ERC721NonexistentToken
-      | ERC721InsufficientApproval
+      | ERC721InsufficientApproval | forwarded
   is {
     Pausable.require_not_paused();
     ERC721Enumerable.safe_transfer_from_with_data(from, to, tokenId, data);
@@ -81,7 +81,7 @@ contract Collectible is {
   (* Mints the next id, with its own URI under the base. *)
   external function safeMint(const to : address; const uri : string) : nat
     raises OwnableUnauthorizedAccount | EnforcedPause | ERC721InvalidReceiver | ERC721InvalidSender
-      | ERC721NonexistentToken | ERC721InsufficientApproval
+      | ERC721NonexistentToken | ERC721InsufficientApproval | forwarded
   is {
     Ownable.check_owner();
     Pausable.require_not_paused();

@@ -1612,10 +1612,9 @@ impl<'a> Parser<'a> {
     }
 
     fn arm_body(&mut self) -> Result<(Vec<Stmt>, Expr), Error> {
-        if self.kind() == Kind::Fail {
+        if self.kind() == Kind::Fail || self.forward_ahead() {
             let (line, col) = self.at();
-            self.bump();
-            let reason = self.raised()?;
+            let reason = self.fail_reason()?;
             return Ok((
                 vec![Stmt::Fail { reason }],
                 Expr::Lit {
@@ -1759,12 +1758,9 @@ impl<'a> Parser<'a> {
                 let expr = self.case_expr()?;
                 Ok(Stmt::Call { line, col, expr })
             }
-            Kind::Fail => {
-                self.bump();
-                Ok(Stmt::Fail {
-                    reason: self.raised()?,
-                })
-            }
+            kind if kind == Kind::Fail || self.forward_ahead() => Ok(Stmt::Fail {
+                reason: self.fail_reason()?,
+            }),
             Kind::Failwith => return Err(self.err("errors must be typed; use `fail`")),
             Kind::SkipKw => {
                 self.bump();
@@ -2151,6 +2147,29 @@ impl<'a> Parser<'a> {
         self.raised()
     }
 
+    /// `forward name`: a contextual keyword, so `forward` still names functions and values.
+    fn forward_ahead(&self) -> bool {
+        self.kind() == Kind::Ident && self.slice() == "forward" && self.peek_kind(1) == Kind::Ident
+    }
+
+    /// `fail E(...)`, or `forward reason`, which reverts with the raw `bytes` in `reason`.
+    fn fail_reason(&mut self) -> Result<Raised, Error> {
+        let forward = self.kind() != Kind::Fail;
+        self.bump();
+        if !forward {
+            return self.raised();
+        }
+        let (line, col) = self.at();
+        Ok(Raised {
+            line,
+            col,
+            name: self.ident()?,
+            form: RaisedForm::Unit,
+            index: None,
+            forward,
+        })
+    }
+
     fn raised(&mut self) -> Result<Raised, Error> {
         let (line, col) = self.at();
         let name = self.ident()?;
@@ -2171,6 +2190,7 @@ impl<'a> Parser<'a> {
             name,
             form,
             index: None,
+            forward: false,
         })
     }
 

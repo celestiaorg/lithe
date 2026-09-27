@@ -69,7 +69,7 @@ module ERC20FlashMint is {
   ) : bool
     raises ERC3156ExceededMaxLoan | ERC3156UnsupportedToken | ERC3156InvalidReceiver
       | ERC20InsufficientAllowance | ERC20InvalidApprover | ERC20InvalidSpender
-      | ERC20InvalidReceiver | ERC20InvalidSender | ERC20InsufficientBalance
+      | ERC20InvalidReceiver | ERC20InvalidSender | ERC20InsufficientBalance | forwarded
   is {
     const fee : nat := check_loan(token, amount);
     ERC20.mint(address(receiver), amount);
@@ -79,7 +79,7 @@ module ERC20FlashMint is {
           ERC20.burn(address(receiver), amount + fee);
         }
       | Error(reason : bytes) -> {
-          fail reason;
+          forward reason;
         }
     };
   } with true
