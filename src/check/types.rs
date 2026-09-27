@@ -35,6 +35,7 @@ impl Checker {
                     words: 0,
                     bits: 0,
                     laid: false,
+                    tuple: false,
                 });
                 self.named.insert(name.to_string(), id);
                 self.fill_nominal(id, &ty)?;
@@ -67,6 +68,7 @@ impl Checker {
                     words,
                     bits,
                     laid: true,
+                    tuple: false,
                 });
                 self.named.insert(name.to_string(), id);
                 id
@@ -97,6 +99,7 @@ impl Checker {
                 words: 1,
                 bits: 0,
                 laid: true,
+                tuple: false,
             });
             self.named.insert(iface.name.clone(), id);
             ids.push(id);
@@ -110,18 +113,17 @@ impl Checker {
                 for p in &m.params {
                     let ty = &p.ty;
                     let pid = self.build(ty)?;
-                    // Each argument is one ABI value: a record or tuple is a tuple.
-                    let part = abi_value(&self.types, pid)
-                        .then(|| abi_nested(&self.types, pid, "").ok().map(|f| f.ty))
+                    let parts = abi_value(&self.types, pid)
+                        .then(|| abi_parts(&self.types, pid).ok())
                         .flatten();
-                    let Some(part) = part else {
+                    let Some(parts) = parts else {
                         return Err(error(
                             ty.line(),
                             ty.col(),
                             "interface arguments must be ABI values",
                         ));
                     };
-                    abi.push(part);
+                    abi.extend(parts);
                     params.push(pid);
                 }
                 let sig = format!("{}({})", m.name, abi.join(","));
@@ -349,7 +351,8 @@ impl Checker {
     > {
         if self.is_dyn_ty(id)
             || self.abi_list(id)
-            || (matches!(self.types[peel_id(&self.types, id)].kind, TyKind::List | TyKind::Tuple)
+            || ((matches!(self.types[peel_id(&self.types, id)].kind, TyKind::List | TyKind::Tuple)
+                || self.types[peel_id(&self.types, id)].tuple)
                 && abi_value(&self.types, id))
         {
             let abi = abi_nested(&self.types, id, "")?.ty;
@@ -410,7 +413,8 @@ impl Checker {
 
     fn fill_nominal(&mut self, id: usize, ty: &TypeRef) -> Result<(), Error> {
         match ty {
-            TypeRef::Record { fields, .. } => {
+            TypeRef::Record { fields, tuple, .. } => {
+                self.types[id].tuple = *tuple;
                 let mut built = Vec::with_capacity(fields.len());
                 let mut names = HashSet::new();
                 for f in fields {
@@ -671,6 +675,7 @@ impl Checker {
             words: 0,
             bits,
             laid: false,
+            tuple: false,
         });
         id
     }
@@ -779,6 +784,7 @@ impl Checker {
                     words: 0,
                     bits: 0,
                     laid: false,
+                    tuple: false,
                 });
                 layout(&mut self.types, id);
                 Ok(id)
@@ -800,6 +806,7 @@ impl Checker {
                     words: 0,
                     bits: 0,
                     laid: false,
+                    tuple: false,
                 });
                 self.fill_nominal(id, ty)?;
                 Ok(id)
@@ -837,6 +844,7 @@ impl Checker {
             words: 0,
             bits: 0,
             laid: false,
+            tuple: false,
         });
         layout(&mut self.types, id);
         id
@@ -1217,13 +1225,14 @@ pub(super) fn display_ty(types: &[RType], ty: usize) -> String {
 pub(crate) fn shape_ty(ty: &TypeRef) -> String {
     match ty {
         TypeRef::Name { name, .. } => name.clone(),
-        TypeRef::Record { fields, .. } => {
+        TypeRef::Record { fields, tuple, .. } => {
             let inner = fields
                 .iter()
                 .map(|field| format!("{} : {}", field.name, shape_ty(&field.ty)))
                 .collect::<Vec<_>>()
                 .join("; ");
-            format!("record {{ {inner} }}")
+            let tuple = if *tuple { "tuple " } else { "" };
+            format!("{tuple}record {{ {inner} }}")
         }
         TypeRef::Variant { variants, .. } => {
             let inner = variants

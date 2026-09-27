@@ -221,7 +221,7 @@ impl Checker {
         };
         let payload = self.errors[idx].payload;
         let field_tys = self.errors[idx].field_tys.clone();
-        let record = payload.is_some_and(|ty| self.types[ty].kind == TyKind::Record);
+        let record = payload.is_some_and(|ty| self.types[ty].kind == TyKind::Record && !self.types[ty].tuple);
         match &mut raised.form {
             RaisedForm::Unit if payload.is_none() => {}
             RaisedForm::Positional(expr) if payload.is_some() && !record => {
@@ -369,6 +369,13 @@ impl Checker {
         Ok(())
     }
 
+    /// Whether a declared type restates its module's. An inline record is a type of its own
+    /// wherever it is written, so the same one written again matches.
+    fn declared_alike(&self, x: usize, y: usize, p: Option<&TypeRef>, q: Option<&TypeRef>) -> bool {
+        self.same(x, y)
+            || matches!((p, q), (Some(p @ TypeRef::Record { .. }), Some(q)) if shape_ty(p) == shape_ty(q))
+    }
+
     /// Each declaration in `use M exposing { ... }` restates `M`'s external exactly: its
     /// effect, `payable`, `nonreentrant`, parameters, result, and errors.
     pub(super) fn match_declarations(&self, funcs: &[Func]) -> Result<(), Error> {
@@ -387,7 +394,7 @@ impl Checker {
                     .params
                     .iter()
                     .zip(&impl_.params)
-                    .all(|(a, b)| a.name == b.name && self.same(a.ty_id, b.ty_id));
+                    .all(|(a, b)| a.name == b.name && self.declared_alike(a.ty_id, b.ty_id, Some(&a.ty), Some(&b.ty)));
             let mut want: Vec<usize> = impl_.errors.clone();
             let mut have: Vec<usize> = decl.errors.clone();
             want.sort_unstable();
@@ -397,7 +404,7 @@ impl Checker {
                 && exported.external_pure == decl.external_pure
                 && same_params
                 && decl.ret.is_some() == impl_.ret.is_some()
-                && self.same(decl.ret_ty, impl_.ret_ty)
+                && self.declared_alike(decl.ret_ty, impl_.ret_ty, decl.ret.as_ref(), impl_.ret.as_ref())
                 && want == have
                 && (decl.raises.is_some() || impl_.raises.is_none());
             if same {
@@ -503,7 +510,7 @@ impl Checker {
                         p.name,
                         q.name
                     ));
-                } else if !self.same(x.0, y.0) {
+                } else if !self.declared_alike(x.0, y.0, Some(&p.ty), Some(&q.ty)) {
                     reason = Some(format!(
                         "parameter `{}` of `{}` is {} in {label} and {} in {module}",
                         p.name,
@@ -513,7 +520,7 @@ impl Checker {
                     ));
                 }
             }
-            if reason.is_none() && !self.same(a.ret, b.ret) {
+            if reason.is_none() && !self.declared_alike(a.ret, b.ret, decl.ret.as_ref(), impl_.ret.as_ref()) {
                 reason = Some(format!(
                     "`{}` returns {} in {label} and {} in {module}",
                     decl.name,

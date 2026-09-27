@@ -903,6 +903,14 @@ impl<'a> Parser<'a> {
             Kind::List => self.list_ty(line, col),
             Kind::LParen => self.tuple_ty(line, col),
             Kind::Record => self.record_ty(false),
+            Kind::Ident if self.lexeme() == "tuple" && self.peek_kind(1) == Kind::Record => {
+                self.bump();
+                let mut ty = self.record_ty(false)?;
+                if let TypeRef::Record { tuple, .. } = &mut ty {
+                    *tuple = true;
+                }
+                Ok(ty)
+            }
             Kind::Pipe => self.variant_ty(),
             Kind::Ident => {
                 let mut name = self.ident()?;
@@ -1061,7 +1069,12 @@ impl<'a> Parser<'a> {
             }
         }
         self.want(Kind::RBrace)?;
-        Ok(TypeRef::Record { line, col, fields })
+        Ok(TypeRef::Record {
+            line,
+            col,
+            fields,
+            tuple: false,
+        })
     }
 
     fn variant_ty(&mut self) -> Result<TypeRef, Error> {

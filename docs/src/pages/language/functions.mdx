@@ -128,7 +128,7 @@ external function bump() : nat is {
 
 A function without `: type` returns `unit`. `external view` and `external pure` functions must have a result. An `external` stateful function can return one too. The value goes back to the caller after the function's deferred calls have run.
 
-A result can be any ABI value. A record result is flattened into named ABI outputs, one per field, as a Solidity function with several results has. A tuple result is one output, a Solidity tuple, as a function returning a struct has. For words alone the two lay out the same bytes.
+A result can be any ABI value. A record result is flattened into named ABI outputs, one per field, as a Solidity function with several results has. A tuple or `tuple record` result is one output, a Solidity tuple, as a function returning a struct has. For words alone the two lay out the same bytes.
 
 ## Errors
 

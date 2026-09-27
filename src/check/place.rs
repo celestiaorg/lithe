@@ -193,6 +193,7 @@ impl Checker {
             words: 0,
             bits: 0,
             laid: true,
+            tuple: false,
         });
         id
     }

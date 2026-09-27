@@ -88,6 +88,7 @@ Both contracts have the same ABI, the same error selector, the same event topic,
 | `break` | `until` |
 | `return x;` | `... is { ... } with x` |
 | `struct S { uint a; }` | `type s is record { a : nat; }` |
+| `function f(S calldata s)` | a `tuple record` parameter. See [Records in the ABI](/language/types#records-in-the-abi) |
 | `S({a: 1})` | `{ a = 1n; }` |
 | `enum E { A, B }` | `type e is A \| B`, and cases may carry payloads. See [Variants](/language/types#variants) |
 | `e == E.A` | `e = A` |

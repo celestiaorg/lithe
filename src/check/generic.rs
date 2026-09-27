@@ -767,9 +767,15 @@ fn subst_bound(ty: &TypeRef, env: &HashMap<String, usize>) -> TypeRef {
             col: *col,
             elems: elems.iter().map(|elem| subst_bound(elem, env)).collect(),
         },
-        TypeRef::Record { line, col, fields } => TypeRef::Record {
+        TypeRef::Record {
+            line,
+            col,
+            fields,
+            tuple,
+        } => TypeRef::Record {
             line: *line,
             col: *col,
+            tuple: *tuple,
             fields: fields
                 .iter()
                 .map(|field| FieldRef {

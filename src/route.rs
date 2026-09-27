@@ -1695,15 +1695,14 @@ pub(crate) fn render_abi_only(
             .split_once('(')
             .map(|(name, _)| name)
             .unwrap_or(err.abi_sig.as_str());
-        let mut inputs = Vec::new();
-        for (name, ty) in &err.fields {
-            inputs.push(AbiField {
-                name: name.clone().unwrap_or_default(),
-                ty: ty.clone(),
-                components: Vec::new(),
-                indexed: false,
-            });
-        }
+        let inputs = match (err.payload, err.fields.as_slice()) {
+            (Some(ty), [(None, _)]) => vec![crate::check::abi_nested(&checked.types, ty, "")?],
+            _ => err
+                .field_tys
+                .iter()
+                .map(|(name, ty)| crate::check::abi_nested(&checked.types, *ty, name))
+                .collect::<Result<_, _>>()?,
+        };
         items.push(Item::Error {
             name: name.to_string(),
             inputs,

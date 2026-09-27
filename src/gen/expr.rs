@@ -465,20 +465,16 @@ impl<'a> Gen<'a> {
             Builtin::Sha256 => return self.compile_hash(args, Some(2)),
             Builtin::Ripemd160 => return self.compile_hash(args, Some(3)),
             Builtin::Ecrecover => return self.compile_ecrecover(args),
-            Builtin::AbiEncode => return self.compile_abi_encode(&args[..], None),
+            Builtin::AbiEncode => return self.compile_abi_encode(&args[..], None, false),
             Builtin::AbiEncodePacked => return self.compile_packed(args),
             Builtin::AbiEncodeSelector => {
-                return self.compile_abi_encode(&args[1..], Some(&args[0]));
+                return self.compile_abi_encode(&args[1..], Some(&args[0]), false);
             }
             Builtin::AbiEncodeSignature => {
                 return self.compile_abi_signature(&args[0], &args[1..]);
             }
             Builtin::AbiEncodeCall => {
-                return Err(error(
-                    line,
-                    col,
-                    "`Abi.encode_call` is checked into a selector",
-                ));
+                return self.compile_abi_encode(&args[1..], Some(&args[0]), true);
             }
             Builtin::BytesConcat | Builtin::StringConcat => return self.compile_packed(args),
             Builtin::AbiDecode if self.tree(ty) => {

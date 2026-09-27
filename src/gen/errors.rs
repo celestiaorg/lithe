@@ -168,7 +168,7 @@ impl<'a> Gen<'a> {
     /// A payload with records, tuples, fixed lists, or nested dynamic values, encoded as
     /// `Abi.encode` would, after the selector.
     fn revert_tree(&mut self, sel: [u8; 4], args: &[&Expr]) -> Result<(), Error> {
-        self.tree_encode_exprs(args)?;
+        self.tree_encode_exprs(args, false)?;
         self.mload(self.scratch_a);
         self.mstore_off(self.scratch_b);
         self.push_u64(u64::from(u32::from_be_bytes(sel)));

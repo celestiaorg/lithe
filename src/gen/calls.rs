@@ -325,7 +325,7 @@ impl<'a> Gen<'a> {
                     None
                 } else {
                     let at = self.arena_alloc(1);
-                    self.compile_abi_encode(args, None)?;
+                    self.compile_abi_encode(args, None, true)?;
                     self.mstore_off(at);
                     Some(at)
                 };
@@ -823,7 +823,7 @@ impl<'a> Gen<'a> {
             .any(|a| self.is_dynamic(a.ty()) || self.list_value(a.ty()) || self.tree(a.ty()))
         {
             // Calldata in a blob: the selector, then the arguments ABI-encoded.
-            self.compile_abi_encode(args, None)?;
+            self.compile_abi_encode(args, None, true)?;
             self.push_u64(1);
             self.op(SHR);
             self.mstore_off(self.scratch_b);

@@ -655,3 +655,69 @@ fn split_tooling_output() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+const ORDERS: &str = "\
+module Orders is {
+  type order is tuple record { who : address; memo : string; }
+  type job is record { a : nat; label : string; }
+  storage orders at \"t.orders\" is record { h : bytes32; }
+
+  external function place(const o : order) is { orders.h := Crypto.keccak256(Abi.encode(o)); }
+  external function run(const j : job) is { orders.h := Crypto.keccak256(Abi.encode(j)); }
+  external function mark(const m : tuple record { at : nat; note : string; }) is {
+    orders.h := Crypto.keccak256(Abi.encode(m.at, m.note));
+  }
+  external view function last() : bytes32 is orders.h
+}
+";
+
+/// `lithe stubs` writes a `tuple record` as one, so the block it prints exposes the module
+/// as declared, and each record parameter keeps its ABI form in a facet.
+#[test]
+fn stubs_keep_tuple_records() {
+    let dir = std::env::temp_dir().join(format!("lithe-orders-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("dir");
+    let path = dir.join("orders.lithe");
+    std::fs::write(&path, ORDERS).expect("write");
+    let stubs = crate::stubs_file(&path, "Orders").expect("stubs");
+    let _ = std::fs::remove_dir_all(&dir);
+    assert_eq!(
+        stubs,
+        "use Orders exposing {\n  function place(o : order);\n  function run(j : job);\n  function mark(m : tuple record { at : nat; note : string });\n  view function last() : bytes32;\n}\n"
+    );
+    let shop = format!("{ORDERS}\ncontract Shop is {{\n  storage is record {{}}\n{stubs}}}\n");
+    let checked = checked_src(&shop);
+    let whole = deploy(&whole_build(&checked).code).expect("whole");
+    let split = crate::split::build(&checked, "Shop", &all_facets()).expect("split");
+    assert_eq!(facet_names(&split), ["Orders"]);
+    let routed = deploy_split(&split);
+    let n = |x: u64| Word::from_u64(x).to_be_bytes().to_vec();
+    let string = |s: &[u8]| {
+        let mut out = n(s.len() as u64);
+        out.extend(s);
+        out.resize(32 + s.len().div_ceil(32) * 32, 0);
+        out
+    };
+    let memo = b"a memo past thirty-two bytes long".to_vec();
+    // `(address,string)` as one tuple: its offset, then the address and the string's offset.
+    let placed = [n(32), n(0xaa), n(64), string(&memo)].concat();
+    let ran = [n(7), n(64), string(&memo)].concat();
+    let marked = [n(32), n(9), n(64), string(&memo)].concat();
+    let calls = [
+        ("place((address,string))", placed.clone(), placed),
+        ("run(uint256,string)", ran.clone(), [n(32), ran[..32].to_vec(), n(64), string(&memo)].concat()),
+        ("mark((uint256,string))", marked.clone(), [n(9), n(64), string(&memo)].concat()),
+    ];
+    for runtime in [&whole, &routed] {
+        for (sig, args, encoded) in &calls {
+            let mut data = selector(sig).to_vec();
+            data.extend(args);
+            let out = exec(runtime, &data, HashMap::new(), Word::from_u64(1), Word::from_u64(0), Word::from_u64(0))
+                .expect("run");
+            assert!(!out.reverted, "{sig}: {}", pretty(&out.returndata));
+            let last = run_ok(runtime, &out.storage, "last()", &[]);
+            assert_eq!(load_bytes(&last.returndata, 0), keccak_word(encoded), "{sig}");
+        }
+    }
+}

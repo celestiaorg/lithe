@@ -1147,12 +1147,12 @@ impl<'a> Gen<'a> {
         self.mstore_off(self.blob_ptr);
     }
 
-    /// Where a function's result goes in the ABI: a record's fields, each a result of its
-    /// own, or the value itself as one.
+    /// Where a function's argument or result goes in the ABI: a record's fields, each a
+    /// value of its own, or the value itself as one.
     pub(super) fn ret_fields(&self, ty: usize, at: Addr) -> Vec<(usize, Addr)> {
         let id = self.peel_nominal(ty);
         let t = &self.checked.types[id];
-        if t.kind == TyKind::Record {
+        if t.kind == TyKind::Record && !t.tuple {
             t.fields.iter().map(|f| (f.ty, at.plus(f.slot * 32))).collect()
         } else {
             vec![(ty, at)]
@@ -1183,7 +1183,7 @@ impl<'a> Gen<'a> {
     pub(super) fn tree_ret(&self, ty: usize) -> bool {
         let id = self.peel_nominal(ty);
         let t = &self.checked.types[id];
-        if t.kind == TyKind::Record {
+        if t.kind == TyKind::Record && !t.tuple {
             return self.abi_dyn(id) && !crate::check::flat_record(&self.checked.types, id);
         }
         self.tree(id) || (t.kind == TyKind::List && t.bits > 0)
@@ -1228,9 +1228,10 @@ impl<'a> Gen<'a> {
             || (t.kind == TyKind::List && t.bits > 0)
     }
 
-    /// Encodes expressions as `Abi.encode` does, into a blob at `scratch_a`. Each is
-    /// evaluated first, in order. An argument left in calldata is encoded from there.
-    pub(super) fn tree_encode_exprs(&mut self, args: &[&Expr]) -> Result<(), Error> {
+    /// Encodes expressions as `Abi.encode` does, into a blob at `scratch_a`, or as a call's
+    /// arguments when `call` is set, a record as its fields. Each is evaluated first, in
+    /// order. An argument left in calldata is encoded from there.
+    pub(super) fn tree_encode_exprs(&mut self, args: &[&Expr], call: bool) -> Result<(), Error> {
         let mut parts = Vec::with_capacity(args.len());
         for arg in args {
             match arg {
@@ -1238,8 +1239,9 @@ impl<'a> Gen<'a> {
                     parts.push(Part { at: Addr::Mem(self.local[*sym]), ty: arg.ty(), cd: true });
                 }
                 _ => {
-                    let at = self.stage(arg)?;
-                    parts.push(Part { at: Addr::Mem(at), ty: arg.ty(), cd: false });
+                    let at = Addr::Mem(self.stage(arg)?);
+                    let fields = if call { self.ret_fields(arg.ty(), at) } else { vec![(arg.ty(), at)] };
+                    parts.extend(fields.into_iter().map(|(ty, at)| Part { at, ty, cd: false }));
                 }
             }
         }
@@ -1527,7 +1529,7 @@ impl<'a> Gen<'a> {
     /// then the arguments. Leaves the blob's address, untagged, in `slot`.
     pub(super) fn tree_calldata(&mut self, sel: [u8; 4], args: &[Expr], slot: i32) -> Result<(), Error> {
         let refs: Vec<&Expr> = args.iter().collect();
-        self.tree_encode_exprs(&refs)?;
+        self.tree_encode_exprs(&refs, true)?;
         self.mload(self.scratch_a);
         self.mstore_off(self.scratch_b);
         self.push_u64(u64::from(u32::from_be_bytes(sel)));

@@ -43,7 +43,7 @@ Declare a method `payable` when the contract it describes accepts ether with the
 
 A method's arguments and result can be any ABI value: words, strings, bytes, lists, tuples, and records, nested to any depth. Results are decoded and checked where they arrive, by a `query` or in a continuation, with Solidity's bounds on every offset and length.
 
-A tuple result is one Solidity tuple, as a function `returns (S memory)` gives. For a method with several results, `returns (uint112, uint112, uint32)`, declare a record, whose fields are its results in order:
+Records follow the [same rule as external functions](/language/types#records-in-the-abi): a record argument or result is its fields, and a `tuple record` is one tuple. A method that takes a Solidity struct, like Uniswap's `exactInputSingle`, takes a `tuple record`. A tuple result is one Solidity tuple, as a function `returns (S memory)` gives. For a method with several results, `returns (uint112, uint112, uint32)`, declare a record, whose fields are its results in order:
 
 ```lithe
 type reserves is record {

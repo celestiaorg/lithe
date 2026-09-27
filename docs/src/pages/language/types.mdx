@@ -111,7 +111,53 @@ external function grow(const id : nat; const extra : nat) is {
 }
 ```
 
-A record literal is `{ field = value; ... }`. It takes its type from where it is used, such as a binding's annotation, a storage field, or a parameter. In the ABI, a record parameter or return value is flattened into its fields, like a Solidity getter for a struct: each field is one parameter or result. A record inside anything else, such as a list element, a tuple, or another record's field, is a Solidity tuple.
+A record literal is `{ field = value; ... }`. It takes its type from where it is used, such as a binding's annotation, a storage field, or a parameter.
+
+### Records in the ABI
+
+One rule covers every place a record meets the ABI:
+
+- A record that is a whole parameter, a whole result, or a variant case's payload is flattened into its fields, like a Solidity getter for a struct: each field is one parameter or result. This holds for a contract's own external functions and for [interface](/language/effects#interfaces) methods alike, so a call through an interface uses the signature the other contract dispatches on.
+- A `tuple record` in those places stays one Solidity tuple, with its fields as named components.
+- A record nested in anything else, such as a list element, a tuple element, another record's field, an event or error field, or a value given to `Abi.encode`, is always a Solidity tuple.
+
+A `tuple record` is a record in every other way: fields, literals, storage, and equality. A Solidity struct parameter maps to a `tuple record`. Uniswap's `exactInputSingle((address,address,uint24,address,uint256,uint256,uint160))` takes one:
+
+```lithe
+type exact_input_single is tuple record {
+  tokenIn : address;
+  tokenOut : address;
+  fee : uint24;
+  recipient : address;
+  amountIn : nat;
+  amountOutMinimum : nat;
+  sqrtPriceLimitX96 : uint160;
+}
+
+interface SwapRouter is {
+  payable function exactInputSingle(params : exact_input_single) : nat;
+}
+
+storage is record {
+  router : SwapRouter;
+  weth : address;
+  usdc : address;
+}
+
+external function buy(const amount : nat; const least : nat) is {
+  defer storage.router.exactInputSingle({
+    tokenIn = storage.weth;
+    tokenOut = storage.usdc;
+    fee = 3000;
+    recipient = Evm.sender();
+    amountIn = amount;
+    amountOutMinimum = least;
+    sqrtPriceLimitX96 = 0;
+  });
+}
+```
+
+`tuple record { ... }` is written wherever `record { ... }` is. Each record type is its own type, so a `record` and a `tuple record` with the same fields are different types.
 
 A record's fields can be strings, bytes, and dynamic lists too. An external function that returns such a record returns its fields in order, each dynamic one after an offset, as a Solidity function with several results does:
 
@@ -150,7 +196,7 @@ const (half, rest) : (nat, nat) := split(amount);
 
 Tuples nest, can be stored, and pack in storage like a struct. A tuple's elements can be any value: words, strings, bytes, lists, records, and other tuples.
 
-In the ABI, a tuple is always one Solidity tuple, as a struct is: a tuple parameter is `f((uint256,string))`, and a tuple result is one output. For a function with several results, `returns (uint256 a, string b)`, return a record, whose fields are the results.
+In the ABI, a tuple is always one Solidity tuple, as a struct is: a tuple parameter is `f((uint256,string))`, and a tuple result is one output. For a struct with named components, use a [`tuple record`](#records-in-the-abi). For a function with several results, `returns (uint256 a, string b)`, return a record, whose fields are the results.
 
 ## Lists
 

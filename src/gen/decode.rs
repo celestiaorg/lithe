@@ -30,10 +30,15 @@ impl<'a> Gen<'a> {
             }
             // A record, tuple, or fixed list with dynamic values in it, or a list of them:
             // decoded whole, each dynamic value from its offset in the arguments.
-            // One only ever passed on whole, to `Abi.encode` or another contract, stays in
-            // calldata: its position is kept, and each encoding checks and copies it. One
-            // never used is not read, as Solidity reads no calldata argument it doesn't use.
-            if self.tree_param(p.ty_id) && self.abi_dyn(p.ty_id) && !self.init {
+            // One at an offset, only ever passed on whole, to `Abi.encode` or another
+            // contract, stays in calldata: its position is kept, and each encoding checks and
+            // copies it. One never used is not read, as Solidity reads no calldata argument it
+            // doesn't use. A record's fields have no one offset, so it is always decoded.
+            if self.tree_param(p.ty_id)
+                && self.abi_dyn(p.ty_id)
+                && !self.init
+                && !crate::check::abi_record(&self.checked.types, p.ty_id)
+            {
                 if let Some(used) = self.passed_through(func, sym) {
                     if used {
                         self.push_u64(4 + u64::from(head) * 32);
@@ -49,27 +54,11 @@ impl<'a> Gen<'a> {
                 }
             }
             if self.tree_param(p.ty_id) {
-                // The arguments, from byte 4 of the calldata to its end.
                 if !args {
-                    self.push_u64(4);
-                    self.mstore_off(self.tree_at);
-                    self.cd_size();
-                    self.push_u64(4);
-                    self.op(SWAP1);
-                    self.op(SUB);
-                    self.mstore_off(self.tree_len);
+                    self.args_src();
                     args = true;
                 }
-                self.decoding_args = true;
-                for (fty, dst) in self.ret_fields(p.ty_id, Addr::Mem(self.local[sym])) {
-                    let decoded = self.tree_field(SrcKind::Cd, head * 32, fty, dst);
-                    if decoded.is_err() {
-                        self.decoding_args = false;
-                    }
-                    decoded?;
-                    head += self.abi_head_words(fty);
-                }
-                self.decoding_args = false;
+                head += self.decode_arg(sym, p.ty_id, head)?;
                 continue;
             }
             let elem = self.checked.types[self.peel_nominal(p.ty_id)].elem.unwrap_or(0);
@@ -707,8 +696,42 @@ impl<'a> Gen<'a> {
     }
 
     pub(super) fn decode_sym(&mut self, sym: usize) -> Result<(), Error> {
-        self.check_head(self.checked.types[self.checked.syms[sym].ty].words)?;
-        self.decode_words(sym, self.checked.syms[sym].ty, 4)
+        let ty = self.checked.syms[sym].ty;
+        if self.abi_dyn(ty) {
+            self.check_head(self.ret_head(ty) / 32)?;
+            self.args_src();
+            return self.decode_arg(sym, ty, 0).map(|_| ());
+        }
+        self.check_head(self.checked.types[ty].words)?;
+        self.decode_words(sym, ty, 4)
+    }
+
+    /// The arguments, from byte 4 of the calldata to its end, as the data `tree_field` reads.
+    fn args_src(&mut self) {
+        self.push_u64(4);
+        self.mstore_off(self.tree_at);
+        self.cd_size();
+        self.push_u64(4);
+        self.op(SWAP1);
+        self.op(SUB);
+        self.mstore_off(self.tree_len);
+    }
+
+    /// Decodes the argument at head word `head` into `sym`, a record as its fields. Returns
+    /// the head words it took.
+    fn decode_arg(&mut self, sym: usize, ty: usize, head: u32) -> Result<u32, Error> {
+        let mut words = 0;
+        self.decoding_args = true;
+        for (fty, dst) in self.ret_fields(ty, Addr::Mem(self.local[sym])) {
+            let decoded = self.tree_field(SrcKind::Cd, (head + words) * 32, fty, dst);
+            if decoded.is_err() {
+                self.decoding_args = false;
+            }
+            decoded?;
+            words += self.abi_head_words(fty);
+        }
+        self.decoding_args = false;
+        Ok(words)
     }
 
     /// Calldata shorter than the arguments' head reverts, as Solidity's decoder does.

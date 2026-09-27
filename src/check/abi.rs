@@ -194,16 +194,16 @@ pub(crate) fn abi_fields(types: &[RType], ty: usize, name: &str) -> Result<Vec<A
             components: Vec::new(),
             indexed: false,
         }]),
-        TyKind::List | TyKind::Tuple => Ok(vec![abi_nested(types, ty, name)?]),
         TyKind::Map => Err(error(1, 1, "a map cannot be an ABI value")),
         TyKind::Option => Err(error(1, 1, "an option cannot be an ABI value")),
         // A record parameter or result is flattened into its fields, like a Solidity
-        // getter. Inside another value, a record is a tuple.
-        TyKind::Record => types[ty]
+        // getter. A `tuple record` stays one tuple, and inside another value, any record is.
+        TyKind::Record if !types[ty].tuple => types[ty]
             .fields
             .iter()
             .map(|f| abi_nested(types, f.ty, &f.name))
             .collect(),
+        TyKind::List | TyKind::Tuple | TyKind::Record => Ok(vec![abi_nested(types, ty, name)?]),
         _ => Err(error(1, 1, "this type cannot be an ABI value")),
     }
 }
@@ -364,6 +364,7 @@ pub(crate) fn is_stored_aggregate(types: &[RType], ty: usize) -> bool {
 pub(crate) fn abi_record(types: &[RType], ty: usize) -> bool {
     let id = peel_id(types, ty);
     types[id].kind == TyKind::Record
+        && !types[id].tuple
         && !is_static_value(types, id)
         && !has_option(types, id)
         && abi_fields(types, id, "").is_ok()

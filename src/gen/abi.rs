@@ -1,7 +1,8 @@
 use super::*;
 
 impl<'a> Gen<'a> {
-    pub(super) fn compile_abi_encode(&mut self, args: &[Expr], selector: Option<&Expr>) -> Result<(), Error> {
+    /// `call`: the arguments of a call, where a record goes as its fields.
+    pub(super) fn compile_abi_encode(&mut self, args: &[Expr], selector: Option<&Expr>, call: bool) -> Result<(), Error> {
         // With no arguments the encoding is empty, or a selector alone.
         if args.is_empty() {
             match selector {
@@ -19,7 +20,7 @@ impl<'a> Gen<'a> {
         }
         if args.iter().any(|a| self.tree_part(a.ty())) {
             let refs: Vec<&Expr> = args.iter().collect();
-            self.tree_encode_exprs(&refs)?;
+            self.tree_encode_exprs(&refs, call)?;
         } else {
             let values = self.blob_parts(args)?;
             let parts: Vec<(i32, usize)> = values
@@ -415,7 +416,7 @@ impl<'a> Gen<'a> {
             self.call_sub(Sub::ShortBlob);
             return Ok(());
         }
-        self.compile_abi_encode(args, None)?;
+        self.compile_abi_encode(args, None, false)?;
         self.push_u64(1);
         self.op(SHR);
         self.mstore_off(self.scratch_b);

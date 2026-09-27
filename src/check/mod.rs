@@ -102,6 +102,8 @@ pub(crate) struct RType {
     pub words: u32,
     /// Bit width for integers, byte length for `bytesN`. Zero means a full word.
     pub bits: u16,
+    /// A `tuple record`: one ABI tuple as a whole parameter, result, or case payload.
+    pub tuple: bool,
     laid: bool,
 }
 
@@ -554,6 +556,7 @@ pub(crate) fn check(mut prog: Program) -> Result<Checked, Error> {
             words: 0,
             bits: 0,
             laid: true,
+            tuple: false,
         });
         c.named.insert("storage".to_string(), id);
         id

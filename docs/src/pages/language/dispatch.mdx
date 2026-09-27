@@ -49,6 +49,7 @@ A function dispatches when its first parameter is a variant and its body is a `c
 | no payload | no parameters |
 | a single value | one parameter, named after the arm's binding |
 | a record | one parameter per field, with the field names |
+| a `tuple record` | one tuple parameter, named after the arm's binding, with the fields as its components |
 
 `case` must cover every case, and each entrypoint's `raises` includes only what its own path can raise.
 

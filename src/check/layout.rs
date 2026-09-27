@@ -11,6 +11,7 @@ pub(super) fn prim(kind: TyKind, words: u32) -> RType {
         words,
         bits: 0,
         laid: true,
+        tuple: false,
     }
 }
 

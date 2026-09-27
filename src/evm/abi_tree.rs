@@ -291,13 +291,30 @@ fn with_sel(sig: &str, args: &[u8]) -> Vec<u8> {
     out
 }
 
+/// Each type under test, declared as `tt` and written as its uses spell it: every shape as
+/// itself, and each tuple again as a `tuple record`, which the ABI must carry the same way.
+fn forms() -> Vec<(T, String, String)> {
+    let mut out = Vec::new();
+    for t in shapes() {
+        out.push((t.clone(), lithe(&t), lithe(&t)));
+        if let T::Tuple(ts) = &t {
+            let fields: Vec<String> = ts.iter().enumerate().map(|(i, t)| format!("f{i} : {};", lithe(t))).collect();
+            out.push((t.clone(), format!("tuple record {{ {} }}", fields.join(" ")), "tt".into()));
+        }
+    }
+    out
+}
+
 /// A contract that takes, returns, encodes, decodes, logs, raises, queries, and compares
 /// values of one type.
 fn program(t: &T) -> String {
-    let ty = lithe(t);
+    program_as(&lithe(t), &lithe(t))
+}
+
+fn program_as(decl: &str, ty: &str) -> String {
     format!(
         "\
-type tt is {ty};
+type tt is {decl};
 interface Echo is {{
   view function echo(x : {ty}) : {ty};
   function call(x : {ty}) : {ty};
@@ -336,16 +353,16 @@ external pure function local(const x : {ty}) : {ty} is {{
 fn every_abi_type_everywhere() {
     install_mocks();
     let mut rng = Rng(0x5eed_1234_abcd_ef01);
-    for t in shapes() {
+    for (t, decl, ty) in forms() {
         let name = canon(&t);
-        let src = program(&t);
-        let runtime = deploy(&compile(&src).unwrap_or_else(|e| panic!("{name}: {e}\n{src}")))
-            .unwrap_or_else(|e| panic!("{name}: {e}"));
+        let src = program_as(&decl, &ty);
+        let runtime = deploy(&compile(&src).unwrap_or_else(|e| panic!("{decl}: {e}\n{src}")))
+            .unwrap_or_else(|e| panic!("{decl}: {e}"));
         for round in 0..6 {
             let v = value(&t, &mut rng);
             let w = value(&t, &mut rng);
             let enc = encode(std::slice::from_ref(&t), std::slice::from_ref(&v));
-            let what = format!("{name} round {round}: {v:?}");
+            let what = format!("{decl} round {round}: {v:?}");
             // Parameters decode, and results encode, byte for byte.
             for f in ["echo", "kept", "local"] {
                 let out = run_call(&runtime, &with_sel(&format!("{f}({name})"), &enc));
@@ -441,11 +458,10 @@ fn every_abi_type_everywhere() {
 #[test]
 fn deploy_takes_every_abi_type() {
     let mut rng = Rng(0xdead_beef_0bad_f00d);
-    for t in shapes() {
-        let name = canon(&t);
-        let ty = lithe(&t);
+    for (t, decl, ty) in forms() {
+        let name = decl.clone();
         let src = format!(
-            "event Made of record {{ x : {ty}; }}\nstorage is record {{ n : nat; }}\ndeploy(const x : {ty}) is {{ emit Made {{ x = x; }}; }}\nexternal function f() is {{ skip }}\n"
+            "type tt is {decl};\nevent Made of record {{ x : {ty}; }}\nstorage is record {{ n : nat; }}\ndeploy(const x : {ty}) is {{ emit Made {{ x = x; }}; }}\nexternal function f() is {{ skip }}\n"
         );
         let init = compile(&src).unwrap_or_else(|e| panic!("{name}: {e}"));
         for _ in 0..3 {
@@ -661,4 +677,168 @@ external pure function k(const s : status; const t : Target; const x : int8; con
          6162000000000000000000000000000000000000000000000000000000000000\
          6364000000000000000000000000000000000000000000000000000000000000"
     );
+}
+
+/// Records one Lithe contract sends another through an interface, each stored by the
+/// target as the hash of its `Abi.encode`.
+const RECORD_TARGET: &str = "\
+type job is record { a : nat; label : string; ids : list(nat); b : address; }
+type params is record { x : nat; y : nat; z : nat; }
+type order is tuple record { who : address; memo : string; amount : nat; }
+storage is record { h : bytes32; n : nat; }
+external function run(const j : job) is { storage.h := Crypto.keccak256(Abi.encode(j)); }
+external function execute(const p : params) is { storage.h := Crypto.keccak256(Abi.encode(p)); }
+external function place(const o : order) is { storage.h := Crypto.keccak256(Abi.encode(o)); }
+external function after(const j : job; const n : nat) is { storage.n := n; }
+external view function weigh(const j : job) : bytes32 is Crypto.keccak256(Abi.encode(j))
+external view function quote(const o : order) : order is { who = o.who; memo = o.memo; amount = o.amount + 1n; }
+";
+
+const RECORD_CALLER: &str = "\
+type job is record { a : nat; label : string; ids : list(nat); b : address; }
+type params is record { x : nat; y : nat; z : nat; }
+type order is tuple record { who : address; memo : string; amount : nat; }
+interface Target is {
+  function run(j : job);
+  function execute(p : params);
+  function place(o : order);
+  function after(j : job; n : nat);
+  view function weigh(j : job) : bytes32;
+  view function quote(o : order) : order;
+}
+storage is record { target : Target; h : bytes32; amount : nat; }
+external function run(const a : nat; const label : string) is {
+  defer storage.target.run({ a = a; label = label; ids = [a, a + 1n]; b = Evm.sender(); });
+}
+external function relay(const j : job) is { defer storage.target.run(j); }
+external function execute(const x : nat; const y : nat; const z : nat) is {
+  defer storage.target.execute({ x = x; y = y; z = z; });
+}
+external function place(const o : order) is { defer storage.target.place(o); }
+external function after(const j : job; const n : nat) is { defer storage.target.after(j, n); }
+external function weigh(const j : job) is { storage.h := query storage.target.weigh(j); }
+external function quote(const o : order) is {
+  const r : order := query storage.target.quote(o);
+  storage.amount := r.amount;
+}
+external pure function call_data(const j : job) : bytes is Abi.encode_call(Target.run, j)
+";
+
+/// A record argument is its fields, in an interface as at an entrypoint, so one Lithe contract
+/// reaches another's; a `tuple record` is one tuple in both.
+#[test]
+fn record_arguments_cross_interfaces() {
+    assert_eq!(selector("execute(uint256,uint256,uint256)"), [0x2d, 0x29, 0xa4, 0x7b]);
+    assert_eq!(selector("execute((uint256,uint256,uint256))"), [0xe6, 0xf0, 0x81, 0x39]);
+    let target_rt = deploy(&compile(RECORD_TARGET).expect("target")).expect("deploy target");
+    let at = Word::from_u64(0x5201);
+    DEPLOYED.with(|d| d.borrow_mut().insert(at, (target_rt.clone(), HashMap::new())));
+    let caller = deploy(&compile(RECORD_CALLER).expect("caller")).expect("deploy caller");
+    let mut storage = HashMap::new();
+    storage.insert(Word::from_u64(0), at);
+    let send = |data: Vec<u8>| {
+        let out = exec(&caller, &data, storage.clone(), Word::from_u64(0xabc), Word::from_u64(0), Word::from_u64(0))
+            .expect("run");
+        assert!(!out.reverted, "{}", pretty(&out.returndata));
+        out
+    };
+    let theirs = |n: u64| DEPLOYED.with(|d| slot(&d.borrow()[&at].1, n));
+    let n = |x: u64| V::W(Word::from_u64(x));
+    let job = T::Tuple(vec![T::Uint(256), T::Str, arr(T::Uint(256)), T::Address]);
+    let order = T::Tuple(vec![T::Address, T::Str, T::Uint(256)]);
+    let words = vec![T::Uint(256), T::Uint(256), T::Uint(256)];
+    let hash_of = |t: &T, v: &V| keccak_word(&encode(std::slice::from_ref(t), std::slice::from_ref(v)));
+
+    // Static fields: the flat selector, the same words.
+    send(with_sel("execute(uint256,uint256,uint256)", &encode(&words, &[n(1), n(2), n(3)])));
+    let params = T::Tuple(words.clone());
+    assert_eq!(theirs(0), hash_of(&params, &V::L(vec![n(1), n(2), n(3)])));
+    // A tuple entrypoint is not the flat one.
+    let flat = call_raw(&target_rt, &with_sel("execute((uint256,uint256,uint256))", &encode(&words, &[n(1), n(2), n(3)])));
+    assert!(flat.reverted);
+
+    // Dynamic fields: each after an offset of its own among the arguments.
+    let label = b"a label longer than thirty-two bytes".to_vec();
+    send(with_sel("run(uint256,string)", &encode(&[T::Uint(256), T::Str], &[n(7), V::B(label.clone())])));
+    let j = V::L(vec![n(7), V::B(label.clone()), V::L(vec![n(7), n(8)]), n(0xabc)]);
+    assert_eq!(theirs(0), hash_of(&job, &j));
+    let fields = |v: &V| match v {
+        V::L(xs) => xs.clone(),
+        _ => unreachable!(),
+    };
+    let job_fields = [T::Uint(256), T::Str, arr(T::Uint(256)), T::Address];
+    let j2 = V::L(vec![n(9), V::B(b"relayed".to_vec()), V::L(vec![n(1), n(2), n(3)]), n(0x77)]);
+    send(with_sel("relay(uint256,string,uint256[],address)", &encode(&job_fields, &fields(&j2))));
+    assert_eq!(theirs(0), hash_of(&job, &j2));
+    // A record before another argument takes all its fields' heads.
+    let mut both = job_fields.to_vec();
+    both.push(T::Uint(256));
+    let mut args = fields(&j2);
+    args.push(n(42));
+    send(with_sel("after(uint256,string,uint256[],address,uint256)", &encode(&both, &args)));
+    assert_eq!(theirs(1), Word::from_u64(42));
+    // A query's record argument, and `Abi.encode_call`'s.
+    let out = send(with_sel("weigh(uint256,string,uint256[],address)", &encode(&job_fields, &fields(&j2))));
+    assert_eq!(slot(&out.storage, 1), hash_of(&job, &j2));
+    let out = send(with_sel("call_data(uint256,string,uint256[],address)", &encode(&job_fields, &fields(&j2))));
+    let want = with_sel("run(uint256,string,uint256[],address)", &encode(&job_fields, &fields(&j2)));
+    assert_eq!(hex(&out.returndata), hex(&encode(&[T::Bytes], &[V::B(want)])));
+
+    // A `tuple record`: one tuple, as an argument and as a result.
+    let o = V::L(vec![n(0x55), V::B(b"memo".to_vec()), n(10)]);
+    let enc = encode(std::slice::from_ref(&order), std::slice::from_ref(&o));
+    send(with_sel("place((address,string,uint256))", &enc));
+    assert_eq!(theirs(0), hash_of(&order, &o));
+    let out = send(with_sel("quote((address,string,uint256))", &enc));
+    assert_eq!(slot(&out.storage, 2), Word::from_u64(11));
+    let quoted = call_raw(&target_rt, &with_sel("quote((address,string,uint256))", &enc));
+    let o2 = V::L(vec![n(0x55), V::B(b"memo".to_vec()), n(11)]);
+    assert_eq!(hex(&quoted.returndata), hex(&encode(std::slice::from_ref(&order), &[o2])));
+
+    let abi = crate::abi(RECORD_TARGET).expect("abi");
+    let quote = &abi[abi.find("\"name\": \"quote\"").expect("quote")..];
+    let outputs = &quote[..quote.find("\"stateMutability\"").expect("end")];
+    assert!(outputs.matches("\"type\": \"tuple\"").count() == 1, "{outputs}");
+    assert!(outputs.contains("\"name\": \"memo\""), "{outputs}");
+}
+
+/// A case payload takes the ABI form a parameter does: a record its fields, a `tuple record`
+/// one tuple, and dynamic values after their offsets.
+#[test]
+fn case_payloads_decode_like_parameters() {
+    let src = "\
+type key is tuple record { token : address; fee : uint24; }
+type ticket is tuple record { holder : address; note : string; }
+type named is record { s : string; n : nat; }
+type action is
+  | Swap of key
+  | Hold of ticket
+  | Name of named
+  | Tag of string
+storage is record { h : bytes32; }
+external function act(const a : action) is case a of {
+  | Swap(k) -> { storage.h := Crypto.keccak256(Abi.encode(k)); }
+  | Hold(t) -> { storage.h := Crypto.keccak256(Abi.encode(t)); }
+  | Name(m) -> { storage.h := Crypto.keccak256(Abi.encode(m)); }
+  | Tag(s) -> { storage.h := Crypto.keccak256(Abi.encode(s)); }
+  }
+";
+    let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
+    let n = |x: u64| V::W(Word::from_u64(x));
+    let cases = [
+        ("swap((address,uint24))", T::Tuple(vec![T::Address, T::Uint(24)]), V::L(vec![n(0xaa), n(3000)]), true),
+        ("hold((address,string))", T::Tuple(vec![T::Address, T::Str]), V::L(vec![n(0xbb), V::B(b"a note past thirty-two bytes long".to_vec())]), true),
+        ("name(string,uint256)", T::Tuple(vec![T::Str, T::Uint(256)]), V::L(vec![V::B(b"hi".to_vec()), n(5)]), false),
+        ("tag(string)", T::Str, V::B(b"tagged".to_vec()), true),
+    ];
+    for (sig, t, v, whole) in cases {
+        let args = match (&t, &v, whole) {
+            (T::Tuple(ts), V::L(vs), false) => encode(ts, vs),
+            _ => encode(std::slice::from_ref(&t), std::slice::from_ref(&v)),
+        };
+        let out = call_raw(&runtime, &with_sel(sig, &args));
+        assert!(!out.reverted, "{sig}: {}", pretty(&out.returndata));
+        let want = keccak_word(&encode(std::slice::from_ref(&t), std::slice::from_ref(&v)));
+        assert_eq!(slot(&out.storage, 0), want, "{sig}");
+    }
 }

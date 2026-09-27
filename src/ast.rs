@@ -207,6 +207,8 @@ pub(crate) enum TypeRef {
         line: u32,
         col: u32,
         fields: Vec<FieldRef>,
+        /// `tuple record`: one ABI tuple even as a whole parameter or result.
+        tuple: bool,
     },
     Variant {
         line: u32,

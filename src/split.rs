@@ -411,6 +411,7 @@ pub(crate) fn facet_program(source: &Program, module: &str) -> Program {
             line: 0,
             col: 0,
             fields: Vec::new(),
+            tuple: false,
         },
     });
     let mut order = Vec::new();
