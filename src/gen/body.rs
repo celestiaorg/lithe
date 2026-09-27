@@ -361,7 +361,8 @@ impl<'a> Gen<'a> {
     ) -> Result<(), Error> {
         let checked = self.checked;
         let writes = |node: Node<'_>| matches!(node, Node::Stmt(Stmt::Assign { root: Some(sym), .. }) if checked.syms[*sym].storage && !checked.is_transient(*sym));
-        for st in stmts {
+        let tail = std::mem::replace(&mut self.tail, false);
+        for (i, st) in stmts.iter().enumerate() {
             if !pending.is_empty() {
                 if self.stmt_any(st, &writes, &mut Vec::new()) {
                     let picks = std::mem::take(pending);
@@ -374,8 +375,10 @@ impl<'a> Gen<'a> {
                     pending.retain(|(at, _)| !here.iter().any(|q| (q.0, q.1) == *at));
                 }
             }
+            self.tail = tail && i + 1 == stmts.len();
             self.compile_stmt(st)?;
         }
+        self.tail = false;
         Ok(())
     }
 

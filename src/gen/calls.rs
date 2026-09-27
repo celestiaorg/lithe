@@ -631,12 +631,22 @@ impl<'a> Gen<'a> {
         self.push_u64(32);
         self.op(ADD);
         self.op(MSTORE);
-        // Each tail starts after the head and the tails before it, from the arguments' start.
+        // Each tail starts after the head and the tails before it, from the arguments' start:
+        // in a tight build, known while every tail before it is, and after that, and in
+        // other builds always, kept in `cursor`.
         let cursor = self.arena_alloc(1);
-        self.push_u64(u64::from(head) * 32);
-        self.mstore_off(cursor);
-        for &(at, kept, list) in &dynamic {
-            self.mload(cursor);
+        let mut known = Some(u64::from(head) * 32);
+        if !self.plan.tight {
+            self.push_u64(u64::from(head) * 32);
+            self.mstore_off(cursor);
+            known = None;
+        }
+        for (n, &(at, kept, list)) in dynamic.iter().enumerate() {
+            let last = n + 1 == dynamic.len() && self.plan.tight;
+            match known {
+                Some(c) => self.push_u64(c),
+                None => self.mload(cursor),
+            }
             self.mstore_off(head_buf + at as i32 * 32);
             if let Some(elem) = list.filter(|&e| self.is_dynamic(self.peel_nominal(e))) {
                 // The encoding, already laid out as in the ABI.
@@ -644,26 +654,16 @@ impl<'a> Gen<'a> {
                 self.abi_list_size(elem);
                 self.op(DUP1);
                 self.mload(kept);
-                self.mload(slot);
-                self.push_u64(36);
-                self.op(ADD);
-                self.mload(cursor);
-                self.op(ADD);
+                self.tail_at(slot, 36, known, cursor);
                 self.op(MCOPY);
-                self.mload(cursor);
-                self.op(ADD);
-                self.mstore_off(cursor);
+                self.advance_tail(&mut known, cursor, last);
                 continue;
             }
             if let Some(elem) = list {
                 // The length word, then the elements, each already ABI words.
                 self.mload(kept);
                 self.op(MLOAD);
-                self.mload(slot);
-                self.push_u64(36);
-                self.op(ADD);
-                self.mload(cursor);
-                self.op(ADD);
+                self.tail_at(slot, 36, known, cursor);
                 self.op(MSTORE);
                 self.mload(kept);
                 self.op(MLOAD);
@@ -673,46 +673,34 @@ impl<'a> Gen<'a> {
                 self.mload(kept);
                 self.push_u64(32);
                 self.op(ADD);
-                self.mload(slot);
-                self.push_u64(68);
-                self.op(ADD);
-                self.mload(cursor);
-                self.op(ADD);
+                self.tail_at(slot, 68, known, cursor);
                 self.op(MCOPY);
-                self.push_u64(32);
-                self.op(ADD);
-                self.mload(cursor);
-                self.op(ADD);
-                self.mstore_off(cursor);
+                if !last {
+                    self.push_u64(32);
+                    self.op(ADD);
+                }
+                self.advance_tail(&mut known, cursor, last);
                 continue;
             }
             self.mload(kept);
             self.bytes_span();
             // [len, data]: the length word, then the bytes after it.
             self.op(DUP1 + 1);
-            self.mload(slot);
-            self.push_u64(36);
-            self.op(ADD);
-            self.mload(cursor);
-            self.op(ADD);
+            self.tail_at(slot, 36, known, cursor);
             self.op(MSTORE);
             self.op(DUP1 + 1);
             self.op(SWAP1);
-            self.mload(slot);
-            self.push_u64(68);
-            self.op(ADD);
-            self.mload(cursor);
-            self.op(ADD);
+            self.tail_at(slot, 68, known, cursor);
             self.op(MCOPY);
             // The cursor moves past the length word and the padded bytes.
-            self.push_u64(31 + 32);
-            self.op(ADD);
-            self.push_u64(31);
-            self.op(NOT);
-            self.op(AND);
-            self.mload(cursor);
-            self.op(ADD);
-            self.mstore_off(cursor);
+            if !last {
+                self.push_u64(31 + 32);
+                self.op(ADD);
+                self.push_u64(31);
+                self.op(NOT);
+                self.op(AND);
+            }
+            self.advance_tail(&mut known, cursor, last);
         }
         self.push_u64(u64::from(head) * 32);
         self.push_mem(head_buf);
@@ -721,6 +709,39 @@ impl<'a> Gen<'a> {
         self.op(ADD);
         self.op(MCOPY);
         Ok(())
+    }
+
+    /// Pushes where a tail's bytes go: `off` past the blob at `slot`, then the tail's offset,
+    /// constant while `known`.
+    fn tail_at(&mut self, slot: i32, off: u64, known: Option<u64>, cursor: i32) {
+        self.mload(slot);
+        match known {
+            Some(c) => {
+                self.push_u64(off + c);
+                self.op(ADD);
+            }
+            None => {
+                self.push_u64(off);
+                self.op(ADD);
+                self.mload(cursor);
+                self.op(ADD);
+            }
+        }
+    }
+
+    /// `[size]`: moves the tail offset past a tail of `size` bytes. After the last tail
+    /// nothing reads it, so a tight build drops it.
+    fn advance_tail(&mut self, known: &mut Option<u64>, cursor: i32, last: bool) {
+        if last {
+            self.op(POP);
+            return;
+        }
+        match known.take() {
+            Some(c) => self.push_u64(c),
+            None => self.mload(cursor),
+        }
+        self.op(ADD);
+        self.mstore_off(cursor);
     }
 
     /// ABI words the arguments of an external call take: records and tuples inline.
@@ -917,6 +938,20 @@ impl<'a> Gen<'a> {
             self.op(POP);
             site.fired = None;
             self.body_mut().expect("body").ops.push(site);
+            return Ok(());
+        }
+        // The last thing a body runs, with nothing captured before it and storage already
+        // written in place, runs where it stands: no one can tell it from the epilogue's.
+        let fire = std::mem::take(&mut self.fire_tail)
+            && self.direct
+            && !self.any_nonreentrant
+            && self.body.as_ref().is_some_and(|b| {
+                b.ops.is_empty() && !b.nested && b.writes.is_empty() && !b.journal_stores
+            });
+        if fire {
+            let skip = self.fresh();
+            self.replay_op(&site, skip)?;
+            self.jumpdest(skip);
             return Ok(());
         }
         let check_at = self.code.len();

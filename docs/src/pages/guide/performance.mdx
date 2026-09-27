@@ -47,8 +47,9 @@ The benchmark contracts are real programs, not microbenchmarks:
 - **uniswap_v2_factory** and **uniswap_v2_pair**: Uniswap v2-core, ported to Solidity 0.8, with the factory creating each pair with `CREATE2`. A pair lands at a different address in each build, so the comparison names it by role, and swaps both ways, liquidity, the protocol fee, and a signed permit replay on each
 - **executor** and **exchange**: calls whose results feed continuations
 - **records** and **layout**: packed records, fixed lists, and tuples in storage
+- **solady_erc20**, **solady_erc721**, and **solady_erc1155**: Solady's hand-written assembly tokens, with EIP-2612 permits and the Permit2 allowance on the ERC-20, and safe transfers against receiver contracts on the others, next to plain Lithe with the same errors, events, and order of checks
 
-Each Solidity version uses OpenZeppelin where the original does. The benchmark deploys every build of every contract to a local chain and replays the same transactions against each one. It then checks that **statuses, return data, logs, and every storage slot** agree across all four builds. Lithe lays out storage exactly as Solidity does, so the raw slots have to match byte for byte.
+Each Solidity version uses OpenZeppelin where the original does. The benchmark deploys every build of every contract to a local chain and replays the same transactions against each one. It then checks that **statuses, return data, logs, and every storage slot** agree across all four builds. Lithe lays out storage exactly as Solidity does, so the raw slots have to match byte for byte. Solady's tokens are the exception: they put each value at a hashed slot of their own, which no Solidity layout produces, so their slots are left out and everything else is still compared.
 
 ## Reproducing
 

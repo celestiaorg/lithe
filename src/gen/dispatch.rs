@@ -419,6 +419,8 @@ impl<'a> Gen<'a> {
             let f = &self.checked.prog.funcs[func];
             let declared = f.ret.is_some();
             let ret = f.ret_ty;
+            // The body's last statement ends it when no value follows, or only a literal.
+            self.tail = tail.as_ref().is_none_or(|t| matches!(t, Expr::Lit { .. }));
             self.compile_top(&stmts, &mut picks)?;
             match tail {
                 // Encoded now, since it cannot change, and its blob held on the stack
@@ -454,7 +456,11 @@ impl<'a> Gen<'a> {
                     }
                     returns = Some((func, ret));
                 }
-                Some(tail) => self.compile_effect(&tail)?,
+                Some(tail) => {
+                    self.tail = matches!(tail, Expr::Call { callee: Some(_), .. });
+                    self.compile_effect(&tail)?;
+                    self.tail = false;
+                }
                 None => {}
             }
         } else {
@@ -569,7 +575,13 @@ impl<'a> Gen<'a> {
             };
             self.return_record(at, ret)?;
         } else if self.list_value(ret) {
-            self.compile_value(&tail)?;
+            // Nothing runs after the return, so a `var`'s list goes back without a copy.
+            match &tail {
+                Expr::Ident { sym: Some(sym), .. } if self.stored_place(&tail).is_none() => {
+                    self.mload(self.local[*sym]);
+                }
+                _ => self.compile_value(&tail)?,
+            }
             let elem = self.checked.types[self.peel_nominal(ret)].elem.unwrap_or(0);
             self.return_list(elem)?;
         } else if self.is_dynamic(ret) {

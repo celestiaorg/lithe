@@ -27,6 +27,8 @@ impl<'a> Gen<'a> {
             local: Vec::new(),
             query_buf: 0,
             in_query: false,
+            tail: false,
+            fire_tail: false,
             hoisted: HashMap::new(),
             skip_queries: std::collections::HashSet::new(),
             scratch_a: 0,
@@ -244,6 +246,7 @@ impl<'a> Gen<'a> {
         let shared_bytes = (self.bytes_sites.0 >= 2, self.bytes_sites.1 >= 2);
         Plan {
             cache_slots: false,
+            tight: false,
             outline,
             shared_bytes,
             shared_decode: self.decode_sites >= 2,
@@ -756,7 +759,7 @@ impl<'a> Gen<'a> {
         for f in self.funcs.values() {
             calls.insert(f.label, (0, f.leaves));
         }
-        asm::promote(&mut self.code, &tracked, &calls);
+        asm::promote(&mut self.code, &tracked, &calls, self.plan.tight);
         // String helpers reach storage through a slot they are given.
         let opaque: std::collections::HashSet<u32> = self
             .funcs

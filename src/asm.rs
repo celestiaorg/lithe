@@ -1390,8 +1390,10 @@ impl Live {
 }
 
 /// Keeps stored words on the stack where the loads that follow can reach them with `DUP`,
-/// and drops stores nothing reads. Every change is checked against a stack model.
-pub(crate) fn promote(code: &mut Vec<Inst>, tracked: &dyn Fn(u32) -> bool, calls: &Calls) -> bool {
+/// and drops stores nothing reads. Every change is checked against a stack model. With
+/// `consume`, a last load that finds the value on top takes it instead of a copy: fewer
+/// bytes at that site, but sites the outliner would have shared can stop matching.
+pub(crate) fn promote(code: &mut Vec<Inst>, tracked: &dyn Fn(u32) -> bool, calls: &Calls, consume: bool) -> bool {
     let mut any = false;
     for _ in 0..MAX_ROUNDS {
         let exits = safe_exits(code);
@@ -1406,7 +1408,7 @@ pub(crate) fn promote(code: &mut Vec<Inst>, tracked: &dyn Fn(u32) -> bool, calls
             if !tracked(a) || busy.contains(&runs.run[i]) {
                 continue;
             }
-            if let Some(mut plan) = plan_promotion(code, i, a, &runs, &live, calls) {
+            if let Some(mut plan) = plan_promotion(code, i, a, &runs, &live, calls, consume) {
                 busy.insert(runs.run[i]);
                 edits.append(&mut plan);
             }
@@ -1430,6 +1432,7 @@ fn plan_promotion(
     runs: &Runs,
     live: &Live,
     calls: &Calls,
+    consume: bool,
 ) -> Option<Vec<(usize, usize, Vec<Inst>)>> {
     let run = runs.run[i];
     // The stored value sits at position `p` once the store would have popped it.
@@ -1474,7 +1477,7 @@ fn plan_promotion(
     while run_end < n && runs.run[run_end] == run {
         run_end += 1;
     }
-    let mut edits = hold(code, i, p, &loads, stop, run_end, runs, calls)?;
+    let mut edits = hold(code, i, p, &loads, stop, run_end, consume && dead_after, runs, calls)?;
     if dead_after {
         edits.push((i, 2, Vec::new()));
     } else {
@@ -1495,16 +1498,20 @@ fn hold(
     loads: &[usize],
     limit: usize,
     run_end: usize,
+    consume: bool,
     runs: &Runs,
     calls: &Calls,
 ) -> Option<Vec<(usize, usize, Vec<Inst>)>> {
     let run = runs.run[i];
     let last = *loads.last()?;
     let mut edits: Vec<(usize, usize, Vec<Inst>)> = Vec::new();
+    // A last load that finds the value on top, with nothing reading the word after it,
+    // takes the value itself: nothing is left to pop.
+    let consumed = consume && runs.depth[last] == p;
     // Where the value becomes the top of the stack again after its last use.
     let mut pop_at: Option<usize> = None;
     let mut k = last + 2;
-    while k < limit {
+    while k < limit && !consumed {
         if runs.depth[k] == p && !matches!(code[k], Label(_)) {
             pop_at = Some(k);
             break;
@@ -1518,6 +1525,7 @@ fn hold(
     }
     let range_end = match pop_at {
         Some(q) => q,
+        None if consumed => last + 2,
         None => {
             // Left in place only if the run abandons the stack.
             if limit != run_end || !runs.ends_in_exit[run] {
@@ -1533,6 +1541,11 @@ fn hold(
             let above = runs.depth[k] - p;
             if !(0..16).contains(&above) {
                 return None;
+            }
+            if consumed && k == last {
+                edits.push((k, 2, Vec::new()));
+                k += 2;
+                continue;
             }
             edits.push((k, 2, vec![Op(DUP1 + above as u8)]));
             k += 2;
@@ -1723,7 +1736,7 @@ fn plan_storage(
     }
     // A dropped store's value may stay on the stack past the store that replaces it.
     let limit = if overwritten { run_end } else { j };
-    let mut edits = hold(code, i, p, &loads, limit, run_end, runs, calls)?;
+    let mut edits = hold(code, i, p, &loads, limit, run_end, false, runs, calls)?;
     edits.push(if overwritten {
         (i, 2, Vec::new())
     } else {

@@ -2,13 +2,19 @@ use super::*;
 
 impl<'a> Gen<'a> {
     pub(super) fn compile_stmts(&mut self, stmts: &[Stmt]) -> Result<(), Error> {
-        for s in stmts {
+        let tail = std::mem::replace(&mut self.tail, false);
+        for (i, s) in stmts.iter().enumerate() {
+            self.tail = tail && i + 1 == stmts.len();
             self.compile_stmt(s)?;
         }
+        self.tail = false;
         Ok(())
     }
 
+    /// Only an `if`'s branches, an inlined call's body, and a `defer` see whether they are
+    /// the last thing to run; everything nested in any other statement is not.
     pub(super) fn compile_stmt(&mut self, s: &Stmt) -> Result<(), Error> {
+        let tail = std::mem::replace(&mut self.tail, false);
         match s {
             Stmt::Skip => Ok(()),
             Stmt::Fail { reason, .. } => match self.constant_raise(reason) {
@@ -19,7 +25,12 @@ impl<'a> Gen<'a> {
                 }
                 None => self.compile_raised(reason),
             },
-            Stmt::Call { expr, .. } => self.compile_effect(expr),
+            Stmt::Call { expr, .. } => {
+                self.tail = tail && matches!(expr, Expr::Call { callee: Some(_), .. });
+                let result = self.compile_effect(expr);
+                self.tail = false;
+                result
+            }
             Stmt::AssignTuple { expr, syms, .. } => {
                 // Word locals take a tuple literal straight off the stack, last first.
                 let words = syms.iter().all(|&sym| {
@@ -344,7 +355,10 @@ impl<'a> Gen<'a> {
                 then_body,
                 else_body,
                 ..
-            } if else_body.is_empty() => self.compile_stmts(then_body),
+            } if else_body.is_empty() => {
+                self.tail = tail;
+                self.compile_stmts(then_body)
+            }
             Stmt::If {
                 cond,
                 then_body,
@@ -358,10 +372,12 @@ impl<'a> Gen<'a> {
                 self.push_label(else_l);
                 self.op(JUMPI);
                 self.branch += 1;
+                self.tail = tail;
                 self.compile_stmts(then_body)?;
                 self.push_label(end_l);
                 self.op(JUMP);
                 self.jumpdest(else_l);
+                self.tail = tail;
                 self.compile_stmts(else_body)?;
                 self.branch -= 1;
                 self.jumpdest(end_l);
@@ -530,7 +546,12 @@ impl<'a> Gen<'a> {
             } => self.compile_emit(*line, *col, name, fields),
             Stmt::Defer {
                 expr, value, then, ..
-            } => self.compile_defer(expr, value.as_ref(), then.as_deref()),
+            } => {
+                self.fire_tail = tail;
+                let result = self.compile_defer(expr, value.as_ref(), then.as_deref());
+                self.fire_tail = false;
+                result
+            }
         }
     }
 
@@ -968,6 +989,7 @@ impl<'a> Gen<'a> {
     }
 
     pub(super) fn compile_call(&mut self, idx: usize, args: &[Expr]) -> Result<(), Error> {
+        let tail = std::mem::replace(&mut self.tail, false);
         if self.compiling.contains(&idx) {
             let f = &self.checked.prog.funcs[idx];
             return Err(error(f.line, f.col, "recursion is not supported"));
@@ -977,7 +999,10 @@ impl<'a> Gen<'a> {
         if !inline {
             return self.call_func(idx);
         }
+        // An inlined body that ends the caller's ends it too, unless a value follows it.
+        self.tail = tail && self.checked.prog.funcs[idx].tail.is_none();
         let result = self.inline_body(idx, |g| g.func_body(idx));
+        self.tail = false;
         self.unalias(aliased);
         result
     }

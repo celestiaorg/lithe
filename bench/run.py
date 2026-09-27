@@ -5,9 +5,10 @@ For each `bench/<name>.lithe` and `bench/<name>.sol`, report runtime bytecode si
 for Lithe and three solc configurations. Then deploy all of them to a local anvil,
 replay the same transactions against each, check that statuses, return data, logs,
 and every storage slot agree, and report gas. Lithe lays out storage like Solidity,
-so the raw slots must match exactly. Each pair must also expose the same functions,
-and answer `supportsInterface` the same for every id either side's code pushes, so no
-side is measured with entrypoints the other lacks.
+so the raw slots must match exactly, except for Solady's tokens, whose hashed slots
+no Solidity layout has. Each pair must also expose the same functions, and answer
+`supportsInterface` the same for every id either side's code pushes, so no side is
+measured with entrypoints the other lacks.
 
 Needs `anvil` and `cast` (Foundry) and solc. `SOLC` overrides the solc binary.
 Run from the repository root: `python3 bench/run.py [name ...]`.
@@ -1089,11 +1090,35 @@ def uniswap_v2_steps():
     ]
 
 
+# A's first deployment: the token of a suite that deploys it first.
+FIRST = "0x5FbDB2315678afecb367f032d93F642f64180aa3"
+
+
+def sign_typed(name, token, struct_hash):
+    """Account A's EIP-712 signature over a struct for a token's version-1 domain: `v`, `r`, `s`."""
+    domain = cast("keccak", cast(
+        "abi-encode", "f(bytes32,bytes32,bytes32,uint256,address)",
+        cast("keccak", "EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)"),
+        cast("keccak", name), cast("keccak", "1"), "31337", token))
+    digest = cast("keccak", "0x1901" + domain[2:] + struct_hash[2:])
+    sig = cast("wallet", "sign", "--no-hash", "--private-key", KEYS["A"], digest)
+    return [str(int(sig[130:132], 16)), "0x" + sig[2:66], "0x" + sig[66:130]]
+
+
+def permit_args(name, token, spender, value, nonce, deadline):
+    """`permit` arguments for A's signed approval of `spender`."""
+    struct = cast("keccak", cast(
+        "abi-encode", "f(bytes32,address,address,uint256,uint256,uint256)",
+        cast("keccak", "Permit(address owner,address spender,uint256 value,uint256 nonce,uint256 deadline)"),
+        ADDR["A"], spender, str(value), str(nonce), str(deadline)))
+    return [ADDR["A"], spender, str(value), str(deadline), *sign_typed(name, token, struct)]
+
+
 def erc20_full_steps():
     """The wizard token with every add-on: roles, the cap, votes and their history, flash
     loans through a borrower contract, and permits and delegations signed by account A."""
     t, f = "token", "borrower"
-    token = "0x5FbDB2315678afecb367f032d93F642f64180aa3"  # A's first deployment
+    token = FIRST
     minter, pauser = cast("keccak", "MINTER_ROLE"), cast("keccak", "PAUSER_ROLE")
     loan = "flashLoan(address,address,uint256,bytes)"
     xfer = "transfer(address,uint256)"
@@ -1108,22 +1133,8 @@ def erc20_full_steps():
     def call(sig, args=(), role=t):
         steps.append(("call", "A", role, sig, list(args), None))
 
-    def signed(struct_hash):
-        """Account A's EIP-712 signature over a struct for the token's domain: `v`, `r`, `s`."""
-        domain = cast("keccak", cast(
-            "abi-encode", "f(bytes32,bytes32,bytes32,uint256,address)",
-            cast("keccak", "EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)"),
-            cast("keccak", "Bench Governance Token"), cast("keccak", "1"), "31337", token))
-        digest = cast("keccak", "0x1901" + domain[2:] + struct_hash[2:])
-        sig = cast("wallet", "sign", "--no-hash", "--private-key", KEYS["A"], digest)
-        return [str(int(sig[130:132], 16)), "0x" + sig[2:66], "0x" + sig[66:130]]
-
-    def permit(value, nonce, deadline):
-        struct = cast("keccak", cast(
-            "abi-encode", "f(bytes32,address,address,uint256,uint256,uint256)",
-            cast("keccak", "Permit(address owner,address spender,uint256 value,uint256 nonce,uint256 deadline)"),
-            ADDR["A"], ADDR["B"], str(value), str(nonce), str(deadline)))
-        return [ADDR["A"], ADDR["B"], str(value), str(deadline), *signed(struct)]
+    signed = lambda struct_hash: sign_typed("Bench Governance Token", token, struct_hash)
+    permit = lambda value, nonce, deadline: permit_args("Bench Governance Token", token, ADDR["B"], value, nonce, deadline)
 
     def delegation(delegatee, nonce, expiry):
         struct = cast("keccak", cast(
@@ -1247,6 +1258,227 @@ def erc20_full_steps():
     return steps
 
 
+PERMIT2 = "0x000000000022D473030F116dDEE9F6B43aC78BA3"
+
+
+def solady_erc20_steps():
+    """Solady's token: no zero-address checks, a total supply that must not overflow, the
+    fixed Permit2 allowance, and permits signed by account A."""
+    t, a, b = "token", ADDR["A"], ADDR["B"]
+    xfer, xfer_from = "transfer(address,uint256)", "transferFrom(address,address,uint256)"
+    sig = "permit(address,address,uint256,uint256,uint8,bytes32,bytes32)"
+    permit = lambda spender, value, nonce, deadline: permit_args("Solady Token", FIRST, spender, value, nonce, deadline)
+    send = lambda sender, f, args: ("send", sender, t, f, args, None)
+    call = lambda f, args=(): ("call", "A", t, f, list(args), None)
+    signed = permit(b, 123, 0, 3_000_000_000)
+    return [
+        *[call(v) for v in ["name()", "symbol()", "decimals()", "totalSupply()", "DOMAIN_SEPARATOR()"]],
+        send("A", "mint(address,uint256)", [a, str(1000 * E18)]),
+        send("B", "mint(address,uint256)", [b, "5"]),
+        send("A", "mint(address,uint256)", [ZERO, "1"]),
+        send("A", "mint(address,uint256)", [a, MAX]),
+        send("A", xfer, [b, str(100 * E18)]),
+        call(xfer, [b, "1"]),
+        send("A", xfer, [ZERO, "1"]),
+        send("A", xfer, [a, "7"]),
+        send("A", xfer, [b, "0"]),
+        send("B", xfer, [a, str(10**30)]),
+        send("A", "approve(address,uint256)", [b, str(500 * E18)]),
+        send("A", "approve(address,uint256)", [ZERO, "1"]),
+        call("allowance(address,address)", [a, b]),
+        send("B", xfer_from, [a, b, str(200 * E18)]),
+        send("B", xfer_from, [a, b, str(400 * E18)]),
+        send("B", xfer_from, [a, ZERO, "1"]),
+        send("A", "approve(address,uint256)", [b, MAX]),
+        send("B", xfer_from, [a, b, "1"]),
+        call("allowance(address,address)", [a, b]),
+        send("B", xfer_from, [a, b, str(10**30)]),
+        # Permit2 may always spend, and its allowance can't be lowered.
+        call("allowance(address,address)", [a, PERMIT2]),
+        send("A", "approve(address,uint256)", [PERMIT2, "5"]),
+        send("A", "approve(address,uint256)", [PERMIT2, MAX]),
+        send("B", "burn(uint256)", [str(10 * E18)]),
+        send("B", "burn(uint256)", [str(10**30)]),
+        # Signed approvals: used, replayed, expired, for Permit2, and by the wrong owner.
+        send("B", sig, signed),
+        call("allowance(address,address)", [a, b]),
+        call("nonces(address)", [a]),
+        send("B", sig, signed),
+        send("B", sig, permit(b, 5, 1, 1)),
+        send("B", sig, permit(PERMIT2, 5, 1, 3_000_000_000)),
+        send("B", sig, [b, *permit(b, 5, 1, 3_000_000_000)[1:]]),
+        send("B", sig, [ZERO, b, "5", "3000000000", "27", "0x" + "11" * 32, "0x" + "22" * 32]),
+        send("B", sig, permit(b, 9, 1, 3_000_000_000)),
+        call("nonces(address)", [a]),
+        call("totalSupply()"),
+        *[call("balanceOf(address)", [who]) for who in [a, b, ZERO]],
+        send("A", raw(xfer, word(int(b, 16))), []),
+    ]
+
+
+def solady_erc721_steps():
+    """Solady's NFT: its errors and order of checks, operators, burns by approved accounts,
+    and safe transfers to a receiver in each of its modes, and to a contract without the hook."""
+    n, a, b = "nft", ADDR["A"], ADDR["B"]
+    xfer = "transferFrom(address,address,uint256)"
+    safe = "safeTransferFrom(address,address,uint256)"
+    safe_data = "safeTransferFrom(address,address,uint256,bytes)"
+    mint, safe_mint = "mint(address,uint256)", "safeMint(address,uint256,bytes)"
+    send = lambda sender, f, args, value=None: ("send", sender, n, f, args, value)
+    call = lambda f, args=(): ("call", "A", n, f, list(args), None)
+    mode = lambda m: ("send", "A", "receiver", "set_mode(uint256)", [str(m)], None)
+    return [
+        call("name()"),
+        call("symbol()"),
+        *[call("supportsInterface(bytes4)", [i]) for i in ["0x80ac58cd", "0x5b5e139f", "0x01ffc9a7", "0xffffffff"]],
+        send("A", mint, [a, "1"]),
+        send("B", mint, [b, "2"]),
+        send("A", mint, [ZERO, "3"]),
+        send("A", mint, [b, "1"]),
+        send("A", safe_mint, ["$receiver", "3", "0x" + "ab" * 40]),
+        send("A", safe_mint, [a, "4", "0x"]),
+        send("A", safe_mint, [a, "5", "0x1234"]),
+        send("A", mint, [a, "6"]),
+        send("A", safe_mint, ["$nft", "7", "0x"]),
+        call("balanceOf(address)", [a]),
+        call("balanceOf(address)", [ZERO]),
+        call("ownerOf(uint256)", ["1"]),
+        call("ownerOf(uint256)", ["99"]),
+        call("tokenURI(uint256)", ["1"]),
+        call("tokenURI(uint256)", ["4"]),
+        call("tokenURI(uint256)", ["99"]),
+        send("A", "approve(address,uint256)", [b, "1"]),
+        call("getApproved(uint256)", ["1"]),
+        call("getApproved(uint256)", ["99"]),
+        send("B", "approve(address,uint256)", [b, "4"]),
+        send("A", "approve(address,uint256)", [b, "99"]),
+        send("B", xfer, [a, b, "1"]),
+        send("B", xfer, [a, b, "1"]),
+        send("B", xfer, [b, ZERO, "1"]),
+        send("B", xfer, [a, b, "4"]),
+        send("A", xfer, [a, b, "99"]),
+        send("B", "setApprovalForAll(address,bool)", [a, "true"]),
+        send("B", "setApprovalForAll(address,bool)", [ZERO, "true"]),
+        call("isApprovedForAll(address,address)", [b, a]),
+        # An operator moves and approves the owner's tokens, and may pay.
+        send("A", xfer, [b, a, "2"], "1"),
+        send("A", "approve(address,uint256)", [a, "1"]),
+        send("A", safe, [a, b, "2"]),
+        send("A", safe_data, [a, "$receiver", "4", "0x" + "ab" * 40]),
+        send("A", safe_data, [a, "$receiver", "5", "0x1234"]),
+        mode(1),
+        send("A", safe, [a, "$receiver", "6"]),
+        mode(2),
+        # The receiver's own reason passes through unchanged.
+        call(safe, [a, "$receiver", "6"]),
+        send("A", safe, [a, "$receiver", "6"]),
+        mode(0),
+        call(safe, [a, "$nft", "6"]),
+        send("A", safe, [a, "$nft", "6"]),
+        send("A", "burn(uint256)", ["1"]),
+        send("B", "burn(uint256)", ["1"]),
+        send("B", "burn(uint256)", ["6"]),
+        send("A", "burn(uint256)", ["6"]),
+        call("getApproved(uint256)", ["1"]),
+        send("A", mint, [a, "1"]),
+        *[call("balanceOf(address)", [who]) for who in [a, b, "$receiver"]],
+    ]
+
+
+def solady_erc1155_steps():
+    """Solady's multi-token: its errors and order of checks, batches that always log
+    `TransferBatch`, burns by operators, and a receiver in each of its modes and a contract
+    that has no hook. Solady walks a batch from its end, so a batch that fails does so at
+    both ends, and neither side's order costs it the other's writes."""
+    m, a, b = "mt", ADDR["A"], ADDR["B"]
+    mint = "mint(address,uint256,uint256,bytes)"
+    mint_batch = "mintBatch(address,uint256[],uint256[],bytes)"
+    safe = "safeTransferFrom(address,address,uint256,uint256,bytes)"
+    safe_batch = "safeBatchTransferFrom(address,address,uint256[],uint256[],bytes)"
+    burn = "burn(address,uint256,uint256)"
+    burn_batch = "burnBatch(address,uint256[],uint256[])"
+    batch_of = "balanceOfBatch(address[],uint256[])"
+    long = "0x" + "ab" * 100
+    send = lambda sender, f, args: ("send", sender, m, f, args, None)
+    call = lambda f, args: ("call", "A", m, f, args, None)
+    mode = lambda n: ("send", "A", "r1155", "set_mode(uint256)", [str(n)], None)
+    return [
+        call("uri(uint256)", ["1"]),
+        *[call("supportsInterface(bytes4)", [i])
+          for i in ["0xd9b67a26", "0x0e89341c", "0x01ffc9a7", "0x80ac58cd", "0xffffffff"]],
+        send("A", mint, [a, "1", "100", "0x"]),
+        send("B", mint, [b, "2", "50", "0x1234"]),
+        send("A", mint, [ZERO, "1", "1", "0x"]),
+        send("A", mint, ["$r1155", "3", "10", long]),
+        send("A", mint, ["$plain", "3", "1", "0x"]),
+        send("A", mint, [a, "9", MAX, "0x"]),
+        send("A", mint, [a, "9", "1", "0x"]),
+        send("A", mint_batch, [a, "[1,2,3]", "[10,20,30]", "0x"]),
+        # Repeated ids, and a long payload to the batch hook.
+        send("A", mint_batch, ["$r1155", "[4,5,4]", "[1,2,3]", long]),
+        send("A", mint_batch, ["$r1155", "[7]", "[1]", "0x"]),
+        send("A", mint_batch, [a, "[]", "[]", "0x"]),
+        send("A", mint_batch, [a, "[1,2]", "[1]", "0x"]),
+        send("A", mint_batch, [ZERO, "[1]", "[1]", "0x"]),
+        send("A", mint_batch, [a, "[9,8,9]", "[1,1,1]", "0x"]),
+        send("A", mint_batch, ["$plain", "[1,2]", "[1,1]", "0x"]),
+        mode(1),
+        send("A", mint, ["$r1155", "3", "1", "0x"]),
+        send("A", mint_batch, ["$r1155", "[3,4]", "[1,1]", "0x"]),
+        mode(2),
+        # The receiver's own reason passes through unchanged.
+        call(mint, ["$r1155", "3", "1", "0x"]),
+        call(mint_batch, ["$r1155", "[3,4]", "[1,1]", "0x"]),
+        send("A", mint_batch, ["$r1155", "[3,4]", "[1,1]", "0x"]),
+        mode(3),
+        call(mint, ["$r1155", "3", "1", "0x"]),
+        send("A", mint_batch, ["$r1155", "[3,4]", "[1,1]", "0x"]),
+        mode(0),
+        call("balanceOf(address,uint256)", [a, "1"]),
+        call("balanceOf(address,uint256)", ["$r1155", "4"]),
+        call(batch_of, [f"[{a},{b},{a},{a}]", "[1,2,3,99]"]),
+        call(batch_of, [f"[{a},{b}]", "[1]"]),
+        call(batch_of, ["[]", "[]"]),
+        send("A", safe, [a, b, "1", "5", "0x"]),
+        send("B", safe, [a, b, "1", "5", "0x"]),
+        send("A", safe, [a, b, "1", "1000", "0x"]),
+        send("A", safe, [a, ZERO, "1", "1", "0x"]),
+        send("A", safe, [ZERO, b, "1", "1", "0x"]),
+        send("A", safe, [a, a, "1", "1", "0x"]),
+        send("A", safe, [a, "$r1155", "1", "5", long]),
+        send("A", safe, [a, "$plain", "1", "5", "0x"]),
+        send("A", "setApprovalForAll(address,bool)", [b, "true"]),
+        send("A", "setApprovalForAll(address,bool)", [ZERO, "true"]),
+        call("isApprovedForAll(address,address)", [a, b]),
+        send("B", safe, [a, b, "1", "5", "0x"]),
+        send("A", safe_batch, [a, b, "[1,2,3]", "[1,2,3]", "0x"]),
+        send("A", safe_batch, [a, b, "[1,1,2]", "[1,2,3]", "0x1234"]),
+        send("A", safe_batch, [a, b, "[1,2]", "[1]", "0x"]),
+        send("A", safe_batch, [a, b, "[1,2]", "[1000,1000]", "0x"]),
+        # Repeated ids draw on one balance.
+        send("A", safe_batch, [a, b, "[3,3]", "[20,20]", "0x"]),
+        send("A", safe_batch, [a, ZERO, "[1]", "[1]", "0x"]),
+        send("B", safe_batch, [b, a, "[2]", "[1]", "0x"]),
+        send("A", safe_batch, [b, a, "[2]", "[1]", "0x"]),
+        send("A", safe_batch, [a, "$r1155", "[1,3,1]", "[1,1,1]", long]),
+        send("A", safe_batch, [a, "$plain", "[1,3]", "[1,1]", "0x"]),
+        send("A", burn, [a, "1", "1"]),
+        send("B", burn, [a, "1", "1"]),
+        send("A", "setApprovalForAll(address,bool)", [b, "false"]),
+        send("B", burn, [a, "1", "1"]),
+        send("A", burn, [a, "1", "1000"]),
+        send("A", burn, [ZERO, "1", "0"]),
+        send("A", burn_batch, [a, "[1,2,3]", "[1,1,1]"]),
+        send("A", burn_batch, [a, "[1,1]", "[1,1]"]),
+        send("A", burn_batch, [a, "[1,2]", "[1]"]),
+        send("A", burn_batch, [a, "[1,2]", "[1000,1000]"]),
+        send("B", burn_batch, [a, "[1]", "[1]"]),
+        call(batch_of, [f"[{a},{b},{a},{b},{a}]", "[1,1,2,2,9]"]),
+        call("balanceOf(address,uint256)", ["$r1155", "1"]),
+        send("A", raw(batch_of, word(0x40), word(0x60), word(1)), []),
+    ]
+
+
 def cast(*args):
     return subprocess.run(["cast", *args], capture_output=True, text=True, check=True).stdout.strip()
 
@@ -1340,6 +1572,23 @@ SUITES = {
             ("borrower", "flash_borrower"),
         ],
         "steps": erc20_full_steps(),
+    },
+    # Solady lays out storage by hashes no Lithe map produces, so its token's slots are
+    # left out of the storage comparison: `own_layout` names such roles.
+    "solady_erc20": {
+        "deploy": [("token", "solady_erc20")],
+        "steps": solady_erc20_steps(),
+        "own_layout": ["token"],
+    },
+    "solady_erc721": {
+        "deploy": [("nft", "solady_erc721"), ("receiver", "receiver")],
+        "steps": solady_erc721_steps(),
+        "own_layout": ["nft"],
+    },
+    "solady_erc1155": {
+        "deploy": [("mt", "solady_erc1155"), ("r1155", "receiver1155"), ("plain", "receiver")],
+        "steps": solady_erc1155_steps(),
+        "own_layout": ["mt"],
     },
     # Lithe consumes call results in `defer ... then` continuations; Solidity inline.
     "swap": {
@@ -1451,6 +1700,7 @@ def solc_binary():
 REMAPPINGS = [
     "@openzeppelin/contracts-upgradeable/=" + os.path.join(BENCH, "vendor", "openzeppelin-contracts-upgradeable", "contracts") + "/",
     "@openzeppelin/contracts/=" + os.path.join(BENCH, "vendor", "openzeppelin-contracts", "contracts") + "/",
+    "solady/=" + os.path.join(BENCH, "vendor", "solady", "src") + "/",
 ]
 
 
@@ -1762,7 +2012,7 @@ def replay(name, suite, code, order, chains):
             label += " reverts"
         cells = [str(results[b]["gas"]) if results[b]["gas"] is not None else "-" for b in order]
         gas_rows.append([label, *cells])
-    contracts = [r for r, v in roles["lithe"].items() if len(v) == 42]
+    contracts = [r for r, v in roles["lithe"].items() if len(v) == 42 and r not in suite.get("own_layout", [])]
     slots = {b: chains[b].storage([roles[b][r] for r in contracts]) for b in order}
     # Maps keyed by a bound address: their slots, and the words just past a slot in use.
     bases = set(range(64)) | {k - d for b in order for s in slots[b].values() for k in s for d in range(8) if k >= d}

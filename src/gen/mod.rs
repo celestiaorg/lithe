@@ -141,7 +141,8 @@ pub(crate) fn codegen(checked: &Checked, shape: &Shape) -> Result<Built, Error> 
         g.plan()
     };
     // Keeping a hashed slot saves gas, but can cost bytes where the optimizer would have
-    // shared the hashing instead. The smaller program wins; a tie keeps the slots.
+    // shared the hashing instead, and a tight site can keep the outliner from sharing it.
+    // The smallest program wins; ties prefer kept slots, then tight sites.
     let build = |plan: Plan| -> Result<Built, Error> {
         let mut g = Gen::new(checked, plan.clone(), shape)?;
         g.emit()?;
@@ -164,25 +165,38 @@ pub(crate) fn codegen(checked: &Checked, shape: &Shape) -> Result<Built, Error> 
             needs,
         })
     };
-    let cached_plan = Plan {
-        cache_slots: true,
-        ..plan.clone()
-    };
-    // The two builds are independent, and each is most of a compile.
-    let (cached, plain) = std::thread::scope(|s| {
-        let cached = std::thread::Builder::new()
-            .stack_size(64 << 20)
-            .spawn_scoped(s, || build(cached_plan))
-            .expect("spawn a codegen thread");
-        let plain = build(plan);
-        (cached.join().unwrap_or_else(|e| std::panic::resume_unwind(e)), plain)
+    let variants: Vec<Plan> = [(true, true), (true, false), (false, true), (false, false)]
+        .into_iter()
+        .map(|(cache_slots, tight)| Plan {
+            cache_slots,
+            tight,
+            ..plan.clone()
+        })
+        .collect();
+    // The builds are independent, and each is most of a compile.
+    let builds = std::thread::scope(|s| {
+        let handles: Vec<_> = variants[1..]
+            .iter()
+            .map(|plan| {
+                std::thread::Builder::new()
+                    .stack_size(64 << 20)
+                    .spawn_scoped(s, move || build(plan.clone()))
+                    .expect("spawn a codegen thread")
+            })
+            .collect();
+        let first = build(variants[0].clone());
+        std::iter::once(first)
+            .chain(handles.into_iter().map(|h| h.join().unwrap_or_else(|e| std::panic::resume_unwind(e))))
+            .collect::<Vec<_>>()
     });
-    let (cached, plain) = (cached?, plain?);
-    Ok(if plain.runtime.len() < cached.runtime.len() {
-        plain
-    } else {
-        cached
-    })
+    let mut best: Option<Built> = None;
+    for built in builds {
+        let built = built?;
+        if best.as_ref().is_none_or(|b| built.runtime.len() < b.runtime.len()) {
+            best = Some(built);
+        }
+    }
+    Ok(best.expect("four builds"))
 }
 
 /// The creation code for a runtime: a `deploy` compiled around it, or a plain copy. A
@@ -404,6 +418,9 @@ struct Plan {
     single_queues: std::collections::HashSet<i32>,
     /// Constant raises with several sites, which share one block.
     shared_raises: std::collections::HashSet<String>,
+    /// Whether each site takes its smallest form even where that keeps the outliner from
+    /// sharing it with other sites.
+    tight: bool,
 }
 
 /// A function compiled once. Calls merge what it reads and writes into their body.
@@ -620,6 +637,10 @@ struct Gen<'a> {
     local: Vec<i32>,
     query_buf: i32,
     in_query: bool,
+    /// Nothing runs after the statement being compiled before its body ends.
+    tail: bool,
+    /// The `defer` being compiled is the last thing its body runs.
+    fire_tail: bool,
     /// Queries issued at the start of the body, by source position: their buffer holds
     /// whether each succeeded, then its word.
     hoisted: HashMap<(u32, u32), i32>,

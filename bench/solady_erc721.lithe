@@ -1,0 +1,230 @@
+(* Benchmark: Solady's ERC721 with URIs from a base and the id, open minting as in
+   Solady's own mocks, and burning by the owner or an approved account. Same errors,
+   events, and order of checks; Solady's hashed slots become plain maps, with a token's
+   approval next to its owner as Solady keeps it. Mirrors solady_erc721.sol, which
+   imports Solady. *)
+
+error NotOwnerNorApproved;
+error TokenDoesNotExist;
+error TokenAlreadyExists;
+error BalanceQueryForZeroAddress;
+error TransferToZeroAddress;
+error TransferFromIncorrectOwner;
+error AccountBalanceOverflow;
+error TransferToNonERC721ReceiverImplementer;
+
+event Transfer of record {
+  indexed from : address;
+  indexed to : address;
+  indexed id : nat;
+}
+
+event Approval of record {
+  indexed owner : address;
+  indexed account : address;
+  indexed id : nat;
+}
+
+event ApprovalForAll of record {
+  indexed owner : address;
+  indexed operator : address;
+  isApproved : bool;
+}
+
+interface IERC721 is {
+  view function balanceOf(owner : address) : nat;
+  view function ownerOf(id : nat) : address;
+  view function getApproved(id : nat) : address;
+  view function isApprovedForAll(owner : address; operator : address) : bool;
+  function approve(account : address; id : nat);
+  function setApprovalForAll(operator : address; isApproved : bool);
+  function transferFrom(from : address; to : address; id : nat);
+  function safeTransferFrom(from : address; to : address; id : nat);
+  function safeTransferFrom(from : address; to : address; id : nat; data : bytes);
+}
+
+interface IERC721Metadata is {
+  view function name() : string;
+  view function symbol() : string;
+  view function tokenURI(id : nat) : string;
+}
+
+interface ERC721Receiver is {
+  function onERC721Received(operator : address; from : address; id : nat; data : bytes) : bytes4;
+}
+
+supports IERC721, IERC721Metadata;
+
+type token is record {
+  owner : address;
+  approved : address;
+}
+
+storage is record {
+  tokens : map(nat, token);
+  balances : map(address, nat);
+  operators : map(address, map(address, bool));
+}
+
+view function require_owner(const id : nat) : address
+  raises TokenDoesNotExist
+is {
+  const owner : address := storage.tokens[id].owner;
+  assert(owner <> Address.zero, TokenDoesNotExist);
+} with owner
+
+(* An account holds at most 2^32 - 1 tokens. *)
+function credit(const to : address)
+  raises TransferToZeroAddress | AccountBalanceOverflow
+is {
+  assert(to <> Address.zero, TransferToZeroAddress);
+  const balance : nat := storage.balances[to];
+  assert(balance < 0xffffffff, AccountBalanceOverflow);
+  storage.balances[to] := balance + 1n;
+}
+
+function transfer_from(const from : address; const to : address; const id : nat)
+  raises TokenDoesNotExist | TransferFromIncorrectOwner | NotOwnerNorApproved
+    | TransferToZeroAddress | AccountBalanceOverflow
+is {
+  assert(require_owner(id) = from, TransferFromIncorrectOwner);
+  const approved : address := storage.tokens[id].approved;
+  assert(
+    Evm.sender() = from or Evm.sender() = approved or storage.operators[from][Evm.sender()],
+    NotOwnerNorApproved
+  );
+  if approved <> Address.zero then {
+    storage.tokens[id].approved := Address.zero;
+  }
+  storage.tokens[id].owner := to;
+  storage.balances[from] := Nat.wrapping_sub(storage.balances[from], 1n);
+  credit(to);
+  emit Transfer { from = from; to = to; id = id; };
+}
+
+function mint_to(const to : address; const id : nat)
+  raises TokenAlreadyExists | TransferToZeroAddress | AccountBalanceOverflow
+is {
+  assert(storage.tokens[id].owner = Address.zero, TokenAlreadyExists);
+  storage.tokens[id].owner := to;
+  credit(to);
+  emit Transfer { from = Address.zero; to = to; id = id; };
+}
+
+(* A contract receiver must answer with the selector. One that reverts without a reason
+   does not implement it; its own reason passes through unchanged. *)
+function check_received(const from : address; const to : address; const id : nat; const data : bytes)
+  raises TransferToNonERC721ReceiverImplementer
+is {
+  if Evm.code_size(to) > 0n then {
+    defer ERC721Receiver(to).onERC721Received(Evm.sender(), from, id, data) then {
+      | Ok(answer : bytes4) -> {
+          assert(answer = 0x150b7a02, TransferToNonERC721ReceiverImplementer);
+        }
+      | Error(reason : bytes) -> {
+          if reason.length = 0n then {
+            fail TransferToNonERC721ReceiverImplementer;
+          }
+          fail reason;
+        }
+    };
+  }
+}
+
+external pure function name() : string is
+  "Solady NFT"
+
+external pure function symbol() : string is
+  "SNFT"
+
+external view function tokenURI(const id : nat) : string
+  raises TokenDoesNotExist
+is {
+  const owner : address := require_owner(id);
+} with String.concat("https://nft.example/", Nat.to_string(id))
+
+external view function ownerOf(const id : nat) : address
+  raises TokenDoesNotExist
+is
+  require_owner(id)
+
+external view function balanceOf(const owner : address) : nat
+  raises BalanceQueryForZeroAddress
+is {
+  assert(owner <> Address.zero, BalanceQueryForZeroAddress);
+} with storage.balances[owner]
+
+external view function getApproved(const id : nat) : address
+  raises TokenDoesNotExist
+is {
+  const owner : address := require_owner(id);
+} with storage.tokens[id].approved
+
+external view function isApprovedForAll(const owner : address; const operator : address) : bool is
+  storage.operators[owner][operator]
+
+external payable function approve(const account : address; const id : nat)
+  raises TokenDoesNotExist | NotOwnerNorApproved
+is {
+  const owner : address := require_owner(id);
+  assert(Evm.sender() = owner or storage.operators[owner][Evm.sender()], NotOwnerNorApproved);
+  storage.tokens[id].approved := account;
+  emit Approval { owner = owner; account = account; id = id; };
+}
+
+external function setApprovalForAll(const operator : address; const isApproved : bool) is {
+  storage.operators[Evm.sender()][operator] := isApproved;
+  emit ApprovalForAll { owner = Evm.sender(); operator = operator; isApproved = isApproved; };
+}
+
+external payable function transferFrom(const from : address; const to : address; const id : nat)
+  raises TokenDoesNotExist | TransferFromIncorrectOwner | NotOwnerNorApproved
+    | TransferToZeroAddress | AccountBalanceOverflow
+is
+  transfer_from(from, to, id)
+
+external payable function safeTransferFrom(const from : address; const to : address; const id : nat)
+  raises TokenDoesNotExist | TransferFromIncorrectOwner | NotOwnerNorApproved
+    | TransferToZeroAddress | AccountBalanceOverflow | TransferToNonERC721ReceiverImplementer
+is {
+  transfer_from(from, to, id);
+  check_received(from, to, id, "");
+}
+
+external payable function safeTransferFrom(const from : address; const to : address; const id : nat; const data : bytes)
+  raises TokenDoesNotExist | TransferFromIncorrectOwner | NotOwnerNorApproved
+    | TransferToZeroAddress | AccountBalanceOverflow | TransferToNonERC721ReceiverImplementer
+is {
+  transfer_from(from, to, id);
+  check_received(from, to, id, data);
+}
+
+external function mint(const to : address; const id : nat)
+  raises TokenAlreadyExists | TransferToZeroAddress | AccountBalanceOverflow
+is
+  mint_to(to, id)
+
+external function safeMint(const to : address; const id : nat; const data : bytes)
+  raises TokenAlreadyExists | TransferToZeroAddress | AccountBalanceOverflow
+    | TransferToNonERC721ReceiverImplementer
+is {
+  mint_to(to, id);
+  check_received(Address.zero, to, id, data);
+}
+
+external function burn(const id : nat)
+  raises TokenDoesNotExist | NotOwnerNorApproved
+is {
+  const owner : address := require_owner(id);
+  const approved : address := storage.tokens[id].approved;
+  assert(
+    Evm.sender() = owner or Evm.sender() = approved or storage.operators[owner][Evm.sender()],
+    NotOwnerNorApproved
+  );
+  if approved <> Address.zero then {
+    storage.tokens[id].approved := Address.zero;
+  }
+  storage.tokens[id].owner := Address.zero;
+  storage.balances[owner] := Nat.wrapping_sub(storage.balances[owner], 1n);
+  emit Transfer { from = owner; to = Address.zero; id = id; };
+}

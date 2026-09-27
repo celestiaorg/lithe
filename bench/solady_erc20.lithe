@@ -1,0 +1,172 @@
+(* Benchmark: Solady's ERC20 with EIP-2612 permits and its default Permit2 allowance, a
+   fixed name, and open minting and burning as in Solady's own mocks. Same errors, events,
+   and order of checks; Solady's hashed slots become plain maps. Mirrors solady_erc20.sol,
+   which imports Solady. *)
+
+error TotalSupplyOverflow;
+error InsufficientBalance;
+error InsufficientAllowance;
+error InvalidPermit;
+error PermitExpired;
+error Permit2AllowanceIsFixedAtInfinity;
+
+event Transfer of record {
+  indexed from : address;
+  indexed to : address;
+  amount : nat;
+}
+
+event Approval of record {
+  indexed owner : address;
+  indexed spender : address;
+  amount : nat;
+}
+
+storage is record {
+  total_supply : nat;
+  balances : map(address, nat);
+  allowances : map(address, map(address, nat));
+  nonces : map(address, nat);
+}
+
+(* Permit2 may always spend, and its allowance is fixed at the maximum. *)
+pure function permit2() : address is
+  address(0x000000000022D473030F116dDEE9F6B43aC78BA3)
+
+pure function check_permit2(const spender : address; const amount : nat)
+  raises Permit2AllowanceIsFixedAtInfinity
+is {
+  assert(spender <> permit2() or amount = Nat.max, Permit2AllowanceIsFixedAtInfinity);
+}
+
+function set_allowance(const owner : address; const spender : address; const amount : nat) is {
+  storage.allowances[owner][spender] := amount;
+  emit Approval { owner = owner; spender = spender; amount = amount; };
+}
+
+(* The sum of all balances is the total supply, so a balance never overflows. *)
+function move(const from : address; const to : address; const amount : nat)
+  raises InsufficientBalance
+is {
+  const balance : nat := storage.balances[from];
+  assert(amount <= balance, InsufficientBalance);
+  storage.balances[from] := balance - amount;
+  storage.balances[to] := Nat.wrapping_add(storage.balances[to], amount);
+  emit Transfer { from = from; to = to; amount = amount; };
+}
+
+view function domain_separator() : bytes32 is
+  Crypto.keccak256(Abi.encode(
+    (* keccak256("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)") *)
+    0x8b73c3c69bb8fe3d512ecc4cf759cc79239f7b179b0ffacaa9a75d522b39400f,
+    Crypto.keccak256("Solady Token"),
+    Crypto.keccak256("1"),
+    Evm.chain_id(),
+    Evm.self()
+  ))
+
+external pure function name() : string is
+  "Solady Token"
+
+external pure function symbol() : string is
+  "SOLADY"
+
+external pure function decimals() : uint8 is
+  18
+
+external view function totalSupply() : nat is
+  storage.total_supply
+
+external view function balanceOf(const owner : address) : nat is
+  storage.balances[owner]
+
+external view function allowance(const owner : address; const spender : address) : nat is {
+  var amount : nat := Nat.max;
+  if spender <> permit2() then {
+    amount := storage.allowances[owner][spender];
+  }
+} with amount
+
+external view function nonces(const owner : address) : nat is
+  storage.nonces[owner]
+
+external view function DOMAIN_SEPARATOR() : bytes32 is
+  domain_separator()
+
+external function approve(const spender : address; const amount : nat) : bool
+  raises Permit2AllowanceIsFixedAtInfinity
+is {
+  check_permit2(spender, amount);
+  set_allowance(Evm.sender(), spender, amount);
+} with true
+
+external function transfer(const to : address; const amount : nat) : bool
+  raises InsufficientBalance
+is {
+  move(Evm.sender(), to, amount);
+} with true
+
+(* A maximum allowance is never spent down. *)
+external function transferFrom(const from : address; const to : address; const amount : nat) : bool
+  raises InsufficientAllowance | InsufficientBalance
+is {
+  if Evm.sender() <> permit2() then {
+    const allowed : nat := storage.allowances[from][Evm.sender()];
+    if allowed <> Nat.max then {
+      assert(amount <= allowed, InsufficientAllowance);
+      storage.allowances[from][Evm.sender()] := allowed - amount;
+    }
+  }
+  move(from, to, amount);
+} with true
+
+external function permit(
+  const owner : address;
+  const spender : address;
+  const value : nat;
+  const deadline : nat;
+  const v : uint8;
+  const r : bytes32;
+  const s : bytes32
+)
+  raises Permit2AllowanceIsFixedAtInfinity | PermitExpired | InvalidPermit
+is {
+  check_permit2(spender, value);
+  assert(nat(Evm.block_timestamp()) <= deadline, PermitExpired);
+  const nonce : nat := storage.nonces[owner];
+  const struct_hash : bytes32 := Crypto.keccak256(Abi.encode(
+    (* keccak256("Permit(address owner,address spender,uint256 value,uint256 nonce,uint256 deadline)") *)
+    0x6e71edae12b1b97f4d1f60370fef10105fa2faae0126114a169c64845d6126c9,
+    owner,
+    spender,
+    value,
+    nonce,
+    deadline
+  ));
+  const prefix : bytes2 := 0x1901;
+  const digest : bytes32 := Crypto.keccak256(Abi.encode_packed(prefix, domain_separator(), struct_hash));
+  (* The precompile recovers zero from a bad signature, which no owner matches. *)
+  assert(owner <> Address.zero and Crypto.ecrecover(digest, nat(v), r, s) = owner, InvalidPermit);
+  storage.nonces[owner] := nonce + 1n;
+  set_allowance(owner, spender, value);
+}
+
+external function mint(const to : address; const amount : nat)
+  raises TotalSupplyOverflow
+is {
+  const supply : nat := storage.total_supply;
+  assert(amount <= Nat.max - supply, TotalSupplyOverflow);
+  storage.total_supply := supply + amount;
+  storage.balances[to] := Nat.wrapping_add(storage.balances[to], amount);
+  emit Transfer { from = Address.zero; to = to; amount = amount; };
+}
+
+external function burn(const amount : nat)
+  raises InsufficientBalance
+is {
+  const balance : nat := storage.balances[Evm.sender()];
+  assert(amount <= balance, InsufficientBalance);
+  storage.balances[Evm.sender()] := balance - amount;
+  storage.total_supply := Nat.wrapping_sub(storage.total_supply, amount);
+  emit Transfer { from = Evm.sender(); to = Address.zero; amount = amount; };
+}
