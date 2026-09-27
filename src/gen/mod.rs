@@ -167,14 +167,23 @@ pub(crate) fn codegen(checked: &Checked, shape: &Shape) -> Result<Built, Error> 
             needs,
         })
     };
-    let variants: Vec<Plan> = [(true, true), (true, false), (false, true), (false, false)]
-        .into_iter()
-        .map(|(cache_slots, tight)| Plan {
-            cache_slots,
-            tight,
-            ..plan.clone()
-        })
-        .collect();
+    // A shared slice helper can also cost bytes where the outliner would have shared the
+    // inlined copies instead, so slices that could share are built both ways.
+    let mut slices = vec![plan.shared_slice];
+    if plan.shared_slice.contains(&true) {
+        slices.push([false; 2]);
+    }
+    let mut variants = Vec::new();
+    for shared_slice in slices {
+        for (cache_slots, tight) in [(true, true), (true, false), (false, true), (false, false)] {
+            variants.push(Plan {
+                cache_slots,
+                tight,
+                shared_slice,
+                ..plan.clone()
+            });
+        }
+    }
     // The builds are independent, and each is most of a compile.
     let builds = std::thread::scope(|s| {
         let handles: Vec<_> = variants[1..]
@@ -198,7 +207,7 @@ pub(crate) fn codegen(checked: &Checked, shape: &Shape) -> Result<Built, Error> 
             best = Some(built);
         }
     }
-    Ok(best.expect("four builds"))
+    Ok(best.expect("a build"))
 }
 
 /// The creation code for a runtime: a `deploy` compiled around it, or a plain copy. A
@@ -412,6 +421,8 @@ struct Plan {
     /// compared by one shared helper.
     shared_value: [bool; 3],
     shared_eq: bool,
+    /// Whether slices share one helper, for those with an end and for those without.
+    shared_slice: [bool; 2],
     /// Whether unsigned checked multiplications share one helper.
     shared_mul: bool,
     /// Whether queued deferred calls share one helper to allocate and link their nodes.
@@ -511,6 +522,9 @@ enum Sub {
     Base64Decode,
     /// `[n, ret]` becomes `n` in decimal, as a string: signed or unsigned.
     DecimalString(bool),
+    /// `[value, start, end, ret]` becomes the slice between; without `end`, `[value,
+    /// start, ret]` becomes the slice to the end.
+    BytesSlice(bool),
     /// `[x, cur, ret]` becomes `[end]`: a dynamic value of this type ABI-encoded at `cur`.
     TreeEnc(usize),
     /// `[at, dst, ret]` becomes `[]`: the dynamic value of this type at data position
@@ -672,6 +686,7 @@ struct Gen<'a> {
     /// Strings built from decoded bytes so far, per source, and strings compared.
     value_sites: [usize; 3],
     eq_sites: usize,
+    slice_sites: [usize; 2],
     mul_sites: usize,
     /// `defer` sites inside loops, whose calls are queued.
     queued_sites: usize,

@@ -1268,6 +1268,199 @@ external pure function widths(const h : bytes32; const s : bytes4) : (nat, addre
     assert_eq!(load_bytes(&out.returndata, 96), Word::from_be_bytes(h));
 }
 
+/// `b[i]`, `b[start:end]`, and the conversions between `bytes`, `string`, and `bytesN`,
+/// on parameters, call results, stored values, and the calldata.
+#[test]
+fn byte_indexing_slicing_and_conversions() {
+    install_mocks();
+    let src = "\
+storage is record { blob : bytes; notes : map(nat, bytes); }
+external function save(const b : bytes) is { storage.blob := b; storage.notes[7n] := b; }
+external view function stored_at(const i : nat) : (bytes1, bytes1) is (storage.blob[i], storage.notes[7n][i])
+external pure function at(const b : bytes; const i : nat) : bytes1 is b[i]
+external pure function fixed_at(const h : bytes4; const i : nat) : bytes1 is h[i]
+external pure function slice(const b : bytes; const s : nat; const e : nat) : bytes is b[s:e]
+external pure function tail(const b : bytes; const s : nat) : bytes is b[s:]
+external pure function head(const b : bytes; const e : nat) : bytes is b[:e]
+external pure function pieces(const b : bytes) : bytes is
+  Bytes.concat(b[1n:3n], b[2n:4n], b[3n:5n], b[37n:], b[38n:], b[39n:])
+external pure function nested(const b : bytes) : (bytes1, nat) is (b[2n:][1n], b[1n:3n].length)
+external pure function lead(const b : bytes) : (bytes4, bytes32) is (bytes4(b), bytes32(b))
+external pure function text(const s : string) : string is string(bytes(s)[1n:])
+external pure function resize(const h : bytes32; const s : bytes4) : (bytes4, bytes32, bytes2, bytes4) is
+  (bytes4(h), bytes32(s), bytes2(s), bytes4(Crypto.keccak256(\"LowBalance(uint256)\")))
+external view function msg_sender() : address is {
+  const data : bytes := Evm.calldata();
+} with address(bytes20(data[data.length - 20n:]))
+external view function first() : bytes1 is Evm.calldata()[0n]
+external view function reason(const data : bytes) : (bytes4, nat) is
+  case query Evm.static_call(0x00000000000000000000000000000000000000ee, data) of {
+  | Ok(_) -> (bytes4(data), 0n)
+  | Error(r) -> (bytes4(r), Abi.decode(r[4n:], nat))
+  }
+";
+    let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
+    let w = Word::from_u64;
+    let data: Vec<u8> = (10u8..50).collect();
+    let run = |c: &[u8]| call_raw(&runtime, c);
+    let byte = |b: u8| Word::from_u64(u64::from(b)).shl(248);
+    let panics = |out: &Outcome| out.reverted && load_bytes(&out.returndata, 4) == w(0x32);
+
+    for i in [0usize, 5, 39] {
+        let out = run(&encode_args("at(bytes,uint256)", &[Arg::B(data.clone()), Arg::W(w(i as u64))]));
+        assert_eq!(load_bytes(&out.returndata, 0), byte(data[i]), "{i}");
+    }
+    assert!(panics(&run(&encode_args("at(bytes,uint256)", &[Arg::B(data.clone()), Arg::W(w(40))]))));
+    assert!(panics(&run(&encode_args("at(bytes,uint256)", &[Arg::B(Vec::new()), Arg::W(w(0))]))));
+
+    let mut h = [0u8; 32];
+    h[..4].copy_from_slice(&[0xde, 0xad, 0xbe, 0xef]);
+    for (i, b) in [0xde, 0xad, 0xbe, 0xef].into_iter().enumerate() {
+        let out = run(&encode_args("fixed_at(bytes4,uint256)", &[Arg::W(Word::from_be_bytes(h)), Arg::W(w(i as u64))]));
+        assert_eq!(load_bytes(&out.returndata, 0), byte(b), "{i}");
+    }
+    assert!(panics(&run(&encode_args("fixed_at(bytes4,uint256)", &[Arg::W(Word::from_be_bytes(h)), Arg::W(w(4))]))));
+
+    for (s, e) in [(0u64, 40u64), (3, 7), (40, 40), (5, 5), (0, 0)] {
+        let args = [Arg::B(data.clone()), Arg::W(w(s)), Arg::W(w(e))];
+        let out = run(&encode_args("slice(bytes,uint256,uint256)", &args));
+        assert!(!out.reverted, "{s}:{e}");
+        assert_eq!(abi_string_value(&out.returndata), data[s as usize..e as usize].to_vec(), "{s}:{e}");
+    }
+    for (s, e) in [(0u64, 41u64), (8, 7), (u64::MAX, 3)] {
+        let args = [Arg::B(data.clone()), Arg::W(w(s)), Arg::W(w(e))];
+        assert!(panics(&run(&encode_args("slice(bytes,uint256,uint256)", &args))), "{s}:{e}");
+    }
+    let out = run(&encode_args("tail(bytes,uint256)", &[Arg::B(data.clone()), Arg::W(w(36))]));
+    assert_eq!(abi_string_value(&out.returndata), data[36..].to_vec());
+    assert!(panics(&run(&encode_args("tail(bytes,uint256)", &[Arg::B(data.clone()), Arg::W(w(41))]))));
+    let out = run(&encode_args("head(bytes,uint256)", &[Arg::B(data.clone()), Arg::W(w(4))]));
+    assert_eq!(abi_string_value(&out.returndata), data[..4].to_vec());
+
+    let out = run(&encode_args("pieces(bytes)", &[Arg::B(data.clone())]));
+    let want = [&data[1..3], &data[2..4], &data[3..5], &data[37..], &data[38..], &data[39..]].concat();
+    assert_eq!(abi_string_value(&out.returndata), want);
+    assert!(panics(&run(&encode_args("pieces(bytes)", &[Arg::B(data[..38].to_vec())]))));
+    let out = run(&encode_args("nested(bytes)", &[Arg::B(data.clone())]));
+    assert_eq!(load_bytes(&out.returndata, 0), byte(data[3]));
+    assert_eq!(load_bytes(&out.returndata, 32), w(2));
+
+    let out = run(&encode_args("lead(bytes)", &[Arg::B(data.clone())]));
+    assert_eq!(&out.returndata[..4], &data[..4]);
+    assert_eq!(&out.returndata[4..32], &[0u8; 28]);
+    assert_eq!(&out.returndata[32..64], &data[..32]);
+    // Past a short value's end, the fixed bytes are zero.
+    let out = run(&encode_args("lead(bytes)", &[Arg::B(vec![0xaa, 0xbb])]));
+    assert_eq!(&out.returndata[..4], &[0xaa, 0xbb, 0, 0]);
+    assert_eq!(&out.returndata[32..64], &[[0xaa, 0xbb].as_slice(), &[0u8; 30]].concat());
+    let out = run(&encode_args("lead(bytes)", &[Arg::B(Vec::new())]));
+    assert_eq!(out.returndata, vec![0u8; 64]);
+
+    let out = run(&encode_args("text(string)", &[Arg::B(b"hello".to_vec())]));
+    assert_eq!(abi_string_value(&out.returndata), b"ello".to_vec());
+
+    let mut h = [0u8; 32];
+    h.iter_mut().enumerate().for_each(|(i, b)| *b = 0xa0 + i as u8);
+    let mut s4 = [0u8; 32];
+    s4[..4].copy_from_slice(&[1, 2, 3, 4]);
+    let args = [Arg::W(Word::from_be_bytes(h)), Arg::W(Word::from_be_bytes(s4))];
+    let out = run(&encode_args("resize(bytes32,bytes4)", &args));
+    assert!(!out.reverted, "{}", pretty(&out.returndata));
+    assert_eq!(&out.returndata[..32], &[&h[..4], &[0u8; 28][..]].concat());
+    assert_eq!(&out.returndata[32..64], &s4);
+    assert_eq!(&out.returndata[64..96], &[&[1u8, 2][..], &[0u8; 30][..]].concat());
+    assert_eq!(&out.returndata[96..100], &[0x4d, 0x4f, 0x8a, 0xa6]);
+
+    // ERC-2771: the trusted forwarder appends the sender to the calldata.
+    let mut c = selector("msg_sender()").to_vec();
+    c.extend_from_slice(&[0x42; 20]);
+    let out = run(&c);
+    assert!(!out.reverted, "{}", pretty(&out.returndata));
+    assert_eq!(&out.returndata[12..], &[0x42; 20]);
+    let out = run(&selector("first()"));
+    assert_eq!(load_bytes(&out.returndata, 0), byte(selector("first()")[0]));
+
+    // The mock at 0xee reverts with the calldata after its selector.
+    let mut revert = vec![0, 0, 0, 0, 0x12, 0x34, 0x56, 0x78];
+    revert.extend_from_slice(&w(99).to_be_bytes());
+    let out = run(&encode_args("reason(bytes)", &[Arg::B(revert)]));
+    assert!(!out.reverted, "{}", pretty(&out.returndata));
+    assert_eq!(&out.returndata[..4], &[0x12, 0x34, 0x56, 0x78]);
+    assert_eq!(load_bytes(&out.returndata, 32), w(99));
+
+    let saved = run(&encode_args("save(bytes)", &[Arg::B(data.clone())]));
+    assert!(!saved.reverted, "{}", pretty(&saved.returndata));
+    for i in [0u64, 31, 32, 39] {
+        let c = encode_args("stored_at(uint256)", &[Arg::W(w(i))]);
+        let out = exec(&runtime, &c, saved.storage.clone(), w(1), w(0), w(0)).expect("stored_at");
+        assert_eq!(load_bytes(&out.returndata, 0), byte(data[i as usize]), "{i}");
+        assert_eq!(load_bytes(&out.returndata, 32), byte(data[i as usize]), "{i}");
+    }
+}
+
+/// Byte reads and slices as a generic function's arguments, which are checked twice, and
+/// on a failed call's revert data in its continuation.
+#[test]
+fn byte_access_in_generics_and_continuations() {
+    install_mocks();
+    let src = "\
+interface Hook is {
+  function poke(x : nat) : nat;
+}
+storage is record { hook : Hook; tag : bytes4; rest : nat; picked : bytes1; }
+function same(T)(const v : T) : T is v
+external function set(const h : Hook) is { storage.hook := h; }
+external function pick(const b : bytes) is {
+  storage.picked := same(b[1n]);
+  storage.rest := same(b[1n:]).length;
+}
+external function run(const x : nat) is {
+  defer storage.hook.poke(x) then {
+    | Ok(v : nat) -> { storage.rest := v; }
+    | Error(reason : bytes) -> {
+        storage.tag := bytes4(reason[28n:]);
+        storage.rest := reason[4n:].length;
+      }
+  };
+}
+external view function seen() : (bytes4, nat, bytes1) is (storage.tag, storage.rest, storage.picked)
+";
+    let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
+    let w = Word::from_u64;
+    let step = |storage: HashMap<Word, Word>, c: Vec<u8>| {
+        let out = exec(&runtime, &c, storage, w(1), w(0), w(0)).expect("run");
+        assert!(!out.reverted, "{}", pretty(&out.returndata));
+        out
+    };
+    let out = step(HashMap::new(), encode_args("pick(bytes)", &[Arg::B(vec![7, 8, 9])]));
+    let seen = step(out.storage.clone(), selector("seen()").to_vec());
+    assert_eq!(load_bytes(&seen.returndata, 32), w(2));
+    assert_eq!(load_bytes(&seen.returndata, 64), w(8).shl(248));
+    let out = step(out.storage, word_data("set(address)", &[w(0xee)]));
+    let out = step(out.storage, word_data("run(uint256)", &[w(0x12345678)]));
+    let seen = step(out.storage, selector("seen()").to_vec());
+    assert_eq!(&seen.returndata[..4], &[0x12, 0x34, 0x56, 0x78]);
+    assert_eq!(load_bytes(&seen.returndata, 32), w(28));
+}
+
+#[test]
+fn byte_access_rules() {
+    for (body, want) in [
+        ("external function f(const s : string) : string is s[1n:]", "only `bytes` can be sliced"),
+        ("external function f(const b : bytes) : bytes1 is b[true]", "an index must be `nat`"),
+        ("external function f(const s : string) : bytes1 is s[0n]", "this value cannot be indexed"),
+        ("external function f(const s : string) : bytes1 is String.concat(s)[0n]", "this value cannot be indexed"),
+        ("external function f(const b : bytes) : bytes is b[0n:true]", "an index must be `nat`"),
+        ("external function f(const b : bytes) : string is string(bytes4(b))", "cannot convert to `string`"),
+        ("external function f() is { storage.blob[0n] := 0x01; }", "a byte cannot be assigned"),
+        ("external function f(const b : bytes) is { var c : bytes := b; c[0n] := 0x01; }", "a byte cannot be assigned"),
+    ] {
+        let src = format!("storage is record {{ blob : bytes; }}\n{body}\n");
+        let err = compile(&src).expect_err(want);
+        assert!(err.to_string().contains(want), "{want}: {err}");
+    }
+}
+
 #[test]
 fn transfer_lives_in_evm() {
     for (body, want) in [

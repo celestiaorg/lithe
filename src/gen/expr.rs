@@ -563,6 +563,56 @@ impl<'a> Gen<'a> {
                 self.op(SWAP1);
                 self.op(POP);
             }
+            Builtin::BytesAt => {
+                let n = u64::from(self.checked.types[args[0].ty()].bits);
+                self.compile_value(&args[0])?;
+                if n > 0 {
+                    self.compile_value(&args[1])?;
+                    self.push_u64(n);
+                    self.op(DUP1 + 1);
+                    self.op(LT);
+                    self.op(ISZERO);
+                    self.revert_if_panic(0x32)?;
+                    if n < 32 {
+                        self.push_u64(32 - n);
+                        self.op(ADD);
+                    }
+                    self.op(BYTE);
+                    return Ok(());
+                }
+                self.bytes_span();
+                self.compile_value(&args[1])?;
+                self.op(DUP1 + 2);
+                self.op(DUP1 + 1);
+                self.op(LT);
+                self.op(ISZERO);
+                self.revert_if_panic(0x32)?;
+                self.op(ADD);
+                self.op(MLOAD);
+                self.push_u64(248);
+                self.op(SHR);
+                self.op(SWAP1);
+                self.op(POP);
+            }
+            // `[len, data, start, end]`, checked as Solidity checks a calldata slice, then
+            // copied to a blob of its own.
+            Builtin::BytesSlice => {
+                let end = args.len() == 3;
+                self.slice_sites[usize::from(end)] += 1;
+                let shared = self.plan.shared_slice[usize::from(end)];
+                self.compile_value(&args[0])?;
+                if !shared {
+                    self.bytes_span();
+                }
+                for arg in &args[1..] {
+                    self.compile_value(arg)?;
+                }
+                if shared {
+                    self.call_sub(Sub::BytesSlice(end));
+                } else {
+                    self.slice_inline(end)?;
+                }
+            }
             Builtin::Base64Encode
             | Builtin::Base64EncodeUrl
             | Builtin::Base64EncodeWith
@@ -660,6 +710,33 @@ impl<'a> Gen<'a> {
                 self.compile_value(arg)?;
                 let dst = &self.checked.types[self.peel_nominal(ty)];
                 let src = &self.checked.types[self.peel_nominal(arg.ty())];
+                // `bytesN(b)` takes the first N bytes of `b`, zero past its end.
+                if src.kind == TyKind::Bytes && src.bits == 0 && dst.kind == TyKind::Bytes && dst.bits > 0 {
+                    let n = u64::from(dst.bits);
+                    self.bytes_span();
+                    self.op(MLOAD);
+                    self.op(SWAP1);
+                    self.push_u64(3);
+                    self.op(SHL);
+                    self.op(PUSH0);
+                    self.op(NOT);
+                    self.op(SWAP1);
+                    self.op(SHR);
+                    self.op(NOT);
+                    self.op(AND);
+                    if n < 32 {
+                        self.push_u64(256 - 8 * n);
+                        self.op(SHR);
+                    }
+                    return Ok(());
+                }
+                // Between widths, `bytesN` keeps its leading bytes, or pads after them.
+                if src.kind == TyKind::Bytes && dst.kind == TyKind::Bytes && src.bits != dst.bits {
+                    let (from, to) = (u64::from(src.bits), u64::from(dst.bits));
+                    self.push_u64(8 * from.abs_diff(to));
+                    self.op(if to < from { SHR } else { SHL });
+                    return Ok(());
+                }
                 // Only a number can be out of range. `bytesN` and `address` come from values
                 // of their own width.
                 if !matches!(dst.kind, TyKind::Nat | TyKind::Int | TyKind::Wei | TyKind::Timestamp) {

@@ -122,9 +122,20 @@ impl Checker {
                 *ty = f.ty;
                 Ok(())
             }
+            Expr::Index { base, index, line, col, .. } if !is_named(base) => {
+                self.check_expr(base)?;
+                if self.types[base.ty()].kind != TyKind::Bytes {
+                    return Err(error(*line, *col, "this value cannot be indexed"));
+                }
+                self.check_nat_index(index)?;
+                self.byte_at(e)
+            }
             Expr::Field { .. } | Expr::Index { .. } => {
                 let p = self.place(e)?;
                 self.pure_storage(e.line(), e.col(), p.sym)?;
+                if matches!(e, Expr::Index { base, .. } if self.types[base.ty()].kind == TyKind::Bytes) {
+                    return self.byte_at(e);
+                }
                 Ok(())
             }
             Expr::Query {
@@ -325,6 +336,18 @@ impl Checker {
                 line,
                 col,
             } => self.check_record(*line, *col, fields, ty),
+            Expr::Call {
+                builtin: Some(Builtin::BytesSlice),
+                args,
+                ty,
+                line,
+                col,
+                ..
+            } => self.check_slice(*line, *col, args, ty),
+            Expr::Call {
+                builtin: Some(Builtin::BytesAt),
+                ..
+            } => Ok(()),
             Expr::Call {
                 name,
                 args,
@@ -1376,6 +1399,9 @@ impl Checker {
         ty: usize,
         index: &mut Expr,
     ) -> Result<usize, Error> {
+        if !matches!(self.types[ty].kind, TyKind::Map | TyKind::List) {
+            return Err(error(line, col, "this value cannot be indexed"));
+        }
         if !self.syms[sym].storage && !self.inline_list(sym, ty) {
             return Err(error(line, col, "a collection lives in storage"));
         }
@@ -1402,6 +1428,54 @@ impl Checker {
             }
             _ => Err(error(line, col, "this value cannot be indexed")),
         }
+    }
+
+    pub(super) fn check_nat_index(&mut self, index: &mut Expr) -> Result<(), Error> {
+        self.check_expr_as(index, Some(TY_NAT))?;
+        if !self.same(index.ty(), TY_NAT) {
+            return Err(error(index.line(), index.col(), "an index must be `nat`"));
+        }
+        Ok(())
+    }
+
+    /// A checked `b[i]` on `bytes` or `bytesN` becomes the built-in that reads one byte.
+    fn byte_at(&mut self, e: &mut Expr) -> Result<(), Error> {
+        let ty = self.bytes_n(1)?;
+        let (line, col) = (e.line(), e.col());
+        let unit = Expr::Lit { line, col, lit: Lit::Unit, ty: TY_UNIT };
+        let Expr::Index { base, index, .. } = std::mem::replace(e, unit) else {
+            unreachable!()
+        };
+        *e = Expr::Call {
+            line,
+            col,
+            name: String::new(),
+            args: vec![*base, *index],
+            base: None,
+            callee: None,
+            builtin: Some(Builtin::BytesAt),
+            iface: None,
+            method: None,
+            ty,
+        };
+        Ok(())
+    }
+
+    /// `b[start:end]` on `bytes`. A slice checked again keeps its type.
+    pub(super) fn check_slice(&mut self, line: u32, col: u32, args: &mut [Expr], ty: &mut usize) -> Result<(), Error> {
+        let bytes = self.bytes_n(0)?;
+        if *ty == bytes {
+            return Ok(());
+        }
+        self.check_expr_as(&mut args[0], Some(bytes))?;
+        if !self.same(args[0].ty(), bytes) {
+            return Err(error(line, col, "only `bytes` can be sliced"));
+        }
+        for bound in &mut args[1..] {
+            self.check_nat_index(bound)?;
+        }
+        *ty = bytes;
+        Ok(())
     }
 }
 

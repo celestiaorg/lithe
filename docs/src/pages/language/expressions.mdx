@@ -77,7 +77,8 @@ external function run(const a : nat; const b : nat) is {
 | --- | --- |
 | `r.field` | a record field |
 | `xs[i]`, `m[k]`, `m[a][b]` | a list element or map entry |
-| `xs.length` | the length of a dynamic list |
+| `b[i]`, `b[start:end]` | a byte of `bytes` or `bytesN`, and a slice of `bytes`. See [`Bytes` and `String`](/language/builtins#bytes-and-string) |
+| `xs.length` | the length of a dynamic list, `bytes`, or `string` |
 | `f(a, b)` | call an internal function |
 | `Module.f(a)` | call a module's function |
 | `Evm.sender()` | call a built-in |

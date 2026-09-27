@@ -903,6 +903,10 @@ impl Checker {
             }
             _ => {
                 self.numeric_word(src) && self.numeric_word(target)
+                    || self.is_dyn_ty(src) && self.is_dyn_ty(target)
+                    || self.types[src].kind == TyKind::Bytes
+                        && self.types[target].kind == TyKind::Bytes
+                        && self.types[target].bits > 0
                     || self.address_bytes(src, target)
                     || self.same_width(src, target)
                     || self.same_width(target, src)

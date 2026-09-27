@@ -536,7 +536,13 @@ impl Checker {
                 *ty = ret;
                 return Ok(());
             }
-            Builtin::Create | Builtin::Cast | Builtin::Some | Builtin::None | Builtin::Ctor(_) => {
+            Builtin::Create
+            | Builtin::Cast
+            | Builtin::Some
+            | Builtin::None
+            | Builtin::Ctor(_)
+            | Builtin::BytesAt
+            | Builtin::BytesSlice => {
                 return Err(error(line, col, "internal: not a module built-in"));
             }
         }
@@ -719,7 +725,9 @@ impl Checker {
             | Builtin::AbiEncodeCall
             | Builtin::CreationCode
             | Builtin::StaticCall
-            | Builtin::BytesConcat => self.bytes_n(0)?,
+            | Builtin::BytesConcat
+            | Builtin::BytesSlice => self.bytes_n(0)?,
+            Builtin::BytesAt => self.bytes_n(1)?,
             Builtin::StringConcat | Builtin::NatToString | Builtin::IntToString => TY_STRING,
             Builtin::AbiSupportsInterface => TY_BOOL,
             Builtin::ListPop | Builtin::ListPush => TY_UNIT,

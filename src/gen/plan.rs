@@ -46,6 +46,7 @@ impl<'a> Gen<'a> {
             decode_sites: 0,
             value_sites: [0; 3],
             eq_sites: 0,
+            slice_sites: [0; 2],
             mul_sites: 0,
             queued_sites: 0,
             queue_sites: HashMap::new(),
@@ -253,6 +254,7 @@ impl<'a> Gen<'a> {
             shared_decode: self.decode_sites >= 2,
             shared_value: self.value_sites.map(|n| n >= 2),
             shared_eq: self.eq_sites >= 2,
+            shared_slice: self.slice_sites.map(|n| n >= 2),
             // A call costs 8 bytes to the 18 of the check inlined.
             shared_mul: self.mul_sites >= 3,
             queue_helper: self.queued_sites >= 2,
@@ -728,6 +730,7 @@ impl<'a> Gen<'a> {
                     Sub::JournalFlush => (0, 0),
                     Sub::AllocBlob => (1, 1),
                     Sub::BytesSpan => (1, 2),
+                    Sub::BytesSlice(end) => (2 + usize::from(end), 1),
                     Sub::StoreBytes => (2, 0),
                     Sub::LoadBytes => (1, 1),
                     Sub::RevertData => (0, 1),

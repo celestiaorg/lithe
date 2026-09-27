@@ -890,6 +890,13 @@ impl Checker {
             }
         }
         let place = self.place(&mut place_expr)?;
+        if matches!(&place_expr, Expr::Index { base, .. } if self.types[base.ty()].kind == TyKind::Bytes) {
+            return Err(error(
+                line,
+                col,
+                "a byte cannot be assigned; build a new value with slices and `Bytes.concat`",
+            ));
+        }
         let value_ty = place.ty;
         if self.syms[place.sym].storage
             && matches!(self.kind, ItemKind::View | ItemKind::Readonly | ItemKind::Pure)

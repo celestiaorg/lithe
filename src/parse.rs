@@ -2418,7 +2418,38 @@ impl<'a> Parser<'a> {
             if self.kind() == Kind::LBrack {
                 let (iline, icol) = self.at();
                 self.bump();
-                let index = self.expr()?;
+                let start = if self.kind() == Kind::Colon {
+                    Expr::Lit {
+                        line: iline,
+                        col: icol,
+                        lit: Lit::Nat(crate::word::Word::from_u64(0)),
+                        ty: 0,
+                    }
+                } else {
+                    self.expr()?
+                };
+                if self.kind() == Kind::Colon {
+                    self.bump();
+                    let mut args = vec![e, start];
+                    if self.kind() != Kind::RBrack {
+                        args.push(self.expr()?);
+                    }
+                    self.want(Kind::RBrack)?;
+                    e = Expr::Call {
+                        line: iline,
+                        col: icol,
+                        name: String::new(),
+                        args,
+                        base: None,
+                        callee: None,
+                        builtin: Some(Builtin::BytesSlice),
+                        iface: None,
+                        method: None,
+                        ty: 0,
+                    };
+                    continue;
+                }
+                let index = start;
                 self.want(Kind::RBrack)?;
                 e = Expr::Index {
                     line: iline,

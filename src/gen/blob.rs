@@ -124,6 +124,85 @@ impl<'a> Gen<'a> {
         self.op(OR);
     }
 
+    /// `[len, data, start, end]`, or `[len, data, start]` for a slice to the end, becomes
+    /// a copy of the bytes between, checked as Solidity checks a calldata slice.
+    pub(super) fn slice_inline(&mut self, end: bool) -> Result<(), Error> {
+        if end {
+            self.op(DUP1 + 3);
+            self.op(DUP1 + 1);
+            self.op(GT);
+            self.op(DUP1 + 1);
+            self.op(DUP1 + 3);
+            self.op(GT);
+            self.op(OR);
+        } else {
+            self.op(DUP1 + 2);
+            self.op(DUP1 + 1);
+            self.op(GT);
+        }
+        self.revert_if_panic(0x32)?;
+        // A slice to the end already has its end, the length, at the bottom.
+        if end {
+            self.op(SWAP1 + 2);
+            self.op(POP);
+        }
+        // [end, data, start]
+        self.op(SWAP1);
+        self.op(DUP1 + 1);
+        self.op(ADD);
+        self.op(SWAP1 + 1);
+        self.op(SUB);
+        self.slice_copy()
+    }
+
+    /// `[value, start, end, ret]`, or `[value, start, ret]`, becomes the slice.
+    pub(super) fn sub_slice(&mut self, end: bool) -> Result<(), Error> {
+        self.op(if end { SWAP1 + 2 } else { SWAP1 + 1 });
+        self.bytes_span();
+        // [ret, start, end, len, data], or [ret, start, len, data]
+        if end {
+            self.op(DUP1 + 1);
+            self.op(DUP1 + 3);
+            self.op(GT);
+            self.op(DUP1 + 3);
+            self.op(DUP1 + 5);
+            self.op(GT);
+            self.op(OR);
+        } else {
+            self.op(DUP1 + 1);
+            self.op(DUP1 + 3);
+            self.op(GT);
+        }
+        self.revert_if_panic(0x32)?;
+        if end {
+            self.op(SWAP1);
+            self.op(POP);
+        }
+        // [ret, start, end, data]
+        self.op(DUP1 + 2);
+        self.op(ADD);
+        self.op(SWAP1 + 1);
+        self.op(SWAP1);
+        self.op(SUB);
+        self.slice_copy()?;
+        self.op(SWAP1);
+        self.op(JUMP);
+        Ok(())
+    }
+
+    /// `[src, n]` becomes a blob holding the `n` bytes at `src`.
+    fn slice_copy(&mut self) -> Result<(), Error> {
+        self.op(DUP1);
+        self.alloc_blob()?;
+        self.op(SWAP1 + 1);
+        self.op(DUP1 + 2);
+        self.push_u64(32);
+        self.op(ADD);
+        self.op(MCOPY);
+        self.tag_blob();
+        Ok(())
+    }
+
     /// A bytes or string word becomes `[len, data]` with `data` on top.
     pub(super) fn bytes_span(&mut self) {
         self.call_sub(Sub::BytesSpan);

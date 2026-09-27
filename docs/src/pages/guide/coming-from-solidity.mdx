@@ -139,6 +139,7 @@ Both contracts have the same ABI, the same error selector, the same event topic,
 | `ecrecover(h, v, r, s)` | `Crypto.ecrecover(h, v, r, s)` |
 | `abi.encode(...)` | `Abi.encode(...)` |
 | `abi.decode(data, (uint))` | `Abi.decode(data, nat)` |
+| `b[i]`, `msg.data[4:]`, `bytes4(b)` | the same: `b[i]`, `Evm.calldata()[4n:]`, `bytes4(b)`. See [`Bytes` and `String`](/language/builtins#bytes-and-string) |
 | `abi.decode(data, (address, uint))` | `Abi.decode(data, (address, nat))` |
 | `function f() returns (uint a, string b)` | a record result, `: result`, whose fields are the results |
 | `function f() returns (S memory)` | a tuple result, `: (nat, string)` |

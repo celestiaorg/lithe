@@ -118,6 +118,19 @@ impl Checker {
             } => {
                 let p = self.place(base)?;
                 let kind = self.types[p.ty].kind;
+                if kind == TyKind::Bytes {
+                    self.check_nat_index(index)?;
+                    let byte = self.bytes_n(1)?;
+                    *root = Some(p.sym);
+                    *leaf = p.leaf;
+                    *ty = byte;
+                    return Ok(Place {
+                        sym: p.sym,
+                        leaf: p.leaf,
+                        ty: byte,
+                        in_map: p.in_map,
+                    });
+                }
                 if matches!(base.as_ref(), Expr::Index { .. }) && !matches!(kind, TyKind::Map | TyKind::List) {
                     return Err(error(*line, *col, "only a map of maps takes more keys"));
                 }

@@ -182,6 +182,40 @@ external pure function tagged(const tag : bytes4; const data : bytes) : bytes is
   Bytes.concat(tag, data)
 ```
 
+`bytes` values index and slice as in Solidity. Each works on parameters, locals, stored values, and call results such as `Evm.calldata()`:
+
+| Expression | Type | Solidity |
+| --- | --- | --- |
+| `b[i]` | `bytes1` | `b[i]`, for `b : bytes` or any `bytesN`. `Panic(0x32)` if `i` is past the end |
+| `b[start:end]`, `b[start:]`, `b[:end]` | `bytes` | `b[start:end]` on calldata: a copy of the bytes from `start` up to `end`. `Panic(0x32)` if `start > end` or `end` is past the end |
+| `bytes(s)`, `string(b)` | `bytes`, `string` | `bytes(s)`, `string(b)`, with no copy |
+| `bytesN(b)` | `bytesN` | `bytesN(b)`: the first N bytes of `b`, zero past its end. From a `bytesM`, the first N bytes, or all M and then zeros |
+
+A single byte can't be assigned: build a new value from slices with `Bytes.concat`.
+
+```lithe
+storage is record {
+  forwarder : address;
+}
+
+(* ERC-2771: a trusted forwarder appends the original sender to the calldata. *)
+external view function msg_sender() : address is {
+  const data : bytes := Evm.calldata();
+  var sender : address := Evm.sender();
+  if sender = storage.forwarder and data.length >= 20n then {
+    sender := address(bytes20(data[data.length - 20n:]));
+  }
+} with sender
+
+(* The payload of a custom error `LowBalance(uint256)`, from its revert data. *)
+external pure function low_balance(const reason : bytes) : nat is {
+  var have : nat := 0n;
+  if reason.length >= 36n and bytes4(reason) = bytes4(Crypto.keccak256("LowBalance(uint256)")) then {
+    have := Abi.decode(reason[4n:], nat);
+  }
+} with have
+```
+
 ## `Base64`
 
 RFC 4648 base64, with the same algorithm and lookup tables as Solady's `Base64`. Usable in any function, `pure` ones included. `data` is `bytes` or `string`.

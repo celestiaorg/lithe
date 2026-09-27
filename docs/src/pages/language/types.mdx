@@ -78,6 +78,8 @@ external pure function convert(const x : uint8; const raw : bytes20; const amoun
 | `address(b)` for `b : bytes20`, and `bytes20(a)` | exact |
 | `nat(b)` for `b : bytes32`, `uint32(s)` for `s : bytes4`, and back: `bytesN` and the unsigned integer of the same width | exact |
 | `uint160(a)` for `a : address`, and `address(u)` for `u : uint160` | exact |
+| `bytes(s)` for `s : string`, and `string(b)` for `b : bytes` | exact, with no copy |
+| `bytesN(b)` for `b : bytes` or `bytesM` | the first N bytes of `b`, zero past its end, as in Solidity |
 | `Token(a)` for an interface `Token`, and `address(t)` | exact |
 | `wei(n)`, `timestamp(n)`, `nat(w)` | exact |
 | to or from a [nominal type](#nominal-types) | exact |

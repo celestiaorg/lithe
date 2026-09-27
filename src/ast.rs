@@ -608,6 +608,10 @@ pub(crate) enum Builtin {
     NatDivRem,
     /// `Bytes.word(b, offset)`: the 32 bytes of `b` starting at `offset`, as a `bytes32`.
     BytesWord,
+    /// `b[i]` for `b : bytes` or `bytesN`: the byte at `i`, as a `bytes1`.
+    BytesAt,
+    /// `b[start:end]`: a copy of the bytes between. With two arguments, `b[start:]`.
+    BytesSlice,
     /// `Base64.encode(data)`: RFC 4648 base64, padded, as a `string`.
     Base64Encode,
     /// `Base64.encode_url(data)`: the URL and filename safe alphabet, unpadded.
