@@ -24,11 +24,11 @@ storage is record {
 }
 
 type owner_action is
-  | Set_fee of nat
+  | Set_fee of (fee : nat)
   | Pause
 
 type user_action is
-  | Deposit of nat
+  | Deposit of (amount : nat)
 
 type action is
   | Owner of owner_action

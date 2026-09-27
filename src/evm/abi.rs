@@ -1004,3 +1004,27 @@ external pure function echo(const a : bytes; const n : nat) : bytes is a
     let out = exec(&runtime, &dirty, HashMap::new(), w(7), w(0), w(0)).expect("run");
     assert_eq!(abi_string_value(&out.returndata), [0xab]);
 }
+
+/// A case's ABI parameter is named by its declaration, never by the arm's binding.
+#[test]
+fn case_parameter_names_come_from_the_declaration() {
+    let src = "\
+type pair is tuple record { a : nat; b : nat; }
+type action is
+  | Set_fee of (fee : nat)
+  | Set_cap of nat
+  | Set_pair of (limits : pair)
+storage is record { fee : nat; }
+external function main(const action : action) is
+  case action of {
+  | Set_fee(whatever) -> { storage.fee := whatever; }
+  | Set_cap(whatever) -> { storage.fee := whatever; }
+  | Set_pair(whatever) -> { storage.fee := whatever.a; }
+  }
+";
+    let abi = crate::abi(src).expect("abi");
+    assert!(abi.contains("\"name\": \"fee\""), "{abi}");
+    assert!(abi.contains("\"name\": \"limits\""), "{abi}");
+    assert!(abi.contains("\"name\": \"\""), "{abi}");
+    assert!(!abi.contains("whatever"), "{abi}");
+}

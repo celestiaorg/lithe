@@ -463,6 +463,7 @@ impl Checker {
                     built.push(RVariant {
                         name: v.name.clone(),
                         payload,
+                        param: v.param.clone(),
                         at: Vec::new(),
                     });
                 }
@@ -565,6 +566,7 @@ impl Checker {
                 .map(|v| RVariant {
                     name: v.name.clone(),
                     payload: None,
+                    param: String::new(),
                     at: Vec::new(),
                 })
                 .collect(),

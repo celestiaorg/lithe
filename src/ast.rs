@@ -298,6 +298,8 @@ pub(crate) struct VariantRef {
     pub col: u32,
     pub name: String,
     pub payload: Option<TypeRef>,
+    /// The ABI parameter name of a single-value payload, from `of (name : ty)`.
+    pub param: String,
 }
 
 #[derive(Debug, Clone)]

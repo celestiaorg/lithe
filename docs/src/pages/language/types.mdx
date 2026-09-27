@@ -427,6 +427,8 @@ type action is
 
 The first `|` is optional, so a short variant fits on one line: `type phase is Open | Paused | Closed`. Written one case per line, the leading `|` keeps the cases aligned.
 
+A payload can be named, `| Deposit of (amount : nat)`. The name is the ABI parameter's when the case becomes an [entrypoint](/language/dispatch), and nothing else.
+
 A case is written by name, with its payload in parentheses: `Close`, `Deposit(5n)`. A variant is the natural type for stored state, and `case` has to handle every one of its cases:
 
 ```lithe

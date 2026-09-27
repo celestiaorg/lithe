@@ -1086,9 +1086,22 @@ impl<'a> Parser<'a> {
         loop {
             let (vline, vcol) = self.at();
             let name = self.ident()?;
+            let mut param = String::new();
             let payload = if self.kind() == Kind::Of {
                 self.bump();
-                Some(self.ty()?)
+                if self.kind() == Kind::LParen
+                    && self.peek_kind(1) == Kind::Ident
+                    && self.peek_kind(2) == Kind::Colon
+                {
+                    self.bump();
+                    param = self.ident()?;
+                    self.want(Kind::Colon)?;
+                    let ty = self.ty()?;
+                    self.want(Kind::RParen)?;
+                    Some(ty)
+                } else {
+                    Some(self.ty()?)
+                }
             } else {
                 None
             };
@@ -1097,6 +1110,7 @@ impl<'a> Parser<'a> {
                 col: vcol,
                 name,
                 payload,
+                param,
             });
             if self.kind() != Kind::Pipe {
                 break;

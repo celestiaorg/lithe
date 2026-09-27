@@ -9,7 +9,7 @@ type owner_action is
   | Reset
 
 type public_action is
-  | Increment of nat
+  | Increment of (n : nat)
 
 type action is
   | Owner_action of owner_action

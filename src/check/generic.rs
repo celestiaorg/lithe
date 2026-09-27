@@ -804,6 +804,7 @@ fn subst_bound(ty: &TypeRef, env: &HashMap<String, usize>) -> TypeRef {
                         .payload
                         .as_ref()
                         .map(|payload| subst_bound(payload, env)),
+                    param: variant.param.clone(),
                 })
                 .collect(),
         },

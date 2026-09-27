@@ -19,7 +19,7 @@ storage is record {
 }
 
 type action is
-  | Pay of nat
+  | Pay of (n : nat)
   | Stop
 
 external view function first_admin() : address is {

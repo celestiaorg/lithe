@@ -1,7 +1,7 @@
 //! ABI flattening. Nested `case` dispatch becomes one selector per leaf.
 
 use crate::ast::*;
-use crate::check::{abi_fields, abi_parts, AbiField, Checked, RType, TyKind};
+use crate::check::{abi_fields, abi_parts, AbiField, Checked, RType, RVariant, TyKind};
 use crate::error;
 use crate::keccak::selector;
 use crate::Error;
@@ -246,10 +246,13 @@ fn walk(
         }
         for ctor in &arm.ctors {
             let name = abi_name(ctor);
-            let payload = payload_of(checked, scrut, ctor);
-            let inputs = match payload {
-                Some(ty) if checked.types[ty].kind != TyKind::Unit => {
-                    abi_fields(&checked.types, ty, arm.bind.as_deref().unwrap_or(""))?
+            let inputs = match variant_of(checked, scrut, ctor) {
+                Some(RVariant {
+                    payload: Some(ty),
+                    param,
+                    ..
+                }) if checked.types[*ty].kind != TyKind::Unit => {
+                    abi_fields(&checked.types, *ty, param)?
                 }
                 _ => Vec::new(),
             };
@@ -511,13 +514,8 @@ fn dispatch_call(checked: &Checked, arm: &Arm) -> Option<usize> {
     }
 }
 
-fn payload_of(checked: &Checked, scrut: &Expr, ctor: &str) -> Option<usize> {
-    let ty = scrut.ty();
-    checked.types[ty]
-        .variants
-        .iter()
-        .find(|v| v.name == ctor)
-        .and_then(|v| v.payload)
+fn variant_of<'a>(checked: &'a Checked, scrut: &Expr, ctor: &str) -> Option<&'a RVariant> {
+    checked.types[scrut.ty()].variants.iter().find(|v| v.name == ctor)
 }
 
 fn contains_case(types: &[RType], f: &Func) -> bool {

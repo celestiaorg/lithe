@@ -13,8 +13,8 @@ When an external function takes a [variant](/language/types#variants), the compi
 
 ```lithe
 type action is
-  | Deposit of nat
-  | Withdraw of nat
+  | Deposit of (amount : nat)
+  | Withdraw of (amount : nat)
   | Reset
 
 error Insufficient of nat;
@@ -39,7 +39,7 @@ is
   }
 ```
 
-This contract's ABI is `deposit(uint256)`, `withdraw(uint256)`, and `reset()`. There is no `main`, and callers never encode a variant.
+This contract's ABI is `deposit(uint256 amount)`, `withdraw(uint256 amount)`, and `reset()`. There is no `main`, and callers never encode a variant.
 
 A function dispatches when its first parameter is a variant and its body is a `case` on it, after any `const`s and `assert`s. Any other external function takes a variant with no payloads as a `uint8`, and a variant with payloads not at all.
 
@@ -47,9 +47,11 @@ A function dispatches when its first parameter is a variant and its body is a `c
 | --- | --- |
 | name | the case name with its first letter lowercased: `Set_fee` becomes `set_fee`, and `SetFee` becomes `setFee` |
 | no payload | no parameters |
-| a single value | one parameter, named after the arm's binding |
+| a single value | one parameter, named by the declaration: `Set_fee of (fee : nat)` is `set_fee(uint256 fee)`, and `Set_fee of nat` leaves it unnamed |
 | a record | one parameter per field, with the field names |
-| a `tuple record` | one tuple parameter, named after the arm's binding, with the fields as its components |
+| a `tuple record` | one tuple parameter, named like a single value, with the fields as its components |
+
+The ABI is read off the type declaration, never the function body: renaming the binding in `| Set_fee(f) ->` changes nothing callers see.
 
 `case` must cover every case, and each entrypoint's `raises` includes only what its own path can raise.
 
@@ -62,11 +64,11 @@ error Not_owner;
 error Paused;
 
 type owner_action is
-  | Set_fee of nat
+  | Set_fee of (fee : nat)
   | Pause
 
 type user_action is
-  | Deposit of nat
+  | Deposit of (amount : nat)
 
 type action is
   | Owner of owner_action

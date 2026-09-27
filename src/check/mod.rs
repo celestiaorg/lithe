@@ -88,6 +88,7 @@ pub(crate) struct RField {
 pub(crate) struct RVariant {
     pub name: String,
     pub payload: Option<usize>,
+    pub param: String,
     /// In a variant with payloads: the word of the value that holds each payload word.
     pub at: Vec<u32>,
 }
