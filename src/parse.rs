@@ -313,7 +313,17 @@ impl<'a> Parser<'a> {
                 if private && deco.kind == ItemKind::Deploy {
                     return Err(self.err("`deploy` cannot be private"));
                 }
+                if let (true, Some(word)) = (private, special_word(deco.kind)) {
+                    return Err(self.err(format!("`{word}` cannot be private")));
+                }
                 body.funcs.push(self.item(deco, private)?);
+            }
+            Kind::Ident if self.special_ahead() => {
+                if private {
+                    return Err(self.err(format!("`{}` cannot be private", self.slice())));
+                }
+                let deco = self.header()?;
+                body.funcs.push(self.item(deco, false)?);
             }
             Kind::Deploy if private => {
                 return Err(self.err("`deploy` cannot be private"));
@@ -558,8 +568,15 @@ impl<'a> Parser<'a> {
                 | Kind::View
                 | Kind::Pure
                 | Kind::Function => {
+                    let at = self.at();
                     let deco = self.header()?;
+                    if let Some(word) = special_word(deco.kind) {
+                        return Err(error(at.0, at.1, format!("`{word}` belongs to the contract")));
+                    }
                     funcs.push(self.item(deco, false)?);
+                }
+                Kind::Ident if self.special_ahead() => {
+                    return Err(self.err(format!("`{}` belongs to the contract", self.slice())));
                 }
                 Kind::Module => {
                     return Err(self.err("a module cannot contain another module"));
@@ -1146,6 +1163,34 @@ impl<'a> Parser<'a> {
             });
         }
         let nonreentrant = has(Kind::Nonreentrant);
+        if self.special_ahead() {
+            let word = self.slice().to_string();
+            if self.declaring {
+                return Err(self.err(format!("`{word}` belongs to the contract, not an interface")));
+            }
+            if seen.iter().any(|&(_, k)| !matches!(k, Kind::Payable | Kind::Nonreentrant)) {
+                return Err(self.err(format!("`{word}` takes only `payable` and `nonreentrant`")));
+            }
+            if seen.windows(2).any(|w| w[0].0 > w[1].0) {
+                return Err(self.err(format!(
+                    "keywords out of order; write `payable nonreentrant {word}`"
+                )));
+            }
+            let kind = if word == "receive" {
+                if !payable {
+                    return Err(self.err("`receive` accepts ether; write `payable receive`"));
+                }
+                ItemKind::Receive
+            } else {
+                ItemKind::Fallback
+            };
+            return Ok(Deco {
+                kind,
+                payable,
+                nonreentrant,
+                external_pure: false,
+            });
+        }
         let effect = seen.iter().find(|&&(r, _)| r == 3).map(|&(_, k)| k);
         if nonreentrant && !external {
             return Err(self.err(
@@ -1212,6 +1257,9 @@ impl<'a> Parser<'a> {
         } = deco;
         let (line, col) = self.at();
         self.bump();
+        if let Some(word) = special_word(kind) {
+            return self.special_item(line, col, kind, word, payable, nonreentrant);
+        }
         let name = if kind == ItemKind::Deploy {
             "deploy".to_string()
         } else {
@@ -1333,6 +1381,7 @@ impl<'a> Parser<'a> {
                 }
                 None
             }
+            ItemKind::Receive | ItemKind::Fallback => None,
         };
         let raises = if self.kind() == Kind::Raises {
             Some(self.raises_clause()?)
@@ -1375,7 +1424,107 @@ impl<'a> Parser<'a> {
             declares: None,
             interface: None,
             exported: None,
+            forward: None,
         })
+    }
+
+    /// `payable receive [raises E] is ...`, `[payable] fallback [: bytes] [raises E] is ...`,
+    /// or `[payable] fallback [raises E] delegates to target;` and `forwards to target;`.
+    /// The keyword is already consumed.
+    fn special_item(
+        &mut self,
+        line: u32,
+        col: u32,
+        kind: ItemKind,
+        word: &str,
+        payable: bool,
+        nonreentrant: bool,
+    ) -> Result<Func, Error> {
+        if self.kind() == Kind::LParen {
+            return Err(self.err(if kind == ItemKind::Fallback {
+                "`fallback` takes no parameters; read the calldata with `Evm.calldata()`".to_string()
+            } else {
+                format!("`{word}` takes no parameters")
+            }));
+        }
+        let ret = if self.kind() == Kind::Colon {
+            if kind == ItemKind::Receive {
+                return Err(self.err("`receive` does not return a value"));
+            }
+            self.bump();
+            Some(self.ty()?)
+        } else {
+            None
+        };
+        let raises = if self.kind() == Kind::Raises {
+            Some(self.raises_clause()?)
+        } else {
+            None
+        };
+        let forward = match (kind, self.kind(), self.slice()) {
+            (ItemKind::Fallback, Kind::Ident, "delegates") => Some(Forward::Delegate),
+            (ItemKind::Fallback, Kind::Ident, "forwards") => Some(Forward::Call),
+            _ => None,
+        };
+        let (stmts, tail) = if let Some(how) = forward {
+            let verb = if how == Forward::Delegate { "delegates" } else { "forwards" };
+            if ret.is_some() {
+                return Err(self.err(format!(
+                    "a `fallback` that {verb} returns what its target returns; drop the result type"
+                )));
+            }
+            if nonreentrant {
+                return Err(self.err(format!("a `fallback` that {verb} cannot be nonreentrant")));
+            }
+            self.bump();
+            if self.kind() != Kind::Ident || self.slice() != "to" {
+                return Err(self.err(format!("expected `to` after `{verb}`, found {}", self.found())));
+            }
+            self.bump();
+            let target = self.expr()?;
+            self.want(Kind::Semi)?;
+            (Vec::new(), Some(target))
+        } else {
+            if self.kind() != Kind::Is && kind == ItemKind::Fallback {
+                return Err(self.err(format!(
+                    "expected `is`, `delegates to`, or `forwards to`, found {}",
+                    self.found()
+                )));
+            }
+            self.want(Kind::Is)?;
+            self.item_body()?
+        };
+        Ok(Func {
+            line,
+            col,
+            kind,
+            private: false,
+            origin: String::new(),
+            name: word.to_string(),
+            type_params: Vec::new(),
+            params: Vec::new(),
+            ret,
+            ret_ty: 0,
+            payable,
+            nonreentrant,
+            external_pure: false,
+            raises,
+            errors: Vec::new(),
+            stmts,
+            tail,
+            module: None,
+            requires: Vec::new(),
+            promoted: None,
+            declares: None,
+            interface: None,
+            exported: None,
+            forward,
+        })
+    }
+
+    /// `receive` or `fallback` where a declaration can start: a contextual keyword.
+    fn special_ahead(&self) -> bool {
+        self.kind() == Kind::Ident && matches!(self.slice(), "receive" | "fallback")
     }
 
     fn raises_clause(&mut self) -> Result<Raises, Error> {
@@ -2557,6 +2706,15 @@ impl<'a> Parser<'a> {
     fn err(&self, message: impl Into<String>) -> Error {
         let (line, col) = self.at();
         error(line, col, message)
+    }
+}
+
+/// The keyword that declares a `receive` or `fallback`.
+fn special_word(kind: ItemKind) -> Option<&'static str> {
+    match kind {
+        ItemKind::Receive => Some("receive"),
+        ItemKind::Fallback => Some("fallback"),
+        _ => None,
     }
 }
 

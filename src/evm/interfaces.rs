@@ -221,7 +221,7 @@ external function go(const t : Pinger) is {
     for (iface, want) in [
         (
             "interface Pair is { view function both() : (nat, nat); }\nexternal view function f(const p : Pair) : nat is query p.both()",
-            "a query returns a single word, a string, bytes, or a list",
+            "body type does not match its return type",
         ),
         (
             "interface Bad is { function f() raises Missing; }",

@@ -1,0 +1,48 @@
+(* Benchmark: another contract reached only through raw calls. The calldata is built with
+   `Abi.encode_call`, the answer decoded from raw return data with `Abi.decode`, and a
+   refusal's payload read from raw revert data. Mirrors dialer.sol; calls book. *)
+
+type order is record {
+  id : nat;
+  note : string;
+  legs : list(nat);
+}
+
+type ids is list(nat);
+
+interface Book is {
+  function place(os : list(order)) : list(nat);
+  view function note_of(id : nat) : string;
+}
+
+storage is record {
+  ids : list(nat);
+  refused : nat;
+}
+
+(* The answer's ids are kept; a `Rejected(id)` refusal keeps its id, which follows the
+   four bytes of its selector. Any other failure passes on unchanged. *)
+external nonreentrant function place(const book : address; const os : list(order)) is {
+  defer Evm.call(book, Abi.encode_call(Book.place, os)) then {
+  | Ok(answer : bytes) -> {
+      storage.ids := Abi.decode(answer, ids);
+    }
+  | Error(reason : bytes) -> {
+      (* `Rejected(uint256)`'s selector is 0x94064f91. *)
+      if reason.length <> 36n or nat(Bytes.word(reason, 0n)) >> 224n <> 0x94064f91 then {
+        fail reason;
+      }
+      storage.refused := nat(Bytes.word(reason, 4n));
+    }
+  };
+}
+
+(* A read through `STATICCALL`, with the calldata built by hand and the string decoded. *)
+external view function note(const book : address; const id : nat) : string is
+  Abi.decode(query Evm.static_call(book, Abi.encode_with_signature("note_of(uint256)", id)), string)
+
+external view function ids() : list(nat) is
+  storage.ids
+
+external view function refused() : nat is
+  storage.refused

@@ -565,66 +565,10 @@ impl<'a> Gen<'a> {
         self.jumpdest(done);
     }
 
-    pub(super) fn append_word_at_len(&mut self) -> Result<(), Error> {
-        self.mstore_off(self.scratch_val);
-        self.blob_dest()?;
-        self.mload(self.scratch_val);
-        self.op(SWAP1);
-        self.op(MSTORE);
-        self.bump_blob(32);
-        Ok(())
-    }
 
-    pub(super) fn append_mem_at_len(&mut self, pad: bool) -> Result<(), Error> {
-        self.op(SWAP1);
-        self.mstore_off(self.scratch_c);
-        self.mstore_off(self.scratch_b);
-        self.mload(self.scratch_c);
-        self.mload(self.scratch_b);
-        self.blob_dest()?;
-        self.op(MCOPY);
-        self.mload(self.scratch_c);
-        if pad {
-            self.push_u64(31);
-            self.op(ADD);
-            self.push_u64(31);
-            self.op(NOT);
-            self.op(AND);
-        }
-        self.bump_blob_runtime();
-        Ok(())
-    }
 
-    fn blob_dest(&mut self) -> Result<(), Error> {
-        self.mload(self.scratch_a);
-        self.op(DUP1);
-        self.op(MLOAD);
-        self.op(ADD);
-        self.push_u64(32);
-        self.op(ADD);
-        Ok(())
-    }
 
-    fn bump_blob(&mut self, n: u64) {
-        self.mload(self.scratch_a);
-        self.op(DUP1);
-        self.op(MLOAD);
-        self.push_u64(n);
-        self.op(ADD);
-        self.op(SWAP1);
-        self.op(MSTORE);
-    }
 
-    fn bump_blob_runtime(&mut self) {
-        self.mstore_off(self.scratch_val);
-        self.mload(self.scratch_a);
-        self.op(DUP1);
-        self.op(MLOAD);
-        self.mload(self.scratch_val);
-        self.op(ADD);
-        self.op(SWAP1);
-        self.op(MSTORE);
-    }
 
     pub(super) fn prepend_selector(&mut self, sel: &Expr) -> Result<(), Error> {
         self.mload(self.scratch_a);
@@ -662,45 +606,7 @@ impl<'a> Gen<'a> {
         Ok(())
     }
 
-    pub(super) fn finish_packed(&mut self) -> Result<(), Error> {
-        self.tag_blob();
-        Ok(())
-    }
 
-    pub(super) fn append_packed(&mut self, ty: usize) -> Result<(), Error> {
-        let ty = self.peel_nominal(ty);
-        // Packed, a list is its elements as words, with no length, as in Solidity.
-        if self.list_value(ty) {
-            return self.append_list(ty, false);
-        }
-        // Packed, a string or bytes value is its bytes alone: no length, no padding.
-        if self.is_dynamic(ty) {
-            self.bytes_span();
-            self.append_mem_at_len(false)?;
-            return Ok(());
-        }
-        let kind = self.checked.types[ty].kind;
-        let nbytes = if kind == TyKind::Address {
-            20
-        } else if kind == TyKind::Bool {
-            1
-        } else if kind == TyKind::Bytes {
-            u64::from(self.checked.types[ty].bits.max(1))
-        } else {
-            32
-        };
-        self.mstore_off(self.scratch_val);
-        if nbytes == 32 {
-            self.mload(self.scratch_val);
-            self.append_word_at_len()?;
-            return Ok(());
-        }
-        let src = self.scratch_val + (32 - nbytes as i32);
-        self.push_u64(nbytes);
-        self.push_mem(src);
-        self.append_mem_at_len(false)?;
-        Ok(())
-    }
 
     pub(super) fn precompile(&mut self, addr: u64, off: i32, len: i32, out: u64) -> Result<(), Error> {
         self.push_u64(out);
@@ -716,74 +622,4 @@ impl<'a> Gen<'a> {
         Ok(())
     }
 
-    /// The answer must be long enough and hold a value of the declared type, or the
-    /// transition reverts.
-    /// Joins string or bytes values, in order. Every value is computed once, then copied
-    /// into one blob; a result of at most 31 bytes is packed into its word, as all short
-    /// values are.
-    pub(super) fn compile_concat(&mut self, args: &[Expr]) -> Result<(), Error> {
-        let mut parts = Vec::new();
-        for arg in args {
-            self.return_sites += 1;
-            let at = self.region(Region::Returned(self.return_sites), 32);
-            self.compile_value(arg)?;
-            self.mstore_off(at);
-            let t = &self.checked.types[self.peel_nominal(arg.ty())];
-            let fixed = (t.kind == TyKind::Bytes && t.bits > 0).then_some(t.bits);
-            parts.push((at, fixed));
-        }
-        // The result grows in place past the heap, then claims what it wrote: the parts
-        // are already evaluated, so nothing allocates meanwhile.
-        self.push_mem(self.blob_base);
-        self.mload(self.blob_ptr);
-        self.op(ADD);
-        self.op(DUP1);
-        self.mstore_off(self.scratch_a);
-        self.return_sites += 1;
-        let cursor = self.region(Region::Returned(self.return_sites), 32);
-        self.push_u64(32);
-        self.op(ADD);
-        self.mstore_off(cursor);
-        for &(at, fixed) in &parts {
-            match fixed {
-                Some(n) => {
-                    self.mload(at);
-                    if n < 32 {
-                        self.push_u64(u64::from(32 - u32::from(n)) * 8);
-                        self.op(SHL);
-                    }
-                    self.mload(cursor);
-                    self.op(MSTORE);
-                    self.mload(cursor);
-                    self.push_u64(u64::from(n));
-                    self.op(ADD);
-                }
-                None => {
-                    self.mload(at);
-                    self.bytes_span();
-                    // [len, data]
-                    self.op(DUP1 + 1);
-                    self.op(SWAP1);
-                    self.mload(cursor);
-                    self.op(MCOPY);
-                    self.mload(cursor);
-                    self.op(ADD);
-                }
-            }
-            self.mstore_off(cursor);
-        }
-        // The length is how far the cursor moved.
-        self.mload(cursor);
-        self.mload(self.scratch_a);
-        self.push_u64(32);
-        self.op(ADD);
-        self.op(SWAP1);
-        self.op(SUB);
-        self.mload(self.scratch_a);
-        self.op(MSTORE);
-        self.claim_blob();
-        self.mload(self.scratch_a);
-        self.tag_blob();
-        Ok(())
-    }
 }

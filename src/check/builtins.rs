@@ -256,17 +256,16 @@ impl Checker {
                 for arg in args.iter_mut() {
                     self.check_expr_as(arg, None)?;
                     self.encodable(arg)?;
-                    // As in Solidity, packing has no layout for a list of dynamic values.
-                    let ty = peel_id(&self.types, arg.ty());
-                    let elem = self.types[ty].elem.map(|e| peel_id(&self.types, e));
-                    if kind == Builtin::AbiEncodePacked
-                        && self.list_value(ty)
-                        && elem.is_some_and(|e| self.is_dyn_ty(e))
-                    {
+                    // As in Solidity, packing lays out words, strings, bytes, and lists of
+                    // words, each element padded to 32 bytes. It has no layout for records,
+                    // tuples, nested lists, or lists of strings or bytes.
+                    if kind == Builtin::AbiEncodePacked && !self.packable(arg.ty()) {
                         return Err(error(
                             arg.line(),
                             arg.col(),
-                            format!("`{call}` cannot pack a list of strings or bytes"),
+                            format!(
+                                "`{call}` packs words, strings, bytes, and lists of words; encode records, tuples, and nested lists with `Abi.encode`"
+                            ),
                         ));
                     }
                 }
@@ -482,6 +481,45 @@ impl Checker {
                 self.expect_kind(line, col, args[1].ty(), TyKind::Wei)?;
                 self.forbid_effect(line, col, "create an operation")?;
             }
+            Builtin::RawCall | Builtin::DelegateCall | Builtin::StaticCall => {
+                need(args.len(), 2)?;
+                // A literal target, such as a precompile's address, is an address.
+                self.check_expr_as(&mut args[0], Some(TY_ADDRESS))?;
+                self.expect_addr(args[0].line(), args[0].col(), args[0].ty())?;
+                let bytes = self.bytes_n(0)?;
+                self.check_expr_as(&mut args[1], Some(bytes))?;
+                if !self.same(args[1].ty(), bytes) {
+                    return Err(error(
+                        args[1].line(),
+                        args[1].col(),
+                        format!("`{call}` sends a `bytes` value as the calldata"),
+                    ));
+                }
+                if kind == Builtin::StaticCall {
+                    if !self.in_query {
+                        return Err(error(
+                            line,
+                            col,
+                            format!("`{call}` is read-only; write `query {call}(...)`"),
+                        ));
+                    }
+                } else {
+                    if self.in_query {
+                        return Err(error(
+                            line,
+                            col,
+                            format!("`{call}` can change state; `defer` it"),
+                        ));
+                    }
+                    self.forbid_effect(line, col, "create an operation")?;
+                }
+            }
+            Builtin::Precompile(pre) => {
+                let ret = self.check_precompile(line, col, &call, pre, args)?;
+                *builtin = Some(kind);
+                *ty = ret;
+                return Ok(());
+            }
             Builtin::Create | Builtin::Cast | Builtin::Some | Builtin::None | Builtin::Ctor(_) => {
                 return Err(error(line, col, "internal: not a module built-in"));
             }
@@ -516,8 +554,7 @@ impl Checker {
     }
 
     fn encodable(&self, arg: &Expr) -> Result<(), Error> {
-        let id = self.peel(arg.ty());
-        if self.is_dyn_ty(id) || is_word(self.types[id].kind) || self.abi_list(id) {
+        if abi_value(&self.types, arg.ty()) {
             return Ok(());
         }
         Err(error(
@@ -527,29 +564,104 @@ impl Checker {
         ))
     }
 
-    fn decode_type(&self, arg: &Expr) -> Result<usize, Error> {
-        let Expr::Ident {
-            name, line, col, ..
-        } = arg
-        else {
+    /// A precompile's arguments, each of the type its input lays out, and its result's type.
+    fn check_precompile(
+        &mut self,
+        line: u32,
+        col: u32,
+        call: &str,
+        pre: Pre,
+        args: &mut [Expr],
+    ) -> Result<usize, Error> {
+        let bytes = self.bytes_n(0)?;
+        let b32 = self.bytes_n(32)?;
+        let point = self.tuple_of(&[TY_NAT, TY_NAT]);
+        let (params, ret): (Vec<usize>, usize) = match pre {
+            Pre::ModExp => (vec![bytes; 3], bytes),
+            Pre::PowMod => (vec![TY_NAT; 3], TY_NAT),
+            Pre::Bn254Add => (vec![point, point], point),
+            Pre::Bn254Mul => (vec![point, TY_NAT], point),
+            Pre::Bn254Pairing => {
+                let pair = self.tuple_of(&[TY_NAT; 6]);
+                (vec![self.list_of(pair, 0)], TY_BOOL)
+            }
+            Pre::Blake2f => {
+                let rounds = self.named["uint32"];
+                let (h, m) = (self.list_of(b32, 2), self.list_of(b32, 4));
+                (vec![rounds, h, m, self.bytes_n(16)?, TY_BOOL], h)
+            }
+            Pre::PointEvaluation => (vec![b32, TY_NAT, TY_NAT, bytes, bytes], TY_BOOL),
+            Pre::Bls12G1Add | Pre::Bls12G2Add => (vec![bytes; 2], bytes),
+            Pre::Bls12G1Msm | Pre::Bls12G2Msm | Pre::Bls12MapFpToG1 | Pre::Bls12MapFp2ToG2 => {
+                (vec![bytes], bytes)
+            }
+            Pre::Bls12Pairing => (vec![bytes], TY_BOOL),
+            Pre::P256Verify => (vec![b32; 5], TY_BOOL),
+        };
+        if args.len() != params.len() {
             return Err(error(
-                arg.line(),
-                arg.col(),
-                "`Abi.decode` expects a type name",
+                line,
+                col,
+                format!("`{call}` expects {} arguments", params.len()),
             ));
-        };
-        let Some(id) = self.named.get(name).copied() else {
-            return Err(error(*line, *col, format!("unknown type `{name}`")));
-        };
-        let peeled = self.peel(id);
-        if self.is_dyn_ty(peeled) || is_word(self.types[peeled].kind) || self.abi_list(peeled) {
+        }
+        for (arg, want) in args.iter_mut().zip(params) {
+            self.check_expr_as(arg, Some(want))?;
+            if !self.same(arg.ty(), want) {
+                return Err(error(
+                    arg.line(),
+                    arg.col(),
+                    format!("`{call}` takes `{}` here", display_ty(&self.types, want)),
+                ));
+            }
+        }
+        Ok(ret)
+    }
+
+    /// A value `Abi.encode_packed` has a layout for, as Solidity's `abi.encodePacked` does.
+    fn packable(&self, ty: usize) -> bool {
+        let id = self.peel(ty);
+        let t = &self.types[id];
+        match t.kind {
+            TyKind::List => t.elem.is_some_and(|e| {
+                let e = self.peel(e);
+                is_word(self.types[e].kind) && self.types[e].words == 1 && !self.is_dyn_ty(e)
+            }),
+            kind => is_word(kind),
+        }
+    }
+
+    /// `Abi.decode`'s type: a type's name, or a tuple of them, `(address, nat)`, which
+    /// decodes several values as Solidity's `abi.decode(data, (address, uint256))` does.
+    fn decode_type(&mut self, arg: &Expr) -> Result<usize, Error> {
+        let named = |c: &Self, e: &Expr| -> Result<usize, Error> {
+            let Expr::Ident {
+                name, line, col, ..
+            } = e
+            else {
+                return Err(error(
+                    e.line(),
+                    e.col(),
+                    "`Abi.decode` expects a type name, or a tuple of type names",
+                ));
+            };
+            let Some(id) = c.named.get(name).copied() else {
+                return Err(error(*line, *col, format!("unknown type `{name}`")));
+            };
+            if !abi_value(&c.types, id) {
+                return Err(error(*line, *col, format!("`{name}` is not an ABI value")));
+            }
             Ok(id)
-        } else {
-            Err(error(
-                *line,
-                *col,
-                "Abi.decode expects a single word, a string, bytes, or a list",
-            ))
+        };
+        match arg {
+            Expr::Tuple { elems, .. } => {
+                let ids = elems
+                    .iter()
+                    .map(|e| named(self, e))
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok(self.tuple_of(&ids))
+            }
+            _ => named(self, arg),
         }
     }
 
@@ -590,10 +702,12 @@ impl Checker {
             | Builtin::AbiEncodeSignature
             | Builtin::AbiEncodeCall
             | Builtin::CreationCode
+            | Builtin::StaticCall
             | Builtin::BytesConcat => self.bytes_n(0)?,
             Builtin::StringConcat | Builtin::NatToString | Builtin::IntToString => TY_STRING,
             Builtin::AbiSupportsInterface => TY_BOOL,
             Builtin::ListPop => TY_UNIT,
+            Builtin::Precompile(_) => TY_UNIT,
             Builtin::AbiDecode
             | Builtin::NatDivRem
             | Builtin::IntDivRem
@@ -602,7 +716,9 @@ impl Checker {
             | Builtin::Some
             | Builtin::None
             | Builtin::Ctor(_) => TY_UNIT,
-            Builtin::Transfer | Builtin::Create => TY_OPERATION,
+            Builtin::Transfer | Builtin::Create | Builtin::RawCall | Builtin::DelegateCall => {
+                TY_OPERATION
+            }
         })
     }
 }
@@ -657,6 +773,24 @@ fn module_builtin(module: &str, name: &str) -> Option<Builtin> {
         ("Evm", "creation_code") => Builtin::CreationCode,
         ("Evm", "gas_left") => Builtin::GasLeft,
         ("Evm", "transfer") => Builtin::Transfer,
+        ("Evm", "call") => Builtin::RawCall,
+        ("Evm", "delegate_call") => Builtin::DelegateCall,
+        ("Evm", "static_call") => Builtin::StaticCall,
+        ("Crypto", "mod_exp") => Builtin::Precompile(Pre::ModExp),
+        ("Nat", "pow_mod") => Builtin::Precompile(Pre::PowMod),
+        ("Crypto", "bn254_add") => Builtin::Precompile(Pre::Bn254Add),
+        ("Crypto", "bn254_mul") => Builtin::Precompile(Pre::Bn254Mul),
+        ("Crypto", "bn254_pairing") => Builtin::Precompile(Pre::Bn254Pairing),
+        ("Crypto", "blake2f") => Builtin::Precompile(Pre::Blake2f),
+        ("Crypto", "kzg_point_evaluation") => Builtin::Precompile(Pre::PointEvaluation),
+        ("Crypto", "bls12_g1_add") => Builtin::Precompile(Pre::Bls12G1Add),
+        ("Crypto", "bls12_g1_msm") => Builtin::Precompile(Pre::Bls12G1Msm),
+        ("Crypto", "bls12_g2_add") => Builtin::Precompile(Pre::Bls12G2Add),
+        ("Crypto", "bls12_g2_msm") => Builtin::Precompile(Pre::Bls12G2Msm),
+        ("Crypto", "bls12_pairing") => Builtin::Precompile(Pre::Bls12Pairing),
+        ("Crypto", "bls12_map_fp_to_g1") => Builtin::Precompile(Pre::Bls12MapFpToG1),
+        ("Crypto", "bls12_map_fp2_to_g2") => Builtin::Precompile(Pre::Bls12MapFp2ToG2),
+        ("Crypto", "p256_verify") => Builtin::Precompile(Pre::P256Verify),
         ("Crypto", "keccak256") => Builtin::Keccak256,
         ("Crypto", "sha256") => Builtin::Sha256,
         ("Crypto", "ripemd160") => Builtin::Ripemd160,

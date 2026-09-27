@@ -8,6 +8,15 @@ impl<'a> Gen<'a> {
         if let Some(()) = self.local_elem_read(e)? {
             return Ok(());
         }
+        // A field reached through two or more indexes into a value in memory.
+        if matches!(e, Expr::Field { .. })
+            && self.nested_mem(e)
+            && (self.stack_value(e.ty()) || self.list_value(e.ty()))
+        {
+            self.push_mem_addr(e)?;
+            self.op(MLOAD);
+            return Ok(());
+        }
         if let Some((sym, leaf, index, offset, ty)) = self.image_elem(e) {
             if self.stack_value(ty) {
                 self.image_elem_start(sym, leaf, index, offset, None)?;
@@ -40,6 +49,33 @@ impl<'a> Gen<'a> {
             ..
         } = e
         {
+            // A fixed-size record, tuple, or fixed list compares its words.
+            let lt = &self.checked.types[self.peel_nominal(left.ty())];
+            if (matches!(lt.kind, TyKind::Record | TyKind::Tuple) || (lt.kind == TyKind::List && lt.bits > 0))
+                && crate::check::is_static_value(&self.checked.types, left.ty())
+            {
+                let words = u64::from(lt.words);
+                for side in [left, right] {
+                    let at = self.stage(side)?;
+                    self.push_u64(words * 32);
+                    self.push_mem(at);
+                    self.op(KECCAK);
+                }
+                self.op(EQ);
+                if *op == BinOp::Neq {
+                    self.op(ISZERO);
+                }
+                return Ok(());
+            }
+            // Values with lists or strings inside compare by their encodings.
+            if self.tree(left.ty()) {
+                let (a, b) = (self.stage(left)?, self.stage(right)?);
+                self.tree_eq(Addr::Mem(a), Addr::Mem(b), left.ty())?;
+                if *op == BinOp::Neq {
+                    self.op(ISZERO);
+                }
+                return Ok(());
+            }
             if self.is_dynamic(self.peel_nominal(left.ty())) {
                 self.eq_sites += 1;
                 if self.plan.shared_eq {
@@ -204,7 +240,9 @@ impl<'a> Gen<'a> {
                 ty,
                 ..
             } => {
-                if !self.is_word_ty(*ty) && self.flip(*ty).is_none() {
+                // A list field of a record in memory is its pointer, one word like any other.
+                let local_list = self.list_value(*ty) && !self.checked.syms[*sid].storage;
+                if !self.is_word_ty(*ty) && self.flip(*ty).is_none() && !local_list {
                     return Err(error(*line, *col, "expected a word"));
                 }
                 if self.is_dynamic(*ty) && self.checked.syms[*sid].storage {
@@ -212,6 +250,12 @@ impl<'a> Gen<'a> {
                 } else {
                     self.mload(self.addr(*sid, *leaf));
                 }
+                Ok(())
+            }
+            // Two or more indexes into a value in memory: a list inside a list or record.
+            Expr::Index { .. } if self.nested_mem(e) => {
+                self.push_mem_addr(e)?;
+                self.op(MLOAD);
                 Ok(())
             }
             Expr::Index {
@@ -422,7 +466,7 @@ impl<'a> Gen<'a> {
             Builtin::Ripemd160 => return self.compile_hash(args, Some(3)),
             Builtin::Ecrecover => return self.compile_ecrecover(args),
             Builtin::AbiEncode => return self.compile_abi_encode(&args[..], None),
-            Builtin::AbiEncodePacked => return self.compile_abi_packed(args),
+            Builtin::AbiEncodePacked => return self.compile_packed(args),
             Builtin::AbiEncodeSelector => {
                 return self.compile_abi_encode(&args[1..], Some(&args[0]));
             }
@@ -436,7 +480,13 @@ impl<'a> Gen<'a> {
                     "`Abi.encode_call` is checked into a selector",
                 ));
             }
-            Builtin::BytesConcat | Builtin::StringConcat => return self.compile_concat(args),
+            Builtin::BytesConcat | Builtin::StringConcat => return self.compile_packed(args),
+            Builtin::AbiDecode if self.tree(ty) => {
+                let at = self.temp();
+                self.abi_decode_into(&args[0], &args[1], ty, at)?;
+                self.mload(at);
+                return Ok(());
+            }
             Builtin::AbiDecode => return self.compile_abi_decode(&args[0], ty),
             Builtin::Some | Builtin::None => {
                 let Some(flip) = self.flip(ty) else {
@@ -577,6 +627,13 @@ impl<'a> Gen<'a> {
             Builtin::Create => {
                 return Err(error(line, col, "defer the creation"));
             }
+            Builtin::RawCall | Builtin::DelegateCall => {
+                return Err(error(line, col, "defer the call"));
+            }
+            Builtin::Precompile(pre) => return self.compile_precompile(pre, args),
+            Builtin::StaticCall => {
+                return Err(error(line, col, "query the call"));
+            }
             Builtin::Cast => {
                 let Some(arg) = args.first() else {
                     return Err(error(line, col, "cast needs a value"));
@@ -679,7 +736,8 @@ impl<'a> Gen<'a> {
     fn hash_word(&self, ty: usize, packed: bool) -> bool {
         let t = &self.checked.types[self.peel_nominal(ty)];
         match t.kind {
-            TyKind::Nat | TyKind::Int | TyKind::Wei | TyKind::Timestamp => true,
+            TyKind::Nat | TyKind::Int => !packed || t.bits == 0 || t.bits == 256,
+            TyKind::Wei | TyKind::Timestamp => true,
             TyKind::Address | TyKind::Bool | TyKind::Interface => !packed,
             TyKind::Bytes => t.bits == 32 || (!packed && t.bits > 0),
             _ => false,
@@ -1038,6 +1096,9 @@ impl<'a> Gen<'a> {
 
     /// Writes a value of type `ty` to memory at `dst`, however many words it takes.
     pub(super) fn write_value(&mut self, expr: &Expr, dst: i32, ty: usize) -> Result<(), Error> {
+        if self.write_decoded(expr, dst, ty)? {
+            return Ok(());
+        }
         if let Expr::Case {
             scrut,
             arms,

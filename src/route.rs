@@ -32,6 +32,16 @@ pub(crate) struct Route {
     pub nonreentrant: bool,
     /// Continuations in execution order, each a transition after the call it follows.
     pub phases: Vec<Phase>,
+    /// `receive` or `fallback`: reached without a selector, so absent from the selector
+    /// table and from the ABI's functions.
+    pub special: Option<ItemKind>,
+}
+
+impl Route {
+    /// Whether the dispatcher reaches this route by its selector.
+    pub(crate) fn by_selector(&self) -> bool {
+        self.special.is_none()
+    }
 }
 
 #[derive(Default)]
@@ -49,6 +59,10 @@ pub(crate) fn discover(checked: &Checked) -> Result<Vec<Route>, Error> {
     let mut routes = Vec::new();
     let mut seen = Vec::new();
     for (i, f) in checked.prog.funcs.iter().enumerate() {
+        if matches!(f.kind, ItemKind::Receive | ItemKind::Fallback) {
+            routes.push(special(checked, i, f)?);
+            continue;
+        }
         if f.kind != ItemKind::Entry {
             continue;
         }
@@ -110,7 +124,7 @@ pub(crate) fn render(routes: &[Route], parts: Option<&HashMap<[u8; 4], String>>)
         out.push_str("  path:\n    ");
         out.push_str(&r.path.join(" -> "));
         out.push_str("\n\n");
-        if let Some(part) = parts.and_then(|parts| parts.get(&r.sel)) {
+        if let Some(part) = parts.filter(|_| r.by_selector()).and_then(|parts| parts.get(&r.sel)) {
             out.push_str("  runs in:\n    ");
             out.push_str(part);
             out.push_str("\n\n");
@@ -313,6 +327,7 @@ fn walk(
                 payable,
                 nonreentrant,
                 phases,
+                special: None,
             });
         }
     }
@@ -401,7 +416,26 @@ fn direct(checked: &Checked, idx: usize, f: &Func, seen: &mut Vec<String>) -> Re
         payable: f.payable,
         nonreentrant: f.nonreentrant,
         phases,
+        special: None,
     })
+}
+
+/// `receive` or `fallback`: a route with no selector of its own. A forwarding `fallback`
+/// lists what it passes its call to as its one operation.
+fn special(checked: &Checked, idx: usize, f: &Func) -> Result<Route, Error> {
+    let mut route = direct(checked, idx, f, &mut Vec::new())?;
+    route.sig = f.name.clone();
+    route.sel = [0; 4];
+    route.outputs = Vec::new();
+    route.special = Some(f.kind);
+    if let (Some(how), Some(target)) = (f.forward, &f.tail) {
+        let verb = match how {
+            Forward::Delegate => "delegates to",
+            Forward::Call => "forwards to",
+        };
+        route.operations = vec![format!("{verb} {}", fmt_expr(target))];
+    }
+    Ok(route)
 }
 
 pub(crate) fn reentry_warnings(checked: &Checked) -> String {
@@ -413,8 +447,12 @@ pub(crate) fn reentry_warnings(checked: &Checked) -> String {
     let mut seen = Vec::new();
     let mut out = String::new();
     for route in &checked.routes {
+        let forwards = route
+            .direct
+            .is_some_and(|func| checked.prog.funcs[func].forward.is_some());
         if route.nonreentrant
             || route.operations.is_empty()
+            || forwards
             || seen.iter().any(|name| name == &route.name)
         {
             continue;
@@ -835,6 +873,14 @@ fn walk_expr(checked: &Checked, e: &Expr, fx: &mut Effects<'_>) {
     match e {
         Expr::Query { expr, .. } => {
             if let Expr::Call {
+                builtin: Some(Builtin::StaticCall),
+                args,
+                ..
+            } = expr.as_ref()
+            {
+                let target = args.first().map(fmt_expr).unwrap_or_default();
+                push(fx.queries, format!("Evm.static_call({target})"));
+            } else if let Expr::Call {
                 name,
                 base: Some(b),
                 ..
@@ -1128,6 +1174,13 @@ fn op_label(e: &Expr) -> Option<String> {
             builtin: Some(Builtin::Transfer),
             ..
         } => Some("Evm.transfer".into()),
+        // A raw call names its target: what it calls is only known when it runs.
+        Expr::Call {
+            builtin: Some(Builtin::RawCall | Builtin::DelegateCall),
+            name,
+            args,
+            ..
+        } => Some(format!("Evm.{name}({})", args.first().map(fmt_expr).unwrap_or_default())),
         Expr::Call {
             builtin: Some(Builtin::Create),
             name,
@@ -1295,14 +1348,35 @@ pub(crate) fn render_footprints(
                 }
             }
         }
-        let mut fields = vec![
-            ("writes", bare(&writes)),
-            ("emits", bare(&events)),
-            ("defers", bare(&defers)),
-            ("raises", bare(&r.raises)),
-            ("during defers", vec![window(r.nonreentrant)]),
-        ];
-        fields.extend(part(r.sel));
+        let forward = r
+            .direct
+            .and_then(|func| checked.prog.funcs[func].forward.zip(checked.prog.funcs[func].tail.as_ref()));
+        let mut fields = match forward {
+            // A forwarding `fallback` only reads, to find where its call goes.
+            Some((how, target)) => vec![
+                ("reads", bare(&r.reads)),
+                ("", Vec::new()),
+                (
+                    match how {
+                        Forward::Delegate => "delegates to",
+                        Forward::Call => "forwards to",
+                    },
+                    bare(&[fmt_expr(target)]),
+                ),
+                ("raises", bare(&r.raises)),
+                ("during defers", vec![window(false)]),
+            ],
+            None => vec![
+                ("writes", bare(&writes)),
+                ("emits", bare(&events)),
+                ("defers", bare(&defers)),
+                ("raises", bare(&r.raises)),
+                ("during defers", vec![window(r.nonreentrant)]),
+            ],
+        };
+        if r.by_selector() {
+            fields.extend(part(r.sel));
+        }
         rows.push((r.name.clone(), fields));
     }
     for f in checked
@@ -1499,6 +1573,15 @@ pub(crate) fn render_abi_only(
     let mut out = String::from("[\n");
     let mut items = Vec::new();
     for route in &checked.routes {
+        if let Some(kind) = route.special {
+            if keep.is_none() {
+                items.push(Item::Special {
+                    kind: if kind == ItemKind::Receive { "receive" } else { "fallback" },
+                    mutability: if route.payable { "payable" } else { "nonpayable" },
+                });
+            }
+            continue;
+        }
         if !kept(route.sel) {
             continue;
         }
@@ -1656,6 +1739,11 @@ enum Item {
         name: String,
         inputs: Vec<AbiField>,
     },
+    /// `receive` or `fallback`, which have no name or parameters in the ABI.
+    Special {
+        kind: &'static str,
+        mutability: &'static str,
+    },
 }
 
 fn write_item(out: &mut String, item: &Item) {
@@ -1697,6 +1785,13 @@ fn write_item(out: &mut String, item: &Item) {
             out.push_str(",\n    \"name\": ");
             out.push_str(&json_str(name));
             out.push_str(",\n    \"type\": \"error\"\n");
+        }
+        Item::Special { kind, mutability } => {
+            out.push_str("    \"stateMutability\": ");
+            out.push_str(&json_str(mutability));
+            out.push_str(",\n    \"type\": ");
+            out.push_str(&json_str(kind));
+            out.push('\n');
         }
     }
     out.push_str("  }");
@@ -1770,7 +1865,7 @@ fn json_str(text: &str) -> String {
 
 pub(crate) fn method_ids(checked: &Checked) -> Result<Vec<(String, [u8; 4])>, Error> {
     let mut ids = Vec::new();
-    for route in &checked.routes {
+    for route in checked.routes.iter().filter(|route| route.by_selector()) {
         ids.push((route.sig.clone(), route.sel));
     }
     for func in &checked.prog.funcs {

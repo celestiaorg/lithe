@@ -287,7 +287,7 @@ impl Checker {
                         return Err(error(
                             elem.line(),
                             elem.col(),
-                            "tuple elements must be a static word or tuple",
+                            "tuple elements must be values: words, strings, bytes, lists, records, tuples, or fixed-size options",
                         ));
                     }
                     ids.push(elem.ty());
@@ -462,23 +462,12 @@ impl Checker {
                             "an optional result must be a static value",
                         ));
                     }
-                    if query && self.types[ret].words != 1 && !dynamic_ret {
+                    // A result is any ABI value, decoded and checked when it arrives.
+                    if ret != TY_UNIT && !abi_value(&self.types, answer) {
                         return Err(error(
                             *line,
                             *col,
-                            "a query returns a single word, a string, bytes, or a list",
-                        ));
-                    }
-                    // A call's result reaches a continuation.
-                    if !query
-                        && ret != TY_UNIT
-                        && static_abi(&self.types, answer).is_none()
-                        && !dynamic_ret
-                    {
-                        return Err(error(
-                            *line,
-                            *col,
-                            "a call returns a static value, a string, bytes, or a list",
+                            "a call's result must be an ABI value",
                         ));
                     }
                     *iface = Some(bid);
@@ -672,13 +661,16 @@ impl Checker {
                 let sig_kind = self.sigs[idx].kind;
                 let sig_ret = self.sigs[idx].ret;
                 let params = self.sigs[idx].params.clone();
-                if matches!(sig_kind, ItemKind::Entry | ItemKind::View) {
+                if matches!(
+                    sig_kind,
+                    ItemKind::Entry | ItemKind::View | ItemKind::Receive | ItemKind::Fallback
+                ) {
                     return Err(error(
                         *line,
                         *col,
                         format!(
-                            "{} `{name}` cannot be called from inside the contract; move the shared logic into an internal function",
-                            kind_word(sig_kind)
+                            "{} cannot be called from inside the contract; move the shared logic into an internal function",
+                            describe(sig_kind, name)
                         ),
                     ));
                 }
@@ -901,7 +893,7 @@ impl Checker {
             Expr::Lit {
                 line: *line,
                 col: *col,
-                lit: Lit::Int(Word::from_u64(k as u64)),
+                lit: Lit::Int(Word::from_u64(k as u64), None),
                 ty: vty,
             }
         } else {
@@ -1159,6 +1151,29 @@ impl Checker {
                 }
                 Ok(TY_BOOL)
             }
+            // Records, tuples, and fixed lists compare member by member: a fixed-size one by
+            // its words, and one with strings, bytes, or lists in it by its encoding.
+            BinOp::Eq | BinOp::Neq
+                if matches!(self.types[peel_id(&self.types, l)].kind, TyKind::Record | TyKind::Tuple)
+                    || (self.types[peel_id(&self.types, l)].kind == TyKind::List
+                        && self.types[peel_id(&self.types, l)].bits > 0) =>
+            {
+                if !self.same(l, r) || !is_value(&self.types, l) {
+                    return Err(error(
+                        line,
+                        col,
+                        "comparison expects two values of the same type",
+                    ));
+                }
+                if !is_static_value(&self.types, l) && has_option(&self.types, l) {
+                    return Err(error(
+                        line,
+                        col,
+                        "a value with both options and strings, bytes, or lists in it doesn't compare",
+                    ));
+                }
+                Ok(TY_BOOL)
+            }
             BinOp::Eq | BinOp::Neq if self.list_value(l) => {
                 if !self.same(l, r) {
                     return Err(error(
@@ -1231,15 +1246,7 @@ impl Checker {
     }
 
     pub(super) fn record_field_ok(&self, ty: usize) -> bool {
-        match self.types[ty].kind {
-            TyKind::Record | TyKind::Tuple => self.types[ty]
-                .fields
-                .iter()
-                .all(|field| self.record_field_ok(field.ty)),
-            TyKind::Option => is_static_value(&self.types, ty),
-            TyKind::List => self.list_value(ty),
-            kind => is_word(kind),
-        }
+        is_value(&self.types, ty)
     }
 
     fn check_list(
@@ -1325,7 +1332,7 @@ impl Checker {
                 return Err(error(
                     expr.line(),
                     expr.col(),
-                    format!("record field `{name}` must be a word, list, record, or tuple"),
+                    format!("record field `{name}` must be a value, not a map"),
                 ));
             }
             self.check_expr_as(expr, Some(*fty))?;

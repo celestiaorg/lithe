@@ -24,7 +24,7 @@ There is one function form. Keywords in front of `function` set its visibility a
 | `external payable function` | ABI (`payable`) | also accept ether and read `Evm.value()` |
 | `external nonreentrant function` | ABI | holds the [reentrancy lock](/language/reentrancy) |
 
-Two declarations are not functions and run once each: [`deploy`](/language/deploy), when the contract is created, and [`migrate`](/language/upgrades#migrations), inside an upgrade.
+Two declarations are not functions and run once each: [`deploy`](/language/deploy), when the contract is created, and [`migrate`](/language/upgrades#migrations), inside an upgrade. Two more run for calls that name no entrypoint: [`receive` and `fallback`](#receive-and-fallback).
 
 The compiler checks each body against its declared kind, including everything the body calls:
 
@@ -128,7 +128,7 @@ external function bump() : nat is {
 
 A function without `: type` returns `unit`. `external view` and `external pure` functions must have a result. An `external` stateful function can return one too. The value goes back to the caller after the function's deferred calls have run.
 
-Several results are a tuple: `: (nat, address)`. A record result is flattened into named ABI outputs, strings, bytes, and lists among them.
+A result can be any ABI value. A record result is flattened into named ABI outputs, one per field, as a Solidity function with several results has. A tuple result is one output, a Solidity tuple, as a function returning a struct has. For words alone the two lay out the same bytes.
 
 ## Errors
 
@@ -226,6 +226,117 @@ use Token exposing {
 ```
 
 A declaration has no body, and must match the module's external exactly: the same effect, `payable` and `nonreentrant`, parameters, result, and errors. See [Modules and contracts](/language/modules#exposing-a-modules-externals).
+
+## `receive` and `fallback`
+
+Every call to an entrypoint names it by its selector, the first four bytes of the calldata. Two declarations answer the calls that don't:
+
+| Declaration | Runs for |
+| --- | --- |
+| `payable receive is { ... }` | a call with no calldata, such as a plain ether transfer |
+| `[payable] fallback [: bytes] is { ... }` | calldata that matches no entrypoint, and no calldata when there is no `receive` |
+
+Without them, both kinds of call revert. Each is a transition like any stateful entrypoint: it can write storage, `emit`, `defer`, raise the errors its `raises` lists, and be `nonreentrant`. Neither takes parameters, and neither can be called from inside the contract.
+
+```lithe
+event Received of record {
+  indexed from : address;
+  amount : wei;
+}
+
+storage is record {
+  received : wei;
+  unknown : nat;
+}
+
+payable receive is {
+  storage.received := storage.received + Evm.value();
+  emit Received { from = Evm.sender(); amount = Evm.value(); };
+}
+
+fallback is {
+  storage.unknown := storage.unknown + 1n;
+}
+
+external view function received() : wei is
+  storage.received
+```
+
+- `receive` only exists to take ether, so it is always written `payable receive`.
+- A `fallback` that is not `payable` refuses a call that carries ether. A `payable fallback` takes it, and every entrypoint that is not payable still refuses value sent to it by its selector.
+- The `fallback` reads what it was sent with `Evm.calldata()` and `Evm.selector()`. A `fallback : bytes` returns its result as it is, not ABI-encoded, as Solidity's `fallback(bytes calldata) returns (bytes memory)` does.
+- A `receive` that is not `nonreentrant` can run while the contract's own deferred calls do. That is how ether comes back from a call such as WETH's `withdraw`.
+- In the ABI they are `{"type": "receive"}` and `{"type": "fallback"}` entries. `lithe footprint` and `lithe errors` list them by name.
+
+```lithe rejects
+storage is record {
+  n : nat;
+}
+
+receive is {
+  skip
+}
+```
+
+```text
+`receive` accepts ether; write `payable receive`
+```
+
+### Passing a call on
+
+A `fallback` can pass the whole call to another contract instead of running a body:
+
+| Declaration | Runs the target's code | Compiles to |
+| --- | --- | --- |
+| `fallback delegates to target;` | as this contract, on its storage, balance, and address | `DELEGATECALL` |
+| `fallback forwards to target;` | as the target, on its own storage | `CALL`, with the call's value |
+
+The target is an address or an interface value, computed for each call by an expression that only reads: a storage field, a constant, a `view` function, or a `query`. The calldata goes to it unchanged, and what it returns, or reverts with, comes back unchanged. A target with no code is refused, since it would answer every call with success and nothing.
+
+```lithe
+storage is record {}
+
+storage proxy at "example.proxy" is record {
+  implementation : address;
+}
+
+deploy(const implementation : address) is {
+  proxy.implementation := implementation;
+}
+
+payable fallback delegates to proxy.implementation;
+```
+
+To refuse some calls, have a `view` function choose the target and raise, and list its errors on the `fallback`. A map from selectors to targets routes like a diamond:
+
+```lithe
+error Unknown_selector of bytes4;
+error Not_owner;
+
+storage is record {
+  owner : address;
+  routes : map(bytes4, address);
+}
+
+view function route(const selector : bytes4) : address is {
+  const to : address := storage.routes[selector];
+  assert(to <> Address.zero, Unknown_selector(selector));
+} with to
+
+payable fallback raises Unknown_selector delegates to route(Evm.selector());
+
+external function add_route(const selector : bytes4; const to : address)
+  raises Not_owner
+is {
+  assert(Evm.sender() = storage.owner, Not_owner);
+  storage.routes[selector] := to;
+}
+```
+
+- `payable` decides whether the contract takes ether with the call. `forwards to` sends it on with the `CALL`. With `delegates to`, the target's code sees it as `Evm.value()`.
+- Code run by `delegates to` can write any of this contract's storage, so what it may change is only as safe as what the target is. For a contract's own upgrades, prefer [`upgradeable`](/language/upgrades), whose layout `lithe upgrade-check` compares.
+- A `forwards to` call runs under the contract's reentrancy lock, as a deferred call does. A passing `fallback` cannot itself be `nonreentrant`.
+- `lithe footprint` lists what each passes its call to: `delegates to: proxy.implementation`.
 
 ## `private`
 

@@ -597,6 +597,19 @@ impl Checker {
                     return Err(error(*line, *col, "defer expects an operation"));
                 }
                 if let Some(v) = value {
+                    if matches!(
+                        &*expr,
+                        Expr::Call {
+                            builtin: Some(Builtin::DelegateCall),
+                            ..
+                        }
+                    ) {
+                        return Err(error(
+                            *line,
+                            *col,
+                            "a delegate call runs with this call's own value; it takes no `with value`",
+                        ));
+                    }
                     self.check_expr(v)?;
                     if self.types[v.ty()].kind != TyKind::Nat {
                         return Err(error(*line, *col, "`value` must be nat"));
@@ -916,15 +929,6 @@ impl Checker {
             then_body: stmts,
             else_body: Vec::new(),
         })
-    }
-
-    fn holds_map(&self, ty: usize) -> bool {
-        let t = &self.types[peel_id(&self.types, ty)];
-        match t.kind {
-            TyKind::Map => true,
-            TyKind::Record | TyKind::Tuple => t.fields.iter().any(|f| self.holds_map(f.ty)),
-            _ => false,
-        }
     }
 
     pub(super) fn walk_fields(

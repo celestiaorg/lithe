@@ -1312,12 +1312,16 @@ fn abi_string(sig: &str, data: &[u8]) -> Vec<u8> {
 }
 
 mod abi;
+mod abi_tree;
 mod basics;
 mod calls;
 mod differential;
 mod examples;
+mod fallback;
 mod interfaces;
 mod language;
+mod precompiles;
+mod raw;
 mod split;
 mod stdlib;
 mod storage;

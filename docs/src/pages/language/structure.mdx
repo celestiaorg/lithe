@@ -54,6 +54,7 @@ A contract is made of these declarations, in any order. Names are resolved acros
 | Use | `use Ledger;` | [Modules](/language/modules) |
 | Import | `import "./lib.lithe";` | [Imports](/language/imports) |
 | Upgrades | `upgradeable`, `upgrade guard is { ... }`, `migrate f() is { ... }` | [Upgrades](/language/upgrades) |
+| Receive and fallback | `payable receive is { ... }`, `fallback is { ... }`, `fallback delegates to target;` | [Functions](/language/functions#receive-and-fallback) |
 
 Every contract declares `storage is record`, even an empty one, and at least one external function:
 
@@ -118,4 +119,4 @@ is list migrate module nil nonreentrant not of or payable private pure query rai
 record requires skip then true type Unit until upgrade upgradeable use var view with
 ```
 
-`storage`, `transient`, and `guard` are keywords only where a declaration expects them.
+`storage`, `transient`, `guard`, `receive`, and `fallback` are keywords only where a declaration expects them, and `delegates`, `forwards`, and `to` only after `fallback`. Elsewhere they are names like any other.

@@ -45,3 +45,65 @@ external function remember() is {
 
 - `Abi.decode` takes a type name as its second argument.
 - `by_selector`, `by_signature`, and `by_call` produce identical bytes. Only `encode_call` checks the arguments against the method's parameter types.
+
+## Several values, and nested ones
+
+A tuple of type names decodes one value of each, as Solidity's `abi.decode(data, (A, B))` does. Lists and records nest to any depth, both ways:
+
+```lithe [nested.lithe]
+type order is record {
+  id : nat;
+  note : string;
+  legs : list(nat);
+}
+
+type orders is list(order);
+
+type transfer is record {
+  to : address;
+  amount : nat;
+  memo : string;
+}
+
+storage is record {
+  n : nat;
+}
+
+external pure function unpack(const data : bytes) : transfer is {
+  const (to, amount, memo) : (address, nat, string) := Abi.decode(data, (address, nat, string));
+} with { to = to; amount = amount; memo = memo; }
+
+external pure function round_trip(const os : list(order)) : list(order) is
+  Abi.decode(Abi.encode(os), orders)
+
+external pure function second_leg(const data : bytes) : nat is {
+  const os : list(order) := Abi.decode(data, orders);
+} with os[0].legs[1]
+```
+
+- A record is one Solidity tuple wherever it is a value: `Abi.encode(os)` is `abi.encode(Order[])`.
+- Decoding checks every offset, length, and word as Solidity's decoder does, and malformed data reverts.
+
+## Calldata and answers of your own
+
+With a [raw call](/by-example/raw-calls), you build the calldata and decode the answer yourself:
+
+```lithe [raw.lithe]
+interface Token is {
+  view function balanceOf(owner : address) : nat;
+}
+
+storage is record {
+  n : nat;
+}
+
+external view function balance(const token : address; const owner : address) : nat is
+  Abi.decode(query Evm.static_call(token, Abi.encode_call(Token.balanceOf, owner)), nat)
+
+external view function reserves(const pair : address) : (uint112, uint112) is {
+  const answer : bytes := query Evm.static_call(pair, Abi.encode_with_signature("getReserves()"));
+  const (r0, r1, last) : (uint112, uint112, uint32) := Abi.decode(answer, (uint112, uint112, uint32));
+} with (r0, r1)
+```
+
+`examples/abi_codec.lithe` and `examples/raw_codec.lithe` go further, and `bench/codec` and `bench/dialer` compare the same patterns against Solidity, byte for byte.

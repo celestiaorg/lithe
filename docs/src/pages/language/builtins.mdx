@@ -60,6 +60,16 @@ Execution context. Readable in `view` and stateful functions, and not in `pure` 
 
 `Evm.transfer` builds an operation, so it is only valid after `defer`, in a stateful function: `defer Evm.transfer(to, amount);`. See [Queries and deferred calls](/language/effects#evmtransfer).
 
+### Raw calls
+
+| Built-in | Type | Solidity |
+| --- | --- | --- |
+| `Evm.call(to : address, data : bytes)` | `operation` | `to.call{value: v}(data)`, with `with value = v` |
+| `Evm.delegate_call(to : address, data : bytes)` | `operation` | `to.delegatecall(data)` |
+| `Evm.static_call(to : address, data : bytes)` | `bytes` | `to.staticcall(data)` |
+
+`Evm.call` and `Evm.delegate_call` are deferred, and a continuation gets the return data as `bytes`. `Evm.static_call` runs with `query`. See [Raw calls](/language/effects#raw-calls).
+
 Reading `Evm.value()` outside a `payable` function is an error, so a function cannot rely on ether it could never receive:
 
 ```lithe rejects
@@ -90,6 +100,33 @@ Hash functions and signature recovery. Usable in any function, `pure` ones inclu
 
 To hash several values, encode them first: `Crypto.keccak256(Abi.encode(a, b))`.
 
+### Precompiles
+
+Every precompiled contract is a built-in, given its input as the precompile lays it out. Like the hashes, they are usable in `pure` functions.
+
+| Built-in | Type | Precompile |
+| --- | --- | --- |
+| `Crypto.mod_exp(base : bytes, exponent : bytes, modulus : bytes)` | `bytes`, as long as `modulus` | `0x05`, EIP-198 |
+| `Nat.pow_mod(base : nat, exponent : nat, modulus : nat)` | `nat` | `0x05` on words. `Panic(0x12)` if `modulus` is zero |
+| `Crypto.bn254_add(a : (nat, nat), b : (nat, nat))` | `(nat, nat)` | `0x06`, EIP-196 |
+| `Crypto.bn254_mul(p : (nat, nat), s : nat)` | `(nat, nat)` | `0x07`, EIP-196 |
+| `Crypto.bn254_pairing(pairs : list((nat, nat, nat, nat, nat, nat)))` | `bool` | `0x08`, EIP-197. Each pair is `(g1_x, g1_y, g2_x_im, g2_x_re, g2_y_im, g2_y_re)` |
+| `Crypto.blake2f(rounds : uint32, h : list(bytes32, 2), m : list(bytes32, 4), t : bytes16, final : bool)` | `list(bytes32, 2)` | `0x09`, EIP-152. `h`, `m`, and `t` hold their little-endian words as the EIP lays them out |
+| `Crypto.kzg_point_evaluation(versioned_hash : bytes32, z : nat, y : nat, commitment : bytes, proof : bytes)` | `bool` | `0x0a`, EIP-4844. `commitment` and `proof` are 48 bytes |
+| `Crypto.bls12_g1_add(a : bytes, b : bytes)`, `Crypto.bls12_g2_add(a, b)` | `bytes` | `0x0b`, `0x0d`, EIP-2537 |
+| `Crypto.bls12_g1_msm(pairs : bytes)`, `Crypto.bls12_g2_msm(pairs)` | `bytes` | `0x0c`, `0x0e`. Each pair is a point, then a 32-byte scalar |
+| `Crypto.bls12_pairing(pairs : bytes)` | `bool` | `0x0f` |
+| `Crypto.bls12_map_fp_to_g1(fp : bytes)`, `Crypto.bls12_map_fp2_to_g2(fp2 : bytes)` | `bytes` | `0x10`, `0x11` |
+| `Crypto.p256_verify(hash : bytes32, r : bytes32, s : bytes32, x : bytes32, y : bytes32)` | `bool` | `0x100`, EIP-7951 |
+
+BLS12-381 points and field elements are `bytes` in EIP-2537's encoding: a field element is 64 bytes, a G1 point 128, and a G2 point 256.
+
+A precompile that rejects its input, such as a point off its curve, reverts the transaction, except where the result is a `bool`: `kzg_point_evaluation` and `p256_verify` answer `false` for a proof or signature that does not verify. The pairings answer whether the product of pairings is one, and revert on malformed input.
+
+Each call also checks the size of the answer. On a chain without the precompile, the call reaches an account with no code, which succeeds with no answer: that reverts, or reads as `false`, never as zeros. `Crypto.p256_verify` answers `false` on chains before EIP-7951.
+
+The identity precompile, `0x04`, copies its input, which a value already is. `query Evm.static_call(to, data)` reaches any precompile directly.
+
 ## `Abi`
 
 ABI encoding and decoding. Usable in any function, `pure` ones included.
@@ -104,7 +141,9 @@ ABI encoding and decoding. Usable in any function, `pure` ones included.
 | `Abi.decode(data : bytes, T)` | `T` | `abi.decode(data, (T))` |
 | `Abi.supports_interface(id : bytes4)` | `bool` | whether `id` is ERC-165's or one `supports` lists, as the generated `supportsInterface` answers. See [ERC-165](/language/modules#erc-165) |
 
-`Abi.decode` takes a type name as its second argument: `Abi.decode(data, nat)`. A word, a string, bytes, or a list can be decoded; name a list type first, as `type ids is list(nat);`, then `Abi.decode(data, ids)`. Malformed data reverts.
+`Abi.decode` takes a type name as its second argument: `Abi.decode(data, nat)`, which decodes one value, as Solidity's `abi.decode(data, (uint256))`. Any ABI value can be decoded; name a list or record type first, as `type ids is list(nat);`, then `Abi.decode(data, ids)`. A tuple of type names decodes one value of each, as `abi.decode(data, (address, uint256))` does: `const (who, amount) : (address, nat) := Abi.decode(data, (address, nat));`. Malformed data reverts, with Solidity's checks on every offset, length, and word.
+
+`Abi.encode` takes any ABI values, each one argument: a record or tuple is a Solidity tuple. `Abi.encode_packed` packs what Solidity's `abi.encodePacked` does: words, strings, bytes, and lists of words, each element padded to 32 bytes. It has no layout for records, tuples, nested lists, or lists of strings or bytes.
 
 ```lithe
 storage is record {

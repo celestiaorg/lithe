@@ -45,6 +45,13 @@ pub(super) fn require_payable(funcs: &[Func]) -> Result<(), Error> {
                     "`deploy` reads `Evm.value()`; write `payable deploy`",
                 ));
             }
+            ItemKind::Fallback if !func.payable => {
+                return Err(error(
+                    func.line,
+                    func.col,
+                    "`fallback` reads `Evm.value()`; write `payable fallback`",
+                ));
+            }
             ItemKind::View => {
                 return Err(error(
                     func.line,

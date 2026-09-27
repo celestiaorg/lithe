@@ -41,7 +41,31 @@ A method's keywords are its ABI `stateMutability`, and say how it can be called:
 
 Declare a method `payable` when the contract it describes accepts ether with the call, as its own ABI says.
 
-A `query` reads one word, a string, bytes, or a list, and a deferred call's result reaches its continuation as a static value, a string, bytes, or a list. An interface can describe any ABI; these limits apply where a method is called.
+A method's arguments and result can be any ABI value: words, strings, bytes, lists, tuples, and records, nested to any depth. Results are decoded and checked where they arrive, by a `query` or in a continuation, with Solidity's bounds on every offset and length.
+
+A tuple result is one Solidity tuple, as a function `returns (S memory)` gives. For a method with several results, `returns (uint112, uint112, uint32)`, declare a record, whose fields are its results in order:
+
+```lithe
+type reserves is record {
+  reserve0 : uint112;
+  reserve1 : uint112;
+  last : uint32;
+}
+
+interface Pair is {
+  view function getReserves() : reserves;
+}
+
+storage is record {
+  pair : Pair;
+}
+
+external view function price() : nat is {
+  const r : reserves := query storage.pair.getReserves();
+} with nat(r.reserve1) * 1_000_000n / nat(r.reserve0)
+```
+
+For a result of words only, like this one, a tuple works too, since both lay out the same words: `view function getReserves() : (uint112, uint112, uint32);`, destructured with `const (a, b, t) : (uint112, uint112, uint32) := query p.getReserves();`.
 
 ### Optional results
 
@@ -453,9 +477,74 @@ contract Vault is {
 }
 ```
 
+## Raw calls
+
+When the calldata is only known at runtime, as it is for a wallet, a timelock, or a batch of calls, send it as `bytes`. Raw calls follow the same split as interface methods: the one that cannot change state is a `query`, and the others are deferred.
+
+| Call | Compiles to | Result |
+| --- | --- | --- |
+| `query Evm.static_call(to, data)` | `STATICCALL` | the return data, as `bytes` |
+| `defer Evm.call(to, data)` | `CALL`, with optional `with value = amount` | the return data, to a continuation |
+| `defer Evm.delegate_call(to, data)` | `DELEGATECALL` | the return data, to a continuation |
+
+`to` is an address or an interface value, and `data` is the whole calldata, selector included. Build it with [`Abi.encode_call`](/language/builtins#abi), `Abi.encode_with_selector`, or take it as a parameter. Nothing decodes the answer: a continuation's `bytes` are the return data exactly as it came back, and `Abi.decode` reads them.
+
+```lithe
+error Not_owner;
+
+storage is record {
+  owner : address;
+  nonce : nat;
+}
+
+external nonreentrant function execute(const target : address; const value : nat; const data : bytes)
+  raises Not_owner
+is {
+  assert(Evm.sender() = storage.owner, Not_owner);
+  storage.nonce := storage.nonce + 1n;
+  defer Evm.call(target, data) with value = value;
+}
+```
+
+A raw call fails and recovers as any other does. Without `Ok` and `Error` arms, a failed call reverts the transaction; with them, `Error(reason : bytes)` gets the revert data, and `fail reason` passes it on:
+
+```lithe
+storage is record {
+  failures : nat;
+}
+
+external nonreentrant function try_call(const target : address; const data : bytes) is {
+  defer Evm.call(target, data) then {
+    | Ok(result : bytes) -> { skip }
+    | Error(reason : bytes) -> {
+        storage.failures := storage.failures + 1n;
+      }
+  };
+}
+```
+
+- `Evm.call` to an account with no code succeeds, as the EVM's `CALL` does: an ether transfer with data to a wallet is a call like any other. `Evm.delegate_call` to an account with no code reverts, because it would run nothing and report success.
+- `Evm.delegate_call` runs the target's code as this contract, on its storage, after the transition's own writes have landed. The continuation reads storage again, so it sees what the code changed. That code can write any slot, so delegate only to code you trust. It takes no `with value`: the code sees the value of the call that deferred it.
+- `Evm.static_call` reaches precompiles, which have no ABI of their own. `query Evm.static_call(0x0000000000000000000000000000000000000002, data)` is SHA-256 of `data`.
+- `lithe footprint` lists raw calls as `Evm.call`, `Evm.delegate_call`, and `Evm.static_call`.
+
+A `pure` function cannot query, and a `view` cannot defer, for raw calls as for any other:
+
+```lithe rejects
+storage is record {
+  n : nat;
+}
+
+external view function peek(const to : address; const data : bytes) : bytes is
+  Evm.static_call(to, data)
+```
+
+```text
+`Evm.static_call` is read-only; write `query Evm.static_call(...)`
+```
+
 ## What cannot be written
 
-- An inline state-changing call. `token.transfer(...)` without `defer` is not an expression.
+- An inline state-changing call. `token.transfer(...)` without `defer` is not an expression, and neither is `Evm.call(...)`.
 - A `query` in a `pure` function, or a `defer` in a `view`.
 - A `query` or `defer` in a [migration](/language/upgrades).
-- Low-level `call`, `delegatecall`, or raw calldata calls.

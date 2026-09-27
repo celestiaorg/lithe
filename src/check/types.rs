@@ -110,19 +110,15 @@ impl Checker {
                 for p in &m.params {
                     let ty = &p.ty;
                     let pid = self.build(ty)?;
-                    // Strings, bytes, and lists go after the head, ABI-encoded.
-                    let part = if self.is_dyn_ty(pid) || self.abi_list(pid) {
-                        abi_parts(&self.types, pid)
-                            .ok()
-                            .and_then(|p| p.into_iter().next())
-                    } else {
-                        static_abi(&self.types, pid)
-                    };
+                    // Each argument is one ABI value: a record or tuple is a tuple.
+                    let part = abi_value(&self.types, pid)
+                        .then(|| abi_nested(&self.types, pid, "").ok().map(|f| f.ty))
+                        .flatten();
                     let Some(part) = part else {
                         return Err(error(
                             ty.line(),
                             ty.col(),
-                            "interface arguments must be static values",
+                            "interface arguments must be ABI values",
                         ));
                     };
                     abi.push(part);
@@ -299,15 +295,12 @@ impl Checker {
     ) -> Result<bool, Error> {
         let hashed = topic_hashed(&self.types, ty);
         if !indexed {
-            // Strings, bytes, and lists go in the data after its head, ABI-encoded.
-            if self.is_dyn_ty(ty) || self.abi_list(ty) {
-                return Ok(false);
-            }
-            if hashed || self.types[ty].words != 1 {
+            // The data fields are ABI-encoded, as a function's arguments are.
+            if !abi_value(&self.types, ty) {
                 return Err(error(
                     line,
                     col,
-                    format!("non-indexed event field `{name}` must be a single word"),
+                    format!("event field `{name}` must be an ABI value"),
                 ));
             }
             return Ok(false);
@@ -326,9 +319,7 @@ impl Checker {
             return Err(error(
                 line,
                 col,
-                format!(
-                    "indexed field `{name}` can hash a string, bytes, or a fixed list or record of value types"
-                ),
+                format!("indexed field `{name}` must be an ABI value"),
             ));
         }
         Ok(true)
@@ -356,8 +347,12 @@ impl Checker {
         ),
         Error,
     > {
-        if self.is_dyn_ty(id) || self.abi_list(id) {
-            let abi = abi_parts(&self.types, id)?.remove(0);
+        if self.is_dyn_ty(id)
+            || self.abi_list(id)
+            || (matches!(self.types[peel_id(&self.types, id)].kind, TyKind::List | TyKind::Tuple)
+                && abi_value(&self.types, id))
+        {
+            let abi = abi_nested(&self.types, id, "")?.ty;
             return Ok((Some(id), Vec::new(), vec![(None, abi)]));
         }
         match self.types[id].kind {
@@ -381,28 +376,16 @@ impl Checker {
                 let mut field_tys = Vec::new();
                 let mut fields = Vec::new();
                 for f in &self.types[id].fields {
-                    let word = self.types[f.ty].words == 1 && !self.list_value(f.ty);
-                    if !word && !self.is_dyn_ty(f.ty) && !self.abi_list(f.ty) {
-                        return Err(error(
-                            line,
-                            col,
-                            "error fields must be words, strings, bytes, or lists",
-                        ));
+                    if !abi_value(&self.types, f.ty) {
+                        return Err(error(line, col, "error fields must be ABI values"));
                     }
-                    let abi = abi_parts(&self.types, f.ty)?
-                        .into_iter()
-                        .next()
-                        .unwrap_or_else(|| "uint256".to_string());
+                    let abi = abi_nested(&self.types, f.ty, "")?.ty;
                     field_tys.push((f.name.clone(), f.ty));
                     fields.push((Some(f.name.clone()), abi.to_string()));
                 }
                 Ok((Some(id), field_tys, fields))
             }
-            _ => Err(error(
-                line,
-                col,
-                "error payload must be a word, string, bytes, list, or a record of them",
-            )),
+            _ => Err(error(line, col, "an error's payload must be an ABI value")),
         }
     }
 
@@ -716,15 +699,11 @@ impl Checker {
                 let e = self.build(elem)?;
                 let bits = len.unwrap_or(0) as u16;
                 let operations = self.types[e].kind == TyKind::Operation && bits == 0;
-                let fixed = matches!(
-                    self.types[peel_id(&self.types, e)].kind,
-                    TyKind::Option | TyKind::Record | TyKind::Tuple
-                ) && is_static_value(&self.types, e);
-                if !(operations || self.single_word(e) || fixed) {
+                if !(operations || is_value(&self.types, e)) {
                     return Err(error(
                         *line,
                         *col,
-                        "list elements must be a single word or a fixed-size record, tuple, or option",
+                        "list elements must be values: words, strings, bytes, lists, records, tuples, or fixed-size options",
                     ));
                 }
                 let id = self.alloc(TyKind::List, Some(e), None, None, bits);
@@ -779,7 +758,7 @@ impl Checker {
                         return Err(error(
                             elem.line(),
                             elem.col(),
-                            "tuple elements must be a static word or tuple",
+                            "tuple elements must be values: words, strings, bytes, lists, records, tuples, or fixed-size options",
                         ));
                     }
                     fields.push(RField {
@@ -830,6 +809,13 @@ impl Checker {
         }
     }
 
+    /// A list type of `elem`: dynamic when `len` is zero.
+    pub(super) fn list_of(&mut self, elem: usize, len: u16) -> usize {
+        let id = self.alloc(TyKind::List, Some(elem), None, None, len);
+        layout(&mut self.types, id);
+        id
+    }
+
     pub(super) fn tuple_of(&mut self, elems: &[usize]) -> usize {
         let id = self.types.len();
         let fields = elems
@@ -857,16 +843,7 @@ impl Checker {
     }
 
     pub(super) fn tuple_elem_ok(&self, id: usize) -> bool {
-        if self.types[id].kind == TyKind::Option {
-            return is_static_value(&self.types, id);
-        }
-        if self.types[id].kind == TyKind::Tuple {
-            return self.types[id]
-                .fields
-                .iter()
-                .all(|field| self.tuple_elem_ok(field.ty));
-        }
-        self.single_word(id) && !self.is_dyn_ty(id)
+        is_value(&self.types, id)
     }
 
     pub(super) fn cast(

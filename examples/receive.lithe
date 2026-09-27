@@ -1,0 +1,43 @@
+(* Plain ether, with no calldata, runs `receive`. Calldata that matches no entrypoint runs
+   `fallback`. Without them, both revert. *)
+
+event Received of record {
+  indexed from : address;
+  amount : wei;
+}
+
+event Unknown of record {
+  indexed selector : bytes4;
+  data : bytes;
+}
+
+error Not_owner;
+
+storage is record {
+  owner : address;
+  received : wei;
+}
+
+deploy(const owner : address) is {
+  storage.owner := owner;
+}
+
+payable receive is {
+  storage.received := storage.received + Evm.value();
+  emit Received { from = Evm.sender(); amount = Evm.value(); };
+}
+
+(* Not `payable`: a call with value that no entrypoint takes is refused. *)
+fallback is {
+  emit Unknown { selector = Evm.selector(); data = Evm.calldata(); };
+}
+
+external nonreentrant function withdraw(const amount : wei)
+  raises Not_owner
+is {
+  assert(Evm.sender() = storage.owner, Not_owner);
+  defer Evm.transfer(storage.owner, amount);
+}
+
+external view function received() : wei is
+  storage.received

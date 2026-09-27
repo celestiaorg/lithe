@@ -111,7 +111,7 @@ external function grow(const id : nat; const extra : nat) is {
 }
 ```
 
-A record literal is `{ field = value; ... }`. It takes its type from where it is used, such as a binding's annotation, a storage field, or a parameter. In the ABI, a record parameter or return value is flattened into its fields, like a Solidity getter for a struct.
+A record literal is `{ field = value; ... }`. It takes its type from where it is used, such as a binding's annotation, a storage field, or a parameter. In the ABI, a record parameter or return value is flattened into its fields, like a Solidity getter for a struct: each field is one parameter or result. A record inside anything else, such as a list element, a tuple, or another record's field, is a Solidity tuple.
 
 A record's fields can be strings, bytes, and dynamic lists too. An external function that returns such a record returns its fields in order, each dynamic one after an offset, as a Solidity function with several results does:
 
@@ -148,7 +148,9 @@ pure function split(const amount : nat) : (nat, nat) is
 const (half, rest) : (nat, nat) := split(amount);
 ```
 
-A function that returns several values returns a tuple. Tuples nest, can be stored, and pack in storage like a struct.
+Tuples nest, can be stored, and pack in storage like a struct. A tuple's elements can be any value: words, strings, bytes, lists, records, and other tuples.
+
+In the ABI, a tuple is always one Solidity tuple, as a struct is: a tuple parameter is `f((uint256,string))`, and a tuple result is one output. For a function with several results, `returns (uint256 a, string b)`, return a record, whose fields are the results.
 
 ## Lists
 
@@ -174,7 +176,8 @@ external pure function third() : nat is {
 - `List.pop(xs);` drops a dynamic list's last element. A stored list clears the element's slots, as Solidity's `pop` does. An empty list reverts with `Panic(0x31)`.
 - `xs.length` is the length of a dynamic list.
 - Any other index past the end reverts with `Panic(0x32)`.
-- Elements are single words, or fixed-size records, tuples, or [options](#options).
+- Elements can be any value: words, strings, bytes, records, tuples, fixed-size [options](#options), and other lists, to any depth. `list(list(nat))` is `uint256[][]`, and a list of records with strings is an array of tuples, `(string,uint256[])[]`.
+- Indexes and fields chain: `grid[i][j]`, `items[i].tags[j]`, and `grid[i].length`. Each index is checked against its own list's length.
 
 A list of records is a Solidity array of structs. In storage each element starts a slot and packs its fields as a struct does, so a record of a `uint48` and a `uint208` takes one slot. A field of an element reads and writes in place:
 
@@ -223,7 +226,7 @@ external pure function pair(const a : nat; const b : nat) : list(nat) is {
 - In the ABI, `list(T)` is `T[]` and `list(T, n)` is `T[n]`, and a list of records is an array of tuples, `(uint48,uint208)[]`. A list argument is checked as Solidity checks one: its offset and length must lie inside the calldata, and each element must hold a value of its type.
 - Assigning a list to storage replaces the stored list, and clears the slots a shorter list no longer uses.
 - Reading a stored list as a value copies it. So does reading a `var`'s list, so two names never share one list: changing a `var` can't change anything else.
-- `a = b` compares two lists element by element.
+- `a = b` compares two lists element by element, nested lists and strings included. Records, tuples, and fixed lists compare the same way.
 - Lists can be `Abi.encode`d and `Abi.decode`d, sent to and returned from other contracts, and logged in events.
 
 ## Maps

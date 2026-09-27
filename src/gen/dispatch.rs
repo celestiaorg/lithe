@@ -12,7 +12,25 @@ impl<'a> Gen<'a> {
         for &(sel, part) in &shape.forward {
             targets.push((stubs[part], Target::Forward { sel }));
         }
-        self.dispatcher(&targets)?;
+        let special = |kind: ItemKind| {
+            self.checked
+                .routes
+                .iter()
+                .position(|route| route.special == Some(kind))
+        };
+        let receive = special(ItemKind::Receive).map(|index| (self.fresh(), index));
+        let fallback = special(ItemKind::Fallback).map(|index| (self.fresh(), index));
+        let bad = self.dispatcher(&targets, receive.map(|(label, _)| label), fallback)?;
+        // No selector matched: the fallback follows the table, and a rejection after it.
+        if let Some((label, index)) = fallback {
+            let short = targets.iter().any(|(_, t)| t.sel()[3] == 0);
+            self.fallback_body(label, index, bad, short)?;
+            self.jumpdest(bad);
+            self.revert_empty();
+        }
+        if let Some((label, index)) = receive {
+            self.entry(label, index)?;
+        }
         for (label, target) in targets {
             match target {
                 Target::Entry { index, .. } => self.entry(label, index)?,
@@ -77,9 +95,16 @@ impl<'a> Gen<'a> {
 
     /// Every selector the whole contract dispatches, each with a fresh label.
     pub(super) fn targets(&mut self) -> Result<Vec<(u32, Target)>, Error> {
-        let sels: Vec<[u8; 4]> = self.checked.routes.iter().map(|r| r.sel).collect();
+        let sels: Vec<(usize, [u8; 4])> = self
+            .checked
+            .routes
+            .iter()
+            .enumerate()
+            .filter(|(_, r)| r.by_selector())
+            .map(|(i, r)| (i, r.sel))
+            .collect();
         let mut targets: Vec<(u32, Target)> = Vec::new();
-        for (i, sel) in sels.into_iter().enumerate() {
+        for (i, sel) in sels {
             let label = self.fresh();
             targets.push((label, Target::Entry { index: i, sel }));
         }
@@ -95,7 +120,7 @@ impl<'a> Gen<'a> {
         for fi in views {
             let sig = self.view_sig(fi)?;
             let sel = selector(&sig);
-            if self.checked.routes.iter().any(|r| r.sel == sel) {
+            if self.checked.routes.iter().any(|r| r.by_selector() && r.sel == sel) {
                 let f = &self.checked.prog.funcs[fi];
                 return Err(error(
                     f.line,
@@ -168,28 +193,60 @@ impl<'a> Gen<'a> {
         Ok(targets)
     }
 
-    fn dispatcher(&mut self, targets: &[(u32, Target)]) -> Result<(), Error> {
+    /// The selector table. Calldata that is empty goes to `receive`, if there is one; what
+    /// matches nothing falls through to the `fallback`'s label when there is one, which the
+    /// caller places next, and otherwise reverts. Returns the label that rejects a call.
+    fn dispatcher(
+        &mut self,
+        targets: &[(u32, Target)],
+        receive: Option<u32>,
+        fallback: Option<(u32, usize)>,
+    ) -> Result<u32, Error> {
         let bad = self.fresh();
+        if let Some(receive) = receive {
+            self.op(CALLDATASIZE);
+            self.op(ISZERO);
+            self.push_label(receive);
+            self.op(JUMPI);
+        }
         // Calldata shorter than 4 bytes reads as a selector ending in a zero byte.
         // Only then can it match, so only then is the length checked.
-        if targets.iter().any(|(_, t)| t.sel()[3] == 0) {
+        let short = targets.iter().any(|(_, t)| t.sel()[3] == 0);
+        let unmatched = fallback.map_or(bad, |(label, _)| label);
+        let fallback_payable =
+            fallback.is_some_and(|(_, index)| self.checked.routes[index].payable);
+        if short && fallback.is_none() {
             self.push_u64(4);
             self.op(CALLDATASIZE);
             self.op(LT);
             self.push_label(bad);
             self.op(JUMPI);
         }
-        self.op(PUSH0);
-        self.op(CALLDATALOAD);
-        self.push_u64(224);
-        self.op(SHR);
-        // Payable entries dispatch first. Everything after them rejects value once, here.
+        // Nothing to match: no selector to read, and no body reads below its own values.
+        if !targets.is_empty() {
+            self.op(PUSH0);
+            self.op(CALLDATALOAD);
+            self.push_u64(224);
+            self.op(SHR);
+        }
+        // With a fallback, short calldata reaches it with the selector on the stack, as a
+        // call that matches nothing does.
+        if short && fallback.is_some() {
+            self.push_u64(4);
+            self.op(CALLDATASIZE);
+            self.op(LT);
+            self.push_label(unmatched);
+            self.op(JUMPI);
+        }
+        // Payable entries dispatch first. Everything after them rejects value once, here,
+        // unless a payable fallback takes it: then each such entry rejects it itself.
+        self.reject_value = fallback_payable.then_some(bad);
         let payable: Vec<bool> = targets
             .iter()
             .map(|(_, t)| self.target_payable(t))
             .collect();
         for pass in [true, false] {
-            if !pass {
+            if !pass && !fallback_payable {
                 self.op(CALLVALUE);
                 self.push_label(bad);
                 self.op(JUMPI);
@@ -205,8 +262,114 @@ impl<'a> Gen<'a> {
                 self.op(JUMPI);
             }
         }
-        self.jumpdest(bad);
-        self.revert_empty();
+        if fallback.is_none() {
+            self.jumpdest(bad);
+            self.revert_empty();
+        }
+        Ok(bad)
+    }
+
+    /// Where the dispatcher sends a selector. With a payable fallback, an entry that is not
+    /// payable rejects value here, since the table no longer does.
+    fn enter(&mut self, label: u32, payable: bool) {
+        self.jumpdest(label);
+        if let (Some(bad), false) = (self.reject_value, payable) {
+            self.op(CALLVALUE);
+            self.push_label(bad);
+            self.op(JUMPI);
+        }
+    }
+
+    /// Calldata no entrypoint takes. A `fallback` that is not payable rejects value first
+    /// when short calldata can reach it past the table's own check.
+    fn fallback_body(&mut self, label: u32, index: usize, bad: u32, short: bool) -> Result<(), Error> {
+        let route = &self.checked.routes[index];
+        let func = route.direct.ok_or_else(|| error(1, 1, "internal: a fallback is a function"))?;
+        if !route.payable && short {
+            self.jumpdest(label);
+            self.op(CALLVALUE);
+            self.push_label(bad);
+            self.op(JUMPI);
+            // The body's own label follows directly.
+            let body = self.fresh();
+            return match self.checked.prog.funcs[func].forward {
+                Some(how) => self.forward_body(body, func, how, bad),
+                None => self.entry(body, index),
+            };
+        }
+        match self.checked.prog.funcs[func].forward {
+            Some(how) => self.forward_body(label, func, how, bad),
+            None => self.entry(label, index),
+        }
+    }
+
+    /// `fallback delegates to target;` or `forwards to target;`: the whole calldata goes to
+    /// the target, and what it returns or reverts with comes back unchanged. A target
+    /// without code would answer every call with success and nothing, so it is rejected.
+    fn forward_body(&mut self, label: u32, func: usize, how: Forward, bad: u32) -> Result<(), Error> {
+        let ok = self.fresh();
+        self.jumpdest(label);
+        self.begin_body(self.lists_in_order);
+        let target = self.checked.prog.funcs[func]
+            .tail
+            .clone()
+            .ok_or_else(|| error(1, 1, "internal: a forwarding `fallback` needs a target"))?;
+        self.compile_value(&target)?;
+        self.op(DUP1);
+        self.op(EXTCODESIZE);
+        self.op(ISZERO);
+        self.push_label(bad);
+        self.op(JUMPI);
+        // A forwarded call is another contract's code, run while this one is between
+        // transitions: like a deferred call, it runs under the lock.
+        let window = how == Forward::Call && self.any_nonreentrant;
+        if window {
+            self.push_u64(NONREENTRANT_SLOT);
+            self.op(TLOAD);
+            self.push_u64(1);
+            self.push_u64(NONREENTRANT_SLOT);
+            self.op(TSTORE);
+        }
+        self.op(CALLDATASIZE);
+        self.op(PUSH0);
+        self.op(PUSH0);
+        self.op(CALLDATACOPY);
+        self.op(PUSH0);
+        self.op(PUSH0);
+        self.op(CALLDATASIZE);
+        self.op(PUSH0);
+        match how {
+            Forward::Delegate => {
+                self.op(DUP1 + 4);
+                self.op(GAS);
+                self.op(DELEGATECALL);
+            }
+            Forward::Call => {
+                self.op(CALLVALUE);
+                self.op(DUP1 + if window { 6 } else { 5 });
+                self.op(GAS);
+                self.op(CALL);
+            }
+        }
+        if window {
+            self.op(SWAP1);
+            self.push_u64(NONREENTRANT_SLOT);
+            self.op(TSTORE);
+        }
+        self.op(RETURNDATASIZE);
+        self.op(PUSH0);
+        self.op(PUSH0);
+        self.op(RETURNDATACOPY);
+        self.push_label(ok);
+        self.op(JUMPI);
+        self.op(RETURNDATASIZE);
+        self.op(PUSH0);
+        self.op(REVERT);
+        self.jumpdest(ok);
+        self.op(RETURNDATASIZE);
+        self.op(PUSH0);
+        self.op(RETURN);
+        self.finish_body();
         Ok(())
     }
 
@@ -225,11 +388,12 @@ impl<'a> Gen<'a> {
     fn entry(&mut self, label: u32, index: usize) -> Result<(), Error> {
         let locked = self.checked.routes[index].nonreentrant;
         let bad = self.fresh();
-        self.jumpdest(label);
+        self.enter(label, self.checked.routes[index].payable);
         if locked {
             self.acquire_nonreentrant(bad);
         }
         let route = &self.checked.routes[index];
+        let route_special = route.special;
         let (stmts, tail) = match route.direct {
             Some(func) => {
                 let f = &self.checked.prog.funcs[func];
@@ -249,6 +413,7 @@ impl<'a> Gen<'a> {
         // a tuple in its return buffer. Either goes back after every effect has run.
         let mut returns: Option<(usize, usize)> = None;
         let mut record = None;
+        let mut staged = false;
         if let Some(func) = route.direct {
             self.decode_params(func)?;
             let f = &self.checked.prog.funcs[func];
@@ -256,6 +421,23 @@ impl<'a> Gen<'a> {
             let ret = f.ret_ty;
             self.compile_top(&stmts, &mut picks)?;
             match tail {
+                // Encoded now, since it cannot change, and its blob held on the stack
+                // through the epilogue, as a word result is.
+                Some(tail) if declared && self.tree_ret(ret) => {
+                    let at = self.stage(&tail)?;
+                    self.encode_ret(at, ret)?;
+                    staged = true;
+                    returns = Some((func, ret));
+                }
+                Some(tail)
+                    if declared
+                        && crate::check::abi_record(&self.checked.types, ret)
+                        && decoded(&tail) =>
+                {
+                    self.write_value(&tail, self.fn_ret[func], ret)?;
+                    record = Some(self.fn_ret[func]);
+                    returns = Some((func, ret));
+                }
                 Some(tail) if declared && is_static_aggregate(&self.checked.types, ret) => {
                     self.write_words(&tail, self.fn_ret[func])?;
                     returns = Some((func, ret));
@@ -313,6 +495,7 @@ impl<'a> Gen<'a> {
             self.release_nonreentrant();
         }
         match returns {
+            Some(_) if staged => self.return_blob(),
             Some((_, ret)) if record.is_some() => {
                 self.return_record(record.unwrap_or(0), ret)?;
             }
@@ -322,6 +505,11 @@ impl<'a> Gen<'a> {
             Some((_, ret)) if self.list_value(ret) => {
                 let elem = self.checked.types[self.peel_nominal(ret)].elem.unwrap_or(0);
                 self.return_list(elem)?;
+            }
+            // A `fallback`'s bytes go back as they are, not ABI-encoded.
+            Some(_) if route_special == Some(ItemKind::Fallback) => {
+                self.bytes_span();
+                self.op(RETURN);
             }
             Some((_, ret)) if self.is_dynamic(ret) => self.return_dynamic(),
             Some(_) => self.return_word(),
@@ -352,7 +540,7 @@ impl<'a> Gen<'a> {
 
     fn view_body(&mut self, label: u32, func: usize) -> Result<(), Error> {
         let bad = self.fresh();
-        self.jumpdest(label);
+        self.enter(label, false);
         // A `nonreentrant` view only checks the lock: it must also run under `STATICCALL`.
         if self.checked.prog.funcs[func].nonreentrant {
             self.push_u64(NONREENTRANT_SLOT);
@@ -370,8 +558,15 @@ impl<'a> Gen<'a> {
             .ok_or_else(|| error(1, 1, "view is missing a value"))?;
         self.compile_stmts(&stmts)?;
         let ret = self.checked.prog.funcs[func].ret_ty;
-        if crate::check::abi_record(&self.checked.types, ret) {
-            let at = self.value_addr(&tail)?;
+        if self.tree_ret(ret) {
+            let at = self.stage(&tail)?;
+            self.return_tree(at, ret)?;
+        } else if crate::check::abi_record(&self.checked.types, ret) {
+            let at = if decoded(&tail) {
+                self.stage(&tail)?
+            } else {
+                self.value_addr(&tail)?
+            };
             self.return_record(at, ret)?;
         } else if self.list_value(ret) {
             self.compile_value(&tail)?;
@@ -396,7 +591,7 @@ impl<'a> Gen<'a> {
 
     fn migrate_body(&mut self, label: u32, func: usize) -> Result<(), Error> {
         let bad = self.fresh();
-        self.jumpdest(label);
+        self.enter(label, false);
         self.push_u64(0);
         self.op(TLOAD);
         self.push_u64(1);
@@ -411,7 +606,7 @@ impl<'a> Gen<'a> {
     /// yet: inside the proxy's constructor, against the proxy's storage.
     fn deploy_body(&mut self, label: u32, func: usize) -> Result<(), Error> {
         let bad = self.fresh();
-        self.jumpdest(label);
+        self.enter(label, self.checked.prog.funcs[func].payable);
         self.op(ADDRESS);
         self.op(EXTCODESIZE);
         self.push_label(bad);
@@ -545,7 +740,7 @@ impl<'a> Gen<'a> {
 
     fn proxiable_body(&mut self, label: u32) -> Result<(), Error> {
         let bad = self.fresh();
-        self.jumpdest(label);
+        self.enter(label, false);
         self.push_word(crate::keccak::erc1967_implementation());
         self.return_word();
         self.jumpdest(bad);
@@ -556,7 +751,7 @@ impl<'a> Gen<'a> {
     fn upgrade_body(&mut self, label: u32) -> Result<(), Error> {
         let bad = self.fresh();
         let skip = self.fresh();
-        self.jumpdest(label);
+        self.enter(label, false);
         self.push_u64(68);
         self.op(CALLDATASIZE);
         self.op(LT);
@@ -626,4 +821,16 @@ impl<'a> Gen<'a> {
         self.revert_empty();
         Ok(())
     }
+}
+
+/// A value decoded from ABI data, which has no memory of its own until it is written.
+fn decoded(e: &Expr) -> bool {
+    matches!(
+        e,
+        Expr::Query { .. }
+            | Expr::Call {
+                builtin: Some(Builtin::AbiDecode),
+                ..
+            }
+    )
 }

@@ -15,6 +15,10 @@ impl<'a> Gen<'a> {
             direct: false,
             lists_in_order: true,
             any_nonreentrant: false,
+            reject_value: None,
+            decoding_args: false,
+            tree_at: 0,
+            tree_len: 0,
             code: Vec::new(),
             next_label: 0,
             spaces: Vec::new(),
@@ -48,6 +52,7 @@ impl<'a> Gen<'a> {
             cd_bytes: std::collections::HashSet::new(),
             cd_lazy: std::collections::HashSet::new(),
             cd_words: std::collections::HashSet::new(),
+            cd_trees: std::collections::HashSet::new(),
             slot_hint: None,
             bytes_rep: None,
             dyn_key: None,
@@ -113,7 +118,8 @@ impl<'a> Gen<'a> {
             let f = &g.checked.prog.funcs[i];
             let ret = &g.checked.types[f.ret_ty];
             let returned = matches!(f.kind, ItemKind::Entry | ItemKind::View)
-                && is_static_aggregate(&g.checked.types, f.ret_ty);
+                && (is_static_aggregate(&g.checked.types, f.ret_ty)
+                    || (ret.kind == TyKind::List && ret.bits > 0));
             let option = ret.kind == TyKind::Option && ret.words > 1;
             let aggregate = matches!(ret.kind, TyKind::Tuple | TyKind::Record);
             if (aggregate || returned || option) && ret.words > 0 {
@@ -139,6 +145,8 @@ impl<'a> Gen<'a> {
         g.key_scratch = g.region(Region::Scratch(5), 32);
         g.code_args = g.region(Region::Scratch(6), 32);
         g.mul_div_buf = g.region(Region::Scratch(7), 160);
+        g.tree_at = g.region(Region::Scratch(8), 32);
+        g.tree_len = g.region(Region::Scratch(9), 32);
         g.ret_scratch = g.region(Region::Ret, 96);
         g.args_buf = g.region(Region::Args, 128);
         g.hash_buf = g.region(Region::Hash, 0);
@@ -738,6 +746,9 @@ impl<'a> Gen<'a> {
                     Sub::Base64Encode => (3, 1),
                     Sub::Base64Decode => (1, 1),
                     Sub::DecimalString(_) => (1, 1),
+                    Sub::TreeEnc(_) => (2, 1),
+                    Sub::TreeDec(..) => (2, 0),
+                    Sub::TreeCdEnc(_) => (2, 1),
                 };
                 (label, effect)
             })

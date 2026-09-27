@@ -65,12 +65,7 @@ impl Checker {
                 .unwrap_or((f.line, f.col));
             return Err(error(line, col, "options and variants with payloads cannot be ABI values"));
         }
-        let aggregate = is_static_aggregate(&self.types, ret) || abi_record(&self.types, ret);
-        if f.kind == ItemKind::View
-            && !is_word(self.types[ret].kind)
-            && !aggregate
-            && !self.abi_list(ret)
-        {
+        if f.kind == ItemKind::View && !abi_value(&self.types, ret) {
             let (line, col) = f
                 .ret
                 .as_ref()
@@ -79,23 +74,32 @@ impl Checker {
             return Err(error(
                 line,
                 col,
-                "view must return nat, int, address, bool, or an interface",
+                "a view returns an ABI value",
             ));
         }
         if f.kind == ItemKind::View && self.types[ret].kind == TyKind::Operation {
             return Err(error(f.line, f.col, "view cannot return an operation"));
         }
-        if f.kind == ItemKind::Entry
-            && f.ret.is_some()
-            && !is_word(self.types[ret].kind)
-            && !aggregate
-            && !self.abi_list(ret)
-        {
+        if f.kind == ItemKind::Entry && f.ret.is_some() && !abi_value(&self.types, ret) {
+            return Err(error(f.line, f.col, "an entry returns an ABI value"));
+        }
+        if f.kind == ItemKind::Fallback && f.ret.is_some() && !self.same(ret, self.named["bytes"]) {
+            let (line, col) = f
+                .ret
+                .as_ref()
+                .map(|t| (t.line(), t.col()))
+                .unwrap_or((f.line, f.col));
             return Err(error(
-                f.line,
-                f.col,
-                "an entry returns a single static value or a tuple",
+                line,
+                col,
+                "a `fallback` returns `bytes`, sent back as they are",
             ));
+        }
+        if f.forward.is_some() {
+            let checked = self.check_forward(f);
+            self.scope = parent;
+            self.cur_fn += 1;
+            return checked;
         }
         for s in &mut f.stmts {
             self.check_stmt(s)?;
@@ -123,6 +127,29 @@ impl Checker {
         self.scope = parent;
         self.cur_fn += 1;
         Ok(())
+    }
+
+    /// A forwarding `fallback`'s target: an address or interface value, read as a view
+    /// reads, since nothing of this contract's runs around the call.
+    fn check_forward(&mut self, f: &mut Func) -> Result<(), Error> {
+        self.kind = ItemKind::Readonly;
+        self.forwarding = true;
+        let checked = match &mut f.tail {
+            Some(target) => self.check_expr(target).and_then(|()| {
+                self.expect_addr(target.line(), target.col(), target.ty())
+                    .map_err(|_| {
+                        error(
+                            target.line(),
+                            target.col(),
+                            "a `fallback` passes its call to an address or an interface value",
+                        )
+                    })
+            }),
+            None => Err(error(f.line, f.col, "internal: a forwarding `fallback` needs a target")),
+        };
+        self.forwarding = false;
+        self.kind = f.kind;
+        checked
     }
 
     pub(super) fn resolve_raises(&self, raises: &Raises) -> Result<Vec<usize>, Error> {
@@ -319,7 +346,12 @@ impl Checker {
                 effective[i] = declared.clone();
             } else if matches!(
                 kind,
-                ItemKind::Entry | ItemKind::View | ItemKind::Migrate | ItemKind::Deploy
+                ItemKind::Entry
+                    | ItemKind::View
+                    | ItemKind::Migrate
+                    | ItemKind::Deploy
+                    | ItemKind::Receive
+                    | ItemKind::Fallback
             ) && !inferred.is_empty()
                 // An interface's method is held to its module's external instead.
                 && funcs[i].declares.is_none()
@@ -656,6 +688,11 @@ impl Checker {
                 builtin: Some(Builtin::Create),
                 ..
             } => Ok(TY_ADDRESS),
+            // A raw call's continuation gets the return data as it came back.
+            Expr::Call {
+                builtin: Some(Builtin::RawCall | Builtin::DelegateCall),
+                ..
+            } => Ok(self.named["bytes"]),
             Expr::Call {
                 iface: Some(iface),
                 method: Some(method),
@@ -696,7 +733,12 @@ impl Checker {
         if matches!(self.kind, ItemKind::View | ItemKind::Readonly)
             && matches!(
                 kind,
-                ItemKind::Function | ItemKind::Entry | ItemKind::Migrate | ItemKind::Deploy
+                ItemKind::Function
+                    | ItemKind::Entry
+                    | ItemKind::Migrate
+                    | ItemKind::Deploy
+                    | ItemKind::Receive
+                    | ItemKind::Fallback
             )
         {
             return Err(self.weaker(line, col, &format!("calls `{name}`, which is stateful")));
@@ -705,6 +747,13 @@ impl Checker {
     }
 
     pub(super) fn weaker(&self, line: u32, col: u32, did: &str) -> Error {
+        if self.forwarding {
+            return error(
+                line,
+                col,
+                format!("a `fallback` that passes its call on only reads; its target {did}"),
+            );
+        }
         let declared = if self.external_pure {
             "external pure function"
         } else {
@@ -753,6 +802,17 @@ pub(super) fn kind_word(kind: ItemKind) -> &'static str {
         ItemKind::View => "external view function",
         ItemKind::Migrate => "migration",
         ItemKind::Deploy => "`deploy`",
+        ItemKind::Receive => "`receive`",
+        ItemKind::Fallback => "`fallback`",
+    }
+}
+
+/// How a message names a function: its kind and name, or the one word for a declaration
+/// that has no name of its own.
+pub(super) fn describe(kind: ItemKind, name: &str) -> String {
+    match kind {
+        ItemKind::Deploy | ItemKind::Receive | ItemKind::Fallback => kind_word(kind).to_string(),
+        _ => format!("{} `{name}`", kind_word(kind)),
     }
 }
 
@@ -768,11 +828,7 @@ fn raise_mismatch(
         .iter()
         .map(|id| format!("`{}`", errors[*id].name))
         .collect();
-    let mut msg = format!(
-        "{} `{name}` may raise {}",
-        kind_word(kind),
-        extras.join(", ")
-    );
+    let mut msg = format!("{} may raise {}", describe(kind, name), extras.join(", "));
     msg.push_str("\n\ndeclared:\n");
     if declared.is_empty() {
         msg.push_str("  none\n");
@@ -793,10 +849,7 @@ fn raise_mismatch(
 }
 
 fn must_declare(errors: &[ErrInfo], kind: ItemKind, name: &str, inferred: &[usize]) -> String {
-    let mut msg = format!(
-        "{} `{name}` must declare its errors\n\ninferred:\n",
-        kind_word(kind)
-    );
+    let mut msg = format!("{} must declare its errors\n\ninferred:\n", describe(kind, name));
     for id in inferred {
         msg.push_str("  ");
         msg.push_str(&errors[*id].name);

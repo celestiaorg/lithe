@@ -50,9 +50,9 @@ external function go() is { skip }
 event `Foo` declares 4 indexed fields
 ```
 
-A field that isn't indexed can hold any ABI value: a string, bytes, or a list goes in the log's data, ABI-encoded after the other fields.
+A field that isn't indexed can hold any ABI value, nested lists and records included. The data fields are ABI-encoded, as a function's arguments are.
 
-As in Solidity, an indexed `string`, `bytes`, or list is logged as its `keccak256` hash:
+As in Solidity, an indexed `string` or `bytes` is logged as the `keccak256` of its bytes. An indexed list, record, or tuple is logged as the `keccak256` of its in-place encoding: each member padded to a word, with no offsets or lengths:
 
 ```lithe
 event Renamed of record {

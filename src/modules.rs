@@ -666,6 +666,20 @@ fn absorb(
         let (line, col) = at(via, 1, 1);
         return Err(error(line, col, "an imported file cannot have `deploy`"));
     }
+    // What reaches the contract without a selector is the contract's own to say.
+    if let Some(func) = src
+        .funcs
+        .iter()
+        .find(|f| matches!(f.kind, ItemKind::Receive | ItemKind::Fallback))
+        .filter(|_| via.is_some())
+    {
+        let (line, col) = at(via, 1, 1);
+        return Err(error(
+            line,
+            col,
+            format!("an imported file cannot have `{}`", func.name),
+        ));
+    }
     // A contract's interface is written in the contract: an imported file exposes nothing.
     if via.is_some() {
         if let Some(exposed) = src.exposes.first() {
@@ -930,6 +944,26 @@ fn absorb_decls(
             && same.all(|have| {
                 external(have.kind) == external(func.kind) && shape(have) != shape(&func)
             });
+        let single = |kind: ItemKind| {
+            matches!(kind, ItemKind::Deploy | ItemKind::Receive | ItemKind::Fallback)
+        };
+        if let Some(have) = dst.funcs.iter().find(|have| have.name == public_name) {
+            let (line, col) = at(via, func.line, func.col);
+            if single(func.kind) && have.kind == func.kind {
+                return Err(error(
+                    line,
+                    col,
+                    format!("a contract has at most one `{public_name}`"),
+                ));
+            }
+            if single(func.kind) || single(have.kind) {
+                return Err(error(
+                    line,
+                    col,
+                    format!("the contract declares `{public_name}`, so no function can take that name"),
+                ));
+            }
+        }
         if !overload {
             ensure_free(dst, &public_name, &func.origin, via, func.line, func.col)?;
         }
@@ -1106,6 +1140,8 @@ fn kind_name(kind: ItemKind) -> &'static str {
         ItemKind::View => "external view function",
         ItemKind::Migrate => "migration",
         ItemKind::Deploy => "`deploy`",
+        ItemKind::Receive => "`receive`",
+        ItemKind::Fallback => "`fallback`",
     }
 }
 

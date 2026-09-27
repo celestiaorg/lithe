@@ -1,0 +1,26 @@
+(* A proxy. Every call it has no entrypoint for runs the implementation's code on the
+   proxy's storage, and returns or reverts with whatever that code did. The proxy's own
+   state sits in a named domain, clear of the implementation's slots. *)
+
+error Not_admin;
+
+storage is record {}
+
+storage proxy at "example.proxy" is record {
+  implementation : address;
+  admin : address;
+}
+
+deploy(const implementation : address; const admin : address) is {
+  proxy.implementation := implementation;
+  proxy.admin := admin;
+}
+
+external function upgrade_proxy(const implementation : address)
+  raises Not_admin
+is {
+  assert(Evm.sender() = proxy.admin, Not_admin);
+  proxy.implementation := implementation;
+}
+
+payable fallback delegates to proxy.implementation;

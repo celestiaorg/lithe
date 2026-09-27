@@ -6,13 +6,7 @@ impl<'a> Gen<'a> {
         let head_words: u32 = params
             .iter()
             .filter(|p| p.sym.is_some_and(|sym| !self.checked.syms[sym].storage))
-            .map(|p| {
-                if self.is_dynamic(p.ty_id) || self.list_value(p.ty_id) {
-                    1
-                } else {
-                    self.checked.types[p.ty_id].words
-                }
-            })
+            .map(|p| self.ret_head(p.ty_id) / 32)
             .sum();
         self.check_head(head_words)?;
         let init_sites = params
@@ -27,9 +21,55 @@ impl<'a> Gen<'a> {
         self.cd_bytes.clear();
         self.cd_lazy.clear();
         self.cd_words.clear();
+        self.cd_trees.clear();
+        let mut args = false;
         for p in params {
             let Some(sym) = p.sym else { continue };
             if self.checked.syms[sym].storage {
+                continue;
+            }
+            // A record, tuple, or fixed list with dynamic values in it, or a list of them:
+            // decoded whole, each dynamic value from its offset in the arguments.
+            // One only ever passed on whole, to `Abi.encode` or another contract, stays in
+            // calldata: its position is kept, and each encoding checks and copies it. One
+            // never used is not read, as Solidity reads no calldata argument it doesn't use.
+            if self.tree_param(p.ty_id) && self.abi_dyn(p.ty_id) && !self.init {
+                if let Some(used) = self.passed_through(func, sym) {
+                    if used {
+                        self.push_u64(4 + u64::from(head) * 32);
+                        self.cd_load();
+                        self.fits_64()?;
+                        self.push_u64(4);
+                        self.op(ADD);
+                        self.mstore_off(self.local[sym]);
+                        self.cd_trees.insert(sym);
+                    }
+                    head += 1;
+                    continue;
+                }
+            }
+            if self.tree_param(p.ty_id) {
+                // The arguments, from byte 4 of the calldata to its end.
+                if !args {
+                    self.push_u64(4);
+                    self.mstore_off(self.tree_at);
+                    self.cd_size();
+                    self.push_u64(4);
+                    self.op(SWAP1);
+                    self.op(SUB);
+                    self.mstore_off(self.tree_len);
+                    args = true;
+                }
+                self.decoding_args = true;
+                for (fty, dst) in self.ret_fields(p.ty_id, Addr::Mem(self.local[sym])) {
+                    let decoded = self.tree_field(SrcKind::Cd, head * 32, fty, dst);
+                    if decoded.is_err() {
+                        self.decoding_args = false;
+                    }
+                    decoded?;
+                    head += self.abi_head_words(fty);
+                }
+                self.decoding_args = false;
                 continue;
             }
             let elem = self.checked.types[self.peel_nominal(p.ty_id)].elem.unwrap_or(0);
@@ -37,6 +77,7 @@ impl<'a> Gen<'a> {
             // function always runs checks each one as it reads it. Checking them all up
             // front costs as much as decoding, so such a list is decoded instead.
             let in_place = self.list_value(p.ty_id)
+                && !self.tree(p.ty_id)
                 && self.list_k(p.ty_id) == 1
                 && !self.is_dynamic(self.peel_nominal(elem))
                 && self.stays_in_calldata(func, sym)
@@ -50,7 +91,7 @@ impl<'a> Gen<'a> {
                 self.mstore_off(self.local[sym]);
                 self.cd_lists.insert(sym);
                 head += 1;
-            } else if self.list_value(p.ty_id) {
+            } else if self.list_value(p.ty_id) && !self.tree(p.ty_id) {
                 self.decode_list(sym, head, p.ty_id)?;
                 head += 1;
             } else if self.is_dynamic(p.ty_id) && self.only_decoded(func, sym) {
@@ -607,7 +648,7 @@ impl<'a> Gen<'a> {
     }
 
     /// Whether a decoded word of this type can hold bits its type cannot.
-    fn needs_check(&self, ty: usize) -> bool {
+    pub(super) fn needs_check(&self, ty: usize) -> bool {
         if self.enum_cases(ty).is_some() {
             return true;
         }

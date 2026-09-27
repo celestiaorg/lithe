@@ -806,6 +806,9 @@ impl<'a> Gen<'a> {
     }
 
     pub(super) fn write_words(&mut self, expr: &Expr, dst: i32) -> Result<(), Error> {
+        if self.write_decoded(expr, dst, expr.ty())? {
+            return Ok(());
+        }
         match expr {
             Expr::Tuple { elems, ty, .. } => {
                 let fields: Vec<(u32, usize)> = self.checked.types[*ty]
@@ -859,6 +862,9 @@ impl<'a> Gen<'a> {
     }
 
     pub(super) fn write_list(&mut self, expr: &Expr, dst: i32, ty: usize) -> Result<(), Error> {
+        if self.write_decoded(expr, dst, ty)? {
+            return Ok(());
+        }
         let Expr::List { elems, .. } = expr else {
             let src = self.value_addr(expr)?;
             let n = self.payload_words(expr, ty);
@@ -880,6 +886,9 @@ impl<'a> Gen<'a> {
     }
 
     pub(super) fn write_record(&mut self, expr: &Expr, dst: i32, ty: usize) -> Result<(), Error> {
+        if self.write_decoded(expr, dst, ty)? {
+            return Ok(());
+        }
         if let Expr::Call {
             builtin: Some(Builtin::Ctor(k)),
             args,

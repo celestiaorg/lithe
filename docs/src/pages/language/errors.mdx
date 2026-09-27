@@ -52,7 +52,7 @@ is {
 }
 ```
 
-Each error compiles to a Solidity custom error. The ABI name is the declared name in PascalCase, so `Insufficient_balance` becomes `InsufficientBalance`, with the selector Solidity would compute. Payloads are words, strings, bytes, lists, or records of them, ABI-encoded as Solidity would. Two errors whose ABI names collide, such as `Not_owner` and `NotOwner`, are rejected.
+Each error compiles to a Solidity custom error. The ABI name is the declared name in PascalCase, so `Insufficient_balance` becomes `InsufficientBalance`, with the selector Solidity would compute. Payloads are any ABI values, ABI-encoded as Solidity would. A record payload is the error's parameters, one per field. Two errors whose ABI names collide, such as `Not_owner` and `NotOwner`, are rejected.
 
 ## Raising errors
 

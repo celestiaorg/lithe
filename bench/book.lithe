@@ -1,0 +1,33 @@
+(* Benchmark: the target of dialer's raw calls. Takes a batch of orders, answers their
+   ids, and refuses an order with no legs. Mirrors book.sol. *)
+
+type order is record {
+  id : nat;
+  note : string;
+  legs : list(nat);
+}
+
+error Rejected of nat;
+
+storage is record {
+  notes : map(nat, string);
+  placed : nat;
+}
+
+external function place(const os : list(order)) : list(nat)
+  raises Rejected
+is {
+  var ids : list(nat) := [];
+  for o : order in os do {
+    assert(o.legs.length > 0n, Rejected(o.id));
+    storage.notes[o.id] := o.note;
+    ids[ids.length] := o.id;
+  }
+  storage.placed := storage.placed + os.length;
+} with ids
+
+external view function note_of(const id : nat) : string is
+  storage.notes[id]
+
+external view function placed() : nat is
+  storage.placed

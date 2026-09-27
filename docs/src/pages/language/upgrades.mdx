@@ -56,6 +56,8 @@ external function go() is {
 upgradeable contract requires an upgrade guard
 ```
 
+Other proxy designs, such as a beacon or a proxy whose admin lives outside the implementation, can be written with [`fallback delegates to`](/language/functions#passing-a-call-on). `upgradeable` is still the way to make a contract's own code upgradeable: its guard, migrations, and layout checks come with it.
+
 ## Deploying
 
 Deploy the implementation, then deploy a standard ERC-1967 proxy, such as OpenZeppelin's `ERC1967Proxy`, that points at it. Give the proxy's constructor a call to the contract's [`deploy`](/language/deploy#upgradeable-contracts) as its data, and the proxy is initialized in the same transaction that creates it. Wallets and explorers treat the proxy as they treat any UUPS contract.

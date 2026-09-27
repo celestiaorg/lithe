@@ -194,66 +194,16 @@ pub(crate) fn abi_fields(types: &[RType], ty: usize, name: &str) -> Result<Vec<A
             components: Vec::new(),
             indexed: false,
         }]),
-        TyKind::List => {
-            let Some(elem) = types[ty].elem else {
-                return Err(error(1, 1, "this type cannot be an ABI value"));
-            };
-            let len = if types[ty].bits == 0 {
-                String::new()
-            } else {
-                types[ty].bits.to_string()
-            };
-            // A list of records is a Solidity array of structs: each element a tuple.
-            if types[peel_id(types, elem)].kind == TyKind::Record {
-                let tuple = event_abi(types, "", elem, false)?;
-                let Some(canon) = static_abi(types, elem).filter(|_| !has_option(types, elem)) else {
-                    return Err(error(1, 1, "this type cannot be an ABI value"));
-                };
-                return Ok(vec![AbiField {
-                    name: name.to_string(),
-                    ty: format!("{canon}[{len}]"),
-                    components: tuple.components,
-                    indexed: false,
-                }]);
-            }
-            let inner = abi_fields(types, elem, "")?;
-            if inner.len() != 1 {
-                return Err(error(1, 1, "list elements must be a single ABI value"));
-            }
-            Ok(vec![AbiField {
-                name: name.to_string(),
-                ty: format!("{}[{len}]", inner[0].ty),
-                components: inner[0].components.clone(),
-                indexed: false,
-            }])
-        }
+        TyKind::List | TyKind::Tuple => Ok(vec![abi_nested(types, ty, name)?]),
         TyKind::Map => Err(error(1, 1, "a map cannot be an ABI value")),
         TyKind::Option => Err(error(1, 1, "an option cannot be an ABI value")),
-        TyKind::Record => {
-            let mut out = Vec::new();
-            for f in &types[ty].fields {
-                out.extend(abi_fields(types, f.ty, &f.name)?);
-            }
-            Ok(out)
-        }
-        TyKind::Tuple => {
-            let mut canon = Vec::new();
-            let mut components = Vec::new();
-            for field in &types[ty].fields {
-                let parts = abi_fields(types, field.ty, "")?;
-                if parts.len() != 1 {
-                    return Err(error(1, 1, "tuple elements must be a single ABI value"));
-                }
-                canon.push(parts[0].ty.clone());
-                components.push(parts[0].clone());
-            }
-            Ok(vec![AbiField {
-                name: name.to_string(),
-                ty: format!("({})", canon.join(",")),
-                components,
-                indexed: false,
-            }])
-        }
+        // A record parameter or result is flattened into its fields, like a Solidity
+        // getter. Inside another value, a record is a tuple.
+        TyKind::Record => types[ty]
+            .fields
+            .iter()
+            .map(|f| abi_nested(types, f.ty, &f.name))
+            .collect(),
         _ => Err(error(1, 1, "this type cannot be an ABI value")),
     }
 }
@@ -263,63 +213,93 @@ pub(crate) fn event_input(types: &[RType], field: &EventField) -> Result<AbiFiel
 }
 
 fn event_abi(types: &[RType], name: &str, ty: usize, indexed: bool) -> Result<AbiField, Error> {
-    let id = peel_id(types, ty);
-    if is_sum(types, id) {
-        return Err(error(1, 1, "a variant with a payload cannot be an ABI value"));
-    }
-    match types[id].kind {
-        TyKind::Record | TyKind::Tuple => {
-            let mut components = Vec::new();
-            for part in &types[id].fields {
-                components.push(event_abi(types, &part.name, part.ty, false)?);
-            }
-            Ok(AbiField {
-                name: name.to_string(),
-                ty: "tuple".to_string(),
-                components,
-                indexed,
-            })
-        }
-        _ => Ok(AbiField {
-            name: name.to_string(),
-            ty: event_sig_type(types, id)?,
-            components: Vec::new(),
-            indexed,
-        }),
-    }
+    Ok(AbiField {
+        indexed,
+        ..abi_nested(types, ty, name)?
+    })
 }
 
 pub(super) fn event_sig_type(types: &[RType], ty: usize) -> Result<String, Error> {
+    Ok(abi_nested(types, ty, "")?.ty)
+}
+
+/// The ABI type of a value as another value holds it, or as one argument: a record or tuple
+/// is a Solidity tuple, `(uint256,string)`, with its members as components, and a list is
+/// its element's type with its dimension after it.
+pub(crate) fn abi_nested(types: &[RType], ty: usize, name: &str) -> Result<AbiField, Error> {
     let id = peel_id(types, ty);
     if is_sum(types, id) {
         return Err(error(1, 1, "a variant with a payload cannot be an ABI value"));
     }
-    match types[id].kind {
+    let t = &types[id];
+    match t.kind {
         TyKind::Record | TyKind::Tuple => {
-            let mut parts = Vec::new();
-            for field in &types[id].fields {
-                parts.push(event_sig_type(types, field.ty)?);
+            let mut components = Vec::new();
+            for field in &t.fields {
+                components.push(abi_nested(types, field.ty, &field.name)?);
             }
-            Ok(format!("({})", parts.join(",")))
+            let canon: Vec<&str> = components.iter().map(|c| c.ty.as_str()).collect();
+            Ok(AbiField {
+                name: name.to_string(),
+                ty: format!("({})", canon.join(",")),
+                components,
+                indexed: false,
+            })
         }
         TyKind::List => {
-            let Some(elem) = types[id].elem else {
-                return Err(error(1, 1, "this type cannot be an event field"));
+            let Some(elem) = t.elem.filter(|&e| types[e].kind != TyKind::Operation) else {
+                return Err(error(1, 1, "this type cannot be an ABI value"));
             };
-            let inner = event_sig_type(types, elem)?;
-            if types[id].bits == 0 {
-                Ok(format!("{inner}[]"))
-            } else {
-                Ok(format!("{inner}[{}]", types[id].bits))
-            }
+            let inner = abi_nested(types, elem, "")?;
+            let len = if t.bits == 0 { String::new() } else { t.bits.to_string() };
+            Ok(AbiField {
+                name: name.to_string(),
+                ty: format!("{}[{len}]", inner.ty),
+                components: inner.components,
+                indexed: false,
+            })
         }
         _ => {
-            let parts = abi_parts(types, id)?;
+            let mut parts = abi_fields(types, id, name)?;
             if parts.len() != 1 {
-                return Err(error(1, 1, "this type cannot be an event field"));
+                return Err(error(1, 1, "this type cannot be an ABI value"));
             }
-            Ok(parts.into_iter().next().unwrap_or_default())
+            Ok(parts.remove(0))
         }
+    }
+}
+
+/// A value that can be held in memory: words, strings, bytes, and lists, records, and tuples
+/// of them, at any depth, with options only where they are fixed-size. Maps live only in
+/// storage.
+pub(crate) fn is_value(types: &[RType], ty: usize) -> bool {
+    let id = peel_id(types, ty);
+    let t = &types[id];
+    match t.kind {
+        TyKind::Record | TyKind::Tuple => t.fields.iter().all(|f| is_value(types, f.ty)),
+        TyKind::List => t
+            .elem
+            .is_some_and(|e| types[e].kind != TyKind::Operation && is_value(types, e)),
+        TyKind::Option => is_static_value(types, id),
+        kind => is_word(kind),
+    }
+}
+
+/// A value the ABI can carry: any value with no option in it.
+pub(crate) fn abi_value(types: &[RType], ty: usize) -> bool {
+    is_value(types, ty) && !has_option(types, ty)
+}
+
+/// Whether the ABI puts a value after an offset: a string, bytes, a dynamic list, or a
+/// record, tuple, or fixed list that holds one.
+pub(crate) fn abi_dynamic(types: &[RType], ty: usize) -> bool {
+    let t = &types[peel_id(types, ty)];
+    match t.kind {
+        TyKind::String => true,
+        TyKind::Bytes => t.bits == 0,
+        TyKind::List => t.bits == 0 || t.elem.is_some_and(|e| abi_dynamic(types, e)),
+        TyKind::Record | TyKind::Tuple => t.fields.iter().any(|f| abi_dynamic(types, f.ty)),
+        _ => false,
     }
 }
 
@@ -347,26 +327,11 @@ pub(super) fn topic_hashed(types: &[RType], ty: usize) -> bool {
     }
 }
 
-/// Indexed strings and bytes hash their raw contents. A fixed list or record
-/// hashes the concatenation of its value-type words, at most eight of them.
+/// Indexed strings and bytes hash their raw contents. A list, record, or tuple hashes its
+/// in-place encoding, as Solidity does: each member padded to a word, with no offsets or
+/// lengths.
 pub(super) fn hashable_topic(types: &[RType], ty: usize) -> bool {
-    let id = peel_id(types, ty);
-    match types[id].kind {
-        TyKind::String => true,
-        TyKind::Bytes => types[id].bits == 0,
-        TyKind::List => {
-            (types[id].bits == 0 || types[id].bits <= 8)
-                && types[id].elem.is_some_and(|elem| value_topic(types, elem))
-        }
-        TyKind::Record | TyKind::Tuple => {
-            types[id].words <= 8
-                && types[id]
-                    .fields
-                    .iter()
-                    .all(|field| value_topic(types, field.ty))
-        }
-        _ => false,
-    }
+    abi_value(types, ty)
 }
 
 /// A value of fixed size with no dynamic parts, so it copies word by word: a word other
@@ -402,6 +367,28 @@ pub(crate) fn abi_record(types: &[RType], ty: usize) -> bool {
         && !is_static_value(types, id)
         && !has_option(types, id)
         && abi_fields(types, id, "").is_ok()
+}
+
+/// A record whose fields the existing return path lays out: words, strings, bytes, and lists
+/// of static elements, each one argument.
+pub(crate) fn flat_record(types: &[RType], ty: usize) -> bool {
+    let id = peel_id(types, ty);
+    abi_record(types, id)
+        && types[id].fields.iter().all(|f| {
+            let fid = peel_id(types, f.ty);
+            let ft = &types[fid];
+            match ft.kind {
+                TyKind::List => {
+                    ft.bits == 0
+                        && ft.elem.is_some_and(|e| {
+                            !abi_dynamic(types, e)
+                                || matches!(types[peel_id(types, e)].kind, TyKind::String | TyKind::Bytes)
+                        })
+                }
+                TyKind::Record | TyKind::Tuple => false,
+                _ => ft.words == 1,
+            }
+        })
 }
 
 /// Whether an option or a variant with a payload appears anywhere in a value, which keeps

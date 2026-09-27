@@ -33,4 +33,4 @@ external view function deposited(const who : address) : wei is
   storage.deposits[who]
 ```
 
-There is no `receive` or `fallback`. A plain ether transfer with no calldata reverts. Callers send ether to a payable entrypoint such as `deposit()`.
+A plain ether transfer, with no calldata, reverts unless the contract declares `payable receive`. See [Receive and fallback](/by-example/receive-fallback).

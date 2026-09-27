@@ -27,7 +27,8 @@ use abi::*;
 use payable::*;
 
 pub(crate) use abi::{
-    abi_fields, abi_parts, abi_record, bytes_abi, event_input, int_abi, is_static_aggregate,
+    abi_dynamic, abi_fields, abi_nested, abi_parts, abi_record, abi_value, bytes_abi, event_input,
+    flat_record, int_abi, is_static_aggregate, is_value,
     is_static_value, is_stored_aggregate, static_abi, uint_abi, AbiField,
 };
 pub(crate) use compose::{module_transient_slot, Header};
@@ -275,6 +276,8 @@ struct Checker {
     /// `migrate` or `deploy`, while checking one: code that runs once and calls nobody.
     once: Option<&'static str>,
     in_guard: bool,
+    /// Checking a forwarding `fallback`'s target, which only reads.
+    forwarding: bool,
     fn_name: String,
     /// For each continuation being checked: how many symbols existed when it began.
     /// Earlier symbols belong to an earlier transition phase.
@@ -387,6 +390,7 @@ pub(crate) fn check(mut prog: Program) -> Result<Checked, Error> {
         domain_syms: Vec::new(),
         once: None,
         in_guard: false,
+        forwarding: false,
         phase_floors: Vec::new(),
         op_returns: HashMap::new(),
         state_syms: HashSet::new(),
@@ -510,10 +514,23 @@ pub(crate) fn check(mut prog: Program) -> Result<Checked, Error> {
             "a contract has at most one `deploy`",
         ));
     }
+    for (kind, word) in [(ItemKind::Receive, "receive"), (ItemKind::Fallback, "fallback")] {
+        if let Some(extra) = prog.funcs.iter().filter(|f| f.kind == kind).nth(1) {
+            return Err(error(
+                extra.line,
+                extra.col,
+                format!("a contract has at most one `{word}`"),
+            ));
+        }
+    }
     let has_entry = prog.funcs.iter().any(|func| {
         matches!(
             func.kind,
-            ItemKind::Entry | ItemKind::View | ItemKind::Migrate
+            ItemKind::Entry
+                | ItemKind::View
+                | ItemKind::Migrate
+                | ItemKind::Receive
+                | ItemKind::Fallback
         )
     }) || prog.upgradeable;
     let has_domains = !prog.domains.is_empty();

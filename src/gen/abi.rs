@@ -17,13 +17,18 @@ impl<'a> Gen<'a> {
             }
             return Ok(());
         }
-        let values = self.blob_parts(args)?;
-        let parts: Vec<(i32, usize)> = values
-            .iter()
-            .copied()
-            .zip(args.iter().map(|a| a.ty()))
-            .collect();
-        self.encode_parts(&parts)?;
+        if args.iter().any(|a| self.tree_part(a.ty())) {
+            let refs: Vec<&Expr> = args.iter().collect();
+            self.tree_encode_exprs(&refs)?;
+        } else {
+            let values = self.blob_parts(args)?;
+            let parts: Vec<(i32, usize)> = values
+                .iter()
+                .copied()
+                .zip(args.iter().map(|a| a.ty()))
+                .collect();
+            self.encode_parts(&parts)?;
+        }
         if let Some(sel) = selector {
             self.prepend_selector(sel)?;
         } else {
@@ -143,27 +148,6 @@ impl<'a> Gen<'a> {
         Ok(())
     }
 
-    /// `[ptr]` joins the blob at `scratch_a`: the list's length word, if `counted`, then its
-    /// elements as ABI words.
-    pub(super) fn append_list(&mut self, ty: usize, counted: bool) -> Result<(), Error> {
-        let elem = self.checked.types[self.peel_nominal(ty)].elem.unwrap_or(0);
-        let list = self.temp();
-        self.abi_ready_list(elem)?;
-        self.mstore_off(list);
-        if counted {
-            self.mload(list);
-            self.op(MLOAD);
-            self.append_word_at_len()?;
-        }
-        self.mload(list);
-        self.op(MLOAD);
-        self.push_u64(32 * u64::from(self.elem_words(elem)));
-        self.op(MUL);
-        self.mload(list);
-        self.push_u64(32);
-        self.op(ADD);
-        self.append_mem_at_len(false)
-    }
 
     /// `[ptr]` becomes a list laid out as in the ABI: a copy with `bytesN` elements moved to
     /// the high bytes, strings and bytes encoded after their offsets, or the list itself
@@ -445,20 +429,6 @@ impl<'a> Gen<'a> {
         Ok(())
     }
 
-    pub(super) fn compile_abi_packed(&mut self, args: &[Expr]) -> Result<(), Error> {
-        let values = self.blob_parts(args)?;
-        self.push_u64(0);
-        self.alloc_blob()?;
-        self.mstore_off(self.scratch_a);
-        for (arg, &at) in args.iter().zip(&values) {
-            self.mload(at);
-            self.append_packed(arg.ty())?;
-        }
-        self.claim_blob();
-        self.mload(self.scratch_a);
-        self.finish_packed()?;
-        Ok(())
-    }
 
     pub(super) fn compile_abi_decode(&mut self, data: &Expr, ty: usize) -> Result<(), Error> {
         let in_calldata =
@@ -477,83 +447,8 @@ impl<'a> Gen<'a> {
             self.align_decoded(word);
             return Ok(());
         }
-        let (len, at) = (self.temp(), self.temp());
-        let src = match data {
-            Expr::Ident { sym: Some(sym), .. } if self.cd_bytes.contains(sym) => {
-                self.mload(self.local[*sym]);
-                self.op(DUP1);
-                self.cd_load();
-                self.mstore_off(len);
-                self.push_u64(32);
-                self.op(ADD);
-                self.mstore_off(at);
-                Src::Cd(at, len)
-            }
-            _ => {
-                self.compile_value(data)?;
-                self.bytes_span();
-                self.mstore_off(at);
-                self.mstore_off(len);
-                Src::Mem(at, len)
-            }
-        };
-        if self.list_value(ty) {
-            let elem = self.checked.types[self.peel_nominal(ty)].elem.unwrap_or(0);
-            return self.decode_list_from(src, elem);
-        }
-        // Data shorter than its head reverts, as in Solidity.
-        self.push_u64(32);
-        self.src_size(src);
-        self.op(LT);
-        self.revert_if_true()?;
-        if self.is_dynamic(self.peel_nominal(ty)) {
-            return self.decode_bytes_from(src);
-        }
-        self.check_word(ty, &|g: &mut Self| {
-            g.op(PUSH0);
-            g.src_word(src);
-        })?;
-        self.op(PUSH0);
-        self.src_word(src);
-        self.align_decoded(ty);
-        Ok(())
-    }
-
-    /// Pushes the `string` or `bytes` value encoded in `src`, with Solidity's bounds: its
-    /// offset and length fit in 64 bits, and every byte is inside the data.
-    fn decode_bytes_from(&mut self, src: Src) -> Result<(), Error> {
-        self.op(PUSH0);
-        self.src_word(src);
-        self.op(DUP1);
-        self.push_u64(64);
-        self.op(SHR);
-        self.revert_if_true()?;
-        self.op(DUP1);
-        self.push_u64(32);
-        self.op(ADD);
-        self.src_size(src);
-        self.op(LT);
-        self.revert_if_true()?;
-        self.op(DUP1);
-        self.src_word(src);
-        self.op(DUP1);
-        self.push_u64(64);
-        self.op(SHR);
-        self.revert_if_true()?;
-        self.op(DUP1);
-        self.op(DUP1 + 2);
-        self.op(ADD);
-        self.push_u64(32);
-        self.op(ADD);
-        self.src_size(src);
-        self.op(LT);
-        self.revert_if_true()?;
-        self.op(SWAP1);
-        self.push_u64(32);
-        self.op(ADD);
-        self.src_origin(src);
-        self.op(SWAP1);
-        self.bytes_value_from(src)
+        let kind = self.decode_src(data)?;
+        self.tree_value(kind, ty)
     }
 
     /// `[at, len]` becomes a `string` or `bytes` value of the `len` bytes at `at`, a

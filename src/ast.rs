@@ -180,6 +180,20 @@ pub(crate) enum ItemKind {
     Migrate,
     /// `deploy`: runs once, when the contract is created or, if upgradeable, its proxy is.
     Deploy,
+    /// `payable receive`: a transition for calls with no calldata, such as plain ether.
+    Receive,
+    /// `fallback`: a transition for calldata that matches no entrypoint, or, with
+    /// `delegates to` or `forwards to`, a call passed on whole to another contract.
+    Fallback,
+}
+
+/// How a `fallback` passes its call on: `delegates to` runs the target's code as this
+/// contract, with `DELEGATECALL`; `forwards to` calls the target, with `CALL`. The target
+/// is the function's tail, and the call's result or revert comes back as it is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Forward {
+    Delegate,
+    Call,
 }
 
 #[derive(Debug, Clone)]
@@ -318,6 +332,8 @@ pub(crate) struct Func {
     /// On a module's external function: how it was declared. It is checked as an internal
     /// function, which the entrypoints that declare it call.
     pub exported: Option<Exported>,
+    /// On a `fallback` that passes its call on: how. Its tail is the target.
+    pub forward: Option<Forward>,
 }
 
 #[derive(Debug, Clone)]
@@ -612,6 +628,15 @@ pub(crate) enum Builtin {
     /// values of one integer type, wrapped to its width instead of checked. `true` is `Int`.
     Wrapping(BinOp, bool),
     Transfer,
+    /// `Evm.call(to, data)`: a `CALL` with `data` as the whole calldata. Its continuation
+    /// gets the raw return data.
+    RawCall,
+    /// `Evm.delegate_call(to, data)`: `to`'s code runs as this contract, on `data`.
+    DelegateCall,
+    /// `Evm.static_call(to, data)`: a `STATICCALL` with `data` as the calldata, queried.
+    StaticCall,
+    /// A precompiled contract, given its input as it lays it out.
+    Precompile(Pre),
     /// `create Contract(args)`: the arguments go to its `deploy`; `base` holds the
     /// `CREATE2` salt, if any.
     Create,
@@ -620,6 +645,62 @@ pub(crate) enum Builtin {
     None,
     /// A variant constructor, by its index in the variant's cases.
     Ctor(usize),
+}
+
+/// The precompiled contracts past the hashes and `ecrecover`, each a built-in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Pre {
+    /// `Crypto.mod_exp(base, exponent, modulus)`: 0x05 on byte strings.
+    ModExp,
+    /// `Nat.pow_mod(base, exponent, modulus)`: 0x05 on words.
+    PowMod,
+    /// `Crypto.bn254_add(a, b)`: 0x06.
+    Bn254Add,
+    /// `Crypto.bn254_mul(p, s)`: 0x07.
+    Bn254Mul,
+    /// `Crypto.bn254_pairing(pairs)`: 0x08.
+    Bn254Pairing,
+    /// `Crypto.blake2f(rounds, h, m, t, final)`: 0x09.
+    Blake2f,
+    /// `Crypto.kzg_point_evaluation(versioned_hash, z, y, commitment, proof)`: 0x0a.
+    PointEvaluation,
+    /// `Crypto.bls12_g1_add(a, b)`: 0x0b.
+    Bls12G1Add,
+    /// `Crypto.bls12_g1_msm(pairs)`: 0x0c.
+    Bls12G1Msm,
+    /// `Crypto.bls12_g2_add(a, b)`: 0x0d.
+    Bls12G2Add,
+    /// `Crypto.bls12_g2_msm(pairs)`: 0x0e.
+    Bls12G2Msm,
+    /// `Crypto.bls12_pairing(pairs)`: 0x0f.
+    Bls12Pairing,
+    /// `Crypto.bls12_map_fp_to_g1(fp)`: 0x10.
+    Bls12MapFpToG1,
+    /// `Crypto.bls12_map_fp2_to_g2(fp2)`: 0x11.
+    Bls12MapFp2ToG2,
+    /// `Crypto.p256_verify(hash, r, s, x, y)`: 0x100, EIP-7951.
+    P256Verify,
+}
+
+impl Pre {
+    pub(crate) fn address(self) -> u64 {
+        match self {
+            Pre::ModExp | Pre::PowMod => 0x05,
+            Pre::Bn254Add => 0x06,
+            Pre::Bn254Mul => 0x07,
+            Pre::Bn254Pairing => 0x08,
+            Pre::Blake2f => 0x09,
+            Pre::PointEvaluation => 0x0a,
+            Pre::Bls12G1Add => 0x0b,
+            Pre::Bls12G1Msm => 0x0c,
+            Pre::Bls12G2Add => 0x0d,
+            Pre::Bls12G2Msm => 0x0e,
+            Pre::Bls12Pairing => 0x0f,
+            Pre::Bls12MapFpToG1 => 0x10,
+            Pre::Bls12MapFp2ToG2 => 0x11,
+            Pre::P256Verify => 0x100,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]

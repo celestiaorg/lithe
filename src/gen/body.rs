@@ -245,6 +245,8 @@ impl<'a> Gen<'a> {
                 let optional = self.checked.types[qty].kind == TyKind::Option;
                 let blob = dynamic(qty)
                     || optional
+                    || self.checked.types[qty].words != 1
+                    || self.tree(qty)
                     || matches!(call, Expr::Call { args, .. } if args.iter().any(|a| dynamic(a.ty())));
                 if let (
                     Expr::Call {

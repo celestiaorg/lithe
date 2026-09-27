@@ -57,9 +57,37 @@ def raw(sig, *words):
     sel = subprocess.run(["cast", "sig", sig], capture_output=True, text=True).stdout.strip()
     return sel + "".join(words)
 
+def enc(types, *args):
+    """ABI-encoded values, as `abi.encode` lays them out, from Foundry's encoder."""
+    return subprocess.run(["cast", "abi-encode", f"f({types})", *args], capture_output=True, text=True).stdout.strip()
+
+
+ORDER = "(uint256,string,uint256[])"
+ORDERS = "[(1,first,[10,20]),(2," + LONG + ",[]),(3,\"\",[7])]"
+GRID = "[[1,2],[],[3,4,5]]"
+
 # (kind, sender, signature, args, value): kind is "send" or "call". Each targets the
 # contract its scenario is named after. `SUITES` below deploy several contracts by role.
 SCENARIOS = {
+    # ABI encoding and decoding on their own: flat values, several at once, and nested
+    # ones. Every answer is compared with solc's byte for byte, malformed data included.
+    "codec": [
+        ("call", "A", "enc_flat(address,uint256,string)", [ADDR["B"], "7", LONG], None),
+        ("call", "A", "dec_flat(bytes)", [enc("address,uint256,string", ADDR["B"], "7", LONG)], None),
+        ("call", "A", "dec_flat(bytes)", ["0x" + word(1)], None),
+        ("call", "A", "enc_orders(" + ORDER + "[])", [ORDERS], None),
+        ("call", "A", "enc_orders(" + ORDER + "[])", ["[]"], None),
+        ("call", "A", "dec_orders(bytes)", [enc(ORDER + "[]", ORDERS)], None),
+        ("call", "A", "dec_orders(bytes)", ["0x" + word(0x20) + word(1) + word(0x1000)], None),
+        ("call", "A", "dec_orders(bytes)", ["0x" + word(0x20) + word(1 << 64)], None),
+        ("call", "A", "enc_grid(uint256[][])", [GRID], None),
+        ("call", "A", "dec_grid(bytes)", [enc("uint256[][]", GRID)], None),
+        ("call", "A", "packed(address,uint96,string)", [ADDR["A"], "5", LONG], None),
+        ("call", "A", "calldata_for(" + ORDER + "[])", [ORDERS], None),
+        ("send", "A", "keep(bytes)", [enc(ORDER + "[]", ORDERS)], None),
+        ("call", "A", "seen()", [], None),
+        ("call", "A", "digest()", [], None),
+    ],
     "counter": [
         ("send", "A", "increment(uint256)", ["5"], None),
         ("send", "B", "increment(uint256)", ["0"], None),
@@ -1246,6 +1274,23 @@ SUITES = {
             ("send", "A", "relay", "unpack(address,bytes)", ["$texts", blobs("ab" * 16384, "cd" * 16384)], None),
             ("call", "A", "relay", "count()", [], None),
             ("send", "A", "relay", "unpack(address,bytes)", ["$texts", "0x" + word(0x20) + word(1) + word(0x1000)], None),
+        ],
+    },
+    # One contract reaching another only through raw calls: calldata built with
+    # `Abi.encode_call`, the raw answer decoded, and a refusal's payload read from raw
+    # revert data. No calldata floor price hides the inner call's gas.
+    "dial": {
+        "deploy": [("book", "book"), ("dialer", "dialer")],
+        "steps": [
+            ("send", "A", "dialer", "place(address," + ORDER + "[])", ["$book", "[(1,first,[10,20]),(2," + LONG + ",[5])]"], None),
+            ("call", "A", "dialer", "ids()", [], None),
+            ("call", "A", "dialer", "note(address,uint256)", ["$book", "2"], None),
+            ("call", "A", "dialer", "note(address,uint256)", ["$book", "9"], None),
+            ("send", "A", "dialer", "place(address," + ORDER + "[])", ["$book", "[(4,x,[1]),(3,y,[])]"], None),
+            ("call", "A", "dialer", "refused()", [], None),
+            ("call", "A", "dialer", "ids()", [], None),
+            # An account with no code answers nothing, which does not decode as a list.
+            ("call", "A", "dialer", "place(address," + ORDER + "[])", [ADDR["B"], "[(5,z,[1])]"], None),
         ],
     },
     "registry": {

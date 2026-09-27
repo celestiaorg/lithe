@@ -42,6 +42,8 @@ type Page =
   | { path: '/by-example/order-executor'; render: 'static' }
   | { path: '/by-example/overloading'; render: 'static' }
   | { path: '/by-example/payable'; render: 'static' }
+  | { path: '/by-example/raw-calls'; render: 'static' }
+  | { path: '/by-example/receive-fallback'; render: 'static' }
   | { path: '/by-example/primitive-types'; render: 'static' }
   | { path: '/by-example/records'; render: 'static' }
   | { path: '/by-example/reentrancy'; render: 'static' }

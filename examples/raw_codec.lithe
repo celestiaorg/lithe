@@ -1,0 +1,61 @@
+(* Raw calls with calldata built by hand and answers decoded by hand: the patterns for
+   calling a contract you have no interface for, or one chosen at runtime. The calldata
+   comes from `Abi.encode_call`, `Abi.encode_with_selector`, or `Abi.encode_with_signature`;
+   the return data from `Abi.decode`; a custom error's payload from the revert data. *)
+
+interface Token is {
+  view function balanceOf(owner : address) : nat;
+  function transfer(to : address; amount : nat) : bool;
+}
+
+interface Pair is {
+  view function getReserves() : (uint112, uint112, uint32);
+}
+
+type reserves is record {
+  reserve0 : uint112;
+  reserve1 : uint112;
+  last : uint32;
+}
+
+error Transfer_refused;
+
+storage is record {
+  sent : nat;
+  refusals : nat;
+  last_error : bytes4;
+}
+
+(* A read: `STATICCALL` with typed calldata, and one word decoded. *)
+external view function balance(const token : address; const owner : address) : nat is
+  Abi.decode(query Evm.static_call(token, Abi.encode_call(Token.balanceOf, owner)), nat)
+
+(* Several results decoded at once, from calldata built from a signature. *)
+external view function reserves_of(const pair : address) : reserves is {
+  const answer : bytes := query Evm.static_call(pair, Abi.encode_with_signature("getReserves()"));
+  const (r0, r1, last) : (uint112, uint112, uint32) := Abi.decode(answer, (uint112, uint112, uint32));
+} with { reserve0 = r0; reserve1 = r1; last = last; }
+
+(* A write: a token that answers nothing, `true`, or `false` from `transfer`, as tokens
+   do. No answer is success; an answer must decode as `true`. *)
+external nonreentrant function send(const token : address; const to : address; const amount : nat)
+  raises Transfer_refused
+is {
+  defer Evm.call(token, Abi.encode_with_selector(0xa9059cbb, to, amount)) then {
+  | Ok(answer : bytes) -> {
+      if answer.length > 0n then {
+        assert(Abi.decode(answer, bool), Transfer_refused);
+      }
+      storage.sent := storage.sent + amount;
+    }
+  | Error(reason : bytes) -> {
+      (* The first four bytes of a custom error are its selector. `Bytes.word` reads a
+         whole word, so the reason is padded first: an error with no payload is 4 bytes. *)
+      const pad : bytes32 := 0x00;
+      if reason.length >= 4n then {
+        storage.last_error := bytes4(uint32(nat(Bytes.word(Bytes.concat(reason, pad), 0n)) >> 224n));
+      }
+      storage.refusals := storage.refusals + 1n;
+    }
+  };
+}

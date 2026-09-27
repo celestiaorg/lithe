@@ -32,9 +32,12 @@ mod expr;
 mod helpers;
 mod list;
 mod plan;
+mod precompile;
 mod stmt;
 mod storage;
 mod stored_bytes;
+mod tree;
+use tree::Addr;
 
 const KECCAK: u8 = 0x20;
 const ADD: u8 = 0x01;
@@ -488,6 +491,14 @@ enum Sub {
     Base64Decode,
     /// `[n, ret]` becomes `n` in decimal, as a string: signed or unsigned.
     DecimalString(bool),
+    /// `[x, cur, ret]` becomes `[end]`: a dynamic value of this type ABI-encoded at `cur`.
+    TreeEnc(usize),
+    /// `[at, dst, ret]` becomes `[]`: the dynamic value of this type at data position
+    /// `at` decoded into its words at `dst`: from where, and whether as an argument.
+    TreeDec(usize, SrcKind, bool),
+    /// `[pos, cur, ret]` becomes `[end]`: the value of this type at calldata position
+    /// `pos`, checked and ABI-encoded at `cur`.
+    TreeCdEnc(usize),
 }
 
 /// Where a helper copies bytes from.
@@ -515,6 +526,9 @@ struct OpSite {
     needs_code: bool,
     /// The bytes of return data a result nothing decodes must have, as in Solidity.
     unread: u64,
+    /// `Evm.call` or `Evm.delegate_call`: the opcode. `data` holds a `bytes` value, the
+    /// whole calldata, and the continuation gets the return data as it came back.
+    raw: Option<u8>,
     /// The phase that runs when the call returns, with its result.
     then: Option<Then>,
     /// The arena words the `defer` captured: where they start, and how many. A queued
@@ -590,6 +604,14 @@ struct Gen<'a> {
     lists_in_order: bool,
     /// Some external function is `nonreentrant`, so every defer window must be marked.
     any_nonreentrant: bool,
+    /// With a payable `fallback`, value reaches the selector table, so each entry that is
+    /// not payable rejects it itself, jumping here.
+    reject_value: Option<u32>,
+    /// Decoding a function's arguments, whose oversized lengths revert with no data.
+    decoding_args: bool,
+    /// Where the data the tree decoders read starts, and its length.
+    tree_at: i32,
+    tree_len: i32,
     code: Vec<Inst>,
     next_label: u32,
     spaces: Vec<Space>,
@@ -646,6 +668,9 @@ struct Gen<'a> {
     cd_lazy: std::collections::HashSet<usize>,
     /// Static parameters of the entrypoint being compiled, decoded from calldata.
     cd_words: std::collections::HashSet<usize>,
+    /// Arguments with nested dynamic values left in calldata: each local holds the value's
+    /// calldata position, and encoding it copies from there.
+    cd_trees: std::collections::HashSet<usize>,
     bytes_rep: Option<(usize, u32)>,
     /// A leaf whose slot is read from memory instead of pushed, inside a shared helper.
     dyn_key: Option<(u32, i32)>,

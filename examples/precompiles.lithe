@@ -1,0 +1,36 @@
+(* The precompiles as built-ins: a passkey's P-256 signature, a BN254 pairing check as a
+   zk verifier makes, and a modular exponent. *)
+
+error Bad_signature;
+
+storage is record {
+  owner_x : bytes32;
+  owner_y : bytes32;
+  nonce : nat;
+}
+
+deploy(const x : bytes32; const y : bytes32) is {
+  storage.owner_x := x;
+  storage.owner_y := y;
+}
+
+(* A WebAuthn passkey signs with P-256. `false` on chains without EIP-7951. *)
+external function act(const r : bytes32; const s : bytes32)
+  raises Bad_signature
+is {
+  const digest : bytes32 := Crypto.keccak256(Abi.encode(Evm.self(), storage.nonce));
+  assert(Crypto.p256_verify(digest, r, s, storage.owner_x, storage.owner_y), Bad_signature);
+  storage.nonce := storage.nonce + 1n;
+}
+
+(* Whether the product of the pairings is one, as a Groth16 verifier's final check asks. *)
+external view function pairing_holds(const pairs : list((nat, nat, nat, nat, nat, nat))) : bool is
+  Crypto.bn254_pairing(pairs)
+
+(* A point's negation and double, on BN254's G1. *)
+external pure function double(const p : (nat, nat)) : (nat, nat) is
+  Crypto.bn254_add(p, p)
+
+(* An inverse modulo a prime, by Fermat: a^(p-2) mod p. *)
+external pure function inverse(const a : nat; const p : nat) : nat is
+  Nat.pow_mod(a, p - 2n, p)

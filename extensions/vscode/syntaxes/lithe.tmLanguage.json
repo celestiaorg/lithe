@@ -50,7 +50,7 @@
         },
         {
           "name": "keyword.other.declaration.lithe",
-          "match": "\\b(type|record|function|event|error|errors|interface|module|contract|storage|transient|guard|import|use|exposing|supports|requires|migrate|deploy|upgrade|upgradeable|at|as|create|const|var)\\b"
+          "match": "\\b(type|record|function|event|error|errors|interface|module|contract|storage|transient|guard|receive|fallback|delegates|forwards|import|use|exposing|supports|requires|migrate|deploy|upgrade|upgradeable|at|as|create|const|var)\\b"
         },
         {
           "name": "storage.modifier.lithe",

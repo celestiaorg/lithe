@@ -5,6 +5,22 @@ impl<'a> Gen<'a> {
         if self.in_query {
             return Err(error(line, col, "nested query is not supported"));
         }
+        if let Expr::Call {
+            builtin: Some(Builtin::StaticCall),
+            args,
+            ..
+        } = expr
+        {
+            self.in_query = true;
+            let called = self.raw_static_call(&args[0], &args[1]);
+            self.in_query = false;
+            called?;
+            // A failed query reverts the transition. It is not a declared Lithe error.
+            self.op(ISZERO);
+            self.revert_if_true()?;
+            self.call_sub(Sub::RevertData);
+            return Ok(());
+        }
         let Expr::Call {
             base: Some(base),
             args,
@@ -21,6 +37,12 @@ impl<'a> Gen<'a> {
             self.revert_if_true()?;
             self.check_word(ty, &|g: &mut Self| g.mload(buf + 32))?;
             self.mload(buf + 32);
+            return Ok(());
+        }
+        if self.tree(ty) {
+            let at = self.temp();
+            self.query_into(expr, ty, at, line, col)?;
+            self.mload(at);
             return Ok(());
         }
         let sig = self.checked.ifaces[iface][*method].sig.clone();
@@ -41,8 +63,7 @@ impl<'a> Gen<'a> {
             return Ok(());
         }
         if self.list_value(ty) {
-            let elem = self.checked.types[self.peel_nominal(ty)].elem.unwrap_or(0);
-            return self.decode_list_from(Src::Ret, elem);
+            return self.tree_value(SrcKind::Ret, ty);
         }
         if self.is_dynamic(ty) {
             return self.returned_bytes_value();
@@ -82,6 +103,66 @@ impl<'a> Gen<'a> {
         Ok(())
     }
 
+    /// `STATICCALL`s `to` with the `bytes` value `data` as its whole calldata, keeping none
+    /// of the answer. Leaves whether the call succeeded.
+    fn raw_static_call(&mut self, to: &Expr, data: &Expr) -> Result<(), Error> {
+        self.op(PUSH0);
+        self.op(PUSH0);
+        self.compile_value(data)?;
+        self.bytes_span();
+        self.compile_value(to)?;
+        self.op(GAS);
+        self.op(STATICCALL);
+        Ok(())
+    }
+
+    /// `case query Evm.static_call(to, data) of`: `Ok` gets the return data, whole, and
+    /// `Error` the revert data.
+    fn compile_raw_query_case(
+        &mut self,
+        args: &[Expr],
+        arms: &[crate::ast::Arm],
+        line: u32,
+        col: u32,
+        sink: Sink,
+    ) -> Result<(), Error> {
+        let arm = |name: &str| arms.iter().find(|arm| arm.ctors.iter().any(|c| c == name)).cloned();
+        let (Some(ok), Some(failed)) = (arm("Ok"), arm("Error")) else {
+            return Err(error(
+                line,
+                col,
+                "a query outcome needs `Ok` and `Error` arms",
+            ));
+        };
+        let failed_l = self.fresh();
+        let end = self.fresh();
+        self.in_query = true;
+        let called = self.raw_static_call(&args[0], &args[1]);
+        self.in_query = false;
+        called?;
+        self.op(ISZERO);
+        self.push_label(failed_l);
+        self.op(JUMPI);
+        self.branch += 1;
+        for (arm, at) in [(&ok, None), (&failed, Some(failed_l))] {
+            if let Some(at) = at {
+                self.jumpdest(at);
+            }
+            if let Some(sym) = arm.bind_sym {
+                self.revert_data(sym)?;
+            }
+            self.compile_stmts(&arm.stmts)?;
+            self.arm_result(&arm.expr, sink)?;
+            if at.is_none() {
+                self.push_label(end);
+                self.op(JUMP);
+            }
+        }
+        self.branch -= 1;
+        self.jumpdest(end);
+        Ok(())
+    }
+
     /// `case query ... of`: the `STATICCALL` runs here, and its outcome picks the arm.
     /// A failed call runs `Error` with its revert data; an answer too short or not of the
     /// declared type still reverts, as for any query.
@@ -94,6 +175,14 @@ impl<'a> Gen<'a> {
         col: u32,
         sink: Sink,
     ) -> Result<(), Error> {
+        if let Expr::Call {
+            builtin: Some(Builtin::StaticCall),
+            args,
+            ..
+        } = call
+        {
+            return self.compile_raw_query_case(args, arms, line, col, sink);
+        }
         let Expr::Call {
             base: Some(base),
             args,
@@ -112,6 +201,35 @@ impl<'a> Gen<'a> {
                 "a query outcome needs `Ok` and `Error` arms",
             ));
         };
+        if self.checked.types[ty].kind != TyKind::Option
+            && (self.checked.types[ty].words > 1 || self.tree(ty))
+        {
+            // An answer of several words, or with dynamic values in it, decoded in the
+            // `Ok` arm into its binding.
+            let (failed_l, end) = (self.fresh(), self.fresh());
+            self.query_raw(call, line, col)?;
+            self.op(ISZERO);
+            self.push_label(failed_l);
+            self.op(JUMPI);
+            self.branch += 1;
+            if let Some(sym) = ok.bind_sym {
+                self.decode_ret(ty, Addr::Mem(self.local[sym]))?;
+            }
+            self.compile_stmts(&ok.stmts)?;
+            self.arm_result(&ok.expr, sink)?;
+            self.push_label(end);
+            self.op(JUMP);
+            self.jumpdest(failed_l);
+            if let Some(sym) = failed.bind_sym {
+                self.revert_data(sym)?;
+            }
+            self.compile_stmts(&failed.stmts)?;
+            self.arm_result(&failed.expr, sink)?;
+            self.branch -= 1;
+            self.jumpdest(end);
+            let _ = (base, args, iface, method);
+            return Ok(());
+        }
         let sel = selector(&self.checked.ifaces[iface][*method].sig);
         let failed_l = self.fresh();
         let end = self.fresh();
@@ -142,8 +260,7 @@ impl<'a> Gen<'a> {
             None if optional => self.op(POP),
             Some(sym) if dynamic => {
                 if self.list_value(ty) {
-                    let elem = self.checked.types[self.peel_nominal(ty)].elem.unwrap_or(0);
-                    self.decode_list_from(Src::Ret, elem)?;
+                    self.tree_value(SrcKind::Ret, ty)?;
                 } else {
                     self.returned_bytes_value()?;
                 }
@@ -222,6 +339,47 @@ impl<'a> Gen<'a> {
                     fired: None,
                     needs_code: false,
                     unread: 0,
+                    raw: None,
+                    then: then.cloned(),
+                    record: (0, 0),
+                    captures: self.loop_captures(then),
+                })
+            }
+            Expr::Call {
+                builtin: Some(kind @ (Builtin::RawCall | Builtin::DelegateCall)),
+                args,
+                ..
+            } => {
+                // The target, then the calldata as a `bytes` value, which stays where it is
+                // until the call runs.
+                let to = self.arena_alloc(2);
+                self.compile_value(&args[0])?;
+                self.mstore_off(to);
+                self.compile_value(&args[1])?;
+                self.mstore_off(to + 32);
+                let value_at = match value {
+                    Some(v) => {
+                        let at = self.arena_alloc(1);
+                        self.compile_value(v)?;
+                        self.mstore_off(at);
+                        Some(at)
+                    }
+                    None => None,
+                };
+                let delegate = *kind == Builtin::DelegateCall;
+                self.push_op(OpSite {
+                    to,
+                    value: value_at,
+                    data: Some(to + 32),
+                    size: 0,
+                    dynamic: false,
+                    create: None,
+                    fired: None,
+                    // Code that is not there runs nothing, so a delegate call to it would
+                    // succeed having done nothing.
+                    needs_code: delegate,
+                    unread: 0,
+                    raw: Some(if delegate { DELEGATECALL } else { CALL }),
                     then: then.cloned(),
                     record: (0, 0),
                     captures: self.loop_captures(then),
@@ -254,6 +412,7 @@ impl<'a> Gen<'a> {
                     fired: None,
                     needs_code: false,
                     unread: 0,
+                    raw: None,
                     then: then.cloned(),
                     record: (0, 0),
                     captures: self.loop_captures(then),
@@ -281,10 +440,14 @@ impl<'a> Gen<'a> {
                 };
                 let dynamic = args
                     .iter()
-                    .any(|a| self.is_dynamic(a.ty()) || self.list_value(a.ty()));
+                    .any(|a| self.is_dynamic(a.ty()) || self.list_value(a.ty()) || self.tree(a.ty()));
                 let words = self.arg_words(args);
                 let size = 4 + u64::from(words) * 32;
-                let data = if dynamic {
+                let data = if args.iter().any(|a| self.tree(a.ty())) {
+                    let slot = self.arena_alloc(1);
+                    self.tree_calldata(sel, args, slot)?;
+                    slot
+                } else if dynamic {
                     let slot = self.arena_alloc(1);
                     self.encode_dynamic_call(sel, args, slot)?;
                     slot
@@ -304,6 +467,7 @@ impl<'a> Gen<'a> {
                     needs_code: self.checked.types[self.checked.ifaces[iface][*method].ret].kind
                         == TyKind::Unit,
                     unread: self.unread_result(self.checked.ifaces[iface][*method].ret, then),
+                    raw: None,
                     then: then.cloned(),
                     record: (0, 0),
                     captures: self.loop_captures(then),
@@ -635,7 +799,7 @@ impl<'a> Gen<'a> {
     ) -> Result<(), Error> {
         if args
             .iter()
-            .any(|a| self.is_dynamic(a.ty()) || self.list_value(a.ty()))
+            .any(|a| self.is_dynamic(a.ty()) || self.list_value(a.ty()) || self.tree(a.ty()))
         {
             // Calldata in a blob: the selector, then the arguments ABI-encoded.
             self.compile_abi_encode(args, None)?;
@@ -895,7 +1059,7 @@ impl<'a> Gen<'a> {
             TyKind::Unit | TyKind::Option => 0,
             _ if !unread => 0,
             _ if self.is_dynamic(ret) || self.list_value(ret) => 32,
-            _ => u64::from(t.words) * 32,
+            _ => u64::from(self.ret_head(ret)),
         }
     }
 
@@ -915,6 +1079,10 @@ impl<'a> Gen<'a> {
         self.op(PUSH0);
         self.op(PUSH0);
         match op.data {
+            Some(slot) if op.raw.is_some() => {
+                self.mload(slot);
+                self.bytes_span();
+            }
             Some(slot) if op.dynamic => {
                 self.mload(slot);
                 self.op(MLOAD);
@@ -931,13 +1099,16 @@ impl<'a> Gen<'a> {
                 self.op(PUSH0);
             }
         }
-        match op.value {
-            Some(value) => self.mload(value),
-            None => self.op(PUSH0),
+        let opcode = op.raw.unwrap_or(CALL);
+        if opcode != DELEGATECALL {
+            match op.value {
+                Some(value) => self.mload(value),
+                None => self.op(PUSH0),
+            }
         }
         self.mload(op.to);
         self.op(GAS);
-        self.op(CALL);
+        self.op(opcode);
         match op.then.as_ref().and_then(|then| then.error.as_deref()) {
             // A recoverable call's failure runs its `Error` phase on the revert data.
             Some(failed) => {
@@ -973,10 +1144,30 @@ impl<'a> Gen<'a> {
             self.revert_if_true()?;
         }
         if let Some(then) = &op.then {
+            if op.raw.is_some() {
+                return self.raw_phase(then);
+            }
             self.decode_returned(then)?;
             self.run_phase(then)?;
         }
         Ok(())
+    }
+
+    /// A raw call's continuation: its result is the return data, whole.
+    fn raw_phase(&mut self, then: &Then) -> Result<(), Error> {
+        let lazy = then
+            .syms
+            .first()
+            .copied()
+            .filter(|&sym| self.reads_only_returned(then, sym));
+        match (then.syms.first(), lazy) {
+            (Some(_), Some(sym)) => self.returned = Some(sym),
+            (Some(&sym), None) => self.revert_data(sym)?,
+            _ => {}
+        }
+        let phase = self.run_phase(then);
+        self.returned = None;
+        phase
     }
 
     /// Copies a created contract's creation code out of this code and runs it.
@@ -1204,9 +1395,27 @@ impl<'a> Gen<'a> {
             return Ok(());
         }
         let ret = then.ret;
+        if self.tree(ret) {
+            if !then.tuple {
+                return self.decode_ret(ret, Addr::Mem(self.local[then.syms[0]]));
+            }
+            // A tuple result, decoded whole, then each element's words to its name.
+            let words = self.checked.types[ret].words;
+            self.return_sites += 1;
+            let buf = self.region(Region::Returned(self.return_sites), words * 32);
+            self.decode_ret(ret, Addr::Mem(buf))?;
+            let fields: Vec<(u32, u32)> = self.checked.types[ret]
+                .fields
+                .iter()
+                .map(|f| (f.slot, f.n_leaf.max(1)))
+                .collect();
+            for (sym, (slot, n)) in then.syms.iter().zip(fields) {
+                self.copy_words(buf + slot as i32 * 32, self.local[*sym], n);
+            }
+            return Ok(());
+        }
         if self.list_value(ret) {
-            let elem = self.checked.types[self.peel_nominal(ret)].elem.unwrap_or(0);
-            self.decode_list_from(Src::Ret, elem)?;
+            self.tree_value(SrcKind::Ret, ret)?;
             self.mstore_off(self.local[then.syms[0]]);
             return Ok(());
         }
@@ -1421,201 +1630,6 @@ impl<'a> Gen<'a> {
         }
     }
 
-    /// Pushes a `T[]` value ABI-decoded from the last call's return data, or, given the
-    /// words holding an encoding's data address and length, from memory. The bounds are
-    /// Solidity's, and every element must hold a value of its type.
-    pub(super) fn decode_list_from(&mut self, src: Src, elem: usize) -> Result<(), Error> {
-        let (off, n, list, zero) = (self.temp(), self.temp(), self.temp(), self.temp());
-        let size = |g: &mut Self| g.src_size(src);
-        let word = |g: &mut Self, at: i32| -> Result<(), Error> {
-            if let Src::Ret = src {
-                g.push_u64(32);
-                g.mload(at);
-                g.push_mem(g.hash_buf);
-                g.op(RETURNDATACOPY);
-                g.mload(g.hash_buf);
-            } else {
-                g.mload(at);
-                g.src_word(src);
-            }
-            Ok(())
-        };
-        self.op(PUSH0);
-        self.mstore_off(zero);
-        // The head word: an offset in 64 bits, with its length word inside the data.
-        size(self);
-        self.push_u64(32);
-        self.op(GT);
-        self.revert_if_true()?;
-        word(self, zero)?;
-        self.op(DUP1);
-        self.mstore_off(off);
-        self.op(DUP1);
-        self.push_u64(64);
-        self.op(SHR);
-        self.revert_if_true()?;
-        self.push_u64(32);
-        self.op(ADD);
-        size(self);
-        self.op(LT);
-        self.revert_if_true()?;
-        word(self, off)?;
-        self.op(DUP1);
-        self.mstore_off(n);
-        self.op(DUP1);
-        self.push_u64(64);
-        self.op(SHR);
-        self.revert_if_true()?;
-        // Every element inside the data.
-        let k = self.elem_words(elem);
-        self.mload(n);
-        self.push_u64(32 * u64::from(k));
-        self.op(MUL);
-        self.mload(off);
-        self.op(ADD);
-        self.push_u64(32);
-        self.op(ADD);
-        size(self);
-        self.op(LT);
-        self.revert_if_true()?;
-        self.mload(n);
-        self.alloc_list(k)?;
-        self.mstore_off(list);
-        self.mload(n);
-        self.push_u64(32 * u64::from(k));
-        self.op(MUL);
-        self.mload(off);
-        self.push_u64(32);
-        self.op(ADD);
-        self.src_origin(src);
-        self.mload(list);
-        self.push_u64(32);
-        self.op(ADD);
-        self.src_copy(src);
-        let word_ty = self.peel_nominal(elem);
-        if self.is_dynamic(word_ty) {
-            // Each head word is an offset from the first; its length word and bytes are
-            // inside the data, and each value is copied into a blob of its own.
-            // [end, base, slot, stop]: where the data ends and the heads start, as
-            // addresses in memory or offsets in the return data, and the list's slots.
-            let (top, done) = (self.fresh(), self.fresh());
-            self.src_size(src);
-            self.src_origin(src);
-            self.mload(off);
-            self.src_origin(src);
-            self.push_u64(32);
-            self.op(ADD);
-            self.mload(list);
-            self.push_u64(32);
-            self.op(ADD);
-            self.op(DUP1);
-            self.mload(n);
-            self.push_u64(32);
-            self.op(MUL);
-            self.op(ADD);
-            self.jumpdest(top);
-            self.op(DUP1);
-            self.op(DUP1 + 2);
-            self.op(LT);
-            self.op(ISZERO);
-            self.push_label(done);
-            self.op(JUMPI);
-            self.branch += 1;
-            self.op(DUP1 + 1);
-            self.op(MLOAD);
-            self.op(DUP1);
-            self.push_u64(64);
-            self.op(SHR);
-            self.revert_if_true()?;
-            self.op(DUP1 + 3);
-            self.op(ADD);
-            // [.., pos]: the element's length word.
-            self.op(DUP1);
-            self.push_u64(32);
-            self.op(ADD);
-            self.op(DUP1 + 5);
-            self.op(LT);
-            self.revert_if_true()?;
-            if let Src::Ret = src {
-                self.push_u64(32);
-                self.op(DUP1 + 1);
-                self.push_mem(self.hash_buf);
-                self.op(RETURNDATACOPY);
-                self.mload(self.hash_buf);
-            } else {
-                self.op(DUP1);
-                self.src_load(src);
-            }
-            self.op(DUP1);
-            self.push_u64(64);
-            self.op(SHR);
-            self.revert_if_true()?;
-            self.op(DUP1);
-            self.op(DUP1 + 2);
-            self.op(ADD);
-            self.push_u64(32);
-            self.op(ADD);
-            self.op(DUP1 + 6);
-            self.op(LT);
-            self.revert_if_true()?;
-            self.op(SWAP1);
-            self.push_u64(32);
-            self.op(ADD);
-            self.op(SWAP1);
-            self.bytes_value_from(src)?;
-            self.op(DUP1 + 2);
-            self.op(MSTORE);
-            self.op(SWAP1);
-            self.push_u64(32);
-            self.op(ADD);
-            self.op(SWAP1);
-            self.branch -= 1;
-            self.push_label(top);
-            self.op(JUMP);
-            self.jumpdest(done);
-            for _ in 0..4 {
-                self.op(POP);
-            }
-            self.mload(list);
-            return Ok(());
-        }
-        if k > 1 {
-            self.mload(list);
-            self.check_elements(elem)?;
-            return Ok(());
-        }
-        let t = &self.checked.types[word_ty];
-        let whole =
-            matches!(
-                t.kind,
-                TyKind::Nat | TyKind::Int | TyKind::Wei | TyKind::Timestamp | TyKind::Bytes
-            ) && (t.bits == 0 || t.bits == 256 || (t.kind == TyKind::Bytes && t.bits == 32));
-        if !whole {
-            self.words_loop(zero, n, &mut |g, j| {
-                let at = g.temp();
-                g.mload(j);
-                g.push_u64(32);
-                g.op(MUL);
-                g.mload(list);
-                g.op(ADD);
-                g.push_u64(32);
-                g.op(ADD);
-                g.mstore_off(at);
-                g.check_word(elem, &|g: &mut Self| {
-                    g.mload(at);
-                    g.op(MLOAD);
-                })?;
-                g.mload(at);
-                g.op(MLOAD);
-                g.align_decoded(word_ty);
-                g.mload(at);
-                g.op(MSTORE);
-                Ok(())
-            })?;
-        }
-        self.mload(list);
-        Ok(())
-    }
 
     /// Compiles a continuation as the next transition phase. It starts from storage as the
     /// call left it: nothing cached before the call is reused. It shares the enclosing

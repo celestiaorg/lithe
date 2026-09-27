@@ -119,7 +119,7 @@ The default transient record is accessed as `transient.x`, and a named one as `n
 | integers, `bool`, `address`, `bytesN`, `wei`, `timestamp`, interfaces | yes |
 | `string`, `bytes` | yes |
 | records, tuples | yes, packed |
-| `list(T)`, `list(T, n)` | yes, for word-sized `T` or a fixed-size record, tuple, or option. A record element packs like a struct in a Solidity array |
+| `list(T)`, `list(T, n)` | yes, for word-sized `T`, strings, bytes, or a fixed-size record, tuple, or option. A record element packs like a struct in a Solidity array. A list of lists, or of records or tuples with strings, bytes, or lists in them, is a value but not yet storage |
 | `map(K, V)` | yes. `V` is a word, a map, a list, an option, or a record, which may hold maps, lists, and strings itself |
 | `option(T)` | yes. One slot when `T` is narrower than 32 bytes. Otherwise a tag slot, then `T`'s slots |
 | variants | yes. One byte when no case has a payload, packed. Otherwise laid out as a record: the case's index packed with the narrow payload words, then the rest. See [Variants](/language/types#representation-1) |

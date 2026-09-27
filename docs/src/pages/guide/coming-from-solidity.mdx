@@ -115,7 +115,10 @@ Both contracts have the same ABI, the same error selector, the same event topic,
 | `constructor(...)` | `deploy(...) is { ... }`. See [Deployment](/language/deploy) |
 | `new Vault(a, b)` | `defer create Vault(a, b)`. See [`create`](/language/effects#create) |
 | `initializer` (OpenZeppelin, upgradeable) | `deploy`, in an `upgradeable` contract. See [Deployment](/language/deploy#upgradeable-contracts) |
-| `receive()` / `fallback()` | none. Ether is accepted only by `payable` entrypoints |
+| `receive() external payable` | `payable receive is { ... }`. See [`receive` and `fallback`](/language/functions#receive-and-fallback) |
+| `fallback() external [payable]` | `[payable] fallback is { ... }`, reading `Evm.calldata()` |
+| `fallback(bytes calldata) returns (bytes memory)` | `fallback : bytes is { ... } with result`, returned as it is |
+| a proxy's `fallback` with `delegatecall` in assembly | `payable fallback delegates to target;` |
 | function overloading | the same: overloads differ in their parameter types |
 
 ## Globals
@@ -135,6 +138,11 @@ Both contracts have the same ABI, the same error selector, the same event topic,
 | `ecrecover(h, v, r, s)` | `Crypto.ecrecover(h, v, r, s)` |
 | `abi.encode(...)` | `Abi.encode(...)` |
 | `abi.decode(data, (uint))` | `Abi.decode(data, nat)` |
+| `abi.decode(data, (address, uint))` | `Abi.decode(data, (address, nat))` |
+| `function f() returns (uint a, string b)` | a record result, `: result`, whose fields are the results |
+| `function f() returns (S memory)` | a tuple result, `: (nat, string)` |
+| `uint[][]`, `S[]` with strings inside | `list(list(nat))`, `list(s)`: lists nest to any depth |
+| precompiles by address, in assembly | `Crypto.bn254_pairing`, `Crypto.p256_verify`, and the rest. See [Precompiles](/language/builtins#precompiles) |
 
 The full list is in [Built-ins](/language/builtins).
 
@@ -168,7 +176,9 @@ Lithe error names are converted to PascalCase in the ABI, so `Not_owner` becomes
 | `new C{salt: s}(...)` | `defer create C(...) with salt = s`. See [`create`](/language/effects#create) |
 | `type(C).creationCode` | `Evm.creation_code(C)` |
 | `token.call(...)` accepting empty return data | a result of `option(T)`: `None` when nothing comes back. See [Optional results](/language/effects#optional-results) |
-| `delegatecall` | none. Use modules, or `upgradeable` for proxies |
+| `to.call{value: v}(data)` | `defer Evm.call(to, data) with value = v then (result : bytes) { ... }`. See [Raw calls](/language/effects#raw-calls) |
+| `to.staticcall(data)` | `query Evm.static_call(to, data)` |
+| `to.delegatecall(data)` | `defer Evm.delegate_call(to, data)`. For a contract's own upgrades, use `upgradeable` |
 
 ## Inheritance and libraries
 

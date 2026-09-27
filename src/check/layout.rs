@@ -285,9 +285,23 @@ pub(super) fn check_storage_shape(types: &[RType], id: usize, at: &str) -> Resul
                     format!("storage field `{at}` cannot hold this type"),
                 ));
             }
+            // A stored list's elements are words, strings, bytes, or fixed-size values:
+            // what Solidity keeps in an array's slots.
+            let inner = types[peel_id(types, elem)].kind;
+            if types[id].kind == TyKind::List
+                && (inner == TyKind::List
+                    || (matches!(inner, TyKind::Record | TyKind::Tuple) && !is_static_value(types, elem)))
+            {
+                return Err(error(
+                    1,
+                    1,
+                    format!(
+                        "storage field `{at}` is a list of lists, or of records or tuples with strings, bytes, or lists; a stored list holds words, strings, bytes, or fixed-size records, tuples, and options"
+                    ),
+                ));
+            }
             // A list of options, records, or tuples, or an option holding a record, tuple,
             // fixed list, or option.
-            let inner = types[peel_id(types, elem)].kind;
             if inner == TyKind::Option
                 || (types[id].kind == TyKind::List && matches!(inner, TyKind::Record | TyKind::Tuple))
                 || (types[id].kind == TyKind::Option

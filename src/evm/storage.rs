@@ -260,12 +260,16 @@ fn nested_storage_lays_out_like_solidity() {
     assert_eq!(at(&carded.storage, card.wrapping_add(n(1))), n(3));
     assert_eq!(at(&carded.storage, card.wrapping_add(n(2))), n(long.len() as u64 * 2 + 1));
     assert_eq!(at(&carded.storage, card.wrapping_add(n(3))), n(9));
+    // The record's fields are its results; the inner record is one, a tuple.
     let out = run_ok(&rt, &carded.storage, "card_of(uint256)", &[n(4)]).returndata;
-    let words: Vec<Word> = (0..4).map(|i| load_bytes(&out, i * 32)).collect();
-    assert_eq!(words, [n(128), n(3), n(192), n(9)]);
-    assert_eq!(&out[128..160], &n(2).to_be_bytes());
-    assert_eq!(&out[160..162], b"bo");
-    assert_eq!(&out[224..224 + long.len()], &long[..]);
+    let words: Vec<Word> = (0..3).map(|i| load_bytes(&out, i * 32)).collect();
+    assert_eq!(words, [n(96), n(3), n(160)]);
+    assert_eq!(&out[96..128], &n(2).to_be_bytes());
+    assert_eq!(&out[128..130], b"bo");
+    assert_eq!(load_bytes(&out, 160), n(64));
+    assert_eq!(load_bytes(&out, 192), n(9));
+    assert_eq!(load_bytes(&out, 224), n(long.len() as u64));
+    assert_eq!(&out[256..256 + long.len()], &long[..]);
 }
 
 #[test]

@@ -106,11 +106,13 @@ const byExample = [
     text: "Ether and calls",
     items: [
       { text: "Payable", link: "/by-example/payable" },
+      { text: "Receive and fallback", link: "/by-example/receive-fallback" },
       { text: "Sending ether", link: "/by-example/sending-ether" },
       { text: "Interfaces and queries", link: "/by-example/interfaces" },
       { text: "Calling other contracts", link: "/by-example/calling-contracts" },
       { text: "Using call results", link: "/by-example/continuations" },
       { text: "Recovering from failed calls", link: "/by-example/try-catch" },
+      { text: "Raw calls", link: "/by-example/raw-calls" },
       { text: "Reentrancy", link: "/by-example/reentrancy" },
     ],
   },

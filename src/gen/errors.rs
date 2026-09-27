@@ -128,6 +128,14 @@ impl<'a> Gen<'a> {
 
     /// Arguments are computed first. Then the error is laid out from byte 28 and reverted.
     fn revert_error(&mut self, sel: [u8; 4], args: &[&Expr]) -> Result<(), Error> {
+        // The shared helper lays out lists of words; a list of strings or bytes has tails of
+        // its own.
+        let blobs = |g: &Self, ty: usize| {
+            g.list_value(ty) && g.abi_dyn(g.list_elem(ty))
+        };
+        if args.iter().any(|arg| self.tree_part(arg.ty()) || blobs(self, arg.ty())) {
+            return self.revert_tree(sel, args);
+        }
         if args
             .iter()
             .any(|arg| self.list_value(arg.ty()) && self.list_k(arg.ty()) > 1)
@@ -153,6 +161,26 @@ impl<'a> Gen<'a> {
         self.op(MSTORE);
         self.push_u64(4 + args.len() as u64 * 32);
         self.push_u64(28);
+        self.op(REVERT);
+        Ok(())
+    }
+
+    /// A payload with records, tuples, fixed lists, or nested dynamic values, encoded as
+    /// `Abi.encode` would, after the selector.
+    fn revert_tree(&mut self, sel: [u8; 4], args: &[&Expr]) -> Result<(), Error> {
+        self.tree_encode_exprs(args)?;
+        self.mload(self.scratch_a);
+        self.mstore_off(self.scratch_b);
+        self.push_u64(u64::from(u32::from_be_bytes(sel)));
+        self.mstore_off(self.scratch_val);
+        self.prepend_saved_selector()?;
+        self.push_u64(1);
+        self.op(SHR);
+        self.op(DUP1);
+        self.op(MLOAD);
+        self.op(SWAP1);
+        self.push_u64(32);
+        self.op(ADD);
         self.op(REVERT);
         Ok(())
     }
@@ -432,6 +460,9 @@ impl<'a> Gen<'a> {
         // Topics stay on the stack; data goes to memory in the order the fields are written.
         // Each `emit` has its own data words, so an `emit` inside a field's value cannot
         // overwrite them. The layout lets emits in different bodies share memory.
+        if schema.iter().any(|&(indexed, _, ty)| !indexed && self.tree_part(ty)) {
+            return self.emit_tree(&schema, fields, topic, n_topics);
+        }
         let dynamic = schema
             .iter()
             .any(|&(indexed, _, ty)| !indexed && (self.is_dynamic(ty) || self.list_value(ty)));
@@ -464,6 +495,41 @@ impl<'a> Gen<'a> {
         } else {
             self.push_mem(data);
         }
+        self.op(LOG1 + n_topics as u8);
+        Ok(())
+    }
+
+    /// An event whose data holds records, tuples, fixed lists, or nested dynamic values: the
+    /// data fields are staged in order with the topics, then ABI-encoded.
+    fn emit_tree(
+        &mut self,
+        schema: &[(bool, bool, usize)],
+        fields: &[(String, Expr)],
+        topic: [u8; 32],
+        n_topics: u32,
+    ) -> Result<(), Error> {
+        let mut parts = Vec::new();
+        for (&(indexed, hashed, ty), (_, expr)) in schema.iter().zip(fields) {
+            if indexed {
+                self.compile_topic(expr, ty, hashed)?;
+            } else {
+                let at = self.stage(expr)?;
+                parts.push((Addr::Mem(at), ty));
+            }
+        }
+        self.tree_encode(&parts)?;
+        match n_topics {
+            2 => self.op(SWAP1),
+            3 => self.op(SWAP1 + 1),
+            _ => {}
+        }
+        self.push_word(Word::from_be_bytes(topic));
+        self.mload(self.scratch_a);
+        self.op(DUP1);
+        self.op(MLOAD);
+        self.op(SWAP1);
+        self.push_u64(32);
+        self.op(ADD);
         self.op(LOG1 + n_topics as u8);
         Ok(())
     }
@@ -547,6 +613,10 @@ impl<'a> Gen<'a> {
             return Ok(());
         }
         let id = self.peel_ty(ty);
+        if !self.flat_topic(id) {
+            let at = self.stage(expr)?;
+            return self.tree_topic(Addr::Mem(at), id);
+        }
         match self.checked.types[id].kind {
             TyKind::String | TyKind::Bytes => {
                 self.compile_value(expr)?;
@@ -575,6 +645,39 @@ impl<'a> Gen<'a> {
                 expr.col(),
                 "this indexed value cannot be hashed",
             )),
+        }
+    }
+
+    /// An indexed value the paths below hash: a string or bytes, a list of value words, or
+    /// a fixed list, record, or tuple of at most eight value words.
+    fn flat_topic(&self, id: usize) -> bool {
+        let types = &self.checked.types;
+        let word = |ty: usize| {
+            let t = &types[self.peel_nominal(ty)];
+            matches!(
+                t.kind,
+                TyKind::Nat
+                    | TyKind::Int
+                    | TyKind::Address
+                    | TyKind::Bool
+                    | TyKind::Interface
+                    | TyKind::Wei
+                    | TyKind::Timestamp
+            ) || (t.kind == TyKind::Bytes && t.bits > 0)
+        };
+        // `hash_aggregate` hashes words as they are, so its members must be words the ABI
+        // keeps where Lithe does: not `bytesN`, which the ABI moves to the high bytes.
+        let unshifted = |ty: usize| word(ty) && self.abi_shift(ty) == 0;
+        let t = &types[id];
+        match t.kind {
+            TyKind::String => true,
+            TyKind::Bytes => t.bits == 0,
+            TyKind::List if t.bits == 0 => t.elem.is_some_and(word),
+            TyKind::List => t.bits <= 8 && t.elem.is_some_and(unshifted),
+            TyKind::Record | TyKind::Tuple => {
+                t.words <= 8 && t.fields.iter().all(|f| unshifted(f.ty))
+            }
+            _ => false,
         }
     }
 

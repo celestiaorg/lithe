@@ -127,6 +127,9 @@ impl<'a> Gen<'a> {
                 Sub::Base64Encode => self.sub_base64_encode(),
                 Sub::Base64Decode => self.sub_base64_decode(),
                 Sub::DecimalString(signed) => self.sub_decimal_string(signed)?,
+                Sub::TreeEnc(ty) => self.sub_tree_enc(ty)?,
+                Sub::TreeDec(ty, kind, args) => self.sub_tree_dec(ty, kind, args)?,
+                Sub::TreeCdEnc(ty) => self.sub_tree_cd_enc(ty)?,
             }
         }
     }
@@ -656,64 +659,8 @@ impl<'a> Gen<'a> {
         Ok(format!("{}({})", f.name, parts.join(",")))
     }
 
-    /// simplify: a public payload must be a unit, leaf, or record of leaves. Ceiling: no nested entrypoint variants. Upgrade path: flatten nested variants into one selector each.
+    /// A parameter's ABI types, as the route's signature has them.
     fn abi_types(&self, ty: usize) -> Result<Vec<String>, Error> {
-        match self.checked.types[ty].kind {
-            TyKind::Unit => Ok(Vec::new()),
-            TyKind::Nat => Ok(vec![
-                crate::check::uint_abi(self.checked.types[ty].bits).to_string()
-            ]),
-            TyKind::Int => Ok(vec![
-                crate::check::int_abi(self.checked.types[ty].bits).to_string()
-            ]),
-            TyKind::Wei | TyKind::Timestamp => Ok(vec!["uint256".to_string()]),
-            TyKind::Bytes => Ok(vec![
-                crate::check::bytes_abi(self.checked.types[ty].bits).to_string()
-            ]),
-            TyKind::String => Ok(vec!["string".to_string()]),
-            TyKind::Nominal => {
-                let Some(under) = self.checked.types[ty].elem else {
-                    return Err(error(1, 1, "this type cannot be an entrypoint argument"));
-                };
-                self.abi_types(under)
-            }
-            TyKind::Address | TyKind::Interface => Ok(vec!["address".to_string()]),
-            TyKind::Bool => Ok(vec!["bool".to_string()]),
-            TyKind::List => {
-                let Some(elem) = self.checked.types[ty].elem else {
-                    return Err(error(1, 1, "this type cannot be an entrypoint argument"));
-                };
-                let inner = match crate::check::static_abi(&self.checked.types, elem) {
-                    Some(tuple) if self.checked.types[self.peel_nominal(elem)].kind == TyKind::Record => vec![tuple],
-                    _ => self.abi_types(elem)?,
-                };
-                if inner.len() != 1 {
-                    return Err(error(1, 1, "list elements must be a single ABI value"));
-                }
-                let bits = self.checked.types[ty].bits;
-                let len = if bits == 0 {
-                    String::new()
-                } else {
-                    bits.to_string()
-                };
-                Ok(vec![format!("{}[{len}]", inner[0])])
-            }
-            TyKind::Record if is_sum(&self.checked.types, ty) => {
-                Err(error(1, 1, "a variant with a payload cannot be an ABI value"))
-            }
-            TyKind::Record => {
-                let mut out = Vec::new();
-                for f in &self.checked.types[ty].fields {
-                    out.extend(self.abi_types(f.ty)?);
-                }
-                Ok(out)
-            }
-            TyKind::Variant => Err(error(1, 1, "public entrypoint payload cannot be a variant")),
-            TyKind::Tuple => {
-                let fields = crate::check::abi_fields(&self.checked.types, ty, "")?;
-                Ok(fields.into_iter().map(|field| field.ty).collect())
-            }
-            _ => Err(error(1, 1, "this type cannot be an entrypoint argument")),
-        }
+        crate::check::abi_parts(&self.checked.types, ty)
     }
 }

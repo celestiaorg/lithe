@@ -1,0 +1,66 @@
+(* Benchmark: `Abi.encode`, `Abi.decode`, and `Abi.encode_packed` on their own, over flat
+   values, several values at once, and nested ones: a list of records with strings and
+   lists, and a list of lists. Mirrors codec.sol. *)
+
+type order is record {
+  id : nat;
+  note : string;
+  legs : list(nat);
+}
+
+type orders is list(order);
+type grid is list(list(nat));
+
+(* Several values decoded at once, returned as several results. *)
+type flat is record {
+  who : address;
+  amount : nat;
+  memo : string;
+}
+
+interface Book is {
+  function place(os : list(order)) : list(nat);
+}
+
+storage is record {
+  seen : nat;
+  digest : bytes32;
+}
+
+external pure function enc_flat(const who : address; const amount : nat; const memo : string) : bytes is
+  Abi.encode(who, amount, memo)
+
+external pure function dec_flat(const data : bytes) : flat is {
+  const (who, amount, memo) : (address, nat, string) := Abi.decode(data, (address, nat, string));
+} with { who = who; amount = amount; memo = memo; }
+
+external pure function enc_orders(const os : list(order)) : bytes is
+  Abi.encode(os)
+
+external pure function dec_orders(const data : bytes) : list(order) is
+  Abi.decode(data, orders)
+
+external pure function enc_grid(const g : list(list(nat))) : bytes is
+  Abi.encode(g)
+
+external pure function dec_grid(const data : bytes) : list(list(nat)) is
+  Abi.decode(data, grid)
+
+external pure function packed(const who : address; const amount : uint96; const memo : string) : bytes is
+  Abi.encode_packed(who, amount, memo)
+
+external pure function calldata_for(const os : list(order)) : bytes is
+  Abi.encode_call(Book.place, os)
+
+(* Decoded, then hashed and kept: gas for decoding in a transaction. *)
+external function keep(const data : bytes) is {
+  const os : list(order) := Abi.decode(data, orders);
+  storage.seen := os.length;
+  storage.digest := Crypto.keccak256(Abi.encode(os));
+}
+
+external view function seen() : nat is
+  storage.seen
+
+external view function digest() : bytes32 is
+  storage.digest

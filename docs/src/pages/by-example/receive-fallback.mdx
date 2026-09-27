@@ -1,0 +1,98 @@
+---
+title: "Receive and fallback"
+description: "Taking plain ether, answering unknown calls, and passing calls on to another contract."
+---
+
+# Receive and fallback
+
+A call names an entrypoint with its first four bytes. `receive` runs for a call with no calldata, such as a plain ether transfer, and `fallback` for calldata that matches no entrypoint. Without them, both revert.
+
+```lithe [receive.lithe]
+(* Plain ether, with no calldata, runs `receive`. Calldata that matches no entrypoint runs
+   `fallback`. Without them, both revert. *)
+
+event Received of record {
+  indexed from : address;
+  amount : wei;
+}
+
+event Unknown of record {
+  indexed selector : bytes4;
+  data : bytes;
+}
+
+error Not_owner;
+
+storage is record {
+  owner : address;
+  received : wei;
+}
+
+deploy(const owner : address) is {
+  storage.owner := owner;
+}
+
+payable receive is {
+  storage.received := storage.received + Evm.value();
+  emit Received { from = Evm.sender(); amount = Evm.value(); };
+}
+
+(* Not `payable`: a call with value that no entrypoint takes is refused. *)
+fallback is {
+  emit Unknown { selector = Evm.selector(); data = Evm.calldata(); };
+}
+
+external nonreentrant function withdraw(const amount : wei)
+  raises Not_owner
+is {
+  assert(Evm.sender() = storage.owner, Not_owner);
+  defer Evm.transfer(storage.owner, amount);
+}
+
+external view function received() : wei is
+  storage.received
+```
+
+- `receive` is always `payable`: taking ether is what it is for.
+- This `fallback` is not `payable`, so a call with value that no entrypoint takes is still refused.
+- `Evm.selector()` and `Evm.calldata()` say what the unknown call was.
+
+## A proxy
+
+A `fallback` can pass a call on whole. `delegates to` runs the target's code on this contract's storage, and returns or reverts with whatever it did:
+
+```lithe [proxy.lithe]
+(* A proxy. Every call it has no entrypoint for runs the implementation's code on the
+   proxy's storage, and returns or reverts with whatever that code did. The proxy's own
+   state sits in a named domain, clear of the implementation's slots. *)
+
+error Not_admin;
+
+storage is record {}
+
+storage proxy at "example.proxy" is record {
+  implementation : address;
+  admin : address;
+}
+
+deploy(const implementation : address; const admin : address) is {
+  proxy.implementation := implementation;
+  proxy.admin := admin;
+}
+
+external function upgrade_proxy(const implementation : address)
+  raises Not_admin
+is {
+  assert(Evm.sender() = proxy.admin, Not_admin);
+  proxy.implementation := implementation;
+}
+
+payable fallback delegates to proxy.implementation;
+```
+
+- `upgrade_proxy` has a selector of its own, so the proxy runs it. Every other call goes to the implementation.
+- The implementation's code writes the proxy's storage, so the proxy keeps its own fields in a named domain, where the implementation's default record never reaches.
+- `payable` lets the implementation's payable functions take ether through the proxy.
+- `fallback forwards to target;` calls the target instead, which runs on its own storage.
+
+For a contract whose own code is upgradeable, use [`upgradeable`](/by-example/upgradeable): it adds the guard, migrations, and layout checks. See [`receive` and `fallback`](/language/functions#receive-and-fallback) for the rules.

@@ -623,7 +623,7 @@ pub(super) fn supports_interface(mut checked: Checked, known: &[Supported]) -> R
         }
     };
     let mut have: Vec<([u8; 4], Option<Vec<String>>)> = Vec::new();
-    for route in &checked.routes {
+    for route in checked.routes.iter().filter(|route| route.by_selector()) {
         let func = route.direct.or_else(|| {
             let top = route.path.first()?;
             funcs
@@ -782,5 +782,6 @@ fn erc165_func(line: u32, col: u32, origin: &str, ids: &[u32]) -> Func {
         declares: None,
         interface: None,
         exported: None,
+        forward: None,
     }
 }
