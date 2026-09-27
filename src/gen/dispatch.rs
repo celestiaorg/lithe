@@ -1,5 +1,10 @@
 use super::*;
 
+/// Selectors in one dispatch group from which a bucket table beats a linear scan, and
+/// from which eight buckets are worth their bytes over four.
+const BUCKETS_FROM: usize = 18;
+const BUCKETS_FROM_8: usize = 32;
+
 impl<'a> Gen<'a> {
     pub(super) fn emit(&mut self) -> Result<(), Error> {
         let mut targets = self.targets()?;
@@ -251,22 +256,90 @@ impl<'a> Gen<'a> {
                 self.push_label(bad);
                 self.op(JUMPI);
             }
-            for ((label, target), &pay) in targets.iter().zip(&payable) {
-                if pay != pass {
-                    continue;
-                }
-                self.op(DUP1);
-                self.push_selector(target.sel());
-                self.op(EQ);
-                self.push_label(*label);
-                self.op(JUMPI);
-            }
+            let cases: Vec<(u32, [u8; 4])> = targets
+                .iter()
+                .zip(&payable)
+                .filter(|(_, &pay)| pay == pass)
+                .map(|((label, target), _)| (*label, target.sel()))
+                .collect();
+            self.switch(&cases);
         }
         if fallback.is_none() {
             self.jumpdest(bad);
             self.revert_empty();
         }
         Ok(bad)
+    }
+
+    /// Jumps to the label of the selector on the stack. One that matches none falls
+    /// through. Below `BUCKETS_FROM` cases a linear scan is smallest; past it, jumping to
+    /// a bucket of the table first frees the start of the code for `asm::hoist`.
+    fn switch(&mut self, cases: &[(u32, [u8; 4])]) {
+        match cases.len() {
+            n if n < BUCKETS_FROM => self.linear(cases),
+            n if n < BUCKETS_FROM_8 => self.buckets(cases, 4),
+            _ => self.buckets(cases, 8),
+        }
+    }
+
+    /// Jumps through a table of `count` buckets, indexed by bits of the selector picked
+    /// so the buckets hold the fewest checks. A selector that matches nothing in its
+    /// bucket falls through the buckets after it. An empty bucket is the last one's
+    /// label: every check there fails too.
+    fn buckets(&mut self, cases: &[(u32, [u8; 4])], count: usize) {
+        let slice = |shift: u32, sel: [u8; 4]| (u32::from_be_bytes(sel) >> shift) as usize & (count - 1);
+        let checks = |shift: u32| {
+            let mut sizes = vec![0usize; count];
+            for &(_, sel) in cases {
+                sizes[slice(shift, sel)] += 1;
+            }
+            sizes.iter().map(|k| k * (k + 1)).sum::<usize>()
+        };
+        // The index is shifted into place as the entry's bit offset: 16 times the bucket.
+        let shift = (4..=32 - count.trailing_zeros()).min_by_key(|&s| checks(s)).unwrap_or(4);
+        let mut groups: Vec<Vec<(u32, [u8; 4])>> = vec![Vec::new(); count];
+        for &case in cases {
+            groups[slice(shift, case.1)].push(case);
+        }
+        let mut table = [0u32; 8];
+        for (entry, group) in table.iter_mut().zip(&groups) {
+            if !group.is_empty() {
+                *entry = self.fresh();
+            }
+        }
+        let last = table.iter().copied().filter(|&l| l != 0).last().unwrap_or_default();
+        for entry in &mut table[..count] {
+            if *entry == 0 {
+                *entry = last;
+            }
+        }
+        self.op(DUP1);
+        self.push_u64(u64::from(shift - 4));
+        self.op(SHR);
+        self.push_u64(((count - 1) << 4) as u64);
+        self.op(AND);
+        self.code.push(Inst::Table(table));
+        self.op(SWAP1);
+        self.op(SHR);
+        self.push_u64(0xffff);
+        self.op(AND);
+        self.op(JUMP);
+        for (&label, group) in table.iter().zip(&groups) {
+            if !group.is_empty() {
+                self.jumpdest(label);
+                self.linear(group);
+            }
+        }
+    }
+
+    fn linear(&mut self, cases: &[(u32, [u8; 4])]) {
+        for &(label, sel) in cases {
+            self.op(DUP1);
+            self.push_selector(sel);
+            self.op(EQ);
+            self.push_label(label);
+            self.op(JUMPI);
+        }
     }
 
     /// Where the dispatcher sends a selector. With a payable fallback, an entry that is not

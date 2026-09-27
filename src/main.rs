@@ -70,6 +70,7 @@ fn main() {
     }
     let file = std::path::Path::new(&path);
     let mut note = None;
+    let mut warnings = None;
     let result = match cmd.as_str() {
         "abi" => lithe::abi_file(file),
         "abi-tree" => lithe::abi_tree_file_with(file, &opts),
@@ -79,15 +80,18 @@ fn main() {
         "facets" => lithe::facets_file(file, &opts),
         _ => lithe::compile_file_with(file, &opts).map(|compiled| {
             note = compiled.note;
+            warnings = Some(compiled.warnings);
             compiled.text
         }),
     };
     match result {
         Ok(text) => {
-            if let Ok(notes) = lithe::warnings_file(file) {
-                if !notes.is_empty() {
-                    eprint!("{notes}");
-                }
+            let notes = match warnings {
+                Some(notes) => notes,
+                None => lithe::warnings_file(file).unwrap_or_default(),
+            };
+            if !notes.is_empty() {
+                eprint!("{notes}");
             }
             if let Some(note) = note {
                 eprintln!("{note}");

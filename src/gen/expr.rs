@@ -347,7 +347,10 @@ impl<'a> Gen<'a> {
                     self.op(JUMPI);
                     self.op(POP);
                     self.branch += 1;
+                    let mark = self.facts.len();
+                    self.assume(left, *op == BinOp::And);
                     let right = self.compile_value(right);
+                    self.facts.truncate(mark);
                     self.branch -= 1;
                     right?;
                     self.jumpdest(end);
@@ -378,13 +381,32 @@ impl<'a> Gen<'a> {
                 } else {
                     self.checked.types[left.ty()].kind == TyKind::Int
                 };
-                self.finish_bin(*op, signed, bits)?;
-                let bits = self.checked.types[left.ty()].bits;
-                if bits > 0
-                    && bits < 256
-                    && matches!(*op, BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div)
+                let narrow_bits = self.checked.types[left.ty()].bits;
+                let narrowed = narrow_bits > 0
+                    && narrow_bits < 256
+                    && matches!(*op, BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div);
+                let proven = !signed
+                    && matches!(*op, BinOp::Add | BinOp::Sub | BinOp::Mul)
+                    && self.cannot_wrap(*op, left, right);
+                // A narrow difference that wraps is out of its type's range, which `narrow` checks.
+                if proven || (!signed && narrowed && *op == BinOp::Sub) {
+                    match op {
+                        BinOp::Add => self.op(ADD),
+                        BinOp::Mul => self.op(MUL),
+                        _ => {
+                            self.op(SWAP1);
+                            self.op(SUB);
+                        }
+                    }
+                } else {
+                    self.finish_bin(*op, signed, bits)?;
+                }
+                if narrowed
+                    && !(!signed
+                        && (proven || *op != BinOp::Sub)
+                        && self.shape_range_of(e).1.lt(shift_one(narrow_bits)))
                 {
-                    self.narrow(bits, signed)?;
+                    self.narrow(narrow_bits, signed)?;
                 }
                 Ok(())
             }
@@ -639,7 +661,11 @@ impl<'a> Gen<'a> {
                 let signed = dst.kind == TyKind::Int;
                 // Only an integer can be too narrow for its value. `bytesN` and `address`
                 // come from values of their own width.
-                if matches!(dst.kind, TyKind::Nat | TyKind::Int) && dst.bits > 0 && dst.bits < 256 {
+                if matches!(dst.kind, TyKind::Nat | TyKind::Int)
+                    && dst.bits > 0
+                    && dst.bits < 256
+                    && (signed || !self.range_of(arg).1.lt(shift_one(dst.bits)))
+                {
                     self.narrow(dst.bits, signed)?;
                 }
                 return Ok(());
@@ -840,16 +866,12 @@ impl<'a> Gen<'a> {
             self.push_u64(u64::from(bits / 8 - 1));
             self.op(SIGNEXTEND);
             self.op(DUP1 + 1);
-            self.op(EQ);
-            self.op(ISZERO);
+            self.op(XOR);
             return self.revert_if_panic(0x11);
         }
-        let limit = bits;
         self.op(DUP1);
-        self.push_word(shift_one(limit));
-        self.op(SWAP1);
-        self.op(LT);
-        self.op(ISZERO);
+        self.push_u64(u64::from(bits));
+        self.op(SHR);
         self.revert_if_panic(0x11)
     }
 

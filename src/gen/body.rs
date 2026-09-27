@@ -477,6 +477,7 @@ impl<'a> Gen<'a> {
         self.body = Some(body);
         self.branch = 0;
         self.slot_cache.clear();
+        self.facts.clear();
     }
 
     pub(super) fn body_mut(&mut self) -> Option<&mut Body> {

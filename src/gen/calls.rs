@@ -1322,6 +1322,34 @@ impl<'a> Gen<'a> {
         if let Some(code) = self.peer_built.get(name) {
             return Ok(code.clone());
         }
+        let opts = &self.shape.opts;
+        let builds = &self.checked.peer_builds;
+        let cached = builds
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .find(|(peer, o, ..)| peer == name && o == opts)
+            .map(|(_, _, code, needs)| (code.clone(), needs.clone()));
+        let (code, needs) = match cached {
+            Some(built) => built,
+            None => {
+                let built = self.peer_build(name, line, col)?;
+                builds.lock().unwrap_or_else(|e| e.into_inner()).push((
+                    name.to_string(),
+                    opts.clone(),
+                    built.0.clone(),
+                    built.1.clone(),
+                ));
+                built
+            }
+        };
+        self.needs.extend(needs);
+        self.peer_built.insert(name.to_string(), code.clone());
+        Ok(code)
+    }
+
+    /// A peer's creation code and what must be deployed before it.
+    fn peer_build(&self, name: &str, line: u32, col: u32) -> Result<(Vec<u8>, Vec<Facet>), Error> {
         let own = self.checked.prog.contract_name.clone();
         let peers = &self.checked.prog.peers;
         let Some(peer) = peers
@@ -1345,9 +1373,7 @@ impl<'a> Gen<'a> {
                 .collect();
         }
         let built = crate::split::build(&crate::check::check(unit)?, name, &self.shape.opts)?;
-        self.needs.extend(built.prerequisites());
-        self.peer_built.insert(name.to_string(), built.creation.clone());
-        Ok(built.creation)
+        Ok((built.creation.clone(), built.prerequisites()))
     }
 
     /// The contract `Evm.creation_code` names.
@@ -1676,6 +1702,7 @@ impl<'a> Gen<'a> {
         self.direct = direct;
         self.branch = 0;
         let outer_cache = std::mem::take(&mut self.slot_cache);
+        let outer_facts = std::mem::take(&mut self.facts);
         let mut body = Body {
             id: outer.id,
             prologue: self.code.len(),
@@ -1695,6 +1722,7 @@ impl<'a> Gen<'a> {
         self.direct = outer_direct;
         self.branch = outer_branch;
         self.slot_cache = outer_cache;
+        self.facts = outer_facts;
         result
     }
 }

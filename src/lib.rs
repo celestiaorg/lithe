@@ -84,6 +84,7 @@ struct Prepared {
     methods: Vec<(String, [u8; 4])>,
     split: split::Split,
     upgradeable: bool,
+    warnings: String,
 }
 
 fn prepare(src: &str) -> Result<Prepared, Error> {
@@ -121,6 +122,8 @@ pub fn compile_file(path: &std::path::Path) -> Result<Vec<u8>, Error> {
 pub struct Compiled {
     pub text: String,
     pub note: Option<String>,
+    /// What `warnings_file` reports for the same program.
+    pub warnings: String,
 }
 
 /// The creation code as hex. When something must be deployed first, because the contract
@@ -133,7 +136,11 @@ pub fn compile_file_with(path: &std::path::Path, opts: &Options) -> Result<Compi
     } else {
         plan_json(&prepared, opts, None)
     };
-    Ok(Compiled { text, note })
+    Ok(Compiled {
+        text,
+        note,
+        warnings: prepared.warnings,
+    })
 }
 
 /// The ABI needs the checked program, not its code: a contract over the size limit that
@@ -243,6 +250,7 @@ fn finish(prog: ast::Program, name: &str, opts: &Options) -> Result<Prepared, Er
         methods,
         split,
         upgradeable: checked.prog.upgradeable,
+        warnings: route::reentry_warnings(&checked) + &checked.warnings.concat(),
     })
 }
 

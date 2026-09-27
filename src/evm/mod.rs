@@ -1316,6 +1316,7 @@ mod abi_tree;
 mod basics;
 mod calls;
 mod differential;
+mod dispatch;
 mod examples;
 mod fallback;
 mod interfaces;

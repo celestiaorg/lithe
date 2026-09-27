@@ -33,6 +33,7 @@ mod helpers;
 mod list;
 mod plan;
 mod precompile;
+mod range;
 mod stmt;
 mod storage;
 mod stored_bytes;
@@ -150,11 +151,12 @@ pub(crate) fn codegen(checked: &Checked, shape: &Shape) -> Result<Built, Error> 
         g.promote();
         let mut code = g.resolve()?;
         asm::optimize(&mut code);
-        if asm::outline(&mut code) {
-            asm::optimize(&mut code);
-        }
-        asm::tail_calls(&mut code, &g.func_leaves_by_label());
-        asm::hoist(&mut code);
+        let leaves = g.func_leaves_by_label();
+        asm::outline(&mut code, |code| {
+            asm::tail_calls(code, &leaves);
+            asm::hoist(code);
+            asm::rotate_exits(code);
+        });
         let runtime = place_data(&code, &g.data)?;
         let mut needs = std::mem::take(&mut g.needs);
         let (code, more) = creation(checked, &plan, runtime.clone(), true, shape)?;
@@ -224,11 +226,12 @@ fn creation(
     let mut code = g.resolve()?;
     if optimize {
         asm::optimize(&mut code);
-        if asm::outline(&mut code) {
-            asm::optimize(&mut code);
-        }
-        asm::tail_calls(&mut code, &g.func_leaves_by_label());
-        asm::hoist(&mut code);
+        let leaves = g.func_leaves_by_label();
+        asm::outline(&mut code, |code| {
+            asm::tail_calls(code, &leaves);
+            asm::hoist(code);
+            asm::rotate_exits(code);
+        });
     }
     Ok((place_data(&code, &g.data)?, g.needs))
 }
@@ -753,6 +756,8 @@ struct Gen<'a> {
     header_locals: std::collections::HashSet<usize>,
     /// The counters of the enclosing loops: each is below its limit while its loop runs.
     loop_counters: Vec<usize>,
+    /// Orderings the enclosing guards prove, innermost last.
+    facts: Vec<range::Fact>,
 }
 
 enum Target {

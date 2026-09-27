@@ -181,11 +181,8 @@ pub(crate) struct Checked {
     pub routes: Vec<crate::route::Route>,
     /// Warnings the checker found, such as stale values captured by a continuation.
     pub warnings: Vec<String>,
-    /// A hash of the program as it came in, which is everything a build depends on besides
-    /// the compiler and its options.
-    pub fingerprint: [u8; 32],
     /// The program as it came in, before its modules were composed. A module's facet is
-    /// built from it.
+    /// built from it. It is everything a build depends on besides the compiler and its options.
     pub source: Program,
     /// Map parameters that hold their map's slot, and whether that map is transient.
     pub slot_syms: HashMap<usize, bool>,
@@ -194,7 +191,13 @@ pub(crate) struct Checked {
     pub interface_ids: Vec<u32>,
     /// Some function calls `Abi.supports_interface`.
     pub asks_interfaces: bool,
+    /// Peers' creation code and prerequisites, built once per compile however many passes
+    /// embed them.
+    pub peer_builds: std::sync::Mutex<Vec<PeerBuild>>,
 }
+
+/// A peer's name, the options it was built with, its creation code and prerequisites.
+pub(crate) type PeerBuild = (String, crate::Options, Vec<u8>, Vec<crate::split::Facet>);
 
 impl Checked {
     /// Whether a storage symbol is transient storage rather than persistent storage.
@@ -328,7 +331,6 @@ enum Piece {
 }
 
 pub(crate) fn check(mut prog: Program) -> Result<Checked, Error> {
-    let fingerprint = crate::keccak::keccak256(format!("{prog:?}").as_bytes());
     if !prog.siblings.is_empty() {
         return Err(several_contracts(&prog));
     }
@@ -845,11 +847,11 @@ pub(crate) fn check(mut prog: Program) -> Result<Checked, Error> {
         errors: c.errors,
         routes: Vec::new(),
         warnings: std::mem::take(&mut c.warnings),
-        fingerprint,
         source,
         slot_syms: c.slot_syms,
         interface_ids: Vec::new(),
         asks_interfaces: c.asks_interfaces,
+        peer_builds: Default::default(),
     };
     let routes = crate::route::discover(&checked)?;
     supports_interface(Checked { routes, ..checked }, &known)

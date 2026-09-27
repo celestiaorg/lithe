@@ -39,7 +39,7 @@ pub enum SplitMode {
 }
 
 /// How contracts are fitted to the size limit.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Options {
     /// The most runtime code the router or any facet may have. Creation code may have twice
     /// this, as EIP-3860 allows.
@@ -610,19 +610,13 @@ pub(crate) fn address_word(address: [u8; 20]) -> Word {
 }
 
 /// Where a build is cached: `$LITHE_CACHE_DIR`, else `$XDG_CACHE_HOME/lithe`, else
-/// `~/.cache/lithe`, keyed by the compiler's own bytes, the program, and the options. An empty
+/// `~/.cache/lithe`, keyed by the build of the compiler, the program, and the options. An empty
 /// `LITHE_CACHE_DIR` turns the cache off.
 /// simplify: entries are never evicted; delete the directory to reclaim the space.
 fn cache_path(checked: &Checked, name: &str, opts: &Options) -> Option<PathBuf> {
     if cfg!(test) {
         return None;
     }
-    static COMPILER: OnceLock<Option<[u8; 32]>> = OnceLock::new();
-    let compiler = COMPILER.get_or_init(|| {
-        let exe = std::env::current_exe().and_then(std::fs::read).ok()?;
-        Some(keccak256(&exe))
-    });
-    let compiler = (*compiler)?;
     let dir = match std::env::var_os("LITHE_CACHE_DIR") {
         Some(dir) if dir.is_empty() => return None,
         Some(dir) => PathBuf::from(dir),
@@ -631,10 +625,12 @@ fn cache_path(checked: &Checked, name: &str, opts: &Options) -> Option<PathBuf> 
             None => PathBuf::from(std::env::var_os("HOME")?).join(".cache/lithe"),
         },
     };
-    let mut key = compiler.to_vec();
-    key.extend_from_slice(&checked.fingerprint);
-    key.extend_from_slice(format!("{name}\0{opts:?}").as_bytes());
-    Some(dir.join(crate::hex(&keccak256(&key))))
+    let key = format!(
+        "{}\0{:?}\0{name}\0{opts:?}",
+        env!("LITHE_BUILD_ID"),
+        checked.source
+    );
+    Some(dir.join(crate::hex(&keccak256(key.as_bytes()))))
 }
 
 /// Writes an entry aside and renames it into place, so no reader sees half of one. The cache

@@ -2,13 +2,15 @@ use super::*;
 
 impl<'a> Gen<'a> {
     pub(super) fn compile_stmts(&mut self, stmts: &[Stmt]) -> Result<(), Error> {
+        let mark = self.facts.len();
         let tail = std::mem::replace(&mut self.tail, false);
-        for (i, s) in stmts.iter().enumerate() {
+        let result = stmts.iter().enumerate().try_for_each(|(i, s)| {
             self.tail = tail && i + 1 == stmts.len();
-            self.compile_stmt(s)?;
-        }
+            self.compile_stmt(s)
+        });
         self.tail = false;
-        Ok(())
+        self.facts.truncate(mark);
+        result
     }
 
     /// Only an `if`'s branches, an inlined call's body, and a `defer` see whether they are
@@ -328,6 +330,7 @@ impl<'a> Gen<'a> {
                     self.op(ISZERO);
                     self.push_label(label);
                     self.op(JUMPI);
+                    self.assume(cond, true);
                     return Ok(());
                 }
                 let ok = self.fresh();
@@ -344,6 +347,7 @@ impl<'a> Gen<'a> {
                 self.failing -= 1;
                 raised?;
                 self.jumpdest(ok);
+                self.assume(cond, true);
                 Ok(())
             }
             // A block the checker made, such as a stored record written field by field.
@@ -372,13 +376,18 @@ impl<'a> Gen<'a> {
                 self.push_label(else_l);
                 self.op(JUMPI);
                 self.branch += 1;
+                let mark = self.facts.len();
+                self.assume(cond, true);
                 self.tail = tail;
                 self.compile_stmts(then_body)?;
+                self.facts.truncate(mark);
                 self.push_label(end_l);
                 self.op(JUMP);
                 self.jumpdest(else_l);
+                self.assume(cond, false);
                 self.tail = tail;
                 self.compile_stmts(else_body)?;
+                self.facts.truncate(mark);
                 self.branch -= 1;
                 self.jumpdest(end_l);
                 Ok(())
@@ -1105,9 +1114,11 @@ impl<'a> Gen<'a> {
         body: impl FnOnce(&mut Self) -> Result<(), Error>,
     ) -> Result<(), Error> {
         let start = self.code.len();
+        let mark = self.facts.len();
         self.compiling.push(idx);
         let result = body(self);
         self.compiling.pop();
+        self.facts.truncate(mark);
         let bytes: usize = self.code[start..].iter().map(inst_bytes).sum();
         let entry = self.inlined.entry(idx).or_insert((0, 0));
         entry.0 += 1;
@@ -1156,7 +1167,7 @@ impl<'a> Gen<'a> {
                 let f = &self.checked.prog.funcs[idx];
                 let (stmts, tail) = (f.stmts.clone(), f.tail.clone().expect("checked"));
                 let result = self.inline_body(idx, |g| {
-                    g.compile_stmts(&stmts)?;
+                    stmts.iter().try_for_each(|s| g.compile_stmt(s))?;
                     g.push_record_words(&tail).map(|_| ())
                 });
                 self.unalias(aliased);
@@ -1178,7 +1189,7 @@ impl<'a> Gen<'a> {
         let stmts = self.checked.prog.funcs[idx].stmts.clone();
         let tail = self.checked.prog.funcs[idx].tail.clone();
         let ret = self.checked.prog.funcs[idx].ret_ty;
-        self.compile_stmts(&stmts)?;
+        stmts.iter().try_for_each(|s| self.compile_stmt(s))?;
         if let Some(tail) = &tail {
             let tret = &self.checked.types[ret];
             if tret.kind == TyKind::Tuple {
@@ -1213,6 +1224,7 @@ impl<'a> Gen<'a> {
             let saved_branch = self.branch;
             let saved_shared = self.shared;
             let saved_cache = std::mem::take(&mut self.slot_cache);
+            let saved_facts = std::mem::take(&mut self.facts);
             // A summary body collects the leaves it touches. Writes are never unconditional.
             self.body = Some(Body::default());
             self.branch = 1;
@@ -1232,6 +1244,7 @@ impl<'a> Gen<'a> {
             self.branch = saved_branch;
             self.shared = saved_shared;
             self.slot_cache = saved_cache;
+            self.facts = saved_facts;
             result?;
             self.funcs.insert(
                 key,
@@ -1274,5 +1287,6 @@ fn inst_bytes(inst: &Inst) -> usize {
         Inst::PushLabel(_) => 3,
         Inst::Mem(_) => 2,
         Inst::Label(_) => 1,
+        Inst::Table(t) => 1 + 2 * t.iter().filter(|l| **l != 0).count(),
     }
 }

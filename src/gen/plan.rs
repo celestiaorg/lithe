@@ -91,6 +91,7 @@ impl<'a> Gen<'a> {
             loop_syms: Vec::new(),
             header_locals: std::collections::HashSet::new(),
             loop_counters: Vec::new(),
+            facts: Vec::new(),
         };
         let leaves = g.checked.leaves as u32;
         g.image = g.region(Region::Image, leaves * 32);
@@ -891,25 +892,53 @@ impl<'a> Gen<'a> {
             }
         }
         let lens: Vec<u64> = self.spaces.iter().map(|s| words(s) * 32).collect();
-        // Each region goes to the lowest address no clashing region already holds.
-        let place = |order: &[usize]| -> (Vec<u64>, u64) {
+        let push = |a: u64| u64::from(a != 0) + u64::from(64 - a.leading_zeros()).div_ceil(8);
+        let cost_at = |i: usize, at: u64| offsets[i].iter().map(|&o| push(at + o)).sum::<u64>();
+        // A region's pushes cost the least at address 0, and never less higher up.
+        let floor: Vec<u64> = (0..n).map(|i| cost_at(i, 0)).collect();
+        let mut listed = vec![false; n];
+        for &i in &order {
+            listed[i] = true;
+        }
+        let unplaced: u64 = (0..n).filter(|&i| !listed[i]).map(|i| floor[i]).sum();
+        let lowest: u64 = order.iter().map(|&i| floor[i]).sum();
+        // Each region goes to the lowest address no clashing region already holds, the first
+        // `keep` where `prev` has them. A layout whose pushes cost `best` or more, or that puts
+        // a region past `limit`'s highest start or end, is no use.
+        let place = |order: &[usize], prev: &[u64], keep: usize, best: u64, limit: &[(u64, u64)]| {
             let mut base = vec![0u64; n];
-            let mut placed: Vec<(u64, u64, usize)> = Vec::new();
-            let mut top = 0u64;
-            for &i in order {
+            // By start address.
+            let mut placed: Vec<(u64, u64, usize)> = Vec::with_capacity(order.len());
+            let (mut top, mut cost, mut rest) = (0u64, unplaced, lowest);
+            for (k, &i) in order.iter().enumerate() {
                 let len = lens[i];
-                let mut at = 0u64;
-                while let Some((_, end, _)) = placed
-                    .iter()
-                    .find(|&&(start, end, j)| at < end && start < at + len && clash[i * n + j])
-                {
-                    at = *end;
+                let at = if k < keep {
+                    prev[i]
+                } else {
+                    let mut at = 0u64;
+                    for &(start, end, j) in &placed {
+                        if start >= at + len {
+                            break;
+                        }
+                        if end > at && clash[i * n + j] {
+                            at = end;
+                        }
+                    }
+                    at
+                };
+                if at > limit[i].0 || at + len > limit[i].1 {
+                    return None;
+                }
+                cost += cost_at(i, at);
+                rest -= floor[i];
+                if cost + rest >= best {
+                    return None;
                 }
                 base[i] = at;
                 top = top.max(at + len);
-                placed.push((at, at + len, i));
+                placed.insert(placed.partition_point(|&(s, ..)| s < at), (at, at + len, i));
             }
-            (base, top)
+            Some((base, top, cost))
         };
         // Memory a body touches costs it gas to expand: the highest end among its regions.
         let bodies: Vec<usize> = self
@@ -923,46 +952,45 @@ impl<'a> Gen<'a> {
             .collect::<std::collections::BTreeSet<_>>()
             .into_iter()
             .collect();
-        let used = order.clone();
-        let peaks = |base: &[u64]| -> Vec<u64> {
-            let mut peak = vec![0u64; bodies.len() + 1];
-            for &i in &used {
-                let end = base[i] + lens[i];
-                match &self.spaces[i].users {
-                    Users::Bodies(ids) => {
-                        for id in ids {
-                            let b = bodies.binary_search(id).expect("listed");
-                            peak[b] = peak[b].max(end);
-                        }
-                    }
-                    Users::Nobody => {}
-                    Users::Everyone => {
-                        for p in &mut peak {
-                            *p = (*p).max(end);
-                        }
-                    }
-                }
-            }
-            peak
-        };
-        let push = |a: u64| u64::from(a != 0) + u64::from(64 - a.leading_zeros()).div_ceil(8);
-        let cost = |base: &[u64]| -> u64 {
-            (0..n).map(|i| offsets[i].iter().map(|&o| push(base[i] + o)).sum::<u64>()).sum()
-        };
         // Hot words are worth the most below 0x100, where a one-byte push reaches them. A
         // region only its bodies use can share that space with other bodies' regions, so the
         // order by heat alone can waste it: move a region to the front or back when that shrinks
         // the pushes and grows no body's memory.
         let pinned = order.first().map_or(0, |&i| usize::from(self.spaces[i].region == Region::Base64));
-        let (mut base, mut top) = place(&order);
-        let mut best = cost(&base);
-        let peak = peaks(&base);
-        // Regions code shared between bodies uses never move up: any body may touch them.
-        let start = base.clone();
-        let shared: Vec<usize> = used
-            .iter()
-            .copied()
-            .filter(|&i| self.spaces[i].users == Users::Everyone)
+        let (mut base, mut top, mut best) =
+            place(&order, &[], 0, u64::MAX, &vec![(u64::MAX, u64::MAX); n]).expect("unbounded");
+        let mut peak = vec![0u64; bodies.len() + 1];
+        for &i in &order {
+            let end = base[i] + lens[i];
+            match &self.spaces[i].users {
+                Users::Bodies(ids) => {
+                    for id in ids {
+                        let b = bodies.binary_search(id).expect("listed");
+                        peak[b] = peak[b].max(end);
+                    }
+                }
+                Users::Nobody => {}
+                Users::Everyone => {
+                    for p in &mut peak {
+                        *p = (*p).max(end);
+                    }
+                }
+            }
+        }
+        // No region may end past the memory of a body that uses it. Regions code shared
+        // between bodies uses never move up: any body may touch them.
+        let limit: Vec<(u64, u64)> = (0..n)
+            .map(|i| match &self.spaces[i].users {
+                Users::Bodies(ids) => (
+                    u64::MAX,
+                    ids.iter()
+                        .map(|id| peak[bodies.binary_search(id).expect("listed")])
+                        .min()
+                        .unwrap_or(u64::MAX),
+                ),
+                Users::Nobody => (u64::MAX, u64::MAX),
+                Users::Everyone => (base[i], peak.iter().copied().min().unwrap_or(u64::MAX)),
+            })
             .collect();
         for _ in 0..4 {
             let mut better = false;
@@ -970,14 +998,15 @@ impl<'a> Gen<'a> {
                 for to_front in [true, false] {
                     let mut trial = order.clone();
                     let i = trial.remove(k);
-                    if to_front {
+                    // The regions ahead of the moved one keep their places.
+                    let keep = if to_front {
                         trial.insert(pinned, i);
+                        pinned
                     } else {
                         trial.push(i);
-                    }
-                    let (b, t) = place(&trial);
-                    let c = cost(&b);
-                    if c < best && peaks(&b).iter().zip(&peak).all(|(p, q)| p <= q) && shared.iter().all(|&j| b[j] <= start[j]) {
+                        k
+                    };
+                    if let Some((b, t, c)) = place(&trial, &base, keep, best, &limit) {
                         (order, base, top, best, better) = (trial, b, t, c, true);
                     }
                 }
