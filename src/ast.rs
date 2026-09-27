@@ -618,6 +618,9 @@ pub(crate) enum Builtin {
     NatToString,
     /// `Int.to_string(n)`: a signed integer in decimal, with a `-` when negative.
     IntToString,
+    /// `Nat.from_bits(i)` and `Int.from_bits(n)`, the unchecked bit-cast between `int` and
+    /// `nat`. `true` is `Int.from_bits`.
+    FromBits(bool),
     /// `List.pop(xs)`: drops a dynamic list's last element. Checked into an assignment of
     /// the list, `xs := List.pop(xs)`, so it writes what an assignment writes.
     ListPop,

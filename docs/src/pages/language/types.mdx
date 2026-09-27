@@ -26,7 +26,7 @@ Lithe is statically typed. Every local binding names its type, and nothing conve
 
 ### Integers
 
-Arithmetic on every integer type is checked. Overflow, underflow, and narrowing out of range revert with `Panic(0x11)`, and division by zero reverts with `Panic(0x12)`, as in Solidity. Each fixed width is its own type: a `uint8` does not mix with a `uint16` or a `nat` without an explicit conversion.
+Arithmetic on every integer type is checked. Overflow, underflow, and conversions out of range revert with `Panic(0x11)`, and division by zero reverts with `Panic(0x12)`, as in Solidity. Each fixed width is its own type: a `uint8` does not mix with a `uint16` or a `nat` without an explicit conversion.
 
 Where wrapping is the point, as for a price accumulator meant to overflow, name it: `Nat.wrapping_add`, `Nat.wrapping_sub`, and `Nat.wrapping_mul` take two values of one unsigned type and keep the result's low bits, as Solidity's `unchecked` arithmetic does. `Int.wrapping_*` do the same for signed types. See [Built-ins](/language/builtins#nat-int-and-address).
 
@@ -74,14 +74,15 @@ external pure function convert(const x : uint8; const raw : bytes20; const amoun
 | --- | --- |
 | to a wider integer (`nat(x)` for `x : uint8`) | always succeeds |
 | to a narrower integer (`uint8(n)`) | checked, `Panic(0x11)` if out of range |
-| between signed and unsigned of a smaller width (`int16(x)`) | checked |
-| between `nat` and `int` | reinterprets the 256 bits, as in Solidity |
+| between signed and unsigned (`nat(i)`, `int16(n)`) | checked, `Panic(0x11)` if negative or out of range |
 | `address(b)` for `b : bytes20`, and `bytes20(a)` | exact |
 | `nat(b)` for `b : bytes32`, `uint32(s)` for `s : bytes4`, and back: `bytesN` and the unsigned integer of the same width | exact |
 | `uint160(a)` for `a : address`, and `address(u)` for `u : uint160` | exact |
 | `Token(a)` for an interface `Token`, and `address(t)` | exact |
 | `wei(n)`, `timestamp(n)`, `nat(w)` | exact |
 | to or from a [nominal type](#nominal-types) | exact |
+
+To reinterpret the 256 bits between `int` and `nat`, as Solidity's `uint256(i)` and `int256(n)` do, name the bit-cast: `Nat.from_bits(i)` and `Int.from_bits(n)`, so that `Nat.from_bits(-1)` is `Nat.max`.
 
 ## Records
 

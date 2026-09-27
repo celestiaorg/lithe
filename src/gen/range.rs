@@ -227,7 +227,7 @@ impl<'a> Gen<'a> {
             } if !self.is_dynamic(*ty) => (*w, *w),
             // A cast checks the word or reinterprets it; it never changes it.
             Expr::Call {
-                builtin: Some(Builtin::Cast),
+                builtin: Some(Builtin::Cast | Builtin::FromBits(_)),
                 args,
                 ..
             } if args.len() == 1 => sub(&args[0]),

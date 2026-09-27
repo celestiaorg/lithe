@@ -238,6 +238,7 @@ Constants take their width from the type the context expects. With no expected t
 | `Nat.wrapping_add(a, b)`, `Nat.wrapping_sub(a, b)`, `Nat.wrapping_mul(a, b)` | `T`, the unsigned type of both | `unchecked { a + b }` and the like: the result modulo 2^N for `T`'s N bits |
 | `Int.wrapping_add(a, b)`, `Int.wrapping_sub(a, b)`, `Int.wrapping_mul(a, b)` | `T`, the signed type of both | the same for signed types, in two's complement |
 | `Int.div_rem(a, b)` | `(T, T)` | `(a / b, a % b)`, truncating |
+| `Nat.from_bits(i : int)`, `Int.from_bits(n : nat)` | `nat`, `int` | `uint256(i)`, `int256(n)`: the same 256 bits, unchecked. `nat(i)` and `int(n)` check |
 | `Nat.to_string(n)` | `string` | `Strings.toString(n)`: an unsigned integer of any width in decimal |
 | `Int.to_string(n)` | `string` | `Strings.toStringSigned(n)`: a signed integer in decimal, `-` first when negative |
 

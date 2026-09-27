@@ -440,6 +440,21 @@ impl Checker {
                     ));
                 }
             }
+            Builtin::FromBits(signed) => {
+                need(args.len(), 1)?;
+                let (src, dst) = if signed { (TY_NAT, TY_INT) } else { (TY_INT, TY_NAT) };
+                self.check_expr_as(&mut args[0], Some(src))?;
+                if !self.same(args[0].ty(), src) {
+                    return Err(error(
+                        args[0].line(),
+                        args[0].col(),
+                        format!("`{call}` expects `{}`", if signed { "nat" } else { "int" }),
+                    ));
+                }
+                *builtin = Some(kind);
+                *ty = dst;
+                return Ok(());
+            }
             Builtin::ListPop => {
                 need(args.len(), 1)?;
                 if !std::mem::take(&mut self.popping) {
@@ -712,6 +727,7 @@ impl Checker {
             | Builtin::NatDivRem
             | Builtin::IntDivRem
             | Builtin::Wrapping(..)
+            | Builtin::FromBits(_)
             | Builtin::Cast
             | Builtin::Some
             | Builtin::None
@@ -815,6 +831,8 @@ fn module_builtin(module: &str, name: &str) -> Option<Builtin> {
         ("Int", "div_rem") => Builtin::IntDivRem,
         ("Nat", "to_string") => Builtin::NatToString,
         ("Int", "to_string") => Builtin::IntToString,
+        ("Nat", "from_bits") => Builtin::FromBits(false),
+        ("Int", "from_bits") => Builtin::FromBits(true),
         ("List", "pop") => Builtin::ListPop,
         ("Abi", "supports_interface") => Builtin::AbiSupportsInterface,
         ("Nat" | "Int", "wrapping_add" | "wrapping_sub" | "wrapping_mul") => Builtin::Wrapping(

@@ -527,6 +527,7 @@ impl<'a> Gen<'a> {
                 self.compile_value(&args[0])?;
                 self.call_sub(Sub::DecimalString(b == Builtin::IntToString));
             }
+            Builtin::FromBits(_) => self.compile_value(&args[0])?,
             Builtin::ListPop => {
                 return Err(error(line, col, "`List.pop` is a statement"));
             }
@@ -658,15 +659,23 @@ impl<'a> Gen<'a> {
                 };
                 self.compile_value(arg)?;
                 let dst = &self.checked.types[self.peel_nominal(ty)];
+                let src = &self.checked.types[self.peel_nominal(arg.ty())];
+                // Only a number can be out of range. `bytesN` and `address` come from values
+                // of their own width.
+                if !matches!(dst.kind, TyKind::Nat | TyKind::Int | TyKind::Wei | TyKind::Timestamp) {
+                    return Ok(());
+                }
                 let signed = dst.kind == TyKind::Int;
-                // Only an integer can be too narrow for its value. `bytesN` and `address`
-                // come from values of their own width.
-                if matches!(dst.kind, TyKind::Nat | TyKind::Int)
-                    && dst.bits > 0
-                    && dst.bits < 256
-                    && (signed || !self.range_of(arg).1.lt(shift_one(dst.bits)))
-                {
-                    self.narrow(dst.bits, signed)?;
+                let bits = if dst.bits == 0 { 256 } else { dst.bits };
+                // Across signedness the value must be non-negative and below the unsigned
+                // bound: `2^(bits-1)` into a signed type, `2^bits` (at most `2^255`) out of one.
+                let (bits, signed) = match (src.kind == TyKind::Int, signed) {
+                    (false, true) => (bits - 1, false),
+                    (true, false) => (bits.min(255), false),
+                    _ => (bits, signed),
+                };
+                if bits < 256 && (signed || !self.range_of(arg).1.lt(shift_one(bits))) {
+                    self.narrow(bits, signed)?;
                 }
                 return Ok(());
             }

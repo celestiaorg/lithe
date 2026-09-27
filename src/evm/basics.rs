@@ -691,3 +691,43 @@ external view function cast(const n : nat) : uint32 is uint32(n % 4294967297n)
     panics("cast(uint256)", &[Word::from_u64(1).shl(32)]);
     returns("cast(uint256)", &[w(5)], w(5));
 }
+
+#[test]
+fn sign_changing_casts_are_checked() {
+    let src = "
+storage is record { n : nat; }
+external pure function to_nat(const x : int) : nat is nat(x)
+external pure function to_int(const n : nat) : int is int(n)
+external pure function to_int16(const n : nat) : int16 is int16(n)
+external pure function to_uint8(const x : int8) : uint8 is uint8(x)
+external pure function to_wei(const x : int) : wei is wei(x)
+external pure function nat_bits(const x : int) : nat is Nat.from_bits(x)
+external pure function int_bits(const n : nat) : int is Int.from_bits(n)
+";
+    let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
+    let w = Word::from_u64;
+    let neg = w(0).not();
+    let top = w(1).shl(255);
+    let out = |sig: &str, arg: Word| {
+        let out = call(&runtime, sig, &[arg]);
+        if out.reverted {
+            assert!(out.returndata.starts_with(&selector("Panic(uint256)")), "{sig}");
+            assert_eq!(load_bytes(&out.returndata, 4), w(0x11), "{sig}");
+            None
+        } else {
+            Some(load_bytes(&out.returndata, 0))
+        }
+    };
+    assert_eq!(out("to_nat(int256)", w(7)), Some(w(7)));
+    assert_eq!(out("to_nat(int256)", neg), None);
+    assert_eq!(out("to_wei(int256)", neg), None);
+    assert_eq!(out("to_int(uint256)", top.wrapping_sub(w(1))), Some(top.wrapping_sub(w(1))));
+    assert_eq!(out("to_int(uint256)", top), None);
+    assert_eq!(out("to_int16(uint256)", w(32767)), Some(w(32767)));
+    assert_eq!(out("to_int16(uint256)", w(32768)), None);
+    assert_eq!(out("to_int16(uint256)", neg), None);
+    assert_eq!(out("to_uint8(int8)", w(127)), Some(w(127)));
+    assert_eq!(out("to_uint8(int8)", neg), None);
+    assert_eq!(out("nat_bits(int256)", neg), Some(neg));
+    assert_eq!(out("int_bits(uint256)", neg), Some(neg));
+}

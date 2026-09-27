@@ -24,7 +24,7 @@ Everything here is checked, like the rest of Lithe's arithmetic: a result that d
 
 ## `SafeCast`
 
-`std/math/safe_cast.lithe`. A conversion to a narrower integer, such as `uint128(x)`, is already checked and panics when the value doesn't fit. Only `nat(x)` and `int(x)` between the 256-bit types reinterpret the bits. `SafeCast.to_nat(x)` and `SafeCast.to_int(x)` check instead, and raise `SafeCastOverflowedIntToUint` or `SafeCastOverflowedUintToInt`.
+`std/math/safe_cast.lithe`. Every integer conversion is checked: `nat(x)` and `uint128(x)` revert with `Panic(0x11)` when the value doesn't fit. `SafeCast.to_nat(x)` and `SafeCast.to_int(x)` check the same way but raise OpenZeppelin's `SafeCastOverflowedIntToUint` or `SafeCastOverflowedUintToInt`.
 
 ## `FixedPoint`
 
