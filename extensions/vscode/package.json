@@ -1,11 +1,12 @@
 {
   "name": "lithe",
   "displayName": "Lithe",
-  "description": "Syntax highlighting for Lithe",
+  "description": "Syntax highlighting, diagnostics, hover, navigation, and completion for Lithe",
   "version": "0.1.0",
   "publisher": "lithe",
-  "engines": { "vscode": "^1.80.0" },
+  "engines": { "vscode": "^1.82.0" },
   "categories": ["Programming Languages"],
+  "main": "./extension.js",
   "contributes": {
     "languages": [
       {
@@ -21,6 +22,19 @@
         "scopeName": "source.lithe",
         "path": "./syntaxes/lithe.tmLanguage.json"
       }
-    ]
+    ],
+    "configuration": {
+      "title": "Lithe",
+      "properties": {
+        "lithe.path": {
+          "type": "string",
+          "default": "lithe",
+          "description": "The lithe compiler, run as `lithe lsp`."
+        }
+      }
+    }
+  },
+  "dependencies": {
+    "vscode-languageclient": "^9.0.1"
   }
 }

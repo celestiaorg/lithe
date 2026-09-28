@@ -214,6 +214,10 @@ pub(crate) struct Checked {
     pub routes: Vec<crate::route::Route>,
     /// Warnings the checker found, such as stale values captured by a continuation.
     pub warnings: Vec<Note>,
+    /// Every type name in scope, and its type.
+    pub named: HashMap<String, usize>,
+    /// Each storage domain's record type, by qualified name: `Module.name` inside a module.
+    pub domain_tys: HashMap<String, usize>,
     /// The program as it came in, before its modules were composed. A module's facet is
     /// built from it. It is everything a build depends on besides the compiler and its options.
     pub source: Program,
@@ -371,6 +375,7 @@ struct Checker {
     /// Checking a module function's copy for storage paths passed in: where each starts,
     /// `storage` or another module, which the copy may then use.
     spec_places: Vec<String>,
+    domain_tys: HashMap<String, usize>,
     /// Map parameters that hold their map's slot, and whether that map is transient.
     slot_syms: HashMap<usize, bool>,
     /// The map parameters of the copy about to be checked, and whether each map is transient.
@@ -485,6 +490,7 @@ pub(crate) fn check_in(mut prog: Program, require_entries: bool) -> Result<Check
         busy: Vec::new(),
         spec_module: None,
         spec_places: Vec::new(),
+        domain_tys: HashMap::new(),
         slot_syms: HashMap::new(),
         slot_params: Vec::new(),
         transient_from: 0,
@@ -697,6 +703,7 @@ pub(crate) fn check_in(mut prog: Program, require_entries: bool) -> Result<Check
         }
         seen_ids.insert(decl.id.clone(), (label, qualified.clone(), shape));
         let ty = c.build(&decl.ty)?;
+        c.domain_tys.insert(qualified.clone(), ty);
         if c.types[ty].kind != TyKind::Record {
             return Err(error(
                 decl.line,
@@ -799,6 +806,7 @@ pub(crate) fn check_in(mut prog: Program, require_entries: bool) -> Result<Check
             ));
         }
         let ty = c.build(&decl.ty)?;
+        c.domain_tys.insert(qualified.clone(), ty);
         if c.types[ty].kind != TyKind::Record {
             return Err(error(
                 decl.line,
@@ -992,6 +1000,8 @@ pub(crate) fn check_in(mut prog: Program, require_entries: bool) -> Result<Check
         errors: c.errors,
         routes: Vec::new(),
         warnings: std::mem::take(&mut c.warnings),
+        named: c.named,
+        domain_tys: c.domain_tys,
         source,
         slot_syms: c.slot_syms,
         interface_ids: Vec::new(),

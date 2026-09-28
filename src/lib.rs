@@ -47,6 +47,7 @@ mod format;
 mod gen;
 #[cfg(test)]
 mod hash;
+mod index;
 mod keccak;
 mod lex;
 mod lint;
@@ -61,7 +62,8 @@ use std::path::{Path, PathBuf};
 
 pub use config::{format_width, DEFAULT_WIDTH};
 pub use format::format_source;
-pub use lint::{lint_paths, lithe_files};
+pub use index::{Completion, Def, File, Index, Kind, Ref, Signature, Span};
+pub use lint::{lint_paths, lithe_files, Lint};
 pub use modules::Sources;
 pub use route::{
     Abi, AbiError, AbiItem, Constructor, Event, EventParam, Fallback, Function, Param, Receive,
@@ -297,6 +299,60 @@ fn part_names(
         out.insert(entry.sel, split::label(&entry.group, name));
     }
     Ok(Some(out))
+}
+
+/// What an editor shows for unsaved `src` at `path`.
+pub struct Analysis {
+    /// The first error, including those only code generation finds.
+    pub error: Option<Error>,
+    /// What `lithe lint` reports for the file, once every contract in it checks.
+    pub lints: Vec<Lint>,
+    /// What each name refers to, when at least one of the file's contracts checks.
+    pub index: Option<Index>,
+}
+
+/// Checks every contract `src` defines, as `lithe compile directory` does.
+pub fn analyze(path: &Path, src: &str) -> Analysis {
+    let sources = Sources::disk();
+    let prog = match modules::load_source(&sources, path, src) {
+        Ok(prog) => prog,
+        Err(err) => {
+            return Analysis {
+                error: Some(err),
+                lints: Vec::new(),
+                index: None,
+            }
+        }
+    };
+    let units = modules::split_units(prog);
+    let mut checked = Vec::new();
+    let mut failed = None;
+    for unit in units.clone() {
+        let name = artifact_contract_name(&unit, path);
+        match check::check(unit.clone()) {
+            Ok(unit_checked) => {
+                if failed.is_none() {
+                    failed = build(&sources, path, unit, &name, &Options::default()).err();
+                }
+                checked.push(unit_checked);
+            }
+            Err(err) => {
+                failed.get_or_insert(err);
+            }
+        }
+    }
+    let lints = if checked.len() == units.len() {
+        lint::lint_source(src, path, units).unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+    let root = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    Analysis {
+        error: failed,
+        lints,
+        index: (!checked.is_empty())
+            .then(|| index::build(&root.display().to_string(), src, &checked)),
+    }
 }
 
 /// Each external function's footprint: its writes, events, deferred calls, and errors, with
@@ -983,7 +1039,7 @@ pub fn upgrade_calldata(
     Ok(format!("0x{}", hex(&data)))
 }
 
-fn format_layout(layout: &[check::DomainLayout]) -> String {
+pub(crate) fn format_layout(layout: &[check::DomainLayout]) -> String {
     let mut out = String::new();
     for domain in layout {
         out.push_str(&domain.name);
@@ -1013,7 +1069,7 @@ fn format_layout(layout: &[check::DomainLayout]) -> String {
 
 /// Transient storage is listed apart: it has no root, lives for one transaction, and is
 /// never part of the upgradeable layout.
-fn format_transient(layout: &[check::DomainLayout]) -> String {
+pub(crate) fn format_transient(layout: &[check::DomainLayout]) -> String {
     let mut out = String::new();
     for domain in layout {
         if domain.name == "transient" {

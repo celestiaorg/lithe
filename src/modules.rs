@@ -13,9 +13,9 @@ include!(concat!(env!("OUT_DIR"), "/std.rs"));
 
 /// Where `import "std/..."` files live. The standard library is built into the compiler,
 /// so these paths name no file on disk.
-const STD_ROOT: &str = "/<lithe>";
+pub(crate) const STD_ROOT: &str = "/<lithe>";
 
-fn std_source(path: &Path) -> Option<&'static str> {
+pub(crate) fn std_source(path: &Path) -> Option<&'static str> {
     let rel = path.strip_prefix(STD_ROOT).ok()?.to_str()?;
     STD.iter()
         .find(|(name, _)| *name == rel)
@@ -101,8 +101,12 @@ pub(crate) fn import_origin(from: &Path, import: &str) -> Option<String> {
 }
 
 pub(crate) fn load(sources: &Sources, path: &Path) -> Result<Program, Error> {
-    let mut stack = Vec::new();
-    load_inner(sources, path, &mut stack)
+    load_inner(sources, path, None, &mut Vec::new())
+}
+
+/// Loads `path` with `src` in place of its saved contents, as an editor sees it.
+pub(crate) fn load_source(sources: &Sources, path: &Path, src: &str) -> Result<Program, Error> {
+    load_inner(sources, path, Some(src), &mut Vec::new())
 }
 
 struct Frame {
@@ -110,9 +114,15 @@ struct Frame {
     label: String,
 }
 
-fn load_inner(sources: &Sources, path: &Path, stack: &mut Vec<Frame>) -> Result<Program, Error> {
+fn load_inner(
+    sources: &Sources,
+    path: &Path,
+    text: Option<&str>,
+    stack: &mut Vec<Frame>,
+) -> Result<Program, Error> {
     let canon = match sources.canonicalize(path) {
         Ok(path) => path,
+        Err(_) if text.is_some() => path.to_path_buf(),
         Err(err) => {
             return Err(error(
                 1,
@@ -131,7 +141,7 @@ fn load_inner(sources: &Sources, path: &Path, stack: &mut Vec<Frame>) -> Result<
         msg.push_str(&label);
         return Err(error(1, 1, msg));
     }
-    let src = match std_source(&canon) {
+    let src = match text.or(std_source(&canon)) {
         Some(src) => src.to_string(),
         None if canon.starts_with(STD_ROOT) => {
             let rel = canon.strip_prefix(STD_ROOT).unwrap_or(&canon);
@@ -183,7 +193,7 @@ fn load_inner(sources: &Sources, path: &Path, stack: &mut Vec<Frame>) -> Result<
             msg.push_str(&label);
             return Err(error(decl.line, decl.col, msg));
         }
-        let child = load_inner(sources, &child_path, stack).map_err(|err| {
+        let child = load_inner(sources, &child_path, None, stack).map_err(|err| {
             if err.line == 1 && err.message.starts_with("cannot read") {
                 error(decl.line, decl.col, err.message.clone())
             } else {

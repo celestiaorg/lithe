@@ -120,7 +120,7 @@ fn lint_file(path: &Path, fix: bool) -> Result<(String, bool), Error> {
     let allow = crate::config::find(&own)?.allow;
     let mut findings = suppress(
         &src,
-        findings_at(&src, &own, &own_s, &label)?,
+        findings_at(&src, &own, &own_s, &label, units(&own)?)?,
         &allow,
         &label,
     );
@@ -132,7 +132,7 @@ fn lint_file(path: &Path, fix: bool) -> Result<(String, bool), Error> {
                 let fresh = std::fs::read_to_string(path).unwrap_or(edited);
                 findings = suppress(
                     &fresh,
-                    findings_at(&fresh, &own, &own_s, &label)?,
+                    findings_at(&fresh, &own, &own_s, &label, units(&own)?)?,
                     &allow,
                     &label,
                 );
@@ -144,6 +144,42 @@ fn lint_file(path: &Path, fix: bool) -> Result<(String, bool), Error> {
         text.push_str(&render(finding));
     }
     Ok((text, wrote))
+}
+
+/// A `lithe lint` finding, as an editor shows it.
+pub struct Lint {
+    pub line: u32,
+    pub col: u32,
+    pub rule: &'static str,
+    /// The message, then the hint on how to address it.
+    pub message: String,
+    /// What `lithe lint --fix` would do: replace these bytes of the source with this text.
+    pub fix: Option<(usize, usize, &'static str)>,
+}
+
+/// What `lithe lint` reports for `src`, the unsaved text of `path`, whose contracts check
+/// as `units`.
+pub(crate) fn lint_source(src: &str, path: &Path, units: Vec<Program>) -> Result<Vec<Lint>, Error> {
+    let own = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    let own_s = own.display().to_string();
+    let allow = crate::config::find(&own)
+        .map(|config| config.allow)
+        .unwrap_or_default();
+    let findings = findings_at(src, &own, &own_s, &own_s, units)?;
+    Ok(suppress(src, findings, &allow, &own_s)
+        .into_iter()
+        .map(|f| Lint {
+            line: f.line,
+            col: f.col,
+            rule: f.rule,
+            message: if f.hint.is_empty() {
+                f.message
+            } else {
+                format!("{}\n\n{}", f.message, f.hint)
+            },
+            fix: f.edit,
+        })
+        .collect())
 }
 
 pub(crate) const RULES: &[&str] = &[
@@ -343,7 +379,13 @@ fn apply<'a>(src: &str, edits: impl Iterator<Item = (usize, usize, &'a str)>) ->
     out
 }
 
-fn findings_at(src: &str, from: &Path, own: &str, label: &str) -> Result<Vec<Finding>, Error> {
+fn findings_at(
+    src: &str,
+    from: &Path,
+    own: &str,
+    label: &str,
+    units: Vec<Program>,
+) -> Result<Vec<Finding>, Error> {
     let uses = parse::parse(src)?.uses;
     let toks = lex::tokenize(src)?;
     let idents: HashSet<&str> = toks
@@ -351,7 +393,6 @@ fn findings_at(src: &str, from: &Path, own: &str, label: &str) -> Result<Vec<Fin
         .filter(|tok| tok.kind == Kind::Ident)
         .map(|tok| &src[tok.start..tok.end])
         .collect();
-    let units = units(from)?;
     let mut findings = Vec::new();
     let mut imported = HashSet::new();
     for unit in units {

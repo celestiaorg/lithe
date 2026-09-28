@@ -17,3 +17,10 @@ blockCommentStart = "(*"
 blockCommentEnd = "*)"
 increaseIndentPattern = "[{\\[(]\\s*$"
 decreaseIndentPattern = "^\\s*[}\\])]"
+
+[[languageServer]]
+id = "lithe"
+languages = ["lithe"]
+fileGlob = ["*.lithe"]
+command = "lithe"
+args = ["lsp"]

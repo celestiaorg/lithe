@@ -626,7 +626,7 @@ fn reason_case(types: &[RType], reason: &Raised) -> bool {
     }
 }
 
-fn abi_name(ctor: &str) -> String {
+pub(crate) fn abi_name(ctor: &str) -> String {
     let mut chars = ctor.chars();
     let Some(first) = chars.next() else {
         return String::new();
@@ -685,6 +685,37 @@ fn collect(
     if let Some(e) = tail {
         walk_expr(checked, e, &mut fx);
     }
+}
+
+/// What running a body touches, following the functions it calls.
+#[derive(Default)]
+pub(crate) struct Footprint {
+    pub calls: Vec<String>,
+    pub reads: Vec<String>,
+    pub writes: Vec<String>,
+    pub queries: Vec<String>,
+    pub events: Vec<String>,
+    pub operations: Vec<String>,
+    pub phases: Vec<Phase>,
+}
+
+pub(crate) fn footprint(checked: &Checked, stmts: &[Stmt], tail: Option<&Expr>) -> Footprint {
+    let mut fx = Footprint::default();
+    collect(
+        checked,
+        &[],
+        stmts,
+        tail,
+        &mut fx.calls,
+        &mut fx.reads,
+        &mut fx.writes,
+        &mut fx.queries,
+        &mut fx.events,
+        &mut fx.operations,
+        &mut Vec::new(),
+        &mut fx.phases,
+    );
+    fx
 }
 
 fn event_label(checked: &Checked, name: &str) -> String {

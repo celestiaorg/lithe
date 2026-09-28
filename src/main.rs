@@ -1,3 +1,5 @@
+mod lsp;
+
 use std::path::Path;
 
 use lithe::Sources;
@@ -9,6 +11,9 @@ fn main() {
         std::process::exit(2);
     }
     let cmd = args.remove(0);
+    if cmd == "lsp" && args.is_empty() {
+        lsp::run();
+    }
     if cmd == "fmt" {
         fmt_cmd(&args);
     }
@@ -413,6 +418,7 @@ usage: lithe compile file.lithe
        lithe stubs file.lithe Module
        lithe upgrade-check old.lithe new.lithe
        lithe upgrade 0xProxy file.lithe --migrate name [--impl 0xImpl] --args ...
+       lithe lsp
        lithe fmt path...
        lithe fmt --check path...
        lithe fmt -
