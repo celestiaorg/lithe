@@ -70,6 +70,8 @@ impl<'a> Gen<'a> {
             literals: HashMap::new(),
             returned: None,
             slot_cache: HashMap::new(),
+            val_cache: HashMap::new(),
+            kept_store: false,
             cache_words: Vec::new(),
             failing: 0,
             ret_scratch: 0,

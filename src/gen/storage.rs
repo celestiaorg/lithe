@@ -570,21 +570,53 @@ impl<'a> Gen<'a> {
                         transient,
                     });
                 }
+                // A list whose length and data slot are both kept needs neither its slot
+                // nor a hash.
+                let names = self.named(base);
+                let data = names
+                    .as_ref()
+                    .map(|(n, deps)| ((usize::MAX, 0, vec![n.clone()]), deps.clone()));
+                let data_at = data.as_ref().and_then(|(k, _)| self.slot_cache.get(k)).map(|e| e.0);
+                let len_at = names.as_ref().and_then(|(n, _)| self.kept_value(n));
+                let transient = self
+                    .stored_root(base)
+                    .is_some_and(|leaf| self.checked.transient_leaf(leaf));
+                if let (false, Some(data_at), Some(len_at)) = (grow, data_at, len_at) {
+                    self.compile_value(index)?;
+                    self.push_mem(len_at);
+                    self.op(MLOAD);
+                    self.op(DUP1 + 1);
+                    self.op(SWAP1);
+                    self.op(GT);
+                    self.op(ISZERO);
+                    self.revert_if_panic(0x32)?;
+                    self.push_mem(data_at);
+                    self.op(MLOAD);
+                    return self.element_at(ty, stride, transient);
+                }
                 // [slot, i, length], all on the stack, so that every such index is the
                 // same code and can be shared.
                 let p = self.deep_slot(base, false)?;
-                self.compile_value(index)?;
-                self.op(DUP1 + 1);
-                self.transient_slot = p.transient;
-                self.journal_load();
                 if grow {
-                    // A push: the index is the length, which grows by one.
+                    // A push: the index is the length, read from the slot already here,
+                    // which grows by one.
+                    self.op(DUP1);
+                    self.transient_slot = p.transient;
+                    self.journal_load();
+                    self.op(DUP1);
                     self.push_u64(1);
                     self.op(ADD);
                     self.op(DUP1 + 2);
                     self.transient_slot = p.transient;
                     self.journal_store();
                 } else {
+                    self.compile_value(index)?;
+                    self.kept_load(self.named(base), |g| {
+                        g.op(DUP1 + 1);
+                        g.transient_slot = p.transient;
+                        g.journal_load();
+                        Ok(())
+                    })?;
                     self.op(DUP1 + 1);
                     self.op(SWAP1);
                     self.op(GT);
@@ -592,29 +624,23 @@ impl<'a> Gen<'a> {
                     self.revert_if_panic(0x32)?;
                 }
                 self.op(SWAP1);
-                self.mstore_off(self.hash_buf);
-                self.push_u64(32);
-                self.push_mem(self.hash_buf);
-                self.op(KECCAK);
-                if let Some((pack, per)) = self.packed(ty) {
-                    self.packed_at(pack, per);
-                    return Ok(Deep {
-                        ty,
-                        pack,
-                        transient: p.transient,
-                    });
+                match data_at {
+                    Some(at) => {
+                        self.op(POP);
+                        self.push_mem(at);
+                        self.op(MLOAD);
+                    }
+                    None => {
+                        self.mstore_off(self.hash_buf);
+                        self.push_u64(32);
+                        self.push_mem(self.hash_buf);
+                        self.op(KECCAK);
+                        if let Some((key, deps)) = data {
+                            self.keep_slot(key, deps);
+                        }
+                    }
                 }
-                self.op(SWAP1);
-                if stride > 1 {
-                    self.push_u64(stride);
-                    self.op(MUL);
-                }
-                self.op(ADD);
-                Ok(Deep {
-                    ty,
-                    pack: Pack::FULL,
-                    transient: p.transient,
-                })
+                self.element_at(ty, stride, p.transient)
             }
             Expr::Field {
                 base,
@@ -651,14 +677,107 @@ impl<'a> Gen<'a> {
         }
     }
 
+    /// Hashes, once before a loop, the data slot of each stored list the body indexes
+    /// whose place stays the same through the loop: none of `written` names it. A body
+    /// that writes no storage also has the length read once, for its bounds checks.
+    pub(super) fn hoist_lists(
+        &mut self,
+        body: &[Stmt],
+        written: &[usize],
+        lengths: bool,
+    ) -> Result<(), Error> {
+        if !self.plan.cache_slots || !self.may_keep() {
+            return Ok(());
+        }
+        let found = std::cell::RefCell::new(Vec::new());
+        let record = |node: Node<'_>| {
+            if let Node::Expr(Expr::Index { base, .. }) = node {
+                let lty = self.peel_nominal(base.ty());
+                if self.checked.types[lty].kind == TyKind::List
+                    && self.checked.types[lty].bits == 0
+                    && self.static_place(base).is_none()
+                {
+                    found.borrow_mut().push(base.as_ref().clone());
+                }
+            }
+            false
+        };
+        // Callees' own locals are not bound yet, so the scan stays in this body.
+        let mut callees: Vec<usize> = (0..self.checked.prog.funcs.len()).collect();
+        for st in body {
+            self.stmt_any(st, &record, &mut callees);
+        }
+        for base in found.into_inner() {
+            let Some((name, deps)) = self.named(&base) else {
+                continue;
+            };
+            let key = (usize::MAX, 0, vec![name.clone()]);
+            if deps.iter().any(|d| written.contains(d)) || self.slot_cache.contains_key(&key) {
+                continue;
+            }
+            let p = self.deep_slot(&base, false)?;
+            if lengths && self.kept_value(&name).is_none() {
+                self.op(DUP1);
+                self.transient_slot = p.transient;
+                self.journal_load();
+                self.keep_value(name, deps.clone());
+                self.op(POP);
+            }
+            self.mstore_off(self.hash_buf);
+            self.push_u64(32);
+            self.push_mem(self.hash_buf);
+            self.op(KECCAK);
+            self.keep_slot(key, deps);
+            self.op(POP);
+        }
+        Ok(())
+    }
+
+    /// `[i, data]` becomes the place of element `i` of a list whose data starts at `data`.
+    fn element_at(&mut self, ty: usize, stride: u64, transient: bool) -> Result<Deep, Error> {
+        if let Some((pack, per)) = self.packed(ty) {
+            self.packed_at(pack, per);
+            return Ok(Deep {
+                ty,
+                pack,
+                transient,
+            });
+        }
+        self.op(SWAP1);
+        if stride > 1 {
+            self.push_u64(stride);
+            self.op(MUL);
+        }
+        self.op(ADD);
+        Ok(Deep {
+            ty,
+            pack: Pack::FULL,
+            transient,
+        })
+    }
+
+    /// The leaf a stored place starts from, through its keys and fields.
+    fn stored_root(&self, e: &Expr) -> Option<u32> {
+        if let Some((sym, leaf)) = self.static_place(e) {
+            return Some(self.checked.syms[sym].slot + leaf);
+        }
+        match e {
+            Expr::Field { base, .. } | Expr::Index { base, .. } => self.stored_root(base),
+            _ => None,
+        }
+    }
+
     /// Pushes the word a place `deep` finds holds: a word, a string or bytes value, a
     /// list, or a list's length.
     pub(super) fn deep_read(&mut self, e: &Expr) -> Result<(), Error> {
         if let Expr::Field { base, name, .. } = e {
             if name == "length" && (self.list_value(base.ty()) || self.is_dynamic(base.ty())) {
-                let p = self.deep_slot(base, false)?;
-                self.transient_slot = p.transient;
-                self.journal_load();
+                self.kept_load(self.named(base), |g| {
+                    let p = g.deep_slot(base, false)?;
+                    g.transient_slot = p.transient;
+                    g.journal_load();
+                    Ok(())
+                })?;
                 if self.is_dynamic(base.ty()) {
                     self.header_length();
                 }
@@ -685,6 +804,18 @@ impl<'a> Gen<'a> {
         self.journal_load();
         self.unpack(p.pack);
         Ok(())
+    }
+
+    /// `deep_read` of a word, kept for later reads of its place where it may be.
+    pub(super) fn deep_read_word(&mut self, e: &Expr) -> Result<(), Error> {
+        let ty = e.ty();
+        let name = self
+            .named(e)
+            .filter(|_| !self.list_value(ty) && !self.is_dynamic(ty) && self.stack_value(ty));
+        if name.is_none() {
+            return self.deep_read(e);
+        }
+        self.kept_load(name, |g| g.deep_read(e))
     }
 
     /// `[slot]` of a stored list becomes a copy of it.
@@ -1764,10 +1895,25 @@ impl<'a> Gen<'a> {
                 self.load_slot(self.bytes_elem(ty) && !header);
                 Ok(())
             }
-            TyKind::Map => {
+            TyKind::Map if self.bytes_elem(ty) && !header => {
                 self.push_map_slot(sym, leaf, &[index])?;
-                self.load_slot(self.bytes_elem(ty) && !header);
+                self.load_slot(true);
                 Ok(())
+            }
+            TyKind::Map => {
+                let mut deps = Vec::new();
+                let (root, at) = self.place_of(sym, leaf);
+                let name = if self.checked.slot_syms.contains_key(&root) {
+                    None
+                } else {
+                    let slot = self.checked.syms[root].slot + at;
+                    self.fixed_key(index, &mut deps).map(|k| (format!("L{slot}[{k}]"), deps))
+                };
+                self.kept_load(name, |g| {
+                    g.push_map_slot(sym, leaf, &[index])?;
+                    g.load_slot(false);
+                    Ok(())
+                })
             }
             _ => Err(error(line, col, "this value cannot be indexed")),
         }
@@ -1927,7 +2073,7 @@ impl<'a> Gen<'a> {
         let names: Option<Vec<String>> =
             keys.iter().map(|k| self.fixed_key(k, &mut deps)).collect();
         let cache = names.map(|names| (sym, leaf, names));
-        if let Some(&(at, _)) = cache.as_ref().and_then(|c| self.slot_cache.get(c)) {
+        if let Some(&(at, ..)) = cache.as_ref().and_then(|c| self.slot_cache.get(c)) {
             self.mload(at);
             return Ok(());
         }
@@ -1937,17 +2083,29 @@ impl<'a> Gen<'a> {
             self.compile_key(key)?;
             self.nested_slot(self.is_dynamic(key.ty()));
         }
-        if let Some(cache) = cache.filter(|_| self.plan.cache_slots) {
-            if self.branch == self.top_branch && self.failing == 0 && self.body.is_some() {
-                self.return_sites += 1;
-                let at = self.region(Region::Stored(self.return_sites), 32);
-                self.op(DUP1);
-                self.mstore_off(at);
-                self.cache_words.push(at);
-                self.slot_cache.insert(cache, (at, deps));
-            }
+        if let Some(cache) = cache {
+            self.keep_slot(cache, deps);
         }
         Ok(())
+    }
+
+    /// Keeps the slot on the stack, hashed from what `key` names, for later accesses.
+    pub(super) fn keep_slot(&mut self, key: (usize, u32, Vec<String>), deps: Vec<usize>) {
+        if !self.plan.cache_slots || !self.may_keep() {
+            return;
+        }
+        let at = self.cache_word();
+        self.slot_cache.insert(key, (at, deps, self.branch));
+    }
+
+    /// Stores a copy of the word on the stack in a fresh word of its own, which only the
+    /// code that keeps it names.
+    fn cache_word(&mut self) -> i32 {
+        let at = self.temp();
+        self.op(DUP1);
+        self.mstore_off(at);
+        self.cache_words.push(at);
+        at
     }
 
     /// A name for a key whose value cannot change while it is cached: a literal, fixed
@@ -1988,6 +2146,119 @@ impl<'a> Gen<'a> {
             }
             _ => None,
         }
+    }
+
+    /// Where the storage word read from `name` is kept, if it is.
+    pub(super) fn kept_value(&self, name: &str) -> Option<i32> {
+        self.val_cache.get(name).map(|&(at, ..)| at)
+    }
+
+    /// Whether what is kept here can serve later code: not a failure block, which ends
+    /// in a revert, nor code outside a body. What a branch keeps lasts until it ends.
+    fn may_keep(&self) -> bool {
+        self.branch >= self.top_branch && self.failing == 0 && self.body.is_some()
+    }
+
+    /// Keeps the word on the stack as the one stored at `name`, for later reads.
+    pub(super) fn keep_value(&mut self, name: String, deps: Vec<usize>) {
+        if !self.may_keep() {
+            return;
+        }
+        let at = self.cache_word();
+        self.val_cache.insert(name, (at, deps, self.branch));
+    }
+
+    /// Drops the slots and values kept for places whose keys read these locals.
+    pub(super) fn forget_keys(&mut self, syms: &[usize]) {
+        if syms.is_empty() {
+            return;
+        }
+        self.slot_cache
+            .retain(|_, (_, deps, _)| !deps.iter().any(|d| syms.contains(d)));
+        self.val_cache
+            .retain(|_, (_, deps, _)| !deps.iter().any(|d| syms.contains(d)));
+    }
+
+    /// Drops what code under a branch kept at `level` or deeper: later code may run
+    /// without it.
+    fn forget_from(&mut self, level: u32) {
+        self.slot_cache.retain(|_, (.., at)| *at < level);
+        self.val_cache.retain(|_, (.., at)| *at < level);
+    }
+
+    /// Ends a runtime branch.
+    pub(super) fn leave_branch(&mut self) {
+        self.branch -= 1;
+        self.forget_from(self.branch + 1);
+    }
+
+    /// A label other code may jump to. Under a branch, it may join a path that did not
+    /// run what the branch kept so far.
+    pub(super) fn jumpdest(&mut self, id: u32) {
+        if self.branch > self.top_branch {
+            self.forget_from(self.branch);
+        }
+        self.code.push(Inst::Label(id));
+    }
+
+    /// A name for the slot of a stored place that stays the same while it is kept: a leaf,
+    /// then map keys that `fixed_key` names, and fields.
+    pub(super) fn place_name(&self, e: &Expr, deps: &mut Vec<usize>) -> Option<String> {
+        let root = match e {
+            Expr::Ident { sym, .. } | Expr::Field { root: sym, .. } | Expr::Index { root: sym, .. } => {
+                (*sym)?
+            }
+            _ => return None,
+        };
+        if self.checked.slot_syms.contains_key(&root) || self.slot_binds.contains_key(&root) {
+            return None;
+        }
+        if let Some((sym, leaf)) = self.static_place(e) {
+            return Some(format!("L{}", self.checked.syms[sym].slot + leaf));
+        }
+        match e {
+            Expr::Index { base, index, .. }
+                if self.checked.types[self.peel_nominal(base.ty())].kind == TyKind::Map =>
+            {
+                let base = self.place_name(base, deps)?;
+                let key = self.fixed_key(index, deps)?;
+                Some(format!("{base}[{key}]"))
+            }
+            Expr::Field { base, name, .. } => Some(format!("{}.{name}", self.place_name(base, deps)?)),
+            _ => None,
+        }
+    }
+
+    /// `load` pushes the word stored at a place `name` names, unless it is kept already.
+    /// A fresh load is kept for later reads where it may be.
+    pub(super) fn kept_load(
+        &mut self,
+        name: Option<(String, Vec<usize>)>,
+        load: impl FnOnce(&mut Self) -> Result<(), Error>,
+    ) -> Result<(), Error> {
+        if let Some(at) = name.as_ref().and_then(|(n, _)| self.kept_value(n)) {
+            self.push_mem(at);
+            self.op(MLOAD);
+            return Ok(());
+        }
+        load(self)?;
+        if let Some((n, deps)) = name {
+            self.keep_value(n, deps);
+        }
+        Ok(())
+    }
+
+    /// `place_name` with the locals it reads.
+    pub(super) fn named(&self, e: &Expr) -> Option<(String, Vec<usize>)> {
+        let mut deps = Vec::new();
+        let name = self.place_name(e, &mut deps)?;
+        Some((name, deps))
+    }
+
+    /// Whether a node writes storage.
+    pub(super) fn stores(&self, node: Node<'_>) -> bool {
+        matches!(node, Node::Stmt(Stmt::Assign { root: Some(sym), .. })
+            if self.checked.syms[*sym].storage || self.checked.slot_syms.contains_key(sym))
     }
 
     /// Drops the store of a cached slot no access came back for.

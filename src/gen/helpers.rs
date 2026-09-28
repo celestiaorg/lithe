@@ -14,12 +14,16 @@ impl<'a> Gen<'a> {
     }
 
     pub(super) fn call_sub(&mut self, sub: Sub) {
+        if sub.writes_storage() {
+            self.val_cache.clear();
+        }
         let label = self.sub_label(sub);
         let ret = self.fresh();
         self.push_label(ret);
         self.push_label(label);
         self.op(JUMP);
-        self.jumpdest(ret);
+        // Only the helper's return jumps here.
+        self.code.push(Inst::Label(ret));
     }
 
     /// Emits each helper that some call still reaches. Helpers may call helpers.
@@ -529,7 +533,14 @@ impl<'a> Gen<'a> {
                 return;
             }
             if self.direct {
+                let name = format!("L{leaf}");
+                if let Some(at) = self.kept_value(&name) {
+                    self.push_mem(at);
+                    self.op(MLOAD);
+                    return;
+                }
                 self.sload_leaf(leaf);
+                self.keep_value(name, Vec::new());
                 return;
             }
             let at = self.code.len();
@@ -543,10 +554,8 @@ impl<'a> Gen<'a> {
     }
 
     pub(super) fn mstore_off(&mut self, addr: i32) {
-        if !self.slot_cache.is_empty() {
-            if let Region::Local(sym) = self.spaces[(addr >> REGION_SHIFT) as usize - 1].region {
-                self.slot_cache.retain(|_, (_, deps)| !deps.contains(&sym));
-            }
+        if let Region::Local(sym) = self.spaces[(addr >> REGION_SHIFT) as usize - 1].region {
+            self.forget_keys(&[sym]);
         }
         if let Some(leaf) = self.image_leaf(addr) {
             if self.checked.immutable_leaf(leaf) {
@@ -559,7 +568,18 @@ impl<'a> Gen<'a> {
                 return;
             }
             if self.direct {
+                let name = format!("L{leaf}");
+                match self.kept_value(&name) {
+                    Some(at) => {
+                        self.op(DUP1);
+                        self.push_mem(at);
+                        self.op(MSTORE);
+                    }
+                    None => self.keep_value(name, Vec::new()),
+                }
+                self.kept_store = true;
                 self.sstore_leaf(leaf);
+                self.kept_store = false;
                 return;
             }
         }
@@ -649,6 +669,11 @@ impl<'a> Gen<'a> {
             self.code.push(Inst::Op(CALLDATASIZE));
             self.code.push(Inst::Op(SUB));
         } else {
+            if !self.kept_store
+                && matches!(b, SSTORE | TSTORE | CALL | DELEGATECALL | CREATE | CREATE2)
+            {
+                self.val_cache.clear();
+            }
             self.code.push(Inst::Op(b));
         }
     }
@@ -656,10 +681,6 @@ impl<'a> Gen<'a> {
     pub(super) fn fresh(&mut self) -> u32 {
         self.next_label += 1;
         self.next_label
-    }
-
-    pub(super) fn jumpdest(&mut self, id: u32) {
-        self.code.push(Inst::Label(id));
     }
 
     pub(super) fn push_label(&mut self, id: u32) {

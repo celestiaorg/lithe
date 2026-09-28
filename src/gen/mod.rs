@@ -589,6 +589,53 @@ enum Sub {
     TreeCdEnc(usize),
 }
 
+impl Sub {
+    fn writes_storage(&self) -> bool {
+        match self {
+            Sub::JournalStore
+            | Sub::JournalFlush
+            | Sub::StoreBytes
+            | Sub::StoreList(..)
+            | Sub::StoreRecords(..)
+            | Sub::StorePacked(..)
+            | Sub::ZeroSlots(..)
+            | Sub::ClearElems(..)
+            | Sub::StoreSlotBytes(..) => true,
+            Sub::JournalLoad
+            | Sub::AllocBlob
+            | Sub::BytesSpan
+            | Sub::LoadBytes
+            | Sub::RevertData
+            | Sub::MulDiv
+            | Sub::CheckedMul
+            | Sub::CheckedExp(_)
+            | Sub::DecodeList(_)
+            | Sub::LoadList(..)
+            | Sub::LoadRecords(..)
+            | Sub::LoadPacked(..)
+            | Sub::LoadSlotBytes(..)
+            | Sub::QueuePush
+            | Sub::ListHead
+            | Sub::RevertAbi
+            | Sub::ShortBlob
+            | Sub::BlobsAbi
+            | Sub::DecodeBytes
+            | Sub::BlobsEq
+            | Sub::BytesEq
+            | Sub::BytesValue(_)
+            | Sub::Base64Encode
+            | Sub::Base64Decode
+            | Sub::DecimalString(_)
+            | Sub::HexString
+            | Sub::ChecksumString
+            | Sub::BytesSlice(_)
+            | Sub::TreeEnc(_)
+            | Sub::TreeDec(..)
+            | Sub::TreeCdEnc(_) => false,
+        }
+    }
+}
+
 /// Where a helper copies bytes from.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum SrcKind {
@@ -793,9 +840,16 @@ struct Gen<'a> {
     /// or raises it again, and makes no call that would replace it.
     returned: Option<usize>,
     /// Map slots already hashed on every path to here in the body: where each is kept,
-    /// and the locals its keys read.
-    slot_cache: HashMap<(usize, u32, Vec<String>), (i32, Vec<usize>)>,
-    /// Words holding a cached slot. A word nothing reads drops its store.
+    /// the locals its keys read, and the `branch` it was kept at.
+    slot_cache: HashMap<(usize, u32, Vec<String>), (i32, Vec<usize>, u32)>,
+    /// Storage words already read or written on every path to here, each kept in a memory
+    /// word, by the place they are read from, with the locals the place's keys read and
+    /// the `branch` it was kept at.
+    /// Anything that may write storage it does not account for drops them all.
+    val_cache: HashMap<String, (i32, Vec<usize>, u32)>,
+    /// Set around a store `val_cache` already accounts for.
+    kept_store: bool,
+    /// Words holding a cached slot or value. A word nothing reads drops its store.
     cache_words: Vec<i32>,
     /// Inside an assertion's failure block, which runs only when it fails.
     failing: usize,

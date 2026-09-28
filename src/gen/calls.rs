@@ -180,7 +180,7 @@ impl<'a> Gen<'a> {
                 self.op(JUMP);
             }
         }
-        self.branch -= 1;
+        self.leave_branch();
         self.jumpdest(end);
         Ok(())
     }
@@ -251,7 +251,7 @@ impl<'a> Gen<'a> {
             }
             self.compile_stmts(&failed.stmts)?;
             self.arm_result(&failed.expr, sink)?;
-            self.branch -= 1;
+            self.leave_branch();
             self.jumpdest(end);
             let _ = (base, args, iface, method);
             return Ok(());
@@ -307,7 +307,7 @@ impl<'a> Gen<'a> {
             self.revert_data(sym)?;
         }
         self.run_arm(&failed, sink)?;
-        self.branch -= 1;
+        self.leave_branch();
         self.jumpdest(end);
         Ok(())
     }
@@ -1811,6 +1811,7 @@ impl<'a> Gen<'a> {
         self.direct = direct;
         self.branch = 0;
         let outer_cache = std::mem::take(&mut self.slot_cache);
+        let outer_vals = std::mem::take(&mut self.val_cache);
         let outer_facts = std::mem::take(&mut self.facts);
         let mut body = Body {
             id: outer.id,
@@ -1831,6 +1832,7 @@ impl<'a> Gen<'a> {
         self.direct = outer_direct;
         self.branch = outer_branch;
         self.slot_cache = outer_cache;
+        self.val_cache = outer_vals;
         self.facts = outer_facts;
         result
     }

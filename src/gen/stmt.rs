@@ -222,13 +222,20 @@ impl<'a> Gen<'a> {
                     self.stored_list_base(sym, leaf);
                     self.mstore_off(list_base);
                 }
-                // A slot kept from before the loop is stale once the body rewrites its key.
+                // A slot or value kept from before the loop is stale once the body rewrites
+                // its key, and a value once the body may write storage.
                 let mut written = Vec::new();
                 for st in body.iter() {
                     Self::written_syms(st, &mut written);
                 }
-                self.slot_cache
-                    .retain(|_, (_, deps)| !deps.iter().any(|d| written.contains(d)));
+                self.forget_keys(&written);
+                let stores =
+                    body.iter().any(|st| self.stmt_any(st, &|n| self.stores(n), &mut Vec::new()));
+                if stores {
+                    self.val_cache.clear();
+                }
+                written.extend(declared.iter().copied());
+                self.hoist_lists(body, &written, !stores)?;
                 let top = self.fresh();
                 let done = self.fresh();
                 self.jumpdest(top);
@@ -333,7 +340,7 @@ impl<'a> Gen<'a> {
                 })();
                 self.loop_counters.pop();
                 self.loop_syms.pop();
-                self.branch -= 1;
+                self.leave_branch();
                 result?;
                 self.push_u64(1);
                 if down {
@@ -416,7 +423,7 @@ impl<'a> Gen<'a> {
                 self.tail = tail;
                 self.compile_stmts(else_body)?;
                 self.facts.truncate(mark);
-                self.branch -= 1;
+                self.leave_branch();
                 self.jumpdest(end_l);
                 Ok(())
             }
@@ -1250,7 +1257,7 @@ impl<'a> Gen<'a> {
                 if alias_ok && plain && !self.checked.syms[sym].mutable && !later.contains(&sym) {
                     aliased.push((sym, self.local[sym]));
                     self.local[sym] = self.local[*from];
-                    self.slot_cache.retain(|_, (_, deps)| !deps.contains(&sym));
+                    self.forget_keys(&[sym]);
                     continue;
                 }
             }
@@ -1289,7 +1296,7 @@ impl<'a> Gen<'a> {
     fn unalias(&mut self, aliased: Vec<(usize, i32)>) {
         for (sym, word) in aliased.into_iter().rev() {
             self.local[sym] = word;
-            self.slot_cache.retain(|_, (_, deps)| !deps.contains(&sym));
+            self.forget_keys(&[sym]);
         }
     }
 
@@ -1411,6 +1418,7 @@ impl<'a> Gen<'a> {
             let (saved_branch, saved_top) = (self.branch, self.top_branch);
             let saved_shared = self.shared;
             let saved_cache = std::mem::take(&mut self.slot_cache);
+            let saved_vals = std::mem::take(&mut self.val_cache);
             let saved_facts = std::mem::take(&mut self.facts);
             // A summary body collects the leaves it touches. Writes are never unconditional.
             self.body = Some(Body::default());
@@ -1433,6 +1441,7 @@ impl<'a> Gen<'a> {
             self.top_branch = saved_top;
             self.shared = saved_shared;
             self.slot_cache = saved_cache;
+            self.val_cache = saved_vals;
             self.facts = saved_facts;
             result?;
             self.funcs.insert(
@@ -1447,6 +1456,9 @@ impl<'a> Gen<'a> {
                 },
             );
         }
+        if self.func_any(idx, &|n| self.stores(n), &mut Vec::new()) {
+            self.val_cache.clear();
+        }
         let f = &self.funcs[&key];
         let (label, reads, writes, journal) =
             (f.label, f.reads.clone(), f.writes.clone(), f.journal_stores);
@@ -1460,7 +1472,8 @@ impl<'a> Gen<'a> {
         self.push_label(ret);
         self.push_label(label);
         self.op(JUMP);
-        self.jumpdest(ret);
+        // Only the function's return jumps here.
+        self.code.push(Inst::Label(ret));
         Ok(())
     }
 }

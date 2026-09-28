@@ -163,7 +163,7 @@ impl<'a> Gen<'a> {
         self.jumpdest(short);
         self.mstore_off(self.addr(sym, leaf));
         self.mark_dirty(sym, leaf);
-        self.branch -= 1;
+        self.leave_branch();
         self.jumpdest(done);
         Ok(())
     }

@@ -528,7 +528,7 @@ impl<'a> Gen<'a> {
                 self.op(MSTORE);
             }
         }
-        self.branch -= 1;
+        self.leave_branch();
         self.push_u64(32 * k);
         self.op(ADD);
         self.push_label(top);

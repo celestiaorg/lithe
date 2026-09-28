@@ -3,7 +3,7 @@ use super::*;
 impl<'a> Gen<'a> {
     pub(super) fn compile_value(&mut self, e: &Expr) -> Result<(), Error> {
         if self.deep(e) {
-            return self.deep_read(e);
+            return self.deep_read_word(e);
         }
         if let Some(()) = self.local_elem_read(e)? {
             return Ok(());
@@ -275,9 +275,16 @@ impl<'a> Gen<'a> {
                 base,
                 ..
             } if matches!(base.as_ref(), Expr::Index { .. }) => {
-                self.map_chain(e)?;
-                self.load_slot(self.is_dynamic(self.peel_nominal(e.ty())));
-                Ok(())
+                if self.is_dynamic(self.peel_nominal(e.ty())) {
+                    self.map_chain(e)?;
+                    self.load_slot(true);
+                    return Ok(());
+                }
+                self.kept_load(self.named(e), |g| {
+                    g.map_chain(e)?;
+                    g.load_slot(false);
+                    Ok(())
+                })
             }
             Expr::Index {
                 root: Some(sid),
@@ -382,7 +389,7 @@ impl<'a> Gen<'a> {
                     self.assume(left, *op == BinOp::And);
                     let right = self.compile_value(right);
                     self.facts.truncate(mark);
-                    self.branch -= 1;
+                    self.leave_branch();
                     right?;
                     self.jumpdest(end);
                     return Ok(());
@@ -1796,7 +1803,7 @@ impl<'a> Gen<'a> {
         self.assume(cond, false);
         self.run_arm(arm("false"), sink)?;
         self.facts.truncate(mark);
-        self.branch -= 1;
+        self.leave_branch();
         self.jumpdest(end_l);
         Ok(())
     }
@@ -1906,7 +1913,7 @@ impl<'a> Gen<'a> {
                 self.op(JUMP);
             }
         }
-        self.branch -= 1;
+        self.leave_branch();
         self.jumpdest(end);
         Ok(())
     }
@@ -2054,7 +2061,7 @@ impl<'a> Gen<'a> {
         self.op(JUMP);
         self.jumpdest(none_l);
         self.run_arm(none, sink)?;
-        self.branch -= 1;
+        self.leave_branch();
         self.jumpdest(end_l);
         Ok(())
     }
@@ -2092,7 +2099,7 @@ impl<'a> Gen<'a> {
             self.op(POP);
         }
         self.run_arm(none, sink)?;
-        self.branch -= 1;
+        self.leave_branch();
         self.jumpdest(end_l);
         Ok(())
     }

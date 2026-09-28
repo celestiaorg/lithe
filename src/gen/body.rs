@@ -506,6 +506,7 @@ impl<'a> Gen<'a> {
         self.body = Some(body);
         self.branch = 0;
         self.slot_cache.clear();
+        self.val_cache.clear();
         self.facts.clear();
     }
 
@@ -515,6 +516,7 @@ impl<'a> Gen<'a> {
 
     /// Drops what the body turned out not to need, then loads the leaves it reads.
     pub(super) fn finish_body(&mut self) {
+        self.val_cache.clear();
         let Some(body) = self.body.take() else {
             return;
         };
@@ -535,12 +537,17 @@ impl<'a> Gen<'a> {
             }
         }
         // A leaf this body never writes cannot change while it runs: queries are static
-        // calls, and its own writes wait for the end. It reads storage in place.
+        // calls, and its own writes wait for the end. It reads storage in place, unless it
+        // is read in more than one place: one load then serves the rest from memory.
         let direct: std::collections::BTreeSet<u32> = body
             .reads
             .iter()
             .copied()
-            .filter(|leaf| !body.writes.contains(leaf) && !body.pinned.contains(leaf))
+            .filter(|leaf| {
+                !body.writes.contains(leaf)
+                    && !body.pinned.contains(leaf)
+                    && body.read_sites.iter().filter(|(l, _)| l == leaf).count() < 2
+            })
             .collect();
         for &(leaf, at) in &body.read_sites {
             if direct.contains(&leaf) {

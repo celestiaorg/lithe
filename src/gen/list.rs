@@ -241,6 +241,8 @@ impl<'a> Gen<'a> {
         let j = self.temp();
         self.mload(from);
         self.mstore_off(j);
+        // A store in the body would come after reads of the next pass.
+        self.val_cache.clear();
         self.jumpdest(top);
         self.mload(j);
         self.mload(to);
@@ -250,7 +252,7 @@ impl<'a> Gen<'a> {
         self.op(JUMPI);
         self.branch += 1;
         let result = body(self, j);
-        self.branch -= 1;
+        self.leave_branch();
         result?;
         self.mload(j);
         self.push_u64(1);

@@ -1383,3 +1383,64 @@ external view function f() : nat is {
     let out = run_ok(&runtime, &storage, "f()", &[]);
     assert_eq!(load_bytes(&out.returndata, 0), w(61));
 }
+
+#[test]
+fn kept_storage_reads_see_every_write() {
+    let src = r#"
+type bag is record {
+  xs : list(nat);
+  n : nat;
+}
+
+storage is record {
+  count : nat;
+  m : map(nat, nat);
+  bags : map(nat, bag);
+}
+
+function bump() is {
+  storage.count := storage.count + 1n;
+}
+
+external function alias(const a : nat; const b : nat) : nat is {
+  const first : nat := storage.m[a];
+  storage.m[b] := first + 5n;
+} with storage.m[a] * 100n + first
+
+external function called() : nat is {
+  const before : nat := storage.count;
+  bump();
+  bump();
+} with storage.count * 100n + before
+
+external function pushes(const k : nat) : nat is {
+  var total : nat := storage.bags[k].xs.length;
+  for i : nat in 0n .. 3n do {
+    total := total + storage.bags[k].xs.length * 10n + storage.bags[k].xs[0n] * 1000n;
+    List.push(storage.bags[k].xs, i + 7n);
+  }
+} with total
+
+external function branch(const k : nat; const c : bool) : nat is {
+  if c then {
+    storage.bags[k].n := storage.bags[k].n + 1n;
+  }
+} with storage.bags[k].n
+"#;
+    let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
+    let w = Word::from_u64;
+    let empty = HashMap::new();
+    let word = |out: &Outcome| load_bytes(&out.returndata, 0);
+    assert_eq!(word(&run_ok(&runtime, &empty, "alias(uint256,uint256)", &[w(1), w(1)])), w(500));
+    assert_eq!(word(&run_ok(&runtime, &empty, "alias(uint256,uint256)", &[w(1), w(2)])), w(0));
+    assert_eq!(word(&run_ok(&runtime, &empty, "called()", &[])), w(200));
+    let seeded: HashMap<Word, Word> = [(map_key(w(3), w(2)), w(1))].into_iter().collect();
+    let data = Word::from_be_bytes(crate::keccak::keccak256(&map_key(w(3), w(2)).to_be_bytes()));
+    let mut seeded = seeded;
+    seeded.insert(data, w(4));
+    // A list starting [4]: each pass sees the length the last push left.
+    assert_eq!(word(&run_ok(&runtime, &seeded, "pushes(uint256)", &[w(3)])), w(1 + 10 + 20 + 30 + 3 * 4000));
+    let once = run_ok(&runtime, &empty, "branch(uint256,bool)", &[w(3), w(1)]);
+    assert_eq!(word(&once), w(1));
+    assert_eq!(word(&run_ok(&runtime, &once.storage, "branch(uint256,bool)", &[w(3), w(0)])), w(1));
+}
