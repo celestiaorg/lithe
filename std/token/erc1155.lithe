@@ -131,7 +131,13 @@ module ERC1155 is {
   (* Like `ERC1155Utils.checkOnERC1155Received`: a contract receiver must answer with the
      hook's selector. A receiver that reverts without a reason is invalid; its own reason
      is passed on unchanged. *)
-  function check_received(const from : address; const to : address; const id : nat; const value : nat; const data : bytes)
+  function check_received(
+    const from : address;
+    const to : address;
+    const id : nat;
+    const value : nat;
+    const data : bytes
+  )
     raises ERC1155InvalidReceiver | forwarded
   is {
     if Evm.code_size(to) > 0n then {
@@ -205,9 +211,15 @@ module ERC1155 is {
     update(from, to, ids, values);
   }
 
-  function safe_transfer_from(const from : address; const to : address; const id : nat; const value : nat; const data : bytes)
-    raises ERC1155MissingApprovalForAll | ERC1155InvalidReceiver | ERC1155InvalidSender
-      | ERC1155InvalidArrayLength | ERC1155InsufficientBalance | forwarded
+  function safe_transfer_from(
+    const from : address;
+    const to : address;
+    const id : nat;
+    const value : nat;
+    const data : bytes
+  )
+    raises ERC1155MissingApprovalForAll | ERC1155InvalidReceiver | ERC1155InvalidSender | ERC1155InvalidArrayLength
+      | ERC1155InsufficientBalance | forwarded
   is {
     check_authorized(Evm.sender(), from);
     move(from, to, [id], [value]);
@@ -221,8 +233,8 @@ module ERC1155 is {
     const values : list(nat);
     const data : bytes
   )
-    raises ERC1155MissingApprovalForAll | ERC1155InvalidReceiver | ERC1155InvalidSender
-      | ERC1155InvalidArrayLength | ERC1155InsufficientBalance | forwarded
+    raises ERC1155MissingApprovalForAll | ERC1155InvalidReceiver | ERC1155InvalidSender | ERC1155InvalidArrayLength
+      | ERC1155InsufficientBalance | forwarded
   is {
     check_authorized(Evm.sender(), from);
     move(from, to, ids, values);
@@ -279,9 +291,15 @@ module ERC1155 is {
   is
     set_approval_for_all(operator, approved)
 
-  external function safeTransferFrom(const from : address; const to : address; const id : nat; const value : nat; const data : bytes)
-    raises ERC1155MissingApprovalForAll | ERC1155InvalidReceiver | ERC1155InvalidSender
-      | ERC1155InvalidArrayLength | ERC1155InsufficientBalance | forwarded
+  external function safeTransferFrom(
+    const from : address;
+    const to : address;
+    const id : nat;
+    const value : nat;
+    const data : bytes
+  )
+    raises ERC1155MissingApprovalForAll | ERC1155InvalidReceiver | ERC1155InvalidSender | ERC1155InvalidArrayLength
+      | ERC1155InsufficientBalance | forwarded
   is
     safe_transfer_from(from, to, id, value, data)
 
@@ -292,8 +310,8 @@ module ERC1155 is {
     const values : list(nat);
     const data : bytes
   )
-    raises ERC1155MissingApprovalForAll | ERC1155InvalidReceiver | ERC1155InvalidSender
-      | ERC1155InvalidArrayLength | ERC1155InsufficientBalance
+    raises ERC1155MissingApprovalForAll | ERC1155InvalidReceiver | ERC1155InvalidSender | ERC1155InvalidArrayLength
+      | ERC1155InsufficientBalance
   is
     safe_batch_transfer_from(from, to, ids, values, data)
 }

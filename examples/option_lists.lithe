@@ -29,7 +29,7 @@ external function clear_fixed(const i : nat) is { storage.fixed[i] := None; }
 external view function fixed_at(const i : nat) : nat is
   case storage.fixed[i] of { Some(v) -> v | None -> 1000 }
 external view function fixed8_at(const i : nat) : nat is
-  case storage.fixed8[i] of { Some(b) -> (case Some(b) of { Some(x) -> 1 | None -> 0 }) | None -> 1000 }
+  case storage.fixed8[i] of { Some(b) -> (case Some(b) of { Some(_) -> 1 | None -> 0 }) | None -> 1000 }
 external view function fixed_passed(const i : nat) : nat is or_zero(storage.fixed[i])
 external view function fixed_is_none(const i : nat) : bool is storage.fixed[i] = None
 

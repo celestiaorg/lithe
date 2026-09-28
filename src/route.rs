@@ -1,7 +1,7 @@
 //! ABI flattening. Nested `case` dispatch becomes one selector per leaf.
 
 use crate::ast::*;
-use crate::check::{abi_fields, abi_parts, AbiField, Checked, RType, RVariant, TyKind};
+use crate::check::{abi_fields, abi_parts, AbiField, Checked, Note, RType, RVariant, TyKind};
 use crate::error;
 use crate::keccak::selector;
 use crate::Error;
@@ -55,7 +55,7 @@ pub(crate) struct Phase {
     pub operations: Vec<String>,
 }
 
-pub(crate) fn discover(checked: &Checked) -> Result<Vec<Route>, Error> {
+pub(crate) fn discover(checked: &Checked, require_entries: bool) -> Result<Vec<Route>, Error> {
     let mut routes = Vec::new();
     let mut seen = Vec::new();
     for (i, f) in checked.prog.funcs.iter().enumerate() {
@@ -105,7 +105,8 @@ pub(crate) fn discover(checked: &Checked) -> Result<Vec<Route>, Error> {
             routes.push(direct(checked, i, f, &mut seen)?);
         }
     }
-    if routes.is_empty()
+    if require_entries
+        && routes.is_empty()
         && !checked.prog.funcs.iter().any(|f| f.kind == ItemKind::View)
         && !checked.prog.upgradeable
     {
@@ -440,14 +441,14 @@ fn special(checked: &Checked, idx: usize, f: &Func) -> Result<Route, Error> {
     Ok(route)
 }
 
-pub(crate) fn reentry_warnings(checked: &Checked) -> Vec<String> {
+pub(crate) fn reentry_notes(checked: &Checked) -> Vec<Note> {
     let names: Vec<&str> = checked
         .routes
         .iter()
         .map(|route| route.name.as_str())
         .collect();
     let mut seen = Vec::new();
-    let mut out = Vec::new();
+    let mut notes = Vec::new();
     for route in &checked.routes {
         let forwards = route
             .direct
@@ -471,24 +472,31 @@ pub(crate) fn reentry_warnings(checked: &Checked) -> Vec<String> {
         } else {
             others.join(", ")
         };
-        let (line, col) = warning_site(checked, route);
-        out.push(format!(
-            "{line}:{col}: warning: `{}` performs deferred external operations and may\nbe re-entered through {through}\n\nconsider `nonreentrant` if the protocol requires serialized\nexternal-effect execution\n",
-            route.name
-        ));
+        let (line, col, origin) = warning_site(checked, route);
+        notes.push(Note {
+            origin,
+            line,
+            col,
+            rule: "reentry",
+            message: format!(
+                "`{}` performs deferred external operations and may\nbe re-entered through {through}",
+                route.name
+            ),
+            hint: "consider `nonreentrant` if the protocol requires serialized\nexternal-effect execution",
+        });
     }
-    out
+    notes
 }
 
-fn warning_site(checked: &Checked, route: &Route) -> (u32, u32) {
+fn warning_site(checked: &Checked, route: &Route) -> (u32, u32, String) {
     let owner = route.path.first().unwrap_or(&route.name);
     checked
         .prog
         .funcs
         .iter()
         .find(|func| func.name == *owner)
-        .map(|func| (func.line, func.col))
-        .unwrap_or((1, 1))
+        .map(|func| (func.line, func.col, func.origin.clone()))
+        .unwrap_or((1, 1, String::new()))
 }
 
 fn dispatch_call(checked: &Checked, arm: &Arm) -> Option<usize> {

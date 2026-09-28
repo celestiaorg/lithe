@@ -10,6 +10,7 @@
 
      use ERC20Capped exposing IERC20Capped; *)
 
+(* lithe-ignore unused-import: brings ERC20, which ERC20Capped extends *)
 import "std/token/erc20.lithe";
 
 module ERC20Capped is {

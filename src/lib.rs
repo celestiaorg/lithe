@@ -42,11 +42,14 @@
 mod asm;
 mod ast;
 mod check;
+mod config;
+mod format;
 mod gen;
 #[cfg(test)]
 mod hash;
 mod keccak;
 mod lex;
+mod lint;
 mod modules;
 mod parse;
 mod route;
@@ -56,6 +59,9 @@ mod word;
 use std::fmt;
 use std::path::{Path, PathBuf};
 
+pub use config::{format_width, DEFAULT_WIDTH};
+pub use format::format_source;
+pub use lint::{lint_paths, lithe_files};
 pub use modules::Sources;
 pub use route::{
     Abi, AbiError, AbiItem, Constructor, Event, EventParam, Fallback, Function, Param, Receive,
@@ -98,7 +104,7 @@ pub fn compile(sources: &Sources, entry: &Path, opts: &Options) -> Result<Output
     let mut errors = Vec::new();
     for unit in modules::split_units(prog) {
         let name = artifact_contract_name(&unit, entry);
-        match build(unit, &name, opts) {
+        match build(sources, entry, unit, &name, opts) {
             Ok(contract) => contracts.push(contract),
             Err(err) => errors.push(err),
         }
@@ -196,7 +202,13 @@ impl Contract {
     }
 }
 
-fn build(prog: ast::Program, name: &str, opts: &Options) -> Result<Contract, Error> {
+fn build(
+    sources: &Sources,
+    entry: &Path,
+    prog: ast::Program,
+    name: &str,
+    opts: &Options,
+) -> Result<Contract, Error> {
     let checked = check::check(prog)?;
     let abi = route::abi(&checked)?;
     let method_identifiers = route::method_ids(&checked)?;
@@ -227,15 +239,18 @@ fn build(prog: ast::Program, name: &str, opts: &Options) -> Result<Contract, Err
         abi,
         method_identifiers,
         plan,
-        warnings: warnings_of(&checked),
+        warnings: warnings_of(sources, entry, &checked),
         split,
     })
 }
 
-fn warnings_of(checked: &check::Checked) -> Vec<String> {
-    let mut out = route::reentry_warnings(checked);
-    out.extend(checked.warnings.iter().cloned());
-    out
+fn warnings_of(sources: &Sources, entry: &Path, checked: &check::Checked) -> Vec<String> {
+    let mut notes = route::reentry_notes(checked);
+    notes.extend(checked.warnings.iter().cloned());
+    lint::unsilenced(sources, entry, notes)
+        .iter()
+        .map(check::format_note)
+        .collect()
 }
 
 fn checked(sources: &Sources, entry: &Path) -> Result<check::Checked, Error> {
@@ -249,7 +264,7 @@ pub fn abi(sources: &Sources, entry: &Path) -> Result<Abi, Error> {
 }
 
 pub fn warnings(sources: &Sources, entry: &Path) -> Result<Vec<String>, Error> {
-    Ok(warnings_of(&checked(sources, entry)?))
+    Ok(warnings_of(sources, entry, &checked(sources, entry)?))
 }
 
 /// Each entrypoint's dispatch tree, with the facet it runs in when the contract is split.

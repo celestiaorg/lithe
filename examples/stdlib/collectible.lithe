@@ -75,7 +75,7 @@ contract Collectible is {
     raises EnforcedPause | ERC721NonexistentToken | ERC721InsufficientApproval
   is {
     Pausable.require_not_paused();
-    const previous : address := ERC721Enumerable.update(Address.zero, tokenId, Evm.sender());
+    const _ : address := ERC721Enumerable.update(Address.zero, tokenId, Evm.sender());
   }
 
   (* Mints the next id, with its own URI under the base. *)

@@ -1,0 +1,43 @@
+---
+title: "Project configuration"
+description: "lithe.toml: the line width for lithe fmt, and the lint rules a project allows."
+---
+
+# Project configuration
+
+`lithe fmt` and `lithe lint` read settings from a `lithe.toml`. For each source file they use the nearest one: in the file's own directory, or the first directory above it that has one. `lithe fmt -` looks from the current directory. Without a `lithe.toml`, every setting has its default.
+
+```toml
+# lithe.toml
+[fmt]
+width = 100
+
+[lint]
+allow = ["reentry", "stale-capture"]
+```
+
+## `[fmt]`
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `width` | `120` | the column `lithe fmt` wraps long lines at |
+
+Only width is configurable; everything else about the style is fixed. See [Formatting](/tooling/cli#formatting).
+
+## `[lint]`
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `allow` | `[]` | rules that are silenced everywhere, for `lithe lint` and for the warnings `lithe compile` prints |
+
+To silence a rule at a single place instead, write a `lithe-ignore` comment there. See [Silencing a rule](/tooling/cli#silencing-a-rule) and the [list of rules](/tooling/cli#linting).
+
+## Errors
+
+The file is read strictly. An unknown table, key, or rule name, or a value of the wrong kind, is an error that names the file and line:
+
+```text
+lithe.toml:6: unknown rule `reentrancy`
+```
+
+Each table holds one-line `key = value` settings, and `#` starts a comment.

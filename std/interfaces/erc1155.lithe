@@ -35,11 +35,11 @@ interface IERC1155 is {
   function setApprovalForAll(operator : address; approved : bool)
     raises ERC1155InvalidApprover | ERC1155InvalidOperator;
   function safeTransferFrom(from : address; to : address; id : nat; value : nat; data : bytes)
-    raises ERC1155MissingApprovalForAll | ERC1155InvalidReceiver | ERC1155InvalidSender
-      | ERC1155InvalidArrayLength | ERC1155InsufficientBalance | forwarded;
+    raises ERC1155MissingApprovalForAll | ERC1155InvalidReceiver | ERC1155InvalidSender | ERC1155InvalidArrayLength
+      | ERC1155InsufficientBalance | forwarded;
   function safeBatchTransferFrom(from : address; to : address; ids : list(nat); values : list(nat); data : bytes)
-    raises ERC1155MissingApprovalForAll | ERC1155InvalidReceiver | ERC1155InvalidSender
-      | ERC1155InvalidArrayLength | ERC1155InsufficientBalance | forwarded;
+    raises ERC1155MissingApprovalForAll | ERC1155InvalidReceiver | ERC1155InvalidSender | ERC1155InvalidArrayLength
+      | ERC1155InsufficientBalance | forwarded;
 }
 
 interface IERC1155MetadataURI is {
@@ -48,5 +48,11 @@ interface IERC1155MetadataURI is {
 
 interface IERC1155Receiver is {
   function onERC1155Received(operator : address; from : address; id : nat; value : nat; data : bytes) : bytes4;
-  function onERC1155BatchReceived(operator : address; from : address; ids : list(nat); values : list(nat); data : bytes) : bytes4;
+  function onERC1155BatchReceived(
+    operator : address;
+    from : address;
+    ids : list(nat);
+    values : list(nat);
+    data : bytes
+  ) : bytes4;
 }

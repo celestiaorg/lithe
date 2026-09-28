@@ -24,16 +24,16 @@ storage is record {
    four bytes of its selector. Any other failure passes on unchanged. *)
 external nonreentrant function place(const book : address; const os : list(order)) raises forwarded is {
   defer Evm.call(book, Abi.encode_call(Book.place, os)) then {
-  | Ok(answer : bytes) -> {
-      storage.ids := Abi.decode(answer, ids);
-    }
-  | Error(reason : bytes) -> {
-      (* `Rejected(uint256)`'s selector is 0x94064f91. *)
-      if reason.length <> 36n or nat(Bytes.word(reason, 0n)) >> 224n <> 0x94064f91 then {
-        forward reason;
+    | Ok(answer : bytes) -> {
+        storage.ids := Abi.decode(answer, ids);
       }
-      storage.refused := nat(Bytes.word(reason, 4n));
-    }
+    | Error(reason : bytes) -> {
+        (* `Rejected(uint256)`'s selector is 0x94064f91. *)
+        if reason.length <> 36n or nat(Bytes.word(reason, 0n)) >> 224n <> 0x94064f91 then {
+          forward reason;
+        }
+        storage.refused := nat(Bytes.word(reason, 4n));
+      }
   };
 }
 

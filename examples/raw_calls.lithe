@@ -42,8 +42,8 @@ is {
   assert(targets.length = calls.length, Mismatched_lengths);
   for (i, target) : (nat, address) in targets do {
     defer Evm.call(target, calls[i]) then {
-    | Ok -> { skip }
-    | Error(reason : bytes) -> { forward reason; }
+      | Ok -> { skip }
+      | Error(reason : bytes) -> { forward reason; }
     };
   }
 }

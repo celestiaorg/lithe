@@ -67,12 +67,12 @@ external function move(const src : address; const dst : address; const amount : 
   const have : nat := storage.balances[src];
   storage.balances[src] := have - amount;
   storage.balances[dst] := storage.balances[dst] + amount;
-  const t : nat := bump(1n);
+  const _ : nat := bump(1n);
 }
 
 external function push(const v : nat) is {
   storage.ids[storage.count] := v;
-  const t : nat := bump(1n);
+  const _ : nat := bump(1n);
 }
 
 external function set_slot(const i : nat; const v : nat) is {

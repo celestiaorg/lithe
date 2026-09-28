@@ -33,8 +33,8 @@ module ERC20Permit is {
     const r : bytes32;
     const s : bytes32
   )
-    raises ERC2612ExpiredSignature | ERC2612InvalidSigner | ECDSAInvalidSignature
-      | ECDSAInvalidSignatureS | ERC20InvalidApprover | ERC20InvalidSpender
+    raises ERC2612ExpiredSignature | ERC2612InvalidSigner | ECDSAInvalidSignature | ECDSAInvalidSignatureS
+      | ERC20InvalidApprover | ERC20InvalidSpender
   is {
     assert(nat(Evm.block_timestamp()) <= deadline, ERC2612ExpiredSignature(deadline));
     const struct_hash : bytes32 := Crypto.keccak256(Abi.encode(
@@ -59,8 +59,8 @@ module ERC20Permit is {
     const r : bytes32;
     const s : bytes32
   )
-    raises ERC2612ExpiredSignature | ERC2612InvalidSigner | ECDSAInvalidSignature
-      | ECDSAInvalidSignatureS | ERC20InvalidApprover | ERC20InvalidSpender
+    raises ERC2612ExpiredSignature | ERC2612InvalidSigner | ECDSAInvalidSignature | ECDSAInvalidSignatureS
+      | ERC20InvalidApprover | ERC20InvalidSpender
   is
     permit(owner, spender, value, deadline, v, r, s)
 

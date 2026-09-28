@@ -42,7 +42,7 @@ external function pick(const k : nat) is {
     skip
   }
   storage.last := bump(o);
-  storage.flag := case s of { Some(v) -> true | None -> false };
+  storage.flag := case s of { Some(_) -> true | None -> false };
 }
 
 external view function last_or() : nat is or_zero(storage.last)
@@ -76,7 +76,7 @@ external view function tuples(const k : nat) : nat is {
 
 external view function records(const k : nat) : nat is {
   const s : slot := { held = Some(k); small = None; n = 4n; };
-} with (case s.held of { Some(v) -> v | None -> 0 }) + (case s.small of { Some(v) -> 1000 | None -> 0 }) + s.n
+} with (case s.held of { Some(v) -> v | None -> 0 }) + (case s.small of { Some(_) -> 1000 | None -> 0 }) + s.n
 
 external function set_pos(const x : nat; const y : nat) is {
   storage.pos := Some({ x = x; y = y; });
@@ -98,4 +98,4 @@ external function set_pair(const k : nat) is {
 }
 external view function pair_or() : nat is {
   const (a, b) : (option(nat), option(address)) := storage.pair;
-} with or_zero(a) + (case b of { Some(w) -> 1000 | None -> 0 })
+} with or_zero(a) + (case b of { Some(_) -> 1000 | None -> 0 })

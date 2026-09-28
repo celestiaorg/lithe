@@ -8,7 +8,6 @@ error ECDSAInvalidSignatureLength of nat;
 error ECDSAInvalidSignatureS of bytes32;
 
 module ECDSA is {
-
   pure function half_order() : nat is
     nat(0x7fffffffffffffffffffffffffffffff5d576e7357a4501ddfe92f46681b20a0)
 

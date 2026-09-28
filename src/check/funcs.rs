@@ -2,6 +2,7 @@ use super::*;
 
 impl Checker {
     pub(super) fn check_func(&mut self, f: &mut Func) -> Result<(), Error> {
+        self.origin = f.origin.clone();
         let idx = self.cur_fn;
         self.module_name = f.module.clone();
         self.requires = f.requires.clone();
@@ -726,6 +727,7 @@ impl Checker {
     }
 
     pub(super) fn check_guard(&mut self, guard: &mut GuardDecl) -> Result<(), Error> {
+        self.origin.clear();
         let parent = self.scope;
         self.scope = self.push_scope(parent);
         self.kind = ItemKind::Entry;
@@ -785,9 +787,16 @@ impl Checker {
             ));
         }
         if self.state_syms.contains(&sym) && self.warned.insert((floor, sym)) {
-            self.warnings.push(format!(
-                "{line}:{col}: warning: captured value `{name}` was derived from storage before\nan external state-changing call and may be stale in this continuation\n\nconsider re-reading storage inside the continuation\n"
-            ));
+            self.warnings.push(Note {
+                origin: self.origin.clone(),
+                line,
+                col,
+                rule: "stale-capture",
+                message: format!(
+                    "captured value `{name}` was derived from storage before\nan external state-changing call and may be stale in this continuation"
+                ),
+                hint: "consider re-reading storage inside the continuation",
+            });
         }
         Ok(())
     }

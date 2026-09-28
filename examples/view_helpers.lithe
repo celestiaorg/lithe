@@ -20,8 +20,8 @@ view function all() : list(address) is {
 view function price(const asset : address) : nat is {
   var p : nat := 0n;
   case query storage.oracle.price(asset) of {
-  | Ok(v) -> { p := v; }
-  | Error(reason) -> { forward reason; }
+    | Ok(v) -> { p := v; }
+    | Error(reason) -> { forward reason; }
   };
 } with p
 

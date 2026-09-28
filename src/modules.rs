@@ -50,7 +50,7 @@ impl Sources {
         path.canonicalize()
     }
 
-    fn read(&self, path: &Path) -> io::Result<String> {
+    pub(crate) fn read(&self, path: &Path) -> io::Result<String> {
         match &self.files {
             None => std::fs::read_to_string(path),
             Some(files) => files
@@ -87,6 +87,17 @@ fn import_path(from: &Path, import: &str) -> PathBuf {
     } else {
         from.parent().unwrap_or(Path::new(".")).join(import)
     }
+}
+
+/// Canonical path string `load` stamps as `origin` for this import.
+pub(crate) fn import_origin(from: &Path, import: &str) -> Option<String> {
+    let path = import_path(from, import);
+    let canon = if import.starts_with("std/") {
+        normalize(&path)
+    } else {
+        path.canonicalize().ok()?
+    };
+    Some(canon.display().to_string())
 }
 
 pub(crate) fn load(sources: &Sources, path: &Path) -> Result<Program, Error> {

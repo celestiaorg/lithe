@@ -4,7 +4,11 @@
 error FailedDeployment;
 
 module Create2 is {
-  pure function compute_address(const salt : bytes32; const init_code_hash : bytes32; const deployer : address) : address is {
+  pure function compute_address(
+    const salt : bytes32;
+    const init_code_hash : bytes32;
+    const deployer : address
+  ) : address is {
     const marker : bytes1 := 0xff;
     const hash : bytes32 := Crypto.keccak256(Abi.encode_packed(marker, deployer, salt, init_code_hash));
   } with address(uint160(nat(hash) & ((1n << 160n) - 1n)))

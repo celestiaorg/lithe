@@ -73,8 +73,8 @@ module ERC20 is {
   } with true
 
   function transfer_from(const from : address; const to : address; const value : nat) : bool
-    raises ERC20InsufficientAllowance | ERC20InvalidApprover | ERC20InvalidSpender
-      | ERC20InvalidSender | ERC20InvalidReceiver | ERC20InsufficientBalance
+    raises ERC20InsufficientAllowance | ERC20InvalidApprover | ERC20InvalidSpender | ERC20InvalidSender
+      | ERC20InvalidReceiver | ERC20InsufficientBalance
   is {
     spend_allowance(from, Evm.sender(), value);
     move(from, to, value);
@@ -188,8 +188,8 @@ module ERC20 is {
     approve(spender, value)
 
   external function transferFrom(const from : address; const to : address; const value : nat) : bool
-    raises ERC20InsufficientAllowance | ERC20InvalidApprover | ERC20InvalidSpender
-      | ERC20InvalidSender | ERC20InvalidReceiver | ERC20InsufficientBalance
+    raises ERC20InsufficientAllowance | ERC20InvalidApprover | ERC20InvalidSpender | ERC20InvalidSender
+      | ERC20InvalidReceiver | ERC20InsufficientBalance
   is
     transfer_from(from, to, value)
 }

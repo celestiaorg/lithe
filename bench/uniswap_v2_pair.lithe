@@ -486,7 +486,10 @@ contract UniswapV2Pair is {
   is {
     lock();
     const token1 : IERC20 := storage.token1;
-    defer storage.token0.transfer(to, query storage.token0.balanceOf(Evm.self()) - nat(storage.reserves.reserve0)) then {
+    defer storage.token0.transfer(
+      to,
+      query storage.token0.balanceOf(Evm.self()) - nat(storage.reserves.reserve0)
+    ) then {
       | Ok(ok : option(bool)) -> {
           assert(ok <> Some(false), Error("UniswapV2: TRANSFER_FAILED"));
           defer token1.transfer(to, query token1.balanceOf(Evm.self()) - nat(storage.reserves.reserve1)) then {

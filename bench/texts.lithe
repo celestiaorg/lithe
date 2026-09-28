@@ -36,6 +36,7 @@ external view function saved_at(const i : nat) : bytes is
 
 external view function joined() : bytes is {
   var out : bytes := "";
+  (* lithe-ignore unbounded-loop: mirrors the unbounded loop in texts.sol *)
   for x : bytes in storage.saved do {
     out := Bytes.concat(out, x);
   }

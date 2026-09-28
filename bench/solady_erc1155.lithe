@@ -87,7 +87,13 @@ is {
 
 (* A contract receiver must answer with the hook's selector. One that reverts without a
    reason does not implement it; its own reason passes through unchanged. *)
-function check_received(const from : address; const to : address; const id : nat; const amount : nat; const data : bytes)
+function check_received(
+  const from : address;
+  const to : address;
+  const id : nat;
+  const amount : nat;
+  const data : bytes
+)
   raises TransferToNonERC1155ReceiverImplementer | forwarded
 is {
   if Evm.code_size(to) > 0n then {
@@ -117,7 +123,10 @@ is {
   if Evm.code_size(to) > 0n then {
     defer ERC1155Receiver(to).onERC1155BatchReceived(Evm.sender(), from, ids, amounts, data) then {
       | Ok(answer : bytes4) -> {
-          assert(answer = Abi.selector(ERC1155Receiver.onERC1155BatchReceived), TransferToNonERC1155ReceiverImplementer);
+          assert(
+            answer = Abi.selector(ERC1155Receiver.onERC1155BatchReceived),
+            TransferToNonERC1155ReceiverImplementer
+          );
         }
       | Error(reason : bytes) -> {
           if reason.length = 0n then {
@@ -153,7 +162,13 @@ external function setApprovalForAll(const operator : address; const isApproved :
   emit ApprovalForAll { owner = Evm.sender(); operator = operator; isApproved = isApproved; };
 }
 
-external function safeTransferFrom(const from : address; const to : address; const id : nat; const amount : nat; const data : bytes)
+external function safeTransferFrom(
+  const from : address;
+  const to : address;
+  const id : nat;
+  const amount : nat;
+  const data : bytes
+)
   raises TransferToZeroAddress | NotOwnerNorApproved | InsufficientBalance | AccountBalanceOverflow
     | TransferToNonERC1155ReceiverImplementer | forwarded
 is {
@@ -196,8 +211,8 @@ is {
 }
 
 external function mintBatch(const to : address; const ids : list(nat); const amounts : list(nat); const data : bytes)
-  raises ArrayLengthsMismatch | TransferToZeroAddress | AccountBalanceOverflow
-    | TransferToNonERC1155ReceiverImplementer | forwarded
+  raises ArrayLengthsMismatch | TransferToZeroAddress | AccountBalanceOverflow | TransferToNonERC1155ReceiverImplementer
+    | forwarded
 is {
   assert(ids.length = amounts.length, ArrayLengthsMismatch);
   assert(to <> Address.zero, TransferToZeroAddress);

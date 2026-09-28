@@ -67,9 +67,9 @@ module ERC20FlashMint is {
     const amount : nat;
     const data : bytes
   ) : bool
-    raises ERC3156ExceededMaxLoan | ERC3156UnsupportedToken | ERC3156InvalidReceiver
-      | ERC20InsufficientAllowance | ERC20InvalidApprover | ERC20InvalidSpender
-      | ERC20InvalidReceiver | ERC20InvalidSender | ERC20InsufficientBalance | forwarded
+    raises ERC3156ExceededMaxLoan | ERC3156UnsupportedToken | ERC3156InvalidReceiver | ERC20InsufficientAllowance
+      | ERC20InvalidApprover | ERC20InvalidSpender | ERC20InvalidReceiver | ERC20InvalidSender
+      | ERC20InsufficientBalance | forwarded
   is {
     const fee : nat := check_loan(token, amount);
     ERC20.mint(address(receiver), amount);

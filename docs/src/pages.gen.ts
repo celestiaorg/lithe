@@ -97,6 +97,7 @@ type Page =
   | { path: '/stdlib/tokens'; render: 'static' }
   | { path: '/stdlib/utils'; render: 'static' }
   | { path: '/tooling/cli'; render: 'static' }
+  | { path: '/tooling/config'; render: 'static' }
   | { path: '/tooling/inspection'; render: 'static' }
   | { path: '/tooling/size-limit'; render: 'static' }
 

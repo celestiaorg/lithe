@@ -45,7 +45,11 @@ module Clones is {
     };
   } with predict_here(implementation, salt)
 
-  function clone_deterministic_with_args(const implementation : address; const args : bytes; const salt : bytes32) : address
+  function clone_deterministic_with_args(
+    const implementation : address;
+    const args : bytes;
+    const salt : bytes32
+  ) : address
     raises CloneArgumentsTooLong | FailedDeployment
   is clone_deterministic_with_args(implementation, args, salt, 0n)
 

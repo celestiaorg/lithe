@@ -84,8 +84,8 @@ is {
 }
 
 function transfer_from(const from : address; const to : address; const id : nat)
-  raises TokenDoesNotExist | TransferFromIncorrectOwner | NotOwnerNorApproved
-    | TransferToZeroAddress | AccountBalanceOverflow
+  raises TokenDoesNotExist | TransferFromIncorrectOwner | NotOwnerNorApproved | TransferToZeroAddress
+    | AccountBalanceOverflow
 is {
   assert(require_owner(id) = from, TransferFromIncorrectOwner);
   const approved : address := storage.tokens[id].approved;
@@ -140,7 +140,7 @@ external pure function symbol() : string is
 external view function tokenURI(const id : nat) : string
   raises TokenDoesNotExist
 is {
-  const owner : address := require_owner(id);
+  const _ : address := require_owner(id);
 } with String.concat("https://nft.example/", Nat.to_string(id))
 
 external view function ownerOf(const id : nat) : address
@@ -157,7 +157,7 @@ is {
 external view function getApproved(const id : nat) : address
   raises TokenDoesNotExist
 is {
-  const owner : address := require_owner(id);
+  const _ : address := require_owner(id);
 } with storage.tokens[id].approved
 
 external view function isApprovedForAll(const owner : address; const operator : address) : bool is
@@ -178,22 +178,22 @@ external function setApprovalForAll(const operator : address; const isApproved :
 }
 
 external payable function transferFrom(const from : address; const to : address; const id : nat)
-  raises TokenDoesNotExist | TransferFromIncorrectOwner | NotOwnerNorApproved
-    | TransferToZeroAddress | AccountBalanceOverflow
+  raises TokenDoesNotExist | TransferFromIncorrectOwner | NotOwnerNorApproved | TransferToZeroAddress
+    | AccountBalanceOverflow
 is
   transfer_from(from, to, id)
 
 external payable function safeTransferFrom(const from : address; const to : address; const id : nat)
-  raises TokenDoesNotExist | TransferFromIncorrectOwner | NotOwnerNorApproved
-    | TransferToZeroAddress | AccountBalanceOverflow | TransferToNonERC721ReceiverImplementer | forwarded
+  raises TokenDoesNotExist | TransferFromIncorrectOwner | NotOwnerNorApproved | TransferToZeroAddress
+    | AccountBalanceOverflow | TransferToNonERC721ReceiverImplementer | forwarded
 is {
   transfer_from(from, to, id);
   check_received(from, to, id, "");
 }
 
 external payable function safeTransferFrom(const from : address; const to : address; const id : nat; const data : bytes)
-  raises TokenDoesNotExist | TransferFromIncorrectOwner | NotOwnerNorApproved
-    | TransferToZeroAddress | AccountBalanceOverflow | TransferToNonERC721ReceiverImplementer | forwarded
+  raises TokenDoesNotExist | TransferFromIncorrectOwner | NotOwnerNorApproved | TransferToZeroAddress
+    | AccountBalanceOverflow | TransferToNonERC721ReceiverImplementer | forwarded
 is {
   transfer_from(from, to, id);
   check_received(from, to, id, data);
@@ -205,8 +205,8 @@ is
   mint_to(to, id)
 
 external function safeMint(const to : address; const id : nat; const data : bytes)
-  raises TokenAlreadyExists | TransferToZeroAddress | AccountBalanceOverflow
-    | TransferToNonERC721ReceiverImplementer | forwarded
+  raises TokenAlreadyExists | TransferToZeroAddress | AccountBalanceOverflow | TransferToNonERC721ReceiverImplementer
+    | forwarded
 is {
   mint_to(to, id);
   check_received(Address.zero, to, id, data);

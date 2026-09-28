@@ -28,8 +28,8 @@ module ERC20Permit is {
     const r : bytes32;
     const s : bytes32
   )
-    raises ERC2612ExpiredSignature | ECDSAInvalidSignature | ECDSAInvalidSignatureS
-      | ERC2612InvalidSigner | ERC20InvalidApprover | ERC20InvalidSpender
+    raises ERC2612ExpiredSignature | ECDSAInvalidSignature | ECDSAInvalidSignatureS | ERC2612InvalidSigner
+      | ERC20InvalidApprover | ERC20InvalidSpender
   is {
     assert(nat(Evm.block_timestamp()) <= deadline, ERC2612ExpiredSignature(deadline));
     const struct_hash : bytes32 := Crypto.keccak256(Abi.encode(
@@ -62,8 +62,8 @@ interface IERC20Permit is {
     r : bytes32;
     s : bytes32
   )
-    raises ERC2612ExpiredSignature | ECDSAInvalidSignature | ECDSAInvalidSignatureS
-      | ERC2612InvalidSigner | ERC20InvalidApprover | ERC20InvalidSpender;
+    raises ERC2612ExpiredSignature | ECDSAInvalidSignature | ECDSAInvalidSignatureS | ERC2612InvalidSigner
+      | ERC20InvalidApprover | ERC20InvalidSpender;
   view function nonces(owner : address) : nat;
   view function DOMAIN_SEPARATOR() : bytes32;
 }

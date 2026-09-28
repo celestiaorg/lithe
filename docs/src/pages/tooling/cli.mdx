@@ -14,12 +14,16 @@ lithe abi-tree file.lithe
 lithe footprint file.lithe
 lithe analysis file.lithe
 lithe errors file.lithe
+lithe lint [--fix] path...
 lithe facets file.lithe
 lithe stubs file.lithe Module
 lithe storage file.lithe
 lithe storage old.lithe new.lithe
 lithe upgrade-check old.lithe new.lithe
 lithe upgrade 0xProxy file.lithe --migrate name [--impl 0xImpl] --args ...
+lithe fmt path...
+lithe fmt --check path...
+lithe fmt -
 ```
 
 Commands that read one file need a file with exactly one contract. Errors and warnings go to stderr as `line:column: message`. The exit status is `0` on success, `1` on a compile error, and `2` on a usage error.
@@ -106,6 +110,58 @@ cast send --private-key $KEY 0xProxy 0x4f1ef286...
 
 For a split contract, it prints the deployment plan with an `upgrade` entry holding the proxy's call. Deploy the facets and the router first. `--impl` is optional here: it defaults to the router's `CREATE2` address from the plan.
 
+## Formatting
+
+### `lithe fmt path...`
+
+Rewrites each file in place, in the one Lithe style, and prints the path of every file it changes. A directory is every `.lithe` file under it. `lithe fmt -` reads source on stdin and writes the formatted source to stdout.
+
+Line breaks you wrote stay, except inside a `raises` list, which is refilled so each line holds as many errors as fit. A line over 120 columns, or the `width` a [`lithe.toml`](/tooling/config) sets, is broken at its outermost structure until it fits: a long header puts `raises` and the body on their own lines and one parameter per line; a bracket, record, or block puts one element per line; a long expression breaks before its loosest operators; a `case` puts one arm per line. Strings and comments are never broken, so a line holding a long one can stay over the width.
+
+`lithe fmt --check path...` writes nothing. It prints each file that would change and exits `1` if any would, so a CI job can refuse unformatted code.
+
+A lex error is `path:line:column: message` and exits `1`. A usage error exits `2`.
+
+## Linting
+
+`lithe lint` reads each file, and every `.lithe` file under a directory. Findings go to stderr as `path:line:col: warning[rule]: message`, then a hint line when there is one. The exit status is `0` when nothing is wrong, `1` when there is a finding or a compile error, and `2` on a usage error. Imports are loaded, but only the files you named are reported.
+
+`lithe lint --fix` applies the fixes that cannot change behavior or bytecode, prints each file it changed, and reports whatever is left.
+
+| Rule | Reports |
+| --- | --- |
+| `reentry` | a deferred call can re-enter an entrypoint that is not `nonreentrant` |
+| `stale-capture` | a continuation reads a storage snapshot from an earlier phase |
+| `unbounded-loop` | a loop's trip count depends on storage and has no `bound` |
+| `prefer-const` | a `var` is never reassigned |
+| `unused-binding` | a local `const` or `var`, or a parameter of an internal function, is unused |
+| `unused-private` | a `private` function, type, error, or event is unused |
+| `unused-import` | nothing from an `import`, or from what it imports, is referenced |
+| `unused-ignore` | a `lithe-ignore` comment silences nothing, or names no rule |
+
+### Silencing a rule
+
+A `lithe-ignore` comment names the rules it silences, then an optional reason after `:`. Written at the end of a line, it covers that line. On a line of its own, it covers the next one:
+
+```lithe
+storage is record { n : nat; }
+
+(* lithe-ignore reentry: the recipient is our own vault *)
+external function pay(const to : address) is {
+  storage.n := 1n;
+  defer Evm.transfer(to, 1wei);
+}
+```
+
+To silence a rule everywhere, list it in the project's [`lithe.toml`](/tooling/config):
+
+```toml
+[lint]
+allow = ["reentry", "stale-capture"]
+```
+
+`lithe compile` honors both: a warning that is silenced for `lint` is silenced when compiling too.
+
 ## Warnings
 
 The compiler warns, but still compiles, when an entrypoint's deferred calls could let another entrypoint re-enter the contract before the transaction finishes:
@@ -118,4 +174,4 @@ consider `nonreentrant` if the protocol requires serialized
 external-effect execution
 ```
 
-See [Reentrancy](/language/reentrancy).
+See [Reentrancy](/language/reentrancy). To silence a warning, see [Silencing a rule](#silencing-a-rule).

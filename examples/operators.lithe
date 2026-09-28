@@ -69,24 +69,24 @@ external function run(const amount : nat) is {
   const (who, pair_amount) : (address, nat) := pair;
   storage.pair_amount := pair_amount;
   const nested : (nat, (address, bool)) := (1, (Evm.sender(), true));
-  const (n, inner) : (nat, (address, bool)) := nested;
-  const (acct, flag) : (address, bool) := inner;
+  const (_, inner) : (nat, (address, bool)) := nested;
+  const (_acct, flag) : (address, bool) := inner;
   storage.nested_flag := flag;
   storage.payment := (who, amount);
 }
 
 external function mod_zero(const d : nat) is {
-  const q : nat := 1 % d;
+  const _ : nat := 1 % d;
   skip
 }
 
 external function min_div(const min : int) is {
-  const q : int := min / -1;
+  const _ : int := min / -1;
   skip
 }
 
 external function min_mod(const min : int) is {
-  const r : int := min % -1;
+  const _ : int := min % -1;
   skip
 }
 

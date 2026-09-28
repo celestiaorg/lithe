@@ -111,15 +111,22 @@ module ERC721Enumerable is {
 
   (* The three-argument `safeTransferFrom`. *)
   function safe_transfer_from(const from : address; const to : address; const tokenId : nat)
-    raises ERC721InvalidReceiver | ERC721IncorrectOwner | ERC721NonexistentToken | ERC721InsufficientApproval | forwarded
+    raises ERC721InvalidReceiver | ERC721IncorrectOwner | ERC721NonexistentToken | ERC721InsufficientApproval
+      | forwarded
   is {
     transfer_from(from, to, tokenId);
     ERC721.check_received(Evm.sender(), from, to, tokenId, "");
   }
 
   (* The four-argument `safeTransferFrom`, passing `data` to the receiver. *)
-  function safe_transfer_from_with_data(const from : address; const to : address; const tokenId : nat; const data : bytes)
-    raises ERC721InvalidReceiver | ERC721IncorrectOwner | ERC721NonexistentToken | ERC721InsufficientApproval | forwarded
+  function safe_transfer_from_with_data(
+    const from : address;
+    const to : address;
+    const tokenId : nat;
+    const data : bytes
+  )
+    raises ERC721InvalidReceiver | ERC721IncorrectOwner | ERC721NonexistentToken | ERC721InsufficientApproval
+      | forwarded
   is {
     transfer_from(from, to, tokenId);
     ERC721.check_received(Evm.sender(), from, to, tokenId, data);
@@ -162,20 +169,19 @@ module ERC721Enumerable is {
     token_of_owner_by_index(owner, index)
 
   external function transferFrom(const from : address; const to : address; const tokenId : nat)
-    raises ERC721InvalidReceiver | ERC721IncorrectOwner | ERC721NonexistentToken
-      | ERC721InsufficientApproval
+    raises ERC721InvalidReceiver | ERC721IncorrectOwner | ERC721NonexistentToken | ERC721InsufficientApproval
   is
     transfer_from(from, to, tokenId)
 
   external function safeTransferFrom(const from : address; const to : address; const tokenId : nat)
-    raises ERC721InvalidReceiver | ERC721IncorrectOwner | ERC721NonexistentToken
-      | ERC721InsufficientApproval | forwarded
+    raises ERC721InvalidReceiver | ERC721IncorrectOwner | ERC721NonexistentToken | ERC721InsufficientApproval
+      | forwarded
   is
     safe_transfer_from(from, to, tokenId)
 
   external function safeTransferFrom(const from : address; const to : address; const tokenId : nat; const data : bytes)
-    raises ERC721InvalidReceiver | ERC721IncorrectOwner | ERC721NonexistentToken
-      | ERC721InsufficientApproval | forwarded
+    raises ERC721InvalidReceiver | ERC721IncorrectOwner | ERC721NonexistentToken | ERC721InsufficientApproval
+      | forwarded
   is
     safe_transfer_from_with_data(from, to, tokenId, data)
 }

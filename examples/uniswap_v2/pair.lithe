@@ -212,8 +212,8 @@ contract UniswapV2Pair is {
 
   (* Burns the liquidity sent in, and sends out its share of each token. *)
   external nonreentrant function burn(const to : address) : (nat, nat)
-    raises Insufficient_liquidity_burned | Transfer_failed | Overflow | ERC20InvalidSender
-      | ERC20InvalidReceiver | ERC20InsufficientBalance
+    raises Insufficient_liquidity_burned | Transfer_failed | Overflow | ERC20InvalidSender | ERC20InvalidReceiver
+      | ERC20InsufficientBalance
   is {
     const reserve0 : uint112 := storage.reserves.reserve0;
     const reserve1 : uint112 := storage.reserves.reserve1;
@@ -284,9 +284,14 @@ contract UniswapV2Pair is {
 
   (* Sends the outputs, then, with data, calls `to` back, which may pay for them there.
      The last of those calls settles. *)
-  external nonreentrant function swap(const amount0Out : nat; const amount1Out : nat; const to : address; const data : bytes)
-    raises Insufficient_output_amount | Insufficient_liquidity | Invalid_to | Insufficient_input_amount
-      | K | Transfer_failed | Overflow
+  external nonreentrant function swap(
+    const amount0Out : nat;
+    const amount1Out : nat;
+    const to : address;
+    const data : bytes
+  )
+    raises Insufficient_output_amount | Insufficient_liquidity | Invalid_to | Insufficient_input_amount | K
+      | Transfer_failed | Overflow
   is {
     assert(amount0Out > 0n or amount1Out > 0n, Insufficient_output_amount);
     const reserve0 : uint112 := storage.reserves.reserve0;

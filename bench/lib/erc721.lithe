@@ -210,14 +210,11 @@ interface IERC721 is {
   function setApprovalForAll(operator : address; approved : bool)
     raises ERC721InvalidApprover | ERC721InvalidOperator;
   function transferFrom(from : address; to : address; tokenId : nat)
-    raises ERC721InvalidReceiver | ERC721IncorrectOwner | ERC721NonexistentToken
-      | ERC721InsufficientApproval;
+    raises ERC721InvalidReceiver | ERC721IncorrectOwner | ERC721NonexistentToken | ERC721InsufficientApproval;
   function safeTransferFrom(from : address; to : address; tokenId : nat)
-    raises ERC721InvalidReceiver | ERC721IncorrectOwner | ERC721NonexistentToken
-      | ERC721InsufficientApproval;
+    raises ERC721InvalidReceiver | ERC721IncorrectOwner | ERC721NonexistentToken | ERC721InsufficientApproval;
   function safeTransferFrom(from : address; to : address; tokenId : nat; data : bytes)
-    raises ERC721InvalidReceiver | ERC721IncorrectOwner | ERC721NonexistentToken
-      | ERC721InsufficientApproval;
+    raises ERC721InvalidReceiver | ERC721IncorrectOwner | ERC721NonexistentToken | ERC721InsufficientApproval;
 }
 
 (* IERC721's views. Transfers are each token's own, since its extensions hook every

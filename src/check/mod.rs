@@ -165,6 +165,23 @@ pub(crate) struct DomainLayout {
     pub places: Vec<String>,
 }
 
+#[derive(Clone)]
+pub(crate) struct Note {
+    pub origin: String,
+    pub line: u32,
+    pub col: u32,
+    pub rule: &'static str,
+    pub message: String,
+    pub hint: &'static str,
+}
+
+pub(crate) fn format_note(note: &Note) -> String {
+    format!(
+        "{}:{}: warning: {}\n\n{}\n",
+        note.line, note.col, note.message, note.hint
+    )
+}
+
 /// A block of immutables: where its words start among the leaves, and how many there are.
 pub(crate) struct ImmutableBlock {
     pub id: String,
@@ -196,7 +213,7 @@ pub(crate) struct Checked {
     pub errors: Vec<ErrInfo>,
     pub routes: Vec<crate::route::Route>,
     /// Warnings the checker found, such as stale values captured by a continuation.
-    pub warnings: Vec<String>,
+    pub warnings: Vec<Note>,
     /// The program as it came in, before its modules were composed. A module's facet is
     /// built from it. It is everything a build depends on besides the compiler and its options.
     pub source: Program,
@@ -328,7 +345,9 @@ struct Checker {
     state_syms: HashSet<usize>,
     /// Snapshot warnings already given: (continuation floor, symbol).
     warned: HashSet<(usize, usize)>,
-    warnings: Vec<String>,
+    warnings: Vec<Note>,
+    /// File of the function being checked. Empty while checking the root file's guard.
+    origin: String,
     module_name: Option<String>,
     /// Checking the value of `List.pop(xs)`'s assignment, the only place it may appear.
     popping: bool,
@@ -374,7 +393,12 @@ enum Piece {
     Write(u32, u32, String),
 }
 
-pub(crate) fn check(mut prog: Program) -> Result<Checked, Error> {
+pub(crate) fn check(prog: Program) -> Result<Checked, Error> {
+    check_in(prog, true)
+}
+
+/// `require_entries` is false for `lithe lint`, which still reports on a library file.
+pub(crate) fn check_in(mut prog: Program, require_entries: bool) -> Result<Checked, Error> {
     if !prog.siblings.is_empty() {
         return Err(several_contracts(&prog));
     }
@@ -444,6 +468,7 @@ pub(crate) fn check(mut prog: Program) -> Result<Checked, Error> {
         state_syms: HashSet::new(),
         warned: HashSet::new(),
         warnings: Vec::new(),
+        origin: String::new(),
         fn_name: String::new(),
         module_name: None,
         popping: false,
@@ -973,7 +998,7 @@ pub(crate) fn check(mut prog: Program) -> Result<Checked, Error> {
         asks_interfaces: c.asks_interfaces,
         peer_builds: Default::default(),
     };
-    let routes = crate::route::discover(&checked)?;
+    let routes = crate::route::discover(&checked, require_entries)?;
     supports_interface(Checked { routes, ..checked }, &known)
 }
 
@@ -1027,6 +1052,7 @@ struct CheckSave {
     requires: Vec<String>,
     spec_module: Option<String>,
     spec_places: Vec<String>,
+    origin: String,
 }
 
 struct Place {

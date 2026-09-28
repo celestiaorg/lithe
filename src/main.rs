@@ -9,6 +9,9 @@ fn main() {
         std::process::exit(2);
     }
     let cmd = args.remove(0);
+    if cmd == "fmt" {
+        fmt_cmd(&args);
+    }
     // Size and splitting flags apply wherever code is built and placed.
     let opts = if matches!(
         cmd.as_str(),
@@ -36,6 +39,9 @@ fn main() {
     }
     if matches!(cmd.as_str(), "storage" | "upgrade-check" | "upgrade") {
         tool(&cmd, &args, &opts);
+    }
+    if cmd == "lint" {
+        lint(&args);
     }
     if !matches!(
         cmd.as_str(),
@@ -269,6 +275,126 @@ fn upgrade(args: &[String], opts: &lithe::Options) -> Result<String, Vec<lithe::
     )
 }
 
+fn fmt_cmd(args: &[String]) -> ! {
+    let mut check = false;
+    let mut paths = Vec::new();
+    for arg in args {
+        match arg.as_str() {
+            "--check" => check = true,
+            "--" => {
+                usage();
+                std::process::exit(2);
+            }
+            other if other.starts_with('-') && other != "-" => {
+                usage();
+                std::process::exit(2);
+            }
+            _ => paths.push(arg.as_str()),
+        }
+    }
+    if paths.is_empty() {
+        usage();
+        std::process::exit(2);
+    }
+    if paths.contains(&"-") && paths.len() != 1 {
+        usage();
+        std::process::exit(2);
+    }
+    if paths == ["-"] {
+        let mut src = String::new();
+        if std::io::Read::read_to_string(&mut std::io::stdin(), &mut src).is_err() {
+            eprintln!("-: cannot read stdin");
+            std::process::exit(1);
+        }
+        match lithe::format_source(&src, fmt_width(std::path::Path::new("."))) {
+            Ok(out) => {
+                if check {
+                    if out != src {
+                        println!("-");
+                        std::process::exit(1);
+                    }
+                } else {
+                    print!("{out}");
+                }
+            }
+            Err(err) => {
+                eprintln!("-:{err}");
+                std::process::exit(1);
+            }
+        }
+        std::process::exit(0);
+    }
+    let mut files = Vec::new();
+    for path in &paths {
+        if let Err(err) = lithe::lithe_files(std::path::Path::new(path), &mut files) {
+            eprintln!("{path}: {err}");
+            std::process::exit(1);
+        }
+    }
+    files.sort();
+    files.dedup();
+    let mut dirty = false;
+    for path in &files {
+        let src = match std::fs::read_to_string(path) {
+            Ok(src) => src,
+            Err(err) => {
+                eprintln!("{}: {err}", path.display());
+                std::process::exit(1);
+            }
+        };
+        let out = match lithe::format_source(&src, fmt_width(path)) {
+            Ok(out) => out,
+            Err(err) => {
+                eprintln!("{}:{err}", path.display());
+                std::process::exit(1);
+            }
+        };
+        if out == src {
+            continue;
+        }
+        dirty = true;
+        println!("{}", path.display());
+        if !check && std::fs::write(path, &out).is_err() {
+            eprintln!("{}: cannot write", path.display());
+            std::process::exit(1);
+        }
+    }
+    std::process::exit(if check && dirty { 1 } else { 0 });
+}
+
+/// `[fmt] width` from the `lithe.toml` nearest `path`.
+fn fmt_width(path: &std::path::Path) -> usize {
+    lithe::format_width(path).unwrap_or_else(|err| {
+        eprintln!("{err}");
+        std::process::exit(1);
+    })
+}
+
+fn lint(args: &[String]) -> ! {
+    let mut fix = false;
+    let mut paths = Vec::new();
+    for arg in args {
+        match arg.as_str() {
+            "--fix" => fix = true,
+            other if other.starts_with('-') => {
+                eprintln!("unknown flag `{other}`");
+                std::process::exit(2);
+            }
+            _ => paths.push(std::path::PathBuf::from(arg)),
+        }
+    }
+    if paths.is_empty() {
+        usage();
+        std::process::exit(2);
+    }
+    let result = lithe::lint_paths(&paths, fix);
+    eprint!("{}", result.stderr);
+    for path in &result.changed {
+        println!("{}", path.display());
+    }
+    std::process::exit(result.status);
+}
+
 fn usage() {
     eprintln!(
         "\
@@ -280,12 +406,16 @@ usage: lithe compile file.lithe
        lithe footprint file.lithe
        lithe analysis file.lithe
        lithe errors file.lithe
+       lithe lint [--fix] path...
        lithe storage file.lithe
        lithe storage old.lithe new.lithe
        lithe facets file.lithe
        lithe stubs file.lithe Module
        lithe upgrade-check old.lithe new.lithe
        lithe upgrade 0xProxy file.lithe --migrate name [--impl 0xImpl] --args ...
+       lithe fmt path...
+       lithe fmt --check path...
+       lithe fmt -
 
 compile, abi, facets, abi-tree, footprint, upgrade, and upgrade-check also take
        --size-limit <bytes>          largest runtime code, default 24576

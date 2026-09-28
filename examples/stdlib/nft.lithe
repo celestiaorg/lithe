@@ -26,6 +26,6 @@ contract Collection is {
   external function burn(const tokenId : nat)
     raises ERC721NonexistentToken | ERC721InsufficientApproval
   is {
-    const previous : address := ERC721.update(Address.zero, tokenId, Evm.sender());
+    const _ : address := ERC721.update(Address.zero, tokenId, Evm.sender());
   }
 }

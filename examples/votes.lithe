@@ -26,7 +26,7 @@ module ERC20Votes is {
   }
 
   external function delegate(const account : address; const delegatee : address) is {
-    const balance : nat := ERC20.erc20.balances[account];
+    const _ : nat := ERC20.erc20.balances[account];
     votes.delegates[account] := delegatee;
   }
 }

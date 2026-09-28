@@ -66,7 +66,8 @@ contract Utils is {
   external pure function root(const proof : bytes; const leaf : bytes32) : bytes32
     raises MerkleProofInvalidLength
   is Merkle.process_proof(proof, leaf)
-  external view function predict(const salt : bytes32; const code_hash : bytes32) : address is Create2.compute_address_here(salt, code_hash)
+  external view function predict(const salt : bytes32; const code_hash : bytes32) : address is
+    Create2.compute_address_here(salt, code_hash)
   external function use_nonce(const owner : address) : nat is Nonces.use_nonce(owner)
   external function claim(const index : nat) is { Bitmap.set(storage.claimed, index); }
   external view function is_claimed(const index : nat) : bool is Bitmap.get(storage.claimed, index)
@@ -79,15 +80,27 @@ contract Utils is {
     nat(Checkpoints.upper_lookup(storage.history, uint48(key)))
   external function enqueue() is { Queue.push(storage.pending, Evm.sender()); }
   external view function queued() : nat is Queue.length(storage.pending)
-  external function join() is { Set.add(storage.members, Evm.sender()); SetEnumerable.add(storage.listed, Evm.sender()); }
+  external function join() is {
+    Set.add(storage.members, Evm.sender());
+    SetEnumerable.add(storage.listed, Evm.sender());
+  }
   external view function member(const who : address) : bool is Set.contains(storage.members, who)
   external view function listed_count() : nat is SetEnumerable.length(storage.listed)
   external view function verify(const proof : bytes; const root_hash : bytes32; const leaf : bytes32) : bool
     raises MerkleProofInvalidLength
   is Merkle.verify(proof, root_hash, leaf)
-  external pure function create2_address(const salt : bytes32; const code_hash : bytes32; const deployer : address) : address is Create2.compute_address(salt, code_hash, deployer)
+  external pure function create2_address(
+    const salt : bytes32;
+    const code_hash : bytes32;
+    const deployer : address
+  ) : address is Create2.compute_address(salt, code_hash, deployer)
   external pure function eth_message(const hash : bytes32) : bytes32 is ECDSA.to_eth_signed_message_hash(hash)
-  external pure function recover_vrs(const hash : bytes32; const v : uint8; const r : bytes32; const s : bytes32) : address
+  external pure function recover_vrs(
+    const hash : bytes32;
+    const v : uint8;
+    const r : bytes32;
+    const s : bytes32
+  ) : address
     raises ECDSAInvalidSignature | ECDSAInvalidSignatureS
   is ECDSA.recover(hash, v, r, s)
   external pure function to_int(const x : nat) : int

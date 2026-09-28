@@ -28,8 +28,8 @@ external function handle(const selector : bytes4)
 is {
   assert(
     selector = Abi.selector(Vault.deposit)
-      or selector = Abi.selector(Vault.withdraw)
-      or selector = Abi.selector(Token.transfer),
+    or selector = Abi.selector(Vault.withdraw)
+    or selector = Abi.selector(Token.transfer),
     Unrouted(selector)
   );
   storage.handled[selector] := storage.handled[selector] + 1n;

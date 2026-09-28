@@ -19,7 +19,7 @@ interface IERC3156FlashLender is {
   view function flashFee(token : address; amount : nat) : nat
     raises ERC3156UnsupportedToken;
   function flashLoan(receiver : IERC3156FlashBorrower; token : address; amount : nat; data : bytes) : bool
-    raises ERC3156ExceededMaxLoan | ERC3156UnsupportedToken | ERC3156InvalidReceiver
-      | ERC20InsufficientAllowance | ERC20InvalidApprover | ERC20InvalidSpender
-      | ERC20InvalidReceiver | ERC20InvalidSender | ERC20InsufficientBalance | forwarded;
+    raises ERC3156ExceededMaxLoan | ERC3156UnsupportedToken | ERC3156InvalidReceiver | ERC20InsufficientAllowance
+      | ERC20InvalidApprover | ERC20InvalidSpender | ERC20InvalidReceiver | ERC20InvalidSender
+      | ERC20InsufficientBalance | forwarded;
 }

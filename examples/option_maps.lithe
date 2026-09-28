@@ -38,7 +38,7 @@ external view function wide_passed(const k : nat) : nat is or_zero(storage.wide[
 external view function wide_is_none(const k : nat) : bool is storage.wide[k] = None
 external view function wide_is(const k : nat; const v : nat) : bool is storage.wide[k] = Some(v)
 external function copy_wide(const from : nat; const to : nat) is {
-  var o : option(nat) := storage.wide[from];
+  const o : option(nat) := storage.wide[from];
   storage.wide[to] := o;
 }
 
@@ -61,7 +61,7 @@ external view function pt_sum(const k : nat) : nat is
   case storage.pts[k] of { Some((x, y)) -> x + y * 10 | None -> 1000 }
 
 view function read_t() : nat is
-  (case transient.t1 of { Some(w) -> 1 | None -> 0 })
+  (case transient.t1 of { Some(_) -> 1 | None -> 0 })
     + (case transient.t2 of { Some(v) -> v * 10 | None -> 0 })
     + (case transient.tm[1n] of { Some(v) -> v * 100 | None -> 0 })
     + (case transient.tm8[2n] of { Some(v) -> nat(v) * 1000 | None -> 0 })

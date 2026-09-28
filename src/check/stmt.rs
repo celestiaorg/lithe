@@ -565,9 +565,14 @@ impl Checker {
                         }
                     }
                     if bound.is_none() && stateful {
-                        self.warnings.push(format!(
-                            "{line}:{col}: warning: the number of iterations depends on storage, so this\nloop's gas grows as the collection grows and can exceed the block limit\n\nconsider `bound N` to cap it\n"
-                        ));
+                        self.warnings.push(Note {
+                            origin: self.origin.clone(),
+                            line,
+                            col,
+                            rule: "unbounded-loop",
+                            message: "the number of iterations depends on storage, so this\nloop's gas grows as the collection grows and can exceed the block limit".to_string(),
+                            hint: "consider `bound N` to cap it",
+                        });
                     }
                     if let Some(c) = until {
                         self.check_expr(c)?;

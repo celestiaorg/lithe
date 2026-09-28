@@ -56,8 +56,10 @@ enum LexError {
 enum Raw {
     #[regex(r"[ \t\r]+", logos::skip)]
     #[regex(r"\n", newline)]
-    #[token("(*", comment)]
     Skipped,
+
+    #[token("(*", comment)]
+    Comment,
 
     #[regex(r"[A-Za-z_][A-Za-z0-9_]*")]
     Ident,
@@ -261,7 +263,7 @@ fn newline(lex: &mut Lexer<Raw>) -> Skip {
     Skip
 }
 
-fn comment(lex: &mut Lexer<Raw>) -> Result<Skip, LexError> {
+fn comment(lex: &mut Lexer<Raw>) -> Result<(), LexError> {
     let line = lex.extras.line;
     let col = col_at(lex, lex.span().start);
     let mut depth = 1;
@@ -279,7 +281,7 @@ fn comment(lex: &mut Lexer<Raw>) -> Result<Skip, LexError> {
             depth -= 1;
             lex.bump(2);
             if depth == 0 {
-                return Ok(Skip);
+                return Ok(());
             }
             continue;
         }
@@ -529,126 +531,15 @@ pub(crate) fn tokenize(src: &str) -> Result<Vec<Token>, Error> {
         let span = lex.span();
         let line = lex.extras.line;
         let col = (span.start.saturating_sub(lex.extras.line_start) + 1) as u32;
-        let raw = match item {
-            Ok(raw) => raw,
-            Err(LexError::Unexpected) => {
-                let ch = src.get(span.clone()).unwrap_or("?");
-                return Err(error(line, col, format!("unexpected character `{ch}`")));
-            }
-            Err(LexError::UnterminatedComment { line, col }) => {
-                return Err(error(line, col, "unterminated comment"));
-            }
-            Err(LexError::UnterminatedString { line, col }) => {
-                return Err(error(line, col, "unterminated string"));
-            }
-            Err(LexError::BadNumber { line, col, message }) => {
-                return Err(error(line, col, message));
-            }
+        let raw = item.map_err(|err| lex_error(src, &lex, err))?;
+        let (word, string) = match &raw {
+            Raw::Skipped | Raw::Comment => continue,
+            Raw::Number(Num::Nat(w) | Num::Int(w) | Num::Wei(w) | Num::Duration(w)) => (*w, None),
+            Raw::Number(Num::Bytes(digits)) => (Word::from_u64(0), Some(digits.clone())),
+            Raw::String(s) => (Word::from_u64(0), Some(s.clone())),
+            _ => (Word::from_u64(0), None),
         };
-        if matches!(raw, Raw::Skipped) {
-            continue;
-        }
-        let (kind, word, string) = match raw {
-            Raw::Skipped => continue,
-            Raw::Ident => (Kind::Ident, Word::from_u64(0), None),
-            Raw::Number(Num::Nat(w)) => (Kind::Nat, w, None),
-            Raw::Number(Num::Int(w)) => (Kind::Int, w, None),
-            Raw::Number(Num::Wei(w)) => (Kind::WeiLit, w, None),
-            Raw::Number(Num::Duration(w)) => (Kind::DurationLit, w, None),
-            Raw::Number(Num::Bytes(digits)) => (Kind::HexBytes, Word::from_u64(0), Some(digits)),
-            Raw::String(s) => (Kind::String, Word::from_u64(0), Some(s)),
-            Raw::Type => (Kind::Type, Word::from_u64(0), None),
-            Raw::Is => (Kind::Is, Word::from_u64(0), None),
-            Raw::Record => (Kind::Record, Word::from_u64(0), None),
-            Raw::Function => (Kind::Function, Word::from_u64(0), None),
-            Raw::View => (Kind::View, Word::from_u64(0), None),
-            Raw::Event => (Kind::Event, Word::from_u64(0), None),
-            Raw::Indexed => (Kind::Indexed, Word::from_u64(0), None),
-            Raw::Anonymous => (Kind::Anonymous, Word::from_u64(0), None),
-            Raw::ErrorKw => (Kind::ErrorKw, Word::from_u64(0), None),
-            Raw::ErrorsKw => (Kind::ErrorsKw, Word::from_u64(0), None),
-            Raw::Raises => (Kind::Raises, Word::from_u64(0), None),
-            Raw::Payable => (Kind::Payable, Word::from_u64(0), None),
-            Raw::External => (Kind::External, Word::from_u64(0), None),
-            Raw::Pure => (Kind::Pure, Word::from_u64(0), None),
-            Raw::Nonreentrant => (Kind::Nonreentrant, Word::from_u64(0), None),
-            Raw::Import => (Kind::Import, Word::from_u64(0), None),
-            Raw::Module => (Kind::Module, Word::from_u64(0), None),
-            Raw::Use => (Kind::Use, Word::from_u64(0), None),
-            Raw::Requires => (Kind::Requires, Word::from_u64(0), None),
-            Raw::As => (Kind::As, Word::from_u64(0), None),
-            Raw::Private => (Kind::Private, Word::from_u64(0), None),
-            Raw::Migrate => (Kind::Migrate, Word::from_u64(0), None),
-            Raw::Deploy => (Kind::Deploy, Word::from_u64(0), None),
-            Raw::Upgradeable => (Kind::Upgradeable, Word::from_u64(0), None),
-            Raw::Upgrade => (Kind::Upgrade, Word::from_u64(0), None),
-            Raw::AtKw => (Kind::AtKw, Word::from_u64(0), None),
-            Raw::Contract => (Kind::Contract, Word::from_u64(0), None),
-            Raw::Fail => (Kind::Fail, Word::from_u64(0), None),
-            Raw::Interface => (Kind::Interface, Word::from_u64(0), None),
-            Raw::Query => (Kind::Query, Word::from_u64(0), None),
-            Raw::Emit => (Kind::Emit, Word::from_u64(0), None),
-            Raw::Defer => (Kind::Defer, Word::from_u64(0), None),
-            Raw::End => (Kind::End, Word::from_u64(0), None),
-            Raw::Create => (Kind::Create, Word::from_u64(0), None),
-            Raw::Const => (Kind::Const, Word::from_u64(0), None),
-            Raw::Var => (Kind::Var, Word::from_u64(0), None),
-            Raw::If => (Kind::If, Word::from_u64(0), None),
-            Raw::Then => (Kind::Then, Word::from_u64(0), None),
-            Raw::Else => (Kind::Else, Word::from_u64(0), None),
-            Raw::For => (Kind::For, Word::from_u64(0), None),
-            Raw::In => (Kind::In, Word::from_u64(0), None),
-            Raw::Do => (Kind::Do, Word::from_u64(0), None),
-            Raw::Until => (Kind::Until, Word::from_u64(0), None),
-            Raw::Bound => (Kind::Bound, Word::from_u64(0), None),
-            Raw::Case => (Kind::Case, Word::from_u64(0), None),
-            Raw::Of => (Kind::Of, Word::from_u64(0), None),
-            Raw::With => (Kind::With, Word::from_u64(0), None),
-            Raw::SkipKw => (Kind::SkipKw, Word::from_u64(0), None),
-            Raw::And => (Kind::And, Word::from_u64(0), None),
-            Raw::Or => (Kind::Or, Word::from_u64(0), None),
-            Raw::Not => (Kind::Not, Word::from_u64(0), None),
-            Raw::Failwith => (Kind::Failwith, Word::from_u64(0), None),
-            Raw::Assert => (Kind::Assert, Word::from_u64(0), None),
-            Raw::List => (Kind::List, Word::from_u64(0), None),
-            Raw::True => (Kind::True, Word::from_u64(0), None),
-            Raw::False => (Kind::False, Word::from_u64(0), None),
-            Raw::Unit => (Kind::Unit, Word::from_u64(0), None),
-            Raw::Nil => (Kind::Nil, Word::from_u64(0), None),
-            Raw::LParen => (Kind::LParen, Word::from_u64(0), None),
-            Raw::RParen => (Kind::RParen, Word::from_u64(0), None),
-            Raw::LBrack => (Kind::LBrack, Word::from_u64(0), None),
-            Raw::RBrack => (Kind::RBrack, Word::from_u64(0), None),
-            Raw::LBrace => (Kind::LBrace, Word::from_u64(0), None),
-            Raw::RBrace => (Kind::RBrace, Word::from_u64(0), None),
-            Raw::Assign => (Kind::Assign, Word::from_u64(0), None),
-            Raw::Colon => (Kind::Colon, Word::from_u64(0), None),
-            Raw::Semi => (Kind::Semi, Word::from_u64(0), None),
-            Raw::Comma => (Kind::Comma, Word::from_u64(0), None),
-            Raw::DotDot => (Kind::DotDot, Word::from_u64(0), None),
-            Raw::Dot => (Kind::Dot, Word::from_u64(0), None),
-            Raw::Hash => (Kind::Hash, Word::from_u64(0), None),
-            Raw::Arrow => (Kind::Arrow, Word::from_u64(0), None),
-            Raw::Pipe => (Kind::Pipe, Word::from_u64(0), None),
-            Raw::Plus => (Kind::Plus, Word::from_u64(0), None),
-            Raw::Minus => (Kind::Minus, Word::from_u64(0), None),
-            Raw::StarStar => (Kind::StarStar, Word::from_u64(0), None),
-            Raw::Star => (Kind::Star, Word::from_u64(0), None),
-            Raw::Slash => (Kind::Slash, Word::from_u64(0), None),
-            Raw::Percent => (Kind::Percent, Word::from_u64(0), None),
-            Raw::Amp => (Kind::Amp, Word::from_u64(0), None),
-            Raw::Caret => (Kind::Caret, Word::from_u64(0), None),
-            Raw::Tilde => (Kind::Tilde, Word::from_u64(0), None),
-            Raw::Shl => (Kind::Shl, Word::from_u64(0), None),
-            Raw::Shr => (Kind::Shr, Word::from_u64(0), None),
-            Raw::Neq => (Kind::Neq, Word::from_u64(0), None),
-            Raw::Eq => (Kind::Eq, Word::from_u64(0), None),
-            Raw::Le => (Kind::Le, Word::from_u64(0), None),
-            Raw::Ge => (Kind::Ge, Word::from_u64(0), None),
-            Raw::Lt => (Kind::Lt, Word::from_u64(0), None),
-            Raw::Gt => (Kind::Gt, Word::from_u64(0), None),
-            Raw::At => (Kind::At, Word::from_u64(0), None),
-        };
+        let kind = kind_of(raw);
         out.push(Token {
             kind,
             line,
@@ -671,6 +562,168 @@ pub(crate) fn tokenize(src: &str) -> Result<Vec<Token>, Error> {
         string: None,
     });
     Ok(out)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PieceKind {
+    Token(Kind),
+    Comment,
+}
+
+pub(crate) struct Piece {
+    pub kind: PieceKind,
+    pub start: usize,
+    pub end: usize,
+    /// Newlines in the whitespace gap before this piece. Comments are pieces.
+    pub newlines_before: u32,
+}
+
+/// Tokens and comments, with the newline count of the gap before each one.
+pub(crate) fn pieces(src: &str) -> Result<Vec<Piece>, Error> {
+    let mut lex = Raw::lexer(src);
+    let mut out = Vec::new();
+    let mut prev = 0;
+    while let Some(item) = lex.next() {
+        let span = lex.span();
+        let raw = match item {
+            Ok(raw) => raw,
+            Err(err) => return Err(lex_error(src, &lex, err)),
+        };
+        if matches!(raw, Raw::Skipped) {
+            continue;
+        }
+        let kind = match raw {
+            Raw::Comment => PieceKind::Comment,
+            other => PieceKind::Token(kind_of(other)),
+        };
+        let newlines_before = src[prev..span.start].bytes().filter(|b| *b == b'\n').count() as u32;
+        out.push(Piece {
+            kind,
+            start: span.start,
+            end: span.end,
+            newlines_before,
+        });
+        prev = span.end;
+    }
+    Ok(out)
+}
+
+fn lex_error(src: &str, lex: &Lexer<Raw>, err: LexError) -> Error {
+    let span = lex.span();
+    let line = lex.extras.line;
+    let col = (span.start.saturating_sub(lex.extras.line_start) + 1) as u32;
+    match err {
+        LexError::Unexpected => {
+            let ch = src.get(span.clone()).unwrap_or("?");
+            error(line, col, format!("unexpected character `{ch}`"))
+        }
+        LexError::UnterminatedComment { line, col } => error(line, col, "unterminated comment"),
+        LexError::UnterminatedString { line, col } => error(line, col, "unterminated string"),
+        LexError::BadNumber { line, col, message } => error(line, col, message),
+    }
+}
+
+fn kind_of(raw: Raw) -> Kind {
+    match raw {
+        Raw::Skipped | Raw::Comment | Raw::Ident => Kind::Ident,
+        Raw::Number(Num::Nat(_)) => Kind::Nat,
+        Raw::Number(Num::Int(_)) => Kind::Int,
+        Raw::Number(Num::Wei(_)) => Kind::WeiLit,
+        Raw::Number(Num::Duration(_)) => Kind::DurationLit,
+        Raw::Number(Num::Bytes(_)) => Kind::HexBytes,
+        Raw::String(_) => Kind::String,
+        Raw::Type => Kind::Type,
+        Raw::Is => Kind::Is,
+        Raw::Record => Kind::Record,
+        Raw::Function => Kind::Function,
+        Raw::View => Kind::View,
+        Raw::Event => Kind::Event,
+        Raw::Indexed => Kind::Indexed,
+        Raw::Anonymous => Kind::Anonymous,
+        Raw::ErrorKw => Kind::ErrorKw,
+        Raw::ErrorsKw => Kind::ErrorsKw,
+        Raw::Raises => Kind::Raises,
+        Raw::Payable => Kind::Payable,
+        Raw::External => Kind::External,
+        Raw::Pure => Kind::Pure,
+        Raw::Nonreentrant => Kind::Nonreentrant,
+        Raw::Import => Kind::Import,
+        Raw::Module => Kind::Module,
+        Raw::Use => Kind::Use,
+        Raw::Requires => Kind::Requires,
+        Raw::As => Kind::As,
+        Raw::Private => Kind::Private,
+        Raw::Migrate => Kind::Migrate,
+        Raw::Deploy => Kind::Deploy,
+        Raw::Upgradeable => Kind::Upgradeable,
+        Raw::Upgrade => Kind::Upgrade,
+        Raw::AtKw => Kind::AtKw,
+        Raw::Contract => Kind::Contract,
+        Raw::Fail => Kind::Fail,
+        Raw::Interface => Kind::Interface,
+        Raw::Query => Kind::Query,
+        Raw::Emit => Kind::Emit,
+        Raw::Defer => Kind::Defer,
+        Raw::End => Kind::End,
+        Raw::Create => Kind::Create,
+        Raw::Const => Kind::Const,
+        Raw::Var => Kind::Var,
+        Raw::If => Kind::If,
+        Raw::Then => Kind::Then,
+        Raw::Else => Kind::Else,
+        Raw::For => Kind::For,
+        Raw::In => Kind::In,
+        Raw::Do => Kind::Do,
+        Raw::Until => Kind::Until,
+        Raw::Bound => Kind::Bound,
+        Raw::Case => Kind::Case,
+        Raw::Of => Kind::Of,
+        Raw::With => Kind::With,
+        Raw::SkipKw => Kind::SkipKw,
+        Raw::And => Kind::And,
+        Raw::Or => Kind::Or,
+        Raw::Not => Kind::Not,
+        Raw::Failwith => Kind::Failwith,
+        Raw::Assert => Kind::Assert,
+        Raw::List => Kind::List,
+        Raw::True => Kind::True,
+        Raw::False => Kind::False,
+        Raw::Unit => Kind::Unit,
+        Raw::Nil => Kind::Nil,
+        Raw::LParen => Kind::LParen,
+        Raw::RParen => Kind::RParen,
+        Raw::LBrack => Kind::LBrack,
+        Raw::RBrack => Kind::RBrack,
+        Raw::LBrace => Kind::LBrace,
+        Raw::RBrace => Kind::RBrace,
+        Raw::Assign => Kind::Assign,
+        Raw::Colon => Kind::Colon,
+        Raw::Semi => Kind::Semi,
+        Raw::Comma => Kind::Comma,
+        Raw::DotDot => Kind::DotDot,
+        Raw::Dot => Kind::Dot,
+        Raw::Hash => Kind::Hash,
+        Raw::Arrow => Kind::Arrow,
+        Raw::Pipe => Kind::Pipe,
+        Raw::Plus => Kind::Plus,
+        Raw::Minus => Kind::Minus,
+        Raw::StarStar => Kind::StarStar,
+        Raw::Star => Kind::Star,
+        Raw::Slash => Kind::Slash,
+        Raw::Percent => Kind::Percent,
+        Raw::Amp => Kind::Amp,
+        Raw::Caret => Kind::Caret,
+        Raw::Tilde => Kind::Tilde,
+        Raw::Shl => Kind::Shl,
+        Raw::Shr => Kind::Shr,
+        Raw::Neq => Kind::Neq,
+        Raw::Eq => Kind::Eq,
+        Raw::Le => Kind::Le,
+        Raw::Ge => Kind::Ge,
+        Raw::Lt => Kind::Lt,
+        Raw::Gt => Kind::Gt,
+        Raw::At => Kind::At,
+    }
 }
 
 pub(crate) fn kind_name(k: Kind) -> &'static str {

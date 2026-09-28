@@ -20,7 +20,7 @@ external view function count() : nat is
   storage.count
 
 external function set(const n : nat) is {
-  const saved : nat := stamp(n);
+  const _ : nat := stamp(n);
   skip
 }
 
