@@ -599,6 +599,68 @@ impl<'a> Gen<'a> {
         self.body = None;
     }
 
+    /// For `PUSH bad JUMPI PUSH ok JUMP bad: ... ok:` at `i`, an assertion that jumps over
+    /// its failure block, where past `ok` the scan may go on: the block reads nothing from
+    /// the image, calls only helpers, jumps only within itself or to the shared failure
+    /// blocks, and ends by reverting, and nothing else jumps to `ok`.
+    fn past_failure(
+        &self,
+        i: usize,
+        bad: u32,
+        fail: &dyn Fn(u32) -> bool,
+        sub: &dyn Fn(u32) -> bool,
+    ) -> Option<usize> {
+        let code = &self.code;
+        let (Some(Inst::PushLabel(ok)), Some(Inst::Op(JUMP)), Some(Inst::Label(at))) =
+            (code.get(i + 2), code.get(i + 3), code.get(i + 4))
+        else {
+            return None;
+        };
+        if *at != bad {
+            return None;
+        }
+        let end = i + 5 + code[i + 5..].iter().position(|inst| *inst == Inst::Label(*ok))?;
+        let block = &code[i + 5..end];
+        let inner: Vec<u32> = block
+            .iter()
+            .filter_map(|inst| match inst {
+                Inst::Label(l) => Some(*l),
+                _ => None,
+            })
+            .collect();
+        let leaves = self.checked.leaves as i32;
+        for (k, inst) in block.iter().enumerate() {
+            match inst {
+                Inst::Mem(addr) => {
+                    let addr = *addr as i32;
+                    if addr >= self.image && addr < self.image + leaves * 32 {
+                        return None;
+                    }
+                }
+                Inst::PushLabel(l) => {
+                    let jumps = matches!(block.get(k + 1), Some(Inst::Op(JUMP | JUMPI)));
+                    let returns = matches!(block.get(k + 1), Some(Inst::PushLabel(h)) if sub(*h));
+                    if jumps && !inner.contains(l) && !fail(*l) && !sub(*l) {
+                        return None;
+                    }
+                    if !jumps && !returns && !inner.contains(l) && !sub(*l) {
+                        return None;
+                    }
+                }
+                _ => {}
+            }
+        }
+        let exits = match block.last() {
+            Some(Inst::Op(REVERT)) => true,
+            Some(Inst::Op(JUMP)) => {
+                matches!(block.len().checked_sub(2).map(|k| block[k]), Some(Inst::PushLabel(l)) if fail(l))
+            }
+            _ => false,
+        };
+        let once = code.iter().filter(|inst| **inst == Inst::PushLabel(*ok)).count() == 1;
+        (exits && once).then_some(end + 1)
+    }
+
     /// Instructions `emit` produces, without adding them to the code.
     fn side_code(&mut self, emit: impl FnOnce(&mut Self)) -> Vec<Inst> {
         let saved = std::mem::take(&mut self.code);
@@ -608,13 +670,17 @@ impl<'a> Gen<'a> {
 
     /// The latest point from `from` where `leaf` can still be loaded before anything uses
     /// it, on every path. The scan runs through straight-line code: calls that do not touch
-    /// the leaf, and conditional jumps to the shared failure blocks, which read no storage.
-    /// It stops at the leaf's first access, a dynamic index into the image, a call that
-    /// touches the leaf, any other jump or label, or an exit.
+    /// the leaf, conditional jumps to the shared failure blocks, which read no storage, and
+    /// an assertion's own failure block when it reads no leaf. It stops at the leaf's first
+    /// access, a dynamic index into the image, a call that touches the leaf, any other jump
+    /// or label, or an exit.
     fn first_use(&self, from: usize, leaf: u32) -> usize {
         let leaves = self.checked.leaves as i32;
         let mine = self.image + leaf as i32 * 32;
-        let fail = |l: u32| self.fails.iter().any(|(_, have)| *have == l);
+        let fail = |l: u32| {
+            self.fails.iter().any(|(_, have)| *have == l)
+                || self.raises.iter().any(|(_, have, _)| *have == l)
+        };
         let sub = |l: u32| self.subs.iter().any(|(_, have, _)| *have == l);
         let code = &self.code;
         let mut i = from;
@@ -655,7 +721,14 @@ impl<'a> Gen<'a> {
                         i += 2;
                         continue;
                     }
-                    Some(Inst::Op(JUMP | JUMPI)) => return i,
+                    Some(Inst::Op(JUMPI)) => match self.past_failure(i, l, &fail, &sub) {
+                        Some(next) => {
+                            i = next;
+                            continue;
+                        }
+                        None => return i,
+                    },
+                    Some(Inst::Op(JUMP)) => return i,
                     _ => {}
                 },
                 Inst::Op(STOP | RETURN | REVERT | JUMP) => return i,
