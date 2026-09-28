@@ -107,9 +107,11 @@ const SSTORE: u8 = 0x55;
 const TLOAD: u8 = 0x5c;
 const TSTORE: u8 = 0x5d;
 /// Transient slot for the contract-wide `nonreentrant` lock. It is set while a transition
-/// runs its deferred calls, and for the whole of a `nonreentrant` one.
-/// Slot 0 is the upgrade gate.
-const NONREENTRANT_SLOT: u64 = 1;
+/// runs its deferred calls, and for the whole of a `nonreentrant` one. It is the slot most
+/// contracts touch, so its key is `PUSH0`.
+const NONREENTRANT_SLOT: u64 = 0;
+/// Transient slot an upgrade sets for its `migrate` call.
+const UPGRADE_SLOT: u64 = 1;
 const JUMP: u8 = 0x56;
 const JUMPI: u8 = 0x57;
 const GAS: u8 = 0x5a;
@@ -391,7 +393,8 @@ enum Region {
     Topic,
     Tuple,
     Journal,
-    JournalCount,
+    JournalLen,
+    JournalAt,
     BlobPtr,
     Blob,
     Image,
@@ -524,6 +527,16 @@ enum Sub {
     LoadRecords(usize, bool, bool),
     /// `StoreList` for records whose fields share slots.
     StoreRecords(usize, bool, bool),
+    /// `LoadList` for elements that share slots: the first one's bytes, how many fit in a
+    /// slot, whether the slots are transient, and whether the body is direct.
+    LoadPacked(Pack, u64, bool, bool),
+    /// `StoreList` for elements that share slots.
+    StorePacked(Pack, u64, bool, bool),
+    /// `[n, base, ret]` zeroes the `n` slots from `base`.
+    ZeroSlots(bool, bool),
+    /// `[n, base, ret]` zeroes the `n` elements of this type stored from slot `base`, with
+    /// the data of their strings, bytes, and lists.
+    ClearElems(usize, bool, bool),
     /// `[slot, ret]` becomes the string or bytes value stored at a computed slot: whether
     /// the slot is transient, and whether the body is direct.
     LoadSlotBytes(bool, bool),
@@ -790,7 +803,8 @@ struct Gen<'a> {
     args_buf: i32,
     hash_buf: i32,
     topic_buf: i32,
-    journal_count: i32,
+    journal_len: i32,
+    journal_at: i32,
     journal_base: i32,
     blob_ptr: i32,
     blob_base: i32,

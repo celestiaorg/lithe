@@ -106,7 +106,7 @@ impl Checker {
             }
             Builtin::Keccak256 | Builtin::Sha256 | Builtin::Ripemd160 => {
                 need(args.len(), 1)?;
-                self.check_expr(&mut args[0])?;
+                self.check_blob(&mut args[0])?;
                 if !self.is_dyn_ty(args[0].ty()) {
                     return Err(error(
                         args[0].line(),
@@ -226,7 +226,7 @@ impl Checker {
                         1
                     },
                 )?;
-                self.check_expr(&mut args[0])?;
+                self.check_blob(&mut args[0])?;
                 if !self.is_dyn_ty(args[0].ty()) {
                     return Err(error(
                         args[0].line(),
@@ -391,7 +391,7 @@ impl Checker {
             }
             Builtin::AbiDecode => {
                 need(args.len(), 2)?;
-                self.check_expr(&mut args[0])?;
+                self.check_blob(&mut args[0])?;
                 if !self.is_dyn_ty(args[0].ty()) && self.types[args[0].ty()].kind != TyKind::Bytes {
                     return Err(error(
                         args[0].line(),
@@ -711,6 +711,19 @@ impl Checker {
             .get(name)
             .copied()
             .ok_or_else(|| error(1, 1, "internal: missing `bytes`"))
+    }
+
+    /// An argument taking `bytes` or a `string`, where a hex literal is the bytes it spells.
+    fn check_blob(&mut self, arg: &mut Expr) -> Result<(), Error> {
+        let hex = matches!(
+            arg,
+            Expr::Lit {
+                lit: Lit::Int(_, Some(_)) | Lit::Bytes(_),
+                ..
+            }
+        );
+        let bytes = self.named["bytes"];
+        self.check_expr_as(arg, if hex { Some(bytes) } else { self.expect })
     }
 
     fn check_word_arg(&mut self, arg: &mut Expr, expect: usize) -> Result<(), Error> {

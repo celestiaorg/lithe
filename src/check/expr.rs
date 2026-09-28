@@ -43,6 +43,12 @@ impl Checker {
         }
         match e {
             Expr::Lit { lit, ty, line, col } => {
+                let bytes = self.named["bytes"];
+                let wants_bytes = self.expect.is_some_and(|t| self.peel(t) == bytes);
+                // A word of hex digits is also a `bytes` too long to pack in a word.
+                if let (Lit::Int(w, Some(64)), true) = (&*lit, wants_bytes) {
+                    *lit = Lit::Bytes(w.to_be_bytes().to_vec());
+                }
                 *ty = match lit {
                     Lit::Nat(_) => TY_NAT,
                     Lit::Int(w, digits) => {
@@ -55,16 +61,10 @@ impl Checker {
                     Lit::Wei(_) => TY_WEI,
                     Lit::Duration(_) => TY_NAT,
                     Lit::Bool(_) => TY_BOOL,
-                    Lit::Str(_) => {
-                        // A literal also spells `bytes` where the context expects them.
-                        let bytes = self.named["bytes"];
-                        if self.expect.is_some_and(|t| self.peel(t) == bytes) {
-                            bytes
-                        } else {
-                            TY_STRING
-                        }
-                    }
-                    Lit::Bytes(_) => self.named["bytes"],
+                    // A literal also spells `bytes` where the context expects them.
+                    Lit::Str(_) if wants_bytes => bytes,
+                    Lit::Str(_) => TY_STRING,
+                    Lit::Bytes(_) => bytes,
                     Lit::Unit => TY_UNIT,
                     Lit::Nil => self.op_list(),
                 };
@@ -190,6 +190,29 @@ impl Checker {
                 line,
                 col,
             } => {
+                // `-128` is an `int8`, though `128` alone is not.
+                if let (
+                    UnOp::Neg,
+                    Some(expect),
+                    Expr::Lit {
+                        lit: Lit::Int(w, None),
+                        ty: lit_ty,
+                        ..
+                    },
+                ) = (*op, self.expect, &mut **expr)
+                {
+                    let peeled = self.peel(expect);
+                    let bits = self.types[peeled].bits;
+                    let bits = if bits == 0 { 256 } else { bits };
+                    if self.types[peeled].kind == TyKind::Int
+                        && !w.is_zero()
+                        && fits_unsigned(w.wrapping_sub(Word::from_u64(1)), bits - 1)
+                    {
+                        *lit_ty = expect;
+                        *ty = expect;
+                        return Ok(());
+                    }
+                }
                 match op {
                     UnOp::Not => {
                         self.check_expr(expr)?;
@@ -237,17 +260,7 @@ impl Checker {
                     self.check_expr_as(right, Some(TY_NAT))?;
                 } else if op.is_cmp() {
                     // The operands type each other, not the boolean they make.
-                    let literal = |e: &Expr| {
-                        matches!(
-                            e,
-                            Expr::Lit {
-                                lit: Lit::Int(..),
-                                ..
-                            }
-                        )
-                    };
-                    let (lc, rc) = (self.names_ctor(left), self.names_ctor(right));
-                    if (literal(left) && !literal(right)) || (lc && !rc) {
+                    if self.contextual(left) > self.contextual(right) {
                         self.check_expr_as(right, None)?;
                         self.check_expr_as(left, Some(right.ty()))?;
                     } else {
@@ -262,18 +275,6 @@ impl Checker {
                     self.check_expr(right)?;
                 }
                 *ty = self.check_bin(*line, *col, *op, left.ty(), right.ty())?;
-                let bare = |e: &Expr| matches!(e, Expr::Call { builtin: Some(Builtin::Ctor(_)), args, .. } if args.is_empty());
-                if is_sum(&self.types, left.ty())
-                    && !is_static_value(&self.types, left.ty())
-                    && !bare(left)
-                    && !bare(right)
-                {
-                    return Err(error(
-                        *line,
-                        *col,
-                        "a variant holding strings, bytes, or lists compares only with a case that has no payload",
-                    ));
-                }
                 Ok(())
             }
             Expr::Tuple {
@@ -319,7 +320,7 @@ impl Checker {
                         return Err(error(
                             elem.line(),
                             elem.col(),
-                            "tuple elements must be values: words, strings, bytes, lists, records, tuples, or fixed-size options",
+                            "tuple elements must be values: words, strings, bytes, lists, records, tuples, or options",
                         ));
                     }
                     ids.push(elem.ty());
@@ -369,6 +370,12 @@ impl Checker {
                 builtin: Some(Builtin::BytesAt),
                 ..
             } => Ok(()),
+            // A bare constructor, checked again as a specialized call's argument is.
+            Expr::Call {
+                builtin: Some(Builtin::Ctor(_)),
+                args,
+                ..
+            } if args.is_empty() => Ok(()),
             Expr::Call {
                 name,
                 args,
@@ -631,11 +638,11 @@ impl Checker {
                         None => {
                             self.check_expr_as(&mut args[0], None)?;
                             let e = args[0].ty();
-                            if !self.single_word(e) && !is_static_value(&self.types, e) {
+                            if !is_value(&self.types, e) {
                                 return Err(error(
                                     args[0].line(),
                                     args[0].col(),
-                                    "an option holds a word or a fixed-size value",
+                                    "an option holds a value: a word, a string, bytes, a list, a record, a tuple, or an option",
                                 ));
                             }
                             let id = self.alloc(TyKind::Option, Some(e), None, None, 0);
@@ -785,7 +792,11 @@ impl Checker {
                 };
                 let mut seen = HashSet::new();
                 let mut result = None;
-                for arm in arms.iter_mut() {
+                let expect = self.expect;
+                // Arms that take their type from context wait for the others' type when
+                // nothing is expected of the case.
+                let mut waiting = Vec::new();
+                for (i, arm) in arms.iter_mut().enumerate() {
                     let binds = arm.bind.is_some() || !arm.tuple_names.is_empty();
                     let mut payload: &Option<usize> = &None;
                     for (i, ctor) in arm.ctors.iter().enumerate() {
@@ -900,23 +911,18 @@ impl Checker {
                     for s in &mut arm.stmts {
                         self.check_stmt(s)?;
                     }
-                    self.check_expr(&mut arm.expr)?;
-                    let at = arm.expr.ty();
-                    // An arm that fails has no value, so it fits any other arm's type.
-                    if !arm.fails() {
-                        if let Some(prev) = result {
-                            if !self.same(prev, at) {
-                                let what = if is_if { "`if` branches" } else { "case arms" };
-                                return Err(error(
-                                    arm.line,
-                                    arm.col,
-                                    format!("{what} have different types"),
-                                ));
-                            }
-                        } else {
-                            result = Some(at);
-                        }
+                    if expect.or(result).is_none() && self.contextual(&arm.expr) > 0 {
+                        waiting.push((self.contextual(&arm.expr), i, self.scope));
+                    } else {
+                        self.check_arm(arm, expect, &mut result, is_if)?;
                     }
+                    self.scope = parent;
+                }
+                waiting.sort_by_key(|&(rank, ..)| rank);
+                for (_, i, scope) in waiting {
+                    let parent = self.scope;
+                    self.scope = scope;
+                    self.check_arm(&mut arms[i], expect, &mut result, is_if)?;
                     self.scope = parent;
                 }
                 for (name, _) in &variants {
@@ -927,6 +933,56 @@ impl Checker {
                 *ty = result.unwrap_or(TY_UNIT);
                 Ok(())
             }
+        }
+    }
+
+    fn check_arm(
+        &mut self,
+        arm: &mut Arm,
+        expect: Option<usize>,
+        result: &mut Option<usize>,
+        is_if: bool,
+    ) -> Result<(), Error> {
+        self.check_expr_as(&mut arm.expr, expect.or(*result))?;
+        let at = arm.expr.ty();
+        // An arm that fails has no value, so it fits any other arm's type.
+        if !arm.fails() {
+            if let Some(prev) = *result {
+                if !self.same(prev, at) {
+                    let what = if is_if { "`if` branches" } else { "case arms" };
+                    return Err(error(
+                        arm.line,
+                        arm.col,
+                        format!("{what} have different types"),
+                    ));
+                }
+            } else {
+                *result = Some(at);
+            }
+        }
+        Ok(())
+    }
+
+    /// How much an unchecked expression takes its type from its context: 2 for a literal
+    /// or `None`, which has only the context to go by, 1 for another constructor or a
+    /// tuple with a literal in it, and 0 for anything else. A case is as contextual as its
+    /// least contextual arm.
+    fn contextual(&self, e: &Expr) -> u8 {
+        match e {
+            Expr::Lit { .. } | Expr::List { .. } | Expr::Record { .. } => 2,
+            Expr::Unary { op: UnOp::Neg, .. } => 2,
+            Expr::Ident {
+                name, sym: None, ..
+            } if name == "None" => 2,
+            _ if matches!(self.type_constant(e), Ok(Some(_))) => 2,
+            Expr::Tuple { elems, .. } => u8::from(elems.iter().any(|e| self.contextual(e) > 0)),
+            Expr::Case { arms, .. } => arms
+                .iter()
+                .filter(|arm| !arm.fails())
+                .map(|arm| self.contextual(&arm.expr))
+                .min()
+                .unwrap_or(0),
+            _ => u8::from(self.names_ctor(e)),
         }
     }
 
@@ -1228,11 +1284,11 @@ impl Checker {
                 Ok(l)
             }
             BinOp::Eq | BinOp::Neq if lk == TyKind::Option => {
-                if !self.same(l, r) || !is_static_value(&self.types, l) {
+                if !self.same(l, r) || !is_value(&self.types, l) {
                     return Err(error(
                         line,
                         col,
-                        "options compare when both hold the same fixed-size type",
+                        "options compare when both hold the same type",
                     ));
                 }
                 Ok(TY_BOOL)
@@ -1248,7 +1304,8 @@ impl Checker {
                 Ok(TY_BOOL)
             }
             // Records, tuples, and fixed lists compare member by member: a fixed-size one by
-            // its words, and one with strings, bytes, or lists in it by its encoding.
+            // its words, and one with strings, bytes, or lists in it by its encoding, where an
+            // option is its tag and payload.
             BinOp::Eq | BinOp::Neq
                 if matches!(
                     self.types[peel_id(&self.types, l)].kind,
@@ -1261,13 +1318,6 @@ impl Checker {
                         line,
                         col,
                         "comparison expects two values of the same type",
-                    ));
-                }
-                if !is_static_value(&self.types, l) && has_option(&self.types, l) {
-                    return Err(error(
-                        line,
-                        col,
-                        "a value with both options and strings, bytes, or lists in it doesn't compare",
                     ));
                 }
                 Ok(TY_BOOL)
@@ -1295,6 +1345,7 @@ impl Checker {
                             | TyKind::Bytes
                             | TyKind::String
                             | TyKind::Nominal
+                            | TyKind::Interface
                     )
                 {
                     return Err(error(

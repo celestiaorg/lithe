@@ -336,7 +336,14 @@ impl Checker {
             .is_some_and(|ty| self.types[ty].kind == TyKind::Record && !self.types[ty].tuple);
         match &mut raised.form {
             RaisedForm::Unit if payload.is_none() => {}
-            RaisedForm::Positional(expr) if payload.is_some() && !record => {
+            RaisedForm::Positional(_) | RaisedForm::Fields(_) if payload.is_none() => {
+                return Err(error(
+                    raised.line,
+                    raised.col,
+                    format!("error `{}` does not take a payload", raised.name),
+                ));
+            }
+            RaisedForm::Positional(expr) => {
                 self.check_expr_as(expr, payload)?;
                 if !self.same(expr.ty(), payload.unwrap_or(TY_UNIT)) {
                     return Err(error(
@@ -377,20 +384,6 @@ impl Checker {
                     raised.line,
                     raised.col,
                     format!("error `{}` expects a payload", raised.name),
-                ));
-            }
-            RaisedForm::Positional(_) | RaisedForm::Fields(_) if payload.is_none() => {
-                return Err(error(
-                    raised.line,
-                    raised.col,
-                    format!("error `{}` does not take a payload", raised.name),
-                ));
-            }
-            RaisedForm::Positional(_) => {
-                return Err(error(
-                    raised.line,
-                    raised.col,
-                    format!("error `{}` expects named fields", raised.name),
                 ));
             }
             RaisedForm::Fields(_) => {

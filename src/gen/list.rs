@@ -22,6 +22,11 @@ impl<'a> Gen<'a> {
         self.checked.types[id].kind == TyKind::List && self.checked.types[id].bits == 0
     }
 
+    pub(super) fn fixed_list(&self, ty: usize) -> bool {
+        let id = self.peel_nominal(ty);
+        self.checked.types[id].kind == TyKind::List && self.checked.types[id].bits > 0
+    }
+
     /// Words per element of a list type.
     pub(super) fn list_k(&self, ty: usize) -> u32 {
         self.list_stride(self.peel_nominal(ty))
@@ -79,6 +84,61 @@ impl<'a> Gen<'a> {
         Ok(())
     }
 
+    /// Whether a value's lists belong to no one else: built here, read from storage or
+    /// decoded, or copied as a `var`'s lists are when it is read.
+    pub(super) fn owned(&self, e: &Expr) -> bool {
+        if self.owned_by_type(e.ty()) || self.stored_place(e).is_some() {
+            return true;
+        }
+        match e {
+            Expr::List { ty, elems, .. } => {
+                self.list_value(*ty) || elems.iter().all(|x| self.owned(x))
+            }
+            Expr::Tuple { elems, .. } => elems.iter().all(|x| self.owned(x)),
+            Expr::Record { fields, .. } => fields.iter().all(|(_, x)| self.owned(x)),
+            Expr::Call {
+                builtin: Some(Builtin::Ctor(_)),
+                args,
+                ..
+            } => args.iter().all(|x| self.owned(x)),
+            Expr::Query { .. }
+            | Expr::Call {
+                builtin: Some(Builtin::AbiDecode),
+                ..
+            } => true,
+            Expr::Ident { sym: Some(sym), .. }
+            | Expr::Field {
+                root: Some(sym), ..
+            } => {
+                self.checked.syms[*sym].mutable
+                    && !self.checked.syms[*sym].storage
+                    && !self.nested_mem(e)
+            }
+            _ => false,
+        }
+    }
+
+    /// Whether none of a value's own words, `dyn_words` finds, is a dynamic list.
+    pub(super) fn owned_by_type(&self, ty: usize) -> bool {
+        let mut words = Vec::new();
+        self.dyn_words(ty, 0, &mut words);
+        !words.iter().any(|&(_, t)| self.list_value(t))
+    }
+
+    /// Replaces each dynamic list among the words of a value in memory at `at` with a copy.
+    pub(super) fn own_lists(&mut self, at: i32, ty: usize) -> Result<(), Error> {
+        let mut words = Vec::new();
+        self.dyn_words(ty, 0, &mut words);
+        for (word, t) in words {
+            if self.list_value(t) {
+                self.mload(at + word as i32 * 32);
+                self.copy_list(self.list_k(t))?;
+                self.mstore_off(at + word as i32 * 32);
+            }
+        }
+        Ok(())
+    }
+
     /// The storage behind an expression, if it names a stored place.
     pub(super) fn stored_place(&self, e: &Expr) -> Option<(usize, u32)> {
         let (sym, leaf) = match e {
@@ -98,7 +158,7 @@ impl<'a> Gen<'a> {
     pub(super) fn compile_list_value(&mut self, e: &Expr) -> Result<bool, Error> {
         let k = self.list_k(e.ty());
         if let Some((sym, leaf)) = self.stored_place(e) {
-            self.load_stored_list(sym, leaf, k, self.list_dyn(e.ty()))?;
+            self.load_stored_list(sym, leaf, e.ty())?;
             return Ok(true);
         }
         match e {
@@ -203,24 +263,18 @@ impl<'a> Gen<'a> {
     }
 
     /// Pushes a copy of a stored list.
-    fn load_stored_list(
+    pub(super) fn load_stored_list(
         &mut self,
         sym: usize,
         leaf: u32,
-        k: u32,
-        bytes: bool,
+        lty: usize,
     ) -> Result<(), Error> {
         let transient = self
             .checked
             .transient_leaf(self.checked.syms[sym].slot + leaf);
         self.mload(self.addr(sym, leaf));
         self.stored_list_base(sym, leaf);
-        let elem = self.list_elem(self.type_at(self.checked.syms[sym].ty, leaf));
-        if !self.plain_elem(elem) {
-            self.load_list_sub(elem, transient);
-            return Ok(());
-        }
-        self.call_sub(Sub::LoadList(k, transient, self.direct, bytes));
+        self.load_list_sub(self.list_elem(lty), transient);
         Ok(())
     }
 
@@ -274,13 +328,7 @@ impl<'a> Gen<'a> {
     }
 
     /// `[ptr]`: writes the list to a stored list, clearing the slots it no longer uses.
-    pub(super) fn store_list(
-        &mut self,
-        sym: usize,
-        leaf: u32,
-        k: u32,
-        bytes: bool,
-    ) -> Result<(), Error> {
+    pub(super) fn store_list(&mut self, sym: usize, leaf: u32, lty: usize) -> Result<(), Error> {
         let transient = self
             .checked
             .transient_leaf(self.checked.syms[sym].slot + leaf);
@@ -294,18 +342,7 @@ impl<'a> Gen<'a> {
         self.mstore_off(len_addr);
         self.mark_dirty(sym, leaf);
         self.stored_list_base(sym, leaf);
-        let elem = self.list_elem(self.type_at(self.checked.syms[sym].ty, leaf));
-        if !self.plain_elem(elem) {
-            self.store_list_sub(elem, transient);
-            return Ok(());
-        }
-        // The helper journals its stores, so this body's loads must read the journal too.
-        if !self.direct && !transient {
-            if let Some(body) = self.body_mut() {
-                body.journal_stores = true;
-            }
-        }
-        self.call_sub(Sub::StoreList(k, transient, self.direct, bytes));
+        self.store_list_sub(self.list_elem(lty), transient);
         Ok(())
     }
 
@@ -376,6 +413,320 @@ impl<'a> Gen<'a> {
         }
         self.op(JUMP);
         Ok(())
+    }
+
+    /// `[x]` becomes `x / n`.
+    pub(super) fn div_by(&mut self, n: u64) {
+        if n.is_power_of_two() {
+            self.push_u64(u64::from(n.trailing_zeros()));
+            self.op(SHR);
+        } else {
+            self.push_u64(n);
+            self.op(SWAP1);
+            self.op(DIV);
+        }
+    }
+
+    /// `[x]` becomes `x % n`.
+    pub(super) fn mod_by(&mut self, n: u64) {
+        if n.is_power_of_two() {
+            self.push_u64(n - 1);
+            self.op(AND);
+        } else {
+            self.push_u64(n);
+            self.op(SWAP1);
+            self.op(MOD);
+        }
+    }
+
+    /// `[x]` becomes `x * n`.
+    pub(super) fn mul_by(&mut self, n: u64) {
+        if n.is_power_of_two() {
+            self.push_u64(u64::from(n.trailing_zeros()));
+            self.op(SHL);
+        } else {
+            self.push_u64(n);
+            self.op(MUL);
+        }
+    }
+
+    /// `[n, base, ret]` becomes a copy of the `n` packed elements stored from slot `base`.
+    pub(super) fn sub_load_packed(
+        &mut self,
+        pack: Pack,
+        per: u64,
+        transient: bool,
+    ) -> Result<(), Error> {
+        // [ret, base, list, n, j]
+        let (top, done) = (self.fresh(), self.fresh());
+        self.op(SWAP1 + 1);
+        self.op(DUP1);
+        self.alloc_list(1)?;
+        self.op(SWAP1);
+        self.op(PUSH0);
+        self.jumpdest(top);
+        self.op(DUP1 + 1);
+        self.op(DUP1 + 1);
+        self.op(LT);
+        self.op(ISZERO);
+        self.push_label(done);
+        self.op(JUMPI);
+        self.op(DUP1);
+        self.op(DUP1 + 4);
+        self.packed_at(pack, per);
+        self.packed_load(pack, transient);
+        self.op(DUP1 + 1);
+        self.push_u64(32);
+        self.op(MUL);
+        self.op(DUP1 + 4);
+        self.op(ADD);
+        self.push_u64(32);
+        self.op(ADD);
+        self.op(MSTORE);
+        self.push_u64(1);
+        self.op(ADD);
+        self.push_label(top);
+        self.op(JUMP);
+        self.jumpdest(done);
+        self.op(POP);
+        self.op(POP);
+        self.op(SWAP1 + 1);
+        self.op(SWAP1);
+        self.op(POP);
+        self.op(JUMP);
+        Ok(())
+    }
+
+    /// `[ptr, old, base, ret]` writes a list over `old` packed elements from slot `base`,
+    /// each slot joined from its elements and written once. The slots a shorter list no
+    /// longer uses are cleared, and so are the bytes past its last element.
+    pub(super) fn sub_store_packed(&mut self, pack: Pack, per: u64, transient: bool) {
+        let (top, done, clear, cleared) = (self.fresh(), self.fresh(), self.fresh(), self.fresh());
+        // [ret, old, base, ptr, n, j, word]
+        self.op(SWAP1 + 2);
+        self.op(DUP1);
+        self.op(MLOAD);
+        self.op(PUSH0);
+        self.op(PUSH0);
+        self.jumpdest(top);
+        self.op(DUP1 + 2);
+        self.op(DUP1 + 2);
+        self.op(LT);
+        self.op(ISZERO);
+        self.push_label(done);
+        self.op(JUMPI);
+        self.op(DUP1 + 1);
+        self.push_u64(32);
+        self.op(MUL);
+        self.op(DUP1 + 4);
+        self.op(ADD);
+        self.push_u64(32);
+        self.op(ADD);
+        self.op(MLOAD);
+        if pack.signed {
+            self.push_word(byte_mask(pack.width));
+            self.op(AND);
+        }
+        self.op(DUP1 + 2);
+        self.mod_by(per);
+        self.mul_by(u64::from(pack.width) * 8);
+        self.op(SHL);
+        self.op(OR);
+        self.op(SWAP1);
+        self.push_u64(1);
+        self.op(ADD);
+        self.op(SWAP1);
+        // The word is full, or holds the last element.
+        self.op(DUP1 + 1);
+        self.mod_by(per);
+        self.op(ISZERO);
+        self.op(DUP1 + 3);
+        self.op(DUP1 + 3);
+        self.op(EQ);
+        self.op(OR);
+        self.op(ISZERO);
+        self.push_label(top);
+        self.op(JUMPI);
+        self.op(DUP1 + 1);
+        self.push_u64(1);
+        self.op(SWAP1);
+        self.op(SUB);
+        self.div_by(per);
+        self.op(DUP1 + 5);
+        self.op(ADD);
+        self.transient_slot = transient;
+        self.journal_store();
+        self.op(PUSH0);
+        self.push_label(top);
+        self.op(JUMP);
+        self.jumpdest(done);
+        // [ret, old, base, ptr, slots, old slots]
+        self.op(POP);
+        self.op(POP);
+        self.push_u64(per - 1);
+        self.op(ADD);
+        self.div_by(per);
+        self.op(DUP1 + 3);
+        self.push_u64(per - 1);
+        self.op(ADD);
+        self.div_by(per);
+        self.jumpdest(clear);
+        self.op(DUP1);
+        self.op(DUP1 + 2);
+        self.op(LT);
+        self.op(ISZERO);
+        self.push_label(cleared);
+        self.op(JUMPI);
+        self.op(PUSH0);
+        self.op(DUP1 + 2);
+        self.op(DUP1 + 5);
+        self.op(ADD);
+        self.transient_slot = transient;
+        self.journal_store();
+        self.op(SWAP1);
+        self.push_u64(1);
+        self.op(ADD);
+        self.op(SWAP1);
+        self.push_label(clear);
+        self.op(JUMP);
+        self.jumpdest(cleared);
+        for _ in 0..5 {
+            self.op(POP);
+        }
+        self.op(JUMP);
+    }
+
+    /// Whether clearing a list element must reach past its slots: to the data of the
+    /// strings, bytes, or lists it holds.
+    pub(super) fn deep_clear(&self, elem: usize) -> bool {
+        !crate::check::is_static_value(&self.checked.types, elem) && !self.stored_dyn(elem)
+    }
+
+    /// `[n, base]` zeroes the `n` elements of a stored list from slot `base`, and the data
+    /// of the strings, bytes, and lists in them, as Solidity's `delete` does.
+    pub(super) fn clear_elems(&mut self, elem: usize, transient: bool) {
+        if !self.direct && !transient {
+            if let Some(body) = self.body_mut() {
+                body.journal_stores = true;
+            }
+        }
+        if !crate::check::is_static_value(&self.checked.types, elem) {
+            let id = self.peel_nominal(elem);
+            self.call_sub(Sub::ClearElems(id, transient, self.direct));
+            return;
+        }
+        // [slots, base]: a packed list's part-full last slot counts.
+        if let Some((_, per)) = self.packed(elem) {
+            self.op(SWAP1);
+            self.push_u64(per - 1);
+            self.op(ADD);
+            self.div_by(per);
+            self.op(SWAP1);
+        } else if self.elem_slots(elem) > 1 {
+            self.op(SWAP1);
+            self.push_u64(self.elem_slots(elem));
+            self.op(MUL);
+            self.op(SWAP1);
+        }
+        self.call_sub(Sub::ZeroSlots(transient, self.direct));
+    }
+
+    /// `[n, base, ret]` zeroes the `n` slots from `base`, the last first.
+    pub(super) fn sub_zero_slots(&mut self, transient: bool) {
+        let (top, done) = (self.fresh(), self.fresh());
+        self.op(SWAP1 + 1);
+        self.jumpdest(top);
+        self.op(DUP1);
+        self.op(ISZERO);
+        self.push_label(done);
+        self.op(JUMPI);
+        self.push_u64(1);
+        self.op(SWAP1);
+        self.op(SUB);
+        self.op(PUSH0);
+        self.op(DUP1 + 1);
+        self.op(DUP1 + 3);
+        self.op(ADD);
+        self.transient_slot = transient;
+        self.journal_store();
+        self.push_label(top);
+        self.op(JUMP);
+        self.jumpdest(done);
+        self.op(POP);
+        self.op(POP);
+        self.op(JUMP);
+    }
+
+    /// `[n, base, ret]` zeroes the `n` elements of type `elem` from slot `base`, the last
+    /// first: each word's slot, a string's or bytes value's data, and a list's elements.
+    pub(super) fn sub_clear_elems(&mut self, elem: usize, transient: bool) {
+        let layout = self.value_layout(elem);
+        let mut leaves = Vec::new();
+        self.record_leaves(elem, &mut leaves);
+        let slots = self.elem_slots(elem);
+        let (top, done) = (self.fresh(), self.fresh());
+        // [ret, base, i, slot]
+        self.op(SWAP1 + 1);
+        self.jumpdest(top);
+        self.op(DUP1);
+        self.op(ISZERO);
+        self.push_label(done);
+        self.op(JUMPI);
+        self.push_u64(1);
+        self.op(SWAP1);
+        self.op(SUB);
+        self.op(DUP1);
+        if slots > 1 {
+            self.push_u64(slots);
+            self.op(MUL);
+        }
+        self.op(DUP1 + 2);
+        self.op(ADD);
+        let mut j = 0;
+        while j < layout.len() {
+            let off = layout[j].0;
+            let leaf = leaves[j];
+            let at = |g: &mut Self| {
+                if off > 0 {
+                    g.push_u64(off);
+                    g.op(ADD);
+                }
+            };
+            if self.list_value(leaf) {
+                // Its length, then its elements.
+                self.op(DUP1);
+                at(self);
+                self.op(DUP1);
+                self.transient_slot = transient;
+                self.journal_load();
+                self.op(PUSH0);
+                self.op(DUP1 + 2);
+                self.transient_slot = transient;
+                self.journal_store();
+                self.op(SWAP1);
+                self.mstore_off(self.hash_buf);
+                self.push_u64(32);
+                self.push_mem(self.hash_buf);
+                self.op(KECCAK);
+                self.clear_elems(self.list_elem(leaf), transient);
+            } else {
+                self.op(PUSH0);
+                self.op(DUP1 + 1);
+                at(self);
+                self.transient_slot = transient;
+                self.store_slot(self.is_dynamic(leaf));
+            }
+            j = (j..layout.len())
+                .find(|&x| layout[x].0 != off)
+                .unwrap_or(layout.len());
+        }
+        self.op(POP);
+        self.push_label(top);
+        self.op(JUMP);
+        self.jumpdest(done);
+        self.op(POP);
+        self.op(POP);
+        self.op(JUMP);
     }
 
     /// `[ptr]` becomes a hash of the list's length and elements, for equality.
@@ -599,6 +950,80 @@ impl<'a> Gen<'a> {
                 self.push_u64(u64::from(at));
                 self.op(ADD);
             }
+            self.op(MSTORE);
+        }
+        Ok(())
+    }
+
+    /// `xs[i][j] := v`, `hs[i].x[j] := v`: a value in memory past an index, written in place.
+    /// A push grows the list it writes past the end of.
+    pub(super) fn nested_assign(
+        &mut self,
+        target: &Expr,
+        expr: &Expr,
+        push: bool,
+    ) -> Result<(), Error> {
+        let ty = target.ty();
+        let word = self.stack_value(ty) || self.list_value(ty);
+        if word {
+            self.compile_value(expr)?;
+        } else {
+            let src = self.value_addr(expr)?;
+            self.push_u64(u64::from(self.checked.types[ty].words) * 32);
+            self.push_mem(src);
+        }
+        match target {
+            Expr::Index { base, index, .. } if push => {
+                self.own_path(base)?;
+                let list = self.temp();
+                self.push_mem_addr(base)?;
+                self.op(DUP1);
+                self.op(MLOAD);
+                self.mstore_off(list);
+                self.heap_element(list, index, u64::from(self.list_k(base.ty())), true)?;
+                self.op(SWAP1);
+                self.mload(list);
+                self.op(SWAP1);
+                self.op(MSTORE);
+            }
+            _ => {
+                self.own_path(target)?;
+                self.push_mem_addr(target)?;
+            }
+        }
+        self.op(if word { MSTORE } else { MCOPY });
+        Ok(())
+    }
+
+    /// `List.pop(xs[i])` for a list in memory past an index.
+    pub(super) fn nested_pop(&mut self, target: &Expr) -> Result<(), Error> {
+        self.own_path(target)?;
+        self.own_list(target)?;
+        self.push_mem_addr(target)?;
+        self.op(MLOAD);
+        self.pop_list()
+    }
+
+    /// Replaces each list a write to `e` passes through past an index with a copy of it:
+    /// a copy of the `var` shares those lists, and must not see the write.
+    // simplify: each nested write copies the inner lists on its path, so filling an inner list
+    // element by element costs quadratic gas and memory. Copying lists deeply when a `var`
+    // takes or gives them would let these writes go in place.
+    fn own_path(&mut self, e: &Expr) -> Result<(), Error> {
+        if let Expr::Index { base, .. } | Expr::Field { base, .. } = e {
+            self.own_path(base)?;
+            self.own_list(base)?;
+        }
+        Ok(())
+    }
+
+    fn own_list(&mut self, e: &Expr) -> Result<(), Error> {
+        if self.list_value(e.ty()) && (matches!(e, Expr::Index { .. }) || self.nested_mem(e)) {
+            self.push_mem_addr(e)?;
+            self.op(DUP1);
+            self.op(MLOAD);
+            self.copy_list(self.list_k(e.ty()))?;
+            self.op(SWAP1);
             self.op(MSTORE);
         }
         Ok(())

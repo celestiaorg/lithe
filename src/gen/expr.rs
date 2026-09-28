@@ -49,6 +49,11 @@ impl<'a> Gen<'a> {
             ..
         } = e
         {
+            if is_sum(&self.checked.types, left.ty())
+                && self.compile_case_eq(left, right, *op == BinOp::Neq)?
+            {
+                return Ok(());
+            }
             // A fixed-size record, tuple, or fixed list compares its words.
             let lt = &self.checked.types[self.peel_nominal(left.ty())];
             if (matches!(lt.kind, TyKind::Record | TyKind::Tuple)
@@ -207,8 +212,8 @@ impl<'a> Gen<'a> {
                     return Err(error(*line, *col, "expected a word"));
                 }
                 let (index, value, start) = self.map_place(e).expect("checked");
-                let layout = self.value_layout(value);
                 self.map_chain(index)?;
+                let layout = self.slot_layout(value, self.transient_slot);
                 self.load_value_word(&layout, start);
                 Ok(())
             }
@@ -286,6 +291,10 @@ impl<'a> Gen<'a> {
                 self.compile_value(expr)?;
                 match op {
                     UnOp::Not => self.op(ISZERO),
+                    UnOp::Neg if matches!(**expr, Expr::Lit { .. }) => {
+                        self.op(PUSH0);
+                        self.op(SUB);
+                    }
                     UnOp::Neg => {
                         let (_, bits) = self.integer_info(expr.ty());
                         if bits < 256 {
@@ -383,9 +392,6 @@ impl<'a> Gen<'a> {
                     && !self.stack_value(left.ty())
                 {
                     return self.compile_option_eq(left, right, *op == BinOp::Neq);
-                }
-                if matches!(op, BinOp::Eq | BinOp::Neq) && is_sum(&self.checked.types, left.ty()) {
-                    return self.compile_sum_eq(left, right, *op == BinOp::Neq);
                 }
                 if *op == BinOp::Pow {
                     return self.compile_pow(e, left, right);
@@ -937,6 +943,13 @@ impl<'a> Gen<'a> {
                 Expr::Lit {
                     lit: Lit::Bytes(b), ..
                 } => Some(b.clone()),
+                Expr::Lit {
+                    lit: Lit::Int(w, Some(d)),
+                    ty,
+                    ..
+                } if self.is_dynamic(*ty) => {
+                    Some(w.to_be_bytes()[32 - usize::from(d / 2)..].to_vec())
+                }
                 Expr::Call {
                     builtin: Some(Builtin::CreationCode),
                     args: inner,
@@ -1278,7 +1291,9 @@ impl<'a> Gen<'a> {
         };
         let constant = lit(base).or_else(|| match base {
             Expr::Unary {
-                op: UnOp::Neg, expr, ..
+                op: UnOp::Neg,
+                expr,
+                ..
             } if signed => lit(expr).map(Word::wrapping_neg),
             _ => None,
         });
@@ -1292,7 +1307,11 @@ impl<'a> Gen<'a> {
                 let (mut p, mut k) = (one, 0u64);
                 loop {
                     let (q, over) = p.overflowing_mul(m);
-                    let fits = if neg && k % 2 == 0 { max.wrapping_add(one) } else { max };
+                    let fits = if neg && k % 2 == 0 {
+                        max.wrapping_add(one)
+                    } else {
+                        max
+                    };
                     if over || fits.lt(q) {
                         break;
                     }
@@ -1324,7 +1343,7 @@ impl<'a> Gen<'a> {
             return Ok(());
         }
         let (top, over) = self.range_of(base).1.overflowing_pow(self.range_of(exp).1);
-        if !over && !(signed && top.bit(255)) {
+        if !over && (!signed || !top.bit(255)) {
             self.compile_value(base)?;
             self.compile_value(exp)?;
             self.op(SWAP1);
@@ -1567,6 +1586,10 @@ impl<'a> Gen<'a> {
         expr: &Expr,
     ) -> Result<(), Error> {
         let oty = self.type_at(self.checked.syms[sym].ty, leaf);
+        if self.checked.syms[sym].storage && self.dynamic_option(oty) {
+            // The tag, then the payload stored as its words are, which `None` empties.
+            return self.store_dyn_value(sym, leaf, expr, oty);
+        }
         self.write_option(expr, self.addr(sym, leaf), oty)?;
         for i in 0..self.checked.types[oty].words.max(1) {
             self.mark_dirty(sym, leaf + i);
@@ -1598,9 +1621,16 @@ impl<'a> Gen<'a> {
                 builtin: Some(Builtin::None),
                 ..
             } => {
+                // The payload's strings, bytes, and lists are empty, as a case's unused
+                // words are.
+                let mut dyns = Vec::new();
+                self.dyn_words(elem, 1, &mut dyns);
                 for i in 0..words {
-                    self.op(PUSH0);
-                    self.mstore_off(dst + i as i32 * 32);
+                    let ty = dyns
+                        .iter()
+                        .find(|&&(at, _)| at == i)
+                        .map_or(crate::check::TY_NAT, |d| d.1);
+                    self.write_empty(dst + i as i32 * 32, ty)?;
                 }
             }
             Expr::Case {
@@ -1651,6 +1681,17 @@ impl<'a> Gen<'a> {
                 Ok(())
             }
         }
+    }
+
+    /// Whether a type is an option of a string or bytes.
+    pub(super) fn bytes_option(&self, ty: usize) -> bool {
+        crate::check::bytes_option(&self.checked.types, ty)
+    }
+
+    /// Whether a type is an option of a string, bytes, a list, or a value holding one.
+    pub(super) fn dynamic_option(&self, ty: usize) -> bool {
+        self.checked.types[self.peel_nominal(ty)].kind == TyKind::Option
+            && !crate::check::is_static_value(&self.checked.types, ty)
     }
 
     /// Whether a value of this type is one word, carried on the stack.
@@ -1892,44 +1933,49 @@ impl<'a> Gen<'a> {
                 }
             }
         }
-        // The words this case leaves: zero, or an empty string, bytes, or list.
+        // The words this case leaves.
         let rest: Vec<(u32, usize)> = self.checked.types[ty].fields[1..]
             .iter()
             .filter(|f| !at.contains(&f.slot))
             .map(|f| (f.slot, f.ty))
             .collect();
         for (slot, fty) in rest {
-            let at = dst + slot as i32 * 32;
-            let (line, col) = (0, 0);
-            if self.list_value(fty) {
-                let empty = Expr::List {
-                    line,
-                    col,
-                    elems: Vec::new(),
-                    ty: fty,
-                };
-                self.write_value(&empty, at, fty)?;
-            } else if self.is_dynamic(self.peel_nominal(fty)) {
-                let empty = Expr::Lit {
-                    line,
-                    col,
-                    lit: Lit::Str(String::new()),
-                    ty: fty,
-                };
-                self.write_value(&empty, at, fty)?;
-            } else {
-                self.op(PUSH0);
-                self.mstore_off(at);
-            }
+            self.write_empty(dst + slot as i32 * 32, fty)?;
         }
         self.push_u64(k as u64);
         self.mstore_off(dst);
         Ok(())
     }
 
-    /// `=` or `<>` on variants with payloads. Words a case leaves are zero, so equal values
-    /// have equal words, and against a case with no payload only the tag matters.
-    fn compile_sum_eq(&mut self, left: &Expr, right: &Expr, neq: bool) -> Result<(), Error> {
+    /// Writes an unused word of type `ty` at `at`: zero, or an empty string, bytes, or list.
+    fn write_empty(&mut self, at: i32, ty: usize) -> Result<(), Error> {
+        let (line, col) = (0, 0);
+        if self.list_value(ty) {
+            let empty = Expr::List {
+                line,
+                col,
+                elems: Vec::new(),
+                ty,
+            };
+            self.write_value(&empty, at, ty)
+        } else if self.is_dynamic(self.peel_nominal(ty)) {
+            let empty = Expr::Lit {
+                line,
+                col,
+                lit: Lit::Str(String::new()),
+                ty,
+            };
+            self.write_value(&empty, at, ty)
+        } else {
+            self.op(PUSH0);
+            self.mstore_off(at);
+            Ok(())
+        }
+    }
+
+    /// `=` or `<>` between a variant with payloads and one of its cases with no payload,
+    /// which reads only the tag. False, with no code, when neither side is such a case.
+    fn compile_case_eq(&mut self, left: &Expr, right: &Expr, neq: bool) -> Result<bool, Error> {
         let bare = |e: &Expr| match e {
             Expr::Call {
                 builtin: Some(Builtin::Ctor(k)),
@@ -1942,7 +1988,7 @@ impl<'a> Gen<'a> {
             .map(|k| (left, k))
             .or_else(|| bare(left).map(|k| (right, k)))
         else {
-            return self.compile_option_eq(left, right, neq);
+            return Ok(false);
         };
         self.compile_value(&self.tag_of(other))?;
         if k == 0 {
@@ -1954,7 +2000,7 @@ impl<'a> Gen<'a> {
         if neq {
             self.op(ISZERO);
         }
-        Ok(())
+        Ok(true)
     }
 
     fn compile_option_case(
@@ -2065,6 +2111,31 @@ impl<'a> Gen<'a> {
             let src = self.value_addr(other)?;
             self.mload(src);
             if !neq {
+                self.op(ISZERO);
+            }
+            return Ok(());
+        }
+        if self.bytes_option(left.ty()) {
+            // `None`'s payload word is always the empty value, so the payloads compare too.
+            let src = self.value_addr(left)?;
+            self.mload(src);
+            self.mload(src + 32);
+            let other = self.value_addr(right)?;
+            self.mload(other + 32);
+            self.call_sub(Sub::BytesEq);
+            self.op(SWAP1);
+            self.mload(other);
+            self.op(EQ);
+            self.op(AND);
+            if neq {
+                self.op(ISZERO);
+            }
+            return Ok(());
+        }
+        if self.abi_dyn(left.ty()) {
+            let (a, b) = (self.stage(left)?, self.stage(right)?);
+            self.tree_eq(Addr::Mem(a), Addr::Mem(b), left.ty())?;
+            if neq {
                 self.op(ISZERO);
             }
             return Ok(());

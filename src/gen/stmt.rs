@@ -104,7 +104,9 @@ impl<'a> Gen<'a> {
                                 .transient_leaf(self.checked.syms[*sym].slot + *leaf);
                         let heap = !self.checked.syms[*sym].storage
                             && matches!(base.as_ref(), Expr::Ident { .. });
-                        if one_word && (self.checked.syms[*sym].storage || heap) {
+                        // A stored list's slot holds its length, not the list.
+                        let stored = self.checked.syms[*sym].storage && !self.list_value(elem_ty);
+                        if one_word && (stored || heap) {
                             Some((*sym, *leaf, self.checked.syms[*sym].storage))
                         } else {
                             None
@@ -288,7 +290,12 @@ impl<'a> Gen<'a> {
                             // One word per element: the slot or address is the counter
                             // scaled and added to a base computed once, at entry.
                             self.op(DUP1);
-                            if storage {
+                            let packed = self.packed(self.checked.syms[elem].ty);
+                            if let (true, Some((pack, per))) = (storage, packed) {
+                                self.mload(list_base);
+                                self.packed_at(pack, per);
+                                self.packed_load(pack, false);
+                            } else if storage {
                                 self.mload(list_base);
                                 self.op(ADD);
                                 self.load_slot(
@@ -462,6 +469,9 @@ impl<'a> Gen<'a> {
                 } = expr
                 {
                     if let Some(target) = target {
+                        if !self.checked.syms[root].storage {
+                            return self.nested_pop(target);
+                        }
                         return self.deep_pop(target);
                     }
                     return self.compile_pop(root, *leaf);
@@ -500,6 +510,9 @@ impl<'a> Gen<'a> {
                     if self.local_elem(target).is_some() {
                         return self.local_elem_assign(target, expr);
                     }
+                    if self.nested_mem(target) {
+                        return self.nested_assign(target, expr, *push);
+                    }
                 }
                 if let Some(first) = index {
                     let mut value = self.type_at(self.checked.syms[root].ty, *leaf);
@@ -531,41 +544,10 @@ impl<'a> Gen<'a> {
                         *push,
                     );
                 }
-                // A record shares its first leaf with its first field, so the value says which.
-                let ty = match self.checked.types[expr.ty()].kind {
-                    TyKind::Record => expr.ty(),
-                    _ => self.type_at(self.checked.syms[root].ty, *leaf),
-                };
-                if self.checked.types[ty].kind == TyKind::Option {
-                    return self.compile_option_store(root, *leaf, expr);
+                self.assign_named(root, *leaf, expr)?;
+                if !self.checked.syms[root].storage && !self.owned(expr) {
+                    self.own_lists(self.addr(root, *leaf), expr.ty())?;
                 }
-                if self.checked.types[ty].kind == TyKind::Record {
-                    return self.assign_record(root, *leaf, expr, ty);
-                }
-                if self.checked.types[ty].kind == TyKind::Tuple {
-                    let addr = self.addr(root, *leaf);
-                    let n = self.checked.types[ty].words;
-                    self.write_words(expr, addr)?;
-                    for i in 0..n {
-                        self.mark_dirty(root, *leaf + i);
-                    }
-                    return Ok(());
-                }
-                if self.is_dynamic(ty) && self.checked.syms[root].storage {
-                    return self.store_storage_bytes(root, *leaf, expr);
-                }
-                if self.list_value(ty) {
-                    self.compile_value(expr)?;
-                    if self.checked.syms[root].storage {
-                        return self.store_list(root, *leaf, self.list_k(ty), self.list_dyn(ty));
-                    }
-                    self.mstore_off(self.local[root]);
-                    return Ok(());
-                }
-                self.compile_value(expr)?;
-                let addr = self.addr(root, *leaf);
-                self.mstore_off(addr);
-                self.mark_dirty(root, *leaf);
                 Ok(())
             }
             Stmt::Emit {
@@ -590,26 +572,84 @@ impl<'a> Gen<'a> {
         }
     }
 
+    /// `[ptr]`: the length of the list in memory there drops by one.
+    pub(super) fn pop_list(&mut self) -> Result<(), Error> {
+        self.op(DUP1);
+        self.op(MLOAD);
+        self.op(DUP1);
+        self.op(ISZERO);
+        self.revert_if_panic(0x31)?;
+        self.push_u64(1);
+        self.op(SWAP1);
+        self.op(SUB);
+        self.op(SWAP1);
+        self.op(MSTORE);
+        Ok(())
+    }
+
+    /// A value written whole to a named place: a local, or a storage field.
+    fn assign_named(&mut self, root: usize, leaf: u32, expr: &Expr) -> Result<(), Error> {
+        // A record shares its first leaf with its first field, so the value says which.
+        let ty = match self.checked.types[expr.ty()].kind {
+            TyKind::Record => expr.ty(),
+            _ => self.type_at(self.checked.syms[root].ty, leaf),
+        };
+        if self.checked.types[ty].kind == TyKind::Option {
+            return self.compile_option_store(root, leaf, expr);
+        }
+        if self.checked.syms[root].storage
+            && (self.checked.types[ty].kind == TyKind::Tuple || self.fixed_list(ty))
+            && !crate::check::is_static_value(&self.checked.types, ty)
+        {
+            return self.store_dyn_value(root, leaf, expr, ty);
+        }
+        if self.checked.types[ty].kind == TyKind::Record || self.fixed_list(ty) {
+            return self.assign_record(root, leaf, expr, ty);
+        }
+        if self.checked.types[ty].kind == TyKind::Tuple {
+            // A value that reads the tuple it replaces is built whole first.
+            let mut read = Vec::new();
+            self.expr_syms(expr, &mut read);
+            if read.contains(&root) {
+                return self.assign_record(root, leaf, expr, ty);
+            }
+            let addr = self.addr(root, leaf);
+            let n = self.checked.types[ty].words;
+            self.write_words(expr, addr)?;
+            for i in 0..n {
+                self.mark_dirty(root, leaf + i);
+            }
+            return Ok(());
+        }
+        if self.is_dynamic(ty) && self.checked.syms[root].storage {
+            return self.store_storage_bytes(root, leaf, expr);
+        }
+        if self.list_value(ty) {
+            self.compile_value(expr)?;
+            if self.checked.syms[root].storage {
+                return self.store_list(root, leaf, ty);
+            }
+            self.mstore_off(self.addr(root, leaf));
+            return Ok(());
+        }
+        self.compile_value(expr)?;
+        let addr = self.addr(root, leaf);
+        self.mstore_off(addr);
+        self.mark_dirty(root, leaf);
+        Ok(())
+    }
+
     /// `List.pop(xs)`: the length drops by one, and a stored list clears the element's
     /// slots, as Solidity's `pop` does. An empty list panics with `0x31`.
     fn compile_pop(&mut self, root: usize, leaf: u32) -> Result<(), Error> {
         let len_addr = self.addr(root, leaf);
         if !self.checked.syms[root].storage {
             self.mload(len_addr);
-            self.op(DUP1);
-            self.op(MLOAD);
-            self.op(DUP1);
-            self.op(ISZERO);
-            self.revert_if_panic(0x31)?;
-            self.push_u64(1);
-            self.op(SWAP1);
-            self.op(SUB);
-            self.op(SWAP1);
-            self.op(MSTORE);
-            return Ok(());
+            return self.pop_list();
         }
         let ty = self.type_at(self.checked.syms[root].ty, leaf);
-        let (k, bytes) = (self.elem_slots(self.list_elem(ty)), self.list_dyn(ty));
+        let elem = self.list_elem(ty);
+        let (k, bytes) = (self.elem_slots(elem), self.list_dyn(ty));
         let transient = self
             .checked
             .transient_leaf(self.checked.syms[root].slot + leaf);
@@ -623,12 +663,26 @@ impl<'a> Gen<'a> {
         self.op(DUP1);
         self.mstore_off(len_addr);
         self.mark_dirty(root, leaf);
+        if let Some((pack, per)) = self.packed(elem) {
+            self.op(PUSH0);
+            self.op(SWAP1);
+            self.stored_list_base(root, leaf);
+            self.packed_at(pack, per);
+            self.packed_store(pack, transient);
+            return Ok(());
+        }
         if k > 1 {
             self.push_u64(k);
             self.op(MUL);
         }
         self.stored_list_base(root, leaf);
         self.op(ADD);
+        if self.deep_clear(elem) {
+            self.push_u64(1);
+            self.op(SWAP1);
+            self.clear_elems(elem, transient);
+            return Ok(());
+        }
         for j in 0..k {
             if j + 1 < k {
                 self.op(DUP1);
@@ -664,6 +718,17 @@ impl<'a> Gen<'a> {
         self.op(DUP1 + 2);
         self.transient_slot = p.transient;
         self.journal_store();
+        if let Some((pack, per)) = self.packed(elem) {
+            self.op(PUSH0);
+            self.op(SWAP1 + 1);
+            self.mstore_off(self.hash_buf);
+            self.push_u64(32);
+            self.push_mem(self.hash_buf);
+            self.op(KECCAK);
+            self.packed_at(pack, per);
+            self.packed_store(pack, p.transient);
+            return Ok(());
+        }
         if slots > 1 {
             self.push_u64(slots);
             self.op(MUL);
@@ -674,6 +739,12 @@ impl<'a> Gen<'a> {
         self.push_mem(self.hash_buf);
         self.op(KECCAK);
         self.op(ADD);
+        if self.deep_clear(elem) {
+            self.push_u64(1);
+            self.op(SWAP1);
+            self.clear_elems(elem, p.transient);
+            return Ok(());
+        }
         for j in 0..slots {
             if j + 1 < slots {
                 self.op(DUP1);
@@ -798,7 +869,7 @@ impl<'a> Gen<'a> {
         if self.is_word_ty(ty) {
             self.compile_value(expr)?;
             slot(self)?;
-            let layout = self.value_layout(value);
+            let layout = self.slot_layout(value, self.transient_slot);
             self.store_value_word(&layout, start);
             return Ok(());
         }
@@ -812,11 +883,19 @@ impl<'a> Gen<'a> {
             buf
         };
         slot(self)?;
-        self.store_value(value, start, n, buf);
+        self.store_value(self.slot_layout(value, self.transient_slot), start, n, buf);
         Ok(())
     }
 
     fn store_expr(&mut self, sym: usize, expr: &Expr) -> Result<(), Error> {
+        self.store_value_of(sym, expr)?;
+        if self.checked.syms[sym].mutable && !self.owned(expr) {
+            self.own_lists(self.local[sym], self.checked.syms[sym].ty)?;
+        }
+        Ok(())
+    }
+
+    fn store_value_of(&mut self, sym: usize, expr: &Expr) -> Result<(), Error> {
         let ty = self.checked.syms[sym].ty;
         if self.checked.types[ty].kind == TyKind::Option {
             return self.compile_option_store(sym, 0, expr);
@@ -860,8 +939,15 @@ impl<'a> Gen<'a> {
             .iter()
             .map(|field| (field.slot, field.n_leaf.max(1)))
             .collect();
-        for (sym, (slot, n)) in syms.iter().zip(fields) {
+        for (i, (sym, (slot, n))) in syms.iter().zip(fields).enumerate() {
             self.copy_words(self.tuple_buf + slot as i32 * 32, self.local[*sym], n);
+            let part = match expr {
+                Expr::Tuple { elems, .. } => &elems[i],
+                _ => expr,
+            };
+            if self.checked.syms[*sym].mutable && !self.owned(part) {
+                self.own_lists(self.local[*sym], self.checked.syms[*sym].ty)?;
+            }
         }
         Ok(())
     }
@@ -1177,6 +1263,19 @@ impl<'a> Gen<'a> {
                 self.mstore_off(base + i as i32 * 32);
             }
         }
+        for (arg, param) in args.iter().zip(&params) {
+            match param.sym {
+                Some(sym)
+                    if self.checked.syms[sym].mutable
+                        && !self.checked.syms[sym].storage
+                        && !self.checked.slot_syms.contains_key(&sym)
+                        && !self.owned(arg) =>
+                {
+                    self.own_lists(self.local[sym], param.ty_id)?
+                }
+                _ => {}
+            }
+        }
         Ok(aliased)
     }
 
@@ -1274,7 +1373,7 @@ impl<'a> Gen<'a> {
             let tret = &self.checked.types[ret];
             if tret.kind == TyKind::Tuple {
                 self.write_words(tail, self.fn_ret[idx])?;
-            } else if tret.kind == TyKind::Record {
+            } else if tret.kind == TyKind::Record || self.fixed_list(ret) {
                 self.write_value(tail, self.fn_ret[idx], ret)?;
             } else if tret.kind == TyKind::Option && tret.words > 1 {
                 self.write_option(tail, self.fn_ret[idx], ret)?;
@@ -1290,7 +1389,8 @@ impl<'a> Gen<'a> {
     fn func_leaves(&self, idx: usize) -> usize {
         let f = &self.checked.prog.funcs[idx];
         let tret = &self.checked.types[f.ret_ty];
-        let aggregate = matches!(tret.kind, TyKind::Tuple | TyKind::Record);
+        let aggregate =
+            matches!(tret.kind, TyKind::Tuple | TyKind::Record) || self.fixed_list(f.ret_ty);
         usize::from(f.tail.is_some() && !aggregate && tret.words == 1)
     }
 

@@ -84,6 +84,8 @@ is {
 }
 ```
 
+A record payload can also be passed as one value: with `error Bad_point of point`, where `point` is a record type, `fail Bad_point(p)` raises it for a `p : point`. The record's fields are still the error's parameters.
+
 ## `raises`
 
 An external function must list every error its body can raise, directly or through the functions it calls:

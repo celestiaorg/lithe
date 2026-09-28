@@ -260,9 +260,8 @@ pub(crate) fn abi_nested(types: &[RType], ty: usize, name: &str) -> Result<AbiFi
     }
 }
 
-/// A value that can be held in memory: words, strings, bytes, and lists, records, and tuples
-/// of them, at any depth, with options only where they are fixed-size. Maps live only in
-/// storage.
+/// A value that can be held in memory: words, strings, bytes, options, and lists, records,
+/// and tuples of them, at any depth. Maps live only in storage.
 pub(crate) fn is_value(types: &[RType], ty: usize) -> bool {
     let id = peel_id(types, ty);
     let t = &types[id];
@@ -271,9 +270,19 @@ pub(crate) fn is_value(types: &[RType], ty: usize) -> bool {
         TyKind::List => t
             .elem
             .is_some_and(|e| types[e].kind != TyKind::Operation && is_value(types, e)),
-        TyKind::Option => is_static_value(types, id),
+        TyKind::Option => t.elem.is_some_and(|e| is_value(types, e)),
         kind => is_word(kind),
     }
+}
+
+/// An option of a string or bytes: a tag word, then the value's word.
+pub(crate) fn bytes_option(types: &[RType], ty: usize) -> bool {
+    let t = &types[peel_id(types, ty)];
+    t.kind == TyKind::Option
+        && t.elem.is_some_and(|e| {
+            let e = &types[peel_id(types, e)];
+            e.kind == TyKind::String || (e.kind == TyKind::Bytes && e.bits == 0)
+        })
 }
 
 /// A value the ABI can carry: any value with no option in it.
@@ -282,7 +291,8 @@ pub(crate) fn abi_value(types: &[RType], ty: usize) -> bool {
 }
 
 /// Whether the ABI puts a value after an offset: a string, bytes, a dynamic list, or a
-/// record, tuple, or fixed list that holds one.
+/// record, tuple, or fixed list that holds one. An option, which only `=` encodes, is its
+/// tag and payload.
 pub(crate) fn abi_dynamic(types: &[RType], ty: usize) -> bool {
     let t = &types[peel_id(types, ty)];
     match t.kind {
@@ -290,6 +300,7 @@ pub(crate) fn abi_dynamic(types: &[RType], ty: usize) -> bool {
         TyKind::Bytes => t.bits == 0,
         TyKind::List => t.bits == 0 || t.elem.is_some_and(|e| abi_dynamic(types, e)),
         TyKind::Record | TyKind::Tuple => t.fields.iter().any(|f| abi_dynamic(types, f.ty)),
+        TyKind::Option => t.elem.is_some_and(|e| abi_dynamic(types, e)),
         _ => false,
     }
 }

@@ -13,7 +13,7 @@ description: "Arithmetic, comparison, boolean, and bitwise operators, precedence
 | `/` `%` | divide, remainder (truncating; checked) | two values of the same numeric type |
 | `**` | power (checked) | an integer base and an unsigned exponent; the result has the base's type |
 | `-x` | negate (checked: `-Int.min` panics) | `int` types |
-| `=` `<>` | equal, not equal (`=/=` also means not equal) | two values of the same type; strings, bytes, and lists compare by content |
+| `=` `<>` | equal, not equal (`=/=` also means not equal) | two values of the same type with no map in them; strings, bytes, lists, and what holds them compare by content |
 | `<` `<=` `>` `>=` | ordered comparison | numeric types, `wei`, `timestamp`, and `address` and `bytesN`, which order as unsigned numbers, as in Solidity |
 | `and` `or` `not` | boolean logic | `bool` |
 | `&` `\|` `^` `~` | bitwise and, or, xor, not | integers of the same type |

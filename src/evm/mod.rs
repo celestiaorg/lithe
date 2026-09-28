@@ -1422,6 +1422,7 @@ mod fallback;
 mod immutables;
 mod interfaces;
 mod language;
+mod matrix;
 mod precompiles;
 mod raw;
 mod split;

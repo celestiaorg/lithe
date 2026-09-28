@@ -95,6 +95,11 @@ impl<'a> Gen<'a> {
         expr: &Expr,
     ) -> Result<(), Error> {
         self.compile_value(expr)?;
+        self.store_bytes_top(sym, leaf)
+    }
+
+    /// `[value]`, a string or bytes value, is written to the stored leaf.
+    pub(super) fn store_bytes_top(&mut self, sym: usize, leaf: u32) -> Result<(), Error> {
         if let Some(sub) = self.shared_bytes(sym, leaf, true) {
             self.push_leaf_key(self.checked.syms[sym].slot + leaf);
             self.call_sub(sub);

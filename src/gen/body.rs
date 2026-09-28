@@ -452,6 +452,18 @@ impl<'a> Gen<'a> {
                 .fields
                 .iter()
                 .all(|f| self.lists_in_order(f.ty, first + f.slot)),
+            // Elements with strings, bytes, or lists, and records, tuples, and lists, are
+            // reached by their slots, never by leaf.
+            TyKind::List
+                if t.bits > 0
+                    && (!crate::check::is_static_value(&self.checked.types, id)
+                        || matches!(
+                            self.checked.types[self.peel_nominal(self.list_elem(id))].kind,
+                            TyKind::Record | TyKind::Tuple | TyKind::List
+                        )) =>
+            {
+                true
+            }
             TyKind::List if t.bits > 0 => {
                 let (base, pack, per) = self.list_shape(first);
                 (0..u32::from(t.bits)).all(|i| {
@@ -566,7 +578,7 @@ impl<'a> Gen<'a> {
             let clear = self.side_code(|g| {
                 if body.journal_stores || !body.journal_loads.is_empty() {
                     g.op(PUSH0);
-                    g.mstore_off(g.journal_count);
+                    g.mstore_off(g.journal_len);
                 }
                 for leaf in body.writes.difference(&body.always) {
                     g.op(PUSH0);

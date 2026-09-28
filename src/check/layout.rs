@@ -286,30 +286,22 @@ pub(super) fn check_storage_shape(types: &[RType], id: usize, at: &str) -> Resul
                     format!("storage field `{at}` cannot hold this type"),
                 ));
             }
-            // A stored list's elements are words, strings, bytes, or fixed-size values:
-            // what Solidity keeps in an array's slots.
+            // A stored list's elements are values, laid out as Solidity lays out an array's.
             let inner = types[peel_id(types, elem)].kind;
-            if types[id].kind == TyKind::List
-                && (inner == TyKind::List
-                    || (matches!(inner, TyKind::Record | TyKind::Tuple)
-                        && !is_static_value(types, elem)))
-            {
+            if types[id].kind == TyKind::List && !is_value(types, elem) {
                 return Err(error(
                     1,
                     1,
-                    format!(
-                        "storage field `{at}` is a list of lists, or of records or tuples with strings, bytes, or lists; a stored list holds words, strings, bytes, or fixed-size records, tuples, and options"
-                    ),
+                    format!("storage field `{at}` is a list of maps; a stored list holds values"),
                 ));
             }
-            // A list of options, records, or tuples, or an option holding a record, tuple,
-            // fixed list, or option.
+            // A list of options, records, tuples, or lists, or an option holding a record,
+            // tuple, list, or option.
             if inner == TyKind::Option
                 || (types[id].kind == TyKind::List
-                    && matches!(inner, TyKind::Record | TyKind::Tuple))
+                    && matches!(inner, TyKind::Record | TyKind::Tuple | TyKind::List))
                 || (types[id].kind == TyKind::Option
-                    && matches!(inner, TyKind::Record | TyKind::Tuple | TyKind::List)
-                    && is_static_value(types, elem))
+                    && matches!(inner, TyKind::Record | TyKind::Tuple | TyKind::List))
             {
                 return check_storage_shape(types, elem, at);
             }
@@ -360,7 +352,7 @@ pub(super) fn storage_field_path(types: &[RType], ty: usize, name: &str) -> Opti
 }
 
 /// `leaves` are the domain's own slot keys and packing, starting at its first leaf.
-/// Transient storage holds words, options, and maps of them, each in slots of its own.
+/// Transient storage holds fixed-size values and maps of them, a slot to each word.
 pub(super) fn check_transient_shape(types: &[RType], ty: usize, at: &str) -> Result<(), Error> {
     let t = &types[peel_id(types, ty)];
     let ok = match t.kind {
@@ -372,20 +364,12 @@ pub(super) fn check_transient_shape(types: &[RType], ty: usize, at: &str) -> Res
         }
         TyKind::Map => {
             let value = t.right.unwrap_or(0);
-            let v = &types[peel_id(types, value)];
-            if v.kind == TyKind::Map {
+            if types[peel_id(types, value)].kind == TyKind::Map {
                 return check_transient_shape(types, value, at);
             }
-            (v.kind == TyKind::Option && is_static_value(types, value))
-                || (is_word(v.kind)
-                    && v.words == 1
-                    && v.kind != TyKind::String
-                    && !(v.kind == TyKind::Bytes && v.bits == 0))
+            is_static_value(types, value)
         }
-        TyKind::String => false,
-        TyKind::Bytes => t.bits > 0,
-        TyKind::Option => is_static_value(types, ty),
-        kind => is_word(kind) && t.words == 1,
+        _ => is_static_value(types, ty),
     };
     if ok {
         Ok(())
@@ -393,7 +377,9 @@ pub(super) fn check_transient_shape(types: &[RType], ty: usize, at: &str) -> Res
         Err(error(
             1,
             1,
-            format!("transient storage field `{at}` must hold a word, an option, or a map of them"),
+            format!(
+                "transient storage field `{at}` must hold a fixed-size value, or a map of them"
+            ),
         ))
     }
 }

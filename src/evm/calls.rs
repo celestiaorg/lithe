@@ -771,7 +771,7 @@ external function probe(const me : Me) is {
     for (body, want) in [
         (
             "transient storage t is record { s : string; }\nexternal function f() is { skip }\n",
-            "transient storage field `s` must hold a word, an option, or a map of them",
+            "transient storage field `s` must hold a fixed-size value, or a map of them",
         ),
         (
             "transient storage t is record { n : nat; }\nexternal view function f() : nat is { t.n := 1n; } with 1n\n",

@@ -523,9 +523,26 @@ impl<'a> Gen<'a> {
     }
 
     /// What the ABI needs of a type: its kind, its width or length, its element, and its
-    /// fields as their first word and type.
+    /// fields as their first word and type. An option is a tuple of its tag and payload.
     fn shape_of(&self, id: usize) -> Shape {
         let t = &self.checked.types[id];
+        if t.kind == TyKind::Option {
+            return Shape {
+                kind: TyKind::Tuple,
+                bits: 0,
+                elem: None,
+                fields: vec![
+                    Field {
+                        slot: 0,
+                        ty: crate::check::TY_NAT,
+                    },
+                    Field {
+                        slot: 1,
+                        ty: t.elem.unwrap_or(0),
+                    },
+                ],
+            };
+        }
         Shape {
             kind: t.kind,
             bits: t.bits,
@@ -1503,17 +1520,23 @@ impl<'a> Gen<'a> {
         called
     }
 
-    /// Whether an expression reaches a value in memory through two or more indexes: `xs[i][j]`,
-    /// `items[i].tags[j]`. A single index keeps the paths it has.
+    /// Whether an expression reaches a value in memory past an index into a list, where its
+    /// `root` and `leaf` no longer say where it is: `xs[i][j]`, `items[i].tags`. A list's own
+    /// element, `xs[i]`, keeps the paths it has.
     pub(super) fn nested_mem(&self, e: &Expr) -> bool {
-        fn indexes(e: &Expr) -> usize {
+        fn indexed(e: &Expr) -> bool {
             match e {
-                Expr::Index { base, .. } => 1 + indexes(base),
-                Expr::Field { base, .. } => indexes(base),
-                _ => 0,
+                Expr::Index { .. } => true,
+                Expr::Field { base, .. } => indexed(base),
+                _ => false,
             }
         }
-        indexes(e) >= 2 && self.mem_path(e)
+        match e {
+            Expr::Index { base, .. } | Expr::Field { base, .. } => {
+                indexed(base) && self.mem_path(e)
+            }
+            _ => false,
+        }
     }
 
     /// Whether a value lives in memory, found from a local through lists, fixed lists, and

@@ -999,7 +999,10 @@ external function move(const to : address; const id : nat) : address is {
     .expect("move");
     assert!(!second.reverted, "{}", pretty(&second.returndata));
     assert_eq!(load_bytes(&second.returndata, 0), a);
-    assert_eq!(second.storage.get(&map_key(id, Word::from_u64(0))), Some(&b));
+    assert_eq!(
+        second.storage.get(&map_key(id, Word::from_u64(0))),
+        Some(&b)
+    );
 }
 
 /// Solidity hashes a `bytesN` map key as the ABI lays it out, left-aligned.
@@ -2121,6 +2124,37 @@ fn operators_divide_shift_and_return_tuples() {
     assert_eq!(load_bytes(&min_mod.returndata, 4), Word::from_u64(0x11));
 }
 
+/// Negating a signed type's minimum overflows, at every width.
+#[test]
+fn negating_the_minimum_panics() {
+    let src = "storage is record { n : nat; }
+external pure function neg8(const x : int8) : int8 is -x
+external pure function neg(const x : int) : int is -x
+external pure function lit() : int8 is -128
+";
+    let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
+    let min8 = Word::from_u64(127).not();
+    let min = Word::from_u64(1).shl(255);
+    for (sig, arg) in [("neg8(int8)", min8), ("neg(int256)", min)] {
+        let out = call(&runtime, sig, &[arg]);
+        assert!(out.reverted, "{sig}: {}", hex(&out.returndata));
+        assert_eq!(load_bytes(&out.returndata, 4), Word::from_u64(0x11));
+    }
+    let seven = Word::from_u64(7);
+    assert_eq!(
+        load_bytes(&call(&runtime, "neg8(int8)", &[seven]).returndata, 0),
+        Word::from_u64(6).not()
+    );
+    assert_eq!(
+        load_bytes(&call(&runtime, "neg(int256)", &[seven.not()]).returndata, 0),
+        Word::from_u64(8)
+    );
+    assert_eq!(
+        load_bytes(&call(&runtime, "lit()", &[]).returndata, 0),
+        min8
+    );
+}
+
 /// `Nat.to_string` and `Int.to_string` write decimal, as OpenZeppelin's `Strings` does,
 /// at every width, the extremes included.
 #[test]
@@ -2237,7 +2271,12 @@ external pure function checksum(const a : address) : string is
     assert_eq!(fixed(255, 4), "0x000000ff");
     assert_eq!(fixed(0x1234, 2), "0x1234");
     assert_eq!(fixed(1, 40), format!("0x{}1", "0".repeat(79)));
-    for (n, len) in [(w(256), w(1)), (w(1), w(0)), (w(0).not(), w(31)), (w(0), w(1).shl(255))] {
+    for (n, len) in [
+        (w(256), w(1)),
+        (w(1), w(0)),
+        (w(0).not(), w(31)),
+        (w(0), w(1).shl(255)),
+    ] {
         let out = call(&runtime, "fixed(uint256,uint256)", &[n, len]);
         assert!(out.reverted, "{n:?}, {len:?}");
         assert!(out.returndata.starts_with(&selector("Panic(uint256)")));
@@ -2836,10 +2875,6 @@ fn variant_values_are_checked() {
         "`A` and `B` carry different payloads",
     );
     rejects(
-        "type st is | A of string | B\nstorage is record { s : st; t : st; }\nexternal view function f() : bool is storage.s = storage.t",
-        "compares only with a case that has no payload",
-    );
-    rejects(
         &with("external function f() is { storage.m := 1; }"),
         "`mode` is a variant",
     );
@@ -3232,6 +3267,159 @@ external function draft(const id : nat) is { storage.reviews[id] := Draft; }
     assert_eq!(used(&st), 0);
 }
 
+/// A variant with strings and lists in its payloads is a list element in memory and in
+/// storage, and a stored element's case clears the other cases' payloads.
+#[test]
+fn dynamic_variants_are_list_elements() {
+    let w = Word::from_u64;
+    let src = r#"
+type dyn is | Name of string | Nums of list(nat) | Blank
+type row is record { k : uint8; d : dyn; }
+storage is record { xs : list(dyn); rows : map(nat, list(row)); }
+pure function tag(const d : dyn) : nat is case d of { Name(s) -> s.length | Nums(xs) -> 100n + xs.length | Blank -> 999n }
+external function name(const i : nat; const s : string) is {
+  for _ : nat in storage.xs.length .. i + 1n do { List.push(storage.xs, Blank); }
+  storage.xs[i] := Name(s);
+}
+external function nums(const i : nat; const n : nat) is {
+  var xs : list(nat) := [];
+  for k : nat in 0n .. n do { List.push(xs, k); }
+  storage.xs[i] := Nums(xs);
+}
+external function blank(const i : nat) is { storage.xs[i] := Blank; }
+external function shrink() is { storage.xs := [Blank]; }
+external view function at(const i : nat) : nat is tag(storage.xs[i])
+external function row() is { List.push(storage.rows[1n], { k = 3; d = Name("row") }); }
+external view function row_at() : nat is tag(storage.rows[1n][0].d)
+external pure function local() : nat is {
+  var xs : list(dyn) := [Blank, Nums([1n, 2n])];
+  var ys : list(dyn) := xs;
+  List.push(xs, Name("four"));
+  xs[0] := Name("a string that is longer than thirty-two bytes, to spill");
+} with tag(xs[0]) * 1000000n + tag(xs[2]) * 1000n + tag(ys[1]) + ys.length * 0n
+external pure function pairs() : nat is {
+  var ts : list((uint8, dyn)) := [(uint8(1), Blank)];
+  List.push(ts, (uint8(2), Name("tuple")));
+  const (k, d) : (uint8, dyn) := ts[1];
+} with nat(k) * 1000n + tag(d)
+"#;
+    let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
+    let run = |st: &HashMap<Word, Word>, data: Vec<u8>| {
+        let out = exec(&runtime, &data, st.clone(), w(1), w(0), w(0)).expect("run");
+        assert!(!out.reverted, "{}", pretty(&out.returndata));
+        out.storage
+    };
+    let used = |st: &HashMap<Word, Word>| st.values().filter(|v| !v.is_zero()).count();
+    let st = run(
+        &HashMap::new(),
+        encode_args(
+            "name(uint256,string)",
+            &[Arg::W(w(1)), Arg::B(vec![b'x'; 40])],
+        ),
+    );
+    // The length, element 1's tag, and a 40-byte string's length slot and two data slots.
+    assert_eq!(used(&st), 5);
+    assert_eq!(read_ok(&runtime, &st, "at(uint256)", &[w(0)]), w(999));
+    assert_eq!(read_ok(&runtime, &st, "at(uint256)", &[w(1)]), w(40));
+    let st = run(&st, word_data("nums(uint256,uint256)", &[w(1), w(3)]));
+    // The length, both tags, and a three-element list's length and two nonzero elements.
+    assert_eq!(used(&st), 6);
+    assert_eq!(read_ok(&runtime, &st, "at(uint256)", &[w(1)]), w(103));
+    // The length and two tags: the list went with its case.
+    let st = run(&st, word_data("blank(uint256)", &[w(1)]));
+    assert_eq!(used(&st), 3);
+    assert_eq!(read_ok(&runtime, &st, "at(uint256)", &[w(1)]), w(999));
+    let st = run(
+        &st,
+        encode_args(
+            "name(uint256,string)",
+            &[Arg::W(w(2)), Arg::B(vec![b'y'; 40])],
+        ),
+    );
+    let st = run(&st, word_data("shrink()", &[]));
+    assert_eq!(read_ok(&runtime, &st, "at(uint256)", &[w(0)]), w(999));
+    let st = run(&st, word_data("row()", &[]));
+    assert_eq!(read_ok(&runtime, &st, "row_at()", &[]), w(3));
+    assert_eq!(read_ok(&runtime, &st, "local()", &[]), w(55_004_102));
+    assert_eq!(read_ok(&runtime, &st, "pairs()", &[]), w(2005));
+}
+
+/// `=` compares any value without a map: options beside strings and lists, and variants
+/// with dynamic payloads, member by member.
+#[test]
+fn values_with_options_and_strings_compare() {
+    let src = r#"
+type dyn is | Name of string | Nums of list(nat) | Blank
+type mix is record { o : option(nat); s : string; }
+type holds is record { d : dyn; n : nat; }
+storage is record { d : dyn; ds : list(dyn); }
+external function keep() is { storage.d := Nums([1n, 2n]); storage.ds := [Blank, Name("x")]; }
+external pure function a() : bool is { var d : dyn := Name("x"); d := Nums([1n]); } with d = Nums([1n])
+external pure function b() : bool is Name("") = Blank
+external pure function c() : bool is Name("x") <> Name("y")
+external pure function d() : bool is { const xs : list(option(string)) := [Some("a"), None]; } with xs = [Some("a"), None]
+external pure function e() : bool is { const xs : list(option(string)) := [Some("a"), None]; } with xs = [Some("a"), Some("")]
+external pure function f() : bool is { const t : (option(string), nat) := (Some("a"), 1n); } with t = (Some("a"), 2n)
+external pure function g() : bool is { const m : mix := { o = None; s = "s"; }; } with m = { o = Some(0n); s = "s"; }
+external pure function h() : bool is { const m : mix := { o = Some(0n); s = "s"; }; } with m = { o = Some(0n); s = "s"; }
+external pure function i() : bool is { const x : holds := { d = Nums([]); n = 1n; }; } with x = { d = Nums([]); n = 1n; }
+external pure function j() : bool is { const x : holds := { d = Nums([]); n = 1n; }; } with x = { d = Blank; n = 1n; }
+external view function k() : bool is storage.d = Nums([1n, 2n])
+external view function l() : bool is storage.ds = [Blank, Name("x")]
+external view function m() : bool is storage.ds[1] = Name("")
+external pure function n() : bool is { const o : option(option(string)) := Some(None); } with o = Some(Some(""))
+external pure function o() : bool is { const o : option(option(list(nat))) := Some(Some([1n])); } with o = Some(Some([1n]))
+external pure function p() : bool is { const o : option(list(nat)) := None; } with o <> Some([])
+"#;
+    let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
+    let st = run_ok(&runtime, &HashMap::new(), "keep()", &[]).storage;
+    for (f, want) in [
+        ("a()", 1),
+        ("b()", 0),
+        ("c()", 1),
+        ("d()", 1),
+        ("e()", 0),
+        ("f()", 0),
+        ("g()", 0),
+        ("h()", 1),
+        ("i()", 1),
+        ("j()", 0),
+        ("k()", 1),
+        ("l()", 1),
+        ("m()", 0),
+        ("n()", 0),
+        ("o()", 1),
+        ("p()", 1),
+    ] {
+        assert_eq!(read_ok(&runtime, &st, f, &[]), Word::from_u64(want), "{f}");
+    }
+}
+
+/// An option holds any value, and storing `None` clears the strings and lists `Some` left.
+#[test]
+fn options_of_dynamic_values_clear_their_payloads() {
+    let w = Word::from_u64;
+    let src = r#"
+type doc is record { n : uint8; s : string; xs : list(nat); }
+storage is record { o : option(list(nat)); m : map(nat, option(doc)); ds : list(option(doc)); }
+external function set() is {
+  storage.o := Some([1n, 2n, 3n]);
+  storage.m[1n] := Some({ n = 1; s = "a string that is longer than thirty-two bytes, to spill"; xs = [4n]; });
+  List.push(storage.ds, Some({ n = 2; s = "short"; xs = [5n, 6n]; }));
+}
+external function clear() is { storage.o := None; storage.m[1n] := None; storage.ds[0] := None; List.pop(storage.ds); }
+external view function sum() : nat is
+  (case storage.o of { Some(xs) -> xs[2] | None -> 0n })
+  + (case storage.m[1n] of { Some(d) -> d.s.length + d.xs[0] | None -> 0n })
+  + (case storage.ds[0] of { Some(d) -> d.xs[1] | None -> 0n })
+"#;
+    let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
+    let st = run_ok(&runtime, &HashMap::new(), "set()", &[]).storage;
+    assert_eq!(read_ok(&runtime, &st, "sum()", &[]), w(3 + 55 + 4 + 6));
+    let st = run_ok(&runtime, &st, "clear()", &[]).storage;
+    assert!(st.values().all(|v| v.is_zero()), "{st:?}");
+}
+
 /// A variant's first case and a `case`'s first arm may leave out their `|`.
 #[test]
 fn opening_pipes_are_optional() {
@@ -3268,6 +3456,154 @@ external pure function only(const n : nat) : nat is {
     )
     .expect_err("arms after the first need `|`");
     assert!(err.to_string().contains("expected `|`"), "{err}");
+}
+
+#[test]
+fn nested_list_writes_leave_copies_alone() {
+    let src = "\
+type holder is record { pre : uint8; x : list(nat); post : bool; }
+storage is record { n : nat; }
+external pure function a() : nat is { var xs : list(list(nat)) := [[1n]]; const b : list(nat) := xs[0]; xs[0][0] := 2n; } with b[0]
+external pure function b() : nat is { var hs : list(holder) := [{ pre = 1; x = [1n]; post = true; }]; const y : list(nat) := hs[0].x; hs[0].x[0] := 2n; } with y[0]
+external pure function c() : nat is { var xs : list(list(list(nat))) := [[[1n]]]; const y : list(nat) := xs[0][0]; xs[0][0][0] := 2n; } with y[0]
+external pure function d() : nat is { var xs : list(list(nat)) := [[1n]]; const y : list(list(nat)) := xs; xs[0][0] := 2n; } with y[0][0]
+external pure function e() : nat is { var xs : list(list(nat)) := [[1n]]; const y : list(list(nat)) := xs; List.pop(xs[0]); } with y[0].length
+external pure function f() : nat is { var xs : list(list(nat)) := [[1n]]; const y : list(nat) := xs[0]; List.push(xs[0], 5n); } with y.length * 10n + xs[0][1]
+external pure function g() : nat is { var hs : list(holder) := [{ pre = 1; x = [1n]; post = true; }]; List.push(hs[0].x, 7n); List.push(hs[0].x, 8n); List.pop(hs[0].x); } with hs[0].x.length * 10n + hs[0].x[1]
+external pure function h() : nat is { var xs : list(list(nat)) := [[]]; List.pop(xs[0]); } with 1n
+";
+    let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
+    for (f, want) in [
+        ("a()", 1),
+        ("b()", 1),
+        ("c()", 1),
+        ("d()", 1),
+        ("e()", 1),
+        ("f()", 15),
+        ("g()", 27),
+    ] {
+        let out = call(&runtime, f, &[]);
+        assert!(!out.reverted, "{f}: {}", pretty(&out.returndata));
+        assert_eq!(load_bytes(&out.returndata, 0), Word::from_u64(want), "{f}");
+    }
+    let empty = call(&runtime, "h()", &[]);
+    assert!(empty.reverted);
+    assert_eq!(empty.returndata[35], 0x31);
+    let err = compile("storage is record { n : nat; }\nexternal pure function f() : nat is { const xs : list(list(nat)) := [[1n]]; List.pop(xs[0]); } with 1n\n")
+        .expect_err("const");
+    assert!(
+        err.to_string().contains("cannot assign to a const"),
+        "{err}"
+    );
+}
+
+#[test]
+fn literals_take_their_type_from_context() {
+    let src = r#"
+type pt is record { a : uint8; b : bool; }
+type doc is record { n : uint8; s : string; xs : list(nat); }
+type dyn is | Name of string | Blank
+error Whole of doc;
+error Named of doc;
+storage is record { n : nat; }
+pure function opt(const n : uint8) : option(uint8) is { var o : option(uint8) := None; if n <> 0 then { o := Some(n); } } with o
+pure function iopt(const n : int8) : option(int8) is { var o : option(int8) := None; if n <> 0 then { o := Some(n); } } with o
+pure function tag(const d : dyn) : nat is case d of { Name(_) -> 1n | Blank -> 2n }
+external pure function arms(const n : uint8) : bool is case opt(n) of { None -> 255 | Some(x) -> x } = uint8(255)
+external pure function neg(const n : int8) : bool is -1 = case iopt(n) of { None -> -1 | Some(x) -> x }
+external pure function opts(const n : uint8) : bool is None = case opt(n) of { None -> None | Some(x) -> Some(x) }
+external pure function recs(const p : pt) : bool is case Some(p.b) of { None -> { a = 2; b = false; } | Some(v) -> { a = 1; b = v; } } = p
+external pure function lists(const xs : list(nat)) : bool is [] = xs
+external pure function max(const x : uint8) : bool is Nat.max = x
+external pure function long(const b : bytes) : bool is 0x0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f2021 = b
+external pure function word(const b : bytes) : bool is b = 0x0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20
+external pure function blank() : nat is tag(Blank)
+external pure function hash(const b : bytes) : (bool, bool) is
+  (Crypto.keccak256(b) = Crypto.keccak256(0xdeadbeef), Crypto.keccak256(b) = Crypto.keccak256(0x0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f2021))
+external function whole() raises Whole is {
+  const d : doc := { n = 7; s = "a string that is longer than thirty-two bytes, to spill"; xs = [1n, 2n]; };
+  fail Whole(d);
+}
+external function named() raises Named is {
+  fail Named { n = 7; s = "a string that is longer than thirty-two bytes, to spill"; xs = [1n, 2n]; };
+}
+"#;
+    let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
+    let w = Word::from_u64;
+    let yes = |sig: &str, args: &[Arg]| {
+        load_bytes(&call_raw(&runtime, &encode_args(sig, args)).returndata, 0)
+    };
+    assert_eq!(yes("arms(uint8)", &[Arg::W(w(0))]), w(1));
+    assert_eq!(yes("arms(uint8)", &[Arg::W(w(5))]), w(0));
+    assert_eq!(yes("neg(int8)", &[Arg::W(w(0))]), w(1));
+    assert_eq!(yes("neg(int8)", &[Arg::W(w(3))]), w(0));
+    assert_eq!(yes("opts(uint8)", &[Arg::W(w(0))]), w(1));
+    assert_eq!(yes("opts(uint8)", &[Arg::W(w(4))]), w(0));
+    assert_eq!(yes("recs(uint8,bool)", &[Arg::W(w(1)), Arg::W(w(1))]), w(1));
+    assert_eq!(yes("recs(uint8,bool)", &[Arg::W(w(2)), Arg::W(w(0))]), w(0));
+    assert_eq!(yes("max(uint8)", &[Arg::W(w(255))]), w(1));
+    assert_eq!(yes("long(bytes)", &[Arg::B((1u8..=33).collect())]), w(1));
+    assert_eq!(yes("long(bytes)", &[Arg::B((1u8..=32).collect())]), w(0));
+    assert_eq!(yes("word(bytes)", &[Arg::B((1u8..=32).collect())]), w(1));
+    assert_eq!(yes("blank()", &[]), w(2));
+    let hash = |b: Vec<u8>| {
+        let out = call_raw(&runtime, &encode_args("hash(bytes)", &[Arg::B(b)])).returndata;
+        (load_bytes(&out, 0), load_bytes(&out, 32))
+    };
+    assert_eq!(hash(vec![0xde, 0xad, 0xbe, 0xef]), (w(1), w(0)));
+    assert_eq!(hash((1u8..=33).collect()), (w(0), w(1)));
+    let whole = call(&runtime, "whole()", &[]);
+    let named = call(&runtime, "named()", &[]);
+    assert!(whole.reverted && named.reverted);
+    assert_eq!(whole.returndata[4..], named.returndata[4..]);
+}
+
+/// Whatever enters a `var` or leaves one is copied, so two names never share a value.
+#[test]
+fn vars_never_share_their_values() {
+    let src = "\
+type h is record { n : nat; xs : list(nat); }
+storage is record { n : nat; t : (nat, nat); }
+pure function id(const x : list(nat)) : list(nat) is x
+pure function first(const t : (nat, nat)) : nat is { const (a, b) : (nat, nat) := t; } with a
+pure function setp(var xs : list(nat)) : nat is { xs[0] := 2n; } with xs[0]
+pure function seth(var a : h) : nat is { a.xs[0] := 2n; } with a.xs[0]
+external pure function decl() : nat is { const ys : list(nat) := [1n]; var xs : list(nat) := ys; xs[0] := 2n; } with ys[0]
+external pure function assign() : nat is { const ys : list(nat) := [1n]; var xs : list(nat) := []; xs := ys; xs[0] := 2n; } with ys[0]
+external pure function param() : nat is { const ys : list(nat) := [1n]; const z : nat := setp(ys); } with ys[0] * 10n + z
+external pure function elem() : nat is { const ys : list(list(nat)) := [[1n]]; var xs : list(nat) := ys[0]; xs[0] := 2n; } with ys[0][0]
+external pure function tup() : nat is { const ys : list(nat) := [1n]; var xs : list(nat) := []; var n : nat := 0n; (xs, n) := (ys, 1n); xs[0] := 2n; } with ys[0]
+external pure function call() : nat is { const ys : list(nat) := [1n]; var xs : list(nat) := id(ys); xs[0] := 2n; } with ys[0]
+external pure function rec() : nat is { const g : h := { n = 1n; xs = [1n]; }; var a : h := g; a.xs[0] := 2n; } with g.xs[0]
+external pure function field() : nat is { const ys : list(nat) := [1n]; var a : h := { n = 1n; xs = []; }; a.xs := ys; a.xs[0] := 2n; } with ys[0]
+external pure function lit() : nat is { const ys : list(nat) := [1n]; var a : h := { n = 1n; xs = ys; }; a.xs[0] := 2n; } with ys[0]
+external pure function recparam() : nat is { const g : h := { n = 1n; xs = [1n]; }; const z : nat := seth(g); } with g.xs[0] * 10n + z
+external pure function out() : nat is { var a : h := { n = 1n; xs = [1n]; }; const b : h := a; a.xs[0] := 2n; } with b.xs[0] * 10n + a.xs[0]
+external pure function records() : nat is { const gs : list(h) := [{ n = 1n; xs = [1n]; }]; var hs : list(h) := gs; hs[0].xs[0] := 2n; } with gs[0].xs[0]
+external pure function swap() : nat is { var t : (nat, nat) := (1n, 2n); t := (3n, first(t)); const (a, b) : (nat, nat) := t; } with a * 10n + b
+external function stored() : nat is { storage.t := (1n, 2n); storage.t := (3n, first(storage.t)); const (a, b) : (nat, nat) := storage.t; } with a * 10n + b
+";
+    let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
+    for (f, want) in [
+        ("decl()", 1),
+        ("assign()", 1),
+        ("param()", 12),
+        ("elem()", 1),
+        ("tup()", 1),
+        ("call()", 1),
+        ("rec()", 1),
+        ("field()", 1),
+        ("lit()", 1),
+        ("recparam()", 12),
+        ("out()", 12),
+        ("records()", 1),
+        ("swap()", 31),
+        ("stored()", 31),
+    ] {
+        let out = call(&runtime, f, &[]);
+        assert!(!out.reverted, "{f}: {}", pretty(&out.returndata));
+        assert_eq!(load_bytes(&out.returndata, 0), Word::from_u64(want), "{f}");
+    }
 }
 
 /// A hex literal is `bytes` at any length: a word's 32 bytes, or past it, where only

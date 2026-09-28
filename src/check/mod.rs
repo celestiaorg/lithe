@@ -8,12 +8,12 @@ use crate::Error;
 mod abi;
 mod builtins;
 mod compose;
+mod consts;
 mod expr;
 mod funcs;
 mod generic;
 mod layout;
 mod payable;
-mod consts;
 mod place;
 mod stmt;
 mod types;
@@ -28,9 +28,9 @@ use place::*;
 use types::*;
 
 pub(crate) use abi::{
-    abi_dynamic, abi_fields, abi_nested, abi_parts, abi_record, abi_value, bytes_abi, flat_record,
-    int_abi, is_static_aggregate, is_static_value, is_stored_aggregate, is_value, static_abi,
-    uint_abi, AbiField,
+    abi_dynamic, abi_fields, abi_nested, abi_parts, abi_record, abi_value, bytes_abi, bytes_option,
+    flat_record, int_abi, is_static_aggregate, is_static_value, is_stored_aggregate, is_value,
+    static_abi, uint_abi, AbiField,
 };
 pub(crate) use compose::{module_transient_slot, several_contracts, Header};
 pub(crate) use layout::{narrow_width, option_flip, pack_leaves, Flip};
@@ -785,7 +785,7 @@ pub(crate) fn check_in(mut prog: Program, require_entries: bool) -> Result<Check
         });
     }
     // Transient storage comes after every persistent leaf, one transient slot per word.
-    // Slots 0 and 1 are the compiler's upgrade gate and reentrancy lock. The contract's own
+    // Slots 0 and 1 are the compiler's reentrancy lock and upgrade gate. The contract's own
     // records follow them; a module's record starts at a slot derived from its name, so it
     // is the same in every contract that uses the module, and in its facet.
     let transient_from = leaf_keys.len();
@@ -1016,7 +1016,7 @@ const TY_UNIT: usize = 0;
 
 const TY_BOOL: usize = 1;
 
-const TY_NAT: usize = 2;
+pub(crate) const TY_NAT: usize = 2;
 
 const TY_INT: usize = 3;
 

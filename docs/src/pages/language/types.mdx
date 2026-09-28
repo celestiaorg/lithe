@@ -224,11 +224,13 @@ external pure function third() : nat is {
 
 - `xs[i]` reads and `xs[i] := v` writes.
 - `List.push(xs, v);` appends `v` to a dynamic list, reading and writing its length.
-- `List.pop(xs);` drops a dynamic list's last element. A stored list clears the element's slots, as Solidity's `pop` does. An empty list reverts with `Panic(0x31)`.
+- `List.pop(xs);` drops a dynamic list's last element. A stored list clears the element and whatever it holds, a long string's data and an inner list's elements included, as Solidity's `pop` does. An empty list reverts with `Panic(0x31)`.
 - `xs.length` is the length of a dynamic list.
 - An index past the end, read or written, reverts with `Panic(0x32)`.
-- Elements can be any value: words, strings, bytes, records, tuples, fixed-size [options](#options), and other lists, to any depth. `list(list(nat))` is `uint256[][]`, and a list of records with strings is an array of tuples, `(string,uint256[])[]`.
+- Elements can be any value: words, strings, bytes, records, tuples, [options](#options), and other lists, to any depth. `list(list(nat))` is `uint256[][]`, and a list of records with strings is an array of tuples, `(string,uint256[])[]`.
 - Indexes and fields chain: `grid[i][j]`, `items[i].tags[j]`, and `grid[i].length`. Each index is checked against its own list's length.
+
+In storage, elements narrower than 32 bytes share slots as a Solidity array's do, low bytes first: `list(uint8)` and `list(bool)` hold 32 to a slot, `list(uint16)` 16, `list(bytes4)` 8, and `list(address)` one. `list(uint8, 3)` takes one slot.
 
 A list of records is a Solidity array of structs. In storage each element starts a slot and packs its fields as a struct does, so a record of a `uint48` and a `uint208` takes one slot. A field of an element reads and writes in place:
 
@@ -275,9 +277,9 @@ external pure function pair(const a : nat; const b : nat) : list(nat) is {
 ```
 
 - In the ABI, `list(T)` is `T[]` and `list(T, n)` is `T[n]`, and a list of records is an array of tuples, `(uint48,uint208)[]`. A list argument is checked as Solidity checks one: its offset and length must lie inside the calldata, and each element must hold a value of its type.
-- Assigning a list to storage replaces the stored list, and clears the slots a shorter list no longer uses.
-- Reading a stored list as a value copies it. So does reading a `var`'s list, so two names never share one list: changing a `var` can't change anything else.
-- `a = b` compares two lists element by element, nested lists and strings included. Records, tuples, and fixed lists compare the same way.
+- Assigning a list to storage replaces the stored list, and clears the elements a shorter list no longer has, with whatever they hold.
+- Reading a stored list as a value copies it. So does putting a list into a `var` or reading one out of it, the lists in a `var`'s records and tuples included, so two names never share one list: changing a `var` can't change anything else.
+- `a = b` compares two lists element by element, nested lists and strings included. Records, tuples, fixed lists, options, and variants compare the same way, whatever they hold.
 - Lists can be `Abi.encode`d and `Abi.decode`d, sent to and returned from other contracts, and logged in events.
 
 ## Maps
@@ -293,7 +295,7 @@ storage is record {
 storage.allowances[owner][spender] := amount;
 ```
 
-Keys must be single-word values: integers, `bool`, `address`, `bytesN`, `wei`, `timestamp`, or nominal types over them. Values are words, maps, lists, records, or [options](#options). A record value may hold maps, lists, and strings of its own, as a Solidity struct in a mapping does, and each sits at the slot Solidity gives it:
+Keys are single-word values (integers, `bool`, `address`, `bytesN`, `wei`, `timestamp`, or nominal types over them) or `string` and `bytes`. As in Solidity, a word key's value lives at `keccak256(key . slot)`, and a `string` or `bytes` key's at `keccak256(bytes . slot)`, its bytes unpadded. Values are words, maps, lists, records, or [options](#options). A record value may hold maps, lists, and strings of its own, as a Solidity struct in a mapping does, and each sits at the slot Solidity gives it:
 
 ```lithe
 type role is record {
@@ -340,7 +342,7 @@ external view function admin_or_zero() : address is
   }
 ```
 
-`T` can be any single word, including `string` and `bytes`, or any fixed-size value: a record, a tuple, a fixed list, or another option. A tuple payload destructures in its arm: `| Some((a, b)) -> a + b`.
+`T` can be any value: a word, `string`, `bytes`, a list, a record, a tuple, a variant, or another option. A tuple payload destructures in its arm: `| Some((a, b)) -> a + b`.
 
 ### Where options work
 
@@ -397,16 +399,16 @@ external view function expiry_or_zero(const who : address) : nat is
   an option cannot be an ABI value
   ```
 
-- **Map keys.** A key is always a single word.
-- **Dynamic payloads inside other values.** `option(string)` and `option(bytes)` work as a storage field or a local. They can't be a map value, a list element, a tuple element, a record field, or a transient field, and they can't be compared with `=`. `T` can't be a map or a dynamic list.
+- **Map keys.** A key is a single word, a `string`, or `bytes`.
+- **Transient storage** holds only fixed-size values, so not an option of a string, bytes, or a list, or of a value holding one.
 
 ### Representation
 
 When `T` is narrower than a word, the option takes **one word**. That covers `bool`, `address`, interfaces, `uintN` and `intN` below 256 bits, and `bytesN` below 32. `None` is zero. `Some(x)` stores `x` bitwise-inverted, or for a signed `intN`, with bit N−1 flipped, so it's never zero. `Some(0)` and `None` stay distinct.
 
-Otherwise the option takes a **tag word**, 1 for `Some` and 0 for `None`, followed by the payload's words. `None` zeroes every word.
+Otherwise the option takes a **tag word**, 1 for `Some` and 0 for `None`, followed by the payload's words. `None` zeroes every word, and a string, bytes, or list in its payload is empty.
 
-Each word of an option is a whole slot. An option never shares a slot with the fields around it:
+Each word of an option is a whole slot, and a string, bytes, or list word keeps its data where it would as a record field. An option never shares a slot with the fields around it:
 
 ```text
 storage
@@ -480,8 +482,8 @@ external view function amount_out(const id : nat) : nat raises NotComplete is
 - An arm for several cases binds a payload when each case binds the same names and carries the same payload type: `| Queued(reason) | Held(reason) -> reason`. Written without names, `| Filled | Unwound ->`, it ignores the payloads.
 - An arm that fails has no value, so it fits a `case` of any type.
 - A case name is resolved from the type the context expects. With no expected type, it must belong to only one variant in scope.
-- `=` and `<>` compare two variants of the same type. Comparing with a case that has no payload, like `status = New`, reads only the tag. A variant whose payloads hold a string, bytes, or a list compares only that way.
-- A variant value can be a local, a parameter or result of an internal function, a storage field, a map value, or a record field. With fixed-size payloads, it can also be a list element or an option's payload. It isn't a number: there is no arithmetic, no ordering, no integer literal, and no `order_status(n)`. `uint8(m)` gives a variant's case index when it has no payloads.
+- `=` and `<>` compare two variants of the same type, payloads included. Comparing with a case that has no payload, like `status = New`, reads only the tag.
+- A variant value can be a local, a parameter or result of an internal function, a storage field, a map value, a record field, a list element, or an option's payload. It isn't a number: there is no arithmetic, no ordering, no integer literal, and no `order_status(n)`. `uint8(m)` gives a variant's case index when it has no payloads.
 
 ### Representation
 
@@ -489,7 +491,7 @@ A variant with **no payloads** is its case's index, from 0, like a Solidity `enu
 
 A variant **with payloads** starts a slot, as a record does. The case's index takes its first byte. The cases share their payloads' words by position: the first word of every payload lives in one place, the second in another, and so on. A position whose words are all narrower than a slot is stored as the narrowest integer that holds each of them, and these pack after the index, low bytes first. A position that is a whole word in any case takes a slot. The other cases leave a position zero. The layout above keeps `status` at `keccak256(id . slot) + 1`: the index and `at` share that slot, and `amount_out` takes the next. A variant whose payloads are all narrow, such as `Empty | Stamp of uint64 | Who of address`, is one slot.
 
-A payload may hold a string, bytes, or a list. Each such word keeps a slot of its own, shared only with the same type at the same position in another case, and stored as that type is. Writing another case clears it. Such a variant can't be a list element, an option's payload, or transient storage, as a record holding a string can't.
+A payload may hold a string, bytes, or a list. Each such word keeps a slot of its own, shared only with the same type at the same position in another case, and stored as that type is. Writing another case clears it. As a record holding a string can't, such a variant can't be in transient storage.
 
 A variant with payloads has no ABI form, as an option doesn't, so it can't be an external parameter or result, an event field, or an error payload.
 

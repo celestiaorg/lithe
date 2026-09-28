@@ -6,7 +6,11 @@
 use super::*;
 
 impl Checker {
-    pub(super) fn reject_failing_constants(&self, funcs: &[Func], guard: Option<&GuardDecl>) -> Result<(), Error> {
+    pub(super) fn reject_failing_constants(
+        &self,
+        funcs: &[Func],
+        guard: Option<&GuardDecl>,
+    ) -> Result<(), Error> {
         let mut fold = Fold {
             c: self,
             funcs,
@@ -68,7 +72,17 @@ impl Fold<'_> {
 
     fn split(&self, w: Word, ty: usize) -> Exact {
         let signed = self.num(ty).is_some_and(|(s, _)| s);
-        exact(signed && w.bit(255), (if signed && w.bit(255) { w.wrapping_neg() } else { w }, false))
+        exact(
+            signed && w.bit(255),
+            (
+                if signed && w.bit(255) {
+                    w.wrapping_neg()
+                } else {
+                    w
+                },
+                false,
+            ),
+        )
     }
 
     /// `v` as a word of `ty`, or the error for the operation `e` when it is out of range.
@@ -84,7 +98,10 @@ impl Fold<'_> {
             };
         if !fits {
             let way = if v.neg { "underflows" } else { "overflows" };
-            return Err(self.fail(e, format!("`{}` {way} `{}`", self.show(e), self.c.type_name(ty))));
+            return Err(self.fail(
+                e,
+                format!("`{}` {way} `{}`", self.show(e), self.c.type_name(ty)),
+            ));
         }
         Ok(if v.neg { v.mag.wrapping_neg() } else { v.mag })
     }
@@ -126,7 +143,10 @@ impl Fold<'_> {
     fn stmt(&mut self, s: &Stmt) -> Result<(), Error> {
         match s {
             Stmt::Const {
-                expr, sym, part_syms, ..
+                expr,
+                sym,
+                part_syms,
+                ..
             } => {
                 if let (Expr::Tuple { elems, .. }, false) = (expr, part_syms.is_empty()) {
                     for (e, sym) in elems.iter().zip(part_syms) {
@@ -249,12 +269,16 @@ impl Fold<'_> {
                         let v = self.split(w, ty);
                         self.fit(e, exact(!v.neg, (v.mag, false)), ty).map(Some)
                     }
-                    UnOp::BitNot if !signed && bits < 256 => Ok(Some(w.not().bitand(ones().shr(256 - bits)))),
+                    UnOp::BitNot if !signed && bits < 256 => {
+                        Ok(Some(w.not().bitand(ones().shr(256 - bits))))
+                    }
                     UnOp::BitNot => Ok(Some(w.not())),
                     UnOp::Not => Ok(None),
                 }
             }
-            Expr::Binary { op, left, right, .. } => {
+            Expr::Binary {
+                op, left, right, ..
+            } => {
                 let (l, r) = (self.expr(left)?, self.expr(right)?);
                 match (l, r) {
                     (Some(l), Some(r)) => self.binary(e, *op, (left, l), (right, r)),
@@ -276,7 +300,11 @@ impl Fold<'_> {
                     vals.push(self.expr(a)?);
                 }
                 if let Some(idx) = callee {
-                    let v = if args.is_empty() { self.func(*idx)? } else { None };
+                    let v = if args.is_empty() {
+                        self.func(*idx)?
+                    } else {
+                        None
+                    };
                     return Ok(v.filter(|_| self.num(ty).is_some()));
                 }
                 let Some(vals) = vals.into_iter().collect::<Option<Vec<Word>>>() else {
@@ -320,7 +348,13 @@ impl Fold<'_> {
         }
     }
 
-    fn binary(&self, e: &Expr, op: BinOp, (left, l): (&Expr, Word), (right, r): (&Expr, Word)) -> Result<Option<Word>, Error> {
+    fn binary(
+        &self,
+        e: &Expr,
+        op: BinOp,
+        (left, l): (&Expr, Word),
+        (right, r): (&Expr, Word),
+    ) -> Result<Option<Word>, Error> {
         let ty = e.ty();
         let (Some((signed, bits)), Some(_)) = (self.num(ty), self.num(left.ty())) else {
             return Ok(None);
@@ -343,7 +377,10 @@ impl Fold<'_> {
             BinOp::Div | BinOp::Mod if r.is_zero() => return Err(self.by_zero(e)),
             // `Int.min % -1` panics as `Int.min / -1` does.
             BinOp::Mod if signed && l == min_int() && r == ones() => {
-                return Err(self.fail(e, format!("`{}` overflows `{}`", self.show(e), self.c.type_name(ty))))
+                return Err(self.fail(
+                    e,
+                    format!("`{}` overflows `{}`", self.show(e), self.c.type_name(ty)),
+                ))
             }
             BinOp::Div => exact(a.neg ^ b.neg, (a.mag.div(b.mag), false)),
             BinOp::Mod => exact(a.neg, (a.mag.rem(b.mag), false)),
@@ -351,7 +388,11 @@ impl Fold<'_> {
             BinOp::BitOr => return Ok(Some(l.bitor(r))),
             BinOp::BitXor => return Ok(Some(l.bitxor(r))),
             BinOp::Shl | BinOp::Shr => {
-                let n = if r.lt(Word::from_u64(256)) { r.0[0] as u32 } else { 256 };
+                let n = if r.lt(Word::from_u64(256)) {
+                    r.0[0] as u32
+                } else {
+                    256
+                };
                 let right = op == BinOp::Shr;
                 return Ok(Some(if n >= bits {
                     if right && signed && l.bit(255) {
@@ -380,15 +421,37 @@ impl Fold<'_> {
 
     /// Casts carry a constant through; the checked `Nat` and `Int` built-ins fail on
     /// constants that must panic.
-    fn builtin(&self, e: &Expr, b: Option<Builtin>, args: &[Expr], vals: &[Word]) -> Result<Option<Word>, Error> {
+    fn builtin(
+        &self,
+        e: &Expr,
+        b: Option<Builtin>,
+        args: &[Expr],
+        vals: &[Word],
+    ) -> Result<Option<Word>, Error> {
         let ty = e.ty();
-        let by_zero = |i: usize| if vals[i].is_zero() { Err(self.by_zero(e)) } else { Ok(None) };
+        let by_zero = |i: usize| {
+            if vals[i].is_zero() {
+                Err(self.by_zero(e))
+            } else {
+                Ok(None)
+            }
+        };
         match b {
-            Some(Builtin::Cast) if vals.len() == 1 && self.num(args[0].ty()).is_some() && self.num(ty).is_some() => {
+            Some(Builtin::Cast)
+                if vals.len() == 1
+                    && self.num(args[0].ty()).is_some()
+                    && self.num(ty).is_some() =>
+            {
                 self.fit(e, self.split(vals[0], args[0].ty()), ty).map(Some)
             }
-            Some(Builtin::FromBits(_)) if vals.len() == 1 && self.num(ty).is_some() => Ok(Some(vals[0])),
-            Some(Builtin::NatMulMod | Builtin::NatAddMod | Builtin::Precompile(Pre::PowMod)) if vals.len() == 3 => by_zero(2),
+            Some(Builtin::FromBits(_)) if vals.len() == 1 && self.num(ty).is_some() => {
+                Ok(Some(vals[0]))
+            }
+            Some(Builtin::NatMulMod | Builtin::NatAddMod | Builtin::Precompile(Pre::PowMod))
+                if vals.len() == 3 =>
+            {
+                by_zero(2)
+            }
             Some(Builtin::NatDivRem) if vals.len() == 2 => by_zero(1),
             Some(Builtin::IntDivRem) if vals.len() == 2 => {
                 if vals[0] == min_int() && vals[1] == ones() {
@@ -405,9 +468,16 @@ impl Fold<'_> {
             }
             Some(Builtin::NatToHexString) if vals.len() == 2 => {
                 let (n, len) = (vals[0], vals[1]);
-                let shift = if len.lt(Word::from_u64(32)) { len.0[0] as u32 * 8 } else { 256 };
+                let shift = if len.lt(Word::from_u64(32)) {
+                    len.0[0] as u32 * 8
+                } else {
+                    256
+                };
                 if !n.shr(shift).is_zero() || !len.shr(250).is_zero() {
-                    return Err(self.fail(e, format!("`{}` does not fit its length in bytes", self.show(e))));
+                    return Err(self.fail(
+                        e,
+                        format!("`{}` does not fit its length in bytes", self.show(e)),
+                    ));
                 }
                 Ok(None)
             }
@@ -444,10 +514,22 @@ impl Fold<'_> {
                 _ => "...".into(),
             },
             Expr::Ident { name, .. } => name.clone(),
-            Expr::Unary { op: UnOp::Neg, expr, .. } => format!("-{}", operand(expr)),
-            Expr::Unary { op: UnOp::BitNot, expr, .. } => format!("~{}", operand(expr)),
-            Expr::Binary { op, left, right, .. } => format!("{} {} {}", inner(left), op_text(*op), inner(right)),
-            Expr::Call { name, args, base, .. } => {
+            Expr::Unary {
+                op: UnOp::Neg,
+                expr,
+                ..
+            } => format!("-{}", operand(expr)),
+            Expr::Unary {
+                op: UnOp::BitNot,
+                expr,
+                ..
+            } => format!("~{}", operand(expr)),
+            Expr::Binary {
+                op, left, right, ..
+            } => format!("{} {} {}", inner(left), op_text(*op), inner(right)),
+            Expr::Call {
+                name, args, base, ..
+            } => {
                 let args: Vec<String> = args.iter().map(|a| self.show(a)).collect();
                 match base.as_deref() {
                     Some(b) => format!("{}.{name}({})", self.show(b), args.join(", ")),
@@ -493,7 +575,11 @@ fn dec(mut w: Word) -> String {
 fn hex(w: Word) -> String {
     let s: String = w.to_be_bytes().iter().map(|b| format!("{b:02x}")).collect();
     let s = s.trim_start_matches('0');
-    if s.is_empty() { "0".into() } else { s.into() }
+    if s.is_empty() {
+        "0".into()
+    } else {
+        s.into()
+    }
 }
 
 /// The high word of the 512-bit product `a * b`.

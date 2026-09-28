@@ -83,75 +83,27 @@ impl<'a> Gen<'a> {
     /// `[index]` becomes the element of the stored fixed list whose first leaf is `first`.
     fn sload_element(&mut self, first: u32) {
         let (base, pack, per) = self.list_shape(first);
+        self.push_word(base);
         if per == 1 {
-            self.push_word(base);
             self.op(ADD);
             self.op(SLOAD);
             return;
         }
-        self.op(DUP1);
-        self.push_u64(u64::from(per));
-        self.op(SWAP1);
-        self.op(DIV);
-        self.push_word(base);
-        self.op(ADD);
-        self.op(SLOAD);
-        // [index, slot word]
-        self.op(SWAP1);
-        self.push_u64(u64::from(per));
-        self.op(SWAP1);
-        self.op(MOD);
-        self.push_u64(u64::from(pack.width) * 8);
-        self.op(MUL);
-        self.op(SHR);
-        if pack.signed {
-            self.push_u64(u64::from(pack.width) - 1);
-            self.op(SIGNEXTEND);
-        } else {
-            self.push_word(byte_mask(pack.width));
-            self.op(AND);
-        }
+        self.packed_at(pack, u64::from(per));
+        self.packed_load(pack, false);
     }
 
     /// `[value, index]` writes the element of the stored fixed list whose first leaf is `first`.
     fn sstore_element(&mut self, first: u32) {
         let (base, pack, per) = self.list_shape(first);
+        self.push_word(base);
         if per == 1 {
-            self.push_word(base);
             self.op(ADD);
             self.op(SSTORE);
             return;
         }
-        // [value, shift, slot]
-        self.op(DUP1);
-        self.push_u64(u64::from(per));
-        self.op(SWAP1);
-        self.op(MOD);
-        self.push_u64(u64::from(pack.width) * 8);
-        self.op(MUL);
-        self.op(SWAP1);
-        self.push_u64(u64::from(per));
-        self.op(SWAP1);
-        self.op(DIV);
-        self.push_word(base);
-        self.op(ADD);
-        // `old ^ ((old ^ (value << shift)) & (mask << shift))`
-        self.op(DUP1);
-        self.op(SLOAD);
-        self.push_word(byte_mask(pack.width));
-        self.op(DUP1 + 3);
-        self.op(SHL);
-        self.op(DUP1 + 4);
-        self.op(DUP1 + 4);
-        self.op(SHL);
-        self.op(DUP1 + 2);
-        self.op(XOR);
-        self.op(AND);
-        self.op(XOR);
-        self.op(SWAP1);
-        self.op(SSTORE);
-        self.op(POP);
-        self.op(POP);
+        self.packed_at(pack, u64::from(per));
+        self.packed_store(pack, false);
     }
 
     /// Reads a storage leaf as a full word, unpacking it from a shared slot.
@@ -218,6 +170,17 @@ impl<'a> Gen<'a> {
             &mut packs,
         );
         keys.iter().map(|k| k.0[0]).zip(packs).collect()
+    }
+
+    /// Where each word of a stored value lives, packed as `value_layout` has it, or a slot
+    /// to each word in transient storage.
+    pub(super) fn slot_layout(&self, ty: usize, transient: bool) -> Vec<(u64, Pack)> {
+        if transient {
+            return (0..u64::from(self.checked.types[self.peel_nominal(ty)].words))
+                .map(|i| (i, Pack::FULL))
+                .collect();
+        }
+        self.value_layout(ty)
     }
 
     /// `[slot]` of a map value becomes its word `i`.
@@ -296,18 +259,26 @@ impl<'a> Gen<'a> {
         let types = &self.checked.types;
         let kind = |ty: usize| types[self.peel_nominal(ty)].kind;
         // A stored fixed list's elements are leaves of the image, which a body that has
-        // one reads and writes instead of their slots.
-        if !self.direct
-            && kind(steps[first].1) == TyKind::List
-            && types[self.peel_nominal(steps[first].1)].bits > 0
+        // one reads and writes instead of their slots. Elements with strings, bytes, or
+        // lists are read and written at their slots, which their data follows.
+        if kind(steps[first].1) == TyKind::List && types[self.peel_nominal(steps[first].1)].bits > 0
         {
-            return false;
+            // A transient one too, whose image holds no leaves a dynamic index can reach.
+            if !crate::check::is_static_value(types, self.list_elem(steps[first].1))
+                || root.is_some_and(|sym| self.checked.is_transient(sym))
+            {
+                return true;
+            }
+            if !self.direct {
+                return false;
+            }
         }
         let rest = &steps[first + 1..];
         let length_only = |rest: &[(Option<&str>, usize)]| matches!(rest, [(Some("length"), ty)] if self.is_dynamic(*ty));
         if kind(steps[first].1) == TyKind::List {
             let elem = self.list_elem(steps[first].1);
-            return matches!(kind(elem), TyKind::Record | TyKind::Tuple)
+            return matches!(kind(elem), TyKind::Record | TyKind::Tuple | TyKind::List)
+                || self.dynamic_option(elem)
                 || !(rest.is_empty() || length_only(rest));
         }
         let keys = rest
@@ -319,7 +290,7 @@ impl<'a> Gen<'a> {
         let vkind = kind(value);
         if after.is_empty() {
             return vkind == TyKind::List
-                || (matches!(vkind, TyKind::Record | TyKind::Tuple)
+                || (matches!(vkind, TyKind::Record | TyKind::Tuple | TyKind::Option)
                     && !crate::check::is_static_value(types, value));
         }
         if length_only(after) {
@@ -381,16 +352,120 @@ impl<'a> Gen<'a> {
         }
     }
 
+    /// How a stored list packs elements that more than one of fit in a slot, as Solidity
+    /// packs an array's, low bytes first: the first element's bytes, and how many share a slot.
+    pub(super) fn packed(&self, elem: usize) -> Option<(Pack, u64)> {
+        let (width, signed) = crate::check::narrow_width(&self.checked.types, elem)?;
+        let per = 32 / u64::from(width);
+        (per > 1).then_some((
+            Pack {
+                offset: 0,
+                width,
+                signed,
+            },
+            per,
+        ))
+    }
+
+    /// Whether `e` is an element of a stored list that shares its slot. A transient list's
+    /// elements take a slot each.
+    fn packed_index(&self, e: &Expr, transient: bool) -> bool {
+        !transient
+            && matches!(e, Expr::Index { base, .. } if self.checked.types[self.peel_nominal(base.ty())].kind == TyKind::List)
+            && self.packed(e.ty()).is_some()
+    }
+
+    /// `[i, base]` becomes `[shift, slot]`: where element `i` of a packed list whose
+    /// elements start at slot `base` sits.
+    pub(super) fn packed_at(&mut self, pack: Pack, per: u64) {
+        let pow2 = per.is_power_of_two();
+        self.op(DUP1 + 1);
+        if pow2 {
+            self.push_u64(per - 1);
+            self.op(AND);
+        } else {
+            self.push_u64(per);
+            self.op(SWAP1);
+            self.op(MOD);
+        }
+        let bits = u64::from(pack.width) * 8;
+        if bits.is_power_of_two() {
+            self.push_u64(u64::from(bits.trailing_zeros()));
+            self.op(SHL);
+        } else {
+            self.push_u64(bits);
+            self.op(MUL);
+        }
+        self.op(SWAP1 + 1);
+        if pow2 {
+            self.push_u64(u64::from(per.trailing_zeros()));
+            self.op(SHR);
+        } else {
+            self.push_u64(per);
+            self.op(SWAP1);
+            self.op(DIV);
+        }
+        self.op(ADD);
+    }
+
+    /// `[shift, slot]` from `packed_at` becomes the element there.
+    pub(super) fn packed_load(&mut self, pack: Pack, transient: bool) {
+        self.transient_slot = transient;
+        self.journal_load();
+        self.op(SWAP1);
+        self.op(SHR);
+        self.mask_narrow(pack);
+    }
+
+    /// A narrow value in a word's low bytes, with whatever is above them, becomes itself.
+    fn mask_narrow(&mut self, pack: Pack) {
+        if pack.signed {
+            self.push_u64(u64::from(pack.width) - 1);
+            self.op(SIGNEXTEND);
+        } else {
+            self.push_word(byte_mask(pack.width));
+            self.op(AND);
+        }
+    }
+
+    /// `[value, shift, slot]` from `packed_at` writes the element there, keeping the rest
+    /// of the slot: `old ^ ((old ^ (value << shift)) & (mask << shift))`.
+    pub(super) fn packed_store(&mut self, pack: Pack, transient: bool) {
+        self.op(DUP1);
+        self.transient_slot = transient;
+        self.journal_load();
+        self.op(DUP1 + 3);
+        self.op(DUP1 + 3);
+        self.op(SHL);
+        self.op(DUP1 + 1);
+        self.op(XOR);
+        self.push_word(byte_mask(pack.width));
+        self.op(DUP1 + 4);
+        self.op(SHL);
+        self.op(AND);
+        self.op(XOR);
+        self.op(SWAP1);
+        self.transient_slot = transient;
+        self.journal_store();
+        self.op(POP);
+        self.op(POP);
+    }
+
     /// Whether a list element's words each fill a slot, so `LoadList` and `StoreList`
     /// copy it word for word.
     pub(super) fn plain_elem(&self, elem: usize) -> bool {
         let id = self.peel_nominal(elem);
-        !matches!(self.checked.types[id].kind, TyKind::Record | TyKind::Tuple)
-            || self
-                .value_layout(id)
-                .iter()
-                .enumerate()
-                .all(|(i, (off, pack))| *off == i as u64 && pack.is_full())
+        let t = &self.checked.types[id];
+        if t.kind == TyKind::List || self.dynamic_option(id) {
+            return false;
+        }
+        !matches!(t.kind, TyKind::Record | TyKind::Tuple)
+            || crate::check::is_static_value(&self.checked.types, id)
+                && self
+                    .value_layout(id)
+                    .iter()
+                    .enumerate()
+                    .all(|(i, (off, pack))| *off == i as u64 && pack.is_full())
     }
 
     /// Pushes the slot of a stored place `deep` finds. `grow` lets an index at a list's
@@ -426,7 +501,7 @@ impl<'a> Gen<'a> {
                     }
                     let p = self.deep_slot(base, false)?;
                     self.compile_key(index)?;
-                    self.nested_slot();
+                    self.nested_slot(self.is_dynamic(index.ty()));
                     return Ok(Deep {
                         ty,
                         pack: Pack::FULL,
@@ -437,8 +512,22 @@ impl<'a> Gen<'a> {
                 let bits = self.checked.types[bty].bits;
                 if bits > 0 {
                     let p = self.deep_slot(base, false)?;
+                    let stride = if p.transient {
+                        u64::from(self.checked.types[ty].words.max(1))
+                    } else {
+                        stride
+                    };
                     self.compile_value(index)?;
                     self.bounds_index(u64::from(bits), false)?;
+                    if let Some((pack, per)) = self.packed(ty).filter(|_| !p.transient) {
+                        self.op(SWAP1);
+                        self.packed_at(pack, per);
+                        return Ok(Deep {
+                            ty,
+                            pack,
+                            transient: false,
+                        });
+                    }
                     if stride > 1 {
                         self.push_u64(stride);
                         self.op(MUL);
@@ -458,6 +547,16 @@ impl<'a> Gen<'a> {
                     self.compile_value(index)?;
                     self.mstore_off(self.scratch_a);
                     self.list_bounds(sym, leaf, grow)?;
+                    if let Some((pack, per)) = self.packed(ty) {
+                        self.mload(self.scratch_a);
+                        self.stored_list_base(sym, leaf);
+                        self.packed_at(pack, per);
+                        return Ok(Deep {
+                            ty,
+                            pack,
+                            transient,
+                        });
+                    }
                     self.stored_list_base(sym, leaf);
                     self.mload(self.scratch_a);
                     if stride > 1 {
@@ -497,6 +596,14 @@ impl<'a> Gen<'a> {
                 self.push_u64(32);
                 self.push_mem(self.hash_buf);
                 self.op(KECCAK);
+                if let Some((pack, per)) = self.packed(ty) {
+                    self.packed_at(pack, per);
+                    return Ok(Deep {
+                        ty,
+                        pack,
+                        transient: p.transient,
+                    });
+                }
                 self.op(SWAP1);
                 if stride > 1 {
                     self.push_u64(stride);
@@ -524,7 +631,7 @@ impl<'a> Gen<'a> {
                     .find(|f| f.name == *name)
                     .ok_or_else(|| error(*line, *col, format!("no field `{name}`")))?;
                 let (slot, fty) = (field.slot, field.ty);
-                let (off, pack) = self.value_layout(rty)[slot as usize];
+                let (off, pack) = self.slot_layout(rty, p.transient)[slot as usize];
                 if off > 0 {
                     self.push_u64(off);
                     self.op(ADD);
@@ -571,6 +678,10 @@ impl<'a> Gen<'a> {
         if !self.stack_value(ty) {
             return Err(error(e.line(), e.col(), "expected a word"));
         }
+        if self.packed_index(e, p.transient) {
+            self.packed_load(p.pack, p.transient);
+            return Ok(());
+        }
         self.journal_load();
         self.unpack(p.pack);
         Ok(())
@@ -593,7 +704,9 @@ impl<'a> Gen<'a> {
 
     /// `[n, base]` becomes a copy of the `n` elements stored from slot `base`.
     pub(super) fn load_list_sub(&mut self, elem: usize, transient: bool) {
-        if self.plain_elem(elem) {
+        if let Some((pack, per)) = self.packed(elem) {
+            self.call_sub(Sub::LoadPacked(pack, per, transient, self.direct));
+        } else if self.plain_elem(elem) {
             let k = self.checked.types[self.peel_nominal(elem)].words.max(1);
             let bytes = self.stored_dyn(elem);
             self.call_sub(Sub::LoadList(k, transient, self.direct, bytes));
@@ -613,7 +726,9 @@ impl<'a> Gen<'a> {
                 body.journal_stores = true;
             }
         }
-        if self.plain_elem(elem) {
+        if let Some((pack, per)) = self.packed(elem) {
+            self.call_sub(Sub::StorePacked(pack, per, transient, self.direct));
+        } else if self.plain_elem(elem) {
             let k = self.checked.types[self.peel_nominal(elem)].words.max(1);
             let bytes = self.stored_dyn(elem);
             self.call_sub(Sub::StoreList(k, transient, self.direct, bytes));
@@ -633,11 +748,11 @@ impl<'a> Gen<'a> {
         if !crate::check::is_static_value(&self.checked.types, p.ty) {
             return self.deep_load_record(p);
         }
-        Ok(self.load_layout(p.ty, 0, n, p.transient))
+        Ok(self.load_layout(self.slot_layout(p.ty, p.transient), 0, n, p.transient))
     }
 
     /// The type of each word of a stored record, nested records' words in place.
-    fn record_leaves(&self, ty: usize, out: &mut Vec<usize>) {
+    pub(super) fn record_leaves(&self, ty: usize, out: &mut Vec<usize>) {
         let id = self.peel_nominal(ty);
         let t = &self.checked.types[id];
         match t.kind {
@@ -650,6 +765,10 @@ impl<'a> Gen<'a> {
                 for _ in 0..t.bits {
                     self.record_leaves(t.elem.unwrap_or(0), out);
                 }
+            }
+            TyKind::Option if t.words > 1 => {
+                out.push(crate::check::TY_NAT);
+                self.record_leaves(t.elem.unwrap_or(0), out);
             }
             _ => out.extend(std::iter::repeat_n(id, t.words.max(1) as usize)),
         }
@@ -782,7 +901,7 @@ impl<'a> Gen<'a> {
         let ty = target.ty();
         if self.list_value(ty) {
             self.compile_value(expr)?;
-            let p = self.deep_slot(target, false)?;
+            let p = self.deep_slot(target, grow)?;
             let (list, slot) = (self.temp(), self.temp());
             self.mstore_off(slot);
             self.mstore_off(list);
@@ -809,6 +928,10 @@ impl<'a> Gen<'a> {
             if self.is_dynamic(ty) {
                 self.transient_slot = p.transient;
                 self.store_slot(true);
+                return Ok(());
+            }
+            if self.packed_index(target, p.transient) {
+                self.packed_store(p.pack, p.transient);
                 return Ok(());
             }
             if p.pack.is_full() {
@@ -851,7 +974,7 @@ impl<'a> Gen<'a> {
             return self.deep_store_record(p, buf);
         }
         self.transient_slot = p.transient;
-        self.store_value(self.peel_nominal(ty), 0, n, buf);
+        self.store_value(self.slot_layout(ty, p.transient), 0, n, buf);
         Ok(())
     }
 
@@ -886,6 +1009,8 @@ impl<'a> Gen<'a> {
         self.op(ADD);
         self.push_u64(32);
         self.op(ADD);
+        let mut leaves = Vec::new();
+        self.record_leaves(elem, &mut leaves);
         let mut j = 0;
         while j < layout.len() {
             let off = layout[j].0;
@@ -896,6 +1021,27 @@ impl<'a> Gen<'a> {
             if off > 0 {
                 self.push_u64(off);
                 self.op(ADD);
+            }
+            if self.list_value(leaves[j]) || self.is_dynamic(leaves[j]) {
+                // A string, bytes, or list word has its slot to itself.
+                if self.list_value(leaves[j]) {
+                    self.deep_load_list(Deep {
+                        ty: leaves[j],
+                        pack: Pack::FULL,
+                        transient,
+                    })?;
+                } else {
+                    self.transient_slot = transient;
+                    self.load_slot(true);
+                }
+                self.op(DUP1 + 1);
+                if j > 0 {
+                    self.push_u64(32 * j as u64);
+                    self.op(ADD);
+                }
+                self.op(MSTORE);
+                j = end;
+                continue;
             }
             self.transient_slot = transient;
             self.journal_load();
@@ -960,12 +1106,52 @@ impl<'a> Gen<'a> {
         self.op(MUL);
         self.op(DUP1 + 5);
         self.op(ADD);
+        let mut leaves = Vec::new();
+        self.record_leaves(elem, &mut leaves);
         let mut j = 0;
         while j < layout.len() {
             let off = layout[j].0;
             let end = (j..layout.len())
                 .find(|&x| layout[x].0 != off)
                 .unwrap_or(layout.len());
+            let leaf = leaves[j];
+            if self.list_value(leaf) || self.is_dynamic(leaf) {
+                // [.., src, slot, value, at]
+                self.op(DUP1 + 1);
+                if j > 0 {
+                    self.push_u64(32 * j as u64);
+                    self.op(ADD);
+                }
+                self.op(MLOAD);
+                self.op(DUP1 + 1);
+                if off > 0 {
+                    self.push_u64(off);
+                    self.op(ADD);
+                }
+                if self.is_dynamic(leaf) {
+                    self.transient_slot = transient;
+                    self.store_slot(true);
+                    j = end;
+                    continue;
+                }
+                // A list: its new length, then its elements over the old ones.
+                self.op(DUP1);
+                self.transient_slot = transient;
+                self.journal_load();
+                self.op(DUP1 + 2);
+                self.op(MLOAD);
+                self.op(DUP1 + 2);
+                self.transient_slot = transient;
+                self.journal_store();
+                self.op(SWAP1);
+                self.mstore_off(self.hash_buf);
+                self.push_u64(32);
+                self.push_mem(self.hash_buf);
+                self.op(KECCAK);
+                self.store_list_sub(self.list_elem(leaf), transient);
+                j = end;
+                continue;
+            }
             for x in j..end {
                 let pack = layout[x].1;
                 self.op(DUP1 + 1 + usize::from(x > j) as u8);
@@ -1005,9 +1191,39 @@ impl<'a> Gen<'a> {
         self.push_label(top);
         self.op(JUMP);
         self.jumpdest(done);
-        // [ret, old, base, ptr, n, i]: the slots a shorter list no longer uses, from
-        // `n * slots` to `old * slots`.
         self.op(POP);
+        if self.deep_clear(elem) {
+            // [ret, old, base, ptr, n]: the elements a shorter list no longer has, from
+            // `n` to `old`, cleared with what they hold.
+            let skip = self.fresh();
+            self.op(DUP1);
+            self.op(DUP1 + 4);
+            self.op(GT);
+            self.op(ISZERO);
+            self.push_label(skip);
+            self.op(JUMPI);
+            self.op(DUP1);
+            if slots > 1 {
+                self.push_u64(slots);
+                self.op(MUL);
+            }
+            self.op(DUP1 + 3);
+            self.op(ADD);
+            self.op(SWAP1);
+            self.op(DUP1 + 4);
+            self.op(SUB);
+            self.op(SWAP1);
+            self.clear_elems(elem, transient);
+            self.op(PUSH0);
+            self.jumpdest(skip);
+            for _ in 0..4 {
+                self.op(POP);
+            }
+            self.op(JUMP);
+            return;
+        }
+        // [ret, old, base, ptr, n]: the slots a shorter list no longer uses, from
+        // `n * slots` to `old * slots`.
         self.push_u64(slots);
         self.op(MUL);
         self.op(DUP1 + 3);
@@ -1124,14 +1340,19 @@ impl<'a> Gen<'a> {
         self.map_chain(index)?;
         // Every slot of a value in a transient map is transient, not just the first.
         let transient = std::mem::take(&mut self.transient_slot);
-        Ok(self.load_layout(value, start, n, transient))
+        Ok(self.load_layout(self.slot_layout(value, transient), start, n, transient))
     }
 
     /// `[slot]` of a stored value: reads its words `start..start + n` into a buffer.
-    fn load_layout(&mut self, value: usize, start: u32, n: u32, transient: bool) -> i32 {
+    fn load_layout(
+        &mut self,
+        layout: Vec<(u64, Pack)>,
+        start: u32,
+        n: u32,
+        transient: bool,
+    ) -> i32 {
         self.return_sites += 1;
         let buf = self.region(Region::Stored(self.return_sites), n * 32);
-        let layout = self.value_layout(value);
         let mut i = 0;
         while i < n {
             let off = layout[(start + i) as usize].0;
@@ -1160,8 +1381,7 @@ impl<'a> Gen<'a> {
 
     /// `[slot]` of a map value: writes words `start..start + n` from `buf`. The words
     /// fill whole slots, since a record starts and ends on a slot boundary.
-    pub(super) fn store_value(&mut self, value: usize, start: u32, n: u32, buf: i32) {
-        let layout = self.value_layout(value);
+    pub(super) fn store_value(&mut self, layout: Vec<(u64, Pack)>, start: u32, n: u32, buf: i32) {
         let transient = std::mem::take(&mut self.transient_slot);
         let mut i = 0;
         while i < n {
@@ -1205,6 +1425,9 @@ impl<'a> Gen<'a> {
         }
         if let Some(at) = self.local_elem_addr(e)? {
             return Ok(at);
+        }
+        if self.nested_mem(e) {
+            return self.value_buf(e);
         }
         if let Some((sym, leaf, index, offset, ty)) = self.image_elem(e) {
             let n = self.checked.types[ty].words;
@@ -1261,16 +1484,13 @@ impl<'a> Gen<'a> {
             }
             | Expr::Case { .. }
             | Expr::Tuple { .. }
-            | Expr::Record { .. } => {
-                let ty = e.ty();
-                self.return_sites += 1;
-                let buf = self.region(
-                    Region::Stored(self.return_sites),
-                    self.checked.types[ty].words * 32,
-                );
-                self.write_value(e, buf, ty)?;
-                Ok(buf)
-            }
+            | Expr::Record { .. } => self.value_buf(e),
+            Expr::List { ty, .. } if self.fixed_list(*ty) => self.value_buf(e),
+            Expr::Query { .. }
+            | Expr::Call {
+                builtin: Some(Builtin::AbiDecode),
+                ..
+            } if self.checked.types[e.ty()].kind != TyKind::Option => self.value_buf(e),
             Expr::Field {
                 root: None,
                 base,
@@ -1288,12 +1508,30 @@ impl<'a> Gen<'a> {
                     .ok_or_else(|| error(*line, *col, format!("no field `{name}`")))?;
                 Ok(src + field.slot as i32 * 32)
             }
-            // A stored record with strings, bytes, or lists: each field read as itself.
             Expr::Ident { sym: Some(sym), .. }
             | Expr::Field {
                 root: Some(sym), ..
             } if self.checked.syms[*sym].storage
-                && self.checked.types[e.ty()].kind == TyKind::Record
+                && matches!(
+                    self.checked.types[e.ty()].kind,
+                    TyKind::Tuple | TyKind::Option
+                )
+                && !crate::check::is_static_value(&self.checked.types, e.ty()) =>
+            {
+                let leaf = match e {
+                    Expr::Field { leaf, .. } => *leaf,
+                    _ => 0,
+                };
+                self.load_dyn_value(*sym, leaf, self.peel_nominal(e.ty()))
+            }
+            // A stored record or fixed list with strings, bytes, or lists: each part read
+            // as itself.
+            Expr::Ident { sym: Some(sym), .. }
+            | Expr::Field {
+                root: Some(sym), ..
+            } if self.checked.syms[*sym].storage
+                && (self.checked.types[e.ty()].kind == TyKind::Record
+                    || self.fixed_list(e.ty()))
                 && !crate::check::is_static_value(&self.checked.types, e.ty()) =>
             {
                 let ty = e.ty();
@@ -1306,7 +1544,31 @@ impl<'a> Gen<'a> {
                     Expr::Field { leaf, .. } => *leaf,
                     _ => 0,
                 };
-                let fields: Vec<(String, u32, usize)> = self.checked.types[ty]
+                let t = &self.checked.types[ty];
+                if t.kind == TyKind::List {
+                    // Its elements are read at their slots, as they are written.
+                    let (elem, n) = (t.elem.unwrap_or(0), t.bits);
+                    let k = self.checked.types[elem].words as i32;
+                    for i in 0..n {
+                        let at = Expr::Index {
+                            line: e.line(),
+                            col: e.col(),
+                            base: Box::new(e.clone()),
+                            index: Box::new(Expr::Lit {
+                                line: e.line(),
+                                col: e.col(),
+                                lit: Lit::Nat(Word::from_u64(u64::from(i))),
+                                ty: crate::check::TY_NAT,
+                            }),
+                            root: Some(*sym),
+                            leaf,
+                            ty: elem,
+                        };
+                        self.write_value(&at, buf + i32::from(i) * k * 32, elem)?;
+                    }
+                    return Ok(buf);
+                }
+                let fields: Vec<(String, u32, usize)> = t
                     .fields
                     .iter()
                     .map(|f| (f.name.clone(), f.slot, f.ty))
@@ -1325,8 +1587,110 @@ impl<'a> Gen<'a> {
                 }
                 Ok(buf)
             }
-            _ => self.addr_expr(e),
+            _ => {
+                let at = self.addr_expr(e)?;
+                let (Expr::Ident { sym: Some(sym), .. }
+                | Expr::Field {
+                    root: Some(sym), ..
+                }) = e
+                else {
+                    return Ok(at);
+                };
+                if !self.checked.syms[*sym].mutable || self.owned_by_type(e.ty()) {
+                    return Ok(at);
+                }
+                // A `var`'s lists are copied, as a list read from it is, so no one else
+                // shares what it changes.
+                self.return_sites += 1;
+                let n = self.checked.types[e.ty()].words;
+                let buf = self.region(Region::Stored(self.return_sites), n * 32);
+                self.copy_words(at, buf, n);
+                self.own_lists(buf, e.ty())?;
+                Ok(buf)
+            }
         }
+    }
+
+    /// The words of a value that point to a string, bytes, or a dynamic list, with that
+    /// word's type: its own, and those of the records, tuples, and fixed lists in it.
+    pub(super) fn dyn_words(&self, ty: usize, at: u32, out: &mut Vec<(u32, usize)>) {
+        let id = self.peel_nominal(ty);
+        let t = &self.checked.types[id];
+        match t.kind {
+            TyKind::List if t.bits == 0 => out.push((at, id)),
+            TyKind::List => {
+                let elem = t.elem.unwrap_or(0);
+                let k = self.checked.types[elem].words;
+                for i in 0..u32::from(t.bits) {
+                    self.dyn_words(elem, at + i * k, out);
+                }
+            }
+            TyKind::Record | TyKind::Tuple => {
+                for f in &t.fields {
+                    self.dyn_words(f.ty, at + f.slot, out);
+                }
+            }
+            TyKind::Option if t.words > 1 => self.dyn_words(t.elem.unwrap_or(0), at + 1, out),
+            _ if self.is_dynamic(id) => out.push((at, id)),
+            _ => {}
+        }
+    }
+
+    /// A tuple or fixed list with strings, bytes, or lists, read from a named storage place
+    /// into a buffer, each word as the leaf it is.
+    fn load_dyn_value(&mut self, sym: usize, leaf: u32, ty: usize) -> Result<i32, Error> {
+        let n = self.checked.types[ty].words;
+        self.return_sites += 1;
+        let buf = self.region(Region::Stored(self.return_sites), n * 32);
+        let mut dyns = Vec::new();
+        self.dyn_words(ty, 0, &mut dyns);
+        for i in 0..n {
+            match dyns.iter().find(|&&(at, _)| at == i) {
+                Some(&(_, t)) if self.list_value(t) => self.load_stored_list(sym, leaf + i, t)?,
+                Some(_) => self.load_storage_bytes(sym, leaf + i)?,
+                None => self.mload(self.addr(sym, leaf + i)),
+            }
+            self.mstore_off(buf + i as i32 * 32);
+        }
+        Ok(buf)
+    }
+
+    /// Writes a tuple or fixed list with strings, bytes, or lists to a named storage place,
+    /// each word as the leaf it is.
+    pub(super) fn store_dyn_value(
+        &mut self,
+        sym: usize,
+        leaf: u32,
+        expr: &Expr,
+        ty: usize,
+    ) -> Result<(), Error> {
+        let src = self.value_addr(expr)?;
+        let mut dyns = Vec::new();
+        self.dyn_words(ty, 0, &mut dyns);
+        for i in 0..self.checked.types[ty].words {
+            self.mload(src + i as i32 * 32);
+            match dyns.iter().find(|&&(at, _)| at == i) {
+                Some(&(_, t)) if self.list_value(t) => self.store_list(sym, leaf + i, t)?,
+                Some(_) => self.store_bytes_top(sym, leaf + i)?,
+                None => {
+                    self.mstore_off(self.addr(sym, leaf + i));
+                    self.mark_dirty(sym, leaf + i);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// A value built in place, in a buffer of its own.
+    fn value_buf(&mut self, e: &Expr) -> Result<i32, Error> {
+        let ty = e.ty();
+        self.return_sites += 1;
+        let buf = self.region(
+            Region::Stored(self.return_sites),
+            self.checked.types[ty].words * 32,
+        );
+        self.write_value(e, buf, ty)?;
+        Ok(buf)
     }
 
     /// Writes the word on the stack to a storage leaf, keeping the rest of a shared slot.
@@ -1389,6 +1753,13 @@ impl<'a> Gen<'a> {
                 self.compile_value(index)?;
                 self.mstore_off(self.scratch_a);
                 self.list_bounds(sym, leaf, false)?;
+                if let Some((pack, per)) = self.packed(self.list_elem(ty)) {
+                    self.mload(self.scratch_a);
+                    self.stored_list_base(sym, leaf);
+                    self.packed_at(pack, per);
+                    self.packed_load(pack, false);
+                    return Ok(());
+                }
                 self.list_slot(sym, leaf);
                 self.load_slot(self.bytes_elem(ty) && !header);
                 Ok(())
@@ -1424,8 +1795,10 @@ impl<'a> Gen<'a> {
                     self.sstore_element(self.checked.syms[sym].slot + leaf);
                     return Ok(());
                 }
-                self.op(DUP1);
-                self.dirty_at(sym, leaf);
+                if self.checked.syms[sym].storage {
+                    self.op(DUP1);
+                    self.dirty_at(sym, leaf);
+                }
                 self.element_addr(sym, leaf);
                 self.op(MSTORE);
                 Ok(())
@@ -1448,6 +1821,11 @@ impl<'a> Gen<'a> {
                 self.mstore_off(len_addr);
                 self.mark_dirty(sym, leaf);
                 self.stored_list_base(sym, leaf);
+                if let Some((pack, per)) = self.packed(self.list_elem(ty)) {
+                    self.packed_at(pack, per);
+                    self.packed_store(pack, false);
+                    return Ok(());
+                }
                 self.op(ADD);
                 self.store_slot(self.bytes_elem(ty));
                 Ok(())
@@ -1457,6 +1835,13 @@ impl<'a> Gen<'a> {
                 self.compile_value(index)?;
                 self.mstore_off(self.scratch_a);
                 self.list_bounds(sym, leaf, false)?;
+                if let Some((pack, per)) = self.packed(self.list_elem(ty)) {
+                    self.mload(self.scratch_a);
+                    self.stored_list_base(sym, leaf);
+                    self.packed_at(pack, per);
+                    self.packed_store(pack, false);
+                    return Ok(());
+                }
                 self.list_slot(sym, leaf);
                 self.store_slot(self.bytes_elem(ty));
                 Ok(())
@@ -1547,10 +1932,10 @@ impl<'a> Gen<'a> {
             return Ok(());
         }
         self.compile_key(keys[0])?;
-        self.map_slot(sym, leaf);
+        self.map_slot(sym, leaf, self.is_dynamic(keys[0].ty()));
         for key in &keys[1..] {
             self.compile_key(key)?;
-            self.nested_slot();
+            self.nested_slot(self.is_dynamic(key.ty()));
         }
         if let Some(cache) = cache.filter(|_| self.plan.cache_slots) {
             if self.branch == 0 && self.failing == 0 && self.body.is_some() {
@@ -1636,8 +2021,34 @@ impl<'a> Gen<'a> {
         Ok(())
     }
 
-    /// `[slot, key]` becomes the slot of `key` in the map stored at `slot`.
-    fn nested_slot(&mut self) {
+    /// `[slot, key]` becomes the slot of `key` in the map stored at `slot`. A string or
+    /// bytes key hashes its bytes, unpadded, before the slot, as Solidity does.
+    fn nested_slot(&mut self, bytes: bool) {
+        if bytes {
+            // The bytes and the slot are joined in the free memory past the heap.
+            self.bytes_span();
+            self.push_mem(self.blob_base);
+            self.mload(self.blob_ptr);
+            self.op(ADD);
+            // [slot, len, data, top]
+            self.op(DUP1 + 2);
+            self.op(DUP1 + 2);
+            self.op(DUP1 + 2);
+            self.op(MCOPY);
+            self.op(SWAP1);
+            self.op(POP);
+            self.op(SWAP1 + 1);
+            // [top, len, slot]
+            self.op(DUP1 + 2);
+            self.op(DUP1 + 2);
+            self.op(ADD);
+            self.op(MSTORE);
+            self.push_u64(32);
+            self.op(ADD);
+            self.op(SWAP1);
+            self.op(KECCAK);
+            return;
+        }
         self.mstore_off(self.hash_buf);
         self.mstore_off(self.hash_buf + 32);
         self.push_u64(64);
@@ -1645,13 +2056,19 @@ impl<'a> Gen<'a> {
         self.op(KECCAK);
     }
 
-    fn map_slot(&mut self, sym: usize, leaf: u32) {
+    fn map_slot(&mut self, sym: usize, leaf: u32, bytes: bool) {
         let (sym, leaf) = self.place_of(sym, leaf);
-        self.mstore_off(self.hash_buf);
+        if !bytes {
+            self.mstore_off(self.hash_buf);
+        }
         if self.checked.slot_syms.contains_key(&sym) {
             self.mload(self.local[sym]);
         } else {
             self.push_word(self.leaf_key(sym, leaf));
+        }
+        if bytes {
+            self.op(SWAP1);
+            return self.nested_slot(true);
         }
         self.mstore_off(self.hash_buf + 32);
         self.push_u64(64);

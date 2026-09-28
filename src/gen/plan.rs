@@ -76,7 +76,8 @@ impl<'a> Gen<'a> {
             args_buf: 0,
             hash_buf: 0,
             topic_buf: 0,
-            journal_count: 0,
+            journal_len: 0,
+            journal_at: 0,
             journal_base: 0,
             blob_ptr: 0,
             blob_base: 0,
@@ -131,10 +132,10 @@ impl<'a> Gen<'a> {
             let f = &g.checked.prog.funcs[i];
             let ret = &g.checked.types[f.ret_ty];
             let returned = matches!(f.kind, ItemKind::Entry | ItemKind::View)
-                && (is_static_aggregate(&g.checked.types, f.ret_ty)
-                    || (ret.kind == TyKind::List && ret.bits > 0));
+                && is_static_aggregate(&g.checked.types, f.ret_ty);
             let option = ret.kind == TyKind::Option && ret.words > 1;
-            let aggregate = matches!(ret.kind, TyKind::Tuple | TyKind::Record);
+            let aggregate = matches!(ret.kind, TyKind::Tuple | TyKind::Record)
+                || (ret.kind == TyKind::List && ret.bits > 0);
             if (aggregate || returned || option) && ret.words > 0 {
                 let words = ret.words;
                 *slot = g.region(Region::FnRet(i), words * 32);
@@ -166,7 +167,8 @@ impl<'a> Gen<'a> {
         g.ret_scratch = g.region(Region::Ret, 96);
         g.args_buf = g.region(Region::Args, 128);
         g.hash_buf = g.region(Region::Hash, 0);
-        g.journal_count = g.region(Region::JournalCount, 32);
+        g.journal_len = g.region(Region::JournalLen, 32);
+        g.journal_at = g.region(Region::JournalAt, 32);
         g.journal_base = g.region(Region::Journal, MAX_JOURNAL as u32 * 64);
         g.blob_ptr = g.region(Region::BlobPtr, 32);
         g.blob_base = g.region(Region::Blob, 0);
@@ -786,7 +788,9 @@ impl<'a> Gen<'a> {
                     Sub::CheckedMul | Sub::CheckedExp(_) => (2, 1),
                     Sub::DecodeList(_) => (1, 1),
                     Sub::LoadList(..) | Sub::LoadRecords(..) => (2, 1),
-                    Sub::StoreList(..) | Sub::StoreRecords(..) => (3, 0),
+                    Sub::StoreList(..) | Sub::StoreRecords(..) | Sub::StorePacked(..) => (3, 0),
+                    Sub::LoadPacked(..) => (2, 1),
+                    Sub::ZeroSlots(..) | Sub::ClearElems(..) => (2, 0),
                     Sub::LoadSlotBytes(..) => (1, 1),
                     Sub::StoreSlotBytes(..) => (2, 0),
                     Sub::QueuePush => (3, 1),

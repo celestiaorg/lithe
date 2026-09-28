@@ -171,17 +171,27 @@ fn stdlib_math_crypto_and_collections() {
     }
     let one = Word::from_u64(1);
     for (a, log) in [(0, 0), (1, 0), (2, 1), (3, 1), (4, 2), (255, 7), (256, 8)] {
-        assert_eq!(u.word("log2(uint256)", &[w(a)]), Word::from_u64(log), "log2({a})");
+        assert_eq!(
+            u.word("log2(uint256)", &[w(a)]),
+            Word::from_u64(log),
+            "log2({a})"
+        );
     }
     for k in [63, 64, 127, 128, 200, 255] {
         let p = one.shl(k);
-        assert_eq!(u.word("log2(uint256)", &[Arg::W(p)]), Word::from_u64(k as u64));
+        assert_eq!(
+            u.word("log2(uint256)", &[Arg::W(p)]),
+            Word::from_u64(k as u64)
+        );
         assert_eq!(
             u.word("log2(uint256)", &[Arg::W(p.wrapping_sub(one))]),
             Word::from_u64(k as u64 - 1)
         );
     }
-    assert_eq!(u.word("log2(uint256)", &[Arg::W(Word::from_u64(0).not())]), Word::from_u64(255));
+    assert_eq!(
+        u.word("log2(uint256)", &[Arg::W(Word::from_u64(0).not())]),
+        Word::from_u64(255)
+    );
     // Around every power of two and at pseudo-random words, against bit-by-bit references.
     let isqrt = |a: Word| {
         let mut r = Word::from_u64(0);
@@ -209,12 +219,24 @@ fn stdlib_math_crypto_and_collections() {
         samples.push(Word([next(), next(), next(), next()]).shr(k));
     }
     for a in samples {
-        assert_eq!(u.word("sqrt(uint256)", &[Arg::W(a)]), isqrt(a), "sqrt({a:?})");
-        assert_eq!(u.word("log2(uint256)", &[Arg::W(a)]), Word::from_u64(bits(a)), "log2({a:?})");
+        assert_eq!(
+            u.word("sqrt(uint256)", &[Arg::W(a)]),
+            isqrt(a),
+            "sqrt({a:?})"
+        );
+        assert_eq!(
+            u.word("log2(uint256)", &[Arg::W(a)]),
+            Word::from_u64(bits(a)),
+            "log2({a:?})"
+        );
     }
     let int = |n: i64| {
         let m = Word::from_u64(n.unsigned_abs());
-        if n < 0 { Word::from_u64(0).wrapping_sub(m) } else { m }
+        if n < 0 {
+            Word::from_u64(0).wrapping_sub(m)
+        } else {
+            m
+        }
     };
     let int_min = one.shl(255);
     let int_max = int_min.wrapping_sub(one);
@@ -228,33 +250,64 @@ fn stdlib_math_crypto_and_collections() {
         (int_max, int_max, int_max),
         (int_min, int_max, int(0)),
     ] {
-        assert_eq!(u.word("average_int(int256,int256)", &[Arg::W(a), Arg::W(b)]), mean);
+        assert_eq!(
+            u.word("average_int(int256,int256)", &[Arg::W(a), Arg::W(b)]),
+            mean
+        );
     }
-    assert_eq!(u.word("min_int(int256,int256)", &[Arg::W(int(-5)), w(2)]), int(-5));
-    assert_eq!(u.word("max_int(int256,int256)", &[Arg::W(int(-5)), w(2)]), int(2));
-    assert_eq!(u.word("max_int(int256,int256)", &[Arg::W(int_min), Arg::W(int(-1))]), int(-1));
+    assert_eq!(
+        u.word("min_int(int256,int256)", &[Arg::W(int(-5)), w(2)]),
+        int(-5)
+    );
+    assert_eq!(
+        u.word("max_int(int256,int256)", &[Arg::W(int(-5)), w(2)]),
+        int(2)
+    );
+    assert_eq!(
+        u.word(
+            "max_int(int256,int256)",
+            &[Arg::W(int_min), Arg::W(int(-1))]
+        ),
+        int(-1)
+    );
     let ten = Word::from_u64(10);
     let mut p = one;
     for k in 0..=77u64 {
-        assert_eq!(u.word("log10(uint256)", &[Arg::W(p)]), Word::from_u64(k), "log10(10^{k})");
+        assert_eq!(
+            u.word("log10(uint256)", &[Arg::W(p)]),
+            Word::from_u64(k),
+            "log10(10^{k})"
+        );
         if k > 0 {
             let below = p.wrapping_sub(one);
-            assert_eq!(u.word("log10(uint256)", &[Arg::W(below)]), Word::from_u64(k - 1));
+            assert_eq!(
+                u.word("log10(uint256)", &[Arg::W(below)]),
+                Word::from_u64(k - 1)
+            );
         }
         if k < 77 {
             p = p.wrapping_mul(ten);
         }
     }
     assert_eq!(u.word("log10(uint256)", &[w(0)]), Word::from_u64(0));
-    assert_eq!(u.word("log10(uint256)", &[Arg::W(Word::from_u64(0).not())]), Word::from_u64(77));
+    assert_eq!(
+        u.word("log10(uint256)", &[Arg::W(Word::from_u64(0).not())]),
+        Word::from_u64(77)
+    );
     let mut clamp_int = |x: i64, lo: i64, hi: i64| {
-        u.word("clamp_int(int256,int256,int256)", &[Arg::W(int(x)), Arg::W(int(lo)), Arg::W(int(hi))])
+        u.word(
+            "clamp_int(int256,int256,int256)",
+            &[Arg::W(int(x)), Arg::W(int(lo)), Arg::W(int(hi))],
+        )
     };
     assert_eq!(clamp_int(-9, -5, 3), int(-5));
     assert_eq!(clamp_int(9, -5, 3), int(3));
     assert_eq!(clamp_int(-2, -5, 3), int(-2));
     assert_eq!(u.word("abs(int256)", &[w(7)]), Word::from_u64(7));
-    assert_eq!(u.word("abs(int256)", &[Arg::W(Word::from_u64(6).not())]), Word::from_u64(7));
+    assert_eq!(
+        u.word("abs(int256)", &[Arg::W(Word::from_u64(6).not())]),
+        Word::from_u64(7)
+    );
     assert_eq!(u.word("abs(int256)", &[Arg::W(one.shl(255))]), one.shl(255));
     let max = "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff";
     assert_eq!(
@@ -282,7 +335,11 @@ fn stdlib_math_crypto_and_collections() {
     );
     assert!(!u.send(0, "clamp(uint256,uint256,uint256)", &[w(1), w(5), w(2)]));
     u.reverted_with("MathInvalidRange(uint256,uint256)");
-    assert!(!u.send(0, "clamp_int(int256,int256,int256)", &[w(0), w(1), Arg::W(int(-1))]));
+    assert!(!u.send(
+        0,
+        "clamp_int(int256,int256,int256)",
+        &[w(0), w(1), Arg::W(int(-1))]
+    ));
     u.reverted_with("MathInvalidSignedRange(int256,int256)");
     assert!(!u.send(0, "to_nat(int256)", &[Arg::W(Word::from_u64(3).not())]));
     u.reverted_with("SafeCastOverflowedIntToUint(int256)");

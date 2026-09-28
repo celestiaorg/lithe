@@ -87,15 +87,11 @@ impl Checker {
                 let want = self.build(ty)?;
                 self.check_expr_as(expr, Some(want))?;
                 let id = self.annotated(*line, *col, ty, expr.ty())?;
-                if !is_word(self.types[id].kind)
-                    && self.types[id].kind != TyKind::Option
-                    && !self.list_value(id)
+                if id == self.storage
+                    || self.types[id].words == 0
+                    || self.types[id].kind == TyKind::Operation
                 {
-                    return Err(error(
-                        *line,
-                        *col,
-                        "var must hold a word, an option, or a list",
-                    ));
+                    return Err(error(*line, *col, "this value cannot be stored"));
                 }
                 let sid = self.add_sym(Sym {
                     ty: id,
@@ -123,7 +119,13 @@ impl Checker {
             } => {
                 let written = path.clone();
                 let place = self.lookup_path(*line, *col, path)?;
-                if index.is_some() && self.deep_assign(place.ty, keys.len() + 1, fields) {
+                // An index into a transient fixed list writes its slot, as a deep place does.
+                let transient_list = self.syms[place.sym].storage
+                    && (self.syms[place.sym].slot + place.leaf) as usize >= self.transient_from
+                    && self.types[peel_id(&self.types, place.ty)].kind == TyKind::List;
+                if index.is_some()
+                    && (transient_list || self.deep_assign(place.ty, keys.len() + 1, fields))
+                {
                     return self.check_deep_assign(
                         *line, *col, &written, index, keys, fields, expr, root, leaf, target,
                     );
@@ -156,10 +158,15 @@ impl Checker {
                     value_ty = self.walk_fields(*line, *col, value_ty, 0, &names)?.0;
                 }
                 self.check_expr_as(expr, Some(value_ty))?;
-                if self.types[value_ty].kind != TyKind::Option
+                let fixed_list =
+                    self.types[value_ty].kind == TyKind::List && self.types[value_ty].bits > 0;
+                let local = !self.syms[place.sym].storage && !self.holds_map(value_ty);
+                if !fixed_list
+                    && !local
+                    && self.types[value_ty].kind != TyKind::Option
                     && self.types[value_ty].kind != TyKind::Tuple
-                    && !(self.types[value_ty].kind == TyKind::Record
-                        && is_static_value(&self.types, value_ty))
+                    && (self.types[value_ty].kind != TyKind::Record
+                        || !is_static_value(&self.types, value_ty))
                     && !is_word(self.types[value_ty].kind)
                     && !self.list_value(value_ty)
                     && !(map_value && is_stored_aggregate(&self.types, value_ty))
@@ -786,7 +793,13 @@ impl Checker {
                 TyKind::List if i == 0 => {
                     let elem = peel_id(&self.types, t.elem.unwrap_or(TY_UNIT));
                     return n_keys > 1
-                        || matches!(self.types[elem].kind, TyKind::Record | TyKind::Tuple);
+                        || matches!(
+                            self.types[elem].kind,
+                            TyKind::Record | TyKind::Tuple | TyKind::List
+                        )
+                        || (self.types[elem].kind == TyKind::Option
+                            && !is_static_value(&self.types, elem))
+                        || (t.bits > 0 && self.is_dyn_ty(elem));
                 }
                 TyKind::Map => ty = peel_id(&self.types, t.right.unwrap_or(TY_UNIT)),
                 _ => return true,
@@ -794,7 +807,7 @@ impl Checker {
         }
         match self.types[ty].kind {
             TyKind::List => true,
-            TyKind::Record | TyKind::Tuple => !is_static_value(&self.types, ty),
+            TyKind::Record | TyKind::Tuple | TyKind::Option => !is_static_value(&self.types, ty),
             _ => false,
         }
     }
@@ -825,13 +838,6 @@ impl Checker {
                 list.line(),
                 list.col(),
                 "`List.push` expects a dynamic list",
-            ));
-        }
-        if !keys.is_empty() && !self.syms[place.sym].storage {
-            return Err(error(
-                line,
-                col,
-                "`List.push` takes a list variable or a stored list",
             ));
         }
         keys.push(Expr::Field {
@@ -883,17 +889,22 @@ impl Checker {
             ));
         }
         let place = self.place(arg)?;
-        if !self.syms[place.sym].storage || !self.list_value(place.ty) {
+        if !self.list_value(place.ty) {
             return Err(error(
                 line,
                 col,
                 "`List.pop` takes a list variable or a stored list",
             ));
         }
-        if matches!(
-            self.kind,
-            ItemKind::View | ItemKind::Readonly | ItemKind::Pure
-        ) {
+        if !self.syms[place.sym].storage && !self.syms[place.sym].mutable {
+            return Err(error(line, col, "cannot assign to a const"));
+        }
+        if self.syms[place.sym].storage
+            && matches!(
+                self.kind,
+                ItemKind::View | ItemKind::Readonly | ItemKind::Pure
+            )
+        {
             return Err(self.weaker(line, col, "writes storage"));
         }
         let target = arg.clone();
@@ -1028,9 +1039,9 @@ impl Checker {
         Ok(())
     }
 
-    /// A storage field holding a record with strings, bytes, or lists is written one field
-    /// at a time: `p := v` becomes `const t := v; p.a := t.a; ...`, in a block of its own.
-    /// Past a key, such a record is written whole.
+    /// A storage field holding a record or fixed list with strings, bytes, or lists is
+    /// written one part at a time: `p := v` becomes `const t := v; p.a := t.a; ...`, or
+    /// `p[0] := t[0]; ...`, in a block of its own. Past a key, such a value is written whole.
     fn split_assign(&self, s: &Stmt) -> Option<Stmt> {
         let Stmt::Assign {
             line,
@@ -1051,7 +1062,11 @@ impl Checker {
         }
         let ty = place.ty;
         let t = &self.types[ty];
-        if t.kind != TyKind::Record || is_static_value(&self.types, ty) || self.holds_map(ty) {
+        let fixed = t.kind == TyKind::List && t.bits > 0;
+        if !(t.kind == TyKind::Record || fixed)
+            || is_static_value(&self.types, ty)
+            || self.holds_map(ty)
+        {
             return None;
         }
         let temp = format!("#set{}", self.syms.len());
@@ -1065,17 +1080,50 @@ impl Checker {
             sym: None,
             part_syms: Vec::new(),
         }];
-        for field in &t.fields {
-            let mut path = path.clone();
-            path.push(field.name.clone());
+        let at = |i: u16| Expr::Lit {
+            line,
+            col,
+            lit: Lit::Nat(Word::from_u64(u64::from(i))),
+            ty: 0,
+        };
+        let parts: Vec<(Vec<String>, Option<Expr>, Expr)> = if fixed {
+            (0..t.bits)
+                .map(|i| {
+                    let value = Expr::Index {
+                        line,
+                        col,
+                        base: Box::new(path_expr(line, col, std::slice::from_ref(&temp))),
+                        index: Box::new(at(i)),
+                        root: None,
+                        leaf: 0,
+                        ty: 0,
+                    };
+                    (path.clone(), Some(at(i)), value)
+                })
+                .collect()
+        } else {
+            t.fields
+                .iter()
+                .map(|field| {
+                    let mut path = path.clone();
+                    path.push(field.name.clone());
+                    (
+                        path,
+                        None,
+                        path_expr(line, col, &[temp.clone(), field.name.clone()]),
+                    )
+                })
+                .collect()
+        };
+        for (path, index, expr) in parts {
             stmts.push(Stmt::Assign {
                 line,
                 col,
                 path,
-                index: None,
+                index,
                 keys: Vec::new(),
                 fields: Vec::new(),
-                expr: path_expr(line, col, &[temp.clone(), field.name.clone()]),
+                expr,
                 root: None,
                 leaf: 0,
                 target: None,

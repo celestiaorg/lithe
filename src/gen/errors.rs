@@ -117,17 +117,18 @@ impl<'a> Gen<'a> {
         };
         let sel = self.checked.errors[index].selector;
         match &raised.form {
-            RaisedForm::Unit => self.revert_error(sel, &[]),
-            RaisedForm::Positional(expr) => self.revert_error(sel, &[expr]),
+            RaisedForm::Unit => self.revert_error(sel, &[], false),
+            // A record payload is the error's parameters, one per field.
+            RaisedForm::Positional(expr) => self.revert_error(sel, &[expr], true),
             RaisedForm::Fields(fields) => {
                 let args: Vec<&Expr> = fields.iter().map(|(_, expr)| expr).collect();
-                self.revert_error(sel, &args)
+                self.revert_error(sel, &args, false)
             }
         }
     }
 
     /// Arguments are computed first. Then the error is laid out from byte 28 and reverted.
-    fn revert_error(&mut self, sel: [u8; 4], args: &[&Expr]) -> Result<(), Error> {
+    fn revert_error(&mut self, sel: [u8; 4], args: &[&Expr], spread: bool) -> Result<(), Error> {
         // The shared helper lays out lists of words; a list of strings or bytes has tails of
         // its own.
         let blobs = |g: &Self, ty: usize| g.list_value(ty) && g.abi_dyn(g.list_elem(ty));
@@ -135,7 +136,7 @@ impl<'a> Gen<'a> {
             .iter()
             .any(|arg| self.tree_part(arg.ty()) || blobs(self, arg.ty()))
         {
-            return self.revert_tree(sel, args);
+            return self.revert_tree(sel, args, spread);
         }
         if args
             .iter()
@@ -168,8 +169,8 @@ impl<'a> Gen<'a> {
 
     /// A payload with records, tuples, fixed lists, or nested dynamic values, encoded as
     /// `Abi.encode` would, after the selector.
-    fn revert_tree(&mut self, sel: [u8; 4], args: &[&Expr]) -> Result<(), Error> {
-        self.tree_encode_exprs(args, false)?;
+    fn revert_tree(&mut self, sel: [u8; 4], args: &[&Expr], spread: bool) -> Result<(), Error> {
+        self.tree_encode_exprs(args, spread)?;
         self.mload(self.scratch_a);
         self.mstore_off(self.scratch_b);
         self.push_u64(u64::from(u32::from_be_bytes(sel)));

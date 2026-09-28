@@ -111,7 +111,11 @@ is {
 }
 ```
 
-The default transient record is accessed as `transient.x`, and a named one as `name.x`. Transient storage is never part of the persistent layout or the upgrade layout, and it has no ERC-7201 id. Use it for flags and bookkeeping that only need to live for one transaction. For reentrancy locks, use [`nonreentrant`](/language/reentrancy), which is built on transient storage already.
+The default transient record is accessed as `transient.x`, and a named one as `name.x`. A transient field holds a fixed-size value (a word, or a record, tuple, fixed list, option, or variant of fixed-size values) or a map of them. Transient storage is never part of the persistent layout or the upgrade layout, and it has no ERC-7201 id. Use it for flags and bookkeeping that only need to live for one transaction. For reentrancy locks, use [`nonreentrant`](/language/reentrancy), which is built on transient storage already.
+
+Transient storage doesn't pack. Every word of a transient value takes a slot of its own: a `bool` or a `uint8` field, each element of a fixed list, and each word of a map's value. `TLOAD` and `TSTORE` cost 100 gas whatever the slot holds, so a shared slot saves nothing by itself. Writing one field of a packed slot takes a `TLOAD`, a mask, and a `TSTORE` instead of one `TSTORE`, and reading one takes a shift and a mask. A slot per word gives the smallest code for every access and the cheapest reads and writes of single fields. Packing would only save gas when a whole record of narrow fields is read or written at once.
+
+Transient slots 0 and 1 hold the reentrancy lock and the upgrade gate. The contract's own transient records follow from slot 2, in order. A module's record starts at a slot derived from its name, so it is the same in every contract that uses the module. `lithe storage` prints each field's transient slots.
 
 ## Immutables
 
@@ -229,8 +233,8 @@ A field holds a word: an integer of any width, `bool`, `address`, an interface, 
 | integers, `bool`, `address`, `bytesN`, `wei`, `timestamp`, interfaces | yes |
 | `string`, `bytes` | yes |
 | records, tuples | yes, packed |
-| `list(T)`, `list(T, n)` | yes, for word-sized `T`, strings, bytes, or a fixed-size record, tuple, or option. A record element packs like a struct in a Solidity array. A list of lists, or of records or tuples with strings, bytes, or lists in them, is a value but not yet storage |
-| `map(K, V)` | yes. `V` is a word, a map, a list, an option, or a record, which may hold maps, lists, and strings itself |
+| `list(T)`, `list(T, n)` | yes, for any value `T`: words, strings, bytes, records, tuples, options, and other lists, laid out as a Solidity array. Elements narrower than 32 bytes share slots, low bytes first, as many as fit: 32 `uint8`s or `bool`s, 16 `uint16`s, one `address`. A record element starts a slot and packs like a struct in a Solidity array |
+| `map(K, V)` | yes. `K` is a word, a string, or bytes. `V` is a word, a map, a list, an option, a tuple, or a record, which may hold maps, lists, and strings itself |
 | `option(T)` | yes. One slot when `T` is narrower than 32 bytes. Otherwise a tag slot, then `T`'s slots |
 | variants | yes. One byte when no case has a payload, packed. Otherwise laid out as a record: the case's index packed with the narrow payload words, then the rest. See [Variants](/language/types#representation-1) |
 

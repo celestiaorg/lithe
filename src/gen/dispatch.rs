@@ -778,7 +778,7 @@ impl<'a> Gen<'a> {
     fn migrate_body(&mut self, label: u32, func: usize) -> Result<(), Error> {
         let bad = self.fresh();
         self.enter(label, false);
-        self.push_u64(0);
+        self.push_u64(UPGRADE_SLOT);
         self.op(TLOAD);
         self.push_u64(1);
         self.op(EQ);
@@ -1031,7 +1031,7 @@ impl<'a> Gen<'a> {
         self.store_image();
         self.finish_body();
         self.push_u64(1);
-        self.push_u64(0);
+        self.push_u64(UPGRADE_SLOT);
         self.op(TSTORE);
         self.mload(self.scratch_to);
         self.push_word(crate::keccak::erc1967_implementation());

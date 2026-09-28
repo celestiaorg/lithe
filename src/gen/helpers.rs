@@ -90,6 +90,27 @@ impl<'a> Gen<'a> {
                     self.sub_store_records(elem, transient);
                     self.direct = was;
                 }
+                Sub::LoadPacked(pack, per, transient, direct) => {
+                    let was = std::mem::replace(&mut self.direct, direct);
+                    let result = self.sub_load_packed(pack, per, transient);
+                    self.direct = was;
+                    result?;
+                }
+                Sub::StorePacked(pack, per, transient, direct) => {
+                    let was = std::mem::replace(&mut self.direct, direct);
+                    self.sub_store_packed(pack, per, transient);
+                    self.direct = was;
+                }
+                Sub::ZeroSlots(transient, direct) => {
+                    let was = std::mem::replace(&mut self.direct, direct);
+                    self.sub_zero_slots(transient);
+                    self.direct = was;
+                }
+                Sub::ClearElems(elem, transient, direct) => {
+                    let was = std::mem::replace(&mut self.direct, direct);
+                    self.sub_clear_elems(elem, transient);
+                    self.direct = was;
+                }
                 Sub::LoadSlotBytes(transient, direct) => {
                     let was = std::mem::replace(&mut self.direct, direct);
                     let result = self.sub_load_slot_bytes(transient);
@@ -289,36 +310,40 @@ impl<'a> Gen<'a> {
         Ok(())
     }
 
+    /// Pushes where the journal starts and ends. It starts in its own region, and moves to
+    /// the heap once that fills. Each entry is a slot and its value.
+    fn journal_span(&mut self) {
+        self.push_mem(self.journal_base);
+        self.mload(self.journal_at);
+        self.op(ADD);
+        self.op(DUP1);
+        self.mload(self.journal_len);
+        self.op(ADD);
+    }
+
     /// `[slot, ret]` becomes `[value]`: the newest journal entry for the slot, else storage.
     fn sub_journal_load(&mut self) {
         let loop_l = self.fresh();
-        let hit = self.fresh();
         let miss = self.fresh();
         self.op(SWAP1);
-        self.mload(self.journal_count);
+        self.journal_span();
+        // [ret, slot, start, entry]
         self.jumpdest(loop_l);
-        self.op(DUP1);
-        self.op(ISZERO);
+        self.op(DUP1 + 1);
+        self.op(DUP1 + 1);
+        self.op(EQ);
         self.push_label(miss);
         self.op(JUMPI);
-        self.push_u64(1);
+        self.push_u64(64);
         self.op(SWAP1);
         self.op(SUB);
-        self.op(DUP1);
-        self.push_u64(64);
-        self.op(MUL);
-        self.push_mem(self.journal_base);
-        self.op(ADD);
         self.op(DUP1);
         self.op(MLOAD);
         self.op(DUP1 + 3);
         self.op(EQ);
-        self.push_label(hit);
-        self.op(JUMPI);
-        self.op(POP);
+        self.op(ISZERO);
         self.push_label(loop_l);
-        self.op(JUMP);
-        self.jumpdest(hit);
+        self.op(JUMPI);
         self.push_u64(32);
         self.op(ADD);
         self.op(MLOAD);
@@ -328,45 +353,39 @@ impl<'a> Gen<'a> {
         self.op(SWAP1);
         self.op(JUMP);
         self.jumpdest(miss);
+        self.op(POP);
         self.op(POP);
         self.op(SLOAD);
         self.op(SWAP1);
         self.op(JUMP);
     }
 
-    /// `[value, slot, ret]` becomes `[]`. Updates the slot's entry or appends one.
+    /// `[value, slot, ret]` becomes `[]`. Updates the slot's entry or appends one. A journal
+    /// of `MAX_JOURNAL` entries, or of any larger power of two, is full: it moves to the heap,
+    /// into twice the space.
     fn sub_journal_store(&mut self) {
         let loop_l = self.fresh();
-        let hit = self.fresh();
         let miss = self.fresh();
-        let full = self.fail_label(None);
+        let room = self.fresh();
         self.op(SWAP1 + 1);
-        // [ret, slot, value]
-        self.mload(self.journal_count);
+        self.journal_span();
+        // [ret, slot, value, start, entry]
         self.jumpdest(loop_l);
-        self.op(DUP1);
-        self.op(ISZERO);
+        self.op(DUP1 + 1);
+        self.op(DUP1 + 1);
+        self.op(EQ);
         self.push_label(miss);
         self.op(JUMPI);
-        self.push_u64(1);
+        self.push_u64(64);
         self.op(SWAP1);
         self.op(SUB);
-        self.op(DUP1);
-        self.push_u64(64);
-        self.op(MUL);
-        self.push_mem(self.journal_base);
-        self.op(ADD);
         self.op(DUP1);
         self.op(MLOAD);
         self.op(DUP1 + 4);
         self.op(EQ);
-        self.push_label(hit);
-        self.op(JUMPI);
-        self.op(POP);
+        self.op(ISZERO);
         self.push_label(loop_l);
-        self.op(JUMP);
-        self.jumpdest(hit);
-        // [ret, slot, value, i, entry]
+        self.op(JUMPI);
         self.op(SWAP1);
         self.op(POP);
         self.push_u64(32);
@@ -375,29 +394,49 @@ impl<'a> Gen<'a> {
         self.op(POP);
         self.op(JUMP);
         self.jumpdest(miss);
-        // [ret, slot, value, 0]
+        // [ret, slot, value, start, start]
         self.op(POP);
-        self.mload(self.journal_count);
-        self.push_u64(MAX_JOURNAL as u64);
-        self.op(EQ);
-        self.push_label(full);
+        self.mload(self.journal_len);
+        // Full when `len & (len - full)` is zero and `len` is not: `len` is `full` times a
+        // power of two.
+        self.op(DUP1);
+        self.push_u64(MAX_JOURNAL as u64 * 64);
+        self.op(DUP1 + 1);
+        self.op(SUB);
+        self.op(AND);
+        self.op(DUP1 + 1);
+        self.op(ISZERO);
+        self.op(OR);
+        self.push_label(room);
         self.op(JUMPI);
-        self.mload(self.journal_count);
-        self.push_u64(64);
-        self.op(MUL);
-        self.push_mem(self.journal_base);
+        // [ret, slot, value, start, len]
+        self.op(DUP1);
+        self.op(DUP1);
         self.op(ADD);
-        // [ret, slot, value, entry]
+        self.call_sub(Sub::AllocBlob);
+        self.op(DUP1 + 1);
+        self.op(DUP1 + 3);
+        self.op(DUP1 + 2);
+        self.op(MCOPY);
+        self.op(SWAP1 + 1);
+        self.op(POP);
+        self.push_mem(self.journal_base);
+        self.op(DUP1 + 2);
+        self.op(SUB);
+        self.mstore_off(self.journal_at);
+        self.jumpdest(room);
+        // [ret, slot, value, start, len]
+        self.op(DUP1);
+        self.push_u64(64);
+        self.op(ADD);
+        self.mstore_off(self.journal_len);
+        self.op(ADD);
         self.op(SWAP1);
         self.op(DUP1 + 1);
         self.push_u64(32);
         self.op(ADD);
         self.op(MSTORE);
         self.op(MSTORE);
-        self.mload(self.journal_count);
-        self.push_u64(1);
-        self.op(ADD);
-        self.mstore_off(self.journal_count);
         self.op(JUMP);
     }
 
@@ -405,30 +444,28 @@ impl<'a> Gen<'a> {
     fn sub_journal_flush(&mut self) {
         let loop_l = self.fresh();
         let done = self.fresh();
-        self.op(PUSH0);
+        self.journal_span();
+        self.op(SWAP1);
+        // [ret, end, entry]
         self.jumpdest(loop_l);
-        self.op(DUP1);
-        self.mload(self.journal_count);
+        self.op(DUP1 + 1);
+        self.op(DUP1 + 1);
         self.op(EQ);
         self.push_label(done);
         self.op(JUMPI);
         self.op(DUP1);
-        self.push_u64(64);
-        self.op(MUL);
-        self.push_mem(self.journal_base);
-        self.op(ADD);
-        self.op(DUP1);
         self.push_u64(32);
         self.op(ADD);
         self.op(MLOAD);
-        self.op(SWAP1);
+        self.op(DUP1 + 1);
         self.op(MLOAD);
         self.op(SSTORE);
-        self.push_u64(1);
+        self.push_u64(64);
         self.op(ADD);
         self.push_label(loop_l);
         self.op(JUMP);
         self.jumpdest(done);
+        self.op(POP);
         self.op(POP);
         self.op(JUMP);
     }

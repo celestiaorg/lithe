@@ -92,7 +92,7 @@ external function open() is { storage.open := true; }
     assert!(!paid.reverted, "{}", pretty(&paid.returndata));
     // A `nonreentrant` receive is refused while the lock is held.
     let mut locked = HashMap::new();
-    locked.insert(Word::from_u64(1), Word::from_u64(1));
+    locked.insert(Word::from_u64(0), Word::from_u64(1));
     let refused = exec_state(
         &runtime,
         &[],

@@ -25,7 +25,7 @@ A block is a sequence of statements in braces, each ending with `;`:
 
 ## Bindings
 
-`const` binds a value that never changes. `var` binds a value that `:=` can reassign. Every binding states its type, and names cannot shadow other names in scope.
+`const` binds a value that never changes. `var` binds a value that `:=` can reassign, whole or in part: a record's field (`p.x := v`) or a list's element (`xs[i] := v`). Either can hold any value, records, tuples, fixed lists, and variants included. Every binding states its type, and names cannot shadow other names in scope.
 
 ```lithe
 storage is record {

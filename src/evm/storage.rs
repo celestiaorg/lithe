@@ -713,3 +713,650 @@ external function journaled(const me : Me) is {
         assert_eq!(slot(&out.storage, 4), w(3 * len as u64), "journaled {len}");
     }
 }
+
+#[test]
+fn string_and_bytes_keys_hash_like_solidity() {
+    let src = r#"
+storage is record { pre : uint8; names : map(string, nat); raw : map(address, map(bytes, nat)); }
+external function set(const k : string; const v : nat) is { storage.names[k] := v; }
+external function set_raw(const k : bytes; const v : nat) is { storage.raw[Evm.sender()][k] := v; }
+external view function get(const k : string) : nat is storage.names[k]
+"#;
+    let rt = deploy(&compile(src).expect("compile")).expect("deploy");
+    let n = Word::from_u64;
+    let slot_of = |key: &[u8], slot: Word| {
+        let mut buf = key.to_vec();
+        buf.extend(slot.to_be_bytes());
+        Word::from_be_bytes(keccak256(&buf))
+    };
+    let call = |st: &HashMap<Word, Word>, sig: &str, args: &[Arg]| {
+        let out = exec(&rt, &encode_args(sig, args), st.clone(), n(1), n(0), n(0)).expect("exec");
+        assert!(!out.reverted, "{sig}: {}", pretty(&out.returndata));
+        out
+    };
+    let long = b"a key that is longer than thirty-two bytes, to spill".to_vec();
+    let mut st = HashMap::new();
+    for (k, v) in [(b"".to_vec(), 1), (b"hi".to_vec(), 2), (long.clone(), 3)] {
+        st = call(
+            &st,
+            "set(string,uint256)",
+            &[Arg::B(k.clone()), Arg::W(n(v))],
+        )
+        .storage;
+        assert_eq!(st.get(&slot_of(&k, n(1))).copied(), Some(n(v)));
+        st = call(
+            &st,
+            "set_raw(bytes,uint256)",
+            &[Arg::B(k.clone()), Arg::W(n(v + 10))],
+        )
+        .storage;
+        assert_eq!(
+            st.get(&slot_of(&k, map_key(n(1), n(2)))).copied(),
+            Some(n(v + 10))
+        );
+    }
+    for (k, v) in [(b"".to_vec(), 1), (b"hi".to_vec(), 2), (long, 3)] {
+        let out = call(&st, "get(string)", &[Arg::B(k)]).returndata;
+        assert_eq!(load_bytes(&out, 0), n(v));
+    }
+}
+
+#[test]
+fn nested_stored_lists_lay_out_like_solidity() {
+    let src = r#"
+type doc is record { n : uint8; s : string; xs : list(nat); }
+storage is record { pre : uint8; xs : list(list(nat)); ds : list(doc); t : (uint8, string); post : uint8; }
+external function put() is {
+  List.push(storage.xs, [1n, 2n]);
+  List.push(storage.xs, []);
+  List.push(storage.xs[1], 7n);
+  List.push(storage.ds, { n = 5; s = "a string that is longer than thirty-two bytes, to spill"; xs = [9n]; });
+  storage.ds[0].n := 6;
+  storage.t := (uint8(3), "hi");
+}
+external function pop() is { List.pop(storage.xs); List.pop(storage.ds); }
+external function whole() is { storage.xs := [[3n], [4n, 5n, 6n]]; }
+external view function get() : list(list(nat)) is storage.xs
+external view function doc0() : (uint8, string, list(nat)) is { const d : doc := storage.ds[0]; } with (d.n, d.s, d.xs)
+"#;
+    let rt = deploy(&compile(src).expect("compile")).expect("deploy");
+    let n = Word::from_u64;
+    let at = |st: &HashMap<Word, Word>, key: Word| st.get(&key).copied().unwrap_or(n(0));
+    let elems = |slot: Word| Word::from_be_bytes(keccak256(&slot.to_be_bytes()));
+    let words = |out: &[u8]| {
+        (0..out.len() / 32)
+            .map(|i| load_bytes(out, i * 32))
+            .collect::<Vec<_>>()
+    };
+    let st = run_ok(&rt, &HashMap::new(), "put()", &[]).storage;
+    // `xs` at slot 1: its length, then each inner list's length at `keccak(1) + i` and
+    // its elements from `keccak(keccak(1) + i)`.
+    assert_eq!(at(&st, n(1)), n(2));
+    let inner = |i: u64| elems(n(1)).wrapping_add(n(i));
+    assert_eq!((at(&st, inner(0)), at(&st, inner(1))), (n(2), n(1)));
+    assert_eq!(at(&st, elems(inner(0)).wrapping_add(n(1))), n(2));
+    assert_eq!(at(&st, elems(inner(1))), n(7));
+    let out = run_ok(&rt, &st, "get()", &[]).returndata;
+    assert_eq!(words(&out), [32, 2, 64, 160, 2, 1, 2, 1, 7].map(n));
+    // `ds` at slot 2: each element three slots from `keccak(2)`, a struct's layout.
+    let doc = elems(n(2));
+    let long = b"a string that is longer than thirty-two bytes, to spill";
+    assert_eq!(at(&st, doc), n(6));
+    assert_eq!(
+        at(&st, doc.wrapping_add(n(1))),
+        n(long.len() as u64 * 2 + 1)
+    );
+    assert_eq!(
+        &at(&st, elems(doc.wrapping_add(n(1)))).to_be_bytes()[..],
+        &long[..32]
+    );
+    assert_eq!(at(&st, elems(doc.wrapping_add(n(2)))), n(9));
+    let out = run_ok(&rt, &st, "doc0()", &[]).returndata;
+    assert_eq!(load_bytes(&out, 32), n(6));
+    assert_eq!(&out[160..160 + long.len()], &long[..]);
+    // `t` at slots 3-4: the `uint8`, then the string's slot.
+    assert_eq!(at(&st, n(3)), n(3));
+    let mut hi = [0u8; 32];
+    hi[..2].copy_from_slice(b"hi");
+    hi[31] = 4;
+    assert_eq!(at(&st, n(4)), Word::from_be_bytes(hi));
+    // A whole list replaces the old, and a shorter inner list clears what it no longer uses.
+    let st = run_ok(&rt, &st, "whole()", &[]).storage;
+    assert_eq!(
+        words(&run_ok(&rt, &st, "get()", &[]).returndata),
+        [32, 2, 64, 128, 1, 3, 3, 4, 5, 6].map(n)
+    );
+    assert_eq!(at(&st, elems(inner(0)).wrapping_add(n(1))), n(0));
+    let st = run_ok(&rt, &st, "pop()", &[]).storage;
+    assert_eq!((at(&st, n(1)), at(&st, inner(1))), (n(1), n(0)));
+    assert_eq!(
+        (at(&st, n(2)), at(&st, doc), at(&st, doc.wrapping_add(n(1)))),
+        (n(0), n(0), n(0))
+    );
+}
+
+/// Every word of a transient value takes a slot of its own, map values included: after
+/// the lock and the upgrade gate, fields in order, and a map's value from its hash on.
+#[test]
+fn transient_storage_takes_a_slot_per_word() {
+    let src = r#"
+type flags is record { on : bool; depth : uint8; count : uint16; }
+type pt is record { a : uint8; b : address; c : int16; d : nat; }
+type box is | Empty | Full of uint8 | Other of nat
+transient storage is record {
+  on : bool;
+  f : flags;
+  t : (uint16, address);
+  xs : list(uint8, 8);
+  ps : list(pt, 2);
+  o : option(nat);
+  o8 : option(uint8);
+  b : box;
+  m : map(nat, flags);
+  mm : map(address, map(nat, uint8));
+  ml : map(nat, list(uint8, 3));
+}
+storage is record { out : nat; }
+external function run(const i : nat) : (uint8, uint8, int16, uint16, uint8, uint8, nat, uint16) is {
+  transient.on := true;
+  transient.f := { on = true; depth = 2; count = 300; };
+  transient.f.depth := 4;
+  transient.t := (uint16(7), Evm.sender());
+  transient.xs[i] := 9;
+  transient.xs[2] := 7;
+  transient.ps[i - 4n] := { a = 1; b = Evm.sender(); c = -2; d = 3n; };
+  transient.ps[1].c := -5;
+  transient.o := Some(11n);
+  transient.o8 := Some(uint8(6));
+  transient.b := Full(uint8(8));
+  transient.m[4n] := { on = true; depth = 5; count = 500; };
+  transient.m[4n].count := 600;
+  transient.mm[Evm.sender()][3n] := 12;
+  transient.ml[6n][i - 3n] := 13;
+  const whole : list(uint8, 8) := transient.xs;
+  const p : pt := transient.ps[1];
+  const e : flags := transient.m[4n];
+  const (u, _) : (uint16, address) := transient.t;
+} with (transient.f.depth, whole[5], p.c, e.count, transient.ml[6n][2], transient.mm[Evm.sender()][3n],
+  case transient.o of { Some(v) -> v | None -> 0n }, u)
+"#;
+    let rt = deploy(&compile(src).expect("compile")).expect("deploy");
+    let n = Word::from_u64;
+    let neg = |x: u64| n(0).wrapping_sub(n(x));
+    let out = run_ok(&rt, &HashMap::new(), "run(uint256)", &[n(5)]);
+    assert!(
+        out.storage.is_empty(),
+        "transient writes stay out of storage"
+    );
+    let words: Vec<Word> = (0..8)
+        .map(|i| load_bytes(&out.returndata, i * 32))
+        .collect();
+    assert_eq!(
+        words,
+        [n(4), n(9), neg(5), n(600), n(13), n(12), n(11), n(7)]
+    );
+    let m = map_key(n(4), n(29));
+    let want: HashMap<Word, Word> = [
+        (n(2), n(1)),
+        // `f`, written whole and then by field.
+        (n(3), n(1)),
+        (n(4), n(4)),
+        (n(5), n(300)),
+        (n(6), n(7)),
+        (n(7), n(1)),
+        // `xs` from slot 8, `ps` from 16, four slots to an element.
+        (n(10), n(7)),
+        (n(13), n(9)),
+        (n(20), n(1)),
+        (n(21), n(1)),
+        (n(22), neg(5)),
+        (n(23), n(3)),
+        // `Some` of a word is a tag and the word; of a narrow value, the value flipped.
+        (n(24), n(1)),
+        (n(25), n(11)),
+        (n(26), n(6).not()),
+        (n(27), n(1)),
+        (n(28), n(8)),
+        (m, n(1)),
+        (m.wrapping_add(n(1)), n(5)),
+        (m.wrapping_add(n(2)), n(600)),
+        (map_key(n(3), map_key(n(1), n(30))), n(12)),
+        (map_key(n(6), n(31)).wrapping_add(n(2)), n(13)),
+    ]
+    .into();
+    let got: HashMap<Word, Word> = out
+        .transient
+        .into_iter()
+        .filter(|(_, v)| !v.is_zero())
+        .collect();
+    assert_eq!(got, want);
+}
+
+/// A fixed list in a map's value packs as it does anywhere else, however it is reached.
+#[test]
+fn fixed_lists_in_maps_pack_like_solidity() {
+    let src = r#"
+storage is record { m : map(nat, list(uint8, 3)); }
+external function set(const i : nat; const v : uint8) is { storage.m[1n][i] := v; }
+external view function get() : list(uint8, 3) is storage.m[1n]
+"#;
+    let rt = deploy(&compile(src).expect("compile")).expect("deploy");
+    let n = Word::from_u64;
+    let st = run_ok(&rt, &HashMap::new(), "set(uint256,uint8)", &[n(1), n(7)]).storage;
+    let st = run_ok(&rt, &st, "set(uint256,uint8)", &[n(2), n(9)]).storage;
+    assert_eq!(st, [(map_key(n(1), n(0)), n(0x09_07_00))].into());
+    let got = run_ok(&rt, &st, "get()", &[]).returndata;
+    assert_eq!((load_bytes(&got, 32), load_bytes(&got, 64)), (n(7), n(9)));
+}
+
+/// Stored lists of elements narrower than half a slot pack as Solidity's arrays do: as
+/// many to a slot as fit, low bytes first, pushed, popped, written, and replaced whole.
+#[test]
+fn narrow_stored_lists_pack_like_solidity() {
+    let src = r#"
+interface Echo is { view function echo(x : nat) : nat; }
+storage is record { pre : uint8; a : list(uint8); b : list(uint16); c : list(address); d : list(bool); e : list(uint8, 3); f : list(int8); g : map(nat, list(uint16)); h : list(list(uint8)); post : uint8; }
+external function fence() is { storage.pre := 0xa5; storage.post := 0x5a; }
+external function push(const x : uint8; const y : uint16; const z : bool; const w : int8) is { pushes(x, y, z, w); }
+external function push_ask(const x : uint8; const y : uint16; const z : bool; const w : int8) : nat is { pushes(x, y, z, w); } with query Echo(address(0xcd)).echo(storage.a.length)
+function pushes(const x : uint8; const y : uint16; const z : bool; const w : int8) is {
+  List.push(storage.a, x); List.push(storage.b, y); List.push(storage.d, z); List.push(storage.f, w);
+  List.push(storage.g[5n], y);
+  if storage.h.length = 0 then { List.push(storage.h, []); }
+  List.push(storage.h[0], x);
+}
+external function push_c(const who : address) is { List.push(storage.c, who); }
+external function pop() is { pops(); }
+external function pop_ask() : nat is { pops(); } with query Echo(address(0xcd)).echo(storage.a.length)
+function pops() is { List.pop(storage.a); List.pop(storage.b); List.pop(storage.d); List.pop(storage.f);
+  List.pop(storage.g[5n]); List.pop(storage.h[0]);
+}
+external function set(const i : nat; const x : uint8; const w : int8) is { sets(i, x, w); }
+external function set_ask(const i : nat; const x : uint8; const w : int8) : nat is { sets(i, x, w); } with query Echo(address(0xcd)).echo(nat(storage.a[i]))
+function sets(const i : nat; const x : uint8; const w : int8) is { storage.a[i] := x; storage.f[i] := w; storage.h[0][i] := x; }
+external function set_e(const i : nat; const v : uint8) is { storage.e[i] := v; }
+external function assign(const xs : list(uint8)) is { storage.a := xs; storage.h[0] := xs; }
+external function assign_ask(const xs : list(uint8)) : nat is { storage.a := xs; storage.h[0] := xs; } with query Echo(address(0xcd)).echo(storage.a.length)
+external view function a() : list(uint8) is storage.a
+external view function b() : list(uint16) is storage.b
+external view function f() : list(int8) is storage.f
+external view function g() : list(uint16) is storage.g[5n]
+external view function h() : list(uint8) is storage.h[0]
+external view function deep(const i : nat) : (uint16, uint8) is (storage.g[5n][i], storage.h[0][i])
+external view function at(const i : nat) : (uint8, uint16, bool, int8) is (storage.a[i], storage.b[i], storage.d[i], storage.f[i])
+external view function sum() : nat is { var s : nat := 0n; for x : uint8 in storage.a do { s := s + nat(x); } } with s
+"#;
+    install_mocks();
+    let rt = deploy(&compile(src).expect("compile")).expect("deploy");
+    let n = Word::from_u64;
+    let elems = |slot: u64| Word::from_be_bytes(keccak256(&n(slot).to_be_bytes()));
+    // Solidity's layout of each list: its length at its slot, its elements from `keccak(slot)`.
+    let expect = |a: &[u64], b: &[u64], c: &[u64], d: &[u64], e: &[u64; 3], f: &[i64]| {
+        let mut want: HashMap<Word, Word> = HashMap::new();
+        let mut put = |slot: Word, value: Word| {
+            let old = want.get(&slot).copied().unwrap_or(n(0));
+            want.insert(slot, old.bitor(value));
+        };
+        put(n(0), n(0xa5));
+        put(n(9), n(0x5a));
+        let mut list = |slot: Word, width: u32, xs: Vec<Word>| {
+            put(slot, n(xs.len() as u64));
+            let per = 32 / width as usize;
+            let mask = Word::from_u64(0).not().shr(256 - 8 * width);
+            for (i, x) in xs.into_iter().enumerate() {
+                let at = Word::from_be_bytes(keccak256(&slot.to_be_bytes()))
+                    .wrapping_add(n((i / per) as u64));
+                put(at, x.bitand(mask).shl(8 * width * (i % per) as u32));
+            }
+        };
+        list(n(1), 1, a.iter().map(|&x| n(x)).collect());
+        list(n(2), 2, b.iter().map(|&x| n(x)).collect());
+        list(n(3), 20, c.iter().map(|&x| n(x)).collect());
+        list(n(4), 1, d.iter().map(|&x| n(x)).collect());
+        list(n(6), 1, f.iter().map(|&x| n(x as u8 as u64)).collect());
+        // `g[5]` holds a copy of `b`, from `keccak(5 . 7)`; `h[0]` a copy of `a`.
+        list(map_key(n(5), n(7)), 2, b.iter().map(|&x| n(x)).collect());
+        list(elems(8), 1, a.iter().map(|&x| n(x)).collect());
+        put(n(8), n(1));
+        for (i, &x) in e.iter().enumerate() {
+            put(n(5), n(x).shl(8 * i as u32));
+        }
+        want.retain(|_, v| !v.is_zero());
+        want
+    };
+    let live = |st: &HashMap<Word, Word>| {
+        let mut st = st.clone();
+        st.retain(|_, v| !v.is_zero());
+        st
+    };
+    let words = |out: &[u8]| {
+        (0..out.len() / 32)
+            .map(|i| load_bytes(out, i * 32))
+            .collect::<Vec<_>>()
+    };
+    let signed = |x: i64| {
+        if x < 0 {
+            n(0).wrapping_sub(n(x.unsigned_abs()))
+        } else {
+            n(x as u64)
+        }
+    };
+
+    let mut st = run_ok(&rt, &HashMap::new(), "fence()", &[]).storage;
+    let (mut a, mut b, mut c, mut d, mut e, mut f) = (
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        [0u64; 3],
+        Vec::new(),
+    );
+    for i in 0..40u64 {
+        let (x, y, z, w) = (
+            i + 1,
+            0x101 * (i + 1),
+            u64::from(i % 3 == 0),
+            -(i as i64) + 3,
+        );
+        st = run_ok(
+            &rt,
+            &st,
+            "push(uint8,uint16,bool,int8)",
+            &[n(x), n(y), n(z), signed(w)],
+        )
+        .storage;
+        a.push(x);
+        b.push(y);
+        d.push(z);
+        f.push(w);
+    }
+    for who in [0xabcd_u64, 0x1234] {
+        st = run_ok(&rt, &st, "push_c(address)", &[n(who)]).storage;
+        c.push(who);
+    }
+    for (i, v) in [(0u64, 7u64), (2, 255)] {
+        st = run_ok(&rt, &st, "set_e(uint256,uint8)", &[n(i), n(v)]).storage;
+        e[i as usize] = v;
+    }
+    assert_eq!(live(&st), expect(&a, &b, &c, &d, &e, &f), "pushed");
+    // The first slot of `a` holds 1..=32, low bytes first; the second 33..=40.
+    let first: Vec<u8> = (1..=32).rev().collect();
+    assert_eq!(st[&elems(1)].to_be_bytes().to_vec(), first);
+    let out = run_ok(&rt, &st, "at(uint256)", &[n(35)]).returndata;
+    assert_eq!(words(&out), [n(36), n(0x101 * 36), n(0), signed(-32)]);
+    let out = run_ok(&rt, &st, "a()", &[]).returndata;
+    assert_eq!(
+        words(&out)[2..],
+        a.iter().map(|&x| n(x)).collect::<Vec<_>>()[..]
+    );
+    let out = run_ok(&rt, &st, "f()", &[]).returndata;
+    assert_eq!(
+        words(&out)[2..],
+        f.iter().map(|&x| signed(x)).collect::<Vec<_>>()[..]
+    );
+    assert_eq!(read_ok(&rt, &st, "sum()", &[]), n(a.iter().sum()));
+    let out = run_ok(&rt, &st, "deep(uint256)", &[n(35)]).returndata;
+    assert_eq!(words(&out), [n(0x101 * 36), n(36)]);
+    for (sig, xs) in [("g()", &b), ("h()", &a)] {
+        let out = run_ok(&rt, &st, sig, &[]).returndata;
+        assert_eq!(
+            words(&out)[2..],
+            xs.iter().map(|&x| n(x)).collect::<Vec<_>>()[..]
+        );
+    }
+    assert!(
+        exec(
+            &rt,
+            &word_data("at(uint256)", &[n(40)]),
+            st.clone(),
+            n(1),
+            n(0),
+            n(0)
+        )
+        .unwrap()
+        .reverted
+    );
+
+    // Popping down past a slot boundary clears each element's bytes, and pushing again
+    // fills the part-full slot, directly and through the journal.
+    for i in 0..9 {
+        st = run_ok(&rt, &st, ["pop()", "pop_ask()"][i % 2], &[]).storage;
+        a.pop();
+        b.pop();
+        d.pop();
+        f.pop();
+    }
+    assert_eq!(live(&st), expect(&a, &b, &c, &d, &e, &f), "popped");
+    st = run_ok(
+        &rt,
+        &st,
+        "push_ask(uint8,uint16,bool,int8)",
+        &[n(200), n(0xffff), n(1), signed(-128)],
+    )
+    .storage;
+    a.push(200);
+    b.push(0xffff);
+    d.push(1);
+    f.push(-128);
+    st = run_ok(
+        &rt,
+        &st,
+        "set_ask(uint256,uint8,int8)",
+        &[n(5), n(0xee), signed(-2)],
+    )
+    .storage;
+    a[5] = 0xee;
+    f[5] = -2;
+    assert_eq!(live(&st), expect(&a, &b, &c, &d, &e, &f), "pushed again");
+    let out = run_ok(&rt, &st, "b()", &[]).returndata;
+    assert_eq!(
+        words(&out)[2..],
+        b.iter().map(|&x| n(x)).collect::<Vec<_>>()[..]
+    );
+
+    // A shorter list clears the slots and bytes it no longer uses; a longer one fills them.
+    let assign = |st: &HashMap<Word, Word>, xs: &[u64]| {
+        let mut args = vec![n(32), n(xs.len() as u64)];
+        args.extend(xs.iter().map(|&x| n(x)));
+        let sig = if xs.len() == 3 {
+            "assign_ask(uint8[])"
+        } else {
+            "assign(uint8[])"
+        };
+        run_ok(&rt, st, sig, &args).storage
+    };
+    // The first through the journal.
+    st = assign(&st, &[9, 8, 7]);
+    a = vec![9, 8, 7];
+    assert_eq!(live(&st), expect(&a, &b, &c, &d, &e, &f), "shrunk");
+    a = (1..=33).map(|x| x * 7 % 256).collect();
+    st = assign(&st, &a);
+    assert_eq!(live(&st), expect(&a, &b, &c, &d, &e, &f), "grown");
+    a = vec![];
+    st = assign(&st, &a);
+    assert_eq!(live(&st), expect(&a, &b, &c, &d, &e, &f), "emptied");
+}
+
+/// Popping or shrinking a stored list clears everything its elements held, as Solidity's
+/// `pop` and `delete` do: long strings' data, inner lists' elements, at any depth.
+#[test]
+fn popped_and_shrunk_elements_leave_no_data() {
+    let src = r#"
+interface Echo is { view function echo(x : nat) : nat; }
+type doc is record { n : uint8; s : string; xs : list(nat); bs : list(uint16); o : option(string); }
+type dyn is | Name of string | Nums of list(nat) | Blank
+type memo is record { s : string; xs : list(nat); }
+type note is | Gone | Plain of memo | Pair of (nat, list(string))
+storage is record {
+  xs : list(list(nat)); ys : list(list(list(uint8))); ds : list(doc); m : map(nat, list(doc));
+  ss : list(list(string)); fs : list(list(string, 2)); vs : list(dyn); os : list(option(memo));
+  ol : list(option(list(nat))); ns : list(note);
+}
+external function fill() is {
+  const long : string := "a string well past thirty-two bytes, to spill into data slots";
+  const d : doc := { n = 1; s = long; xs = [4n, 5n]; bs = [6, 7, 8]; o = Some(long); };
+  List.push(storage.xs, [1n, 2n, 3n]);
+  List.push(storage.ys, [[uint8(1), 2], [3]]);
+  List.push(storage.ds, d);
+  List.push(storage.m[3n], d);
+  List.push(storage.ss, [long, "short"]);
+  List.push(storage.fs, [long, long]);
+  List.push(storage.vs, Name(long));
+  List.push(storage.vs, Nums([1n, 2n]));
+  List.push(storage.os, Some({ s = long; xs = [3n]; }));
+  List.push(storage.ol, Some([4n, 5n]));
+  List.push(storage.ns, Plain({ s = long; xs = [6n]; }));
+  List.push(storage.ns, Pair((7n, [long])));
+}
+external function pop_all() is { pops(); }
+function pops() is {
+  List.pop(storage.xs); List.pop(storage.ys); List.pop(storage.ds); List.pop(storage.m[3n]);
+  List.pop(storage.ss); List.pop(storage.fs);
+  List.pop(storage.vs); List.pop(storage.vs); List.pop(storage.os); List.pop(storage.ol);
+  List.pop(storage.ns); List.pop(storage.ns);
+}
+external function pop_then_ask() : nat is { pops(); } with query Echo(address(0xcd)).echo(storage.xs.length)
+external function keep_one() is {
+  storage.xs := [storage.xs[0]]; storage.ys := [storage.ys[0]]; storage.ds := [storage.ds[0]];
+  storage.m[3n] := [storage.m[3n][0]]; storage.ss := [storage.ss[0]]; storage.fs := [storage.fs[0]];
+  storage.vs := [storage.vs[0], storage.vs[1]]; storage.os := [storage.os[0]];
+  storage.ol := [storage.ol[0]]; storage.ns := [storage.ns[0], storage.ns[1]];
+}
+external function clear() is {
+  storage.xs := []; storage.ys := []; storage.ds := []; storage.m[3n] := []; storage.ss := []; storage.fs := [];
+  storage.vs := []; storage.os := []; storage.ol := []; storage.ns := [];
+}
+"#;
+    install_mocks();
+    let rt = deploy(&compile(src).expect("compile")).expect("deploy");
+    let live = |st: &HashMap<Word, Word>| {
+        let mut st = st.clone();
+        st.retain(|_, v| !v.is_zero());
+        st
+    };
+    let run = |st: &HashMap<Word, Word>, sig: &str| run_ok(&rt, st, sig, &[]).storage;
+    let once = run(&HashMap::new(), "fill()");
+    assert_eq!(live(&once).len(), 85);
+    assert!(live(&run(&once, "pop_all()")).is_empty(), "popped");
+    // Through the journal: a query after the pops.
+    assert!(live(&run(&once, "pop_then_ask()")).is_empty(), "journaled");
+    let twice = run(&once, "fill()");
+    assert_eq!(
+        live(&run(&twice, "keep_one()")),
+        live(&once),
+        "shrunk to one"
+    );
+    assert!(live(&run(&twice, "clear()")).is_empty(), "cleared");
+    let popped = run(&twice, "pop_all()");
+    assert_eq!(live(&popped), live(&once), "popped one of two");
+}
+
+/// A body that queries after writing keeps its writes in a journal until it ends. However
+/// many slots it writes first, a long string, a nested list, and map entries, it succeeds,
+/// the query sees storage as it was, and the body reads its own writes back.
+#[test]
+fn journal_holds_any_number_of_slots() {
+    install_mocks();
+    let src = "\
+interface Echo is { view function echo(x : nat) : nat; }
+interface Keep is { function keep(x : nat) : nat; }
+storage is record { pre : uint8; s : string; m : map(nat, nat); xs : list(list(nat)); n : nat; }
+external view function peek() : nat is storage.s.length
+external function write(const t : string; const n : nat) is {
+  storage.s := t;
+  for i : nat in 0n .. n do { storage.m[i] := i + 1n; }
+  List.push(storage.xs, [1n, 2n, 3n, 4n, 5n, 6n, 7n, 8n, 9n, 10n]);
+  const e : nat := query Echo(address(0xcd)).echo(storage.s.length);
+  for i : nat in 0n .. n do { storage.m[i] := storage.m[i] + e; }
+  storage.n := storage.s.length + storage.xs[0n][9n] + storage.m[0n];
+}
+external view function get(const k : nat) : (nat, nat, nat, nat) is
+  (storage.m[k], storage.xs.length, storage.xs[storage.xs.length - 1n][9n], storage.n)
+external view function text() : string is storage.s
+external view function at(const k : nat) : nat is storage.m[k]
+external function phases(const n : nat) is {
+  for i : nat in 0n .. n do { storage.m[i] := i + 1n; }
+  storage.n := query Echo(address(0xcd)).echo(storage.m[0n]);
+  defer Keep(address(0xcd)).keep(n) then (k : nat) {
+    for i : nat in 0n .. k do { storage.m[i + 100n] := storage.m[i] + 1n; }
+    const f : nat := query Echo(address(0xcd)).echo(storage.m[100n]);
+    for i : nat in 0n .. k do { storage.m[i + 100n] := storage.m[i + 100n] + f; }
+  };
+}
+";
+    let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
+    let w = Word::from_u64;
+    for (len, n) in [
+        (0usize, 0u64),
+        (5, 3),
+        (40, 5),
+        (33, 8),
+        (300, 0),
+        (300, 9),
+        (500, 40),
+    ] {
+        let text = vec![0x61; len];
+        let out = exec(
+            &runtime,
+            &encode_args(
+                "write(string,uint256)",
+                &[Arg::B(text.clone()), Arg::W(w(n))],
+            ),
+            HashMap::new(),
+            w(7),
+            w(0),
+            w(0),
+        )
+        .expect("write");
+        assert!(
+            !out.reverted,
+            "write {len} {n}: {}",
+            pretty(&out.returndata)
+        );
+        let first = if n > 0 { 1 + len as u64 } else { 0 };
+        let view = |data: &[u8]| {
+            exec(&runtime, data, out.storage.clone(), w(7), w(0), w(0)).expect("view")
+        };
+        for k in 0..n {
+            let got = view(&word_data("get(uint256)", &[w(k)])).returndata;
+            let words: Vec<Word> = (0..4).map(|i| load_bytes(&got, 32 * i)).collect();
+            assert_eq!(
+                words,
+                [
+                    w(k + 1 + len as u64),
+                    w(1),
+                    w(10),
+                    w(len as u64 + 10 + first)
+                ],
+                "{len} {n} {k}"
+            );
+        }
+        let got = view(&word_data("text()", &[])).returndata;
+        assert_eq!(abi_string_value(&got), text, "{len} {n}");
+    }
+    // A continuation starts its journal over, wherever the earlier phase left it.
+    for n in [3u64, 8, 12, 20] {
+        let out = exec(
+            &runtime,
+            &word_data("phases(uint256)", &[w(n)]),
+            HashMap::new(),
+            w(7),
+            w(0),
+            w(0),
+        )
+        .expect("phases");
+        assert!(!out.reverted, "phases {n}: {}", pretty(&out.returndata));
+        for k in 0..n {
+            let got = exec(
+                &runtime,
+                &word_data("at(uint256)", &[w(k + 100)]),
+                out.storage.clone(),
+                w(7),
+                w(0),
+                w(0),
+            )
+            .expect("at");
+            assert_eq!(load_bytes(&got.returndata, 0), w(k + 4), "phases {n} {k}");
+        }
+    }
+}

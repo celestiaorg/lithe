@@ -311,7 +311,11 @@ impl<'a> Gen<'a> {
                     BinOp::Mul => (sat_mul(a.0, b.0), sat_mul(a.1, b.1)),
                     // `0 ** 0` is 1.
                     BinOp::Pow => (
-                        if a.0.is_zero() { zero } else { sat_pow(a.0, b.0) },
+                        if a.0.is_zero() {
+                            zero
+                        } else {
+                            sat_pow(a.0, b.0)
+                        },
                         sat_pow(max(a.1, Word::from_u64(1)), b.1),
                     ),
                     BinOp::Div if b.0.is_zero() => (zero, a.1),

@@ -760,7 +760,8 @@ external pure function flag8(const a : nat; const b : nat) : uint8 is uint8(a = 
 ";
     let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
     let w = Word::from_u64;
-    let out = |sig: &str, a: u64, b: u64| load_bytes(&call(&runtime, sig, &[w(a), w(b)]).returndata, 0);
+    let out =
+        |sig: &str, a: u64, b: u64| load_bytes(&call(&runtime, sig, &[w(a), w(b)]).returndata, 0);
     assert_eq!(out("below(uint256,uint256)", 1, 2), w(1));
     assert_eq!(out("below(uint256,uint256)", 2, 2), w(0));
     assert_eq!(out("flag8(uint256,uint256)", 3, 3), w(128));
@@ -803,7 +804,10 @@ external pure function ipow(const a : int; const b : nat) : int is a ** b
     let out = |runtime: &[u8], sig: &str, args: &[Word]| {
         let out = call(runtime, sig, args);
         if out.reverted {
-            assert!(out.returndata.starts_with(&selector("Panic(uint256)")), "{sig}");
+            assert!(
+                out.returndata.starts_with(&selector("Panic(uint256)")),
+                "{sig}"
+            );
             assert_eq!(load_bytes(&out.returndata, 4), w(0x11), "{sig}");
             None
         } else {
@@ -825,7 +829,10 @@ external pure function ipow(const a : int; const b : nat) : int is a ** b
         assert_eq!(pow(w(3), w(162)), None);
         assert_eq!(pow(w(1).shl(128), w(1)), Some(w(1).shl(128)));
         assert_eq!(pow(w(1).shl(128), w(2)), None);
-        assert_eq!(pow(w(1).shl(128).wrapping_sub(w(1)), w(2)), Some(w(1).shl(128).wrapping_sub(w(1)).overflowing_pow(w(2)).0));
+        assert_eq!(
+            pow(w(1).shl(128).wrapping_sub(w(1)), w(2)),
+            Some(w(1).shl(128).wrapping_sub(w(1)).overflowing_pow(w(2)).0)
+        );
     }
     for runtime in [&runtimes[0], &runtimes[2]] {
         let ipow = |a: Word, b: Word| out(runtime, "ipow(int256,uint256)", &[a, b]);
@@ -859,15 +866,30 @@ external pure function ipow(const a : int; const b : nat) : int is a ** b
     assert_eq!(out(r, "sq(uint256)", &[w(1).shl(128)]), None);
     assert_eq!(out(r, "sq(uint256)", &[w(12)]), Some(w(144)));
     assert_eq!(out(r, "isq(int256)", &[n(12)]), Some(w(144)));
-    assert_eq!(out(r, "tower(uint256,uint256,uint256)", &[w(2), w(3), w(2)]), Some(w(512)));
+    assert_eq!(
+        out(r, "tower(uint256,uint256,uint256)", &[w(2), w(3), w(2)]),
+        Some(w(512))
+    );
     assert_eq!(out(r, "neg_sq(int256)", &[w(3)]), Some(n(9)));
-    assert_eq!(out(r, "small(uint8,uint8)", &[w(15), w(7)]), Some(w(170_859_375)));
+    assert_eq!(
+        out(r, "small(uint8,uint8)", &[w(15), w(7)]),
+        Some(w(170_859_375))
+    );
 
     let folded = |expr: &str, ty: &str| {
-        compile(&format!("storage is record {{ n : nat; }}\nexternal pure function k() : {ty} is {expr}\n")).expect("compile")
+        compile(&format!(
+            "storage is record {{ n : nat; }}\nexternal pure function k() : {ty} is {expr}\n"
+        ))
+        .expect("compile")
     };
-    assert_eq!(folded("10n ** 18n", "nat"), folded("1_000_000_000_000_000_000n", "nat"));
-    assert_eq!(folded("10 ** 18", "int"), folded("1_000_000_000_000_000_000", "int"));
+    assert_eq!(
+        folded("10n ** 18n", "nat"),
+        folded("1_000_000_000_000_000_000n", "nat")
+    );
+    assert_eq!(
+        folded("10 ** 18", "int"),
+        folded("1_000_000_000_000_000_000", "int")
+    );
     assert_eq!(folded("2n ** 3n ** 2n", "nat"), folded("512n", "nat"));
 }
 
@@ -897,7 +919,10 @@ external pure function units(const d : uint8) : nat is 10n ** d
     let out = |sig: &str, e: Word| {
         let out = call(&runtime, sig, &[e]);
         if out.reverted {
-            assert!(out.returndata.starts_with(&selector("Panic(uint256)")), "{sig}");
+            assert!(
+                out.returndata.starts_with(&selector("Panic(uint256)")),
+                "{sig}"
+            );
             assert_eq!(load_bytes(&out.returndata, 4), w(0x11), "{sig}");
             None
         } else {
@@ -905,18 +930,33 @@ external pure function units(const d : uint8) : nat is 10n ** d
         }
     };
     assert_eq!(out("ten(uint256)", w(0)), Some(w(1)));
-    assert_eq!(out("ten(uint256)", w(77)), Some(w(10).overflowing_pow(w(77)).0));
+    assert_eq!(
+        out("ten(uint256)", w(77)),
+        Some(w(10).overflowing_pow(w(77)).0)
+    );
     assert_eq!(out("ten(uint256)", w(78)), None);
     assert_eq!(out("ten(uint256)", max), None);
-    assert_eq!(out("three(uint256)", w(161)), Some(w(3).overflowing_pow(w(161)).0));
+    assert_eq!(
+        out("three(uint256)", w(161)),
+        Some(w(3).overflowing_pow(w(161)).0)
+    );
     assert_eq!(out("three(uint256)", w(162)), None);
     assert_eq!(out("zero(uint256)", w(0)), Some(w(1)));
     assert_eq!(out("zero(uint256)", max), Some(w(0)));
     assert_eq!(out("one(uint256)", max), Some(w(1)));
     assert_eq!(out("minus_one(uint256)", max), Some(n(1)));
-    assert_eq!(out("minus_one(uint256)", max.wrapping_sub(w(1))), Some(w(1)));
-    assert_eq!(out("minus_ten(uint256)", w(75)), Some(w(0).wrapping_sub(w(10).overflowing_pow(w(75)).0)));
-    assert_eq!(out("minus_ten(uint256)", w(76)), Some(w(10).overflowing_pow(w(76)).0));
+    assert_eq!(
+        out("minus_one(uint256)", max.wrapping_sub(w(1))),
+        Some(w(1))
+    );
+    assert_eq!(
+        out("minus_ten(uint256)", w(75)),
+        Some(w(0).wrapping_sub(w(10).overflowing_pow(w(75)).0))
+    );
+    assert_eq!(
+        out("minus_ten(uint256)", w(76)),
+        Some(w(10).overflowing_pow(w(76)).0)
+    );
     assert_eq!(out("minus_ten(uint256)", w(77)), None);
     assert_eq!(out("minus_two(uint256)", w(255)), Some(w(1).shl(255)));
     assert_eq!(out("minus_two(uint256)", w(256)), None);
@@ -933,7 +973,10 @@ external pure function units(const d : uint8) : nat is 10n ** d
     assert_eq!(out("minus_two8(uint256)", w(8)), None);
     assert_eq!(out("three_i8(uint256)", w(4)), Some(w(81)));
     assert_eq!(out("three_i8(uint256)", w(5)), None);
-    assert_eq!(out("units(uint8)", w(77)), Some(w(10).overflowing_pow(w(77)).0));
+    assert_eq!(
+        out("units(uint8)", w(77)),
+        Some(w(10).overflowing_pow(w(77)).0)
+    );
     assert_eq!(out("units(uint8)", w(78)), None);
     assert_eq!(out("units(uint8)", w(255)), None);
 }
@@ -957,40 +1000,115 @@ external pure function ipow64(const a : int64; const b : nat) : int64 is a ** b
         (!out.reverted).then(|| load_bytes(&out.returndata, 0))
     };
     let bases = [
-        w(0), w(1), w(2), w(3), w(5), w(7), w(10), w(11), w(255), w(256), w(306), w(307), w(u64::MAX),
-        one.shl(85), one.shl(127), one.shl(128).wrapping_sub(one), one.shl(128), one.shl(128).wrapping_add(one),
-        one.shl(200), top, max,
+        w(0),
+        w(1),
+        w(2),
+        w(3),
+        w(5),
+        w(7),
+        w(10),
+        w(11),
+        w(255),
+        w(256),
+        w(306),
+        w(307),
+        w(u64::MAX),
+        one.shl(85),
+        one.shl(127),
+        one.shl(128).wrapping_sub(one),
+        one.shl(128),
+        one.shl(128).wrapping_add(one),
+        one.shl(200),
+        top,
+        max,
     ];
     let exponents = [
-        w(0), w(1), w(2), w(3), w(4), w(5), w(7), w(8), w(31), w(32), w(63), w(64), w(77), w(78),
-        w(127), w(128), w(160), w(161), w(162), w(255), w(256), w(257), one.shl(128), max,
+        w(0),
+        w(1),
+        w(2),
+        w(3),
+        w(4),
+        w(5),
+        w(7),
+        w(8),
+        w(31),
+        w(32),
+        w(63),
+        w(64),
+        w(77),
+        w(78),
+        w(127),
+        w(128),
+        w(160),
+        w(161),
+        w(162),
+        w(255),
+        w(256),
+        w(257),
+        one.shl(128),
+        max,
     ];
     for &a in &bases {
         for &b in &exponents {
             let (p, over) = a.overflowing_pow(b);
-            assert_eq!(result("pow(uint256,uint256)", a, b), (!over).then_some(p), "{a:?} ** {b:?}");
+            assert_eq!(
+                result("pow(uint256,uint256)", a, b),
+                (!over).then_some(p),
+                "{a:?} ** {b:?}"
+            );
             for a in [a, a.wrapping_neg()] {
                 let negative = a.bit(255);
                 let (m, over) = (if negative { a.wrapping_neg() } else { a }).overflowing_pow(b);
                 let odd = negative && b.bit(0);
                 let fits = !over && if odd { !top.lt(m) } else { m.lt(top) };
                 let expected = fits.then(|| if odd { m.wrapping_neg() } else { m });
-                assert_eq!(result("ipow(int256,uint256)", a, b), expected, "{a:?} ** {b:?} signed");
+                assert_eq!(
+                    result("ipow(int256,uint256)", a, b),
+                    expected,
+                    "{a:?} ** {b:?} signed"
+                );
             }
         }
     }
     // Both sides of the bare `EXP` window, in a result type narrower than the word.
     let bound = one.shl(64);
     for a in [w(2), w(3), w(10), w(11), w(306), w(307), w(i64::MAX as u64)] {
-        for b in [w(7), w(8), w(19), w(20), w(31), w(32), w(63), w(64), w(77), w(78)] {
+        for b in [
+            w(7),
+            w(8),
+            w(19),
+            w(20),
+            w(31),
+            w(32),
+            w(63),
+            w(64),
+            w(77),
+            w(78),
+        ] {
             let (p, over) = a.overflowing_pow(b);
             let fits = |limit: Word| (!over && p.lt(limit)).then_some(p);
-            assert_eq!(result("pow64(uint64,uint256)", a, b), fits(bound), "{a:?} ** {b:?} in 64 bits");
+            assert_eq!(
+                result("pow64(uint64,uint256)", a, b),
+                fits(bound),
+                "{a:?} ** {b:?} in 64 bits"
+            );
             let half = one.shl(63);
-            assert_eq!(result("ipow64(int64,uint256)", a, b), fits(half), "{a:?} ** {b:?} in 64 signed bits");
+            assert_eq!(
+                result("ipow64(int64,uint256)", a, b),
+                fits(half),
+                "{a:?} ** {b:?} in 64 signed bits"
+            );
             let odd = b.bit(0);
-            let expected = if odd { (!over && !half.lt(p)).then(|| p.wrapping_neg()) } else { fits(half) };
-            assert_eq!(result("ipow64(int64,uint256)", a.wrapping_neg(), b), expected, "-{a:?} ** {b:?} in 64 signed bits");
+            let expected = if odd {
+                (!over && !half.lt(p)).then(|| p.wrapping_neg())
+            } else {
+                fits(half)
+            };
+            assert_eq!(
+                result("ipow64(int64,uint256)", a.wrapping_neg(), b),
+                expected,
+                "-{a:?} ** {b:?} in 64 signed bits"
+            );
         }
     }
 }
@@ -1009,7 +1127,10 @@ external pure function neg8(const x : int8) : int8 is -x
     let out = |sig: &str, arg: Word| {
         let out = call(&runtime, sig, &[arg]);
         if out.reverted {
-            assert!(out.returndata.starts_with(&selector("Panic(uint256)")), "{sig}");
+            assert!(
+                out.returndata.starts_with(&selector("Panic(uint256)")),
+                "{sig}"
+            );
             assert_eq!(load_bytes(&out.returndata, 4), w(0x11), "{sig}");
             None
         } else {
@@ -1019,7 +1140,10 @@ external pure function neg8(const x : int8) : int8 is -x
     assert_eq!(out("neg(int256)", w(0)), Some(w(0)));
     assert_eq!(out("neg(int256)", int(5, false)), Some(int(5, true)));
     assert_eq!(out("neg(int256)", int(5, true)), Some(int(5, false)));
-    assert_eq!(out("neg(int256)", min.wrapping_add(w(1))), Some(min.wrapping_sub(w(1))));
+    assert_eq!(
+        out("neg(int256)", min.wrapping_add(w(1))),
+        Some(min.wrapping_sub(w(1)))
+    );
     assert_eq!(out("neg(int256)", min), None);
     assert_eq!(out("neg8(int8)", int(127, false)), Some(int(127, true)));
     assert_eq!(out("neg8(int8)", int(127, true)), Some(int(127, false)));

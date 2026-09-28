@@ -108,6 +108,8 @@ const MLOAD: u8 = 0x51;
 const MSTORE: u8 = 0x52;
 const SLOAD: u8 = 0x54;
 const SSTORE: u8 = 0x55;
+const TLOAD: u8 = 0x5c;
+const TSTORE: u8 = 0x5d;
 const JUMP: u8 = 0x56;
 const JUMPI: u8 = 0x57;
 const JUMPDEST: u8 = 0x5b;
@@ -718,17 +720,9 @@ fn rewrite(w: &[Inst]) -> Option<(usize, Vec<Inst>)> {
         // Nothing reads MSIZE, so a load has no effect but its value.
         [Op(MLOAD), Op(POP), ..] => Some((2, vec![Op(POP)])),
         // A copy stored, then the original dropped: store the original.
-        [Op(DUP1), c, Op(MSTORE | SSTORE), Op(POP), ..] if is_const(c) => Some((
-            4,
-            vec![
-                *c,
-                Op(if matches!(w[2], Op(MSTORE)) {
-                    MSTORE
-                } else {
-                    SSTORE
-                }),
-            ],
-        )),
+        [Op(DUP1), c, Op(store @ (MSTORE | SSTORE | TSTORE)), Op(POP), ..] if is_const(c) => {
+            Some((4, vec![*c, Op(*store)]))
+        }
         [Op(0x81), Op(0x81), Op(SWAP1), ..] => Some((3, vec![Op(DUP1), Op(DUP1 + 2)])),
         [Op(d), Op(e), ..] if d == e && (0x81..=0x8f).contains(d) => dup_pair_stored(w),
         [a, b, Op(SWAP1), ..] if is_const(a) && is_const(b) => Some((3, vec![*b, *a])),
@@ -746,6 +740,11 @@ fn rewrite(w: &[Inst]) -> Option<(usize, Vec<Inst>)> {
         [Push(b), Push(a), Op(op), ..] => {
             let v = fold_binary(*op, *a, *b)?;
             Some((3, vec![Push(v)]))
+        }
+        // A constant tested against another, as a constant index is against its bound.
+        [Push(b), Op(DUP1), Push(a), Op(op), ..] => {
+            let v = fold_binary(*op, *a, *b)?;
+            Some((4, vec![Push(*b), Push(v)]))
         }
         [Push(x), Op(ISZERO), ..] => Some((2, vec![Push(if x.is_zero() { one } else { zero })])),
         [Push(x), Op(NOT), ..] => Some((2, vec![Push(x.not())])),
@@ -2048,7 +2047,8 @@ fn hold(
     // feeds a commutative operation, which takes the value from under its other operand.
     let consumed = consume
         && (runs.depth[last] == p
-            || runs.depth[last] == p + 1 && matches!(code.get(last + 2), Some(Op(op)) if is_commutative(*op)));
+            || runs.depth[last] == p + 1
+                && matches!(code.get(last + 2), Some(Op(op)) if is_commutative(*op)));
     // Where the value becomes the top of the stack again after its last use.
     let mut pop_at: Option<usize> = None;
     let mut k = last + 2;
@@ -2182,10 +2182,11 @@ fn runs_other_code(op: u8) -> bool {
     matches!(op, 0xf0 | 0xf1 | 0xf2 | 0xf4 | 0xf5 | 0xfa)
 }
 
-/// For storage slots with constant keys: a value stored and read back in the same straight
-/// run stays on the stack instead, and a store that is overwritten before anything could
-/// see it is dropped. Two writes to one packed slot become one. `opaque` are helpers that
-/// may touch storage themselves. Keys made by hashing never equal these constants.
+/// For storage and transient slots with constant keys: a value stored and read back in the
+/// same straight run stays on the stack instead, and a store that is overwritten before
+/// anything could see it is dropped. Two writes to one packed slot become one. `opaque` are
+/// helpers that may touch storage themselves. Keys made by hashing never equal these
+/// constants, and an index into a fixed list is bounds-checked, which ends the run.
 pub(crate) fn forward_storage(code: &mut Vec<Inst>, calls: &Calls, opaque: &HashSet<u32>) -> bool {
     let mut any = false;
     for _ in 0..MAX_ROUNDS {
@@ -2195,13 +2196,15 @@ pub(crate) fn forward_storage(code: &mut Vec<Inst>, calls: &Calls, opaque: &Hash
         let mut edits: Vec<(usize, usize, Vec<Inst>)> = Vec::new();
         let mut busy: FxHashSet<usize> = FxHashSet::default();
         for i in 0..code.len().saturating_sub(1) {
-            let (Push(key), Op(SSTORE)) = (code[i], code[i + 1]) else {
+            let (Push(key), Op(store @ (SSTORE | TSTORE))) = (code[i], code[i + 1]) else {
                 continue;
             };
             if busy.contains(&runs.run[i]) {
                 continue;
             }
-            if let Some(mut plan) = plan_storage(code, i, key, &runs, calls, opaque, &reverts) {
+            if let Some(mut plan) =
+                plan_storage(code, i, (key, store), &runs, calls, opaque, &reverts)
+            {
                 busy.insert(runs.run[i]);
                 edits.append(&mut plan);
             }
@@ -2221,12 +2224,13 @@ pub(crate) fn forward_storage(code: &mut Vec<Inst>, calls: &Calls, opaque: &Hash
 fn plan_storage(
     code: &[Inst],
     i: usize,
-    key: Word,
+    (key, store): (Word, u8),
     runs: &Runs,
     calls: &Calls,
     opaque: &HashSet<u32>,
     reverts: &FxHashSet<u32>,
 ) -> Option<Vec<(usize, usize, Vec<Inst>)>> {
+    let load = if store == SSTORE { SLOAD } else { TLOAD };
     let run = runs.run[i];
     let p = runs.depth[i] - 1;
     let n = code.len();
@@ -2246,12 +2250,12 @@ fn plan_storage(
             }
         }
         match (code[j], code.get(j + 1)) {
-            (Push(k), Some(Op(SLOAD))) if k == key => {
+            (Push(k), Some(&Op(op))) if k == key && op == load => {
                 loads.push(j);
                 j += 2;
                 continue;
             }
-            (Push(k), Some(Op(SSTORE))) if k == key => {
+            (Push(k), Some(&Op(op))) if k == key && op == store => {
                 overwritten = unseen;
                 break;
             }
@@ -2483,5 +2487,23 @@ mod tests {
             }
         }
         assert!(applied > 30, "{applied}");
+    }
+
+    /// A constant index into a fixed list at a constant slot checks and adds to nothing.
+    #[test]
+    fn constant_bounds_check_folds_away() {
+        let w = Word::from_u64;
+        let mut code = vec![
+            Push(w(2)),
+            Push(w(3)),
+            Op(DUP1),
+            Push(w(7)),
+            Op(LT),
+            PushLabel(1),
+            Op(JUMPI),
+            Op(ADD),
+        ];
+        while peephole(&mut code) {}
+        assert_eq!(code, [Push(w(5))]);
     }
 }

@@ -391,7 +391,7 @@ impl Checker {
                     .unwrap_or_else(|| "uint256".to_string());
                 Ok((Some(id), Vec::new(), vec![(None, abi.to_string())]))
             }
-            TyKind::Record => {
+            TyKind::Record if !is_sum(&self.types, id) => {
                 let mut field_tys = Vec::new();
                 let mut fields = Vec::new();
                 for f in &self.types[id].fields {
@@ -738,7 +738,7 @@ impl Checker {
                     return Err(error(
                         *line,
                         *col,
-                        "list elements must be values: words, strings, bytes, lists, records, tuples, or fixed-size options",
+                        "list elements must be values: words, strings, bytes, lists, records, tuples, or options",
                     ));
                 }
                 let id = self.alloc(TyKind::List, Some(e), None, None, bits);
@@ -747,11 +747,11 @@ impl Checker {
             }
             TypeRef::Option { elem, line, col } => {
                 let e = self.build(elem)?;
-                if !self.single_word(e) && !is_static_value(&self.types, e) {
+                if !is_value(&self.types, e) {
                     return Err(error(
                         *line,
                         *col,
-                        "an option holds a word or a fixed-size value",
+                        "an option holds a value: a word, a string, bytes, a list, a record, a tuple, or an option",
                     ));
                 }
                 let id = self.alloc(TyKind::Option, Some(e), None, None, 0);
@@ -773,12 +773,12 @@ impl Checker {
                     self.types[peel_id(&self.types, v)].kind,
                     TyKind::Record | TyKind::Tuple
                 ) || (self.types[v].kind == TyKind::Option
-                    && is_static_value(&self.types, v));
+                    && is_value(&self.types, v));
                 if !self.single_word(k) || !(self.single_word(v) || nested || record) {
                     return Err(error(
                         *line,
                         *col,
-                        "map keys must be a single word; values a word, a map, a list, a record, or a fixed-size option",
+                        "map keys must be a word, a string, or bytes; values a word, a map, a list, a record, a tuple, or an option",
                     ));
                 }
                 let id = self.alloc(TyKind::Map, None, Some(k), Some(v), 0);
@@ -796,7 +796,7 @@ impl Checker {
                         return Err(error(
                             elem.line(),
                             elem.col(),
-                            "tuple elements must be values: words, strings, bytes, lists, records, tuples, or fixed-size options",
+                            "tuple elements must be values: words, strings, bytes, lists, records, tuples, or options",
                         ));
                     }
                     fields.push(RField {
@@ -912,6 +912,7 @@ impl Checker {
                 },
                 Some(bits),
             ) => self.named[&format!("uint{bits}")],
+            _ if self.types[target].kind == TyKind::Interface => self.named["address"],
             _ => target,
         };
         self.check_expr_as(&mut args[0], Some(expect))?;
@@ -1350,6 +1351,11 @@ fn word_leaves(types: &[RType], ty: usize, out: &mut Vec<Option<usize>>) {
             for _ in 0..t.bits {
                 word_leaves(types, t.elem.unwrap_or(TY_NAT), out);
             }
+        }
+        // An option of a dynamic value keeps its payload's words as their types.
+        TyKind::Option if !is_static_value(types, ty) => {
+            out.push(None);
+            word_leaves(types, t.elem.unwrap_or(TY_NAT), out);
         }
         TyKind::Option => out.extend(std::iter::repeat_n(None, t.words as usize)),
         _ => out.push(Some(ty)),
