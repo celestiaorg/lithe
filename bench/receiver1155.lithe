@@ -2,6 +2,8 @@
    In mode 1 it answers with the wrong selector; in mode 2 it refuses with a reason; in
    mode 3 it reverts without one. *)
 
+import "std/interfaces/erc1155.lithe";
+
 error Refused of nat;
 
 storage is record {
@@ -50,7 +52,7 @@ external function onERC1155Received(
   raises Refused | forwarded
 is {
   keep(operator, from, [id], [value], data);
-  var answer : bytes4 := 0xf23a6e61;
+  var answer : bytes4 := Abi.selector(IERC1155Receiver.onERC1155Received);
   if storage.mode = 1n then {
     answer := 0xdeadbeef;
   }
@@ -66,7 +68,7 @@ external function onERC1155BatchReceived(
   raises Refused | forwarded
 is {
   keep(operator, from, ids, values, data);
-  var answer : bytes4 := 0xbc197c81;
+  var answer : bytes4 := Abi.selector(IERC1155Receiver.onERC1155BatchReceived);
   if storage.mode = 1n then {
     answer := 0xdeadbeef;
   }

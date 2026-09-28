@@ -466,7 +466,7 @@ impl<'a> Gen<'a> {
             .iter()
             .find(|e| e.name == name)
             .ok_or_else(|| error(line, col, format!("unknown event `{name}`")))?;
-        let topic = crate::keccak::keccak256(ev.topic_sig.as_bytes());
+        let topic = (!ev.anonymous).then(|| crate::keccak::keccak256(ev.topic_sig.as_bytes()));
         let schema: Vec<(bool, bool, usize)> = ev
             .fields
             .iter()
@@ -474,6 +474,9 @@ impl<'a> Gen<'a> {
             .collect();
         let n_topics = schema.iter().filter(|field| field.0).count() as u32;
         let n_data = schema.len() as u32 - n_topics;
+        // When no field's evaluation can be observed, the topics are pushed last-first, as
+        // `LOGn` takes them, rather than reordered on the stack.
+        let reversed = n_topics > 1 && fields.iter().all(|(_, e)| self.eager_ok(e));
         // Topics stay on the stack; data goes to memory in the order the fields are written.
         // Each `emit` has its own data words, so an `emit` inside a field's value cannot
         // overwrite them. The layout lets emits in different bodies share memory.
@@ -481,42 +484,73 @@ impl<'a> Gen<'a> {
             .iter()
             .any(|&(indexed, _, ty)| !indexed && self.tree_part(ty))
         {
-            return self.emit_tree(&schema, fields, topic, n_topics);
+            return self.emit_tree(&schema, fields, topic, n_topics, reversed);
         }
         let dynamic = schema
             .iter()
             .any(|&(indexed, _, ty)| !indexed && (self.is_dynamic(ty) || self.list_value(ty)));
         if dynamic {
-            return self.emit_encoded(&schema, fields, topic, n_topics);
+            return self.emit_encoded(&schema, fields, topic, n_topics, reversed);
         }
         self.log_sites += 1;
         let data = self.region(Region::Log(self.log_sites), n_data * 32);
         let mut data_i = 0;
+        if reversed {
+            self.reversed_topics(&schema, fields)?;
+        }
         for ((indexed, hashed, ty), (_, expr)) in schema.iter().zip(fields) {
-            if *indexed {
-                self.compile_topic(expr, *ty, *hashed)?;
-            } else {
+            if !*indexed {
                 self.compile_value(expr)?;
                 self.fit_static_word(*ty);
                 self.mstore_off(data + data_i * 32);
                 data_i += 1;
+            } else if !reversed {
+                self.compile_topic(expr, *ty, *hashed)?;
             }
         }
-        // `LOGn` takes the first topic nearest the top.
-        match n_topics {
-            2 => self.op(SWAP1),
-            3 => self.op(SWAP1 + 1),
-            _ => {}
-        }
-        self.push_word(Word::from_be_bytes(topic));
+        self.order_topics(if reversed { 0 } else { n_topics }, topic);
         self.push_u64(u64::from(n_data) * 32);
         if n_data == 0 {
             self.op(PUSH0);
         } else {
             self.push_mem(data);
         }
-        self.op(LOG1 + n_topics as u8);
+        self.op(LOG0 + n_topics as u8 + u8::from(topic.is_some()));
         Ok(())
+    }
+
+    /// Pushes the field topics last-first, so the first is nearest the top, as `LOGn` takes
+    /// them.
+    fn reversed_topics(
+        &mut self,
+        schema: &[(bool, bool, usize)],
+        fields: &[(String, Expr)],
+    ) -> Result<(), Error> {
+        for (&(indexed, hashed, ty), (_, expr)) in schema.iter().zip(fields).rev() {
+            if indexed {
+                self.compile_topic(expr, ty, hashed)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Reverses the `n_topics` field topics on the stack, so `LOGn` takes the first nearest
+    /// the top, then pushes the signature topic above them.
+    fn order_topics(&mut self, n_topics: u32, topic: Option<[u8; 32]>) {
+        match n_topics {
+            2 => self.op(SWAP1),
+            3 => self.op(SWAP1 + 1),
+            4 => {
+                self.op(SWAP1 + 2);
+                self.op(SWAP1);
+                self.op(SWAP1 + 1);
+                self.op(SWAP1);
+            }
+            _ => {}
+        }
+        if let Some(topic) = topic {
+            self.push_word(Word::from_be_bytes(topic));
+        }
     }
 
     /// An event whose data holds records, tuples, fixed lists, or nested dynamic values: the
@@ -525,32 +559,31 @@ impl<'a> Gen<'a> {
         &mut self,
         schema: &[(bool, bool, usize)],
         fields: &[(String, Expr)],
-        topic: [u8; 32],
+        topic: Option<[u8; 32]>,
         n_topics: u32,
+        reversed: bool,
     ) -> Result<(), Error> {
         let mut parts = Vec::new();
+        if reversed {
+            self.reversed_topics(schema, fields)?;
+        }
         for (&(indexed, hashed, ty), (_, expr)) in schema.iter().zip(fields) {
-            if indexed {
-                self.compile_topic(expr, ty, hashed)?;
-            } else {
+            if !indexed {
                 let at = self.stage(expr)?;
                 parts.push((Addr::Mem(at), ty));
+            } else if !reversed {
+                self.compile_topic(expr, ty, hashed)?;
             }
         }
         self.tree_encode(&parts)?;
-        match n_topics {
-            2 => self.op(SWAP1),
-            3 => self.op(SWAP1 + 1),
-            _ => {}
-        }
-        self.push_word(Word::from_be_bytes(topic));
+        self.order_topics(if reversed { 0 } else { n_topics }, topic);
         self.mload(self.scratch_a);
         self.op(DUP1);
         self.op(MLOAD);
         self.op(SWAP1);
         self.push_u64(32);
         self.op(ADD);
-        self.op(LOG1 + n_topics as u8);
+        self.op(LOG0 + n_topics as u8 + u8::from(topic.is_some()));
         Ok(())
     }
 
@@ -560,34 +593,33 @@ impl<'a> Gen<'a> {
         &mut self,
         schema: &[(bool, bool, usize)],
         fields: &[(String, Expr)],
-        topic: [u8; 32],
+        topic: Option<[u8; 32]>,
         n_topics: u32,
+        reversed: bool,
     ) -> Result<(), Error> {
         let mut parts = Vec::new();
+        if reversed {
+            self.reversed_topics(schema, fields)?;
+        }
         for (&(indexed, hashed, ty), (_, expr)) in schema.iter().zip(fields) {
-            if indexed {
-                self.compile_topic(expr, ty, hashed)?;
-            } else {
+            if !indexed {
                 let at = self.temp();
                 self.compile_value(expr)?;
                 self.mstore_off(at);
                 parts.push((at, ty));
+            } else if !reversed {
+                self.compile_topic(expr, ty, hashed)?;
             }
         }
         self.encode_parts(&parts)?;
-        match n_topics {
-            2 => self.op(SWAP1),
-            3 => self.op(SWAP1 + 1),
-            _ => {}
-        }
-        self.push_word(Word::from_be_bytes(topic));
+        self.order_topics(if reversed { 0 } else { n_topics }, topic);
         self.mload(self.scratch_a);
         self.op(DUP1);
         self.op(MLOAD);
         self.op(SWAP1);
         self.push_u64(32);
         self.op(ADD);
-        self.op(LOG1 + n_topics as u8);
+        self.op(LOG0 + n_topics as u8 + u8::from(topic.is_some()));
         Ok(())
     }
 

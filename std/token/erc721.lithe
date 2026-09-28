@@ -14,6 +14,7 @@
    transfers call the receiver in a deferred call, after the transfer's own effects, and
    pass a receiver's revert reason through unchanged. *)
 
+import "std/interfaces/erc165.lithe";
 import "std/interfaces/erc721.lithe";
 
 module ERC721 is {
@@ -51,7 +52,9 @@ module ERC721 is {
 
   (* ERC-721, its metadata extension, and ERC-165 itself. *)
   pure function supports_interface(const interfaceId : bytes4) : bool is
-    (interfaceId = 0x80ac58cd) or (interfaceId = 0x5b5e139f) or (interfaceId = 0x01ffc9a7)
+    interfaceId = Abi.interface_id(IERC721)
+      or interfaceId = Abi.interface_id(IERC721Metadata)
+      or interfaceId = Abi.interface_id(IERC165)
 
   view function balance_of(const owner : address) : nat
     raises ERC721InvalidOwner
@@ -175,7 +178,7 @@ module ERC721 is {
       const receiver : IERC721Receiver := IERC721Receiver(to);
       defer receiver.onERC721Received(operator, from, tokenId, data) then {
         | Ok(answer : bytes4) -> {
-            assert(answer = 0x150b7a02, ERC721InvalidReceiver(to));
+            assert(answer = Abi.selector(IERC721Receiver.onERC721Received), ERC721InvalidReceiver(to));
           }
         | Error(reason : bytes) -> {
             if reason.length = 0n then {

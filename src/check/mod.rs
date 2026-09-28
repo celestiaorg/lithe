@@ -143,6 +143,7 @@ pub(crate) struct EventInfo {
     pub name: String,
     pub fields: Vec<EventField>,
     pub topic_sig: String,
+    pub anonymous: bool,
 }
 
 pub(crate) struct ErrInfo {

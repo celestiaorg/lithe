@@ -11,6 +11,7 @@
    effects, and pass a receiver's revert reason through unchanged. A burn asks no
    receiver. *)
 
+import "std/interfaces/erc165.lithe";
 import "std/interfaces/erc1155.lithe";
 
 module ERC1155 is {
@@ -49,7 +50,9 @@ module ERC1155 is {
 
   (* ERC-1155, its metadata URI extension, and ERC-165 itself. *)
   pure function supports_interface(const interfaceId : bytes4) : bool is
-    (interfaceId = 0xd9b67a26) or (interfaceId = 0x0e89341c) or (interfaceId = 0x01ffc9a7)
+    interfaceId = Abi.interface_id(IERC1155)
+      or interfaceId = Abi.interface_id(IERC1155MetadataURI)
+      or interfaceId = Abi.interface_id(IERC165)
 
   view function uri() : string is
     erc1155.uri
@@ -135,7 +138,7 @@ module ERC1155 is {
       const receiver : IERC1155Receiver := IERC1155Receiver(to);
       defer receiver.onERC1155Received(Evm.sender(), from, id, value, data) then {
         | Ok(answer : bytes4) -> {
-            assert(answer = 0xf23a6e61, ERC1155InvalidReceiver(to));
+            assert(answer = Abi.selector(IERC1155Receiver.onERC1155Received), ERC1155InvalidReceiver(to));
           }
         | Error(reason : bytes) -> {
             if reason.length = 0n then {
@@ -161,7 +164,7 @@ module ERC1155 is {
       const receiver : IERC1155Receiver := IERC1155Receiver(to);
       defer receiver.onERC1155BatchReceived(Evm.sender(), from, ids, values, data) then {
         | Ok(answer : bytes4) -> {
-            assert(answer = 0xbc197c81, ERC1155InvalidReceiver(to));
+            assert(answer = Abi.selector(IERC1155Receiver.onERC1155BatchReceived), ERC1155InvalidReceiver(to));
           }
         | Error(reason : bytes) -> {
             if reason.length = 0n then {

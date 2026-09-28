@@ -219,6 +219,34 @@ SCENARIOS = {
         ("send", "A", "withdraw(uint256)", ["100"], "1"),
         ("call", "A", "deposit_of(address)", [ADDR["A"]], None),
     ],
+    # Selectors and ERC-165 ids named by interface methods, as constants on both sides.
+    "selectors": [
+        ("send", "A", "handle(bytes4)", [raw("deposit(uint256)")], None),
+        ("send", "B", "handle(bytes4)", [raw("deposit(uint256)")], None),
+        ("send", "A", "handle(bytes4)", [raw("withdraw(uint256,address)")], None),
+        ("send", "A", "handle(bytes4)", [raw("transfer(address,uint256)")], None),
+        ("send", "A", "handle(bytes4)", [raw("balanceOf(address)")], None),
+        ("call", "A", "handle(bytes4)", ["0xdeadbeef"], None),
+        ("call", "A", "handled(bytes4)", [raw("deposit(uint256)")], None),
+        ("call", "A", "transfer_call(address,uint256)", [ADDR["B"], "7"], None),
+        ("call", "A", "ids()", [], None),
+    ],
+    # Anonymous events: four topics, a topic and a string, and data alone.
+    "logs": [
+        ("send", "A", "move(address,uint256)", [ADDR["B"], "1"], None),
+        ("send", "B", "move(address,uint256)", [ADDR["A"], "1"], None),
+        ("send", "A", "note(uint256,string)", ["1", "hi"], None),
+        ("send", "A", "note(uint256,string)", ["2", LONG], None),
+        ("send", "A", "tick()", [], None),
+        ("send", "B", "tick()", [], None),
+    ],
+    # `SELFBALANCE` and the blob base fee.
+    "env": [
+        ("send", "A", "deposit()", [], "1ether"),
+        ("send", "B", "deposit()", [], "0.5ether"),
+        ("call", "A", "deposit()", [], None),
+        ("call", "A", "blob_fee()", [], None),
+    ],
     "math": [
         ("call", "A", "mul_div(uint256,uint256,uint256)", ["10", "20", "3"], None),
         ("call", "A", "mul_div(uint256,uint256,uint256)", ["1", "2", "0"], None),

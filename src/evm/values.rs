@@ -973,6 +973,182 @@ fn indexed_events_split_topics_and_data() {
     );
 }
 
+/// A map entry read and then written keeps its hashed slot on the stack between the two.
+#[test]
+fn map_entry_read_then_written() {
+    let src = "\
+storage is record { owners : map(nat, address); }
+external function move(const to : address; const id : nat) : address is {
+  const from : address := storage.owners[id];
+  storage.owners[id] := to;
+} with from
+";
+    let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
+    let (a, b, id) = (Word::from_u64(0xa), Word::from_u64(0xb), Word::from_u64(3));
+    let first = call(&runtime, "move(address,uint256)", &[a, id]);
+    assert!(!first.reverted, "{}", pretty(&first.returndata));
+    assert_eq!(load_bytes(&first.returndata, 0), Word::from_u64(0));
+    let second = exec(
+        &runtime,
+        &word_data("move(address,uint256)", &[b, id]),
+        first.storage.clone(),
+        Word::from_u64(1),
+        Word::from_u64(0),
+        Word::from_u64(0),
+    )
+    .expect("move");
+    assert!(!second.reverted, "{}", pretty(&second.returndata));
+    assert_eq!(load_bytes(&second.returndata, 0), a);
+    assert_eq!(second.storage.get(&map_key(id, Word::from_u64(0))), Some(&b));
+}
+
+/// Solidity hashes a `bytesN` map key as the ABI lays it out, left-aligned.
+#[test]
+fn bytes_map_keys_hash_left_aligned() {
+    let src = "\
+storage is record {
+  flat : map(bytes4, nat);
+  nested : map(bytes2, map(bytes4, nat));
+}
+external function put(const k : bytes4; const j : bytes2) is {
+  storage.flat[k] := 7n;
+  storage.flat[0xa9059cbb] := 8n;
+  storage.nested[j][k] := 9n;
+}
+";
+    let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
+    let left = |bytes: &[u8]| {
+        let mut w = [0u8; 32];
+        w[..bytes.len()].copy_from_slice(bytes);
+        Word::from_be_bytes(w)
+    };
+    let (k, j) = (left(&[0xb6, 0xb5, 0x5f, 0x25]), left(&[0x12, 0x34]));
+    let out = call(&runtime, "put(bytes4,bytes2)", &[k, j]);
+    assert!(!out.reverted, "{}", pretty(&out.returndata));
+    let at = |slot: Word| out.storage.get(&slot).copied().unwrap_or(Word::from_u64(0));
+    assert_eq!(at(map_key(k, Word::from_u64(0))), Word::from_u64(7));
+    assert_eq!(
+        at(map_key(left(&[0xa9, 0x05, 0x9c, 0xbb]), Word::from_u64(0))),
+        Word::from_u64(8)
+    );
+    assert_eq!(
+        at(map_key(k, map_key(j, Word::from_u64(1)))),
+        Word::from_u64(9)
+    );
+}
+
+#[test]
+fn abi_selectors_and_interface_ids_are_constants() {
+    let src = "\
+interface Token is {
+  function transfer(to : address; amount : nat) : bool;
+  view function balanceOf(who : address) : nat;
+}
+storage is record { n : nat; }
+external pure function sel() : bytes4 is Abi.selector(Token.transfer)
+external pure function id() : bytes4 is Abi.interface_id(Token)
+";
+    let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
+    let transfer = selector("transfer(address,uint256)");
+    let balance = selector("balanceOf(address)");
+    let word = |sel: [u8; 4]| {
+        let mut w = [0u8; 32];
+        w[..4].copy_from_slice(&sel);
+        Word::from_be_bytes(w)
+    };
+    assert_eq!(
+        load_bytes(&call(&runtime, "sel()", &[]).returndata, 0),
+        word(transfer)
+    );
+    let xor = std::array::from_fn(|i| transfer[i] ^ balance[i]);
+    assert_eq!(
+        load_bytes(&call(&runtime, "id()", &[]).returndata, 0),
+        word(xor)
+    );
+
+    for (body, want) in [
+        (
+            "Abi.selector(Token.mint)",
+            "unknown interface method `Token.mint`",
+        ),
+        (
+            "Abi.selector(Token)",
+            "`Abi.selector` expects an interface method",
+        ),
+        ("Abi.interface_id(Nope)", "unknown interface `Nope`"),
+        (
+            "Abi.selector(Pair.put)",
+            "`Pair.put` is overloaded: put(uint256), put(address)",
+        ),
+    ] {
+        let bad = format!(
+            "interface Token is {{ function transfer(to : address; amount : nat) : bool; }}
+interface Pair is {{ function put(x : nat); function put(x : address); }}
+storage is record {{ n : nat; }}
+external pure function f() : bytes4 is {body}
+"
+        );
+        let err = compile(&bad).expect_err(body);
+        assert!(err.to_string().contains(want), "{body}: {err}");
+    }
+}
+
+#[test]
+fn anonymous_events_log_no_signature_topic() {
+    let src = "\
+storage is record { n : nat; }
+anonymous event Four of record { indexed a : nat; indexed b : nat; indexed c : nat; indexed d : nat; }
+anonymous event Note of record { indexed a : nat; indexed b : nat; indexed c : nat; indexed d : nat; memo : string; }
+anonymous event Pair of record { indexed a : nat; indexed b : nat; indexed c : nat; indexed d : nat; p : (nat, nat); }
+anonymous event Bare of record { x : nat; }
+external function f() is {
+  emit Four { a = 1n; b = 2n; c = 3n; d = 4n; };
+  emit Note { a = 1n; b = 2n; c = 3n; d = 4n; memo = \"hi\"; };
+  emit Pair { a = 1n; b = 2n; c = 3n; d = 4n; p = (5n, 6n); };
+  emit Bare { x = 9n; };
+  emit Four { a = storage.n + 1n; b = 2n; c = 3n; d = 4n; };
+}
+";
+    let abi = abi(src).expect("abi");
+    assert!(abi.contains("\"anonymous\": true"), "{abi}");
+    assert!(!abi.contains("\"anonymous\": false"), "{abi}");
+    let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
+    let out = call(&runtime, "f()", &[]);
+    assert!(!out.reverted, "{}", pretty(&out.returndata));
+    let logs: Vec<&[Word]> = out
+        .trace
+        .iter()
+        .filter_map(|ev| match ev {
+            Ev::Log { topics } => Some(topics.as_slice()),
+            _ => None,
+        })
+        .collect();
+    let four: Vec<Word> = (1..=4).map(Word::from_u64).collect();
+    assert_eq!(
+        logs,
+        [&four[..], &four[..], &four[..], &[], &four[..]],
+        "{:?}",
+        out.trace
+    );
+    let details: Vec<&String> = out.detail.iter().filter(|d| d.starts_with("log")).collect();
+    assert!(
+        details[3].ends_with(&hex(&Word::from_u64(9).to_be_bytes())),
+        "{details:?}"
+    );
+
+    let five = "\
+storage is record { n : nat; }
+anonymous event E of record { indexed a : nat; indexed b : nat; indexed c : nat; indexed d : nat; indexed e : nat; }
+external function f() is { skip }
+";
+    let err = compile(five).expect_err("five topics");
+    assert!(
+        err.to_string()
+            .contains("anonymous EVM events support at most 4 indexed fields"),
+        "{err}"
+    );
+}
+
 #[test]
 fn hex_literals_keep_their_written_width_as_bytes() {
     let src = "\
@@ -1829,6 +2005,7 @@ fn builtins_are_explicit_modules() {
     packed[19] = 1;
     packed[31] = 40;
     assert_eq!(layout.get(&out.storage, 23), Word::from_be_bytes(packed));
+    assert_eq!(layout.get(&out.storage, 24), Word::from_u64(7));
     let data = call(&runtime, "payload()", &[]);
     assert!(!data.reverted, "{}", pretty(&data.returndata));
     assert_eq!(load_bytes(&data.returndata, 32), Word::from_u64(4));

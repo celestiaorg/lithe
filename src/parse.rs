@@ -298,7 +298,7 @@ impl<'a> Parser<'a> {
                 return Err(self.err("an error set cannot be private"));
             }
             Kind::ErrorsKw => body.error_sets.push(self.error_set_decl()?),
-            Kind::Event => {
+            Kind::Anonymous | Kind::Event => {
                 let mut decl = self.event_decl()?;
                 decl.private = private;
                 body.events.push(decl);
@@ -589,7 +589,7 @@ impl<'a> Parser<'a> {
                 Kind::Type => types.push(self.type_decl()?),
                 Kind::ErrorKw => errors.push(self.error_decl()?),
                 Kind::ErrorsKw => error_sets.push(self.error_set_decl()?),
-                Kind::Event => events.push(self.event_decl()?),
+                Kind::Anonymous | Kind::Event => events.push(self.event_decl()?),
                 Kind::External
                 | Kind::Payable
                 | Kind::Nonreentrant
@@ -893,6 +893,10 @@ impl<'a> Parser<'a> {
 
     fn event_decl(&mut self) -> Result<EventDecl, Error> {
         let (line, col) = self.at();
+        let anonymous = self.kind() == Kind::Anonymous;
+        if anonymous {
+            self.bump();
+        }
         self.want(Kind::Event)?;
         let name = self.ident()?;
         self.want(Kind::Of)?;
@@ -904,6 +908,7 @@ impl<'a> Parser<'a> {
             line,
             col,
             private: false,
+            anonymous,
             origin: String::new(),
             name,
             fields,

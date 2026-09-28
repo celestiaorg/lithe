@@ -155,7 +155,7 @@ module ERC1155 is {
       const receiver : ERC1155Receiver := ERC1155Receiver(to);
       defer receiver.onERC1155Received(Evm.sender(), from, id, value, data) then {
         | Ok(answer : bytes4) -> {
-            assert(answer = 0xf23a6e61, ERC1155InvalidReceiver(to));
+            assert(answer = Abi.selector(ERC1155Receiver.onERC1155Received), ERC1155InvalidReceiver(to));
           }
         | Error(reason : bytes) -> {
             if reason.length = 0n then {
@@ -181,7 +181,7 @@ module ERC1155 is {
       const receiver : ERC1155Receiver := ERC1155Receiver(to);
       defer receiver.onERC1155BatchReceived(Evm.sender(), from, ids, values, data) then {
         | Ok(answer : bytes4) -> {
-            assert(answer = 0xbc197c81, ERC1155InvalidReceiver(to));
+            assert(answer = Abi.selector(ERC1155Receiver.onERC1155BatchReceived), ERC1155InvalidReceiver(to));
           }
         | Error(reason : bytes) -> {
             if reason.length = 0n then {

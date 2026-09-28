@@ -1901,8 +1901,12 @@ pub(crate) fn promote(
     tracked: &dyn Fn(u32) -> bool,
     calls: &Calls,
     consume: bool,
+    hold_dups: bool,
 ) -> bool {
     let mut any = false;
+    // Holding a `DUP1` copy is tried once nothing else is left to promote, so it never
+    // takes a run another promotion needs.
+    let mut dups = false;
     for _ in 0..MAX_ROUNDS {
         let exits = safe_exits(code);
         let runs = runs(code, calls, &exits);
@@ -1916,13 +1920,17 @@ pub(crate) fn promote(
             if !tracked(a) || busy.contains(&runs.run[i]) {
                 continue;
             }
-            if let Some(mut plan) = plan_promotion(code, i, a, &runs, &live, calls, consume) {
+            if let Some(mut plan) = plan_promotion(code, i, a, &runs, &live, calls, consume, dups) {
                 busy.insert(runs.run[i]);
                 edits.append(&mut plan);
             }
         }
         if edits.is_empty() {
-            return any;
+            if dups || !hold_dups {
+                return any;
+            }
+            dups = true;
+            continue;
         }
         any = true;
         edits.sort_by_key(|e| std::cmp::Reverse(e.0));
@@ -1941,6 +1949,7 @@ fn plan_promotion(
     live: &Live,
     calls: &Calls,
     consume: bool,
+    dups: bool,
 ) -> Option<Vec<(usize, usize, Vec<Inst>)>> {
     let run = runs.run[i];
     // The stored value sits at position `p` once the store would have popped it.
@@ -1985,17 +1994,28 @@ fn plan_promotion(
     while run_end < n && runs.run[run_end] == run {
         run_end += 1;
     }
-    let mut edits = hold(
-        code,
-        i,
-        p,
-        &loads,
-        stop,
-        run_end,
-        consume && dead_after,
-        runs,
-        calls,
-    )?;
+    let held = |p| {
+        hold(
+            code,
+            i,
+            p,
+            &loads,
+            stop,
+            run_end,
+            consume && dead_after,
+            runs,
+            calls,
+        )
+    };
+    // A value copied by `DUP1` to be stored may be consumed at once, as a slot is by
+    // `SLOAD`. The copy under it is the same value, and can be held one place down.
+    let dup_below =
+        dups && dead_after && i > 0 && code[i - 1] == Op(DUP1) && runs.run[i - 1] == run;
+    let mut edits = match held(p) {
+        Some(edits) => edits,
+        None if dup_below => held(p - 1)?,
+        None => return None,
+    };
     if dead_after {
         edits.push((i, 2, Vec::new()));
     } else {

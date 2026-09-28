@@ -425,7 +425,7 @@ impl<'a> Gen<'a> {
                         });
                     }
                     let p = self.deep_slot(base, false)?;
-                    self.compile_value(index)?;
+                    self.compile_key(index)?;
                     self.nested_slot();
                     return Ok(Deep {
                         ty,
@@ -1546,10 +1546,10 @@ impl<'a> Gen<'a> {
             self.mload(at);
             return Ok(());
         }
-        self.compile_value(keys[0])?;
+        self.compile_key(keys[0])?;
         self.map_slot(sym, leaf);
         for key in &keys[1..] {
-            self.compile_value(key)?;
+            self.compile_key(key)?;
             self.nested_slot();
         }
         if let Some(cache) = cache.filter(|_| self.plan.cache_slots) {
@@ -1627,6 +1627,13 @@ impl<'a> Gen<'a> {
                 self.code.drain(i..i + 3);
             }
         }
+    }
+
+    /// A map key as Solidity hashes it: a `bytesN` is left-aligned, as the ABI encodes it.
+    fn compile_key(&mut self, key: &Expr) -> Result<(), Error> {
+        self.compile_value(key)?;
+        self.fit_static_word(key.ty());
+        Ok(())
     }
 
     /// `[slot, key]` becomes the slot of `key` in the map stored at `slot`.

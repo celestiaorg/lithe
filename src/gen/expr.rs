@@ -483,15 +483,22 @@ impl<'a> Gen<'a> {
             Builtin::BlockTimestamp => self.op(TIMESTAMP),
             Builtin::BlockCoinbase => self.op(COINBASE),
             Builtin::BlockBaseFee => self.op(BASEFEE),
+            Builtin::BlobBaseFee => self.op(BLOBBASEFEE),
             Builtin::ChainId => self.op(CHAINID),
             Builtin::BlockPrevrandao => self.op(PREVRANDAO),
             Builtin::BlockGasLimit => self.op(GASLIMIT),
             Builtin::SelfAddr => self.op(ADDRESS),
             Builtin::GasLeft => self.op(GAS),
-            Builtin::Balance => {
-                self.compile_value(&args[0])?;
-                self.op(BALANCE);
-            }
+            Builtin::Balance => match &args[0] {
+                Expr::Call {
+                    builtin: Some(Builtin::SelfAddr),
+                    ..
+                } => self.op(SELFBALANCE),
+                who => {
+                    self.compile_value(who)?;
+                    self.op(BALANCE);
+                }
+            },
             Builtin::CodeSize => {
                 self.compile_value(&args[0])?;
                 self.op(EXTCODESIZE);

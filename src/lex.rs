@@ -83,6 +83,8 @@ enum Raw {
     Event,
     #[token("indexed")]
     Indexed,
+    #[token("anonymous")]
+    Anonymous,
     #[token("error")]
     ErrorKw,
     #[token("errors")]
@@ -431,6 +433,7 @@ pub(crate) enum Kind {
     External,
     Pure,
     Nonreentrant,
+    Anonymous,
     Import,
     Module,
     Use,
@@ -561,6 +564,7 @@ pub(crate) fn tokenize(src: &str) -> Result<Vec<Token>, Error> {
             Raw::View => (Kind::View, Word::from_u64(0), None),
             Raw::Event => (Kind::Event, Word::from_u64(0), None),
             Raw::Indexed => (Kind::Indexed, Word::from_u64(0), None),
+            Raw::Anonymous => (Kind::Anonymous, Word::from_u64(0), None),
             Raw::ErrorKw => (Kind::ErrorKw, Word::from_u64(0), None),
             Raw::ErrorsKw => (Kind::ErrorsKw, Word::from_u64(0), None),
             Raw::Raises => (Kind::Raises, Word::from_u64(0), None),
@@ -686,6 +690,7 @@ pub(crate) fn kind_name(k: Kind) -> &'static str {
         Kind::View => "`view`",
         Kind::Event => "`event`",
         Kind::Indexed => "`indexed`",
+        Kind::Anonymous => "`anonymous`",
         Kind::ErrorKw => "`error`",
         Kind::ErrorsKw => "`errors`",
         Kind::Raises => "`raises`",

@@ -344,6 +344,7 @@ impl<'a> Gen<'a> {
                             | Builtin::BlockTimestamp
                             | Builtin::BlockCoinbase
                             | Builtin::BlockBaseFee
+                            | Builtin::BlobBaseFee
                             | Builtin::ChainId
                             | Builtin::BlockPrevrandao
                             | Builtin::BlockGasLimit

@@ -54,7 +54,7 @@
         },
         {
           "name": "storage.modifier.lithe",
-          "match": "\\b(external|view|pure|payable|nonreentrant|private|indexed|raises)\\b"
+          "match": "\\b(external|view|pure|payable|nonreentrant|private|indexed|anonymous|raises)\\b"
         },
         {
           "name": "keyword.operator.word.lithe",

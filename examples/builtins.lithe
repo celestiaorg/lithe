@@ -29,6 +29,7 @@ storage is record {
   ripe : bytes20;
   round : nat;
   packed : bytes;
+  blob_fee : wei;
 }
 
 external payable function take() is {
@@ -50,6 +51,7 @@ external payable function take() is {
   storage.codehash := Evm.code_hash(Evm.self());
   storage.bhash := Evm.block_hash(1n);
   storage.blob := Evm.blob_hash(0n);
+  storage.blob_fee := Evm.blob_base_fee();
   storage.gas := Evm.gas_left();
   const raw : bytes := 0x616263;
   storage.digest := Crypto.keccak256(raw);

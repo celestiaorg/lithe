@@ -82,6 +82,7 @@ impl Checker {
             | Builtin::BlockTimestamp
             | Builtin::BlockCoinbase
             | Builtin::BlockBaseFee
+            | Builtin::BlobBaseFee
             | Builtin::ChainId
             | Builtin::BlockPrevrandao
             | Builtin::BlockGasLimit
@@ -587,6 +588,103 @@ impl Checker {
         Ok(())
     }
 
+    /// `Abi.selector(Token.transfer)` and `Abi.interface_id(Token)`, as `bytes4` literals.
+    /// An interface's id is the XOR of its methods' selectors, as ERC-165 has it.
+    pub(super) fn abi_constant(&self, e: &Expr) -> Result<Option<Expr>, Error> {
+        let Expr::Call {
+            name,
+            args,
+            base: Some(base),
+            line,
+            col,
+            ..
+        } = e
+        else {
+            return Ok(None);
+        };
+        let (line, col) = (*line, *col);
+        if !matches!(base.as_ref(), Expr::Ident { name: module, .. } if module == "Abi")
+            || self.lookup("Abi").is_some()
+        {
+            return Ok(None);
+        }
+        let iface_methods = |iface: &str| {
+            self.named
+                .get(iface)
+                .filter(|&&id| self.types[id].kind == TyKind::Interface)
+                .and_then(|id| self.ifaces.get(id))
+        };
+        let sel = |sig: &str| u32::from_be_bytes(crate::keccak::selector(sig));
+        let word = match (name.as_str(), args.as_slice()) {
+            (
+                "selector",
+                [Expr::Field {
+                    base, name: method, ..
+                }],
+            ) => {
+                let Expr::Ident { name: iface, .. } = base.as_ref() else {
+                    return Err(error(
+                        line,
+                        col,
+                        "`Abi.selector` expects an interface method, like `Token.transfer`",
+                    ));
+                };
+                let found: Vec<&IfaceMethod> = iface_methods(iface)
+                    .into_iter()
+                    .flatten()
+                    .filter(|m| &m.name == method)
+                    .collect();
+                match found.as_slice() {
+                    [m] => sel(&m.sig),
+                    [] => {
+                        return Err(error(
+                            line,
+                            col,
+                            format!("unknown interface method `{iface}.{method}`"),
+                        ))
+                    }
+                    _ => {
+                        return Err(error(
+                            line,
+                            col,
+                            format!(
+                                "`{iface}.{method}` is overloaded: {}\nwrite its selector with `Crypto.keccak256` of the signature",
+                                found.iter().map(|m| m.sig.as_str()).collect::<Vec<_>>().join(", ")
+                            ),
+                        ))
+                    }
+                }
+            }
+            ("selector", _) => {
+                return Err(error(
+                    line,
+                    col,
+                    "`Abi.selector` expects an interface method, like `Token.transfer`",
+                ));
+            }
+            ("interface_id", [Expr::Ident { name: iface, .. }]) => {
+                let Some(methods) = iface_methods(iface) else {
+                    return Err(error(line, col, format!("unknown interface `{iface}`")));
+                };
+                methods.iter().fold(0, |id, m| id ^ sel(&m.sig))
+            }
+            ("interface_id", _) => {
+                return Err(error(
+                    line,
+                    col,
+                    "`Abi.interface_id` expects an interface, like `IERC721`",
+                ));
+            }
+            _ => return Ok(None),
+        };
+        Ok(Some(Expr::Lit {
+            line,
+            col,
+            lit: Lit::Int(Word::from_u64(u64::from(word)), None),
+            ty: self.bytes_n(4)?,
+        }))
+    }
+
     /// A `create`'s `CREATE2` salt, a `bytes32`.
     pub(super) fn check_salt(&mut self, salt: &mut Option<Box<Expr>>) -> Result<(), Error> {
         if let Some(salt) = salt {
@@ -748,9 +846,11 @@ impl Checker {
             | Builtin::BlockCoinbase
             | Builtin::SelfAddr
             | Builtin::Ecrecover => TY_ADDRESS,
-            Builtin::Value | Builtin::TxGasPrice | Builtin::BlockBaseFee | Builtin::Balance => {
-                TY_WEI
-            }
+            Builtin::Value
+            | Builtin::TxGasPrice
+            | Builtin::BlockBaseFee
+            | Builtin::BlobBaseFee
+            | Builtin::Balance => TY_WEI,
             Builtin::BlockTimestamp => TY_TIMESTAMP,
             Builtin::BlockNumber
             | Builtin::ChainId
@@ -816,6 +916,7 @@ fn env_builtin(kind: Builtin) -> bool {
             | Builtin::BlockTimestamp
             | Builtin::BlockCoinbase
             | Builtin::BlockBaseFee
+            | Builtin::BlobBaseFee
             | Builtin::ChainId
             | Builtin::BlockPrevrandao
             | Builtin::BlockGasLimit
@@ -842,6 +943,7 @@ fn module_builtin(module: &str, name: &str) -> Option<Builtin> {
         ("Evm", "block_timestamp") => Builtin::BlockTimestamp,
         ("Evm", "block_coinbase") => Builtin::BlockCoinbase,
         ("Evm", "block_base_fee") => Builtin::BlockBaseFee,
+        ("Evm", "blob_base_fee") => Builtin::BlobBaseFee,
         ("Evm", "chain_id") => Builtin::ChainId,
         ("Evm", "block_prevrandao") => Builtin::BlockPrevrandao,
         ("Evm", "block_gas_limit") => Builtin::BlockGasLimit,

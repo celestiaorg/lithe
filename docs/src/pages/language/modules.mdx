@@ -153,7 +153,7 @@ use ERC721 exposing IERC721, IERC721Metadata;
 supports IERC721, IERC721Metadata;
 ```
 
-The compiler then generates `supportsInterface(bytes4)`, true for ERC-165 itself, `0x01ffc9a7`, and for each interface listed. An interface's id is the XOR of its methods' selectors, so the standard library's `IERC721`, for example, answers for `0x80ac58cd`. The contract must have each interface it lists: dispatch every one of its methods, with the same result, whether they come from `use ... exposing` or from its own externals. A method it lacks is an error that names it:
+The compiler then generates `supportsInterface(bytes4)`, true for ERC-165 itself, `0x01ffc9a7`, and for each interface listed. An interface's id is the XOR of its methods' selectors, so the standard library's `IERC721`, for example, answers for `0x80ac58cd`, which is `Abi.interface_id(IERC721)`. The contract must have each interface it lists: dispatch every one of its methods, with the same result, whether they come from `use ... exposing` or from its own externals. A method it lacks is an error that names it:
 
 ```lithe rejects
 import "std/token/erc721.lithe";

@@ -93,7 +93,7 @@ is {
   if Evm.code_size(to) > 0n then {
     defer ERC1155Receiver(to).onERC1155Received(Evm.sender(), from, id, amount, data) then {
       | Ok(answer : bytes4) -> {
-          assert(answer = 0xf23a6e61, TransferToNonERC1155ReceiverImplementer);
+          assert(answer = Abi.selector(ERC1155Receiver.onERC1155Received), TransferToNonERC1155ReceiverImplementer);
         }
       | Error(reason : bytes) -> {
           if reason.length = 0n then {
@@ -117,7 +117,7 @@ is {
   if Evm.code_size(to) > 0n then {
     defer ERC1155Receiver(to).onERC1155BatchReceived(Evm.sender(), from, ids, amounts, data) then {
       | Ok(answer : bytes4) -> {
-          assert(answer = 0xbc197c81, TransferToNonERC1155ReceiverImplementer);
+          assert(answer = Abi.selector(ERC1155Receiver.onERC1155BatchReceived), TransferToNonERC1155ReceiverImplementer);
         }
       | Error(reason : bytes) -> {
           if reason.length = 0n then {

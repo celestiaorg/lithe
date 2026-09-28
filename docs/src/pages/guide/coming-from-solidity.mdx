@@ -131,6 +131,7 @@ Both contracts have the same ABI, the same error selector, the same event topic,
 | `msg.sender` | `Evm.sender()` |
 | `msg.value` | `Evm.value()` (only in `payable` functions) |
 | `msg.data`, `msg.sig` | `Evm.calldata()`, `Evm.selector()` |
+| `I.f.selector`, `type(I).interfaceId` | `Abi.selector(I.f)`, `Abi.interface_id(I)` |
 | `tx.origin`, `tx.gasprice` | `Evm.tx_origin()`, `Evm.tx_gas_price()` |
 | `block.timestamp`, `block.number` | `Evm.block_timestamp()`, `Evm.block_number()` |
 | `block.chainid`, `block.basefee` | `Evm.chain_id()`, `Evm.block_base_fee()` |

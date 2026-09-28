@@ -1,6 +1,8 @@
 (* Benchmark: an ERC-721 receiver that records each delivery. Mirrors receiver.sol.
    In mode 1 it answers with the wrong selector; in mode 2 it refuses with a reason. *)
 
+import "std/interfaces/erc721.lithe";
+
 error Refused of nat;
 
 storage is record {
@@ -30,7 +32,7 @@ is {
   storage.last_token := tokenId;
   storage.last_data := data;
   storage.calls := storage.calls + 1n;
-  var answer : bytes4 := 0x150b7a02;
+  var answer : bytes4 := Abi.selector(IERC721Receiver.onERC721Received);
   if storage.mode = 1n then {
     answer := 0xdeadbeef;
   }

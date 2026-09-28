@@ -183,7 +183,7 @@ module ERC721 is {
       const receiver : ERC721Receiver := ERC721Receiver(to);
       defer receiver.onERC721Received(operator, from, tokenId, data) then {
         | Ok(answer : bytes4) -> {
-            assert(answer = 0x150b7a02, ERC721InvalidReceiver(to));
+            assert(answer = Abi.selector(ERC721Receiver.onERC721Received), ERC721InvalidReceiver(to));
           }
         | Error(reason : bytes) -> {
             if reason.length = 0n then {

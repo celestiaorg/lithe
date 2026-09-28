@@ -33,7 +33,7 @@ impl Checker {
     }
 
     pub(super) fn check_expr(&mut self, e: &mut Expr) -> Result<(), Error> {
-        if let Some(constant) = self.type_constant(e)? {
+        if let Some(constant) = self.type_constant(e)?.or(self.abi_constant(e)?) {
             *e = constant;
             return Ok(());
         }

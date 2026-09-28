@@ -92,8 +92,10 @@ const NUMBER: u8 = 0x43;
 const PREVRANDAO: u8 = 0x44;
 const GASLIMIT: u8 = 0x45;
 const CHAINID: u8 = 0x46;
+const SELFBALANCE: u8 = 0x47;
 const BASEFEE: u8 = 0x48;
 const BLOBHASH: u8 = 0x49;
+const BLOBBASEFEE: u8 = 0x4a;
 const MCOPY: u8 = 0x5e;
 const MSIZE: u8 = 0x59;
 const POP: u8 = 0x50;
@@ -119,7 +121,7 @@ const DELEGATECALL: u8 = 0xf4;
 const RETURN: u8 = 0xf3;
 const STATICCALL: u8 = 0xfa;
 const REVERT: u8 = 0xfd;
-const LOG1: u8 = 0xa1;
+const LOG0: u8 = 0xa0;
 const STOP: u8 = 0x00;
 
 const MAX_OPS: usize = 8;
@@ -179,12 +181,18 @@ pub(crate) fn codegen(checked: &Checked, shape: &Shape) -> Result<Built, Error> 
     let mut variants = Vec::new();
     for shared_slice in slices {
         for (cache_slots, tight) in [(true, true), (true, false), (false, true), (false, false)] {
-            variants.push(Plan {
-                cache_slots,
-                tight,
-                shared_slice,
-                ..plan.clone()
-            });
+            for hold_dups in [false, true] {
+                if hold_dups && !tight {
+                    continue;
+                }
+                variants.push(Plan {
+                    cache_slots,
+                    tight,
+                    shared_slice,
+                    hold_dups,
+                    ..plan.clone()
+                });
+            }
         }
     }
     // The builds are independent, and each is most of a compile.
@@ -458,6 +466,9 @@ struct Plan {
     /// Whether each site takes its smallest form even where that keeps the outliner from
     /// sharing it with other sites.
     tight: bool,
+    /// Whether a value copied by `DUP1` to be stored stays on the stack under the copy.
+    /// That can keep the outliner from sharing a tail, so tight builds try it both ways.
+    hold_dups: bool,
 }
 
 /// A function compiled once. Calls merge what it reads and writes into their body.

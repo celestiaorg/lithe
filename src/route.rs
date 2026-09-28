@@ -1816,7 +1816,7 @@ pub(crate) fn abi(checked: &Checked) -> Result<Abi, Error> {
         items.push(AbiItem::Event(Event {
             name: event.name.clone(),
             inputs,
-            anonymous: false,
+            anonymous: event.anonymous,
         }));
     }
     if checked.prog.upgradeable {

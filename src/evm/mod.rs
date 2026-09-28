@@ -539,6 +539,7 @@ fn exec_state(
             0x45 => stack.push(Word::from_u64(30_000_000)),
             0x46 => stack.push(Word::from_u64(1)),
             0x48 => stack.push(Word::from_u64(1_000_000_000)),
+            0x4a => stack.push(Word::from_u64(7)),
             0x49 => {
                 let index = pop(&mut stack)?;
                 if index.is_zero() {
@@ -942,7 +943,7 @@ fn exec_state(
                     stack.push(Word::from_u64(1));
                 }
             }
-            0xa1..=0xa4 => {
+            0xa0..=0xa4 => {
                 let n = (op - 0xa0) as usize;
                 let off = word_usize(pop(&mut stack)?)?;
                 let size = word_usize(pop(&mut stack)?)?;

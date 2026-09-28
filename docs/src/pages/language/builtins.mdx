@@ -40,6 +40,7 @@ Execution context. Readable in `view` and stateful functions, and not in `pure` 
 | `Evm.chain_id()` | `nat` | `block.chainid` |
 | `Evm.block_hash(n : nat)` | `bytes32` | `blockhash(n)` |
 | `Evm.blob_hash(i : nat)` | `bytes32` | `blobhash(i)` |
+| `Evm.blob_base_fee()` | `wei` | `block.blobbasefee` |
 
 ### Accounts
 
@@ -140,6 +141,8 @@ ABI encoding and decoding. Usable in any function, `pure` ones included.
 | `Abi.encode_with_signature(sig : string, a, ...)` | `bytes` | `abi.encodeWithSignature(sig, a, ...)` |
 | `Abi.encode_call(Interface.method, a, ...)` | `bytes` | `abi.encodeCall(I.method, (a, ...))`. Arguments are type-checked |
 | `Abi.decode(data : bytes, T)` | `T` | `abi.decode(data, (T))` |
+| `Abi.selector(Interface.method)` | `bytes4` | `I.method.selector`. A constant. An overloaded method has no single selector: hash its signature with `Crypto.keccak256` |
+| `Abi.interface_id(Interface)` | `bytes4` | `type(I).interfaceId`: the XOR of its methods' selectors. A constant |
 | `Abi.supports_interface(id : bytes4)` | `bool` | whether `id` is ERC-165's or one `supports` lists, as the generated `supportsInterface` answers. See [ERC-165](/language/modules#erc-165) |
 
 `Abi.decode` takes a type name as its second argument: `Abi.decode(data, nat)`, which decodes one value, as Solidity's `abi.decode(data, (uint256))`. Any ABI value can be decoded; name a list or record type first, as `type ids is list(nat);`, then `Abi.decode(data, ids)`. A tuple of type names decodes one value of each, as `abi.decode(data, (address, uint256))` does: `const (who, amount) : (address, nat) := Abi.decode(data, (address, nat));`. Malformed data reverts, with Solidity's checks on every offset, length, and word.

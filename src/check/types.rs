@@ -162,15 +162,17 @@ impl Checker {
                 ));
             }
             let indexed: Vec<_> = ev.fields.iter().filter(|field| field.indexed).collect();
-            if indexed.len() > 3 {
-                let extra = indexed[3];
+            let limit = if ev.anonymous { 4 } else { 3 };
+            if indexed.len() > limit {
+                let extra = indexed[limit];
                 return Err(error(
                     extra.line,
                     extra.col,
                     format!(
-                        "event `{}` declares {} indexed fields\nnon-anonymous EVM events support at most 3 indexed fields",
+                        "event `{}` declares {} indexed fields\n{} EVM events support at most {limit} indexed fields",
                         ev.name,
-                        indexed.len()
+                        indexed.len(),
+                        if ev.anonymous { "anonymous" } else { "non-anonymous" },
                     ),
                 ));
             }
@@ -207,6 +209,7 @@ impl Checker {
                 name: ev.name.clone(),
                 fields,
                 topic_sig: format!("{}({})", ev.name, abi.join(",")),
+                anonymous: ev.anonymous,
             });
         }
         Ok(())
