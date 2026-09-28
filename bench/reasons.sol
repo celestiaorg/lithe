@@ -7,7 +7,7 @@ contract Reasons {
     error Failed(string);
     error Denied(address who, string reason);
 
-    address owner;
+    address immutable owner;
     bool paused;
     uint256 limit;
     mapping(address => uint256) balances;

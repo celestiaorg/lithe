@@ -95,8 +95,13 @@ impl<'a> Gen<'a> {
             header_locals: std::collections::HashSet::new(),
             loop_counters: Vec::new(),
             facts: Vec::new(),
+            imm_mem: 0,
+            cd_tail: 0,
+            imm_tail: Vec::new(),
+            tail_blobs: Vec::new(),
         };
-        let leaves = g.checked.leaves as u32;
+        // Immutables are never in memory, so the image has no words for them.
+        let leaves = (g.checked.leaves - (g.checked.transient_from - g.checked.immutable_from)) as u32;
         g.image = g.region(Region::Image, leaves * 32);
         g.dirty = g.region(Region::Dirty, leaves * 32);
         let mut local = vec![-1; g.checked.syms.len()];
@@ -134,6 +139,9 @@ impl<'a> Gen<'a> {
             }
         }
         g.fn_ret = fn_ret;
+        if shape.part {
+            g.facet_tail();
+        }
         let mut tuple_words = 2u32;
         for ty in &g.checked.types {
             if ty.kind == TyKind::Tuple {
@@ -293,7 +301,7 @@ impl<'a> Gen<'a> {
     }
 
     /// Whether any statement or expression in a function, or in what it calls, is `bad`.
-    fn func_any(&self, idx: usize, bad: &dyn Fn(Node<'_>) -> bool, seen: &mut Vec<usize>) -> bool {
+    pub(super) fn func_any(&self, idx: usize, bad: &dyn Fn(Node<'_>) -> bool, seen: &mut Vec<usize>) -> bool {
         if seen.contains(&idx) {
             return false;
         }

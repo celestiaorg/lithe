@@ -729,7 +729,7 @@ impl Checker {
                 }
                 *callee = Some(idx);
                 *ty = sig_ret;
-                self.note_call(idx);
+                self.note_call(idx, *line, *col);
                 Ok(())
             }
             Expr::Case {

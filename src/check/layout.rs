@@ -396,6 +396,41 @@ pub(super) fn check_transient_shape(types: &[RType], ty: usize, at: &str) -> Res
     }
 }
 
+/// The type of each word of a fixed-size value, in word order.
+pub(super) fn word_leaves(types: &[RType], ty: usize, out: &mut Vec<usize>) {
+    let t = &types[peel_id(types, ty)];
+    if matches!(t.kind, TyKind::Record | TyKind::Tuple) {
+        let mut fields: Vec<&RField> = t.fields.iter().collect();
+        fields.sort_by_key(|f| f.slot);
+        for field in fields {
+            word_leaves(types, field.ty, out);
+        }
+    } else {
+        out.push(ty);
+    }
+}
+
+/// Immutables hold fixed-size values: words, and records and tuples of them.
+pub(super) fn check_immutable_shape(types: &[RType], ty: usize, at: &str) -> Result<(), String> {
+    let t = &types[peel_id(types, ty)];
+    match t.kind {
+        TyKind::Record | TyKind::Tuple if t.variants.is_empty() => t
+            .fields
+            .iter()
+            .try_for_each(|f| check_immutable_shape(types, f.ty, &f.name)),
+        TyKind::Map | TyKind::List => Err(format!(
+            "immutable field `{at}` is a collection; an immutable holds a fixed-size value"
+        )),
+        TyKind::String | TyKind::Bytes if t.bits == 0 => Err(format!(
+            "immutable field `{at}` is dynamic; an immutable holds a fixed-size value"
+        )),
+        kind if is_word(kind) && t.words == 1 => Ok(()),
+        _ => Err(format!(
+            "immutable field `{at}` must hold a word, or a record or tuple of words"
+        )),
+    }
+}
+
 pub(super) fn domain_layout(
     name: &str,
     id: &str,

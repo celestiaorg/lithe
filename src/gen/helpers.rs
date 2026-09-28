@@ -473,6 +473,10 @@ impl<'a> Gen<'a> {
 
     pub(super) fn mload(&mut self, addr: i32) {
         if let Some(leaf) = self.image_leaf(addr) {
+            if self.checked.immutable_leaf(leaf) {
+                self.push_immutable(leaf);
+                return;
+            }
             if self.checked.transient_leaf(leaf) {
                 self.push_word(self.checked.leaf_keys[leaf as usize]);
                 self.op(TLOAD);
@@ -499,6 +503,10 @@ impl<'a> Gen<'a> {
             }
         }
         if let Some(leaf) = self.image_leaf(addr) {
+            if self.checked.immutable_leaf(leaf) {
+                self.store_immutable(leaf);
+                return;
+            }
             if self.checked.transient_leaf(leaf) {
                 self.push_word(self.checked.leaf_keys[leaf as usize]);
                 self.op(TSTORE);
@@ -589,6 +597,11 @@ impl<'a> Gen<'a> {
     pub(super) fn op(&mut self, b: u8) {
         if b == PUSH0 {
             self.push_u64(0);
+        } else if b == CALLDATASIZE && self.cd_tail > 0 {
+            // A facet's calldata ends where the immutables its router appended begin.
+            self.push_u64(self.cd_tail);
+            self.code.push(Inst::Op(CALLDATASIZE));
+            self.code.push(Inst::Op(SUB));
         } else {
             self.code.push(Inst::Op(b));
         }

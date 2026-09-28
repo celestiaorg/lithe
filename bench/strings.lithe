@@ -20,21 +20,24 @@ event Renamed of record {
   new_name : string;
 }
 
-storage is record {
+immutable is record {
   owner : address;
+}
+
+storage is record {
   name : string;
   description : string;
 }
 
 deploy() is {
-  storage.owner := Evm.sender();
+  immutable.owner := Evm.sender();
 }
 
 external function rename(const name : string)
   raises Not_owner | Name_taken | Too_long
 is {
-  assert(Evm.sender() = storage.owner, Not_owner { caller = Evm.sender(); name = storage.name; });
-  assert(name =/= storage.name, Name_taken { name = name; owner = storage.owner; });
+  assert(Evm.sender() = immutable.owner, Not_owner { caller = Evm.sender(); name = storage.name; });
+  assert(name =/= storage.name, Name_taken { name = name; owner = immutable.owner; });
   assert(name.length <= 100n, Too_long { name = name; limit = 100n; });
   emit Renamed { who = Evm.sender(); old_name = storage.name; new_name = name; };
   storage.name := name;
@@ -43,7 +46,7 @@ is {
 external function describe(const text : string)
   raises Not_owner | Too_long
 is {
-  assert(Evm.sender() = storage.owner, Not_owner { caller = Evm.sender(); name = storage.name; });
+  assert(Evm.sender() = immutable.owner, Not_owner { caller = Evm.sender(); name = storage.name; });
   assert(text.length <= 200n, Too_long { name = text; limit = 200n; });
   storage.description := String.concat(storage.name, ": ", text);
 }

@@ -163,6 +163,13 @@ pub(crate) struct DomainLayout {
     pub places: Vec<String>,
 }
 
+/// A block of immutables: where its words start among the leaves, and how many there are.
+pub(crate) struct ImmutableBlock {
+    pub id: String,
+    pub start: u32,
+    pub words: u32,
+}
+
 pub(crate) struct Checked {
     pub prog: Program,
     pub types: Vec<RType>,
@@ -176,6 +183,12 @@ pub(crate) struct Checked {
     /// Leaves from here on are transient storage, read with `TLOAD` at their key.
     pub transient_from: usize,
     pub transient_layout: Vec<DomainLayout>,
+    /// Leaves from here to `transient_from` are immutables, one word each, set by `deploy`
+    /// and built into the code. An upgradeable contract keeps its immutables in storage.
+    pub immutable_from: usize,
+    /// Every block of immutables, in storage or in the code, and the symbols naming them.
+    pub immutables: Vec<ImmutableBlock>,
+    pub immutable_syms: HashSet<usize>,
     pub ifaces: HashMap<usize, Vec<IfaceMethod>>,
     pub events: Vec<EventInfo>,
     pub errors: Vec<ErrInfo>,
@@ -227,6 +240,11 @@ impl Checked {
         leaf as usize >= self.transient_from
     }
 
+    /// Whether a leaf is an immutable built into the code.
+    pub(crate) fn immutable_leaf(&self, leaf: u32) -> bool {
+        (self.immutable_from..self.transient_from).contains(&(leaf as usize))
+    }
+
     /// Whether a leaf of a storage symbol is transient, for a map parameter as well.
     pub(crate) fn sym_leaf_transient(&self, sym: usize, leaf: u32) -> bool {
         match self.slot_syms.get(&sym) {
@@ -242,6 +260,7 @@ struct BoundDomain {
     short: String,
     ty: usize,
     slot: u32,
+    immutable: bool,
 }
 
 struct VisibleDomain {
@@ -334,12 +353,21 @@ struct Checker {
     /// The map parameters of the copy about to be checked, and whether each map is transient.
     slot_params: Vec<(String, bool)>,
     transient_from: usize,
+    /// Symbols naming a block of immutables.
+    imm_syms: HashSet<usize>,
+    /// What the upgrade guard calls and writes.
+    guard_pieces: Vec<Piece>,
 }
+
+/// `cur_fn` while the upgrade guard is checked.
+const GUARD_FN: usize = usize::MAX;
 
 #[derive(Clone)]
 enum Piece {
     Err(usize),
-    Call(usize),
+    Call(usize, u32, u32),
+    /// A write to an immutable, and the immutable's name.
+    Write(u32, u32, String),
 }
 
 pub(crate) fn check(mut prog: Program) -> Result<Checked, Error> {
@@ -431,6 +459,8 @@ pub(crate) fn check(mut prog: Program) -> Result<Checked, Error> {
         slot_syms: HashMap::new(),
         slot_params: Vec::new(),
         transient_from: 0,
+        imm_syms: HashSet::new(),
+        guard_pieces: Vec::new(),
     };
     c.types.push(prim(TyKind::Unit, 0));
     c.types.push(prim(TyKind::Bool, 1));
@@ -602,6 +632,8 @@ pub(crate) fn check(mut prog: Program) -> Result<Checked, Error> {
     let mut seen_names = HashSet::new();
     let mut seen_ids: HashMap<String, (String, String, String)> = HashMap::new();
     let domains = prog.domains.clone();
+    let mut immutables = Vec::new();
+    let mut code_immutables = Vec::new();
     for decl in domains.iter().filter(|decl| !decl.transient) {
         let qualified = match &decl.owner {
             Some(module) => format!("{module}.{}", decl.name),
@@ -637,11 +669,24 @@ pub(crate) fn check(mut prog: Program) -> Result<Checked, Error> {
             return Err(error(
                 decl.line,
                 decl.col,
-                "storage domain must be a record",
+                if decl.immutable {
+                    "immutables must be a record"
+                } else {
+                    "storage domain must be a record"
+                },
             ));
         }
         layout(&mut c.types, ty);
-        check_storage_shape(&c.types, ty, &decl.name)?;
+        if decl.immutable {
+            check_immutable_shape(&c.types, ty, &decl.name)
+                .map_err(|msg| error(decl.line, decl.col, msg))?;
+            if !prog.upgradeable {
+                code_immutables.push((decl, ty));
+                continue;
+            }
+        } else {
+            check_storage_shape(&c.types, ty, &decl.name)?;
+        }
         let start = leaf_keys.len() as u32;
         let root = crate::keccak::erc7201(&decl.id);
         pack_leaves(&c.types, ty, root, &mut leaf_keys, &mut leaf_pack);
@@ -650,7 +695,15 @@ pub(crate) fn check(mut prog: Program) -> Result<Checked, Error> {
             short: decl.name.clone(),
             ty,
             slot: start,
+            immutable: decl.immutable,
         });
+        if decl.immutable {
+            immutables.push(ImmutableBlock {
+                id: decl.id.clone(),
+                start,
+                words: leaf_keys.len() as u32 - start,
+            });
+        }
         let start = start as usize;
         layout_info.push(domain_layout(
             &qualified,
@@ -660,6 +713,33 @@ pub(crate) fn check(mut prog: Program) -> Result<Checked, Error> {
             ty,
             (&leaf_keys[start..], &leaf_pack[start..]),
         )?);
+    }
+    // Immutables built into the code come next, one leaf per word. A leaf's pack is how many
+    // bytes its value takes, so its constant can be that short.
+    let immutable_from = leaf_keys.len();
+    for (decl, ty) in code_immutables {
+        let start = leaf_keys.len() as u32;
+        let mut words = Vec::new();
+        word_leaves(&c.types, ty, &mut words);
+        for word in words {
+            leaf_keys.push(Word::from_u64(u64::from(leaf_keys.len() as u32 - start)));
+            leaf_pack.push(match narrow_width(&c.types, word) {
+                Some((width, false)) => Pack { offset: 0, width, signed: false },
+                _ => Pack::FULL,
+            });
+        }
+        c.domain_binds.push(BoundDomain {
+            owner: decl.owner.clone(),
+            short: decl.name.clone(),
+            ty,
+            slot: start,
+            immutable: true,
+        });
+        immutables.push(ImmutableBlock {
+            id: decl.id.clone(),
+            start,
+            words: leaf_keys.len() as u32 - start,
+        });
     }
     // Transient storage comes after every persistent leaf, one transient slot per word.
     // Slots 0 and 1 are the compiler's upgrade gate and reentrancy lock. The contract's own
@@ -724,6 +804,7 @@ pub(crate) fn check(mut prog: Program) -> Result<Checked, Error> {
             short: decl.name.clone(),
             ty,
             slot: start as u32,
+            immutable: false,
         });
         transient_layout.push(domain_layout(
             &qualified,
@@ -811,6 +892,7 @@ pub(crate) fn check(mut prog: Program) -> Result<Checked, Error> {
     if let Some(guard) = &mut prog.guard {
         c.check_guard(guard)?;
     }
+    c.check_immutable_writes(&prog.funcs, prog.upgradeable)?;
     // Each interface `supports` lists, by the signatures, selectors, and results of its
     // methods.
     let mut known: Vec<Supported> = Vec::new();
@@ -854,6 +936,9 @@ pub(crate) fn check(mut prog: Program) -> Result<Checked, Error> {
         layout: layout_info,
         transient_from,
         transient_layout,
+        immutable_from,
+        immutables,
+        immutable_syms: std::mem::take(&mut c.imm_syms),
         ifaces: c.ifaces,
         events: c.events,
         errors: c.errors,

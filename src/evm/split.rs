@@ -3,7 +3,7 @@ use super::*;
 
 /// Deploys a split build: each prerequisite facet at its `CREATE2` address, then the router.
 /// Returns the router's runtime.
-fn deploy_split(split: &crate::split::Split) -> Vec<u8> {
+pub(super) fn deploy_split(split: &crate::split::Split) -> Vec<u8> {
     deploy_facets(split);
     deploy(&split.creation).unwrap_or_else(|e| panic!("router: {e}"))
 }
@@ -27,22 +27,22 @@ fn split_opts(limit: usize) -> crate::Options {
     }
 }
 
-fn all_facets() -> crate::Options {
+pub(super) fn all_facets() -> crate::Options {
     crate::Options {
         split: crate::SplitMode::All,
         ..crate::Options::default()
     }
 }
 
-fn checked_src(src: &str) -> crate::check::Checked {
+pub(super) fn checked_src(src: &str) -> crate::check::Checked {
     crate::check::check(crate::parse::parse(src).expect("parse")).expect("check")
 }
 
-fn whole_build(checked: &crate::check::Checked) -> crate::gen::Built {
+pub(super) fn whole_build(checked: &crate::check::Checked) -> crate::gen::Built {
     crate::gen::codegen(checked, &crate::split::Shape::default()).expect("whole")
 }
 
-fn facet_names(split: &crate::split::Split) -> Vec<&str> {
+pub(super) fn facet_names(split: &crate::split::Split) -> Vec<&str> {
     split.facets.iter().map(|facet| facet.name.as_str()).collect()
 }
 
@@ -123,7 +123,7 @@ external view function fee() : nat is
 
 /// A standard ERC-1967 proxy's runtime: `delegatecall` the implementation in the slot with
 /// the whole calldata, then return or revert with what it did.
-fn proxy_runtime() -> Vec<u8> {
+pub(super) fn proxy_runtime() -> Vec<u8> {
     let mut code = vec![0x36, 0x5f, 0x5f, 0x37, 0x5f, 0x5f, 0x36, 0x5f, 0x7f];
     code.extend_from_slice(&crate::keccak::erc1967_implementation().to_be_bytes());
     code.extend_from_slice(&[0x54, 0x5a, 0xf4, 0x3d, 0x5f, 0x5f, 0x3e, 0x60, 0x36, 0x57]);
@@ -132,7 +132,7 @@ fn proxy_runtime() -> Vec<u8> {
     code
 }
 
-fn upgrade_to_and_call(implementation: Word, data: &[u8]) -> Vec<u8> {
+pub(super) fn upgrade_to_and_call(implementation: Word, data: &[u8]) -> Vec<u8> {
     let mut out = selector("upgradeToAndCall(address,bytes)").to_vec();
     out.extend_from_slice(&implementation.to_be_bytes());
     out.extend_from_slice(&Word::from_u64(64).to_be_bytes());

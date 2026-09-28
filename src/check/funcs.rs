@@ -181,16 +181,107 @@ impl Checker {
         Ok(out)
     }
 
-    pub(super) fn note_call(&mut self, idx: usize) {
-        if self.cur_fn < self.pieces.len() {
-            self.pieces[self.cur_fn].push(Piece::Call(idx));
-        }
+    pub(super) fn note_call(&mut self, idx: usize, line: u32, col: u32) {
+        self.note(Piece::Call(idx, line, col));
     }
 
     fn note_error(&mut self, idx: usize) {
-        if self.cur_fn < self.pieces.len() {
-            self.pieces[self.cur_fn].push(Piece::Err(idx));
+        self.note(Piece::Err(idx));
+    }
+
+    /// A write to a storage symbol: one to an immutable is kept for the write rule.
+    pub(super) fn note_write(&mut self, sym: usize, line: u32, col: u32, path: &[String]) {
+        if self.imm_syms.contains(&sym) {
+            self.note(Piece::Write(line, col, path.join(".")));
         }
+    }
+
+    fn note(&mut self, piece: Piece) {
+        if self.cur_fn == GUARD_FN {
+            self.guard_pieces.push(piece);
+        } else if self.cur_fn < self.pieces.len() {
+            self.pieces[self.cur_fn].push(piece);
+        }
+    }
+
+    /// Immutables are set up once: a function that writes one, itself or through what it
+    /// calls, runs only from `deploy`, a migration, or functions that keep the same rule.
+    /// A contract that is not upgradeable has them in its code, which only `deploy` sets.
+    pub(super) fn check_immutable_writes(&self, funcs: &[Func], upgradeable: bool) -> Result<(), Error> {
+        let n = self.pieces.len().min(funcs.len());
+        let mut writes: Vec<Option<String>> = vec![None; n];
+        loop {
+            let mut changed = false;
+            for i in 0..n {
+                if writes[i].is_some() {
+                    continue;
+                }
+                let found = self.pieces[i].iter().find_map(|piece| match piece {
+                    Piece::Write(_, _, name) => Some(name.clone()),
+                    Piece::Call(j, ..) => writes.get(*j).cloned().flatten(),
+                    Piece::Err(_) => None,
+                });
+                if found.is_some() {
+                    writes[i] = found;
+                    changed = true;
+                }
+            }
+            if !changed {
+                break;
+            }
+        }
+        let rule = if upgradeable {
+            "`deploy`, a migration, or the functions they call"
+        } else {
+            "`deploy` or the functions it calls, since a contract that is not upgradeable has them in its code"
+        };
+        let offending = |pieces: &[Piece], who: &str| -> Result<(), Error> {
+            for piece in pieces {
+                match piece {
+                    Piece::Write(line, col, name) => {
+                        return Err(error(
+                            *line,
+                            *col,
+                            format!("{who} writes immutable `{name}`; immutables are written only by {rule}"),
+                        ));
+                    }
+                    Piece::Call(j, line, col) => {
+                        if let Some(name) = writes.get(*j).cloned().flatten() {
+                            return Err(error(
+                                *line,
+                                *col,
+                                format!(
+                                    "{who} calls `{}`, which writes immutable `{name}`; call it only from {rule}",
+                                    source_name(&funcs[*j].name)
+                                ),
+                            ));
+                        }
+                    }
+                    Piece::Err(_) => {}
+                }
+            }
+            Ok(())
+        };
+        for (i, func) in funcs.iter().enumerate().take(n) {
+            let root = func.exported.is_some()
+                || matches!(
+                    func.kind,
+                    ItemKind::Entry | ItemKind::View | ItemKind::Receive | ItemKind::Fallback
+                )
+                || (func.kind == ItemKind::Migrate && !upgradeable);
+            if root && writes[i].is_some() {
+                let who = match &func.exported {
+                    Some(exported) => format!(
+                        "external `{}.{}`",
+                        func.module.as_deref().unwrap_or(""),
+                        exported.name
+                    ),
+                    None => describe(func.kind, source_name(&func.name)),
+                };
+                offending(&self.pieces[i], &who)?;
+            }
+        }
+        offending(&self.guard_pieces, "the upgrade guard")
     }
 
     pub(super) fn check_reason(&mut self, reason: &mut Raised) -> Result<(), Error> {
@@ -568,6 +659,9 @@ impl Checker {
                 slot: bind.slot,
                 span: 0,
             });
+            if bind.immutable {
+                self.imm_syms.insert(sym);
+            }
             let visible = match &self.module_name {
                 None => bind.owner.is_none(),
                 Some(module) => bind.owner.as_deref() == Some(module.as_str()),
@@ -593,10 +687,12 @@ impl Checker {
         self.requires.clear();
         self.in_guard = true;
         self.once = None;
+        let cur_fn = std::mem::replace(&mut self.cur_fn, GUARD_FN);
         self.bind_storage(guard.line, guard.col)?;
         for stmt in &mut guard.stmts {
             self.check_stmt(stmt)?;
         }
+        self.cur_fn = cur_fn;
         self.scope = parent;
         self.in_guard = false;
         Ok(())
@@ -790,7 +886,8 @@ fn expand(pieces: &[Piece], effective: &[Vec<usize>]) -> Vec<usize> {
     for piece in pieces {
         match piece {
             Piece::Err(id) => push_unique(&mut out, *id),
-            Piece::Call(idx) => {
+            Piece::Write(..) => {}
+            Piece::Call(idx, ..) => {
                 if let Some(set) = effective.get(*idx) {
                     for id in set {
                         push_unique(&mut out, *id);

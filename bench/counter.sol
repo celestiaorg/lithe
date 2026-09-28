@@ -8,7 +8,7 @@ contract Counter {
     event Count_changed(uint256 old_count, uint256 new_count);
 
     uint256 count;
-    address owner;
+    address immutable owner;
 
     constructor() {
         owner = msg.sender;

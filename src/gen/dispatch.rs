@@ -9,13 +9,27 @@ impl<'a> Gen<'a> {
     pub(super) fn emit(&mut self) -> Result<(), Error> {
         let mut targets = self.targets()?;
         let shape = self.shape;
+        // Selectors whose code reads no immutable, which a facet with immutables gets
+        // without their values.
+        let blind: std::collections::HashSet<[u8; 4]> = if shape.tails.iter().any(|t| !t.is_empty()) {
+            targets
+                .iter()
+                .filter(|(_, target)| !self.target_reads_immutables(target))
+                .map(|(_, target)| target.sel())
+                .collect()
+        } else {
+            Default::default()
+        };
         if let Some(keep) = &shape.keep {
             targets.retain(|(_, target)| keep.contains(&target.sel()));
         }
         // Every selector forwarded to one facet jumps to that facet's stub.
-        let stubs: Vec<u32> = shape.parts.iter().map(|_| self.fresh()).collect();
+        let stubs: Vec<(u32, u32)> = shape.parts.iter().map(|_| (self.fresh(), self.fresh())).collect();
         for &(sel, part) in &shape.forward {
-            targets.push((stubs[part], Target::Forward { sel }));
+            let (stub, bare) = stubs[part];
+            let tailed = shape.tails.get(part).is_some_and(|tail| !tail.is_empty());
+            let to = if tailed && blind.contains(&sel) { bare } else { stub };
+            targets.push((to, Target::Forward { sel }));
         }
         let special = |kind: ItemKind| {
             self.checked
@@ -56,17 +70,54 @@ impl<'a> Gen<'a> {
         Ok(())
     }
 
+    /// Whether an entrypoint's code, or anything it calls, reads an immutable.
+    fn target_reads_immutables(&self, target: &Target) -> bool {
+        let funcs = &self.checked.prog.funcs;
+        let func = match target {
+            Target::Entry { index, .. } => {
+                let route = &self.checked.routes[*index];
+                route.direct.or_else(|| {
+                    let top = route.path.first()?;
+                    funcs.iter().position(|f| f.kind == ItemKind::Entry && &f.name == top)
+                })
+            }
+            Target::View { func, .. } => Some(*func),
+            _ => None,
+        };
+        let Some(func) = func else { return true };
+        let syms = &self.checked.immutable_syms;
+        let reads = |node: Node<'_>| match node {
+            Node::Expr(Expr::Ident { sym: Some(sym), .. } | Expr::Field { root: Some(sym), .. }) => {
+                syms.contains(sym)
+            }
+            _ => false,
+        };
+        self.func_any(func, &reads, &mut Vec::new())
+    }
+
     /// A router's stubs, one per facet, each pushing its facet's address, then the code they
     /// share: `delegatecall` the facet with the whole calldata, and return or revert with
     /// whatever it did. The selector is still on the stack below the address.
-    fn forwarder(&mut self, stubs: &[u32]) {
+    fn forwarder(&mut self, stubs: &[(u32, u32)]) {
         let go = self.fresh();
         let ok = self.fresh();
+        let after = self.fresh();
         let shape = self.shape;
-        for (i, &stub) in stubs.iter().enumerate() {
-            self.jumpdest(stub);
+        let tails: Vec<Vec<u32>> = (0..stubs.len())
+            .map(|i| shape.tails.get(i).map_or_else(Vec::new, |ids| self.tail_order(ids)))
+            .collect();
+        // A facet that reads immutables gets them after its calldata; the others share `go`.
+        for (i, &(stub, bare)) in stubs.iter().enumerate() {
+            if !tails[i].is_empty() {
+                self.jumpdest(stub);
+                self.tail_stub(shape.parts[i], &tails[i], bare, after);
+            }
+        }
+        let plain: Vec<usize> = (0..stubs.len()).filter(|&i| tails[i].is_empty()).collect();
+        for (n, &i) in plain.iter().enumerate() {
+            self.jumpdest(stubs[i].0);
             self.push_word(shape.parts[i]);
-            if i + 1 != stubs.len() {
+            if n + 1 != plain.len() {
                 self.push_label(go);
                 self.op(JUMP);
             }
@@ -83,6 +134,9 @@ impl<'a> Gen<'a> {
         self.op(DUP1 + 4);
         self.op(GAS);
         self.op(DELEGATECALL);
+        if tails.iter().any(|tail| !tail.is_empty()) {
+            self.jumpdest(after);
+        }
         self.op(RETURNDATASIZE);
         self.op(PUSH0);
         self.op(PUSH0);
@@ -724,10 +778,58 @@ impl<'a> Gen<'a> {
             .position(|f| f.kind == ItemKind::Deploy)
     }
 
+    /// Appends the facet's immutables to the calldata, copies the calldata, and
+    /// `delegatecall`s the facet, then goes on to `after`. An upgradeable router reads them
+    /// from storage; any other has them in its code, in one piece the creation code fills.
+    /// A call whose code reads none enters at `bare`, and the facet gets as many words of
+    /// whatever memory holds, since it reads none of them.
+    fn tail_stub(&mut self, part: Word, leaves: &[u32], bare: u32, after: u32) {
+        let len = 32 * leaves.len() as u64;
+        if self.checked.prog.upgradeable {
+            for (j, &leaf) in leaves.iter().enumerate() {
+                self.sload_leaf(leaf);
+                self.push_u64(32 * j as u64);
+                self.op(CALLDATASIZE);
+                self.op(ADD);
+                self.op(MSTORE);
+            }
+        } else {
+            let marker = self.data_marker();
+            self.data.push((marker, vec![0; len as usize], String::new()));
+            let from = self.checked.immutable_from as u32;
+            self.tail_blobs
+                .push((marker, leaves.iter().map(|leaf| leaf - from).collect()));
+            self.push_u64(len);
+            self.push_word(marker);
+            self.op(CALLDATASIZE);
+            self.op(CODECOPY);
+        }
+        self.jumpdest(bare);
+        self.op(CALLDATASIZE);
+        self.op(PUSH0);
+        self.op(PUSH0);
+        self.op(CALLDATACOPY);
+        self.op(PUSH0);
+        self.op(PUSH0);
+        self.push_u64(len);
+        self.op(CALLDATASIZE);
+        self.op(ADD);
+        self.op(PUSH0);
+        self.push_word(part);
+        self.op(GAS);
+        self.op(DELEGATECALL);
+        self.push_label(after);
+        self.op(JUMP);
+    }
+
     /// Creation code that runs `deploy` on the arguments appended to it, then returns the
-    /// runtime code.
-    pub(super) fn emit_init(&mut self, func: usize, runtime: Vec<u8>) -> Result<(), Error> {
+    /// runtime code with its immutables written in.
+    pub(super) fn emit_init(&mut self, func: usize, runtime: Vec<u8>, marks: &[Mark]) -> Result<(), Error> {
         self.init = true;
+        let words = self.checked.transient_from - self.checked.immutable_from;
+        if words > 0 {
+            self.imm_mem = self.region(Region::Immutables, words as u32 * 32);
+        }
         let shape = self.shape;
         for &part in &shape.parts {
             self.push_word(part);
@@ -769,13 +871,17 @@ impl<'a> Gen<'a> {
         }
         self.store_image();
         self.finish_body();
-        self.push_u64(len);
-        self.op(DUP1);
-        self.push_word(code);
-        self.op(PUSH0);
-        self.op(CODECOPY);
-        self.op(PUSH0);
-        self.op(RETURN);
+        if marks.is_empty() {
+            self.push_u64(len);
+            self.op(DUP1);
+            self.push_word(code);
+            self.op(PUSH0);
+            self.op(CODECOPY);
+            self.op(PUSH0);
+            self.op(RETURN);
+        } else {
+            self.return_patched(code, len, marks);
+        }
         self.emit_raises()?;
         self.emit_subs()?;
         self.emit_fails();

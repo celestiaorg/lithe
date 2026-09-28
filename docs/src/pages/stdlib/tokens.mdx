@@ -96,7 +96,7 @@ contract Token is {
 
 ## `ERC20Capped`
 
-`std/token/erc20_capped.lithe`. A ceiling on the supply, like OpenZeppelin's `ERC20Capped`. `init(cap)` sets it once, usually from `deploy`, and a zero cap raises `ERC20InvalidCap`. Minting is the contract's own, so it checks the cap after each mint with `check(supply)`, which raises `ERC20ExceededCap`. The external is `cap()`, `IERC20Capped`.
+`std/token/erc20_capped.lithe`. A ceiling on the supply, like OpenZeppelin's `ERC20Capped`. `init(cap)` sets it once, from `deploy` or a migration, as an [immutable](/language/storage#immutables), and a zero cap raises `ERC20InvalidCap`. Minting is the contract's own, so it checks the cap after each mint with `check(supply)`, which raises `ERC20ExceededCap`. The external is `cap()`, `IERC20Capped`.
 
 ```lithe
 import "std/token/erc20_capped.lithe";

@@ -12,7 +12,7 @@ contract Shapes {
     error BadData(bytes);
     error Mismatch(string expected, string actual);
 
-    address owner;
+    address immutable owner;
     uint256 items;
     uint256 sold;
 

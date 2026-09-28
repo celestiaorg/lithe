@@ -68,6 +68,8 @@ pub(crate) struct Shape {
     pub forward: Vec<([u8; 4], usize)>,
     /// The facets' addresses.
     pub parts: Vec<Word>,
+    /// The ids of the immutables each facet reads after its calldata, in order.
+    pub tails: Vec<Vec<String>>,
     /// A facet: its creation code only copies it, since it has no `deploy`.
     pub part: bool,
     pub opts: Options,
@@ -86,6 +88,8 @@ pub(crate) struct Facet {
     pub methods: Vec<(String, [u8; 4])>,
     /// Facets of contracts this facet creates.
     pub needs: Vec<Facet>,
+    /// The ids of the immutables it reads after its calldata.
+    pub immutables: Vec<String>,
 }
 
 /// A contract as it deploys: the router's code, and the facets it forwards to. A contract
@@ -289,6 +293,7 @@ fn router_shape(entries: &[Entrypoint], facets: &[Facet], chosen: &[usize], opts
             .iter()
             .map(|&i| address_word(facets[i].address))
             .collect(),
+        tails: chosen.iter().map(|&i| facets[i].immutables.clone()).collect(),
         part: false,
         opts: opts.clone(),
     }
@@ -380,6 +385,7 @@ fn facet(checked: &Checked, module: &str, opts: &Options) -> Result<Facet, Error
         abi: crate::route::render_abi(&checked)?,
         methods: crate::route::method_ids(&checked)?,
         needs: built.needs,
+        immutables: checked.immutables.iter().map(|block| block.id.clone()).collect(),
     };
     if let Ok(mut memo) = memo.lock() {
         memo.insert(key, facet.clone());
@@ -703,6 +709,10 @@ fn put_facets(out: &mut Vec<u8>, facets: &[Facet]) {
             out.extend_from_slice(sel);
         }
         put_facets(out, &facet.needs);
+        put_len(out, facet.immutables.len());
+        for id in &facet.immutables {
+            put_bytes(out, id.as_bytes());
+        }
     }
 }
 
@@ -780,6 +790,9 @@ impl Reader<'_> {
                         .map(|_| Some((self.string()?, self.array()?)))
                         .collect::<Option<_>>()?,
                     needs: self.facets()?,
+                    immutables: (0..self.len()?)
+                        .map(|_| self.string())
+                        .collect::<Option<_>>()?,
                 })
             })
             .collect()

@@ -34,6 +34,9 @@ impl<'a> Gen<'a> {
             && !self
                 .checked
                 .transient_leaf(self.checked.syms[sym].slot + leaf)
+            && !self
+                .checked
+                .immutable_leaf(self.checked.syms[sym].slot + leaf)
         {
             let slot = self.checked.syms[sym].slot + leaf;
             let at = self.code.len();

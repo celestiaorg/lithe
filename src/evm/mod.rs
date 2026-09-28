@@ -1341,6 +1341,7 @@ mod differential;
 mod dispatch;
 mod examples;
 mod fallback;
+mod immutables;
 mod interfaces;
 mod language;
 mod precompiles;

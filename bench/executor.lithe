@@ -44,9 +44,12 @@ event Deposited of record {
   shares : nat;
 }
 
-storage is record {
+immutable is record {
   exchange : Exchange;
   floor : nat;
+}
+
+storage is record {
   executed : nat;
   total_out : nat;
   left : nat;
@@ -55,8 +58,8 @@ storage is record {
 }
 
 deploy(const exchange : Exchange; const floor : nat) is {
-  storage.exchange := exchange;
-  storage.floor := floor;
+  immutable.exchange := exchange;
+  immutable.floor := floor;
 }
 
 external function execute(const id : nat; const amount_in : nat; const min_out : nat)
@@ -65,11 +68,11 @@ is {
   assert(storage.orders[id].status = New, AlreadyExecuted(id));
   storage.orders[id].status := Pending;
   storage.orders[id].amount_in := amount_in;
-  defer storage.exchange.swap(amount_in, min_out)
+  defer immutable.exchange.swap(amount_in, min_out)
     then (result : swap_result) {
       assert(
-        result.amount_out >= storage.floor,
-        TooLittle { amount_out = result.amount_out; floor = storage.floor; }
+        result.amount_out >= immutable.floor,
+        TooLittle { amount_out = result.amount_out; floor = immutable.floor; }
       );
       storage.orders[id].status := Complete;
       storage.orders[id].amount_out := result.amount_out;
@@ -85,11 +88,11 @@ is {
   assert(storage.orders[id].status = New, AlreadyExecuted(id));
   storage.orders[id].status := Pending;
   storage.orders[id].amount_in := amount_in;
-  defer storage.exchange.swap(amount_in, 0n)
+  defer immutable.exchange.swap(amount_in, 0n)
     then (result : swap_result) {
       storage.orders[id].status := Complete;
       storage.orders[id].amount_out := result.amount_out;
-      defer storage.exchange.deposit(result.amount_out)
+      defer immutable.exchange.deposit(result.amount_out)
         then (shares : nat) {
           storage.orders[id].shares := shares;
           emit Deposited { id = id; shares = shares; };
@@ -101,7 +104,7 @@ external function unwind(const id : nat)
   raises NotComplete
 is {
   assert(storage.orders[id].status = Complete, NotComplete(id));
-  defer storage.exchange.split(storage.orders[id].shares)
+  defer immutable.exchange.split(storage.orders[id].shares)
     then ((a, b) : (nat, nat)) {
       storage.orders[id].status := Unwound;
       storage.left := storage.left + a;

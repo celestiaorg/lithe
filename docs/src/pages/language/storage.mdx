@@ -1,6 +1,6 @@
 ---
 title: "Storage"
-description: "Default storage, named ERC-7201 domains, transient storage, and storage layout."
+description: "Default storage, named ERC-7201 domains, transient storage, immutables, and storage layout."
 ---
 
 # Storage
@@ -12,6 +12,7 @@ Lithe has three kinds of state, and each has a different lifetime:
 | Locals | `const` / `var` | `name` | the current call |
 | Transient storage | `transient storage [name] is record { ... }` | `transient.x` / `name.x` | the current transaction |
 | Storage | `storage [name at "id"] is record { ... }` | `storage.x` / `name.x` | forever |
+| Immutables | `immutable [name at "id"] is record { ... }` | `immutable.x` / `name.x` | forever, set only while the contract is set up |
 
 State is always accessed through a qualified path. A reviewer can always tell a storage read from a local.
 
@@ -111,6 +112,115 @@ is {
 ```
 
 The default transient record is accessed as `transient.x`, and a named one as `name.x`. Transient storage is never part of the persistent layout or the upgrade layout, and it has no ERC-7201 id. Use it for flags and bookkeeping that only need to live for one transaction. For reentrancy locks, use [`nonreentrant`](/language/reentrancy), which is built on transient storage already.
+
+## Immutables
+
+An immutable is a value fixed while the contract is set up, such as a factory address, a fee, or a hash, and never written again. Reading one costs about 3 gas, where a first storage read costs 2,100:
+
+```lithe
+error Fee_too_high of nat;
+
+immutable is record {
+  factory : address;
+  fee_bps : uint16;
+}
+
+storage is record {
+  total : nat;
+}
+
+deploy(const fee_bps : uint16)
+  raises Fee_too_high
+is {
+  assert(fee_bps <= 1000, Fee_too_high(nat(fee_bps)));
+  immutable.factory := Evm.sender();
+  immutable.fee_bps := fee_bps;
+}
+
+external function trade(const amount : nat) is {
+  storage.total := storage.total + amount * nat(immutable.fee_bps) / 10_000n;
+}
+
+external view function factory() : address is
+  immutable.factory
+```
+
+The contract's own block is read as `immutable.x`. A named block has an id, as named storage does, and a module declares its immutables that way:
+
+```lithe
+module Fees is {
+  immutable fees at "vault.fees" is record {
+    bps : uint16;
+    treasury : address;
+  }
+
+  function init(const bps : uint16; const treasury : address) is {
+    fees.bps := bps;
+    fees.treasury := treasury;
+  }
+
+  view function cut(const amount : nat) : nat is
+    amount * nat(fees.bps) / 10_000n
+}
+
+use Fees;
+
+storage is record {
+  total : nat;
+}
+
+deploy(const treasury : address) is {
+  Fees.init(25, treasury);
+}
+
+external function trade(const amount : nat) is {
+  storage.total := storage.total + Fees.cut(amount);
+}
+```
+
+Names and ids follow named storage's rules. An immutable block and a storage domain share one set of ids, so two blocks with the same id in one contract are a compile error, whether each is storage or immutable.
+
+### Writing immutables
+
+Immutables are written only while the contract is set up: by `deploy`, by a [migration](/language/upgrades#migrations) in an upgradeable contract, and by the functions they call. A function that writes an immutable, itself or through a function it calls, may be called only from those, or from other functions that keep the same rule. The compiler works this out from the calls, and rejects any other path to a write where it starts:
+
+```lithe rejects
+immutable is record {
+  owner : address;
+}
+
+storage is record {
+  total : nat;
+}
+
+function claim() is {
+  immutable.owner := Evm.sender();
+}
+
+deploy() is {
+  claim();
+}
+
+external function reclaim() is {
+  claim();
+}
+```
+
+```text
+external function `reclaim` calls `claim`, which writes immutable `immutable.owner`; call it only from `deploy` or the functions it calls
+```
+
+Within `deploy` or a migration, an immutable can be written more than once, and a read sees the value written last. A field never written reads as zero.
+
+### What immutables can hold
+
+A field holds a word: an integer of any width, `bool`, `address`, an interface, `bytesN`, `wei`, `timestamp`, or an enum. It can also hold a record or tuple of these. Maps and lists are collections, and belong in storage. `string` and `bytes` values can't be immutables yet.
+
+### Where immutables live
+
+- **A plain contract** builds them into its code, as Solidity does. Each read is a push of a constant that the creation code writes in after `deploy` returns, only as wide as its type: 20 bytes for an address, 2 for a `uint16`. Nothing is stored.
+- **An [upgradeable](/language/upgrades) contract** can't: its code is the implementation's, shared by every proxy. Its immutables are kept in the proxy's storage instead, laid out as named storage at the ERC-7201 root of their id. The contract's own block has the id `lithe.immutable`. `deploy` writes them there as it runs in the proxy, and a migration can set a field that a later version adds. They show in `lithe storage` and `lithe upgrade-check` with the rest of the layout.
+- **A facet** of a [split contract](/tooling/size-limit#immutables) reads its module's immutables from its router, after the calldata.
 
 ## What storage can hold
 

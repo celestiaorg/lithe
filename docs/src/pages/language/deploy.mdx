@@ -37,7 +37,7 @@ external view function owner() : address is
 ```
 
 - A contract has at most one `deploy`. Without one, the contract starts with every field at zero.
-- `deploy` can read its arguments and the `Evm` context, write storage, emit events, and raise errors. A raised error reverts the deployment.
+- `deploy` can read its arguments and the `Evm` context, write storage and [immutables](/language/storage#immutables), emit events, and raise errors. A raised error reverts the deployment.
 - It cannot `query` or `defer`. The contract has no code until `deploy` returns, so no one can call it back, and a continuation would have nothing to return to.
 - It declares no return type. The deployment returns the contract's code.
 - It cannot be called afterwards, and it is not in the ABI as a function.
@@ -119,6 +119,8 @@ Here `deploy` compiles to an entrypoint, `deploy(address,uint256)`. The proxy's 
 ```solidity
 new ERC1967Proxy(implementation, abi.encodeCall(Vault.deploy, (owner, cap)));
 ```
+
+Its [immutables](/language/storage#where-immutables-live) are kept in the proxy's storage, so `deploy` writes them there too.
 
 It runs only while the proxy has no code yet, which is only during the proxy's own creation. Called any other way, through a deployed proxy or on the implementation itself, it reverts. It needs no "initialized" flag in storage.
 

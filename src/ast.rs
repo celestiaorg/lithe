@@ -43,6 +43,8 @@ pub(crate) struct DomainDecl {
     pub owner: Option<String>,
     /// `transient storage`: kept for the transaction only, in `TLOAD`/`TSTORE` slots.
     pub transient: bool,
+    /// `immutable`: written only while the contract is set up, then read as a constant.
+    pub immutable: bool,
 }
 
 #[derive(Debug, Clone)]

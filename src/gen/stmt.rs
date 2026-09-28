@@ -685,7 +685,10 @@ impl<'a> Gen<'a> {
                 self.mload(src + i as i32 * 32);
             }
         }
-        if self.direct && self.checked.syms[root].storage {
+        if self.direct
+            && self.checked.syms[root].storage
+            && !self.checked.immutable_leaf(self.checked.syms[root].slot + leaf)
+        {
             self.store_record_slots(self.checked.syms[root].slot + leaf, n);
             return Ok(());
         }
@@ -1318,5 +1321,6 @@ fn inst_bytes(inst: &Inst) -> usize {
         Inst::Mem(_) => 2,
         Inst::Label(_) => 1,
         Inst::Table(t) => 1 + 2 * t.iter().filter(|l| **l != 0).count(),
+        Inst::Imm(_, width) => 1 + usize::from(*width),
     }
 }

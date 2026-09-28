@@ -8,7 +8,7 @@ contract Token {
 
     event Transfer(address indexed from, address indexed to, uint256 amount);
 
-    address owner;
+    address immutable owner;
     uint256 total;
     mapping(address => uint256) balances;
 

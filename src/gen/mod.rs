@@ -9,7 +9,7 @@
 
 use std::collections::HashMap;
 
-use crate::asm::{self, Inst};
+use crate::asm::{self, Inst, Mark};
 use crate::ast::*;
 use crate::check::{
     is_enum, is_static_aggregate, is_stored_aggregate, is_sum, option_flip, Checked, Flip, Pack,
@@ -30,6 +30,7 @@ mod dispatch;
 mod errors;
 mod expr;
 mod helpers;
+mod immutable;
 mod list;
 mod plan;
 mod precompile;
@@ -158,9 +159,9 @@ pub(crate) fn codegen(checked: &Checked, shape: &Shape) -> Result<Built, Error> 
             asm::hoist(code);
             asm::rotate_exits(code);
         });
-        let runtime = place_data(&code, &g.data)?;
+        let (runtime, marks) = g.place_runtime(&code)?;
         let mut needs = std::mem::take(&mut g.needs);
-        let (code, more) = creation(checked, &plan, runtime.clone(), true, shape)?;
+        let (code, more) = creation(checked, &plan, runtime.clone(), &marks, true, shape)?;
         needs.extend(more);
         Ok(Built {
             code,
@@ -218,6 +219,7 @@ fn creation(
     checked: &Checked,
     plan: &Plan,
     runtime: Vec<u8>,
+    marks: &[Mark],
     optimize: bool,
     shape: &Shape,
 ) -> Result<(Vec<u8>, Vec<Facet>), Error> {
@@ -228,7 +230,7 @@ fn creation(
     else {
         return Ok((wrap_init(&runtime, &shape.parts)?, Vec::new()));
     };
-    g.emit_init(func, runtime)?;
+    g.emit_init(func, runtime, marks)?;
     if optimize {
         g.drop_unread_caches();
         g.promote();
@@ -249,8 +251,17 @@ fn creation(
 /// Assembles the code with the creation code it embeds appended, each placeholder replaced
 /// by where its code lands. Offsets only shrink as the guess tightens, so this settles.
 fn place_data(code: &[Inst], data: &[(Word, Vec<u8>, String)]) -> Result<Vec<u8>, Error> {
+    Ok(place_marked(code, data)?.0)
+}
+
+/// `place_data`, with where each immutable's push is and where each appended piece starts.
+fn place_marked(
+    code: &[Inst],
+    data: &[(Word, Vec<u8>, String)],
+) -> Result<(Vec<u8>, Vec<Mark>, HashMap<Word, usize>), Error> {
     if data.is_empty() {
-        return asm::assemble(code);
+        let (bytes, marks) = asm::assemble_marked(code)?;
+        return Ok((bytes, marks, HashMap::new()));
     }
     let mut guess = asm::assemble(code)?.len();
     for _ in 0..16 {
@@ -269,12 +280,12 @@ fn place_data(code: &[Inst], data: &[(Word, Vec<u8>, String)]) -> Result<Vec<u8>
                 other => *other,
             })
             .collect();
-        let mut runtime = asm::assemble(&patched)?;
+        let (mut runtime, marks) = asm::assemble_marked(&patched)?;
         if runtime.len() == guess {
             for (_, bytes, _) in data {
                 runtime.extend_from_slice(bytes);
             }
-            return Ok(runtime);
+            return Ok((runtime, marks, offsets));
         }
         guess = runtime.len();
     }
@@ -288,8 +299,8 @@ pub(crate) fn codegen_unoptimized(checked: Checked) -> Result<Vec<u8>, Error> {
     let mut g = Gen::new(&checked, Plan::default(), &shape)?;
     g.emit()?;
     let code = g.resolve()?;
-    let runtime = place_data(&code, &g.data)?;
-    Ok(creation(&checked, &Plan::default(), runtime, false, &shape)?.0)
+    let (runtime, marks) = g.place_runtime(&code)?;
+    Ok(creation(&checked, &Plan::default(), runtime, &marks, false, &shape)?.0)
 }
 
 /// What an entrypoint's code belongs with: the router, or the facet of the module it
@@ -387,6 +398,10 @@ enum Region {
     /// The base64 lookup tables. Always placed at address zero, so a table index is its
     /// own address.
     Base64,
+    /// Immutables' values while `deploy` runs.
+    Immutables,
+    /// The runtime code, where creation code writes the immutables into it.
+    Deployed,
 }
 
 /// Which bodies touch a region. Two regions can share memory when no body touches both.
@@ -780,6 +795,15 @@ struct Gen<'a> {
     loop_counters: Vec<usize>,
     /// Orderings the enclosing guards prove, innermost last.
     facts: Vec<range::Fact>,
+    /// Where creation code keeps the immutables' values.
+    imm_mem: i32,
+    /// A facet's immutables follow its calldata, from the router: their bytes, and where
+    /// each word sits among them.
+    cd_tail: u64,
+    imm_tail: Vec<u32>,
+    /// Immutables a router appends to a facet's calldata, copied from its code: each
+    /// block's placeholder, and its words.
+    tail_blobs: Vec<(Word, Vec<u32>)>,
 }
 
 enum Target {

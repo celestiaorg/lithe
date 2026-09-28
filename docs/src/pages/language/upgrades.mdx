@@ -97,6 +97,7 @@ external view function fee_bps() : nat is
 - It is not in the ABI as a normal function. Nobody can call it after the upgrade.
 - It cannot `query` or `defer`. An upgrade should only change your own state.
 - Every field starts at zero, so a migration is needed only to set non-zero values.
+- A migration can write [immutables](/language/storage#immutables), which an upgradeable contract keeps in the proxy's storage. A field that a new version adds to a block is set this way.
 
 `lithe upgrade` builds the upgrade transaction's calldata:
 

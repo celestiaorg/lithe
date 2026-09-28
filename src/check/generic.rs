@@ -422,7 +422,7 @@ impl Checker {
         *args = kept_args;
         *callee = Some(idx);
         *ty = self.sigs[idx].ret;
-        self.note_call(idx);
+        self.note_call(idx, line, col);
         Ok(())
     }
 

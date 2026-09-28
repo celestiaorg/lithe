@@ -29,8 +29,8 @@ contract Executor {
     event Executed(uint256 indexed id, uint256 amount_out, uint256 fee);
     event Deposited(uint256 indexed id, uint256 shares);
 
-    IExchange exchange;
-    uint256 floor;
+    IExchange immutable exchange;
+    uint256 immutable floor;
     uint256 executed;
     uint256 total_out;
     uint256 left;

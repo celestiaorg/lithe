@@ -18,14 +18,17 @@ event Withdrawn of record {
   amount : wei;
 }
 
-storage is record {
+immutable is record {
   owner : address;
+}
+
+storage is record {
   paused : bool;
   deposits : map(address, wei);
 }
 
 deploy() is {
-  storage.owner := Evm.sender();
+  immutable.owner := Evm.sender();
 }
 
 external payable function deposit()
@@ -62,7 +65,7 @@ is {
 external function set_paused(const flag : bool)
   raises Not_owner
 is {
-  assert(Evm.sender() = storage.owner, Not_owner);
+  assert(Evm.sender() = immutable.owner, Not_owner);
   storage.paused := flag;
 }
 

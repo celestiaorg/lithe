@@ -7,15 +7,18 @@ error Denied of record {
   reason : string;
 }
 
-storage is record {
+immutable is record {
   owner : address;
+}
+
+storage is record {
   paused : bool;
   limit : nat;
   balances : map(address, nat);
 }
 
 deploy() is {
-  storage.owner := Evm.sender();
+  immutable.owner := Evm.sender();
   storage.limit := 1000n;
 }
 
@@ -53,7 +56,7 @@ is {
 external function set_limit(const limit : nat)
   raises Denied | Failed
 is {
-  assert(Evm.sender() = storage.owner, Denied { who = Evm.sender(); reason = "not the owner"; });
+  assert(Evm.sender() = immutable.owner, Denied { who = Evm.sender(); reason = "not the owner"; });
   assert(limit > 0n, Failed("zero limit"));
   assert(limit <= 1_000_000n, Failed("limit too high"));
   storage.limit := limit;
@@ -62,7 +65,7 @@ is {
 external function pause(const on : bool)
   raises Denied | Failed
 is {
-  assert(Evm.sender() = storage.owner, Denied { who = Evm.sender(); reason = "not the owner"; });
+  assert(Evm.sender() = immutable.owner, Denied { who = Evm.sender(); reason = "not the owner"; });
   assert(storage.paused =/= on, Failed("already set"));
   storage.paused := on;
 }

@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0
 // Benchmark: Uniswap v2-core's UniswapV2Pair, with its LP token UniswapV2ERC20 and the
-// Math and UQ112x112 libraries, ported to 0.8: SafeMath becomes checked arithmetic, and
-// the price accumulators and `timeElapsed`, which rely on wrapping, are `unchecked`.
+// Math and UQ112x112 libraries, ported to 0.8: SafeMath becomes checked arithmetic, the
+// price accumulators and `timeElapsed`, which rely on wrapping, are `unchecked`, and
+// `factory` and `DOMAIN_SEPARATOR`, set only by the constructors, are `immutable`.
 // Mirrors uniswap_v2_pair.lithe.
 pragma solidity ^0.8.24;
 
@@ -61,7 +62,7 @@ contract UniswapV2ERC20 {
     mapping(address => uint256) public balanceOf;
     mapping(address => mapping(address => uint256)) public allowance;
 
-    bytes32 public DOMAIN_SEPARATOR;
+    bytes32 public immutable DOMAIN_SEPARATOR;
     // keccak256("Permit(address owner,address spender,uint256 value,uint256 nonce,uint256 deadline)");
     bytes32 public constant PERMIT_TYPEHASH = 0x6e71edae12b1b97f4d1f60370fef10105fa2faae0126114a169c64845d6126c9;
     mapping(address => uint256) public nonces;
@@ -149,7 +150,7 @@ contract UniswapV2Pair is UniswapV2ERC20 {
     uint256 public constant MINIMUM_LIQUIDITY = 10 ** 3;
     bytes4 private constant SELECTOR = bytes4(keccak256(bytes("transfer(address,uint256)")));
 
-    address public factory;
+    address public immutable factory;
     address public token0;
     address public token1;
 

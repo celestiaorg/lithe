@@ -184,6 +184,7 @@ impl Checker {
                         "assignment type does not match the field",
                     ));
                 }
+                self.note_write(place.sym, *line, *col, &written);
                 *root = Some(place.sym);
                 *leaf = place.leaf;
                 Ok(())
@@ -920,6 +921,7 @@ impl Checker {
         {
             return Err(self.weaker(line, col, "writes storage"));
         }
+        self.note_write(place.sym, line, col, path);
         if !self.syms[place.sym].mutable {
             return Err(error(line, col, "cannot assign to a const"));
         }

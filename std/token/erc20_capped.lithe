@@ -13,7 +13,7 @@
 import "std/token/erc20.lithe";
 
 module ERC20Capped is {
-  storage erc20_capped at "lithe.std.erc20.capped" is record {
+  immutable erc20_capped at "lithe.std.erc20.capped" is record {
     cap : nat;
   }
 
@@ -24,7 +24,8 @@ module ERC20Capped is {
 
   error ERC20InvalidCap of nat;
 
-  (* The cap is set once, usually from `deploy`, and can't be zero. *)
+  (* The cap is set once, from `deploy` or a migration, and can't be zero. It is an
+     immutable: read from the code, or from storage in an upgradeable contract. *)
   function init(const cap : nat)
     raises ERC20InvalidCap
   is {

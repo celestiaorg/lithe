@@ -1,7 +1,8 @@
 (* Benchmark: Uniswap v2-core's UniswapV2Pair, with its LP token and the Math and
    UQ112x112 helpers. Mirrors uniswap_v2_pair.sol: the same storage, events, and
-   `Error(string)` reasons. The lock is the original's storage word. Transfers are
-   deferred, so the balances after them are read in the last one's continuation. *)
+   `Error(string)` reasons, with `factory` and `DOMAIN_SEPARATOR` immutable. The lock is
+   the original's storage word. Transfers are deferred, so the balances after them are
+   read in the last one's continuation. *)
 
 contract UniswapV2Pair is {
   interface IERC20 is {
@@ -24,13 +25,16 @@ contract UniswapV2Pair is {
     blockTimestampLast : uint32;
   }
 
+  immutable is record {
+    DOMAIN_SEPARATOR : bytes32;
+    factory : address;
+  }
+
   storage is record {
     totalSupply : nat;
     balanceOf : map(address, nat);
     allowance : map(address, map(address, nat));
-    DOMAIN_SEPARATOR : bytes32;
     nonces : map(address, nat);
-    factory : address;
     token0 : IERC20;
     token1 : IERC20;
     reserves : reserves;
@@ -83,7 +87,7 @@ contract UniswapV2Pair is {
   }
 
   deploy() is {
-    storage.DOMAIN_SEPARATOR := Crypto.keccak256(Abi.encode(
+    immutable.DOMAIN_SEPARATOR := Crypto.keccak256(Abi.encode(
       Crypto.keccak256("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)"),
       Crypto.keccak256("Uniswap V2"),
       Crypto.keccak256("1"),
@@ -91,7 +95,7 @@ contract UniswapV2Pair is {
       Evm.self()
     ));
     storage.unlocked := 1n;
-    storage.factory := Evm.sender();
+    immutable.factory := Evm.sender();
   }
 
   pure function min(const x : nat; const y : nat) : nat is {
@@ -171,13 +175,13 @@ contract UniswapV2Pair is {
     storage.allowance[owner][spender]
 
   external view function DOMAIN_SEPARATOR() : bytes32 is
-    storage.DOMAIN_SEPARATOR
+    immutable.DOMAIN_SEPARATOR
 
   external view function nonces(const owner : address) : nat is
     storage.nonces[owner]
 
   external view function factory() : address is
-    storage.factory
+    immutable.factory
 
   external view function token0() : IERC20 is
     storage.token0
@@ -230,7 +234,7 @@ contract UniswapV2Pair is {
     const prefix : bytes2 := 0x1901;
     const digest : bytes32 := Crypto.keccak256(Abi.encode_packed(
       prefix,
-      storage.DOMAIN_SEPARATOR,
+      immutable.DOMAIN_SEPARATOR,
       Crypto.keccak256(Abi.encode(
         INTERNAL_PERMIT_TYPEHASH(),
         owner,
@@ -266,7 +270,7 @@ contract UniswapV2Pair is {
   external function initialize(const token0 : IERC20; const token1 : IERC20)
     raises Error
   is {
-    assert(Evm.sender() = storage.factory, Error("UniswapV2: FORBIDDEN"));
+    assert(Evm.sender() = immutable.factory, Error("UniswapV2: FORBIDDEN"));
     storage.token0 := token0;
     storage.token1 := token1;
   }
@@ -328,7 +332,7 @@ contract UniswapV2Pair is {
     const balance1 : nat := query storage.token1.balanceOf(Evm.self());
     const amount0 : nat := balance0 - nat(reserve0);
     const amount1 : nat := balance1 - nat(reserve1);
-    const fee_on : bool := mint_fee(query IUniswapV2Factory(storage.factory).feeTo(), reserve0, reserve1);
+    const fee_on : bool := mint_fee(query IUniswapV2Factory(immutable.factory).feeTo(), reserve0, reserve1);
     const total_supply : nat := storage.totalSupply;
     var liquidity : nat := 0n;
     if total_supply = 0n then {
@@ -358,7 +362,7 @@ contract UniswapV2Pair is {
     const balance0 : nat := query token0.balanceOf(Evm.self());
     const balance1 : nat := query token1.balanceOf(Evm.self());
     const liquidity : nat := storage.balanceOf[Evm.self()];
-    const fee_on : bool := mint_fee(query IUniswapV2Factory(storage.factory).feeTo(), reserve0, reserve1);
+    const fee_on : bool := mint_fee(query IUniswapV2Factory(immutable.factory).feeTo(), reserve0, reserve1);
     const total_supply : nat := storage.totalSupply;
     const amount0 : nat := liquidity * balance0 / total_supply;
     const amount1 : nat := liquidity * balance1 / total_supply;

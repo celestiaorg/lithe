@@ -10,7 +10,7 @@ contract Vault {
     event Deposited(address indexed who, uint256 amount);
     event Withdrawn(address indexed who, uint256 amount);
 
-    address owner;
+    address immutable owner;
     bool paused;
     mapping(address => uint256) deposits;
 

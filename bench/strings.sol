@@ -10,7 +10,7 @@ contract Names {
 
     event Renamed(address indexed who, string old_name, string new_name);
 
-    address owner;
+    address immutable owner;
     string _name;
     string _description;
 

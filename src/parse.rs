@@ -397,6 +397,10 @@ impl<'a> Parser<'a> {
                 let decl = self.transient_decl()?;
                 body.domains.push(decl);
             }
+            Kind::Ident if !private && self.slice() == "immutable" => {
+                let decl = self.immutable_decl()?;
+                body.domains.push(decl);
+            }
             _ => {
                 return Err(self.err(format!("expected a declaration, found {}", self.found())));
             }
@@ -530,8 +534,18 @@ impl<'a> Parser<'a> {
                     return Err(self
                         .err("declare storage in the module: `storage name at \"id\" is record`"));
                 }
-                Kind::Ident if matches!(self.slice(), "storage" | "transient") => {
-                    let mut decl = if self.slice() == "transient" {
+                Kind::Ident if matches!(self.slice(), "storage" | "transient" | "immutable") => {
+                    let mut decl = if self.slice() == "immutable" {
+                        let decl = self.immutable_decl()?;
+                        if decl.name == "immutable" {
+                            return Err(error(
+                                decl.line,
+                                decl.col,
+                                "a module names its immutables: `immutable name at \"id\" is record`",
+                            ));
+                        }
+                        decl
+                    } else if self.slice() == "transient" {
                         let decl = self.transient_decl()?;
                         if decl.name == "transient" {
                             return Err(error(
@@ -710,6 +724,7 @@ impl<'a> Parser<'a> {
             ty,
             owner: None,
             transient: false,
+            immutable: false,
         }))
     }
 
@@ -738,6 +753,39 @@ impl<'a> Parser<'a> {
             ty,
             owner: None,
             transient: true,
+            immutable: false,
+        })
+    }
+
+    /// `immutable name at "id" is record { ... }`, or `immutable is ...`, which is reached as
+    /// `immutable` and has the id `lithe.immutable`.
+    fn immutable_decl(&mut self) -> Result<DomainDecl, Error> {
+        let (line, col) = self.at();
+        self.bump();
+        let (name, id) = if self.kind() == Kind::Is {
+            ("immutable".to_string(), "lithe.immutable".to_string())
+        } else {
+            let name = self.ident()?;
+            self.want(Kind::AtKw)?;
+            if self.kind() != Kind::String {
+                return Err(self.err("immutables expect a string id"));
+            }
+            let id = self.tok().string.clone().unwrap_or_default();
+            self.bump();
+            (name, id)
+        };
+        self.want(Kind::Is)?;
+        let ty = self.ty()?;
+        Ok(DomainDecl {
+            line,
+            col,
+            origin: String::new(),
+            name,
+            id,
+            ty,
+            owner: None,
+            transient: false,
+            immutable: true,
         })
     }
 

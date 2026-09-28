@@ -1253,10 +1253,13 @@ fn slot_label(fx: &Effects<'_>, sym: usize, label: String) -> String {
     }
 }
 
-/// Transient storage is named as such, so it is never mistaken for persistent state.
+/// Transient storage and immutables are named as such, so they are never mistaken for
+/// persistent state.
 fn space_label(checked: &Checked, sym: usize, label: String) -> String {
     if checked.is_transient(sym) && !label.starts_with("transient.") {
         format!("transient {label}")
+    } else if checked.immutable_syms.contains(&sym) && !label.starts_with("immutable.") {
+        format!("immutable {label}")
     } else {
         label
     }
@@ -1485,7 +1488,8 @@ pub(crate) fn render_footprints(
     out
 }
 
-/// The footprints as JSON. Each state access names its space, `storage` or `transient`.
+/// The footprints as JSON. Each state access names its space: `storage`, `transient`, or
+/// `immutable`.
 pub(crate) fn render_analysis(checked: &Checked) -> String {
     let access = |labels: &[String]| -> String {
         let items: Vec<String> = labels
@@ -1494,7 +1498,11 @@ pub(crate) fn render_analysis(checked: &Checked) -> String {
                 let (space, path) = match label.strip_prefix("transient ") {
                     Some(path) => ("transient", path),
                     None if label.starts_with("transient.") => ("transient", label.as_str()),
-                    None => ("storage", label.strip_prefix("storage.").unwrap_or(label)),
+                    None => match label.strip_prefix("immutable ") {
+                        Some(path) => ("immutable", path),
+                        None if label.starts_with("immutable.") => ("immutable", label.as_str()),
+                        None => ("storage", label.strip_prefix("storage.").unwrap_or(label)),
+                    },
                 };
                 format!("{{ \"space\": \"{space}\", \"path\": {} }}", json_str(path))
             })

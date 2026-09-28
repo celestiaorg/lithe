@@ -25,9 +25,12 @@ pub(crate) enum Inst {
     /// The code positions of up to eight labels, two bytes each, the first lowest.
     /// Unused entries are 0, which is never a label.
     Table([u32; 8]),
+    /// An immutable's word, and how many bytes its value takes: a push of that many zero
+    /// bytes, which the creation code overwrites. No pass knows its value, so none folds it.
+    Imm(u32, u8),
 }
 
-use Inst::{Label, Mem, Op, Push, PushLabel, Table};
+use Inst::{Imm, Label, Mem, Op, Push, PushLabel, Table};
 
 fn entries(table: &[u32; 8]) -> impl Iterator<Item = u32> + '_ {
     table.iter().copied().take_while(|&l| l != 0)
@@ -140,6 +143,15 @@ pub(crate) fn optimize(code: &mut Vec<Inst>) {
 }
 
 pub(crate) fn assemble(code: &[Inst]) -> Result<Vec<u8>, Error> {
+    Ok(assemble_marked(code)?.0)
+}
+
+/// Where an immutable's word goes in assembled code: the word, the offset of the push it
+/// fills, and how many bytes the push takes.
+pub(crate) type Mark = (u32, usize, u8);
+
+/// The code, and where each immutable's push is.
+pub(crate) fn assemble_marked(code: &[Inst]) -> Result<(Vec<u8>, Vec<Mark>), Error> {
     let refs = referenced(code);
     let mut encodings: FxHashMap<Word, Vec<u8>> = FxHashMap::default();
     for inst in code {
@@ -164,7 +176,7 @@ pub(crate) fn assemble(code: &[Inst]) -> Result<Vec<u8>, Error> {
                     }
                 }
                 PushLabel(_) => pc += if wide[i] { 3 } else { 2 },
-                Table(_) => pc += inst_len(inst),
+                Table(_) | Imm(..) => pc += inst_len(inst),
                 Mem(_) => return Err(error(0, 0, "internal: unplaced memory address")),
             }
         }
@@ -189,9 +201,15 @@ pub(crate) fn assemble(code: &[Inst]) -> Result<Vec<u8>, Error> {
             return Err(error(0, 0, "internal: missing jump target"));
         }
         let mut out = Vec::with_capacity(pc);
+        let mut marks = Vec::new();
         for (i, inst) in code.iter().enumerate() {
             match inst {
                 Op(op) => out.push(*op),
+                Imm(word, width) => {
+                    marks.push((*word, out.len(), *width));
+                    out.push(PUSH0 + width);
+                    out.extend(std::iter::repeat_n(0, usize::from(*width)));
+                }
                 Push(w) => out.extend_from_slice(&encodings[w]),
                 Label(l) => {
                     if refs.contains(l) {
@@ -218,7 +236,7 @@ pub(crate) fn assemble(code: &[Inst]) -> Result<Vec<u8>, Error> {
                 Mem(_) => return Err(error(0, 0, "internal: unplaced memory address")),
             }
         }
-        return Ok(out);
+        return Ok((out, marks));
     }
 }
 
@@ -330,6 +348,7 @@ fn inst_len(inst: &Inst) -> usize {
         Label(_) => 0,
         PushLabel(_) | Mem(_) => 3,
         Table(t) => 1 + 2 * entries(t).count(),
+        Imm(_, width) => 1 + usize::from(*width),
     }
 }
 
@@ -407,7 +426,7 @@ fn is_commutative(op: u8) -> bool {
 }
 
 fn is_const(inst: &Inst) -> bool {
-    matches!(inst, Push(_) | PushLabel(_) | Table(_))
+    matches!(inst, Push(_) | PushLabel(_) | Table(_) | Imm(..))
 }
 
 fn referenced(code: &[Inst]) -> FxHashSet<u32> {
@@ -995,7 +1014,7 @@ fn dup_constants(code: &mut [Inst]) -> bool {
         let inst = code[i];
         match inst {
             Label(_) => stack.clear(),
-            Push(_) | PushLabel(_) | Table(_) => {
+            Push(_) | PushLabel(_) | Table(_) | Imm(..) => {
                 let worth = match inst {
                     Push(w) => !w.is_zero(),
                     _ => true,
@@ -1172,7 +1191,7 @@ impl Tokens {
     /// A `JUMPI` gets a token here, and is settled each round by its target.
     fn of(&mut self, inst: &Inst) -> u32 {
         let ok = match inst {
-            Push(_) | PushLabel(_) | Op(JUMPI) => true,
+            Push(_) | PushLabel(_) | Imm(..) | Op(JUMPI) => true,
             Op(op) => {
                 stack_io(*op).is_some() && !is_terminal(*op) && *op != 0x58 && *op != JUMPDEST
             }
@@ -1202,7 +1221,7 @@ fn safe_exits(code: &[Inst]) -> FxHashSet<u32> {
         let mut ok = false;
         for inst in &code[body_at(code, i)..] {
             match inst {
-                Push(_) | PushLabel(_) | Table(_) => depth += 1,
+                Push(_) | PushLabel(_) | Table(_) | Imm(..) => depth += 1,
                 Op(op) if matches!(*op, STOP | RETURN | REVERT | INVALID) => {
                     let (pops, _) = stack_io(*op).unwrap_or((0, 0));
                     ok = depth >= pops as i64;
@@ -1233,7 +1252,7 @@ fn run_effect(run: &[Inst]) -> Option<(usize, usize)> {
     let mut low = 0i64;
     for inst in run {
         match inst {
-            Push(_) | PushLabel(_) | Table(_) => depth += 1,
+            Push(_) | PushLabel(_) | Table(_) | Imm(..) => depth += 1,
             Op(op) => {
                 let (pops, pushes) = stack_io(*op)?;
                 let reach = if (0x90..=0x9f).contains(op) {
@@ -1273,7 +1292,7 @@ fn fetches(run: &[Inst], params: &[usize]) -> Option<Vec<usize>> {
             continue;
         }
         match inst {
-            Push(_) | PushLabel(_) => depth += 1,
+            Push(_) | PushLabel(_) | Imm(..) => depth += 1,
             Op(op) => {
                 let (pops, pushes) = stack_io(*op)?;
                 depth = depth.checked_sub(pops)? + pushes;
@@ -1644,7 +1663,7 @@ fn runs(code: &[Inst], calls: &Calls, exits: &FxHashSet<u32>) -> Runs {
         depth[i] = d;
         let mut split = false;
         match code[i] {
-            Push(_) | PushLabel(_) | Mem(_) | Table(_) => d += 1,
+            Push(_) | PushLabel(_) | Mem(_) | Table(_) | Imm(..) => d += 1,
             Label(_) => {}
             Op(JUMPI) => {
                 let safe = matches!(i.checked_sub(1).map(|p| code[p]), Some(PushLabel(l)) if exits.contains(&l));
@@ -1999,7 +2018,7 @@ fn hold(
         }
         let d = runs.depth[k];
         match code[k] {
-            Push(_) | PushLabel(_) | Mem(_) | Label(_) | Table(_) => {}
+            Push(_) | PushLabel(_) | Mem(_) | Label(_) | Table(_) | Imm(..) => {}
             Op(op) if (0x80..=0x8f).contains(&op) => {
                 let reach = (op - 0x7f) as i64;
                 if d - reach < p {

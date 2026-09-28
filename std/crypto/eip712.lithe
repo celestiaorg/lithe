@@ -1,6 +1,7 @@
-(* EIP-712 typed structured data. `init` records the domain's name and version, usually
-   from `deploy`; the chain id and this contract's address are read when a hash is made,
-   so the domain stays correct on a fork.
+(* EIP-712 typed structured data. `init` records the hashes of the domain's name and
+   version as immutables, so it runs only from `deploy` or a migration, and a hash reads
+   them from the code, or from storage in an upgradeable contract. The chain id and this
+   contract's address are read when a hash is made, so the domain stays correct on a fork.
 
      deploy() is {
        EIP712.init("My Token", "1");
@@ -17,7 +18,7 @@
      } *)
 
 module EIP712 is {
-  storage eip712 at "lithe.std.eip712" is record {
+  immutable eip712 at "lithe.std.eip712" is record {
     hashed_name : bytes32;
     hashed_version : bytes32;
   }
