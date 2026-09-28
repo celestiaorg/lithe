@@ -141,7 +141,11 @@ pub(crate) struct AbiField {
 
 pub(crate) fn abi_fields(types: &[RType], ty: usize, name: &str) -> Result<Vec<AbiField>, Error> {
     if is_sum(types, ty) {
-        return Err(error(1, 1, "a variant with a payload cannot be an ABI value"));
+        return Err(error(
+            1,
+            1,
+            "a variant with a payload cannot be an ABI value",
+        ));
     }
     match types[ty].kind {
         TyKind::Unit => Ok(Vec::new()),
@@ -210,7 +214,11 @@ pub(super) fn event_sig_type(types: &[RType], ty: usize) -> Result<String, Error
 pub(crate) fn abi_nested(types: &[RType], ty: usize, name: &str) -> Result<AbiField, Error> {
     let id = peel_id(types, ty);
     if is_sum(types, id) {
-        return Err(error(1, 1, "a variant with a payload cannot be an ABI value"));
+        return Err(error(
+            1,
+            1,
+            "a variant with a payload cannot be an ABI value",
+        ));
     }
     let t = &types[id];
     match t.kind {
@@ -231,7 +239,11 @@ pub(crate) fn abi_nested(types: &[RType], ty: usize, name: &str) -> Result<AbiFi
                 return Err(error(1, 1, "this type cannot be an ABI value"));
             };
             let inner = abi_nested(types, elem, "")?;
-            let len = if t.bits == 0 { String::new() } else { t.bits.to_string() };
+            let len = if t.bits == 0 {
+                String::new()
+            } else {
+                t.bits.to_string()
+            };
             Ok(AbiField {
                 name: name.to_string(),
                 ty: format!("{}[{len}]", inner.ty),
@@ -362,7 +374,10 @@ pub(crate) fn flat_record(types: &[RType], ty: usize) -> bool {
                     ft.bits == 0
                         && ft.elem.is_some_and(|e| {
                             !abi_dynamic(types, e)
-                                || matches!(types[peel_id(types, e)].kind, TyKind::String | TyKind::Bytes)
+                                || matches!(
+                                    types[peel_id(types, e)].kind,
+                                    TyKind::String | TyKind::Bytes
+                                )
                         })
                 }
                 TyKind::Record | TyKind::Tuple => false,

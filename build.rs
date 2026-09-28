@@ -35,9 +35,18 @@ fn build_id(mut files: Vec<String>) {
         std::fs::read(file).unwrap_or_default().hash(&mut hasher);
     }
     let rustc = std::env::var("RUSTC").unwrap_or_else(|_| "rustc".to_string());
-    let version = std::process::Command::new(rustc).arg("-vV").output().map(|out| out.stdout);
+    let version = std::process::Command::new(rustc)
+        .arg("-vV")
+        .output()
+        .map(|out| out.stdout);
     version.unwrap_or_default().hash(&mut hasher);
-    for var in ["TARGET", "PROFILE", "OPT_LEVEL", "DEBUG", "CARGO_ENCODED_RUSTFLAGS"] {
+    for var in [
+        "TARGET",
+        "PROFILE",
+        "OPT_LEVEL",
+        "DEBUG",
+        "CARGO_ENCODED_RUSTFLAGS",
+    ] {
         std::env::var(var).unwrap_or_default().hash(&mut hasher);
     }
     println!("cargo:rustc-env=LITHE_BUILD_ID={:016x}", hasher.finish());

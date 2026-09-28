@@ -88,7 +88,12 @@ impl<'a> Gen<'a> {
         Ok(())
     }
 
-    pub(super) fn store_storage_bytes(&mut self, sym: usize, leaf: u32, expr: &Expr) -> Result<(), Error> {
+    pub(super) fn store_storage_bytes(
+        &mut self,
+        sym: usize,
+        leaf: u32,
+        expr: &Expr,
+    ) -> Result<(), Error> {
         self.compile_value(expr)?;
         if let Some(sub) = self.shared_bytes(sym, leaf, true) {
             self.push_leaf_key(self.checked.syms[sym].slot + leaf);
@@ -375,7 +380,8 @@ impl<'a> Gen<'a> {
                 col,
                 ..
             } if self.checked.syms[*sid].storage
-                && self.checked.types[self.type_at(self.checked.syms[*sid].ty, *leaf)].bits == 0 =>
+                && self.checked.types[self.type_at(self.checked.syms[*sid].ty, *leaf)].bits
+                    == 0 =>
             {
                 self.compile_index_read(*sid, *leaf, index, *line, *col, true)?;
             }

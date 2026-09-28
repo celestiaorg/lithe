@@ -43,7 +43,11 @@ pub(super) fn whole_build(checked: &crate::check::Checked) -> crate::gen::Built 
 }
 
 pub(super) fn facet_names(split: &crate::split::Split) -> Vec<&str> {
-    split.facets.iter().map(|facet| facet.name.as_str()).collect()
+    split
+        .facets
+        .iter()
+        .map(|facet| facet.name.as_str())
+        .collect()
 }
 
 /// Every program that exposes a module, with every exposed module in its facet, behaves
@@ -164,12 +168,22 @@ fn upgrades_move_between_whole_and_split() {
     let proxy = proxy_runtime();
     let owner = Word::from_u64(1);
     // The proxy's storage as `deploy` would have left it: the owner in slot 0.
-    let storage: std::cell::RefCell<HashMap<Word, Word>> =
-        std::cell::RefCell::new([(slot, a), (Word::from_u64(0), owner)].into_iter().collect());
+    let storage: std::cell::RefCell<HashMap<Word, Word>> = std::cell::RefCell::new(
+        [(slot, a), (Word::from_u64(0), owner)]
+            .into_iter()
+            .collect(),
+    );
     let send = |data: Vec<u8>| {
         let now = storage.borrow().clone();
-        let out = exec(&proxy, &data, now, owner, Word::from_u64(0), Word::from_u64(0))
-            .expect("run");
+        let out = exec(
+            &proxy,
+            &data,
+            now,
+            owner,
+            Word::from_u64(0),
+            Word::from_u64(0),
+        )
+        .expect("run");
         if !out.reverted {
             *storage.borrow_mut() = out.storage.clone();
         }
@@ -179,7 +193,11 @@ fn upgrades_move_between_whole_and_split() {
     assert!(!send(word_data("bump(uint256)", &[Word::from_u64(5)])).reverted);
     let init = word_data("init(uint256)", &[Word::from_u64(30)]);
     let out = send(upgrade_to_and_call(b, &init));
-    assert!(!out.reverted, "upgrade into the split build: {}", pretty(&out.returndata));
+    assert!(
+        !out.reverted,
+        "upgrade into the split build: {}",
+        pretty(&out.returndata)
+    );
     assert_eq!(storage.borrow()[&slot], b);
     assert_eq!(send(word_data("count()", &[])).returndata, word(5));
     assert_eq!(send(word_data("fee()", &[])).returndata, word(30));
@@ -203,8 +221,16 @@ fn facets_run_only_their_module() {
     let names: Vec<&str> = facet.entries.iter().map(|e| e.name.as_str()).collect();
     assert_eq!(names, ["bump", "count"]);
     let runtime = deploy(&facet.init).expect("facet");
-    for sig in ["deploy(address)", "init(uint256)", "proxiableUUID()", "fee()"] {
-        assert!(call_raw(&runtime, &word_data(sig, &[Word::from_u64(1)])).reverted, "{sig}");
+    for sig in [
+        "deploy(address)",
+        "init(uint256)",
+        "proxiableUUID()",
+        "fee()",
+    ] {
+        assert!(
+            call_raw(&runtime, &word_data(sig, &[Word::from_u64(1)])).reverted,
+            "{sig}"
+        );
     }
     let out = call_raw(&runtime, &word_data("bump(uint256)", &[Word::from_u64(3)]));
     assert!(!out.reverted);
@@ -347,7 +373,11 @@ contract Other is {{
     let other = crate::split::build(&checked_src(&other), "Other", &all_facets()).expect("other");
     assert_eq!(facet_names(&other), ["Alpha"]);
     let alpha = |split: &crate::split::Split| {
-        let facet = split.facets.iter().find(|f| f.name == "Alpha").expect("Alpha");
+        let facet = split
+            .facets
+            .iter()
+            .find(|f| f.name == "Alpha")
+            .expect("Alpha");
         (facet.address, facet.init.clone())
     };
     assert_eq!(alpha(&one), alpha(&other));
@@ -356,8 +386,15 @@ contract Other is {{
     assert_eq!(facet.entries.len(), 3);
     assert_eq!(other.forwarded(facet).len(), 1);
     let runtime = deploy_split(&other);
-    let out = call(&runtime, "alpha_add(uint256,uint256)", &[Word::from_u64(1), Word::from_u64(2)]);
-    assert!(out.reverted, "undeclared externals are not reachable through the router");
+    let out = call(
+        &runtime,
+        "alpha_add(uint256,uint256)",
+        &[Word::from_u64(1), Word::from_u64(2)],
+    );
+    assert!(
+        out.reverted,
+        "undeclared externals are not reachable through the router"
+    );
     DEPLOYED.with(|d| d.borrow_mut().clear());
 }
 
@@ -427,17 +464,25 @@ fn split_errors_say_what_cannot_move() {
         .err()
         .expect("nothing can move")
         .to_string();
-    assert!(err.contains("only a module exposed with `use M exposing` can move"), "{err}");
+    assert!(
+        err.contains("only a module exposed with `use M exposing` can move"),
+        "{err}"
+    );
     // Small enough for the facet, but not for the router with everything else.
     let split = crate::split::build(&checked, "Vault", &all_facets()).expect("split");
-    let facet = split.facets[0].runtime.len().max(split.facets[0].init.len().div_ceil(2));
+    let facet = split.facets[0]
+        .runtime
+        .len()
+        .max(split.facets[0].init.len().div_ceil(2));
     assert!(facet < split.runtime.len());
     let err = crate::split::build(&checked, "Vault", &split_opts(facet))
         .err()
         .expect("the router is too big")
         .to_string();
     assert!(
-        err.contains("contract `Vault` does not fit with every exposed module in its facet: its router is "),
+        err.contains(
+            "contract `Vault` does not fit with every exposed module in its facet: its router is "
+        ),
         "{err}"
     );
 }
@@ -549,8 +594,15 @@ fn factories_create_split_contracts() {
         .expect("factory");
     let checked = crate::check::check(factory).expect("check");
     let split = crate::split::build(&checked, "Factory", &all_facets()).expect("split");
-    assert!(split.facets.is_empty(), "the factory itself exposes nothing");
-    let needs: Vec<String> = split.prerequisites().iter().map(|f| f.name.clone()).collect();
+    assert!(
+        split.facets.is_empty(),
+        "the factory itself exposes nothing"
+    );
+    let needs: Vec<String> = split
+        .prerequisites()
+        .iter()
+        .map(|f| f.name.clone())
+        .collect();
     assert_eq!(needs, ["Folds"]);
     let factory = deploy_split(&split);
     let out = exec(
@@ -578,7 +630,10 @@ fn factories_create_split_contracts() {
         .expect("created");
     let folded = exec(
         &code,
-        &word_data("fold(uint256,uint256,uint256)", &[Word::from_u64(2), Word::from_u64(3), Word::from_u64(4)]),
+        &word_data(
+            "fold(uint256,uint256,uint256)",
+            &[Word::from_u64(2), Word::from_u64(3), Word::from_u64(4)],
+        ),
         storage,
         Word::from_u64(7),
         Word::from_u64(0),
@@ -635,7 +690,10 @@ fn split_tooling_output() {
     let unsplit =
         crate::facets(&Sources::disk(), &pair, &crate::Options::default()).expect("facets");
     assert!(!unsplit.contains("facet "), "{unsplit}");
-    assert!(unsplit.contains("  Alpha: alpha_add, alpha_mix, alpha\n"), "{unsplit}");
+    assert!(
+        unsplit.contains("  Alpha: alpha_add, alpha_mix, alpha\n"),
+        "{unsplit}"
+    );
     let check = crate::upgrade_check(&Sources::disk(), &pair, &pair2, &opts).expect("check");
     assert!(check.contains("facets\n  router "), "{check}");
     assert!(check.contains("\n  Alpha   unchanged  0x"), "{check}");
@@ -643,11 +701,23 @@ fn split_tooling_output() {
     assert!(check.ends_with("\ncompatible\n"), "{check}");
     let out = dir.join("out");
     let built = crate::compile_dir(&dir.join("src"), &out, &opts).expect("dir");
-    assert!(built.failed.is_empty(), "{}", built.failed.iter().map(|e| e.to_string()).collect::<String>());
+    assert!(
+        built.failed.is_empty(),
+        "{}",
+        built
+            .failed
+            .iter()
+            .map(|e| e.to_string())
+            .collect::<String>()
+    );
     let artifact = std::fs::read_to_string(out.join("facets/Alpha.json")).expect("facet artifact");
     assert!(artifact.contains("\"name\": \"alpha_mix\""), "{artifact}");
-    let router = std::fs::read_to_string(out.join("pair.lithe/Pair.json")).expect("router artifact");
-    assert!(router.contains("\"facets\": [\n    {\n      \"name\": \"Alpha\""), "{router}");
+    let router =
+        std::fs::read_to_string(out.join("pair.lithe/Pair.json")).expect("router artifact");
+    assert!(
+        router.contains("\"facets\": [\n    {\n      \"name\": \"Alpha\""),
+        "{router}"
+    );
     let vault = dir.join("vault.lithe");
     std::fs::write(&vault, SPLIT_VAULT).expect("write");
     let args = ["30".to_string()];
@@ -737,18 +807,37 @@ fn stubs_keep_tuple_records() {
     let marked = [n(32), n(9), n(64), string(&memo)].concat();
     let calls = [
         ("place((address,string))", placed.clone(), placed),
-        ("run(uint256,string)", ran.clone(), [n(32), ran[..32].to_vec(), n(64), string(&memo)].concat()),
-        ("mark((uint256,string))", marked.clone(), [n(9), n(64), string(&memo)].concat()),
+        (
+            "run(uint256,string)",
+            ran.clone(),
+            [n(32), ran[..32].to_vec(), n(64), string(&memo)].concat(),
+        ),
+        (
+            "mark((uint256,string))",
+            marked.clone(),
+            [n(9), n(64), string(&memo)].concat(),
+        ),
     ];
     for runtime in [&whole, &routed] {
         for (sig, args, encoded) in &calls {
             let mut data = selector(sig).to_vec();
             data.extend(args);
-            let out = exec(runtime, &data, HashMap::new(), Word::from_u64(1), Word::from_u64(0), Word::from_u64(0))
-                .expect("run");
+            let out = exec(
+                runtime,
+                &data,
+                HashMap::new(),
+                Word::from_u64(1),
+                Word::from_u64(0),
+                Word::from_u64(0),
+            )
+            .expect("run");
             assert!(!out.reverted, "{sig}: {}", pretty(&out.returndata));
             let last = run_ok(runtime, &out.storage, "last()", &[]);
-            assert_eq!(load_bytes(&last.returndata, 0), keccak_word(encoded), "{sig}");
+            assert_eq!(
+                load_bytes(&last.returndata, 0),
+                keccak_word(encoded),
+                "{sig}"
+            );
         }
     }
 }

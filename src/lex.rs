@@ -31,8 +31,9 @@ pub(crate) enum Num {
     Bytes(String),
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Default)]
 enum LexError {
+    #[default]
     Unexpected,
     UnterminatedComment {
         line: u32,
@@ -47,12 +48,6 @@ enum LexError {
         col: u32,
         message: String,
     },
-}
-
-impl Default for LexError {
-    fn default() -> Self {
-        Self::Unexpected
-    }
 }
 
 #[derive(Logos, Debug, Clone)]

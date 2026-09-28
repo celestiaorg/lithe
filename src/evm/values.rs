@@ -635,40 +635,89 @@ fn loops_run_bounded_work() {
     // A storage list: three members marked, and a search that stops early.
     let mut storage = HashMap::new();
     for who in [w(0xa1), w(0xa2), w(0xa3)] {
-        let joined = exec(&runtime, &word_data("join(address)", &[who]), storage, w(1), w(0), w(0))
-            .expect("join");
+        let joined = exec(
+            &runtime,
+            &word_data("join(address)", &[who]),
+            storage,
+            w(1),
+            w(0),
+            w(0),
+        )
+        .expect("join");
         assert!(!joined.reverted, "{}", pretty(&joined.returndata));
         storage = joined.storage;
     }
-    let marked = exec(&runtime, &word_data("mark_all()", &[]), storage.clone(), w(1), w(0), w(0))
-        .expect("mark");
+    let marked = exec(
+        &runtime,
+        &word_data("mark_all()", &[]),
+        storage.clone(),
+        w(1),
+        w(0),
+        w(0),
+    )
+    .expect("mark");
     assert!(!marked.reverted, "{}", pretty(&marked.returndata));
     for who in [w(0xa1), w(0xa2), w(0xa3)] {
-        assert_eq!(marked.storage.get(&map_key(who, w(4))), Some(&w(1)), "{who:?}");
+        assert_eq!(
+            marked.storage.get(&map_key(who, w(4))),
+            Some(&w(1)),
+            "{who:?}"
+        );
     }
-    let found = exec(&runtime, &word_data("find(address)", &[w(0xa2)]), storage.clone(), w(1), w(0), w(0))
-        .expect("find");
+    let found = exec(
+        &runtime,
+        &word_data("find(address)", &[w(0xa2)]),
+        storage.clone(),
+        w(1),
+        w(0),
+        w(0),
+    )
+    .expect("find");
     assert!(!found.reverted, "{}", pretty(&found.returndata));
     assert_eq!(slot(&found.storage, 2), w(2));
-    let missing = exec(&runtime, &word_data("find(address)", &[w(0xa9)]), storage.clone(), w(1), w(0), w(0))
-        .expect("find");
+    let missing = exec(
+        &runtime,
+        &word_data("find(address)", &[w(0xa9)]),
+        storage.clone(),
+        w(1),
+        w(0),
+        w(0),
+    )
+    .expect("find");
     assert_eq!(slot(&missing.storage, 2), w(0));
 
     // Past the bound, the loop panics before it starts.
     for who in [w(0xa4), w(0xa5)] {
-        let joined = exec(&runtime, &word_data("join(address)", &[who]), storage, w(1), w(0), w(0))
-            .expect("join");
+        let joined = exec(
+            &runtime,
+            &word_data("join(address)", &[who]),
+            storage,
+            w(1),
+            w(0),
+            w(0),
+        )
+        .expect("join");
         storage = joined.storage;
     }
-    let too_many = exec(&runtime, &word_data("mark_all()", &[]), storage, w(1), w(0), w(0))
-        .expect("mark");
+    let too_many = exec(
+        &runtime,
+        &word_data("mark_all()", &[]),
+        storage,
+        w(1),
+        w(0),
+        w(0),
+    )
+    .expect("mark");
     assert!(too_many.reverted);
     assert_eq!(load_bytes(&too_many.returndata, 4), w(0x01));
 
     // One event and one transfer per recipient, in order, after the storage write.
     let paid = exec(
         &runtime,
-        &word_data("pay(address[2],uint256[2])", &[w(0xb1), w(0xb2), w(5), w(7)]),
+        &word_data(
+            "pay(address[2],uint256[2])",
+            &[w(0xb1), w(0xb2), w(5), w(7)],
+        ),
         HashMap::new(),
         w(1),
         w(0),
@@ -677,7 +726,11 @@ fn loops_run_bounded_work() {
     .expect("pay");
     assert!(!paid.reverted, "{}", pretty(&paid.returndata));
     assert_eq!(slot(&paid.storage, 7), w(12));
-    let logs = paid.trace.iter().filter(|ev| matches!(ev, Ev::Log { .. })).count();
+    let logs = paid
+        .trace
+        .iter()
+        .filter(|ev| matches!(ev, Ev::Log { .. }))
+        .count();
     assert_eq!(logs, 2, "{:?}", paid.trace);
     let calls: Vec<(Word, Word)> = paid
         .trace
@@ -687,7 +740,12 @@ fn loops_run_bounded_work() {
             _ => None,
         })
         .collect();
-    assert_eq!(calls, vec![(w(0xb1), w(5)), (w(0xb2), w(7))], "{:?}", paid.trace);
+    assert_eq!(
+        calls,
+        vec![(w(0xb1), w(5)), (w(0xb2), w(7))],
+        "{:?}",
+        paid.trace
+    );
     let store_then_call = paid
         .trace
         .iter()
@@ -852,7 +910,10 @@ external function bump(const x : nat) is {
     };
     reject("if x then 1n else 2n", "`if` condition must be bool");
     reject("if x > 0n then 1n", "`else`");
-    reject("if x > 0n then 1n else true", "`if` branches have different types");
+    reject(
+        "if x > 0n then 1n else true",
+        "`if` branches have different types",
+    );
 }
 
 #[test]
@@ -941,7 +1002,11 @@ external pure function reject() : nat raises Bad_data is { assert(false, Bad_dat
         "storage is record { n : nat; }\nexternal pure function f() : bytes4 is 0x0012345678\n",
     )
     .expect_err("too wide");
-    assert!(err.to_string().contains("`bytes4` literal needs 8 hex digits"), "{err}");
+    assert!(
+        err.to_string()
+            .contains("`bytes4` literal needs 8 hex digits"),
+        "{err}"
+    );
     for (ty, lit, want) in [
         ("bytes32", "0x11", "`bytes32` literal needs 64 hex digits"),
         ("bytes4", "17", "`bytes4` literal needs 8 hex digits"),
@@ -954,9 +1019,16 @@ external pure function reject() : nat raises Bad_data is { assert(false, Bad_dat
         .expect_err(lit);
         assert!(err.to_string().contains(want), "{err}");
     }
-    for (ty, lit) in [("bytes32", "0x00"), ("address", "0"), ("bytes32", "bytes32(0x11)"), ("address", "address(0x01)")] {
-        compile(&format!("storage is record {{ n : nat; }}\nexternal pure function f() : {ty} is {lit}\n"))
-            .expect(lit);
+    for (ty, lit) in [
+        ("bytes32", "0x00"),
+        ("address", "0"),
+        ("bytes32", "bytes32(0x11)"),
+        ("address", "address(0x01)"),
+    ] {
+        compile(&format!(
+            "storage is record {{ n : nat; }}\nexternal pure function f() : {ty} is {lit}\n"
+        ))
+        .expect(lit);
     }
     for ty in ["bytes", "bytes4"] {
         let err = compile(&format!(
@@ -1047,8 +1119,15 @@ external function refuse() raises Refused is {{
     assert_eq!(slot(&made.storage, 1), Word::from_u64(7));
     let runtime = made.returndata;
     let run = |data: &[u8], storage: HashMap<Word, Word>| {
-        exec(&runtime, data, storage, Word::from_u64(1), Word::from_u64(0), Word::from_u64(0))
-            .expect("exec")
+        exec(
+            &runtime,
+            data,
+            storage,
+            Word::from_u64(1),
+            Word::from_u64(0),
+            Word::from_u64(0),
+        )
+        .expect("exec")
     };
     let note = run(&word_data("note()", &[]), made.storage.clone());
     assert_eq!(note.returndata, abi_string("f()", EDGE.as_bytes())[4..]);
@@ -1058,17 +1137,30 @@ external function refuse() raises Refused is {{
     assert_eq!(hash.returndata, crate::keccak::keccak256(LONG.as_bytes()));
     for (text, want) in [(LONG, 1), (EDGE, 0)] {
         let same = run(&abi_string("same(string)", text.as_bytes()), HashMap::new());
-        assert_eq!(load_bytes(&same.returndata, 0), Word::from_u64(want), "{text}");
+        assert_eq!(
+            load_bytes(&same.returndata, 0),
+            Word::from_u64(want),
+            "{text}"
+        );
     }
     let kept = run(&word_data("keep()", &[]), HashMap::new());
-    assert_eq!(slot(&kept.storage, 2), Word::from_u64(2 * LONG.len() as u64 + 1));
+    assert_eq!(
+        slot(&kept.storage, 2),
+        Word::from_u64(2 * LONG.len() as u64 + 1)
+    );
     let data = keccak_word(&Word::from_u64(2).to_be_bytes());
     let mut first = [0u8; 32];
     first.copy_from_slice(&LONG.as_bytes()[..32]);
-    assert_eq!(kept.storage.get(&data).copied(), Some(Word::from_be_bytes(first)));
+    assert_eq!(
+        kept.storage.get(&data).copied(),
+        Some(Word::from_be_bytes(first))
+    );
     let refused = run(&word_data("refuse()", &[]), HashMap::new());
     assert!(refused.reverted);
-    assert_eq!(refused.returndata, abi_string("Refused(string)", REASON.as_bytes()));
+    assert_eq!(
+        refused.returndata,
+        abi_string("Refused(string)", REASON.as_bytes())
+    );
 }
 
 /// A list literal passed to a function whose list parameter could be a stored list takes
@@ -1131,7 +1223,10 @@ external pure function ge(const a : bytes2; const b : bytes2) : bool is a >= b
             "storage is record {{ n : nat; }}\nexternal pure function f(const a : {ty}; const b : {ty}) : bool is a < b\n"
         );
         let err = compile(&src).expect_err(ty);
-        assert!(err.to_string().contains("ordered comparison expects"), "{ty}: {err}");
+        assert!(
+            err.to_string().contains("ordered comparison expects"),
+            "{ty}: {err}"
+        );
     }
 }
 
@@ -1172,7 +1267,10 @@ external pure function mul(const a : int; const b : int) : int is Int.wrapping_m
         "storage is record { n : nat; }\nexternal pure function f(const a : int8) : int8 is Nat.wrapping_add(a, a)\n",
     )
     .expect_err("signed");
-    assert!(err.to_string().contains("expects an unsigned integer"), "{err}");
+    assert!(
+        err.to_string().contains("expects an unsigned integer"),
+        "{err}"
+    );
 }
 
 /// Sending ether is `Evm.transfer`, like every other built-in reached through its module.
@@ -1380,40 +1478,82 @@ external view function reason(const data : bytes) : (bytes4, nat) is
     let panics = |out: &Outcome| out.reverted && load_bytes(&out.returndata, 4) == w(0x32);
 
     for i in [0usize, 5, 39] {
-        let out = run(&encode_args("at(bytes,uint256)", &[Arg::B(data.clone()), Arg::W(w(i as u64))]));
+        let out = run(&encode_args(
+            "at(bytes,uint256)",
+            &[Arg::B(data.clone()), Arg::W(w(i as u64))],
+        ));
         assert_eq!(load_bytes(&out.returndata, 0), byte(data[i]), "{i}");
     }
-    assert!(panics(&run(&encode_args("at(bytes,uint256)", &[Arg::B(data.clone()), Arg::W(w(40))]))));
-    assert!(panics(&run(&encode_args("at(bytes,uint256)", &[Arg::B(Vec::new()), Arg::W(w(0))]))));
+    assert!(panics(&run(&encode_args(
+        "at(bytes,uint256)",
+        &[Arg::B(data.clone()), Arg::W(w(40))]
+    ))));
+    assert!(panics(&run(&encode_args(
+        "at(bytes,uint256)",
+        &[Arg::B(Vec::new()), Arg::W(w(0))]
+    ))));
 
     let mut h = [0u8; 32];
     h[..4].copy_from_slice(&[0xde, 0xad, 0xbe, 0xef]);
     for (i, b) in [0xde, 0xad, 0xbe, 0xef].into_iter().enumerate() {
-        let out = run(&encode_args("fixed_at(bytes4,uint256)", &[Arg::W(Word::from_be_bytes(h)), Arg::W(w(i as u64))]));
+        let out = run(&encode_args(
+            "fixed_at(bytes4,uint256)",
+            &[Arg::W(Word::from_be_bytes(h)), Arg::W(w(i as u64))],
+        ));
         assert_eq!(load_bytes(&out.returndata, 0), byte(b), "{i}");
     }
-    assert!(panics(&run(&encode_args("fixed_at(bytes4,uint256)", &[Arg::W(Word::from_be_bytes(h)), Arg::W(w(4))]))));
+    assert!(panics(&run(&encode_args(
+        "fixed_at(bytes4,uint256)",
+        &[Arg::W(Word::from_be_bytes(h)), Arg::W(w(4))]
+    ))));
 
     for (s, e) in [(0u64, 40u64), (3, 7), (40, 40), (5, 5), (0, 0)] {
         let args = [Arg::B(data.clone()), Arg::W(w(s)), Arg::W(w(e))];
         let out = run(&encode_args("slice(bytes,uint256,uint256)", &args));
         assert!(!out.reverted, "{s}:{e}");
-        assert_eq!(abi_string_value(&out.returndata), data[s as usize..e as usize].to_vec(), "{s}:{e}");
+        assert_eq!(
+            abi_string_value(&out.returndata),
+            data[s as usize..e as usize].to_vec(),
+            "{s}:{e}"
+        );
     }
     for (s, e) in [(0u64, 41u64), (8, 7), (u64::MAX, 3)] {
         let args = [Arg::B(data.clone()), Arg::W(w(s)), Arg::W(w(e))];
-        assert!(panics(&run(&encode_args("slice(bytes,uint256,uint256)", &args))), "{s}:{e}");
+        assert!(
+            panics(&run(&encode_args("slice(bytes,uint256,uint256)", &args))),
+            "{s}:{e}"
+        );
     }
-    let out = run(&encode_args("tail(bytes,uint256)", &[Arg::B(data.clone()), Arg::W(w(36))]));
+    let out = run(&encode_args(
+        "tail(bytes,uint256)",
+        &[Arg::B(data.clone()), Arg::W(w(36))],
+    ));
     assert_eq!(abi_string_value(&out.returndata), data[36..].to_vec());
-    assert!(panics(&run(&encode_args("tail(bytes,uint256)", &[Arg::B(data.clone()), Arg::W(w(41))]))));
-    let out = run(&encode_args("head(bytes,uint256)", &[Arg::B(data.clone()), Arg::W(w(4))]));
+    assert!(panics(&run(&encode_args(
+        "tail(bytes,uint256)",
+        &[Arg::B(data.clone()), Arg::W(w(41))]
+    ))));
+    let out = run(&encode_args(
+        "head(bytes,uint256)",
+        &[Arg::B(data.clone()), Arg::W(w(4))],
+    ));
     assert_eq!(abi_string_value(&out.returndata), data[..4].to_vec());
 
     let out = run(&encode_args("pieces(bytes)", &[Arg::B(data.clone())]));
-    let want = [&data[1..3], &data[2..4], &data[3..5], &data[37..], &data[38..], &data[39..]].concat();
+    let want = [
+        &data[1..3],
+        &data[2..4],
+        &data[3..5],
+        &data[37..],
+        &data[38..],
+        &data[39..],
+    ]
+    .concat();
     assert_eq!(abi_string_value(&out.returndata), want);
-    assert!(panics(&run(&encode_args("pieces(bytes)", &[Arg::B(data[..38].to_vec())]))));
+    assert!(panics(&run(&encode_args(
+        "pieces(bytes)",
+        &[Arg::B(data[..38].to_vec())]
+    ))));
     let out = run(&encode_args("nested(bytes)", &[Arg::B(data.clone())]));
     assert_eq!(load_bytes(&out.returndata, 0), byte(data[3]));
     assert_eq!(load_bytes(&out.returndata, 32), w(2));
@@ -1425,7 +1565,10 @@ external view function reason(const data : bytes) : (bytes4, nat) is
     // Past a short value's end, the fixed bytes are zero.
     let out = run(&encode_args("lead(bytes)", &[Arg::B(vec![0xaa, 0xbb])]));
     assert_eq!(&out.returndata[..4], &[0xaa, 0xbb, 0, 0]);
-    assert_eq!(&out.returndata[32..64], &[[0xaa, 0xbb].as_slice(), &[0u8; 30]].concat());
+    assert_eq!(
+        &out.returndata[32..64],
+        &[[0xaa, 0xbb].as_slice(), &[0u8; 30]].concat()
+    );
     let out = run(&encode_args("lead(bytes)", &[Arg::B(Vec::new())]));
     assert_eq!(out.returndata, vec![0u8; 64]);
 
@@ -1433,15 +1576,23 @@ external view function reason(const data : bytes) : (bytes4, nat) is
     assert_eq!(abi_string_value(&out.returndata), b"ello".to_vec());
 
     let mut h = [0u8; 32];
-    h.iter_mut().enumerate().for_each(|(i, b)| *b = 0xa0 + i as u8);
+    h.iter_mut()
+        .enumerate()
+        .for_each(|(i, b)| *b = 0xa0 + i as u8);
     let mut s4 = [0u8; 32];
     s4[..4].copy_from_slice(&[1, 2, 3, 4]);
-    let args = [Arg::W(Word::from_be_bytes(h)), Arg::W(Word::from_be_bytes(s4))];
+    let args = [
+        Arg::W(Word::from_be_bytes(h)),
+        Arg::W(Word::from_be_bytes(s4)),
+    ];
     let out = run(&encode_args("resize(bytes32,bytes4)", &args));
     assert!(!out.reverted, "{}", pretty(&out.returndata));
     assert_eq!(&out.returndata[..32], &[&h[..4], &[0u8; 28][..]].concat());
     assert_eq!(&out.returndata[32..64], &s4);
-    assert_eq!(&out.returndata[64..96], &[&[1u8, 2][..], &[0u8; 30][..]].concat());
+    assert_eq!(
+        &out.returndata[64..96],
+        &[&[1u8, 2][..], &[0u8; 30][..]].concat()
+    );
     assert_eq!(&out.returndata[96..100], &[0x4d, 0x4f, 0x8a, 0xa6]);
 
     // ERC-2771: the trusted forwarder appends the sender to the calldata.
@@ -1466,8 +1617,16 @@ external view function reason(const data : bytes) : (bytes4, nat) is
     for i in [0u64, 31, 32, 39] {
         let c = encode_args("stored_at(uint256)", &[Arg::W(w(i))]);
         let out = exec(&runtime, &c, saved.storage.clone(), w(1), w(0), w(0)).expect("stored_at");
-        assert_eq!(load_bytes(&out.returndata, 0), byte(data[i as usize]), "{i}");
-        assert_eq!(load_bytes(&out.returndata, 32), byte(data[i as usize]), "{i}");
+        assert_eq!(
+            load_bytes(&out.returndata, 0),
+            byte(data[i as usize]),
+            "{i}"
+        );
+        assert_eq!(
+            load_bytes(&out.returndata, 32),
+            byte(data[i as usize]),
+            "{i}"
+        );
     }
 }
 
@@ -1505,7 +1664,10 @@ external view function seen() : (bytes4, nat, bytes1) is (storage.tag, storage.r
         assert!(!out.reverted, "{}", pretty(&out.returndata));
         out
     };
-    let out = step(HashMap::new(), encode_args("pick(bytes)", &[Arg::B(vec![7, 8, 9])]));
+    let out = step(
+        HashMap::new(),
+        encode_args("pick(bytes)", &[Arg::B(vec![7, 8, 9])]),
+    );
     let seen = step(out.storage.clone(), selector("seen()").to_vec());
     assert_eq!(load_bytes(&seen.returndata, 32), w(2));
     assert_eq!(load_bytes(&seen.returndata, 64), w(8).shl(248));
@@ -1519,14 +1681,38 @@ external view function seen() : (bytes4, nat, bytes1) is (storage.tag, storage.r
 #[test]
 fn byte_access_rules() {
     for (body, want) in [
-        ("external function f(const s : string) : string is s[1n:]", "only `bytes` can be sliced"),
-        ("external function f(const b : bytes) : bytes1 is b[true]", "an index must be `nat`"),
-        ("external function f(const s : string) : bytes1 is s[0n]", "this value cannot be indexed"),
-        ("external function f(const s : string) : bytes1 is String.concat(s)[0n]", "this value cannot be indexed"),
-        ("external function f(const b : bytes) : bytes is b[0n:true]", "an index must be `nat`"),
-        ("external function f(const b : bytes) : string is string(bytes4(b))", "cannot convert to `string`"),
-        ("external function f() is { storage.blob[0n] := 0x01; }", "a byte cannot be assigned"),
-        ("external function f(const b : bytes) is { var c : bytes := b; c[0n] := 0x01; }", "a byte cannot be assigned"),
+        (
+            "external function f(const s : string) : string is s[1n:]",
+            "only `bytes` can be sliced",
+        ),
+        (
+            "external function f(const b : bytes) : bytes1 is b[true]",
+            "an index must be `nat`",
+        ),
+        (
+            "external function f(const s : string) : bytes1 is s[0n]",
+            "this value cannot be indexed",
+        ),
+        (
+            "external function f(const s : string) : bytes1 is String.concat(s)[0n]",
+            "this value cannot be indexed",
+        ),
+        (
+            "external function f(const b : bytes) : bytes is b[0n:true]",
+            "an index must be `nat`",
+        ),
+        (
+            "external function f(const b : bytes) : string is string(bytes4(b))",
+            "cannot convert to `string`",
+        ),
+        (
+            "external function f() is { storage.blob[0n] := 0x01; }",
+            "a byte cannot be assigned",
+        ),
+        (
+            "external function f(const b : bytes) is { var c : bytes := b; c[0n] := 0x01; }",
+            "a byte cannot be assigned",
+        ),
     ] {
         let src = format!("storage is record {{ blob : bytes; }}\n{body}\n");
         let err = compile(&src).expect_err(want);
@@ -1806,15 +1992,29 @@ external view function uri() : string is
         int(max.shr(1)),
         b"57896044618658097711785492504343953926634992332820282019728792003956564819967"
     );
-    let out = call(&runtime, "small(uint8,int8)", &[Word::from_u64(255), neg(128)]);
+    let out = call(
+        &runtime,
+        "small(uint8,int8)",
+        &[Word::from_u64(255), neg(128)],
+    );
     assert_eq!(abi_string_value(&out.returndata), b"255/-128");
     let kept = call(&runtime, "keep(uint256)", &[Word::from_u64(7)]);
-    let uri = exec(&runtime, &selector("uri()"), kept.storage, Word::from_u64(1), Word::from_u64(0), Word::from_u64(0))
-        .expect("uri");
+    let uri = exec(
+        &runtime,
+        &selector("uri()"),
+        kept.storage,
+        Word::from_u64(1),
+        Word::from_u64(0),
+        Word::from_u64(0),
+    )
+    .expect("uri");
     assert_eq!(abi_string_value(&uri.returndata), b"ipfs://base/7");
     let err = compile("storage is record { n : nat; }\nexternal pure function f(const n : int) : string is Nat.to_string(n)\n")
         .expect_err("signed");
-    assert!(err.to_string().contains("expects an unsigned integer"), "{err}");
+    assert!(
+        err.to_string().contains("expects an unsigned integer"),
+        "{err}"
+    );
 }
 
 /// `List.pop` drops the last element of a stored list, clearing its slots as Solidity's
@@ -1930,9 +2130,18 @@ contract T is {
     assert_eq!(load_bytes(&out.returndata, 32), Word::from_u64(2));
     assert_eq!(load_bytes(&out.returndata, 96), Word::from_u64(2));
     for (body, want) in [
-        ("const x : nat := List.pop(storage.ids);", "`List.pop` is a statement"),
-        ("List.pop(storage.fixed);", "`List.pop` expects a dynamic list"),
-        ("List.pop(storage.ids[0n]);", "takes a list variable or a stored list"),
+        (
+            "const x : nat := List.pop(storage.ids);",
+            "`List.pop` is a statement",
+        ),
+        (
+            "List.pop(storage.fixed);",
+            "`List.pop` expects a dynamic list",
+        ),
+        (
+            "List.pop(storage.ids[0n]);",
+            "takes a list variable or a stored list",
+        ),
     ] {
         let src = format!(
             "storage is record {{ ids : list(nat); fixed : list(nat, 3); }}\nexternal function f() is {{ {body} }}\n"
@@ -1979,8 +2188,14 @@ external view function size() : nat is
     let run = |data: Vec<u8>, storage: HashMap<Word, Word>| {
         exec(&runtime, &data, storage, one, zero, zero).expect("run")
     };
-    let out = run(word_data("push(uint256)", &[Word::from_u64(4)]), HashMap::new());
-    let out = run(word_data("push(uint256)", &[Word::from_u64(5)]), out.storage);
+    let out = run(
+        word_data("push(uint256)", &[Word::from_u64(4)]),
+        HashMap::new(),
+    );
+    let out = run(
+        word_data("push(uint256)", &[Word::from_u64(5)]),
+        out.storage,
+    );
     let out = run(word_data("pop()", &[]), out.storage);
     assert_eq!(load_bytes(&out.returndata, 0), Word::from_u64(5));
     let size = run(word_data("size()", &[]), out.storage);
@@ -2048,19 +2263,33 @@ external pure function local(const i : nat) : nat is {
         storage = out.storage;
     }
     let sums = run(word_data("sums()", &[]), storage.clone());
-    let got: Vec<Word> = (0..3).map(|k| load_bytes(&sums.returndata, 32 * k)).collect();
+    let got: Vec<Word> = (0..3)
+        .map(|k| load_bytes(&sums.returndata, 32 * k))
+        .collect();
     assert_eq!(got, [w(30), w(62), w(30)]);
     for sig in ["set_id(uint256)", "set_pair(uint256)", "set_by(uint256)"] {
         let out = run(word_data(sig, &[w(1)]), storage.clone());
         assert!(!out.reverted, "{sig}: {}", pretty(&out.returndata));
-        assert!(panics(&run(word_data(sig, &[w(2)]), storage.clone())), "{sig}");
+        assert!(
+            panics(&run(word_data(sig, &[w(2)]), storage.clone())),
+            "{sig}"
+        );
     }
     let out = run(word_data("local(uint256)", &[w(0)]), HashMap::new());
     assert_eq!(load_bytes(&out.returndata, 0), w(19));
-    assert!(panics(&run(word_data("local(uint256)", &[w(1)]), HashMap::new())));
+    assert!(panics(&run(
+        word_data("local(uint256)", &[w(1)]),
+        HashMap::new()
+    )));
     for (body, want) in [
-        ("const x : nat := List.push(storage.ids, 1n);", "`List.push` is a statement"),
-        ("List.push(storage.fixed, 1n);", "`List.push` expects a dynamic list"),
+        (
+            "const x : nat := List.push(storage.ids, 1n);",
+            "`List.push` is a statement",
+        ),
+        (
+            "List.push(storage.fixed, 1n);",
+            "`List.push` expects a dynamic list",
+        ),
         ("List.push(storage.ids);", "`List.push` expects 2 arguments"),
         ("List.push(storage.ids, true);", "does not match"),
         ("storage.ids.length := 1n;", "`List.push` grows a list"),
@@ -2165,14 +2394,24 @@ external view function first_fill() : nat is
     let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
     let w = Word::from_u64;
     let fails = |st: &HashMap<Word, Word>, sig: &str, args: &[Word]| {
-        exec(&runtime, &word_data(sig, args), st.clone(), w(1), w(0), w(0))
-            .expect("run")
-            .reverted
+        exec(
+            &runtime,
+            &word_data(sig, args),
+            st.clone(),
+            w(1),
+            w(0),
+            w(0),
+        )
+        .expect("run")
+        .reverted
     };
 
     let mut st = HashMap::new();
     assert_eq!(read_ok(&runtime, &st, "last_code()", &[]), w(99));
-    assert!(fails(&st, "set_mode(uint8)", &[w(3)]), "a mode past the last case");
+    assert!(
+        fails(&st, "set_mode(uint8)", &[w(3)]),
+        "a mode past the last case"
+    );
     st = run_ok(&runtime, &st, "set_mode(uint8)", &[w(2)]).storage;
     // `mode` and `flag` share slot 0: a byte each.
     assert_eq!(st.get(&w(0)).copied(), Some(w(0x0102)));
@@ -2191,15 +2430,24 @@ external view function first_fill() : nat is
     st = run_ok(&runtime, &st, "place(uint256)", &[w(1)]).storage;
     assert!(fails(&st, "place(uint256)", &[w(1)]), "placed twice");
     assert_eq!(read_ok(&runtime, &st, "stage(uint256)", &[w(1)]), w(1));
-    assert!(fails(&st, "amount(uint256)", &[w(1)]), "pending has no amount");
+    assert!(
+        fails(&st, "amount(uint256)", &[w(1)]),
+        "pending has no amount"
+    );
     st = run_ok(&runtime, &st, "fill_order(uint256,uint256)", &[w(1), w(42)]).storage;
     assert_eq!(read_ok(&runtime, &st, "stage(uint256)", &[w(1)]), w(2));
     assert_eq!(read_ok(&runtime, &st, "amount(uint256)", &[w(1)]), w(42));
     assert_eq!(read_ok(&runtime, &st, "first_fill()", &[]), w(49));
-    assert!(fails(&st, "place(uint256)", &[w(1)]), "a filled order is placed");
+    assert!(
+        fails(&st, "place(uint256)", &[w(1)]),
+        "a filled order is placed"
+    );
     st = run_ok(&runtime, &st, "unwind(uint256)", &[w(1)]).storage;
     assert_eq!(read_ok(&runtime, &st, "stage(uint256)", &[w(1)]), w(2));
-    assert!(fails(&st, "amount(uint256)", &[w(1)]), "unwound has no amount");
+    assert!(
+        fails(&st, "amount(uint256)", &[w(1)]),
+        "unwound has no amount"
+    );
     // Unwinding cleared the payload words the fill had written.
     assert_eq!(read_ok(&runtime, &st, "first_fill()", &[]), w(49));
     let slot = map_key(w(1), w(1));
@@ -2290,18 +2538,27 @@ external view function n() : nat is storage.n
     assert_eq!(read_ok(&runtime, &st, "weight_of(uint256)", &[w(5)]), w(3));
     assert_eq!(read_ok(&runtime, &st, "maybe_weight()", &[]), w(3));
     assert_eq!(read_ok(&runtime, &st, "n()", &[]), w(3));
-    assert_eq!(read_ok(&runtime, &st, "same(uint256,uint256)", &[w(5), w(6)]), w(0));
+    assert_eq!(
+        read_ok(&runtime, &st, "same(uint256,uint256)", &[w(5), w(6)]),
+        w(0)
+    );
     st = run_ok(&runtime, &st, "finish(uint256,bool)", &[w(5), w(1)]).storage;
     assert_eq!(read_ok(&runtime, &st, "weight_of(uint256)", &[w(5)]), w(6));
     st = run_ok(&runtime, &st, "step(uint256)", &[w(5)]).storage;
     assert_eq!(read_ok(&runtime, &st, "weight_of(uint256)", &[w(5)]), w(6));
     st = run_ok(&runtime, &st, "finish(uint256,bool)", &[w(6), w(1)]).storage;
-    assert_eq!(read_ok(&runtime, &st, "same(uint256,uint256)", &[w(5), w(6)]), w(0));
+    assert_eq!(
+        read_ok(&runtime, &st, "same(uint256,uint256)", &[w(5), w(6)]),
+        w(0)
+    );
     st = run_ok(&runtime, &st, "step(uint256)", &[w(7)]).storage;
     st = run_ok(&runtime, &st, "step(uint256)", &[w(7)]).storage;
     st = run_ok(&runtime, &st, "step(uint256)", &[w(7)]).storage;
     st = run_ok(&runtime, &st, "finish(uint256,bool)", &[w(7), w(1)]).storage;
-    assert_eq!(read_ok(&runtime, &st, "same(uint256,uint256)", &[w(5), w(7)]), w(1));
+    assert_eq!(
+        read_ok(&runtime, &st, "same(uint256,uint256)", &[w(5), w(7)]),
+        w(1)
+    );
 
     assert_eq!(read_ok(&runtime, &st, "light_at(uint256)", &[w(1)]), w(0));
     st = run_ok(&runtime, &st, "cycle(uint256)", &[w(1)]).storage;
@@ -2336,7 +2593,10 @@ fn variant_values_are_checked() {
         "type st is | A of string | B\nstorage is record { s : st; t : st; }\nexternal view function f() : bool is storage.s = storage.t",
         "compares only with a case that has no payload",
     );
-    rejects(&with("external function f() is { storage.m := 1; }"), "`mode` is a variant");
+    rejects(
+        &with("external function f() is { storage.m := 1; }"),
+        "`mode` is a variant",
+    );
     rejects(
         &with("external function f() is { storage.m := mode(uint8(1)); }"),
         "cannot convert to `mode`",
@@ -2345,8 +2605,14 @@ fn variant_values_are_checked() {
         &with("external function f() is { storage.m := storage.m | Closed; }"),
         "expects two integers",
     );
-    rejects(&with("external function f() is { storage.s := Busy; }"), "`Busy` carries a payload");
-    rejects(&with("external function f() is { storage.s := Idle(1); }"), "`Idle` has no payload");
+    rejects(
+        &with("external function f() is { storage.s := Busy; }"),
+        "`Busy` carries a payload",
+    );
+    rejects(
+        &with("external function f() is { storage.s := Idle(1); }"),
+        "`Idle` has no payload",
+    );
     rejects(
         &with("external function f(const s : st) is { storage.s := s; }"),
         "a variant with a payload cannot be an ABI value",
@@ -2360,7 +2626,9 @@ fn variant_values_are_checked() {
         "only dispatches entrypoints",
     );
     rejects(
-        &format!("type other is | Open | Shut\n{base}external view function f() : bool is Open = Open"),
+        &format!(
+            "type other is | Open | Shut\n{base}external view function f() : bool is Open = Open"
+        ),
         "annotate which type is meant",
     );
 }
@@ -2417,8 +2685,14 @@ external pure function ons(const ms : list(mode)) : nat is {
     assert!(bad.reverted);
     assert_eq!(&bad.returndata[..4], &selector("Bad(uint8)"));
     assert_eq!(load_bytes(&bad.returndata, 4), w(1));
-    assert!(call(&runtime, "bump(uint8)", &[w(2)]).reverted, "past the last case");
-    assert!(call(&runtime, "count(uint8)", &[w(256)]).reverted, "wider than a byte");
+    assert!(
+        call(&runtime, "bump(uint8)", &[w(2)]).reverted,
+        "past the last case"
+    );
+    assert!(
+        call(&runtime, "count(uint8)", &[w(256)]).reverted,
+        "wider than a byte"
+    );
     let decode = |n: u64| {
         let data = encode_args("decoded(bytes)", &[Arg::B(w(n).to_be_bytes().to_vec())]);
         exec(&runtime, &data, HashMap::new(), w(1), w(0), w(0)).expect("run")
@@ -2435,7 +2709,6 @@ external pure function ons(const ms : list(mode)) : nat is {
     assert_eq!(load_bytes(&ons(&[0, 1, 0]).returndata, 0), w(2));
     assert!(ons(&[0, 2]).reverted, "an element past the last case");
 }
-
 
 /// A variant's tag and the payload words narrower than a slot share its first slot.
 #[test]
@@ -2522,7 +2795,15 @@ external view function cur_text() : string is
     let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
     let w = Word::from_u64;
     let send = |st: &HashMap<Word, Word>, sig: &str, args: &[Arg]| {
-        let out = exec(&runtime, &encode_args(sig, args), st.clone(), w(1), w(0), w(0)).expect("run");
+        let out = exec(
+            &runtime,
+            &encode_args(sig, args),
+            st.clone(),
+            w(1),
+            w(0),
+            w(0),
+        )
+        .expect("run");
         assert!(!out.reverted, "{sig}: {}", pretty(&out.returndata));
         out.storage
     };
@@ -2530,12 +2811,24 @@ external view function cur_text() : string is
         abi_string_value(&run_ok(&runtime, st, sig, args).returndata)
     };
     let long = b"a reason longer than thirty-one bytes, stored past its slot".to_vec();
-    let mut st = send(&HashMap::new(), "queue(uint256,string)", &[Arg::W(w(1)), Arg::B(long.clone())]);
+    let mut st = send(
+        &HashMap::new(),
+        "queue(uint256,string)",
+        &[Arg::W(w(1)), Arg::B(long.clone())],
+    );
     assert_eq!(text(&st, "why(uint256)", &[w(1)]), long);
     assert_eq!(read_ok(&runtime, &st, "idle(uint256)", &[w(1)]), w(0));
-    st = send(&st, "hold(uint256,string)", &[Arg::W(w(1)), Arg::B(b"short".to_vec())]);
+    st = send(
+        &st,
+        "hold(uint256,string)",
+        &[Arg::W(w(1)), Arg::B(b"short".to_vec())],
+    );
     assert_eq!(text(&st, "why(uint256)", &[w(1)]), b"short".to_vec());
-    st = send(&st, "tag(uint256,string)", &[Arg::W(w(2)), Arg::B(b"tagged".to_vec())]);
+    st = send(
+        &st,
+        "tag(uint256,string)",
+        &[Arg::W(w(2)), Arg::B(b"tagged".to_vec())],
+    );
     assert_eq!(text(&st, "why(uint256)", &[w(2)]), b"tagged".to_vec());
     assert_eq!(text(&st, "cur_text()", &[]), b"tagged".to_vec());
     let mut data = selector("batch(uint256,uint256[])").to_vec();
@@ -2579,11 +2872,20 @@ external view function sum(const k : nat) : nat is {
 "#;
     let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
     let w = Word::from_u64;
-    let data = encode_args("set(uint256,string)", &[Arg::W(w(4)), Arg::B(b"hi".to_vec())]);
+    let data = encode_args(
+        "set(uint256,string)",
+        &[Arg::W(w(4)), Arg::B(b"hi".to_vec())],
+    );
     let out = exec(&runtime, &data, HashMap::new(), w(1), w(0), w(0)).expect("run");
     assert!(!out.reverted, "{}", pretty(&out.returndata));
-    assert_eq!(abi_string_value(&run_ok(&runtime, &out.storage, "memo(uint256)", &[w(4)]).returndata), b"hi".to_vec());
-    assert_eq!(read_ok(&runtime, &out.storage, "sum(uint256)", &[w(4)]), w(11));
+    assert_eq!(
+        abi_string_value(&run_ok(&runtime, &out.storage, "memo(uint256)", &[w(4)]).returndata),
+        b"hi".to_vec()
+    );
+    assert_eq!(
+        read_ok(&runtime, &out.storage, "sum(uint256)", &[w(4)]),
+        w(11)
+    );
 }
 
 /// A stored record read whole loads its strings and lists, and a list field of a local
@@ -2660,11 +2962,26 @@ external function draft(const id : nat) is { storage.reviews[id] := Draft; }
     assert_eq!(used(&st), 5);
     assert_eq!(read_ok(&runtime, &st, "approvals(uint256)", &[w(1)]), w(3));
     // The tag, and a 40-byte string's length slot and two data slots.
-    let st = run(&st, encode_args("reject(uint256,string)", &[Arg::W(w(1)), Arg::B(vec![b'x'; 40])]));
+    let st = run(
+        &st,
+        encode_args(
+            "reject(uint256,string)",
+            &[Arg::W(w(1)), Arg::B(vec![b'x'; 40])],
+        ),
+    );
     assert_eq!(used(&st), 4);
     assert_eq!(read_ok(&runtime, &st, "approvals(uint256)", &[w(1)]), w(0));
-    let st = run(&st, encode_args("withdraw(uint256,string)", &[Arg::W(w(1)), Arg::B(b"late".to_vec())]));
-    assert_eq!(abi_string_value(&run_ok(&runtime, &st, "reason(uint256)", &[w(1)]).returndata), b"late".to_vec());
+    let st = run(
+        &st,
+        encode_args(
+            "withdraw(uint256,string)",
+            &[Arg::W(w(1)), Arg::B(b"late".to_vec())],
+        ),
+    );
+    assert_eq!(
+        abi_string_value(&run_ok(&runtime, &st, "reason(uint256)", &[w(1)]).returndata),
+        b"late".to_vec()
+    );
     let st = run(&st, encode_args("draft(uint256)", &[Arg::W(w(1))]));
     assert_eq!(used(&st), 0);
 }
@@ -2695,7 +3012,11 @@ external pure function only(const n : nat) : nat is {
     assert_eq!(read_ok(&runtime, &st, "y()", &[]), w(9));
     assert_eq!(read_ok(&runtime, &st, "only(uint256)", &[w(4)]), w(4));
     let st = run_ok(&runtime, &st, "set(uint8)", &[w(2)]).storage;
-    assert!(exec(&runtime, &word_data("fee()", &[]), st, w(1), w(0), w(0)).expect("run").reverted);
+    assert!(
+        exec(&runtime, &word_data("fee()", &[]), st, w(1), w(0), w(0))
+            .expect("run")
+            .reverted
+    );
     let err = compile(
         "type phase is Open | Closed\nstorage is record { p : phase; }\nexternal view function f() : nat is case storage.p of { Open -> 1 Closed -> 2 }",
     )
@@ -2709,7 +3030,8 @@ external pure function only(const n : nat) : nat is {
 fn long_hex_bytes_literals() {
     let word = "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f";
     let long = format!("{word}{word}ff");
-    let src = format!("\
+    let src = format!(
+        "\
 error Blob of bytes;
 storage is record {{ kept : bytes; }}
 external pure function word() : bytes is 0x{word}
@@ -2720,11 +3042,27 @@ external pure function same(const b : bytes) : bool is b = 0x{long}
 external function keep() is {{ storage.kept := 0x{long}; }}
 external view function kept() : bytes is storage.kept
 external function refuse() raises Blob is {{ fail Blob(0x{long}); }}
-");
+"
+    );
     let runtime = deploy(&compile(&src).expect("compile")).expect("deploy");
-    let unhex = |h: &str| (0..h.len()).step_by(2).map(|i| u8::from_str_radix(&h[i..i + 2], 16).unwrap()).collect::<Vec<u8>>();
+    let unhex = |h: &str| {
+        (0..h.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&h[i..i + 2], 16).unwrap())
+            .collect::<Vec<u8>>()
+    };
     let (word, long) = (unhex(word), unhex(&long));
-    let call = |data: Vec<u8>, storage: HashMap<Word, Word>| exec(&runtime, &data, storage, Word::from_u64(1), Word::from_u64(0), Word::from_u64(0)).expect("run");
+    let call = |data: Vec<u8>, storage: HashMap<Word, Word>| {
+        exec(
+            &runtime,
+            &data,
+            storage,
+            Word::from_u64(1),
+            Word::from_u64(0),
+            Word::from_u64(0),
+        )
+        .expect("run")
+    };
     let bytes_of = |sig: &str| {
         let out = call(selector(sig).to_vec(), HashMap::new());
         assert!(!out.reverted, "{sig}: {}", pretty(&out.returndata));
@@ -2741,7 +3079,10 @@ external function refuse() raises Blob is {{ fail Blob(0x{long}); }}
     let mut padded = long.clone();
     padded.resize(96, 0);
     arg.extend(padded);
-    assert_eq!(call(arg, HashMap::new()).returndata, Word::from_u64(1).to_be_bytes().to_vec());
+    assert_eq!(
+        call(arg, HashMap::new()).returndata,
+        Word::from_u64(1).to_be_bytes().to_vec()
+    );
     let kept = call(selector("keep()").to_vec(), HashMap::new());
     assert!(!kept.reverted);
     let read = call(selector("kept()").to_vec(), kept.storage);

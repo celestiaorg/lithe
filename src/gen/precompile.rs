@@ -72,7 +72,11 @@ impl<'a> Gen<'a> {
                 self.mload(buf + 160);
                 self.op(ISZERO);
                 self.revert_if_panic(0x12)?;
-                self.pre_call(addr, (Val::Mem(buf), Val::Const(192)), (Val::Mem(self.ret_scratch), Val::Const(32)));
+                self.pre_call(
+                    addr,
+                    (Val::Mem(buf), Val::Const(192)),
+                    (Val::Mem(self.ret_scratch), Val::Const(32)),
+                );
                 self.expect_answer(Val::Const(32))?;
                 self.mload(self.ret_scratch);
                 Ok(())
@@ -87,7 +91,11 @@ impl<'a> Gen<'a> {
                 self.push_u64(192);
                 self.op(MUL);
                 self.mstore_off(len);
-                self.pre_call(addr, (Val::Data(list), Val::Word(len)), (Val::Mem(self.ret_scratch), Val::Const(32)));
+                self.pre_call(
+                    addr,
+                    (Val::Data(list), Val::Word(len)),
+                    (Val::Mem(self.ret_scratch), Val::Const(32)),
+                );
                 self.expect_answer(Val::Const(32))?;
                 self.mload(self.ret_scratch);
                 Ok(())
@@ -97,7 +105,11 @@ impl<'a> Gen<'a> {
                 let head = self.words_input(&args[..3])?;
                 let values = self.blob_values(&args[3..])?;
                 let (data, len) = self.concat_input(Some((head, 96)), &values)?;
-                self.pre_call(addr, (Val::Word(data), Val::Word(len)), (Val::Const(0), Val::Const(0)));
+                self.pre_call(
+                    addr,
+                    (Val::Word(data), Val::Word(len)),
+                    (Val::Const(0), Val::Const(0)),
+                );
                 // It answers the blob's size and the field's modulus when the proof holds.
                 self.op(RETURNDATASIZE);
                 self.push_u64(64);
@@ -109,7 +121,11 @@ impl<'a> Gen<'a> {
                 let input = self.words_input(args)?;
                 self.op(PUSH0);
                 self.mstore_off(self.ret_scratch);
-                self.pre_call(addr, (Val::Mem(input), Val::Const(160)), (Val::Mem(self.ret_scratch), Val::Const(32)));
+                self.pre_call(
+                    addr,
+                    (Val::Mem(input), Val::Const(160)),
+                    (Val::Mem(self.ret_scratch), Val::Const(32)),
+                );
                 // A valid signature answers 1; an invalid one, nothing.
                 self.mload(self.ret_scratch);
                 self.op(AND);
@@ -118,13 +134,21 @@ impl<'a> Gen<'a> {
             Pre::Bls12Pairing => {
                 let values = self.blob_values(args)?;
                 let (data, len) = self.concat_input(None, &values)?;
-                self.pre_call(addr, (Val::Word(data), Val::Word(len)), (Val::Mem(self.ret_scratch), Val::Const(32)));
+                self.pre_call(
+                    addr,
+                    (Val::Word(data), Val::Word(len)),
+                    (Val::Mem(self.ret_scratch), Val::Const(32)),
+                );
                 self.expect_answer(Val::Const(32))?;
                 self.mload(self.ret_scratch);
                 Ok(())
             }
-            Pre::Bls12G1Add | Pre::Bls12G1Msm | Pre::Bls12MapFpToG1 => self.bls_point(pre, args, 128),
-            Pre::Bls12G2Add | Pre::Bls12G2Msm | Pre::Bls12MapFp2ToG2 => self.bls_point(pre, args, 256),
+            Pre::Bls12G1Add | Pre::Bls12G1Msm | Pre::Bls12MapFpToG1 => {
+                self.bls_point(pre, args, 128)
+            }
+            Pre::Bls12G2Add | Pre::Bls12G2Msm | Pre::Bls12MapFp2ToG2 => {
+                self.bls_point(pre, args, 256)
+            }
             Pre::Bn254Add | Pre::Bn254Mul | Pre::Blake2f => Err(error(
                 args[0].line(),
                 args[0].col(),
@@ -135,7 +159,12 @@ impl<'a> Gen<'a> {
 
     /// A precompile whose result is several words, written to `dst`: a point, or BLAKE2's
     /// state.
-    pub(super) fn write_precompile(&mut self, pre: Pre, args: &[Expr], dst: i32) -> Result<(), Error> {
+    pub(super) fn write_precompile(
+        &mut self,
+        pre: Pre,
+        args: &[Expr],
+        dst: i32,
+    ) -> Result<(), Error> {
         let input = match pre {
             Pre::Bn254Add | Pre::Bn254Mul => {
                 let n = if pre == Pre::Bn254Add { 128 } else { 96 };
@@ -152,7 +181,10 @@ impl<'a> Gen<'a> {
                 self.op(SHL);
                 self.push_mem(buf);
                 self.op(MSTORE);
-                for (i, src) in [h, h + 32, m, m + 32, m + 64, m + 96].into_iter().enumerate() {
+                for (i, src) in [h, h + 32, m, m + 32, m + 64, m + 96]
+                    .into_iter()
+                    .enumerate()
+                {
                     self.mload(src);
                     self.push_mem(buf + 4 + 32 * i as i32);
                     self.op(MSTORE);
@@ -210,7 +242,11 @@ impl<'a> Gen<'a> {
 
     /// A blob of a fixed head, if any, then each `bytes` argument's bytes. Returns the words
     /// holding its data's address and its length.
-    fn concat_input(&mut self, head: Option<(i32, u64)>, values: &[i32]) -> Result<(i32, i32), Error> {
+    fn concat_input(
+        &mut self,
+        head: Option<(i32, u64)>,
+        values: &[i32],
+    ) -> Result<(i32, i32), Error> {
         let (data, len, cur) = (self.temp(), self.temp(), self.temp());
         self.push_u64(head.map_or(0, |(_, n)| n));
         for &at in values {
@@ -270,7 +306,11 @@ impl<'a> Gen<'a> {
         self.push_u64(n);
         self.alloc_blob()?;
         self.mstore_off(out);
-        self.pre_call(pre.address(), (Val::Word(data), Val::Word(len)), (Val::Data(out), Val::Const(n)));
+        self.pre_call(
+            pre.address(),
+            (Val::Word(data), Val::Word(len)),
+            (Val::Data(out), Val::Const(n)),
+        );
         self.expect_answer(Val::Const(n))?;
         self.mload(out);
         self.tag_blob();
@@ -299,7 +339,11 @@ impl<'a> Gen<'a> {
         self.mload(modulus);
         self.alloc_blob()?;
         self.mstore_off(out);
-        self.pre_call(Pre::ModExp.address(), (Val::Word(data), Val::Word(len)), (Val::Data(out), Val::Word(modulus)));
+        self.pre_call(
+            Pre::ModExp.address(),
+            (Val::Word(data), Val::Word(len)),
+            (Val::Data(out), Val::Word(modulus)),
+        );
         self.expect_answer(Val::Word(modulus))?;
         self.mload(out);
         self.tag_blob();

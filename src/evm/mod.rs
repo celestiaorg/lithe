@@ -108,7 +108,13 @@ fn gas_limit(gas: Word) -> String {
 
 /// The code of the account running `code`: its own, unless it runs by `delegatecall`.
 fn account_code(code: &[u8]) -> Vec<u8> {
-    ACCOUNT_CODE.with(|a| a.borrow().last().cloned().flatten().unwrap_or_else(|| code.to_vec()))
+    ACCOUNT_CODE.with(|a| {
+        a.borrow()
+            .last()
+            .cloned()
+            .flatten()
+            .unwrap_or_else(|| code.to_vec())
+    })
 }
 
 /// Runs `f` as another account, which runs its own code.
@@ -258,8 +264,7 @@ fn exec_state(
     let mut stopped = false;
     let self_addr = Word::from_u64(0x1000);
     let mut self_balance = balance;
-    let storage0 = storage;
-    let mut storage = storage0;
+    let mut storage = storage;
     for _ in 0..200_000 {
         if pc >= code.len() {
             stopped = true;
@@ -309,7 +314,7 @@ fn exec_state(
                 let b = pop(&mut stack)?;
                 stack.push(a.wrapping_sub(b));
             }
-            0x04 | 0x05 | 0x06 | 0x07 => {
+            0x04..=0x07 => {
                 let a = pop(&mut stack)?;
                 let b = pop(&mut stack)?;
                 let q = match op {
@@ -343,7 +348,7 @@ fn exec_state(
                 };
                 stack.push(v.sign_extend(byte));
             }
-            0x10 | 0x11 | 0x12 | 0x13 => {
+            0x10..=0x13 => {
                 let a = pop(&mut stack)?;
                 let b = pop(&mut stack)?;
                 let bit = match op {
@@ -386,10 +391,14 @@ fn exec_state(
                 let i = pop(&mut stack)?;
                 let x = pop(&mut stack)?;
                 let small = i.0[1] | i.0[2] | i.0[3] == 0 && i.0[0] < 32;
-                let b = if small { x.to_be_bytes()[i.0[0] as usize] } else { 0 };
+                let b = if small {
+                    x.to_be_bytes()[i.0[0] as usize]
+                } else {
+                    0
+                };
                 stack.push(Word::from_u64(u64::from(b)));
             }
-            0x1b | 0x1c | 0x1d => {
+            0x1b..=0x1d => {
                 let sh = pop(&mut stack)?;
                 let v = pop(&mut stack)?;
                 let n = if sh.0[1] | sh.0[2] | sh.0[3] != 0 || sh.0[0] >= 256 {
@@ -440,7 +449,12 @@ fn exec_state(
                 let src = if addr == self_addr {
                     account_code(code)
                 } else {
-                    DEPLOYED.with(|d| d.borrow().get(&addr).map(|(c, _)| c.clone()).unwrap_or_default())
+                    DEPLOYED.with(|d| {
+                        d.borrow()
+                            .get(&addr)
+                            .map(|(c, _)| c.clone())
+                            .unwrap_or_default()
+                    })
                 };
                 write_mem(&mut mem, dest, &slice_pad(&src, off, len));
             }
@@ -797,10 +811,7 @@ fn exec_state(
                         self_balance,
                         transient.clone(),
                     )?;
-                    let wrote = nested
-                        .trace
-                        .iter()
-                        .any(|ev| matches!(ev, Ev::SStore));
+                    let wrote = nested.trace.iter().any(|ev| matches!(ev, Ev::SStore));
                     returndata = nested.returndata;
                     if ret_size > 0 {
                         let n = ret_size.min(returndata.len());
@@ -926,7 +937,7 @@ fn exec_state(
                     stack.push(Word::from_u64(1));
                 }
             }
-            0xa1 | 0xa2 | 0xa3 | 0xa4 => {
+            0xa1..=0xa4 => {
                 let n = (op - 0xa0) as usize;
                 let off = word_usize(pop(&mut stack)?)?;
                 let size = word_usize(pop(&mut stack)?)?;

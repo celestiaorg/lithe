@@ -259,9 +259,11 @@ impl<'a> Gen<'a> {
     /// in a word, and how many there are.
     pub(super) fn short_bytes_lit(&self, e: &Expr) -> Option<(Word, u32)> {
         match e {
-            Expr::Lit { lit: Lit::Int(w, Some(digits)), .. }
-                if self.checked.types[self.peel_nominal(e.ty())].kind == TyKind::Bytes
-                    && (1..=64).contains(digits) =>
+            Expr::Lit {
+                lit: Lit::Int(w, Some(digits)),
+                ..
+            } if self.checked.types[self.peel_nominal(e.ty())].kind == TyKind::Bytes
+                && (1..=64).contains(digits) =>
             {
                 let n = u32::from(*digits) / 2;
                 Some((if n < 32 { w.shl(8 * (32 - n)) } else { *w }, n))
@@ -413,7 +415,9 @@ impl<'a> Gen<'a> {
         let mut types = Vec::new();
         self.word_types(elem, &mut types);
         if !self.abi_dyn(elem) {
-            let shifted = types.iter().any(|t| t.is_some_and(|t| self.abi_shift(t) > 0));
+            let shifted = types
+                .iter()
+                .any(|t| t.is_some_and(|t| self.abi_shift(t) > 0));
             if !shifted {
                 // The words are already the encoding: one copy.
                 self.push_u64(32 * k);
@@ -526,7 +530,14 @@ impl<'a> Gen<'a> {
             kind: t.kind,
             bits: t.bits,
             elem: t.elem,
-            fields: t.fields.iter().map(|f| Field { slot: f.slot, ty: f.ty }).collect(),
+            fields: t
+                .fields
+                .iter()
+                .map(|f| Field {
+                    slot: f.slot,
+                    ty: f.ty,
+                })
+                .collect(),
         }
     }
 
@@ -802,7 +813,13 @@ impl<'a> Gen<'a> {
 
     /// A value whose head is `off` bytes into the data, in a tuple that starts where the
     /// data does, decoded into its words at `dst`. The head is inside the data.
-    pub(super) fn tree_field(&mut self, kind: SrcKind, off: u32, ty: usize, dst: Addr) -> Result<(), Error> {
+    pub(super) fn tree_field(
+        &mut self,
+        kind: SrcKind,
+        off: u32,
+        ty: usize,
+        dst: Addr,
+    ) -> Result<(), Error> {
         let src = self.tree_src(kind);
         if !self.abi_dyn(ty) {
             let mut types = Vec::new();
@@ -822,7 +839,11 @@ impl<'a> Gen<'a> {
         self.src_word(src);
         self.fits_64()?;
         self.push_addr(dst);
-        self.call_sub(Sub::TreeDec(self.peel_nominal(ty), kind, self.decoding_args));
+        self.call_sub(Sub::TreeDec(
+            self.peel_nominal(ty),
+            kind,
+            self.decoding_args,
+        ));
         Ok(())
     }
 
@@ -868,7 +889,12 @@ impl<'a> Gen<'a> {
 
     /// `[at, dst, ret]` becomes `[]`: the dynamic value of type `ty` at the data position
     /// `at`, decoded into its words at `dst`, with Solidity's checks.
-    pub(super) fn sub_tree_dec(&mut self, ty: usize, kind: SrcKind, args: bool) -> Result<(), Error> {
+    pub(super) fn sub_tree_dec(
+        &mut self,
+        ty: usize,
+        kind: SrcKind,
+        args: bool,
+    ) -> Result<(), Error> {
         let was = std::mem::replace(&mut self.decoding_args, args);
         let result = self.tree_dec_body(ty, kind);
         self.decoding_args = was;
@@ -975,7 +1001,11 @@ impl<'a> Gen<'a> {
                         self.op(ADD);
                         self.op(DUP1 + 2);
                         self.add_const(f.slot * 32);
-                        self.call_sub(Sub::TreeDec(self.peel_nominal(f.ty), kind, self.decoding_args));
+                        self.call_sub(Sub::TreeDec(
+                            self.peel_nominal(f.ty),
+                            kind,
+                            self.decoding_args,
+                        ));
                     } else {
                         let mut types = Vec::new();
                         self.word_types(f.ty, &mut types);
@@ -1005,13 +1035,23 @@ impl<'a> Gen<'a> {
     /// `[.., data, n, list]` stays: the `n` elements of type `elem` whose encoding is a tuple
     /// from the data position `data`, decoded into the words from `list + skip` on. With
     /// `counted`, `list` is a list's pointer; without, the address before its words.
-    fn dec_elements(&mut self, elem: usize, kind: SrcKind, skip: u32, counted: bool) -> Result<(), Error> {
+    fn dec_elements(
+        &mut self,
+        elem: usize,
+        kind: SrcKind,
+        skip: u32,
+        counted: bool,
+    ) -> Result<(), Error> {
         let _ = counted;
         let src = self.tree_src(kind);
         let k = u64::from(self.checked.types[elem].words.max(1));
         let mut types = Vec::new();
         self.word_types(elem, &mut types);
-        if !self.abi_dyn(elem) && types.iter().all(|t| t.is_none_or(|t| !self.needs_check(t) && self.abi_shift(t) == 0)) {
+        if !self.abi_dyn(elem)
+            && types
+                .iter()
+                .all(|t| t.is_none_or(|t| !self.needs_check(t) && self.abi_shift(t) == 0))
+        {
             // [data, n, list]: the words need no check, so they are copied as they are.
             self.op(DUP1 + 1);
             self.push_u64(32 * k);
@@ -1070,7 +1110,11 @@ impl<'a> Gen<'a> {
             self.add_const(skip);
             self.op(DUP1 + 3);
             self.op(ADD);
-            self.call_sub(Sub::TreeDec(self.peel_nominal(elem), kind, self.decoding_args));
+            self.call_sub(Sub::TreeDec(
+                self.peel_nominal(elem),
+                kind,
+                self.decoding_args,
+            ));
         }
         self.push_u64(1);
         self.op(ADD);
@@ -1187,7 +1231,10 @@ impl<'a> Gen<'a> {
         let id = self.peel_nominal(ty);
         let t = &self.checked.types[id];
         if t.kind == TyKind::Record && !t.tuple {
-            t.fields.iter().map(|f| (f.ty, at.plus(f.slot * 32))).collect()
+            t.fields
+                .iter()
+                .map(|f| (f.ty, at.plus(f.slot * 32)))
+                .collect()
         } else {
             vec![(ty, at)]
         }
@@ -1270,12 +1317,24 @@ impl<'a> Gen<'a> {
         for arg in args {
             match arg {
                 Expr::Ident { sym: Some(sym), .. } if self.cd_trees.contains(sym) => {
-                    parts.push(Part { at: Addr::Mem(self.local[*sym]), ty: arg.ty(), cd: true });
+                    parts.push(Part {
+                        at: Addr::Mem(self.local[*sym]),
+                        ty: arg.ty(),
+                        cd: true,
+                    });
                 }
                 _ => {
                     let at = Addr::Mem(self.stage(arg)?);
-                    let fields = if call { self.ret_fields(arg.ty(), at) } else { vec![(arg.ty(), at)] };
-                    parts.extend(fields.into_iter().map(|(ty, at)| Part { at, ty, cd: false }));
+                    let fields = if call {
+                        self.ret_fields(arg.ty(), at)
+                    } else {
+                        vec![(arg.ty(), at)]
+                    };
+                    parts.extend(
+                        fields
+                            .into_iter()
+                            .map(|(ty, at)| Part { at, ty, cd: false }),
+                    );
                 }
             }
         }
@@ -1290,16 +1349,28 @@ impl<'a> Gen<'a> {
         let own = |e: &Expr| matches!(e, Expr::Ident { sym: Some(s), .. } if *s == sym);
         let count = |node: Node<'_>| {
             match node {
-                Node::Expr(Expr::Ident { sym: Some(s), .. }) if *s == sym => uses.set(uses.get() + 1),
+                Node::Expr(Expr::Ident { sym: Some(s), .. }) if *s == sym => {
+                    uses.set(uses.get() + 1)
+                }
                 Node::Expr(Expr::Call {
-                    builtin: Some(Builtin::AbiEncode | Builtin::AbiEncodeCall | Builtin::AbiEncodeSelector | Builtin::AbiEncodeSignature),
+                    builtin:
+                        Some(
+                            Builtin::AbiEncode
+                            | Builtin::AbiEncodeCall
+                            | Builtin::AbiEncodeSelector
+                            | Builtin::AbiEncodeSignature,
+                        ),
                     args,
                     ..
                 })
-                | Node::Expr(Expr::Call { iface: Some(_), args, .. }) => {
-                    whole.set(whole.get() + args.iter().filter(|a| own(a)).count())
+                | Node::Expr(Expr::Call {
+                    iface: Some(_),
+                    args,
+                    ..
+                }) => whole.set(whole.get() + args.iter().filter(|a| own(a)).count()),
+                Node::Stmt(Stmt::Assign { root: Some(s), .. }) if *s == sym => {
+                    uses.set(usize::MAX / 2)
                 }
-                Node::Stmt(Stmt::Assign { root: Some(s), .. }) if *s == sym => uses.set(usize::MAX / 2),
                 _ => {}
             }
             false
@@ -1320,7 +1391,12 @@ impl<'a> Gen<'a> {
 
     /// Writes the value of an `Abi.decode` or a `query` straight to `dst`, when it is one
     /// these paths decode. Returns whether it was.
-    pub(super) fn write_decoded(&mut self, expr: &Expr, dst: i32, ty: usize) -> Result<bool, Error> {
+    pub(super) fn write_decoded(
+        &mut self,
+        expr: &Expr,
+        dst: i32,
+        ty: usize,
+    ) -> Result<bool, Error> {
         let multi = |g: &Self, t: usize| g.checked.types[t].words > 1 || g.tree(t);
         match expr {
             Expr::Call {
@@ -1333,7 +1409,8 @@ impl<'a> Gen<'a> {
                 Ok(true)
             }
             Expr::Call {
-                builtin: Some(Builtin::Precompile(pre @ (Pre::Bn254Add | Pre::Bn254Mul | Pre::Blake2f))),
+                builtin:
+                    Some(Builtin::Precompile(pre @ (Pre::Bn254Add | Pre::Bn254Mul | Pre::Blake2f))),
                 args,
                 ..
             } => {
@@ -1368,7 +1445,13 @@ impl<'a> Gen<'a> {
 
     /// `Abi.decode(data, T)` into `dst`: one value of type `T`, or, for a tuple of types
     /// `(A, B)`, one value of each, as Solidity's `abi.decode(data, (A, B))`.
-    pub(super) fn abi_decode_into(&mut self, data: &Expr, types: &Expr, ty: usize, dst: i32) -> Result<(), Error> {
+    pub(super) fn abi_decode_into(
+        &mut self,
+        data: &Expr,
+        types: &Expr,
+        ty: usize,
+        dst: i32,
+    ) -> Result<(), Error> {
         let kind = self.decode_src(data)?;
         let fields: Vec<(usize, Addr)> = if matches!(types, Expr::Tuple { .. }) {
             self.checked.types[self.peel_nominal(ty)]
@@ -1384,7 +1467,14 @@ impl<'a> Gen<'a> {
 
     /// A `query` whose answer is several words or has dynamic values nested in it, decoded
     /// from the return data into `dst`. A failed call reverts, as any query's does.
-    pub(super) fn query_into(&mut self, call: &Expr, ty: usize, dst: i32, line: u32, col: u32) -> Result<(), Error> {
+    pub(super) fn query_into(
+        &mut self,
+        call: &Expr,
+        ty: usize,
+        dst: i32,
+        line: u32,
+        col: u32,
+    ) -> Result<(), Error> {
         self.query_raw(call, line, col)?;
         self.op(ISZERO);
         self.revert_if_true()?;
@@ -1460,7 +1550,10 @@ impl<'a> Gen<'a> {
             }
             Expr::Index { base, index, .. } => {
                 let bt = self.peel_nominal(base.ty());
-                let (bits, elem) = (self.checked.types[bt].bits, self.checked.types[bt].elem.unwrap_or(0));
+                let (bits, elem) = (
+                    self.checked.types[bt].bits,
+                    self.checked.types[bt].elem.unwrap_or(0),
+                );
                 let k = u64::from(self.checked.types[elem].words.max(1));
                 if bits > 0 {
                     // A fixed list inline: its elements follow one another.
@@ -1509,7 +1602,11 @@ impl<'a> Gen<'a> {
                 }
                 Ok(())
             }
-            other => Err(error(other.line(), other.col(), "internal: not a value in memory")),
+            other => Err(error(
+                other.line(),
+                other.col(),
+                "internal: not a value in memory",
+            )),
         }
     }
 
@@ -1565,7 +1662,12 @@ impl<'a> Gen<'a> {
 
     /// Calldata for an interface method whose arguments these paths encode: the selector,
     /// then the arguments. Leaves the blob's address, untagged, in `slot`.
-    pub(super) fn tree_calldata(&mut self, sel: [u8; 4], args: &[Expr], slot: i32) -> Result<(), Error> {
+    pub(super) fn tree_calldata(
+        &mut self,
+        sel: [u8; 4],
+        args: &[Expr],
+        slot: i32,
+    ) -> Result<(), Error> {
         let refs: Vec<&Expr> = args.iter().collect();
         self.tree_encode_exprs(&refs, true)?;
         self.mload(self.scratch_a);

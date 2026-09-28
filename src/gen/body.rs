@@ -238,7 +238,8 @@ impl<'a> Gen<'a> {
                 break;
             }
             let mut found = Vec::new();
-            if let Stmt::Const { expr, .. } | Stmt::Var { expr, .. } | Stmt::Call { expr, .. } = st {
+            if let Stmt::Const { expr, .. } | Stmt::Var { expr, .. } | Stmt::Call { expr, .. } = st
+            {
                 eager_queries(expr, &mut false, &mut found);
             }
             for (line, col, call, qty) in found {
@@ -270,7 +271,12 @@ impl<'a> Gen<'a> {
                     }
                 }
             }
-            if let Stmt::Const { sym: Some(sym), expr, .. } = st {
+            if let Stmt::Const {
+                sym: Some(sym),
+                expr,
+                ..
+            } = st
+            {
                 if self.settled(expr, &defined, &written.borrow(), &known) {
                     known.insert(*sym, substitute(expr, &known));
                 }
@@ -306,7 +312,8 @@ impl<'a> Gen<'a> {
                 ..
             } => {
                 let info = &self.checked.syms[*sym];
-                known.contains_key(sym) || (!info.storage && !info.mutable && !defined.contains(sym))
+                known.contains_key(sym)
+                    || (!info.storage && !info.mutable && !defined.contains(sym))
             }
             Expr::Call {
                 builtin: Some(Builtin::Cast),
@@ -314,7 +321,10 @@ impl<'a> Gen<'a> {
                 ty,
                 ..
             } if args.len() == 1
-                && matches!(self.checked.types[*ty].kind, TyKind::Address | TyKind::Interface) =>
+                && matches!(
+                    self.checked.types[*ty].kind,
+                    TyKind::Address | TyKind::Interface
+                ) =>
             {
                 self.settled(&args[0], defined, written, known)
             }
@@ -372,7 +382,10 @@ impl<'a> Gen<'a> {
                     self.issue_queries(&picks)?;
                 } else {
                     let mut here = Vec::new();
-                    if let Stmt::Const { expr, .. } | Stmt::Var { expr, .. } | Stmt::Call { expr, .. } = st {
+                    if let Stmt::Const { expr, .. }
+                    | Stmt::Var { expr, .. }
+                    | Stmt::Call { expr, .. } = st
+                    {
                         eager_queries(expr, &mut false, &mut here);
                     }
                     pending.retain(|(at, _)| !here.iter().any(|q| (q.0, q.1) == *at));
@@ -522,7 +535,7 @@ impl<'a> Gen<'a> {
                 edits.push((at, 2, read));
             }
         }
-        edits.sort_by(|a, b| b.0.cmp(&a.0));
+        edits.sort_by_key(|e| std::cmp::Reverse(e.0));
         for (at, len, with) in edits {
             self.code.splice(at..at + len, with);
         }
@@ -625,7 +638,7 @@ impl<'a> Gen<'a> {
                     Some(Inst::Op(JUMP | JUMPI)) => return i,
                     _ => {}
                 },
-                Inst::Op(op) if matches!(op, STOP | RETURN | REVERT | JUMP) => return i,
+                Inst::Op(STOP | RETURN | REVERT | JUMP) => return i,
                 _ => {}
             }
             i += 1;

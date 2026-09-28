@@ -199,13 +199,20 @@ pub(crate) fn codegen(checked: &Checked, shape: &Shape) -> Result<Built, Error> 
             .collect();
         let first = build(variants[0].clone());
         std::iter::once(first)
-            .chain(handles.into_iter().map(|h| h.join().unwrap_or_else(|e| std::panic::resume_unwind(e))))
+            .chain(
+                handles
+                    .into_iter()
+                    .map(|h| h.join().unwrap_or_else(|e| std::panic::resume_unwind(e))),
+            )
             .collect::<Vec<_>>()
     });
     let mut best: Option<Built> = None;
     for built in builds {
         let built = built?;
-        if best.as_ref().is_none_or(|b| built.runtime.len() < b.runtime.len()) {
+        if best
+            .as_ref()
+            .is_none_or(|b| built.runtime.len() < b.runtime.len())
+        {
             best = Some(built);
         }
     }
@@ -344,10 +351,7 @@ pub(crate) fn entrypoints(checked: &Checked) -> Result<Vec<Entrypoint>, Error> {
                         .iter()
                         .position(|f| f.kind == ItemKind::Entry && &f.name == top)
                 });
-                (
-                    route.name.clone(),
-                    func.map_or(Group::Contract, &group),
-                )
+                (route.name.clone(), func.map_or(Group::Contract, &group))
             }
             Target::View { func, .. } => (funcs[*func].name.clone(), group(*func)),
             Target::Migrate { func, .. } => {
@@ -807,14 +811,32 @@ struct Gen<'a> {
 }
 
 enum Target {
-    Entry { index: usize, sel: [u8; 4] },
-    View { func: usize, sel: [u8; 4] },
-    Migrate { func: usize, sel: [u8; 4] },
-    Deploy { func: usize, sel: [u8; 4] },
-    Proxiable { sel: [u8; 4] },
-    Upgrade { sel: [u8; 4] },
+    Entry {
+        index: usize,
+        sel: [u8; 4],
+    },
+    View {
+        func: usize,
+        sel: [u8; 4],
+    },
+    Migrate {
+        func: usize,
+        sel: [u8; 4],
+    },
+    Deploy {
+        func: usize,
+        sel: [u8; 4],
+    },
+    Proxiable {
+        sel: [u8; 4],
+    },
+    Upgrade {
+        sel: [u8; 4],
+    },
     /// A selector a router hands to one of its facets.
-    Forward { sel: [u8; 4] },
+    Forward {
+        sel: [u8; 4],
+    },
 }
 
 impl Target {
@@ -971,7 +993,9 @@ fn record_words<'e>(
 fn same_expr(a: &Expr, b: &Expr) -> bool {
     match (a, b) {
         (Expr::Ident { sym: Some(x), .. }, Expr::Ident { sym: Some(y), .. }) => x == y,
-        (Expr::Lit { lit: x, .. }, Expr::Lit { lit: y, .. }) => format!("{x:?}") == format!("{y:?}"),
+        (Expr::Lit { lit: x, .. }, Expr::Lit { lit: y, .. }) => {
+            format!("{x:?}") == format!("{y:?}")
+        }
         (
             Expr::Field {
                 base: x, name: n, ..

@@ -3,7 +3,6 @@ use super::*;
 impl Checker {
     pub(super) fn check_func(&mut self, f: &mut Func) -> Result<(), Error> {
         let idx = self.cur_fn;
-        self.cur_fn = idx;
         self.module_name = f.module.clone();
         self.requires = f.requires.clone();
         if let Some(raises) = &f.raises {
@@ -63,7 +62,11 @@ impl Checker {
                 .as_ref()
                 .map(|t| (t.line(), t.col()))
                 .unwrap_or((f.line, f.col));
-            return Err(error(line, col, "options and variants with payloads cannot be ABI values"));
+            return Err(error(
+                line,
+                col,
+                "options and variants with payloads cannot be ABI values",
+            ));
         }
         if f.kind == ItemKind::View && !abi_value(&self.types, ret) {
             let (line, col) = f
@@ -71,11 +74,7 @@ impl Checker {
                 .as_ref()
                 .map(|t| (t.line(), t.col()))
                 .unwrap_or((f.line, f.col));
-            return Err(error(
-                line,
-                col,
-                "a view returns an ABI value",
-            ));
+            return Err(error(line, col, "a view returns an ABI value"));
         }
         if f.kind == ItemKind::View && self.types[ret].kind == TyKind::Operation {
             return Err(error(f.line, f.col, "view cannot return an operation"));
@@ -145,7 +144,11 @@ impl Checker {
                         )
                     })
             }),
-            None => Err(error(f.line, f.col, "internal: a forwarding `fallback` needs a target")),
+            None => Err(error(
+                f.line,
+                f.col,
+                "internal: a forwarding `fallback` needs a target",
+            )),
         };
         self.forwarding = false;
         self.kind = f.kind;
@@ -207,7 +210,11 @@ impl Checker {
     /// Immutables are set up once: a function that writes one, itself or through what it
     /// calls, runs only from `deploy`, a migration, or functions that keep the same rule.
     /// A contract that is not upgradeable has them in its code, which only `deploy` sets.
-    pub(super) fn check_immutable_writes(&self, funcs: &[Func], upgradeable: bool) -> Result<(), Error> {
+    pub(super) fn check_immutable_writes(
+        &self,
+        funcs: &[Func],
+        upgradeable: bool,
+    ) -> Result<(), Error> {
         let n = self.pieces.len().min(funcs.len());
         let mut writes: Vec<Option<String>> = vec![None; n];
         loop {
@@ -309,7 +316,11 @@ impl Checker {
                 self.note_error(FORWARDED);
                 return Ok(());
             }
-            return Err(error(raised.line, raised.col, "`forward` passes on a `bytes` value"));
+            return Err(error(
+                raised.line,
+                raised.col,
+                "`forward` passes on a `bytes` value",
+            ));
         }
         let Some(idx) = self.errors.iter().position(|e| e.name == raised.name) else {
             return Err(error(
@@ -320,7 +331,8 @@ impl Checker {
         };
         let payload = self.errors[idx].payload;
         let field_tys = self.errors[idx].field_tys.clone();
-        let record = payload.is_some_and(|ty| self.types[ty].kind == TyKind::Record && !self.types[ty].tuple);
+        let record = payload
+            .is_some_and(|ty| self.types[ty].kind == TyKind::Record && !self.types[ty].tuple);
         match &mut raised.form {
             RaisedForm::Unit if payload.is_none() => {}
             RaisedForm::Positional(expr) if payload.is_some() && !record => {
@@ -423,7 +435,11 @@ impl Checker {
             let (kind, name) = match &funcs[i].exported {
                 Some(exported) => (
                     exported.kind,
-                    format!("{}.{}", funcs[i].module.as_deref().unwrap_or(""), exported.name),
+                    format!(
+                        "{}.{}",
+                        funcs[i].module.as_deref().unwrap_or(""),
+                        exported.name
+                    ),
                 ),
                 None => (funcs[i].kind, source_name(&funcs[i].name).to_string()),
             };
@@ -489,11 +505,10 @@ impl Checker {
                 continue;
             };
             let same_params = decl.params.len() == impl_.params.len()
-                && decl
-                    .params
-                    .iter()
-                    .zip(&impl_.params)
-                    .all(|(a, b)| a.name == b.name && self.declared_alike(a.ty_id, b.ty_id, Some(&a.ty), Some(&b.ty)));
+                && decl.params.iter().zip(&impl_.params).all(|(a, b)| {
+                    a.name == b.name
+                        && self.declared_alike(a.ty_id, b.ty_id, Some(&a.ty), Some(&b.ty))
+                });
             let mut want: Vec<usize> = impl_.errors.clone();
             let mut have: Vec<usize> = decl.errors.clone();
             want.sort_unstable();
@@ -503,7 +518,12 @@ impl Checker {
                 && exported.external_pure == decl.external_pure
                 && same_params
                 && decl.ret.is_some() == impl_.ret.is_some()
-                && self.declared_alike(decl.ret_ty, impl_.ret_ty, decl.ret.as_ref(), impl_.ret.as_ref())
+                && self.declared_alike(
+                    decl.ret_ty,
+                    impl_.ret_ty,
+                    decl.ret.as_ref(),
+                    impl_.ret.as_ref(),
+                )
                 && want == have
                 && (decl.raises.is_some() || impl_.raises.is_none());
             if same {
@@ -527,34 +547,57 @@ impl Checker {
                     names.join(", ")
                 }
             };
-            let reason = if exported.kind != decl.kind || exported.external_pure != decl.external_pure {
-                format!(
-                    "`{}` is {} in {label} and {} in {module}",
-                    decl.name,
-                    effect(decl.kind, decl.external_pure),
-                    effect(exported.kind, exported.external_pure)
-                )
-            } else if exported.payable != decl.payable {
-                let (yes, no) = if decl.payable { (&label, &module) } else { (&module, &label) };
-                format!("`{}` is `payable` in {yes} but not in {no}", decl.name)
-            } else if want != have {
-                let missing: Vec<usize> = want.iter().copied().filter(|id| !have.contains(id)).collect();
-                let extra: Vec<usize> = have.iter().copied().filter(|id| !want.contains(id)).collect();
-                let mut parts = Vec::new();
-                if !missing.is_empty() {
-                    parts.push(format!("{module} raises {} that {label} doesn't list", names(&missing)));
-                }
-                if !extra.is_empty() {
-                    parts.push(format!("{label} lists {} that {module} doesn't raise", names(&extra)));
-                }
-                format!("`{}` raises different errors: {}", decl.name, parts.join(", and "))
-            } else {
-                format!(
-                    "`{}` raises {} in {module}, and {label} lists no errors",
-                    decl.name,
-                    names(&want)
-                )
-            };
+            let reason =
+                if exported.kind != decl.kind || exported.external_pure != decl.external_pure {
+                    format!(
+                        "`{}` is {} in {label} and {} in {module}",
+                        decl.name,
+                        effect(decl.kind, decl.external_pure),
+                        effect(exported.kind, exported.external_pure)
+                    )
+                } else if exported.payable != decl.payable {
+                    let (yes, no) = if decl.payable {
+                        (&label, &module)
+                    } else {
+                        (&module, &label)
+                    };
+                    format!("`{}` is `payable` in {yes} but not in {no}", decl.name)
+                } else if want != have {
+                    let missing: Vec<usize> = want
+                        .iter()
+                        .copied()
+                        .filter(|id| !have.contains(id))
+                        .collect();
+                    let extra: Vec<usize> = have
+                        .iter()
+                        .copied()
+                        .filter(|id| !want.contains(id))
+                        .collect();
+                    let mut parts = Vec::new();
+                    if !missing.is_empty() {
+                        parts.push(format!(
+                            "{module} raises {} that {label} doesn't list",
+                            names(&missing)
+                        ));
+                    }
+                    if !extra.is_empty() {
+                        parts.push(format!(
+                            "{label} lists {} that {module} doesn't raise",
+                            names(&extra)
+                        ));
+                    }
+                    format!(
+                        "`{}` raises different errors: {}",
+                        decl.name,
+                        parts.join(", and ")
+                    )
+                } else {
+                    format!(
+                        "`{}` raises {} in {module}, and {label} lists no errors",
+                        decl.name,
+                        names(&want)
+                    )
+                };
             let msg = interface_mismatch(decl, impl_, &reason);
             return Err(error(decl.line, decl.col, msg));
         }
@@ -619,7 +662,9 @@ impl Checker {
                     ));
                 }
             }
-            if reason.is_none() && !self.declared_alike(a.ret, b.ret, decl.ret.as_ref(), impl_.ret.as_ref()) {
+            if reason.is_none()
+                && !self.declared_alike(a.ret, b.ret, decl.ret.as_ref(), impl_.ret.as_ref())
+            {
                 reason = Some(format!(
                     "`{}` returns {} in {label} and {} in {module}",
                     decl.name,
@@ -640,7 +685,9 @@ impl Checker {
 
     fn bind_storage(&mut self, line: u32, col: u32) -> Result<(), Error> {
         self.domain_syms.clear();
-        if (self.module_name.is_none() || !self.spec_places.is_empty()) && self.lookup("storage").is_none() {
+        if (self.module_name.is_none() || !self.spec_places.is_empty())
+            && self.lookup("storage").is_none()
+        {
             let sym = self.add_sym(Sym {
                 ty: self.storage,
                 mutable: true,
@@ -715,7 +762,13 @@ impl Checker {
 
     /// A continuation sees only immutable values from earlier phases. A captured value
     /// that came from state is a snapshot, which the author is warned about.
-    pub(super) fn across_phases(&mut self, line: u32, col: u32, name: &str, sym: usize) -> Result<(), Error> {
+    pub(super) fn across_phases(
+        &mut self,
+        line: u32,
+        col: u32,
+        name: &str,
+        sym: usize,
+    ) -> Result<(), Error> {
         let Some(&floor) = self.phase_floors.last() else {
             return Ok(());
         };
@@ -741,7 +794,7 @@ impl Checker {
 
     /// Whether a checked expression reads state that an external call may change:
     /// storage, a query, the balance, gas left, or a function that may read storage.
-    pub(super) fn from_state(&self, e: &Expr) -> bool {
+    pub(super) fn reads_state(&self, e: &Expr) -> bool {
         let sensitive =
             |b: &Option<Builtin>| matches!(b, Some(Builtin::Balance | Builtin::GasLeft));
         match e {
@@ -752,14 +805,14 @@ impl Checker {
             }
             Expr::Field { base, root, .. } => {
                 root.is_some_and(|s| self.syms[s].storage || self.state_syms.contains(&s))
-                    || self.from_state(base)
+                    || self.reads_state(base)
             }
             Expr::Index {
                 base, index, root, ..
             } => {
                 root.is_some_and(|s| self.syms[s].storage || self.state_syms.contains(&s))
-                    || self.from_state(base)
-                    || self.from_state(index)
+                    || self.reads_state(base)
+                    || self.reads_state(index)
             }
             Expr::Query { .. } => true,
             Expr::Call {
@@ -771,20 +824,18 @@ impl Checker {
             } => {
                 sensitive(builtin)
                     || callee.is_some_and(|idx| self.sigs[idx].kind != ItemKind::Pure)
-                    || args.iter().any(|a| self.from_state(a))
-                    || base.as_ref().is_some_and(|b| self.from_state(b))
+                    || args.iter().any(|a| self.reads_state(a))
+                    || base.as_ref().is_some_and(|b| self.reads_state(b))
             }
             Expr::Case { scrut, arms, .. } => {
-                self.from_state(scrut) || arms.iter().any(|arm| self.from_state(&arm.expr))
+                self.reads_state(scrut) || arms.iter().any(|arm| self.reads_state(&arm.expr))
             }
-            Expr::Unary { expr, .. } => self.from_state(expr),
-            Expr::Binary { left, right, .. } => {
-                self.from_state(left) || self.from_state(right)
-            }
+            Expr::Unary { expr, .. } => self.reads_state(expr),
+            Expr::Binary { left, right, .. } => self.reads_state(left) || self.reads_state(right),
             Expr::Tuple { elems, .. } | Expr::List { elems, .. } => {
-                elems.iter().any(|x| self.from_state(x))
+                elems.iter().any(|x| self.reads_state(x))
             }
-            Expr::Record { fields, .. } => fields.iter().any(|(_, x)| self.from_state(x)),
+            Expr::Record { fields, .. } => fields.iter().any(|(_, x)| self.reads_state(x)),
         }
     }
 
@@ -836,7 +887,13 @@ impl Checker {
     /// The body does something its declared effect does not allow.
     /// A callee's own body is checked against its declared kind, so the kind alone says
     /// what calling it does.
-    pub(super) fn callee_effect(&self, line: u32, col: u32, name: &str, kind: ItemKind) -> Result<(), Error> {
+    pub(super) fn callee_effect(
+        &self,
+        line: u32,
+        col: u32,
+        name: &str,
+        kind: ItemKind,
+    ) -> Result<(), Error> {
         let name = source_name(name);
         if self.is_pure() && kind != ItemKind::Pure {
             return Err(self.weaker(line, col, &format!("calls `{name}`, which is not pure")));
@@ -965,7 +1022,10 @@ fn err_name(errors: &[ErrInfo], id: usize) -> &str {
 }
 
 fn must_declare(errors: &[ErrInfo], kind: ItemKind, name: &str, inferred: &[usize]) -> String {
-    let mut msg = format!("{} must declare its errors\n\ninferred:\n", describe(kind, name));
+    let mut msg = format!(
+        "{} must declare its errors\n\ninferred:\n",
+        describe(kind, name)
+    );
     for id in inferred {
         msg.push_str("  ");
         msg.push_str(err_name(errors, *id));

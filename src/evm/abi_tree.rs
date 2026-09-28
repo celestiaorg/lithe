@@ -281,7 +281,12 @@ fn run_call(runtime: &[u8], data: &[u8]) -> Outcome {
 }
 
 fn log_data(out: &Outcome) -> Vec<u8> {
-    let line = out.detail.iter().rev().find(|d| d.starts_with("log ")).expect("a log");
+    let line = out
+        .detail
+        .iter()
+        .rev()
+        .find(|d| d.starts_with("log "))
+        .expect("a log");
     hex_decode(line.rsplit(' ').next().unwrap_or(""))
 }
 
@@ -298,8 +303,16 @@ fn forms() -> Vec<(T, String, String)> {
     for t in shapes() {
         out.push((t.clone(), lithe(&t), lithe(&t)));
         if let T::Tuple(ts) = &t {
-            let fields: Vec<String> = ts.iter().enumerate().map(|(i, t)| format!("f{i} : {};", lithe(t))).collect();
-            out.push((t.clone(), format!("tuple record {{ {} }}", fields.join(" ")), "tt".into()));
+            let fields: Vec<String> = ts
+                .iter()
+                .enumerate()
+                .map(|(i, t)| format!("f{i} : {};", lithe(t)))
+                .collect();
+            out.push((
+                t.clone(),
+                format!("tuple record {{ {} }}", fields.join(" ")),
+                "tt".into(),
+            ));
         }
     }
     out
@@ -376,29 +389,60 @@ fn every_abi_type_everywhere() {
             assert_eq!(hex(&out.returndata), hex(&want), "enc {what}");
             let seven = V::W(Word::from_u64(7));
             let pair = encode(&[t.clone(), T::Uint(256)], &[v.clone(), seven.clone()]);
-            let out = run_call(&runtime, &with_sel(&format!("enc_pair({name},uint256)"), &pair));
+            let out = run_call(
+                &runtime,
+                &with_sel(&format!("enc_pair({name},uint256)"), &pair),
+            );
             let inner = encode(
                 &[T::Uint(256), t.clone(), T::Uint(256)],
                 &[seven.clone(), v.clone(), seven.clone()],
             );
-            assert_eq!(hex(&out.returndata), hex(&encode(&[T::Bytes], &[V::B(inner)])), "enc_pair {what}");
+            assert_eq!(
+                hex(&out.returndata),
+                hex(&encode(&[T::Bytes], &[V::B(inner)])),
+                "enc_pair {what}"
+            );
             let out = run_call(&runtime, &with_sel(&format!("enc_call({name})"), &enc));
             let call = with_sel(&format!("call({name})"), &enc);
-            assert_eq!(hex(&out.returndata), hex(&encode(&[T::Bytes], &[V::B(call)])), "enc_call {what}");
+            assert_eq!(
+                hex(&out.returndata),
+                hex(&encode(&[T::Bytes], &[V::B(call)])),
+                "enc_call {what}"
+            );
             let out = run_call(&runtime, &with_sel(&format!("enc_sel({name})"), &enc));
             let mut sel = vec![0x12, 0x34, 0x56, 0x78];
-            sel.extend(encode(&[t.clone(), T::Uint(256)], &[v.clone(), V::W(Word::from_u64(1))]));
-            assert_eq!(hex(&out.returndata), hex(&encode(&[T::Bytes], &[V::B(sel)])), "enc_sel {what}");
+            sel.extend(encode(
+                &[t.clone(), T::Uint(256)],
+                &[v.clone(), V::W(Word::from_u64(1))],
+            ));
+            assert_eq!(
+                hex(&out.returndata),
+                hex(&encode(&[T::Bytes], &[V::B(sel)])),
+                "enc_sel {what}"
+            );
             // `Abi.decode` of one value, and of a list of types.
             let bytes_arg = encode(&[T::Bytes], &[V::B(enc.clone())]);
             let out = run_call(&runtime, &with_sel("dec(bytes)", &bytes_arg));
             assert!(!out.reverted, "dec {what}: {}", pretty(&out.returndata));
             assert_eq!(hex(&out.returndata), hex(&enc), "dec {what}");
             let two = encode(&[t.clone(), T::Uint(256)], &[v.clone(), seven.clone()]);
-            let out = run_call(&runtime, &with_sel("dec_pair(bytes)", &encode(&[T::Bytes], &[V::B(two.clone())])));
-            assert!(!out.reverted, "dec_pair {what}: {}", pretty(&out.returndata));
+            let out = run_call(
+                &runtime,
+                &with_sel(
+                    "dec_pair(bytes)",
+                    &encode(&[T::Bytes], &[V::B(two.clone())]),
+                ),
+            );
+            assert!(
+                !out.reverted,
+                "dec_pair {what}: {}",
+                pretty(&out.returndata)
+            );
             let tuple = T::Tuple(vec![t.clone(), T::Uint(256)]);
-            let want = encode(std::slice::from_ref(&tuple), &[V::L(vec![v.clone(), seven.clone()])]);
+            let want = encode(
+                std::slice::from_ref(&tuple),
+                &[V::L(vec![v.clone(), seven.clone()])],
+            );
             assert_eq!(hex(&out.returndata), hex(&want), "dec_pair {what}");
             // An event's data, and an indexed value's topic.
             let out = run_call(&runtime, &with_sel(&format!("log({name})"), &enc));
@@ -423,33 +467,60 @@ fn every_abi_type_everywhere() {
             // An error's payload.
             let out = run_call(&runtime, &with_sel(&format!("bad({name})"), &enc));
             assert!(out.reverted);
-            assert_eq!(hex(&out.returndata), hex(&with_sel(&format!("Bad({name})"), &enc)), "bad {what}");
+            assert_eq!(
+                hex(&out.returndata),
+                hex(&with_sel(&format!("Bad({name})"), &enc)),
+                "bad {what}"
+            );
             // A query's arguments and result, through a contract that echoes its arguments.
             let echo = Word::from_u64(0xcd);
             let args = encode(&[T::Address, t.clone()], &[V::W(echo), v.clone()]);
             let out = run_call(&runtime, &with_sel(&format!("ask(address,{name})"), &args));
             assert!(!out.reverted, "ask {what}: {}", pretty(&out.returndata));
             assert_eq!(hex(&out.returndata), hex(&enc), "ask {what}");
-            let args = encode(&[T::Address, t.clone(), t.clone()], &[V::W(echo), v.clone(), w.clone()]);
-            let out = run_call(&runtime, &with_sel(&format!("ask_or(address,{name},{name})"), &args));
+            let args = encode(
+                &[T::Address, t.clone(), t.clone()],
+                &[V::W(echo), v.clone(), w.clone()],
+            );
+            let out = run_call(
+                &runtime,
+                &with_sel(&format!("ask_or(address,{name},{name})"), &args),
+            );
             assert_eq!(hex(&out.returndata), hex(&enc), "ask_or {what}");
             let refuse = Word::from_u64(0xef);
-            let args = encode(&[T::Address, t.clone(), t.clone()], &[V::W(refuse), v.clone(), w.clone()]);
-            let out = run_call(&runtime, &with_sel(&format!("ask_or(address,{name},{name})"), &args));
+            let args = encode(
+                &[T::Address, t.clone(), t.clone()],
+                &[V::W(refuse), v.clone(), w.clone()],
+            );
+            let out = run_call(
+                &runtime,
+                &with_sel(&format!("ask_or(address,{name},{name})"), &args),
+            );
             let w_enc = encode(std::slice::from_ref(&t), std::slice::from_ref(&w));
             assert_eq!(hex(&out.returndata), hex(&w_enc), "ask_or failed {what}");
             // A deferred call's result, in its continuation.
             let args = encode(&[T::Address, t.clone()], &[V::W(echo), v.clone()]);
-            let out = run_call(&runtime, &with_sel(&format!("later(address,{name})"), &args));
+            let out = run_call(
+                &runtime,
+                &with_sel(&format!("later(address,{name})"), &args),
+            );
             assert!(!out.reverted, "later {what}: {}", pretty(&out.returndata));
             assert_eq!(hex(&log_data(&out)), hex(&enc), "later {what}");
             // Equality.
             let args = encode(&[t.clone(), t.clone()], &[v.clone(), v.clone()]);
             let out = run_call(&runtime, &with_sel(&format!("same({name},{name})"), &args));
-            assert_eq!(load_bytes(&out.returndata, 0), Word::from_u64(1), "same {what}");
+            assert_eq!(
+                load_bytes(&out.returndata, 0),
+                Word::from_u64(1),
+                "same {what}"
+            );
             let args = encode(&[t.clone(), t.clone()], &[v.clone(), w.clone()]);
             let out = run_call(&runtime, &with_sel(&format!("same({name},{name})"), &args));
-            assert_eq!(load_bytes(&out.returndata, 0), Word::from_u64(u64::from(v == w)), "differ {what}");
+            assert_eq!(
+                load_bytes(&out.returndata, 0),
+                Word::from_u64(u64::from(v == w)),
+                "differ {what}"
+            );
         }
     }
 }
@@ -484,7 +555,10 @@ fn malformed_nested_arguments_revert() {
     let src = program(&t);
     let runtime = deploy(&compile(&src).expect("compile")).expect("deploy");
     let v = V::L(vec![
-        V::L(vec![V::B(b"hello".to_vec()), V::L(vec![V::W(Word::from_u64(1)), V::W(Word::from_u64(2))])]),
+        V::L(vec![
+            V::B(b"hello".to_vec()),
+            V::L(vec![V::W(Word::from_u64(1)), V::W(Word::from_u64(2))]),
+        ]),
         V::L(vec![V::B(Vec::new()), V::L(Vec::new())]),
     ]);
     let enc = encode(std::slice::from_ref(&t), std::slice::from_ref(&v));
@@ -495,7 +569,12 @@ fn malformed_nested_arguments_revert() {
     // Each word of the encoding, broken in several ways, must revert or decode to exactly
     // what re-encodes to the data given: no word is read unchecked.
     for at in (0..enc.len()).step_by(32) {
-        for bad in [Word::from_u64(0x1000), Word::from_u64(u64::MAX), Word::from_u64(256), Word::from_u64(3)] {
+        for bad in [
+            Word::from_u64(0x1000),
+            Word::from_u64(u64::MAX),
+            Word::from_u64(256),
+            Word::from_u64(3),
+        ] {
             let mut data = enc.clone();
             data[at..at + 32].copy_from_slice(&bad.to_be_bytes());
             let out = run_call(&runtime, &with_sel(&sig, &data));
@@ -522,15 +601,26 @@ fn malformed_nested_arguments_revert() {
     let mut wide = enc.clone();
     // The first list's second element, 2, is at the end of its tail.
     let two = Word::from_u64(2).to_be_bytes();
-    let pos = wide.windows(32).position(|w| w == two).expect("the element");
+    let pos = wide
+        .windows(32)
+        .position(|w| w == two)
+        .expect("the element");
     wide[pos..pos + 32].copy_from_slice(&Word::from_u64(300).to_be_bytes());
-    assert!(run_call(&runtime, &with_sel(&sig, &wide)).reverted, "uint8 of 300");
+    assert!(
+        run_call(&runtime, &with_sel(&sig, &wide)).reverted,
+        "uint8 of 300"
+    );
     // `enc` passes its argument on without decoding it first: it reverts exactly when
     // `echo` does, and encodes what `echo` decodes.
     let sig_enc = format!("enc({})", canon(&t));
     let mut cases = vec![enc.clone(), wide];
     for at in (0..enc.len()).step_by(32) {
-        for bad in [Word::from_u64(0x1000), Word::from_u64(u64::MAX), Word::from_u64(256), Word::from_u64(3)] {
+        for bad in [
+            Word::from_u64(0x1000),
+            Word::from_u64(u64::MAX),
+            Word::from_u64(256),
+            Word::from_u64(3),
+        ] {
             let mut data = enc.clone();
             data[at..at + 32].copy_from_slice(&bad.to_be_bytes());
             cases.push(data);
@@ -542,7 +632,11 @@ fn malformed_nested_arguments_revert() {
         let passed = run_call(&runtime, &with_sel(&sig_enc, data));
         assert_eq!(passed.reverted, echoed.reverted, "case {i}");
         if !echoed.reverted {
-            assert_eq!(abi_string_value(&passed.returndata), echoed.returndata, "case {i}");
+            assert_eq!(
+                abi_string_value(&passed.returndata),
+                echoed.returndata,
+                "case {i}"
+            );
         }
     }
 }
@@ -580,7 +674,11 @@ external pure function swap(const p : (string, list(nat))) : (list(nat), string)
     let grid = V::L(vec![
         V::L(vec![V::W(Word::from_u64(1)), V::W(Word::from_u64(2))]),
         V::L(vec![]),
-        V::L(vec![V::W(Word::from_u64(3)), V::W(Word::from_u64(4)), V::W(Word::from_u64(5))]),
+        V::L(vec![
+            V::W(Word::from_u64(3)),
+            V::W(Word::from_u64(4)),
+            V::W(Word::from_u64(5)),
+        ]),
     ]);
     let gt = arr(arr(T::Uint(256)));
     let n = |x: u64| V::W(Word::from_u64(x));
@@ -590,23 +688,90 @@ external pure function swap(const p : (string, list(nat))) : (list(nat), string)
         out.returndata
     };
     let word = |data: Vec<u8>| load_bytes(&data, 0);
-    assert_eq!(word(call("cell(uint256[][],uint256,uint256)", &[gt.clone(), T::Uint(256), T::Uint(256)], &[grid.clone(), n(2), n(1)])), Word::from_u64(4));
-    assert_eq!(word(call("row_len(uint256[][],uint256)", &[gt.clone(), T::Uint(256)], &[grid.clone(), n(1)])), Word::from_u64(0));
-    assert_eq!(word(call("total(uint256[][])", std::slice::from_ref(&gt), std::slice::from_ref(&grid))), Word::from_u64(15));
-    let out = run_call(&runtime, &with_sel("cell(uint256[][],uint256,uint256)", &encode(&[gt.clone(), T::Uint(256), T::Uint(256)], &[grid.clone(), n(1), n(0)])));
+    assert_eq!(
+        word(call(
+            "cell(uint256[][],uint256,uint256)",
+            &[gt.clone(), T::Uint(256), T::Uint(256)],
+            &[grid.clone(), n(2), n(1)]
+        )),
+        Word::from_u64(4)
+    );
+    assert_eq!(
+        word(call(
+            "row_len(uint256[][],uint256)",
+            &[gt.clone(), T::Uint(256)],
+            &[grid.clone(), n(1)]
+        )),
+        Word::from_u64(0)
+    );
+    assert_eq!(
+        word(call(
+            "total(uint256[][])",
+            std::slice::from_ref(&gt),
+            std::slice::from_ref(&grid)
+        )),
+        Word::from_u64(15)
+    );
+    let out = run_call(
+        &runtime,
+        &with_sel(
+            "cell(uint256[][],uint256,uint256)",
+            &encode(
+                &[gt.clone(), T::Uint(256), T::Uint(256)],
+                &[grid.clone(), n(1), n(0)],
+            ),
+        ),
+    );
     assert!(out.reverted, "an index past an inner list's end");
-    let built = V::L(vec![V::L(vec![n(5), n(6)]), V::L(vec![]), V::L(vec![n(10)])]);
-    assert_eq!(call("built(uint256)", &[T::Uint(256)], &[n(5)]), encode(std::slice::from_ref(&gt), &[built]));
+    let built = V::L(vec![
+        V::L(vec![n(5), n(6)]),
+        V::L(vec![]),
+        V::L(vec![n(10)]),
+    ]);
+    assert_eq!(
+        call("built(uint256)", &[T::Uint(256)], &[n(5)]),
+        encode(std::slice::from_ref(&gt), &[built])
+    );
     let it = T::Tuple(vec![T::Str, arr(T::Uint(256))]);
     let items = V::L(vec![
         V::L(vec![V::B(b"one".to_vec()), V::L(vec![n(1)])]),
-        V::L(vec![V::B(b"a name longer than thirty-two bytes".to_vec()), V::L(vec![n(2), n(3)])]),
+        V::L(vec![
+            V::B(b"a name longer than thirty-two bytes".to_vec()),
+            V::L(vec![n(2), n(3)]),
+        ]),
     ]);
-    let names = V::L(vec![V::B(b"one".to_vec()), V::B(b"a name longer than thirty-two bytes".to_vec())]);
-    assert_eq!(call("names((string,uint256[])[])", &[arr(it.clone())], std::slice::from_ref(&items)), encode(&[arr(T::Str)], &[names]));
-    assert_eq!(word(call("tag((string,uint256[])[],uint256,uint256)", &[arr(it.clone()), T::Uint(256), T::Uint(256)], &[items.clone(), n(1), n(1)])), Word::from_u64(3));
-    let made = V::L(vec![V::L(vec![V::B(b"x".to_vec()), V::L(vec![n(9), n(9)])])]);
-    assert_eq!(call("make(string,uint256)", &[T::Str, T::Uint(256)], &[V::B(b"x".to_vec()), n(9)]), encode(&[arr(it.clone())], &[made]));
+    let names = V::L(vec![
+        V::B(b"one".to_vec()),
+        V::B(b"a name longer than thirty-two bytes".to_vec()),
+    ]);
+    assert_eq!(
+        call(
+            "names((string,uint256[])[])",
+            &[arr(it.clone())],
+            std::slice::from_ref(&items)
+        ),
+        encode(&[arr(T::Str)], &[names])
+    );
+    assert_eq!(
+        word(call(
+            "tag((string,uint256[])[],uint256,uint256)",
+            &[arr(it.clone()), T::Uint(256), T::Uint(256)],
+            &[items.clone(), n(1), n(1)]
+        )),
+        Word::from_u64(3)
+    );
+    let made = V::L(vec![V::L(vec![
+        V::B(b"x".to_vec()),
+        V::L(vec![n(9), n(9)]),
+    ])]);
+    assert_eq!(
+        call(
+            "make(string,uint256)",
+            &[T::Str, T::Uint(256)],
+            &[V::B(b"x".to_vec()), n(9)]
+        ),
+        encode(&[arr(it.clone())], &[made])
+    );
     let p = V::L(vec![V::B(b"s".to_vec()), V::L(vec![n(1), n(2)])]);
     let swapped = V::L(vec![V::L(vec![n(1), n(2)]), V::B(b"s".to_vec())]);
     assert_eq!(
@@ -614,7 +779,6 @@ external pure function swap(const p : (string, list(nat))) : (list(nat), string)
         encode(&[T::Tuple(vec![arr(T::Uint(256)), T::Str])], &[swapped])
     );
 }
-
 
 /// `Abi.encode_packed` lays out what Solidity's `abi.encodePacked` does, fixed lists included:
 /// each element padded to a word, `bytesN` in its high bytes. The expected bytes are solc's.
@@ -641,19 +805,31 @@ external pure function k(const s : status; const t : Target; const x : int8; con
         assert!(!out.reverted, "{}", pretty(&out.returndata));
         hex(&abi_string_value(&out.returndata))
     };
-    let two = encode(&[fixed(T::Fixed(2), 2)], &[V::L(vec![V::W(Word::from_u64(0x6162)), V::W(Word::from_u64(0x6364))])]);
+    let two = encode(
+        &[fixed(T::Fixed(2), 2)],
+        &[V::L(vec![
+            V::W(Word::from_u64(0x6162)),
+            V::W(Word::from_u64(0x6364)),
+        ])],
+    );
     assert_eq!(
         packed(with_sel("f(bytes2[2])", &two)),
         "61620000000000000000000000000000000000000000000000000000000000006364000000000000000000000000000000000000000000000000000000000000"
     );
-    let bytes = encode(&[arr(T::Uint(8))], &[V::L(vec![V::W(Word::from_u64(1)), V::W(Word::from_u64(2))])]);
+    let bytes = encode(
+        &[arr(T::Uint(8))],
+        &[V::L(vec![V::W(Word::from_u64(1)), V::W(Word::from_u64(2))])],
+    );
     assert_eq!(
         packed(with_sel("g(uint8[])", &bytes)),
         "00000000000000000000000000000000000000000000000000000000000000010000000000000000000000000000000000000000000000000000000000000002"
     );
     let args = encode(
         &[fixed(T::Bool, 2), T::Address],
-        &[V::L(vec![V::W(Word::from_u64(1)), V::W(Word::from_u64(0))]), V::W(Word::from_u64(0xab))],
+        &[
+            V::L(vec![V::W(Word::from_u64(1)), V::W(Word::from_u64(0))]),
+            V::W(Word::from_u64(0xab)),
+        ],
     );
     assert_eq!(
         packed(with_sel("h(bool[2],address)", &args)),
@@ -662,13 +838,22 @@ external pure function k(const s : status; const t : Target; const x : int8; con
     let mut minus_two = [0xffu8; 32];
     minus_two[31] = 0xfe;
     let args = encode(
-        &[T::Uint(8), T::Address, T::Int(8), T::Fixed(3), arr(T::Fixed(2))],
+        &[
+            T::Uint(8),
+            T::Address,
+            T::Int(8),
+            T::Fixed(3),
+            arr(T::Fixed(2)),
+        ],
         &[
             V::W(Word::from_u64(2)),
             V::W(Word::from_u64(0xab)),
             V::W(Word::from_be_bytes(minus_two)),
             V::W(Word::from_u64(0x616263)),
-            V::L(vec![V::W(Word::from_u64(0x6162)), V::W(Word::from_u64(0x6364))]),
+            V::L(vec![
+                V::W(Word::from_u64(0x6162)),
+                V::W(Word::from_u64(0x6364)),
+            ]),
         ],
     );
     assert_eq!(
@@ -728,17 +913,33 @@ external pure function call_data(const j : job) : bytes is Abi.encode_call(Targe
 /// reaches another's; a `tuple record` is one tuple in both.
 #[test]
 fn record_arguments_cross_interfaces() {
-    assert_eq!(selector("execute(uint256,uint256,uint256)"), [0x2d, 0x29, 0xa4, 0x7b]);
-    assert_eq!(selector("execute((uint256,uint256,uint256))"), [0xe6, 0xf0, 0x81, 0x39]);
+    assert_eq!(
+        selector("execute(uint256,uint256,uint256)"),
+        [0x2d, 0x29, 0xa4, 0x7b]
+    );
+    assert_eq!(
+        selector("execute((uint256,uint256,uint256))"),
+        [0xe6, 0xf0, 0x81, 0x39]
+    );
     let target_rt = deploy(&compile(RECORD_TARGET).expect("target")).expect("deploy target");
     let at = Word::from_u64(0x5201);
-    DEPLOYED.with(|d| d.borrow_mut().insert(at, (target_rt.clone(), HashMap::new())));
+    DEPLOYED.with(|d| {
+        d.borrow_mut()
+            .insert(at, (target_rt.clone(), HashMap::new()))
+    });
     let caller = deploy(&compile(RECORD_CALLER).expect("caller")).expect("deploy caller");
     let mut storage = HashMap::new();
     storage.insert(Word::from_u64(0), at);
     let send = |data: Vec<u8>| {
-        let out = exec(&caller, &data, storage.clone(), Word::from_u64(0xabc), Word::from_u64(0), Word::from_u64(0))
-            .expect("run");
+        let out = exec(
+            &caller,
+            &data,
+            storage.clone(),
+            Word::from_u64(0xabc),
+            Word::from_u64(0),
+            Word::from_u64(0),
+        )
+        .expect("run");
         assert!(!out.reverted, "{}", pretty(&out.returndata));
         out
     };
@@ -747,42 +948,83 @@ fn record_arguments_cross_interfaces() {
     let job = T::Tuple(vec![T::Uint(256), T::Str, arr(T::Uint(256)), T::Address]);
     let order = T::Tuple(vec![T::Address, T::Str, T::Uint(256)]);
     let words = vec![T::Uint(256), T::Uint(256), T::Uint(256)];
-    let hash_of = |t: &T, v: &V| keccak_word(&encode(std::slice::from_ref(t), std::slice::from_ref(v)));
+    let hash_of =
+        |t: &T, v: &V| keccak_word(&encode(std::slice::from_ref(t), std::slice::from_ref(v)));
 
     // Static fields: the flat selector, the same words.
-    send(with_sel("execute(uint256,uint256,uint256)", &encode(&words, &[n(1), n(2), n(3)])));
+    send(with_sel(
+        "execute(uint256,uint256,uint256)",
+        &encode(&words, &[n(1), n(2), n(3)]),
+    ));
     let params = T::Tuple(words.clone());
     assert_eq!(theirs(0), hash_of(&params, &V::L(vec![n(1), n(2), n(3)])));
     // A tuple entrypoint is not the flat one.
-    let flat = call_raw(&target_rt, &with_sel("execute((uint256,uint256,uint256))", &encode(&words, &[n(1), n(2), n(3)])));
+    let flat = call_raw(
+        &target_rt,
+        &with_sel(
+            "execute((uint256,uint256,uint256))",
+            &encode(&words, &[n(1), n(2), n(3)]),
+        ),
+    );
     assert!(flat.reverted);
 
     // Dynamic fields: each after an offset of its own among the arguments.
     let label = b"a label longer than thirty-two bytes".to_vec();
-    send(with_sel("run(uint256,string)", &encode(&[T::Uint(256), T::Str], &[n(7), V::B(label.clone())])));
-    let j = V::L(vec![n(7), V::B(label.clone()), V::L(vec![n(7), n(8)]), n(0xabc)]);
+    send(with_sel(
+        "run(uint256,string)",
+        &encode(&[T::Uint(256), T::Str], &[n(7), V::B(label.clone())]),
+    ));
+    let j = V::L(vec![
+        n(7),
+        V::B(label.clone()),
+        V::L(vec![n(7), n(8)]),
+        n(0xabc),
+    ]);
     assert_eq!(theirs(0), hash_of(&job, &j));
     let fields = |v: &V| match v {
         V::L(xs) => xs.clone(),
         _ => unreachable!(),
     };
     let job_fields = [T::Uint(256), T::Str, arr(T::Uint(256)), T::Address];
-    let j2 = V::L(vec![n(9), V::B(b"relayed".to_vec()), V::L(vec![n(1), n(2), n(3)]), n(0x77)]);
-    send(with_sel("relay(uint256,string,uint256[],address)", &encode(&job_fields, &fields(&j2))));
+    let j2 = V::L(vec![
+        n(9),
+        V::B(b"relayed".to_vec()),
+        V::L(vec![n(1), n(2), n(3)]),
+        n(0x77),
+    ]);
+    send(with_sel(
+        "relay(uint256,string,uint256[],address)",
+        &encode(&job_fields, &fields(&j2)),
+    ));
     assert_eq!(theirs(0), hash_of(&job, &j2));
     // A record before another argument takes all its fields' heads.
     let mut both = job_fields.to_vec();
     both.push(T::Uint(256));
     let mut args = fields(&j2);
     args.push(n(42));
-    send(with_sel("after(uint256,string,uint256[],address,uint256)", &encode(&both, &args)));
+    send(with_sel(
+        "after(uint256,string,uint256[],address,uint256)",
+        &encode(&both, &args),
+    ));
     assert_eq!(theirs(1), Word::from_u64(42));
     // A query's record argument, and `Abi.encode_call`'s.
-    let out = send(with_sel("weigh(uint256,string,uint256[],address)", &encode(&job_fields, &fields(&j2))));
+    let out = send(with_sel(
+        "weigh(uint256,string,uint256[],address)",
+        &encode(&job_fields, &fields(&j2)),
+    ));
     assert_eq!(slot(&out.storage, 1), hash_of(&job, &j2));
-    let out = send(with_sel("call_data(uint256,string,uint256[],address)", &encode(&job_fields, &fields(&j2))));
-    let want = with_sel("run(uint256,string,uint256[],address)", &encode(&job_fields, &fields(&j2)));
-    assert_eq!(hex(&out.returndata), hex(&encode(&[T::Bytes], &[V::B(want)])));
+    let out = send(with_sel(
+        "call_data(uint256,string,uint256[],address)",
+        &encode(&job_fields, &fields(&j2)),
+    ));
+    let want = with_sel(
+        "run(uint256,string,uint256[],address)",
+        &encode(&job_fields, &fields(&j2)),
+    );
+    assert_eq!(
+        hex(&out.returndata),
+        hex(&encode(&[T::Bytes], &[V::B(want)]))
+    );
 
     // A `tuple record`: one tuple, as an argument and as a result.
     let o = V::L(vec![n(0x55), V::B(b"memo".to_vec()), n(10)]);
@@ -791,14 +1033,23 @@ fn record_arguments_cross_interfaces() {
     assert_eq!(theirs(0), hash_of(&order, &o));
     let out = send(with_sel("quote((address,string,uint256))", &enc));
     assert_eq!(slot(&out.storage, 2), Word::from_u64(11));
-    let quoted = call_raw(&target_rt, &with_sel("quote((address,string,uint256))", &enc));
+    let quoted = call_raw(
+        &target_rt,
+        &with_sel("quote((address,string,uint256))", &enc),
+    );
     let o2 = V::L(vec![n(0x55), V::B(b"memo".to_vec()), n(11)]);
-    assert_eq!(hex(&quoted.returndata), hex(&encode(std::slice::from_ref(&order), &[o2])));
+    assert_eq!(
+        hex(&quoted.returndata),
+        hex(&encode(std::slice::from_ref(&order), &[o2]))
+    );
 
     let abi = abi(RECORD_TARGET).expect("abi");
     let quote = &abi[abi.find("\"name\": \"quote\"").expect("quote")..];
     let outputs = &quote[..quote.find("\"stateMutability\"").expect("end")];
-    assert!(outputs.matches("\"type\": \"tuple\"").count() == 1, "{outputs}");
+    assert!(
+        outputs.matches("\"type\": \"tuple\"").count() == 1,
+        "{outputs}"
+    );
     assert!(outputs.contains("\"name\": \"memo\""), "{outputs}");
 }
 
@@ -826,9 +1077,27 @@ external function act(const a : action) is case a of {
     let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
     let n = |x: u64| V::W(Word::from_u64(x));
     let cases = [
-        ("swap((address,uint24))", T::Tuple(vec![T::Address, T::Uint(24)]), V::L(vec![n(0xaa), n(3000)]), true),
-        ("hold((address,string))", T::Tuple(vec![T::Address, T::Str]), V::L(vec![n(0xbb), V::B(b"a note past thirty-two bytes long".to_vec())]), true),
-        ("name(string,uint256)", T::Tuple(vec![T::Str, T::Uint(256)]), V::L(vec![V::B(b"hi".to_vec()), n(5)]), false),
+        (
+            "swap((address,uint24))",
+            T::Tuple(vec![T::Address, T::Uint(24)]),
+            V::L(vec![n(0xaa), n(3000)]),
+            true,
+        ),
+        (
+            "hold((address,string))",
+            T::Tuple(vec![T::Address, T::Str]),
+            V::L(vec![
+                n(0xbb),
+                V::B(b"a note past thirty-two bytes long".to_vec()),
+            ]),
+            true,
+        ),
+        (
+            "name(string,uint256)",
+            T::Tuple(vec![T::Str, T::Uint(256)]),
+            V::L(vec![V::B(b"hi".to_vec()), n(5)]),
+            false,
+        ),
         ("tag(string)", T::Str, V::B(b"tagged".to_vec()), true),
     ];
     for (sig, t, v, whole) in cases {
@@ -880,8 +1149,18 @@ external pure function cat_hash(const a : address; const b : bytes3) : bytes32 i
     let sig = "(uint8,address,int8,bytes3,uint96,bool,bytes32)";
     let packed = abi_string_value(&answer(&format!("enc{sig}"), &args));
     assert_eq!(packed.len(), 1 + 20 + 1 + 3 + 12 + 1 + 32);
-    assert_eq!(answer(&format!("hash{sig}"), &args), crate::keccak::keccak256(&packed).to_vec());
-    let cat = abi_string_value(&answer("cat(address,bytes3)", &args[1..2].iter().chain(&args[3..4]).copied().collect::<Vec<_>>()));
+    assert_eq!(
+        answer(&format!("hash{sig}"), &args),
+        crate::keccak::keccak256(&packed).to_vec()
+    );
+    let cat = abi_string_value(&answer(
+        "cat(address,bytes3)",
+        &args[1..2]
+            .iter()
+            .chain(&args[3..4])
+            .copied()
+            .collect::<Vec<_>>(),
+    ));
     assert_eq!(cat.len(), 2 + 20 + 1 + 3 + 31);
     assert_eq!(&cat[..2], &[0xd6, 0x94]);
     assert_eq!(&cat[22..26], &[0x01, 0x61, 0x62, 0x63]);

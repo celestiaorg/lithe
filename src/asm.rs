@@ -197,7 +197,10 @@ pub(crate) fn assemble_marked(code: &[Inst]) -> Result<(Vec<u8>, Vec<Mark>), Err
         if grew {
             continue;
         }
-        if code.iter().any(|inst| matches!(inst, Table(t) if entries(t).any(|l| !pos.contains_key(&l)))) {
+        if code
+            .iter()
+            .any(|inst| matches!(inst, Table(t) if entries(t).any(|l| !pos.contains_key(&l))))
+        {
             return Err(error(0, 0, "internal: missing jump target"));
         }
         let mut out = Vec::with_capacity(pc);
@@ -243,7 +246,12 @@ pub(crate) fn assemble_marked(code: &[Inst]) -> Result<(Vec<u8>, Vec<Mark>), Err
 /// The shortest byte sequence that leaves `w` on the stack.
 fn encode_push(w: Word) -> Vec<u8> {
     thread_local!(static ENCODINGS: std::cell::RefCell<FxHashMap<Word, Vec<u8>>> = Default::default());
-    ENCODINGS.with(|all| all.borrow_mut().entry(w).or_insert_with(|| encode_depth(w, 3)).clone())
+    ENCODINGS.with(|all| {
+        all.borrow_mut()
+            .entry(w)
+            .or_insert_with(|| encode_depth(w, 3))
+            .clone()
+    })
 }
 
 /// Tries a plain push, then `NOT` of a shorter value, then a shorter value shifted
@@ -343,7 +351,12 @@ fn inst_len(inst: &Inst) -> usize {
         Push(w) => {
             // The passes ask for the same constants' lengths over and over.
             thread_local!(static LENS: std::cell::RefCell<FxHashMap<Word, usize>> = Default::default());
-            LENS.with(|lens| *lens.borrow_mut().entry(*w).or_insert_with(|| encode_push(*w).len()))
+            LENS.with(|lens| {
+                *lens
+                    .borrow_mut()
+                    .entry(*w)
+                    .or_insert_with(|| encode_push(*w).len())
+            })
         }
         Label(_) => 0,
         PushLabel(_) | Mem(_) => 3,
@@ -375,7 +388,7 @@ fn stack_io(op: u8) -> Option<(usize, usize)> {
         0x52 | 0x53 | 0x55 | 0x5d => (2, 0),
         0x56 => (1, 0),
         0x57 => (2, 0),
-        0x58 | 0x59 | 0x5a => (0, 1),
+        0x58..=0x5a => (0, 1),
         0x5b => (0, 0),
         0x5e => (3, 0),
         0x5f => (0, 1),
@@ -866,7 +879,9 @@ fn small(w: Word) -> Option<u64> {
 /// Word copies `a MLOAD b MSTORE` whose addresses both step by 32 become one `MCOPY`
 /// when the source and destination ranges are apart and it is shorter.
 fn copy_run(w: &[Inst]) -> Option<(usize, Vec<Inst>)> {
-    let (Push(a), Push(b)) = (w[0], w[2]) else { return None };
+    let (Push(a), Push(b)) = (w[0], w[2]) else {
+        return None;
+    };
     let (src, dst) = (small(a)?, small(b)?);
     if src.max(dst) > u64::from(u32::MAX) {
         return None;
@@ -874,7 +889,9 @@ fn copy_run(w: &[Inst]) -> Option<(usize, Vec<Inst>)> {
     let mut words = 0u64;
     let mut bytes = 0;
     for step in w.chunks_exact(4) {
-        let [Push(x), Op(MLOAD), Push(y), Op(MSTORE)] = step else { break };
+        let [Push(x), Op(MLOAD), Push(y), Op(MSTORE)] = step else {
+            break;
+        };
         if small(*x) != Some(src + 32 * words) || small(*y) != Some(dst + 32 * words) {
             break;
         }
@@ -966,7 +983,7 @@ fn label_of(inst: &Inst) -> u32 {
 }
 
 /// Blocks with the same body share one copy.
-fn dedup_blocks(code: &mut Vec<Inst>) -> bool {
+fn dedup_blocks(code: &mut [Inst]) -> bool {
     // Bodies by length and their first and last instructions, then compared in full.
     let mut first: FxHashMap<_, Vec<(&[Inst], u32)>> = FxHashMap::default();
     let mut map: FxHashMap<u32, u32> = FxHashMap::default();
@@ -976,7 +993,9 @@ fn dedup_blocks(code: &mut Vec<Inst>) -> bool {
             continue;
         }
         let body = &code[seg.start..=seg.end];
-        let same = first.entry((body.len(), body[0], code[seg.end])).or_default();
+        let same = first
+            .entry((body.len(), body[0], code[seg.end]))
+            .or_default();
         match same.iter().find(|(other, _)| *other == body) {
             Some(&(_, keep)) => {
                 for l in code[seg.labels.clone()].iter().map(label_of) {
@@ -1007,7 +1026,7 @@ fn dup_constants(code: &mut [Inst]) -> bool {
     let pad = |stack: &mut Vec<V>, n: usize| {
         if stack.len() < n {
             let missing = n - stack.len();
-            stack.splice(0..0, std::iter::repeat(V::Unknown).take(missing));
+            stack.splice(0..0, std::iter::repeat_n(V::Unknown, missing));
         }
     };
     for i in 0..code.len() {
@@ -1093,7 +1112,7 @@ fn merge_tails(code: &mut Vec<Inst>) -> bool {
                     n += 1;
                 }
                 // Ties go to the earliest pair, so the output never depends on map order.
-                let better = best.map_or(true, |(ba, bb, _, have)| {
+                let better = best.is_none_or(|(ba, bb, _, have)| {
                     bytes > have || (bytes == have && (a, b) < (ba, bb))
                 });
                 if bytes >= MIN_TAIL_BYTES && better {
@@ -1511,7 +1530,7 @@ fn outline_once(code: &mut Vec<Inst>, t: &mut Tokens, params: bool) -> bool {
                 top = top.max(o.saved);
                 all.push((o, starts.to_vec()));
             }
-            Some(o) if best.as_ref().map_or(true, |b| rank(&o) < rank(b)) => best = Some(o),
+            Some(o) if best.as_ref().is_none_or(|b| rank(&o) < rank(b)) => best = Some(o),
             _ => {}
         }
         match &best {
@@ -1771,7 +1790,9 @@ impl Live {
                             Some(&tb) => succ[b].push(tb),
                             None => open[b] = true,
                         }
-                    } else if let Some(Table(t)) = code[s..e].iter().find(|inst| matches!(inst, Table(_))) {
+                    } else if let Some(Table(t)) =
+                        code[s..e].iter().find(|inst| matches!(inst, Table(_)))
+                    {
                         for l in entries(t) {
                             match at.get(&l) {
                                 Some(&tb) => succ[b].push(tb),
@@ -1851,7 +1872,12 @@ impl Live {
 /// and drops stores nothing reads. Every change is checked against a stack model. With
 /// `consume`, a last load that finds the value on top takes it instead of a copy: fewer
 /// bytes at that site, but sites the outliner would have shared can stop matching.
-pub(crate) fn promote(code: &mut Vec<Inst>, tracked: &dyn Fn(u32) -> bool, calls: &Calls, consume: bool) -> bool {
+pub(crate) fn promote(
+    code: &mut Vec<Inst>,
+    tracked: &dyn Fn(u32) -> bool,
+    calls: &Calls,
+    consume: bool,
+) -> bool {
     let mut any = false;
     for _ in 0..MAX_ROUNDS {
         let exits = safe_exits(code);
@@ -1875,7 +1901,7 @@ pub(crate) fn promote(code: &mut Vec<Inst>, tracked: &dyn Fn(u32) -> bool, calls
             return any;
         }
         any = true;
-        edits.sort_by(|x, y| y.0.cmp(&x.0));
+        edits.sort_by_key(|e| std::cmp::Reverse(e.0));
         for (at, len, with) in edits {
             code.splice(at..at + len, with);
         }
@@ -1935,7 +1961,17 @@ fn plan_promotion(
     while run_end < n && runs.run[run_end] == run {
         run_end += 1;
     }
-    let mut edits = hold(code, i, p, &loads, stop, run_end, consume && dead_after, runs, calls)?;
+    let mut edits = hold(
+        code,
+        i,
+        p,
+        &loads,
+        stop,
+        run_end,
+        consume && dead_after,
+        runs,
+        calls,
+    )?;
     if dead_after {
         edits.push((i, 2, Vec::new()));
     } else {
@@ -2127,7 +2163,7 @@ pub(crate) fn forward_storage(code: &mut Vec<Inst>, calls: &Calls, opaque: &Hash
             return any;
         }
         any = true;
-        edits.sort_by(|x, y| y.0.cmp(&x.0));
+        edits.sort_by_key(|e| std::cmp::Reverse(e.0));
         for (at, len, with) in edits {
             code.splice(at..at + len, with);
         }
@@ -2317,7 +2353,7 @@ pub(crate) fn hoist(code: &mut Vec<Inst>) {
         moved.extend_from_slice(&code[start..=end]);
     }
     let mut drop: Vec<(usize, usize)> = picked.clone();
-    drop.sort_by(|a, b| b.0.cmp(&a.0));
+    drop.sort_by_key(|e| std::cmp::Reverse(e.0));
     for (start, end) in drop {
         code.drain(start..=end);
     }
@@ -2368,7 +2404,12 @@ mod tests {
             vec![Push(max), Op(EQ)],
             vec![Push(w(1).shl(128)), Op(GT)],
             vec![Push(w(1).shl(128).wrapping_sub(w(1))), Op(LT), Op(ISZERO)],
-            vec![Push(w(1).shl(128).wrapping_sub(w(1))), Op(LT), PushLabel(1), Op(JUMPI)],
+            vec![
+                Push(w(1).shl(128).wrapping_sub(w(1))),
+                Op(LT),
+                PushLabel(1),
+                Op(JUMPI),
+            ],
         ];
         for c in edges {
             for op in [LT, GT, SLT, SGT] {
@@ -2383,7 +2424,9 @@ mod tests {
         };
         let mut applied = 0;
         for pat in &pats {
-            let Some((n, mut with)) = rewrite(pat) else { continue };
+            let Some((n, mut with)) = rewrite(pat) else {
+                continue;
+            };
             applied += 1;
             with.extend_from_slice(&pat[n..]);
             for x in edges {

@@ -1,7 +1,12 @@
 use super::*;
 
 impl<'a> Gen<'a> {
-    pub(super) fn compile_memory_list_read(&mut self, sym: usize, leaf: u32, index: &Expr) -> Result<(), Error> {
+    pub(super) fn compile_memory_list_read(
+        &mut self,
+        sym: usize,
+        leaf: u32,
+        index: &Expr,
+    ) -> Result<(), Error> {
         self.list_element_start(sym, leaf, index, false, false)?;
         self.op(MLOAD);
         Ok(())
@@ -198,7 +203,13 @@ impl<'a> Gen<'a> {
     }
 
     /// Pushes a copy of a stored list.
-    fn load_stored_list(&mut self, sym: usize, leaf: u32, k: u32, bytes: bool) -> Result<(), Error> {
+    fn load_stored_list(
+        &mut self,
+        sym: usize,
+        leaf: u32,
+        k: u32,
+        bytes: bool,
+    ) -> Result<(), Error> {
         let transient = self
             .checked
             .transient_leaf(self.checked.syms[sym].slot + leaf);
@@ -213,7 +224,12 @@ impl<'a> Gen<'a> {
         Ok(())
     }
 
-    pub(super) fn sub_load_list(&mut self, k: u32, transient: bool, bytes: bool) -> Result<(), Error> {
+    pub(super) fn sub_load_list(
+        &mut self,
+        k: u32,
+        transient: bool,
+        bytes: bool,
+    ) -> Result<(), Error> {
         // [n, base, ret] becomes [ret, base, list, total, j].
         let (top, done) = (self.fresh(), self.fresh());
         self.op(SWAP1 + 1);
@@ -258,7 +274,13 @@ impl<'a> Gen<'a> {
     }
 
     /// `[ptr]`: writes the list to a stored list, clearing the slots it no longer uses.
-    pub(super) fn store_list(&mut self, sym: usize, leaf: u32, k: u32, bytes: bool) -> Result<(), Error> {
+    pub(super) fn store_list(
+        &mut self,
+        sym: usize,
+        leaf: u32,
+        k: u32,
+        bytes: bool,
+    ) -> Result<(), Error> {
         let transient = self
             .checked
             .transient_leaf(self.checked.syms[sym].slot + leaf);
@@ -287,7 +309,12 @@ impl<'a> Gen<'a> {
         Ok(())
     }
 
-    pub(super) fn sub_store_list(&mut self, k: u32, transient: bool, bytes: bool) -> Result<(), Error> {
+    pub(super) fn sub_store_list(
+        &mut self,
+        k: u32,
+        transient: bool,
+        bytes: bool,
+    ) -> Result<(), Error> {
         // [ptr, old, base, ret] becomes [ret, base, ptr, old total, total, j].
         let (top, done, clear, cleared) = (self.fresh(), self.fresh(), self.fresh(), self.fresh());
         self.op(SWAP1 + 2);
@@ -672,7 +699,12 @@ impl<'a> Gen<'a> {
     }
 
     /// Copies element `index` of a list of several-word elements into a buffer.
-    pub(super) fn load_list_element(&mut self, sym: usize, leaf: u32, index: &Expr) -> Result<i32, Error> {
+    pub(super) fn load_list_element(
+        &mut self,
+        sym: usize,
+        leaf: u32,
+        index: &Expr,
+    ) -> Result<i32, Error> {
         let lty = self.type_at(self.checked.syms[sym].ty, leaf);
         let k = self.list_stride(lty);
         self.return_sites += 1;

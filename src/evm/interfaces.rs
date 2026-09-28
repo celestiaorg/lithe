@@ -21,9 +21,17 @@ contract T is {
 
 fn supports_answers(runtime: &[u8], cases: &[(u64, u64)]) {
     for &(sel, want) in cases {
-        let out = call(runtime, "supportsInterface(bytes4)", &[Word::from_u64(sel).shl(224)]);
+        let out = call(
+            runtime,
+            "supportsInterface(bytes4)",
+            &[Word::from_u64(sel).shl(224)],
+        );
         assert!(!out.reverted, "{sel:#x}");
-        assert_eq!(load_bytes(&out.returndata, 0), Word::from_u64(want), "{sel:#x}");
+        assert_eq!(
+            load_bytes(&out.returndata, 0),
+            Word::from_u64(want),
+            "{sel:#x}"
+        );
     }
 }
 
@@ -67,12 +75,23 @@ fn erc165_answers_for_supported_interfaces() {
         ],
     );
     // Without `supports`, nothing is announced: the contract has no `supportsInterface`.
-    let none = ERC165_SRC.replace("  supports IERC20, IERC20Metadata, IERC1155MetadataURI;\n", "");
+    let none = ERC165_SRC.replace(
+        "  supports IERC20, IERC20Metadata, IERC1155MetadataURI;\n",
+        "",
+    );
     assert!(!abi(&none).expect("abi").contains("supportsInterface"));
-    let plain = compile("storage is record { n : nat; }\nexternal function f() is { storage.n := 1n; }\n")
-        .expect("plain");
+    let plain =
+        compile("storage is record { n : nat; }\nexternal function f() is { storage.n := 1n; }\n")
+            .expect("plain");
     let runtime = deploy(&plain).expect("deploy");
-    assert!(call(&runtime, "supportsInterface(bytes4)", &[Word::from_u64(0x01ffc9a7).shl(224)]).reverted);
+    assert!(
+        call(
+            &runtime,
+            "supportsInterface(bytes4)",
+            &[Word::from_u64(0x01ffc9a7).shl(224)]
+        )
+        .reverted
+    );
 }
 
 /// `supports` names interfaces the contract has, each once, and a contract that writes its
@@ -92,14 +111,20 @@ fn supports_rejects_what_the_contract_cannot_announce() {
         "supports IERC20, IERC20Metadata, IERC1155MetadataURI;",
         "supports IERC20, { view function name() : string; };",
     ));
-    assert!(inline.contains("`supports` lists named interfaces"), "{inline}");
+    assert!(
+        inline.contains("`supports` lists named interfaces"),
+        "{inline}"
+    );
     let twice = err(ERC165_SRC.replace(
         "supports IERC20, IERC20Metadata, IERC1155MetadataURI;",
         "supports IERC20, IERC20Metadata;\n  supports IERC20;",
     ));
     assert!(twice.contains("`supports` lists `IERC20` twice"), "{twice}");
     let unknown = err(ERC165_SRC.replace("supports IERC20,", "supports IERC20, IERC7777,"));
-    assert!(unknown.contains("unknown interface `IERC7777`"), "{unknown}");
+    assert!(
+        unknown.contains("unknown interface `IERC7777`"),
+        "{unknown}"
+    );
     let own = err(ERC165_SRC.replace(
         "storage is record {}",
         "storage is record {}\n  external pure function supportsInterface(const interfaceId : bytes4) : bool is interfaceId = 0x01ffc9a7",
@@ -154,7 +179,11 @@ fn own_supports_interface_extends_the_generated_answer() {
         "module M is {\n  pure function has(const id : bytes4) : bool is Abi.supports_interface(id)\n}\ncontract T is {\n  use M;\n  storage is record {}\n  external pure function f(const id : bytes4) : bool is M.has(id)\n}\n",
     )
     .expect_err("module");
-    assert!(err.to_string().contains("only the contract's own functions"), "{err}");
+    assert!(
+        err.to_string()
+            .contains("only the contract's own functions"),
+        "{err}"
+    );
 }
 
 /// An interface is a list of function headers. The same list names what a contract calls and
@@ -201,7 +230,10 @@ external function go(const t : Pinger) is {
             "`ping` is not payable; declare it `payable function ping` in its interface",
         ),
         ("defer t.ping(1n, 2n, 3n);", "`ping` expects 1 arguments"),
-        ("defer t.put(1n);", "no overload of `put` takes these arguments"),
+        (
+            "defer t.put(1n);",
+            "no overload of `put` takes these arguments",
+        ),
     ] {
         let bad = src.replace("defer t.ping(1n, 2n);", body);
         let err = compile(&bad).expect_err(want);
@@ -235,8 +267,9 @@ external function go(const t : Pinger) is {
 /// storage-taking ones included, and external overloads are separate entrypoints.
 #[test]
 fn overloads_example_picks_by_arguments() {
-    let runtime = deploy(&compile(include_str!("../../examples/overloads.lithe")).expect("compile"))
-        .expect("deploy");
+    let runtime =
+        deploy(&compile(include_str!("../../examples/overloads.lithe")).expect("compile"))
+            .expect("deploy");
     let sender = Word::from_u64(7);
     let send = |storage: HashMap<Word, Word>, sig: &str, args: &[Word]| {
         let out = exec(
@@ -574,11 +607,17 @@ interface IAdd is {
             "`use Vault exposing` appears twice; list all its interfaces in one",
         ),
         (
-            src.replace("pure function version() : nat;", "view function version() : nat;"),
+            src.replace(
+                "pure function version() : nat;",
+                "view function version() : nat;",
+            ),
             "`version` is `view` in the inline interface and `pure` in `Vault`",
         ),
         (
-            src.replace("  pure function version() : nat;\n}", "  pure function version() : nat;\n}, {\n  view function total() : nat;\n}"),
+            src.replace(
+                "  pure function version() : nat;\n}",
+                "  pure function version() : nat;\n}, {\n  view function total() : nat;\n}",
+            ),
             "`use ... exposing` has one inline interface",
         ),
     ] {

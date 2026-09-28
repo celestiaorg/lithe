@@ -252,8 +252,12 @@ impl Checker {
         };
         // A literal takes its type from its parameter, once the other arguments have
         // settled the type parameters that parameter names.
-        let literal =
-            |arg: &Expr| matches!(arg, Expr::Lit { .. } | Expr::List { .. } | Expr::Record { .. });
+        let literal = |arg: &Expr| {
+            matches!(
+                arg,
+                Expr::Lit { .. } | Expr::List { .. } | Expr::Record { .. }
+            )
+        };
         let mut env = HashMap::new();
         for pass in [false, true] {
             for (param, arg) in template.params.iter().zip(args.iter_mut()) {
@@ -398,14 +402,11 @@ impl Checker {
             idx
         };
         let mut kept_args = Vec::new();
-        let mut arg_i = 0;
-        for param in &template.params {
-            let arg = args[arg_i].clone();
-            arg_i += 1;
+        for (param, arg) in template.params.iter().zip(args.iter()) {
             if places.iter().any(|(name, _)| name == &param.name) {
                 continue;
             }
-            kept_args.push(arg);
+            kept_args.push(arg.clone());
         }
         kept_args.extend(hidden.into_iter().map(|(_, arg)| arg));
         let sig_params = self.sigs[idx].params.clone();
@@ -1066,7 +1067,9 @@ fn rewrite_expr(expr: &mut Expr, name: &str, path: &[Seg]) {
 /// `keys` collects each key's hidden parameter and the caller's key, in order.
 fn storage_path(expr: &Expr, param: &str, keys: &mut Vec<(String, Expr)>) -> Option<Vec<Seg>> {
     match expr {
-        Expr::Ident { name, .. } => Some(name.split('.').map(|s| Seg::Field(s.to_string())).collect()),
+        Expr::Ident { name, .. } => {
+            Some(name.split('.').map(|s| Seg::Field(s.to_string())).collect())
+        }
         Expr::Field { base, name, .. } => {
             let mut path = storage_path(base, param, keys)?;
             path.push(Seg::Field(name.clone()));

@@ -28,7 +28,14 @@ impl<'a> Gen<'a> {
                 None => self.compile_raised(reason),
             },
             Stmt::Call { expr, .. } => {
-                self.tail = tail && matches!(expr, Expr::Call { callee: Some(_), .. });
+                self.tail = tail
+                    && matches!(
+                        expr,
+                        Expr::Call {
+                            callee: Some(_),
+                            ..
+                        }
+                    );
                 let result = self.compile_effect(expr);
                 self.tail = false;
                 result
@@ -72,7 +79,8 @@ impl<'a> Gen<'a> {
                     return Err(error(*line, *col, "unbound loop"));
                 };
                 let _ = limit;
-                let signed = self.checked.types[self.peel_nominal(self.checked.syms[counter].ty)].kind
+                let signed = self.checked.types[self.peel_nominal(self.checked.syms[counter].ty)]
+                    .kind
                     == TyKind::Int;
                 // A dynamic list of single words is read without the general element path:
                 // a stored one from `keccak(slot)`, hashed once here, plus the counter.
@@ -88,9 +96,12 @@ impl<'a> Gen<'a> {
                         let one_word = self.checked.types[lty].bits == 0
                             && self.list_stride(lty) == 1
                             && self.checked.types[self.peel_nominal(elem_ty)].words == 1
-                            && self.checked.types[self.peel_nominal(elem_ty)].kind != TyKind::Option
+                            && self.checked.types[self.peel_nominal(elem_ty)].kind
+                                != TyKind::Option
                             && self.stored_place(base).is_some() == self.checked.syms[*sym].storage
-                            && !self.checked.transient_leaf(self.checked.syms[*sym].slot + *leaf);
+                            && !self
+                                .checked
+                                .transient_leaf(self.checked.syms[*sym].slot + *leaf);
                         let heap = !self.checked.syms[*sym].storage
                             && matches!(base.as_ref(), Expr::Ident { .. });
                         if one_word && (self.checked.syms[*sym].storage || heap) {
@@ -267,7 +278,9 @@ impl<'a> Gen<'a> {
                             self.op(ADD);
                             self.cd_load();
                             if self.cd_lazy.contains(&list) {
-                                self.check_word(self.checked.syms[elem].ty, &|g: &mut Self| g.op(DUP1))?;
+                                self.check_word(self.checked.syms[elem].ty, &|g: &mut Self| {
+                                    g.op(DUP1)
+                                })?;
                             }
                             self.align_decoded(word);
                             self.mstore_off(self.local[elem]);
@@ -352,10 +365,11 @@ impl<'a> Gen<'a> {
             }
             // A block the checker made, such as a stored record written field by field.
             Stmt::If {
-                cond: Expr::Lit {
-                    lit: Lit::Bool(true),
-                    ..
-                },
+                cond:
+                    Expr::Lit {
+                        lit: Lit::Bool(true),
+                        ..
+                    },
                 then_body,
                 else_body,
                 ..
@@ -509,7 +523,13 @@ impl<'a> Gen<'a> {
                     return Ok(());
                 }
                 if index.is_some() {
-                    return self.compile_index_write(root, *leaf, index.as_ref().unwrap(), expr, *push);
+                    return self.compile_index_write(
+                        root,
+                        *leaf,
+                        index.as_ref().unwrap(),
+                        expr,
+                        *push,
+                    );
                 }
                 // A record shares its first leaf with its first field, so the value says which.
                 let ty = match self.checked.types[expr.ty()].kind {
@@ -562,7 +582,8 @@ impl<'a> Gen<'a> {
                 ..
             } => {
                 self.fire_tail = tail;
-                let result = self.compile_defer(expr, value.as_ref(), gas.as_ref(), then.as_deref());
+                let result =
+                    self.compile_defer(expr, value.as_ref(), gas.as_ref(), then.as_deref());
                 self.fire_tail = false;
                 result
             }
@@ -687,7 +708,9 @@ impl<'a> Gen<'a> {
         }
         if self.direct
             && self.checked.syms[root].storage
-            && !self.checked.immutable_leaf(self.checked.syms[root].slot + leaf)
+            && !self
+                .checked
+                .immutable_leaf(self.checked.syms[root].slot + leaf)
         {
             self.store_record_slots(self.checked.syms[root].slot + leaf, n);
             return Ok(());
@@ -1042,9 +1065,20 @@ impl<'a> Gen<'a> {
     /// The word a literal, or a parameter bound to one, always is.
     pub(super) fn const_word(&self, e: &Expr) -> Option<Word> {
         match e {
-            Expr::Lit { lit: Lit::Nat(w) | Lit::Wei(w) | Lit::Duration(w), .. } => Some(*w),
-            Expr::Lit { lit: Lit::Int(w, _), ty, .. } if !self.is_dynamic(*ty) => Some(*w),
-            Expr::Ident { sym: Some(s), builtin: None, .. } => self.const_params.get(s).copied(),
+            Expr::Lit {
+                lit: Lit::Nat(w) | Lit::Wei(w) | Lit::Duration(w),
+                ..
+            } => Some(*w),
+            Expr::Lit {
+                lit: Lit::Int(w, _),
+                ty,
+                ..
+            } if !self.is_dynamic(*ty) => Some(*w),
+            Expr::Ident {
+                sym: Some(s),
+                builtin: None,
+                ..
+            } => self.const_params.get(s).copied(),
             _ => None,
         }
     }
@@ -1053,7 +1087,12 @@ impl<'a> Gen<'a> {
     /// entrypoint's constant parameter from its word, which later reads from calldata, when
     /// it is passed as a constant parameter. Returns the parameters it aliased, with their
     /// own words.
-    fn bind_params(&mut self, idx: usize, args: &[Expr], inline: bool) -> Result<Vec<(usize, i32)>, Error> {
+    fn bind_params(
+        &mut self,
+        idx: usize,
+        args: &[Expr],
+        inline: bool,
+    ) -> Result<Vec<(usize, i32)>, Error> {
         let params = self.checked.prog.funcs[idx].params.clone();
         let mut stacked: Vec<(usize, u32)> = Vec::new();
         let mut aliased = Vec::new();
@@ -1062,7 +1101,10 @@ impl<'a> Gen<'a> {
         let later = std::cell::RefCell::new(Vec::new());
         if alias_ok {
             let conts = |node: Node<'_>| {
-                if let Node::Stmt(Stmt::Defer { then: Some(then), .. }) = node {
+                if let Node::Stmt(Stmt::Defer {
+                    then: Some(then), ..
+                }) = node
+                {
                     for arm in then.arms() {
                         for st in &arm.stmts {
                             self.stmt_syms(st, &mut later.borrow_mut());
@@ -1102,7 +1144,12 @@ impl<'a> Gen<'a> {
             if n == 0 {
                 continue;
             }
-            if let Expr::Ident { sym: Some(from), builtin: None, .. } = arg {
+            if let Expr::Ident {
+                sym: Some(from),
+                builtin: None,
+                ..
+            } = arg
+            {
                 let info = &self.checked.syms[*from];
                 let plain = self.cd_words.contains(from)
                     && !info.mutable

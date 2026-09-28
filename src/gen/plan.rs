@@ -101,7 +101,8 @@ impl<'a> Gen<'a> {
             tail_blobs: Vec::new(),
         };
         // Immutables are never in memory, so the image has no words for them.
-        let leaves = (g.checked.leaves - (g.checked.transient_from - g.checked.immutable_from)) as u32;
+        let leaves =
+            (g.checked.leaves - (g.checked.transient_from - g.checked.immutable_from)) as u32;
         g.image = g.region(Region::Image, leaves * 32);
         g.dirty = g.region(Region::Dirty, leaves * 32);
         let mut local = vec![-1; g.checked.syms.len()];
@@ -301,7 +302,12 @@ impl<'a> Gen<'a> {
     }
 
     /// Whether any statement or expression in a function, or in what it calls, is `bad`.
-    pub(super) fn func_any(&self, idx: usize, bad: &dyn Fn(Node<'_>) -> bool, seen: &mut Vec<usize>) -> bool {
+    pub(super) fn func_any(
+        &self,
+        idx: usize,
+        bad: &dyn Fn(Node<'_>) -> bool,
+        seen: &mut Vec<usize>,
+    ) -> bool {
         if seen.contains(&idx) {
             return false;
         }
@@ -311,7 +317,12 @@ impl<'a> Gen<'a> {
             || f.tail.as_ref().is_some_and(|e| self.expr_any(e, bad, seen))
     }
 
-    pub(super) fn stmt_any(&self, st: &Stmt, bad: &dyn Fn(Node<'_>) -> bool, seen: &mut Vec<usize>) -> bool {
+    pub(super) fn stmt_any(
+        &self,
+        st: &Stmt,
+        bad: &dyn Fn(Node<'_>) -> bool,
+        seen: &mut Vec<usize>,
+    ) -> bool {
         if bad(Node::Stmt(st)) {
             return true;
         }
@@ -329,7 +340,10 @@ impl<'a> Gen<'a> {
                 true
             }
             Stmt::Defer {
-                expr: e, value, gas, ..
+                expr: e,
+                value,
+                gas,
+                ..
             } => expr(e, seen) || value.iter().chain(gas).any(|v| expr(v, seen)),
             Stmt::Const { expr: e, .. }
             | Stmt::Var { expr: e, .. }
@@ -617,14 +631,20 @@ impl<'a> Gen<'a> {
         }
     }
 
-    pub(super) fn expr_any(&self, e: &Expr, bad: &dyn Fn(Node<'_>) -> bool, seen: &mut Vec<usize>) -> bool {
+    pub(super) fn expr_any(
+        &self,
+        e: &Expr,
+        bad: &dyn Fn(Node<'_>) -> bool,
+        seen: &mut Vec<usize>,
+    ) -> bool {
         if bad(Node::Expr(e)) {
             return true;
         }
         match e {
             Expr::Lit { .. } | Expr::Ident { .. } => false,
             Expr::Query { expr, gas, .. } => {
-                self.expr_any(expr, bad, seen) || gas.as_ref().is_some_and(|g| self.expr_any(g, bad, seen))
+                self.expr_any(expr, bad, seen)
+                    || gas.as_ref().is_some_and(|g| self.expr_any(g, bad, seen))
             }
             Expr::Unary { expr, .. } => self.expr_any(expr, bad, seen),
             Expr::Field { base, .. } => self.expr_any(base, bad, seen),
@@ -727,7 +747,7 @@ impl<'a> Gen<'a> {
             let Inst::Mem(addr) = inst else { continue };
             let ix = (addr >> REGION_SHIFT) as usize - 1;
             let direct = matches!(self.code.get(i + 1), Some(Inst::Op(MLOAD | MSTORE)));
-            if !direct || (addr & mask) % 32 != 0 {
+            if !direct || !(addr & mask).is_multiple_of(32) {
                 escapes[ix] = true;
             }
         }
@@ -795,12 +815,7 @@ impl<'a> Gen<'a> {
             .chain(
                 self.subs
                     .iter()
-                    .filter(|(sub, _, _)| {
-                        matches!(
-                            sub,
-                            Sub::StoreBytes | Sub::LoadBytes
-                        )
-                    })
+                    .filter(|(sub, _, _)| matches!(sub, Sub::StoreBytes | Sub::LoadBytes))
                     .map(|&(_, label, _)| label),
             )
             .collect();
@@ -931,41 +946,42 @@ impl<'a> Gen<'a> {
         // Each region goes to the lowest address no clashing region already holds, the first
         // `keep` where `prev` has them. A layout whose pushes cost `best` or more, or that puts
         // a region past `limit`'s highest start or end, is no use.
-        let place = |order: &[usize], prev: &[u64], keep: usize, best: u64, limit: &[(u64, u64)]| {
-            let mut base = vec![0u64; n];
-            // By start address.
-            let mut placed: Vec<(u64, u64, usize)> = Vec::with_capacity(order.len());
-            let (mut top, mut cost, mut rest) = (0u64, unplaced, lowest);
-            for (k, &i) in order.iter().enumerate() {
-                let len = lens[i];
-                let at = if k < keep {
-                    prev[i]
-                } else {
-                    let mut at = 0u64;
-                    for &(start, end, j) in &placed {
-                        if start >= at + len {
-                            break;
+        let place =
+            |order: &[usize], prev: &[u64], keep: usize, best: u64, limit: &[(u64, u64)]| {
+                let mut base = vec![0u64; n];
+                // By start address.
+                let mut placed: Vec<(u64, u64, usize)> = Vec::with_capacity(order.len());
+                let (mut top, mut cost, mut rest) = (0u64, unplaced, lowest);
+                for (k, &i) in order.iter().enumerate() {
+                    let len = lens[i];
+                    let at = if k < keep {
+                        prev[i]
+                    } else {
+                        let mut at = 0u64;
+                        for &(start, end, j) in &placed {
+                            if start >= at + len {
+                                break;
+                            }
+                            if end > at && clash[i * n + j] {
+                                at = end;
+                            }
                         }
-                        if end > at && clash[i * n + j] {
-                            at = end;
-                        }
+                        at
+                    };
+                    if at > limit[i].0 || at + len > limit[i].1 {
+                        return None;
                     }
-                    at
-                };
-                if at > limit[i].0 || at + len > limit[i].1 {
-                    return None;
+                    cost += cost_at(i, at);
+                    rest -= floor[i];
+                    if cost + rest >= best {
+                        return None;
+                    }
+                    base[i] = at;
+                    top = top.max(at + len);
+                    placed.insert(placed.partition_point(|&(s, ..)| s < at), (at, at + len, i));
                 }
-                cost += cost_at(i, at);
-                rest -= floor[i];
-                if cost + rest >= best {
-                    return None;
-                }
-                base[i] = at;
-                top = top.max(at + len);
-                placed.insert(placed.partition_point(|&(s, ..)| s < at), (at, at + len, i));
-            }
-            Some((base, top, cost))
-        };
+                Some((base, top, cost))
+            };
         // Memory a body touches costs it gas to expand: the highest end among its regions.
         let bodies: Vec<usize> = self
             .spaces
@@ -982,7 +998,9 @@ impl<'a> Gen<'a> {
         // region only its bodies use can share that space with other bodies' regions, so the
         // order by heat alone can waste it: move a region to the front or back when that shrinks
         // the pushes and grows no body's memory.
-        let pinned = order.first().map_or(0, |&i| usize::from(self.spaces[i].region == Region::Base64));
+        let pinned = order
+            .first()
+            .map_or(0, |&i| usize::from(self.spaces[i].region == Region::Base64));
         let (mut base, mut top, mut best) =
             place(&order, &[], 0, u64::MAX, &vec![(u64::MAX, u64::MAX); n]).expect("unbounded");
         let mut peak = vec![0u64; bodies.len() + 1];

@@ -2,7 +2,12 @@ use super::*;
 
 impl<'a> Gen<'a> {
     /// `call`: the arguments of a call, where a record goes as its fields.
-    pub(super) fn compile_abi_encode(&mut self, args: &[Expr], selector: Option<&Expr>, call: bool) -> Result<(), Error> {
+    pub(super) fn compile_abi_encode(
+        &mut self,
+        args: &[Expr],
+        selector: Option<&Expr>,
+        call: bool,
+    ) -> Result<(), Error> {
         // With no arguments the encoding is empty, or a selector alone.
         if args.is_empty() {
             match selector {
@@ -93,7 +98,10 @@ impl<'a> Gen<'a> {
             self.op(ADD);
             self.op(MSTORE);
         }
-        if !ready.iter().any(|&(_, ty)| bytes(self, ty) || list(self, ty)) {
+        if !ready
+            .iter()
+            .any(|&(_, ty)| bytes(self, ty) || list(self, ty))
+        {
             return Ok(());
         }
         // [cursor]: where the next tail goes.
@@ -148,7 +156,6 @@ impl<'a> Gen<'a> {
         self.op(POP);
         Ok(())
     }
-
 
     /// `[ptr]` becomes a list laid out as in the ABI: a copy with `bytesN` elements moved to
     /// the high bytes, strings and bytes encoded after their offsets, or the list itself
@@ -429,7 +436,6 @@ impl<'a> Gen<'a> {
         self.prepend_saved_selector()?;
         Ok(())
     }
-
 
     pub(super) fn compile_abi_decode(&mut self, data: &Expr, ty: usize) -> Result<(), Error> {
         let in_calldata =

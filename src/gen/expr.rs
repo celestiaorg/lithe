@@ -51,7 +51,8 @@ impl<'a> Gen<'a> {
         {
             // A fixed-size record, tuple, or fixed list compares its words.
             let lt = &self.checked.types[self.peel_nominal(left.ty())];
-            if (matches!(lt.kind, TyKind::Record | TyKind::Tuple) || (lt.kind == TyKind::List && lt.bits > 0))
+            if (matches!(lt.kind, TyKind::Record | TyKind::Tuple)
+                || (lt.kind == TyKind::List && lt.bits > 0))
                 && crate::check::is_static_value(&self.checked.types, left.ty())
             {
                 let words = u64::from(lt.words);
@@ -511,7 +512,7 @@ impl<'a> Gen<'a> {
             Builtin::Sha256 => return self.compile_hash(args, Some(2)),
             Builtin::Ripemd160 => return self.compile_hash(args, Some(3)),
             Builtin::Ecrecover => return self.compile_ecrecover(args),
-            Builtin::AbiEncode => return self.compile_abi_encode(&args[..], None, false),
+            Builtin::AbiEncode => return self.compile_abi_encode(args, None, false),
             Builtin::AbiEncodePacked => return self.compile_packed(args),
             Builtin::AbiEncodeSelector => {
                 return self.compile_abi_encode(&args[1..], Some(&args[0]), false);
@@ -553,7 +554,11 @@ impl<'a> Gen<'a> {
             }
             Builtin::FromBits(_) => self.compile_value(&args[0])?,
             Builtin::ListPop | Builtin::ListPush => {
-                return Err(error(line, col, "`List.pop` and `List.push` are statements"));
+                return Err(error(
+                    line,
+                    col,
+                    "`List.pop` and `List.push` are statements",
+                ));
             }
             Builtin::AbiSupportsInterface => {
                 self.compile_value(&args[0])?;
@@ -621,7 +626,13 @@ impl<'a> Gen<'a> {
             // `[len, data, start, end]`, checked as Solidity checks a calldata slice, then
             // copied to a blob of its own.
             Builtin::BytesSlice
-                if matches!(&args[0], Expr::Call { builtin: Some(Builtin::Code), .. }) =>
+                if matches!(
+                    &args[0],
+                    Expr::Call {
+                        builtin: Some(Builtin::Code),
+                        ..
+                    }
+                ) =>
             {
                 return self.code_slice(args);
             }
@@ -740,7 +751,11 @@ impl<'a> Gen<'a> {
                 let dst = &self.checked.types[self.peel_nominal(ty)];
                 let src = &self.checked.types[self.peel_nominal(arg.ty())];
                 // `bytesN(b)` takes the first N bytes of `b`, zero past its end.
-                if src.kind == TyKind::Bytes && src.bits == 0 && dst.kind == TyKind::Bytes && dst.bits > 0 {
+                if src.kind == TyKind::Bytes
+                    && src.bits == 0
+                    && dst.kind == TyKind::Bytes
+                    && dst.bits > 0
+                {
                     let n = u64::from(dst.bits);
                     self.bytes_span();
                     self.op(MLOAD);
@@ -768,7 +783,10 @@ impl<'a> Gen<'a> {
                 }
                 // Only a number can be out of range. `bytesN` and `address` come from values
                 // of their own width.
-                if !matches!(dst.kind, TyKind::Nat | TyKind::Int | TyKind::Wei | TyKind::Timestamp) {
+                if !matches!(
+                    dst.kind,
+                    TyKind::Nat | TyKind::Int | TyKind::Wei | TyKind::Timestamp
+                ) {
                     return Ok(());
                 }
                 let signed = dst.kind == TyKind::Int;
@@ -793,7 +811,11 @@ impl<'a> Gen<'a> {
     /// slice of the whole code is.
     fn code_slice(&mut self, args: &[Expr]) -> Result<(), Error> {
         let Expr::Call { args: code, .. } = &args[0] else {
-            return Err(error(args[0].line(), args[0].col(), "internal: not `Evm.code`"));
+            return Err(error(
+                args[0].line(),
+                args[0].col(),
+                "internal: not `Evm.code`",
+            ));
         };
         // [a, start, end, size], or [a, start, size]
         self.compile_value(&code[0])?;
@@ -852,8 +874,12 @@ impl<'a> Gen<'a> {
         // The hash of a literal, or of a contract's creation code, is a constant.
         if precompile.is_none() {
             let constant = match &args[0] {
-                Expr::Lit { lit: Lit::Str(s), .. } => Some(s.as_bytes().to_vec()),
-                Expr::Lit { lit: Lit::Bytes(b), .. } => Some(b.clone()),
+                Expr::Lit {
+                    lit: Lit::Str(s), ..
+                } => Some(s.as_bytes().to_vec()),
+                Expr::Lit {
+                    lit: Lit::Bytes(b), ..
+                } => Some(b.clone()),
                 Expr::Call {
                     builtin: Some(Builtin::CreationCode),
                     args: inner,
@@ -918,11 +944,17 @@ impl<'a> Gen<'a> {
             if !inner.is_empty() && inner.iter().all(fixed) {
                 let widths: Vec<u32> = inner
                     .iter()
-                    .map(|a| self.short_bytes_lit(a).map_or_else(|| self.packed_width(a.ty()), |(_, n)| n))
+                    .map(|a| {
+                        self.short_bytes_lit(a)
+                            .map_or_else(|| self.packed_width(a.ty()), |(_, n)| n)
+                    })
                     .collect();
                 let total: u32 = widths.iter().sum();
                 self.return_sites += 1;
-                let buf = self.region(Region::Returned(self.return_sites), total.div_ceil(32) * 32 + 32);
+                let buf = self.region(
+                    Region::Returned(self.return_sites),
+                    total.div_ceil(32) * 32 + 32,
+                );
                 let mut off = 0;
                 for (a, n) in inner.iter().zip(widths) {
                     match self.short_bytes_lit(a) {
@@ -1265,7 +1297,12 @@ impl<'a> Gen<'a> {
     }
 
     /// Writes an option to a named place, marking what it changes in storage.
-    pub(super) fn compile_option_store(&mut self, sym: usize, leaf: u32, expr: &Expr) -> Result<(), Error> {
+    pub(super) fn compile_option_store(
+        &mut self,
+        sym: usize,
+        leaf: u32,
+        expr: &Expr,
+    ) -> Result<(), Error> {
         let oty = self.type_at(self.checked.syms[sym].ty, leaf);
         self.write_option(expr, self.addr(sym, leaf), oty)?;
         for i in 0..self.checked.types[oty].words.max(1) {
@@ -1391,7 +1428,10 @@ impl<'a> Gen<'a> {
         col: u32,
         sink: Sink,
     ) -> Result<(), Error> {
-        if let Expr::Query { expr: call, gas, .. } = scrut {
+        if let Expr::Query {
+            expr: call, gas, ..
+        } = scrut
+        {
             self.query_gas = gas.as_deref().cloned();
             let result = self.compile_query_case(call, scrut.ty(), arms, line, col, sink);
             self.query_gas = None;
@@ -1412,7 +1452,10 @@ impl<'a> Gen<'a> {
             return Err(error(line, col, "case is not on a dispatched variant"));
         }
         // Without a binding only the tag matters, so only the tag is read.
-        if arms.iter().all(|arm| arm.bind_sym.is_none() && arm.tuple_syms.is_empty()) {
+        if arms
+            .iter()
+            .all(|arm| arm.bind_sym.is_none() && arm.tuple_syms.is_empty())
+        {
             self.compile_value(&self.tag_of(scrut))?;
             return self.compile_tag_case(sty, arms, None, sink);
         }
@@ -1422,7 +1465,12 @@ impl<'a> Gen<'a> {
     }
 
     /// `if c then a else b`, with each branch knowing whether `c` held.
-    fn compile_if(&mut self, cond: &Expr, arms: &[crate::ast::Arm], sink: Sink) -> Result<(), Error> {
+    fn compile_if(
+        &mut self,
+        cond: &Expr,
+        arms: &[crate::ast::Arm],
+        sink: Sink,
+    ) -> Result<(), Error> {
         let arm = |ctor: &str| arms.iter().find(|a| a.ctors[0] == ctor).unwrap();
         let else_l = self.fresh();
         let end_l = self.fresh();
@@ -1558,7 +1606,13 @@ impl<'a> Gen<'a> {
 
     /// Writes a variant with payloads: its tag, its case's payload, and zero in the words
     /// that payload leaves.
-    pub(super) fn write_ctor(&mut self, k: usize, payload: Option<&Expr>, dst: i32, ty: usize) -> Result<(), Error> {
+    pub(super) fn write_ctor(
+        &mut self,
+        k: usize,
+        payload: Option<&Expr>,
+        dst: i32,
+        ty: usize,
+    ) -> Result<(), Error> {
         let at = self.checked.types[ty].variants[k].at.clone();
         let used = at.len();
         if let Some(arg) = payload {
@@ -1585,10 +1639,20 @@ impl<'a> Gen<'a> {
             let at = dst + slot as i32 * 32;
             let (line, col) = (0, 0);
             if self.list_value(fty) {
-                let empty = Expr::List { line, col, elems: Vec::new(), ty: fty };
+                let empty = Expr::List {
+                    line,
+                    col,
+                    elems: Vec::new(),
+                    ty: fty,
+                };
                 self.write_value(&empty, at, fty)?;
             } else if self.is_dynamic(self.peel_nominal(fty)) {
-                let empty = Expr::Lit { line, col, lit: Lit::Str(String::new()), ty: fty };
+                let empty = Expr::Lit {
+                    line,
+                    col,
+                    lit: Lit::Str(String::new()),
+                    ty: fty,
+                };
                 self.write_value(&empty, at, fty)?;
             } else {
                 self.op(PUSH0);
@@ -1638,8 +1702,12 @@ impl<'a> Gen<'a> {
         col: u32,
         sink: Sink,
     ) -> Result<(), Error> {
-        let some = arms.iter().find(|arm| arm.ctors.iter().any(|c| c == "Some"));
-        let none = arms.iter().find(|arm| arm.ctors.iter().any(|c| c == "None"));
+        let some = arms
+            .iter()
+            .find(|arm| arm.ctors.iter().any(|c| c == "Some"));
+        let none = arms
+            .iter()
+            .find(|arm| arm.ctors.iter().any(|c| c == "None"));
         let (Some(some), Some(none)) = (some, none) else {
             return Err(error(line, col, "option case needs `Some` and `None`"));
         };

@@ -296,8 +296,8 @@ fn added_examples_match_runtime_results() {
     assert_eq!(load_bytes(&overflow.returndata, 4), Word::from_u64(0x11));
 
     let units_layout = leaves(include_str!("../../examples/units.lithe"));
-    let units =
-        deploy(&compile(include_str!("../../examples/units.lithe")).expect("units")).expect("deploy");
+    let units = deploy(&compile(include_str!("../../examples/units.lithe")).expect("units"))
+        .expect("deploy");
     let priced = call(&units, "set()", &[]);
     assert!(!priced.reverted, "{}", pretty(&priced.returndata));
     assert_eq!(
@@ -318,8 +318,8 @@ fn added_examples_match_runtime_results() {
     );
 
     let bytes_layout = leaves(include_str!("../../examples/bytes.lithe"));
-    let bytes =
-        deploy(&compile(include_str!("../../examples/bytes.lithe")).expect("bytes")).expect("deploy");
+    let bytes = deploy(&compile(include_str!("../../examples/bytes.lithe")).expect("bytes"))
+        .expect("deploy");
     let tagged = call(&bytes, "set()", &[]);
     assert!(!tagged.reverted, "{}", pretty(&tagged.returndata));
     assert_eq!(
@@ -329,8 +329,8 @@ fn added_examples_match_runtime_results() {
     assert_eq!(bytes_layout.get(&tagged.storage, 1), Word::from_u64(0x11));
     assert_eq!(bytes_layout.get(&tagged.storage, 2), Word::from_u64(0xab));
 
-    let named =
-        deploy(&compile(include_str!("../../examples/named.lithe")).expect("named")).expect("deploy");
+    let named = deploy(&compile(include_str!("../../examples/named.lithe")).expect("named"))
+        .expect("deploy");
     let who = Word::from_u64(0xcd);
     let configured = call(
         &named,

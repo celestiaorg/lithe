@@ -291,7 +291,8 @@ pub(super) fn check_storage_shape(types: &[RType], id: usize, at: &str) -> Resul
             let inner = types[peel_id(types, elem)].kind;
             if types[id].kind == TyKind::List
                 && (inner == TyKind::List
-                    || (matches!(inner, TyKind::Record | TyKind::Tuple) && !is_static_value(types, elem)))
+                    || (matches!(inner, TyKind::Record | TyKind::Tuple)
+                        && !is_static_value(types, elem)))
             {
                 return Err(error(
                     1,
@@ -304,7 +305,8 @@ pub(super) fn check_storage_shape(types: &[RType], id: usize, at: &str) -> Resul
             // A list of options, records, or tuples, or an option holding a record, tuple,
             // fixed list, or option.
             if inner == TyKind::Option
-                || (types[id].kind == TyKind::List && matches!(inner, TyKind::Record | TyKind::Tuple))
+                || (types[id].kind == TyKind::List
+                    && matches!(inner, TyKind::Record | TyKind::Tuple))
                 || (types[id].kind == TyKind::Option
                     && matches!(inner, TyKind::Record | TyKind::Tuple | TyKind::List)
                     && is_static_value(types, elem))

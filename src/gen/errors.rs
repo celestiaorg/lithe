@@ -130,10 +130,11 @@ impl<'a> Gen<'a> {
     fn revert_error(&mut self, sel: [u8; 4], args: &[&Expr]) -> Result<(), Error> {
         // The shared helper lays out lists of words; a list of strings or bytes has tails of
         // its own.
-        let blobs = |g: &Self, ty: usize| {
-            g.list_value(ty) && g.abi_dyn(g.list_elem(ty))
-        };
-        if args.iter().any(|arg| self.tree_part(arg.ty()) || blobs(self, arg.ty())) {
+        let blobs = |g: &Self, ty: usize| g.list_value(ty) && g.abi_dyn(g.list_elem(ty));
+        if args
+            .iter()
+            .any(|arg| self.tree_part(arg.ty()) || blobs(self, arg.ty()))
+        {
             return self.revert_tree(sel, args);
         }
         if args
@@ -229,13 +230,25 @@ impl<'a> Gen<'a> {
             .filter(|w| !w.is_zero());
             match (packed, arg) {
                 (Some(w), _) => self.push_word(w),
-                (None, Expr::Lit { lit: Lit::Str(s), .. }) if self.is_dynamic(ty) => {
-                    self.push_long_unpadded(s.as_bytes())?
-                }
-                (None, Expr::Lit { lit: Lit::Bytes(b), .. }) => self.push_long_unpadded(b)?,
-                (None, Expr::Lit { lit: Lit::Int(w, Some(64)), .. }) if self.is_dynamic(ty) => {
-                    self.push_long_unpadded(&w.to_be_bytes())?
-                }
+                (
+                    None,
+                    Expr::Lit {
+                        lit: Lit::Str(s), ..
+                    },
+                ) if self.is_dynamic(ty) => self.push_long_unpadded(s.as_bytes())?,
+                (
+                    None,
+                    Expr::Lit {
+                        lit: Lit::Bytes(b), ..
+                    },
+                ) => self.push_long_unpadded(b)?,
+                (
+                    None,
+                    Expr::Lit {
+                        lit: Lit::Int(w, Some(64)),
+                        ..
+                    },
+                ) if self.is_dynamic(ty) => self.push_long_unpadded(&w.to_be_bytes())?,
                 _ => self.compile_value(arg)?,
             }
             let kind = if packed.is_some() {
@@ -464,7 +477,10 @@ impl<'a> Gen<'a> {
         // Topics stay on the stack; data goes to memory in the order the fields are written.
         // Each `emit` has its own data words, so an `emit` inside a field's value cannot
         // overwrite them. The layout lets emits in different bodies share memory.
-        if schema.iter().any(|&(indexed, _, ty)| !indexed && self.tree_part(ty)) {
+        if schema
+            .iter()
+            .any(|&(indexed, _, ty)| !indexed && self.tree_part(ty))
+        {
             return self.emit_tree(&schema, fields, topic, n_topics);
         }
         let dynamic = schema

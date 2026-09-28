@@ -130,7 +130,9 @@ fn mentions_params(ty: &TypeRef, params: &[TypeParam]) -> bool {
                 .is_some_and(|payload| mentions_params(payload, params))
         }),
         TypeRef::List { elem, .. } | TypeRef::Option { elem, .. } => mentions_params(elem, params),
-        TypeRef::Map { key, val, .. } => mentions_params(key, params) || mentions_params(val, params),
+        TypeRef::Map { key, val, .. } => {
+            mentions_params(key, params) || mentions_params(val, params)
+        }
         TypeRef::Tuple { elems, .. } => elems.iter().any(|elem| mentions_params(elem, params)),
         TypeRef::Apply { args, .. } => args.iter().any(|arg| mentions_params(arg, params)),
         TypeRef::Hole { .. } => false,
@@ -148,7 +150,11 @@ pub(super) fn compose(prog: &mut Program) -> Result<(), Error> {
             ));
         }
     }
-    for module in prog.modules.iter().filter(|module| !module.params.is_empty()) {
+    for module in prog
+        .modules
+        .iter()
+        .filter(|module| !module.params.is_empty())
+    {
         if let Some(func) = module
             .funcs
             .iter()
@@ -300,7 +306,11 @@ pub(super) fn compose(prog: &mut Program) -> Result<(), Error> {
     for exposed in &exposes {
         let mut members = Vec::new();
         for named in &exposed.interfaces {
-            let Some(iface) = prog.interfaces.iter().find(|iface| iface.name == named.name) else {
+            let Some(iface) = prog
+                .interfaces
+                .iter()
+                .find(|iface| iface.name == named.name)
+            else {
                 return Err(error(
                     named.line,
                     named.col,
@@ -451,7 +461,11 @@ fn declared_entry(prog: &Program, module: &str, decl: Func) -> Result<Func, Erro
         several => {
             let shape: Vec<String> = decl.params.iter().map(|p| shape_ty(&p.ty)).collect();
             let found = several.iter().find(|func| {
-                func.params.iter().map(|p| shape_ty(&p.ty)).collect::<Vec<_>>() == shape
+                func.params
+                    .iter()
+                    .map(|p| shape_ty(&p.ty))
+                    .collect::<Vec<_>>()
+                    == shape
             });
             match found {
                 Some(func) => *func,
@@ -629,7 +643,10 @@ pub(super) type Supported = (NameAt, Vec<(String, [u8; 4], Vec<String>)>);
 /// methods, with the same result. An interface's id is the XOR of its methods' selectors.
 /// The contract is checked again with the function added. One that writes its own keeps it,
 /// and answers for the list with `Abi.supports_interface`.
-pub(super) fn supports_interface(mut checked: Checked, known: &[Supported]) -> Result<Checked, Error> {
+pub(super) fn supports_interface(
+    mut checked: Checked,
+    known: &[Supported],
+) -> Result<Checked, Error> {
     if known.is_empty() && !checked.asks_interfaces {
         return Ok(checked);
     }
@@ -666,8 +683,11 @@ pub(super) fn supports_interface(mut checked: Checked, known: &[Supported]) -> R
     for (named, methods) in known {
         let mut missing = Vec::new();
         for (sig, sel, ret) in methods {
-            let found: Vec<&Option<Vec<String>>> =
-                have.iter().filter(|(s, _)| s == sel).map(|(_, r)| r).collect();
+            let found: Vec<&Option<Vec<String>>> = have
+                .iter()
+                .filter(|(s, _)| s == sel)
+                .map(|(_, r)| r)
+                .collect();
             if found.iter().any(|r| r.as_ref().is_none_or(|r| r == ret)) {
                 continue;
             }
@@ -718,10 +738,15 @@ pub(super) fn supports_interface(mut checked: Checked, known: &[Supported]) -> R
     if known.is_empty() {
         return Ok(checked);
     }
-    let (line, col) = (checked.prog.contract_line.max(1), checked.prog.contract_col.max(1));
+    let (line, col) = (
+        checked.prog.contract_line.max(1),
+        checked.prog.contract_col.max(1),
+    );
     let mut source = checked.source.clone();
     let supports = std::mem::take(&mut source.supports);
-    source.funcs.push(erc165_func(line, col, &source.origin, &ids));
+    source
+        .funcs
+        .push(erc165_func(line, col, &source.origin, &ids));
     let mut again = check(source)?;
     again.source.supports = supports;
     again.interface_ids = ids;

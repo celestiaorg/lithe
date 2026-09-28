@@ -184,11 +184,18 @@ fn load_inner(sources: &Sources, path: &Path, stack: &mut Vec<Frame>) -> Result<
                 return Err(error(
                     decl.line,
                     decl.col,
-                    format!("`{}` defines contracts; import it without an alias", decl.path),
+                    format!(
+                        "`{}` defines contracts; import it without an alias",
+                        decl.path
+                    ),
                 ));
             }
             for unit in split_units(child) {
-                if let Some(name) = unit.contract_name.as_ref().filter(|n| own_names.contains(n)) {
+                if let Some(name) = unit
+                    .contract_name
+                    .as_ref()
+                    .filter(|n| own_names.contains(n))
+                {
                     return Err(error(
                         decl.line,
                         decl.col,
@@ -642,7 +649,9 @@ fn rewrite_raised(reason: &mut Raised, map: &HashMap<String, String>) {
 fn rewrite_expr(expr: &mut Expr, map: &HashMap<String, String>) {
     match expr {
         Expr::Lit { .. } | Expr::Ident { .. } => {}
-        Expr::Query { expr: base, gas, .. } => {
+        Expr::Query {
+            expr: base, gas, ..
+        } => {
             rewrite_expr(base, map);
             if let Some(gas) = gas {
                 rewrite_expr(gas, map);
@@ -785,8 +794,7 @@ fn absorb(
     src.modules.retain(|decl| !present.contains(&decl.origin));
     src.interfaces
         .retain(|decl| !present.contains(&decl.origin));
-    if alias.is_some() {
-        let alias = alias.unwrap();
+    if let Some(alias) = alias {
         let mut map = HashMap::new();
         for decl in &src.types {
             if !decl.private {
@@ -1015,7 +1023,10 @@ fn absorb_decls(
                 external(have.kind) == external(func.kind) && shape(have) != shape(&func)
             });
         let single = |kind: ItemKind| {
-            matches!(kind, ItemKind::Deploy | ItemKind::Receive | ItemKind::Fallback)
+            matches!(
+                kind,
+                ItemKind::Deploy | ItemKind::Receive | ItemKind::Fallback
+            )
         };
         if let Some(have) = dst.funcs.iter().find(|have| have.name == public_name) {
             let (line, col) = at(via, func.line, func.col);
@@ -1030,7 +1041,9 @@ fn absorb_decls(
                 return Err(error(
                     line,
                     col,
-                    format!("the contract declares `{public_name}`, so no function can take that name"),
+                    format!(
+                        "the contract declares `{public_name}`, so no function can take that name"
+                    ),
                 ));
             }
         }

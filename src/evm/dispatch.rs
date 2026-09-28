@@ -42,7 +42,11 @@ fn entries(plain: usize, payable: usize, extra: &str) -> (String, Vec<(String, u
 fn tables(runtime: &[u8]) -> Vec<usize> {
     runtime
         .windows(4)
-        .filter_map(|w| [4, 8].into_iter().find(|&b| w == [0x60, ((b - 1) << 4) as u8, 0x16, 0x5f + 2 * b as u8]))
+        .filter_map(|w| {
+            [4, 8]
+                .into_iter()
+                .find(|&b| w == [0x60, ((b - 1) << 4) as u8, 0x16, 0x5f + 2 * b as u8])
+        })
         .collect()
 }
 
@@ -76,11 +80,20 @@ fn check_dispatch(runtime: &[u8], sigs: &[(String, u64, bool)], missed: impl Fn(
 
 #[test]
 fn dispatch_shapes_hit_and_miss() {
-    for (plain, shape) in [(4, vec![]), (16, vec![]), (17, vec![4]), (30, vec![4]), (31, vec![8]), (40, vec![8])] {
+    for (plain, shape) in [
+        (4, vec![]),
+        (16, vec![]),
+        (17, vec![4]),
+        (30, vec![4]),
+        (31, vec![8]),
+        (40, vec![8]),
+    ] {
         let (src, sigs) = entries(plain, 0, "");
         let runtime = deploy(&compile(&src).expect("compile")).expect("deploy");
         assert_eq!(tables(&runtime), shape, "{plain} entrypoints");
-        check_dispatch(&runtime, &sigs, |data, out| assert!(out.reverted, "{data:?}"));
+        check_dispatch(&runtime, &sigs, |data, out| {
+            assert!(out.reverted, "{data:?}")
+        });
         // Short calldata never matches, even the selector it reads as.
         let zero = selector(&sigs[0].0);
         assert!(run(&runtime, &zero[..3], 0).reverted);
@@ -117,11 +130,18 @@ fallback : bytes is { skip } with Evm.calldata()";
 #[test]
 fn dispatch_shapes_split_payable_entries() {
     // Payable entries dispatch first: a miss among them still reaches the others.
-    for (plain, payable, shape) in [(3, 20, vec![4]), (20, 3, vec![4]), (20, 20, vec![4, 4]), (18, 33, vec![8, 4])] {
+    for (plain, payable, shape) in [
+        (3, 20, vec![4]),
+        (20, 3, vec![4]),
+        (20, 20, vec![4, 4]),
+        (18, 33, vec![8, 4]),
+    ] {
         let (src, sigs) = entries(plain, payable, "");
         let runtime = deploy(&compile(&src).expect("compile")).expect("deploy");
         assert_eq!(tables(&runtime), shape, "{plain} and {payable} payable");
-        check_dispatch(&runtime, &sigs, |data, out| assert!(out.reverted, "{data:?}"));
+        check_dispatch(&runtime, &sigs, |data, out| {
+            assert!(out.reverted, "{data:?}")
+        });
         assert!(run(&runtime, &[0xde, 0xad, 0xbe, 0xef], 1).reverted);
     }
     // With a payable fallback, value to an entrypoint that is not payable is still refused.

@@ -421,7 +421,11 @@ fn generics_specialize_sets() {
             Word::from_u64(0),
         )
         .expect(sig);
-        assert_eq!(load_bytes(&got.returndata, 0), Word::from_u64(want), "{sig}");
+        assert_eq!(
+            load_bytes(&got.returndata, 0),
+            Word::from_u64(want),
+            "{sig}"
+        );
     }
 
     let mixed = r#"
@@ -644,8 +648,9 @@ use Vault_ops exposing {{
     );
     let err = compile(&src).expect_err("an external is not callable");
     assert!(
-        err.to_string()
-            .contains("external function `Vault_ops.withdraw` cannot be called from inside the contract"),
+        err.to_string().contains(
+            "external function `Vault_ops.withdraw` cannot be called from inside the contract"
+        ),
         "{err}"
     );
 }
@@ -863,9 +868,16 @@ fn types_reject_implicit_conversions() {
     for sig in ["fee_from(address,uint256)", "has_fee(address,uint256)"] {
         let out = call(&runtime, sig, &[echo, Word::from_u64(500)]);
         assert!(!out.reverted, "{sig}");
-        assert!(call(&runtime, sig, &[echo, Word::from_u64(70_000)]).reverted, "{sig}");
+        assert!(
+            call(&runtime, sig, &[echo, Word::from_u64(70_000)]).reverted,
+            "{sig}"
+        );
     }
-    let out = call(&runtime, "fee_from(address,uint256)", &[echo, Word::from_u64(500)]);
+    let out = call(
+        &runtime,
+        "fee_from(address,uint256)",
+        &[echo, Word::from_u64(500)],
+    );
     assert_eq!(load_bytes(&out.returndata, 0), Word::from_u64(500));
 }
 
@@ -1299,7 +1311,10 @@ contract Token is {
     let pinger = deploy(&compile_file(&pinger_path).expect("pinger")).expect("deploy");
     let relay = exec(
         &pinger,
-        &word_data("relay(address,uint256)", &[Word::from_u64(0xcd), Word::from_u64(9)]),
+        &word_data(
+            "relay(address,uint256)",
+            &[Word::from_u64(0xcd), Word::from_u64(9)],
+        ),
         HashMap::new(),
         Word::from_u64(1),
         Word::from_u64(0),
@@ -1307,7 +1322,10 @@ contract Token is {
     )
     .expect("relay");
     assert!(!relay.reverted, "{}", pretty(&relay.returndata));
-    assert!(relay.detail.join("\n").contains(&hex(&selector("ping(uint256)"))));
+    assert!(relay
+        .detail
+        .join("\n")
+        .contains(&hex(&selector("ping(uint256)"))));
 
     let votes_path =
         std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples/votes.lithe");

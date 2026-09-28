@@ -120,14 +120,21 @@ fn nested_storage_lays_out_like_solidity() {
     let at = |st: &HashMap<Word, Word>, key: Word| st.get(&key).copied().unwrap_or(n(0));
     let elems = |slot: Word| Word::from_be_bytes(keccak256(&slot.to_be_bytes()));
     let point = |key: u64, value: u64| n(value).shl(48).wrapping_add(n(key));
-    let run = |st: &HashMap<Word, Word>, sig: &str, args: &[Word]| run_ok(&rt, st, sig, args).storage;
+    let run =
+        |st: &HashMap<Word, Word>, sig: &str, args: &[Word]| run_ok(&rt, st, sig, args).storage;
     let read = |st: &HashMap<Word, Word>, sig: &str, args: &[Word]| read_ok(&rt, st, sig, args);
     let call = |st: &HashMap<Word, Word>, data: Vec<u8>| {
         exec(&rt, &data, st.clone(), n(1), n(0), n(0)).expect("exec")
     };
-    let reverts = |st: &HashMap<Word, Word>, sig: &str, args: &[Word]| call(st, word_data(sig, args)).reverted;
+    let reverts = |st: &HashMap<Word, Word>, sig: &str, args: &[Word]| {
+        call(st, word_data(sig, args)).reverted
+    };
 
-    let st = run(&HashMap::new(), "note(address,uint48,uint208)", &[n(2), n(10), n(5)]);
+    let st = run(
+        &HashMap::new(),
+        "note(address,uint48,uint208)",
+        &[n(2), n(10), n(5)],
+    );
     let st = run(&st, "note(address,uint48,uint208)", &[n(2), n(10), n(7)]);
     let st = run(&st, "note(address,uint48,uint208)", &[n(3), n(11), n(1)]);
     let st = run(&st, "record_total(uint48,uint208)", &[n(12), n(100)]);
@@ -144,11 +151,18 @@ fn nested_storage_lays_out_like_solidity() {
     let out = run_ok(&rt, &st, "total_at(uint256)", &[n(1)]).returndata;
     assert_eq!((load_bytes(&out, 0), load_bytes(&out, 32)), (n(11), n(13)));
     assert!(reverts(&st, "total_at(uint256)", &[n(3)]));
-    assert_eq!(read(&st, "history_value(address,uint256)", &[n(2), n(0)]), n(7));
+    assert_eq!(
+        read(&st, "history_value(address,uint256)", &[n(2), n(0)]),
+        n(7)
+    );
     assert_eq!(read(&st, "newest(address)", &[n(3)]), n(1));
     assert_eq!(read(&st, "newest(address)", &[n(9)]), n(0));
     assert_eq!(read(&st, "history_count(address)", &[n(9)]), n(0));
-    assert!(reverts(&st, "history_value(address,uint256)", &[n(9), n(0)]));
+    assert!(reverts(
+        &st,
+        "history_value(address,uint256)",
+        &[n(9), n(0)]
+    ));
 
     let popped = run(&st, "pop(address)", &[n(2)]);
     assert_eq!(at(&popped, history(2)), n(0));
@@ -170,11 +184,22 @@ fn nested_storage_lays_out_like_solidity() {
     assert_eq!(at(&restarted, total.wrapping_add(n(2))), n(0));
 
     // Through the journal: a query first, then the same pushes land in the same slots.
-    let priced = run(&st, "note_priced(address,address,uint48)", &[n(2), n(3), n(11)]);
+    let priced = run(
+        &st,
+        "note_priced(address,address,uint48)",
+        &[n(2), n(3), n(11)],
+    );
     assert_eq!(at(&priced, elems(history(3))), point(11, 77));
-    let priced = run(&priced, "note_priced(address,address,uint48)", &[n(2), n(3), n(12)]);
+    let priced = run(
+        &priced,
+        "note_priced(address,address,uint48)",
+        &[n(2), n(3), n(12)],
+    );
     assert_eq!(at(&priced, history(3)), n(2));
-    assert_eq!(at(&priced, elems(history(3)).wrapping_add(n(1))), point(12, 77));
+    assert_eq!(
+        at(&priced, elems(history(3)).wrapping_add(n(1))),
+        point(12, 77)
+    );
     let role1 = map_key(n(1), n(2));
     assert_eq!(at(&priced, map_key(n(3), role1)), n(1));
 
@@ -188,7 +213,13 @@ fn nested_storage_lays_out_like_solidity() {
     assert_eq!(read(&st, "member(bytes32,address)", &[role, n(3)]), n(0));
     assert_eq!(read(&st, "admin(bytes32)", &[role]), n(0xdef));
 
-    let named = call(&st, encode_args("name(uint256,string)", &[Arg::W(n(7)), Arg::B(b"alice".to_vec())]));
+    let named = call(
+        &st,
+        encode_args(
+            "name(uint256,string)",
+            &[Arg::W(n(7)), Arg::B(b"alice".to_vec())],
+        ),
+    );
     assert!(!named.reverted);
     let account = map_key(n(7), n(3));
     let mut short = [0u8; 32];
@@ -196,9 +227,18 @@ fn nested_storage_lays_out_like_solidity() {
     short[31] = 10;
     assert_eq!(at(&named.storage, account), Word::from_be_bytes(short));
     let long = "a name well past thirty one bytes long".as_bytes();
-    let renamed = call(&named.storage, encode_args("name(uint256,string)", &[Arg::W(n(7)), Arg::B(long.to_vec())]));
+    let renamed = call(
+        &named.storage,
+        encode_args(
+            "name(uint256,string)",
+            &[Arg::W(n(7)), Arg::B(long.to_vec())],
+        ),
+    );
     assert_eq!(at(&renamed.storage, account), n(long.len() as u64 * 2 + 1));
-    assert_eq!(read(&renamed.storage, "name_length(uint256)", &[n(7)]), n(long.len() as u64));
+    assert_eq!(
+        read(&renamed.storage, "name_length(uint256)", &[n(7)]),
+        n(long.len() as u64)
+    );
     let out = run_ok(&rt, &renamed.storage, "name_of(uint256)", &[n(7)]).returndata;
     assert_eq!(&out[64..64 + long.len()], long);
     let st = run(&named.storage, "tag(uint256,uint256)", &[n(7), n(42)]);
@@ -226,20 +266,39 @@ fn nested_storage_lays_out_like_solidity() {
     let out = run_ok(&rt, &counted, "counts(address)", &[n(2)]).returndata;
     assert_eq!((load_bytes(&out, 32), load_bytes(&out, 64)), (n(1), n(9)));
 
-    assert_eq!(read(&HashMap::new(), "locals(uint208)", &[n(9)]), n(10_001_012));
+    assert_eq!(
+        read(&HashMap::new(), "locals(uint208)", &[n(9)]),
+        n(10_001_012)
+    );
 
     // A fixed list of records from slot 5, each element a slot, directly and in the image.
-    let fixed = run(&HashMap::new(), "set_fixed(uint256,uint48,uint208)", &[n(1), n(4), n(9)]);
+    let fixed = run(
+        &HashMap::new(),
+        "set_fixed(uint256,uint48,uint208)",
+        &[n(1), n(4), n(9)],
+    );
     assert_eq!(slot(&fixed, 6), point(4, 10));
-    let fixed = run(&fixed, "set_fixed_priced(address,uint256,uint48)", &[n(2), n(1), n(8)]);
+    let fixed = run(
+        &fixed,
+        "set_fixed_priced(address,uint256,uint48)",
+        &[n(2), n(1), n(8)],
+    );
     assert_eq!(slot(&fixed, 6), point(8, 15));
-    let fixed = run(&fixed, "set_fixed_priced(address,uint256,uint48)", &[n(2), n(2), n(3)]);
+    let fixed = run(
+        &fixed,
+        "set_fixed_priced(address,uint256,uint48)",
+        &[n(2), n(2), n(3)],
+    );
     assert_eq!(slot(&fixed, 7), point(3, 5));
     let out = run_ok(&rt, &fixed, "fixed_at(uint256)", &[n(1)]).returndata;
     assert_eq!((load_bytes(&out, 0), load_bytes(&out, 32)), (n(8), n(15)));
     assert_eq!(read(&fixed, "fixed_key(uint256)", &[n(2)]), n(3));
     assert!(reverts(&fixed, "fixed_at(uint256)", &[n(3)]));
-    assert!(reverts(&fixed, "set_fixed_priced(address,uint256,uint48)", &[n(2), n(3), n(1)]));
+    assert!(reverts(
+        &fixed,
+        "set_fixed_priced(address,uint256,uint48)",
+        &[n(2), n(3), n(1)]
+    ));
 
     // A record with strings in a map, from slot `keccak(id . 8)`: the name, the age, then
     // the inner record's slots.
@@ -258,7 +317,10 @@ fn nested_storage_lays_out_like_solidity() {
     short[31] = 4;
     assert_eq!(at(&carded.storage, card), Word::from_be_bytes(short));
     assert_eq!(at(&carded.storage, card.wrapping_add(n(1))), n(3));
-    assert_eq!(at(&carded.storage, card.wrapping_add(n(2))), n(long.len() as u64 * 2 + 1));
+    assert_eq!(
+        at(&carded.storage, card.wrapping_add(n(2))),
+        n(long.len() as u64 * 2 + 1)
+    );
     assert_eq!(at(&carded.storage, card.wrapping_add(n(3))), n(9));
     // The record's fields are its results; the inner record is one, a tuple.
     let out = run_ok(&rt, &carded.storage, "card_of(uint256)", &[n(4)]).returndata;
@@ -349,7 +411,7 @@ fn named_storage_and_upgrade_migrate_once() {
     assert!(direct.reverted, "migrate is not a public entry");
     let uuid = exec(
         &runtime,
-        &selector("proxiableUUID()").to_vec(),
+        selector("proxiableUUID()").as_ref(),
         HashMap::new(),
         owner,
         Word::from_u64(0),
@@ -504,13 +566,21 @@ external view function total() : nat is {
 /// `examples/string_maps.lithe` keeps long values in maps and lists.
 #[test]
 fn string_maps_example_keeps_long_values() {
-    let runtime = deploy(&compile(include_str!("../../examples/string_maps.lithe")).expect("compile"))
-        .expect("deploy");
+    let runtime =
+        deploy(&compile(include_str!("../../examples/string_maps.lithe")).expect("compile"))
+            .expect("deploy");
     let w = Word::from_u64;
     let mut storage = HashMap::new();
     let mut send = |sig: &str, args: &[Arg]| {
-        let out = exec(&runtime, &encode_args(sig, args), storage.clone(), w(7), w(0), w(0))
-            .expect(sig);
+        let out = exec(
+            &runtime,
+            &encode_args(sig, args),
+            storage.clone(),
+            w(7),
+            w(0),
+            w(0),
+        )
+        .expect(sig);
         assert!(!out.reverted, "{sig}: {}", pretty(&out.returndata));
         storage = out.storage;
         out.returndata
@@ -521,11 +591,23 @@ fn string_maps_example_keeps_long_values() {
     for e in &entries {
         send("append(string)", &[Arg::B(e.clone())]);
     }
-    send("amend(uint256,string)", &[Arg::W(w(2)), Arg::B(vec![b'd'; 33])]);
+    send(
+        "amend(uint256,string)",
+        &[Arg::W(w(2)), Arg::B(vec![b'd'; 33])],
+    );
     let hash = Word::from_be_bytes(keccak256(&file));
-    assert_eq!(abi_string_value(&send("file(bytes32)", &[Arg::W(hash)])), file);
-    assert_eq!(abi_string_value(&send("entry(uint256)", &[Arg::W(w(0))])), entries[0]);
-    assert_eq!(abi_string_value(&send("entry(uint256)", &[Arg::W(w(2))])), vec![b'd'; 33]);
+    assert_eq!(
+        abi_string_value(&send("file(bytes32)", &[Arg::W(hash)])),
+        file
+    );
+    assert_eq!(
+        abi_string_value(&send("entry(uint256)", &[Arg::W(w(0))])),
+        entries[0]
+    );
+    assert_eq!(
+        abi_string_value(&send("entry(uint256)", &[Arg::W(w(2))])),
+        vec![b'd'; 33]
+    );
     assert_eq!(load_bytes(&send("logged()", &[]), 0), w(45 + 3 + 33));
 }
 
@@ -567,7 +649,10 @@ external function journaled(const me : Me) is {
     for len in [0usize, 1, 31, 32, 33, 64, 127, 128, 200, 5] {
         let out = exec(
             &runtime,
-            &encode_args("put(bytes,string)", &[Arg::B(vec![0x61; len]), Arg::B(vec![0x62; len])]),
+            &encode_args(
+                "put(bytes,string)",
+                &[Arg::B(vec![0x61; len]), Arg::B(vec![0x62; len])],
+            ),
             storage,
             w(7),
             w(0),
@@ -577,15 +662,39 @@ external function journaled(const me : Me) is {
         assert!(!out.reverted, "put {len}: {}", pretty(&out.returndata));
         storage = out.storage;
         total += len;
-        let got = exec(&runtime, &word_data("lengths()", &[]), storage.clone(), w(7), w(0), w(0))
-            .expect("lengths");
-        let words: Vec<Word> = (0..6).map(|i| load_bytes(&got.returndata, 32 * i)).collect();
+        let got = exec(
+            &runtime,
+            &word_data("lengths()", &[]),
+            storage.clone(),
+            w(7),
+            w(0),
+            w(0),
+        )
+        .expect("lengths");
+        let words: Vec<Word> = (0..6)
+            .map(|i| load_bytes(&got.returndata, 32 * i))
+            .collect();
         let n = w(len as u64);
-        assert_eq!(words, [n, n, n, n, w(total as u64), w((len == 0) as u64)], "{len}");
+        assert_eq!(
+            words,
+            [n, n, n, n, w(total as u64), w((len == 0) as u64)],
+            "{len}"
+        );
         if len > 0 {
-            let got = exec(&runtime, &word_data("last()", &[]), storage.clone(), w(7), w(0), w(0))
-                .expect("last");
-            assert_eq!(abi_string_value(&got.returndata), vec![0x62; len], "last {len}");
+            let got = exec(
+                &runtime,
+                &word_data("last()", &[]),
+                storage.clone(),
+                w(7),
+                w(0),
+                w(0),
+            )
+            .expect("last");
+            assert_eq!(
+                abi_string_value(&got.returndata),
+                vec![0x62; len],
+                "last {len}"
+            );
         }
         let out = exec(
             &runtime,
@@ -596,7 +705,11 @@ external function journaled(const me : Me) is {
             w(0),
         )
         .expect("journaled");
-        assert!(!out.reverted, "journaled {len}: {}", pretty(&out.returndata));
+        assert!(
+            !out.reverted,
+            "journaled {len}: {}",
+            pretty(&out.returndata)
+        );
         assert_eq!(slot(&out.storage, 4), w(3 * len as u64), "journaled {len}");
     }
 }

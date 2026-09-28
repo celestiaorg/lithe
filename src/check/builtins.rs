@@ -217,7 +217,14 @@ impl Checker {
             | Builtin::Base64EncodeUrl
             | Builtin::Base64EncodeWith
             | Builtin::Base64Decode => {
-                need(args.len(), if kind == Builtin::Base64EncodeWith { 3 } else { 1 })?;
+                need(
+                    args.len(),
+                    if kind == Builtin::Base64EncodeWith {
+                        3
+                    } else {
+                        1
+                    },
+                )?;
                 self.check_expr(&mut args[0])?;
                 if !self.is_dyn_ty(args[0].ty()) {
                     return Err(error(
@@ -442,7 +449,11 @@ impl Checker {
             }
             Builtin::FromBits(signed) => {
                 need(args.len(), 1)?;
-                let (src, dst) = if signed { (TY_NAT, TY_INT) } else { (TY_INT, TY_NAT) };
+                let (src, dst) = if signed {
+                    (TY_NAT, TY_INT)
+                } else {
+                    (TY_INT, TY_NAT)
+                };
                 self.check_expr_as(&mut args[0], Some(src))?;
                 if !self.same(args[0].ty(), src) {
                     return Err(error(
@@ -759,9 +770,7 @@ impl Checker {
             | Builtin::Create
             | Builtin::RawCreate
             | Builtin::RawCall
-            | Builtin::DelegateCall => {
-                TY_OPERATION
-            }
+            | Builtin::DelegateCall => TY_OPERATION,
         })
     }
 }

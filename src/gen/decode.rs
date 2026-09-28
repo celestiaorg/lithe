@@ -11,9 +11,15 @@ impl<'a> Gen<'a> {
         self.check_head(head_words)?;
         let init_sites = params
             .iter()
-            .filter_map(|p| p.sym.filter(|&sym| !self.checked.syms[sym].storage).map(|sym| (p, sym)))
+            .filter_map(|p| {
+                p.sym
+                    .filter(|&sym| !self.checked.syms[sym].storage)
+                    .map(|sym| (p, sym))
+            })
             .filter(|(p, sym)| {
-                self.is_dynamic(p.ty_id) && !self.list_value(p.ty_id) && !self.only_decoded(func, *sym)
+                self.is_dynamic(p.ty_id)
+                    && !self.list_value(p.ty_id)
+                    && !self.only_decoded(func, *sym)
             })
             .count();
         let mut head = 0u32;
@@ -61,7 +67,9 @@ impl<'a> Gen<'a> {
                 head += self.decode_arg(sym, p.ty_id, head)?;
                 continue;
             }
-            let elem = self.checked.types[self.peel_nominal(p.ty_id)].elem.unwrap_or(0);
+            let elem = self.checked.types[self.peel_nominal(p.ty_id)]
+                .elem
+                .unwrap_or(0);
             // A list stays in calldata when its elements need no check, or when a loop the
             // function always runs checks each one as it reads it. Checking them all up
             // front costs as much as decoding, so such a list is decoded instead.
@@ -117,7 +125,9 @@ impl<'a> Gen<'a> {
         let (uses, decoded) = (std::cell::Cell::new(0), std::cell::Cell::new(0));
         let count = |node: Node<'_>| {
             match node {
-                Node::Expr(Expr::Ident { sym: Some(s), .. }) if *s == sym => uses.set(uses.get() + 1),
+                Node::Expr(Expr::Ident { sym: Some(s), .. }) if *s == sym => {
+                    uses.set(uses.get() + 1)
+                }
                 Node::Expr(Expr::Call {
                     builtin: Some(Builtin::AbiDecode),
                     args,
@@ -125,7 +135,9 @@ impl<'a> Gen<'a> {
                 }) if matches!(args.first(), Some(Expr::Ident { sym: Some(s), .. }) if *s == sym) => {
                     decoded.set(decoded.get() + 1)
                 }
-                Node::Stmt(Stmt::Assign { root: Some(s), .. }) if *s == sym => uses.set(usize::MAX / 2),
+                Node::Stmt(Stmt::Assign { root: Some(s), .. }) if *s == sym => {
+                    uses.set(usize::MAX / 2)
+                }
                 _ => {}
             }
             false
@@ -171,12 +183,18 @@ impl<'a> Gen<'a> {
             _ => false,
         };
         let f = &self.checked.prog.funcs[func];
-        let always = f.stmts.iter().any(|s| {
-            matches!(s, Stmt::For { until: None, elem_init, .. } if over(elem_init))
-        });
+        let always = f
+            .stmts
+            .iter()
+            .any(|s| matches!(s, Stmt::For { until: None, elem_init, .. } if over(elem_init)));
         always
-            && !(f.stmts.iter().any(|s| self.stmt_any(s, &stops, &mut Vec::new()))
-                || f.tail.as_ref().is_some_and(|e| self.expr_any(e, &stops, &mut Vec::new())))
+            && !(f
+                .stmts
+                .iter()
+                .any(|s| self.stmt_any(s, &stops, &mut Vec::new()))
+                || f.tail
+                    .as_ref()
+                    .is_some_and(|e| self.expr_any(e, &stops, &mut Vec::new())))
     }
 
     pub(super) fn stmt_uses(&self, st: &Stmt, sym: usize, other: &mut bool) {
@@ -214,7 +232,6 @@ impl<'a> Gen<'a> {
             } => {
                 index.iter().chain(keys).for_each(&mut e);
                 e(expr);
-                drop(e);
                 *other |= *root == Some(sym);
             }
             Stmt::If {
@@ -247,9 +264,7 @@ impl<'a> Gen<'a> {
                 until.iter().chain(bound).chain(length).for_each(&mut e);
                 // Walking the list is what calldata is for; the index is checked on its own.
                 match elem_init {
-                    Some(Expr::Index { base, index, .. })
-                        if matches!(base.as_ref(), Expr::Ident { sym: Some(s), .. } if *s == sym) =>
-                    {
+                    Some(Expr::Index { base, index, .. }) if matches!(base.as_ref(), Expr::Ident { sym: Some(s), .. } if *s == sym) => {
                         e(index)
                     }
                     Some(init) => e(init),
@@ -796,7 +811,7 @@ impl<'a> Gen<'a> {
             // A variant keeps its type: its cases bound the word, not its `uint8`.
             _ if self.enum_cases(ty).is_some() => out.push(Some(ty)),
             _ if t.words == 1 && self.is_word_ty(id) => out.push(Some(id)),
-            _ => out.extend(std::iter::repeat(None).take(t.words as usize)),
+            _ => out.extend(std::iter::repeat_n(None, t.words as usize)),
         }
     }
 

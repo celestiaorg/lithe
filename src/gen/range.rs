@@ -78,7 +78,9 @@ fn same_value(a: &Expr, b: &Expr) -> bool {
                 ..
             },
         ) => p == q && same_value(l1, l2) && same_value(r1, r2),
-        (Expr::Unary { op: p, expr: x, .. }, Expr::Unary { op: q, expr: y, .. }) => p == q && same_value(x, y),
+        (Expr::Unary { op: p, expr: x, .. }, Expr::Unary { op: q, expr: y, .. }) => {
+            p == q && same_value(x, y)
+        }
         (
             Expr::Call {
                 builtin: Some(Builtin::Cast),
@@ -98,8 +100,16 @@ fn same_value(a: &Expr, b: &Expr) -> bool {
 impl<'a> Gen<'a> {
     /// Records what `cond` evaluating to `holds` proves, until the caller truncates `facts`.
     pub(super) fn assume(&mut self, cond: &Expr, holds: bool) {
-        let Expr::Binary { op, left, right, .. } = cond else {
-            if let Expr::Unary { op: UnOp::Not, expr, .. } = cond {
+        let Expr::Binary {
+            op, left, right, ..
+        } = cond
+        else {
+            if let Expr::Unary {
+                op: UnOp::Not,
+                expr,
+                ..
+            } = cond
+            {
                 self.assume(expr, !holds);
             }
             return;
@@ -114,7 +124,10 @@ impl<'a> Gen<'a> {
             _ => {}
         }
         let kind = self.checked.types[self.peel_nominal(left.ty())].kind;
-        if !matches!(kind, TyKind::Nat | TyKind::Wei | TyKind::Timestamp) || !self.fixed(left) || !self.fixed(right) {
+        if !matches!(kind, TyKind::Nat | TyKind::Wei | TyKind::Timestamp)
+            || !self.fixed(left)
+            || !self.fixed(right)
+        {
             return;
         }
         let zero = |g: &Self, e: &Expr| g.range_of(e) == (Word::from_u64(0), Word::from_u64(0));
@@ -148,8 +161,12 @@ impl<'a> Gen<'a> {
                 builtin: None,
                 ..
             } => !self.checked.syms[*s].mutable && !self.checked.syms[*s].storage,
-            Expr::Binary { op, left, right, .. } => {
-                !matches!(op, BinOp::And | BinOp::Or | BinOp::Cons) && self.fixed(left) && self.fixed(right)
+            Expr::Binary {
+                op, left, right, ..
+            } => {
+                !matches!(op, BinOp::And | BinOp::Or | BinOp::Cons)
+                    && self.fixed(left)
+                    && self.fixed(right)
             }
             Expr::Unary { expr, .. } => self.fixed(expr),
             Expr::Call {
@@ -198,11 +215,25 @@ impl<'a> Gen<'a> {
             for f in &self.facts {
                 if same_value(&f.lo, e) {
                     let bound = self.range(&f.hi, depth - 1, true).1;
-                    hi = min(hi, if f.strict { sat_sub(bound, Word::from_u64(1)) } else { bound });
+                    hi = min(
+                        hi,
+                        if f.strict {
+                            sat_sub(bound, Word::from_u64(1))
+                        } else {
+                            bound
+                        },
+                    );
                 }
                 if same_value(&f.hi, e) {
                     let bound = self.range(&f.lo, depth - 1, true).0;
-                    lo = max(lo, if f.strict { sat_add(bound, Word::from_u64(1)) } else { bound });
+                    lo = max(
+                        lo,
+                        if f.strict {
+                            sat_add(bound, Word::from_u64(1))
+                        } else {
+                            bound
+                        },
+                    );
                 }
             }
         }
@@ -225,7 +256,11 @@ impl<'a> Gen<'a> {
                 ty,
                 ..
             } if !self.is_dynamic(*ty) => (*w, *w),
-            Expr::Ident { sym: Some(s), builtin: None, .. } if self.const_params.contains_key(s) => {
+            Expr::Ident {
+                sym: Some(s),
+                builtin: None,
+                ..
+            } if self.const_params.contains_key(s) => {
                 let w = self.const_params[s];
                 (w, w)
             }
@@ -251,7 +286,9 @@ impl<'a> Gen<'a> {
                 right,
                 ..
             } => (Word::from_u64(0), min(sub(left).1, sub(right).1)),
-            Expr::Binary { op, left, right, .. } if !self.integer_info(left.ty()).0 => {
+            Expr::Binary {
+                op, left, right, ..
+            } if !self.integer_info(left.ty()).0 => {
                 let (a, b) = (sub(left), sub(right));
                 let zero = Word::from_u64(0);
                 match op {
@@ -263,10 +300,10 @@ impl<'a> Gen<'a> {
                     BinOp::Div => (zero, a.1.div(b.0)),
                     BinOp::Mod if b.1.is_zero() => (zero, a.1),
                     BinOp::Mod => (zero, min(a.1, b.1.wrapping_sub(Word::from_u64(1)))),
-                    BinOp::Shr if b.0.lt(Word::from_u64(256)) => (zero, a.1.shr(b.0.0[0] as u32)),
+                    BinOp::Shr if b.0.lt(Word::from_u64(256)) => (zero, a.1.shr(b.0 .0[0] as u32)),
                     BinOp::Shr => (zero, zero),
                     BinOp::Shl if b.1.lt(Word::from_u64(256)) => {
-                        let k = b.1.0[0] as u32;
+                        let k = b.1 .0[0] as u32;
                         let top = a.1.shl(k);
                         if top.shr(k) == a.1 {
                             (zero, top)

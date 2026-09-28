@@ -423,7 +423,12 @@ pub fn stubs(sources: &Sources, entry: &Path, module: &str) -> Result<String, Er
         let header = check::Header::of(func, &func.name);
         // A header too long for one line takes one parameter per line, and long error lists
         // wrap before a `|`, as the standard library writes them.
-        let one_line = format!("  {}({}){}", header.head, header.params.join("; "), header.ret);
+        let one_line = format!(
+            "  {}({}){}",
+            header.head,
+            header.params.join("; "),
+            header.ret
+        );
         if one_line.len() <= 92 || header.params.is_empty() {
             out.push_str(&one_line);
         } else {
@@ -438,7 +443,11 @@ pub fn stubs(sources: &Sources, entry: &Path, module: &str) -> Result<String, Er
             out.push('\n');
             let mut line = String::from("    raises");
             for (i, error) in header.raises.iter().enumerate() {
-                let piece = if i == 0 { format!(" {error}") } else { format!(" | {error}") };
+                let piece = if i == 0 {
+                    format!(" {error}")
+                } else {
+                    format!(" | {error}")
+                };
                 if i > 0 && line.len() + piece.len() > 92 {
                     out.push_str(&line);
                     out.push('\n');
@@ -526,7 +535,9 @@ fn emit_dir(
                     let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     let Some(path) = files.get(i) else { break };
                     let out = emit_file(path, out_dir, artifact, opts);
-                    done.lock().unwrap_or_else(|e| e.into_inner()).push((i, out));
+                    done.lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .push((i, out));
                 })
                 .expect("spawn a compile thread");
         }
@@ -571,7 +582,8 @@ fn write_facets(out_dir: &Path, facets: Vec<(String, Facet)>, all: &mut DirOutpu
         }
         written.push((facet.name.clone(), facet.address, source.clone()));
         let dest = dir.join(format!("{}.json", facet.name));
-        let wrote = std::fs::create_dir_all(&dir).and_then(|_| std::fs::write(&dest, facet_artifact(&facet)));
+        let wrote = std::fs::create_dir_all(&dir)
+            .and_then(|_| std::fs::write(&dest, facet_artifact(&facet)));
         match wrote {
             Ok(()) => all.wrote.push(dest),
             Err(err) => all.failed.push(SourceError {
@@ -842,7 +854,11 @@ pub fn upgrade_check(
             checksum(&part.address),
         ));
     }
-    let width = rows.iter().map(|(label, _, _)| label.len()).max().unwrap_or(0);
+    let width = rows
+        .iter()
+        .map(|(label, _, _)| label.len())
+        .max()
+        .unwrap_or(0);
     let mut section = String::from("facets\n");
     for (label, status, address) in rows {
         let line = format!("  {label:width$}  {status:9}  {address}");
@@ -948,7 +964,7 @@ pub fn upgrade_calldata(
     data.extend_from_slice(&len);
     data.extend_from_slice(&inner);
     let pad = (32 - inner.len() % 32) % 32;
-    data.extend(std::iter::repeat(0).take(pad));
+    data.extend(std::iter::repeat_n(0, pad));
     Ok(format!("0x{}", hex(&data)))
 }
 

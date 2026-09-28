@@ -318,7 +318,11 @@ external function try_peek(const e : Echo; const v : nat) is {
         let out = call(&runtime, &sig, &[w(target), w(arg)]);
         match want {
             Some(want) => {
-                assert!(!out.reverted, "{sig} {target:#x} {arg}: {}", pretty(&out.returndata));
+                assert!(
+                    !out.reverted,
+                    "{sig} {target:#x} {arg}: {}",
+                    pretty(&out.returndata)
+                );
                 assert_eq!(slot(&out.storage, at), w(want), "{sig} {target:#x} {arg}");
             }
             None => assert!(out.reverted, "{sig} {target:#x} {arg}"),
@@ -328,7 +332,11 @@ external function try_peek(const e : Echo; const v : nat) is {
         "interface E is { function f() : option(string); }\nstorage is record { e : E; }\nexternal function go() is { defer storage.e.f() then (s : option(string)) { skip }; }\n",
     )
     .expect_err("dynamic payload");
-    assert!(err.to_string().contains("an optional result must be a static value"), "{err}");
+    assert!(
+        err.to_string()
+            .contains("an optional result must be a static value"),
+        "{err}"
+    );
 }
 
 /// As in Solidity, a call to an account without code fails when nothing else would catch
@@ -349,14 +357,21 @@ external function ignore(const h : Hook) is { defer h.count() then { storage.n :
 external function maybe(const h : Hook) is { defer h.maybe(); }
 ";
     let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
-    let (quiet, answers, nobody) = (Word::from_u64(0xce), Word::from_u64(2), Word::from_u64(0x4242));
+    let (quiet, answers, nobody) = (
+        Word::from_u64(0xce),
+        Word::from_u64(2),
+        Word::from_u64(0x4242),
+    );
     for sig in ["ping(address)", "maybe(address)"] {
         let out = call(&runtime, sig, &[quiet]);
         assert!(!out.reverted, "{sig}: {}", pretty(&out.returndata));
     }
     for sig in ["count(address)", "ignore(address)"] {
         assert!(!call(&runtime, sig, &[answers]).reverted, "{sig}");
-        assert!(call(&runtime, sig, &[quiet]).reverted, "{sig} with no return data");
+        assert!(
+            call(&runtime, sig, &[quiet]).reverted,
+            "{sig} with no return data"
+        );
     }
     for sig in ["ping(address)", "count(address)", "ignore(address)"] {
         let out = call(&runtime, sig, &[nobody]);
@@ -404,14 +419,31 @@ contract Maker is {
     assert!(!made.reverted, "{}", pretty(&made.returndata));
     assert_eq!(made.returndata, crate::keccak::keccak256(&child_code));
     let at = slot(&made.storage, 0);
-    assert_eq!(at, created_address(Word::from_u64(0x1000), Some(salt), &child_code));
-    let (_, storage) = DEPLOYED.with(|d| d.borrow().get(&at).cloned()).expect("created");
+    assert_eq!(
+        at,
+        created_address(Word::from_u64(0x1000), Some(salt), &child_code)
+    );
+    let (_, storage) = DEPLOYED
+        .with(|d| d.borrow().get(&at).cloned())
+        .expect("created");
     assert_eq!(slot(&storage, 0), Word::from_u64(5));
 
     for (from, to, want) in [
-        ("import \"./child.lithe\";", "import \"./child.lithe\" as C;", "defines contracts; import it without an alias"),
-        ("contract Maker is {", "contract Child is {", "contract `Child` is already declared in `./child.lithe`"),
-        ("Evm.creation_code(Child))", "Evm.creation_code(Nope))", "`Nope` is not another contract of this file or its imports"),
+        (
+            "import \"./child.lithe\";",
+            "import \"./child.lithe\" as C;",
+            "defines contracts; import it without an alias",
+        ),
+        (
+            "contract Maker is {",
+            "contract Child is {",
+            "contract `Child` is already declared in `./child.lithe`",
+        ),
+        (
+            "Evm.creation_code(Child))",
+            "Evm.creation_code(Nope))",
+            "`Nope` is not another contract of this file or its imports",
+        ),
     ] {
         std::fs::write(dir.join("bad.lithe"), maker.replacen(from, to, 1)).expect("bad");
         let err = compile_file(&dir.join("bad.lithe")).expect_err(want);
@@ -1084,13 +1116,20 @@ external function total() is {
         }
     };
     let expect_bytes = |st: &HashMap<Word, Word>, slot: Word, data: &[u8]| {
-        assert_eq!(st.get(&slot).copied().unwrap_or(w(0)), head(data), "{}", data.len());
+        assert_eq!(
+            st.get(&slot).copied().unwrap_or(w(0)),
+            head(data),
+            "{}",
+            data.len()
+        );
         if data.len() >= 32 {
             let base = data_at(slot);
             let slots = data.len().div_ceil(32);
             for i in 0..slots {
                 assert_eq!(
-                    st.get(&base.wrapping_add(w(i as u64))).copied().unwrap_or(w(0)),
+                    st.get(&base.wrapping_add(w(i as u64)))
+                        .copied()
+                        .unwrap_or(w(0)),
                     packed(data, i)
                 );
             }
@@ -1102,7 +1141,13 @@ external function total() is {
     let boundary = &[0x62u8; 32];
     let long = &[0x63u8; 40];
     let mut st = empty.clone();
-    for (data, key) in [(short.as_slice(), 1u64), (exact, 2), (boundary, 3), (long, 4), (b"", 5)] {
+    for (data, key) in [
+        (short.as_slice(), 1u64),
+        (exact, 2),
+        (boundary, 3),
+        (long, 4),
+        (b"", 5),
+    ] {
         st = run(&st, "s(uint256,string)", &[Arg::W(w(key)), bytes(data)]).storage;
         assert_eq!(text(&st, "g(uint256)", &[Arg::W(w(key))]), data);
         expect_bytes(&st, map_at(laid.keys[0], key), data);
@@ -1118,7 +1163,10 @@ external function total() is {
     assert_eq!(text(&st, "g(uint256)", &[Arg::W(w(4))]), short);
     expect_bytes(&st, slot4, short);
     assert_eq!(st.get(&stale).copied().unwrap_or(w(0)), w(0));
-    assert_eq!(st.get(&stale.wrapping_add(w(1))).copied().unwrap_or(w(0)), w(0));
+    assert_eq!(
+        st.get(&stale.wrapping_add(w(1))).copied().unwrap_or(w(0)),
+        w(0)
+    );
 
     st = run(&st, "put(bytes,bytes)", &[bytes(long), bytes(boundary)]).storage;
     assert_eq!(word(&st, "len()", &[]), w(2));
@@ -1137,7 +1185,10 @@ external function total() is {
     st = run(&st, "put1(bytes)", &[bytes(exact)]).storage;
     assert_eq!(word(&st, "len()", &[]), w(1));
     assert_eq!(text(&st, "at(uint256)", &[Arg::W(w(0))]), exact);
-    assert_eq!(st.get(&base.wrapping_add(w(1))).copied().unwrap_or(w(0)), w(0));
+    assert_eq!(
+        st.get(&base.wrapping_add(w(1))).copied().unwrap_or(w(0)),
+        w(0)
+    );
     assert_eq!(st.get(&dropped).copied().unwrap_or(w(0)), w(0));
 
     st = run(&st, "put_s(string,string)", &[bytes(long), bytes(short)]).storage;
@@ -1171,16 +1222,35 @@ external function go(const ex : Ext){raises} is relay(ex)
     let errors = errors(&src(" raises forwarded", "forward reason;")).expect("declared");
     assert!(errors.contains("go(address)\n\n  forwarded\n"), "{errors}");
     for (raises, arm, want) in [
-        ("", "forward reason;", "must declare its errors\n\ninferred:\n  forwarded"),
+        (
+            "",
+            "forward reason;",
+            "must declare its errors\n\ninferred:\n  forwarded",
+        ),
         (" raises none", "forward reason;", "may raise `forwarded`"),
-        (" raises forwarded", "fail reason;", "unknown error `reason`"),
-        (" raises forwarded", "const n : nat := 1n; forward n;", "`forward` passes on a `bytes` value"),
+        (
+            " raises forwarded",
+            "fail reason;",
+            "unknown error `reason`",
+        ),
+        (
+            " raises forwarded",
+            "const n : nat := 1n; forward n;",
+            "`forward` passes on a `bytes` value",
+        ),
     ] {
         let err = compile(&src(raises, arm)).expect_err(want);
         assert!(err.message.contains(want), "{want}: {}", err.message);
     }
-    let err = compile("error forwarded;\nstorage is record { n : nat; }\nexternal function f() is { skip }\n").expect_err("reserved");
-    assert!(err.message.contains("`forwarded` is not an error name"), "{}", err.message);
+    let err = compile(
+        "error forwarded;\nstorage is record { n : nat; }\nexternal function f() is { skip }\n",
+    )
+    .expect_err("reserved");
+    assert!(
+        err.message.contains("`forwarded` is not an error name"),
+        "{}",
+        err.message
+    );
 }
 
 /// `forward reason` re-raises raw revert data unchanged, whether it stays in the return data
@@ -1844,12 +1914,24 @@ external function each(const e : Echo) is {
     let w = Word::from_u64;
     let gas = |g: u64| format!(" gas {:?}", w(g));
     let run = |sig: &str, args: &[Word], value: u64| {
-        let out = exec(&runtime, &word_data(sig, args), HashMap::new(), w(7), w(value), w(10)).expect(sig);
+        let out = exec(
+            &runtime,
+            &word_data(sig, args),
+            HashMap::new(),
+            w(7),
+            w(value),
+            w(10),
+        )
+        .expect(sig);
         assert!(!out.reverted, "{sig}: {}", pretty(&out.returndata));
         out
     };
     let detect = run("detect(address)", &[w(0xcd)], 0);
-    assert!(detect.detail[0].ends_with(&gas(30000)), "{:?}", detect.detail);
+    assert!(
+        detect.detail[0].ends_with(&gas(30000)),
+        "{:?}",
+        detect.detail
+    );
     assert_eq!(slot(&detect.storage, 0), w(1));
     let failed = run("detect(address)", &[w(0xef)], 0);
     assert_eq!(slot(&failed.storage, 0), w(9));
@@ -1862,7 +1944,11 @@ external function each(const e : Echo) is {
     let raw = run("raw(address)", &[w(0xcd)], 0);
     assert!(raw.detail[0].ends_with(&gas(40000)), "{:?}", raw.detail);
     let send = run("send(address,address)", &[w(0xcd), w(0xce)], 1);
-    let limits: Vec<bool> = [50000, 60000, 2300].iter().zip(&send.detail).map(|(&g, d)| d.ends_with(&gas(g))).collect();
+    let limits: Vec<bool> = [50000, 60000, 2300]
+        .iter()
+        .zip(&send.detail)
+        .map(|(&g, d)| d.ends_with(&gas(g)))
+        .collect();
     assert_eq!(limits, [true; 3], "{:?}", send.detail);
     assert!(!send.detail[3].contains(" gas "), "{:?}", send.detail);
     let each = run("each(address)", &[w(0xcd)], 0);
@@ -1872,17 +1958,26 @@ external function each(const e : Echo) is {
     assert_eq!(each.detail.len(), 3);
 
     for (body, want) in [
-        ("storage.n := query e.peek(1n) with value = 1n;", "a query takes only `with gas`"),
+        (
+            "storage.n := query e.peek(1n) with value = 1n;",
+            "a query takes only `with gas`",
+        ),
         ("defer e.ping(1n) with gas = true;", "`gas` must be nat"),
-        ("storage.n := query e.peek(query e.peek(1n) with gas = 1n);", "nested query"),
+        (
+            "storage.n := query e.peek(query e.peek(1n) with gas = 1n);",
+            "nested query",
+        ),
     ] {
         let bad = src.replace("storage.n := case query e.peek(1n) with gas = 30000n of { | Ok(v) -> v | Error(_) -> 9n };", body);
         let err = compile(&bad).expect_err(want);
         assert!(err.to_string().contains(want), "{want}: {err}");
     }
-    let err = crate::compile_contracts(
+    let err = compile_contracts(
         "contract One is {\n  storage is record { n : nat; }\n  external function f() is { defer create Other() with gas = 1n; }\n}\ncontract Other is {\n  storage is record { n : nat; }\n  external function g() is { skip }\n}\n",
     )
     .expect_err("create gas");
-    assert!(err.to_string().contains("`create` takes no `with gas`"), "{err}");
+    assert!(
+        err.to_string().contains("`create` takes no `with gas`"),
+        "{err}"
+    );
 }

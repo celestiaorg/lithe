@@ -41,7 +41,15 @@ fn words(ns: &[u64]) -> Vec<u8> {
 }
 
 fn run(runtime: &[u8], data: &[u8]) -> Outcome {
-    exec(runtime, data, HashMap::new(), Word::from_u64(1), Word::from_u64(0), Word::from_u64(0)).expect("run")
+    exec(
+        runtime,
+        data,
+        HashMap::new(),
+        Word::from_u64(1),
+        Word::from_u64(0),
+        Word::from_u64(0),
+    )
+    .expect("run")
 }
 
 fn bytes_args(sig: &str, parts: &[Vec<u8>]) -> Vec<u8> {
@@ -76,16 +84,40 @@ fn bn254_calls_lay_out_their_input() {
     stand_at(&[6, 7, 8]);
     let runtime = deploy(&compile(SRC).expect("compile")).expect("deploy");
     answer(Ok(words(&[5, 6])));
-    let out = run(&runtime, &[selector("add((uint256,uint256),(uint256,uint256))").to_vec(), words(&[1, 2, 3, 4])].concat());
+    let out = run(
+        &runtime,
+        &[
+            selector("add((uint256,uint256),(uint256,uint256))").to_vec(),
+            words(&[1, 2, 3, 4]),
+        ]
+        .concat(),
+    );
     assert!(!out.reverted, "{}", pretty(&out.returndata));
     assert_eq!(seen(), words(&[1, 2, 3, 4]));
     assert_eq!(out.returndata, words(&[5, 6]));
-    let out = run(&runtime, &[selector("mul((uint256,uint256),uint256)").to_vec(), words(&[1, 2, 9])].concat());
+    let out = run(
+        &runtime,
+        &[
+            selector("mul((uint256,uint256),uint256)").to_vec(),
+            words(&[1, 2, 9]),
+        ]
+        .concat(),
+    );
     assert_eq!(seen(), words(&[1, 2, 9]));
     assert_eq!(out.returndata, words(&[5, 6]));
     // A rejected point reverts.
     answer(Err(Vec::new()));
-    assert!(run(&runtime, &[selector("add((uint256,uint256),(uint256,uint256))").to_vec(), words(&[1, 2, 3, 4])].concat()).reverted);
+    assert!(
+        run(
+            &runtime,
+            &[
+                selector("add((uint256,uint256),(uint256,uint256))").to_vec(),
+                words(&[1, 2, 3, 4])
+            ]
+            .concat()
+        )
+        .reverted
+    );
     // The pairs are the input as the list holds them: six words each.
     let pairs: Vec<u64> = (1..=12).collect();
     let mut data = selector("pair((uint256,uint256,uint256,uint256,uint256,uint256)[])").to_vec();
@@ -139,24 +171,50 @@ fn modexp_lays_out_eip198_input() {
     stand_at(&[5]);
     let runtime = deploy(&compile(SRC).expect("compile")).expect("deploy");
     answer(Ok(vec![5]));
-    let out = run(&runtime, &bytes_args("modexp(bytes,bytes,bytes)", &[vec![3], vec![5], vec![7]]));
+    let out = run(
+        &runtime,
+        &bytes_args("modexp(bytes,bytes,bytes)", &[vec![3], vec![5], vec![7]]),
+    );
     assert!(!out.reverted, "{}", pretty(&out.returndata));
     assert_eq!(seen(), [words(&[1, 1, 1]), vec![3, 5, 7]].concat());
     assert_eq!(abi_string_value(&out.returndata), vec![5]);
     // A long modulus: the answer is as long as it.
     let modulus = vec![0xab; 40];
     answer(Ok(vec![0x11; 40]));
-    let out = run(&runtime, &bytes_args("modexp(bytes,bytes,bytes)", &[vec![2; 33], vec![], modulus.clone()]));
+    let out = run(
+        &runtime,
+        &bytes_args(
+            "modexp(bytes,bytes,bytes)",
+            &[vec![2; 33], vec![], modulus.clone()],
+        ),
+    );
     assert_eq!(seen(), [words(&[33, 0, 40]), vec![2; 33], modulus].concat());
     assert_eq!(abi_string_value(&out.returndata), vec![0x11; 40]);
     answer(Ok(w(5)));
-    let out = run(&runtime, &[selector("powmod(uint256,uint256,uint256)").to_vec(), words(&[3, 5, 7])].concat());
+    let out = run(
+        &runtime,
+        &[
+            selector("powmod(uint256,uint256,uint256)").to_vec(),
+            words(&[3, 5, 7]),
+        ]
+        .concat(),
+    );
     assert_eq!(seen(), words(&[32, 32, 32, 3, 5, 7]));
     assert_eq!(out.returndata, w(5));
     // A zero modulus divides by zero.
-    let out = run(&runtime, &[selector("powmod(uint256,uint256,uint256)").to_vec(), words(&[3, 5, 0])].concat());
+    let out = run(
+        &runtime,
+        &[
+            selector("powmod(uint256,uint256,uint256)").to_vec(),
+            words(&[3, 5, 0]),
+        ]
+        .concat(),
+    );
     assert!(out.reverted);
-    assert_eq!(out.returndata, [selector("Panic(uint256)").to_vec(), w(0x12)].concat());
+    assert_eq!(
+        out.returndata,
+        [selector("Panic(uint256)").to_vec(), w(0x12)].concat()
+    );
 }
 
 #[test]
@@ -176,14 +234,25 @@ fn point_evaluation_and_p256_answer_bools() {
     answer(Ok(words(&[4096, 17])));
     let out = run(&runtime, &args);
     assert!(!out.reverted, "{}", pretty(&out.returndata));
-    assert_eq!(seen(), [vh.to_vec(), words(&[7, 8]), commitment, proof].concat());
+    assert_eq!(
+        seen(),
+        [vh.to_vec(), words(&[7, 8]), commitment, proof].concat()
+    );
     assert_eq!(out.returndata, w(1));
     answer(Err(Vec::new()));
     assert_eq!(run(&runtime, &args).returndata, w(0));
     answer(Ok(Vec::new()));
-    assert_eq!(run(&runtime, &args).returndata, w(0), "no precompile is no proof");
+    assert_eq!(
+        run(&runtime, &args).returndata,
+        w(0),
+        "no precompile is no proof"
+    );
     let sig: Vec<u8> = (1..=5).flat_map(|i| [i as u8; 32]).collect();
-    let data = [selector("p256(bytes32,bytes32,bytes32,bytes32,bytes32)").to_vec(), sig.clone()].concat();
+    let data = [
+        selector("p256(bytes32,bytes32,bytes32,bytes32,bytes32)").to_vec(),
+        sig.clone(),
+    ]
+    .concat();
     answer(Ok(w(1)));
     assert_eq!(run(&runtime, &data).returndata, w(1));
     assert_eq!(seen(), sig);
@@ -197,7 +266,10 @@ fn bls12_calls_concatenate_their_inputs() {
     let runtime = deploy(&compile(SRC).expect("compile")).expect("deploy");
     let (a, b) = (vec![0xaa; 128], vec![0xbb; 128]);
     answer(Ok(vec![0x11; 128]));
-    let out = run(&runtime, &bytes_args("g1_add(bytes,bytes)", &[a.clone(), b.clone()]));
+    let out = run(
+        &runtime,
+        &bytes_args("g1_add(bytes,bytes)", &[a.clone(), b.clone()]),
+    );
     assert!(!out.reverted, "{}", pretty(&out.returndata));
     assert_eq!(seen(), [a.clone(), b.clone()].concat());
     assert_eq!(abi_string_value(&out.returndata), vec![0x11; 128]);
@@ -208,9 +280,18 @@ fn bls12_calls_concatenate_their_inputs() {
     assert_eq!(seen(), vec![0xdd; 64]);
     assert_eq!(abi_string_value(&out.returndata), vec![0x11; 128]);
     // A G2 point is 256 bytes; an answer of another size reverts.
-    assert!(run(&runtime, &bytes_args("g2_add(bytes,bytes)", &[vec![1; 256], vec![2; 256]])).reverted);
+    assert!(
+        run(
+            &runtime,
+            &bytes_args("g2_add(bytes,bytes)", &[vec![1; 256], vec![2; 256]])
+        )
+        .reverted
+    );
     answer(Ok(vec![0x22; 256]));
-    let out = run(&runtime, &bytes_args("g2_add(bytes,bytes)", &[vec![1; 256], vec![2; 256]]));
+    let out = run(
+        &runtime,
+        &bytes_args("g2_add(bytes,bytes)", &[vec![1; 256], vec![2; 256]]),
+    );
     assert_eq!(seen(), [vec![1; 256], vec![2; 256]].concat());
     assert_eq!(abi_string_value(&out.returndata), vec![0x22; 256]);
     let out = run(&runtime, &bytes_args("g2_msm(bytes)", &[vec![3; 288]]));
@@ -229,9 +310,18 @@ fn bls12_calls_concatenate_their_inputs() {
 #[test]
 fn precompile_arguments_are_typed() {
     for (body, want) in [
-        ("Crypto.bn254_add((1n, 2n), 3n)", "`Crypto.bn254_add` takes `(uint256,uint256)` here"),
-        ("Crypto.p256_verify(0x01, 0x02, 0x03, 0x04)", "`Crypto.p256_verify` expects 5 arguments"),
-        ("Crypto.mod_exp(1n, 2n, 3n)", "`Crypto.mod_exp` takes `bytes` here"),
+        (
+            "Crypto.bn254_add((1n, 2n), 3n)",
+            "`Crypto.bn254_add` takes `(uint256,uint256)` here",
+        ),
+        (
+            "Crypto.p256_verify(0x01, 0x02, 0x03, 0x04)",
+            "`Crypto.p256_verify` expects 5 arguments",
+        ),
+        (
+            "Crypto.mod_exp(1n, 2n, 3n)",
+            "`Crypto.mod_exp` takes `bytes` here",
+        ),
     ] {
         let src = format!("storage is record {{ n : nat; }}\nexternal pure function f() : nat is {{ const x : bool := {body} = {body}; }} with 1n\n");
         let err = compile(&src).expect_err(want);

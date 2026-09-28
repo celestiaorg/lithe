@@ -139,7 +139,9 @@ fn options(args: &mut Vec<String>) -> Result<lithe::Options, String> {
                 Some("off") => opts.split = lithe::SplitMode::Off,
                 Some("all") => opts.split = lithe::SplitMode::All,
                 Some(other) => {
-                    return Err(format!("--split takes `auto`, `off`, or `all`, not `{other}`"))
+                    return Err(format!(
+                        "--split takes `auto`, `off`, or `all`, not `{other}`"
+                    ))
                 }
                 None => return Err("--split takes `auto`, `off`, or `all`".to_string()),
             },

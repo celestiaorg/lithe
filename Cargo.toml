@@ -21,3 +21,9 @@ strip = true
 # The optimizer passes are too slow to run unoptimized: debug builds take minutes per contract.
 [profile.dev]
 opt-level = 2
+
+[lints.clippy]
+too_many_arguments = "allow"
+type_complexity = "allow"
+needless_range_loop = "allow"
+large_enum_variant = "allow"

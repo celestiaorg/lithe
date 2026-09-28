@@ -37,8 +37,15 @@ fn record_lists_cross_the_abi() {
     assert!(!set.reverted, "{}", pretty(&set.returndata));
     let base = Word::from_be_bytes(keccak256(&n(0).to_be_bytes()));
     assert_eq!(slot(&set.storage, 0), n(2));
-    assert_eq!(set.storage[&base.wrapping_add(n(1))], n(4).shl(48).wrapping_add(n(3)));
-    let data = set.detail.iter().find(|d| d.starts_with("log")).expect("log detail");
+    assert_eq!(
+        set.storage[&base.wrapping_add(n(1))],
+        n(4).shl(48).wrapping_add(n(3))
+    );
+    let data = set
+        .detail
+        .iter()
+        .find(|d| d.starts_with("log"))
+        .expect("log detail");
     assert!(data.contains(&hex(&flat(pts))), "{data}");
     let st = set.storage;
     assert_eq!(call(&st, word_data("all()", &[])).returndata, flat(pts));
@@ -50,7 +57,13 @@ fn record_lists_cross_the_abi() {
     assert_eq!(load_bytes(&decoded.returndata, 0), n(2002));
     // Data too short for its elements does not decode.
     let short = &flat(pts)[..32 * 5];
-    assert!(call(&st, encode_args("decoded(bytes)", &[Arg::B(short.to_vec())])).reverted);
+    assert!(
+        call(
+            &st,
+            encode_args("decoded(bytes)", &[Arg::B(short.to_vec())])
+        )
+        .reverted
+    );
     let refused = call(&st, word_data("refuse()", &[]));
     assert!(refused.reverted);
     let mut want = selector("Rejected((uint48,uint208)[])").to_vec();
@@ -63,12 +76,18 @@ fn record_lists_cross_the_abi() {
         Word::from_be_bytes(w)
     };
     let minus5 = n(0).wrapping_sub(n(5));
-    let tags: &[&[Word]] = &[&[tag([0xde, 0xad, 0xbe, 0xef]), n(1), minus5], &[tag([1, 2, 3, 4]), n(0), n(7)]];
+    let tags: &[&[Word]] = &[
+        &[tag([0xde, 0xad, 0xbe, 0xef]), n(1), minus5],
+        &[tag([1, 2, 3, 4]), n(0), n(7)],
+    ];
     let tagged = call(&st, args("set_tags((bytes4,bool,int16)[])", tags));
     assert!(!tagged.reverted, "{}", pretty(&tagged.returndata));
     let out = call(&tagged.storage, word_data("tag_at(uint256)", &[n(1)]));
     assert_eq!(load_bytes(&out.returndata, 0), tag([1, 2, 3, 4]));
-    assert_eq!(call(&tagged.storage, word_data("tags()", &[])).returndata, flat(tags));
+    assert_eq!(
+        call(&tagged.storage, word_data("tags()", &[])).returndata,
+        flat(tags)
+    );
     for bad in [
         [tag([1, 2, 3, 4]), n(2), n(7)],
         [tag([1, 2, 3, 4]).wrapping_add(n(1)), n(0), n(7)],
@@ -539,9 +558,18 @@ fn strings_and_bytes_compare_by_content() {
     assert_eq!(c.word("is_name(string)", &[b(longer)]), no);
     assert_eq!(c.word("is_name(string)", &[b(b"short")]), no);
     let pair = "same_pair(string,string,string,string)";
-    assert_eq!(c.word(pair, &[b(long), b(b"short"), b(long), b(b"short")]), yes);
-    assert_eq!(c.word(pair, &[b(long), b(b"short"), b(longer), b(b"short")]), no);
-    assert_eq!(c.word(pair, &[b(long), b(b"short"), b(long), b(b"shorT")]), no);
+    assert_eq!(
+        c.word(pair, &[b(long), b(b"short"), b(long), b(b"short")]),
+        yes
+    );
+    assert_eq!(
+        c.word(pair, &[b(long), b(b"short"), b(longer), b(b"short")]),
+        no
+    );
+    assert_eq!(
+        c.word(pair, &[b(long), b(b"short"), b(long), b(b"shorT")]),
+        no
+    );
     let one = "pair_is_one(string,string,string)";
     assert_eq!(c.word(one, &[b(long), b(long), b(long)]), no);
     for (x, y, want) in [
@@ -812,33 +840,90 @@ external pure function pk(const xs : list(string)) : bytes is Abi.encode_packed(
         v.resize(32, 0);
         v
     };
-    let two = [w(0x20), w(2), w(0x40), w(0x80), w(2), pad(&[1, 2]), w(3), pad(&[3, 4, 5])].concat();
+    let two = [
+        w(0x20),
+        w(2),
+        w(0x40),
+        w(0x80),
+        w(2),
+        pad(&[1, 2]),
+        w(3),
+        pad(&[3, 4, 5]),
+    ]
+    .concat();
     let want = [w(0x20), w(5), pad(&[1, 2, 3, 4, 5])].concat();
     for sig in ["idx(bytes[])", "each(bytes[])"] {
         let data = [selector(sig).to_vec(), two.clone()].concat();
-        let out = exec(&runtime, &data, HashMap::new(), Word::from_u64(1), Word::from_u64(0), Word::from_u64(0)).expect(sig);
+        let out = exec(
+            &runtime,
+            &data,
+            HashMap::new(),
+            Word::from_u64(1),
+            Word::from_u64(0),
+            Word::from_u64(0),
+        )
+        .expect(sig);
         assert!(!out.reverted, "{sig}: {}", pretty(&out.returndata));
         assert_eq!(hex(&out.returndata), hex(&want), "{sig}");
     }
     let long: Vec<u8> = (1..=40).collect();
-    let mixed = [w(0x20), w(2), w(0x40), w(0xa0), w(40), long.clone(), vec![0; 24], w(1), pad(&[41])].concat();
+    let mixed = [
+        w(0x20),
+        w(2),
+        w(0x40),
+        w(0xa0),
+        w(40),
+        long.clone(),
+        vec![0; 24],
+        w(1),
+        pad(&[41]),
+    ]
+    .concat();
     let mut want = [w(0x20), w(41)].concat();
     want.extend((1..=41).collect::<Vec<u8>>());
     want.resize(128, 0);
     let bad = [w(0x20), w(1), w(0x1000)].concat();
     for sig in ["idx(bytes[])", "each(bytes[])"] {
         let data = [selector(sig).to_vec(), mixed.clone()].concat();
-        let out = exec(&runtime, &data, HashMap::new(), Word::from_u64(1), Word::from_u64(0), Word::from_u64(0)).expect(sig);
+        let out = exec(
+            &runtime,
+            &data,
+            HashMap::new(),
+            Word::from_u64(1),
+            Word::from_u64(0),
+            Word::from_u64(0),
+        )
+        .expect(sig);
         assert_eq!(hex(&out.returndata), hex(&want), "{sig}");
         let data = [selector(sig).to_vec(), bad.clone()].concat();
-        let out = exec(&runtime, &data, HashMap::new(), Word::from_u64(1), Word::from_u64(0), Word::from_u64(0)).expect(sig);
+        let out = exec(
+            &runtime,
+            &data,
+            HashMap::new(),
+            Word::from_u64(1),
+            Word::from_u64(0),
+            Word::from_u64(0),
+        )
+        .expect(sig);
         assert!(out.reverted, "{sig}: offset past calldata");
     }
     let one = [w(0x20), w(1), w(0x20), w(2), pad(b"ab")].concat();
     let data = [selector("pk(string[])").to_vec(), one].concat();
-    let out = exec(&runtime, &data, HashMap::new(), Word::from_u64(1), Word::from_u64(0), Word::from_u64(0)).expect("pk");
+    let out = exec(
+        &runtime,
+        &data,
+        HashMap::new(),
+        Word::from_u64(1),
+        Word::from_u64(0),
+        Word::from_u64(0),
+    )
+    .expect("pk");
     assert!(!out.reverted, "pk: {}", pretty(&out.returndata));
-    assert_eq!(hex(&out.returndata), hex(&[w(0x20), w(2), pad(b"ab")].concat()), "pk");
+    assert_eq!(
+        hex(&out.returndata),
+        hex(&[w(0x20), w(2), pad(b"ab")].concat()),
+        "pk"
+    );
 }
 
 /// The ABI tail of a `bytes[]` or `string[]`: the length, each element's offset, then each
@@ -907,54 +992,154 @@ external view function ss() : list(string) is storage.ss
     let mut storage = HashMap::new();
     let run = |storage: &mut HashMap<Word, Word>, sig: &str, args: Vec<u8>| {
         let data = [selector(sig).to_vec(), args].concat();
-        let out = exec(&runtime, &data, storage.clone(), Word::from_u64(1), Word::from_u64(0), Word::from_u64(0))
-            .expect(sig);
+        let out = exec(
+            &runtime,
+            &data,
+            storage.clone(),
+            Word::from_u64(1),
+            Word::from_u64(0),
+            Word::from_u64(0),
+        )
+        .expect(sig);
         assert!(!out.reverted, "{sig}: {}", pretty(&out.returndata));
         *storage = out.storage.clone();
         out
     };
     let hexed = |out: &Outcome| hex(&out.returndata);
-    assert_eq!(hexed(&run(&mut storage, "echo(bytes[])", list.clone())), hex(&list), "echo");
-    let built = [w(0x40), w(0x80), w(2), [&[1u8, 2][..], &[0; 30]].concat(), w(40), long.clone(), vec![0; 24]].concat();
+    assert_eq!(
+        hexed(&run(&mut storage, "echo(bytes[])", list.clone())),
+        hex(&list),
+        "echo"
+    );
+    let built = [
+        w(0x40),
+        w(0x80),
+        w(2),
+        [&[1u8, 2][..], &[0; 30]].concat(),
+        w(40),
+        long.clone(),
+        vec![0; 24],
+    ]
+    .concat();
     let want = [w(0x20), abi_blobs(&[&[1, 2], &long])].concat();
-    assert_eq!(hexed(&run(&mut storage, "build(bytes,bytes)", built)), hex(&want), "build");
-    assert_eq!(hexed(&run(&mut storage, "enc(bytes[])", list.clone())), hex(&as_bytes(&list)), "enc");
+    assert_eq!(
+        hexed(&run(&mut storage, "build(bytes,bytes)", built)),
+        hex(&want),
+        "build"
+    );
+    assert_eq!(
+        hexed(&run(&mut storage, "enc(bytes[])", list.clone())),
+        hex(&as_bytes(&list)),
+        "enc"
+    );
     let two = [w(7), w(0x40), abi_blobs(&items)].concat();
-    assert_eq!(hexed(&run(&mut storage, "enc2(uint256,string[])", two.clone())), hex(&as_bytes(&two)), "enc2");
-    assert_eq!(hexed(&run(&mut storage, "dec(bytes)", as_bytes(&list))), hex(&list), "dec");
+    assert_eq!(
+        hexed(&run(&mut storage, "enc2(uint256,string[])", two.clone())),
+        hex(&as_bytes(&two)),
+        "enc2"
+    );
+    assert_eq!(
+        hexed(&run(&mut storage, "dec(bytes)", as_bytes(&list))),
+        hex(&list),
+        "dec"
+    );
     let past = [w(0x20), w(1), w(0x1000)].concat();
     let data = [selector("dec(bytes)").to_vec(), as_bytes(&past)].concat();
-    let out = exec(&runtime, &data, HashMap::new(), Word::from_u64(1), Word::from_u64(0), Word::from_u64(0)).expect("dec");
+    let out = exec(
+        &runtime,
+        &data,
+        HashMap::new(),
+        Word::from_u64(1),
+        Word::from_u64(0),
+        Word::from_u64(0),
+    )
+    .expect("dec");
     assert!(out.reverted, "dec: an element past the data");
     // A short value is its first `len` bytes, not the word after its length.
     let args = [w(0x40), w(0x60), w(0), w(3), vec![7; 32]].concat();
-    assert_eq!(hexed(&run(&mut storage, "first(bytes,bytes)", args)), hex(&as_bytes(&[])), "first");
+    assert_eq!(
+        hexed(&run(&mut storage, "first(bytes,bytes)", args)),
+        hex(&as_bytes(&[])),
+        "first"
+    );
     let other: [&[u8]; 3] = [&[1, 2], &long, &[0]];
     let pair = |a: &[&[u8]], b: &[&[u8]]| {
         let a = abi_blobs(a);
         [w(0x40), w(0x40 + a.len() as u64), a, abi_blobs(b)].concat()
     };
-    assert_eq!(hexed(&run(&mut storage, "same(bytes[],bytes[])", pair(&items, &items))), hex(&w(1)), "same");
-    assert_eq!(hexed(&run(&mut storage, "same(bytes[],bytes[])", pair(&items, &other))), hex(&w(0)), "differ");
+    assert_eq!(
+        hexed(&run(
+            &mut storage,
+            "same(bytes[],bytes[])",
+            pair(&items, &items)
+        )),
+        hex(&w(1)),
+        "same"
+    );
+    assert_eq!(
+        hexed(&run(
+            &mut storage,
+            "same(bytes[],bytes[])",
+            pair(&items, &other)
+        )),
+        hex(&w(0)),
+        "differ"
+    );
     let logged = run(&mut storage, "log(string[])", list.clone());
-    let log = logged.detail.iter().find(|d| d.starts_with("log")).expect("log detail");
+    let log = logged
+        .detail
+        .iter()
+        .find(|d| d.starts_with("log"))
+        .expect("log detail");
     assert!(log.ends_with(&hex(&list)), "{log}");
-    let asked = run(&mut storage, "ask(address,bytes[])", [w(0xcd), w(0x40), abi_blobs(&items)].concat());
+    let asked = run(
+        &mut storage,
+        "ask(address,bytes[])",
+        [w(0xcd), w(0x40), abi_blobs(&items)].concat(),
+    );
     assert_eq!(hexed(&asked), hex(&list), "ask");
-    let sent = run(&mut storage, "send(address,string[])", [w(0xcd), w(0x40), abi_blobs(&items)].concat());
-    let call = sent.detail.iter().find(|d| d.starts_with("call")).expect("call detail");
+    let sent = run(
+        &mut storage,
+        "send(address,string[])",
+        [w(0xcd), w(0x40), abi_blobs(&items)].concat(),
+    );
+    let call = sent
+        .detail
+        .iter()
+        .find(|d| d.starts_with("call"))
+        .expect("call detail");
     assert!(call.ends_with(&hex(&list)), "{call}");
-    let log = sent.detail.iter().find(|d| d.starts_with("log")).expect("log detail");
+    let log = sent
+        .detail
+        .iter()
+        .find(|d| d.starts_with("log"))
+        .expect("log detail");
     assert!(log.ends_with(&hex(&list)), "{log}");
     assert_eq!(hexed(&run(&mut storage, "ss()", vec![])), hex(&list), "ss");
     run(&mut storage, "save(bytes[])", list.clone());
-    assert_eq!(hexed(&run(&mut storage, "saved()", vec![])), hex(&list), "saved");
+    assert_eq!(
+        hexed(&run(&mut storage, "saved()", vec![])),
+        hex(&list),
+        "saved"
+    );
     let short = [w(1), w(0x40), w(1), [&[9u8][..], &[0; 31]].concat()].concat();
     run(&mut storage, "set_at(uint256,bytes)", short);
     let want = [w(0x20), abi_blobs(&[&[1, 2], &[9], &[]])].concat();
-    assert_eq!(hexed(&run(&mut storage, "saved()", vec![])), hex(&want), "set_at");
-    run(&mut storage, "ask_save(address,bytes[])", [w(0xcd), w(0x40), abi_blobs(&items)].concat());
-    assert_eq!(hexed(&run(&mut storage, "saved()", vec![])), hex(&list), "ask_save");
+    assert_eq!(
+        hexed(&run(&mut storage, "saved()", vec![])),
+        hex(&want),
+        "set_at"
+    );
+    run(
+        &mut storage,
+        "ask_save(address,bytes[])",
+        [w(0xcd), w(0x40), abi_blobs(&items)].concat(),
+    );
+    assert_eq!(
+        hexed(&run(&mut storage, "saved()", vec![])),
+        hex(&list),
+        "ask_save"
+    );
 }
 
 /// A short string or bytes value is packed into its word wherever it comes from, so it
@@ -985,32 +1170,75 @@ external pure function signed() : bytes is Abi.encode_with_signature("f()")
     };
     let long = b"a string that is well past thirty one bytes long";
     let call = |sig: &str, args: &[Arg], storage: HashMap<Word, Word>| {
-        let out = exec(&runtime, &encode_args(sig, args), storage, Word::from_u64(1), Word::from_u64(0), Word::from_u64(0)).expect(sig);
+        let out = exec(
+            &runtime,
+            &encode_args(sig, args),
+            storage,
+            Word::from_u64(1),
+            Word::from_u64(0),
+            Word::from_u64(0),
+        )
+        .expect(sig);
         assert!(!out.reverted, "{sig}: {}", pretty(&out.returndata));
         out
     };
     let t = hex(&w(1));
-    assert_eq!(hex(&call("eq_short(bytes)", &[Arg::B(text(b"hi"))], HashMap::new()).returndata), t);
-    let eq_long = call("eq_long(string,bytes)", &[Arg::B(long.to_vec()), Arg::B(text(long))], HashMap::new());
-    assert_eq!(hex(&eq_long.returndata), t, "equal long strings in different blobs");
-    assert_eq!(hex(&call("empty(bytes)", &[Arg::B(text(b""))], HashMap::new()).returndata), t);
+    assert_eq!(
+        hex(&call("eq_short(bytes)", &[Arg::B(text(b"hi"))], HashMap::new()).returndata),
+        t
+    );
+    let eq_long = call(
+        "eq_long(string,bytes)",
+        &[Arg::B(long.to_vec()), Arg::B(text(long))],
+        HashMap::new(),
+    );
+    assert_eq!(
+        hex(&eq_long.returndata),
+        t,
+        "equal long strings in different blobs"
+    );
+    assert_eq!(
+        hex(&call("empty(bytes)", &[Arg::B(text(b""))], HashMap::new()).returndata),
+        t
+    );
     // Stored in Solidity's short layout: the bytes, then twice the length.
-    let list = [w(0x20), w(1), w(0x20), w(2), [&b"hi"[..], &[0; 30]].concat()].concat();
-    let kept = call("keep(bytes,bytes)", &[Arg::B(text(b"hi")), Arg::B(list)], HashMap::new());
+    let list = [
+        w(0x20),
+        w(1),
+        w(0x20),
+        w(2),
+        [&b"hi"[..], &[0; 30]].concat(),
+    ]
+    .concat();
+    let kept = call(
+        "keep(bytes,bytes)",
+        &[Arg::B(text(b"hi")), Arg::B(list)],
+        HashMap::new(),
+    );
     let mut short = [0u8; 32];
     short[..2].copy_from_slice(b"hi");
     short[31] = 4;
     let short = Word::from_be_bytes(short);
     let head = Word::from_be_bytes(crate::keccak::keccak256(&w(1)));
-    assert_eq!(kept.storage.get(&Word::from_u64(0)), Some(&short), "stored string");
+    assert_eq!(
+        kept.storage.get(&Word::from_u64(0)),
+        Some(&short),
+        "stored string"
+    );
     assert_eq!(kept.storage.get(&head), Some(&short), "list element");
     let sel = call("sel()", &[], HashMap::new());
     let mut packed = [0u8; 32];
     packed[..4].copy_from_slice(&[0x12, 0x34, 0x56, 0x78]);
     packed[31] = 8;
-    assert_eq!(sel.storage.get(&Word::from_u64(2)), Some(&Word::from_be_bytes(packed)));
+    assert_eq!(
+        sel.storage.get(&Word::from_u64(2)),
+        Some(&Word::from_be_bytes(packed))
+    );
     let signed = call("signed()", &[], HashMap::new());
-    assert_eq!(hex(&signed.returndata), hex(&text(&crate::keccak::keccak256(b"f()")[..4])));
+    assert_eq!(
+        hex(&signed.returndata),
+        hex(&text(&crate::keccak::keccak256(b"f()")[..4]))
+    );
 }
 
 /// A short `bytes` or `string` argument keeps only its own bytes from the word after its
@@ -1031,17 +1259,36 @@ external pure function copy(const a : bytes; const s : string) : bytes is a
         assert!(!out.reverted);
         out.returndata
     };
-    let words = |ns: &[u64]| ns.iter().flat_map(|&n| w(n).to_be_bytes()).collect::<Vec<u8>>();
+    let words = |ns: &[u64]| {
+        ns.iter()
+            .flat_map(|&n| w(n).to_be_bytes())
+            .collect::<Vec<u8>>()
+    };
     let hello = || Arg::B(b"hello".to_vec());
     for (sig, args, want) in [
-        ("bb(bytes,bytes)", vec![Arg::B(vec![]), Arg::B(vec![1, 2])], vec![0, 2]),
-        ("bbs(bytes,bytes,string)", vec![Arg::B(vec![1]), Arg::B(vec![]), hello()], vec![1, 0, 5]),
-        ("sb(string,bytes)", vec![Arg::B(vec![]), Arg::B(vec![1, 2])], vec![0, 2]),
+        (
+            "bb(bytes,bytes)",
+            vec![Arg::B(vec![]), Arg::B(vec![1, 2])],
+            vec![0, 2],
+        ),
+        (
+            "bbs(bytes,bytes,string)",
+            vec![Arg::B(vec![1]), Arg::B(vec![]), hello()],
+            vec![1, 0, 5],
+        ),
+        (
+            "sb(string,bytes)",
+            vec![Arg::B(vec![]), Arg::B(vec![1, 2])],
+            vec![0, 2],
+        ),
     ] {
         assert_eq!(run(&encode_args(sig, &args)), words(&want), "{sig}");
     }
     assert_eq!(
-        abi_string_value(&run(&encode_args("copy(bytes,string)", &[Arg::B(vec![]), hello()]))),
+        abi_string_value(&run(&encode_args(
+            "copy(bytes,string)",
+            &[Arg::B(vec![]), hello()]
+        ))),
         b""
     );
     let mut dirty = encode_args("copy(bytes,string)", &[Arg::B(vec![0xab]), hello()]);

@@ -11,7 +11,8 @@ impl<'a> Gen<'a> {
         let shape = self.shape;
         // Selectors whose code reads no immutable, which a facet with immutables gets
         // without their values.
-        let blind: std::collections::HashSet<[u8; 4]> = if shape.tails.iter().any(|t| !t.is_empty()) {
+        let blind: std::collections::HashSet<[u8; 4]> = if shape.tails.iter().any(|t| !t.is_empty())
+        {
             targets
                 .iter()
                 .filter(|(_, target)| !self.target_reads_immutables(target))
@@ -24,11 +25,19 @@ impl<'a> Gen<'a> {
             targets.retain(|(_, target)| keep.contains(&target.sel()));
         }
         // Every selector forwarded to one facet jumps to that facet's stub.
-        let stubs: Vec<(u32, u32)> = shape.parts.iter().map(|_| (self.fresh(), self.fresh())).collect();
+        let stubs: Vec<(u32, u32)> = shape
+            .parts
+            .iter()
+            .map(|_| (self.fresh(), self.fresh()))
+            .collect();
         for &(sel, part) in &shape.forward {
             let (stub, bare) = stubs[part];
             let tailed = shape.tails.get(part).is_some_and(|tail| !tail.is_empty());
-            let to = if tailed && blind.contains(&sel) { bare } else { stub };
+            let to = if tailed && blind.contains(&sel) {
+                bare
+            } else {
+                stub
+            };
             targets.push((to, Target::Forward { sel }));
         }
         let special = |kind: ItemKind| {
@@ -78,7 +87,9 @@ impl<'a> Gen<'a> {
                 let route = &self.checked.routes[*index];
                 route.direct.or_else(|| {
                     let top = route.path.first()?;
-                    funcs.iter().position(|f| f.kind == ItemKind::Entry && &f.name == top)
+                    funcs
+                        .iter()
+                        .position(|f| f.kind == ItemKind::Entry && &f.name == top)
                 })
             }
             Target::View { func, .. } => Some(*func),
@@ -87,9 +98,12 @@ impl<'a> Gen<'a> {
         let Some(func) = func else { return true };
         let syms = &self.checked.immutable_syms;
         let reads = |node: Node<'_>| match node {
-            Node::Expr(Expr::Ident { sym: Some(sym), .. } | Expr::Field { root: Some(sym), .. }) => {
-                syms.contains(sym)
-            }
+            Node::Expr(
+                Expr::Ident { sym: Some(sym), .. }
+                | Expr::Field {
+                    root: Some(sym), ..
+                },
+            ) => syms.contains(sym),
             _ => false,
         };
         self.func_any(func, &reads, &mut Vec::new())
@@ -104,7 +118,12 @@ impl<'a> Gen<'a> {
         let after = self.fresh();
         let shape = self.shape;
         let tails: Vec<Vec<u32>> = (0..stubs.len())
-            .map(|i| shape.tails.get(i).map_or_else(Vec::new, |ids| self.tail_order(ids)))
+            .map(|i| {
+                shape
+                    .tails
+                    .get(i)
+                    .map_or_else(Vec::new, |ids| self.tail_order(ids))
+            })
             .collect();
         // A facet that reads immutables gets them after its calldata; the others share `go`.
         for (i, &(stub, bare)) in stubs.iter().enumerate() {
@@ -179,7 +198,12 @@ impl<'a> Gen<'a> {
         for fi in views {
             let sig = self.view_sig(fi)?;
             let sel = selector(&sig);
-            if self.checked.routes.iter().any(|r| r.by_selector() && r.sel == sel) {
+            if self
+                .checked
+                .routes
+                .iter()
+                .any(|r| r.by_selector() && r.sel == sel)
+            {
                 let f = &self.checked.prog.funcs[fi];
                 return Err(error(
                     f.line,
@@ -341,7 +365,8 @@ impl<'a> Gen<'a> {
     /// bucket falls through the buckets after it. An empty bucket is the last one's
     /// label: every check there fails too.
     fn buckets(&mut self, cases: &[(u32, [u8; 4])], count: usize) {
-        let slice = |shift: u32, sel: [u8; 4]| (u32::from_be_bytes(sel) >> shift) as usize & (count - 1);
+        let slice =
+            |shift: u32, sel: [u8; 4]| (u32::from_be_bytes(sel) >> shift) as usize & (count - 1);
         let checks = |shift: u32| {
             let mut sizes = vec![0usize; count];
             for &(_, sel) in cases {
@@ -350,7 +375,9 @@ impl<'a> Gen<'a> {
             sizes.iter().map(|k| k * (k + 1)).sum::<usize>()
         };
         // The index is shifted into place as the entry's bit offset: 16 times the bucket.
-        let shift = (4..=32 - count.trailing_zeros()).min_by_key(|&s| checks(s)).unwrap_or(4);
+        let shift = (4..=32 - count.trailing_zeros())
+            .min_by_key(|&s| checks(s))
+            .unwrap_or(4);
         let mut groups: Vec<Vec<(u32, [u8; 4])>> = vec![Vec::new(); count];
         for &case in cases {
             groups[slice(shift, case.1)].push(case);
@@ -361,7 +388,7 @@ impl<'a> Gen<'a> {
                 *entry = self.fresh();
             }
         }
-        let last = table.iter().copied().filter(|&l| l != 0).last().unwrap_or_default();
+        let last = table.iter().copied().rfind(|&l| l != 0).unwrap_or_default();
         for entry in &mut table[..count] {
             if *entry == 0 {
                 *entry = last;
@@ -409,9 +436,17 @@ impl<'a> Gen<'a> {
 
     /// Calldata no entrypoint takes. A `fallback` that is not payable rejects value first
     /// when short calldata can reach it past the table's own check.
-    fn fallback_body(&mut self, label: u32, index: usize, bad: u32, short: bool) -> Result<(), Error> {
+    fn fallback_body(
+        &mut self,
+        label: u32,
+        index: usize,
+        bad: u32,
+        short: bool,
+    ) -> Result<(), Error> {
         let route = &self.checked.routes[index];
-        let func = route.direct.ok_or_else(|| error(1, 1, "internal: a fallback is a function"))?;
+        let func = route
+            .direct
+            .ok_or_else(|| error(1, 1, "internal: a fallback is a function"))?;
         if !route.payable && short {
             self.jumpdest(label);
             self.op(CALLVALUE);
@@ -433,7 +468,13 @@ impl<'a> Gen<'a> {
     /// `fallback delegates to target;` or `forwards to target;`: the whole calldata goes to
     /// the target, and what it returns or reverts with comes back unchanged. A target
     /// without code would answer every call with success and nothing, so it is rejected.
-    fn forward_body(&mut self, label: u32, func: usize, how: Forward, bad: u32) -> Result<(), Error> {
+    fn forward_body(
+        &mut self,
+        label: u32,
+        func: usize,
+        how: Forward,
+        bad: u32,
+    ) -> Result<(), Error> {
         let ok = self.fresh();
         self.jumpdest(label);
         self.begin_body(self.lists_in_order);
@@ -584,7 +625,13 @@ impl<'a> Gen<'a> {
                     returns = Some((func, ret));
                 }
                 Some(tail) => {
-                    self.tail = matches!(tail, Expr::Call { callee: Some(_), .. });
+                    self.tail = matches!(
+                        tail,
+                        Expr::Call {
+                            callee: Some(_),
+                            ..
+                        }
+                    );
                     self.compile_effect(&tail)?;
                     self.tail = false;
                 }
@@ -795,7 +842,8 @@ impl<'a> Gen<'a> {
             }
         } else {
             let marker = self.data_marker();
-            self.data.push((marker, vec![0; len as usize], String::new()));
+            self.data
+                .push((marker, vec![0; len as usize], String::new()));
             let from = self.checked.immutable_from as u32;
             self.tail_blobs
                 .push((marker, leaves.iter().map(|leaf| leaf - from).collect()));
@@ -824,7 +872,12 @@ impl<'a> Gen<'a> {
 
     /// Creation code that runs `deploy` on the arguments appended to it, then returns the
     /// runtime code with its immutables written in.
-    pub(super) fn emit_init(&mut self, func: usize, runtime: Vec<u8>, marks: &[Mark]) -> Result<(), Error> {
+    pub(super) fn emit_init(
+        &mut self,
+        func: usize,
+        runtime: Vec<u8>,
+        marks: &[Mark],
+    ) -> Result<(), Error> {
         self.init = true;
         let words = self.checked.transient_from - self.checked.immutable_from;
         if words > 0 {

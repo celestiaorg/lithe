@@ -1,7 +1,13 @@
 use super::*;
 
 impl<'a> Gen<'a> {
-    pub(super) fn compile_query(&mut self, expr: &Expr, ty: usize, line: u32, col: u32) -> Result<(), Error> {
+    pub(super) fn compile_query(
+        &mut self,
+        expr: &Expr,
+        ty: usize,
+        line: u32,
+        col: u32,
+    ) -> Result<(), Error> {
         if self.in_query {
             return Err(error(line, col, "nested query is not supported"));
         }
@@ -49,11 +55,12 @@ impl<'a> Gen<'a> {
         let sel = selector(&sig);
         self.in_query = true;
         let result = if self.checked.types[ty].kind == TyKind::Option {
-            self.query_call(base, sel, args, self.ret_scratch).and_then(|()| {
-                self.op(ISZERO);
-                self.revert_if_true()?;
-                self.returned_option_word(ty)
-            })
+            self.query_call(base, sel, args, self.ret_scratch)
+                .and_then(|()| {
+                    self.op(ISZERO);
+                    self.revert_if_true()?;
+                    self.returned_option_word(ty)
+                })
         } else {
             self.static_call(base, sel, args)
         };
@@ -137,7 +144,11 @@ impl<'a> Gen<'a> {
         col: u32,
         sink: Sink,
     ) -> Result<(), Error> {
-        let arm = |name: &str| arms.iter().find(|arm| arm.ctors.iter().any(|c| c == name)).cloned();
+        let arm = |name: &str| {
+            arms.iter()
+                .find(|arm| arm.ctors.iter().any(|c| c == name))
+                .cloned()
+        };
         let (Some(ok), Some(failed)) = (arm("Ok"), arm("Error")) else {
             return Err(error(
                 line,
@@ -204,7 +215,11 @@ impl<'a> Gen<'a> {
         else {
             return Err(error(line, col, "query expects an interface method"));
         };
-        let arm = |name: &str| arms.iter().find(|arm| arm.ctors.iter().any(|c| c == name)).cloned();
+        let arm = |name: &str| {
+            arms.iter()
+                .find(|arm| arm.ctors.iter().any(|c| c == name))
+                .cloned()
+        };
         let (Some(ok), Some(failed)) = (arm("Ok"), arm("Error")) else {
             return Err(error(
                 line,
@@ -484,9 +499,9 @@ impl<'a> Gen<'a> {
                 self.mstore_off(to);
                 let value_at = self.capture_value(value)?;
                 let gas = self.arena_word(gas)?;
-                let dynamic = args
-                    .iter()
-                    .any(|a| self.is_dynamic(a.ty()) || self.list_value(a.ty()) || self.tree(a.ty()));
+                let dynamic = args.iter().any(|a| {
+                    self.is_dynamic(a.ty()) || self.list_value(a.ty()) || self.tree(a.ty())
+                });
                 let words = self.arg_words(args);
                 let size = 4 + u64::from(words) * 32;
                 let data = if args.iter().any(|a| self.tree(a.ty())) {
@@ -1373,7 +1388,12 @@ impl<'a> Gen<'a> {
     /// The creation code of another contract of this file or its imports, embedded once.
     /// Its place in this code is a placeholder word until the code's length is known.
     /// Creation code keeps it ahead of its end, where its arguments begin.
-    pub(super) fn peer_code(&mut self, name: &str, line: u32, col: u32) -> Result<(Word, u64), Error> {
+    pub(super) fn peer_code(
+        &mut self,
+        name: &str,
+        line: u32,
+        col: u32,
+    ) -> Result<(Word, u64), Error> {
         if let Some((marker, code)) = self
             .data
             .iter()
@@ -1385,14 +1405,21 @@ impl<'a> Gen<'a> {
         let code = self.peer_creation(name, line, col)?;
         let marker = self.data_marker();
         let len = code.len() as u64;
-        let end = self.init.then(|| self.data.iter().position(|(m, ..)| *m == self.code_end));
+        let end = self
+            .init
+            .then(|| self.data.iter().position(|(m, ..)| *m == self.code_end));
         let at = end.flatten().unwrap_or(self.data.len());
         self.data.insert(at, (marker, code, name.to_string()));
         Ok((marker, len))
     }
 
     /// A peer's creation code, compiled once however often it is embedded or hashed.
-    pub(super) fn peer_creation(&mut self, name: &str, line: u32, col: u32) -> Result<Vec<u8>, Error> {
+    pub(super) fn peer_creation(
+        &mut self,
+        name: &str,
+        line: u32,
+        col: u32,
+    ) -> Result<Vec<u8>, Error> {
         if let Some(code) = self.peer_built.get(name) {
             return Ok(code.clone());
         }
@@ -1451,10 +1478,19 @@ impl<'a> Gen<'a> {
     }
 
     /// The contract `Evm.creation_code` names.
-    pub(super) fn creation_code_of<'e>(&self, name: &'e Expr, line: u32, col: u32) -> Result<&'e str, Error> {
+    pub(super) fn creation_code_of<'e>(
+        &self,
+        name: &'e Expr,
+        line: u32,
+        col: u32,
+    ) -> Result<&'e str, Error> {
         match name {
             Expr::Ident { name, .. } => Ok(name),
-            _ => Err(error(line, col, "`Evm.creation_code` takes the name of a contract")),
+            _ => Err(error(
+                line,
+                col,
+                "`Evm.creation_code` takes the name of a contract",
+            )),
         }
     }
 
@@ -1764,7 +1800,6 @@ impl<'a> Gen<'a> {
             Src::Ret => self.op(RETURNDATACOPY),
         }
     }
-
 
     /// Compiles a continuation as the next transition phase. It starts from storage as the
     /// call left it: nothing cached before the call is reused. It shares the enclosing

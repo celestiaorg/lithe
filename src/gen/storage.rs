@@ -297,19 +297,23 @@ impl<'a> Gen<'a> {
         let kind = |ty: usize| types[self.peel_nominal(ty)].kind;
         // A stored fixed list's elements are leaves of the image, which a body that has
         // one reads and writes instead of their slots.
-        if !self.direct && kind(steps[first].1) == TyKind::List && types[self.peel_nominal(steps[first].1)].bits > 0 {
+        if !self.direct
+            && kind(steps[first].1) == TyKind::List
+            && types[self.peel_nominal(steps[first].1)].bits > 0
+        {
             return false;
         }
         let rest = &steps[first + 1..];
-        let length_only = |rest: &[(Option<&str>, usize)]| {
-            matches!(rest, [(Some("length"), ty)] if self.is_dynamic(*ty))
-        };
+        let length_only = |rest: &[(Option<&str>, usize)]| matches!(rest, [(Some("length"), ty)] if self.is_dynamic(*ty));
         if kind(steps[first].1) == TyKind::List {
             let elem = self.list_elem(steps[first].1);
             return matches!(kind(elem), TyKind::Record | TyKind::Tuple)
                 || !(rest.is_empty() || length_only(rest));
         }
-        let keys = rest.iter().take_while(|(name, ty)| name.is_none() && kind(*ty) == TyKind::Map).count();
+        let keys = rest
+            .iter()
+            .take_while(|(name, ty)| name.is_none() && kind(*ty) == TyKind::Map)
+            .count();
         let after = &rest[keys..];
         let value = after.first().map_or(e.ty(), |(_, ty)| *ty);
         let vkind = kind(value);
@@ -327,7 +331,9 @@ impl<'a> Gen<'a> {
     /// A stored place with a leaf of its own: a name, or fields of one.
     fn static_place(&self, e: &Expr) -> Option<(usize, u32)> {
         match e {
-            Expr::Ident { sym: Some(sym), .. } if self.checked.syms[*sym].storage => Some((*sym, 0)),
+            Expr::Ident { sym: Some(sym), .. } if self.checked.syms[*sym].storage => {
+                Some((*sym, 0))
+            }
             Expr::Field {
                 root: Some(sym),
                 leaf,
@@ -366,7 +372,8 @@ impl<'a> Gen<'a> {
         let id = self.peel_nominal(elem);
         match self.checked.types[id].kind {
             TyKind::Record | TyKind::Tuple | TyKind::Option | TyKind::List
-                if self.checked.types[id].words > 1 || self.checked.types[id].kind != TyKind::Option =>
+                if self.checked.types[id].words > 1
+                    || self.checked.types[id].kind != TyKind::Option =>
             {
                 self.value_layout(id).last().map_or(1, |(off, _)| off + 1)
             }
@@ -395,22 +402,36 @@ impl<'a> Gen<'a> {
             let at = self.checked.syms[sym].slot + leaf;
             let transient = self.checked.transient_leaf(at);
             self.push_word(self.checked.leaf_keys[at as usize]);
-            return Ok(Deep { ty, pack: Pack::FULL, transient });
+            return Ok(Deep {
+                ty,
+                pack: Pack::FULL,
+                transient,
+            });
         }
         match e {
             Expr::Index { base, index, .. } => {
                 let bty = self.peel_nominal(base.ty());
                 if self.checked.types[bty].kind == TyKind::Map {
                     if let Some((sym, leaf, keys)) = self.map_prefix(e) {
-                        let transient = self.checked.transient_leaf(self.checked.syms[sym].slot + leaf);
+                        let transient = self
+                            .checked
+                            .transient_leaf(self.checked.syms[sym].slot + leaf);
                         self.push_map_slot(sym, leaf, &keys)?;
                         self.transient_slot = false;
-                        return Ok(Deep { ty, pack: Pack::FULL, transient });
+                        return Ok(Deep {
+                            ty,
+                            pack: Pack::FULL,
+                            transient,
+                        });
                     }
                     let p = self.deep_slot(base, false)?;
                     self.compile_value(index)?;
                     self.nested_slot();
-                    return Ok(Deep { ty, pack: Pack::FULL, transient: p.transient });
+                    return Ok(Deep {
+                        ty,
+                        pack: Pack::FULL,
+                        transient: p.transient,
+                    });
                 }
                 let stride = self.elem_slots(ty);
                 let bits = self.checked.types[bty].bits;
@@ -423,11 +444,17 @@ impl<'a> Gen<'a> {
                         self.op(MUL);
                     }
                     self.op(ADD);
-                    return Ok(Deep { ty, pack: Pack::FULL, transient: p.transient });
+                    return Ok(Deep {
+                        ty,
+                        pack: Pack::FULL,
+                        transient: p.transient,
+                    });
                 }
                 if let Some((sym, leaf)) = self.static_place(base) {
                     // A stored list's length is a leaf of the image.
-                    let transient = self.checked.transient_leaf(self.checked.syms[sym].slot + leaf);
+                    let transient = self
+                        .checked
+                        .transient_leaf(self.checked.syms[sym].slot + leaf);
                     self.compile_value(index)?;
                     self.mstore_off(self.scratch_a);
                     self.list_bounds(sym, leaf, grow)?;
@@ -438,7 +465,11 @@ impl<'a> Gen<'a> {
                         self.op(MUL);
                     }
                     self.op(ADD);
-                    return Ok(Deep { ty, pack: Pack::FULL, transient });
+                    return Ok(Deep {
+                        ty,
+                        pack: Pack::FULL,
+                        transient,
+                    });
                 }
                 // [slot, i, length], all on the stack, so that every such index is the
                 // same code and can be shared.
@@ -472,9 +503,19 @@ impl<'a> Gen<'a> {
                     self.op(MUL);
                 }
                 self.op(ADD);
-                Ok(Deep { ty, pack: Pack::FULL, transient: p.transient })
+                Ok(Deep {
+                    ty,
+                    pack: Pack::FULL,
+                    transient: p.transient,
+                })
             }
-            Expr::Field { base, name, line, col, .. } => {
+            Expr::Field {
+                base,
+                name,
+                line,
+                col,
+                ..
+            } => {
                 let p = self.deep_slot(base, false)?;
                 let rty = self.peel_nominal(base.ty());
                 let field = self.checked.types[rty]
@@ -495,7 +536,11 @@ impl<'a> Gen<'a> {
                     transient: p.transient,
                 })
             }
-            other => Err(error(other.line(), other.col(), "this value is not in storage")),
+            other => Err(error(
+                other.line(),
+                other.col(),
+                "this value is not in storage",
+            )),
         }
     }
 
@@ -553,7 +598,11 @@ impl<'a> Gen<'a> {
             let bytes = self.stored_dyn(elem);
             self.call_sub(Sub::LoadList(k, transient, self.direct, bytes));
         } else {
-            self.call_sub(Sub::LoadRecords(self.peel_nominal(elem), transient, self.direct));
+            self.call_sub(Sub::LoadRecords(
+                self.peel_nominal(elem),
+                transient,
+                self.direct,
+            ));
         }
     }
 
@@ -569,7 +618,11 @@ impl<'a> Gen<'a> {
             let bytes = self.stored_dyn(elem);
             self.call_sub(Sub::StoreList(k, transient, self.direct, bytes));
         } else {
-            self.call_sub(Sub::StoreRecords(self.peel_nominal(elem), transient, self.direct));
+            self.call_sub(Sub::StoreRecords(
+                self.peel_nominal(elem),
+                transient,
+                self.direct,
+            ));
         }
     }
 
@@ -598,7 +651,7 @@ impl<'a> Gen<'a> {
                     self.record_leaves(t.elem.unwrap_or(0), out);
                 }
             }
-            _ => out.extend(std::iter::repeat(id).take(t.words.max(1) as usize)),
+            _ => out.extend(std::iter::repeat_n(id, t.words.max(1) as usize)),
         }
     }
 
@@ -620,7 +673,11 @@ impl<'a> Gen<'a> {
                 self.op(ADD);
             }
             if self.list_value(leaf) {
-                self.deep_load_list(Deep { ty: leaf, pack, transient: p.transient })?;
+                self.deep_load_list(Deep {
+                    ty: leaf,
+                    pack,
+                    transient: p.transient,
+                })?;
             } else {
                 self.transient_slot = p.transient;
                 if self.is_dynamic(leaf) {
@@ -685,7 +742,9 @@ impl<'a> Gen<'a> {
                 continue;
             }
             let end = (j..leaves.len())
-                .find(|&x| layout[x].0 != off || self.list_value(leaves[x]) || self.is_dynamic(leaves[x]))
+                .find(|&x| {
+                    layout[x].0 != off || self.list_value(leaves[x]) || self.is_dynamic(leaves[x])
+                })
                 .unwrap_or(leaves.len());
             for x in j..end {
                 let pack = layout[x].1;
@@ -714,7 +773,12 @@ impl<'a> Gen<'a> {
 
     /// `target := expr` for a place `deep` finds. The value is computed before the slot, so
     /// it may read the place it replaces. A push appends.
-    pub(super) fn deep_assign(&mut self, target: &Expr, expr: &Expr, grow: bool) -> Result<(), Error> {
+    pub(super) fn deep_assign(
+        &mut self,
+        target: &Expr,
+        expr: &Expr,
+        grow: bool,
+    ) -> Result<(), Error> {
         let ty = target.ty();
         if self.list_value(ty) {
             self.compile_value(expr)?;
@@ -825,7 +889,9 @@ impl<'a> Gen<'a> {
         let mut j = 0;
         while j < layout.len() {
             let off = layout[j].0;
-            let end = (j..layout.len()).find(|&x| layout[x].0 != off).unwrap_or(layout.len());
+            let end = (j..layout.len())
+                .find(|&x| layout[x].0 != off)
+                .unwrap_or(layout.len());
             self.op(DUP1 + 1);
             if off > 0 {
                 self.push_u64(off);
@@ -897,7 +963,9 @@ impl<'a> Gen<'a> {
         let mut j = 0;
         while j < layout.len() {
             let off = layout[j].0;
-            let end = (j..layout.len()).find(|&x| layout[x].0 != off).unwrap_or(layout.len());
+            let end = (j..layout.len())
+                .find(|&x| layout[x].0 != off)
+                .unwrap_or(layout.len());
             for x in j..end {
                 let pack = layout[x].1;
                 self.op(DUP1 + 1 + usize::from(x > j) as u8);
@@ -994,7 +1062,13 @@ impl<'a> Gen<'a> {
         };
         let (sym, leaf) = self.static_place(base)?;
         let t = &self.checked.types[self.peel_nominal(base.ty())];
-        (t.kind == TyKind::List && t.bits > 0).then_some((sym, leaf, index.as_ref(), offset, e.ty()))
+        (t.kind == TyKind::List && t.bits > 0).then_some((
+            sym,
+            leaf,
+            index.as_ref(),
+            offset,
+            e.ty(),
+        ))
     }
 
     /// Pushes where `image_elem`'s field sits in the image. A write of `n` words marks
@@ -1215,14 +1289,19 @@ impl<'a> Gen<'a> {
                 Ok(src + field.slot as i32 * 32)
             }
             // A stored record with strings, bytes, or lists: each field read as itself.
-            Expr::Ident { sym: Some(sym), .. } | Expr::Field { root: Some(sym), .. }
-                if self.checked.syms[*sym].storage
-                    && self.checked.types[e.ty()].kind == TyKind::Record
-                    && !crate::check::is_static_value(&self.checked.types, e.ty()) =>
+            Expr::Ident { sym: Some(sym), .. }
+            | Expr::Field {
+                root: Some(sym), ..
+            } if self.checked.syms[*sym].storage
+                && self.checked.types[e.ty()].kind == TyKind::Record
+                && !crate::check::is_static_value(&self.checked.types, e.ty()) =>
             {
                 let ty = e.ty();
                 self.return_sites += 1;
-                let buf = self.region(Region::Stored(self.return_sites), self.checked.types[ty].words * 32);
+                let buf = self.region(
+                    Region::Stored(self.return_sites),
+                    self.checked.types[ty].words * 32,
+                );
                 let leaf = match e {
                     Expr::Field { leaf, .. } => *leaf,
                     _ => 0,
@@ -1434,7 +1513,12 @@ impl<'a> Gen<'a> {
 
     /// Pushes the slot of `m[k1][k2]...`. When every key is fixed for the rest of the body,
     /// the slot is hashed once and kept for later accesses the hash reaches on every path.
-    pub(super) fn push_map_slot(&mut self, sym: usize, leaf: u32, keys: &[&Expr]) -> Result<(), Error> {
+    pub(super) fn push_map_slot(
+        &mut self,
+        sym: usize,
+        leaf: u32,
+        keys: &[&Expr],
+    ) -> Result<(), Error> {
         let transient = self.checked.sym_leaf_transient(sym, leaf);
         let result = self.hash_map_slot(sym, leaf, keys);
         // The access right after the slot is to transient storage.
@@ -1660,7 +1744,10 @@ fn reads_slot(e: &Expr, sym: usize, leaf: u32, key: &Expr) -> bool {
             leaf: at,
             ..
         } => {
-            (*root == sym && *at == leaf && !matches!(base.as_ref(), Expr::Index { .. }) && same_expr(index, key))
+            (*root == sym
+                && *at == leaf
+                && !matches!(base.as_ref(), Expr::Index { .. })
+                && same_expr(index, key))
                 || reads_slot(base, sym, leaf, key)
                 || reads_slot(index, sym, leaf, key)
         }

@@ -216,7 +216,11 @@ impl Checker {
         let mut seen = HashSet::new();
         for err in &prog.errors {
             if err.name == "none" || err.name == "forwarded" {
-                return Err(error(err.line, err.col, format!("`{}` is not an error name", err.name)));
+                return Err(error(
+                    err.line,
+                    err.col,
+                    format!("`{}` is not an error name", err.name),
+                ));
             }
             if !seen.insert(err.name.clone()) {
                 return Err(error(
@@ -258,7 +262,11 @@ impl Checker {
         let mut set_names = HashSet::new();
         for set in &prog.error_sets {
             if set.name == "forwarded" {
-                return Err(error(set.line, set.col, "`forwarded` is not an error set name"));
+                return Err(error(
+                    set.line,
+                    set.col,
+                    "`forwarded` is not an error set name",
+                ));
             }
             if !set_names.insert(set.name.clone()) || seen.contains(&set.name) {
                 return Err(error(
@@ -354,8 +362,10 @@ impl Checker {
     > {
         if self.is_dyn_ty(id)
             || self.abi_list(id)
-            || ((matches!(self.types[peel_id(&self.types, id)].kind, TyKind::List | TyKind::Tuple)
-                || self.types[peel_id(&self.types, id)].tuple)
+            || ((matches!(
+                self.types[peel_id(&self.types, id)].kind,
+                TyKind::List | TyKind::Tuple
+            ) || self.types[peel_id(&self.types, id)].tuple)
                 && abi_value(&self.types, id))
         {
             let abi = abi_nested(&self.types, id, "")?.ty;
@@ -530,7 +540,10 @@ impl Checker {
                 }
                 match leaf {
                     Some(t) if self.dynamic_word(t) => {
-                        let k = match dynamic.iter().position(|&(at, d)| at == j && self.same(d, t)) {
+                        let k = match dynamic
+                            .iter()
+                            .position(|&(at, d)| at == j && self.same(d, t))
+                        {
                             Some(k) => k,
                             None => {
                                 dynamic.push((j, t));
@@ -587,7 +600,11 @@ impl Checker {
             .filter_map(|(j, width)| width.map(|w| (j, scalar_ty(w))))
             .collect();
         let narrow = |ty: usize| narrow_width(&self.types, ty).is_some();
-        for &(j, ty) in used.iter().filter(|(_, ty)| narrow(*ty)).chain(used.iter().filter(|(_, ty)| !narrow(*ty))) {
+        for &(j, ty) in used
+            .iter()
+            .filter(|(_, ty)| narrow(*ty))
+            .chain(used.iter().filter(|(_, ty)| !narrow(*ty)))
+        {
             fields.push(field(format!("#{j}"), ty));
         }
         for (k, &(j, ty)) in dynamic.iter().enumerate() {
@@ -627,7 +644,12 @@ impl Checker {
 
     /// The variant type and case index a constructor name refers to: a case of the type
     /// the context expects, or else of the one declared variant that has it.
-    pub(super) fn ctor(&self, line: u32, col: u32, name: &str) -> Result<Option<(usize, usize)>, Error> {
+    pub(super) fn ctor(
+        &self,
+        line: u32,
+        col: u32,
+        name: &str,
+    ) -> Result<Option<(usize, usize)>, Error> {
         if self.lookup(name).is_some() {
             return Ok(None);
         }
@@ -744,8 +766,11 @@ impl Checker {
                 // A map may hold maps and lists: each level is a slot hashed from the one
                 // before. A record value is laid out like a Solidity struct from its slot.
                 let nested = matches!(self.types[v].kind, TyKind::Map | TyKind::List);
-                let record = matches!(self.types[peel_id(&self.types, v)].kind, TyKind::Record | TyKind::Tuple)
-                    || (self.types[v].kind == TyKind::Option && is_static_value(&self.types, v));
+                let record = matches!(
+                    self.types[peel_id(&self.types, v)].kind,
+                    TyKind::Record | TyKind::Tuple
+                ) || (self.types[v].kind == TyKind::Option
+                    && is_static_value(&self.types, v));
                 if !self.single_word(k) || !(self.single_word(v) || nested || record) {
                     return Err(error(
                         *line,
@@ -871,12 +896,19 @@ impl Checker {
         let target = self.named[name];
         // A number literal converts as the unsigned integer of the target's width: `bytes32(0x11)` is 17.
         let width = match self.types[target].kind {
-            TyKind::Bytes if self.types[target].bits > 0 => Some(u32::from(self.types[target].bits) * 8),
+            TyKind::Bytes if self.types[target].bits > 0 => {
+                Some(u32::from(self.types[target].bits) * 8)
+            }
             TyKind::Address => Some(160),
             _ => None,
         };
         let expect = match (&args[0], width) {
-            (Expr::Lit { lit: Lit::Int(..), .. }, Some(bits)) => self.named[&format!("uint{bits}")],
+            (
+                Expr::Lit {
+                    lit: Lit::Int(..), ..
+                },
+                Some(bits),
+            ) => self.named[&format!("uint{bits}")],
             _ => target,
         };
         self.check_expr_as(&mut args[0], Some(expect))?;
@@ -1019,7 +1051,13 @@ impl Checker {
         }
     }
 
-    pub(super) fn expect_kind(&self, line: u32, col: u32, ty: usize, k: TyKind) -> Result<(), Error> {
+    pub(super) fn expect_kind(
+        &self,
+        line: u32,
+        col: u32,
+        ty: usize,
+        k: TyKind,
+    ) -> Result<(), Error> {
         if self.types[ty].kind == k {
             Ok(())
         } else {
@@ -1304,7 +1342,7 @@ fn word_leaves(types: &[RType], ty: usize, out: &mut Vec<Option<usize>>) {
                 word_leaves(types, t.elem.unwrap_or(TY_NAT), out);
             }
         }
-        TyKind::Option => out.extend(std::iter::repeat(None).take(t.words as usize)),
+        TyKind::Option => out.extend(std::iter::repeat_n(None, t.words as usize)),
         _ => out.push(Some(ty)),
     }
 }

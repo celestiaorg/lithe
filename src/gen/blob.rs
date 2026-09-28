@@ -109,7 +109,9 @@ impl<'a> Gen<'a> {
             return marker;
         }
         let marker = self.data_marker();
-        let end = self.init.then(|| self.data.iter().position(|(m, ..)| *m == self.code_end));
+        let end = self
+            .init
+            .then(|| self.data.iter().position(|(m, ..)| *m == self.code_end));
         let at = end.flatten().unwrap_or(self.data.len());
         self.data.insert(at, (marker, bytes.clone(), String::new()));
         self.literals.insert(bytes, marker);
@@ -644,11 +646,6 @@ impl<'a> Gen<'a> {
         self.jumpdest(done);
     }
 
-
-
-
-
-
     pub(super) fn prepend_selector(&mut self, sel: &Expr) -> Result<(), Error> {
         self.mload(self.scratch_a);
         self.mstore_off(self.scratch_b);
@@ -685,9 +682,13 @@ impl<'a> Gen<'a> {
         Ok(())
     }
 
-
-
-    pub(super) fn precompile(&mut self, addr: u64, off: i32, len: i32, out: u64) -> Result<(), Error> {
+    pub(super) fn precompile(
+        &mut self,
+        addr: u64,
+        off: i32,
+        len: i32,
+        out: u64,
+    ) -> Result<(), Error> {
         self.push_u64(out);
         self.push_mem(self.ret_scratch);
         self.mload(len);
@@ -700,5 +701,4 @@ impl<'a> Gen<'a> {
         self.mload(self.ret_scratch);
         Ok(())
     }
-
 }

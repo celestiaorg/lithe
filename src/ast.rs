@@ -893,7 +893,6 @@ impl Expr {
             | Self::Record { ty, .. } => *ty,
         }
     }
-
 }
 
 #[derive(Debug, Clone)]

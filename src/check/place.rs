@@ -131,7 +131,9 @@ impl Checker {
                         in_map: p.in_map,
                     });
                 }
-                if matches!(base.as_ref(), Expr::Index { .. }) && !matches!(kind, TyKind::Map | TyKind::List) {
+                if matches!(base.as_ref(), Expr::Index { .. })
+                    && !matches!(kind, TyKind::Map | TyKind::List)
+                {
                     return Err(error(*line, *col, "only a map of maps takes more keys"));
                 }
                 // Past a key or an index, fields are found from the value's slot, not a leaf.
@@ -310,7 +312,13 @@ impl Checker {
         Err(error(line, col, format!("unknown module `{module}`")))
     }
 
-    pub(super) fn define(&mut self, line: u32, col: u32, name: &str, sym: usize) -> Result<(), Error> {
+    pub(super) fn define(
+        &mut self,
+        line: u32,
+        col: u32,
+        name: &str,
+        sym: usize,
+    ) -> Result<(), Error> {
         if name == "storage" && self.lookup("storage").is_some() {
             return Err(error(line, col, "`storage` names the contract storage"));
         }

@@ -177,10 +177,7 @@ fn storage_is_written_before_calls() {
     assert!(!out.reverted, "{}", pretty(&out.returndata));
     assert_eq!(slot(&out.storage, 0), Word::from_u64(10));
     assert_eq!(out.balances.get(&to).copied(), Some(Word::from_u64(10)));
-    let sstore_at = out
-        .trace
-        .iter()
-        .position(|e| matches!(e, Ev::SStore { .. }));
+    let sstore_at = out.trace.iter().position(|e| matches!(e, Ev::SStore));
     let call_at = out.trace.iter().position(|e| matches!(e, Ev::Call { .. }));
     assert!(sstore_at < call_at, "{:?}", out.trace);
 }
@@ -222,7 +219,7 @@ fn touch_records_time_for_the_guard() {
     .expect("denied");
     assert!(denied.reverted);
     assert_eq!(denied.returndata, selector("NotGuard()").to_vec());
-    assert!(denied.storage.get(&Word::from_u64(0)).is_none());
+    assert!(!denied.storage.contains_key(&Word::from_u64(0)));
 
     let touched = exec(
         &runtime,
@@ -287,7 +284,7 @@ fn gate_pays_out_only_when_open() {
     assert!(closed.reverted);
     assert_eq!(closed.returndata, selector("Closed()").to_vec());
     assert!(closed.trace.iter().all(|e| !matches!(e, Ev::Call { .. })));
-    assert!(closed.balances.get(&to).is_none());
+    assert!(!closed.balances.contains_key(&to));
 
     let denied = exec(
         &runtime,
@@ -588,9 +585,15 @@ is {{
             "r := nat(a) * nat(b) * 1000000n;",
             "r := Nat.wrapping_mul(Nat.wrapping_mul(nat(a), nat(b)), 1000000n);",
         ),
-        ("r := shifted(a, b) * nat(c);", "r := Nat.wrapping_mul(shifted(a, b), nat(c));"),
+        (
+            "r := shifted(a, b) * nat(c);",
+            "r := Nat.wrapping_mul(shifted(a, b), nat(c));",
+        ),
         ("r := n / 2n + 1n;", "r := Nat.wrapping_add(n / 2n, 1n);"),
-        ("if n > m then { r := n - m; }", "if n > m then { r := Nat.wrapping_sub(n, m); }"),
+        (
+            "if n > m then { r := n - m; }",
+            "if n > m then { r := Nat.wrapping_sub(n, m); }",
+        ),
         (
             "if n <= m then { r := 1n; } else { r := n - m; }",
             "if n <= m then { r := 1n; } else { r := Nat.wrapping_sub(n, m); }",
@@ -616,7 +619,10 @@ is {{
         assert_eq!(build(checked), build(wrapping), "{checked}");
     }
     // A cast whose operand already fits its type has nothing to check.
-    assert!(build("r := nat(uint32(n % 4294967296n));").len() < build("r := nat(uint32(n % 4294967297n));").len());
+    assert!(
+        build("r := nat(uint32(n % 4294967296n));").len()
+            < build("r := nat(uint32(n % 4294967297n));").len()
+    );
     assert!(
         build("assert(n <= nat(a), Low); r := nat(uint112(n));").len()
             < build("assert(n <= m, Low); r := nat(uint112(n));").len()
@@ -666,7 +672,10 @@ external view function cast(const n : nat) : uint32 is uint32(n % 4294967297n)
     let panics = |sig: &str, args: &[Word]| {
         let out = call(&runtime, sig, args);
         assert!(out.reverted, "{sig} {args:?}");
-        assert!(out.returndata.starts_with(&selector("Panic(uint256)")), "{sig}");
+        assert!(
+            out.returndata.starts_with(&selector("Panic(uint256)")),
+            "{sig}"
+        );
         assert_eq!(load_bytes(&out.returndata, 4), w(0x11), "{sig}");
     };
     let returns = |sig: &str, args: &[Word], want: Word| {
@@ -685,7 +694,11 @@ external view function cast(const n : nat) : uint32 is uint32(n % 4294967297n)
     assert!(low.reverted && low.returndata.starts_with(&selector("Low()")));
     panics("wide(uint256,uint112)", &[Word::from_u64(1).shl(255), w(2)]);
     let most = Word::from_u64(0).not().shr(144);
-    returns("fits(uint112,uint112)", &[most, most], most.wrapping_mul(most).wrapping_mul(w(1_000_000)));
+    returns(
+        "fits(uint112,uint112)",
+        &[most, most],
+        most.wrapping_mul(most).wrapping_mul(w(1_000_000)),
+    );
     panics("narrow_sub(uint8,uint8)", &[w(3), w(5)]);
     returns("narrow_sub(uint8,uint8)", &[w(5), w(3)], w(2));
     panics("cast(uint256)", &[Word::from_u64(1).shl(32)]);
@@ -711,7 +724,10 @@ external pure function int_bits(const n : nat) : int is Int.from_bits(n)
     let out = |sig: &str, arg: Word| {
         let out = call(&runtime, sig, &[arg]);
         if out.reverted {
-            assert!(out.returndata.starts_with(&selector("Panic(uint256)")), "{sig}");
+            assert!(
+                out.returndata.starts_with(&selector("Panic(uint256)")),
+                "{sig}"
+            );
             assert_eq!(load_bytes(&out.returndata, 4), w(0x11), "{sig}");
             None
         } else {
@@ -721,7 +737,10 @@ external pure function int_bits(const n : nat) : int is Int.from_bits(n)
     assert_eq!(out("to_nat(int256)", w(7)), Some(w(7)));
     assert_eq!(out("to_nat(int256)", neg), None);
     assert_eq!(out("to_wei(int256)", neg), None);
-    assert_eq!(out("to_int(uint256)", top.wrapping_sub(w(1))), Some(top.wrapping_sub(w(1))));
+    assert_eq!(
+        out("to_int(uint256)", top.wrapping_sub(w(1))),
+        Some(top.wrapping_sub(w(1)))
+    );
     assert_eq!(out("to_int(uint256)", top), None);
     assert_eq!(out("to_int16(uint256)", w(32767)), Some(w(32767)));
     assert_eq!(out("to_int16(uint256)", w(32768)), None);

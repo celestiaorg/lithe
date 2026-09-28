@@ -16,7 +16,15 @@ fn construct_with(init: &[u8], words: &[Word]) -> Outcome {
 }
 
 fn view(runtime: &[u8], storage: &HashMap<Word, Word>, sig: &str, args: &[Word]) -> Vec<u8> {
-    let out = exec(runtime, &word_data(sig, args), storage.clone(), w(1), w(0), w(0)).expect(sig);
+    let out = exec(
+        runtime,
+        &word_data(sig, args),
+        storage.clone(),
+        w(1),
+        w(0),
+        w(0),
+    )
+    .expect(sig);
     assert!(!out.reverted, "{sig}: {}", pretty(&out.returndata));
     out.returndata
 }
@@ -81,7 +89,15 @@ fn deploy_sets_immutables() {
     assert_eq!(word("seen()"), w(36));
     assert_eq!(word("during()"), w(0));
     // Nothing reads storage for them.
-    let out = exec(&runtime, &word_data("factory()", &[]), HashMap::new(), w(1), w(0), w(0)).expect("run");
+    let out = exec(
+        &runtime,
+        &word_data("factory()", &[]),
+        HashMap::new(),
+        w(1),
+        w(0),
+        w(0),
+    )
+    .expect("run");
     assert_eq!(load_bytes(&out.returndata, 0), w(0xfac));
 }
 
@@ -153,11 +169,33 @@ fn modules_own_named_immutables() {
     let init = compile(MODULE).expect("compile");
     let made = construct_with(&init, &[w(250)]);
     let runtime = made.returndata.clone();
-    assert_eq!(load_bytes(&view(&runtime, &made.storage, "fee_to()", &[]), 0), w(7));
-    assert_eq!(load_bytes(&view(&runtime, &made.storage, "window()", &[]), 0), w(10));
-    let pay = exec(&runtime, &word_data("pay(uint256)", &[w(1000)]), made.storage.clone(), w(1), w(0), w(0)).expect("pay");
+    assert_eq!(
+        load_bytes(&view(&runtime, &made.storage, "fee_to()", &[]), 0),
+        w(7)
+    );
+    assert_eq!(
+        load_bytes(&view(&runtime, &made.storage, "window()", &[]), 0),
+        w(10)
+    );
+    let pay = exec(
+        &runtime,
+        &word_data("pay(uint256)", &[w(1000)]),
+        made.storage.clone(),
+        w(1),
+        w(0),
+        w(0),
+    )
+    .expect("pay");
     assert_eq!(slot(&pay.storage, 0), w(25));
-    let quoted = exec(&runtime, &word_data("quoted(address)", &[w(0xcd)]), made.storage.clone(), w(1), w(0), w(0)).expect("quoted");
+    let quoted = exec(
+        &runtime,
+        &word_data("quoted(address)", &[w(0xcd)]),
+        made.storage.clone(),
+        w(1),
+        w(0),
+        w(0),
+    )
+    .expect("quoted");
     assert!(!quoted.reverted, "{}", pretty(&quoted.returndata));
     assert_eq!(slot(&quoted.storage, 0), w(41_010));
 }
@@ -175,7 +213,10 @@ fn immutables_are_written_only_while_setting_up() {
     );
     let init = compile(&ok).expect("compile");
     let made = construct_with(&init, &[w(4)]);
-    assert_eq!(load_bytes(&view(&made.returndata, &made.storage, "x()", &[]), 0), w(5));
+    assert_eq!(
+        load_bytes(&view(&made.returndata, &made.storage, "x()", &[]), 0),
+        w(5)
+    );
     assert_eq!(slot(&made.storage, 0), w(5));
     let cases = [
         (
@@ -222,11 +263,11 @@ fn immutables_are_written_only_while_setting_up() {
         ),
         (
             format!("{head}immutable other at \"lithe.immutable\" is record {{ y : nat; }}\n"),
-            "storage id `lithe.immutable` conflicts",
+            "share the id \"lithe.immutable\"",
         ),
         (
             format!("{head}storage s at \"lithe.immutable\" is record {{ y : nat; }}\n"),
-            "storage id `lithe.immutable` conflicts",
+            "share the id \"lithe.immutable\"",
         ),
         (
             "immutable is record { m : map(address, nat); }\nstorage is record { n : nat; }\n".to_string(),
@@ -307,26 +348,48 @@ fn upgradeable_immutables_live_in_proxy_storage() {
     let owner = w(0x0e);
     let mut storage: HashMap<Word, Word> = [(implementation, a)].into_iter().collect();
     let was = CONSTRUCTING.replace(true);
-    let made = exec(&proxy, &word_data("deploy(address,uint256)", &[owner, w(500)]), storage.clone(), owner, w(0), w(0));
+    let made = exec(
+        &proxy,
+        &word_data("deploy(address,uint256)", &[owner, w(500)]),
+        storage.clone(),
+        owner,
+        w(0),
+        w(0),
+    );
     CONSTRUCTING.set(was);
     let made = made.expect("deploy");
     assert!(!made.reverted, "{}", pretty(&made.returndata));
     storage = made.storage;
     let root = crate::keccak::erc7201("lithe.immutable");
     let packed = Word::from_u64(30).shl(160).bitor(owner);
-    assert_eq!(storage[&root], packed, "owner and fee pack into the root slot");
+    assert_eq!(
+        storage[&root], packed,
+        "owner and fee pack into the root slot"
+    );
     assert_eq!(storage[&crate::keccak::erc7201("vault.limits")], w(500));
     let run = |storage: &HashMap<Word, Word>, data: Vec<u8>| {
         exec(&proxy, &data, storage.clone(), owner, w(0), w(0)).expect("run")
     };
-    assert_eq!(load_bytes(&run(&storage, word_data("owner()", &[])).returndata, 0), owner);
-    assert_eq!(load_bytes(&run(&storage, word_data("fee()", &[])).returndata, 0), w(30));
+    assert_eq!(
+        load_bytes(&run(&storage, word_data("owner()", &[])).returndata, 0),
+        owner
+    );
+    assert_eq!(
+        load_bytes(&run(&storage, word_data("fee()", &[])).returndata, 0),
+        w(30)
+    );
     let migrate = word_data("set_floor(uint256)", &[w(7)]);
     let out = run(&storage, super::split::upgrade_to_and_call(b, &migrate));
     assert!(!out.reverted, "{}", pretty(&out.returndata));
     storage = out.storage;
-    assert_eq!(load_bytes(&run(&storage, word_data("floor()", &[])).returndata, 0), w(7));
-    assert_eq!(load_bytes(&run(&storage, word_data("cap()", &[])).returndata, 0), w(500));
+    assert_eq!(
+        load_bytes(&run(&storage, word_data("floor()", &[])).returndata, 0),
+        w(7)
+    );
+    assert_eq!(
+        load_bytes(&run(&storage, word_data("cap()", &[])).returndata, 0),
+        w(500)
+    );
     DEPLOYED.with(|d| d.borrow_mut().clear());
 }
 
@@ -424,18 +487,36 @@ fn facets_read_immutables_after_their_calldata() {
     for (runtime, name) in [(&whole, "whole"), (&ours, "split")] {
         let out = call_raw(runtime, &raw);
         assert!(!out.reverted, "{name}");
-        assert_eq!(abi_string_value(&out.returndata), raw, "{name} sees its own calldata");
-        assert_eq!(load_bytes(&call(runtime, "quote(uint256)", &[w(2)]).returndata, 0), w(1_010), "{name}");
-        assert_eq!(load_bytes(&call(runtime, "token()", &[]).returndata, 0), w(1), "{name}");
+        assert_eq!(
+            abi_string_value(&out.returndata),
+            raw,
+            "{name} sees its own calldata"
+        );
+        assert_eq!(
+            load_bytes(&call(runtime, "quote(uint256)", &[w(2)]).returndata, 0),
+            w(1_010),
+            "{name}"
+        );
+        assert_eq!(
+            load_bytes(&call(runtime, "token()", &[]).returndata, 0),
+            w(1),
+            "{name}"
+        );
     }
     let methods = crate::route::method_ids(&checked).expect("methods");
     super::differential::compare_builds("immutables", &methods, &whole, &ours, 300, true);
     // Another contract exposing the module, with other values and code of its own, shares
     // the facet.
-    let other = SPLIT
-        .replace("uint32(1_000)", "uint32(7)")
-        .replace("external view function unit() : nat is\n  Base.unit()", "external view function twice() : nat is\n  Base.unit() * 2n");
-    let other = crate::split::build(&super::split::checked_src(&other), "Other", &super::split::all_facets()).expect("other");
+    let other = SPLIT.replace("uint32(1_000)", "uint32(7)").replace(
+        "external view function unit() : nat is\n  Base.unit()",
+        "external view function twice() : nat is\n  Base.unit() * 2n",
+    );
+    let other = crate::split::build(
+        &super::split::checked_src(&other),
+        "Other",
+        &super::split::all_facets(),
+    )
+    .expect("other");
     assert_eq!(other.facets[0].address, split.facets[0].address);
     OPAQUE_CODE.set(false);
     DEPLOYED.with(|d| d.borrow_mut().clear());
@@ -450,16 +531,36 @@ fn upgradeable_routers_append_stored_immutables() {
     );
     let checked = super::split::checked_src(&src);
     let split = crate::split::build(&checked, "Pool", &super::split::all_facets()).expect("split");
-    let plain = crate::split::build(&super::split::checked_src(SPLIT), "Pool", &super::split::all_facets()).expect("plain");
+    let plain = crate::split::build(
+        &super::split::checked_src(SPLIT),
+        "Pool",
+        &super::split::all_facets(),
+    )
+    .expect("plain");
     assert_eq!(split.facets[0].address, plain.facets[0].address);
     let router = super::split::deploy_split(&split);
     let was = CONSTRUCTING.replace(true);
-    let made = exec(&router, &word_data("deploy()", &[]), HashMap::new(), w(9), w(0), w(0));
+    let made = exec(
+        &router,
+        &word_data("deploy()", &[]),
+        HashMap::new(),
+        w(9),
+        w(0),
+        w(0),
+    );
     CONSTRUCTING.set(was);
     let made = made.expect("deploy");
     assert!(!made.reverted, "{}", pretty(&made.returndata));
     let run = |sig: &str, args: &[Word]| {
-        let out = exec(&router, &word_data(sig, args), made.storage.clone(), w(1), w(0), w(0)).expect(sig);
+        let out = exec(
+            &router,
+            &word_data(sig, args),
+            made.storage.clone(),
+            w(1),
+            w(0),
+            w(0),
+        )
+        .expect(sig);
         assert!(!out.reverted, "{sig}: {}", pretty(&out.returndata));
         load_bytes(&out.returndata, 0)
     };
@@ -514,22 +615,33 @@ contract Bare is {
   external view function x() : nat is immutable.x
 }
 "#;
-    let contracts = crate::compile_contracts(src).expect("compile");
+    let contracts = compile_contracts(src).expect("compile");
     let code = |name: &str| {
         contracts
             .iter()
-            .find(|(n, _)| n.as_deref() == Some(name))
+            .find(|(n, _)| n == name)
             .map(|(_, c)| c.clone())
             .expect(name)
     };
     let factory = deploy(&code("Factory")).expect("factory");
-    let opened = exec(&factory, &word_data("open(uint256)", &[w(30)]), HashMap::new(), w(0xabc), w(0), w(0)).expect("open");
+    let opened = exec(
+        &factory,
+        &word_data("open(uint256)", &[w(30)]),
+        HashMap::new(),
+        w(0xabc),
+        w(0),
+        w(0),
+    )
+    .expect("open");
     assert!(!opened.reverted, "{}", pretty(&opened.returndata));
     let (vault, _) = DEPLOYED
         .with(|d| d.borrow().get(&slot(&opened.storage, 0)).cloned())
         .expect("deployed");
     let none = HashMap::new();
-    assert_eq!(load_bytes(&view(&vault, &none, "owner()", &[]), 0), w(0xabc));
+    assert_eq!(
+        load_bytes(&view(&vault, &none, "owner()", &[]), 0),
+        w(0xabc)
+    );
     assert_eq!(load_bytes(&view(&vault, &none, "fee()", &[]), 0), w(30));
     assert_eq!(load_bytes(&view(&vault, &none, "selling()", &[]), 0), w(1));
     let bare = deploy(&code("Bare")).expect("bare");

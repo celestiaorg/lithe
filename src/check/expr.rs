@@ -1,7 +1,13 @@
 use super::*;
 
 impl Checker {
-    pub(super) fn annotated(&mut self, line: u32, col: u32, ty: &TypeRef, got: usize) -> Result<usize, Error> {
+    pub(super) fn annotated(
+        &mut self,
+        line: u32,
+        col: u32,
+        ty: &TypeRef,
+        got: usize,
+    ) -> Result<usize, Error> {
         let id = self.build(ty)?;
         if self.same(got, id) {
             Ok(id)
@@ -14,7 +20,11 @@ impl Checker {
         }
     }
 
-    pub(super) fn check_expr_as(&mut self, e: &mut Expr, expect: Option<usize>) -> Result<(), Error> {
+    pub(super) fn check_expr_as(
+        &mut self,
+        e: &mut Expr,
+        expect: Option<usize>,
+    ) -> Result<(), Error> {
         let saved = self.expect;
         self.expect = expect;
         let result = self.check_expr(e);
@@ -123,7 +133,13 @@ impl Checker {
                 *ty = f.ty;
                 Ok(())
             }
-            Expr::Index { base, index, line, col, .. } if !is_named(base) => {
+            Expr::Index {
+                base,
+                index,
+                line,
+                col,
+                ..
+            } if !is_named(base) => {
                 self.check_expr(base)?;
                 if self.types[base.ty()].kind != TyKind::Bytes {
                     return Err(error(*line, *col, "this value cannot be indexed"));
@@ -134,7 +150,8 @@ impl Checker {
             Expr::Field { .. } | Expr::Index { .. } => {
                 let p = self.place(e)?;
                 self.pure_storage(e.line(), e.col(), p.sym)?;
-                if matches!(e, Expr::Index { base, .. } if self.types[base.ty()].kind == TyKind::Bytes) {
+                if matches!(e, Expr::Index { base, .. } if self.types[base.ty()].kind == TyKind::Bytes)
+                {
                     return self.byte_at(e);
                 }
                 Ok(())
@@ -245,9 +262,7 @@ impl Checker {
                     self.check_expr(right)?;
                 }
                 *ty = self.check_bin(*line, *col, *op, left.ty(), right.ty())?;
-                let bare = |e: &Expr| {
-                    matches!(e, Expr::Call { builtin: Some(Builtin::Ctor(_)), args, .. } if args.is_empty())
-                };
+                let bare = |e: &Expr| matches!(e, Expr::Call { builtin: Some(Builtin::Ctor(_)), args, .. } if args.is_empty());
                 if is_sum(&self.types, left.ty())
                     && !is_static_value(&self.types, left.ty())
                     && !bare(left)
@@ -496,11 +511,7 @@ impl Checker {
                     }
                     // A result is any ABI value, decoded and checked when it arrives.
                     if ret != TY_UNIT && !abi_value(&self.types, answer) {
-                        return Err(error(
-                            *line,
-                            *col,
-                            "a call's result must be an ABI value",
-                        ));
+                        return Err(error(*line, *col, "a call's result must be an ABI value"));
                     }
                     *iface = Some(bid);
                     *method = Some(mi);
@@ -525,7 +536,11 @@ impl Checker {
                         self.check_expr_as(code, Some(bytes))?;
                     }
                     if args.len() != 1 || !self.same(args[0].ty(), bytes) {
-                        return Err(error(*line, *col, "`create(code)` runs a `bytes` value as creation code"));
+                        return Err(error(
+                            *line,
+                            *col,
+                            "`create(code)` runs a `bytes` value as creation code",
+                        ));
                     }
                     self.forbid_effect(*line, *col, "create an operation")?;
                     *ty = TY_OPERATION;
@@ -892,7 +907,11 @@ impl Checker {
                         if let Some(prev) = result {
                             if !self.same(prev, at) {
                                 let what = if is_if { "`if` branches" } else { "case arms" };
-                                return Err(error(arm.line, arm.col, format!("{what} have different types")));
+                                return Err(error(
+                                    arm.line,
+                                    arm.col,
+                                    format!("{what} have different types"),
+                                ));
                             }
                         } else {
                             result = Some(at);
@@ -1066,7 +1085,10 @@ impl Checker {
             return Err(error(
                 line,
                 col,
-                format!("`{}` is a variant; write one of its cases", self.type_name(expect)),
+                format!(
+                    "`{}` is a variant; write one of its cases",
+                    self.type_name(expect)
+                ),
             ));
         }
         let peeled = self.peel(expect);
@@ -1086,7 +1108,8 @@ impl Checker {
             TyKind::Address => Some(40),
             _ => None,
         };
-        if let Some(width) = width.filter(|w| !word.is_zero() && digits.map(u32::from) != Some(*w)) {
+        if let Some(width) = width.filter(|w| !word.is_zero() && digits.map(u32::from) != Some(*w))
+        {
             return Err(error(
                 line,
                 col,
@@ -1099,7 +1122,10 @@ impl Checker {
         let ok = match self.types[peeled].kind {
             TyKind::Nat | TyKind::Wei | TyKind::Timestamp => fits_unsigned(word, bits),
             TyKind::Int => fits_signed(word, bits),
-            TyKind::Bytes => digits.map_or(byte_len(word), |d| u32::from(d / 2)) <= u32::from(if bits == 0 { 32 } else { bits }),
+            TyKind::Bytes => {
+                digits.map_or(byte_len(word), |d| u32::from(d / 2))
+                    <= u32::from(if bits == 0 { 32 } else { bits })
+            }
             TyKind::Address => byte_len(word) <= 20,
             _ => false,
         };
@@ -1215,9 +1241,11 @@ impl Checker {
             // Records, tuples, and fixed lists compare member by member: a fixed-size one by
             // its words, and one with strings, bytes, or lists in it by its encoding.
             BinOp::Eq | BinOp::Neq
-                if matches!(self.types[peel_id(&self.types, l)].kind, TyKind::Record | TyKind::Tuple)
-                    || (self.types[peel_id(&self.types, l)].kind == TyKind::List
-                        && self.types[peel_id(&self.types, l)].bits > 0) =>
+                if matches!(
+                    self.types[peel_id(&self.types, l)].kind,
+                    TyKind::Record | TyKind::Tuple
+                ) || (self.types[peel_id(&self.types, l)].kind == TyKind::List
+                    && self.types[peel_id(&self.types, l)].bits > 0) =>
             {
                 if !self.same(l, r) || !is_value(&self.types, l) {
                     return Err(error(
@@ -1272,7 +1300,11 @@ impl Checker {
                     && !fixed_bytes
                     && !matches!(
                         lk,
-                        TyKind::Nat | TyKind::Int | TyKind::Wei | TyKind::Timestamp | TyKind::Address
+                        TyKind::Nat
+                            | TyKind::Int
+                            | TyKind::Wei
+                            | TyKind::Timestamp
+                            | TyKind::Address
                     )
                 {
                     return Err(error(
@@ -1286,7 +1318,13 @@ impl Checker {
         }
     }
 
-    pub(super) fn list_span(&self, _line: u32, _col: u32, _id: usize, _expr: &Expr) -> Result<u32, Error> {
+    pub(super) fn list_span(
+        &self,
+        _line: u32,
+        _col: u32,
+        _id: usize,
+        _expr: &Expr,
+    ) -> Result<u32, Error> {
         Ok(0)
     }
 
@@ -1473,7 +1511,12 @@ impl Checker {
     fn byte_at(&mut self, e: &mut Expr) -> Result<(), Error> {
         let ty = self.bytes_n(1)?;
         let (line, col) = (e.line(), e.col());
-        let unit = Expr::Lit { line, col, lit: Lit::Unit, ty: TY_UNIT };
+        let unit = Expr::Lit {
+            line,
+            col,
+            lit: Lit::Unit,
+            ty: TY_UNIT,
+        };
         let Expr::Index { base, index, .. } = std::mem::replace(e, unit) else {
             unreachable!()
         };
@@ -1493,7 +1536,13 @@ impl Checker {
     }
 
     /// `b[start:end]` on `bytes`. A slice checked again keeps its type.
-    pub(super) fn check_slice(&mut self, line: u32, col: u32, args: &mut [Expr], ty: &mut usize) -> Result<(), Error> {
+    pub(super) fn check_slice(
+        &mut self,
+        line: u32,
+        col: u32,
+        args: &mut [Expr],
+        ty: &mut usize,
+    ) -> Result<(), Error> {
         let bytes = self.bytes_n(0)?;
         if *ty == bytes {
             return Ok(());

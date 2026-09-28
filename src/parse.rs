@@ -200,10 +200,10 @@ impl<'a> Parser<'a> {
                             _ => "an interface cannot be private",
                         }));
                     }
-                    self.bare_decl(&mut implicit, &mut explicit, &mut saw_implicit, true)?;
+                    self.bare_decl(&mut implicit, &explicit, &mut saw_implicit, true)?;
                 }
                 _ => {
-                    self.bare_decl(&mut implicit, &mut explicit, &mut saw_implicit, false)?;
+                    self.bare_decl(&mut implicit, &explicit, &mut saw_implicit, false)?;
                 }
             }
         }
@@ -335,11 +335,15 @@ impl<'a> Parser<'a> {
             Kind::Deploy if private => {
                 return Err(self.err("`deploy` cannot be private"));
             }
-            Kind::Deploy => body.funcs.push(self.item(Deco::of(ItemKind::Deploy), false)?),
+            Kind::Deploy => body
+                .funcs
+                .push(self.item(Deco::of(ItemKind::Deploy), false)?),
             Kind::Migrate if private => {
                 return Err(self.err("a migration cannot be private"));
             }
-            Kind::Migrate => body.funcs.push(self.item(Deco::of(ItemKind::Migrate), false)?),
+            Kind::Migrate => body
+                .funcs
+                .push(self.item(Deco::of(ItemKind::Migrate), false)?),
             Kind::Upgradeable if private => {
                 return Err(self.err("`upgradeable` cannot be private"));
             }
@@ -595,7 +599,11 @@ impl<'a> Parser<'a> {
                     let at = self.at();
                     let deco = self.header()?;
                     if let Some(word) = special_word(deco.kind) {
-                        return Err(error(at.0, at.1, format!("`{word}` belongs to the contract")));
+                        return Err(error(
+                            at.0,
+                            at.1,
+                            format!("`{word}` belongs to the contract"),
+                        ));
                     }
                     funcs.push(self.item(deco, false)?);
                 }
@@ -813,7 +821,8 @@ impl<'a> Parser<'a> {
         }
         self.want(Kind::Is)?;
         // `Open | Closed` or `Open of nat`: a variant without its opening `|`.
-        let ty = if self.kind() == Kind::Ident && matches!(self.peek_kind(1), Kind::Pipe | Kind::Of) {
+        let ty = if self.kind() == Kind::Ident && matches!(self.peek_kind(1), Kind::Pipe | Kind::Of)
+        {
             self.variant_ty()?
         } else {
             self.ty()?
@@ -1251,9 +1260,14 @@ impl<'a> Parser<'a> {
         if self.special_ahead() {
             let word = self.slice().to_string();
             if self.declaring {
-                return Err(self.err(format!("`{word}` belongs to the contract, not an interface")));
+                return Err(self.err(format!(
+                    "`{word}` belongs to the contract, not an interface"
+                )));
             }
-            if seen.iter().any(|&(_, k)| !matches!(k, Kind::Payable | Kind::Nonreentrant)) {
+            if seen
+                .iter()
+                .any(|&(_, k)| !matches!(k, Kind::Payable | Kind::Nonreentrant))
+            {
                 return Err(self.err(format!("`{word}` takes only `payable` and `nonreentrant`")));
             }
             if seen.windows(2).any(|w| w[0].0 > w[1].0) {
@@ -1527,7 +1541,8 @@ impl<'a> Parser<'a> {
     ) -> Result<Func, Error> {
         if self.kind() == Kind::LParen {
             return Err(self.err(if kind == ItemKind::Fallback {
-                "`fallback` takes no parameters; read the calldata with `Evm.calldata()`".to_string()
+                "`fallback` takes no parameters; read the calldata with `Evm.calldata()`"
+                    .to_string()
             } else {
                 format!("`{word}` takes no parameters")
             }));
@@ -1552,7 +1567,11 @@ impl<'a> Parser<'a> {
             _ => None,
         };
         let (stmts, tail) = if let Some(how) = forward {
-            let verb = if how == Forward::Delegate { "delegates" } else { "forwards" };
+            let verb = if how == Forward::Delegate {
+                "delegates"
+            } else {
+                "forwards"
+            };
             if ret.is_some() {
                 return Err(self.err(format!(
                     "a `fallback` that {verb} returns what its target returns; drop the result type"
@@ -1563,7 +1582,10 @@ impl<'a> Parser<'a> {
             }
             self.bump();
             if self.kind() != Kind::Ident || self.slice() != "to" {
-                return Err(self.err(format!("expected `to` after `{verb}`, found {}", self.found())));
+                return Err(self.err(format!(
+                    "expected `to` after `{verb}`, found {}",
+                    self.found()
+                )));
             }
             self.bump();
             let target = self.expr()?;
@@ -1823,7 +1845,7 @@ impl<'a> Parser<'a> {
             kind if kind == Kind::Fail || self.forward_ahead() => Ok(Stmt::Fail {
                 reason: self.fail_reason()?,
             }),
-            Kind::Failwith => return Err(self.err("errors must be typed; use `fail`")),
+            Kind::Failwith => Err(self.err("errors must be typed; use `fail`")),
             Kind::SkipKw => {
                 self.bump();
                 Ok(Stmt::Skip)
@@ -2892,10 +2914,10 @@ impl<'a> Parser<'a> {
     fn found(&self) -> String {
         if self.kind() == Kind::Eof {
             "end of file".to_string()
-        } else if self.kind() == Kind::Ident || self.kind() == Kind::Nat || self.kind() == Kind::Int
-        {
-            format!("`{}`", self.lexeme())
-        } else if self.kind() == Kind::String {
+        } else if matches!(
+            self.kind(),
+            Kind::Ident | Kind::Nat | Kind::Int | Kind::String
+        ) {
             format!("`{}`", self.lexeme())
         } else {
             lex::kind_name(self.kind()).to_string()

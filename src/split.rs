@@ -25,8 +25,8 @@ pub const SIZE_LIMIT: usize = 24_576;
 /// The deterministic deployment proxy Foundry uses: calldata is a 32-byte salt, then the
 /// creation code, and it returns the created address.
 pub const DEPLOYER: [u8; 20] = [
-    0x4e, 0x59, 0xb4, 0x48, 0x47, 0xb3, 0x79, 0x57, 0x85, 0x88, 0x92, 0x0c, 0xa7, 0x8f, 0xbf,
-    0x26, 0xc0, 0xb4, 0x95, 0x6c,
+    0x4e, 0x59, 0xb4, 0x48, 0x47, 0xb3, 0x79, 0x57, 0x85, 0x88, 0x92, 0x0c, 0xa7, 0x8f, 0xbf, 0x26,
+    0xc0, 0xb4, 0x95, 0x6c,
 ];
 
 /// When a contract's exposed modules run from their facets.
@@ -201,21 +201,26 @@ fn build_uncached(checked: &Checked, name: &str, opts: &Options) -> Result<Split
     }
     let facets = parallel(&modules, |module| facet(checked, module, opts))?;
     let router = |chosen: &[usize]| -> Result<Option<Built>, Error> {
-        measure(checked, &router_shape(&entries, &facets, chosen, opts), opts)
+        measure(
+            checked,
+            &router_shape(&entries, &facets, chosen, opts),
+            opts,
+        )
     };
     let chosen: Vec<usize> = match opts.split {
         SplitMode::All => (0..facets.len()).collect(),
         _ => {
             // Each module's saving on its own decides the order; the one that saves the most
             // moves first, and more follow until the router fits.
-            let alone: Vec<Option<usize>> = parallel(&(0..facets.len()).collect::<Vec<_>>(), |&i| {
-                let shape = router_shape(&entries, &facets, &[i], opts);
-                Ok(match gen::codegen(checked, &shape) {
-                    Ok(built) => Some(built.runtime.len()),
-                    Err(err) if too_large(&err) => None,
-                    Err(err) => return Err(err),
-                })
-            })?;
+            let alone: Vec<Option<usize>> =
+                parallel(&(0..facets.len()).collect::<Vec<_>>(), |&i| {
+                    let shape = router_shape(&entries, &facets, &[i], opts);
+                    Ok(match gen::codegen(checked, &shape) {
+                        Ok(built) => Some(built.runtime.len()),
+                        Err(err) if too_large(&err) => None,
+                        Err(err) => return Err(err),
+                    })
+                })?;
             let mut order: Vec<usize> = (0..facets.len()).collect();
             order.sort_by_key(|&i| (alone[i].unwrap_or(usize::MAX), facets[i].name.clone()));
             let mut chosen = Vec::new();
@@ -275,7 +280,12 @@ fn exposed(checked: &Checked, entries: &[Entrypoint]) -> Vec<String> {
 }
 
 /// The router with the modules in `chosen` forwarded to their facets.
-fn router_shape(entries: &[Entrypoint], facets: &[Facet], chosen: &[usize], opts: &Options) -> Shape {
+fn router_shape(
+    entries: &[Entrypoint],
+    facets: &[Facet],
+    chosen: &[usize],
+    opts: &Options,
+) -> Shape {
     let mut keep = HashSet::new();
     let mut forward = Vec::new();
     for entry in entries {
@@ -296,7 +306,10 @@ fn router_shape(entries: &[Entrypoint], facets: &[Facet], chosen: &[usize], opts
             .iter()
             .map(|&i| address_word(facets[i].address))
             .collect(),
-        tails: chosen.iter().map(|&i| facets[i].immutables.clone()).collect(),
+        tails: chosen
+            .iter()
+            .map(|&i| facets[i].immutables.clone())
+            .collect(),
         part: false,
         opts: opts.clone(),
     }
@@ -349,7 +362,10 @@ fn too_large(err: &Error) -> bool {
 /// address.
 fn facet(checked: &Checked, module: &str, opts: &Options) -> Result<Facet, Error> {
     let prog = facet_program(&checked.source, module);
-    let key = (keccak256(format!("{prog:?}\0{opts:?}").as_bytes()), module.to_string());
+    let key = (
+        keccak256(format!("{prog:?}\0{opts:?}").as_bytes()),
+        module.to_string(),
+    );
     static BUILT: OnceLock<Mutex<HashMap<([u8; 32], String), Facet>>> = OnceLock::new();
     let memo = BUILT.get_or_init(|| Mutex::new(HashMap::new()));
     if let Some(facet) = memo.lock().ok().and_then(|memo| memo.get(&key).cloned()) {
@@ -375,7 +391,10 @@ fn facet(checked: &Checked, module: &str, opts: &Options) -> Result<Facet, Error
             return Err(error(
                 0,
                 0,
-                format!("module `{module}`'s facet {}", too_big(built.as_ref(), opts)),
+                format!(
+                    "module `{module}`'s facet {}",
+                    too_big(built.as_ref(), opts)
+                ),
             ));
         }
     };
@@ -388,7 +407,11 @@ fn facet(checked: &Checked, module: &str, opts: &Options) -> Result<Facet, Error
         abi: crate::route::abi(&checked)?,
         methods: crate::route::method_ids(&checked)?,
         needs: built.needs,
-        immutables: checked.immutables.iter().map(|block| block.id.clone()).collect(),
+        immutables: checked
+            .immutables
+            .iter()
+            .map(|block| block.id.clone())
+            .collect(),
     };
     if let Ok(mut memo) = memo.lock() {
         memo.insert(key, facet.clone());
@@ -405,7 +428,8 @@ pub(crate) fn facet_program(source: &Program, module: &str) -> Program {
     prog.funcs.clear();
     prog.domains.clear();
     prog.exposes.clear();
-    prog.types.retain(|decl| decl.name != "storage" && decl.origin != own);
+    prog.types
+        .retain(|decl| decl.name != "storage" && decl.origin != own);
     prog.errors.retain(|decl| decl.origin != own);
     prog.error_sets.retain(|decl| decl.origin != own);
     prog.events.retain(|decl| decl.origin != own);

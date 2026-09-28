@@ -80,8 +80,15 @@ external function open() is { storage.open := true; }
     assert_eq!(closed.returndata, selector("Closed()"));
     let mut storage = HashMap::new();
     storage.insert(Word::from_u64(0), Word::from_u64(1));
-    let paid = exec(&runtime, &[], storage.clone(), Word::from_u64(1), Word::from_u64(1), Word::from_u64(1))
-        .expect("run");
+    let paid = exec(
+        &runtime,
+        &[],
+        storage.clone(),
+        Word::from_u64(1),
+        Word::from_u64(1),
+        Word::from_u64(1),
+    )
+    .expect("run");
     assert!(!paid.reverted, "{}", pretty(&paid.returndata));
     // A `nonreentrant` receive is refused while the lock is held.
     let mut locked = HashMap::new();
@@ -180,7 +187,11 @@ external view function n() : nat is storage.n
     assert_eq!(slot(&unknown.storage, 1), Word::from_u64(7));
 
     // A fallback that is not payable refuses value on the short path too.
-    let strict = src.replacen("payable fallback is { storage.seen := Evm.value(); }", "fallback is { storage.n := 9n; }", 1);
+    let strict = src.replacen(
+        "payable fallback is { storage.seen := Evm.value(); }",
+        "fallback is { storage.n := 9n; }",
+        1,
+    );
     let runtime = deploy(&compile(&strict).expect("compile")).expect("deploy");
     assert!(run(&runtime, &entry[..3], 1).reverted);
     let short = run(&runtime, &entry[..3], 0);
@@ -217,34 +228,72 @@ payable fallback delegates to storage.implementation;
     let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
     let mut storage = HashMap::new();
     storage.insert(Word::from_u64(0), implementation);
-    let set = exec(&runtime, &word_data("set(uint256)", &[Word::from_u64(7)]), storage.clone(), Word::from_u64(1), Word::from_u64(0), Word::from_u64(0))
-        .expect("set");
+    let set = exec(
+        &runtime,
+        &word_data("set(uint256)", &[Word::from_u64(7)]),
+        storage.clone(),
+        Word::from_u64(1),
+        Word::from_u64(0),
+        Word::from_u64(0),
+    )
+    .expect("set");
     assert!(!set.reverted, "{}", pretty(&set.returndata));
     // The implementation's code wrote the proxy's storage.
     assert_eq!(slot(&set.storage, 1), Word::from_u64(7));
-    let got = exec(&runtime, &word_data("get()", &[]), set.storage.clone(), Word::from_u64(1), Word::from_u64(0), Word::from_u64(0))
-        .expect("get");
+    let got = exec(
+        &runtime,
+        &word_data("get()", &[]),
+        set.storage.clone(),
+        Word::from_u64(1),
+        Word::from_u64(0),
+        Word::from_u64(0),
+    )
+    .expect("get");
     assert_eq!(load_bytes(&got.returndata, 0), Word::from_u64(7));
     // A revert comes back unchanged.
-    let big = exec(&runtime, &word_data("set(uint256)", &[Word::from_u64(200)]), storage.clone(), Word::from_u64(1), Word::from_u64(0), Word::from_u64(0))
-        .expect("set");
+    let big = exec(
+        &runtime,
+        &word_data("set(uint256)", &[Word::from_u64(200)]),
+        storage.clone(),
+        Word::from_u64(1),
+        Word::from_u64(0),
+        Word::from_u64(0),
+    )
+    .expect("set");
     assert!(big.reverted);
     assert_eq!(big.returndata[..4], selector("TooBig(uint256)"));
     assert_eq!(load_bytes(&big.returndata, 4), Word::from_u64(200));
     // The call's value is the implementation's to take.
-    let funded = exec(&runtime, &word_data("fund()", &[]), storage, Word::from_u64(1), Word::from_u64(3), Word::from_u64(3))
-        .expect("fund");
+    let funded = exec(
+        &runtime,
+        &word_data("fund()", &[]),
+        storage,
+        Word::from_u64(1),
+        Word::from_u64(3),
+        Word::from_u64(3),
+    )
+    .expect("fund");
     assert!(!funded.reverted);
     assert_eq!(slot(&funded.storage, 1), Word::from_u64(3));
     // A target without code is refused, rather than answering with nothing.
     let mut empty = HashMap::new();
     empty.insert(Word::from_u64(0), Word::from_u64(0x5199));
-    let missing = exec(&runtime, &word_data("get()", &[]), empty, Word::from_u64(1), Word::from_u64(0), Word::from_u64(0))
-        .expect("get");
+    let missing = exec(
+        &runtime,
+        &word_data("get()", &[]),
+        empty,
+        Word::from_u64(1),
+        Word::from_u64(0),
+        Word::from_u64(0),
+    )
+    .expect("get");
     assert!(missing.reverted);
 
     let footprint = footprint(src).expect("footprint");
-    assert!(footprint.contains("delegates to: implementation"), "{footprint}");
+    assert!(
+        footprint.contains("delegates to: implementation"),
+        "{footprint}"
+    );
     assert!(warnings(src).expect("warnings").is_empty());
 }
 
@@ -274,20 +323,41 @@ external nonreentrant function locked() is { skip }
         "add(bytes4,address)",
         &[Word::from_be_bytes(sel), implementation],
     );
-    let routed = exec(&runtime, &word_data("get()", &[]), added.storage.clone(), Word::from_u64(1), Word::from_u64(0), Word::from_u64(0))
-        .expect("get");
+    let routed = exec(
+        &runtime,
+        &word_data("get()", &[]),
+        added.storage.clone(),
+        Word::from_u64(1),
+        Word::from_u64(0),
+        Word::from_u64(0),
+    )
+    .expect("get");
     assert!(!routed.reverted, "{}", pretty(&routed.returndata));
     assert_eq!(load_bytes(&routed.returndata, 0), Word::from_u64(0));
     // The lock marks the forwarded call, as it marks a deferred one, and is restored after.
-    let lock = routed.transient.get(&Word::from_u64(1)).copied().unwrap_or_else(|| Word::from_u64(0));
+    let lock = routed
+        .transient
+        .get(&Word::from_u64(1))
+        .copied()
+        .unwrap_or_else(|| Word::from_u64(0));
     assert_eq!(lock, Word::from_u64(0));
     // `forwards to` calls: the target runs on its own storage.
-    let set = exec(&runtime, &word_data("set(uint256)", &[Word::from_u64(8)]), added.storage.clone(), Word::from_u64(1), Word::from_u64(0), Word::from_u64(0))
-        .expect("set");
+    let set = exec(
+        &runtime,
+        &word_data("set(uint256)", &[Word::from_u64(8)]),
+        added.storage.clone(),
+        Word::from_u64(1),
+        Word::from_u64(0),
+        Word::from_u64(0),
+    )
+    .expect("set");
     assert!(set.reverted);
     assert_eq!(set.returndata[..4], selector("UnknownSelector(bytes4)"));
     let errors = errors(src).expect("errors");
-    assert!(errors.contains("fallback\n\n  UnknownSelector(bytes4)"), "{errors}");
+    assert!(
+        errors.contains("fallback\n\n  UnknownSelector(bytes4)"),
+        "{errors}"
+    );
     let footprint = footprint(src).expect("footprint");
     assert!(footprint.contains("forwards to: route"), "{footprint}");
 }
@@ -302,16 +372,34 @@ payable fallback forwards to storage.target;
     let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
     let mut storage = HashMap::new();
     storage.insert(Word::from_u64(0), target);
-    let set = exec(&runtime, &word_data("set(uint256)", &[Word::from_u64(9)]), storage.clone(), Word::from_u64(1), Word::from_u64(0), Word::from_u64(0))
-        .expect("set");
+    let set = exec(
+        &runtime,
+        &word_data("set(uint256)", &[Word::from_u64(9)]),
+        storage.clone(),
+        Word::from_u64(1),
+        Word::from_u64(0),
+        Word::from_u64(0),
+    )
+    .expect("set");
     assert!(!set.reverted, "{}", pretty(&set.returndata));
     assert_eq!(slot(&set.storage, 1), Word::from_u64(0));
-    let (_, theirs) = DEPLOYED.with(|d| d.borrow().get(&target).cloned()).expect("target");
+    let (_, theirs) = DEPLOYED
+        .with(|d| d.borrow().get(&target).cloned())
+        .expect("target");
     assert_eq!(slot(&theirs, 1), Word::from_u64(9));
-    let funded = exec(&runtime, &word_data("fund()", &[]), storage, Word::from_u64(1), Word::from_u64(4), Word::from_u64(4))
-        .expect("fund");
+    let funded = exec(
+        &runtime,
+        &word_data("fund()", &[]),
+        storage,
+        Word::from_u64(1),
+        Word::from_u64(4),
+        Word::from_u64(4),
+    )
+    .expect("fund");
     assert!(!funded.reverted);
-    assert!(funded.trace.iter().any(|ev| matches!(ev, Ev::Call { to, value } if *to == target && *value == Word::from_u64(4))));
+    assert!(funded.trace.iter().any(
+        |ev| matches!(ev, Ev::Call { to, value } if *to == target && *value == Word::from_u64(4))
+    ));
 }
 
 #[test]
@@ -350,7 +438,12 @@ pure function fallback(const n : nat) : nat is n + 1n
 external function receive(const n : nat) is { storage.receive := fallback(n); }
 ";
     let runtime = deploy(&compile(named).expect("compile")).expect("deploy");
-    let out = run_ok(&runtime, &HashMap::new(), "receive(uint256)", &[Word::from_u64(4)]);
+    let out = run_ok(
+        &runtime,
+        &HashMap::new(),
+        "receive(uint256)",
+        &[Word::from_u64(4)],
+    );
     assert_eq!(slot(&out.storage, 0), Word::from_u64(5));
 }
 
@@ -385,15 +478,28 @@ external view function fell() : nat is storage.fell
     for facet in split.prerequisites() {
         let runtime = deploy(&facet.init).expect("facet");
         DEPLOYED.with(|d| {
-            d.borrow_mut()
-                .insert(crate::split::address_word(facet.address), (runtime, HashMap::new()))
+            d.borrow_mut().insert(
+                crate::split::address_word(facet.address),
+                (runtime, HashMap::new()),
+            )
         });
     }
     let router = deploy(&split.creation).expect("router");
     // A module's selector still reaches its facet, and carries no value it cannot take.
-    let bumped = run(&router, &word_data("bump(uint256)", &[Word::from_u64(3)]), 0);
+    let bumped = run(
+        &router,
+        &word_data("bump(uint256)", &[Word::from_u64(3)]),
+        0,
+    );
     assert!(!bumped.reverted, "{}", pretty(&bumped.returndata));
-    assert!(run(&router, &word_data("bump(uint256)", &[Word::from_u64(3)]), 1).reverted);
+    assert!(
+        run(
+            &router,
+            &word_data("bump(uint256)", &[Word::from_u64(3)]),
+            1
+        )
+        .reverted
+    );
     let plain = run(&router, &[], 6);
     assert!(!plain.reverted);
     assert_eq!(slot(&plain.storage, 0), Word::from_u64(6));

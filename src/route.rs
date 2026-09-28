@@ -124,7 +124,10 @@ pub(crate) fn render(routes: &[Route], parts: Option<&HashMap<[u8; 4], String>>)
         out.push_str("  path:\n    ");
         out.push_str(&r.path.join(" -> "));
         out.push_str("\n\n");
-        if let Some(part) = parts.filter(|_| r.by_selector()).and_then(|parts| parts.get(&r.sel)) {
+        if let Some(part) = parts
+            .filter(|_| r.by_selector())
+            .and_then(|parts| parts.get(&r.sel))
+        {
             out.push_str("  runs in:\n    ");
             out.push_str(part);
             out.push_str("\n\n");
@@ -185,14 +188,14 @@ fn section(out: &mut String, title: &str, items: &[String]) {
 }
 
 fn dispatcher<'a>(types: &[RType], f: &'a Func) -> Option<&'a Expr> {
-    if f.params.first().is_none_or(|p| types[p.ty_id].variants.is_empty()) {
+    if f.params
+        .first()
+        .is_none_or(|p| types[p.ty_id].variants.is_empty())
+    {
         return None;
     }
     for s in &f.stmts {
-        if !matches!(
-            s,
-            Stmt::Assert { .. } | Stmt::Skip | Stmt::Const { .. }
-        ) {
+        if !matches!(s, Stmt::Assert { .. } | Stmt::Skip | Stmt::Const { .. }) {
             return None;
         }
     }
@@ -405,11 +408,7 @@ fn direct(checked: &Checked, idx: usize, f: &Func, seen: &mut Vec<String>) -> Re
         queries,
         events,
         operations,
-        raises: f
-            .errors
-            .iter()
-            .map(|i| checked.raise_sig(*i))
-            .collect(),
+        raises: f.errors.iter().map(|i| checked.raise_sig(*i)).collect(),
         inputs,
         outputs: if f.ret.is_some() {
             abi_fields(&checked.types, f.ret_ty, "")?
@@ -504,9 +503,7 @@ fn dispatch_call(checked: &Checked, arm: &Arm) -> Option<usize> {
         return None;
     };
     let callee = &checked.prog.funcs[*idx];
-    if dispatcher(&checked.types, callee).is_none() {
-        return None;
-    }
+    dispatcher(&checked.types, callee)?;
     match (&arm.bind, args.as_slice()) {
         (None, []) => Some(*idx),
         (Some(bind), [Expr::Ident { name: arg, .. }]) if arg == bind => Some(*idx),
@@ -515,7 +512,10 @@ fn dispatch_call(checked: &Checked, arm: &Arm) -> Option<usize> {
 }
 
 fn variant_of<'a>(checked: &'a Checked, scrut: &Expr, ctor: &str) -> Option<&'a RVariant> {
-    checked.types[scrut.ty()].variants.iter().find(|v| v.name == ctor)
+    checked.types[scrut.ty()]
+        .variants
+        .iter()
+        .find(|v| v.name == ctor)
 }
 
 fn contains_case(types: &[RType], f: &Func) -> bool {
@@ -569,7 +569,12 @@ fn stmt_case(types: &[RType], stmts: &[Stmt]) -> bool {
                 ForIter::List(xs) => expr(xs),
             };
             in_iter
-                || until.iter().chain(bound).chain(elem_init).chain(length).any(expr)
+                || until
+                    .iter()
+                    .chain(bound)
+                    .chain(elem_init)
+                    .chain(length)
+                    .any(expr)
                 || stmt_case(types, body)
         }
         Stmt::Skip => false,
@@ -593,9 +598,7 @@ fn expr_case(types: &[RType], e: &Expr) -> bool {
         Expr::Case { .. } => true,
         Expr::Query { expr: e, gas, .. } => expr(e) || gas.as_ref().is_some_and(|g| expr(g)),
         Expr::Unary { expr: e, .. } => expr(e),
-        Expr::Binary { left, right, .. } => {
-            expr(left) || expr(right)
-        }
+        Expr::Binary { left, right, .. } => expr(left) || expr(right),
         Expr::Tuple { elems, .. } | Expr::List { elems, .. } => elems.iter().any(expr),
         Expr::Record { fields, .. } => fields.iter().any(|(_, e)| expr(e)),
         Expr::Call { args, base, .. } => {
@@ -1013,9 +1016,7 @@ fn collect_raises(
     if let Some(expr) = tail {
         raise_expr(checked, expr, &mut ids);
     }
-    ids.iter()
-        .map(|id| checked.raise_sig(*id))
-        .collect()
+    ids.iter().map(|id| checked.raise_sig(*id)).collect()
 }
 
 fn raise_stmt(checked: &Checked, stmt: &Stmt, ids: &mut Vec<usize>) {
@@ -1198,7 +1199,10 @@ fn op_label(e: &Expr) -> Option<String> {
             name,
             args,
             ..
-        } => Some(format!("Evm.{name}({})", args.first().map(fmt_expr).unwrap_or_default())),
+        } => Some(format!(
+            "Evm.{name}({})",
+            args.first().map(fmt_expr).unwrap_or_default()
+        )),
         Expr::Call {
             builtin: Some(Builtin::Create),
             name,
@@ -1208,7 +1212,10 @@ fn op_label(e: &Expr) -> Option<String> {
             builtin: Some(Builtin::RawCreate),
             args,
             ..
-        } => Some(format!("create({})", args.first().map(fmt_expr).unwrap_or_default())),
+        } => Some(format!(
+            "create({})",
+            args.first().map(fmt_expr).unwrap_or_default()
+        )),
         Expr::Call {
             name,
             base: Some(b),
@@ -1329,7 +1336,10 @@ fn fmt_expr(e: &Expr) -> String {
             Lit::Unit => "Unit".into(),
             Lit::Nil => "nil".into(),
             Lit::Str(s) => format!("\"{s}\""),
-            Lit::Bytes(b) => format!("0x{}", b.iter().map(|x| format!("{x:02x}")).collect::<String>()),
+            Lit::Bytes(b) => format!(
+                "0x{}",
+                b.iter().map(|x| format!("{x:02x}")).collect::<String>()
+            ),
         },
         _ => "...".into(),
     }
@@ -1375,9 +1385,11 @@ pub(crate) fn render_footprints(
                 }
             }
         }
-        let forward = r
-            .direct
-            .and_then(|func| checked.prog.funcs[func].forward.zip(checked.prog.funcs[func].tail.as_ref()));
+        let forward = r.direct.and_then(|func| {
+            checked.prog.funcs[func]
+                .forward
+                .zip(checked.prog.funcs[func].tail.as_ref())
+        });
         let mut fields = match forward {
             // A forwarding `fallback` only reads, to find where its call goes.
             Some((how, target)) => vec![
@@ -1427,11 +1439,7 @@ pub(crate) fn render_footprints(
             &mut Vec::new(),
             &mut Vec::new(),
         );
-        let raises: Vec<String> = f
-            .errors
-            .iter()
-            .map(|i| checked.raise_sig(*i))
-            .collect();
+        let raises: Vec<String> = f.errors.iter().map(|i| checked.raise_sig(*i)).collect();
         let mut fields = vec![
             ("reads", bare(&reads)),
             ("raises", bare(&raises)),
@@ -1572,11 +1580,7 @@ pub(crate) fn render_analysis(checked: &Checked) -> String {
             &mut Vec::new(),
             &mut Vec::new(),
         );
-        let raises: Vec<String> = f
-            .errors
-            .iter()
-            .map(|i| checked.raise_sig(*i))
-            .collect();
+        let raises: Vec<String> = f.errors.iter().map(|i| checked.raise_sig(*i)).collect();
         entries.push(format!(
             "  {{\n    \"name\": {},\n    \"effect\": \"{}\",\n    \"payable\": false,\n    \"nonreentrant\": {},\n    \"reads\": {},\n    \"writes\": [],\n    \"emits\": [],\n    \"defers\": [],\n    \"raises\": {}\n  }}",
             json_str(&f.name),

@@ -54,7 +54,12 @@ impl<'a> Gen<'a> {
 
     /// A facet reads every immutable it has after its calldata.
     pub(super) fn facet_tail(&mut self) {
-        let ids: Vec<String> = self.checked.immutables.iter().map(|b| b.id.clone()).collect();
+        let ids: Vec<String> = self
+            .checked
+            .immutables
+            .iter()
+            .map(|b| b.id.clone())
+            .collect();
         let order = self.tail_order(&ids);
         let from = self.checked.immutable_from as u32;
         self.imm_tail = vec![0; order.len()];
@@ -69,7 +74,12 @@ impl<'a> Gen<'a> {
         let (bytes, mut marks, offsets) = place_marked(code, &self.data)?;
         for (marker, words) in &self.tail_blobs {
             let at = offsets[marker];
-            marks.extend(words.iter().enumerate().map(|(j, &k)| (k, at + 32 * j - 1, 32)));
+            marks.extend(
+                words
+                    .iter()
+                    .enumerate()
+                    .map(|(j, &k)| (k, at + 32 * j - 1, 32)),
+            );
         }
         Ok((bytes, marks))
     }

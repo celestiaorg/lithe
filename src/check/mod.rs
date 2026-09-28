@@ -5,26 +5,26 @@ use crate::error;
 use crate::word::Word;
 use crate::Error;
 
-mod compose;
-mod layout;
-mod types;
-mod funcs;
-mod stmt;
-mod expr;
-mod builtins;
-mod place;
-mod generic;
 mod abi;
+mod builtins;
+mod compose;
+mod expr;
+mod funcs;
+mod generic;
+mod layout;
 mod payable;
+mod place;
+mod stmt;
+mod types;
 
-use compose::*;
-use layout::*;
-use types::*;
-use funcs::*;
-use builtins::*;
-use place::*;
 use abi::*;
+use builtins::*;
+use compose::*;
+use funcs::*;
+use layout::*;
 use payable::*;
+use place::*;
+use types::*;
 
 pub(crate) use abi::{
     abi_dynamic, abi_fields, abi_nested, abi_parts, abi_record, abi_value, bytes_abi, flat_record,
@@ -217,7 +217,9 @@ pub(crate) const FORWARDED: usize = usize::MAX;
 impl Checked {
     /// How a report names a raised error: its ABI signature, or `forwarded`.
     pub(crate) fn raise_sig(&self, id: usize) -> String {
-        self.errors.get(id).map_or_else(|| "forwarded".to_string(), |e| e.abi_sig.clone())
+        self.errors
+            .get(id)
+            .map_or_else(|| "forwarded".to_string(), |e| e.abi_sig.clone())
     }
 }
 
@@ -560,7 +562,10 @@ pub(crate) fn check(mut prog: Program) -> Result<Checked, Error> {
             "a contract has at most one `deploy`",
         ));
     }
-    for (kind, word) in [(ItemKind::Receive, "receive"), (ItemKind::Fallback, "fallback")] {
+    for (kind, word) in [
+        (ItemKind::Receive, "receive"),
+        (ItemKind::Fallback, "fallback"),
+    ] {
         if let Some(extra) = prog.funcs.iter().filter(|f| f.kind == kind).nth(1) {
             return Err(error(
                 extra.line,
@@ -724,7 +729,11 @@ pub(crate) fn check(mut prog: Program) -> Result<Checked, Error> {
         for word in words {
             leaf_keys.push(Word::from_u64(u64::from(leaf_keys.len() as u32 - start)));
             leaf_pack.push(match narrow_width(&c.types, word) {
-                Some((width, false)) => Pack { offset: 0, width, signed: false },
+                Some((width, false)) => Pack {
+                    offset: 0,
+                    width,
+                    signed: false,
+                },
                 _ => Pack::FULL,
             });
         }
@@ -897,7 +906,10 @@ pub(crate) fn check(mut prog: Program) -> Result<Checked, Error> {
     // methods.
     let mut known: Vec<Supported> = Vec::new();
     for (i, named) in prog.supports.iter().enumerate() {
-        if prog.supports[..i].iter().any(|have| have.name == named.name) {
+        if prog.supports[..i]
+            .iter()
+            .any(|have| have.name == named.name)
+        {
             return Err(error(
                 named.line,
                 named.col,
@@ -911,7 +923,11 @@ pub(crate) fn check(mut prog: Program) -> Result<Checked, Error> {
             .then(|| c.named.get(&named.name).and_then(|id| c.ifaces.get(id)))
             .flatten()
             .ok_or_else(|| {
-                error(named.line, named.col, format!("unknown interface `{}`", named.name))
+                error(
+                    named.line,
+                    named.col,
+                    format!("unknown interface `{}`", named.name),
+                )
             })?;
         let mut sigs = Vec::new();
         for method in methods {
@@ -921,7 +937,11 @@ pub(crate) fn check(mut prog: Program) -> Result<Checked, Error> {
             } else {
                 abi_parts(&c.types, method.ret).unwrap_or_default()
             };
-            sigs.push((method.sig.clone(), [hash[0], hash[1], hash[2], hash[3]], ret));
+            sigs.push((
+                method.sig.clone(),
+                [hash[0], hash[1], hash[2], hash[3]],
+                ret,
+            ));
         }
         known.push((named.clone(), sigs));
     }

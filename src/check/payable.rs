@@ -97,10 +97,7 @@ fn stmt_reads_value(stmt: &Stmt, calls: &mut Vec<usize>) -> bool {
         Stmt::Fail { reason, .. } => reason_reads_value(reason, calls),
         Stmt::AssignTuple { expr, .. } => expr_reads_value(expr, calls),
         Stmt::For {
-            iter,
-            until,
-            body,
-            ..
+            iter, until, body, ..
         } => {
             let iter_reads = match iter {
                 ForIter::Range { lo, hi } => {
@@ -150,8 +147,11 @@ fn expr_reads_value(expr: &Expr, calls: &mut Vec<usize>) -> bool {
             ..
         } => true,
         Expr::Ident { .. } | Expr::Lit { .. } => false,
-        Expr::Query { expr: base, gas, .. } => {
-            expr_reads_value(base, calls) || gas.as_ref().is_some_and(|g| expr_reads_value(g, calls))
+        Expr::Query {
+            expr: base, gas, ..
+        } => {
+            expr_reads_value(base, calls)
+                || gas.as_ref().is_some_and(|g| expr_reads_value(g, calls))
         }
         Expr::Field { base, .. } | Expr::Unary { expr: base, .. } => expr_reads_value(base, calls),
         Expr::Index { base, index, .. } => {

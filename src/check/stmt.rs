@@ -36,7 +36,7 @@ impl Checker {
                             ),
                         ));
                     }
-                    let derived = self.from_state(expr);
+                    let derived = self.reads_state(expr);
                     for (name, elem) in parts.iter().zip(elem_tys) {
                         let sid = self.add_sym(Sym {
                             ty: elem,
@@ -70,7 +70,7 @@ impl Checker {
                 if let Ok(ret) = self.op_return(*line, *col, expr) {
                     self.op_returns.insert(sid, ret);
                 }
-                if self.from_state(expr) {
+                if self.reads_state(expr) {
                     self.state_syms.insert(sid);
                 }
                 self.define(*line, *col, name, sid)?;
@@ -124,7 +124,9 @@ impl Checker {
                 let written = path.clone();
                 let place = self.lookup_path(*line, *col, path)?;
                 if index.is_some() && self.deep_assign(place.ty, keys.len() + 1, fields) {
-                    return self.check_deep_assign(*line, *col, &written, index, keys, fields, expr, root, leaf, target);
+                    return self.check_deep_assign(
+                        *line, *col, &written, index, keys, fields, expr, root, leaf, target,
+                    );
                 }
                 if let Some(owner) = self
                     .domain_syms
@@ -238,7 +240,15 @@ impl Checker {
                 let Some(path) = args.first().and_then(place_path) else {
                     return self.check_deep_pop(line, col, s);
                 };
-                let expr = std::mem::replace(expr, Expr::Lit { line, col, lit: Lit::Unit, ty: 0 });
+                let expr = std::mem::replace(
+                    expr,
+                    Expr::Lit {
+                        line,
+                        col,
+                        lit: Lit::Unit,
+                        ty: 0,
+                    },
+                );
                 *s = Stmt::Assign {
                     line,
                     col,
@@ -370,14 +380,15 @@ impl Checker {
                             }
                             self.check_expr_as(lo, Some(declared_ty))?;
                             self.check_expr_as(hi, Some(declared_ty))?;
-                            if !self.same(lo.ty(), declared_ty) || !self.same(hi.ty(), declared_ty) {
+                            if !self.same(lo.ty(), declared_ty) || !self.same(hi.ty(), declared_ty)
+                            {
                                 return Err(error(
                                     line,
                                     col,
                                     "the range's ends must have the loop variable's type",
                                 ));
                             }
-                            stateful = self.from_state(lo) || self.from_state(hi);
+                            stateful = self.reads_state(lo) || self.reads_state(hi);
                             let sid = self.add_sym(Sym {
                                 ty: declared_ty,
                                 mutable: false,
@@ -433,7 +444,11 @@ impl Checker {
                                 self.check_expr(xs)?;
                                 let lt = xs.ty();
                                 if self.types[lt].kind != TyKind::List {
-                                    return Err(error(line, col, "`for` iterates a list or a range"));
+                                    return Err(error(
+                                        line,
+                                        col,
+                                        "`for` iterates a list or a range",
+                                    ));
                                 }
                                 let span = self.list_span(line, col, lt, xs)?;
                                 let lsid = self.add_sym(Sym {
@@ -443,7 +458,7 @@ impl Checker {
                                     slot: 0,
                                     span,
                                 });
-                                if self.from_state(xs) {
+                                if self.reads_state(xs) {
                                     self.state_syms.insert(lsid);
                                 }
                                 *list = Some(lsid);
@@ -467,7 +482,13 @@ impl Checker {
                                         "a map cannot be iterated; keep an enumerable set",
                                     ))
                                 }
-                                _ => return Err(error(line, col, "`for` iterates a list or a range")),
+                                _ => {
+                                    return Err(error(
+                                        line,
+                                        col,
+                                        "`for` iterates a list or a range",
+                                    ))
+                                }
                             }
                             let held = self.types[p.ty].elem.unwrap_or(TY_UNIT);
                             if !self.same(held, elem_ty) {
@@ -479,7 +500,7 @@ impl Checker {
                             }
                             // A fixed list's length is in its type, so only a dynamic list
                             // grows with storage.
-                            stateful = self.types[p.ty].bits == 0 && self.from_state(&base);
+                            stateful = self.types[p.ty].bits == 0 && self.reads_state(&base);
                             let sid = self.add_sym(Sym {
                                 ty: TY_NAT,
                                 mutable: false,
@@ -579,7 +600,11 @@ impl Checker {
                         return Err(error(*line, *col, "a tuple assignment writes locals"));
                     }
                     if !self.syms[sym].mutable {
-                        return Err(error(*line, *col, format!("cannot assign to a const `{name}`")));
+                        return Err(error(
+                            *line,
+                            *col,
+                            format!("cannot assign to a const `{name}`"),
+                        ));
                     }
                     elems.push(self.syms[sym].ty);
                     syms.push(sym);
@@ -587,7 +612,11 @@ impl Checker {
                 let want = self.tuple_of(&elems);
                 self.check_expr_as(expr, Some(want))?;
                 if !self.same(expr.ty(), want) {
-                    return Err(error(*line, *col, "assignment type does not match the names"));
+                    return Err(error(
+                        *line,
+                        *col,
+                        "assignment type does not match the names",
+                    ));
                 }
                 Ok(())
             }
@@ -751,7 +780,8 @@ impl Checker {
             match t.kind {
                 TyKind::List if i == 0 => {
                     let elem = peel_id(&self.types, t.elem.unwrap_or(TY_UNIT));
-                    return n_keys > 1 || matches!(self.types[elem].kind, TyKind::Record | TyKind::Tuple);
+                    return n_keys > 1
+                        || matches!(self.types[elem].kind, TyKind::Record | TyKind::Tuple);
                 }
                 TyKind::Map => ty = peel_id(&self.types, t.right.unwrap_or(TY_UNIT)),
                 _ => return true,
@@ -766,7 +796,11 @@ impl Checker {
 
     /// `List.push(xs, v)` becomes `xs[xs.length] := v`, marked as the write that grows `xs`.
     fn check_push(&mut self, line: u32, col: u32, s: &mut Stmt) -> Result<(), Error> {
-        let Stmt::Call { expr: Expr::Call { args, .. }, .. } = s else {
+        let Stmt::Call {
+            expr: Expr::Call { args, .. },
+            ..
+        } = s
+        else {
             return Ok(());
         };
         if args.len() != 2 {
@@ -774,14 +808,26 @@ impl Checker {
         }
         let (list, value) = (args[0].clone(), args[1].clone());
         let Some((path, mut keys, fields)) = assign_parts(&list) else {
-            return Err(error(line, col, "`List.push` takes a list variable or a stored list"));
+            return Err(error(
+                line,
+                col,
+                "`List.push` takes a list variable or a stored list",
+            ));
         };
         let place = self.place(&mut list.clone())?;
         if !self.list_value(place.ty) {
-            return Err(error(list.line(), list.col(), "`List.push` expects a dynamic list"));
+            return Err(error(
+                list.line(),
+                list.col(),
+                "`List.push` expects a dynamic list",
+            ));
         }
         if !keys.is_empty() && !self.syms[place.sym].storage {
-            return Err(error(line, col, "`List.push` takes a list variable or a stored list"));
+            return Err(error(
+                line,
+                col,
+                "`List.push` takes a list variable or a stored list",
+            ));
         }
         keys.push(Expr::Field {
             line,
@@ -818,24 +864,56 @@ impl Checker {
             return Ok(());
         };
         let Some(arg) = args.first_mut() else {
-            return Err(error(line, col, "`List.pop` takes a list variable or a stored list"));
+            return Err(error(
+                line,
+                col,
+                "`List.pop` takes a list variable or a stored list",
+            ));
         };
         if !matches!(arg, Expr::Index { .. } | Expr::Field { .. }) {
-            return Err(error(line, col, "`List.pop` takes a list variable or a stored list"));
+            return Err(error(
+                line,
+                col,
+                "`List.pop` takes a list variable or a stored list",
+            ));
         }
         let place = self.place(arg)?;
         if !self.syms[place.sym].storage || !self.list_value(place.ty) {
-            return Err(error(line, col, "`List.pop` takes a list variable or a stored list"));
+            return Err(error(
+                line,
+                col,
+                "`List.pop` takes a list variable or a stored list",
+            ));
         }
-        if matches!(self.kind, ItemKind::View | ItemKind::Readonly | ItemKind::Pure) {
+        if matches!(
+            self.kind,
+            ItemKind::View | ItemKind::Readonly | ItemKind::Pure
+        ) {
             return Err(self.weaker(line, col, "writes storage"));
         }
         let target = arg.clone();
         let (found, named) = place_keys(&target);
         let path = place_path(named).unwrap_or_default();
         let mut found = found.into_iter();
-        let expr = std::mem::replace(expr, Expr::Lit { line, col, lit: Lit::Unit, ty: 0 });
-        let Expr::Call { mut args, name, base, ty, line: cline, col: ccol, .. } = expr else {
+        let expr = std::mem::replace(
+            expr,
+            Expr::Lit {
+                line,
+                col,
+                lit: Lit::Unit,
+                ty: 0,
+            },
+        );
+        let Expr::Call {
+            mut args,
+            name,
+            base,
+            ty,
+            line: cline,
+            col: ccol,
+            ..
+        } = expr
+        else {
             return Ok(());
         };
         args[0] = target.clone();
@@ -908,7 +986,8 @@ impl Checker {
             }
         }
         let place = self.place(&mut place_expr)?;
-        if matches!(&place_expr, Expr::Index { base, .. } if self.types[base.ty()].kind == TyKind::Bytes) {
+        if matches!(&place_expr, Expr::Index { base, .. } if self.types[base.ty()].kind == TyKind::Bytes)
+        {
             return Err(error(
                 line,
                 col,
@@ -917,7 +996,10 @@ impl Checker {
         }
         let value_ty = place.ty;
         if self.syms[place.sym].storage
-            && matches!(self.kind, ItemKind::View | ItemKind::Readonly | ItemKind::Pure)
+            && matches!(
+                self.kind,
+                ItemKind::View | ItemKind::Readonly | ItemKind::Pure
+            )
         {
             return Err(self.weaker(line, col, "writes storage"));
         }
