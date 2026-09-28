@@ -533,14 +533,7 @@ impl<'a> Gen<'a> {
                 return;
             }
             if self.direct {
-                let name = format!("L{leaf}");
-                if let Some(at) = self.kept_value(&name) {
-                    self.push_mem(at);
-                    self.op(MLOAD);
-                    return;
-                }
                 self.sload_leaf(leaf);
-                self.keep_value(name, Vec::new());
                 return;
             }
             let at = self.code.len();
@@ -568,18 +561,7 @@ impl<'a> Gen<'a> {
                 return;
             }
             if self.direct {
-                let name = format!("L{leaf}");
-                match self.kept_value(&name) {
-                    Some(at) => {
-                        self.op(DUP1);
-                        self.push_mem(at);
-                        self.op(MSTORE);
-                    }
-                    None => self.keep_value(name, Vec::new()),
-                }
-                self.kept_store = true;
                 self.sstore_leaf(leaf);
-                self.kept_store = false;
                 return;
             }
         }

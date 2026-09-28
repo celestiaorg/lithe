@@ -150,7 +150,8 @@ pub(crate) fn codegen(checked: &Checked, shape: &Shape) -> Result<Built, Error> 
     };
     // Keeping a hashed slot saves gas, but can cost bytes where the optimizer would have
     // shared the hashing instead, and a tight site can keep the outliner from sharing it.
-    // The smallest program wins; ties prefer kept slots, then tight sites.
+    // The smallest program wins, give or take a few bytes for kept slots; ties prefer kept
+    // slots, then tight sites.
     let build = |plan: Plan| -> Result<Built, Error> {
         let mut g = Gen::new(checked, plan.clone(), shape)?;
         g.emit()?;
@@ -217,17 +218,19 @@ pub(crate) fn codegen(checked: &Checked, shape: &Shape) -> Result<Built, Error> 
             )
             .collect::<Vec<_>>()
     });
-    let mut best: Option<Built> = None;
-    for built in builds {
+    // Each reuse of a kept slot saves a hash, some 40 gas, so a build that keeps slots
+    // wins unless it is more than a few bytes larger.
+    const SLOT_SLACK: usize = 8;
+    let mut best: Option<(usize, Built)> = None;
+    for (plan, built) in variants.iter().zip(builds) {
         let built = built?;
-        if best
-            .as_ref()
-            .is_none_or(|b| built.runtime.len() < b.runtime.len())
-        {
-            best = Some(built);
+        let slack = if plan.cache_slots { SLOT_SLACK } else { 0 };
+        let cost = built.runtime.len().saturating_sub(slack);
+        if best.as_ref().is_none_or(|(c, _)| cost < *c) {
+            best = Some((cost, built));
         }
     }
-    Ok(best.expect("a build"))
+    Ok(best.expect("a build").1)
 }
 
 /// The creation code for a runtime: a `deploy` compiled around it, or a plain copy. A

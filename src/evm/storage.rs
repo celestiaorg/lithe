@@ -1444,3 +1444,29 @@ external function branch(const k : nat; const c : bool) : nat is {
     assert_eq!(word(&once), w(1));
     assert_eq!(word(&run_ok(&runtime, &once.storage, "branch(uint256,bool)", &[w(3), w(0)])), w(1));
 }
+
+#[test]
+fn kept_slot_words_follow_packed_writes() {
+    let src = r#"
+storage is record {
+  a : uint128;
+  b : uint128;
+}
+
+external function f(const x : uint128; const flag : bool) : nat is {
+  const before : uint128 := storage.a;
+  if flag then {
+    storage.b := x;
+  }
+  storage.a := before + uint128(1);
+} with nat(storage.a) * 1000n + nat(storage.b)
+"#;
+    let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
+    let w = Word::from_u64;
+    let word = |out: &Outcome| load_bytes(&out.returndata, 0);
+    let set = run_ok(&runtime, &HashMap::new(), "f(uint128,bool)", &[w(5), w(1)]);
+    assert_eq!(word(&set), w(1005));
+    let kept = run_ok(&runtime, &set.storage, "f(uint128,bool)", &[w(9), w(0)]);
+    assert_eq!(word(&kept), w(2005));
+    assert_eq!(kept.storage.get(&w(0)).copied(), Some(w(5).shl(128).wrapping_add(w(2))));
+}

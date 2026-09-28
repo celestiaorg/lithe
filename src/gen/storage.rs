@@ -11,16 +11,21 @@ impl<'a> Gen<'a> {
         let journal = body.journal_stores;
         for leaf in writes {
             let skip = self.fresh();
-            if !always.contains(&leaf) {
+            let flagged = !always.contains(&leaf);
+            if flagged {
                 self.push_mem(self.dirty + leaf as i32 * 32);
                 self.op(MLOAD);
                 self.op(ISZERO);
                 self.push_label(skip);
                 self.op(JUMPI);
+                self.branch += 1;
             }
             self.push_mem(self.image + leaf as i32 * 32);
             self.op(MLOAD);
             self.sstore_leaf(leaf);
+            if flagged {
+                self.leave_branch();
+            }
             self.jumpdest(skip);
         }
         if journal {
@@ -109,9 +114,51 @@ impl<'a> Gen<'a> {
     /// Reads a storage leaf as a full word, unpacking it from a shared slot.
     pub(super) fn sload_leaf(&mut self, leaf: u32) {
         let pack = self.checked.leaf_pack[leaf as usize];
+        self.load_leaf_slot(leaf, true);
+        self.unpack(pack);
+    }
+
+    /// The name of a leaf's slot, where its slot is a constant.
+    fn slot_word(&self, leaf: u32) -> Option<String> {
+        (self.dyn_key.is_none()).then(|| format!("S{:?}", self.checked.leaf_keys[leaf as usize]))
+    }
+
+    /// The name a leaf's slot word is kept under, as `place_name` has it.
+    fn leaf_name(&self, leaf: u32) -> Option<String> {
+        self.slot_word(leaf).map(|slot| format!("{slot}+0"))
+    }
+
+    /// Pushes the whole word of the slot a leaf is in, kept for later reads if `keep`.
+    fn load_leaf_slot(&mut self, leaf: u32, keep: bool) {
+        let name = self.leaf_name(leaf);
+        if let Some(at) = name.as_deref().and_then(|n| self.kept_value(n)) {
+            self.push_mem(at);
+            self.op(MLOAD);
+            return;
+        }
         self.push_leaf_key(leaf);
         self.op(SLOAD);
-        self.unpack(pack);
+        if let Some(name) = name.filter(|_| keep) {
+            self.keep_value(name, Vec::new());
+        }
+    }
+
+    /// `[word]` becomes the slot word of `leaf`, kept for later reads.
+    fn store_leaf_slot(&mut self, leaf: u32) {
+        if let Some(name) = self.leaf_name(leaf) {
+            match self.kept_value(&name) {
+                Some(at) => {
+                    self.op(DUP1);
+                    self.push_mem(at);
+                    self.op(MSTORE);
+                }
+                None => self.keep_value(name, Vec::new()),
+            }
+        }
+        self.push_leaf_key(leaf);
+        self.kept_store = true;
+        self.op(SSTORE);
+        self.kept_store = false;
     }
 
     /// A slot's word on the stack becomes the value packed at `pack`.
@@ -812,10 +859,18 @@ impl<'a> Gen<'a> {
         let name = self
             .named(e)
             .filter(|_| !self.list_value(ty) && !self.is_dynamic(ty) && self.stack_value(ty));
-        if name.is_none() {
+        if name.is_none() || self.packed_index(e, self.place_transient(e)) {
             return self.deep_read(e);
         }
-        self.kept_load(name, |g| g.deep_read(e))
+        let pack = self.place_pack(e);
+        self.kept_load(name, |g| {
+            let p = g.deep_slot(e, false)?;
+            g.transient_slot = p.transient;
+            g.journal_load();
+            Ok(())
+        })?;
+        self.unpack(pack);
+        Ok(())
     }
 
     /// `[slot]` of a stored list becomes a copy of it.
@@ -1827,10 +1882,8 @@ impl<'a> Gen<'a> {
     /// Writes the word on the stack to a storage leaf, keeping the rest of a shared slot.
     pub(super) fn sstore_leaf(&mut self, leaf: u32) {
         let pack = self.checked.leaf_pack[leaf as usize];
-        let key = self.checked.leaf_keys[leaf as usize];
         if pack.is_full() {
-            self.push_leaf_key(leaf);
-            self.op(SSTORE);
+            self.store_leaf_slot(leaf);
             return;
         }
         // `old ^ ((old ^ (v << s)) & m)` takes the leaf's bits from `v` and the rest from `old`.
@@ -1840,16 +1893,14 @@ impl<'a> Gen<'a> {
             self.push_u64(u64::from(shift));
             self.op(SHL);
         }
-        self.push_word(key);
-        self.op(SLOAD);
+        self.load_leaf_slot(leaf, false);
         self.op(SWAP1);
         self.op(DUP1 + 1);
         self.op(XOR);
         self.push_word(byte_mask(pack.width).shl(shift));
         self.op(AND);
         self.op(XOR);
-        self.push_word(key);
-        self.op(SSTORE);
+        self.store_leaf_slot(leaf);
     }
 
     /// `header` leaves a stored string's slot word instead of the string.
@@ -1901,14 +1952,7 @@ impl<'a> Gen<'a> {
                 Ok(())
             }
             TyKind::Map => {
-                let mut deps = Vec::new();
-                let (root, at) = self.place_of(sym, leaf);
-                let name = if self.checked.slot_syms.contains_key(&root) {
-                    None
-                } else {
-                    let slot = self.checked.syms[root].slot + at;
-                    self.fixed_key(index, &mut deps).map(|k| (format!("L{slot}[{k}]"), deps))
-                };
+                let name = self.map_entry_name(sym, leaf, index);
                 self.kept_load(name, |g| {
                     g.push_map_slot(sym, leaf, &[index])?;
                     g.load_slot(false);
@@ -2213,20 +2257,67 @@ impl<'a> Gen<'a> {
         if self.checked.slot_syms.contains_key(&root) || self.slot_binds.contains_key(&root) {
             return None;
         }
+        let (base, off) = self.slot_place(e, deps)?;
+        Some(format!("{base}+{off}"))
+    }
+
+    /// `place_name` as a name for a slot and how many slots past it the place is.
+    fn slot_place(&self, e: &Expr, deps: &mut Vec<usize>) -> Option<(String, u64)> {
         if let Some((sym, leaf)) = self.static_place(e) {
-            return Some(format!("L{}", self.checked.syms[sym].slot + leaf));
+            return Some((self.slot_word(self.checked.syms[sym].slot + leaf)?, 0));
         }
         match e {
             Expr::Index { base, index, .. }
                 if self.checked.types[self.peel_nominal(base.ty())].kind == TyKind::Map =>
             {
-                let base = self.place_name(base, deps)?;
+                let (base, off) = self.slot_place(base, deps)?;
                 let key = self.fixed_key(index, deps)?;
-                Some(format!("{base}[{key}]"))
+                Some((format!("{base}+{off}[{key}]"), 0))
             }
-            Expr::Field { base, name, .. } => Some(format!("{}.{name}", self.place_name(base, deps)?)),
+            Expr::Field { base, name, .. } => {
+                let (at, off) = self.slot_place(base, deps)?;
+                let rty = self.peel_nominal(base.ty());
+                let field = self.checked.types[rty].fields.iter().find(|f| f.name == *name)?;
+                let (skip, _) = self.slot_layout(rty, self.place_transient(e))[field.slot as usize];
+                Some((at, off + skip))
+            }
             _ => None,
         }
+    }
+
+    fn place_transient(&self, e: &Expr) -> bool {
+        self.stored_root(e)
+            .is_some_and(|leaf| self.checked.transient_leaf(leaf))
+    }
+
+    /// The bytes of its slot a place `slot_place` names takes, as `deep_slot` finds them.
+    fn place_pack(&self, e: &Expr) -> Pack {
+        let Expr::Field { base, name, .. } = e else {
+            return Pack::FULL;
+        };
+        if self.static_place(e).is_some() {
+            return Pack::FULL;
+        }
+        let rty = self.peel_nominal(base.ty());
+        let Some(field) = self.checked.types[rty].fields.iter().find(|f| f.name == *name) else {
+            return Pack::FULL;
+        };
+        if crate::check::narrow_width(&self.checked.types, field.ty).is_none() {
+            return Pack::FULL;
+        }
+        self.slot_layout(rty, self.place_transient(e))[field.slot as usize].1
+    }
+
+    /// The name of the entry of a stored map at key `index`, as `place_name` has it.
+    fn map_entry_name(&self, sym: usize, leaf: u32, index: &Expr) -> Option<(String, Vec<usize>)> {
+        let (root, at) = self.place_of(sym, leaf);
+        if self.checked.slot_syms.contains_key(&root) {
+            return None;
+        }
+        let base = self.slot_word(self.checked.syms[root].slot + at)?;
+        let mut deps = Vec::new();
+        let key = self.fixed_key(index, &mut deps)?;
+        Some((format!("{base}+0[{key}]+0"), deps))
     }
 
     /// `load` pushes the word stored at a place `name` names, unless it is kept already.
