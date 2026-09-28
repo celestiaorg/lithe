@@ -140,6 +140,7 @@ impl Checker {
             }
             Expr::Query {
                 expr,
+                gas,
                 ty,
                 line,
                 col,
@@ -155,8 +156,12 @@ impl Checker {
                 }
                 let saved = self.in_query;
                 self.in_query = true;
-                self.check_expr(expr)?;
+                let checked = self.check_expr(expr).and_then(|()| match gas {
+                    Some(gas) => self.check_gas(gas),
+                    None => Ok(()),
+                });
                 self.in_query = saved;
+                checked?;
                 *ty = expr.ty();
                 Ok(())
             }
@@ -1428,6 +1433,14 @@ impl Checker {
             }
             _ => Err(error(line, col, "this value cannot be indexed")),
         }
+    }
+
+    pub(super) fn check_gas(&mut self, gas: &mut Expr) -> Result<(), Error> {
+        self.check_expr_as(gas, Some(TY_NAT))?;
+        if self.types[gas.ty()].kind != TyKind::Nat {
+            return Err(error(gas.line(), gas.col(), "`gas` must be nat"));
+        }
+        Ok(())
     }
 
     pub(super) fn check_nat_index(&mut self, index: &mut Expr) -> Result<(), Error> {

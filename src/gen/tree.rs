@@ -1308,11 +1308,15 @@ impl<'a> Gen<'a> {
             }
             Expr::Query {
                 expr: call,
+                gas,
                 ty: qty,
                 line,
                 col,
             } if multi(self, *qty) && self.checked.types[*qty].kind != TyKind::Option => {
-                self.query_into(call, *qty, dst, *line, *col)?;
+                self.query_gas = gas.as_deref().cloned();
+                let result = self.query_into(call, *qty, dst, *line, *col);
+                self.query_gas = None;
+                result?;
                 let _ = ty;
                 Ok(true)
             }

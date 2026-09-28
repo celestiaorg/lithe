@@ -535,10 +535,14 @@ fn rewrite_stmts(stmts: &mut [Stmt], map: &HashMap<String, String>) {
                 }
             }
             Stmt::Defer {
-                expr, value, then, ..
+                expr,
+                value,
+                gas,
+                then,
+                ..
             } => {
                 rewrite_expr(expr, map);
-                if let Some(value) = value {
+                for value in value.iter_mut().chain(gas) {
                     rewrite_expr(value, map);
                 }
                 if let Some(then) = then {
@@ -606,9 +610,13 @@ fn rewrite_raised(reason: &mut Raised, map: &HashMap<String, String>) {
 fn rewrite_expr(expr: &mut Expr, map: &HashMap<String, String>) {
     match expr {
         Expr::Lit { .. } | Expr::Ident { .. } => {}
-        Expr::Field { base, .. }
-        | Expr::Query { expr: base, .. }
-        | Expr::Unary { expr: base, .. } => {
+        Expr::Query { expr: base, gas, .. } => {
+            rewrite_expr(base, map);
+            if let Some(gas) = gas {
+                rewrite_expr(gas, map);
+            }
+        }
+        Expr::Field { base, .. } | Expr::Unary { expr: base, .. } => {
             rewrite_expr(base, map);
         }
         Expr::Index { base, index, .. } => {

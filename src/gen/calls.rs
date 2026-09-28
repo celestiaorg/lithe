@@ -111,9 +111,20 @@ impl<'a> Gen<'a> {
         self.compile_value(data)?;
         self.bytes_span();
         self.compile_value(to)?;
-        self.op(GAS);
+        self.query_gas()?;
         self.op(STATICCALL);
         Ok(())
+    }
+
+    /// The gas a query's `STATICCALL` gets: its `with gas`, or all that is left.
+    fn query_gas(&mut self) -> Result<(), Error> {
+        match self.query_gas.take() {
+            Some(gas) => self.compile_value(&gas),
+            None => {
+                self.op(GAS);
+                Ok(())
+            }
+        }
     }
 
     /// `case query Evm.static_call(to, data) of`: `Ok` gets the return data, whole, and
@@ -290,6 +301,7 @@ impl<'a> Gen<'a> {
         &mut self,
         expr: &Expr,
         value: Option<&Expr>,
+        gas: Option<&Expr>,
         then: Option<&Then>,
     ) -> Result<(), Error> {
         match expr {
@@ -303,15 +315,8 @@ impl<'a> Gen<'a> {
                 ..
             } => {
                 let (marker, len) = self.peer_code(name, *line, *col)?;
-                let value_at = match value {
-                    Some(v) => {
-                        let at = self.arena_alloc(1);
-                        self.compile_value(v)?;
-                        self.mstore_off(at);
-                        Some(at)
-                    }
-                    None => None,
-                };
+                let value_at = self.arena_word(value)?;
+                let gas = self.arena_word(gas)?;
                 let salt_at = match base {
                     Some(salt) => {
                         let at = self.arena_alloc(1);
@@ -332,6 +337,7 @@ impl<'a> Gen<'a> {
                 self.push_op(OpSite {
                     to: 0,
                     value: value_at,
+                    gas,
                     data: None,
                     size: 0,
                     dynamic: false,
@@ -357,19 +363,13 @@ impl<'a> Gen<'a> {
                 self.mstore_off(to);
                 self.compile_value(&args[1])?;
                 self.mstore_off(to + 32);
-                let value_at = match value {
-                    Some(v) => {
-                        let at = self.arena_alloc(1);
-                        self.compile_value(v)?;
-                        self.mstore_off(at);
-                        Some(at)
-                    }
-                    None => None,
-                };
+                let value_at = self.arena_word(value)?;
+                let gas = self.arena_word(gas)?;
                 let delegate = *kind == Builtin::DelegateCall;
                 self.push_op(OpSite {
                     to,
                     value: value_at,
+                    gas,
                     data: Some(to + 32),
                     size: 0,
                     dynamic: false,
@@ -402,9 +402,11 @@ impl<'a> Gen<'a> {
                 self.mstore_off(to);
                 self.compile_value(&args[1])?;
                 self.mstore_off(to + 32);
+                let gas = self.arena_word(gas)?;
                 self.push_op(OpSite {
                     to,
                     value: Some(to + 32),
+                    gas,
                     data: None,
                     size: 0,
                     dynamic: false,
@@ -430,14 +432,8 @@ impl<'a> Gen<'a> {
                 let to = self.arena_alloc(1);
                 self.compile_value(base)?;
                 self.mstore_off(to);
-                let value_at = if let Some(v) = value {
-                    let at = self.arena_alloc(1);
-                    self.compile_value(v)?;
-                    self.mstore_off(at);
-                    Some(at)
-                } else {
-                    None
-                };
+                let value_at = self.arena_word(value)?;
+                let gas = self.arena_word(gas)?;
                 let dynamic = args
                     .iter()
                     .any(|a| self.is_dynamic(a.ty()) || self.list_value(a.ty()) || self.tree(a.ty()));
@@ -459,6 +455,7 @@ impl<'a> Gen<'a> {
                 self.push_op(OpSite {
                     to,
                     value: value_at,
+                    gas,
                     data: Some(data),
                     size,
                     dynamic,
@@ -485,7 +482,7 @@ impl<'a> Gen<'a> {
                 let init = self
                     .const_init(*sid)
                     .ok_or_else(|| error(expr.line(), expr.col(), "defer expects an operation"))?;
-                self.compile_defer(&init, value, then)
+                self.compile_defer(&init, value, gas, then)
             }
             other => Err(error(
                 other.line(),
@@ -493,6 +490,15 @@ impl<'a> Gen<'a> {
                 "defer expects an operation",
             )),
         }
+    }
+
+    /// A `with` option's word, kept in the arena until the call runs.
+    fn arena_word(&mut self, e: Option<&Expr>) -> Result<Option<i32>, Error> {
+        let Some(e) = e else { return Ok(None) };
+        let at = self.arena_alloc(1);
+        self.compile_value(e)?;
+        self.mstore_off(at);
+        Ok(Some(at))
     }
 
     fn const_init(&self, sym: usize) -> Option<Expr> {
@@ -842,7 +848,7 @@ impl<'a> Gen<'a> {
             self.push_u64(32);
             self.op(ADD);
             self.compile_value(base)?;
-            self.op(GAS);
+            self.query_gas()?;
             self.op(STATICCALL);
             return Ok(());
         }
@@ -857,7 +863,7 @@ impl<'a> Gen<'a> {
         self.push_u64(size);
         self.push_mem(self.query_buf);
         self.compile_value(base)?;
-        self.op(GAS);
+        self.query_gas()?;
         self.op(STATICCALL);
         Ok(())
     }
@@ -872,6 +878,7 @@ impl<'a> Gen<'a> {
             let end = body.arena + body.arena_next;
             let mut slots = vec![site.to, end];
             slots.extend(site.value);
+            slots.extend(site.gas);
             slots.extend(site.data);
             if let Some((_, _, salt, args)) = site.create {
                 slots.extend(salt);
@@ -1142,7 +1149,10 @@ impl<'a> Gen<'a> {
             }
         }
         self.mload(op.to);
-        self.op(GAS);
+        match op.gas {
+            Some(gas) => self.mload(gas),
+            None => self.op(GAS),
+        }
         self.op(opcode);
         match op.then.as_ref().and_then(|then| then.error.as_deref()) {
             // A recoverable call's failure runs its `Error` phase on the revert data.

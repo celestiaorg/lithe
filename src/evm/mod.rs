@@ -36,6 +36,15 @@ thread_local! {
     static ACCOUNT_CODE: std::cell::RefCell<Vec<Option<Vec<u8>>>> = const { std::cell::RefCell::new(Vec::new()) };
 }
 
+/// A call's gas, in its detail line, when it is not all of what `GAS` answers.
+fn gas_limit(gas: Word) -> String {
+    if gas == Word::from_u64(1_000_000) {
+        String::new()
+    } else {
+        format!(" gas {gas:?}")
+    }
+}
+
 /// The code of the account running `code`: its own, unless it runs by `delegatecall`.
 fn account_code(code: &[u8]) -> Vec<u8> {
     ACCOUNT_CODE.with(|a| a.borrow().last().cloned().flatten().unwrap_or_else(|| code.to_vec()))
@@ -574,7 +583,7 @@ fn exec_state(
                 stack.push(at);
             }
             0xf1 => {
-                let _gas = pop(&mut stack)?;
+                let gas = pop(&mut stack)?;
                 let to = pop(&mut stack)?;
                 let val = pop(&mut stack)?;
                 let in_off = word_usize(pop(&mut stack)?)?;
@@ -582,8 +591,9 @@ fn exec_state(
                 let ret_off = word_usize(pop(&mut stack)?)?;
                 let ret_size = word_usize(pop(&mut stack)?)?;
                 detail.push(format!(
-                    "call {to:?} {val:?} {}",
-                    hex(&read_slice(&mut mem, in_off, in_size))
+                    "call {to:?} {val:?} {}{}",
+                    hex(&read_slice(&mut mem, in_off, in_size)),
+                    gas_limit(gas)
                 ));
                 if self_balance.lt(val) {
                     stack.push(Word::from_u64(0));
@@ -672,14 +682,14 @@ fn exec_state(
                 }
             }
             0xfa => {
-                let _gas = pop(&mut stack)?;
+                let gas = pop(&mut stack)?;
                 let to = pop(&mut stack)?;
                 let in_off = word_usize(pop(&mut stack)?)?;
                 let in_size = word_usize(pop(&mut stack)?)?;
                 let ret_off = word_usize(pop(&mut stack)?)?;
                 let ret_size = word_usize(pop(&mut stack)?)?;
                 let input = read_slice(&mut mem, in_off, in_size);
-                detail.push(format!("static {to:?} {}", hex(&input)));
+                detail.push(format!("static {to:?} {}{}", hex(&input), gas_limit(gas)));
                 if let Some((child, child_storage)) =
                     DEPLOYED.with(|d| d.borrow().get(&to).cloned())
                 {

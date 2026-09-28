@@ -27,6 +27,7 @@ impl<'a> Gen<'a> {
             local: Vec::new(),
             query_buf: 0,
             in_query: false,
+            query_gas: None,
             tail: false,
             fire_tail: false,
             hoisted: HashMap::new(),
@@ -318,9 +319,9 @@ impl<'a> Gen<'a> {
             {
                 true
             }
-            Stmt::Defer { expr: e, value, .. } => {
-                expr(e, seen) || value.as_ref().is_some_and(|v| expr(v, seen))
-            }
+            Stmt::Defer {
+                expr: e, value, gas, ..
+            } => expr(e, seen) || value.iter().chain(gas).any(|v| expr(v, seen)),
             Stmt::Const { expr: e, .. }
             | Stmt::Var { expr: e, .. }
             | Stmt::Call { expr: e, .. }
@@ -400,10 +401,14 @@ impl<'a> Gen<'a> {
                 }
             }
             Stmt::Defer {
-                expr, value, then, ..
+                expr,
+                value,
+                gas,
+                then,
+                ..
             } => {
                 self.expr_syms(expr, out);
-                if let Some(v) = value {
+                for v in value.iter().chain(gas) {
                     self.expr_syms(v, out);
                 }
                 if let Some(then) = then {
@@ -489,7 +494,13 @@ impl<'a> Gen<'a> {
         match e {
             Expr::Lit { .. } => {}
             Expr::Ident { sym, .. } => out.extend(sym),
-            Expr::Query { expr, .. } | Expr::Unary { expr, .. } => self.expr_syms(expr, out),
+            Expr::Query { expr, gas, .. } => {
+                self.expr_syms(expr, out);
+                if let Some(gas) = gas {
+                    self.expr_syms(gas, out);
+                }
+            }
+            Expr::Unary { expr, .. } => self.expr_syms(expr, out),
             Expr::Field { base, root, .. } => {
                 out.extend(root);
                 self.expr_syms(base, out);
@@ -603,7 +614,10 @@ impl<'a> Gen<'a> {
         }
         match e {
             Expr::Lit { .. } | Expr::Ident { .. } => false,
-            Expr::Query { expr, .. } | Expr::Unary { expr, .. } => self.expr_any(expr, bad, seen),
+            Expr::Query { expr, gas, .. } => {
+                self.expr_any(expr, bad, seen) || gas.as_ref().is_some_and(|g| self.expr_any(g, bad, seen))
+            }
+            Expr::Unary { expr, .. } => self.expr_any(expr, bad, seen),
             Expr::Field { base, .. } => self.expr_any(base, bad, seen),
             Expr::Index { base, index, .. } => {
                 self.expr_any(base, bad, seen) || self.expr_any(index, bad, seen)

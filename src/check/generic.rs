@@ -973,10 +973,14 @@ fn rewrite_stmts(stmts: &mut [Stmt], name: &str, path: &[Seg]) {
                 }
             }
             Stmt::Defer {
-                expr, value, then, ..
+                expr,
+                value,
+                gas,
+                then,
+                ..
             } => {
                 rewrite_expr(expr, name, path);
-                if let Some(value) = value {
+                for value in value.iter_mut().chain(gas) {
                     rewrite_expr(value, name, path);
                 }
                 if let Some(then) = then {
@@ -1026,7 +1030,13 @@ fn rewrite_expr(expr: &mut Expr, name: &str, path: &[Seg]) {
                 rewrite_expr(base, name, path);
             }
         }
-        Expr::Query { expr, .. } | Expr::Unary { expr, .. } => rewrite_expr(expr, name, path),
+        Expr::Query { expr, gas, .. } => {
+            rewrite_expr(expr, name, path);
+            if let Some(gas) = gas {
+                rewrite_expr(gas, name, path);
+            }
+        }
+        Expr::Unary { expr, .. } => rewrite_expr(expr, name, path),
         Expr::Case { scrut, arms, .. } => {
             rewrite_expr(scrut, name, path);
             for arm in arms {

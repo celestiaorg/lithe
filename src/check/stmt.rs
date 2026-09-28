@@ -595,12 +595,29 @@ impl Checker {
                 col,
                 expr,
                 value,
+                gas,
                 then,
             } => {
                 self.forbid_effect(*line, *col, "defer an operation")?;
                 self.check_expr(expr)?;
                 if self.types[expr.ty()].kind != TyKind::Operation {
                     return Err(error(*line, *col, "defer expects an operation"));
+                }
+                if let Some(gas) = gas {
+                    if matches!(
+                        &*expr,
+                        Expr::Call {
+                            builtin: Some(Builtin::Create),
+                            ..
+                        }
+                    ) {
+                        return Err(error(
+                            gas.line(),
+                            gas.col(),
+                            "a contract's creation uses all the gas left; `create` takes no `with gas`",
+                        ));
+                    }
+                    self.check_gas(gas)?;
                 }
                 if let Some(v) = value {
                     if matches!(

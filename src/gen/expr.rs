@@ -173,11 +173,15 @@ impl<'a> Gen<'a> {
             }
             Expr::Query {
                 expr,
+                gas,
                 line,
                 col,
                 ty,
             } => {
-                self.compile_query(expr, *ty, *line, *col)?;
+                self.query_gas = gas.as_deref().cloned();
+                let result = self.compile_query(expr, *ty, *line, *col);
+                self.query_gas = None;
+                result?;
                 self.align_decoded(*ty);
                 Ok(())
             }
@@ -1271,8 +1275,11 @@ impl<'a> Gen<'a> {
         col: u32,
         sink: Sink,
     ) -> Result<(), Error> {
-        if let Expr::Query { expr: call, .. } = scrut {
-            return self.compile_query_case(call, scrut.ty(), arms, line, col, sink);
+        if let Expr::Query { expr: call, gas, .. } = scrut {
+            self.query_gas = gas.as_deref().cloned();
+            let result = self.compile_query_case(call, scrut.ty(), arms, line, col, sink);
+            self.query_gas = None;
+            return result;
         }
         let sty = scrut.ty();
         if self.checked.types[sty].kind == TyKind::Option {

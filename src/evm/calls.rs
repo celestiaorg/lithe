@@ -1803,3 +1803,86 @@ external view function call_data() : bytes is storage.call_data
         assert!(err.to_string().contains(want), "{want}: {err}");
     }
 }
+
+/// `with gas = g` caps what a call gets, as Solidity's `{gas: g}` does, for queries and
+/// deferred calls alike; the limit is evaluated where the call is written.
+#[test]
+fn calls_take_a_gas_limit() {
+    install_mocks();
+    let src = "\
+interface Echo is {
+  view function peek(v : nat) : nat;
+  view function pair(a : nat; b : nat) : (nat, nat);
+  payable function ping(v : nat);
+}
+storage is record { n : nat; }
+external function detect(const e : Echo) is {
+  storage.n := case query e.peek(1n) with gas = 30000n of { | Ok(v) -> v | Error(_) -> 9n };
+}
+external function read(const e : Echo; const g : nat) is {
+  storage.n := query e.peek(2n) with gas = g + 1n;
+}
+external function both(const e : Echo) is {
+  const (a, b) : (nat, nat) := query e.pair(3n, 4n) with gas = 8000n;
+  storage.n := a + b;
+}
+external function raw(const to : address) is {
+  const d : bytes := query Evm.static_call(to, Abi.encode(3n)) with gas = 40000n;
+  storage.n := d.length;
+}
+external payable function send(const e : Echo; const to : address) is {
+  defer e.ping(4n) with { value = 1n; gas = 50000n };
+  defer Evm.call(to, Abi.encode(5n)) with gas = 60000n;
+  defer Evm.transfer(to, 1wei) with gas = 2300n;
+  defer e.ping(6n);
+}
+external function each(const e : Echo) is {
+  for i : nat in 0n .. 3n do { defer e.ping(i) with gas = 7000n + i; };
+}
+";
+    let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
+    let w = Word::from_u64;
+    let gas = |g: u64| format!(" gas {:?}", w(g));
+    let run = |sig: &str, args: &[Word], value: u64| {
+        let out = exec(&runtime, &word_data(sig, args), HashMap::new(), w(7), w(value), w(10)).expect(sig);
+        assert!(!out.reverted, "{sig}: {}", pretty(&out.returndata));
+        out
+    };
+    let detect = run("detect(address)", &[w(0xcd)], 0);
+    assert!(detect.detail[0].ends_with(&gas(30000)), "{:?}", detect.detail);
+    assert_eq!(slot(&detect.storage, 0), w(1));
+    let failed = run("detect(address)", &[w(0xef)], 0);
+    assert_eq!(slot(&failed.storage, 0), w(9));
+    let read = run("read(address,uint256)", &[w(0xcd), w(41)], 0);
+    assert!(read.detail[0].ends_with(&gas(42)), "{:?}", read.detail);
+    assert_eq!(slot(&read.storage, 0), w(2));
+    let both = run("both(address)", &[w(0xcd)], 0);
+    assert!(both.detail[0].ends_with(&gas(8000)), "{:?}", both.detail);
+    assert_eq!(slot(&both.storage, 0), w(7));
+    let raw = run("raw(address)", &[w(0xcd)], 0);
+    assert!(raw.detail[0].ends_with(&gas(40000)), "{:?}", raw.detail);
+    let send = run("send(address,address)", &[w(0xcd), w(0xce)], 1);
+    let limits: Vec<bool> = [50000, 60000, 2300].iter().zip(&send.detail).map(|(&g, d)| d.ends_with(&gas(g))).collect();
+    assert_eq!(limits, [true; 3], "{:?}", send.detail);
+    assert!(!send.detail[3].contains(" gas "), "{:?}", send.detail);
+    let each = run("each(address)", &[w(0xcd)], 0);
+    for (i, d) in each.detail.iter().enumerate() {
+        assert!(d.ends_with(&gas(7000 + i as u64)), "{:?}", each.detail);
+    }
+    assert_eq!(each.detail.len(), 3);
+
+    for (body, want) in [
+        ("storage.n := query e.peek(1n) with value = 1n;", "a query takes only `with gas`"),
+        ("defer e.ping(1n) with gas = true;", "`gas` must be nat"),
+        ("storage.n := query e.peek(query e.peek(1n) with gas = 1n);", "nested query"),
+    ] {
+        let bad = src.replace("storage.n := case query e.peek(1n) with gas = 30000n of { | Ok(v) -> v | Error(_) -> 9n };", body);
+        let err = compile(&bad).expect_err(want);
+        assert!(err.to_string().contains(want), "{want}: {err}");
+    }
+    let err = crate::compile_contracts(
+        "contract One is {\n  storage is record { n : nat; }\n  external function f() is { defer create Other() with gas = 1n; }\n}\ncontract Other is {\n  storage is record { n : nat; }\n  external function g() is { skip }\n}\n",
+    )
+    .expect_err("create gas");
+    assert!(err.to_string().contains("`create` takes no `with gas`"), "{err}");
+}

@@ -114,8 +114,11 @@ fn stmt_reads_value(stmt: &Stmt, calls: &mut Vec<usize>) -> bool {
         }
         Stmt::Call { expr, .. } | Stmt::Defer { expr, .. } => {
             let mut reads = expr_reads_value(expr, calls);
-            if let Stmt::Defer { value, then, .. } = stmt {
-                if let Some(value) = value {
+            if let Stmt::Defer {
+                value, gas, then, ..
+            } = stmt
+            {
+                for value in value.iter().chain(gas) {
                     reads |= expr_reads_value(value, calls);
                 }
                 if let Some(then) = then {
@@ -147,9 +150,10 @@ fn expr_reads_value(expr: &Expr, calls: &mut Vec<usize>) -> bool {
             ..
         } => true,
         Expr::Ident { .. } | Expr::Lit { .. } => false,
-        Expr::Field { base, .. }
-        | Expr::Query { expr: base, .. }
-        | Expr::Unary { expr: base, .. } => expr_reads_value(base, calls),
+        Expr::Query { expr: base, gas, .. } => {
+            expr_reads_value(base, calls) || gas.as_ref().is_some_and(|g| expr_reads_value(g, calls))
+        }
+        Expr::Field { base, .. } | Expr::Unary { expr: base, .. } => expr_reads_value(base, calls),
         Expr::Index { base, index, .. } => {
             expr_reads_value(base, calls) || expr_reads_value(index, calls)
         }

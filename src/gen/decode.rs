@@ -185,10 +185,14 @@ impl<'a> Gen<'a> {
             Stmt::Skip => {}
             Stmt::Emit { fields, .. } => fields.iter().for_each(|(_, x)| e(x)),
             Stmt::Defer {
-                expr, value, then, ..
+                expr,
+                value,
+                gas,
+                then,
+                ..
             } => {
                 e(expr);
-                value.iter().for_each(&mut e);
+                value.iter().chain(gas).for_each(&mut e);
                 if let Some(then) = then {
                     for arm in then.arms() {
                         for st in &arm.stmts {
@@ -282,7 +286,11 @@ impl<'a> Gen<'a> {
                 if name == "length"
                     && matches!(base.as_ref(), Expr::Ident { sym: Some(s), .. } if *s == sym) => {}
             Expr::Field { base, .. } => e(base),
-            Expr::Query { expr, .. } | Expr::Unary { expr, .. } => e(expr),
+            Expr::Query { expr, gas, .. } => {
+                e(expr);
+                gas.iter().for_each(|g| e(g));
+            }
+            Expr::Unary { expr, .. } => e(expr),
             Expr::Index { base, index, .. } => {
                 e(base);
                 e(index);

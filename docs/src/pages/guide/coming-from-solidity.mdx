@@ -171,6 +171,7 @@ Lithe error names are converted to PascalCase in the ABI, so `Not_owner` becomes
 | `token.balanceOf(a)` (view) | `query token.balanceOf(a)` |
 | `token.transfer(to, n)` | `defer token.transfer(to, n)` |
 | `pool.deposit{value: v}(a)` | `defer pool.deposit(a) with value = v` |
+| `c.f{gas: g}(a)`, `to.staticcall{gas: g}(data)` | `with gas = g` on the `defer` or `query`. See [Limiting a call's gas](/language/effects#limiting-a-calls-gas) |
 | `payable(to).transfer(v)`, `.call{value: v}("")` | `defer Evm.transfer(to, v)` |
 | `uint r = pool.swap(x); use(r);` | `defer pool.swap(x) then (r : nat) { ... }` |
 | `try c.f() returns (r) { } catch { }` | `defer c.f() then { \| Ok(r : T) -> { } \| Error(e : bytes) -> { } }` |

@@ -20,7 +20,7 @@ A block is a sequence of statements in braces, each ending with `;`:
 | Assertion | `assert(cond, Error);` |
 | Failure | `fail Error;`, or `forward reason;` for a failed call's `bytes` |
 | Event | `emit Event { field = value; };` |
-| Deferred call | `defer target.method(args);`, with optional `with value = v` and `then (...) { ... }` |
+| Deferred call | `defer target.method(args);`, with optional `with value = v`, `with gas = g`, and `then (...) { ... }` |
 | No-op | `skip` |
 
 ## Bindings

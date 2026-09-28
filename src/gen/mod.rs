@@ -547,6 +547,7 @@ enum SrcKind {
 struct OpSite {
     to: i32,
     value: Option<i32>,
+    gas: Option<i32>,
     data: Option<i32>,
     size: u64,
     /// `data` holds a blob's address instead: calldata sized at the `defer`.
@@ -654,6 +655,8 @@ struct Gen<'a> {
     local: Vec<i32>,
     query_buf: i32,
     in_query: bool,
+    /// The gas limit of the query being compiled, if it has one.
+    query_gas: Option<Expr>,
     /// Nothing runs after the statement being compiled before its body ends.
     tail: bool,
     /// The `defer` being compiled is the last thing its body runs.

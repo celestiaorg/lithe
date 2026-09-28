@@ -39,6 +39,13 @@ impl Deco {
     }
 }
 
+#[derive(Default)]
+struct CallOptions {
+    value: Option<Expr>,
+    salt: Option<Expr>,
+    gas: Option<Expr>,
+}
+
 struct Parser<'a> {
     src: &'a str,
     toks: Vec<Token>,
@@ -1896,12 +1903,7 @@ impl<'a> Parser<'a> {
         } else {
             self.expr()?
         };
-        let (value, salt) = if self.kind() == Kind::With {
-            self.bump();
-            self.with_options()?
-        } else {
-            (None, None)
-        };
+        let CallOptions { value, salt, gas } = self.with_options()?;
         if let Some(salt) = salt {
             let (Expr::Call { base, .. }, true) = (&mut expr, create) else {
                 return Err(error(
@@ -1922,6 +1924,7 @@ impl<'a> Parser<'a> {
             col,
             expr,
             value,
+            gas,
             then,
         })
     }
@@ -2044,9 +2047,14 @@ impl<'a> Parser<'a> {
         Ok(ok)
     }
 
-    /// `with value = x`, `with salt = s`, or both in braces: `with { value = x; salt = s }`.
-    fn with_options(&mut self) -> Result<(Option<Expr>, Option<Expr>), Error> {
-        let mut options = (None, None);
+    /// `with value = x`, `with gas = g`, `with salt = s`, or several in braces:
+    /// `with { value = x; gas = g }`. Nothing when there is no `with`.
+    fn with_options(&mut self) -> Result<CallOptions, Error> {
+        let mut options = CallOptions::default();
+        if self.kind() != Kind::With {
+            return Ok(options);
+        }
+        self.bump();
         if self.kind() == Kind::LBrace {
             self.bump();
             while self.kind() != Kind::RBrace && self.kind() != Kind::Eof {
@@ -2063,13 +2071,14 @@ impl<'a> Parser<'a> {
         Ok(options)
     }
 
-    fn with_option(&mut self, options: &mut (Option<Expr>, Option<Expr>)) -> Result<(), Error> {
+    fn with_option(&mut self, options: &mut CallOptions) -> Result<(), Error> {
         let name = self.ident()?;
         self.want(Kind::Eq)?;
         let expr = self.expr()?;
         let slot = match name.as_str() {
-            "value" => &mut options.0,
-            "salt" => &mut options.1,
+            "value" => &mut options.value,
+            "salt" => &mut options.salt,
+            "gas" => &mut options.gas,
             _ => return Err(self.err(format!("unknown `with` option `{name}`"))),
         };
         if slot.is_some() {
@@ -2270,10 +2279,15 @@ impl<'a> Parser<'a> {
             Kind::Query => {
                 self.bump();
                 let expr = self.primary()?;
+                let CallOptions { value, salt, gas } = self.with_options()?;
+                if let Some(e) = value.or(salt) {
+                    return Err(error(e.line(), e.col(), "a query takes only `with gas`"));
+                }
                 Ok(Expr::Query {
                     line,
                     col,
                     expr: Box::new(expr),
+                    gas: gas.map(Box::new),
                     ty: 0,
                 })
             }

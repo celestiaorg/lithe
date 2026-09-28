@@ -180,9 +180,9 @@ external nonreentrant function pay(const to : address; const amount : nat) is {
 }
 ```
 
-The target, arguments, and value are **evaluated at the `defer`**, and the call itself happens later. A `defer` inside an `if` runs only if that branch ran.
+The target, arguments, value, and gas limit are **evaluated at the `defer`**, and the call itself happens later. A `defer` inside an `if` runs only if that branch ran.
 
-Deferred calls forward all remaining gas. If a deferred call reverts, the whole transaction reverts, unless its continuation has [`Ok` and `Error` arms](/language/continuations#recovering-from-failed-calls). When a [continuation](/language/continuations) binds the call's result, the result is decoded and checked first, and a malformed result reverts.
+Deferred calls forward all remaining gas, unless they set a [gas limit](#limiting-a-calls-gas). If a deferred call reverts, the whole transaction reverts, unless its continuation has [`Ok` and `Error` arms](/language/continuations#recovering-from-failed-calls). When a [continuation](/language/continuations) binds the call's result, the result is decoded and checked first, and a malformed result reverts.
 
 A call to an account with no code succeeds on the EVM, so as in Solidity it is checked. A method without a result reverts before the call when the account has no code, and a result nothing decodes must still be as long as its head words. An [optional result](#optional-results) may be missing.
 
@@ -224,6 +224,29 @@ external payable function forward() is {
 `deposit` is not payable; declare it `payable function deposit` in its interface to send value
 ```
 
+### Limiting a call's gas
+
+A call gets all the gas left unless it says otherwise. `with gas = g` caps it at `g`, a `nat`, as Solidity's `{gas: g}` does. It works on a `query`, a `defer`, and the raw calls and `Evm.transfer`, and combines with `value` in braces: `with { value = v; gas = g }`. ERC-165 detection, for example, queries `supportsInterface` with 30,000 gas and treats a failure as no:
+
+```lithe
+interface IERC165 is {
+  view function supportsInterface(interfaceId : bytes4) : bool;
+}
+
+storage is record {
+  receiver : bool;
+}
+
+external function check(const target : IERC165) is {
+  storage.receiver := case query target.supportsInterface(0x150b7a02) with gas = 30000n of {
+  | Ok(yes) -> yes
+  | Error(_) -> false
+  };
+}
+```
+
+A call that runs out of its gas fails like any other: the transaction reverts, unless an `Error` arm recovers. `create` takes no gas limit, since the EVM's creation always gets all the gas left.
+
 ## `Evm.transfer`
 
 `defer Evm.transfer(to, amount)` sends plain ether. `to` is an address or an interface value, and `amount` is `wei`:
@@ -245,7 +268,7 @@ is {
 }
 ```
 
-The transfer forwards all remaining gas, like Solidity's `call{value: ...}("")`, and reverts the transaction if the recipient rejects it. It is always deferred.
+The transfer forwards all remaining gas, like Solidity's `call{value: ...}("")`, unless it sets a [gas limit](#limiting-a-calls-gas), and reverts the transaction if the recipient rejects it. It is always deferred.
 
 ## `create`
 

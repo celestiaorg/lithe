@@ -555,10 +555,14 @@ impl<'a> Gen<'a> {
                 col,
             } => self.compile_emit(*line, *col, name, fields),
             Stmt::Defer {
-                expr, value, then, ..
+                expr,
+                value,
+                gas,
+                then,
+                ..
             } => {
                 self.fire_tail = tail;
-                let result = self.compile_defer(expr, value.as_ref(), then.as_deref());
+                let result = self.compile_defer(expr, value.as_ref(), gas.as_ref(), then.as_deref());
                 self.fire_tail = false;
                 result
             }
@@ -985,7 +989,7 @@ impl<'a> Gen<'a> {
                 builtin: Some(Builtin::Transfer),
                 ..
             }
-            | Expr::Call { iface: Some(_), .. } => self.compile_defer(e, None, None),
+            | Expr::Call { iface: Some(_), .. } => self.compile_defer(e, None, None, None),
             Expr::Lit { lit: Lit::Unit, .. } => Ok(()),
             Expr::Case {
                 scrut,

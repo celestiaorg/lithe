@@ -433,6 +433,8 @@ pub(crate) enum Stmt {
         col: u32,
         expr: Expr,
         value: Option<Expr>,
+        /// `with gas = g`: the most gas the call may use, instead of all that is left.
+        gas: Option<Expr>,
         /// What runs after the call returns: a later, separate transition phase.
         then: Option<Box<Then>>,
     },
@@ -785,6 +787,8 @@ pub(crate) enum Expr {
         line: u32,
         col: u32,
         expr: Box<Expr>,
+        /// `with gas = g`: the most gas the call may use, instead of all that is left.
+        gas: Option<Box<Expr>>,
         ty: usize,
     },
     Case {

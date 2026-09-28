@@ -71,9 +71,12 @@ impl<'a> Gen<'a> {
                 let es: Vec<&Expr> = fields.iter().map(|(_, e)| e).collect();
                 exprs(&es, written, seen)
             }
-            Stmt::Defer { expr, value, .. } => {
+            Stmt::Defer {
+                expr, value, gas, ..
+            } => {
                 let mut es = vec![expr];
                 es.extend(value.as_ref());
+                es.extend(gas.as_ref());
                 exprs(&es, written, seen)
             }
             Stmt::Assign {
@@ -654,7 +657,14 @@ fn substitute(e: &Expr, known: &HashMap<usize, Expr>) -> Expr {
 /// answer, and the arguments of calls and operators that evaluate every operand.
 fn eager_queries<'e>(e: &'e Expr, called: &mut bool, out: &mut Vec<(u32, u32, &'e Expr, usize)>) {
     match e {
-        Expr::Query { expr, line, col, ty } => {
+        // A gas limit is evaluated where the query is, so a query with one stays there.
+        Expr::Query {
+            expr,
+            gas: None,
+            line,
+            col,
+            ty,
+        } => {
             if !*called {
                 out.push((*line, *col, expr.as_ref(), *ty));
             }

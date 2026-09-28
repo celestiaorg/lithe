@@ -535,11 +535,13 @@ fn stmt_case(types: &[RType], stmts: &[Stmt]) -> bool {
         Stmt::Defer {
             expr: e,
             value,
+            gas,
             then,
             ..
         } => {
             expr(e)
                 || value.as_ref().is_some_and(expr)
+                || gas.as_ref().is_some_and(expr)
                 || then
                     .as_ref()
                     .is_some_and(|then| then.arms().any(|arm| stmt_case(types, &arm.stmts)))
@@ -589,7 +591,8 @@ fn expr_case(types: &[RType], e: &Expr) -> bool {
                     .any(|arm| stmt_case(types, &arm.stmts) || expr(&arm.expr))
         }
         Expr::Case { .. } => true,
-        Expr::Query { expr: e, .. } | Expr::Unary { expr: e, .. } => expr(e),
+        Expr::Query { expr: e, gas, .. } => expr(e) || gas.as_ref().is_some_and(|g| expr(g)),
+        Expr::Unary { expr: e, .. } => expr(e),
         Expr::Binary { left, right, .. } => {
             expr(left) || expr(right)
         }
@@ -736,12 +739,13 @@ fn walk_stmt(checked: &Checked, s: &Stmt, fx: &mut Effects<'_>) {
         Stmt::Defer {
             expr: e,
             value,
+            gas,
             then,
             ..
         } => {
             note_op(fx, e);
             walk_expr(checked, e, fx);
-            if let Some(v) = value {
+            for v in value.iter().chain(gas) {
                 walk_expr(checked, v, fx);
             }
             if let Some(then) = then {
@@ -869,7 +873,10 @@ fn fmt_ty(ty: &TypeRef) -> String {
 
 fn walk_expr(checked: &Checked, e: &Expr, fx: &mut Effects<'_>) {
     match e {
-        Expr::Query { expr, .. } => {
+        Expr::Query { expr, gas, .. } => {
+            if let Some(gas) = gas {
+                walk_expr(checked, gas, fx);
+            }
             if let Expr::Call {
                 builtin: Some(Builtin::StaticCall),
                 args,
@@ -1034,10 +1041,14 @@ fn raise_stmt(checked: &Checked, stmt: &Stmt, ids: &mut Vec<usize>) {
             raise_expr(checked, expr, ids);
         }
         Stmt::Defer {
-            expr, value, then, ..
+            expr,
+            value,
+            gas,
+            then,
+            ..
         } => {
             raise_expr(checked, expr, ids);
-            if let Some(value) = value {
+            for value in value.iter().chain(gas) {
                 raise_expr(checked, value, ids);
             }
             if let Some(then) = then {
@@ -1123,7 +1134,13 @@ fn raise_expr(checked: &Checked, expr: &Expr, ids: &mut Vec<usize>) {
                 raise_expr(checked, base, ids);
             }
         }
-        Expr::Query { expr, .. } | Expr::Unary { expr, .. } | Expr::Field { base: expr, .. } => {
+        Expr::Query { expr, gas, .. } => {
+            raise_expr(checked, expr, ids);
+            if let Some(gas) = gas {
+                raise_expr(checked, gas, ids);
+            }
+        }
+        Expr::Unary { expr, .. } | Expr::Field { base: expr, .. } => {
             raise_expr(checked, expr, ids);
         }
         Expr::Index { base, index, .. } => {
