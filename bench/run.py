@@ -2070,6 +2070,14 @@ def canon_slots(slots, bound, bases):
     return {keyed.get(k, f"{k:#x}"): canon(f"{v:#066x}", bound) for k, v in slots.items()}
 
 
+def flat_slots(slots, other):
+    """Under `LITHE_MAP_SLOTS=flat`, Lithe's maps of maps hash elsewhere than Solidity's:
+    slots only one side has are compared as a multiset of their values."""
+    out = {k: v for k, v in slots.items() if k in other}
+    out["unmatched"] = sorted(v for k, v in slots.items() if k not in other)
+    return out
+
+
 def replay(name, suite, code, order, chains):
     mismatches = 0
     stamp = GENESIS
@@ -2157,6 +2165,8 @@ def replay(name, suite, code, order, chains):
         for role in contracts:
             want = canon_slots(slots["lithe"][roles["lithe"][role]], bound["lithe"], bases)
             have = canon_slots(slots[b][roles[b][role]], bound[b], bases)
+            if os.environ.get("LITHE_MAP_SLOTS") == "flat":
+                want, have = flat_slots(want, have), flat_slots(have, want)
             if want != have:
                 mismatches += 1
                 print(f"  STORAGE MISMATCH {name} {role}: lithe vs {b}")

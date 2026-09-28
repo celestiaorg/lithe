@@ -1360,3 +1360,115 @@ external function phases(const n : nat) is {
         }
     }
 }
+
+#[test]
+fn flat_maps_hash_word_keys_once() {
+    let src = r#"
+type Rec is record { tag : nat; inner : map(nat, map(address, bool)); }
+storage is record {
+  pre : nat;
+  m : map(address, map(nat, nat));
+  deep : map(nat, map(nat, map(nat, nat)));
+  recs : map(nat, Rec);
+  mixed : map(address, map(string, nat));
+}
+function bump(storage x : map(address, map(nat, nat)); const a : address; const k : nat) is {
+  x[a][k] := x[a][k] + 1n;
+}
+external function set(const a : address; const k : nat; const v : nat) is { storage.m[a][k] := v; }
+external function inc(const a : address; const k : nat) is { bump(storage.m, a, k); }
+external function set3(const a : nat; const b : nat; const c : nat; const v : nat) is {
+  storage.deep[a][b][c] := v;
+}
+external function set_inner(const i : nat; const k : nat; const a : address) is {
+  storage.recs[i].inner[k][a] := true;
+}
+external function set_mixed(const a : address; const s : string; const v : nat) is {
+  storage.mixed[a][s] := v;
+}
+external view function get(const a : address; const k : nat) : nat is storage.m[a][k]
+external view function get3(const a : nat; const b : nat; const c : nat) : nat is storage.deep[a][b][c]
+external view function get_inner(const i : nat; const k : nat; const a : address) : bool is
+  storage.recs[i].inner[k][a]
+external view function get_mixed(const a : address; const s : string) : nat is storage.mixed[a][s]
+"#;
+    crate::check::FLAT_MAPS.with(|f| f.set(Some(true)));
+    let rt = deploy(&compile(src).expect("compile")).expect("deploy");
+    crate::check::FLAT_MAPS.with(|f| f.set(None));
+    let n = Word::from_u64;
+    let flat = |words: &[Word]| {
+        keccak_word(
+            &words
+                .iter()
+                .flat_map(|w| w.to_be_bytes())
+                .collect::<Vec<u8>>(),
+        )
+    };
+    let run = |st: &HashMap<Word, Word>, sig: &str, args: &[Arg]| {
+        let out = exec(&rt, &encode_args(sig, args), st.clone(), n(1), n(0), n(0)).expect("exec");
+        assert!(!out.reverted, "{sig}: {}", pretty(&out.returndata));
+        out
+    };
+    let st = run(
+        &HashMap::new(),
+        "set(address,uint256,uint256)",
+        &[Arg::W(n(0xaa)), Arg::W(n(5)), Arg::W(n(7))],
+    )
+    .storage;
+    assert_eq!(st.get(&flat(&[n(0xaa), n(5), n(1)])), Some(&n(7)));
+    let st = run(
+        &st,
+        "inc(address,uint256)",
+        &[Arg::W(n(0xaa)), Arg::W(n(5))],
+    )
+    .storage;
+    assert_eq!(
+        read_ok(&rt, &st, "get(address,uint256)", &[n(0xaa), n(5)]),
+        n(8)
+    );
+    let st = run(
+        &st,
+        "set3(uint256,uint256,uint256,uint256)",
+        &[Arg::W(n(1)), Arg::W(n(2)), Arg::W(n(3)), Arg::W(n(9))],
+    )
+    .storage;
+    assert_eq!(st.get(&flat(&[n(1), n(2), n(3), n(2)])), Some(&n(9)));
+    assert_eq!(
+        read_ok(
+            &rt,
+            &st,
+            "get3(uint256,uint256,uint256)",
+            &[n(1), n(2), n(3)]
+        ),
+        n(9)
+    );
+    // A map of maps in a mapped record hashes from the record's field slot.
+    let st = run(
+        &st,
+        "set_inner(uint256,uint256,address)",
+        &[Arg::W(n(4)), Arg::W(n(6)), Arg::W(n(0xbb))],
+    )
+    .storage;
+    let inner = map_key(n(4), n(3)).wrapping_add(n(1));
+    assert_eq!(st.get(&flat(&[n(6), n(0xbb), inner])), Some(&n(1)));
+    assert_eq!(
+        read_ok(
+            &rt,
+            &st,
+            "get_inner(uint256,uint256,address)",
+            &[n(4), n(6), n(0xbb)]
+        ),
+        n(1)
+    );
+    // A string key keeps Solidity's nested hashing for the whole chain.
+    let st = run(
+        &st,
+        "set_mixed(address,string,uint256)",
+        &[Arg::W(n(0xcc)), Arg::B(b"hi".to_vec()), Arg::W(n(3))],
+    )
+    .storage;
+    let mut pre = b"hi".to_vec();
+    pre.extend(map_key(n(0xcc), n(4)).to_be_bytes());
+    assert_eq!(st.get(&keccak_word(&pre)), Some(&n(3)));
+    assert_eq!(st.len(), 4);
+}

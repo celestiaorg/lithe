@@ -664,9 +664,10 @@ fn cache_path(checked: &Checked, name: &str, opts: &Options) -> Option<PathBuf> 
         },
     };
     let key = format!(
-        "{}\0{:?}\0{name}\0{opts:?}",
+        "{}\0{:?}\0{name}\0{opts:?}\0{}",
         env!("LITHE_BUILD_ID"),
-        checked.source
+        checked.source,
+        checked.flat_maps
     );
     Some(dir.join(crate::hex(&keccak256(key.as_bytes()))))
 }

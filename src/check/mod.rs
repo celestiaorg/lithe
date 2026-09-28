@@ -229,6 +229,9 @@ pub(crate) struct Checked {
     pub interface_ids: Vec<u32>,
     /// Some function calls `Abi.supports_interface`.
     pub asks_interfaces: bool,
+    /// Maps of maps hash all their word keys and the map's slot at once, `keccak(k1 . k2 .
+    /// slot)`, instead of Solidity's `keccak(k2 . keccak(k1 . slot))`: see `flat_maps`.
+    pub flat_maps: bool,
     /// Peers' creation code and prerequisites, built once per compile however many passes
     /// embed them.
     pub peer_builds: std::sync::Mutex<Vec<PeerBuild>>,
@@ -399,6 +402,22 @@ enum Piece {
     Call(usize, u32, u32),
     /// A write to an immutable, and the immutable's name.
     Write(u32, u32, String),
+}
+
+thread_local! {
+    /// A test's choice of map layout, over `LITHE_MAP_SLOTS`.
+    pub(crate) static FLAT_MAPS: std::cell::Cell<Option<bool>> =
+        const { std::cell::Cell::new(None) };
+}
+
+// simplify: the layout is chosen for the whole process by `LITHE_MAP_SLOTS=flat`, so both
+// layouts can be measured. Make it a per-contract setting if it ships as an option, so
+// `lithe storage` and `upgrade-check` see it from the source.
+fn flat_maps() -> bool {
+    static ENV: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    FLAT_MAPS.with(|f| f.get()).unwrap_or_else(|| {
+        *ENV.get_or_init(|| std::env::var("LITHE_MAP_SLOTS").is_ok_and(|v| v == "flat"))
+    })
 }
 
 pub(crate) fn check(prog: Program) -> Result<Checked, Error> {
@@ -1018,6 +1037,7 @@ pub(crate) fn check_in(mut prog: Program, require_entries: bool) -> Result<Check
         slot_syms: c.slot_syms,
         interface_ids: Vec::new(),
         asks_interfaces: c.asks_interfaces,
+        flat_maps: flat_maps(),
         peer_builds: Default::default(),
     };
     let routes = crate::route::discover(&checked, require_entries)?;

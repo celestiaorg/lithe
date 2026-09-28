@@ -499,6 +499,28 @@ impl<'a> Gen<'a> {
                             transient,
                         });
                     }
+                    let mut keys = vec![index.as_ref()];
+                    let mut at = base.as_ref();
+                    while let Expr::Index { base, index, .. } = at {
+                        if self.checked.types[self.peel_nominal(base.ty())].kind != TyKind::Map {
+                            break;
+                        }
+                        keys.push(index);
+                        at = base;
+                    }
+                    keys.reverse();
+                    if self.flat_chain(&keys) {
+                        let p = self.deep_slot(at, false)?;
+                        for key in &keys {
+                            self.compile_key(key)?;
+                        }
+                        self.flat_slot(keys.len());
+                        return Ok(Deep {
+                            ty,
+                            pack: Pack::FULL,
+                            transient: p.transient,
+                        });
+                    }
                     let p = self.deep_slot(base, false)?;
                     self.compile_key(index)?;
                     self.nested_slot(self.is_dynamic(index.ty()));
@@ -1931,11 +1953,23 @@ impl<'a> Gen<'a> {
             self.mload(at);
             return Ok(());
         }
-        self.compile_key(keys[0])?;
-        self.map_slot(sym, leaf, self.is_dynamic(keys[0].ty()));
-        for key in &keys[1..] {
-            self.compile_key(key)?;
-            self.nested_slot(self.is_dynamic(key.ty()));
+        if self.flat_chain(keys) {
+            if self.checked.slot_syms.contains_key(&sym) {
+                self.mload(self.local[sym]);
+            } else {
+                self.push_word(self.leaf_key(sym, leaf));
+            }
+            for key in keys {
+                self.compile_key(key)?;
+            }
+            self.flat_slot(keys.len());
+        } else {
+            self.compile_key(keys[0])?;
+            self.map_slot(sym, leaf, self.is_dynamic(keys[0].ty()));
+            for key in &keys[1..] {
+                self.compile_key(key)?;
+                self.nested_slot(self.is_dynamic(key.ty()));
+            }
         }
         if let Some(cache) = cache.filter(|_| self.plan.cache_slots) {
             if self.branch == 0 && self.failing == 0 && self.body.is_some() {
@@ -2019,6 +2053,25 @@ impl<'a> Gen<'a> {
         self.compile_value(key)?;
         self.fit_static_word(key.ty());
         Ok(())
+    }
+
+    /// Whether a map of maps' keys hash at once with its slot: the flat layout, for word keys.
+    fn flat_chain(&self, keys: &[&Expr]) -> bool {
+        self.checked.flat_maps && keys.len() > 1 && !keys.iter().any(|k| self.is_dynamic(k.ty()))
+    }
+
+    /// `[slot, k1 .. kn]` becomes `keccak(k1 . .. . kn . slot)`, the flat layout's slot of
+    /// `m[k1]..[kn]`. The preimage ends with the map's own slot, as a Solidity map entry's
+    /// does, so it cannot be another map's, even one keyed by bytes, and it is longer than a
+    /// list's one word or a word-keyed entry's two.
+    fn flat_slot(&mut self, n: usize) {
+        for i in (0..n as i32).rev() {
+            self.mstore_off(self.hash_buf + 32 * i);
+        }
+        self.mstore_off(self.hash_buf + 32 * n as i32);
+        self.push_u64(32 * (n as u64 + 1));
+        self.push_mem(self.hash_buf);
+        self.op(KECCAK);
     }
 
     /// `[slot, key]` becomes the slot of `key` in the map stored at `slot`. A string or
