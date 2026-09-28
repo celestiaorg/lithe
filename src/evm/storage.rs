@@ -1360,3 +1360,26 @@ external function phases(const n : nat) is {
         }
     }
 }
+
+#[test]
+fn map_slots_follow_keys_a_loop_rewrites() {
+    let src = r#"
+storage is record {
+  m : map(nat, nat);
+}
+
+external view function f() : nat is {
+  var k : nat := 1n;
+  var total : nat := storage.m[k];
+  for i : nat in 0n .. 3n do {
+    total := total + storage.m[k] * 10n;
+    k := k + 1n;
+  }
+} with total
+"#;
+    let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
+    let w = Word::from_u64;
+    let storage: HashMap<Word, Word> = (1..4).map(|k| (map_key(w(k), w(0)), w(k))).collect();
+    let out = run_ok(&runtime, &storage, "f()", &[]);
+    assert_eq!(load_bytes(&out.returndata, 0), w(61));
+}

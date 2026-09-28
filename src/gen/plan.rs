@@ -509,6 +509,29 @@ impl<'a> Gen<'a> {
         }
     }
 
+    /// Every local a statement assigns.
+    pub(super) fn written_syms(st: &Stmt, out: &mut Vec<usize>) {
+        match st {
+            Stmt::Assign { root, .. } => out.extend(root),
+            Stmt::AssignTuple { syms, .. } => out.extend(syms),
+            Stmt::If {
+                then_body,
+                else_body,
+                ..
+            } => {
+                for s in then_body.iter().chain(else_body) {
+                    Self::written_syms(s, out);
+                }
+            }
+            Stmt::For { body, .. } => {
+                for s in body {
+                    Self::written_syms(s, out);
+                }
+            }
+            _ => {}
+        }
+    }
+
     fn raised_syms(&self, reason: &Raised, out: &mut Vec<usize>) {
         match &reason.form {
             RaisedForm::Unit => {}

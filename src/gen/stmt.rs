@@ -222,6 +222,13 @@ impl<'a> Gen<'a> {
                     self.stored_list_base(sym, leaf);
                     self.mstore_off(list_base);
                 }
+                // A slot kept from before the loop is stale once the body rewrites its key.
+                let mut written = Vec::new();
+                for st in body.iter() {
+                    Self::written_syms(st, &mut written);
+                }
+                self.slot_cache
+                    .retain(|_, (_, deps)| !deps.iter().any(|d| written.contains(d)));
                 let top = self.fresh();
                 let done = self.fresh();
                 self.jumpdest(top);
