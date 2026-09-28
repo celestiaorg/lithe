@@ -26,6 +26,7 @@ impl<'a> Gen<'a> {
         }
         let label = self.fresh();
         self.fails.push((panic, label));
+        self.revert_labels.insert(label);
         label
     }
 
@@ -55,6 +56,7 @@ impl<'a> Gen<'a> {
         }
         let label = self.fresh();
         self.raises.push((key, label, raised.clone()));
+        self.revert_labels.insert(label);
         Some(label)
     }
 

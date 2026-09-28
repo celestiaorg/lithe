@@ -854,6 +854,10 @@ struct Gen<'a> {
     kept_store: bool,
     /// Words holding a cached slot or value. A word nothing reads drops its store.
     cache_words: Vec<i32>,
+    /// The words among them that hold a constant slot's word, with the slot.
+    leaf_words: Vec<(i32, Word)>,
+    /// The shared blocks that revert: `fails` and `raises`, which later consume them.
+    revert_labels: std::collections::HashSet<u32>,
     /// Inside an assertion's failure block, which runs only when it fails.
     failing: usize,
     ret_scratch: i32,

@@ -73,6 +73,8 @@ impl<'a> Gen<'a> {
             val_cache: HashMap::new(),
             kept_store: false,
             cache_words: Vec::new(),
+            leaf_words: Vec::new(),
+            revert_labels: std::collections::HashSet::new(),
             failing: 0,
             ret_scratch: 0,
             args_buf: 0,
@@ -850,7 +852,8 @@ impl<'a> Gen<'a> {
             self.plan.tight,
             self.plan.hold_dups,
         );
-        // String helpers reach storage through a slot they are given.
+        // String helpers reach storage through a slot they are given, and others write
+        // slots they are given, which may be a fixed list's.
         let opaque: std::collections::HashSet<u32> = self
             .funcs
             .values()
@@ -858,7 +861,7 @@ impl<'a> Gen<'a> {
             .chain(
                 self.subs
                     .iter()
-                    .filter(|(sub, _, _)| matches!(sub, Sub::StoreBytes | Sub::LoadBytes))
+                    .filter(|(sub, _, _)| matches!(sub, Sub::LoadBytes) || sub.writes_storage())
                     .map(|&(_, label, _)| label),
             )
             .collect();

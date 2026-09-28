@@ -139,7 +139,14 @@ impl<'a> Gen<'a> {
         self.push_leaf_key(leaf);
         self.op(SLOAD);
         if let Some(name) = name.filter(|_| keep) {
-            self.keep_value(name, Vec::new());
+            self.keep_leaf_slot(name, leaf);
+        }
+    }
+
+    fn keep_leaf_slot(&mut self, name: String, leaf: u32) {
+        self.keep_value(name.clone(), Vec::new());
+        if let Some(at) = self.kept_value(&name) {
+            self.leaf_words.push((at, self.checked.leaf_keys[leaf as usize]));
         }
     }
 
@@ -152,7 +159,7 @@ impl<'a> Gen<'a> {
                     self.push_mem(at);
                     self.op(MSTORE);
                 }
-                None => self.keep_value(name, Vec::new()),
+                None => self.keep_leaf_slot(name, leaf),
             }
         }
         self.push_leaf_key(leaf);
@@ -2353,7 +2360,36 @@ impl<'a> Gen<'a> {
     }
 
     /// Drops the store of a cached slot no access came back for.
+    /// A small constant slot's word used only within straight-line code goes back to loads
+    /// of the slot, which `forward_storage` keeps on the stack there instead.
     pub(super) fn drop_unread_caches(&mut self) {
+        let fail = |l: u32| self.revert_labels.contains(&l);
+        for &(at, key) in &self.leaf_words {
+            if !key.lt(Word::from_u64(256)) {
+                continue;
+            }
+            let sites: Vec<usize> = (0..self.code.len())
+                .filter(|&i| self.code[i] == Inst::Mem(at as u32))
+                .collect();
+            let (Some(&lo), Some(&hi)) = (sites.first(), sites.last()) else {
+                continue;
+            };
+            let code = &self.code[lo..hi];
+            let straight = !code.iter().enumerate().any(|(k, inst)| match inst {
+                Inst::PushLabel(l) => !(fail(*l) && code.get(k + 1) == Some(&Inst::Op(JUMPI))),
+                Inst::Label(_) | Inst::Op(JUMP) => true,
+                Inst::Op(JUMPI) => !matches!(k.checked_sub(1).map(|j| code[j]), Some(Inst::PushLabel(l)) if fail(l)),
+                _ => false,
+            });
+            if !straight {
+                continue;
+            }
+            for &i in sites.iter().rev() {
+                if self.code.get(i + 1) == Some(&Inst::Op(MLOAD)) {
+                    self.code.splice(i..i + 2, [Inst::Push(key), Inst::Op(SLOAD)]);
+                }
+            }
+        }
         let read: std::collections::HashSet<u32> = self
             .code
             .windows(2)
@@ -2366,11 +2402,8 @@ impl<'a> Gen<'a> {
             if read.contains(&(at as u32)) {
                 continue;
             }
-            if let Some(i) = self
-                .code
-                .windows(3)
-                .position(|w| w == [Inst::Op(DUP1), Inst::Mem(at as u32), Inst::Op(MSTORE)])
-            {
+            let store = [Inst::Op(DUP1), Inst::Mem(at as u32), Inst::Op(MSTORE)];
+            while let Some(i) = self.code.windows(3).position(|w| w == store) {
                 self.code.drain(i..i + 3);
             }
         }

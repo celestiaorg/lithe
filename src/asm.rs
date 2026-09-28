@@ -2203,15 +2203,19 @@ pub(crate) fn forward_storage(code: &mut Vec<Inst>, calls: &Calls, opaque: &Hash
         let mut edits: Vec<(usize, usize, Vec<Inst>)> = Vec::new();
         let mut busy: FxHashSet<usize> = FxHashSet::default();
         for i in 0..code.len().saturating_sub(1) {
-            let (Push(key), Op(store @ (SSTORE | TSTORE))) = (code[i], code[i + 1]) else {
+            let (Push(key), Op(op @ (SSTORE | TSTORE | SLOAD | TLOAD))) = (code[i], code[i + 1])
+            else {
                 continue;
             };
             if busy.contains(&runs.run[i]) {
                 continue;
             }
-            if let Some(mut plan) =
-                plan_storage(code, i, (key, store), &runs, calls, opaque, &reverts)
-            {
+            let plan = if matches!(op, SLOAD | TLOAD) {
+                plan_load(code, i, (key, op), &runs, calls, opaque)
+            } else {
+                plan_storage(code, i, (key, op), &runs, calls, opaque, &reverts)
+            };
+            if let Some(mut plan) = plan {
                 busy.insert(runs.run[i]);
                 edits.append(&mut plan);
             }
@@ -2285,12 +2289,57 @@ fn plan_storage(
     }
     // A dropped store's value may stay on the stack past the store that replaces it.
     let limit = if overwritten { run_end } else { j };
-    let mut edits = hold(code, i, p, &loads, limit, run_end, false, true, runs, calls)?;
+    let mut edits = hold(code, i, p, &loads, limit, run_end, true, true, runs, calls)?;
     edits.push(if overwritten {
         (i, 2, Vec::new())
     } else {
         (i, 0, vec![Op(DUP1)])
     });
+    Some(edits)
+}
+
+/// A value loaded and loaded again in the same straight run, with no store of its key
+/// between, stays on the stack for the later loads.
+fn plan_load(
+    code: &[Inst],
+    i: usize,
+    (key, load): (Word, u8),
+    runs: &Runs,
+    calls: &Calls,
+    opaque: &HashSet<u32>,
+) -> Option<Vec<(usize, usize, Vec<Inst>)>> {
+    let store = if load == SLOAD { SSTORE } else { TSTORE };
+    let run = runs.run[i];
+    let n = code.len();
+    let mut run_end = i + 2;
+    while run_end < n && runs.run[run_end] == run {
+        run_end += 1;
+    }
+    let mut loads = Vec::new();
+    let mut j = i + 2;
+    while j < run_end {
+        if let Some(PushLabel(h)) = code.get(j + 1) {
+            if call_at(code, j, calls).is_some() && opaque.contains(h) {
+                break;
+            }
+        }
+        match (code[j], code.get(j + 1)) {
+            (Push(k), Some(&Op(op))) if k == key && op == load => {
+                loads.push(j);
+                j += 2;
+                continue;
+            }
+            (Push(k), Some(&Op(op))) if k == key && op == store => break,
+            (Op(op), _) if runs_other_code(op) => break,
+            _ => {}
+        }
+        j += 1;
+    }
+    if loads.is_empty() {
+        return None;
+    }
+    let mut edits = hold(code, i, runs.depth[i], &loads, j, run_end, true, true, runs, calls)?;
+    edits.push((i + 2, 0, vec![Op(DUP1)]));
     Some(edits)
 }
 
