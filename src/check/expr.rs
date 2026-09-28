@@ -732,6 +732,8 @@ impl Checker {
                 let sty = scrut.ty();
                 // `case query ... of` recovers: `Ok` holds the answer, `Error` the revert data.
                 let outcome = matches!(scrut.as_ref(), Expr::Query { .. });
+                // `if c then a else b` parses as a `case` on `c`, with arms `true` and `false`.
+                let is_if = arms[0].ctors[0] == "true";
                 let variants: Vec<(String, Option<usize>)> = if outcome {
                     vec![
                         ("Ok".to_string(), Some(sty)),
@@ -742,12 +744,16 @@ impl Checker {
                         ("None".to_string(), None),
                         ("Some".to_string(), self.types[sty].elem),
                     ]
+                } else if self.types[sty].kind == TyKind::Bool {
+                    vec![("true".to_string(), None), ("false".to_string(), None)]
                 } else if !self.types[sty].variants.is_empty() {
                     self.types[sty]
                         .variants
                         .iter()
                         .map(|v| (v.name.clone(), v.payload))
                         .collect()
+                } else if is_if {
+                    return Err(error(*line, *col, "`if` condition must be bool"));
                 } else {
                     return Err(error(*line, *col, "`case` expects a variant"));
                 };
@@ -874,7 +880,8 @@ impl Checker {
                     if !arm.fails() {
                         if let Some(prev) = result {
                             if !self.same(prev, at) {
-                                return Err(error(arm.line, arm.col, "case arms have different types"));
+                                let what = if is_if { "`if` branches" } else { "case arms" };
+                                return Err(error(arm.line, arm.col, format!("{what} have different types")));
                             }
                         } else {
                             result = Some(at);

@@ -1,39 +1,38 @@
 ---
 title: "If / else"
-description: "Conditionals, nested branches, and choosing a value."
+description: "Conditionals, else-if chains, and choosing a value."
 ---
 
 # If / else
 
-`if cond then { ... } else { ... }` is a statement. There is no ternary operator and no `else if`. Nest an `if` inside `else`.
+`if cond then { ... } else { ... }` runs one of two blocks. `if cond then a else b` chooses one of two values. There is no ternary operator.
 
 ```lithe [if-else.lithe]
-(* `if` is a statement. `else if` is written as an `if` inside the `else` block. *)
+(* `if` with blocks is a statement. Chain conditions with `else if`. *)
 
 storage is record {
-  checks : nat;
+  size : nat;
 }
 
-external pure function classify(const x : nat) : nat is {
-  var size : nat := 0n;
+external function record_size(const x : nat) is {
   if x < 10n then {
-    size := 1n;
+    storage.size := 1n;
+  } else if x < 100n then {
+    storage.size := 2n;
   } else {
-    if x < 100n then {
-      size := 2n;
-    } else {
-      size := 3n;
-    }
+    storage.size := 3n;
   }
-} with size
+}
 
-(* For a value that depends on a condition, bind a `var` and assign in each branch. *)
-external pure function min(const a : nat; const b : nat) : nat is {
-  var smaller : nat := b;
-  if a < b then {
-    smaller := a;
-  }
-} with smaller
+(* `if` with values is an expression. Both branches are required and share a type. *)
+external pure function min(const a : nat; const b : nat) : nat is
+  if a < b then a else b
+
+external pure function classify(const x : nat) : nat is {
+  const size : nat := if x < 10n then 1n else if x < 100n then 2n else 3n;
+} with size
 ```
 
-To produce a value conditionally, bind a `var` and assign it in the branches, then return it with `with`.
+- An `if` expression can go anywhere a value can, like a `case`: a function body, a `with` result, a `const` initializer, or an operand.
+- A branch can be `fail E`, as a `case` arm can: `if amount > 0n then amount else fail Zero`.
+- Inside each branch the compiler knows whether the condition held, so `if a >= b then a - b else 0n` has no underflow check.

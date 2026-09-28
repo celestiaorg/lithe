@@ -783,6 +783,79 @@ external view function go() : address is {
 }
 
 #[test]
+fn if_chooses_a_value_and_chains_with_else_if() {
+    let src = "\
+error Bad;
+
+storage is record {
+  n : nat;
+}
+
+external pure function classify(const x : nat) : nat is
+  if x < 10n then 1n else if x < 100n then 2n else 3n
+
+external pure function gap(const a : nat; const b : nat) : nat is
+  if a >= b then a - b else 0n
+
+external pure function flag(const f : bool) : nat is {
+  const n : nat := 1n + (if f then 7n else 9n);
+} with n
+
+external pure function must(const x : nat) : nat raises Bad is
+  if x > 0n then x else fail Bad
+
+external pure function sign(const x : nat) : string is
+  if x > 0n then \"positive\" else \"zero\"
+
+external function set(const f : bool) is
+  if f then { storage.n := 4n; } else { storage.n := 6n; }
+
+external function bump(const x : nat) is {
+  if x < 10n then {
+    storage.n := 1n;
+  } else if x < 100n then {
+    storage.n := 2n;
+  } else {
+    storage.n := 3n;
+  }
+}
+";
+    let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
+    let word = |sig: &str, args: &[u64]| {
+        let args: Vec<Word> = args.iter().map(|&a| Word::from_u64(a)).collect();
+        let out = call(&runtime, sig, &args);
+        assert!(!out.reverted, "{sig}: {}", pretty(&out.returndata));
+        load_bytes(&out.returndata, 0)
+    };
+    for (x, want) in [(5, 1), (50, 2), (500, 3)] {
+        assert_eq!(word("classify(uint256)", &[x]), Word::from_u64(want));
+        let bumped = call(&runtime, "bump(uint256)", &[Word::from_u64(x)]);
+        assert_eq!(slot(&bumped.storage, 0), Word::from_u64(want));
+    }
+    let set = call(&runtime, "set(bool)", &[Word::from_u64(1)]);
+    assert_eq!(slot(&set.storage, 0), Word::from_u64(4));
+    let set = call(&runtime, "set(bool)", &[Word::from_u64(0)]);
+    assert_eq!(slot(&set.storage, 0), Word::from_u64(6));
+    assert_eq!(word("gap(uint256,uint256)", &[9, 4]), Word::from_u64(5));
+    assert_eq!(word("gap(uint256,uint256)", &[4, 9]), Word::from_u64(0));
+    assert_eq!(word("flag(bool)", &[1]), Word::from_u64(8));
+    assert_eq!(word("flag(bool)", &[0]), Word::from_u64(10));
+    assert_eq!(word("must(uint256)", &[3]), Word::from_u64(3));
+    assert!(call(&runtime, "must(uint256)", &[Word::from_u64(0)]).reverted);
+    let named = call(&runtime, "sign(uint256)", &[Word::from_u64(1)]);
+    assert!(named.returndata.windows(8).any(|w| w == b"positive"));
+
+    let reject = |body: &str, want: &str| {
+        let src = format!("storage is record {{ n : nat; }}\nexternal pure function go(const x : nat) : nat is {body}\n");
+        let err = compile(&src).expect_err(body).to_string();
+        assert!(err.contains(want), "{body}: {err}");
+    };
+    reject("if x then 1n else 2n", "`if` condition must be bool");
+    reject("if x > 0n then 1n", "`else`");
+    reject("if x > 0n then 1n else true", "`if` branches have different types");
+}
+
+#[test]
 fn indexed_events_split_topics_and_data() {
     let src = include_str!("../../examples/events.lithe");
     let abi = crate::abi(src).expect("abi");

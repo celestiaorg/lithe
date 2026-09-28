@@ -42,10 +42,8 @@ view function vested_at(const time : timestamp) : wei is {
   var vested : wei := 0wei;
   if time >= storage.start + storage.duration then {
     vested := total;
-  } else {
-    if time > storage.start then {
-      vested := wei(nat(total) * (time - storage.start) / storage.duration);
-    }
+  } else if time > storage.start then {
+    vested := wei(nat(total) * (time - storage.start) / storage.duration);
   }
 } with vested
 

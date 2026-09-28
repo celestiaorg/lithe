@@ -1285,6 +1285,9 @@ impl<'a> Gen<'a> {
         if self.checked.types[sty].kind == TyKind::Option {
             return self.compile_option_case(scrut, arms, line, col, sink);
         }
+        if self.checked.types[sty].kind == TyKind::Bool {
+            return self.compile_if(scrut, arms, sink);
+        }
         if is_enum(&self.checked.types, sty) {
             self.compile_value(scrut)?;
             return self.compile_tag_case(sty, arms, None, sink);
@@ -1300,6 +1303,31 @@ impl<'a> Gen<'a> {
         let src = self.value_addr(scrut)?;
         self.mload(src);
         self.compile_tag_case(sty, arms, Some(src), sink)
+    }
+
+    /// `if c then a else b`, with each branch knowing whether `c` held.
+    fn compile_if(&mut self, cond: &Expr, arms: &[crate::ast::Arm], sink: Sink) -> Result<(), Error> {
+        let arm = |ctor: &str| arms.iter().find(|a| a.ctors[0] == ctor).unwrap();
+        let else_l = self.fresh();
+        let end_l = self.fresh();
+        self.compile_value(cond)?;
+        self.op(ISZERO);
+        self.push_label(else_l);
+        self.op(JUMPI);
+        self.branch += 1;
+        let mark = self.facts.len();
+        self.assume(cond, true);
+        self.run_arm(arm("true"), sink)?;
+        self.facts.truncate(mark);
+        self.push_label(end_l);
+        self.op(JUMP);
+        self.jumpdest(else_l);
+        self.assume(cond, false);
+        self.run_arm(arm("false"), sink)?;
+        self.facts.truncate(mark);
+        self.branch -= 1;
+        self.jumpdest(end_l);
+        Ok(())
     }
 
     /// The tag of a variant with payloads, as the field it is.

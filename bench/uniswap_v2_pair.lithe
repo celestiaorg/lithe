@@ -111,10 +111,8 @@ contract UniswapV2Pair is {
         z := x;
         x := (y / x + x) / 2n;
       }
-    } else {
-      if y <> 0n then {
-        z := 1n;
-      }
+    } else if y <> 0n then {
+      z := 1n;
     }
   } with z
 
@@ -315,10 +313,8 @@ contract UniswapV2Pair is {
           }
         }
       }
-    } else {
-      if k_last <> 0n then {
-        storage.kLast := 0n;
-      }
+    } else if k_last <> 0n then {
+      storage.kLast := 0n;
     }
   } with fee_on
 

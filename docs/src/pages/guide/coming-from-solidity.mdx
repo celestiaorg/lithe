@@ -81,7 +81,8 @@ Both contracts have the same ABI, the same error selector, the same event topic,
 | `uint256 x = 1;` | `const x : nat := 1n;` |
 | a local you reassign | `var x : nat := 0n;` |
 | `true`, `false` | `true`, `false` |
-| `if (c) { } else if (d) { }` | `if c then { } else { if d then { } }` |
+| `if (c) { } else if (d) { }` | `if c then { } else if d then { }` |
+| `c ? a : b` | `if c then a else b` |
 | `for (uint i = 0; i < n; i++)` | `for i : nat in 0n .. n do { }`. See [Loops](/by-example/loops) |
 | `for (uint i = 0; i < xs.length; i++)` | `for (i, x) : (nat, T) in xs do { }` |
 | `while (cond)` | none. `for ... until cond bound n do { }` |

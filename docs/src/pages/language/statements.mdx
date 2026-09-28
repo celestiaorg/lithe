@@ -14,7 +14,7 @@ A block is a sequence of statements in braces, each ending with `;`:
 | Mutable binding | `var name : type := expr;` |
 | Assignment | `name := expr;`, `storage.path := expr;` |
 | Call | `f(args);`, `Module.f(args);` |
-| Conditional | `if cond then { ... } else { ... }` |
+| Conditional | `if cond then { ... } else if cond then { ... } else { ... }` |
 | Loop | `for x : T in xs [until cond] [bound n] do { ... }`, or over `lo .. hi` |
 | Tuple assignment | `(a, b) := expr;` |
 | Assertion | `assert(cond, Error);` |
@@ -90,12 +90,14 @@ storage field `paid` must be qualified as `storage.paid`
 ```lithe fragment
 if balance >= amount then {
   storage.balance := balance - amount;
+} else if storage.overdraft then {
+  storage.balance := 0n;
 } else {
   fail Insufficient;
 }
 ```
 
-The condition must be a `bool`. Both branches are blocks. There is no `else if`: nest another `if` inside the `else` block.
+The condition must be a `bool`. Both branches are blocks, and `else if` chains another `if`. To choose a value instead, use an [`if` expression](/language/expressions#if-expressions).
 
 ## `assert` and `fail`
 

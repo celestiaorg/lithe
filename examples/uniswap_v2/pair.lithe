@@ -177,10 +177,8 @@ contract UniswapV2Pair is {
           }
         }
       }
-    } else {
-      if k_last <> 0n then {
-        storage.k_last := 0n;
-      }
+    } else if k_last <> 0n then {
+      storage.k_last := 0n;
     }
   } with fee_on
 

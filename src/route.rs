@@ -66,7 +66,7 @@ pub(crate) fn discover(checked: &Checked) -> Result<Vec<Route>, Error> {
         if f.kind != ItemKind::Entry {
             continue;
         }
-        if let Some(case) = dispatcher(f) {
+        if let Some(case) = dispatcher(&checked.types, f) {
             if f.ret.is_some() {
                 return Err(error(
                     f.line,
@@ -184,8 +184,8 @@ fn section(out: &mut String, title: &str, items: &[String]) {
     }
 }
 
-fn dispatcher(f: &Func) -> Option<&Expr> {
-    if f.params.is_empty() {
+fn dispatcher<'a>(types: &[RType], f: &'a Func) -> Option<&'a Expr> {
+    if f.params.first().is_none_or(|p| types[p.ty_id].variants.is_empty()) {
         return None;
     }
     for s in &f.stmts {
@@ -225,7 +225,7 @@ fn walk(
     for arm in arms {
         if let Some(idx) = dispatch_call(checked, arm) {
             let callee = &checked.prog.funcs[idx];
-            let Some(inner) = dispatcher(callee) else {
+            let Some(inner) = dispatcher(&checked.types, callee) else {
                 return Err(error(arm.line, arm.col, "callee is not a dispatcher"));
             };
             let mut next_guards = guards.to_vec();
@@ -504,7 +504,7 @@ fn dispatch_call(checked: &Checked, arm: &Arm) -> Option<usize> {
         return None;
     };
     let callee = &checked.prog.funcs[*idx];
-    if dispatcher(callee).is_none() {
+    if dispatcher(&checked.types, callee).is_none() {
         return None;
     }
     match (&arm.bind, args.as_slice()) {

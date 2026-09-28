@@ -1735,7 +1735,11 @@ impl<'a> Parser<'a> {
                 let then_body = self.block()?;
                 let else_body = if self.kind() == Kind::Else {
                     self.bump();
-                    self.block()?
+                    if self.kind() == Kind::If {
+                        vec![self.stmt()?]
+                    } else {
+                        self.block()?
+                    }
                 } else {
                     Vec::new()
                 };
@@ -2389,6 +2393,7 @@ impl<'a> Parser<'a> {
                 })
             }
             Kind::Case => self.case_expr(),
+            Kind::If => self.if_expr(),
             Kind::LBrace => self.record_expr(line, col),
             Kind::LBrack => self.list_expr(line, col),
             Kind::LParen => {
@@ -2661,6 +2666,37 @@ impl<'a> Parser<'a> {
             return Err(self.err("expected at least one case arm"));
         }
         self.want(Kind::RBrace)?;
+        Ok(Expr::Case {
+            line,
+            col,
+            scrut: Box::new(scrut),
+            arms,
+            ty: 0,
+        })
+    }
+
+    /// `if c then a else b` is a `case` on `c`, so its branches are arms.
+    fn if_expr(&mut self) -> Result<Expr, Error> {
+        let (line, col) = self.at();
+        self.want(Kind::If)?;
+        let scrut = self.expr()?;
+        let mut arms = Vec::new();
+        for (kind, ctor) in [(Kind::Then, "true"), (Kind::Else, "false")] {
+            let (aline, acol) = self.at();
+            self.want(kind)?;
+            let (stmts, expr) = self.arm_body()?;
+            arms.push(Arm {
+                line: aline,
+                col: acol,
+                ctors: vec![ctor.to_string()],
+                bind: None,
+                bind_sym: None,
+                tuple_names: Vec::new(),
+                tuple_syms: Vec::new(),
+                stmts,
+                expr,
+            });
+        }
         Ok(Expr::Case {
             line,
             col,

@@ -137,19 +137,26 @@ external function main(const action : action) is
   }
 ```
 
-## `if` is a statement
+## `if` expressions
 
-There is no `if` expression and no ternary operator. To choose a value, bind a `var` and assign it in each branch:
+`if cond then a else b` chooses a value. It goes anywhere a `case` can. `else` is required, both branches have the same type, and `else if` chains:
 
 ```lithe
+error Zero;
+
 storage is record {
   n : nat;
 }
 
-external pure function max(const a : nat; const b : nat) : nat is {
-  var larger : nat := a;
-  if b > a then {
-    larger := b;
-  }
-} with larger
+external pure function max(const a : nat; const b : nat) : nat is
+  if a > b then a else b
+
+external pure function tier(const x : nat) : nat is {
+  const t : nat := if x < 10n then 1n else if x < 100n then 2n else 3n;
+} with t
+
+external pure function nonzero(const x : nat) : nat raises Zero is
+  if x > 0n then x else fail Zero
 ```
+
+Its branches are `case` arms, so a branch can be `fail E`, or in a stateful function a block. There is no ternary operator.

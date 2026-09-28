@@ -55,17 +55,13 @@ module ERC721Enumerable is {
     const previous : address := ERC721.update(to, tokenId, auth);
     if previous = Address.zero then {
       add_to_all(tokenId);
-    } else {
-      if previous <> to then {
-        remove_from_owner(previous, tokenId);
-      }
+    } else if previous <> to then {
+      remove_from_owner(previous, tokenId);
     }
     if to = Address.zero then {
       remove_from_all(tokenId);
-    } else {
-      if previous <> to then {
-        add_to_owner(to, tokenId);
-      }
+    } else if previous <> to then {
+      add_to_owner(to, tokenId);
     }
   } with previous
 
