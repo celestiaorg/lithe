@@ -2002,6 +2002,7 @@ fn plan_promotion(
             stop,
             run_end,
             consume && dead_after,
+            false,
             runs,
             calls,
         )
@@ -2026,16 +2027,19 @@ fn plan_promotion(
 /// Keeps the value stored at `i` on the stack at position `p` until it is on top again,
 /// and turns each two-instruction load in `loads` into a `DUP` of it. The point where it
 /// is popped is searched for before `limit`; if there is none, the value may stay only
-/// when `limit` is the end of a run that abandons the stack.
+/// when `limit` is the end of a run that abandons the stack. With `sink`, an op that takes
+/// the word right under the value gets it by a `SWAP1` before the pushes that feed it,
+/// and the value is held one place lower from there.
 #[allow(clippy::too_many_arguments)]
 fn hold(
     code: &[Inst],
     i: usize,
-    p: i64,
+    mut p: i64,
     loads: &[usize],
     limit: usize,
     run_end: usize,
     consume: bool,
+    sink: bool,
     runs: &Runs,
     calls: &Calls,
 ) -> Option<Vec<(usize, usize, Vec<Inst>)>> {
@@ -2049,35 +2053,18 @@ fn hold(
         && (runs.depth[last] == p
             || runs.depth[last] == p + 1
                 && matches!(code.get(last + 2), Some(Op(op)) if is_commutative(*op)));
-    // Where the value becomes the top of the stack again after its last use.
+    // Every instruction the value lives under must leave it alone, up to where it becomes
+    // the top of the stack again after its last use.
     let mut pop_at: Option<usize> = None;
-    let mut k = last + 2;
-    while k < limit && !consumed {
-        if runs.depth[k] == p && !matches!(code[k], Label(_)) {
+    let mut k = i + 2;
+    while k < limit {
+        if consumed && k >= last + 2 {
+            break;
+        }
+        if k > last && runs.depth[k] == p && !matches!(code[k], Label(_)) {
             pop_at = Some(k);
             break;
         }
-        // Never split a call from its return label.
-        k += if call_at(code, k, calls).is_some() {
-            4
-        } else {
-            1
-        };
-    }
-    let range_end = match pop_at {
-        Some(q) => q,
-        None if consumed => last + 2,
-        None => {
-            // Left in place only if the run abandons the stack.
-            if limit != run_end || !runs.ends_in_exit[run] {
-                return None;
-            }
-            limit
-        }
-    };
-    // Every instruction the value lives under must leave it alone.
-    let mut k = i + 2;
-    while k < range_end {
         if loads.contains(&k) {
             let above = runs.depth[k] - p;
             if !(0..16).contains(&above) {
@@ -2096,6 +2083,7 @@ fn hold(
             if runs.depth[k] - (takes as i64) < p {
                 return None;
             }
+            // Never split a call from its return label.
             k += 4;
             continue;
         }
@@ -2126,11 +2114,30 @@ fn hold(
             Op(op) => {
                 let (pops, _) = stack_io(op)?;
                 if d - (pops as i64) < p {
-                    return None;
+                    if !sink || d - (pops as i64) != p - 1 {
+                        return None;
+                    }
+                    let mut q = k;
+                    while runs.depth[q] != p {
+                        q -= 1;
+                        if q < i + 2
+                            || !matches!(code[q], Push(_) | PushLabel(_) | Mem(_) | Imm(..))
+                        {
+                            return None;
+                        }
+                    }
+                    edits.push((q, 0, vec![Op(SWAP1)]));
+                    p -= 1;
                 }
             }
         }
         k += 1;
+    }
+    if pop_at.is_none() && !consumed {
+        // Left in place only if the run abandons the stack.
+        if limit != run_end || !runs.ends_in_exit[run] {
+            return None;
+        }
     }
     if let Some(q) = pop_at {
         edits.push((q, 0, vec![Op(POP)]));
@@ -2276,12 +2283,9 @@ fn plan_storage(
     if loads.is_empty() {
         return overwritten.then(|| vec![(i, 2, vec![Op(POP)])]);
     }
-    if !overwritten && loads.len() < 2 {
-        return None;
-    }
     // A dropped store's value may stay on the stack past the store that replaces it.
     let limit = if overwritten { run_end } else { j };
-    let mut edits = hold(code, i, p, &loads, limit, run_end, false, runs, calls)?;
+    let mut edits = hold(code, i, p, &loads, limit, run_end, false, true, runs, calls)?;
     edits.push(if overwritten {
         (i, 2, Vec::new())
     } else {

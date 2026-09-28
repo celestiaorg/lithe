@@ -91,6 +91,7 @@ impl<'a> Gen<'a> {
             revert_kinds: 0,
             revert_head: None,
             branch: 0,
+            top_branch: 0,
             body: None,
             bodies: 0,
             loop_syms: Vec::new(),

@@ -1401,13 +1401,14 @@ impl<'a> Gen<'a> {
             let label = self.fresh();
             let saved_code = std::mem::take(&mut self.code);
             let saved_body = self.body.take();
-            let saved_branch = self.branch;
+            let (saved_branch, saved_top) = (self.branch, self.top_branch);
             let saved_shared = self.shared;
             let saved_cache = std::mem::take(&mut self.slot_cache);
             let saved_facts = std::mem::take(&mut self.facts);
             // A summary body collects the leaves it touches. Writes are never unconditional.
             self.body = Some(Body::default());
             self.branch = 1;
+            self.top_branch = 1;
             self.shared = true;
             self.jumpdest(label);
             self.compiling.push(idx);
@@ -1422,6 +1423,7 @@ impl<'a> Gen<'a> {
             let code = std::mem::replace(&mut self.code, saved_code);
             self.body = saved_body;
             self.branch = saved_branch;
+            self.top_branch = saved_top;
             self.shared = saved_shared;
             self.slot_cache = saved_cache;
             self.facts = saved_facts;

@@ -824,6 +824,8 @@ struct Gen<'a> {
     revert_head: Option<i32>,
     /// Runtime branches around the code being compiled.
     branch: u32,
+    /// The `branch` of code that runs whenever the current body or shared function does.
+    top_branch: u32,
     body: Option<Body>,
     bodies: usize,
     /// The locals declared by each enclosing loop, innermost last.

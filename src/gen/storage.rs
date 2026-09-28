@@ -1938,7 +1938,7 @@ impl<'a> Gen<'a> {
             self.nested_slot(self.is_dynamic(key.ty()));
         }
         if let Some(cache) = cache.filter(|_| self.plan.cache_slots) {
-            if self.branch == 0 && self.failing == 0 && self.body.is_some() {
+            if self.branch == self.top_branch && self.failing == 0 && self.body.is_some() {
                 self.return_sites += 1;
                 let at = self.region(Region::Stored(self.return_sites), 32);
                 self.op(DUP1);
