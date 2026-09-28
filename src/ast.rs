@@ -543,6 +543,7 @@ pub(crate) enum BinOp {
     Mul,
     Div,
     Mod,
+    Pow,
     BitAnd,
     BitOr,
     BitXor,
@@ -633,6 +634,12 @@ pub(crate) enum Builtin {
     NatToString,
     /// `Int.to_string(n)`: a signed integer in decimal, with a `-` when negative.
     IntToString,
+    /// `Nat.to_hex_string(n)`: `0x` and the fewest whole bytes in lowercase hex. With a
+    /// second argument, exactly that many bytes.
+    NatToHexString,
+    /// `Address.to_hex_string(a)`: `0x` and 40 lowercase hex digits. `true` is
+    /// `Address.to_checksum_string`, cased as EIP-55.
+    AddressToHexString(bool),
     /// `Nat.from_bits(i)` and `Int.from_bits(n)`, the unchecked bit-cast between `int` and
     /// `nat`. `true` is `Int.from_bits`.
     FromBits(bool),

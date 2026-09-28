@@ -1,0 +1,38 @@
+(* Benchmark: powers, the standard library's roots, logarithms, and signed helpers, and
+   hex formatting, on runtime arguments. Mirrors numerics.sol, which imports OpenZeppelin. *)
+
+import "std/math/math.lithe";
+
+contract Numerics is {
+  use Math;
+
+  storage is record {
+    scale : nat;
+  }
+
+  external pure function pow(const base : nat; const exponent : nat) : nat is base ** exponent
+  external pure function units(const decimals : uint8) : nat is 10n ** decimals
+  external pure function pow_signed(const base : int; const exponent : nat) : int is base ** exponent
+  external pure function pow2(const exponent : nat) : nat is 2n ** exponent
+
+  external pure function sqrt(const a : nat) : nat is Math.sqrt(a)
+  external pure function log2(const a : nat) : nat is Math.log2(a)
+  external pure function log10(const a : nat) : nat is Math.log10(a)
+
+  external pure function abs(const x : int) : nat is Math.abs(x)
+  external pure function min(const a : int; const b : int) : int is Math.min(a, b)
+  external pure function max(const a : int; const b : int) : int is Math.max(a, b)
+  external pure function average(const a : int; const b : int) : int is Math.average(a, b)
+  external pure function clamp(const x : int; const low : int; const high : int) : int
+    raises MathInvalidSignedRange
+  is Math.clamp(x, low, high)
+
+  external pure function hex_nat(const n : nat) : string is Nat.to_hex_string(n)
+  external pure function hex_fixed(const n : nat; const length : nat) : string is Nat.to_hex_string(n, length)
+  external pure function hex_address(const a : address) : string is Address.to_hex_string(a)
+  external pure function checksum(const a : address) : string is Address.to_checksum_string(a)
+
+  external function set_scale(const decimals : uint8) is {
+    storage.scale := 10n ** decimals;
+  }
+}

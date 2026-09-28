@@ -39,3 +39,4 @@ external pure function limits() : (nat, uint16, int, address) is
 
 - `1_000n` uses `_` as a digit separator.
 - `Nat.max` is `type(uint256).max`, or the maximum of whatever width the context expects. Here `limits` returns it both as a `nat` and as a `uint16`.
+- Arithmetic on constants is checked when the contract compiles: `max_fee_bps() * Nat.max` is a compile error, not a panic at run time.

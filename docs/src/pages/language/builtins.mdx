@@ -277,6 +277,10 @@ Constants take their width from the type the context expects. With no expected t
 | `Nat.from_bits(i : int)`, `Int.from_bits(n : nat)` | `nat`, `int` | `uint256(i)`, `int256(n)`: the same 256 bits, unchecked. `nat(i)` and `int(n)` check |
 | `Nat.to_string(n)` | `string` | `Strings.toString(n)`: an unsigned integer of any width in decimal |
 | `Int.to_string(n)` | `string` | `Strings.toStringSigned(n)`: a signed integer in decimal, `-` first when negative |
+| `Nat.to_hex_string(n)` | `string` | `Strings.toHexString(n)`: `0x` and lowercase hex in the fewest whole bytes, `0x00` for zero |
+| `Nat.to_hex_string(n, length : nat)` | `string` | `Strings.toHexString(n, length)`: exactly `length` bytes, zero-padded. `Panic(0x11)` if `n` doesn't fit |
+| `Address.to_hex_string(a)` | `string` | `Strings.toHexString(a)`: `0x` and 40 lowercase hex digits |
+| `Address.to_checksum_string(a)` | `string` | `Strings.toChecksumHexString(a)`: EIP-55 mixed case |
 
 ```lithe
 storage is record {

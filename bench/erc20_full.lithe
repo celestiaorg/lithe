@@ -58,7 +58,7 @@ contract BenchGovernanceToken is {
   is {
     Initializable.begin();
     ERC20.init("Bench Governance Token", "BGOV");
-    ERC20Capped.init(1_000_000_000_000_000_000_000_000n);
+    ERC20Capped.init(1_000_000n * 10n ** 18n);
     EIP712.init("Bench Governance Token", "1");
     AccessControl.grant(AccessControl.default_admin_role(), defaultAdmin);
     AccessControl.grant(pauser_role(), pauser);

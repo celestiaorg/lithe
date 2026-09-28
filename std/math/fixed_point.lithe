@@ -6,7 +6,7 @@ module FixedPoint is {
   type wad is nat;
 
   pure function scale() : nat is
-    1_000_000_000_000_000_000n
+    10n ** 18n
 
   pure function bps_scale() : nat is
     10_000n

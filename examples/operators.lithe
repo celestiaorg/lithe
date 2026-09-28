@@ -75,19 +75,17 @@ external function run(const amount : nat) is {
   storage.payment := (who, amount);
 }
 
-external function mod_zero() is {
-  const q : nat := 1 % 0;
+external function mod_zero(const d : nat) is {
+  const q : nat := 1 % d;
   skip
 }
 
-external function min_div() is {
-  const min : int := 1 << 255;
+external function min_div(const min : int) is {
   const q : int := min / -1;
   skip
 }
 
-external function min_mod() is {
-  const min : int := 1 << 255;
+external function min_mod(const min : int) is {
   const r : int := min % -1;
   skip
 }

@@ -1,4 +1,4 @@
-(* Arithmetic helpers over `nat`. Everything is checked: a result that doesn't fit, or a
+(* Integer arithmetic helpers. Everything is checked: a result that doesn't fit, or a
    division by zero, panics as ordinary arithmetic does. For `a * b / d` without overflow
    in the product, use the built-in `Nat.mul_div`. *)
 
@@ -8,30 +8,45 @@ module Math is {
     high : nat;
   }
 
-  pure function min(const a : nat; const b : nat) : nat is {
-    var smaller : nat := b;
-    if a < b then {
-      smaller := a;
-    }
-  } with smaller
+  error MathInvalidSignedRange of record {
+    low : int;
+    high : int;
+  }
 
-  pure function max(const a : nat; const b : nat) : nat is {
-    var larger : nat := b;
-    if a > b then {
-      larger := a;
-    }
-  } with larger
+  (* Branchless: `b`, or `b ^ (a ^ b)`, which is `a`. *)
+  pure function min(const a : nat; const b : nat) : nat is b ^ (a ^ b) * nat(a < b)
+
+  pure function max(const a : nat; const b : nat) : nat is b ^ (a ^ b) * nat(a > b)
+
+  pure function min(const a : int; const b : int) : int is
+    Int.from_bits(Nat.from_bits(b) ^ Nat.from_bits(a ^ b) * nat(a < b))
+
+  pure function max(const a : int; const b : int) : int is
+    Int.from_bits(Nat.from_bits(b) ^ Nat.from_bits(a ^ b) * nat(a > b))
 
   (* `x` limited to `[low, high]`. *)
   pure function clamp(const x : nat; const low : nat; const high : nat) : nat
     raises MathInvalidRange
   is {
     assert(low <= high, MathInvalidRange { low = low; high = high; });
-  } with min(max(x, low), high)
+    const floor : nat := x ^ (x ^ low) * nat(x < low);
+  } with floor ^ (floor ^ high) * nat(floor > high)
+
+  pure function clamp(const x : int; const low : int; const high : int) : int
+    raises MathInvalidSignedRange
+  is {
+    assert(low <= high, MathInvalidSignedRange { low = low; high = high; });
+    const floor : int := Int.from_bits(Nat.from_bits(x) ^ Nat.from_bits(x ^ low) * nat(x < low));
+  } with Int.from_bits(Nat.from_bits(floor) ^ Nat.from_bits(floor ^ high) * nat(floor > high))
 
   (* The mean, rounded down, without overflow in `a + b`. *)
   pure function average(const a : nat; const b : nat) : nat is
-    (a & b) + ((a ^ b) >> 1n)
+    Nat.wrapping_add(a & b, (a ^ b) >> 1n)
+
+  (* The mean, rounded toward zero, without overflow in `a + b`. *)
+  pure function average(const a : int; const b : int) : int is {
+    const mean : int := Int.wrapping_add(a & b, (a ^ b) >> 1n);
+  } with Int.wrapping_add(mean, Int.from_bits(Nat.from_bits(mean) >> 255n) & (a ^ b))
 
   (* `a / b` rounded up. Panics when `b` is zero, even for `a = 0`. *)
   pure function ceil_div(const a : nat; const b : nat) : nat is {
@@ -49,32 +64,59 @@ module Math is {
     }
   } with q
 
+  (* The base-2 logarithm, rounded down, by halving the range of bits: 0 for 0. *)
+  pure function log2(const a : nat) : nat is {
+    const x : nat := a;
+    var r : nat := nat(x > 0xffffffffffffffffffffffffffffffff) << 7n;
+    r := nat(x >> r > 0xffffffffffffffff) << 6n | r;
+    r := nat(x >> r > 0xffffffff) << 5n | r;
+    r := nat(x >> r > 0xffff) << 4n | r;
+    r := nat(x >> r > 0xff) << 3n | r;
+    r := nat(x >> r > 0xf) << 2n | r;
+    r := nat(x >> r > 3n) << 1n | r;
+  } with (x >> r) >> 1n | r
+
+  (* The base-10 logarithm, rounded down: 0 for 0. *)
+  pure function log10(const a : nat) : nat is {
+    var rest : nat := a;
+    var result : nat := 0n;
+    if rest >= 10n ** 64n then { rest := rest / 10n ** 64n; result := result | 64n; }
+    if rest >= 10n ** 32n then { rest := rest / 10n ** 32n; result := result | 32n; }
+    if rest >= 10n ** 16n then { rest := rest / 10n ** 16n; result := result | 16n; }
+    if rest >= 10n ** 8n then { rest := rest / 10n ** 8n; result := result | 8n; }
+    if rest >= 10n ** 4n then { rest := rest / 10n ** 4n; result := result | 4n; }
+    if rest >= 10n ** 2n then { rest := rest / 10n ** 2n; result := result | 2n; }
+    if rest >= 10n then { result := result | 1n; }
+  } with result
+
   (* The integer square root, rounded down. A first guess within a factor of two of the
      root, from the bit length of `a`, then six Newton steps, each doubling the correct
-     bits: enough for all 256. *)
+     bits: enough for all 256. The guesses stay near the root, so their sums fit. *)
   pure function sqrt(const a : nat) : nat is {
     var result : nat := a;
     if a > 1n then {
-      var rest : nat := a;
-      var guess : nat := 1n;
-      if rest >= 1n << 128n then { rest := rest >> 128n; guess := guess << 64n; }
-      if rest >= 1n << 64n then { rest := rest >> 64n; guess := guess << 32n; }
-      if rest >= 1n << 32n then { rest := rest >> 32n; guess := guess << 16n; }
-      if rest >= 1n << 16n then { rest := rest >> 16n; guess := guess << 8n; }
-      if rest >= 1n << 8n then { rest := rest >> 8n; guess := guess << 4n; }
-      if rest >= 1n << 4n then { rest := rest >> 4n; guess := guess << 2n; }
-      if rest >= 1n << 2n then { guess := guess << 1n; }
-      guess := (3n * guess) >> 1n;
-      guess := (guess + a / guess) >> 1n;
-      guess := (guess + a / guess) >> 1n;
-      guess := (guess + a / guess) >> 1n;
-      guess := (guess + a / guess) >> 1n;
-      guess := (guess + a / guess) >> 1n;
-      guess := (guess + a / guess) >> 1n;
-      if guess > a / guess then {
-        guess := guess - 1n;
-      }
-      result := guess;
+      const x : nat := a;
+      var r : nat := nat(x > 0xffffffffffffffffffffffffffffffff) << 7n;
+      r := nat(x >> r > 0xffffffffffffffff) << 6n | r;
+      r := nat(x >> r > 0xffffffff) << 5n | r;
+      r := nat(x >> r > 0xffff) << 4n | r;
+      r := nat(x >> r > 0xff) << 3n | r;
+      r := nat(x >> r > 0xf) << 2n | r;
+      r := nat(x >> r > 3n) << 1n | r;
+      var guess : nat := (3n << (r >> 1n)) >> 1n;
+      guess := Nat.wrapping_add(guess, x / guess) >> 1n;
+      guess := Nat.wrapping_add(guess, x / guess) >> 1n;
+      guess := Nat.wrapping_add(guess, x / guess) >> 1n;
+      guess := Nat.wrapping_add(guess, x / guess) >> 1n;
+      guess := Nat.wrapping_add(guess, x / guess) >> 1n;
+      guess := Nat.wrapping_add(guess, x / guess) >> 1n;
+      result := Nat.wrapping_sub(guess, nat(guess > x / guess));
     }
   } with result
+
+  (* The magnitude of `x`, as a `nat` so that `Int.min` has one: `x`, or `~x + 1` where
+     the sign mask is all ones. *)
+  pure function abs(const x : int) : nat is {
+    const mask : int := x >> 255n;
+  } with Nat.wrapping_sub(Nat.from_bits(x ^ mask), Nat.from_bits(mask))
 }

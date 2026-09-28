@@ -51,6 +51,7 @@ const MULMOD: u8 = 0x09;
 const SDIV: u8 = 0x05;
 const MOD: u8 = 0x06;
 const SMOD: u8 = 0x07;
+const EXP: u8 = 0x0a;
 const SIGNEXTEND: u8 = 0x0b;
 const LT: u8 = 0x10;
 const GT: u8 = 0x11;
@@ -445,6 +446,8 @@ struct Plan {
     shared_slice: [bool; 2],
     /// Whether unsigned checked multiplications share one helper.
     shared_mul: bool,
+    /// Whether checked powers share one helper, unsigned and signed.
+    shared_exp: [bool; 2],
     /// Whether queued deferred calls share one helper to allocate and link their nodes.
     queue_helper: bool,
     /// Queues with one `defer` site, by their words' address: their nodes carry no site
@@ -494,6 +497,8 @@ enum Sub {
     MulDiv,
     /// `[a, b, ret]` becomes `a * b`, or panics on overflow.
     CheckedMul,
+    /// `[a, b, ret]` becomes `a ** b`, or panics on overflow: unsigned or signed.
+    CheckedExp(bool),
     /// `[head, ret]` becomes a list decoded from the calldata argument at `head`, its
     /// elements of the given type.
     DecodeList(usize),
@@ -542,6 +547,11 @@ enum Sub {
     Base64Decode,
     /// `[n, ret]` becomes `n` in decimal, as a string: signed or unsigned.
     DecimalString(bool),
+    /// `[value, len, ret]` becomes `value` as `0x` and hex digits, in the fewest whole
+    /// bytes past `len`. `value` must fit in them if they are to be exactly `len + 1`.
+    HexString,
+    /// `[address, ret]` becomes its EIP-55 checksummed hex string.
+    ChecksumString,
     /// `[value, start, end, ret]` becomes the slice between; without `end`, `[value,
     /// start, ret]` becomes the slice to the end.
     BytesSlice(bool),
@@ -712,6 +722,7 @@ struct Gen<'a> {
     eq_sites: usize,
     slice_sites: [usize; 2],
     mul_sites: usize,
+    exp_sites: [usize; 2],
     /// `defer` sites inside loops, whose calls are queued.
     queued_sites: usize,
     /// How many sites each queue, by its words' address, gathered.

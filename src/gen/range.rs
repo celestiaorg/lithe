@@ -61,6 +61,15 @@ fn sat_mul(a: Word, b: Word) -> Word {
     }
 }
 
+fn sat_pow(a: Word, b: Word) -> Word {
+    let (p, over) = a.overflowing_pow(b);
+    if over {
+        ones()
+    } else {
+        p
+    }
+}
+
 /// `same_expr`, also through operators and casts, which are fixed when their operands are.
 fn same_value(a: &Expr, b: &Expr) -> bool {
     match (a, b) {
@@ -184,6 +193,7 @@ impl<'a> Gen<'a> {
         match op {
             BinOp::Add => !a.1.overflowing_add(b.1).1,
             BinOp::Mul => !a.1.overflowing_mul(b.1).1,
+            BinOp::Pow => !a.1.overflowing_pow(b.1).1,
             BinOp::Sub => {
                 !a.0.lt(b.1)
                     || self
@@ -246,6 +256,9 @@ impl<'a> Gen<'a> {
             return full;
         }
         let sub = |x: &Expr| self.range(x, depth - 1, scoped);
+        if self.checked.types[e.ty()].kind == TyKind::Bool {
+            return (Word::from_u64(0), Word::from_u64(1));
+        }
         match e {
             Expr::Lit {
                 lit: Lit::Nat(w) | Lit::Wei(w) | Lit::Duration(w),
@@ -296,6 +309,11 @@ impl<'a> Gen<'a> {
                     BinOp::Add => (sat_add(a.0, b.0), sat_add(a.1, b.1)),
                     BinOp::Sub => (sat_sub(a.0, b.1), sat_sub(a.1, b.0)),
                     BinOp::Mul => (sat_mul(a.0, b.0), sat_mul(a.1, b.1)),
+                    // `0 ** 0` is 1.
+                    BinOp::Pow => (
+                        if a.0.is_zero() { zero } else { sat_pow(a.0, b.0) },
+                        sat_pow(max(a.1, Word::from_u64(1)), b.1),
+                    ),
                     BinOp::Div if b.0.is_zero() => (zero, a.1),
                     BinOp::Div => (zero, a.1.div(b.0)),
                     BinOp::Mod if b.1.is_zero() => (zero, a.1),

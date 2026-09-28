@@ -190,9 +190,9 @@ impl Checker {
                 line,
                 col,
             } => {
-                self.check_expr(expr)?;
                 match op {
                     UnOp::Not => {
+                        self.check_expr(expr)?;
                         if self.types[expr.ty()].kind != TyKind::Bool {
                             return Err(error(*line, *col, "`not` expects bool"));
                         }
@@ -231,7 +231,7 @@ impl Checker {
                 line,
                 col,
             } => {
-                if matches!(op, BinOp::Shl | BinOp::Shr) {
+                if matches!(op, BinOp::Shl | BinOp::Shr | BinOp::Pow) {
                     let left_expect = self.expect.filter(|id| self.is_integer(*id));
                     self.check_expr_as(left, left_expect)?;
                     self.check_expr_as(right, Some(TY_NAT))?;
@@ -1188,6 +1188,15 @@ impl Checker {
                         col,
                         "arithmetic expects two values of the same numeric type",
                     ));
+                }
+                Ok(l)
+            }
+            BinOp::Pow => {
+                if !matches!(lk, TyKind::Nat | TyKind::Int) {
+                    return Err(error(line, col, "`**` expects an integer base"));
+                }
+                if self.types[self.peel(r)].kind != TyKind::Nat {
+                    return Err(error(line, col, "`**` expects an unsigned exponent"));
                 }
                 Ok(l)
             }

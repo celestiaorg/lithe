@@ -218,6 +218,8 @@ enum Raw {
     Plus,
     #[token("-")]
     Minus,
+    #[token("**")]
+    StarStar,
     #[token("*")]
     Star,
     #[token("/")]
@@ -489,6 +491,7 @@ pub(crate) enum Kind {
     Pipe,
     Plus,
     Minus,
+    StarStar,
     Star,
     Slash,
     Percent,
@@ -625,6 +628,7 @@ pub(crate) fn tokenize(src: &str) -> Result<Vec<Token>, Error> {
             Raw::Pipe => (Kind::Pipe, Word::from_u64(0), None),
             Raw::Plus => (Kind::Plus, Word::from_u64(0), None),
             Raw::Minus => (Kind::Minus, Word::from_u64(0), None),
+            Raw::StarStar => (Kind::StarStar, Word::from_u64(0), None),
             Raw::Star => (Kind::Star, Word::from_u64(0), None),
             Raw::Slash => (Kind::Slash, Word::from_u64(0), None),
             Raw::Percent => (Kind::Percent, Word::from_u64(0), None),
@@ -749,6 +753,7 @@ pub(crate) fn kind_name(k: Kind) -> &'static str {
         Kind::Pipe => "`|`",
         Kind::Plus => "`+`",
         Kind::Minus => "`-`",
+        Kind::StarStar => "`**`",
         Kind::Star => "`*`",
         Kind::Slash => "`/`",
         Kind::Percent => "`%`",

@@ -11,14 +11,15 @@ description: "Arithmetic, comparison, boolean, and bitwise operators, precedence
 | --- | --- | --- |
 | `+` `-` `*` | add, subtract, multiply (checked) | two values of the same numeric type |
 | `/` `%` | divide, remainder (truncating; checked) | two values of the same numeric type |
-| `-x` | negate | `int` types |
+| `**` | power (checked) | an integer base and an unsigned exponent; the result has the base's type |
+| `-x` | negate (checked: `-Int.min` panics) | `int` types |
 | `=` `<>` | equal, not equal (`=/=` also means not equal) | two values of the same type; strings, bytes, and lists compare by content |
 | `<` `<=` `>` `>=` | ordered comparison | numeric types, `wei`, `timestamp`, and `address` and `bytesN`, which order as unsigned numbers, as in Solidity |
 | `and` `or` `not` | boolean logic | `bool` |
 | `&` `\|` `^` `~` | bitwise and, or, xor, not | integers of the same type |
 | `<<` `>>` | shift left, right (arithmetic for signed types) | integers |
 
-`^` is xor. There is no exponent operator.
+`^` is xor. `**` is the power: `10n ** decimals` for a `uint8` `decimals` is a `nat`, and `0 ** 0` is `1`.
 
 ### Precedence
 
@@ -26,18 +27,19 @@ From tightest to loosest:
 
 | Level | Operators | Associativity |
 | --- | --- | --- |
-| 1 | prefix `-`, `not`, `~` | |
-| 2 | `*` `/` `%` | left |
-| 3 | `+` `-` | left |
-| 4 | `<<` `>>` | left |
-| 5 | `&` | left |
-| 6 | `^` | left |
-| 7 | `\|` | left |
-| 8 | `=` `<>` `<` `<=` `>` `>=` | none: `a < b < c` is an error |
-| 9 | `and` | left |
-| 10 | `or` | left |
+| 1 | `**` | right: `a ** b ** c` is `a ** (b ** c)` |
+| 2 | prefix `-`, `not`, `~` | |
+| 3 | `*` `/` `%` | left |
+| 4 | `+` `-` | left |
+| 5 | `<<` `>>` | left |
+| 6 | `&` | left |
+| 7 | `^` | left |
+| 8 | `\|` | left |
+| 9 | `=` `<>` `<` `<=` `>` `>=` | none: `a < b < c` is an error |
+| 10 | `and` | left |
+| 11 | `or` | left |
 
-Bitwise operators bind tighter than comparisons, so `flags & mask = 0n` means `(flags & mask) = 0n`. Prefix operators bind tightest, so `not a = b` means `(not a) = b` and fails to type-check. Write `a <> b` or `not (a = b)`.
+Bitwise operators bind tighter than comparisons, so `flags & mask = 0n` means `(flags & mask) = 0n`. Prefix operators bind tighter than everything but `**`, so `not a = b` means `(not a) = b` and fails to type-check: write `a <> b` or `not (a = b)`. And `-x ** 2` means `-(x ** 2)`.
 
 ## Arithmetic
 
@@ -50,6 +52,24 @@ Every arithmetic operation is checked against its type's width:
 | `Int.min / -1` | `Panic(0x11)` |
 
 Division truncates toward zero, so `-7 / 3` is `-2` and `-7 % 3` is `-1`. To get both results at once, use `Nat.div_rem(a, b)` or `Int.div_rem(a, b)`, which return a tuple.
+
+A power is checked the same way, and a negative base works: `(-2) ** 3` is `-8`. A power of constants, such as `10n ** 18n`, compiles to the number itself.
+
+When every operand is a constant, the check runs at compile time: an operation that must fail is a compile error, not a panic. The constants are number literals, `Nat.max`, `Int.min`, and `Int.max`, named constants, `const` bindings of constants, and casts and operators over those. So `Nat.max + 1n`, `1n / 0n`, `2n ** 256n`, `uint8(300n)`, `-Int.min`, and `Nat.mul_div(1n, 1n, 0n)` are all rejected, even in a branch that never runs. Parameters are never constants, and neither is what a condition proves: `if x = 0n then 1n / x` still panics at run time, and so does `Math.ceil_div(1n, 0n)`, since its body divides by a parameter.
+
+```lithe rejects
+storage is record {
+  n : nat;
+}
+
+external function go() is {
+  storage.n := 2n ** 256n;
+}
+```
+
+```text
+`2n ** 256n` overflows `nat`
+```
 
 Shifts do not overflow. Bits shifted past a type's width are dropped, so for a `uint8`, `1 << 8` is `0`. `~` flips bits within the type's width, so for a `uint8`, `~0` is `255`.
 

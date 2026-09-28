@@ -303,6 +303,144 @@ impl<'a> Gen<'a> {
         Ok(())
     }
 
+    /// Grows the byte count until `value` fits, then writes the digits from the last.
+    pub(super) fn sub_hex_string(&mut self) -> Result<(), Error> {
+        let [grow, fill] = std::array::from_fn(|_| self.fresh());
+        self.op(SWAP1 + 1);
+        self.op(SWAP1);
+        // [ret, value, len]
+        self.jumpdest(grow);
+        self.push_u64(1);
+        self.op(ADD);
+        self.op(DUP1 + 1);
+        self.op(DUP1 + 1);
+        self.push_u64(3);
+        self.op(SHL);
+        self.op(SHR);
+        self.push_label(grow);
+        self.op(JUMPI);
+        self.op(DUP1);
+        self.op(DUP1);
+        self.op(ADD);
+        self.push_u64(2);
+        self.op(ADD);
+        self.alloc_blob()?;
+        self.push_u64(34);
+        self.op(ADD);
+        self.op(SWAP1);
+        self.op(DUP1);
+        self.op(ADD);
+        self.op(DUP1 + 1);
+        self.op(ADD);
+        // [ret, value, start, q]: one digit per round while `q` is past `start`.
+        self.jumpdest(fill);
+        self.push_u64(1);
+        self.op(SWAP1);
+        self.op(SUB);
+        self.op(DUP1 + 2);
+        self.push_u64(15);
+        self.op(AND);
+        self.op(DUP1);
+        self.push_u64(9);
+        self.op(LT);
+        self.push_u64(39);
+        self.op(MUL);
+        self.op(ADD);
+        self.push_u64(48);
+        self.op(ADD);
+        self.op(DUP1 + 1);
+        self.op(MSTORE8);
+        self.op(SWAP1 + 1);
+        self.push_u64(4);
+        self.op(SHR);
+        self.op(SWAP1 + 1);
+        self.op(DUP1);
+        self.op(DUP1 + 2);
+        self.op(LT);
+        self.push_label(fill);
+        self.op(JUMPI);
+        self.op(POP);
+        self.op(SWAP1);
+        self.op(POP);
+        // [ret, start]. With no digits, the round wrote one over the `x`, which `0x`
+        // replaces: stored at `ptr + 2`, under the length it rewrites.
+        self.push_u64(34);
+        self.op(SWAP1);
+        self.op(SUB);
+        self.op(DUP1);
+        self.op(MLOAD);
+        self.push_u64(16);
+        self.op(SHL);
+        self.push_u64(0x3078);
+        self.op(OR);
+        self.op(DUP1 + 1);
+        self.push_u64(2);
+        self.op(ADD);
+        self.op(MSTORE);
+        self.tag_blob();
+        self.op(SWAP1);
+        self.op(JUMP);
+        Ok(())
+    }
+
+    /// OpenZeppelin's `toChecksumHexString`: a letter is uppercased where the keccak of
+    /// the lowercase digits has its matching nibble's high bit set.
+    pub(super) fn sub_checksum_string(&mut self) {
+        let round = self.fresh();
+        self.op(SWAP1);
+        self.push_u64(19);
+        self.call_sub(Sub::HexString);
+        self.op(DUP1);
+        self.push_u64(1);
+        self.op(SHR);
+        self.push_u64(34);
+        self.op(ADD);
+        self.push_u64(40);
+        self.op(DUP1 + 1);
+        self.op(KECCAK);
+        self.push_u64(96);
+        self.op(SHR);
+        self.op(DUP1 + 1);
+        self.push_u64(40);
+        self.op(ADD);
+        // [ret, str, start, hash, q]
+        self.jumpdest(round);
+        self.push_u64(1);
+        self.op(SWAP1);
+        self.op(SUB);
+        // Letters have `0x40` set, and `^ 0x20` uppercases them.
+        self.op(DUP1);
+        self.op(MLOAD);
+        self.op(PUSH0);
+        self.op(BYTE);
+        self.op(DUP1 + 2);
+        self.push_u64(2);
+        self.op(SHL);
+        self.op(DUP1 + 1);
+        self.push_u64(1);
+        self.op(SHR);
+        self.op(AND);
+        self.push_u64(0x20);
+        self.op(AND);
+        self.op(XOR);
+        self.op(DUP1 + 1);
+        self.op(MSTORE8);
+        self.op(SWAP1);
+        self.push_u64(4);
+        self.op(SHR);
+        self.op(SWAP1);
+        self.op(DUP1);
+        self.op(DUP1 + 3);
+        self.op(LT);
+        self.push_label(round);
+        self.op(JUMPI);
+        self.op(POP);
+        self.op(POP);
+        self.op(POP);
+        self.op(SWAP1);
+        self.op(JUMP);
+    }
+
     /// Solady's `Base64.encode`: each round turns three bytes into four characters, looked
     /// up in a table whose byte for index `i` sits at `i + 31`, so `MLOAD(i)` ends in it.
     /// The word after the data is zeroed while the rounds read past its end, then restored.

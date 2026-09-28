@@ -88,6 +88,7 @@ const DIV: u8 = 0x04;
 const SDIV: u8 = 0x05;
 const MOD: u8 = 0x06;
 const SMOD: u8 = 0x07;
+const EXP: u8 = 0x0a;
 const SIGNEXTEND: u8 = 0x0b;
 const LT: u8 = 0x10;
 const GT: u8 = 0x11;
@@ -629,6 +630,7 @@ fn fold_binary(op: u8, a: Word, b: Word) -> Option<Word> {
     Some(match op {
         ADD => a.wrapping_add(b),
         MUL => a.wrapping_mul(b),
+        EXP => a.overflowing_pow(b).0,
         SUB => a.wrapping_sub(b),
         DIV => a.div(b),
         SDIV => a.sdiv(b),
@@ -1087,6 +1089,28 @@ fn dup_constants(code: &mut [Inst]) -> bool {
 /// Two exits that end the same way share the common tail.
 fn merge_tails(code: &mut Vec<Inst>) -> bool {
     let segs = segments(code);
+    let mut refs: FxHashMap<u32, usize> = FxHashMap::default();
+    for inst in code.iter() {
+        match inst {
+            PushLabel(l) => *refs.entry(*l).or_default() += 1,
+            Table(t) => entries(t).for_each(|l| *refs.entry(l).or_default() += 1),
+            _ => {}
+        }
+    }
+    // Sharing a tail puts a jump on every path into the donor. A helper's body runs on
+    // every call to it, so its tail must save a byte for each call it slows.
+    let calls = |seg: &Segment| {
+        if code[seg.end] != Op(JUMP) || matches!(code[seg.end - 1], PushLabel(_)) {
+            return 1;
+        }
+        let falls = seg.labels.start > 0
+            && !matches!(code[seg.labels.start - 1], Op(op) if is_terminal(op));
+        let jumps: usize = code[seg.labels.clone()]
+            .iter()
+            .map(|l| refs.get(&label_of(l)).copied().unwrap_or(0))
+            .sum();
+        (jumps + falls as usize).max(1)
+    };
     let mut best: Option<(usize, usize, usize, usize)> = None;
     // A segment ends in a one-byte exit, so a tail worth sharing is at least two long.
     let mut by_last: FxHashMap<(Inst, Inst), Vec<usize>> = FxHashMap::default();
@@ -1115,7 +1139,7 @@ fn merge_tails(code: &mut Vec<Inst>) -> bool {
                 let better = best.is_none_or(|(ba, bb, _, have)| {
                     bytes > have || (bytes == have && (a, b) < (ba, bb))
                 });
-                if bytes >= MIN_TAIL_BYTES && better {
+                if bytes >= MIN_TAIL_BYTES && better && bytes + 1 >= MIN_TAIL_BYTES + calls(sb) {
                     best = Some((a, b, n, bytes));
                 }
             }
@@ -2000,8 +2024,11 @@ fn hold(
     let last = *loads.last()?;
     let mut edits: Vec<(usize, usize, Vec<Inst>)> = Vec::new();
     // A last load that finds the value on top, with nothing reading the word after it,
-    // takes the value itself: nothing is left to pop.
-    let consumed = consume && runs.depth[last] == p;
+    // takes the value itself: nothing is left to pop. So does one just below the top that
+    // feeds a commutative operation, which takes the value from under its other operand.
+    let consumed = consume
+        && (runs.depth[last] == p
+            || runs.depth[last] == p + 1 && matches!(code.get(last + 2), Some(Op(op)) if is_commutative(*op)));
     // Where the value becomes the top of the stack again after its last use.
     let mut pop_at: Option<usize> = None;
     let mut k = last + 2;

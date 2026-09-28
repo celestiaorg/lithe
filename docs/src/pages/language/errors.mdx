@@ -215,9 +215,11 @@ Some failures are not declared errors. They are violated invariants, and they re
 
 | Code | Cause |
 | --- | --- |
-| `0x11` | arithmetic overflow or underflow, or a conversion out of range |
+| `0x11` | arithmetic overflow or underflow, a conversion out of range, or a value too wide for `Nat.to_hex_string`'s length |
 | `0x12` | division or remainder by zero |
 | `0x32` | list index out of range |
+
+An arithmetic operation on constants that must fail is a compile error instead of a panic, as [Arithmetic](/language/expressions#arithmetic) describes.
 
 A failed `query` or deferred call also reverts the transaction, unless the code recovers from it with `Ok` and `Error` arms. The ABI decoder reverts on malformed calldata, and a non-payable function reverts if it receives ether. None of these appear in `raises`.
 

@@ -40,11 +40,20 @@ contract Utils is {
   }
 
   external pure function sqrt(const a : nat) : nat is Math.sqrt(a)
+  external pure function log2(const a : nat) : nat is Math.log2(a)
+  external pure function log10(const a : nat) : nat is Math.log10(a)
+  external pure function abs(const x : int) : nat is Math.abs(x)
   external pure function average(const a : nat; const b : nat) : nat is Math.average(a, b)
+  external pure function average_int(const a : int; const b : int) : int is Math.average(a, b)
+  external pure function min_int(const a : int; const b : int) : int is Math.min(a, b)
+  external pure function max_int(const a : int; const b : int) : int is Math.max(a, b)
   external pure function ceil_div(const a : nat; const b : nat) : nat is Math.ceil_div(a, b)
   external pure function mul_div_up(const a : nat; const b : nat; const d : nat) : nat is Math.mul_div_up(a, b, d)
   external pure function clamp(const x : nat; const lo : nat; const hi : nat) : nat
     raises MathInvalidRange
+  is Math.clamp(x, lo, hi)
+  external pure function clamp_int(const x : int; const lo : int; const hi : int) : int
+    raises MathInvalidSignedRange
   is Math.clamp(x, lo, hi)
   external pure function to_nat(const x : int) : nat
     raises SafeCastOverflowedIntToUint

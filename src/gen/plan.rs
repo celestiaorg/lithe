@@ -49,6 +49,7 @@ impl<'a> Gen<'a> {
             eq_sites: 0,
             slice_sites: [0; 2],
             mul_sites: 0,
+            exp_sites: [0; 2],
             queued_sites: 0,
             queue_sites: HashMap::new(),
             trusted_index: false,
@@ -249,8 +250,10 @@ impl<'a> Gen<'a> {
             if calls < 2 || !self.outline_safe(idx, &mut Vec::new()) {
                 continue;
             }
+            // Each call also stores its arguments, which inlined copies may read in place.
+            let params = self.checked.prog.funcs[idx].params.len();
             let inline = calls * bytes;
-            let shared = bytes + 3 + calls * 8;
+            let shared = bytes + 3 + calls * (8 + 3 * params);
             if inline > shared {
                 outline.insert(idx);
             }
@@ -268,6 +271,7 @@ impl<'a> Gen<'a> {
             shared_slice: self.slice_sites.map(|n| n >= 2),
             // A call costs 8 bytes to the 18 of the check inlined.
             shared_mul: self.mul_sites >= 3,
+            shared_exp: self.exp_sites.map(|n| n >= 2),
             queue_helper: self.queued_sites >= 2,
             single_queues: self
                 .queue_sites
@@ -778,7 +782,7 @@ impl<'a> Gen<'a> {
                     Sub::LoadBytes => (1, 1),
                     Sub::RevertData => (0, 1),
                     Sub::MulDiv => (3, 1),
-                    Sub::CheckedMul => (2, 1),
+                    Sub::CheckedMul | Sub::CheckedExp(_) => (2, 1),
                     Sub::DecodeList(_) => (1, 1),
                     Sub::LoadList(..) | Sub::LoadRecords(..) => (2, 1),
                     Sub::StoreList(..) | Sub::StoreRecords(..) => (3, 0),
@@ -796,6 +800,8 @@ impl<'a> Gen<'a> {
                     Sub::Base64Encode => (3, 1),
                     Sub::Base64Decode => (1, 1),
                     Sub::DecimalString(_) => (1, 1),
+                    Sub::HexString => (2, 1),
+                    Sub::ChecksumString => (1, 1),
                     Sub::TreeEnc(_) => (2, 1),
                     Sub::TreeDec(..) => (2, 0),
                     Sub::TreeCdEnc(_) => (2, 1),

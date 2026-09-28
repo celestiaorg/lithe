@@ -882,6 +882,85 @@ fn types_reject_implicit_conversions() {
 }
 
 #[test]
+fn constant_operations_that_must_panic_are_rejected() {
+    let program = |ty: &str, body: &str| {
+        format!("storage is record {{ n : {ty}; }}\nerror Bad;\npure function big() : nat is Nat.max\npure function wide() : nat is {{ const a : nat := 2n ** 200n; }} with a\nexternal function go(const x : nat) raises Bad is {{ {body} }}\n")
+    };
+    for (ty, body, rule) in [
+        ("nat", "storage.n := Nat.max + 1n;", "`Nat.max + 1n` overflows `nat`"),
+        ("nat", "storage.n := 0n - 1n;", "`0n - 1n` underflows `nat`"),
+        ("nat", "storage.n := 1n / 0n;", "division by zero in `1n / 0n`"),
+        ("nat", "storage.n := 1n % 0n;", "division by zero in `1n % 0n`"),
+        ("nat", "storage.n := (2n ** 128n) * (2n ** 128n);", "`(2n ** 128n) * (2n ** 128n)` overflows `nat`"),
+        ("nat", "storage.n := 2n ** 256n;", "`2n ** 256n` overflows `nat`"),
+        ("uint8", "storage.n := 200 + 100;", "`200 + 100` overflows `uint8`"),
+        ("uint8", "storage.n := uint8(300n);", "`uint8(300n)` overflows `uint8`"),
+        ("int8", "storage.n := Int.max + 1;", "`127 + 1` overflows `int8`"),
+        ("int8", "storage.n := Int.min * 2;", "`-128 * 2` underflows `int8`"),
+        ("int8", "storage.n := Int.min / -1;", "`-128 / -1` overflows `int8`"),
+        ("int8", "storage.n := -Int.min;", "`-(-128)` overflows `int8`"),
+        ("int", "storage.n := Int.min / -1;", "`Int.min / -1` overflows `int`"),
+        ("int", "storage.n := Int.min % -1;", "`Int.min % -1` overflows `int`"),
+        ("int", "storage.n := -Int.min;", "`-Int.min` overflows `int`"),
+        ("int", "storage.n := int(Nat.max);", "`int(Nat.max)` overflows `int`"),
+        ("nat", "const m : int := -1; storage.n := nat(m);", "`nat(m)` underflows `nat`"),
+        ("wei", "storage.n := 1eth - 2eth;", "underflows `wei`"),
+        ("timestamp", "storage.n := timestamp(1n) - 2n;", "`timestamp(1n) - 2n` underflows `timestamp`"),
+        ("nat", "storage.n := (1n << 255n) * 2n;", "`(1n << 255n) * 2n` overflows `nat`"),
+        ("nat", "storage.n := big() + 1n;", "`big() + 1n` overflows `nat`"),
+        ("nat", "storage.n := wide() * wide();", "`wide() * wide()` overflows `nat`"),
+        ("nat", "const a : nat := Nat.max; storage.n := a + 1n;", "`a + 1n` overflows `nat`"),
+        ("nat", "const (a, b) : (nat, nat) := (Nat.max, 1n); storage.n := a + b;", "`a + b` overflows `nat`"),
+        ("nat", "if false then { storage.n := Nat.max + 1n; } else { skip }", "`Nat.max + 1n` overflows `nat`"),
+        ("nat", "assert(x > Nat.max * 2n, Bad);", "`Nat.max * 2n` overflows `nat`"),
+        ("nat", "storage.n := Nat.mul_div(1n, 1n, 0n);", "division by zero in `Nat.mul_div(1n, 1n, 0n)`"),
+        ("nat", "storage.n := Nat.mul_div(Nat.max, 2n, 1n);", "`Nat.mul_div(Nat.max, 2n, 1n)` overflows `nat`"),
+        ("nat", "storage.n := Nat.mul_mod(1n, 2n, 0n);", "division by zero in `Nat.mul_mod(1n, 2n, 0n)`"),
+        ("nat", "storage.n := Nat.add_mod(1n, 2n, 0n);", "division by zero in `Nat.add_mod(1n, 2n, 0n)`"),
+        ("nat", "storage.n := Nat.pow_mod(2n, 3n, 0n);", "division by zero in `Nat.pow_mod(2n, 3n, 0n)`"),
+        ("nat", "const (q, r) : (nat, nat) := Nat.div_rem(1n, 0n); storage.n := q;", "division by zero in `Nat.div_rem(1n, 0n)`"),
+        ("int", "const (q, r) : (int, int) := Int.div_rem(Int.min, -1); storage.n := q;", "`Int.div_rem(Int.min, -1)` overflows `int`"),
+        ("nat", "storage.n := Nat.to_hex_string(256n, 1n).length;", "`Nat.to_hex_string(256n, 1n)` does not fit its length in bytes"),
+    ] {
+        let err = compile(&program(ty, body)).expect_err(body);
+        assert!(err.to_string().contains(rule), "{body}: expected `{rule}` in {err}");
+    }
+    // The error points at the operator.
+    let err = compile(&program("nat", "storage.n := Nat.max + 1n;")).expect_err("position");
+    assert_eq!((err.line, err.column), (5, 74), "{err}");
+
+    for (ty, body) in [
+        ("nat", "storage.n := 2n ** 255n;"),
+        ("nat", "storage.n := Nat.max - 1n;"),
+        ("nat", "storage.n := big() - wide();"),
+        ("uint8", "storage.n := 200 + 55;"),
+        ("int8", "storage.n := Int.min % -1;"),
+        ("int8", "storage.n := -Int.max;"),
+        ("int", "storage.n := Int.min / 1 + 0 ** 0;"),
+        ("nat", "storage.n := Nat.mul_div(Nat.max, Nat.max, Nat.max);"),
+        ("nat", "if x = 0n then { storage.n := 1n / x; } else { skip }"),
+        ("nat", "storage.n := x - 1n;"),
+    ] {
+        compile(&program(ty, body)).unwrap_or_else(|e| panic!("{body}: {e}"));
+    }
+
+    // A body is judged on its own, so a constant argument to a function that fails on it
+    // still panics at run time.
+    let dir = std::env::temp_dir().join(format!("lithe-consts-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let main = dir.join("main.lithe");
+    std::fs::write(
+        &main,
+        "import \"std/math/math.lithe\";\nuse Math;\nstorage is record { n : nat; }\nexternal function go() is { storage.n := Math.ceil_div(1n, 0n); }\n",
+    )
+    .unwrap();
+    let runtime = deploy(&compile_file(&main).expect("std call")).expect("deploy");
+    let out = call(&runtime, "go()", &[]);
+    assert!(out.reverted);
+    assert_eq!(load_bytes(&out.returndata, 4), Word::from_u64(0x12));
+}
+
+#[test]
 fn duplicates_say_where_the_first_is() {
     let tail = "external function go() is { skip }\n";
     for (src, want) in [

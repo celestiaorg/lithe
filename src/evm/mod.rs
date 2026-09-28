@@ -325,6 +325,11 @@ fn exec_state(
                 };
                 stack.push(q);
             }
+            0x0a => {
+                let a = pop(&mut stack)?;
+                let b = pop(&mut stack)?;
+                stack.push(a.overflowing_pow(b).0);
+            }
             0x08 | 0x09 => {
                 let a = pop(&mut stack)?;
                 let b = pop(&mut stack)?;

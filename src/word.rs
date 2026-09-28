@@ -175,6 +175,27 @@ impl Word {
         self.overflowing_mul(rhs).0
     }
 
+    /// `self` to the power `exp`, and whether the true power needs more than 256 bits.
+    pub(crate) fn overflowing_pow(self, exp: Self) -> (Self, bool) {
+        let Some(top) = (0..256).rev().find(|&i| exp.bit(i)) else {
+            return (Self::from_u64(1), false);
+        };
+        let (mut base, mut out, mut over) = (self, Self::from_u64(1), false);
+        for i in 0..=top {
+            if exp.bit(i) {
+                let (p, o) = out.overflowing_mul(base);
+                out = p;
+                over |= o;
+            }
+            if i < top {
+                let (b, o) = base.overflowing_mul(base);
+                base = b;
+                over |= o;
+            }
+        }
+        (out, over)
+    }
+
     pub(crate) fn lt(self, rhs: Self) -> bool {
         for i in (0..4).rev() {
             if self.0[i] != rhs.0[i] {

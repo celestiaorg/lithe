@@ -44,7 +44,7 @@ contract GovernanceToken is {
   is {
     ERC20.init("Lithe Governance", "LGOV");
     EIP712.init("Lithe Governance", "1");
-    ERC20Capped.init(10_000_000n * 1_000_000_000_000_000_000n);
+    ERC20Capped.init(10_000_000n * 10n ** 18n);
     AccessControl.grant(AccessControl.default_admin_role(), Evm.sender());
     AccessControl.grant(minter(), Evm.sender());
     AccessControl.grant(pauser(), Evm.sender());

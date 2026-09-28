@@ -13,6 +13,7 @@ mod funcs;
 mod generic;
 mod layout;
 mod payable;
+mod consts;
 mod place;
 mod stmt;
 mod types;
@@ -901,6 +902,7 @@ pub(crate) fn check(mut prog: Program) -> Result<Checked, Error> {
     if let Some(guard) = &mut prog.guard {
         c.check_guard(guard)?;
     }
+    c.reject_failing_constants(&prog.funcs, prog.guard.as_ref())?;
     c.check_immutable_writes(&prog.funcs, prog.upgradeable)?;
     // Each interface `supports` lists, by the signatures, selectors, and results of its
     // methods.

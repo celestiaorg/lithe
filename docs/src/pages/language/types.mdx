@@ -82,6 +82,7 @@ external pure function convert(const x : uint8; const raw : bytes20; const amoun
 | `bytesN(b)` for `b : bytes` or `bytesM` | the first N bytes of `b`, zero past its end, as in Solidity |
 | `Token(a)` for an interface `Token`, and `address(t)` | exact |
 | `wei(n)`, `timestamp(n)`, `nat(w)` | exact |
+| `nat(b)` or `uint8(b)` for `b : bool` | 1 for `true`, 0 for `false` |
 | to or from a [nominal type](#nominal-types) | exact |
 
 To reinterpret the 256 bits between `int` and `nat`, as Solidity's `uint256(i)` and `int256(n)` do, name the bit-cast: `Nat.from_bits(i)` and `Int.from_bits(n)`, so that `Nat.from_bits(-1)` is `Nat.max`.

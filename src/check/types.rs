@@ -929,6 +929,7 @@ impl Checker {
         match (self.types[src].kind, self.types[target].kind) {
             (TyKind::Nominal, TyKind::Nominal) => false,
             (TyKind::Address, TyKind::Interface) | (TyKind::Interface, TyKind::Address) => true,
+            (TyKind::Bool, TyKind::Nat) => true,
             (TyKind::Nominal, _) => self.types[src].elem == Some(target),
             (_, TyKind::Nominal) => {
                 self.types[target].variants.is_empty() && self.types[target].elem == Some(src)
@@ -992,6 +993,11 @@ impl Checker {
     }
 
     pub(super) fn type_name(&self, id: usize) -> String {
+        match id {
+            TY_NAT => return "nat".into(),
+            TY_INT => return "int".into(),
+            _ => {}
+        }
         self.named
             .iter()
             .find(|(_, ty)| **ty == id)

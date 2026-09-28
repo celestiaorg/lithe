@@ -2127,6 +2127,7 @@ fn bin(op: BinOp) -> &'static str {
         BinOp::Mul => "*",
         BinOp::Div => "/",
         BinOp::Mod => "%",
+        BinOp::Pow => "**",
         BinOp::BitAnd => "&",
         BinOp::BitOr => "|",
         BinOp::BitXor => "^",

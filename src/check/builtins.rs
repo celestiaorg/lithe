@@ -447,6 +447,30 @@ impl Checker {
                     ));
                 }
             }
+            Builtin::NatToHexString => {
+                if args.len() != 2 {
+                    need(args.len(), 1)?;
+                }
+                self.check_expr(&mut args[0])?;
+                if self.types[self.peel(args[0].ty())].kind != TyKind::Nat {
+                    return Err(error(
+                        args[0].line(),
+                        args[0].col(),
+                        format!("`{call}` expects an unsigned integer"),
+                    ));
+                }
+                if let Some(len) = args.get_mut(1) {
+                    self.check_expr_as(len, Some(TY_NAT))?;
+                    if self.types[len.ty()].kind != TyKind::Nat {
+                        return Err(error(len.line(), len.col(), "a length must be `nat`"));
+                    }
+                }
+            }
+            Builtin::AddressToHexString(_) => {
+                need(args.len(), 1)?;
+                self.check_expr_as(&mut args[0], Some(TY_ADDRESS))?;
+                self.expect_addr(args[0].line(), args[0].col(), args[0].ty())?;
+            }
             Builtin::FromBits(signed) => {
                 need(args.len(), 1)?;
                 let (src, dst) = if signed {
@@ -753,7 +777,11 @@ impl Checker {
             | Builtin::BytesConcat
             | Builtin::BytesSlice => self.bytes_n(0)?,
             Builtin::BytesAt => self.bytes_n(1)?,
-            Builtin::StringConcat | Builtin::NatToString | Builtin::IntToString => TY_STRING,
+            Builtin::StringConcat
+            | Builtin::NatToString
+            | Builtin::IntToString
+            | Builtin::NatToHexString
+            | Builtin::AddressToHexString(_) => TY_STRING,
             Builtin::AbiSupportsInterface => TY_BOOL,
             Builtin::ListPop | Builtin::ListPush => TY_UNIT,
             Builtin::Precompile(_) => TY_UNIT,
@@ -869,6 +897,9 @@ fn module_builtin(module: &str, name: &str) -> Option<Builtin> {
         ("Int", "div_rem") => Builtin::IntDivRem,
         ("Nat", "to_string") => Builtin::NatToString,
         ("Int", "to_string") => Builtin::IntToString,
+        ("Nat", "to_hex_string") => Builtin::NatToHexString,
+        ("Address", "to_hex_string") => Builtin::AddressToHexString(false),
+        ("Address", "to_checksum_string") => Builtin::AddressToHexString(true),
         ("Nat", "from_bits") => Builtin::FromBits(false),
         ("Int", "from_bits") => Builtin::FromBits(true),
         ("List", "pop") => Builtin::ListPop,

@@ -1930,15 +1930,16 @@ fn operators_divide_shift_and_return_tuples() {
     assert!(!masked.reverted, "{}", pretty(&masked.returndata));
     assert_eq!(load_bytes(&masked.returndata, 0), Word::from_u64(0x0f));
 
-    let zero = call(&runtime, "mod_zero()", &[]);
+    let zero = call(&runtime, "mod_zero(uint256)", &[Word::from_u64(0)]);
     assert!(zero.reverted);
     assert!(zero.returndata.starts_with(&selector("Panic(uint256)")));
     assert_eq!(load_bytes(&zero.returndata, 4), Word::from_u64(0x12));
 
-    let min_div = call(&runtime, "min_div()", &[]);
+    let min = Word::from_u64(1).shl(255);
+    let min_div = call(&runtime, "min_div(int256)", &[min]);
     assert!(min_div.reverted);
     assert_eq!(load_bytes(&min_div.returndata, 4), Word::from_u64(0x11));
-    let min_mod = call(&runtime, "min_mod()", &[]);
+    let min_mod = call(&runtime, "min_mod(int256)", &[min]);
     assert!(min_mod.reverted);
     assert_eq!(load_bytes(&min_mod.returndata, 4), Word::from_u64(0x11));
 }
@@ -2015,6 +2016,74 @@ external view function uri() : string is
         err.to_string().contains("expects an unsigned integer"),
         "{err}"
     );
+}
+
+/// The hex built-ins match OpenZeppelin's `Strings.toHexString` and
+/// `toChecksumHexString`. A value too wide for its length panics with `0x11`.
+#[test]
+fn integers_and_addresses_convert_to_hex_strings() {
+    let src = r#"
+storage is record { n : nat; }
+
+external pure function hex(const n : nat) : string is
+  Nat.to_hex_string(n)
+
+external pure function fixed(const n : nat; const len : nat) : string is
+  Nat.to_hex_string(n, len)
+
+external pure function small(const n : uint8) : string is
+  Nat.to_hex_string(n)
+
+external pure function addr(const a : address) : string is
+  Address.to_hex_string(a)
+
+external pure function checksum(const a : address) : string is
+  Address.to_checksum_string(a)
+"#;
+    let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
+    let w = Word::from_u64;
+    let text = |sig: &str, args: &[Word]| {
+        let out = call(&runtime, sig, args);
+        assert!(!out.reverted, "{sig}: {}", pretty(&out.returndata));
+        String::from_utf8(abi_string_value(&out.returndata)).expect("utf-8")
+    };
+    let hex = |n: Word| text("hex(uint256)", &[n]);
+    assert_eq!(hex(w(0)), "0x00");
+    assert_eq!(hex(w(255)), "0xff");
+    assert_eq!(hex(w(256)), "0x0100");
+    assert_eq!(hex(w(0xabcdef)), "0xabcdef");
+    assert_eq!(hex(w(0).not()), format!("0x{}", "f".repeat(64)));
+    assert_eq!(hex(w(1).shl(255)), format!("0x8{}", "0".repeat(63)));
+    let fixed = |n: u64, len: u64| text("fixed(uint256,uint256)", &[w(n), w(len)]);
+    assert_eq!(fixed(0, 0), "0x");
+    assert_eq!(fixed(255, 1), "0xff");
+    assert_eq!(fixed(255, 4), "0x000000ff");
+    assert_eq!(fixed(0x1234, 2), "0x1234");
+    assert_eq!(fixed(1, 40), format!("0x{}1", "0".repeat(79)));
+    for (n, len) in [(w(256), w(1)), (w(1), w(0)), (w(0).not(), w(31)), (w(0), w(1).shl(255))] {
+        let out = call(&runtime, "fixed(uint256,uint256)", &[n, len]);
+        assert!(out.reverted, "{n:?}, {len:?}");
+        assert!(out.returndata.starts_with(&selector("Panic(uint256)")));
+        assert_eq!(load_bytes(&out.returndata, 4), w(0x11), "{n:?}, {len:?}");
+    }
+    assert_eq!(text("small(uint8)", &[w(7)]), "0x07");
+    assert_eq!(text("small(uint8)", &[w(200)]), "0xc8");
+    for want in [
+        "0x5aAeb6053F3E94C9b9A09f33669435E7Ef1BeAed",
+        "0xfB6916095ca1df60bB79Ce92cE3Ea74c37c5d359",
+        "0xdbF03B407c01E7cD3CBea99509d93f8DDDC8C6FB",
+        "0xD1220A0cf47c7B9Be7A2E6BA89F429762e7b9aDb",
+        "0x52908400098527886E0F7030069857D2E4169EE7",
+        "0xde709f2102306220921060314715629080e2fb77",
+        "0x0000000000000000000000000000000000000000",
+    ] {
+        let a = Word::from_hex(&want[2..]).expect("hex");
+        assert_eq!(text("addr(address)", &[a]), want.to_lowercase());
+        assert_eq!(text("checksum(address)", &[a]), want);
+    }
+    let err = compile("storage is record { n : nat; }\nexternal pure function f(const n : nat; const m : int) : string is Nat.to_hex_string(n, m)\n")
+        .expect_err("signed length");
+    assert!(err.to_string().contains("a length must be `nat`"), "{err}");
 }
 
 /// `List.pop` drops the last element of a stored list, clearing its slots as Solidity's

@@ -59,6 +59,13 @@ impl<'a> Gen<'a> {
                     self.op(SWAP1);
                     self.op(JUMP);
                 }
+                Sub::CheckedExp(signed) => {
+                    self.op(SWAP1 + 1);
+                    self.op(SWAP1);
+                    self.checked_exp(signed)?;
+                    self.op(SWAP1);
+                    self.op(JUMP);
+                }
                 Sub::DecodeList(elem) => self.sub_decode_list(elem)?,
                 Sub::LoadList(k, transient, direct, bytes) => {
                     let was = std::mem::replace(&mut self.direct, direct);
@@ -127,6 +134,8 @@ impl<'a> Gen<'a> {
                 Sub::Base64Encode => self.sub_base64_encode(),
                 Sub::Base64Decode => self.sub_base64_decode(),
                 Sub::DecimalString(signed) => self.sub_decimal_string(signed)?,
+                Sub::HexString => self.sub_hex_string()?,
+                Sub::ChecksumString => self.sub_checksum_string(),
                 Sub::BytesSlice(end) => self.sub_slice(end)?,
                 Sub::TreeEnc(ty) => self.sub_tree_enc(ty)?,
                 Sub::TreeDec(ty, kind, args) => self.sub_tree_dec(ty, kind, args)?,

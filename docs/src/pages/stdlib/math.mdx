@@ -13,12 +13,14 @@ Everything here is checked, like the rest of Lithe's arithmetic: a result that d
 
 | Function | |
 | --- | --- |
-| `min(a, b)`, `max(a, b)` | |
-| `clamp(x, low, high)` | raises `MathInvalidRange` when `low > high` |
-| `average(a, b)` | rounded down, without overflow in `a + b` |
+| `min(a, b)`, `max(a, b)` | for `nat` or `int` |
+| `clamp(x, low, high)` | for `nat` or `int`; raises `MathInvalidRange`, or `MathInvalidSignedRange` for `int`, when `low > high` |
+| `average(a, b)` | without overflow in `a + b`; a `nat` mean rounds down, an `int` one toward zero |
 | `ceil_div(a, b)` | `a / b` rounded up |
 | `mul_div_up(a, b, d)` | `a * b / d` rounded up, with a 512-bit product |
 | `sqrt(a)` | the integer square root, rounded down |
+| `log2(a)`, `log10(a)` | the base-2 or base-10 logarithm, rounded down; 0 for 0 |
+| `abs(x)` | the magnitude of an `int`, as a `nat`, so `abs(Int.min)` is `2^255` |
 
 `a * b / d` rounded down is the built-in [`Nat.mul_div`](/language/builtins#nat-int-and-address). Its product is kept in 512 bits, so `Nat.mul_div(amount, price, 1e18)` doesn't overflow where `amount * price` would.
 

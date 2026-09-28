@@ -35,7 +35,7 @@ contract Token is {
     ERC20.init("Lithe Token", "LTK");
     EIP712.init("Lithe Token", "1");
     Ownable.init(Evm.sender());
-    storage.cap := 1_000_000n * 1_000_000_000_000_000_000n;
+    storage.cap := 1_000_000n * 10n ** 18n;
   }
 
   external function transfer(const to : address; const value : nat) : bool

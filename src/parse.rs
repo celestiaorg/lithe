@@ -2307,7 +2307,7 @@ impl<'a> Parser<'a> {
             if lbp == min_bp && op.is_cmp() {
                 return Err(self.err("comparisons cannot be chained"));
             }
-            let (line, col) = left.line_col();
+            let (line, col) = self.at();
             self.bump();
             let right = self.expr_bp(rbp)?;
             left = Expr::Binary {
@@ -2942,8 +2942,8 @@ fn special_word(kind: ItemKind) -> Option<&'static str> {
 const PREFIX_BP: u8 = 21;
 
 fn infix(k: Kind) -> Option<(BinOp, u8, u8)> {
-    // Looser to tighter: boolean, comparison, bitwise, cons, shift, add, mul.
-    // Comparisons stay non-associative. `#` stays right-associative.
+    // Looser to tighter: boolean, comparison, bitwise, cons, shift, add, mul, prefix, power.
+    // Comparisons stay non-associative. `#` and `**` stay right-associative.
     // Bitwise binds tighter than comparison, so `flags & mask = 0` is `(flags & mask) = 0`.
     Some(match k {
         Kind::Or => (BinOp::Or, 1, 2),
@@ -2965,18 +2965,9 @@ fn infix(k: Kind) -> Option<(BinOp, u8, u8)> {
         Kind::Star => (BinOp::Mul, 19, 20),
         Kind::Slash => (BinOp::Div, 19, 20),
         Kind::Percent => (BinOp::Mod, 19, 20),
+        Kind::StarStar => (BinOp::Pow, 23, 23),
         _ => return None,
     })
-}
-
-trait LineCol {
-    fn line_col(&self) -> (u32, u32);
-}
-
-impl LineCol for Expr {
-    fn line_col(&self) -> (u32, u32) {
-        (self.line(), self.col())
-    }
 }
 
 #[cfg(test)]

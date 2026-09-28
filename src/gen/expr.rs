@@ -287,8 +287,23 @@ impl<'a> Gen<'a> {
                 match op {
                     UnOp::Not => self.op(ISZERO),
                     UnOp::Neg => {
-                        self.op(PUSH0);
-                        self.op(SUB);
+                        let (_, bits) = self.integer_info(expr.ty());
+                        if bits < 256 {
+                            self.op(PUSH0);
+                            self.op(SUB);
+                            self.narrow(bits, true)?;
+                        } else {
+                            // Only `Int.min` is negative both before and after.
+                            self.op(DUP1);
+                            self.op(PUSH0);
+                            self.op(SUB);
+                            self.op(SWAP1);
+                            self.op(DUP1 + 1);
+                            self.op(AND);
+                            self.op(PUSH0);
+                            self.op(SGT);
+                            self.revert_if_panic(0x11)?;
+                        }
                     }
                     UnOp::BitNot => {
                         self.op(NOT);
@@ -371,6 +386,9 @@ impl<'a> Gen<'a> {
                 }
                 if matches!(op, BinOp::Eq | BinOp::Neq) && is_sum(&self.checked.types, left.ty()) {
                     return self.compile_sum_eq(left, right, *op == BinOp::Neq);
+                }
+                if *op == BinOp::Pow {
+                    return self.compile_pow(e, left, right);
                 }
                 self.compile_value(left)?;
                 self.compile_value(right)?;
@@ -551,6 +569,38 @@ impl<'a> Gen<'a> {
             Builtin::NatToString | Builtin::IntToString => {
                 self.compile_value(&args[0])?;
                 self.call_sub(Sub::DecimalString(b == Builtin::IntToString));
+            }
+            Builtin::NatToHexString => {
+                self.compile_value(&args[0])?;
+                if let Some(len) = args.get(1) {
+                    // `n` must fit in `len` bytes, and `len` in the memory a string can take.
+                    self.compile_value(len)?;
+                    self.op(DUP1 + 1);
+                    self.op(DUP1 + 1);
+                    self.push_u64(3);
+                    self.op(SHL);
+                    self.op(SHR);
+                    self.op(DUP1 + 1);
+                    self.push_u64(250);
+                    self.op(SHR);
+                    self.op(OR);
+                    self.revert_if_panic(0x11)?;
+                    self.push_u64(1);
+                    self.op(SWAP1);
+                    self.op(SUB);
+                } else {
+                    self.op(PUSH0);
+                }
+                self.call_sub(Sub::HexString);
+            }
+            Builtin::AddressToHexString(false) => {
+                self.compile_value(&args[0])?;
+                self.push_u64(19);
+                self.call_sub(Sub::HexString);
+            }
+            Builtin::AddressToHexString(true) => {
+                self.compile_value(&args[0])?;
+                self.call_sub(Sub::ChecksumString);
             }
             Builtin::FromBits(_) => self.compile_value(&args[0])?,
             Builtin::ListPop | Builtin::ListPush => {
@@ -1037,6 +1087,14 @@ impl<'a> Gen<'a> {
             BinOp::Mul => self.checked_mul(signed),
             BinOp::Div => self.checked_div(signed),
             BinOp::Mod => self.checked_mod(signed),
+            BinOp::Pow => {
+                self.exp_sites[usize::from(signed)] += 1;
+                if self.plan.shared_exp[usize::from(signed)] {
+                    self.call_sub(Sub::CheckedExp(signed));
+                    return Ok(());
+                }
+                self.checked_exp(signed)
+            }
             BinOp::BitAnd => {
                 self.op(AND);
                 Ok(())
@@ -1193,6 +1251,204 @@ impl<'a> Gen<'a> {
         self.op(SWAP1 + 1);
         self.op(POP);
         self.op(POP);
+        Ok(())
+    }
+
+    /// `base ** exp`: for a constant base, an `EXP` behind a bound on the exponent (none
+    /// where the ranges prove the power fits, which folds when both are constants); `x ** 2`
+    /// as `x * x`; otherwise square-and-multiply.
+    fn compile_pow(&mut self, e: &Expr, base: &Expr, exp: &Expr) -> Result<(), Error> {
+        let signed = self.checked.types[base.ty()].kind == TyKind::Int;
+        let bits = self.checked.types[base.ty()].bits;
+        let width = if bits == 0 { 256 } else { u32::from(bits) };
+        let one = Word::from_u64(1);
+        let lit = |x: &Expr| match x {
+            Expr::Lit {
+                lit: Lit::Nat(w) | Lit::Int(w, _),
+                ..
+            } => Some(*w),
+            _ => None,
+        };
+        let constant = lit(base).or_else(|| match base {
+            Expr::Unary {
+                op: UnOp::Neg, expr, ..
+            } if signed => lit(expr).map(Word::wrapping_neg),
+            _ => None,
+        });
+        if let Some(w) = constant {
+            // The largest exponent whose power fits the type; none for -1, 0, and 1.
+            let neg = signed && w.bit(255);
+            let m = if neg { w.wrapping_neg() } else { w };
+            let max = Word::from_u64(0).not().shr(256 - width + u32::from(signed));
+            let mut limit = None;
+            if one.lt(m) {
+                let (mut p, mut k) = (one, 0u64);
+                loop {
+                    let (q, over) = p.overflowing_mul(m);
+                    let fits = if neg && k % 2 == 0 { max.wrapping_add(one) } else { max };
+                    if over || fits.lt(q) {
+                        break;
+                    }
+                    p = q;
+                    k += 1;
+                }
+                limit = Some(Word::from_u64(k)).filter(|k| k.lt(self.range_of(exp).1));
+            }
+            self.compile_value(exp)?;
+            match limit {
+                // Past the limit, a power of two wraps to zero.
+                Some(_) if !signed && width == 256 && m.bitand(m.wrapping_sub(one)).is_zero() => {
+                    self.push_word(w);
+                    self.op(EXP);
+                    self.op(DUP1);
+                    self.op(ISZERO);
+                    return self.revert_if_panic(0x11);
+                }
+                Some(k) => {
+                    self.op(DUP1);
+                    self.push_word(k);
+                    self.op(LT);
+                    self.revert_if_panic(0x11)?;
+                }
+                None => {}
+            }
+            self.push_word(w);
+            self.op(EXP);
+            return Ok(());
+        }
+        let (top, over) = self.range_of(base).1.overflowing_pow(self.range_of(exp).1);
+        if !over && !(signed && top.bit(255)) {
+            self.compile_value(base)?;
+            self.compile_value(exp)?;
+            self.op(SWAP1);
+            self.op(EXP);
+        } else if lit(exp) == Some(Word::from_u64(2)) {
+            self.compile_value(base)?;
+            self.op(DUP1);
+            self.finish_bin(BinOp::Mul, signed, bits)?;
+        } else {
+            self.compile_value(base)?;
+            self.compile_value(exp)?;
+            self.finish_bin(BinOp::Pow, signed, bits)?;
+        }
+        if bits > 0 && bits < 256 && (signed || !self.shape_range_of(e).1.lt(shift_one(bits))) {
+            self.narrow(bits, signed)?;
+        }
+        Ok(())
+    }
+
+    /// Stack: `a b` becomes `a ** b`, by a bare `EXP` for small operands, else by
+    /// square-and-multiply. A signed base is raised by its
+    /// magnitude, and the result takes the sign `(-1) ** b` of a negative base.
+    pub(super) fn checked_exp(&mut self, signed: bool) -> Result<(), Error> {
+        if signed {
+            // `m` is 1 or -1, as `a` is: `[g, |a|, b]` with `g = m ** b = (m * (b & 1)) | 1`.
+            self.op(DUP1 + 1);
+            self.push_u64(255);
+            self.op(SAR);
+            self.push_u64(1);
+            self.op(OR);
+            self.op(DUP1);
+            self.op(DUP1 + 2);
+            self.push_u64(1);
+            self.op(AND);
+            self.op(MUL);
+            self.push_u64(1);
+            self.op(OR);
+            self.op(SWAP1 + 2);
+            self.op(MUL);
+            self.op(SWAP1);
+        }
+        // Solidity's window, `a < 11 && b < 78` or `a < 307 && b < 32`, fits a bare `EXP`:
+        // `a <= 306 && b <= 31 + 46 * (a < 11)`.
+        let (square, entry, slow, done) = (self.fresh(), self.fresh(), self.fresh(), self.fresh());
+        self.op(DUP1 + 1);
+        self.push_u64(11);
+        self.op(GT);
+        self.push_u64(46);
+        self.op(MUL);
+        self.push_u64(31);
+        self.op(ADD);
+        self.op(DUP1 + 1);
+        self.op(GT);
+        self.op(DUP1 + 2);
+        self.push_u64(306);
+        self.op(LT);
+        self.op(OR);
+        self.push_label(slow);
+        self.op(JUMPI);
+        self.op(SWAP1);
+        self.op(EXP);
+        self.push_label(done);
+        self.op(JUMP);
+        self.jumpdest(slow);
+        self.push_u64(1);
+        self.push_label(entry);
+        self.op(JUMP);
+        // `[a, b, r, x]` with bits of `b` left: `a * a` must fit, and then `r * x` fits too,
+        // as `r < a` once `a >= 2`.
+        self.jumpdest(square);
+        self.op(DUP1 + 3);
+        self.push_u64(128);
+        self.op(SHR);
+        self.revert_if_panic(0x11)?;
+        self.op(MUL);
+        self.op(SWAP1 + 1);
+        self.op(DUP1);
+        self.op(MUL);
+        self.op(SWAP1 + 1);
+        self.jumpdest(entry);
+        // `x = a ** (b & 1)`, as `a * bit | !bit`, and `b >> 1`, then go on while bits are
+        // left and `a > r`, which holds from the start when `a >= 2`, and never when `a < 2`.
+        self.op(DUP1 + 1);
+        self.push_u64(1);
+        self.op(AND);
+        self.op(DUP1);
+        self.op(ISZERO);
+        self.op(SWAP1);
+        self.op(DUP1 + 4);
+        self.op(MUL);
+        self.op(OR);
+        self.op(SWAP1 + 1);
+        self.push_u64(1);
+        self.op(SHR);
+        self.op(SWAP1 + 1);
+        self.op(DUP1 + 1);
+        self.op(DUP1 + 4);
+        self.op(GT);
+        self.op(DUP1 + 3);
+        self.op(MUL);
+        self.push_label(square);
+        self.op(JUMPI);
+        // The last `r * x` overflows when `x > MAX / r`, and `r >= 1`.
+        self.op(DUP1 + 1);
+        self.op(PUSH0);
+        self.op(NOT);
+        self.op(DIV);
+        self.op(DUP1 + 1);
+        self.op(GT);
+        self.revert_if_panic(0x11)?;
+        self.op(MUL);
+        // `[a, b, r]`: bits of `b` are left only when `a < 2`, whose power is `a`, so the
+        // result is `r`, but zero for `a = 0`.
+        self.op(SWAP1 + 1);
+        self.op(ISZERO);
+        self.op(MUL);
+        self.op(SHR);
+        self.jumpdest(done);
+        if signed {
+            // The magnitude fits when the signed result's sign is `g`'s.
+            self.op(DUP1 + 1);
+            self.op(MUL);
+            self.op(DUP1);
+            self.op(DUP1 + 2);
+            self.op(XOR);
+            self.push_u64(255);
+            self.op(SHR);
+            self.revert_if_panic(0x11)?;
+            self.op(SWAP1);
+            self.op(POP);
+        }
         Ok(())
     }
 

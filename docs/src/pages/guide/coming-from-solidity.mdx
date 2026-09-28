@@ -99,6 +99,7 @@ Both contracts have the same ABI, the same error selector, the same event topic,
 | `type(uint256).max` | `Nat.max` |
 | `unchecked { a + b }` | `Nat.wrapping_add(a, b)`, and `wrapping_sub`, `wrapping_mul` |
 | `1 ether`, `1 days` | `1eth`, `1days` |
+| `10 ** decimals` | `10n ** decimals`: any unsigned exponent, and the result has the base's type |
 
 ## Functions
 

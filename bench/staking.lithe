@@ -83,13 +83,13 @@ contract StakingRewards is {
     if storage.totalSupply <> 0n then {
       per := storage.rewardPerTokenStored
         + (last_time_reward_applicable() - storage.lastUpdateTime)
-          * storage.rewardRate * 1000000000000000000n / storage.totalSupply;
+          * storage.rewardRate * 10n ** 18n / storage.totalSupply;
     }
   } with per
 
   view function earned_by(const account : address) : nat is
     storage.balances[account] * (reward_per_token() - storage.userRewardPerTokenPaid[account])
-      / 1000000000000000000n + storage.rewards[account]
+      / 10n ** 18n + storage.rewards[account]
 
   function update_reward(const account : address) is {
     storage.rewardPerTokenStored := reward_per_token();
