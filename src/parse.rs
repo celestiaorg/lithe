@@ -563,14 +563,17 @@ impl<'a> Parser<'a> {
                         };
                         decl
                     };
-                    if domains.iter().any(|have| have.name == decl.name) {
-                        return Err(error(
-                            decl.line,
-                            decl.col,
+                    if let Some(have) = domains.iter().find(|have| have.name == decl.name) {
+                        return Err(crate::modules::clash(
                             format!(
                                 "module `{name}` declares storage `{}` more than once",
                                 decl.name
                             ),
+                            &decl.name,
+                            &crate::modules::Site::of("", have.line, have.col, ""),
+                            &crate::modules::Site::of("", decl.line, decl.col, ""),
+                            None,
+                            "rename one of them",
                         ));
                     }
                     decl.owner = Some(name.clone());

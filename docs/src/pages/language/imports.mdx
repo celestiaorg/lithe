@@ -48,10 +48,26 @@ private pure function unused() : nat is
 
 ## Plain and aliased imports
 
-A plain import, `import "./lib/math.lithe";`, makes the file's names available directly, as `min`. Two plain imports that define the same name are an error when the name is used:
+A plain import, `import "./lib/math.lithe";`, makes the file's names available directly, as `min`. Two plain imports that define the same name are an error, whether or not the name is used. The error says where each is, and how to resolve it:
 
 ```text
-ambiguous symbol `calculate_fee`
+2:1: ambiguous symbol `calculate_fee`
+
+defined in:
+- left.lithe:1:6
+- right.lithe:1:6
+
+rename one, or import `./right.lithe` with an alias: `import "./right.lithe" as Name;`
+```
+
+Declaring one name twice in a file is an error too, and it points at the first declaration:
+
+```text
+8:6: duplicate function `scale`
+
+`scale` is already declared at 5:6 as a pure function
+
+overloads need different parameter types; rename one or change its parameters
 ```
 
 An aliased import, `import "./lib/fees.lithe" as Fees;`, keeps the file's names behind the alias: `Fees.apply`, `Fees.basis_points`. Aliases avoid clashes, and they make it obvious at each use where a name comes from.

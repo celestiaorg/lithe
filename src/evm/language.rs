@@ -3,7 +3,7 @@ use super::*;
 #[test]
 fn decorators_split_visibility_and_effects() {
     let src = include_str!("../../examples/decorators.lithe");
-    let abi = crate::abi(src).expect("abi");
+    let abi = abi(src).expect("abi");
     for name in ["set", "add", "deposit", "count"] {
         assert!(abi.contains(&format!("\"name\": \"{name}\"")), "{abi}");
     }
@@ -57,7 +57,7 @@ fn decorators_split_visibility_and_effects() {
 #[test]
 fn pure_functions_depend_only_on_arguments() {
     let src = include_str!("../../examples/pure.lithe");
-    let abi = crate::abi(src).expect("abi");
+    let abi = abi(src).expect("abi");
     for hidden in ["calculate_fee", "fee_of"] {
         assert!(!abi.contains(&format!("\"name\": \"{hidden}\"")), "{abi}");
     }
@@ -209,7 +209,7 @@ external function set(const n : nat) is { storage.n := twice(n); }
     let runtime = deploy(&compile(external_pure).expect("external pure")).expect("deploy");
     let out = call(&runtime, "double(uint256)", &[Word::from_u64(21)]);
     assert_eq!(load_bytes(&out.returndata, 0), Word::from_u64(42));
-    let abi = crate::abi(external_pure).expect("abi");
+    let abi = super::abi(external_pure).expect("abi");
     assert!(abi.contains("\"stateMutability\": \"pure\""), "{abi}");
     let reads = "storage is record { n : nat; }\nexternal pure function get() : nat is storage.n\n";
     let err = compile(reads).expect_err("external pure reads");
@@ -242,18 +242,18 @@ external function set(const n : nat) is { storage.n := twice(n); }
 #[test]
 fn generics_specialize_sets() {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/generics.lithe");
-    let abi = crate::abi_file(&path).expect("abi");
+    let abi = crate::abi(&Sources::disk(), &path).expect("abi").to_json();
     assert!(abi.contains("\"name\": \"is_admin\""), "{abi}");
     assert!(abi.contains("\"name\": \"grant\""), "{abi}");
     assert!(!abi.contains("\"name\": \"contains\""), "{abi}");
     assert!(!abi.contains("\"name\": \"identity\""), "{abi}");
-    let tree = crate::abi_tree_file(&path).expect("tree");
+    let tree = crate::abi_tree(&Sources::disk(), &path, &Options::default()).expect("tree");
     assert!(
         tree.contains("storage.admins"),
         "analysis should see the concrete write\n{tree}"
     );
 
-    let runtime = deploy(&crate::compile_file(&path).expect("compile")).expect("deploy");
+    let runtime = deploy(&compile_file(&path).expect("compile")).expect("deploy");
     let alice = Word::from_u64(2);
     let bob = Word::from_u64(3);
     let caller = Word::from_u64(1);
@@ -565,7 +565,7 @@ use Vault_ops exposing {{
   view function deposit_of(who : address) : wei;
   pure function fee(amount : wei) : wei;";
     let good = program(all);
-    let abi = crate::abi(&good).expect("declarations");
+    let abi = abi(&good).expect("declarations");
     for name in ["withdraw", "deposit", "deposit_of", "fee"] {
         assert!(
             abi.contains(&format!("\"name\": \"{name}\"")),
@@ -576,7 +576,7 @@ use Vault_ops exposing {{
     assert!(!abi.contains("\"name\": \"hidden\""), "{abi}");
     assert!(abi.contains("\"stateMutability\": \"payable\""), "{abi}");
     assert!(abi.contains("\"stateMutability\": \"pure\""), "{abi}");
-    let footprint = crate::footprint(&good).expect("footprint");
+    let footprint = footprint(&good).expect("footprint");
     assert!(
         footprint.contains("writes: Vault_ops.vault.deposits"),
         "{footprint}"
@@ -660,9 +660,9 @@ fn compiling_is_deterministic() {
         "bench/staking.lithe",
     ] {
         let path = root.join(rel);
-        let first = crate::compile_file(&path).unwrap_or_else(|e| panic!("{rel}: {e}"));
+        let first = compile_file(&path).unwrap_or_else(|e| panic!("{rel}: {e}"));
         for _ in 0..4 {
-            assert_eq!(crate::compile_file(&path).expect("again"), first, "{rel}");
+            assert_eq!(compile_file(&path).expect("again"), first, "{rel}");
         }
     }
 }
@@ -731,7 +731,7 @@ contract Vault is {
 ";
     std::fs::write(dir.join("named.lithe"), one).expect("named");
     let out_dir = dir.join("out");
-    let out = crate::compile_dir(&dir, &out_dir).expect("dir");
+    let out = crate::compile_dir(&dir, &out_dir, &Options::default()).expect("dir");
     let failed: Vec<_> = out.failed.iter().map(ToString::to_string).collect();
     assert!(failed.is_empty(), "{failed:?}");
     let vault =
@@ -800,7 +800,7 @@ fn payable_is_explicit_on_entries() {
     )
     .expect("value");
     assert!(rejected.reverted, "nonzero value must revert");
-    let abi = crate::abi(PAY).expect("pay abi");
+    let abi = abi(PAY).expect("pay abi");
     assert!(abi.contains("\"stateMutability\": \"payable\""), "{abi}");
 }
 
@@ -870,16 +870,128 @@ fn types_reject_implicit_conversions() {
 }
 
 #[test]
+fn duplicates_say_where_the_first_is() {
+    let tail = "external function go() is { skip }\n";
+    for (src, want) in [
+        (
+            "type x is nat;\npure function x(const a : nat) : nat is a\n",
+            "2:6: duplicate name `x`\n\n`x` is already declared at 1:1 as a type\n\nrename one of them",
+        ),
+        (
+            "private type t is nat;\nprivate type t is bool;\n",
+            "2:9: duplicate type `t`\n\n`t` is already declared at 1:9 as a type",
+        ),
+        (
+            "storage a at \"x\" is record { n : nat; }\nstorage b at \"x\" is record { n : nat; }\n",
+            "2:1: storage domains `a` and `b` share the id \"x\"\n\n`a` is declared at 1:1\n\ngive each storage domain its own id",
+        ),
+        (
+            "module M is {\n  pure function a(const x : nat) : nat is x\n  pure function a(const x : nat) : nat is x\n}\nuse M;\n",
+            "3:8: duplicate function `M.a(nat)`\n\n`M.a` is already declared at 2:8",
+        ),
+        (
+            "module M is {\n  type t is nat;\n  type t is bool;\n}\nuse M;\n",
+            "`t` is already declared at 2:3",
+        ),
+    ] {
+        let err = compile(&format!("{src}{tail}")).expect_err(want);
+        assert!(err.to_string().contains(want), "{want}\n---\n{err}");
+    }
+    let lib = "pure function f(const x : nat) : nat is x\n";
+    let sources = Sources::memory([
+        ("a.lithe", lib.to_string()),
+        ("b.lithe", lib.to_string()),
+        (
+            "main.lithe",
+            format!("import \"./a.lithe\";\nimport \"./b.lithe\";\n{tail}"),
+        ),
+    ]);
+    let Err(errors) = crate::compile(&sources, Path::new("main.lithe"), &Options::default()) else {
+        panic!("ambiguous");
+    };
+    assert_eq!(
+        errors[0].to_string(),
+        "2:1: ambiguous symbol `f`\n\ndefined in:\n- a.lithe:1:6\n- b.lithe:1:6\n\nrename one, or import `./b.lithe` with an alias: `import \"./b.lithe\" as Name;`"
+    );
+}
+
+#[test]
+fn memory_sources_compile_as_files_do() {
+    let examples = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples");
+    let files: Vec<(String, String)> = ["imports", "compose"]
+        .iter()
+        .flat_map(|dir| std::fs::read_dir(examples.join(dir)).expect("dir"))
+        .map(|entry| {
+            let path = entry.expect("entry").path();
+            let rel = path.strip_prefix(&examples).expect("under examples");
+            let src = std::fs::read_to_string(&path).expect("read");
+            (format!("project/{}", rel.display()), src)
+        })
+        .collect();
+    let memory = Sources::memory(files);
+    for entry in ["imports/vault.lithe", "compose/token.lithe"] {
+        let from_disk = compile_file(&examples.join(entry)).expect(entry);
+        let from_memory = crate::compile(
+            &memory,
+            &Path::new("project").join(entry),
+            &Options::default(),
+        )
+        .and_then(crate::Output::single)
+        .expect(entry);
+        assert_eq!(from_memory.bytecode, from_disk, "{entry}");
+    }
+}
+
+#[test]
+fn every_failing_contract_reports_its_error() {
+    let src = "\
+contract A is {
+  storage is record { n : nat; }
+  external function f() is { storage.n := true; }
+}
+
+contract B is {
+  storage is record { n : nat; }
+  external function g() is { storage.n := Evm.sender(); }
+}
+
+contract C is {
+  storage is record { n : nat; }
+  external function h() is { storage.n := 1n; }
+}
+";
+    let Err(errors) = crate::compile(&memory(src), Path::new(ENTRY), &Options::default()) else {
+        panic!("A and B fail");
+    };
+    let lines: Vec<u32> = errors.iter().map(|err| err.line).collect();
+    assert_eq!(lines, [3, 8], "{errors:?}");
+}
+
+#[test]
+fn memory_paths_above_the_root_stay_distinct() {
+    let sources = Sources::memory([
+        ("a.lithe", "pure function f() : nat is 1n\n"),
+        ("../a.lithe", "pure function g() : nat is 2n\n"),
+        (
+            "main.lithe",
+            "import \"./a.lithe\";\nimport \"../a.lithe\";\nstorage is record { n : nat; }\nexternal pure function h() : nat is f() + g()\n",
+        ),
+    ]);
+    crate::compile(&sources, Path::new("main.lithe"), &Options::default())
+        .and_then(crate::Output::single)
+        .expect("../a.lithe");
+}
+
+#[test]
 fn imports_are_typed_declarations() {
     let examples = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples/imports");
-    let err = compile("import \"./fee.lithe\";\n").expect_err("string");
+    let err = compile("import \"./fee.lithe\";\n").expect_err("missing");
     assert!(
-        err.to_string()
-            .contains("`import` requires compiling a file"),
+        err.to_string().contains("cannot read `./fee.lithe`"),
         "{err}"
     );
-    let runtime = deploy(&crate::compile_file(&examples.join("vault.lithe")).expect("vault"))
-        .expect("deploy");
+    let runtime =
+        deploy(&compile_file(&examples.join("vault.lithe")).expect("vault")).expect("deploy");
     let out = exec(
         &runtime,
         &word_data("go(uint256)", &[Word::from_u64(4)]),
@@ -905,14 +1017,14 @@ fn imports_are_typed_declarations() {
         "import \"./fee.lithe\";\nimport \"./other.lithe\";\nstorage is record { n : nat; }\nexternal function go() is { skip }\n",
     )
     .expect("clash");
-    let err = crate::compile_file(&dir.join("clash.lithe")).expect_err("clash");
+    let err = compile_file(&dir.join("clash.lithe")).expect_err("clash");
     assert!(
         err.to_string().contains("ambiguous symbol `calculate_fee`"),
         "{err}"
     );
     std::fs::write(dir.join("a.lithe"), "import \"./b.lithe\";\n").expect("a");
     std::fs::write(dir.join("b.lithe"), "import \"./a.lithe\";\n").expect("b");
-    let err = crate::compile_file(&dir.join("a.lithe")).expect_err("cycle");
+    let err = compile_file(&dir.join("a.lithe")).expect_err("cycle");
     assert!(
         err.to_string()
             .contains("cyclic module dependency detected"),
@@ -926,7 +1038,7 @@ fn imports_are_typed_declarations() {
 #[test]
 fn modules_compose_without_inheritance() {
     let src = include_str!("../../examples/compose.lithe");
-    let abi = crate::abi(src).expect("abi");
+    let abi = abi(src).expect("abi");
     assert!(abi.contains("\"name\": \"transfer\""), "{abi}");
     assert!(abi.contains("\"name\": \"balance_of\""), "{abi}");
     assert!(!abi.contains("Ledger.transfer"), "{abi}");
@@ -934,7 +1046,7 @@ fn modules_compose_without_inheritance() {
     assert!(abi.contains("Paused"), "{abi}");
     assert!(abi.contains("Transfer"), "{abi}");
 
-    let tree = crate::abi_tree(src).expect("abi-tree");
+    let tree = abi_tree(src).expect("abi-tree");
     let transfer_route = route_text(&tree, "transfer");
     assert!(transfer_route.contains("  - Ledger.transfer\n"), "{tree}");
     assert!(
@@ -949,7 +1061,7 @@ fn modules_compose_without_inheritance() {
     );
     assert!(tree.contains("Guarded.transfer"), "{tree}");
 
-    let report = crate::errors(src).expect("errors");
+    let report = errors(src).expect("errors");
     assert!(
         report.contains("transfer(address,uint256)") && report.contains("InsufficientBalance"),
         "{report}"
@@ -978,7 +1090,7 @@ contract Token is {
   }
 }
 ";
-    let hidden_abi = crate::abi(hidden).expect("hidden");
+    let hidden_abi = super::abi(hidden).expect("hidden");
     assert!(hidden_abi.contains("\"name\": \"go\""), "{hidden_abi}");
     assert!(!hidden_abi.contains("\"name\": \"set\""), "{hidden_abi}");
 
@@ -1160,7 +1272,7 @@ contract Token is {
 
     let path =
         std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples/compose/token.lithe");
-    let imported = deploy(&crate::compile_file(&path).expect("import")).expect("deploy");
+    let imported = deploy(&compile_file(&path).expect("import")).expect("deploy");
     let ping = call(&imported, "ping(uint256)", &[Word::from_u64(7)]);
     assert!(!ping.reverted, "{}", pretty(&ping.returndata));
     let root = crate::keccak::erc7201("lithe.compose");
@@ -1184,7 +1296,7 @@ contract Token is {
     let pinger_path =
         std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples/compose/pinger.lithe");
     install_mocks();
-    let pinger = deploy(&crate::compile_file(&pinger_path).expect("pinger")).expect("deploy");
+    let pinger = deploy(&compile_file(&pinger_path).expect("pinger")).expect("deploy");
     let relay = exec(
         &pinger,
         &word_data("relay(address,uint256)", &[Word::from_u64(0xcd), Word::from_u64(9)]),
@@ -1199,7 +1311,7 @@ contract Token is {
 
     let votes_path =
         std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples/votes.lithe");
-    let layout = crate::storage_layout(&votes_path).expect("layout");
+    let layout = crate::storage_layout(&Sources::disk(), &votes_path).expect("layout");
     assert!(
         layout.contains("ERC20.erc20 \"lithe.std.erc20\""),
         "{layout}"
@@ -1208,7 +1320,7 @@ contract Token is {
         layout.contains("ERC20Votes.votes \"lithe.std.erc20.votes\""),
         "{layout}"
     );
-    let votes = deploy(&crate::compile_file(&votes_path).expect("votes")).expect("deploy");
+    let votes = deploy(&compile_file(&votes_path).expect("votes")).expect("deploy");
     let minted = call(
         &votes,
         "mint(address,uint256)",
@@ -1225,7 +1337,8 @@ contract Token is {
     )
     .expect("supply");
     assert_eq!(load_bytes(&supply.returndata, 0), Word::from_u64(5));
-    let tree = crate::abi_tree_file(&votes_path).expect("votes tree");
+    let tree =
+        crate::abi_tree(&Sources::disk(), &votes_path, &Options::default()).expect("votes tree");
     assert!(tree.contains("ERC20.erc20.balances"), "{tree}");
     assert!(tree.contains("ERC20Votes.votes.delegates"), "{tree}");
     let delegated = exec(

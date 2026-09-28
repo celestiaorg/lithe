@@ -858,14 +858,14 @@ external function bump(const x : nat) is {
 #[test]
 fn indexed_events_split_topics_and_data() {
     let src = include_str!("../../examples/events.lithe");
-    let abi = crate::abi(src).expect("abi");
+    let abi = abi(src).expect("abi");
     assert!(
         abi.contains("\"name\": \"from\"") && abi.contains("\"indexed\": true"),
         "{abi}"
     );
     assert!(abi.contains("\"name\": \"amount\""), "{abi}");
     assert!(abi.contains("\"indexed\": false"), "{abi}");
-    let tree = crate::abi_tree(src).expect("tree");
+    let tree = abi_tree(src).expect("tree");
     assert!(
         tree.contains("Transfer(indexed from, indexed to, amount)"),
         "{tree}"
@@ -1670,7 +1670,7 @@ fn builtins_are_explicit_modules() {
 fn operators_divide_shift_and_return_tuples() {
     let layout = leaves(include_str!("../../examples/operators.lithe"));
     let src = include_str!("../../examples/operators.lithe");
-    let abi = crate::abi(src).expect("abi");
+    let abi = abi(src).expect("abi");
     assert!(abi.contains("(uint256,uint256)"), "{abi}");
     assert!(abi.contains("(uint256,address)"), "{abi}");
     assert!(abi.contains("(uint256,(address,bool))"), "{abi}");

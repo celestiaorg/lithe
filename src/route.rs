@@ -441,14 +441,14 @@ fn special(checked: &Checked, idx: usize, f: &Func) -> Result<Route, Error> {
     Ok(route)
 }
 
-pub(crate) fn reentry_warnings(checked: &Checked) -> String {
+pub(crate) fn reentry_warnings(checked: &Checked) -> Vec<String> {
     let names: Vec<&str> = checked
         .routes
         .iter()
         .map(|route| route.name.as_str())
         .collect();
     let mut seen = Vec::new();
-    let mut out = String::new();
+    let mut out = Vec::new();
     for route in &checked.routes {
         let forwards = route
             .direct
@@ -473,7 +473,7 @@ pub(crate) fn reentry_warnings(checked: &Checked) -> String {
             others.join(", ")
         };
         let (line, col) = warning_site(checked, route);
-        out.push_str(&format!(
+        out.push(format!(
             "{line}:{col}: warning: `{}` performs deferred external operations and may\nbe re-entered through {through}\n\nconsider `nonreentrant` if the protocol requires serialized\nexternal-effect execution\n",
             route.name
         ));
@@ -1589,47 +1589,156 @@ pub(crate) fn render_analysis(checked: &Checked) -> String {
     format!("[\n{}\n]\n", entries.join(",\n"))
 }
 
-/// Solidity JSON ABI. An external function is payable only when it is declared `payable`.
-/// Views are `view` because they revert when value is attached.
-pub(crate) fn render_abi(checked: &Checked) -> Result<String, Error> {
-    render_abi_only(checked, None)
+/// A Solidity JSON ABI, its items in the order the JSON lists them. The types follow
+/// `alloy-json-abi`'s names.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Abi {
+    pub items: Vec<AbiItem>,
 }
 
-/// The ABI of the functions `keep` names, with every event and error, and with the
-/// constructor only when every function is kept.
-pub(crate) fn render_abi_only(
-    checked: &Checked,
-    keep: Option<&std::collections::HashSet<[u8; 4]>>,
-) -> Result<String, Error> {
-    let kept = |sel: [u8; 4]| keep.is_none_or(|keep| keep.contains(&sel));
-    let mut out = String::from("[\n");
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AbiItem {
+    Constructor(Constructor),
+    Function(Function),
+    Event(Event),
+    Error(AbiError),
+    Fallback(Fallback),
+    Receive(Receive),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Constructor {
+    pub inputs: Vec<Param>,
+    pub state_mutability: StateMutability,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Function {
+    pub name: String,
+    pub inputs: Vec<Param>,
+    pub outputs: Vec<Param>,
+    pub state_mutability: StateMutability,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Event {
+    pub name: String,
+    pub inputs: Vec<EventParam>,
+    pub anonymous: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AbiError {
+    pub name: String,
+    pub inputs: Vec<Param>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Fallback {
+    pub state_mutability: StateMutability,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Receive {
+    pub state_mutability: StateMutability,
+}
+
+/// `ty` is `tuple`, with its dimensions, for a tuple; `internal_type` is its full type,
+/// `(uint256,address)[]`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Param {
+    pub ty: String,
+    pub name: String,
+    pub components: Vec<Param>,
+    pub internal_type: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EventParam {
+    pub ty: String,
+    pub name: String,
+    pub indexed: bool,
+    pub components: Vec<Param>,
+    pub internal_type: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StateMutability {
+    Pure,
+    View,
+    NonPayable,
+    Payable,
+}
+
+impl StateMutability {
+    fn paying(payable: bool) -> Self {
+        if payable {
+            Self::Payable
+        } else {
+            Self::NonPayable
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Pure => "pure",
+            Self::View => "view",
+            Self::NonPayable => "nonpayable",
+            Self::Payable => "payable",
+        }
+    }
+}
+
+impl Param {
+    fn of(field: &AbiField) -> Self {
+        let ty = if field.components.is_empty() {
+            field.ty.clone()
+        } else {
+            // An array of tuples keeps its dimensions after `tuple`.
+            let dims = field.ty.rfind(')').map_or("", |at| &field.ty[at + 1..]);
+            format!("tuple{dims}")
+        };
+        Param {
+            ty,
+            name: field.name.clone(),
+            components: params(&field.components),
+            internal_type: field.ty.clone(),
+        }
+    }
+
+    fn named(name: &str, ty: &str) -> Self {
+        Param {
+            ty: ty.to_string(),
+            name: name.to_string(),
+            components: Vec::new(),
+            internal_type: ty.to_string(),
+        }
+    }
+}
+
+fn params(fields: &[AbiField]) -> Vec<Param> {
+    fields.iter().map(Param::of).collect()
+}
+
+/// An external function is payable only when it is declared `payable`. Views are `view`
+/// because they revert when value is attached.
+pub(crate) fn abi(checked: &Checked) -> Result<Abi, Error> {
     let mut items = Vec::new();
     for route in &checked.routes {
-        if let Some(kind) = route.special {
-            if keep.is_none() {
-                items.push(Item::Special {
-                    kind: if kind == ItemKind::Receive { "receive" } else { "fallback" },
-                    mutability: if route.payable { "payable" } else { "nonpayable" },
-                });
-            }
-            continue;
-        }
-        if !kept(route.sel) {
-            continue;
-        }
-        items.push(Item::Function {
-            name: route.name.clone(),
-            inputs: route.inputs.clone(),
-            outputs: route.outputs.clone(),
-            mutability: if route.payable {
-                "payable"
-            } else {
-                "nonpayable"
-            },
+        let state_mutability = StateMutability::paying(route.payable);
+        items.push(match route.special {
+            Some(ItemKind::Receive) => AbiItem::Receive(Receive { state_mutability }),
+            Some(_) => AbiItem::Fallback(Fallback { state_mutability }),
+            None => AbiItem::Function(Function {
+                name: route.name.clone(),
+                inputs: params(&route.inputs),
+                outputs: params(&route.outputs),
+                state_mutability,
+            }),
         });
     }
     for func in &checked.prog.funcs {
-        if func.kind != ItemKind::View || !kept(selector(&view_sig(checked, func)?)) {
+        if func.kind != ItemKind::View {
             continue;
         }
         let mut inputs = Vec::new();
@@ -1637,14 +1746,22 @@ pub(crate) fn render_abi_only(
             if param.ty_id == checked.storage || checked.types[param.ty_id].kind == TyKind::Unit {
                 continue;
             }
-            inputs.extend(abi_fields(&checked.types, param.ty_id, &param.name)?);
+            inputs.extend(params(&abi_fields(
+                &checked.types,
+                param.ty_id,
+                &param.name,
+            )?));
         }
-        items.push(Item::Function {
+        items.push(AbiItem::Function(Function {
             name: func.name.clone(),
             inputs,
-            outputs: abi_fields(&checked.types, func.ret_ty, "")?,
-            mutability: if func.external_pure { "pure" } else { "view" },
-        });
+            outputs: params(&abi_fields(&checked.types, func.ret_ty, "")?),
+            state_mutability: if func.external_pure {
+                StateMutability::Pure
+            } else {
+                StateMutability::View
+            },
+        }));
     }
     if let Some(func) = checked
         .prog
@@ -1654,72 +1771,66 @@ pub(crate) fn render_abi_only(
     {
         let mut inputs = Vec::new();
         for param in &func.params {
-            inputs.extend(abi_fields(&checked.types, param.ty_id, &param.name)?);
+            inputs.extend(params(&abi_fields(
+                &checked.types,
+                param.ty_id,
+                &param.name,
+            )?));
         }
-        let mutability = if func.payable {
-            "payable"
-        } else {
-            "nonpayable"
-        };
+        let state_mutability = StateMutability::paying(func.payable);
         // Behind a proxy, `deploy` is what the proxy's constructor calls.
-        if checked.prog.upgradeable {
-            let mut parts = Vec::new();
-            for param in &func.params {
-                parts.extend(abi_parts(&checked.types, param.ty_id)?);
-            }
-            if kept(selector(&format!("{}({})", func.name, parts.join(",")))) {
-                items.push(Item::Function {
-                    name: func.name.clone(),
-                    inputs,
-                    outputs: Vec::new(),
-                    mutability,
-                });
-            }
-        } else if keep.is_none() {
-            items.push(Item::Constructor { inputs, mutability });
-        }
+        items.push(if checked.prog.upgradeable {
+            AbiItem::Function(Function {
+                name: func.name.clone(),
+                inputs,
+                outputs: Vec::new(),
+                state_mutability,
+            })
+        } else {
+            AbiItem::Constructor(Constructor {
+                inputs,
+                state_mutability,
+            })
+        });
     }
     for event in &checked.events {
         let mut inputs = Vec::new();
         for field in &event.fields {
-            inputs.push(crate::check::event_input(&checked.types, field)?);
+            let param = Param::of(&crate::check::abi_nested(
+                &checked.types,
+                field.ty,
+                &field.name,
+            )?);
+            inputs.push(EventParam {
+                ty: param.ty,
+                name: param.name,
+                indexed: field.indexed,
+                components: param.components,
+                internal_type: param.internal_type,
+            });
         }
-        items.push(Item::Event {
+        items.push(AbiItem::Event(Event {
             name: event.name.clone(),
             inputs,
-        });
+            anonymous: false,
+        }));
     }
-    if checked.prog.upgradeable && keep.is_none() {
-        items.push(Item::Function {
+    if checked.prog.upgradeable {
+        items.push(AbiItem::Function(Function {
             name: "proxiableUUID".to_string(),
             inputs: Vec::new(),
-            outputs: vec![crate::check::AbiField {
-                name: String::new(),
-                ty: "bytes32".to_string(),
-                components: Vec::new(),
-                indexed: false,
-            }],
-            mutability: "view",
-        });
-        items.push(Item::Function {
+            outputs: vec![Param::named("", "bytes32")],
+            state_mutability: StateMutability::View,
+        }));
+        items.push(AbiItem::Function(Function {
             name: "upgradeToAndCall".to_string(),
             inputs: vec![
-                crate::check::AbiField {
-                    name: "newImplementation".to_string(),
-                    ty: "address".to_string(),
-                    components: Vec::new(),
-                    indexed: false,
-                },
-                crate::check::AbiField {
-                    name: "data".to_string(),
-                    ty: "bytes".to_string(),
-                    components: Vec::new(),
-                    indexed: false,
-                },
+                Param::named("newImplementation", "address"),
+                Param::named("data", "bytes"),
             ],
             outputs: Vec::new(),
-            mutability: "nonpayable",
-        });
+            state_mutability: StateMutability::NonPayable,
+        }));
     }
     for err in &checked.errors {
         let name = err
@@ -1735,146 +1846,142 @@ pub(crate) fn render_abi_only(
                 .map(|(name, ty)| crate::check::abi_nested(&checked.types, *ty, name))
                 .collect::<Result<_, _>>()?,
         };
-        items.push(Item::Error {
+        items.push(AbiItem::Error(AbiError {
             name: name.to_string(),
-            inputs,
-        });
+            inputs: params(&inputs),
+        }));
     }
-    for (i, item) in items.iter().enumerate() {
-        write_item(&mut out, item);
-        if i + 1 != items.len() {
-            out.push(',');
-        }
-        out.push('\n');
-    }
-    out.push_str("]\n");
-    Ok(out)
+    Ok(Abi { items })
 }
 
-enum Item {
-    Constructor {
-        inputs: Vec<AbiField>,
-        mutability: &'static str,
-    },
-    Function {
-        name: String,
-        inputs: Vec<AbiField>,
-        outputs: Vec<AbiField>,
-        mutability: &'static str,
-    },
-    Event {
-        name: String,
-        inputs: Vec<AbiField>,
-    },
-    Error {
-        name: String,
-        inputs: Vec<AbiField>,
-    },
-    /// `receive` or `fallback`, which have no name or parameters in the ABI.
-    Special {
-        kind: &'static str,
-        mutability: &'static str,
-    },
-}
-
-fn write_item(out: &mut String, item: &Item) {
-    out.push_str("  {\n");
-    match item {
-        Item::Constructor { inputs, mutability } => {
-            out.push_str("    \"inputs\": ");
-            write_params(out, inputs, false, "    ");
-            out.push_str(",\n    \"stateMutability\": ");
-            out.push_str(&json_str(mutability));
-            out.push_str(",\n    \"type\": \"constructor\"\n");
-        }
-        Item::Function {
-            name,
-            inputs,
-            outputs,
-            mutability,
-        } => {
-            out.push_str("    \"inputs\": ");
-            write_params(out, inputs, false, "    ");
-            out.push_str(",\n    \"name\": ");
-            out.push_str(&json_str(name));
-            out.push_str(",\n    \"outputs\": ");
-            write_params(out, outputs, false, "    ");
-            out.push_str(",\n    \"stateMutability\": ");
-            out.push_str(&json_str(mutability));
-            out.push_str(",\n    \"type\": \"function\"\n");
-        }
-        Item::Event { name, inputs } => {
-            out.push_str("    \"anonymous\": false,\n    \"inputs\": ");
-            write_params(out, inputs, true, "    ");
-            out.push_str(",\n    \"name\": ");
-            out.push_str(&json_str(name));
-            out.push_str(",\n    \"type\": \"event\"\n");
-        }
-        Item::Error { name, inputs } => {
-            out.push_str("    \"inputs\": ");
-            write_params(out, inputs, false, "    ");
-            out.push_str(",\n    \"name\": ");
-            out.push_str(&json_str(name));
-            out.push_str(",\n    \"type\": \"error\"\n");
-        }
-        Item::Special { kind, mutability } => {
-            out.push_str("    \"stateMutability\": ");
-            out.push_str(&json_str(mutability));
-            out.push_str(",\n    \"type\": ");
-            out.push_str(&json_str(kind));
+impl Abi {
+    pub fn to_json(&self) -> String {
+        let mut out = String::from("[\n");
+        for (i, item) in self.items.iter().enumerate() {
+            write_item(&mut out, item);
+            if i + 1 != self.items.len() {
+                out.push(',');
+            }
             out.push('\n');
         }
+        out.push_str("]\n");
+        out
     }
-    out.push_str("  }");
 }
 
-fn write_params(out: &mut String, params: &[AbiField], event: bool, indent: &str) {
-    if params.is_empty() {
+fn write_item(out: &mut String, item: &AbiItem) {
+    out.push_str("  {\n    ");
+    let (kind, mutability) = match item {
+        AbiItem::Constructor(item) => {
+            out.push_str("\"inputs\": ");
+            write_params(out, &item.inputs, "    ");
+            out.push_str(",\n    ");
+            ("constructor", Some(item.state_mutability))
+        }
+        AbiItem::Function(item) => {
+            out.push_str("\"inputs\": ");
+            write_params(out, &item.inputs, "    ");
+            out.push_str(&format!(
+                ",\n    \"name\": {},\n    \"outputs\": ",
+                json_str(&item.name)
+            ));
+            write_params(out, &item.outputs, "    ");
+            out.push_str(",\n    ");
+            ("function", Some(item.state_mutability))
+        }
+        AbiItem::Event(item) => {
+            out.push_str(&format!(
+                "\"anonymous\": {},\n    \"inputs\": ",
+                item.anonymous
+            ));
+            let indent = "    ";
+            write_list(out, &item.inputs, indent, |out, param| {
+                out.push_str(&format!(
+                    "{indent}  {{\n{indent}    \"indexed\": {},\n",
+                    param.indexed
+                ));
+                write_param(
+                    out,
+                    &param.internal_type,
+                    &param.name,
+                    &param.ty,
+                    &param.components,
+                    indent,
+                );
+            });
+            out.push_str(&format!(",\n    \"name\": {},\n    ", json_str(&item.name)));
+            ("event", None)
+        }
+        AbiItem::Error(item) => {
+            out.push_str("\"inputs\": ");
+            write_params(out, &item.inputs, "    ");
+            out.push_str(&format!(",\n    \"name\": {},\n    ", json_str(&item.name)));
+            ("error", None)
+        }
+        AbiItem::Fallback(item) => ("fallback", Some(item.state_mutability)),
+        AbiItem::Receive(item) => ("receive", Some(item.state_mutability)),
+    };
+    if let Some(mutability) = mutability {
+        out.push_str(&format!(
+            "\"stateMutability\": \"{}\",\n    ",
+            mutability.as_str()
+        ));
+    }
+    out.push_str(&format!("\"type\": \"{kind}\"\n  }}"));
+}
+
+fn write_params(out: &mut String, params: &[Param], indent: &str) {
+    write_list(out, params, indent, |out, param| {
+        out.push_str(&format!("{indent}  {{\n"));
+        write_param(
+            out,
+            &param.internal_type,
+            &param.name,
+            &param.ty,
+            &param.components,
+            indent,
+        );
+    });
+}
+
+fn write_list<T>(out: &mut String, items: &[T], indent: &str, write: impl Fn(&mut String, &T)) {
+    if items.is_empty() {
         out.push_str("[]");
         return;
     }
     out.push_str("[\n");
-    for (i, param) in params.iter().enumerate() {
-        out.push_str(indent);
-        out.push_str("  {\n");
-        if event {
-            out.push_str(indent);
-            out.push_str("    \"indexed\": ");
-            out.push_str(if param.indexed { "true" } else { "false" });
-            out.push_str(",\n");
-        }
-        out.push_str(indent);
-        out.push_str("    \"internalType\": ");
-        out.push_str(&json_str(&param.ty));
-        out.push_str(",\n");
-        out.push_str(indent);
-        out.push_str("    \"name\": ");
-        out.push_str(&json_str(&param.name));
-        out.push_str(",\n");
-        out.push_str(indent);
-        out.push_str("    \"type\": ");
-        if param.components.is_empty() {
-            out.push_str(&json_str(&param.ty));
-            out.push('\n');
-        } else {
-            // An array of tuples keeps its dimensions after `tuple`.
-            let dims = param.ty.rfind(')').map_or("", |at| &param.ty[at + 1..]);
-            out.push_str(&json_str(&format!("tuple{dims}")));
-            out.push_str(",\n");
-            out.push_str(indent);
-            out.push_str("    \"components\": ");
-            write_params(out, &param.components, false, &format!("{indent}    "));
-            out.push('\n');
-        }
+    for (i, item) in items.iter().enumerate() {
+        write(out, item);
         out.push_str(indent);
         out.push_str("  }");
-        if i + 1 != params.len() {
+        if i + 1 != items.len() {
             out.push(',');
         }
         out.push('\n');
     }
     out.push_str(indent);
     out.push(']');
+}
+
+fn write_param(
+    out: &mut String,
+    internal_type: &str,
+    name: &str,
+    ty: &str,
+    components: &[Param],
+    indent: &str,
+) {
+    out.push_str(&format!(
+        "{indent}    \"internalType\": {},\n{indent}    \"name\": {},\n{indent}    \"type\": {}",
+        json_str(internal_type),
+        json_str(name),
+        json_str(ty)
+    ));
+    if !components.is_empty() {
+        out.push_str(&format!(",\n{indent}    \"components\": "));
+        write_params(out, components, &format!("{indent}    "));
+    }
+    out.push('\n');
 }
 
 fn json_str(text: &str) -> String {

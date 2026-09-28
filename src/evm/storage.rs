@@ -279,11 +279,11 @@ fn named_storage_and_upgrade_migrate_once() {
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).expect("dir");
     let src = std::fs::read_to_string(&path).expect("upgrade example");
-    let abi = crate::abi_file(&path).expect("abi");
+    let abi = crate::abi(&Sources::disk(), &path).expect("abi").to_json();
     assert!(abi.contains("upgradeToAndCall"), "{abi}");
     assert!(abi.contains("proxiableUUID"), "{abi}");
     assert!(!abi.contains("\"name\": \"init\""), "{abi}");
-    let layout = crate::storage_layout(&path).expect("layout");
+    let layout = crate::storage_layout(&Sources::disk(), &path).expect("layout");
     assert!(layout.contains("vault.settings"), "{layout}");
     assert!(
         layout.contains(&hex_bytes(
@@ -291,7 +291,7 @@ fn named_storage_and_upgrade_migrate_once() {
         )),
         "{layout}"
     );
-    let runtime = deploy(&crate::compile_file(&path).expect("compile")).expect("deploy");
+    let runtime = deploy(&compile_file(&path).expect("compile")).expect("deploy");
     let owner = Word::from_u64(0xab);
     let claimed = exec(
         &runtime,
@@ -303,8 +303,14 @@ fn named_storage_and_upgrade_migrate_once() {
     )
     .expect("claim");
     assert!(!claimed.reverted, "{}", pretty(&claimed.returndata));
-    let data =
-        crate::upgrade_calldata(&path, "init", "0x1000", &["9".to_string()]).expect("calldata");
+    let data = crate::upgrade_calldata(
+        &Sources::disk(),
+        &path,
+        "init",
+        "0x1000",
+        &["9".to_string()],
+    )
+    .expect("calldata");
     let raw = hex_decode(data.strip_prefix("0x").unwrap());
     let upgraded = exec(
         &runtime,
@@ -363,7 +369,7 @@ fn named_storage_and_upgrade_migrate_once() {
         src.replace("paused : bool;", "paused : bool;\n  extra : nat;"),
     )
     .expect("next");
-    let diff = crate::storage_diff(&path, &next).expect("diff");
+    let diff = crate::storage_diff(&Sources::disk(), &path, &next).expect("diff");
     assert!(diff.contains("extra added"), "{diff}");
     assert!(diff.contains("compatible"), "{diff}");
     let _ = std::fs::remove_dir_all(&dir);

@@ -52,7 +52,7 @@ external payable nonreentrant function run(const to : address; const data : byte
     let refused = exec(&runtime, &bytes_arg("run(address,bytes)", &[Word::from_u64(0xee)], &data), HashMap::new(), Word::from_u64(1), Word::from_u64(0), Word::from_u64(0))
         .expect("run");
     assert!(refused.reverted);
-    let footprint = crate::footprint(src).expect("footprint");
+    let footprint = footprint(src).expect("footprint");
     assert!(footprint.contains("defers: Evm.call"), "{footprint}");
 }
 
@@ -187,7 +187,7 @@ external view function outcome(const to : address; const data : bytes) : bytes i
     let answered = call_raw(&runtime, &bytes_arg("outcome(address,bytes)", &[Word::from_u64(0xcd)], &data));
     assert!(!answered.reverted, "{}", pretty(&answered.returndata));
     assert_eq!(abi_string_value(&answered.returndata), [&data[4..], &data[4..]].concat());
-    let footprint = crate::footprint(src).expect("footprint");
+    let footprint = footprint(src).expect("footprint");
     assert!(footprint.contains("peek"), "{footprint}");
 }
 

@@ -55,7 +55,8 @@ fn split_preserves_behavior() {
     let mut compared = 0;
     for (path, rel) in differential_targets() {
         let checked =
-            crate::check::check(crate::modules::load(&path).expect("load")).expect("check");
+            crate::check::check(crate::modules::load(&Sources::disk(), &path).expect("load"))
+                .expect("check");
         let split = crate::split::build(&checked, "Test", &all_facets())
             .unwrap_or_else(|e| panic!("{rel}: {e}"));
         if split.facets.is_empty() {
@@ -614,27 +615,34 @@ fn split_tooling_output() {
     let changed = pair_src("").replace("beta_state.m * 2n", "beta_state.m * 3n");
     std::fs::write(&pair2, changed).expect("write");
     let opts = all_facets();
-    let compiled = crate::compile_file_with(&pair, &opts).expect("compile");
-    assert!(compiled.text.starts_with("{\n  \"facets\": ["), "{}", compiled.text);
-    assert!(compiled.text.contains("\"to\": \"0x4e59b44847b379578588920cA78FbF26c0B4956C\""));
-    assert!(compiled.text.contains("\"name\": \"Beta\""), "{}", compiled.text);
-    let note = compiled.note.expect("note");
+    let compiled = crate::compile(&Sources::disk(), &pair, &opts)
+        .and_then(crate::Output::single)
+        .expect("compile");
+    let plan = compiled.plan_json().expect("plan");
+    assert!(plan.starts_with("{\n  \"facets\": ["), "{plan}");
+    assert!(plan.contains("\"to\": \"0x4e59b44847b379578588920cA78FbF26c0B4956C\""));
+    assert!(plan.contains("\"name\": \"Beta\""), "{plan}");
+    let note = compiled.note().expect("note");
     assert_eq!(note, "note: `Pair` `Alpha`, `Beta` run from their facets");
-    let facets = crate::facets_file(&pair, &opts).expect("facets");
+    let facets = crate::facets(&Sources::disk(), &pair, &opts).expect("facets");
     assert!(facets.starts_with("router  "), "{facets}");
     assert!(facets.contains("  Pair: mix\n"), "{facets}");
     assert!(facets.contains("\nfacet Alpha  0x"), "{facets}");
-    assert!(facets.contains("\n  alpha_add, alpha_mix, alpha\n"), "{facets}");
-    let unsplit = crate::facets_file(&pair, &crate::Options::default()).expect("facets");
+    assert!(
+        facets.contains("\n  alpha_add, alpha_mix, alpha\n"),
+        "{facets}"
+    );
+    let unsplit =
+        crate::facets(&Sources::disk(), &pair, &crate::Options::default()).expect("facets");
     assert!(!unsplit.contains("facet "), "{unsplit}");
     assert!(unsplit.contains("  Alpha: alpha_add, alpha_mix, alpha\n"), "{unsplit}");
-    let check = crate::upgrade_check(&pair, &pair2, &opts).expect("check");
+    let check = crate::upgrade_check(&Sources::disk(), &pair, &pair2, &opts).expect("check");
     assert!(check.contains("facets\n  router "), "{check}");
     assert!(check.contains("\n  Alpha   unchanged  0x"), "{check}");
     assert!(check.contains("\n  Beta    new        0x"), "{check}");
     assert!(check.ends_with("\ncompatible\n"), "{check}");
     let out = dir.join("out");
-    let built = crate::compile_dir_with(&dir.join("src"), &out, &opts).expect("dir");
+    let built = crate::compile_dir(&dir.join("src"), &out, &opts).expect("dir");
     assert!(built.failed.is_empty(), "{}", built.failed.iter().map(|e| e.to_string()).collect::<String>());
     let artifact = std::fs::read_to_string(out.join("facets/Alpha.json")).expect("facet artifact");
     assert!(artifact.contains("\"name\": \"alpha_mix\""), "{artifact}");
@@ -643,12 +651,35 @@ fn split_tooling_output() {
     let vault = dir.join("vault.lithe");
     std::fs::write(&vault, SPLIT_VAULT).expect("write");
     let args = ["30".to_string()];
-    let plan = crate::upgrade_plan("0xProxy", &vault, "init", None, &args, &opts).expect("upgrade");
-    assert!(plan.contains("\"upgrade\": {\n    \"to\": \"0xProxy\""), "{plan}");
-    assert!(plan.contains("\"router\": {\n    \"address\": \"0x"), "{plan}");
-    let plain = crate::upgrade_plan("0xProxy", &vault, "init", None, &args, &crate::Options::default());
+    let plan = crate::upgrade_plan(
+        &Sources::disk(),
+        &vault,
+        "0xProxy",
+        "init",
+        None,
+        &args,
+        &opts,
+    )
+    .expect("upgrade");
+    assert!(
+        plan.contains("\"upgrade\": {\n    \"to\": \"0xProxy\""),
+        "{plan}"
+    );
+    assert!(
+        plan.contains("\"router\": {\n    \"address\": \"0x"),
+        "{plan}"
+    );
+    let plain = crate::upgrade_plan(
+        &Sources::disk(),
+        &vault,
+        "0xProxy",
+        "init",
+        None,
+        &args,
+        &crate::Options::default(),
+    );
     assert!(plain.is_err(), "an unsplit upgrade needs --impl");
-    let stubs = crate::stubs_file(&pair, "Alpha").expect("stubs");
+    let stubs = crate::stubs(&Sources::disk(), &pair, "Alpha").expect("stubs");
     assert_eq!(
         stubs,
         "use Alpha exposing {\n  function alpha_add(a : nat; b : nat);\n  function alpha_mix(a : nat; b : nat; c : nat)\n    raises Alpha_zero;\n  view function alpha() : nat;\n}\n"
@@ -680,7 +711,7 @@ fn stubs_keep_tuple_records() {
     std::fs::create_dir_all(&dir).expect("dir");
     let path = dir.join("orders.lithe");
     std::fs::write(&path, ORDERS).expect("write");
-    let stubs = crate::stubs_file(&path, "Orders").expect("stubs");
+    let stubs = crate::stubs(&Sources::disk(), &path, "Orders").expect("stubs");
     let _ = std::fs::remove_dir_all(&dir);
     assert_eq!(
         stubs,

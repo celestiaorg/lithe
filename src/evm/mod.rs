@@ -1,8 +1,69 @@
 use std::collections::HashMap;
+use std::path::Path;
 
-use crate::compile;
 use crate::keccak::{keccak256, selector};
 use crate::word::Word;
+use crate::{Options, Sources};
+
+/// Where a source string lives when compiled from memory.
+const ENTRY: &str = "contract.lithe";
+
+fn memory(src: &str) -> Sources {
+    Sources::memory([(ENTRY, src)])
+}
+
+/// The first of a failed compile's errors.
+fn first(mut errors: Vec<crate::Error>) -> crate::Error {
+    errors.remove(0)
+}
+
+fn compile(src: &str) -> Result<Vec<u8>, crate::Error> {
+    let out = crate::compile(&memory(src), Path::new(ENTRY), &Options::default())
+        .and_then(crate::Output::single)
+        .map_err(first)?;
+    Ok(out.bytecode)
+}
+
+fn compile_file(path: &Path) -> Result<Vec<u8>, crate::Error> {
+    let out = crate::compile(&Sources::disk(), path, &Options::default())
+        .and_then(crate::Output::single)
+        .map_err(first)?;
+    Ok(out.bytecode)
+}
+
+/// Every contract a source defines, by name, each compiled with the others it may create.
+fn compile_contracts(src: &str) -> Result<Vec<(String, Vec<u8>)>, crate::Error> {
+    let out = crate::compile(&memory(src), Path::new(ENTRY), &Options::default()).map_err(first)?;
+    Ok(out
+        .contracts
+        .into_iter()
+        .map(|contract| (contract.name, contract.bytecode))
+        .collect())
+}
+
+fn abi(src: &str) -> Result<String, crate::Error> {
+    Ok(crate::abi(&memory(src), Path::new(ENTRY))?.to_json())
+}
+
+fn abi_tree(src: &str) -> Result<String, crate::Error> {
+    crate::abi_tree(&memory(src), Path::new(ENTRY), &Options::default())
+}
+
+fn footprint(src: &str) -> Result<String, crate::Error> {
+    crate::footprint(&memory(src), Path::new(ENTRY), &Options::default())
+}
+
+fn analysis(src: &str) -> Result<String, crate::Error> {
+    crate::analysis(&memory(src), Path::new(ENTRY))
+}
+
+fn errors(src: &str) -> Result<String, crate::Error> {
+    crate::errors(&memory(src), Path::new(ENTRY))
+}
+
+fn warnings(src: &str) -> Result<String, crate::Error> {
+    Ok(crate::warnings(&memory(src), Path::new(ENTRY))?.concat())
+}
 
 #[derive(Clone, Debug)]
 enum Ev {
@@ -1233,7 +1294,7 @@ fn encode_args(sig: &str, args: &[Arg]) -> Vec<u8> {
 impl Session {
     fn new(path: &str) -> Session {
         let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        let init = crate::compile_file(&root.join(path)).unwrap_or_else(|e| panic!("{path}: {e}"));
+        let init = compile_file(&root.join(path)).unwrap_or_else(|e| panic!("{path}: {e}"));
         let made = construct(&init, Word::from_u64(1), Word::from_u64(0)).expect("construct");
         assert!(!made.reverted, "{path}: {}", pretty(&made.returndata));
         Session {

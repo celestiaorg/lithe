@@ -23,9 +23,9 @@ fn every_example_file_is_compiled() {
             continue;
         }
         let result = if has_imports(&src) {
-            crate::compile_file(path).map(|_| ())
+            compile_file(path).map(|_| ())
         } else if contracts(&src) > 1 {
-            crate::compile_contracts(&src).map(|_| ())
+            compile_contracts(&src).map(|_| ())
         } else {
             compile(&src).map(|_| ())
         };
@@ -39,9 +39,9 @@ fn every_example_file_is_compiled() {
         let path = root.join(rel);
         let src = std::fs::read_to_string(&path).unwrap_or_else(|err| panic!("{rel}: {err}"));
         let err = if has_imports(&src) {
-            crate::compile_file(&path).expect_err(rel)
+            compile_file(&path).expect_err(rel)
         } else if contracts(&src) > 1 {
-            crate::compile_contracts(&src).expect_err(rel)
+            compile_contracts(&src).expect_err(rel)
         } else {
             compile(&src).expect_err(rel)
         };
@@ -250,7 +250,7 @@ const REJECT_RULES: &[(&str, &str)] = &[
     ),
     (
         "reject/overload_duplicate.lithe",
-        "duplicate function `scale(nat)`",
+        "duplicate function `scale`\n\n`scale` is already declared at 5:6 as a pure function",
     ),
     (
         "reject/overload_mismatch.lithe",

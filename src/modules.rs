@@ -1,7 +1,7 @@
 //! Resolve `import` by loading each file once and merging exported declarations.
 
 use std::collections::HashMap;
-use std::fs;
+use std::io;
 use std::path::{Path, PathBuf};
 
 use crate::ast::*;
@@ -22,15 +22,59 @@ fn std_source(path: &Path) -> Option<&'static str> {
         .map(|(_, src)| *src)
 }
 
-/// Resolves `.` and `..` without the file system, for paths inside the standard library.
+/// Where imported files are read from: the file system, or files held in memory.
+pub struct Sources {
+    files: Option<HashMap<PathBuf, String>>,
+}
+
+impl Sources {
+    pub fn disk() -> Self {
+        Sources { files: None }
+    }
+
+    /// Files by path. Paths are compared after resolving `.` and `..`, never on disk.
+    pub fn memory<P: AsRef<Path>, S: Into<String>>(
+        files: impl IntoIterator<Item = (P, S)>,
+    ) -> Self {
+        let files = files
+            .into_iter()
+            .map(|(path, src)| (normalize(path.as_ref()), src.into()))
+            .collect();
+        Sources { files: Some(files) }
+    }
+
+    fn canonicalize(&self, path: &Path) -> io::Result<PathBuf> {
+        if path.starts_with(STD_ROOT) || self.files.is_some() {
+            return Ok(normalize(path));
+        }
+        path.canonicalize()
+    }
+
+    fn read(&self, path: &Path) -> io::Result<String> {
+        match &self.files {
+            None => std::fs::read_to_string(path),
+            Some(files) => files
+                .get(path)
+                .cloned()
+                .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "no such file")),
+        }
+    }
+}
+
+/// Resolves `.` and `..` without the file system, for paths inside the standard library
+/// and in memory.
 fn normalize(path: &Path) -> PathBuf {
     let mut out = PathBuf::new();
     for part in path.components() {
         match part {
             std::path::Component::CurDir => {}
-            std::path::Component::ParentDir => {
-                out.pop();
-            }
+            std::path::Component::ParentDir => match out.components().next_back() {
+                Some(std::path::Component::Normal(_)) => {
+                    out.pop();
+                }
+                Some(std::path::Component::RootDir | std::path::Component::Prefix(_)) => {}
+                _ => out.push(".."),
+            },
             other => out.push(other),
         }
     }
@@ -45,9 +89,9 @@ fn import_path(from: &Path, import: &str) -> PathBuf {
     }
 }
 
-pub(crate) fn load(path: &Path) -> Result<Program, Error> {
+pub(crate) fn load(sources: &Sources, path: &Path) -> Result<Program, Error> {
     let mut stack = Vec::new();
-    load_inner(path, &mut stack)
+    load_inner(sources, path, &mut stack)
 }
 
 struct Frame {
@@ -55,19 +99,15 @@ struct Frame {
     label: String,
 }
 
-fn load_inner(path: &Path, stack: &mut Vec<Frame>) -> Result<Program, Error> {
-    let canon = if path.starts_with(STD_ROOT) {
-        normalize(path)
-    } else {
-        match path.canonicalize() {
-            Ok(path) => path,
-            Err(err) => {
-                return Err(error(
-                    1,
-                    1,
-                    format!("cannot read `{}`: {err}", path.display()),
-                ));
-            }
+fn load_inner(sources: &Sources, path: &Path, stack: &mut Vec<Frame>) -> Result<Program, Error> {
+    let canon = match sources.canonicalize(path) {
+        Ok(path) => path,
+        Err(err) => {
+            return Err(error(
+                1,
+                1,
+                format!("cannot read `{}`: {err}", path.display()),
+            ));
         }
     };
     let label = file_label(&canon);
@@ -93,7 +133,8 @@ fn load_inner(path: &Path, stack: &mut Vec<Frame>) -> Result<Program, Error> {
                 ),
             ));
         }
-        None => fs::read_to_string(&canon)
+        None => sources
+            .read(&canon)
             .map_err(|err| error(1, 1, format!("cannot read `{}`: {err}", path.display())))?,
     };
     let mut own = parse::parse(&src)?;
@@ -117,7 +158,9 @@ fn load_inner(path: &Path, stack: &mut Vec<Frame>) -> Result<Program, Error> {
         .collect();
     for decl in &uses {
         let child_path = import_path(&canon, &decl.path);
-        if let Some(start) = child_canon(&child_path)
+        if let Some(start) = sources
+            .canonicalize(&child_path)
+            .ok()
             .and_then(|child| stack.iter().position(|frame| frame.canon == child))
         {
             let label = file_label(Path::new(&decl.path));
@@ -129,7 +172,7 @@ fn load_inner(path: &Path, stack: &mut Vec<Frame>) -> Result<Program, Error> {
             msg.push_str(&label);
             return Err(error(decl.line, decl.col, msg));
         }
-        let child = load_inner(&child_path, stack).map_err(|err| {
+        let child = load_inner(sources, &child_path, stack).map_err(|err| {
             if err.line == 1 && err.message.starts_with("cannot read") {
                 error(decl.line, decl.col, err.message.clone())
             } else {
@@ -210,13 +253,6 @@ fn add_peer(peers: &mut Vec<Program>, peer: Program, line: u32, col: u32) -> Res
     Ok(())
 }
 
-fn child_canon(path: &Path) -> Option<PathBuf> {
-    if path.starts_with(STD_ROOT) {
-        return Some(normalize(path));
-    }
-    path.canonicalize().ok()
-}
-
 fn empty() -> Program {
     Program {
         uses: Vec::new(),
@@ -240,10 +276,6 @@ fn empty() -> Program {
         peers: Vec::new(),
         origin: String::new(),
     }
-}
-
-pub(crate) fn load_units(path: &Path) -> Result<Vec<Program>, Error> {
-    Ok(split_units(load(path)?))
 }
 
 /// One program per contract, each knowing the others it may create: the rest of its file,
@@ -902,32 +934,62 @@ fn absorb_decls(
 ) -> Result<(), Error> {
     for decl in src.types {
         let public_name = publish(&decl.name, decl.private, alias);
-        ensure_free(dst, &public_name, &decl.origin, via, decl.line, decl.col)?;
+        ensure_free(
+            dst,
+            &public_name,
+            Site::of(&decl.origin, decl.line, decl.col, "type"),
+            via,
+            None,
+        )?;
         let mut decl = decl;
         decl.name = public_name;
         dst.types.push(decl);
     }
     for decl in src.errors {
         let public_name = publish(&decl.name, decl.private, alias);
-        ensure_free(dst, &public_name, &decl.origin, via, decl.line, decl.col)?;
+        ensure_free(
+            dst,
+            &public_name,
+            Site::of(&decl.origin, decl.line, decl.col, "error"),
+            via,
+            None,
+        )?;
         let mut decl = decl;
         decl.name = public_name;
         dst.errors.push(decl);
     }
     for decl in src.error_sets {
-        ensure_free(dst, &decl.name, "", via, decl.line, decl.col)?;
+        ensure_free(
+            dst,
+            &decl.name,
+            Site::of(&decl.origin, decl.line, decl.col, "error set"),
+            via,
+            None,
+        )?;
         dst.error_sets.push(decl);
     }
     for decl in src.events {
         let public_name = publish(&decl.name, decl.private, alias);
-        ensure_free(dst, &public_name, &decl.origin, via, decl.line, decl.col)?;
+        ensure_free(
+            dst,
+            &public_name,
+            Site::of(&decl.origin, decl.line, decl.col, "event"),
+            via,
+            None,
+        )?;
         let mut decl = decl;
         decl.name = public_name;
         dst.events.push(decl);
     }
     for decl in src.interfaces {
         let public_name = publish(&decl.name, false, alias);
-        ensure_free(dst, &public_name, &decl.origin, via, decl.line, decl.col)?;
+        ensure_free(
+            dst,
+            &public_name,
+            Site::of(&decl.origin, decl.line, decl.col, "interface"),
+            via,
+            None,
+        )?;
         let mut decl = decl;
         decl.name = public_name;
         dst.interfaces.push(decl);
@@ -973,32 +1035,73 @@ fn absorb_decls(
             }
         }
         if !overload {
-            ensure_free(dst, &public_name, &func.origin, via, func.line, func.col)?;
+            let fix = dst.funcs.iter().find(|have| have.name == public_name).map(|have| {
+                if external(have.kind) != external(func.kind) {
+                    "an external and an internal function cannot share a name; rename one of them"
+                } else {
+                    "overloads need different parameter types; rename one or change its parameters"
+                }
+            });
+            let site = Site::of(&func.origin, func.line, func.col, kind_name(func.kind));
+            ensure_free(dst, &public_name, site, via, fix)?;
         }
         let mut func = func;
         func.name = public_name;
         dst.funcs.push(func);
     }
     for decl in src.domains {
-        if dst.domains.iter().any(|have| {
-            have.name == decl.name || (!have.transient && !decl.transient && have.id == decl.id)
-        }) {
-            let (line, col) = at(via, decl.line, decl.col);
-            return Err(error(
-                line,
-                col,
-                format!("ambiguous storage domain `{}`", decl.name),
+        let same_id = |have: &DomainDecl| !have.transient && !decl.transient && have.id == decl.id;
+        if let Some(have) = dst
+            .domains
+            .iter()
+            .find(|have| have.name == decl.name || same_id(have))
+        {
+            let have_site = Site::of(&have.origin, have.line, have.col, "");
+            let site = Site::of(&decl.origin, decl.line, decl.col, "");
+            if have.name != decl.name {
+                let (line, col) = at(via, decl.line, decl.col);
+                return Err(error(
+                    line,
+                    col,
+                    format!(
+                        "storage domains `{}` and `{}` share the id \"{}\"\n\n`{}` is declared at {}\n\ngive each storage domain its own id",
+                        have.name,
+                        decl.name,
+                        decl.id,
+                        have.name,
+                        have_site.place(&site)
+                    ),
+                ));
+            }
+            let what = if have.origin == decl.origin {
+                "duplicate"
+            } else {
+                "ambiguous"
+            };
+            let headline = format!("{what} storage domain `{}`", decl.name);
+            return Err(clash(
+                headline,
+                &decl.name,
+                &have_site,
+                &site,
+                via,
+                "rename one of them",
             ));
         }
         dst.domains.push(decl);
     }
     for module in src.modules {
-        if dst.modules.iter().any(|have| have.name == module.name) {
-            let (line, col) = at(via, module.line, module.col);
-            return Err(error(
-                line,
-                col,
-                format!("duplicate module `{}`", module.name),
+        if let Some(have) = dst.modules.iter().find(|have| have.name == module.name) {
+            let have_site = Site::of(&have.origin, have.line, have.col, "");
+            let site = Site::of(&module.origin, module.line, module.col, "");
+            let headline = format!("duplicate module `{}`", module.name);
+            return Err(clash(
+                headline,
+                &module.name,
+                &have_site,
+                &site,
+                via,
+                "rename one of them",
             ));
         }
         dst.modules.push(module);
@@ -1079,60 +1182,157 @@ fn publish(name: &str, private: bool, alias: Option<&str>) -> String {
     }
 }
 
+/// Where a declaration is, and what it declares, for a message about two that clash.
+pub(crate) struct Site<'a> {
+    origin: &'a str,
+    line: u32,
+    col: u32,
+    kind: &'static str,
+}
+
+impl<'a> Site<'a> {
+    pub(crate) fn of(origin: &'a str, line: u32, col: u32, kind: &'static str) -> Self {
+        Site {
+            origin,
+            line,
+            col,
+            kind,
+        }
+    }
+
+    /// `line:col`, with the file when it is not `from`'s.
+    fn place(&self, from: &Site) -> String {
+        if self.origin == from.origin {
+            format!("{}:{}", self.line, self.col)
+        } else {
+            format!(
+                "{}:{}:{}",
+                file_label(Path::new(self.origin)),
+                self.line,
+                self.col
+            )
+        }
+    }
+}
+
+/// A private name as its file wrote it, without the file that keeps it apart.
+pub(crate) fn shown(name: &str) -> &str {
+    name.rsplit_once("::").map_or(name, |(_, name)| name)
+}
+
+/// Two declarations of `name`: where the first is, in this file or with both files, and `fix`.
+pub(crate) fn clash(
+    headline: String,
+    name: &str,
+    have: &Site,
+    new: &Site,
+    via: Option<&UseDecl>,
+    fix: &str,
+) -> Error {
+    let (line, col) = at(via, new.line, new.col);
+    let name = shown(name);
+    let body = if have.origin == new.origin {
+        let kind = match have.kind {
+            "" => String::new(),
+            kind if kind.starts_with(['a', 'e', 'i', 'o', 'u']) => format!(" as an {kind}"),
+            kind => format!(" as a {kind}"),
+        };
+        format!("`{name}` is already declared at {}{kind}", have.place(new))
+    } else {
+        format!("defined in:\n- {}\n- {}", have.place(new), new.place(have))
+    };
+    error(line, col, format!("{headline}\n\n{body}\n\n{fix}"))
+}
+
+/// In one file, `fix` or a rename resolves a clash; across files, so does an alias.
 fn ensure_free(
     dst: &Program,
     name: &str,
-    incoming: &str,
+    new: Site,
     via: Option<&UseDecl>,
-    line: u32,
-    col: u32,
+    fix: Option<&str>,
 ) -> Result<(), Error> {
-    let Some(previous) = occupied(dst, name) else {
+    let Some(have) = occupied(dst, name, new.origin) else {
         return Ok(());
     };
-    let (line, col) = at(via, line, col);
-    Err(error(
-        line,
-        col,
-        format!(
-            "ambiguous symbol `{name}`\n\ndefined in:\n- {}\n- {}",
-            file_label(Path::new(previous)),
-            file_label(Path::new(incoming))
+    if have.origin == new.origin {
+        let noun = |kind: &'static str| {
+            if kind.ends_with("function") {
+                "function"
+            } else {
+                kind
+            }
+        };
+        let what = if noun(have.kind) == noun(new.kind) {
+            noun(new.kind)
+        } else {
+            "name"
+        };
+        let fix = fix.unwrap_or("rename one of them");
+        let headline = format!("duplicate {what} `{}`", shown(name));
+        return Err(clash(headline, name, &have, &new, via, fix));
+    }
+    let fix = match via {
+        Some(decl) if decl.alias.is_some() => {
+            format!(
+                "rename one, or import `{}` with a different alias",
+                decl.path
+            )
+        }
+        Some(decl) => format!(
+            "rename one, or import `{}` with an alias: `import \"{}\" as Name;`",
+            decl.path, decl.path
         ),
+        None => {
+            "rename one, or import the other file with an alias: `import \"./file.lithe\" as Name;`"
+                .to_string()
+        }
+    };
+    Err(clash(
+        format!("ambiguous symbol `{name}`"),
+        name,
+        &have,
+        &new,
+        via,
+        &fix,
     ))
 }
 
-fn occupied<'a>(prog: &'a Program, name: &str) -> Option<&'a str> {
+/// The declaration `name` already names. A private one is another file's only when it is
+/// from `origin`: two files with one file name keep their private names apart.
+fn occupied<'a>(prog: &'a Program, name: &str, origin: &str) -> Option<Site<'a>> {
+    let visible = |private: bool, from: &str| !private || from == origin;
     if let Some(decl) = prog
         .types
         .iter()
-        .find(|decl| !decl.private && decl.name == name)
+        .find(|decl| visible(decl.private, &decl.origin) && decl.name == name)
     {
-        return Some(decl.origin.as_str());
+        return Some(Site::of(&decl.origin, decl.line, decl.col, "type"));
     }
     if let Some(decl) = prog
         .errors
         .iter()
-        .find(|decl| !decl.private && decl.name == name)
+        .find(|decl| visible(decl.private, &decl.origin) && decl.name == name)
     {
-        return Some(decl.origin.as_str());
+        return Some(Site::of(&decl.origin, decl.line, decl.col, "error"));
     }
     if let Some(decl) = prog
         .events
         .iter()
-        .find(|decl| !decl.private && decl.name == name)
+        .find(|decl| visible(decl.private, &decl.origin) && decl.name == name)
     {
-        return Some(decl.origin.as_str());
+        return Some(Site::of(&decl.origin, decl.line, decl.col, "event"));
     }
-    if prog.error_sets.iter().any(|decl| decl.name == name)
-        || prog.interfaces.iter().any(|decl| decl.name == name)
-    {
-        return Some("");
+    if let Some(decl) = prog.error_sets.iter().find(|decl| decl.name == name) {
+        return Some(Site::of(&decl.origin, decl.line, decl.col, "error set"));
+    }
+    if let Some(decl) = prog.interfaces.iter().find(|decl| decl.name == name) {
+        return Some(Site::of(&decl.origin, decl.line, decl.col, "interface"));
     }
     prog.funcs
         .iter()
-        .find(|func| !func.private && func.name == name)
-        .map(|func| func.origin.as_str())
+        .find(|func| visible(func.private, &func.origin) && func.name == name)
+        .map(|func| Site::of(&func.origin, func.line, func.col, kind_name(func.kind)))
 }
 
 fn at(via: Option<&UseDecl>, line: u32, col: u32) -> (u32, u32) {

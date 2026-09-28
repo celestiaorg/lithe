@@ -11,7 +11,7 @@ fn every_stdlib_file_compiles() {
             "import \"{path}\";\nstorage is record {{ n : nat; }}\nexternal function f() is {{ storage.n := 1n; }}\n"
         );
         std::fs::write(&main, src).unwrap();
-        crate::compile_file(&main).unwrap_or_else(|e| panic!("{path}: {e}"));
+        compile_file(&main).unwrap_or_else(|e| panic!("{path}: {e}"));
     }
 }
 
@@ -730,7 +730,7 @@ fn stdlib_collectible() {
 fn uniswap_v2_example_creates_pairs() {
     let w = Word::from_u64;
     let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let mut init = crate::compile_file(&root.join("examples/uniswap_v2/factory.lithe")).expect("factory");
+    let mut init = compile_file(&root.join("examples/uniswap_v2/factory.lithe")).expect("factory");
     init.extend_from_slice(&w(1).to_be_bytes());
     let made = construct(&init, w(1), w(0)).expect("construct");
     assert!(!made.reverted, "{}", pretty(&made.returndata));

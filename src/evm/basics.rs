@@ -125,7 +125,7 @@ fn rejected_programs_name_the_rule() {
         ),
         "{err}"
     );
-    let err = crate::compile_contracts(CREATE).expect_err("create");
+    let err = compile_contracts(CREATE).expect_err("create");
     assert!(
         err.to_string()
             .contains("`Vault` has no `deploy` parameters, so it takes no arguments"),
@@ -453,7 +453,7 @@ external function boom(const n : nat) is {
 
 #[test]
 fn dispatch_errors_follow_the_path() {
-    let tree = crate::abi_tree(DISPATCH_ERRORS).expect("abi-tree");
+    let tree = abi_tree(DISPATCH_ERRORS).expect("abi-tree");
     assert_eq!(
         tree,
         "\
@@ -515,7 +515,7 @@ increment
 "
     );
 
-    let report = crate::errors(BANK).expect("errors");
+    let report = errors(BANK).expect("errors");
     assert!(
         report.contains(
             "\

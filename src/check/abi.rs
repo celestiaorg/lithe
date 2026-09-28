@@ -137,7 +137,6 @@ pub(crate) struct AbiField {
     pub name: String,
     pub ty: String,
     pub components: Vec<AbiField>,
-    pub indexed: bool,
 }
 
 pub(crate) fn abi_fields(types: &[RType], ty: usize, name: &str) -> Result<Vec<AbiField>, Error> {
@@ -156,43 +155,36 @@ pub(crate) fn abi_fields(types: &[RType], ty: usize, name: &str) -> Result<Vec<A
             name: name.to_string(),
             ty: uint_abi(types[ty].bits).to_string(),
             components: Vec::new(),
-            indexed: false,
         }]),
         TyKind::Int => Ok(vec![AbiField {
             name: name.to_string(),
             ty: int_abi(types[ty].bits).to_string(),
             components: Vec::new(),
-            indexed: false,
         }]),
         TyKind::Wei | TyKind::Timestamp => Ok(vec![AbiField {
             name: name.to_string(),
             ty: "uint256".to_string(),
             components: Vec::new(),
-            indexed: false,
         }]),
         TyKind::String => Ok(vec![AbiField {
             name: name.to_string(),
             ty: "string".to_string(),
             components: Vec::new(),
-            indexed: false,
         }]),
         TyKind::Bytes => Ok(vec![AbiField {
             name: name.to_string(),
             ty: bytes_abi(types[ty].bits).to_string(),
             components: Vec::new(),
-            indexed: false,
         }]),
         TyKind::Address | TyKind::Interface => Ok(vec![AbiField {
             name: name.to_string(),
             ty: "address".to_string(),
             components: Vec::new(),
-            indexed: false,
         }]),
         TyKind::Bool => Ok(vec![AbiField {
             name: name.to_string(),
             ty: "bool".to_string(),
             components: Vec::new(),
-            indexed: false,
         }]),
         TyKind::Map => Err(error(1, 1, "a map cannot be an ABI value")),
         TyKind::Option => Err(error(1, 1, "an option cannot be an ABI value")),
@@ -206,17 +198,6 @@ pub(crate) fn abi_fields(types: &[RType], ty: usize, name: &str) -> Result<Vec<A
         TyKind::List | TyKind::Tuple | TyKind::Record => Ok(vec![abi_nested(types, ty, name)?]),
         _ => Err(error(1, 1, "this type cannot be an ABI value")),
     }
-}
-
-pub(crate) fn event_input(types: &[RType], field: &EventField) -> Result<AbiField, Error> {
-    event_abi(types, &field.name, field.ty, field.indexed)
-}
-
-fn event_abi(types: &[RType], name: &str, ty: usize, indexed: bool) -> Result<AbiField, Error> {
-    Ok(AbiField {
-        indexed,
-        ..abi_nested(types, ty, name)?
-    })
 }
 
 pub(super) fn event_sig_type(types: &[RType], ty: usize) -> Result<String, Error> {
@@ -243,7 +224,6 @@ pub(crate) fn abi_nested(types: &[RType], ty: usize, name: &str) -> Result<AbiFi
                 name: name.to_string(),
                 ty: format!("({})", canon.join(",")),
                 components,
-                indexed: false,
             })
         }
         TyKind::List => {
@@ -256,7 +236,6 @@ pub(crate) fn abi_nested(types: &[RType], ty: usize, name: &str) -> Result<AbiFi
                 name: name.to_string(),
                 ty: format!("{}[{len}]", inner.ty),
                 components: inner.components,
-                indexed: false,
             })
         }
         _ => {

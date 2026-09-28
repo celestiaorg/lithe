@@ -1,26 +1,5 @@
 use super::*;
 
-/// Writes `src` to its own file, so it can import the standard library, and compiles it.
-fn compile_temp(name: &str, src: &str, opts: &crate::Options) -> Result<Vec<u8>, crate::Error> {
-    let dir = std::env::temp_dir().join(format!("lithe-{name}-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).expect("dir");
-    let path = dir.join("main.lithe");
-    std::fs::write(&path, src).expect("write");
-    let out = crate::compile_file_with(&path, opts).map(|c| hex_decode(c.text.trim_start_matches("0x")));
-    let _ = std::fs::remove_dir_all(&dir);
-    out
-}
-
-fn abi_temp(name: &str, src: &str) -> String {
-    let dir = std::env::temp_dir().join(format!("lithe-{name}-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).expect("dir");
-    let path = dir.join("main.lithe");
-    std::fs::write(&path, src).expect("write");
-    let abi = crate::abi_file(&path).expect("abi");
-    let _ = std::fs::remove_dir_all(&dir);
-    abi
-}
-
 const ERC165_SRC: &str = r#"
 import "std/token/erc20.lithe";
 import "std/interfaces/erc1155.lithe";
@@ -53,7 +32,7 @@ fn supports_answers(runtime: &[u8], cases: &[(u64, u64)]) {
 /// standard ids.
 #[test]
 fn erc165_answers_for_supported_interfaces() {
-    let init = compile_temp("erc165", ERC165_SRC, &crate::Options::default()).expect("compile");
+    let init = compile(ERC165_SRC).expect("compile");
     let runtime = deploy(&init).expect("deploy");
     supports_answers(
         &runtime,
@@ -77,12 +56,19 @@ fn erc165_answers_for_supported_interfaces() {
             "supports IERC20, IERC20Metadata, IERC1155MetadataURI;",
             "supports IERC20, IERC1155MetadataURI;",
         );
-    let runtime = deploy(&compile_temp("erc165-inline", &inline, &crate::Options::default()).expect("inline"))
-        .expect("deploy");
-    supports_answers(&runtime, &[(0x01ffc9a7, 1), (0x36372b07, 1), (0x0e89341c, 1), (0xa219a025, 0)]);
+    let runtime = deploy(&compile(&inline).expect("inline")).expect("deploy");
+    supports_answers(
+        &runtime,
+        &[
+            (0x01ffc9a7, 1),
+            (0x36372b07, 1),
+            (0x0e89341c, 1),
+            (0xa219a025, 0),
+        ],
+    );
     // Without `supports`, nothing is announced: the contract has no `supportsInterface`.
     let none = ERC165_SRC.replace("  supports IERC20, IERC20Metadata, IERC1155MetadataURI;\n", "");
-    assert!(!abi_temp("erc165-none", &none).contains("supportsInterface"));
+    assert!(!abi(&none).expect("abi").contains("supportsInterface"));
     let plain = compile("storage is record { n : nat; }\nexternal function f() is { storage.n := 1n; }\n")
         .expect("plain");
     let runtime = deploy(&plain).expect("deploy");
@@ -93,11 +79,7 @@ fn erc165_answers_for_supported_interfaces() {
 /// own `supportsInterface` answers for them with `Abi.supports_interface`.
 #[test]
 fn supports_rejects_what_the_contract_cannot_announce() {
-    let err = |src: String| {
-        compile_temp("erc165-err", &src, &crate::Options::default())
-            .expect_err("rejected")
-            .to_string()
-    };
+    let err = |src: String| compile(&src).expect_err("rejected").to_string();
     let missing = err(ERC165_SRC.replace(
         "use ERC20 exposing IERC20, IERC20Metadata;",
         "use ERC20 exposing IERC20;",
@@ -140,8 +122,10 @@ fn own_supports_interface_extends_the_generated_answer() {
     std::fs::create_dir_all(&dir).expect("dir");
     let path = dir.join("main.lithe");
     std::fs::write(&path, &own).expect("write");
-    assert_eq!(crate::warnings_file(&path).expect("warnings"), "");
-    let runtime = deploy(&crate::compile_file(&path).expect("compile")).expect("deploy");
+    assert!(crate::warnings(&Sources::disk(), &path)
+        .expect("warnings")
+        .is_empty());
+    let runtime = deploy(&compile_file(&path).expect("compile")).expect("deploy");
     supports_answers(
         &runtime,
         &[
@@ -156,10 +140,15 @@ fn own_supports_interface_extends_the_generated_answer() {
     );
     let _ = std::fs::remove_dir_all(&dir);
     // Without `supports`, it answers for ERC-165 alone.
-    let bare = own.replace("  supports IERC20, IERC20Metadata, IERC1155MetadataURI;\n", "");
-    let runtime = deploy(&compile_temp("erc165-bare", &bare, &crate::Options::default()).expect("bare"))
-        .expect("deploy");
-    supports_answers(&runtime, &[(0x49064906, 1), (0x01ffc9a7, 1), (0x36372b07, 0)]);
+    let bare = own.replace(
+        "  supports IERC20, IERC20Metadata, IERC1155MetadataURI;\n",
+        "",
+    );
+    let runtime = deploy(&compile(&bare).expect("bare")).expect("deploy");
+    supports_answers(
+        &runtime,
+        &[(0x49064906, 1), (0x01ffc9a7, 1), (0x36372b07, 0)],
+    );
     // It answers for the contract, so a module's code cannot depend on it.
     let err = compile(
         "module M is {\n  pure function has(const id : bytes4) : bool is Abi.supports_interface(id)\n}\ncontract T is {\n  use M;\n  storage is record {}\n  external pure function f(const id : bytes4) : bool is M.has(id)\n}\n",
@@ -367,7 +356,7 @@ external view function name_of(const who : address) : string is storage.names[wh
         .filter(|f| f.name == "bump" || f.name.starts_with("bump#"))
         .count();
     assert_eq!(copies, 2, "one copy for persistent maps, one for transient");
-    let footprint = crate::footprint(src).expect("footprint");
+    let footprint = footprint(src).expect("footprint");
     for map in ["a", "b", "nested", "names", "transient scratch.t"] {
         assert!(footprint.contains(map), "{map}: {footprint}");
     }
@@ -413,7 +402,7 @@ external function go() : nat is {
     .expect("go");
     assert!(!out.reverted, "{}", pretty(&out.returndata));
     assert_eq!(load_bytes(&out.returndata, 0), w(207));
-    let footprint = crate::footprint(src).expect("footprint");
+    let footprint = footprint(src).expect("footprint");
     assert!(footprint.contains("writes: total, items"), "{footprint}");
 
     for (src, want) in [
@@ -504,11 +493,11 @@ external function go(const a : nat) : nat is {
     for (extra, want) in [
         (
             "pure function pick(const y : nat) : nat is y",
-            "duplicate function `pick(nat)`",
+            "duplicate function `pick`",
         ),
         (
             "external function pick(const y : address) is { skip; }",
-            "duplicate name `pick`",
+            "an external and an internal function cannot share a name",
         ),
         (
             "pure function same(const x : nat) : nat is x\nexternal pure function g() : nat is same(1n)",
@@ -573,7 +562,7 @@ interface IAdd is {
     assert_eq!(load_bytes(&total.returndata, 0), Word::from_u64(10));
     let out = call(&runtime, "version()", &[]);
     assert_eq!(load_bytes(&out.returndata, 0), Word::from_u64(3));
-    let footprint = crate::footprint(&src).expect("footprint");
+    let footprint = footprint(&src).expect("footprint");
     assert!(footprint.contains("add"), "{footprint}");
     for (bad, want) in [
         (

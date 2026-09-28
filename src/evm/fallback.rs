@@ -46,14 +46,14 @@ external function reset() is { storage.total := 0wei; }
     assert!(run(&runtime, &[0xde, 0xad, 0xbe, 0xef], 0).reverted);
     assert!(run(&runtime, &[0xde], 0).reverted);
 
-    let abi = crate::abi(src).expect("abi");
+    let abi = abi(src).expect("abi");
     assert!(
         abi.contains("\"stateMutability\": \"payable\",\n    \"type\": \"receive\""),
         "{abi}"
     );
-    let footprint = crate::footprint(src).expect("footprint");
+    let footprint = footprint(src).expect("footprint");
     assert!(footprint.contains("receive"), "{footprint}");
-    let errors = crate::errors(src).expect("errors");
+    let errors = errors(src).expect("errors");
     assert!(errors.starts_with("receive\n\n  none"), "{errors}");
 
     // Without `receive`, plain ether is refused.
@@ -123,7 +123,7 @@ external view function calls() : nat is storage.calls
     let calls = run(&runtime, &word_data("calls()", &[]), 0);
     assert_eq!(load_bytes(&calls.returndata, 0), Word::from_u64(0));
 
-    let abi = crate::abi(src).expect("abi");
+    let abi = abi(src).expect("abi");
     assert!(
         abi.contains("\"stateMutability\": \"nonpayable\",\n    \"type\": \"fallback\""),
         "{abi}"
@@ -243,9 +243,9 @@ payable fallback delegates to storage.implementation;
         .expect("get");
     assert!(missing.reverted);
 
-    let footprint = crate::footprint(src).expect("footprint");
+    let footprint = footprint(src).expect("footprint");
     assert!(footprint.contains("delegates to: implementation"), "{footprint}");
-    assert!(crate::warnings(src).expect("warnings").is_empty());
+    assert!(warnings(src).expect("warnings").is_empty());
 }
 
 #[test]
@@ -286,9 +286,9 @@ external nonreentrant function locked() is { skip }
         .expect("set");
     assert!(set.reverted);
     assert_eq!(set.returndata[..4], selector("UnknownSelector(bytes4)"));
-    let errors = crate::errors(src).expect("errors");
+    let errors = errors(src).expect("errors");
     assert!(errors.contains("fallback\n\n  UnknownSelector(bytes4)"), "{errors}");
-    let footprint = crate::footprint(src).expect("footprint");
+    let footprint = footprint(src).expect("footprint");
     assert!(footprint.contains("forwards to: route"), "{footprint}");
 }
 

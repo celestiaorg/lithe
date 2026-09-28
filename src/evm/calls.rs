@@ -3,7 +3,7 @@ use super::*;
 #[test]
 fn nonreentrant_lock_covers_deferred_calls() {
     let src = include_str!("../../examples/nonreentrant.lithe");
-    let tree = crate::abi_tree(src).expect("tree");
+    let tree = abi_tree(src).expect("tree");
     let settle = route_text(&tree, "settle");
     assert!(
         settle.contains("protected by nonreentrant domain"),
@@ -19,7 +19,7 @@ fn nonreentrant_lock_covers_deferred_calls() {
         !route_text(&tree, "ping").contains("nonreentrant"),
         "{tree}"
     );
-    assert!(crate::warnings(src).expect("warnings").is_empty());
+    assert!(warnings(src).expect("warnings").is_empty());
 
     let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
     let hook = Word::from_u64(0x1000);
@@ -53,7 +53,7 @@ fn nonreentrant_lock_covers_deferred_calls() {
     assert_eq!(slot(&canceled.storage, 1), Word::from_u64(2));
 
     let open = include_str!("../../examples/reentry.lithe");
-    let notes = crate::warnings(open).expect("reentry warnings");
+    let notes = warnings(open).expect("reentry warnings");
     assert!(
         notes.contains(
             "warning: `settle` performs deferred external operations and may\nbe re-entered through `cancel`"
@@ -79,7 +79,7 @@ external function pay(const to : address) is {
   defer Evm.transfer(to, 1wei);
 }
 ";
-    let alone_notes = crate::warnings(alone).expect("alone");
+    let alone_notes = warnings(alone).expect("alone");
     assert!(
         alone_notes.contains("be re-entered through `pay`"),
         "{alone_notes}"
@@ -91,7 +91,7 @@ external nonreentrant function pay(const to : address) is {
   defer Evm.transfer(to, 1wei);
 }
 ";
-    assert!(crate::warnings(guarded).expect("guarded").is_empty());
+    assert!(warnings(guarded).expect("guarded").is_empty());
     compile(guarded).expect("decorator order");
 }
 
@@ -185,7 +185,7 @@ fn continuations_run_as_new_phases() {
         .iter()
         .any(|ev| matches!(ev, Ev::Call { value, .. } if *value == Word::from_u64(3))));
 
-    let tree = crate::abi_tree(src).expect("tree");
+    let tree = abi_tree(src).expect("tree");
     let chain = route_text(&tree, "chain");
     assert!(
         chain.contains("  phase 2 (after op):\n    input:\n      - first : nat\n"),
@@ -200,7 +200,7 @@ fn continuations_run_as_new_phases() {
     assert!(!split.contains("phase 3"), "{split}");
     assert!(!route_text(&tree, "narrow").contains("phase 3"), "{tree}");
 
-    let notes = crate::warnings(src).expect("warnings");
+    let notes = warnings(src).expect("warnings");
     assert!(
         notes.contains(
             "warning: captured value `before` was derived from storage before\nan external state-changing call and may be stale in this continuation\n\nconsider re-reading storage inside the continuation"
@@ -394,8 +394,8 @@ contract Maker is {
 ";
     std::fs::write(dir.join("child.lithe"), child).expect("child");
     std::fs::write(dir.join("maker.lithe"), maker).expect("maker");
-    let child_code = crate::compile_file(&dir.join("child.lithe")).expect("child");
-    let runtime = deploy(&crate::compile_file(&dir.join("maker.lithe")).expect("maker")).expect("deploy");
+    let child_code = compile_file(&dir.join("child.lithe")).expect("child");
+    let runtime = deploy(&compile_file(&dir.join("maker.lithe")).expect("maker")).expect("deploy");
     let code = call(&runtime, "code()", &[]);
     assert!(!code.reverted, "{}", pretty(&code.returndata));
     assert_eq!(abi_string_value(&code.returndata), child_code);
@@ -414,7 +414,7 @@ contract Maker is {
         ("Evm.creation_code(Child))", "Evm.creation_code(Nope))", "`Nope` is not another contract of this file or its imports"),
     ] {
         std::fs::write(dir.join("bad.lithe"), maker.replacen(from, to, 1)).expect("bad");
-        let err = crate::compile_file(&dir.join("bad.lithe")).expect_err(want);
+        let err = compile_file(&dir.join("bad.lithe")).expect_err(want);
         assert!(err.to_string().contains(want), "{want}: {err}");
     }
     std::fs::remove_dir_all(&dir).ok();
@@ -475,7 +475,7 @@ storage is record {{ n : nat; }}
     let captured = program(
         "external function f(const ex : Ex; const k : nat) is {\n  const seen : nat := storage.n;\n  const fresh : nat := k + 1n;\n  defer ex.swap(k) then (r : nat) { storage.n := r + fresh + seen + k; };\n}\n",
     );
-    let notes = crate::warnings(&captured).expect("warnings");
+    let notes = warnings(&captured).expect("warnings");
     assert!(notes.contains("captured value `seen`"), "{notes}");
     assert!(
         !notes.contains("`fresh`") && !notes.contains("`k`"),
@@ -557,7 +557,7 @@ external function continuation_then_guarded(const me : Me) is {
     let open = run("plain_then_open(address)", &[me]);
     assert_eq!(slot(&open.storage, 1), Word::from_u64(5));
 
-    let footprint = crate::footprint(src).expect("footprint");
+    let footprint = footprint(src).expect("footprint");
     let line = |name: &str| {
         footprint
             .lines()
@@ -628,7 +628,7 @@ external function relay(const me : Me) is { defer me.plain(); }
 #[test]
 fn transient_storage_lasts_for_the_transaction() {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/transient.lithe");
-    let runtime = deploy(&crate::compile_file(&path).expect("compile")).expect("deploy");
+    let runtime = deploy(&compile_file(&path).expect("compile")).expect("deploy");
     let w = Word::from_u64;
     let me = w(0x1000);
     let run =
@@ -719,13 +719,13 @@ external function probe(const me : Me) is {
 
     let file = std::env::temp_dir().join(format!("lithe-transient-{}.lithe", std::process::id()));
     std::fs::write(&file, src).expect("write");
-    let layout = crate::storage_layout(&file).expect("layout");
+    let layout = crate::storage_layout(&Sources::disk(), &file).expect("layout");
     std::fs::remove_file(&file).ok();
     assert!(
         layout.contains("transient scratch\n  pending: uint256  transient slot 2"),
         "{layout}"
     );
-    let analysis = crate::analysis(src).expect("analysis");
+    let analysis = analysis(src).expect("analysis");
     assert!(
         analysis.contains("{ \"space\": \"transient\", \"path\": \"scratch.pending\" }"),
         "{analysis}"
@@ -734,7 +734,7 @@ external function probe(const me : Me) is {
         analysis.contains("{ \"space\": \"storage\", \"path\": \"seen\" }"),
         "{analysis}"
     );
-    assert!(!crate::abi(src).expect("abi").contains("scratch"));
+    assert!(!abi(src).expect("abi").contains("scratch"));
 
     for (body, want) in [
         (
@@ -862,7 +862,7 @@ fn recoverable_calls_branch_on_the_outcome() {
         let err = compile(&program(body)).expect_err(want);
         assert!(err.to_string().contains(want), "{want}: {err}");
     }
-    let tree = crate::abi_tree(src).expect("tree");
+    let tree = abi_tree(src).expect("tree");
     assert!(
         route_text(&tree, "execute")
             .contains("phase 3 (after ex.swap fails):\n    input:\n      - reason : bytes"),
@@ -1168,7 +1168,7 @@ external function go(const ex : Ext){raises} is relay(ex)
 "
         )
     };
-    let errors = crate::errors(&src(" raises forwarded", "forward reason;")).expect("declared");
+    let errors = errors(&src(" raises forwarded", "forward reason;")).expect("declared");
     assert!(errors.contains("go(address)\n\n  forwarded\n"), "{errors}");
     for (raises, arm, want) in [
         ("", "forward reason;", "must declare its errors\n\ninferred:\n  forwarded"),
@@ -1303,11 +1303,11 @@ contract Vault is {
   external view function owner() : address is storage.owner
 }
 ";
-    let contracts = crate::compile_contracts(src).expect("compile");
+    let contracts = compile_contracts(src).expect("compile");
     let code = |name: &str| {
         contracts
             .iter()
-            .find(|(n, _)| n.as_deref() == Some(name))
+            .find(|(n, _)| n == name)
             .map(|(_, c)| c.clone())
             .expect(name)
     };
@@ -1431,7 +1431,7 @@ contract Vault is {
         let src = format!(
             "contract One is {{\n  storage is record {{ n : nat; }}\n  external function f() is {{ {body} }}\n}}\ncontract Other is {{\n  storage is record {{ n : nat; }}\n  external function g() is {{ skip }}\n}}\n"
         );
-        let err = crate::compile_contracts(&src).expect_err(want);
+        let err = compile_contracts(&src).expect_err(want);
         assert!(err.to_string().contains(want), "{want}: {err}");
     }
 }
@@ -1556,7 +1556,7 @@ external view function name() : string is storage.name
     assert!(paid.reverted);
     let short = construct(&with_args(&deploy_args(w(1), 1, b"")[..64]), w(7), w(0)).expect("short");
     assert!(short.reverted);
-    let abi = crate::abi(src).expect("abi");
+    let abi = abi(src).expect("abi");
     assert!(abi.contains("\"type\": \"constructor\""), "{abi}");
 
     let payable = "\
@@ -1610,7 +1610,7 @@ external view function owner() : address is storage.owner
     let during = during.expect("during");
     assert!(!during.reverted, "{}", pretty(&during.returndata));
     assert_eq!(slot(&during.storage, 0), w(0xabc));
-    let abi = crate::abi(src).expect("abi");
+    let abi = abi(src).expect("abi");
     assert!(abi.contains("\"name\": \"deploy\""), "{abi}");
     assert!(!abi.contains("constructor"), "{abi}");
 }
@@ -1644,11 +1644,11 @@ contract Vault is {
   external view function fee() : nat is storage.fee
 }
 ";
-    let contracts = crate::compile_contracts(src).expect("compile");
+    let contracts = compile_contracts(src).expect("compile");
     let code = |name: &str| {
         contracts
             .iter()
-            .find(|(n, _)| n.as_deref() == Some(name))
+            .find(|(n, _)| n == name)
             .map(|(_, c)| c.clone())
             .expect(name)
     };
@@ -1696,7 +1696,7 @@ contract Vault is {
         ("Evm.sender(), \"no\", \"x\"", "argument has the wrong type"),
     ] {
         let bad = src.replace("Vault(Evm.sender(), fee, name)", &format!("Vault({args})"));
-        let err = crate::compile_contracts(&bad).expect_err(want);
+        let err = compile_contracts(&bad).expect_err(want);
         assert!(err.to_string().contains(want), "{want}: {err}");
     }
 }

@@ -795,7 +795,7 @@ fn record_arguments_cross_interfaces() {
     let o2 = V::L(vec![n(0x55), V::B(b"memo".to_vec()), n(11)]);
     assert_eq!(hex(&quoted.returndata), hex(&encode(std::slice::from_ref(&order), &[o2])));
 
-    let abi = crate::abi(RECORD_TARGET).expect("abi");
+    let abi = abi(RECORD_TARGET).expect("abi");
     let quote = &abi[abi.find("\"name\": \"quote\"").expect("quote")..];
     let outputs = &quote[..quote.find("\"stateMutability\"").expect("end")];
     assert!(outputs.matches("\"type\": \"tuple\"").count() == 1, "{outputs}");

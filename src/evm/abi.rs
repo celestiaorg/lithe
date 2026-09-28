@@ -83,7 +83,7 @@ fn record_lists_cross_the_abi() {
 
 #[test]
 fn counter_abi_tree_matches_the_dispatch() {
-    let tree = crate::abi_tree(COUNTER).expect("abi-tree");
+    let tree = abi_tree(COUNTER).expect("abi-tree");
     assert_eq!(
         tree,
         "\
@@ -149,7 +149,7 @@ increment
 
 #[test]
 fn bank_abi_is_solidity_json() {
-    let abi = crate::abi(BANK).expect("abi");
+    let abi = abi(BANK).expect("abi");
     assert_eq!(abi, BANK_ABI);
 }
 
@@ -240,8 +240,63 @@ const BANK_ABI: &str = r#"[
 "#;
 
 #[test]
+fn abi_is_typed() {
+    let src = "error Empty;\n\
+        storage is record { paid : wei; }\n\
+        event Paid of record { indexed from : address; amount : wei; }\n\
+        external payable function pay(const memo : nat) raises Empty is {\n\
+          assert(memo <> 0n, Empty);\n\
+          storage.paid := storage.paid + Evm.value();\n\
+          emit Paid { from = Evm.sender(); amount = Evm.value(); };\n\
+        }\n";
+    let abi = crate::abi(&memory(src), Path::new(ENTRY)).expect("abi");
+    let uint = |name: &str| crate::Param {
+        ty: "uint256".to_string(),
+        name: name.to_string(),
+        components: Vec::new(),
+        internal_type: "uint256".to_string(),
+    };
+    let from = crate::EventParam {
+        ty: "address".to_string(),
+        name: "from".to_string(),
+        indexed: true,
+        components: Vec::new(),
+        internal_type: "address".to_string(),
+    };
+    let amount = crate::EventParam {
+        ty: "uint256".to_string(),
+        name: "amount".to_string(),
+        indexed: false,
+        components: Vec::new(),
+        internal_type: "uint256".to_string(),
+    };
+    use crate::{AbiItem::*, StateMutability::Payable};
+    assert_eq!(
+        abi.items,
+        [
+            Function(crate::Function {
+                name: "pay".to_string(),
+                inputs: vec![uint("memo")],
+                outputs: Vec::new(),
+                state_mutability: Payable,
+            }),
+            Event(crate::Event {
+                name: "Paid".to_string(),
+                inputs: vec![from, amount],
+                anonymous: false,
+            }),
+            Error(crate::AbiError {
+                name: "Empty".to_string(),
+                inputs: Vec::new(),
+            }),
+        ]
+    );
+    assert_eq!(abi.to_json(), super::abi(src).expect("json"));
+}
+
+#[test]
 fn counter_abi_flattens_dispatch_and_views() {
-    let abi = crate::abi(COUNTER).expect("abi");
+    let abi = abi(COUNTER).expect("abi");
     assert!(abi.contains("\"name\": \"reset\""), "{abi}");
     assert!(abi.contains("\"name\": \"increment\""), "{abi}");
     assert!(abi.contains("\"name\": \"n\""), "{abi}");
@@ -266,7 +321,7 @@ fn directory_compile_writes_bytecode_and_abi() {
     std::fs::write(dir.join("bad.lithe"), "nope\n").expect("bad");
 
     let out_dir = dir.join("out");
-    let out = crate::compile_dir(&dir, &out_dir).expect("compile dir");
+    let out = crate::compile_dir(&dir, &out_dir, &Options::default()).expect("compile dir");
     let msgs: Vec<_> = out.failed.iter().map(ToString::to_string).collect();
     assert_eq!(msgs.len(), 1, "{msgs:?}");
     assert!(msgs[0].contains("bad.lithe"), "{msgs:?}");
@@ -305,10 +360,10 @@ fn directory_compile_writes_bytecode_and_abi() {
     std::fs::create_dir_all(&abi_only).expect("abi-only");
     std::fs::write(abi_only.join("pay.lithe"), PAY).expect("pay");
     let abi_out = dir.join("abi-out");
-    let out = crate::abi_dir(&abi_only, &abi_out).expect("abi dir");
+    let out = crate::abi_dir(&abi_only, &abi_out, &Options::default()).expect("abi dir");
     assert!(out.failed.is_empty());
     let abi = std::fs::read_to_string(abi_out.join("pay.lithe").join("Pay.abi.json")).expect("abi");
-    assert_eq!(abi, crate::abi(PAY).expect("pay abi"));
+    assert_eq!(abi, super::abi(PAY).expect("pay abi"));
     assert!(!abi_only.join("pay.abi.json").exists());
     std::fs::remove_dir_all(&dir).ok();
 }
@@ -1022,7 +1077,7 @@ external function main(const action : action) is
   | Set_pair(whatever) -> { storage.fee := whatever.a; }
   }
 ";
-    let abi = crate::abi(src).expect("abi");
+    let abi = abi(src).expect("abi");
     assert!(abi.contains("\"name\": \"fee\""), "{abi}");
     assert!(abi.contains("\"name\": \"limits\""), "{abi}");
     assert!(abi.contains("\"name\": \"\""), "{abi}");

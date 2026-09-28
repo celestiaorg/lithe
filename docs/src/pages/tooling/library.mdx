@@ -1,0 +1,106 @@
+---
+title: "Rust library"
+description: "Compile Lithe from Rust: sources on disk or in memory, typed output, and a typed ABI."
+---
+
+# Rust library
+
+The compiler is a Rust crate, `lithe`, with no dependencies beyond its lexer. Everything the `lithe` command does, a Rust program can do too, and it gets typed values back instead of text.
+
+```toml
+[dependencies]
+lithe = { path = "../lithe" }
+```
+
+Run `cargo doc --open` in the compiler's checkout for the full API.
+
+## Compiling
+
+`lithe::compile` builds every contract an entry file defines:
+
+```rust
+use std::path::Path;
+use lithe::{Options, Sources};
+
+let output = lithe::compile(&Sources::disk(), Path::new("token.lithe"), &Options::default())?;
+let token = output.single()?;
+```
+
+`output.contracts` has each contract the file defines, in order. `single()` is for a file that must define exactly one, as `lithe compile file.lithe` requires.
+
+A `Contract` has:
+
+| Field | |
+| --- | --- |
+| `name` | The contract's name. |
+| `bytecode` | The creation code. For a [split](/tooling/size-limit) contract, the router's. |
+| `deployed_bytecode` | The runtime code. |
+| `abi` | The typed ABI. |
+| `method_identifiers` | Each external's signature and selector. |
+| `plan` | What to deploy first, when the contract is split or creates one that is: each facet's address, code, and ABI, and the `CREATE2` factory. |
+| `warnings` | The warnings `lithe compile` prints. |
+
+`contract.plan_json()` renders the plan as `lithe compile` prints it.
+
+## Sources in memory
+
+`Sources::disk()` reads files and resolves imports as the `lithe` command does. `Sources::memory` takes the files by path, so a program with imports compiles without touching the file system, in a browser, a test, or a build tool:
+
+```rust
+let sources = Sources::memory([
+    ("lib/math.lithe", "pure function twice(const n : nat) : nat is n + n\n"),
+    ("counter.lithe", COUNTER_SOURCE),
+]);
+let counter = lithe::compile(&sources, Path::new("counter.lithe"), &Options::default())?.single()?;
+```
+
+Imports resolve relative to the importing file's path, `.` and `..` included. The standard library, `import "std/..."`, is built into the compiler and works with either.
+
+## The typed ABI
+
+`contract.abi` is an `Abi`: its items, in the order the JSON ABI lists them. The types follow [`alloy-json-abi`](https://docs.rs/alloy-json-abi)'s names and fields.
+
+```rust
+use lithe::{AbiItem, StateMutability};
+
+for item in &counter.abi.items {
+    if let AbiItem::Function(f) = item {
+        let payable = f.state_mutability == StateMutability::Payable;
+        println!("{}({} inputs) payable: {payable}", f.name, f.inputs.len());
+    }
+}
+```
+
+| Type | |
+| --- | --- |
+| `AbiItem` | `Constructor`, `Function`, `Event`, `Error`, `Fallback`, or `Receive`. |
+| `Function` | `name`, `inputs`, `outputs`, and `state_mutability`. |
+| `Event` | `name`, `inputs` (each an `EventParam`, with `indexed`), and `anonymous`. |
+| `AbiError` | `name` and `inputs`. |
+| `Param` | `ty` (`uint256`, `tuple[]`, ...), `name`, `components` for a tuple, and `internal_type`. |
+| `StateMutability` | `Pure`, `View`, `NonPayable`, or `Payable`. |
+
+`abi.to_json()` prints the Solidity JSON ABI, byte for byte what `lithe abi` prints. `lithe::abi(&sources, entry)` returns the ABI alone. It needs only the checked program, so a contract too large to build still has one.
+
+## Errors
+
+A failed `compile` returns an `Error` for each contract that fails, so a file with ten contracts and three broken ones reports all three. Each `Error` has a 1-based `line` and `column`, and a `message`. Its `Display` is `line:column: message`, as the command prints it.
+
+## Everything else
+
+The other functions take the same `sources` and entry path, and return what the matching command prints:
+
+| Function | Command |
+| --- | --- |
+| `abi_tree` | `lithe abi-tree` |
+| `footprint` | `lithe footprint` |
+| `analysis` | `lithe analysis` |
+| `errors` | `lithe errors` |
+| `facets` | `lithe facets` |
+| `stubs` | `lithe stubs` |
+| `storage_layout`, `storage_diff` | `lithe storage` |
+| `upgrade_check` | `lithe upgrade-check` |
+| `upgrade_plan` | `lithe upgrade` |
+| `compile_dir`, `abi_dir` | `lithe compile directory`, `lithe abi directory` |
+
+`Options` holds the [size flags](/tooling/cli#size-flags): `size_limit`, `split`, and `deployer`.

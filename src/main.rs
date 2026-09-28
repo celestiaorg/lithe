@@ -1,3 +1,7 @@
+use std::path::Path;
+
+use lithe::Sources;
+
 fn main() {
     let mut args: Vec<String> = std::env::args().skip(1).collect();
     if args.is_empty() {
@@ -21,7 +25,7 @@ fn main() {
         lithe::Options::default()
     };
     if cmd == "stubs" && args.len() == 2 {
-        match lithe::stubs_file(std::path::Path::new(&args[0]), &args[1]) {
+        match lithe::stubs(&Sources::disk(), Path::new(&args[0]), &args[1]) {
             Ok(text) => print!("{text}"),
             Err(err) => {
                 eprintln!("{err}");
@@ -51,16 +55,8 @@ fn main() {
     };
     if meta.is_dir() {
         let result = match cmd.as_str() {
-            "compile" => lithe::compile_dir_with(
-                std::path::Path::new(&path),
-                std::path::Path::new("out"),
-                &opts,
-            ),
-            "abi" => lithe::abi_dir_with(
-                std::path::Path::new(&path),
-                std::path::Path::new("out"),
-                &opts,
-            ),
+            "compile" => lithe::compile_dir(Path::new(&path), Path::new("out"), &opts),
+            "abi" => lithe::abi_dir(Path::new(&path), Path::new("out"), &opts),
             cmd => {
                 eprintln!("{cmd} reads one file");
                 std::process::exit(2);
@@ -68,27 +64,41 @@ fn main() {
         };
         finish_dir(result);
     }
-    let file = std::path::Path::new(&path);
+    let file = Path::new(&path);
+    let sources = Sources::disk();
     let mut note = None;
     let mut warnings = None;
     let result = match cmd.as_str() {
-        "abi" => lithe::abi_file(file),
-        "abi-tree" => lithe::abi_tree_file_with(file, &opts),
-        "footprint" => lithe::footprint_file_with(file, &opts),
-        "analysis" => lithe::analysis_file(file),
-        "errors" => lithe::errors_file(file),
-        "facets" => lithe::facets_file(file, &opts),
-        _ => lithe::compile_file_with(file, &opts).map(|compiled| {
-            note = compiled.note;
-            warnings = Some(compiled.warnings);
-            compiled.text
-        }),
+        "abi" => lithe::abi(&sources, file)
+            .map(|abi| abi.to_json())
+            .map_err(Vec::from),
+        "abi-tree" => lithe::abi_tree(&sources, file, &opts).map_err(Vec::from),
+        "footprint" => lithe::footprint(&sources, file, &opts).map_err(Vec::from),
+        "analysis" => lithe::analysis(&sources, file).map_err(Vec::from),
+        "errors" => lithe::errors(&sources, file).map_err(Vec::from),
+        "facets" => lithe::facets(&sources, file, &opts).map_err(Vec::from),
+        _ => lithe::compile(&sources, file, &opts)
+            .and_then(lithe::Output::single)
+            .map(|contract| {
+                note = contract.note();
+                warnings = Some(contract.warnings.concat());
+                contract.plan_json().unwrap_or_else(|| {
+                    let hex: String = contract
+                        .bytecode
+                        .iter()
+                        .map(|b| format!("{b:02x}"))
+                        .collect();
+                    format!("0x{hex}\n")
+                })
+            }),
     };
     match result {
         Ok(text) => {
             let notes = match warnings {
                 Some(notes) => notes,
-                None => lithe::warnings_file(file).unwrap_or_default(),
+                None => lithe::warnings(&sources, file)
+                    .map(|notes| notes.concat())
+                    .unwrap_or_default(),
             };
             if !notes.is_empty() {
                 eprint!("{notes}");
@@ -97,16 +107,15 @@ fn main() {
                 eprintln!("{note}");
             }
             print!("{text}");
-            // Hex gets a newline after it; a deployment plan already ends with one.
-            if cmd == "compile" && !text.ends_with('\n') {
-                println!();
-            }
         }
-        Err(err) => {
-            eprintln!("{err}");
-            std::process::exit(1);
-        }
+        Err(errors) => fail(&errors),
     }
+}
+
+fn fail(errors: &[lithe::Error]) -> ! {
+    let errors: Vec<String> = errors.iter().map(ToString::to_string).collect();
+    eprintln!("{}", errors.join("\n\n"));
+    std::process::exit(1);
 }
 
 /// Takes `--size-limit`, `--split`, and `--create2-deployer` out of `args`.
@@ -182,17 +191,18 @@ fn finish_dir(result: Result<lithe::DirOutput, lithe::Error>) -> ! {
 }
 
 fn tool(cmd: &str, args: &[String], opts: &lithe::Options) -> ! {
+    let sources = Sources::disk();
     let result = match cmd {
-        "storage" if args.len() == 1 => lithe::storage_layout(std::path::Path::new(&args[0])),
-        "storage" if args.len() == 2 => lithe::storage_diff(
-            std::path::Path::new(&args[0]),
-            std::path::Path::new(&args[1]),
-        ),
-        "upgrade-check" if args.len() == 2 => lithe::upgrade_check(
-            std::path::Path::new(&args[0]),
-            std::path::Path::new(&args[1]),
-            opts,
-        ),
+        "storage" if args.len() == 1 => {
+            lithe::storage_layout(&sources, Path::new(&args[0])).map_err(Vec::from)
+        }
+        "storage" if args.len() == 2 => {
+            lithe::storage_diff(&sources, Path::new(&args[0]), Path::new(&args[1]))
+                .map_err(Vec::from)
+        }
+        "upgrade-check" if args.len() == 2 => {
+            lithe::upgrade_check(&sources, Path::new(&args[0]), Path::new(&args[1]), opts)
+        }
         "upgrade" => upgrade(args, opts),
         _ => {
             usage();
@@ -201,21 +211,18 @@ fn tool(cmd: &str, args: &[String], opts: &lithe::Options) -> ! {
     };
     match result {
         Ok(text) => print!("{text}"),
-        Err(err) => {
-            eprintln!("{err}");
-            std::process::exit(1);
-        }
+        Err(errors) => fail(&errors),
     }
     std::process::exit(0);
 }
 
-fn upgrade(args: &[String], opts: &lithe::Options) -> Result<String, lithe::Error> {
+fn upgrade(args: &[String], opts: &lithe::Options) -> Result<String, Vec<lithe::Error>> {
     if args.len() < 2 {
         usage();
         std::process::exit(2);
     }
     let proxy = &args[0];
-    let file = std::path::Path::new(&args[1]);
+    let file = Path::new(&args[1]);
     let mut migrate = None;
     let mut implementation = None;
     let mut values = Vec::new();
@@ -250,8 +257,9 @@ fn upgrade(args: &[String], opts: &lithe::Options) -> Result<String, lithe::Erro
         std::process::exit(2);
     };
     lithe::upgrade_plan(
-        proxy,
+        &Sources::disk(),
         file,
+        proxy,
         &migrate,
         implementation.as_deref(),
         &values,

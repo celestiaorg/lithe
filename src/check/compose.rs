@@ -49,14 +49,13 @@ fn publish_generic(prog: &mut Program) -> Result<(), Error> {
                     "a generic error cannot use a type parameter",
                 ));
             }
-            if prog.errors.iter().any(|have| have.name == decl.name) {
-                return Err(error(
-                    decl.line,
-                    decl.col,
-                    format!(
-                        "module `{}` exports error `{}`, which is already declared",
-                        module.name, decl.name
-                    ),
+            if let Some(have) = prog.errors.iter().find(|have| have.name == decl.name) {
+                return Err(exported_twice(
+                    &module.name,
+                    "error",
+                    &decl.name,
+                    (&decl.origin, decl.line, decl.col),
+                    (&have.origin, have.line, have.col),
                 ));
             }
             prog.errors.push(decl.clone());
@@ -73,33 +72,49 @@ fn publish_generic(prog: &mut Program) -> Result<(), Error> {
                     "a generic event cannot use a type parameter",
                 ));
             }
-            if prog.events.iter().any(|have| have.name == decl.name) {
-                return Err(error(
-                    decl.line,
-                    decl.col,
-                    format!(
-                        "module `{}` exports event `{}`, which is already declared",
-                        module.name, decl.name
-                    ),
+            if let Some(have) = prog.events.iter().find(|have| have.name == decl.name) {
+                return Err(exported_twice(
+                    &module.name,
+                    "event",
+                    &decl.name,
+                    (&decl.origin, decl.line, decl.col),
+                    (&have.origin, have.line, have.col),
                 ));
             }
             prog.events.push(decl.clone());
         }
         for decl in &module.error_sets {
-            if prog.error_sets.iter().any(|have| have.name == decl.name) {
-                return Err(error(
-                    decl.line,
-                    decl.col,
-                    format!(
-                        "module `{}` exports error set `{}`, which is already declared",
-                        module.name, decl.name
-                    ),
+            if let Some(have) = prog.error_sets.iter().find(|have| have.name == decl.name) {
+                return Err(exported_twice(
+                    &module.name,
+                    "error set",
+                    &decl.name,
+                    (&decl.origin, decl.line, decl.col),
+                    (&have.origin, have.line, have.col),
                 ));
             }
             prog.error_sets.push(decl.clone());
         }
     }
     Ok(())
+}
+
+/// A module exports a declaration whose name is taken, by one of its own or another's.
+fn exported_twice(
+    module: &str,
+    what: &str,
+    name: &str,
+    (origin, line, col): (&str, u32, u32),
+    (have_origin, have_line, have_col): (&str, u32, u32),
+) -> Error {
+    crate::modules::clash(
+        format!("module `{module}` exports {what} `{name}`, which is already declared"),
+        name,
+        &crate::modules::Site::of(have_origin, have_line, have_col, ""),
+        &crate::modules::Site::of(origin, line, col, ""),
+        None,
+        "rename one of them",
+    )
 }
 
 fn mentions_params(ty: &TypeRef, params: &[TypeParam]) -> bool {
@@ -204,53 +219,49 @@ pub(super) fn compose(prog: &mut Program) -> Result<(), Error> {
             ));
         }
         for decl in module.types {
-            if prog.types.iter().any(|have| have.name == decl.name) {
-                return Err(error(
-                    decl.line,
-                    decl.col,
-                    format!(
-                        "module `{}` exports type `{}`, which is already declared",
-                        module.name, decl.name
-                    ),
+            if let Some(have) = prog.types.iter().find(|have| have.name == decl.name) {
+                return Err(exported_twice(
+                    &module.name,
+                    "type",
+                    &decl.name,
+                    (&decl.origin, decl.line, decl.col),
+                    (&have.origin, have.line, have.col),
                 ));
             }
             prog.types.push(decl);
         }
         for decl in module.errors {
-            if prog.errors.iter().any(|have| have.name == decl.name) {
-                return Err(error(
-                    decl.line,
-                    decl.col,
-                    format!(
-                        "module `{}` exports error `{}`, which is already declared",
-                        module.name, decl.name
-                    ),
+            if let Some(have) = prog.errors.iter().find(|have| have.name == decl.name) {
+                return Err(exported_twice(
+                    &module.name,
+                    "error",
+                    &decl.name,
+                    (&decl.origin, decl.line, decl.col),
+                    (&have.origin, have.line, have.col),
                 ));
             }
             prog.errors.push(decl);
         }
         for decl in module.error_sets {
-            if prog.error_sets.iter().any(|have| have.name == decl.name) {
-                return Err(error(
-                    decl.line,
-                    decl.col,
-                    format!(
-                        "module `{}` exports error set `{}`, which is already declared",
-                        module.name, decl.name
-                    ),
+            if let Some(have) = prog.error_sets.iter().find(|have| have.name == decl.name) {
+                return Err(exported_twice(
+                    &module.name,
+                    "error set",
+                    &decl.name,
+                    (&decl.origin, decl.line, decl.col),
+                    (&have.origin, have.line, have.col),
                 ));
             }
             prog.error_sets.push(decl);
         }
         for decl in module.events {
-            if prog.events.iter().any(|have| have.name == decl.name) {
-                return Err(error(
-                    decl.line,
-                    decl.col,
-                    format!(
-                        "module `{}` exports event `{}`, which is already declared",
-                        module.name, decl.name
-                    ),
+            if let Some(have) = prog.events.iter().find(|have| have.name == decl.name) {
+                return Err(exported_twice(
+                    &module.name,
+                    "event",
+                    &decl.name,
+                    (&decl.origin, decl.line, decl.col),
+                    (&have.origin, have.line, have.col),
                 ));
             }
             prog.events.push(decl);
@@ -352,11 +363,19 @@ pub(super) fn name_overloads(
         }
         for (k, &i) in members.iter().enumerate() {
             let own = shape(&funcs[i]);
-            if members[..k].iter().any(|&j| shape(&funcs[j]) == own) {
-                return Err(error(
-                    funcs[i].line,
-                    funcs[i].col,
-                    format!("duplicate function `{name}({})`", own.join(", ")),
+            if let Some(&j) = members[..k].iter().find(|&&j| shape(&funcs[j]) == own) {
+                let (have, new) = (&funcs[j], &funcs[i]);
+                return Err(crate::modules::clash(
+                    format!(
+                        "duplicate function `{}({})`",
+                        crate::modules::shown(&name),
+                        own.join(", ")
+                    ),
+                    &name,
+                    &crate::modules::Site::of(&have.origin, have.line, have.col, ""),
+                    &crate::modules::Site::of(&new.origin, new.line, new.col, ""),
+                    None,
+                    "overloads need different parameter types; rename one or change its parameters",
                 ));
             }
         }
@@ -578,7 +597,7 @@ impl Header {
     }
 }
 
-pub(super) fn several_contracts(prog: &Program) -> Error {
+pub(crate) fn several_contracts(prog: &Program) -> Error {
     let mut names = Vec::new();
     if let Some(name) = &prog.contract_name {
         names.push(format!("`{name}`"));

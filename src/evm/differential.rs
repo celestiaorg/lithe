@@ -187,9 +187,10 @@ fn optimized_code_matches_reference() {
 fn differential(path: &std::path::Path, rel: &str, reference: &[u8], steps: usize, slots: bool) {
     OPAQUE_CODE.set(true);
     install_mocks();
-    let ours = deploy(&crate::compile_file(path).unwrap_or_else(|e| panic!("{rel}: {e}")))
+    let ours = deploy(&compile_file(path).unwrap_or_else(|e| panic!("{rel}: {e}")))
         .unwrap_or_else(|e| panic!("{rel}: deploy: {e}"));
-    let checked = crate::check::check(crate::modules::load(path).expect("load")).expect("check");
+    let checked = crate::check::check(crate::modules::load(&Sources::disk(), path).expect("load"))
+        .expect("check");
     let methods = crate::route::method_ids(&checked).expect("methods");
     compare_builds(rel, &methods, reference, &ours, steps, slots);
 }

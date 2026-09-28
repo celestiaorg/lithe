@@ -27,11 +27,11 @@ use abi::*;
 use payable::*;
 
 pub(crate) use abi::{
-    abi_dynamic, abi_fields, abi_nested, abi_parts, abi_record, abi_value, bytes_abi, event_input,
-    flat_record, int_abi, is_static_aggregate, is_value,
-    is_static_value, is_stored_aggregate, static_abi, uint_abi, AbiField,
+    abi_dynamic, abi_fields, abi_nested, abi_parts, abi_record, abi_value, bytes_abi, flat_record,
+    int_abi, is_static_aggregate, is_static_value, is_stored_aggregate, is_value, static_abi,
+    uint_abi, AbiField,
 };
-pub(crate) use compose::{module_transient_slot, Header};
+pub(crate) use compose::{module_transient_slot, several_contracts, Header};
 pub(crate) use layout::{narrow_width, option_flip, pack_leaves, Flip};
 pub(crate) use types::shape_ty;
 

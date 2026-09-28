@@ -14,7 +14,10 @@ use crate::check::Checked;
 use crate::gen::{self, Built, Entrypoint, Group};
 use crate::keccak::keccak256;
 use crate::word::Word;
-use crate::{error, Error};
+use crate::{
+    error, Abi, AbiError, AbiItem, Constructor, Error, Event, EventParam, Fallback, Function,
+    Param, Receive, StateMutability,
+};
 
 /// EIP-170's limit on deployed code.
 pub const SIZE_LIMIT: usize = 24_576;
@@ -84,7 +87,7 @@ pub(crate) struct Facet {
     pub init: Vec<u8>,
     pub runtime: Vec<u8>,
     pub entries: Vec<Entrypoint>,
-    pub abi: String,
+    pub abi: Abi,
     pub methods: Vec<(String, [u8; 4])>,
     /// Facets of contracts this facet creates.
     pub needs: Vec<Facet>,
@@ -382,7 +385,7 @@ fn facet(checked: &Checked, module: &str, opts: &Options) -> Result<Facet, Error
         init: built.code,
         runtime: built.runtime,
         entries: gen::entrypoints(&checked)?,
-        abi: crate::route::render_abi(&checked)?,
+        abi: crate::route::abi(&checked)?,
         methods: crate::route::method_ids(&checked)?,
         needs: built.needs,
         immutables: checked.immutables.iter().map(|block| block.id.clone()).collect(),
@@ -702,7 +705,7 @@ fn put_facets(out: &mut Vec<u8>, facets: &[Facet]) {
         put_bytes(out, &facet.init);
         put_bytes(out, &facet.runtime);
         put_entries(out, &facet.entries);
-        put_bytes(out, facet.abi.as_bytes());
+        put_abi(out, &facet.abi);
         put_len(out, facet.methods.len());
         for (sig, sel) in &facet.methods {
             put_bytes(out, sig.as_bytes());
@@ -714,6 +717,75 @@ fn put_facets(out: &mut Vec<u8>, facets: &[Facet]) {
             put_bytes(out, id.as_bytes());
         }
     }
+}
+
+fn put_abi(out: &mut Vec<u8>, abi: &Abi) {
+    put_len(out, abi.items.len());
+    for item in &abi.items {
+        match item {
+            AbiItem::Constructor(item) => {
+                put_len(out, 0);
+                put_params(out, &item.inputs);
+                put_len(out, item.state_mutability as usize);
+            }
+            AbiItem::Function(item) => {
+                put_len(out, 1);
+                put_bytes(out, item.name.as_bytes());
+                put_params(out, &item.inputs);
+                put_params(out, &item.outputs);
+                put_len(out, item.state_mutability as usize);
+            }
+            AbiItem::Event(item) => {
+                put_len(out, 2);
+                put_bytes(out, item.name.as_bytes());
+                put_len(out, item.inputs.len());
+                for param in &item.inputs {
+                    put_param(
+                        out,
+                        &param.ty,
+                        &param.name,
+                        &param.internal_type,
+                        &param.components,
+                    );
+                    put_len(out, param.indexed as usize);
+                }
+                put_len(out, item.anonymous as usize);
+            }
+            AbiItem::Error(item) => {
+                put_len(out, 3);
+                put_bytes(out, item.name.as_bytes());
+                put_params(out, &item.inputs);
+            }
+            AbiItem::Fallback(item) => {
+                put_len(out, 4);
+                put_len(out, item.state_mutability as usize);
+            }
+            AbiItem::Receive(item) => {
+                put_len(out, 5);
+                put_len(out, item.state_mutability as usize);
+            }
+        }
+    }
+}
+
+fn put_params(out: &mut Vec<u8>, params: &[Param]) {
+    put_len(out, params.len());
+    for param in params {
+        put_param(
+            out,
+            &param.ty,
+            &param.name,
+            &param.internal_type,
+            &param.components,
+        );
+    }
+}
+
+fn put_param(out: &mut Vec<u8>, ty: &str, name: &str, internal_type: &str, components: &[Param]) {
+    put_bytes(out, ty.as_bytes());
+    put_bytes(out, name.as_bytes());
+    put_bytes(out, internal_type.as_bytes());
+    put_params(out, components);
 }
 
 /// Reads back what `encode` wrote. Anything else, such as a truncated file, is `None`.
@@ -760,6 +832,79 @@ impl Reader<'_> {
         String::from_utf8(self.bytes()?).ok()
     }
 
+    fn abi(&mut self) -> Option<Abi> {
+        let items = (0..self.len()?)
+            .map(|_| {
+                Some(match self.len()? {
+                    0 => AbiItem::Constructor(Constructor {
+                        inputs: self.params()?,
+                        state_mutability: self.mutability()?,
+                    }),
+                    1 => AbiItem::Function(Function {
+                        name: self.string()?,
+                        inputs: self.params()?,
+                        outputs: self.params()?,
+                        state_mutability: self.mutability()?,
+                    }),
+                    2 => AbiItem::Event(Event {
+                        name: self.string()?,
+                        inputs: (0..self.len()?)
+                            .map(|_| {
+                                let param = self.param()?;
+                                Some(EventParam {
+                                    ty: param.ty,
+                                    name: param.name,
+                                    indexed: self.flag()?,
+                                    components: param.components,
+                                    internal_type: param.internal_type,
+                                })
+                            })
+                            .collect::<Option<_>>()?,
+                        anonymous: self.flag()?,
+                    }),
+                    3 => AbiItem::Error(AbiError {
+                        name: self.string()?,
+                        inputs: self.params()?,
+                    }),
+                    4 => AbiItem::Fallback(Fallback {
+                        state_mutability: self.mutability()?,
+                    }),
+                    5 => AbiItem::Receive(Receive {
+                        state_mutability: self.mutability()?,
+                    }),
+                    _ => return None,
+                })
+            })
+            .collect::<Option<_>>()?;
+        Some(Abi { items })
+    }
+
+    fn params(&mut self) -> Option<Vec<Param>> {
+        (0..self.len()?).map(|_| self.param()).collect()
+    }
+
+    fn param(&mut self) -> Option<Param> {
+        Some(Param {
+            ty: self.string()?,
+            name: self.string()?,
+            internal_type: self.string()?,
+            components: self.params()?,
+        })
+    }
+
+    fn mutability(&mut self) -> Option<StateMutability> {
+        use StateMutability::*;
+        [Pure, View, NonPayable, Payable].get(self.len()?).copied()
+    }
+
+    fn flag(&mut self) -> Option<bool> {
+        match self.len()? {
+            0 => Some(false),
+            1 => Some(true),
+            _ => None,
+        }
+    }
+
     fn entries(&mut self) -> Option<Vec<Entrypoint>> {
         (0..self.len()?)
             .map(|_| {
@@ -785,7 +930,7 @@ impl Reader<'_> {
                     init: self.bytes()?,
                     runtime: self.bytes()?,
                     entries: self.entries()?,
-                    abi: self.string()?,
+                    abi: self.abi()?,
                     methods: (0..self.len()?)
                         .map(|_| Some((self.string()?, self.array()?)))
                         .collect::<Option<_>>()?,
