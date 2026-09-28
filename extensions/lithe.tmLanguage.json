@@ -57,6 +57,10 @@
           "match": "\\b(external|view|pure|payable|nonreentrant|private|indexed|anonymous|raises)\\b"
         },
         {
+          "name": "keyword.other.spec.lithe",
+          "match": "\\b(spec|invariant|ensures|panics|partial|when|forall)\\b|\\b(old|new)(?=\\.)"
+        },
+        {
           "name": "keyword.operator.word.lithe",
           "match": "\\b(and|or|not)\\b"
         }

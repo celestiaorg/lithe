@@ -25,11 +25,16 @@ pub(crate) fn std_source(path: &Path) -> Option<&'static str> {
 /// Where imported files are read from: the file system, or files held in memory.
 pub struct Sources {
     files: Option<HashMap<PathBuf, String>>,
+    /// One more file, read before the others: a contract the compiler writes itself.
+    extra: Option<(PathBuf, String)>,
 }
 
 impl Sources {
     pub fn disk() -> Self {
-        Sources { files: None }
+        Sources {
+            files: None,
+            extra: None,
+        }
     }
 
     /// Files by path. Paths are compared after resolving `.` and `..`, never on disk.
@@ -40,17 +45,37 @@ impl Sources {
             .into_iter()
             .map(|(path, src)| (normalize(path.as_ref()), src.into()))
             .collect();
-        Sources { files: Some(files) }
+        Sources {
+            files: Some(files),
+            extra: None,
+        }
     }
 
-    fn canonicalize(&self, path: &Path) -> io::Result<PathBuf> {
-        if path.starts_with(STD_ROOT) || self.files.is_some() {
+    /// These sources, and the file `path` holding `src`. `path` is canonical.
+    pub(crate) fn with(&self, path: PathBuf, src: String) -> Self {
+        Sources {
+            files: self.files.clone(),
+            extra: Some((path, src)),
+        }
+    }
+
+    pub(crate) fn canonicalize(&self, path: &Path) -> io::Result<PathBuf> {
+        if path.starts_with(STD_ROOT)
+            || self.files.is_some()
+            || self
+                .extra
+                .as_ref()
+                .is_some_and(|(p, _)| *p == normalize(path))
+        {
             return Ok(normalize(path));
         }
         path.canonicalize()
     }
 
     pub(crate) fn read(&self, path: &Path) -> io::Result<String> {
+        if let Some((_, src)) = self.extra.as_ref().filter(|(p, _)| p == path) {
+            return Ok(src.clone());
+        }
         match &self.files {
             None => std::fs::read_to_string(path),
             Some(files) => files
@@ -87,6 +112,168 @@ fn import_path(from: &Path, import: &str) -> PathBuf {
     } else {
         from.parent().unwrap_or(Path::new(".")).join(import)
     }
+}
+
+/// `x.spec.lithe`, beside the entry file `x.lithe`: spec blocks for its contracts and
+/// modules. Only the tools that check specs read it, so it never changes what is built. The
+/// files the entry imports may have spec files too, for their modules, and the standard
+/// library's do.
+pub(crate) fn load_specs(sources: &Sources, entry: &Path, prog: &mut Program) -> Result<(), Error> {
+    load_entry_specs(sources, entry, prog)?;
+    let own = sources.canonicalize(entry).ok();
+    let mut files: Vec<String> = Vec::new();
+    for module in &prog.modules {
+        if !module.origin.is_empty()
+            && own.as_ref().map(|p| p.display().to_string()) != Some(module.origin.clone())
+            && !files.contains(&module.origin)
+        {
+            files.push(module.origin.clone());
+        }
+    }
+    for file in files {
+        let Some(path) = spec_path(Path::new(&file)) else {
+            continue;
+        };
+        let src = match std_source(&path) {
+            Some(src) => src.to_string(),
+            None if path.starts_with(STD_ROOT) => continue,
+            None => match sources.read(&path) {
+                Ok(src) => src,
+                Err(err) if err.kind() == io::ErrorKind::NotFound => continue,
+                Err(err) => {
+                    return Err(error(
+                        1,
+                        1,
+                        format!("cannot read `{}`: {err}", path.display()),
+                    ))
+                }
+            },
+        };
+        let label = file_label(&path);
+        let parsed = parse::parse_specs(&src)
+            .map_err(|err| error(err.line, err.column, format!("{label}: {}", err.message)))?;
+        if let Some(block) = parsed.bare.first() {
+            return Err(error(
+                block.line,
+                block.col,
+                format!(
+                    "{label}: an imported file's spec file writes `spec for module M is {{ ... }}`"
+                ),
+            ));
+        }
+        if let Some((name, _)) = parsed.contracts.first() {
+            return Err(error(
+                name.line,
+                name.col,
+                format!("{label}: an imported file's spec file describes its modules"),
+            ));
+        }
+        for (_, mut blocks) in parsed.modules {
+            for block in &mut blocks {
+                block.origin = path.display().to_string();
+            }
+            for sibling in &mut prog.siblings {
+                sibling.specs.extend(blocks.iter().cloned());
+            }
+            prog.specs.extend(blocks);
+        }
+    }
+    Ok(())
+}
+
+/// `x.spec.lithe` for `x.lithe`.
+fn spec_path(file: &Path) -> Option<PathBuf> {
+    let stem = file.file_name()?.to_str()?.strip_suffix(".lithe")?;
+    Some(file.with_file_name(format!("{stem}.spec.lithe")))
+}
+
+fn load_entry_specs(sources: &Sources, entry: &Path, prog: &mut Program) -> Result<(), Error> {
+    let Some(stem) = entry
+        .file_name()
+        .and_then(|name| name.to_str())
+        .and_then(|name| name.strip_suffix(".lithe"))
+    else {
+        return Ok(());
+    };
+    let path = entry.with_file_name(format!("{stem}.spec.lithe"));
+    let Ok(canon) = sources.canonicalize(&path) else {
+        return Ok(());
+    };
+    let src = match sources.read(&canon) {
+        Ok(src) => src,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(err) => {
+            return Err(error(
+                1,
+                1,
+                format!("cannot read `{}`: {err}", path.display()),
+            ))
+        }
+    };
+    let mut file = parse::parse_specs(&src)?;
+    let origin = canon.display().to_string();
+    // The entry file's private names are mangled by now; the spec file names them as the
+    // entry file does.
+    let own = match sources.canonicalize(entry) {
+        Ok(entry) => format!("{}::", file_label(&entry)),
+        Err(_) => String::new(),
+    };
+    let mut map = HashMap::new();
+    let mut note = |name: &str| {
+        if let Some(short) = name.strip_prefix(own.as_str()).filter(|_| !own.is_empty()) {
+            map.insert(short.to_string(), name.to_string());
+        }
+    };
+    for unit in std::iter::once(&*prog).chain(prog.siblings.iter()) {
+        unit.types.iter().for_each(|d| note(&d.name));
+        unit.errors.iter().for_each(|d| note(&d.name));
+        unit.events.iter().for_each(|d| note(&d.name));
+        unit.funcs.iter().for_each(|f| note(&f.name));
+    }
+    let stamp_all = |blocks: &mut Vec<SpecBlock>| {
+        for block in blocks.iter_mut() {
+            block.origin = origin.clone();
+        }
+        rewrite_specs(blocks, &map);
+    };
+    stamp_all(&mut file.bare);
+    for (_, blocks) in &mut file.contracts {
+        stamp_all(blocks);
+    }
+    for (_, blocks) in &mut file.modules {
+        stamp_all(blocks);
+    }
+    if let Some(block) = file.bare.first() {
+        if !prog.siblings.is_empty() {
+            return Err(error(
+                block.line,
+                block.col,
+                "this file declares several contracts; write `spec for contract C is { ... }`",
+            ));
+        }
+    }
+    prog.specs.extend(file.bare);
+    for (name, blocks) in file.contracts {
+        let named = |unit: &Program| unit.contract_name.as_deref() == Some(name.name.as_str());
+        if named(prog) {
+            prog.specs.extend(blocks);
+        } else if let Some(unit) = prog.siblings.iter_mut().find(|unit| named(unit)) {
+            unit.specs.extend(blocks);
+        } else {
+            return Err(error(
+                name.line,
+                name.col,
+                format!("no contract `{}` in `{}`", name.name, file_label(entry)),
+            ));
+        }
+    }
+    for (_, blocks) in file.modules {
+        for sibling in &mut prog.siblings {
+            sibling.specs.extend(blocks.iter().cloned());
+        }
+        prog.specs.extend(blocks);
+    }
+    Ok(())
 }
 
 /// Canonical path string `load` stamps as `origin` for this import.
@@ -303,6 +490,8 @@ fn empty() -> Program {
         siblings: Vec::new(),
         peers: Vec::new(),
         origin: String::new(),
+        specs: Vec::new(),
+        proving: false,
     }
 }
 
@@ -373,6 +562,12 @@ fn stamp(prog: &mut Program, origin: &str) {
         for decl in &mut module.domains {
             decl.origin = origin.to_string();
         }
+        for block in &mut module.specs {
+            block.origin = origin.to_string();
+        }
+    }
+    for block in &mut prog.specs {
+        block.origin = origin.to_string();
     }
     for sibling in &mut prog.siblings {
         stamp(sibling, origin);
@@ -461,7 +656,95 @@ fn hide_private(prog: &mut Program) {
             rewrite_expr(tail, &map);
         }
     }
+    rewrite_specs(&mut prog.specs, &map);
     rewrite_modules(&mut prog.modules, &map);
+}
+
+/// Spec blocks name what the rest of the file declares: their targets, types, errors, and
+/// the functions their clauses call.
+fn rewrite_specs(blocks: &mut [SpecBlock], map: &HashMap<String, String>) {
+    for block in blocks {
+        if let Some(target) = &mut block.target {
+            if let Some(name) = map.get(&target.name) {
+                target.name = name.clone();
+            }
+        }
+        for clause in &mut block.clauses {
+            match &mut clause.kind {
+                ClauseKind::Const { ty, .. } => rewrite_ty(ty, map),
+                ClauseKind::Raises(named) => {
+                    if let Some(name) = map.get(&named.name) {
+                        named.name = name.clone();
+                    }
+                }
+                ClauseKind::Invariant(_) | ClauseKind::Panics | ClauseKind::Ensures => {}
+            }
+            rewrite_spec_expr(&mut clause.expr, map);
+        }
+    }
+}
+
+/// A clause's expression, and the type each `forall` in it binds.
+fn rewrite_spec_expr(expr: &mut Expr, map: &HashMap<String, String>) {
+    rewrite_expr(expr, map);
+    visit_foralls(expr, &mut |ty_name| {
+        if let Some(name) = map.get(ty_name.as_str()) {
+            *ty_name = name.clone();
+        }
+    });
+}
+
+fn visit_foralls(expr: &mut Expr, f: &mut dyn FnMut(&mut String)) {
+    match expr {
+        Expr::Call {
+            builtin: Some(Builtin::SpecForall),
+            args,
+            ..
+        } => {
+            if let Some(Expr::Ident { name, .. }) = args.get_mut(1) {
+                f(name);
+            }
+            if let Some(body) = args.get_mut(2) {
+                visit_foralls(body, f);
+            }
+        }
+        Expr::Lit { .. } | Expr::Ident { .. } => {}
+        Expr::Query { expr, .. } | Expr::Field { base: expr, .. } | Expr::Unary { expr, .. } => {
+            visit_foralls(expr, f);
+        }
+        Expr::Index { base, index, .. } => {
+            visit_foralls(base, f);
+            visit_foralls(index, f);
+        }
+        Expr::Call { args, base, .. } => {
+            for arg in args {
+                visit_foralls(arg, f);
+            }
+            if let Some(base) = base {
+                visit_foralls(base, f);
+            }
+        }
+        Expr::Case { scrut, arms, .. } => {
+            visit_foralls(scrut, f);
+            for arm in arms {
+                visit_foralls(&mut arm.expr, f);
+            }
+        }
+        Expr::Binary { left, right, .. } => {
+            visit_foralls(left, f);
+            visit_foralls(right, f);
+        }
+        Expr::Tuple { elems, .. } | Expr::List { elems, .. } => {
+            for elem in elems {
+                visit_foralls(elem, f);
+            }
+        }
+        Expr::Record { fields, .. } => {
+            for (_, expr) in fields {
+                visit_foralls(expr, f);
+            }
+        }
+    }
 }
 
 fn mangled(origin: &str, name: &str) -> String {
@@ -627,8 +910,12 @@ fn rewrite_stmts(stmts: &mut [Stmt], map: &HashMap<String, String>) {
                 elem_init,
                 length,
                 body,
+                invariants,
                 ..
             } => {
+                for inv in invariants.iter_mut() {
+                    rewrite_spec_expr(inv, map);
+                }
                 rewrite_ty(ty, map);
                 match iter {
                     ForIter::Range { lo, hi } => {
@@ -815,6 +1102,7 @@ fn absorb(
     src.modules.retain(|decl| !present.contains(&decl.origin));
     src.interfaces
         .retain(|decl| !present.contains(&decl.origin));
+    src.specs.retain(|block| !present.contains(&block.origin));
     if let Some(alias) = alias {
         let mut map = HashMap::new();
         for decl in &src.types {
@@ -893,6 +1181,7 @@ fn hide_names(prog: &mut Program, map: &HashMap<String, String>) {
             rewrite_expr(tail, map);
         }
     }
+    rewrite_specs(&mut prog.specs, map);
     rewrite_modules(&mut prog.modules, map);
 }
 
@@ -952,6 +1241,7 @@ fn rewrite_modules(modules: &mut [ModuleDecl], map: &HashMap<String, String>) {
         for decl in &mut module.domains {
             rewrite_ty(&mut decl.ty, map);
         }
+        rewrite_specs(&mut module.specs, map);
     }
 }
 
@@ -1083,6 +1373,7 @@ fn absorb_decls(
         func.name = public_name;
         dst.funcs.push(func);
     }
+    dst.specs.extend(src.specs);
     for decl in src.domains {
         let same_id = |have: &DomainDecl| !have.transient && !decl.transient && have.id == decl.id;
         if let Some(have) = dst

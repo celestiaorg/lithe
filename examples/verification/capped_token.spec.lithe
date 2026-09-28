@@ -1,0 +1,13 @@
+(* What capped_token.lithe guarantees. The standard library's own spec file proves that
+   the ERC-20 balances add up to the supply. *)
+
+spec is {
+  invariant capped is ERC20.erc20.total_supply <= storage.cap;
+}
+
+spec for mint is partial {
+  raises Not_owner when Evm.sender() <> old.storage.owner;
+  raises Over_cap when old.ERC20.erc20.total_supply + value > old.storage.cap;
+  ensures new.ERC20.erc20.total_supply = old.ERC20.erc20.total_supply + value;
+  ensures new.ERC20.erc20.balances[to] = old.ERC20.erc20.balances[to] + value;
+}

@@ -22,6 +22,15 @@ lithe
 
 Run with no arguments, `lithe` prints its commands. See [Command line](/tooling/cli) for the full list.
 
+To prove contracts' specs with [`lithe prove`](/language/verification#proving-specs), also install the [Z3](https://github.com/Z3Prover/z3) solver, which it runs:
+
+```bash
+brew install z3        # macOS
+sudo apt install z3    # Debian and Ubuntu
+```
+
+Or download a release from [github.com/Z3Prover/z3/releases](https://github.com/Z3Prover/z3/releases) and put `z3` on your `PATH`, or set `LITHE_Z3` to its path. Nothing else needs Z3.
+
 ## Write a contract
 
 A Lithe file is a contract. Create `counter.lithe`:

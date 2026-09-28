@@ -239,7 +239,11 @@ impl Checker {
                     self.error_payload(err.line, err.col, id)?
                 }
             };
-            let abi_name = abi_error_name(&err.name);
+            let abi_name = if err.name == crate::spec::VIOLATION {
+                "SpecViolation".to_string()
+            } else {
+                abi_error_name(&err.name)
+            };
             let abi_types: Vec<&str> = fields.iter().map(|(_, abi)| abi.as_str()).collect();
             let abi_sig = format!("{abi_name}({})", abi_types.join(","));
             let selector = crate::keccak::selector(&abi_sig);

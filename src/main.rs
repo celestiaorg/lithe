@@ -32,6 +32,9 @@ fn main() {
     } else {
         lithe::Options::default()
     };
+    if cmd == "prove" {
+        prove(args);
+    }
     if cmd == "stubs" && args.len() == 2 {
         match lithe::stubs(&Sources::disk(), Path::new(&args[0]), &args[1]) {
             Ok(text) => print!("{text}"),
@@ -50,7 +53,7 @@ fn main() {
     }
     if !matches!(
         cmd.as_str(),
-        "compile" | "abi" | "abi-tree" | "footprint" | "analysis" | "errors" | "facets"
+        "compile" | "abi" | "abi-tree" | "footprint" | "analysis" | "errors" | "facets" | "specs"
     ) || args.len() != 1
     {
         usage();
@@ -87,6 +90,7 @@ fn main() {
         "footprint" => lithe::footprint(&sources, file, &opts).map_err(Vec::from),
         "analysis" => lithe::analysis(&sources, file).map_err(Vec::from),
         "errors" => lithe::errors(&sources, file).map_err(Vec::from),
+        "specs" => lithe::specs(&sources, file).map_err(Vec::from),
         "facets" => lithe::facets(&sources, file, &opts).map_err(Vec::from),
         _ => lithe::compile(&sources, file, &opts)
             .and_then(lithe::Output::single)
@@ -123,6 +127,53 @@ fn main() {
     }
 }
 
+/// `lithe prove file.lithe [--solver path] [--timeout seconds]`. Exits 0 when every
+/// obligation is proved, 1 when one fails or the file does not compile, 2 without Z3, and 3
+/// when one is unknown.
+fn prove(args: Vec<String>) -> ! {
+    let mut opts = lithe::ProveOptions::default();
+    let mut files = Vec::new();
+    let mut it = args.into_iter();
+    while let Some(arg) = it.next() {
+        match arg.as_str() {
+            "--solver" => match it.next() {
+                Some(path) => opts.solver = Some(path.into()),
+                None => usage_exit("--solver needs the path to z3"),
+            },
+            "--timeout" => match it.next().and_then(|s| s.parse().ok()) {
+                Some(n) => opts.timeout = n,
+                None => usage_exit("--timeout needs a number of seconds"),
+            },
+            _ => files.push(arg),
+        }
+    }
+    let [file] = files.as_slice() else {
+        usage();
+        std::process::exit(2);
+    };
+    if let Err(why) = lithe::solver(&opts) {
+        usage_exit(&why);
+    }
+    match lithe::prove(&Sources::disk(), Path::new(file), &opts) {
+        Ok(proof) => {
+            print!("{}", proof.text);
+            std::process::exit(if proof.failed > 0 {
+                1
+            } else if proof.unknown > 0 {
+                3
+            } else {
+                0
+            });
+        }
+        Err(err) => fail(&[err]),
+    }
+}
+
+fn usage_exit(msg: &str) -> ! {
+    eprintln!("{msg}");
+    std::process::exit(2);
+}
+
 fn fail(errors: &[lithe::Error]) -> ! {
     let errors: Vec<String> = errors.iter().map(ToString::to_string).collect();
     eprintln!("{}", errors.join("\n\n"));
@@ -156,6 +207,7 @@ fn options(args: &mut Vec<String>) -> Result<lithe::Options, String> {
                 }
                 None => return Err("--split takes `auto`, `off`, or `all`".to_string()),
             },
+            "--check-specs" => opts.check_specs = true,
             "--create2-deployer" => {
                 let value = it.next().ok_or("--create2-deployer needs an address")?;
                 opts.deployer = address(&value)
@@ -411,6 +463,8 @@ usage: lithe compile file.lithe
        lithe footprint file.lithe
        lithe analysis file.lithe
        lithe errors file.lithe
+       lithe specs file.lithe
+       lithe prove file.lithe [--solver path/to/z3] [--timeout seconds]
        lithe lint [--fix] path...
        lithe storage file.lithe
        lithe storage old.lithe new.lithe
@@ -429,6 +483,10 @@ compile, abi, facets, abi-tree, footprint, upgrade, and upgrade-check also take
                                      contract is over the limit (auto, the default),
                                      never (off), or always (all)
        --create2-deployer <address>  the CREATE2 factory for facets
+
+compile also takes
+       --check-specs                 a test build that checks the contract's specs as it
+                                     runs, and reverts with SpecViolation(string)
 
 directory commands write to ./out
 builds are cached in ~/.cache/lithe; set LITHE_CACHE_DIR to move it, or empty to turn it off"

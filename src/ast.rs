@@ -29,6 +29,61 @@ pub(crate) struct Program {
     pub peers: Vec<Program>,
     /// The file the contract is written in, as its declarations' `origin` names it.
     pub origin: String,
+    /// The contract's spec blocks, and those of the files it imports. The checker drops
+    /// them: only `spec::check` reads them.
+    pub specs: Vec<SpecBlock>,
+    /// Checked for the spec tools, which read loop invariants. A build drops them.
+    pub proving: bool,
+}
+
+/// `spec is { ... }` or `spec for f is { ... }`: claims about the program that `lithe prove`
+/// checks. Nothing in a spec block runs on chain.
+#[derive(Debug, Clone)]
+pub(crate) struct SpecBlock {
+    pub line: u32,
+    pub col: u32,
+    pub origin: String,
+    /// The function or route the block describes. `None` for `spec is`, the invariants.
+    pub target: Option<NameAt>,
+    /// `spec for external f` or `spec for function f`, for a module that has both.
+    pub external: Option<bool>,
+    /// `spec for f is partial`: the listed `raises` and `panics` conditions need not be the
+    /// only ways `f` reverts.
+    pub partial: bool,
+    pub clauses: Vec<Clause>,
+    /// Set when the block describes a module, from inside it or from `spec for module M`.
+    pub module: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct Clause {
+    pub line: u32,
+    pub col: u32,
+    pub kind: ClauseKind,
+    pub expr: Expr,
+    /// The expression as written, on one line: what the spec tools say the clause claims.
+    pub text: String,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) enum ClauseKind {
+    /// `invariant name is e;`, in `spec is`.
+    Invariant(String),
+    /// `const x : T := e;`, a name for a value the later clauses use.
+    Const { name: String, ty: TypeRef },
+    /// `raises E when e;`
+    Raises(NameAt),
+    /// `panics when e;`
+    Panics,
+    /// `ensures e;`
+    Ensures,
+}
+
+/// Which state a spec reads: `old.` before the call, `new.` after it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum State {
+    Old,
+    New,
 }
 
 #[derive(Debug, Clone)]
@@ -70,6 +125,8 @@ pub(crate) struct ModuleDecl {
     pub error_sets: Vec<ErrorSetDecl>,
     pub events: Vec<EventDecl>,
     pub funcs: Vec<Func>,
+    /// The spec blocks written inside the module.
+    pub specs: Vec<SpecBlock>,
 }
 
 /// `use M exposing I, J, { ... }`: the contract uses `M` and exposes the members of the
@@ -473,6 +530,9 @@ pub(crate) enum Stmt {
         /// Every local the loop declares, counter and element included. A deferred call
         /// inside the loop snapshots those its continuation reads.
         declared: Vec<usize>,
+        /// `invariant e`: what holds each time an iteration starts, and when the loop ends.
+        /// Only the spec tools read them; a build drops them.
+        invariants: Vec<Expr>,
     },
     /// `(a, b) := expr;` assigns each element of a tuple to a `var`.
     AssignTuple {
@@ -682,6 +742,14 @@ pub(crate) enum Builtin {
     None,
     /// A variant constructor, by its index in the variant's cases.
     Ctor(usize),
+    /// `old.e` or `new.e` in a spec: `e` read in the state before or after the call.
+    SpecState(State),
+    /// `sum(m)` in a spec: the sum of a map's values.
+    SpecSum,
+    /// `count(m)` in a spec: how many of a map's values are not zero.
+    SpecCount,
+    /// `forall x : T . e` in a spec. Its arguments are `x`, the name of `T`, and `e`.
+    SpecForall,
 }
 
 /// The precompiled contracts past the hashes and `ecrecover`, each a built-in.

@@ -12,8 +12,59 @@ pub(crate) fn parse(src: &str) -> Result<Program, Error> {
         toks,
         i: 0,
         declaring: false,
+        in_spec: false,
     }
     .program()
+}
+
+/// A spec file, `x.spec.lithe`: spec blocks for the contract and modules of `x.lithe`.
+pub(crate) struct SpecFile {
+    /// `spec is` and `spec for f` at the top level, for a file's one implicit contract.
+    pub bare: Vec<SpecBlock>,
+    /// `spec for contract C is { ... }`.
+    pub contracts: Vec<(NameAt, Vec<SpecBlock>)>,
+    /// `spec for module M is { ... }`: each block has `module` set.
+    pub modules: Vec<(NameAt, Vec<SpecBlock>)>,
+}
+
+pub(crate) fn parse_specs(src: &str) -> Result<SpecFile, Error> {
+    let toks = lex::tokenize(src)?;
+    let mut parser = Parser {
+        src,
+        toks,
+        i: 0,
+        declaring: false,
+        in_spec: false,
+    };
+    let mut file = SpecFile {
+        bare: Vec::new(),
+        contracts: Vec::new(),
+        modules: Vec::new(),
+    };
+    while parser.kind() != Kind::Eof {
+        if parser.kind() == Kind::Semi {
+            parser.bump();
+            continue;
+        }
+        if !parser.spec_ahead() {
+            return Err(parser.err(format!(
+                "a spec file holds only spec blocks; found {}",
+                parser.found()
+            )));
+        }
+        match parser.peek_kind(2) {
+            Kind::Contract => {
+                let (name, blocks) = parser.spec_wrapper()?;
+                file.contracts.push((name, blocks));
+            }
+            Kind::Module => {
+                let (name, blocks) = parser.spec_wrapper()?;
+                file.modules.push((name, blocks));
+            }
+            _ => file.bare.push(parser.spec_block(None)?),
+        }
+    }
+    Ok(file)
 }
 
 enum StorageItem {
@@ -52,6 +103,8 @@ struct Parser<'a> {
     i: usize,
     /// Inside `use M exposing { ... }`: functions are external and have no body.
     declaring: bool,
+    /// Inside a spec block, where `old.`, `new.`, `sum`, `count`, and `forall` are spec forms.
+    in_spec: bool,
 }
 
 fn path_expr(line: u32, col: u32, path: &[String]) -> Expr {
@@ -93,6 +146,7 @@ struct Body {
     supports: Vec<NameAt>,
     upgradeable: bool,
     guard: Option<GuardDecl>,
+    specs: Vec<SpecBlock>,
 }
 
 impl Body {
@@ -113,6 +167,7 @@ impl Body {
             supports: Vec::new(),
             upgradeable: false,
             guard: None,
+            specs: Vec::new(),
         }
     }
 
@@ -139,6 +194,8 @@ impl Body {
             siblings: Vec::new(),
             peers: Vec::new(),
             origin: String::new(),
+            specs: self.specs,
+            proving: false,
         }
     }
 }
@@ -151,6 +208,8 @@ impl<'a> Parser<'a> {
         let mut implicit = Body::new(1, 1, None);
         let mut explicit = Vec::new();
         let mut saw_implicit = false;
+        let mut contract_specs: Vec<(NameAt, Vec<SpecBlock>)> = Vec::new();
+        let mut module_specs: Vec<(NameAt, Vec<SpecBlock>)> = Vec::new();
         while self.kind() == Kind::Import {
             uses.push(self.use_decl()?);
         }
@@ -162,6 +221,12 @@ impl<'a> Parser<'a> {
             match self.kind() {
                 Kind::Module => modules.push(self.module_decl()?),
                 Kind::Interface => shared_interfaces.push(self.interface_decl()?),
+                Kind::Ident if self.spec_ahead() && self.peek_kind(2) == Kind::Contract => {
+                    contract_specs.push(self.spec_wrapper()?);
+                }
+                Kind::Ident if self.spec_ahead() && self.peek_kind(2) == Kind::Module => {
+                    module_specs.push(self.spec_wrapper()?);
+                }
                 Kind::Contract => {
                     if saw_implicit {
                         let (line, col) = self.at();
@@ -207,13 +272,34 @@ impl<'a> Parser<'a> {
                 }
             }
         }
+        for (name, blocks) in contract_specs {
+            let Some(body) = explicit
+                .iter_mut()
+                .find(|body| body.name.as_deref() == Some(name.name.as_str()))
+            else {
+                return Err(error(
+                    name.line,
+                    name.col,
+                    format!("no contract `{}` in this file", name.name),
+                ));
+            };
+            body.specs.extend(blocks);
+        }
+        // `spec for module M` blocks join `M`'s when the contract is checked, which knows
+        // whether it uses `M`.
+        let module_specs: Vec<SpecBlock> = module_specs
+            .into_iter()
+            .flat_map(|(_, blocks)| blocks)
+            .collect();
         if explicit.is_empty() {
             implicit.interfaces.extend(shared_interfaces);
+            implicit.specs.extend(module_specs);
             return Ok(implicit.into_program(modules, uses));
         }
         let mut programs = Vec::new();
         for (index, mut body) in explicit.into_iter().enumerate() {
             body.interfaces.extend(shared_interfaces.clone());
+            body.specs.extend(module_specs.iter().cloned());
             let unit_uses = if index == 0 { uses.clone() } else { Vec::new() };
             programs.push(body.into_program(modules.clone(), unit_uses));
         }
@@ -324,6 +410,17 @@ impl<'a> Parser<'a> {
                     return Err(self.err(format!("`{word}` cannot be private")));
                 }
                 body.funcs.push(self.item(deco, private)?);
+            }
+            Kind::Ident if self.spec_ahead() => {
+                if private {
+                    return Err(self.err("a spec block cannot be private"));
+                }
+                if matches!(self.peek_kind(2), Kind::Contract | Kind::Module) {
+                    return Err(self.err(
+                        "a spec block inside a contract describes that contract; write `spec is` or `spec for f`",
+                    ));
+                }
+                body.specs.push(self.spec_block(None)?);
             }
             Kind::Ident if self.special_ahead() => {
                 if private {
@@ -502,6 +599,7 @@ impl<'a> Parser<'a> {
         let mut error_sets = Vec::new();
         let mut events = Vec::new();
         let mut funcs = Vec::new();
+        let mut specs = Vec::new();
         while self.kind() != Kind::RBrace && self.kind() != Kind::Eof {
             if self.kind() == Kind::Semi {
                 self.bump();
@@ -509,6 +607,15 @@ impl<'a> Parser<'a> {
             }
             if self.kind() == Kind::End {
                 return Err(self.err("close this module with `}`"));
+            }
+            if self.spec_ahead() {
+                if matches!(self.peek_kind(2), Kind::Contract | Kind::Module) {
+                    return Err(self.err(
+                        "a spec block inside a module describes that module; write `spec is` or `spec for f`",
+                    ));
+                }
+                specs.push(self.spec_block(Some(name.clone()))?);
+                continue;
             }
             if self.kind() == Kind::Private {
                 return Err(self.err("module functions cannot be private"));
@@ -646,6 +753,7 @@ impl<'a> Parser<'a> {
             error_sets,
             events,
             funcs,
+            specs,
         })
     }
 
@@ -700,6 +808,262 @@ impl<'a> Parser<'a> {
     fn slice(&self) -> &str {
         let tok = &self.toks[self.i];
         &self.src[tok.start..tok.end]
+    }
+
+    /// `spec is` or `spec for`: a spec block, where a declaration may be.
+    fn spec_ahead(&self) -> bool {
+        self.kind() == Kind::Ident
+            && self.slice() == "spec"
+            && matches!(self.peek_kind(1), Kind::Is | Kind::For)
+    }
+
+    /// `spec is { invariants }`, or `spec for f is [partial] { clauses }`.
+    fn spec_block(&mut self, module: Option<String>) -> Result<SpecBlock, Error> {
+        let (line, col) = self.at();
+        self.bump();
+        let mut external = None;
+        let target = if self.kind() == Kind::For {
+            self.bump();
+            match self.kind() {
+                Kind::External => external = Some(true),
+                Kind::Function => external = Some(false),
+                _ => {}
+            }
+            if external.is_some() {
+                self.bump();
+            }
+            let (tline, tcol) = self.at();
+            Some(NameAt {
+                line: tline,
+                col: tcol,
+                name: self.ident()?,
+            })
+        } else {
+            None
+        };
+        self.want(Kind::Is)?;
+        let partial = self.kind() == Kind::Ident && self.slice() == "partial";
+        if partial {
+            if target.is_none() {
+                return Err(self.err("only `spec for f` can be `partial`"));
+            }
+            self.bump();
+        }
+        self.want(Kind::LBrace)?;
+        let saved = std::mem::replace(&mut self.in_spec, true);
+        let mut clauses = Vec::new();
+        while self.kind() != Kind::RBrace && self.kind() != Kind::Eof {
+            if self.kind() == Kind::Semi {
+                self.bump();
+                continue;
+            }
+            clauses.push(self.clause(target.is_some())?);
+        }
+        self.in_spec = saved;
+        self.want(Kind::RBrace)?;
+        Ok(SpecBlock {
+            line,
+            col,
+            origin: String::new(),
+            target,
+            external,
+            partial,
+            clauses,
+            module,
+        })
+    }
+
+    /// `spec for contract C is { ... }` or `spec for module M is { ... }`: spec blocks written
+    /// outside the contract or module they describe.
+    fn spec_wrapper(&mut self) -> Result<(NameAt, Vec<SpecBlock>), Error> {
+        self.bump();
+        self.want(Kind::For)?;
+        let module = self.kind() == Kind::Module;
+        self.bump();
+        let (line, col) = self.at();
+        let name = self.ident()?;
+        self.want(Kind::Is)?;
+        self.want(Kind::LBrace)?;
+        let mut blocks = Vec::new();
+        while self.kind() != Kind::RBrace && self.kind() != Kind::Eof {
+            if self.kind() == Kind::Semi {
+                self.bump();
+                continue;
+            }
+            if !self.spec_ahead() || matches!(self.peek_kind(2), Kind::Contract | Kind::Module) {
+                return Err(self.err(format!(
+                    "expected `spec is` or `spec for f`, found {}",
+                    self.found()
+                )));
+            }
+            blocks.push(self.spec_block(module.then(|| name.clone()))?);
+        }
+        self.want(Kind::RBrace)?;
+        Ok((NameAt { line, col, name }, blocks))
+    }
+
+    /// One clause of a spec block, and the `;` that ends it.
+    fn clause(&mut self, for_fn: bool) -> Result<Clause, Error> {
+        let (line, col) = self.at();
+        let word = match self.kind() {
+            Kind::Const => "const",
+            Kind::Raises => "raises",
+            Kind::Ident => match self.slice() {
+                "invariant" => "invariant",
+                "panics" => "panics",
+                "ensures" => "ensures",
+                _ => "",
+            },
+            _ => "",
+        };
+        if word.is_empty() {
+            return Err(self.err(if for_fn {
+                format!(
+                    "expected `const`, `raises`, `panics`, or `ensures`, found {}",
+                    self.found()
+                )
+            } else {
+                format!("expected `invariant`, found {}", self.found())
+            }));
+        }
+        if for_fn && word == "invariant" {
+            return Err(self.err("an invariant describes the contract; write it in `spec is`"));
+        }
+        if !for_fn && word != "invariant" {
+            return Err(self.err(format!(
+                "`{word}` describes a function; write it in `spec for f`"
+            )));
+        }
+        self.bump();
+        let kind = match word {
+            "invariant" => {
+                let name = self.ident()?;
+                self.want(Kind::Is)?;
+                ClauseKind::Invariant(name)
+            }
+            "const" => {
+                let name = self.ident()?;
+                self.want(Kind::Colon)?;
+                let ty = self.ty()?;
+                self.want(Kind::Assign)?;
+                ClauseKind::Const { name, ty }
+            }
+            "raises" => {
+                let (eline, ecol) = self.at();
+                let name = self.ident()?;
+                self.want_word("when")?;
+                ClauseKind::Raises(NameAt {
+                    line: eline,
+                    col: ecol,
+                    name,
+                })
+            }
+            "panics" => {
+                self.want_word("when")?;
+                ClauseKind::Panics
+            }
+            _ => ClauseKind::Ensures,
+        };
+        let start = self.toks[self.i].start;
+        let expr = self.expr()?;
+        let text = self.src[start..self.toks[self.i - 1].end]
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+        self.want(Kind::Semi)?;
+        Ok(Clause {
+            line,
+            col,
+            kind,
+            expr,
+            text,
+        })
+    }
+
+    /// A word that is a keyword only here, such as `when` in a spec clause.
+    fn want_word(&mut self, word: &str) -> Result<(), Error> {
+        if self.kind() == Kind::Ident && self.slice() == word {
+            self.bump();
+            Ok(())
+        } else {
+            Err(self.err(format!("expected `{word}`, found {}", self.found())))
+        }
+    }
+
+    /// `old.path`, `new.path`, `sum(m)`, `count(m)`, and `forall x : T . e`, inside a spec
+    /// block. `None` when the identifier ahead starts none of them.
+    fn spec_form(&mut self) -> Result<Option<Expr>, Error> {
+        let (line, col) = self.at();
+        let call = |name: &str, builtin: Builtin, args: Vec<Expr>| Expr::Call {
+            line,
+            col,
+            name: name.to_string(),
+            args,
+            base: None,
+            callee: None,
+            builtin: Some(builtin),
+            iface: None,
+            method: None,
+            ty: 0,
+        };
+        let word = self.slice().to_string();
+        match word.as_str() {
+            "old" | "new" if self.peek_kind(1) == Kind::LParen => Err(self.err(format!(
+                "`{word}.` starts a path, such as `{word}.storage.x`"
+            ))),
+            "old" | "new" if self.peek_kind(1) == Kind::Dot => {
+                self.bump();
+                self.bump();
+                if self.kind() != Kind::Ident {
+                    return Err(self.err(format!(
+                        "expected what `{word}.` reads, such as `{word}.storage.x`, found {}",
+                        self.found()
+                    )));
+                }
+                let state = if word == "old" {
+                    State::Old
+                } else {
+                    State::New
+                };
+                let path = self.primary()?;
+                Ok(Some(call(&word, Builtin::SpecState(state), vec![path])))
+            }
+            "sum" | "count" if self.peek_kind(1) == Kind::LParen => {
+                self.bump();
+                self.bump();
+                let args = self.args()?;
+                let builtin = if word == "sum" {
+                    Builtin::SpecSum
+                } else {
+                    Builtin::SpecCount
+                };
+                Ok(Some(call(&word, builtin, args)))
+            }
+            "forall" if self.peek_kind(1) == Kind::Ident && self.peek_kind(2) == Kind::Colon => {
+                self.bump();
+                let (bline, bcol) = self.at();
+                let name = self.ident()?;
+                self.want(Kind::Colon)?;
+                let (tline, tcol) = self.at();
+                let ty = self.ident()?;
+                self.want(Kind::Dot)?;
+                let body = self.expr()?;
+                let ident = |line: u32, col: u32, name: String| Expr::Ident {
+                    line,
+                    col,
+                    name,
+                    sym: None,
+                    builtin: None,
+                    ty: 0,
+                };
+                Ok(Some(call(
+                    "forall",
+                    Builtin::SpecForall,
+                    vec![ident(bline, bcol, name), ident(tline, tcol, ty), body],
+                )))
+            }
+            _ => Ok(None),
+        }
     }
 
     fn storage_decl(&mut self) -> Result<StorageItem, Error> {
@@ -1900,6 +2264,14 @@ impl<'a> Parser<'a> {
         } else {
             None
         };
+        let mut invariants = Vec::new();
+        while self.kind() == Kind::Ident && self.slice() == "invariant" {
+            self.bump();
+            let saved = std::mem::replace(&mut self.in_spec, true);
+            let e = self.expr();
+            self.in_spec = saved;
+            invariants.push(e?);
+        }
         self.want(Kind::Do)?;
         let body = self.block()?;
         Ok(Stmt::For {
@@ -1920,6 +2292,7 @@ impl<'a> Parser<'a> {
             cap: None,
             list: None,
             declared: Vec::new(),
+            invariants,
         })
     }
 
@@ -2515,6 +2888,11 @@ impl<'a> Parser<'a> {
                 }
             }
             Kind::Ident => {
+                if self.in_spec {
+                    if let Some(form) = self.spec_form()? {
+                        return Ok(form);
+                    }
+                }
                 let name = self.ident()?;
                 self.postfix(Expr::Ident {
                     line,

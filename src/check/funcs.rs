@@ -15,6 +15,7 @@ impl Checker {
         self.kind = f.kind;
         self.external_pure = f.external_pure;
         self.fn_name = source_name(&f.name).to_string();
+        self.in_spec = crate::spec::is_spec_fn(&f.name);
         self.once = match f.kind {
             ItemKind::Migrate => Some("migrate"),
             ItemKind::Deploy => Some("deploy"),
@@ -423,8 +424,14 @@ impl Checker {
                 break;
             }
         }
+        // `--check-specs` reports a broken spec with an error no function declares.
+        let violation = self
+            .errors
+            .iter()
+            .position(|e| e.name == crate::spec::VIOLATION);
         for i in 0..n {
-            let inferred = expand(&self.pieces[i], &effective);
+            let mut inferred = expand(&self.pieces[i], &effective);
+            inferred.retain(|id| Some(*id) != violation);
             // A module's external declares its errors as any external does.
             let (kind, name) = match &funcs[i].exported {
                 Some(exported) => (

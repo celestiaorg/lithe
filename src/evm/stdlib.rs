@@ -4,6 +4,9 @@ use super::*;
 #[test]
 fn every_stdlib_file_compiles() {
     for (path, _) in crate::modules::STD {
+        if crate::is_spec_file(std::path::Path::new(path)) {
+            continue;
+        }
         let dir = std::env::temp_dir().join(format!("lithe-std-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let main = dir.join("main.lithe");

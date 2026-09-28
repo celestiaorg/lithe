@@ -579,7 +579,11 @@ impl Checker {
             | Builtin::None
             | Builtin::Ctor(_)
             | Builtin::BytesAt
-            | Builtin::BytesSlice => {
+            | Builtin::BytesSlice
+            | Builtin::SpecState(_)
+            | Builtin::SpecSum
+            | Builtin::SpecCount
+            | Builtin::SpecForall => {
                 return Err(error(line, col, "internal: not a module built-in"));
             }
         }
@@ -907,6 +911,9 @@ impl Checker {
             | Builtin::Some
             | Builtin::None
             | Builtin::Ctor(_) => TY_UNIT,
+            Builtin::SpecCount => TY_NAT,
+            Builtin::SpecState(_) | Builtin::SpecSum => TY_UNIT,
+            Builtin::SpecForall => TY_BOOL,
             Builtin::Transfer
             | Builtin::Create
             | Builtin::RawCreate

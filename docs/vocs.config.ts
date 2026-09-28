@@ -35,6 +35,7 @@ const guide = [
       { text: "Imports", link: "/language/imports" },
       { text: "Generics", link: "/language/generics" },
       { text: "Upgrades and migrations", link: "/language/upgrades" },
+      { text: "Formal verification", link: "/language/verification" },
       { text: "Built-ins", link: "/language/builtins" },
     ],
   },

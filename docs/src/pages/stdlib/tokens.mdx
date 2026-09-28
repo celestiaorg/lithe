@@ -57,6 +57,23 @@ use ERC20 exposing IERC20Metadata, IERC20Views, IERC20Approvals;
 supports IERC20, IERC20Metadata;
 ```
 
+`ERC20` ships a [spec file](/language/verification#modules), `std/token/erc20.spec.lithe`: its balances add up to its supply, the zero address holds nothing, and it lists exactly when `transfer`, `approve`, and `transferFrom` revert. `lithe prove` proves them for your contract, whose own code can change the module's storage too:
+
+```text
+invariant ERC20.supply: erc20.total_supply = sum(erc20.balances)
+  proved      deploy
+  proved      transfer
+  proved      approve (unchanged)
+  proved      transferFrom
+...
+spec for ERC20.transferFrom
+  proved      ensures new.erc20.total_supply = old.erc20.total_supply
+  ...
+  proved      raises ERC20InsufficientAllowance when allowed < value
+  ...
+  proved      reverts in no other case
+```
+
 ## `ERC20Burnable`
 
 `std/token/erc20_burnable.lithe`. The externals, `IERC20Burnable`: `burn(value)` burns the caller's tokens, and `burnFrom(account, value)` spends an allowance to burn someone else's. The internal `burn` and `burn_from` do the same for a contract's own entrypoints.
@@ -231,6 +248,9 @@ contract Collection is {
 ```
 
 `IERC721` has both `safeTransferFrom` overloads, one for each ABI signature, and `supports` answers for it and `IERC721Metadata` with `0x80ac58cd` and `0x5b5e139f`. `token_uri` checks that the token exists and answers the empty string, as OpenZeppelin's does without a base URI; a collection with URIs writes its own `tokenURI`. A collection that writes its own transfers or `tokenURI` exposes the rest with the file's `IERC721Views`, `IERC721Name` (`name` and `symbol`), and `IERC721Approvals`, and still lists the standards in `supports`.
+
+
+`ERC721` ships a [spec file](/language/verification#modules) too, `std/token/erc721.spec.lithe`: each owned token counts once in its owner's balance, the zero address owns and approves nothing, only a token that exists has an approval, and `transferFrom` moves the token and clears its approval. `lithe prove` proves them for your collection.
 
 ## `ERC721Enumerable`
 

@@ -22,7 +22,7 @@ fn render(src: &str, max: usize) -> Result<String, Error> {
     for i in 1..pieces.len() {
         if pieces[i - 1].kind != PieceKind::Comment
             && token_kind(&pieces[i]) == Some(Kind::Pipe)
-            && in_raises(&pieces, i)
+            && in_raises(src, &pieces, i)
         {
             pieces[i].newlines_before = 0;
         }
@@ -35,7 +35,7 @@ fn render(src: &str, max: usize) -> Result<String, Error> {
             return Ok(out);
         };
         let from = line_start(&out, starts[a]);
-        let options = options(&pieces, &partner, &out, &starts, from, a, b, max);
+        let options = options(src, &pieces, &partner, &out, &starts, from, a, b, max);
         let pick = options
             .iter()
             .find(|o| fits(src, &mut pieces, o, a, b, max))
@@ -67,6 +67,9 @@ fn print(src: &str, pieces: &[Piece]) -> (String, Vec<usize>) {
         prev_kind: None,
         in_raises: false,
         tight: false,
+        line_head: String::new(),
+        recent: Vec::new(),
+        forall_dot: false,
         col: 0,
         starts: Vec::new(),
     };
@@ -147,6 +150,7 @@ fn partners(pieces: &[Piece]) -> Vec<Option<usize>> {
 /// Ways to break line `a..=b`, each a set of pieces to start a new line at, best first.
 /// Only the outermost nesting level that offers a break is used.
 fn options(
+    src: &str,
     pieces: &[Piece],
     partner: &[Option<usize>],
     out: &str,
@@ -199,7 +203,7 @@ fn options(
         let pipes: Vec<usize> = inner
             .iter()
             .copied()
-            .filter(|&i| is(i, Kind::Pipe) && in_raises(pieces, i))
+            .filter(|&i| is(i, Kind::Pipe) && in_raises(src, pieces, i))
             .collect();
         if let Some(&first) = pipes.first() {
             let fit = pipes
@@ -356,10 +360,12 @@ fn binary(pieces: &[Piece], i: usize) -> Option<u8> {
 }
 
 /// Whether `|` at `i` separates the errors of a `raises` clause.
-fn in_raises(pieces: &[Piece], i: usize) -> bool {
+fn in_raises(src: &str, pieces: &[Piece], i: usize) -> bool {
     for j in (0..i).rev() {
         match token_kind(&pieces[j]) {
             Some(Kind::Raises) => return true,
+            // `raises E when a | b` in a spec block: the rest is an expression.
+            Some(Kind::Ident) if &src[pieces[j].start..pieces[j].end] == "when" => return false,
             Some(Kind::Ident | Kind::Pipe | Kind::Dot) | None => {}
             Some(_) => return false,
         }
@@ -380,6 +386,8 @@ struct Group {
     close: usize,
     open: Open,
     square: bool,
+    /// A spec block's braces, whose `raises` lines are clauses, not a header's.
+    spec: bool,
 }
 
 struct Printer<'a> {
@@ -399,6 +407,12 @@ struct Printer<'a> {
     in_raises: bool,
     /// Previous token was a prefix (`-`, `~`, `@`) that sticks to the next token.
     tight: bool,
+    /// The first token of the line being printed.
+    line_head: String,
+    /// The last few tokens, for `forall x : T . e`, whose `.` is spaced.
+    recent: Vec<(Kind, String)>,
+    /// The token just printed is a `forall`'s `.`.
+    forall_dot: bool,
     col: usize,
     /// Output offset of each piece.
     starts: Vec<usize>,
@@ -435,6 +449,15 @@ impl Printer<'_> {
             PieceKind::Comment => self.emit_comment(piece),
             PieceKind::Token(_) => {
                 let text = &self.src[piece.start..piece.end];
+                if bol {
+                    self.line_head = text.to_string();
+                }
+                let kind_now = kind.expect("token");
+                self.forall_dot = kind_now == Kind::Dot && self.before_forall_dot();
+                self.recent.push((kind_now, text.to_string()));
+                if self.recent.len() > 4 {
+                    self.recent.remove(0);
+                }
                 self.out.push_str(text);
                 self.col += text.len();
                 let kind = kind.expect("token");
@@ -464,6 +487,9 @@ impl Printer<'_> {
         }
         if kind == Kind::Is {
             return self.decl_indent;
+        }
+        if kind == Kind::Raises && self.groups.last().is_some_and(|g| g.spec) {
+            return self.structural();
         }
         if kind == Kind::Raises {
             return self.decl_indent + 2;
@@ -520,7 +546,7 @@ impl Printer<'_> {
         ) {
             self.decl_indent = self.line_indent;
         }
-        if kind == Kind::Raises {
+        if kind == Kind::Raises && !self.groups.last().is_some_and(|g| g.spec) {
             self.in_raises = true;
             self.raises_indent = self.line_indent;
         }
@@ -533,6 +559,7 @@ impl Printer<'_> {
                 close: self.line_indent,
                 open: Open::Flat,
                 square: kind == Kind::LBrack,
+                spec: false,
             }),
             Kind::LBrace => self.groups.push(self.brace(bol)),
             Kind::RParen | Kind::RBrack | Kind::RBrace => {
@@ -550,6 +577,7 @@ impl Printer<'_> {
                     close: self.line_indent,
                     open: Open::Block,
                     square: false,
+                    spec: false,
                 }
             } else {
                 Group {
@@ -557,6 +585,7 @@ impl Printer<'_> {
                     close: self.line_indent + 2,
                     open: Open::Block,
                     square: false,
+                    spec: false,
                 }
             }
         } else if self.prev_kind == Some(Kind::Of) {
@@ -566,6 +595,7 @@ impl Printer<'_> {
                     close: self.line_indent,
                     open: Open::Flat,
                     square: false,
+                    spec: false,
                 }
             } else {
                 Group {
@@ -573,6 +603,7 @@ impl Printer<'_> {
                     close: self.line_indent,
                     open: Open::Flat,
                     square: false,
+                    spec: false,
                 }
             }
         } else {
@@ -581,6 +612,7 @@ impl Printer<'_> {
                 close: self.line_indent,
                 open: Open::Block,
                 square: false,
+                spec: self.line_head == "spec",
             }
         }
     }
@@ -593,6 +625,12 @@ impl Printer<'_> {
             return true;
         };
         let prev = self.prev_kind.expect("prev");
+        if next == Kind::Dot && self.before_forall_dot() {
+            return true;
+        }
+        if prev == Kind::Dot && self.forall_dot {
+            return true;
+        }
         if matches!(
             next,
             Kind::Comma | Kind::Semi | Kind::RParen | Kind::RBrack | Kind::Dot
@@ -622,6 +660,15 @@ impl Printer<'_> {
             return false;
         }
         true
+    }
+
+    /// The tokens so far end `forall x : T`, so a `.` next separates the body.
+    fn before_forall_dot(&self) -> bool {
+        matches!(
+            self.recent.as_slice(),
+            [.., (Kind::Ident, forall), (Kind::Ident, _), (Kind::Colon, _), (Kind::Ident, _)]
+                if forall == "forall"
+        )
     }
 
     fn emit_comment(&mut self, piece: &Piece) {

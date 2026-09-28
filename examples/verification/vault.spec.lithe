@@ -1,0 +1,21 @@
+(* What vault.lithe guarantees. `lithe specs vault.lithe` checks these. *)
+
+spec is {
+  (* The balances add up to the total. *)
+  invariant ledger is storage.total = sum(storage.balances);
+  (* The vault holds at least the ether it owes. *)
+  invariant solvent is Evm.balance(Evm.self()) >= storage.total;
+}
+
+spec for deposit is {
+  panics when old.storage.total + Evm.value() > 0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff;
+  ensures new.storage.balances[Evm.sender()] = old.storage.balances[Evm.sender()] + Evm.value();
+  ensures new.storage.total = old.storage.total + Evm.value();
+}
+
+spec for withdraw is {
+  const have : wei := old.storage.balances[Evm.sender()];
+  raises Insufficient when have < amount;
+  ensures new.storage.balances[Evm.sender()] = have - amount;
+  ensures new.storage.total = old.storage.total - amount;
+}

@@ -50,6 +50,10 @@ pub struct Options {
     pub split: SplitMode,
     /// The `CREATE2` factory facets are deployed through.
     pub deployer: [u8; 20],
+    /// A test build that checks the contract's specs as it runs, and reverts with
+    /// `SpecViolation(string)` when a call breaks one. It reads the contract's spec file,
+    /// and is never split.
+    pub check_specs: bool,
 }
 
 impl Default for Options {
@@ -58,6 +62,7 @@ impl Default for Options {
             size_limit: SIZE_LIMIT,
             split: SplitMode::Auto,
             deployer: DEPLOYER,
+            check_specs: false,
         }
     }
 }

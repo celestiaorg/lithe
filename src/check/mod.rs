@@ -15,6 +15,7 @@ mod generic;
 mod layout;
 mod payable;
 mod place;
+mod spec_forms;
 mod stmt;
 mod types;
 
@@ -385,6 +386,8 @@ struct Checker {
     imm_syms: HashSet<usize>,
     /// What the upgrade guard calls and writes.
     guard_pieces: Vec<Piece>,
+    /// Checking a spec block, which `crate::spec` has made a function no code calls.
+    in_spec: bool,
 }
 
 /// `cur_fn` while the upgrade guard is checked.
@@ -406,6 +409,14 @@ pub(crate) fn check(prog: Program) -> Result<Checked, Error> {
 pub(crate) fn check_in(mut prog: Program, require_entries: bool) -> Result<Checked, Error> {
     if !prog.siblings.is_empty() {
         return Err(several_contracts(&prog));
+    }
+    // Spec blocks run nowhere, so nothing built depends on them. `crate::spec` checks them.
+    prog.specs.clear();
+    for module in &mut prog.modules {
+        module.specs.clear();
+    }
+    if !prog.proving {
+        drop_loop_invariants(&mut prog);
     }
     let source = prog.clone();
     compose(&mut prog)?;
@@ -496,6 +507,7 @@ pub(crate) fn check_in(mut prog: Program, require_entries: bool) -> Result<Check
         transient_from: 0,
         imm_syms: HashSet::new(),
         guard_pieces: Vec::new(),
+        in_spec: false,
     };
     c.types.push(prim(TyKind::Unit, 0));
     c.types.push(prim(TyKind::Bool, 1));
@@ -1062,6 +1074,7 @@ struct CheckSave {
     requires: Vec<String>,
     spec_module: Option<String>,
     spec_places: Vec<String>,
+    in_spec: bool,
     origin: String,
 }
 
@@ -1109,5 +1122,72 @@ fn peel_id(types: &[RType], ty: usize) -> usize {
             .map(|under| peel_id(types, under))
             .unwrap_or(ty),
         _ => ty,
+    }
+}
+
+/// A build has no use for loop invariants, which only the spec tools read.
+fn drop_loop_invariants(prog: &mut Program) {
+    fn stmts(list: &mut [Stmt]) {
+        for s in list {
+            match s {
+                Stmt::For {
+                    invariants, body, ..
+                } => {
+                    invariants.clear();
+                    stmts(body);
+                }
+                Stmt::If {
+                    then_body,
+                    else_body,
+                    cond,
+                    ..
+                } => {
+                    expr(cond);
+                    stmts(then_body);
+                    stmts(else_body);
+                }
+                Stmt::Defer { then: Some(then), .. } => {
+                    stmts(&mut then.stmts);
+                    if let Some(error) = &mut then.error {
+                        stmts(&mut error.stmts);
+                    }
+                }
+                Stmt::Const { expr: e, .. }
+                | Stmt::Var { expr: e, .. }
+                | Stmt::Assign { expr: e, .. }
+                | Stmt::Call { expr: e, .. }
+                | Stmt::AssignTuple { expr: e, .. } => expr(e),
+                _ => {}
+            }
+        }
+    }
+    /// The statements of each `case` arm in `e`.
+    fn expr(e: &mut Expr) {
+        match e {
+            Expr::Case { scrut, arms, .. } => {
+                expr(scrut);
+                for arm in arms {
+                    stmts(&mut arm.stmts);
+                    expr(&mut arm.expr);
+                }
+            }
+            Expr::Binary { left, right, .. } => {
+                expr(left);
+                expr(right);
+            }
+            Expr::Unary { expr: inner, .. } => expr(inner),
+            Expr::Call { args, .. } => args.iter_mut().for_each(expr),
+            _ => {}
+        }
+    }
+    for f in prog
+        .funcs
+        .iter_mut()
+        .chain(prog.modules.iter_mut().flat_map(|m| m.funcs.iter_mut()))
+    {
+        stmts(&mut f.stmts);
+        if let Some(tail) = &mut f.tail {
+            expr(tail);
+        }
     }
 }

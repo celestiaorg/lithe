@@ -1,0 +1,347 @@
+---
+title: "Formal verification"
+description: "State what a contract guarantees in a spec file: invariants, what each function does, and exactly when it reverts."
+---
+
+# Formal verification
+
+Tests check the inputs someone thought to try. Formal verification checks a claim for every input and every order of calls. You write what the contract guarantees in a **spec file**: facts that always hold about its storage, what each function does, and exactly when it reverts. A prover then checks each claim against the code.
+
+Lithe is built to make this tractable. A contract's state only becomes visible to other code when a [transition phase](/guide/transition-model) commits: a state-changing call to another contract runs after the phase, never halfway through it. So a claim about the contract can be checked one phase at a time, without modeling what the contracts it calls might do. In Solidity, every external call inside a function is a point where anything might have happened.
+
+The compiler checks every spec: its types, what it may read, and the rules on this page. [`lithe prove`](#proving-specs) proves a contract's specs for every input and every order of calls, and a [test build](#checking-specs-as-the-contract-runs) checks every spec as the contract runs, so fuzzing and tests find a call that breaks one. Specs never change what is built: a contract compiles to the same bytecode with or without them.
+
+## Spec files
+
+A contract's specs live next to it: `vault.spec.lithe` holds the specs of `vault.lithe`.
+
+```lithe [vault.lithe]
+error Insufficient;
+
+storage is record {
+  total : wei;
+  balances : map(address, wei);
+}
+
+external payable function deposit() is {
+  storage.balances[Evm.sender()] := storage.balances[Evm.sender()] + Evm.value();
+  storage.total := storage.total + Evm.value();
+}
+
+external nonreentrant function withdraw(const amount : wei)
+  raises Insufficient
+is {
+  const have : wei := storage.balances[Evm.sender()];
+  assert(have >= amount, Insufficient);
+  storage.balances[Evm.sender()] := have - amount;
+  storage.total := storage.total - amount;
+  defer Evm.transfer(Evm.sender(), amount);
+}
+```
+
+```lithe [vault.spec.lithe]
+spec is {
+  invariant ledger is storage.total = sum(storage.balances);
+  invariant solvent is Evm.balance(Evm.self()) >= storage.total;
+}
+
+spec for withdraw is {
+  const have : wei := old.storage.balances[Evm.sender()];
+  raises Insufficient when have < amount;
+  ensures new.storage.balances[Evm.sender()] = have - amount;
+  ensures new.storage.total = old.storage.total - amount;
+}
+```
+
+A spec file holds only spec blocks. For a file with one contract it writes them bare, as above. For a file with several, it wraps each contract's in `spec for contract C is { ... }`. `lithe compile` reads a spec file only to [check specs as the contract runs](#checking-specs-as-the-contract-runs), and `lithe compile directory` compiles no spec file as a contract.
+
+## Invariants
+
+`spec is { ... }` holds the contract's invariants. An invariant is a `bool` that holds once `deploy` has run, and again each time a transition phase commits. Those are the only points where another contract can see or act on this one's state.
+
+```lithe fragment
+spec is {
+  invariant ledger is storage.total = sum(storage.balances);
+}
+```
+
+An invariant describes one state, so it reads storage as code does: `storage.total`, `settings.fee_bps`, `Module.domain.x`.
+
+## Function specs
+
+`spec for f is { ... }` describes one function: an entrypoint, a [dispatched route](/language/dispatch) such as `set_fee`, a guard, or an internal function. The block sees `f`'s parameters. A dispatched route's parameter is what its arm binds.
+
+A function spec talks about two states: before the call and after it. Every read of something the call can change says which one it means:
+
+| Write | Reads |
+| --- | --- |
+| `old.storage.total` | storage before the call |
+| `new.storage.total` | storage once the call's first phase commits |
+| `old.Evm.balance(a)`, `new.Evm.balance(a)` | an account's balance, or its code with `Evm.code_size` and `Evm.code_hash` |
+| `old.total_owed()`, `new.total_owed()` | a `view` function, run in that state |
+
+`old.` and `new.` apply to the whole path after them, keys included. Parameters, `Evm.sender()`, `Evm.value()`, block and transaction context, immutables, and `pure` functions are the same in both states, and are read bare. A bare read of state is an error:
+
+```lithe fragment
+spec for withdraw is {
+  ensures storage.total = 0wei;
+}
+```
+
+```text
+say which state this reads: `old.` before the call, or `new.` after it
+```
+
+An `old.` value is read before the call, so no part of it can read `new.` state: `new.storage.m[old.storage.k]` is a value, but `old.storage.m[new.storage.k]` is an error.
+
+### Clauses
+
+| Clause | Claims |
+| --- | --- |
+| `const x : T := e;` | nothing: names a value for the clauses after it |
+| `raises E when c;` | if `c` holds before the call, the call reverts. `E` must be one of the errors `f` raises |
+| `panics when c;` | the same, for an arithmetic panic, such as overflow or division by zero |
+| `ensures e;` | if the call succeeds, `e` holds when its first phase commits |
+
+A reverted call has no after state, so `raises` and `panics` conditions read only `old.`, directly or through a `const`.
+
+### When a function reverts
+
+A spec block's `raises` and `panics` clauses are the **complete** list of the ways the function reverts. When the call reverts with `E`, one of `E`'s conditions holds, and when it reverts at all, one of the listed conditions holds. A block with no `raises` or `panics` clause claims the function never reverts.
+
+Some reverts are never listed, because no state before the call decides them: ABI decoding, ether sent to a function that is not `payable`, the [reentrancy lock](/language/reentrancy), a deferred call or continuation that fails, and running out of gas.
+
+`spec for f is partial { ... }` drops completeness: its conditions still cause the reverts they name, but the function may revert in other ways too.
+
+```lithe fragment
+spec for transfer is partial {
+  raises Insufficient when old.storage.balances[Evm.sender()] < amount;
+}
+```
+
+## Guards
+
+A spec for a [dispatch guard](/language/dispatch#groups-and-guards) says when the guard reverts, and holds only `raises` and `panics` clauses. Every route through the guard inherits them, so an owner-only route's own spec does not repeat the owner check:
+
+```lithe [owned.lithe]
+error Not_owner;
+
+type owner_action is
+  | Set_fee of nat
+  | Pause
+
+type action is
+  | Owner of owner_action
+
+storage is record {
+  owner : address;
+  paused : bool;
+  fee : nat;
+}
+
+function owner_main(const action : owner_action)
+  raises Not_owner
+is {
+  assert(Evm.sender() = storage.owner, Not_owner);
+}
+with case action of {
+| Set_fee(fee) -> { storage.fee := fee; }
+| Pause -> { storage.paused := true; }
+}
+
+external function main(const action : action)
+  raises Not_owner
+is
+  case action of {
+  | Owner(a) -> owner_main(a)
+  }
+```
+
+```lithe [owned.spec.lithe]
+spec for owner_main is {
+  raises Not_owner when Evm.sender() <> old.storage.owner;
+}
+
+spec for set_fee is {
+  ensures new.storage.fee = fee;
+}
+```
+
+With the guard's clause, `spec for set_fee` says that `set_fee` reverts only when the sender is not the owner, and otherwise sets the fee. A case added to `owner_action` inherits the guard's spec as it inherits the guard.
+
+## Modules
+
+`spec for module M is { ... }` holds a module's specs: its invariants read the module's storage and that of the modules it `requires`, and `spec for f` names one of its functions. A module's specs are checked for each contract that uses the module, as its functions are.
+
+```lithe [token.lithe]
+import "std/token/erc20.lithe";
+
+contract Token is {
+  use ERC20 exposing IERC20;
+
+  deploy() is {
+    ERC20.init("Token", "TKN");
+  }
+}
+```
+
+```lithe [token.spec.lithe]
+spec for module ERC20 is {
+  spec for function transfer is partial {
+    raises ERC20InsufficientBalance when old.erc20.balances[Evm.sender()] < value;
+    ensures new.erc20.total_supply = old.erc20.total_supply;
+  }
+}
+```
+
+A module can have an internal function and an external with the same name, as `ERC20` has `transfer`. Name one of them with `spec for function f` or `spec for external f`.
+
+A file a contract imports can have a spec file too, beside it, with `spec for module M` blocks for its modules; the spec tools read it for each module the contract uses. The standard library's do: `ERC20`'s states that its balances add up to its supply and that the zero address holds nothing, and lists exactly when `transfer`, `approve`, and `transferFrom` revert; `ERC721`'s that each owned token counts once in its owner's balance and that only a token that exists has an approval. `lithe prove` proves them for each contract that uses the module, since the contract's own code can write the module's storage too. To prove a file of modules on its own, run `lithe prove` on it: `lithe prove std/token/erc20.lithe` proves the module as a contract that uses it and exposes all its external functions.
+
+## Specs in the source file
+
+A spec block can also sit in the source file, where a declaration can, or inside a module. The compiler then checks it as part of every build, and a wrong one fails the build. Keep specs in the spec file unless a module ships them itself.
+
+## Proving specs
+
+`lithe prove vault.lithe` proves the specs of `vault.lithe` and its spec file with the [Z3](https://github.com/Z3Prover/z3) solver: each invariant in each phase, and each claim of each function spec. Install Z3 first: `brew install z3` on macOS, `sudo apt install z3` on Debian and Ubuntu, or a [release](https://github.com/Z3Prover/z3/releases) on your `PATH`. Without it, `lithe prove` says so and exits `2`.
+
+```bash
+lithe prove vault.lithe
+```
+
+```text
+invariant ledger: storage.total = sum(storage.balances)
+  proved      the initial state
+  proved      deposit
+  proved      withdraw
+
+invariant solvent: Evm.balance(Evm.self()) >= storage.total
+  proved      the initial state
+  proved      deposit
+  proved      withdraw
+
+spec for withdraw
+  proved      ensures new.storage.balances[Evm.sender()] = have - amount
+  proved      ensures new.storage.total = old.storage.total - amount
+  proved      raises Insufficient when have < amount
+  proved      raises Insufficient only when have < amount
+  proved      reverts in no other case
+
+11 proved, 0 failed, 0 unknown
+```
+
+### Invariants
+
+A phase is `deploy`, or the empty storage of a new contract when there is no `deploy`, each entrypoint's body, each continuation, and each migration. The prover assumes every invariant holds before a phase and proves each still holds after it. The first phase starts from nothing, so together they cover every order of calls. A continuation starts from any state the invariants allow, because other calls may run between its call and it. The contracts a phase calls need no modeling, because their calls run after it commits. A phase that changes nothing an invariant reads is proved and marked `(unchanged)`.
+
+A migration's state is its previous version's, so the prover assumes nothing before one.
+
+### Function specs
+
+A function spec's claims are about one call, from the state before it to the state its first phase commits. An entrypoint's call, and a module's external's, starts where the invariants hold, so a spec can rely on them: `withdraw` reverts in no other case because the ledger rules out an underflow of the total. An internal function runs inside a phase, before the phase may have put its state right, so its call starts from any state. A route answers for its own block and for the blocks of the [guards](#guards) it runs through; a route with no block of its own answers for its guards'.
+
+| Claim | Proved |
+| --- | --- |
+| `ensures e` | when the call succeeds, `e` holds |
+| `raises E when c` | when `c` holds, the call reverts |
+| `panics when c` | when `c` holds, the call panics |
+| `raises E only when c or d` | when the call reverts with `E`, one of `E`'s conditions holds |
+| `reverts in no other case` | when the call reverts at all, one of its conditions holds; `never reverts` for a block with none; not claimed by a `partial` block |
+
+### Counterexamples
+
+When a claim can fail, the prover shows how: the arguments, the caller, what the claim reads, and, for a claim about reverts, what the call reverts with.
+
+```text
+invariant ledger: storage.total = sum(storage.balances)
+  FAILED      deposit
+              Evm.sender() = 4
+              Evm.value() = 1
+              storage.total before = 0
+              sum(storage.balances) before = 0
+              storage.total after = 0
+              sum(storage.balances) after = 1
+
+spec for withdraw
+  FAILED      reverts in no other case
+              amount = 1
+              Evm.sender() = 1
+              old.storage.balances[_] = 1
+              reverts with = a panic
+```
+
+### What it models
+
+The prover models storage words, maps, records, checked arithmetic, and `forall` exactly, and runs internal calls, branches, and loops of up to 16 iterations. It does not model everything: strings, lists, and bit operations become values it knows only the type of, and a spec cannot use them. When a counterexample depends on one of those, the report says `not proved`, and names what it approximated. What it cannot check at all is `unknown`, with why: a deferred `Evm.delegate_call`, and a `fallback` that passes its call to other code.
+
+### Loops
+
+A loop that may run more than 16 times, or over a list, is too long to follow one iteration at a time. Without more to go on, the prover knows only that what its body writes has changed, and a claim that depends on it is `not proved`. A loop invariant says more. It is a `bool` that holds each time an iteration starts, and when the loop ends, written after the loop's `bound`:
+
+```lithe fragment
+const start : nat := storage.steps;
+for i : nat in 0n .. n bound 100 invariant storage.steps = start + i do {
+  storage.steps := storage.steps + 1n;
+}
+```
+
+The prover proves that the invariant holds as the loop starts, with its counter at the start of the range, and that each iteration keeps it. Then, after the loop, it knows the invariant holds with the counter at the end of the range: here, that the steps went up by `n`. The report lists each loop invariant's claims under `loop invariants`, and a proof that relies on one that is not proved is `unknown`. A loop may have several invariants, and they may use `sum`, `count`, and `forall`; a build drops them, so they never change the code. A [checking build](#checking-specs-as-the-contract-runs) checks each as every iteration starts.
+
+A `sum` or `count` is a running total the solver knows only in part: that it is at least any one value of its map, and any two at different keys. That is enough for a ledger, and when a proof fails, the prover checks that the counterexample's totals can be real sums before it reports `FAILED`. Beside a `forall` it cannot check that, so it reports `not proved`.
+
+The prover assumes no call comes from the zero address, which no one has the key to: `Evm.sender()` and `Evm.tx_origin()` are never zero.
+
+The contract's ether counts every value its deferred calls send as gone when the phase commits, the least it can hold until the next phase. Write invariants about it as lower bounds, such as `Evm.balance(Evm.self()) >= storage.total`: ether can arrive without a call.
+
+`lithe prove` finds Z3 in `LITHE_Z3`, then on `PATH`, or where `--solver` says, and gives each question `--timeout` seconds, 30 by default. It exits `0` when everything is proved, `1` when a claim fails, `2` when it finds no Z3, and `3` when something is unknown or not proved.
+
+## Checking specs as the contract runs
+
+`lithe compile --check-specs vault.lithe` builds the contract with its specs checked on every call, for tests and fuzzing. A call that breaks a spec reverts with `SpecViolation(string)`, whose message names the spec:
+
+| Checks | Where |
+| --- | --- |
+| each invariant | where each transition phase ends: an entrypoint's body, each continuation, `deploy`, and each migration |
+| each `ensures` | where the call's first phase ends, against values kept from before the call |
+| each `raises ... when` and `panics ... when` | if its condition held before the call, the call must not reach its end |
+
+A test run cannot check the rest of what a spec claims: that a reverting call reverts with the error its spec names, and that it reverts in no other case. [`lithe prove`](#proving-specs) does.
+
+`sum` and `count` of a storage map are kept as the contract runs: the build updates a running total, in storage of its own, at each write to the map. A clause with `forall`, or with a `sum` or `count` of anything but a storage map, cannot be computed; the build skips it with a warning. The build also skips a contract's spec for an external that a module provides, which runs the module's code: write it in the module's spec.
+
+A checking build computes a spec's arithmetic as the code does, so a spec whose own arithmetic overflows stops the call with a panic. It reads the spec file, is never [split](/tooling/size-limit), and is bigger and slower than the plain build. Don't deploy it.
+
+## Spec-only forms
+
+| Form | Is |
+| --- | --- |
+| `sum(m)` | the sum of a map's values, which are numbers, as the map's value type |
+| `count(m)` | how many of a map's values are not zero, as a `nat` |
+| `forall x : T . e` | `e` holds for every `x` of the named type `T` |
+
+`sum` and `count` range over every key, which only a spec can: a contract cannot enumerate a map. Inside a spec block, `old`, `new`, `sum`, `count`, and `forall` are these forms. Outside one, they are ordinary names.
+
+A spec cannot `query` another contract or read `Evm.gas_left`.
+
+## `lithe specs`
+
+`lithe specs file.lithe` checks the file's specs and its spec file's, and lists what each block claims:
+
+```bash
+lithe specs vault.lithe
+```
+
+```text
+spec is
+  invariant ledger: storage.total = sum(storage.balances)
+  invariant solvent: Evm.balance(Evm.self()) >= storage.total
+spec for withdraw(amount : wei) (entrypoint)
+  const have := old.storage.balances[Evm.sender()]
+  raises Insufficient when have < amount
+  ensures new.storage.balances[Evm.sender()] = have - amount
+  ensures new.storage.total = old.storage.total - amount
+  reverts in no other case
+```
+
+A guard's entry names the routes through it, and a route's entry names the guards whose clauses it inherits.

@@ -579,6 +579,9 @@ impl<'a> Gen<'a> {
             Builtin::Ctor(_) => {
                 return Err(error(line, col, "a variant with payloads is not a word"));
             }
+            Builtin::SpecState(_) | Builtin::SpecSum | Builtin::SpecCount | Builtin::SpecForall => {
+                unreachable!("the checker drops spec blocks before codegen")
+            }
             Builtin::NatToString | Builtin::IntToString => {
                 self.compile_value(&args[0])?;
                 self.call_sub(Sub::DecimalString(b == Builtin::IntToString));

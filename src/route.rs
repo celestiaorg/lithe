@@ -898,7 +898,7 @@ fn walk_arm(checked: &Checked, after: String, then: &Then, fx: &mut Effects<'_>)
     fx.phases.append(&mut nested);
 }
 
-fn fmt_ty(ty: &TypeRef) -> String {
+pub(crate) fn fmt_ty(ty: &TypeRef) -> String {
     match ty {
         TypeRef::Name { name, .. } => name.clone(),
         TypeRef::Tuple { elems, .. } => {
@@ -1320,7 +1320,7 @@ fn storage_label(expr: &Expr) -> String {
     }
 }
 
-fn fmt_expr(e: &Expr) -> String {
+pub(crate) fn fmt_expr(e: &Expr) -> String {
     match e {
         Expr::Ident { name, .. } => name.clone(),
         Expr::Field { base, name, .. } => format!("{}.{}", fmt_expr(base), name),
@@ -2157,6 +2157,11 @@ pub(crate) fn render_errors(checked: &Checked) -> Result<String, Error> {
         out.push('\n');
     }
     Ok(out)
+}
+
+/// An operator as the source writes it.
+pub(crate) fn bin_op(op: BinOp) -> &'static str {
+    bin(op)
 }
 
 fn bin(op: BinOp) -> &'static str {

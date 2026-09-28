@@ -16,9 +16,18 @@ impl Checker {
                 sym,
                 part_syms,
             } => {
-                let want = self.build(ty)?;
-                self.check_expr_as(expr, Some(want))?;
-                let id = self.annotated(*line, *col, ty, expr.ty())?;
+                let id = if crate::spec::inferred(ty) {
+                    // A value `--check-specs` keeps from before the call, as it is.
+                    let expect = self.expect.take();
+                    let checked = self.check_expr(expr);
+                    self.expect = expect;
+                    checked?;
+                    expr.ty()
+                } else {
+                    let want = self.build(ty)?;
+                    self.check_expr_as(expr, Some(want))?;
+                    self.annotated(*line, *col, ty, expr.ty())?
+                };
                 if !parts.is_empty() {
                     if self.types[id].kind != TyKind::Tuple {
                         return Err(error(*line, *col, "destructuring expects a tuple"));
@@ -346,6 +355,7 @@ impl Checker {
                 cap,
                 list,
                 declared,
+                invariants,
             } => {
                 let (line, col) = (*line, *col);
                 // The bound is a number fixed when the contract is compiled.
@@ -585,6 +595,20 @@ impl Checker {
                         self.check_expr(c)?;
                         if self.types[c.ty()].kind != TyKind::Bool {
                             return Err(error(c.line(), c.col(), "`until` must be bool"));
+                        }
+                    }
+                    // A loop invariant is a spec, and may use a spec's forms.
+                    for inv in invariants.iter_mut() {
+                        let in_spec = std::mem::replace(&mut self.in_spec, true);
+                        let checked = self.check_expr(inv);
+                        self.in_spec = in_spec;
+                        checked?;
+                        if self.peel(inv.ty()) != TY_BOOL {
+                            return Err(error(
+                                inv.line(),
+                                inv.col(),
+                                "a loop invariant is a `bool`",
+                            ));
                         }
                     }
                     for s in body.iter_mut() {

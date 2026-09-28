@@ -35,9 +35,9 @@
 //! The ABI is typed: [`Abi`] lists its items in the order its JSON has them, and
 //! [`Abi::to_json`] prints that JSON. The other functions take the same `sources` and entry
 //! path, and return what the matching `lithe` command prints: [`abi_tree`], [`footprint`],
-//! [`analysis`], [`errors`], [`facets`], [`stubs`], [`storage_layout`], [`storage_diff`],
-//! [`upgrade_check`], and [`upgrade_plan`]. [`compile_dir`] and [`abi_dir`] write Foundry-style
-//! artifacts.
+//! [`analysis`], [`errors`], [`specs`], [`facets`], [`stubs`], [`storage_layout`],
+//! [`storage_diff`], [`upgrade_check`], and [`upgrade_plan`]. [`compile_dir`] and [`abi_dir`]
+//! write Foundry-style artifacts.
 
 mod asm;
 mod ast;
@@ -53,7 +53,9 @@ mod lex;
 mod lint;
 mod modules;
 mod parse;
+mod prove;
 mod route;
+mod spec;
 mod split;
 mod word;
 
@@ -65,6 +67,7 @@ pub use format::format_source;
 pub use index::{Completion, Def, File, Index, Kind, Ref, Signature, Span};
 pub use lint::{lint_paths, lithe_files, Lint};
 pub use modules::Sources;
+pub use prove::{solver, Proof, ProveOptions};
 pub use route::{
     Abi, AbiError, AbiItem, Constructor, Event, EventParam, Fallback, Function, Param, Receive,
     StateMutability,
@@ -100,7 +103,10 @@ impl From<Error> for Vec<Error> {
 /// Every contract an entry file defines, with the files it imports read from `sources`. Every
 /// contract is built, and the file fails with the errors of each that fails.
 pub fn compile(sources: &Sources, entry: &Path, opts: &Options) -> Result<Output, Vec<Error>> {
-    let prog = modules::load(sources, entry)?;
+    let mut prog = modules::load(sources, entry)?;
+    if opts.check_specs {
+        modules::load_specs(sources, entry, &mut prog)?;
+    }
     let several = (!prog.siblings.is_empty()).then(|| check::several_contracts(&prog));
     let mut contracts = Vec::new();
     let mut errors = Vec::new();
@@ -211,7 +217,30 @@ fn build(
     name: &str,
     opts: &Options,
 ) -> Result<Contract, Error> {
-    let checked = check::check(prog)?;
+    let mut notes = Vec::new();
+    let checked = if opts.check_specs {
+        let specs = spec::check(prog.clone())?;
+        let instrumented = spec::instrument(prog, &specs)?;
+        notes = instrumented.warnings;
+        check::check(instrumented.prog)?
+    } else {
+        // A spec block builds nothing, but a wrong one fails the build as a type error does.
+        if spec::has_specs(&prog) {
+            spec::check(prog.clone())?;
+        }
+        check::check(prog)?
+    };
+    // A checking build runs its modules' checks in the contract's own code, so it is whole.
+    let unsplit;
+    let opts = if opts.check_specs {
+        unsplit = Options {
+            split: SplitMode::Off,
+            ..opts.clone()
+        };
+        &unsplit
+    } else {
+        opts
+    };
     let abi = route::abi(&checked)?;
     let method_identifiers = route::method_ids(&checked)?;
     let split = split::build(&checked, name, opts)?;
@@ -241,7 +270,10 @@ fn build(
         abi,
         method_identifiers,
         plan,
-        warnings: warnings_of(sources, entry, &checked),
+        warnings: notes
+            .into_iter()
+            .chain(warnings_of(sources, entry, &checked))
+            .collect(),
         split,
     })
 }
@@ -374,6 +406,101 @@ pub fn errors(sources: &Sources, entry: &Path) -> Result<String, Error> {
     route::render_errors(&checked(sources, entry)?)
 }
 
+/// Proves the contract's invariants against its code, phase by phase, with Z3: the entry file's
+/// specs and its `.spec.lithe`'s.
+///
+/// A file of modules, with no contract, is proved as a contract that uses each of them and
+/// exposes all their external functions.
+pub fn prove(sources: &Sources, entry: &Path, opts: &ProveOptions) -> Result<Proof, Error> {
+    let mut prog = modules::load(sources, entry)?;
+    if let Some((path, src)) = module_contract(sources, entry, &prog)? {
+        let sources = sources.with(path.clone(), src);
+        return prove(&sources, &path, opts);
+    }
+    modules::load_specs(sources, entry, &mut prog)?;
+    if !prog.siblings.is_empty() {
+        return Err(check::several_contracts(&prog));
+    }
+    prove::prove(&spec::check(prog)?, opts)
+}
+
+/// For a file of modules, with no contract: a contract beside it that uses each of its
+/// modules, after the modules they require, and exposes all their external functions.
+fn module_contract(
+    sources: &Sources,
+    entry: &Path,
+    prog: &ast::Program,
+) -> Result<Option<(PathBuf, String)>, Error> {
+    let only_modules = prog.contract_name.is_none()
+        && prog.funcs.is_empty()
+        && prog.domains.is_empty()
+        && prog.exposes.is_empty();
+    if !only_modules {
+        return Ok(None);
+    }
+    let canon = sources
+        .canonicalize(entry)
+        .map_err(|err| error(1, 1, format!("cannot read `{}`: {err}", entry.display())))?;
+    let origin = canon.display().to_string();
+    let find = |name: &str| prog.modules.iter().find(|decl| decl.name == name);
+    let mut order: Vec<&ast::ModuleDecl> = Vec::new();
+    fn visit<'a>(
+        decl: &'a ast::ModuleDecl,
+        find: &dyn Fn(&str) -> Option<&'a ast::ModuleDecl>,
+        order: &mut Vec<&'a ast::ModuleDecl>,
+    ) {
+        if order.iter().any(|seen| seen.name == decl.name) {
+            return;
+        }
+        for req in &decl.requires {
+            if let Some(dep) = find(&req.name) {
+                visit(dep, find, order);
+            }
+        }
+        order.push(decl);
+    }
+    for decl in prog.modules.iter().filter(|decl| decl.origin == origin) {
+        visit(decl, &find, &mut order);
+    }
+    if order.is_empty() {
+        return Err(error(1, 1, "the file declares no contract and no module"));
+    }
+    let file = canon.file_name().unwrap_or_default().to_string_lossy();
+    let mut src = format!("import \"./{file}\";\n\ncontract Modules is {{\n");
+    for decl in order {
+        if let Some(param) = decl.params.first() {
+            return Err(error(
+                param.line,
+                param.col,
+                format!(
+                    "module `{}` takes type parameters; prove a contract that uses it",
+                    decl.name
+                ),
+            ));
+        }
+        match exposing(decl) {
+            Some(text) => src.push_str(&text),
+            None => src.push_str(&format!("use {};\n", decl.name)),
+        }
+    }
+    src.push_str("}\n");
+    Ok(Some((canon.with_file_name("#modules.lithe"), src)))
+}
+
+/// The contract's spec blocks, from the entry file and its `.spec.lithe`, checked: each
+/// block, and what it claims.
+pub fn specs(sources: &Sources, entry: &Path) -> Result<String, Error> {
+    let mut prog = modules::load(sources, entry)?;
+    if let Some((path, src)) = module_contract(sources, entry, &prog)? {
+        return specs(&sources.with(path.clone(), src), &path);
+    }
+    modules::load_specs(sources, entry, &mut prog)?;
+    if !prog.siblings.is_empty() {
+        return Err(check::several_contracts(&prog));
+    }
+    Ok(spec::render(&spec::check(prog)?))
+}
+
 /// The same program without the optimizer, for checking that optimization preserves behavior.
 #[cfg(test)]
 pub(crate) fn compile_file_unoptimized(path: &Path) -> Result<Vec<u8>, Error> {
@@ -477,19 +604,27 @@ pub fn stubs(sources: &Sources, entry: &Path, module: &str) -> Result<String, Er
     let Some(decl) = prog.modules.iter().find(|decl| decl.name == module) else {
         return Err(error(0, 0, format!("unknown module `{module}`")));
     };
-    let mut out = format!("use {module} exposing {{\n");
+    exposing(decl).ok_or_else(|| {
+        error(
+            decl.line,
+            decl.col,
+            format!("module `{module}` declares no external functions"),
+        )
+    })
+}
+
+/// `use M exposing { ... }` with each of the module's external functions, or `None` when it
+/// has none.
+fn exposing(decl: &ast::ModuleDecl) -> Option<String> {
     let externals: Vec<&ast::Func> = decl
         .funcs
         .iter()
         .filter(|func| matches!(func.kind, ast::ItemKind::Entry | ast::ItemKind::View))
         .collect();
     if externals.is_empty() {
-        return Err(error(
-            decl.line,
-            decl.col,
-            format!("module `{module}` declares no external functions"),
-        ));
+        return None;
     }
+    let mut out = format!("use {} exposing {{\n", decl.name);
     for func in externals {
         let header = check::Header::of(func, &func.name);
         // A header too long for one line takes one parameter per line, and long error lists
@@ -532,7 +667,7 @@ pub fn stubs(sources: &Sources, entry: &Path, module: &str) -> Result<String, Er
         out.push_str(";\n");
     }
     out.push_str("}\n");
-    Ok(out)
+    Some(out)
 }
 
 /// `  Group: a, b` for each group, in the order they first appear.
@@ -850,6 +985,13 @@ fn json_string(text: &str) -> String {
     out
 }
 
+/// `x.spec.lithe` holds the spec blocks of `x.lithe`, and is no program of its own.
+pub(crate) fn is_spec_file(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.ends_with(".spec.lithe"))
+}
+
 fn lithe_sources(dir: &Path) -> Result<Vec<PathBuf>, Error> {
     let entries =
         std::fs::read_dir(dir).map_err(|err| error(0, 0, format!("{}: {err}", dir.display())))?;
@@ -857,7 +999,10 @@ fn lithe_sources(dir: &Path) -> Result<Vec<PathBuf>, Error> {
     for entry in entries {
         let entry = entry.map_err(|err| error(0, 0, format!("{}: {err}", dir.display())))?;
         let path = entry.path();
-        if path.extension().and_then(|ext| ext.to_str()) == Some("lithe") && path.is_file() {
+        if path.extension().and_then(|ext| ext.to_str()) == Some("lithe")
+            && !is_spec_file(&path)
+            && path.is_file()
+        {
             files.push(path);
         }
     }

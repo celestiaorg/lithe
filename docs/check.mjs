@@ -7,7 +7,8 @@
 //                             the compiler's error must contain that text
 //   ```lithe [path.lithe]     a file of a multi-file example, written under that path
 //                             next to the page's other named files; every named file
-//                             not under lib/ must compile
+//                             not under lib/ must compile. A named `x.spec.lithe` holds
+//                             spec blocks: `lithe specs x.lithe` must accept it
 
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -79,7 +80,9 @@ for (const [p, page] of walk(pages).entries()) {
       const file = join(dir, title[1]);
       mkdirSync(dirname(file), { recursive: true });
       writeFileSync(file, block.code);
-      if (!title[1].split("/").includes("lib")) named.push({ file, where });
+      if (title[1].endsWith(".spec.lithe")) {
+        named.push({ file: file.replace(/\.spec\.lithe$/, ".lithe"), where, specs: true });
+      } else if (!title[1].split("/").includes("lib")) named.push({ file, where });
       return;
     }
     const file = join(scratch, `block${checked++}.lithe`);
@@ -95,9 +98,9 @@ for (const [p, page] of walk(pages).entries()) {
       failures.push(`${where}:\n${result.message}`);
     }
   });
-  for (const { file, where } of named) {
+  for (const { file, where, specs } of named) {
     checked++;
-    const result = compile(file);
+    const result = specs ? run(["specs", file]) : compile(file);
     if (!result.ok) failures.push(`${where}:\n${result.message}`);
   }
 }

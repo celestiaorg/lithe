@@ -48,6 +48,8 @@ pub(super) fn compare_builds(
     // Each build keeps its own storage: their layouts may differ.
     let mut theirs: HashMap<Word, Word> = HashMap::new();
     let mut mine: HashMap<Word, Word> = HashMap::new();
+    // The ether the contract holds, as a chain keeps it from call to call.
+    let mut held = Word::from_u64(10_000_000_000_000_000_000);
     let mut succeeded = 0;
     for step in 0..steps {
         let data = random_calldata(methods, &mut rng);
@@ -63,7 +65,8 @@ pub(super) fn compare_builds(
             1 => Word::from_u64(1_000_000_000_000_000_000),
             _ => Word::from_u64(0),
         };
-        let balance = Word::from_u64(10_000_000_000_000_000_000);
+        // The call's value is the account's as the call starts.
+        let balance = held.wrapping_add(value);
         let run = |code: &[u8], storage: &HashMap<Word, Word>| {
             exec_state(
                 code,
@@ -135,10 +138,15 @@ pub(super) fn compare_builds(
             sorted(&got.balances),
             "{ctx}: balances"
         );
+        assert_eq!(
+            want.self_balance, got.self_balance,
+            "{ctx}: its own balance"
+        );
         if !want.reverted {
             succeeded += 1;
             theirs = want.storage;
             mine = got.storage;
+            held = want.self_balance;
         }
     }
     eprintln!("{rel}: {succeeded}/{steps} calls succeeded");

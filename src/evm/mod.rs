@@ -1184,7 +1184,9 @@ fn lithe_files(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
     for path in entries {
         if path.is_dir() {
             lithe_files(&path, out);
-        } else if path.extension().and_then(|ext| ext.to_str()) == Some("lithe") {
+        } else if path.extension().and_then(|ext| ext.to_str()) == Some("lithe")
+            && !crate::is_spec_file(&path)
+        {
             out.push(path);
         }
     }
@@ -1424,7 +1426,9 @@ mod interfaces;
 mod language;
 mod matrix;
 mod precompiles;
+mod prove;
 mod raw;
+mod specs;
 mod split;
 mod stdlib;
 mod storage;

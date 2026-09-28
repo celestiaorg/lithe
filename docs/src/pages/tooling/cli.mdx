@@ -14,6 +14,8 @@ lithe abi-tree file.lithe
 lithe footprint file.lithe
 lithe analysis file.lithe
 lithe errors file.lithe
+lithe specs file.lithe
+lithe prove file.lithe
 lithe lint [--fix] path...
 lithe facets file.lithe
 lithe stubs file.lithe Module
@@ -71,6 +73,10 @@ It prints each path it writes. It keeps going after a failing file, reports ever
 
 A split contract's artifact has the whole contract's ABI and a `facets` field listing each facet's module, address, and the selectors the router forwards to it. Each facet is written once, to `./out/facets/<Module>.json`, however many contracts use it.
 
+### `lithe compile --check-specs`
+
+Builds the contract to check its [specs](/language/verification) as it runs, for tests and fuzzing: a call that breaks one reverts with `SpecViolation(string)`, which says which. It reads the contract's spec file, never splits the contract, and is bigger and costs more gas than the plain build. Don't deploy it. See [Checking specs as the contract runs](/language/verification#checking-specs-as-the-contract-runs).
+
 ### `lithe abi file.lithe` / `lithe abi directory`
 
 Prints the Solidity-compatible JSON ABI: functions, events, and errors. Given a directory, it writes ABIs to `./out`.
@@ -85,6 +91,8 @@ These commands summarize what each entrypoint does. See [Inspecting contracts](/
 | `lithe abi-tree file.lithe` | each entrypoint's dispatch path, guards, calls, and effects |
 | `lithe analysis file.lithe` | the same facts as JSON, for tools |
 | `lithe errors file.lithe` | each entrypoint's errors, and each error's selector, fields, and raisers |
+| `lithe prove file.lithe` | [proves](/language/verification#proving-specs) the specs with Z3: each invariant phase by phase, and each claim of each function spec; a file of modules is proved as a contract that exposes them all; needs [Z3](/guide/getting-started#build-the-compiler); `--solver path` and `--timeout seconds` |
+| `lithe specs file.lithe` | the [formal verification](/language/verification) specs of the file and its `.spec.lithe`, checked, and what each claims |
 | `lithe storage file.lithe` | the storage and transient layout, slot by slot |
 | `lithe facets file.lithe` | the router and each facet: size against the limit, and the entrypoints each runs |
 | `lithe stubs file.lithe Module` | the `use Module exposing` block that declares every external a module has |

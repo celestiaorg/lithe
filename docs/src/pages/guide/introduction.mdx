@@ -77,6 +77,8 @@ Reading `sell`, you know exactly what it can do. It reads the oracle, it may fai
 
 **Composition is explicit.** Modules replace inheritance. A contract chooses, by name, every function it exposes. Nothing becomes public because a parent declared it.
 
+**Built for formal verification.** A contract's state is visible to other code only when a transition phase commits, so a claim about it can be checked one phase at a time. You state invariants, what each function does, and when it reverts in a [spec file](/language/verification) beside the contract. `lithe prove` proves them for every input and order of calls, and a test build checks them as the contract runs.
+
 **Execution context is namespaced.** There is no `msg.sender`. Context is `Evm.sender()`, hashing is `Crypto.keccak256(...)`, and encoding is `Abi.encode(...)`, so dependencies on the environment are easy to find.
 
 ## Smaller output

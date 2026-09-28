@@ -1,0 +1,49 @@
+(* What `ERC20` guarantees. `lithe prove` proves these for each contract that uses the module:
+   the contract's own code can write the module's storage too.
+
+   The externals start where the invariants hold, so their specs list every way they revert:
+   no transfer can overflow a balance, because the balances add up to the supply. *)
+
+spec for module ERC20 is {
+  spec is {
+    (* The balances add up to the supply. *)
+    invariant supply is erc20.total_supply = sum(erc20.balances);
+    (* The zero address holds nothing: tokens sent there are burned. *)
+    invariant nothing_at_zero is erc20.balances[Address.zero] = 0n;
+  }
+
+  spec for external transfer is {
+    const from : address := Evm.sender();
+    raises ERC20InvalidSender when from = Address.zero;
+    raises ERC20InvalidReceiver when to = Address.zero;
+    raises ERC20InsufficientBalance when old.erc20.balances[from] < value;
+    ensures new.erc20.total_supply = old.erc20.total_supply;
+    ensures from = to or new.erc20.balances[from] = old.erc20.balances[from] - value;
+    ensures from = to or new.erc20.balances[to] = old.erc20.balances[to] + value;
+    ensures from <> to or new.erc20.balances[from] = old.erc20.balances[from];
+  }
+
+  spec for external approve is {
+    raises ERC20InvalidApprover when Evm.sender() = Address.zero;
+    raises ERC20InvalidSpender when spender = Address.zero;
+    ensures new.erc20.allowances[Evm.sender()][spender] = value;
+    ensures new.erc20.total_supply = old.erc20.total_supply;
+  }
+
+  spec for external transferFrom is {
+    const allowed : nat := old.erc20.allowances[from][Evm.sender()];
+    (* An unlimited allowance, `Nat.max`, is never spent down, and never checked. *)
+    const limited : bool := allowed < Nat.max;
+    raises ERC20InsufficientAllowance when allowed < value;
+    raises ERC20InvalidApprover when limited and from = Address.zero;
+    raises ERC20InvalidSpender when limited and Evm.sender() = Address.zero;
+    raises ERC20InvalidSender when from = Address.zero;
+    raises ERC20InvalidReceiver when to = Address.zero;
+    raises ERC20InsufficientBalance when old.erc20.balances[from] < value;
+    ensures new.erc20.total_supply = old.erc20.total_supply;
+    ensures not limited or new.erc20.allowances[from][Evm.sender()] = allowed - value;
+    ensures limited or new.erc20.allowances[from][Evm.sender()] = allowed;
+    ensures from = to or new.erc20.balances[from] = old.erc20.balances[from] - value;
+    ensures from = to or new.erc20.balances[to] = old.erc20.balances[to] + value;
+  }
+}

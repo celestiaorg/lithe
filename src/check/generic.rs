@@ -521,6 +521,7 @@ impl Checker {
             requires: self.requires.clone(),
             spec_module: self.spec_module.clone(),
             spec_places: self.spec_places.clone(),
+            in_spec: self.in_spec,
             origin: self.origin.clone(),
         };
         self.cur_fn = idx;
@@ -544,6 +545,7 @@ impl Checker {
         self.requires = saved.requires;
         self.spec_module = saved.spec_module;
         self.spec_places = saved.spec_places;
+        self.in_spec = saved.in_spec;
         self.origin = saved.origin;
         checked?;
         self.work[idx] = func;

@@ -377,6 +377,20 @@ impl Checker {
                 ..
             } if args.is_empty() => Ok(()),
             Expr::Call {
+                builtin:
+                    Some(
+                        kind @ (Builtin::SpecState(_)
+                        | Builtin::SpecSum
+                        | Builtin::SpecCount
+                        | Builtin::SpecForall),
+                    ),
+                args,
+                ty,
+                line,
+                col,
+                ..
+            } => self.check_spec_form(*line, *col, *kind, args, ty),
+            Expr::Call {
                 name,
                 args,
                 base,
@@ -693,7 +707,10 @@ impl Checker {
                     }
                     return Err(error(*line, *col, format!("unknown function `{name}`")));
                 };
-                if let Some(mine) = self.module_name.clone() {
+                // `--check-specs` checks the contract's invariants where a module's phase
+                // ends, in the module's code.
+                let spec_check = crate::spec::is_spec_fn(name);
+                if let Some(mine) = self.module_name.clone().filter(|_| !spec_check) {
                     // A module is closed over what it requires: the code it runs never
                     // depends on the contract that uses it.
                     if !name.contains('.') {
