@@ -79,6 +79,7 @@ const CREATE: u8 = 0xf0;
 const CREATE2: u8 = 0xf5;
 const GASPRICE: u8 = 0x3a;
 const EXTCODESIZE: u8 = 0x3b;
+const EXTCODECOPY: u8 = 0x3c;
 const RETURNDATASIZE: u8 = 0x3d;
 const RETURNDATACOPY: u8 = 0x3e;
 const EXTCODEHASH: u8 = 0x3f;
@@ -554,6 +555,7 @@ struct OpSite {
     dynamic: bool,
     /// `create`: the placeholder for where the contract's creation code sits in this
     /// code, its length, and the words of the `CREATE2` salt and encoded arguments, if any.
+    /// `Evm.create` has no placeholder: `data` holds its creation code as a `bytes` value.
     create: Option<(Word, u64, Option<i32>, Option<i32>)>,
     fired: Option<i32>,
     /// A method with no result, whose call to an account without code would succeed: as
@@ -719,6 +721,8 @@ struct Gen<'a> {
     /// Map parameters of an inlined call, bound to the stored map the call passes: the
     /// body reaches it as if it named the map. An outlined body reads the slot instead.
     slot_binds: HashMap<usize, (usize, u32)>,
+    /// Parameters of an inlined call that the call passes a literal word: the word.
+    const_params: HashMap<usize, Word>,
     /// Temporaries of shared code. Each serves one site, so only the code that made it
     /// names it, and it can live on the stack as a body's words do.
     shared_temps: std::collections::HashSet<usize>,

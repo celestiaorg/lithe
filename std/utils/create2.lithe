@@ -1,6 +1,8 @@
 (* CREATE2 addresses: where `defer create C() with salt = s` lands, given the hash of C's
    creation code, arguments included. *)
 
+error FailedDeployment;
+
 module Create2 is {
   pure function compute_address(const salt : bytes32; const init_code_hash : bytes32; const deployer : address) : address is {
     const marker : bytes1 := 0xff;

@@ -1205,6 +1205,11 @@ fn op_label(e: &Expr) -> Option<String> {
             ..
         } => Some(format!("create {name}")),
         Expr::Call {
+            builtin: Some(Builtin::RawCreate),
+            args,
+            ..
+        } => Some(format!("create({})", args.first().map(fmt_expr).unwrap_or_default())),
+        Expr::Call {
             name,
             base: Some(b),
             callee: None,
@@ -1321,6 +1326,7 @@ fn fmt_expr(e: &Expr) -> String {
             Lit::Unit => "Unit".into(),
             Lit::Nil => "nil".into(),
             Lit::Str(s) => format!("\"{s}\""),
+            Lit::Bytes(b) => format!("0x{}", b.iter().map(|x| format!("{x:02x}")).collect::<String>()),
         },
         _ => "...".into(),
     }

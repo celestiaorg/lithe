@@ -700,7 +700,7 @@ impl Checker {
                 ..
             } => Ok(TY_UNIT),
             Expr::Call {
-                builtin: Some(Builtin::Create),
+                builtin: Some(Builtin::Create | Builtin::RawCreate),
                 ..
             } => Ok(TY_ADDRESS),
             // A raw call's continuation gets the return data as it came back.

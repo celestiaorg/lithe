@@ -192,6 +192,70 @@ external view function outcome(const to : address; const data : bytes) : bytes i
 }
 
 #[test]
+fn create_runs_raw_creation_code() {
+    let src = "\
+storage is record { made : address; code : bytes; }
+external function clone(const target : address; const salt : bytes32) is {
+  defer create(Bytes.concat(0x3d602d80600a3d3981f3363d3d373d3d3d363d73, bytes20(target), 0x5af43d82803e903d91602b57fd5bf3))
+    with salt = salt then (made : address) {
+    storage.made := made;
+    storage.code := Evm.code(made);
+  };
+}
+external function write(const data : bytes) is {
+  defer create(Bytes.concat(0x61, bytes2(uint16(data.length + 1n)), 0x80600a3d393df300, data)) then (made : address) {
+    storage.made := made;
+  };
+}
+external view function read(const pointer : address) : bytes is Evm.code(pointer)[1n:]
+external function refused() is {
+  defer create(0x63deadbeef5f526004601cfd) then {
+  | Ok(made : address) -> { storage.made := made; }
+  | Error(reason : bytes) -> { storage.code := reason; }
+  };
+}
+";
+    let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
+    let unhex = |h: &str| (0..h.len()).step_by(2).map(|i| u8::from_str_radix(&h[i..i + 2], 16).unwrap()).collect::<Vec<u8>>();
+    let target = Word::from_u64(0x1167);
+    let salt = Word::from_u64(7);
+    let out = run_ok(&runtime, &HashMap::new(), "clone(address,bytes32)", &[target, salt]);
+    // ERC-1167: the clone's code delegates every call to `target`.
+    let mut init = unhex("3d602d80600a3d3981f3363d3d373d3d3d363d73");
+    init.extend(&target.to_be_bytes()[12..]);
+    init.extend(unhex("5af43d82803e903d91602b57fd5bf3"));
+    assert_eq!(slot(&out.storage, 0), created_address(Word::from_u64(0x1000), Some(salt), &init));
+    assert_eq!(stored_bytes(&out.storage, 1), init[10..].to_vec());
+    // SSTORE2: the data is the code of a contract that cannot run, past its leading `STOP`.
+    let data = b"stored as code, read back with EXTCODECOPY".to_vec();
+    let wrote = call_raw(&runtime, &bytes_arg("write(bytes)", &[], &data));
+    assert!(!wrote.reverted, "{}", pretty(&wrote.returndata));
+    let read = call_raw(&runtime, &word_data("read(address)", &[slot(&wrote.storage, 0)]));
+    assert!(!read.reverted, "{}", pretty(&read.returndata));
+    assert_eq!(abi_string_value(&read.returndata), data);
+    // Creation code that reverts runs the `Error` arm on its revert data.
+    let refused = run_ok(&runtime, &HashMap::new(), "refused()", &[]);
+    assert_eq!(slot(&refused.storage, 0), Word::from_u64(0));
+    assert_eq!(stored_bytes(&refused.storage, 1), vec![0xde, 0xad, 0xbe, 0xef]);
+    let footprint = crate::footprint(src).expect("footprint");
+    assert!(footprint.contains("defers: create "), "{footprint}");
+}
+
+#[test]
+fn raw_create_rules() {
+    let cases = [
+        ("storage is record { n : nat; }\nexternal function f(const d : string) is { defer create(d); }\n", "`create(code)` runs a `bytes` value as creation code"),
+        ("storage is record { n : nat; }\nexternal function f(const d : bytes) is { defer create(d) with salt = 1n; }\n", "a salt is a `bytes32`"),
+        ("storage is record { n : nat; }\nexternal function f(const d : bytes) is { defer create(d) then (x : bytes) { skip }; }\n", "the result type does not match"),
+        ("storage is record { n : nat; }\npure function f(const a : address) : bytes is Evm.code(a)\nexternal function g() is { skip }\n", "reads `Evm.code`"),
+    ];
+    for (src, want) in cases {
+        let err = compile(src).expect_err(want);
+        assert!(err.to_string().contains(want), "{want}\n{src}\n{err}");
+    }
+}
+
+#[test]
 fn raw_call_rules() {
     let cases = [
         ("storage is record { n : nat; }\nexternal view function f(const to : address; const d : bytes) : bytes is Evm.static_call(to, d)\n", "`Evm.static_call` is read-only; write `query Evm.static_call(...)`"),
@@ -237,4 +301,53 @@ fn raw_codec_example_builds_and_decodes() {
     let silent = run_ok(&runtime, &HashMap::new(), "send(address,address,uint256)", &[Word::from_u64(0xef), owner, Word::from_u64(1)]);
     assert_eq!(slot(&silent.storage, 1), Word::from_u64(1));
     assert_eq!(slot(&silent.storage, 2), Word::from_u64(0));
+}
+
+/// A slice of `Evm.code(a)` copies only its bytes, and checks its bounds as any slice does.
+#[test]
+fn code_slices_copy_only_the_slice() {
+    let src = "\
+storage is record { n : nat; }
+external view function from(const a : address; const s : nat) : bytes is Evm.code(a)[s:]
+external view function between(const a : address; const s : nat; const e : nat) : bytes is Evm.code(a)[s:e]
+external view function whole(const a : address) : bytes is Evm.code(a)
+";
+    let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
+    let at = Word::from_u64(0x5401);
+    let code: Vec<u8> = (0..70u8).collect();
+    DEPLOYED.with(|d| d.borrow_mut().insert(at, (code.clone(), HashMap::new())));
+    let answer = |sig: &str, words: &[Word]| {
+        let out = call_raw(&runtime, &word_data(sig, words));
+        (!out.reverted).then(|| abi_string_value(&out.returndata)).ok_or(out.returndata)
+    };
+    let n = |x: u64| Word::from_u64(x);
+    assert_eq!(answer("whole(address)", &[at]), Ok(code.clone()));
+    assert_eq!(answer("from(address,uint256)", &[at, n(1)]), Ok(code[1..].to_vec()));
+    assert_eq!(answer("from(address,uint256)", &[at, n(70)]), Ok(vec![]));
+    assert_eq!(answer("between(address,uint256,uint256)", &[at, n(3), n(40)]), Ok(code[3..40].to_vec()));
+    assert_eq!(answer("between(address,uint256,uint256)", &[at, n(5), n(5)]), Ok(vec![]));
+    let panic = |data: Vec<u8>| assert_eq!(hex(&data[data.len() - 32..]), hex(&Word::from_u64(0x32).to_be_bytes()));
+    panic(answer("from(address,uint256)", &[at, n(71)]).unwrap_err());
+    panic(answer("between(address,uint256,uint256)", &[at, n(6), n(5)]).unwrap_err());
+    panic(answer("between(address,uint256,uint256)", &[at, n(0), n(71)]).unwrap_err());
+    // An account without code has an empty slice at zero, and nothing past it.
+    assert_eq!(answer("from(address,uint256)", &[n(0x5402), n(0)]), Ok(vec![]));
+    panic(answer("from(address,uint256)", &[n(0x5402), n(1)]).unwrap_err());
+}
+
+/// A value of zero, written or passed to an inlined function, sends none: the code is the
+/// code without it.
+#[test]
+fn zero_values_compile_to_no_value() {
+    let build = |body: &str| compile(&format!("storage is record {{ n : nat; }}\n{body}\n")).expect(body);
+    let none = build("external function f(const to : address; const d : bytes) is { defer Evm.call(to, d); }");
+    assert_eq!(build("external function f(const to : address; const d : bytes) is { defer Evm.call(to, d) with value = 0n; }"), none);
+    assert_eq!(
+        build("function g(const to : address; const d : bytes; const v : nat) is { defer Evm.call(to, d) with value = v; }\nexternal function f(const to : address; const d : bytes) is { g(to, d, 0n); }"),
+        none
+    );
+    let created = build("external function f(const d : bytes; const s : bytes32) is { defer create(d) with salt = s; }");
+    assert_eq!(build("external function f(const d : bytes; const s : bytes32) is { defer create(d) with { value = 0n; salt = s; }; }"), created);
+    // A value that is not a literal zero is still sent.
+    assert_ne!(build("external function f(const to : address; const d : bytes; const v : nat) is { defer Evm.call(to, d) with value = v; }"), none);
 }

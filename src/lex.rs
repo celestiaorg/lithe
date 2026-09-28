@@ -27,6 +27,8 @@ pub(crate) enum Num {
     Int(Word),
     Wei(Word),
     Duration(Word),
+    /// A hex literal past a word's 64 digits: `bytes`, as digits.
+    Bytes(String),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -377,7 +379,17 @@ fn hex_lit(lex: &mut Lexer<Raw>) -> Result<Num, LexError> {
     let line = lex.extras.line;
     let col = col_at(lex, lex.span().start);
     let digits = lex.slice()[2..].replace('_', "");
-    if digits.is_empty() || digits.len() > 64 {
+    if digits.len() > 64 {
+        if digits.len() % 2 == 1 {
+            return Err(LexError::BadNumber {
+                line,
+                col,
+                message: "a hex literal longer than a word is `bytes`, and needs an even number of digits".to_string(),
+            });
+        }
+        return Ok(Num::Bytes(digits));
+    }
+    if digits.is_empty() {
         return Err(LexError::BadNumber {
             line,
             col,
@@ -406,6 +418,7 @@ pub(crate) enum Kind {
     Int,
     WeiLit,
     DurationLit,
+    HexBytes,
     String,
     Type,
     Is,
@@ -541,6 +554,7 @@ pub(crate) fn tokenize(src: &str) -> Result<Vec<Token>, Error> {
             Raw::Number(Num::Int(w)) => (Kind::Int, w, None),
             Raw::Number(Num::Wei(w)) => (Kind::WeiLit, w, None),
             Raw::Number(Num::Duration(w)) => (Kind::DurationLit, w, None),
+            Raw::Number(Num::Bytes(digits)) => (Kind::HexBytes, Word::from_u64(0), Some(digits)),
             Raw::String(s) => (Kind::String, Word::from_u64(0), Some(s)),
             Raw::Type => (Kind::Type, Word::from_u64(0), None),
             Raw::Is => (Kind::Is, Word::from_u64(0), None),
@@ -662,6 +676,7 @@ pub(crate) fn kind_name(k: Kind) -> &'static str {
         Kind::Ident => "identifier",
         Kind::Nat => "nat",
         Kind::Int => "int",
+        Kind::HexBytes => "hex bytes",
         Kind::WeiLit => "wei",
         Kind::DurationLit => "duration",
         Kind::String => "string",

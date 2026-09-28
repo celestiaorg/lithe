@@ -297,6 +297,20 @@ impl<'a> Gen<'a> {
         Ok(())
     }
 
+    /// A deferred call's value, captured at the `defer`. Zero is no value: the call sends
+    /// none either way.
+    fn capture_value(&mut self, value: Option<&Expr>) -> Result<Option<i32>, Error> {
+        match value {
+            Some(v) if !self.const_word(v).is_some_and(|w| w.is_zero()) => {
+                let at = self.arena_alloc(1);
+                self.compile_value(v)?;
+                self.mstore_off(at);
+                Ok(Some(at))
+            }
+            _ => Ok(None),
+        }
+    }
+
     pub(super) fn compile_defer(
         &mut self,
         expr: &Expr,
@@ -315,7 +329,7 @@ impl<'a> Gen<'a> {
                 ..
             } => {
                 let (marker, len) = self.peer_code(name, *line, *col)?;
-                let value_at = self.arena_word(value)?;
+                let value_at = self.capture_value(value)?;
                 let gas = self.arena_word(gas)?;
                 let salt_at = match base {
                     Some(salt) => {
@@ -352,6 +366,42 @@ impl<'a> Gen<'a> {
                 })
             }
             Expr::Call {
+                builtin: Some(Builtin::RawCreate),
+                args,
+                base,
+                ..
+            } => {
+                let code = self.arena_alloc(1);
+                self.compile_value(&args[0])?;
+                self.mstore_off(code);
+                let value_at = self.capture_value(value)?;
+                let salt_at = match base {
+                    Some(salt) => {
+                        let at = self.arena_alloc(1);
+                        self.compile_value(salt)?;
+                        self.mstore_off(at);
+                        Some(at)
+                    }
+                    None => None,
+                };
+                self.push_op(OpSite {
+                    to: 0,
+                    value: value_at,
+                    gas: None,
+                    data: Some(code),
+                    size: 0,
+                    dynamic: false,
+                    create: Some((Word::from_u64(0), 0, salt_at, None)),
+                    fired: None,
+                    needs_code: false,
+                    unread: 0,
+                    raw: None,
+                    then: then.cloned(),
+                    record: (0, 0),
+                    captures: self.loop_captures(then),
+                })
+            }
+            Expr::Call {
                 builtin: Some(kind @ (Builtin::RawCall | Builtin::DelegateCall)),
                 args,
                 ..
@@ -363,7 +413,7 @@ impl<'a> Gen<'a> {
                 self.mstore_off(to);
                 self.compile_value(&args[1])?;
                 self.mstore_off(to + 32);
-                let value_at = self.arena_word(value)?;
+                let value_at = self.capture_value(value)?;
                 let gas = self.arena_word(gas)?;
                 let delegate = *kind == Builtin::DelegateCall;
                 self.push_op(OpSite {
@@ -432,7 +482,7 @@ impl<'a> Gen<'a> {
                 let to = self.arena_alloc(1);
                 self.compile_value(base)?;
                 self.mstore_off(to);
-                let value_at = self.arena_word(value)?;
+                let value_at = self.capture_value(value)?;
                 let gas = self.arena_word(gas)?;
                 let dynamic = args
                     .iter()
@@ -1109,7 +1159,21 @@ impl<'a> Gen<'a> {
     /// code after the call continues.
     fn replay_op(&mut self, op: &OpSite, skip: u32) -> Result<(), Error> {
         if let Some((marker, len, salt, args)) = op.create {
-            self.emit_create(marker, len, salt, args, op.value);
+            match op.data {
+                Some(code) => {
+                    if let Some(salt) = salt {
+                        self.mload(salt);
+                    }
+                    self.mload(code);
+                    self.bytes_span();
+                    match op.value {
+                        Some(value) => self.mload(value),
+                        None => self.op(PUSH0),
+                    }
+                    self.op(if salt.is_some() { CREATE2 } else { CREATE });
+                }
+                None => self.emit_create(marker, len, salt, args, op.value),
+            }
             return self.finish_create(op, skip);
         }
         if op.needs_code {

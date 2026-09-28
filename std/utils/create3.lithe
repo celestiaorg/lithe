@@ -1,0 +1,45 @@
+(* Addresses that depend only on the deployer and a salt, not on the creation code,
+   matching Solady's `CREATE3`. A `CREATE2` makes a small proxy at a salted address,
+   and the proxy creates the contract with its first `CREATE`. *)
+
+import "std/utils/create2.lithe";
+
+module Create3 is {
+  requires Create2;
+
+  (* The hash of the proxy's creation code, `0x67363d3d37363d34f03d5260086018f3`. *)
+  pure function proxy_code_hash() : bytes32 is
+    0x21c35dbe1b344a2488cf3321d6ce542f8e9f305544ff09e4993a62319a497c1f
+
+  (* Creates `code`, and answers its address. Raises `FailedDeployment` if the salt was
+     used before or the creation fails. *)
+  function deploy_deterministic(const code : bytes; const salt : bytes32) : address
+    raises FailedDeployment
+  is deploy_deterministic(code, salt, 0n)
+
+  (* The same, sending `value` wei to the new contract. *)
+  function deploy_deterministic(const code : bytes; const salt : bytes32; const value : nat) : address
+    raises FailedDeployment
+  is {
+    const deployed : address := predict(salt, Evm.self());
+    defer create(0x67363d3d37363d34f03d5260086018f3) with salt = salt then {
+      | Ok(proxy : address) -> {
+          defer Evm.call(proxy, code) with value = value then {
+            assert(Evm.code_size(deployed) > 0n, FailedDeployment);
+          };
+        }
+      | Error(_) -> { fail FailedDeployment; }
+    };
+  } with deployed
+
+  (* The proxy's address, then the address of the proxy's first creation. *)
+  pure function predict(const salt : bytes32; const deployer : address) : address is {
+    const proxy : address := Create2.compute_address(salt, proxy_code_hash(), deployer);
+    const prefix : bytes2 := 0xd694;
+    const nonce : bytes1 := 0x01;
+    const hash : bytes32 := Crypto.keccak256(Abi.encode_packed(prefix, proxy, nonce));
+  } with address(uint160(nat(hash) & ((1n << 160n) - 1n)))
+
+  view function predict_here(const salt : bytes32) : address is
+    predict(salt, Evm.self())
+}

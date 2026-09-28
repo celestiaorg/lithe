@@ -61,6 +61,7 @@ impl<'a> Gen<'a> {
             bytes_rep: None,
             dyn_key: None,
             slot_binds: HashMap::new(),
+            const_params: HashMap::new(),
             shared_temps: std::collections::HashSet::new(),
             transient_slot: false,
             data: Vec::new(),

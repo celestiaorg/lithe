@@ -656,6 +656,11 @@ pub(crate) enum Builtin {
     DelegateCall,
     /// `Evm.static_call(to, data)`: a `STATICCALL` with `data` as the calldata, queried.
     StaticCall,
+    /// `Evm.create(code)`: runs `code` as creation code. `base` holds the `CREATE2` salt,
+    /// if any.
+    RawCreate,
+    /// `Evm.code(a)`: the code at `a`, as `bytes`.
+    Code,
     /// A precompiled contract, given its input as it lays it out.
     Precompile(Pre),
     /// `create Contract(args)`: the arguments go to its `deploy`; `base` holds the
@@ -733,6 +738,8 @@ pub(crate) enum Lit {
     Duration(Word),
     Bool(bool),
     Str(String),
+    /// A hex literal longer than a word, which only `bytes` can hold.
+    Bytes(Vec<u8>),
     Unit,
     Nil,
 }

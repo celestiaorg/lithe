@@ -87,7 +87,7 @@ impl Checker {
             | Builtin::BlockGasLimit
             | Builtin::SelfAddr
             | Builtin::GasLeft => need(args.len(), 0)?,
-            Builtin::Balance | Builtin::CodeSize | Builtin::CodeHash => {
+            Builtin::Balance | Builtin::CodeSize | Builtin::CodeHash | Builtin::Code => {
                 need(args.len(), 1)?;
                 self.check_expr_as(&mut args[0], Some(TY_ADDRESS))?;
                 self.expect_addr(args[0].line(), args[0].col(), args[0].ty())?;
@@ -537,6 +537,7 @@ impl Checker {
                 return Ok(());
             }
             Builtin::Create
+            | Builtin::RawCreate
             | Builtin::Cast
             | Builtin::Some
             | Builtin::None
@@ -548,6 +549,18 @@ impl Checker {
         }
         *builtin = Some(kind);
         *ty = self.builtin_ret(kind)?;
+        Ok(())
+    }
+
+    /// A `create`'s `CREATE2` salt, a `bytes32`.
+    pub(super) fn check_salt(&mut self, salt: &mut Option<Box<Expr>>) -> Result<(), Error> {
+        if let Some(salt) = salt {
+            let word = self.bytes_n(32)?;
+            self.check_expr_as(salt, Some(word))?;
+            if !self.same(salt.ty(), word) {
+                return Err(error(salt.line(), salt.col(), "a salt is a `bytes32`"));
+            }
+        }
         Ok(())
     }
 
@@ -724,6 +737,7 @@ impl Checker {
             | Builtin::AbiEncodeSignature
             | Builtin::AbiEncodeCall
             | Builtin::CreationCode
+            | Builtin::Code
             | Builtin::StaticCall
             | Builtin::BytesConcat
             | Builtin::BytesSlice => self.bytes_n(0)?,
@@ -741,7 +755,11 @@ impl Checker {
             | Builtin::Some
             | Builtin::None
             | Builtin::Ctor(_) => TY_UNIT,
-            Builtin::Transfer | Builtin::Create | Builtin::RawCall | Builtin::DelegateCall => {
+            Builtin::Transfer
+            | Builtin::Create
+            | Builtin::RawCreate
+            | Builtin::RawCall
+            | Builtin::DelegateCall => {
                 TY_OPERATION
             }
         })
@@ -770,6 +788,7 @@ fn env_builtin(kind: Builtin) -> bool {
             | Builtin::Balance
             | Builtin::CodeSize
             | Builtin::CodeHash
+            | Builtin::Code
             | Builtin::GasLeft
     )
 }
@@ -795,6 +814,7 @@ fn module_builtin(module: &str, name: &str) -> Option<Builtin> {
         ("Evm", "balance") => Builtin::Balance,
         ("Evm", "code_size") => Builtin::CodeSize,
         ("Evm", "code_hash") => Builtin::CodeHash,
+        ("Evm", "code") => Builtin::Code,
         ("Evm", "creation_code") => Builtin::CreationCode,
         ("Evm", "gas_left") => Builtin::GasLeft,
         ("Evm", "transfer") => Builtin::Transfer,

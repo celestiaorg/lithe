@@ -75,7 +75,11 @@ pub(super) fn compare_builds(
                 HashMap::new(),
             )
         };
-        let (want, got) = (run(reference, &theirs), run(ours, &mine));
+        // Both builds see the same world, so their `CREATE`s land at the same address.
+        let nonce = NONCE.get();
+        let want = run(reference, &theirs);
+        NONCE.set(nonce);
+        let got = run(ours, &mine);
         let ctx = format!("{rel} step {step}: calldata {}", hex(&data));
         let (want, got) = match (want, got) {
             (Err(a), Err(b)) => {

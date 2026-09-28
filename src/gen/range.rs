@@ -225,6 +225,10 @@ impl<'a> Gen<'a> {
                 ty,
                 ..
             } if !self.is_dynamic(*ty) => (*w, *w),
+            Expr::Ident { sym: Some(s), builtin: None, .. } if self.const_params.contains_key(s) => {
+                let w = self.const_params[s];
+                (w, w)
+            }
             // A cast checks the word or reinterprets it; it never changes it.
             Expr::Call {
                 builtin: Some(Builtin::Cast | Builtin::FromBits(_)),

@@ -1,6 +1,6 @@
 ---
 title: "Utilities"
-description: "CREATE2 addresses, nonces, and checkpointed history."
+description: "CREATE2 addresses, clones, SSTORE2, CREATE3, nonces, and checkpointed history."
 ---
 
 # Utilities
@@ -8,6 +8,124 @@ description: "CREATE2 addresses, nonces, and checkpointed history."
 ## `Create2`
 
 `std/utils/create2.lithe`. `compute_address(salt, init_code_hash, deployer)` is where a `CREATE2` from `deployer` lands, and `compute_address_here(salt, init_code_hash)` is where [`defer create`](/language/effects#create) with that salt would put a contract from this one. `init_code_hash` is the hash of the created contract's creation code, with its [`deploy`](/language/deploy) arguments appended: `Crypto.keccak256(Evm.creation_code(C))` for a contract `C` without arguments, a constant.
+
+The file also declares `FailedDeployment`, which the deployers below raise when a salted creation fails.
+
+## `Clones`
+
+`std/utils/clones.lithe`. ERC-1167 minimal proxies, as OpenZeppelin's `Clones` makes them: a 45-byte contract that delegates every call to an implementation, so each instance costs a small creation instead of a copy of the implementation. `code(implementation)` is a clone's creation code, for [`defer create(code)`](/language/effects#creation-code-as-bytes):
+
+```lithe
+import "std/utils/create2.lithe";
+import "std/utils/clones.lithe";
+
+contract Factory is {
+  use Create2;
+  use Clones;
+
+  storage is record {
+    implementation : address;
+    instances : list(address);
+  }
+
+  external function open() is {
+    defer create(Clones.code(storage.implementation)) then (instance : address) {
+      List.push(storage.instances, instance);
+    };
+  }
+
+  external function open_at(const salt : bytes32) : address
+    raises FailedDeployment
+  is {
+    const instance : address := Clones.clone_deterministic(storage.implementation, salt);
+    List.push(storage.instances, instance);
+  } with instance
+}
+```
+
+A clone with arguments carries them after its code, where the implementation reads them with `Clones.args_of(Evm.self())`: fixed configuration, such as a token and an owner, with no storage to initialize.
+
+| Function | |
+| --- | --- |
+| `code(implementation) : bytes` | a clone's creation code |
+| `code_with_args(implementation, args) : bytes` | the same, with `args` after the clone's code; raises `CloneArgumentsTooLong` past 24531 bytes |
+| `clone_deterministic(implementation, salt) : address` | creates a clone with `CREATE2`, and answers where it lands; raises `FailedDeployment` if it is already there |
+| `clone_deterministic(implementation, salt, value) : address` | the same, sending `value` wei to the clone |
+| `clone_deterministic_with_args(implementation, args, salt)`, `(implementation, args, salt, value)` | the same, with arguments |
+| `predict(implementation, salt, deployer)`, `predict_with_args(implementation, args, salt, deployer)` | where `deployer` would create the clone |
+| `predict_here(implementation, salt) : address` | where this contract would |
+| `args_of(instance) : bytes` | the arguments a clone was created with; empty for a clone without them |
+
+## `SSTORE2`
+
+`std/utils/sstore2.lithe`. Data kept as the code of a contract, as Solady's `SSTORE2` keeps it: writing costs a creation, about 200 gas a byte, and reading is one `EXTCODECOPY`, far cheaper than storage for data of more than a few words that never changes. The code starts with `STOP`, so a call to it does nothing. The data is at most 24575 bytes.
+
+```lithe
+import "std/utils/create2.lithe";
+import "std/utils/sstore2.lithe";
+
+contract Art is {
+  use Create2;
+  use SSTORE2;
+
+  storage is record {
+    pointer : address;
+  }
+
+  external function store(const image : bytes) is {
+    defer create(SSTORE2.code(image)) then (pointer : address) {
+      storage.pointer := pointer;
+    };
+  }
+
+  external view function image() : bytes is
+    SSTORE2.read(storage.pointer)
+}
+```
+
+| Function | |
+| --- | --- |
+| `code(data) : bytes` | the creation code that stores `data` |
+| `write_counterfactual(data, salt) : address` | stores `data` with `CREATE2`, and answers the pointer; raises `FailedDeployment` if the same data was stored with the salt before |
+| `predict_counterfactual(data, salt, deployer) : address` | where `deployer` would store it |
+| `read(pointer) : bytes` | the data; panics if `pointer` has no code |
+
+`SSTORE2.read(p)[start:end]` reads the whole data first. `Evm.code(p)[1n + start:1n + end]` copies only the range.
+
+## `Create3`
+
+`std/utils/create3.lithe`. Addresses that depend only on the deployer and a salt, not on the creation code, as Solady's `CREATE3` makes them: the same salt gives the same address on every chain, whatever the contract's code or constructor arguments. A `CREATE2` makes a 16-byte proxy at a salted address, and the proxy creates the contract with its first `CREATE`.
+
+```lithe
+import "std/utils/create2.lithe";
+import "std/utils/create3.lithe";
+
+contract Deployer is {
+  use Create2;
+  use Create3;
+
+  storage is record {
+    last : address;
+  }
+
+  external payable function deploy_at(const code : bytes; const salt : bytes32) : address
+    raises FailedDeployment
+  is {
+    storage.last := Create3.deploy_deterministic(code, salt, nat(Evm.value()));
+  } with storage.last
+
+  external view function predict(const salt : bytes32) : address is
+    Create3.predict_here(salt)
+}
+```
+
+| Function | |
+| --- | --- |
+| `deploy_deterministic(code, salt) : address` | creates `code`, and answers its address; raises `FailedDeployment` if the salt was used or the creation fails |
+| `deploy_deterministic(code, salt, value) : address` | the same, sending `value` wei to the new contract |
+| `predict(salt, deployer) : address` | where `deployer` would create a contract with `salt` |
+| `predict_here(salt) : address` | where this contract would |
+| `proxy_code_hash() : bytes32` | the hash of the proxy's creation code |
 
 ## `Nonces`
 

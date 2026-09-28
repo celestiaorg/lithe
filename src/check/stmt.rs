@@ -607,7 +607,7 @@ impl Checker {
                     if matches!(
                         &*expr,
                         Expr::Call {
-                            builtin: Some(Builtin::Create),
+                            builtin: Some(Builtin::Create | Builtin::RawCreate),
                             ..
                         }
                     ) {

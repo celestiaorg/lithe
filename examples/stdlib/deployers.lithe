@@ -1,0 +1,73 @@
+(* Contracts from creation code the factory builds: ERC-1167 clones of an
+   implementation, data kept as code with SSTORE2, and CREATE3 deployments whose
+   address depends only on a salt. *)
+
+import "std/utils/create2.lithe";
+import "std/utils/clones.lithe";
+import "std/utils/sstore2.lithe";
+import "std/utils/create3.lithe";
+
+contract Deployers is {
+  use Create2;
+  use Clones;
+  use SSTORE2;
+  use Create3;
+
+  storage is record {
+    last : address;
+    pointer : address;
+  }
+
+  external function clone(const implementation : address) is {
+    defer create(Clones.code(implementation)) then (instance : address) {
+      storage.last := instance;
+    };
+  }
+
+  external function clone_with_args(const implementation : address; const args : bytes)
+    raises CloneArgumentsTooLong
+  is {
+    defer create(Clones.code_with_args(implementation, args)) then (instance : address) {
+      storage.last := instance;
+    };
+  }
+
+  external function clone_deterministic(const implementation : address; const salt : bytes32) : address
+    raises FailedDeployment
+  is {
+    storage.last := Clones.clone_deterministic(implementation, salt);
+  } with storage.last
+
+  external view function predict_clone(const implementation : address; const salt : bytes32) : address is
+    Clones.predict_here(implementation, salt)
+
+  external view function args_of(const instance : address) : bytes is
+    Clones.args_of(instance)
+
+  external function write(const data : bytes) is {
+    defer create(SSTORE2.code(data)) then (pointer : address) {
+      storage.pointer := pointer;
+    };
+  }
+
+  external function write_counterfactual(const data : bytes; const salt : bytes32) : address
+    raises FailedDeployment
+  is {
+    storage.pointer := SSTORE2.write_counterfactual(data, salt);
+  } with storage.pointer
+
+  external view function read() : bytes is
+    SSTORE2.read(storage.pointer)
+
+  external payable function deploy3(const code : bytes; const salt : bytes32) : address
+    raises FailedDeployment
+  is {
+    storage.last := Create3.deploy_deterministic(code, salt, nat(Evm.value()));
+  } with storage.last
+
+  external view function predict3(const salt : bytes32) : address is
+    Create3.predict_here(salt)
+
+  external view function last() : address is
+    storage.last
+}

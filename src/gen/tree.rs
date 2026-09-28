@@ -165,9 +165,13 @@ impl<'a> Gen<'a> {
     /// The values are evaluated first; the blob then grows past the heap from
     /// `[start, cur]` on the stack.
     pub(super) fn compile_packed(&mut self, args: &[Expr]) -> Result<(), Error> {
+        // A hex literal of up to a word is written as one, with no blob to copy it from.
         let mut values = Vec::with_capacity(args.len());
         for arg in args {
-            values.push((self.stage(arg)?, arg.ty()));
+            values.push(match self.short_bytes_lit(arg) {
+                Some(lit) => Err(lit),
+                None => Ok((self.stage(arg)?, arg.ty())),
+            });
         }
         self.push_mem(self.blob_base);
         self.mload(self.blob_ptr);
@@ -177,7 +181,17 @@ impl<'a> Gen<'a> {
         self.push_u64(32);
         self.op(ADD);
         self.op(DUP1);
-        for (at, ty) in values {
+        for value in values {
+            let (at, ty) = match value {
+                Ok(staged) => staged,
+                Err((w, n)) => {
+                    self.push_word(w);
+                    self.op(DUP1 + 1);
+                    self.op(MSTORE);
+                    self.add_const(n);
+                    continue;
+                }
+            };
             let at = Addr::Mem(at);
             let id = self.peel_nominal(ty);
             let (kind, bits, elem) = {
@@ -208,15 +222,7 @@ impl<'a> Gen<'a> {
                 self.op(ADD);
                 continue;
             }
-            // Its own width, in the high bytes: `uint96` is 12 bytes.
-            let n: u32 = match kind {
-                _ if self.enum_cases(ty).is_some() => 1,
-                TyKind::Address | TyKind::Interface => 20,
-                TyKind::Bool => 1,
-                TyKind::Bytes => u32::from(bits.max(1)),
-                TyKind::Nat | TyKind::Int if bits > 0 && bits < 256 => u32::from(bits) / 8,
-                _ => 32,
-            };
+            let n = self.packed_width(ty);
             self.load_at(at);
             if n < 32 {
                 self.push_u64(u64::from(8 * (32 - n)));
@@ -234,6 +240,34 @@ impl<'a> Gen<'a> {
         self.mload(self.scratch_a);
         self.tag_blob();
         Ok(())
+    }
+
+    /// A static value's packed width, in the high bytes of its word: `uint96` is 12 bytes.
+    pub(super) fn packed_width(&self, ty: usize) -> u32 {
+        let t = &self.checked.types[self.peel_nominal(ty)];
+        match t.kind {
+            _ if self.enum_cases(ty).is_some() => 1,
+            TyKind::Address | TyKind::Interface => 20,
+            TyKind::Bool => 1,
+            TyKind::Bytes => u32::from(t.bits.max(1)),
+            TyKind::Nat | TyKind::Int if t.bits > 0 && t.bits < 256 => u32::from(t.bits) / 8,
+            _ => 32,
+        }
+    }
+
+    /// A hex literal of up to a word, where `bytes` are expected: its bytes, left-aligned
+    /// in a word, and how many there are.
+    pub(super) fn short_bytes_lit(&self, e: &Expr) -> Option<(Word, u32)> {
+        match e {
+            Expr::Lit { lit: Lit::Int(w, Some(digits)), .. }
+                if self.checked.types[self.peel_nominal(e.ty())].kind == TyKind::Bytes
+                    && (1..=64).contains(digits) =>
+            {
+                let n = u32::from(*digits) / 2;
+                Some((if n < 32 { w.shl(8 * (32 - n)) } else { *w }, n))
+            }
+            _ => None,
+        }
     }
 
     /// `[.. base ..]`: a static value's ABI words at `base + off`, from its words at `at`,

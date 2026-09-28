@@ -221,7 +221,7 @@ impl<'a> Gen<'a> {
             let packed = match arg {
                 Expr::Lit { lit, .. } if self.is_dynamic(ty) => match lit {
                     Lit::Str(s) if s.len() <= 31 => Some(Word::short_dyn(s.as_bytes())),
-                    Lit::Int(w, digits) => Some(dyn_from_word(*w, *digits)),
+                    Lit::Int(w, digits) if *digits != Some(64) => Some(dyn_from_word(*w, *digits)),
                     _ => None,
                 },
                 _ => None,
@@ -231,6 +231,10 @@ impl<'a> Gen<'a> {
                 (Some(w), _) => self.push_word(w),
                 (None, Expr::Lit { lit: Lit::Str(s), .. }) if self.is_dynamic(ty) => {
                     self.push_long_unpadded(s.as_bytes())?
+                }
+                (None, Expr::Lit { lit: Lit::Bytes(b), .. }) => self.push_long_unpadded(b)?,
+                (None, Expr::Lit { lit: Lit::Int(w, Some(64)), .. }) if self.is_dynamic(ty) => {
+                    self.push_long_unpadded(&w.to_be_bytes())?
                 }
                 _ => self.compile_value(arg)?,
             }

@@ -2702,3 +2702,55 @@ external pure function only(const n : nat) : nat is {
     .expect_err("arms after the first need `|`");
     assert!(err.to_string().contains("expected `|`"), "{err}");
 }
+
+/// A hex literal is `bytes` at any length: a word's 32 bytes, or past it, where only
+/// `bytes` can hold it. Each reads back, hashes, compares, and reverts as written.
+#[test]
+fn long_hex_bytes_literals() {
+    let word = "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f";
+    let long = format!("{word}{word}ff");
+    let src = format!("\
+error Blob of bytes;
+storage is record {{ kept : bytes; }}
+external pure function word() : bytes is 0x{word}
+external pure function long() : bytes is 0x{long}
+external pure function joined() : bytes is Bytes.concat(0x{word}, 0x{long})
+external pure function hashed() : bytes32 is Crypto.keccak256(0x{long})
+external pure function same(const b : bytes) : bool is b = 0x{long}
+external function keep() is {{ storage.kept := 0x{long}; }}
+external view function kept() : bytes is storage.kept
+external function refuse() raises Blob is {{ fail Blob(0x{long}); }}
+");
+    let runtime = deploy(&compile(&src).expect("compile")).expect("deploy");
+    let unhex = |h: &str| (0..h.len()).step_by(2).map(|i| u8::from_str_radix(&h[i..i + 2], 16).unwrap()).collect::<Vec<u8>>();
+    let (word, long) = (unhex(word), unhex(&long));
+    let call = |data: Vec<u8>, storage: HashMap<Word, Word>| exec(&runtime, &data, storage, Word::from_u64(1), Word::from_u64(0), Word::from_u64(0)).expect("run");
+    let bytes_of = |sig: &str| {
+        let out = call(selector(sig).to_vec(), HashMap::new());
+        assert!(!out.reverted, "{sig}: {}", pretty(&out.returndata));
+        abi_string_value(&out.returndata)
+    };
+    assert_eq!(bytes_of("word()"), word);
+    assert_eq!(bytes_of("long()"), long);
+    assert_eq!(bytes_of("joined()"), [word.clone(), long.clone()].concat());
+    let hashed = call(selector("hashed()").to_vec(), HashMap::new());
+    assert_eq!(hashed.returndata, crate::keccak::keccak256(&long).to_vec());
+    let mut arg = selector("same(bytes)").to_vec();
+    arg.extend(Word::from_u64(32).to_be_bytes());
+    arg.extend(Word::from_u64(long.len() as u64).to_be_bytes());
+    let mut padded = long.clone();
+    padded.resize(96, 0);
+    arg.extend(padded);
+    assert_eq!(call(arg, HashMap::new()).returndata, Word::from_u64(1).to_be_bytes().to_vec());
+    let kept = call(selector("keep()").to_vec(), HashMap::new());
+    assert!(!kept.reverted);
+    let read = call(selector("kept()").to_vec(), kept.storage);
+    assert_eq!(abi_string_value(&read.returndata), long);
+    let refused = call(selector("refuse()").to_vec(), HashMap::new());
+    assert!(refused.reverted);
+    assert_eq!(abi_string_value(&refused.returndata[4..]), long);
+    let err = compile("storage is record { n : nat; }\nexternal pure function f() : bytes is 0x000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f2\n").expect_err("odd");
+    assert!(err.to_string().contains("even number of digits"), "{err}");
+    let err = compile("storage is record { n : nat; }\nexternal pure function f() : nat is 0x000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20\n").expect_err("nat");
+    assert!(!err.to_string().is_empty());
+}

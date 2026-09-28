@@ -371,6 +371,18 @@ fn exec_state(
                 write_mem(&mut mem, dest, &data);
             }
             0x3a => stack.push(Word::from_u64(1_000_000_000)),
+            0x3c => {
+                let addr = pop(&mut stack)?;
+                let dest = word_usize(pop(&mut stack)?)?;
+                let off = word_usize(pop(&mut stack)?)?;
+                let len = word_usize(pop(&mut stack)?)?;
+                let src = if addr == self_addr {
+                    account_code(code)
+                } else {
+                    DEPLOYED.with(|d| d.borrow().get(&addr).map(|(c, _)| c.clone()).unwrap_or_default())
+                };
+                write_mem(&mut mem, dest, &slice_pad(&src, off, len));
+            }
             0x3b => {
                 let addr = pop(&mut stack)?;
                 let size = if addr == self_addr {

@@ -1,0 +1,85 @@
+(* ERC-1167 minimal proxies: clones that delegate every call to one implementation,
+   matching OpenZeppelin's `Clones`. `code` is a clone's creation code:
+
+     defer create(Clones.code(implementation)) then (instance : address) { ... };
+
+   `code_with_args` appends immutable arguments after the clone's code, where `args_of`
+   reads them back. The deterministic forms create with `CREATE2` and answer where the
+   clone lands. *)
+
+import "std/utils/create2.lithe";
+
+error CloneArgumentsTooLong;
+
+module Clones is {
+  requires Create2;
+
+  pure function code(const implementation : address) : bytes is
+    Bytes.concat(0x3d602d80600a3d3981f3363d3d373d3d3d363d73, bytes20(implementation), 0x5af43d82803e903d91602b57fd5bf3)
+
+  (* A clone's code is 45 bytes, and the arguments must fit after it. *)
+  pure function code_with_args(const implementation : address; const args : bytes) : bytes
+    raises CloneArgumentsTooLong
+  is {
+    assert(args.length <= 24531n, CloneArgumentsTooLong);
+  } with Bytes.concat(
+    0x61,
+    bytes2(uint16(args.length + 45n)),
+    0x3d81600a3d39f3363d3d373d3d3d363d73,
+    bytes20(implementation),
+    0x5af43d82803e903d91602b57fd5bf3,
+    args
+  )
+
+  (* Raises `FailedDeployment` if the clone is already there. *)
+  function clone_deterministic(const implementation : address; const salt : bytes32) : address
+    raises FailedDeployment
+  is clone_deterministic(implementation, salt, 0n)
+
+  function clone_deterministic(const implementation : address; const salt : bytes32; const value : nat) : address
+    raises FailedDeployment
+  is {
+    defer create(code(implementation)) with { value = value; salt = salt; } then {
+      | Ok(_) -> { skip }
+      | Error(_) -> { fail FailedDeployment; }
+    };
+  } with predict_here(implementation, salt)
+
+  function clone_deterministic_with_args(const implementation : address; const args : bytes; const salt : bytes32) : address
+    raises CloneArgumentsTooLong | FailedDeployment
+  is clone_deterministic_with_args(implementation, args, salt, 0n)
+
+  function clone_deterministic_with_args(
+    const implementation : address;
+    const args : bytes;
+    const salt : bytes32;
+    const value : nat
+  ) : address
+    raises CloneArgumentsTooLong | FailedDeployment
+  is {
+    const init : bytes := code_with_args(implementation, args);
+    defer create(init) with { value = value; salt = salt; } then {
+      | Ok(_) -> { skip }
+      | Error(_) -> { fail FailedDeployment; }
+    };
+  } with Create2.compute_address_here(salt, Crypto.keccak256(init))
+
+  pure function predict(const implementation : address; const salt : bytes32; const deployer : address) : address is
+    Create2.compute_address(salt, Crypto.keccak256(code(implementation)), deployer)
+
+  view function predict_here(const implementation : address; const salt : bytes32) : address is
+    predict(implementation, salt, Evm.self())
+
+  pure function predict_with_args(
+    const implementation : address;
+    const args : bytes;
+    const salt : bytes32;
+    const deployer : address
+  ) : address
+    raises CloneArgumentsTooLong
+  is Create2.compute_address(salt, Crypto.keccak256(code_with_args(implementation, args)), deployer)
+
+  (* The arguments a clone was created with; empty for a clone without them. *)
+  view function args_of(const instance : address) : bytes is
+    Evm.code(instance)[45n:]
+}

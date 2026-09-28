@@ -178,7 +178,9 @@ Lithe error names are converted to PascalCase in the ABI, so `Not_owner` becomes
 | `try c.f() returns (r) { } catch { }` | `defer c.f() then { \| Ok(r : T) -> { } \| Error(e : bytes) -> { } }` |
 | `try` on a view call | `case query c.f() of { Ok(r) -> ... \| Error(e) -> ... }` |
 | `new C{salt: s}(...)` | `defer create C(...) with salt = s`. See [`create`](/language/effects#create) |
+| `create(v, p, n)`, `create2(v, p, n, s)` in assembly | `defer create(code) with { value = v; salt = s; }`. See [Creation code as bytes](/language/effects#creation-code-as-bytes) |
 | `type(C).creationCode` | `Evm.creation_code(C)` |
+| `a.code`, `Clones.clone(impl)`, `SSTORE2.write(data)` | `Evm.code(a)`, `defer create(Clones.code(impl))`, `defer create(SSTORE2.code(data))`. See [Utilities](/stdlib/utils#clones) |
 | `token.call(...)` accepting empty return data | a result of `option(T)`: `None` when nothing comes back. See [Optional results](/language/effects#optional-results) |
 | `to.call{value: v}(data)` | `defer Evm.call(to, data) with value = v then (result : bytes) { ... }`. See [Raw calls](/language/effects#raw-calls) |
 | `to.staticcall(data)` | `query Evm.static_call(to, data)` |

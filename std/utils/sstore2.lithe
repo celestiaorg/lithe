@@ -1,0 +1,38 @@
+(* Data kept as the code of a contract that cannot run, matching Solady's `SSTORE2`:
+   writing costs a contract creation, and reading is one `EXTCODECOPY`, far cheaper
+   than storage for data larger than a few words and never changed.
+
+     defer create(SSTORE2.code(data)) then (pointer : address) { storage.pointer := pointer; };
+
+     SSTORE2.read(storage.pointer)
+
+   The data is at most 24575 bytes, one less than a contract's code. *)
+
+import "std/utils/create2.lithe";
+
+module SSTORE2 is {
+  requires Create2;
+
+  (* Creation code that returns `data` after a `STOP`, so a call to it does nothing. *)
+  pure function code(const data : bytes) : bytes is
+    Bytes.concat(0x61, bytes2(uint16(data.length + 1n)), 0x80600a3d393df300, data)
+
+  (* Writes with `CREATE2`, and answers the pointer. Raises `FailedDeployment` if the
+     salt was used for this data before. *)
+  function write_counterfactual(const data : bytes; const salt : bytes32) : address
+    raises FailedDeployment
+  is {
+    const init : bytes := code(data);
+    defer create(init) with salt = salt then {
+      | Ok(_) -> { skip }
+      | Error(_) -> { fail FailedDeployment; }
+    };
+  } with Create2.compute_address_here(salt, Crypto.keccak256(init))
+
+  pure function predict_counterfactual(const data : bytes; const salt : bytes32; const deployer : address) : address is
+    Create2.compute_address(salt, Crypto.keccak256(code(data)), deployer)
+
+  (* The data, which panics if `pointer` has no code. *)
+  view function read(const pointer : address) : bytes is
+    Evm.code(pointer)[1n:]
+}

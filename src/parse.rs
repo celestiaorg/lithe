@@ -1894,14 +1894,19 @@ impl<'a> Parser<'a> {
         let create = self.kind() == Kind::Create;
         let mut expr = if create {
             // `create Vault(args)`: a contract of the same file, given its `deploy` arguments.
+            // `create(code)`: creation code as a `bytes` value.
             self.bump();
             let (cline, ccol) = self.at();
-            let name = self.ident()?;
+            let (name, kind) = if self.kind() == Kind::LParen {
+                ("create".to_string(), Builtin::RawCreate)
+            } else {
+                (self.ident()?, Builtin::Create)
+            };
             self.want(Kind::LParen)?;
             let args = self.args()?;
             let mut call = self.call(cline, ccol, name, args, None);
             if let Expr::Call { builtin, .. } = &mut call {
-                *builtin = Some(Builtin::Create);
+                *builtin = Some(kind);
             }
             call
         } else {
@@ -2379,6 +2384,20 @@ impl<'a> Parser<'a> {
                     line,
                     col,
                     lit: Lit::Nil,
+                    ty: 0,
+                })
+            }
+            Kind::HexBytes => {
+                let digits = self.tok().string.clone().unwrap_or_default();
+                let bytes = (0..digits.len())
+                    .step_by(2)
+                    .map(|i| u8::from_str_radix(&digits[i..i + 2], 16).unwrap_or(0))
+                    .collect();
+                self.bump();
+                Ok(Expr::Lit {
+                    line,
+                    col,
+                    lit: Lit::Bytes(bytes),
                     ty: 0,
                 })
             }

@@ -124,6 +124,8 @@ impl<'a> Gen<'a> {
                     self.push_word(*w);
                     Ok(())
                 }
+                Lit::Int(w, Some(64)) if self.is_dynamic(*ty) => self.push_long(&w.to_be_bytes()),
+                Lit::Bytes(b) => self.push_long(b),
                 Lit::Int(w, digits) => {
                     if self.is_dynamic(*ty) {
                         self.push_short(dyn_from_word(*w, *digits));
@@ -479,6 +481,24 @@ impl<'a> Gen<'a> {
                 self.compile_value(&args[0])?;
                 self.op(EXTCODEHASH);
             }
+            Builtin::Code => {
+                // [a, n] becomes [a, blob], then the code fills the blob's data.
+                self.compile_value(&args[0])?;
+                self.op(DUP1);
+                self.op(EXTCODESIZE);
+                self.alloc_blob()?;
+                self.op(DUP1);
+                self.op(MLOAD);
+                self.op(PUSH0);
+                self.op(DUP1 + 2);
+                self.push_u64(32);
+                self.op(ADD);
+                self.op(DUP1 + 4);
+                self.op(EXTCODECOPY);
+                self.op(SWAP1);
+                self.op(POP);
+                self.tag_blob();
+            }
             Builtin::BlockHash => {
                 self.compile_value(&args[0])?;
                 self.op(BLOCKHASH);
@@ -600,6 +620,11 @@ impl<'a> Gen<'a> {
             }
             // `[len, data, start, end]`, checked as Solidity checks a calldata slice, then
             // copied to a blob of its own.
+            Builtin::BytesSlice
+                if matches!(&args[0], Expr::Call { builtin: Some(Builtin::Code), .. }) =>
+            {
+                return self.code_slice(args);
+            }
             Builtin::BytesSlice => {
                 let end = args.len() == 3;
                 self.slice_sites[usize::from(end)] += 1;
@@ -697,7 +722,7 @@ impl<'a> Gen<'a> {
             Builtin::Transfer => {
                 return Err(error(line, col, "defer the transfer"));
             }
-            Builtin::Create => {
+            Builtin::Create | Builtin::RawCreate => {
                 return Err(error(line, col, "defer the creation"));
             }
             Builtin::RawCall | Builtin::DelegateCall => {
@@ -764,6 +789,50 @@ impl<'a> Gen<'a> {
         Ok(())
     }
 
+    /// `Evm.code(a)[start:end]` copies only the slice out of `a`'s code, checked as a
+    /// slice of the whole code is.
+    fn code_slice(&mut self, args: &[Expr]) -> Result<(), Error> {
+        let Expr::Call { args: code, .. } = &args[0] else {
+            return Err(error(args[0].line(), args[0].col(), "internal: not `Evm.code`"));
+        };
+        // [a, start, end, size], or [a, start, size]
+        self.compile_value(&code[0])?;
+        for arg in &args[1..] {
+            self.compile_value(arg)?;
+        }
+        self.op(DUP1 + args.len() as u8 - 1);
+        self.op(EXTCODESIZE);
+        if args.len() == 3 {
+            self.op(DUP1 + 1);
+            self.op(GT);
+            self.revert_if_panic(0x32)?;
+        }
+        // [a, start, n]
+        self.op(DUP1 + 1);
+        self.op(DUP1 + 1);
+        self.op(LT);
+        self.revert_if_panic(0x32)?;
+        self.op(DUP1 + 1);
+        self.op(SWAP1);
+        self.op(SUB);
+        // [blob, start, n, a], then `EXTCODECOPY(a, blob + 32, start, n)`.
+        self.op(DUP1);
+        self.alloc_blob()?;
+        self.op(SWAP1 + 2);
+        self.op(DUP1 + 1);
+        self.op(DUP1 + 3);
+        self.op(DUP1 + 5);
+        self.push_u64(32);
+        self.op(ADD);
+        self.op(DUP1 + 3);
+        self.op(EXTCODECOPY);
+        self.op(POP);
+        self.op(POP);
+        self.op(POP);
+        self.tag_blob();
+        Ok(())
+    }
+
     fn compile_calldata(&mut self) -> Result<(), Error> {
         self.op(CALLDATASIZE);
         self.alloc_blob()?;
@@ -784,6 +853,7 @@ impl<'a> Gen<'a> {
         if precompile.is_none() {
             let constant = match &args[0] {
                 Expr::Lit { lit: Lit::Str(s), .. } => Some(s.as_bytes().to_vec()),
+                Expr::Lit { lit: Lit::Bytes(b), .. } => Some(b.clone()),
                 Expr::Call {
                     builtin: Some(Builtin::CreationCode),
                     args: inner,
@@ -823,6 +893,52 @@ impl<'a> Gen<'a> {
                     self.mstore_off(buf + i as i32 * 32);
                 }
                 self.push_u64(u64::from(n) * 32);
+                self.push_mem(buf);
+                self.op(KECCAK);
+                return Ok(());
+            }
+        }
+        // Packed static values and short hex literals, the same way, each at its offset:
+        // a later value overwrites the zeros past an earlier one.
+        if let (
+            None,
+            Expr::Call {
+                builtin: Some(Builtin::AbiEncodePacked | Builtin::BytesConcat),
+                args: inner,
+                ..
+            },
+        ) = (precompile, &args[0])
+        {
+            let fixed = |a: &Expr| {
+                self.short_bytes_lit(a).is_some() || {
+                    let t = &self.checked.types[self.peel_nominal(a.ty())];
+                    !self.is_dynamic(a.ty()) && t.kind != TyKind::List && t.words == 1
+                }
+            };
+            if !inner.is_empty() && inner.iter().all(fixed) {
+                let widths: Vec<u32> = inner
+                    .iter()
+                    .map(|a| self.short_bytes_lit(a).map_or_else(|| self.packed_width(a.ty()), |(_, n)| n))
+                    .collect();
+                let total: u32 = widths.iter().sum();
+                self.return_sites += 1;
+                let buf = self.region(Region::Returned(self.return_sites), total.div_ceil(32) * 32 + 32);
+                let mut off = 0;
+                for (a, n) in inner.iter().zip(widths) {
+                    match self.short_bytes_lit(a) {
+                        Some((w, _)) => self.push_word(w),
+                        None => {
+                            self.compile_value(a)?;
+                            if n < 32 {
+                                self.push_u64(u64::from(8 * (32 - n)));
+                                self.op(SHL);
+                            }
+                        }
+                    }
+                    self.mstore_off(buf + off as i32);
+                    off += n;
+                }
+                self.push_u64(u64::from(total));
                 self.push_mem(buf);
                 self.op(KECCAK);
                 return Ok(());

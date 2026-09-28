@@ -1013,12 +1013,37 @@ impl<'a> Gen<'a> {
         if !inline {
             return self.call_func(idx);
         }
+        let consts: Vec<(usize, Word)> = self.checked.prog.funcs[idx]
+            .params
+            .iter()
+            .zip(args)
+            .filter_map(|(param, arg)| {
+                let sym = param.sym.filter(|&s| !self.checked.syms[s].mutable)?;
+                Some((sym, self.const_word(arg)?))
+            })
+            .collect();
+        for &(sym, w) in &consts {
+            self.const_params.insert(sym, w);
+        }
         // An inlined body that ends the caller's ends it too, unless a value follows it.
         self.tail = tail && self.checked.prog.funcs[idx].tail.is_none();
         let result = self.inline_body(idx, |g| g.func_body(idx));
         self.tail = false;
+        for (sym, _) in consts {
+            self.const_params.remove(&sym);
+        }
         self.unalias(aliased);
         result
+    }
+
+    /// The word a literal, or a parameter bound to one, always is.
+    pub(super) fn const_word(&self, e: &Expr) -> Option<Word> {
+        match e {
+            Expr::Lit { lit: Lit::Nat(w) | Lit::Wei(w) | Lit::Duration(w), .. } => Some(*w),
+            Expr::Lit { lit: Lit::Int(w, _), ty, .. } if !self.is_dynamic(*ty) => Some(*w),
+            Expr::Ident { sym: Some(s), builtin: None, .. } => self.const_params.get(s).copied(),
+            _ => None,
+        }
     }
 
     /// Stores each argument in its parameter's words. An inlined call instead reads an

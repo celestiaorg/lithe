@@ -54,6 +54,7 @@ impl Checker {
                             TY_STRING
                         }
                     }
+                    Lit::Bytes(_) => self.named["bytes"],
                     Lit::Unit => TY_UNIT,
                     Lit::Nil => self.op_list(),
                 };
@@ -405,7 +406,10 @@ impl Checker {
                 if self.builtin_module(*line, *col, name, args, base, builtin, ty)? {
                     return Ok(());
                 }
-                if let (Some(base), false) = (base.as_mut(), *builtin == Some(Builtin::Create)) {
+                if let (Some(base), false) = (
+                    base.as_mut(),
+                    matches!(builtin, Some(Builtin::Create | Builtin::RawCreate)),
+                ) {
                     self.check_expr(base)?;
                     let bid = base.ty();
                     if self.types[bid].kind != TyKind::Interface {
@@ -514,6 +518,19 @@ impl Checker {
                     }
                     return Ok(());
                 }
+                if *builtin == Some(Builtin::RawCreate) {
+                    self.check_salt(base)?;
+                    let bytes = self.bytes_n(0)?;
+                    if let [code] = args.as_mut_slice() {
+                        self.check_expr_as(code, Some(bytes))?;
+                    }
+                    if args.len() != 1 || !self.same(args[0].ty(), bytes) {
+                        return Err(error(*line, *col, "`create(code)` runs a `bytes` value as creation code"));
+                    }
+                    self.forbid_effect(*line, *col, "create an operation")?;
+                    *ty = TY_OPERATION;
+                    return Ok(());
+                }
                 if *builtin == Some(Builtin::Create) {
                     let Some((_, params)) = self.peers.iter().find(|(n, _)| n == name).cloned()
                     else {
@@ -523,13 +540,7 @@ impl Checker {
                             format!("`{name}` is not another contract of this file or its imports"),
                         ));
                     };
-                    if let Some(salt) = base {
-                        let word = self.bytes_n(32)?;
-                        self.check_expr_as(salt, Some(word))?;
-                        if !self.same(salt.ty(), word) {
-                            return Err(error(salt.line(), salt.col(), "a salt is a `bytes32`"));
-                        }
-                    }
+                    self.check_salt(base)?;
                     if args.len() != params.len() {
                         let msg = if params.is_empty() {
                             format!("`{name}` has no `deploy` parameters, so it takes no arguments")
@@ -1088,7 +1099,7 @@ impl Checker {
         let ok = match self.types[peeled].kind {
             TyKind::Nat | TyKind::Wei | TyKind::Timestamp => fits_unsigned(word, bits),
             TyKind::Int => fits_signed(word, bits),
-            TyKind::Bytes => digits.map_or(byte_len(word), |d| u32::from(d / 2)) <= u32::from(if bits == 0 { 31 } else { bits }),
+            TyKind::Bytes => digits.map_or(byte_len(word), |d| u32::from(d / 2)) <= u32::from(if bits == 0 { 32 } else { bits }),
             TyKind::Address => byte_len(word) <= 20,
             _ => false,
         };

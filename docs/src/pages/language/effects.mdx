@@ -500,6 +500,36 @@ contract Vault is {
 }
 ```
 
+### Creation code as bytes
+
+`defer create(code)` runs a `bytes` value as creation code, for contracts that are not Lithe contracts of this build: ERC-1167 clones, CREATE3 proxies, and SSTORE2 data. It takes `with value` and `with salt` and fails as `create Name()` does, and its continuation gets the new address. [`Evm.code(a)`](/language/builtins#accounts) reads an account's code back:
+
+```lithe
+storage is record {
+  last : address;
+}
+
+(* ERC-1167: a clone that delegates every call to `target`. *)
+external function clone(const target : address; const salt : bytes32) is {
+  defer create(Bytes.concat(0x3d602d80600a3d3981f3363d3d373d3d3d363d73, bytes20(target), 0x5af43d82803e903d91602b57fd5bf3))
+    with salt = salt then (made : address) {
+    storage.last := made;
+  };
+}
+
+(* SSTORE2: `data` becomes the code of a contract that stops at once. *)
+external function write(const data : bytes) is {
+  defer create(Bytes.concat(0x61, bytes2(uint16(data.length + 1n)), 0x80600a3d393df300, data)) then (made : address) {
+    storage.last := made;
+  };
+}
+
+external view function read(const pointer : address) : bytes is
+  Evm.code(pointer)[1n:]
+```
+
+The standard library's [`Clones`, `SSTORE2`, and `Create3`](/stdlib/utils#clones) build this code, and predict where it lands. A slice of `Evm.code(a)` copies only the bytes it takes.
+
 ## Raw calls
 
 When the calldata is only known at runtime, as it is for a wallet, a timelock, or a batch of calls, send it as `bytes`. Raw calls follow the same split as interface methods: the one that cannot change state is a `query`, and the others are deferred.

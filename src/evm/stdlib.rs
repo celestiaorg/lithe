@@ -861,3 +861,159 @@ contract T is {
     let out = run(&abi_string("text(string)", b"lithe?>"));
     assert_eq!(abi_string_value(&out.returndata), b"bGl0aGU_Pg");
 }
+
+/// `std/utils`: ERC-1167 clones that delegate to a real implementation, clone arguments,
+/// SSTORE2 data, and CREATE3 addresses.
+#[test]
+fn stdlib_deployers() {
+    let unhex = |h: &str| (0..h.len()).step_by(2).map(|i| u8::from_str_radix(&h[i..i + 2], 16).unwrap()).collect::<Vec<u8>>();
+    let this = Word::from_u64(0x1000);
+    let counter = "\
+storage is record { n : nat; }
+external function bump() is { storage.n := storage.n + 1n; }
+";
+    let implementation = Word::from_u64(0x5301);
+    let code = deploy(&compile(counter).expect("compile")).expect("deploy");
+    DEPLOYED.with(|d| d.borrow_mut().insert(implementation, (code, HashMap::new())));
+    let mut d = Session::new("examples/stdlib/deployers.lithe");
+    let clone_code = |args: &[u8]| {
+        let mut code = unhex("363d3d373d3d3d363d73");
+        code.extend(&implementation.to_be_bytes()[12..]);
+        code.extend(unhex("5af43d82803e903d91602b57fd5bf3"));
+        code.extend(args);
+        code
+    };
+
+    // A clone runs the implementation's code on its own storage.
+    assert!(d.send(1, "clone(address)", &[Arg::W(implementation)]));
+    let instance = slot(&d.storage, 0);
+    let (code, _) = DEPLOYED.with(|m| m.borrow()[&instance].clone());
+    assert_eq!(code, clone_code(&[]));
+    let bumped = exec(&code, &selector("bump()"), HashMap::new(), Word::from_u64(1), Word::from_u64(0), Word::from_u64(0)).expect("bump");
+    assert!(!bumped.reverted, "{}", pretty(&bumped.returndata));
+    assert_eq!(slot(&bumped.storage, 0), Word::from_u64(1));
+    assert!(d.word("args_of(address)", &[Arg::W(instance)]) == Word::from_u64(32));
+    assert!(abi_string_value(&d.returned()).is_empty());
+
+    // With a salt, the clone lands where `predict_clone` says.
+    let salt = Word::from_u64(0x5a17);
+    let predicted = d.word("predict_clone(address,bytes32)", &[Arg::W(implementation), Arg::W(salt)]);
+    let mut init = unhex("3d602d80600a3d3981f3");
+    init.extend(clone_code(&[]));
+    assert_eq!(predicted, created_address(this, Some(salt), &init));
+    assert_eq!(d.word("clone_deterministic(address,bytes32)", &[Arg::W(implementation), Arg::W(salt)]), predicted);
+    assert_eq!(slot(&d.storage, 0), predicted);
+
+    // Arguments ride after the clone's code.
+    let args = b"immutable arguments, read back with EXTCODECOPY".to_vec();
+    assert!(d.send(1, "clone_with_args(address,bytes)", &[Arg::W(implementation), Arg::B(args.clone())]));
+    let instance = slot(&d.storage, 0);
+    assert_eq!(DEPLOYED.with(|m| m.borrow()[&instance].0.clone()), clone_code(&args));
+    d.word("args_of(address)", &[Arg::W(instance)]);
+    assert_eq!(abi_string_value(&d.returned()), args);
+    assert!(!d.send(1, "clone_with_args(address,bytes)", &[Arg::W(implementation), Arg::B(vec![7; 24532])]));
+    d.reverted_with("CloneArgumentsTooLong()");
+
+    // SSTORE2: data written as code reads back whole.
+    let data = b"data kept as the code of a contract that stops at once".to_vec();
+    assert!(d.send(1, "write(bytes)", &[Arg::B(data.clone())]));
+    d.word("read()", &[]);
+    assert_eq!(abi_string_value(&d.returned()), data);
+    let pointer = d.word("write_counterfactual(bytes,bytes32)", &[Arg::B(data[..9].to_vec()), Arg::W(salt)]);
+    let mut init = unhex("61000a80600a3d393df300");
+    init.extend(&data[..9]);
+    assert_eq!(pointer, created_address(this, Some(salt), &init));
+    d.word("read()", &[]);
+    assert_eq!(abi_string_value(&d.returned()), data[..9].to_vec());
+
+    // CREATE3: the proxy's address, then its first creation's, from the salt alone.
+    let proxy = created_address(this, Some(salt), &unhex("67363d3d37363d34f03d5260086018f3"));
+    let mut rlp = vec![0xd6, 0x94];
+    rlp.extend(&proxy.to_be_bytes()[12..]);
+    rlp.push(0x01);
+    let mut deployed = [0u8; 32];
+    deployed[12..].copy_from_slice(&crate::keccak::keccak256(&rlp)[12..]);
+    assert_eq!(d.word("predict3(bytes32)", &[Arg::W(salt)]), Word::from_be_bytes(deployed));
+    assert_eq!(
+        Word::from_be_bytes(crate::keccak::keccak256(&unhex("67363d3d37363d34f03d5260086018f3"))),
+        Word::from_hex("21c35dbe1b344a2488cf3321d6ce542f8e9f305544ff09e4993a62319a497c1f").unwrap()
+    );
+    // This interpreter's `CREATE` does not land at the nonce's address, so the check
+    // that the contract exists fails, as it does when its creation code reverts.
+    assert!(!d.send(1, "deploy3(bytes,bytes32)", &[Arg::B(unhex("6001600c60003960016000f3fe")), Arg::W(salt)]));
+    d.reverted_with("FailedDeployment()");
+    let calls = &d.last.as_ref().unwrap().detail;
+    assert!(calls.iter().any(|c| c.contains("6001600c60003960016000f3fe")), "{calls:?}");
+}
+
+/// The salted deployers take a value or not: without one, they send none.
+#[test]
+fn stdlib_deployers_with_and_without_value() {
+    let src = "\
+import \"std/utils/create2.lithe\";
+import \"std/utils/clones.lithe\";
+import \"std/utils/create3.lithe\";
+
+contract Funded is {
+  use Create2;
+  use Clones;
+  use Create3;
+
+  storage is record { last : address; }
+
+  external function plain(const target : address; const salt : bytes32) : address raises FailedDeployment is {
+    storage.last := Clones.clone_deterministic(target, salt);
+  } with storage.last
+
+  external payable function funded(const target : address; const salt : bytes32) : address raises FailedDeployment is {
+    storage.last := Clones.clone_deterministic(target, salt, nat(Evm.value()));
+  } with storage.last
+
+  external payable function funded_with_args(const target : address; const args : bytes; const salt : bytes32) : address
+    raises CloneArgumentsTooLong | FailedDeployment
+  is {
+    storage.last := Clones.clone_deterministic_with_args(target, args, salt, nat(Evm.value()));
+  } with storage.last
+
+  external function plain_with_args(const target : address; const args : bytes; const salt : bytes32) : address
+    raises CloneArgumentsTooLong | FailedDeployment
+  is {
+    storage.last := Clones.clone_deterministic_with_args(target, args, salt);
+  } with storage.last
+
+  external function deploy3(const code : bytes; const salt : bytes32) : address raises FailedDeployment is {
+    storage.last := Create3.deploy_deterministic(code, salt);
+  } with storage.last
+}
+";
+    let dir = std::env::temp_dir().join(format!("lithe-funded-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let main = dir.join("main.lithe");
+    std::fs::write(&main, src).unwrap();
+    let init = crate::compile_file(&main).expect("compile");
+    let runtime = construct(&init, Word::from_u64(1), Word::from_u64(0)).expect("construct").returndata;
+    let target = Word::from_u64(0x5501);
+    let run = |sig: &str, args: &[Arg], value: u64| {
+        let out = exec(&runtime, &encode_args(sig, args), HashMap::new(), Word::from_u64(1), Word::from_u64(value), Word::from_u64(value)).expect(sig);
+        assert!(!out.reverted, "{sig}: {}", pretty(&out.returndata));
+        let made = load_bytes(&out.returndata, 0);
+        let sent = out.trace.iter().find_map(|ev| match ev { Ev::Call { to, value } if *to == made => Some(*value), _ => None });
+        (made, sent)
+    };
+    let salt = || Arg::W(Word::from_u64(0x77));
+    let (plain, sent) = run("plain(address,bytes32)", &[Arg::W(target), salt()], 0);
+    assert_eq!(sent, Some(Word::from_u64(0)));
+    let (funded, sent) = run("funded(address,bytes32)", &[Arg::W(target), salt()], 5);
+    assert_eq!(sent, Some(Word::from_u64(5)));
+    assert_eq!(plain, funded, "the value does not move the address");
+    let args = || Arg::B(b"config".to_vec());
+    let (with_args, sent) = run("plain_with_args(address,bytes,bytes32)", &[Arg::W(target), args(), salt()], 0);
+    assert_eq!(sent, Some(Word::from_u64(0)));
+    let (funded_args, sent) = run("funded_with_args(address,bytes,bytes32)", &[Arg::W(target), args(), salt()], 3);
+    assert_eq!(sent, Some(Word::from_u64(3)));
+    assert_eq!(with_args, funded_args);
+    assert_ne!(with_args, plain);
+    // The proxy is created with no value, and the call to it sends none.
+    let out = exec(&runtime, &encode_args("deploy3(bytes,bytes32)", &[Arg::B(vec![0x00]), salt()]), HashMap::new(), Word::from_u64(1), Word::from_u64(0), Word::from_u64(0)).expect("deploy3");
+    assert!(out.trace.iter().all(|ev| !matches!(ev, Ev::Call { value, .. } if !value.is_zero())));
+}

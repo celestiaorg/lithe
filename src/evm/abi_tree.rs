@@ -842,3 +842,51 @@ external function act(const a : action) is case a of {
         assert_eq!(slot(&out.storage, 0), want, "{sig}");
     }
 }
+
+/// Hashing packed static values or short hex literals writes them straight to a buffer;
+/// the hash is the hash of the bytes the blob encoding builds.
+#[test]
+fn packed_hashes_match_their_encoding() {
+    let src = "\
+storage is record { n : nat; }
+type status is
+  | New
+  | Pending
+external pure function enc(const s : status; const a : address; const x : int8; const b : bytes3; const w : uint96; const f : bool; const h : bytes32) : bytes is
+  Abi.encode_packed(s, a, x, b, w, f, h)
+external pure function hash(const s : status; const a : address; const x : int8; const b : bytes3; const w : uint96; const f : bool; const h : bytes32) : bytes32 is
+  Crypto.keccak256(Abi.encode_packed(s, a, x, b, w, f, h))
+external pure function cat(const a : address; const b : bytes3) : bytes is
+  Bytes.concat(0xd694, bytes20(a), 0x01, b, 0x000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e)
+external pure function cat_hash(const a : address; const b : bytes3) : bytes32 is
+  Crypto.keccak256(Bytes.concat(0xd694, bytes20(a), 0x01, b, 0x000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e))
+";
+    let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
+    let answer = |sig: &str, words: &[Word]| {
+        let out = run_call(&runtime, &word_data(sig, words));
+        assert!(!out.reverted, "{sig}: {}", pretty(&out.returndata));
+        out.returndata
+    };
+    let w = |h: &str| Word::from_hex(h).unwrap();
+    let args = [
+        Word::from_u64(1),
+        w("00000000000000000000000000000000000000000000000000000000000000ab"),
+        Word::from_u64(0).wrapping_sub(Word::from_u64(3)),
+        w("6162630000000000000000000000000000000000000000000000000000000000"),
+        w("0000000000000000000000000000000000000000fedcba987654321012345678"),
+        Word::from_u64(1),
+        w("ff00000000000000000000000000000000000000000000000000000000000011"),
+    ];
+    let sig = "(uint8,address,int8,bytes3,uint96,bool,bytes32)";
+    let packed = abi_string_value(&answer(&format!("enc{sig}"), &args));
+    assert_eq!(packed.len(), 1 + 20 + 1 + 3 + 12 + 1 + 32);
+    assert_eq!(answer(&format!("hash{sig}"), &args), crate::keccak::keccak256(&packed).to_vec());
+    let cat = abi_string_value(&answer("cat(address,bytes3)", &args[1..2].iter().chain(&args[3..4]).copied().collect::<Vec<_>>()));
+    assert_eq!(cat.len(), 2 + 20 + 1 + 3 + 31);
+    assert_eq!(&cat[..2], &[0xd6, 0x94]);
+    assert_eq!(&cat[22..26], &[0x01, 0x61, 0x62, 0x63]);
+    assert_eq!(
+        answer("cat_hash(address,bytes3)", &[args[1], args[3]]),
+        crate::keccak::keccak256(&cat).to_vec()
+    );
+}

@@ -49,6 +49,7 @@ Execution context. Readable in `view` and stateful functions, and not in `pure` 
 | `Evm.balance(a : address)` | `wei` | `a.balance` |
 | `Evm.code_size(a : address)` | `nat` | `a.code.length` |
 | `Evm.code_hash(a : address)` | `bytes32` | `a.codehash` |
+| `Evm.code(a : address)` | `bytes` | `a.code` |
 | `Evm.gas_left()` | `nat` | `gasleft()` |
 | `Evm.creation_code(C)` | `bytes` | `type(C).creationCode`, for a contract `C` that [`defer create`](/language/effects#create) can create. Usable in `pure` functions, and its hash is a constant |
 
