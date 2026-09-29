@@ -9,29 +9,29 @@ description: "Mappings, nested mappings, defaults, and deletion."
 
 ```lithe [maps.lithe]
 storage is record {
-  balances : map(address, nat);
+  balances : map(address, uint);
   (* Maps nest: owner -> spender -> amount. *)
-  allowances : map(address, map(address, nat));
+  allowances : map(address, map(address, uint));
 }
 
 (* A missing key reads as the zero value. *)
-external view function balance_of(const who : address) : nat is
+external view function balance_of(const who : address) : uint is
   storage.balances[who]
 
-external function set_balance(const amount : nat) is {
+external function set_balance(const amount : uint) is {
   storage.balances[Evm.sender()] := amount;
 }
 
 (* Deleting is writing the zero value. *)
 external function clear() is {
-  storage.balances[Evm.sender()] := 0n;
+  storage.balances[Evm.sender()] := 0;
 }
 
-external function approve(const spender : address; const amount : nat) is {
+external function approve(const spender : address; const amount : uint) is {
   storage.allowances[Evm.sender()][spender] := amount;
 }
 
-external view function allowance(const owner : address; const spender : address) : nat is
+external view function allowance(const owner : address; const spender : address) : uint is
   storage.allowances[owner][spender]
 ```
 

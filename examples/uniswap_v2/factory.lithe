@@ -25,7 +25,7 @@ contract UniswapV2Factory is {
     indexed token0 : address;
     indexed token1 : address;
     pair : address;
-    length : nat;
+    length : uint;
   }
 
   deploy(const fee_to_setter : address) is {
@@ -61,10 +61,10 @@ contract UniswapV2Factory is {
   external view function getPair(const tokenA : address; const tokenB : address) : address is
     storage.pairs[tokenA][tokenB]
 
-  external view function allPairs(const index : nat) : address is
+  external view function allPairs(const index : uint) : address is
     storage.all_pairs[index]
 
-  external view function allPairsLength() : nat is
+  external view function allPairsLength() : uint is
     storage.all_pairs.length
 
   (* UniswapV2Library's `pairFor`, without the storage read. *)

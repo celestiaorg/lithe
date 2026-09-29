@@ -34,7 +34,7 @@ storage is record {
   pledges : map(address, wei);
 }
 
-external function launch(const goal : wei; const duration : nat)
+external function launch(const goal : wei; const duration : uint)
   raises Already_started
 is {
   assert(storage.creator = Address.zero, Already_started);

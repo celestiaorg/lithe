@@ -12,7 +12,7 @@ type inner is record {
 type order is record {
   status : uint8;
   owner : address;
-  amount : nat;
+  amount : uint;
   small : uint32;
   inner : inner;
   last : uint64;
@@ -23,26 +23,26 @@ type pair is record {
   b : uint128;
 }
 
-error Missing of nat;
+error Missing of uint;
 
 interface Oracle is {
-  view function price(amount : nat) : nat;
+  view function price(amount : uint) : uint;
 }
 
 event Placed of record {
-  indexed id : nat;
-  amount : nat;
+  indexed id : uint;
+  amount : uint;
   status : uint8;
 }
 
 storage is record {
-  count : nat;
-  orders : map(nat, order);
-  pairs : map(address, map(nat, pair));
+  count : uint;
+  orders : map(uint, order);
+  pairs : map(address, map(uint, pair));
   tail : uint8;
 }
 
-external function place(const id : nat; const amount : nat; const small : uint32; const delta : int16) is {
+external function place(const id : uint; const amount : uint; const small : uint32; const delta : int16) is {
   storage.orders[id] := {
     status = uint8(1);
     owner = Evm.sender();
@@ -51,11 +51,11 @@ external function place(const id : nat; const amount : nat; const small : uint32
     inner = { flag = true; delta = delta; };
     last = uint64(7);
   };
-  storage.count := storage.count + 1n;
+  storage.count := storage.count + 1;
   emit Placed { id = id; amount = storage.orders[id].amount; status = storage.orders[id].status; };
 }
 
-external function bump(const id : nat; const by : nat)
+external function bump(const id : uint; const by : uint)
   raises Missing
 is {
   assert(storage.orders[id].status > uint8(0), Missing(id));
@@ -66,40 +66,40 @@ is {
   storage.tail := storage.orders[id].status;
 }
 
-external function copy(const src : nat; const dst : nat) is {
+external function copy(const src : uint; const dst : uint) is {
   const o : order := storage.orders[src];
   storage.orders[dst] := o;
   storage.orders[dst].inner := { flag = not o.inner.flag; delta = o.inner.delta; };
 }
 
-external function pair_set(const k : nat; const a : uint128; const b : uint128) is {
+external function pair_set(const k : uint; const a : uint128; const b : uint128) is {
   storage.pairs[Evm.sender()][k] := { a = a; b = b; };
-  storage.pairs[Evm.sender()][k + 1n].b := b;
+  storage.pairs[Evm.sender()][k + 1].b := b;
 }
 
-function reprice(const id : nat; const p : nat) is {
-  storage.orders[id].amount := storage.orders[id].amount + p % 1000n;
-  storage.orders[id].status := uint8(p % 200n);
-  storage.orders[id].inner := { flag = p % 2n = 0n; delta = int16(-5); };
-  storage.orders[id + 1n] := storage.orders[id];
-  storage.orders[id + 1n].last := uint64(p % 99n);
+function reprice(const id : uint; const p : uint) is {
+  storage.orders[id].amount := storage.orders[id].amount + p % 1000;
+  storage.orders[id].status := uint8(p % 200);
+  storage.orders[id].inner := { flag = p % 2 = 0; delta = int16(-5); };
+  storage.orders[id + 1] := storage.orders[id];
+  storage.orders[id + 1].last := uint64(p % 99);
   storage.tail := storage.orders[id].status;
 }
 
-external function priced(const o : Oracle; const id : nat) is {
+external function priced(const o : Oracle; const id : uint) is {
   reprice(id, query o.price(id));
 }
 
-external function set_price(const id : nat; const p : nat) is {
+external function set_price(const id : uint; const p : uint) is {
   reprice(id, p);
 }
 
-external view function probe(const o : Oracle; const id : nat) : nat is query o.price(id)
+external view function probe(const o : Oracle; const id : uint) : uint is query o.price(id)
 
-external view function order_of(const id : nat) : order is storage.orders[id]
+external view function order_of(const id : uint) : order is storage.orders[id]
 
-external view function status_of(const id : nat) : uint8 is storage.orders[id].status
+external view function status_of(const id : uint) : uint8 is storage.orders[id].status
 
-external view function delta_of(const id : nat) : int16 is storage.orders[id].inner.delta
+external view function delta_of(const id : uint) : int16 is storage.orders[id].inner.delta
 
-external view function pair_of(const who : address; const k : nat) : pair is storage.pairs[who][k]
+external view function pair_of(const who : address; const k : uint) : pair is storage.pairs[who][k]

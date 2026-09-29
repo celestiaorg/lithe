@@ -33,17 +33,17 @@ interface Hook is {
 }
 
 storage is record {
-  status : nat;
-  extra : nat;
+  status : uint;
+  extra : uint;
 }
 
 external function settle(const hook : Hook) is {
-  storage.status := 1n;
+  storage.status := 1;
   defer hook.cancel();
 }
 
 external function cancel() is {
-  storage.extra := 2n;
+  storage.extra := 2;
 }
 ```
 
@@ -65,19 +65,19 @@ interface Hook is {
 }
 
 storage is record {
-  status : nat;
+  status : uint;
 }
 
 external nonreentrant function settle(const hook : Hook) is {
-  storage.status := 1n;
+  storage.status := 1;
   defer hook.cancel();
 }
 
 external nonreentrant function cancel() is {
-  storage.status := 2n;
+  storage.status := 2;
 }
 
-external view function status() : nat is
+external view function status() : uint is
   storage.status
 ```
 

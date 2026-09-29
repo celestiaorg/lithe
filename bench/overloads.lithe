@@ -1,71 +1,71 @@
 (* Benchmark: overloaded internal functions, picked by argument count and type, including
    ones that take a storage map; and overloaded entrypoints. Mirrors overloads.sol. *)
 
-type shares is nat;
+type shares is uint;
 
 storage is record {
-  balances : map(address, nat);
-  staked : map(address, nat);
-  total : nat;
+  balances : map(address, uint);
+  staked : map(address, uint);
+  total : uint;
 }
 
-pure function fee(const amount : nat) : nat is
-  fee(amount, 30n)
+pure function fee(const amount : uint) : uint is
+  fee(amount, 30)
 
-pure function fee(const amount : nat; const bps : nat) : nat is
-  amount * bps / 10_000n
+pure function fee(const amount : uint; const bps : uint) : uint is
+  amount * bps / 10_000
 
-function credit(storage ledger : map(address, nat); const to : address; const amount : nat) is {
+function credit(storage ledger : map(address, uint); const to : address; const amount : uint) is {
   ledger[to] := ledger[to] + amount;
 }
 
-function credit(const to : address; const amount : nat) is {
+function credit(const to : address; const amount : uint) is {
   credit(storage.balances, to, amount);
   storage.total := storage.total + amount;
 }
 
 function credit(const to : address; const amount : shares) is {
-  credit(storage.staked, to, nat(amount));
+  credit(storage.staked, to, uint(amount));
 }
 
-function move(storage ledger : map(address, nat); const to : address; const amount : nat) is {
+function move(storage ledger : map(address, uint); const to : address; const amount : uint) is {
   ledger[Evm.sender()] := ledger[Evm.sender()] - amount;
   credit(ledger, to, amount);
 }
 
-function move(const to : address; const amount : nat) is {
+function move(const to : address; const amount : uint) is {
   move(storage.balances, to, amount);
 }
 
 function move(const to : address; const amount : shares) is {
-  move(storage.staked, to, nat(amount));
+  move(storage.staked, to, uint(amount));
 }
 
-external function deposit(const amount : nat) is {
+external function deposit(const amount : uint) is {
   credit(Evm.sender(), amount - fee(amount));
 }
 
-external function deposit(const amount : nat; const bps : nat) is {
+external function deposit(const amount : uint; const bps : uint) is {
   credit(Evm.sender(), amount - fee(amount, bps));
 }
 
-external function stake(const amount : nat) is {
+external function stake(const amount : uint) is {
   credit(Evm.sender(), shares(amount));
 }
 
-external function transfer(const to : address; const amount : nat) is {
+external function transfer(const to : address; const amount : uint) is {
   move(to, amount);
 }
 
-external function transfer_staked(const to : address; const amount : nat) is {
+external function transfer_staked(const to : address; const amount : uint) is {
   move(to, shares(amount));
 }
 
-external view function balance_of(const who : address) : nat is
+external view function balance_of(const who : address) : uint is
   storage.balances[who]
 
-external view function staked_of(const who : address) : nat is
+external view function staked_of(const who : address) : uint is
   storage.staked[who]
 
-external view function total() : nat is
+external view function total() : uint is
   storage.total

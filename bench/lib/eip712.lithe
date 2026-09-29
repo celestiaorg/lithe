@@ -7,10 +7,10 @@ type domain is record {
   fields : bytes1;
   name : string;
   version : string;
-  chainId : nat;
+  chainId : uint;
   verifyingContract : address;
   salt : bytes32;
-  extensions : list(nat);
+  extensions : list(uint);
 }
 
 module EIP712 is {
@@ -42,7 +42,7 @@ module EIP712 is {
 
   (* The name, the version, the chain id, and the verifying contract. *)
   external view function eip712Domain() : domain is {
-    const extensions : list(nat) := [];
+    const extensions : list(uint) := [];
   } with {
     fields = 0x0f;
     name = eip712.name;

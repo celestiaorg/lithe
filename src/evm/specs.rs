@@ -53,11 +53,11 @@ error Not_owner;
 error Paused;
 
 type owner_action is
-  | Set_fee of nat
+  | Set_fee of uint
   | Pause
 
 type user_action is
-  | Deposit of nat
+  | Deposit of uint
 
 type action is
   | Owner of owner_action
@@ -66,8 +66,8 @@ type action is
 storage is record {
   owner : address;
   paused : bool;
-  fee : nat;
-  deposits : map(address, nat);
+  fee : uint;
+  deposits : map(address, uint);
 }
 
 function owner_main(const action : owner_action)
@@ -106,11 +106,11 @@ error Short;
 
 module Coin is {
   storage coin at "t.coin" is record {
-    balances : map(address, nat);
-    total_supply : nat;
+    balances : map(address, uint);
+    total_supply : uint;
   }
 
-  function transfer(const to : address; const value : nat) : bool
+  function transfer(const to : address; const value : uint) : bool
     raises Short
   is {
     const from : address := Evm.sender();
@@ -119,26 +119,26 @@ module Coin is {
     coin.balances[to] := coin.balances[to] + value;
   } with true
 
-  function mint(const to : address; const value : nat) is {
+  function mint(const to : address; const value : uint) is {
     coin.balances[to] := coin.balances[to] + value;
     coin.total_supply := coin.total_supply + value;
   }
 
-  external function transfer(const to : address; const value : nat) : bool
+  external function transfer(const to : address; const value : uint) : bool
     raises Short
   is
     transfer(to, value)
 }
 
 interface ICoin is {
-  function transfer(to : address; value : nat) : bool raises Short;
+  function transfer(to : address; value : uint) : bool raises Short;
 }
 
 use Coin exposing ICoin;
 
-storage is record { calls : nat; }
+storage is record { calls : uint; }
 
-external function mint(const to : address; const value : nat) is {
+external function mint(const to : address; const value : uint) is {
   Coin.mint(to, value);
 }
 "#;
@@ -230,10 +230,10 @@ spec for deposit is partial {
         "spec for owner_main(action : owner_action) (guard of set_fee, pause)
   raises Not_owner when Evm.sender() <> old.storage.owner
   reverts in no other case
-spec for set_fee(fee : nat) (entrypoint, inherits owner_main)
+spec for set_fee(fee : uint) (entrypoint, inherits owner_main)
   ensures new.storage.fee = fee
   reverts in no other case
-spec for deposit(amount : nat) (entrypoint)
+spec for deposit(amount : uint) (entrypoint)
   raises Paused when old.storage.paused
   ensures new.storage.deposits[Evm.sender()] = old.storage.deposits[Evm.sender()] + amount
   may revert in other ways (partial)
@@ -245,7 +245,7 @@ spec for deposit(amount : nat) (entrypoint)
 fn module_specs_come_from_the_module_or_a_spec_file() {
     let expected = "spec is
   invariant Coin.supply: coin.total_supply = sum(coin.balances)
-spec for Coin.transfer(to : address; value : nat) (function)
+spec for Coin.transfer(to : address; value : uint) (function)
   const from := Evm.sender()
   raises Short when old.coin.balances[from] < value
   ensures from = to or new.coin.balances[to] = old.coin.balances[to] + value
@@ -259,21 +259,21 @@ spec for Coin.transfer(to : address; value : nat) (function)
     assert_eq!(specs_with(TOKEN, TOKEN_SPECS).expect("spec file"), expected);
     let module = r#"
 module Counter is {
-  storage counter at "t.counter" is record { n : nat; }
+  storage counter at "t.counter" is record { n : uint; }
 
   function bump() is {
-    counter.n := counter.n + 1n;
+    counter.n := counter.n + 1;
   }
 
   spec for bump is {
-    panics when old.counter.n + 1n > 0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff;
-    ensures new.counter.n = old.counter.n + 1n;
+    panics when old.counter.n + 1 > 0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff;
+    ensures new.counter.n = old.counter.n + 1;
   }
 }
 
 use Counter;
 
-storage is record { calls : nat; }
+storage is record { calls : uint; }
 
 external function go() is {
   Counter.bump();
@@ -294,7 +294,7 @@ fn a_spec_file_is_read_only_by_the_spec_tools() {
         .expect("compile ignores the spec file");
     let err = specs_with(VAULT, spec_file).expect_err("specs reads it");
     assert!(err.to_string().contains("unknown name `nope`"), "{err}");
-    let err = specs_with(VAULT, "storage is record { x : nat; }").expect_err("not specs");
+    let err = specs_with(VAULT, "storage is record { x : uint; }").expect_err("not specs");
     assert!(
         err.to_string()
             .contains("a spec file holds only spec blocks"),
@@ -381,12 +381,12 @@ fn spec_rules() {
             "`old.` starts a path, such as `old.storage.x`",
         ),
         (
-            "spec for withdraw is { ensures Evm.gas_left() > 0n; }",
+            "spec for withdraw is { ensures Evm.gas_left() > 0; }",
             "a spec cannot read `Evm.gas_left`",
         ),
         ("spec is partial { invariant a is true; }", "only `spec for f` can be `partial`"),
         (
-            "spec for withdraw is { ensures storage.x = 1n }",
+            "spec for withdraw is { ensures storage.x = 1 }",
             "expected `;`",
         ),
         (
@@ -414,11 +414,11 @@ fn spec_rules() {
 #[test]
 fn an_old_value_cannot_read_the_new_state() {
     let src = r#"
-storage is record { m : map(nat, nat); k : nat; }
-external function set(const k : nat) is { storage.k := k; }
+storage is record { m : map(uint, uint); k : uint; }
+external function set(const k : uint) is { storage.k := k; }
 "#;
     let err = specs(&format!(
-        "{src}spec for set is {{ ensures old.storage.m[new.storage.k] = 0n; }}"
+        "{src}spec for set is {{ ensures old.storage.m[new.storage.k] = 0; }}"
     ))
     .expect_err("new inside old");
     assert!(
@@ -427,7 +427,7 @@ external function set(const k : nat) is { storage.k := k; }
         "{err}"
     );
     specs(&format!(
-        "{src}spec for set is {{ ensures new.storage.m[old.storage.k] = 0n; }}"
+        "{src}spec for set is {{ ensures new.storage.m[old.storage.k] = 0; }}"
     ))
     .expect("old inside new");
 }
@@ -436,7 +436,7 @@ external function set(const k : nat) is { storage.k := k; }
 fn spec_reads() {
     let cases = [
         "spec for withdraw is { ensures forall a : address . new.storage.balances[a] <= new.storage.total; }",
-        "spec is { invariant c is count(storage.balances) >= 0n; }",
+        "spec is { invariant c is count(storage.balances) >= 0; }",
         "spec for withdraw is { ensures new.Evm.balance(Evm.self()) >= 0wei; }",
         "spec for withdraw is { ensures new.storage.balances[Evm.sender()] <= old.storage.balances[Evm.sender()]; }",
         "spec for withdraw is { ensures new.storage.total = old.storage.total - amount; }",
@@ -450,15 +450,15 @@ fn spec_reads() {
 #[test]
 fn a_spec_names_the_file_s_private_functions_and_a_route_s_payload() {
     let src = r#"
-type fees is record { a : nat; b : nat; }
+type fees is record { a : uint; b : uint; }
 
 type action is
   | Set_fees of fees
   | Reset
 
-storage is record { a : nat; b : nat; count : nat; }
+storage is record { a : uint; b : uint; count : uint; }
 
-private view function total() : nat is storage.a + storage.b
+private view function total() : uint is storage.a + storage.b
 
 external function main(const action : action) is
   case action of {
@@ -467,8 +467,8 @@ external function main(const action : action) is
       storage.b := f.b;
     }
   | Reset -> {
-      const old : nat := storage.count;
-      storage.count := old + 1n;
+      const old : uint := storage.count;
+      storage.count := old + 1;
     }
   }
 "#;
@@ -515,7 +515,7 @@ fn spec_for_names_a_function_or_an_external() {
         "{both}"
     );
     assert!(
-        out.contains("spec for Coin.transfer(to : address; value : nat) (external)"),
+        out.contains("spec for Coin.transfer(to : address; value : uint) (external)"),
         "{out}"
     );
 }
@@ -524,21 +524,21 @@ fn spec_for_names_a_function_or_an_external() {
 fn only_a_used_module_s_spec_blocks_are_checked() {
     let src = r#"
 module Unused is {
-  storage unused at "t.unused" is record { n : nat; }
+  storage unused at "t.unused" is record { n : uint; }
 
   function bump() is {
-    unused.n := unused.n + 1n;
+    unused.n := unused.n + 1;
   }
 
   spec is {
-    invariant small is unused.n < 10n;
+    invariant small is unused.n < 10;
   }
 }
 
-storage is record { n : nat; }
+storage is record { n : uint; }
 
 external function go() is {
-  storage.n := 1n;
+  storage.n := 1;
 }
 "#;
     compile(src).expect("an unused module's specs are not the contract's");
@@ -698,7 +698,7 @@ fn a_checking_build_checks_guards_routes_and_results() {
 error Not_owner;
 
 type owner_action is
-  | Set_fee of nat
+  | Set_fee of uint
   | Pause
 
 type action is
@@ -707,7 +707,7 @@ type action is
 storage is record {
   owner : address;
   paused : bool;
-  fee : nat;
+  fee : uint;
 }
 
 deploy() is {
@@ -731,14 +731,14 @@ is
   | Owner(a) -> owner_main(a)
   }
 
-external function bump(var by : nat) : nat is {
-  by := by + 1n;
+external function bump(var by : uint) : uint is {
+  by := by + 1;
   storage.fee := storage.fee + by;
 } with storage.fee
 "#;
     let specs = r#"
 spec is {
-  invariant capped is storage.fee < 1000n;
+  invariant capped is storage.fee < 1000;
 }
 
 spec for owner_main is {
@@ -750,7 +750,7 @@ spec for set_fee is {
 }
 
 spec for bump is {
-  ensures new.storage.fee = old.storage.fee + by + 1n;
+  ensures new.storage.fee = old.storage.fee + by + 1;
 }
 "#;
     let mut c = Checked::new(src, specs);
@@ -769,7 +769,7 @@ spec for bump is {
     // A guard whose spec says it rejects more callers than it does.
     let wrong = specs.replace(
         "when Evm.sender() <> old.storage.owner",
-        "when old.storage.fee > 12n",
+        "when old.storage.fee > 12",
     );
     let mut c = Checked::new(src, &wrong);
     c.call(1, 0, "set_fee(uint256)", &[Word::from_u64(20)])
@@ -794,7 +794,7 @@ contract Token is {
     ERC20.init("Token", "TKN");
   }
 
-  external function mint(const to : address; const value : nat)
+  external function mint(const to : address; const value : uint)
     raises ERC20InvalidReceiver | ERC20InsufficientBalance
   is {
     ERC20.mint(to, value);
@@ -836,16 +836,16 @@ contract Token is {
     let leaky = r#"
 module Ledger is {
   storage ledger at "t.ledger" is record {
-    balances : map(address, nat);
-    supply : nat;
+    balances : map(address, uint);
+    supply : uint;
   }
 
-  external function mint(const value : nat) is {
+  external function mint(const value : uint) is {
     ledger.balances[Evm.sender()] := ledger.balances[Evm.sender()] + value;
     ledger.supply := ledger.supply + value;
   }
 
-  external function leak(const value : nat) is {
+  external function leak(const value : uint) is {
     ledger.balances[Evm.sender()] := ledger.balances[Evm.sender()] + value;
   }
 
@@ -855,13 +855,13 @@ module Ledger is {
 }
 
 interface ILedger is {
-  function mint(value : nat);
-  function leak(value : nat);
+  function mint(value : uint);
+  function leak(value : uint);
 }
 
 use Ledger exposing ILedger;
 
-storage is record { calls : nat; }
+storage is record { calls : uint; }
 "#;
     let mut c = Checked::new(leaky, "");
     c.call(1, 0, "mint(uint256)", &[Word::from_u64(5)])
@@ -877,27 +877,27 @@ fn a_checking_build_checks_every_phase_and_says_what_it_cannot() {
     install_mocks();
     let src = r#"
 interface Echo is {
-  function echo(n : nat) : nat;
+  function echo(n : uint) : uint;
 }
 
 storage is record {
-  pending : nat;
-  done : nat;
-  owed : map(address, nat);
+  pending : uint;
+  done : uint;
+  owed : map(address, uint);
 }
 
-external function start(const echo : Echo; const n : nat) is {
+external function start(const echo : Echo; const n : uint) is {
   storage.pending := storage.pending + n;
-  defer echo.echo(n) then (got : nat) {
+  defer echo.echo(n) then (got : uint) {
     storage.pending := storage.pending - got;
-    storage.done := storage.done + got + 1n;
+    storage.done := storage.done + got + 1;
   };
 }
 "#;
     let specs = r#"
 spec is {
-  invariant tidy is storage.done <= 100n;
-  invariant never is forall a : address . storage.owed[a] = 0n;
+  invariant tidy is storage.done <= 100;
+  invariant never is forall a : address . storage.owed[a] = 0;
 }
 "#;
     let built = checking(src, specs).expect("build");
@@ -971,12 +971,12 @@ fn checking_builds_of_the_examples_behave_as_their_plain_builds() {
 #[test]
 fn loop_invariants_are_checked_each_iteration_and_never_built() {
     let src = r#"
-storage is record { steps : nat; }
+storage is record { steps : uint; }
 
-external function walk(const n : nat) is {
-  const start : nat := storage.steps;
-  for i : nat in 0n .. n bound 100 invariant storage.steps = start + i do {
-    storage.steps := storage.steps + 1n;
+external function walk(const n : uint) is {
+  const start : uint := storage.steps;
+  for i : uint in 0 .. n bound 100 invariant storage.steps = start + i do {
+    storage.steps := storage.steps + 1;
   }
 }
 "#;

@@ -1,5 +1,5 @@
 storage is record {
-  indexed n : nat;
+  indexed n : uint;
 }
 
 external function go() is { skip }

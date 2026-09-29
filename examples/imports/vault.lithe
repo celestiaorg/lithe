@@ -3,13 +3,13 @@ import "./fee.lithe";
 import "./ratios.lithe" as Ratios;
 
 storage is record {
-  n : nat;
+  n : uint;
 }
 
-external function go(const amount : nat) is {
+external function go(const amount : uint) is {
   const fee : Ratios.basis_points := 500;
   const raw : uint16 := uint16(fee);
   const _back : Ratios.basis_points := Ratios.basis_points(raw);
-  const taken : nat := calculate_fee(amount);
+  const taken : uint := calculate_fee(amount);
   storage.n := Math.add_one(taken);
 }

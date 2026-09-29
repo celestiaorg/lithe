@@ -9,11 +9,11 @@ By default, a failed external call reverts the whole transaction. To handle the 
 
 ```lithe [try-catch.lithe]
 interface Oracle is {
-  view function price(asset : address) : nat;
+  view function price(asset : address) : uint;
 }
 
 interface Hook is {
-  function on_payout(amount : nat) : bool;
+  function on_payout(amount : uint) : bool;
 }
 
 event Payout_failed of record {
@@ -23,15 +23,15 @@ event Payout_failed of record {
 
 storage is record {
   oracle : Oracle;
-  last_good_price : nat;
+  last_good_price : uint;
   hook : Hook;
-  hook_failures : nat;
+  hook_failures : uint;
   unpaid : map(address, wei);
 }
 
 (* A query's outcome is available now, so it matches with an ordinary `case`. *)
 external function refresh(const asset : address) is {
-  const price : nat := case query storage.oracle.price(asset) of {
+  const price : uint := case query storage.oracle.price(asset) of {
   | Ok(p) -> p
   | Error(_) -> storage.last_good_price
   };
@@ -40,13 +40,13 @@ external function refresh(const asset : address) is {
 
 (* A deferred call's outcome arrives in its continuation. `Error` binds the raw
    revert data. *)
-external nonreentrant function notify(const amount : nat) is {
+external nonreentrant function notify(const amount : uint) is {
   defer storage.hook.on_payout(amount) then {
     | Ok(accepted : bool) -> {
         skip
       }
     | Error(reason : bytes) -> {
-        storage.hook_failures := storage.hook_failures + 1n;
+        storage.hook_failures := storage.hook_failures + 1;
       }
   };
 }

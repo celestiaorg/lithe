@@ -1,12 +1,12 @@
 module Ledger is {
   storage ledger at "lithe.compose" is record {
-    n : nat;
+    n : uint;
   }
 
-  external function ping(const n : nat) is {
+  external function ping(const n : uint) is {
     ledger.n := n;
   }
 
-  external view function pinged() : nat is
+  external view function pinged() : uint is
     ledger.n
 }

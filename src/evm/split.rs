@@ -86,14 +86,14 @@ error Not_owner;
 
 module Counter is {
   storage counter at "split.counter" is record {
-    count : nat;
+    count : uint;
   }
 
-  external function bump(const by : nat) is {
+  external function bump(const by : uint) is {
     counter.count := counter.count + by;
   }
 
-  external view function count() : nat is
+  external view function count() : uint is
     counter.count
 }
 
@@ -102,7 +102,7 @@ storage is record {
 }
 
 storage settings at "split.settings" is record {
-  fee : nat;
+  fee : uint;
 }
 
 upgrade guard is {
@@ -113,16 +113,16 @@ deploy(const owner : address) is {
   storage.owner := owner;
 }
 
-migrate init(const fee : nat) is {
+migrate init(const fee : uint) is {
   settings.fee := fee;
 }
 
 use Counter exposing {
-  function bump(by : nat);
-  view function count() : nat;
+  function bump(by : uint);
+  view function count() : uint;
 }
 
-external view function fee() : nat is
+external view function fee() : uint is
   settings.fee
 "#;
 
@@ -241,16 +241,16 @@ fn facets_run_only_their_module() {
 #[test]
 fn routers_need_their_facets() {
     let plain = "module M is {\n\
-          storage m at \"t.m\" is record { a : nat; b : nat; }\n\
-          external function set_a(const v : nat) is { m.a := v * 3n + m.b; }\n\
-          external view function sum() : nat is m.a + m.b\n\
+          storage m at \"t.m\" is record { a : uint; b : uint; }\n\
+          external function set_a(const v : uint) is { m.a := v * 3 + m.b; }\n\
+          external view function sum() : uint is m.a + m.b\n\
         }\n\
-        storage is record { n : nat; }\n\
+        storage is record { n : uint; }\n\
         use M exposing {\n\
-          function set_a(v : nat);\n\
-          view function sum() : nat;\n\
+          function set_a(v : uint);\n\
+          view function sum() : uint;\n\
         }\n";
-    let constructed = format!("{plain}deploy(const a : nat) is {{ storage.n := a; }}\n");
+    let constructed = format!("{plain}deploy(const a : uint) is {{ storage.n := a; }}\n");
     for src in [plain.to_string(), constructed] {
         let split = crate::split::build(&checked_src(&src), "T", &all_facets()).expect("split");
         let mut init = split.creation.clone();
@@ -267,40 +267,40 @@ fn routers_need_their_facets() {
 const SPLIT_MODULES: &str = r#"
 module Alpha is {
   storage alpha_state at "split.alpha" is record {
-    n : nat;
+    n : uint;
   }
 
   error Alpha_zero;
 
-  function add(const a : nat; const b : nat) is {
-    alpha_state.n := alpha_state.n + a * b + a / (b + 1n);
+  function add(const a : uint; const b : uint) is {
+    alpha_state.n := alpha_state.n + a * b + a / (b + 1);
   }
 
-  external function alpha_add(const a : nat; const b : nat) is
+  external function alpha_add(const a : uint; const b : uint) is
     add(a, b)
 
-  external function alpha_mix(const a : nat; const b : nat; const c : nat)
+  external function alpha_mix(const a : uint; const b : uint; const c : uint)
     raises Alpha_zero
   is {
-    assert(c > 0n, Alpha_zero);
-    alpha_state.n := alpha_state.n * 3n + a * b * c + (a + b) / c + (a * c) % (b + 5n);
-    add(a % 7n, c);
+    assert(c > 0, Alpha_zero);
+    alpha_state.n := alpha_state.n * 3 + a * b * c + (a + b) / c + (a * c) % (b + 5);
+    add(a % 7, c);
   }
 
-  external view function alpha() : nat is
+  external view function alpha() : uint is
     alpha_state.n
 }
 
 module Beta is {
   storage beta_state at "split.beta" is record {
-    m : nat;
+    m : uint;
   }
 
-  external function beta_add(const a : nat; const b : nat) is {
-    beta_state.m := beta_state.m * 2n + a % (b + 3n) + b;
+  external function beta_add(const a : uint; const b : uint) is {
+    beta_state.m := beta_state.m * 2 + a % (b + 3) + b;
   }
 
-  external view function beta() : nat is
+  external view function beta() : uint is
     beta_state.m
 }
 "#;
@@ -310,24 +310,24 @@ fn pair_src(extra: &str) -> String {
         "{SPLIT_MODULES}
 contract Pair is {{
   storage is record {{
-    total : nat;
+    total : uint;
   }}
 
   use Alpha exposing {{
-    function alpha_add(a : nat; b : nat);
-    function alpha_mix(a : nat; b : nat; c : nat)
+    function alpha_add(a : uint; b : uint);
+    function alpha_mix(a : uint; b : uint; c : uint)
       raises Alpha_zero;
-    view function alpha() : nat;
+    view function alpha() : uint;
   }}
 
   use Beta exposing {{
-    function beta_add(a : nat; b : nat);
-    view function beta() : nat;
+    function beta_add(a : uint; b : uint);
+    view function beta() : uint;
   }}
 
-  external function mix(const a : nat; const b : nat; const c : nat) is {{
-    storage.total := storage.total * 5n + a * b * c + (a + b) / (c + 5n) + (a * c) % (b + 10n);
-    storage.total := storage.total + (a * a + b * b) / (c * c + 1n) + (a + c) % (b + 3n);
+  external function mix(const a : uint; const b : uint; const c : uint) is {{
+    storage.total := storage.total * 5 + a * b * c + (a + b) / (c + 5) + (a * c) % (b + 10);
+    storage.total := storage.total + (a * a + b * b) / (c * c + 1) + (a + c) % (b + 3);
   }}
 {extra}
 }}
@@ -352,7 +352,7 @@ fn facets_are_shared() {
 contract Other is {{
   storage is record {{
     a : address;
-    b : nat;
+    b : uint;
   }}
 
   error Mine;
@@ -360,7 +360,7 @@ contract Other is {{
   use Beta;
 
   use Alpha exposing {{
-    view function alpha() : nat;
+    view function alpha() : uint;
   }}
 
   external function set(const who : address) raises Mine is {{
@@ -457,8 +457,8 @@ fn split_errors_say_what_cannot_move() {
     assert!(err.contains("\n  upgrade "), "{err}");
     assert!(err.contains("(dispatch and shared code)"), "{err}");
     let plain = checked_src(
-        "storage is record { a : nat; }\n\
-         external function set(const v : nat) is { storage.a := v * 3n + storage.a; }\n",
+        "storage is record { a : uint; }\n\
+         external function set(const v : uint) is { storage.a := v * 3 + storage.a; }\n",
     );
     let err = crate::split::build(&plain, "Plain", &split_opts(10))
         .err()
@@ -492,8 +492,8 @@ fn split_errors_say_what_cannot_move() {
 #[test]
 fn module_transient_storage_has_one_slot() {
     let module = "module Lock is {\n\
-          transient storage lock is record { held : bool; depth : nat; }\n\
-          external function enter() is { lock.depth := lock.depth + 1n; }\n\
+          transient storage lock is record { held : bool; depth : uint; }\n\
+          external function enter() is { lock.depth := lock.depth + 1; }\n\
         }\n";
     let slot_of = |checked: &crate::check::Checked| {
         checked
@@ -504,11 +504,11 @@ fn module_transient_storage_has_one_slot() {
             .expect("Lock.lock")
     };
     let a = checked_src(&format!(
-        "{module}storage is record {{ n : nat; }}\nuse Lock exposing {{ function enter(); }}\n"
+        "{module}storage is record {{ n : uint; }}\nuse Lock exposing {{ function enter(); }}\n"
     ));
     let b = checked_src(&format!(
-        "{module}storage is record {{ n : nat; }}\n\
-         transient storage is record {{ busy : bool; count : nat; more : nat; }}\n\
+        "{module}storage is record {{ n : uint; }}\n\
+         transient storage is record {{ busy : bool; count : uint; more : uint; }}\n\
          use Lock exposing {{ function enter(); }}\n\
          external function go() is {{ transient.busy := true; }}\n"
     ));
@@ -520,22 +520,22 @@ fn module_transient_storage_has_one_slot() {
 const SPLIT_FACTORY: &str = r#"
 module Folds is {
   storage folds at "split.folds" is record {
-    count : nat;
+    count : uint;
   }
 
-  external function fold(const a : nat; const b : nat; const c : nat) is {
-    folds.count := folds.count + a * b * c + (a + b) / (c + 1n) + (a * c) % (b + 5n);
+  external function fold(const a : uint; const b : uint; const c : uint) is {
+    folds.count := folds.count + a * b * c + (a + b) / (c + 1) + (a * c) % (b + 5);
   }
 
-  external function fold2(const a : nat; const b : nat; const c : nat) is {
-    folds.count := folds.count * 2n + a * b * c + (a + b) / (c + 2n) + (a * c) % (b + 7n);
+  external function fold2(const a : uint; const b : uint; const c : uint) is {
+    folds.count := folds.count * 2 + a * b * c + (a + b) / (c + 2) + (a * c) % (b + 7);
   }
 
-  external function fold3(const a : nat; const b : nat; const c : nat) is {
-    folds.count := folds.count * 3n + a * b * c + (a + b) / (c + 3n) + (a * c) % (b + 8n);
+  external function fold3(const a : uint; const b : uint; const c : uint) is {
+    folds.count := folds.count * 3 + a * b * c + (a + b) / (c + 3) + (a * c) % (b + 8);
   }
 
-  external view function folded() : nat is
+  external view function folded() : uint is
     folds.count
 }
 
@@ -557,7 +557,7 @@ contract Factory is {
 contract Vault is {
   storage is record {
     owner : address;
-    count : nat;
+    count : uint;
   }
 
   deploy(const owner : address) is {
@@ -565,17 +565,17 @@ contract Vault is {
   }
 
   use Folds exposing {
-    function fold(a : nat; b : nat; c : nat);
-    function fold2(a : nat; b : nat; c : nat);
-    function fold3(a : nat; b : nat; c : nat);
-    view function folded() : nat;
+    function fold(a : uint; b : uint; c : uint);
+    function fold2(a : uint; b : uint; c : uint);
+    function fold3(a : uint; b : uint; c : uint);
+    view function folded() : uint;
   }
 
-  external function bump(const by : nat) is {
-    storage.count := storage.count + by * 3n;
+  external function bump(const by : uint) is {
+    storage.count := storage.count + by * 3;
   }
 
-  external view function count() : nat is
+  external view function count() : uint is
     storage.count
 
   external view function owner() : address is
@@ -667,7 +667,7 @@ fn split_tooling_output() {
     let pair = dir.join("src/pair.lithe");
     std::fs::write(&pair, pair_src("")).expect("write");
     let pair2 = dir.join("pair2.lithe");
-    let changed = pair_src("").replace("beta_state.m * 2n", "beta_state.m * 3n");
+    let changed = pair_src("").replace("beta_state.m * 2", "beta_state.m * 3");
     std::fs::write(&pair2, changed).expect("write");
     let opts = all_facets();
     let compiled = crate::compile(&Sources::disk(), &pair, &opts)
@@ -752,7 +752,7 @@ fn split_tooling_output() {
     let stubs = crate::stubs(&Sources::disk(), &pair, "Alpha").expect("stubs");
     assert_eq!(
         stubs,
-        "use Alpha exposing {\n  function alpha_add(a : nat; b : nat);\n  function alpha_mix(a : nat; b : nat; c : nat)\n    raises Alpha_zero;\n  view function alpha() : nat;\n}\n"
+        "use Alpha exposing {\n  function alpha_add(a : uint; b : uint);\n  function alpha_mix(a : uint; b : uint; c : uint)\n    raises Alpha_zero;\n  view function alpha() : uint;\n}\n"
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -760,12 +760,12 @@ fn split_tooling_output() {
 const ORDERS: &str = "\
 module Orders is {
   type order is tuple record { who : address; memo : string; }
-  type job is record { a : nat; label : string; }
+  type job is record { a : uint; label : string; }
   storage orders at \"t.orders\" is record { h : bytes32; }
 
   external function place(const o : order) is { orders.h := Crypto.keccak256(Abi.encode(o)); }
   external function run(const j : job) is { orders.h := Crypto.keccak256(Abi.encode(j)); }
-  external function mark(const m : tuple record { at : nat; note : string; }) is {
+  external function mark(const m : tuple record { at : uint; note : string; }) is {
     orders.h := Crypto.keccak256(Abi.encode(m.at, m.note));
   }
   external view function last() : bytes32 is orders.h
@@ -785,7 +785,7 @@ fn stubs_keep_tuple_records() {
     let _ = std::fs::remove_dir_all(&dir);
     assert_eq!(
         stubs,
-        "use Orders exposing {\n  function place(o : order);\n  function run(j : job);\n  function mark(m : tuple record { at : nat; note : string });\n  view function last() : bytes32;\n}\n"
+        "use Orders exposing {\n  function place(o : order);\n  function run(j : job);\n  function mark(m : tuple record { at : uint; note : string });\n  view function last() : bytes32;\n}\n"
     );
     let shop = format!("{ORDERS}\ncontract Shop is {{\n  storage is record {{}}\n{stubs}}}\n");
     let checked = checked_src(&shop);

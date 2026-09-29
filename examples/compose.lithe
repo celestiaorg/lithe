@@ -3,32 +3,32 @@
 
 module Ledger is {
   storage ledger at "lithe.ledger" is record {
-    balances : map(address, nat);
+    balances : map(address, uint);
   }
 
   error Insufficient_balance of record {
-    available : nat;
-    required : nat;
+    available : uint;
+    required : uint;
   }
 
   event Transfer of record {
     indexed from : address;
     indexed to : address;
-    amount : nat;
+    amount : uint;
   }
 
-  external view function balance_of(const account : address) : nat is
+  external view function balance_of(const account : address) : uint is
     ledger.balances[account]
 
-  external function mint(const account : address; const amount : nat) is {
+  external function mint(const account : address; const amount : uint) is {
     ledger.balances[account] := ledger.balances[account] + amount;
   }
 
-  function transfer(const to : address; const amount : nat)
+  function transfer(const to : address; const amount : uint)
     raises Insufficient_balance
   is {
     const sender : address := Evm.sender();
-    const balance : nat := ledger.balances[sender];
+    const balance : uint := ledger.balances[sender];
     assert(
       balance >= amount,
       Insufficient_balance {
@@ -45,7 +45,7 @@ module Ledger is {
     };
   }
 
-  external function transfer(const to : address; const amount : nat)
+  external function transfer(const to : address; const amount : uint)
     raises Insufficient_balance
   is
     transfer(to, amount)
@@ -76,7 +76,7 @@ module Guarded is {
   requires Ledger;
   requires Pausable;
 
-  function transfer(const to : address; const amount : nat)
+  function transfer(const to : address; const amount : uint)
     raises Paused | Insufficient_balance
   is {
     Pausable.require_unpaused();
@@ -88,9 +88,9 @@ contract Token is {
   use Guarded;
 
   use Ledger exposing {
-    view function balance_of(account : address) : nat;
-    function mint(account : address; amount : nat);
-    function transfer(to : address; amount : nat)
+    view function balance_of(account : address) : uint;
+    function mint(account : address; amount : uint);
+    function transfer(to : address; amount : uint)
       raises Insufficient_balance;
   }
 
@@ -102,14 +102,14 @@ contract Token is {
   external view function flag() : bool is
     Pausable.settings.paused
 
-  external function guarded_transfer(const to : address; const amount : nat)
+  external function guarded_transfer(const to : address; const amount : uint)
     raises Paused | Insufficient_balance
   is {
     Pausable.require_unpaused();
     Ledger.transfer(to, amount);
   }
 
-  external function safe_transfer(const to : address; const amount : nat)
+  external function safe_transfer(const to : address; const amount : uint)
     raises Paused | Insufficient_balance
   is {
     Guarded.transfer(to, amount);

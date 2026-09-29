@@ -1,15 +1,15 @@
 (* Execution context is Evm.*, hashes are Crypto.*, encoding is Abi.*. *)
 
 interface Target is {
-  function foo(amount : nat);
+  function foo(amount : uint);
 }
 
 storage is record {
   caller : address;
   paid : wei;
   time : timestamp;
-  number : nat;
-  chain : nat;
+  number : uint;
+  chain : uint;
   mine : address;
   bal : wei;
   sel : bytes4;
@@ -18,16 +18,16 @@ storage is record {
   coin : address;
   fee : wei;
   rand : bytes32;
-  limit : nat;
-  codesz : nat;
+  limit : uint;
+  codesz : uint;
   codehash : bytes32;
   bhash : bytes32;
   blob : bytes32;
-  gas : nat;
+  gas : uint;
   digest : bytes32;
   sha : bytes32;
   ripe : bytes20;
-  round : nat;
+  round : uint;
   packed : bytes;
   blob_fee : wei;
 }
@@ -49,16 +49,16 @@ external payable function take() is {
   storage.limit := Evm.block_gas_limit();
   storage.codesz := Evm.code_size(Evm.self());
   storage.codehash := Evm.code_hash(Evm.self());
-  storage.bhash := Evm.block_hash(1n);
-  storage.blob := Evm.blob_hash(0n);
+  storage.bhash := Evm.block_hash(1);
+  storage.blob := Evm.blob_hash(0);
   storage.blob_fee := Evm.blob_base_fee();
   storage.gas := Evm.gas_left();
   const raw : bytes := 0x616263;
   storage.digest := Crypto.keccak256(raw);
   storage.sha := Crypto.sha256(raw);
   storage.ripe := Crypto.ripemd160(raw);
-  const encoded : bytes := Abi.encode(7n);
-  storage.round := Abi.decode(encoded, nat);
+  const encoded : bytes := Abi.encode(7);
+  storage.round := Abi.decode(encoded, uint);
   storage.packed := Abi.encode_packed(Evm.sender());
 }
 
@@ -66,13 +66,13 @@ external view function payload() : bytes is
   Evm.calldata()
 
 external view function framed() : bytes is
-  Abi.encode_with_selector(0xaabbccdd, 7n)
+  Abi.encode_with_selector(0xaabbccdd, 7)
 
 external view function signed() : bytes is
-  Abi.encode_with_signature("foo(uint256)", 7n)
+  Abi.encode_with_signature("foo(uint256)", 7)
 
 external view function called() : bytes is
-  Abi.encode_call(Target.foo, 7n)
+  Abi.encode_call(Target.foo, 7)
 
 external view function recovered() : address is
-  Crypto.ecrecover(0x00, 0n, 0x00, 0x00)
+  Crypto.ecrecover(0x00, 0, 0x00, 0x00)

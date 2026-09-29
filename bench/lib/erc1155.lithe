@@ -2,21 +2,21 @@
    events, and order of checks. Extensions compose these pieces explicitly. *)
 
 interface ERC1155Receiver is {
-  function onERC1155Received(operator : address; from : address; id : nat; value : nat; data : bytes) : bytes4;
+  function onERC1155Received(operator : address; from : address; id : uint; value : uint; data : bytes) : bytes4;
   function onERC1155BatchReceived(
     operator : address;
     from : address;
-    ids : list(nat);
-    values : list(nat);
+    ids : list(uint);
+    values : list(uint);
     data : bytes
   ) : bytes4;
 }
 
 error ERC1155InsufficientBalance of record {
   sender : address;
-  balance : nat;
-  needed : nat;
-  tokenId : nat;
+  balance : uint;
+  needed : uint;
+  tokenId : uint;
 }
 
 error ERC1155InvalidSender of address;
@@ -33,13 +33,13 @@ error ERC1155InvalidApprover of address;
 error ERC1155InvalidOperator of address;
 
 error ERC1155InvalidArrayLength of record {
-  idsLength : nat;
-  valuesLength : nat;
+  idsLength : uint;
+  valuesLength : uint;
 }
 
 module ERC1155 is {
   storage erc1155 at "openzeppelin.storage.ERC1155" is record {
-    balances : map(nat, map(address, nat));
+    balances : map(uint, map(address, uint));
     operatorApprovals : map(address, map(address, bool));
     uri : string;
   }
@@ -48,16 +48,16 @@ module ERC1155 is {
     indexed operator : address;
     indexed from : address;
     indexed to : address;
-    id : nat;
-    value : nat;
+    id : uint;
+    value : uint;
   }
 
   event TransferBatch of record {
     indexed operator : address;
     indexed from : address;
     indexed to : address;
-    ids : list(nat);
-    values : list(nat);
+    ids : list(uint);
+    values : list(uint);
   }
 
   event ApprovalForAll of record {
@@ -71,21 +71,21 @@ module ERC1155 is {
   }
 
   (* One URI for every id; clients substitute the id for `{id}`. *)
-  external view function uri(const id : nat) : string is
+  external view function uri(const id : uint) : string is
     erc1155.uri
 
-  external view function balanceOf(const account : address; const id : nat) : nat is
+  external view function balanceOf(const account : address; const id : uint) : uint is
     erc1155.balances[id][account]
 
-  external view function balanceOfBatch(const accounts : list(address); const ids : list(nat)) : list(nat)
+  external view function balanceOfBatch(const accounts : list(address); const ids : list(uint)) : list(uint)
     raises ERC1155InvalidArrayLength
   is {
     assert(
       accounts.length = ids.length,
       ERC1155InvalidArrayLength { idsLength = ids.length; valuesLength = accounts.length; }
     );
-    var balances : list(nat) := [];
-    for (i, account) : (nat, address) in accounts do {
+    var balances : list(uint) := [];
+    for (i, account) : (uint, address) in accounts do {
       List.push(balances, erc1155.balances[ids[i]][account]);
     }
   } with balances
@@ -104,17 +104,17 @@ module ERC1155 is {
 
   (* Moves, mints (`from` is zero), or burns (`to` is zero) each `values[i]` of `ids[i]`.
      One id logs `TransferSingle`, any other count `TransferBatch`. *)
-  function update(const from : address; const to : address; const ids : list(nat); const values : list(nat))
+  function update(const from : address; const to : address; const ids : list(uint); const values : list(uint))
     raises ERC1155InvalidArrayLength | ERC1155InsufficientBalance
   is {
     assert(
       ids.length = values.length,
       ERC1155InvalidArrayLength { idsLength = ids.length; valuesLength = values.length; }
     );
-    for (i, id) : (nat, nat) in ids do {
-      const value : nat := values[i];
+    for (i, id) : (uint, uint) in ids do {
+      const value : uint := values[i];
       if from <> Address.zero then {
-        const fromBalance : nat := erc1155.balances[id][from];
+        const fromBalance : uint := erc1155.balances[id][from];
         assert(
           fromBalance >= value,
           ERC1155InsufficientBalance { sender = from; balance = fromBalance; needed = value; tokenId = id; }
@@ -125,7 +125,7 @@ module ERC1155 is {
         erc1155.balances[id][to] := erc1155.balances[id][to] + value;
       }
     }
-    if ids.length = 1n then {
+    if ids.length = 1 then {
       emit TransferSingle {
         operator = Evm.sender();
         from = from;
@@ -151,20 +151,20 @@ module ERC1155 is {
   function check_received(
     const from : address;
     const to : address;
-    const id : nat;
-    const value : nat;
+    const id : uint;
+    const value : uint;
     const data : bytes
   )
     raises ERC1155InvalidReceiver | forwarded
   is {
-    if Evm.code_size(to) > 0n then {
+    if Evm.code_size(to) > 0 then {
       const receiver : ERC1155Receiver := ERC1155Receiver(to);
       defer receiver.onERC1155Received(Evm.sender(), from, id, value, data) then {
         | Ok(answer : bytes4) -> {
             assert(answer = Abi.selector(ERC1155Receiver.onERC1155Received), ERC1155InvalidReceiver(to));
           }
         | Error(reason : bytes) -> {
-            if reason.length = 0n then {
+            if reason.length = 0 then {
               fail ERC1155InvalidReceiver(to);
             }
             forward reason;
@@ -177,20 +177,20 @@ module ERC1155 is {
   function check_batch_received(
     const from : address;
     const to : address;
-    const ids : list(nat);
-    const values : list(nat);
+    const ids : list(uint);
+    const values : list(uint);
     const data : bytes
   )
     raises ERC1155InvalidReceiver | forwarded
   is {
-    if Evm.code_size(to) > 0n then {
+    if Evm.code_size(to) > 0 then {
       const receiver : ERC1155Receiver := ERC1155Receiver(to);
       defer receiver.onERC1155BatchReceived(Evm.sender(), from, ids, values, data) then {
         | Ok(answer : bytes4) -> {
             assert(answer = Abi.selector(ERC1155Receiver.onERC1155BatchReceived), ERC1155InvalidReceiver(to));
           }
         | Error(reason : bytes) -> {
-            if reason.length = 0n then {
+            if reason.length = 0 then {
               fail ERC1155InvalidReceiver(to);
             }
             forward reason;
@@ -215,16 +215,16 @@ module ERC1155 is {
 
 (* The whole standard, for `supports`. *)
 interface IERC1155 is {
-  view function balanceOf(account : address; id : nat) : nat;
-  view function balanceOfBatch(accounts : list(address); ids : list(nat)) : list(nat)
+  view function balanceOf(account : address; id : uint) : uint;
+  view function balanceOfBatch(accounts : list(address); ids : list(uint)) : list(uint)
     raises ERC1155InvalidArrayLength;
   view function isApprovedForAll(account : address; operator : address) : bool;
   function setApprovalForAll(operator : address; approved : bool)
     raises ERC1155InvalidApprover | ERC1155InvalidOperator;
-  function safeTransferFrom(from : address; to : address; id : nat; value : nat; data : bytes)
+  function safeTransferFrom(from : address; to : address; id : uint; value : uint; data : bytes)
     raises ERC1155MissingApprovalForAll | ERC1155InvalidReceiver | ERC1155InvalidSender | ERC1155InvalidArrayLength
       | ERC1155InsufficientBalance;
-  function safeBatchTransferFrom(from : address; to : address; ids : list(nat); values : list(nat); data : bytes)
+  function safeBatchTransferFrom(from : address; to : address; ids : list(uint); values : list(uint); data : bytes)
     raises ERC1155MissingApprovalForAll | ERC1155InvalidReceiver | ERC1155InvalidSender | ERC1155InvalidArrayLength
       | ERC1155InsufficientBalance;
 }
@@ -232,12 +232,12 @@ interface IERC1155 is {
 (* IERC1155's views. Transfers are each token's own, since its extensions hook every
    balance update. *)
 interface IERC1155Views is {
-  view function balanceOf(account : address; id : nat) : nat;
-  view function balanceOfBatch(accounts : list(address); ids : list(nat)) : list(nat)
+  view function balanceOf(account : address; id : uint) : uint;
+  view function balanceOfBatch(accounts : list(address); ids : list(uint)) : list(uint)
     raises ERC1155InvalidArrayLength;
   view function isApprovedForAll(account : address; operator : address) : bool;
 }
 
 interface IERC1155MetadataURI is {
-  view function uri(id : nat) : string;
+  view function uri(id : uint) : string;
 }

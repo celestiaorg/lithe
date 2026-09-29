@@ -250,7 +250,7 @@ impl<'a> Gen<'a> {
             TyKind::Address | TyKind::Interface => 20,
             TyKind::Bool => 1,
             TyKind::Bytes => u32::from(t.bits.max(1)),
-            TyKind::Nat | TyKind::Int if t.bits > 0 && t.bits < 256 => u32::from(t.bits) / 8,
+            TyKind::Uint | TyKind::Int if t.bits > 0 && t.bits < 256 => u32::from(t.bits) / 8,
             _ => 32,
         }
     }
@@ -534,7 +534,7 @@ impl<'a> Gen<'a> {
                 fields: vec![
                     Field {
                         slot: 0,
-                        ty: crate::check::TY_NAT,
+                        ty: crate::check::TY_UINT,
                     },
                     Field {
                         slot: 1,

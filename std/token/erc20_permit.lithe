@@ -27,8 +27,8 @@ module ERC20Permit is {
   function permit(
     const owner : address;
     const spender : address;
-    const value : nat;
-    const deadline : nat;
+    const value : uint;
+    const deadline : uint;
     const v : uint8;
     const r : bytes32;
     const s : bytes32
@@ -36,7 +36,7 @@ module ERC20Permit is {
     raises ERC2612ExpiredSignature | ERC2612InvalidSigner | ECDSAInvalidSignature | ECDSAInvalidSignatureS
       | ERC20InvalidApprover | ERC20InvalidSpender
   is {
-    assert(nat(Evm.block_timestamp()) <= deadline, ERC2612ExpiredSignature(deadline));
+    assert(uint(Evm.block_timestamp()) <= deadline, ERC2612ExpiredSignature(deadline));
     const struct_hash : bytes32 := Crypto.keccak256(Abi.encode(
       permit_typehash(),
       owner,
@@ -53,8 +53,8 @@ module ERC20Permit is {
   external function permit(
     const owner : address;
     const spender : address;
-    const value : nat;
-    const deadline : nat;
+    const value : uint;
+    const deadline : uint;
     const v : uint8;
     const r : bytes32;
     const s : bytes32
@@ -64,7 +64,7 @@ module ERC20Permit is {
   is
     permit(owner, spender, value, deadline, v, r, s)
 
-  external view function nonces(const owner : address) : nat is
+  external view function nonces(const owner : address) : uint is
     Nonces.nonces(owner)
 
   external view function DOMAIN_SEPARATOR() : bytes32 is

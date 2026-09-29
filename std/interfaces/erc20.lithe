@@ -6,8 +6,8 @@ import "std/crypto/ecdsa.lithe";
 
 error ERC20InsufficientBalance of record {
   sender : address;
-  balance : nat;
-  needed : nat;
+  balance : uint;
+  needed : uint;
 }
 
 error ERC20InvalidSender of address;
@@ -16,15 +16,15 @@ error ERC20InvalidReceiver of address;
 
 error ERC20InsufficientAllowance of record {
   spender : address;
-  allowance : nat;
-  needed : nat;
+  allowance : uint;
+  needed : uint;
 }
 
 error ERC20InvalidApprover of address;
 
 error ERC20InvalidSpender of address;
 
-error ERC2612ExpiredSignature of nat;
+error ERC2612ExpiredSignature of uint;
 
 error ERC2612InvalidSigner of record {
   signer : address;
@@ -32,14 +32,14 @@ error ERC2612InvalidSigner of record {
 }
 
 interface IERC20 is {
-  view function totalSupply() : nat;
-  view function balanceOf(account : address) : nat;
-  view function allowance(owner : address; spender : address) : nat;
-  function transfer(to : address; value : nat) : bool
+  view function totalSupply() : uint;
+  view function balanceOf(account : address) : uint;
+  view function allowance(owner : address; spender : address) : uint;
+  function transfer(to : address; value : uint) : bool
     raises ERC20InvalidSender | ERC20InvalidReceiver | ERC20InsufficientBalance;
-  function approve(spender : address; value : nat) : bool
+  function approve(spender : address; value : uint) : bool
     raises ERC20InvalidApprover | ERC20InvalidSpender;
-  function transferFrom(from : address; to : address; value : nat) : bool
+  function transferFrom(from : address; to : address; value : uint) : bool
     raises ERC20InsufficientAllowance | ERC20InvalidApprover | ERC20InvalidSpender | ERC20InvalidSender
       | ERC20InvalidReceiver | ERC20InsufficientBalance;
 }
@@ -55,14 +55,14 @@ interface IERC20Permit is {
   function permit(
     owner : address;
     spender : address;
-    value : nat;
-    deadline : nat;
+    value : uint;
+    deadline : uint;
     v : uint8;
     r : bytes32;
     s : bytes32
   )
     raises ERC2612ExpiredSignature | ERC2612InvalidSigner | ECDSAInvalidSignature | ECDSAInvalidSignatureS
       | ERC20InvalidApprover | ERC20InvalidSpender;
-  view function nonces(owner : address) : nat;
+  view function nonces(owner : address) : uint;
   view function DOMAIN_SEPARATOR() : bytes32;
 }

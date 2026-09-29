@@ -50,16 +50,16 @@ impl Checker {
                     *lit = Lit::Bytes(w.to_be_bytes().to_vec());
                 }
                 *ty = match lit {
-                    Lit::Nat(_) => TY_NAT,
+                    Lit::Uint(_) => TY_UINT,
                     Lit::Int(w, digits) => {
                         if let Some(expect) = self.expect {
                             self.adopt_literal(*line, *col, *w, *digits, expect)?
                         } else {
-                            TY_NAT
+                            TY_UINT
                         }
                     }
                     Lit::Wei(_) => TY_WEI,
-                    Lit::Duration(_) => TY_NAT,
+                    Lit::Duration(_) => TY_UINT,
                     Lit::Bool(_) => TY_BOOL,
                     // A literal also spells `bytes` where the context expects them.
                     Lit::Str(_) if wants_bytes => bytes,
@@ -121,7 +121,7 @@ impl Checker {
                 let dynamic = matches!(rec.kind, TyKind::String | TyKind::List | TyKind::Bytes)
                     && rec.bits == 0;
                 if dynamic && name == "length" {
-                    *ty = TY_NAT;
+                    *ty = TY_UINT;
                     return Ok(());
                 }
                 if rec.kind != TyKind::Record {
@@ -144,7 +144,7 @@ impl Checker {
                 if self.types[base.ty()].kind != TyKind::Bytes {
                     return Err(error(*line, *col, "this value cannot be indexed"));
                 }
-                self.check_nat_index(index)?;
+                self.check_uint_index(index)?;
                 self.byte_at(e)
             }
             Expr::Field { .. } | Expr::Index { .. } => {
@@ -257,7 +257,7 @@ impl Checker {
                 if matches!(op, BinOp::Shl | BinOp::Shr | BinOp::Pow) {
                     let left_expect = self.expect.filter(|id| self.is_integer(*id));
                     self.check_expr_as(left, left_expect)?;
-                    self.check_expr_as(right, Some(TY_NAT))?;
+                    self.check_expr_as(right, Some(TY_UINT))?;
                 } else if op.is_cmp() {
                     // The operands type each other, not the boolean they make.
                     if self.contextual(left) > self.contextual(right) {
@@ -270,9 +270,22 @@ impl Checker {
                 } else if matches!(op, BinOp::And | BinOp::Or) {
                     self.check_expr_as(left, Some(TY_BOOL))?;
                     self.check_expr_as(right, Some(TY_BOOL))?;
-                } else {
+                } else if matches!(op, BinOp::Cons) {
                     self.check_expr(left)?;
                     self.check_expr(right)?;
+                } else {
+                    // A literal takes the other operand's type before the context's.
+                    let (first, second) = if self.contextual(left) > self.contextual(right) {
+                        (&mut **right, &mut **left)
+                    } else {
+                        (&mut **left, &mut **right)
+                    };
+                    self.check_expr(first)?;
+                    let other = match self.types[first.ty()].kind {
+                        TyKind::Timestamp if matches!(op, BinOp::Add | BinOp::Sub) => TY_UINT,
+                        _ => first.ty(),
+                    };
+                    self.check_expr_as(second, Some(other))?;
                 }
                 *ty = self.check_bin(*line, *col, *op, left.ty(), right.ty())?;
                 Ok(())
@@ -1088,7 +1101,7 @@ impl Checker {
                 .any(|&ty| self.types[ty].variants.iter().any(|v| &v.name == name))
     }
 
-    /// `Nat.max`, `Int.min`, `Int.max`, and `Address.zero`, as literals. A bound takes
+    /// `Uint.max`, `Int.min`, `Int.max`, and `Address.zero`, as literals. A bound takes
     /// its width from the type the context expects, as a bare literal does, and is 256
     /// bits without one.
     fn type_constant(&self, e: &Expr) -> Result<Option<Expr>, Error> {
@@ -1105,7 +1118,7 @@ impl Checker {
         let Expr::Ident { name: module, .. } = base.as_ref() else {
             return Ok(None);
         };
-        if self.lookup(module).is_some() || !matches!(module.as_str(), "Nat" | "Int" | "Address") {
+        if self.lookup(module).is_some() || !matches!(module.as_str(), "Uint" | "Int" | "Address") {
             return Ok(None);
         }
         let expected = |kind: TyKind, default: usize| {
@@ -1115,8 +1128,8 @@ impl Checker {
         };
         let ones = Word::from_u64(0).not();
         let (ty, word) = match (module.as_str(), name.as_str()) {
-            ("Nat", "max") => {
-                let ty = expected(TyKind::Nat, TY_NAT);
+            ("Uint", "max") => {
+                let ty = expected(TyKind::Uint, TY_UINT);
                 let bits = u32::from(self.types[self.peel(ty)].bits);
                 (ty, if bits == 0 || bits >= 256 { ones } else { ones.shr(256 - bits) })
             }
@@ -1133,7 +1146,7 @@ impl Checker {
                     *line,
                     *col,
                     format!(
-                        "unknown constant `{module}.{name}`; the constants are `Nat.max`, `Int.min`, `Int.max`, and `Address.zero`"
+                        "unknown constant `{module}.{name}`; the constants are `Uint.max`, `Int.min`, `Int.max`, and `Address.zero`"
                     ),
                 ))
             }
@@ -1193,7 +1206,7 @@ impl Checker {
             ));
         }
         let ok = match self.types[peeled].kind {
-            TyKind::Nat | TyKind::Wei | TyKind::Timestamp => fits_unsigned(word, bits),
+            TyKind::Uint | TyKind::Wei | TyKind::Timestamp => fits_unsigned(word, bits),
             TyKind::Int => fits_signed(word, bits),
             TyKind::Bytes => {
                 digits.map_or(byte_len(word), |d| u32::from(d / 2))
@@ -1247,15 +1260,15 @@ impl Checker {
             }
             BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod => {
                 if lk == TyKind::Timestamp
-                    && rk == TyKind::Nat
+                    && rk == TyKind::Uint
                     && matches!(op, BinOp::Add | BinOp::Sub)
                 {
                     return Ok(l);
                 }
                 if lk == TyKind::Timestamp && rk == TyKind::Timestamp && op == BinOp::Sub {
-                    return Ok(TY_NAT);
+                    return Ok(TY_UINT);
                 }
-                if !self.same(l, r) || !matches!(lk, TyKind::Nat | TyKind::Int | TyKind::Wei) {
+                if !self.same(l, r) || !matches!(lk, TyKind::Uint | TyKind::Int | TyKind::Wei) {
                     return Err(error(
                         line,
                         col,
@@ -1265,10 +1278,10 @@ impl Checker {
                 Ok(l)
             }
             BinOp::Pow => {
-                if !matches!(lk, TyKind::Nat | TyKind::Int) {
+                if !matches!(lk, TyKind::Uint | TyKind::Int) {
                     return Err(error(line, col, "`**` expects an integer base"));
                 }
-                if self.types[self.peel(r)].kind != TyKind::Nat {
+                if self.types[self.peel(r)].kind != TyKind::Uint {
                     return Err(error(line, col, "`**` expects an unsigned exponent"));
                 }
                 Ok(l)
@@ -1291,11 +1304,11 @@ impl Checker {
                         format!("`{}` expects an integer", bit_name(op)),
                     ));
                 }
-                if self.types[self.peel(r)].kind != TyKind::Nat {
+                if self.types[self.peel(r)].kind != TyKind::Uint {
                     return Err(error(
                         line,
                         col,
-                        format!("`{}` expects a `nat` shift", bit_name(op)),
+                        format!("`{}` expects a `uint` shift", bit_name(op)),
                     ));
                 }
                 Ok(l)
@@ -1353,7 +1366,7 @@ impl Checker {
                 if !self.same(l, r)
                     || !matches!(
                         lk,
-                        TyKind::Nat
+                        TyKind::Uint
                             | TyKind::Int
                             | TyKind::Address
                             | TyKind::Bool
@@ -1377,7 +1390,7 @@ impl Checker {
                     && !fixed_bytes
                     && !matches!(
                         lk,
-                        TyKind::Nat
+                        TyKind::Uint
                             | TyKind::Int
                             | TyKind::Wei
                             | TyKind::Timestamp
@@ -1558,9 +1571,9 @@ impl Checker {
                 Ok(val)
             }
             TyKind::List => {
-                self.check_expr_as(index, Some(TY_NAT))?;
-                if self.types[index.ty()].kind != TyKind::Nat {
-                    return Err(error(index.line(), index.col(), "an index must be `nat`"));
+                self.check_expr_as(index, Some(TY_UINT))?;
+                if self.types[index.ty()].kind != TyKind::Uint {
+                    return Err(error(index.line(), index.col(), "an index must be `uint`"));
                 }
                 Ok(self.types[ty].elem.unwrap_or(TY_UNIT))
             }
@@ -1569,17 +1582,17 @@ impl Checker {
     }
 
     pub(super) fn check_gas(&mut self, gas: &mut Expr) -> Result<(), Error> {
-        self.check_expr_as(gas, Some(TY_NAT))?;
-        if self.types[gas.ty()].kind != TyKind::Nat {
-            return Err(error(gas.line(), gas.col(), "`gas` must be nat"));
+        self.check_expr_as(gas, Some(TY_UINT))?;
+        if self.types[gas.ty()].kind != TyKind::Uint {
+            return Err(error(gas.line(), gas.col(), "`gas` must be uint"));
         }
         Ok(())
     }
 
-    pub(super) fn check_nat_index(&mut self, index: &mut Expr) -> Result<(), Error> {
-        self.check_expr_as(index, Some(TY_NAT))?;
-        if !self.same(index.ty(), TY_NAT) {
-            return Err(error(index.line(), index.col(), "an index must be `nat`"));
+    pub(super) fn check_uint_index(&mut self, index: &mut Expr) -> Result<(), Error> {
+        self.check_expr_as(index, Some(TY_UINT))?;
+        if !self.same(index.ty(), TY_UINT) {
+            return Err(error(index.line(), index.col(), "an index must be `uint`"));
         }
         Ok(())
     }
@@ -1629,7 +1642,7 @@ impl Checker {
             return Err(error(line, col, "only `bytes` can be sliced"));
         }
         for bound in &mut args[1..] {
-            self.check_nat_index(bound)?;
+            self.check_uint_index(bound)?;
         }
         *ty = bytes;
         Ok(())

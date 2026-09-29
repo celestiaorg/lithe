@@ -9,28 +9,28 @@ A deferred call runs after the transition that defers it. So how do you use its 
 
 ```lithe
 interface Exchange is {
-  function swap(amount_in : nat) : nat;
+  function swap(amount_in : uint) : uint;
 }
 
 event Swapped of record {
-  indexed id : nat;
-  amount_out : nat;
+  indexed id : uint;
+  amount_out : uint;
 }
 
 type order is record {
   status : uint8;
-  amount_out : nat;
+  amount_out : uint;
 }
 
 storage is record {
   exchange : Exchange;
-  orders : map(nat, order);
+  orders : map(uint, order);
 }
 
-external nonreentrant function execute(const id : nat; const amount_in : nat) is {
+external nonreentrant function execute(const id : uint; const amount_in : uint) is {
   storage.orders[id].status := uint8(1);
   defer storage.exchange.swap(amount_in)
-    then (amount_out : nat) {
+    then (amount_out : uint) {
       storage.orders[id].status := uint8(2);
       storage.orders[id].amount_out := amount_out;
       emit Swapped { id = id; amount_out = amount_out; };
@@ -61,24 +61,24 @@ The binding's type must match the method's declared return type.
 
 ```lithe
 interface Vault is {
-  function withdraw(shares : nat) : (nat, nat);
-  function deposit(amount : nat) : nat;
+  function withdraw(shares : uint) : (uint, uint);
+  function deposit(amount : uint) : uint;
 }
 
 storage is record {
   vault : Vault;
-  principal : nat;
-  earned : nat;
-  shares : nat;
+  principal : uint;
+  earned : uint;
+  shares : uint;
 }
 
-external nonreentrant function redeem(const shares : nat) is {
+external nonreentrant function redeem(const shares : uint) is {
   defer storage.vault.withdraw(shares)
-    then ((principal, earned) : (nat, nat)) {
+    then ((principal, earned) : (uint, uint)) {
       storage.principal := storage.principal + principal;
       storage.earned := storage.earned + earned;
       defer storage.vault.deposit(earned)
-        then (new_shares : nat) {
+        then (new_shares : uint) {
           storage.shares := storage.shares + new_shares;
         };
     };
@@ -91,17 +91,17 @@ A continuation can use the enclosing function's parameters and `const` bindings.
 
 ```lithe rejects
 interface Exchange is {
-  function swap(amount : nat) : nat;
+  function swap(amount : uint) : uint;
 }
 
 storage is record {
-  left : nat;
+  left : uint;
 }
 
-external nonreentrant function execute(const ex : Exchange; const amount : nat) is {
-  var remaining : nat := amount;
+external nonreentrant function execute(const ex : Exchange; const amount : uint) is {
+  var remaining : uint := amount;
   defer ex.swap(amount)
-    then (out : nat) {
+    then (out : uint) {
       storage.left := remaining + out;
     };
 }
@@ -123,23 +123,23 @@ To handle a failed call instead of reverting, give the continuation an `Ok` arm 
 
 ```lithe
 interface Registry is {
-  function notify(id : nat) : bool;
+  function notify(id : uint) : bool;
 }
 
 storage is record {
   registry : Registry;
-  notified : map(nat, bool);
-  failures : nat;
+  notified : map(uint, bool);
+  failures : uint;
   last_error : bytes;
 }
 
-external nonreentrant function publish(const id : nat) is {
+external nonreentrant function publish(const id : uint) is {
   defer storage.registry.notify(id) then {
     | Ok(accepted : bool) -> {
         storage.notified[id] := accepted;
       }
     | Error(reason : bytes) -> {
-        storage.failures := storage.failures + 1n;
+        storage.failures := storage.failures + 1;
         storage.last_error := reason;
       }
   };
@@ -148,7 +148,7 @@ external nonreentrant function publish(const id : nat) is {
 
 - `Ok(x : T)` binds the decoded result. For a method that returns `unit`, write `Ok` with no binding.
 - `Error(reason : bytes)` binds the raw revert data, and `Error(_)` ignores it.
-- `forward reason` reverts with exactly those bytes, passing the callee's failure on unchanged. It is not one of the contract's declared errors, so the function [raises `forwarded`](/language/errors#forwarded-failures). `reason.length` is its length in bytes, so `if reason.length = 0n then { fail My_error; } forward reason;` replaces only an empty reason.
+- `forward reason` reverts with exactly those bytes, passing the callee's failure on unchanged. It is not one of the contract's declared errors, so the function [raises `forwarded`](/language/errors#forwarded-failures). `reason.length` is its length in bytes, so `if reason.length = 0 then { fail My_error; } forward reason;` replaces only an empty reason.
 - Both arms are required: ``a recoverable call needs both `Ok` and `Error` arms``.
 - Each arm is a new phase, like any continuation. The failed call's own effects are undone, but the first phase's writes stay.
 - A call that succeeds but returns data that does not decode as `T` still reverts the transaction. It is not an `Error`.
@@ -159,15 +159,15 @@ A `query` recovers with an ordinary `case`, because its result is available imme
 
 ```lithe
 interface Oracle is {
-  view function price(asset : address) : nat;
+  view function price(asset : address) : uint;
 }
 
 storage is record {
   oracle : Oracle;
-  fallback_price : nat;
+  fallback_price : uint;
 }
 
-external view function price_or_fallback(const asset : address) : nat is
+external view function price_or_fallback(const asset : address) : uint is
   case query storage.oracle.price(asset) of {
   | Ok(price) -> price
   | Error(_) -> storage.fallback_price

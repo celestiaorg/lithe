@@ -48,7 +48,7 @@ impl Checker {
                 let val = self.types[map].right.unwrap_or(TY_UNIT);
                 let numeric = matches!(
                     self.types[self.peel(val)].kind,
-                    TyKind::Nat | TyKind::Int | TyKind::Wei
+                    TyKind::Uint | TyKind::Int | TyKind::Wei
                 );
                 *ty = if kind == Builtin::SpecCount {
                     if !is_word(self.types[self.peel(val)].kind) {
@@ -58,7 +58,7 @@ impl Checker {
                             "`count` counts a map whose values are words",
                         ));
                     }
-                    TY_NAT
+                    TY_UINT
                 } else if numeric {
                     val
                 } else {

@@ -21,22 +21,22 @@ type point is record {
 }
 
 storage is record {
-  todos : map(nat, todo);
-  count : nat;
+  todos : map(uint, todo);
+  count : uint;
   origin : point;
 }
 
 external function add(const priority : uint8) is {
   storage.todos[storage.count] := { priority = priority; done = false; };
-  storage.count := storage.count + 1n;
+  storage.count := storage.count + 1;
 }
 
 (* Write one field of a record stored in a map. *)
-external function toggle(const id : nat) is {
+external function toggle(const id : uint) is {
   storage.todos[id].done := not storage.todos[id].done;
 }
 
-external view function get(const id : nat) : todo is
+external view function get(const id : uint) : todo is
   storage.todos[id]
 
 external function move(const x : uint128; const y : uint128) is {

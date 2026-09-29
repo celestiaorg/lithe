@@ -21,25 +21,25 @@ external function configure() is {
   storage.unlock_at := Evm.block_timestamp() + 1days + 12hours + 30minutes;
 }
 
-external view function seconds_left() : nat is {
-  var left : nat := 0n;
+external view function seconds_left() : uint is {
+  var left : uint := 0;
   if Evm.block_timestamp() < storage.unlock_at then {
-    (* timestamp - timestamp is a plain nat of seconds. *)
+    (* timestamp - timestamp is a plain uint of seconds. *)
     left := storage.unlock_at - Evm.block_timestamp();
   }
 } with left
 
-external pure function one_week() : nat is
+external pure function one_week() : uint is
   7days
 
-(* `wei` scales by literals, and converts to `nat` explicitly. *)
+(* `wei` scales by literals, and converts to `uint` explicitly. *)
 external view function double_price() : wei is
   storage.price * 2
 
-external view function price_in_wei() : nat is
-  nat(storage.price)
+external view function price_in_wei() : uint is
+  uint(storage.price)
 ```
 
 - `1eth + 500gwei + 7wei` is a `wei` value.
-- `Evm.block_timestamp() + 1days` is a `timestamp`. A `nat` can't be stored in a `timestamp` field by accident.
-- Convert out explicitly with `nat(price)`.
+- `Evm.block_timestamp() + 1days` is a `timestamp`. A `uint` can't be stored in a `timestamp` field by accident.
+- Convert out explicitly with `uint(price)`.

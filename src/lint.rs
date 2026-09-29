@@ -1173,20 +1173,20 @@ fn rules(src: &str) -> Vec<&'static str> {
 mod tests {
     use super::*;
 
-    const STORE: &str = "storage is record { n : nat; }\n";
+    const STORE: &str = "storage is record { n : uint; }\n";
 
     #[test]
     fn each_rule_fires_and_stays_quiet() {
-        let var_src = format!("{STORE}external function go(const k : nat) is {{\n  var x : nat := k;\n  storage.n := x;\n}}\n");
+        let var_src = format!("{STORE}external function go(const k : uint) is {{\n  var x : uint := k;\n  storage.n := x;\n}}\n");
         assert!(rules(&var_src).contains(&"prefer-const"));
-        let assigned = format!("{STORE}external function go() is {{\n  var x : nat := 0n;\n  x := 1n;\n  storage.n := x;\n}}\n");
+        let assigned = format!("{STORE}external function go() is {{\n  var x : uint := 0;\n  x := 1;\n  storage.n := x;\n}}\n");
         assert!(!rules(&assigned).contains(&"prefer-const"));
 
-        let unused = format!("{STORE}function id(const n : nat; const extra : nat) : nat is n\nexternal function go() is {{\n  storage.n := id(1n, 2n);\n}}\n");
+        let unused = format!("{STORE}function id(const n : uint; const extra : uint) : uint is n\nexternal function go() is {{\n  storage.n := id(1, 2);\n}}\n");
         assert!(rules(&unused).contains(&"unused-binding"));
-        let used = format!("{STORE}function id(const n : nat) : nat is n\nexternal function go() is {{\n  storage.n := id(1n);\n}}\n");
+        let used = format!("{STORE}function id(const n : uint) : uint is n\nexternal function go() is {{\n  storage.n := id(1);\n}}\n");
         assert!(!rules(&used).contains(&"unused-binding"));
-        let entry = format!("{STORE}external function go(const k : nat) is {{ skip; }}\n");
+        let entry = format!("{STORE}external function go(const k : uint) is {{ skip; }}\n");
         assert!(!rules(&entry).contains(&"unused-binding"));
 
         let hidden = format!("{STORE}private function hidden() is {{ skip; }}\nexternal function go() is {{ skip; }}\n");
@@ -1194,38 +1194,38 @@ mod tests {
         let called = format!("{STORE}private function hidden() is {{ skip; }}\nexternal function go() is {{ hidden(); }}\n");
         assert!(!rules(&called).contains(&"unused-private"));
 
-        let open = format!("{STORE}external function pay(const to : address) is {{\n  storage.n := 1n;\n  defer Evm.transfer(to, 1wei);\n}}\n");
+        let open = format!("{STORE}external function pay(const to : address) is {{\n  storage.n := 1;\n  defer Evm.transfer(to, 1wei);\n}}\n");
         assert!(rules(&open).contains(&"reentry"));
-        let guarded = format!("{STORE}external nonreentrant function pay(const to : address) is {{\n  storage.n := 1n;\n  defer Evm.transfer(to, 1wei);\n}}\n");
+        let guarded = format!("{STORE}external nonreentrant function pay(const to : address) is {{\n  storage.n := 1;\n  defer Evm.transfer(to, 1wei);\n}}\n");
         assert!(!rules(&guarded).contains(&"reentry"));
 
         let open_loop = "\
-storage is record { members : list(nat); }
+storage is record { members : list(uint); }
 external function go() is {
-  for x : nat in storage.members do { skip; }
+  for x : uint in storage.members do { skip; }
 }
 ";
         assert!(rules(open_loop).contains(&"unbounded-loop"));
         let capped = "\
-storage is record { members : list(nat); }
+storage is record { members : list(uint); }
 external function go() is {
-  for x : nat in storage.members bound 4 do { skip; }
+  for x : uint in storage.members bound 4 do { skip; }
 }
 ";
         assert!(!rules(capped).contains(&"unbounded-loop"));
 
         let stale = "\
 interface Hook is { function ping(); }
-storage is record { n : nat; hook : Hook; }
+storage is record { n : uint; hook : Hook; }
 external function go() is {
-  const before : nat := storage.n;
+  const before : uint := storage.n;
   defer storage.hook.ping() then { storage.n := before; };
 }
 ";
         assert!(rules(stale).contains(&"stale-capture"));
         let fresh = "\
 interface Hook is { function ping(); }
-storage is record { n : nat; hook : Hook; }
+storage is record { n : uint; hook : Hook; }
 external function go() is {
   defer storage.hook.ping() then { storage.n := storage.n; };
 }
@@ -1236,9 +1236,9 @@ external function go() is {
     #[test]
     fn prefer_const_fix_keeps_bytecode() {
         let src = "\
-storage is record { n : nat; }
-external function go(const k : nat) is {
-  var x : nat := k;
+storage is record { n : uint; }
+external function go(const k : uint) is {
+  var x : uint := k;
   storage.n := x;
 }
 ";
@@ -1257,10 +1257,10 @@ external function go(const k : nat) is {
     #[test]
     fn unused_binding_renames_to_underscore() {
         let src = "\
-storage is record { n : nat; }
-function id(const n : nat; const extra : nat) : nat is n
+storage is record { n : uint; }
+function id(const n : uint; const extra : uint) : uint is n
 external function go() is {
-  storage.n := id(1n, 2n);
+  storage.n := id(1, 2);
 }
 ";
         let found = findings_in(src).expect("lint");
@@ -1279,12 +1279,12 @@ external function go() is {
         let main = dir.join("main.lithe");
         std::fs::write(
             &lib,
-            "function bump(const n : nat) : nat is {\n  var x : nat := n;\n} with x\n",
+            "function bump(const n : uint) : uint is {\n  var x : uint := n;\n} with x\n",
         )
         .unwrap();
         std::fs::write(
             &main,
-            "import \"lib.lithe\";\nstorage is record { n : nat; }\nexternal function go() is {\n  storage.n := bump(1n);\n}\n",
+            "import \"lib.lithe\";\nstorage is record { n : uint; }\nexternal function go() is {\n  storage.n := bump(1);\n}\n",
         )
         .unwrap();
         let report = lint_paths(std::slice::from_ref(&main), false);
@@ -1296,10 +1296,10 @@ external function go() is {
             lib_report.stderr
         );
         let unused = dir.join("idle.lithe");
-        std::fs::write(&unused, "function bump(const n : nat) : nat is n\n").unwrap();
+        std::fs::write(&unused, "function bump(const n : uint) : uint is n\n").unwrap();
         std::fs::write(
             &main,
-            "import \"idle.lithe\";\nstorage is record { n : nat; }\nexternal function go() is { skip; }\n",
+            "import \"idle.lithe\";\nstorage is record { n : uint; }\nexternal function go() is { skip; }\n",
         )
         .unwrap();
         let idle = lint_paths(std::slice::from_ref(&main), false);
@@ -1310,7 +1310,7 @@ external function go() is {
     #[test]
     fn ignores_and_config_silence_findings() {
         let src = format!(
-            "{STORE}external function go(const k : nat) is {{\n  (* lithe-ignore prefer-const: on purpose *)\n  var x : nat := k;\n  var y : nat := k; (* lithe-ignore prefer-const *)\n  var z : nat := k; (* lithe-ignore unused-binding, bogus *)\n  storage.n := x + y + z;\n}}\n"
+            "{STORE}external function go(const k : uint) is {{\n  (* lithe-ignore prefer-const: on purpose *)\n  var x : uint := k;\n  var y : uint := k; (* lithe-ignore prefer-const *)\n  var z : uint := k; (* lithe-ignore unused-binding, bogus *)\n  storage.n := x + y + z;\n}}\n"
         );
         let found = suppress(&src, findings_in(&src).expect("lint"), &[], "test.lithe");
         let lines: Vec<(u32, &str, &str)> = found
@@ -1334,7 +1334,7 @@ external function go() is {
             .allow;
         assert!(suppress(&src, findings_in(&src).unwrap(), &allow, "test.lithe").is_empty());
 
-        let pay = format!("{STORE}external function pay(const to : address) is {{\n  storage.n := 1n;\n  defer Evm.transfer(to, 1wei);\n}}\n");
+        let pay = format!("{STORE}external function pay(const to : address) is {{\n  storage.n := 1;\n  defer Evm.transfer(to, 1wei);\n}}\n");
         let quiet = pay.replace(
             "external function",
             "(* lithe-ignore reentry *)\nexternal function",
@@ -1360,23 +1360,23 @@ external function go() is {
         let write = |name: &str, src: &str| std::fs::write(dir.join(name), src).unwrap();
         write("errors.lithe", "error Denied;\n");
         write("reexport.lithe", "import \"errors.lithe\";\n");
-        write("child.lithe", "contract Child is {\n  storage is record { n : nat; }\n  external function go() is { storage.n := 1n; }\n}\n");
+        write("child.lithe", "contract Child is {\n  storage is record { n : uint; }\n  external function go() is { storage.n := 1; }\n}\n");
         write(
             "lib.lithe",
-            "module Lib is {\n  function init() is { skip; }\n  external view function peek(const k : nat) : nat is {\n    const spare : nat := k;\n  } with k\n}\ninterface IPeek is {\n  view function peek(k : nat) : nat;\n}\n",
+            "module Lib is {\n  function init() is { skip; }\n  external view function peek(const k : uint) : uint is {\n    const spare : uint := k;\n  } with k\n}\ninterface IPeek is {\n  view function peek(k : uint) : uint;\n}\n",
         );
         let cases = [
             ("raises.lithe", "import \"errors.lithe\";\ninterface Gate is {\n  function open() raises Denied;\n}\nstorage is record { g : Gate; }\nexternal function go() is { skip; }\n"),
-            ("through.lithe", "import \"reexport.lithe\";\nstorage is record { n : nat; }\nexternal function go() raises Denied is {\n  assert(storage.n = 0n, Denied);\n}\n"),
+            ("through.lithe", "import \"reexport.lithe\";\nstorage is record { n : uint; }\nexternal function go() raises Denied is {\n  assert(storage.n = 0, Denied);\n}\n"),
             ("peer.lithe", "import \"child.lithe\";\nstorage is record { h : bytes32; }\nexternal function go() is {\n  storage.h := Crypto.keccak256(Evm.creation_code(Child));\n}\n"),
-            ("exposed.lithe", "import \"lib.lithe\";\ncontract Main is {\n  storage is record { n : nat; }\n  use Lib exposing IPeek;\n}\n"),
+            ("exposed.lithe", "import \"lib.lithe\";\ncontract Main is {\n  storage is record { n : uint; }\n  use Lib exposing IPeek;\n}\n"),
         ];
         for (name, src) in cases {
             write(name, src);
             let report = lint_paths(&[dir.join(name)], false);
             assert_eq!(report.status, 0, "{name}: {}", report.stderr);
         }
-        write("same_name.lithe", "import \"lib.lithe\";\nstorage is record { n : nat; }\nfunction init() is { skip; }\nexternal function go() is { init(); }\n");
+        write("same_name.lithe", "import \"lib.lithe\";\nstorage is record { n : uint; }\nfunction init() is { skip; }\nexternal function go() is { init(); }\n");
         let report = lint_paths(&[dir.join("same_name.lithe")], false);
         assert!(report.stderr.contains("unused-import"), "{}", report.stderr);
         let _ = std::fs::remove_dir_all(&dir);

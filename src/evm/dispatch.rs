@@ -24,14 +24,14 @@ fn zero_ending_name() -> String {
 /// and one whose selector ends in a zero byte answering 999.
 fn entries(plain: usize, payable: usize, extra: &str) -> (String, Vec<(String, u64, bool)>) {
     let zero = zero_ending_name();
-    let mut src = format!("storage is record {{ n : nat; }}\n{extra}\nexternal view function {zero}() : nat is 999n\n");
+    let mut src = format!("storage is record {{ n : uint; }}\n{extra}\nexternal view function {zero}() : uint is 999\n");
     let mut sigs = vec![(format!("{zero}()"), 999, false)];
     for i in 0..plain {
-        src += &format!("external view function f{i}() : nat is {i}n\n");
+        src += &format!("external view function f{i}() : uint is {i}\n");
         sigs.push((format!("f{i}()"), i as u64, false));
     }
     for i in 0..payable {
-        src += &format!("external payable function p{i}() : nat is {{ skip }} with {i}n\n");
+        src += &format!("external payable function p{i}() : uint is {{ skip }} with {i}\n");
         sigs.push((format!("p{i}()"), i as u64, true));
     }
     (src, sigs)
@@ -104,7 +104,7 @@ fn dispatch_shapes_hit_and_miss() {
 #[test]
 fn dispatch_shapes_keep_fallback_and_receive() {
     let extra = "\
-payable receive is { storage.n := 7n; }
+payable receive is { storage.n := 7; }
 fallback : bytes is { skip } with Evm.calldata()";
     for (plain, shape) in [(4, vec![]), (19, vec![4]), (40, vec![8])] {
         let (src, sigs) = entries(plain, 0, extra);
@@ -145,7 +145,7 @@ fn dispatch_shapes_split_payable_entries() {
         assert!(run(&runtime, &[0xde, 0xad, 0xbe, 0xef], 1).reverted);
     }
     // With a payable fallback, value to an entrypoint that is not payable is still refused.
-    let (src, sigs) = entries(20, 20, "payable fallback is { storage.n := 5n; }");
+    let (src, sigs) = entries(20, 20, "payable fallback is { storage.n := 5; }");
     let runtime = deploy(&compile(&src).expect("compile")).expect("deploy");
     check_dispatch(&runtime, &sigs, |data, out| {
         assert!(!out.reverted, "{data:?}");

@@ -136,7 +136,7 @@ fn canon(t: &T) -> String {
 /// The same type in Lithe.
 fn lithe(t: &T) -> String {
     match t {
-        T::Uint(256) => "nat".into(),
+        T::Uint(256) => "uint".into(),
         T::Uint(bits) => format!("uint{bits}"),
         T::Int(256) => "int".into(),
         T::Int(bits) => format!("int{bits}"),
@@ -335,15 +335,15 @@ interface Echo is {{
 event Logged of record {{ x : {ty}; }}
 event Topic of record {{ indexed x : {ty}; }}
 error Bad of {ty};
-storage is record {{ n : nat; }}
+storage is record {{ n : uint; }}
 external pure function echo(const x : {ty}) : {ty} is x
-external function kept(const x : {ty}) : {ty} is {{ storage.n := 1n; }} with x
+external function kept(const x : {ty}) : {ty} is {{ storage.n := 1; }} with x
 external pure function enc(const x : {ty}) : bytes is Abi.encode(x)
-external pure function enc_pair(const x : {ty}; const y : nat) : bytes is Abi.encode(y, x, y)
+external pure function enc_pair(const x : {ty}; const y : uint) : bytes is Abi.encode(y, x, y)
 external pure function enc_call(const x : {ty}) : bytes is Abi.encode_call(Echo.call, x)
-external pure function enc_sel(const x : {ty}) : bytes is Abi.encode_with_selector(0x12345678, x, 1n)
+external pure function enc_sel(const x : {ty}) : bytes is Abi.encode_with_selector(0x12345678, x, 1)
 external pure function dec(const b : bytes) : tt is Abi.decode(b, tt)
-external pure function dec_pair(const b : bytes) : (tt, nat) is Abi.decode(b, (tt, nat))
+external pure function dec_pair(const b : bytes) : (tt, uint) is Abi.decode(b, (tt, uint))
 external function log(const x : {ty}) is {{ emit Logged {{ x = x; }}; }}
 external function topic(const x : {ty}) is {{ emit Topic {{ x = x; }}; }}
 external function bad(const x : {ty}) raises Bad is {{ fail Bad(x); }}
@@ -532,7 +532,7 @@ fn deploy_takes_every_abi_type() {
     for (t, decl, ty) in forms() {
         let name = decl.clone();
         let src = format!(
-            "type tt is {decl};\nevent Made of record {{ x : {ty}; }}\nstorage is record {{ n : nat; }}\ndeploy(const x : {ty}) is {{ emit Made {{ x = x; }}; }}\nexternal function f() is {{ skip }}\n"
+            "type tt is {decl};\nevent Made of record {{ x : {ty}; }}\nstorage is record {{ n : uint; }}\ndeploy(const x : {ty}) is {{ emit Made {{ x = x; }}; }}\nexternal function f() is {{ skip }}\n"
         );
         let init = compile(&src).unwrap_or_else(|e| panic!("{name}: {e}"));
         for _ in 0..3 {
@@ -645,29 +645,29 @@ fn malformed_nested_arguments_revert() {
 #[test]
 fn nested_values_index_and_loop() {
     let src = "\
-type item is record { name : string; tags : list(nat); }
-storage is record { n : nat; }
-external pure function cell(const xs : list(list(nat)); const i : nat; const j : nat) : nat is xs[i][j]
-external pure function row_len(const xs : list(list(nat)); const i : nat) : nat is xs[i].length
-external pure function total(const xs : list(list(nat))) : nat is {
-  var sum : nat := 0n;
-  for row : list(nat) in xs do {
-    for x : nat in row do {
+type item is record { name : string; tags : list(uint); }
+storage is record { n : uint; }
+external pure function cell(const xs : list(list(uint)); const i : uint; const j : uint) : uint is xs[i][j]
+external pure function row_len(const xs : list(list(uint)); const i : uint) : uint is xs[i].length
+external pure function total(const xs : list(list(uint))) : uint is {
+  var sum : uint := 0;
+  for row : list(uint) in xs do {
+    for x : uint in row do {
       sum := sum + x;
     }
   }
 } with sum
-external pure function built(const a : nat) : list(list(nat)) is [[a, a + 1n], [], [a * 2n]]
+external pure function built(const a : uint) : list(list(uint)) is [[a, a + 1], [], [a * 2]]
 external pure function names(const items : list(item)) : list(string) is {
   var out : list(string) := [];
   for it : item in items do {
     List.push(out, it.name);
   }
 } with out
-external pure function tag(const items : list(item); const i : nat; const j : nat) : nat is items[i].tags[j]
-external pure function make(const s : string; const t : nat) : list(item) is [{ name = s; tags = [t, t]; }]
-external pure function swap(const p : (string, list(nat))) : (list(nat), string) is {
-  const (s, xs) : (string, list(nat)) := p;
+external pure function tag(const items : list(item); const i : uint; const j : uint) : uint is items[i].tags[j]
+external pure function make(const s : string; const t : uint) : list(item) is [{ name = s; tags = [t, t]; }]
+external pure function swap(const p : (string, list(uint))) : (list(uint), string) is {
+  const (s, xs) : (string, list(uint)) := p;
 } with (xs, s)
 ";
     let runtime = deploy(&compile(src).unwrap_or_else(|e| panic!("{e}"))).expect("deploy");
@@ -785,7 +785,7 @@ external pure function swap(const p : (string, list(nat))) : (list(nat), string)
 #[test]
 fn packed_fixed_lists_match_solidity() {
     let src = "\
-storage is record { n : nat; }
+storage is record { n : uint; }
 external pure function f(const a : list(bytes2, 2)) : bytes is Abi.encode_packed(a)
 external pure function g(const a : list(uint8)) : bytes is Abi.encode_packed(a)
 external pure function h(const a : list(bool, 2); const x : address) : bytes is Abi.encode_packed(a, x)
@@ -794,7 +794,7 @@ type status is
   | Pending
   | Complete
 interface Target is {
-  function foo(amount : nat);
+  function foo(amount : uint);
 }
 external pure function k(const s : status; const t : Target; const x : int8; const b : bytes3; const ys : list(bytes2)) : bytes is
   Abi.encode_packed(s, t, x, b, ys)
@@ -867,40 +867,40 @@ external pure function k(const s : status; const t : Target; const x : int8; con
 /// Records one Lithe contract sends another through an interface, each stored by the
 /// target as the hash of its `Abi.encode`.
 const RECORD_TARGET: &str = "\
-type job is record { a : nat; label : string; ids : list(nat); b : address; }
-type params is record { x : nat; y : nat; z : nat; }
-type order is tuple record { who : address; memo : string; amount : nat; }
-storage is record { h : bytes32; n : nat; }
+type job is record { a : uint; label : string; ids : list(uint); b : address; }
+type params is record { x : uint; y : uint; z : uint; }
+type order is tuple record { who : address; memo : string; amount : uint; }
+storage is record { h : bytes32; n : uint; }
 external function run(const j : job) is { storage.h := Crypto.keccak256(Abi.encode(j)); }
 external function execute(const p : params) is { storage.h := Crypto.keccak256(Abi.encode(p)); }
 external function place(const o : order) is { storage.h := Crypto.keccak256(Abi.encode(o)); }
-external function after(const j : job; const n : nat) is { storage.n := n; }
+external function after(const j : job; const n : uint) is { storage.n := n; }
 external view function weigh(const j : job) : bytes32 is Crypto.keccak256(Abi.encode(j))
-external view function quote(const o : order) : order is { who = o.who; memo = o.memo; amount = o.amount + 1n; }
+external view function quote(const o : order) : order is { who = o.who; memo = o.memo; amount = o.amount + 1; }
 ";
 
 const RECORD_CALLER: &str = "\
-type job is record { a : nat; label : string; ids : list(nat); b : address; }
-type params is record { x : nat; y : nat; z : nat; }
-type order is tuple record { who : address; memo : string; amount : nat; }
+type job is record { a : uint; label : string; ids : list(uint); b : address; }
+type params is record { x : uint; y : uint; z : uint; }
+type order is tuple record { who : address; memo : string; amount : uint; }
 interface Target is {
   function run(j : job);
   function execute(p : params);
   function place(o : order);
-  function after(j : job; n : nat);
+  function after(j : job; n : uint);
   view function weigh(j : job) : bytes32;
   view function quote(o : order) : order;
 }
-storage is record { target : Target; h : bytes32; amount : nat; }
-external function run(const a : nat; const label : string) is {
-  defer storage.target.run({ a = a; label = label; ids = [a, a + 1n]; b = Evm.sender(); });
+storage is record { target : Target; h : bytes32; amount : uint; }
+external function run(const a : uint; const label : string) is {
+  defer storage.target.run({ a = a; label = label; ids = [a, a + 1]; b = Evm.sender(); });
 }
 external function relay(const j : job) is { defer storage.target.run(j); }
-external function execute(const x : nat; const y : nat; const z : nat) is {
+external function execute(const x : uint; const y : uint; const z : uint) is {
   defer storage.target.execute({ x = x; y = y; z = z; });
 }
 external function place(const o : order) is { defer storage.target.place(o); }
-external function after(const j : job; const n : nat) is { defer storage.target.after(j, n); }
+external function after(const j : job; const n : uint) is { defer storage.target.after(j, n); }
 external function weigh(const j : job) is { storage.h := query storage.target.weigh(j); }
 external function quote(const o : order) is {
   const r : order := query storage.target.quote(o);
@@ -1060,7 +1060,7 @@ fn case_payloads_decode_like_parameters() {
     let src = "\
 type key is tuple record { token : address; fee : uint24; }
 type ticket is tuple record { holder : address; note : string; }
-type named is record { s : string; n : nat; }
+type named is record { s : string; n : uint; }
 type action is
   | Swap of key
   | Hold of ticket
@@ -1117,7 +1117,7 @@ external function act(const a : action) is case a of {
 #[test]
 fn packed_hashes_match_their_encoding() {
     let src = "\
-storage is record { n : nat; }
+storage is record { n : uint; }
 type status is
   | New
   | Pending

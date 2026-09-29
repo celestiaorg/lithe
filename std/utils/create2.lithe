@@ -11,7 +11,7 @@ module Create2 is {
   ) : address is {
     const marker : bytes1 := 0xff;
     const hash : bytes32 := Crypto.keccak256(Abi.encode_packed(marker, deployer, salt, init_code_hash));
-  } with address(uint160(nat(hash) & ((1n << 160n) - 1n)))
+  } with address(uint160(uint(hash) & ((1 << 160) - 1)))
 
   (* Where this contract would create it. *)
   view function compute_address_here(const salt : bytes32; const init_code_hash : bytes32) : address is

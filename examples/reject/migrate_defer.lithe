@@ -3,7 +3,7 @@ upgradeable
 error Denied;
 
 storage is record {
-  n : nat;
+  n : uint;
 }
 
 upgrade guard is {

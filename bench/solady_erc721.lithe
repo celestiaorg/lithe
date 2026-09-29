@@ -16,13 +16,13 @@ error TransferToNonERC721ReceiverImplementer;
 event Transfer of record {
   indexed from : address;
   indexed to : address;
-  indexed id : nat;
+  indexed id : uint;
 }
 
 event Approval of record {
   indexed owner : address;
   indexed account : address;
-  indexed id : nat;
+  indexed id : uint;
 }
 
 event ApprovalForAll of record {
@@ -32,25 +32,25 @@ event ApprovalForAll of record {
 }
 
 interface IERC721 is {
-  view function balanceOf(owner : address) : nat;
-  view function ownerOf(id : nat) : address;
-  view function getApproved(id : nat) : address;
+  view function balanceOf(owner : address) : uint;
+  view function ownerOf(id : uint) : address;
+  view function getApproved(id : uint) : address;
   view function isApprovedForAll(owner : address; operator : address) : bool;
-  function approve(account : address; id : nat);
+  function approve(account : address; id : uint);
   function setApprovalForAll(operator : address; isApproved : bool);
-  function transferFrom(from : address; to : address; id : nat);
-  function safeTransferFrom(from : address; to : address; id : nat);
-  function safeTransferFrom(from : address; to : address; id : nat; data : bytes);
+  function transferFrom(from : address; to : address; id : uint);
+  function safeTransferFrom(from : address; to : address; id : uint);
+  function safeTransferFrom(from : address; to : address; id : uint; data : bytes);
 }
 
 interface IERC721Metadata is {
   view function name() : string;
   view function symbol() : string;
-  view function tokenURI(id : nat) : string;
+  view function tokenURI(id : uint) : string;
 }
 
 interface ERC721Receiver is {
-  function onERC721Received(operator : address; from : address; id : nat; data : bytes) : bytes4;
+  function onERC721Received(operator : address; from : address; id : uint; data : bytes) : bytes4;
 }
 
 supports IERC721, IERC721Metadata;
@@ -61,12 +61,12 @@ type token is record {
 }
 
 storage is record {
-  tokens : map(nat, token);
-  balances : map(address, nat);
+  tokens : map(uint, token);
+  balances : map(address, uint);
   operators : map(address, map(address, bool));
 }
 
-view function require_owner(const id : nat) : address
+view function require_owner(const id : uint) : address
   raises TokenDoesNotExist
 is {
   const owner : address := storage.tokens[id].owner;
@@ -78,12 +78,12 @@ function credit(const to : address)
   raises TransferToZeroAddress | AccountBalanceOverflow
 is {
   assert(to <> Address.zero, TransferToZeroAddress);
-  const balance : nat := storage.balances[to];
+  const balance : uint := storage.balances[to];
   assert(balance < 0xffffffff, AccountBalanceOverflow);
-  storage.balances[to] := balance + 1n;
+  storage.balances[to] := balance + 1;
 }
 
-function transfer_from(const from : address; const to : address; const id : nat)
+function transfer_from(const from : address; const to : address; const id : uint)
   raises TokenDoesNotExist | TransferFromIncorrectOwner | NotOwnerNorApproved | TransferToZeroAddress
     | AccountBalanceOverflow
 is {
@@ -97,12 +97,12 @@ is {
     storage.tokens[id].approved := Address.zero;
   }
   storage.tokens[id].owner := to;
-  storage.balances[from] := Nat.wrapping_sub(storage.balances[from], 1n);
+  storage.balances[from] := Uint.wrapping_sub(storage.balances[from], 1);
   credit(to);
   emit Transfer { from = from; to = to; id = id; };
 }
 
-function mint_to(const to : address; const id : nat)
+function mint_to(const to : address; const id : uint)
   raises TokenAlreadyExists | TransferToZeroAddress | AccountBalanceOverflow
 is {
   assert(storage.tokens[id].owner = Address.zero, TokenAlreadyExists);
@@ -113,16 +113,16 @@ is {
 
 (* A contract receiver must answer with the selector. One that reverts without a reason
    does not implement it; its own reason passes through unchanged. *)
-function check_received(const from : address; const to : address; const id : nat; const data : bytes)
+function check_received(const from : address; const to : address; const id : uint; const data : bytes)
   raises TransferToNonERC721ReceiverImplementer | forwarded
 is {
-  if Evm.code_size(to) > 0n then {
+  if Evm.code_size(to) > 0 then {
     defer ERC721Receiver(to).onERC721Received(Evm.sender(), from, id, data) then {
       | Ok(answer : bytes4) -> {
           assert(answer = Abi.selector(ERC721Receiver.onERC721Received), TransferToNonERC721ReceiverImplementer);
         }
       | Error(reason : bytes) -> {
-          if reason.length = 0n then {
+          if reason.length = 0 then {
             fail TransferToNonERC721ReceiverImplementer;
           }
           forward reason;
@@ -137,24 +137,24 @@ external pure function name() : string is
 external pure function symbol() : string is
   "SNFT"
 
-external view function tokenURI(const id : nat) : string
+external view function tokenURI(const id : uint) : string
   raises TokenDoesNotExist
 is {
   const _ : address := require_owner(id);
-} with String.concat("https://nft.example/", Nat.to_string(id))
+} with String.concat("https://nft.example/", Uint.to_string(id))
 
-external view function ownerOf(const id : nat) : address
+external view function ownerOf(const id : uint) : address
   raises TokenDoesNotExist
 is
   require_owner(id)
 
-external view function balanceOf(const owner : address) : nat
+external view function balanceOf(const owner : address) : uint
   raises BalanceQueryForZeroAddress
 is {
   assert(owner <> Address.zero, BalanceQueryForZeroAddress);
 } with storage.balances[owner]
 
-external view function getApproved(const id : nat) : address
+external view function getApproved(const id : uint) : address
   raises TokenDoesNotExist
 is {
   const _ : address := require_owner(id);
@@ -163,7 +163,7 @@ is {
 external view function isApprovedForAll(const owner : address; const operator : address) : bool is
   storage.operators[owner][operator]
 
-external payable function approve(const account : address; const id : nat)
+external payable function approve(const account : address; const id : uint)
   raises TokenDoesNotExist | NotOwnerNorApproved
 is {
   const owner : address := require_owner(id);
@@ -177,13 +177,13 @@ external function setApprovalForAll(const operator : address; const isApproved :
   emit ApprovalForAll { owner = Evm.sender(); operator = operator; isApproved = isApproved; };
 }
 
-external payable function transferFrom(const from : address; const to : address; const id : nat)
+external payable function transferFrom(const from : address; const to : address; const id : uint)
   raises TokenDoesNotExist | TransferFromIncorrectOwner | NotOwnerNorApproved | TransferToZeroAddress
     | AccountBalanceOverflow
 is
   transfer_from(from, to, id)
 
-external payable function safeTransferFrom(const from : address; const to : address; const id : nat)
+external payable function safeTransferFrom(const from : address; const to : address; const id : uint)
   raises TokenDoesNotExist | TransferFromIncorrectOwner | NotOwnerNorApproved | TransferToZeroAddress
     | AccountBalanceOverflow | TransferToNonERC721ReceiverImplementer | forwarded
 is {
@@ -191,7 +191,12 @@ is {
   check_received(from, to, id, "");
 }
 
-external payable function safeTransferFrom(const from : address; const to : address; const id : nat; const data : bytes)
+external payable function safeTransferFrom(
+  const from : address;
+  const to : address;
+  const id : uint;
+  const data : bytes
+)
   raises TokenDoesNotExist | TransferFromIncorrectOwner | NotOwnerNorApproved | TransferToZeroAddress
     | AccountBalanceOverflow | TransferToNonERC721ReceiverImplementer | forwarded
 is {
@@ -199,12 +204,12 @@ is {
   check_received(from, to, id, data);
 }
 
-external function mint(const to : address; const id : nat)
+external function mint(const to : address; const id : uint)
   raises TokenAlreadyExists | TransferToZeroAddress | AccountBalanceOverflow
 is
   mint_to(to, id)
 
-external function safeMint(const to : address; const id : nat; const data : bytes)
+external function safeMint(const to : address; const id : uint; const data : bytes)
   raises TokenAlreadyExists | TransferToZeroAddress | AccountBalanceOverflow | TransferToNonERC721ReceiverImplementer
     | forwarded
 is {
@@ -212,7 +217,7 @@ is {
   check_received(Address.zero, to, id, data);
 }
 
-external function burn(const id : nat)
+external function burn(const id : uint)
   raises TokenDoesNotExist | NotOwnerNorApproved
 is {
   const owner : address := require_owner(id);
@@ -225,6 +230,6 @@ is {
     storage.tokens[id].approved := Address.zero;
   }
   storage.tokens[id].owner := Address.zero;
-  storage.balances[owner] := Nat.wrapping_sub(storage.balances[owner], 1n);
+  storage.balances[owner] := Uint.wrapping_sub(storage.balances[owner], 1);
   emit Transfer { from = owner; to = Address.zero; id = id; };
 }

@@ -5,7 +5,7 @@
 storage is record {
   bios : map(address, string);
   files : map(bytes32, bytes);
-  titles : map(address, map(nat, string));
+  titles : map(address, map(uint, string));
   log : list(string);
 }
 
@@ -23,26 +23,26 @@ external function store(const data : bytes) is {
 external view function file(const hash : bytes32) : bytes is
   storage.files[hash]
 
-external function set_title(const id : nat; const title : string) is {
+external function set_title(const id : uint; const title : string) is {
   storage.titles[Evm.sender()][id] := title;
 }
 
-external view function title(const who : address; const id : nat) : string is
+external view function title(const who : address; const id : uint) : string is
   storage.titles[who][id]
 
 external function append(const entry : string) is {
   List.push(storage.log, entry);
 }
 
-external function amend(const i : nat; const entry : string) is {
+external function amend(const i : uint; const entry : string) is {
   storage.log[i] := entry;
 }
 
-external view function entry(const i : nat) : string is
+external view function entry(const i : uint) : string is
   storage.log[i]
 
-external view function logged() : nat is {
-  var total : nat := 0n;
+external view function logged() : uint is {
+  var total : uint := 0;
   for e : string in storage.log bound 16 do {
     total := total + e.length;
   }

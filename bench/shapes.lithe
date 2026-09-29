@@ -6,18 +6,18 @@ error Unauthorized of record {
   role : string;
 }
 error Out_of_range of record {
-  value : nat;
-  min : nat;
-  max : nat;
+  value : uint;
+  min : uint;
+  max : uint;
 }
 error Unknown_item of record {
-  id : nat;
+  id : uint;
   name : string;
 }
-error Bad_items of list(nat);
+error Bad_items of list(uint);
 error Bad_batch of record {
   reason : string;
-  ids : list(nat);
+  ids : list(uint);
 }
 error Bad_data of bytes;
 error Mismatch of record {
@@ -30,40 +30,40 @@ immutable is record {
 }
 
 storage is record {
-  items : nat;
-  sold : nat;
+  items : uint;
+  sold : uint;
 }
 
 deploy() is {
   immutable.owner := Evm.sender();
 }
 
-external function add(const count : nat)
+external function add(const count : uint)
   raises Unauthorized | Out_of_range
 is {
   assert(Evm.sender() = immutable.owner, Unauthorized { caller = Evm.sender(); role = "owner"; });
-  assert(count > 0n and count <= 10n, Out_of_range { value = count; min = 1n; max = 10n; });
+  assert(count > 0 and count <= 10, Out_of_range { value = count; min = 1; max = 10; });
   storage.items := storage.items + count;
 }
 
-external function buy(const id : nat; const name : string)
+external function buy(const id : uint; const name : string)
   raises Unknown_item | Out_of_range | Mismatch
 is {
   assert(id < storage.items, Unknown_item { id = id; name = name; });
-  assert(name.length <= 40n, Out_of_range { value = name.length; min = 0n; max = 40n; });
-  assert(name.length > 0n, Mismatch { expected = "a name"; actual = name; });
-  storage.sold := storage.sold + 1n;
+  assert(name.length <= 40, Out_of_range { value = name.length; min = 0; max = 40; });
+  assert(name.length > 0, Mismatch { expected = "a name"; actual = name; });
+  storage.sold := storage.sold + 1;
 }
 
-external function buy_all(const ids : list(nat); const note : string)
+external function buy_all(const ids : list(uint); const note : string)
   raises Bad_items | Bad_batch | Unknown_item
 is {
-  assert(ids.length > 0n, Bad_batch { reason = note; ids = ids; });
-  assert(ids.length <= 4n, Bad_batch { reason = "batch too large"; ids = ids; });
-  for id : nat in ids do {
+  assert(ids.length > 0, Bad_batch { reason = note; ids = ids; });
+  assert(ids.length <= 4, Bad_batch { reason = "batch too large"; ids = ids; });
+  for id : uint in ids do {
     assert(id < storage.items, Bad_items(ids));
   }
-  assert(ids[0] > 0n, Unknown_item { id = 0n; name = note; });
+  assert(ids[0] > 0, Unknown_item { id = 0; name = note; });
   storage.sold := storage.sold + ids.length;
 }
 
@@ -71,14 +71,14 @@ external function load(const data : bytes)
   raises Bad_data | Unauthorized | Bad_items
 is {
   assert(Evm.sender() = immutable.owner, Unauthorized { caller = Evm.sender(); role = "loader"; });
-  assert(data.length > 0n, Bad_data(data));
-  assert(data.length <= 64n, Bad_items([data.length, 64n]));
+  assert(data.length > 0, Bad_data(data));
+  assert(data.length <= 64, Bad_items([data.length, 64]));
   storage.sold := storage.sold + data.length;
 }
 
-external view function compare(const expected : string; const actual : string) : nat
+external view function compare(const expected : string; const actual : string) : uint
   raises Mismatch | Bad_data
 is {
   assert(expected = actual, Mismatch { expected = expected; actual = actual; });
-  assert(expected.length > 0n, Bad_data(0xff));
+  assert(expected.length > 0, Bad_data(0xff));
 } with expected.length

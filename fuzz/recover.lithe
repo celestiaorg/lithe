@@ -6,38 +6,38 @@
 error Unavailable;
 
 interface Ext is {
-  function swap(amount : nat) : nat;
-  function notify(id : nat);
-  view function price(asset : nat) : nat;
-  view function small(asset : nat) : uint8;
+  function swap(amount : uint) : uint;
+  function notify(id : uint);
+  view function price(asset : uint) : uint;
+  view function small(asset : uint) : uint8;
 }
 
 storage is record {
-  status : nat;
-  out : nat;
-  failures : nat;
+  status : uint;
+  out : uint;
+  failures : uint;
   notified : bool;
-  price : nat;
+  price : uint;
   small : uint8;
   reason : bytes;
 }
 
-external function execute(const ex : Ext; const amount : nat) is {
-  storage.status := 1n;
+external function execute(const ex : Ext; const amount : uint) is {
+  storage.status := 1;
   defer ex.swap(amount) then {
-    | Ok(result : nat) -> {
-        storage.status := 2n;
+    | Ok(result : uint) -> {
+        storage.status := 2;
         storage.out := result;
       }
     | Error(reason : bytes) -> {
-        storage.status := 3n;
+        storage.status := 3;
         storage.reason := reason;
-        storage.failures := storage.failures + 1n;
+        storage.failures := storage.failures + 1;
       }
   };
 }
 
-external function ping(const ex : Ext; const id : nat) is {
+external function ping(const ex : Ext; const id : uint) is {
   defer ex.notify(id) then {
     | Ok -> {
         storage.notified := true;
@@ -48,7 +48,7 @@ external function ping(const ex : Ext; const id : nat) is {
   };
 }
 
-external function read(const ex : Ext; const asset : nat)
+external function read(const ex : Ext; const asset : uint)
   raises Unavailable
 is {
   case query ex.price(asset) of {
@@ -61,7 +61,7 @@ is {
   }
 }
 
-external function read_small(const ex : Ext; const asset : nat) is {
+external function read_small(const ex : Ext; const asset : uint) is {
   case query ex.small(asset) of {
     | Ok(value) -> {
         storage.small := value;
@@ -73,18 +73,18 @@ external function read_small(const ex : Ext; const asset : nat) is {
 }
 
 (* A plain query reverts on failure, and on an answer that does not fit its type. *)
-external function read_plain(const ex : Ext; const asset : nat) is {
+external function read_plain(const ex : Ext; const asset : uint) is {
   const value : uint8 := query ex.small(asset);
   storage.small := value;
 }
 
 (* The same, with the query issued before the write that precedes it. *)
-external function read_early(const ex : Ext; const asset : nat) is {
-  storage.status := 9n;
+external function read_early(const ex : Ext; const asset : uint) is {
+  storage.status := 9;
   const value : uint8 := query ex.small(asset);
   storage.small := value;
 }
 
-external view function status() : nat is storage.status
+external view function status() : uint is storage.status
 
 external view function reason() : bytes is storage.reason

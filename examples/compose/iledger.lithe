@@ -2,6 +2,6 @@
    contract that has it. *)
 
 interface ILedger is {
-  function ping(n : nat);
-  view function pinged() : nat;
+  function ping(n : uint);
+  view function pinged() : uint;
 }

@@ -52,7 +52,7 @@ impl<'a> Gen<'a> {
         self.revert_if_true()
     }
 
-    /// A precompile whose result is one word: a `bool`, a `nat`, or a `bytes` value.
+    /// A precompile whose result is one word: a `bool`, a `uint`, or a `bytes` value.
     pub(super) fn compile_precompile(&mut self, pre: Pre, args: &[Expr]) -> Result<(), Error> {
         let addr = pre.address();
         match pre {
@@ -68,7 +68,7 @@ impl<'a> Gen<'a> {
                     self.compile_value(arg)?;
                     self.mstore_off(buf + 96 + 32 * i as i32);
                 }
-                // A zero modulus is a division by zero, as `Nat.mul_mod`'s is.
+                // A zero modulus is a division by zero, as `Uint.mul_mod`'s is.
                 self.mload(buf + 160);
                 self.op(ISZERO);
                 self.revert_if_panic(0x12)?;

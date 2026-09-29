@@ -12,42 +12,42 @@ Maps can't be enumerated. To list members, keep a list and an index map in sync.
    a list for order plus an index map for membership, updated together. Removal
    swaps the last member into the gap, so it costs the same for any member. *)
 
-error Out_of_range of nat;
+error Out_of_range of uint;
 
 storage is record {
   members : list(address);
-  count : nat;
+  count : uint;
   (* index + 1, so that 0 means absent *)
-  positions : map(address, nat);
+  positions : map(address, uint);
 }
 
 external view function contains(const who : address) : bool is
-  storage.positions[who] > 0n
+  storage.positions[who] > 0
 
 external function join() is {
-  if storage.positions[Evm.sender()] = 0n then {
+  if storage.positions[Evm.sender()] = 0 then {
     storage.members[storage.count] := Evm.sender();
-    storage.count := storage.count + 1n;
+    storage.count := storage.count + 1;
     storage.positions[Evm.sender()] := storage.count;
   }
 }
 
 external function leave() is {
-  const position : nat := storage.positions[Evm.sender()];
-  if position > 0n then {
-    const last : address := storage.members[storage.count - 1n];
-    storage.members[position - 1n] := last;
+  const position : uint := storage.positions[Evm.sender()];
+  if position > 0 then {
+    const last : address := storage.members[storage.count - 1];
+    storage.members[position - 1] := last;
     storage.positions[last] := position;
-    storage.positions[Evm.sender()] := 0n;
-    storage.count := storage.count - 1n;
+    storage.positions[Evm.sender()] := 0;
+    storage.count := storage.count - 1;
   }
 }
 
-external view function length() : nat is
+external view function length() : uint is
   storage.count
 
 (* Clients page through members one index at a time. *)
-external view function at(const i : nat) : address
+external view function at(const i : uint) : address
   raises Out_of_range
 is {
   assert(i < storage.count, Out_of_range(i));

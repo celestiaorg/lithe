@@ -23,7 +23,7 @@ contract Airdrop is {
     waiting : Queue(address);
   }
 
-  external function claim(const index : nat) is {
+  external function claim(const index : uint) is {
     if not Bitmap.get(storage.claimed, index) then {
       Bitmap.set(storage.claimed, index);
       SetEnumerable.add(storage.holders, Evm.sender());
@@ -34,7 +34,7 @@ contract Airdrop is {
     Queue.push(storage.waiting, Evm.sender());
   }
 
-  external view function holder_count() : nat is
+  external view function holder_count() : uint is
     SetEnumerable.length(storage.holders)
 
   external view function is_admin(const who : address) : bool is

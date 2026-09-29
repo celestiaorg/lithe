@@ -12,15 +12,15 @@ An interface describes another contract as function headers. `view` methods are 
    now, through STATICCALL. Other methods change state and can only be deferred. *)
 
 interface Oracle is {
-  view function price(asset : address) : nat;
+  view function price(asset : address) : uint;
   view function decimals() : uint8;
 }
 
-error Stale_price of nat;
+error Stale_price of uint;
 
 storage is record {
   oracle : Oracle;
-  last_price : nat;
+  last_price : uint;
 }
 
 (* An interface value is an address in the ABI. *)
@@ -31,14 +31,14 @@ external function set_oracle(const oracle : Oracle) is {
 external function refresh(const asset : address)
   raises Stale_price
 is {
-  const price : nat := query storage.oracle.price(asset);
-  assert(price > 0n, Stale_price(price));
+  const price : uint := query storage.oracle.price(asset);
+  assert(price > 0, Stale_price(price));
   storage.last_price := price;
 }
 
-external view function quote(const asset : address; const amount : nat) : nat is
+external view function quote(const asset : address; const amount : uint) : uint is
   amount * query storage.oracle.price(asset)
 ```
 
-- `query storage.oracle.price(asset)` returns a `nat` right away. The EVM guarantees the oracle can't change state during the call.
+- `query storage.oracle.price(asset)` returns a `uint` right away. The EVM guarantees the oracle can't change state during the call.
 - `quote` is an `external view` that queries. Queries are allowed in views, but not in pure functions.

@@ -4,7 +4,7 @@ type basis_points is uint16;
 type discount_rate is uint16;
 
 interface Fees is {
-  view function fee_of(amount : nat) : basis_points;
+  view function fee_of(amount : uint) : basis_points;
 }
 
 storage is record {
@@ -22,10 +22,10 @@ external function quote(const fee : basis_points) is {
 }
 
 (* An answer too wide for its nominal type reverts, as for the type it wraps. *)
-external view function fee_from(const fees : Fees; const amount : nat) : basis_points is
+external view function fee_from(const fees : Fees; const amount : uint) : basis_points is
   query fees.fee_of(amount)
 
-external view function has_fee(const fees : Fees; const amount : nat) : bool is
+external view function has_fee(const fees : Fees; const amount : uint) : bool is
   case query fees.fee_of(amount) of {
     | Ok(_) -> true
     | Error(_) -> false

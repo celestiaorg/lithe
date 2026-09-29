@@ -75,15 +75,15 @@ fn pure_functions_depend_only_on_arguments() {
     let raised = r#"
 error Too_small;
 
-storage is record { n : nat; }
+storage is record { n : uint; }
 
-pure function need(const n : nat) : nat
+pure function need(const n : uint) : uint
   raises Too_small
 is {
-  assert(n > 0n, Too_small);
+  assert(n > 0, Too_small);
 } with n
 
-external function go(const n : nat)
+external function go(const n : uint)
   raises Too_small
 is {
   storage.n := need(n);
@@ -105,30 +105,30 @@ external function store(const data : bytes) is {
 
     let module = r#"
 module Fees is {
-  pure function calculate_fee(const amount : nat; const fee_bps : nat) : nat is
-    amount * fee_bps / 10_000n
+  pure function calculate_fee(const amount : uint; const fee_bps : uint) : uint is
+    amount * fee_bps / 10_000
 }
 
 use Fees;
 
-storage is record { rate : nat; }
+storage is record { rate : uint; }
 
-external function quote(const amount : nat) is {
-  storage.rate := Fees.calculate_fee(amount, 25n);
+external function quote(const amount : uint) is {
+  storage.rate := Fees.calculate_fee(amount, 25);
 }
 "#;
     compile(module).expect("a module can define a pure function");
 
     let declared = r#"
 module Math is {
-  external pure function double(const n : nat) : nat is
+  external pure function double(const n : uint) : uint is
     n + n
 }
 
-storage is record { n : nat; }
+storage is record { n : uint; }
 
 use Math exposing {
-  view function double(n : nat) : nat;
+  view function double(n : uint) : uint;
 }
 "#;
     let err = compile(declared).expect_err("pure is not a view");
@@ -139,10 +139,10 @@ use Math exposing {
     );
 
     let wrote = r#"
-storage is record { n : nat; }
+storage is record { n : uint; }
 
 pure function set() is {
-  storage.n := 1n;
+  storage.n := 1;
 }
 "#;
     let err = compile(wrote).expect_err("write");
@@ -154,10 +154,10 @@ pure function set() is {
     );
 
     let emitted = r#"
-event Ping of record { n : nat; }
+event Ping of record { n : uint; }
 
 pure function ping() is {
-  emit Ping { n = 1n };
+  emit Ping { n = 1 };
 }
 "#;
     let err = compile(emitted).expect_err("emit");
@@ -170,10 +170,10 @@ pure function ping() is {
 
     let queried = r#"
 interface Source is {
-  view function read() : nat;
+  view function read() : uint;
 }
 
-pure function pulled(const source : Source) : nat is
+pure function pulled(const source : Source) : uint is
   query source.read()
 "#;
     let err = compile(queried).expect_err("query");
@@ -185,11 +185,11 @@ pure function pulled(const source : Source) : nat is
 
     let deferred = r#"
 interface Token is {
-  function transfer(to : address; amount : nat);
+  function transfer(to : address; amount : uint);
 }
 
 pure function send(const token : Token; const to : address) is {
-  defer token.transfer(to, 1n);
+  defer token.transfer(to, 1);
 }
 "#;
     let err = compile(deferred).expect_err("defer");
@@ -201,17 +201,17 @@ pure function send(const token : Token; const to : address) is {
 
     // All six combinations of visibility and effect are expressible.
     let external_pure = "\
-storage is record { n : nat; }
-pure function twice(const n : nat) : nat is n + n
-external pure function double(const n : nat) : nat is twice(n)
-external function set(const n : nat) is { storage.n := twice(n); }
+storage is record { n : uint; }
+pure function twice(const n : uint) : uint is n + n
+external pure function double(const n : uint) : uint is twice(n)
+external function set(const n : uint) is { storage.n := twice(n); }
 ";
     let runtime = deploy(&compile(external_pure).expect("external pure")).expect("deploy");
     let out = call(&runtime, "double(uint256)", &[Word::from_u64(21)]);
     assert_eq!(load_bytes(&out.returndata, 0), Word::from_u64(42));
     let abi = super::abi(external_pure).expect("abi");
     assert!(abi.contains("\"stateMutability\": \"pure\""), "{abi}");
-    let reads = "storage is record { n : nat; }\nexternal pure function get() : nat is storage.n\n";
+    let reads = "storage is record { n : uint; }\nexternal pure function get() : uint is storage.n\n";
     let err = compile(reads).expect_err("external pure reads");
     assert!(
         err.to_string().contains(
@@ -222,13 +222,13 @@ external function set(const n : nat) is { storage.n := twice(n); }
     // External functions are never called from inside the contract.
     for (callee, call_site) in [
         (
-            "external view function get() : nat is storage.n",
+            "external view function get() : uint is storage.n",
             "storage.n := get();",
         ),
-        ("external function get() is { storage.n := 1n; }", "get();"),
+        ("external function get() is { storage.n := 1; }", "get();"),
     ] {
         let src = format!(
-            "storage is record {{ n : nat; }}\n{callee}\nexternal function go() is {{ {call_site} }}\n"
+            "storage is record {{ n : uint; }}\n{callee}\nexternal function go() is {{ {call_site} }}\n"
         );
         let err = compile(&src).expect_err("internal call to an external function");
         assert!(
@@ -453,7 +453,7 @@ module Set(T : map_key) is {
   type self is map(T, bool);
 }
 use Set;
-storage is record { n : nat; }
+storage is record { n : uint; }
 external function go() is { skip }
 "#;
     let err = compile(used).expect_err("use");
@@ -469,23 +469,23 @@ fn queries_see_storage_as_the_transition_found_it() {
     let src = "\
 error Bad;
 interface Me is {
-  view function peek() : nat;
-  view function peek_plus(k : nat) : nat;
+  view function peek() : uint;
+  view function peek_plus(k : uint) : uint;
 }
-storage is record { n : nat; seen : nat; }
-external view function peek() : nat is storage.n
-external view function peek_plus(const k : nat) : nat is storage.n + k
-external function early(const me : Me; const k : nat)
+storage is record { n : uint; seen : uint; }
+external view function peek() : uint is storage.n
+external view function peek_plus(const k : uint) : uint is storage.n + k
+external function early(const me : Me; const k : uint)
   raises Bad
 is {
-  storage.n := storage.n + 1n;
-  assert(k > 0n, Bad);
-  const before : nat := query me.peek();
+  storage.n := storage.n + 1;
+  assert(k > 0, Bad);
+  const before : uint := query me.peek();
   storage.seen := before;
 }
 external function late(const me : Me) is {
-  storage.n := storage.n + 1n;
-  const before : nat := query me.peek_plus(storage.n);
+  storage.n := storage.n + 1;
+  const before : uint := query me.peek_plus(storage.n);
   storage.seen := before;
 }
 ";
@@ -606,8 +606,8 @@ use Vault_ops exposing {{
             "parameter 1 of `deposit_of` is `account` in the inline interface and `who` in `Vault_ops`",
         ),
         (
-            "  view function deposit_of(who : address) : nat;",
-            "`deposit_of` returns `nat` in the inline interface and `wei` in `Vault_ops`",
+            "  view function deposit_of(who : address) : uint;",
+            "`deposit_of` returns `uint` in the inline interface and `wei` in `Vault_ops`",
         ),
         (
             "  function withdraw(amount : wei);",
@@ -676,27 +676,27 @@ fn compiling_is_deterministic() {
 fn explicit_contracts_are_braced_and_separate() {
     let braced = "\
 module Counter is {
-  function step(const n : nat) : nat is
-    n + 1n
+  function step(const n : uint) : uint is
+    n + 1
 }
 
 contract Vault is {
   use Counter;
 
-  storage is record { n : nat; }
+  storage is record { n : uint; }
 
   external function go() is {
-    storage.n := Counter.step(1n);
+    storage.n := Counter.step(1);
   }
 }
 
 contract Factory is {
   use Counter;
 
-  storage is record { n : nat; }
+  storage is record { n : uint; }
 
   external function make() is {
-    storage.n := Counter.step(2n);
+    storage.n := Counter.step(2);
   }
 }
 ";
@@ -714,7 +714,7 @@ contract Factory is {
     let old = compile("module M is\nend\n").expect_err("old module");
     assert!(old.to_string().contains("`{`"), "{old}");
     let stray = compile(
-        "contract Foo is {\n  storage is record { n : nat; }\n}\nexternal function go() is { skip }\n",
+        "contract Foo is {\n  storage is record { n : uint; }\n}\nexternal function go() is { skip }\n",
     )
     .expect_err("stray");
     assert!(
@@ -730,8 +730,8 @@ contract Factory is {
     std::fs::write(dir.join("shops.lithe"), braced).expect("shops");
     let one = "\
 contract Vault is {
-  storage is record { n : nat; }
-  external function claim() is { storage.n := 1n; }
+  storage is record { n : uint; }
+  external function claim() is { storage.n := 1; }
 }
 ";
     std::fs::write(dir.join("named.lithe"), one).expect("named");
@@ -762,7 +762,7 @@ contract Vault is {
 #[test]
 fn payable_is_explicit_on_entries() {
     let err = compile(
-        "storage is record { n : nat; }\nexternal function go() is { const x : wei := Evm.value(); }\n",
+        "storage is record { n : uint; }\nexternal function go() is { const x : wei := Evm.value(); }\n",
     )
     .expect_err("value");
     assert!(
@@ -777,11 +777,11 @@ fn payable_is_explicit_on_entries() {
             "payable functions must be external; write `external payable function`",
         ),
         (
-            "external payable view function go() : nat is 0n\n",
+            "external payable view function go() : uint is 0\n",
             "payable functions must be stateful",
         ),
         (
-            "view external function go() : nat is 0n\n",
+            "view external function go() : uint is 0\n",
             "keywords out of order; write `external view function`",
         ),
         (
@@ -811,7 +811,7 @@ fn payable_is_explicit_on_entries() {
 
 #[test]
 fn types_reject_implicit_conversions() {
-    let err = compile("type storage is record { n : nat; }\nexternal function go() is { skip }\n")
+    let err = compile("type storage is record { n : uint; }\nexternal function go() is { skip }\n")
         .expect_err("syntax");
     assert!(
         err.to_string()
@@ -819,7 +819,7 @@ fn types_reject_implicit_conversions() {
         "{err}"
     );
     let err = compile(
-        "type tiny is uint8;\nstorage is record { n : nat; }\nexternal function go() is { const x : tiny := 300; skip }\n",
+        "type tiny is uint8;\nstorage is record { n : uint; }\nexternal function go() is { const x : tiny := 300; skip }\n",
     )
     .expect_err("range");
     assert!(
@@ -828,17 +828,9 @@ fn types_reject_implicit_conversions() {
     );
     assert!(err.to_string().contains("uint8"), "{err}");
     let err = compile(
-        "type basis_points is uint16;\ntype discount_rate is uint16;\nstorage is record { n : nat; }\nexternal function go() is { const fee : basis_points := 500; const discount : discount_rate := fee; skip }\n",
+        "type basis_points is uint16;\ntype discount_rate is uint16;\nstorage is record { n : uint; }\nexternal function go() is { const fee : basis_points := 500; const discount : discount_rate := fee; skip }\n",
     )
     .expect_err("nominal");
-    assert!(
-        err.to_string().contains("initializer type does not match"),
-        "{err}"
-    );
-    let err = compile(
-        "type basis_points is uint16;\nstorage is record { n : nat; }\nexternal function go() is { const fee : basis_points := 500n; skip }\n",
-    )
-    .expect_err("suffix");
     assert!(
         err.to_string().contains("initializer type does not match"),
         "{err}"
@@ -884,34 +876,34 @@ fn types_reject_implicit_conversions() {
 #[test]
 fn constant_operations_that_must_panic_are_rejected() {
     let program = |ty: &str, body: &str| {
-        format!("storage is record {{ n : {ty}; }}\nerror Bad;\npure function big() : nat is Nat.max\npure function wide() : nat is {{ const a : nat := 2n ** 200n; }} with a\nexternal function go(const x : nat) raises Bad is {{ {body} }}\n")
+        format!("storage is record {{ n : {ty}; }}\nerror Bad;\npure function big() : uint is Uint.max\npure function wide() : uint is {{ const a : uint := 2 ** 200; }} with a\nexternal function go(const x : uint) raises Bad is {{ {body} }}\n")
     };
     for (ty, body, rule) in [
         (
-            "nat",
-            "storage.n := Nat.max + 1n;",
-            "`Nat.max + 1n` overflows `nat`",
+            "uint",
+            "storage.n := Uint.max + 1;",
+            "`Uint.max + 1` overflows `uint`",
         ),
-        ("nat", "storage.n := 0n - 1n;", "`0n - 1n` underflows `nat`"),
+        ("uint", "storage.n := 0 - 1;", "`0 - 1` underflows `uint`"),
         (
-            "nat",
-            "storage.n := 1n / 0n;",
-            "division by zero in `1n / 0n`",
-        ),
-        (
-            "nat",
-            "storage.n := 1n % 0n;",
-            "division by zero in `1n % 0n`",
+            "uint",
+            "storage.n := 1 / 0;",
+            "division by zero in `1 / 0`",
         ),
         (
-            "nat",
-            "storage.n := (2n ** 128n) * (2n ** 128n);",
-            "`(2n ** 128n) * (2n ** 128n)` overflows `nat`",
+            "uint",
+            "storage.n := 1 % 0;",
+            "division by zero in `1 % 0`",
         ),
         (
-            "nat",
-            "storage.n := 2n ** 256n;",
-            "`2n ** 256n` overflows `nat`",
+            "uint",
+            "storage.n := (2 ** 128) * (2 ** 128);",
+            "`(2 ** 128) * (2 ** 128)` overflows `uint`",
+        ),
+        (
+            "uint",
+            "storage.n := 2 ** 256;",
+            "`2 ** 256` overflows `uint`",
         ),
         (
             "uint8",
@@ -920,8 +912,8 @@ fn constant_operations_that_must_panic_are_rejected() {
         ),
         (
             "uint8",
-            "storage.n := uint8(300n);",
-            "`uint8(300n)` overflows `uint8`",
+            "storage.n := uint8(uint(300));",
+            "`uint8(uint(300))` overflows `uint8`",
         ),
         (
             "int8",
@@ -960,84 +952,84 @@ fn constant_operations_that_must_panic_are_rejected() {
         ),
         (
             "int",
-            "storage.n := int(Nat.max);",
-            "`int(Nat.max)` overflows `int`",
+            "storage.n := int(Uint.max);",
+            "`int(Uint.max)` overflows `int`",
         ),
         (
-            "nat",
-            "const m : int := -1; storage.n := nat(m);",
-            "`nat(m)` underflows `nat`",
+            "uint",
+            "const m : int := -1; storage.n := uint(m);",
+            "`uint(m)` underflows `uint`",
         ),
         ("wei", "storage.n := 1eth - 2eth;", "underflows `wei`"),
         (
             "timestamp",
-            "storage.n := timestamp(1n) - 2n;",
-            "`timestamp(1n) - 2n` underflows `timestamp`",
+            "storage.n := timestamp(1) - 2;",
+            "`timestamp(1) - 2` underflows `timestamp`",
         ),
         (
-            "nat",
-            "storage.n := (1n << 255n) * 2n;",
-            "`(1n << 255n) * 2n` overflows `nat`",
+            "uint",
+            "storage.n := (1 << 255) * 2;",
+            "`(1 << 255) * 2` overflows `uint`",
         ),
         (
-            "nat",
-            "storage.n := big() + 1n;",
-            "`big() + 1n` overflows `nat`",
+            "uint",
+            "storage.n := big() + 1;",
+            "`big() + 1` overflows `uint`",
         ),
         (
-            "nat",
+            "uint",
             "storage.n := wide() * wide();",
-            "`wide() * wide()` overflows `nat`",
+            "`wide() * wide()` overflows `uint`",
         ),
         (
-            "nat",
-            "const a : nat := Nat.max; storage.n := a + 1n;",
-            "`a + 1n` overflows `nat`",
+            "uint",
+            "const a : uint := Uint.max; storage.n := a + 1;",
+            "`a + 1` overflows `uint`",
         ),
         (
-            "nat",
-            "const (a, b) : (nat, nat) := (Nat.max, 1n); storage.n := a + b;",
-            "`a + b` overflows `nat`",
+            "uint",
+            "const (a, b) : (uint, uint) := (Uint.max, 1); storage.n := a + b;",
+            "`a + b` overflows `uint`",
         ),
         (
-            "nat",
-            "if false then { storage.n := Nat.max + 1n; } else { skip }",
-            "`Nat.max + 1n` overflows `nat`",
+            "uint",
+            "if false then { storage.n := Uint.max + 1; } else { skip }",
+            "`Uint.max + 1` overflows `uint`",
         ),
         (
-            "nat",
-            "assert(x > Nat.max * 2n, Bad);",
-            "`Nat.max * 2n` overflows `nat`",
+            "uint",
+            "assert(x > Uint.max * 2, Bad);",
+            "`Uint.max * 2` overflows `uint`",
         ),
         (
-            "nat",
-            "storage.n := Nat.mul_div(1n, 1n, 0n);",
-            "division by zero in `Nat.mul_div(1n, 1n, 0n)`",
+            "uint",
+            "storage.n := Uint.mul_div(1, 1, 0);",
+            "division by zero in `Uint.mul_div(1, 1, 0)`",
         ),
         (
-            "nat",
-            "storage.n := Nat.mul_div(Nat.max, 2n, 1n);",
-            "`Nat.mul_div(Nat.max, 2n, 1n)` overflows `nat`",
+            "uint",
+            "storage.n := Uint.mul_div(Uint.max, 2, 1);",
+            "`Uint.mul_div(Uint.max, 2, 1)` overflows `uint`",
         ),
         (
-            "nat",
-            "storage.n := Nat.mul_mod(1n, 2n, 0n);",
-            "division by zero in `Nat.mul_mod(1n, 2n, 0n)`",
+            "uint",
+            "storage.n := Uint.mul_mod(1, 2, 0);",
+            "division by zero in `Uint.mul_mod(1, 2, 0)`",
         ),
         (
-            "nat",
-            "storage.n := Nat.add_mod(1n, 2n, 0n);",
-            "division by zero in `Nat.add_mod(1n, 2n, 0n)`",
+            "uint",
+            "storage.n := Uint.add_mod(1, 2, 0);",
+            "division by zero in `Uint.add_mod(1, 2, 0)`",
         ),
         (
-            "nat",
-            "storage.n := Nat.pow_mod(2n, 3n, 0n);",
-            "division by zero in `Nat.pow_mod(2n, 3n, 0n)`",
+            "uint",
+            "storage.n := Uint.pow_mod(2, 3, 0);",
+            "division by zero in `Uint.pow_mod(2, 3, 0)`",
         ),
         (
-            "nat",
-            "const (q, r) : (nat, nat) := Nat.div_rem(1n, 0n); storage.n := q;",
-            "division by zero in `Nat.div_rem(1n, 0n)`",
+            "uint",
+            "const (q, r) : (uint, uint) := Uint.div_rem(1, 0); storage.n := q;",
+            "division by zero in `Uint.div_rem(1, 0)`",
         ),
         (
             "int",
@@ -1045,9 +1037,9 @@ fn constant_operations_that_must_panic_are_rejected() {
             "`Int.div_rem(Int.min, -1)` overflows `int`",
         ),
         (
-            "nat",
-            "storage.n := Nat.to_hex_string(256n, 1n).length;",
-            "`Nat.to_hex_string(256n, 1n)` does not fit its length in bytes",
+            "uint",
+            "storage.n := Uint.to_hex_string(256, 1).length;",
+            "`Uint.to_hex_string(256, 1)` does not fit its length in bytes",
         ),
     ] {
         let err = compile(&program(ty, body)).expect_err(body);
@@ -1057,26 +1049,26 @@ fn constant_operations_that_must_panic_are_rejected() {
         );
     }
     // The error points at the operator.
-    let err = compile(&program("nat", "storage.n := Nat.max + 1n;")).expect_err("position");
-    assert_eq!((err.line, err.column), (5, 74), "{err}");
+    let err = compile(&program("uint", "storage.n := Uint.max + 1;")).expect_err("position");
+    assert_eq!((err.line, err.column), (5, 76), "{err}");
 
     for (ty, body) in [
-        ("nat", "storage.n := 2n ** 255n;"),
-        ("nat", "storage.n := Nat.max - 1n;"),
-        ("nat", "storage.n := big() - wide();"),
+        ("uint", "storage.n := 2 ** 255;"),
+        ("uint", "storage.n := Uint.max - 1;"),
+        ("uint", "storage.n := big() - wide();"),
         ("uint8", "storage.n := 200 + 55;"),
         ("int8", "storage.n := Int.min % -1;"),
         ("int8", "storage.n := -Int.max;"),
         ("int", "storage.n := Int.min / 1 + 0 ** 0;"),
         (
-            "nat",
-            "storage.n := Nat.mul_div(Nat.max, Nat.max, Nat.max);",
+            "uint",
+            "storage.n := Uint.mul_div(Uint.max, Uint.max, Uint.max);",
         ),
         (
-            "nat",
-            "if x = 0n then { storage.n := 1n / x; } else { skip }",
+            "uint",
+            "if x = 0 then { storage.n := 1 / x; } else { skip }",
         ),
-        ("nat", "storage.n := x - 1n;"),
+        ("uint", "storage.n := x - 1;"),
     ] {
         compile(&program(ty, body)).unwrap_or_else(|e| panic!("{body}: {e}"));
     }
@@ -1088,7 +1080,7 @@ fn constant_operations_that_must_panic_are_rejected() {
     let main = dir.join("main.lithe");
     std::fs::write(
         &main,
-        "import \"std/math/math.lithe\";\nuse Math;\nstorage is record { n : nat; }\nexternal function go() is { storage.n := Math.ceil_div(1n, 0n); }\n",
+        "import \"std/math/math.lithe\";\nuse Math;\nstorage is record { n : uint; }\nexternal function go() is { storage.n := Math.ceil_div(1, 0); }\n",
     )
     .unwrap();
     let runtime = deploy(&compile_file(&main).expect("std call")).expect("deploy");
@@ -1102,30 +1094,30 @@ fn duplicates_say_where_the_first_is() {
     let tail = "external function go() is { skip }\n";
     for (src, want) in [
         (
-            "type x is nat;\npure function x(const a : nat) : nat is a\n",
+            "type x is uint;\npure function x(const a : uint) : uint is a\n",
             "2:6: duplicate name `x`\n\n`x` is already declared at 1:1 as a type\n\nrename one of them",
         ),
         (
-            "private type t is nat;\nprivate type t is bool;\n",
+            "private type t is uint;\nprivate type t is bool;\n",
             "2:9: duplicate type `t`\n\n`t` is already declared at 1:9 as a type",
         ),
         (
-            "storage a at \"x\" is record { n : nat; }\nstorage b at \"x\" is record { n : nat; }\n",
+            "storage a at \"x\" is record { n : uint; }\nstorage b at \"x\" is record { n : uint; }\n",
             "2:1: storage domains `a` and `b` share the id \"x\"\n\n`a` is declared at 1:1\n\ngive each storage domain its own id",
         ),
         (
-            "module M is {\n  pure function a(const x : nat) : nat is x\n  pure function a(const x : nat) : nat is x\n}\nuse M;\n",
-            "3:8: duplicate function `M.a(nat)`\n\n`M.a` is already declared at 2:8",
+            "module M is {\n  pure function a(const x : uint) : uint is x\n  pure function a(const x : uint) : uint is x\n}\nuse M;\n",
+            "3:8: duplicate function `M.a(uint)`\n\n`M.a` is already declared at 2:8",
         ),
         (
-            "module M is {\n  type t is nat;\n  type t is bool;\n}\nuse M;\n",
+            "module M is {\n  type t is uint;\n  type t is bool;\n}\nuse M;\n",
             "`t` is already declared at 2:3",
         ),
     ] {
         let err = compile(&format!("{src}{tail}")).expect_err(want);
         assert!(err.to_string().contains(want), "{want}\n---\n{err}");
     }
-    let lib = "pure function f(const x : nat) : nat is x\n";
+    let lib = "pure function f(const x : uint) : uint is x\n";
     let sources = Sources::memory([
         ("a.lithe", lib.to_string()),
         ("b.lithe", lib.to_string()),
@@ -1174,18 +1166,18 @@ fn memory_sources_compile_as_files_do() {
 fn every_failing_contract_reports_its_error() {
     let src = "\
 contract A is {
-  storage is record { n : nat; }
+  storage is record { n : uint; }
   external function f() is { storage.n := true; }
 }
 
 contract B is {
-  storage is record { n : nat; }
+  storage is record { n : uint; }
   external function g() is { storage.n := Evm.sender(); }
 }
 
 contract C is {
-  storage is record { n : nat; }
-  external function h() is { storage.n := 1n; }
+  storage is record { n : uint; }
+  external function h() is { storage.n := 1; }
 }
 ";
     let Err(errors) = crate::compile(&memory(src), Path::new(ENTRY), &Options::default()) else {
@@ -1198,11 +1190,11 @@ contract C is {
 #[test]
 fn memory_paths_above_the_root_stay_distinct() {
     let sources = Sources::memory([
-        ("a.lithe", "pure function f() : nat is 1n\n"),
-        ("../a.lithe", "pure function g() : nat is 2n\n"),
+        ("a.lithe", "pure function f() : uint is 1\n"),
+        ("../a.lithe", "pure function g() : uint is 2\n"),
         (
             "main.lithe",
-            "import \"./a.lithe\";\nimport \"../a.lithe\";\nstorage is record { n : nat; }\nexternal pure function h() : nat is f() + g()\n",
+            "import \"./a.lithe\";\nimport \"../a.lithe\";\nstorage is record { n : uint; }\nexternal pure function h() : uint is f() + g()\n",
         ),
     ]);
     crate::compile(&sources, Path::new("main.lithe"), &Options::default())
@@ -1237,12 +1229,12 @@ fn imports_are_typed_declarations() {
     std::fs::copy(examples.join("fee.lithe"), dir.join("fee.lithe")).expect("fee");
     std::fs::write(
         dir.join("other.lithe"),
-        "function calculate_fee(const amount : nat) : nat is amount\n",
+        "function calculate_fee(const amount : uint) : uint is amount\n",
     )
     .expect("other");
     std::fs::write(
         dir.join("clash.lithe"),
-        "import \"./fee.lithe\";\nimport \"./other.lithe\";\nstorage is record { n : nat; }\nexternal function go() is { skip }\n",
+        "import \"./fee.lithe\";\nimport \"./other.lithe\";\nstorage is record { n : uint; }\nexternal function go() is { skip }\n",
     )
     .expect("clash");
     let err = compile_file(&dir.join("clash.lithe")).expect_err("clash");
@@ -1302,10 +1294,10 @@ fn modules_compose_without_inheritance() {
     let hidden = "\
 module Ledger is {
   storage ledger at \"lithe.ledger\" is record {
-    n : nat;
+    n : uint;
   }
 
-  function set(const n : nat) is {
+  function set(const n : uint) is {
     ledger.n := n;
   }
 }
@@ -1313,7 +1305,7 @@ module Ledger is {
 contract Token is {
   use Ledger;
 
-  external function go(const n : nat) is {
+  external function go(const n : uint) is {
     Ledger.set(n);
   }
 }

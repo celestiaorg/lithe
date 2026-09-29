@@ -3,8 +3,8 @@
 
 error ERC20InsufficientBalance of record {
   sender : address;
-  balance : nat;
-  needed : nat;
+  balance : uint;
+  needed : uint;
 }
 
 error ERC20InvalidSender of address;
@@ -13,8 +13,8 @@ error ERC20InvalidReceiver of address;
 
 error ERC20InsufficientAllowance of record {
   spender : address;
-  allowance : nat;
-  needed : nat;
+  allowance : uint;
+  needed : uint;
 }
 
 error ERC20InvalidApprover of address;
@@ -23,9 +23,9 @@ error ERC20InvalidSpender of address;
 
 module ERC20 is {
   storage erc20 at "openzeppelin.storage.ERC20" is record {
-    balances : map(address, nat);
-    allowances : map(address, map(address, nat));
-    totalSupply : nat;
+    balances : map(address, uint);
+    allowances : map(address, map(address, uint));
+    totalSupply : uint;
     name : string;
     symbol : string;
   }
@@ -33,13 +33,13 @@ module ERC20 is {
   event Transfer of record {
     indexed from : address;
     indexed to : address;
-    value : nat;
+    value : uint;
   }
 
   event Approval of record {
     indexed owner : address;
     indexed spender : address;
-    value : nat;
+    value : uint;
   }
 
   external view function name() : string is
@@ -51,13 +51,13 @@ module ERC20 is {
   external view function decimals() : uint8 is
     18
 
-  external view function totalSupply() : nat is
+  external view function totalSupply() : uint is
     erc20.totalSupply
 
-  external view function balanceOf(const account : address) : nat is
+  external view function balanceOf(const account : address) : uint is
     erc20.balances[account]
 
-  external view function allowance(const owner : address; const spender : address) : nat is
+  external view function allowance(const owner : address; const spender : address) : uint is
     erc20.allowances[owner][spender]
 
   function init(const n : string; const s : string) is {
@@ -66,13 +66,13 @@ module ERC20 is {
   }
 
   (* Moves, mints (`from` is zero), or burns (`to` is zero). *)
-  function update(const from : address; const to : address; const value : nat)
+  function update(const from : address; const to : address; const value : uint)
     raises ERC20InsufficientBalance
   is {
     if from = Address.zero then {
       erc20.totalSupply := erc20.totalSupply + value;
     } else {
-      const fromBalance : nat := erc20.balances[from];
+      const fromBalance : uint := erc20.balances[from];
       assert(
         fromBalance >= value,
         ERC20InsufficientBalance {
@@ -111,7 +111,7 @@ module ERC20 is {
   function approve_as(
     const owner : address;
     const spender : address;
-    const value : nat;
+    const value : uint;
     const announce : bool
   )
     raises ERC20InvalidApprover | ERC20InvalidSpender
@@ -135,11 +135,11 @@ module ERC20 is {
   }
 
   (* An unlimited allowance is never spent down. *)
-  function spend_allowance(const owner : address; const spender : address; const value : nat)
+  function spend_allowance(const owner : address; const spender : address; const value : uint)
     raises ERC20InsufficientAllowance | ERC20InvalidApprover | ERC20InvalidSpender
   is {
-    const current : nat := erc20.allowances[owner][spender];
-    if current < Nat.max then {
+    const current : uint := erc20.allowances[owner][spender];
+    if current < Uint.max then {
       assert(
         current >= value,
         ERC20InsufficientAllowance {
@@ -156,9 +156,9 @@ module ERC20 is {
 (* IERC20's views. Transfers and approvals are each token's own, since its extensions
    hook every balance update. *)
 interface IERC20Views is {
-  view function totalSupply() : nat;
-  view function balanceOf(account : address) : nat;
-  view function allowance(owner : address; spender : address) : nat;
+  view function totalSupply() : uint;
+  view function balanceOf(account : address) : uint;
+  view function allowance(owner : address; spender : address) : uint;
 }
 
 interface IERC20Metadata is {

@@ -1,36 +1,36 @@
 (* Bitwise operators, truncating division, and positional tuples. *)
 
 storage is record {
-  q : nat;
-  r : nat;
+  q : uint;
+  r : uint;
   sq : int;
   sr : int;
-  rem_nat : nat;
+  rem_nat : uint;
   div_int : int;
   rem_int : int;
-  masked : nat;
-  flags : nat;
-  toggled : nat;
-  inverted : nat;
-  shifted : nat;
-  back : nat;
+  masked : uint;
+  flags : uint;
+  toggled : uint;
+  inverted : uint;
+  shifted : uint;
+  back : uint;
   uq : uint32;
   ur : uint32;
   narrow_shift : uint8;
   narrow_not : uint8;
   sar : int;
-  half : nat;
-  rest : nat;
-  pair_amount : nat;
+  half : uint;
+  rest : uint;
+  pair_amount : uint;
   nested_flag : bool;
-  payment : (address, nat);
+  payment : (address, uint);
 }
 
-view function split(const amount : nat) : (nat, nat) is
+view function split(const amount : uint) : (uint, uint) is
   (amount / 2, amount % 2)
 
-external function run(const amount : nat) is {
-  const (q, r) : (nat, nat) := Nat.div_rem(7, 3);
+external function run(const amount : uint) is {
+  const (q, r) : (uint, uint) := Uint.div_rem(7, 3);
   storage.q := q;
   storage.r := r;
   const (sq, sr) : (int, int) := Int.div_rem(-7, 3);
@@ -39,21 +39,21 @@ external function run(const amount : nat) is {
   storage.rem_nat := 7 % 3;
   storage.div_int := -7 / 3;
   storage.rem_int := -7 % 3;
-  const masked : nat := 0xff & 0x0f;
+  const masked : uint := 0xff & 0x0f;
   storage.masked := masked;
-  const flags : nat := 1 | 2;
+  const flags : uint := 1 | 2;
   storage.flags := flags;
-  const toggled : nat := flags ^ 0xff;
+  const toggled : uint := flags ^ 0xff;
   storage.toggled := toggled;
-  const inverted : nat := ~0;
+  const inverted : uint := ~0;
   storage.inverted := inverted;
-  const shifted : nat := 1 << 8;
+  const shifted : uint := 1 << 8;
   storage.shifted := shifted;
-  const back : nat := 256 >> 8;
+  const back : uint := 256 >> 8;
   storage.back := back;
   const a : uint32 := 10;
   const b : uint32 := 3;
-  const (uq, ur) : (uint32, uint32) := Nat.div_rem(a, b);
+  const (uq, ur) : (uint32, uint32) := Uint.div_rem(a, b);
   storage.uq := uq;
   storage.ur := ur;
   const narrow_shift : uint8 := 1 << 8;
@@ -62,21 +62,21 @@ external function run(const amount : nat) is {
   storage.narrow_not := narrow_not;
   const neg : int := -8;
   storage.sar := neg >> 1;
-  const (half, rest) : (nat, nat) := split(amount);
+  const (half, rest) : (uint, uint) := split(amount);
   storage.half := half;
   storage.rest := rest;
-  const pair : (address, nat) := (Evm.sender(), amount);
-  const (who, pair_amount) : (address, nat) := pair;
+  const pair : (address, uint) := (Evm.sender(), amount);
+  const (who, pair_amount) : (address, uint) := pair;
   storage.pair_amount := pair_amount;
-  const nested : (nat, (address, bool)) := (1, (Evm.sender(), true));
-  const (_, inner) : (nat, (address, bool)) := nested;
+  const nested : (uint, (address, bool)) := (1, (Evm.sender(), true));
+  const (_, inner) : (uint, (address, bool)) := nested;
   const (_acct, flag) : (address, bool) := inner;
   storage.nested_flag := flag;
   storage.payment := (who, amount);
 }
 
-external function mod_zero(const d : nat) is {
-  const _ : nat := 1 % d;
+external function mod_zero(const d : uint) is {
+  const _ : uint := 1 % d;
   skip
 }
 
@@ -90,25 +90,25 @@ external function min_mod(const min : int) is {
   skip
 }
 
-external view function quote() : (nat, nat) is
+external view function quote() : (uint, uint) is
   (2, 1)
 
-external view function payee() : (nat, address) is
+external view function payee() : (uint, address) is
   (7, Evm.sender())
 
-external view function nested_quote() : (nat, (address, bool)) is
+external view function nested_quote() : (uint, (address, bool)) is
   (1, (Evm.self(), true))
 
-external view function sum_some() : nat is {
-  const wrapped : option((nat, nat)) := Some((4, 5));
+external view function sum_some() : uint is {
+  const wrapped : option((uint, uint)) := Some((4, 5));
 } with case wrapped of
 {
 | Some((q, r)) -> q + r
 | None -> 0
 }
 
-external view function mask_some() : nat is {
-  const wrapped : option(nat) := Some(0xff);
+external view function mask_some() : uint is {
+  const wrapped : option(uint) := Some(0xff);
 } with case wrapped of
 {
 | Some(n) -> n & 0x0f

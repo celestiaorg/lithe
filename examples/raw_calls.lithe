@@ -7,13 +7,13 @@ error Mismatched_lengths;
 
 event Executed of record {
   indexed target : address;
-  value : nat;
+  value : uint;
   result : bytes;
 }
 
 storage is record {
   owner : address;
-  nonce : nat;
+  nonce : uint;
 }
 
 deploy(const owner : address) is {
@@ -24,11 +24,11 @@ payable receive is {
   skip
 }
 
-external nonreentrant function execute(const target : address; const value : nat; const data : bytes)
+external nonreentrant function execute(const target : address; const value : uint; const data : bytes)
   raises Not_owner
 is {
   assert(Evm.sender() = storage.owner, Not_owner);
-  storage.nonce := storage.nonce + 1n;
+  storage.nonce := storage.nonce + 1;
   defer Evm.call(target, data) with value = value then (result : bytes) {
     emit Executed { target = target; value = value; result = result; };
   };
@@ -40,7 +40,7 @@ external nonreentrant function batch(const targets : list(address); const calls 
 is {
   assert(Evm.sender() = storage.owner, Not_owner);
   assert(targets.length = calls.length, Mismatched_lengths);
-  for (i, target) : (nat, address) in targets do {
+  for (i, target) : (uint, address) in targets do {
     defer Evm.call(target, calls[i]) then {
       | Ok -> { skip }
       | Error(reason : bytes) -> { forward reason; }
@@ -50,7 +50,7 @@ is {
 
 (* A read-only call with calldata of your own: here, the SHA-256 precompile. *)
 external view function sha256_of(const data : bytes) : bytes32 is
-  Bytes.word(query Evm.static_call(0x0000000000000000000000000000000000000002, data), 0n)
+  Bytes.word(query Evm.static_call(0x0000000000000000000000000000000000000002, data), 0)
 
-external view function nonce() : nat is
+external view function nonce() : uint is
   storage.nonce

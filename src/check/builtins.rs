@@ -95,12 +95,12 @@ impl Checker {
             }
             Builtin::BlockHash | Builtin::BlobHash => {
                 need(args.len(), 1)?;
-                self.check_expr_as(&mut args[0], Some(TY_NAT))?;
-                if self.types[args[0].ty()].kind != TyKind::Nat {
+                self.check_expr_as(&mut args[0], Some(TY_UINT))?;
+                if self.types[args[0].ty()].kind != TyKind::Uint {
                     return Err(error(
                         args[0].line(),
                         args[0].col(),
-                        "an index must be `nat`",
+                        "an index must be `uint`",
                     ));
                 }
             }
@@ -118,14 +118,14 @@ impl Checker {
             Builtin::Ecrecover => {
                 need(args.len(), 4)?;
                 self.check_word_arg(&mut args[0], self.bytes_n(32)?)?;
-                self.check_expr_as(&mut args[1], Some(TY_NAT))?;
-                if self.types[args[1].ty()].kind != TyKind::Nat {
-                    return Err(error(args[1].line(), args[1].col(), "`v` must be `nat`"));
+                self.check_expr_as(&mut args[1], Some(TY_UINT))?;
+                if self.types[args[1].ty()].kind != TyKind::Uint {
+                    return Err(error(args[1].line(), args[1].col(), "`v` must be `uint`"));
                 }
                 self.check_word_arg(&mut args[2], self.bytes_n(32)?)?;
                 self.check_word_arg(&mut args[3], self.bytes_n(32)?)?;
             }
-            Builtin::NatDivRem | Builtin::IntDivRem => {
+            Builtin::UintDivRem | Builtin::IntDivRem => {
                 need(args.len(), 2)?;
                 let signed = kind == Builtin::IntDivRem;
                 let elem = self.expect.and_then(|id| {
@@ -151,13 +151,13 @@ impl Checker {
                 let ok = if signed {
                     peeled == TyKind::Int
                 } else {
-                    peeled == TyKind::Nat
+                    peeled == TyKind::Uint
                 };
                 if !ok {
                     let msg = if signed {
                         "`Int.div_rem` expects a signed integer"
                     } else {
-                        "`Nat.div_rem` expects an unsigned integer"
+                        "`Uint.div_rem` expects an unsigned integer"
                     };
                     return Err(error(line, col, msg));
                 }
@@ -168,7 +168,7 @@ impl Checker {
             }
             Builtin::Wrapping(_, signed) => {
                 need(args.len(), 2)?;
-                let want = if signed { TyKind::Int } else { TyKind::Nat };
+                let want = if signed { TyKind::Int } else { TyKind::Uint };
                 let elem = self
                     .expect
                     .filter(|&id| self.types[self.peel(id)].kind == want);
@@ -205,12 +205,12 @@ impl Checker {
                         format!("`{call}` reads a `bytes` value"),
                     ));
                 }
-                self.check_expr_as(&mut args[1], Some(TY_NAT))?;
-                if !self.same(args[1].ty(), TY_NAT) {
+                self.check_expr_as(&mut args[1], Some(TY_UINT))?;
+                if !self.same(args[1].ty(), TY_UINT) {
                     return Err(error(
                         args[1].line(),
                         args[1].col(),
-                        "an offset must be `nat`",
+                        "an offset must be `uint`",
                     ));
                 }
             }
@@ -245,15 +245,15 @@ impl Checker {
                     }
                 }
             }
-            Builtin::NatMulDiv | Builtin::NatMulMod | Builtin::NatAddMod => {
+            Builtin::UintMulDiv | Builtin::UintMulMod | Builtin::UintAddMod => {
                 need(args.len(), 3)?;
                 for arg in args.iter_mut() {
-                    self.check_expr_as(arg, Some(TY_NAT))?;
-                    if !self.same(arg.ty(), TY_NAT) {
+                    self.check_expr_as(arg, Some(TY_UINT))?;
+                    if !self.same(arg.ty(), TY_UINT) {
                         return Err(error(
                             arg.line(),
                             arg.col(),
-                            format!("`{call}` expects `nat` values"),
+                            format!("`{call}` expects `uint` values"),
                         ));
                     }
                 }
@@ -365,7 +365,7 @@ impl Checker {
                     ));
                 }
                 for arg in args.iter_mut().skip(1) {
-                    self.check_expr(arg)?;
+                    self.check_expr_as(arg, None)?;
                     self.encodable(arg)?;
                 }
             }
@@ -432,12 +432,12 @@ impl Checker {
                     }
                 }
             }
-            Builtin::NatToString | Builtin::IntToString => {
+            Builtin::UintToString | Builtin::IntToString => {
                 need(args.len(), 1)?;
-                self.check_expr(&mut args[0])?;
+                self.check_expr_as(&mut args[0], None)?;
                 let signed = kind == Builtin::IntToString;
                 let peeled = self.types[self.peel(args[0].ty())].kind;
-                if peeled != if signed { TyKind::Int } else { TyKind::Nat } {
+                if peeled != if signed { TyKind::Int } else { TyKind::Uint } {
                     return Err(error(
                         args[0].line(),
                         args[0].col(),
@@ -448,12 +448,12 @@ impl Checker {
                     ));
                 }
             }
-            Builtin::NatToHexString => {
+            Builtin::UintToHexString => {
                 if args.len() != 2 {
                     need(args.len(), 1)?;
                 }
-                self.check_expr(&mut args[0])?;
-                if self.types[self.peel(args[0].ty())].kind != TyKind::Nat {
+                self.check_expr_as(&mut args[0], None)?;
+                if self.types[self.peel(args[0].ty())].kind != TyKind::Uint {
                     return Err(error(
                         args[0].line(),
                         args[0].col(),
@@ -461,9 +461,9 @@ impl Checker {
                     ));
                 }
                 if let Some(len) = args.get_mut(1) {
-                    self.check_expr_as(len, Some(TY_NAT))?;
-                    if self.types[len.ty()].kind != TyKind::Nat {
-                        return Err(error(len.line(), len.col(), "a length must be `nat`"));
+                    self.check_expr_as(len, Some(TY_UINT))?;
+                    if self.types[len.ty()].kind != TyKind::Uint {
+                        return Err(error(len.line(), len.col(), "a length must be `uint`"));
                     }
                 }
             }
@@ -475,16 +475,16 @@ impl Checker {
             Builtin::FromBits(signed) => {
                 need(args.len(), 1)?;
                 let (src, dst) = if signed {
-                    (TY_NAT, TY_INT)
+                    (TY_UINT, TY_INT)
                 } else {
-                    (TY_INT, TY_NAT)
+                    (TY_INT, TY_UINT)
                 };
                 self.check_expr_as(&mut args[0], Some(src))?;
                 if !self.same(args[0].ty(), src) {
                     return Err(error(
                         args[0].line(),
                         args[0].col(),
-                        format!("`{call}` expects `{}`", if signed { "nat" } else { "int" }),
+                        format!("`{call}` expects `{}`", if signed { "uint" } else { "int" }),
                     ));
                 }
                 *builtin = Some(kind);
@@ -760,14 +760,14 @@ impl Checker {
     ) -> Result<usize, Error> {
         let bytes = self.bytes_n(0)?;
         let b32 = self.bytes_n(32)?;
-        let point = self.tuple_of(&[TY_NAT, TY_NAT]);
+        let point = self.tuple_of(&[TY_UINT, TY_UINT]);
         let (params, ret): (Vec<usize>, usize) = match pre {
             Pre::ModExp => (vec![bytes; 3], bytes),
-            Pre::PowMod => (vec![TY_NAT; 3], TY_NAT),
+            Pre::PowMod => (vec![TY_UINT; 3], TY_UINT),
             Pre::Bn254Add => (vec![point, point], point),
-            Pre::Bn254Mul => (vec![point, TY_NAT], point),
+            Pre::Bn254Mul => (vec![point, TY_UINT], point),
             Pre::Bn254Pairing => {
-                let pair = self.tuple_of(&[TY_NAT; 6]);
+                let pair = self.tuple_of(&[TY_UINT; 6]);
                 (vec![self.list_of(pair, 0)], TY_BOOL)
             }
             Pre::Blake2f => {
@@ -775,7 +775,7 @@ impl Checker {
                 let (h, m) = (self.list_of(b32, 2), self.list_of(b32, 4));
                 (vec![rounds, h, m, self.bytes_n(16)?, TY_BOOL], h)
             }
-            Pre::PointEvaluation => (vec![b32, TY_NAT, TY_NAT, bytes, bytes], TY_BOOL),
+            Pre::PointEvaluation => (vec![b32, TY_UINT, TY_UINT, bytes, bytes], TY_BOOL),
             Pre::Bls12G1Add | Pre::Bls12G2Add => (vec![bytes; 2], bytes),
             Pre::Bls12G1Msm | Pre::Bls12G2Msm | Pre::Bls12MapFpToG1 | Pre::Bls12MapFp2ToG2 => {
                 (vec![bytes], bytes)
@@ -816,7 +816,7 @@ impl Checker {
         }
     }
 
-    /// `Abi.decode`'s type: a type's name, or a tuple of them, `(address, nat)`, which
+    /// `Abi.decode`'s type: a type's name, or a tuple of them, `(address, uint)`, which
     /// decodes several values as Solidity's `abi.decode(data, (address, uint256))` does.
     fn decode_type(&mut self, arg: &Expr) -> Result<usize, Error> {
         let named = |c: &Self, e: &Expr| -> Result<usize, Error> {
@@ -852,7 +852,7 @@ impl Checker {
 
     fn builtin_ret(&self, kind: Builtin) -> Result<usize, Error> {
         Ok(match kind {
-            Builtin::NatMulDiv | Builtin::NatMulMod | Builtin::NatAddMod => TY_NAT,
+            Builtin::UintMulDiv | Builtin::UintMulMod | Builtin::UintAddMod => TY_UINT,
             Builtin::BytesWord => self.bytes_n(32)?,
             Builtin::Base64Encode | Builtin::Base64EncodeUrl | Builtin::Base64EncodeWith => {
                 TY_STRING
@@ -873,7 +873,7 @@ impl Checker {
             | Builtin::ChainId
             | Builtin::BlockGasLimit
             | Builtin::CodeSize
-            | Builtin::GasLeft => TY_NAT,
+            | Builtin::GasLeft => TY_UINT,
             Builtin::Selector => self.bytes_n(4)?,
             Builtin::BlockPrevrandao
             | Builtin::BlockHash
@@ -895,15 +895,15 @@ impl Checker {
             | Builtin::BytesSlice => self.bytes_n(0)?,
             Builtin::BytesAt => self.bytes_n(1)?,
             Builtin::StringConcat
-            | Builtin::NatToString
+            | Builtin::UintToString
             | Builtin::IntToString
-            | Builtin::NatToHexString
+            | Builtin::UintToHexString
             | Builtin::AddressToHexString(_) => TY_STRING,
             Builtin::AbiSupportsInterface => TY_BOOL,
             Builtin::ListPop | Builtin::ListPush => TY_UNIT,
             Builtin::Precompile(_) => TY_UNIT,
             Builtin::AbiDecode
-            | Builtin::NatDivRem
+            | Builtin::UintDivRem
             | Builtin::IntDivRem
             | Builtin::Wrapping(..)
             | Builtin::FromBits(_)
@@ -911,7 +911,7 @@ impl Checker {
             | Builtin::Some
             | Builtin::None
             | Builtin::Ctor(_) => TY_UNIT,
-            Builtin::SpecCount => TY_NAT,
+            Builtin::SpecCount => TY_UINT,
             Builtin::SpecState(_) | Builtin::SpecSum => TY_UNIT,
             Builtin::SpecForall => TY_BOOL,
             Builtin::Transfer
@@ -981,7 +981,7 @@ fn module_builtin(module: &str, name: &str) -> Option<Builtin> {
         ("Evm", "delegate_call") => Builtin::DelegateCall,
         ("Evm", "static_call") => Builtin::StaticCall,
         ("Crypto", "mod_exp") => Builtin::Precompile(Pre::ModExp),
-        ("Nat", "pow_mod") => Builtin::Precompile(Pre::PowMod),
+        ("Uint", "pow_mod") => Builtin::Precompile(Pre::PowMod),
         ("Crypto", "bn254_add") => Builtin::Precompile(Pre::Bn254Add),
         ("Crypto", "bn254_mul") => Builtin::Precompile(Pre::Bn254Mul),
         ("Crypto", "bn254_pairing") => Builtin::Precompile(Pre::Bn254Pairing),
@@ -1012,22 +1012,22 @@ fn module_builtin(module: &str, name: &str) -> Option<Builtin> {
         ("Base64", "encode_with") => Builtin::Base64EncodeWith,
         ("Base64", "decode") => Builtin::Base64Decode,
         ("String", "concat") => Builtin::StringConcat,
-        ("Nat", "div_rem") => Builtin::NatDivRem,
-        ("Nat", "mul_div") => Builtin::NatMulDiv,
-        ("Nat", "mul_mod") => Builtin::NatMulMod,
-        ("Nat", "add_mod") => Builtin::NatAddMod,
+        ("Uint", "div_rem") => Builtin::UintDivRem,
+        ("Uint", "mul_div") => Builtin::UintMulDiv,
+        ("Uint", "mul_mod") => Builtin::UintMulMod,
+        ("Uint", "add_mod") => Builtin::UintAddMod,
         ("Int", "div_rem") => Builtin::IntDivRem,
-        ("Nat", "to_string") => Builtin::NatToString,
+        ("Uint", "to_string") => Builtin::UintToString,
         ("Int", "to_string") => Builtin::IntToString,
-        ("Nat", "to_hex_string") => Builtin::NatToHexString,
+        ("Uint", "to_hex_string") => Builtin::UintToHexString,
         ("Address", "to_hex_string") => Builtin::AddressToHexString(false),
         ("Address", "to_checksum_string") => Builtin::AddressToHexString(true),
-        ("Nat", "from_bits") => Builtin::FromBits(false),
+        ("Uint", "from_bits") => Builtin::FromBits(false),
         ("Int", "from_bits") => Builtin::FromBits(true),
         ("List", "pop") => Builtin::ListPop,
         ("List", "push") => Builtin::ListPush,
         ("Abi", "supports_interface") => Builtin::AbiSupportsInterface,
-        ("Nat" | "Int", "wrapping_add" | "wrapping_sub" | "wrapping_mul") => Builtin::Wrapping(
+        ("Uint" | "Int", "wrapping_add" | "wrapping_sub" | "wrapping_mul") => Builtin::Wrapping(
             match name {
                 "wrapping_add" => BinOp::Add,
                 "wrapping_sub" => BinOp::Sub,

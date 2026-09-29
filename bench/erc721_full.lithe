@@ -23,7 +23,7 @@ contract BenchNFTFull is {
   supports IERC721, IERC721Metadata, IERC721Enumerable, IERC2981;
 
   storage bench_nft at "bench.storage.BenchNFTFull" is record {
-    nextTokenId : nat;
+    nextTokenId : uint;
   }
 
   (* Initializable's bookkeeping matches the `initializer` modifier on Solidity's
@@ -43,20 +43,20 @@ contract BenchNFTFull is {
   external pure function supportsInterface(const interfaceId : bytes4) : bool is
     (interfaceId = 0x49064906) or Abi.supports_interface(interfaceId)
 
-  external view function tokenURI(const tokenId : nat) : string
+  external view function tokenURI(const tokenId : uint) : string
     raises ERC721NonexistentToken
   is
     ERC721URIStorage.token_uri(tokenId, "ipfs://bench/")
 
   (* `ERC721Pausable` checks the pause inside every ownership update, then
      `ERC721Enumerable` keeps its lists. *)
-  function update(const to : address; const tokenId : nat; const auth : address) : address
+  function update(const to : address; const tokenId : uint; const auth : address) : address
     raises EnforcedPause | ERC721NonexistentToken | ERC721InsufficientApproval
   is {
     Pausable.require_not_paused();
   } with ERC721Enumerable.update(to, tokenId, auth)
 
-  function transfer_from(const from : address; const to : address; const tokenId : nat)
+  function transfer_from(const from : address; const to : address; const tokenId : uint)
     raises ERC721InvalidReceiver | ERC721IncorrectOwner | EnforcedPause | ERC721NonexistentToken
       | ERC721InsufficientApproval
   is {
@@ -68,7 +68,7 @@ contract BenchNFTFull is {
     );
   }
 
-  external function approve(const to : address; const tokenId : nat)
+  external function approve(const to : address; const tokenId : uint)
     raises ERC721NonexistentToken | ERC721InvalidApprover
   is {
     ERC721.approve_as(to, tokenId, Evm.sender());
@@ -80,14 +80,14 @@ contract BenchNFTFull is {
     ERC721.set_approval_for_all(Evm.sender(), operator, approved);
   }
 
-  external function transferFrom(const from : address; const to : address; const tokenId : nat)
+  external function transferFrom(const from : address; const to : address; const tokenId : uint)
     raises ERC721InvalidReceiver | ERC721IncorrectOwner | EnforcedPause | ERC721NonexistentToken
       | ERC721InsufficientApproval
   is {
     transfer_from(from, to, tokenId);
   }
 
-  external function safeTransferFrom(const from : address; const to : address; const tokenId : nat)
+  external function safeTransferFrom(const from : address; const to : address; const tokenId : uint)
     raises ERC721InvalidReceiver | ERC721IncorrectOwner | EnforcedPause | ERC721NonexistentToken
       | ERC721InsufficientApproval | forwarded
   is {
@@ -98,7 +98,7 @@ contract BenchNFTFull is {
   external function safeTransferFrom(
     const from : address;
     const to : address;
-    const tokenId : nat;
+    const tokenId : uint;
     const data : bytes
   )
     raises ERC721InvalidReceiver | ERC721IncorrectOwner | EnforcedPause | ERC721NonexistentToken
@@ -108,20 +108,20 @@ contract BenchNFTFull is {
     ERC721.check_received(Evm.sender(), from, to, tokenId, data);
   }
 
-  external function burn(const tokenId : nat)
+  external function burn(const tokenId : uint)
     raises EnforcedPause | ERC721NonexistentToken | ERC721InsufficientApproval
   is {
     const _ : address := update(Address.zero, tokenId, Evm.sender());
   }
 
   (* Mints the next id to `to` with its own URI. *)
-  external function safeMint(const to : address; const uri : string) : nat
+  external function safeMint(const to : address; const uri : string) : uint
     raises OwnableUnauthorizedAccount | ERC721InvalidReceiver | ERC721InvalidSender | EnforcedPause
       | ERC721NonexistentToken | ERC721InsufficientApproval | forwarded
   is {
     Ownable.check_owner();
-    const tokenId : nat := bench_nft.nextTokenId;
-    bench_nft.nextTokenId := tokenId + 1n;
+    const tokenId : uint := bench_nft.nextTokenId;
+    bench_nft.nextTokenId := tokenId + 1;
     assert(to <> Address.zero, ERC721InvalidReceiver(Address.zero));
     const previous : address := update(to, tokenId, Address.zero);
     assert(previous = Address.zero, ERC721InvalidSender(Address.zero));
@@ -157,14 +157,14 @@ contract BenchNFTFull is {
     ERC2981.delete_default_royalty();
   }
 
-  external function setTokenRoyalty(const tokenId : nat; const receiver : address; const feeNumerator : uint96)
+  external function setTokenRoyalty(const tokenId : uint; const receiver : address; const feeNumerator : uint96)
     raises OwnableUnauthorizedAccount | ERC2981InvalidTokenRoyalty | ERC2981InvalidTokenRoyaltyReceiver
   is {
     Ownable.check_owner();
     ERC2981.set_token_royalty(tokenId, receiver, feeNumerator);
   }
 
-  external function resetTokenRoyalty(const tokenId : nat)
+  external function resetTokenRoyalty(const tokenId : uint)
     raises OwnableUnauthorizedAccount
   is {
     Ownable.check_owner();

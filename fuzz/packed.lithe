@@ -18,22 +18,22 @@ storage is record {
   owner : address;
   ready : bool;
   name : string;
-  total : nat;
+  total : uint;
 }
 
-external function set_level(const i : nat; const v : uint8) is {
+external function set_level(const i : uint; const v : uint8) is {
   storage.levels[i] := v;
   storage.small := v;
 }
 
-external function set_flag(const i : nat; const f : bool) is {
+external function set_flag(const i : uint; const f : bool) is {
   storage.flags[i] := f;
   if f then {
     storage.ready := true;
   }
 }
 
-external function set_delta(const i : nat; const d : int16) is {
+external function set_delta(const i : uint; const d : int16) is {
   storage.deltas[i] := d;
   storage.deltas[0] := d;
 }
@@ -54,16 +54,16 @@ external function set_pair(const a : uint32; const who : address) is {
 external function rename(const n : string; const t : uint64) is {
   storage.name := n;
   storage.tail := t;
-  storage.total := storage.total + 1n;
+  storage.total := storage.total + 1;
 }
 
-external view function level(const i : nat) : uint8 is
+external view function level(const i : uint) : uint8 is
   storage.levels[i]
 
-external view function flag(const i : nat) : bool is
+external view function flag(const i : uint) : bool is
   storage.flags[i]
 
-external view function delta(const i : nat) : int16 is
+external view function delta(const i : uint) : int16 is
   storage.deltas[i]
 
 external view function spot() : (uint16, uint16, bool) is
@@ -72,7 +72,7 @@ external view function spot() : (uint16, uint16, bool) is
 external view function pair() : (uint32, address) is
   storage.pair
 
-external view function status() : (uint8, address, bool, uint64, nat) is
+external view function status() : (uint8, address, bool, uint64, uint) is
   (storage.small, storage.owner, storage.ready, storage.tail, storage.total)
 
 external view function name() : string is

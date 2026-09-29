@@ -1,7 +1,7 @@
 storage is record {
-  n : nat;
+  n : uint;
 }
 
-external view function balance() : nat is {
+external view function balance() : uint is {
   defer Evm.transfer(Evm.sender(), 1wei);
-} with 0n
+} with 0

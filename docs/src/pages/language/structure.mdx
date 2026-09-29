@@ -24,11 +24,11 @@ To name the contract, or to put several contracts in one file, wrap each in `con
 ```lithe
 contract Registry is {
   storage is record {
-    count : nat;
+    count : uint;
   }
 
   external function register() is {
-    storage.count := storage.count + 1n;
+    storage.count := storage.count + 1;
   }
 }
 ```
@@ -61,8 +61,8 @@ Every contract declares `storage is record`, even an empty one, and at least one
 ```lithe
 storage is record {}
 
-external pure function version() : nat is
-  1n
+external pure function version() : uint is
+  1
 ```
 
 ## Comments
@@ -90,10 +90,10 @@ Each bracket has one job:
 Statements end with `;`. Fields in a record type or record literal also end with `;`. Parameters are separated by `;`, and arguments by `,`:
 
 ```lithe fragment
-pure function scale(const amount : nat; const bps : nat) : nat is
-  amount * bps / 10_000n
+pure function scale(const amount : uint; const bps : uint) : uint is
+  amount * bps / 10_000
 
-const fee : nat := scale(1_000n, 25n);
+const fee : uint := scale(1_000, 25);
 ```
 
 ## Naming

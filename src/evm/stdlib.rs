@@ -11,7 +11,7 @@ fn every_stdlib_file_compiles() {
         std::fs::create_dir_all(&dir).unwrap();
         let main = dir.join("main.lithe");
         let src = format!(
-            "import \"{path}\";\nstorage is record {{ n : nat; }}\nexternal function f() is {{ storage.n := 1n; }}\n"
+            "import \"{path}\";\nstorage is record {{ n : uint; }}\nexternal function f() is {{ storage.n := 1; }}\n"
         );
         std::fs::write(&main, src).unwrap();
         compile_file(&main).unwrap_or_else(|e| panic!("{path}: {e}"));
@@ -344,7 +344,7 @@ fn stdlib_math_crypto_and_collections() {
         &[w(0), w(1), Arg::W(int(-1))]
     ));
     u.reverted_with("MathInvalidSignedRange(int256,int256)");
-    assert!(!u.send(0, "to_nat(int256)", &[Arg::W(Word::from_u64(3).not())]));
+    assert!(!u.send(0, "to_uint(int256)", &[Arg::W(Word::from_u64(3).not())]));
     u.reverted_with("SafeCastOverflowedIntToUint(int256)");
     assert!(!u.send(0, "to_int(uint256)", &[Arg::W(hexw(max))]));
     u.reverted_with("SafeCastOverflowedUintToInt(uint256)");
@@ -1151,8 +1151,8 @@ fn stdlib_deployers() {
     };
     let this = Word::from_u64(0x1000);
     let counter = "\
-storage is record { n : nat; }
-external function bump() is { storage.n := storage.n + 1n; }
+storage is record { n : uint; }
+external function bump() is { storage.n := storage.n + 1; }
 ";
     let implementation = Word::from_u64(0x5301);
     let code = deploy(&compile(counter).expect("compile")).expect("deploy");
@@ -1296,13 +1296,13 @@ contract Funded is {
   } with storage.last
 
   external payable function funded(const target : address; const salt : bytes32) : address raises FailedDeployment is {
-    storage.last := Clones.clone_deterministic(target, salt, nat(Evm.value()));
+    storage.last := Clones.clone_deterministic(target, salt, uint(Evm.value()));
   } with storage.last
 
   external payable function funded_with_args(const target : address; const args : bytes; const salt : bytes32) : address
     raises CloneArgumentsTooLong | FailedDeployment
   is {
-    storage.last := Clones.clone_deterministic_with_args(target, args, salt, nat(Evm.value()));
+    storage.last := Clones.clone_deterministic_with_args(target, args, salt, uint(Evm.value()));
   } with storage.last
 
   external function plain_with_args(const target : address; const args : bytes; const salt : bytes32) : address

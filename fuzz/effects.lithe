@@ -1,23 +1,23 @@
 (* Fuzz target: queries, deferred calls, transfers, and guarded entries. *)
 
 error Not_owner;
-error Low of nat;
+error Low of uint;
 
 interface Oracle is {
-  view function price() : nat;
-  view function quote(amount : nat) : nat;
+  view function price() : uint;
+  view function quote(amount : uint) : uint;
 }
 
 interface Sink is {
-  function deposit(amount : nat);
+  function deposit(amount : uint);
   function ping();
 }
 
 storage is record {
   owner : address;
-  last : nat;
+  last : uint;
   sent : wei;
-  calls : nat;
+  calls : uint;
 }
 
 view function only_owner()
@@ -26,18 +26,18 @@ is {
   assert(Evm.sender() = storage.owner, Not_owner);
 }
 
-external function read(const o : Oracle; const amount : nat) is {
+external function read(const o : Oracle; const amount : uint) is {
   storage.last := query o.quote(amount) + query o.price();
 }
 
-external payable function forward(const s : Sink; const amount : nat)
+external payable function forward(const s : Sink; const amount : uint)
   raises Low
 is {
-  assert(amount < 100n, Low(amount));
+  assert(amount < 100, Low(amount));
   storage.sent := storage.sent + Evm.value();
-  storage.calls := storage.calls + 1n;
+  storage.calls := storage.calls + 1;
   defer s.deposit(amount);
-  if amount > 3n then {
+  if amount > 3 then {
     defer s.ping();
   } else {
     skip
@@ -59,5 +59,5 @@ is {
   storage.owner := next;
 }
 
-external view function last() : nat is
+external view function last() : uint is
   storage.last

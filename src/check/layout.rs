@@ -185,7 +185,7 @@ pub(crate) fn narrow_width(types: &[RType], ty: usize) -> Option<(u8, bool)> {
     let t = &types[peel_id(types, ty)];
     match t.kind {
         TyKind::Bool => Some((1, false)),
-        TyKind::Nat if t.bits > 0 && t.bits < 256 => Some(((t.bits / 8) as u8, false)),
+        TyKind::Uint if t.bits > 0 && t.bits < 256 => Some(((t.bits / 8) as u8, false)),
         TyKind::Int if t.bits > 0 && t.bits < 256 => Some(((t.bits / 8) as u8, true)),
         TyKind::Address | TyKind::Interface => Some((20, false)),
         TyKind::Bytes if t.bits > 0 && t.bits < 32 => Some((t.bits as u8, false)),
@@ -220,7 +220,7 @@ pub(crate) fn option_flip(types: &[RType], ty: usize) -> Option<Flip> {
 
 pub(super) fn check_storage_shape(types: &[RType], id: usize, at: &str) -> Result<(), Error> {
     match types[id].kind {
-        TyKind::Nat
+        TyKind::Uint
         | TyKind::Int
         | TyKind::Address
         | TyKind::Bool

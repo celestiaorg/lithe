@@ -5,7 +5,7 @@ type notes is list(string);
 
 storage is record {
   notes : list(string);
-  by_id : map(nat, string);
+  by_id : map(uint, string);
 }
 
 event Noted of record {
@@ -25,14 +25,14 @@ external function add_note(const x : string) is {
 external view function notes() : list(string) is
   storage.notes
 
-external view function note_at(const i : nat) : string is
+external view function note_at(const i : uint) : string is
   storage.notes[i]
 
-external function name(const id : nat; const v : string) is {
+external function name(const id : uint; const v : string) is {
   storage.by_id[id] := v;
 }
 
-external view function name_of(const id : nat) : string is
+external view function name_of(const id : uint) : string is
   storage.by_id[id]
 
 external pure function joined(const xs : list(bytes)) : bytes is {

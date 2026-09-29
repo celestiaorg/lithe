@@ -9,7 +9,7 @@ type inner is record {
 type order is record {
   status : uint8;
   owner : address;
-  amount : nat;
+  amount : uint;
   small : uint32;
   inner : inner;
   last : uint64;
@@ -20,24 +20,24 @@ type pair is record {
   b : uint128;
 }
 
-error Missing of nat;
+error Missing of uint;
 
 event Placed of record {
-  indexed id : nat;
-  amount : nat;
+  indexed id : uint;
+  amount : uint;
   status : uint8;
 }
 
 storage is record {
-  count : nat;
-  orders : map(nat, order);
-  pairs : map(address, map(nat, pair));
+  count : uint;
+  orders : map(uint, order);
+  pairs : map(address, map(uint, pair));
   tail : uint8;
   head : pair;
   top : order;
 }
 
-pure function fresh(const owner : address; const amount : nat; const delta : int16) : order is {
+pure function fresh(const owner : address; const amount : uint; const delta : int16) : order is {
   status = uint8(2);
   owner = owner;
   amount = amount;
@@ -51,7 +51,7 @@ pure function split(const total : uint128) : pair is {
   b = total - total / uint128(2);
 }
 
-external function place(const id : nat; const amount : nat; const small : uint32; const delta : int16) is {
+external function place(const id : uint; const amount : uint; const small : uint32; const delta : int16) is {
   storage.orders[id] := {
     status = uint8(1);
     owner = Evm.sender();
@@ -60,11 +60,11 @@ external function place(const id : nat; const amount : nat; const small : uint32
     inner = { flag = true; delta = delta; };
     last = uint64(7);
   };
-  storage.count := storage.count + 1n;
+  storage.count := storage.count + 1;
   emit Placed { id = id; amount = storage.orders[id].amount; status = storage.orders[id].status; };
 }
 
-external function bump(const id : nat; const by : nat)
+external function bump(const id : uint; const by : uint)
   raises Missing
 is {
   assert(storage.orders[id].status > uint8(0), Missing(id));
@@ -75,21 +75,21 @@ is {
   storage.tail := storage.orders[id].status;
 }
 
-external function copy(const src : nat; const dst : nat) is {
+external function copy(const src : uint; const dst : uint) is {
   const o : order := storage.orders[src];
   storage.orders[dst] := o;
   storage.orders[dst].inner := { flag = not o.inner.flag; delta = o.inner.delta; };
 }
 
-external function pair_set(const k : nat; const a : uint128; const b : uint128) is {
+external function pair_set(const k : uint; const a : uint128; const b : uint128) is {
   storage.pairs[Evm.sender()][k] := { a = a; b = b; };
-  storage.pairs[Evm.sender()][k + 1n].b := b;
+  storage.pairs[Evm.sender()][k + 1].b := b;
 }
 
 (* A function's record result, stored whole outside a map and inside one. *)
 external function head_set(const total : uint128) is {
   storage.head := split(total);
-  storage.pairs[Evm.sender()][0n] := split(total + uint128(1));
+  storage.pairs[Evm.sender()][0] := split(total + uint128(1));
 }
 
 (* The new value is built from the old one before any of it is written. *)
@@ -102,11 +102,11 @@ external view function odd_of(const total : uint128) : uint128 is {
 } with p.b - split(total).a
 
 (* Whole records over packed slots: from a map entry, and from a function. *)
-external function promote(const id : nat) is {
+external function promote(const id : uint) is {
   storage.top := storage.orders[id];
 }
 
-external function reset_top(const amount : nat; const delta : int16) is {
+external function reset_top(const amount : uint; const delta : int16) is {
   storage.top := fresh(Evm.sender(), amount, delta);
 }
 
@@ -114,10 +114,10 @@ external view function top_order() : order is storage.top
 
 external view function head_pair() : pair is storage.head
 
-external view function order_of(const id : nat) : order is storage.orders[id]
+external view function order_of(const id : uint) : order is storage.orders[id]
 
-external view function status_of(const id : nat) : uint8 is storage.orders[id].status
+external view function status_of(const id : uint) : uint8 is storage.orders[id].status
 
-external view function delta_of(const id : nat) : int16 is storage.orders[id].inner.delta
+external view function delta_of(const id : uint) : int16 is storage.orders[id].inner.delta
 
-external view function pair_of(const who : address; const k : nat) : pair is storage.pairs[who][k]
+external view function pair_of(const who : address; const k : uint) : pair is storage.pairs[who][k]

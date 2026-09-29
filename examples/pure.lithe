@@ -1,18 +1,18 @@
 (* A pure function depends only on its arguments. *)
 
 storage is record {
-  rate : nat;
+  rate : uint;
 }
 
-pure function calculate_fee(const amount : nat; const fee_bps : nat) : nat is
-  amount * fee_bps / 10_000n
+pure function calculate_fee(const amount : uint; const fee_bps : uint) : uint is
+  amount * fee_bps / 10_000
 
-pure function fee_of(const amount : nat) : nat is
-  calculate_fee(amount, 25n)
+pure function fee_of(const amount : uint) : uint is
+  calculate_fee(amount, 25)
 
-external view function preview(const amount : nat) : nat is
+external view function preview(const amount : uint) : uint is
   fee_of(amount)
 
-external function quote(const amount : nat) is {
+external function quote(const amount : uint) is {
   storage.rate := fee_of(amount);
 }

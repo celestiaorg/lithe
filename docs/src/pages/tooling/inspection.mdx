@@ -14,11 +14,11 @@ error Not_owner;
 error Paused;
 
 error Insufficient_balance of record {
-  available : nat;
-  required : nat;
+  available : uint;
+  required : uint;
 }
 
-error Invalid_amount of nat;
+error Invalid_amount of uint;
 
 errors withdrawal_errors is
   | Paused
@@ -28,12 +28,12 @@ errors withdrawal_errors is
 storage is record {
   owner : address;
   paused : bool;
-  balance : nat;
+  balance : uint;
 }
 
 event Withdrawal of record {
   account : address;
-  amount : nat;
+  amount : uint;
 }
 
 view function require_owner()
@@ -42,18 +42,18 @@ is {
   assert(Evm.sender() = storage.owner, Not_owner);
 }
 
-view function require_amount(const amount : nat) : nat
+view function require_amount(const amount : uint) : uint
   raises Invalid_amount
 is {
-  assert(amount <> 0n, Invalid_amount(amount));
+  assert(amount <> 0, Invalid_amount(amount));
 } with amount
 
-external function withdraw(const amount : nat)
+external function withdraw(const amount : uint)
   raises withdrawal_errors
 is {
   assert(not storage.paused, Paused);
 
-  const taken : nat := require_amount(amount);
+  const taken : uint := require_amount(amount);
 
   assert(
     storage.balance >= taken,

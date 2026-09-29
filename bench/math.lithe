@@ -1,24 +1,24 @@
 (* Benchmark: checked arithmetic in pure views. Mirrors math.sol. *)
 
 storage is record {
-  last : nat;
+  last : uint;
 }
 
-external view function mul_div(const a : nat; const b : nat; const c : nat) : nat is
+external view function mul_div(const a : uint; const b : uint; const c : uint) : uint is
   a * b / c
 
-external view function average(const a : nat; const b : nat) : nat is
-  (a + b) / 2n
+external view function average(const a : uint; const b : uint) : uint is
+  (a + b) / 2
 
 external view function distance(const a : int; const b : int) : int is
   a * b - a / b
 
-external view function narrow(const x : nat) : uint8 is
+external view function narrow(const x : uint) : uint8 is
   uint8(x)
 
 external view function mix(const x : uint32; const y : uint32) : uint32 is
   (x + y) * 3 - x % 7
 
-external function store(const a : nat; const b : nat) is {
+external function store(const a : uint; const b : uint) is {
   storage.last := a * b + a / b - b % a;
 }

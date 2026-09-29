@@ -11,30 +11,30 @@ ERC-721 with ERC-6093 errors, including `safeTransferFrom` and its receiver chec
 (* ERC-721: ownership, approvals, operators, safe and unsafe transfers, mint, and burn. *)
 
 interface ERC721Receiver is {
-  function onERC721Received(operator : address; from : address; tokenId : nat; data : bytes) : bytes4;
+  function onERC721Received(operator : address; from : address; tokenId : uint; data : bytes) : bytes4;
 }
 
-error ERC721NonexistentToken of nat;
+error ERC721NonexistentToken of uint;
 error ERC721InvalidReceiver of address;
 error ERC721InsufficientApproval of record {
   operator : address;
-  tokenId : nat;
+  tokenId : uint;
 }
 error ERC721InvalidSender of address;
 error ERC721InvalidOwner of address;
-error AlreadyMinted of nat;
+error AlreadyMinted of uint;
 error NotMinter of address;
 
 event Transfer of record {
   indexed from : address;
   indexed to : address;
-  indexed tokenId : nat;
+  indexed tokenId : uint;
 }
 
 event Approval of record {
   indexed owner : address;
   indexed approved : address;
-  indexed tokenId : nat;
+  indexed tokenId : uint;
 }
 
 event ApprovalForAll of record {
@@ -45,9 +45,9 @@ event ApprovalForAll of record {
 
 storage is record {
   minter : address;
-  owners : map(nat, address);
-  balances : map(address, nat);
-  approvals : map(nat, address);
+  owners : map(uint, address);
+  balances : map(address, uint);
+  approvals : map(uint, address);
   operators : map(address, map(address, bool));
 }
 
@@ -55,25 +55,25 @@ external function init() is {
   storage.minter := Evm.sender();
 }
 
-view function owner_of(const id : nat) : address
+view function owner_of(const id : uint) : address
   raises ERC721NonexistentToken
 is {
   const owner : address := storage.owners[id];
   assert(owner <> Address.zero, ERC721NonexistentToken(id));
 } with owner
 
-external view function ownerOf(const tokenId : nat) : address
+external view function ownerOf(const tokenId : uint) : address
   raises ERC721NonexistentToken
 is
   owner_of(tokenId)
 
-external view function balanceOf(const owner : address) : nat
+external view function balanceOf(const owner : address) : uint
   raises ERC721InvalidOwner
 is {
   assert(owner <> Address.zero, ERC721InvalidOwner(owner));
 } with storage.balances[owner]
 
-external view function getApproved(const tokenId : nat) : address
+external view function getApproved(const tokenId : uint) : address
   raises ERC721NonexistentToken
 is {
   const owner : address := owner_of(tokenId);
@@ -82,7 +82,7 @@ is {
 external view function isApprovedForAll(const owner : address; const operator : address) : bool is
   storage.operators[owner][operator]
 
-external function approve(const to : address; const tokenId : nat)
+external function approve(const to : address; const tokenId : uint)
   raises ERC721NonexistentToken | ERC721InsufficientApproval
 is {
   const owner : address := owner_of(tokenId);
@@ -99,7 +99,7 @@ external function setApprovalForAll(const operator : address; const approved : b
   emit ApprovalForAll { owner = Evm.sender(); operator = operator; approved = approved; };
 }
 
-function move(const from : address; const to : address; const tokenId : nat)
+function move(const from : address; const to : address; const tokenId : uint)
   raises ERC721NonexistentToken | ERC721InsufficientApproval | ERC721InvalidSender | ERC721InvalidReceiver
 is {
   assert(to <> Address.zero, ERC721InvalidReceiver(to));
@@ -111,8 +111,8 @@ is {
     ERC721InsufficientApproval { operator = caller; tokenId = tokenId; }
   );
   storage.approvals[tokenId] := Address.zero;
-  storage.balances[from] := storage.balances[from] - 1n;
-  storage.balances[to] := storage.balances[to] + 1n;
+  storage.balances[from] := storage.balances[from] - 1;
+  storage.balances[to] := storage.balances[to] + 1;
   storage.owners[tokenId] := to;
   emit Transfer { from = from; to = to; tokenId = tokenId; };
 }
@@ -121,16 +121,16 @@ is {
    after the transfer's effects. A receiver that answers wrongly, or reverts without a
    reason, is rejected; one that reverts with a reason has it passed on unchanged.
    Either reverts the whole transfer. *)
-function check_received(const from : address; const to : address; const tokenId : nat; const data : bytes)
+function check_received(const from : address; const to : address; const tokenId : uint; const data : bytes)
   raises ERC721InvalidReceiver | forwarded
 is {
-  if Evm.code_size(to) > 0n then {
+  if Evm.code_size(to) > 0 then {
     defer ERC721Receiver(to).onERC721Received(Evm.sender(), from, tokenId, data) then {
       | Ok(answer : bytes4) -> {
           assert(answer = Abi.selector(ERC721Receiver.onERC721Received), ERC721InvalidReceiver(to));
         }
       | Error(reason : bytes) -> {
-          if reason.length = 0n then {
+          if reason.length = 0 then {
             fail ERC721InvalidReceiver(to);
           }
           forward reason;
@@ -139,13 +139,13 @@ is {
   }
 }
 
-external function transferFrom(const from : address; const to : address; const tokenId : nat)
+external function transferFrom(const from : address; const to : address; const tokenId : uint)
   raises ERC721NonexistentToken | ERC721InsufficientApproval | ERC721InvalidSender | ERC721InvalidReceiver
 is {
   move(from, to, tokenId);
 }
 
-external nonreentrant function safeTransferFrom(const from : address; const to : address; const tokenId : nat)
+external nonreentrant function safeTransferFrom(const from : address; const to : address; const tokenId : uint)
   raises ERC721NonexistentToken | ERC721InsufficientApproval | ERC721InvalidSender | ERC721InvalidReceiver | forwarded
 is {
   move(from, to, tokenId);
@@ -155,7 +155,7 @@ is {
 external nonreentrant function safeTransferFrom(
   const from : address;
   const to : address;
-  const tokenId : nat;
+  const tokenId : uint;
   const data : bytes
 )
   raises ERC721NonexistentToken | ERC721InsufficientApproval | ERC721InvalidSender | ERC721InvalidReceiver | forwarded
@@ -164,24 +164,24 @@ is {
   check_received(from, to, tokenId, data);
 }
 
-external function mint(const to : address; const tokenId : nat)
+external function mint(const to : address; const tokenId : uint)
   raises NotMinter | AlreadyMinted | ERC721InvalidReceiver
 is {
   assert(Evm.sender() = storage.minter, NotMinter(Evm.sender()));
   assert(to <> Address.zero, ERC721InvalidReceiver(to));
   assert(storage.owners[tokenId] = Address.zero, AlreadyMinted(tokenId));
   storage.owners[tokenId] := to;
-  storage.balances[to] := storage.balances[to] + 1n;
+  storage.balances[to] := storage.balances[to] + 1;
   emit Transfer { from = Address.zero; to = to; tokenId = tokenId; };
 }
 
-external function burn(const tokenId : nat)
+external function burn(const tokenId : uint)
   raises ERC721NonexistentToken | ERC721InsufficientApproval
 is {
   const owner : address := owner_of(tokenId);
   assert(Evm.sender() = owner, ERC721InsufficientApproval { operator = Evm.sender(); tokenId = tokenId; });
   storage.approvals[tokenId] := Address.zero;
-  storage.balances[owner] := storage.balances[owner] - 1n;
+  storage.balances[owner] := storage.balances[owner] - 1;
   storage.owners[tokenId] := Address.zero;
   emit Transfer { from = owner; to = Address.zero; tokenId = tokenId; };
 }

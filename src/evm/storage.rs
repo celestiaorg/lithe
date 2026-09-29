@@ -91,16 +91,16 @@ fn records_in_maps_lay_out_like_solidity_structs() {
     assert_eq!(at(&paired.storage, map_key(w(8), inner)), w(2).shl(128));
 
     let program = |body: &str| {
-        format!("type r is record {{ a : uint8; b : nat; }}\nstorage is record {{ m : map(nat, r); n : map(nat, nat); }}\nexternal function f(const k : nat) is {{\n  {body}\n}}\n")
+        format!("type r is record {{ a : uint8; b : uint; }}\nstorage is record {{ m : map(uint, r); n : map(uint, uint); }}\nexternal function f(const k : uint) is {{\n  {body}\n}}\n")
     };
     for (body, want) in [
-        ("storage.m[k].c := 1n;", "no field `c`"),
+        ("storage.m[k].c := 1;", "no field `c`"),
         (
-            "storage.n[k].a := 1n;",
+            "storage.n[k].a := 1;",
             "only a record in a map has fields here",
         ),
         (
-            "storage.m[k].a := 1n;",
+            "storage.m[k].a := k;",
             "assignment type does not match the field",
         ),
     ] {
@@ -428,7 +428,7 @@ fn named_storage_and_upgrade_migrate_once() {
     let next = dir.join("next.lithe");
     std::fs::write(
         &next,
-        src.replace("paused : bool;", "paused : bool;\n  extra : nat;"),
+        src.replace("paused : bool;", "paused : bool;\n  extra : uint;"),
     )
     .expect("next");
     let diff = crate::storage_diff(&Sources::disk(), &path, &next).expect("diff");
@@ -442,39 +442,39 @@ fn named_storage_and_upgrade_migrate_once() {
 #[test]
 fn long_strings_round_trip_in_maps_and_lists() {
     let src = "\
-interface Me is { view function peek() : nat; }
+interface Me is { view function peek() : uint; }
 storage is record {
-  m : map(bytes32, bytes); s : map(nat, string); mm : map(nat, map(nat, string));
-  l : list(string); one : bytes; n : nat;
+  m : map(bytes32, bytes); s : map(uint, string); mm : map(uint, map(uint, string));
+  l : list(string); one : bytes; n : uint;
 }
-external view function peek() : nat is storage.n
-external function put(const k : nat; const d : bytes) is { storage.m[bytes32(k)] := d; }
-external view function get(const k : nat) : bytes is storage.m[bytes32(k)]
-external function put_s(const k : nat; const d : string) is { storage.s[k] := d; }
-external view function get_s(const k : nat) : string is storage.s[k]
-external function put_mm(const k : nat; const d : string) is { storage.mm[k][2n] := d; }
-external view function get_mm(const k : nat) : string is storage.mm[k][2n]
-external function put_l(const k : nat; const d : string) is {
-  if storage.l.length = 0n then { List.push(storage.l, d); } else { storage.l[k] := d; }
+external view function peek() : uint is storage.n
+external function put(const k : uint; const d : bytes) is { storage.m[bytes32(k)] := d; }
+external view function get(const k : uint) : bytes is storage.m[bytes32(k)]
+external function put_s(const k : uint; const d : string) is { storage.s[k] := d; }
+external view function get_s(const k : uint) : string is storage.s[k]
+external function put_mm(const k : uint; const d : string) is { storage.mm[k][2] := d; }
+external view function get_mm(const k : uint) : string is storage.mm[k][2]
+external function put_l(const k : uint; const d : string) is {
+  if storage.l.length = 0 then { List.push(storage.l, d); } else { storage.l[k] := d; }
 }
-external view function get_l(const k : nat) : string is storage.l[k]
-external function put_all(const k : nat; const d : string) is {
+external view function get_l(const k : uint) : string is storage.l[k]
+external function put_all(const k : uint; const d : string) is {
   var xs : list(string) := storage.l;
-  if xs.length = 0n then { List.push(xs, d); } else { xs[k] := d; }
+  if xs.length = 0 then { List.push(xs, d); } else { xs[k] := d; }
   storage.l := xs;
 }
-external view function get_all(const k : nat) : string is {
+external view function get_all(const k : uint) : string is {
   const xs : list(string) := storage.l;
 } with xs[k]
-external function put_j(const me : Me; const k : nat; const d : bytes) is {
-  storage.n := storage.n + 1n;
+external function put_j(const me : Me; const k : uint; const d : bytes) is {
+  storage.n := storage.n + 1;
   storage.m[bytes32(k)] := d;
   storage.n := query me.peek();
   storage.n := storage.m[bytes32(k)].length;
 }
-external view function get_j(const k : nat) : bytes is storage.m[bytes32(k)]
-external view function total() : nat is {
-  var n : nat := 0n;
+external view function get_j(const k : uint) : bytes is storage.m[bytes32(k)]
+external view function total() : uint is {
+  var n : uint := 0;
   for x : string in storage.l do { n := n + x.length; }
 } with n
 ";
@@ -616,30 +616,30 @@ fn string_maps_example_keeps_long_values() {
 #[test]
 fn stored_string_lengths_read_the_slot() {
     let src = "\
-interface Me is { view function peek() : nat; }
+interface Me is { view function peek() : uint; }
 storage is record {
-  one : bytes; m : map(nat, string); mm : map(nat, map(nat, bytes)); l : list(string); n : nat;
+  one : bytes; m : map(uint, string); mm : map(uint, map(uint, bytes)); l : list(string); n : uint;
 }
-external view function peek() : nat is storage.n
+external view function peek() : uint is storage.n
 external function put(const d : bytes; const t : string) is {
   storage.one := d;
-  storage.m[1n] := t;
-  storage.mm[1n][2n] := d;
+  storage.m[1] := t;
+  storage.mm[1][2] := d;
   List.push(storage.l, t);
 }
-external view function lengths() : (nat, nat, nat, nat, nat, bool) is {
-  var total : nat := 0n;
+external view function lengths() : (uint, uint, uint, uint, uint, bool) is {
+  var total : uint := 0;
   for s : string in storage.l do { total := total + s.length; }
-} with (storage.one.length, storage.m[1n].length, storage.mm[1n][2n].length,
-  storage.l[storage.l.length - 1n].length, total, storage.m[1n].length = 0n)
+} with (storage.one.length, storage.m[1].length, storage.mm[1][2].length,
+  storage.l[storage.l.length - 1].length, total, storage.m[1].length = 0)
 external view function last() : string is {
   var last : string := \"\";
-  for s : string in storage.l do { if s.length > 0n then { last := s; } }
+  for s : string in storage.l do { if s.length > 0 then { last := s; } }
 } with last
 external function journaled(const me : Me) is {
-  storage.n := storage.n + 1n;
+  storage.n := storage.n + 1;
   storage.n := query me.peek();
-  storage.n := storage.one.length + storage.m[1n].length + storage.mm[1n][2n].length;
+  storage.n := storage.one.length + storage.m[1].length + storage.mm[1][2].length;
 }
 ";
     let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
@@ -717,10 +717,10 @@ external function journaled(const me : Me) is {
 #[test]
 fn string_and_bytes_keys_hash_like_solidity() {
     let src = r#"
-storage is record { pre : uint8; names : map(string, nat); raw : map(address, map(bytes, nat)); }
-external function set(const k : string; const v : nat) is { storage.names[k] := v; }
-external function set_raw(const k : bytes; const v : nat) is { storage.raw[Evm.sender()][k] := v; }
-external view function get(const k : string) : nat is storage.names[k]
+storage is record { pre : uint8; names : map(string, uint); raw : map(address, map(bytes, uint)); }
+external function set(const k : string; const v : uint) is { storage.names[k] := v; }
+external function set_raw(const k : bytes; const v : uint) is { storage.raw[Evm.sender()][k] := v; }
+external view function get(const k : string) : uint is storage.names[k]
 "#;
     let rt = deploy(&compile(src).expect("compile")).expect("deploy");
     let n = Word::from_u64;
@@ -764,20 +764,20 @@ external view function get(const k : string) : nat is storage.names[k]
 #[test]
 fn nested_stored_lists_lay_out_like_solidity() {
     let src = r#"
-type doc is record { n : uint8; s : string; xs : list(nat); }
-storage is record { pre : uint8; xs : list(list(nat)); ds : list(doc); t : (uint8, string); post : uint8; }
+type doc is record { n : uint8; s : string; xs : list(uint); }
+storage is record { pre : uint8; xs : list(list(uint)); ds : list(doc); t : (uint8, string); post : uint8; }
 external function put() is {
-  List.push(storage.xs, [1n, 2n]);
+  List.push(storage.xs, [1, 2]);
   List.push(storage.xs, []);
-  List.push(storage.xs[1], 7n);
-  List.push(storage.ds, { n = 5; s = "a string that is longer than thirty-two bytes, to spill"; xs = [9n]; });
+  List.push(storage.xs[1], 7);
+  List.push(storage.ds, { n = 5; s = "a string that is longer than thirty-two bytes, to spill"; xs = [9]; });
   storage.ds[0].n := 6;
   storage.t := (uint8(3), "hi");
 }
 external function pop() is { List.pop(storage.xs); List.pop(storage.ds); }
-external function whole() is { storage.xs := [[3n], [4n, 5n, 6n]]; }
-external view function get() : list(list(nat)) is storage.xs
-external view function doc0() : (uint8, string, list(nat)) is { const d : doc := storage.ds[0]; } with (d.n, d.s, d.xs)
+external function whole() is { storage.xs := [[3], [4, 5, 6]]; }
+external view function get() : list(list(uint)) is storage.xs
+external view function doc0() : (uint8, string, list(uint)) is { const d : doc := storage.ds[0]; } with (d.n, d.s, d.xs)
 "#;
     let rt = deploy(&compile(src).expect("compile")).expect("deploy");
     let n = Word::from_u64;
@@ -841,44 +841,44 @@ external view function doc0() : (uint8, string, list(nat)) is { const d : doc :=
 fn transient_storage_takes_a_slot_per_word() {
     let src = r#"
 type flags is record { on : bool; depth : uint8; count : uint16; }
-type pt is record { a : uint8; b : address; c : int16; d : nat; }
-type box is | Empty | Full of uint8 | Other of nat
+type pt is record { a : uint8; b : address; c : int16; d : uint; }
+type box is | Empty | Full of uint8 | Other of uint
 transient storage is record {
   on : bool;
   f : flags;
   t : (uint16, address);
   xs : list(uint8, 8);
   ps : list(pt, 2);
-  o : option(nat);
+  o : option(uint);
   o8 : option(uint8);
   b : box;
-  m : map(nat, flags);
-  mm : map(address, map(nat, uint8));
-  ml : map(nat, list(uint8, 3));
+  m : map(uint, flags);
+  mm : map(address, map(uint, uint8));
+  ml : map(uint, list(uint8, 3));
 }
-storage is record { out : nat; }
-external function run(const i : nat) : (uint8, uint8, int16, uint16, uint8, uint8, nat, uint16) is {
+storage is record { out : uint; }
+external function run(const i : uint) : (uint8, uint8, int16, uint16, uint8, uint8, uint, uint16) is {
   transient.on := true;
   transient.f := { on = true; depth = 2; count = 300; };
   transient.f.depth := 4;
   transient.t := (uint16(7), Evm.sender());
   transient.xs[i] := 9;
   transient.xs[2] := 7;
-  transient.ps[i - 4n] := { a = 1; b = Evm.sender(); c = -2; d = 3n; };
+  transient.ps[i - 4] := { a = 1; b = Evm.sender(); c = -2; d = 3; };
   transient.ps[1].c := -5;
-  transient.o := Some(11n);
+  transient.o := Some(11);
   transient.o8 := Some(uint8(6));
   transient.b := Full(uint8(8));
-  transient.m[4n] := { on = true; depth = 5; count = 500; };
-  transient.m[4n].count := 600;
-  transient.mm[Evm.sender()][3n] := 12;
-  transient.ml[6n][i - 3n] := 13;
+  transient.m[4] := { on = true; depth = 5; count = 500; };
+  transient.m[4].count := 600;
+  transient.mm[Evm.sender()][3] := 12;
+  transient.ml[6][i - 3] := 13;
   const whole : list(uint8, 8) := transient.xs;
   const p : pt := transient.ps[1];
-  const e : flags := transient.m[4n];
+  const e : flags := transient.m[4];
   const (u, _) : (uint16, address) := transient.t;
-} with (transient.f.depth, whole[5], p.c, e.count, transient.ml[6n][2], transient.mm[Evm.sender()][3n],
-  case transient.o of { Some(v) -> v | None -> 0n }, u)
+} with (transient.f.depth, whole[5], p.c, e.count, transient.ml[6][2], transient.mm[Evm.sender()][3],
+  case transient.o of { Some(v) -> v | None -> 0 }, u)
 "#;
     let rt = deploy(&compile(src).expect("compile")).expect("deploy");
     let n = Word::from_u64;
@@ -936,9 +936,9 @@ external function run(const i : nat) : (uint8, uint8, int16, uint16, uint8, uint
 #[test]
 fn fixed_lists_in_maps_pack_like_solidity() {
     let src = r#"
-storage is record { m : map(nat, list(uint8, 3)); }
-external function set(const i : nat; const v : uint8) is { storage.m[1n][i] := v; }
-external view function get() : list(uint8, 3) is storage.m[1n]
+storage is record { m : map(uint, list(uint8, 3)); }
+external function set(const i : uint; const v : uint8) is { storage.m[1][i] := v; }
+external view function get() : list(uint8, 3) is storage.m[1]
 "#;
     let rt = deploy(&compile(src).expect("compile")).expect("deploy");
     let n = Word::from_u64;
@@ -954,37 +954,37 @@ external view function get() : list(uint8, 3) is storage.m[1n]
 #[test]
 fn narrow_stored_lists_pack_like_solidity() {
     let src = r#"
-interface Echo is { view function echo(x : nat) : nat; }
-storage is record { pre : uint8; a : list(uint8); b : list(uint16); c : list(address); d : list(bool); e : list(uint8, 3); f : list(int8); g : map(nat, list(uint16)); h : list(list(uint8)); post : uint8; }
+interface Echo is { view function echo(x : uint) : uint; }
+storage is record { pre : uint8; a : list(uint8); b : list(uint16); c : list(address); d : list(bool); e : list(uint8, 3); f : list(int8); g : map(uint, list(uint16)); h : list(list(uint8)); post : uint8; }
 external function fence() is { storage.pre := 0xa5; storage.post := 0x5a; }
 external function push(const x : uint8; const y : uint16; const z : bool; const w : int8) is { pushes(x, y, z, w); }
-external function push_ask(const x : uint8; const y : uint16; const z : bool; const w : int8) : nat is { pushes(x, y, z, w); } with query Echo(address(0xcd)).echo(storage.a.length)
+external function push_ask(const x : uint8; const y : uint16; const z : bool; const w : int8) : uint is { pushes(x, y, z, w); } with query Echo(address(0xcd)).echo(storage.a.length)
 function pushes(const x : uint8; const y : uint16; const z : bool; const w : int8) is {
   List.push(storage.a, x); List.push(storage.b, y); List.push(storage.d, z); List.push(storage.f, w);
-  List.push(storage.g[5n], y);
+  List.push(storage.g[5], y);
   if storage.h.length = 0 then { List.push(storage.h, []); }
   List.push(storage.h[0], x);
 }
 external function push_c(const who : address) is { List.push(storage.c, who); }
 external function pop() is { pops(); }
-external function pop_ask() : nat is { pops(); } with query Echo(address(0xcd)).echo(storage.a.length)
+external function pop_ask() : uint is { pops(); } with query Echo(address(0xcd)).echo(storage.a.length)
 function pops() is { List.pop(storage.a); List.pop(storage.b); List.pop(storage.d); List.pop(storage.f);
-  List.pop(storage.g[5n]); List.pop(storage.h[0]);
+  List.pop(storage.g[5]); List.pop(storage.h[0]);
 }
-external function set(const i : nat; const x : uint8; const w : int8) is { sets(i, x, w); }
-external function set_ask(const i : nat; const x : uint8; const w : int8) : nat is { sets(i, x, w); } with query Echo(address(0xcd)).echo(nat(storage.a[i]))
-function sets(const i : nat; const x : uint8; const w : int8) is { storage.a[i] := x; storage.f[i] := w; storage.h[0][i] := x; }
-external function set_e(const i : nat; const v : uint8) is { storage.e[i] := v; }
+external function set(const i : uint; const x : uint8; const w : int8) is { sets(i, x, w); }
+external function set_ask(const i : uint; const x : uint8; const w : int8) : uint is { sets(i, x, w); } with query Echo(address(0xcd)).echo(uint(storage.a[i]))
+function sets(const i : uint; const x : uint8; const w : int8) is { storage.a[i] := x; storage.f[i] := w; storage.h[0][i] := x; }
+external function set_e(const i : uint; const v : uint8) is { storage.e[i] := v; }
 external function assign(const xs : list(uint8)) is { storage.a := xs; storage.h[0] := xs; }
-external function assign_ask(const xs : list(uint8)) : nat is { storage.a := xs; storage.h[0] := xs; } with query Echo(address(0xcd)).echo(storage.a.length)
+external function assign_ask(const xs : list(uint8)) : uint is { storage.a := xs; storage.h[0] := xs; } with query Echo(address(0xcd)).echo(storage.a.length)
 external view function a() : list(uint8) is storage.a
 external view function b() : list(uint16) is storage.b
 external view function f() : list(int8) is storage.f
-external view function g() : list(uint16) is storage.g[5n]
+external view function g() : list(uint16) is storage.g[5]
 external view function h() : list(uint8) is storage.h[0]
-external view function deep(const i : nat) : (uint16, uint8) is (storage.g[5n][i], storage.h[0][i])
-external view function at(const i : nat) : (uint8, uint16, bool, int8) is (storage.a[i], storage.b[i], storage.d[i], storage.f[i])
-external view function sum() : nat is { var s : nat := 0n; for x : uint8 in storage.a do { s := s + nat(x); } } with s
+external view function deep(const i : uint) : (uint16, uint8) is (storage.g[5][i], storage.h[0][i])
+external view function at(const i : uint) : (uint8, uint16, bool, int8) is (storage.a[i], storage.b[i], storage.d[i], storage.f[i])
+external view function sum() : uint is { var s : uint := 0; for x : uint8 in storage.a do { s := s + uint(x); } } with s
 "#;
     install_mocks();
     let rt = deploy(&compile(src).expect("compile")).expect("deploy");
@@ -1182,48 +1182,48 @@ external view function sum() : nat is { var s : nat := 0n; for x : uint8 in stor
 #[test]
 fn popped_and_shrunk_elements_leave_no_data() {
     let src = r#"
-interface Echo is { view function echo(x : nat) : nat; }
-type doc is record { n : uint8; s : string; xs : list(nat); bs : list(uint16); o : option(string); }
-type dyn is | Name of string | Nums of list(nat) | Blank
-type memo is record { s : string; xs : list(nat); }
-type note is | Gone | Plain of memo | Pair of (nat, list(string))
+interface Echo is { view function echo(x : uint) : uint; }
+type doc is record { n : uint8; s : string; xs : list(uint); bs : list(uint16); o : option(string); }
+type dyn is | Name of string | Nums of list(uint) | Blank
+type memo is record { s : string; xs : list(uint); }
+type note is | Gone | Plain of memo | Pair of (uint, list(string))
 storage is record {
-  xs : list(list(nat)); ys : list(list(list(uint8))); ds : list(doc); m : map(nat, list(doc));
+  xs : list(list(uint)); ys : list(list(list(uint8))); ds : list(doc); m : map(uint, list(doc));
   ss : list(list(string)); fs : list(list(string, 2)); vs : list(dyn); os : list(option(memo));
-  ol : list(option(list(nat))); ns : list(note);
+  ol : list(option(list(uint))); ns : list(note);
 }
 external function fill() is {
   const long : string := "a string well past thirty-two bytes, to spill into data slots";
-  const d : doc := { n = 1; s = long; xs = [4n, 5n]; bs = [6, 7, 8]; o = Some(long); };
-  List.push(storage.xs, [1n, 2n, 3n]);
+  const d : doc := { n = 1; s = long; xs = [4, 5]; bs = [6, 7, 8]; o = Some(long); };
+  List.push(storage.xs, [1, 2, 3]);
   List.push(storage.ys, [[uint8(1), 2], [3]]);
   List.push(storage.ds, d);
-  List.push(storage.m[3n], d);
+  List.push(storage.m[3], d);
   List.push(storage.ss, [long, "short"]);
   List.push(storage.fs, [long, long]);
   List.push(storage.vs, Name(long));
-  List.push(storage.vs, Nums([1n, 2n]));
-  List.push(storage.os, Some({ s = long; xs = [3n]; }));
-  List.push(storage.ol, Some([4n, 5n]));
-  List.push(storage.ns, Plain({ s = long; xs = [6n]; }));
-  List.push(storage.ns, Pair((7n, [long])));
+  List.push(storage.vs, Nums([1, 2]));
+  List.push(storage.os, Some({ s = long; xs = [3]; }));
+  List.push(storage.ol, Some([4, 5]));
+  List.push(storage.ns, Plain({ s = long; xs = [6]; }));
+  List.push(storage.ns, Pair((7, [long])));
 }
 external function pop_all() is { pops(); }
 function pops() is {
-  List.pop(storage.xs); List.pop(storage.ys); List.pop(storage.ds); List.pop(storage.m[3n]);
+  List.pop(storage.xs); List.pop(storage.ys); List.pop(storage.ds); List.pop(storage.m[3]);
   List.pop(storage.ss); List.pop(storage.fs);
   List.pop(storage.vs); List.pop(storage.vs); List.pop(storage.os); List.pop(storage.ol);
   List.pop(storage.ns); List.pop(storage.ns);
 }
-external function pop_then_ask() : nat is { pops(); } with query Echo(address(0xcd)).echo(storage.xs.length)
+external function pop_then_ask() : uint is { pops(); } with query Echo(address(0xcd)).echo(storage.xs.length)
 external function keep_one() is {
   storage.xs := [storage.xs[0]]; storage.ys := [storage.ys[0]]; storage.ds := [storage.ds[0]];
-  storage.m[3n] := [storage.m[3n][0]]; storage.ss := [storage.ss[0]]; storage.fs := [storage.fs[0]];
+  storage.m[3] := [storage.m[3][0]]; storage.ss := [storage.ss[0]]; storage.fs := [storage.fs[0]];
   storage.vs := [storage.vs[0], storage.vs[1]]; storage.os := [storage.os[0]];
   storage.ol := [storage.ol[0]]; storage.ns := [storage.ns[0], storage.ns[1]];
 }
 external function clear() is {
-  storage.xs := []; storage.ys := []; storage.ds := []; storage.m[3n] := []; storage.ss := []; storage.fs := [];
+  storage.xs := []; storage.ys := []; storage.ds := []; storage.m[3] := []; storage.ss := []; storage.fs := [];
   storage.vs := []; storage.os := []; storage.ol := []; storage.ns := [];
 }
 "#;
@@ -1258,29 +1258,29 @@ external function clear() is {
 fn journal_holds_any_number_of_slots() {
     install_mocks();
     let src = "\
-interface Echo is { view function echo(x : nat) : nat; }
-interface Keep is { function keep(x : nat) : nat; }
-storage is record { pre : uint8; s : string; m : map(nat, nat); xs : list(list(nat)); n : nat; }
-external view function peek() : nat is storage.s.length
-external function write(const t : string; const n : nat) is {
+interface Echo is { view function echo(x : uint) : uint; }
+interface Keep is { function keep(x : uint) : uint; }
+storage is record { pre : uint8; s : string; m : map(uint, uint); xs : list(list(uint)); n : uint; }
+external view function peek() : uint is storage.s.length
+external function write(const t : string; const n : uint) is {
   storage.s := t;
-  for i : nat in 0n .. n do { storage.m[i] := i + 1n; }
-  List.push(storage.xs, [1n, 2n, 3n, 4n, 5n, 6n, 7n, 8n, 9n, 10n]);
-  const e : nat := query Echo(address(0xcd)).echo(storage.s.length);
-  for i : nat in 0n .. n do { storage.m[i] := storage.m[i] + e; }
-  storage.n := storage.s.length + storage.xs[0n][9n] + storage.m[0n];
+  for i : uint in 0 .. n do { storage.m[i] := i + 1; }
+  List.push(storage.xs, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+  const e : uint := query Echo(address(0xcd)).echo(storage.s.length);
+  for i : uint in 0 .. n do { storage.m[i] := storage.m[i] + e; }
+  storage.n := storage.s.length + storage.xs[0][9] + storage.m[0];
 }
-external view function get(const k : nat) : (nat, nat, nat, nat) is
-  (storage.m[k], storage.xs.length, storage.xs[storage.xs.length - 1n][9n], storage.n)
+external view function get(const k : uint) : (uint, uint, uint, uint) is
+  (storage.m[k], storage.xs.length, storage.xs[storage.xs.length - 1][9], storage.n)
 external view function text() : string is storage.s
-external view function at(const k : nat) : nat is storage.m[k]
-external function phases(const n : nat) is {
-  for i : nat in 0n .. n do { storage.m[i] := i + 1n; }
-  storage.n := query Echo(address(0xcd)).echo(storage.m[0n]);
-  defer Keep(address(0xcd)).keep(n) then (k : nat) {
-    for i : nat in 0n .. k do { storage.m[i + 100n] := storage.m[i] + 1n; }
-    const f : nat := query Echo(address(0xcd)).echo(storage.m[100n]);
-    for i : nat in 0n .. k do { storage.m[i + 100n] := storage.m[i + 100n] + f; }
+external view function at(const k : uint) : uint is storage.m[k]
+external function phases(const n : uint) is {
+  for i : uint in 0 .. n do { storage.m[i] := i + 1; }
+  storage.n := query Echo(address(0xcd)).echo(storage.m[0]);
+  defer Keep(address(0xcd)).keep(n) then (k : uint) {
+    for i : uint in 0 .. k do { storage.m[i + 100] := storage.m[i] + 1; }
+    const f : uint := query Echo(address(0xcd)).echo(storage.m[100]);
+    for i : uint in 0 .. k do { storage.m[i + 100] := storage.m[i + 100] + f; }
   };
 }
 ";

@@ -1,7 +1,7 @@
 storage is record {
-  count : nat;
+  count : uint;
 }
 
-view function bad() : nat is {
-  storage.count := 1n
+view function bad() : uint is {
+  storage.count := 1
 } with storage.count

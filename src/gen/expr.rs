@@ -126,7 +126,7 @@ impl<'a> Gen<'a> {
         }
         match e {
             Expr::Lit { lit, ty, line, col } => match lit {
-                Lit::Nat(w) | Lit::Wei(w) | Lit::Duration(w) => {
+                Lit::Uint(w) | Lit::Wei(w) | Lit::Duration(w) => {
                     self.push_word(*w);
                     Ok(())
                 }
@@ -340,7 +340,7 @@ impl<'a> Gen<'a> {
                     BinOp::Gt | BinOp::Neq | BinOp::Eq,
                     Expr::Field { base, name, .. },
                     Expr::Lit {
-                        lit: Lit::Nat(zero) | Lit::Int(zero, _),
+                        lit: Lit::Uint(zero) | Lit::Int(zero, _),
                         ..
                     },
                 ) = (op, left.as_ref(), right.as_ref())
@@ -401,7 +401,7 @@ impl<'a> Gen<'a> {
                 // A loop counter is below its limit, so one more always fits its type.
                 if *op == BinOp::Add
                     && matches!(left.as_ref(), Expr::Ident { sym: Some(c), .. } if self.loop_counters.contains(c))
-                    && matches!(right.as_ref(), Expr::Lit { lit: Lit::Nat(w) | Lit::Int(w, _), .. } if *w == Word::from_u64(1))
+                    && matches!(right.as_ref(), Expr::Lit { lit: Lit::Uint(w) | Lit::Int(w, _), .. } if *w == Word::from_u64(1))
                 {
                     self.op(ADD);
                     return Ok(());
@@ -573,7 +573,7 @@ impl<'a> Gen<'a> {
                     self.apply_flip(flip);
                 }
             }
-            Builtin::NatDivRem | Builtin::IntDivRem => {
+            Builtin::UintDivRem | Builtin::IntDivRem => {
                 return Err(error(line, col, "div_rem returns a tuple"));
             }
             Builtin::Ctor(_) => {
@@ -582,11 +582,11 @@ impl<'a> Gen<'a> {
             Builtin::SpecState(_) | Builtin::SpecSum | Builtin::SpecCount | Builtin::SpecForall => {
                 unreachable!("the checker drops spec blocks before codegen")
             }
-            Builtin::NatToString | Builtin::IntToString => {
+            Builtin::UintToString | Builtin::IntToString => {
                 self.compile_value(&args[0])?;
                 self.call_sub(Sub::DecimalString(b == Builtin::IntToString));
             }
-            Builtin::NatToHexString => {
+            Builtin::UintToHexString => {
                 self.compile_value(&args[0])?;
                 if let Some(len) = args.get(1) {
                     // `n` must fit in `len` bytes, and `len` in the memory a string can take.
@@ -741,7 +741,7 @@ impl<'a> Gen<'a> {
                     Sub::Base64Encode
                 });
             }
-            Builtin::NatMulDiv => {
+            Builtin::UintMulDiv => {
                 for arg in args {
                     self.compile_value(arg)?;
                 }
@@ -782,7 +782,7 @@ impl<'a> Gen<'a> {
                     }
                 }
             }
-            Builtin::NatMulMod | Builtin::NatAddMod => {
+            Builtin::UintMulMod | Builtin::UintAddMod => {
                 for arg in args {
                     self.compile_value(arg)?;
                 }
@@ -790,7 +790,7 @@ impl<'a> Gen<'a> {
                 self.op(ISZERO);
                 self.revert_if_panic(0x12)?;
                 self.op(SWAP1 + 1);
-                self.op(if b == Builtin::NatMulMod {
+                self.op(if b == Builtin::UintMulMod {
                     MULMOD
                 } else {
                     ADDMOD
@@ -851,7 +851,7 @@ impl<'a> Gen<'a> {
                 // of their own width.
                 if !matches!(
                     dst.kind,
-                    TyKind::Nat | TyKind::Int | TyKind::Wei | TyKind::Timestamp
+                    TyKind::Uint | TyKind::Int | TyKind::Wei | TyKind::Timestamp
                 ) {
                     return Ok(());
                 }
@@ -1069,7 +1069,7 @@ impl<'a> Gen<'a> {
     fn hash_word(&self, ty: usize, packed: bool) -> bool {
         let t = &self.checked.types[self.peel_nominal(ty)];
         match t.kind {
-            TyKind::Nat | TyKind::Int => !packed || t.bits == 0 || t.bits == 256,
+            TyKind::Uint | TyKind::Int => !packed || t.bits == 0 || t.bits == 256,
             TyKind::Wei | TyKind::Timestamp => true,
             TyKind::Address | TyKind::Bool | TyKind::Interface => !packed,
             TyKind::Bytes => t.bits == 32 || (!packed && t.bits > 0),
@@ -1246,7 +1246,7 @@ impl<'a> Gen<'a> {
 
     /// Stack: `a b` becomes `a * b`.
     pub(super) fn checked_mul(&mut self, signed: bool) -> Result<(), Error> {
-        // simplify: nat/int are checked uint256/int256. Ceiling: values must fit in 256 bits. Upgrade path: a bigint type if a contract needs Michelson-sized integers.
+        // simplify: uint/int are checked uint256/int256. Ceiling: values must fit in 256 bits. Upgrade path: a bigint type if a contract needs Michelson-sized integers.
         self.op(DUP1 + 1);
         self.op(DUP1 + 1);
         self.op(MUL);
@@ -1287,7 +1287,7 @@ impl<'a> Gen<'a> {
         let one = Word::from_u64(1);
         let lit = |x: &Expr| match x {
             Expr::Lit {
-                lit: Lit::Nat(w) | Lit::Int(w, _),
+                lit: Lit::Uint(w) | Lit::Int(w, _),
                 ..
             } => Some(*w),
             _ => None,
@@ -1632,7 +1632,7 @@ impl<'a> Gen<'a> {
                     let ty = dyns
                         .iter()
                         .find(|&&(at, _)| at == i)
-                        .map_or(crate::check::TY_NAT, |d| d.1);
+                        .map_or(crate::check::TY_UINT, |d| d.1);
                     self.write_empty(dst + i as i32 * 32, ty)?;
                 }
             }

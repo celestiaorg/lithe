@@ -1,9 +1,9 @@
 storage is record {
-  n : nat;
+  n : uint;
 }
 
-view function peek() : nat is
+view function peek() : uint is
   storage.n
 
-pure function wrapped() : nat is
+pure function wrapped() : uint is
   peek()

@@ -22,7 +22,7 @@ storage is record {
 }
 
 storage settings at "vault.settings" is record {
-  fee : nat;
+  fee : uint;
   treasury : address;
 }
 
@@ -30,7 +30,7 @@ upgrade guard is {
   assert(Evm.sender() = storage.owner, Not_owner);
 }
 
-migrate init_settings(const fee : nat; const treasury : address) is {
+migrate init_settings(const fee : uint; const treasury : address) is {
   settings.fee := fee;
   settings.treasury := treasury;
 }
@@ -39,7 +39,7 @@ deploy(const owner : address) is {
   storage.owner := owner;
 }
 
-external view function fee() : nat is
+external view function fee() : uint is
   settings.fee
 ```
 

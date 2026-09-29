@@ -5,23 +5,23 @@ description: "Read, increment, and decrement a stored number."
 
 # Counter
 
-A first stateful contract. `nat` is an unsigned 256-bit integer and `1n` is a `nat` literal.
+A first stateful contract. `uint` is an unsigned 256-bit integer and `1` here is a `uint`.
 
 ```lithe [counter.lithe]
 storage is record {
-  count : nat;
+  count : uint;
 }
 
-external view function get() : nat is
+external view function get() : uint is
   storage.count
 
 external function inc() is {
-  storage.count := storage.count + 1n;
+  storage.count := storage.count + 1;
 }
 
-(* `nat` never goes negative. Decrementing zero reverts with Panic(0x11). *)
+(* `uint` never goes negative. Decrementing zero reverts with Panic(0x11). *)
 external function dec() is {
-  storage.count := storage.count - 1n;
+  storage.count := storage.count - 1;
 }
 ```
 

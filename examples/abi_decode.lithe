@@ -2,7 +2,7 @@
    data too short for the value, or a word too wide for its type, reverts. *)
 
 storage is record {
-  decoded : nat;
+  decoded : uint;
 }
 
 external pure function round_bytes(const value : bytes) : bytes is

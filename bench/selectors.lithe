@@ -4,19 +4,19 @@
 import "std/interfaces/erc165.lithe";
 
 interface Vault is {
-  function deposit(amount : nat);
-  function withdraw(amount : nat; to : address);
-  view function balanceOf(who : address) : nat;
+  function deposit(amount : uint);
+  function withdraw(amount : uint; to : address);
+  view function balanceOf(who : address) : uint;
 }
 
 interface Token is {
-  function transfer(to : address; amount : nat) : bool;
+  function transfer(to : address; amount : uint) : bool;
 }
 
 error Unrouted of bytes4;
 
 storage is record {
-  handled : map(bytes4, nat);
+  handled : map(bytes4, uint);
 }
 
 external pure function supportsInterface(const interfaceId : bytes4) : bool is
@@ -32,13 +32,13 @@ is {
     or selector = Abi.selector(Token.transfer),
     Unrouted(selector)
   );
-  storage.handled[selector] := storage.handled[selector] + 1n;
+  storage.handled[selector] := storage.handled[selector] + 1;
 }
 
-external view function handled(const selector : bytes4) : nat is
+external view function handled(const selector : bytes4) : uint is
   storage.handled[selector]
 
-external pure function transfer_call(const to : address; const amount : nat) : bytes is
+external pure function transfer_call(const to : address; const amount : uint) : bytes is
   Abi.encode_with_selector(Abi.selector(Token.transfer), to, amount)
 
 external pure function ids() : (bytes4, bytes4, bytes4) is

@@ -36,13 +36,13 @@ immutable is record {
   shift : int8;
   tag : bytes4;
   on : bool;
-  limits : record { low : nat; high : nat; };
-  unset : nat;
+  limits : record { low : uint; high : uint; };
+  unset : uint;
 }
 
 storage is record {
-  seen : nat;
-  during : nat;
+  seen : uint;
+  during : uint;
 }
 
 deploy(const factory : address; const fee : uint16) is {
@@ -53,8 +53,8 @@ deploy(const factory : address; const fee : uint16) is {
   immutable.shift := int8(-3);
   immutable.tag := 0xdeadbeef;
   immutable.on := true;
-  immutable.limits := { low = 5n; high = 9n; };
-  storage.seen := nat(immutable.fee) + immutable.limits.low;
+  immutable.limits := { low = 5; high = 9; };
+  storage.seen := uint(immutable.fee) + immutable.limits.low;
 }
 
 external view function factory() : address is immutable.factory
@@ -62,11 +62,11 @@ external view function fee() : uint16 is immutable.fee
 external view function shift() : int8 is immutable.shift
 external view function tag() : bytes4 is immutable.tag
 external view function on() : bool is immutable.on
-external view function limits() : nat is immutable.limits.low + immutable.limits.high
-external view function twice() : nat is nat(immutable.fee) + nat(immutable.fee)
-external view function unset() : nat is immutable.unset
-external view function seen() : nat is storage.seen
-external view function during() : nat is storage.during
+external view function limits() : uint is immutable.limits.low + immutable.limits.high
+external view function twice() : uint is uint(immutable.fee) + uint(immutable.fee)
+external view function unset() : uint is immutable.unset
+external view function seen() : uint is storage.seen
+external view function during() : uint is storage.during
 "#;
 
 /// `deploy` writes immutables; later reads in `deploy` see the last write, fields never
@@ -114,26 +114,26 @@ module Fees is {
   function init(const bps : uint16; const to : address) is {
     set(bps);
     fees.to := to;
-    fees.window := { start = timestamp(10n); stop = timestamp(20n); };
+    fees.window := { start = timestamp(10); stop = timestamp(20); };
   }
 
   function set(const bps : uint16) is {
     fees.bps := bps;
   }
 
-  view function cut(const amount : nat) : nat is
-    amount * nat(fees.bps) / 10_000n
+  view function cut(const amount : uint) : uint is
+    amount * uint(fees.bps) / 10_000
 
-  view function length() : nat is {
+  view function length() : uint is {
     const w : span := fees.window;
-  } with nat(w.stop) - nat(w.start)
+  } with uint(w.stop) - uint(w.start)
 
   external view function fee_to() : address is
     fees.to
 }
 
 interface Price is {
-  view function price(x : nat) : nat;
+  view function price(x : uint) : uint;
 }
 
 use Fees exposing {
@@ -141,22 +141,22 @@ use Fees exposing {
 }
 
 storage is record {
-  paid : nat;
+  paid : uint;
 }
 
 deploy(const bps : uint16) is {
   Fees.init(bps, Evm.sender());
 }
 
-external function pay(const amount : nat) is {
+external function pay(const amount : uint) is {
   storage.paid := storage.paid + Fees.cut(amount);
 }
 
-external view function window() : nat is
+external view function window() : uint is
   Fees.length()
 
 external function quoted(const oracle : Price) is {
-  const price : nat := query oracle.price(40_000n);
+  const price : uint := query oracle.price(40_000);
   storage.paid := price + Fees.cut(price) + Fees.length();
 }
 "#;
@@ -204,12 +204,12 @@ fn modules_own_named_immutables() {
 /// Any other path to a write, direct or through calls, is rejected where it starts.
 #[test]
 fn immutables_are_written_only_while_setting_up() {
-    let head = "immutable is record { x : nat; }\nstorage is record { n : nat; }\n";
+    let head = "immutable is record { x : uint; }\nstorage is record { n : uint; }\n";
     let ok = format!(
-        "{head}function set(const v : nat) is {{ immutable.x := v; }}\n\
-         function set_twice(const v : nat) is {{ set(v); set(v + 1n); }}\n\
-         deploy(const v : nat) is {{ set_twice(v); storage.n := immutable.x; }}\n\
-         external view function x() : nat is immutable.x\n"
+        "{head}function set(const v : uint) is {{ immutable.x := v; }}\n\
+         function set_twice(const v : uint) is {{ set(v); set(v + 1); }}\n\
+         deploy(const v : uint) is {{ set_twice(v); storage.n := immutable.x; }}\n\
+         external view function x() : uint is immutable.x\n"
     );
     let init = compile(&ok).expect("compile");
     let made = construct_with(&init, &[w(4)]);
@@ -220,69 +220,69 @@ fn immutables_are_written_only_while_setting_up() {
     assert_eq!(slot(&made.storage, 0), w(5));
     let cases = [
         (
-            format!("{head}external function poke() is {{ immutable.x := 1n; }}\n"),
+            format!("{head}external function poke() is {{ immutable.x := 1; }}\n"),
             "external function `poke` writes immutable `immutable.x`; immutables are written only by `deploy` or the functions it calls, since a contract that is not upgradeable has them in its code",
         ),
         (
-            format!("{head}migrate m() is {{ immutable.x := 1n; }}\n"),
+            format!("{head}migrate m() is {{ immutable.x := 1; }}\n"),
             "migration `m` writes immutable `immutable.x`; immutables are written only by `deploy` or the functions it calls",
         ),
         (
             format!(
-                "{head}function set(const v : nat) is {{ immutable.x := v; }}\n\
-                 function relay() is {{ set(2n); }}\n\
+                "{head}function set(const v : uint) is {{ immutable.x := v; }}\n\
+                 function relay() is {{ set(2); }}\n\
                  deploy() is {{ relay(); }}\n\
                  external function poke() is {{ relay(); }}\n"
             ),
             "external function `poke` calls `relay`, which writes immutable `immutable.x`; call it only from `deploy` or the functions it calls",
         ),
         (
-            format!("{head}function set() is {{ immutable.x := 2n; }}\npayable receive is {{ set(); }}\n"),
+            format!("{head}function set() is {{ immutable.x := 2; }}\npayable receive is {{ set(); }}\n"),
             "`receive` calls `set`, which writes immutable `immutable.x`",
         ),
         (
             "module M is {\n\
-               immutable m at \"t.m\" is record { x : nat; }\n\
-               external function poke() is { m.x := 1n; }\n\
+               immutable m at \"t.m\" is record { x : uint; }\n\
+               external function poke() is { m.x := 1; }\n\
              }\n\
              use M;\n\
-             storage is record { n : nat; }\n\
-             external function go() is { storage.n := 1n; }\n"
+             storage is record { n : uint; }\n\
+             external function go() is { storage.n := 1; }\n"
                 .to_string(),
             "external `M.poke` writes immutable `m.x`",
         ),
         (
             "upgradeable\n\
              immutable is record { owner : address; }\n\
-             storage is record { n : nat; }\n\
+             storage is record { n : uint; }\n\
              function claim() is { immutable.owner := Evm.sender(); }\n\
              upgrade guard is { claim(); }\n\
-             external function go() is { storage.n := 1n; }\n"
+             external function go() is { storage.n := 1; }\n"
                 .to_string(),
             "the upgrade guard calls `claim`, which writes immutable `immutable.owner`; call it only from `deploy`, a migration, or the functions they call",
         ),
         (
-            format!("{head}immutable other at \"lithe.immutable\" is record {{ y : nat; }}\n"),
+            format!("{head}immutable other at \"lithe.immutable\" is record {{ y : uint; }}\n"),
             "share the id \"lithe.immutable\"",
         ),
         (
-            format!("{head}storage s at \"lithe.immutable\" is record {{ y : nat; }}\n"),
+            format!("{head}storage s at \"lithe.immutable\" is record {{ y : uint; }}\n"),
             "share the id \"lithe.immutable\"",
         ),
         (
-            "immutable is record { m : map(address, nat); }\nstorage is record { n : nat; }\n".to_string(),
+            "immutable is record { m : map(address, uint); }\nstorage is record { n : uint; }\n".to_string(),
             "immutable field `m` is a collection; an immutable holds a fixed-size value",
         ),
         (
-            "immutable is record { name : string; }\nstorage is record { n : nat; }\n".to_string(),
+            "immutable is record { name : string; }\nstorage is record { n : uint; }\n".to_string(),
             "immutable field `name` is dynamic; an immutable holds a fixed-size value",
         ),
         (
-            "immutable is nat\nstorage is record { n : nat; }\n".to_string(),
+            "immutable is uint\nstorage is record { n : uint; }\n".to_string(),
             "immutables must be a record",
         ),
         (
-            "module M is {\n immutable is record { x : nat; }\n}\nstorage is record { n : nat; }\n".to_string(),
+            "module M is {\n immutable is record { x : uint; }\n}\nstorage is record { n : uint; }\n".to_string(),
             "a module names its immutables: `immutable name at \"id\" is record`",
         ),
     ];
@@ -303,18 +303,18 @@ immutable is record {
 }
 
 immutable limits at "vault.limits" is record {
-  cap : nat;
+  cap : uint;
 }
 
 storage is record {
-  n : nat;
+  n : uint;
 }
 
 upgrade guard is {
   assert(Evm.sender() = immutable.owner, Not_owner);
 }
 
-deploy(const owner : address; const cap : nat) is {
+deploy(const owner : address; const cap : uint) is {
   immutable.owner := owner;
   immutable.fee := 30;
   limits.cap := cap;
@@ -322,7 +322,7 @@ deploy(const owner : address; const cap : nat) is {
 
 external view function owner() : address is immutable.owner
 external view function fee() : uint16 is immutable.fee
-external view function cap() : nat is limits.cap
+external view function cap() : uint is limits.cap
 "#;
 
 /// An upgradeable contract keeps its immutables in the proxy's storage, at the ERC-7201 root
@@ -331,10 +331,10 @@ external view function cap() : nat is limits.cap
 fn upgradeable_immutables_live_in_proxy_storage() {
     let v1 = deploy(&compile(UPGRADEABLE_V1).expect("v1")).expect("v1 runtime");
     let v2_src = UPGRADEABLE_V1
-        .replace("  cap : nat;\n}", "  cap : nat;\n  floor : nat;\n}")
+        .replace("  cap : uint;\n}", "  cap : uint;\n  floor : uint;\n}")
         .replace(
             "external view function cap()",
-            "migrate set_floor(const floor : nat) is {\n  limits.floor := floor;\n}\n\nexternal view function floor() : nat is limits.floor\nexternal view function cap()",
+            "migrate set_floor(const floor : uint) is {\n  limits.floor := floor;\n}\n\nexternal view function floor() : uint is limits.floor\nexternal view function cap()",
         );
     let v2 = deploy(&compile(&v2_src).expect("v2")).expect("v2 runtime");
     let (a, b) = (w(0xa11), w(0xb22));
@@ -403,8 +403,8 @@ module Base is {
     base.unit := unit;
   }
 
-  view function unit() : nat is
-    nat(base.unit)
+  view function unit() : uint is
+    uint(base.unit)
 }
 
 module Pool is {
@@ -412,35 +412,35 @@ module Pool is {
 
   immutable pool at "split.pool" is record {
     token : address;
-    rates : record { buy : nat; sell : nat; };
+    rates : record { buy : uint; sell : uint; };
     flag : bool;
   }
 
   storage pool_state at "split.pool.state" is record {
-    total : nat;
+    total : uint;
   }
 
   function init(const token : address) is {
     pool.token := token;
-    pool.rates := { buy = 3n; sell = 5n; };
+    pool.rates := { buy = 3; sell = 5; };
     pool.flag := true;
   }
 
-  external function add(const n : nat; const note : string) is {
+  external function add(const n : uint; const note : string) is {
     pool_state.total := pool_state.total + n * pool.rates.buy + Base.unit() + note.length;
   }
 
   external view function token() : address is
     pool.token
 
-  external view function quote(const n : nat) : nat is {
-    var out : nat := 0n;
+  external view function quote(const n : uint) : uint is {
+    var out : uint := 0;
     if pool.flag then {
       out := n * pool.rates.sell + Base.unit();
     }
   } with out
 
-  external view function total() : nat is
+  external view function total() : uint is
     pool_state.total
 
   external view function raw() : bytes is
@@ -448,16 +448,16 @@ module Pool is {
 }
 
 storage is record {
-  n : nat;
+  n : uint;
 }
 
 use Base;
 
 use Pool exposing {
-  function add(n : nat; note : string);
+  function add(n : uint; note : string);
   view function token() : address;
-  view function quote(n : nat) : nat;
-  view function total() : nat;
+  view function quote(n : uint) : uint;
+  view function total() : uint;
   view function raw() : bytes;
 }
 
@@ -466,7 +466,7 @@ deploy() is {
   Pool.init(Evm.sender());
 }
 
-external view function unit() : nat is
+external view function unit() : uint is
   Base.unit()
 "#;
 
@@ -508,8 +508,8 @@ fn facets_read_immutables_after_their_calldata() {
     // Another contract exposing the module, with other values and code of its own, shares
     // the facet.
     let other = SPLIT.replace("uint32(1_000)", "uint32(7)").replace(
-        "external view function unit() : nat is\n  Base.unit()",
-        "external view function twice() : nat is\n  Base.unit() * 2n",
+        "external view function unit() : uint is\n  Base.unit()",
+        "external view function twice() : uint is\n  Base.unit() * 2",
     );
     let other = crate::split::build(
         &super::split::checked_src(&other),
@@ -582,7 +582,7 @@ fn created_contracts_set_their_own_immutables() {
     let src = r#"
 contract Factory is {
   storage is record { last : address; }
-  external function open(const fee : nat) is {
+  external function open(const fee : uint) is {
     defer create Vault(Evm.sender(), fee) then (vault : address) {
       storage.last := vault;
     };
@@ -593,26 +593,26 @@ contract Vault is {
   type side is | Buy | Sell
   immutable is record {
     owner : address;
-    fee : nat;
+    fee : uint;
     pair : (side, wei);
   }
-  storage is record { n : nat; }
-  deploy(const owner : address; const fee : nat) is {
+  storage is record { n : uint; }
+  deploy(const owner : address; const fee : uint) is {
     immutable.owner := owner;
     immutable.fee := fee;
     immutable.pair := (Sell, 1wei);
   }
   external view function owner() : address is immutable.owner
-  external view function fee() : nat is immutable.fee
+  external view function fee() : uint is immutable.fee
   external view function selling() : bool is {
     const (s, v) : (side, wei) := immutable.pair;
   } with s = Sell and v = 1wei
 }
 
 contract Bare is {
-  immutable is record { x : nat; }
-  storage is record { n : nat; }
-  external view function x() : nat is immutable.x
+  immutable is record { x : uint; }
+  storage is record { n : uint; }
+  external view function x() : uint is immutable.x
 }
 "#;
     let contracts = compile_contracts(src).expect("compile");

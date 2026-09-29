@@ -48,7 +48,7 @@ A `Contract` has:
 
 ```rust
 let sources = Sources::memory([
-    ("lib/math.lithe", "pure function twice(const n : nat) : nat is n + n\n"),
+    ("lib/math.lithe", "pure function twice(const n : uint) : uint is n + n\n"),
     ("counter.lithe", COUNTER_SOURCE),
 ]);
 let counter = lithe::compile(&sources, Path::new("counter.lithe"), &Options::default())?.single()?;

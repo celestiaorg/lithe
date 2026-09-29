@@ -1,9 +1,9 @@
 module Ledger is {
   storage ledger at "lithe.ledger" is record {
-    n : nat;
+    n : uint;
   }
 
-  function set(const n : nat) is {
+  function set(const n : uint) is {
     ledger.n := n;
   }
 }
@@ -11,7 +11,7 @@ module Ledger is {
 contract Token is {
   use Ledger;
 
-  external function go(const n : nat) is {
+  external function go(const n : uint) is {
     ledger.n := n;
   }
 }

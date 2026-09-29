@@ -3,43 +3,43 @@
 module SetEnumerable(T : map_key) is {
   type self is record {
     values : list(T);
-    indexes : map(T, nat);
+    indexes : map(T, uint);
   }
 
   type iterator is record {
-    index : nat;
+    index : uint;
   }
 
   error Out_of_bounds;
 
   view function contains(storage items : self; const value : T) : bool is
-    items.indexes[value] > 0n
+    items.indexes[value] > 0
 
-  view function length(storage items : self) : nat is
+  view function length(storage items : self) : uint is
     items.values.length
 
-  view function at(storage items : self; const index : nat) : T
+  view function at(storage items : self; const index : uint) : T
     raises Out_of_bounds
   is {
     assert(index < items.values.length, Out_of_bounds);
   } with items.values[index]
 
   function add(storage items : self; const value : T) is {
-    if items.indexes[value] = 0n then {
+    if items.indexes[value] = 0 then {
       List.push(items.values, value);
       items.indexes[value] := items.values.length;
     }
   }
 
   function remove(storage items : self; const value : T) is {
-    const found : nat := items.indexes[value];
-    if found = 0n then {
+    const found : uint := items.indexes[value];
+    if found = 0 then {
       skip
     } else {
-      const moved : T := items.values[items.values.length - 1n];
-      items.values[found - 1n] := moved;
+      const moved : T := items.values[items.values.length - 1];
+      items.values[found - 1] := moved;
       items.indexes[moved] := found;
-      items.indexes[value] := 0n;
+      items.indexes[value] := 0;
       List.pop(items.values);
     }
   }

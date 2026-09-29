@@ -13,41 +13,41 @@ A deferred call's result arrives after the transition that deferred it. `then (r
    the transition: it may write storage, emit, and defer again. *)
 
 interface Exchange is {
-  function swap(amount_in : nat) : nat;
-  function split(amount : nat) : (nat, nat);
+  function swap(amount_in : uint) : uint;
+  function split(amount : uint) : (uint, uint);
 }
 
-error Already_filled of nat;
+error Already_filled of uint;
 
 event Filled of record {
-  indexed id : nat;
-  amount_out : nat;
+  indexed id : uint;
+  amount_out : uint;
 }
 
 type order is record {
   status : uint8;
-  amount_out : nat;
+  amount_out : uint;
 }
 
 storage is record {
   exchange : Exchange;
-  orders : map(nat, order);
-  left : nat;
-  right : nat;
+  orders : map(uint, order);
+  left : uint;
+  right : uint;
 }
 
 external function init(const exchange : Exchange) is {
   storage.exchange := exchange;
 }
 
-external nonreentrant function fill(const id : nat; const amount_in : nat)
+external nonreentrant function fill(const id : uint; const amount_in : uint)
   raises Already_filled
 is {
   assert(storage.orders[id].status = uint8(0), Already_filled(id));
   (* The exchange sees this order as pending while it runs. *)
   storage.orders[id].status := uint8(1);
   defer storage.exchange.swap(amount_in)
-    then (amount_out : nat) {
+    then (amount_out : uint) {
       storage.orders[id].status := uint8(2);
       storage.orders[id].amount_out := amount_out;
       emit Filled { id = id; amount_out = amount_out; };
@@ -55,9 +55,9 @@ is {
 }
 
 (* A tuple result destructures in the binding. *)
-external nonreentrant function split(const amount : nat) is {
+external nonreentrant function split(const amount : uint) is {
   defer storage.exchange.split(amount)
-    then ((a, b) : (nat, nat)) {
+    then ((a, b) : (uint, uint)) {
       storage.left := storage.left + a;
       storage.right := storage.right + b;
     };

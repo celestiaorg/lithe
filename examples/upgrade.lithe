@@ -13,11 +13,11 @@ upgrade guard is {
 }
 
 storage settings at "vault.settings" is record {
-  fee : nat;
+  fee : uint;
   paused : bool;
 }
 
-migrate init(const fee : nat) is {
+migrate init(const fee : uint) is {
   settings.fee := fee;
 }
 

@@ -1,7 +1,7 @@
 upgradeable
 
 storage is record {
-  n : nat;
+  n : uint;
 }
 
 external function go() is {

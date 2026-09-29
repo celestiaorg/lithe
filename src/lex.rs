@@ -23,7 +23,6 @@ impl Default for Extras {
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum Num {
-    Nat(Word),
     Int(Word),
     Wei(Word),
     Duration(Word),
@@ -65,7 +64,7 @@ enum Raw {
     Ident,
 
     #[regex(r"0x[0-9a-fA-F_]+", hex_lit)]
-    #[regex(r"[0-9][0-9_]*(n|eth|gwei|wei|seconds|minutes|hours|days)?", number)]
+    #[regex(r"[0-9][0-9_]*(eth|gwei|wei|seconds|minutes|hours|days)?", number)]
     Number(Num),
 
     #[token("\"", string_lit)]
@@ -345,8 +344,6 @@ fn number(lex: &mut Lexer<Raw>) -> Result<Num, LexError> {
         (rest, NumKind::Wei(1_000_000_000_000_000_000))
     } else if let Some(rest) = slice.strip_suffix("wei") {
         (rest, NumKind::Wei(1))
-    } else if let Some(rest) = slice.strip_suffix('n') {
-        (rest, NumKind::Nat)
     } else {
         (slice, NumKind::Plain)
     };
@@ -359,10 +356,9 @@ fn number(lex: &mut Lexer<Raw>) -> Result<Num, LexError> {
     };
     let word = match kind {
         NumKind::Wei(scale) | NumKind::Duration(scale) => word.wrapping_mul(Word::from_u64(scale)),
-        NumKind::Nat | NumKind::Plain => word,
+        NumKind::Plain => word,
     };
     match kind {
-        NumKind::Nat => Ok(Num::Nat(word)),
         NumKind::Wei(_) => Ok(Num::Wei(word)),
         NumKind::Duration(_) => Ok(Num::Duration(word)),
         NumKind::Plain => Ok(Num::Int(word)),
@@ -370,7 +366,6 @@ fn number(lex: &mut Lexer<Raw>) -> Result<Num, LexError> {
 }
 
 enum NumKind {
-    Nat,
     Plain,
     Wei(u64),
     Duration(u64),
@@ -415,7 +410,6 @@ fn col_at(lex: &Lexer<Raw>, start: usize) -> u32 {
 pub(crate) enum Kind {
     Eof,
     Ident,
-    Nat,
     Int,
     WeiLit,
     DurationLit,
@@ -534,7 +528,7 @@ pub(crate) fn tokenize(src: &str) -> Result<Vec<Token>, Error> {
         let raw = item.map_err(|err| lex_error(src, &lex, err))?;
         let (word, string) = match &raw {
             Raw::Skipped | Raw::Comment => continue,
-            Raw::Number(Num::Nat(w) | Num::Int(w) | Num::Wei(w) | Num::Duration(w)) => (*w, None),
+            Raw::Number(Num::Int(w) | Num::Wei(w) | Num::Duration(w)) => (*w, None),
             Raw::Number(Num::Bytes(digits)) => (Word::from_u64(0), Some(digits.clone())),
             Raw::String(s) => (Word::from_u64(0), Some(s.clone())),
             _ => (Word::from_u64(0), None),
@@ -626,7 +620,6 @@ fn lex_error(src: &str, lex: &Lexer<Raw>, err: LexError) -> Error {
 fn kind_of(raw: Raw) -> Kind {
     match raw {
         Raw::Skipped | Raw::Comment | Raw::Ident => Kind::Ident,
-        Raw::Number(Num::Nat(_)) => Kind::Nat,
         Raw::Number(Num::Int(_)) => Kind::Int,
         Raw::Number(Num::Wei(_)) => Kind::WeiLit,
         Raw::Number(Num::Duration(_)) => Kind::DurationLit,
@@ -730,7 +723,6 @@ pub(crate) fn kind_name(k: Kind) -> &'static str {
     match k {
         Kind::Eof => "end of file",
         Kind::Ident => "identifier",
-        Kind::Nat => "nat",
         Kind::Int => "int",
         Kind::HexBytes => "hex bytes",
         Kind::WeiLit => "wei",

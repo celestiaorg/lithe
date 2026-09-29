@@ -2,19 +2,19 @@
 
 module ERC20 is {
   storage erc20 at "lithe.std.erc20" is record {
-    balances : map(address, nat);
-    total_supply : nat;
+    balances : map(address, uint);
+    total_supply : uint;
   }
 
-  external function mint(const account : address; const amount : nat) is {
+  external function mint(const account : address; const amount : uint) is {
     erc20.balances[account] := erc20.balances[account] + amount;
     erc20.total_supply := erc20.total_supply + amount;
   }
 
-  external view function balance_of(const account : address) : nat is
+  external view function balance_of(const account : address) : uint is
     erc20.balances[account]
 
-  external view function total() : nat is
+  external view function total() : uint is
     erc20.total_supply
 }
 
@@ -26,22 +26,22 @@ module ERC20Votes is {
   }
 
   external function delegate(const account : address; const delegatee : address) is {
-    const _ : nat := ERC20.erc20.balances[account];
+    const _ : uint := ERC20.erc20.balances[account];
     votes.delegates[account] := delegatee;
   }
 }
 
 contract Token is {
   use ERC20 exposing {
-    function mint(account : address; amount : nat);
-    view function balance_of(account : address) : nat;
-    view function total() : nat;
+    function mint(account : address; amount : uint);
+    view function balance_of(account : address) : uint;
+    view function total() : uint;
   }
 
   use ERC20Votes exposing {
     function delegate(account : address; delegatee : address);
   }
 
-  external view function total_supply() : nat is
+  external view function total_supply() : uint is
     ERC20.erc20.total_supply
 }

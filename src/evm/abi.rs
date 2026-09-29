@@ -263,8 +263,8 @@ fn abi_is_typed() {
     let src = "error Empty;\n\
         storage is record { paid : wei; }\n\
         event Paid of record { indexed from : address; amount : wei; }\n\
-        external payable function pay(const memo : nat) raises Empty is {\n\
-          assert(memo <> 0n, Empty);\n\
+        external payable function pay(const memo : uint) raises Empty is {\n\
+          assert(memo <> 0, Empty);\n\
           storage.paid := storage.paid + Evm.value();\n\
           emit Paid { from = Evm.sender(); amount = Evm.value(); };\n\
         }\n";
@@ -688,9 +688,9 @@ fn lists_and_strings_through_calls() {
 #[test]
 fn topics_survive_encoded_event_data() {
     let src = "\
-storage is record { n : nat; }
-event E of record { indexed who : address; note : string; tail : string; ids : list(nat); }
-external function f(const note : string; const ids : list(nat)) is {
+storage is record { n : uint; }
+event E of record { indexed who : address; note : string; tail : string; ids : list(uint); }
+external function f(const note : string; const ids : list(uint)) is {
   emit E { who = Evm.sender(); note = note; tail = note; ids = ids; };
 }
 ";
@@ -822,16 +822,16 @@ external view function differ(const a : string; const b : string) : bool is a =/
 #[test]
 fn dynamic_list_elements_read_from_calldata() {
     let src = r#"
-storage is record { n : nat; }
+storage is record { n : uint; }
 external pure function idx(const xs : list(bytes)) : bytes is {
   var out : bytes := "";
-  for i : nat in 0n .. xs.length do { out := Bytes.concat(out, xs[i]); }
+  for i : uint in 0 .. xs.length do { out := Bytes.concat(out, xs[i]); }
 } with out
 external pure function each(const xs : list(bytes)) : bytes is {
   var out : bytes := "";
   for x : bytes in xs do { out := Bytes.concat(out, x); }
 } with out
-external pure function pk(const xs : list(string)) : bytes is Abi.encode_packed(xs[0n])
+external pure function pk(const xs : list(string)) : bytes is Abi.encode_packed(xs[0])
 "#;
     let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
     let w = |n: u64| Word::from_u64(n).to_be_bytes().to_vec();
@@ -961,7 +961,7 @@ external pure function build(const a : bytes; const b : bytes) : list(bytes) is 
   List.push(out, b);
 } with out
 external pure function enc(const xs : list(bytes)) : bytes is Abi.encode(xs)
-external pure function enc2(const k : nat; const xs : list(string)) : bytes is Abi.encode(k, xs)
+external pure function enc2(const k : uint; const xs : list(string)) : bytes is Abi.encode(k, xs)
 external pure function dec(const b : bytes) : list(bytes) is Abi.decode(b, blobs)
 external pure function first(const a : bytes; const b : bytes) : bytes is a
 external pure function same(const a : list(bytes); const b : list(bytes)) : bool is a = b
@@ -976,7 +976,7 @@ external function send(const e : Echo; const xs : list(string)) is {
 external function save(const xs : list(bytes)) is { storage.bs := xs; }
 external function ask_save(const e : Echo; const xs : list(bytes)) is { storage.bs := query e.same(xs); }
 external view function saved() : list(bytes) is storage.bs
-external function set_at(const i : nat; const b : bytes) is { storage.bs[i] := b; }
+external function set_at(const i : uint; const b : bytes) is { storage.bs[i] := b; }
 external view function ss() : list(string) is storage.ss
 "#;
     let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
@@ -1246,10 +1246,10 @@ external pure function signed() : bytes is Abi.encode_with_signature("f()")
 #[test]
 fn short_dynamic_arguments_ignore_what_follows() {
     let src = "\
-storage is record { n : nat; }
-external pure function bb(const a : bytes; const b : bytes) : (nat, nat) is (a.length, b.length)
-external pure function bbs(const a : bytes; const b : bytes; const s : string) : (nat, nat, nat) is (a.length, b.length, s.length)
-external pure function sb(const s : string; const b : bytes) : (nat, nat) is (s.length, b.length)
+storage is record { n : uint; }
+external pure function bb(const a : bytes; const b : bytes) : (uint, uint) is (a.length, b.length)
+external pure function bbs(const a : bytes; const b : bytes; const s : string) : (uint, uint, uint) is (a.length, b.length, s.length)
+external pure function sb(const s : string; const b : bytes) : (uint, uint) is (s.length, b.length)
 external pure function copy(const a : bytes; const s : string) : bytes is a
 ";
     let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
@@ -1297,8 +1297,8 @@ external pure function copy(const a : bytes; const s : string) : bytes is a
 
     // A lone argument is decoded inline rather than by the shared helper.
     let src = "\
-storage is record { n : nat; }
-external pure function echo(const a : bytes; const n : nat) : bytes is a
+storage is record { n : uint; }
+external pure function echo(const a : bytes; const n : uint) : bytes is a
 ";
     let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
     let mut dirty = encode_args("echo(bytes,uint256)", &[Arg::B(vec![0xab]), Arg::W(w(7))]);
@@ -1311,12 +1311,12 @@ external pure function echo(const a : bytes; const n : nat) : bytes is a
 #[test]
 fn case_parameter_names_come_from_the_declaration() {
     let src = "\
-type pair is tuple record { a : nat; b : nat; }
+type pair is tuple record { a : uint; b : uint; }
 type action is
-  | Set_fee of (fee : nat)
-  | Set_cap of nat
+  | Set_fee of (fee : uint)
+  | Set_cap of uint
   | Set_pair of (limits : pair)
-storage is record { fee : nat; }
+storage is record { fee : uint; }
 external function main(const action : action) is
   case action of {
   | Set_fee(whatever) -> { storage.fee := whatever; }

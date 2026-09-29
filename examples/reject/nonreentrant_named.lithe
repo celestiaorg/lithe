@@ -1,5 +1,5 @@
 storage is record {
-  n : nat;
+  n : uint;
 }
 
 external nonreentrant("settlement") function go() is { skip }

@@ -3,35 +3,35 @@
    lists, and a list of lists. Mirrors codec.sol. *)
 
 type order is record {
-  id : nat;
+  id : uint;
   note : string;
-  legs : list(nat);
+  legs : list(uint);
 }
 
 type orders is list(order);
-type grid is list(list(nat));
+type grid is list(list(uint));
 
 (* Several values decoded at once, returned as several results. *)
 type flat is record {
   who : address;
-  amount : nat;
+  amount : uint;
   memo : string;
 }
 
 interface Book is {
-  function place(os : list(order)) : list(nat);
+  function place(os : list(order)) : list(uint);
 }
 
 storage is record {
-  seen : nat;
+  seen : uint;
   digest : bytes32;
 }
 
-external pure function enc_flat(const who : address; const amount : nat; const memo : string) : bytes is
+external pure function enc_flat(const who : address; const amount : uint; const memo : string) : bytes is
   Abi.encode(who, amount, memo)
 
 external pure function dec_flat(const data : bytes) : flat is {
-  const (who, amount, memo) : (address, nat, string) := Abi.decode(data, (address, nat, string));
+  const (who, amount, memo) : (address, uint, string) := Abi.decode(data, (address, uint, string));
 } with { who = who; amount = amount; memo = memo; }
 
 external pure function enc_orders(const os : list(order)) : bytes is
@@ -40,10 +40,10 @@ external pure function enc_orders(const os : list(order)) : bytes is
 external pure function dec_orders(const data : bytes) : list(order) is
   Abi.decode(data, orders)
 
-external pure function enc_grid(const g : list(list(nat))) : bytes is
+external pure function enc_grid(const g : list(list(uint))) : bytes is
   Abi.encode(g)
 
-external pure function dec_grid(const data : bytes) : list(list(nat)) is
+external pure function dec_grid(const data : bytes) : list(list(uint)) is
   Abi.decode(data, grid)
 
 external pure function packed(const who : address; const amount : uint96; const memo : string) : bytes is
@@ -59,7 +59,7 @@ external function keep(const data : bytes) is {
   storage.digest := Crypto.keccak256(Abi.encode(os));
 }
 
-external view function seen() : nat is
+external view function seen() : uint is
   storage.seen
 
 external view function digest() : bytes32 is

@@ -1,11 +1,11 @@
 storage is record {
-  n : nat;
+  n : uint;
 }
 
-function bump(const keys : list(nat)) is {
+function bump(const keys : list(uint)) is {
   storage.n := storage.n + keys.length;
 }
 
-external view function get(const keys : list(nat)) : nat is {
+external view function get(const keys : list(uint)) : uint is {
   bump(keys);
 } with storage.n

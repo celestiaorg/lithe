@@ -694,7 +694,7 @@ impl<'a> Gen<'a> {
     pub(super) fn is_word_ty(&self, ty: usize) -> bool {
         matches!(
             self.checked.types[ty].kind,
-            TyKind::Nat
+            TyKind::Uint
                 | TyKind::Int
                 | TyKind::Address
                 | TyKind::Bool

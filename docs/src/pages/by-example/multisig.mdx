@@ -13,58 +13,58 @@ Three owners, two confirmations required. The owners are a fixed-size `list(addr
 
 error Not_owner;
 error Already_initialized;
-error No_such_tx of nat;
-error Already_executed of nat;
-error Already_confirmed of nat;
-error Not_confirmed of nat;
+error No_such_tx of uint;
+error Already_executed of uint;
+error Already_confirmed of uint;
+error Not_confirmed of uint;
 error Not_enough_confirmations of record {
-  id : nat;
-  confirmations : nat;
+  id : uint;
+  confirmations : uint;
 }
 
 event Submitted of record {
-  indexed id : nat;
+  indexed id : uint;
   indexed to : address;
   value : wei;
 }
 
 event Confirmed of record {
-  indexed id : nat;
+  indexed id : uint;
   indexed owner : address;
 }
 
 event Revoked of record {
-  indexed id : nat;
+  indexed id : uint;
   indexed owner : address;
 }
 
 event Executed of record {
-  indexed id : nat;
+  indexed id : uint;
 }
 
 type payment is record {
   to : address;
   value : wei;
   executed : bool;
-  confirmations : nat;
+  confirmations : uint;
 }
 
 storage is record {
   is_owner : map(address, bool);
-  threshold : nat;
-  count : nat;
-  payments : map(nat, payment);
-  confirmed : map(nat, map(address, bool));
+  threshold : uint;
+  count : uint;
+  payments : map(uint, payment);
+  confirmed : map(uint, map(address, bool));
 }
 
 external function init(const owners : list(address, 3))
   raises Already_initialized
 is {
-  assert(storage.threshold = 0n, Already_initialized);
+  assert(storage.threshold = 0, Already_initialized);
   for owner : address in owners do {
     storage.is_owner[owner] := true;
   }
-  storage.threshold := 2n;
+  storage.threshold := 2;
 }
 
 external payable function deposit() is {
@@ -75,44 +75,44 @@ view function only_owner() is {
   assert(storage.is_owner[Evm.sender()], Not_owner);
 }
 
-view function pending(const id : nat) is {
+view function pending(const id : uint) is {
   assert(id < storage.count, No_such_tx(id));
   assert(not storage.payments[id].executed, Already_executed(id));
 }
 
-external function submit(const to : address; const value : wei) : nat
+external function submit(const to : address; const value : wei) : uint
   raises Not_owner
 is {
   only_owner();
-  const id : nat := storage.count;
-  storage.payments[id] := { to = to; value = value; executed = false; confirmations = 0n; };
-  storage.count := id + 1n;
+  const id : uint := storage.count;
+  storage.payments[id] := { to = to; value = value; executed = false; confirmations = 0; };
+  storage.count := id + 1;
   emit Submitted { id = id; to = to; value = value; };
 } with id
 
-external function confirm(const id : nat)
+external function confirm(const id : uint)
   raises Not_owner | No_such_tx | Already_executed | Already_confirmed
 is {
   only_owner();
   pending(id);
   assert(not storage.confirmed[id][Evm.sender()], Already_confirmed(id));
   storage.confirmed[id][Evm.sender()] := true;
-  storage.payments[id].confirmations := storage.payments[id].confirmations + 1n;
+  storage.payments[id].confirmations := storage.payments[id].confirmations + 1;
   emit Confirmed { id = id; owner = Evm.sender(); };
 }
 
-external function revoke(const id : nat)
+external function revoke(const id : uint)
   raises Not_owner | No_such_tx | Already_executed | Not_confirmed
 is {
   only_owner();
   pending(id);
   assert(storage.confirmed[id][Evm.sender()], Not_confirmed(id));
   storage.confirmed[id][Evm.sender()] := false;
-  storage.payments[id].confirmations := storage.payments[id].confirmations - 1n;
+  storage.payments[id].confirmations := storage.payments[id].confirmations - 1;
   emit Revoked { id = id; owner = Evm.sender(); };
 }
 
-external nonreentrant function execute(const id : nat)
+external nonreentrant function execute(const id : uint)
   raises No_such_tx | Already_executed | Not_enough_confirmations
 is {
   pending(id);
@@ -126,7 +126,7 @@ is {
   defer Evm.transfer(p.to, p.value);
 }
 
-external view function payment_of(const id : nat) : payment is
+external view function payment_of(const id : uint) : payment is
   storage.payments[id]
 ```
 

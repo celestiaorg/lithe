@@ -90,7 +90,7 @@ contract Art is {
 | `predict_counterfactual(data, salt, deployer) : address` | where `deployer` would store it |
 | `read(pointer) : bytes` | the data; panics if `pointer` has no code |
 
-`SSTORE2.read(p)[start:end]` reads the whole data first. `Evm.code(p)[1n + start:1n + end]` copies only the range.
+`SSTORE2.read(p)[start:end]` reads the whole data first. `Evm.code(p)[1 + start:1 + end]` copies only the range.
 
 ## `Create3`
 
@@ -111,7 +111,7 @@ contract Deployer is {
   external payable function deploy_at(const code : bytes; const salt : bytes32) : address
     raises FailedDeployment
   is {
-    storage.last := Create3.deploy_deterministic(code, salt, nat(Evm.value()));
+    storage.last := Create3.deploy_deterministic(code, salt, uint(Evm.value()));
   } with storage.last
 
   external view function predict(const salt : bytes32) : address is
@@ -133,8 +133,8 @@ contract Deployer is {
 
 | Function | |
 | --- | --- |
-| `nonces(owner) : nat` | the next nonce; also an external |
-| `use_nonce(owner) : nat` | returns the next nonce and moves the counter on |
+| `nonces(owner) : uint` | the next nonce; also an external |
+| `use_nonce(owner) : uint` | returns the next nonce and moves the counter on |
 | `use_checked_nonce(owner, nonce)` | the same, raising `InvalidAccountNonce` unless `nonce` is the next one |
 
 ## `Checkpoints`
@@ -150,18 +150,18 @@ contract Supply is {
 
   storage is record {
     history : trace;
-    total : nat;
+    total : uint;
   }
 
-  external function grow(const amount : nat)
+  external function grow(const amount : uint)
     raises CheckpointUnorderedInsertion
   is {
     storage.total := storage.total + amount;
     Checkpoints.push(storage.history, uint48(Evm.block_number()), uint208(storage.total));
   }
 
-  external view function total_at(const block : nat) : nat is
-    nat(Checkpoints.upper_lookup(storage.history, uint48(block)))
+  external view function total_at(const block : uint) : uint is
+    uint(Checkpoints.upper_lookup(storage.history, uint48(block)))
 }
 ```
 

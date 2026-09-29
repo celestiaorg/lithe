@@ -2,26 +2,26 @@
    lists.sol. *)
 
 storage is record {
-  saved : list(nat);
+  saved : list(uint);
   owners : list(address);
 }
 
 event Batch of record {
   indexed who : address;
-  ids : list(nat);
+  ids : list(uint);
   note : string;
 }
 
 event Tagged of record {
   indexed tags : list(bytes4);
-  count : nat;
+  count : uint;
 }
 
-external function save(const xs : list(nat)) is {
+external function save(const xs : list(uint)) is {
   storage.saved := xs;
 }
 
-external function push(const x : nat) is {
+external function push(const x : uint) is {
   List.push(storage.saved, x);
 }
 
@@ -29,27 +29,27 @@ external function set_owners(const owners : list(address)) is {
   storage.owners := owners;
 }
 
-external view function saved() : list(nat) is
+external view function saved() : list(uint) is
   storage.saved
 
 external view function owners() : list(address) is
   storage.owners
 
-external view function owner_at(const i : nat) : address is
+external view function owner_at(const i : uint) : address is
   storage.owners[i]
 
-external pure function first(const xs : list(nat)) : nat is
+external pure function first(const xs : list(uint)) : uint is
   xs[0]
 
 external pure function echo(const xs : list(bytes4)) : list(bytes4) is
   xs
 
-external pure function pair(const a : nat; const b : nat) : list(nat) is {
-  var out : list(nat) := [a];
+external pure function pair(const a : uint; const b : uint) : list(uint) is {
+  var out : list(uint) := [a];
   List.push(out, b);
 } with out
 
-external function announce(const ids : list(nat); const note : string) is {
+external function announce(const ids : list(uint); const note : string) is {
   emit Batch { who = Evm.sender(); ids = ids; note = note; };
 }
 
@@ -57,8 +57,8 @@ external function tag(const tags : list(bytes4)) is {
   emit Tagged { tags = tags; count = tags.length; };
 }
 
-external pure function same(const a : list(nat); const b : list(nat)) : bool is
+external pure function same(const a : list(uint); const b : list(uint)) : bool is
   a = b
 
-external pure function encoded(const xs : list(nat); const tag : bytes4) : bytes is
+external pure function encoded(const xs : list(uint); const tag : bytes4) : bytes is
   Abi.encode(tag, xs)

@@ -1,4 +1,4 @@
-(* Fixed widths stay distinct from nat. Narrowing and overflow are checked. *)
+(* Fixed widths stay distinct from uint. Narrowing and overflow are checked. *)
 
 storage is record {
   small : uint8;
@@ -13,7 +13,7 @@ external function fill() is {
   storage.delta := -5;
 }
 
-external function clip(const raw : nat) is {
+external function clip(const raw : uint) is {
   storage.small := uint8(raw);
 }
 

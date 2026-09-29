@@ -8,24 +8,24 @@ contract CappedToken is {
   use ERC20 exposing IERC20;
 
   error Not_owner;
-  error Over_cap of nat;
+  error Over_cap of uint;
 
   storage is record {
     owner : address;
-    cap : nat;
+    cap : uint;
   }
 
   deploy() is {
     storage.owner := Evm.sender();
-    storage.cap := 1_000_000n;
+    storage.cap := 1_000_000;
     ERC20.init("Capped", "CAP");
   }
 
-  external function mint(const to : address; const value : nat)
+  external function mint(const to : address; const value : uint)
     raises Not_owner | Over_cap | ERC20InvalidReceiver | ERC20InsufficientBalance
   is {
     assert(Evm.sender() = storage.owner, Not_owner);
-    const supply : nat := ERC20.erc20.total_supply;
+    const supply : uint := ERC20.erc20.total_supply;
     assert(value <= storage.cap - supply, Over_cap(storage.cap - supply));
     ERC20.mint(to, value);
   }

@@ -1,6 +1,6 @@
 ---
 title: "Built-ins"
-description: "Reference for the Evm, Crypto, Abi, Bytes, String, Base64, List, Nat, Int, and Address modules, options, and conversions."
+description: "Reference for the Evm, Crypto, Abi, Bytes, String, Base64, List, Uint, Int, and Address modules, options, and conversions."
 ---
 
 # Built-ins
@@ -31,15 +31,15 @@ Execution context. Readable in `view` and stateful functions, and not in `pure` 
 
 | Built-in | Type | Solidity |
 | --- | --- | --- |
-| `Evm.block_number()` | `nat` | `block.number` |
+| `Evm.block_number()` | `uint` | `block.number` |
 | `Evm.block_timestamp()` | `timestamp` | `block.timestamp` |
 | `Evm.block_coinbase()` | `address` | `block.coinbase` |
 | `Evm.block_base_fee()` | `wei` | `block.basefee` |
 | `Evm.block_prevrandao()` | `bytes32` | `block.prevrandao` |
-| `Evm.block_gas_limit()` | `nat` | `block.gaslimit` |
-| `Evm.chain_id()` | `nat` | `block.chainid` |
-| `Evm.block_hash(n : nat)` | `bytes32` | `blockhash(n)` |
-| `Evm.blob_hash(i : nat)` | `bytes32` | `blobhash(i)` |
+| `Evm.block_gas_limit()` | `uint` | `block.gaslimit` |
+| `Evm.chain_id()` | `uint` | `block.chainid` |
+| `Evm.block_hash(n : uint)` | `bytes32` | `blockhash(n)` |
+| `Evm.blob_hash(i : uint)` | `bytes32` | `blobhash(i)` |
 | `Evm.blob_base_fee()` | `wei` | `block.blobbasefee` |
 
 ### Accounts
@@ -48,10 +48,10 @@ Execution context. Readable in `view` and stateful functions, and not in `pure` 
 | --- | --- | --- |
 | `Evm.self()` | `address` | `address(this)` |
 | `Evm.balance(a : address)` | `wei` | `a.balance` |
-| `Evm.code_size(a : address)` | `nat` | `a.code.length` |
+| `Evm.code_size(a : address)` | `uint` | `a.code.length` |
 | `Evm.code_hash(a : address)` | `bytes32` | `a.codehash` |
 | `Evm.code(a : address)` | `bytes` | `a.code` |
-| `Evm.gas_left()` | `nat` | `gasleft()` |
+| `Evm.gas_left()` | `uint` | `gasleft()` |
 | `Evm.creation_code(C)` | `bytes` | `type(C).creationCode`, for a contract `C` that [`defer create`](/language/effects#create) can create. Usable in `pure` functions, and its hash is a constant |
 
 ### Sending ether
@@ -76,7 +76,7 @@ Reading `Evm.value()` outside a `payable` function is an error, so a function ca
 
 ```lithe rejects
 storage is record {
-  n : nat;
+  n : uint;
 }
 
 external function go() is {
@@ -98,7 +98,7 @@ Hash functions and signature recovery. Usable in any function, `pure` ones inclu
 | `Crypto.keccak256(x : bytes \| string)` | `bytes32` | `keccak256(x)` |
 | `Crypto.sha256(x : bytes \| string)` | `bytes32` | `sha256(x)` |
 | `Crypto.ripemd160(x : bytes \| string)` | `bytes20` | `ripemd160(x)` |
-| `Crypto.ecrecover(hash : bytes32, v : nat, r : bytes32, s : bytes32)` | `address` | `ecrecover(...)` |
+| `Crypto.ecrecover(hash : bytes32, v : uint, r : bytes32, s : bytes32)` | `address` | `ecrecover(...)` |
 
 To hash several values, encode them first: `Crypto.keccak256(Abi.encode(a, b))`.
 
@@ -109,12 +109,12 @@ Every precompiled contract is a built-in, given its input as the precompile lays
 | Built-in | Type | Precompile |
 | --- | --- | --- |
 | `Crypto.mod_exp(base : bytes, exponent : bytes, modulus : bytes)` | `bytes`, as long as `modulus` | `0x05`, EIP-198 |
-| `Nat.pow_mod(base : nat, exponent : nat, modulus : nat)` | `nat` | `0x05` on words. `Panic(0x12)` if `modulus` is zero |
-| `Crypto.bn254_add(a : (nat, nat), b : (nat, nat))` | `(nat, nat)` | `0x06`, EIP-196 |
-| `Crypto.bn254_mul(p : (nat, nat), s : nat)` | `(nat, nat)` | `0x07`, EIP-196 |
-| `Crypto.bn254_pairing(pairs : list((nat, nat, nat, nat, nat, nat)))` | `bool` | `0x08`, EIP-197. Each pair is `(g1_x, g1_y, g2_x_im, g2_x_re, g2_y_im, g2_y_re)` |
+| `Uint.pow_mod(base : uint, exponent : uint, modulus : uint)` | `uint` | `0x05` on words. `Panic(0x12)` if `modulus` is zero |
+| `Crypto.bn254_add(a : (uint, uint), b : (uint, uint))` | `(uint, uint)` | `0x06`, EIP-196 |
+| `Crypto.bn254_mul(p : (uint, uint), s : uint)` | `(uint, uint)` | `0x07`, EIP-196 |
+| `Crypto.bn254_pairing(pairs : list((uint, uint, uint, uint, uint, uint)))` | `bool` | `0x08`, EIP-197. Each pair is `(g1_x, g1_y, g2_x_im, g2_x_re, g2_y_im, g2_y_re)` |
 | `Crypto.blake2f(rounds : uint32, h : list(bytes32, 2), m : list(bytes32, 4), t : bytes16, final : bool)` | `list(bytes32, 2)` | `0x09`, EIP-152. `h`, `m`, and `t` hold their little-endian words as the EIP lays them out |
-| `Crypto.kzg_point_evaluation(versioned_hash : bytes32, z : nat, y : nat, commitment : bytes, proof : bytes)` | `bool` | `0x0a`, EIP-4844. `commitment` and `proof` are 48 bytes |
+| `Crypto.kzg_point_evaluation(versioned_hash : bytes32, z : uint, y : uint, commitment : bytes, proof : bytes)` | `bool` | `0x0a`, EIP-4844. `commitment` and `proof` are 48 bytes |
 | `Crypto.bls12_g1_add(a : bytes, b : bytes)`, `Crypto.bls12_g2_add(a, b)` | `bytes` | `0x0b`, `0x0d`, EIP-2537 |
 | `Crypto.bls12_g1_msm(pairs : bytes)`, `Crypto.bls12_g2_msm(pairs)` | `bytes` | `0x0c`, `0x0e`. Each pair is a point, then a 32-byte scalar |
 | `Crypto.bls12_pairing(pairs : bytes)` | `bool` | `0x0f` |
@@ -145,7 +145,7 @@ ABI encoding and decoding. Usable in any function, `pure` ones included.
 | `Abi.interface_id(Interface)` | `bytes4` | `type(I).interfaceId`: the XOR of its methods' selectors. A constant |
 | `Abi.supports_interface(id : bytes4)` | `bool` | whether `id` is ERC-165's or one `supports` lists, as the generated `supportsInterface` answers. See [ERC-165](/language/modules#erc-165) |
 
-`Abi.decode` takes a type name as its second argument: `Abi.decode(data, nat)`, which decodes one value, as Solidity's `abi.decode(data, (uint256))`. Any ABI value can be decoded; name a list or record type first, as `type ids is list(nat);`, then `Abi.decode(data, ids)`. A tuple of type names decodes one value of each, as `abi.decode(data, (address, uint256))` does: `const (who, amount) : (address, nat) := Abi.decode(data, (address, nat));`. Malformed data reverts, with Solidity's checks on every offset, length, and word.
+`Abi.decode` takes a type name as its second argument: `Abi.decode(data, uint)`, which decodes one value, as Solidity's `abi.decode(data, (uint256))`. Any ABI value can be decoded; name a list or record type first, as `type ids is list(uint);`, then `Abi.decode(data, ids)`. A tuple of type names decodes one value of each, as `abi.decode(data, (address, uint256))` does: `const (who, amount) : (address, uint) := Abi.decode(data, (address, uint));`. Malformed data reverts, with Solidity's checks on every offset, length, and word.
 
 `Abi.encode` takes any ABI values, each one argument: a record or tuple is a Solidity tuple. `Abi.encode_packed` packs what Solidity's `abi.encodePacked` does: words, strings, bytes, and lists of words, each element padded to 32 bytes. It has no layout for records, tuples, nested lists, or lists of strings or bytes.
 
@@ -154,14 +154,14 @@ storage is record {
   digest : bytes32;
 }
 
-external function commit(const amount : nat; const salt : bytes32) is {
+external function commit(const amount : uint; const salt : bytes32) is {
   storage.digest := Crypto.keccak256(Abi.encode(Evm.sender(), amount, salt));
 }
 
-external pure function round_trip(const n : nat) : nat is
-  Abi.decode(Abi.encode(n), nat)
+external pure function round_trip(const n : uint) : uint is
+  Abi.decode(Abi.encode(n), uint)
 
-external pure function transfer_call(const to : address; const amount : nat) : bytes is
+external pure function transfer_call(const to : address; const amount : uint) : bytes is
   Abi.encode_with_signature("transfer(address,uint256)", to, amount)
 ```
 
@@ -170,7 +170,7 @@ external pure function transfer_call(const to : address; const amount : nat) : b
 | Built-in | Type | Solidity |
 | --- | --- | --- |
 | `Bytes.concat(a, b, ...)` | `bytes` | `bytes.concat(a, b, ...)`. Arguments are `bytes` or `bytesN` |
-| `Bytes.word(b : bytes, offset : nat)` | `bytes32` | the 32 bytes at `offset`. `Panic(0x32)` if they run past the end |
+| `Bytes.word(b : bytes, offset : uint)` | `bytes32` | the 32 bytes at `offset`. `Panic(0x32)` if they run past the end |
 | `String.concat(a, b, ...)` | `string` | `string.concat(a, b, ...)` |
 
 ```lithe
@@ -206,16 +206,16 @@ storage is record {
 external view function msg_sender() : address is {
   const data : bytes := Evm.calldata();
   var sender : address := Evm.sender();
-  if sender = storage.forwarder and data.length >= 20n then {
-    sender := address(bytes20(data[data.length - 20n:]));
+  if sender = storage.forwarder and data.length >= 20 then {
+    sender := address(bytes20(data[data.length - 20:]));
   }
 } with sender
 
 (* The payload of a custom error `LowBalance(uint256)`, from its revert data. *)
-external pure function low_balance(const reason : bytes) : nat is {
-  var have : nat := 0n;
-  if reason.length >= 36n and bytes4(reason) = bytes4(Crypto.keccak256("LowBalance(uint256)")) then {
-    have := Abi.decode(reason[4n:], nat);
+external pure function low_balance(const reason : bytes) : uint is {
+  var have : uint := 0;
+  if reason.length >= 36 and bytes4(reason) = bytes4(Crypto.keccak256("LowBalance(uint256)")) then {
+    have := Abi.decode(reason[4:], uint);
   }
 } with have
 ```
@@ -235,7 +235,7 @@ Like Solady's, `Base64.decode` does not check its input: other characters decode
 
 ```lithe
 storage is record {
-  n : nat;
+  n : uint;
 }
 
 external pure function contractURI() : string is
@@ -253,35 +253,35 @@ external pure function contractURI() : string is
 
 ```lithe
 storage is record {
-  ids : list(nat);
+  ids : list(uint);
 }
 
-external function remove(const i : nat) is {
-  storage.ids[i] := storage.ids[storage.ids.length - 1n];
+external function remove(const i : uint) is {
+  storage.ids[i] := storage.ids[storage.ids.length - 1];
   List.pop(storage.ids);
 }
 ```
 
-## `Nat`, `Int`, and `Address`
+## `Uint`, `Int`, and `Address`
 
 Constants take their width from the type the context expects. With no expected type, they are 256-bit.
 
 | Built-in | Type | Solidity |
 | --- | --- | --- |
-| `Nat.max` | `nat`, or the expected unsigned type | `type(uint256).max` |
+| `Uint.max` | `uint`, or the expected unsigned type | `type(uint256).max` |
 | `Int.min`, `Int.max` | `int`, or the expected signed type | `type(int256).min`, `.max` |
 | `Address.zero` | `address` | `address(0)` |
-| `Nat.div_rem(a, b)` | `(T, T)` | `(a / b, a % b)` |
-| `Nat.mul_div(a, b, d : nat)` | `nat` | `Math.mulDiv(a, b, d)`: `a * b / d` with the product in 512 bits. `Panic(0x11)` if the result doesn't fit, `Panic(0x12)` if `d` is zero |
-| `Nat.mul_mod(a, b, d : nat)`, `Nat.add_mod(a, b, d : nat)` | `nat` | `mulmod(a, b, d)`, `addmod(a, b, d)`, without overflow. `Panic(0x12)` if `d` is zero |
-| `Nat.wrapping_add(a, b)`, `Nat.wrapping_sub(a, b)`, `Nat.wrapping_mul(a, b)` | `T`, the unsigned type of both | `unchecked { a + b }` and the like: the result modulo 2^N for `T`'s N bits |
+| `Uint.div_rem(a, b)` | `(T, T)` | `(a / b, a % b)` |
+| `Uint.mul_div(a, b, d : uint)` | `uint` | `Math.mulDiv(a, b, d)`: `a * b / d` with the product in 512 bits. `Panic(0x11)` if the result doesn't fit, `Panic(0x12)` if `d` is zero |
+| `Uint.mul_mod(a, b, d : uint)`, `Uint.add_mod(a, b, d : uint)` | `uint` | `mulmod(a, b, d)`, `addmod(a, b, d)`, without overflow. `Panic(0x12)` if `d` is zero |
+| `Uint.wrapping_add(a, b)`, `Uint.wrapping_sub(a, b)`, `Uint.wrapping_mul(a, b)` | `T`, the unsigned type of both | `unchecked { a + b }` and the like: the result modulo 2^N for `T`'s N bits |
 | `Int.wrapping_add(a, b)`, `Int.wrapping_sub(a, b)`, `Int.wrapping_mul(a, b)` | `T`, the signed type of both | the same for signed types, in two's complement |
 | `Int.div_rem(a, b)` | `(T, T)` | `(a / b, a % b)`, truncating |
-| `Nat.from_bits(i : int)`, `Int.from_bits(n : nat)` | `nat`, `int` | `uint256(i)`, `int256(n)`: the same 256 bits, unchecked. `nat(i)` and `int(n)` check |
-| `Nat.to_string(n)` | `string` | `Strings.toString(n)`: an unsigned integer of any width in decimal |
+| `Uint.from_bits(i : int)`, `Int.from_bits(n : uint)` | `uint`, `int` | `uint256(i)`, `int256(n)`: the same 256 bits, unchecked. `uint(i)` and `int(n)` check |
+| `Uint.to_string(n)` | `string` | `Strings.toString(n)`: an unsigned integer of any width in decimal |
 | `Int.to_string(n)` | `string` | `Strings.toStringSigned(n)`: a signed integer in decimal, `-` first when negative |
-| `Nat.to_hex_string(n)` | `string` | `Strings.toHexString(n)`: `0x` and lowercase hex in the fewest whole bytes, `0x00` for zero |
-| `Nat.to_hex_string(n, length : nat)` | `string` | `Strings.toHexString(n, length)`: exactly `length` bytes, zero-padded. `Panic(0x11)` if `n` doesn't fit |
+| `Uint.to_hex_string(n)` | `string` | `Strings.toHexString(n)`: `0x` and lowercase hex in the fewest whole bytes, `0x00` for zero |
+| `Uint.to_hex_string(n, length : uint)` | `string` | `Strings.toHexString(n, length)`: exactly `length` bytes, zero-padded. `Panic(0x11)` if `n` doesn't fit |
 | `Address.to_hex_string(a)` | `string` | `Strings.toHexString(a)`: `0x` and 40 lowercase hex digits |
 | `Address.to_checksum_string(a)` | `string` | `Strings.toChecksumHexString(a)`: EIP-55 mixed case |
 
@@ -291,22 +291,22 @@ storage is record {
   label : string;
 }
 
-external function name(const id : nat) is {
-  storage.label := String.concat("token #", Nat.to_string(id));
+external function name(const id : uint) is {
+  storage.label := String.concat("token #", Uint.to_string(id));
 }
 
 external function reset() is {
-  storage.cap := Nat.max;
+  storage.cap := Uint.max;
 }
 
 external pure function bounds() : (int16, int16) is
   (Int.min, Int.max)
 
 external pure function elapsed(const later : uint32; const earlier : uint32) : uint32 is
-  Nat.wrapping_sub(later, earlier)
+  Uint.wrapping_sub(later, earlier)
 ```
 
-Here `storage.cap := Nat.max` stores 255, because the target is a `uint8`, and `elapsed(1, 3)` is 4294967294: the difference wraps to 32 bits.
+Here `storage.cap := Uint.max` stores 255, because the target is a `uint8`, and `elapsed(1, 3)` is 4294967294: the difference wraps to 32 bits.
 
 ## `Some` and `None`
 
@@ -314,4 +314,4 @@ Here `storage.cap := Nat.max` stores 255, because the target is a `uint8`, and `
 
 ## Conversions
 
-A type name used as a function converts to it: `nat(x)`, `uint8(n)`, `int(n)`, `address(b)`, `bytes20(a)`, `wei(n)`, `timestamp(n)`, and the names of your own nominal types. See [Conversions](/language/types#conversions).
+A type name used as a function converts to it: `uint(x)`, `uint8(n)`, `int(n)`, `address(b)`, `bytes20(a)`, `wei(n)`, `timestamp(n)`, and the names of your own nominal types. See [Conversions](/language/types#conversions).

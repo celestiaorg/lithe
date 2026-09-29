@@ -15,7 +15,7 @@ module SSTORE2 is {
 
   (* Creation code that returns `data` after a `STOP`, so a call to it does nothing. *)
   pure function code(const data : bytes) : bytes is
-    Bytes.concat(0x61, bytes2(uint16(data.length + 1n)), 0x80600a3d393df300, data)
+    Bytes.concat(0x61, bytes2(uint16(data.length + 1)), 0x80600a3d393df300, data)
 
   (* Writes with `CREATE2`, and answers the pointer. Raises `FailedDeployment` if the
      salt was used for this data before. *)
@@ -34,5 +34,5 @@ module SSTORE2 is {
 
   (* The data, which panics if `pointer` has no code. *)
   view function read(const pointer : address) : bytes is
-    Evm.code(pointer)[1n:]
+    Evm.code(pointer)[1:]
 }

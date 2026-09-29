@@ -28,11 +28,11 @@ storage is record {
   start_price : wei;
   floor : wei;
   started_at : timestamp;
-  duration : nat;
+  duration : uint;
   sold : bool;
 }
 
-external function start(const start_price : wei; const floor : wei; const duration : nat)
+external function start(const start_price : wei; const floor : wei; const duration : uint)
   raises Already_started
 is {
   assert(storage.seller = Address.zero, Already_started);
@@ -44,10 +44,10 @@ is {
 }
 
 view function current_price() : wei is {
-  const elapsed : nat := Evm.block_timestamp() - storage.started_at;
+  const elapsed : uint := Evm.block_timestamp() - storage.started_at;
   var price : wei := storage.floor;
   if elapsed < storage.duration then {
-    const spread : nat := nat(storage.start_price - storage.floor);
+    const spread : uint := uint(storage.start_price - storage.floor);
     price := storage.start_price - wei(spread * elapsed / storage.duration);
   }
 } with price

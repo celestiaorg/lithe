@@ -5,22 +5,22 @@ type trait is string;
 
 error Unknown_trait of trait;
 error Attribute_not_found of record {
-  tokenId : nat;
+  tokenId : uint;
   traitType : string;
-  known : list(nat);
+  known : list(uint);
 }
 
 storage is record {
-  minted : nat;
+  minted : uint;
 }
 
-external view function attribute(const token_id : nat; const trait_type : trait) : nat
+external view function attribute(const token_id : uint; const trait_type : trait) : uint
   raises Unknown_trait | Attribute_not_found
 is {
-  if token_id = 0n then {
+  if token_id = 0 then {
     fail Unknown_trait(trait_type);
   }
   if token_id > storage.minted then {
-    fail Attribute_not_found { tokenId = token_id; traitType = "Background"; known = [7n]; };
+    fail Attribute_not_found { tokenId = token_id; traitType = "Background"; known = [7]; };
   }
 } with token_id

@@ -774,8 +774,8 @@ mod tests {
         let root = std::env::current_dir().unwrap();
         let vault = root.join("examples/imports/vault.lithe");
         let vault_uri = format!("file://{}", vault.display()).replace(' ', "%20");
-        let broken = "storage is record { count : nat; }\n\
-                      external view function get() : nat is\n  (* é *) nope\n";
+        let broken = "storage is record { count : uint; }\n\
+                      external view function get() : uint is\n  (* é *) nope\n";
         let (code, bodies) = session(&[
             frame(
                 r#"{"jsonrpc":"2.0","id":"a1","method":"initialize","params":{"capabilities":{}}}"#,
@@ -862,7 +862,7 @@ mod tests {
             completion.contains(r#""label":"count""#) && completion.contains(r#""label":"owner""#)
         );
         assert!(
-            reply(6).contains(r#""parameters":[{"label":"const n : nat"}]"#),
+            reply(6).contains(r#""parameters":[{"label":"const n : uint"}]"#),
             "{}",
             reply(6)
         );
@@ -924,7 +924,7 @@ mod tests {
     #[test]
     fn lints_fixes_and_formats_unsaved_text() {
         let uri = "file:///tmp/lithe-lsp-test/probe.lithe";
-        let src = "storage is record {  n : nat; }\n\nexternal function go(const a : nat) is {\n  var b : nat := a;\n  (* lithe-ignore unused-binding: kept *)\n  const kept : nat := 1n;\n  storage.n := b;\n}\n";
+        let src = "storage is record {  n : uint; }\n\nexternal function go(const a : uint) is {\n  var b : uint := a;\n  (* lithe-ignore unused-binding: kept *)\n  const kept : uint := 1;\n  storage.n := b;\n}\n";
         let (_, bodies) = session(&[
             frame(r#"{"jsonrpc":"2.0","id":0,"method":"initialize","params":{}}"#),
             open(uri, src),
@@ -951,7 +951,7 @@ mod tests {
             bodies[2]
         );
         assert!(
-            bodies[3].contains(r#""newText":"storage is record { n : nat; }"#),
+            bodies[3].contains(r#""newText":"storage is record { n : uint; }"#),
             "{}",
             bodies[3]
         );

@@ -2,32 +2,32 @@
    ids, and refuses an order with no legs. Mirrors book.sol. *)
 
 type order is record {
-  id : nat;
+  id : uint;
   note : string;
-  legs : list(nat);
+  legs : list(uint);
 }
 
-error Rejected of nat;
+error Rejected of uint;
 
 storage is record {
-  notes : map(nat, string);
-  placed : nat;
+  notes : map(uint, string);
+  placed : uint;
 }
 
-external function place(const os : list(order)) : list(nat)
+external function place(const os : list(order)) : list(uint)
   raises Rejected
 is {
-  var ids : list(nat) := [];
+  var ids : list(uint) := [];
   for o : order in os do {
-    assert(o.legs.length > 0n, Rejected(o.id));
+    assert(o.legs.length > 0, Rejected(o.id));
     storage.notes[o.id] := o.note;
     List.push(ids, o.id);
   }
   storage.placed := storage.placed + os.length;
 } with ids
 
-external view function note_of(const id : nat) : string is
+external view function note_of(const id : uint) : string is
   storage.notes[id]
 
-external view function placed() : nat is
+external view function placed() : uint is
   storage.placed

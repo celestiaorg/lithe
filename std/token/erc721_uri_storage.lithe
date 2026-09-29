@@ -7,7 +7,7 @@
    the collection answers for it in its own `supportsInterface`, and for what its
    `supports` lists with `Abi.supports_interface`:
 
-     external view function tokenURI(const tokenId : nat) : string
+     external view function tokenURI(const tokenId : uint) : string
        raises ERC721NonexistentToken
      is
        ERC721URIStorage.token_uri(tokenId, "ipfs://collection/")
@@ -21,38 +21,38 @@ module ERC721URIStorage is {
   requires ERC721;
 
   storage erc721_uri_storage at "lithe.std.erc721.uri_storage" is record {
-    token_uris : map(nat, string);
+    token_uris : map(uint, string);
   }
 
   event MetadataUpdate of record {
-    tokenId : nat;
+    tokenId : uint;
   }
 
   event BatchMetadataUpdate of record {
-    fromTokenId : nat;
-    toTokenId : nat;
+    fromTokenId : uint;
+    toTokenId : uint;
   }
 
   (* ERC-4906's id, which the standard fixes rather than derives from functions. *)
   pure function supports_interface(const interfaceId : bytes4) : bool is
     interfaceId = 0x49064906
 
-  view function token_uri(const tokenId : nat; const base : string) : string
+  view function token_uri(const tokenId : uint; const base : string) : string
     raises ERC721NonexistentToken
   is {
     const owner : address := ERC721.require_owned(tokenId);
     const own : string := erc721_uri_storage.token_uris[tokenId];
     var uri : string := own;
-    if base.length > 0n then {
-      if own.length > 0n then {
+    if base.length > 0 then {
+      if own.length > 0 then {
         uri := String.concat(base, own);
       } else {
-        uri := String.concat(base, Nat.to_string(tokenId));
+        uri := String.concat(base, Uint.to_string(tokenId));
       }
     }
   } with uri
 
-  function set_token_uri(const tokenId : nat; const uri : string) is {
+  function set_token_uri(const tokenId : uint; const uri : string) is {
     erc721_uri_storage.token_uris[tokenId] := uri;
     emit MetadataUpdate {
       tokenId = tokenId;
@@ -60,7 +60,7 @@ module ERC721URIStorage is {
   }
 
   (* For a change that reaches many tokens' URIs at once, such as a new base URI. *)
-  function announce_update(const fromTokenId : nat; const toTokenId : nat) is {
+  function announce_update(const fromTokenId : uint; const toTokenId : uint) is {
     emit BatchMetadataUpdate {
       fromTokenId = fromTokenId;
       toTokenId = toTokenId;

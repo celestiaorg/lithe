@@ -29,14 +29,14 @@ A block is a sequence of statements in braces, each ending with `;`:
 
 ```lithe
 storage is record {
-  total : nat;
+  total : uint;
 }
 
-external function add(const a : nat; const b : nat) is {
-  const sum : nat := a + b;
-  var bonus : nat := 0n;
-  if sum > 100n then {
-    bonus := 1n;
+external function add(const a : uint; const b : uint) is {
+  const sum : uint := a + b;
+  var bonus : uint := 0;
+  if sum > 100 then {
+    bonus := 1;
   }
   storage.total := storage.total + sum + bonus;
 }
@@ -44,7 +44,7 @@ external function add(const a : nat; const b : nat) is {
 
 ```lithe rejects
 storage is record {
-  count : nat;
+  count : uint;
 }
 
 external function go() is {
@@ -62,22 +62,22 @@ local bindings require a type
 
 | Target | Example |
 | --- | --- |
-| default storage | `storage.count := 1n;` |
-| a map entry | `storage.balances[who] := 0n;` |
+| default storage | `storage.count := 1;` |
+| a map entry | `storage.balances[who] := 0;` |
 | a nested map entry | `storage.allowances[owner][spender] := n;` |
 | a field of a stored record | `storage.orders[id].status := uint8(2);` |
-| named storage | `config.fee := 30n;` |
-| a module's storage, from outside it | `Ledger.ledger.total := 0n;` |
+| named storage | `config.fee := 30;` |
+| a module's storage, from outside it | `Ledger.ledger.total := 0;` |
 
 An unqualified storage name is an error:
 
 ```lithe rejects
 storage is record {
-  paid : nat;
+  paid : uint;
 }
 
 external function pay(const to : address) is {
-  paid := paid + 1n;
+  paid := paid + 1;
 }
 ```
 
@@ -91,7 +91,7 @@ storage field `paid` must be qualified as `storage.paid`
 if balance >= amount then {
   storage.balance := balance - amount;
 } else if storage.overdraft then {
-  storage.balance := 0n;
+  storage.balance := 0;
 } else {
   fail Insufficient;
 }
@@ -133,7 +133,7 @@ A `for` loop runs its body once per element of a list, or once per number in a h
 storage is record {
   owners : list(address, 3);
   is_owner : map(address, bool);
-  total : nat;
+  total : uint;
 }
 
 external function mark() is {
@@ -142,9 +142,9 @@ external function mark() is {
   }
 }
 
-external function triangle(const n : nat) is {
-  var acc : nat := 0n;
-  for i : nat in 0n .. n do {
+external function triangle(const n : uint) is {
+  var acc : uint := 0;
+  for i : uint in 0 .. n do {
     acc := acc + i;
   }
   storage.total := acc;
@@ -154,7 +154,7 @@ external function triangle(const n : nat) is {
 | Form | Iterates |
 | --- | --- |
 | `for x : T in xs do { ... }` | each element of a list, fixed or dynamic, in storage or local |
-| `for (i, x) : (nat, T) in xs do { ... }` | each element with its index |
+| `for (i, x) : (uint, T) in xs do { ... }` | each element with its index |
 | `for i : T in lo .. hi do { ... }` | each integer from `lo` up to, not including, `hi` |
 
 The loop variables are `const`, bound afresh each iteration, and typed like every other binding. `_` binds nothing. A range's ends have the loop variable's type, which can be any integer type. Maps cannot be iterated: keep an [enumerable set](/by-example/iterable-set).
@@ -166,10 +166,10 @@ The count is read once, at entry. A dynamic list that the body appends to does n
 `until cond` is checked before each iteration, including the first, and ends the loop when it is true. It is the only early exit:
 
 ```lithe fragment
-var hit : nat := 0n;
-for (i, who) : (nat, address) in storage.members until hit <> 0n do {
+var hit : uint := 0;
+for (i, who) : (uint, address) in storage.members until hit <> 0 do {
   if who = target then {
-    hit := i + 1n;
+    hit := i + 1;
   }
 }
 ```
@@ -200,8 +200,8 @@ A loop over a parameter is not warned about: the caller chose its size and pays 
 `emit`, `defer`, `query`, and continuations all work inside a loop. A `defer` records one call per iteration, in order, and a `then` block sees the bindings of the iteration that deferred it:
 
 ```lithe fragment
-for (i, amount) : (nat, nat) in amounts do {
-  defer storage.exchange.swap(amount) then (out : nat) {
+for (i, amount) : (uint, uint) in amounts do {
+  defer storage.exchange.swap(amount) then (out : uint) {
     storage.results[i] := out;
   };
 }
@@ -212,9 +212,9 @@ for (i, amount) : (nat, nat) in amounts do {
 `(a, b) := expr;` assigns each element of a tuple to a `var`, at once, so two values can be stepped together:
 
 ```lithe fragment
-var x : nat := a;
-var y : nat := b;
-for _ : nat in 0n .. 256n until y = 0n do {
+var x : uint := a;
+var y : uint := b;
+for _ : uint in 0 .. 256 until y = 0 do {
   (x, y) := (y, x % y);
 }
 ```

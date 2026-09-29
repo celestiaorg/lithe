@@ -11,23 +11,23 @@ contract StakingRewards is {
   use Ownable exposing IOwnable;
 
   interface IERC20 is {
-    function transfer(to : address; value : nat) : bool;
-    function transferFrom(from : address; to : address; value : nat) : bool;
-    view function balanceOf(account : address) : nat;
+    function transfer(to : address; value : uint) : bool;
+    function transferFrom(from : address; to : address; value : uint) : bool;
+    view function balanceOf(account : address) : uint;
   }
 
   storage is record {
     rewardsToken : IERC20;
     stakingToken : IERC20;
     periodFinish : timestamp;
-    rewardRate : nat;
-    rewardsDuration : nat;
+    rewardRate : uint;
+    rewardsDuration : uint;
     lastUpdateTime : timestamp;
-    rewardPerTokenStored : nat;
-    userRewardPerTokenPaid : map(address, nat);
-    rewards : map(address, nat);
-    totalSupply : nat;
-    balances : map(address, nat);
+    rewardPerTokenStored : uint;
+    userRewardPerTokenPaid : map(address, uint);
+    rewards : map(address, uint);
+    totalSupply : uint;
+    balances : map(address, uint);
   }
 
   error CannotStakeZero;
@@ -36,26 +36,26 @@ contract StakingRewards is {
   error RewardPeriodActive;
 
   event RewardAdded of record {
-    reward : nat;
+    reward : uint;
   }
 
   event Staked of record {
     indexed user : address;
-    amount : nat;
+    amount : uint;
   }
 
   event Withdrawn of record {
     indexed user : address;
-    amount : nat;
+    amount : uint;
   }
 
   event RewardPaid of record {
     indexed user : address;
-    reward : nat;
+    reward : uint;
   }
 
   event RewardsDurationUpdated of record {
-    newDuration : nat;
+    newDuration : uint;
   }
 
   (* Initializable's bookkeeping matches the `initializer` modifier on Solidity's
@@ -67,7 +67,7 @@ contract StakingRewards is {
     Ownable.init(owner_);
     storage.rewardsToken := rewardsToken_;
     storage.stakingToken := stakingToken_;
-    storage.rewardsDuration := 604800n;
+    storage.rewardsDuration := 604800;
     Initializable.finish();
   }
 
@@ -78,18 +78,18 @@ contract StakingRewards is {
     }
   } with applicable
 
-  view function reward_per_token() : nat is {
-    var per : nat := storage.rewardPerTokenStored;
-    if storage.totalSupply <> 0n then {
+  view function reward_per_token() : uint is {
+    var per : uint := storage.rewardPerTokenStored;
+    if storage.totalSupply <> 0 then {
       per := storage.rewardPerTokenStored
         + (last_time_reward_applicable() - storage.lastUpdateTime)
-          * storage.rewardRate * 10n ** 18n / storage.totalSupply;
+          * storage.rewardRate * 10 ** 18 / storage.totalSupply;
     }
   } with per
 
-  view function earned_by(const account : address) : nat is
+  view function earned_by(const account : address) : uint is
     storage.balances[account] * (reward_per_token() - storage.userRewardPerTokenPaid[account])
-      / 10n ** 18n + storage.rewards[account]
+      / 10 ** 18 + storage.rewards[account]
 
   function update_reward(const account : address) is {
     storage.rewardPerTokenStored := reward_per_token();
@@ -100,11 +100,11 @@ contract StakingRewards is {
     }
   }
 
-  function withdraw_as_sender(const amount : nat)
+  function withdraw_as_sender(const amount : uint)
     raises CannotWithdrawZero
   is {
     update_reward(Evm.sender());
-    assert(amount <> 0n, CannotWithdrawZero);
+    assert(amount <> 0, CannotWithdrawZero);
     storage.totalSupply := storage.totalSupply - amount;
     storage.balances[Evm.sender()] := storage.balances[Evm.sender()] - amount;
     emit Withdrawn {
@@ -116,9 +116,9 @@ contract StakingRewards is {
 
   function reward_sender() is {
     update_reward(Evm.sender());
-    const reward : nat := storage.rewards[Evm.sender()];
-    if reward > 0n then {
-      storage.rewards[Evm.sender()] := 0n;
+    const reward : uint := storage.rewards[Evm.sender()];
+    if reward > 0 then {
+      storage.rewards[Evm.sender()] := 0;
       emit RewardPaid {
         user = Evm.sender();
         reward = reward;
@@ -127,11 +127,11 @@ contract StakingRewards is {
     }
   }
 
-  external nonreentrant function stake(const amount : nat)
+  external nonreentrant function stake(const amount : uint)
     raises CannotStakeZero
   is {
     update_reward(Evm.sender());
-    assert(amount <> 0n, CannotStakeZero);
+    assert(amount <> 0, CannotStakeZero);
     storage.totalSupply := storage.totalSupply + amount;
     storage.balances[Evm.sender()] := storage.balances[Evm.sender()] + amount;
     emit Staked {
@@ -141,7 +141,7 @@ contract StakingRewards is {
     defer storage.stakingToken.transferFrom(Evm.sender(), Evm.self(), amount);
   }
 
-  external nonreentrant function withdraw(const amount : nat)
+  external nonreentrant function withdraw(const amount : uint)
     raises CannotWithdrawZero
   is {
     withdraw_as_sender(amount);
@@ -158,7 +158,7 @@ contract StakingRewards is {
     reward_sender();
   }
 
-  external function notifyRewardAmount(const reward : nat)
+  external function notifyRewardAmount(const reward : uint)
     raises OwnableUnauthorizedAccount | RewardTooHigh
   is {
     Ownable.check_owner();
@@ -166,11 +166,11 @@ contract StakingRewards is {
     if Evm.block_timestamp() >= storage.periodFinish then {
       storage.rewardRate := reward / storage.rewardsDuration;
     } else {
-      const remaining : nat := storage.periodFinish - Evm.block_timestamp();
-      const leftover : nat := remaining * storage.rewardRate;
+      const remaining : uint := storage.periodFinish - Evm.block_timestamp();
+      const leftover : uint := remaining * storage.rewardRate;
       storage.rewardRate := (reward + leftover) / storage.rewardsDuration;
     }
-    const balance : nat := query storage.rewardsToken.balanceOf(Evm.self());
+    const balance : uint := query storage.rewardsToken.balanceOf(Evm.self());
     assert(storage.rewardRate <= balance / storage.rewardsDuration, RewardTooHigh);
     storage.lastUpdateTime := Evm.block_timestamp();
     storage.periodFinish := Evm.block_timestamp() + storage.rewardsDuration;
@@ -179,7 +179,7 @@ contract StakingRewards is {
     };
   }
 
-  external function setRewardsDuration(const duration : nat)
+  external function setRewardsDuration(const duration : uint)
     raises OwnableUnauthorizedAccount | RewardPeriodActive
   is {
     Ownable.check_owner();
@@ -199,39 +199,39 @@ contract StakingRewards is {
   external view function periodFinish() : timestamp is
     storage.periodFinish
 
-  external view function rewardRate() : nat is
+  external view function rewardRate() : uint is
     storage.rewardRate
 
-  external view function rewardsDuration() : nat is
+  external view function rewardsDuration() : uint is
     storage.rewardsDuration
 
   external view function lastUpdateTime() : timestamp is
     storage.lastUpdateTime
 
-  external view function rewardPerTokenStored() : nat is
+  external view function rewardPerTokenStored() : uint is
     storage.rewardPerTokenStored
 
-  external view function userRewardPerTokenPaid(const account : address) : nat is
+  external view function userRewardPerTokenPaid(const account : address) : uint is
     storage.userRewardPerTokenPaid[account]
 
-  external view function rewards(const account : address) : nat is
+  external view function rewards(const account : address) : uint is
     storage.rewards[account]
 
-  external view function totalSupply() : nat is
+  external view function totalSupply() : uint is
     storage.totalSupply
 
-  external view function balanceOf(const account : address) : nat is
+  external view function balanceOf(const account : address) : uint is
     storage.balances[account]
 
   external view function lastTimeRewardApplicable() : timestamp is
     last_time_reward_applicable()
 
-  external view function rewardPerToken() : nat is
+  external view function rewardPerToken() : uint is
     reward_per_token()
 
-  external view function earned(const account : address) : nat is
+  external view function earned(const account : address) : uint is
     earned_by(account)
 
-  external view function getRewardForDuration() : nat is
+  external view function getRewardForDuration() : uint is
     storage.rewardRate * storage.rewardsDuration
 }

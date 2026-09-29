@@ -4,19 +4,19 @@
    zero address. *)
 
 error ECDSAInvalidSignature;
-error ECDSAInvalidSignatureLength of nat;
+error ECDSAInvalidSignatureLength of uint;
 error ECDSAInvalidSignatureS of bytes32;
 
 module ECDSA is {
-  pure function half_order() : nat is
-    nat(0x7fffffffffffffffffffffffffffffff5d576e7357a4501ddfe92f46681b20a0)
+  pure function half_order() : uint is
+    uint(0x7fffffffffffffffffffffffffffffff5d576e7357a4501ddfe92f46681b20a0)
 
   (* The signer of `hash`, from the signature's `v`, `r`, and `s`. *)
   pure function recover(const hash : bytes32; const v : uint8; const r : bytes32; const s : bytes32) : address
     raises ECDSAInvalidSignature | ECDSAInvalidSignatureS
   is {
-    assert(nat(s) <= half_order(), ECDSAInvalidSignatureS(s));
-    const signer : address := Crypto.ecrecover(hash, nat(v), r, s);
+    assert(uint(s) <= half_order(), ECDSAInvalidSignatureS(s));
+    const signer : address := Crypto.ecrecover(hash, uint(v), r, s);
     assert(signer <> Address.zero, ECDSAInvalidSignature);
   } with signer
 
@@ -24,19 +24,19 @@ module ECDSA is {
   pure function recover_signature(const hash : bytes32; const signature : bytes) : address
     raises ECDSAInvalidSignature | ECDSAInvalidSignatureLength | ECDSAInvalidSignatureS
   is {
-    assert(signature.length = 65n, ECDSAInvalidSignatureLength(signature.length));
-    const r : bytes32 := Bytes.word(signature, 0n);
-    const s : bytes32 := Bytes.word(signature, 32n);
+    assert(signature.length = 65, ECDSAInvalidSignatureLength(signature.length));
+    const r : bytes32 := Bytes.word(signature, 0);
+    const s : bytes32 := Bytes.word(signature, 32);
     (* The word ending at the last byte holds `v` in its low byte. *)
-    const v : uint8 := uint8(nat(Bytes.word(signature, 33n)) & 255n);
+    const v : uint8 := uint8(uint(Bytes.word(signature, 33)) & 255);
   } with recover(hash, v, r, s)
 
   (* The signer from an EIP-2098 compact signature: `vs` is `s` with `v - 27` in its top bit. *)
   pure function recover_compact(const hash : bytes32; const r : bytes32; const vs : bytes32) : address
     raises ECDSAInvalidSignature | ECDSAInvalidSignatureS
   is {
-    const s : bytes32 := bytes32(nat(vs) & ((1n << 255n) - 1n));
-    const v : uint8 := uint8((nat(vs) >> 255n) + 27n);
+    const s : bytes32 := bytes32(uint(vs) & ((1 << 255) - 1));
+    const v : uint8 := uint8((uint(vs) >> 255) + 27);
   } with recover(hash, v, r, s)
 
   (* The hash `eth_sign` and `personal_sign` sign for a 32-byte message (EIP-191). *)

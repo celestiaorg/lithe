@@ -18,7 +18,7 @@ contract Items is {
     Ownable.init(Evm.sender());
   }
 
-  external function mint(const to : address; const id : nat; const value : nat; const data : bytes)
+  external function mint(const to : address; const id : uint; const value : uint; const data : bytes)
     raises OwnableUnauthorizedAccount | ERC1155InvalidReceiver | ERC1155InvalidArrayLength | ERC1155InsufficientBalance
       | forwarded
   is {
@@ -26,7 +26,7 @@ contract Items is {
     ERC1155Supply.mint(to, id, value, data);
   }
 
-  external function mintBatch(const to : address; const ids : list(nat); const values : list(nat); const data : bytes)
+  external function mintBatch(const to : address; const ids : list(uint); const values : list(uint); const data : bytes)
     raises OwnableUnauthorizedAccount | ERC1155InvalidReceiver | ERC1155InvalidArrayLength | ERC1155InsufficientBalance
       | forwarded
   is {
@@ -34,14 +34,14 @@ contract Items is {
     ERC1155Supply.mint_batch(to, ids, values, data);
   }
 
-  external function burn(const account : address; const id : nat; const value : nat)
+  external function burn(const account : address; const id : uint; const value : uint)
     raises ERC1155MissingApprovalForAll | ERC1155InvalidSender | ERC1155InvalidArrayLength | ERC1155InsufficientBalance
   is {
     ERC1155.check_authorized(Evm.sender(), account);
     ERC1155Supply.burn(account, id, value);
   }
 
-  external function burnBatch(const account : address; const ids : list(nat); const values : list(nat))
+  external function burnBatch(const account : address; const ids : list(uint); const values : list(uint))
     raises ERC1155MissingApprovalForAll | ERC1155InvalidSender | ERC1155InvalidArrayLength | ERC1155InsufficientBalance
   is {
     ERC1155.check_authorized(Evm.sender(), account);

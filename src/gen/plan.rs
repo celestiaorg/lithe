@@ -199,7 +199,7 @@ impl<'a> Gen<'a> {
     pub(super) fn fresh_zero(&mut self, sym: usize, expr: &Expr) -> bool {
         let zero = match expr {
             Expr::Lit { lit, .. } => match lit {
-                Lit::Nat(w) | Lit::Int(w, _) | Lit::Wei(w) | Lit::Duration(w) => w.is_zero(),
+                Lit::Uint(w) | Lit::Int(w, _) | Lit::Wei(w) | Lit::Duration(w) => w.is_zero(),
                 Lit::Bool(b) => !b,
                 _ => false,
             },

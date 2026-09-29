@@ -42,16 +42,16 @@ In Lithe, the call is a value that runs later:
 
 ```lithe
 interface Token is {
-  function transfer(to : address; amount : nat) : bool;
+  function transfer(to : address; amount : uint) : bool;
 }
 
 storage is record {
   token : Token;
-  balances : map(address, nat);
-  total_withdrawn : nat;
+  balances : map(address, uint);
+  total_withdrawn : uint;
 }
 
-external nonreentrant function withdraw(const amount : nat) is {
+external nonreentrant function withdraw(const amount : uint) is {
   storage.balances[Evm.sender()] := storage.balances[Evm.sender()] - amount;
   defer storage.token.transfer(Evm.sender(), amount);
   storage.total_withdrawn := storage.total_withdrawn + amount;
@@ -65,7 +65,7 @@ The transfer runs after both writes, wherever the `defer` appears in the body. W
 Sometimes you need another contract's answer before you can finish computing, such as an oracle price or a token balance. That is a `query`:
 
 ```lithe fragment
-const price : nat := query storage.oracle.price(asset);
+const price : uint := query storage.oracle.price(asset);
 ```
 
 A query compiles to `STATICCALL`, so the EVM itself guarantees that nothing in the callee's call tree changes state. Only `view` and `pure` interface methods can be queried, and only the others can be deferred. Neither can be used as the other.
@@ -76,17 +76,17 @@ A deferred call's result does not exist during the transition that defers it. To
 
 ```lithe
 interface Exchange is {
-  function swap(amount_in : nat) : nat;
+  function swap(amount_in : uint) : uint;
 }
 
 storage is record {
   exchange : Exchange;
-  received : nat;
+  received : uint;
 }
 
-external nonreentrant function swap(const amount_in : nat) is {
+external nonreentrant function swap(const amount_in : uint) is {
   defer storage.exchange.swap(amount_in)
-    then (amount_out : nat) {
+    then (amount_out : uint) {
       storage.received := storage.received + amount_out;
     };
 }

@@ -4,23 +4,23 @@
 
 error ERC721OutOfBoundsIndex of record {
   owner : address;
-  index : nat;
+  index : uint;
 }
 
 module ERC721Enumerable is {
   requires ERC721;
 
   storage erc721_enumerable at "openzeppelin.storage.ERC721Enumerable" is record {
-    ownedTokens : map(address, map(nat, nat));
-    ownedTokensIndex : map(nat, nat);
-    allTokens : list(nat);
-    allTokensIndex : map(nat, nat);
+    ownedTokens : map(address, map(uint, uint));
+    ownedTokensIndex : map(uint, uint);
+    allTokens : list(uint);
+    allTokensIndex : map(uint, uint);
   }
 
-  external view function totalSupply() : nat is
+  external view function totalSupply() : uint is
     erc721_enumerable.allTokens.length
 
-  external view function tokenByIndex(const index : nat) : nat
+  external view function tokenByIndex(const index : uint) : uint
     raises ERC721OutOfBoundsIndex
   is {
     assert(
@@ -29,7 +29,7 @@ module ERC721Enumerable is {
     );
   } with erc721_enumerable.allTokens[index]
 
-  external view function tokenOfOwnerByIndex(const owner : address; const index : nat) : nat
+  external view function tokenOfOwnerByIndex(const owner : address; const index : uint) : uint
     raises ERC721InvalidOwner | ERC721OutOfBoundsIndex
   is {
     assert(owner <> Address.zero, ERC721InvalidOwner(Address.zero));
@@ -40,7 +40,7 @@ module ERC721Enumerable is {
   } with erc721_enumerable.ownedTokens[owner][index]
 
   (* `ERC721.update`, then the enumerations follow the token. *)
-  function update(const to : address; const tokenId : nat; const auth : address) : address
+  function update(const to : address; const tokenId : uint; const auth : address) : address
     raises ERC721NonexistentToken | ERC721InsufficientApproval
   is {
     const previous : address := ERC721.update(to, tokenId, auth);
@@ -56,45 +56,45 @@ module ERC721Enumerable is {
     }
   } with previous
 
-  function add_to_owner(const to : address; const tokenId : nat) is {
-    const length : nat := ERC721.erc721.balances[to] - 1n;
+  function add_to_owner(const to : address; const tokenId : uint) is {
+    const length : uint := ERC721.erc721.balances[to] - 1;
     erc721_enumerable.ownedTokens[to][length] := tokenId;
     erc721_enumerable.ownedTokensIndex[tokenId] := length;
   }
 
-  function add_to_all(const tokenId : nat) is {
+  function add_to_all(const tokenId : uint) is {
     erc721_enumerable.allTokensIndex[tokenId] := erc721_enumerable.allTokens.length;
     List.push(erc721_enumerable.allTokens, tokenId);
   }
 
   (* The owner's last token moves into the removed token's place. *)
-  function remove_from_owner(const from : address; const tokenId : nat) is {
-    const lastTokenIndex : nat := ERC721.erc721.balances[from];
-    const tokenIndex : nat := erc721_enumerable.ownedTokensIndex[tokenId];
+  function remove_from_owner(const from : address; const tokenId : uint) is {
+    const lastTokenIndex : uint := ERC721.erc721.balances[from];
+    const tokenIndex : uint := erc721_enumerable.ownedTokensIndex[tokenId];
     if tokenIndex <> lastTokenIndex then {
-      const lastTokenId : nat := erc721_enumerable.ownedTokens[from][lastTokenIndex];
+      const lastTokenId : uint := erc721_enumerable.ownedTokens[from][lastTokenIndex];
       erc721_enumerable.ownedTokens[from][tokenIndex] := lastTokenId;
       erc721_enumerable.ownedTokensIndex[lastTokenId] := tokenIndex;
     }
-    erc721_enumerable.ownedTokensIndex[tokenId] := 0n;
-    erc721_enumerable.ownedTokens[from][lastTokenIndex] := 0n;
+    erc721_enumerable.ownedTokensIndex[tokenId] := 0;
+    erc721_enumerable.ownedTokens[from][lastTokenIndex] := 0;
   }
 
-  function remove_from_all(const tokenId : nat) is {
-    const lastTokenIndex : nat := erc721_enumerable.allTokens.length - 1n;
-    const tokenIndex : nat := erc721_enumerable.allTokensIndex[tokenId];
-    const lastTokenId : nat := erc721_enumerable.allTokens[lastTokenIndex];
+  function remove_from_all(const tokenId : uint) is {
+    const lastTokenIndex : uint := erc721_enumerable.allTokens.length - 1;
+    const tokenIndex : uint := erc721_enumerable.allTokensIndex[tokenId];
+    const lastTokenId : uint := erc721_enumerable.allTokens[lastTokenIndex];
     erc721_enumerable.allTokens[tokenIndex] := lastTokenId;
     erc721_enumerable.allTokensIndex[lastTokenId] := tokenIndex;
-    erc721_enumerable.allTokensIndex[tokenId] := 0n;
+    erc721_enumerable.allTokensIndex[tokenId] := 0;
     List.pop(erc721_enumerable.allTokens);
   }
 }
 
 interface IERC721Enumerable is {
-  view function totalSupply() : nat;
-  view function tokenByIndex(index : nat) : nat
+  view function totalSupply() : uint;
+  view function tokenByIndex(index : uint) : uint
     raises ERC721OutOfBoundsIndex;
-  view function tokenOfOwnerByIndex(owner : address; index : nat) : nat
+  view function tokenOfOwnerByIndex(owner : address; index : uint) : uint
     raises ERC721InvalidOwner | ERC721OutOfBoundsIndex;
 }

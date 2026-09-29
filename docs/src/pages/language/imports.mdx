@@ -15,21 +15,21 @@ import "./lib/fees.lithe" as Fees;
 
 storage is record {
   fee : Fees.basis_points;
-  cap : nat;
+  cap : uint;
 }
 
-external function configure(const fee : Fees.basis_points; const cap : nat) is {
+external function configure(const fee : Fees.basis_points; const cap : uint) is {
   storage.fee := fee;
   storage.cap := cap;
 }
 
-external view function charge(const amount : nat) : nat is
+external view function charge(const amount : uint) : uint is
   min(Fees.apply(storage.fee, amount), storage.cap)
 ```
 
 ```lithe [lib/math.lithe]
-pure function min(const a : nat; const b : nat) : nat is {
-  var smaller : nat := b;
+pure function min(const a : uint; const b : uint) : uint is {
+  var smaller : uint := b;
   if a < b then { smaller := a; }
 } with smaller
 ```
@@ -37,11 +37,11 @@ pure function min(const a : nat; const b : nat) : nat is {
 ```lithe [lib/fees.lithe]
 type basis_points is uint16;
 
-pure function apply(const fee : basis_points; const amount : nat) : nat is
-  amount * nat(uint16(fee)) / 10_000n
+pure function apply(const fee : basis_points; const amount : uint) : uint is
+  amount * uint(uint16(fee)) / 10_000
 
-private pure function unused() : nat is
-  0n
+private pure function unused() : uint is
+  0
 ```
 
 :::
@@ -95,8 +95,8 @@ import "./lib/ledger.lithe";
 
 contract Token is {
   use Ledger exposing {
-    function mint(to : address; amount : nat);
-    view function balance_of(who : address) : nat;
+    function mint(to : address; amount : uint);
+    view function balance_of(who : address) : uint;
   }
 }
 ```
@@ -104,13 +104,13 @@ contract Token is {
 ```lithe [lib/ledger.lithe]
 module Ledger is {
   storage ledger at "example.ledger" is record {
-    balances : map(address, nat);
+    balances : map(address, uint);
   }
 
-  external view function balance_of(const who : address) : nat is
+  external view function balance_of(const who : address) : uint is
     ledger.balances[who]
 
-  external function mint(const to : address; const amount : nat) is {
+  external function mint(const to : address; const amount : uint) is {
     ledger.balances[to] := ledger.balances[to] + amount;
   }
 }

@@ -12,7 +12,7 @@ description: "For loops over lists and ranges, with until and bound."
    length. `until` ends a loop early. `bound n` caps the count, and a longer list panics. *)
 
 interface Exchange is {
-  function swap(amount : nat) : nat;
+  function swap(amount : uint) : uint;
 }
 
 event Paid of record {
@@ -21,30 +21,30 @@ event Paid of record {
 }
 
 storage is record {
-  total : nat;
-  gcd : nat;
-  found : nat;
+  total : uint;
+  gcd : uint;
+  found : uint;
   members : list(address);
   is_member : map(address, bool);
   exchange : Exchange;
-  results : map(nat, nat);
-  paid : nat;
+  results : map(uint, uint);
+  paid : uint;
 }
 
 (* A range is half-open: 0 <= i < n. *)
-external function triangle(const n : nat) is {
-  var acc : nat := 0n;
-  for i : nat in 0n .. n do {
+external function triangle(const n : uint) is {
+  var acc : uint := 0;
+  for i : uint in 0 .. n do {
     acc := acc + i;
   }
   storage.total := acc;
 }
 
 (* A fixed list's length is in its type. `(i, x)` binds the index too. *)
-external function weighted(const xs : list(nat, 3)) is {
-  var acc : nat := 0n;
-  for (i, x) : (nat, nat) in xs do {
-    acc := acc + x * (i + 1n);
+external function weighted(const xs : list(uint, 3)) is {
+  var acc : uint := 0;
+  for (i, x) : (uint, uint) in xs do {
+    acc := acc + x * (i + 1);
   }
   storage.total := acc;
 }
@@ -62,28 +62,28 @@ external function mark_all() is {
 
 (* `until` is checked before each iteration, so the search stops once it has found. *)
 external function find(const target : address) is {
-  var hit : nat := 0n;
-  for (i, who) : (nat, address) in storage.members until hit <> 0n bound 4 do {
+  var hit : uint := 0;
+  for (i, who) : (uint, address) in storage.members until hit <> 0 bound 4 do {
     if who = target then {
-      hit := i + 1n;
+      hit := i + 1;
     }
   }
   storage.found := hit;
 }
 
 (* A tuple assignment steps two `var`s at once. *)
-external function euclid(const a : nat; const b : nat) is {
-  var x : nat := a;
-  var y : nat := b;
-  for _ : nat in 0n .. 256n until y = 0n do {
+external function euclid(const a : uint; const b : uint) is {
+  var x : uint := a;
+  var y : uint := b;
+  for _ : uint in 0 .. 256 until y = 0 do {
     (x, y) := (y, x % y);
   }
   storage.gcd := x;
 }
 
 (* Effects in a loop: one event and one deferred transfer per recipient. *)
-external function pay(const tos : list(address, 2); const amounts : list(nat, 2)) is {
-  for (i, to) : (nat, address) in tos do {
+external function pay(const tos : list(address, 2); const amounts : list(uint, 2)) is {
+  for (i, to) : (uint, address) in tos do {
     const amount : wei := wei(amounts[i]);
     storage.paid := storage.paid + amounts[i];
     emit Paid { to = to; amount = amount; };
@@ -96,29 +96,29 @@ external function set_exchange(const exchange : Exchange) is {
 }
 
 (* A continuation in a loop sees that iteration's bindings. *)
-external nonreentrant function swap_all(const amounts : list(nat, 2)) is {
-  for (i, amount) : (nat, nat) in amounts do {
-    defer storage.exchange.swap(amount) then (out : nat) {
+external nonreentrant function swap_all(const amounts : list(uint, 2)) is {
+  for (i, amount) : (uint, uint) in amounts do {
+    defer storage.exchange.swap(amount) then (out : uint) {
       storage.results[i] := out;
     };
   }
 }
 
-external function grid(const n : nat) is {
-  var acc : nat := 0n;
-  for i : nat in 0n .. n do {
-    for j : nat in 0n .. n do {
+external function grid(const n : uint) is {
+  var acc : uint := 0;
+  for i : uint in 0 .. n do {
+    for j : uint in 0 .. n do {
       acc := acc + i * j;
     }
   }
   storage.total := acc;
 }
 
-external view function total() : nat is
+external view function total() : uint is
   storage.total
 ```
 
-- `triangle` counts a half-open range: `0n .. n` runs for `0` up to `n - 1`.
+- `triangle` counts a half-open range: `0 .. n` runs for `0` up to `n - 1`.
 - `weighted` walks a fixed list with its index. A fixed list's length is in its type, so the loop's cost is known when the contract is compiled.
 - `mark_all` walks a storage list, which can grow. Its `bound 4` makes the worst case visible, and a fifth member makes the call revert with `Panic(0x01)`. Leave the bound off and the compiler warns that the loop's gas depends on storage.
 - `find` stops as soon as `until` is true. The condition is checked before every iteration, including the first.

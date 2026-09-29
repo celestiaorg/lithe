@@ -1,30 +1,30 @@
 (* One function form. Decorators classify visibility and effects. *)
 
 storage is record {
-  count : nat;
+  count : uint;
   paid : wei;
 }
 
-view function doubled(const n : nat) : nat is
+view function doubled(const n : uint) : uint is
   n + n
 
-function stamp(const n : nat) : nat is {
+function stamp(const n : uint) : uint is {
   storage.count := n;
 } with storage.count
 
-function bump(const n : nat) is {
+function bump(const n : uint) is {
   storage.count := storage.count + doubled(n);
 }
 
-external view function count() : nat is
+external view function count() : uint is
   storage.count
 
-external function set(const n : nat) is {
-  const _ : nat := stamp(n);
+external function set(const n : uint) is {
+  const _ : uint := stamp(n);
   skip
 }
 
-external function add(const n : nat) is {
+external function add(const n : uint) is {
   bump(n);
 }
 

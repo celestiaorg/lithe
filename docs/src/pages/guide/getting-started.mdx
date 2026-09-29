@@ -39,25 +39,25 @@ A Lithe file is a contract. Create `counter.lithe`:
 (* Comments are written like this, and they nest. *)
 
 storage is record {
-  count : nat;
+  count : uint;
 }
 
-external view function get() : nat is
+external view function get() : uint is
   storage.count
 
 external function inc() is {
-  storage.count := storage.count + 1n;
+  storage.count := storage.count + 1;
 }
 
 external function dec() is {
-  storage.count := storage.count - 1n;
+  storage.count := storage.count - 1;
 }
 ```
 
 A few things to notice:
 
 - **`storage is record`** declares the contract's persistent state. Every contract has one, and every access is qualified as `storage.count`.
-- **`nat`** is an unsigned 256-bit integer. `1n` is a `nat` literal. Arithmetic is checked, so `dec` on zero reverts with `Panic(0x11)`, the same panic Solidity uses.
+- **`uint`** is an unsigned 256-bit integer. `1` is a `uint` literal. Arithmetic is checked, so `dec` on zero reverts with `Panic(0x11)`, the same panic Solidity uses.
 - **`external`** puts a function in the ABI. `external view` promises the function never writes, and the compiler checks the promise.
 - **`:=`** assigns. **`=`** compares.
 - A function body is a block `{ ... }` or a single expression.

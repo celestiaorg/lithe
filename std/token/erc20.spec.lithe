@@ -9,7 +9,7 @@ spec for module ERC20 is {
     (* The balances add up to the supply. *)
     invariant supply is erc20.total_supply = sum(erc20.balances);
     (* The zero address holds nothing: tokens sent there are burned. *)
-    invariant nothing_at_zero is erc20.balances[Address.zero] = 0n;
+    invariant nothing_at_zero is erc20.balances[Address.zero] = 0;
   }
 
   spec for external transfer is {
@@ -31,9 +31,9 @@ spec for module ERC20 is {
   }
 
   spec for external transferFrom is {
-    const allowed : nat := old.erc20.allowances[from][Evm.sender()];
-    (* An unlimited allowance, `Nat.max`, is never spent down, and never checked. *)
-    const limited : bool := allowed < Nat.max;
+    const allowed : uint := old.erc20.allowances[from][Evm.sender()];
+    (* An unlimited allowance, `Uint.max`, is never spent down, and never checked. *)
+    const limited : bool := allowed < Uint.max;
     raises ERC20InsufficientAllowance when allowed < value;
     raises ERC20InvalidApprover when limited and from = Address.zero;
     raises ERC20InvalidSpender when limited and Evm.sender() = Address.zero;

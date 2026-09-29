@@ -1,2 +1,2 @@
-view function calculate_fee(const amount : nat) : nat is
+view function calculate_fee(const amount : uint) : uint is
   amount

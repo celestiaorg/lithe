@@ -13,32 +13,32 @@ Named domains live at ERC-7201 roots derived from their id strings. They never c
    refactors. The default `storage` record starts at slot 0, like Solidity. *)
 
 storage is record {
-  count : nat;
+  count : uint;
 }
 
 storage config at "example.config" is record {
-  fee : nat;
+  fee : uint;
   treasury : address;
 }
 
 storage stats at "example.stats" is record {
-  volume : nat;
+  volume : uint;
   users : map(address, bool);
 }
 
 (* A named domain is accessed by its name, not `storage.` *)
-external function configure(const fee : nat; const treasury : address) is {
+external function configure(const fee : uint; const treasury : address) is {
   config.fee := fee;
   config.treasury := treasury;
 }
 
-external function trade(const amount : nat) is {
-  storage.count := storage.count + 1n;
+external function trade(const amount : uint) is {
+  storage.count := storage.count + 1;
   stats.volume := stats.volume + amount;
   stats.users[Evm.sender()] := true;
 }
 
-external view function fee() : nat is
+external view function fee() : uint is
   config.fee
 ```
 

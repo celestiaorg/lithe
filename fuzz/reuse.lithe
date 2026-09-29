@@ -1,19 +1,19 @@
 (* Fuzz target: functions called from many places, so they compile once. *)
 
-error Over of nat;
+error Over of uint;
 
 storage is record {
   owner : address;
-  totals : map(address, nat);
-  limit : nat;
-  last : nat;
-  spare : option(nat);
-  pair : (nat, nat);
+  totals : map(address, uint);
+  limit : uint;
+  last : uint;
+  spare : option(uint);
+  pair : (uint, uint);
   flag : bool;
 }
 
-pure function clamp(const x : nat; const hi : nat) : nat is {
-  var out : nat := x;
+pure function clamp(const x : uint; const hi : uint) : uint is {
+  var out : uint := x;
   if x > hi then {
     out := hi;
   } else {
@@ -21,11 +21,11 @@ pure function clamp(const x : nat; const hi : nat) : nat is {
   }
 } with out
 
-function add_to(const who : address; const amount : nat) : nat
+function add_to(const who : address; const amount : uint) : uint
   raises Over
 is {
-  const next : nat := storage.totals[who] + amount;
-  assert(next < 1000000n, Over(next));
+  const next : uint := storage.totals[who] + amount;
+  assert(next < 1000000, Over(next));
   storage.totals[who] := next;
   if next > storage.limit then {
     storage.limit := next;
@@ -34,46 +34,46 @@ is {
   }
 } with next
 
-pure function split(const x : nat) : (nat, nat) is
+pure function split(const x : uint) : (uint, uint) is
   (x / 3, x % 3)
 
-view function spare_or(const d : nat) : nat is
+view function spare_or(const d : uint) : uint is
   case storage.spare of
   {
   | Some(v) -> v + d
-  | None -> d + 1n
+  | None -> d + 1
   }
 
-function touch(const x : nat) is {
-  if x % 2n = 0n then {
+function touch(const x : uint) is {
+  if x % 2 = 0 then {
     storage.flag := true;
   } else {
     storage.spare := Some(x);
   }
 }
 
-external function one(const who : address; const amount : nat)
+external function one(const who : address; const amount : uint)
   raises Over
 is {
-  const got : nat := add_to(who, clamp(amount, 5000n));
+  const got : uint := add_to(who, clamp(amount, 5000));
   touch(got);
   storage.pair := split(got);
 }
 
-external function two(const a : address; const b : address; const amount : nat)
+external function two(const a : address; const b : address; const amount : uint)
   raises Over
 is {
-  const x : nat := add_to(a, amount);
-  const y : nat := add_to(b, clamp(x, 700n));
+  const x : uint := add_to(a, amount);
+  const y : uint := add_to(b, clamp(x, 700));
   touch(y);
-  const (q, r) : (nat, nat) := split(x + y);
+  const (q, r) : (uint, uint) := split(x + y);
   storage.last := q + r + spare_or(q);
 }
 
-external function three(const amount : nat) is {
+external function three(const amount : uint) is {
   touch(amount);
-  touch(amount + 1n);
-  storage.last := spare_or(clamp(amount, 9n)) + clamp(amount, 3n);
+  touch(amount + 1);
+  storage.last := spare_or(clamp(amount, 9)) + clamp(amount, 3);
 }
 
 external function reset() is {
@@ -81,8 +81,8 @@ external function reset() is {
   touch(storage.last);
 }
 
-external view function peek(const who : address; const d : nat) : nat is
-  storage.totals[who] + spare_or(d) + spare_or(7n)
+external view function peek(const who : address; const d : uint) : uint is
+  storage.totals[who] + spare_or(d) + spare_or(7)
 
-external view function parts(const x : nat) : (nat, nat) is
+external view function parts(const x : uint) : (uint, uint) is
   split(x)

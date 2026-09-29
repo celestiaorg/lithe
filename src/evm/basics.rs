@@ -426,11 +426,11 @@ fn typed_errors_revert_with_custom_error_data() {
 fn division_by_zero_is_a_panic() {
     let src = "\
 storage is record {
-  count : nat;
+  count : uint;
 }
 
-external function boom(const n : nat) is {
-  storage.count := n / 0n;
+external function boom(const n : uint) is {
+  storage.count := n / 0;
 }
 ";
     let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
@@ -563,17 +563,17 @@ raised by:
 #[test]
 fn proven_arithmetic_skips_its_check() {
     let head = "\
-storage is record { n : nat; }
+storage is record { n : uint; }
 error Low;
-pure function shifted(const y : uint112; const x : uint112) : nat is (nat(y) << 112n) / nat(x)
+pure function shifted(const y : uint112; const x : uint112) : uint is (uint(y) << 112) / uint(x)
 ";
     let build = |body: &str| {
         compile(&format!(
-            "{head}external view function f(const a : uint112; const b : uint112; const c : uint32; const n : nat; const m : nat) : nat
+            "{head}external view function f(const a : uint112; const b : uint112; const c : uint32; const n : uint; const m : uint) : uint
   raises Low
 is {{
   assert(c > 0, Low);
-  var r : nat := 0n;
+  var r : uint := 0;
   {body}
 }} with r
 "
@@ -582,37 +582,37 @@ is {{
     };
     let pairs = [
         (
-            "r := nat(a) * nat(b) * 1000000n;",
-            "r := Nat.wrapping_mul(Nat.wrapping_mul(nat(a), nat(b)), 1000000n);",
+            "r := uint(a) * uint(b) * 1000000;",
+            "r := Uint.wrapping_mul(Uint.wrapping_mul(uint(a), uint(b)), 1000000);",
         ),
         (
-            "r := shifted(a, b) * nat(c);",
-            "r := Nat.wrapping_mul(shifted(a, b), nat(c));",
+            "r := shifted(a, b) * uint(c);",
+            "r := Uint.wrapping_mul(shifted(a, b), uint(c));",
         ),
-        ("r := n / 2n + 1n;", "r := Nat.wrapping_add(n / 2n, 1n);"),
+        ("r := n / 2 + 1;", "r := Uint.wrapping_add(n / 2, 1);"),
         (
             "if n > m then { r := n - m; }",
-            "if n > m then { r := Nat.wrapping_sub(n, m); }",
+            "if n > m then { r := Uint.wrapping_sub(n, m); }",
         ),
         (
-            "if n <= m then { r := 1n; } else { r := n - m; }",
-            "if n <= m then { r := 1n; } else { r := Nat.wrapping_sub(n, m); }",
+            "if n <= m then { r := 1; } else { r := n - m; }",
+            "if n <= m then { r := 1; } else { r := Uint.wrapping_sub(n, m); }",
         ),
         (
             "if not (n < m) then { r := n - m; }",
-            "if not (n < m) then { r := Nat.wrapping_sub(n, m); }",
+            "if not (n < m) then { r := Uint.wrapping_sub(n, m); }",
         ),
         (
-            "if n > nat(a) - m then { r := n - (nat(a) - m); }",
-            "if n > nat(a) - m then { r := Nat.wrapping_sub(n, nat(a) - m); }",
+            "if n > uint(a) - m then { r := n - (uint(a) - m); }",
+            "if n > uint(a) - m then { r := Uint.wrapping_sub(n, uint(a) - m); }",
         ),
         (
             "assert(n >= m, Low); r := n - m;",
-            "assert(n >= m, Low); r := Nat.wrapping_sub(n, m);",
+            "assert(n >= m, Low); r := Uint.wrapping_sub(n, m);",
         ),
         (
-            "if m <> 0n and m - 1n < n then { r := 1n; }",
-            "if m <> 0n and Nat.wrapping_sub(m, 1n) < n then { r := 1n; }",
+            "if m <> 0 and m - 1 < n then { r := 1; }",
+            "if m <> 0 and Uint.wrapping_sub(m, 1) < n then { r := 1; }",
         ),
     ];
     for (checked, wrapping) in pairs {
@@ -620,12 +620,12 @@ is {{
     }
     // A cast whose operand already fits its type has nothing to check.
     assert!(
-        build("r := nat(uint32(n % 4294967296n));").len()
-            < build("r := nat(uint32(n % 4294967297n));").len()
+        build("r := uint(uint32(n % 4294967296));").len()
+            < build("r := uint(uint32(n % 4294967297));").len()
     );
     assert!(
-        build("assert(n <= nat(a), Low); r := nat(uint112(n));").len()
-            < build("assert(n <= m, Low); r := nat(uint112(n));").len()
+        build("assert(n <= uint(a), Low); r := uint(uint112(n));").len()
+            < build("assert(n <= m, Low); r := uint(uint112(n));").len()
     );
 }
 
@@ -633,39 +633,39 @@ is {{
 #[test]
 fn unproven_arithmetic_still_panics() {
     let src = "\
-storage is record { n : nat; }
+storage is record { n : uint; }
 error Low;
-external view function reassigned(const n : nat; const m : nat) : nat is {
-  var x : nat := n;
-  var r : nat := 0n;
+external view function reassigned(const n : uint; const m : uint) : uint is {
+  var x : uint := n;
+  var r : uint := 0;
   if x > m then {
-    x := 0n;
+    x := 0;
     r := x - m;
   }
 } with r
-external view function other_path(const n : nat; const m : nat) : nat is {
-  var r : nat := 0n;
+external view function other_path(const n : uint; const m : uint) : uint is {
+  var r : uint := 0;
   if n > m then {
-    r := 1n;
+    r := 1;
   } else {
     r := n - m;
   }
 } with r
-external view function after_scope(const n : nat; const m : nat) : nat is {
-  var r : nat := 0n;
+external view function after_scope(const n : uint; const m : uint) : uint is {
+  var r : uint := 0;
   if n > m then {
     r := n - m;
   }
 } with r + (n - m)
-external view function guarded(const n : nat; const m : nat) : nat
+external view function guarded(const n : uint; const m : uint) : uint
   raises Low
 is {
   assert(n >= m, Low);
 } with n - m
-external view function wide(const n : nat; const a : uint112) : nat is n * nat(a)
-external view function fits(const a : uint112; const b : uint112) : nat is nat(a) * nat(b) * 1000000n
+external view function wide(const n : uint; const a : uint112) : uint is n * uint(a)
+external view function fits(const a : uint112; const b : uint112) : uint is uint(a) * uint(b) * 1000000
 external view function narrow_sub(const a : uint8; const b : uint8) : uint8 is a - b
-external view function cast(const n : nat) : uint32 is uint32(n % 4294967297n)
+external view function cast(const n : uint) : uint32 is uint32(n % 4294967297)
 ";
     let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
     let w = Word::from_u64;
@@ -708,14 +708,14 @@ external view function cast(const n : nat) : uint32 is uint32(n % 4294967297n)
 #[test]
 fn sign_changing_casts_are_checked() {
     let src = "
-storage is record { n : nat; }
-external pure function to_nat(const x : int) : nat is nat(x)
-external pure function to_int(const n : nat) : int is int(n)
-external pure function to_int16(const n : nat) : int16 is int16(n)
+storage is record { n : uint; }
+external pure function to_uint(const x : int) : uint is uint(x)
+external pure function to_int(const n : uint) : int is int(n)
+external pure function to_int16(const n : uint) : int16 is int16(n)
 external pure function to_uint8(const x : int8) : uint8 is uint8(x)
 external pure function to_wei(const x : int) : wei is wei(x)
-external pure function nat_bits(const x : int) : nat is Nat.from_bits(x)
-external pure function int_bits(const n : nat) : int is Int.from_bits(n)
+external pure function uint_bits(const x : int) : uint is Uint.from_bits(x)
+external pure function int_bits(const n : uint) : int is Int.from_bits(n)
 ";
     let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
     let w = Word::from_u64;
@@ -734,8 +734,8 @@ external pure function int_bits(const n : nat) : int is Int.from_bits(n)
             Some(load_bytes(&out.returndata, 0))
         }
     };
-    assert_eq!(out("to_nat(int256)", w(7)), Some(w(7)));
-    assert_eq!(out("to_nat(int256)", neg), None);
+    assert_eq!(out("to_uint(int256)", w(7)), Some(w(7)));
+    assert_eq!(out("to_uint(int256)", neg), None);
     assert_eq!(out("to_wei(int256)", neg), None);
     assert_eq!(
         out("to_int(uint256)", top.wrapping_sub(w(1))),
@@ -747,16 +747,16 @@ external pure function int_bits(const n : nat) : int is Int.from_bits(n)
     assert_eq!(out("to_int16(uint256)", neg), None);
     assert_eq!(out("to_uint8(int8)", w(127)), Some(w(127)));
     assert_eq!(out("to_uint8(int8)", neg), None);
-    assert_eq!(out("nat_bits(int256)", neg), Some(neg));
+    assert_eq!(out("uint_bits(int256)", neg), Some(neg));
     assert_eq!(out("int_bits(uint256)", neg), Some(neg));
 }
 
 #[test]
 fn booleans_convert_to_unsigned_integers() {
     let src = "
-storage is record { n : nat; }
-external pure function below(const a : nat; const b : nat) : nat is nat(a < b)
-external pure function flag8(const a : nat; const b : nat) : uint8 is uint8(a = b) << 7n
+storage is record { n : uint; }
+external pure function below(const a : uint; const b : uint) : uint is uint(a < b)
+external pure function flag8(const a : uint; const b : uint) : uint8 is uint8(a = b) << 7
 ";
     let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
     let w = Word::from_u64;
@@ -766,33 +766,33 @@ external pure function flag8(const a : nat; const b : nat) : uint8 is uint8(a = 
     assert_eq!(out("below(uint256,uint256)", 2, 2), w(0));
     assert_eq!(out("flag8(uint256,uint256)", 3, 3), w(128));
     assert_eq!(out("flag8(uint256,uint256)", 3, 4), w(0));
-    assert!(compile("storage is record { n : nat; }\nexternal pure function f(const b : bool) : int is int(b)\n").is_err());
+    assert!(compile("storage is record { n : uint; }\nexternal pure function f(const b : bool) : int is int(b)\n").is_err());
 }
 
 #[test]
 fn powers_are_checked() {
     let shared = "
-storage is record { n : nat; }
-external pure function pow(const a : nat; const b : nat) : nat is a ** b
-external pure function ipow(const a : int; const b : nat) : int is a ** b
+storage is record { n : uint; }
+external pure function pow(const a : uint; const b : uint) : uint is a ** b
+external pure function ipow(const a : int; const b : uint) : int is a ** b
 external pure function pow8(const a : uint8; const b : uint8) : uint8 is a ** b
-external pure function ipow8(const a : int8; const b : nat) : int8 is a ** b
-external pure function two(const b : nat) : nat is 2n ** b
-external pure function itwo(const b : nat) : int is 2 ** b
-external pure function four8(const b : nat) : uint8 is 4 ** b
-external pure function sq(const a : nat) : nat is a ** 2n
+external pure function ipow8(const a : int8; const b : uint) : int8 is a ** b
+external pure function two(const b : uint) : uint is 2 ** b
+external pure function itwo(const b : uint) : int is 2 ** b
+external pure function four8(const b : uint) : uint8 is 4 ** b
+external pure function sq(const a : uint) : uint is a ** 2
 external pure function isq(const a : int) : int is a ** 2
-external pure function tower(const a : nat; const b : nat; const c : nat) : nat is a ** b ** c
+external pure function tower(const a : uint; const b : uint; const c : uint) : uint is a ** b ** c
 external pure function neg_sq(const x : int) : int is -x ** 2
-external pure function small(const a : uint8; const b : uint8) : nat is (nat(a) % 16n) ** (nat(b) % 8n)
+external pure function small(const a : uint8; const b : uint8) : uint is (uint(a) % 16) ** (uint(b) % 8)
 ";
     let single = "
-storage is record { n : nat; }
-external pure function pow(const a : nat; const b : nat) : nat is a ** b
+storage is record { n : uint; }
+external pure function pow(const a : uint; const b : uint) : uint is a ** b
 ";
     let single_int = "
-storage is record { n : nat; }
-external pure function ipow(const a : int; const b : nat) : int is a ** b
+storage is record { n : uint; }
+external pure function ipow(const a : int; const b : uint) : int is a ** b
 ";
     let runtimes: Vec<Vec<u8>> = [shared, single, single_int]
         .iter()
@@ -878,39 +878,39 @@ external pure function ipow(const a : int; const b : nat) : int is a ** b
 
     let folded = |expr: &str, ty: &str| {
         compile(&format!(
-            "storage is record {{ n : nat; }}\nexternal pure function k() : {ty} is {expr}\n"
+            "storage is record {{ n : uint; }}\nexternal pure function k() : {ty} is {expr}\n"
         ))
         .expect("compile")
     };
     assert_eq!(
-        folded("10n ** 18n", "nat"),
-        folded("1_000_000_000_000_000_000n", "nat")
+        folded("10 ** 18", "uint"),
+        folded("1_000_000_000_000_000_000", "uint")
     );
     assert_eq!(
         folded("10 ** 18", "int"),
         folded("1_000_000_000_000_000_000", "int")
     );
-    assert_eq!(folded("2n ** 3n ** 2n", "nat"), folded("512n", "nat"));
+    assert_eq!(folded("2 ** 3 ** 2", "uint"), folded("512", "uint"));
 }
 
 #[test]
 fn constant_bases_bound_the_exponent() {
     let src = "
-storage is record { n : nat; }
-external pure function ten(const e : nat) : nat is 10n ** e
-external pure function three(const e : nat) : nat is 3n ** e
-external pure function zero(const e : nat) : nat is 0n ** e
-external pure function one(const e : nat) : nat is 1n ** e
-external pure function minus_one(const e : nat) : int is (-1) ** e
-external pure function minus_ten(const e : nat) : int is (-10) ** e
-external pure function minus_two(const e : nat) : int is (-2) ** e
-external pure function ten8(const e : nat) : uint8 is 10 ** e
+storage is record { n : uint; }
+external pure function ten(const e : uint) : uint is 10 ** e
+external pure function three(const e : uint) : uint is 3 ** e
+external pure function zero(const e : uint) : uint is 0 ** e
+external pure function one(const e : uint) : uint is 1 ** e
+external pure function minus_one(const e : uint) : int is (-1) ** e
+external pure function minus_ten(const e : uint) : int is (-10) ** e
+external pure function minus_two(const e : uint) : int is (-2) ** e
+external pure function ten8(const e : uint) : uint8 is 10 ** e
 external pure function three8(const e : uint8) : uint8 is 3 ** e
-external pure function two8(const e : nat) : uint8 is 2 ** e
-external pure function minus_three8(const e : nat) : int8 is (-3) ** e
-external pure function minus_two8(const e : nat) : int8 is (-2) ** e
-external pure function three_i8(const e : nat) : int8 is 3 ** e
-external pure function units(const d : uint8) : nat is 10n ** d
+external pure function two8(const e : uint) : uint8 is 2 ** e
+external pure function minus_three8(const e : uint) : int8 is (-3) ** e
+external pure function minus_two8(const e : uint) : int8 is (-2) ** e
+external pure function three_i8(const e : uint) : int8 is 3 ** e
+external pure function units(const d : uint8) : uint is 10 ** d
 ";
     let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
     let w = Word::from_u64;
@@ -984,11 +984,11 @@ external pure function units(const d : uint8) : nat is 10n ** d
 #[test]
 fn powers_match_a_reference() {
     let src = "
-storage is record { n : nat; }
-external pure function pow(const a : nat; const b : nat) : nat is a ** b
-external pure function ipow(const a : int; const b : nat) : int is a ** b
-external pure function pow64(const a : uint64; const b : nat) : uint64 is a ** b
-external pure function ipow64(const a : int64; const b : nat) : int64 is a ** b
+storage is record { n : uint; }
+external pure function pow(const a : uint; const b : uint) : uint is a ** b
+external pure function ipow(const a : int; const b : uint) : int is a ** b
+external pure function pow64(const a : uint64; const b : uint) : uint64 is a ** b
+external pure function ipow64(const a : int64; const b : uint) : int64 is a ** b
 ";
     let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
     let w = Word::from_u64;
@@ -1116,7 +1116,7 @@ external pure function ipow64(const a : int64; const b : nat) : int64 is a ** b
 #[test]
 fn negation_is_checked() {
     let src = "
-storage is record { n : nat; }
+storage is record { n : uint; }
 external pure function neg(const x : int) : int is -x
 external pure function neg8(const x : int8) : int8 is -x
 ";

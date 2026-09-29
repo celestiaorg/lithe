@@ -1,14 +1,14 @@
-type shares is nat;
+type shares is uint;
 
 storage is record {
-  n : nat;
+  n : uint;
 }
 
-pure function scale(const x : nat) : nat is
-  x * 2n
+pure function scale(const x : uint) : uint is
+  x * 2
 
-pure function scale(const x : shares) : nat is
-  nat(x) * 3n
+pure function scale(const x : shares) : uint is
+  uint(x) * 3
 
-external pure function f() : nat is
+external pure function f() : uint is
   scale(true)

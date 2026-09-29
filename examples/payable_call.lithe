@@ -3,9 +3,9 @@
    `withdraw` is an ordinary state-changing call. *)
 
 interface Vault is {
-  view function balanceOf(owner : address) : nat;
+  view function balanceOf(owner : address) : uint;
   payable function deposit(owner : address);
-  function withdraw(amount : nat);
+  function withdraw(amount : uint);
 }
 
 storage is record {
@@ -19,12 +19,12 @@ external function init(const vault : Vault) is {
 
 external payable function forward() is {
   storage.forwarded := storage.forwarded + Evm.value();
-  defer storage.vault.deposit(Evm.sender()) with value = nat(Evm.value());
+  defer storage.vault.deposit(Evm.sender()) with value = uint(Evm.value());
 }
 
-external function take(const amount : nat) is {
+external function take(const amount : uint) is {
   defer storage.vault.withdraw(amount);
 }
 
-external view function held() : nat is
+external view function held() : uint is
   query storage.vault.balanceOf(Evm.self())

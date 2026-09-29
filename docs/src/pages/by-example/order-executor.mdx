@@ -13,14 +13,14 @@ A larger continuation example. `execute_and_deposit` swaps, and its continuation
    exchange runs, so the exchange, and anything it calls, sees a consistent state. *)
 
 type swap_result is record {
-  amount_out : nat;
-  fee : nat;
+  amount_out : uint;
+  fee : uint;
 }
 
 interface Exchange is {
-  function swap(amount_in : nat; min_out : nat) : swap_result;
-  function deposit(amount : nat) : nat;
-  function split(shares : nat) : (nat, nat);
+  function swap(amount_in : uint; min_out : uint) : swap_result;
+  function deposit(amount : uint) : uint;
+  function split(shares : uint) : (uint, uint);
 }
 
 type order_status is
@@ -31,45 +31,45 @@ type order_status is
 
 type order is record {
   status : order_status;
-  amount_in : nat;
-  amount_out : nat;
-  shares : nat;
+  amount_in : uint;
+  amount_out : uint;
+  shares : uint;
 }
 
-error AlreadyExecuted of nat;
-error NotComplete of nat;
+error AlreadyExecuted of uint;
+error NotComplete of uint;
 error TooLittle of record {
-  amount_out : nat;
-  floor : nat;
+  amount_out : uint;
+  floor : uint;
 }
 
 event Executed of record {
-  indexed id : nat;
-  amount_out : nat;
-  fee : nat;
+  indexed id : uint;
+  amount_out : uint;
+  fee : uint;
 }
 
 event Deposited of record {
-  indexed id : nat;
-  shares : nat;
+  indexed id : uint;
+  shares : uint;
 }
 
 storage is record {
   exchange : Exchange;
-  floor : nat;
-  executed : nat;
-  total_out : nat;
-  left : nat;
-  right : nat;
-  orders : map(nat, order);
+  floor : uint;
+  executed : uint;
+  total_out : uint;
+  left : uint;
+  right : uint;
+  orders : map(uint, order);
 }
 
-external function init(const exchange : Exchange; const floor : nat) is {
+external function init(const exchange : Exchange; const floor : uint) is {
   storage.exchange := exchange;
   storage.floor := floor;
 }
 
-external nonreentrant function execute(const id : nat; const amount_in : nat; const min_out : nat)
+external nonreentrant function execute(const id : uint; const amount_in : uint; const min_out : uint)
   raises AlreadyExecuted | TooLittle
 is {
   assert(storage.orders[id].status = New, AlreadyExecuted(id));
@@ -83,43 +83,43 @@ is {
       );
       storage.orders[id].status := Complete;
       storage.orders[id].amount_out := result.amount_out;
-      storage.executed := storage.executed + 1n;
+      storage.executed := storage.executed + 1;
       storage.total_out := storage.total_out + result.amount_out;
       emit Executed { id = id; amount_out = result.amount_out; fee = result.fee; };
     };
 }
 
-external nonreentrant function execute_and_deposit(const id : nat; const amount_in : nat)
+external nonreentrant function execute_and_deposit(const id : uint; const amount_in : uint)
   raises AlreadyExecuted | TooLittle
 is {
   assert(storage.orders[id].status = New, AlreadyExecuted(id));
   storage.orders[id].status := Pending;
   storage.orders[id].amount_in := amount_in;
-  defer storage.exchange.swap(amount_in, 0n)
+  defer storage.exchange.swap(amount_in, 0)
     then (result : swap_result) {
       storage.orders[id].status := Complete;
       storage.orders[id].amount_out := result.amount_out;
       defer storage.exchange.deposit(result.amount_out)
-        then (shares : nat) {
+        then (shares : uint) {
           storage.orders[id].shares := shares;
           emit Deposited { id = id; shares = shares; };
         };
     };
 }
 
-external nonreentrant function unwind(const id : nat)
+external nonreentrant function unwind(const id : uint)
   raises NotComplete
 is {
   assert(storage.orders[id].status = Complete, NotComplete(id));
   defer storage.exchange.split(storage.orders[id].shares)
-    then ((a, b) : (nat, nat)) {
+    then ((a, b) : (uint, uint)) {
       storage.orders[id].status := Unwound;
       storage.left := storage.left + a;
       storage.right := storage.right + b;
     };
 }
 
-external view function order_of(const id : nat) : order is storage.orders[id]
+external view function order_of(const id : uint) : order is storage.orders[id]
 ```
 
 - Each `then` is a separate phase. The exchange sees each order as `Pending` while it runs.

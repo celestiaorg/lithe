@@ -44,7 +44,7 @@ The guard is required. An upgradeable contract without one, or a guard in a cont
 upgradeable
 
 storage is record {
-  n : nat;
+  n : uint;
 }
 
 external function go() is {
@@ -76,7 +76,7 @@ storage is record {
 }
 
 storage settings at "vault.settings" is record {
-  fee_bps : nat;
+  fee_bps : uint;
   treasury : address;
 }
 
@@ -84,12 +84,12 @@ upgrade guard is {
   assert(Evm.sender() = storage.owner, Not_owner);
 }
 
-migrate init_settings(const fee_bps : nat; const treasury : address) is {
+migrate init_settings(const fee_bps : uint; const treasury : address) is {
   settings.fee_bps := fee_bps;
   settings.treasury := treasury;
 }
 
-external view function fee_bps() : nat is
+external view function fee_bps() : uint is
   settings.fee_bps
 ```
 

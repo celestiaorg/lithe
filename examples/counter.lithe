@@ -3,28 +3,28 @@
 error Invalid_owner_access;
 
 storage is record {
-  count : nat;
+  count : uint;
   owner : address;
 }
 
 event Count_changed of record {
-  old_count : nat;
-  new_count : nat;
+  old_count : uint;
+  new_count : uint;
 }
 
 type owner_action is
   | Reset
 
 type public_action is
-  | Increment of (n : nat)
+  | Increment of (n : uint)
 
 type action is
   | Owner_action of owner_action
   | Public_action of public_action
 
-function add(const n : nat) is {
-  if n > 0n then {
-    const old_count : nat := storage.count;
+function add(const n : uint) is {
+  if n > 0 then {
+    const old_count : uint := storage.count;
 
     storage.count := storage.count + n;
 
@@ -43,13 +43,13 @@ is {
 with case action of
 {
 | Reset -> {
-    const old_count : nat := storage.count;
+    const old_count : uint := storage.count;
 
-    storage.count := 0n;
+    storage.count := 0;
 
     emit Count_changed {
       old_count = old_count;
-      new_count = 0n;
+      new_count = 0;
     };
   }
 }
@@ -69,5 +69,5 @@ is
   | Public_action(a) -> public_main(a)
   }
 
-external view function get_count() : nat is
+external view function get_count() : uint is
   storage.count

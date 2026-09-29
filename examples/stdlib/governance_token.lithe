@@ -44,13 +44,13 @@ contract GovernanceToken is {
   is {
     ERC20.init("Lithe Governance", "LGOV");
     EIP712.init("Lithe Governance", "1");
-    ERC20Capped.init(10_000_000n * 10n ** 18n);
+    ERC20Capped.init(10_000_000 * 10 ** 18);
     AccessControl.grant(AccessControl.default_admin_role(), Evm.sender());
     AccessControl.grant(minter(), Evm.sender());
     AccessControl.grant(pauser(), Evm.sender());
   }
 
-  function update(const from : address; const to : address; const value : nat)
+  function update(const from : address; const to : address; const value : uint)
     raises EnforcedPause | ERC20InsufficientBalance | ERC20ExceededCap | ERC20ExceededSafeSupply
       | CheckpointUnorderedInsertion
   is {
@@ -62,7 +62,7 @@ contract GovernanceToken is {
     ERC20Votes.transfer_voting_units(from, to, value);
   }
 
-  function mint_to(const to : address; const value : nat)
+  function mint_to(const to : address; const value : uint)
     raises ERC20InvalidReceiver | EnforcedPause | ERC20InsufficientBalance | ERC20ExceededCap | ERC20ExceededSafeSupply
       | CheckpointUnorderedInsertion
   is {
@@ -70,7 +70,7 @@ contract GovernanceToken is {
     update(Address.zero, to, value);
   }
 
-  function burn_from(const account : address; const value : nat)
+  function burn_from(const account : address; const value : uint)
     raises ERC20InvalidSender | EnforcedPause | ERC20InsufficientBalance | ERC20ExceededCap | ERC20ExceededSafeSupply
       | CheckpointUnorderedInsertion
   is {
@@ -78,7 +78,7 @@ contract GovernanceToken is {
     update(account, Address.zero, value);
   }
 
-  external function transfer(const to : address; const value : nat) : bool
+  external function transfer(const to : address; const value : uint) : bool
     raises ERC20InvalidSender | ERC20InvalidReceiver | EnforcedPause | ERC20InsufficientBalance | ERC20ExceededCap
       | ERC20ExceededSafeSupply | CheckpointUnorderedInsertion
   is {
@@ -86,7 +86,7 @@ contract GovernanceToken is {
     update(Evm.sender(), to, value);
   } with true
 
-  external function transferFrom(const from : address; const to : address; const value : nat) : bool
+  external function transferFrom(const from : address; const to : address; const value : uint) : bool
     raises ERC20InsufficientAllowance | ERC20InvalidApprover | ERC20InvalidSpender | ERC20InvalidSender
       | ERC20InvalidReceiver | EnforcedPause | ERC20InsufficientBalance | ERC20ExceededCap | ERC20ExceededSafeSupply
       | CheckpointUnorderedInsertion
@@ -97,14 +97,14 @@ contract GovernanceToken is {
     update(from, to, value);
   } with true
 
-  external function burn(const value : nat)
+  external function burn(const value : uint)
     raises ERC20InvalidSender | EnforcedPause | ERC20InsufficientBalance | ERC20ExceededCap | ERC20ExceededSafeSupply
       | CheckpointUnorderedInsertion
   is {
     burn_from(Evm.sender(), value);
   }
 
-  external function burnFrom(const account : address; const value : nat)
+  external function burnFrom(const account : address; const value : uint)
     raises ERC20InsufficientAllowance | ERC20InvalidApprover | ERC20InvalidSpender | ERC20InvalidSender | EnforcedPause
       | ERC20InsufficientBalance | ERC20ExceededCap | ERC20ExceededSafeSupply | CheckpointUnorderedInsertion
   is {
@@ -112,7 +112,7 @@ contract GovernanceToken is {
     burn_from(account, value);
   }
 
-  external function mint(const to : address; const value : nat)
+  external function mint(const to : address; const value : uint)
     raises AccessControlUnauthorizedAccount | ERC20InvalidReceiver | EnforcedPause | ERC20InsufficientBalance
       | ERC20ExceededCap | ERC20ExceededSafeSupply | CheckpointUnorderedInsertion
   is {
@@ -138,14 +138,14 @@ contract GovernanceToken is {
   external function flashLoan(
     const receiver : IERC3156FlashBorrower;
     const token : address;
-    const amount : nat;
+    const amount : uint;
     const data : bytes
   ) : bool
     raises ERC3156ExceededMaxLoan | ERC3156UnsupportedToken | ERC3156InvalidReceiver | ERC20InsufficientAllowance
       | ERC20InvalidApprover | ERC20InvalidSpender | ERC20InvalidReceiver | ERC20InvalidSender | EnforcedPause
       | ERC20InsufficientBalance | ERC20ExceededCap | ERC20ExceededSafeSupply | CheckpointUnorderedInsertion | forwarded
   is {
-    const fee : nat := ERC20FlashMint.check_loan(token, amount);
+    const fee : uint := ERC20FlashMint.check_loan(token, amount);
     mint_to(address(receiver), amount);
     defer receiver.onFlashLoan(Evm.sender(), token, amount, fee, data) then {
       | Ok(answer : bytes32) -> {

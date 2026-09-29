@@ -3,46 +3,46 @@
    as Solidity's `abi.decode(data, (A, B))` does. Malformed data reverts. *)
 
 type order is record {
-  id : nat;
+  id : uint;
   note : string;
-  legs : list(nat);
+  legs : list(uint);
 }
 
 type orders is list(order);
-type grid is list(list(nat));
+type grid is list(list(uint));
 
 type transfer is record {
   to : address;
-  amount : nat;
+  amount : uint;
   memo : string;
 }
 
 storage is record {
-  n : nat;
+  n : uint;
 }
 
 (* Several values, and back. *)
-external pure function pack_transfer(const to : address; const amount : nat; const memo : string) : bytes is
+external pure function pack_transfer(const to : address; const amount : uint; const memo : string) : bytes is
   Abi.encode(to, amount, memo)
 
 external pure function unpack_transfer(const data : bytes) : transfer is {
-  const (to, amount, memo) : (address, nat, string) := Abi.decode(data, (address, nat, string));
+  const (to, amount, memo) : (address, uint, string) := Abi.decode(data, (address, uint, string));
 } with { to = to; amount = amount; memo = memo; }
 
 (* A record is one tuple, as a Solidity struct is. *)
-external pure function pack_order(const id : nat; const note : string) : bytes is {
-  const o : order := { id = id; note = note; legs = [id, id * 2n]; };
+external pure function pack_order(const id : uint; const note : string) : bytes is {
+  const o : order := { id = id; note = note; legs = [id, id * 2]; };
 } with Abi.encode(o)
 
 (* Nested values, and back. *)
 external pure function round_orders(const os : list(order)) : list(order) is
   Abi.decode(Abi.encode(os), orders)
 
-external pure function round_grid(const g : list(list(nat))) : list(list(nat)) is
+external pure function round_grid(const g : list(list(uint))) : list(list(uint)) is
   Abi.decode(Abi.encode(g), grid)
 
 (* A decoded value works as any other: here, the second leg of the first order. *)
-external pure function first_second_leg(const data : bytes) : nat is {
+external pure function first_second_leg(const data : bytes) : uint is {
   const os : list(order) := Abi.decode(data, orders);
 } with os[0].legs[1]
 

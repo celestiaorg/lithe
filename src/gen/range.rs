@@ -1,4 +1,4 @@
-//! Which `nat` arithmetic can skip its overflow check: bounds on each value's word,
+//! Which `uint` arithmetic can skip its overflow check: bounds on each value's word,
 //! from literals, narrow types, and how parts combine, and the orderings that the
 //! guards around it prove.
 
@@ -133,7 +133,7 @@ impl<'a> Gen<'a> {
             _ => {}
         }
         let kind = self.checked.types[self.peel_nominal(left.ty())].kind;
-        if !matches!(kind, TyKind::Nat | TyKind::Wei | TyKind::Timestamp)
+        if !matches!(kind, TyKind::Uint | TyKind::Wei | TyKind::Timestamp)
             || !self.fixed(left)
             || !self.fixed(right)
         {
@@ -218,7 +218,7 @@ impl<'a> Gen<'a> {
     fn range(&self, e: &Expr, depth: u32, scoped: bool) -> Range {
         let (mut lo, mut hi) = self.shape_range(e, depth, scoped);
         let t = &self.checked.types[self.peel_nominal(e.ty())];
-        if t.kind == TyKind::Nat && t.bits > 0 && t.bits < 256 {
+        if t.kind == TyKind::Uint && t.bits > 0 && t.bits < 256 {
             hi = min(hi, ones().shr(256 - u32::from(t.bits)));
         }
         if scoped && depth > 0 {
@@ -261,7 +261,7 @@ impl<'a> Gen<'a> {
         }
         match e {
             Expr::Lit {
-                lit: Lit::Nat(w) | Lit::Wei(w) | Lit::Duration(w),
+                lit: Lit::Uint(w) | Lit::Wei(w) | Lit::Duration(w),
                 ..
             } => (*w, *w),
             Expr::Lit {

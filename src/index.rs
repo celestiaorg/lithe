@@ -103,7 +103,7 @@ struct Ty {
 }
 
 const NAMESPACES: [&str; 10] = [
-    "Evm", "Crypto", "Abi", "Bytes", "String", "Base64", "List", "Nat", "Int", "Address",
+    "Evm", "Crypto", "Abi", "Bytes", "String", "Base64", "List", "Uint", "Int", "Address",
 ];
 
 const KEYWORDS: [&str; 61] = [
@@ -171,7 +171,7 @@ const KEYWORDS: [&str; 61] = [
 ];
 
 const TYPE_NAMES: [&str; 17] = [
-    "nat",
+    "uint",
     "int",
     "bool",
     "address",
@@ -313,7 +313,7 @@ fn builtin_table() -> Vec<Builtin> {
         let [sig, ty, note, ..] = cells.as_slice() else {
             continue;
         };
-        // One row may list several: `Nat.wrapping_add(a, b)`, `Nat.wrapping_sub(a, b)`.
+        // One row may list several: `Uint.wrapping_add(a, b)`, `Uint.wrapping_sub(a, b)`.
         for sig in sig.trim_end_matches('`').split("`, `") {
             let Some((namespace, rest)) = sig.split_once('.') else {
                 continue;
@@ -2259,7 +2259,7 @@ impl<'a> Builder<'a> {
         let c = self.c();
         match e {
             Expr::Lit { line, col, ty, .. } => {
-                // `Nat.max` and `Address.zero` are folded into literals where they stand.
+                // `Uint.max` and `Address.zero` are folded into literals where they stand.
                 let word = self.word_at(self.file, *line, *col).to_string();
                 let text = &self.ix.files[self.file].text;
                 let at = self.offset(self.file, *line, *col);
@@ -2367,7 +2367,7 @@ impl<'a> Builder<'a> {
                             (name == "length" && sized).then(|| {
                                 self.pseudo(
                                     "length",
-                                    "xs.length : nat".to_string(),
+                                    "xs.length : uint".to_string(),
                                     "the number of elements of a dynamic list, or of bytes in `bytes` or a `string`".to_string(),
                                 )
                             })

@@ -1,37 +1,37 @@
 (* Fixed-point numbers with 18 decimals, and basis points. A `wad` is its own type, so
-   a plain `nat` can't be mixed in by accident: convert with `to_wad` and `from_wad`.
+   a plain `uint` can't be mixed in by accident: convert with `to_wad` and `from_wad`.
    Products and quotients keep a 512-bit intermediate and round down. *)
 
 module FixedPoint is {
-  type wad is nat;
+  type wad is uint;
 
-  pure function scale() : nat is
-    10n ** 18n
+  pure function scale() : uint is
+    10 ** 18
 
-  pure function bps_scale() : nat is
-    10_000n
+  pure function bps_scale() : uint is
+    10_000
 
   pure function one() : wad is
     wad(scale())
 
-  pure function to_wad(const n : nat) : wad is
+  pure function to_wad(const n : uint) : wad is
     wad(n * scale())
 
   (* The whole part, rounded down. *)
-  pure function from_wad(const x : wad) : nat is
-    nat(x) / scale()
+  pure function from_wad(const x : wad) : uint is
+    uint(x) / scale()
 
   pure function wad_mul(const a : wad; const b : wad) : wad is
-    wad(Nat.mul_div(nat(a), nat(b), scale()))
+    wad(Uint.mul_div(uint(a), uint(b), scale()))
 
   pure function wad_div(const a : wad; const b : wad) : wad is
-    wad(Nat.mul_div(nat(a), scale(), nat(b)))
+    wad(Uint.mul_div(uint(a), scale(), uint(b)))
 
   (* `amount` scaled by a `wad` factor: a fee rate of `0.003e18` takes 0.3%. *)
-  pure function mul_wad(const amount : nat; const factor : wad) : nat is
-    Nat.mul_div(amount, nat(factor), scale())
+  pure function mul_wad(const amount : uint; const factor : wad) : uint is
+    Uint.mul_div(amount, uint(factor), scale())
 
   (* `bps` basis points of `amount`: 25 is 0.25%. *)
-  pure function apply_bps(const amount : nat; const bps : nat) : nat is
-    Nat.mul_div(amount, bps, bps_scale())
+  pure function apply_bps(const amount : uint; const bps : uint) : uint is
+    Uint.mul_div(amount, bps, bps_scale())
 }

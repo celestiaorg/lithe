@@ -15,13 +15,13 @@ error Cap_is_zero;
 
 storage is record {
   owner : address;
-  cap : nat;
+  cap : uint;
 }
 
-deploy(const owner : address; const cap : nat)
+deploy(const owner : address; const cap : uint)
   raises Cap_is_zero
 is {
-  assert(cap > 0n, Cap_is_zero);
+  assert(cap > 0, Cap_is_zero);
   storage.owner := owner;
   storage.cap := cap;
 }
@@ -29,7 +29,7 @@ is {
 external view function owner() : address is
   storage.owner
 
-external view function cap() : nat is
+external view function cap() : uint is
   storage.cap
 ```
 

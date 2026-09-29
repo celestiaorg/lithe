@@ -3,34 +3,34 @@
 
 module ERC1155Supply is {
   storage erc1155Supply at "openzeppelin.storage.ERC1155Supply" is record {
-    totalSupply : map(nat, nat);
-    totalSupplyAll : nat;
+    totalSupply : map(uint, uint);
+    totalSupplyAll : uint;
   }
 
-  external view function totalSupply(const id : nat) : nat is
+  external view function totalSupply(const id : uint) : uint is
     erc1155Supply.totalSupply[id]
 
-  external view function totalSupply() : nat is
+  external view function totalSupply() : uint is
     erc1155Supply.totalSupplyAll
 
-  external view function exists(const id : nat) : bool is
-    erc1155Supply.totalSupply[id] > 0n
+  external view function exists(const id : uint) : bool is
+    erc1155Supply.totalSupply[id] > 0
 
   (* A burn can't take more than was minted, so its totals can't underflow. *)
-  function update(const from : address; const to : address; const ids : list(nat); const values : list(nat)) is {
+  function update(const from : address; const to : address; const ids : list(uint); const values : list(uint)) is {
     if from = Address.zero then {
-      var minted : nat := 0n;
-      for (i, id) : (nat, nat) in ids do {
-        const value : nat := values[i];
+      var minted : uint := 0;
+      for (i, id) : (uint, uint) in ids do {
+        const value : uint := values[i];
         erc1155Supply.totalSupply[id] := erc1155Supply.totalSupply[id] + value;
         minted := minted + value;
       }
       erc1155Supply.totalSupplyAll := erc1155Supply.totalSupplyAll + minted;
     }
     if to = Address.zero then {
-      var burned : nat := 0n;
-      for (i, id) : (nat, nat) in ids do {
-        const value : nat := values[i];
+      var burned : uint := 0;
+      for (i, id) : (uint, uint) in ids do {
+        const value : uint := values[i];
         erc1155Supply.totalSupply[id] := erc1155Supply.totalSupply[id] - value;
         burned := burned + value;
       }
@@ -40,7 +40,7 @@ module ERC1155Supply is {
 }
 
 interface IERC1155Supply is {
-  view function totalSupply(id : nat) : nat;
-  view function totalSupply() : nat;
-  view function exists(id : nat) : bool;
+  view function totalSupply(id : uint) : uint;
+  view function totalSupply() : uint;
+  view function exists(id : uint) : bool;
 }

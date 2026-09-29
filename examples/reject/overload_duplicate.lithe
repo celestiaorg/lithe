@@ -1,9 +1,9 @@
 storage is record {
-  n : nat;
+  n : uint;
 }
 
-pure function scale(const x : nat) : nat is
-  x * 2n
+pure function scale(const x : uint) : uint is
+  x * 2
 
-pure function scale(const y : nat) : nat is
-  y * 3n
+pure function scale(const y : uint) : uint is
+  y * 3

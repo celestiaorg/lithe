@@ -12,21 +12,21 @@ Transient storage is shared by every call in a transaction and cleared when the 
    it, cleared when it ends, and cheap. It is read and written with TLOAD/TSTORE. *)
 
 interface Callback is {
-  function on_flash(amount : nat);
+  function on_flash(amount : uint);
 }
 
 error Not_in_flash;
 
 transient storage flash is record {
   active : bool;
-  lent : nat;
+  lent : uint;
 }
 
 storage is record {
-  total_lent : nat;
+  total_lent : uint;
 }
 
-external function lend(const to : Callback; const amount : nat) is {
+external function lend(const to : Callback; const amount : uint) is {
   flash.active := true;
   flash.lent := amount;
   storage.total_lent := storage.total_lent + amount;
@@ -34,7 +34,7 @@ external function lend(const to : Callback; const amount : nat) is {
 }
 
 (* Called back by the borrower during `lend`'s deferred call. *)
-external view function current_loan() : nat
+external view function current_loan() : uint
   raises Not_in_flash
 is {
   assert(flash.active, Not_in_flash);

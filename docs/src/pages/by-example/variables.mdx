@@ -12,32 +12,32 @@ Solidity has local, state, and global variables. Lithe has locals, two kinds of 
    transaction, storage forever. *)
 
 storage is record {
-  total : nat;
+  total : uint;
   last_caller : address;
 }
 
 transient storage is record {
-  calls_this_tx : nat;
+  calls_this_tx : uint;
 }
 
-external function track(const amount : nat) is {
+external function track(const amount : uint) is {
   (* `const` is immutable. Every local binding names its type. *)
   const caller : address := Evm.sender();
 
   (* `var` can be reassigned with `:=`. *)
-  var bonus : nat := 0n;
-  if amount > 100n then {
-    bonus := 1n;
+  var bonus : uint := 0;
+  if amount > 100 then {
+    bonus := 1;
   }
 
   (* Contract state is always qualified: `storage.` or `transient.` *)
   storage.total := storage.total + amount + bonus;
   storage.last_caller := caller;
-  transient.calls_this_tx := transient.calls_this_tx + 1n;
+  transient.calls_this_tx := transient.calls_this_tx + 1;
 }
 
 (* Execution context comes from `Evm`, not magic globals. *)
-external view function context() : (address, nat, timestamp) is
+external view function context() : (address, uint, timestamp) is
   (Evm.sender(), Evm.block_number(), Evm.block_timestamp())
 ```
 

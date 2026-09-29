@@ -5,7 +5,7 @@
 contract Factory is {
   storage is record {
     vaults : map(address, address);
-    failed : nat;
+    failed : uint;
   }
 
   external function open() is {
@@ -24,19 +24,19 @@ contract Factory is {
 
   (* Funds the new vault; a failed creation is counted instead of reverting. *)
   external payable function open_funded() is {
-    defer create Vault(Evm.sender()) with value = nat(Evm.value()) then {
+    defer create Vault(Evm.sender()) with value = uint(Evm.value()) then {
       | Ok(vault : address) -> {
           storage.vaults[Evm.sender()] := vault;
         }
       | Error(_) -> {
-          storage.failed := storage.failed + 1n;
+          storage.failed := storage.failed + 1;
         }
     };
   }
 
   (* Both options together: a funded vault at a salted address. *)
   external payable function open_funded_at(const salt : bytes32) is {
-    defer create Vault(Evm.sender()) with { value = nat(Evm.value()); salt = salt; }
+    defer create Vault(Evm.sender()) with { value = uint(Evm.value()); salt = salt; }
       then (vault : address) {
         storage.vaults[Evm.sender()] := vault;
       };

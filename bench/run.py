@@ -259,7 +259,7 @@ SCENARIOS = {
         ("send", "A", "store(uint256,uint256)", ["12", "5"], None),
     ],
     # Powers, roots, logarithms, signed helpers, and hex formatting at their edges.
-    # Nat.to_hex_string(n, length) panics where OpenZeppelin raises its own error, so
+    # Uint.to_hex_string(n, length) panics where OpenZeppelin raises its own error, so
     # the too-short length is left out.
     "numerics": [
         ("call", "A", "pow(uint256,uint256)", ["3", "5"], None),

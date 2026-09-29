@@ -5,11 +5,11 @@
 
 error ERC721InvalidOwner of address;
 
-error ERC721NonexistentToken of nat;
+error ERC721NonexistentToken of uint;
 
 error ERC721IncorrectOwner of record {
   sender : address;
-  tokenId : nat;
+  tokenId : uint;
   owner : address;
 }
 
@@ -19,7 +19,7 @@ error ERC721InvalidReceiver of address;
 
 error ERC721InsufficientApproval of record {
   operator : address;
-  tokenId : nat;
+  tokenId : uint;
 }
 
 error ERC721InvalidApprover of address;
@@ -27,23 +27,23 @@ error ERC721InvalidApprover of address;
 error ERC721InvalidOperator of address;
 
 interface IERC721 is {
-  view function balanceOf(owner : address) : nat
+  view function balanceOf(owner : address) : uint
     raises ERC721InvalidOwner;
-  view function ownerOf(tokenId : nat) : address
+  view function ownerOf(tokenId : uint) : address
     raises ERC721NonexistentToken;
-  view function getApproved(tokenId : nat) : address
+  view function getApproved(tokenId : uint) : address
     raises ERC721NonexistentToken;
   view function isApprovedForAll(owner : address; operator : address) : bool;
-  function approve(to : address; tokenId : nat)
+  function approve(to : address; tokenId : uint)
     raises ERC721NonexistentToken | ERC721InvalidApprover;
   function setApprovalForAll(operator : address; approved : bool)
     raises ERC721InvalidApprover | ERC721InvalidOperator;
-  function transferFrom(from : address; to : address; tokenId : nat)
+  function transferFrom(from : address; to : address; tokenId : uint)
     raises ERC721InvalidReceiver | ERC721IncorrectOwner | ERC721NonexistentToken | ERC721InsufficientApproval;
-  function safeTransferFrom(from : address; to : address; tokenId : nat)
+  function safeTransferFrom(from : address; to : address; tokenId : uint)
     raises ERC721InvalidReceiver | ERC721IncorrectOwner | ERC721NonexistentToken | ERC721InsufficientApproval
       | forwarded;
-  function safeTransferFrom(from : address; to : address; tokenId : nat; data : bytes)
+  function safeTransferFrom(from : address; to : address; tokenId : uint; data : bytes)
     raises ERC721InvalidReceiver | ERC721IncorrectOwner | ERC721NonexistentToken | ERC721InsufficientApproval
       | forwarded;
 }
@@ -51,24 +51,24 @@ interface IERC721 is {
 interface IERC721Metadata is {
   view function name() : string;
   view function symbol() : string;
-  view function tokenURI(tokenId : nat) : string
+  view function tokenURI(tokenId : uint) : string
     raises ERC721NonexistentToken;
 }
 
 (* OpenZeppelin's, for an index past the end of an enumeration. *)
 error ERC721OutOfBoundsIndex of record {
   owner : address;
-  index : nat;
+  index : uint;
 }
 
 interface IERC721Enumerable is {
-  view function totalSupply() : nat;
-  view function tokenOfOwnerByIndex(owner : address; index : nat) : nat
+  view function totalSupply() : uint;
+  view function tokenOfOwnerByIndex(owner : address; index : uint) : uint
     raises ERC721InvalidOwner | ERC721OutOfBoundsIndex;
-  view function tokenByIndex(index : nat) : nat
+  view function tokenByIndex(index : uint) : uint
     raises ERC721OutOfBoundsIndex;
 }
 
 interface IERC721Receiver is {
-  function onERC721Received(operator : address; from : address; tokenId : nat; data : bytes) : bytes4;
+  function onERC721Received(operator : address; from : address; tokenId : uint; data : bytes) : bytes4;
 }

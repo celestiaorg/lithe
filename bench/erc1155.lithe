@@ -30,7 +30,7 @@ contract BenchMultiToken is {
   }
 
   (* `ERC1155Pausable` checks the pause, and `ERC1155Supply` counts after the balances. *)
-  function update(const from : address; const to : address; const ids : list(nat); const values : list(nat))
+  function update(const from : address; const to : address; const ids : list(uint); const values : list(uint))
     raises EnforcedPause | ERC1155InvalidArrayLength | ERC1155InsufficientBalance
   is {
     Pausable.require_not_paused();
@@ -38,7 +38,7 @@ contract BenchMultiToken is {
     ERC1155Supply.update(from, to, ids, values);
   }
 
-  function transfer(const from : address; const to : address; const ids : list(nat); const values : list(nat))
+  function transfer(const from : address; const to : address; const ids : list(uint); const values : list(uint))
     raises ERC1155MissingApprovalForAll | ERC1155InvalidReceiver | ERC1155InvalidSender | EnforcedPause
       | ERC1155InvalidArrayLength | ERC1155InsufficientBalance
   is {
@@ -48,7 +48,7 @@ contract BenchMultiToken is {
     update(from, to, ids, values);
   }
 
-  function burn_from(const account : address; const ids : list(nat); const values : list(nat))
+  function burn_from(const account : address; const ids : list(uint); const values : list(uint))
     raises ERC1155MissingApprovalForAll | ERC1155InvalidSender | EnforcedPause | ERC1155InvalidArrayLength
       | ERC1155InsufficientBalance
   is {
@@ -57,7 +57,7 @@ contract BenchMultiToken is {
     update(account, Address.zero, ids, values);
   }
 
-  function mint_to(const to : address; const ids : list(nat); const values : list(nat))
+  function mint_to(const to : address; const ids : list(uint); const values : list(uint))
     raises OwnableUnauthorizedAccount | ERC1155InvalidReceiver | EnforcedPause | ERC1155InvalidArrayLength
       | ERC1155InsufficientBalance
   is {
@@ -75,8 +75,8 @@ contract BenchMultiToken is {
   external function safeTransferFrom(
     const from : address;
     const to : address;
-    const id : nat;
-    const value : nat;
+    const id : uint;
+    const value : uint;
     const data : bytes
   )
     raises ERC1155MissingApprovalForAll | ERC1155InvalidReceiver | ERC1155InvalidSender | EnforcedPause
@@ -89,8 +89,8 @@ contract BenchMultiToken is {
   external function safeBatchTransferFrom(
     const from : address;
     const to : address;
-    const ids : list(nat);
-    const values : list(nat);
+    const ids : list(uint);
+    const values : list(uint);
     const data : bytes
   )
     raises ERC1155MissingApprovalForAll | ERC1155InvalidReceiver | ERC1155InvalidSender | EnforcedPause
@@ -100,21 +100,21 @@ contract BenchMultiToken is {
     ERC1155.check_batch_received(from, to, ids, values, data);
   }
 
-  external function burn(const account : address; const id : nat; const value : nat)
+  external function burn(const account : address; const id : uint; const value : uint)
     raises ERC1155MissingApprovalForAll | ERC1155InvalidSender | EnforcedPause | ERC1155InvalidArrayLength
       | ERC1155InsufficientBalance
   is {
     burn_from(account, [id], [value]);
   }
 
-  external function burnBatch(const account : address; const ids : list(nat); const values : list(nat))
+  external function burnBatch(const account : address; const ids : list(uint); const values : list(uint))
     raises ERC1155MissingApprovalForAll | ERC1155InvalidSender | EnforcedPause | ERC1155InvalidArrayLength
       | ERC1155InsufficientBalance
   is {
     burn_from(account, ids, values);
   }
 
-  external function mint(const account : address; const id : nat; const amount : nat; const data : bytes)
+  external function mint(const account : address; const id : uint; const amount : uint; const data : bytes)
     raises OwnableUnauthorizedAccount | ERC1155InvalidReceiver | EnforcedPause | ERC1155InvalidArrayLength
       | ERC1155InsufficientBalance | forwarded
   is {
@@ -122,7 +122,12 @@ contract BenchMultiToken is {
     ERC1155.check_received(Address.zero, account, id, amount, data);
   }
 
-  external function mintBatch(const to : address; const ids : list(nat); const amounts : list(nat); const data : bytes)
+  external function mintBatch(
+    const to : address;
+    const ids : list(uint);
+    const amounts : list(uint);
+    const data : bytes
+  )
     raises OwnableUnauthorizedAccount | ERC1155InvalidReceiver | EnforcedPause | ERC1155InvalidArrayLength
       | ERC1155InsufficientBalance | forwarded
   is {

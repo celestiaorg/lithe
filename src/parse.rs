@@ -1184,7 +1184,7 @@ impl<'a> Parser<'a> {
             return Err(self.err("declare contract storage as `storage is record`"));
         }
         self.want(Kind::Is)?;
-        // `Open | Closed` or `Open of nat`: a variant without its opening `|`.
+        // `Open | Closed` or `Open of uint`: a variant without its opening `|`.
         let ty = if self.kind() == Kind::Ident && matches!(self.peek_kind(1), Kind::Pipe | Kind::Of)
         {
             self.variant_ty()?
@@ -1456,7 +1456,7 @@ impl<'a> Parser<'a> {
     fn list_len(&mut self) -> Result<u32, Error> {
         let (line, col) = self.at();
         let word = match self.kind() {
-            Kind::Int | Kind::Nat => self.tok().word,
+            Kind::Int => self.tok().word,
             _ => return Err(self.err(format!("expected a list length, found {}", self.found()))),
         };
         self.bump();
@@ -2229,7 +2229,7 @@ impl<'a> Parser<'a> {
     }
 
     /// `for x : T in xs [until c] [bound n] do { ... }`, or over `lo .. hi`, or with
-    /// `(i, x) : (nat, T)` to bind the index too.
+    /// `(i, x) : (uint, T)` to bind the index too.
     fn for_stmt(&mut self, line: u32, col: u32) -> Result<Stmt, Error> {
         self.want(Kind::For)?;
         let (index, name) = if self.kind() == Kind::LParen {
@@ -2758,16 +2758,6 @@ impl<'a> Parser<'a> {
     fn primary(&mut self) -> Result<Expr, Error> {
         let (line, col) = self.at();
         match self.kind() {
-            Kind::Nat => {
-                let lit = Lit::Nat(self.tok().word);
-                self.bump();
-                Ok(Expr::Lit {
-                    line,
-                    col,
-                    lit,
-                    ty: 0,
-                })
-            }
             Kind::Int => {
                 let digits = self
                     .slice()
@@ -2916,7 +2906,7 @@ impl<'a> Parser<'a> {
                     Expr::Lit {
                         line: iline,
                         col: icol,
-                        lit: Lit::Nat(crate::word::Word::from_u64(0)),
+                        lit: Lit::Uint(crate::word::Word::from_u64(0)),
                         ty: 0,
                     }
                 } else {
@@ -3299,7 +3289,7 @@ impl<'a> Parser<'a> {
             "end of file".to_string()
         } else if matches!(
             self.kind(),
-            Kind::Ident | Kind::Nat | Kind::Int | Kind::String
+            Kind::Ident | Kind::Int | Kind::String
         ) {
             format!("`{}`", self.lexeme())
         } else {
@@ -3359,7 +3349,7 @@ mod tests {
 
     #[test]
     fn chained_comparison_points_at_the_operator() {
-        let src = "function f (const a : nat) : nat is\n  1n = 2n = 3n\n";
+        let src = "function f (const a : uint) : uint is\n  1 = 2 = 3\n";
         let err = parse(src).expect_err("chained comparison");
         assert_eq!(err.line, 2);
         assert!(

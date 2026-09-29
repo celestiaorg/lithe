@@ -6,7 +6,7 @@ error Bad_signature;
 storage is record {
   owner_x : bytes32;
   owner_y : bytes32;
-  nonce : nat;
+  nonce : uint;
 }
 
 deploy(const x : bytes32; const y : bytes32) is {
@@ -20,17 +20,17 @@ external function act(const r : bytes32; const s : bytes32)
 is {
   const digest : bytes32 := Crypto.keccak256(Abi.encode(Evm.self(), storage.nonce));
   assert(Crypto.p256_verify(digest, r, s, storage.owner_x, storage.owner_y), Bad_signature);
-  storage.nonce := storage.nonce + 1n;
+  storage.nonce := storage.nonce + 1;
 }
 
 (* Whether the product of the pairings is one, as a Groth16 verifier's final check asks. *)
-external view function pairing_holds(const pairs : list((nat, nat, nat, nat, nat, nat))) : bool is
+external view function pairing_holds(const pairs : list((uint, uint, uint, uint, uint, uint))) : bool is
   Crypto.bn254_pairing(pairs)
 
 (* A point's negation and double, on BN254's G1. *)
-external pure function double(const p : (nat, nat)) : (nat, nat) is
+external pure function double(const p : (uint, uint)) : (uint, uint) is
   Crypto.bn254_add(p, p)
 
 (* An inverse modulo a prime, by Fermat: a^(p-2) mod p. *)
-external pure function inverse(const a : nat; const p : nat) : nat is
-  Nat.pow_mod(a, p - 2n, p)
+external pure function inverse(const a : uint; const p : uint) : uint is
+  Uint.pow_mod(a, p - 2, p)

@@ -78,39 +78,39 @@ Both contracts have the same ABI, the same error selector, the same event topic,
 | `x = y;` | `x := y;` |
 | `a == b`, `a != b` | `a = b`, `a <> b` |
 | `&&`, `\|\|`, `!` | `and`, `or`, `not` |
-| `uint256 x = 1;` | `const x : nat := 1n;` |
-| a local you reassign | `var x : nat := 0n;` |
+| `uint256 x = 1;` | `const x : uint := 1;` |
+| a local you reassign | `var x : uint := 0;` |
 | `true`, `false` | `true`, `false` |
 | `if (c) { } else if (d) { }` | `if c then { } else if d then { }` |
 | `c ? a : b` | `if c then a else b` |
-| `for (uint i = 0; i < n; i++)` | `for i : nat in 0n .. n do { }`. See [Loops](/by-example/loops) |
-| `for (uint i = 0; i < xs.length; i++)` | `for (i, x) : (nat, T) in xs do { }` |
+| `for (uint i = 0; i < n; i++)` | `for i : uint in 0 .. n do { }`. See [Loops](/by-example/loops) |
+| `for (uint i = 0; i < xs.length; i++)` | `for (i, x) : (uint, T) in xs do { }` |
 | `while (cond)` | none. `for ... until cond bound n do { }` |
 | `break` | `until` |
 | `return x;` | `... is { ... } with x` |
-| `struct S { uint a; }` | `type s is record { a : nat; }` |
+| `struct S { uint a; }` | `type s is record { a : uint; }` |
 | `function f(S calldata s)` | a `tuple record` parameter. See [Records in the ABI](/language/types#records-in-the-abi) |
-| `S({a: 1})` | `{ a = 1n; }` |
+| `S({a: 1})` | `{ a = 1; }` |
 | `enum E { A, B }` | `type e is A \| B`, and cases may carry payloads. See [Variants](/language/types#variants) |
 | `e == E.A` | `e = A` |
-| `uint[]`, `uint[3]` | `list(nat)`, `list(nat, 3)` |
-| `mapping(address => uint)` | `map(address, nat)` |
+| `uint[]`, `uint[3]` | `list(uint)`, `list(uint, 3)` |
+| `mapping(address => uint)` | `map(address, uint)` |
 | `address(0)` | `Address.zero` |
-| `type(uint256).max` | `Nat.max` |
-| `unchecked { a + b }` | `Nat.wrapping_add(a, b)`, and `wrapping_sub`, `wrapping_mul` |
+| `type(uint256).max` | `Uint.max` |
+| `unchecked { a + b }` | `Uint.wrapping_add(a, b)`, and `wrapping_sub`, `wrapping_mul` |
 | `1 ether`, `1 days` | `1eth`, `1days` |
-| `10 ** decimals` | `10n ** decimals`: any unsigned exponent, and the result has the base's type |
+| `10 ** decimals` | `10 ** decimals`: any unsigned exponent, and the result has the base's type |
 
 ## Functions
 
 | Solidity | Lithe |
 | --- | --- |
 | `function f() external` | `external function f() is { ... }` |
-| `function f() external view returns (uint)` | `external view function f() : nat is ...` |
-| `function f() external pure returns (uint)` | `external pure function f() : nat is ...` |
+| `function f() external view returns (uint)` | `external view function f() : uint is ...` |
+| `function f() external pure returns (uint)` | `external pure function f() : uint is ...` |
 | `function f() external payable` | `external payable function f() is { ... }` |
 | `function f() internal` | `function f() is { ... }` |
-| `function f() internal view` | `view function f() : nat is ...` |
+| `function f() internal view` | `view function f() : uint is ...` |
 | `function f() private` | `private function f() is { ... }` (private to the file) |
 | `public` state variable getter | write an `external view function` |
 | `modifier onlyOwner` | a guard function, or a [dispatch group](/language/dispatch) |
@@ -141,12 +141,12 @@ Both contracts have the same ABI, the same error selector, the same event topic,
 | `keccak256(x)` | `Crypto.keccak256(x)` |
 | `ecrecover(h, v, r, s)` | `Crypto.ecrecover(h, v, r, s)` |
 | `abi.encode(...)` | `Abi.encode(...)` |
-| `abi.decode(data, (uint))` | `Abi.decode(data, nat)` |
-| `b[i]`, `msg.data[4:]`, `bytes4(b)` | the same: `b[i]`, `Evm.calldata()[4n:]`, `bytes4(b)`. See [`Bytes` and `String`](/language/builtins#bytes-and-string) |
-| `abi.decode(data, (address, uint))` | `Abi.decode(data, (address, nat))` |
+| `abi.decode(data, (uint))` | `Abi.decode(data, uint)` |
+| `b[i]`, `msg.data[4:]`, `bytes4(b)` | the same: `b[i]`, `Evm.calldata()[4:]`, `bytes4(b)`. See [`Bytes` and `String`](/language/builtins#bytes-and-string) |
+| `abi.decode(data, (address, uint))` | `Abi.decode(data, (address, uint))` |
 | `function f() returns (uint a, string b)` | a record result, `: result`, whose fields are the results |
-| `function f() returns (S memory)` | a tuple result, `: (nat, string)` |
-| `uint[][]`, `S[]` with strings inside | `list(list(nat))`, `list(s)`: lists nest to any depth |
+| `function f() returns (S memory)` | a tuple result, `: (uint, string)` |
+| `uint[][]`, `S[]` with strings inside | `list(list(uint))`, `list(s)`: lists nest to any depth |
 | precompiles by address, in assembly | `Crypto.bn254_pairing`, `Crypto.p256_verify`, and the rest. See [Precompiles](/language/builtins#precompiles) |
 
 The full list is in [Built-ins](/language/builtins).
@@ -156,9 +156,9 @@ The full list is in [Built-ins](/language/builtins).
 | Solidity | Lithe |
 | --- | --- |
 | `error NotOwner();` | `error Not_owner;` |
-| `error TooSmall(uint256);` | `error Too_small of nat;` |
-| `error Low(uint256 have, uint256 want);` | `error Low of record { have : nat; want : nat; }` |
-| `error Missing(string key, uint256[] ids);` | `error Missing of record { key : string; ids : list(nat); }` |
+| `error TooSmall(uint256);` | `error Too_small of uint;` |
+| `error Low(uint256 have, uint256 want);` | `error Low of record { have : uint; want : uint; }` |
+| `error Missing(string key, uint256[] ids);` | `error Missing of record { key : string; ids : list(uint); }` |
 | `if (!c) revert NotOwner();` | `assert(c, Not_owner);` |
 | `revert NotOwner();` | `fail Not_owner;` |
 | `require(c, "message")` | not allowed. Errors are typed |
@@ -176,7 +176,7 @@ Lithe error names are converted to PascalCase in the ABI, so `Not_owner` becomes
 | `pool.deposit{value: v}(a)` | `defer pool.deposit(a) with value = v` |
 | `c.f{gas: g}(a)`, `to.staticcall{gas: g}(data)` | `with gas = g` on the `defer` or `query`. See [Limiting a call's gas](/language/effects#limiting-a-calls-gas) |
 | `payable(to).transfer(v)`, `.call{value: v}("")` | `defer Evm.transfer(to, v)` |
-| `uint r = pool.swap(x); use(r);` | `defer pool.swap(x) then (r : nat) { ... }` |
+| `uint r = pool.swap(x); use(r);` | `defer pool.swap(x) then (r : uint) { ... }` |
 | `try c.f() returns (r) { } catch { }` | `defer c.f() then { \| Ok(r : T) -> { } \| Error(e : bytes) -> { } }` |
 | `try` on a view call | `case query c.f() of { Ok(r) -> ... \| Error(e) -> ... }` |
 | `new C{salt: s}(...)` | `defer create C(...) with salt = s`. See [`create`](/language/effects#create) |

@@ -8,16 +8,16 @@ description: "Dynamic and fixed-length lists in storage and memory."
 `list(T)` is a dynamic list and `list(T, n)` a fixed-length one. Both work in storage and in memory.
 
 ```lithe [lists.lithe]
-error Out_of_range of nat;
+error Out_of_range of uint;
 
 storage is record {
   (* A dynamic list has a length, which `List.push` grows. *)
-  items : list(nat);
+  items : list(uint);
   (* A fixed list has its length in its type. *)
   slots : list(address, 3);
 }
 
-external function append(const value : nat) is {
+external function append(const value : uint) is {
   List.push(storage.items, value);
 }
 
@@ -25,25 +25,25 @@ external function drop() is {
   List.pop(storage.items);
 }
 
-external view function get(const i : nat) : nat
+external view function get(const i : uint) : uint
   raises Out_of_range
 is {
   assert(i < storage.items.length, Out_of_range(i));
 } with storage.items[i]
 
-external view function length() : nat is
+external view function length() : uint is
   storage.items.length
 
-external function set_slot(const i : nat) is {
+external function set_slot(const i : uint) is {
   storage.slots[i] := Evm.sender();
 }
 
 (* List literals build lists in memory. *)
-external pure function second() : nat is {
-  const primes : list(nat, 4) := [2n, 3n, 5n, 7n];
+external pure function second() : uint is {
+  const primes : list(uint, 4) := [2, 3, 5, 7];
 } with primes[1]
 
-external pure function count() : nat is {
+external pure function count() : uint is {
   const names : list(string) := ["a", "b", "c"];
 } with names.length
 ```

@@ -80,11 +80,11 @@ impl Checker {
                 if (rec.kind == TyKind::List && rec.bits == 0 || dynamic) && name == "length" {
                     *root = Some(p.sym);
                     *leaf = p.leaf;
-                    *ty = TY_NAT;
+                    *ty = TY_UINT;
                     return Ok(Place {
                         sym: p.sym,
                         leaf: p.leaf,
-                        ty: TY_NAT,
+                        ty: TY_UINT,
                         in_map: false,
                     });
                 }
@@ -119,7 +119,7 @@ impl Checker {
                 let p = self.place(base)?;
                 let kind = self.types[p.ty].kind;
                 if kind == TyKind::Bytes {
-                    self.check_nat_index(index)?;
+                    self.check_uint_index(index)?;
                     let byte = self.bytes_n(1)?;
                     *root = Some(p.sym);
                     *leaf = p.leaf;

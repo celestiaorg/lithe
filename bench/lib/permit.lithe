@@ -5,7 +5,7 @@ import "./erc20.lithe";
 import "./eip712.lithe";
 import "./nonces.lithe";
 
-error ERC2612ExpiredSignature of nat;
+error ERC2612ExpiredSignature of uint;
 
 error ERC2612InvalidSigner of record {
   signer : address;
@@ -22,8 +22,8 @@ module ERC20Permit is {
   external function permit(
     const owner : address;
     const spender : address;
-    const value : nat;
-    const deadline : nat;
+    const value : uint;
+    const deadline : uint;
     const v : uint8;
     const r : bytes32;
     const s : bytes32
@@ -31,7 +31,7 @@ module ERC20Permit is {
     raises ERC2612ExpiredSignature | ECDSAInvalidSignature | ECDSAInvalidSignatureS | ERC2612InvalidSigner
       | ERC20InvalidApprover | ERC20InvalidSpender
   is {
-    assert(nat(Evm.block_timestamp()) <= deadline, ERC2612ExpiredSignature(deadline));
+    assert(uint(Evm.block_timestamp()) <= deadline, ERC2612ExpiredSignature(deadline));
     const struct_hash : bytes32 := Crypto.keccak256(Abi.encode(
       0x6e71edae12b1b97f4d1f60370fef10105fa2faae0126114a169c64845d6126c9,
       owner,
@@ -45,7 +45,7 @@ module ERC20Permit is {
     ERC20.approve_as(owner, spender, value, true);
   }
 
-  external view function nonces(const owner : address) : nat is
+  external view function nonces(const owner : address) : uint is
     Nonces.nonce_state.nonces[owner]
 
   external view function DOMAIN_SEPARATOR() : bytes32 is
@@ -56,14 +56,14 @@ interface IERC20Permit is {
   function permit(
     owner : address;
     spender : address;
-    value : nat;
-    deadline : nat;
+    value : uint;
+    deadline : uint;
     v : uint8;
     r : bytes32;
     s : bytes32
   )
     raises ERC2612ExpiredSignature | ECDSAInvalidSignature | ECDSAInvalidSignatureS | ERC2612InvalidSigner
       | ERC20InvalidApprover | ERC20InvalidSpender;
-  view function nonces(owner : address) : nat;
+  view function nonces(owner : address) : uint;
   view function DOMAIN_SEPARATOR() : bytes32;
 }

@@ -13,15 +13,15 @@ import "std/access/ownable.lithe";
 
 contract Token is {
   use ERC20 exposing {
-    view function balanceOf(account : address) : nat;
-    function transfer(to : address; value : nat) : bool
+    view function balanceOf(account : address) : uint;
+    function transfer(to : address; value : uint) : bool
       raises ERC20InvalidSender | ERC20InvalidReceiver | ERC20InsufficientBalance;
   }
 
   use Ownable;
 
   storage is record {
-    minted : nat;
+    minted : uint;
   }
 
   deploy()
@@ -31,7 +31,7 @@ contract Token is {
     Ownable.init(Evm.sender());
   }
 
-  external function mint(const to : address; const value : nat)
+  external function mint(const to : address; const value : uint)
     raises OwnableUnauthorizedAccount | ERC20InvalidReceiver | ERC20InsufficientBalance
   is {
     Ownable.check_owner();
@@ -87,6 +87,6 @@ Every module follows the ordinary rules for [modules](/language/modules):
 ## What isn't here
 
 - **A reentrancy guard.** [`nonreentrant`](/language/reentrancy) is a language feature, and deferred calls already run after a transition's own effects.
-- **Byte and arithmetic primitives.** `Bytes.concat`, `Bytes.word`, `Base64.encode`, `Nat.mul_div`, and the rest are [built-ins](/language/builtins), because the compiler does them better than a library could.
+- **Byte and arithmetic primitives.** `Bytes.concat`, `Bytes.word`, `Base64.encode`, `Uint.mul_div`, and the rest are [built-ins](/language/builtins), because the compiler does them better than a library could.
 - **ERC-1155.** Not yet. The interface, batch methods included, is in `std/interfaces/erc1155.lithe`.
 - **Applications**, such as AMMs, lending markets, or auctions. They are too opinionated for a foundation.

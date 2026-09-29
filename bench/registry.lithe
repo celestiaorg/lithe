@@ -13,7 +13,7 @@ event Tagged of record {
 storage is record {
   name : string;
   blob : bytes;
-  updates : nat;
+  updates : uint;
   tag : bytes4;
   level : uint8;
 }
@@ -24,7 +24,7 @@ deploy(const n : string) is {
 
 external function rename(const n : string) is {
   storage.name := n;
-  storage.updates := storage.updates + 1n;
+  storage.updates := storage.updates + 1;
   emit Renamed {
     label = n;
   };

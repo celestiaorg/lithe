@@ -1,10 +1,10 @@
 module Alpha is {
   storage foo at "lithe.std.foo" is record {
-    n : nat;
+    n : uint;
   }
 
   external function go() is {
-    foo.n := 1n;
+    foo.n := 1;
   }
 }
 

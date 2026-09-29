@@ -4,8 +4,8 @@
 (* A token's `transfer` may return nothing, as some do: `None`. Only `Some(false)` is a
    refusal. *)
 interface Token is {
-  view function balanceOf(owner : address) : nat;
-  function transfer(to : address; value : nat) : option(bool);
+  view function balanceOf(owner : address) : uint;
+  function transfer(to : address; value : uint) : option(bool);
 }
 
 interface IUniswapV2Factory is {
@@ -17,5 +17,5 @@ interface IUniswapV2Pair is {
 }
 
 interface IUniswapV2Callee is {
-  function uniswapV2Call(sender : address; amount0 : nat; amount1 : nat; data : bytes);
+  function uniswapV2Call(sender : address; amount0 : uint; amount1 : uint; data : bytes);
 }

@@ -2,22 +2,22 @@
    call arguments and results, and decoded from bytes. *)
 
 interface Echo is {
-  view function same(xs : list(nat)) : list(nat);
+  view function same(xs : list(uint)) : list(uint);
   view function named(s : string) : string;
   function keep(xs : list(address)) : list(address);
 }
 
-type nums is list(nat);
+type nums is list(uint);
 
 storage is record {
-  got : list(nat);
+  got : list(uint);
   kept : list(address);
   label : string;
-  total : nat;
+  total : uint;
 }
 
-external function ask(const e : Echo; const xs : list(nat)) is {
-  const back : list(nat) := query e.same(xs);
+external function ask(const e : Echo; const xs : list(uint)) is {
+  const back : list(uint) := query e.same(xs);
   storage.got := back;
 }
 
@@ -31,28 +31,28 @@ external function send(const e : Echo; const xs : list(address)) is {
   };
 }
 
-external function ask_case(const e : Echo; const xs : list(nat)) is {
+external function ask_case(const e : Echo; const xs : list(uint)) is {
   case query e.same(xs) of {
     | Ok(back) -> {
         storage.total := back.length;
       }
     | Error(_) -> {
-        storage.total := 99n;
+        storage.total := 99;
       }
   }
 }
 
-external pure function decoded_length(const data : bytes) : nat is {
+external pure function decoded_length(const data : bytes) : uint is {
   const xs : nums := Abi.decode(data, nums);
 } with xs.length
 
-external function counted(const n : nat) : list(nat) is {
-  var out : list(nat) := [];
+external function counted(const n : uint) : list(uint) is {
+  var out : list(uint) := [];
   List.push(out, n);
-  List.push(out, n + 1n);
+  List.push(out, n + 1);
 } with out
 
-external view function got() : list(nat) is
+external view function got() : list(uint) is
   storage.got
 
 external view function kept() : list(address) is
@@ -61,5 +61,5 @@ external view function kept() : list(address) is
 external view function label() : string is
   storage.label
 
-external view function total() : nat is
+external view function total() : uint is
   storage.total

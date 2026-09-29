@@ -3,11 +3,11 @@ upgradeable
 error Denied;
 
 interface Reader is {
-  view function read() : nat;
+  view function read() : uint;
 }
 
 storage is record {
-  n : nat;
+  n : uint;
 }
 
 upgrade guard is {

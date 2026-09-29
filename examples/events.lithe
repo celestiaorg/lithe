@@ -3,25 +3,25 @@
 event Transfer of record {
   indexed from : address;
   indexed to : address;
-  amount : nat;
+  amount : uint;
 }
 
 event Note of record {
   indexed memo : string;
-  amount : nat;
+  amount : uint;
 }
 
 event Tagged of record {
   indexed flag : bool;
-  indexed ids : list(nat, 2);
-  amount : nat;
+  indexed ids : list(uint, 2);
+  amount : uint;
 }
 
 storage is record {
-  paid : nat;
+  paid : uint;
 }
 
-external function pay(const to : address; const amount : nat) is {
+external function pay(const to : address; const amount : uint) is {
   emit Transfer {
     from = Evm.sender();
     to = to;
@@ -33,7 +33,7 @@ external function pay(const to : address; const amount : nat) is {
   };
   emit Tagged {
     flag = true;
-    ids = [7n, 8n];
+    ids = [7, 8];
     amount = amount;
   };
   storage.paid := amount;

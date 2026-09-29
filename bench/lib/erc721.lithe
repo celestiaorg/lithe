@@ -2,16 +2,16 @@
    events, and order of checks. Extensions compose these pieces explicitly. *)
 
 interface ERC721Receiver is {
-  function onERC721Received(operator : address; from : address; tokenId : nat; data : bytes) : bytes4;
+  function onERC721Received(operator : address; from : address; tokenId : uint; data : bytes) : bytes4;
 }
 
 error ERC721InvalidOwner of address;
 
-error ERC721NonexistentToken of nat;
+error ERC721NonexistentToken of uint;
 
 error ERC721IncorrectOwner of record {
   sender : address;
-  tokenId : nat;
+  tokenId : uint;
   owner : address;
 }
 
@@ -21,7 +21,7 @@ error ERC721InvalidReceiver of address;
 
 error ERC721InsufficientApproval of record {
   operator : address;
-  tokenId : nat;
+  tokenId : uint;
 }
 
 error ERC721InvalidApprover of address;
@@ -32,22 +32,22 @@ module ERC721 is {
   storage erc721 at "openzeppelin.storage.ERC721" is record {
     name : string;
     symbol : string;
-    owners : map(nat, address);
-    balances : map(address, nat);
-    tokenApprovals : map(nat, address);
+    owners : map(uint, address);
+    balances : map(address, uint);
+    tokenApprovals : map(uint, address);
     operatorApprovals : map(address, map(address, bool));
   }
 
   event Transfer of record {
     indexed from : address;
     indexed to : address;
-    indexed tokenId : nat;
+    indexed tokenId : uint;
   }
 
   event Approval of record {
     indexed owner : address;
     indexed approved : address;
-    indexed tokenId : nat;
+    indexed tokenId : uint;
   }
 
   event ApprovalForAll of record {
@@ -61,13 +61,13 @@ module ERC721 is {
     erc721.symbol := s;
   }
 
-  external view function balanceOf(const owner : address) : nat
+  external view function balanceOf(const owner : address) : uint
     raises ERC721InvalidOwner
   is {
     assert(owner <> Address.zero, ERC721InvalidOwner(Address.zero));
   } with erc721.balances[owner]
 
-  external view function ownerOf(const tokenId : nat) : address
+  external view function ownerOf(const tokenId : uint) : address
     raises ERC721NonexistentToken
   is
     require_owned(tokenId)
@@ -79,13 +79,13 @@ module ERC721 is {
     erc721.symbol
 
   (* Without a base URI, an existing token's URI is empty. *)
-  external view function tokenURI(const tokenId : nat) : string
+  external view function tokenURI(const tokenId : uint) : string
     raises ERC721NonexistentToken
   is {
     const owner : address := require_owned(tokenId);
   } with ""
 
-  external view function getApproved(const tokenId : nat) : address
+  external view function getApproved(const tokenId : uint) : address
     raises ERC721NonexistentToken
   is {
     const owner : address := require_owned(tokenId);
@@ -94,14 +94,14 @@ module ERC721 is {
   external view function isApprovedForAll(const owner : address; const operator : address) : bool is
     erc721.operatorApprovals[owner][operator]
 
-  view function require_owned(const tokenId : nat) : address
+  view function require_owned(const tokenId : uint) : address
     raises ERC721NonexistentToken
   is {
     const owner : address := erc721.owners[tokenId];
     assert(owner <> Address.zero, ERC721NonexistentToken(tokenId));
   } with owner
 
-  view function check_authorized(const owner : address; const spender : address; const tokenId : nat)
+  view function check_authorized(const owner : address; const spender : address; const tokenId : uint)
     raises ERC721NonexistentToken | ERC721InsufficientApproval
   is {
     const authorized : bool := spender <> Address.zero
@@ -116,7 +116,7 @@ module ERC721 is {
 
   (* Moves, mints (`to` from zero), or burns (`to` is zero); returns the previous owner.
      A nonzero `auth` must be allowed to move the token. *)
-  function update(const to : address; const tokenId : nat; const auth : address) : address
+  function update(const to : address; const tokenId : uint; const auth : address) : address
     raises ERC721NonexistentToken | ERC721InsufficientApproval
   is {
     const from : address := erc721.owners[tokenId];
@@ -125,10 +125,10 @@ module ERC721 is {
     }
     if from <> Address.zero then {
       erc721.tokenApprovals[tokenId] := Address.zero;
-      erc721.balances[from] := erc721.balances[from] - 1n;
+      erc721.balances[from] := erc721.balances[from] - 1;
     }
     if to <> Address.zero then {
-      erc721.balances[to] := erc721.balances[to] + 1n;
+      erc721.balances[to] := erc721.balances[to] + 1;
     }
     erc721.owners[tokenId] := to;
     emit Transfer {
@@ -138,7 +138,7 @@ module ERC721 is {
     };
   } with from
 
-  function approve_as(const to : address; const tokenId : nat; const auth : address)
+  function approve_as(const to : address; const tokenId : uint; const auth : address)
     raises ERC721NonexistentToken | ERC721InvalidApprover
   is {
     const owner : address := require_owned(tokenId);
@@ -174,19 +174,19 @@ module ERC721 is {
     const operator : address;
     const from : address;
     const to : address;
-    const tokenId : nat;
+    const tokenId : uint;
     const data : bytes
   )
     raises ERC721InvalidReceiver | forwarded
   is {
-    if Evm.code_size(to) > 0n then {
+    if Evm.code_size(to) > 0 then {
       const receiver : ERC721Receiver := ERC721Receiver(to);
       defer receiver.onERC721Received(operator, from, tokenId, data) then {
         | Ok(answer : bytes4) -> {
             assert(answer = Abi.selector(ERC721Receiver.onERC721Received), ERC721InvalidReceiver(to));
           }
         | Error(reason : bytes) -> {
-            if reason.length = 0n then {
+            if reason.length = 0 then {
               fail ERC721InvalidReceiver(to);
             }
             forward reason;
@@ -198,33 +198,33 @@ module ERC721 is {
 
 (* The whole standard, for `supports`. *)
 interface IERC721 is {
-  view function balanceOf(owner : address) : nat
+  view function balanceOf(owner : address) : uint
     raises ERC721InvalidOwner;
-  view function ownerOf(tokenId : nat) : address
+  view function ownerOf(tokenId : uint) : address
     raises ERC721NonexistentToken;
-  view function getApproved(tokenId : nat) : address
+  view function getApproved(tokenId : uint) : address
     raises ERC721NonexistentToken;
   view function isApprovedForAll(owner : address; operator : address) : bool;
-  function approve(to : address; tokenId : nat)
+  function approve(to : address; tokenId : uint)
     raises ERC721NonexistentToken | ERC721InvalidApprover;
   function setApprovalForAll(operator : address; approved : bool)
     raises ERC721InvalidApprover | ERC721InvalidOperator;
-  function transferFrom(from : address; to : address; tokenId : nat)
+  function transferFrom(from : address; to : address; tokenId : uint)
     raises ERC721InvalidReceiver | ERC721IncorrectOwner | ERC721NonexistentToken | ERC721InsufficientApproval;
-  function safeTransferFrom(from : address; to : address; tokenId : nat)
+  function safeTransferFrom(from : address; to : address; tokenId : uint)
     raises ERC721InvalidReceiver | ERC721IncorrectOwner | ERC721NonexistentToken | ERC721InsufficientApproval;
-  function safeTransferFrom(from : address; to : address; tokenId : nat; data : bytes)
+  function safeTransferFrom(from : address; to : address; tokenId : uint; data : bytes)
     raises ERC721InvalidReceiver | ERC721IncorrectOwner | ERC721NonexistentToken | ERC721InsufficientApproval;
 }
 
 (* IERC721's views. Transfers are each token's own, since its extensions hook every
    ownership update. *)
 interface IERC721Views is {
-  view function balanceOf(owner : address) : nat
+  view function balanceOf(owner : address) : uint
     raises ERC721InvalidOwner;
-  view function ownerOf(tokenId : nat) : address
+  view function ownerOf(tokenId : uint) : address
     raises ERC721NonexistentToken;
-  view function getApproved(tokenId : nat) : address
+  view function getApproved(tokenId : uint) : address
     raises ERC721NonexistentToken;
   view function isApprovedForAll(owner : address; operator : address) : bool;
 }
@@ -238,6 +238,6 @@ interface IERC721Name is {
 interface IERC721Metadata is {
   view function name() : string;
   view function symbol() : string;
-  view function tokenURI(tokenId : nat) : string
+  view function tokenURI(tokenId : uint) : string
     raises ERC721NonexistentToken;
 }

@@ -11,28 +11,28 @@ description: "Conditionals, else-if chains, and choosing a value."
 (* `if` with blocks is a statement. Chain conditions with `else if`. *)
 
 storage is record {
-  size : nat;
+  size : uint;
 }
 
-external function record_size(const x : nat) is {
-  if x < 10n then {
-    storage.size := 1n;
-  } else if x < 100n then {
-    storage.size := 2n;
+external function record_size(const x : uint) is {
+  if x < 10 then {
+    storage.size := 1;
+  } else if x < 100 then {
+    storage.size := 2;
   } else {
-    storage.size := 3n;
+    storage.size := 3;
   }
 }
 
 (* `if` with values is an expression. Both branches are required and share a type. *)
-external pure function min(const a : nat; const b : nat) : nat is
+external pure function min(const a : uint; const b : uint) : uint is
   if a < b then a else b
 
-external pure function classify(const x : nat) : nat is {
-  const size : nat := if x < 10n then 1n else if x < 100n then 2n else 3n;
+external pure function classify(const x : uint) : uint is {
+  const size : uint := if x < 10 then 1 else if x < 100 then 2 else 3;
 } with size
 ```
 
 - An `if` expression can go anywhere a value can, like a `case`: a function body, a `with` result, a `const` initializer, or an operand.
-- A branch can be `fail E`, as a `case` arm can: `if amount > 0n then amount else fail Zero`.
-- Inside each branch the compiler knows whether the condition held, so `if a >= b then a - b else 0n` has no underflow check.
+- A branch can be `fail E`, as a `case` arm can: `if amount > 0 then amount else fail Zero`.
+- Inside each branch the compiler knows whether the condition held, so `if a >= b then a - b else 0` has no underflow check.

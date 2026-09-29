@@ -112,7 +112,6 @@ const REJECT_RULES: &[(&str, &str)] = &[
         "reject/nominal_assign.lithe",
         "initializer type does not match",
     ),
-    ("reject/nat_suffix.lithe", "initializer type does not match"),
     (
         "reject/value_nonpayable.lithe",
         "`deposit` is not payable; declare it `payable function deposit` in its interface to send value",

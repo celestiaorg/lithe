@@ -13,14 +13,14 @@ A standard fungible token. Function, event, and error names match the ERC-20 and
 
 error ERC20InsufficientBalance of record {
   sender : address;
-  balance : nat;
-  needed : nat;
+  balance : uint;
+  needed : uint;
 }
 
 error ERC20InsufficientAllowance of record {
   spender : address;
-  allowance : nat;
-  needed : nat;
+  allowance : uint;
+  needed : uint;
 }
 
 error ERC20InvalidReceiver of address;
@@ -30,22 +30,22 @@ error AlreadyInitialized;
 event Transfer of record {
   indexed from : address;
   indexed to : address;
-  value : nat;
+  value : uint;
 }
 
 event Approval of record {
   indexed owner : address;
   indexed spender : address;
-  value : nat;
+  value : uint;
 }
 
 storage is record {
   owner : address;
   name : string;
   symbol : string;
-  total_supply : nat;
-  balances : map(address, nat);
-  allowances : map(address, map(address, nat));
+  total_supply : uint;
+  balances : map(address, uint);
+  allowances : map(address, map(address, uint));
 }
 
 external function initialize(const name : string; const symbol : string)
@@ -60,17 +60,17 @@ is {
 external view function name() : string is storage.name
 external view function symbol() : string is storage.symbol
 external pure function decimals() : uint8 is 18
-external view function totalSupply() : nat is storage.total_supply
-external view function balanceOf(const account : address) : nat is storage.balances[account]
+external view function totalSupply() : uint is storage.total_supply
+external view function balanceOf(const account : address) : uint is storage.balances[account]
 
-external view function allowance(const owner : address; const spender : address) : nat is
+external view function allowance(const owner : address; const spender : address) : uint is
   storage.allowances[owner][spender]
 
-function move(const from : address; const to : address; const value : nat)
+function move(const from : address; const to : address; const value : uint)
   raises ERC20InsufficientBalance | ERC20InvalidReceiver
 is {
   assert(to <> Address.zero, ERC20InvalidReceiver(to));
-  const balance : nat := storage.balances[from];
+  const balance : uint := storage.balances[from];
   assert(
     balance >= value,
     ERC20InsufficientBalance { sender = from; balance = balance; needed = value; }
@@ -80,23 +80,23 @@ is {
   emit Transfer { from = from; to = to; value = value; };
 }
 
-external function transfer(const to : address; const value : nat) : bool
+external function transfer(const to : address; const value : uint) : bool
   raises ERC20InsufficientBalance | ERC20InvalidReceiver
 is {
   move(Evm.sender(), to, value);
 } with true
 
-external function approve(const spender : address; const value : nat) : bool is {
+external function approve(const spender : address; const value : uint) : bool is {
   storage.allowances[Evm.sender()][spender] := value;
   emit Approval { owner = Evm.sender(); spender = spender; value = value; };
 } with true
 
-external function transferFrom(const from : address; const to : address; const value : nat) : bool
+external function transferFrom(const from : address; const to : address; const value : uint) : bool
   raises ERC20InsufficientAllowance | ERC20InsufficientBalance | ERC20InvalidReceiver
 is {
-  const allowed : nat := storage.allowances[from][Evm.sender()];
-  (* An allowance of Nat.max never decreases, as in OpenZeppelin. *)
-  if allowed < Nat.max then {
+  const allowed : uint := storage.allowances[from][Evm.sender()];
+  (* An allowance of Uint.max never decreases, as in OpenZeppelin. *)
+  if allowed < Uint.max then {
     assert(
       allowed >= value,
       ERC20InsufficientAllowance { spender = Evm.sender(); allowance = allowed; needed = value; }
@@ -106,7 +106,7 @@ is {
   move(from, to, value);
 } with true
 
-external function mint(const to : address; const value : nat)
+external function mint(const to : address; const value : uint)
   raises OwnableUnauthorizedAccount | ERC20InvalidReceiver
 is {
   assert(Evm.sender() = storage.owner, OwnableUnauthorizedAccount(Evm.sender()));
@@ -117,6 +117,6 @@ is {
 }
 ```
 
-- `transferFrom` treats an allowance of `Nat.max` as infinite, like OpenZeppelin.
+- `transferFrom` treats an allowance of `Uint.max` as infinite, like OpenZeppelin.
 - `move` is internal and shared by `transfer` and `transferFrom`, and its errors flow into both.
 - For a modular version, move the balances into a `module ERC20` with named storage. The [Modules](/by-example/modules) example shows the pattern.

@@ -24,8 +24,8 @@ Every contract declares one default storage record:
 storage is record {
   owner : address;
   paused : bool;
-  total : nat;
-  balances : map(address, nat);
+  total : uint;
+  balances : map(address, uint);
 }
 
 external function claim() is {
@@ -56,24 +56,24 @@ A named domain has its own ERC-7201 root, derived from its id string:
 
 ```lithe
 storage settings at "vault.settings" is record {
-  fee_bps : nat;
+  fee_bps : uint;
   treasury : address;
 }
 
 storage stats at "vault.stats" is record {
-  volume : nat;
+  volume : uint;
 }
 
 storage is record {
   owner : address;
 }
 
-external function configure(const fee_bps : nat; const treasury : address) is {
+external function configure(const fee_bps : uint; const treasury : address) is {
   settings.fee_bps := fee_bps;
   settings.treasury := treasury;
 }
 
-external function trade(const amount : nat) is {
+external function trade(const amount : uint) is {
   stats.volume := stats.volume + amount;
 }
 ```
@@ -94,14 +94,14 @@ transient storage is record {
 }
 
 transient storage scratch is record {
-  touched : map(address, nat);
+  touched : map(address, uint);
 }
 
 storage is record {
-  total : nat;
+  total : uint;
 }
 
-external function run(const amount : nat)
+external function run(const amount : uint)
   raises Busy
 is {
   assert(not transient.entered, Busy);
@@ -122,7 +122,7 @@ Transient slots 0 and 1 hold the reentrancy lock and the upgrade gate. The contr
 An immutable is a value fixed while the contract is set up, such as a factory address, a fee, or a hash, and never written again. Reading one costs about 3 gas, where a first storage read costs 2,100:
 
 ```lithe
-error Fee_too_high of nat;
+error Fee_too_high of uint;
 
 immutable is record {
   factory : address;
@@ -130,19 +130,19 @@ immutable is record {
 }
 
 storage is record {
-  total : nat;
+  total : uint;
 }
 
 deploy(const fee_bps : uint16)
   raises Fee_too_high
 is {
-  assert(fee_bps <= 1000, Fee_too_high(nat(fee_bps)));
+  assert(fee_bps <= 1000, Fee_too_high(uint(fee_bps)));
   immutable.factory := Evm.sender();
   immutable.fee_bps := fee_bps;
 }
 
-external function trade(const amount : nat) is {
-  storage.total := storage.total + amount * nat(immutable.fee_bps) / 10_000n;
+external function trade(const amount : uint) is {
+  storage.total := storage.total + amount * uint(immutable.fee_bps) / 10_000;
 }
 
 external view function factory() : address is
@@ -163,21 +163,21 @@ module Fees is {
     fees.treasury := treasury;
   }
 
-  view function cut(const amount : nat) : nat is
-    amount * nat(fees.bps) / 10_000n
+  view function cut(const amount : uint) : uint is
+    amount * uint(fees.bps) / 10_000
 }
 
 use Fees;
 
 storage is record {
-  total : nat;
+  total : uint;
 }
 
 deploy(const treasury : address) is {
   Fees.init(25, treasury);
 }
 
-external function trade(const amount : nat) is {
+external function trade(const amount : uint) is {
   storage.total := storage.total + Fees.cut(amount);
 }
 ```
@@ -194,7 +194,7 @@ immutable is record {
 }
 
 storage is record {
-  total : nat;
+  total : uint;
 }
 
 function claim() is {
@@ -249,18 +249,18 @@ You can write one field of a stored record, or a whole record into a field or a 
 ```lithe
 type order is record {
   status : uint8;
-  amount : nat;
+  amount : uint;
 }
 
 storage is record {
-  orders : map(nat, order);
+  orders : map(uint, order);
 }
 
-external function place(const id : nat; const amount : nat) is {
+external function place(const id : uint; const amount : uint) is {
   storage.orders[id] := { status = uint8(1); amount = amount; };
 }
 
-external function fill(const id : nat) is {
+external function fill(const id : uint) is {
   storage.orders[id].status := uint8(2);
 }
 ```

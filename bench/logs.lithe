@@ -1,42 +1,42 @@
 (* Benchmark: anonymous events, which log no signature topic. Mirrors logs.sol. *)
 
 storage is record {
-  owners : map(nat, address);
-  notes : nat;
+  owners : map(uint, address);
+  notes : uint;
 }
 
 (* Four topics and no data: the signature's place holds a fourth field. *)
 anonymous event Moved of record {
   indexed from : address;
   indexed to : address;
-  indexed id : nat;
-  indexed kind : nat;
+  indexed id : uint;
+  indexed kind : uint;
 }
 
 (* A topic, and a string as data. *)
 anonymous event Noted of record {
-  indexed id : nat;
+  indexed id : uint;
   note : string;
 }
 
 (* Data only. *)
 anonymous event Ticked of record {
-  count : nat;
+  count : uint;
 }
 
-external function move(const to : address; const id : nat) is {
+external function move(const to : address; const id : uint) is {
   const from : address := storage.owners[id];
   storage.owners[id] := to;
-  emit Moved { from = from; to = to; id = id; kind = 1n; };
+  emit Moved { from = from; to = to; id = id; kind = 1; };
 }
 
-external function note(const id : nat; const text : string) is {
-  storage.notes := storage.notes + 1n;
+external function note(const id : uint; const text : string) is {
+  storage.notes := storage.notes + 1;
   emit Noted { id = id; note = text; };
 }
 
 external function tick() is {
-  const count : nat := storage.notes + 1n;
+  const count : uint := storage.notes + 1;
   storage.notes := count;
   emit Ticked { count = count; };
 }

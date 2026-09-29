@@ -10,16 +10,16 @@ description: "Interface declarations for common ERC standards: for typed queries
 ```lithe
 import "std/interfaces/erc20.lithe";
 
-error Too_little of nat;
+error Too_little of uint;
 
 storage is record {
   token : IERC20;
 }
 
-external function pay(const to : address; const amount : nat)
+external function pay(const to : address; const amount : uint)
   raises Too_little
 is {
-  const balance : nat := query storage.token.balanceOf(Evm.self());
+  const balance : uint := query storage.token.balanceOf(Evm.self());
   assert(balance >= amount, Too_little(balance));
   defer storage.token.transfer(to, amount);
 }

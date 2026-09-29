@@ -2,33 +2,33 @@
    Mirrors exchange.sol. The executor consumes the results in continuations. *)
 
 type swap_result is record {
-  amount_out : nat;
-  fee : nat;
+  amount_out : uint;
+  fee : uint;
 }
 
 error Slippage of record {
-  amount_out : nat;
-  min_out : nat;
+  amount_out : uint;
+  min_out : uint;
 }
 
 event Swapped of record {
   indexed trader : address;
-  amount_in : nat;
-  amount_out : nat;
+  amount_in : uint;
+  amount_out : uint;
 }
 
 storage is record {
-  volume : nat;
-  fees : nat;
-  total_shares : nat;
-  shares : map(address, nat);
+  volume : uint;
+  fees : uint;
+  total_shares : uint;
+  shares : map(address, uint);
 }
 
-external function swap(const amount_in : nat; const min_out : nat) : swap_result
+external function swap(const amount_in : uint; const min_out : uint) : swap_result
   raises Slippage
 is {
-  const fee : nat := amount_in * 3n / 1000n;
-  const amount_out : nat := (amount_in - fee) * 2n;
+  const fee : uint := amount_in * 3 / 1000;
+  const amount_out : uint := (amount_in - fee) * 2;
   assert(amount_out >= min_out, Slippage { amount_out = amount_out; min_out = min_out; });
   storage.volume := storage.volume + amount_in;
   storage.fees := storage.fees + fee;
@@ -36,14 +36,14 @@ is {
   const result : swap_result := { amount_out = amount_out; fee = fee; };
 } with result
 
-external function deposit(const amount : nat) : nat is {
-  const minted : nat := amount * 10n;
+external function deposit(const amount : uint) : uint is {
+  const minted : uint := amount * 10;
   storage.total_shares := storage.total_shares + minted;
   storage.shares[Evm.sender()] := storage.shares[Evm.sender()] + minted;
 } with minted
 
-external function split(const shares : nat) : (nat, nat) is {
+external function split(const shares : uint) : (uint, uint) is {
   storage.total_shares := storage.total_shares - shares;
-} with (shares / 3n, shares - shares / 3n)
+} with (shares / 3, shares - shares / 3)
 
-external view function shares_of(const who : address) : nat is storage.shares[who]
+external view function shares_of(const who : address) : uint is storage.shares[who]

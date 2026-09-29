@@ -2,7 +2,7 @@ storage is record {
   members : list(address);
 }
 
-external function go(const cap : nat) is {
+external function go(const cap : uint) is {
   for who : address in storage.members bound cap do {
     skip
   }

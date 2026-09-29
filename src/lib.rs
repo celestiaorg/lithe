@@ -9,12 +9,12 @@
 //! use lithe::{AbiItem, Options, Sources, StateMutability};
 //!
 //! let sources = Sources::memory([
-//!     ("lib/math.lithe", "pure function twice(const n : nat) : nat is n + n\n"),
+//!     ("lib/math.lithe", "pure function twice(const n : uint) : uint is n + n\n"),
 //!     (
 //!         "counter.lithe",
 //!         "import \"./lib/math.lithe\";\n\
-//!          storage is record { count : nat; }\n\
-//!          external function bump(const n : nat) is { storage.count := storage.count + twice(n); }\n",
+//!          storage is record { count : uint; }\n\
+//!          external function bump(const n : uint) is { storage.count := storage.count + twice(n); }\n",
 //!     ),
 //! ]);
 //! let output = lithe::compile(&sources, Path::new("counter.lithe"), &Options::default())?;

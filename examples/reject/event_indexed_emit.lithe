@@ -1,11 +1,11 @@
 event Foo of record {
-  amount : nat;
+  amount : uint;
 }
 
 storage is record {
-  n : nat;
+  n : uint;
 }
 
 external function go() is {
-  emit Foo { indexed amount = 1n };
+  emit Foo { indexed amount = 1 };
 }

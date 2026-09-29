@@ -16,7 +16,7 @@ contract Registry is {
   supports IAccessControl;
 
   storage is record {
-    entries : map(address, nat);
+    entries : map(address, uint);
   }
 
   (* keccak256("MINTER_ROLE") *)
@@ -35,7 +35,7 @@ contract Registry is {
     AccessControl.grant(minter(), Evm.sender());
   }
 
-  external function record_entry(const account : address; const amount : nat)
+  external function record_entry(const account : address; const amount : uint)
     raises AccessControlUnauthorizedAccount | EnforcedPause
   is {
     AccessControl.check_role(minter());
@@ -43,7 +43,7 @@ contract Registry is {
     storage.entries[account] := storage.entries[account] + amount;
   }
 
-  external view function entry(const account : address) : nat is
+  external view function entry(const account : address) : uint is
     storage.entries[account]
 
   (* The owner decides who may pause. *)

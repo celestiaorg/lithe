@@ -2,23 +2,23 @@
    like a Solidity constructor. It can write storage and emit events, but cannot call
    other contracts: the contract has no code until it returns. *)
 
-error Fee_too_high of nat;
+error Fee_too_high of uint;
 
 storage is record {
   owner : address;
-  fee_bps : nat;
+  fee_bps : uint;
   name : string;
 }
 
 event Configured of record {
   indexed owner : address;
-  fee_bps : nat;
+  fee_bps : uint;
 }
 
-deploy(const owner : address; const fee_bps : nat; const name : string)
+deploy(const owner : address; const fee_bps : uint; const name : string)
   raises Fee_too_high
 is {
-  assert(fee_bps <= 1000n, Fee_too_high(fee_bps));
+  assert(fee_bps <= 1000, Fee_too_high(fee_bps));
   storage.owner := owner;
   storage.fee_bps := fee_bps;
   storage.name := name;
@@ -31,7 +31,7 @@ is {
 external view function owner() : address is
   storage.owner
 
-external view function fee_bps() : nat is
+external view function fee_bps() : uint is
   storage.fee_bps
 
 external view function name() : string is

@@ -9,7 +9,7 @@
        AccessControl.grant(AccessControl.default_admin_role(), admin);
      }
 
-     external function mint(const to : address; const amount : nat)
+     external function mint(const to : address; const amount : uint)
        raises AccessControlUnauthorizedAccount
      is {
        AccessControl.check_role(minter());

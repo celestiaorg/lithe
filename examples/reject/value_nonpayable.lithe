@@ -7,5 +7,5 @@ storage is record {
 }
 
 external payable function forward() is {
-  defer storage.vault.deposit(Evm.sender()) with value = nat(Evm.value());
+  defer storage.vault.deposit(Evm.sender()) with value = uint(Evm.value());
 }

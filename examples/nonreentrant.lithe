@@ -6,24 +6,24 @@ interface Hook is {
 }
 
 storage is record {
-  status : nat;
-  pinged : nat;
+  status : uint;
+  pinged : uint;
 }
 
 external nonreentrant function settle(const hook : Hook) is {
-  storage.status := 1n;
+  storage.status := 1;
   defer hook.cancel();
 }
 
 external nonreentrant function notify(const hook : Hook) is {
-  storage.status := 1n;
+  storage.status := 1;
   defer hook.ping();
 }
 
 external nonreentrant function cancel() is {
-  storage.pinged := 2n;
+  storage.pinged := 2;
 }
 
 external function ping() is {
-  storage.pinged := 3n;
+  storage.pinged := 3;
 }

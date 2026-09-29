@@ -3,37 +3,37 @@
 
 import "std/interfaces/erc721.lithe";
 
-error Refused of nat;
+error Refused of uint;
 
 storage is record {
   last_operator : address;
   last_from : address;
-  last_token : nat;
+  last_token : uint;
   last_data : bytes;
-  calls : nat;
-  mode : nat;
+  calls : uint;
+  mode : uint;
 }
 
-external function set_mode(const m : nat) is {
+external function set_mode(const m : uint) is {
   storage.mode := m;
 }
 
 external function onERC721Received(
   const operator : address;
   const from : address;
-  const tokenId : nat;
+  const tokenId : uint;
   const data : bytes
 ) : bytes4
   raises Refused
 is {
-  assert(storage.mode <> 2n, Refused(tokenId));
+  assert(storage.mode <> 2, Refused(tokenId));
   storage.last_operator := operator;
   storage.last_from := from;
   storage.last_token := tokenId;
   storage.last_data := data;
-  storage.calls := storage.calls + 1n;
+  storage.calls := storage.calls + 1;
   var answer : bytes4 := Abi.selector(IERC721Receiver.onERC721Received);
-  if storage.mode = 1n then {
+  if storage.mode = 1 then {
     answer := 0xdeadbeef;
   }
 } with answer

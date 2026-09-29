@@ -36,26 +36,26 @@ You still write ordinary imperative code, with `const`, `var`, `if`, and assignm
 
 ```lithe
 interface Oracle is {
-  view function price(asset : address) : nat;
+  view function price(asset : address) : uint;
 }
 
 interface Token is {
-  function transfer(to : address; amount : nat) : bool;
+  function transfer(to : address; amount : uint) : bool;
 }
 
-error Too_cheap of nat;
+error Too_cheap of uint;
 
 storage is record {
   oracle : Oracle;
   token : Token;
-  sold : nat;
+  sold : uint;
 }
 
-external function sell(const asset : address; const amount : nat)
+external function sell(const asset : address; const amount : uint)
   raises Too_cheap
 is {
-  const price : nat := query storage.oracle.price(asset);
-  assert(price >= 100n, Too_cheap(price));
+  const price : uint := query storage.oracle.price(asset);
+  assert(price >= 100, Too_cheap(price));
   storage.sold := storage.sold + amount;
   defer storage.token.transfer(Evm.sender(), amount * price);
 }

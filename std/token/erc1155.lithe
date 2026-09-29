@@ -16,7 +16,7 @@ import "std/interfaces/erc1155.lithe";
 
 module ERC1155 is {
   storage erc1155 at "lithe.std.erc1155" is record {
-    balances : map(nat, map(address, nat));
+    balances : map(uint, map(address, uint));
     operator_approvals : map(address, map(address, bool));
     uri : string;
   }
@@ -25,16 +25,16 @@ module ERC1155 is {
     indexed operator : address;
     indexed from : address;
     indexed to : address;
-    id : nat;
-    value : nat;
+    id : uint;
+    value : uint;
   }
 
   event TransferBatch of record {
     indexed operator : address;
     indexed from : address;
     indexed to : address;
-    ids : list(nat);
-    values : list(nat);
+    ids : list(uint);
+    values : list(uint);
   }
 
   event ApprovalForAll of record {
@@ -57,18 +57,18 @@ module ERC1155 is {
   view function uri() : string is
     erc1155.uri
 
-  view function balance_of(const account : address; const id : nat) : nat is
+  view function balance_of(const account : address; const id : uint) : uint is
     erc1155.balances[id][account]
 
-  view function balance_of_batch(const accounts : list(address); const ids : list(nat)) : list(nat)
+  view function balance_of_batch(const accounts : list(address); const ids : list(uint)) : list(uint)
     raises ERC1155InvalidArrayLength
   is {
     assert(
       accounts.length = ids.length,
       ERC1155InvalidArrayLength { idsLength = ids.length; valuesLength = accounts.length; }
     );
-    var balances : list(nat) := [];
-    for (i, account) : (nat, address) in accounts do {
+    var balances : list(uint) := [];
+    for (i, account) : (uint, address) in accounts do {
       List.push(balances, erc1155.balances[ids[i]][account]);
     }
   } with balances
@@ -88,17 +88,17 @@ module ERC1155 is {
 
   (* Moves, mints (`from` is zero), or burns (`to` is zero) each `values[i]` of `ids[i]`.
      One id logs `TransferSingle`, any other count `TransferBatch`. *)
-  function update(const from : address; const to : address; const ids : list(nat); const values : list(nat))
+  function update(const from : address; const to : address; const ids : list(uint); const values : list(uint))
     raises ERC1155InvalidArrayLength | ERC1155InsufficientBalance
   is {
     assert(
       ids.length = values.length,
       ERC1155InvalidArrayLength { idsLength = ids.length; valuesLength = values.length; }
     );
-    for (i, id) : (nat, nat) in ids do {
-      const value : nat := values[i];
+    for (i, id) : (uint, uint) in ids do {
+      const value : uint := values[i];
       if from <> Address.zero then {
-        const balance : nat := erc1155.balances[id][from];
+        const balance : uint := erc1155.balances[id][from];
         assert(
           balance >= value,
           ERC1155InsufficientBalance { sender = from; balance = balance; needed = value; tokenId = id; }
@@ -109,7 +109,7 @@ module ERC1155 is {
         erc1155.balances[id][to] := erc1155.balances[id][to] + value;
       }
     }
-    if ids.length = 1n then {
+    if ids.length = 1 then {
       emit TransferSingle {
         operator = Evm.sender();
         from = from;
@@ -134,20 +134,20 @@ module ERC1155 is {
   function check_received(
     const from : address;
     const to : address;
-    const id : nat;
-    const value : nat;
+    const id : uint;
+    const value : uint;
     const data : bytes
   )
     raises ERC1155InvalidReceiver | forwarded
   is {
-    if Evm.code_size(to) > 0n then {
+    if Evm.code_size(to) > 0 then {
       const receiver : IERC1155Receiver := IERC1155Receiver(to);
       defer receiver.onERC1155Received(Evm.sender(), from, id, value, data) then {
         | Ok(answer : bytes4) -> {
             assert(answer = Abi.selector(IERC1155Receiver.onERC1155Received), ERC1155InvalidReceiver(to));
           }
         | Error(reason : bytes) -> {
-            if reason.length = 0n then {
+            if reason.length = 0 then {
               fail ERC1155InvalidReceiver(to);
             }
             forward reason;
@@ -160,20 +160,20 @@ module ERC1155 is {
   function check_batch_received(
     const from : address;
     const to : address;
-    const ids : list(nat);
-    const values : list(nat);
+    const ids : list(uint);
+    const values : list(uint);
     const data : bytes
   )
     raises ERC1155InvalidReceiver | forwarded
   is {
-    if Evm.code_size(to) > 0n then {
+    if Evm.code_size(to) > 0 then {
       const receiver : IERC1155Receiver := IERC1155Receiver(to);
       defer receiver.onERC1155BatchReceived(Evm.sender(), from, ids, values, data) then {
         | Ok(answer : bytes4) -> {
             assert(answer = Abi.selector(IERC1155Receiver.onERC1155BatchReceived), ERC1155InvalidReceiver(to));
           }
         | Error(reason : bytes) -> {
-            if reason.length = 0n then {
+            if reason.length = 0 then {
               fail ERC1155InvalidReceiver(to);
             }
             forward reason;
@@ -203,7 +203,7 @@ module ERC1155 is {
 
   (* A move between two accounts, without asking the receiver: `from` and `to` must be
      nonzero. *)
-  function move(const from : address; const to : address; const ids : list(nat); const values : list(nat))
+  function move(const from : address; const to : address; const ids : list(uint); const values : list(uint))
     raises ERC1155InvalidReceiver | ERC1155InvalidSender | ERC1155InvalidArrayLength | ERC1155InsufficientBalance
   is {
     assert(to <> Address.zero, ERC1155InvalidReceiver(Address.zero));
@@ -214,8 +214,8 @@ module ERC1155 is {
   function safe_transfer_from(
     const from : address;
     const to : address;
-    const id : nat;
-    const value : nat;
+    const id : uint;
+    const value : uint;
     const data : bytes
   )
     raises ERC1155MissingApprovalForAll | ERC1155InvalidReceiver | ERC1155InvalidSender | ERC1155InvalidArrayLength
@@ -229,8 +229,8 @@ module ERC1155 is {
   function safe_batch_transfer_from(
     const from : address;
     const to : address;
-    const ids : list(nat);
-    const values : list(nat);
+    const ids : list(uint);
+    const values : list(uint);
     const data : bytes
   )
     raises ERC1155MissingApprovalForAll | ERC1155InvalidReceiver | ERC1155InvalidSender | ERC1155InvalidArrayLength
@@ -242,7 +242,7 @@ module ERC1155 is {
   }
 
   (* Mints, then checks that a contract receiver accepts the tokens. *)
-  function mint(const to : address; const id : nat; const value : nat; const data : bytes)
+  function mint(const to : address; const id : uint; const value : uint; const data : bytes)
     raises ERC1155InvalidReceiver | ERC1155InvalidArrayLength | ERC1155InsufficientBalance | forwarded
   is {
     assert(to <> Address.zero, ERC1155InvalidReceiver(Address.zero));
@@ -250,7 +250,7 @@ module ERC1155 is {
     check_received(Address.zero, to, id, value, data);
   }
 
-  function mint_batch(const to : address; const ids : list(nat); const values : list(nat); const data : bytes)
+  function mint_batch(const to : address; const ids : list(uint); const values : list(uint); const data : bytes)
     raises ERC1155InvalidReceiver | ERC1155InvalidArrayLength | ERC1155InsufficientBalance
   is {
     assert(to <> Address.zero, ERC1155InvalidReceiver(Address.zero));
@@ -258,27 +258,27 @@ module ERC1155 is {
     check_batch_received(Address.zero, to, ids, values, data);
   }
 
-  function burn(const from : address; const id : nat; const value : nat)
+  function burn(const from : address; const id : uint; const value : uint)
     raises ERC1155InvalidSender | ERC1155InvalidArrayLength | ERC1155InsufficientBalance
   is {
     assert(from <> Address.zero, ERC1155InvalidSender(Address.zero));
     update(from, Address.zero, [id], [value]);
   }
 
-  function burn_batch(const from : address; const ids : list(nat); const values : list(nat))
+  function burn_batch(const from : address; const ids : list(uint); const values : list(uint))
     raises ERC1155InvalidSender | ERC1155InvalidArrayLength | ERC1155InsufficientBalance
   is {
     assert(from <> Address.zero, ERC1155InvalidSender(Address.zero));
     update(from, Address.zero, ids, values);
   }
 
-  external view function uri(const id : nat) : string is
+  external view function uri(const id : uint) : string is
     erc1155.uri
 
-  external view function balanceOf(const account : address; const id : nat) : nat is
+  external view function balanceOf(const account : address; const id : uint) : uint is
     erc1155.balances[id][account]
 
-  external view function balanceOfBatch(const accounts : list(address); const ids : list(nat)) : list(nat)
+  external view function balanceOfBatch(const accounts : list(address); const ids : list(uint)) : list(uint)
     raises ERC1155InvalidArrayLength
   is
     balance_of_batch(accounts, ids)
@@ -294,8 +294,8 @@ module ERC1155 is {
   external function safeTransferFrom(
     const from : address;
     const to : address;
-    const id : nat;
-    const value : nat;
+    const id : uint;
+    const value : uint;
     const data : bytes
   )
     raises ERC1155MissingApprovalForAll | ERC1155InvalidReceiver | ERC1155InvalidSender | ERC1155InvalidArrayLength
@@ -306,8 +306,8 @@ module ERC1155 is {
   external function safeBatchTransferFrom(
     const from : address;
     const to : address;
-    const ids : list(nat);
-    const values : list(nat);
+    const ids : list(uint);
+    const values : list(uint);
     const data : bytes
   )
     raises ERC1155MissingApprovalForAll | ERC1155InvalidReceiver | ERC1155InvalidSender | ERC1155InvalidArrayLength

@@ -15,17 +15,17 @@ module Create3 is {
      used before or the creation fails. *)
   function deploy_deterministic(const code : bytes; const salt : bytes32) : address
     raises FailedDeployment
-  is deploy_deterministic(code, salt, 0n)
+  is deploy_deterministic(code, salt, 0)
 
   (* The same, sending `value` wei to the new contract. *)
-  function deploy_deterministic(const code : bytes; const salt : bytes32; const value : nat) : address
+  function deploy_deterministic(const code : bytes; const salt : bytes32; const value : uint) : address
     raises FailedDeployment
   is {
     const deployed : address := predict(salt, Evm.self());
     defer create(0x67363d3d37363d34f03d5260086018f3) with salt = salt then {
       | Ok(proxy : address) -> {
           defer Evm.call(proxy, code) with value = value then {
-            assert(Evm.code_size(deployed) > 0n, FailedDeployment);
+            assert(Evm.code_size(deployed) > 0, FailedDeployment);
           };
         }
       | Error(_) -> { fail FailedDeployment; }
@@ -38,7 +38,7 @@ module Create3 is {
     const prefix : bytes2 := 0xd694;
     const nonce : bytes1 := 0x01;
     const hash : bytes32 := Crypto.keccak256(Abi.encode_packed(prefix, proxy, nonce));
-  } with address(uint160(nat(hash) & ((1n << 160n) - 1n)))
+  } with address(uint160(uint(hash) & ((1 << 160) - 1)))
 
   view function predict_here(const salt : bytes32) : address is
     predict(salt, Evm.self())

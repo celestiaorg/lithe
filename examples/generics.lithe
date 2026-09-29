@@ -27,10 +27,10 @@ external function revoke(const account : address) is {
   Set.remove(storage.admins, account);
 }
 
-external view function validator_count() : nat is
+external view function validator_count() : uint is
   SetEnumerable.length(storage.validators)
 
-external view function validator_at(const index : nat) : address
+external view function validator_at(const index : uint) : address
   raises Out_of_bounds
 is
   SetEnumerable.at(storage.validators, index)
@@ -65,7 +65,7 @@ module Watchlist is {
   external view function is_watched(const account : address) : bool is
     SetEnumerable.contains(watchlist.watched, account)
 
-  external view function watched_count() : nat is
+  external view function watched_count() : uint is
     SetEnumerable.length(watchlist.watched)
 }
 
@@ -73,5 +73,5 @@ use Watchlist exposing {
   function watch(account : address);
   function unwatch(account : address);
   view function is_watched(account : address) : bool;
-  view function watched_count() : nat;
+  view function watched_count() : uint;
 }

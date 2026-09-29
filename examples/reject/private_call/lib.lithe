@@ -1,2 +1,2 @@
-private view function hidden(const x : nat) : nat is
+private view function hidden(const x : uint) : uint is
   x

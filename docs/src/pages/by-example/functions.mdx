@@ -9,38 +9,38 @@ Functions take `;`-separated parameters and return their result with `with`, or 
 
 ```lithe [functions.lithe]
 storage is record {
-  total : nat;
+  total : uint;
 }
 
 (* Internal functions are called from the contract only. A body is a block;
    `with` gives the result. *)
-pure function add(const a : nat; const b : nat) : nat is
+pure function add(const a : uint; const b : uint) : uint is
   a + b
 
 (* A block runs first, then the `with` expression is the result. *)
-pure function hypot_squared(const a : nat; const b : nat) : nat is {
-  const aa : nat := a * a;
-  const bb : nat := b * b;
+pure function hypot_squared(const a : uint; const b : uint) : uint is {
+  const aa : uint := a * a;
+  const bb : uint := b * b;
 } with add(aa, bb)
 
 (* Parameters are `const` unless declared `var`. Parameters are separated by `;`. *)
-pure function clamp(var x : nat; const lo : nat; const hi : nat) : nat is {
+pure function clamp(var x : uint; const lo : uint; const hi : uint) : uint is {
   if x < lo then { x := lo; }
   if x > hi then { x := hi; }
 } with x
 
 (* A function with no result returns `unit`, so it has no `: type`. *)
-function bump(const by : nat) is {
+function bump(const by : uint) is {
   storage.total := storage.total + by;
 }
 
-external function run(const a : nat; const b : nat) is {
-  bump(clamp(hypot_squared(a, b), 1n, 1_000n));
+external function run(const a : uint; const b : uint) is {
+  bump(clamp(hypot_squared(a, b), 1, 1_000));
 }
 
 (* Several results are a tuple. *)
-external view function stats() : (nat, bool) is
-  (storage.total, storage.total > 100n)
+external view function stats() : (uint, bool) is
+  (storage.total, storage.total > 100)
 ```
 
 - `var` parameters can be reassigned inside the body. Callers are unaffected.

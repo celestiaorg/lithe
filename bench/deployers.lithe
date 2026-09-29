@@ -62,7 +62,7 @@ contract Deployers is {
   external payable function deploy3(const code : bytes; const salt : bytes32) : address
     raises FailedDeployment
   is {
-    storage.last := Create3.deploy_deterministic(code, salt, nat(Evm.value()));
+    storage.last := Create3.deploy_deterministic(code, salt, uint(Evm.value()));
   } with storage.last
 
   external view function predict3(const salt : bytes32) : address is

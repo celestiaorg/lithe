@@ -2,63 +2,63 @@
 
 storage is record {
   small : list(option(uint8));
-  wide : list(option(nat));
+  wide : list(option(uint));
   fixed8 : list(option(bool), 3);
-  fixed : list(option(nat), 3);
-  after : nat;
+  fixed : list(option(uint), 3);
+  after : uint;
 }
 
-pure function or_zero(const o : option(nat)) : nat is
+pure function or_zero(const o : option(uint)) : uint is
   case o of { Some(v) -> v | None -> 0 }
 
 external function push_small(const v : uint8) is { List.push(storage.small, Some(v)); }
-external function push_wide(const v : nat) is { List.push(storage.wide, Some(v)); }
-external function clear_wide(const i : nat) is { storage.wide[i] := None; }
-external view function small_at(const i : nat) : nat is
-  case storage.small[i] of { Some(v) -> nat(v) | None -> 1000 }
-external view function wide_at(const i : nat) : nat is
+external function push_wide(const v : uint) is { List.push(storage.wide, Some(v)); }
+external function clear_wide(const i : uint) is { storage.wide[i] := None; }
+external view function small_at(const i : uint) : uint is
+  case storage.small[i] of { Some(v) -> uint(v) | None -> 1000 }
+external view function wide_at(const i : uint) : uint is
   case storage.wide[i] of { Some(v) -> v | None -> 1000 }
-external view function wide_len() : nat is storage.wide.length
+external view function wide_len() : uint is storage.wide.length
 
-external function put_fixed(const i : nat; const v : nat) is {
+external function put_fixed(const i : uint; const v : uint) is {
   storage.fixed[i] := Some(v);
   storage.fixed8[i] := Some(v > 5);
   storage.after := storage.after + 1;
 }
-external function clear_fixed(const i : nat) is { storage.fixed[i] := None; }
-external view function fixed_at(const i : nat) : nat is
+external function clear_fixed(const i : uint) is { storage.fixed[i] := None; }
+external view function fixed_at(const i : uint) : uint is
   case storage.fixed[i] of { Some(v) -> v | None -> 1000 }
-external view function fixed8_at(const i : nat) : nat is
+external view function fixed8_at(const i : uint) : uint is
   case storage.fixed8[i] of { Some(b) -> (case Some(b) of { Some(_) -> 1 | None -> 0 }) | None -> 1000 }
-external view function fixed_passed(const i : nat) : nat is or_zero(storage.fixed[i])
-external view function fixed_is_none(const i : nat) : bool is storage.fixed[i] = None
+external view function fixed_passed(const i : uint) : uint is or_zero(storage.fixed[i])
+external view function fixed_is_none(const i : uint) : bool is storage.fixed[i] = None
 
-external function move_fixed(const from : nat; const to : nat) is {
-  const held : option(nat) := storage.fixed[from];
+external function move_fixed(const from : uint; const to : uint) is {
+  const held : option(uint) := storage.fixed[from];
   storage.fixed[to] := held;
 }
 
-external view function locals(const i : nat; const k : nat) : nat is {
-  const fx : list(option(nat), 3) := [Some(k), None, Some(k + 1)];
-  const dy : list(option(nat)) := [None, Some(k * 2)];
+external view function locals(const i : uint; const k : uint) : uint is {
+  const fx : list(option(uint), 3) := [Some(k), None, Some(k + 1)];
+  const dy : list(option(uint)) := [None, Some(k * 2)];
   const sm : list(option(uint8), 2) := [Some(uint8(4)), None];
 } with or_zero(fx[i]) * 1000 + (case dy[i] of { Some(v) -> v | None -> 7 }) * 10
-  + (case sm[i] of { Some(v) -> nat(v) | None -> 9 })
+  + (case sm[i] of { Some(v) -> uint(v) | None -> 9 })
 
 interface Oracle is {
-  view function price(amount : nat) : nat;
+  view function price(amount : uint) : uint;
 }
 
 (* A query that reads a value written before it keeps storage in the image. *)
-external function put_fixed_image(const o : Oracle; const i : nat; const v : nat) is {
+external function put_fixed_image(const o : Oracle; const i : uint; const v : uint) is {
   storage.after := v;
   storage.fixed[i] := Some(v);
-  const p : nat := query o.price(storage.after);
+  const p : uint := query o.price(storage.after);
   storage.after := p - p + (case storage.fixed[i] of { Some(x) -> x | None -> 1000 });
 }
-external function move_fixed_image(const o : Oracle; const from : nat; const to : nat) is {
+external function move_fixed_image(const o : Oracle; const from : uint; const to : uint) is {
   storage.after := from;
-  const p : nat := query o.price(storage.after);
+  const p : uint := query o.price(storage.after);
   storage.fixed[to] := storage.fixed[from];
   storage.after := p - p + 2;
 }

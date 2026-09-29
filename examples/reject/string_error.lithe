@@ -1,5 +1,5 @@
 storage is record {
-  count : nat;
+  count : uint;
 }
 
 external function go() is {

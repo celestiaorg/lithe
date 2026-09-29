@@ -13,19 +13,19 @@ Recover the signer of an `eth_sign` signature and act on it once. The signed mes
    EIP-191 prefix "\x19Ethereum Signed Message:\n32". *)
 
 error Invalid_signature;
-error Nonce_used of nat;
+error Nonce_used of uint;
 
 storage is record {
   signer : address;
-  used : map(nat, bool);
-  credited : map(address, nat);
+  used : map(uint, bool);
+  credited : map(address, uint);
 }
 
 external function init(const signer : address) is {
   storage.signer := signer;
 }
 
-view function message_hash(const to : address; const amount : nat; const nonce : nat) : bytes32 is
+view function message_hash(const to : address; const amount : uint; const nonce : uint) : bytes32 is
   Crypto.keccak256(Abi.encode(Evm.self(), to, amount, nonce))
 
 pure function eth_signed(const hash : bytes32) : bytes32 is {
@@ -34,8 +34,8 @@ pure function eth_signed(const hash : bytes32) : bytes32 is {
 
 external function claim(
   const to : address;
-  const amount : nat;
-  const nonce : nat;
+  const amount : uint;
+  const nonce : uint;
   const v : uint8;
   const r : bytes32;
   const s : bytes32

@@ -3,14 +3,14 @@
 error Not_owner;
 
 error Insufficient_balance of record {
-  available : nat;
-  required : nat;
+  available : uint;
+  required : uint;
 }
 
 event Transfer of record {
   indexed from : address;
   indexed to : address;
-  amount : nat;
+  amount : uint;
 }
 
 immutable is record {
@@ -18,15 +18,15 @@ immutable is record {
 }
 
 storage is record {
-  total : nat;
-  balances : map(address, nat);
+  total : uint;
+  balances : map(address, uint);
 }
 
 deploy() is {
   immutable.owner := Evm.sender();
 }
 
-external function mint(const to : address; const amount : nat)
+external function mint(const to : address; const amount : uint)
   raises Not_owner
 is {
   assert(Evm.sender() = immutable.owner, Not_owner);
@@ -39,11 +39,11 @@ is {
   };
 }
 
-external function transfer(const to : address; const amount : nat)
+external function transfer(const to : address; const amount : uint)
   raises Insufficient_balance
 is {
   const from : address := Evm.sender();
-  const have : nat := storage.balances[from];
+  const have : uint := storage.balances[from];
   assert(
     have >= amount,
     Insufficient_balance {
@@ -60,8 +60,8 @@ is {
   };
 }
 
-external view function balance_of(const who : address) : nat is
+external view function balance_of(const who : address) : uint is
   storage.balances[who]
 
-external view function total_supply() : nat is
+external view function total_supply() : uint is
   storage.total

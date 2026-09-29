@@ -5,14 +5,14 @@ description: "Integers, addresses, bytes, strings, semantic types, records, tupl
 
 # Types
 
-Lithe is statically typed. Every local binding names its type, and nothing converts implicitly: not between widths, not between `nat` and `int`, and not between a nominal type and its representation.
+Lithe is statically typed. Every local binding names its type, and nothing converts implicitly: not between widths, not between `uint` and `int`, and not between a nominal type and its representation.
 
 ## Primitive types
 
 | Type | ABI type | Values |
 | --- | --- | --- |
 | `bool` | `bool` | `true`, `false` |
-| `nat` | `uint256` | unsigned 256-bit integers. `uint256` is another name for `nat` |
+| `uint` | `uint256` | unsigned 256-bit integers. `uint256` is another name for `uint` |
 | `int` | `int256` | signed 256-bit integers. `int256` is another name for `int` |
 | `uint8` ... `uint248` | same | unsigned integers of that width, in steps of 8 |
 | `int8` ... `int248` | same | signed integers of that width, in steps of 8 |
@@ -26,32 +26,32 @@ Lithe is statically typed. Every local binding names its type, and nothing conve
 
 ### Integers
 
-Arithmetic on every integer type is checked. Overflow, underflow, and conversions out of range revert with `Panic(0x11)`, and division by zero reverts with `Panic(0x12)`, as in Solidity. Each fixed width is its own type: a `uint8` does not mix with a `uint16` or a `nat` without an explicit conversion.
+Arithmetic on every integer type is checked. Overflow, underflow, and conversions out of range revert with `Panic(0x11)`, and division by zero reverts with `Panic(0x12)`, as in Solidity. Each fixed width is its own type: a `uint8` does not mix with a `uint16` or a `uint` without an explicit conversion.
 
-Where wrapping is the point, as for a price accumulator meant to overflow, name it: `Nat.wrapping_add`, `Nat.wrapping_sub`, and `Nat.wrapping_mul` take two values of one unsigned type and keep the result's low bits, as Solidity's `unchecked` arithmetic does. `Int.wrapping_*` do the same for signed types. See [Built-ins](/language/builtins#nat-int-and-address).
+Where wrapping is the point, as for a price accumulator meant to overflow, name it: `Uint.wrapping_add`, `Uint.wrapping_sub`, and `Uint.wrapping_mul` take two values of one unsigned type and keep the result's low bits, as Solidity's `unchecked` arithmetic does. `Int.wrapping_*` do the same for signed types. See [Built-ins](/language/builtins#uint-int-and-address).
 
 ```lithe
 storage is record {
   small : uint8;
-  total : nat;
+  total : uint;
 }
 
-external function add(const a : uint8; const b : nat) is {
+external function add(const a : uint8; const b : uint) is {
   storage.small := a + 1;
-  storage.total := nat(a) + b;
+  storage.total := uint(a) + b;
 }
 ```
 
 ### Semantic types: `wei` and `timestamp`
 
-`wei` and `timestamp` are `uint256` in the ABI, but the type checker keeps them apart from `nat` and from each other, so a price is never added to a deadline by mistake.
+`wei` and `timestamp` are `uint256` in the ABI, but the type checker keeps them apart from `uint` and from each other, so a price is never added to a deadline by mistake.
 
 | Expression | Type |
 | --- | --- |
 | `wei + wei`, `wei - wei` | `wei` |
 | `wei * 2`, `wei / 2` (literal) | `wei` |
-| `timestamp + duration`, `timestamp + nat` | `timestamp` |
-| `timestamp - timestamp` | `nat` (seconds) |
+| `timestamp + duration`, `timestamp + uint` | `timestamp` |
+| `timestamp - timestamp` | `uint` (seconds) |
 | `Evm.value()`, `Evm.balance(a)` | `wei` |
 | `Evm.block_timestamp()` | `timestamp` |
 
@@ -63,29 +63,29 @@ Convert with the target type's name, used as a function:
 
 ```lithe
 storage is record {
-  n : nat;
+  n : uint;
 }
 
-external pure function convert(const x : uint8; const raw : bytes20; const amount : nat) : (nat, address, uint16, wei) is
-  (nat(x), address(raw), uint16(amount), wei(amount))
+external pure function convert(const x : uint8; const raw : bytes20; const amount : uint) : (uint, address, uint16, wei) is
+  (uint(x), address(raw), uint16(amount), wei(amount))
 ```
 
 | Conversion | Behavior |
 | --- | --- |
-| to a wider integer (`nat(x)` for `x : uint8`) | always succeeds |
+| to a wider integer (`uint(x)` for `x : uint8`) | always succeeds |
 | to a narrower integer (`uint8(n)`) | checked, `Panic(0x11)` if out of range |
-| between signed and unsigned (`nat(i)`, `int16(n)`) | checked, `Panic(0x11)` if negative or out of range |
+| between signed and unsigned (`uint(i)`, `int16(n)`) | checked, `Panic(0x11)` if negative or out of range |
 | `address(b)` for `b : bytes20`, and `bytes20(a)` | exact |
-| `nat(b)` for `b : bytes32`, `uint32(s)` for `s : bytes4`, and back: `bytesN` and the unsigned integer of the same width | exact |
+| `uint(b)` for `b : bytes32`, `uint32(s)` for `s : bytes4`, and back: `bytesN` and the unsigned integer of the same width | exact |
 | `uint160(a)` for `a : address`, and `address(u)` for `u : uint160` | exact |
 | `bytes(s)` for `s : string`, and `string(b)` for `b : bytes` | exact, with no copy |
 | `bytesN(b)` for `b : bytes` or `bytesM` | the first N bytes of `b`, zero past its end, as in Solidity |
 | `Token(a)` for an interface `Token`, and `address(t)` | exact |
-| `wei(n)`, `timestamp(n)`, `nat(w)` | exact |
-| `nat(b)` or `uint8(b)` for `b : bool` | 1 for `true`, 0 for `false` |
+| `wei(n)`, `timestamp(n)`, `uint(w)` | exact |
+| `uint(b)` or `uint8(b)` for `b : bool` | 1 for `true`, 0 for `false` |
 | to or from a [nominal type](#nominal-types) | exact |
 
-To reinterpret the 256 bits between `int` and `nat`, as Solidity's `uint256(i)` and `int256(n)` do, name the bit-cast: `Nat.from_bits(i)` and `Int.from_bits(n)`, so that `Nat.from_bits(-1)` is `Nat.max`.
+To reinterpret the 256 bits between `int` and `uint`, as Solidity's `uint256(i)` and `int256(n)` do, name the bit-cast: `Uint.from_bits(i)` and `Int.from_bits(n)`, so that `Uint.from_bits(-1)` is `Uint.max`.
 
 ## Records
 
@@ -94,15 +94,15 @@ A record is a struct: a fixed set of named, typed fields.
 ```lithe
 type position is record {
   owner : address;
-  amount : nat;
+  amount : uint;
   opened_at : timestamp;
 }
 
 storage is record {
-  positions : map(nat, position);
+  positions : map(uint, position);
 }
 
-external function open(const id : nat; const amount : nat) is {
+external function open(const id : uint; const amount : uint) is {
   storage.positions[id] := {
     owner = Evm.sender();
     amount = amount;
@@ -110,7 +110,7 @@ external function open(const id : nat; const amount : nat) is {
   };
 }
 
-external function grow(const id : nat; const extra : nat) is {
+external function grow(const id : uint; const extra : uint) is {
   storage.positions[id].amount := storage.positions[id].amount + extra;
 }
 ```
@@ -133,13 +133,13 @@ type exact_input_single is tuple record {
   tokenOut : address;
   fee : uint24;
   recipient : address;
-  amountIn : nat;
-  amountOutMinimum : nat;
+  amountIn : uint;
+  amountOutMinimum : uint;
   sqrtPriceLimitX96 : uint160;
 }
 
 interface SwapRouter is {
-  payable function exactInputSingle(params : exact_input_single) : nat;
+  payable function exactInputSingle(params : exact_input_single) : uint;
 }
 
 storage is record {
@@ -148,7 +148,7 @@ storage is record {
   usdc : address;
 }
 
-external function buy(const amount : nat; const least : nat) is {
+external function buy(const amount : uint; const least : uint) is {
   defer storage.router.exactInputSingle({
     tokenIn = storage.weth;
     tokenOut = storage.usdc;
@@ -169,8 +169,8 @@ A record's fields can be strings, bytes, and dynamic lists too. An external func
 type domain is record {
   fields : bytes1;
   name : string;
-  chainId : nat;
-  extensions : list(nat);
+  chainId : uint;
+  extensions : list(uint);
 }
 
 storage is record {
@@ -178,7 +178,7 @@ storage is record {
 }
 
 external view function eip712Domain() : domain is {
-  const extensions : list(nat) := [];
+  const extensions : list(uint) := [];
 } with {
   fields = 0x0f;
   name = storage.name;
@@ -192,10 +192,10 @@ external view function eip712Domain() : domain is {
 Tuples group values by position. Destructure them in a `const` binding:
 
 ```lithe fragment
-pure function split(const amount : nat) : (nat, nat) is
-  (amount / 2n, amount - amount / 2n)
+pure function split(const amount : uint) : (uint, uint) is
+  (amount / 2, amount - amount / 2)
 
-const (half, rest) : (nat, nat) := split(amount);
+const (half, rest) : (uint, uint) := split(amount);
 ```
 
 Tuples nest, can be stored, and pack in storage like a struct. A tuple's elements can be any value: words, strings, bytes, lists, records, and other tuples.
@@ -208,17 +208,17 @@ In the ABI, a tuple is always one Solidity tuple, as a struct is: a tuple parame
 
 ```lithe
 storage is record {
-  history : list(nat);
+  history : list(uint);
   top3 : list(address, 3);
 }
 
-external function push(const value : nat) is {
+external function push(const value : uint) is {
   List.push(storage.history, value);
-  storage.top3[0n] := Evm.sender();
+  storage.top3[0] := Evm.sender();
 }
 
-external pure function third() : nat is {
-  const primes : list(nat, 4) := [2n, 3n, 5n, 7n];
+external pure function third() : uint is {
+  const primes : list(uint, 4) := [2, 3, 5, 7];
 } with primes[2]
 ```
 
@@ -227,7 +227,7 @@ external pure function third() : nat is {
 - `List.pop(xs);` drops a dynamic list's last element. A stored list clears the element and whatever it holds, a long string's data and an inner list's elements included, as Solidity's `pop` does. An empty list reverts with `Panic(0x31)`.
 - `xs.length` is the length of a dynamic list.
 - An index past the end, read or written, reverts with `Panic(0x32)`.
-- Elements can be any value: words, strings, bytes, records, tuples, [options](#options), and other lists, to any depth. `list(list(nat))` is `uint256[][]`, and a list of records with strings is an array of tuples, `(string,uint256[])[]`.
+- Elements can be any value: words, strings, bytes, records, tuples, [options](#options), and other lists, to any depth. `list(list(uint))` is `uint256[][]`, and a list of records with strings is an array of tuples, `(string,uint256[])[]`.
 - Indexes and fields chain: `grid[i][j]`, `items[i].tags[j]`, and `grid[i].length`. Each index is checked against its own list's length.
 
 In storage, elements narrower than 32 bytes share slots as a Solidity array's do, low bytes first: `list(uint8)` and `list(bool)` hold 32 to a slot, `list(uint16)` 16, `list(bytes4)` 8, and `list(address)` one. `list(uint8, 3)` takes one slot.
@@ -248,7 +248,7 @@ external function note(const value : uint208) is {
   List.push(storage.history, { key = uint48(Evm.block_number()); value = value; });
 }
 
-external function bump(const i : nat) is {
+external function bump(const i : uint) is {
   storage.history[i].value := storage.history[i].value + 1;
 }
 
@@ -260,18 +260,18 @@ A dynamic list is also a value. It can be a parameter or a result, a `const` or 
 
 ```lithe
 storage is record {
-  saved : list(nat);
+  saved : list(uint);
 }
 
-external function save(const xs : list(nat)) is {
+external function save(const xs : list(uint)) is {
   storage.saved := xs;
 }
 
-external view function saved() : list(nat) is
+external view function saved() : list(uint) is
   storage.saved
 
-external pure function pair(const a : nat; const b : nat) : list(nat) is {
-  var out : list(nat) := [a];
+external pure function pair(const a : uint; const b : uint) : list(uint) is {
+  var out : list(uint) := [a];
   List.push(out, b);
 } with out
 ```
@@ -288,8 +288,8 @@ external pure function pair(const a : nat; const b : nat) : list(nat) is {
 
 ```lithe fragment
 storage is record {
-  balances : map(address, nat);
-  allowances : map(address, map(address, nat));
+  balances : map(address, uint);
+  allowances : map(address, map(address, uint));
 }
 
 storage.allowances[owner][spender] := amount;
@@ -305,18 +305,18 @@ type role is record {
 
 storage is record {
   roles : map(bytes32, role);
-  deposits : map(address, list(nat));
+  deposits : map(address, list(uint));
 }
 
 external function grant(const r : bytes32; const who : address) is {
   storage.roles[r].members[who] := true;
 }
 
-external function deposit(const amount : nat) is {
+external function deposit(const amount : uint) is {
   List.push(storage.deposits[Evm.sender()], amount);
 }
 
-external view function deposits(const who : address) : list(nat) is
+external view function deposits(const who : address) : list(uint) is
   storage.deposits[who]
 ```
 
@@ -352,7 +352,7 @@ An option works anywhere a value does, except the ABI:
 - `const` and `var` locals, and the parameters and results of internal functions
 - tuple elements and record fields
 - `case` on any option, including a function's result: `case find(id) of { ... }`
-- `=` and `<>`: `storage.admin = None`, or `a = Some(5n)`
+- `=` and `<>`: `storage.admin = None`, or `a = Some(5)`
 
 A map key that was never written, an unwritten list element, and a transient field in a new transaction all read as `None`. So a map of options tells "never set" apart from "set to zero" at no extra storage cost:
 
@@ -372,9 +372,9 @@ external function revoke(const who : address) is {
 external view function has_grant(const who : address) : bool is
   storage.expiry[who] <> None
 
-external view function expiry_or_zero(const who : address) : nat is
+external view function expiry_or_zero(const who : address) : uint is
   case storage.expiry[who] of {
-  | Some(expiry) -> nat(expiry)
+  | Some(expiry) -> uint(expiry)
   | None -> 0
   }
 ```
@@ -387,10 +387,10 @@ external view function expiry_or_zero(const who : address) : nat is
 
   ```lithe rejects
   storage is record {
-    limit : option(nat);
+    limit : option(uint);
   }
 
-  external function set_limit(const limit : option(nat)) is {
+  external function set_limit(const limit : option(uint)) is {
     storage.limit := limit;
   }
   ```
@@ -418,7 +418,7 @@ storage
   paused: bool            slot 4, offset 0, 1 byte
 ```
 
-In a map or a dynamic list, an option's words take consecutive slots, as a Solidity struct does. `map(K, option(nat))` keeps a key's tag at `keccak256(key . slot)` and its payload in the slot after. Element `i` of a `list(option(nat))` starts at `keccak256(slot) + 2i`.
+In a map or a dynamic list, an option's words take consecutive slots, as a Solidity struct does. `map(K, option(uint))` keeps a key's tag at `keccak256(key . slot)` and its payload in the slot after. Element `i` of a `list(option(uint))` starts at `keccak256(slot) + 2i`.
 
 ## Variants
 
@@ -426,20 +426,20 @@ A variant type is a closed set of cases, where each case may carry a payload:
 
 ```lithe fragment
 type action is
-  | Deposit of nat
-  | Withdraw of nat
+  | Deposit of uint
+  | Withdraw of uint
   | Close
 ```
 
 The first `|` is optional, so a short variant fits on one line: `type phase is Open | Paused | Closed`. Written one case per line, the leading `|` keeps the cases aligned.
 
-A payload can be named, `| Deposit of (amount : nat)`. The name is the ABI parameter's when the case becomes an [entrypoint](/language/dispatch), and nothing else.
+A payload can be named, `| Deposit of (amount : uint)`. The name is the ABI parameter's when the case becomes an [entrypoint](/language/dispatch), and nothing else.
 
-A case is written by name, with its payload in parentheses: `Close`, `Deposit(5n)`. A variant is the natural type for stored state, and `case` has to handle every one of its cases:
+A case is written by name, with its payload in parentheses: `Close`, `Deposit(5)`. A variant is the natural type for stored state, and `case` has to handle every one of its cases:
 
 ```lithe
 type fill is record {
-  amount_out : nat;
+  amount_out : uint;
   at : uint64;
 }
 
@@ -454,24 +454,24 @@ type order is record {
   status : order_status;
 }
 
-error AlreadyPlaced of nat;
-error NotComplete of nat;
+error AlreadyPlaced of uint;
+error NotComplete of uint;
 
 storage is record {
-  orders : map(nat, order);
+  orders : map(uint, order);
 }
 
-external function place(const id : nat) raises AlreadyPlaced is {
+external function place(const id : uint) raises AlreadyPlaced is {
   assert(storage.orders[id].status = New, AlreadyPlaced(id));
   storage.orders[id].owner := Evm.sender();
   storage.orders[id].status := Pending;
 }
 
-external function settle(const id : nat; const out : nat) is {
+external function settle(const id : uint; const out : uint) is {
   storage.orders[id].status := Filled({ amount_out = out; at = uint64(Evm.block_timestamp()); });
 }
 
-external view function amount_out(const id : nat) : nat raises NotComplete is
+external view function amount_out(const id : uint) : uint raises NotComplete is
   case storage.orders[id].status of {
   | Filled(f) -> f.amount_out
   | New | Pending | Unwound -> fail NotComplete(id)
@@ -521,14 +521,14 @@ external view function as_discount() : discount_rate is
   discount_rate(uint16(storage.fee))
 ```
 
-A nominal type costs nothing at runtime, and in the ABI it appears as its representation. Integer literals take on nominal integer types directly: `const fee : basis_points := 500;`. A suffixed literal such as `500n` is a `nat`, and it does not.
+A nominal type costs nothing at runtime, and in the ABI it appears as its representation. Integer literals take on nominal integer types directly: `const fee : basis_points := 500;`.
 
 ```lithe rejects
 type basis_points is uint16;
 type discount_rate is uint16;
 
 storage is record {
-  n : nat;
+  n : uint;
 }
 
 external function go() is {
@@ -548,8 +548,8 @@ An [interface](/language/effects#interfaces) is a type whose values are contract
 
 ```lithe fragment
 interface Token is {
-  view function balanceOf(owner : address) : nat;
-  function transfer(to : address; amount : nat) : bool;
+  view function balanceOf(owner : address) : uint;
+  function transfer(to : address; amount : uint) : bool;
 }
 
 storage is record {

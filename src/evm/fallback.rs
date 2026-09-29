@@ -57,7 +57,7 @@ external function reset() is { storage.total := 0wei; }
     assert!(errors.starts_with("receive\n\n  none"), "{errors}");
 
     // Without `receive`, plain ether is refused.
-    let none = "storage is record { n : nat; }\nexternal function f() is { skip }\n";
+    let none = "storage is record { n : uint; }\nexternal function f() is { skip }\n";
     let runtime = deploy(&compile(none).expect("compile")).expect("deploy");
     assert!(run(&runtime, &[], 5).reverted);
 }
@@ -109,11 +109,11 @@ external function open() is { storage.open := true; }
 #[test]
 fn fallback_runs_for_unmatched_calldata() {
     let src = "\
-storage is record { calls : nat; }
+storage is record { calls : uint; }
 fallback : bytes is {
-  storage.calls := storage.calls + 1n;
+  storage.calls := storage.calls + 1;
 } with Evm.calldata()
-external view function calls() : nat is storage.calls
+external view function calls() : uint is storage.calls
 ";
     let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
     // The result goes back as it is, not ABI-encoded.
@@ -140,9 +140,9 @@ external view function calls() : nat is storage.calls
 #[test]
 fn receive_comes_before_fallback() {
     let src = "\
-storage is record { received : nat; fell : nat; }
-payable receive is { storage.received := storage.received + 1n; }
-fallback is { storage.fell := storage.fell + 1n; }
+storage is record { received : uint; fell : uint; }
+payable receive is { storage.received := storage.received + 1; }
+fallback is { storage.fell := storage.fell + 1; }
 ";
     let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
     let plain = run(&runtime, &[], 3);
@@ -160,11 +160,11 @@ fn payable_fallback_keeps_entrypoints_value_checks() {
     let name = zero_ending_name();
     let src = format!(
         "\
-storage is record {{ n : nat; seen : wei; }}
+storage is record {{ n : uint; seen : wei; }}
 payable fallback is {{ storage.seen := Evm.value(); }}
-external function {name}() is {{ storage.n := 1n; }}
-external payable function tip() is {{ storage.n := 2n; }}
-external view function n() : nat is storage.n
+external function {name}() is {{ storage.n := 1; }}
+external payable function tip() is {{ storage.n := 2; }}
+external view function n() : uint is storage.n
 "
     );
     let runtime = deploy(&compile(&src).expect("compile")).expect("deploy");
@@ -189,7 +189,7 @@ external view function n() : nat is storage.n
     // A fallback that is not payable refuses value on the short path too.
     let strict = src.replacen(
         "payable fallback is { storage.seen := Evm.value(); }",
-        "fallback is { storage.n := 9n; }",
+        "fallback is { storage.n := 9; }",
         1,
     );
     let runtime = deploy(&compile(&strict).expect("compile")).expect("deploy");
@@ -201,14 +201,14 @@ external view function n() : nat is storage.n
 
 /// An implementation behind a proxy: its `n` sits in slot 1, clear of the proxy's slot 0.
 const IMPLEMENTATION: &str = "\
-error Too_big of nat;
-storage is record { pad : address; n : nat; }
-external function set(const n : nat) raises Too_big is {
-  assert(n < 100n, Too_big(n));
+error Too_big of uint;
+storage is record { pad : address; n : uint; }
+external function set(const n : uint) raises Too_big is {
+  assert(n < 100, Too_big(n));
   storage.n := n;
 }
-external payable function fund() is { storage.n := nat(Evm.value()); }
-external view function get() : nat is storage.n
+external payable function fund() is { storage.n := uint(Evm.value()); }
+external view function get() : uint is storage.n
 ";
 
 fn put_contract(at: u64, src: &str) -> Word {
@@ -405,27 +405,27 @@ payable fallback forwards to storage.target;
 #[test]
 fn receive_and_fallback_rules() {
     let cases = [
-        ("storage is record { n : nat; }\nreceive is { skip }\n", "`receive` accepts ether; write `payable receive`"),
-        ("storage is record { n : nat; }\nexternal payable receive is { skip }\n", "`receive` takes only `payable` and `nonreentrant`"),
-        ("storage is record { n : nat; }\nnonreentrant payable receive is { skip }\n", "keywords out of order; write `payable nonreentrant receive`"),
-        ("storage is record { n : nat; }\npayable receive() is { skip }\n", "`receive` takes no parameters"),
-        ("storage is record { n : nat; }\npayable receive : nat is 1n\n", "`receive` does not return a value"),
-        ("storage is record { n : nat; }\nfallback(const d : bytes) is { skip }\n", "`fallback` takes no parameters; read the calldata with `Evm.calldata()`"),
-        ("storage is record { n : nat; }\nfallback : nat is 1n\n", "a `fallback` returns `bytes`, sent back as they are"),
-        ("storage is record { n : nat; }\nfallback is { storage.n := nat(Evm.value()); }\n", "`fallback` reads `Evm.value()`; write `payable fallback`"),
-        ("storage is record { n : nat; }\npayable receive is { skip }\npayable receive is { skip }\n", "a contract has at most one `receive`"),
-        ("storage is record { n : nat; }\nfallback is { skip }\nfallback is { skip }\n", "a contract has at most one `fallback`"),
-        ("storage is record { n : nat; }\nprivate fallback is { skip }\n", "`fallback` cannot be private"),
-        ("module M is { payable receive is { skip } }\nstorage is record { n : nat; }\nexternal function f() is { skip }\n", "`receive` belongs to the contract"),
-        ("interface I is { payable receive; }\nstorage is record { n : nat; }\nexternal function f() is { skip }\n", "`receive` belongs to the contract, not an interface"),
-        ("storage is record { n : nat; }\npayable receive is { skip }\nexternal function f() is { receive(); }\n", "`receive` cannot be called from inside the contract"),
-        ("error No;\nstorage is record { n : nat; }\npayable receive is { assert(storage.n = 0n, No); }\n", "`receive` must declare its errors"),
-        ("storage is record { n : nat; }\nfallback : bytes delegates to Address.zero;\n", "a `fallback` that delegates returns what its target returns; drop the result type"),
-        ("storage is record { n : nat; }\nnonreentrant fallback forwards to Address.zero;\n", "a `fallback` that forwards cannot be nonreentrant"),
-        ("storage is record { n : nat; }\nfallback delegates storage.n;\n", "expected `to` after `delegates`"),
-        ("storage is record { n : nat; }\nfallback forwards to storage.n;\n", "a `fallback` passes its call to an address or an interface value"),
-        ("storage is record { n : nat; h : address; }\nfunction pick() : address is { storage.n := 1n; } with storage.h\nfallback forwards to pick();\n", "a `fallback` that passes its call on only reads; its target calls `pick`, which is stateful"),
-        ("storage is record { n : nat; }\nfallback skip\n", "expected `is`, `delegates to`, or `forwards to`"),
+        ("storage is record { n : uint; }\nreceive is { skip }\n", "`receive` accepts ether; write `payable receive`"),
+        ("storage is record { n : uint; }\nexternal payable receive is { skip }\n", "`receive` takes only `payable` and `nonreentrant`"),
+        ("storage is record { n : uint; }\nnonreentrant payable receive is { skip }\n", "keywords out of order; write `payable nonreentrant receive`"),
+        ("storage is record { n : uint; }\npayable receive() is { skip }\n", "`receive` takes no parameters"),
+        ("storage is record { n : uint; }\npayable receive : uint is 1\n", "`receive` does not return a value"),
+        ("storage is record { n : uint; }\nfallback(const d : bytes) is { skip }\n", "`fallback` takes no parameters; read the calldata with `Evm.calldata()`"),
+        ("storage is record { n : uint; }\nfallback : uint is 1\n", "a `fallback` returns `bytes`, sent back as they are"),
+        ("storage is record { n : uint; }\nfallback is { storage.n := uint(Evm.value()); }\n", "`fallback` reads `Evm.value()`; write `payable fallback`"),
+        ("storage is record { n : uint; }\npayable receive is { skip }\npayable receive is { skip }\n", "a contract has at most one `receive`"),
+        ("storage is record { n : uint; }\nfallback is { skip }\nfallback is { skip }\n", "a contract has at most one `fallback`"),
+        ("storage is record { n : uint; }\nprivate fallback is { skip }\n", "`fallback` cannot be private"),
+        ("module M is { payable receive is { skip } }\nstorage is record { n : uint; }\nexternal function f() is { skip }\n", "`receive` belongs to the contract"),
+        ("interface I is { payable receive; }\nstorage is record { n : uint; }\nexternal function f() is { skip }\n", "`receive` belongs to the contract, not an interface"),
+        ("storage is record { n : uint; }\npayable receive is { skip }\nexternal function f() is { receive(); }\n", "`receive` cannot be called from inside the contract"),
+        ("error No;\nstorage is record { n : uint; }\npayable receive is { assert(storage.n = 0, No); }\n", "`receive` must declare its errors"),
+        ("storage is record { n : uint; }\nfallback : bytes delegates to Address.zero;\n", "a `fallback` that delegates returns what its target returns; drop the result type"),
+        ("storage is record { n : uint; }\nnonreentrant fallback forwards to Address.zero;\n", "a `fallback` that forwards cannot be nonreentrant"),
+        ("storage is record { n : uint; }\nfallback delegates storage.n;\n", "expected `to` after `delegates`"),
+        ("storage is record { n : uint; }\nfallback forwards to storage.n;\n", "a `fallback` passes its call to an address or an interface value"),
+        ("storage is record { n : uint; h : address; }\nfunction pick() : address is { storage.n := 1; } with storage.h\nfallback forwards to pick();\n", "a `fallback` that passes its call on only reads; its target calls `pick`, which is stateful"),
+        ("storage is record { n : uint; }\nfallback skip\n", "expected `is`, `delegates to`, or `forwards to`"),
     ];
     for (src, want) in cases {
         let err = compile(src).expect_err(want);
@@ -433,9 +433,9 @@ fn receive_and_fallback_rules() {
     }
     // Outside a declaration's first word, `receive` and `fallback` are names like any other.
     let named = "\
-storage is record { receive : nat; }
-pure function fallback(const n : nat) : nat is n + 1n
-external function receive(const n : nat) is { storage.receive := fallback(n); }
+storage is record { receive : uint; }
+pure function fallback(const n : uint) : uint is n + 1
+external function receive(const n : uint) is { storage.receive := fallback(n); }
 ";
     let runtime = deploy(&compile(named).expect("compile")).expect("deploy");
     let out = run_ok(
@@ -451,18 +451,18 @@ external function receive(const n : nat) is { storage.receive := fallback(n); }
 fn split_router_keeps_receive_and_fallback() {
     let src = "\
 module Counter is {
-  storage counter at \"fallback.counter\" is record { count : nat; }
-  external function bump(const by : nat) is { counter.count := counter.count + by; }
-  external view function count() : nat is counter.count
+  storage counter at \"fallback.counter\" is record { count : uint; }
+  external function bump(const by : uint) is { counter.count := counter.count + by; }
+  external view function count() : uint is counter.count
 }
 use Counter exposing {
-  function bump(by : nat);
-  view function count() : nat;
+  function bump(by : uint);
+  view function count() : uint;
 }
-storage is record { received : wei; fell : nat; }
+storage is record { received : wei; fell : uint; }
 payable receive is { storage.received := storage.received + Evm.value(); }
-payable fallback is { storage.fell := storage.fell + 1n; }
-external view function fell() : nat is storage.fell
+payable fallback is { storage.fell := storage.fell + 1; }
+external view function fell() : uint is storage.fell
 ";
     let checked = crate::check::check(crate::parse::parse(src).expect("parse")).expect("check");
     let split = crate::split::build(

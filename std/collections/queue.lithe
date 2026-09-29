@@ -11,22 +11,22 @@
 
 module Queue(T) is {
   type self is record {
-    items : map(nat, T);
-    head : nat;
-    tail : nat;
+    items : map(uint, T);
+    head : uint;
+    tail : uint;
   }
 
   error QueueEmpty;
-  error QueueOutOfBounds of nat;
+  error QueueOutOfBounds of uint;
 
-  view function length(storage q : self) : nat is
+  view function length(storage q : self) : uint is
     q.tail - q.head
 
   view function is_empty(storage q : self) : bool is
     q.tail = q.head
 
   (* The element `index` places from the front. *)
-  view function at(storage q : self; const index : nat) : T
+  view function at(storage q : self; const index : uint) : T
     raises QueueOutOfBounds
   is {
     assert(index < q.tail - q.head, QueueOutOfBounds(index));
@@ -42,11 +42,11 @@ module Queue(T) is {
     raises QueueEmpty
   is {
     assert(q.tail > q.head, QueueEmpty);
-  } with q.items[q.tail - 1n]
+  } with q.items[q.tail - 1]
 
   function push(storage q : self; const value : T) is {
     q.items[q.tail] := value;
-    q.tail := q.tail + 1n;
+    q.tail := q.tail + 1;
   }
 
   (* Removes and returns the front element. *)
@@ -55,6 +55,6 @@ module Queue(T) is {
   is {
     assert(q.tail > q.head, QueueEmpty);
     const value : T := q.items[q.head];
-    q.head := q.head + 1n;
+    q.head := q.head + 1;
   } with value
 }

@@ -767,7 +767,7 @@ impl<'a> Gen<'a> {
                 }
             }
             TyKind::Option if t.words > 1 => {
-                out.push(crate::check::TY_NAT);
+                out.push(crate::check::TY_UINT);
                 self.record_leaves(t.elem.unwrap_or(0), out);
             }
             _ => out.extend(std::iter::repeat_n(id, t.words.max(1) as usize)),
@@ -1557,8 +1557,8 @@ impl<'a> Gen<'a> {
                             index: Box::new(Expr::Lit {
                                 line: e.line(),
                                 col: e.col(),
-                                lit: Lit::Nat(Word::from_u64(u64::from(i))),
-                                ty: crate::check::TY_NAT,
+                                lit: Lit::Uint(Word::from_u64(u64::from(i))),
+                                ty: crate::check::TY_UINT,
                             }),
                             root: Some(*sym),
                             leaf,

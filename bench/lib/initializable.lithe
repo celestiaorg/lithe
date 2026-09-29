@@ -18,7 +18,7 @@ module Initializable is {
     raises InvalidInitialization
   is {
     assert(
-      initializable.initialized = uint64(0n) and not initializable.initializing,
+      initializable.initialized = uint64(0) and not initializable.initializing,
       InvalidInitialization
     );
     initializable.initialized := 1;

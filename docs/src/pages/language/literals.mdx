@@ -9,19 +9,18 @@ description: "Number, hex, string, boolean, list, record, and tuple literals, an
 
 ```lithe fragment
 42          (* an integer literal: its type comes from context *)
-42n         (* a nat *)
 -42         (* an int *)
-1_000_000n  (* underscores separate digits *)
+1_000_000  (* underscores separate digits *)
 0xff        (* hexadecimal *)
 ```
 
-An unsuffixed literal takes the type its context expects: a binding's annotation, an assignment's target, a parameter, or a return type. It must fit that type. `const x : uint8 := 300;` is a compile error:
+An integer literal takes the type its context expects: a binding's annotation, an assignment's target, a parameter, or a return type. It must fit that type. `const x : uint8 := 300;` is a compile error:
 
 ```lithe rejects
 type tiny is uint8;
 
 storage is record {
-  n : nat;
+  n : uint;
 }
 
 external function go() is {
@@ -34,7 +33,7 @@ external function go() is {
 literal 300 does not fit type `tiny`
 ```
 
-The suffix `n` fixes a literal's type to `nat`. In a comparison, an unsuffixed literal takes the type of the other side, so `level > 3` works for a `uint8`.
+With no context, an integer literal is a `uint`. In arithmetic and comparisons, a literal takes the type of the other side, so `level > 3` and `level + 1` work for a `uint8`.
 
 ## Ether units
 
@@ -49,12 +48,12 @@ The suffix `n` fixes a literal's type to `nat`. In a comparison, an unsuffixed l
 
 ## Time units
 
-`seconds`, `minutes`, `hours`, and `days` produce durations. A duration adds to a `timestamp` and is also usable as a `nat` number of seconds:
+`seconds`, `minutes`, `hours`, and `days` produce durations. A duration adds to a `timestamp` and is also usable as a `uint` number of seconds:
 
 ```lithe
 storage is record {
   deadline : timestamp;
-  period : nat;
+  period : uint;
 }
 
 external function start() is {
@@ -72,7 +71,7 @@ storage is record {
   selector : bytes4;
   blob : bytes;
   owner : address;
-  mask : nat;
+  mask : uint;
 }
 
 external function set() is {
@@ -100,30 +99,30 @@ String literals are double-quoted. A backslash makes the next character literal,
 
 | Literal | Type |
 | --- | --- |
-| `{ amount = 1n; to = who; }` | a record, whose type comes from context |
-| `(1n, who)` | a tuple, `(nat, address)` |
-| `[1n, 2n, 3n]` | a list, `list(nat)` or `list(nat, 3)` |
+| `{ amount = 1; to = who; }` | a record, whose type comes from context |
+| `(1, who)` | a tuple, `(uint, address)` |
+| `[1, 2, 3]` | a list, `list(uint)` or `list(uint, 3)` |
 | `Some(x)`, `None` | an option |
 
 ```lithe
 type payment is record {
   to : address;
-  amount : nat;
+  amount : uint;
 }
 
 storage is record {
-  payments : map(nat, payment);
+  payments : map(uint, payment);
 }
 
-external function pay(const id : nat; const to : address) is {
-  const p : payment := { to = to; amount = 5n; };
+external function pay(const id : uint; const to : address) is {
+  const p : payment := { to = to; amount = 5; };
   storage.payments[id] := p;
 }
 
-external pure function pair() : (nat, bool) is
-  (1n, true)
+external pure function pair() : (uint, bool) is
+  (1, true)
 
-external pure function sum3() : nat is {
-  const xs : list(nat, 3) := [1n, 2n, 3n];
+external pure function sum3() : uint is {
+  const xs : list(uint, 3) := [1, 2, 3];
 } with xs[0] + xs[1] + xs[2]
 ```

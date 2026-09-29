@@ -21,10 +21,10 @@ module Clones is {
   pure function code_with_args(const implementation : address; const args : bytes) : bytes
     raises CloneArgumentsTooLong
   is {
-    assert(args.length <= 24531n, CloneArgumentsTooLong);
+    assert(args.length <= 24531, CloneArgumentsTooLong);
   } with Bytes.concat(
     0x61,
-    bytes2(uint16(args.length + 45n)),
+    bytes2(uint16(args.length + 45)),
     0x3d81600a3d39f3363d3d373d3d3d363d73,
     bytes20(implementation),
     0x5af43d82803e903d91602b57fd5bf3,
@@ -34,9 +34,9 @@ module Clones is {
   (* Raises `FailedDeployment` if the clone is already there. *)
   function clone_deterministic(const implementation : address; const salt : bytes32) : address
     raises FailedDeployment
-  is clone_deterministic(implementation, salt, 0n)
+  is clone_deterministic(implementation, salt, 0)
 
-  function clone_deterministic(const implementation : address; const salt : bytes32; const value : nat) : address
+  function clone_deterministic(const implementation : address; const salt : bytes32; const value : uint) : address
     raises FailedDeployment
   is {
     defer create(code(implementation)) with { value = value; salt = salt; } then {
@@ -51,13 +51,13 @@ module Clones is {
     const salt : bytes32
   ) : address
     raises CloneArgumentsTooLong | FailedDeployment
-  is clone_deterministic_with_args(implementation, args, salt, 0n)
+  is clone_deterministic_with_args(implementation, args, salt, 0)
 
   function clone_deterministic_with_args(
     const implementation : address;
     const args : bytes;
     const salt : bytes32;
-    const value : nat
+    const value : uint
   ) : address
     raises CloneArgumentsTooLong | FailedDeployment
   is {
@@ -85,5 +85,5 @@ module Clones is {
 
   (* The arguments a clone was created with; empty for a clone without them. *)
   view function args_of(const instance : address) : bytes is
-    Evm.code(instance)[45n:]
+    Evm.code(instance)[45:]
 }

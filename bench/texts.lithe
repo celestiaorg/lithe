@@ -7,7 +7,7 @@ type notes is list(string);
 storage is record {
   saved : list(bytes);
   names : list(string);
-  labels : map(nat, string);
+  labels : map(uint, string);
   note : string;
 }
 
@@ -24,14 +24,14 @@ external function push(const x : bytes) is {
   List.push(storage.saved, x);
 }
 
-external function set_at(const i : nat; const x : bytes) is {
+external function set_at(const i : uint; const x : bytes) is {
   storage.saved[i] := x;
 }
 
 external view function saved() : list(bytes) is
   storage.saved
 
-external view function saved_at(const i : nat) : bytes is
+external view function saved_at(const i : uint) : bytes is
   storage.saved[i]
 
 external view function joined() : bytes is {
@@ -50,11 +50,11 @@ external function set_names(const names : list(string)) is {
 external view function names() : list(string) is
   storage.names
 
-external function label(const k : nat; const v : string) is {
+external function label(const k : uint; const v : string) is {
   storage.labels[k] := v;
 }
 
-external view function label_of(const k : nat) : string is
+external view function label_of(const k : uint) : string is
   storage.labels[k]
 
 external pure function first(const xs : list(bytes)) : bytes is
@@ -79,7 +79,7 @@ external pure function left(const a : bytes; const b : bytes) : bytes is
 external pure function same(const a : list(bytes); const b : list(bytes)) : bool is
   a = b
 
-external pure function encoded(const k : nat; const xs : list(string)) : bytes is
+external pure function encoded(const k : uint; const xs : list(string)) : bytes is
   Abi.encode(k, xs)
 
 external pure function decoded(const data : bytes) : list(bytes) is
@@ -110,7 +110,7 @@ external pure function empty_text(const data : bytes) : bool is {
   const s : string := Abi.decode(data, string);
 } with s.length = 0
 
-external function keep_text(const k : nat; const data : bytes) is {
+external function keep_text(const k : uint; const data : bytes) is {
   storage.labels[k] := Abi.decode(data, string);
   storage.note := Abi.decode(data, string);
 }

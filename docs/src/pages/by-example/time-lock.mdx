@@ -12,7 +12,7 @@ The admin queues a payment for a future time, and it can execute only after a mi
    they execute. The admin can cancel a queued payment. *)
 
 error Not_admin;
-error Delay_too_short of nat;
+error Delay_too_short of uint;
 error Not_queued of bytes32;
 error Too_early of record {
   now : timestamp;
@@ -40,8 +40,8 @@ storage is record {
   queued : map(bytes32, bool);
 }
 
-pure function min_delay() : nat is 2days
-pure function grace_period() : nat is 14days
+pure function min_delay() : uint is 2days
+pure function grace_period() : uint is 14days
 
 external function init() is {
   storage.admin := Evm.sender();

@@ -6,12 +6,12 @@ import "std/crypto/ecdsa.lithe";
 import "std/utils/nonce.lithe";
 import "std/utils/checkpoint.lithe";
 
-error VotesExpiredSignature of nat;
+error VotesExpiredSignature of uint;
 
 error ERC6372InconsistentClock;
 
 error ERC5805FutureLookup of record {
-  timepoint : nat;
+  timepoint : uint;
   clock : uint48;
 }
 
@@ -22,15 +22,15 @@ interface IERC6372 is {
 }
 
 interface IVotes is {
-  view function getVotes(account : address) : nat;
-  view function getPastVotes(account : address; timepoint : nat) : nat
+  view function getVotes(account : address) : uint;
+  view function getPastVotes(account : address; timepoint : uint) : uint
     raises ERC5805FutureLookup;
-  view function getPastTotalSupply(timepoint : nat) : nat
+  view function getPastTotalSupply(timepoint : uint) : uint
     raises ERC5805FutureLookup;
   view function delegates(account : address) : address;
   function delegate(delegatee : address)
     raises CheckpointUnorderedInsertion;
-  function delegateBySig(delegatee : address; nonce : nat; expiry : nat; v : uint8; r : bytes32; s : bytes32)
+  function delegateBySig(delegatee : address; nonce : uint; expiry : uint; v : uint8; r : bytes32; s : bytes32)
     raises VotesExpiredSignature | ECDSAInvalidSignature | ECDSAInvalidSignatureS | InvalidAccountNonce
       | CheckpointUnorderedInsertion;
 }

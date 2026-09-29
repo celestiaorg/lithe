@@ -6,31 +6,31 @@ module ERC721URIStorage is {
   requires ERC721;
 
   storage erc721_uri_storage at "openzeppelin.storage.ERC721URIStorage" is record {
-    tokenURIs : map(nat, string);
+    tokenURIs : map(uint, string);
   }
 
   event MetadataUpdate of record {
-    tokenId : nat;
+    tokenId : uint;
   }
 
-  function set_token_uri(const tokenId : nat; const uri : string) is {
+  function set_token_uri(const tokenId : uint; const uri : string) is {
     erc721_uri_storage.tokenURIs[tokenId] := uri;
     emit MetadataUpdate {
       tokenId = tokenId;
     };
   }
 
-  view function token_uri(const tokenId : nat; const base : string) : string
+  view function token_uri(const tokenId : uint; const base : string) : string
     raises ERC721NonexistentToken
   is {
     const owner : address := ERC721.require_owned(tokenId);
     const suffix : string := erc721_uri_storage.tokenURIs[tokenId];
     var uri : string := suffix;
-    if base.length > 0n then {
-      if suffix.length > 0n then {
+    if base.length > 0 then {
+      if suffix.length > 0 then {
         uri := String.concat(base, suffix);
       } else {
-        uri := String.concat(base, Nat.to_string(tokenId));
+        uri := String.concat(base, Uint.to_string(tokenId));
       }
     }
   } with uri

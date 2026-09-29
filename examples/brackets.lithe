@@ -1,25 +1,25 @@
 (* Parentheses group and call. Brackets list and index. Braces group records, blocks, and case arms. *)
 
 error Too_small of record {
-  amount : nat;
+  amount : uint;
 }
 
 event Paid of record {
-  amount : nat;
+  amount : uint;
 }
 
 type payment is record {
   recipient : address;
-  amount : nat;
+  amount : uint;
   expires_at : timestamp;
 }
 
 storage is record {
-  paid : nat;
+  paid : uint;
 }
 
 type action is
-  | Pay of (n : nat)
+  | Pay of (n : uint)
   | Stop
 
 external view function first_admin() : address is {
@@ -34,21 +34,21 @@ external view function first_admin() : address is {
   const first : address := admins[0];
 } with first
 
-external view function admin_count() : nat is {
+external view function admin_count() : uint is {
   const alice : address := 0x0000000000000000000000000000000000000001;
   const bob : address := 0x0000000000000000000000000000000000000002;
   const admins : list(address) := [alice, bob];
 } with admins.length
 
-external view function second() : nat is {
-  const nums : list(nat, 3) := [1n, 2n, 4n];
-  const n : nat := nums[1];
+external view function second() : uint is {
+  const nums : list(uint, 3) := [1, 2, 4];
+  const n : uint := nums[1];
 } with n
 
-external view function owed() : nat is {
+external view function owed() : uint is {
   const account : address := Evm.sender();
   const payment : payment := {
-    amount = 9n;
+    amount = 9;
     expires_at = Evm.block_timestamp();
     recipient = account;
   };
@@ -59,7 +59,7 @@ external function main(const action : action)
 is
   case action of {
     | Pay(n) -> {
-        assert(n > 0n, Too_small { amount = n });
+        assert(n > 0, Too_small { amount = n });
         storage.paid := storage.paid + n;
         emit Paid { amount = n };
       }

@@ -2,7 +2,7 @@ import "./left.lithe";
 import "./right.lithe";
 
 storage is record {
-  n : nat;
+  n : uint;
 }
 
 external function go() is {

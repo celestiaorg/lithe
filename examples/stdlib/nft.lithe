@@ -8,22 +8,22 @@ contract Collection is {
   supports IERC721, IERC721Metadata;
 
   storage is record {
-    next_id : nat;
+    next_id : uint;
   }
 
   deploy() is {
     ERC721.init("Lithe Collection", "LCOL");
   }
 
-  external function mint() : nat
+  external function mint() : uint
     raises ERC721InvalidReceiver | ERC721InvalidSender | ERC721NonexistentToken | ERC721InsufficientApproval | forwarded
   is {
-    const id : nat := storage.next_id;
-    storage.next_id := id + 1n;
+    const id : uint := storage.next_id;
+    storage.next_id := id + 1;
     ERC721.safe_mint(Evm.sender(), id, "");
   } with id
 
-  external function burn(const tokenId : nat)
+  external function burn(const tokenId : uint)
     raises ERC721NonexistentToken | ERC721InsufficientApproval
   is {
     const _ : address := ERC721.update(Address.zero, tokenId, Evm.sender());

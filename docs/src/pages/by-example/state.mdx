@@ -9,23 +9,23 @@ State is read and written through `storage.`. A function's keyword says whether 
 
 ```lithe [state.lithe]
 storage is record {
-  value : nat;
+  value : uint;
   updated_by : address;
 }
 
 (* A stateful external function may write storage. *)
-external function set(const value : nat) is {
+external function set(const value : uint) is {
   storage.value := value;
   storage.updated_by := Evm.sender();
 }
 
 (* A view may read storage but never write it. The compiler checks. *)
-external view function get() : nat is
+external view function get() : uint is
   storage.value
 
 (* Stateful functions can return a value too, after their writes. *)
-external function swap(const value : nat) : nat is {
-  const old : nat := storage.value;
+external function swap(const value : uint) : uint is {
+  const old : uint := storage.value;
   storage.value := value;
 } with old
 ```

@@ -21,12 +21,12 @@ contract Token is {
   supports IERC20, IERC20Metadata, IERC20Permit;
 
   storage is record {
-    cap : nat;
+    cap : uint;
   }
 
   error ERC20ExceededCap of record {
-    increasedSupply : nat;
-    cap : nat;
+    increasedSupply : uint;
+    cap : uint;
   }
 
   deploy()
@@ -35,17 +35,17 @@ contract Token is {
     ERC20.init("Lithe Token", "LTK");
     EIP712.init("Lithe Token", "1");
     Ownable.init(Evm.sender());
-    storage.cap := 1_000_000n * 10n ** 18n;
+    storage.cap := 1_000_000 * 10 ** 18;
   }
 
-  external function transfer(const to : address; const value : nat) : bool
+  external function transfer(const to : address; const value : uint) : bool
     raises EnforcedPause | ERC20InvalidSender | ERC20InvalidReceiver | ERC20InsufficientBalance
   is {
     Pausable.require_not_paused();
     ERC20.move(Evm.sender(), to, value);
   } with true
 
-  external function transferFrom(const from : address; const to : address; const value : nat) : bool
+  external function transferFrom(const from : address; const to : address; const value : uint) : bool
     raises EnforcedPause | ERC20InsufficientAllowance | ERC20InvalidApprover | ERC20InvalidSpender | ERC20InvalidSender
       | ERC20InvalidReceiver | ERC20InsufficientBalance
   is {
@@ -54,11 +54,11 @@ contract Token is {
     ERC20.move(from, to, value);
   } with true
 
-  external function mint(const to : address; const value : nat)
+  external function mint(const to : address; const value : uint)
     raises OwnableUnauthorizedAccount | ERC20ExceededCap | ERC20InvalidReceiver | ERC20InsufficientBalance
   is {
     Ownable.check_owner();
-    const supply : nat := ERC20.total_supply() + value;
+    const supply : uint := ERC20.total_supply() + value;
     assert(supply <= storage.cap, ERC20ExceededCap { increasedSupply = supply; cap = storage.cap; });
     ERC20.mint(to, value);
   }

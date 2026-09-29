@@ -672,7 +672,7 @@ pub(crate) enum Builtin {
     AbiEncodeCall,
     BytesConcat,
     StringConcat,
-    NatDivRem,
+    UintDivRem,
     /// `Bytes.word(b, offset)`: the 32 bytes of `b` starting at `offset`, as a `bytes32`.
     BytesWord,
     /// `b[i]` for `b : bytes` or `bytesN`: the byte at `i`, as a `bytes1`.
@@ -687,23 +687,23 @@ pub(crate) enum Builtin {
     Base64EncodeWith,
     /// `Base64.decode(data)`: the bytes a base64 string encodes, in either alphabet.
     Base64Decode,
-    /// `Nat.mul_div(a, b, d)`: `a * b / d` without overflow in the product.
-    NatMulDiv,
-    NatMulMod,
-    NatAddMod,
+    /// `Uint.mul_div(a, b, d)`: `a * b / d` without overflow in the product.
+    UintMulDiv,
+    UintMulMod,
+    UintAddMod,
     IntDivRem,
-    /// `Nat.to_string(n)`: an unsigned integer in decimal, as a `string`.
-    NatToString,
+    /// `Uint.to_string(n)`: an unsigned integer in decimal, as a `string`.
+    UintToString,
     /// `Int.to_string(n)`: a signed integer in decimal, with a `-` when negative.
     IntToString,
-    /// `Nat.to_hex_string(n)`: `0x` and the fewest whole bytes in lowercase hex. With a
+    /// `Uint.to_hex_string(n)`: `0x` and the fewest whole bytes in lowercase hex. With a
     /// second argument, exactly that many bytes.
-    NatToHexString,
+    UintToHexString,
     /// `Address.to_hex_string(a)`: `0x` and 40 lowercase hex digits. `true` is
     /// `Address.to_checksum_string`, cased as EIP-55.
     AddressToHexString(bool),
-    /// `Nat.from_bits(i)` and `Int.from_bits(n)`, the unchecked bit-cast between `int` and
-    /// `nat`. `true` is `Int.from_bits`.
+    /// `Uint.from_bits(i)` and `Int.from_bits(n)`, the unchecked bit-cast between `int` and
+    /// `uint`. `true` is `Int.from_bits`.
     FromBits(bool),
     /// `List.pop(xs)`: drops a dynamic list's last element. Checked into an assignment of
     /// the list, `xs := List.pop(xs)`, so it writes what an assignment writes.
@@ -716,7 +716,7 @@ pub(crate) enum Builtin {
     AbiSupportsInterface,
     /// `Evm.creation_code(C)`: the creation code `create C(...)` runs, before its arguments.
     CreationCode,
-    /// `Nat.wrapping_add(a, b)`, `Int.wrapping_mul(a, b)`, and so on: the operation on two
+    /// `Uint.wrapping_add(a, b)`, `Int.wrapping_mul(a, b)`, and so on: the operation on two
     /// values of one integer type, wrapped to its width instead of checked. `true` is `Int`.
     Wrapping(BinOp, bool),
     Transfer,
@@ -757,7 +757,7 @@ pub(crate) enum Builtin {
 pub(crate) enum Pre {
     /// `Crypto.mod_exp(base, exponent, modulus)`: 0x05 on byte strings.
     ModExp,
-    /// `Nat.pow_mod(base, exponent, modulus)`: 0x05 on words.
+    /// `Uint.pow_mod(base, exponent, modulus)`: 0x05 on words.
     PowMod,
     /// `Crypto.bn254_add(a, b)`: 0x06.
     Bn254Add,
@@ -810,7 +810,7 @@ impl Pre {
 
 #[derive(Debug, Clone)]
 pub(crate) enum Lit {
-    Nat(Word),
+    Uint(Word),
     /// Hex literals keep how many digits were written.
     Int(Word, Option<u8>),
     Wei(Word),

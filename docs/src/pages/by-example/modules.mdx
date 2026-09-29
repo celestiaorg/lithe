@@ -85,12 +85,12 @@ contract Vault is {
   }
 
   storage is record {
-    total : nat;
+    total : uint;
   }
 
   (* Or wrap a module's functions. Outside its module, module storage is
      `Module.domain.field`. *)
-  external function deposit(const amount : nat)
+  external function deposit(const amount : uint)
     raises Paused
   is {
     Pausable.when_not_paused();

@@ -1,24 +1,24 @@
 (* View helpers that only change their own locals stay views. *)
 
 interface Oracle is {
-  view function price(asset : address) : nat;
+  view function price(asset : address) : uint;
 }
 
 storage is record {
-  xs : map(nat, address);
-  n : nat;
+  xs : map(uint, address);
+  n : uint;
   oracle : Oracle;
 }
 
 view function all() : list(address) is {
   var out : list(address) := [];
-  for i : nat in 0n .. storage.n bound 16 do {
+  for i : uint in 0 .. storage.n bound 16 do {
     List.push(out, storage.xs[i]);
   }
 } with out
 
-view function price(const asset : address) : nat is {
-  var p : nat := 0n;
+view function price(const asset : address) : uint is {
+  var p : uint := 0;
   case query storage.oracle.price(asset) of {
     | Ok(v) -> { p := v; }
     | Error(reason) -> { forward reason; }
@@ -27,4 +27,4 @@ view function price(const asset : address) : nat is {
 
 external view function listed() : list(address) is all()
 
-external view function price_of(const asset : address) : nat raises forwarded is price(asset)
+external view function price_of(const asset : address) : uint raises forwarded is price(asset)

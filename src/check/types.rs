@@ -380,7 +380,7 @@ impl Checker {
         }
         match self.types[id].kind {
             TyKind::Unit => Ok((None, Vec::new(), Vec::new())),
-            TyKind::Nat
+            TyKind::Uint
             | TyKind::Int
             | TyKind::Address
             | TyKind::Bool
@@ -580,7 +580,7 @@ impl Checker {
             Some((u, s)) if s.max(u + 1) < 32 => {
                 self.named[&format!("int{}", u32::from(s.max(u + 1)) * 8)]
             }
-            _ => TY_NAT,
+            _ => TY_UINT,
         };
         let tag = self.types.len();
         self.types.push(index(
@@ -937,7 +937,7 @@ impl Checker {
         match (self.types[src].kind, self.types[target].kind) {
             (TyKind::Nominal, TyKind::Nominal) => false,
             (TyKind::Address, TyKind::Interface) | (TyKind::Interface, TyKind::Address) => true,
-            (TyKind::Bool, TyKind::Nat) => true,
+            (TyKind::Bool, TyKind::Uint) => true,
             (TyKind::Nominal, _) => self.types[src].elem == Some(target),
             (_, TyKind::Nominal) => {
                 self.types[target].variants.is_empty() && self.types[target].elem == Some(src)
@@ -956,18 +956,18 @@ impl Checker {
     }
 
     pub(super) fn is_integer(&self, id: usize) -> bool {
-        matches!(self.types[self.peel(id)].kind, TyKind::Nat | TyKind::Int)
+        matches!(self.types[self.peel(id)].kind, TyKind::Uint | TyKind::Int)
     }
 
     fn numeric_word(&self, id: usize) -> bool {
         matches!(
             self.types[self.peel(id)].kind,
-            TyKind::Nat | TyKind::Int | TyKind::Wei | TyKind::Timestamp
+            TyKind::Uint | TyKind::Int | TyKind::Wei | TyKind::Timestamp
         )
     }
 
     /// `bytesN` and `address` are words of a fixed width. Each converts exactly to and from
-    /// the unsigned integer of that width: `nat(b)` for `b : bytes32`, `uint160(a)`.
+    /// the unsigned integer of that width: `uint(b)` for `b : bytes32`, `uint160(a)`.
     fn same_width(&self, fixed: usize, int: usize) -> bool {
         let (a, b) = (&self.types[self.peel(fixed)], &self.types[self.peel(int)]);
         let width = match a.kind {
@@ -976,7 +976,7 @@ impl Checker {
             _ => return false,
         };
         let bits = if b.bits == 0 { 256 } else { u32::from(b.bits) };
-        b.kind == TyKind::Nat && bits == width
+        b.kind == TyKind::Uint && bits == width
     }
 
     fn address_bytes(&self, src: usize, target: usize) -> bool {
@@ -1002,7 +1002,7 @@ impl Checker {
 
     pub(super) fn type_name(&self, id: usize) -> String {
         match id {
-            TY_NAT => return "nat".into(),
+            TY_UINT => return "uint".into(),
             TY_INT => return "int".into(),
             _ => {}
         }
@@ -1016,7 +1016,7 @@ impl Checker {
     pub(super) fn repr_name(&self, id: usize) -> String {
         let id = self.peel(id);
         match self.types[id].kind {
-            TyKind::Nat => uint_abi(self.types[id].bits).to_string(),
+            TyKind::Uint => uint_abi(self.types[id].bits).to_string(),
             TyKind::Int => int_abi(self.types[id].bits).to_string(),
             TyKind::Wei => "wei".into(),
             TyKind::Timestamp => "timestamp".into(),
@@ -1158,7 +1158,7 @@ impl Checker {
         match self.types[id].kind {
             TyKind::Address
             | TyKind::Bool
-            | TyKind::Nat
+            | TyKind::Uint
             | TyKind::Int
             | TyKind::Wei
             | TyKind::Timestamp => true,
@@ -1215,7 +1215,7 @@ fn builtin_type_name(name: &str) -> bool {
         name,
         "unit"
             | "bool"
-            | "nat"
+            | "uint"
             | "int"
             | "address"
             | "string"
@@ -1353,13 +1353,13 @@ fn word_leaves(types: &[RType], ty: usize, out: &mut Vec<Option<usize>>) {
         }
         TyKind::List if t.bits > 0 => {
             for _ in 0..t.bits {
-                word_leaves(types, t.elem.unwrap_or(TY_NAT), out);
+                word_leaves(types, t.elem.unwrap_or(TY_UINT), out);
             }
         }
         // An option of a dynamic value keeps its payload's words as their types.
         TyKind::Option if !is_static_value(types, ty) => {
             out.push(None);
-            word_leaves(types, t.elem.unwrap_or(TY_NAT), out);
+            word_leaves(types, t.elem.unwrap_or(TY_UINT), out);
         }
         TyKind::Option => out.extend(std::iter::repeat_n(None, t.words as usize)),
         _ => out.push(Some(ty)),

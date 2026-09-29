@@ -2,23 +2,23 @@
    The interface is exactly the standard's function, so its ERC-165 id is `0x2a55205a`. *)
 
 error ERC2981InvalidDefaultRoyalty of record {
-  numerator : nat;
-  denominator : nat;
+  numerator : uint;
+  denominator : uint;
 }
 
 error ERC2981InvalidDefaultRoyaltyReceiver of address;
 
 error ERC2981InvalidTokenRoyalty of record {
-  tokenId : nat;
-  numerator : nat;
-  denominator : nat;
+  tokenId : uint;
+  numerator : uint;
+  denominator : uint;
 }
 
 error ERC2981InvalidTokenRoyaltyReceiver of record {
-  tokenId : nat;
+  tokenId : uint;
   receiver : address;
 }
 
 interface IERC2981 is {
-  view function royaltyInfo(tokenId : nat; salePrice : nat) : (address, nat);
+  view function royaltyInfo(tokenId : uint; salePrice : uint) : (address, uint);
 }

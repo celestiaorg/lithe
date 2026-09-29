@@ -14,30 +14,30 @@ Deferral means a callee never sees half-written state. It can still call back in
    by all nonreentrant functions, held until the deferred calls finish. *)
 
 interface Hook is {
-  function notify(amount : nat);
+  function notify(amount : uint);
 }
 
 storage is record {
   hook : Hook;
-  total : nat;
+  total : uint;
 }
 
 external function set_hook(const hook : Hook) is {
   storage.hook := hook;
 }
 
-external nonreentrant function add(const amount : nat) is {
+external nonreentrant function add(const amount : uint) is {
   storage.total := storage.total + amount;
   defer storage.hook.notify(amount);
 }
 
 (* While `add`'s hook runs, calling `reset` reverts. *)
 external nonreentrant function reset() is {
-  storage.total := 0n;
+  storage.total := 0;
 }
 
 (* Views are always callable during deferred calls. *)
-external view function total() : nat is
+external view function total() : uint is
   storage.total
 ```
 

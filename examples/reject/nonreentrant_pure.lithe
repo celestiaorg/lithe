@@ -1,2 +1,2 @@
-external nonreentrant pure function double(const n : nat) : nat is
+external nonreentrant pure function double(const n : uint) : uint is
   n + n

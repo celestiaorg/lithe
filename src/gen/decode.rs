@@ -370,7 +370,7 @@ impl<'a> Gen<'a> {
             && t.words == 1
             && matches!(
                 t.kind,
-                TyKind::Nat | TyKind::Int | TyKind::Wei | TyKind::Timestamp | TyKind::Bytes
+                TyKind::Uint | TyKind::Int | TyKind::Wei | TyKind::Timestamp | TyKind::Bytes
             )
             && (t.bits == 0 || t.bits == 256 || (t.kind == TyKind::Bytes && t.bits == 32));
         if whole {
@@ -666,7 +666,7 @@ impl<'a> Gen<'a> {
         }
         let t = &self.checked.types[self.peel_nominal(ty)];
         match t.kind {
-            TyKind::Nat | TyKind::Int => t.bits > 0 && t.bits < 256,
+            TyKind::Uint | TyKind::Int => t.bits > 0 && t.bits < 256,
             TyKind::Address | TyKind::Interface | TyKind::Bool => true,
             TyKind::Bytes => t.bits > 0 && t.bits < 32,
             _ => false,
@@ -835,7 +835,7 @@ impl<'a> Gen<'a> {
         let t = &self.checked.types[self.peel_nominal(ty)];
         let (kind, bits) = (t.kind, t.bits);
         match kind {
-            TyKind::Nat if bits > 0 && bits < 256 => {
+            TyKind::Uint if bits > 0 && bits < 256 => {
                 load(self);
                 self.push_u64(u64::from(bits));
                 self.op(SHR);

@@ -1,17 +1,17 @@
 (* Maps, dynamic lists, fixed lists, and options in storage. *)
 
 storage is record {
-  balances : map(address, nat);
-  echo : nat;
+  balances : map(address, uint);
+  echo : uint;
   ids : list(address);
-  slots : list(nat, 4);
+  slots : list(uint, 4);
   admin : option(address);
 }
 
-external function deposit(const amount : nat) is {
-  const prev : nat := storage.balances[Evm.sender()];
+external function deposit(const amount : uint) is {
+  const prev : uint := storage.balances[Evm.sender()];
   storage.balances[Evm.sender()] := prev + amount;
-  const stored : nat := storage.balances[Evm.sender()];
+  const stored : uint := storage.balances[Evm.sender()];
   storage.echo := stored;
 }
 
@@ -20,14 +20,14 @@ external function note() is {
 }
 
 external view function first() : address is
-  storage.ids[0n]
+  storage.ids[0]
 
 external function fill() is {
-  storage.slots[1n] := 7n;
+  storage.slots[1] := 7;
 }
 
-external view function slot1() : nat is
-  storage.slots[1n]
+external view function slot1() : uint is
+  storage.slots[1]
 
 external function appoint() is {
   storage.admin := Some(Evm.sender());
@@ -41,8 +41,8 @@ external view function admin_or_sender() : address is
   }
 
 external function miss() is {
-  storage.slots[4n] := 1n;
+  storage.slots[4] := 1;
 }
 
-external view function context() : nat is
+external view function context() : uint is
   Evm.block_number() + Evm.chain_id()

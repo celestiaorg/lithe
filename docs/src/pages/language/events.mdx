@@ -11,14 +11,14 @@ An event is a record type that can be logged. Declare it with `event`, and log i
 event Transfer of record {
   indexed from : address;
   indexed to : address;
-  amount : nat;
+  amount : uint;
 }
 
 storage is record {
-  balances : map(address, nat);
+  balances : map(address, uint);
 }
 
-external function send(const to : address; const amount : nat) is {
+external function send(const to : address; const amount : uint) is {
   storage.balances[Evm.sender()] := storage.balances[Evm.sender()] - amount;
   storage.balances[to] := storage.balances[to] + amount;
   emit Transfer { from = Evm.sender(); to = to; amount = amount; };
@@ -33,14 +33,14 @@ Events compile to standard EVM logs. The first topic is the event signature's ha
 
 ```lithe rejects
 event Foo of record {
-  indexed a : nat;
-  indexed b : nat;
-  indexed c : nat;
-  indexed d : nat;
+  indexed a : uint;
+  indexed b : uint;
+  indexed c : uint;
+  indexed d : uint;
 }
 
 storage is record {
-  n : nat;
+  n : uint;
 }
 
 external function go() is { skip }
@@ -76,17 +76,17 @@ An `anonymous event` logs no signature topic, as Solidity's `anonymous` does. Th
 anonymous event Moved of record {
   indexed from : address;
   indexed to : address;
-  indexed id : nat;
-  indexed kind : nat;
+  indexed id : uint;
+  indexed kind : uint;
 }
 
 storage is record {
-  owners : map(nat, address);
+  owners : map(uint, address);
 }
 
-external function move(const to : address; const id : nat) is {
+external function move(const to : address; const id : uint) is {
   storage.owners[id] := to;
-  emit Moved { from = Evm.sender(); to = to; id = id; kind = 1n; };
+  emit Moved { from = Evm.sender(); to = to; id = id; kind = 1; };
 }
 ```
 

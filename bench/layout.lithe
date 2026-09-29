@@ -14,18 +14,18 @@ storage is record {
   spot : pos;
   pair : (uint32, address);
   tail : uint64;
-  total : nat;
+  total : uint;
 }
 
-external function set_level(const i : nat; const v : uint8) is {
+external function set_level(const i : uint; const v : uint8) is {
   storage.levels[i] := v;
 }
 
-external function set_flag(const i : nat; const f : bool) is {
+external function set_flag(const i : uint; const f : bool) is {
   storage.flags[i] := f;
 }
 
-external function set_delta(const i : nat; const d : int16) is {
+external function set_delta(const i : uint; const d : int16) is {
   storage.deltas[i] := d;
 }
 
@@ -42,16 +42,16 @@ external function set_pair(const a : uint32; const who : address) is {
 external function bump(const t : uint64) is {
   storage.tail := t;
   storage.small := storage.small + 1;
-  storage.total := storage.total + 1n;
+  storage.total := storage.total + 1;
 }
 
-external view function level(const i : nat) : uint8 is
+external view function level(const i : uint) : uint8 is
   storage.levels[i]
 
-external view function flag(const i : nat) : bool is
+external view function flag(const i : uint) : bool is
   storage.flags[i]
 
-external view function delta(const i : nat) : int16 is
+external view function delta(const i : uint) : int16 is
   storage.deltas[i]
 
 external view function spot() : (uint16, uint16, bool) is

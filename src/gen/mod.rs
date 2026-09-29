@@ -729,7 +729,7 @@ struct Gen<'a> {
     /// Where a shared string helper keeps the slot it was given.
     key_scratch: i32,
     base64_tbl: i32,
-    /// `Nat.mul_div`'s five words.
+    /// `Uint.mul_div`'s five words.
     mul_div_buf: i32,
     /// Creation code: arguments are read from a copy of what follows the code, not calldata.
     init: bool,

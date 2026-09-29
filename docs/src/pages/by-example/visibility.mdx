@@ -13,26 +13,26 @@ description: "External, internal, and private functions."
    from anywhere in the program. `private` hides a declaration from importing files. *)
 
 storage is record {
-  value : nat;
+  value : uint;
 }
 
-private pure function double(const n : nat) : nat is
-  n * 2n
+private pure function double(const n : uint) : uint is
+  n * 2
 
-function store(const n : nat) is {
+function store(const n : uint) is {
   storage.value := double(n);
 }
 
-external function set(const n : nat) is {
+external function set(const n : uint) is {
   store(n);
 }
 
-external function set_twice(const n : nat) is {
+external function set_twice(const n : uint) is {
   store(n);
   store(storage.value);
 }
 
-external view function get() : nat is
+external view function get() : uint is
   storage.value
 ```
 

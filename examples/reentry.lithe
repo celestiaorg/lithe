@@ -5,15 +5,15 @@ interface Hook is {
 }
 
 storage is record {
-  status : nat;
-  extra : nat;
+  status : uint;
+  extra : uint;
 }
 
 external function settle(const hook : Hook) is {
-  storage.status := 1n;
+  storage.status := 1;
   defer hook.cancel();
 }
 
 external function cancel() is {
-  storage.extra := 2n;
+  storage.extra := 2;
 }

@@ -1,6 +1,6 @@
 contract Token is {
   storage is record {
-    n : nat;
+    n : uint;
   }
 
   use Missing;

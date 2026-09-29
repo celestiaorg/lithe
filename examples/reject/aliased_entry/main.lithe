@@ -1,7 +1,7 @@
 import "./child.lithe" as Child;
 
 storage is record {
-  n : nat;
+  n : uint;
 }
 
 external function run() is {

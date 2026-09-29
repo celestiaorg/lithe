@@ -1,17 +1,17 @@
 (* A `var` belongs to the phase that made it. It does not cross an external call. *)
 
 interface Exchange is {
-  function swap(amount : nat) : nat;
+  function swap(amount : uint) : uint;
 }
 
 storage is record {
-  left : nat;
+  left : uint;
 }
 
-external nonreentrant function execute(const ex : Exchange; const amount : nat) is {
-  var remaining : nat := amount;
+external nonreentrant function execute(const ex : Exchange; const amount : uint) is {
+  var remaining : uint := amount;
   defer ex.swap(amount)
-    then (out : nat) {
+    then (out : uint) {
       storage.left := remaining + out;
     };
 }

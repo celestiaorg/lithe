@@ -2,9 +2,9 @@
    own, taken, returned, logged, and sent to another contract as Solidity would. *)
 
 type order is record {
-  id : nat;
+  id : uint;
   note : string;
-  legs : list(nat);
+  legs : list(uint);
 }
 
 type reserves is record {
@@ -18,7 +18,7 @@ interface Pair is {
 }
 
 interface Book is {
-  function place(orders : list(order)) : list(nat);
+  function place(orders : list(order)) : list(uint);
 }
 
 event Placed of record {
@@ -27,30 +27,30 @@ event Placed of record {
 }
 
 error Empty_leg of record {
-  order : nat;
-  legs : list(list(nat));
+  order : uint;
+  legs : list(list(uint));
 }
 
 storage is record {
-  placed : nat;
+  placed : uint;
 }
 
 (* The legs of every order, as a list of lists. *)
-external pure function legs(const orders : list(order)) : list(list(nat)) is {
-  var out : list(list(nat)) := [];
+external pure function legs(const orders : list(order)) : list(list(uint)) is {
+  var out : list(list(uint)) := [];
   for o : order in orders do {
     List.push(out, o.legs);
   }
 } with out
 
-external pure function leg(const orders : list(order); const i : nat; const j : nat) : nat is
+external pure function leg(const orders : list(order); const i : uint; const j : uint) : uint is
   orders[i].legs[j]
 
 external nonreentrant function place(const book : Book; const orders : list(order))
   raises Empty_leg
 is {
   for o : order in orders do {
-    if o.legs.length = 0n then {
+    if o.legs.length = 0 then {
       fail Empty_leg { order = o.id; legs = [o.legs]; };
     }
   }
@@ -64,5 +64,5 @@ external view function reserves_of(const pair : Pair) : reserves is
   query pair.getReserves()
 
 (* Several values from `bytes`, as `abi.decode(data, (address, uint256))`. *)
-external pure function unpack(const data : bytes) : (address, nat) is
-  Abi.decode(data, (address, nat))
+external pure function unpack(const data : bytes) : (address, uint) is
+  Abi.decode(data, (address, uint))

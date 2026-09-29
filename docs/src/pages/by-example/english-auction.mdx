@@ -41,7 +41,7 @@ storage is record {
   refunds : map(address, wei);
 }
 
-external function start(const reserve : wei; const duration : nat)
+external function start(const reserve : wei; const duration : uint)
   raises Already_started
 is {
   assert(storage.seller = Address.zero, Already_started);

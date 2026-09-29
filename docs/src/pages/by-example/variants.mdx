@@ -14,18 +14,18 @@ A variant type lists every case a value can take, and each case may carry a payl
 
 type send_params is record {
   to : address;
-  amount : nat;
+  amount : uint;
 }
 
 type action is
-  | Deposit of nat
+  | Deposit of uint
   | Send of send_params
   | Reset
 
-error Insufficient of nat;
+error Insufficient of uint;
 
 storage is record {
-  balances : map(address, nat);
+  balances : map(address, uint);
 }
 
 (* `case` must handle every case; leaving one out is a compile error.
@@ -38,17 +38,17 @@ is
       storage.balances[Evm.sender()] := storage.balances[Evm.sender()] + amount;
     }
   | Send(p) -> {
-      const have : nat := storage.balances[Evm.sender()];
+      const have : uint := storage.balances[Evm.sender()];
       assert(have >= p.amount, Insufficient(have));
       storage.balances[Evm.sender()] := have - p.amount;
       storage.balances[p.to] := storage.balances[p.to] + p.amount;
     }
   | Reset -> {
-      storage.balances[Evm.sender()] := 0n;
+      storage.balances[Evm.sender()] := 0;
     }
   }
 
-external view function balance_of(const who : address) : nat is
+external view function balance_of(const who : address) : uint is
   storage.balances[who]
 ```
 
@@ -64,17 +64,17 @@ A variant value is written by naming its case. A variant with no payloads is one
 type phase is
   | Open
   | Paused
-  | Settled of nat
+  | Settled of uint
 
 error NotOpen;
 error NotSettled;
 
 storage is record {
   phase : phase;
-  bids : map(address, nat);
+  bids : map(address, uint);
 }
 
-external function bid(const amount : nat) raises NotOpen is {
+external function bid(const amount : uint) raises NotOpen is {
   assert(storage.phase = Open, NotOpen);
   storage.bids[Evm.sender()] := storage.bids[Evm.sender()] + amount;
 }
@@ -83,13 +83,13 @@ external function pause() is {
   storage.phase := Paused;
 }
 
-external function settle(const price : nat) is {
+external function settle(const price : uint) is {
   storage.phase := Settled(price);
 }
 
 (* `| Open | Paused ->` is one arm for both, and still exhaustive: a new case
    is a compile error here until it is handled. *)
-external view function price() : nat raises NotSettled is
+external view function price() : uint raises NotSettled is
   case storage.phase of {
   | Settled(p) -> p
   | Open | Paused -> fail NotSettled
@@ -110,28 +110,28 @@ type review is
   | Approved of list(address)
 
 storage is record {
-  reviews : map(nat, review);
+  reviews : map(uint, review);
 }
 
-external function reject(const id : nat; const why : string) is {
+external function reject(const id : uint; const why : string) is {
   storage.reviews[id] := Rejected(why);
 }
 
-external function withdraw(const id : nat; const why : string) is {
+external function withdraw(const id : uint; const why : string) is {
   storage.reviews[id] := Withdrawn(why);
 }
 
-external function approve(const id : nat; const by : list(address)) is {
+external function approve(const id : uint; const by : list(address)) is {
   storage.reviews[id] := Approved(by);
 }
 
-external view function reason(const id : nat) : string is
+external view function reason(const id : uint) : string is
   case storage.reviews[id] of {
   | Rejected(why) | Withdrawn(why) -> why
   | Draft | Approved -> ""
   }
 
-external view function approvals(const id : nat) : nat is
+external view function approvals(const id : uint) : uint is
   case storage.reviews[id] of {
   | Approved(by) -> by.length
   | Draft | Rejected | Withdrawn -> 0

@@ -138,11 +138,11 @@ error Full;
 error Not_owner;
 
 interface Echo is {
-  function echo(n : nat) : nat;
+  function echo(n : uint) : uint;
 }
 
 type owner_action is
-  | Set_cap of nat
+  | Set_cap of uint
   | Grow
 
 type action is
@@ -150,16 +150,16 @@ type action is
 
 module Ledger is {
   storage ledger at "t.ledger" is record {
-    balances : map(address, nat);
-    supply : nat;
+    balances : map(address, uint);
+    supply : uint;
   }
 
-  external function mint(const value : nat) is {
+  external function mint(const value : uint) is {
     ledger.balances[Evm.sender()] := ledger.balances[Evm.sender()] + value;
     ledger.supply := ledger.supply + value;
   }
 
-  external function burn(const value : nat) is {
+  external function burn(const value : uint) is {
     ledger.balances[Evm.sender()] := ledger.balances[Evm.sender()] - value;
     ledger.supply := ledger.supply - value;
   }
@@ -170,23 +170,23 @@ module Ledger is {
 }
 
 interface ILedger is {
-  function mint(value : nat);
-  function burn(value : nat);
+  function mint(value : uint);
+  function burn(value : uint);
 }
 
 use Ledger exposing ILedger;
 
 storage is record {
   owner : address;
-  pending : nat;
-  cap : nat;
-  steps : nat;
-  calls : nat;
+  pending : uint;
+  cap : uint;
+  steps : uint;
+  calls : uint;
 }
 
 deploy() is {
   storage.owner := Evm.sender();
-  storage.cap := 100n;
+  storage.cap := 100;
 }
 
 function owner_main(const action : owner_action)
@@ -199,7 +199,7 @@ with case action of {
     assert(cap >= storage.pending, Not_owner);
     storage.cap := cap;
   }
-| Grow -> { storage.cap := storage.cap + 1n; }
+| Grow -> { storage.cap := storage.cap + 1; }
 }
 
 external function main(const action : action)
@@ -209,27 +209,27 @@ is
   | Owner(a) -> owner_main(a)
   }
 
-external nonreentrant function start(const echo : Echo; const n : nat)
+external nonreentrant function start(const echo : Echo; const n : uint)
   raises Full
 is {
   assert(storage.pending + n <= storage.cap, Full);
   storage.pending := storage.pending + n;
-  defer echo.echo(n) then (got : nat) {
+  defer echo.echo(n) then (got : uint) {
     storage.pending := storage.pending - got;
   };
 }
 
-external function walk(const n : nat) is {
-  storage.calls := storage.calls + 1n;
-  for i : nat in 0n .. n bound 3 do {
-    storage.steps := storage.steps + 1n;
+external function walk(const n : uint) is {
+  storage.calls := storage.calls + 1;
+  for i : uint in 0 .. n bound 3 do {
+    storage.steps := storage.steps + 1;
   }
 }
 "#;
     let specs = r#"
 spec is {
   invariant bounded is storage.pending <= storage.cap;
-  invariant paced is storage.steps <= 3n * storage.calls;
+  invariant paced is storage.steps <= 3 * storage.calls;
 }
 "#;
     let Some(proof) = prove(src, specs) else {
@@ -310,20 +310,20 @@ spec is {
 fn what_the_prover_cannot_decide_it_says() {
     let src = r#"
 storage is record {
-  x : nat;
-  owed : map(address, nat);
+  x : uint;
+  owed : map(address, uint);
 }
 
 deploy() is {
-  storage.x := 1n;
+  storage.x := 1;
 }
 
-external function mask(const n : nat) is {
-  storage.x := n & 255n;
+external function mask(const n : uint) is {
+  storage.x := n & 255;
 }
 "#;
     // `&` is not modeled, so a counterexample may not be real.
-    let Some(proof) = prove(src, "spec is { invariant small is storage.x < 256n; }") else {
+    let Some(proof) = prove(src, "spec is { invariant small is storage.x < 256; }") else {
         return;
     };
     let mask = outcome(&proof, "small", "mask");
@@ -333,7 +333,7 @@ external function mask(const n : nat) is {
         "{mask}"
     );
     // A spec cannot rest on what the prover does not model.
-    let Some(proof) = prove(src, "spec is { invariant masked is storage.x & 1n = 1n; }") else {
+    let Some(proof) = prove(src, "spec is { invariant masked is storage.x & 1 = 1; }") else {
         return;
     };
     assert!(
@@ -343,8 +343,8 @@ external function mask(const n : nat) is {
     );
     // Without `deploy`, the empty storage of a new contract must satisfy the invariants.
     let Some(proof) = prove(
-        "storage is record { cap : nat; }\nexternal function set() is { storage.cap := 100n; }\n",
-        "spec is { invariant fixed is storage.cap = 100n; }",
+        "storage is record { cap : uint; }\nexternal function set() is { storage.cap := 100; }\n",
+        "spec is { invariant fixed is storage.cap = 100; }",
     ) else {
         return;
     };
@@ -472,7 +472,7 @@ error Not_owner;
 error Too_high;
 
 type owner_action is
-  | Set_fee of nat
+  | Set_fee of uint
   | Pause
 
 type action is
@@ -481,12 +481,12 @@ type action is
 storage is record {
   owner : address;
   paused : bool;
-  fee : nat;
-  n : nat;
+  fee : uint;
+  n : uint;
 }
 
 deploy() is {
-  storage.n := 1n;
+  storage.n := 1;
 }
 
 function owner_main(const action : owner_action)
@@ -496,7 +496,7 @@ is {
 }
 with case action of {
 | Set_fee(fee) -> {
-    assert(fee <= 100n, Too_high);
+    assert(fee <= 100, Too_high);
     storage.fee := fee;
   }
 | Pause -> { storage.paused := true; }
@@ -510,18 +510,18 @@ is
   }
 
 function take() is {
-  storage.n := storage.n - 1n;
+  storage.n := storage.n - 1;
 }
 
 external function spend() is {
-  storage.n := storage.n + 1n;
+  storage.n := storage.n + 1;
   take();
 }
 "#;
     let specs = r#"
 spec is {
-  invariant capped is storage.fee <= 100n;
-  invariant some is storage.n >= 1n;
+  invariant capped is storage.fee <= 100;
+  invariant some is storage.n >= 1;
 }
 
 spec for owner_main is {
@@ -529,7 +529,7 @@ spec for owner_main is {
 }
 
 spec for set_fee is {
-  raises Too_high when fee > 100n;
+  raises Too_high when fee > 100;
   ensures new.storage.fee = fee;
 }
 
@@ -538,7 +538,7 @@ spec for spend is partial {
 }
 
 spec for take is partial {
-  ensures new.storage.n = old.storage.n - 1n;
+  ensures new.storage.n = old.storage.n - 1;
 }
 "#;
     let Some(proof) = prove(src, specs) else {
@@ -556,7 +556,7 @@ spec for take is partial {
         proof.text
     );
     // `set_fee` forgets that it rejects a fee over 100.
-    let forgot = specs.replace("  raises Too_high when fee > 100n;\n", "");
+    let forgot = specs.replace("  raises Too_high when fee > 100;\n", "");
     let Some(proof) = prove(src, &forgot) else {
         return;
     };
@@ -628,7 +628,7 @@ contract Token is {
 
   deploy() raises ERC20InvalidReceiver | ERC20InsufficientBalance is {
     ERC20.init("Token", "TKN");
-    ERC20.mint(Evm.sender(), 1_000_000n);
+    ERC20.mint(Evm.sender(), 1_000_000);
   }
 }
 "#;
@@ -658,7 +658,7 @@ contract Nft is {
   use ERC721 exposing IERC721;
 
   storage is record {
-    next : nat;
+    next : uint;
   }
 
   deploy() is {
@@ -669,10 +669,10 @@ contract Nft is {
     raises ERC721InvalidReceiver | ERC721InvalidSender | ERC721NonexistentToken | ERC721InsufficientApproval
   is {
     ERC721.mint(Evm.sender(), storage.next);
-    storage.next := storage.next + 1n;
+    storage.next := storage.next + 1;
   }
 
-  external function burn(const id : nat)
+  external function burn(const id : uint)
     raises ERC721NonexistentToken | ERC721InsufficientApproval
   is {
     ERC721.burn(id);
@@ -689,7 +689,7 @@ contract Nft is {
     // A contract that writes the module's storage answers for the module's invariants.
     let minter = token.replace(
         "  }\n}\n",
-        "  }\n\n  external function gift(const to : address) is {\n    ERC20.erc20.balances[to] := ERC20.erc20.balances[to] + 1n;\n  }\n}\n",
+        "  }\n\n  external function gift(const to : address) is {\n    ERC20.erc20.balances[to] := ERC20.erc20.balances[to] + 1;\n  }\n}\n",
     );
     let Some(proof) = prove(&minter, "") else {
         return;
@@ -705,19 +705,19 @@ contract Nft is {
 fn loops_prove_by_their_invariants() {
     let src = r#"
 storage is record {
-  steps : nat;
-  calls : nat;
+  steps : uint;
+  calls : uint;
 }
 
-external function walk(const n : nat) is {
-  storage.calls := storage.calls + 1n;
-  const start : nat := storage.steps;
-  for i : nat in 0n .. n bound 100 invariant storage.steps = start + i do {
-    storage.steps := storage.steps + 1n;
+external function walk(const n : uint) is {
+  storage.calls := storage.calls + 1;
+  const start : uint := storage.steps;
+  for i : uint in 0 .. n bound 100 invariant storage.steps = start + i do {
+    storage.steps := storage.steps + 1;
   }
 }
 "#;
-    let specs = "spec is { invariant paced is storage.steps <= 100n * storage.calls; }";
+    let specs = "spec is { invariant paced is storage.steps <= 100 * storage.calls; }";
     let Some(proof) = prove(src, specs) else {
         return;
     };
@@ -778,11 +778,11 @@ module Doubler is {
 
 module Counter is {
   storage counter at "counter" is record {
-    n : nat;
+    n : uint;
   }
 
   function step() is {
-    counter.n := counter.n + 1n;
+    counter.n := counter.n + 1;
   }
 
   external function bump() is {
@@ -793,7 +793,7 @@ module Counter is {
     let spec = r#"
 spec for module Counter is {
   spec for bump is partial {
-    ensures new.counter.n = old.counter.n + 1n;
+    ensures new.counter.n = old.counter.n + 1;
   }
 }
 "#;
@@ -806,7 +806,7 @@ spec for module Counter is {
         "{}",
         proof.text
     );
-    let Some(proof) = prove(modules, &spec.replace("+ 1n;", "+ 2n;")) else {
+    let Some(proof) = prove(modules, &spec.replace("+ 1;", "+ 2;")) else {
         return;
     };
     assert_eq!(proof.failed, 1, "{}", proof.text);

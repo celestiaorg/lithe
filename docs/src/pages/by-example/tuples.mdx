@@ -13,12 +13,12 @@ storage is record {
   pair : (uint32, address);
 }
 
-pure function split(const amount : nat) : (nat, nat) is
-  (amount / 2n, amount % 2n)
+pure function split(const amount : uint) : (uint, uint) is
+  (amount / 2, amount % 2)
 
-external function run(const amount : nat) is {
+external function run(const amount : uint) is {
   (* Destructure a tuple into names. *)
-  const (half, rest) : (nat, nat) := split(amount);
+  const (half, rest) : (uint, uint) := split(amount);
   storage.pair := (uint32(half + rest), Evm.sender());
 }
 
@@ -26,6 +26,6 @@ external function run(const amount : nat) is {
 external view function info() : (uint32, address) is
   storage.pair
 
-external pure function div_rem(const a : nat; const b : nat) : (nat, nat) is
-  Nat.div_rem(a, b)
+external pure function div_rem(const a : uint; const b : uint) : (uint, uint) is
+  Uint.div_rem(a, b)
 ```

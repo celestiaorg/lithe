@@ -6,20 +6,20 @@
      } *)
 
 module Bitmap is {
-  type bitmap is map(nat, nat);
+  type bitmap is map(uint, uint);
 
-  view function get(storage bits : bitmap; const index : nat) : bool is
-    (bits[index >> 8n] >> (index & 255n)) & 1n = 1n
+  view function get(storage bits : bitmap; const index : uint) : bool is
+    (bits[index >> 8] >> (index & 255)) & 1 = 1
 
-  function set(storage bits : bitmap; const index : nat) is {
-    bits[index >> 8n] := bits[index >> 8n] | (1n << (index & 255n));
+  function set(storage bits : bitmap; const index : uint) is {
+    bits[index >> 8] := bits[index >> 8] | (1 << (index & 255));
   }
 
-  function unset(storage bits : bitmap; const index : nat) is {
-    bits[index >> 8n] := bits[index >> 8n] & ~(1n << (index & 255n));
+  function unset(storage bits : bitmap; const index : uint) is {
+    bits[index >> 8] := bits[index >> 8] & ~(1 << (index & 255));
   }
 
-  function set_to(storage bits : bitmap; const index : nat; const value : bool) is {
+  function set_to(storage bits : bitmap; const index : uint; const value : bool) is {
     if value then {
       set(bits, index);
     } else {

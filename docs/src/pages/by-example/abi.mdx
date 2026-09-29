@@ -11,30 +11,30 @@ description: "Encoding, decoding, packed encoding, and calldata."
 (* `Abi` mirrors Solidity's `abi.*` helpers. *)
 
 interface Token is {
-  function transfer(to : address; amount : nat) : bool;
+  function transfer(to : address; amount : uint) : bool;
 }
 
 storage is record {
   last : bytes;
 }
 
-external pure function encode(const to : address; const amount : nat) : bytes is
+external pure function encode(const to : address; const amount : uint) : bytes is
   Abi.encode(to, amount)
 
-external pure function decode(const data : bytes) : nat is
-  Abi.decode(data, nat)
+external pure function decode(const data : bytes) : uint is
+  Abi.decode(data, uint)
 
 external pure function packed(const tag : string; const who : address) : bytes is
   Abi.encode_packed(tag, who)
 
 (* Calldata for `transfer(address,uint256)`, three ways. *)
-external pure function by_selector(const to : address; const amount : nat) : bytes is
+external pure function by_selector(const to : address; const amount : uint) : bytes is
   Abi.encode_with_selector(0xa9059cbb, to, amount)
 
-external pure function by_signature(const to : address; const amount : nat) : bytes is
+external pure function by_signature(const to : address; const amount : uint) : bytes is
   Abi.encode_with_signature("transfer(address,uint256)", to, amount)
 
-external pure function by_call(const to : address; const amount : nat) : bytes is
+external pure function by_call(const to : address; const amount : uint) : bytes is
   Abi.encode_call(Token.transfer, to, amount)
 
 (* The raw calldata of the current call. *)
@@ -52,31 +52,31 @@ A tuple of type names decodes one value of each, as Solidity's `abi.decode(data,
 
 ```lithe [nested.lithe]
 type order is record {
-  id : nat;
+  id : uint;
   note : string;
-  legs : list(nat);
+  legs : list(uint);
 }
 
 type orders is list(order);
 
 type transfer is record {
   to : address;
-  amount : nat;
+  amount : uint;
   memo : string;
 }
 
 storage is record {
-  n : nat;
+  n : uint;
 }
 
 external pure function unpack(const data : bytes) : transfer is {
-  const (to, amount, memo) : (address, nat, string) := Abi.decode(data, (address, nat, string));
+  const (to, amount, memo) : (address, uint, string) := Abi.decode(data, (address, uint, string));
 } with { to = to; amount = amount; memo = memo; }
 
 external pure function round_trip(const os : list(order)) : list(order) is
   Abi.decode(Abi.encode(os), orders)
 
-external pure function second_leg(const data : bytes) : nat is {
+external pure function second_leg(const data : bytes) : uint is {
   const os : list(order) := Abi.decode(data, orders);
 } with os[0].legs[1]
 ```
@@ -90,15 +90,15 @@ With a [raw call](/by-example/raw-calls), you build the calldata and decode the 
 
 ```lithe [raw.lithe]
 interface Token is {
-  view function balanceOf(owner : address) : nat;
+  view function balanceOf(owner : address) : uint;
 }
 
 storage is record {
-  n : nat;
+  n : uint;
 }
 
-external view function balance(const token : address; const owner : address) : nat is
-  Abi.decode(query Evm.static_call(token, Abi.encode_call(Token.balanceOf, owner)), nat)
+external view function balance(const token : address; const owner : address) : uint is
+  Abi.decode(query Evm.static_call(token, Abi.encode_call(Token.balanceOf, owner)), uint)
 
 external view function reserves(const pair : address) : (uint112, uint112) is {
   const answer : bytes := query Evm.static_call(pair, Abi.encode_with_signature("getReserves()"));

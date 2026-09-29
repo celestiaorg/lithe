@@ -1,5 +1,5 @@
 storage is record {
-  paid : nat;
+  paid : uint;
 }
 
 external function pay(const to : address) is {

@@ -54,39 +54,39 @@ A contract `use`s modules, and exposes what a module offers in one of two ways: 
 ```lithe
 module Counter is {
   storage counter at "example.counter" is record {
-    count : nat;
+    count : uint;
   }
 
-  function bump(const by : nat) is {
+  function bump(const by : uint) is {
     counter.count := counter.count + by;
   }
 
   (* The interface the module offers. *)
-  external view function count() : nat is
+  external view function count() : uint is
     counter.count
 
   external function reset() is {
-    counter.count := 0n;
+    counter.count := 0;
   }
 }
 
 contract App is {
   (* Declaring exposes the module's externals as they are. *)
   use Counter exposing {
-    view function count() : nat;
+    view function count() : uint;
   }
 
   storage is record {
-    calls : nat;
+    calls : uint;
   }
 
   (* Wrapping adds behavior around a module's functions. *)
-  external function bump(const by : nat) is {
-    storage.calls := storage.calls + 1n;
+  external function bump(const by : uint) is {
+    storage.calls := storage.calls + 1;
     Counter.bump(by);
   }
 
-  external view function current() : nat is
+  external view function current() : uint is
     Counter.counter.count
 }
 ```
@@ -101,7 +101,7 @@ contract App is {
 use ERC20 exposing IERC20, IERC20Metadata;
 
 use ERC20Permit exposing IERC20Permit, {
-  view function nonces(owner : address) : nat;
+  view function nonces(owner : address) : uint;
 }
 ```
 
@@ -119,16 +119,16 @@ A declaration that differs is an error that shows both headers:
 ```lithe rejects
 module Ledger is {
   storage ledger at "example.ledger" is record {
-    n : nat;
+    n : uint;
   }
 
-  external view function balance() : nat is
+  external view function balance() : uint is
     ledger.n
 }
 
 contract Token is {
   use Ledger exposing {
-    function balance() : nat;
+    function balance() : uint;
   }
 }
 ```
@@ -136,8 +136,8 @@ contract Token is {
 ```text
 module `Ledger` does not have the contract's inline interface: `balance` is stateful in the inline interface and `view` in `Ledger`
 
-  interface:  function balance() : nat
-  module:     view function balance() : nat
+  interface:  function balance() : uint
+  module:     view function balance() : uint
 ```
 
 An interface never adds behavior, so its methods have no body. To change what an external does, leave it out of the contract's interfaces, and write the contract's own external instead. A module's externals are not functions: nothing inside the contract calls them. Put shared logic in an internal function that the external and the contract both call.
@@ -209,16 +209,16 @@ module Ledger is {
   requires Pausable;
 
   storage ledger at "example.ledger" is record {
-    balances : map(address, nat);
+    balances : map(address, uint);
   }
 
-  error Insufficient of nat;
+  error Insufficient of uint;
 
-  external function transfer(const to : address; const amount : nat)
+  external function transfer(const to : address; const amount : uint)
     raises Paused | Insufficient
   is {
     Pausable.when_not_paused();
-    const have : nat := ledger.balances[Evm.sender()];
+    const have : uint := ledger.balances[Evm.sender()];
     assert(have >= amount, Insufficient(have));
     ledger.balances[Evm.sender()] := have - amount;
     ledger.balances[to] := ledger.balances[to] + amount;
@@ -235,7 +235,7 @@ contract Token is {
   }
 
   use Ledger exposing {
-    function transfer(to : address; amount : nat)
+    function transfer(to : address; amount : uint)
       raises Paused | Insufficient;
     view function frozen() : bool;
   }
@@ -249,10 +249,10 @@ contract Token is {
 ```lithe rejects
 module Ledger is {
   storage ledger at "lithe.ledger" is record {
-    n : nat;
+    n : uint;
   }
 
-  function set(const n : nat) is {
+  function set(const n : uint) is {
     ledger.n := n;
   }
 }
@@ -260,14 +260,14 @@ module Ledger is {
 module Guarded is {
   requires Ledger;
 
-  external function set(const n : nat) is {
+  external function set(const n : uint) is {
     Ledger.set(n);
   }
 }
 
 contract Token is {
   use Guarded exposing {
-    function set(n : nat);
+    function set(n : uint);
   }
 }
 ```
@@ -283,10 +283,10 @@ Outside its module, a module's storage is always written with the module's name,
 ```lithe rejects
 module Ledger is {
   storage ledger at "lithe.ledger" is record {
-    n : nat;
+    n : uint;
   }
 
-  function set(const n : nat) is {
+  function set(const n : uint) is {
     ledger.n := n;
   }
 }
@@ -294,7 +294,7 @@ module Ledger is {
 contract Token is {
   use Ledger;
 
-  external function go(const n : nat) is {
+  external function go(const n : uint) is {
     ledger.n := n;
   }
 }

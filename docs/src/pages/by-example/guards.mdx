@@ -19,16 +19,16 @@ error Paused;
 storage is record {
   owner : address;
   paused : bool;
-  fee : nat;
-  deposits : map(address, nat);
+  fee : uint;
+  deposits : map(address, uint);
 }
 
 type owner_action is
-  | Set_fee of (fee : nat)
+  | Set_fee of (fee : uint)
   | Pause
 
 type user_action is
-  | Deposit of (amount : nat)
+  | Deposit of (amount : uint)
 
 type action is
   | Owner of owner_action

@@ -6,12 +6,12 @@
 import "./erc20.lithe";
 
 interface ERC3156FlashBorrower is {
-  function onFlashLoan(initiator : address; token : address; amount : nat; fee : nat; data : bytes) : bytes32;
+  function onFlashLoan(initiator : address; token : address; amount : uint; fee : uint; data : bytes) : bytes32;
 }
 
 error ERC3156UnsupportedToken of address;
 
-error ERC3156ExceededMaxLoan of nat;
+error ERC3156ExceededMaxLoan of uint;
 
 error ERC3156InvalidReceiver of address;
 
@@ -22,31 +22,31 @@ module ERC20FlashMint is {
   pure function return_value() : bytes32 is
     0x439148f0bbc682ca079e46d6e2c2f0c1e3b820f1a291b069d8882abf8cf18dd9
 
-  view function max_flash_loan(const token : address) : nat is {
-    var most : nat := 0n;
+  view function max_flash_loan(const token : address) : uint is {
+    var most : uint := 0;
     if token = Evm.self() then {
-      most := Nat.max - ERC20.erc20.totalSupply;
+      most := Uint.max - ERC20.erc20.totalSupply;
     }
   } with most
 
-  view function flash_fee(const token : address; const value : nat) : nat
+  view function flash_fee(const token : address; const value : uint) : uint
     raises ERC3156UnsupportedToken
   is {
     assert(token = Evm.self(), ERC3156UnsupportedToken(token));
-  } with 0n
+  } with 0
 
   (* The fee for a loan the token can make. *)
-  view function check_loan(const token : address; const value : nat) : nat
+  view function check_loan(const token : address; const value : uint) : uint
     raises ERC3156ExceededMaxLoan | ERC3156UnsupportedToken
   is {
-    const most : nat := max_flash_loan(token);
+    const most : uint := max_flash_loan(token);
     assert(value <= most, ERC3156ExceededMaxLoan(most));
   } with flash_fee(token, value)
 
-  external view function maxFlashLoan(const token : address) : nat is
+  external view function maxFlashLoan(const token : address) : uint is
     max_flash_loan(token)
 
-  external view function flashFee(const token : address; const value : nat) : nat
+  external view function flashFee(const token : address; const value : uint) : uint
     raises ERC3156UnsupportedToken
   is
     flash_fee(token, value)
@@ -55,7 +55,7 @@ module ERC20FlashMint is {
 (* IERC3156FlashLender's views. `flashLoan` is the token's own, since it mints and burns
    through the token's balance updates. *)
 interface IERC3156FlashLenderViews is {
-  view function maxFlashLoan(token : address) : nat;
-  view function flashFee(token : address; value : nat) : nat
+  view function maxFlashLoan(token : address) : uint;
+  view function flashFee(token : address; value : uint) : uint
     raises ERC3156UnsupportedToken;
 }

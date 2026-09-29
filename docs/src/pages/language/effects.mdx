@@ -21,10 +21,10 @@ An interface describes a contract's external functions. Each method is a functio
 
 ```lithe fragment
 interface IERC20 is {
-  view function balanceOf(owner : address) : nat;
-  view function allowance(owner : address; spender : address) : nat;
-  function transfer(to : address; amount : nat) : bool;
-  function transferFrom(from : address; to : address; amount : nat) : bool;
+  view function balanceOf(owner : address) : uint;
+  view function allowance(owner : address; spender : address) : uint;
+  function transfer(to : address; amount : uint) : bool;
+  function transferFrom(from : address; to : address; amount : uint) : bool;
 }
 ```
 
@@ -60,9 +60,9 @@ storage is record {
   pair : Pair;
 }
 
-external view function price() : nat is {
+external view function price() : uint is {
   const r : reserves := query storage.pair.getReserves();
-} with nat(r.reserve1) * 1_000_000n / nat(r.reserve0)
+} with uint(r.reserve1) * 1_000_000 / uint(r.reserve0)
 ```
 
 For a result of words only, like this one, a tuple works too, since both lay out the same words: `view function getReserves() : (uint112, uint112, uint32);`, destructured with `const (a, b, t) : (uint112, uint112, uint32) := query p.getReserves();`.
@@ -73,7 +73,7 @@ Some contracts return nothing where their interface promises a value: older toke
 
 ```lithe
 interface Token is {
-  function transfer(to : address; value : nat) : option(bool);
+  function transfer(to : address; value : uint) : option(bool);
 }
 
 error Transfer_failed;
@@ -82,7 +82,7 @@ storage is record {
   token : Token;
 }
 
-external nonreentrant function pay(const to : address; const value : nat)
+external nonreentrant function pay(const to : address; const value : uint)
   raises Transfer_failed
 is {
   defer storage.token.transfer(to, value) then (ok : option(bool)) {
@@ -115,23 +115,23 @@ Interfaces can be declared at the top level, or inside a contract or module.
 
 ```lithe
 interface Oracle is {
-  view function price(asset : address) : nat;
+  view function price(asset : address) : uint;
 }
 
-error Price_too_low of nat;
+error Price_too_low of uint;
 
 storage is record {
   oracle : Oracle;
-  floor : nat;
+  floor : uint;
 }
 
-external view function price(const asset : address) : nat is
+external view function price(const asset : address) : uint is
   query storage.oracle.price(asset)
 
 external function check(const asset : address)
   raises Price_too_low
 is {
-  const p : nat := query storage.oracle.price(asset);
+  const p : uint := query storage.oracle.price(asset);
   assert(p >= storage.floor, Price_too_low(p));
   storage.floor := p;
 }
@@ -143,12 +143,12 @@ You cannot `query` a stateful method, or `defer` a `view` one:
 
 ```lithe rejects
 interface X is {
-  function f() : nat;
+  function f() : uint;
 }
 
 storage is record {
   x : X;
-  n : nat;
+  n : uint;
 }
 
 external function a() is {
@@ -166,15 +166,15 @@ query expects a read-only method
 
 ```lithe
 interface Token is {
-  function transfer(to : address; amount : nat) : bool;
+  function transfer(to : address; amount : uint) : bool;
 }
 
 storage is record {
   token : Token;
-  paid : map(address, nat);
+  paid : map(address, uint);
 }
 
-external nonreentrant function pay(const to : address; const amount : nat) is {
+external nonreentrant function pay(const to : address; const amount : uint) is {
   storage.paid[to] := storage.paid[to] + amount;
   defer storage.token.transfer(to, amount);
 }
@@ -188,7 +188,7 @@ A call to an account with no code succeeds on the EVM, so as in Solidity it is c
 
 ### Sending ether with a call
 
-Attach ether with `with value = amount`. The amount is a `nat` number of wei. Only a method its interface declares `payable function` takes value:
+Attach ether with `with value = amount`. The amount is a `uint` number of wei. Only a method its interface declares `payable function` takes value:
 
 ```lithe
 interface Pool is {
@@ -200,7 +200,7 @@ storage is record {
 }
 
 external payable nonreentrant function forward() is {
-  defer storage.pool.deposit(Evm.sender()) with value = nat(Evm.value());
+  defer storage.pool.deposit(Evm.sender()) with value = uint(Evm.value());
 }
 ```
 
@@ -216,7 +216,7 @@ storage is record {
 }
 
 external payable function forward() is {
-  defer storage.pool.deposit(Evm.sender()) with value = nat(Evm.value());
+  defer storage.pool.deposit(Evm.sender()) with value = uint(Evm.value());
 }
 ```
 
@@ -226,7 +226,7 @@ external payable function forward() is {
 
 ### Limiting a call's gas
 
-A call gets all the gas left unless it says otherwise. `with gas = g` caps it at `g`, a `nat`, as Solidity's `{gas: g}` does. It works on a `query`, a `defer`, and the raw calls and `Evm.transfer`, and combines with `value` in braces: `with { value = v; gas = g }`. ERC-165 detection, for example, queries `supportsInterface` with 30,000 gas and treats a failure as no:
+A call gets all the gas left unless it says otherwise. `with gas = g` caps it at `g`, a `uint`, as Solidity's `{gas: g}` does. It works on a `query`, a `defer`, and the raw calls and `Evm.transfer`, and combines with `value` in braces: `with { value = v; gas = g }`. ERC-165 detection, for example, queries `supportsInterface` with 30,000 gas and treats a failure as no:
 
 ```lithe
 interface IERC165 is {
@@ -238,7 +238,7 @@ storage is record {
 }
 
 external function check(const target : IERC165) is {
-  storage.receiver := case query target.supportsInterface(0x150b7a02) with gas = 30000n of {
+  storage.receiver := case query target.supportsInterface(0x150b7a02) with gas = 30000 of {
   | Ok(yes) -> yes
   | Error(_) -> false
   };
@@ -348,7 +348,7 @@ contract Factory is {
     vaults : map(address, address);
   }
 
-  external function open(const cap : nat) is {
+  external function open(const cap : uint) is {
     defer create Vault(Evm.sender(), cap) then (vault : address) {
       storage.vaults[Evm.sender()] := vault;
     };
@@ -358,10 +358,10 @@ contract Factory is {
 contract Vault is {
   storage is record {
     owner : address;
-    cap : nat;
+    cap : uint;
   }
 
-  deploy(const owner : address; const cap : nat) is {
+  deploy(const owner : address; const cap : uint) is {
     storage.owner := owner;
     storage.cap := cap;
   }
@@ -400,7 +400,7 @@ contract Vault is {
 
 ### Value and salt
 
-`with value = amount` sends ether to the new contract. The amount is a `nat` number of wei, as for [calls](#sending-ether-with-a-call). A contract whose `deploy` is not `payable` rejects the value, and the creation fails.
+`with value = amount` sends ether to the new contract. The amount is a `uint` number of wei, as for [calls](#sending-ether-with-a-call). A contract whose `deploy` is not `payable` rejects the value, and the creation fails.
 
 `with salt = s` takes a `bytes32` and deploys with `CREATE2`. The address then depends only on the factory, the salt, and the created contract's creation code, arguments included, so it can be computed before deployment. Without a salt, `create` uses `CREATE`, and the address depends on the factory's nonce.
 
@@ -413,12 +413,12 @@ contract Factory is {
   use Create2;
 
   storage is record {
-    count : nat;
+    count : uint;
   }
 
   external function open(const salt : bytes32) : address is {
     defer create Vault() with salt = salt;
-    storage.count := storage.count + 1n;
+    storage.count := storage.count + 1;
   } with Create2.compute_address_here(salt, Crypto.keccak256(Evm.creation_code(Vault)))
 }
 
@@ -441,7 +441,7 @@ contract Factory is {
   }
 
   external payable function open_funded() is {
-    defer create Vault() with value = nat(Evm.value());
+    defer create Vault() with value = uint(Evm.value());
   }
 
   external function open_at(const salt : bytes32) is {
@@ -451,7 +451,7 @@ contract Factory is {
   }
 
   external payable function open_funded_at(const salt : bytes32) is {
-    defer create Vault() with { value = nat(Evm.value()); salt = salt; } then (vault : address) {
+    defer create Vault() with { value = uint(Evm.value()); salt = salt; } then (vault : address) {
       storage.last := vault;
     };
   }
@@ -475,7 +475,7 @@ A creation fails if the factory cannot pay the value, if the salted address is a
 contract Factory is {
   storage is record {
     last : address;
-    failed : nat;
+    failed : uint;
   }
 
   external function open_at(const salt : bytes32) is {
@@ -484,7 +484,7 @@ contract Factory is {
           storage.last := vault;
         }
       | Error(_) -> {
-          storage.failed := storage.failed + 1n;
+          storage.failed := storage.failed + 1;
         }
     };
   }
@@ -519,13 +519,13 @@ external function clone(const target : address; const salt : bytes32) is {
 
 (* SSTORE2: `data` becomes the code of a contract that stops at once. *)
 external function write(const data : bytes) is {
-  defer create(Bytes.concat(0x61, bytes2(uint16(data.length + 1n)), 0x80600a3d393df300, data)) then (made : address) {
+  defer create(Bytes.concat(0x61, bytes2(uint16(data.length + 1)), 0x80600a3d393df300, data)) then (made : address) {
     storage.last := made;
   };
 }
 
 external view function read(const pointer : address) : bytes is
-  Evm.code(pointer)[1n:]
+  Evm.code(pointer)[1:]
 ```
 
 The standard library's [`Clones`, `SSTORE2`, and `Create3`](/stdlib/utils#clones) build this code, and predict where it lands. A slice of `Evm.code(a)` copies only the bytes it takes.
@@ -547,14 +547,14 @@ error Not_owner;
 
 storage is record {
   owner : address;
-  nonce : nat;
+  nonce : uint;
 }
 
-external nonreentrant function execute(const target : address; const value : nat; const data : bytes)
+external nonreentrant function execute(const target : address; const value : uint; const data : bytes)
   raises Not_owner
 is {
   assert(Evm.sender() = storage.owner, Not_owner);
-  storage.nonce := storage.nonce + 1n;
+  storage.nonce := storage.nonce + 1;
   defer Evm.call(target, data) with value = value;
 }
 ```
@@ -563,14 +563,14 @@ A raw call fails and recovers as any other does. Without `Ok` and `Error` arms, 
 
 ```lithe
 storage is record {
-  failures : nat;
+  failures : uint;
 }
 
 external nonreentrant function try_call(const target : address; const data : bytes) is {
   defer Evm.call(target, data) then {
     | Ok(result : bytes) -> { skip }
     | Error(reason : bytes) -> {
-        storage.failures := storage.failures + 1n;
+        storage.failures := storage.failures + 1;
       }
   };
 }
@@ -585,7 +585,7 @@ A `pure` function cannot query, and a `view` cannot defer, for raw calls as for 
 
 ```lithe rejects
 storage is record {
-  n : nat;
+  n : uint;
 }
 
 external view function peek(const to : address; const data : bytes) : bytes is

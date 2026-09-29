@@ -1,2 +1,2 @@
-view external function go() : nat is
-  0n
+view external function go() : uint is
+  0

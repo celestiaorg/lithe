@@ -2,20 +2,20 @@
    token's own royalty wins over the default; fees are in basis points. *)
 
 error ERC2981InvalidDefaultRoyalty of record {
-  numerator : nat;
-  denominator : nat;
+  numerator : uint;
+  denominator : uint;
 }
 
 error ERC2981InvalidDefaultRoyaltyReceiver of address;
 
 error ERC2981InvalidTokenRoyalty of record {
-  tokenId : nat;
-  numerator : nat;
-  denominator : nat;
+  tokenId : uint;
+  numerator : uint;
+  denominator : uint;
 }
 
 error ERC2981InvalidTokenRoyaltyReceiver of record {
-  tokenId : nat;
+  tokenId : uint;
   receiver : address;
 }
 
@@ -27,24 +27,24 @@ module ERC2981 is {
 
   storage erc2981 at "openzeppelin.storage.ERC2981" is record {
     defaultRoyaltyInfo : royalty_info;
-    tokenRoyaltyInfo : map(nat, royalty_info);
+    tokenRoyaltyInfo : map(uint, royalty_info);
   }
 
-  external view function royaltyInfo(const tokenId : nat; const salePrice : nat) : (address, nat) is {
+  external view function royaltyInfo(const tokenId : uint; const salePrice : uint) : (address, uint) is {
     var receiver : address := erc2981.tokenRoyaltyInfo[tokenId].receiver;
     var fraction : uint96 := erc2981.tokenRoyaltyInfo[tokenId].royaltyFraction;
     if receiver = Address.zero then {
       receiver := erc2981.defaultRoyaltyInfo.receiver;
       fraction := erc2981.defaultRoyaltyInfo.royaltyFraction;
     }
-  } with (receiver, salePrice * nat(fraction) / 10000n)
+  } with (receiver, salePrice * uint(fraction) / 10000)
 
   function set_default_royalty(const receiver : address; const feeNumerator : uint96)
     raises ERC2981InvalidDefaultRoyalty | ERC2981InvalidDefaultRoyaltyReceiver
   is {
     assert(
       feeNumerator <= 10000,
-      ERC2981InvalidDefaultRoyalty { numerator = nat(feeNumerator); denominator = 10000n; }
+      ERC2981InvalidDefaultRoyalty { numerator = uint(feeNumerator); denominator = 10000; }
     );
     assert(receiver <> Address.zero, ERC2981InvalidDefaultRoyaltyReceiver(Address.zero));
     erc2981.defaultRoyaltyInfo := { receiver = receiver; royaltyFraction = feeNumerator; };
@@ -54,12 +54,12 @@ module ERC2981 is {
     erc2981.defaultRoyaltyInfo := { receiver = Address.zero; royaltyFraction = 0; };
   }
 
-  function set_token_royalty(const tokenId : nat; const receiver : address; const feeNumerator : uint96)
+  function set_token_royalty(const tokenId : uint; const receiver : address; const feeNumerator : uint96)
     raises ERC2981InvalidTokenRoyalty | ERC2981InvalidTokenRoyaltyReceiver
   is {
     assert(
       feeNumerator <= 10000,
-      ERC2981InvalidTokenRoyalty { tokenId = tokenId; numerator = nat(feeNumerator); denominator = 10000n; }
+      ERC2981InvalidTokenRoyalty { tokenId = tokenId; numerator = uint(feeNumerator); denominator = 10000; }
     );
     assert(
       receiver <> Address.zero,
@@ -68,11 +68,11 @@ module ERC2981 is {
     erc2981.tokenRoyaltyInfo[tokenId] := { receiver = receiver; royaltyFraction = feeNumerator; };
   }
 
-  function reset_token_royalty(const tokenId : nat) is {
+  function reset_token_royalty(const tokenId : uint) is {
     erc2981.tokenRoyaltyInfo[tokenId] := { receiver = Address.zero; royaltyFraction = 0; };
   }
 }
 
 interface IERC2981 is {
-  view function royaltyInfo(tokenId : nat; salePrice : nat) : (address, nat);
+  view function royaltyInfo(tokenId : uint; salePrice : uint) : (address, uint);
 }

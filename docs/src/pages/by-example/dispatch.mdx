@@ -17,12 +17,12 @@ error Not_minter;
 
 type mint_params is record {
   to : address;
-  amount : nat;
+  amount : uint;
 }
 
 type transfer_params is record {
   to : address;
-  amount : nat;
+  amount : uint;
 }
 
 type admin_action is
@@ -33,7 +33,7 @@ type minter_action is
 
 type holder_action is
   | Transfer of transfer_params
-  | Burn of nat
+  | Burn of uint
 
 type action is
   | Admin of admin_action
@@ -43,7 +43,7 @@ type action is
 storage is record {
   admin : address;
   minter : address;
-  balances : map(address, nat);
+  balances : map(address, uint);
 }
 
 function admin_main(const action : admin_action)

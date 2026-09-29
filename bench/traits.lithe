@@ -2,24 +2,24 @@
 
 error Empty_trait of string;
 error Attribute_not_found of record {
-  tokenId : nat;
+  tokenId : uint;
   traitType : string;
 }
-error Not_minted of list(nat);
+error Not_minted of list(uint);
 
 storage is record {
-  minted : nat;
-  tagged : nat;
+  minted : uint;
+  tagged : uint;
 }
 
-external function mint(const count : nat) is {
+external function mint(const count : uint) is {
   storage.minted := storage.minted + count;
 }
 
-external function tag(const token_id : nat; const trait_type : string)
+external function tag(const token_id : uint; const trait_type : string)
   raises Empty_trait | Attribute_not_found
 is {
-  assert(trait_type.length > 0n, Empty_trait("trait type is empty"));
+  assert(trait_type.length > 0, Empty_trait("trait type is empty"));
   assert(
     token_id < storage.minted,
     Attribute_not_found { tokenId = token_id; traitType = trait_type; }
@@ -27,7 +27,7 @@ is {
   storage.tagged := token_id;
 }
 
-external view function background(const token_id : nat) : nat
+external view function background(const token_id : uint) : uint
   raises Attribute_not_found
 is {
   assert(
@@ -36,10 +36,10 @@ is {
   );
 } with token_id
 
-external view function check(const ids : list(nat)) : nat
+external view function check(const ids : list(uint)) : uint
   raises Not_minted
 is {
-  for id : nat in ids do {
+  for id : uint in ids do {
     assert(id < storage.minted, Not_minted(ids));
   }
 } with ids.length

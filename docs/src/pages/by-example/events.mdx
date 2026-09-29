@@ -13,7 +13,7 @@ Events are records declared with `event`. `indexed` fields become topics.
 event Transfer of record {
   indexed from : address;
   indexed to : address;
-  amount : nat;
+  amount : uint;
 }
 
 (* An indexed string or list is logged as its keccak256 hash, as in Solidity. *)
@@ -28,7 +28,7 @@ storage is record {
   name : string;
 }
 
-external function send(const to : address; const amount : nat) is {
+external function send(const to : address; const amount : uint) is {
   emit Transfer { from = Evm.sender(); to = to; amount = amount; };
 }
 

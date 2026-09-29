@@ -35,7 +35,7 @@ fn raw_call_sends_calldata_and_value() {
     let src = "\
 storage is record { answer : bytes; }
 external payable nonreentrant function run(const to : address; const data : bytes) is {
-  defer Evm.call(to, data) with value = nat(Evm.value()) then (answer : bytes) {
+  defer Evm.call(to, data) with value = uint(Evm.value()) then (answer : bytes) {
     storage.answer := answer;
   };
 }
@@ -90,12 +90,12 @@ external payable nonreentrant function run(const to : address; const data : byte
 fn raw_call_recovers_and_passes_failures_on() {
     install_mocks();
     let src = "\
-storage is record { failures : nat; kept : bytes; }
+storage is record { failures : uint; kept : bytes; }
 external function try_call(const to : address; const data : bytes) is {
   defer Evm.call(to, data) then {
   | Ok(answer : bytes) -> { storage.kept := answer; }
   | Error(reason : bytes) -> {
-      storage.failures := storage.failures + 1n;
+      storage.failures := storage.failures + 1;
       storage.kept := reason;
     }
   };
@@ -133,7 +133,7 @@ external function must(const to : address; const data : bytes) raises forwarded 
 fn raw_calls_in_a_loop() {
     install_mocks();
     let src = "\
-storage is record { sizes : nat; }
+storage is record { sizes : uint; }
 external function each(const targets : list(address); const data : bytes) is {
   for to : address in targets do {
     defer Evm.call(to, data) then (answer : bytes) {
@@ -164,18 +164,18 @@ external function each(const targets : list(address); const data : bytes) is {
 #[test]
 fn delegate_call_runs_code_on_own_storage() {
     let library = "\
-storage is record { pad : address; n : nat; }
-external function set(const n : nat) : nat is { storage.n := n; } with n * 2n
+storage is record { pad : address; n : uint; }
+external function set(const n : uint) : uint is { storage.n := n; } with n * 2
 ";
     let library_code = deploy(&compile(library).expect("compile")).expect("deploy");
     let at = Word::from_u64(0x5201);
     DEPLOYED.with(|d| d.borrow_mut().insert(at, (library_code, HashMap::new())));
     let src = "\
-interface Library is { function set(n : nat) : nat; }
-storage is record { library : address; n : nat; doubled : nat; }
-external function run(const n : nat) is {
+interface Library is { function set(n : uint) : uint; }
+storage is record { library : address; n : uint; doubled : uint; }
+external function run(const n : uint) is {
   defer Evm.delegate_call(storage.library, Abi.encode_call(Library.set, n)) then (answer : bytes) {
-    storage.doubled := Abi.decode(answer, nat);
+    storage.doubled := Abi.decode(answer, uint);
   };
 }
 ";
@@ -205,11 +205,11 @@ external function run(const n : nat) is {
 fn static_call_reads_raw_answers_and_precompiles() {
     install_mocks();
     let src = "\
-storage is record { n : nat; }
+storage is record { n : uint; }
 external view function peek(const to : address; const data : bytes) : bytes is
   query Evm.static_call(to, data)
 external view function digest(const data : bytes) : bytes32 is
-  Bytes.word(query Evm.static_call(0x0000000000000000000000000000000000000002, data), 0n)
+  Bytes.word(query Evm.static_call(0x0000000000000000000000000000000000000002, data), 0)
 external view function outcome(const to : address; const data : bytes) : bytes is
   case query Evm.static_call(to, data) of {
   | Ok(answer) -> Bytes.concat(answer, answer)
@@ -264,11 +264,11 @@ external function clone(const target : address; const salt : bytes32) is {
   };
 }
 external function write(const data : bytes) is {
-  defer create(Bytes.concat(0x61, bytes2(uint16(data.length + 1n)), 0x80600a3d393df300, data)) then (made : address) {
+  defer create(Bytes.concat(0x61, bytes2(uint16(data.length + 1)), 0x80600a3d393df300, data)) then (made : address) {
     storage.made := made;
   };
 }
-external view function read(const pointer : address) : bytes is Evm.code(pointer)[1n:]
+external view function read(const pointer : address) : bytes is Evm.code(pointer)[1:]
 external function refused() is {
   defer create(0x63deadbeef5f526004601cfd) then {
   | Ok(made : address) -> { storage.made := made; }
@@ -324,10 +324,10 @@ external function refused() is {
 #[test]
 fn raw_create_rules() {
     let cases = [
-        ("storage is record { n : nat; }\nexternal function f(const d : string) is { defer create(d); }\n", "`create(code)` runs a `bytes` value as creation code"),
-        ("storage is record { n : nat; }\nexternal function f(const d : bytes) is { defer create(d) with salt = 1n; }\n", "a salt is a `bytes32`"),
-        ("storage is record { n : nat; }\nexternal function f(const d : bytes) is { defer create(d) then (x : bytes) { skip }; }\n", "the result type does not match"),
-        ("storage is record { n : nat; }\npure function f(const a : address) : bytes is Evm.code(a)\nexternal function g() is { skip }\n", "reads `Evm.code`"),
+        ("storage is record { n : uint; }\nexternal function f(const d : string) is { defer create(d); }\n", "`create(code)` runs a `bytes` value as creation code"),
+        ("storage is record { n : uint; }\nexternal function f(const d : bytes) is { defer create(d) with salt = true; }\n", "a salt is a `bytes32`"),
+        ("storage is record { n : uint; }\nexternal function f(const d : bytes) is { defer create(d) then (x : bytes) { skip }; }\n", "the result type does not match"),
+        ("storage is record { n : uint; }\npure function f(const a : address) : bytes is Evm.code(a)\nexternal function g() is { skip }\n", "reads `Evm.code`"),
     ];
     for (src, want) in cases {
         let err = compile(src).expect_err(want);
@@ -338,14 +338,14 @@ fn raw_create_rules() {
 #[test]
 fn raw_call_rules() {
     let cases = [
-        ("storage is record { n : nat; }\nexternal view function f(const to : address; const d : bytes) : bytes is Evm.static_call(to, d)\n", "`Evm.static_call` is read-only; write `query Evm.static_call(...)`"),
-        ("storage is record { n : nat; }\nexternal view function f(const to : address; const d : bytes) : bytes is query Evm.call(to, d)\n", "`Evm.call` can change state; `defer` it"),
-        ("storage is record { n : nat; }\nexternal view function f(const to : address; const d : bytes) : nat is { defer Evm.call(to, d); } with 1n\n", "cannot defer an operation"),
-        ("storage is record { n : nat; }\nexternal function f(const to : address; const d : bytes) is { defer Evm.delegate_call(to, d) with value = 1n; }\n", "a delegate call runs with this call's own value; it takes no `with value`"),
-        ("storage is record { n : nat; }\nexternal function f(const to : address; const d : string) is { defer Evm.call(to, d); }\n", "`Evm.call` sends a `bytes` value as the calldata"),
-        ("storage is record { n : nat; }\nexternal function f(const to : nat; const d : bytes) is { defer Evm.call(to, d); }\n", "expected an address"),
-        ("storage is record { n : nat; }\nexternal function f(const to : address; const d : bytes) is { defer Evm.call(to, d) then (x : nat) { storage.n := x; }; }\n", "the result type does not match what the call returns"),
-        ("storage is record { n : nat; }\npure function f(const to : address; const d : bytes) : bytes is query Evm.static_call(to, d)\nexternal function g() is { skip }\n", "queries another contract"),
+        ("storage is record { n : uint; }\nexternal view function f(const to : address; const d : bytes) : bytes is Evm.static_call(to, d)\n", "`Evm.static_call` is read-only; write `query Evm.static_call(...)`"),
+        ("storage is record { n : uint; }\nexternal view function f(const to : address; const d : bytes) : bytes is query Evm.call(to, d)\n", "`Evm.call` can change state; `defer` it"),
+        ("storage is record { n : uint; }\nexternal view function f(const to : address; const d : bytes) : uint is { defer Evm.call(to, d); } with 1\n", "cannot defer an operation"),
+        ("storage is record { n : uint; }\nexternal function f(const to : address; const d : bytes) is { defer Evm.delegate_call(to, d) with value = 1; }\n", "a delegate call runs with this call's own value; it takes no `with value`"),
+        ("storage is record { n : uint; }\nexternal function f(const to : address; const d : string) is { defer Evm.call(to, d); }\n", "`Evm.call` sends a `bytes` value as the calldata"),
+        ("storage is record { n : uint; }\nexternal function f(const to : uint; const d : bytes) is { defer Evm.call(to, d); }\n", "expected an address"),
+        ("storage is record { n : uint; }\nexternal function f(const to : address; const d : bytes) is { defer Evm.call(to, d) then (x : uint) { storage.n := x; }; }\n", "the result type does not match what the call returns"),
+        ("storage is record { n : uint; }\npure function f(const to : address; const d : bytes) : bytes is query Evm.static_call(to, d)\nexternal function g() is { skip }\n", "queries another contract"),
     ];
     for (src, want) in cases {
         let err = compile(src).expect_err(want);
@@ -428,9 +428,9 @@ fn raw_codec_example_builds_and_decodes() {
 #[test]
 fn code_slices_copy_only_the_slice() {
     let src = "\
-storage is record { n : nat; }
-external view function from(const a : address; const s : nat) : bytes is Evm.code(a)[s:]
-external view function between(const a : address; const s : nat; const e : nat) : bytes is Evm.code(a)[s:e]
+storage is record { n : uint; }
+external view function from(const a : address; const s : uint) : bytes is Evm.code(a)[s:]
+external view function between(const a : address; const s : uint; const e : uint) : bytes is Evm.code(a)[s:e]
 external view function whole(const a : address) : bytes is Evm.code(a)
 ";
     let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
@@ -480,17 +480,17 @@ external view function whole(const a : address) : bytes is Evm.code(a)
 #[test]
 fn zero_values_compile_to_no_value() {
     let build =
-        |body: &str| compile(&format!("storage is record {{ n : nat; }}\n{body}\n")).expect(body);
+        |body: &str| compile(&format!("storage is record {{ n : uint; }}\n{body}\n")).expect(body);
     let none = build(
         "external function f(const to : address; const d : bytes) is { defer Evm.call(to, d); }",
     );
-    assert_eq!(build("external function f(const to : address; const d : bytes) is { defer Evm.call(to, d) with value = 0n; }"), none);
+    assert_eq!(build("external function f(const to : address; const d : bytes) is { defer Evm.call(to, d) with value = 0; }"), none);
     assert_eq!(
-        build("function g(const to : address; const d : bytes; const v : nat) is { defer Evm.call(to, d) with value = v; }\nexternal function f(const to : address; const d : bytes) is { g(to, d, 0n); }"),
+        build("function g(const to : address; const d : bytes; const v : uint) is { defer Evm.call(to, d) with value = v; }\nexternal function f(const to : address; const d : bytes) is { g(to, d, 0); }"),
         none
     );
     let created = build("external function f(const d : bytes; const s : bytes32) is { defer create(d) with salt = s; }");
-    assert_eq!(build("external function f(const d : bytes; const s : bytes32) is { defer create(d) with { value = 0n; salt = s; }; }"), created);
+    assert_eq!(build("external function f(const d : bytes; const s : bytes32) is { defer create(d) with { value = 0; salt = s; }; }"), created);
     // A value that is not a literal zero is still sent.
-    assert_ne!(build("external function f(const to : address; const d : bytes; const v : nat) is { defer Evm.call(to, d) with value = v; }"), none);
+    assert_ne!(build("external function f(const to : address; const d : bytes; const v : uint) is { defer Evm.call(to, d) with value = v; }"), none);
 }

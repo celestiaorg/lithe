@@ -3,16 +3,16 @@ use super::*;
 #[test]
 fn type_constants_take_their_width_from_context() {
     let src = "\
-storage is record { small : uint8; delta : int16; big : nat; low : int; who : address; }
+storage is record { small : uint8; delta : int16; big : uint; low : int; who : address; }
 function lowest(T)(const value : T) : T is Int.min
 external function set() is {
-  storage.small := Nat.max;
+  storage.small := Uint.max;
   storage.delta := Int.min;
-  storage.big := Nat.max;
+  storage.big := Uint.max;
   storage.low := lowest(Int.max);
   storage.who := Address.zero;
 }
-external view function capped(const n : nat) : bool is n < Nat.max
+external view function capped(const n : uint) : bool is n < Uint.max
 external view function top16() : int16 is Int.max
 ";
     let layout = leaves(src);
@@ -30,11 +30,11 @@ external view function top16() : int16 is Int.max
     let top = call(&runtime, "top16()", &[]);
     assert_eq!(load_bytes(&top.returndata, 0), Word::from_u64(0x7fff));
     let err = compile(
-        "storage is record { n : nat; }\nexternal function f() is { storage.n := Nat.min; }\n",
+        "storage is record { n : uint; }\nexternal function f() is { storage.n := Uint.min; }\n",
     )
-    .expect_err("no Nat.min");
+    .expect_err("no Uint.min");
     assert!(
-        err.to_string().contains("unknown constant `Nat.min`"),
+        err.to_string().contains("unknown constant `Uint.min`"),
         "{err}"
     );
 }
@@ -46,7 +46,7 @@ fn narrow_options_take_one_slot() {
     let src = r#"
 type inner is record {
   small : option(uint8);
-  n : nat;
+  n : uint;
 }
 
 storage is record {
@@ -55,15 +55,15 @@ storage is record {
   tiny : option(int8);
   flag : option(bool);
   tag : option(bytes4);
-  wide : option(nat);
+  wide : option(uint);
   nested : inner;
 }
 
 pure function wrap(const k : uint8) : option(uint8) is
   Some(k)
 
-pure function or_seven(const o : option(uint8)) : nat is
-  case o of { | Some(v) -> nat(v) | None -> 7 }
+pure function or_seven(const o : option(uint8)) : uint is
+  case o of { | Some(v) -> uint(v) | None -> 7 }
 
 external function set_who() is { storage.who := Some(Evm.sender()); }
 external view function who_or() : address is
@@ -71,8 +71,8 @@ external view function who_or() : address is
 
 external function set_small(const v : uint8) is { storage.small := Some(v); }
 external function clear_small() is { storage.small := None; }
-external view function small_or() : nat is
-  case storage.small of { | Some(v) -> nat(v) | None -> 1000 }
+external view function small_or() : uint is
+  case storage.small of { | Some(v) -> uint(v) | None -> 1000 }
 external view function has_small() : bool is
   case storage.small of { | Some(v) -> true | None -> false }
 
@@ -88,8 +88,8 @@ external function set_tag(const v : bytes4) is { storage.tag := Some(v); }
 external view function tag_or(const d : bytes4) : bytes4 is
   case storage.tag of { | Some(t) -> t | None -> d }
 
-external function set_wide(const v : nat) is { storage.wide := Some(v); }
-external view function wide_or() : nat is
+external function set_wide(const v : uint) is { storage.wide := Some(v); }
+external view function wide_or() : uint is
   case storage.wide of { | Some(v) -> v | None -> 1000 }
 
 external function set_nested(const v : uint8) is { storage.nested.small := Some(v); }
@@ -97,13 +97,13 @@ external function copy_small() is {
   const held : option(uint8) := storage.small;
   storage.nested.small := held;
 }
-external view function nested_or() : nat is
-  case storage.nested.small of { | Some(v) -> nat(v) | None -> 1000 }
+external view function nested_or() : uint is
+  case storage.nested.small of { | Some(v) -> uint(v) | None -> 1000 }
 
-external view function through(const k : uint8) : nat is {
+external view function through(const k : uint8) : uint is {
   const o : option(uint8) := wrap(k);
-} with case o of { | Some(v) -> nat(v) + or_seven(None) | None -> 0 }
-external view function direct(const k : uint8) : nat is
+} with case o of { | Some(v) -> uint(v) + or_seven(None) | None -> 0 }
+external view function direct(const k : uint8) : uint is
   case wrap(k) of { | Some(v) -> or_seven(Some(v)) | None -> 0 }
 "#;
     let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
@@ -276,53 +276,53 @@ fn record_results_everywhere() {
     install_mocks();
     let src = r#"
 interface Echo is {
-  view function echo(n : nat) : nat;
+  view function echo(n : uint) : uint;
 }
 
-type inner is record { a : nat; b : int16; }
+type inner is record { a : uint; b : int16; }
 type v is record { ok : bool; d : int16; i : inner; }
 
-storage is record { r : v; k : nat; }
+storage is record { r : v; k : uint; }
 
 transient storage t is record { r : v; }
 
-pure function mk(const n : nat; const d : int16) : v is {
+pure function mk(const n : uint; const d : int16) : v is {
   ok = true;
   d = d;
   i = { a = n; b = d - int16(1); };
 }
 
-pure function wrap(const n : nat) : v is mk(n + 1n, int16(-3))
+pure function wrap(const n : uint) : v is mk(n + 1, int16(-3))
 
-pure function total(const x : v) : nat is x.i.a
+pure function total(const x : v) : uint is x.i.a
 
-external function later(const e : Echo; const n : nat) is {
+external function later(const e : Echo; const n : uint) is {
   storage.r := mk(n, int16(-2));
   storage.k := query e.echo(storage.r.i.a);
 }
 
-external function flash(const n : nat) : int16 is {
+external function flash(const n : uint) : int16 is {
   t.r := mk(n, int16(-7));
 } with t.r.d + t.r.i.b
 
-external view function chain(const n : nat) : nat is
-  wrap(n).i.a + total(mk(n, int16(0))) + total({ ok = false; d = int16(0); i = { a = 5n; b = int16(0); }; })
+external view function chain(const n : uint) : uint is
+  wrap(n).i.a + total(mk(n, int16(0))) + total({ ok = false; d = int16(0); i = { a = 5; b = int16(0); }; })
 
-external view function neg() : int16 is wrap(1n).i.b
+external view function neg() : int16 is wrap(1).i.b
 
 external view function r_d() : int16 is storage.r.d
 
 external view function r_b() : int16 is storage.r.i.b
 
-external view function k() : nat is storage.k
+external view function k() : uint is storage.k
 
-pure function once(const n : nat) : v is {
+pure function once(const n : uint) : v is {
   ok = false;
   d = int16(-9);
-  i = { a = n * 2n; b = int16(4); };
+  i = { a = n * 2; b = int16(4); };
 }
 
-external view function once_d(const n : nat) : int16 is int16(1) + once(n).d
+external view function once_d(const n : uint) : int16 is int16(1) + once(n).d
 "#;
     let rt = deploy(&compile(src).expect("compile")).expect("deploy");
     let n = Word::from_u64;
@@ -805,20 +805,20 @@ fn braces_group_records_blocks_and_cases() {
     assert_eq!(slot(&paid.storage, 0), Word::from_u64(5));
     assert!(paid.trace.iter().any(|ev| matches!(ev, Ev::Log { .. })));
 
-    let old = compile("storage is record [ n : nat; ]\nexternal function go() is { skip }\n");
+    let old = compile("storage is record [ n : uint; ]\nexternal function go() is { skip }\n");
     let err = old.expect_err("square record").to_string();
     assert!(err.contains("`{`"), "{err}");
 
     let bare_case = compile(
-        "storage is record { n : nat; }\nexternal function go() is\n  case storage.n of\n  | _ -> skip\n  end\n",
+        "storage is record { n : uint; }\nexternal function go() is\n  case storage.n of\n  | _ -> skip\n  end\n",
     );
     let err = bare_case.expect_err("bare case").to_string();
     assert!(err.contains("`{`"), "{err}");
 
     let short = "\
-storage is record { n : nat; }
-external view function go() : nat is {
-  const nums : list(nat, 2) := [1n];
+storage is record { n : uint; }
+external view function go() : uint is {
+  const nums : list(uint, 2) := [1];
 } with nums[0]
 ";
     let err = compile(short).expect_err("short list").to_string();
@@ -828,7 +828,7 @@ external view function go() : nat is {
     );
 
     let past = "\
-storage is record { n : nat; }
+storage is record { n : uint; }
 external view function go() : address is {
   const alice : address := 0x0000000000000000000000000000000000000001;
   const admins : list(address) := [alice];
@@ -846,35 +846,35 @@ fn if_chooses_a_value_and_chains_with_else_if() {
 error Bad;
 
 storage is record {
-  n : nat;
+  n : uint;
 }
 
-external pure function classify(const x : nat) : nat is
-  if x < 10n then 1n else if x < 100n then 2n else 3n
+external pure function classify(const x : uint) : uint is
+  if x < 10 then 1 else if x < 100 then 2 else 3
 
-external pure function gap(const a : nat; const b : nat) : nat is
-  if a >= b then a - b else 0n
+external pure function gap(const a : uint; const b : uint) : uint is
+  if a >= b then a - b else 0
 
-external pure function flag(const f : bool) : nat is {
-  const n : nat := 1n + (if f then 7n else 9n);
+external pure function flag(const f : bool) : uint is {
+  const n : uint := 1 + (if f then 7 else 9);
 } with n
 
-external pure function must(const x : nat) : nat raises Bad is
-  if x > 0n then x else fail Bad
+external pure function must(const x : uint) : uint raises Bad is
+  if x > 0 then x else fail Bad
 
-external pure function sign(const x : nat) : string is
-  if x > 0n then \"positive\" else \"zero\"
+external pure function sign(const x : uint) : string is
+  if x > 0 then \"positive\" else \"zero\"
 
 external function set(const f : bool) is
-  if f then { storage.n := 4n; } else { storage.n := 6n; }
+  if f then { storage.n := 4; } else { storage.n := 6; }
 
-external function bump(const x : nat) is {
-  if x < 10n then {
-    storage.n := 1n;
-  } else if x < 100n then {
-    storage.n := 2n;
+external function bump(const x : uint) is {
+  if x < 10 then {
+    storage.n := 1;
+  } else if x < 100 then {
+    storage.n := 2;
   } else {
-    storage.n := 3n;
+    storage.n := 3;
   }
 }
 ";
@@ -904,14 +904,14 @@ external function bump(const x : nat) is {
     assert!(named.returndata.windows(8).any(|w| w == b"positive"));
 
     let reject = |body: &str, want: &str| {
-        let src = format!("storage is record {{ n : nat; }}\nexternal pure function go(const x : nat) : nat is {body}\n");
+        let src = format!("storage is record {{ n : uint; }}\nexternal pure function go(const x : uint) : uint is {body}\n");
         let err = compile(&src).expect_err(body).to_string();
         assert!(err.contains(want), "{body}: {err}");
     };
-    reject("if x then 1n else 2n", "`if` condition must be bool");
-    reject("if x > 0n then 1n", "`else`");
+    reject("if x then 1 else 2", "`if` condition must be bool");
+    reject("if x > 0 then 1", "`else`");
     reject(
-        "if x > 0n then 1n else true",
+        "if x > 0 then 1 else true",
         "`if` branches have different types",
     );
 }
@@ -977,8 +977,8 @@ fn indexed_events_split_topics_and_data() {
 #[test]
 fn map_entry_read_then_written() {
     let src = "\
-storage is record { owners : map(nat, address); }
-external function move(const to : address; const id : nat) : address is {
+storage is record { owners : map(uint, address); }
+external function move(const to : address; const id : uint) : address is {
   const from : address := storage.owners[id];
   storage.owners[id] := to;
 } with from
@@ -1010,13 +1010,13 @@ external function move(const to : address; const id : nat) : address is {
 fn bytes_map_keys_hash_left_aligned() {
     let src = "\
 storage is record {
-  flat : map(bytes4, nat);
-  nested : map(bytes2, map(bytes4, nat));
+  flat : map(bytes4, uint);
+  nested : map(bytes2, map(bytes4, uint));
 }
 external function put(const k : bytes4; const j : bytes2) is {
-  storage.flat[k] := 7n;
-  storage.flat[0xa9059cbb] := 8n;
-  storage.nested[j][k] := 9n;
+  storage.flat[k] := 7;
+  storage.flat[0xa9059cbb] := 8;
+  storage.nested[j][k] := 9;
 }
 ";
     let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
@@ -1044,10 +1044,10 @@ external function put(const k : bytes4; const j : bytes2) is {
 fn abi_selectors_and_interface_ids_are_constants() {
     let src = "\
 interface Token is {
-  function transfer(to : address; amount : nat) : bool;
-  view function balanceOf(who : address) : nat;
+  function transfer(to : address; amount : uint) : bool;
+  view function balanceOf(who : address) : uint;
 }
-storage is record { n : nat; }
+storage is record { n : uint; }
 external pure function sel() : bytes4 is Abi.selector(Token.transfer)
 external pure function id() : bytes4 is Abi.interface_id(Token)
 ";
@@ -1085,9 +1085,9 @@ external pure function id() : bytes4 is Abi.interface_id(Token)
         ),
     ] {
         let bad = format!(
-            "interface Token is {{ function transfer(to : address; amount : nat) : bool; }}
-interface Pair is {{ function put(x : nat); function put(x : address); }}
-storage is record {{ n : nat; }}
+            "interface Token is {{ function transfer(to : address; amount : uint) : bool; }}
+interface Pair is {{ function put(x : uint); function put(x : address); }}
+storage is record {{ n : uint; }}
 external pure function f() : bytes4 is {body}
 "
         );
@@ -1099,17 +1099,17 @@ external pure function f() : bytes4 is {body}
 #[test]
 fn anonymous_events_log_no_signature_topic() {
     let src = "\
-storage is record { n : nat; }
-anonymous event Four of record { indexed a : nat; indexed b : nat; indexed c : nat; indexed d : nat; }
-anonymous event Note of record { indexed a : nat; indexed b : nat; indexed c : nat; indexed d : nat; memo : string; }
-anonymous event Pair of record { indexed a : nat; indexed b : nat; indexed c : nat; indexed d : nat; p : (nat, nat); }
-anonymous event Bare of record { x : nat; }
+storage is record { n : uint; }
+anonymous event Four of record { indexed a : uint; indexed b : uint; indexed c : uint; indexed d : uint; }
+anonymous event Note of record { indexed a : uint; indexed b : uint; indexed c : uint; indexed d : uint; memo : string; }
+anonymous event Pair of record { indexed a : uint; indexed b : uint; indexed c : uint; indexed d : uint; p : (uint, uint); }
+anonymous event Bare of record { x : uint; }
 external function f() is {
-  emit Four { a = 1n; b = 2n; c = 3n; d = 4n; };
-  emit Note { a = 1n; b = 2n; c = 3n; d = 4n; memo = \"hi\"; };
-  emit Pair { a = 1n; b = 2n; c = 3n; d = 4n; p = (5n, 6n); };
-  emit Bare { x = 9n; };
-  emit Four { a = storage.n + 1n; b = 2n; c = 3n; d = 4n; };
+  emit Four { a = 1; b = 2; c = 3; d = 4; };
+  emit Note { a = 1; b = 2; c = 3; d = 4; memo = \"hi\"; };
+  emit Pair { a = 1; b = 2; c = 3; d = 4; p = (5, 6); };
+  emit Bare { x = 9; };
+  emit Four { a = storage.n + 1; b = 2; c = 3; d = 4; };
 }
 ";
     let abi = abi(src).expect("abi");
@@ -1140,8 +1140,8 @@ external function f() is {
     );
 
     let five = "\
-storage is record { n : nat; }
-anonymous event E of record { indexed a : nat; indexed b : nat; indexed c : nat; indexed d : nat; indexed e : nat; }
+storage is record { n : uint; }
+anonymous event E of record { indexed a : uint; indexed b : uint; indexed c : uint; indexed d : uint; indexed e : uint; }
 external function f() is { skip }
 ";
     let err = compile(five).expect_err("five topics");
@@ -1156,11 +1156,11 @@ external function f() is { skip }
 fn hex_literals_keep_their_written_width_as_bytes() {
     let src = "\
 error Bad_data of bytes;
-storage is record { n : nat; }
+storage is record { n : uint; }
 external pure function zero() : bytes is 0x00
 external pure function one() : bytes is 0x0001
 external pure function ff() : bytes is 0x0000_00ff
-external pure function reject() : nat raises Bad_data is { assert(false, Bad_data(0x00)); } with 0n
+external pure function reject() : uint raises Bad_data is { assert(false, Bad_data(0x00)); } with 0
 ";
     let abi_bytes = |data: &[u8]| abi_string("x()", data)[4..].to_vec();
     let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
@@ -1178,7 +1178,7 @@ external pure function reject() : nat raises Bad_data is { assert(false, Bad_dat
     assert_eq!(&out.returndata[4..], abi_bytes(&[0]));
 
     let err = compile(
-        "storage is record { n : nat; }\nexternal pure function f() : bytes4 is 0x0012345678\n",
+        "storage is record { n : uint; }\nexternal pure function f() : bytes4 is 0x0012345678\n",
     )
     .expect_err("too wide");
     assert!(
@@ -1193,7 +1193,7 @@ external pure function reject() : nat raises Bad_data is { assert(false, Bad_dat
         ("bytes1", "0x0000", "does not fit type `bytes1`"),
     ] {
         let err = compile(&format!(
-            "storage is record {{ n : nat; }}\nexternal pure function f() : {ty} is {lit}\n"
+            "storage is record {{ n : uint; }}\nexternal pure function f() : {ty} is {lit}\n"
         ))
         .expect_err(lit);
         assert!(err.to_string().contains(want), "{err}");
@@ -1205,18 +1205,18 @@ external pure function reject() : nat raises Bad_data is { assert(false, Bad_dat
         ("address", "address(0x01)"),
     ] {
         compile(&format!(
-            "storage is record {{ n : nat; }}\nexternal pure function f() : {ty} is {lit}\n"
+            "storage is record {{ n : uint; }}\nexternal pure function f() : {ty} is {lit}\n"
         ))
         .expect(lit);
     }
     for ty in ["bytes", "bytes4"] {
         let err = compile(&format!(
-            "storage is record {{ n : nat; }}\nexternal pure function f() : {ty} is 0x123\n"
+            "storage is record {{ n : uint; }}\nexternal pure function f() : {ty} is 0x123\n"
         ))
         .expect_err("odd digits");
         assert!(err.to_string().contains("even number of digits"), "{err}");
     }
-    compile("storage is record { n : nat; }\nexternal pure function f() : nat is 0x123\n")
+    compile("storage is record { n : uint; }\nexternal pure function f() : uint is 0x123\n")
         .expect("odd digits as a number");
 }
 
@@ -1274,8 +1274,8 @@ fn long_string_literals() {
     let src = format!(
         "\
 error Refused of string;
-storage is record {{ note : string; n : nat; blob : bytes; }}
-deploy(const n : nat) is {{
+storage is record {{ note : string; n : uint; blob : bytes; }}
+deploy(const n : uint) is {{
   storage.note := \"{EDGE}\";
   storage.n := n;
 }}
@@ -1347,18 +1347,18 @@ external function refuse() raises Refused is {{
 #[test]
 fn list_literal_arguments() {
     let src = "\
-storage is record { n : nat; }
-function sum(const xs : list(nat)) : nat is {
-  var total : nat := 0n;
-  for x : nat in xs do {
+storage is record { n : uint; }
+function sum(const xs : list(uint)) : uint is {
+  var total : uint := 0;
+  for x : uint in xs do {
     total := total + x;
   }
 } with total
 function keep(const xs : list(uint8)) is {
-  storage.n := nat(xs[1]);
+  storage.n := uint(xs[1]);
 }
-external function f(const a : nat) is {
-  storage.n := sum([a, a + 1n, 3n]);
+external function f(const a : uint) is {
+  storage.n := sum([a, a + 1, 3]);
 }
 external function g() is {
   keep([4, 5]);
@@ -1378,7 +1378,7 @@ external function g() is {
 #[test]
 fn addresses_and_fixed_bytes_order() {
     let src = "\
-storage is record { n : nat; }
+storage is record { n : uint; }
 external pure function lt(const a : address; const b : address) : bool is a < b
 external pure function ge(const a : bytes2; const b : bytes2) : bool is a >= b
 ";
@@ -1399,7 +1399,7 @@ external pure function ge(const a : bytes2; const b : bytes2) : bool is a >= b
     }
     for ty in ["bool", "string"] {
         let src = format!(
-            "storage is record {{ n : nat; }}\nexternal pure function f(const a : {ty}; const b : {ty}) : bool is a < b\n"
+            "storage is record {{ n : uint; }}\nexternal pure function f(const a : {ty}; const b : {ty}) : bool is a < b\n"
         );
         let err = compile(&src).expect_err(ty);
         assert!(
@@ -1409,16 +1409,16 @@ external pure function ge(const a : bytes2; const b : bytes2) : bool is a >= b
     }
 }
 
-/// `Nat.wrapping_*` and `Int.wrapping_*` wrap to the operands' width instead of
+/// `Uint.wrapping_*` and `Int.wrapping_*` wrap to the operands' width instead of
 /// panicking, as Solidity's `unchecked` arithmetic does.
 #[test]
 fn wrapping_arithmetic() {
     let src = "\
-storage is record { n : nat; }
-external pure function add(const a : nat; const b : nat) : nat is Nat.wrapping_add(a, b)
-external pure function sub32(const a : uint32; const b : uint32) : uint32 is Nat.wrapping_sub(a, b)
-external pure function mul8(const a : uint8; const b : uint8) : uint8 is Nat.wrapping_mul(a, b)
-external pure function add8(const a : uint8) : uint8 is Nat.wrapping_add(a, 1)
+storage is record { n : uint; }
+external pure function add(const a : uint; const b : uint) : uint is Uint.wrapping_add(a, b)
+external pure function sub32(const a : uint32; const b : uint32) : uint32 is Uint.wrapping_sub(a, b)
+external pure function mul8(const a : uint8; const b : uint8) : uint8 is Uint.wrapping_mul(a, b)
+external pure function add8(const a : uint8) : uint8 is Uint.wrapping_add(a, 1)
 external pure function sub16(const a : int16; const b : int16) : int16 is Int.wrapping_sub(a, b)
 external pure function mul(const a : int; const b : int) : int is Int.wrapping_mul(a, b)
 ";
@@ -1443,7 +1443,7 @@ external pure function mul(const a : int; const b : int) : int is Int.wrapping_m
         assert_eq!(load_bytes(&out.returndata, 0), *want, "{sig} {args:?}");
     }
     let err = compile(
-        "storage is record { n : nat; }\nexternal pure function f(const a : int8) : int8 is Nat.wrapping_add(a, a)\n",
+        "storage is record { n : uint; }\nexternal pure function f(const a : int8) : int8 is Uint.wrapping_add(a, a)\n",
     )
     .expect_err("signed");
     assert!(
@@ -1454,15 +1454,15 @@ external pure function mul(const a : int; const b : int) : int is Int.wrapping_m
 
 /// Sending ether is `Evm.transfer`, like every other built-in reached through its module.
 /// A bare `transfer` is an ordinary name, free for a contract's own function.
-/// `Nat.mul_div` keeps the full 512-bit product, as OpenZeppelin's `Math.mulDiv` does;
-/// `Nat.mul_mod` and `Nat.add_mod` are the EVM's modular operations.
+/// `Uint.mul_div` keeps the full 512-bit product, as OpenZeppelin's `Math.mulDiv` does;
+/// `Uint.mul_mod` and `Uint.add_mod` are the EVM's modular operations.
 #[test]
 fn full_precision_arithmetic() {
     let src = "\
-storage is record { n : nat; }
-external pure function mul_div(const a : nat; const b : nat; const d : nat) : nat is Nat.mul_div(a, b, d)
-external pure function mul_mod(const a : nat; const b : nat; const d : nat) : nat is Nat.mul_mod(a, b, d)
-external pure function add_mod(const a : nat; const b : nat; const d : nat) : nat is Nat.add_mod(a, b, d)
+storage is record { n : uint; }
+external pure function mul_div(const a : uint; const b : uint; const d : uint) : uint is Uint.mul_div(a, b, d)
+external pure function mul_mod(const a : uint; const b : uint; const d : uint) : uint is Uint.mul_mod(a, b, d)
+external pure function add_mod(const a : uint; const b : uint; const d : uint) : uint is Uint.add_mod(a, b, d)
 ";
     let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
     let hexw = |s: &str| {
@@ -1568,10 +1568,10 @@ external pure function add_mod(const a : nat; const b : nat; const d : nat) : na
 #[test]
 fn byte_words_and_width_conversions() {
     let src = "\
-storage is record { n : nat; }
-external pure function word(const b : bytes; const offset : nat) : bytes32 is Bytes.word(b, offset)
-external pure function widths(const h : bytes32; const s : bytes4) : (nat, address, uint32, bytes32) is
-  (nat(h), address(uint160(nat(h) & ((1n << 160n) - 1n))), uint32(s), bytes32(nat(h) + 1n))
+storage is record { n : uint; }
+external pure function word(const b : bytes; const offset : uint) : bytes32 is Bytes.word(b, offset)
+external pure function widths(const h : bytes32; const s : bytes4) : (uint, address, uint32, bytes32) is
+  (uint(h), address(uint160(uint(h) & ((1 << 160) - 1))), uint32(s), bytes32(uint(h) + 1))
 ";
     let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
     let w = Word::from_u64;
@@ -1624,29 +1624,29 @@ external pure function widths(const h : bytes32; const s : bytes4) : (nat, addre
 fn byte_indexing_slicing_and_conversions() {
     install_mocks();
     let src = "\
-storage is record { blob : bytes; notes : map(nat, bytes); }
-external function save(const b : bytes) is { storage.blob := b; storage.notes[7n] := b; }
-external view function stored_at(const i : nat) : (bytes1, bytes1) is (storage.blob[i], storage.notes[7n][i])
-external pure function at(const b : bytes; const i : nat) : bytes1 is b[i]
-external pure function fixed_at(const h : bytes4; const i : nat) : bytes1 is h[i]
-external pure function slice(const b : bytes; const s : nat; const e : nat) : bytes is b[s:e]
-external pure function tail(const b : bytes; const s : nat) : bytes is b[s:]
-external pure function head(const b : bytes; const e : nat) : bytes is b[:e]
+storage is record { blob : bytes; notes : map(uint, bytes); }
+external function save(const b : bytes) is { storage.blob := b; storage.notes[7] := b; }
+external view function stored_at(const i : uint) : (bytes1, bytes1) is (storage.blob[i], storage.notes[7][i])
+external pure function at(const b : bytes; const i : uint) : bytes1 is b[i]
+external pure function fixed_at(const h : bytes4; const i : uint) : bytes1 is h[i]
+external pure function slice(const b : bytes; const s : uint; const e : uint) : bytes is b[s:e]
+external pure function tail(const b : bytes; const s : uint) : bytes is b[s:]
+external pure function head(const b : bytes; const e : uint) : bytes is b[:e]
 external pure function pieces(const b : bytes) : bytes is
-  Bytes.concat(b[1n:3n], b[2n:4n], b[3n:5n], b[37n:], b[38n:], b[39n:])
-external pure function nested(const b : bytes) : (bytes1, nat) is (b[2n:][1n], b[1n:3n].length)
+  Bytes.concat(b[1:3], b[2:4], b[3:5], b[37:], b[38:], b[39:])
+external pure function nested(const b : bytes) : (bytes1, uint) is (b[2:][1], b[1:3].length)
 external pure function lead(const b : bytes) : (bytes4, bytes32) is (bytes4(b), bytes32(b))
-external pure function text(const s : string) : string is string(bytes(s)[1n:])
+external pure function text(const s : string) : string is string(bytes(s)[1:])
 external pure function resize(const h : bytes32; const s : bytes4) : (bytes4, bytes32, bytes2, bytes4) is
   (bytes4(h), bytes32(s), bytes2(s), bytes4(Crypto.keccak256(\"LowBalance(uint256)\")))
 external view function msg_sender() : address is {
   const data : bytes := Evm.calldata();
-} with address(bytes20(data[data.length - 20n:]))
-external view function first() : bytes1 is Evm.calldata()[0n]
-external view function reason(const data : bytes) : (bytes4, nat) is
+} with address(bytes20(data[data.length - 20:]))
+external view function first() : bytes1 is Evm.calldata()[0]
+external view function reason(const data : bytes) : (bytes4, uint) is
   case query Evm.static_call(0x00000000000000000000000000000000000000ee, data) of {
-  | Ok(_) -> (bytes4(data), 0n)
-  | Error(r) -> (bytes4(r), Abi.decode(r[4n:], nat))
+  | Ok(_) -> (bytes4(data), 0)
+  | Error(r) -> (bytes4(r), Abi.decode(r[4:], uint))
   }
 ";
     let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
@@ -1816,25 +1816,25 @@ fn byte_access_in_generics_and_continuations() {
     install_mocks();
     let src = "\
 interface Hook is {
-  function poke(x : nat) : nat;
+  function poke(x : uint) : uint;
 }
-storage is record { hook : Hook; tag : bytes4; rest : nat; picked : bytes1; }
+storage is record { hook : Hook; tag : bytes4; rest : uint; picked : bytes1; }
 function same(T)(const v : T) : T is v
 external function set(const h : Hook) is { storage.hook := h; }
 external function pick(const b : bytes) is {
-  storage.picked := same(b[1n]);
-  storage.rest := same(b[1n:]).length;
+  storage.picked := same(b[1]);
+  storage.rest := same(b[1:]).length;
 }
-external function run(const x : nat) is {
+external function run(const x : uint) is {
   defer storage.hook.poke(x) then {
-    | Ok(v : nat) -> { storage.rest := v; }
+    | Ok(v : uint) -> { storage.rest := v; }
     | Error(reason : bytes) -> {
-        storage.tag := bytes4(reason[28n:]);
-        storage.rest := reason[4n:].length;
+        storage.tag := bytes4(reason[28:]);
+        storage.rest := reason[4:].length;
       }
   };
 }
-external view function seen() : (bytes4, nat, bytes1) is (storage.tag, storage.rest, storage.picked)
+external view function seen() : (bytes4, uint, bytes1) is (storage.tag, storage.rest, storage.picked)
 ";
     let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
     let w = Word::from_u64;
@@ -1861,35 +1861,35 @@ external view function seen() : (bytes4, nat, bytes1) is (storage.tag, storage.r
 fn byte_access_rules() {
     for (body, want) in [
         (
-            "external function f(const s : string) : string is s[1n:]",
+            "external function f(const s : string) : string is s[1:]",
             "only `bytes` can be sliced",
         ),
         (
             "external function f(const b : bytes) : bytes1 is b[true]",
-            "an index must be `nat`",
+            "an index must be `uint`",
         ),
         (
-            "external function f(const s : string) : bytes1 is s[0n]",
+            "external function f(const s : string) : bytes1 is s[0]",
             "this value cannot be indexed",
         ),
         (
-            "external function f(const s : string) : bytes1 is String.concat(s)[0n]",
+            "external function f(const s : string) : bytes1 is String.concat(s)[0]",
             "this value cannot be indexed",
         ),
         (
-            "external function f(const b : bytes) : bytes is b[0n:true]",
-            "an index must be `nat`",
+            "external function f(const b : bytes) : bytes is b[0:true]",
+            "an index must be `uint`",
         ),
         (
             "external function f(const b : bytes) : string is string(bytes4(b))",
             "cannot convert to `string`",
         ),
         (
-            "external function f() is { storage.blob[0n] := 0x01; }",
+            "external function f() is { storage.blob[0] := 0x01; }",
             "a byte cannot be assigned",
         ),
         (
-            "external function f(const b : bytes) is { var c : bytes := b; c[0n] := 0x01; }",
+            "external function f(const b : bytes) is { var c : bytes := b; c[0] := 0x01; }",
             "a byte cannot be assigned",
         ),
     ] {
@@ -1911,25 +1911,25 @@ fn transfer_lives_in_evm() {
             "`Evm.transfer` expects 2 arguments",
         ),
         (
-            "defer Evm.transfer(Evm.sender(), 1n);",
+            "defer Evm.transfer(Evm.sender(), 1);",
             "argument has the wrong type",
         ),
     ] {
         let src =
-            format!("storage is record {{ n : nat; }}\nexternal function f() is {{ {body} }}\n");
+            format!("storage is record {{ n : uint; }}\nexternal function f() is {{ {body} }}\n");
         let err = compile(&src).expect_err(want);
         assert!(err.to_string().contains(want), "{want}: {err}");
     }
-    let view = "storage is record { n : nat; }\nexternal view function f() : nat is {\n  defer Evm.transfer(Evm.sender(), 1wei);\n} with 1n\n";
+    let view = "storage is record { n : uint; }\nexternal view function f() : uint is {\n  defer Evm.transfer(Evm.sender(), 1wei);\n} with 1\n";
     let err = compile(view).expect_err("view");
     assert!(err.to_string().contains("weaker"), "{err}");
 
     let own = "\
-storage is record { balances : map(address, nat); }
-external function transfer(const to : address; const amount : nat) is {
+storage is record { balances : map(address, uint); }
+external function transfer(const to : address; const amount : uint) is {
   storage.balances[to] := storage.balances[to] + amount;
 }
-external view function balance_of(const who : address) : nat is storage.balances[who]
+external view function balance_of(const who : address) : uint is storage.balances[who]
 ";
     let runtime = deploy(&compile(own).expect("own transfer")).expect("deploy");
     let w = Word::from_u64;
@@ -2027,7 +2027,7 @@ fn builtins_are_explicit_modules() {
     let who = call(&runtime, "recovered()", &[]);
     assert!(!who.reverted, "{}", pretty(&who.returndata));
     assert_eq!(load_bytes(&who.returndata, 0), Word::from_u64(0));
-    let bare = "storage is record { x : nat; }\nexternal function f() is { const a : address := sender; }\n";
+    let bare = "storage is record { x : uint; }\nexternal function f() is { const a : address := sender; }\n";
     let err = compile(bare).expect_err("bare sender");
     assert!(err.to_string().contains("use `Evm.sender()`"), "{err}");
 }
@@ -2127,7 +2127,7 @@ fn operators_divide_shift_and_return_tuples() {
 /// Negating a signed type's minimum overflows, at every width.
 #[test]
 fn negating_the_minimum_panics() {
-    let src = "storage is record { n : nat; }
+    let src = "storage is record { n : uint; }
 external pure function neg8(const x : int8) : int8 is -x
 external pure function neg(const x : int) : int is -x
 external pure function lit() : int8 is -128
@@ -2155,7 +2155,7 @@ external pure function lit() : int8 is -128
     );
 }
 
-/// `Nat.to_string` and `Int.to_string` write decimal, as OpenZeppelin's `Strings` does,
+/// `Uint.to_string` and `Int.to_string` write decimal, as OpenZeppelin's `Strings` does,
 /// at every width, the extremes included.
 #[test]
 fn integers_convert_to_decimal_strings() {
@@ -2164,17 +2164,17 @@ storage is record {
   uri : string;
 }
 
-external pure function nat(const n : nat) : string is
-  Nat.to_string(n)
+external pure function uint(const n : uint) : string is
+  Uint.to_string(n)
 
 external pure function int(const n : int) : string is
   Int.to_string(n)
 
 external pure function small(const n : uint8; const m : int8) : string is
-  String.concat(Nat.to_string(n), "/", Int.to_string(m))
+  String.concat(Uint.to_string(n), "/", Int.to_string(m))
 
-external function keep(const n : nat) is {
-  storage.uri := String.concat("ipfs://base/", Nat.to_string(n));
+external function keep(const n : uint) is {
+  storage.uri := String.concat("ipfs://base/", Uint.to_string(n));
 }
 
 external view function uri() : string is
@@ -2182,12 +2182,12 @@ external view function uri() : string is
 "#;
     let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
     let max = Word::from_u64(0).wrapping_sub(Word::from_u64(1));
-    let nat = |n: Word| abi_string_value(&call(&runtime, "nat(uint256)", &[n]).returndata);
+    let uint = |n: Word| abi_string_value(&call(&runtime, "uint(uint256)", &[n]).returndata);
     for n in [0u64, 1, 9, 10, 99, 100, 12345, u64::MAX] {
-        assert_eq!(nat(Word::from_u64(n)), n.to_string().into_bytes());
+        assert_eq!(uint(Word::from_u64(n)), n.to_string().into_bytes());
     }
     assert_eq!(
-        nat(max),
+        uint(max),
         b"115792089237316195423570985008687907853269984665640564039457584007913129639935"
     );
     let int = |n: Word| abi_string_value(&call(&runtime, "int(int256)", &[n]).returndata);
@@ -2221,7 +2221,7 @@ external view function uri() : string is
     )
     .expect("uri");
     assert_eq!(abi_string_value(&uri.returndata), b"ipfs://base/7");
-    let err = compile("storage is record { n : nat; }\nexternal pure function f(const n : int) : string is Nat.to_string(n)\n")
+    let err = compile("storage is record { n : uint; }\nexternal pure function f(const n : int) : string is Uint.to_string(n)\n")
         .expect_err("signed");
     assert!(
         err.to_string().contains("expects an unsigned integer"),
@@ -2234,16 +2234,16 @@ external view function uri() : string is
 #[test]
 fn integers_and_addresses_convert_to_hex_strings() {
     let src = r#"
-storage is record { n : nat; }
+storage is record { n : uint; }
 
-external pure function hex(const n : nat) : string is
-  Nat.to_hex_string(n)
+external pure function hex(const n : uint) : string is
+  Uint.to_hex_string(n)
 
-external pure function fixed(const n : nat; const len : nat) : string is
-  Nat.to_hex_string(n, len)
+external pure function fixed(const n : uint; const len : uint) : string is
+  Uint.to_hex_string(n, len)
 
 external pure function small(const n : uint8) : string is
-  Nat.to_hex_string(n)
+  Uint.to_hex_string(n)
 
 external pure function addr(const a : address) : string is
   Address.to_hex_string(a)
@@ -2297,9 +2297,9 @@ external pure function checksum(const a : address) : string is
         assert_eq!(text("addr(address)", &[a]), want.to_lowercase());
         assert_eq!(text("checksum(address)", &[a]), want);
     }
-    let err = compile("storage is record { n : nat; }\nexternal pure function f(const n : nat; const m : int) : string is Nat.to_hex_string(n, m)\n")
+    let err = compile("storage is record { n : uint; }\nexternal pure function f(const n : uint; const m : int) : string is Uint.to_hex_string(n, m)\n")
         .expect_err("signed length");
-    assert!(err.to_string().contains("a length must be `nat`"), "{err}");
+    assert!(err.to_string().contains("a length must be `uint`"), "{err}");
 }
 
 /// `List.pop` drops the last element of a stored list, clearing its slots as Solidity's
@@ -2310,7 +2310,7 @@ fn list_pop_drops_the_last_element() {
     let src = r#"
 module Bag is {
   storage bag at "t.bag" is record {
-    items : list(nat);
+    items : list(uint);
   }
 
   function drop() is {
@@ -2322,12 +2322,12 @@ contract T is {
   use Bag;
 
   storage is record {
-    ids : list(nat);
+    ids : list(uint);
     names : list(string);
-    limits : list(option(nat));
+    limits : list(option(uint));
   }
 
-  external function push(const n : nat) is {
+  external function push(const n : uint) is {
     List.push(storage.ids, n);
     List.push(storage.names, String.concat("a string that is well past", " thirty one bytes long"));
     List.push(storage.limits, Some(n));
@@ -2342,22 +2342,22 @@ contract T is {
   }
 
   (* Solidity's swap and pop. *)
-  external function remove(const i : nat) is {
-    const last : nat := storage.ids[storage.ids.length - 1n];
+  external function remove(const i : uint) is {
+    const last : uint := storage.ids[storage.ids.length - 1];
     storage.ids[i] := last;
     List.pop(storage.ids);
   }
 
-  external view function ids() : list(nat) is
+  external view function ids() : list(uint) is
     storage.ids
 
-  external view function counts() : (nat, nat, nat, nat) is
+  external view function counts() : (uint, uint, uint, uint) is
     (storage.ids.length, storage.names.length, storage.limits.length, Bag.bag.items.length)
 
-  external pure function trim(const xs : list(nat)) : list(nat) is {
-    var ys : list(nat) := xs;
+  external pure function trim(const xs : list(uint)) : list(uint) is {
+    var ys : list(uint) := xs;
     List.pop(ys);
-    List.push(ys, 9n);
+    List.push(ys, 9);
     List.pop(ys);
   } with ys
 }
@@ -2416,7 +2416,7 @@ contract T is {
     assert_eq!(load_bytes(&out.returndata, 96), Word::from_u64(2));
     for (body, want) in [
         (
-            "const x : nat := List.pop(storage.ids);",
+            "const x : uint := List.pop(storage.ids);",
             "`List.pop` is a statement",
         ),
         (
@@ -2424,17 +2424,17 @@ contract T is {
             "`List.pop` expects a dynamic list",
         ),
         (
-            "List.pop(storage.ids[0n]);",
+            "List.pop(storage.ids[0]);",
             "takes a list variable or a stored list",
         ),
     ] {
         let src = format!(
-            "storage is record {{ ids : list(nat); fixed : list(nat, 3); }}\nexternal function f() is {{ {body} }}\n"
+            "storage is record {{ ids : list(uint); fixed : list(uint, 3); }}\nexternal function f() is {{ {body} }}\n"
         );
         let err = compile(&src).expect_err(body);
         assert!(err.to_string().contains(want), "{body}: {err}");
     }
-    let err = compile("storage is record { ids : list(nat); }\nexternal view function f() : nat is { List.pop(storage.ids); } with 0n\n")
+    let err = compile("storage is record { ids : list(uint); }\nexternal view function f() : uint is { List.pop(storage.ids); } with 0\n")
         .expect_err("view");
     assert!(err.to_string().contains("writes storage"), "{err}");
     // A generic module pops a list in the storage its caller passes.
@@ -2449,24 +2449,24 @@ module Stack(T : map_key) is {
   }
 
   function pop(storage s : self) : T is {
-    const top : T := s.items[s.items.length - 1n];
+    const top : T := s.items[s.items.length - 1];
     List.pop(s.items);
   } with top
 }
 
 storage is record {
-  stack : Stack(nat);
+  stack : Stack(uint);
 }
 
-external function push(const n : nat) is {
+external function push(const n : uint) is {
   Stack.push(storage.stack, n);
 }
 
-external function pop() : nat is {
-  const top : nat := Stack.pop(storage.stack);
+external function pop() : uint is {
+  const top : uint := Stack.pop(storage.stack);
 } with top
 
-external view function size() : nat is
+external view function size() : uint is
   storage.stack.items.length
 "#;
     let runtime = deploy(&compile(generic).expect("generic")).expect("deploy");
@@ -2493,43 +2493,43 @@ external view function size() : nat is
 fn list_push_is_the_only_growing_write() {
     let src = r#"
 type pair is record {
-  a : nat;
-  b : nat;
+  a : uint;
+  b : uint;
 }
 
 storage is record {
-  ids : list(nat);
+  ids : list(uint);
   pairs : list(pair);
-  by : map(address, list(nat));
+  by : map(address, list(uint));
 }
 
-external function push(const n : nat) is {
+external function push(const n : uint) is {
   List.push(storage.ids, n);
-  List.push(storage.pairs, { a = n; b = n + 1n; });
+  List.push(storage.pairs, { a = n; b = n + 1; });
   List.push(storage.by[Evm.sender()], n);
 }
 
-external function set_id(const i : nat) is { storage.ids[i] := 7n; }
-external function set_pair(const i : nat) is { storage.pairs[i] := { a = 7n; b = 7n; }; }
-external function set_by(const i : nat) is { storage.by[Evm.sender()][i] := 7n; }
+external function set_id(const i : uint) is { storage.ids[i] := 7; }
+external function set_pair(const i : uint) is { storage.pairs[i] := { a = 7; b = 7; }; }
+external function set_by(const i : uint) is { storage.by[Evm.sender()][i] := 7; }
 
-external view function sums() : (nat, nat, nat) is {
-  var s : nat := 0n;
-  for x : nat in storage.ids do { s := s + x; }
-  var p : nat := 0n;
+external view function sums() : (uint, uint, uint) is {
+  var s : uint := 0;
+  for x : uint in storage.ids do { s := s + x; }
+  var p : uint := 0;
   for q : pair in storage.pairs do { p := p + q.a + q.b; }
-  var m : nat := 0n;
-  for x : nat in storage.by[Evm.sender()] do { m := m + x; }
+  var m : uint := 0;
+  for x : uint in storage.by[Evm.sender()] do { m := m + x; }
 } with (s, p, m)
 
-external pure function local(const i : nat) : nat is {
-  var xs : list(nat) := [];
-  List.push(xs, 5n);
+external pure function local(const i : uint) : uint is {
+  var xs : list(uint) := [];
+  List.push(xs, 5);
   var ps : list(pair) := [];
-  List.push(ps, { a = 1n; b = 2n; });
-  xs[i] := 6n;
-  ps[i] := { a = 3n; b = 4n; };
-} with xs[0n] + ps[0n].a + xs.length * 10n
+  List.push(ps, { a = 1; b = 2; });
+  xs[i] := 6;
+  ps[i] := { a = 3; b = 4; };
+} with xs[0] + ps[0].a + xs.length * 10
 "#;
     let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
     let w = Word::from_u64;
@@ -2568,24 +2568,24 @@ external pure function local(const i : nat) : nat is {
     )));
     for (body, want) in [
         (
-            "const x : nat := List.push(storage.ids, 1n);",
+            "const x : uint := List.push(storage.ids, 1);",
             "`List.push` is a statement",
         ),
         (
-            "List.push(storage.fixed, 1n);",
+            "List.push(storage.fixed, 1);",
             "`List.push` expects a dynamic list",
         ),
         ("List.push(storage.ids);", "`List.push` expects 2 arguments"),
         ("List.push(storage.ids, true);", "does not match"),
-        ("storage.ids.length := 1n;", "`List.push` grows a list"),
+        ("storage.ids.length := 1;", "`List.push` grows a list"),
     ] {
         let src = format!(
-            "storage is record {{ ids : list(nat); fixed : list(nat, 3); }}\nexternal function f() is {{ {body} }}\n"
+            "storage is record {{ ids : list(uint); fixed : list(uint, 3); }}\nexternal function f() is {{ {body} }}\n"
         );
         let err = compile(&src).expect_err(body);
         assert!(err.to_string().contains(want), "{body}: {err}");
     }
-    let err = compile("storage is record { ids : list(nat); }\nexternal view function f() : nat is { List.push(storage.ids, 1n); } with 0n\n")
+    let err = compile("storage is record { ids : list(uint); }\nexternal view function f() : uint is { List.push(storage.ids, 1); } with 0\n")
         .expect_err("view");
     assert!(err.to_string().contains("writes storage"), "{err}");
 }
@@ -2596,7 +2596,7 @@ external pure function local(const i : nat) : nat is {
 fn stored_variants_track_states() {
     let src = r#"
 type fill is record {
-  amount_out : nat;
+  amount_out : uint;
   at : uint64;
 }
 
@@ -2616,13 +2616,13 @@ type order is record {
   status : order_status;
 }
 
-error AlreadyPlaced of nat;
-error NotComplete of nat;
+error AlreadyPlaced of uint;
+error NotComplete of uint;
 
 storage is record {
   mode : mode;
   flag : bool;
-  orders : map(nat, order);
+  orders : map(uint, order);
   history : list(order_status);
   last : option(mode);
 }
@@ -2636,42 +2636,42 @@ external function set_mode(const m : mode) is {
 external view function get_mode() : mode is storage.mode
 external view function is_open() : bool is storage.mode = Open
 external view function mode_code() : uint8 is uint8(storage.mode)
-external view function mode_name() : nat is
+external view function mode_name() : uint is
   case storage.mode of { | Open -> 10 | Paused -> 20 | Closed -> 30 }
-external view function last_code() : nat is
-  case storage.last of { | Some(m) -> nat(uint8(m)) | None -> 99 }
+external view function last_code() : uint is
+  case storage.last of { | Some(m) -> uint(uint8(m)) | None -> 99 }
 
-external function place(const id : nat) raises AlreadyPlaced is {
+external function place(const id : uint) raises AlreadyPlaced is {
   assert(storage.orders[id].status = New, AlreadyPlaced(id));
   storage.orders[id].owner := Evm.sender();
   storage.orders[id].status := Pending;
 }
 
-external function fill_order(const id : nat; const out : nat) is {
+external function fill_order(const id : uint; const out : uint) is {
   storage.orders[id].status := Filled({ amount_out = out; at = uint64(7) });
   List.push(storage.history, storage.orders[id].status);
 }
 
-external function unwind(const id : nat) is {
+external function unwind(const id : uint) is {
   storage.orders[id].status := Unwound;
 }
 
-external view function amount(const id : nat) : nat raises NotComplete is
+external view function amount(const id : uint) : uint raises NotComplete is
   case storage.orders[id].status of {
   | Filled(f) -> f.amount_out
   | New | Pending | Unwound -> fail NotComplete(id);
   }
 
-external view function stage(const id : nat) : nat is
+external view function stage(const id : uint) : uint is
   case storage.orders[id].status of {
   | New -> 0
   | Pending -> 1
   | Filled | Unwound -> 2
   }
 
-external view function first_fill() : nat is
+external view function first_fill() : uint is
   case storage.history[0] of {
-  | Filled(f) -> f.amount_out + nat(f.at)
+  | Filled(f) -> f.amount_out + uint(f.at)
   | New | Pending | Unwound -> 0
   }
 "#;
@@ -2747,16 +2747,16 @@ fn variant_values_work_everywhere() {
     let src = r#"
 type status is
   | Idle
-  | Busy of nat
-  | Done of (nat, bool)
+  | Busy of uint
+  | Done of (uint, bool)
 
 type light is | Red | Amber | Green
 
 storage is record {
-  by_id : map(nat, status);
+  by_id : map(uint, status);
   lights : list(light, 3);
   maybe : option(status);
-  n : nat;
+  n : uint;
 }
 
 transient storage scratch is record {
@@ -2767,7 +2767,7 @@ transient storage scratch is record {
 pure function next(const l : light) : light is
   case l of { | Red -> Green | Green -> Amber | Amber -> Red }
 
-pure function weight(const s : status) : nat is
+pure function weight(const s : status) : uint is
   case s of {
   | Idle -> 0
   | Busy(n) -> n
@@ -2781,7 +2781,7 @@ pure function bump(const s : status) : status is
   | Done(d) -> Done(d)
   }
 
-external function step(const id : nat) is {
+external function step(const id : uint) is {
   const s : status := bump(storage.by_id[id]);
   storage.by_id[id] := s;
   scratch.s := s;
@@ -2789,24 +2789,24 @@ external function step(const id : nat) is {
   storage.n := weight(scratch.s);
 }
 
-external function finish(const id : nat; const ok : bool) is {
+external function finish(const id : uint; const ok : bool) is {
   storage.by_id[id] := Done(weight(storage.by_id[id]), ok);
 }
 
-external function cycle(const i : nat) is {
+external function cycle(const i : uint) is {
   storage.lights[i] := next(storage.lights[i]);
   scratch.l := storage.lights[i];
-  storage.n := nat(uint8(scratch.l));
+  storage.n := uint(uint8(scratch.l));
 }
 
-external view function weight_of(const id : nat) : nat is weight(storage.by_id[id])
-external view function same(const a : nat; const b : nat) : bool is storage.by_id[a] = storage.by_id[b]
-external view function idle(const id : nat) : bool is storage.by_id[id] = Idle
-external view function busy_one(const id : nat) : bool is storage.by_id[id] <> Busy(1)
-external view function light_at(const i : nat) : light is storage.lights[i]
-external view function maybe_weight() : nat is
+external view function weight_of(const id : uint) : uint is weight(storage.by_id[id])
+external view function same(const a : uint; const b : uint) : bool is storage.by_id[a] = storage.by_id[b]
+external view function idle(const id : uint) : bool is storage.by_id[id] = Idle
+external view function busy_one(const id : uint) : bool is storage.by_id[id] <> Busy(1)
+external view function light_at(const i : uint) : light is storage.lights[i]
+external view function maybe_weight() : uint is
   case storage.maybe of { | Some(s) -> weight(s) | None -> 999 }
-external view function n() : nat is storage.n
+external view function n() : uint is storage.n
 "#;
     let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
     let w = Word::from_u64;
@@ -2860,18 +2860,18 @@ fn variant_values_are_checked() {
         let err = compile(src).expect_err(want);
         assert!(err.to_string().contains(want), "{err}");
     };
-    let base = "type mode is | Open | Closed\ntype st is | Idle | Busy of nat\ntype act is | Put of bytes | Stop\nstorage is record { m : mode; s : st; }\n";
+    let base = "type mode is | Open | Closed\ntype st is | Idle | Busy of uint\ntype act is | Put of bytes | Stop\nstorage is record { m : mode; s : st; }\n";
     let with = |body: &str| format!("{base}{body}");
     rejects(
-        &with("external view function f() : nat is case storage.m of { | Open -> 1 }"),
+        &with("external view function f() : uint is case storage.m of { | Open -> 1 }"),
         "missing case arm `Closed`",
     );
     rejects(
-        &with("external view function f() : nat is case storage.s of { | Idle | Busy(n) -> 1 }"),
+        &with("external view function f() : uint is case storage.s of { | Idle | Busy(n) -> 1 }"),
         "every case of an arm must bind the same names",
     );
     rejects(
-        "type st is | A of nat | B of bool\nstorage is record { s : st; }\nexternal view function f() : nat is case storage.s of { | A(n) | B(n) -> 1 }",
+        "type st is | A of uint | B of bool\nstorage is record { s : st; }\nexternal view function f() : uint is case storage.s of { | A(n) | B(n) -> 1 }",
         "`A` and `B` carry different payloads",
     );
     rejects(
@@ -2903,7 +2903,7 @@ fn variant_values_are_checked() {
         "variants with payloads cannot be ABI values",
     );
     rejects(
-        "type act is | Put of map(nat, nat) | Stop\nstorage is record { n : nat; }\nexternal function f() is { const a : act := Stop; }",
+        "type act is | Put of map(uint, uint) | Stop\nstorage is record { n : uint; }\nexternal function f() is { const a : act := Stop; }",
         "only dispatches entrypoints",
     );
     rejects(
@@ -2930,7 +2930,7 @@ error Bad of mode;
 
 storage is record {
   paused : bool;
-  counts : map(mode, nat);
+  counts : map(mode, uint);
 }
 
 external function main(const a : admin) is
@@ -2941,16 +2941,16 @@ external function main(const a : admin) is
 
 external function bump(const m : mode) raises Bad is {
   assert(m <> Off, Bad(m));
-  storage.counts[m] := storage.counts[m] + 1n;
+  storage.counts[m] := storage.counts[m] + 1;
 }
 
 external view function paused() : bool is storage.paused
-external view function count(const m : mode) : nat is storage.counts[m]
+external view function count(const m : mode) : uint is storage.counts[m]
 external pure function decoded(const data : bytes) : mode is Abi.decode(data, mode)
-external pure function ons(const ms : list(mode)) : nat is {
-  var n : nat := 0n;
+external pure function ons(const ms : list(mode)) : uint is {
+  var n : uint := 0;
   for m : mode in ms do {
-    if m = On then { n := n + 1n; }
+    if m = On then { n := n + 1; }
   }
 } with n
 "#;
@@ -2995,17 +2995,17 @@ external pure function ons(const ms : list(mode)) : nat is {
 #[test]
 fn stored_variants_pack() {
     let src = r#"
-type fill is record { amount_out : nat; at : uint64; }
+type fill is record { amount_out : uint; at : uint64; }
 type status is | New | Filled of fill
 type small is | Empty | Stamp of uint64 | Flag of bool | Delta of int16 | Who of address
 storage is record {
   s : status;
   t : small;
 }
-external function fill(const out : nat) is { storage.s := Filled({ amount_out = out; at = uint64(9) }); }
+external function fill(const out : uint) is { storage.s := Filled({ amount_out = out; at = uint64(9) }); }
 external function delta(const d : int16) is { storage.t := Delta(d); }
 external function who() is { storage.t := Who(Evm.sender()); }
-external view function at() : nat is case storage.s of { | Filled(f) -> nat(f.at) + f.amount_out | New -> 0 }
+external view function at() : uint is case storage.s of { | Filled(f) -> uint(f.at) + f.amount_out | New -> 0 }
 external view function d() : int is
   case storage.t of { | Delta(d) -> int(d) | Empty | Stamp | Flag | Who -> 0 }
 external view function is_who() : bool is
@@ -3037,39 +3037,39 @@ type job is
   | Idle
   | Queued of string
   | Tagged of memo
-  | Batch of list(nat)
+  | Batch of list(uint)
   | Held of string
   | Count of uint64
 
 storage is record {
   cur : job;
-  jobs : map(nat, job);
+  jobs : map(uint, job);
 }
 
-external function queue(const id : nat; const why : string) is { storage.jobs[id] := Queued(why); }
-external function hold(const id : nat; const why : string) is { storage.jobs[id] := Held(why); }
-external function tag(const id : nat; const text : string) is {
+external function queue(const id : uint; const why : string) is { storage.jobs[id] := Queued(why); }
+external function hold(const id : uint; const why : string) is { storage.jobs[id] := Held(why); }
+external function tag(const id : uint; const text : string) is {
   storage.jobs[id] := Tagged({ who = Evm.sender(); text = text; });
   storage.cur := storage.jobs[id];
 }
-external function batch(const id : nat; const xs : list(nat)) is { storage.jobs[id] := Batch(xs); }
-external function clear(const id : nat) is { storage.jobs[id] := Idle; }
+external function batch(const id : uint; const xs : list(uint)) is { storage.jobs[id] := Batch(xs); }
+external function clear(const id : uint) is { storage.jobs[id] := Idle; }
 
-external view function why(const id : nat) : string is
+external view function why(const id : uint) : string is
   case storage.jobs[id] of {
   | Queued(s) | Held(s) -> s
   | Tagged(m) -> m.text
   | Idle | Batch | Count -> ""
   }
-external view function total(const id : nat) : nat is {
-  var t : nat := 0n;
+external view function total(const id : uint) : uint is {
+  var t : uint := 0;
   case storage.jobs[id] of {
-  | Batch(xs) -> { for x : nat in xs do { t := t + x; } }
-  | Count(n) -> { t := nat(n); }
+  | Batch(xs) -> { for x : uint in xs do { t := t + x; } }
+  | Count(n) -> { t := uint(n); }
   | Idle | Queued | Tagged | Held -> { skip; }
   };
 } with t
-external view function idle(const id : nat) : bool is storage.jobs[id] = Idle
+external view function idle(const id : uint) : bool is storage.jobs[id] = Idle
 external view function cur_text() : string is
   case storage.cur of { | Tagged(m) -> m.text | Idle | Queued | Batch | Held | Count -> "none" }
 "#;
@@ -3136,20 +3136,20 @@ external view function cur_text() : string is
 #[test]
 fn stored_records_with_dynamic_fields_are_written_whole() {
     let src = r#"
-type note is record { tag : uint8; memo : string; ids : list(nat); }
+type note is record { tag : uint8; memo : string; ids : list(uint); }
 storage is record {
   one : note;
-  by : map(nat, note);
+  by : map(uint, note);
 }
-external function set(const k : nat; const m : string) is {
-  const n : note := { tag = uint8(7); memo = m; ids = [1n, 2n, 3n]; };
+external function set(const k : uint; const m : string) is {
+  const n : note := { tag = uint8(7); memo = m; ids = [1, 2, 3]; };
   storage.one := n;
   storage.by[k] := storage.one;
 }
-external view function memo(const k : nat) : string is storage.by[k].memo
-external view function sum(const k : nat) : nat is {
+external view function memo(const k : uint) : string is storage.by[k].memo
+external view function sum(const k : uint) : uint is {
   const n : note := storage.by[k];
-} with n.ids[0] + n.ids[2] + nat(n.tag)
+} with n.ids[0] + n.ids[2] + uint(n.tag)
 "#;
     let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
     let w = Word::from_u64;
@@ -3174,11 +3174,11 @@ external view function sum(const k : nat) : nat is {
 #[test]
 fn records_read_their_dynamic_fields() {
     let w = Word::from_u64;
-    let base = "type note is record { tag : uint8; memo : string; ids : list(nat); }\nstorage is record { one : note; }\nexternal function set() is { storage.one.memo := \"hey\"; storage.one.ids := [1n, 2n, 3n]; }\n";
+    let base = "type note is record { tag : uint8; memo : string; ids : list(uint); }\nstorage is record { one : note; }\nexternal function set() is { storage.one.memo := \"hey\"; storage.one.ids := [1, 2, 3]; }\n";
     for (view, want) in [
-        ("external view function s() : nat is { const n : note := storage.one; } with n.ids[2]", 3),
-        ("external view function s() : nat is { const n : note := storage.one; } with n.memo.length", 3),
-        ("external view function s() : nat is { const n : note := { tag = uint8(1); memo = \"\"; ids = [4n, 5n, 6n]; }; } with n.ids[2]", 6),
+        ("external view function s() : uint is { const n : note := storage.one; } with n.ids[2]", 3),
+        ("external view function s() : uint is { const n : note := storage.one; } with n.memo.length", 3),
+        ("external view function s() : uint is { const n : note := { tag = uint8(1); memo = \"\"; ids = [4, 5, 6]; }; } with n.ids[2]", 6),
     ] {
         let runtime = deploy(&compile(&format!("{base}{view}")).expect("compile")).expect("deploy");
         let st = run_ok(&runtime, &HashMap::new(), "set()", &[]).storage;
@@ -3198,34 +3198,34 @@ type review is
   | Approved of list(address)
 
 storage is record {
-  reviews : map(nat, review);
+  reviews : map(uint, review);
 }
 
-external function reject(const id : nat; const why : string) is {
+external function reject(const id : uint; const why : string) is {
   storage.reviews[id] := Rejected(why);
 }
 
-external function withdraw(const id : nat; const why : string) is {
+external function withdraw(const id : uint; const why : string) is {
   storage.reviews[id] := Withdrawn(why);
 }
 
-external function approve(const id : nat; const by : list(address)) is {
+external function approve(const id : uint; const by : list(address)) is {
   storage.reviews[id] := Approved(by);
 }
 
-external view function reason(const id : nat) : string is
+external view function reason(const id : uint) : string is
   case storage.reviews[id] of {
   | Rejected(why) | Withdrawn(why) -> why
   | Draft | Approved -> ""
   }
 
-external view function approvals(const id : nat) : nat is
+external view function approvals(const id : uint) : uint is
   case storage.reviews[id] of {
   | Approved(by) -> by.length
   | Draft | Rejected | Withdrawn -> 0
   }
 
-external function draft(const id : nat) is { storage.reviews[id] := Draft; }
+external function draft(const id : uint) is { storage.reviews[id] := Draft; }
 "#;
     let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
     let run = |st: &HashMap<Word, Word>, data: Vec<u8>| {
@@ -3273,35 +3273,35 @@ external function draft(const id : nat) is { storage.reviews[id] := Draft; }
 fn dynamic_variants_are_list_elements() {
     let w = Word::from_u64;
     let src = r#"
-type dyn is | Name of string | Nums of list(nat) | Blank
+type dyn is | Name of string | Nums of list(uint) | Blank
 type row is record { k : uint8; d : dyn; }
-storage is record { xs : list(dyn); rows : map(nat, list(row)); }
-pure function tag(const d : dyn) : nat is case d of { Name(s) -> s.length | Nums(xs) -> 100n + xs.length | Blank -> 999n }
-external function name(const i : nat; const s : string) is {
-  for _ : nat in storage.xs.length .. i + 1n do { List.push(storage.xs, Blank); }
+storage is record { xs : list(dyn); rows : map(uint, list(row)); }
+pure function tag(const d : dyn) : uint is case d of { Name(s) -> s.length | Nums(xs) -> 100 + xs.length | Blank -> 999 }
+external function name(const i : uint; const s : string) is {
+  for _ : uint in storage.xs.length .. i + 1 do { List.push(storage.xs, Blank); }
   storage.xs[i] := Name(s);
 }
-external function nums(const i : nat; const n : nat) is {
-  var xs : list(nat) := [];
-  for k : nat in 0n .. n do { List.push(xs, k); }
+external function nums(const i : uint; const n : uint) is {
+  var xs : list(uint) := [];
+  for k : uint in 0 .. n do { List.push(xs, k); }
   storage.xs[i] := Nums(xs);
 }
-external function blank(const i : nat) is { storage.xs[i] := Blank; }
+external function blank(const i : uint) is { storage.xs[i] := Blank; }
 external function shrink() is { storage.xs := [Blank]; }
-external view function at(const i : nat) : nat is tag(storage.xs[i])
-external function row() is { List.push(storage.rows[1n], { k = 3; d = Name("row") }); }
-external view function row_at() : nat is tag(storage.rows[1n][0].d)
-external pure function local() : nat is {
-  var xs : list(dyn) := [Blank, Nums([1n, 2n])];
+external view function at(const i : uint) : uint is tag(storage.xs[i])
+external function row() is { List.push(storage.rows[1], { k = 3; d = Name("row") }); }
+external view function row_at() : uint is tag(storage.rows[1][0].d)
+external pure function local() : uint is {
+  var xs : list(dyn) := [Blank, Nums([1, 2])];
   var ys : list(dyn) := xs;
   List.push(xs, Name("four"));
   xs[0] := Name("a string that is longer than thirty-two bytes, to spill");
-} with tag(xs[0]) * 1000000n + tag(xs[2]) * 1000n + tag(ys[1]) + ys.length * 0n
-external pure function pairs() : nat is {
+} with tag(xs[0]) * 1000000 + tag(xs[2]) * 1000 + tag(ys[1]) + ys.length * 0
+external pure function pairs() : uint is {
   var ts : list((uint8, dyn)) := [(uint8(1), Blank)];
   List.push(ts, (uint8(2), Name("tuple")));
   const (k, d) : (uint8, dyn) := ts[1];
-} with nat(k) * 1000n + tag(d)
+} with uint(k) * 1000 + tag(d)
 "#;
     let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
     let run = |st: &HashMap<Word, Word>, data: Vec<u8>| {
@@ -3349,27 +3349,27 @@ external pure function pairs() : nat is {
 #[test]
 fn values_with_options_and_strings_compare() {
     let src = r#"
-type dyn is | Name of string | Nums of list(nat) | Blank
-type mix is record { o : option(nat); s : string; }
-type holds is record { d : dyn; n : nat; }
+type dyn is | Name of string | Nums of list(uint) | Blank
+type mix is record { o : option(uint); s : string; }
+type holds is record { d : dyn; n : uint; }
 storage is record { d : dyn; ds : list(dyn); }
-external function keep() is { storage.d := Nums([1n, 2n]); storage.ds := [Blank, Name("x")]; }
-external pure function a() : bool is { var d : dyn := Name("x"); d := Nums([1n]); } with d = Nums([1n])
+external function keep() is { storage.d := Nums([1, 2]); storage.ds := [Blank, Name("x")]; }
+external pure function a() : bool is { var d : dyn := Name("x"); d := Nums([1]); } with d = Nums([1])
 external pure function b() : bool is Name("") = Blank
 external pure function c() : bool is Name("x") <> Name("y")
 external pure function d() : bool is { const xs : list(option(string)) := [Some("a"), None]; } with xs = [Some("a"), None]
 external pure function e() : bool is { const xs : list(option(string)) := [Some("a"), None]; } with xs = [Some("a"), Some("")]
-external pure function f() : bool is { const t : (option(string), nat) := (Some("a"), 1n); } with t = (Some("a"), 2n)
-external pure function g() : bool is { const m : mix := { o = None; s = "s"; }; } with m = { o = Some(0n); s = "s"; }
-external pure function h() : bool is { const m : mix := { o = Some(0n); s = "s"; }; } with m = { o = Some(0n); s = "s"; }
-external pure function i() : bool is { const x : holds := { d = Nums([]); n = 1n; }; } with x = { d = Nums([]); n = 1n; }
-external pure function j() : bool is { const x : holds := { d = Nums([]); n = 1n; }; } with x = { d = Blank; n = 1n; }
-external view function k() : bool is storage.d = Nums([1n, 2n])
+external pure function f() : bool is { const t : (option(string), uint) := (Some("a"), 1); } with t = (Some("a"), 2)
+external pure function g() : bool is { const m : mix := { o = None; s = "s"; }; } with m = { o = Some(0); s = "s"; }
+external pure function h() : bool is { const m : mix := { o = Some(0); s = "s"; }; } with m = { o = Some(0); s = "s"; }
+external pure function i() : bool is { const x : holds := { d = Nums([]); n = 1; }; } with x = { d = Nums([]); n = 1; }
+external pure function j() : bool is { const x : holds := { d = Nums([]); n = 1; }; } with x = { d = Blank; n = 1; }
+external view function k() : bool is storage.d = Nums([1, 2])
 external view function l() : bool is storage.ds = [Blank, Name("x")]
 external view function m() : bool is storage.ds[1] = Name("")
 external pure function n() : bool is { const o : option(option(string)) := Some(None); } with o = Some(Some(""))
-external pure function o() : bool is { const o : option(option(list(nat))) := Some(Some([1n])); } with o = Some(Some([1n]))
-external pure function p() : bool is { const o : option(list(nat)) := None; } with o <> Some([])
+external pure function o() : bool is { const o : option(option(list(uint))) := Some(Some([1])); } with o = Some(Some([1]))
+external pure function p() : bool is { const o : option(list(uint)) := None; } with o <> Some([])
 "#;
     let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
     let st = run_ok(&runtime, &HashMap::new(), "keep()", &[]).storage;
@@ -3400,18 +3400,18 @@ external pure function p() : bool is { const o : option(list(nat)) := None; } wi
 fn options_of_dynamic_values_clear_their_payloads() {
     let w = Word::from_u64;
     let src = r#"
-type doc is record { n : uint8; s : string; xs : list(nat); }
-storage is record { o : option(list(nat)); m : map(nat, option(doc)); ds : list(option(doc)); }
+type doc is record { n : uint8; s : string; xs : list(uint); }
+storage is record { o : option(list(uint)); m : map(uint, option(doc)); ds : list(option(doc)); }
 external function set() is {
-  storage.o := Some([1n, 2n, 3n]);
-  storage.m[1n] := Some({ n = 1; s = "a string that is longer than thirty-two bytes, to spill"; xs = [4n]; });
-  List.push(storage.ds, Some({ n = 2; s = "short"; xs = [5n, 6n]; }));
+  storage.o := Some([1, 2, 3]);
+  storage.m[1] := Some({ n = 1; s = "a string that is longer than thirty-two bytes, to spill"; xs = [4]; });
+  List.push(storage.ds, Some({ n = 2; s = "short"; xs = [5, 6]; }));
 }
-external function clear() is { storage.o := None; storage.m[1n] := None; storage.ds[0] := None; List.pop(storage.ds); }
-external view function sum() : nat is
-  (case storage.o of { Some(xs) -> xs[2] | None -> 0n })
-  + (case storage.m[1n] of { Some(d) -> d.s.length + d.xs[0] | None -> 0n })
-  + (case storage.ds[0] of { Some(d) -> d.xs[1] | None -> 0n })
+external function clear() is { storage.o := None; storage.m[1] := None; storage.ds[0] := None; List.pop(storage.ds); }
+external view function sum() : uint is
+  (case storage.o of { Some(xs) -> xs[2] | None -> 0 })
+  + (case storage.m[1] of { Some(d) -> d.s.length + d.xs[0] | None -> 0 })
+  + (case storage.ds[0] of { Some(d) -> d.xs[1] | None -> 0 })
 "#;
     let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
     let st = run_ok(&runtime, &HashMap::new(), "set()", &[]).storage;
@@ -3425,17 +3425,17 @@ external view function sum() : nat is
 fn opening_pipes_are_optional() {
     let src = r#"
 type phase is Open | Paused | Closed
-type one is Only of nat
+type one is Only of uint
 type multi is
   | X
-  | Y of nat
+  | Y of uint
 error Shut;
-storage is record { phase : phase; fee : nat; m : multi; }
-external function set(const p : phase) is { storage.phase := p; storage.fee := 5n; storage.m := Y(9n); }
-external view function fee() : nat raises Shut is
+storage is record { phase : phase; fee : uint; m : multi; }
+external function set(const p : phase) is { storage.phase := p; storage.fee := 5; storage.m := Y(9); }
+external view function fee() : uint raises Shut is
   case storage.phase of { Open | Paused -> storage.fee | Closed -> fail Shut }
-external view function y() : nat is case storage.m of { X -> 0 | Y(n) -> n }
-external pure function only(const n : nat) : nat is {
+external view function y() : uint is case storage.m of { X -> 0 | Y(n) -> n }
+external pure function only(const n : uint) : uint is {
   const o : one := Only(n);
 } with case o of { Only(k) -> k }
 "#;
@@ -3452,7 +3452,7 @@ external pure function only(const n : nat) : nat is {
             .reverted
     );
     let err = compile(
-        "type phase is Open | Closed\nstorage is record { p : phase; }\nexternal view function f() : nat is case storage.p of { Open -> 1 Closed -> 2 }",
+        "type phase is Open | Closed\nstorage is record { p : phase; }\nexternal view function f() : uint is case storage.p of { Open -> 1 Closed -> 2 }",
     )
     .expect_err("arms after the first need `|`");
     assert!(err.to_string().contains("expected `|`"), "{err}");
@@ -3461,16 +3461,16 @@ external pure function only(const n : nat) : nat is {
 #[test]
 fn nested_list_writes_leave_copies_alone() {
     let src = "\
-type holder is record { pre : uint8; x : list(nat); post : bool; }
-storage is record { n : nat; }
-external pure function a() : nat is { var xs : list(list(nat)) := [[1n]]; const b : list(nat) := xs[0]; xs[0][0] := 2n; } with b[0]
-external pure function b() : nat is { var hs : list(holder) := [{ pre = 1; x = [1n]; post = true; }]; const y : list(nat) := hs[0].x; hs[0].x[0] := 2n; } with y[0]
-external pure function c() : nat is { var xs : list(list(list(nat))) := [[[1n]]]; const y : list(nat) := xs[0][0]; xs[0][0][0] := 2n; } with y[0]
-external pure function d() : nat is { var xs : list(list(nat)) := [[1n]]; const y : list(list(nat)) := xs; xs[0][0] := 2n; } with y[0][0]
-external pure function e() : nat is { var xs : list(list(nat)) := [[1n]]; const y : list(list(nat)) := xs; List.pop(xs[0]); } with y[0].length
-external pure function f() : nat is { var xs : list(list(nat)) := [[1n]]; const y : list(nat) := xs[0]; List.push(xs[0], 5n); } with y.length * 10n + xs[0][1]
-external pure function g() : nat is { var hs : list(holder) := [{ pre = 1; x = [1n]; post = true; }]; List.push(hs[0].x, 7n); List.push(hs[0].x, 8n); List.pop(hs[0].x); } with hs[0].x.length * 10n + hs[0].x[1]
-external pure function h() : nat is { var xs : list(list(nat)) := [[]]; List.pop(xs[0]); } with 1n
+type holder is record { pre : uint8; x : list(uint); post : bool; }
+storage is record { n : uint; }
+external pure function a() : uint is { var xs : list(list(uint)) := [[1]]; const b : list(uint) := xs[0]; xs[0][0] := 2; } with b[0]
+external pure function b() : uint is { var hs : list(holder) := [{ pre = 1; x = [1]; post = true; }]; const y : list(uint) := hs[0].x; hs[0].x[0] := 2; } with y[0]
+external pure function c() : uint is { var xs : list(list(list(uint))) := [[[1]]]; const y : list(uint) := xs[0][0]; xs[0][0][0] := 2; } with y[0]
+external pure function d() : uint is { var xs : list(list(uint)) := [[1]]; const y : list(list(uint)) := xs; xs[0][0] := 2; } with y[0][0]
+external pure function e() : uint is { var xs : list(list(uint)) := [[1]]; const y : list(list(uint)) := xs; List.pop(xs[0]); } with y[0].length
+external pure function f() : uint is { var xs : list(list(uint)) := [[1]]; const y : list(uint) := xs[0]; List.push(xs[0], 5); } with y.length * 10 + xs[0][1]
+external pure function g() : uint is { var hs : list(holder) := [{ pre = 1; x = [1]; post = true; }]; List.push(hs[0].x, 7); List.push(hs[0].x, 8); List.pop(hs[0].x); } with hs[0].x.length * 10 + hs[0].x[1]
+external pure function h() : uint is { var xs : list(list(uint)) := [[]]; List.pop(xs[0]); } with 1
 ";
     let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
     for (f, want) in [
@@ -3489,7 +3489,7 @@ external pure function h() : nat is { var xs : list(list(nat)) := [[]]; List.pop
     let empty = call(&runtime, "h()", &[]);
     assert!(empty.reverted);
     assert_eq!(empty.returndata[35], 0x31);
-    let err = compile("storage is record { n : nat; }\nexternal pure function f() : nat is { const xs : list(list(nat)) := [[1n]]; List.pop(xs[0]); } with 1n\n")
+    let err = compile("storage is record { n : uint; }\nexternal pure function f() : uint is { const xs : list(list(uint)) := [[1]]; List.pop(xs[0]); } with 1\n")
         .expect_err("const");
     assert!(
         err.to_string().contains("cannot assign to a const"),
@@ -3501,31 +3501,31 @@ external pure function h() : nat is { var xs : list(list(nat)) := [[]]; List.pop
 fn literals_take_their_type_from_context() {
     let src = r#"
 type pt is record { a : uint8; b : bool; }
-type doc is record { n : uint8; s : string; xs : list(nat); }
+type doc is record { n : uint8; s : string; xs : list(uint); }
 type dyn is | Name of string | Blank
 error Whole of doc;
 error Named of doc;
-storage is record { n : nat; }
+storage is record { n : uint; }
 pure function opt(const n : uint8) : option(uint8) is { var o : option(uint8) := None; if n <> 0 then { o := Some(n); } } with o
 pure function iopt(const n : int8) : option(int8) is { var o : option(int8) := None; if n <> 0 then { o := Some(n); } } with o
-pure function tag(const d : dyn) : nat is case d of { Name(_) -> 1n | Blank -> 2n }
+pure function tag(const d : dyn) : uint is case d of { Name(_) -> 1 | Blank -> 2 }
 external pure function arms(const n : uint8) : bool is case opt(n) of { None -> 255 | Some(x) -> x } = uint8(255)
 external pure function neg(const n : int8) : bool is -1 = case iopt(n) of { None -> -1 | Some(x) -> x }
 external pure function opts(const n : uint8) : bool is None = case opt(n) of { None -> None | Some(x) -> Some(x) }
 external pure function recs(const p : pt) : bool is case Some(p.b) of { None -> { a = 2; b = false; } | Some(v) -> { a = 1; b = v; } } = p
-external pure function lists(const xs : list(nat)) : bool is [] = xs
-external pure function max(const x : uint8) : bool is Nat.max = x
+external pure function lists(const xs : list(uint)) : bool is [] = xs
+external pure function max(const x : uint8) : bool is Uint.max = x
 external pure function long(const b : bytes) : bool is 0x0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f2021 = b
 external pure function word(const b : bytes) : bool is b = 0x0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20
-external pure function blank() : nat is tag(Blank)
+external pure function blank() : uint is tag(Blank)
 external pure function hash(const b : bytes) : (bool, bool) is
   (Crypto.keccak256(b) = Crypto.keccak256(0xdeadbeef), Crypto.keccak256(b) = Crypto.keccak256(0x0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f2021))
 external function whole() raises Whole is {
-  const d : doc := { n = 7; s = "a string that is longer than thirty-two bytes, to spill"; xs = [1n, 2n]; };
+  const d : doc := { n = 7; s = "a string that is longer than thirty-two bytes, to spill"; xs = [1, 2]; };
   fail Whole(d);
 }
 external function named() raises Named is {
-  fail Named { n = 7; s = "a string that is longer than thirty-two bytes, to spill"; xs = [1n, 2n]; };
+  fail Named { n = 7; s = "a string that is longer than thirty-two bytes, to spill"; xs = [1, 2]; };
 }
 "#;
     let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
@@ -3562,26 +3562,26 @@ external function named() raises Named is {
 #[test]
 fn vars_never_share_their_values() {
     let src = "\
-type h is record { n : nat; xs : list(nat); }
-storage is record { n : nat; t : (nat, nat); }
-pure function id(const x : list(nat)) : list(nat) is x
-pure function first(const t : (nat, nat)) : nat is { const (a, b) : (nat, nat) := t; } with a
-pure function setp(var xs : list(nat)) : nat is { xs[0] := 2n; } with xs[0]
-pure function seth(var a : h) : nat is { a.xs[0] := 2n; } with a.xs[0]
-external pure function decl() : nat is { const ys : list(nat) := [1n]; var xs : list(nat) := ys; xs[0] := 2n; } with ys[0]
-external pure function assign() : nat is { const ys : list(nat) := [1n]; var xs : list(nat) := []; xs := ys; xs[0] := 2n; } with ys[0]
-external pure function param() : nat is { const ys : list(nat) := [1n]; const z : nat := setp(ys); } with ys[0] * 10n + z
-external pure function elem() : nat is { const ys : list(list(nat)) := [[1n]]; var xs : list(nat) := ys[0]; xs[0] := 2n; } with ys[0][0]
-external pure function tup() : nat is { const ys : list(nat) := [1n]; var xs : list(nat) := []; var n : nat := 0n; (xs, n) := (ys, 1n); xs[0] := 2n; } with ys[0]
-external pure function call() : nat is { const ys : list(nat) := [1n]; var xs : list(nat) := id(ys); xs[0] := 2n; } with ys[0]
-external pure function rec() : nat is { const g : h := { n = 1n; xs = [1n]; }; var a : h := g; a.xs[0] := 2n; } with g.xs[0]
-external pure function field() : nat is { const ys : list(nat) := [1n]; var a : h := { n = 1n; xs = []; }; a.xs := ys; a.xs[0] := 2n; } with ys[0]
-external pure function lit() : nat is { const ys : list(nat) := [1n]; var a : h := { n = 1n; xs = ys; }; a.xs[0] := 2n; } with ys[0]
-external pure function recparam() : nat is { const g : h := { n = 1n; xs = [1n]; }; const z : nat := seth(g); } with g.xs[0] * 10n + z
-external pure function out() : nat is { var a : h := { n = 1n; xs = [1n]; }; const b : h := a; a.xs[0] := 2n; } with b.xs[0] * 10n + a.xs[0]
-external pure function records() : nat is { const gs : list(h) := [{ n = 1n; xs = [1n]; }]; var hs : list(h) := gs; hs[0].xs[0] := 2n; } with gs[0].xs[0]
-external pure function swap() : nat is { var t : (nat, nat) := (1n, 2n); t := (3n, first(t)); const (a, b) : (nat, nat) := t; } with a * 10n + b
-external function stored() : nat is { storage.t := (1n, 2n); storage.t := (3n, first(storage.t)); const (a, b) : (nat, nat) := storage.t; } with a * 10n + b
+type h is record { n : uint; xs : list(uint); }
+storage is record { n : uint; t : (uint, uint); }
+pure function id(const x : list(uint)) : list(uint) is x
+pure function first(const t : (uint, uint)) : uint is { const (a, b) : (uint, uint) := t; } with a
+pure function setp(var xs : list(uint)) : uint is { xs[0] := 2; } with xs[0]
+pure function seth(var a : h) : uint is { a.xs[0] := 2; } with a.xs[0]
+external pure function decl() : uint is { const ys : list(uint) := [1]; var xs : list(uint) := ys; xs[0] := 2; } with ys[0]
+external pure function assign() : uint is { const ys : list(uint) := [1]; var xs : list(uint) := []; xs := ys; xs[0] := 2; } with ys[0]
+external pure function param() : uint is { const ys : list(uint) := [1]; const z : uint := setp(ys); } with ys[0] * 10 + z
+external pure function elem() : uint is { const ys : list(list(uint)) := [[1]]; var xs : list(uint) := ys[0]; xs[0] := 2; } with ys[0][0]
+external pure function tup() : uint is { const ys : list(uint) := [1]; var xs : list(uint) := []; var n : uint := 0; (xs, n) := (ys, 1); xs[0] := 2; } with ys[0]
+external pure function call() : uint is { const ys : list(uint) := [1]; var xs : list(uint) := id(ys); xs[0] := 2; } with ys[0]
+external pure function rec() : uint is { const g : h := { n = 1; xs = [1]; }; var a : h := g; a.xs[0] := 2; } with g.xs[0]
+external pure function field() : uint is { const ys : list(uint) := [1]; var a : h := { n = 1; xs = []; }; a.xs := ys; a.xs[0] := 2; } with ys[0]
+external pure function lit() : uint is { const ys : list(uint) := [1]; var a : h := { n = 1; xs = ys; }; a.xs[0] := 2; } with ys[0]
+external pure function recparam() : uint is { const g : h := { n = 1; xs = [1]; }; const z : uint := seth(g); } with g.xs[0] * 10 + z
+external pure function out() : uint is { var a : h := { n = 1; xs = [1]; }; const b : h := a; a.xs[0] := 2; } with b.xs[0] * 10 + a.xs[0]
+external pure function records() : uint is { const gs : list(h) := [{ n = 1; xs = [1]; }]; var hs : list(h) := gs; hs[0].xs[0] := 2; } with gs[0].xs[0]
+external pure function swap() : uint is { var t : (uint, uint) := (1, 2); t := (3, first(t)); const (a, b) : (uint, uint) := t; } with a * 10 + b
+external function stored() : uint is { storage.t := (1, 2); storage.t := (3, first(storage.t)); const (a, b) : (uint, uint) := storage.t; } with a * 10 + b
 ";
     let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
     for (f, want) in [
@@ -3672,8 +3672,8 @@ external function refuse() raises Blob is {{ fail Blob(0x{long}); }}
     let refused = call(selector("refuse()").to_vec(), HashMap::new());
     assert!(refused.reverted);
     assert_eq!(abi_string_value(&refused.returndata[4..]), long);
-    let err = compile("storage is record { n : nat; }\nexternal pure function f() : bytes is 0x000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f2\n").expect_err("odd");
+    let err = compile("storage is record { n : uint; }\nexternal pure function f() : bytes is 0x000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f2\n").expect_err("odd");
     assert!(err.to_string().contains("even number of digits"), "{err}");
-    let err = compile("storage is record { n : nat; }\nexternal pure function f() : nat is 0x000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20\n").expect_err("nat");
+    let err = compile("storage is record { n : uint; }\nexternal pure function f() : uint is 0x000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20\n").expect_err("uint");
     assert!(!err.to_string().is_empty());
 }

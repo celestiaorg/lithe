@@ -1,5 +1,5 @@
 storage is record {
-  balances : map(address, nat);
+  balances : map(address, uint);
 }
 
 external function go() is {

@@ -23,40 +23,40 @@ module ERC20FlashMint is {
     0x439148f0bbc682ca079e46d6e2c2f0c1e3b820f1a291b069d8882abf8cf18dd9
 
   (* All the supply can still grow by, for the token itself; nothing of any other. *)
-  view function max_flash_loan(const token : address) : nat is {
-    var most : nat := 0n;
+  view function max_flash_loan(const token : address) : uint is {
+    var most : uint := 0;
     if token = Evm.self() then {
-      most := Nat.max - ERC20.total_supply();
+      most := Uint.max - ERC20.total_supply();
     }
   } with most
 
-  view function flash_fee(const token : address; const value : nat) : nat
+  view function flash_fee(const token : address; const value : uint) : uint
     raises ERC3156UnsupportedToken
   is {
     assert(token = Evm.self(), ERC3156UnsupportedToken(token));
-  } with 0n
+  } with 0
 
   (* The fee for a loan the token can make. *)
-  view function check_loan(const token : address; const value : nat) : nat
+  view function check_loan(const token : address; const value : uint) : uint
     raises ERC3156ExceededMaxLoan | ERC3156UnsupportedToken
   is {
-    const most : nat := max_flash_loan(token);
+    const most : uint := max_flash_loan(token);
     assert(value <= most, ERC3156ExceededMaxLoan(most));
   } with flash_fee(token, value)
 
   (* After the borrower answers: the answer must be ERC-3156's, and the loan and fee come
      back from the borrower's allowance to the token. The caller burns them. *)
-  function repay(const receiver : address; const answer : bytes32; const value : nat; const fee : nat)
+  function repay(const receiver : address; const answer : bytes32; const value : uint; const fee : uint)
     raises ERC3156InvalidReceiver | ERC20InsufficientAllowance | ERC20InvalidApprover | ERC20InvalidSpender
   is {
     assert(answer = return_value(), ERC3156InvalidReceiver(receiver));
     ERC20.spend_allowance(receiver, Evm.self(), value + fee);
   }
 
-  external view function maxFlashLoan(const token : address) : nat is
+  external view function maxFlashLoan(const token : address) : uint is
     max_flash_loan(token)
 
-  external view function flashFee(const token : address; const amount : nat) : nat
+  external view function flashFee(const token : address; const amount : uint) : uint
     raises ERC3156UnsupportedToken
   is
     flash_fee(token, amount)
@@ -64,14 +64,14 @@ module ERC20FlashMint is {
   external function flashLoan(
     const receiver : IERC3156FlashBorrower;
     const token : address;
-    const amount : nat;
+    const amount : uint;
     const data : bytes
   ) : bool
     raises ERC3156ExceededMaxLoan | ERC3156UnsupportedToken | ERC3156InvalidReceiver | ERC20InsufficientAllowance
       | ERC20InvalidApprover | ERC20InvalidSpender | ERC20InvalidReceiver | ERC20InvalidSender
       | ERC20InsufficientBalance | forwarded
   is {
-    const fee : nat := check_loan(token, amount);
+    const fee : uint := check_loan(token, amount);
     ERC20.mint(address(receiver), amount);
     defer receiver.onFlashLoan(Evm.sender(), token, amount, fee, data) then {
       | Ok(answer : bytes32) -> {
@@ -87,7 +87,7 @@ module ERC20FlashMint is {
 
 (* `IERC3156FlashLender` without `flashLoan`, for a token that writes its own. *)
 interface IERC3156FlashLenderViews is {
-  view function maxFlashLoan(token : address) : nat;
-  view function flashFee(token : address; amount : nat) : nat
+  view function maxFlashLoan(token : address) : uint;
+  view function flashFee(token : address; amount : uint) : uint
     raises ERC3156UnsupportedToken;
 }

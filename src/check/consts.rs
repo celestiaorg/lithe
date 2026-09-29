@@ -1,5 +1,5 @@
 //! Operations on compile-time constants that must panic are compile errors. A constant is
-//! a number literal, a bound such as `Nat.max`, a named constant, a `const` bound to a
+//! a number literal, a bound such as `Uint.max`, a named constant, a `const` bound to a
 //! constant, or a cast or operator over those. Each function body is judged on its own:
 //! parameters, callers' arguments, and what conditions prove are never constants.
 
@@ -64,7 +64,7 @@ impl Fold<'_> {
         let t = &self.c.types[self.c.peel(ty)];
         let bits = if t.bits == 0 { 256 } else { u32::from(t.bits) };
         match t.kind {
-            TyKind::Nat | TyKind::Wei | TyKind::Timestamp => Some((false, bits)),
+            TyKind::Uint | TyKind::Wei | TyKind::Timestamp => Some((false, bits)),
             TyKind::Int => Some((true, bits)),
             _ => None,
         }
@@ -252,7 +252,7 @@ impl Fold<'_> {
         let ty = e.ty();
         match e {
             Expr::Lit {
-                lit: Lit::Nat(w) | Lit::Int(w, _) | Lit::Wei(w) | Lit::Duration(w),
+                lit: Lit::Uint(w) | Lit::Int(w, _) | Lit::Wei(w) | Lit::Duration(w),
                 ..
             } => Ok(self.num(ty).map(|_| *w)),
             Expr::Lit { .. } => Ok(None),
@@ -419,7 +419,7 @@ impl Fold<'_> {
         self.fit(e, v, ty).map(Some)
     }
 
-    /// Casts carry a constant through; the checked `Nat` and `Int` built-ins fail on
+    /// Casts carry a constant through; the checked `Uint` and `Int` built-ins fail on
     /// constants that must panic.
     fn builtin(
         &self,
@@ -447,26 +447,26 @@ impl Fold<'_> {
             Some(Builtin::FromBits(_)) if vals.len() == 1 && self.num(ty).is_some() => {
                 Ok(Some(vals[0]))
             }
-            Some(Builtin::NatMulMod | Builtin::NatAddMod | Builtin::Precompile(Pre::PowMod))
+            Some(Builtin::UintMulMod | Builtin::UintAddMod | Builtin::Precompile(Pre::PowMod))
                 if vals.len() == 3 =>
             {
                 by_zero(2)
             }
-            Some(Builtin::NatDivRem) if vals.len() == 2 => by_zero(1),
+            Some(Builtin::UintDivRem) if vals.len() == 2 => by_zero(1),
             Some(Builtin::IntDivRem) if vals.len() == 2 => {
                 if vals[0] == min_int() && vals[1] == ones() {
                     return Err(self.fail(e, format!("`{}` overflows `int`", self.show(e))));
                 }
                 by_zero(1)
             }
-            Some(Builtin::NatMulDiv) if vals.len() == 3 => {
+            Some(Builtin::UintMulDiv) if vals.len() == 3 => {
                 by_zero(2)?;
                 if !mul_hi(vals[0], vals[1]).lt(vals[2]) {
-                    return Err(self.fail(e, format!("`{}` overflows `nat`", self.show(e))));
+                    return Err(self.fail(e, format!("`{}` overflows `uint`", self.show(e))));
                 }
                 Ok(None)
             }
-            Some(Builtin::NatToHexString) if vals.len() == 2 => {
+            Some(Builtin::UintToHexString) if vals.len() == 2 => {
                 let (n, len) = (vals[0], vals[1]);
                 let shift = if len.lt(Word::from_u64(32)) {
                     len.0[0] as u32 * 8
@@ -497,14 +497,14 @@ impl Fold<'_> {
         };
         match e {
             Expr::Lit { lit, ty, .. } => match lit {
-                Lit::Nat(w) => format!("{}n", dec(*w)),
+                Lit::Uint(w) => dec(*w),
                 Lit::Wei(w) => format!("{}wei", dec(*w)),
                 Lit::Duration(w) => format!("{}seconds", dec(*w)),
                 Lit::Int(w, Some(_)) => format!("0x{}", hex(*w)),
                 Lit::Int(w, None) => {
                     let (signed, bits) = self.num(*ty).unwrap_or((false, 256));
                     match (signed, bits) {
-                        (false, 256) if *w == ones() => "Nat.max".into(),
+                        (false, 256) if *w == ones() => "Uint.max".into(),
                         (true, 256) if *w == min_int() => "Int.min".into(),
                         (true, 256) if *w == ones().shr(1) => "Int.max".into(),
                         (true, _) if w.bit(255) => format!("-{}", dec(w.wrapping_neg())),

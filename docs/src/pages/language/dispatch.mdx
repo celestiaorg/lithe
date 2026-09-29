@@ -13,14 +13,14 @@ When an external function takes a [variant](/language/types#variants), the compi
 
 ```lithe
 type action is
-  | Deposit of (amount : nat)
-  | Withdraw of (amount : nat)
+  | Deposit of (amount : uint)
+  | Withdraw of (amount : uint)
   | Reset
 
-error Insufficient of nat;
+error Insufficient of uint;
 
 storage is record {
-  balances : map(address, nat);
+  balances : map(address, uint);
 }
 
 external function main(const action : action)
@@ -31,11 +31,11 @@ is
       storage.balances[Evm.sender()] := storage.balances[Evm.sender()] + amount;
     }
   | Withdraw(amount) -> {
-      const have : nat := storage.balances[Evm.sender()];
+      const have : uint := storage.balances[Evm.sender()];
       assert(have >= amount, Insufficient(have));
       storage.balances[Evm.sender()] := have - amount;
     }
-  | Reset -> { storage.balances[Evm.sender()] := 0n; }
+  | Reset -> { storage.balances[Evm.sender()] := 0; }
   }
 ```
 
@@ -47,7 +47,7 @@ A function dispatches when its first parameter is a variant and its body is a `c
 | --- | --- |
 | name | the case name with its first letter lowercased: `Set_fee` becomes `set_fee`, and `SetFee` becomes `setFee` |
 | no payload | no parameters |
-| a single value | one parameter, named by the declaration: `Set_fee of (fee : nat)` is `set_fee(uint256 fee)`, and `Set_fee of nat` leaves it unnamed |
+| a single value | one parameter, named by the declaration: `Set_fee of (fee : uint)` is `set_fee(uint256 fee)`, and `Set_fee of uint` leaves it unnamed |
 | a record | one parameter per field, with the field names |
 | a `tuple record` | one tuple parameter, named like a single value, with the fields as its components |
 
@@ -64,11 +64,11 @@ error Not_owner;
 error Paused;
 
 type owner_action is
-  | Set_fee of (fee : nat)
+  | Set_fee of (fee : uint)
   | Pause
 
 type user_action is
-  | Deposit of (amount : nat)
+  | Deposit of (amount : uint)
 
 type action is
   | Owner of owner_action
@@ -77,8 +77,8 @@ type action is
 storage is record {
   owner : address;
   paused : bool;
-  fee : nat;
-  deposits : map(address, nat);
+  fee : uint;
+  deposits : map(address, uint);
 }
 
 function owner_main(const action : owner_action)
@@ -143,5 +143,5 @@ set_fee
 ## Rules
 
 - Routing must be static. A dispatcher is a guard block plus a `case`, and it cannot choose a branch from storage or other runtime state.
-- Every flattened entrypoint must be unique. A case `Deposit of nat` and an `external function deposit(const x : nat)` collide as `deposit(uint256)`.
+- Every flattened entrypoint must be unique. A case `Deposit of uint` and an `external function deposit(const x : uint)` collide as `deposit(uint256)`.
 - Variant values exist only along a dispatch path. They cannot yet be constructed, stored, or returned.

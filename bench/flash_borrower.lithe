@@ -4,50 +4,50 @@
    with a reason. *)
 
 interface Token is {
-  view function balanceOf(account : address) : nat;
-  function approve(spender : address; value : nat) : bool;
+  view function balanceOf(account : address) : uint;
+  function approve(spender : address; value : uint) : bool;
 }
 
-error Refused of nat;
+error Refused of uint;
 
 storage is record {
   last_initiator : address;
   last_token : address;
-  last_amount : nat;
-  last_fee : nat;
+  last_amount : uint;
+  last_fee : uint;
   last_data : bytes;
-  held : nat;
-  loans : nat;
-  mode : nat;
+  held : uint;
+  loans : uint;
+  mode : uint;
 }
 
-external function set_mode(const m : nat) is {
+external function set_mode(const m : uint) is {
   storage.mode := m;
 }
 
 external function onFlashLoan(
   const initiator : address;
   const token : Token;
-  const amount : nat;
-  const fee : nat;
+  const amount : uint;
+  const fee : uint;
   const data : bytes
 ) : bytes32
   raises Refused
 is {
-  assert(storage.mode <> 3n, Refused(amount));
+  assert(storage.mode <> 3, Refused(amount));
   storage.last_initiator := initiator;
   storage.last_token := address(token);
   storage.last_amount := amount;
   storage.last_fee := fee;
   storage.last_data := data;
   storage.held := query token.balanceOf(Evm.self());
-  storage.loans := storage.loans + 1n;
-  if storage.mode <> 2n then {
+  storage.loans := storage.loans + 1;
+  if storage.mode <> 2 then {
     defer token.approve(address(token), amount + fee);
   }
   (* keccak256("ERC3156FlashBorrower.onFlashLoan") *)
   var answer : bytes32 := 0x439148f0bbc682ca079e46d6e2c2f0c1e3b820f1a291b069d8882abf8cf18dd9;
-  if storage.mode = 1n then {
+  if storage.mode = 1 then {
     answer := 0x0000000000000000000000000000000000000000000000000000000000000000;
   }
 } with answer

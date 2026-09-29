@@ -6,8 +6,8 @@
 
 contract UniswapV2Pair is {
   interface IERC20 is {
-    view function balanceOf(owner : address) : nat;
-    function transfer(to : address; value : nat) : option(bool);
+    view function balanceOf(owner : address) : uint;
+    function transfer(to : address; value : uint) : option(bool);
   }
 
   interface IUniswapV2Factory is {
@@ -15,7 +15,7 @@ contract UniswapV2Pair is {
   }
 
   interface IUniswapV2Callee is {
-    function uniswapV2Call(sender : address; amount0 : nat; amount1 : nat; data : bytes);
+    function uniswapV2Call(sender : address; amount0 : uint; amount1 : uint; data : bytes);
   }
 
   (* Solidity's three packed variables, one slot written at once. *)
@@ -31,17 +31,17 @@ contract UniswapV2Pair is {
   }
 
   storage is record {
-    totalSupply : nat;
-    balanceOf : map(address, nat);
-    allowance : map(address, map(address, nat));
-    nonces : map(address, nat);
+    totalSupply : uint;
+    balanceOf : map(address, uint);
+    allowance : map(address, map(address, uint));
+    nonces : map(address, uint);
     token0 : IERC20;
     token1 : IERC20;
     reserves : reserves;
-    price0CumulativeLast : nat;
-    price1CumulativeLast : nat;
-    kLast : nat;
-    unlocked : nat;
+    price0CumulativeLast : uint;
+    price1CumulativeLast : uint;
+    kLast : uint;
+    unlocked : uint;
   }
 
   (* `require(condition, "reason")`. *)
@@ -50,34 +50,34 @@ contract UniswapV2Pair is {
   event Approval of record {
     indexed owner : address;
     indexed spender : address;
-    value : nat;
+    value : uint;
   }
 
   event Transfer of record {
     indexed from : address;
     indexed to : address;
-    value : nat;
+    value : uint;
   }
 
   event Mint of record {
     indexed sender : address;
-    amount0 : nat;
-    amount1 : nat;
+    amount0 : uint;
+    amount1 : uint;
   }
 
   event Burn of record {
     indexed sender : address;
-    amount0 : nat;
-    amount1 : nat;
+    amount0 : uint;
+    amount1 : uint;
     indexed to : address;
   }
 
   event Swap of record {
     indexed sender : address;
-    amount0In : nat;
-    amount1In : nat;
-    amount0Out : nat;
-    amount1Out : nat;
+    amount0In : uint;
+    amount1In : uint;
+    amount0Out : uint;
+    amount1Out : uint;
     indexed to : address;
   }
 
@@ -94,54 +94,54 @@ contract UniswapV2Pair is {
       Evm.chain_id(),
       Evm.self()
     ));
-    storage.unlocked := 1n;
+    storage.unlocked := 1;
     immutable.factory := Evm.sender();
   }
 
-  pure function min(const x : nat; const y : nat) : nat is {
-    var z : nat := y;
+  pure function min(const x : uint; const y : uint) : uint is {
+    var z : uint := y;
     if x < y then {
       z := x;
     }
   } with z
 
   (* The Babylonian method, as Uniswap's `Math.sqrt`: at most one step per bit. *)
-  pure function sqrt(const y : nat) : nat is {
-    var z : nat := 0n;
-    if y > 3n then {
+  pure function sqrt(const y : uint) : uint is {
+    var z : uint := 0;
+    if y > 3 then {
       z := y;
-      var x : nat := y / 2n + 1n;
-      for _ : nat in 0n .. 256n until x >= z do {
+      var x : uint := y / 2 + 1;
+      for _ : uint in 0 .. 256 until x >= z do {
         z := x;
-        x := (y / x + x) / 2n;
+        x := (y / x + x) / 2;
       }
-    } else if y <> 0n then {
-      z := 1n;
+    } else if y <> 0 then {
+      z := 1;
     }
   } with z
 
   (* UQ112x112: `encode(y).uqdiv(x)`, `y / x` with 112 fractional bits. *)
-  pure function uqdiv(const y : uint112; const x : uint112) : nat is
-    (nat(y) << 112n) / nat(x)
+  pure function uqdiv(const y : uint112; const x : uint112) : uint is
+    (uint(y) << 112) / uint(x)
 
-  function mint_to(const to : address; const value : nat) is {
+  function mint_to(const to : address; const value : uint) is {
     storage.totalSupply := storage.totalSupply + value;
     storage.balanceOf[to] := storage.balanceOf[to] + value;
     emit Transfer { from = Address.zero; to = to; value = value; };
   }
 
-  function burn_from(const from : address; const value : nat) is {
+  function burn_from(const from : address; const value : uint) is {
     storage.balanceOf[from] := storage.balanceOf[from] - value;
     storage.totalSupply := storage.totalSupply - value;
     emit Transfer { from = from; to = Address.zero; value = value; };
   }
 
-  function approve_as(const owner : address; const spender : address; const value : nat) is {
+  function approve_as(const owner : address; const spender : address; const value : uint) is {
     storage.allowance[owner][spender] := value;
     emit Approval { owner = owner; spender = spender; value = value; };
   }
 
-  function transfer_from(const from : address; const to : address; const value : nat) is {
+  function transfer_from(const from : address; const to : address; const value : uint) is {
     storage.balanceOf[from] := storage.balanceOf[from] - value;
     storage.balanceOf[to] := storage.balanceOf[to] + value;
     emit Transfer { from = from; to = to; value = value; };
@@ -162,22 +162,22 @@ contract UniswapV2Pair is {
   pure function INTERNAL_PERMIT_TYPEHASH() : bytes32 is
     0x6e71edae12b1b97f4d1f60370fef10105fa2faae0126114a169c64845d6126c9
 
-  external pure function MINIMUM_LIQUIDITY() : nat is
-    1000n
+  external pure function MINIMUM_LIQUIDITY() : uint is
+    1000
 
-  external view function totalSupply() : nat is
+  external view function totalSupply() : uint is
     storage.totalSupply
 
-  external view function balanceOf(const owner : address) : nat is
+  external view function balanceOf(const owner : address) : uint is
     storage.balanceOf[owner]
 
-  external view function allowance(const owner : address; const spender : address) : nat is
+  external view function allowance(const owner : address; const spender : address) : uint is
     storage.allowance[owner][spender]
 
   external view function DOMAIN_SEPARATOR() : bytes32 is
     immutable.DOMAIN_SEPARATOR
 
-  external view function nonces(const owner : address) : nat is
+  external view function nonces(const owner : address) : uint is
     storage.nonces[owner]
 
   external view function factory() : address is
@@ -189,29 +189,29 @@ contract UniswapV2Pair is {
   external view function token1() : IERC20 is
     storage.token1
 
-  external view function price0CumulativeLast() : nat is
+  external view function price0CumulativeLast() : uint is
     storage.price0CumulativeLast
 
-  external view function price1CumulativeLast() : nat is
+  external view function price1CumulativeLast() : uint is
     storage.price1CumulativeLast
 
-  external view function kLast() : nat is
+  external view function kLast() : uint is
     storage.kLast
 
   external view function getReserves() : (uint112, uint112, uint32) is
     (storage.reserves.reserve0, storage.reserves.reserve1, storage.reserves.blockTimestampLast)
 
-  external function approve(const spender : address; const value : nat) : bool is {
+  external function approve(const spender : address; const value : uint) : bool is {
     approve_as(Evm.sender(), spender, value);
   } with true
 
-  external function transfer(const to : address; const value : nat) : bool is {
+  external function transfer(const to : address; const value : uint) : bool is {
     transfer_from(Evm.sender(), to, value);
   } with true
 
-  external function transferFrom(const from : address; const to : address; const value : nat) : bool is {
-    const allowed : nat := storage.allowance[from][Evm.sender()];
-    if allowed <> Nat.max then {
+  external function transferFrom(const from : address; const to : address; const value : uint) : bool is {
+    const allowed : uint := storage.allowance[from][Evm.sender()];
+    if allowed <> Uint.max then {
       storage.allowance[from][Evm.sender()] := allowed - value;
     }
     transfer_from(from, to, value);
@@ -220,17 +220,17 @@ contract UniswapV2Pair is {
   external function permit(
     const owner : address;
     const spender : address;
-    const value : nat;
-    const deadline : nat;
+    const value : uint;
+    const deadline : uint;
     const v : uint8;
     const r : bytes32;
     const s : bytes32
   )
     raises Error
   is {
-    assert(deadline >= nat(Evm.block_timestamp()), Error("UniswapV2: EXPIRED"));
-    const nonce : nat := storage.nonces[owner];
-    storage.nonces[owner] := nonce + 1n;
+    assert(deadline >= uint(Evm.block_timestamp()), Error("UniswapV2: EXPIRED"));
+    const nonce : uint := storage.nonces[owner];
+    storage.nonces[owner] := nonce + 1;
     const prefix : bytes2 := 0x1901;
     const digest : bytes32 := Crypto.keccak256(Abi.encode_packed(
       prefix,
@@ -244,19 +244,19 @@ contract UniswapV2Pair is {
         deadline
       ))
     ));
-    const recovered : address := Crypto.ecrecover(digest, nat(v), r, s);
+    const recovered : address := Crypto.ecrecover(digest, uint(v), r, s);
     assert(recovered <> Address.zero and recovered = owner, Error("UniswapV2: INVALID_SIGNATURE"));
     approve_as(owner, spender, value);
   }
 
   function lock() is {
-    assert(storage.unlocked = 1n, Error("UniswapV2: LOCKED"));
-    storage.unlocked := 0n;
+    assert(storage.unlocked = 1, Error("UniswapV2: LOCKED"));
+    storage.unlocked := 0;
   }
 
   (* `_safeTransfer`: a failed call, or `false`, is `TRANSFER_FAILED`. A token that
      returns nothing succeeds. *)
-  function safe_transfer(const token : IERC20; const to : address; const value : nat) is {
+  function safe_transfer(const token : IERC20; const to : address; const value : uint) is {
     defer token.transfer(to, value) then {
       | Ok(ok : option(bool)) -> {
           assert(ok <> Some(false), Error("UniswapV2: TRANSFER_FAILED"));
@@ -276,19 +276,19 @@ contract UniswapV2Pair is {
   }
 
   (* The reserves and, on the first call per block, the price accumulators, which wrap. *)
-  function update(const balance0 : nat; const balance1 : nat; const reserve0 : uint112; const reserve1 : uint112) is {
-    const most : uint112 := Nat.max;
-    assert(balance0 <= nat(most) and balance1 <= nat(most), Error("UniswapV2: OVERFLOW"));
-    const block_timestamp : uint32 := uint32(nat(Evm.block_timestamp()) % 4294967296n);
-    const time_elapsed : uint32 := Nat.wrapping_sub(block_timestamp, storage.reserves.blockTimestampLast);
+  function update(const balance0 : uint; const balance1 : uint; const reserve0 : uint112; const reserve1 : uint112) is {
+    const most : uint112 := Uint.max;
+    assert(balance0 <= uint(most) and balance1 <= uint(most), Error("UniswapV2: OVERFLOW"));
+    const block_timestamp : uint32 := uint32(uint(Evm.block_timestamp()) % 4294967296);
+    const time_elapsed : uint32 := Uint.wrapping_sub(block_timestamp, storage.reserves.blockTimestampLast);
     if time_elapsed > 0 and reserve0 <> 0 and reserve1 <> 0 then {
-      storage.price0CumulativeLast := Nat.wrapping_add(
+      storage.price0CumulativeLast := Uint.wrapping_add(
         storage.price0CumulativeLast,
-        uqdiv(reserve1, reserve0) * nat(time_elapsed)
+        uqdiv(reserve1, reserve0) * uint(time_elapsed)
       );
-      storage.price1CumulativeLast := Nat.wrapping_add(
+      storage.price1CumulativeLast := Uint.wrapping_add(
         storage.price1CumulativeLast,
-        uqdiv(reserve0, reserve1) * nat(time_elapsed)
+        uqdiv(reserve0, reserve1) * uint(time_elapsed)
       );
     }
     storage.reserves := {
@@ -303,55 +303,55 @@ contract UniswapV2Pair is {
      asks the factory for the recipient. *)
   function mint_fee(const fee_to : address; const reserve0 : uint112; const reserve1 : uint112) : bool is {
     const fee_on : bool := fee_to <> Address.zero;
-    const k_last : nat := storage.kLast;
+    const k_last : uint := storage.kLast;
     if fee_on then {
-      if k_last <> 0n then {
-        const root_k : nat := sqrt(nat(reserve0) * nat(reserve1));
-        const root_k_last : nat := sqrt(k_last);
+      if k_last <> 0 then {
+        const root_k : uint := sqrt(uint(reserve0) * uint(reserve1));
+        const root_k_last : uint := sqrt(k_last);
         if root_k > root_k_last then {
-          const numerator : nat := storage.totalSupply * (root_k - root_k_last);
-          const denominator : nat := root_k * 5n + root_k_last;
-          const liquidity : nat := numerator / denominator;
-          if liquidity > 0n then {
+          const numerator : uint := storage.totalSupply * (root_k - root_k_last);
+          const denominator : uint := root_k * 5 + root_k_last;
+          const liquidity : uint := numerator / denominator;
+          if liquidity > 0 then {
             mint_to(fee_to, liquidity);
           }
         }
       }
-    } else if k_last <> 0n then {
-      storage.kLast := 0n;
+    } else if k_last <> 0 then {
+      storage.kLast := 0;
     }
   } with fee_on
 
-  external function mint(const to : address) : nat
+  external function mint(const to : address) : uint
     raises Error
   is {
     lock();
     const reserve0 : uint112 := storage.reserves.reserve0;
     const reserve1 : uint112 := storage.reserves.reserve1;
-    const balance0 : nat := query storage.token0.balanceOf(Evm.self());
-    const balance1 : nat := query storage.token1.balanceOf(Evm.self());
-    const amount0 : nat := balance0 - nat(reserve0);
-    const amount1 : nat := balance1 - nat(reserve1);
+    const balance0 : uint := query storage.token0.balanceOf(Evm.self());
+    const balance1 : uint := query storage.token1.balanceOf(Evm.self());
+    const amount0 : uint := balance0 - uint(reserve0);
+    const amount1 : uint := balance1 - uint(reserve1);
     const fee_on : bool := mint_fee(query IUniswapV2Factory(immutable.factory).feeTo(), reserve0, reserve1);
-    const total_supply : nat := storage.totalSupply;
-    var liquidity : nat := 0n;
-    if total_supply = 0n then {
-      liquidity := sqrt(amount0 * amount1) - 1000n;
-      mint_to(Address.zero, 1000n);
+    const total_supply : uint := storage.totalSupply;
+    var liquidity : uint := 0;
+    if total_supply = 0 then {
+      liquidity := sqrt(amount0 * amount1) - 1000;
+      mint_to(Address.zero, 1000);
     } else {
-      liquidity := min(amount0 * total_supply / nat(reserve0), amount1 * total_supply / nat(reserve1));
+      liquidity := min(amount0 * total_supply / uint(reserve0), amount1 * total_supply / uint(reserve1));
     }
-    assert(liquidity > 0n, Error("UniswapV2: INSUFFICIENT_LIQUIDITY_MINTED"));
+    assert(liquidity > 0, Error("UniswapV2: INSUFFICIENT_LIQUIDITY_MINTED"));
     mint_to(to, liquidity);
     update(balance0, balance1, reserve0, reserve1);
     if fee_on then {
-      storage.kLast := nat(storage.reserves.reserve0) * nat(storage.reserves.reserve1);
+      storage.kLast := uint(storage.reserves.reserve0) * uint(storage.reserves.reserve1);
     }
     emit Mint { sender = Evm.sender(); amount0 = amount0; amount1 = amount1; };
-    storage.unlocked := 1n;
+    storage.unlocked := 1;
   } with liquidity
 
-  external function burn(const to : address) : (nat, nat)
+  external function burn(const to : address) : (uint, uint)
     raises Error
   is {
     lock();
@@ -359,14 +359,14 @@ contract UniswapV2Pair is {
     const reserve1 : uint112 := storage.reserves.reserve1;
     const token0 : IERC20 := storage.token0;
     const token1 : IERC20 := storage.token1;
-    const balance0 : nat := query token0.balanceOf(Evm.self());
-    const balance1 : nat := query token1.balanceOf(Evm.self());
-    const liquidity : nat := storage.balanceOf[Evm.self()];
+    const balance0 : uint := query token0.balanceOf(Evm.self());
+    const balance1 : uint := query token1.balanceOf(Evm.self());
+    const liquidity : uint := storage.balanceOf[Evm.self()];
     const fee_on : bool := mint_fee(query IUniswapV2Factory(immutable.factory).feeTo(), reserve0, reserve1);
-    const total_supply : nat := storage.totalSupply;
-    const amount0 : nat := liquidity * balance0 / total_supply;
-    const amount1 : nat := liquidity * balance1 / total_supply;
-    assert(amount0 > 0n and amount1 > 0n, Error("UniswapV2: INSUFFICIENT_LIQUIDITY_BURNED"));
+    const total_supply : uint := storage.totalSupply;
+    const amount0 : uint := liquidity * balance0 / total_supply;
+    const amount1 : uint := liquidity * balance1 / total_supply;
+    assert(amount0 > 0 and amount1 > 0, Error("UniswapV2: INSUFFICIENT_LIQUIDITY_BURNED"));
     burn_from(Evm.self(), liquidity);
     safe_transfer(token0, to, amount0);
     defer token1.transfer(to, amount1) then {
@@ -374,10 +374,10 @@ contract UniswapV2Pair is {
           assert(ok <> Some(false), Error("UniswapV2: TRANSFER_FAILED"));
           update(query token0.balanceOf(Evm.self()), query token1.balanceOf(Evm.self()), reserve0, reserve1);
           if fee_on then {
-            storage.kLast := nat(storage.reserves.reserve0) * nat(storage.reserves.reserve1);
+            storage.kLast := uint(storage.reserves.reserve0) * uint(storage.reserves.reserve1);
           }
           emit Burn { sender = Evm.sender(); amount0 = amount0; amount1 = amount1; to = to; };
-          storage.unlocked := 1n;
+          storage.unlocked := 1;
         }
       | Error(_) -> {
           fail Error("UniswapV2: TRANSFER_FAILED");
@@ -388,27 +388,27 @@ contract UniswapV2Pair is {
   (* After the transfers and the callback: the input is what arrived beyond the
      reserves, and the balances, less the 0.3% fee on it, must keep k. *)
   function settle_swap(
-    const balance0 : nat;
-    const balance1 : nat;
-    const amount0Out : nat;
-    const amount1Out : nat;
+    const balance0 : uint;
+    const balance1 : uint;
+    const amount0Out : uint;
+    const amount1Out : uint;
     const to : address;
     const reserve0 : uint112;
     const reserve1 : uint112
   ) is {
-    var amount0In : nat := 0n;
-    if balance0 > nat(reserve0) - amount0Out then {
-      amount0In := balance0 - (nat(reserve0) - amount0Out);
+    var amount0In : uint := 0;
+    if balance0 > uint(reserve0) - amount0Out then {
+      amount0In := balance0 - (uint(reserve0) - amount0Out);
     }
-    var amount1In : nat := 0n;
-    if balance1 > nat(reserve1) - amount1Out then {
-      amount1In := balance1 - (nat(reserve1) - amount1Out);
+    var amount1In : uint := 0;
+    if balance1 > uint(reserve1) - amount1Out then {
+      amount1In := balance1 - (uint(reserve1) - amount1Out);
     }
-    assert(amount0In > 0n or amount1In > 0n, Error("UniswapV2: INSUFFICIENT_INPUT_AMOUNT"));
-    const balance0Adjusted : nat := balance0 * 1000n - amount0In * 3n;
-    const balance1Adjusted : nat := balance1 * 1000n - amount1In * 3n;
+    assert(amount0In > 0 or amount1In > 0, Error("UniswapV2: INSUFFICIENT_INPUT_AMOUNT"));
+    const balance0Adjusted : uint := balance0 * 1000 - amount0In * 3;
+    const balance1Adjusted : uint := balance1 * 1000 - amount1In * 3;
     assert(
-      balance0Adjusted * balance1Adjusted >= nat(reserve0) * nat(reserve1) * 1000000n,
+      balance0Adjusted * balance1Adjusted >= uint(reserve0) * uint(reserve1) * 1000000,
       Error("UniswapV2: K")
     );
     update(balance0, balance1, reserve0, reserve1);
@@ -420,27 +420,27 @@ contract UniswapV2Pair is {
       amount1Out = amount1Out;
       to = to;
     };
-    storage.unlocked := 1n;
+    storage.unlocked := 1;
   }
 
   (* The tokens go out first, then the callback if there is data. *)
-  external function swap(const amount0Out : nat; const amount1Out : nat; const to : address; const data : bytes)
+  external function swap(const amount0Out : uint; const amount1Out : uint; const to : address; const data : bytes)
     raises Error
   is {
     lock();
-    assert(amount0Out > 0n or amount1Out > 0n, Error("UniswapV2: INSUFFICIENT_OUTPUT_AMOUNT"));
+    assert(amount0Out > 0 or amount1Out > 0, Error("UniswapV2: INSUFFICIENT_OUTPUT_AMOUNT"));
     const reserve0 : uint112 := storage.reserves.reserve0;
     const reserve1 : uint112 := storage.reserves.reserve1;
-    assert(amount0Out < nat(reserve0) and amount1Out < nat(reserve1), Error("UniswapV2: INSUFFICIENT_LIQUIDITY"));
+    assert(amount0Out < uint(reserve0) and amount1Out < uint(reserve1), Error("UniswapV2: INSUFFICIENT_LIQUIDITY"));
     const token0 : IERC20 := storage.token0;
     const token1 : IERC20 := storage.token1;
     assert(to <> address(token0) and to <> address(token1), Error("UniswapV2: INVALID_TO"));
     (* The last call settles: the callback, or else the last transfer. *)
-    if amount0Out > 0n and (amount1Out > 0n or data.length > 0n) then {
+    if amount0Out > 0 and (amount1Out > 0 or data.length > 0) then {
       safe_transfer(token0, to, amount0Out);
     }
-    if data.length > 0n then {
-      if amount1Out > 0n then {
+    if data.length > 0 then {
+      if amount1Out > 0 then {
         safe_transfer(token1, to, amount1Out);
       }
       defer IUniswapV2Callee(to).uniswapV2Call(Evm.sender(), amount0Out, amount1Out, data) then {
@@ -456,8 +456,8 @@ contract UniswapV2Pair is {
       };
     } else {
       var last : IERC20 := token0;
-      var amount : nat := amount0Out;
-      if amount1Out > 0n then {
+      var amount : uint := amount0Out;
+      if amount1Out > 0 then {
         last := token1;
         amount := amount1Out;
       }
@@ -488,14 +488,14 @@ contract UniswapV2Pair is {
     const token1 : IERC20 := storage.token1;
     defer storage.token0.transfer(
       to,
-      query storage.token0.balanceOf(Evm.self()) - nat(storage.reserves.reserve0)
+      query storage.token0.balanceOf(Evm.self()) - uint(storage.reserves.reserve0)
     ) then {
       | Ok(ok : option(bool)) -> {
           assert(ok <> Some(false), Error("UniswapV2: TRANSFER_FAILED"));
-          defer token1.transfer(to, query token1.balanceOf(Evm.self()) - nat(storage.reserves.reserve1)) then {
+          defer token1.transfer(to, query token1.balanceOf(Evm.self()) - uint(storage.reserves.reserve1)) then {
             | Ok(done : option(bool)) -> {
                 assert(done <> Some(false), Error("UniswapV2: TRANSFER_FAILED"));
-                storage.unlocked := 1n;
+                storage.unlocked := 1;
               }
             | Error(_) -> {
                 fail Error("UniswapV2: TRANSFER_FAILED");
@@ -518,6 +518,6 @@ contract UniswapV2Pair is {
       storage.reserves.reserve0,
       storage.reserves.reserve1
     );
-    storage.unlocked := 1n;
+    storage.unlocked := 1;
   }
 }

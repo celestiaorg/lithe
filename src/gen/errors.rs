@@ -709,7 +709,7 @@ impl<'a> Gen<'a> {
             let t = &types[self.peel_nominal(ty)];
             matches!(
                 t.kind,
-                TyKind::Nat
+                TyKind::Uint
                     | TyKind::Int
                     | TyKind::Address
                     | TyKind::Bool

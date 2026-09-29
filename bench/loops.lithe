@@ -5,23 +5,23 @@ error Nobody;
 
 event Sent of record {
   indexed to : address;
-  amount : nat;
+  amount : uint;
 }
 
 storage is record {
-  balances : map(address, nat);
+  balances : map(address, uint);
   owners : list(address);
   is_owner : map(address, bool);
 }
 
-external pure function sum(const xs : list(nat)) : nat is {
-  var acc : nat := 0n;
-  for x : nat in xs do {
+external pure function sum(const xs : list(uint)) : uint is {
+  var acc : uint := 0;
+  for x : uint in xs do {
     acc := acc + x;
   }
 } with acc
 
-external function airdrop(const tos : list(address); const amount : nat) is {
+external function airdrop(const tos : list(address); const amount : uint) is {
   for to : address in tos do {
     storage.balances[to] := storage.balances[to] + amount;
     emit Sent { to = to; amount = amount; };
@@ -38,26 +38,26 @@ external function mark_all() is {
   }
 }
 
-external view function find(const target : address) : nat is {
-  var hit : nat := 0n;
-  for (i, who) : (nat, address) in storage.owners until hit <> 0n bound 8 do {
+external view function find(const target : address) : uint is {
+  var hit : uint := 0;
+  for (i, who) : (uint, address) in storage.owners until hit <> 0 bound 8 do {
     if who = target then {
-      hit := i + 1n;
+      hit := i + 1;
     }
   }
 } with hit
 
-external pure function gcd(const a : nat; const b : nat) : nat is {
-  var x : nat := a;
-  var y : nat := b;
-  for _ : nat in 0n .. 256n until y = 0n do {
+external pure function gcd(const a : uint; const b : uint) : uint is {
+  var x : uint := a;
+  var y : uint := b;
+  for _ : uint in 0 .. 256 until y = 0 do {
     (x, y) := (y, x % y);
   }
 } with x
 
-external pure function hash_chain(const seed : bytes32; const n : nat) : bytes32 is {
+external pure function hash_chain(const seed : bytes32; const n : uint) : bytes32 is {
   var h : bytes32 := seed;
-  for _ : nat in 0n .. n do {
+  for _ : uint in 0 .. n do {
     h := Crypto.keccak256(Abi.encode(h));
   }
 } with h
@@ -65,14 +65,14 @@ external pure function hash_chain(const seed : bytes32; const n : nat) : bytes32
 external payable function payout(const tos : list(address))
   raises Nobody
 is {
-  assert(tos.length > 0n, Nobody);
-  const each : wei := wei(nat(Evm.value()) / tos.length);
+  assert(tos.length > 0, Nobody);
+  const each : wei := wei(uint(Evm.value()) / tos.length);
   for to : address in tos do {
     defer Evm.transfer(to, each);
   }
 }
 
-external view function balance_of(const who : address) : nat is
+external view function balance_of(const who : address) : uint is
   storage.balances[who]
 
 external view function is_owner(const who : address) : bool is

@@ -30,11 +30,11 @@ The compiler checks each body against its declared kind, including everything th
 
 ```lithe rejects
 storage is record {
-  count : nat;
+  count : uint;
 }
 
-external view function bad() : nat is {
-  storage.count := 1n
+external view function bad() : uint is {
+  storage.count := 1
 } with storage.count
 ```
 
@@ -56,8 +56,8 @@ A `view` that calls a stateful function, a `pure` function that calls a `view`, 
 Keywords must appear in this order: `external`, then `payable` and/or `nonreentrant`, then `view` or `pure`. `payable` and `nonreentrant` apply only to stateful external functions. The compiler says what it expected:
 
 ```lithe rejects
-external payable view function go() : nat is
-  0n
+external payable view function go() : uint is
+  0
 ```
 
 ```text
@@ -70,34 +70,34 @@ Parameters are separated by `;`. Each is `const` (a value that never changes), `
 
 ```lithe
 storage is record {
-  n : nat;
+  n : uint;
 }
 
-pure function clamp(var x : nat; const lo : nat; const hi : nat) : nat is {
+pure function clamp(var x : uint; const lo : uint; const hi : uint) : uint is {
   if x < lo then { x := lo; }
   if x > hi then { x := hi; }
 } with x
 
-external function set(const x : nat) is {
-  storage.n := clamp(x, 1n, 100n);
+external function set(const x : uint) is {
+  storage.n := clamp(x, 1, 100);
 }
 ```
 
 Arguments are separated by `,`.
 
-A `storage` parameter is passed a storage path, and the function reads and writes that storage in place. A map, or a record holding one, lives only in storage, so it is always a `storage` parameter. Other types can be either: `const xs : list(nat)` is a copy, `storage xs : list(nat)` is the stored list itself. Only internal functions take `storage` parameters. The writes show up in the calling entrypoint's [`footprint`](/tooling/inspection#footprint):
+A `storage` parameter is passed a storage path, and the function reads and writes that storage in place. A map, or a record holding one, lives only in storage, so it is always a `storage` parameter. Other types can be either: `const xs : list(uint)` is a copy, `storage xs : list(uint)` is the stored list itself. Only internal functions take `storage` parameters. The writes show up in the calling entrypoint's [`footprint`](/tooling/inspection#footprint):
 
 ```lithe
 storage is record {
-  balances : map(address, nat);
-  total : nat;
+  balances : map(address, uint);
+  total : uint;
 }
 
-function credit(storage ledger : map(address, nat); const to : address; const amount : nat) is {
+function credit(storage ledger : map(address, uint); const to : address; const amount : uint) is {
   ledger[to] := ledger[to] + amount;
 }
 
-external function mint(const to : address; const amount : nat) is {
+external function mint(const to : address; const amount : uint) is {
   credit(storage.balances, to, amount);
   storage.total := storage.total + amount;
 }
@@ -115,14 +115,14 @@ A function with a result declares `: type`. The body is an expression, or a bloc
 
 ```lithe
 storage is record {
-  count : nat;
+  count : uint;
 }
 
-pure function double(const n : nat) : nat is
-  n * 2n
+pure function double(const n : uint) : uint is
+  n * 2
 
-external function bump() : nat is {
-  storage.count := storage.count + 1n;
+external function bump() : uint is {
+  storage.count := storage.count + 1;
 } with double(storage.count)
 ```
 
@@ -140,14 +140,14 @@ External functions can share a name when their parameter types differ, because e
 
 ```lithe
 storage is record {
-  total : nat;
+  total : uint;
 }
 
-external function add(const a : nat) is {
+external function add(const a : uint) is {
   storage.total := storage.total + a;
 }
 
-external function add(const a : nat; const b : nat) is {
+external function add(const a : uint; const b : uint) is {
   storage.total := storage.total + a + b;
 }
 ```
@@ -158,19 +158,19 @@ Internal functions overload the same way, generic ones and ones that take storag
 
 ```lithe
 storage is record {
-  total : nat;
+  total : uint;
 }
 
-pure function double(const a : nat) : nat is a * 2n
+pure function double(const a : uint) : uint is a * 2
 
-pure function double(const a : bool) : nat is 0n
+pure function double(const a : bool) : uint is 0
 
-external function add(const a : nat) is {
+external function add(const a : uint) is {
   storage.total := storage.total + double(a) + double(true);
 }
 ```
 
-A call picks the overload that takes as many arguments as it passes. If several do, the argument types choose, and literals keep their own types: `1n` is a `nat`. Overloads of one name are all internal or all external, and no two take the same parameter types.
+A call picks the overload that takes as many arguments as it passes. If several do, the argument types choose, and literals keep their own types: `1` is a `uint`. Overloads of one name are all internal or all external, and no two take the same parameter types.
 
 ## Calling functions
 
@@ -181,7 +181,7 @@ A call picks the overload that takes as many arguments as it passes. If several 
 
 ```lithe rejects
 storage is record {
-  n : nat;
+  n : uint;
 }
 
 external function g() is { skip }
@@ -219,9 +219,9 @@ A module can declare external functions, and a contract exposes them by declarin
 
 ```lithe fragment
 use Token exposing {
-  function transfer(to : address; amount : nat)
+  function transfer(to : address; amount : uint)
     raises Insufficient_balance;
-  view function balance_of(account : address) : nat;
+  view function balance_of(account : address) : uint;
 }
 ```
 
@@ -246,7 +246,7 @@ event Received of record {
 
 storage is record {
   received : wei;
-  unknown : nat;
+  unknown : uint;
 }
 
 payable receive is {
@@ -255,7 +255,7 @@ payable receive is {
 }
 
 fallback is {
-  storage.unknown := storage.unknown + 1n;
+  storage.unknown := storage.unknown + 1;
 }
 
 external view function received() : wei is
@@ -270,7 +270,7 @@ external view function received() : wei is
 
 ```lithe rejects
 storage is record {
-  n : nat;
+  n : uint;
 }
 
 receive is {

@@ -7,19 +7,19 @@ contract Numerics is {
   use Math;
 
   storage is record {
-    scale : nat;
+    scale : uint;
   }
 
-  external pure function pow(const base : nat; const exponent : nat) : nat is base ** exponent
-  external pure function units(const decimals : uint8) : nat is 10n ** decimals
-  external pure function pow_signed(const base : int; const exponent : nat) : int is base ** exponent
-  external pure function pow2(const exponent : nat) : nat is 2n ** exponent
+  external pure function pow(const base : uint; const exponent : uint) : uint is base ** exponent
+  external pure function units(const decimals : uint8) : uint is 10 ** decimals
+  external pure function pow_signed(const base : int; const exponent : uint) : int is base ** exponent
+  external pure function pow2(const exponent : uint) : uint is 2 ** exponent
 
-  external pure function sqrt(const a : nat) : nat is Math.sqrt(a)
-  external pure function log2(const a : nat) : nat is Math.log2(a)
-  external pure function log10(const a : nat) : nat is Math.log10(a)
+  external pure function sqrt(const a : uint) : uint is Math.sqrt(a)
+  external pure function log2(const a : uint) : uint is Math.log2(a)
+  external pure function log10(const a : uint) : uint is Math.log10(a)
 
-  external pure function abs(const x : int) : nat is Math.abs(x)
+  external pure function abs(const x : int) : uint is Math.abs(x)
   external pure function min(const a : int; const b : int) : int is Math.min(a, b)
   external pure function max(const a : int; const b : int) : int is Math.max(a, b)
   external pure function average(const a : int; const b : int) : int is Math.average(a, b)
@@ -27,12 +27,12 @@ contract Numerics is {
     raises MathInvalidSignedRange
   is Math.clamp(x, low, high)
 
-  external pure function hex_nat(const n : nat) : string is Nat.to_hex_string(n)
-  external pure function hex_fixed(const n : nat; const length : nat) : string is Nat.to_hex_string(n, length)
+  external pure function hex_nat(const n : uint) : string is Uint.to_hex_string(n)
+  external pure function hex_fixed(const n : uint; const length : uint) : string is Uint.to_hex_string(n, length)
   external pure function hex_address(const a : address) : string is Address.to_hex_string(a)
   external pure function checksum(const a : address) : string is Address.to_checksum_string(a)
 
   external function set_scale(const decimals : uint8) is {
-    storage.scale := 10n ** decimals;
+    storage.scale := 10 ** decimals;
   }
 }

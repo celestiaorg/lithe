@@ -14,16 +14,16 @@ event TransferSingle of record {
   indexed operator : address;
   indexed from : address;
   indexed to : address;
-  id : nat;
-  amount : nat;
+  id : uint;
+  amount : uint;
 }
 
 event TransferBatch of record {
   indexed operator : address;
   indexed from : address;
   indexed to : address;
-  ids : list(nat);
-  amounts : list(nat);
+  ids : list(uint);
+  amounts : list(uint);
 }
 
 event ApprovalForAll of record {
@@ -33,25 +33,25 @@ event ApprovalForAll of record {
 }
 
 interface IERC1155 is {
-  view function balanceOf(owner : address; id : nat) : nat;
-  view function balanceOfBatch(owners : list(address); ids : list(nat)) : list(nat);
+  view function balanceOf(owner : address; id : uint) : uint;
+  view function balanceOfBatch(owners : list(address); ids : list(uint)) : list(uint);
   view function isApprovedForAll(owner : address; operator : address) : bool;
   function setApprovalForAll(operator : address; isApproved : bool);
-  function safeTransferFrom(from : address; to : address; id : nat; amount : nat; data : bytes);
-  function safeBatchTransferFrom(from : address; to : address; ids : list(nat); amounts : list(nat); data : bytes);
+  function safeTransferFrom(from : address; to : address; id : uint; amount : uint; data : bytes);
+  function safeBatchTransferFrom(from : address; to : address; ids : list(uint); amounts : list(uint); data : bytes);
 }
 
 interface IERC1155MetadataURI is {
-  view function uri(id : nat) : string;
+  view function uri(id : uint) : string;
 }
 
 interface ERC1155Receiver is {
-  function onERC1155Received(operator : address; from : address; id : nat; amount : nat; data : bytes) : bytes4;
+  function onERC1155Received(operator : address; from : address; id : uint; amount : uint; data : bytes) : bytes4;
   function onERC1155BatchReceived(
     operator : address;
     from : address;
-    ids : list(nat);
-    amounts : list(nat);
+    ids : list(uint);
+    amounts : list(uint);
     data : bytes
   ) : bytes4;
 }
@@ -59,7 +59,7 @@ interface ERC1155Receiver is {
 supports IERC1155, IERC1155MetadataURI;
 
 storage is record {
-  balances : map(address, map(nat, nat));
+  balances : map(address, map(uint, uint));
   operators : map(address, map(address, bool));
 }
 
@@ -69,19 +69,19 @@ is {
   assert(Evm.sender() = from or storage.operators[from][Evm.sender()], NotOwnerNorApproved);
 }
 
-function debit(const from : address; const id : nat; const amount : nat)
+function debit(const from : address; const id : uint; const amount : uint)
   raises InsufficientBalance
 is {
-  const balance : nat := storage.balances[from][id];
+  const balance : uint := storage.balances[from][id];
   assert(amount <= balance, InsufficientBalance);
   storage.balances[from][id] := balance - amount;
 }
 
-function credit(const to : address; const id : nat; const amount : nat)
+function credit(const to : address; const id : uint; const amount : uint)
   raises AccountBalanceOverflow
 is {
-  const balance : nat := storage.balances[to][id];
-  assert(amount <= Nat.max - balance, AccountBalanceOverflow);
+  const balance : uint := storage.balances[to][id];
+  assert(amount <= Uint.max - balance, AccountBalanceOverflow);
   storage.balances[to][id] := balance + amount;
 }
 
@@ -90,19 +90,19 @@ is {
 function check_received(
   const from : address;
   const to : address;
-  const id : nat;
-  const amount : nat;
+  const id : uint;
+  const amount : uint;
   const data : bytes
 )
   raises TransferToNonERC1155ReceiverImplementer | forwarded
 is {
-  if Evm.code_size(to) > 0n then {
+  if Evm.code_size(to) > 0 then {
     defer ERC1155Receiver(to).onERC1155Received(Evm.sender(), from, id, amount, data) then {
       | Ok(answer : bytes4) -> {
           assert(answer = Abi.selector(ERC1155Receiver.onERC1155Received), TransferToNonERC1155ReceiverImplementer);
         }
       | Error(reason : bytes) -> {
-          if reason.length = 0n then {
+          if reason.length = 0 then {
             fail TransferToNonERC1155ReceiverImplementer;
           }
           forward reason;
@@ -114,13 +114,13 @@ is {
 function check_batch_received(
   const from : address;
   const to : address;
-  const ids : list(nat);
-  const amounts : list(nat);
+  const ids : list(uint);
+  const amounts : list(uint);
   const data : bytes
 )
   raises TransferToNonERC1155ReceiverImplementer | forwarded
 is {
-  if Evm.code_size(to) > 0n then {
+  if Evm.code_size(to) > 0 then {
     defer ERC1155Receiver(to).onERC1155BatchReceived(Evm.sender(), from, ids, amounts, data) then {
       | Ok(answer : bytes4) -> {
           assert(
@@ -129,7 +129,7 @@ is {
           );
         }
       | Error(reason : bytes) -> {
-          if reason.length = 0n then {
+          if reason.length = 0 then {
             fail TransferToNonERC1155ReceiverImplementer;
           }
           forward reason;
@@ -138,18 +138,18 @@ is {
   }
 }
 
-external pure function uri(const id : nat) : string is
+external pure function uri(const id : uint) : string is
   "https://multi.example/{id}.json"
 
-external view function balanceOf(const owner : address; const id : nat) : nat is
+external view function balanceOf(const owner : address; const id : uint) : uint is
   storage.balances[owner][id]
 
-external view function balanceOfBatch(const owners : list(address); const ids : list(nat)) : list(nat)
+external view function balanceOfBatch(const owners : list(address); const ids : list(uint)) : list(uint)
   raises ArrayLengthsMismatch
 is {
   assert(owners.length = ids.length, ArrayLengthsMismatch);
-  var balances : list(nat) := [];
-  for (i, owner) : (nat, address) in owners do {
+  var balances : list(uint) := [];
+  for (i, owner) : (uint, address) in owners do {
     List.push(balances, storage.balances[owner][ids[i]]);
   }
 } with balances
@@ -165,8 +165,8 @@ external function setApprovalForAll(const operator : address; const isApproved :
 external function safeTransferFrom(
   const from : address;
   const to : address;
-  const id : nat;
-  const amount : nat;
+  const id : uint;
+  const amount : uint;
   const data : bytes
 )
   raises TransferToZeroAddress | NotOwnerNorApproved | InsufficientBalance | AccountBalanceOverflow
@@ -183,8 +183,8 @@ is {
 external function safeBatchTransferFrom(
   const from : address;
   const to : address;
-  const ids : list(nat);
-  const amounts : list(nat);
+  const ids : list(uint);
+  const amounts : list(uint);
   const data : bytes
 )
   raises ArrayLengthsMismatch | TransferToZeroAddress | NotOwnerNorApproved | InsufficientBalance
@@ -193,7 +193,7 @@ is {
   assert(ids.length = amounts.length, ArrayLengthsMismatch);
   assert(to <> Address.zero, TransferToZeroAddress);
   check_operator(from);
-  for (i, id) : (nat, nat) in ids do {
+  for (i, id) : (uint, uint) in ids do {
     debit(from, id, amounts[i]);
     credit(to, id, amounts[i]);
   }
@@ -201,7 +201,7 @@ is {
   check_batch_received(from, to, ids, amounts, data);
 }
 
-external function mint(const to : address; const id : nat; const amount : nat; const data : bytes)
+external function mint(const to : address; const id : uint; const amount : uint; const data : bytes)
   raises TransferToZeroAddress | AccountBalanceOverflow | TransferToNonERC1155ReceiverImplementer | forwarded
 is {
   assert(to <> Address.zero, TransferToZeroAddress);
@@ -210,20 +210,20 @@ is {
   check_received(Address.zero, to, id, amount, data);
 }
 
-external function mintBatch(const to : address; const ids : list(nat); const amounts : list(nat); const data : bytes)
+external function mintBatch(const to : address; const ids : list(uint); const amounts : list(uint); const data : bytes)
   raises ArrayLengthsMismatch | TransferToZeroAddress | AccountBalanceOverflow | TransferToNonERC1155ReceiverImplementer
     | forwarded
 is {
   assert(ids.length = amounts.length, ArrayLengthsMismatch);
   assert(to <> Address.zero, TransferToZeroAddress);
-  for (i, id) : (nat, nat) in ids do {
+  for (i, id) : (uint, uint) in ids do {
     credit(to, id, amounts[i]);
   }
   emit TransferBatch { operator = Evm.sender(); from = Address.zero; to = to; ids = ids; amounts = amounts; };
   check_batch_received(Address.zero, to, ids, amounts, data);
 }
 
-external function burn(const from : address; const id : nat; const amount : nat)
+external function burn(const from : address; const id : uint; const amount : uint)
   raises NotOwnerNorApproved | InsufficientBalance
 is {
   check_operator(from);
@@ -231,12 +231,12 @@ is {
   emit TransferSingle { operator = Evm.sender(); from = from; to = Address.zero; id = id; amount = amount; };
 }
 
-external function burnBatch(const from : address; const ids : list(nat); const amounts : list(nat))
+external function burnBatch(const from : address; const ids : list(uint); const amounts : list(uint))
   raises ArrayLengthsMismatch | NotOwnerNorApproved | InsufficientBalance
 is {
   assert(ids.length = amounts.length, ArrayLengthsMismatch);
   check_operator(from);
-  for (i, id) : (nat, nat) in ids do {
+  for (i, id) : (uint, uint) in ids do {
     debit(from, id, amounts[i]);
   }
   emit TransferBatch { operator = Evm.sender(); from = from; to = Address.zero; ids = ids; amounts = amounts; };

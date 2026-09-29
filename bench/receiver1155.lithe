@@ -4,33 +4,33 @@
 
 import "std/interfaces/erc1155.lithe";
 
-error Refused of nat;
+error Refused of uint;
 
 storage is record {
   last_operator : address;
   last_from : address;
-  last_ids : list(nat);
-  last_values : list(nat);
+  last_ids : list(uint);
+  last_values : list(uint);
   last_data : bytes;
-  calls : nat;
-  mode : nat;
+  calls : uint;
+  mode : uint;
 }
 
-external function set_mode(const m : nat) is {
+external function set_mode(const m : uint) is {
   storage.mode := m;
 }
 
 function keep(
   const operator : address;
   const from : address;
-  const ids : list(nat);
-  const values : list(nat);
+  const ids : list(uint);
+  const values : list(uint);
   const data : bytes
 )
   raises Refused | forwarded
 is {
-  assert(storage.mode <> 2n, Refused(ids.length));
-  if storage.mode = 3n then {
+  assert(storage.mode <> 2, Refused(ids.length));
+  if storage.mode = 3 then {
     const nothing : bytes := "";
     forward nothing;
   }
@@ -39,21 +39,21 @@ is {
   storage.last_ids := ids;
   storage.last_values := values;
   storage.last_data := data;
-  storage.calls := storage.calls + 1n;
+  storage.calls := storage.calls + 1;
 }
 
 external function onERC1155Received(
   const operator : address;
   const from : address;
-  const id : nat;
-  const value : nat;
+  const id : uint;
+  const value : uint;
   const data : bytes
 ) : bytes4
   raises Refused | forwarded
 is {
   keep(operator, from, [id], [value], data);
   var answer : bytes4 := Abi.selector(IERC1155Receiver.onERC1155Received);
-  if storage.mode = 1n then {
+  if storage.mode = 1 then {
     answer := 0xdeadbeef;
   }
 } with answer
@@ -61,15 +61,15 @@ is {
 external function onERC1155BatchReceived(
   const operator : address;
   const from : address;
-  const ids : list(nat);
-  const values : list(nat);
+  const ids : list(uint);
+  const values : list(uint);
   const data : bytes
 ) : bytes4
   raises Refused | forwarded
 is {
   keep(operator, from, ids, values, data);
   var answer : bytes4 := Abi.selector(IERC1155Receiver.onERC1155BatchReceived);
-  if storage.mode = 1n then {
+  if storage.mode = 1 then {
     answer := 0xdeadbeef;
   }
 } with answer

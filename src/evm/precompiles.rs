@@ -58,15 +58,15 @@ fn bytes_args(sig: &str, parts: &[Vec<u8>]) -> Vec<u8> {
 }
 
 const SRC: &str = "\
-storage is record { n : nat; }
-external pure function add(const a : (nat, nat); const b : (nat, nat)) : (nat, nat) is Crypto.bn254_add(a, b)
-external pure function mul(const p : (nat, nat); const s : nat) : (nat, nat) is Crypto.bn254_mul(p, s)
-external pure function pair(const ps : list((nat, nat, nat, nat, nat, nat))) : bool is Crypto.bn254_pairing(ps)
+storage is record { n : uint; }
+external pure function add(const a : (uint, uint); const b : (uint, uint)) : (uint, uint) is Crypto.bn254_add(a, b)
+external pure function mul(const p : (uint, uint); const s : uint) : (uint, uint) is Crypto.bn254_mul(p, s)
+external pure function pair(const ps : list((uint, uint, uint, uint, uint, uint))) : bool is Crypto.bn254_pairing(ps)
 external pure function blake(const r : uint32; const h : list(bytes32, 2); const m : list(bytes32, 4); const t : bytes16; const f : bool) : list(bytes32, 2) is
   Crypto.blake2f(r, h, m, t, f)
 external pure function modexp(const b : bytes; const e : bytes; const m : bytes) : bytes is Crypto.mod_exp(b, e, m)
-external pure function powmod(const b : nat; const e : nat; const m : nat) : nat is Nat.pow_mod(b, e, m)
-external pure function kzg(const h : bytes32; const z : nat; const y : nat; const c : bytes; const p : bytes) : bool is
+external pure function powmod(const b : uint; const e : uint; const m : uint) : uint is Uint.pow_mod(b, e, m)
+external pure function kzg(const h : bytes32; const z : uint; const y : uint; const c : bytes; const p : bytes) : bool is
   Crypto.kzg_point_evaluation(h, z, y, c, p)
 external pure function g1_add(const a : bytes; const b : bytes) : bytes is Crypto.bls12_g1_add(a, b)
 external pure function g1_msm(const pairs : bytes) : bytes is Crypto.bls12_g1_msm(pairs)
@@ -311,7 +311,7 @@ fn bls12_calls_concatenate_their_inputs() {
 fn precompile_arguments_are_typed() {
     for (body, want) in [
         (
-            "Crypto.bn254_add((1n, 2n), 3n)",
+            "Crypto.bn254_add((1, 2), true)",
             "`Crypto.bn254_add` takes `(uint256,uint256)` here",
         ),
         (
@@ -319,11 +319,11 @@ fn precompile_arguments_are_typed() {
             "`Crypto.p256_verify` expects 5 arguments",
         ),
         (
-            "Crypto.mod_exp(1n, 2n, 3n)",
+            "Crypto.mod_exp(true, false, true)",
             "`Crypto.mod_exp` takes `bytes` here",
         ),
     ] {
-        let src = format!("storage is record {{ n : nat; }}\nexternal pure function f() : nat is {{ const x : bool := {body} = {body}; }} with 1n\n");
+        let src = format!("storage is record {{ n : uint; }}\nexternal pure function f() : uint is {{ const x : bool := {body} = {body}; }} with 1\n");
         let err = compile(&src).expect_err(want);
         assert!(err.to_string().contains(want), "{want}: {err}");
     }

@@ -6,7 +6,7 @@
    `MerkleProofInvalidLength`. *)
 
 module Merkle is {
-  error MerkleProofInvalidLength of nat;
+  error MerkleProofInvalidLength of uint;
 
   pure function verify(const proof : bytes; const root : bytes32; const leaf : bytes32) : bool
     raises MerkleProofInvalidLength
@@ -17,17 +17,17 @@ module Merkle is {
   pure function process_proof(const proof : bytes; const leaf : bytes32) : bytes32
     raises MerkleProofInvalidLength
   is {
-    assert(proof.length % 32n = 0n, MerkleProofInvalidLength(proof.length));
+    assert(proof.length % 32 = 0, MerkleProofInvalidLength(proof.length));
     var node : bytes32 := leaf;
-    for level : nat in 0n .. proof.length / 32n do {
-      node := hash_pair(node, Bytes.word(proof, level * 32n));
+    for level : uint in 0 .. proof.length / 32 do {
+      node := hash_pair(node, Bytes.word(proof, level * 32));
     }
   } with node
 
   (* The parent of two nodes, whichever order they come in. *)
   pure function hash_pair(const a : bytes32; const b : bytes32) : bytes32 is {
     var pair : bytes32 := Crypto.keccak256(Abi.encode_packed(b, a));
-    if nat(a) < nat(b) then {
+    if uint(a) < uint(b) then {
       pair := Crypto.keccak256(Abi.encode_packed(a, b));
     }
   } with pair

@@ -13,52 +13,52 @@ immutable is record {
 
 storage is record {
   paused : bool;
-  limit : nat;
-  balances : map(address, nat);
+  limit : uint;
+  balances : map(address, uint);
 }
 
 deploy() is {
   immutable.owner := Evm.sender();
-  storage.limit := 1000n;
+  storage.limit := 1000;
 }
 
-external function deposit(const amount : nat)
+external function deposit(const amount : uint)
   raises Failed
 is {
   assert(not storage.paused, Failed("paused"));
-  assert(amount > 0n, Failed("zero amount"));
+  assert(amount > 0, Failed("zero amount"));
   assert(amount <= storage.limit, Failed("over the limit"));
   storage.balances[Evm.sender()] := storage.balances[Evm.sender()] + amount;
 }
 
-external function withdraw(const amount : nat)
+external function withdraw(const amount : uint)
   raises Failed
 is {
   assert(not storage.paused, Failed("paused"));
-  assert(amount > 0n, Failed("zero amount"));
-  const have : nat := storage.balances[Evm.sender()];
+  assert(amount > 0, Failed("zero amount"));
+  const have : uint := storage.balances[Evm.sender()];
   assert(have >= amount, Failed("insufficient balance to proceed"));
   storage.balances[Evm.sender()] := have - amount;
 }
 
-external function transfer(const to : address; const amount : nat)
+external function transfer(const to : address; const amount : uint)
   raises Failed | Denied
 is {
   assert(not storage.paused, Failed("paused"));
   assert(to =/= Address.zero, Failed("zero address"));
   assert(to =/= Evm.sender(), Denied { who = to; reason = "self transfer"; });
-  const have : nat := storage.balances[Evm.sender()];
+  const have : uint := storage.balances[Evm.sender()];
   assert(have >= amount, Failed("insufficient balance to proceed"));
   storage.balances[Evm.sender()] := have - amount;
   storage.balances[to] := storage.balances[to] + amount;
 }
 
-external function set_limit(const limit : nat)
+external function set_limit(const limit : uint)
   raises Denied | Failed
 is {
   assert(Evm.sender() = immutable.owner, Denied { who = Evm.sender(); reason = "not the owner"; });
-  assert(limit > 0n, Failed("zero limit"));
-  assert(limit <= 1_000_000n, Failed("limit too high"));
+  assert(limit > 0, Failed("zero limit"));
+  assert(limit <= 1_000_000, Failed("limit too high"));
   storage.limit := limit;
 }
 
@@ -70,7 +70,7 @@ is {
   storage.paused := on;
 }
 
-external view function balance_of(const who : address) : nat
+external view function balance_of(const who : address) : uint
   raises Failed
 is {
   assert(who =/= Address.zero, Failed("zero address"));

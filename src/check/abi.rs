@@ -155,7 +155,7 @@ pub(crate) fn abi_fields(types: &[RType], ty: usize, name: &str) -> Result<Vec<A
             };
             abi_fields(types, under, name)
         }
-        TyKind::Nat => Ok(vec![AbiField {
+        TyKind::Uint => Ok(vec![AbiField {
             name: name.to_string(),
             ty: uint_abi(types[ty].bits).to_string(),
             components: Vec::new(),
@@ -309,7 +309,7 @@ pub(super) fn value_topic(types: &[RType], ty: usize) -> bool {
     let id = peel_id(types, ty);
     matches!(
         types[id].kind,
-        TyKind::Nat
+        TyKind::Uint
             | TyKind::Int
             | TyKind::Address
             | TyKind::Bool

@@ -7,7 +7,7 @@ import "std/interfaces/erc1155.lithe";
 module Uris is {
   storage uris at "t.uris" is record { base : string; }
 
-  external view function uri(const id : nat) : string is
+  external view function uri(const id : uint) : string is
     uris.base
 }
 
@@ -58,7 +58,7 @@ fn erc165_answers_for_supported_interfaces() {
     let inline = ERC165_SRC
         .replace(
             "use Uris exposing IERC1155MetadataURI;",
-            "use Uris exposing { view function uri(id : nat) : string; }",
+            "use Uris exposing { view function uri(id : uint) : string; }",
         )
         .replace(
             "supports IERC20, IERC20Metadata, IERC1155MetadataURI;",
@@ -81,7 +81,7 @@ fn erc165_answers_for_supported_interfaces() {
     );
     assert!(!abi(&none).expect("abi").contains("supportsInterface"));
     let plain =
-        compile("storage is record { n : nat; }\nexternal function f() is { storage.n := 1n; }\n")
+        compile("storage is record { n : uint; }\nexternal function f() is { storage.n := 1; }\n")
             .expect("plain");
     let runtime = deploy(&plain).expect("deploy");
     assert!(
@@ -194,19 +194,19 @@ fn interfaces_are_function_headers() {
     install_mocks();
     let src = r#"
 interface Pinger is {
-  function ping(a : nat);
-  function ping(a : nat; b : nat);
+  function ping(a : uint);
+  function ping(a : uint; b : uint);
   function put(a : address);
   function put(a : bool);
-  payable function fund(a : nat);
+  payable function fund(a : uint);
 }
 
-storage is record { n : nat; }
+storage is record { n : uint; }
 
 external function go(const t : Pinger) is {
-  defer t.ping(1n, 2n);
+  defer t.ping(1, 2);
   defer t.put(Evm.sender());
-  defer t.fund(3n) with value = 0n;
+  defer t.fund(3) with value = 0;
 }
 "#;
     let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
@@ -226,22 +226,22 @@ external function go(const t : Pinger) is {
     }
     for (body, want) in [
         (
-            "defer t.ping(1n) with value = 1n;",
+            "defer t.ping(1) with value = 1;",
             "`ping` is not payable; declare it `payable function ping` in its interface",
         ),
-        ("defer t.ping(1n, 2n, 3n);", "`ping` expects 1 arguments"),
+        ("defer t.ping(1, 2, 3);", "`ping` expects 1 arguments"),
         (
-            "defer t.put(1n);",
+            "defer t.put(1);",
             "no overload of `put` takes these arguments",
         ),
     ] {
-        let bad = src.replace("defer t.ping(1n, 2n);", body);
+        let bad = src.replace("defer t.ping(1, 2);", body);
         let err = compile(&bad).expect_err(want);
         assert!(err.to_string().contains(want), "{want}: {err}");
     }
     for (iface, want) in [
         (
-            "interface Pair is { view function both() : (nat, nat); }\nexternal view function f(const p : Pair) : nat is query p.both()",
+            "interface Pair is { view function both() : (uint, uint); }\nexternal view function f(const p : Pair) : uint is query p.both()",
             "body type does not match its return type",
         ),
         (
@@ -249,11 +249,11 @@ external function go(const t : Pinger) is {
             "unknown error `Missing`",
         ),
         (
-            "interface Bad is { function f(const a : nat); }",
+            "interface Bad is { function f(const a : uint); }",
             "an interface's parameters are `name : type`, without `const`",
         ),
         (
-            "interface Bad is { query f() : nat; }",
+            "interface Bad is { query f() : uint; }",
             "an interface declares functions, found `query`",
         ),
     ] {
@@ -310,26 +310,26 @@ fn map_parameters_share_one_copy() {
     install_mocks();
     let src = r#"
 storage is record {
-  a : map(address, nat);
-  b : map(address, nat);
-  nested : map(address, map(address, nat));
+  a : map(address, uint);
+  b : map(address, uint);
+  nested : map(address, map(address, uint));
   names : map(address, string);
 }
 
 transient storage scratch is record {
-  t : map(address, nat);
+  t : map(address, uint);
 }
 
-function bump(storage m : map(address, nat); const by : nat) is {
+function bump(storage m : map(address, uint); const by : uint) is {
   m[Evm.sender()] := m[Evm.sender()] + by;
 }
 
-function bump_twice(storage m : map(address, nat)) is {
-  bump(m, 1n);
-  bump(m, 1n);
+function bump_twice(storage m : map(address, uint)) is {
+  bump(m, 1);
+  bump(m, 1);
 }
 
-function put(storage m : map(address, map(address, nat)); const k : address; const v : nat) is {
+function put(storage m : map(address, map(address, uint)); const k : address; const v : uint) is {
   m[Evm.sender()][k] := v;
 }
 
@@ -337,20 +337,20 @@ function name(storage m : map(address, string); const v : string) is {
   m[Evm.sender()] := v;
 }
 
-external function go(const k : address) : nat is {
-  bump(storage.a, 5n);
-  bump(storage.b, 7n);
+external function go(const k : address) : uint is {
+  bump(storage.a, 5);
+  bump(storage.b, 7);
   bump_twice(storage.a);
-  bump(scratch.t, 100n);
-  bump(scratch.t, 1n);
-  put(storage.nested, k, 9n);
+  bump(scratch.t, 100);
+  bump(scratch.t, 1);
+  put(storage.nested, k, 9);
   name(storage.names, String.concat("a string that is well ", "past thirty one bytes long"));
-} with storage.a[Evm.sender()] * 1000000n + storage.b[Evm.sender()] * 1000n
+} with storage.a[Evm.sender()] * 1000000 + storage.b[Evm.sender()] * 1000
   + scratch.t[Evm.sender()]
 
-external view function a_of(const who : address) : nat is storage.a[who]
-external view function b_of(const who : address) : nat is storage.b[who]
-external view function nested_of(const who : address; const k : address) : nat is
+external view function a_of(const who : address) : uint is storage.a[who]
+external view function b_of(const who : address) : uint is storage.b[who]
+external view function nested_of(const who : address; const k : address) : uint is
   storage.nested[who][k]
 external view function name_of(const who : address) : string is storage.names[who]
 "#;
@@ -401,26 +401,26 @@ external view function name_of(const who : address) : string is storage.names[wh
 fn storage_parameters_write_in_place() {
     let src = r#"
 storage is record {
-  total : nat;
-  items : list(nat);
+  total : uint;
+  items : list(uint);
 }
 
-function bump(storage n : nat) is {
-  n := n + 1n;
+function bump(storage n : uint) is {
+  n := n + 1;
 }
 
-function push(storage xs : list(nat); const v : nat) is {
+function push(storage xs : list(uint); const v : uint) is {
   List.push(xs, v);
 }
 
-function last(const xs : list(nat)) : nat is
-  xs[xs.length - 1n]
+function last(const xs : list(uint)) : uint is
+  xs[xs.length - 1]
 
-external function go() : nat is {
+external function go() : uint is {
   bump(storage.total);
   bump(storage.total);
-  push(storage.items, 7n);
-} with storage.total * 100n + last(storage.items)
+  push(storage.items, 7);
+} with storage.total * 100 + last(storage.items)
 "#;
     let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
     let w = Word::from_u64;
@@ -440,19 +440,19 @@ external function go() : nat is {
 
     for (src, want) in [
         (
-            "storage is record { n : nat; }\nfunction bump(storage n : nat) is { n := n + 1n; }\nexternal function go() is { var k : nat := 0n; bump(k); }\n",
+            "storage is record { n : uint; }\nfunction bump(storage n : uint) is { n := n + 1; }\nexternal function go() is { var k : uint := 0; bump(k); }\n",
             "pass a storage path to `n`",
         ),
         (
-            "storage is record { m : map(address, nat); }\nfunction f(const m : map(address, nat)) is { skip }\nexternal function go() is { f(storage.m); }\n",
+            "storage is record { m : map(address, uint); }\nfunction f(const m : map(address, uint)) is { skip }\nexternal function go() is { f(storage.m); }\n",
             "declare it `storage m`",
         ),
         (
-            "storage is record { xs : list(nat); }\nfunction f(const xs : list(nat)) is { xs[0n] := 1n; }\nexternal function go() is { f(storage.xs); }\n",
+            "storage is record { xs : list(uint); }\nfunction f(const xs : list(uint)) is { xs[0] := 1; }\nexternal function go() is { f(storage.xs); }\n",
             "cannot assign to a const",
         ),
         (
-            "external function go(storage n : nat) is { skip }\n",
+            "external function go(storage n : uint) is { skip }\n",
             "its parameters are values",
         ),
     ] {
@@ -467,8 +467,8 @@ external function go() : nat is {
 fn internal_functions_overload() {
     let src = r#"
 module Tally is {
-  pure function score(const x : nat) : nat is x * 2n
-  pure function score(const x : bool) : nat is 7n
+  pure function score(const x : uint) : uint is x * 2
+  pure function score(const x : bool) : uint is 7
 }
 
 module Pair(T) is {
@@ -479,29 +479,29 @@ module Pair(T) is {
 use Tally;
 
 storage is record {
-  total : nat;
-  seen : map(address, nat);
+  total : uint;
+  seen : map(address, uint);
 }
 
-pure function pick(const x : nat) : nat is x + 1n
-pure function pick(const x : nat; const y : nat) : nat is x + y
-pure function pick(const x : bool) : nat is 100n
+pure function pick(const x : uint) : uint is x + 1
+pure function pick(const x : uint; const y : uint) : uint is x + y
+pure function pick(const x : bool) : uint is 100
 pure function same(T)(const x : T) : T is x
 pure function same(T)(const x : T; const y : T) : T is y
 
-function bump(storage m : map(address, nat)) is {
-  m[Evm.sender()] := 5n;
+function bump(storage m : map(address, uint)) is {
+  m[Evm.sender()] := 5;
 }
 
-function bump(const x : nat) is {
+function bump(const x : uint) is {
   storage.total := storage.total + x;
 }
 
-external function go(const a : nat) : nat is {
+external function go(const a : uint) : uint is {
   bump(storage.seen);
   bump(a);
-} with pick(a) + pick(a, 10n) + pick(true) + same(a) + same(a, 1n) + Tally.score(a) + Tally.score(true)
-  + Pair.first(a, 2n) + Pair.first(a, 2n, 3n) + storage.seen[Evm.sender()] + storage.total
+} with pick(a) + pick(a, 10) + pick(true) + same(a) + same(a, 1) + Tally.score(a) + Tally.score(true)
+  + Pair.first(a, 2) + Pair.first(a, 2, 3) + storage.seen[Evm.sender()] + storage.total
 "#;
     let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
     let out = call(&runtime, "go(uint256)", &[Word::from_u64(4)]);
@@ -509,14 +509,14 @@ external function go(const a : nat) : nat is {
     // 5 + 14 + 100 + 4 + 1 + 8 + 7 + 4 + 3 + 5 + 4
     assert_eq!(load_bytes(&out.returndata, 0), Word::from_u64(155));
     for (bad, want) in [
-        ("pick(a, 1n, 2n)", "no overload of `pick` takes 3 arguments"),
+        ("pick(a, 1, 2)", "no overload of `pick` takes 3 arguments"),
         (
             "pick(Evm.sender())",
             "no overload of `pick` takes these arguments",
         ),
         (
             "same(a, true)",
-            "type parameter `T` is both `nat` and `bool`",
+            "type parameter `T` is both `uint` and `bool`",
         ),
     ] {
         let bad = src.replace("pick(a) +", &format!("{bad} +"));
@@ -525,7 +525,7 @@ external function go(const a : nat) : nat is {
     }
     for (extra, want) in [
         (
-            "pure function pick(const y : nat) : nat is y",
+            "pure function pick(const y : uint) : uint is y",
             "duplicate function `pick`",
         ),
         (
@@ -533,7 +533,7 @@ external function go(const a : nat) : nat is {
             "an external and an internal function cannot share a name",
         ),
         (
-            "pure function same(const x : nat) : nat is x\nexternal pure function g() : nat is same(1n)",
+            "pure function same(const x : uint) : uint is x\nexternal pure function g() : uint is same(1)",
             "more than one overload of `same` takes these arguments",
         ),
     ] {
@@ -549,28 +549,28 @@ external function go(const a : nat) : nat is {
 fn external_use_combines_interfaces() {
     let module = r#"
 module Vault is {
-  storage vault at "t.vault" is record { total : nat; }
+  storage vault at "t.vault" is record { total : uint; }
   error Too_much;
 
-  external view function total() : nat is vault.total
-  external nonreentrant function add(var by : nat) raises Too_much is {
-    assert(by < 1000n, Too_much);
-    by := by * 2n;
+  external view function total() : uint is vault.total
+  external nonreentrant function add(var by : uint) raises Too_much is {
+    assert(by < 1000, Too_much);
+    by := by * 2;
     vault.total := vault.total + by;
   }
-  external pure function version() : nat is 3n
+  external pure function version() : uint is 3
 }
 
 interface ITotal is {
-  view function total() : nat;
+  view function total() : uint;
 }
 
 interface IAdd is {
-  function add(by : nat) raises Too_much;
+  function add(by : uint) raises Too_much;
 }
 "#;
     let src = format!(
-        "{module}\nuse Vault exposing ITotal, IAdd, {{\n  pure function version() : nat;\n}}\n"
+        "{module}\nuse Vault exposing ITotal, IAdd, {{\n  pure function version() : uint;\n}}\n"
     );
     let runtime = deploy(&compile(&src).expect("compile")).expect("deploy");
     let add = exec(
@@ -608,15 +608,15 @@ interface IAdd is {
         ),
         (
             src.replace(
-                "pure function version() : nat;",
-                "view function version() : nat;",
+                "pure function version() : uint;",
+                "view function version() : uint;",
             ),
             "`version` is `view` in the inline interface and `pure` in `Vault`",
         ),
         (
             src.replace(
-                "  pure function version() : nat;\n}",
-                "  pure function version() : nat;\n}, {\n  view function total() : nat;\n}",
+                "  pure function version() : uint;\n}",
+                "  pure function version() : uint;\n}, {\n  view function total() : uint;\n}",
             ),
             "`use ... exposing` has one inline interface",
         ),

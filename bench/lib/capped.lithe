@@ -2,35 +2,35 @@
    it after every mint. *)
 
 error ERC20ExceededCap of record {
-  increasedSupply : nat;
-  cap : nat;
+  increasedSupply : uint;
+  cap : uint;
 }
 
-error ERC20InvalidCap of nat;
+error ERC20InvalidCap of uint;
 
 module ERC20Capped is {
   storage capped at "openzeppelin.storage.ERC20Capped" is record {
-    cap : nat;
+    cap : uint;
   }
 
-  external view function cap() : nat is
+  external view function cap() : uint is
     capped.cap
 
-  function init(const cap : nat)
+  function init(const cap : uint)
     raises ERC20InvalidCap
   is {
-    assert(cap > 0n, ERC20InvalidCap(0n));
+    assert(cap > 0, ERC20InvalidCap(0));
     capped.cap := cap;
   }
 
-  view function check_cap(const supply : nat)
+  view function check_cap(const supply : uint)
     raises ERC20ExceededCap
   is {
-    const cap : nat := capped.cap;
+    const cap : uint := capped.cap;
     assert(supply <= cap, ERC20ExceededCap { increasedSupply = supply; cap = cap; });
   }
 }
 
 interface IERC20Capped is {
-  view function cap() : nat;
+  view function cap() : uint;
 }

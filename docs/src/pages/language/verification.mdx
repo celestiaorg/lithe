@@ -127,7 +127,7 @@ A spec for a [dispatch guard](/language/dispatch#groups-and-guards) says when th
 error Not_owner;
 
 type owner_action is
-  | Set_fee of nat
+  | Set_fee of uint
   | Pause
 
 type action is
@@ -136,7 +136,7 @@ type action is
 storage is record {
   owner : address;
   paused : bool;
-  fee : nat;
+  fee : uint;
 }
 
 function owner_main(const action : owner_action)
@@ -280,9 +280,9 @@ The prover models storage words, maps, records, checked arithmetic, and `forall`
 A loop that may run more than 16 times, or over a list, is too long to follow one iteration at a time. Without more to go on, the prover knows only that what its body writes has changed, and a claim that depends on it is `not proved`. A loop invariant says more. It is a `bool` that holds each time an iteration starts, and when the loop ends, written after the loop's `bound`:
 
 ```lithe fragment
-const start : nat := storage.steps;
-for i : nat in 0n .. n bound 100 invariant storage.steps = start + i do {
-  storage.steps := storage.steps + 1n;
+const start : uint := storage.steps;
+for i : uint in 0 .. n bound 100 invariant storage.steps = start + i do {
+  storage.steps := storage.steps + 1;
 }
 ```
 
@@ -317,7 +317,7 @@ A checking build computes a spec's arithmetic as the code does, so a spec whose 
 | Form | Is |
 | --- | --- |
 | `sum(m)` | the sum of a map's values, which are numbers, as the map's value type |
-| `count(m)` | how many of a map's values are not zero, as a `nat` |
+| `count(m)` | how many of a map's values are not zero, as a `uint` |
 | `forall x : T . e` | `e` holds for every `x` of the named type `T` |
 
 `sum` and `count` range over every key, which only a spec can: a contract cannot enumerate a map. Inside a spec block, `old`, `new`, `sum`, `count`, and `forall` are these forms. Outside one, they are ordinary names.

@@ -1,9 +1,9 @@
 module Ledger is {
   storage ledger at "lithe.ledger" is record {
-    n : nat;
+    n : uint;
   }
 
-  function set(const n : nat) is {
+  function set(const n : uint) is {
     ledger.n := n;
   }
 }
@@ -11,13 +11,13 @@ module Ledger is {
 module Guarded is {
   requires Ledger;
 
-  external function set(const n : nat) is {
+  external function set(const n : uint) is {
     Ledger.set(n);
   }
 }
 
 contract Token is {
   use Guarded exposing {
-    function set(n : nat);
+    function set(n : uint);
   }
 }

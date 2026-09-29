@@ -1368,8 +1368,7 @@ pub(crate) fn fmt_expr(e: &Expr) -> String {
         }
         Expr::Query { expr, .. } => fmt_expr(expr),
         Expr::Lit { lit, .. } => match lit {
-            Lit::Nat(w) | Lit::Duration(w) => format!("{}n", w.0[0]),
-            Lit::Int(w, _) | Lit::Wei(w) => w.0[0].to_string(),
+            Lit::Uint(w) | Lit::Duration(w) | Lit::Int(w, _) | Lit::Wei(w) => w.0[0].to_string(),
             Lit::Bool(true) => "true".into(),
             Lit::Bool(false) => "false".into(),
             Lit::Unit => "Unit".into(),

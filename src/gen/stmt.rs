@@ -139,7 +139,7 @@ impl<'a> Gen<'a> {
                 // stack word, and a test against zero.
                 let down = !mirrored
                     && matches!(iter, ForIter::Range { lo, .. }
-                        if matches!(lo, Expr::Lit { lit: Lit::Nat(w) | Lit::Int(w, _), .. } if w.is_zero()));
+                        if matches!(lo, Expr::Lit { lit: Lit::Uint(w) | Lit::Int(w, _), .. } if w.is_zero()));
                 match iter {
                     ForIter::Range { hi, .. } if down => {
                         self.compile_value(hi)?;
@@ -969,7 +969,7 @@ impl<'a> Gen<'a> {
                 Ok(())
             }
             Expr::Call {
-                builtin: Some(kind @ (Builtin::NatDivRem | Builtin::IntDivRem)),
+                builtin: Some(kind @ (Builtin::UintDivRem | Builtin::IntDivRem)),
                 args,
                 ..
             } => {
@@ -1152,7 +1152,7 @@ impl<'a> Gen<'a> {
     pub(super) fn const_word(&self, e: &Expr) -> Option<Word> {
         match e {
             Expr::Lit {
-                lit: Lit::Nat(w) | Lit::Wei(w) | Lit::Duration(w),
+                lit: Lit::Uint(w) | Lit::Wei(w) | Lit::Duration(w),
                 ..
             } => Some(*w),
             Expr::Lit {

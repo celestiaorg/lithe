@@ -2,7 +2,7 @@ type basis_points is uint16;
 type discount_rate is uint16;
 
 storage is record {
-  n : nat;
+  n : uint;
 }
 
 external function go() is {

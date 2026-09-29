@@ -16,12 +16,12 @@ Errors take one of three forms:
 error Unauthorized;
 
 (* One value. In the ABI: TooLarge(uint256) *)
-error Too_large of nat;
+error Too_large of uint;
 
 (* Named fields. In the ABI: InsufficientBalance(uint256 available, uint256 required) *)
 error Insufficient_balance of record {
-  available : nat;
-  required : nat;
+  available : uint;
+  required : uint;
 }
 
 (* Strings, bytes, and lists too. In the ABI: UnknownKey(string) *)
@@ -29,25 +29,25 @@ error Unknown_key of string;
 
 (* In the ABI: AttributeNotFound(uint256 tokenId, string traitType) *)
 error Attribute_not_found of record {
-  tokenId : nat;
+  tokenId : uint;
   traitType : string;
 }
 
 storage is record {
-  n : nat;
+  n : uint;
 }
 
-external function check(const n : nat)
+external function check(const n : uint)
   raises Too_large
 is {
-  assert(n <= 100n, Too_large(n));
+  assert(n <= 100, Too_large(n));
   storage.n := n;
 }
 
-external function lookup(const token_id : nat)
+external function lookup(const token_id : uint)
   raises Unknown_key | Attribute_not_found
 is {
-  assert(token_id > 0n, Unknown_key("token 0"));
+  assert(token_id > 0, Unknown_key("token 0"));
   assert(token_id <= storage.n, Attribute_not_found { tokenId = token_id; traitType = "Background"; });
 }
 ```
@@ -60,23 +60,23 @@ Each error compiles to a Solidity custom error. The ABI name is the declared nam
 
 ```lithe
 error Unauthorized;
-error Too_large of nat;
+error Too_large of uint;
 error Insufficient_balance of record {
-  available : nat;
-  required : nat;
+  available : uint;
+  required : uint;
 }
 
 storage is record {
   owner : address;
-  balances : map(address, nat);
+  balances : map(address, uint);
 }
 
-external function withdraw(const amount : nat)
+external function withdraw(const amount : uint)
   raises Unauthorized | Too_large | Insufficient_balance
 is {
   assert(Evm.sender() = storage.owner, Unauthorized);
-  assert(amount <= 1_000_000n, Too_large(amount));
-  const have : nat := storage.balances[Evm.sender()];
+  assert(amount <= 1_000_000, Too_large(amount));
+  const have : uint := storage.balances[Evm.sender()];
   if have < amount then {
     fail Insufficient_balance { available = have; required = amount; };
   }
@@ -129,14 +129,14 @@ error Not_owner;
 
 storage is record {
   owner : address;
-  value : nat;
+  value : uint;
 }
 
 view function only_owner() is {
   assert(Evm.sender() = storage.owner, Not_owner);
 }
 
-external function set(const value : nat)
+external function set(const value : uint)
   raises Not_owner
 is {
   only_owner();
@@ -154,14 +154,14 @@ A failed call's revert data can be passed on unchanged with `forward reason`, wh
 error Rejected;
 
 interface Receiver is {
-  function accept(amount : nat) : bool;
+  function accept(amount : uint) : bool;
 }
 
 storage is record {
   receiver : Receiver;
 }
 
-external function notify(const amount : nat)
+external function notify(const amount : uint)
   raises Rejected | forwarded
 is {
   defer storage.receiver.accept(amount) then {
@@ -169,7 +169,7 @@ is {
         assert(accepted, Rejected);
       }
     | Error(reason : bytes) -> {
-        if reason.length = 0n then {
+        if reason.length = 0 then {
           fail Rejected;
         }
         forward reason;
@@ -186,8 +186,8 @@ Name a group of errors once and reuse it:
 
 ```lithe
 error Paused;
-error Too_small of nat;
-error Insufficient of nat;
+error Too_small of uint;
+error Insufficient of uint;
 
 errors withdraw_errors is
   | Paused
@@ -196,14 +196,14 @@ errors withdraw_errors is
 
 storage is record {
   paused : bool;
-  balance : nat;
+  balance : uint;
 }
 
-external function withdraw(const amount : nat)
+external function withdraw(const amount : uint)
   raises withdraw_errors
 is {
   assert(not storage.paused, Paused);
-  assert(amount >= 10n, Too_small(amount));
+  assert(amount >= 10, Too_small(amount));
   assert(storage.balance >= amount, Insufficient(storage.balance));
   storage.balance := storage.balance - amount;
 }
@@ -217,7 +217,7 @@ Some failures are not declared errors. They are violated invariants, and they re
 
 | Code | Cause |
 | --- | --- |
-| `0x11` | arithmetic overflow or underflow, a conversion out of range, or a value too wide for `Nat.to_hex_string`'s length |
+| `0x11` | arithmetic overflow or underflow, a conversion out of range, or a value too wide for `Uint.to_hex_string`'s length |
 | `0x12` | division or remainder by zero |
 | `0x32` | list index out of range |
 

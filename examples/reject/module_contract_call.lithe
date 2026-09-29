@@ -1,6 +1,6 @@
 module Ledger is {
   storage ledger at "lithe.ledger" is record {
-    n : nat;
+    n : uint;
   }
 
   external function bump() is {
@@ -8,8 +8,8 @@ module Ledger is {
   }
 }
 
-pure function hook() : nat is
-  1n
+pure function hook() : uint is
+  1
 
 use Ledger exposing {
   function bump();

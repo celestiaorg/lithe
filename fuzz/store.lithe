@@ -1,46 +1,46 @@
 (* Fuzz target: collections, options, records, and dynamic values in storage. *)
 
-error Too_big of nat;
+error Too_big of uint;
 error Bad_pair of record {
-  left : nat;
-  right : nat;
+  left : uint;
+  right : uint;
 }
 
 type point is record {
-  x : nat;
-  y : nat;
+  x : uint;
+  y : uint;
 }
 
 storage is record {
   owner : address;
-  balances : map(address, nat);
-  allowed : map(nat, bool);
-  ids : list(nat);
-  slots : list(nat, 4);
+  balances : map(address, uint);
+  allowed : map(uint, bool);
+  ids : list(uint);
+  slots : list(uint, 4);
   admin : option(address);
   spot : point;
   name : string;
   blob : bytes;
-  count : nat;
-  pair : (nat, nat);
+  count : uint;
+  pair : (uint, uint);
 }
 
 event Moved of record {
   indexed who : address;
-  amount : nat;
-  total : nat;
+  amount : uint;
+  total : uint;
 }
 
 event Named of record {
   indexed label : string;
-  size : nat;
+  size : uint;
 }
 
-function bump(const k : nat) : nat is {
+function bump(const k : uint) : uint is {
   storage.count := storage.count + k;
 } with storage.count
 
-function credit(const who : address; const amount : nat) is {
+function credit(const who : address; const amount : uint) is {
   storage.balances[who] := storage.balances[who] + amount;
   emit Moved {
     who = who;
@@ -49,40 +49,40 @@ function credit(const who : address; const amount : nat) is {
   };
 }
 
-external function deposit(const who : address; const amount : nat)
+external function deposit(const who : address; const amount : uint)
   raises Too_big
 is {
-  assert(amount < 1000000n, Too_big(amount));
+  assert(amount < 1000000, Too_big(amount));
   credit(who, amount);
-  credit(Evm.sender(), 1n);
-  const c : nat := bump(amount);
-  if c > 50n then {
+  credit(Evm.sender(), 1);
+  const c : uint := bump(amount);
+  if c > 50 then {
     storage.allowed[c] := true;
   } else {
     skip
   }
 }
 
-external function move(const src : address; const dst : address; const amount : nat) is {
-  const have : nat := storage.balances[src];
+external function move(const src : address; const dst : address; const amount : uint) is {
+  const have : uint := storage.balances[src];
   storage.balances[src] := have - amount;
   storage.balances[dst] := storage.balances[dst] + amount;
-  const _ : nat := bump(1n);
+  const _ : uint := bump(1);
 }
 
-external function push(const v : nat) is {
+external function push(const v : uint) is {
   storage.ids[storage.count] := v;
-  const _ : nat := bump(1n);
+  const _ : uint := bump(1);
 }
 
-external function set_slot(const i : nat; const v : nat) is {
+external function set_slot(const i : uint; const v : uint) is {
   storage.slots[i] := v;
 }
 
-external view function get_slot(const i : nat) : nat is
+external view function get_slot(const i : uint) : uint is
   storage.slots[i]
 
-external view function get_id(const i : nat) : nat is
+external view function get_id(const i : uint) : uint is
   storage.ids[i]
 
 external function appoint(const who : address) is {
@@ -100,7 +100,7 @@ external view function admin_or(const d : address) : address is
   | None -> d
   }
 
-external function place(const x : nat; const y : nat)
+external function place(const x : uint; const y : uint)
   raises Bad_pair
 is {
   assert(x <> y, Bad_pair { left = x; right = y; });
@@ -109,17 +109,17 @@ is {
   storage.pair := (y, x);
 }
 
-external view function spot_sum() : nat is
+external view function spot_sum() : uint is
   storage.spot.x + storage.spot.y
 
-external view function pair() : (nat, nat) is
+external view function pair() : (uint, uint) is
   storage.pair
 
 external function rename(const n : string) is {
   storage.name := n;
   emit Named {
     label = n;
-    size = 1n;
+    size = 1;
   };
 }
 
@@ -136,10 +136,10 @@ external view function blob() : bytes is
 external view function digest() : bytes32 is
   Crypto.keccak256(storage.blob)
 
-external view function balance(const who : address) : nat is
+external view function balance(const who : address) : uint is
   storage.balances[who]
 
-external view function allowed(const k : nat) : bool is
+external view function allowed(const k : uint) : bool is
   storage.allowed[k]
 
 external view function owner() : address is

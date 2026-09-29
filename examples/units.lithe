@@ -2,9 +2,9 @@
 
 storage is record {
   price : wei;
-  wait : nat;
+  wait : uint;
   unlock_at : timestamp;
-  elapsed : nat;
+  elapsed : uint;
 }
 
 external function set() is {

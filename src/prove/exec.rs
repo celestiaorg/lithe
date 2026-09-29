@@ -1521,7 +1521,7 @@ impl<'a> Exec<'a> {
         self.at = (e.line(), e.col());
         match e {
             Expr::Lit { lit, ty, .. } => Ok(match lit {
-                Lit::Nat(w) | Lit::Wei(w) | Lit::Duration(w) => Val::Int(dec(*w)),
+                Lit::Uint(w) | Lit::Wei(w) | Lit::Duration(w) => Val::Int(dec(*w)),
                 Lit::Int(w, _) => {
                     // A literal of a signed type is written as its bits.
                     if matches!(word_of(self.checked, *ty), Some(Word1::Int(ref lo, _)) if lo.starts_with('-'))
@@ -2135,12 +2135,12 @@ impl<'a> Exec<'a> {
             {
                 Ok(Val::Int(k.to_string()))
             }
-            Builtin::NatMulDiv => {
+            Builtin::UintMulDiv => {
                 let a = self.eval(st, &args[0], ctx)?;
                 let bb = self.eval(st, &args[1], ctx)?;
                 let d = self.eval(st, &args[2], ctx)?;
                 let (Val::Int(a), Val::Int(bb), Val::Int(d)) = (a, bb, d) else {
-                    return self.approx_fresh(ty, "`Nat.mul_div` of values it does not model");
+                    return self.approx_fresh(ty, "`Uint.mul_div` of values it does not model");
                 };
                 if ctx.mode == Mode::Code {
                     st.ok =
@@ -2332,7 +2332,7 @@ pub(crate) fn word_of(checked: &Checked, ty: usize) -> Option<Word1> {
     let bits = u32::from(t.bits);
     Some(match t.kind {
         TyKind::Bool => Word1::Bool,
-        TyKind::Nat => Word1::Int(
+        TyKind::Uint => Word1::Int(
             "0".to_string(),
             max_bits(if bits == 0 { 256 } else { bits }),
         ),

@@ -1,5 +1,5 @@
 storage is record {
-  n : nat;
+  n : uint;
 }
 
 external function go() is {
@@ -8,7 +8,7 @@ external function go() is {
 
 contract Foo is {
   storage is record {
-    n : nat;
+    n : uint;
   }
 
   external function go() is {

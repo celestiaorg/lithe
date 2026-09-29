@@ -13,24 +13,24 @@ Everything here is checked, like the rest of Lithe's arithmetic: a result that d
 
 | Function | |
 | --- | --- |
-| `min(a, b)`, `max(a, b)` | for `nat` or `int` |
-| `clamp(x, low, high)` | for `nat` or `int`; raises `MathInvalidRange`, or `MathInvalidSignedRange` for `int`, when `low > high` |
-| `average(a, b)` | without overflow in `a + b`; a `nat` mean rounds down, an `int` one toward zero |
+| `min(a, b)`, `max(a, b)` | for `uint` or `int` |
+| `clamp(x, low, high)` | for `uint` or `int`; raises `MathInvalidRange`, or `MathInvalidSignedRange` for `int`, when `low > high` |
+| `average(a, b)` | without overflow in `a + b`; a `uint` mean rounds down, an `int` one toward zero |
 | `ceil_div(a, b)` | `a / b` rounded up |
 | `mul_div_up(a, b, d)` | `a * b / d` rounded up, with a 512-bit product |
 | `sqrt(a)` | the integer square root, rounded down |
 | `log2(a)`, `log10(a)` | the base-2 or base-10 logarithm, rounded down; 0 for 0 |
-| `abs(x)` | the magnitude of an `int`, as a `nat`, so `abs(Int.min)` is `2^255` |
+| `abs(x)` | the magnitude of an `int`, as a `uint`, so `abs(Int.min)` is `2^255` |
 
-`a * b / d` rounded down is the built-in [`Nat.mul_div`](/language/builtins#nat-int-and-address). Its product is kept in 512 bits, so `Nat.mul_div(amount, price, 1e18)` doesn't overflow where `amount * price` would.
+`a * b / d` rounded down is the built-in [`Uint.mul_div`](/language/builtins#uint-int-and-address). Its product is kept in 512 bits, so `Uint.mul_div(amount, price, 1e18)` doesn't overflow where `amount * price` would.
 
 ## `SafeCast`
 
-`std/math/safe_cast.lithe`. Every integer conversion is checked: `nat(x)` and `uint128(x)` revert with `Panic(0x11)` when the value doesn't fit. `SafeCast.to_nat(x)` and `SafeCast.to_int(x)` check the same way but raise OpenZeppelin's `SafeCastOverflowedIntToUint` or `SafeCastOverflowedUintToInt`.
+`std/math/safe_cast.lithe`. Every integer conversion is checked: `uint(x)` and `uint128(x)` revert with `Panic(0x11)` when the value doesn't fit. `SafeCast.to_uint(x)` and `SafeCast.to_int(x)` check the same way but raise OpenZeppelin's `SafeCastOverflowedIntToUint` or `SafeCastOverflowedUintToInt`.
 
 ## `FixedPoint`
 
-`std/math/fixed_point.lithe`. A `wad` is a number with 18 decimals, its own type so that a plain `nat` can't be mixed in by mistake.
+`std/math/fixed_point.lithe`. A `wad` is a number with 18 decimals, its own type so that a plain `uint` can't be mixed in by mistake.
 
 ```lithe
 import "std/math/fixed_point.lithe";
@@ -40,26 +40,26 @@ contract Fees is {
 
   storage is record {
     rate : wad;
-    fee_bps : nat;
+    fee_bps : uint;
   }
 
   (* 0.3% as a rate, and 25 basis points. *)
   deploy() is {
-    storage.rate := wad(3_000_000_000_000_000n);
-    storage.fee_bps := 25n;
+    storage.rate := wad(3_000_000_000_000_000);
+    storage.fee_bps := 25;
   }
 
-  external view function interest(const principal : nat) : nat is
+  external view function interest(const principal : uint) : uint is
     FixedPoint.mul_wad(principal, storage.rate)
 
-  external view function fee(const amount : nat) : nat is
+  external view function fee(const amount : uint) : uint is
     FixedPoint.apply_bps(amount, storage.fee_bps)
 }
 ```
 
 | Function | |
 | --- | --- |
-| `one()`, `scale()` | `1e18` as a `wad`, and as a `nat` |
+| `one()`, `scale()` | `1e18` as a `wad`, and as a `uint` |
 | `to_wad(n)`, `from_wad(x)` | whole numbers in and out, rounding down |
 | `wad_mul(a, b)`, `wad_div(a, b)` | products and quotients of two `wad`s, rounding down |
 | `mul_wad(amount, factor)` | an amount scaled by a `wad` |

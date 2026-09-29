@@ -20,11 +20,11 @@ event Released of record {
 storage is record {
   beneficiary : address;
   start : timestamp;
-  duration : nat;
+  duration : uint;
   released : wei;
 }
 
-external function init(const beneficiary : address; const start : timestamp; const duration : nat)
+external function init(const beneficiary : address; const start : timestamp; const duration : uint)
   raises Already_initialized
 is {
   assert(storage.beneficiary = Address.zero, Already_initialized);
@@ -43,7 +43,7 @@ view function vested_at(const time : timestamp) : wei is {
   if time >= storage.start + storage.duration then {
     vested := total;
   } else if time > storage.start then {
-    vested := wei(nat(total) * (time - storage.start) / storage.duration);
+    vested := wei(uint(total) * (time - storage.start) / storage.duration);
   }
 } with vested
 

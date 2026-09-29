@@ -153,11 +153,11 @@ A lex error is `path:line:column: message` and exits `1`. A usage error exits `2
 A `lithe-ignore` comment names the rules it silences, then an optional reason after `:`. Written at the end of a line, it covers that line. On a line of its own, it covers the next one:
 
 ```lithe
-storage is record { n : nat; }
+storage is record { n : uint; }
 
 (* lithe-ignore reentry: the recipient is our own vault *)
 external function pay(const to : address) is {
-  storage.n := 1n;
+  storage.n := 1;
   defer Evm.transfer(to, 1wei);
 }
 ```

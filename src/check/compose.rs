@@ -549,7 +549,7 @@ pub(super) fn iface_label(decl: &Func) -> String {
     }
 }
 
-/// A function's header as an interface writes it, for diagnostics: `view function f(a : nat) : nat`.
+/// A function's header as an interface writes it, for diagnostics: `view function f(a : uint) : uint`.
 pub(crate) fn header_text(func: &Func, name: &str) -> String {
     let header = Header::of(func, name);
     let mut out = format!("{}({})", header.head, header.params.join("; "));

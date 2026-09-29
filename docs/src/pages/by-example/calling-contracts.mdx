@@ -12,8 +12,8 @@ A call that changes another contract's state is deferred with `defer`. It runs a
    entrypoint's writes and events, never in the middle of them. *)
 
 interface Token is {
-  view function balanceOf(owner : address) : nat;
-  function transfer(to : address; amount : nat) : bool;
+  view function balanceOf(owner : address) : uint;
+  function transfer(to : address; amount : uint) : bool;
 }
 
 interface Pool is {
@@ -25,7 +25,7 @@ error Empty;
 storage is record {
   token : Token;
   pool : Pool;
-  swept : nat;
+  swept : uint;
 }
 
 external function init(const token : Token; const pool : Pool) is {
@@ -36,16 +36,16 @@ external function init(const token : Token; const pool : Pool) is {
 external function sweep(const to : address)
   raises Empty
 is {
-  const held : nat := query storage.token.balanceOf(Evm.self());
-  assert(held > 0n, Empty);
+  const held : uint := query storage.token.balanceOf(Evm.self());
+  assert(held > 0, Empty);
   storage.swept := storage.swept + held;
   defer storage.token.transfer(to, held);
 }
 
-(* Attach ether with `with value = ...`. The value is a `nat` of wei, and only a
+(* Attach ether with `with value = ...`. The value is a `uint` of wei, and only a
    method the interface declares `payable function` takes it. *)
 external payable function forward() is {
-  defer storage.pool.deposit(Evm.sender()) with value = nat(Evm.value());
+  defer storage.pool.deposit(Evm.sender()) with value = uint(Evm.value());
 }
 ```
 

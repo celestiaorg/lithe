@@ -362,12 +362,12 @@ impl Checker {
                 if let Some(b) = bound {
                     let n = match b {
                         Expr::Lit {
-                            lit: Lit::Nat(w) | Lit::Int(w, _),
+                            lit: Lit::Uint(w) | Lit::Int(w, _),
                             ..
                         } if w.0[1..] == [0; 3] => w.0[0],
                         _ => return Err(error(b.line(), b.col(), "`bound` must be a number")),
                     };
-                    self.check_expr_as(b, Some(TY_NAT))?;
+                    self.check_expr_as(b, Some(TY_UINT))?;
                     *cap = Some(n);
                 }
                 let declared_ty = self.build(ty)?;
@@ -431,12 +431,12 @@ impl Checker {
                                 let t = &self.types[declared_ty];
                                 if t.kind != TyKind::Tuple
                                     || t.fields.len() != 2
-                                    || !self.same(t.fields[0].ty, TY_NAT)
+                                    || !self.same(t.fields[0].ty, TY_UINT)
                                 {
                                     return Err(error(
                                         line,
                                         col,
-                                        "an indexed loop is declared `(i, x) : (nat, T)`",
+                                        "an indexed loop is declared `(i, x) : (uint, T)`",
                                     ));
                                 }
                                 t.fields[1].ty
@@ -519,7 +519,7 @@ impl Checker {
                             // grows with storage.
                             stateful = self.types[p.ty].bits == 0 && self.reads_state(&base);
                             let sid = self.add_sym(Sym {
-                                ty: TY_NAT,
+                                ty: TY_UINT,
                                 mutable: false,
                                 storage: false,
                                 slot: 0,
@@ -535,7 +535,7 @@ impl Checker {
                                 builtin: None,
                                 ty: 0,
                             };
-                            self.check_expr_as(&mut idx, Some(TY_NAT))?;
+                            self.check_expr_as(&mut idx, Some(TY_UINT))?;
                             if self.types[p.ty].bits == 0 {
                                 *length = Some(Expr::Field {
                                     line,
@@ -544,7 +544,7 @@ impl Checker {
                                     name: "length".to_string(),
                                     root: Some(p.sym),
                                     leaf: p.leaf,
-                                    ty: TY_NAT,
+                                    ty: TY_UINT,
                                 });
                             }
                             let init = Expr::Index {
@@ -573,7 +573,7 @@ impl Checker {
                                 self.define(line, col, name, esid)?;
                             }
                             *limit = Some(self.add_sym(Sym {
-                                ty: TY_NAT,
+                                ty: TY_UINT,
                                 mutable: false,
                                 storage: false,
                                 slot: 0,
@@ -700,8 +700,8 @@ impl Checker {
                         ));
                     }
                     self.check_expr(v)?;
-                    if self.types[v.ty()].kind != TyKind::Nat {
-                        return Err(error(*line, *col, "`value` must be nat"));
+                    if self.types[v.ty()].kind != TyKind::Uint {
+                        return Err(error(*line, *col, "`value` must be uint"));
                     }
                     // Only a payable method accepts value.
                     if let Expr::Call {
@@ -1107,7 +1107,7 @@ impl Checker {
         let at = |i: u16| Expr::Lit {
             line,
             col,
-            lit: Lit::Nat(Word::from_u64(u64::from(i))),
+            lit: Lit::Uint(Word::from_u64(u64::from(i))),
             ty: 0,
         };
         let parts: Vec<(Vec<String>, Option<Expr>, Expr)> = if fixed {

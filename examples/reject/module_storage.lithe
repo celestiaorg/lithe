@@ -1,6 +1,6 @@
 module Ledger is {
   storage ledger at "lithe.ledger" is record {
-    n : nat;
+    n : uint;
   }
 
   function peek() : bool is

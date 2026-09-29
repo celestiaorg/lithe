@@ -1,7 +1,7 @@
 error Not_owner;
 
 storage is record {
-  count : nat;
+  count : uint;
   owner : address;
 }
 
@@ -9,7 +9,7 @@ type owner_action is
   | Reset
 
 type public_action is
-  | Increment of (n : nat)
+  | Increment of (n : uint)
 
 type action is
   | Owner_action of owner_action
@@ -23,7 +23,7 @@ is {
 with case action of
 {
 | Reset -> {
-    storage.count := 0n
+    storage.count := 0
   }
 }
 
@@ -44,5 +44,5 @@ is
   | Public_action(a) -> public_main(a)
   }
 
-external view function get_count() : nat is
+external view function get_count() : uint is
   storage.count

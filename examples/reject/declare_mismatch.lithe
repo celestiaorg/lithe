@@ -1,14 +1,14 @@
 module Ledger is {
   storage ledger at "lithe.ledger" is record {
-    n : nat;
+    n : uint;
   }
 
-  external view function balance() : nat is
+  external view function balance() : uint is
     ledger.n
 }
 
 contract Token is {
   use Ledger exposing {
-    function balance() : nat;
+    function balance() : uint;
   }
 }

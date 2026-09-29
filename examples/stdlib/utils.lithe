@@ -39,26 +39,26 @@ contract Utils is {
     EIP712.init("Utils", "1");
   }
 
-  external pure function sqrt(const a : nat) : nat is Math.sqrt(a)
-  external pure function log2(const a : nat) : nat is Math.log2(a)
-  external pure function log10(const a : nat) : nat is Math.log10(a)
-  external pure function abs(const x : int) : nat is Math.abs(x)
-  external pure function average(const a : nat; const b : nat) : nat is Math.average(a, b)
+  external pure function sqrt(const a : uint) : uint is Math.sqrt(a)
+  external pure function log2(const a : uint) : uint is Math.log2(a)
+  external pure function log10(const a : uint) : uint is Math.log10(a)
+  external pure function abs(const x : int) : uint is Math.abs(x)
+  external pure function average(const a : uint; const b : uint) : uint is Math.average(a, b)
   external pure function average_int(const a : int; const b : int) : int is Math.average(a, b)
   external pure function min_int(const a : int; const b : int) : int is Math.min(a, b)
   external pure function max_int(const a : int; const b : int) : int is Math.max(a, b)
-  external pure function ceil_div(const a : nat; const b : nat) : nat is Math.ceil_div(a, b)
-  external pure function mul_div_up(const a : nat; const b : nat; const d : nat) : nat is Math.mul_div_up(a, b, d)
-  external pure function clamp(const x : nat; const lo : nat; const hi : nat) : nat
+  external pure function ceil_div(const a : uint; const b : uint) : uint is Math.ceil_div(a, b)
+  external pure function mul_div_up(const a : uint; const b : uint; const d : uint) : uint is Math.mul_div_up(a, b, d)
+  external pure function clamp(const x : uint; const lo : uint; const hi : uint) : uint
     raises MathInvalidRange
   is Math.clamp(x, lo, hi)
   external pure function clamp_int(const x : int; const lo : int; const hi : int) : int
     raises MathInvalidSignedRange
   is Math.clamp(x, lo, hi)
-  external pure function to_nat(const x : int) : nat
+  external pure function to_uint(const x : int) : uint
     raises SafeCastOverflowedIntToUint
-  is SafeCast.to_nat(x)
-  external pure function wad_mul(const a : nat; const b : nat) : nat is nat(FixedPoint.wad_mul(wad(a), wad(b)))
+  is SafeCast.to_uint(x)
+  external pure function wad_mul(const a : uint; const b : uint) : uint is uint(FixedPoint.wad_mul(wad(a), wad(b)))
   external pure function recover(const hash : bytes32; const signature : bytes) : address
     raises ECDSAInvalidSignature | ECDSAInvalidSignatureLength | ECDSAInvalidSignatureS
   is ECDSA.recover_signature(hash, signature)
@@ -68,24 +68,24 @@ contract Utils is {
   is Merkle.process_proof(proof, leaf)
   external view function predict(const salt : bytes32; const code_hash : bytes32) : address is
     Create2.compute_address_here(salt, code_hash)
-  external function use_nonce(const owner : address) : nat is Nonces.use_nonce(owner)
-  external function claim(const index : nat) is { Bitmap.set(storage.claimed, index); }
-  external view function is_claimed(const index : nat) : bool is Bitmap.get(storage.claimed, index)
-  external function checkpoint_value(const value : nat)
+  external function use_nonce(const owner : address) : uint is Nonces.use_nonce(owner)
+  external function claim(const index : uint) is { Bitmap.set(storage.claimed, index); }
+  external view function is_claimed(const index : uint) : bool is Bitmap.get(storage.claimed, index)
+  external function checkpoint_value(const value : uint)
     raises CheckpointUnorderedInsertion
   is {
     Checkpoints.push(storage.history, uint48(Evm.block_number()), uint208(value));
   }
-  external view function value_at(const key : nat) : nat is
-    nat(Checkpoints.upper_lookup(storage.history, uint48(key)))
+  external view function value_at(const key : uint) : uint is
+    uint(Checkpoints.upper_lookup(storage.history, uint48(key)))
   external function enqueue() is { Queue.push(storage.pending, Evm.sender()); }
-  external view function queued() : nat is Queue.length(storage.pending)
+  external view function queued() : uint is Queue.length(storage.pending)
   external function join() is {
     Set.add(storage.members, Evm.sender());
     SetEnumerable.add(storage.listed, Evm.sender());
   }
   external view function member(const who : address) : bool is Set.contains(storage.members, who)
-  external view function listed_count() : nat is SetEnumerable.length(storage.listed)
+  external view function listed_count() : uint is SetEnumerable.length(storage.listed)
   external view function verify(const proof : bytes; const root_hash : bytes32; const leaf : bytes32) : bool
     raises MerkleProofInvalidLength
   is Merkle.verify(proof, root_hash, leaf)
@@ -103,14 +103,14 @@ contract Utils is {
   ) : address
     raises ECDSAInvalidSignature | ECDSAInvalidSignatureS
   is ECDSA.recover(hash, v, r, s)
-  external pure function to_int(const x : nat) : int
+  external pure function to_int(const x : uint) : int
     raises SafeCastOverflowedUintToInt
   is SafeCast.to_int(x)
-  external pure function apply_bps(const amount : nat; const bps : nat) : nat is FixedPoint.apply_bps(amount, bps)
-  external pure function wad_div(const a : nat; const b : nat) : nat is nat(FixedPoint.wad_div(wad(a), wad(b)))
-  external view function checkpoints() : nat is Checkpoints.length(storage.history)
-  external view function latest() : nat is nat(Checkpoints.latest(storage.history))
-  external function unclaim(const index : nat) is { Bitmap.unset(storage.claimed, index); }
+  external pure function apply_bps(const amount : uint; const bps : uint) : uint is FixedPoint.apply_bps(amount, bps)
+  external pure function wad_div(const a : uint; const b : uint) : uint is uint(FixedPoint.wad_div(wad(a), wad(b)))
+  external view function checkpoints() : uint is Checkpoints.length(storage.history)
+  external view function latest() : uint is uint(Checkpoints.latest(storage.history))
+  external function unclaim(const index : uint) is { Bitmap.unset(storage.claimed, index); }
   external function dequeue() : address
     raises QueueEmpty
   is Queue.pop(storage.pending)

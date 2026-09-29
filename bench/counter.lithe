@@ -7,21 +7,21 @@ immutable is record {
 }
 
 storage is record {
-  count : nat;
+  count : uint;
 }
 
 event Count_changed of record {
-  old_count : nat;
-  new_count : nat;
+  old_count : uint;
+  new_count : uint;
 }
 
 deploy() is {
   immutable.owner := Evm.sender();
 }
 
-external function increment(const n : nat) is {
-  if n > 0n then {
-    const old : nat := storage.count;
+external function increment(const n : uint) is {
+  if n > 0 then {
+    const old : uint := storage.count;
     storage.count := old + n;
     emit Count_changed {
       old_count = old;
@@ -34,13 +34,13 @@ external function reset()
   raises Not_owner
 is {
   assert(Evm.sender() = immutable.owner, Not_owner);
-  const old : nat := storage.count;
-  storage.count := 0n;
+  const old : uint := storage.count;
+  storage.count := 0;
   emit Count_changed {
     old_count = old;
-    new_count = 0n;
+    new_count = 0;
   };
 }
 
-external view function get_count() : nat is
+external view function get_count() : uint is
   storage.count

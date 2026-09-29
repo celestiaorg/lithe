@@ -552,7 +552,7 @@ impl Build<'_> {
             TypeRef::Name {
                 line: 0,
                 col: 0,
-                name: "nat".to_string(),
+                name: "uint".to_string(),
             }
         } else {
             val
@@ -869,7 +869,7 @@ fn keep_totals(
     }
 }
 
-/// `total := total - m[k] + v`, or for a count, `total := total - nat(m[k] <> 0) + nat(v <> 0)`.
+/// `total := total - m[k] + v`, or for a count, `total := total - uint(m[k] <> 0) + uint(v <> 0)`.
 fn total_update(
     g: &Ghost,
     scope: &Option<String>,
@@ -895,7 +895,7 @@ fn total_update(
     let (old, new) = if g.count {
         let nonzero = |e: Expr| {
             call_expr(
-                "nat",
+                "uint",
                 None,
                 vec![binary(BinOp::Neq, e, int_lit(0, line, col), line, col)],
                 line,

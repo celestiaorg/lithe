@@ -5,14 +5,14 @@ import "./iledger.lithe";
 
 contract Pinger is {
   storage is record {
-    relayed : nat;
+    relayed : uint;
   }
 
-  external function relay(const ledger : ILedger; const n : nat) is {
-    storage.relayed := storage.relayed + 1n;
+  external function relay(const ledger : ILedger; const n : uint) is {
+    storage.relayed := storage.relayed + 1;
     defer ledger.ping(n);
   }
 
-  external view function last(const ledger : ILedger) : nat is
+  external view function last(const ledger : ILedger) : uint is
     query ledger.pinged()
 }

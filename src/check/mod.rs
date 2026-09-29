@@ -41,7 +41,7 @@ pub(crate) use types::shape_ty;
 pub(crate) enum TyKind {
     Unit,
     Bool,
-    Nat,
+    Uint,
     Int,
     Address,
     String,
@@ -511,21 +511,21 @@ pub(crate) fn check_in(mut prog: Program, require_entries: bool) -> Result<Check
     };
     c.types.push(prim(TyKind::Unit, 0));
     c.types.push(prim(TyKind::Bool, 1));
-    c.types.push(prim(TyKind::Nat, 1));
+    c.types.push(prim(TyKind::Uint, 1));
     c.types.push(prim(TyKind::Int, 1));
     c.types.push(prim(TyKind::Address, 1));
     c.types.push(prim(TyKind::String, 1));
     c.types.push(prim(TyKind::Operation, 0));
     c.types.push(prim(TyKind::Wei, 1));
     c.types.push(prim(TyKind::Timestamp, 1));
-    c.types[TY_NAT].bits = 256;
+    c.types[TY_UINT].bits = 256;
     c.types[TY_INT].bits = 256;
     c.types[TY_WEI].bits = 256;
     c.types[TY_TIMESTAMP].bits = 256;
     for name in [
         "unit",
         "bool",
-        "nat",
+        "uint",
         "int",
         "address",
         "string",
@@ -536,18 +536,18 @@ pub(crate) fn check_in(mut prog: Program, require_entries: bool) -> Result<Check
     }
     c.named.insert("unit".into(), TY_UNIT);
     c.named.insert("bool".into(), TY_BOOL);
-    c.named.insert("nat".into(), TY_NAT);
+    c.named.insert("uint".into(), TY_UINT);
     c.named.insert("int".into(), TY_INT);
     c.named.insert("address".into(), TY_ADDRESS);
     c.named.insert("string".into(), TY_STRING);
     c.named.insert("operation".into(), TY_OPERATION);
     c.named.insert("wei".into(), TY_WEI);
     c.named.insert("timestamp".into(), TY_TIMESTAMP);
-    c.named.insert("uint256".into(), TY_NAT);
+    c.named.insert("uint256".into(), TY_UINT);
     c.named.insert("int256".into(), TY_INT);
     for bits in (8..256).step_by(8) {
         let uid = c.types.len();
-        c.types.push(prim(TyKind::Nat, 1));
+        c.types.push(prim(TyKind::Uint, 1));
         c.types[uid].bits = bits as u16;
         c.named.insert(format!("uint{bits}"), uid);
         let iid = c.types.len();
@@ -1028,7 +1028,7 @@ const TY_UNIT: usize = 0;
 
 const TY_BOOL: usize = 1;
 
-pub(crate) const TY_NAT: usize = 2;
+pub(crate) const TY_UINT: usize = 2;
 
 const TY_INT: usize = 3;
 
@@ -1089,7 +1089,7 @@ struct Place {
 fn is_word(k: TyKind) -> bool {
     matches!(
         k,
-        TyKind::Nat
+        TyKind::Uint
             | TyKind::Int
             | TyKind::Address
             | TyKind::Bool

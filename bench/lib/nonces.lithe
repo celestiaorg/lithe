@@ -2,27 +2,27 @@
 
 error InvalidAccountNonce of record {
   account : address;
-  currentNonce : nat;
+  currentNonce : uint;
 }
 
 module Nonces is {
   storage nonce_state at "openzeppelin.storage.Nonces" is record {
-    nonces : map(address, nat);
+    nonces : map(address, uint);
   }
 
-  external view function nonces(const owner : address) : nat is
+  external view function nonces(const owner : address) : uint is
     nonce_state.nonces[owner]
 
   (* Returns the current nonce and moves the counter on. *)
-  function use_nonce(const owner : address) : nat is {
-    const current : nat := nonce_state.nonces[owner];
-    nonce_state.nonces[owner] := current + 1n;
+  function use_nonce(const owner : address) : uint is {
+    const current : uint := nonce_state.nonces[owner];
+    nonce_state.nonces[owner] := current + 1;
   } with current
 
-  function use_checked_nonce(const owner : address; const nonce : nat)
+  function use_checked_nonce(const owner : address; const nonce : uint)
     raises InvalidAccountNonce
   is {
-    const current : nat := use_nonce(owner);
+    const current : uint := use_nonce(owner);
     assert(nonce = current, InvalidAccountNonce { account = owner; currentNonce = current; });
   }
 }

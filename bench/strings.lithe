@@ -7,7 +7,7 @@ error Name_taken of record {
 }
 error Too_long of record {
   name : string;
-  limit : nat;
+  limit : uint;
 }
 error Not_owner of record {
   caller : address;
@@ -38,7 +38,7 @@ external function rename(const name : string)
 is {
   assert(Evm.sender() = immutable.owner, Not_owner { caller = Evm.sender(); name = storage.name; });
   assert(name =/= storage.name, Name_taken { name = name; owner = immutable.owner; });
-  assert(name.length <= 100n, Too_long { name = name; limit = 100n; });
+  assert(name.length <= 100, Too_long { name = name; limit = 100; });
   emit Renamed { who = Evm.sender(); old_name = storage.name; new_name = name; };
   storage.name := name;
 }
@@ -47,7 +47,7 @@ external function describe(const text : string)
   raises Not_owner | Too_long
 is {
   assert(Evm.sender() = immutable.owner, Not_owner { caller = Evm.sender(); name = storage.name; });
-  assert(text.length <= 200n, Too_long { name = text; limit = 200n; });
+  assert(text.length <= 200, Too_long { name = text; limit = 200; });
   storage.description := String.concat(storage.name, ": ", text);
 }
 

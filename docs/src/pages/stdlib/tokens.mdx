@@ -20,7 +20,7 @@ contract Token is {
     minter : address;
   }
 
-  deploy(const supply : nat)
+  deploy(const supply : uint)
     raises ERC20InvalidReceiver | ERC20InsufficientBalance
   is {
     ERC20.init("Token", "TKN");
@@ -39,12 +39,12 @@ contract Token is {
 | `mint(account, value)`, `burn(account, value)` | |
 | `update(from, to, value)` | every balance change; `from` zero mints, `to` zero burns |
 | `approve_as(owner, spender, value, announce)` | sets an allowance, logging `Approval` if `announce` |
-| `spend_allowance(owner, spender, value)` | an allowance of `Nat.max` is never spent down |
+| `spend_allowance(owner, spender, value)` | an allowance of `Uint.max` is never spent down |
 
 To add a rule, write the entrypoint yourself around `move` and `spend_allowance`, and expose the rest of `IERC20` as `IERC20Views`, its views, and `IERC20Approvals`, its `approve`, which the file declares:
 
 ```lithe fragment
-external function transfer(const to : address; const value : nat) : bool
+external function transfer(const to : address; const value : uint) : bool
   raises EnforcedPause | ERC20InvalidSender | ERC20InvalidReceiver | ERC20InsufficientBalance
 is {
   Pausable.require_not_paused();
@@ -91,9 +91,9 @@ contract Token is {
   use Nonces;
 
   use ERC20 exposing {
-    view function balanceOf(account : address) : nat;
-    view function allowance(owner : address; spender : address) : nat;
-    function transferFrom(from : address; to : address; value : nat) : bool
+    view function balanceOf(account : address) : uint;
+    view function allowance(owner : address; spender : address) : uint;
+    function transferFrom(from : address; to : address; value : uint) : bool
       raises ERC20InsufficientAllowance | ERC20InvalidApprover | ERC20InvalidSpender
         | ERC20InvalidSender | ERC20InvalidReceiver | ERC20InsufficientBalance;
   }
@@ -101,7 +101,7 @@ contract Token is {
   use ERC20Permit exposing IERC20Permit;
 
   storage is record {
-    supply_cap : nat;
+    supply_cap : uint;
   }
 
   deploy() is {
@@ -127,10 +127,10 @@ contract Token is {
     raises ERC20InvalidCap
   is {
     ERC20.init("Token", "TKN");
-    ERC20Capped.init(1_000_000n);
+    ERC20Capped.init(1_000_000);
   }
 
-  external function mint(const to : address; const value : nat)
+  external function mint(const to : address; const value : uint)
     raises ERC20InvalidReceiver | ERC20InsufficientBalance | ERC20ExceededCap
   is {
     ERC20.mint(to, value);
@@ -158,7 +158,7 @@ contract Token is {
   use Pausable;
 
   use ERC20 exposing IERC20Metadata, {
-    view function balanceOf(account : address) : nat;
+    view function balanceOf(account : address) : uint;
   }
 
   use ERC20Votes exposing IERC6372, IVotes;
@@ -168,7 +168,7 @@ contract Token is {
     EIP712.init("Token", "1");
   }
 
-  function update(const from : address; const to : address; const value : nat)
+  function update(const from : address; const to : address; const value : uint)
     raises EnforcedPause | ERC20InsufficientBalance | ERC20ExceededSafeSupply
       | CheckpointUnorderedInsertion
   is {
@@ -177,7 +177,7 @@ contract Token is {
     ERC20Votes.transfer_voting_units(from, to, value);
   }
 
-  external function transfer(const to : address; const value : nat) : bool
+  external function transfer(const to : address; const value : uint) : bool
     raises ERC20InvalidReceiver | EnforcedPause | ERC20InsufficientBalance
       | ERC20ExceededSafeSupply | CheckpointUnorderedInsertion
   is {
@@ -230,18 +230,18 @@ contract Collection is {
   supports IERC721, IERC721Metadata;
 
   storage is record {
-    next_id : nat;
+    next_id : uint;
   }
 
   deploy() is {
     ERC721.init("Collection", "COL");
   }
 
-  external function mint() : nat
+  external function mint() : uint
     raises ERC721InvalidReceiver | ERC721InvalidSender | ERC721NonexistentToken | ERC721InsufficientApproval | forwarded
   is {
-    const id : nat := storage.next_id;
-    storage.next_id := id + 1n;
+    const id : uint := storage.next_id;
+    storage.next_id := id + 1;
     ERC721.safe_mint(Evm.sender(), id, "");
   } with id
 }
@@ -263,44 +263,44 @@ import "std/token/erc721_enumerable.lithe";
 
 contract Collection is {
   use ERC721 exposing IERC721Metadata, {
-    view function balanceOf(owner : address) : nat
+    view function balanceOf(owner : address) : uint
       raises ERC721InvalidOwner;
-    view function ownerOf(tokenId : nat) : address
+    view function ownerOf(tokenId : uint) : address
       raises ERC721NonexistentToken;
-    view function getApproved(tokenId : nat) : address
+    view function getApproved(tokenId : uint) : address
       raises ERC721NonexistentToken;
     view function isApprovedForAll(owner : address; operator : address) : bool;
-    function approve(to : address; tokenId : nat)
+    function approve(to : address; tokenId : uint)
       raises ERC721NonexistentToken | ERC721InvalidApprover;
     function setApprovalForAll(operator : address; approved : bool)
       raises ERC721InvalidApprover | ERC721InvalidOperator;
   }
 
   use ERC721Enumerable exposing IERC721Enumerable, {
-    function transferFrom(from : address; to : address; tokenId : nat)
+    function transferFrom(from : address; to : address; tokenId : uint)
       raises ERC721InvalidReceiver | ERC721IncorrectOwner | ERC721NonexistentToken
         | ERC721InsufficientApproval;
-    function safeTransferFrom(from : address; to : address; tokenId : nat)
+    function safeTransferFrom(from : address; to : address; tokenId : uint)
       raises ERC721InvalidReceiver | ERC721IncorrectOwner | ERC721NonexistentToken
         | ERC721InsufficientApproval | forwarded;
-    function safeTransferFrom(from : address; to : address; tokenId : nat; data : bytes)
+    function safeTransferFrom(from : address; to : address; tokenId : uint; data : bytes)
       raises ERC721InvalidReceiver | ERC721IncorrectOwner | ERC721NonexistentToken
         | ERC721InsufficientApproval | forwarded;
   }
 
   storage is record {
-    next_id : nat;
+    next_id : uint;
   }
 
   deploy() is {
     ERC721.init("Collection", "COL");
   }
 
-  external function mint() : nat
+  external function mint() : uint
     raises ERC721InvalidReceiver | ERC721InvalidSender | ERC721NonexistentToken | ERC721InsufficientApproval | forwarded
   is {
-    const id : nat := storage.next_id;
-    storage.next_id := id + 1n;
+    const id : uint := storage.next_id;
+    storage.next_id := id + 1;
     ERC721Enumerable.safe_mint(Evm.sender(), id, "");
   } with id
 }
@@ -320,7 +320,7 @@ contract Collection is {
 ERC-4906's ERC-165 id, `0x49064906`, is fixed by the standard, not derived from functions, so a collection answers for it in its own `supportsInterface`, and for what its `supports` lists with [`Abi.supports_interface`](/language/modules#erc-165):
 
 ```lithe fragment
-external view function tokenURI(const tokenId : nat) : string
+external view function tokenURI(const tokenId : uint) : string
   raises ERC721NonexistentToken
 is
   ERC721URIStorage.token_uri(tokenId, "ipfs://collection/")
@@ -362,7 +362,7 @@ contract Items is {
     Ownable.init(Evm.sender());
   }
 
-  external function mint(const to : address; const id : nat; const value : nat; const data : bytes)
+  external function mint(const to : address; const id : uint; const value : uint; const data : bytes)
     raises OwnableUnauthorizedAccount | ERC1155InvalidReceiver | ERC1155InvalidArrayLength
       | ERC1155InsufficientBalance | forwarded
   is {
@@ -391,7 +391,7 @@ contract Items is {
 To burn as OpenZeppelin's `ERC1155Burnable` does, a contract writes the entrypoint around `check_authorized`:
 
 ```lithe fragment
-external function burn(const account : address; const id : nat; const value : nat)
+external function burn(const account : address; const id : uint; const value : uint)
   raises ERC1155MissingApprovalForAll | ERC1155InvalidSender | ERC1155InvalidArrayLength
     | ERC1155InsufficientBalance
 is {

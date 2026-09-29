@@ -1,43 +1,43 @@
 (* Records as values: returned by functions, read field by field, and stored whole. *)
 
 type range is record {
-  low : nat;
-  high : nat;
+  low : uint;
+  high : uint;
 }
 
 type quote is record {
   filled : bool;
-  price : nat;
+  price : uint;
   band : range;
 }
 
 storage is record {
   last : quote;
-  quotes : map(nat, quote);
+  quotes : map(uint, quote);
 }
 
-pure function span(const mid : nat) : range is { low = mid; high = mid * 2n; }
+pure function span(const mid : uint) : range is { low = mid; high = mid * 2; }
 
-pure function quote_at(const price : nat) : quote is {
+pure function quote_at(const price : uint) : quote is {
   filled = true;
   price = price;
-  band = { low = price + 1n; high = price + 2n; };
+  band = { low = price + 1; high = price + 2; };
 }
 
-external view function spread(const price : nat) : nat is {
+external view function spread(const price : uint) : uint is {
   const a : quote := quote_at(price);
-  const b : quote := quote_at(price + 100n);
+  const b : quote := quote_at(price + 100);
 } with a.price + a.band.high + b.price
 
 (* A field of a call's result, without naming the record first. *)
-external view function low_plus(const price : nat) : nat is
-  quote_at(price).band.low + quote_at(price + 10n).price
+external view function low_plus(const price : uint) : uint is
+  quote_at(price).band.low + quote_at(price + 10).price
 
-external view function span_high(const mid : nat) : nat is span(mid).high
+external view function span_high(const mid : uint) : uint is span(mid).high
 
-external view function quote_of(const price : nat) : quote is quote_at(price)
+external view function quote_of(const price : uint) : quote is quote_at(price)
 
-external function save(const price : nat) is {
+external function save(const price : uint) is {
   storage.last := quote_at(price);
   storage.quotes[price] := quote_at(price);
 }
@@ -51,6 +51,6 @@ external function flip() is {
   };
 }
 
-external view function last() : nat is storage.last.price * 1000n + storage.last.band.low
+external view function last() : uint is storage.last.price * 1000 + storage.last.band.low
 
-external view function high_of(const price : nat) : nat is storage.quotes[price].band.high
+external view function high_of(const price : uint) : uint is storage.quotes[price].band.high

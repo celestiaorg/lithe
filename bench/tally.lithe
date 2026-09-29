@@ -3,17 +3,17 @@
 
 module Tally(K : map_key) is {
   type self is record {
-    counts : map(K, nat);
-    total : nat;
+    counts : map(K, uint);
+    total : uint;
   }
 
-  view function count(storage tally : self; const key : K) : nat is
+  view function count(storage tally : self; const key : K) : uint is
     tally.counts[key]
 
-  view function total(storage tally : self) : nat is
+  view function total(storage tally : self) : uint is
     tally.total
 
-  function add(storage tally : self; const key : K; const n : nat) is {
+  function add(storage tally : self; const key : K; const n : uint) is {
     tally.counts[key] := tally.counts[key] + n;
     tally.total := tally.total + n;
   }
@@ -27,30 +27,30 @@ module Votes is {
 
   error Zero_weight;
 
-  external function vote(const topic : bytes32; const weight : nat)
+  external function vote(const topic : bytes32; const weight : uint)
     raises Zero_weight
   is {
-    assert(weight > 0n, Zero_weight);
+    assert(weight > 0, Zero_weight);
     Tally.add(votes.by_voter, Evm.sender(), weight);
     Tally.add(votes.by_topic, topic, weight);
   }
 
-  external view function votes_of(const voter : address) : nat is
+  external view function votes_of(const voter : address) : uint is
     Tally.count(votes.by_voter, voter)
 
-  external view function votes_for(const topic : bytes32) : nat is
+  external view function votes_for(const topic : bytes32) : uint is
     Tally.count(votes.by_topic, topic)
 
-  external view function total_votes() : nat is
+  external view function total_votes() : uint is
     Tally.total(votes.by_topic)
 }
 
 interface ITally is {
-  function vote(topic : bytes32; weight : nat)
+  function vote(topic : bytes32; weight : uint)
     raises Zero_weight;
-  view function votes_of(voter : address) : nat;
-  view function votes_for(topic : bytes32) : nat;
-  view function total_votes() : nat;
+  view function votes_of(voter : address) : uint;
+  view function votes_for(topic : bytes32) : uint;
+  view function total_votes() : uint;
 }
 
 use Votes exposing ITally;

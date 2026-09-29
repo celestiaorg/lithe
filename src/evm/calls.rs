@@ -73,9 +73,9 @@ fn nonreentrant_lock_covers_deferred_calls() {
     assert_eq!(slot(&entered.storage, 1), Word::from_u64(2));
 
     let alone = "\
-storage is record { n : nat; }
+storage is record { n : uint; }
 external function pay(const to : address) is {
-  storage.n := 1n;
+  storage.n := 1;
   defer Evm.transfer(to, 1wei);
 }
 ";
@@ -85,9 +85,9 @@ external function pay(const to : address) is {
         "{alone_notes}"
     );
     let guarded = "\
-storage is record { n : nat; }
+storage is record { n : uint; }
 external nonreentrant function pay(const to : address) is {
-  storage.n := 1n;
+  storage.n := 1;
   defer Evm.transfer(to, 1wei);
 }
 ";
@@ -188,13 +188,13 @@ fn continuations_run_as_new_phases() {
     let tree = abi_tree(src).expect("tree");
     let chain = route_text(&tree, "chain");
     assert!(
-        chain.contains("  phase 2 (after op):\n    input:\n      - first : nat\n"),
+        chain.contains("  phase 2 (after op):\n    input:\n      - first : uint\n"),
         "{chain}"
     );
     assert!(chain.contains("  phase 5 (after ex.poke):"), "{chain}");
     let split = route_text(&tree, "split");
     assert!(
-        split.contains("      - x : nat\n      - y : nat\n"),
+        split.contains("      - x : uint\n      - y : uint\n"),
         "{split}"
     );
     assert!(!split.contains("phase 3"), "{split}");
@@ -214,7 +214,7 @@ interface Hook is {
   function cancel();
   function ping();
 }
-storage is record { status : nat; pinged : nat; }
+storage is record { status : uint; pinged : uint; }
 external nonreentrant function settle(const hook : Hook) is {
   defer hook.ping()
     then {
@@ -223,10 +223,10 @@ external nonreentrant function settle(const hook : Hook) is {
     };
 }
 external nonreentrant function cancel() is {
-  storage.pinged := 2n;
+  storage.pinged := 2;
 }
 external function ping() is {
-  storage.pinged := 3n;
+  storage.pinged := 3;
 }
 ";
     let runtime = deploy(&compile(locked).expect("compile")).expect("deploy");
@@ -251,44 +251,44 @@ fn optional_results() {
     install_mocks();
     let src = "\
 interface Echo is {
-  function flag(value : nat) : option(bool);
-  function amount(value : nat) : option(nat);
-  view function peek(value : nat) : option(bool);
+  function flag(value : uint) : option(bool);
+  function amount(value : uint) : option(uint);
+  view function peek(value : uint) : option(bool);
 }
-storage is record { seen : nat; got : nat; peeked : nat; failed : nat; }
-pure function high(const b : bool) : nat is {
-  var n : nat := 2n;
+storage is record { seen : uint; got : uint; peeked : uint; failed : uint; }
+pure function high(const b : bool) : uint is {
+  var n : uint := 2;
   if b then {
-    n := 3n;
+    n := 3;
   }
 } with n
-pure function rank(const ok : option(bool)) : nat is
+pure function rank(const ok : option(bool)) : uint is
   case ok of {
-  | None -> 1n
+  | None -> 1
   | Some(b) -> high(b)
   }
-external function flag(const e : Echo; const v : nat) is {
+external function flag(const e : Echo; const v : uint) is {
   defer e.flag(v) then (ok : option(bool)) {
     storage.seen := rank(ok);
   };
 }
-external function amount(const e : Echo; const v : nat) is {
+external function amount(const e : Echo; const v : uint) is {
   defer e.amount(v) then {
-    | Ok(n : option(nat)) -> {
-        storage.got := case n of { | Some(x) -> x + 1n | None -> 1n };
+    | Ok(n : option(uint)) -> {
+        storage.got := case n of { | Some(x) -> x + 1 | None -> 1 };
       }
     | Error(_) -> {
-        storage.failed := 1n;
+        storage.failed := 1;
       }
   };
 }
-external function peek(const e : Echo; const v : nat) is {
+external function peek(const e : Echo; const v : uint) is {
   storage.peeked := rank(query e.peek(v));
 }
-external function try_peek(const e : Echo; const v : nat) is {
+external function try_peek(const e : Echo; const v : uint) is {
   storage.peeked := case query e.peek(v) of {
   | Ok(ok) -> rank(ok)
-  | Error(_) -> 9n
+  | Error(_) -> 9
   };
 }
 ";
@@ -347,13 +347,13 @@ fn calls_to_accounts_without_code_fail() {
     let src = "\
 interface Hook is {
   function ping();
-  function count() : nat;
+  function count() : uint;
   function maybe() : option(bool);
 }
-storage is record { n : nat; }
+storage is record { n : uint; }
 external function ping(const h : Hook) is { defer h.ping(); }
 external function count(const h : Hook) is { defer h.count(); }
-external function ignore(const h : Hook) is { defer h.count() then { storage.n := 1n; }; }
+external function ignore(const h : Hook) is { defer h.count() then { storage.n := 1; }; }
 external function maybe(const h : Hook) is { defer h.maybe(); }
 ";
     let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
@@ -388,11 +388,11 @@ fn imported_contracts_are_created() {
     std::fs::create_dir_all(&dir).expect("dir");
     let child = "\
 contract Child is {
-  storage is record { n : nat; }
+  storage is record { n : uint; }
   deploy() is {
-    storage.n := 5n;
+    storage.n := 5;
   }
-  external view function n() : nat is storage.n
+  external view function n() : uint is storage.n
 }
 ";
     let maker = "\
@@ -458,45 +458,45 @@ fn continuations_reject_what_cannot_cross_a_call() {
         format!(
             "\
 interface Ex is {{
-  function swap(amount : nat) : nat;
-  function pair() : (nat, nat);
+  function swap(amount : uint) : uint;
+  function pair() : (uint, uint);
   function poke();
 }}
-storage is record {{ n : nat; }}
+storage is record {{ n : uint; }}
 {body}"
         )
     };
     let cases = [
         (
-            "external function f(const ex : Ex) is {\n  var left : nat := 1n;\n  defer ex.swap(1n) then (r : nat) { storage.n := left + r; };\n}\n",
+            "external function f(const ex : Ex) is {\n  var left : uint := 1;\n  defer ex.swap(1) then (r : uint) { storage.n := left + r; };\n}\n",
             "`left` is a `var` of an earlier phase; mutable locals do not cross an external call",
         ),
         (
-            "external function f(const ex : Ex) is {\n  defer ex.swap(1n) then (r : bool) { skip; };\n}\n",
+            "external function f(const ex : Ex) is {\n  defer ex.swap(1) then (r : bool) { skip; };\n}\n",
             "the result type does not match what the call returns",
         ),
         (
-            "external function f(const ex : Ex) is {\n  defer ex.poke() then (r : nat) { skip; };\n}\n",
+            "external function f(const ex : Ex) is {\n  defer ex.poke() then (r : uint) { skip; };\n}\n",
             "this call returns nothing; write `then { ... }` without a result",
         ),
         (
-            "external function f(const ex : Ex) is {\n  defer ex.pair() then ((a, b, c) : (nat, nat)) { skip; };\n}\n",
+            "external function f(const ex : Ex) is {\n  defer ex.pair() then ((a, b, c) : (uint, uint)) { skip; };\n}\n",
             "tuple pattern has 3 names and the type has 2 elements",
         ),
         (
-            "external function f(const ex : Ex) is {\n  defer ex.swap(1n) then (r) { skip; };\n}\n",
+            "external function f(const ex : Ex) is {\n  defer ex.swap(1) then (r) { skip; };\n}\n",
             "a continuation result needs a type",
         ),
         (
-            "external view function f(const ex : Ex) : nat is {\n  defer ex.swap(1n) then (r : nat) { skip; };\n} with 1n\n",
+            "external view function f(const ex : Ex) : uint is {\n  defer ex.swap(1) then (r : uint) { skip; };\n} with 1\n",
             "cannot defer an operation",
         ),
         (
-            "view function g(const ex : Ex) is {\n  defer ex.swap(1n) then (r : nat) { skip; };\n}\n",
+            "view function g(const ex : Ex) is {\n  defer ex.swap(1) then (r : uint) { skip; };\n}\n",
             "cannot defer an operation",
         ),
         (
-            "pure function g(const ex : Ex) is {\n  defer ex.swap(1n) then (r : nat) { skip; };\n}\n",
+            "pure function g(const ex : Ex) is {\n  defer ex.swap(1) then (r : uint) { skip; };\n}\n",
             "cannot defer an operation",
         ),
     ];
@@ -505,7 +505,7 @@ storage is record {{ n : nat; }}
         assert!(err.to_string().contains(want), "{want}: {err}");
     }
     let captured = program(
-        "external function f(const ex : Ex; const k : nat) is {\n  const seen : nat := storage.n;\n  const fresh : nat := k + 1n;\n  defer ex.swap(k) then (r : nat) { storage.n := r + fresh + seen + k; };\n}\n",
+        "external function f(const ex : Ex; const k : uint) is {\n  const seen : uint := storage.n;\n  const fresh : uint := k + 1;\n  defer ex.swap(k) then (r : uint) { storage.n := r + fresh + seen + k; };\n}\n",
     );
     let notes = warnings(&captured).expect("warnings");
     assert!(notes.contains("captured value `seen`"), "{notes}");
@@ -528,22 +528,22 @@ interface Me is {
   function guarded();
   function plain();
   function relay(me : Me);
-  function price() : nat;
-  function open_price() : nat;
+  function price() : uint;
+  function open_price() : uint;
 }
-storage is record { n : nat; seen : nat; }
-external nonreentrant function guarded() is { storage.n := storage.n + 1n; }
-external function plain() is { storage.n := storage.n + 10n; }
+storage is record { n : uint; seen : uint; }
+external nonreentrant function guarded() is { storage.n := storage.n + 1; }
+external function plain() is { storage.n := storage.n + 10; }
 external function relay(const me : Me) is { defer me.plain(); }
-external nonreentrant view function price() : nat is storage.n
-external view function open_price() : nat is storage.n
+external nonreentrant view function price() : uint is storage.n
+external view function open_price() : uint is storage.n
 external function plain_then_guarded(const me : Me) is { defer me.guarded(); }
 external function plain_then_price(const me : Me) is {
-  defer me.price() then (p : nat) { storage.seen := p; };
+  defer me.price() then (p : uint) { storage.seen := p; };
 }
 external function plain_then_open(const me : Me) is {
-  storage.n := 5n;
-  defer me.open_price() then (p : nat) { storage.seen := p; };
+  storage.n := 5;
+  defer me.open_price() then (p : uint) { storage.seen := p; };
 }
 external function plain_then_plain(const me : Me) is { defer me.plain(); }
 external nonreentrant function locked_then_plain(const me : Me) is { defer me.plain(); }
@@ -617,8 +617,8 @@ external function continuation_then_guarded(const me : Me) is {
     // Without a `nonreentrant` function nothing checks the lock, so nothing sets it.
     let unguarded = "\
 interface Me is { function plain(); }
-storage is record { n : nat; }
-external function plain() is { storage.n := storage.n + 1n; }
+storage is record { n : uint; }
+external function plain() is { storage.n := storage.n + 1; }
 external function relay(const me : Me) is { defer me.plain(); }
 ";
     let code = compile(unguarded).expect("unguarded");
@@ -633,15 +633,15 @@ external function relay(const me : Me) is { defer me.plain(); }
             "nonreentrant functions must be external; write `external nonreentrant function`",
         ),
         (
-            "pure nonreentrant function calc() : nat is 1n\n",
+            "pure nonreentrant function calc() : uint is 1\n",
             "nonreentrant functions must be external",
         ),
         (
-            "view nonreentrant function peek() : nat is 1n\n",
+            "view nonreentrant function peek() : uint is 1\n",
             "nonreentrant functions must be external",
         ),
         (
-            "external view nonreentrant function peek() : nat is 1n\n",
+            "external view nonreentrant function peek() : uint is 1\n",
             "keywords out of order; write `external nonreentrant view function`",
         ),
         (
@@ -733,14 +733,14 @@ fn transient_storage_lasts_for_the_transaction() {
 
     // A query sees transient writes made before it, so it is never moved ahead of one.
     let src = "\
-interface Me is { view function pending() : nat; }
-transient storage scratch is record { pending : nat; }
-storage is record { first : nat; seen : nat; }
-external view function pending() : nat is scratch.pending
+interface Me is { view function pending() : uint; }
+transient storage scratch is record { pending : uint; }
+storage is record { first : uint; seen : uint; }
+external view function pending() : uint is scratch.pending
 external function probe(const me : Me) is {
-  storage.first := 1n;
-  scratch.pending := 9n;
-  const seen : nat := query me.pending();
+  storage.first := 1;
+  scratch.pending := 9;
+  const seen : uint := query me.pending();
   storage.seen := seen;
 }
 ";
@@ -774,15 +774,15 @@ external function probe(const me : Me) is {
             "transient storage field `s` must hold a fixed-size value, or a map of them",
         ),
         (
-            "transient storage t is record { n : nat; }\nexternal view function f() : nat is { t.n := 1n; } with 1n\n",
+            "transient storage t is record { n : uint; }\nexternal view function f() : uint is { t.n := 1; } with 1\n",
             "declared effect is weaker than the body's: external view function `f` writes storage",
         ),
         (
-            "transient storage t is record { n : nat; }\npure function f() : nat is t.n\nexternal function g() is { skip }\n",
+            "transient storage t is record { n : uint; }\npure function f() : uint is t.n\nexternal function g() is { skip }\n",
             "declared effect is weaker than the body's: pure function `f` reads contract storage",
         ),
         (
-            "transient storage t is record { n : nat; }\nstorage t at \"x\" is record { n : nat; }\nexternal function f() is { skip }\n",
+            "transient storage t is record { n : uint; }\nstorage t at \"x\" is record { n : uint; }\nexternal function f() is { skip }\n",
             "duplicate storage domain `t`",
         ),
     ] {
@@ -862,32 +862,32 @@ fn recoverable_calls_branch_on_the_outcome() {
 
     let program = |body: &str| {
         format!(
-            "interface Ext is {{ function swap(n : nat) : nat; function poke(); view function price(n : nat) : nat; }}\nstorage is record {{ n : nat; r : bytes; }}\n{body}"
+            "interface Ext is {{ function swap(n : uint) : uint; function poke(); view function price(n : uint) : uint; }}\nstorage is record {{ n : uint; r : bytes; }}\n{body}"
         )
     };
     for (body, want) in [
         (
-            "external function f(const e : Ext) is { defer e.swap(1n) then { | Ok(r : nat) -> { skip } }; }\n",
+            "external function f(const e : Ext) is { defer e.swap(1) then { | Ok(r : uint) -> { skip } }; }\n",
             "a recoverable call needs both `Ok` and `Error` arms",
         ),
         (
-            "external function f(const e : Ext) is { defer e.swap(1n) then { | Ok(r : nat) -> { skip } | Fail(r : bytes) -> { skip } }; }\n",
+            "external function f(const e : Ext) is { defer e.swap(1) then { | Ok(r : uint) -> { skip } | Fail(r : bytes) -> { skip } }; }\n",
             "a call's outcome is `Ok` or `Error`, not `Fail`",
         ),
         (
-            "external function f(const e : Ext) is { defer e.swap(1n) then { | Ok(r : bool) -> { skip } | Error(_) -> { skip } }; }\n",
+            "external function f(const e : Ext) is { defer e.swap(1) then { | Ok(r : bool) -> { skip } | Error(_) -> { skip } }; }\n",
             "the result type does not match what the call returns",
         ),
         (
-            "external function f(const e : Ext) is { defer e.swap(1n) then { | Ok(r : nat) -> { skip } | Error(x : string) -> { skip } }; }\n",
+            "external function f(const e : Ext) is { defer e.swap(1) then { | Ok(r : uint) -> { skip } | Error(x : string) -> { skip } }; }\n",
             "the result type does not match what the call returns",
         ),
         (
-            "external function f(const e : Ext) is { defer e.poke() then { | Ok(r : nat) -> { skip } | Error(_) -> { skip } }; }\n",
+            "external function f(const e : Ext) is { defer e.poke() then { | Ok(r : uint) -> { skip } | Error(_) -> { skip } }; }\n",
             "this call returns nothing",
         ),
         (
-            "external function f(const e : Ext) is { case query e.price(1n) of { | Ok(p) -> { skip } }; }\n",
+            "external function f(const e : Ext) is { case query e.price(1) of { | Ok(p) -> { skip } }; }\n",
             "missing case arm `Error`",
         ),
     ] {
@@ -909,15 +909,15 @@ fn deferred_calls_send_dynamic_values() {
     let src = "\
 interface Echo is {
   function same(data : bytes) : bytes;
-  function around(n : nat; data : bytes; m : nat) : (nat, nat);
+  function around(n : uint; data : bytes; m : uint) : (uint, uint);
   function text(label : string) : string;
 }
-storage is record { back : bytes; first : nat; offset : nat; label : string; }
+storage is record { back : bytes; first : uint; offset : uint; label : string; }
 external function send(const e : Echo; const data : bytes) is {
   defer e.same(data) then (back : bytes) { storage.back := back; };
 }
-external function head(const e : Echo; const n : nat; const data : bytes) is {
-  defer e.around(n, data, 7n) then ((a, b) : (nat, nat)) {
+external function head(const e : Echo; const n : uint; const data : bytes) is {
+  defer e.around(n, data, 7) then ((a, b) : (uint, uint)) {
     storage.first := a;
     storage.offset := b;
   };
@@ -1035,16 +1035,16 @@ external view function stored() : string is storage.s
 fn computed_slots_store_bytes_like_solidity() {
     let src = "\
 storage is record {
-  m : map(nat, string);
-  b : map(nat, bytes);
+  m : map(uint, string);
+  b : map(uint, bytes);
   bs : list(bytes);
   ss : list(string);
-  n : nat;
+  n : uint;
 }
-external function s(const k : nat; const v : string) is { storage.m[k] := v; }
-external view function g(const k : nat) : string is storage.m[k]
-external function sb(const k : nat; const v : bytes) is { storage.b[k] := v; }
-external view function gb(const k : nat) : bytes is storage.b[k]
+external function s(const k : uint; const v : string) is { storage.m[k] := v; }
+external view function g(const k : uint) : string is storage.m[k]
+external function sb(const k : uint; const v : bytes) is { storage.b[k] := v; }
+external view function gb(const k : uint) : bytes is storage.b[k]
 external function put(const a : bytes; const c : bytes) is {
   var xs : list(bytes) := [a, c];
   storage.bs := xs;
@@ -1053,17 +1053,17 @@ external function put1(const a : bytes) is {
   var xs : list(bytes) := [a];
   storage.bs := xs;
 }
-external view function at(const i : nat) : bytes is storage.bs[i]
-external view function len() : nat is storage.bs.length
-external function set_at(const i : nat; const v : bytes) is { storage.bs[i] := v; }
+external view function at(const i : uint) : bytes is storage.bs[i]
+external view function len() : uint is storage.bs.length
+external function set_at(const i : uint; const v : bytes) is { storage.bs[i] := v; }
 external function put_s(const a : string; const c : string) is {
   var xs : list(string) := [a, c];
   storage.ss := xs;
 }
-external view function sat(const i : nat) : string is storage.ss[i]
-external view function slen() : nat is storage.ss.length
+external view function sat(const i : uint) : string is storage.ss[i]
+external view function slen() : uint is storage.ss.length
 external function total() is {
-  var acc : nat := 0n;
+  var acc : uint := 0;
   for x : bytes in storage.bs bound 8 do { acc := acc + x.length; }
   storage.n := acc;
 }
@@ -1207,11 +1207,11 @@ fn forwarded_is_declared() {
     let src = |raises: &str, arm: &str| {
         format!(
             "\
-interface Ext is {{ function swap(n : nat) : nat; }}
-storage is record {{ n : nat; }}
+interface Ext is {{ function swap(n : uint) : uint; }}
+storage is record {{ n : uint; }}
 function relay(const ex : Ext) is {{
-  defer ex.swap(1n) then {{
-    | Ok(r : nat) -> {{ skip }}
+  defer ex.swap(1) then {{
+    | Ok(r : uint) -> {{ skip }}
     | Error(reason : bytes) -> {{ {arm} }}
   }};
 }}
@@ -1235,7 +1235,7 @@ external function go(const ex : Ext){raises} is relay(ex)
         ),
         (
             " raises forwarded",
-            "const n : nat := 1n; forward n;",
+            "const n : uint := 1; forward n;",
             "`forward` passes on a `bytes` value",
         ),
     ] {
@@ -1243,7 +1243,7 @@ external function go(const ex : Ext){raises} is relay(ex)
         assert!(err.message.contains(want), "{want}: {}", err.message);
     }
     let err = compile(
-        "error forwarded;\nstorage is record { n : nat; }\nexternal function f() is { skip }\n",
+        "error forwarded;\nstorage is record { n : uint; }\nexternal function f() is { skip }\n",
     )
     .expect_err("reserved");
     assert!(
@@ -1260,26 +1260,26 @@ fn raw_revert_data_passes_through() {
     install_mocks();
     let src = "\
 error Silent;
-interface Ext is { function swap(n : nat) : nat; }
-storage is record { out : nat; kept : bytes; size : nat; }
-external function relay(const ex : Ext; const n : nat)
+interface Ext is { function swap(n : uint) : uint; }
+storage is record { out : uint; kept : bytes; size : uint; }
+external function relay(const ex : Ext; const n : uint)
   raises Silent | forwarded
 is {
   defer ex.swap(n) then {
-    | Ok(r : nat) -> { storage.out := r; }
+    | Ok(r : uint) -> { storage.out := r; }
     | Error(reason : bytes) -> {
-        if reason.length = 0n then { fail Silent; }
+        if reason.length = 0 then { fail Silent; }
         forward reason;
       }
   };
 }
-external function keep(const ex : Ext; const n : nat) raises forwarded is {
+external function keep(const ex : Ext; const n : uint) raises forwarded is {
   defer ex.swap(n) then {
-    | Ok(r : nat) -> { storage.out := r; }
+    | Ok(r : uint) -> { storage.out := r; }
     | Error(reason : bytes) -> {
         storage.kept := reason;
         storage.size := reason.length;
-        if reason.length > 20n then { forward reason; }
+        if reason.length > 20 then { forward reason; }
       }
   };
 }
@@ -1333,12 +1333,12 @@ interface Child is {
 }
 
 contract Factory is {
-  storage is record { last : address; count : nat; seeded : address; }
+  storage is record { last : address; count : uint; seeded : address; }
 
   external function make() is {
     defer create Vault() then (vault : address) {
       storage.last := vault;
-      storage.count := storage.count + 1n;
+      storage.count := storage.count + 1;
       defer Child(vault).init(Evm.sender());
     };
   }
@@ -1349,14 +1349,14 @@ contract Factory is {
     };
   }
 
-  external function fund(const amount : nat) is {
+  external function fund(const amount : uint) is {
     defer create Vault() with value = amount then {
       | Ok(vault : address) -> { storage.last := vault; }
-      | Error(_) -> { storage.count := 99n; }
+      | Error(_) -> { storage.count := 99; }
     };
   }
 
-  external function fund_at(const amount : nat; const salt : bytes32) is {
+  external function fund_at(const amount : uint; const salt : bytes32) is {
     defer create Vault() with { value = amount; salt = salt; } then (vault : address) {
       storage.seeded := vault;
     };
@@ -1490,7 +1490,7 @@ contract Vault is {
             "`Missing` is not another contract of this file or its imports",
         ),
         (
-            "defer create Other(1n);",
+            "defer create Other(1);",
             "`Other` has no `deploy` parameters, so it takes no arguments",
         ),
         (
@@ -1499,7 +1499,7 @@ contract Vault is {
         ),
     ] {
         let src = format!(
-            "contract One is {{\n  storage is record {{ n : nat; }}\n  external function f() is {{ {body} }}\n}}\ncontract Other is {{\n  storage is record {{ n : nat; }}\n  external function g() is {{ skip }}\n}}\n"
+            "contract One is {{\n  storage is record {{ n : uint; }}\n  external function f() is {{ {body} }}\n}}\ncontract Other is {{\n  storage is record {{ n : uint; }}\n  external function g() is {{ skip }}\n}}\n"
         );
         let err = compile_contracts(&src).expect_err(want);
         assert!(err.to_string().contains(want), "{want}: {err}");
@@ -1513,8 +1513,8 @@ fn encoded_blobs_keep_their_tails() {
     let src = "\
 storage is record { a : bytes; b : bytes; name : string; }
 external function both(const x : string; const y : string) is {
-  const a : bytes := Abi.encode(1n, x);
-  const b : bytes := Abi.encode_packed(y, 2n);
+  const a : bytes := Abi.encode(1, x);
+  const b : bytes := Abi.encode_packed(y, 2);
   const c : bytes := Abi.encode(y, storage.name);
   storage.a := a;
   storage.b := b;
@@ -1577,20 +1577,20 @@ fn deploy_args(owner: Word, fee: u64, name: &[u8]) -> Vec<u8> {
 #[test]
 fn deploy_runs_in_creation_code() {
     let src = "\
-error Too_high of nat;
-storage is record { owner : address; fee : nat; name : string; }
-event Deployed of record { indexed owner : address; fee : nat; }
-deploy(const owner : address; const fee : nat; const name : string)
+error Too_high of uint;
+storage is record { owner : address; fee : uint; name : string; }
+event Deployed of record { indexed owner : address; fee : uint; }
+deploy(const owner : address; const fee : uint; const name : string)
   raises Too_high
 is {
-  assert(fee <= 100n, Too_high(fee));
+  assert(fee <= 100, Too_high(fee));
   storage.owner := owner;
   storage.fee := fee;
   storage.name := name;
   emit Deployed { owner = owner; fee = fee; };
 }
 external view function owner() : address is storage.owner
-external view function fee() : nat is storage.fee
+external view function fee() : uint is storage.fee
 external view function name() : string is storage.name
 ";
     let init = compile(src).expect("compile");
@@ -1640,17 +1640,17 @@ external view function paid() : wei is storage.paid
 
     for (body, want) in [
         ("deploy() is { skip }\ndeploy() is { skip }", "a contract has at most one `deploy`"),
-        ("deploy() : nat is { skip }", "`deploy` does not declare a return type"),
+        ("deploy() : uint is { skip }", "`deploy` does not declare a return type"),
         ("external deploy() is { skip }", "`deploy` takes only `payable`"),
-        ("deploy() is { storage.n := nat(Evm.value()); }", "`deploy` reads `Evm.value()`; write `payable deploy`"),
+        ("deploy() is { storage.n := uint(Evm.value()); }", "`deploy` reads `Evm.value()`; write `payable deploy`"),
         ("deploy() is { defer Evm.transfer(Evm.sender(), 1wei); }", "deploy cannot defer an operation"),
         (
-            "interface I is { view function n() : nat; }\ndeploy() is { storage.n := query I(Evm.sender()).n(); }",
+            "interface I is { view function n() : uint; }\ndeploy() is { storage.n := query I(Evm.sender()).n(); }",
             "deploy cannot query",
         ),
     ] {
         let src = format!(
-            "storage is record {{ n : nat; }}\n{body}\nexternal view function n() : nat is storage.n\n"
+            "storage is record {{ n : uint; }}\n{body}\nexternal view function n() : uint is storage.n\n"
         );
         let err = compile(&src).expect_err(want);
         assert!(err.to_string().contains(want), "{want}: {err}");
@@ -1692,12 +1692,12 @@ fn created_contracts_receive_deploy_arguments() {
     let src = "\
 contract Factory is {
   storage is record { last : address; }
-  external function open(const fee : nat; const name : string) is {
+  external function open(const fee : uint; const name : string) is {
     defer create Vault(Evm.sender(), fee, name) then (vault : address) {
       storage.last := vault;
     };
   }
-  external function open_at(const salt : bytes32; const fee : nat) is {
+  external function open_at(const salt : bytes32; const fee : uint) is {
     defer create Vault(Evm.sender(), fee, \"salted\") with salt = salt then (vault : address) {
       storage.last := vault;
     };
@@ -1705,13 +1705,13 @@ contract Factory is {
 }
 
 contract Vault is {
-  storage is record { owner : address; fee : nat; name : string; }
-  deploy(const owner : address; const fee : nat; const name : string) is {
+  storage is record { owner : address; fee : uint; name : string; }
+  deploy(const owner : address; const fee : uint; const name : string) is {
     storage.owner := owner;
     storage.fee := fee;
     storage.name := name;
   }
-  external view function fee() : nat is storage.fee
+  external view function fee() : uint is storage.fee
 }
 ";
     let contracts = compile_contracts(src).expect("compile");
@@ -1762,7 +1762,7 @@ contract Vault is {
     assert_eq!(slot(&at.storage, 0), Word::from_be_bytes(expected));
 
     for (args, want) in [
-        ("Evm.sender(), 1n", "`Vault` expects 3 arguments"),
+        ("Evm.sender(), 1", "`Vault` expects 3 arguments"),
         ("Evm.sender(), \"no\", \"x\"", "argument has the wrong type"),
     ] {
         let bad = src.replace("Vault(Evm.sender(), fee, name)", &format!("Vault({args})"));
@@ -1776,7 +1776,7 @@ contract Vault is {
 #[test]
 fn concatenation_and_typed_call_encoding() {
     let src = "\
-interface Token is { function transfer(to : address; amount : nat) : bool; }
+interface Token is { function transfer(to : address; amount : uint) : bool; }
 storage is record { joined : bytes; text : string; call_data : bytes; }
 external function join(const a : bytes; const b : bytes) is {
   storage.joined := Bytes.concat(a, 0xdeadbeef, b);
@@ -1784,10 +1784,10 @@ external function join(const a : bytes; const b : bytes) is {
 external function greet(const name : string) is {
   storage.text := String.concat(\"hello, \", name, \"!\");
 }
-external function encode(const to : address; const amount : nat) is {
+external function encode(const to : address; const amount : uint) is {
   storage.call_data := Abi.encode_call(Token.transfer, to, amount);
 }
-external pure function same(const to : address; const amount : nat) : bool is
+external pure function same(const to : address; const amount : uint) : bool is
   Crypto.keccak256(Abi.encode_call(Token.transfer, to, amount))
     = Crypto.keccak256(Abi.encode_with_signature(\"transfer(address,uint256)\", to, amount))
 external view function joined() : bytes is storage.joined
@@ -1854,20 +1854,20 @@ external view function call_data() : bytes is storage.call_data
             "`Token.transfer` expects 2 arguments",
         ),
         (
-            "Abi.encode_call(Token.mint, Evm.sender(), 1n)",
+            "Abi.encode_call(Token.mint, Evm.sender(), 1)",
             "unknown interface method `Token.mint`",
         ),
         (
-            "Abi.encode_call(\"transfer(address,uint256)\", Evm.sender(), 1n)",
+            "Abi.encode_call(\"transfer(address,uint256)\", Evm.sender(), 1)",
             "expects an interface method",
         ),
         (
-            "Bytes.concat(1n)",
+            "Bytes.concat(true)",
             "`Bytes.concat` joins `bytes` and `bytesN` values",
         ),
     ] {
         let src = format!(
-            "interface Token is {{ function transfer(to : address; amount : nat) : bool; }}\nstorage is record {{ b : bytes; }}\nexternal function f() is {{ storage.b := {body}; }}\n"
+            "interface Token is {{ function transfer(to : address; amount : uint) : bool; }}\nstorage is record {{ b : bytes; }}\nexternal function f() is {{ storage.b := {body}; }}\n"
         );
         let err = compile(&src).expect_err(want);
         assert!(err.to_string().contains(want), "{want}: {err}");
@@ -1881,33 +1881,33 @@ fn calls_take_a_gas_limit() {
     install_mocks();
     let src = "\
 interface Echo is {
-  view function peek(v : nat) : nat;
-  view function pair(a : nat; b : nat) : (nat, nat);
-  payable function ping(v : nat);
+  view function peek(v : uint) : uint;
+  view function pair(a : uint; b : uint) : (uint, uint);
+  payable function ping(v : uint);
 }
-storage is record { n : nat; }
+storage is record { n : uint; }
 external function detect(const e : Echo) is {
-  storage.n := case query e.peek(1n) with gas = 30000n of { | Ok(v) -> v | Error(_) -> 9n };
+  storage.n := case query e.peek(1) with gas = 30000 of { | Ok(v) -> v | Error(_) -> 9 };
 }
-external function read(const e : Echo; const g : nat) is {
-  storage.n := query e.peek(2n) with gas = g + 1n;
+external function read(const e : Echo; const g : uint) is {
+  storage.n := query e.peek(2) with gas = g + 1;
 }
 external function both(const e : Echo) is {
-  const (a, b) : (nat, nat) := query e.pair(3n, 4n) with gas = 8000n;
+  const (a, b) : (uint, uint) := query e.pair(3, 4) with gas = 8000;
   storage.n := a + b;
 }
 external function raw(const to : address) is {
-  const d : bytes := query Evm.static_call(to, Abi.encode(3n)) with gas = 40000n;
+  const d : bytes := query Evm.static_call(to, Abi.encode(3)) with gas = 40000;
   storage.n := d.length;
 }
 external payable function send(const e : Echo; const to : address) is {
-  defer e.ping(4n) with { value = 1n; gas = 50000n };
-  defer Evm.call(to, Abi.encode(5n)) with gas = 60000n;
-  defer Evm.transfer(to, 1wei) with gas = 2300n;
-  defer e.ping(6n);
+  defer e.ping(4) with { value = 1; gas = 50000 };
+  defer Evm.call(to, Abi.encode(5)) with gas = 60000;
+  defer Evm.transfer(to, 1wei) with gas = 2300;
+  defer e.ping(6);
 }
 external function each(const e : Echo) is {
-  for i : nat in 0n .. 3n do { defer e.ping(i) with gas = 7000n + i; };
+  for i : uint in 0 .. 3 do { defer e.ping(i) with gas = 7000 + i; };
 }
 ";
     let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
@@ -1959,21 +1959,21 @@ external function each(const e : Echo) is {
 
     for (body, want) in [
         (
-            "storage.n := query e.peek(1n) with value = 1n;",
+            "storage.n := query e.peek(1) with value = 1;",
             "a query takes only `with gas`",
         ),
-        ("defer e.ping(1n) with gas = true;", "`gas` must be nat"),
+        ("defer e.ping(1) with gas = true;", "`gas` must be uint"),
         (
-            "storage.n := query e.peek(query e.peek(1n) with gas = 1n);",
+            "storage.n := query e.peek(query e.peek(1) with gas = 1);",
             "nested query",
         ),
     ] {
-        let bad = src.replace("storage.n := case query e.peek(1n) with gas = 30000n of { | Ok(v) -> v | Error(_) -> 9n };", body);
+        let bad = src.replace("storage.n := case query e.peek(1) with gas = 30000 of { | Ok(v) -> v | Error(_) -> 9 };", body);
         let err = compile(&bad).expect_err(want);
         assert!(err.to_string().contains(want), "{want}: {err}");
     }
     let err = compile_contracts(
-        "contract One is {\n  storage is record { n : nat; }\n  external function f() is { defer create Other() with gas = 1n; }\n}\ncontract Other is {\n  storage is record { n : nat; }\n  external function g() is { skip }\n}\n",
+        "contract One is {\n  storage is record { n : uint; }\n  external function f() is { defer create Other() with gas = 1; }\n}\ncontract Other is {\n  storage is record { n : uint; }\n  external function g() is { skip }\n}\n",
     )
     .expect_err("create gas");
     assert!(

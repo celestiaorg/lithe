@@ -1,9 +1,9 @@
 import "./lib.lithe";
 
 storage is record {
-  n : nat;
+  n : uint;
 }
 
 external function go() is {
-  storage.n := hidden(1n);
+  storage.n := hidden(1);
 }

@@ -14,12 +14,12 @@ Errors are typed and declared, and each compiles to a Solidity custom error. Ext
 error Unauthorized;
 
 (* One positional value: `Too_small(uint256)`, in the ABI as `TooSmall(uint256)` *)
-error Too_small of nat;
+error Too_small of uint;
 
 (* Named fields: `InsufficientBalance(uint256 available, uint256 required)` *)
 error Insufficient_balance of record {
-  available : nat;
-  required : nat;
+  available : uint;
+  required : uint;
 }
 
 (* A named set of errors, for reuse in `raises`. *)
@@ -29,7 +29,7 @@ errors withdraw_errors is
 
 storage is record {
   owner : address;
-  balances : map(address, nat);
+  balances : map(address, uint);
 }
 
 (* An internal function's errors are inferred when `raises` is left off. *)
@@ -38,11 +38,11 @@ view function require_owner() is {
 }
 
 (* An external function must declare every error it can raise. *)
-external function withdraw(const amount : nat)
+external function withdraw(const amount : uint)
   raises withdraw_errors
 is {
-  assert(amount >= 100n, Too_small(amount));
-  const have : nat := storage.balances[Evm.sender()];
+  assert(amount >= 100, Too_small(amount));
+  const have : uint := storage.balances[Evm.sender()];
   if have < amount then {
     fail Insufficient_balance { available = have; required = amount; };
   }
@@ -53,7 +53,7 @@ external function reset(const who : address)
   raises Unauthorized
 is {
   require_owner();
-  storage.balances[who] := 0n;
+  storage.balances[who] := 0;
 }
 ```
 

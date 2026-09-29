@@ -2,7 +2,7 @@ error Not_owner;
 error NotOwner;
 
 storage is record {
-  count : nat;
+  count : uint;
 }
 
 external function go() is {
