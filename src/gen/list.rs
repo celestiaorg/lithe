@@ -918,7 +918,7 @@ impl<'a> Gen<'a> {
             return Ok(None);
         }
         let k = self.list_k(self.checked.syms[sym].ty);
-        self.heap_element(self.local[sym], index, u64::from(k), false)?;
+        self.heap_element(self.local[sym], index, u64::from(k), false, None)?;
         if offset > 0 {
             self.push_u64(u64::from(offset) * 32);
             self.op(ADD);
@@ -935,7 +935,7 @@ impl<'a> Gen<'a> {
         let k = self.list_k(self.checked.syms[sym].ty);
         self.return_sites += 1;
         let buf = self.region(Region::Stored(self.return_sites), n * 32);
-        self.heap_element(self.local[sym], index, u64::from(k), false)?;
+        self.heap_element(self.local[sym], index, u64::from(k), false, None)?;
         for j in 0..n {
             if j + 1 < n {
                 self.op(DUP1);
@@ -960,7 +960,7 @@ impl<'a> Gen<'a> {
         let k = self.list_k(self.checked.syms[sym].ty);
         if n == 1 && self.stack_value(ty) {
             self.compile_value(expr)?;
-            self.heap_element(self.local[sym], index, u64::from(k), false)?;
+            self.heap_element(self.local[sym], index, u64::from(k), false, None)?;
             if offset > 0 {
                 self.push_u64(u64::from(offset) * 32);
                 self.op(ADD);
@@ -976,7 +976,7 @@ impl<'a> Gen<'a> {
             self.write_value(expr, buf, ty)?;
             buf
         };
-        self.heap_element(self.local[sym], index, u64::from(k), false)?;
+        self.heap_element(self.local[sym], index, u64::from(k), false, None)?;
         for j in 0..n {
             if j + 1 < n {
                 self.op(DUP1);
@@ -1012,13 +1012,19 @@ impl<'a> Gen<'a> {
         }
         match target {
             Expr::Index { base, index, .. } if push => {
-                self.own_path(target)?;
+                // A list its local owns grows in place or into its room; any other moves,
+                // which copies it.
+                self.own_path(base)?;
+                let own = self.own_record(base);
+                if own.is_none() {
+                    self.own_list(base)?;
+                }
                 let list = self.temp();
                 self.push_mem_addr(base)?;
                 self.op(DUP1);
                 self.op(MLOAD);
                 self.mstore_off(list);
-                self.heap_element(list, index, u64::from(self.list_k(base.ty())), true)?;
+                self.heap_element(list, index, u64::from(self.list_k(base.ty())), true, own)?;
                 self.op(SWAP1);
                 self.mload(list);
                 self.op(SWAP1);
@@ -1043,10 +1049,10 @@ impl<'a> Gen<'a> {
     }
 
     /// Replaces each list a write to `e` passes through past an index with a copy of it:
-    /// a copy of the `var` shares those lists, and must not see the write.
-    // simplify: each nested write copies the inner lists on its path, so filling an inner list
-    // element by element costs quadratic gas and memory. Copying lists deeply when a `var`
-    // takes or gives them would let these writes go in place.
+    /// a copy of the `var` shares those lists, and must not see the write. A copy is the
+    /// local's own until a statement reads lists out of the local, so later writes skip it.
+    // simplify: a local keeps one owned list per path, so writes alternating between
+    // `xs[a][..]` and `xs[b][..]` copy on each switch. A record per index would fix that.
     fn own_path(&mut self, e: &Expr) -> Result<(), Error> {
         if let Expr::Index { base, .. } | Expr::Field { base, .. } = e {
             self.own_path(base)?;
@@ -1056,15 +1062,304 @@ impl<'a> Gen<'a> {
     }
 
     fn own_list(&mut self, e: &Expr) -> Result<(), Error> {
-        if self.list_value(e.ty()) && (matches!(e, Expr::Index { .. }) || self.nested_mem(e)) {
-            self.push_mem_addr(e)?;
-            self.op(DUP1);
-            self.op(MLOAD);
-            self.copy_list(self.list_k(e.ty()))?;
-            self.op(SWAP1);
-            self.op(MSTORE);
+        if !self.copied_list(e) {
+            return Ok(());
         }
+        let own = self.own_record(e).map(|own| (own, self.fresh()));
+        self.push_mem_addr(e)?;
+        self.op(DUP1);
+        self.op(MLOAD);
+        if let Some((own, mine)) = own {
+            self.op(DUP1);
+            self.mload(own);
+            self.op(EQ);
+            self.push_label(mine);
+            self.op(JUMPI);
+        }
+        self.copy_list(self.list_k(e.ty()))?;
+        if let Some((own, mine)) = own {
+            // The copy ends at the heap top, with no room past it.
+            self.op(DUP1);
+            self.mstore_off(own);
+            self.op(PUSH0);
+            self.mstore_off(own + 32);
+            self.jumpdest(mine);
+        }
+        self.op(SWAP1);
+        self.op(MSTORE);
         Ok(())
+    }
+
+    /// Whether a write through `e` copies the list there first.
+    fn copied_list(&self, e: &Expr) -> bool {
+        self.list_value(e.ty()) && (matches!(e, Expr::Index { .. }) || self.nested_mem(e))
+    }
+
+    /// The words `room` names for the list a write through `e` copies, while no statement
+    /// being compiled reads lists out of its local.
+    fn own_record(&mut self, e: &Expr) -> Option<i32> {
+        let (sym, path) = self.place_path(e)?;
+        if self.sharing.contains(&sym) || !self.owners.get(&sym)?.contains(&path) {
+            return None;
+        }
+        Some(self.owned_words(sym, path))
+    }
+
+    fn owned_words(&mut self, sym: usize, path: String) -> i32 {
+        if let Some(&at) = self.owned.get(&(sym, path.clone())) {
+            return at;
+        }
+        let at = self.region(Region::Room, 64);
+        self.owned.insert((sym, path), at);
+        at
+    }
+
+    /// Forgets the lists a local owns: something else may hold them now, or the local is
+    /// bound anew.
+    pub(super) fn disown(&mut self, sym: usize) {
+        for path in self.owners.get(&sym).cloned().unwrap_or_default() {
+            let at = self.owned_words(sym, path);
+            self.op(PUSH0);
+            self.mstore_off(at);
+        }
+    }
+
+    /// The local a place starts from, and its fields and indexes after that.
+    fn place_path(&self, e: &Expr) -> Option<(usize, String)> {
+        match e {
+            Expr::Ident {
+                sym: Some(sym),
+                builtin: None,
+                ..
+            } => Some((*sym, String::new())),
+            Expr::Field { base, name, .. } => {
+                self.place_path(base).map(|(sym, path)| (sym, path + "." + name))
+            }
+            Expr::Index { base, .. } => self.place_path(base).map(|(sym, path)| (sym, path + "[]")),
+            _ => None,
+        }
+    }
+
+    /// The locals whose lists some nested write copies, and the paths to those lists.
+    pub(super) fn find_owners(&self) -> HashMap<usize, Vec<String>> {
+        let found = std::cell::RefCell::new(HashMap::<usize, Vec<String>>::new());
+        let note = |node: Node<'_>| {
+            if let Node::Stmt(Stmt::Assign {
+                target: Some(target),
+                root: Some(root),
+                expr,
+                ..
+            }) = node
+            {
+                let mut lists = Vec::new();
+                self.path_lists(target, &mut lists);
+                if matches!(expr, Expr::Call { builtin: Some(Builtin::ListPop), .. })
+                    && self.copied_list(target)
+                {
+                    lists.push(target.as_ref());
+                }
+                for list in lists.into_iter().filter(|_| !self.checked.syms[*root].storage) {
+                    if let Some((sym, path)) = self.place_path(list) {
+                        let paths = found.borrow_mut();
+                        let mut paths = std::cell::RefMut::map(paths, |f| f.entry(sym).or_default());
+                        if !paths.contains(&path) {
+                            paths.push(path);
+                        }
+                    }
+                }
+            }
+            false
+        };
+        let mut seen = Vec::new();
+        for f in &self.checked.prog.funcs {
+            for st in &f.stmts {
+                self.stmt_any(st, &note, &mut seen);
+            }
+            if let Some(tail) = &f.tail {
+                self.expr_any(tail, &note, &mut seen);
+            }
+        }
+        found.into_inner()
+    }
+
+    /// The lists `own_path` copies on the way to `e`.
+    fn path_lists<'e>(&self, e: &'e Expr, out: &mut Vec<&'e Expr>) {
+        if let Expr::Index { base, .. } | Expr::Field { base, .. } = e {
+            self.path_lists(base, out);
+            if self.copied_list(base) {
+                out.push(base);
+            }
+        }
+    }
+
+    /// Before a statement that reads lists out of a local, forgets the lists the local owns,
+    /// and has writes through it copy until the statement ends: what the statement read may
+    /// be held past it. A local the statement declares owns none yet.
+    pub(super) fn share_lists(&mut self, s: &Stmt) {
+        let mut read = Vec::new();
+        self.stmt_shares(s, &mut read);
+        read.sort_unstable();
+        read.dedup();
+        read.retain(|sym| !self.sharing.contains(sym));
+        let declared = match s {
+            Stmt::Var { sym, part_syms, .. } => sym.iter().chain(part_syms).copied().collect(),
+            _ => Vec::new(),
+        };
+        for &sym in read.iter().chain(&declared) {
+            self.disown(sym);
+        }
+        self.sharing.extend(read);
+    }
+
+    fn stmt_shares(&self, s: &Stmt, out: &mut Vec<usize>) {
+        match s {
+            Stmt::Skip => {}
+            Stmt::Const { expr, .. }
+            | Stmt::Var { expr, .. }
+            | Stmt::Call { expr, .. }
+            | Stmt::AssignTuple { expr, .. } => self.shares(expr, out),
+            Stmt::Assign {
+                index,
+                keys,
+                expr,
+                target,
+                ..
+            } => {
+                for e in index.iter().chain(keys) {
+                    self.shares(e, out);
+                }
+                if let Some(target) = target {
+                    self.path_shares(target, out);
+                }
+                match expr {
+                    // Its argument is the place it pops.
+                    Expr::Call {
+                        builtin: Some(Builtin::ListPop),
+                        args,
+                        ..
+                    } => args.iter().for_each(|a| self.path_shares(a, out)),
+                    _ => self.shares(expr, out),
+                }
+            }
+            Stmt::If { cond, .. } => self.shares(cond, out),
+            Stmt::Assert { cond, reason, .. } => {
+                self.shares(cond, out);
+                self.raised_shares(reason, out);
+            }
+            Stmt::Fail { reason } => self.raised_shares(reason, out),
+            Stmt::Emit { fields, .. } => fields.iter().for_each(|(_, e)| self.shares(e, out)),
+            Stmt::Defer {
+                expr,
+                value,
+                gas,
+                then,
+                ..
+            } => {
+                self.shares(expr, out);
+                value.iter().chain(gas).for_each(|e| self.shares(e, out));
+                // A continuation may see the locals as they are now.
+                let mut read = Vec::new();
+                for arm in then.iter().flat_map(|then| then.arms()) {
+                    for st in &arm.stmts {
+                        self.stmt_syms(st, &mut read);
+                    }
+                }
+                out.extend(read.into_iter().filter(|sym| self.owners.contains_key(sym)));
+            }
+            Stmt::For {
+                iter,
+                until,
+                bound,
+                elem_init,
+                length,
+                ..
+            } => {
+                match iter {
+                    ForIter::Range { lo, hi } => {
+                        self.shares(lo, out);
+                        self.shares(hi, out);
+                    }
+                    ForIter::List(xs) => self.shares(xs, out),
+                }
+                for e in until.iter().chain(bound).chain(elem_init).chain(length) {
+                    self.shares(e, out);
+                }
+            }
+        }
+    }
+
+    fn raised_shares(&self, reason: &Raised, out: &mut Vec<usize>) {
+        match &reason.form {
+            RaisedForm::Unit => {}
+            RaisedForm::Positional(e) => self.shares(e, out),
+            RaisedForm::Fields(fields) => fields.iter().for_each(|(_, e)| self.shares(e, out)),
+        }
+    }
+
+    /// The locals whose lists `e` reads out whole, holding a list in a value that may
+    /// outlive the read. Statements nested in `e` are left to themselves.
+    fn shares(&self, e: &Expr, out: &mut Vec<usize>) {
+        match e {
+            Expr::Ident { .. } | Expr::Field { .. } | Expr::Index { .. }
+                if self.place_path(e).is_some() =>
+            {
+                let (sym, _) = self.place_path(e).expect("place");
+                if self.owners.contains_key(&sym) && self.holds_list(e.ty()) {
+                    out.push(sym);
+                }
+                self.path_shares(e, out);
+            }
+            Expr::Lit { .. } | Expr::Ident { .. } => {}
+            Expr::Field { base, .. } | Expr::Unary { expr: base, .. } => self.shares(base, out),
+            Expr::Index { base, index, .. } => {
+                self.shares(base, out);
+                self.shares(index, out);
+            }
+            Expr::Query { expr, gas, .. } => {
+                self.shares(expr, out);
+                gas.iter().for_each(|g| self.shares(g, out));
+            }
+            Expr::Call { args, base, .. } => {
+                base.iter().for_each(|b| self.shares(b, out));
+                args.iter().for_each(|a| self.shares(a, out));
+            }
+            Expr::Case { scrut, arms, .. } => {
+                self.shares(scrut, out);
+                arms.iter().for_each(|arm| self.shares(&arm.expr, out));
+            }
+            Expr::Binary { left, right, .. } => {
+                self.shares(left, out);
+                self.shares(right, out);
+            }
+            Expr::Tuple { elems, .. } | Expr::List { elems, .. } => {
+                elems.iter().for_each(|x| self.shares(x, out));
+            }
+            Expr::Record { fields, .. } => fields.iter().for_each(|(_, x)| self.shares(x, out)),
+        }
+    }
+
+    /// The indexes along a place.
+    fn path_shares(&self, e: &Expr, out: &mut Vec<usize>) {
+        match e {
+            Expr::Field { base, .. } => self.path_shares(base, out),
+            Expr::Index { base, index, .. } => {
+                self.path_shares(base, out);
+                self.shares(index, out);
+            }
+            _ => {}
+        }
+    }
+
+    /// Whether a value may hold a pointer to a dynamic list.
+    fn holds_list(&self, ty: usize) -> bool {
+        let t = &self.checked.types[self.peel_nominal(ty)];
+        match t.kind {
+            TyKind::List => t.bits == 0 || self.holds_list(t.elem.unwrap_or(0)),
+            TyKind::Record | TyKind::Tuple => t.fields.iter().any(|f| self.holds_list(f.ty)),
+            TyKind::Option => self.holds_list(t.elem.unwrap_or(0)),
+            TyKind::Variant | TyKind::Map => true,
+            _ => false,
+        }
     }
 
     /// `index` is on the stack. Leaves it there when the index is inside `0..len`.
@@ -1118,7 +1413,7 @@ impl<'a> Gen<'a> {
             return Ok(true);
         }
         if bits == 0 {
-            return self.heap_element(self.addr(sym, leaf), index, k, grow);
+            return self.heap_element(self.addr(sym, leaf), index, k, grow, None);
         }
         self.compile_value(index)?;
         let start = self.addr(sym, leaf);
@@ -1229,13 +1524,15 @@ impl<'a> Gen<'a> {
 
     /// Pushes the address of element `index` of a list value. A push appends: the list
     /// grows in place at the top of the heap, or moves to a blob one element longer.
-    /// `at` holds the list's pointer.
+    /// `at` holds the list's pointer. With `own`, the list may be shared unless `own` records
+    /// it, and a push that moves it records the move there.
     pub(super) fn heap_element(
         &mut self,
         at: i32,
         index: &Expr,
         k: u64,
         grow: bool,
+        own: Option<i32>,
     ) -> Result<bool, Error> {
         if !grow && (self.trusted_index || self.index_below(index, at)) {
             self.compile_value(index)?;
@@ -1268,7 +1565,7 @@ impl<'a> Gen<'a> {
         // one element each. The list is its holder's own, so no one else sees it grow. A local's
         // list that must move, because something was allocated past it, moves to a blob with
         // room for as many elements again, and grows into that room until it fills.
-        let room = self.room(at);
+        let room = own.or_else(|| self.room(at));
         let size = 32 * k;
         let (fast, bump) = (self.fresh(), self.fresh());
         self.compile_value(index)?;
@@ -1289,6 +1586,12 @@ impl<'a> Gen<'a> {
         self.op(DUP1);
         self.mload(self.blob_ptr);
         self.op(EQ);
+        if let Some(own) = own {
+            self.mload(own);
+            self.op(DUP1 + 4);
+            self.op(EQ);
+            self.op(AND);
+        }
         self.push_label(fast);
         self.op(JUMPI);
         self.op(POP);

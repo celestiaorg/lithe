@@ -88,6 +88,9 @@ impl<'a> Gen<'a> {
             journal_base: 0,
             blob_ptr: 0,
             rooms: HashMap::new(),
+            owners: HashMap::new(),
+            owned: HashMap::new(),
+            sharing: Vec::new(),
             blob_base: 0,
             fn_ret: Vec::new(),
             tuple_buf: 0,
@@ -182,6 +185,7 @@ impl<'a> Gen<'a> {
         g.blob_ptr = g.region(Region::BlobPtr, 32);
         g.blob_base = g.region(Region::Blob, 0);
         g.base64_tbl = g.region(Region::Base64, 0);
+        g.owners = g.find_owners();
         Ok(g)
     }
 

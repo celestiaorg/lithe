@@ -58,6 +58,16 @@ impl<'a> Gen<'a> {
     /// Only an `if`'s branches, an inlined call's body, and a `defer` see whether they are
     /// the last thing to run; everything nested in any other statement is not.
     pub(super) fn compile_stmt(&mut self, s: &Stmt) -> Result<(), Error> {
+        let mark = self.sharing.len();
+        if !self.owners.is_empty() {
+            self.share_lists(s);
+        }
+        let result = self.stmt_code(s);
+        self.sharing.truncate(mark);
+        result
+    }
+
+    fn stmt_code(&mut self, s: &Stmt) -> Result<(), Error> {
         let tail = std::mem::replace(&mut self.tail, false);
         match s {
             Stmt::Skip => Ok(()),
@@ -1399,6 +1409,9 @@ impl<'a> Gen<'a> {
                     self.own_lists(self.local[sym], param.ty_id)?
                 }
                 _ => {}
+            }
+            if let Some(sym) = param.sym {
+                self.disown(sym);
             }
         }
         Ok(aliased)
