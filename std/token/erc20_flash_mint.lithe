@@ -12,6 +12,7 @@
 
      use ERC20FlashMint exposing IERC3156FlashLenderViews; *)
 
+import "std/crypto";
 import "std/evm";
 import "std/uint";
 import "std/token/erc20";
@@ -21,9 +22,8 @@ import "std/interfaces/erc20";
 module ERC20FlashMint is {
   requires ERC20;
 
-  (* keccak256("ERC3156FlashBorrower.onFlashLoan") *)
   pure function return_value() : bytes32 is
-    0x439148f0bbc682ca079e46d6e2c2f0c1e3b820f1a291b069d8882abf8cf18dd9
+    Crypto.keccak256("ERC3156FlashBorrower.onFlashLoan")
 
   (* All the supply can still grow by, for the token itself; nothing of any other. *)
   view function max_flash_loan(const token : address) : uint is {

@@ -1840,6 +1840,51 @@ impl<'a> Builder<'a> {
             .copied()
     }
 
+    /// The named constants in a list length, which the checker evaluates but never checks
+    /// as calls: `list(T, M.n())`.
+    fn size_refs(&mut self, e: &Expr) {
+        match e {
+            Expr::Binary { left, right, .. } => {
+                self.size_refs(left);
+                self.size_refs(right);
+            }
+            Expr::Call {
+                line,
+                col,
+                name,
+                args,
+                base,
+                ..
+            } => {
+                let key = match base.as_deref() {
+                    Some(Expr::Ident {
+                        line, col, name: m, ..
+                    }) => {
+                        let d = self.names.get(&('m', m.clone())).copied();
+                        self.refer((*line, *col), m, d);
+                        format!("{m}.{name}")
+                    }
+                    _ => name.clone(),
+                };
+                let c = self.c();
+                let d = c
+                    .prog
+                    .funcs
+                    .iter()
+                    .position(|f| f.name == key)
+                    .and_then(|i| self.funcs.get(i).copied())
+                    .or_else(|| self.type_name(name));
+                let short_name = short(name);
+                let pos = self.locate(self.file, *line, *col, short_name);
+                self.refer(pos, short_name, d);
+                for a in args {
+                    self.size_refs(a);
+                }
+            }
+            _ => {}
+        }
+    }
+
     fn type_refs(&mut self, t: &TypeRef) {
         match t {
             TypeRef::Name { line, col, name } => {
@@ -1858,7 +1903,13 @@ impl<'a> Builder<'a> {
                     }
                 }
             }
-            TypeRef::List { elem, .. } | TypeRef::Option { elem, .. } => self.type_refs(elem),
+            TypeRef::List { elem, size, .. } => {
+                if let Some(size) = size {
+                    self.size_refs(size);
+                }
+                self.type_refs(elem);
+            }
+            TypeRef::Option { elem, .. } => self.type_refs(elem),
             TypeRef::Map { key, val, .. } => {
                 self.type_refs(key);
                 self.type_refs(val);
@@ -2772,6 +2823,11 @@ fn ty_ref(t: &TypeRef) -> String {
             })
             .collect::<Vec<_>>()
             .join(" "),
+        TypeRef::List {
+            elem,
+            size: Some(size),
+            ..
+        } => format!("list({}, {})", ty_ref(elem), size_text(size)),
         TypeRef::List {
             elem, len: None, ..
         } => format!("list({})", ty_ref(elem)),

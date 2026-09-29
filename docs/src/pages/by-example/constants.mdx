@@ -1,21 +1,23 @@
 ---
 title: "Constants"
-description: "Named constants as pure functions, and built-in bounds."
+description: "Named constants as pure functions, hashes, fixed list lengths, and built-in bounds."
 ---
 
 # Constants
 
-Lithe has no `constant` declaration. A pure function with no parameters is a named constant, and the compiler folds it to a literal.
+Lithe has no `constant` declaration. A pure function with no parameters is a named constant, and the compiler folds it to a literal. That covers every use of Solidity's `constant`: numbers, hashes, and the length of a fixed list.
 
 ```lithe [constants.lithe]
 (* A constant is a pure function of no arguments. It compiles to the literal. *)
 
 import "std/address";
+import "std/crypto";
 import "std/int";
 import "std/uint";
 
 storage is record {
   fee_bps : uint;
+  admins : list(address, max_admins());
 }
 
 pure function max_fee_bps() : uint is
@@ -23,6 +25,14 @@ pure function max_fee_bps() : uint is
 
 pure function denominator() : uint is
   10_000
+
+(* The hash of a literal is a constant too. *)
+pure function pauser_role() : bytes32 is
+  Crypto.keccak256("PAUSER_ROLE")
+
+(* A named constant can be a fixed list's length. *)
+pure function max_admins() : uint is
+  3
 
 error Fee_too_high of uint;
 
@@ -43,4 +53,6 @@ external pure function limits() : (uint, uint16, int, address) is
 
 - `1_000` uses `_` as a digit separator.
 - `Uint.max` is `type(uint256).max`, or the maximum of whatever width the context expects. Here `limits` returns it both as a `uint` and as a `uint16`.
+- `Crypto.keccak256("PAUSER_ROLE")` compiles to the 32-byte hash, so a role id or an EIP-712 typehash is written as its preimage, not pasted in.
+- A fixed list's length can be a named constant, `M.n()` from a module, or arithmetic over those: `list(address, max_admins())`, `list(uint, max_admins() * 2)`.
 - Arithmetic on constants is checked when the contract compiles: `max_fee_bps() * Uint.max` is a compile error, not a panic at run time.

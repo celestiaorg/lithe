@@ -210,7 +210,7 @@ In the ABI, a tuple is always one Solidity tuple, as a struct is: a tuple parame
 
 ## Lists
 
-`list(T)` is a dynamic list and `list(T, n)` is a fixed list of length `n`.
+`list(T)` is a dynamic list and `list(T, n)` is a fixed list of length `n`, from 1 to 1024. `n` is a number or a constant expression: a [named constant](/by-example/constants), `M.n()` from a module, a cast, or arithmetic over those, such as `list(uint, max_owners() * 2)`.
 
 ```lithe
 import "std/evm";

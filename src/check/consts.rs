@@ -27,6 +27,153 @@ impl Checker {
     }
 }
 
+impl Checker {
+    /// The length of `list(T, size)`: a number, a named constant, a cast, or arithmetic
+    /// over those, evaluated before any body is checked.
+    pub(super) fn list_size(&mut self, size: &Expr) -> Result<u32, Error> {
+        let w = self.size_value(size, None, &HashMap::new(), &mut Vec::new())?;
+        crate::parse::list_len(w, size.line(), size.col())
+    }
+
+    fn size_value(
+        &mut self,
+        e: &Expr,
+        module: Option<&str>,
+        locals: &HashMap<String, Word>,
+        busy: &mut Vec<String>,
+    ) -> Result<Word, Error> {
+        let (line, col) = (e.line(), e.col());
+        let not_const = || {
+            error(
+                line,
+                col,
+                "a list length is a constant: a number, a named constant, a cast, or arithmetic over those",
+            )
+        };
+        let not_named = |name: &str| {
+            error(
+                line,
+                col,
+                format!("`{name}` is not a named constant: a pure function of no parameters"),
+            )
+        };
+        match e {
+            Expr::Lit {
+                lit: Lit::Uint(w) | Lit::Int(w, _),
+                ..
+            } => Ok(*w),
+            Expr::Ident { name, .. } => locals.get(name).copied().ok_or_else(not_const),
+            Expr::Binary {
+                op, left, right, ..
+            } => {
+                let l = self.size_value(left, module, locals, busy)?;
+                let r = self.size_value(right, module, locals, busy)?;
+                let (v, over) = match op {
+                    BinOp::Add => l.overflowing_add(r),
+                    BinOp::Sub => (l.wrapping_sub(r), l.lt(r)),
+                    BinOp::Mul => l.overflowing_mul(r),
+                    BinOp::Pow => l.overflowing_pow(r),
+                    BinOp::Div | BinOp::Mod if r.is_zero() => {
+                        return Err(error(line, col, "division by zero in a list length"))
+                    }
+                    BinOp::Div => (l.div(r), false),
+                    BinOp::Mod => (l.rem(r), false),
+                    BinOp::BitAnd => (l.bitand(r), false),
+                    BinOp::BitOr => (l.bitor(r), false),
+                    BinOp::BitXor => (l.bitxor(r), false),
+                    BinOp::Shl | BinOp::Shr if !r.lt(Word::from_u64(256)) => {
+                        (Word::from_u64(0), false)
+                    }
+                    BinOp::Shl => (l.shl(r.0[0] as u32), false),
+                    BinOp::Shr => (l.shr(r.0[0] as u32), false),
+                    _ => return Err(not_const()),
+                };
+                if over {
+                    return Err(error(line, col, "a list length overflows `uint`"));
+                }
+                Ok(v)
+            }
+            Expr::Call {
+                name, args, base, ..
+            } if args.len() == 1 && base.is_none() => {
+                let ty = TypeRef::Name {
+                    line,
+                    col,
+                    name: name.clone(),
+                };
+                let id = self.build(&ty).map_err(|_| not_named(name))?;
+                let t = &self.types[self.peel(id)];
+                if t.kind != TyKind::Uint {
+                    return Err(not_const());
+                }
+                let bits = if t.bits == 0 { 256 } else { u32::from(t.bits) };
+                let w = self.size_value(&args[0], module, locals, busy)?;
+                if bits < 256 && !w.shr(bits).is_zero() {
+                    return Err(error(
+                        line,
+                        col,
+                        format!("a list length does not fit `{name}`"),
+                    ));
+                }
+                Ok(w)
+            }
+            Expr::Call {
+                name, args, base, ..
+            } if args.is_empty() => {
+                let key = match base.as_deref() {
+                    Some(Expr::Ident { name: owner, .. }) => format!("{owner}.{name}"),
+                    Some(_) => return Err(not_const()),
+                    None => module
+                        .map(|m| format!("{m}.{name}"))
+                        .filter(|k| self.const_fns.contains_key(k))
+                        .unwrap_or_else(|| name.clone()),
+                };
+                let Some(f) = self.const_fns.get(&key).cloned() else {
+                    return Err(not_named(name));
+                };
+                if busy.contains(&key) {
+                    return Err(error(
+                        line,
+                        col,
+                        format!("named constant `{name}` depends on itself"),
+                    ));
+                }
+                if let Some(ret) = &f.ret {
+                    let id = self.build(ret)?;
+                    if self.types[self.peel(id)].kind != TyKind::Uint {
+                        return Err(error(
+                            line,
+                            col,
+                            format!("a list length is a `uint`, and `{name}` is not one"),
+                        ));
+                    }
+                }
+                busy.push(key);
+                let module = f.module.as_deref();
+                let mut own = HashMap::new();
+                for stmt in &f.stmts {
+                    match stmt {
+                        Stmt::Const {
+                            name, parts, expr, ..
+                        } if parts.is_empty() => {
+                            let v = self.size_value(expr, module, &own, busy)?;
+                            own.insert(name.clone(), v);
+                        }
+                        _ => return Err(not_const()),
+                    }
+                }
+                let v = match &f.tail {
+                    Some(tail) => self.size_value(tail, module, &own, busy)?,
+                    None => return Err(not_const()),
+                };
+                busy.pop();
+                Ok(v)
+            }
+            _ => Err(not_const()),
+        }
+    }
+}
+
 struct Fold<'a> {
     c: &'a Checker,
     funcs: &'a [Func],
@@ -538,23 +685,6 @@ impl Fold<'_> {
             }
             _ => "...".into(),
         }
-    }
-}
-
-fn op_text(op: BinOp) -> &'static str {
-    match op {
-        BinOp::Add => "+",
-        BinOp::Sub => "-",
-        BinOp::Mul => "*",
-        BinOp::Div => "/",
-        BinOp::Mod => "%",
-        BinOp::Pow => "**",
-        BinOp::BitAnd => "&",
-        BinOp::BitOr => "|",
-        BinOp::BitXor => "^",
-        BinOp::Shl => "<<",
-        BinOp::Shr => ">>",
-        _ => "?",
     }
 }
 

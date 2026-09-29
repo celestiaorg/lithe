@@ -4049,3 +4049,116 @@ fn builtins_are_imported_where_they_are_named() {
     assert_eq!(slot(&out.storage, 0), Word::from_u64(7));
     assert_eq!(slot(&out.storage, 1), Word::from_u64(1));
 }
+
+#[test]
+fn named_constants_size_fixed_lists() {
+    let main = "\
+import \"./limits\";
+
+pure function slots() : uint is 3
+
+module Grid is {
+  pure function side() : uint8 is 2
+
+  pure function cells() : uint is {
+    const s : uint := uint(side());
+  } with s * s
+
+  type board is list(uint, cells());
+
+  pure function empty() : board is [0, 0, 0, 0]
+}
+
+use Grid;
+
+storage is record {
+  ring : list(uint, slots());
+  owners : list(address, Limits.max_owners());
+  wide : list(uint, slots() * 2 + 1);
+  after : uint;
+}
+
+external function put(const i : uint; const v : uint) is {
+  storage.wide[i] := v;
+  storage.after := v + 1;
+}
+
+external pure function board() : list(uint, Grid.cells()) is Grid.empty()
+
+external pure function last(const xs : list(uint, slots())) : uint is xs[2]
+";
+    let limits = "module Limits is {\n  pure function max_owners() : uint is 1 << 2\n}\n";
+    let sources = Sources::memory([(ENTRY, main), ("limits.lithe", limits)]);
+    let out = crate::compile(&sources, Path::new(ENTRY), &Options::default())
+        .and_then(crate::Output::single)
+        .map_err(first)
+        .expect("compile");
+    let runtime = deploy(&out.bytecode).expect("deploy");
+    let put = call(
+        &runtime,
+        "put(uint256,uint256)",
+        &[Word::from_u64(6), Word::from_u64(9)],
+    );
+    assert!(!put.reverted, "{}", pretty(&put.returndata));
+    // 3 slots of `ring`, 4 of `owners`, then `wide`'s 7, then `after`.
+    assert_eq!(slot(&put.storage, 7 + 6), Word::from_u64(9));
+    assert_eq!(slot(&put.storage, 14), Word::from_u64(10));
+    let past = call(
+        &runtime,
+        "put(uint256,uint256)",
+        &[Word::from_u64(7), Word::from_u64(1)],
+    );
+    assert!(past.reverted);
+    let board = call(&runtime, "board()", &[]);
+    assert_eq!(board.returndata.len(), 4 * 32);
+    let ones = [1, 2, 3].map(Word::from_u64);
+    assert_eq!(
+        read_ok(&runtime, &HashMap::new(), "last(uint256[3])", &ones),
+        ones[2]
+    );
+
+    let rejects = |decls: &str, want: &str| {
+        let src = format!(
+            "{decls}\nstorage is record {{ n : uint; }}\nexternal function go() is {{ skip }}\n"
+        );
+        let err = compile(&src).expect_err(decls).to_string();
+        assert!(err.contains(want), "{decls}: {err}");
+    };
+    let named = "is not a named constant: a pure function of no parameters";
+    rejects(
+        "pure function f(const x : uint) : uint is x\ntype t is list(uint, f(1));",
+        named,
+    );
+    rejects(
+        "view function n() : uint is 3\ntype t is list(uint, n());",
+        named,
+    );
+    rejects(
+        "pure function n() : bool is true\ntype t is list(uint, n());",
+        "`n` is not one",
+    );
+    rejects(
+        "pure function a() : uint is b()\npure function b() : uint is a()\ntype t is list(uint, a());",
+        "depends on itself",
+    );
+    rejects(
+        "pure function n() : uint is 3\ntype t is list(uint, n() - 3);",
+        "from 1 to 1024",
+    );
+    rejects(
+        "pure function n() : uint is 3\ntype t is list(uint, n() - 4);",
+        "overflows",
+    );
+    rejects(
+        "pure function n() : uint is 2000\ntype t is list(uint, n());",
+        "from 1 to 1024",
+    );
+    rejects(
+        "pure function n() : uint is 2\ntype t is list(uint, uint8(n() * 200));",
+        "does not fit",
+    );
+    rejects(
+        "pure function n() : uint is 0\ntype t is list(uint, 4 / n());",
+        "division by zero",
+    );
+}

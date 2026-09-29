@@ -10,9 +10,9 @@ import "std/utils/create2";
 module Create3 is {
   requires Create2;
 
-  (* The hash of the proxy's creation code, `0x67363d3d37363d34f03d5260086018f3`. *)
+  (* The hash of the proxy's creation code. *)
   pure function proxy_code_hash() : bytes32 is
-    0x21c35dbe1b344a2488cf3321d6ce542f8e9f305544ff09e4993a62319a497c1f
+    Crypto.keccak256(0x67363d3d37363d34f03d5260086018f3)
 
   (* Creates `code`, and answers its address. Raises `FailedDeployment` if the salt was
      used before or the creation fails. *)

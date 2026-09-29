@@ -57,6 +57,7 @@ contract Vault is {
 `std/access/access_control.lithe`. Roles, each with an admin role whose members grant and revoke it. A role is a `role`, a [nominal type](/language/types#nominal-types) over `bytes32`, so a stray hash can't be passed where a role is meant. In the ABI, a role is a `bytes32`, so the file's `IAccessControl` is OpenZeppelin's, and a contract that exposes it can announce it with [`supports`](/language/modules#erc-165).
 
 ```lithe
+import "std/crypto";
 import "std/evm";
 import "std/access/access_control";
 
@@ -75,9 +76,8 @@ contract Minter is {
     minted : map(address, uint);
   }
 
-  (* keccak256("MINTER_ROLE") *)
   pure function minter() : role is
-    role(0x9f2df0fed2c77648de5860a4cc508cd0818c85b8b8a1ab4ceeef8d981c8956a6)
+    role(Crypto.keccak256("MINTER_ROLE"))
 
   deploy() is {
     AccessControl.grant(AccessControl.default_admin_role(), Evm.sender());

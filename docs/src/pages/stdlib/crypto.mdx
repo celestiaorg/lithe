@@ -46,9 +46,8 @@ contract Mailbox is {
     EIP712.init("Mailbox", "1");
   }
 
-  (* keccak256("Mail(address to,bytes32 contents)") *)
   pure function mail_typehash() : bytes32 is
-    0x61fcdad8d6cdaff589c739197c58cd35a410b9521bd145efa1f6b7213a4384b8
+    Crypto.keccak256("Mail(address to,bytes32 contents)")
 
   external function deliver(
     const from : address;

@@ -363,6 +363,9 @@ struct Checker {
     known_modules: HashSet<String>,
     used_modules: HashSet<String>,
     modules: Vec<ModuleDecl>,
+    /// The functions a list length may name: pure, with no parameters, by name and by
+    /// `M.f` for a module's.
+    const_fns: HashMap<String, Func>,
     generic_fns: Vec<Func>,
     /// Each overloaded internal function's name, and the names its overloads go by.
     overloads: HashMap<String, Vec<String>>,
@@ -400,6 +403,24 @@ enum Piece {
     Call(usize, u32, u32),
     /// A write to an immutable, and the immutable's name.
     Write(u32, u32, String),
+}
+
+fn const_fns(prog: &Program) -> HashMap<String, Func> {
+    let candidate =
+        |f: &&Func| f.kind == ItemKind::Pure && f.params.is_empty() && f.type_params.is_empty();
+    let mut fns: HashMap<String, Func> = prog
+        .funcs
+        .iter()
+        .filter(candidate)
+        .map(|f| (f.name.clone(), f.clone()))
+        .collect();
+    for module in &prog.modules {
+        for f in module.funcs.iter().filter(candidate) {
+            fns.entry(format!("{}.{}", module.name, f.name))
+                .or_insert_with(|| f.clone());
+        }
+    }
+    fns
 }
 
 pub(crate) fn check(prog: Program) -> Result<Checked, Error> {
@@ -494,6 +515,7 @@ pub(crate) fn check_in(mut prog: Program, require_entries: bool) -> Result<Check
         known_modules: HashSet::new(),
         used_modules: HashSet::new(),
         modules: prog.modules.clone(),
+        const_fns: const_fns(&prog),
         generic_fns,
         overloads,
         work: Vec::new(),

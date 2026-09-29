@@ -42,9 +42,9 @@ type Page =
   | { path: '/by-example/order-executor'; render: 'static' }
   | { path: '/by-example/overloading'; render: 'static' }
   | { path: '/by-example/payable'; render: 'static' }
+  | { path: '/by-example/primitive-types'; render: 'static' }
   | { path: '/by-example/raw-calls'; render: 'static' }
   | { path: '/by-example/receive-fallback'; render: 'static' }
-  | { path: '/by-example/primitive-types'; render: 'static' }
   | { path: '/by-example/records'; render: 'static' }
   | { path: '/by-example/reentrancy'; render: 'static' }
   | { path: '/by-example/sending-ether'; render: 'static' }
@@ -99,6 +99,7 @@ type Page =
   | { path: '/tooling/cli'; render: 'static' }
   | { path: '/tooling/config'; render: 'static' }
   | { path: '/tooling/inspection'; render: 'static' }
+  | { path: '/tooling/library'; render: 'static' }
   | { path: '/tooling/size-limit'; render: 'static' }
 
 // prettier-ignore

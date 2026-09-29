@@ -100,7 +100,6 @@ module ERC20Votes is {
     delegate_as(Evm.sender(), delegatee);
   }
 
-  (* keccak256("Delegation(address delegatee,uint256 nonce,uint256 expiry)") *)
   external function delegateBySig(
     const delegatee : address;
     const nonce : uint;
@@ -115,7 +114,7 @@ module ERC20Votes is {
     assert(uint(Evm.block_timestamp()) <= expiry, VotesExpiredSignature(expiry));
     const signer : address := ECDSA.recover(
       EIP712.hash_typed_data(Crypto.keccak256(Abi.encode(
-        0xe48329057bfd03d55e49b547132e39cffd9c1820ad7b9d4c5307691425d15adf,
+        Crypto.keccak256("Delegation(address delegatee,uint256 nonce,uint256 expiry)"),
         delegatee,
         nonce,
         expiry

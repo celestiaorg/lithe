@@ -107,6 +107,14 @@ struct Parser<'a> {
     in_spec: bool,
 }
 
+/// A fixed list's length, which must be from 1 to 1024.
+pub(crate) fn list_len(word: crate::word::Word, line: u32, col: u32) -> Result<u32, Error> {
+    if word.0[1] != 0 || word.0[2] != 0 || word.0[3] != 0 || word.0[0] == 0 || word.0[0] > 1024 {
+        return Err(error(line, col, "list length must be from 1 to 1024"));
+    }
+    Ok(word.0[0] as u32)
+}
+
 fn path_expr(line: u32, col: u32, path: &[String]) -> Expr {
     let mut expr = Expr::Ident {
         line,
@@ -1548,33 +1556,25 @@ impl<'a> Parser<'a> {
         self.bump();
         self.want(Kind::LParen)?;
         let elem = self.ty()?;
-        let len = if self.kind() == Kind::Comma {
+        let (mut len, mut size) = (None, None);
+        if self.kind() == Kind::Comma {
             self.bump();
-            Some(self.list_len()?)
-        } else {
-            None
-        };
+            if self.kind() == Kind::Int && self.peek_kind(1) == Kind::RParen {
+                let (line, col) = self.at();
+                len = Some(list_len(self.tok().word, line, col)?);
+                self.bump();
+            } else {
+                size = Some(Box::new(self.expr()?));
+            }
+        }
         self.want(Kind::RParen)?;
         Ok(TypeRef::List {
             line,
             col,
             elem: Box::new(elem),
             len,
+            size,
         })
-    }
-
-    fn list_len(&mut self) -> Result<u32, Error> {
-        let (line, col) = self.at();
-        let word = match self.kind() {
-            Kind::Int => self.tok().word,
-            _ => return Err(self.err(format!("expected a list length, found {}", self.found()))),
-        };
-        self.bump();
-        if word.0[1] != 0 || word.0[2] != 0 || word.0[3] != 0 || word.0[0] == 0 || word.0[0] > 1024
-        {
-            return Err(error(line, col, "list length must be from 1 to 1024"));
-        }
-        Ok(word.0[0] as u32)
     }
 
     fn record_ty(&mut self, event: bool) -> Result<TypeRef, Error> {

@@ -708,6 +708,7 @@ fn universe_type(name: &str) -> bool {
 /// The module whose body is being rewritten: its functions and its other members, which its
 /// code names bare.
 struct InModule {
+    name: String,
     funcs: HashSet<String>,
     members: HashSet<String>,
 }
@@ -827,6 +828,7 @@ impl Resolver<'_> {
             .collect();
         members.insert("self".to_string());
         self.module = Some(InModule {
+            name: module.name.clone(),
             funcs: module.funcs.iter().map(|f| f.name.clone()).collect(),
             members,
         });
@@ -1118,7 +1120,13 @@ impl Resolver<'_> {
                 }
                 Ok(())
             }
-            TypeRef::List { elem, .. } | TypeRef::Option { elem, .. } => self.ty(elem),
+            TypeRef::List { elem, size, .. } => {
+                if let Some(size) = size {
+                    self.size(size)?;
+                }
+                self.ty(elem)
+            }
+            TypeRef::Option { elem, .. } => self.ty(elem),
             TypeRef::Map { key, val, .. } => {
                 self.ty(key)?;
                 self.ty(val)
@@ -1148,6 +1156,55 @@ impl Resolver<'_> {
                 Ok(())
             }
             TypeRef::Hole { .. } => Ok(()),
+        }
+    }
+
+    /// A list length names constants from wherever the type is used, so a module's own
+    /// constant is qualified: `list(T, n())` in `M` is `M.n()`.
+    fn size(&mut self, size: &mut Expr) -> Result<(), Error> {
+        if let (
+            Expr::Call {
+                name,
+                base: base @ None,
+                line,
+                col,
+                ..
+            },
+            Some(module),
+        ) = (&mut *size, &self.module)
+        {
+            if module.funcs.contains(name.as_str()) {
+                *base = Some(Box::new(Expr::Ident {
+                    line: *line,
+                    col: *col,
+                    name: module.name.clone(),
+                    sym: None,
+                    builtin: None,
+                    ty: 0,
+                }));
+                return Ok(());
+            }
+        }
+        match size {
+            Expr::Binary { left, right, .. } => {
+                self.size(left)?;
+                self.size(right)
+            }
+            // A cast, `uint16(n())`: its argument is a length too.
+            Expr::Call {
+                base: None, args, ..
+            } if !args.is_empty() => {
+                let mut taken = std::mem::take(args);
+                for arg in &mut taken {
+                    self.size(arg)?;
+                }
+                let result = self.expr(size);
+                if let Expr::Call { args, .. } = size {
+                    *args = taken;
+                }
+                result
+            }
+            _ => self.expr(size),
         }
     }
 

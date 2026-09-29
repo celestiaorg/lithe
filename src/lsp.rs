@@ -1007,6 +1007,28 @@ mod tests {
         );
     }
 
+    #[test]
+    fn list_lengths_name_their_constants() {
+        let dir = std::env::temp_dir().join(format!("lithe-lsp-sizes-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("main.lithe");
+        let text = "pure function slots() : uint is 3\n\nmodule Grid is {\n  pure function cells() : uint is 4\n  pure function zero() : list(uint, cells()) is [0, 0, 0, 0]\n}\n\nuse Grid;\n\nstorage is record { ring : list(uint, slots() * 2); }\n\nexternal pure function board() : list(uint, Grid.cells()) is Grid.zero()\n";
+        std::fs::write(&path, text).unwrap();
+        let index = lithe::analyze(&path, text).index.expect("index");
+        let named = |line: u32, col: u32| {
+            let r = index
+                .at(0, text, line, col)
+                .unwrap_or_else(|| panic!("no ref at {line}:{col}"));
+            let def = &index.defs[r.def];
+            (def.name.clone(), def.at.map(|at| at.line))
+        };
+        assert_eq!(named(10, 39), ("slots".to_string(), Some(1)));
+        assert_eq!(named(12, 50), ("cells".to_string(), Some(4)));
+        assert_eq!(named(12, 45).0, "Grid");
+        assert_eq!(named(5, 37), ("cells".to_string(), Some(4)));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
     /// Every example and standard library file indexes, and each builtin call in it resolves
     /// to its declaration.
     #[test]

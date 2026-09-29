@@ -24,9 +24,8 @@ module ERC20Permit is {
   requires ECDSA;
   requires Nonces;
 
-  (* keccak256("Permit(address owner,address spender,uint256 value,uint256 nonce,uint256 deadline)") *)
   pure function permit_typehash() : bytes32 is
-    0x6e71edae12b1b97f4d1f60370fef10105fa2faae0126114a169c64845d6126c9
+    Crypto.keccak256("Permit(address owner,address spender,uint256 value,uint256 nonce,uint256 deadline)")
 
   function permit(
     const owner : address;

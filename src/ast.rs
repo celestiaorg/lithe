@@ -312,6 +312,9 @@ pub(crate) enum TypeRef {
         elem: Box<TypeRef>,
         /// `None` is a dynamic list. `Some(n)` is a fixed list of length `n`.
         len: Option<u32>,
+        /// A fixed length written as a constant expression, `list(T, max_owners())`, which
+        /// the checker evaluates. `len` is then `None`.
+        size: Option<Box<Expr>>,
     },
     Option {
         line: u32,
@@ -370,6 +373,54 @@ impl TypeRef {
             | Self::Apply { col, .. } => *col,
             Self::Hole { .. } => 0,
         }
+    }
+}
+
+/// A list length as written, `M.n()` or `n() * 2`, with each name as declared.
+pub(crate) fn size_text(e: &Expr) -> String {
+    let short = |name: &str| name.rsplit("::").next().unwrap_or(name).to_string();
+    match e {
+        Expr::Lit {
+            lit: Lit::Uint(w) | Lit::Int(w, _),
+            ..
+        } => w.0[0].to_string(),
+        Expr::Ident { name, .. } => short(name),
+        Expr::Call {
+            name, args, base, ..
+        } => {
+            let args: Vec<String> = args.iter().map(size_text).collect();
+            let base = base
+                .as_deref()
+                .map(|b| format!("{}.", size_text(b)))
+                .unwrap_or_default();
+            format!("{base}{}({})", short(name), args.join(", "))
+        }
+        Expr::Binary {
+            op, left, right, ..
+        } => format!(
+            "({} {} {})",
+            size_text(left),
+            op_text(*op),
+            size_text(right)
+        ),
+        _ => "_".to_string(),
+    }
+}
+
+pub(crate) fn op_text(op: BinOp) -> &'static str {
+    match op {
+        BinOp::Add => "+",
+        BinOp::Sub => "-",
+        BinOp::Mul => "*",
+        BinOp::Div => "/",
+        BinOp::Mod => "%",
+        BinOp::Pow => "**",
+        BinOp::BitAnd => "&",
+        BinOp::BitOr => "|",
+        BinOp::BitXor => "^",
+        BinOp::Shl => "<<",
+        BinOp::Shr => ">>",
+        _ => "?",
     }
 }
 

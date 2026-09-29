@@ -3,6 +3,7 @@
    then spends the borrower's allowance and burns the repayment: it composes those steps
    around its own balance updates. *)
 
+import "std/crypto";
 import "std/evm";
 import "std/uint";
 import "./erc20";
@@ -20,9 +21,8 @@ error ERC3156InvalidReceiver of address;
 module ERC20FlashMint is {
   requires ERC20;
 
-  (* keccak256("ERC3156FlashBorrower.onFlashLoan") *)
   pure function return_value() : bytes32 is
-    0x439148f0bbc682ca079e46d6e2c2f0c1e3b820f1a291b069d8882abf8cf18dd9
+    Crypto.keccak256("ERC3156FlashBorrower.onFlashLoan")
 
   view function max_flash_loan(const token : address) : uint is {
     var most : uint := 0;

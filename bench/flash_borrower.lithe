@@ -3,6 +3,7 @@
    answers with the wrong value, in mode 2 it approves nothing, and in mode 3 it refuses
    with a reason. *)
 
+import "std/crypto";
 import "std/evm";
 
 interface Token is {
@@ -47,8 +48,7 @@ is {
   if storage.mode <> 2 then {
     defer token.approve(address(token), amount + fee);
   }
-  (* keccak256("ERC3156FlashBorrower.onFlashLoan") *)
-  var answer : bytes32 := 0x439148f0bbc682ca079e46d6e2c2f0c1e3b820f1a291b069d8882abf8cf18dd9;
+  var answer : bytes32 := Crypto.keccak256("ERC3156FlashBorrower.onFlashLoan");
   if storage.mode = 1 then {
     answer := 0x0000000000000000000000000000000000000000000000000000000000000000;
   }

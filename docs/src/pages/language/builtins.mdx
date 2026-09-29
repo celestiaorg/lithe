@@ -143,6 +143,8 @@ Hash functions and signature recovery, from `import "std/crypto";`. Usable in an
 
 To hash several values, encode them first: `Crypto.keccak256(Abi.encode(a, b))`.
 
+The hash of a string or hex literal is a constant: `Crypto.keccak256("MINTER_ROLE")` compiles to the 32-byte word, as Solidity's `keccak256("MINTER_ROLE")` in a `constant` does. Write typehashes and role ids this way rather than pasting the hash.
+
 ### Precompiles
 
 Every precompiled contract is a built-in, given its input as the precompile lays it out. Like the hashes, they are usable in `pure` functions.

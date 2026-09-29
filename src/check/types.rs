@@ -732,11 +732,15 @@ impl Checker {
             TypeRef::List {
                 elem,
                 len,
+                size,
                 line,
                 col,
             } => {
                 let e = self.build(elem)?;
-                let bits = len.unwrap_or(0) as u16;
+                let bits = match size {
+                    Some(size) => self.list_size(size)?,
+                    None => len.unwrap_or(0),
+                } as u16;
                 let operations = self.types[e].kind == TyKind::Operation && bits == 0;
                 if !(operations || is_value(&self.types, e)) {
                     return Err(error(
@@ -1316,9 +1320,12 @@ pub(crate) fn shape_ty(ty: &TypeRef) -> String {
                 .join(" | ");
             format!("| {inner}")
         }
-        TypeRef::List { elem, len, .. } => match len {
-            Some(n) => format!("list({}, {n})", shape_ty(elem)),
-            None => format!("list({})", shape_ty(elem)),
+        TypeRef::List {
+            elem, len, size, ..
+        } => match (len, size) {
+            (_, Some(size)) => format!("list({}, {})", shape_ty(elem), size_text(size)),
+            (Some(n), None) => format!("list({}, {n})", shape_ty(elem)),
+            (None, None) => format!("list({})", shape_ty(elem)),
         },
         TypeRef::Option { elem, .. } => format!("option({})", shape_ty(elem)),
         TypeRef::Map { key, val, .. } => {

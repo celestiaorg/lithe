@@ -906,7 +906,10 @@ pub(crate) fn fmt_ty(ty: &TypeRef) -> String {
             format!("({})", parts.join(", "))
         }
         TypeRef::List {
-            elem, len: None, ..
+            elem,
+            len: None,
+            size: None,
+            ..
         } => format!("list({})", fmt_ty(elem)),
         TypeRef::Option { elem, .. } => format!("option({})", fmt_ty(elem)),
         _ => "record".into(),

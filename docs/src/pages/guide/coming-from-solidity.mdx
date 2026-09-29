@@ -96,6 +96,9 @@ Both contracts have the same ABI, the same error selector, the same event topic,
 | `enum E { A, B }` | `type e is A \| B`, and cases may carry payloads. See [Variants](/language/types#variants) |
 | `e == E.A` | `e = A` |
 | `uint[]`, `uint[3]` | `list(uint)`, `list(uint, 3)` |
+| `uint constant MAX = 3;` | `pure function max() : uint is 3`, folded to the literal. See [Constants](/by-example/constants) |
+| `bytes32 constant ROLE = keccak256("ROLE");` | `pure function role() : bytes32 is Crypto.keccak256("ROLE")` |
+| `uint[MAX]` | `list(uint, max())` |
 | `mapping(address => uint)` | `map(address, uint)` |
 | `address(0)` | `Address.zero` |
 | `type(uint256).max` | `Uint.max` |

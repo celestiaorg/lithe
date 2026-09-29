@@ -597,10 +597,14 @@ impl Checker {
                 self.unify(key, left, module, params, env, line, col)?;
                 self.unify(val, right, module, params, env, line, col)
             }
-            TypeRef::List { elem, len, .. } => {
-                if self.types[arg].kind != TyKind::List
-                    || u32::from(self.types[arg].bits) != len.unwrap_or(0)
-                {
+            TypeRef::List {
+                elem, len, size, ..
+            } => {
+                let len = match size {
+                    Some(size) => self.list_size(size)?,
+                    None => len.unwrap_or(0),
+                };
+                if self.types[arg].kind != TyKind::List || u32::from(self.types[arg].bits) != len {
                     return Err(error(line, col, "argument has the wrong type"));
                 }
                 let inner = self.types[arg].elem.unwrap_or(TY_UNIT);
@@ -745,11 +749,13 @@ fn subst_bound(ty: &TypeRef, env: &HashMap<String, usize>) -> TypeRef {
             col,
             elem,
             len,
+            size,
         } => TypeRef::List {
             line: *line,
             col: *col,
             elem: Box::new(subst_bound(elem, env)),
             len: *len,
+            size: size.clone(),
         },
         TypeRef::Option { line, col, elem } => TypeRef::Option {
             line: *line,

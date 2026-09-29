@@ -107,7 +107,9 @@ module ERC20Votes is {
     move_delegate_votes(previous, delegatee, ERC20.balance_of(account));
   }
 
-  (* keccak256("Delegation(address delegatee,uint256 nonce,uint256 expiry)") *)
+  pure function delegation_typehash() : bytes32 is
+    Crypto.keccak256("Delegation(address delegatee,uint256 nonce,uint256 expiry)")
+
   function delegate_by_sig(
     const delegatee : address;
     const nonce : uint;
@@ -121,7 +123,7 @@ module ERC20Votes is {
   is {
     assert(uint(Evm.block_timestamp()) <= expiry, VotesExpiredSignature(expiry));
     const struct_hash : bytes32 := Crypto.keccak256(Abi.encode(
-      0xe48329057bfd03d55e49b547132e39cffd9c1820ad7b9d4c5307691425d15adf,
+      delegation_typehash(),
       delegatee,
       nonce,
       expiry
