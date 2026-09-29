@@ -2209,7 +2209,7 @@ impl<'a> Gen<'a> {
             }
             TyKind::List if !self.checked.syms[sym].storage => {
                 self.compile_value(value)?;
-                self.heap_element(self.addr(sym, leaf), index, 1, push)?;
+                self.heap_element(self.addr(sym, leaf), index, 1, push, None)?;
                 self.op(MSTORE);
                 Ok(())
             }

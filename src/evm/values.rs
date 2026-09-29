@@ -3587,6 +3587,153 @@ external pure function field() : uint is {
 }
 
 #[test]
+fn nested_pushes_skip_copies_only_while_nothing_shares() {
+    let src = "\
+import \"std/list\";
+type v is tuple record { k : uint; data : bytes; }
+type f is tuple record { tag : uint; items : list(v); }
+type g is tuple record { id : uint; inner : f; }
+storage is record { n : uint; }
+pure function sum(const xs : list(v)) : uint is { var s : uint := 0; for x : v in xs do { s := s + x.k * x.data.length + 1; } } with s
+pure function total(const st : list(f)) : uint is { var s : uint := 0; for x : f in st do { s := s + sum(x.items) * 7 + x.items.length; } } with s
+pure function grow(var st : list(f)) : list(f) is { List.push(st[0].items, { k = 50; data = 0x01; }); } with st
+pure function frame(const x : f) : uint is sum(x.items) * 3 + x.items.length
+pure function items(const x : f) : list(v) is x.items
+external pure function outer() : uint is {
+  var st : list(f) := [{ tag = 0; items = []; }, { tag = 1; items = []; }];
+  for i : uint in 0 .. 5 do { List.push(st[0].items, { k = i; data = 0x01; }); }
+  const c : list(f) := st;
+  for i : uint in 5 .. 8 do { List.push(st[0].items, { k = i; data = 0x0102; }); }
+} with total(c) * 1000000 + total(st)
+external pure function elem(const t : uint) : uint is {
+  var st : list(f) := [{ tag = 0; items = []; }, { tag = 1; items = []; }];
+  for i : uint in 0 .. 5 do { List.push(st[t].items, { k = i; data = 0x01; }); }
+  const c : f := st[t];
+  for i : uint in 5 .. 9 do { List.push(st[t].items, { k = i; data = 0x0102; }); }
+  const d : f := st[t];
+  List.push(st[t].items, { k = 77; data = 0x01; });
+} with frame(c) * 1000000000000 + frame(d) * 1000000 + total(st)
+external pure function inner(const t : uint) : uint is {
+  var st : list(f) := [{ tag = 0; items = []; }, { tag = 1; items = []; }];
+  for i : uint in 0 .. 5 do { List.push(st[t].items, { k = i; data = 0x01; }); }
+  const c : list(v) := st[t].items;
+  List.push(st[t].items, { k = 20; data = 0x01; });
+  const d : list(v) := st[t].items;
+  for i : uint in 0 .. 6 do { List.push(st[t].items, { k = 30 + i; data = 0x010203; }); }
+} with sum(c) * 1000000000000 + sum(d) * 1000000 + total(st) * 100 + c.length + d.length
+external pure function calls() : uint is {
+  var st : list(f) := [{ tag = 0; items = []; }, { tag = 1; items = []; }];
+  var s : uint := 0;
+  for i : uint in 0 .. 6 do {
+    List.push(st[0].items, { k = i; data = 0x01; });
+    s := s * 3 + total(st) + frame(st[0]);
+    List.push(st[0].items, { k = i + 10; data = 0x01; });
+  }
+  const r : list(f) := grow(st);
+  List.push(st[0].items, { k = 60; data = 0x01; });
+  const w : list(v) := items(st[0]);
+  List.push(st[0].items, { k = 70; data = 0x01; });
+} with s * 1000000 + total(r) * 1000 + total(st) + sum(w) * 1000000000000
+external pure function poppush() : uint is {
+  var st : list(f) := [{ tag = 0; items = []; }];
+  for i : uint in 0 .. 10 do { List.push(st[0].items, { k = i; data = 0x01; }); }
+  for i : uint in 0 .. 4 do { List.pop(st[0].items); }
+  const c : list(v) := st[0].items;
+  for i : uint in 10 .. 13 do { List.push(st[0].items, { k = i; data = 0x01; }); }
+  List.pop(st[0].items);
+  List.pop(st[0].items);
+  const d : f := st[0];
+  List.push(st[0].items, { k = 99; data = 0x0102; });
+} with sum(c) * 1000000000000 + frame(d) * 1000000 + total(st)
+external pure function two() : uint is {
+  var st : list(f) := [{ tag = 0; items = []; }, { tag = 1; items = []; }];
+  var s : uint := 0;
+  for i : uint in 0 .. 8 do {
+    List.push(st[i % 2].items, { k = i; data = 0x01; });
+    List.push(st[1 - i % 2].items, { k = i * 2; data = 0x0102; });
+    if i = 3 then { s := frame(st[0]) * 1000 + frame(st[1]); } else { skip }
+  }
+  const c : f := st[1];
+  List.push(st[1].items, { k = 5; data = 0x01; });
+} with s * 1000000000 + frame(c) * 1000000 + total(st)
+external pure function iterate() : uint is {
+  var st : list(f) := [{ tag = 0; items = [{ k = 1; data = 0x01; }]; }, { tag = 1; items = []; }];
+  var s : uint := 0;
+  for x : f in st do {
+    List.push(st[1].items, { k = x.tag + 5; data = 0x01; });
+    List.push(st[1].items, { k = x.items.length; data = 0x01; });
+    s := s * 100 + x.items.length * 10 + sum(x.items);
+  }
+  for y : v in st[0].items do {
+    List.push(st[0].items, { k = y.k + 100; data = 0x01; });
+    s := s + y.k;
+  }
+} with s * 1000000 + total(st)
+external pure function fields() : uint is {
+  var a : f := { tag = 1; items = []; };
+  var r : g := { id = 2; inner = { tag = 3; items = []; }; };
+  for i : uint in 0 .. 7 do { List.push(a.items, { k = i; data = 0x01; }); List.push(r.inner.items, { k = i * 3; data = 0x0102; }); }
+  const c : f := a;
+  const d : g := r;
+  const e : list(v) := r.inner.items;
+  List.push(a.items, { k = 50; data = 0x01; });
+  List.push(r.inner.items, { k = 51; data = 0x01; });
+} with frame(c) * 1000000000000 + frame(d.inner) * 100000000 + sum(e) * 10000 + frame(a) + frame(r.inner) + a.items.length * 1000
+external pure function deep() : uint is {
+  var st : list(list(list(uint))) := [[[], []]];
+  for i : uint in 0 .. 4 do { List.push(st[0][0], i); List.push(st[0][1], i * 2); }
+  const c : list(list(uint)) := st[0];
+  for i : uint in 4 .. 6 do { List.push(st[0][0], i); }
+  const d : list(uint) := st[0][1];
+  st[0][1][0] := 9;
+  List.push(st[0], [7, 8]);
+  List.push(st[0][2], 9);
+  st[0][0][1] := 5;
+} with c[0].length * 10000000000 + c[1][0] * 1000000000 + d[0] * 100000000 + st[0][0].length * 1000000 + st[0][0][1] * 100000 + st[0][1][0] * 10000 + st[0][2].length * 100 + c.length * 10 + st[0].length
+external pure function again() : uint is {
+  var s : uint := 0;
+  for j : uint in 0 .. 3 do {
+    var st : list(list(uint)) := [[j]];
+    for i : uint in 0 .. j + 2 do { List.push(st[0], i); }
+    const c : list(uint) := st[0];
+    List.push(st[0], 9);
+    s := s * 100 + c.length * 10 + st[0].length;
+  }
+} with s
+external pure function arm(const n : uint) : uint is {
+  var st : list(list(uint)) := [[]];
+  var s : uint := 0;
+  for i : uint in 0 .. n do {
+    const o : option(uint) := if i % 2 = 0 then Some(i) else None;
+    case o of { | Some(x) -> { List.push(st[0], x); } | None -> { List.push(st[0], 100); } };
+    const c : list(uint) := st[0];
+    List.push(st[0], 1);
+    s := s + c.length;
+  }
+} with s * 1000 + st[0].length
+";
+    let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
+    let cases: [(&str, &[Word], u64); 11] = [
+        ("outer()", &[], 110000386),
+        ("elem(uint256)", &[Word::from_u64(1)], 50000222001053),
+        ("inner(uint256)", &[Word::from_u64(0)], 15000036440111),
+        ("calls()", &[], 163029995085652),
+        ("poppush()", &[], 21000103001625),
+        ("two()", &[], 70052224001151),
+        ("iterate()", &[], 1229000860),
+        ("fields()", &[], 91040601338808),
+        ("deep()", &[], 40006590323),
+        ("again()", &[], 344556),
+        ("arm(uint256)", &[Word::from_u64(6)], 36012),
+    ];
+    for (f, args, want) in cases {
+        let out = call(&runtime, f, args);
+        assert!(!out.reverted, "{f}: {}", pretty(&out.returndata));
+        assert_eq!(load_bytes(&out.returndata, 0), Word::from_u64(want), "{f}");
+    }
+}
+
+#[test]
 fn literals_take_their_type_from_context() {
     let src = r#"import "std/crypto"; import "std/uint"; 
 type pt is record { a : uint8; b : bool; }
