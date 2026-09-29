@@ -135,6 +135,8 @@ const MAX_VARIANT_ROUNDS: usize = 4;
 const MAX_TOGGLE_ROUNDS: usize = 16;
 /// How much more than the start a toggle can cost and still be tried in the next round.
 const RETRY_COST: f64 = 500.0;
+/// What a build over the size limit adds to its cost, so that any build that fits is cheaper.
+const OVER_LIMIT: f64 = 1e15;
 /// Gas a call to an outlined function adds: pushes, jumps and jumpdests there and back.
 const CALL_GAS: f64 = 24.0;
 /// Gas each argument of an outlined call adds, stored for the body to load.
@@ -178,6 +180,7 @@ pub(crate) fn codegen(checked: &Checked, shape: &Shape) -> Result<Built, Error> 
         };
         Ok((emitted, std::mem::take(&mut g.needs)))
     };
+    let limit = shape.opts.size_limit;
     let finish = |e: &Emitted, both: bool| -> Result<Finished, Error> {
         let mut code = e.code.clone();
         asm::optimize(&mut code);
@@ -189,16 +192,35 @@ pub(crate) fn codegen(checked: &Checked, shape: &Shape) -> Result<Built, Error> 
             asm::rotate_exits(code);
         });
         let gas = asm::gas(&code, &e.entries);
-        let (runtime, marks) = immutable::place_runtime(&code, &e.data, &e.tail_blobs)?;
-        let cost = gas + runtime.len() as f64 * asm::byte_gas();
+        let (runtime, marks) = match immutable::place_runtime(&code, &e.data, &e.tail_blobs) {
+            Ok(placed) => placed,
+            Err(err) if err.line == 0 && err.message == "contract too large" => {
+                return Ok(Finished {
+                    runtime: Vec::new(),
+                    marks: Vec::new(),
+                    gas,
+                    bytes: usize::MAX,
+                    cost: 2.0 * OVER_LIMIT,
+                });
+            }
+            Err(err) => return Err(err),
+        };
+        let bytes = runtime.len();
+        let over = if bytes > limit { OVER_LIMIT } else { 0.0 };
+        let cost = gas + bytes as f64 * asm::byte_gas() + over;
         Ok(Finished {
             runtime,
             marks,
+            gas,
+            bytes,
             cost,
         })
     };
     // Plans often emit the same program, which is optimized once.
     let done = std::sync::Mutex::new(HashMap::<Arc<Emitted>, Arc<Finished>>::new());
+    // The outline sets of builds over the limit. Inlining more only grows code, so later
+    // rounds skip the sets that inline at least as much, whose builds are also the slowest.
+    let too_big = std::sync::Mutex::new(Vec::<std::collections::HashSet<usize>>::new());
     let build_all = |plans: &[Plan]| -> Result<Vec<Candidate>, Error> {
         let emitted: Vec<(Arc<Emitted>, Vec<Facet>)> = parallel_map(plans, emit)
             .into_iter()
@@ -218,6 +240,14 @@ pub(crate) fn codegen(checked: &Checked, shape: &Shape) -> Result<Built, Error> 
         for (e, f) in todo.into_iter().zip(finished) {
             done.insert(e.clone(), Arc::new(f?));
         }
+        let mut too_big = too_big.lock().unwrap_or_else(|e| e.into_inner());
+        too_big.extend(
+            plans
+                .iter()
+                .zip(&emitted)
+                .filter(|(_, (e, _))| done[e].bytes > limit)
+                .map(|(p, _)| p.outline.clone()),
+        );
         Ok(plans
             .iter()
             .zip(emitted)
@@ -247,8 +277,14 @@ pub(crate) fn codegen(checked: &Checked, shape: &Shape) -> Result<Built, Error> 
         outlines.push(Default::default());
     }
     let variant_moves = |p: &Plan| -> Vec<Vec<Move>> {
+        let too_big = too_big.lock().unwrap_or_else(|e| e.into_inner());
         let mut dims = vec![
-            outlines.iter().filter(|o| **o != p.outline).cloned().map(Move::Outline).collect(),
+            outlines
+                .iter()
+                .filter(|o| **o != p.outline && !too_big.iter().any(|b| o.is_subset(b)))
+                .cloned()
+                .map(Move::Outline)
+                .collect(),
             slices.iter().filter(|s| **s != p.shared_slice).copied().map(Move::Slice).collect(),
             vec![Move::CacheSlots(!p.cache_slots)],
             vec![Move::Tight(!p.tight)],
@@ -337,8 +373,50 @@ pub(crate) fn codegen(checked: &Checked, shape: &Shape) -> Result<Built, Error> 
             break;
         }
     }
+    // A build over the limit outlines more: each function alone is built, then the sets that
+    // add them in order of bytes saved per gas added, and the cheapest set that fits wins, or
+    // failing that the smallest, which the next round starts from. One that never fits is
+    // split.
+    while best.built.bytes > limit {
+        let mut rest: Vec<usize> = (&plan.outlinable - &best.plan.outline).into_iter().collect();
+        rest.sort_unstable();
+        let alone: Vec<Plan> = rest
+            .iter()
+            .map(|&f| Move::Toggle(f).applied(&best.plan))
+            .collect();
+        let (b0, g0) = (best.built.bytes, best.built.gas);
+        let mut order: Vec<(f64, usize)> = rest
+            .iter()
+            .zip(build_all(&alone)?)
+            .filter(|(_, c)| c.built.bytes < b0)
+            .map(|(&f, c)| ((b0 - c.built.bytes) as f64 / (c.built.gas - g0).max(1.0), f))
+            .collect();
+        order.sort_by(|a, b| b.0.total_cmp(&a.0));
+        let sets: Vec<Plan> = (1..=order.len())
+            .map(|k| {
+                let mut p = best.plan.clone();
+                p.outline.extend(order[..k].iter().map(|&(_, f)| f));
+                p
+            })
+            .collect();
+        let rank = |c: &Candidate| match c.built.bytes {
+            b if b <= limit => c.cost(),
+            b => OVER_LIMIT + b as f64,
+        };
+        let Some(next) = build_all(&sets)?
+            .into_iter()
+            .min_by(|a, b| rank(a).total_cmp(&rank(b)))
+            .filter(|c| c.built.bytes < b0)
+        else {
+            break;
+        };
+        best = next;
+    }
     // The search leaves the exact copies out, which the chosen plan gets.
     let built = finish(&best.emitted, true)?;
+    if built.bytes == usize::MAX {
+        return Err(error(0, 0, "contract too large"));
+    }
     let (code, more) = creation(
         checked,
         &best.plan,
@@ -366,10 +444,14 @@ struct Emitted {
     tail_blobs: Vec<(Word, Vec<u32>)>,
 }
 
-/// An optimized runtime, and its estimated gas plus bytes weighed by `asm::byte_gas`.
+/// An optimized runtime, and its estimated gas plus bytes weighed by `asm::byte_gas`, plus
+/// `OVER_LIMIT` when it is over the size limit, twice that when it can't be assembled at all.
 struct Finished {
     runtime: Vec<u8>,
     marks: Vec<Mark>,
+    gas: f64,
+    /// `usize::MAX` when it can't be assembled.
+    bytes: usize,
     cost: f64,
 }
 
@@ -685,6 +767,8 @@ struct Plan {
     /// The outlined functions called in a loop, where a call's arguments and jumps cost
     /// each run, and inlined copies may read their arguments in place.
     looped: std::collections::HashSet<usize>,
+    /// Every function called more than once that can be outlined, for builds too big to fit.
+    outlinable: std::collections::HashSet<usize>,
     /// Whether stored strings are written, and read, through one shared helper each.
     shared_bytes: (bool, bool),
     /// Whether `string` and `bytes` arguments are decoded by one shared helper.

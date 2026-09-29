@@ -430,6 +430,43 @@ fn auto_moves_the_largest_module_first() {
     assert_eq!(facet_names(&both), ["Alpha", "Beta"]);
 }
 
+/// A contract whose cheapest build is over the limit outlines the functions it shares until
+/// it fits, before any split, and behaves as the cheapest build does.
+#[test]
+fn outlining_fits_the_limit() {
+    let checked = checked_src(
+        "storage is record { a : uint; }\n\
+         pure function step(const a : uint; const i : uint) : uint is\n\
+           (a * 31 + i) % 1000003 + (a / 7) % 13 + (a / 11) % 17 + (a / 19) % 23 + (a / 29) % 31 + (a / 37) % 41 + (a / 43) % 47\n\
+         external pure function f(const x : uint; const y : uint) : uint is {\n\
+           var a : uint := x;\n\
+           for i : uint in 0 .. y do { for j : uint in 0 .. y do { a := step(a, i * j); } }\n\
+         } with a\n\
+         external pure function g(const x : uint; const y : uint) : uint is {\n\
+           var a : uint := x + 5;\n\
+           for i : uint in 0 .. y do { for j : uint in 0 .. i do { a := step(a, i + j) + 1; } }\n\
+         } with a\n\
+         external pure function h(const x : uint) : uint is {\n\
+           var a : uint := x;\n\
+           for i : uint in 0 .. x % 9 do { a := step(a, i) * 3; }\n\
+         } with a\n",
+    );
+    let whole = whole_build(&checked);
+    let off = crate::Options {
+        size_limit: whole.runtime.len() - 1,
+        split: crate::SplitMode::Off,
+        ..crate::Options::default()
+    };
+    let fit = crate::split::build(&checked, "Fit", &off).expect("fits by outlining");
+    assert!(fit.facets.is_empty());
+    assert!(fit.runtime.len() < whole.runtime.len());
+    OPAQUE_CODE.set(true);
+    let reference = deploy(&whole.code).expect("whole");
+    let ours = deploy(&fit.creation).expect("fit");
+    let methods = crate::route::method_ids(&checked).expect("methods");
+    compare_builds("fit", &methods, &reference, &ours, 200, true);
+}
+
 /// Only exposed modules can move: a contract over the limit that exposes none, or whose own
 /// code is still too big, is an error that says so. With splitting off, the error lists
 /// what takes the space.

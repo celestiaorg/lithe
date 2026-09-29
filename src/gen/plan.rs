@@ -275,12 +275,14 @@ impl<'a> Gen<'a> {
     pub(super) fn plan(&self) -> Plan {
         let mut outline = std::collections::HashSet::new();
         let mut looped = std::collections::HashSet::new();
+        let mut outlinable = std::collections::HashSet::new();
         for (&idx, (calls, bytes, runs)) in &self.inlined {
             let (calls, bytes) = (*calls, *bytes);
             let runs = runs.values().fold(0.0, |a: f64, &b| a.max(b));
             if calls < 2 || !self.outline_safe(idx, &mut Vec::new()) {
                 continue;
             }
+            outlinable.insert(idx);
             // Each call also stores its arguments, which inlined copies may read in place.
             let params = self.checked.prog.funcs[idx].params.len();
             let inline = calls * bytes;
@@ -303,6 +305,7 @@ impl<'a> Gen<'a> {
             sink: false,
             outline,
             looped,
+            outlinable,
             shared_bytes,
             shared_decode: self.decode_sites >= 2,
             shared_value: self.value_sites.map(|n| n >= 2),
@@ -805,7 +808,8 @@ impl<'a> Gen<'a> {
         self.funcs.values().map(|f| (f.label, f.leaves)).collect()
     }
 
-    /// Moves memory words that only one body uses, and whose address never escapes, onto the stack.
+    /// Moves memory words that only one body, or one function compiled once, uses, and whose
+    /// address never escapes, onto the stack.
     pub(super) fn promote(&mut self) {
         let mask = (1u32 << REGION_SHIFT) - 1;
         let mut escapes = vec![false; self.spaces.len()];
@@ -824,7 +828,9 @@ impl<'a> Gen<'a> {
             .enumerate()
             .map(|(ix, (space, escaped))| {
                 !escaped
-                    && (matches!(space.users, Users::Bodies(_)) || self.shared_temps.contains(&ix))
+                    && (matches!(&space.users, Users::Bodies(_))
+                        || self.shared_temps.contains(&ix)
+                        || matches!(&space.users, Users::Shared(ids) if ids.len() == 1 && ids.iter().all(|&i| i >= FUNC_CTX)))
             })
             .collect();
         let tracked = |addr: u32| spaces[(addr >> REGION_SHIFT) as usize - 1];
