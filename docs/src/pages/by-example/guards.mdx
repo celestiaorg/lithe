@@ -13,6 +13,8 @@ Solidity uses modifiers like `onlyOwner`, applied one function at a time. In Lit
    every case under it inherits it. The ABI still gets one function per case:
    `set_fee(uint256)`, `pause()`, `deposit(uint256)`. *)
 
+import "std/evm";
+
 error Not_owner;
 error Paused;
 

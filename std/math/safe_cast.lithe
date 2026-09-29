@@ -1,6 +1,9 @@
 (* Conversions between `uint` and `int` that raise OpenZeppelin's `SafeCast` errors instead
    of the `Panic(0x11)` that `uint(x)` and `int(x)` raise when the value doesn't fit. *)
 
+import "std/int";
+import "std/uint";
+
 module SafeCast is {
   error SafeCastOverflowedIntToUint of int;
   error SafeCastOverflowedUintToInt of uint;

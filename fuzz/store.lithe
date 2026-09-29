@@ -1,5 +1,8 @@
 (* Fuzz target: collections, options, records, and dynamic values in storage. *)
 
+import "std/crypto";
+import "std/evm";
+
 error Too_big of uint;
 error Bad_pair of record {
   left : uint;

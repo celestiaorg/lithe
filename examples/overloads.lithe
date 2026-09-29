@@ -1,6 +1,8 @@
 (* Functions overload, internal and external alike. The number of arguments picks one;
    when several take as many, the argument types pick. *)
 
+import "std/evm";
+
 type shares is uint;
 
 storage is record {

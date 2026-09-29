@@ -7,7 +7,10 @@
    reads them back. The deterministic forms create with `CREATE2` and answer where the
    clone lands. *)
 
-import "std/utils/create2.lithe";
+import "std/bytes";
+import "std/crypto";
+import "std/evm";
+import "std/utils/create2";
 
 error CloneArgumentsTooLong;
 

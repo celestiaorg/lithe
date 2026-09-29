@@ -1,6 +1,10 @@
 (* CREATE2 addresses: where `defer create C() with salt = s` lands, given the hash of C's
    creation code, arguments included. *)
 
+import "std/abi";
+import "std/crypto";
+import "std/evm";
+
 error FailedDeployment;
 
 module Create2 is {

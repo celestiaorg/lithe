@@ -1,0 +1,21 @@
+(* RFC 4648 base64, with the same algorithm and lookup tables as Solady's `Base64`. `data`
+   is `bytes` or a `string`. Usable in any function, `pure` ones included. *)
+
+module Base64 is {
+  (* encode(data : bytes | string) : string
+     The standard alphabet, padded with `=`. *)
+  intrinsic encode;
+
+  (* encode_url(data : bytes | string) : string
+     `-` and `_` for `+` and `/`, and no padding. *)
+  intrinsic encode_url;
+
+  (* encode_with(data : bytes | string; file_safe : bool; no_padding : bool) : string
+     `encode_with(data, file_safe, no_padding)`, with `bool` flags. *)
+  intrinsic encode_with;
+
+  (* decode(data : bytes | string) : bytes
+     The bytes either alphabet encodes, padded or not. Other characters decode to
+     unspecified bytes. *)
+  intrinsic decode;
+}

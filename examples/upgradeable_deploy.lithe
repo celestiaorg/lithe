@@ -3,6 +3,8 @@
    runs against the proxy's storage. It runs only while the proxy has no code yet: once
    the proxy is deployed, or on the implementation itself, it reverts. *)
 
+import "std/evm";
+
 upgradeable
 
 error Not_owner;

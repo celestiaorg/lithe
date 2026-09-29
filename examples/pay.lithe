@@ -1,5 +1,7 @@
 (* Record the amount received, then transfer it. Storage is written before the call. *)
 
+import "std/evm";
+
 storage is record {
   paid : wei;
 }

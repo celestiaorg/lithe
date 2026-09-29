@@ -8,11 +8,17 @@
    ERC-2981, which it lists in `supports`, and for ERC-4906, which `ERC721URIStorage`
    adds. *)
 
-import "std/token/erc721_enumerable.lithe";
-import "std/token/erc721_uri_storage.lithe";
-import "std/token/erc2981.lithe";
-import "std/access/ownable.lithe";
-import "std/security/pausable.lithe";
+import "std/abi";
+import "std/address";
+import "std/evm";
+import "std/token/erc721_enumerable";
+import "std/token/erc721_uri_storage";
+import "std/token/erc2981";
+import "std/access/ownable";
+import "std/security/pausable";
+import "std/interfaces/erc2981";
+import "std/token/erc721";
+import "std/interfaces/erc721";
 
 contract Collectible is {
   use ERC721URIStorage;

@@ -1,5 +1,7 @@
 (* One function form. Decorators classify visibility and effects. *)
 
+import "std/evm";
+
 storage is record {
   count : uint;
   paid : wei;

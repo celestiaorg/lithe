@@ -10,6 +10,9 @@ A minimal wallet: deposits are open to anyone, and withdrawals are limited to th
 ```lithe [ether-wallet.lithe]
 (* Anyone can send ether in. Only the owner can take it out. *)
 
+import "std/address";
+import "std/evm";
+
 error Not_owner;
 error Already_initialized;
 error Insufficient of wei;

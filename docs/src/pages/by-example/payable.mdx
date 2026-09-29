@@ -12,6 +12,8 @@ Only `external payable` functions accept ether. Every other entrypoint rejects a
    a call with value before its body runs, and reading `Evm.value()` outside a
    payable function is a compile error. *)
 
+import "std/evm";
+
 event Deposit of record {
   indexed from : address;
   amount : wei;

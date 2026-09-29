@@ -2,6 +2,10 @@
    `Abi.encode_call`, the answer decoded from raw return data with `Abi.decode`, and a
    refusal's payload read from raw revert data. Mirrors dialer.sol; calls book. *)
 
+import "std/abi";
+import "std/bytes";
+import "std/evm";
+
 type order is record {
   id : uint;
   note : string;

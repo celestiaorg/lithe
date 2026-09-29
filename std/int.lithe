@@ -1,0 +1,35 @@
+(* Signed integers. `min`, `max`, and the operations on two values take their width from
+   the values, or from the type the context expects; with neither, 256 bits. *)
+
+module Int is {
+  (* min : int
+     `type(int256).min`, or the expected signed type's. *)
+  intrinsic min;
+
+  (* max : int
+     `type(int256).max`, or the expected signed type's. *)
+  intrinsic max;
+
+  (* div_rem(a : T; b : T) : (T, T)
+     `(a / b, a % b)`, truncating, for two values of one signed type. *)
+  intrinsic div_rem;
+
+  (* wrapping_add(a : T; b : T) : T
+     `unchecked { a + b }`, in two's complement. *)
+  intrinsic wrapping_add;
+
+  (* wrapping_sub(a : T; b : T) : T
+     `unchecked { a - b }`. *)
+  intrinsic wrapping_sub;
+
+  (* wrapping_mul(a : T; b : T) : T
+     `unchecked { a * b }`. *)
+  intrinsic wrapping_mul;
+
+  (* to_string(n : T) : string
+     A signed integer of any width in decimal, with `-` first when negative. *)
+  intrinsic to_string;
+
+  (* `int256(n)`: the same 256 bits, unchecked. *)
+  intrinsic pure function from_bits(n : uint) : int;
+}

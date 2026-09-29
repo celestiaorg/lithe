@@ -1,5 +1,5 @@
-import "./ledger.lithe";
-import "./iledger.lithe";
+import "./ledger";
+import "./iledger";
 
 contract Token is {
   use Ledger exposing ILedger;

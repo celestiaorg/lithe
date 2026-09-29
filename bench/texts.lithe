@@ -1,6 +1,11 @@
 (* Benchmark: lists of strings and bytes through the ABI, storage, events, and encoding,
    and strings in maps. Mirrors texts.sol. *)
 
+import "std/abi";
+import "std/bytes";
+import "std/evm";
+import "std/list";
+
 type blobs is list(bytes);
 type notes is list(string);
 

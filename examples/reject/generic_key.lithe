@@ -1,4 +1,4 @@
-import "std/collections/set.lithe";
+import "std/collections/set";
 
 storage is record {
   names : Set(string);

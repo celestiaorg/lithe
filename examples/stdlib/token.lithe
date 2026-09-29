@@ -2,10 +2,16 @@
    owner who may mint and pause. Transfers check the pause in the contract's own
    `transfer` and `transferFrom`, so the base module's behavior never changes silently. *)
 
-import "std/token/erc20_permit.lithe";
-import "std/token/erc20_burnable.lithe";
-import "std/access/ownable.lithe";
-import "std/security/pausable.lithe";
+import "std/evm";
+import "std/token/erc20_permit";
+import "std/token/erc20_burnable";
+import "std/access/ownable";
+import "std/security/pausable";
+import "std/token/erc20";
+import "std/crypto/eip712";
+import "std/interfaces/erc20";
+import "std/crypto/ecdsa";
+import "std/utils/nonce";
 
 contract Token is {
   use EIP712;

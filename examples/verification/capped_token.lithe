@@ -2,7 +2,9 @@
    that the supply never passes the cap, that the balances add up to the supply, and when
    minting fails. *)
 
-import "std/token/erc20.lithe";
+import "std/evm";
+import "std/token/erc20";
+import "std/interfaces/erc20";
 
 contract CappedToken is {
   use ERC20 exposing IERC20;

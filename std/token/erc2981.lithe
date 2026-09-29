@@ -4,7 +4,8 @@
 
      use ERC2981 exposing IERC2981; *)
 
-import "std/interfaces/erc2981.lithe";
+import "std/address";
+import "std/interfaces/erc2981";
 
 module ERC2981 is {
   type royalty is record {

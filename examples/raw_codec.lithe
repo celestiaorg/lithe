@@ -3,6 +3,10 @@
    comes from `Abi.encode_call`, `Abi.encode_with_selector`, or `Abi.encode_with_signature`;
    the return data from `Abi.decode`; a custom error's payload from the revert data. *)
 
+import "std/abi";
+import "std/bytes";
+import "std/evm";
+
 interface Token is {
   view function balanceOf(owner : address) : uint;
   function transfer(to : address; amount : uint) : bool;

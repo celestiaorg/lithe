@@ -4,6 +4,8 @@
    and 0x1 with one malformed byte. `text` echoes an ABI string whose length may run past
    the data. *)
 
+import "std/evm";
+
 error Too_small of uint;
 
 interface Exchange is {

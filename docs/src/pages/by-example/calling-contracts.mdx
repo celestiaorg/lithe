@@ -11,6 +11,8 @@ A call that changes another contract's state is deferred with `defer`. It runs a
 (* A state-changing call to another contract is deferred: it runs after this
    entrypoint's writes and events, never in the middle of them. *)
 
+import "std/evm";
+
 interface Token is {
   view function balanceOf(owner : address) : uint;
   function transfer(to : address; amount : uint) : bool;

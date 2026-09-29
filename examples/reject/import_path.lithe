@@ -1,0 +1,6 @@
+(* An import names a module, not a file: `./fees`, with no `.lithe`. *)
+import "./fees.lithe";
+
+storage is record { n : uint; }
+
+external function go() is { storage.n := 1; }

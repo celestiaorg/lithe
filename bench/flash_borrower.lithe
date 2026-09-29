@@ -3,6 +3,8 @@
    answers with the wrong value, in mode 2 it approves nothing, and in mode 3 it refuses
    with a reason. *)
 
+import "std/evm";
+
 interface Token is {
   view function balanceOf(account : address) : uint;
   function approve(spender : address; value : uint) : bool;

@@ -1,6 +1,8 @@
 (* Benchmark: records stored in maps, which must land in the same slots and bytes as
    Solidity's structs in mappings. Mirrors records.sol, and fuzz/records.lithe. *)
 
+import "std/evm";
+
 type inner is record {
   flag : bool;
   delta : int16;

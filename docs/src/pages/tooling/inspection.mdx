@@ -10,6 +10,8 @@ Lithe makes every effect explicit, so the compiler knows what each entrypoint ca
 The examples on this page use this contract:
 
 ```lithe [bank.lithe]
+import "std/evm";
+
 error Not_owner;
 error Paused;
 

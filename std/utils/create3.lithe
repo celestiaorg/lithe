@@ -2,7 +2,10 @@
    matching Solady's `CREATE3`. A `CREATE2` makes a small proxy at a salted address,
    and the proxy creates the contract with its first `CREATE`. *)
 
-import "std/utils/create2.lithe";
+import "std/abi";
+import "std/crypto";
+import "std/evm";
+import "std/utils/create2";
 
 module Create3 is {
   requires Create2;

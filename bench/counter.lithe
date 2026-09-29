@@ -1,5 +1,7 @@
 (* Benchmark: owner-gated counter with an event. Mirrors counter.sol. *)
 
+import "std/evm";
+
 error Not_owner;
 
 immutable is record {

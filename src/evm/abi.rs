@@ -260,7 +260,7 @@ const BANK_ABI: &str = r#"[
 
 #[test]
 fn abi_is_typed() {
-    let src = "error Empty;\n\
+    let src = "import \"std/evm\"; error Empty;\n\
         storage is record { paid : wei; }\n\
         event Paid of record { indexed from : address; amount : wei; }\n\
         external payable function pay(const memo : uint) raises Empty is {\n\
@@ -688,7 +688,7 @@ fn lists_and_strings_through_calls() {
 #[test]
 fn topics_survive_encoded_event_data() {
     let src = "\
-storage is record { n : uint; }
+import \"std/evm\"; storage is record { n : uint; }
 event E of record { indexed who : address; note : string; tail : string; ids : list(uint); }
 external function f(const note : string; const ids : list(uint)) is {
   emit E { who = Evm.sender(); note = note; tail = note; ids = ids; };
@@ -821,7 +821,7 @@ external view function differ(const a : string; const b : string) : bool is a =/
 /// in-calldata offsets.
 #[test]
 fn dynamic_list_elements_read_from_calldata() {
-    let src = r#"
+    let src = r#"import "std/abi"; import "std/bytes"; 
 storage is record { n : uint; }
 external pure function idx(const xs : list(bytes)) : bytes is {
   var out : bytes := "";
@@ -947,7 +947,7 @@ fn abi_blobs(items: &[&[u8]]) -> Vec<u8> {
 #[test]
 fn lists_of_bytes_cross_the_abi() {
     install_mocks();
-    let src = r#"
+    let src = r#"import "std/abi"; import "std/evm"; import "std/list"; 
 interface Echo is {
   view function same(xs : list(bytes)) : list(bytes);
   function keep(xs : list(string)) : list(string);
@@ -1146,7 +1146,7 @@ external view function ss() : list(string) is storage.ss
 /// compares, stores, and measures the same as a literal; long values compare by content.
 #[test]
 fn decoded_short_values_are_packed() {
-    let src = r#"
+    let src = r#"import "std/abi"; 
 type notes is list(string);
 storage is record { s : string; ss : list(string); b : bytes; }
 external pure function eq_short(const data : bytes) : bool is Abi.decode(data, string) = "hi"

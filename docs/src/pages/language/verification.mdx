@@ -16,6 +16,8 @@ The compiler checks every spec: its types, what it may read, and the rules on th
 A contract's specs live next to it: `vault.spec.lithe` holds the specs of `vault.lithe`.
 
 ```lithe [vault.lithe]
+import "std/evm";
+
 error Insufficient;
 
 storage is record {
@@ -124,6 +126,8 @@ spec for transfer is partial {
 A spec for a [dispatch guard](/language/dispatch#groups-and-guards) says when the guard reverts, and holds only `raises` and `panics` clauses. Every route through the guard inherits them, so an owner-only route's own spec does not repeat the owner check:
 
 ```lithe [owned.lithe]
+import "std/evm";
+
 error Not_owner;
 
 type owner_action is
@@ -174,7 +178,9 @@ With the guard's clause, `spec for set_fee` says that `set_fee` reverts only whe
 `spec for module M is { ... }` holds a module's specs: its invariants read the module's storage and that of the modules it `requires`, and `spec for f` names one of its functions. A module's specs are checked for each contract that uses the module, as its functions are.
 
 ```lithe [token.lithe]
-import "std/token/erc20.lithe";
+import "std/evm";
+import "std/interfaces/erc20";
+import "std/token/erc20";
 
 contract Token is {
   use ERC20 exposing IERC20;

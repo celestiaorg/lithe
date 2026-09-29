@@ -11,6 +11,9 @@ Ether sent to the contract vests linearly between `start` and `start + duration`
 (* Ether vests linearly to a beneficiary between `start` and `start + duration`.
    Anyone can trigger a release; the funds only ever go to the beneficiary. *)
 
+import "std/address";
+import "std/evm";
+
 error Already_initialized;
 
 event Released of record {

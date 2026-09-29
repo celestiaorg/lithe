@@ -1,7 +1,8 @@
 (* Benchmark: selectors and ERC-165 ids taken from interfaces, as constants. Mirrors
    selectors.sol. *)
 
-import "std/interfaces/erc165.lithe";
+import "std/abi";
+import "std/interfaces/erc165";
 
 interface Vault is {
   function deposit(amount : uint);

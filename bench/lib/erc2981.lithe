@@ -1,6 +1,8 @@
 (* NFT royalties, like OpenZeppelin's `ERC2981Upgradeable`: same storage and errors. A
    token's own royalty wins over the default; fees are in basis points. *)
 
+import "std/address";
+
 error ERC2981InvalidDefaultRoyalty of record {
   numerator : uint;
   denominator : uint;

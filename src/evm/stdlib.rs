@@ -11,7 +11,8 @@ fn every_stdlib_file_compiles() {
         std::fs::create_dir_all(&dir).unwrap();
         let main = dir.join("main.lithe");
         let src = format!(
-            "import \"{path}\";\nstorage is record {{ n : uint; }}\nexternal function f() is {{ storage.n := 1; }}\n"
+            "import \"{}\";\nstorage is record {{ n : uint; }}\nexternal function f() is {{ storage.n := 1; }}\n",
+            path.trim_end_matches(".lithe")
         );
         std::fs::write(&main, src).unwrap();
         compile_file(&main).unwrap_or_else(|e| panic!("{path}: {e}"));
@@ -1037,7 +1038,7 @@ fn base64_reference(data: &[u8], file_safe: bool, no_padding: bool) -> Vec<u8> {
 /// in both alphabets, and its short results are ordinary short values.
 #[test]
 fn base64_encodes_and_decodes() {
-    let src = r#"
+    let src = r#"import "std/base64"; import "std/crypto"; 
 contract T is {
   storage is record {
     last : string;
@@ -1280,9 +1281,9 @@ external function bump() is { storage.n := storage.n + 1; }
 #[test]
 fn stdlib_deployers_with_and_without_value() {
     let src = "\
-import \"std/utils/create2.lithe\";
-import \"std/utils/clones.lithe\";
-import \"std/utils/create3.lithe\";
+import \"std/evm\"; import \"std/utils/create2\";
+import \"std/utils/clones\";
+import \"std/utils/create3\";
 
 contract Funded is {
   use Create2;

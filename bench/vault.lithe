@@ -1,5 +1,7 @@
 (* Benchmark: an ETH vault with pausing and withdrawals. Mirrors vault.sol. *)
 
+import "std/evm";
+
 error Not_owner;
 error Paused;
 

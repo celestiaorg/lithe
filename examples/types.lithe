@@ -1,5 +1,7 @@
 (* Widths, nominal wrappers, value units, and time. *)
 
+import "std/evm";
+
 type basis_points is uint16;
 type discount_rate is uint16;
 

@@ -1,5 +1,7 @@
 (* Parentheses group and call. Brackets list and index. Braces group records, blocks, and case arms. *)
 
+import "std/evm";
+
 error Too_small of record {
   amount : uint;
 }

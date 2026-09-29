@@ -191,6 +191,8 @@ A call to an account with no code succeeds on the EVM, so as in Solidity it is c
 Attach ether with `with value = amount`. The amount is a `uint` number of wei. Only a method its interface declares `payable function` takes value:
 
 ```lithe
+import "std/evm";
+
 interface Pool is {
   payable function deposit(beneficiary : address);
 }
@@ -207,6 +209,8 @@ external payable nonreentrant function forward() is {
 Sending value to any other method is an error, because the callee would reject it:
 
 ```lithe rejects
+import "std/evm";
+
 interface Pool is {
   function deposit(beneficiary : address);
 }
@@ -252,6 +256,8 @@ A call that runs out of its gas fails like any other: the transaction reverts, u
 `defer Evm.transfer(to, amount)` sends plain ether. `to` is an address or an interface value, and `amount` is `wei`:
 
 ```lithe
+import "std/evm";
+
 error Insufficient;
 
 storage is record {
@@ -306,7 +312,8 @@ A file that imports a file of contracts can create them. The imported contracts 
 :::code-group
 
 ```lithe [factory.lithe]
-import "./vault.lithe";
+import "std/evm";
+import "./vault";
 
 contract Factory is {
   storage is record {
@@ -343,6 +350,8 @@ contract Vault is {
 Arguments after the contract's name go to its [`deploy`](/language/deploy), which runs as the contract is created. They are checked against `deploy`'s parameters, and the continuation runs after `deploy` has finished:
 
 ```lithe
+import "std/evm";
+
 contract Factory is {
   storage is record {
     vaults : map(address, address);
@@ -374,6 +383,8 @@ contract Vault is {
 The arguments are ABI-encoded and appended to the creation code, as Solidity does for `new Vault(owner, cap)`. A contract without `deploy` takes no arguments:
 
 ```lithe rejects
+import "std/evm";
+
 contract Factory is {
   storage is record {
     last : address;
@@ -407,7 +418,9 @@ contract Vault is {
 `Evm.creation_code(Name)` is the creation code `create` runs, before the arguments it appends. Its hash is a constant, so a factory knows where a `CREATE2` lands before the contract exists, and can return the address from the transition that creates it:
 
 ```lithe
-import "std/utils/create2.lithe";
+import "std/crypto";
+import "std/evm";
+import "std/utils/create2";
 
 contract Factory is {
   use Create2;
@@ -435,6 +448,8 @@ contract Vault is {
 To give both options, put them in braces:
 
 ```lithe
+import "std/evm";
+
 contract Factory is {
   storage is record {
     last : address;
@@ -505,6 +520,9 @@ contract Vault is {
 `defer create(code)` runs a `bytes` value as creation code, for contracts that are not Lithe contracts of this build: ERC-1167 clones, CREATE3 proxies, and SSTORE2 data. It takes `with value` and `with salt` and fails as `create Name()` does, and its continuation gets the new address. [`Evm.code(a)`](/language/builtins#accounts) reads an account's code back:
 
 ```lithe
+import "std/bytes";
+import "std/evm";
+
 storage is record {
   last : address;
 }
@@ -543,6 +561,8 @@ When the calldata is only known at runtime, as it is for a wallet, a timelock, o
 `to` is an address or an interface value, and `data` is the whole calldata, selector included. Build it with [`Abi.encode_call`](/language/builtins#abi), `Abi.encode_with_selector`, or take it as a parameter. Nothing decodes the answer: a continuation's `bytes` are the return data exactly as it came back, and `Abi.decode` reads them.
 
 ```lithe
+import "std/evm";
+
 error Not_owner;
 
 storage is record {
@@ -562,6 +582,8 @@ is {
 A raw call fails and recovers as any other does. Without `Ok` and `Error` arms, a failed call reverts the transaction; with them, `Error(reason : bytes)` gets the revert data, and [`forward reason`](/language/errors#forwarded-failures) passes it on:
 
 ```lithe
+import "std/evm";
+
 storage is record {
   failures : uint;
 }
@@ -584,6 +606,8 @@ external nonreentrant function try_call(const target : address; const data : byt
 A `pure` function cannot query, and a `view` cannot defer, for raw calls as for any other:
 
 ```lithe rejects
+import "std/evm";
+
 storage is record {
   n : uint;
 }

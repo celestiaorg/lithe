@@ -34,6 +34,8 @@ pub(crate) struct Program {
     pub specs: Vec<SpecBlock>,
     /// Checked for the spec tools, which read loop invariants. A build drops them.
     pub proving: bool,
+    /// What each file of the program sees, and the canonical name of each declaration.
+    pub scopes: std::sync::Arc<crate::resolve::Scopes>,
 }
 
 /// `spec is { ... }` or `spec for f is { ... }`: claims about the program that `lithe prove`
@@ -127,6 +129,35 @@ pub(crate) struct ModuleDecl {
     pub funcs: Vec<Func>,
     /// The spec blocks written inside the module.
     pub specs: Vec<SpecBlock>,
+    /// The members the compiler implements, in a module of the standard library.
+    pub intrinsics: Vec<Intrinsic>,
+}
+
+/// `intrinsic view function sender() : address;` or `intrinsic call;`: a member of a
+/// standard library module that the compiler implements. The checker's rules for it are
+/// its own; the signature, when Lithe can write one, states them.
+#[derive(Debug, Clone)]
+pub(crate) struct Intrinsic {
+    pub line: u32,
+    pub col: u32,
+    pub name: String,
+    pub sig: Option<Func>,
+    /// What the compiler does for it, set when its file is loaded.
+    pub tag: Option<Tag>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Tag {
+    Call(Builtin),
+    /// `Uint.max`, `Int.min`, `Int.max`, and `Address.zero`: literals as wide as the
+    /// context expects.
+    UintMax,
+    IntMin,
+    IntMax,
+    AddressZero,
+    /// `Abi.selector(I.method)` and `Abi.interface_id(I)`: `bytes4` constants.
+    AbiSelector,
+    AbiInterfaceId,
 }
 
 /// `use M exposing I, J, { ... }`: the contract uses `M` and exposes the members of the

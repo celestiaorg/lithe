@@ -2,9 +2,9 @@
    `Votes` raises. Each interface is exactly its standard's functions. A token's votes
    are checkpointed, so pushing one can fail as `Checkpoints` does. *)
 
-import "std/crypto/ecdsa.lithe";
-import "std/utils/nonce.lithe";
-import "std/utils/checkpoint.lithe";
+import "std/crypto/ecdsa";
+import "std/utils/nonce";
+import "std/utils/checkpoint";
 
 error VotesExpiredSignature of uint;
 

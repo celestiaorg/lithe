@@ -13,6 +13,8 @@ description: "UUPS upgrades with a guard and a one-time migration."
    `upgradeToAndCall`; a `migrate` runs once, inside the upgrade that installs this
    version, and is never callable on its own. *)
 
+import "std/evm";
+
 upgradeable
 
 error Not_owner;

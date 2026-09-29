@@ -1,7 +1,8 @@
 (* Benchmark: an ERC-721 receiver that records each delivery. Mirrors receiver.sol.
    In mode 1 it answers with the wrong selector; in mode 2 it refuses with a reason. *)
 
-import "std/interfaces/erc721.lithe";
+import "std/abi";
+import "std/interfaces/erc721";
 
 error Refused of uint;
 

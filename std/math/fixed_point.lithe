@@ -2,6 +2,8 @@
    a plain `uint` can't be mixed in by accident: convert with `to_wad` and `from_wad`.
    Products and quotients keep a 512-bit intermediate and round down. *)
 
+import "std/uint";
+
 module FixedPoint is {
   type wad is uint;
 

@@ -59,6 +59,8 @@ Each error compiles to a Solidity custom error. The ABI name is the declared nam
 `assert` raises when its condition is false. `fail` always raises. The error is written the way it was declared:
 
 ```lithe
+import "std/evm";
+
 error Unauthorized;
 error Too_large of uint;
 error Insufficient_balance of record {
@@ -91,6 +93,8 @@ A record payload can also be passed as one value: with `error Bad_point of point
 An external function must list every error its body can raise, directly or through the functions it calls:
 
 ```lithe rejects
+import "std/evm";
+
 error Not_owner;
 error Closed;
 
@@ -125,6 +129,8 @@ A function's ABI, its `raises` clause, and the output of `lithe errors` therefor
 Internal functions may leave `raises` off. Their errors are inferred and propagate to their callers:
 
 ```lithe
+import "std/evm";
+
 error Not_owner;
 
 storage is record {

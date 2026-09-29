@@ -1,6 +1,11 @@
 (* Lists of strings and bytes, laid out as Solidity's `string[]` and `bytes[]`: in
    arguments and results, in storage, in maps, in events, and encoded. *)
 
+import "std/abi";
+import "std/bytes";
+import "std/evm";
+import "std/list";
+
 type notes is list(string);
 
 storage is record {

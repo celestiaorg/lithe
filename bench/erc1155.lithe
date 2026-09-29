@@ -2,11 +2,13 @@
    with supply tracking and an updatable URI, built from modules. Mirrors erc1155.sol,
    which imports OpenZeppelin. *)
 
-import "./lib/initializable.lithe";
-import "./lib/ownable.lithe";
-import "./lib/pausable.lithe";
-import "./lib/erc1155.lithe";
-import "./lib/erc1155_supply.lithe";
+import "std/address";
+import "std/evm";
+import "./lib/initializable";
+import "./lib/ownable";
+import "./lib/pausable";
+import "./lib/erc1155";
+import "./lib/erc1155_supply";
 
 contract BenchMultiToken is {
   use Initializable;

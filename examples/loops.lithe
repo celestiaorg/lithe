@@ -1,6 +1,9 @@
 (* Loops. The number of iterations is fixed when the loop starts: a range, or a list's
    length. `until` ends a loop early. `bound n` caps the count, and a longer list panics. *)
 
+import "std/evm";
+import "std/list";
+
 interface Exchange is {
   function swap(amount : uint) : uint;
 }

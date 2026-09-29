@@ -1,6 +1,9 @@
 (* Lists and strings through other contracts: as query arguments and answers, as deferred
    call arguments and results, and decoded from bytes. *)
 
+import "std/abi";
+import "std/list";
+
 interface Echo is {
   view function same(xs : list(uint)) : list(uint);
   view function named(s : string) : string;

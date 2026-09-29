@@ -563,7 +563,7 @@ raised by:
 #[test]
 fn proven_arithmetic_skips_its_check() {
     let head = "\
-storage is record { n : uint; }
+import \"std/uint\"; storage is record { n : uint; }
 error Low;
 pure function shifted(const y : uint112; const x : uint112) : uint is (uint(y) << 112) / uint(x)
 ";
@@ -707,7 +707,7 @@ external view function cast(const n : uint) : uint32 is uint32(n % 4294967297)
 
 #[test]
 fn sign_changing_casts_are_checked() {
-    let src = "
+    let src = "import \"std/int\"; import \"std/uint\"; 
 storage is record { n : uint; }
 external pure function to_uint(const x : int) : uint is uint(x)
 external pure function to_int(const n : uint) : int is int(n)

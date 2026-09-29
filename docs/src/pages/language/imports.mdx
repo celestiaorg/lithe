@@ -1,17 +1,17 @@
 ---
 title: "Imports"
-description: "Splitting a program across files with import, aliases, and private declarations."
+description: "Module paths, what each file sees, aliases, and private declarations."
 ---
 
 # Imports
 
-`import` brings another file's declarations into this one. Imports come first in a file, before any other declaration. Paths are relative to the importing file, except those that start with `std/`, which name a module of the [standard library](/stdlib), built into the compiler.
+`import` names another file, a module, and brings its public declarations into this file. Imports come first in a file, before any other declaration. A path that starts with `std/` names a module of the [standard library](/stdlib), built into the compiler. Any other path is relative to the importing file.
 
 :::code-group
 
 ```lithe [main.lithe]
-import "./lib/math.lithe";
-import "./lib/fees.lithe" as Fees;
+import "./lib/math";
+import "./lib/fees" as Fees;
 
 storage is record {
   fee : Fees.basis_points;
@@ -46,9 +46,57 @@ private pure function unused() : uint is
 
 :::
 
+## Import paths
+
+An import path names a module, not a file: `import "std/evm";`, `import "./lib/fees";`, `import "../shared/errors" as E;`. The compiler adds `.lithe`, so `"./lib/fees"` is `lib/fees.lithe` next to the importing file.
+
+A path is `std/`, `./`, or one or more `../`, then names separated by `/`. Each name is a lowercase identifier: letters `a` to `z`, digits, and `_`, not starting with a digit. Anything else is an invalid import path, such as `"./fees.lithe"`, `"fees"`, or `"./my-lib"`:
+
+```lithe rejects
+import "./fees.lithe";
+
+storage is record {
+  n : uint;
+}
+```
+
+```text
+invalid import path `./fees.lithe`
+```
+
+A path names one file, never a directory, so `std/crypto` and `std/crypto/ecdsa` are two modules that one program can import side by side.
+
+## What a file sees
+
+A file's names are exactly:
+
+- the language's own: types, literals, conversions such as `uint(x)`, `Some` and `None`, and `assert`, `fail`, and `forward`;
+- its own declarations;
+- the public declarations of each file it imports, behind the alias when the import has one.
+
+Nothing else. A name reaches a file only through that file's own imports, never through another file's. If `main.lithe` imports `./a`, and `a` imports `./b`, then `main` can't name anything `b` declares until it imports `./b` itself:
+
+```text
+unknown type `amount`
+
+`amount` is declared in `./b`: `import "./b";`
+```
+
+Naming is what needs the import. A value can come from anywhere: `main` can call `a`'s function that returns `b`'s `amount`, and pass the result along, without importing `b`.
+
+So a file's imports list everything it depends on. A file that doesn't import `std/evm` doesn't read the caller, the block, or balances, and a reviewer can see that from its first lines. `lithe lint` reports an import the file doesn't use, and the [language server](/tooling/editors) adds the import a name needs.
+
+### Code resolves where it's written
+
+Code always sees the names of the file that declares it, wherever it runs. A module's body, the code a contract pulls in with `use`, and each instance of a generic module such as `Set(address)` resolve their names in their own file. The importing file's names never reach into them, and their file's imports never reach out: a contract can declare its own `Denied` error while a module it uses raises the `Denied` its own file imports.
+
+### One file, however it is imported
+
+A file is loaded once, however many files import it and under whichever aliases. If `a` imports `./b` as `M`, `c` imports it plainly, and `main` imports it as `B`, then `M.add_one` in `a`, `add_one` in `c`, and `B.add_one` in `main` are one function. `b`'s modules have one storage, and its errors and events have one selector.
+
 ## Plain and aliased imports
 
-A plain import, `import "./lib/math.lithe";`, makes the file's names available directly, as `min`. Two plain imports that define the same name are an error, whether or not the name is used. The error says where each is, and how to resolve it:
+A plain import, `import "./lib/math";`, makes the file's names available directly, as `min`. Two plain imports that define the same name are an error, whether or not the name is used. The error says where each is, and how to resolve it:
 
 ```text
 2:1: ambiguous symbol `calculate_fee`
@@ -57,7 +105,7 @@ defined in:
 - left.lithe:1:6
 - right.lithe:1:6
 
-rename one, or import `./right.lithe` with an alias: `import "./right.lithe" as Name;`
+rename one, or import `./right` with an alias: `import "./right" as Name;`
 ```
 
 Declaring one name twice in a file is an error too, and it points at the first declaration:
@@ -70,7 +118,13 @@ Declaring one name twice in a file is an error too, and it points at the first d
 overloads need different parameter types; rename one or change its parameters
 ```
 
-An aliased import, `import "./lib/fees.lithe" as Fees;`, keeps the file's names behind the alias: `Fees.apply`, `Fees.basis_points`. Aliases avoid clashes, and they make it obvious at each use where a name comes from.
+An aliased import, `import "./lib/fees" as Fees;`, keeps the file's names behind the alias: `Fees.apply`, `Fees.basis_points`. That includes its modules: `import "std/math/math" as M;` names the module `M.Math`, so a call is `M.Math.sqrt(x)` and a contract writes `use M.Math;`. An alias doesn't shorten a module's name; it keeps two files' names apart, so two files that each declare a module `Tool` can both be imported, as `P.Tool` and `Q.Tool`. Aliases avoid clashes, and they make it obvious at each use where a name comes from.
+
+## Built-in modules
+
+`Evm`, `Crypto`, `Abi`, `Bytes`, `String`, `Base64`, `List`, `Uint`, `Int`, and `Address` are modules of the standard library, each in its own file, and a file imports the ones it uses like any other module: `import "std/evm";` for `Evm.sender()`, `import "std/uint";` for `Uint.max`. An alias works the same way: after `import "std/evm" as Chain;`, the caller is `Chain.Evm.sender()`. See [Built-ins](/language/builtins).
+
+A file that doesn't import `std/evm` is free to declare its own module `Evm`. In a file that does, a second `Evm` is a duplicate module.
 
 ## What a file can export
 
@@ -91,7 +145,7 @@ The usual way to share code is a module in its own file:
 :::code-group
 
 ```lithe [token.lithe]
-import "./lib/ledger.lithe";
+import "./lib/ledger";
 
 contract Token is {
   use Ledger exposing {
@@ -121,5 +175,7 @@ module Ledger is {
 ## Rules
 
 - Imports must come before every other declaration.
+- An import path names a module: `std/`, `./`, or `../`, and lowercase names, without `.lithe`.
+- A file sees its own declarations and those of the files it imports, and nothing else.
 - Import cycles are rejected: `cyclic module dependency detected`.
 - Every file is loaded once, however many files import it.

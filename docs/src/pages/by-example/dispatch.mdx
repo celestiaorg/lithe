@@ -12,6 +12,8 @@ Group actions by role, attach one guard per group, and let the compiler flatten 
    `mint(address,uint256)`, `set_minter(address)`, `transfer(address,uint256)`, and
    `burn(uint256)`. Each carries the guards on its path through the tree. *)
 
+import "std/evm";
+
 error Not_admin;
 error Not_minter;
 

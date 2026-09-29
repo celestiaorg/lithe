@@ -1,6 +1,8 @@
 (* Transient storage lasts for the transaction: shared across calls, gone when it ends,
    and read and written with TLOAD / TSTORE. Storage persists; locals last for the call. *)
 
+import "std/evm";
+
 error Already_processing;
 error Not_settling;
 

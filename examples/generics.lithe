@@ -1,7 +1,7 @@
 (* Generic sets specialize at compile time. Set(order_id) is not Set(bytes32). *)
 
-import "std/collections/set.lithe";
-import "std/collections/set_enumerable.lithe";
+import "std/collections/set";
+import "std/collections/set_enumerable";
 
 type order_id is bytes32;
 type address_set is Set(address);

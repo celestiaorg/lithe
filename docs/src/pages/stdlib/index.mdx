@@ -8,8 +8,10 @@ description: "Audited-once building blocks shipped with the compiler: access con
 The standard library ships inside the compiler. Import a module with a path that starts with `std/`:
 
 ```lithe
-import "std/token/erc20.lithe";
-import "std/access/ownable.lithe";
+import "std/interfaces/erc20";
+import "std/evm";
+import "std/token/erc20";
+import "std/access/ownable";
 
 contract Token is {
   use ERC20 exposing {

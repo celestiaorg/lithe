@@ -1,5 +1,5 @@
-import "./left.lithe";
-import "./right.lithe";
+import "./left";
+import "./right";
 
 storage is record {
   n : uint;

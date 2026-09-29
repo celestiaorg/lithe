@@ -3,6 +3,11 @@
    order, which would make a second valid signature from the first, and a recovered
    zero address. *)
 
+import "std/abi";
+import "std/address";
+import "std/bytes";
+import "std/crypto";
+
 error ECDSAInvalidSignature;
 error ECDSAInvalidSignatureLength of uint;
 error ECDSAInvalidSignatureS of bytes32;

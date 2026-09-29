@@ -1,6 +1,8 @@
 (* Benchmark: overloaded internal functions, picked by argument count and type, including
    ones that take a storage map; and overloaded entrypoints. Mirrors overloads.sol. *)
 
+import "std/evm";
+
 type shares is uint;
 
 storage is record {

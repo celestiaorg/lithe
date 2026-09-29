@@ -15,7 +15,11 @@
        ...
      } *)
 
-import "std/token/erc721.lithe";
+import "std/address";
+import "std/evm";
+import "std/list";
+import "std/token/erc721";
+import "std/interfaces/erc721";
 
 module ERC721Enumerable is {
   requires ERC721;

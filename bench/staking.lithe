@@ -2,8 +2,10 @@
    modules as the token. Mirrors staking.sol, which imports OpenZeppelin.
    Token transfers are deferred, so they run after the staking contract's own effects. *)
 
-import "./lib/initializable.lithe";
-import "./lib/ownable.lithe";
+import "std/address";
+import "std/evm";
+import "./lib/initializable";
+import "./lib/ownable";
 
 contract StakingRewards is {
   use Initializable;

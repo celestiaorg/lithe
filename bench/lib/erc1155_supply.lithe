@@ -1,6 +1,8 @@
 (* Supply tracking for ERC-1155, like OpenZeppelin's `ERC1155SupplyUpgradeable`: each id's
    total and the total of all ids. Call `update` after `ERC1155.update`. *)
 
+import "std/address";
+
 module ERC1155Supply is {
   storage erc1155Supply at "openzeppelin.storage.ERC1155Supply" is record {
     totalSupply : map(uint, uint);

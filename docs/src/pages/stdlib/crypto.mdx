@@ -23,8 +23,11 @@ The errors are OpenZeppelin's: `ECDSAInvalidSignature`, `ECDSAInvalidSignatureLe
 `std/crypto/eip712.lithe`. Hashes typed structured data under a domain of name, version, chain id, and contract address. `init` records the hashes of the name and version as [immutables](/language/storage#immutables), so it runs only from `deploy` or a migration. The chain id and address are read when a hash is made, so the domain stays right after a fork. Its one external is `DOMAIN_SEPARATOR`.
 
 ```lithe
-import "std/crypto/eip712.lithe";
-import "std/crypto/ecdsa.lithe";
+import "std/abi";
+import "std/crypto";
+import "std/evm";
+import "std/crypto/eip712";
+import "std/crypto/ecdsa";
 
 contract Mailbox is {
   use EIP712 exposing {
@@ -72,7 +75,10 @@ contract Mailbox is {
 A proof is `bytes`: the sibling hashes from the leaf up, 32 bytes each, concatenated. A proof whose length isn't a multiple of 32 raises `MerkleProofInvalidLength`.
 
 ```lithe
-import "std/crypto/merkle.lithe";
+import "std/abi";
+import "std/crypto";
+import "std/evm";
+import "std/crypto/merkle";
 
 contract Allowlist is {
   use Merkle;

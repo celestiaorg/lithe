@@ -1,4 +1,4 @@
-import "./lib.lithe";
+import "./lib";
 
 storage is record {
   n : uint;

@@ -1,9 +1,10 @@
 use super::*;
+use crate::ast::{BinOp, Builtin, ItemKind, Pre, Tag};
 
 #[test]
 fn type_constants_take_their_width_from_context() {
     let src = "\
-storage is record { small : uint8; delta : int16; big : uint; low : int; who : address; }
+import \"std/address\"; import \"std/int\"; import \"std/uint\"; storage is record { small : uint8; delta : int16; big : uint; low : int; who : address; }
 function lowest(T)(const value : T) : T is Int.min
 external function set() is {
   storage.small := Uint.max;
@@ -30,20 +31,17 @@ external view function top16() : int16 is Int.max
     let top = call(&runtime, "top16()", &[]);
     assert_eq!(load_bytes(&top.returndata, 0), Word::from_u64(0x7fff));
     let err = compile(
-        "storage is record { n : uint; }\nexternal function f() is { storage.n := Uint.min; }\n",
+        "import \"std/uint\"; storage is record { n : uint; }\nexternal function f() is { storage.n := Uint.min; }\n",
     )
     .expect_err("no Uint.min");
-    assert!(
-        err.to_string().contains("unknown constant `Uint.min`"),
-        "{err}"
-    );
+    assert!(err.to_string().contains("unknown name `Uint.min`"), "{err}");
 }
 
 /// An option with a payload narrower than a word is one slot: zero is `None`, and `Some`
 /// flips its payload so that even `Some(0)` or a maximal value never reads as `None`.
 #[test]
 fn narrow_options_take_one_slot() {
-    let src = r#"
+    let src = r#"import "std/evm"; 
 type inner is record {
   small : option(uint8);
   n : uint;
@@ -1043,7 +1041,7 @@ external function put(const k : bytes4; const j : bytes2) is {
 #[test]
 fn abi_selectors_and_interface_ids_are_constants() {
     let src = "\
-interface Token is {
+import \"std/abi\"; interface Token is {
   function transfer(to : address; amount : uint) : bool;
   view function balanceOf(who : address) : uint;
 }
@@ -1085,7 +1083,7 @@ external pure function id() : bytes4 is Abi.interface_id(Token)
         ),
     ] {
         let bad = format!(
-            "interface Token is {{ function transfer(to : address; amount : uint) : bool; }}
+            "import \"std/abi\"; interface Token is {{ function transfer(to : address; amount : uint) : bool; }}
 interface Pair is {{ function put(x : uint); function put(x : address); }}
 storage is record {{ n : uint; }}
 external pure function f() : bytes4 is {body}
@@ -1273,7 +1271,7 @@ fn long_string_literals() {
     const REASON: &str = "a reason that is longer than one word";
     let src = format!(
         "\
-error Refused of string;
+import \"std/crypto\"; error Refused of string;
 storage is record {{ note : string; n : uint; blob : bytes; }}
 deploy(const n : uint) is {{
   storage.note := \"{EDGE}\";
@@ -1414,7 +1412,7 @@ external pure function ge(const a : bytes2; const b : bytes2) : bool is a >= b
 #[test]
 fn wrapping_arithmetic() {
     let src = "\
-storage is record { n : uint; }
+import \"std/int\"; import \"std/uint\"; storage is record { n : uint; }
 external pure function add(const a : uint; const b : uint) : uint is Uint.wrapping_add(a, b)
 external pure function sub32(const a : uint32; const b : uint32) : uint32 is Uint.wrapping_sub(a, b)
 external pure function mul8(const a : uint8; const b : uint8) : uint8 is Uint.wrapping_mul(a, b)
@@ -1443,7 +1441,7 @@ external pure function mul(const a : int; const b : int) : int is Int.wrapping_m
         assert_eq!(load_bytes(&out.returndata, 0), *want, "{sig} {args:?}");
     }
     let err = compile(
-        "storage is record { n : uint; }\nexternal pure function f(const a : int8) : int8 is Uint.wrapping_add(a, a)\n",
+        "import \"std/uint\"; storage is record { n : uint; }\nexternal pure function f(const a : int8) : int8 is Uint.wrapping_add(a, a)\n",
     )
     .expect_err("signed");
     assert!(
@@ -1459,7 +1457,7 @@ external pure function mul(const a : int; const b : int) : int is Int.wrapping_m
 #[test]
 fn full_precision_arithmetic() {
     let src = "\
-storage is record { n : uint; }
+import \"std/uint\"; storage is record { n : uint; }
 external pure function mul_div(const a : uint; const b : uint; const d : uint) : uint is Uint.mul_div(a, b, d)
 external pure function mul_mod(const a : uint; const b : uint; const d : uint) : uint is Uint.mul_mod(a, b, d)
 external pure function add_mod(const a : uint; const b : uint; const d : uint) : uint is Uint.add_mod(a, b, d)
@@ -1568,7 +1566,7 @@ external pure function add_mod(const a : uint; const b : uint; const d : uint) :
 #[test]
 fn byte_words_and_width_conversions() {
     let src = "\
-storage is record { n : uint; }
+import \"std/bytes\"; storage is record { n : uint; }
 external pure function word(const b : bytes; const offset : uint) : bytes32 is Bytes.word(b, offset)
 external pure function widths(const h : bytes32; const s : bytes4) : (uint, address, uint32, bytes32) is
   (uint(h), address(uint160(uint(h) & ((1 << 160) - 1))), uint32(s), bytes32(uint(h) + 1))
@@ -1624,7 +1622,7 @@ external pure function widths(const h : bytes32; const s : bytes4) : (uint, addr
 fn byte_indexing_slicing_and_conversions() {
     install_mocks();
     let src = "\
-storage is record { blob : bytes; notes : map(uint, bytes); }
+import \"std/abi\"; import \"std/bytes\"; import \"std/crypto\"; import \"std/evm\"; storage is record { blob : bytes; notes : map(uint, bytes); }
 external function save(const b : bytes) is { storage.blob := b; storage.notes[7] := b; }
 external view function stored_at(const i : uint) : (bytes1, bytes1) is (storage.blob[i], storage.notes[7][i])
 external pure function at(const b : bytes; const i : uint) : bytes1 is b[i]
@@ -1893,7 +1891,7 @@ fn byte_access_rules() {
             "a byte cannot be assigned",
         ),
     ] {
-        let src = format!("storage is record {{ blob : bytes; }}\n{body}\n");
+        let src = format!("import \"std/string\"; storage is record {{ blob : bytes; }}\n{body}\n");
         let err = compile(&src).expect_err(want);
         assert!(err.to_string().contains(want), "{want}: {err}");
     }
@@ -1916,16 +1914,16 @@ fn transfer_lives_in_evm() {
         ),
     ] {
         let src =
-            format!("storage is record {{ n : uint; }}\nexternal function f() is {{ {body} }}\n");
+            format!("import \"std/evm\"; storage is record {{ n : uint; }}\nexternal function f() is {{ {body} }}\n");
         let err = compile(&src).expect_err(want);
         assert!(err.to_string().contains(want), "{want}: {err}");
     }
-    let view = "storage is record { n : uint; }\nexternal view function f() : uint is {\n  defer Evm.transfer(Evm.sender(), 1wei);\n} with 1\n";
+    let view = "import \"std/evm\"; storage is record { n : uint; }\nexternal view function f() : uint is {\n  defer Evm.transfer(Evm.sender(), 1wei);\n} with 1\n";
     let err = compile(view).expect_err("view");
     assert!(err.to_string().contains("weaker"), "{err}");
 
     let own = "\
-storage is record { balances : map(address, uint); }
+import \"std/evm\"; storage is record { balances : map(address, uint); }
 external function transfer(const to : address; const amount : uint) is {
   storage.balances[to] := storage.balances[to] + amount;
 }
@@ -2027,7 +2025,7 @@ fn builtins_are_explicit_modules() {
     let who = call(&runtime, "recovered()", &[]);
     assert!(!who.reverted, "{}", pretty(&who.returndata));
     assert_eq!(load_bytes(&who.returndata, 0), Word::from_u64(0));
-    let bare = "storage is record { x : uint; }\nexternal function f() is { const a : address := sender; }\n";
+    let bare = "import \"std/evm\"; storage is record { x : uint; }\nexternal function f() is { const a : address := sender; }\n";
     let err = compile(bare).expect_err("bare sender");
     assert!(err.to_string().contains("use `Evm.sender()`"), "{err}");
 }
@@ -2159,7 +2157,7 @@ external pure function lit() : int8 is -128
 /// at every width, the extremes included.
 #[test]
 fn integers_convert_to_decimal_strings() {
-    let src = r#"
+    let src = r#"import "std/int"; import "std/string"; import "std/uint"; 
 storage is record {
   uri : string;
 }
@@ -2221,7 +2219,7 @@ external view function uri() : string is
     )
     .expect("uri");
     assert_eq!(abi_string_value(&uri.returndata), b"ipfs://base/7");
-    let err = compile("storage is record { n : uint; }\nexternal pure function f(const n : int) : string is Uint.to_string(n)\n")
+    let err = compile("import \"std/uint\"; storage is record { n : uint; }\nexternal pure function f(const n : int) : string is Uint.to_string(n)\n")
         .expect_err("signed");
     assert!(
         err.to_string().contains("expects an unsigned integer"),
@@ -2233,7 +2231,7 @@ external view function uri() : string is
 /// `toChecksumHexString`. A value too wide for its length panics with `0x11`.
 #[test]
 fn integers_and_addresses_convert_to_hex_strings() {
-    let src = r#"
+    let src = r#"import "std/address"; import "std/uint"; 
 storage is record { n : uint; }
 
 external pure function hex(const n : uint) : string is
@@ -2297,7 +2295,7 @@ external pure function checksum(const a : address) : string is
         assert_eq!(text("addr(address)", &[a]), want.to_lowercase());
         assert_eq!(text("checksum(address)", &[a]), want);
     }
-    let err = compile("storage is record { n : uint; }\nexternal pure function f(const n : uint; const m : int) : string is Uint.to_hex_string(n, m)\n")
+    let err = compile("import \"std/uint\"; storage is record { n : uint; }\nexternal pure function f(const n : uint; const m : int) : string is Uint.to_hex_string(n, m)\n")
         .expect_err("signed length");
     assert!(err.to_string().contains("a length must be `uint`"), "{err}");
 }
@@ -2307,7 +2305,7 @@ external pure function checksum(const a : address) : string is
 /// An empty list panics with `0x31`.
 #[test]
 fn list_pop_drops_the_last_element() {
-    let src = r#"
+    let src = r#"import "std/list"; import "std/string"; 
 module Bag is {
   storage bag at "t.bag" is record {
     items : list(uint);
@@ -2429,16 +2427,16 @@ contract T is {
         ),
     ] {
         let src = format!(
-            "storage is record {{ ids : list(uint); fixed : list(uint, 3); }}\nexternal function f() is {{ {body} }}\n"
+            "import \"std/list\"; storage is record {{ ids : list(uint); fixed : list(uint, 3); }}\nexternal function f() is {{ {body} }}\n"
         );
         let err = compile(&src).expect_err(body);
         assert!(err.to_string().contains(want), "{body}: {err}");
     }
-    let err = compile("storage is record { ids : list(uint); }\nexternal view function f() : uint is { List.pop(storage.ids); } with 0\n")
+    let err = compile("import \"std/list\"; storage is record { ids : list(uint); }\nexternal view function f() : uint is { List.pop(storage.ids); } with 0\n")
         .expect_err("view");
     assert!(err.to_string().contains("writes storage"), "{err}");
     // A generic module pops a list in the storage its caller passes.
-    let generic = r#"
+    let generic = r#"import "std/list"; 
 module Stack(T : map_key) is {
   type self is record {
     items : list(T);
@@ -2491,7 +2489,7 @@ external view function size() : uint is
 /// with `0x32` like any other past the end, in storage, past a key, and in memory.
 #[test]
 fn list_push_is_the_only_growing_write() {
-    let src = r#"
+    let src = r#"import "std/evm"; import "std/list"; 
 type pair is record {
   a : uint;
   b : uint;
@@ -2580,12 +2578,12 @@ external pure function local(const i : uint) : uint is {
         ("storage.ids.length := 1;", "`List.push` grows a list"),
     ] {
         let src = format!(
-            "storage is record {{ ids : list(uint); fixed : list(uint, 3); }}\nexternal function f() is {{ {body} }}\n"
+            "import \"std/list\"; storage is record {{ ids : list(uint); fixed : list(uint, 3); }}\nexternal function f() is {{ {body} }}\n"
         );
         let err = compile(&src).expect_err(body);
         assert!(err.to_string().contains(want), "{body}: {err}");
     }
-    let err = compile("storage is record { ids : list(uint); }\nexternal view function f() : uint is { List.push(storage.ids, 1); } with 0\n")
+    let err = compile("import \"std/list\"; storage is record { ids : list(uint); }\nexternal view function f() : uint is { List.push(storage.ids, 1); } with 0\n")
         .expect_err("view");
     assert!(err.to_string().contains("writes storage"), "{err}");
 }
@@ -2594,7 +2592,7 @@ external pure function local(const i : uint) : uint is {
 /// One with fixed-size payloads is its tag, then the words of its largest payload.
 #[test]
 fn stored_variants_track_states() {
-    let src = r#"
+    let src = r#"import "std/evm"; import "std/list"; 
 type fill is record {
   amount_out : uint;
   at : uint64;
@@ -2918,7 +2916,7 @@ fn variant_values_are_checked() {
 /// a dispatch arm with several cases gives each its own selector.
 #[test]
 fn variants_cross_the_abi_as_case_indexes() {
-    let src = r#"
+    let src = r#"import "std/abi"; 
 type admin is
   | Pause
   | Unpause
@@ -2994,7 +2992,7 @@ external pure function ons(const ms : list(mode)) : uint is {
 /// A variant's tag and the payload words narrower than a slot share its first slot.
 #[test]
 fn stored_variants_pack() {
-    let src = r#"
+    let src = r#"import "std/evm"; 
 type fill is record { amount_out : uint; at : uint64; }
 type status is | New | Filled of fill
 type small is | Empty | Stamp of uint64 | Flag of bool | Delta of int16 | Who of address
@@ -3031,7 +3029,7 @@ external view function is_who() : bool is
 /// several cases.
 #[test]
 fn variants_hold_dynamic_payloads() {
-    let src = r#"
+    let src = r#"import "std/evm"; 
 type memo is record { who : address; text : string; }
 type job is
   | Idle
@@ -3272,7 +3270,7 @@ external function draft(const id : uint) is { storage.reviews[id] := Draft; }
 #[test]
 fn dynamic_variants_are_list_elements() {
     let w = Word::from_u64;
-    let src = r#"
+    let src = r#"import "std/list"; 
 type dyn is | Name of string | Nums of list(uint) | Blank
 type row is record { k : uint8; d : dyn; }
 storage is record { xs : list(dyn); rows : map(uint, list(row)); }
@@ -3399,7 +3397,7 @@ external pure function p() : bool is { const o : option(list(uint)) := None; } w
 #[test]
 fn options_of_dynamic_values_clear_their_payloads() {
     let w = Word::from_u64;
-    let src = r#"
+    let src = r#"import "std/list"; 
 type doc is record { n : uint8; s : string; xs : list(uint); }
 storage is record { o : option(list(uint)); m : map(uint, option(doc)); ds : list(option(doc)); }
 external function set() is {
@@ -3461,7 +3459,7 @@ external pure function only(const n : uint) : uint is {
 #[test]
 fn nested_list_writes_leave_copies_alone() {
     let src = "\
-type holder is record { pre : uint8; x : list(uint); post : bool; }
+import \"std/list\"; type holder is record { pre : uint8; x : list(uint); post : bool; }
 storage is record { n : uint; }
 external pure function a() : uint is { var xs : list(list(uint)) := [[1]]; const b : list(uint) := xs[0]; xs[0][0] := 2; } with b[0]
 external pure function b() : uint is { var hs : list(holder) := [{ pre = 1; x = [1]; post = true; }]; const y : list(uint) := hs[0].x; hs[0].x[0] := 2; } with y[0]
@@ -3489,7 +3487,7 @@ external pure function h() : uint is { var xs : list(list(uint)) := [[]]; List.p
     let empty = call(&runtime, "h()", &[]);
     assert!(empty.reverted);
     assert_eq!(empty.returndata[35], 0x31);
-    let err = compile("storage is record { n : uint; }\nexternal pure function f() : uint is { const xs : list(list(uint)) := [[1]]; List.pop(xs[0]); } with 1\n")
+    let err = compile("import \"std/list\"; storage is record { n : uint; }\nexternal pure function f() : uint is { const xs : list(list(uint)) := [[1]]; List.pop(xs[0]); } with 1\n")
         .expect_err("const");
     assert!(
         err.to_string().contains("cannot assign to a const"),
@@ -3499,7 +3497,7 @@ external pure function h() : uint is { var xs : list(list(uint)) := [[]]; List.p
 
 #[test]
 fn literals_take_their_type_from_context() {
-    let src = r#"
+    let src = r#"import "std/crypto"; import "std/uint"; 
 type pt is record { a : uint8; b : bool; }
 type doc is record { n : uint8; s : string; xs : list(uint); }
 type dyn is | Name of string | Blank
@@ -3614,7 +3612,7 @@ fn long_hex_bytes_literals() {
     let long = format!("{word}{word}ff");
     let src = format!(
         "\
-error Blob of bytes;
+import \"std/bytes\"; import \"std/crypto\"; error Blob of bytes;
 storage is record {{ kept : bytes; }}
 external pure function word() : bytes is 0x{word}
 external pure function long() : bytes is 0x{long}
@@ -3676,4 +3674,378 @@ external function refuse() raises Blob is {{ fail Blob(0x{long}); }}
     assert!(err.to_string().contains("even number of digits"), "{err}");
     let err = compile("storage is record { n : uint; }\nexternal pure function f() : uint is 0x000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20\n").expect_err("uint");
     assert!(!err.to_string().is_empty());
+}
+
+/// The standard library's builtin modules, by import path.
+const BUILTIN_FILES: &[&str] = &[
+    "std/evm",
+    "std/crypto",
+    "std/abi",
+    "std/bytes",
+    "std/string",
+    "std/base64",
+    "std/list",
+    "std/uint",
+    "std/int",
+    "std/address",
+];
+
+/// Each builtin a module member reaches. Adding a `Builtin` fails `module_member` until it
+/// is listed there, and here when it is a member.
+const MEMBERS: &[Builtin] = &[
+    Builtin::Sender,
+    Builtin::Value,
+    Builtin::Calldata,
+    Builtin::Selector,
+    Builtin::TxOrigin,
+    Builtin::TxGasPrice,
+    Builtin::BlockNumber,
+    Builtin::BlockTimestamp,
+    Builtin::BlockCoinbase,
+    Builtin::BlockBaseFee,
+    Builtin::BlobBaseFee,
+    Builtin::ChainId,
+    Builtin::BlockPrevrandao,
+    Builtin::BlockGasLimit,
+    Builtin::BlockHash,
+    Builtin::BlobHash,
+    Builtin::SelfAddr,
+    Builtin::Balance,
+    Builtin::CodeSize,
+    Builtin::CodeHash,
+    Builtin::GasLeft,
+    Builtin::Keccak256,
+    Builtin::Sha256,
+    Builtin::Ripemd160,
+    Builtin::Ecrecover,
+    Builtin::AbiEncode,
+    Builtin::AbiDecode,
+    Builtin::AbiEncodePacked,
+    Builtin::AbiEncodeSelector,
+    Builtin::AbiEncodeSignature,
+    Builtin::AbiEncodeCall,
+    Builtin::BytesConcat,
+    Builtin::StringConcat,
+    Builtin::UintDivRem,
+    Builtin::BytesWord,
+    Builtin::Base64Encode,
+    Builtin::Base64EncodeUrl,
+    Builtin::Base64EncodeWith,
+    Builtin::Base64Decode,
+    Builtin::UintMulDiv,
+    Builtin::UintMulMod,
+    Builtin::UintAddMod,
+    Builtin::IntDivRem,
+    Builtin::UintToString,
+    Builtin::IntToString,
+    Builtin::UintToHexString,
+    Builtin::AddressToHexString(false),
+    Builtin::AddressToHexString(true),
+    Builtin::FromBits(false),
+    Builtin::FromBits(true),
+    Builtin::ListPop,
+    Builtin::ListPush,
+    Builtin::AbiSupportsInterface,
+    Builtin::CreationCode,
+    Builtin::Wrapping(BinOp::Add, false),
+    Builtin::Wrapping(BinOp::Sub, false),
+    Builtin::Wrapping(BinOp::Mul, false),
+    Builtin::Wrapping(BinOp::Add, true),
+    Builtin::Wrapping(BinOp::Sub, true),
+    Builtin::Wrapping(BinOp::Mul, true),
+    Builtin::Transfer,
+    Builtin::RawCall,
+    Builtin::DelegateCall,
+    Builtin::StaticCall,
+    Builtin::Code,
+    Builtin::Precompile(Pre::ModExp),
+    Builtin::Precompile(Pre::PowMod),
+    Builtin::Precompile(Pre::Bn254Add),
+    Builtin::Precompile(Pre::Bn254Mul),
+    Builtin::Precompile(Pre::Bn254Pairing),
+    Builtin::Precompile(Pre::Blake2f),
+    Builtin::Precompile(Pre::PointEvaluation),
+    Builtin::Precompile(Pre::Bls12G1Add),
+    Builtin::Precompile(Pre::Bls12G1Msm),
+    Builtin::Precompile(Pre::Bls12G2Add),
+    Builtin::Precompile(Pre::Bls12G2Msm),
+    Builtin::Precompile(Pre::Bls12Pairing),
+    Builtin::Precompile(Pre::Bls12MapFpToG1),
+    Builtin::Precompile(Pre::Bls12MapFp2ToG2),
+    Builtin::Precompile(Pre::P256Verify),
+];
+
+/// Whether a builtin is a module member, or what the language's own syntax builds.
+fn module_member(kind: Builtin) -> bool {
+    match kind {
+        Builtin::Sender
+        | Builtin::Value
+        | Builtin::Calldata
+        | Builtin::Selector
+        | Builtin::TxOrigin
+        | Builtin::TxGasPrice
+        | Builtin::BlockNumber
+        | Builtin::BlockTimestamp
+        | Builtin::BlockCoinbase
+        | Builtin::BlockBaseFee
+        | Builtin::BlobBaseFee
+        | Builtin::ChainId
+        | Builtin::BlockPrevrandao
+        | Builtin::BlockGasLimit
+        | Builtin::BlockHash
+        | Builtin::BlobHash
+        | Builtin::SelfAddr
+        | Builtin::Balance
+        | Builtin::CodeSize
+        | Builtin::CodeHash
+        | Builtin::GasLeft
+        | Builtin::Keccak256
+        | Builtin::Sha256
+        | Builtin::Ripemd160
+        | Builtin::Ecrecover
+        | Builtin::AbiEncode
+        | Builtin::AbiDecode
+        | Builtin::AbiEncodePacked
+        | Builtin::AbiEncodeSelector
+        | Builtin::AbiEncodeSignature
+        | Builtin::AbiEncodeCall
+        | Builtin::BytesConcat
+        | Builtin::StringConcat
+        | Builtin::UintDivRem
+        | Builtin::BytesWord
+        | Builtin::Base64Encode
+        | Builtin::Base64EncodeUrl
+        | Builtin::Base64EncodeWith
+        | Builtin::Base64Decode
+        | Builtin::UintMulDiv
+        | Builtin::UintMulMod
+        | Builtin::UintAddMod
+        | Builtin::IntDivRem
+        | Builtin::UintToString
+        | Builtin::IntToString
+        | Builtin::UintToHexString
+        | Builtin::AddressToHexString(_)
+        | Builtin::FromBits(_)
+        | Builtin::ListPop
+        | Builtin::ListPush
+        | Builtin::AbiSupportsInterface
+        | Builtin::CreationCode
+        | Builtin::Wrapping(..)
+        | Builtin::Transfer
+        | Builtin::RawCall
+        | Builtin::DelegateCall
+        | Builtin::StaticCall
+        | Builtin::Code
+        | Builtin::Precompile(_) => true,
+        Builtin::BytesAt
+        | Builtin::BytesSlice
+        | Builtin::RawCreate
+        | Builtin::Create
+        | Builtin::Cast
+        | Builtin::Some
+        | Builtin::None
+        | Builtin::Ctor(_)
+        | Builtin::SpecState(_)
+        | Builtin::SpecSum
+        | Builtin::SpecCount
+        | Builtin::SpecForall => false,
+    }
+}
+
+/// The builtin modules as the standard library declares them.
+fn builtin_modules() -> Vec<(String, crate::ast::ModuleDecl)> {
+    BUILTIN_FILES
+        .iter()
+        .map(|path| {
+            let prog = crate::modules::load(
+                &Sources::memory([(ENTRY, format!("import \"{path}\";\n"))]),
+                Path::new(ENTRY),
+            )
+            .expect(path);
+            assert_eq!(prog.modules.len(), 1, "{path} declares one module");
+            (path.to_string(), prog.modules[0].clone())
+        })
+        .collect()
+}
+
+/// Every builtin a module member reaches has exactly one intrinsic declaration, and the
+/// declared signatures hold as the checker enforces them: the arguments, the result, and
+/// the effect.
+#[test]
+fn intrinsics_state_what_the_checker_enforces() {
+    let modules = builtin_modules();
+    let mut tags = Vec::new();
+    for (_, module) in &modules {
+        for intrinsic in &module.intrinsics {
+            tags.push(intrinsic.tag.expect("tagged"));
+        }
+    }
+    for &kind in MEMBERS {
+        assert!(module_member(kind), "{kind:?}");
+        let n = tags.iter().filter(|&&tag| tag == Tag::Call(kind)).count();
+        assert_eq!(n, 1, "{kind:?} has {n} intrinsic declarations");
+    }
+    for tag in &tags {
+        if let Tag::Call(kind) = tag {
+            assert!(MEMBERS.contains(kind), "{kind:?} is missing from MEMBERS");
+        }
+    }
+    for constant in [
+        Tag::UintMax,
+        Tag::IntMin,
+        Tag::IntMax,
+        Tag::AddressZero,
+        Tag::AbiSelector,
+        Tag::AbiInterfaceId,
+    ] {
+        assert_eq!(
+            tags.iter().filter(|&&tag| tag == constant).count(),
+            1,
+            "{constant:?}"
+        );
+    }
+    for (path, module) in &modules {
+        let text = crate::std_text(path).expect(path);
+        let lines: Vec<&str> = text.lines().collect();
+        for intrinsic in &module.intrinsics {
+            let Some(sig) = &intrinsic.sig else {
+                // A member without a signature gives its call's shape on the first line of
+                // its comment, which the comment above it opens.
+                let first = (0..intrinsic.line as usize - 1)
+                    .rev()
+                    .map(|i| lines[i].trim())
+                    .find(|line| line.starts_with("(*"))
+                    .unwrap_or("");
+                let shape = first.trim_start_matches("(*").trim_start();
+                assert!(
+                    shape.starts_with(&format!("{}(", intrinsic.name))
+                        || shape.starts_with(&format!("{} : ", intrinsic.name)),
+                    "{path}: `{}` has no call shape: {first}",
+                    intrinsic.name
+                );
+                continue;
+            };
+            let call =
+                |args: &[String]| format!("{}.{}({})", module.name, sig.name, args.join(", "));
+            let params: Vec<String> = sig
+                .params
+                .iter()
+                .enumerate()
+                .map(|(i, p)| format!("const p{i} : {}", crate::check::shape_ty(&p.ty)))
+                .collect();
+            let args: Vec<String> = (0..sig.params.len()).map(|i| format!("p{i}")).collect();
+            let ret = sig
+                .ret
+                .as_ref()
+                .map(crate::check::shape_ty)
+                .unwrap_or_default();
+            // Only a `payable` function reads `Evm.value()`, and it is stateful.
+            let payable = if sig.name == "value" { "payable " } else { "" };
+            let effect = match sig.kind {
+                ItemKind::Pure => "pure ",
+                ItemKind::Readonly if payable.is_empty() => "view ",
+                _ => "",
+            };
+            let body = |effect: &str, call: &str, ret: &str| {
+                let head = format!(
+                    "external {payable}{effect}function go({})",
+                    params.join("; ")
+                );
+                if ret == "operation" {
+                    format!("{head} is {{ defer {call}; }}")
+                } else if sig.name == "static_call" {
+                    format!("{head} : {ret} is query {call}")
+                } else {
+                    format!("{head} : {ret} is {call}")
+                }
+            };
+            let program = |fun: String| {
+                format!("import \"{path}\";\nstorage is record {{ n : uint; }}\n{fun}\n")
+            };
+            let name = format!("{}.{}", module.name, sig.name);
+            let ok = program(body(effect, &call(&args), &ret));
+            compile(&ok).unwrap_or_else(|err| panic!("{name}: {err}\n{ok}"));
+            let mut extra = args.clone();
+            extra.push("1".to_string());
+            let more = program(body(effect, &call(&extra), &ret));
+            assert!(compile(&more).is_err(), "{name} takes one more argument");
+            if !args.is_empty() {
+                let fewer = program(body(effect, &call(&args[1..]), &ret));
+                assert!(compile(&fewer).is_err(), "{name} takes one fewer argument");
+            }
+            if ret != "operation" {
+                let other = if ret == "bool" { "uint" } else { "bool" };
+                let wrong = program(body(effect, &call(&args), other));
+                assert!(compile(&wrong).is_err(), "{name} returns `{other}`");
+            }
+            let weaker = match sig.kind {
+                ItemKind::Readonly => Some("pure "),
+                ItemKind::Function => Some("view "),
+                _ => None,
+            };
+            if let Some(weaker) = weaker {
+                let src = program(body(weaker, &call(&args), &ret));
+                assert!(compile(&src).is_err(), "{name} is not {weaker}");
+            }
+        }
+    }
+}
+
+/// A builtin module is named through an import in every place code can name one, and an
+/// alias qualifies it as it does any module.
+#[test]
+fn builtins_are_imported_where_they_are_named() {
+    let missing = "unknown name `Evm`\n\n`Evm` is declared in `std/evm`: `import \"std/evm\";`";
+    for src in [
+        "storage is record { a : address; }\nexternal function f() is { storage.a := Evm.sender(); }\n",
+        "storage is record { a : address; }\nview function who() : address is Evm.sender()\nexternal function f() is { storage.a := who(); }\n",
+        "storage is record { a : address; }\nexternal function f() is { const who : address := Evm.sender(); storage.a := who; }\n",
+        "module Own is {\n  storage own at \"t.own\" is record { a : address; }\n  function take() is { own.a := Evm.sender(); }\n}\ncontract C is {\n  use Own;\n  storage is record {}\n  external function f() is { Own.take(); }\n}\n",
+        "upgradeable\nerror No;\nupgrade guard is { assert(Evm.sender() = address(0x0000000000000000000000000000000000000001), No); }\nstorage is record { n : uint; }\nexternal function f() is { storage.n := 1; }\n",
+    ] {
+        let err = compile(src).expect_err(src);
+        assert!(err.to_string().contains(missing), "{src}: {err}");
+        compile(&format!("import \"std/evm\";\n{src}")).unwrap_or_else(|err| panic!("{src}: {err}"));
+    }
+    let spec = "spec for f is {\n  ensures new.storage.a = Evm.sender();\n}\n";
+    let main = "storage is record { a : address; }\nexternal function f() is { storage.a := address(0x0000000000000000000000000000000000000001); }\n";
+    let specs = |main: &str| {
+        crate::specs(
+            &Sources::memory([
+                (ENTRY, main.to_string()),
+                ("contract.spec.lithe", spec.to_string()),
+            ]),
+            Path::new(ENTRY),
+        )
+    };
+    let err = specs(main).expect_err("spec without import");
+    assert!(err.to_string().contains(missing), "{err}");
+    specs(&format!("import \"std/evm\";\n{main}")).expect("spec with import");
+
+    let aliased = "import \"std/evm\" as Chain;\nstorage is record { a : address; }\nexternal function f() is { storage.a := Chain.Evm.sender(); }\n";
+    compile(aliased).expect("Chain.Evm");
+    let err = compile(&aliased.replace("Chain.Evm", "Evm")).expect_err("bare Evm");
+    assert!(
+        err.to_string()
+            .contains("this file imports it as `Chain.Evm`"),
+        "{err}"
+    );
+
+    // A module of the program's own named `Evm` is its own, beside the builtin one that
+    // another file imports.
+    let other = "import \"std/evm\";\nview function me() : address is Evm.sender()\n";
+    let main = "import \"./other\";\nmodule Evm is { pure function sender() : address is address(0x0000000000000000000000000000000000000007) }\ncontract C is {\n  use Evm;\n  storage is record { a : address; b : address; }\n  external function f() is { storage.a := Evm.sender(); storage.b := me(); }\n}\n";
+    let code = crate::compile(
+        &Sources::memory([("other.lithe", other), ("main.lithe", main)]),
+        Path::new("main.lithe"),
+        &Options::default(),
+    )
+    .and_then(crate::Output::single)
+    .map_err(first)
+    .expect("two Evms");
+    let runtime = deploy(&code.bytecode).expect("deploy");
+    let out = call(&runtime, "f()", &[]);
+    assert!(!out.reverted, "{}", pretty(&out.returndata));
+    assert_eq!(slot(&out.storage, 0), Word::from_u64(7));
+    assert_eq!(slot(&out.storage, 1), Word::from_u64(1));
 }

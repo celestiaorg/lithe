@@ -1,0 +1,5 @@
+(* `Evm` is a module of the standard library like any other: a file that reads the caller
+   imports `std/evm`. *)
+storage is record { owner : address; }
+
+external function claim() is { storage.owner := Evm.sender(); }

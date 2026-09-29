@@ -2,6 +2,10 @@
    `ERC721EnumerableUpgradeable`: same storage, errors, and swap-and-pop removal, so the
    order of the enumerations matches. Every ownership change goes through `update`. *)
 
+import "std/address";
+import "std/list";
+import "./erc721";
+
 error ERC721OutOfBoundsIndex of record {
   owner : address;
   index : uint;

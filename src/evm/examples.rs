@@ -22,14 +22,7 @@ fn every_example_file_is_compiled() {
         if !is_program(&src) {
             continue;
         }
-        let result = if has_imports(&src) {
-            compile_file(path).map(|_| ())
-        } else if contracts(&src) > 1 {
-            compile_contracts(&src).map(|_| ())
-        } else {
-            compile(&src).map(|_| ())
-        };
-        result.unwrap_or_else(|err| panic!("{rel} failed to compile: {err}"));
+        build_example(path).unwrap_or_else(|err| panic!("{rel} failed to compile: {err}"));
     }
     rejects.sort();
     let mut expected: Vec<&str> = REJECT_RULES.iter().map(|(path, _)| *path).collect();
@@ -37,14 +30,7 @@ fn every_example_file_is_compiled() {
     assert_eq!(rejects, expected, "every reject example needs a rule");
     for (rel, rule) in REJECT_RULES {
         let path = root.join(rel);
-        let src = std::fs::read_to_string(&path).unwrap_or_else(|err| panic!("{rel}: {err}"));
-        let err = if has_imports(&src) {
-            compile_file(&path).expect_err(rel)
-        } else if contracts(&src) > 1 {
-            compile_contracts(&src).expect_err(rel)
-        } else {
-            compile(&src).expect_err(rel)
-        };
+        let err = build_example(&path).expect_err(rel);
         assert!(
             err.to_string().contains(rule),
             "{rel}: expected `{rule}` in {err}"
@@ -243,6 +229,21 @@ const REJECT_RULES: &[(&str, &str)] = &[
         "module `Ledger` is already used",
     ),
     ("reject/unknown_module.lithe", "unknown module `Missing`"),
+    ("reject/import_path.lithe", "2:8: invalid import path `./fees.lithe`"),
+    (
+        "reject/transitive/main.lithe",
+        "unknown type `amount`\n\n`amount` is declared in `./b`",
+    ),
+    ("reject/hygiene/main.lithe", "unknown error `Denied`"),
+    (
+        "reject/builtin_import.lithe",
+        "5:49: unknown name `Evm`\n\n`Evm` is declared in `std/evm`: `import \"std/evm\";`",
+    ),
+    ("reject/builtin_clash.lithe", "duplicate module `Evm`"),
+    (
+        "reject/intrinsic.lithe",
+        "3:3: `intrinsic` belongs to the standard library",
+    ),
     (
         "reject/require_call.lithe",
         "module `Guarded` calls `Pausable` but does not require it",
@@ -262,9 +263,11 @@ fn reject_root(rel: &str) -> bool {
     !rest.contains('/') || rest.ends_with("/main.lithe")
 }
 
-fn has_imports(src: &str) -> bool {
-    src.lines()
-        .any(|line| line.trim_start().starts_with("import \""))
+/// Every contract an example file defines, built with the files it imports.
+fn build_example(path: &Path) -> Result<(), crate::Error> {
+    crate::compile(&Sources::disk(), path, &Options::default())
+        .map(|_| ())
+        .map_err(first)
 }
 
 #[test]

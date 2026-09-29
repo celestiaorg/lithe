@@ -43,6 +43,8 @@ declared effect is weaker than the body's: external view function `bad` writes s
 ```
 
 ```lithe rejects
+import "std/evm";
+
 pure function who() : address is
   Evm.sender()
 ```
@@ -239,6 +241,8 @@ Every call to an entrypoint names it by its selector, the first four bytes of th
 Without them, both kinds of call revert. Each is a transition like any stateful entrypoint: it can write storage, `emit`, `defer`, raise the errors its `raises` lists, and be `nonreentrant`. Neither takes parameters, and neither can be called from inside the contract.
 
 ```lithe
+import "std/evm";
+
 event Received of record {
   indexed from : address;
   amount : wei;
@@ -310,6 +314,9 @@ payable fallback delegates to proxy.implementation;
 To refuse some calls, have a `view` function choose the target and raise, and list its errors on the `fallback`. A map from selectors to targets routes like a diamond:
 
 ```lithe
+import "std/address";
+import "std/evm";
+
 error Unknown_selector of bytes4;
 error Not_owner;
 

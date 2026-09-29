@@ -12,6 +12,8 @@ Maps can't be enumerated. To list members, keep a list and an index map in sync.
    a list for order plus an index map for membership, updated together. Removal
    swaps the last member into the gap, so it costs the same for any member. *)
 
+import "std/evm";
+
 error Out_of_range of uint;
 
 storage is record {

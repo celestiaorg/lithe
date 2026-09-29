@@ -10,6 +10,10 @@ Lithe has no `constant` declaration. A pure function with no parameters is a nam
 ```lithe [constants.lithe]
 (* A constant is a pure function of no arguments. It compiles to the literal. *)
 
+import "std/address";
+import "std/int";
+import "std/uint";
+
 storage is record {
   fee_bps : uint;
 }

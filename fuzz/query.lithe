@@ -2,6 +2,8 @@
    read and write it, asserts read it for their errors, and branches follow the query.
    Address 2 is the SHA-256 precompile, which answers any query with a word. *)
 
+import "std/evm";
+
 error Not_owner of address;
 error Too_big of record {
   have : uint;

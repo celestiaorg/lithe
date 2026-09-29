@@ -1,6 +1,8 @@
 (* Benchmark: a fixed-price exchange whose state-changing calls return values.
    Mirrors exchange.sol. The executor consumes the results in continuations. *)
 
+import "std/evm";
+
 type swap_result is record {
   amount_out : uint;
   fee : uint;

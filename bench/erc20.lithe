@@ -1,10 +1,12 @@
 (* Benchmark: OpenZeppelin's wizard token, upgradeable, burnable, pausable, and
    ownable, built from modules. Mirrors erc20.sol, which imports OpenZeppelin. *)
 
-import "./lib/initializable.lithe";
-import "./lib/ownable.lithe";
-import "./lib/pausable.lithe";
-import "./lib/erc20.lithe";
+import "std/address";
+import "std/evm";
+import "./lib/initializable";
+import "./lib/ownable";
+import "./lib/pausable";
+import "./lib/erc20";
 
 contract BenchToken is {
   use Initializable;

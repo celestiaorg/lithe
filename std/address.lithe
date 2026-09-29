@@ -1,0 +1,13 @@
+(* Addresses. *)
+
+module Address is {
+  (* zero : address
+     `address(0)`. *)
+  intrinsic zero;
+
+  (* `0x` and 40 lowercase hex digits. *)
+  intrinsic pure function to_hex_string(a : address) : string;
+
+  (* EIP-55 mixed case. *)
+  intrinsic pure function to_checksum_string(a : address) : string;
+}

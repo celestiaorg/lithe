@@ -5,7 +5,9 @@
      use Ownable;
      use Ownable2Step exposing IOwnable2Step; *)
 
-import "std/access/ownable.lithe";
+import "std/address";
+import "std/evm";
+import "std/access/ownable";
 
 module Ownable2Step is {
   requires Ownable;

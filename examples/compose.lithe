@@ -1,6 +1,8 @@
 (* Modules compose by name. Each module owns the storage it declares, and declares the
    external functions a contract may expose. *)
 
+import "std/evm";
+
 module Ledger is {
   storage ledger at "lithe.ledger" is record {
     balances : map(address, uint);

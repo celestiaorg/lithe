@@ -1,0 +1,8 @@
+(* Only the standard library declares what the compiler implements. *)
+module Chain is {
+  intrinsic view function sender() : address;
+}
+
+storage is record { owner : address; }
+
+external function claim() is { skip; }

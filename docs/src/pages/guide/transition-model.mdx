@@ -41,6 +41,8 @@ totalWithdrawn += amount;             // ...and may have re-entered before this
 In Lithe, the call is a value that runs later:
 
 ```lithe
+import "std/evm";
+
 interface Token is {
   function transfer(to : address; amount : uint) : bool;
 }

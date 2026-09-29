@@ -442,7 +442,7 @@ fn named_storage_and_upgrade_migrate_once() {
 #[test]
 fn long_strings_round_trip_in_maps_and_lists() {
     let src = "\
-interface Me is { view function peek() : uint; }
+import \"std/list\"; interface Me is { view function peek() : uint; }
 storage is record {
   m : map(bytes32, bytes); s : map(uint, string); mm : map(uint, map(uint, string));
   l : list(string); one : bytes; n : uint;
@@ -616,7 +616,7 @@ fn string_maps_example_keeps_long_values() {
 #[test]
 fn stored_string_lengths_read_the_slot() {
     let src = "\
-interface Me is { view function peek() : uint; }
+import \"std/list\"; interface Me is { view function peek() : uint; }
 storage is record {
   one : bytes; m : map(uint, string); mm : map(uint, map(uint, bytes)); l : list(string); n : uint;
 }
@@ -716,7 +716,7 @@ external function journaled(const me : Me) is {
 
 #[test]
 fn string_and_bytes_keys_hash_like_solidity() {
-    let src = r#"
+    let src = r#"import "std/evm"; 
 storage is record { pre : uint8; names : map(string, uint); raw : map(address, map(bytes, uint)); }
 external function set(const k : string; const v : uint) is { storage.names[k] := v; }
 external function set_raw(const k : bytes; const v : uint) is { storage.raw[Evm.sender()][k] := v; }
@@ -763,7 +763,7 @@ external view function get(const k : string) : uint is storage.names[k]
 
 #[test]
 fn nested_stored_lists_lay_out_like_solidity() {
-    let src = r#"
+    let src = r#"import "std/list"; 
 type doc is record { n : uint8; s : string; xs : list(uint); }
 storage is record { pre : uint8; xs : list(list(uint)); ds : list(doc); t : (uint8, string); post : uint8; }
 external function put() is {
@@ -839,7 +839,7 @@ external view function doc0() : (uint8, string, list(uint)) is { const d : doc :
 /// the lock and the upgrade gate, fields in order, and a map's value from its hash on.
 #[test]
 fn transient_storage_takes_a_slot_per_word() {
-    let src = r#"
+    let src = r#"import "std/evm"; 
 type flags is record { on : bool; depth : uint8; count : uint16; }
 type pt is record { a : uint8; b : address; c : int16; d : uint; }
 type box is | Empty | Full of uint8 | Other of uint
@@ -953,7 +953,7 @@ external view function get() : list(uint8, 3) is storage.m[1]
 /// many to a slot as fit, low bytes first, pushed, popped, written, and replaced whole.
 #[test]
 fn narrow_stored_lists_pack_like_solidity() {
-    let src = r#"
+    let src = r#"import "std/list"; 
 interface Echo is { view function echo(x : uint) : uint; }
 storage is record { pre : uint8; a : list(uint8); b : list(uint16); c : list(address); d : list(bool); e : list(uint8, 3); f : list(int8); g : map(uint, list(uint16)); h : list(list(uint8)); post : uint8; }
 external function fence() is { storage.pre := 0xa5; storage.post := 0x5a; }
@@ -1181,7 +1181,7 @@ external view function sum() : uint is { var s : uint := 0; for x : uint8 in sto
 /// `pop` and `delete` do: long strings' data, inner lists' elements, at any depth.
 #[test]
 fn popped_and_shrunk_elements_leave_no_data() {
-    let src = r#"
+    let src = r#"import "std/list"; 
 interface Echo is { view function echo(x : uint) : uint; }
 type doc is record { n : uint8; s : string; xs : list(uint); bs : list(uint16); o : option(string); }
 type dyn is | Name of string | Nums of list(uint) | Blank
@@ -1258,7 +1258,7 @@ external function clear() is {
 fn journal_holds_any_number_of_slots() {
     install_mocks();
     let src = "\
-interface Echo is { view function echo(x : uint) : uint; }
+import \"std/list\"; interface Echo is { view function echo(x : uint) : uint; }
 interface Keep is { function keep(x : uint) : uint; }
 storage is record { pre : uint8; s : string; m : map(uint, uint); xs : list(list(uint)); n : uint; }
 external view function peek() : uint is storage.s.length

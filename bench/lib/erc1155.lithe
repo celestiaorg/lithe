@@ -1,6 +1,11 @@
 (* The ERC-1155 core, like OpenZeppelin's `ERC1155Upgradeable`: same storage, errors,
    events, and order of checks. Extensions compose these pieces explicitly. *)
 
+import "std/abi";
+import "std/address";
+import "std/evm";
+import "std/list";
+
 interface ERC1155Receiver is {
   function onERC1155Received(operator : address; from : address; id : uint; value : uint; data : bytes) : bytes4;
   function onERC1155BatchReceived(

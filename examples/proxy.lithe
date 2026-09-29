@@ -2,6 +2,8 @@
    proxy's storage, and returns or reverts with whatever that code did. The proxy's own
    state sits in a named domain, clear of the implementation's slots. *)
 
+import "std/evm";
+
 error Not_admin;
 
 storage is record {}

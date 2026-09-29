@@ -58,6 +58,8 @@ Malformed or missing arguments revert the deployment. To deploy from another con
 `payable deploy` accepts ether sent with the deployment, and may read `Evm.value()`. A plain `deploy` rejects ether:
 
 ```lithe
+import "std/evm";
+
 storage is record {
   seeded : wei;
 }
@@ -71,6 +73,8 @@ external view function seeded() : wei is
 ```
 
 ```lithe rejects
+import "std/evm";
+
 storage is record {
   seeded : wei;
 }
@@ -92,6 +96,8 @@ external view function seeded() : wei is
 An [upgradeable](/language/upgrades) contract lives behind a proxy. Its creation code only creates the implementation, whose storage nobody uses. So in an upgradeable contract, `deploy` sets up the **proxy** instead:
 
 ```lithe
+import "std/evm";
+
 upgradeable
 
 error Not_owner;

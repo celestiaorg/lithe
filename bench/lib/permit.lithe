@@ -1,9 +1,12 @@
 (* ERC-2612 approvals by signature, like OpenZeppelin's `ERC20PermitUpgradeable`. *)
 
-import "std/crypto/ecdsa.lithe";
-import "./erc20.lithe";
-import "./eip712.lithe";
-import "./nonces.lithe";
+import "std/abi";
+import "std/crypto";
+import "std/evm";
+import "std/crypto/ecdsa";
+import "./erc20";
+import "./eip712";
+import "./nonces";
 
 error ERC2612ExpiredSignature of uint;
 

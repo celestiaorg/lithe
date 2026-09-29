@@ -3,6 +3,12 @@
    and order of checks; Solady's hashed slots become plain maps. Mirrors solady_erc20.sol,
    which imports Solady. *)
 
+import "std/abi";
+import "std/address";
+import "std/crypto";
+import "std/evm";
+import "std/uint";
+
 error TotalSupplyOverflow;
 error InsufficientBalance;
 error InsufficientAllowance;

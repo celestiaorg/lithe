@@ -10,6 +10,8 @@ Events are records declared with `event`. `indexed` fields become topics.
 ```lithe [events.lithe]
 (* Events are records. `indexed` fields become topics; at most three per event. *)
 
+import "std/evm";
+
 event Transfer of record {
   indexed from : address;
   indexed to : address;

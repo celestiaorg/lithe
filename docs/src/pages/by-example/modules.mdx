@@ -12,6 +12,8 @@ Modules own their storage, errors, events, and functions, and declare the extern
    functions, and declares the externals it offers. A contract declares exactly
    which of them it exposes. Nothing becomes public by accident. *)
 
+import "std/evm";
+
 module Ownable is {
   storage ownable at "example.ownable" is record {
     owner : address;

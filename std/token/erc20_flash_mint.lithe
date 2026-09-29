@@ -12,8 +12,11 @@
 
      use ERC20FlashMint exposing IERC3156FlashLenderViews; *)
 
-import "std/token/erc20.lithe";
-import "std/interfaces/erc3156.lithe";
+import "std/evm";
+import "std/uint";
+import "std/token/erc20";
+import "std/interfaces/erc3156";
+import "std/interfaces/erc20";
 
 module ERC20FlashMint is {
   requires ERC20;

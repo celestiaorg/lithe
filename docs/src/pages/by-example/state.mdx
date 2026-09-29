@@ -8,6 +8,8 @@ description: "Views read storage; stateful functions write it."
 State is read and written through `storage.`. A function's keyword says whether it may write, and the compiler holds it to that.
 
 ```lithe [state.lithe]
+import "std/evm";
+
 storage is record {
   value : uint;
   updated_by : address;

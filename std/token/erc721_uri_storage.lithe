@@ -15,7 +15,10 @@
      external pure function supportsInterface(const interfaceId : bytes4) : bool is
        ERC721URIStorage.supports_interface(interfaceId) or Abi.supports_interface(interfaceId) *)
 
-import "std/token/erc721.lithe";
+import "std/string";
+import "std/uint";
+import "std/token/erc721";
+import "std/interfaces/erc721";
 
 module ERC721URIStorage is {
   requires ERC721;

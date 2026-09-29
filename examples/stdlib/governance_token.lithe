@@ -4,12 +4,23 @@
    a mint, then the votes, in OpenZeppelin's order. So each transfer, mint, burn, and flash
    loan moves votes, and none of them runs while the token is paused. *)
 
-import "std/token/erc20_votes.lithe";
-import "std/token/erc20_permit.lithe";
-import "std/token/erc20_capped.lithe";
-import "std/token/erc20_flash_mint.lithe";
-import "std/access/access_control.lithe";
-import "std/security/pausable.lithe";
+import "std/address";
+import "std/evm";
+import "std/token/erc20_votes";
+import "std/token/erc20_permit";
+import "std/token/erc20_capped";
+import "std/token/erc20_flash_mint";
+import "std/access/access_control";
+import "std/security/pausable";
+import "std/token/erc20";
+import "std/crypto/eip712";
+import "std/interfaces/erc20";
+import "std/utils/checkpoint";
+import "std/interfaces/erc3156";
+import "std/interfaces/erc5805";
+import "std/crypto/ecdsa";
+import "std/utils/nonce";
+import "std/math/math";
 
 contract GovernanceToken is {
   use ECDSA;

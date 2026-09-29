@@ -2,13 +2,16 @@
    with a base URI, burnable, pausable, ownable, auto-increment minting, and ERC-2981
    royalties, built from modules. Mirrors erc721_full.sol, which imports OpenZeppelin. *)
 
-import "./lib/initializable.lithe";
-import "./lib/ownable.lithe";
-import "./lib/pausable.lithe";
-import "./lib/erc721.lithe";
-import "./lib/erc721_enumerable.lithe";
-import "./lib/erc721_uri_storage.lithe";
-import "./lib/erc2981.lithe";
+import "std/abi";
+import "std/address";
+import "std/evm";
+import "./lib/initializable";
+import "./lib/ownable";
+import "./lib/pausable";
+import "./lib/erc721";
+import "./lib/erc721_enumerable";
+import "./lib/erc721_uri_storage";
+import "./lib/erc2981";
 
 contract BenchNFTFull is {
   use Initializable;

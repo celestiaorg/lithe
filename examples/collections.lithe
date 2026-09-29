@@ -1,5 +1,8 @@
 (* Maps, dynamic lists, fixed lists, and options in storage. *)
 
+import "std/evm";
+import "std/list";
+
 storage is record {
   balances : map(address, uint);
   echo : uint;

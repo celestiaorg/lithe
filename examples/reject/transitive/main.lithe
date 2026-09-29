@@ -1,0 +1,10 @@
+(* `a` imports `b`, and `main` imports only `a`: `b`'s names are not `main`'s. A value of
+   `b`'s type is fine; naming the type needs `import "./b";`. *)
+import "./a";
+
+storage is record { n : uint; }
+
+external function go() is {
+  const x : amount := doubled();
+  storage.n := uint(x);
+}

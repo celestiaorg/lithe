@@ -11,6 +11,8 @@ A call names an entrypoint with its first four bytes. `receive` runs for a call 
 (* Plain ether, with no calldata, runs `receive`. Calldata that matches no entrypoint runs
    `fallback`. Without them, both revert. *)
 
+import "std/evm";
+
 event Received of record {
   indexed from : address;
   amount : wei;
@@ -65,6 +67,8 @@ A `fallback` can pass a call on whole. `delegates to` runs the target's code on 
 (* A proxy. Every call it has no entrypoint for runs the implementation's code on the
    proxy's storage, and returns or reverts with whatever that code did. The proxy's own
    state sits in a named domain, clear of the implementation's slots. *)
+
+import "std/evm";
 
 error Not_admin;
 

@@ -2,10 +2,11 @@
    implementation, data kept as code with SSTORE2, and CREATE3 deployments whose
    address depends only on a salt. *)
 
-import "std/utils/create2.lithe";
-import "std/utils/clones.lithe";
-import "std/utils/sstore2.lithe";
-import "std/utils/create3.lithe";
+import "std/evm";
+import "std/utils/create2";
+import "std/utils/clones";
+import "std/utils/sstore2";
+import "std/utils/create3";
 
 contract Deployers is {
   use Create2;

@@ -1,7 +1,9 @@
 (* Benchmark: powers, the standard library's roots, logarithms, and signed helpers, and
    hex formatting, on runtime arguments. Mirrors numerics.sol, which imports OpenZeppelin. *)
 
-import "std/math/math.lithe";
+import "std/address";
+import "std/uint";
+import "std/math/math";
 
 contract Numerics is {
   use Math;

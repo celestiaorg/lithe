@@ -1085,8 +1085,13 @@ struct Leaves {
     packs: Vec<crate::check::Pack>,
 }
 
+/// A program held in memory, with the files it imports.
+fn loaded(src: &str) -> crate::ast::Program {
+    crate::modules::load(&memory(src), Path::new(ENTRY)).expect("load")
+}
+
 fn leaves(src: &str) -> Leaves {
-    let checked = crate::check::check(crate::parse::parse(src).expect("parse")).expect("check");
+    let checked = crate::check::check(loaded(src)).expect("check");
     Leaves {
         keys: checked.leaf_keys,
         packs: checked.leaf_pack,

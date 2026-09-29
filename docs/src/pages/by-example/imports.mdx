@@ -11,8 +11,8 @@ description: "Splitting code across files."
 
 ```lithe [main.lithe]
 (* A plain import brings names in directly. `as` keeps them behind a prefix. *)
-import "./lib/math.lithe";
-import "./lib/fees.lithe" as Fees;
+import "./lib/math";
+import "./lib/fees" as Fees;
 
 storage is record {
   fee : Fees.basis_points;
@@ -48,5 +48,6 @@ private pure function unused() : uint is
 
 :::
 
-- Imports come before every other declaration, and paths are relative to the importing file.
+- Imports come before every other declaration. A path names a module, without `.lithe`, relative to the importing file unless it starts with `std/`.
+- A file sees what it declares and what the files it imports declare, never what those files import in turn.
 - `private` declarations, like `unused`, are invisible to importers.

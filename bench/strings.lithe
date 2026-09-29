@@ -1,6 +1,9 @@
 (* Benchmark: strings short and long, from calldata and storage: stored, returned, joined,
    compared, logged, and carried by errors. Mirrors strings.sol. *)
 
+import "std/evm";
+import "std/string";
+
 error Name_taken of record {
   name : string;
   owner : address;

@@ -196,6 +196,7 @@ impl Body {
             origin: String::new(),
             specs: self.specs,
             proving: false,
+            scopes: Default::default(),
         }
     }
 }
@@ -460,7 +461,7 @@ impl<'a> Parser<'a> {
             Kind::Use => {
                 let (line, col) = self.at();
                 self.bump();
-                let module = self.ident()?;
+                let module = self.dotted()?;
                 if self.kind() == Kind::Ident && self.slice() == "exposing" {
                     self.bump();
                     let exposed = self.use_exposing(line, col, module.clone())?;
@@ -600,6 +601,7 @@ impl<'a> Parser<'a> {
         let mut events = Vec::new();
         let mut funcs = Vec::new();
         let mut specs = Vec::new();
+        let mut intrinsics = Vec::new();
         while self.kind() != Kind::RBrace && self.kind() != Kind::Eof {
             if self.kind() == Kind::Semi {
                 self.bump();
@@ -624,7 +626,7 @@ impl<'a> Parser<'a> {
                 Kind::Requires => {
                     self.bump();
                     let (rline, rcol) = self.at();
-                    let required = self.ident()?;
+                    let required = self.dotted()?;
                     if requires.iter().any(|have| have.name == required) {
                         return Err(error(
                             rline,
@@ -693,6 +695,20 @@ impl<'a> Parser<'a> {
                     }
                     domains.push(decl);
                 }
+                Kind::Ident if self.slice() == "intrinsic" => {
+                    let decl = self.intrinsic_decl()?;
+                    if intrinsics
+                        .iter()
+                        .any(|have: &Intrinsic| have.name == decl.name)
+                    {
+                        return Err(error(
+                            decl.line,
+                            decl.col,
+                            format!("module `{name}` declares `{}` more than once", decl.name),
+                        ));
+                    }
+                    intrinsics.push(decl);
+                }
                 Kind::Type => types.push(self.type_decl()?),
                 Kind::ErrorKw => errors.push(self.error_decl()?),
                 Kind::ErrorsKw => error_sets.push(self.error_set_decl()?),
@@ -754,6 +770,97 @@ impl<'a> Parser<'a> {
             events,
             funcs,
             specs,
+            intrinsics,
+        })
+    }
+
+    /// `intrinsic name;`, or `intrinsic [view | pure] function name(a : T; ...) [: R];`.
+    fn intrinsic_decl(&mut self) -> Result<Intrinsic, Error> {
+        let (line, col) = self.at();
+        self.bump();
+        if self.kind() == Kind::Ident && self.peek_kind(1) == Kind::Semi {
+            let name = self.ident()?;
+            self.bump();
+            return Ok(Intrinsic {
+                line,
+                col,
+                name,
+                sig: None,
+                tag: None,
+            });
+        }
+        let kind = match self.kind() {
+            Kind::View => ItemKind::Readonly,
+            Kind::Pure => ItemKind::Pure,
+            _ => ItemKind::Function,
+        };
+        if kind != ItemKind::Function {
+            self.bump();
+        }
+        self.want(Kind::Function)?;
+        let (fline, fcol) = self.at();
+        let name = self.ident()?;
+        self.want(Kind::LParen)?;
+        let mut params = Vec::new();
+        while self.kind() != Kind::RParen {
+            let (pline, pcol) = self.at();
+            let pname = self.ident()?;
+            self.want(Kind::Colon)?;
+            let ty = self.ty()?;
+            params.push(Param {
+                line: pline,
+                col: pcol,
+                mutable: false,
+                storage: false,
+                name: pname,
+                ty,
+                ty_id: 0,
+                sym: None,
+            });
+            if self.kind() != Kind::Semi {
+                break;
+            }
+            self.bump();
+        }
+        self.want(Kind::RParen)?;
+        let ret = if self.kind() == Kind::Colon {
+            self.bump();
+            Some(self.ty()?)
+        } else {
+            None
+        };
+        self.want(Kind::Semi)?;
+        Ok(Intrinsic {
+            line,
+            col,
+            name: name.clone(),
+            sig: Some(Func {
+                line: fline,
+                col: fcol,
+                kind,
+                private: false,
+                origin: String::new(),
+                name,
+                type_params: Vec::new(),
+                params,
+                ret,
+                ret_ty: 0,
+                payable: false,
+                nonreentrant: false,
+                external_pure: false,
+                raises: None,
+                errors: Vec::new(),
+                stmts: Vec::new(),
+                tail: None,
+                module: None,
+                requires: Vec::new(),
+                promoted: None,
+                declares: None,
+                interface: None,
+                exported: None,
+                forward: None,
+            }),
+            tag: None,
         })
     }
 
@@ -1238,7 +1345,7 @@ impl<'a> Parser<'a> {
             members.push(NameAt {
                 line: mline,
                 col: mcol,
-                name: self.ident()?,
+                name: self.dotted()?,
             });
             if self.kind() == Kind::Pipe {
                 self.bump();
@@ -1357,6 +1464,9 @@ impl<'a> Parser<'a> {
                     self.bump();
                     let rest = self.ident()?;
                     name = format!("{name}.{rest}");
+                    if self.kind() == Kind::LParen {
+                        return self.generic(&name, line, col);
+                    }
                 }
                 Ok(TypeRef::Name { line, col, name })
             }
@@ -1567,6 +1677,11 @@ impl<'a> Parser<'a> {
             return Err(self.err("`import` expects a path string"));
         }
         let path = self.tok().string.clone().unwrap_or_default();
+        if !module_path(&path) {
+            return Err(self.err(format!(
+                "invalid import path `{path}`\n\nan import names a module: `std/`, `./`, or `../` and `/`-separated names of lowercase letters, digits, and `_`, as in `std/token/erc20` or `./lib/fees`"
+            )));
+        }
         self.bump();
         let alias = if self.kind() == Kind::As {
             self.bump();
@@ -2021,7 +2136,7 @@ impl<'a> Parser<'a> {
         let mut parts = Vec::new();
         loop {
             let (pline, pcol) = self.at();
-            let name = self.ident()?;
+            let name = self.dotted()?;
             if name == "none" {
                 return Err(error(
                     pline,
@@ -2329,7 +2444,7 @@ impl<'a> Parser<'a> {
 
     fn emit_stmt(&mut self, line: u32, col: u32) -> Result<Stmt, Error> {
         self.want(Kind::Emit)?;
-        let name = self.ident()?;
+        let name = self.dotted()?;
         self.want(Kind::LBrace)?;
         let fields = self.named_fields()?;
         Ok(Stmt::Emit {
@@ -2642,7 +2757,7 @@ impl<'a> Parser<'a> {
 
     fn raised(&mut self) -> Result<Raised, Error> {
         let (line, col) = self.at();
-        let name = self.ident()?;
+        let name = self.dotted()?;
         let form = if self.kind() == Kind::LParen {
             self.bump();
             let expr = self.expr()?;
@@ -3209,6 +3324,16 @@ impl<'a> Parser<'a> {
         Ok(name)
     }
 
+    /// A name, or one qualified by an import alias or a module: `E.Denied`.
+    fn dotted(&mut self) -> Result<String, Error> {
+        let mut name = self.ident()?;
+        while self.kind() == Kind::Dot && self.peek_kind(1) == Kind::Ident {
+            self.bump();
+            name = format!("{name}.{}", self.ident()?);
+        }
+        Ok(name)
+    }
+
     fn kind(&self) -> Kind {
         self.toks[self.i].kind
     }
@@ -3304,6 +3429,29 @@ impl<'a> Parser<'a> {
 }
 
 /// The keyword that declares a `receive` or `fallback`.
+/// `std/a/b`, `./a/b`, or `../../a/b`: each name a lowercase identifier.
+pub(crate) fn module_path(path: &str) -> bool {
+    let mut rest = path
+        .strip_prefix("std/")
+        .or_else(|| path.strip_prefix("./"));
+    if rest.is_none() && path.starts_with("../") {
+        let mut tail = path;
+        while let Some(next) = tail.strip_prefix("../") {
+            tail = next;
+        }
+        rest = Some(tail);
+    }
+    rest.is_some_and(|rest| {
+        rest.split('/').all(|seg| {
+            let mut chars = seg.chars();
+            chars
+                .next()
+                .is_some_and(|c| c.is_ascii_lowercase() || c == '_')
+                && chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+        })
+    })
+}
+
 fn special_word(kind: ItemKind) -> Option<&'static str> {
     match kind {
         ItemKind::Receive => Some("receive"),

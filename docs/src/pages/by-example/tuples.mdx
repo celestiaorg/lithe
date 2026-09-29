@@ -8,6 +8,9 @@ description: "Grouping values by position, returning several values, and destruc
 Tuples group values by position. Use them to return several values, and destructure them with `const (a, b) : (T, U) := ...`.
 
 ```lithe [tuples.lithe]
+import "std/evm";
+import "std/uint";
+
 storage is record {
   (* Tuples can be stored, and pack like a struct. *)
   pair : (uint32, address);

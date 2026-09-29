@@ -1,6 +1,11 @@
 (* The precompiles as built-ins: a passkey's P-256 signature, a BN254 pairing check as a
    zk verifier makes, and a modular exponent. *)
 
+import "std/abi";
+import "std/crypto";
+import "std/evm";
+import "std/uint";
+
 error Bad_signature;
 
 storage is record {

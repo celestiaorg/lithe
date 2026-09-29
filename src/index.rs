@@ -18,6 +18,9 @@ pub struct Index {
     /// Each type's declaring definition, whose children are its fields, variants, or methods.
     shapes: HashMap<usize, usize>,
     tys: Vec<Ty>,
+    /// The names the indexed file sees, as it writes them, and the canonical name each
+    /// stands for: `Math`, `Fees.apply`, `Chain.Evm`.
+    spelled: HashMap<String, String>,
 }
 
 pub struct File {
@@ -101,10 +104,6 @@ struct Ty {
     /// What indexing gives: a map's value, or a list's element.
     item: Option<usize>,
 }
-
-const NAMESPACES: [&str; 10] = [
-    "Evm", "Crypto", "Abi", "Bytes", "String", "Base64", "List", "Uint", "Int", "Address",
-];
 
 const KEYWORDS: [&str; 61] = [
     "type",
@@ -198,6 +197,7 @@ pub(crate) fn build(root: &str, text: &str, units: &[Checked]) -> Index {
             refs: Vec::new(),
             shapes: HashMap::new(),
             tys: Vec::new(),
+            spelled: HashMap::new(),
         },
         root: root.to_string(),
         text,
@@ -208,7 +208,6 @@ pub(crate) fn build(root: &str, text: &str, units: &[Checked]) -> Index {
         kids: HashMap::new(),
         stored: HashSet::new(),
         builtins: HashMap::new(),
-        table: builtin_table(),
         contracts: HashMap::new(),
         c: None,
         base: 0,
@@ -229,6 +228,19 @@ pub(crate) fn build(root: &str, text: &str, units: &[Checked]) -> Index {
     for c in units {
         b.unit(c);
     }
+    for c in units {
+        let key = (c.prog.origin.clone(), c.prog.contract_name.clone());
+        let Some(scope) = c.prog.scopes.scope(&key) else {
+            continue;
+        };
+        let decls = &c.prog.scopes.decls;
+        let names = scope.names.iter().map(|(k, entries)| (k, entries[0].decl));
+        let modules = scope.modules.iter().map(|(k, entry)| (k, entry.decl));
+        for (spelled, decl) in names.chain(modules) {
+            b.ix.spelled
+                .insert(spelled.clone(), decls[decl].canonical.clone());
+        }
+    }
     b.ix
 }
 
@@ -244,7 +256,6 @@ struct Builder<'a> {
     /// Fields declared inside storage, whose hover already says where they are stored.
     stored: HashSet<usize>,
     builtins: HashMap<String, usize>,
-    table: Vec<Builtin>,
     contracts: HashMap<String, usize>,
     // The unit being indexed. A file with several contracts has one per contract.
     c: Option<&'a Checked>,
@@ -258,14 +269,6 @@ struct Builder<'a> {
     file: usize,
     func: Option<usize>,
     module: Option<String>,
-}
-
-struct Builtin {
-    namespace: String,
-    name: String,
-    sig: String,
-    ty: String,
-    note: String,
 }
 
 const BUILTINS_DOC: &str = include_str!(concat!(
@@ -287,51 +290,6 @@ fn section_intro(name: &str) -> String {
         .take_while(|l| !l.trim().is_empty())
         .collect::<Vec<_>>()
         .join("\n")
-}
-
-/// The built-ins, from the rows of the reference tables in the documentation.
-fn builtin_table() -> Vec<Builtin> {
-    const DOC: &str = BUILTINS_DOC;
-    let mut out = Vec::new();
-    for line in DOC.lines() {
-        let Some(row) = line.strip_prefix("| `") else {
-            continue;
-        };
-        let mut cells = Vec::new();
-        let mut cell = String::new();
-        let mut chars = row.chars().peekable();
-        while let Some(ch) = chars.next() {
-            match ch {
-                '\\' if chars.peek() == Some(&'|') => {
-                    cell.push('|');
-                    chars.next();
-                }
-                '|' => cells.push(std::mem::take(&mut cell).trim().to_string()),
-                ch => cell.push(ch),
-            }
-        }
-        let [sig, ty, note, ..] = cells.as_slice() else {
-            continue;
-        };
-        // One row may list several: `Uint.wrapping_add(a, b)`, `Uint.wrapping_sub(a, b)`.
-        for sig in sig.trim_end_matches('`').split("`, `") {
-            let Some((namespace, rest)) = sig.split_once('.') else {
-                continue;
-            };
-            if !NAMESPACES.contains(&namespace) {
-                continue;
-            }
-            let name = rest.split('(').next().unwrap_or(rest).to_string();
-            out.push(Builtin {
-                namespace: namespace.to_string(),
-                name,
-                ty: ty.replace('`', ""),
-                note: note.clone(),
-                sig: sig.to_string(),
-            });
-        }
-    }
-    out
 }
 
 impl<'a> Builder<'a> {
@@ -762,14 +720,24 @@ impl<'a> Builder<'a> {
         d
     }
 
-    fn namespace(&mut self, ns: &str) -> Option<usize> {
-        NAMESPACES.contains(&ns).then(|| {
-            self.pseudo(
-                &format!("ns:{ns}"),
-                format!("module {ns}"),
-                section_intro(ns),
-            )
-        })
+    /// A module the compiler implements, by its canonical name.
+    fn namespace(&self, ns: &str) -> Option<usize> {
+        let c = self.c();
+        c.prog
+            .modules
+            .iter()
+            .any(|m| m.name == ns && !m.intrinsics.is_empty())
+            .then(|| self.names.get(&('m', ns.to_string())).copied())
+            .flatten()
+    }
+
+    /// The module a name before a dot stands for in the file being walked.
+    fn module_named(&self, spelled: &str) -> Option<String> {
+        let c = self.c();
+        let origin = &self.ix.files[self.file].path;
+        let scope = c.prog.scopes.of_file(origin)?;
+        let entry = scope.modules.get(spelled)?;
+        Some(c.prog.scopes.decls[entry.decl].canonical.clone())
     }
 
     fn ty_text(&self, ty: usize) -> String {
@@ -840,10 +808,59 @@ impl<'a> Builder<'a> {
             if !funcs.is_empty() {
                 hover.push(format!("**Functions** {}", funcs.join(", ")));
             }
-            if !prog.compose.iter().any(|u| u.name == m.name) {
+            if m.intrinsics.is_empty() && !prog.compose.iter().any(|u| u.name == m.name) {
                 hover.push("not used by this contract".to_string());
             }
             self.ix.defs[d].hover = join(hover);
+            for i in &m.intrinsics {
+                let at = self.locate(file, i.line, i.col, &i.name);
+                let text = &self.ix.files[file].text;
+                let from = self.offset(file, i.line, i.col);
+                let written = text[from..]
+                    .split(';')
+                    .next()
+                    .unwrap_or("")
+                    .split_whitespace()
+                    .collect::<Vec<_>>()
+                    .join(" ")
+                    .replace("( ", "(");
+                let member = format!("{}.{}", short(&m.name), i.name);
+                let detail = match &i.sig {
+                    Some(f) => format!(
+                        "{member}({}){}",
+                        f.params
+                            .iter()
+                            .map(param_text)
+                            .collect::<Vec<_>>()
+                            .join("; "),
+                        ret_raises(f)
+                    ),
+                    // Without a signature, the doc comment's first line gives the call's
+                    // shape: `keccak256(x : bytes | string) : bytes32`.
+                    None => match self.doc(file, i.line).lines().next() {
+                        Some(shape) => format!("{}.{shape}", short(&m.name)),
+                        None => member,
+                    },
+                };
+                let def = self.def(
+                    Some(self.span(file, at, &i.name)),
+                    Def {
+                        name: i.name.clone(),
+                        kind: Kind::Builtin,
+                        at: None,
+                        hover: join(vec![code(&written), self.doc(file, i.line)]),
+                        detail,
+                        parent: Some(d),
+                        ty: None,
+                        params: i
+                            .sig
+                            .iter()
+                            .flat_map(|f| f.params.iter().map(param_text))
+                            .collect(),
+                    },
+                );
+                self.builtins.insert(format!("{}.{}", m.name, i.name), def);
+            }
         }
         for decl in &prog.interfaces {
             let file = self.file(&decl.origin);
@@ -1945,19 +1962,9 @@ impl<'a> Builder<'a> {
             .or_else(|| self.error_name(name))
     }
 
-    fn builtin(&mut self, namespace: &str, name: &str) -> Option<usize> {
-        let key = format!("{namespace}.{name}");
-        if let Some(&d) = self.builtins.get(&key) {
-            return Some(d);
-        }
-        let b = self
-            .table
-            .iter()
-            .find(|b| b.namespace == namespace && b.name == name)?;
-        let def = builtin_def(b);
-        let d = self.def(None, def);
-        self.builtins.insert(key, d);
-        Some(d)
+    /// The intrinsic `name` of the module the compiler implements named `namespace`.
+    fn builtin(&self, namespace: &str, name: &str) -> Option<usize> {
+        self.builtins.get(&format!("{namespace}.{name}")).copied()
     }
 
     fn stmts(&mut self, ss: &[Stmt]) {
@@ -2263,11 +2270,14 @@ impl<'a> Builder<'a> {
                 let word = self.word_at(self.file, *line, *col).to_string();
                 let text = &self.ix.files[self.file].text;
                 let at = self.offset(self.file, *line, *col);
-                let ns = text[..at]
+                let spelled = text[..at]
                     .strip_suffix('.')
                     .map(|b| &b[b.trim_end_matches(is_ident).len()..])
-                    .filter(|ns| NAMESPACES.contains(ns))
                     .map(str::to_string);
+                let ns = spelled
+                    .as_deref()
+                    .and_then(|ns| self.module_named(ns))
+                    .filter(|ns| self.namespace(ns).is_some());
                 // `Abi.interface_id(I)` and `Abi.selector(I.f)` fold to their `bytes4`.
                 let arg: Option<String> = text[at + word.len()..].strip_prefix('(').map(|inner| {
                     inner
@@ -2280,11 +2290,12 @@ impl<'a> Builder<'a> {
                     let d = self.member(self.key(*ty), &word);
                     self.refer((*line, *col), &word, d);
                 }
-                if let Some(ns) = ns {
+                if let (Some(ns), Some(spelled)) = (ns, spelled) {
                     let d = self.builtin(&ns, &word);
                     self.refer((*line, *col), &word, d);
                     let n = self.namespace(&ns);
-                    self.refer((*line, col.saturating_sub(ns.len() as u32 + 1)), &ns, n);
+                    let back = col.saturating_sub(spelled.len() as u32 + 1);
+                    self.refer((*line, back), &spelled, n);
                     if let Some(arg) = arg {
                         let arg_col = *col + word.len() as u32 + 1;
                         let (iface, method) = arg.split_once('.').unwrap_or((&arg, ""));
@@ -2340,7 +2351,7 @@ impl<'a> Builder<'a> {
                         line: nl,
                         col: nc,
                         ..
-                    } if NAMESPACES.contains(&ns.as_str()) => {
+                    } if self.namespace(ns).is_some() => {
                         let n = self.namespace(ns);
                         self.refer((*nl, *nc), ns, n);
                         self.builtin(ns, name)
@@ -2538,27 +2549,6 @@ impl<'a> Builder<'a> {
                 }
             }
         }
-    }
-}
-
-fn builtin_def(b: &Builtin) -> Def {
-    let detail = format!("{} : {}", b.sig, b.ty);
-    let params = b
-        .sig
-        .split_once('(')
-        .map(|(_, rest)| rest.trim_end_matches(')'))
-        .filter(|inner| !inner.is_empty())
-        .map(|inner| inner.split(", ").map(str::to_string).collect())
-        .unwrap_or_default();
-    Def {
-        name: b.name.clone(),
-        kind: Kind::Builtin,
-        at: None,
-        hover: join(vec![code(&detail), b.note.clone()]),
-        detail,
-        parent: None,
-        ty: None,
-        params,
     }
 }
 
@@ -3131,46 +3121,54 @@ impl Index {
         out
     }
 
+    /// The canonical name a name of the indexed file stands for.
+    fn canonical<'a>(&'a self, spelled: &'a str) -> &'a str {
+        self.spelled.get(spelled).map_or(spelled, String::as_str)
+    }
+
     fn after_dot(&self, text: &str, path: &str, line: u32) -> Vec<Completion> {
         let (segs, _) = chain(path);
-        if let [Seg::Name(head, false)] = segs.as_slice() {
-            if NAMESPACES.contains(&head.as_str()) {
-                let mut seen = HashSet::new();
-                return builtin_table()
-                    .iter()
-                    .filter(|b| &b.namespace == head && seen.insert(b.name.clone()))
-                    .map(|b| {
-                        let def = builtin_def(b);
-                        Completion {
-                            label: b.name.clone(),
-                            kind: Kind::Builtin,
-                            detail: def.detail,
-                            doc: def.hover,
-                            snippet: None,
-                        }
-                    })
-                    .collect();
-            }
-            if let Some(m) = self.named(head, &[Kind::Module]) {
+        let head = match segs.as_slice() {
+            [Seg::Name(head, false)] => Some(head.clone()),
+            [Seg::Name(alias, false), Seg::Name(m, false)] => Some(format!("{alias}.{m}")),
+            _ => None,
+        };
+        if let Some(head) = head {
+            if let Some(m) = self.named(self.canonical(&head), &[Kind::Module]) {
                 return self
                     .children(m)
-                    .filter(|&d| matches!(self.defs[d].kind, Kind::Function | Kind::External))
+                    .filter(|&d| {
+                        matches!(
+                            self.defs[d].kind,
+                            Kind::Function | Kind::External | Kind::Builtin
+                        )
+                    })
                     .map(|d| self.item(d))
                     .collect();
             }
-            if let Some(i) = self.named(head, &[Kind::Interface]) {
+            if let Some(i) = self.named(self.canonical(&head), &[Kind::Interface]) {
                 return self.children(i).map(|d| self.item(d)).collect();
             }
+            // An alias: what its file declares, and its modules.
             let prefix = format!("{head}.");
-            let aliased: Vec<Completion> = (0..self.defs.len())
-                .filter(|&d| self.defs[d].name.starts_with(&prefix))
-                .map(|d| {
-                    let mut item = self.item(d);
-                    item.label = item.label[prefix.len()..].to_string();
-                    item
+            let mut aliased: Vec<Completion> = self
+                .spelled
+                .iter()
+                .filter_map(|(spelled, canonical)| {
+                    let label = spelled.strip_prefix(&prefix)?;
+                    let d = self.defs.iter().position(|d| {
+                        d.parent.is_none() && (d.name == *canonical || d.name == short(canonical))
+                    });
+                    let mut item = match d {
+                        Some(d) => self.item(d),
+                        None => keyword(label, Kind::Module),
+                    };
+                    item.label = label.to_string();
+                    Some(item)
                 })
                 .collect();
             if !aliased.is_empty() {
+                aliased.sort_by(|a, b| a.label.cmp(&b.label));
                 return aliased;
             }
         }
@@ -3270,20 +3268,34 @@ impl Index {
             }
         }
         let module = self.enclosing(line).and_then(|f| self.defs[f].parent);
+        // What another file declares is in scope only through this file's imports.
+        let imported = |def: &Def| {
+            def.at.is_some_and(|at| at.file == 0)
+                || self
+                    .spelled
+                    .iter()
+                    .any(|(k, v)| !k.contains('.') && (*v == def.name || short(v) == def.name))
+        };
         for (d, def) in self.defs.iter().enumerate() {
             let visible = match def.kind {
-                Kind::Function => def.parent.is_none() || def.parent == module,
+                Kind::Function => def.parent == module || (def.parent.is_none() && imported(def)),
                 Kind::Storage => def.parent.is_none() || def.parent == module,
-                Kind::Type | Kind::Variant | Kind::Error | Kind::Interface | Kind::Module => true,
+                Kind::Type | Kind::Error | Kind::Interface | Kind::Module => {
+                    def.parent.is_some() || imported(def)
+                }
+                Kind::Variant => true,
                 _ => false,
             };
             if visible && seen.insert(def.name.clone()) {
                 out.push(self.item(d));
             }
         }
-        for ns in NAMESPACES {
-            if seen.insert(ns.to_string()) {
-                out.push(keyword(ns, Kind::Module));
+        // An alias, which names what its file declares.
+        for spelled in self.spelled.keys() {
+            if let Some((alias, _)) = spelled.split_once('.') {
+                if seen.insert(alias.to_string()) {
+                    out.push(keyword(alias, Kind::Module));
+                }
             }
         }
         for kw in KEYWORDS {
@@ -3329,23 +3341,14 @@ impl Index {
             [Seg::Name(name, _)] => {
                 self.named(name, &[Kind::Function, Kind::External, Kind::Variant])
             }
-            [Seg::Name(ns, false), Seg::Name(name, _)] if NAMESPACES.contains(&ns.as_str()) => {
-                let table = builtin_table();
-                let b = table
-                    .iter()
-                    .find(|b| &b.namespace == ns && &b.name == name)?;
-                let def = builtin_def(b);
-                return Some(Signature {
-                    label: def.detail,
-                    params: def.params,
-                    active,
-                    doc: b.note.clone(),
-                });
-            }
             [Seg::Name(m, false), Seg::Name(name, _)]
-                if self.named(m, &[Kind::Module]).is_some() =>
+                if self.named(self.canonical(m), &[Kind::Module]).is_some() =>
             {
-                let m = self.named(m, &[Kind::Module])?;
+                let m = self.named(self.canonical(m), &[Kind::Module])?;
+                self.children(m).find(|&d| &self.defs[d].name == name)
+            }
+            [Seg::Name(alias, false), Seg::Name(m, false), Seg::Name(name, _)] => {
+                let m = self.named(self.canonical(&format!("{alias}.{m}")), &[Kind::Module])?;
                 self.children(m).find(|&d| &self.defs[d].name == name)
             }
             [rest @ .., Seg::Name(name, _)] => {

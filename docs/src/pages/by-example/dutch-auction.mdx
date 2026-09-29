@@ -11,6 +11,9 @@ The price falls linearly from a start price to a floor. The first buyer to pay t
 (* The price falls linearly from a start price to a floor. The first buyer at or
    above the current price wins, and any overpayment is returned. *)
 
+import "std/address";
+import "std/evm";
+
 error Already_started;
 error Sold;
 error Too_low of record {

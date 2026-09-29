@@ -12,7 +12,7 @@
 //!     ("lib/math.lithe", "pure function twice(const n : uint) : uint is n + n\n"),
 //!     (
 //!         "counter.lithe",
-//!         "import \"./lib/math.lithe\";\n\
+//!         "import \"./lib/math\";\n\
 //!          storage is record { count : uint; }\n\
 //!          external function bump(const n : uint) is { storage.count := storage.count + twice(n); }\n",
 //!     ),
@@ -54,6 +54,7 @@ mod lint;
 mod modules;
 mod parse;
 mod prove;
+mod resolve;
 mod route;
 mod spec;
 mod split;
@@ -66,13 +67,33 @@ pub use config::{format_width, DEFAULT_WIDTH};
 pub use format::format_source;
 pub use index::{Completion, Def, File, Index, Kind, Ref, Signature, Span};
 pub use lint::{lint_paths, lithe_files, Lint};
-pub use modules::Sources;
+pub use modules::{import_path, Sources};
 pub use prove::{solver, Proof, ProveOptions};
 pub use route::{
     Abi, AbiError, AbiItem, Constructor, Event, EventParam, Fallback, Function, Param, Receive,
     StateMutability,
 };
 pub use split::{Options, SplitMode, DEPLOYER, SIZE_LIMIT};
+
+/// Whether `path` is an import path: `std/`, `./`, or `../` and lowercase names.
+pub fn is_module_path(path: &str) -> bool {
+    parse::module_path(path)
+}
+
+/// The standard library's modules, as an import names them: `std/token/erc20`.
+pub fn std_modules() -> Vec<&'static str> {
+    modules::STD
+        .iter()
+        .map(|(path, _)| *path)
+        .filter(|path| !path.ends_with(".spec.lithe"))
+        .filter_map(|path| path.strip_suffix(".lithe"))
+        .collect()
+}
+
+/// The text of the standard library module an import names.
+pub fn std_text(import: &str) -> Option<&'static str> {
+    modules::std_source(&Path::new(modules::STD_ROOT).join(format!("{import}.lithe")))
+}
 
 /// A compile error at a 1-based line and column. Line 0 has no place in the source.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -465,8 +486,16 @@ fn module_contract(
     if order.is_empty() {
         return Err(error(1, 1, "the file declares no contract and no module"));
     }
-    let file = canon.file_name().unwrap_or_default().to_string_lossy();
-    let mut src = format!("import \"./{file}\";\n\ncontract Modules is {{\n");
+    let stem = canon.file_stem().unwrap_or_default().to_string_lossy();
+    let import = format!("./{stem}");
+    if !parse::module_path(&import) {
+        return Err(error(
+            1,
+            1,
+            format!("`{stem}` is not a module name, so no contract can import this file's modules"),
+        ));
+    }
+    let mut src = format!("import \"{import}\";\n\ncontract Modules is {{\n");
     for decl in order {
         if let Some(param) = decl.params.first() {
             return Err(error(

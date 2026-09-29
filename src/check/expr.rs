@@ -1118,37 +1118,44 @@ impl Checker {
         let Expr::Ident { name: module, .. } = base.as_ref() else {
             return Ok(None);
         };
-        if self.lookup(module).is_some() || !matches!(module.as_str(), "Uint" | "Int" | "Address") {
+        if !self.intrinsic_module(module) {
             return Ok(None);
         }
+        let tag = self.intrinsic(base, name);
         let expected = |kind: TyKind, default: usize| {
             self.expect
                 .filter(|&t| self.types[self.peel(t)].kind == kind)
                 .unwrap_or(default)
         };
         let ones = Word::from_u64(0).not();
-        let (ty, word) = match (module.as_str(), name.as_str()) {
-            ("Uint", "max") => {
+        let (ty, word) = match tag {
+            Some(Tag::UintMax) => {
                 let ty = expected(TyKind::Uint, TY_UINT);
                 let bits = u32::from(self.types[self.peel(ty)].bits);
-                (ty, if bits == 0 || bits >= 256 { ones } else { ones.shr(256 - bits) })
+                (
+                    ty,
+                    if bits == 0 || bits >= 256 {
+                        ones
+                    } else {
+                        ones.shr(256 - bits)
+                    },
+                )
             }
-            ("Int", "max" | "min") => {
+            Some(tag @ (Tag::IntMax | Tag::IntMin)) => {
                 let ty = expected(TyKind::Int, TY_INT);
                 let bits = u32::from(self.types[self.peel(ty)].bits);
                 let bits = if bits == 0 { 256 } else { bits.min(256) };
                 let max = ones.shr(257 - bits);
-                (ty, if name == "max" { max } else { max.not() })
+                (ty, if tag == Tag::IntMax { max } else { max.not() })
             }
-            ("Address", "zero") => (TY_ADDRESS, Word::from_u64(0)),
+            Some(Tag::AddressZero) => (TY_ADDRESS, Word::from_u64(0)),
             _ => {
+                let module = crate::modules::shown(module);
                 return Err(error(
                     *line,
                     *col,
-                    format!(
-                        "unknown constant `{module}.{name}`; the constants are `Uint.max`, `Int.min`, `Int.max`, and `Address.zero`"
-                    ),
-                ))
+                    format!("unknown name `{module}.{name}`"),
+                ));
             }
         };
         Ok(Some(Expr::Lit {

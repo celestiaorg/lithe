@@ -12,6 +12,8 @@ Upgradeability is built into the language. You don't hand-write proxy logic, res
 Mark a file `upgradeable`, and give it an **upgrade guard**:
 
 ```lithe
+import "std/evm";
+
 upgradeable
 
 error Not_owner;
@@ -67,6 +69,8 @@ Deploy the implementation, then deploy a standard ERC-1967 proxy, such as OpenZe
 A new version often needs to set up new state. A `migrate` function runs **once, atomically, inside the upgrade** that installs its version:
 
 ```lithe
+import "std/evm";
+
 upgradeable
 
 error Not_owner;

@@ -17,6 +17,10 @@
        view function DOMAIN_SEPARATOR() : bytes32;
      } *)
 
+import "std/abi";
+import "std/crypto";
+import "std/evm";
+
 module EIP712 is {
   immutable eip712 at "lithe.std.eip712" is record {
     hashed_name : bytes32;

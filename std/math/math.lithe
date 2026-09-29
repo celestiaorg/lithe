@@ -2,6 +2,9 @@
    division by zero, panics as ordinary arithmetic does. For `a * b / d` without overflow
    in the product, use the built-in `Uint.mul_div`. *)
 
+import "std/int";
+import "std/uint";
+
 module Math is {
   error MathInvalidRange of record {
     low : uint;

@@ -2,6 +2,10 @@
    ERC-4906 event. A token's URI is the base URI with its own suffix, or with its id when
    it has none. *)
 
+import "std/string";
+import "std/uint";
+import "./erc721";
+
 module ERC721URIStorage is {
   requires ERC721;
 

@@ -1,5 +1,7 @@
 (* Options in every position: locals, vars, tuples, records, payloads, results, and comparisons. *)
 
+import "std/evm";
+
 type point is record {
   x : uint;
   y : uint;

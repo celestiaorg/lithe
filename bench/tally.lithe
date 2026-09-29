@@ -1,6 +1,8 @@
 (* Benchmark: a module keeps generic tallies in its own namespaced storage and passes
    them to a generic module. Mirrors tally.sol. *)
 
+import "std/evm";
+
 module Tally(K : map_key) is {
   type self is record {
     counts : map(K, uint);

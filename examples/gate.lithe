@@ -1,5 +1,7 @@
 (* Withdraw the contract balance only while the gate is open and the caller is the owner. *)
 
+import "std/evm";
+
 error Not_owner;
 error Closed;
 

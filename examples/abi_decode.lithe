@@ -1,6 +1,8 @@
 (* `Abi.decode` reads one value back out of ABI-encoded bytes, with Solidity's checks:
    data too short for the value, or a word too wide for its type, reverts. *)
 
+import "std/abi";
+
 storage is record {
   decoded : uint;
 }

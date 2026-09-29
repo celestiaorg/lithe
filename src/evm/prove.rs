@@ -133,7 +133,7 @@ fn a_broken_phase_fails_with_a_counterexample() {
 
 #[test]
 fn modules_continuations_loops_and_routes_are_phases() {
-    let src = r#"
+    let src = r#"import "std/evm"; 
 error Full;
 error Not_owner;
 
@@ -467,7 +467,7 @@ fn function_specs_prove_and_wrong_ones_fail() {
 
 #[test]
 fn routes_answer_for_their_guards_and_functions_start_anywhere() {
-    let src = r#"
+    let src = r#"import "std/evm"; 
 error Not_owner;
 error Too_high;
 
@@ -620,8 +620,9 @@ spec for withdraw is partial {
 /// The standard library's spec files, proved in a contract that uses each of their modules.
 #[test]
 fn the_standard_library_proves_its_specs() {
-    let token = r#"
-import "std/token/erc20.lithe";
+    let token = r#"import "std/evm"; 
+import "std/token/erc20";
+import "std/interfaces/erc20";
 
 contract Token is {
   use ERC20 exposing IERC20;
@@ -651,8 +652,9 @@ contract Token is {
         "{}",
         proof.text
     );
-    let nft = r#"
-import "std/token/erc721.lithe";
+    let nft = r#"import "std/evm"; 
+import "std/token/erc721";
+import "std/interfaces/erc721";
 
 contract Nft is {
   use ERC721 exposing IERC721;

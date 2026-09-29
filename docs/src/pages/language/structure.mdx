@@ -10,6 +10,8 @@ description: "Files, contracts, declarations, comments, and naming."
 The simplest Lithe program is a file of top-level declarations. The file is the contract:
 
 ```lithe
+import "std/evm";
+
 storage is record {
   owner : address;
 }
@@ -52,7 +54,7 @@ A contract is made of these declarations, in any order. Names are resolved acros
 | Function | `external function f() is { ... }` | [Functions](/language/functions) |
 | Module | `module Ledger is { ... }` | [Modules](/language/modules) |
 | Use | `use Ledger;` | [Modules](/language/modules) |
-| Import | `import "./lib.lithe";` | [Imports](/language/imports) |
+| Import | `import "./lib";` | [Imports](/language/imports) |
 | Upgrades | `upgradeable`, `upgrade guard is { ... }`, `migrate f() is { ... }` | [Upgrades](/language/upgrades) |
 | Receive and fallback | `payable receive is { ... }`, `fallback is { ... }`, `fallback delegates to target;` | [Functions](/language/functions#receive-and-fallback) |
 

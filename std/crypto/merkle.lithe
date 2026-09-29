@@ -5,6 +5,10 @@
    `concat(proof)` off-chain. A proof whose length is not a multiple of 32 raises
    `MerkleProofInvalidLength`. *)
 
+import "std/abi";
+import "std/bytes";
+import "std/crypto";
+
 module Merkle is {
   error MerkleProofInvalidLength of uint;
 

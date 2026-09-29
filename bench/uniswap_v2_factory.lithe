@@ -2,8 +2,13 @@
    creates uniswap_v2_pair.lithe's pair with CREATE2, so it knows the pair's address before
    the pair exists, from the hash of the pair's creation code. *)
 
-import "./uniswap_v2_pair.lithe";
-import "std/utils/create2.lithe";
+import "std/abi";
+import "std/address";
+import "std/crypto";
+import "std/evm";
+import "std/list";
+import "./uniswap_v2_pair";
+import "std/utils/create2";
 
 contract UniswapV2Factory is {
   use Create2;

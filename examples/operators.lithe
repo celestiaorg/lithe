@@ -1,5 +1,9 @@
 (* Bitwise operators, truncating division, and positional tuples. *)
 
+import "std/evm";
+import "std/int";
+import "std/uint";
+
 storage is record {
   q : uint;
   r : uint;

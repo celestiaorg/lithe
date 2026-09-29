@@ -1,5 +1,7 @@
 (* Benchmark: base64 with the `Base64` built-ins. Mirrors base64.sol. *)
 
+import "std/base64";
+
 contract Base64Bench is {
   storage is record {}
 

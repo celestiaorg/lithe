@@ -1,5 +1,7 @@
 (* Read a uint with query, store it, then transfer. The static call runs first. *)
 
+import "std/evm";
+
 interface Reader is {
   view function read() : uint;
 }

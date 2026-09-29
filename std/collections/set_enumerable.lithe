@@ -1,5 +1,7 @@
 (* Membership plus enumeration. The list and the index map are both stored. *)
 
+import "std/list";
+
 module SetEnumerable(T : map_key) is {
   type self is record {
     values : list(T);

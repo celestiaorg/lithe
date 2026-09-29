@@ -831,7 +831,11 @@ fn program(ty: &Ty, place: &Place) -> String {
     let n = ty.samples.len();
     let sample = |k: usize| ty.samples[k % n];
     let (shown, out) = ty.out.unwrap_or((ty.name, "v"));
-    let mut src = format!("{}\n{}\n", ty.decl, fill(place.decl, ty, "", ""));
+    let mut src = format!(
+        "import \"std/abi\";\nimport \"std/evm\";\nimport \"std/int\";\nimport \"std/list\";\nimport \"std/uint\";\n{}\n{}\n",
+        ty.decl,
+        fill(place.decl, ty, "", "")
+    );
     if !ty.name.chars().all(|c| c.is_alphanumeric() || c == '_') && place.name == "abi codec" {
         src += &format!("type tn is {};\n", ty.name);
     }

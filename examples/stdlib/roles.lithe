@@ -2,9 +2,11 @@
    handed over in two steps. A role is a `role`, so a stray `bytes32` can't be passed
    where a role is meant. *)
 
-import "std/access/ownable_two_step.lithe";
-import "std/access/access_control.lithe";
-import "std/security/pausable.lithe";
+import "std/evm";
+import "std/access/ownable_two_step";
+import "std/access/access_control";
+import "std/security/pausable";
+import "std/access/ownable";
 
 contract Registry is {
   use Ownable;

@@ -2,6 +2,8 @@
    value: `payable function deposit` does, `balanceOf` is read with `query`, and
    `withdraw` is an ordinary state-changing call. *)
 
+import "std/evm";
+
 interface Vault is {
   view function balanceOf(owner : address) : uint;
   payable function deposit(owner : address);

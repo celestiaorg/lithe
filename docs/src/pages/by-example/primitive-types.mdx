@@ -8,6 +8,11 @@ description: "Booleans, integers of every width, addresses, bytes, strings, and 
 Lithe's primitive types map directly onto ABI types. Nothing converts implicitly: each width is its own type, and `wei` and `timestamp` don't mix with `uint`.
 
 ```lithe [primitive-types.lithe]
+import "std/crypto";
+import "std/evm";
+import "std/int";
+import "std/uint";
+
 storage is record {
   flag : bool;
   (* `uint` is uint256, `int` is int256. *)

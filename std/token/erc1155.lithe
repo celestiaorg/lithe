@@ -11,8 +11,12 @@
    effects, and pass a receiver's revert reason through unchanged. A burn asks no
    receiver. *)
 
-import "std/interfaces/erc165.lithe";
-import "std/interfaces/erc1155.lithe";
+import "std/abi";
+import "std/address";
+import "std/evm";
+import "std/list";
+import "std/interfaces/erc165";
+import "std/interfaces/erc1155";
 
 module ERC1155 is {
   storage erc1155 at "lithe.std.erc1155" is record {

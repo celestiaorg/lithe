@@ -1,5 +1,7 @@
 (* UUPS upgrade. The migration runs once, inside upgradeToAndCall. *)
 
+import "std/evm";
+
 upgradeable
 
 error Not_owner;

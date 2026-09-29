@@ -1,5 +1,8 @@
 (* Benchmark: string and bytes storage. Mirrors registry.sol. *)
 
+import "std/crypto";
+import "std/evm";
+
 event Renamed of record {
   indexed label : string;
 }

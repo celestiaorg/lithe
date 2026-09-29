@@ -1,5 +1,8 @@
 (* Benchmark: strings and bytes as map values and list elements. Mirrors names.sol. *)
 
+import "std/evm";
+import "std/list";
+
 storage is record {
   names : map(uint, string);
   blobs : map(bytes32, bytes);

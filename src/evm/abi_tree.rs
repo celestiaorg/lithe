@@ -327,7 +327,7 @@ fn program(t: &T) -> String {
 fn program_as(decl: &str, ty: &str) -> String {
     format!(
         "\
-type tt is {decl};
+import \"std/abi\"; type tt is {decl};
 interface Echo is {{
   view function echo(x : {ty}) : {ty};
   function call(x : {ty}) : {ty};
@@ -645,7 +645,7 @@ fn malformed_nested_arguments_revert() {
 #[test]
 fn nested_values_index_and_loop() {
     let src = "\
-type item is record { name : string; tags : list(uint); }
+import \"std/list\"; type item is record { name : string; tags : list(uint); }
 storage is record { n : uint; }
 external pure function cell(const xs : list(list(uint)); const i : uint; const j : uint) : uint is xs[i][j]
 external pure function row_len(const xs : list(list(uint)); const i : uint) : uint is xs[i].length
@@ -785,7 +785,7 @@ external pure function swap(const p : (string, list(uint))) : (list(uint), strin
 #[test]
 fn packed_fixed_lists_match_solidity() {
     let src = "\
-storage is record { n : uint; }
+import \"std/abi\"; storage is record { n : uint; }
 external pure function f(const a : list(bytes2, 2)) : bytes is Abi.encode_packed(a)
 external pure function g(const a : list(uint8)) : bytes is Abi.encode_packed(a)
 external pure function h(const a : list(bool, 2); const x : address) : bytes is Abi.encode_packed(a, x)
@@ -867,7 +867,7 @@ external pure function k(const s : status; const t : Target; const x : int8; con
 /// Records one Lithe contract sends another through an interface, each stored by the
 /// target as the hash of its `Abi.encode`.
 const RECORD_TARGET: &str = "\
-type job is record { a : uint; label : string; ids : list(uint); b : address; }
+import \"std/abi\"; import \"std/crypto\"; type job is record { a : uint; label : string; ids : list(uint); b : address; }
 type params is record { x : uint; y : uint; z : uint; }
 type order is tuple record { who : address; memo : string; amount : uint; }
 storage is record { h : bytes32; n : uint; }
@@ -880,7 +880,7 @@ external view function quote(const o : order) : order is { who = o.who; memo = o
 ";
 
 const RECORD_CALLER: &str = "\
-type job is record { a : uint; label : string; ids : list(uint); b : address; }
+import \"std/abi\"; import \"std/evm\"; type job is record { a : uint; label : string; ids : list(uint); b : address; }
 type params is record { x : uint; y : uint; z : uint; }
 type order is tuple record { who : address; memo : string; amount : uint; }
 interface Target is {
@@ -1058,7 +1058,7 @@ fn record_arguments_cross_interfaces() {
 #[test]
 fn case_payloads_decode_like_parameters() {
     let src = "\
-type key is tuple record { token : address; fee : uint24; }
+import \"std/abi\"; import \"std/crypto\"; type key is tuple record { token : address; fee : uint24; }
 type ticket is tuple record { holder : address; note : string; }
 type named is record { s : string; n : uint; }
 type action is
@@ -1117,7 +1117,7 @@ external function act(const a : action) is case a of {
 #[test]
 fn packed_hashes_match_their_encoding() {
     let src = "\
-storage is record { n : uint; }
+import \"std/abi\"; import \"std/bytes\"; import \"std/crypto\"; storage is record { n : uint; }
 type status is
   | New
   | Pending

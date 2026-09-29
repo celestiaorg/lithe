@@ -1,6 +1,9 @@
 (* The ERC-20 core, like OpenZeppelin's `ERC20Upgradeable`: same storage, errors,
    events, and order of checks. Extensions compose these pieces explicitly. *)
 
+import "std/address";
+import "std/uint";
+
 error ERC20InsufficientBalance of record {
   sender : address;
   balance : uint;

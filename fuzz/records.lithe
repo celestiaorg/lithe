@@ -4,6 +4,8 @@
    so its storage goes through the journal; `set_price` does the same work directly.
    Address 2 is the SHA-256 precompile, which answers any query with a word. *)
 
+import "std/evm";
+
 type inner is record {
   flag : bool;
   delta : int16;

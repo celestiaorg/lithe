@@ -58,7 +58,7 @@ fn bytes_args(sig: &str, parts: &[Vec<u8>]) -> Vec<u8> {
 }
 
 const SRC: &str = "\
-storage is record { n : uint; }
+import \"std/crypto\"; import \"std/uint\"; storage is record { n : uint; }
 external pure function add(const a : (uint, uint); const b : (uint, uint)) : (uint, uint) is Crypto.bn254_add(a, b)
 external pure function mul(const p : (uint, uint); const s : uint) : (uint, uint) is Crypto.bn254_mul(p, s)
 external pure function pair(const ps : list((uint, uint, uint, uint, uint, uint))) : bool is Crypto.bn254_pairing(ps)
@@ -323,7 +323,7 @@ fn precompile_arguments_are_typed() {
             "`Crypto.mod_exp` takes `bytes` here",
         ),
     ] {
-        let src = format!("storage is record {{ n : uint; }}\nexternal pure function f() : uint is {{ const x : bool := {body} = {body}; }} with 1\n");
+        let src = format!("import \"std/crypto\"; storage is record {{ n : uint; }}\nexternal pure function f() : uint is {{ const x : bool := {body} = {body}; }} with 1\n");
         let err = compile(&src).expect_err(want);
         assert!(err.to_string().contains(want), "{want}: {err}");
     }

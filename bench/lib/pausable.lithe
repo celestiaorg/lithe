@@ -1,5 +1,7 @@
 (* An emergency stop, like OpenZeppelin's `PausableUpgradeable`. *)
 
+import "std/evm";
+
 error EnforcedPause;
 
 error ExpectedPause;

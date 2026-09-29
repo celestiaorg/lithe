@@ -1,0 +1,8 @@
+module Keeper is {
+  storage keeper at "reject.keeper" is record { n : uint; }
+
+  function set(const v : uint) raises Denied is {
+    assert(v > 0, Denied);
+    keeper.n := v;
+  }
+}

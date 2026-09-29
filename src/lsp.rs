@@ -22,6 +22,8 @@ struct Doc {
     index: Option<Index>,
     /// The findings for `text` as it is.
     lints: Vec<lithe::Lint>,
+    /// Why `text` does not compile, if it does not.
+    error: Option<lithe::Error>,
 }
 
 /// Answers messages until `exit` or the end of input, and returns the exit status.
@@ -55,6 +57,7 @@ fn serve(input: &mut impl BufRead, output: &mut impl Write) -> i32 {
                         text: String::new(),
                         index: None,
                         lints: Vec::new(),
+                        error: None,
                     });
                     doc.text = text.to_string();
                     update(output, uri, doc);
@@ -116,7 +119,8 @@ fn update(output: &mut impl Write, uri: &str, doc: &mut Doc) {
         doc.index = analysis.index;
     }
     doc.lints = analysis.lints;
-    publish(output, uri, doc, analysis.error);
+    doc.error = analysis.error;
+    publish(output, uri, doc);
 }
 
 /// The whole document as `lithe fmt` writes it, with the width `lithe.toml` sets.
@@ -156,7 +160,65 @@ fn fixes(uri: &str, doc: &Doc, params: &Json) -> Option<String> {
             ))
         })
         .collect();
+    let mut actions = actions;
+    actions.extend(
+        doc.error
+            .as_ref()
+            .filter(|err| (first..=last).contains(&err.line))
+            .and_then(|err| import_fix(uri, &doc.text, err)),
+    );
     Some(format!("[{}]", actions.join(",")))
+}
+
+/// For a name that another file declares: adding its import. The error says which file.
+fn import_fix(uri: &str, text: &str, err: &lithe::Error) -> Option<String> {
+    let (_, rest) = err.message.split_once("` is declared in `")?;
+    let path = rest.split('`').next()?;
+    if !lithe::is_module_path(path) {
+        return None;
+    }
+    let at = import_at(text);
+    let before = &text[..at];
+    let blank = if before
+        .trim_end()
+        .lines()
+        .last()
+        .is_some_and(|l| l.trim_start().starts_with("import "))
+    {
+        ""
+    } else {
+        "\n"
+    };
+    let new = format!("import \"{path}\";\n{blank}");
+    Some(format!(
+        r#"{{"title":{},"kind":"quickfix","isPreferred":true,"diagnostics":[{}],"edit":{{"changes":{{{}:[{{"range":{{"start":{at},"end":{at}}},"newText":{}}}]}}}}}}"#,
+        quote(&format!("Import `{path}`")),
+        error_diagnostic(text, err),
+        quote(uri),
+        quote(&new),
+        at = byte_pos(text, at),
+    ))
+}
+
+/// Where a new import goes: after the file's last import, or before its first declaration.
+fn import_at(text: &str) -> usize {
+    let mut offset = 0;
+    let mut depth = 0i32;
+    let mut after_imports = None;
+    let mut first_code = None;
+    for line in text.split_inclusive('\n') {
+        let trimmed = line.trim();
+        if depth == 0 {
+            if trimmed.starts_with("import ") {
+                after_imports = Some(offset + line.len());
+            } else if !trimmed.is_empty() && !trimmed.starts_with("(*") && first_code.is_none() {
+                first_code = Some(offset);
+            }
+        }
+        depth += line.matches("(*").count() as i32 - line.matches("*)").count() as i32;
+        offset += line.len();
+    }
+    after_imports.or(first_code).unwrap_or(0)
 }
 
 /// A byte offset of `text` as an LSP position.
@@ -189,6 +251,27 @@ fn answer(method: &str, uri: &str, doc: &Doc, index: &Index, params: &Json) -> O
     }
     let (line, col) = position(text, params.get("position")?)?;
     match method {
+        "textDocument/completion" if import_string(text, line, col).is_some() => {
+            let (start, typed) = import_string(text, line, col)?;
+            let range = format!(
+                r#"{{"start":{{"line":{},"character":{start}}},"end":{{"line":{},"character":{}}}}}"#,
+                line - 1,
+                line - 1,
+                start + typed.len()
+            );
+            let items: Vec<String> = module_paths(&file_path(uri))
+                .into_iter()
+                .filter(|path| path.starts_with(&typed))
+                .map(|path| {
+                    format!(
+                        r#"{{"label":{},"kind":9,"textEdit":{{"range":{range},"newText":{}}}}}"#,
+                        quote(&path),
+                        quote(&path)
+                    )
+                })
+                .collect();
+            return Some(format!("[{}]", items.join(",")));
+        }
         "textDocument/completion" => {
             let items: Vec<String> = index
                 .completions(text, line, col)
@@ -226,7 +309,7 @@ fn answer(method: &str, uri: &str, doc: &Doc, index: &Index, params: &Json) -> O
         _ => {}
     }
     if method == "textDocument/definition" {
-        if let Some(found) = import_target(index, uri, text, line, col) {
+        if let Some(found) = import_target(uri, text, line, col) {
             return Some(found);
         }
     }
@@ -263,8 +346,53 @@ fn answer(method: &str, uri: &str, doc: &Doc, index: &Index, params: &Json) -> O
     }
 }
 
+/// Inside an `import "..."` path: where the path starts, as a 0-based character, and what
+/// is typed of it before the position.
+fn import_string(text: &str, line: u32, col: u32) -> Option<(usize, String)> {
+    let src = text.lines().nth(line.checked_sub(1)? as usize)?;
+    if !src.trim_start().starts_with("import") {
+        return None;
+    }
+    let open = src.find('"')?;
+    let at = (col as usize).checked_sub(1)?;
+    if at <= open || src[open + 1..at.min(src.len())].contains('"') {
+        return None;
+    }
+    let typed = src.get(open + 1..at)?.to_string();
+    Some((src[..open + 1].encode_utf16().count(), typed))
+}
+
+/// Every module a file can import: the standard library's, and the files of its project
+/// beside and below it.
+fn module_paths(file: &Path) -> Vec<String> {
+    let mut out: Vec<String> = lithe::std_modules().into_iter().map(String::from).collect();
+    let Some(dir) = file.parent() else {
+        return out;
+    };
+    let mut found = Vec::new();
+    lithe::lithe_files(dir, &mut found).ok();
+    for path in found {
+        if path == file || path.to_string_lossy().ends_with(".spec.lithe") {
+            continue;
+        }
+        let Ok(rel) = path
+            .with_extension("")
+            .strip_prefix(dir)
+            .map(Path::to_path_buf)
+        else {
+            continue;
+        };
+        let module = format!("./{}", rel.to_string_lossy().replace('\\', "/"));
+        if lithe::is_module_path(&module) {
+            out.push(module);
+        }
+    }
+    out.sort();
+    out
+}
+
 /// The file an `import "..."` line names, when the position is on its path.
-fn import_target(index: &Index, uri: &str, text: &str, line: u32, col: u32) -> Option<String> {
+fn import_target(uri: &str, text: &str, line: u32, col: u32) -> Option<String> {
     let src = text.lines().nth(line.checked_sub(1)? as usize)?;
     if !src.trim_start().starts_with("import") {
         return None;
@@ -275,26 +403,30 @@ fn import_target(index: &Index, uri: &str, text: &str, line: u32, col: u32) -> O
         return None;
     }
     let rel = &src[open + 1..close];
-    let start = Span {
-        file: 0,
-        line: 1,
-        col: 1,
-        len: 0,
+    let path = match lithe::std_text(rel) {
+        Some(std) => std_copy(&format!("{rel}.lithe"), std)?,
+        None => lithe::import_path(&file_path(uri), rel)
+            .canonicalize()
+            .ok()?,
     };
-    if let Some(file) = index
-        .files
-        .iter()
-        .position(|f| f.std.as_deref() == Some(rel))
-    {
-        return location(index, uri, text, Span { file, ..start });
-    }
-    let path = file_path(uri).parent()?.join(rel).canonicalize().ok()?;
     path.exists().then(|| {
         format!(
             r#"{{"uri":{},"range":{{"start":{{"line":0,"character":0}},"end":{{"line":0,"character":0}}}}}}"#,
             quote(&file_uri(&path))
         )
     })
+}
+
+/// A standard library file, written out once so an editor can open it.
+fn std_copy(rel: &str, text: &str) -> Option<PathBuf> {
+    let path = std::env::temp_dir()
+        .join(concat!("lithe-", env!("CARGO_PKG_VERSION")))
+        .join(rel);
+    if std::fs::read_to_string(&path).ok().as_deref() != Some(text) {
+        std::fs::create_dir_all(path.parent()?).ok()?;
+        std::fs::write(&path, text).ok()?;
+    }
+    Some(path)
 }
 
 /// Whether a definition belongs in the outline of the indexed file.
@@ -368,16 +500,7 @@ fn location(index: &Index, uri: &str, text: &str, at: Span) -> Option<String> {
     } else {
         let file = index.files.get(at.file)?;
         let path = match &file.std {
-            Some(rel) => {
-                let path = std::env::temp_dir()
-                    .join(concat!("lithe-", env!("CARGO_PKG_VERSION")))
-                    .join(rel);
-                if std::fs::read_to_string(&path).ok().as_deref() != Some(&file.text) {
-                    std::fs::create_dir_all(path.parent()?).ok()?;
-                    std::fs::write(&path, &file.text).ok()?;
-                }
-                path
-            }
+            Some(rel) => std_copy(rel, &file.text)?,
             None => PathBuf::from(&file.path),
         };
         (file_uri(&path), file.text.as_str())
@@ -445,20 +568,26 @@ fn range(text: &str, at: Span) -> String {
 
 // simplify: an error carries no file, so one inside an imported file is shown at its line
 // and column in the importing file. Needs a source path on `lithe::Error`.
-fn publish(output: &mut impl Write, uri: &str, doc: &Doc, error: Option<lithe::Error>) {
+fn publish(output: &mut impl Write, uri: &str, doc: &Doc) {
     let mut items: Vec<String> = doc
         .lints
         .iter()
         .map(|lint| lint_diagnostic(&doc.text, lint))
         .collect();
-    if let Some(err) = error {
-        items.push(format!(
-            r#"{{"range":{},"severity":1,"source":"lithe","message":{}}}"#,
-            word(&doc.text, err.line, err.column),
-            quote(&err.message)
-        ));
-    }
+    items.extend(
+        doc.error
+            .as_ref()
+            .map(|err| error_diagnostic(&doc.text, err)),
+    );
     notify_diagnostics(output, uri, &items);
+}
+
+fn error_diagnostic(text: &str, err: &lithe::Error) -> String {
+    format!(
+        r#"{{"range":{},"severity":1,"source":"lithe","message":{}}}"#,
+        word(text, err.line, err.column),
+        quote(&err.message)
+    )
 }
 
 /// A finding as a warning, tagged unnecessary when it is unused code, so editors fade it.
@@ -833,15 +962,15 @@ mod tests {
         let (_, bodies) = session(&[
             frame(r#"{"jsonrpc":"2.0","id":0,"method":"initialize","params":{}}"#),
             open(&uri, &good),
-            request(1, "hover", &uri, 62, 20),
-            request(2, "definition", &uri, 59, 23),
-            request(3, "references", &uri, 5, 3),
+            request(1, "hover", &uri, 64, 20),
+            request(2, "definition", &uri, 61, 23),
+            request(3, "references", &uri, 7, 3),
             request(4, "documentSymbol", &uri, 0, 0),
-            request(8, "hover", &uri, 15, 5),
+            request(8, "hover", &uri, 17, 5),
             change,
-            request(5, "completion", &uri, 29, 12),
-            request(6, "signatureHelp", &uri, 30, 8),
-            request(7, "hover", &uri, 28, 13),
+            request(5, "completion", &uri, 31, 12),
+            request(6, "signatureHelp", &uri, 32, 8),
+            request(7, "hover", &uri, 30, 13),
         ]);
         let reply = |id: u32| {
             bodies
@@ -853,7 +982,7 @@ mod tests {
         assert!(hover.contains("reset()` `0xd826f88f"), "{hover}");
         assert!(hover.contains("increment(uint256)` `0x7cf5dab0"), "{hover}");
         assert!(reply(2).contains(
-            r#""range":{"start":{"line":24,"character":9},"end":{"line":24,"character":12}}"#
+            r#""range":{"start":{"line":26,"character":9},"end":{"line":26,"character":12}}"#
         ));
         assert_eq!(reply(3).matches(r#""uri""#).count(), 8, "{}", reply(3));
         assert!(reply(4).contains(r#""name":"storage""#) && reply(4).contains(r#""name":"count""#));
@@ -878,6 +1007,114 @@ mod tests {
         );
     }
 
+    /// Every example and standard library file indexes, and each builtin call in it resolves
+    /// to its declaration.
+    #[test]
+    fn every_repo_file_indexes() {
+        let root = std::env::current_dir().unwrap();
+        let mut files = Vec::new();
+        for dir in ["examples", "std", "bench"] {
+            lithe::lithe_files(&root.join(dir), &mut files).unwrap();
+        }
+        for path in files {
+            let name = path.to_string_lossy();
+            if name.contains("reject") || name.ends_with(".spec.lithe") {
+                continue;
+            }
+            let text = std::fs::read_to_string(&path).unwrap();
+            let Some(index) = lithe::analyze(&path, &text).index else {
+                continue;
+            };
+            for r in &index.refs {
+                let def = &index.defs[r.def];
+                if let (Kind::Builtin, Some(at)) = (def.kind, def.at) {
+                    assert!(
+                        index.files[at.file].std.is_some(),
+                        "{}: {}",
+                        path.display(),
+                        def.name
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn answers_for_builtins_and_imports() {
+        let dir = std::env::temp_dir().join(format!("lithe-lsp-imports-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("lib")).unwrap();
+        std::fs::write(
+            dir.join("lib/fees.lithe"),
+            "pure function fee(const x : uint) : uint is x\n",
+        )
+        .unwrap();
+        let path = dir.join("main.lithe");
+        let uri = format!("file://{}", path.display()).replace(' ', "%20");
+        let good = "import \"std/evm\";\n\nstorage is record { a : address; }\n\nexternal function f() is { storage.a := Evm.sender(); }\n";
+        std::fs::write(&path, good).unwrap();
+        let missing = good.replace("import \"std/evm\";\n\n", "");
+        let change = |text: &str| {
+            frame(&format!(
+                r#"{{"jsonrpc":"2.0","method":"textDocument/didChange","params":{{"textDocument":{{"uri":{},"version":2}},"contentChanges":[{{"text":{}}}]}}}}"#,
+                quote(&uri),
+                quote(text)
+            ))
+        };
+        let action = frame(&format!(
+            r#"{{"jsonrpc":"2.0","id":6,"method":"textDocument/codeAction","params":{{"textDocument":{{"uri":{}}},"range":{{"start":{{"line":2,"character":0}},"end":{{"line":2,"character":0}}}},"context":{{"diagnostics":[]}}}}}}"#,
+            quote(&uri)
+        ));
+        let typing = "import \"std/tok\";\n";
+        let (_, bodies) = session(&[
+            frame(r#"{"jsonrpc":"2.0","id":0,"method":"initialize","params":{}}"#),
+            open(&uri, good),
+            request(1, "hover", &uri, 4, 47),
+            request(2, "definition", &uri, 4, 47),
+            request(3, "definition", &uri, 0, 10),
+            request(4, "completion", &uri, 4, 44),
+            change(&missing),
+            action,
+            change(typing),
+            request(5, "completion", &uri, 0, 15),
+            change("import \"./\";\n"),
+            request(7, "completion", &uri, 0, 10),
+        ]);
+        let reply = |id: u32| {
+            bodies
+                .iter()
+                .find(|b| b.starts_with(&format!(r#"{{"jsonrpc":"2.0","id":{id},"#)))
+                .unwrap_or_else(|| panic!("no reply {id}: {bodies:?}"))
+        };
+        let hover = reply(1);
+        assert!(
+            hover.contains("intrinsic view function sender() : address")
+                && hover.contains("the caller of the current frame"),
+            "{hover}"
+        );
+        assert!(reply(2).contains("std/evm.lithe"), "{}", reply(2));
+        assert!(reply(3).contains("std/evm.lithe"), "{}", reply(3));
+        let members = reply(4);
+        assert!(
+            members.contains(r#""label":"sender""#)
+                && members.contains(r#""label":"block_number""#),
+            "{members}"
+        );
+        let fix = reply(6);
+        assert!(
+            fix.contains("Import `std/evm`")
+                && fix.contains(r#""newText":"import \"std/evm\";\n\n""#),
+            "{fix}"
+        );
+        let paths = reply(5);
+        assert!(
+            paths.contains(r#""label":"std/token/erc20""#) && !paths.contains(".lithe"),
+            "{paths}"
+        );
+        assert!(reply(7).contains(r#""label":"./lib/fees""#), "{}", reply(7));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn answers_for_exposed_modules_and_storage_parameters() {
         let root = std::env::current_dir().unwrap();
@@ -893,8 +1130,8 @@ mod tests {
             open(&nested, &text("examples/nested_storage.lithe")),
             request(1, "hover", &votes, 35, 14),
             request(2, "hover", &votes, 8, 22),
-            request(3, "hover", &nested, 36, 29),
-            request(4, "definition", &nested, 47, 5),
+            request(3, "hover", &nested, 38, 29),
+            request(4, "definition", &nested, 49, 5),
         ]);
         let reply = |id: u32| {
             bodies
@@ -915,7 +1152,7 @@ mod tests {
             reply(3)
         );
         assert!(
-            reply(4).contains(r#""start":{"line":44,"character":22}"#),
+            reply(4).contains(r#""start":{"line":46,"character":22}"#),
             "{}",
             reply(4)
         );

@@ -1,5 +1,7 @@
 (* View helpers that only change their own locals stay views. *)
 
+import "std/list";
+
 interface Oracle is {
   view function price(asset : address) : uint;
 }

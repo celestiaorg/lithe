@@ -2,6 +2,8 @@
    has its members and an admin role whose members grant and revoke it; the default admin
    role is zero and administers itself. *)
 
+import "std/evm";
+
 error AccessControlUnauthorizedAccount of record {
   account : address;
   neededRole : bytes32;

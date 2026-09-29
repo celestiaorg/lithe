@@ -11,7 +11,8 @@
      Checkpoints.push(storage.supply, uint48(Evm.block_number()), uint208(total));
      const then : uint208 := Checkpoints.upper_lookup(storage.votes[account], uint48(block)); *)
 
-import "std/math/math.lithe";
+import "std/list";
+import "std/math/math";
 
 error CheckpointUnorderedInsertion;
 

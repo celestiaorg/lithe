@@ -1,10 +1,12 @@
 (* Benchmark: OpenZeppelin's wizard NFT, upgradeable, burnable, pausable, and ownable,
    built from modules. Mirrors erc721.sol, which imports OpenZeppelin. *)
 
-import "./lib/initializable.lithe";
-import "./lib/ownable.lithe";
-import "./lib/pausable.lithe";
-import "./lib/erc721.lithe";
+import "std/address";
+import "std/evm";
+import "./lib/initializable";
+import "./lib/ownable";
+import "./lib/pausable";
+import "./lib/erc721";
 
 contract BenchNFT is {
   use Initializable;

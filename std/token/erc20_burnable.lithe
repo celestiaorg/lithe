@@ -3,7 +3,9 @@
 
      use ERC20Burnable exposing IERC20Burnable; *)
 
-import "std/token/erc20.lithe";
+import "std/evm";
+import "std/token/erc20";
+import "std/interfaces/erc20";
 
 module ERC20Burnable is {
   requires ERC20;

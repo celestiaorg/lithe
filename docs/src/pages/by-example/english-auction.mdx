@@ -11,6 +11,9 @@ Each bid must beat the current highest. Outbid bidders withdraw their refunds th
 (* Highest bid wins. Outbid bidders withdraw their own refunds: sending them
    inside `bid` would let one bidder's failing receiver block everyone else. *)
 
+import "std/address";
+import "std/evm";
+
 error Not_seller;
 error Already_started;
 error Not_started;

@@ -7,9 +7,17 @@
    check runs in the continuation of the last call. Each entry point holds the lock until
    its calls and their continuations finish. *)
 
-import "std/token/erc20_permit.lithe";
-import "std/math/math.lithe";
-import "./interfaces.lithe";
+import "std/address";
+import "std/evm";
+import "std/uint";
+import "std/token/erc20_permit";
+import "std/math/math";
+import "./interfaces";
+import "std/token/erc20";
+import "std/crypto/eip712";
+import "std/interfaces/erc20";
+import "std/crypto/ecdsa";
+import "std/utils/nonce";
 
 contract UniswapV2Pair is {
   use EIP712;

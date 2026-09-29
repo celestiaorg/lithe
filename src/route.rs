@@ -1852,7 +1852,7 @@ pub(crate) fn abi(checked: &Checked) -> Result<Abi, Error> {
             });
         }
         items.push(AbiItem::Event(Event {
-            name: event.name.clone(),
+            name: crate::modules::shown(&event.name).to_string(),
             inputs,
             anonymous: event.anonymous,
         }));

@@ -11,6 +11,8 @@ description: "Deferred transfers and why ordering is safe."
 (* `defer Evm.transfer(to, amount)` sends ether after this call's own work is done.
    It forwards all remaining gas and reverts the transaction if the transfer fails. *)
 
+import "std/evm";
+
 error Insufficient of record {
   available : wei;
   required : wei;

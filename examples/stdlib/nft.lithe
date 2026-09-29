@@ -1,7 +1,10 @@
 (* An ERC-721 collection from the standard library. Anyone can mint the next token id;
    holders can burn theirs. *)
 
-import "std/token/erc721.lithe";
+import "std/address";
+import "std/evm";
+import "std/token/erc721";
+import "std/interfaces/erc721";
 
 contract Collection is {
   use ERC721 exposing IERC721, IERC721Metadata;

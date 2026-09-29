@@ -1,5 +1,7 @@
 (* Counter. Owner and public actions share one dispatcher and become separate ABI entrypoints. *)
 
+import "std/evm";
+
 error Invalid_owner_access;
 
 storage is record {

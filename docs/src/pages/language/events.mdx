@@ -8,6 +8,8 @@ description: "Declaring events, indexed fields, and emitting."
 An event is a record type that can be logged. Declare it with `event`, and log it with `emit`:
 
 ```lithe
+import "std/evm";
+
 event Transfer of record {
   indexed from : address;
   indexed to : address;
@@ -55,6 +57,8 @@ A field that isn't indexed can hold any ABI value, nested lists and records incl
 As in Solidity, an indexed `string` or `bytes` is logged as the `keccak256` of its bytes. An indexed list, record, or tuple is logged as the `keccak256` of its in-place encoding: each member padded to a word, with no offsets or lengths:
 
 ```lithe
+import "std/evm";
+
 event Renamed of record {
   indexed name : string;
   by : address;
@@ -73,6 +77,8 @@ external function rename(const name : string) is {
 An `anonymous event` logs no signature topic, as Solidity's `anonymous` does. That leaves room for four indexed fields, and costs one topic less, but a client can only find its logs by the contract's address and the topics its fields give:
 
 ```lithe
+import "std/evm";
+
 anonymous event Moved of record {
   indexed from : address;
   indexed to : address;

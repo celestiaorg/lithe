@@ -1,4 +1,4 @@
-import "./child.lithe" as Child;
+import "./child" as Child;
 
 storage is record {
   n : uint;

@@ -24,7 +24,9 @@ description: "Ownable, two-step ownership, role-based access control, and pausin
 `std/access/ownable_two_step.lithe`, on top of `Ownable`. The owner proposes a new owner, who must accept. An address that can't accept, because it was mistyped, never takes ownership. Its externals are all of OpenZeppelin's `Ownable2Step`, `owner` included, as `IOwnable2Step`, so a contract exposes them from `Ownable2Step` and only uses `Ownable`.
 
 ```lithe
-import "std/access/ownable_two_step.lithe";
+import "std/access/ownable";
+import "std/evm";
+import "std/access/ownable_two_step";
 
 contract Vault is {
   use Ownable;
@@ -55,7 +57,8 @@ contract Vault is {
 `std/access/access_control.lithe`. Roles, each with an admin role whose members grant and revoke it. A role is a `role`, a [nominal type](/language/types#nominal-types) over `bytes32`, so a stray hash can't be passed where a role is meant. In the ABI, a role is a `bytes32`, so the file's `IAccessControl` is OpenZeppelin's, and a contract that exposes it can announce it with [`supports`](/language/modules#erc-165).
 
 ```lithe
-import "std/access/access_control.lithe";
+import "std/evm";
+import "std/access/access_control";
 
 contract Minter is {
   use AccessControl exposing {

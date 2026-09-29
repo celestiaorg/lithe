@@ -1,5 +1,7 @@
 (* Indexed fields are topics. A string or a fixed list is stored as a hash. *)
 
+import "std/evm";
+
 event Transfer of record {
   indexed from : address;
   indexed to : address;

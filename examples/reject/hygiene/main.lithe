@@ -1,0 +1,12 @@
+(* A module's code sees the names of its own file, never those of a file that uses it. *)
+import "./lib";
+
+contract C is {
+  error Denied;
+
+  use Keeper;
+
+  storage is record { n : uint; }
+
+  external function go(const v : uint) raises Denied is { Keeper.set(v); }
+}

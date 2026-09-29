@@ -14,7 +14,10 @@
 
      use ERC20 exposing IERC20Metadata, IERC20Views, IERC20Approvals; *)
 
-import "std/interfaces/erc20.lithe";
+import "std/address";
+import "std/evm";
+import "std/uint";
+import "std/interfaces/erc20";
 
 module ERC20 is {
   storage erc20 at "lithe.std.erc20" is record {

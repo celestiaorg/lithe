@@ -19,6 +19,8 @@
      use AccessControl exposing IAccessControl;
      supports IAccessControl; *)
 
+import "std/evm";
+
 type role is bytes32;
 
 error AccessControlUnauthorizedAccount of record {

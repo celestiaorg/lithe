@@ -91,7 +91,7 @@ is {
 "#;
     compile(raised).expect("pure function raises a typed error");
 
-    let hashed = r#"
+    let hashed = r#"import "std/crypto"; 
 storage is record { digest : bytes32; }
 
 pure function digest(const data : bytes) : bytes32 is
@@ -542,7 +542,7 @@ fn declarations_restate_the_module_external() {
     let program = |exposed: &str| {
         format!(
             "\
-module Vault_ops is {{
+import \"std/evm\"; module Vault_ops is {{
   storage vault at \"vault.ops\" is record {{ deposits : map(address, wei); }}
   error Too_much of wei;
   function take(const amount : wei) raises Too_much is {{
@@ -762,7 +762,7 @@ contract Vault is {
 #[test]
 fn payable_is_explicit_on_entries() {
     let err = compile(
-        "storage is record { n : uint; }\nexternal function go() is { const x : wei := Evm.value(); }\n",
+        "import \"std/evm\"; storage is record { n : uint; }\nexternal function go() is { const x : wei := Evm.value(); }\n",
     )
     .expect_err("value");
     assert!(
@@ -876,7 +876,7 @@ fn types_reject_implicit_conversions() {
 #[test]
 fn constant_operations_that_must_panic_are_rejected() {
     let program = |ty: &str, body: &str| {
-        format!("storage is record {{ n : {ty}; }}\nerror Bad;\npure function big() : uint is Uint.max\npure function wide() : uint is {{ const a : uint := 2 ** 200; }} with a\nexternal function go(const x : uint) raises Bad is {{ {body} }}\n")
+        format!("import \"std/int\"; import \"std/uint\"; storage is record {{ n : {ty}; }}\nerror Bad;\npure function big() : uint is Uint.max\npure function wide() : uint is {{ const a : uint := 2 ** 200; }} with a\nexternal function go(const x : uint) raises Bad is {{ {body} }}\n")
     };
     for (ty, body, rule) in [
         (
@@ -1080,7 +1080,7 @@ fn constant_operations_that_must_panic_are_rejected() {
     let main = dir.join("main.lithe");
     std::fs::write(
         &main,
-        "import \"std/math/math.lithe\";\nuse Math;\nstorage is record { n : uint; }\nexternal function go() is { storage.n := Math.ceil_div(1, 0); }\n",
+        "import \"std/int\"; import \"std/uint\"; import \"std/math/math\";\nuse Math;\nstorage is record { n : uint; }\nexternal function go() is { storage.n := Math.ceil_div(1, 0); }\n",
     )
     .unwrap();
     let runtime = deploy(&compile_file(&main).expect("std call")).expect("deploy");
@@ -1123,7 +1123,7 @@ fn duplicates_say_where_the_first_is() {
         ("b.lithe", lib.to_string()),
         (
             "main.lithe",
-            format!("import \"./a.lithe\";\nimport \"./b.lithe\";\n{tail}"),
+            format!("import \"./a\";\nimport \"./b\";\n{tail}"),
         ),
     ]);
     let Err(errors) = crate::compile(&sources, Path::new("main.lithe"), &Options::default()) else {
@@ -1131,7 +1131,7 @@ fn duplicates_say_where_the_first_is() {
     };
     assert_eq!(
         errors[0].to_string(),
-        "2:1: ambiguous symbol `f`\n\ndefined in:\n- a.lithe:1:6\n- b.lithe:1:6\n\nrename one, or import `./b.lithe` with an alias: `import \"./b.lithe\" as Name;`"
+        "2:1: ambiguous symbol `f`\n\ndefined in:\n- a.lithe:1:6\n- b.lithe:1:6\n\nrename one, or import `./b` with an alias: `import \"./b\" as Name;`"
     );
 }
 
@@ -1165,7 +1165,7 @@ fn memory_sources_compile_as_files_do() {
 #[test]
 fn every_failing_contract_reports_its_error() {
     let src = "\
-contract A is {
+import \"std/evm\"; contract A is {
   storage is record { n : uint; }
   external function f() is { storage.n := true; }
 }
@@ -1194,7 +1194,7 @@ fn memory_paths_above_the_root_stay_distinct() {
         ("../a.lithe", "pure function g() : uint is 2\n"),
         (
             "main.lithe",
-            "import \"./a.lithe\";\nimport \"../a.lithe\";\nstorage is record { n : uint; }\nexternal pure function h() : uint is f() + g()\n",
+            "import \"./a\";\nimport \"../a\";\nstorage is record { n : uint; }\nexternal pure function h() : uint is f() + g()\n",
         ),
     ]);
     crate::compile(&sources, Path::new("main.lithe"), &Options::default())
@@ -1202,10 +1202,319 @@ fn memory_paths_above_the_root_stay_distinct() {
         .expect("../a.lithe");
 }
 
+/// Builds `main.lithe` from files held in memory.
+fn build_files(files: &[(&str, &str)]) -> Result<Vec<u8>, String> {
+    let sources = Sources::memory(files.iter().copied());
+    crate::compile(&sources, Path::new("main.lithe"), &Options::default())
+        .and_then(crate::Output::single)
+        .map(|out| out.bytecode)
+        .map_err(|errors| first(errors).to_string())
+}
+
+const SCOPE_B: &str = "\
+type amount is uint;
+error Low;
+event Moved of record { n : uint; }
+interface Poke is { function poke(); }
+pure function double(const x : amount) : amount is amount(uint(x) * 2)
+module Tally is {
+  storage tally at \"t.tally\" is record { n : uint; }
+  function bump() is { tally.n := tally.n + 1; }
+}
+";
+
+const SCOPE_A: &str = "import \"./b\";\npure function make() : amount is amount(3)\n";
+
+#[test]
+fn a_file_sees_only_what_it_imports() {
+    let main = |imports: &str, body: &str| {
+        format!("{imports}contract C is {{\n  storage is record {{ n : uint; }}\n  {body}\n}}\n")
+    };
+    for (body, want) in [
+        (
+            "external function go() is { const x : amount := make(); }",
+            "unknown type `amount`\n\n`amount` is declared in `./b`: `import \"./b\";`",
+        ),
+        (
+            "external function go() is { assert(false, Low); }",
+            "unknown error `Low`",
+        ),
+        (
+            "external function go() is { emit Moved { n = 1; }; }",
+            "unknown event `Moved`",
+        ),
+        (
+            "external function go() is { storage.n := uint(double(make())); }",
+            "unknown function `double`",
+        ),
+        (
+            "external function go(const p : Poke) is { skip; }",
+            "unknown type `Poke`",
+        ),
+        (
+            "use Tally;\n  external function go() is { skip; }",
+            "unknown module `Tally`",
+        ),
+        (
+            "external function go() is { Tally.tally.n := 1; }",
+            "unknown name `Tally`",
+        ),
+    ] {
+        let src = main("import \"./a\";\n", body);
+        let err = build_files(&[
+            ("b.lithe", SCOPE_B),
+            ("a.lithe", SCOPE_A),
+            ("main.lithe", &src),
+        ])
+        .expect_err(body);
+        assert!(err.contains(want), "{body}: {err}");
+        let src = main("import \"./a\";\nimport \"./b\";\n", body);
+        let direct = build_files(&[
+            ("b.lithe", SCOPE_B),
+            ("a.lithe", SCOPE_A),
+            ("main.lithe", &src),
+        ]);
+        assert!(
+            direct
+                .as_ref()
+                .err()
+                .is_none_or(|err| !err.contains("unknown")),
+            "{body}: {direct:?}"
+        );
+    }
+    // Contracts too: `lib` imports `vault`, so `lib` may create a `Vault`, and `main` may not.
+    let vault = "contract Vault is {\n  storage is record { n : uint; }\n  external function go() is { storage.n := 1; }\n}\n";
+    let lib = "import \"./vault\";\npure function one() : uint is 1\n";
+    let make = |imports: &str| {
+        format!("{imports}contract Maker is {{\n  storage is record {{ n : uint; }}\n  external function make() is {{ storage.n := one(); defer create Vault(); }}\n}}\n")
+    };
+    let src = make("import \"./lib\";\n");
+    let err = build_files(&[
+        ("vault.lithe", vault),
+        ("lib.lithe", lib),
+        ("main.lithe", &src),
+    ])
+    .expect_err("a contract another file imports");
+    assert!(
+        err.contains("`Vault` is not another contract of this file or its imports"),
+        "{err}"
+    );
+    let src = make("import \"./lib\";\nimport \"./vault\";\n");
+    build_files(&[
+        ("vault.lithe", vault),
+        ("lib.lithe", lib),
+        ("main.lithe", &src),
+    ])
+    .expect("a contract main imports");
+    // A value may have a type this file cannot name.
+    let src = main(
+        "import \"./a\";\n",
+        "external function go() is { storage.n := uint(make()) + 1; }",
+    );
+    build_files(&[
+        ("b.lithe", SCOPE_B),
+        ("a.lithe", SCOPE_A),
+        ("main.lithe", &src),
+    ])
+    .expect("a value of an unnamed type");
+}
+
+#[test]
+fn imported_code_resolves_where_it_is_written() {
+    let util = "error Denied;\ntype amount is uint;\npure function helper(const x : uint) : uint is x + 1\n";
+    let lib = "\
+import \"./util\";
+module Box(T) is {
+  pure function wrap(const x : T) : T is x
+  pure function size(const x : T) : amount is amount(7)
+}
+module Keeper is {
+  storage keeper at \"t.keeper\" is record { n : uint; }
+  function set(const v : uint) raises Denied is {
+    assert(v > 0, Denied);
+    keeper.n := uint(amount(v));
+  }
+}
+";
+    let main = "\
+import \"./lib\";
+import \"./util\" as U;
+contract C is {
+  type amount is bytes32;
+  error Denied of uint;
+  pure function helper() : uint is 5
+  use Keeper;
+  storage is record { n : uint; a : amount; }
+  external function go(const v : uint) raises U.Denied is {
+    Keeper.set(v);
+    storage.n := Box.wrap(v) + uint(Box.size(v)) + helper();
+  }
+  external function no() raises Denied is { assert(false, Denied(1)); }
+}
+";
+    let files = [
+        ("util.lithe", util),
+        ("lib.lithe", lib),
+        ("main.lithe", main),
+    ];
+    let runtime = deploy(&build_files(&files).expect("hygiene")).expect("deploy");
+    let out = call(&runtime, "go(uint256)", &[Word::from_u64(4)]);
+    assert!(!out.reverted, "{}", pretty(&out.returndata));
+    assert_eq!(slot(&out.storage, 0), Word::from_u64(4 + 7 + 5));
+    let abi = crate::abi(&Sources::memory(files), Path::new("main.lithe"))
+        .expect("abi")
+        .to_json();
+    assert_eq!(abi.matches("\"name\": \"Denied\"").count(), 2, "{abi}");
+    // What the importing file declares stays out of the imported file.
+    let lib =
+        "module Keeper is {\n  function set() raises Denied is { assert(false, Denied); }\n}\n";
+    let main = "import \"./lib\";\ncontract C is {\n  error Denied;\n  use Keeper;\n  storage is record { n : uint; }\n  external function go() is { skip; }\n}\n";
+    let err = build_files(&[("lib.lithe", lib), ("main.lithe", main)]).expect_err("leak");
+    assert!(err.contains("unknown error `Denied`"), "{err}");
+}
+
+#[test]
+fn one_file_imported_many_ways_is_one_declaration() {
+    let b = "\
+error Stop;
+event Ping of record { n : uint; }
+pure function add_one(const x : uint) : uint is x + 1
+module Counter is {
+  storage counter at \"d.counter\" is record { n : uint; }
+  function bump() raises Stop is {
+    assert(counter.n < 10, Stop);
+    counter.n := counter.n + 1;
+  }
+}
+";
+    let a = "import \"./b\" as M;\npure function twice(const x : uint) : uint is M.add_one(M.add_one(x))\n";
+    let c = "import \"./b\";\npure function thrice(const x : uint) : uint is add_one(add_one(add_one(x)))\n";
+    let main = "\
+import \"./a\";
+import \"./c\";
+import \"./b\" as Z;
+contract D is {
+  use Z.Counter;
+  storage is record { n : uint; }
+  external function go() raises Z.Stop is {
+    Z.Counter.bump();
+    storage.n := twice(1) + thrice(1) + Z.add_one(0);
+    emit Z.Ping { n = storage.n; };
+  }
+}
+";
+    let files = [
+        ("b.lithe", b),
+        ("a.lithe", a),
+        ("c.lithe", c),
+        ("main.lithe", main),
+    ];
+    let runtime = deploy(&build_files(&files).expect("diamond")).expect("deploy");
+    let out = call(&runtime, "go()", &[]);
+    assert!(!out.reverted, "{}", pretty(&out.returndata));
+    assert_eq!(slot(&out.storage, 0), Word::from_u64(3 + 4 + 1));
+    let sources = Sources::memory(files);
+    let layout = crate::storage_layout(&sources, Path::new("main.lithe")).expect("layout");
+    assert_eq!(layout.matches("\"d.counter\"").count(), 1, "{layout}");
+    let abi = crate::abi(&sources, Path::new("main.lithe"))
+        .expect("abi")
+        .to_json();
+    assert_eq!(abi.matches("\"name\": \"Stop\"").count(), 1, "{abi}");
+    assert_eq!(abi.matches("\"name\": \"Ping\"").count(), 1, "{abi}");
+}
+
+#[test]
+fn an_alias_covers_modules() {
+    let src = "import \"std/math/math\" as M;\ncontract X is {\n  use M.Math;\n  storage is record { n : uint; }\n  external function go() is { storage.n := M.Math.sqrt(16); }\n}\n";
+    build_files(&[("main.lithe", src)]).expect("M.Math");
+    let bare = src.replace("M.Math.sqrt", "Math.sqrt");
+    let err = build_files(&[("main.lithe", &bare)]).expect_err("bare Math");
+    assert!(err.contains("unknown name `Math`"), "{err}");
+    let p = "module Tool is { pure function one() : uint is 1 }\n";
+    let q = "module Tool is { pure function two() : uint is 2 }\n";
+    let main = "import \"./p\" as P;\nimport \"./q\" as Q;\ncontract X is {\n  use P.Tool;\n  use Q.Tool;\n  storage is record { n : uint; }\n  external function go() is { storage.n := P.Tool.one() + Q.Tool.two(); }\n}\n";
+    let runtime = deploy(
+        &build_files(&[("p.lithe", p), ("q.lithe", q), ("main.lithe", main)]).expect("two Tools"),
+    )
+    .expect("deploy");
+    assert_eq!(
+        slot(&call(&runtime, "go()", &[]).storage, 0),
+        Word::from_u64(3)
+    );
+}
+
+#[test]
+fn spec_files_see_what_their_file_sees() {
+    let lib = "type amount is uint;\n";
+    let a = "import \"./lib\";\npure function make() : amount is amount(3)\n";
+    let main = "import \"./a\";\nstorage is record { n : uint; }\nexternal function set(const v : uint) is { storage.n := v; }\n";
+    let spec =
+        "spec for set is {\n  const x : amount := amount(1);\n  ensures new.storage.n = v;\n}\n";
+    let files = |main: &str| {
+        Sources::memory([
+            ("lib.lithe", lib.to_string()),
+            ("a.lithe", a.to_string()),
+            ("main.lithe", main.to_string()),
+            ("main.spec.lithe", spec.to_string()),
+        ])
+    };
+    let err = crate::specs(&files(main), Path::new("main.lithe")).expect_err("transitive");
+    assert!(err.to_string().contains("unknown type `amount`"), "{err}");
+    let direct = format!("import \"./lib\";\n{main}");
+    crate::specs(&files(&direct), Path::new("main.lithe")).expect("direct");
+}
+
+#[test]
+fn import_paths_name_modules() {
+    for bad in [
+        "std/evm.lithe",
+        "fees",
+        "./my-lib",
+        "./lib/",
+        "std/",
+        "./A",
+        "./a.spec",
+    ] {
+        let src = format!("import \"{bad}\";\nstorage is record {{ n : uint; }}\n");
+        let err = build_files(&[("main.lithe", &src)]).expect_err(bad);
+        assert!(
+            err.starts_with(&format!("1:8: invalid import path `{bad}`")),
+            "{bad}: {err}"
+        );
+    }
+    let files = [
+        ("shared/errors.lithe", "error Denied;\n"),
+        ("app/lib/fees.lithe", "pure function fee(const x : uint) : uint is x / 100\n"),
+        (
+            "app/main.lithe",
+            "import \"./lib/fees\";\nimport \"../shared/errors\" as E;\nstorage is record { n : uint; }\nexternal function go(const x : uint) raises E.Denied is {\n  assert(x > 0, E.Denied);\n  storage.n := fee(x);\n}\n",
+        ),
+    ];
+    crate::compile(
+        &Sources::memory(files),
+        Path::new("app/main.lithe"),
+        &Options::default(),
+    )
+    .and_then(crate::Output::single)
+    .expect("module paths");
+    // A file and a directory of the same stem are different modules.
+    let files = [
+        ("tools.lithe", "pure function one() : uint is 1\n"),
+        ("tools/more.lithe", "pure function two() : uint is 2\n"),
+        (
+            "main.lithe",
+            "import \"./tools\";\nimport \"./tools/more\";\nstorage is record { n : uint; }\nexternal function go() is { storage.n := one() + two(); }\n",
+        ),
+    ];
+    build_files(&files).expect("tools and tools/more");
+    let both = "import \"std/crypto\";\nimport \"std/crypto/ecdsa\";\ncontract C is {\n  use ECDSA;\n  storage is record { h : bytes32; }\n  external function f() is { storage.h := Crypto.keccak256(\"x\"); }\n}\n";
+    build_files(&[("main.lithe", both)]).expect("std/crypto and std/crypto/ecdsa");
+}
+
 #[test]
 fn imports_are_typed_declarations() {
     let examples = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples/imports");
-    let err = compile("import \"./fee.lithe\";\n").expect_err("missing");
+    let err = compile("import \"./fee\";\n").expect_err("missing");
     assert!(
         err.to_string().contains("cannot read `./fee.lithe`"),
         "{err}"
@@ -1234,7 +1543,7 @@ fn imports_are_typed_declarations() {
     .expect("other");
     std::fs::write(
         dir.join("clash.lithe"),
-        "import \"./fee.lithe\";\nimport \"./other.lithe\";\nstorage is record { n : uint; }\nexternal function go() is { skip }\n",
+        "import \"./fee\";\nimport \"./other\";\nstorage is record { n : uint; }\nexternal function go() is { skip }\n",
     )
     .expect("clash");
     let err = compile_file(&dir.join("clash.lithe")).expect_err("clash");
@@ -1242,8 +1551,8 @@ fn imports_are_typed_declarations() {
         err.to_string().contains("ambiguous symbol `calculate_fee`"),
         "{err}"
     );
-    std::fs::write(dir.join("a.lithe"), "import \"./b.lithe\";\n").expect("a");
-    std::fs::write(dir.join("b.lithe"), "import \"./a.lithe\";\n").expect("b");
+    std::fs::write(dir.join("a.lithe"), "import \"./b\";\n").expect("a");
+    std::fs::write(dir.join("b.lithe"), "import \"./a\";\n").expect("b");
     let err = compile_file(&dir.join("a.lithe")).expect_err("cycle");
     assert!(
         err.to_string()

@@ -1,5 +1,7 @@
 (* Options as list elements: stored and local, fixed and dynamic, one word or two. *)
 
+import "std/list";
+
 storage is record {
   small : list(option(uint8));
   wide : list(option(uint));

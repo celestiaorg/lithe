@@ -2,6 +2,9 @@
    value. `Evm.call` is deferred like every call, so the wallet's own state is written
    before the target runs, and the continuation gets the return data as it came back. *)
 
+import "std/bytes";
+import "std/evm";
+
 error Not_owner;
 error Mismatched_lengths;
 

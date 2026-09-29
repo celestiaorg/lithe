@@ -1,5 +1,8 @@
 (* Benchmark: a minimal token with owner minting. Mirrors token.sol. *)
 
+import "std/address";
+import "std/evm";
+
 error Not_owner;
 
 error Insufficient_balance of record {

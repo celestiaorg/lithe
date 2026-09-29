@@ -11,6 +11,8 @@
        Pausable.pause();
      } *)
 
+import "std/evm";
+
 module Pausable is {
   storage pausable at "lithe.std.pausable" is record {
     paused : bool;

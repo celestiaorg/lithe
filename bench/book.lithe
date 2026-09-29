@@ -1,6 +1,8 @@
 (* Benchmark: the target of dialer's raw calls. Takes a batch of orders, answers their
    ids, and refuses an order with no legs. Mirrors book.sol. *)
 
+import "std/list";
+
 type order is record {
   id : uint;
   note : string;

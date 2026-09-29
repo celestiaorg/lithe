@@ -2,6 +2,10 @@
    Solidity lays out `mapping(K => string)` and `string[]`: up to 31 bytes in the slot,
    longer values as a length there and data from `keccak(slot)`. *)
 
+import "std/crypto";
+import "std/evm";
+import "std/list";
+
 storage is record {
   bios : map(address, string);
   files : map(bytes32, bytes);

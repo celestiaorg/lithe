@@ -1,6 +1,8 @@
 (* Plain ether, with no calldata, runs `receive`. Calldata that matches no entrypoint runs
    `fallback`. Without them, both revert. *)
 
+import "std/evm";
+
 event Received of record {
   indexed from : address;
   amount : wei;

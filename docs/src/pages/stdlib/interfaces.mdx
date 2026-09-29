@@ -8,7 +8,8 @@ description: "Interface declarations for common ERC standards: for typed queries
 `std/interfaces` declares the common standards as [interfaces](/language/effects#interfaces), for typed `query` and `defer` against other contracts, for exposing a module's externals with [`use M exposing`](/language/modules#exposing-a-modules-externals), and for announcing them with [`supports`](/language/modules#erc-165). Each interface is exactly its standard's functions, so its ERC-165 id is the standard's. Interfaces for part of a module's externals, such as `IERC20Views` or `IOwnable`, are declared next to the module, not here. The ERC-20, ERC-721, and ERC-1155 files also declare the errors of ERC-6093 that OpenZeppelin, and the standard library's tokens, raise.
 
 ```lithe
-import "std/interfaces/erc20.lithe";
+import "std/evm";
+import "std/interfaces/erc20";
 
 error Too_little of uint;
 

@@ -10,6 +10,10 @@ ERC-721 with ERC-6093 errors, including `safeTransferFrom` and its receiver chec
 ```lithe [erc721.lithe]
 (* ERC-721: ownership, approvals, operators, safe and unsafe transfers, mint, and burn. *)
 
+import "std/abi";
+import "std/address";
+import "std/evm";
+
 interface ERC721Receiver is {
   function onERC721Received(operator : address; from : address; tokenId : uint; data : bytes) : bytes4;
 }

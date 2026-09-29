@@ -1,0 +1,10 @@
+(* Byte strings. *)
+
+module Bytes is {
+  (* concat(a; b; ...) : bytes
+     `bytes.concat(a, b, ...)`, of `bytes` and `bytesN` values. *)
+  intrinsic concat;
+
+  (* The 32 bytes of `b` from `offset`. `Panic(0x32)` if they run past the end. *)
+  intrinsic pure function word(b : bytes; offset : uint) : bytes32;
+}

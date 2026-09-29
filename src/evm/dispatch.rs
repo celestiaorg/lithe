@@ -24,7 +24,7 @@ fn zero_ending_name() -> String {
 /// and one whose selector ends in a zero byte answering 999.
 fn entries(plain: usize, payable: usize, extra: &str) -> (String, Vec<(String, u64, bool)>) {
     let zero = zero_ending_name();
-    let mut src = format!("storage is record {{ n : uint; }}\n{extra}\nexternal view function {zero}() : uint is 999\n");
+    let mut src = format!("import \"std/evm\"; storage is record {{ n : uint; }}\n{extra}\nexternal view function {zero}() : uint is 999\n");
     let mut sigs = vec![(format!("{zero}()"), 999, false)];
     for i in 0..plain {
         src += &format!("external view function f{i}() : uint is {i}\n");

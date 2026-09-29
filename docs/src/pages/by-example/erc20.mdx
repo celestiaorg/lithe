@@ -11,6 +11,10 @@ A standard fungible token. Function, event, and error names match the ERC-20 and
 (* A complete ERC-20 with an owner who can mint. Names match the standard exactly,
    and errors follow OpenZeppelin's ERC-6093 conventions. *)
 
+import "std/address";
+import "std/evm";
+import "std/uint";
+
 error ERC20InsufficientBalance of record {
   sender : address;
   balance : uint;

@@ -10,7 +10,9 @@ description: "ERC-20 with burning, permits, a cap, votes, and flash loans, ERC-7
 `std/token/erc20.lithe`. The ERC-20 standard, with OpenZeppelin's errors, events, and order of checks. The module's externals are the standard's, and a token exposes them by naming the standard's interfaces from [`std/interfaces`](/stdlib/interfaces), and announces them through ERC-165 with [`supports`](/language/modules#erc-165):
 
 ```lithe
-import "std/token/erc20.lithe";
+import "std/interfaces/erc20";
+import "std/evm";
+import "std/token/erc20";
 
 contract Token is {
   use ERC20 exposing IERC20, IERC20Metadata;
@@ -83,7 +85,12 @@ spec for ERC20.transferFrom
 `std/token/erc20_permit.lithe`. ERC-2612: approvals signed off-chain, so a holder can approve without paying for a transaction. It uses [`EIP712`](/stdlib/crypto#eip712), [`ECDSA`](/stdlib/crypto#ecdsa), and [`Nonces`](/stdlib/utils#nonces), and a contract uses all four. Its externals are the whole of ERC-2612, `IERC20Permit`: `permit`, `nonces`, and `DOMAIN_SEPARATOR`.
 
 ```lithe
-import "std/token/erc20_permit.lithe";
+import "std/interfaces/erc20";
+import "std/utils/nonce";
+import "std/crypto/ecdsa";
+import "std/crypto/eip712";
+import "std/token/erc20";
+import "std/token/erc20_permit";
 
 contract Token is {
   use EIP712;
@@ -116,7 +123,9 @@ contract Token is {
 `std/token/erc20_capped.lithe`. A ceiling on the supply, like OpenZeppelin's `ERC20Capped`. `init(cap)` sets it once, from `deploy` or a migration, as an [immutable](/language/storage#immutables), and a zero cap raises `ERC20InvalidCap`. Minting is the contract's own, so it checks the cap after each mint with `check(supply)`, which raises `ERC20ExceededCap`. The external is `cap()`, `IERC20Capped`.
 
 ```lithe
-import "std/token/erc20_capped.lithe";
+import "std/interfaces/erc20";
+import "std/token/erc20";
+import "std/token/erc20_capped";
 
 contract Token is {
   use ERC20 exposing IERC20, IERC20Metadata;
@@ -146,8 +155,18 @@ contract Token is {
 The votes follow every balance change that goes through the module's `update`, so a token with votes moves balances only through it. Its `transfer` and `transferFrom` externals, and its `move`, `mint`, and `burn`, all do. A token with rules of its own for a balance change, such as a pause or a cap, writes `ERC20.update`, its rules, then `transfer_voting_units`, in OpenZeppelin's order:
 
 ```lithe
-import "std/token/erc20_votes.lithe";
-import "std/security/pausable.lithe";
+import "std/interfaces/erc5805";
+import "std/math/math";
+import "std/utils/nonce";
+import "std/crypto/ecdsa";
+import "std/utils/checkpoint";
+import "std/interfaces/erc20";
+import "std/crypto/eip712";
+import "std/token/erc20";
+import "std/address";
+import "std/evm";
+import "std/token/erc20_votes";
+import "std/security/pausable";
 
 contract Token is {
   use EIP712;
@@ -203,7 +222,10 @@ contract Token is {
 `std/token/erc20_flash_mint.lithe`. ERC-3156 flash loans of the token itself, like OpenZeppelin's `ERC20FlashMint`, with no fee. `flashLoan` mints the loan to the borrower, calls its `onFlashLoan` in a [deferred call](/language/effects), then, in the continuation, checks its answer, spends its allowance to the token, and burns the loan. A borrower's own failure passes through unchanged. The externals are ERC-3156's lender, `IERC3156FlashLender`:
 
 ```lithe
-import "std/token/erc20_flash_mint.lithe";
+import "std/interfaces/erc3156";
+import "std/interfaces/erc20";
+import "std/token/erc20";
+import "std/token/erc20_flash_mint";
 
 contract Token is {
   use ERC20 exposing IERC20, IERC20Metadata;
@@ -223,7 +245,9 @@ contract Token is {
 `std/token/erc721.lithe`. The ERC-721 standard and its metadata extension, with OpenZeppelin's errors, events, and order of checks. The safe transfers and `safe_mint` call the receiver in a [deferred call](/language/effects), after the transfer's own effects, and pass on a receiver's revert reason unchanged.
 
 ```lithe
-import "std/token/erc721.lithe";
+import "std/interfaces/erc721";
+import "std/evm";
+import "std/token/erc721";
 
 contract Collection is {
   use ERC721 exposing IERC721, IERC721Metadata;
@@ -259,7 +283,10 @@ contract Collection is {
 The lists follow the ownership changes that go through the module's own `update`, so an enumerable collection moves tokens only through `ERC721Enumerable`: it exposes the transfers from it rather than from `ERC721`, and mints and burns with its functions. `ERC721` still provides the rest of the standard:
 
 ```lithe
-import "std/token/erc721_enumerable.lithe";
+import "std/interfaces/erc721";
+import "std/token/erc721";
+import "std/evm";
+import "std/token/erc721_enumerable";
 
 contract Collection is {
   use ERC721 exposing IERC721Metadata, {
@@ -347,8 +374,10 @@ external pure function supportsInterface(const interfaceId : bytes4) : bool is
 `std/token/erc1155.lithe`. The ERC-1155 multi-token standard and its metadata URI extension, with OpenZeppelin's errors, events, and order of checks. One URI serves every id, and clients substitute the id for `{id}` in it; set it with `set_uri`, from `deploy` and whenever it changes. Every balance change goes through `update`, which logs `TransferSingle` for one id and `TransferBatch` for any other count. The safe transfers and mints call the receiver's `onERC1155Received`, or `onERC1155BatchReceived` for a batch even of one id, in a [deferred call](/language/effects) after the update's own effects, and pass on a receiver's revert reason unchanged. A burn asks no receiver.
 
 ```lithe
-import "std/token/erc1155.lithe";
-import "std/access/ownable.lithe";
+import "std/interfaces/erc1155";
+import "std/evm";
+import "std/token/erc1155";
+import "std/access/ownable";
 
 contract Items is {
   use Ownable;

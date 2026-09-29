@@ -1,5 +1,9 @@
 (* Execution context is Evm.*, hashes are Crypto.*, encoding is Abi.*. *)
 
+import "std/abi";
+import "std/crypto";
+import "std/evm";
+
 interface Target is {
   function foo(amount : uint);
 }

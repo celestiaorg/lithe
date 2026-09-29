@@ -14,8 +14,11 @@
    transfers call the receiver in a deferred call, after the transfer's own effects, and
    pass a receiver's revert reason through unchanged. *)
 
-import "std/interfaces/erc165.lithe";
-import "std/interfaces/erc721.lithe";
+import "std/abi";
+import "std/address";
+import "std/evm";
+import "std/interfaces/erc165";
+import "std/interfaces/erc721";
 
 module ERC721 is {
   storage erc721 at "lithe.std.erc721" is record {

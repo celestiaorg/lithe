@@ -2,6 +2,8 @@
    maps inside a map's records, each at the slot Solidity gives it. A function that takes
    stored data works on a map's entry as on a named field. *)
 
+import "std/list";
+
 type checkpoint is record {
   key : uint48;
   value : uint208;

@@ -21,6 +21,8 @@ State is always accessed through a qualified path. A reviewer can always tell a 
 Every contract declares one default storage record:
 
 ```lithe
+import "std/evm";
+
 storage is record {
   owner : address;
   paused : bool;
@@ -87,6 +89,8 @@ Named domains are how modules own state, and how storage stays stable across upg
 Transient storage ([EIP-1153](https://eips.ethereum.org/EIPS/eip-1153)) is shared by every call in a transaction and cleared when the transaction ends. It is read with `TLOAD` and written with `TSTORE`, which is much cheaper than storage.
 
 ```lithe
+import "std/evm";
+
 error Busy;
 
 transient storage is record {
@@ -122,6 +126,8 @@ Transient slots 0 and 1 hold the reentrancy lock and the upgrade gate. The contr
 An immutable is a value fixed while the contract is set up, such as a factory address, a fee, or a hash, and never written again. Reading one costs about 3 gas, where a first storage read costs 2,100:
 
 ```lithe
+import "std/evm";
+
 error Fee_too_high of uint;
 
 immutable is record {
@@ -189,6 +195,8 @@ Names and ids follow named storage's rules. An immutable block and a storage dom
 Immutables are written only while the contract is set up: by `deploy`, by a [migration](/language/upgrades#migrations) in an upgradeable contract, and by the functions they call. A function that writes an immutable, itself or through a function it calls, may be called only from those, or from other functions that keep the same rule. The compiler works this out from the calls, and rejects any other path to a write where it starts:
 
 ```lithe rejects
+import "std/evm";
+
 immutable is record {
   owner : address;
 }

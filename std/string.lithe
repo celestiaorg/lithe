@@ -1,0 +1,7 @@
+(* Strings. *)
+
+module String is {
+  (* concat(a; b; ...) : string
+     `string.concat(a, b, ...)`. *)
+  intrinsic concat;
+}

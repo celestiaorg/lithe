@@ -1,0 +1,12 @@
+(* Growing and shrinking dynamic lists, stored or held in a `var`. Each is a statement that
+   writes the list as an assignment does. *)
+
+module List is {
+  (* push(xs : list(T); v : T)
+     `List.push(xs, v);`: appends `v`. *)
+  intrinsic push;
+
+  (* pop(xs : list(T))
+     `List.pop(xs);`: drops the last element. `Panic(0x31)` if the list is empty. *)
+  intrinsic pop;
+}

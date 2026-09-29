@@ -13,8 +13,9 @@ A generic module like `Set(T : map_key)` is specialized for each element type it
 (* Generic modules specialize at compile time: no runtime cost, no casts.
    `Set(T : map_key)` accepts any type that can key a map. *)
 
-import "./lib/set.lithe";
-import "./lib/set_enumerable.lithe";
+import "std/evm";
+import "./lib/set";
+import "./lib/set_enumerable";
 
 type order_id is bytes32;
 
@@ -93,6 +94,8 @@ module Set(T : map_key) is {
 
 ```lithe [lib/set_enumerable.lithe]
 (* Membership plus enumeration. The list and the index map are both stored. *)
+
+import "std/list";
 
 module SetEnumerable(T : map_key) is {
   type self is record {

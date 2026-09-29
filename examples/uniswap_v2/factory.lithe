@@ -2,9 +2,14 @@
    The salt is the sorted tokens, so anyone can compute a pair's address from its tokens
    and the hash of the pair's creation code, before or after it exists. *)
 
-import "./pair.lithe";
-import "./interfaces.lithe";
-import "std/utils/create2.lithe";
+import "std/abi";
+import "std/address";
+import "std/crypto";
+import "std/evm";
+import "std/list";
+import "./pair";
+import "./interfaces";
+import "std/utils/create2";
 
 contract UniswapV2Factory is {
   use Create2;

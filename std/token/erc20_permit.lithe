@@ -9,10 +9,14 @@
 
      use ERC20Permit exposing IERC20Permit; *)
 
-import "std/token/erc20.lithe";
-import "std/crypto/eip712.lithe";
-import "std/crypto/ecdsa.lithe";
-import "std/utils/nonce.lithe";
+import "std/abi";
+import "std/crypto";
+import "std/evm";
+import "std/token/erc20";
+import "std/crypto/eip712";
+import "std/crypto/ecdsa";
+import "std/utils/nonce";
+import "std/interfaces/erc20";
 
 module ERC20Permit is {
   requires ERC20;

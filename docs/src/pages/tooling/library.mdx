@@ -54,7 +54,7 @@ let sources = Sources::memory([
 let counter = lithe::compile(&sources, Path::new("counter.lithe"), &Options::default())?.single()?;
 ```
 
-Imports resolve relative to the importing file's path, `.` and `..` included. The standard library, `import "std/..."`, is built into the compiler and works with either.
+An import resolves relative to the importing file's path, `.` and `..` included: `import "./lib/math";` in `counter.lithe` names `lib/math.lithe`. The standard library, `import "std/..."`, is built into the compiler and works with either.
 
 ## The typed ABI
 

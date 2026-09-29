@@ -7,9 +7,48 @@ description: "Reference for the Evm, Crypto, Abi, Bytes, String, Base64, List, U
 
 Lithe has no magic globals. Execution context comes from `Evm`, hashing from `Crypto`, and encoding from `Abi`. Every call names where its value comes from, so a search for `Evm.` finds every place a contract depends on its environment.
 
+Each of these is a module of the [standard library](/stdlib), declared in its own file, and a file [imports](/language/imports) the ones it uses as it imports any module. A file that doesn't import `std/evm` doesn't read the caller, the block, or balances, and its first lines say so.
+
+| Module | Import |
+| --- | --- |
+| `Evm` | `import "std/evm";` |
+| `Crypto` | `import "std/crypto";` |
+| `Abi` | `import "std/abi";` |
+| `Bytes` | `import "std/bytes";` |
+| `String` | `import "std/string";` |
+| `Base64` | `import "std/base64";` |
+| `List` | `import "std/list";` |
+| `Uint` | `import "std/uint";` |
+| `Int` | `import "std/int";` |
+| `Address` | `import "std/address";` |
+
+Using one without its import is the error any unknown name is, with the import to add:
+
+```lithe rejects
+storage is record {
+  owner : address;
+}
+
+external function claim() is {
+  storage.owner := Evm.sender();
+}
+```
+
+```text
+unknown name `Evm`
+
+`Evm` is declared in `std/evm`: `import "std/evm";`
+```
+
+An alias qualifies the module as it does any other: after `import "std/evm" as Chain;`, the caller is `Chain.Evm.sender()`. A file that doesn't import `std/evm` can declare a module of its own named `Evm`.
+
+The compiler implements these modules' members. Each file declares its members with `intrinsic`, with a signature where Lithe can write one, and a comment that editors show on hover. A member whose arguments vary in number or type, such as `Abi.encode`, or whose width comes from the context, such as `Uint.max`, has no signature, and its row below says what it takes. Only the standard library declares an `intrinsic`.
+
+The language's own names need no import: types, literals, conversions such as `uint(x)`, `Some` and `None`, and `assert`, `fail`, and `forward`.
+
 ## `Evm`
 
-Execution context. Readable in `view` and stateful functions, and not in `pure` functions.
+Execution context, from `import "std/evm";`. Readable in `view` and stateful functions, and not in `pure` functions.
 
 ### Message
 
@@ -75,6 +114,8 @@ Execution context. Readable in `view` and stateful functions, and not in `pure` 
 Reading `Evm.value()` outside a `payable` function is an error, so a function cannot rely on ether it could never receive:
 
 ```lithe rejects
+import "std/evm";
+
 storage is record {
   n : uint;
 }
@@ -91,7 +132,7 @@ external function `go` reads `Evm.value()`; write `external payable function`
 
 ## `Crypto`
 
-Hash functions and signature recovery. Usable in any function, `pure` ones included.
+Hash functions and signature recovery, from `import "std/crypto";`. Usable in any function, `pure` ones included.
 
 | Built-in | Type | Solidity |
 | --- | --- | --- |
@@ -131,7 +172,7 @@ The identity precompile, `0x04`, copies its input, which a value already is. `qu
 
 ## `Abi`
 
-ABI encoding and decoding. Usable in any function, `pure` ones included.
+ABI encoding and decoding, from `import "std/abi";`. Usable in any function, `pure` ones included.
 
 | Built-in | Type | Solidity |
 | --- | --- | --- |
@@ -150,6 +191,10 @@ ABI encoding and decoding. Usable in any function, `pure` ones included.
 `Abi.encode` takes any ABI values, each one argument: a record or tuple is a Solidity tuple. `Abi.encode_packed` packs what Solidity's `abi.encodePacked` does: words, strings, bytes, and lists of words, each element padded to 32 bytes. It has no layout for records, tuples, nested lists, or lists of strings or bytes.
 
 ```lithe
+import "std/abi";
+import "std/crypto";
+import "std/evm";
+
 storage is record {
   digest : bytes32;
 }
@@ -167,6 +212,8 @@ external pure function transfer_call(const to : address; const amount : uint) : 
 
 ## `Bytes` and `String`
 
+From `import "std/bytes";` and `import "std/string";`.
+
 | Built-in | Type | Solidity |
 | --- | --- | --- |
 | `Bytes.concat(a, b, ...)` | `bytes` | `bytes.concat(a, b, ...)`. Arguments are `bytes` or `bytesN` |
@@ -174,6 +221,9 @@ external pure function transfer_call(const to : address; const amount : uint) : 
 | `String.concat(a, b, ...)` | `string` | `string.concat(a, b, ...)` |
 
 ```lithe
+import "std/bytes";
+import "std/string";
+
 storage is record {
   greeting : string;
 }
@@ -198,6 +248,10 @@ external pure function tagged(const tag : bytes4; const data : bytes) : bytes is
 A single byte can't be assigned: build a new value from slices with `Bytes.concat`.
 
 ```lithe
+import "std/abi";
+import "std/crypto";
+import "std/evm";
+
 storage is record {
   forwarder : address;
 }
@@ -222,7 +276,7 @@ external pure function low_balance(const reason : bytes) : uint is {
 
 ## `Base64`
 
-RFC 4648 base64, with the same algorithm and lookup tables as Solady's `Base64`. Usable in any function, `pure` ones included. `data` is `bytes` or `string`.
+RFC 4648 base64, from `import "std/base64";`, with the same algorithm and lookup tables as Solady's `Base64`. Usable in any function, `pure` ones included. `data` is `bytes` or `string`.
 
 | Built-in | Type | Solidity |
 | --- | --- | --- |
@@ -234,6 +288,9 @@ RFC 4648 base64, with the same algorithm and lookup tables as Solady's `Base64`.
 Like Solady's, `Base64.decode` does not check its input: other characters decode to unspecified bytes.
 
 ```lithe
+import "std/base64";
+import "std/string";
+
 storage is record {
   n : uint;
 }
@@ -244,6 +301,8 @@ external pure function contractURI() : string is
 
 ## `List`
 
+From `import "std/list";`.
+
 | Built-in | Type | Solidity |
 | --- | --- | --- |
 | `List.push(xs, v)` | statement | `xs.push(v)`: appends `v` to a dynamic list |
@@ -252,6 +311,8 @@ external pure function contractURI() : string is
 `xs` is a stored list or a `var`, and `List.push(xs, v);` and `List.pop(xs);` are statements: they write `xs` as an assignment would, so a `view` function cannot push to or pop a stored list. A stored list clears the element's slots. To remove an element from the middle, move the last one into its place first:
 
 ```lithe
+import "std/list";
+
 storage is record {
   ids : list(uint);
 }
@@ -264,7 +325,7 @@ external function remove(const i : uint) is {
 
 ## `Uint`, `Int`, and `Address`
 
-Constants take their width from the type the context expects. With no expected type, they are 256-bit.
+From `import "std/uint";`, `import "std/int";`, and `import "std/address";`. Constants take their width from the type the context expects. With no expected type, they are 256-bit.
 
 | Built-in | Type | Solidity |
 | --- | --- | --- |
@@ -286,6 +347,10 @@ Constants take their width from the type the context expects. With no expected t
 | `Address.to_checksum_string(a)` | `string` | `Strings.toChecksumHexString(a)`: EIP-55 mixed case |
 
 ```lithe
+import "std/int";
+import "std/string";
+import "std/uint";
+
 storage is record {
   cap : uint8;
   label : string;

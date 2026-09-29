@@ -11,6 +11,9 @@ Backers pledge ether before a deadline. If the goal is reached, the creator clai
 (* Pledge ether toward a goal before a deadline. If the goal is met, the creator
    claims the funds. If not, each backer takes their pledge back. *)
 
+import "std/address";
+import "std/evm";
+
 error Already_started;
 error Ended;
 error Not_ended;

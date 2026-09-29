@@ -2,10 +2,11 @@
    `Clones`, `SSTORE2`, and `Create3`. Mirrors deployers.sol, which uses OpenZeppelin's
    `Clones` and Solady's `SSTORE2` and `CREATE3`. *)
 
-import "std/utils/create2.lithe";
-import "std/utils/clones.lithe";
-import "std/utils/sstore2.lithe";
-import "std/utils/create3.lithe";
+import "std/evm";
+import "std/utils/create2";
+import "std/utils/clones";
+import "std/utils/sstore2";
+import "std/utils/create3";
 
 contract Deployers is {
   use Create2;

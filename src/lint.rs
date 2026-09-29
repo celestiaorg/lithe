@@ -120,7 +120,7 @@ fn lint_file(path: &Path, fix: bool) -> Result<(String, bool), Error> {
     let allow = crate::config::find(&own)?.allow;
     let mut findings = suppress(
         &src,
-        findings_at(&src, &own, &own_s, &label, units(&own)?)?,
+        findings_at(&src, &own_s, &label, units(&own)?)?,
         &allow,
         &label,
     );
@@ -132,7 +132,7 @@ fn lint_file(path: &Path, fix: bool) -> Result<(String, bool), Error> {
                 let fresh = std::fs::read_to_string(path).unwrap_or(edited);
                 findings = suppress(
                     &fresh,
-                    findings_at(&fresh, &own, &own_s, &label, units(&own)?)?,
+                    findings_at(&fresh, &own_s, &label, units(&own)?)?,
                     &allow,
                     &label,
                 );
@@ -165,7 +165,7 @@ pub(crate) fn lint_source(src: &str, path: &Path, units: Vec<Program>) -> Result
     let allow = crate::config::find(&own)
         .map(|config| config.allow)
         .unwrap_or_default();
-    let findings = findings_at(src, &own, &own_s, &own_s, units)?;
+    let findings = findings_at(src, &own_s, &own_s, units)?;
     Ok(suppress(src, findings, &allow, &own_s)
         .into_iter()
         .map(|f| Lint {
@@ -381,34 +381,26 @@ fn apply<'a>(src: &str, edits: impl Iterator<Item = (usize, usize, &'a str)>) ->
 
 fn findings_at(
     src: &str,
-    from: &Path,
     own: &str,
     label: &str,
     units: Vec<Program>,
 ) -> Result<Vec<Finding>, Error> {
     let uses = parse::parse(src)?.uses;
-    let toks = lex::tokenize(src)?;
-    let idents: HashSet<&str> = toks
-        .iter()
-        .filter(|tok| tok.kind == Kind::Ident)
-        .map(|tok| &src[tok.start..tok.end])
-        .collect();
     let mut findings = Vec::new();
-    let mut imported = HashSet::new();
+    // An import is used when this file names something through it.
+    let mut used = HashSet::new();
     for unit in units {
+        let key = (unit.origin.clone(), unit.contract_name.clone());
+        if let Some(scope) = unit.scopes.scope(&key) {
+            used.extend(scope.used.iter().copied());
+        }
         let checked = check::check_in(unit, false)?;
         let mut acc = Acc::default();
         collect(&checked, own, &mut acc);
         findings.extend(finish(&checked, src, own, label, &acc));
-        imported.extend(referenced(&checked, &idents, &acc));
     }
-    for use_ in &uses {
-        let Some(origin) = modules::import_origin(from, &use_.path) else {
-            continue;
-        };
-        let used =
-            brought_in(&origin).is_none_or(|files| files.iter().any(|f| imported.contains(f)));
-        if used {
+    for (k, use_) in uses.iter().enumerate() {
+        if used.contains(&k) {
             continue;
         }
         findings.push(Finding {
@@ -580,105 +572,6 @@ fn name_span(toks: &[Token], line: u32, col: u32) -> Option<(usize, usize)> {
         .iter()
         .find(|tok| tok.kind == Kind::Ident)
         .map(|tok| (tok.start, tok.end))
-}
-
-/// Every name the program declares, with the file it comes from.
-fn declared(prog: &Program) -> Vec<(&str, &str)> {
-    let mut out = Vec::new();
-    out.extend(
-        prog.types
-            .iter()
-            .map(|d| (d.name.as_str(), d.origin.as_str())),
-    );
-    out.extend(
-        prog.errors
-            .iter()
-            .map(|d| (d.name.as_str(), d.origin.as_str())),
-    );
-    out.extend(
-        prog.error_sets
-            .iter()
-            .map(|d| (d.name.as_str(), d.origin.as_str())),
-    );
-    out.extend(
-        prog.events
-            .iter()
-            .map(|d| (d.name.as_str(), d.origin.as_str())),
-    );
-    out.extend(
-        prog.interfaces
-            .iter()
-            .map(|d| (d.name.as_str(), d.origin.as_str())),
-    );
-    out.extend(
-        prog.domains
-            .iter()
-            .map(|d| (d.name.as_str(), d.origin.as_str())),
-    );
-    out.extend(
-        prog.funcs
-            .iter()
-            .map(|d| (d.name.as_str(), d.origin.as_str())),
-    );
-    for module in &prog.modules {
-        out.push((module.name.as_str(), module.origin.as_str()));
-        out.extend(
-            module
-                .types
-                .iter()
-                .map(|d| (d.name.as_str(), d.origin.as_str())),
-        );
-        out.extend(
-            module
-                .errors
-                .iter()
-                .map(|d| (d.name.as_str(), d.origin.as_str())),
-        );
-        out.extend(
-            module
-                .events
-                .iter()
-                .map(|d| (d.name.as_str(), d.origin.as_str())),
-        );
-    }
-    for peer in prog.peers.iter().chain(&prog.siblings) {
-        let origin = declared(peer)
-            .into_iter()
-            .map(|(_, origin)| origin)
-            .find(|o| !o.is_empty());
-        if let (Some(name), Some(origin)) = (&peer.contract_name, origin) {
-            out.push((name.as_str(), origin));
-        }
-        out.extend(declared(peer));
-    }
-    out.retain(|(_, origin)| !origin.is_empty());
-    out
-}
-
-/// Files whose declarations this file names. A name is an identifier token, so every
-/// syntax that mentions an imported name counts, including ones the AST walk never sees.
-fn referenced(checked: &Checked, idents: &HashSet<&str>, acc: &Acc) -> HashSet<String> {
-    let mut origins: HashSet<String> = declared(&checked.prog)
-        .into_iter()
-        .filter(|(name, _)| idents.contains(name.split('.').next().unwrap_or(name)))
-        .map(|(_, origin)| origin.to_string())
-        .collect();
-    for callee in &acc.callees {
-        origins.insert(checked.prog.funcs[*callee].origin.clone());
-    }
-    origins
-}
-
-/// The files an import brings in: itself and everything it imports, transitively.
-/// `None` when it does not load on its own, so the import is kept.
-fn brought_in(origin: &str) -> Option<HashSet<String>> {
-    let prog = modules::load(&Sources::disk(), Path::new(origin)).ok()?;
-    let mut out: HashSet<String> = declared(&prog)
-        .into_iter()
-        .map(|(_, o)| o.to_string())
-        .collect();
-    out.insert(origin.to_string());
-    Some(out)
 }
 
 fn collect(checked: &Checked, own: &str, acc: &mut Acc) {
@@ -1137,11 +1030,12 @@ fn scan_ty(ty: &TypeRef, acc: &mut Acc) {
 
 #[cfg(test)]
 fn findings_in(src: &str) -> Result<Vec<Finding>, Error> {
-    let prog = parse::parse(src)?;
+    let path = Path::new("test.lithe");
+    let prog = modules::load(&Sources::memory([(path, src)]), path)?;
     let checked = check::check(prog)?;
     let mut acc = Acc::default();
-    collect(&checked, "", &mut acc);
-    let mut findings = finish(&checked, src, "", "test.lithe", &acc);
+    collect(&checked, "test.lithe", &mut acc);
+    let mut findings = finish(&checked, src, "test.lithe", "test.lithe", &acc);
     findings.sort_by(|a, b| (a.line, a.col, a.rule).cmp(&(b.line, b.col, b.rule)));
     Ok(findings)
 }
@@ -1173,7 +1067,7 @@ fn rules(src: &str) -> Vec<&'static str> {
 mod tests {
     use super::*;
 
-    const STORE: &str = "storage is record { n : uint; }\n";
+    const STORE: &str = "import \"std/evm\"; storage is record { n : uint; }\n";
 
     #[test]
     fn each_rule_fires_and_stays_quiet() {
@@ -1200,14 +1094,14 @@ mod tests {
         assert!(!rules(&guarded).contains(&"reentry"));
 
         let open_loop = "\
-storage is record { members : list(uint); }
+import \"std/evm\"; storage is record { members : list(uint); }
 external function go() is {
   for x : uint in storage.members do { skip; }
 }
 ";
         assert!(rules(open_loop).contains(&"unbounded-loop"));
         let capped = "\
-storage is record { members : list(uint); }
+import \"std/evm\"; storage is record { members : list(uint); }
 external function go() is {
   for x : uint in storage.members bound 4 do { skip; }
 }
@@ -1215,7 +1109,7 @@ external function go() is {
         assert!(!rules(capped).contains(&"unbounded-loop"));
 
         let stale = "\
-interface Hook is { function ping(); }
+import \"std/evm\"; interface Hook is { function ping(); }
 storage is record { n : uint; hook : Hook; }
 external function go() is {
   const before : uint := storage.n;
@@ -1284,7 +1178,7 @@ external function go() is {
         .unwrap();
         std::fs::write(
             &main,
-            "import \"lib.lithe\";\nstorage is record { n : uint; }\nexternal function go() is {\n  storage.n := bump(1);\n}\n",
+            "import \"./lib\";\nstorage is record { n : uint; }\nexternal function go() is {\n  storage.n := bump(1);\n}\n",
         )
         .unwrap();
         let report = lint_paths(std::slice::from_ref(&main), false);
@@ -1299,7 +1193,7 @@ external function go() is {
         std::fs::write(&unused, "function bump(const n : uint) : uint is n\n").unwrap();
         std::fs::write(
             &main,
-            "import \"idle.lithe\";\nstorage is record { n : uint; }\nexternal function go() is { skip; }\n",
+            "import \"./idle\";\nstorage is record { n : uint; }\nexternal function go() is { skip; }\n",
         )
         .unwrap();
         let idle = lint_paths(std::slice::from_ref(&main), false);
@@ -1359,26 +1253,39 @@ external function go() is {
         std::fs::create_dir_all(&dir).unwrap();
         let write = |name: &str, src: &str| std::fs::write(dir.join(name), src).unwrap();
         write("errors.lithe", "error Denied;\n");
-        write("reexport.lithe", "import \"errors.lithe\";\n");
         write("child.lithe", "contract Child is {\n  storage is record { n : uint; }\n  external function go() is { storage.n := 1; }\n}\n");
         write(
             "lib.lithe",
             "module Lib is {\n  function init() is { skip; }\n  external view function peek(const k : uint) : uint is {\n    const spare : uint := k;\n  } with k\n}\ninterface IPeek is {\n  view function peek(k : uint) : uint;\n}\n",
         );
         let cases = [
-            ("raises.lithe", "import \"errors.lithe\";\ninterface Gate is {\n  function open() raises Denied;\n}\nstorage is record { g : Gate; }\nexternal function go() is { skip; }\n"),
-            ("through.lithe", "import \"reexport.lithe\";\nstorage is record { n : uint; }\nexternal function go() raises Denied is {\n  assert(storage.n = 0, Denied);\n}\n"),
-            ("peer.lithe", "import \"child.lithe\";\nstorage is record { h : bytes32; }\nexternal function go() is {\n  storage.h := Crypto.keccak256(Evm.creation_code(Child));\n}\n"),
-            ("exposed.lithe", "import \"lib.lithe\";\ncontract Main is {\n  storage is record { n : uint; }\n  use Lib exposing IPeek;\n}\n"),
+            ("raises.lithe", "import \"./errors\";\ninterface Gate is {\n  function open() raises Denied;\n}\nstorage is record { g : Gate; }\nexternal function go() is { skip; }\n"),
+            ("peer.lithe", "import \"std/crypto\"; import \"std/evm\"; import \"./child\";\nstorage is record { h : bytes32; }\nexternal function go() is {\n  storage.h := Crypto.keccak256(Evm.creation_code(Child));\n}\n"),
+            ("exposed.lithe", "import \"./lib\";\ncontract Main is {\n  storage is record { n : uint; }\n  use Lib exposing IPeek;\n}\n"),
         ];
         for (name, src) in cases {
             write(name, src);
             let report = lint_paths(&[dir.join(name)], false);
             assert_eq!(report.status, 0, "{name}: {}", report.stderr);
         }
-        write("same_name.lithe", "import \"lib.lithe\";\nstorage is record { n : uint; }\nfunction init() is { skip; }\nexternal function go() is { init(); }\n");
+        write("same_name.lithe", "import \"./lib\";\nstorage is record { n : uint; }\nfunction init() is { skip; }\nexternal function go() is { init(); }\n");
         let report = lint_paths(&[dir.join("same_name.lithe")], false);
         assert!(report.stderr.contains("unused-import"), "{}", report.stderr);
+        // Unused means unused by this file: `guard` uses `errors`, and `through` does not.
+        write("guard.lithe", "import \"./errors\";\npure function check(const n : uint) : uint is n\nview function deny() raises Denied is { assert(false, Denied); }\n");
+        write("through.lithe", "import \"std/evm\";\nimport \"./errors\";\nimport \"./guard\";\nstorage is record { n : uint; }\nexternal function go() is { storage.n := check(1); }\n");
+        let report = lint_paths(&[dir.join("through.lithe")], false);
+        assert!(
+            report
+                .stderr
+                .contains("1:1: warning[unused-import]: import `std/evm` is unused")
+                && report
+                    .stderr
+                    .contains("2:1: warning[unused-import]: import `./errors` is unused")
+                && !report.stderr.contains("`./guard`"),
+            "{}",
+            report.stderr
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

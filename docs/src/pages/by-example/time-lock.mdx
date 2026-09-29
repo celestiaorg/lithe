@@ -11,6 +11,10 @@ The admin queues a payment for a future time, and it can execute only after a mi
 (* Payments are queued with a delay, so anyone watching has time to react before
    they execute. The admin can cancel a queued payment. *)
 
+import "std/abi";
+import "std/crypto";
+import "std/evm";
+
 error Not_admin;
 error Delay_too_short of uint;
 error Not_queued of bytes32;

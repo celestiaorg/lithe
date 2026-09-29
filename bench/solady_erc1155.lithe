@@ -3,6 +3,12 @@
    order of checks; Solady's hashed slots become plain maps. Mirrors solady_erc1155.sol,
    which imports Solady. *)
 
+import "std/abi";
+import "std/address";
+import "std/evm";
+import "std/list";
+import "std/uint";
+
 error ArrayLengthsMismatch;
 error TransferToZeroAddress;
 error AccountBalanceOverflow;

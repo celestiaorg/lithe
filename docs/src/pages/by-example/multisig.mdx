@@ -11,6 +11,8 @@ Three owners, two confirmations required. The owners are a fixed-size `list(addr
 (* A 2-of-3 wallet for ether payments. Owners submit a payment, confirm it, and
    anyone can execute it once it has enough confirmations. *)
 
+import "std/evm";
+
 error Not_owner;
 error Already_initialized;
 error No_such_tx of uint;

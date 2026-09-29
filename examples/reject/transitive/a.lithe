@@ -1,0 +1,3 @@
+import "./b";
+
+pure function doubled() : amount is amount(uint(make()) * 2)

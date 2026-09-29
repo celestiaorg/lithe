@@ -1,8 +1,10 @@
 use super::*;
 
 const ERC165_SRC: &str = r#"
-import "std/token/erc20.lithe";
-import "std/interfaces/erc1155.lithe";
+import "std/abi";
+import "std/token/erc20";
+import "std/interfaces/erc20";
+import "std/interfaces/erc1155";
 
 module Uris is {
   storage uris at "t.uris" is record { base : string; }
@@ -176,7 +178,7 @@ fn own_supports_interface_extends_the_generated_answer() {
     );
     // It answers for the contract, so a module's code cannot depend on it.
     let err = compile(
-        "module M is {\n  pure function has(const id : bytes4) : bool is Abi.supports_interface(id)\n}\ncontract T is {\n  use M;\n  storage is record {}\n  external pure function f(const id : bytes4) : bool is M.has(id)\n}\n",
+        "import \"std/abi\"; module M is {\n  pure function has(const id : bytes4) : bool is Abi.supports_interface(id)\n}\ncontract T is {\n  use M;\n  storage is record {}\n  external pure function f(const id : bytes4) : bool is M.has(id)\n}\n",
     )
     .expect_err("module");
     assert!(
@@ -192,7 +194,7 @@ fn own_supports_interface_extends_the_generated_answer() {
 #[test]
 fn interfaces_are_function_headers() {
     install_mocks();
-    let src = r#"
+    let src = r#"import "std/evm"; 
 interface Pinger is {
   function ping(a : uint);
   function ping(a : uint; b : uint);
@@ -308,7 +310,7 @@ fn overloads_example_picks_by_arguments() {
 #[test]
 fn map_parameters_share_one_copy() {
     install_mocks();
-    let src = r#"
+    let src = r#"import "std/evm"; import "std/string"; 
 storage is record {
   a : map(address, uint);
   b : map(address, uint);
@@ -381,7 +383,7 @@ external view function name_of(const who : address) : string is storage.names[wh
         "{}",
         pretty(&named.returndata)
     );
-    let checked = crate::check::check(crate::parse::parse(src).expect("parse")).expect("check");
+    let checked = crate::check::check(loaded(src)).expect("check");
     let copies = checked
         .prog
         .funcs
@@ -399,7 +401,7 @@ external view function name_of(const who : address) : string is storage.names[wh
 /// A `const` one is a value: a stored list passed to it is copied, and a map can't be one.
 #[test]
 fn storage_parameters_write_in_place() {
-    let src = r#"
+    let src = r#"import "std/list"; 
 storage is record {
   total : uint;
   items : list(uint);
@@ -465,7 +467,7 @@ external function go() : uint is {
 /// arguments it passes, then by their types. Overloads may be generic or take storage.
 #[test]
 fn internal_functions_overload() {
-    let src = r#"
+    let src = r#"import "std/evm"; 
 module Tally is {
   pure function score(const x : uint) : uint is x * 2
   pure function score(const x : bool) : uint is 7

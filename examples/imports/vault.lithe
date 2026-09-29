@@ -1,6 +1,6 @@
-import "./math.lithe" as Math;
-import "./fee.lithe";
-import "./ratios.lithe" as Ratios;
+import "./math" as Math;
+import "./fee";
+import "./ratios" as Ratios;
 
 storage is record {
   n : uint;

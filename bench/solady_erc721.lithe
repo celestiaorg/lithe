@@ -4,6 +4,12 @@
    approval next to its owner as Solady keeps it. Mirrors solady_erc721.sol, which
    imports Solady. *)
 
+import "std/abi";
+import "std/address";
+import "std/evm";
+import "std/string";
+import "std/uint";
+
 error NotOwnerNorApproved;
 error TokenDoesNotExist;
 error TokenAlreadyExists;

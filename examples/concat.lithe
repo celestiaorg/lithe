@@ -1,5 +1,8 @@
 (* `String.concat` joins strings; `Bytes.concat` joins `bytes` and `bytesN` values. *)
 
+import "std/bytes";
+import "std/string";
+
 storage is record {
   greeting : string;
   blob : bytes;

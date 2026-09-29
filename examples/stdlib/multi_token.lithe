@@ -1,8 +1,11 @@
 (* An ERC-1155 collection of game items from the standard library, with supply tracking.
    The owner mints and sets the URI; holders, and operators they approve, burn. *)
 
-import "std/token/erc1155_supply.lithe";
-import "std/access/ownable.lithe";
+import "std/evm";
+import "std/token/erc1155_supply";
+import "std/access/ownable";
+import "std/token/erc1155";
+import "std/interfaces/erc1155";
 
 contract Items is {
   use ERC1155 exposing IERC1155, IERC1155MetadataURI;

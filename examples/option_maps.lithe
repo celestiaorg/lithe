@@ -1,5 +1,7 @@
 (* Options as map values, in records held by maps, and in transient storage. *)
 
+import "std/evm";
+
 type entry is record {
   amount : uint;
   expiry : option(uint64);

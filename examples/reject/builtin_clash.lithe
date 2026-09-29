@@ -1,0 +1,10 @@
+(* This file imports `std/evm`, so its own `Evm` is a second module of that name. *)
+import "std/evm";
+
+module Evm is {
+  pure function zero() : uint is 0
+}
+
+storage is record { owner : address; }
+
+external function claim() is { storage.owner := Evm.sender(); }

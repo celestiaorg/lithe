@@ -12,6 +12,8 @@ Solidity puts access control on each function with modifiers such as `onlyOwner`
 When an external function takes a [variant](/language/types#variants), the compiler exposes **one ABI function per case**, and does not expose the dispatcher itself:
 
 ```lithe
+import "std/evm";
+
 type action is
   | Deposit of (amount : uint)
   | Withdraw of (amount : uint)
@@ -60,6 +62,8 @@ The ABI is read off the type declaration, never the function body: renaming the 
 Cases can carry other variants. A function that handles a group can run a **guard** before matching. The guard is a block placed before `with case`:
 
 ```lithe
+import "std/evm";
+
 error Not_owner;
 error Paused;
 

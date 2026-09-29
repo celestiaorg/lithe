@@ -3,11 +3,16 @@
    votes, and the total supply, are checkpointed by block number. The token calls
    `update` after every balance change. *)
 
-import "std/crypto/ecdsa.lithe";
-import "std/utils/checkpoint.lithe";
-import "./erc20.lithe";
-import "./eip712.lithe";
-import "./nonces.lithe";
+import "std/abi";
+import "std/address";
+import "std/crypto";
+import "std/evm";
+import "std/uint";
+import "std/crypto/ecdsa";
+import "std/utils/checkpoint";
+import "./erc20";
+import "./eip712";
+import "./nonces";
 
 error ERC20ExceededSafeSupply of record {
   increasedSupply : uint;

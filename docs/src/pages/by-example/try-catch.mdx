@@ -8,6 +8,8 @@ description: "Lithe's try/catch: Ok and Error arms on deferred calls, transfers,
 By default, a failed external call reverts the whole transaction. To handle the failure instead, match the outcome with `Ok` and `Error` arms. A deferred call matches in its continuation, and a `query` matches with `case`.
 
 ```lithe [try-catch.lithe]
+import "std/evm";
+
 interface Oracle is {
   view function price(asset : address) : uint;
 }

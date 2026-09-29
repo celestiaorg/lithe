@@ -2,6 +2,9 @@
    argument; decoding takes a type's name for one value, or a tuple of names for several,
    as Solidity's `abi.decode(data, (A, B))` does. Malformed data reverts. *)
 
+import "std/abi";
+import "std/crypto";
+
 type order is record {
   id : uint;
   note : string;

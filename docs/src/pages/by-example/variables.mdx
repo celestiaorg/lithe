@@ -11,6 +11,8 @@ Solidity has local, state, and global variables. Lithe has locals, two kinds of 
 (* Three lifetimes: locals last for the call, transient storage for the
    transaction, storage forever. *)
 
+import "std/evm";
+
 storage is record {
   total : uint;
   last_caller : address;

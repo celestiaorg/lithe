@@ -54,7 +54,7 @@
         },
         {
           "name": "storage.modifier.lithe",
-          "match": "\\b(external|view|pure|payable|nonreentrant|private|indexed|anonymous|raises)\\b"
+          "match": "\\b(external|view|pure|payable|nonreentrant|private|indexed|anonymous|raises|intrinsic)\\b"
         },
         {
           "name": "keyword.other.spec.lithe",
@@ -76,7 +76,7 @@
     },
     "module": {
       "name": "entity.name.namespace.lithe",
-      "match": "\\b(Evm|Crypto|Abi|Bytes|String)\\b"
+      "match": "\\b[A-Z][A-Za-z0-9_]*(?=\\.[A-Za-z_])"
     },
     "function-call": {
       "match": "\\b([a-z_][A-Za-z0-9_]*)\\s*(?=\\()",

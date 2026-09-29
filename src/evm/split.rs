@@ -35,7 +35,7 @@ pub(super) fn all_facets() -> crate::Options {
 }
 
 pub(super) fn checked_src(src: &str) -> crate::check::Checked {
-    crate::check::check(crate::parse::parse(src).expect("parse")).expect("check")
+    crate::check::check(loaded(src)).expect("check")
 }
 
 pub(super) fn whole_build(checked: &crate::check::Checked) -> crate::gen::Built {
@@ -79,7 +79,7 @@ fn split_preserves_behavior() {
     assert!(compared >= 5, "only {compared} programs split");
 }
 
-const SPLIT_VAULT: &str = r#"
+const SPLIT_VAULT: &str = r#"import "std/evm"; 
 upgradeable
 
 error Not_owner;
@@ -348,7 +348,7 @@ fn facets_are_shared() {
         assert_eq!((x.address, &x.init), (y.address, &y.init));
     }
     let other = format!(
-        "{SPLIT_MODULES}
+        "import \"std/address\"; {SPLIT_MODULES}
 contract Other is {{
   storage is record {{
     a : address;
@@ -517,7 +517,7 @@ fn module_transient_storage_has_one_slot() {
     assert_eq!(slot_of(&a), slot_of(&facet));
 }
 
-const SPLIT_FACTORY: &str = r#"
+const SPLIT_FACTORY: &str = r#"import "std/evm"; 
 module Folds is {
   storage folds at "split.folds" is record {
     count : uint;
@@ -587,7 +587,7 @@ contract Vault is {
 /// the plan, and the router the factory creates reaches it.
 #[test]
 fn factories_create_split_contracts() {
-    let units = crate::modules::split_units(crate::parse::parse(SPLIT_FACTORY).expect("parse"));
+    let units = crate::modules::split_units(loaded(SPLIT_FACTORY));
     let factory = units
         .into_iter()
         .find(|unit| unit.contract_name.as_deref() == Some("Factory"))
@@ -758,7 +758,7 @@ fn split_tooling_output() {
 }
 
 const ORDERS: &str = "\
-module Orders is {
+import \"std/abi\"; import \"std/crypto\"; module Orders is {
   type order is tuple record { who : address; memo : string; }
   type job is record { a : uint; label : string; }
   storage orders at \"t.orders\" is record { h : bytes32; }

@@ -1,6 +1,9 @@
 (* Benchmark: many short literal reasons, as `require(cond, "reason")` carries them.
    Mirrors reasons.sol. *)
 
+import "std/address";
+import "std/evm";
+
 error Failed of string;
 error Denied of record {
   who : address;

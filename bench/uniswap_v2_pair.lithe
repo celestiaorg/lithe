@@ -4,6 +4,12 @@
    the original's storage word. Transfers are deferred, so the balances after them are
    read in the last one's continuation. *)
 
+import "std/abi";
+import "std/address";
+import "std/crypto";
+import "std/evm";
+import "std/uint";
+
 contract UniswapV2Pair is {
   interface IERC20 is {
     view function balanceOf(owner : address) : uint;

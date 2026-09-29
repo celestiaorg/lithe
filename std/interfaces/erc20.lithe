@@ -2,7 +2,7 @@
    ERC-6093 that OpenZeppelin raises. Each interface is exactly its standard's functions,
    so its ERC-165 id is the standard's. *)
 
-import "std/crypto/ecdsa.lithe";
+import "std/crypto/ecdsa";
 
 error ERC20InsufficientBalance of record {
   sender : address;

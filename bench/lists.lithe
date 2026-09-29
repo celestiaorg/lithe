@@ -1,6 +1,10 @@
 (* Benchmark: dynamic arrays through the ABI, storage, events, and encoding. Mirrors
    lists.sol. *)
 
+import "std/abi";
+import "std/evm";
+import "std/list";
+
 storage is record {
   saved : list(uint);
   owners : list(address);

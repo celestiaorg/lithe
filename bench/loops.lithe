@@ -1,6 +1,11 @@
 (* Benchmark: loops over calldata, storage, and ranges, with effects inside them.
    Mirrors loops.sol. `mark_all` carries a bound; the scenario stays under it. *)
 
+import "std/abi";
+import "std/crypto";
+import "std/evm";
+import "std/list";
+
 error Nobody;
 
 event Sent of record {

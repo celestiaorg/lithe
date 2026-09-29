@@ -8,6 +8,9 @@ description: "Dynamic and fixed-length lists in storage and memory."
 `list(T)` is a dynamic list and `list(T, n)` a fixed-length one. Both work in storage and in memory.
 
 ```lithe [lists.lithe]
+import "std/evm";
+import "std/list";
+
 error Out_of_range of uint;
 
 storage is record {

@@ -1,6 +1,10 @@
 (* The ERC-721 core, like OpenZeppelin's `ERC721Upgradeable`: same storage, errors,
    events, and order of checks. Extensions compose these pieces explicitly. *)
 
+import "std/abi";
+import "std/address";
+import "std/evm";
+
 interface ERC721Receiver is {
   function onERC721Received(operator : address; from : address; tokenId : uint; data : bytes) : bytes4;
 }

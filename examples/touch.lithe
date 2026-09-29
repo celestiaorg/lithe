@@ -1,5 +1,7 @@
 (* Record the current time. Only the guard may change storage. *)
 
+import "std/evm";
+
 error Not_guard;
 
 storage is record {

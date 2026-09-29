@@ -1,3 +1,5 @@
+import "std/evm";
+
 storage is record {
   paid : uint;
 }

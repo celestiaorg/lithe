@@ -1,6 +1,8 @@
 (* An ether vault. Its specs, in vault.spec.lithe, state what it guarantees: the ledger
    adds up, it holds the ether it owes, and a withdrawal fails only for want of funds. *)
 
+import "std/evm";
+
 error Insufficient;
 
 storage is record {

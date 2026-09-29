@@ -1,6 +1,9 @@
 (* Any ABI value, nested any way: a batch of orders, each with a string and a list of its
    own, taken, returned, logged, and sent to another contract as Solidity would. *)
 
+import "std/abi";
+import "std/list";
+
 type order is record {
   id : uint;
   note : string;

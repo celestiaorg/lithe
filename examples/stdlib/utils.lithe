@@ -1,19 +1,20 @@
 (* The standard library's math, crypto, and utility modules and its collections, each
    behind an entrypoint. *)
 
-import "std/math/math.lithe";
-import "std/math/safe_cast.lithe";
-import "std/math/fixed_point.lithe";
-import "std/crypto/ecdsa.lithe";
-import "std/crypto/eip712.lithe";
-import "std/crypto/merkle.lithe";
-import "std/utils/create2.lithe";
-import "std/utils/nonce.lithe";
-import "std/utils/checkpoint.lithe";
-import "std/collections/bitmap.lithe";
-import "std/collections/queue.lithe";
-import "std/collections/set.lithe";
-import "std/collections/set_enumerable.lithe";
+import "std/evm";
+import "std/math/math";
+import "std/math/safe_cast";
+import "std/math/fixed_point";
+import "std/crypto/ecdsa";
+import "std/crypto/eip712";
+import "std/crypto/merkle";
+import "std/utils/create2";
+import "std/utils/nonce";
+import "std/utils/checkpoint";
+import "std/collections/bitmap";
+import "std/collections/queue";
+import "std/collections/set";
+import "std/collections/set_enumerable";
 
 contract Utils is {
   use Math;

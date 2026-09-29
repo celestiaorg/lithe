@@ -2,19 +2,21 @@
    pausable, role-gated minting and pausing, capped, permits, votes, and flash mints,
    built from modules. Mirrors erc20_full.sol, which imports OpenZeppelin. *)
 
-import "std/crypto/ecdsa.lithe";
-import "std/math/math.lithe";
-import "std/utils/checkpoint.lithe";
-import "./lib/initializable.lithe";
-import "./lib/access_control.lithe";
-import "./lib/pausable.lithe";
-import "./lib/erc20.lithe";
-import "./lib/capped.lithe";
-import "./lib/eip712.lithe";
-import "./lib/nonces.lithe";
-import "./lib/permit.lithe";
-import "./lib/votes.lithe";
-import "./lib/flash_mint.lithe";
+import "std/address";
+import "std/evm";
+import "std/crypto/ecdsa";
+import "std/math/math";
+import "std/utils/checkpoint";
+import "./lib/initializable";
+import "./lib/access_control";
+import "./lib/pausable";
+import "./lib/erc20";
+import "./lib/capped";
+import "./lib/eip712";
+import "./lib/nonces";
+import "./lib/permit";
+import "./lib/votes";
+import "./lib/flash_mint";
 
 contract BenchGovernanceToken is {
   use Initializable;

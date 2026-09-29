@@ -35,6 +35,8 @@ You still write ordinary imperative code, with `const`, `var`, `if`, and assignm
 | `fail E` / `assert(c, E)` | Revert with a declared, typed error. |
 
 ```lithe
+import "std/evm";
+
 interface Oracle is {
   view function price(asset : address) : uint;
 }

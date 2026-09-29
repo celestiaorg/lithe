@@ -8,10 +8,11 @@ description: "Sets, enumerable sets, bitmaps, and queues in storage."
 A collection lives in storage. A collection function takes the collection as its first argument, as a storage path such as `storage.members`, and reads and writes it in place.
 
 ```lithe
-import "std/collections/set.lithe";
-import "std/collections/set_enumerable.lithe";
-import "std/collections/bitmap.lithe";
-import "std/collections/queue.lithe";
+import "std/evm";
+import "std/collections/set";
+import "std/collections/set_enumerable";
+import "std/collections/bitmap";
+import "std/collections/queue";
 
 contract Airdrop is {
   use Bitmap;

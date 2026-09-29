@@ -1,6 +1,8 @@
 (* Benchmark: errors of several shapes, strings and lists among words, each raised from
    more than one place. Mirrors shapes.sol. *)
 
+import "std/evm";
+
 error Unauthorized of record {
   caller : address;
   role : string;

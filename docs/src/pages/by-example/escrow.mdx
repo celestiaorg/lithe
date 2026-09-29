@@ -11,6 +11,8 @@ The buyer funds the escrow. The arbiter either releases the funds to the seller 
 (* The buyer funds the escrow. The arbiter releases it to the seller, or refunds
    the buyer. *)
 
+import "std/evm";
+
 error Not_buyer;
 error Not_arbiter;
 error Already_funded;

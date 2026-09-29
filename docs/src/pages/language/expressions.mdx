@@ -74,6 +74,8 @@ external function go() is {
 Shifts do not overflow. Bits shifted past a type's width are dropped, so for a `uint8`, `1 << 8` is `0`. `~` flips bits within the type's width, so for a `uint8`, `~0` is `255`.
 
 ```lithe
+import "std/uint";
+
 storage is record {
   q : uint;
   r : uint;

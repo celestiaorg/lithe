@@ -3,6 +3,10 @@
    hashes are only for contracts upgraded from an older layout, so they stay zero. *)
 
 (* ERC-5267's description of the domain. *)
+import "std/abi";
+import "std/crypto";
+import "std/evm";
+
 type domain is record {
   fields : bytes1;
   name : string;

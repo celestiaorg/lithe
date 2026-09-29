@@ -12,6 +12,8 @@ A variant type lists every case a value can take, and each case may carry a payl
    An external function that takes a variant becomes one ABI function per case:
    this contract exposes `deposit(uint256)`, `send(address,uint256)`, and `reset()`. *)
 
+import "std/evm";
+
 type send_params is record {
   to : address;
   amount : uint;
@@ -61,6 +63,8 @@ external view function balance_of(const who : address) : uint is
 A variant value is written by naming its case. A variant with no payloads is one byte in storage and a `uint8` in the ABI, like a Solidity `enum`:
 
 ```lithe [market.lithe]
+import "std/evm";
+
 type phase is
   | Open
   | Paused

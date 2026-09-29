@@ -101,7 +101,7 @@ fn deploy_sets_immutables() {
     assert_eq!(load_bytes(&out.returndata, 0), w(0xfac));
 }
 
-const MODULE: &str = r#"
+const MODULE: &str = r#"import "std/evm"; 
 type span is record { start : timestamp; stop : timestamp; }
 
 module Fees is {
@@ -252,7 +252,7 @@ fn immutables_are_written_only_while_setting_up() {
             "external `M.poke` writes immutable `m.x`",
         ),
         (
-            "upgradeable\n\
+            "import \"std/evm\"; upgradeable\n\
              immutable is record { owner : address; }\n\
              storage is record { n : uint; }\n\
              function claim() is { immutable.owner := Evm.sender(); }\n\
@@ -292,7 +292,7 @@ fn immutables_are_written_only_while_setting_up() {
     }
 }
 
-const UPGRADEABLE_V1: &str = r#"
+const UPGRADEABLE_V1: &str = r#"import "std/evm"; 
 upgradeable
 
 error Not_owner;
@@ -393,7 +393,7 @@ fn upgradeable_immutables_live_in_proxy_storage() {
     DEPLOYED.with(|d| d.borrow_mut().clear());
 }
 
-const SPLIT: &str = r#"
+const SPLIT: &str = r#"import "std/evm"; 
 module Base is {
   immutable base at "split.base" is record {
     unit : uint32;
@@ -527,7 +527,7 @@ fn facets_read_immutables_after_their_calldata() {
 #[test]
 fn upgradeable_routers_append_stored_immutables() {
     let src = format!(
-        "upgradeable\nerror Not_owner;\nupgrade guard is {{ assert(Evm.sender() = Address.zero, Not_owner); }}\n{SPLIT}"
+        "import \"std/address\"; {SPLIT}\nupgradeable\nerror Not_owner;\nupgrade guard is {{ assert(Evm.sender() = Address.zero, Not_owner); }}\n"
     );
     let checked = super::split::checked_src(&src);
     let split = crate::split::build(&checked, "Pool", &super::split::all_facets()).expect("split");
@@ -579,7 +579,7 @@ fn upgradeable_routers_append_stored_immutables() {
 /// the creator passes. Without a `deploy`, every immutable is zero.
 #[test]
 fn created_contracts_set_their_own_immutables() {
-    let src = r#"
+    let src = r#"import "std/evm"; 
 contract Factory is {
   storage is record { last : address; }
   external function open(const fee : uint) is {

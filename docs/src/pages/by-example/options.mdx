@@ -10,6 +10,8 @@ description: "Optional values with Some and None."
 ```lithe [options.lithe]
 (* `option(T)` is `Some(value)` or `None`. Match it with `case`. *)
 
+import "std/evm";
+
 storage is record {
   admin : option(address);
 }

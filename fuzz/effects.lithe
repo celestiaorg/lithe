@@ -1,5 +1,7 @@
 (* Fuzz target: queries, deferred calls, transfers, and guarded entries. *)
 
+import "std/evm";
+
 error Not_owner;
 error Low of uint;
 

@@ -1,7 +1,7 @@
 (* Calls a ledger through its interface: `ping` is deferred, and `pinged` is read with
    `query`. Any contract that has `ILedger`, such as `Token`, can be passed in. *)
 
-import "./iledger.lithe";
+import "./iledger";
 
 contract Pinger is {
   storage is record {

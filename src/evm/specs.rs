@@ -10,7 +10,7 @@ fn specs_with(src: &str, spec_file: &str) -> Result<String, crate::Error> {
     crate::specs(&sources, Path::new(ENTRY))
 }
 
-const VAULT: &str = r#"
+const VAULT: &str = r#"import "std/evm"; 
 error Insufficient;
 
 storage is record {
@@ -48,7 +48,7 @@ spec for withdraw is {
 }
 "#;
 
-const OWNED: &str = r#"
+const OWNED: &str = r#"import "std/evm"; 
 error Not_owner;
 error Paused;
 
@@ -101,7 +101,7 @@ is
 "#;
 
 /// A contract on a module with an internal `transfer` and an external one.
-const TOKEN: &str = r#"
+const TOKEN: &str = r#"import "std/evm"; 
 error Short;
 
 module Coin is {
@@ -694,7 +694,7 @@ fn a_checking_build_stops_a_call_that_breaks_a_spec() {
 
 #[test]
 fn a_checking_build_checks_guards_routes_and_results() {
-    let src = r#"
+    let src = r#"import "std/evm"; 
 error Not_owner;
 
 type owner_action is
@@ -785,7 +785,8 @@ spec for bump is {
 #[test]
 fn a_checking_build_keeps_module_totals() {
     let token = r#"
-import "std/token/erc20.lithe";
+import "std/token/erc20";
+import "std/interfaces/erc20";
 
 contract Token is {
   use ERC20 exposing IERC20;
@@ -833,7 +834,7 @@ contract Token is {
     );
 
     // A module whose external changes a balance and not the supply.
-    let leaky = r#"
+    let leaky = r#"import "std/evm"; 
 module Ledger is {
   storage ledger at "t.ledger" is record {
     balances : map(address, uint);

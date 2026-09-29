@@ -145,7 +145,7 @@ A lex error is `path:line:column: message` and exits `1`. A usage error exits `2
 | `prefer-const` | a `var` is never reassigned |
 | `unused-binding` | a local `const` or `var`, or a parameter of an internal function, is unused |
 | `unused-private` | a `private` function, type, error, or event is unused |
-| `unused-import` | nothing from an `import`, or from what it imports, is referenced |
+| `unused-import` | the file names nothing through an `import`; what the imported file uses doesn't count |
 | `unused-ignore` | a `lithe-ignore` comment silences nothing, or names no rule |
 
 ### Silencing a rule
@@ -153,6 +153,8 @@ A lex error is `path:line:column: message` and exits `1`. A usage error exits `2
 A `lithe-ignore` comment names the rules it silences, then an optional reason after `:`. Written at the end of a line, it covers that line. On a line of its own, it covers the next one:
 
 ```lithe
+import "std/evm";
+
 storage is record { n : uint; }
 
 (* lithe-ignore reentry: the recipient is our own vault *)
@@ -175,17 +177,17 @@ allow = ["reentry", "stale-capture"]
 
 ### `lithe lsp`
 
-Runs a language server on stdin and stdout. As you type, it reports the first error, for each contract in the file, and what [`lithe lint`](#linting) finds, honoring `lithe-ignore` comments you have not saved yet. A finding `lithe lint --fix` can fix is offered as a quick fix. Formatting the document formats it as [`lithe fmt`](#formatting) does. Imports resolve from the file's saved location. The VS Code extension and the Recur bundle in `extensions/` run it, and find `lithe` on your `PATH`. In VS Code, the `lithe.path` setting points to a different binary.
+Runs a language server on stdin and stdout. As you type, it reports the first error, for each contract in the file, and what [`lithe lint`](#linting) finds, honoring `lithe-ignore` comments you have not saved yet. A finding `lithe lint --fix` can fix is offered as a quick fix, and so is the import a name needs when another file or the standard library declares it. Formatting the document formats it as [`lithe fmt`](#formatting) does. Imports resolve from the file's saved location. The VS Code extension and the Recur bundle in `extensions/` run it, and find `lithe` on your `PATH`. In VS Code, the `lithe.path` setting points to a different binary.
 
 It also answers from the last version of the file that checked, so answers survive a half-typed line:
 
 | Request | Answers |
 | --- | --- |
-| Hover | an entrypoint's selectors and footprint, and those of each entrypoint it dispatches to; a function's effects, errors, and the entrypoints that reach it; a stored field's slot and the entrypoints that read and write it; an error's selector and raisers; an event's topic and emitters; an interface method's selector; an interface named by `use M exposing`, with the entrypoints it exposes; a module's external, with the entrypoints that expose it; a built-in's type |
-| Go to definition | where a name is declared, in the file, an import, or the standard library; an `import` path's file |
+| Hover | an entrypoint's selectors and footprint, and those of each entrypoint it dispatches to; a function's effects, errors, and the entrypoints that reach it; a stored field's slot and the entrypoints that read and write it; an error's selector and raisers; an event's topic and emitters; an interface method's selector; an interface named by `use M exposing`, with the entrypoints it exposes; a module's external, with the entrypoints that expose it; a built-in's declaration in the standard library, with its documentation |
+| Go to definition | where a name is declared, in the file, an import, or the standard library, a built-in included; the module an `import` path names |
 | References and highlights | every use of a name |
 | Outline | the file's declarations, with fields, variants, and methods under them |
-| Completion | what follows `storage.`, a record, an interface value, a module, or a built-in namespace; events after `emit`, errors after `raises`, types after `:`, every arm of a `case`, and the names in scope |
+| Completion | what follows `storage.`, a record, an interface value, a module, or an import alias; events after `emit`, errors after `raises`, types after `:`, every arm of a `case`, and the names the file's imports bring into scope; module paths inside an `import` string |
 | Signature help | the parameters of the function, method, or built-in being called |
 
 ## Warnings

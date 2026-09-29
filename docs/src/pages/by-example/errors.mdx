@@ -11,6 +11,8 @@ Errors are typed and declared, and each compiles to a Solidity custom error. Ext
 (* Errors are typed and declared. Each compiles to a Solidity custom error. *)
 
 (* No payload: `Unauthorized()` *)
+import "std/evm";
+
 error Unauthorized;
 
 (* One positional value: `Too_small(uint256)`, in the ABI as `TooSmall(uint256)` *)

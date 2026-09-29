@@ -33,7 +33,7 @@ fn stored_bytes(storage: &HashMap<Word, Word>, at: u64) -> Vec<u8> {
 fn raw_call_sends_calldata_and_value() {
     install_mocks();
     let src = "\
-storage is record { answer : bytes; }
+import \"std/evm\"; storage is record { answer : bytes; }
 external payable nonreentrant function run(const to : address; const data : bytes) is {
   defer Evm.call(to, data) with value = uint(Evm.value()) then (answer : bytes) {
     storage.answer := answer;
@@ -90,7 +90,7 @@ external payable nonreentrant function run(const to : address; const data : byte
 fn raw_call_recovers_and_passes_failures_on() {
     install_mocks();
     let src = "\
-storage is record { failures : uint; kept : bytes; }
+import \"std/evm\"; storage is record { failures : uint; kept : bytes; }
 external function try_call(const to : address; const data : bytes) is {
   defer Evm.call(to, data) then {
   | Ok(answer : bytes) -> { storage.kept := answer; }
@@ -133,7 +133,7 @@ external function must(const to : address; const data : bytes) raises forwarded 
 fn raw_calls_in_a_loop() {
     install_mocks();
     let src = "\
-storage is record { sizes : uint; }
+import \"std/evm\"; storage is record { sizes : uint; }
 external function each(const targets : list(address); const data : bytes) is {
   for to : address in targets do {
     defer Evm.call(to, data) then (answer : bytes) {
@@ -171,7 +171,7 @@ external function set(const n : uint) : uint is { storage.n := n; } with n * 2
     let at = Word::from_u64(0x5201);
     DEPLOYED.with(|d| d.borrow_mut().insert(at, (library_code, HashMap::new())));
     let src = "\
-interface Library is { function set(n : uint) : uint; }
+import \"std/abi\"; import \"std/evm\"; interface Library is { function set(n : uint) : uint; }
 storage is record { library : address; n : uint; doubled : uint; }
 external function run(const n : uint) is {
   defer Evm.delegate_call(storage.library, Abi.encode_call(Library.set, n)) then (answer : bytes) {
@@ -205,7 +205,7 @@ external function run(const n : uint) is {
 fn static_call_reads_raw_answers_and_precompiles() {
     install_mocks();
     let src = "\
-storage is record { n : uint; }
+import \"std/bytes\"; import \"std/evm\"; storage is record { n : uint; }
 external view function peek(const to : address; const data : bytes) : bytes is
   query Evm.static_call(to, data)
 external view function digest(const data : bytes) : bytes32 is
@@ -255,7 +255,7 @@ external view function outcome(const to : address; const data : bytes) : bytes i
 #[test]
 fn create_runs_raw_creation_code() {
     let src = "\
-storage is record { made : address; code : bytes; }
+import \"std/bytes\"; import \"std/evm\"; storage is record { made : address; code : bytes; }
 external function clone(const target : address; const salt : bytes32) is {
   defer create(Bytes.concat(0x3d602d80600a3d3981f3363d3d373d3d3d363d73, bytes20(target), 0x5af43d82803e903d91602b57fd5bf3))
     with salt = salt then (made : address) {
@@ -324,10 +324,10 @@ external function refused() is {
 #[test]
 fn raw_create_rules() {
     let cases = [
-        ("storage is record { n : uint; }\nexternal function f(const d : string) is { defer create(d); }\n", "`create(code)` runs a `bytes` value as creation code"),
-        ("storage is record { n : uint; }\nexternal function f(const d : bytes) is { defer create(d) with salt = true; }\n", "a salt is a `bytes32`"),
-        ("storage is record { n : uint; }\nexternal function f(const d : bytes) is { defer create(d) then (x : bytes) { skip }; }\n", "the result type does not match"),
-        ("storage is record { n : uint; }\npure function f(const a : address) : bytes is Evm.code(a)\nexternal function g() is { skip }\n", "reads `Evm.code`"),
+        ("import \"std/evm\"; storage is record { n : uint; }\nexternal function f(const d : string) is { defer create(d); }\n", "`create(code)` runs a `bytes` value as creation code"),
+        ("import \"std/evm\"; storage is record { n : uint; }\nexternal function f(const d : bytes) is { defer create(d) with salt = true; }\n", "a salt is a `bytes32`"),
+        ("import \"std/evm\"; storage is record { n : uint; }\nexternal function f(const d : bytes) is { defer create(d) then (x : bytes) { skip }; }\n", "the result type does not match"),
+        ("import \"std/evm\"; storage is record { n : uint; }\npure function f(const a : address) : bytes is Evm.code(a)\nexternal function g() is { skip }\n", "reads `Evm.code`"),
     ];
     for (src, want) in cases {
         let err = compile(src).expect_err(want);
@@ -338,14 +338,14 @@ fn raw_create_rules() {
 #[test]
 fn raw_call_rules() {
     let cases = [
-        ("storage is record { n : uint; }\nexternal view function f(const to : address; const d : bytes) : bytes is Evm.static_call(to, d)\n", "`Evm.static_call` is read-only; write `query Evm.static_call(...)`"),
-        ("storage is record { n : uint; }\nexternal view function f(const to : address; const d : bytes) : bytes is query Evm.call(to, d)\n", "`Evm.call` can change state; `defer` it"),
-        ("storage is record { n : uint; }\nexternal view function f(const to : address; const d : bytes) : uint is { defer Evm.call(to, d); } with 1\n", "cannot defer an operation"),
-        ("storage is record { n : uint; }\nexternal function f(const to : address; const d : bytes) is { defer Evm.delegate_call(to, d) with value = 1; }\n", "a delegate call runs with this call's own value; it takes no `with value`"),
-        ("storage is record { n : uint; }\nexternal function f(const to : address; const d : string) is { defer Evm.call(to, d); }\n", "`Evm.call` sends a `bytes` value as the calldata"),
-        ("storage is record { n : uint; }\nexternal function f(const to : uint; const d : bytes) is { defer Evm.call(to, d); }\n", "expected an address"),
-        ("storage is record { n : uint; }\nexternal function f(const to : address; const d : bytes) is { defer Evm.call(to, d) then (x : uint) { storage.n := x; }; }\n", "the result type does not match what the call returns"),
-        ("storage is record { n : uint; }\npure function f(const to : address; const d : bytes) : bytes is query Evm.static_call(to, d)\nexternal function g() is { skip }\n", "queries another contract"),
+        ("import \"std/evm\"; storage is record { n : uint; }\nexternal view function f(const to : address; const d : bytes) : bytes is Evm.static_call(to, d)\n", "`Evm.static_call` is read-only; write `query Evm.static_call(...)`"),
+        ("import \"std/evm\"; storage is record { n : uint; }\nexternal view function f(const to : address; const d : bytes) : bytes is query Evm.call(to, d)\n", "`Evm.call` can change state; `defer` it"),
+        ("import \"std/evm\"; storage is record { n : uint; }\nexternal view function f(const to : address; const d : bytes) : uint is { defer Evm.call(to, d); } with 1\n", "cannot defer an operation"),
+        ("import \"std/evm\"; storage is record { n : uint; }\nexternal function f(const to : address; const d : bytes) is { defer Evm.delegate_call(to, d) with value = 1; }\n", "a delegate call runs with this call's own value; it takes no `with value`"),
+        ("import \"std/evm\"; storage is record { n : uint; }\nexternal function f(const to : address; const d : string) is { defer Evm.call(to, d); }\n", "`Evm.call` sends a `bytes` value as the calldata"),
+        ("import \"std/evm\"; storage is record { n : uint; }\nexternal function f(const to : uint; const d : bytes) is { defer Evm.call(to, d); }\n", "expected an address"),
+        ("import \"std/evm\"; storage is record { n : uint; }\nexternal function f(const to : address; const d : bytes) is { defer Evm.call(to, d) then (x : uint) { storage.n := x; }; }\n", "the result type does not match what the call returns"),
+        ("import \"std/evm\"; storage is record { n : uint; }\npure function f(const to : address; const d : bytes) : bytes is query Evm.static_call(to, d)\nexternal function g() is { skip }\n", "queries another contract"),
     ];
     for (src, want) in cases {
         let err = compile(src).expect_err(want);
@@ -428,7 +428,7 @@ fn raw_codec_example_builds_and_decodes() {
 #[test]
 fn code_slices_copy_only_the_slice() {
     let src = "\
-storage is record { n : uint; }
+import \"std/evm\"; storage is record { n : uint; }
 external view function from(const a : address; const s : uint) : bytes is Evm.code(a)[s:]
 external view function between(const a : address; const s : uint; const e : uint) : bytes is Evm.code(a)[s:e]
 external view function whole(const a : address) : bytes is Evm.code(a)
@@ -479,8 +479,12 @@ external view function whole(const a : address) : bytes is Evm.code(a)
 /// code without it.
 #[test]
 fn zero_values_compile_to_no_value() {
-    let build =
-        |body: &str| compile(&format!("storage is record {{ n : uint; }}\n{body}\n")).expect(body);
+    let build = |body: &str| {
+        compile(&format!(
+            "import \"std/evm\"; storage is record {{ n : uint; }}\n{body}\n"
+        ))
+        .expect(body)
+    };
     let none = build(
         "external function f(const to : address; const d : bytes) is { defer Evm.call(to, d); }",
     );

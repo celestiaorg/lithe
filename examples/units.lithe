@@ -1,5 +1,7 @@
 (* Value and time units. A duration added to Evm.block_timestamp() is a timestamp. *)
 
+import "std/evm";
+
 storage is record {
   price : wei;
   wait : uint;

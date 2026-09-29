@@ -1,5 +1,8 @@
 (* Single-owner access control, like OpenZeppelin's `OwnableUpgradeable`. *)
 
+import "std/address";
+import "std/evm";
+
 error OwnableUnauthorizedAccount of address;
 
 error OwnableInvalidOwner of address;

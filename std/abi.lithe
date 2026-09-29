@@ -1,0 +1,40 @@
+(* ABI encoding and decoding. Usable in any function, `pure` ones included. *)
+
+module Abi is {
+  (* encode(a; b; ...) : bytes
+     `abi.encode(a, b, ...)`: any ABI values, each one argument. *)
+  intrinsic encode;
+
+  (* decode(data : bytes; T) : T
+     `abi.decode(data, (T))`: the second argument is a type name, or a tuple of them. *)
+  intrinsic decode;
+
+  (* encode_packed(a; b; ...) : bytes
+     `abi.encodePacked(a, b, ...)`: words, strings, bytes, and lists of words. *)
+  intrinsic encode_packed;
+
+  (* encode_with_selector(sel : bytes4; a; ...) : bytes
+     `abi.encodeWithSelector(sel, a, ...)`. *)
+  intrinsic encode_with_selector;
+
+  (* encode_with_signature(sig : string; a; ...) : bytes
+     `abi.encodeWithSignature(sig, a, ...)`. *)
+  intrinsic encode_with_signature;
+
+  (* encode_call(I.method; a; ...) : bytes
+     `abi.encodeCall(I.method, (a, ...))`, for an interface method: the arguments are
+     checked against it. *)
+  intrinsic encode_call;
+
+  (* selector(I.method) : bytes4
+     `I.method.selector`, for an interface method: a constant `bytes4`. *)
+  intrinsic selector;
+
+  (* interface_id(I) : bytes4
+     `type(I).interfaceId`: the XOR of the interface's selectors, a constant `bytes4`. *)
+  intrinsic interface_id;
+
+  (* Whether `id` is ERC-165's or one the contract's `supports` lists, as the generated
+     `supportsInterface` answers. *)
+  intrinsic pure function supports_interface(id : bytes4) : bool;
+}

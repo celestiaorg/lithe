@@ -2,6 +2,9 @@
    results, in `Abi.encode` and `Abi.decode`, in events and errors, and in calls to other
    contracts. Each element's fields are checked as Solidity's decoder checks them. *)
 
+import "std/abi";
+import "std/evm";
+
 type point is record {
   key : uint48;
   value : uint208;

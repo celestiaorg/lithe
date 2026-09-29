@@ -12,6 +12,10 @@ description: "keccak256 and a commit-reveal game."
    encode several values with `Abi.encode` first, since `encode_packed` of
    adjacent dynamic values can collide. *)
 
+import "std/abi";
+import "std/crypto";
+import "std/evm";
+
 error Wrong_guess;
 error Already_solved;
 

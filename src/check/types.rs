@@ -208,7 +208,7 @@ impl Checker {
             self.events.push(EventInfo {
                 name: ev.name.clone(),
                 fields,
-                topic_sig: format!("{}({})", ev.name, abi.join(",")),
+                topic_sig: format!("{}({})", crate::modules::shown(&ev.name), abi.join(",")),
                 anonymous: ev.anonymous,
             });
         }
@@ -242,7 +242,7 @@ impl Checker {
             let abi_name = if err.name == crate::spec::VIOLATION {
                 "SpecViolation".to_string()
             } else {
-                abi_error_name(&err.name)
+                abi_error_name(crate::modules::shown(&err.name))
             };
             let abi_types: Vec<&str> = fields.iter().map(|(_, abi)| abi.as_str()).collect();
             let abi_sig = format!("{abi_name}({})", abi_types.join(","));

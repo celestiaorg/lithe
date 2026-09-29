@@ -3,7 +3,9 @@
    then spends the borrower's allowance and burns the repayment: it composes those steps
    around its own balance updates. *)
 
-import "./erc20.lithe";
+import "std/evm";
+import "std/uint";
+import "./erc20";
 
 interface ERC3156FlashBorrower is {
   function onFlashLoan(initiator : address; token : address; amount : uint; fee : uint; data : bytes) : bytes32;

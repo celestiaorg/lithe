@@ -2,7 +2,7 @@
    OpenZeppelin's `ERC20FlashMint` raises. A borrower answers with
    `keccak256("ERC3156FlashBorrower.onFlashLoan")`. *)
 
-import "std/interfaces/erc20.lithe";
+import "std/interfaces/erc20";
 
 error ERC3156UnsupportedToken of address;
 

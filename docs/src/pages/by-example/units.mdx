@@ -8,6 +8,8 @@ description: "wei, gwei, eth, and durations, with typed arithmetic."
 Ether amounts are `wei`. Points in time are `timestamp`. Durations such as `1days` add to timestamps, and subtracting two timestamps gives a number of seconds.
 
 ```lithe [units.lithe]
+import "std/evm";
+
 storage is record {
   price : wei;
   unlock_at : timestamp;

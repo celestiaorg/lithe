@@ -33,6 +33,7 @@ pub(crate) use abi::{
     flat_record, int_abi, is_static_aggregate, is_static_value, is_stored_aggregate, is_value,
     static_abi, uint_abi, AbiField,
 };
+pub(crate) use builtins::intrinsic_tag;
 pub(crate) use compose::{module_transient_slot, several_contracts, Header};
 pub(crate) use layout::{narrow_width, option_flip, pack_leaves, Flip};
 pub(crate) use types::shape_ty;

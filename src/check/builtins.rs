@@ -22,24 +22,40 @@ impl Checker {
         else {
             return Ok(false);
         };
-        if self.lookup(module).is_some() {
+        if !self.intrinsic_module(module) {
             return Ok(false);
         }
-        let Some(kind) = module_builtin(module, name) else {
-            if matches!(
-                module.as_str(),
-                "Evm" | "Crypto" | "Abi" | "Bytes" | "String" | "Base64" | "List"
-            ) {
-                return Err(error(
-                    line,
-                    col,
-                    format!("unknown built-in `{module}.{name}`"),
-                ));
-            }
-            return Ok(false);
+        let module = crate::modules::shown(module);
+        let Some(Tag::Call(kind)) = self.intrinsic(base_expr, name) else {
+            return Err(error(
+                line,
+                col,
+                format!("unknown function `{module}.{name}`"),
+            ));
         };
         self.check_builtin(line, col, kind, name, module, args, builtin, ty)?;
         Ok(true)
+    }
+
+    /// Whether `name` is a module of the standard library that the compiler implements.
+    pub(super) fn intrinsic_module(&self, name: &str) -> bool {
+        self.modules
+            .iter()
+            .any(|m| m.name == name && !m.intrinsics.is_empty())
+    }
+
+    /// The intrinsic `module.member` names, when `module` is such a module.
+    pub(super) fn intrinsic(&self, module: &Expr, member: &str) -> Option<Tag> {
+        let Expr::Ident { name, .. } = module else {
+            return None;
+        };
+        self.modules
+            .iter()
+            .find(|m| m.name == *name)?
+            .intrinsics
+            .iter()
+            .find(|i| i.name == member)?
+            .tag
     }
 
     fn check_builtin(
@@ -607,9 +623,10 @@ impl Checker {
             return Ok(None);
         };
         let (line, col) = (*line, *col);
-        if !matches!(base.as_ref(), Expr::Ident { name: module, .. } if module == "Abi")
-            || self.lookup("Abi").is_some()
-        {
+        if !matches!(
+            self.intrinsic(base, name),
+            Some(Tag::AbiSelector | Tag::AbiInterfaceId)
+        ) {
             return Ok(None);
         }
         let iface_methods = |iface: &str| {
@@ -949,6 +966,20 @@ fn env_builtin(kind: Builtin) -> bool {
             | Builtin::Code
             | Builtin::GasLeft
     )
+}
+
+/// What the compiler does for the intrinsic `name` of the standard library's module `module`.
+pub(crate) fn intrinsic_tag(module: &str, name: &str) -> Option<Tag> {
+    let constant = match (module, name) {
+        ("Uint", "max") => Some(Tag::UintMax),
+        ("Int", "min") => Some(Tag::IntMin),
+        ("Int", "max") => Some(Tag::IntMax),
+        ("Address", "zero") => Some(Tag::AddressZero),
+        ("Abi", "selector") => Some(Tag::AbiSelector),
+        ("Abi", "interface_id") => Some(Tag::AbiInterfaceId),
+        _ => None,
+    };
+    constant.or_else(|| module_builtin(module, name).map(Tag::Call))
 }
 
 fn module_builtin(module: &str, name: &str) -> Option<Builtin> {

@@ -92,6 +92,8 @@ To reinterpret the 256 bits between `int` and `uint`, as Solidity's `uint256(i)`
 A record is a struct: a fixed set of named, typed fields.
 
 ```lithe
+import "std/evm";
+
 type position is record {
   owner : address;
   amount : uint;
@@ -128,6 +130,8 @@ One rule covers every place a record meets the ABI:
 A `tuple record` is a record in every other way: fields, literals, storage, and equality. A Solidity struct parameter maps to a `tuple record`. Uniswap's `exactInputSingle((address,address,uint24,address,uint256,uint256,uint160))` takes one:
 
 ```lithe
+import "std/evm";
+
 type exact_input_single is tuple record {
   tokenIn : address;
   tokenOut : address;
@@ -166,6 +170,8 @@ external function buy(const amount : uint; const least : uint) is {
 A record's fields can be strings, bytes, and dynamic lists too. An external function that returns such a record returns its fields in order, each dynamic one after an offset, as a Solidity function with several results does:
 
 ```lithe
+import "std/evm";
+
 type domain is record {
   fields : bytes1;
   name : string;
@@ -207,6 +213,9 @@ In the ABI, a tuple is always one Solidity tuple, as a struct is: a tuple parame
 `list(T)` is a dynamic list and `list(T, n)` is a fixed list of length `n`.
 
 ```lithe
+import "std/evm";
+import "std/list";
+
 storage is record {
   history : list(uint);
   top3 : list(address, 3);
@@ -235,6 +244,9 @@ In storage, elements narrower than 32 bytes share slots as a Solidity array's do
 A list of records is a Solidity array of structs. In storage each element starts a slot and packs its fields as a struct does, so a record of a `uint48` and a `uint208` takes one slot. A field of an element reads and writes in place:
 
 ```lithe
+import "std/evm";
+import "std/list";
+
 type checkpoint is record {
   key : uint48;
   value : uint208;
@@ -259,6 +271,8 @@ external view function all() : list(checkpoint) is
 A dynamic list is also a value. It can be a parameter or a result, a `const` or a `var`, and it moves to and from storage whole:
 
 ```lithe
+import "std/list";
+
 storage is record {
   saved : list(uint);
 }
@@ -298,6 +312,9 @@ storage.allowances[owner][spender] := amount;
 Keys are single-word values (integers, `bool`, `address`, `bytesN`, `wei`, `timestamp`, or nominal types over them) or `string` and `bytes`. As in Solidity, a word key's value lives at `keccak256(key . slot)`, and a `string` or `bytes` key's at `keccak256(bytes . slot)`, its bytes unpadded. Values are words, maps, lists, records, or [options](#options). A record value may hold maps, lists, and strings of its own, as a Solidity struct in a mapping does, and each sits at the slot Solidity gives it:
 
 ```lithe
+import "std/evm";
+import "std/list";
+
 type role is record {
   members : map(address, bool);
   admin : bytes32;
@@ -327,6 +344,9 @@ A map's list, or a list inside a map's record, is a list in every way: it can be
 `option(T)` holds `Some(value)` or `None`. Read it with `case`:
 
 ```lithe
+import "std/address";
+import "std/evm";
+
 storage is record {
   admin : option(address);
 }
@@ -438,6 +458,8 @@ A payload can be named, `| Deposit of (amount : uint)`. The name is the ABI para
 A case is written by name, with its payload in parentheses: `Close`, `Deposit(5)`. A variant is the natural type for stored state, and `case` has to handle every one of its cases:
 
 ```lithe
+import "std/evm";
+
 type fill is record {
   amount_out : uint;
   at : uint64;

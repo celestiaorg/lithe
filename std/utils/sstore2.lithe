@@ -8,7 +8,10 @@
 
    The data is at most 24575 bytes, one less than a contract's code. *)
 
-import "std/utils/create2.lithe";
+import "std/bytes";
+import "std/crypto";
+import "std/evm";
+import "std/utils/create2";
 
 module SSTORE2 is {
   requires Create2;

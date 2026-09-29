@@ -23,7 +23,7 @@ fn zero_ending_name() -> String {
 #[test]
 fn receive_takes_plain_ether() {
     let src = "\
-event Got of record {
+import \"std/evm\"; event Got of record {
   indexed from : address;
   amount : wei;
 }
@@ -109,7 +109,7 @@ external function open() is { storage.open := true; }
 #[test]
 fn fallback_runs_for_unmatched_calldata() {
     let src = "\
-storage is record { calls : uint; }
+import \"std/evm\"; storage is record { calls : uint; }
 fallback : bytes is {
   storage.calls := storage.calls + 1;
 } with Evm.calldata()
@@ -160,7 +160,7 @@ fn payable_fallback_keeps_entrypoints_value_checks() {
     let name = zero_ending_name();
     let src = format!(
         "\
-storage is record {{ n : uint; seen : wei; }}
+import \"std/evm\"; storage is record {{ n : uint; seen : wei; }}
 payable fallback is {{ storage.seen := Evm.value(); }}
 external function {name}() is {{ storage.n := 1; }}
 external payable function tip() is {{ storage.n := 2; }}
@@ -201,7 +201,7 @@ external view function n() : uint is storage.n
 
 /// An implementation behind a proxy: its `n` sits in slot 1, clear of the proxy's slot 0.
 const IMPLEMENTATION: &str = "\
-error Too_big of uint;
+import \"std/evm\"; error Too_big of uint;
 storage is record { pad : address; n : uint; }
 external function set(const n : uint) raises Too_big is {
   assert(n < 100, Too_big(n));
@@ -301,7 +301,7 @@ payable fallback delegates to storage.implementation;
 fn fallback_forwards_by_selector() {
     let implementation = put_contract(0x5102, IMPLEMENTATION);
     let src = "\
-error Unknown_selector of bytes4;
+import \"std/address\"; import \"std/evm\"; error Unknown_selector of bytes4;
 storage is record { routes : map(bytes4, address); }
 view function route(const sel : bytes4) : address is {
   const to : address := storage.routes[sel];
@@ -405,27 +405,27 @@ payable fallback forwards to storage.target;
 #[test]
 fn receive_and_fallback_rules() {
     let cases = [
-        ("storage is record { n : uint; }\nreceive is { skip }\n", "`receive` accepts ether; write `payable receive`"),
-        ("storage is record { n : uint; }\nexternal payable receive is { skip }\n", "`receive` takes only `payable` and `nonreentrant`"),
-        ("storage is record { n : uint; }\nnonreentrant payable receive is { skip }\n", "keywords out of order; write `payable nonreentrant receive`"),
-        ("storage is record { n : uint; }\npayable receive() is { skip }\n", "`receive` takes no parameters"),
-        ("storage is record { n : uint; }\npayable receive : uint is 1\n", "`receive` does not return a value"),
-        ("storage is record { n : uint; }\nfallback(const d : bytes) is { skip }\n", "`fallback` takes no parameters; read the calldata with `Evm.calldata()`"),
-        ("storage is record { n : uint; }\nfallback : uint is 1\n", "a `fallback` returns `bytes`, sent back as they are"),
-        ("storage is record { n : uint; }\nfallback is { storage.n := uint(Evm.value()); }\n", "`fallback` reads `Evm.value()`; write `payable fallback`"),
-        ("storage is record { n : uint; }\npayable receive is { skip }\npayable receive is { skip }\n", "a contract has at most one `receive`"),
-        ("storage is record { n : uint; }\nfallback is { skip }\nfallback is { skip }\n", "a contract has at most one `fallback`"),
-        ("storage is record { n : uint; }\nprivate fallback is { skip }\n", "`fallback` cannot be private"),
-        ("module M is { payable receive is { skip } }\nstorage is record { n : uint; }\nexternal function f() is { skip }\n", "`receive` belongs to the contract"),
-        ("interface I is { payable receive; }\nstorage is record { n : uint; }\nexternal function f() is { skip }\n", "`receive` belongs to the contract, not an interface"),
-        ("storage is record { n : uint; }\npayable receive is { skip }\nexternal function f() is { receive(); }\n", "`receive` cannot be called from inside the contract"),
-        ("error No;\nstorage is record { n : uint; }\npayable receive is { assert(storage.n = 0, No); }\n", "`receive` must declare its errors"),
-        ("storage is record { n : uint; }\nfallback : bytes delegates to Address.zero;\n", "a `fallback` that delegates returns what its target returns; drop the result type"),
-        ("storage is record { n : uint; }\nnonreentrant fallback forwards to Address.zero;\n", "a `fallback` that forwards cannot be nonreentrant"),
-        ("storage is record { n : uint; }\nfallback delegates storage.n;\n", "expected `to` after `delegates`"),
-        ("storage is record { n : uint; }\nfallback forwards to storage.n;\n", "a `fallback` passes its call to an address or an interface value"),
-        ("storage is record { n : uint; h : address; }\nfunction pick() : address is { storage.n := 1; } with storage.h\nfallback forwards to pick();\n", "a `fallback` that passes its call on only reads; its target calls `pick`, which is stateful"),
-        ("storage is record { n : uint; }\nfallback skip\n", "expected `is`, `delegates to`, or `forwards to`"),
+        ("import \"std/evm\"; storage is record { n : uint; }\nreceive is { skip }\n", "`receive` accepts ether; write `payable receive`"),
+        ("import \"std/evm\"; storage is record { n : uint; }\nexternal payable receive is { skip }\n", "`receive` takes only `payable` and `nonreentrant`"),
+        ("import \"std/evm\"; storage is record { n : uint; }\nnonreentrant payable receive is { skip }\n", "keywords out of order; write `payable nonreentrant receive`"),
+        ("import \"std/evm\"; storage is record { n : uint; }\npayable receive() is { skip }\n", "`receive` takes no parameters"),
+        ("import \"std/evm\"; storage is record { n : uint; }\npayable receive : uint is 1\n", "`receive` does not return a value"),
+        ("import \"std/evm\"; storage is record { n : uint; }\nfallback(const d : bytes) is { skip }\n", "`fallback` takes no parameters; read the calldata with `Evm.calldata()`"),
+        ("import \"std/evm\"; storage is record { n : uint; }\nfallback : uint is 1\n", "a `fallback` returns `bytes`, sent back as they are"),
+        ("import \"std/evm\"; storage is record { n : uint; }\nfallback is { storage.n := uint(Evm.value()); }\n", "`fallback` reads `Evm.value()`; write `payable fallback`"),
+        ("import \"std/evm\"; storage is record { n : uint; }\npayable receive is { skip }\npayable receive is { skip }\n", "a contract has at most one `receive`"),
+        ("import \"std/evm\"; storage is record { n : uint; }\nfallback is { skip }\nfallback is { skip }\n", "a contract has at most one `fallback`"),
+        ("import \"std/evm\"; storage is record { n : uint; }\nprivate fallback is { skip }\n", "`fallback` cannot be private"),
+        ("import \"std/evm\"; module M is { payable receive is { skip } }\nstorage is record { n : uint; }\nexternal function f() is { skip }\n", "`receive` belongs to the contract"),
+        ("import \"std/evm\"; interface I is { payable receive; }\nstorage is record { n : uint; }\nexternal function f() is { skip }\n", "`receive` belongs to the contract, not an interface"),
+        ("import \"std/evm\"; storage is record { n : uint; }\npayable receive is { skip }\nexternal function f() is { receive(); }\n", "`receive` cannot be called from inside the contract"),
+        ("import \"std/evm\"; error No;\nstorage is record { n : uint; }\npayable receive is { assert(storage.n = 0, No); }\n", "`receive` must declare its errors"),
+        ("import \"std/address\"; import \"std/evm\"; storage is record { n : uint; }\nfallback : bytes delegates to Address.zero;\n", "a `fallback` that delegates returns what its target returns; drop the result type"),
+        ("import \"std/address\"; import \"std/evm\"; storage is record { n : uint; }\nnonreentrant fallback forwards to Address.zero;\n", "a `fallback` that forwards cannot be nonreentrant"),
+        ("import \"std/evm\"; storage is record { n : uint; }\nfallback delegates storage.n;\n", "expected `to` after `delegates`"),
+        ("import \"std/evm\"; storage is record { n : uint; }\nfallback forwards to storage.n;\n", "a `fallback` passes its call to an address or an interface value"),
+        ("import \"std/evm\"; storage is record { n : uint; h : address; }\nfunction pick() : address is { storage.n := 1; } with storage.h\nfallback forwards to pick();\n", "a `fallback` that passes its call on only reads; its target calls `pick`, which is stateful"),
+        ("import \"std/evm\"; storage is record { n : uint; }\nfallback skip\n", "expected `is`, `delegates to`, or `forwards to`"),
     ];
     for (src, want) in cases {
         let err = compile(src).expect_err(want);
@@ -433,7 +433,7 @@ fn receive_and_fallback_rules() {
     }
     // Outside a declaration's first word, `receive` and `fallback` are names like any other.
     let named = "\
-storage is record { receive : uint; }
+import \"std/evm\"; storage is record { receive : uint; }
 pure function fallback(const n : uint) : uint is n + 1
 external function receive(const n : uint) is { storage.receive := fallback(n); }
 ";
@@ -450,7 +450,7 @@ external function receive(const n : uint) is { storage.receive := fallback(n); }
 #[test]
 fn split_router_keeps_receive_and_fallback() {
     let src = "\
-module Counter is {
+import \"std/evm\"; module Counter is {
   storage counter at \"fallback.counter\" is record { count : uint; }
   external function bump(const by : uint) is { counter.count := counter.count + by; }
   external view function count() : uint is counter.count
@@ -464,7 +464,7 @@ payable receive is { storage.received := storage.received + Evm.value(); }
 payable fallback is { storage.fell := storage.fell + 1; }
 external view function fell() : uint is storage.fell
 ";
-    let checked = crate::check::check(crate::parse::parse(src).expect("parse")).expect("check");
+    let checked = crate::check::check(loaded(src)).expect("check");
     let split = crate::split::build(
         &checked,
         "Test",

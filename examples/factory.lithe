@@ -2,6 +2,8 @@
    to the created contract's `deploy`, which runs before the continuation receives the
    new address. *)
 
+import "std/evm";
+
 contract Factory is {
   storage is record {
     vaults : map(address, address);

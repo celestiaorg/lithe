@@ -2,6 +2,9 @@
    values, several values at once, and nested ones: a list of records with strings and
    lists, and a list of lists. Mirrors codec.sol. *)
 
+import "std/abi";
+import "std/crypto";
+
 type order is record {
   id : uint;
   note : string;

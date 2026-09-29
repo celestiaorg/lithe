@@ -51,6 +51,8 @@ With no context, an integer literal is a `uint`. In arithmetic and comparisons, 
 `seconds`, `minutes`, `hours`, and `days` produce durations. A duration adds to a `timestamp` and is also usable as a `uint` number of seconds:
 
 ```lithe
+import "std/evm";
+
 storage is record {
   deadline : timestamp;
   period : uint;

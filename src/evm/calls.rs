@@ -73,7 +73,7 @@ fn nonreentrant_lock_covers_deferred_calls() {
     assert_eq!(slot(&entered.storage, 1), Word::from_u64(2));
 
     let alone = "\
-storage is record { n : uint; }
+import \"std/evm\"; storage is record { n : uint; }
 external function pay(const to : address) is {
   storage.n := 1;
   defer Evm.transfer(to, 1wei);
@@ -85,7 +85,7 @@ external function pay(const to : address) is {
         "{alone_notes}"
     );
     let guarded = "\
-storage is record { n : uint; }
+import \"std/evm\"; storage is record { n : uint; }
 external nonreentrant function pay(const to : address) is {
   storage.n := 1;
   defer Evm.transfer(to, 1wei);
@@ -387,7 +387,7 @@ fn imported_contracts_are_created() {
     let dir = std::env::temp_dir().join(format!("lithe-imported-{}", std::process::id()));
     std::fs::create_dir_all(&dir).expect("dir");
     let child = "\
-contract Child is {
+import \"std/evm\"; contract Child is {
   storage is record { n : uint; }
   deploy() is {
     storage.n := 5;
@@ -396,7 +396,7 @@ contract Child is {
 }
 ";
     let maker = "\
-import \"./child.lithe\";
+import \"std/crypto\"; import \"std/evm\"; import \"./child\";
 contract Maker is {
   storage is record { last : address; }
   external function make(const salt : bytes32) : bytes32 is {
@@ -430,14 +430,14 @@ contract Maker is {
 
     for (from, to, want) in [
         (
-            "import \"./child.lithe\";",
-            "import \"./child.lithe\" as C;",
+            "import \"std/evm\"; import \"./child\";",
+            "import \"std/evm\"; import \"./child\" as C;",
             "defines contracts; import it without an alias",
         ),
         (
             "contract Maker is {",
             "contract Child is {",
-            "contract `Child` is already declared in `./child.lithe`",
+            "contract `Child` is already declared in `./child`",
         ),
         (
             "Evm.creation_code(Child))",
@@ -652,7 +652,7 @@ external function relay(const me : Me) is { defer me.plain(); }
         let err = compile(src).expect_err(want);
         assert!(err.to_string().contains(want), "{want}: {err}");
     }
-    compile("storage is record { n : wei; }\nexternal payable nonreentrant function pay() is { storage.n := Evm.value(); }\n")
+    compile("import \"std/evm\"; storage is record { n : wei; }\nexternal payable nonreentrant function pay() is { storage.n := Evm.value(); }\n")
         .expect("payable nonreentrant");
 }
 
@@ -1327,7 +1327,7 @@ external function measure(const s : string) is { storage.size := s.length; }
 #[test]
 fn deferred_creation_deploys_a_peer_contract() {
     let src = "\
-interface Child is {
+import \"std/evm\"; interface Child is {
   function init(owner : address);
   view function owner() : address;
 }
@@ -1499,7 +1499,7 @@ contract Vault is {
         ),
     ] {
         let src = format!(
-            "contract One is {{\n  storage is record {{ n : uint; }}\n  external function f() is {{ {body} }}\n}}\ncontract Other is {{\n  storage is record {{ n : uint; }}\n  external function g() is {{ skip }}\n}}\n"
+            "import \"std/evm\"; contract One is {{\n  storage is record {{ n : uint; }}\n  external function f() is {{ {body} }}\n}}\ncontract Other is {{\n  storage is record {{ n : uint; }}\n  external function g() is {{ skip }}\n}}\n"
         );
         let err = compile_contracts(&src).expect_err(want);
         assert!(err.to_string().contains(want), "{want}: {err}");
@@ -1511,7 +1511,7 @@ contract Vault is {
 #[test]
 fn encoded_blobs_keep_their_tails() {
     let src = "\
-storage is record { a : bytes; b : bytes; name : string; }
+import \"std/abi\"; storage is record { a : bytes; b : bytes; name : string; }
 external function both(const x : string; const y : string) is {
   const a : bytes := Abi.encode(1, x);
   const b : bytes := Abi.encode_packed(y, 2);
@@ -1577,7 +1577,7 @@ fn deploy_args(owner: Word, fee: u64, name: &[u8]) -> Vec<u8> {
 #[test]
 fn deploy_runs_in_creation_code() {
     let src = "\
-error Too_high of uint;
+import \"std/evm\"; error Too_high of uint;
 storage is record { owner : address; fee : uint; name : string; }
 event Deployed of record { indexed owner : address; fee : uint; }
 deploy(const owner : address; const fee : uint; const name : string)
@@ -1630,7 +1630,7 @@ external view function name() : string is storage.name
     assert!(abi.contains("\"type\": \"constructor\""), "{abi}");
 
     let payable = "\
-storage is record { paid : wei; }
+import \"std/evm\"; storage is record { paid : wei; }
 payable deploy() is { storage.paid := Evm.value(); }
 external view function paid() : wei is storage.paid
 ";
@@ -1650,7 +1650,7 @@ external view function paid() : wei is storage.paid
         ),
     ] {
         let src = format!(
-            "storage is record {{ n : uint; }}\n{body}\nexternal view function n() : uint is storage.n\n"
+            "import \"std/evm\"; storage is record {{ n : uint; }}\n{body}\nexternal view function n() : uint is storage.n\n"
         );
         let err = compile(&src).expect_err(want);
         assert!(err.to_string().contains(want), "{want}: {err}");
@@ -1662,7 +1662,7 @@ external view function paid() : wei is storage.paid
 #[test]
 fn upgradeable_deploy_runs_only_during_construction() {
     let src = "\
-upgradeable
+import \"std/evm\"; upgradeable
 error Not_owner;
 storage is record { owner : address; }
 upgrade guard is { assert(Evm.sender() = storage.owner, Not_owner); }
@@ -1690,7 +1690,7 @@ external view function owner() : address is storage.owner
 #[test]
 fn created_contracts_receive_deploy_arguments() {
     let src = "\
-contract Factory is {
+import \"std/evm\"; contract Factory is {
   storage is record { last : address; }
   external function open(const fee : uint; const name : string) is {
     defer create Vault(Evm.sender(), fee, name) then (vault : address) {
@@ -1776,7 +1776,7 @@ contract Vault is {
 #[test]
 fn concatenation_and_typed_call_encoding() {
     let src = "\
-interface Token is { function transfer(to : address; amount : uint) : bool; }
+import \"std/abi\"; import \"std/bytes\"; import \"std/crypto\"; import \"std/evm\"; import \"std/string\"; interface Token is { function transfer(to : address; amount : uint) : bool; }
 storage is record { joined : bytes; text : string; call_data : bytes; }
 external function join(const a : bytes; const b : bytes) is {
   storage.joined := Bytes.concat(a, 0xdeadbeef, b);
@@ -1867,7 +1867,7 @@ external view function call_data() : bytes is storage.call_data
         ),
     ] {
         let src = format!(
-            "interface Token is {{ function transfer(to : address; amount : uint) : bool; }}\nstorage is record {{ b : bytes; }}\nexternal function f() is {{ storage.b := {body}; }}\n"
+            "import \"std/abi\"; import \"std/bytes\"; import \"std/evm\"; interface Token is {{ function transfer(to : address; amount : uint) : bool; }}\nstorage is record {{ b : bytes; }}\nexternal function f() is {{ storage.b := {body}; }}\n"
         );
         let err = compile(&src).expect_err(want);
         assert!(err.to_string().contains(want), "{want}: {err}");
@@ -1880,7 +1880,7 @@ external view function call_data() : bytes is storage.call_data
 fn calls_take_a_gas_limit() {
     install_mocks();
     let src = "\
-interface Echo is {
+import \"std/abi\"; import \"std/evm\"; interface Echo is {
   view function peek(v : uint) : uint;
   view function pair(a : uint; b : uint) : (uint, uint);
   payable function ping(v : uint);

@@ -1,0 +1,49 @@
+(* Unsigned integers. `max` and the operations on two values take their width from the
+   values, or from the type the context expects; with neither, 256 bits. *)
+
+module Uint is {
+  (* max : uint
+     `type(uint256).max`, or the expected unsigned type's. *)
+  intrinsic max;
+
+  (* `0x05` on words: `base ** exponent % modulus`. `Panic(0x12)` if `modulus` is zero. *)
+  intrinsic pure function pow_mod(base : uint; exponent : uint; modulus : uint) : uint;
+
+  (* div_rem(a : T; b : T) : (T, T)
+     `(a / b, a % b)`, for two values of one unsigned type. *)
+  intrinsic div_rem;
+
+  (* `a * b / d` with the product in 512 bits. `Panic(0x11)` if the result doesn't fit,
+     `Panic(0x12)` if `d` is zero. *)
+  intrinsic pure function mul_div(a : uint; b : uint; d : uint) : uint;
+
+  (* `mulmod(a, b, d)`. `Panic(0x12)` if `d` is zero. *)
+  intrinsic pure function mul_mod(a : uint; b : uint; d : uint) : uint;
+
+  (* `addmod(a, b, d)`. `Panic(0x12)` if `d` is zero. *)
+  intrinsic pure function add_mod(a : uint; b : uint; d : uint) : uint;
+
+  (* wrapping_add(a : T; b : T) : T
+     `unchecked { a + b }`: the sum modulo 2^N for the values' N bits. *)
+  intrinsic wrapping_add;
+
+  (* wrapping_sub(a : T; b : T) : T
+     `unchecked { a - b }`. *)
+  intrinsic wrapping_sub;
+
+  (* wrapping_mul(a : T; b : T) : T
+     `unchecked { a * b }`. *)
+  intrinsic wrapping_mul;
+
+  (* to_string(n : T) : string
+     An unsigned integer of any width in decimal. *)
+  intrinsic to_string;
+
+  (* to_hex_string(n : T [; length : uint]) : string
+     `0x` and lowercase hex in the fewest whole bytes, or with a second argument exactly
+     that many bytes. *)
+  intrinsic to_hex_string;
+
+  (* `uint256(i)`: the same 256 bits, unchecked. *)
+  intrinsic pure function from_bits(i : int) : uint;
+}

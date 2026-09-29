@@ -8,6 +8,8 @@ description: "Mappings, nested mappings, defaults, and deletion."
 `map(K, V)` is a Solidity mapping. It lives in storage, every key starts at zero, and keys cannot be enumerated.
 
 ```lithe [maps.lithe]
+import "std/evm";
+
 storage is record {
   balances : map(address, uint);
   (* Maps nest: owner -> spender -> amount. *)
