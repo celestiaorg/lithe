@@ -3,6 +3,7 @@
   "displayName": "Lithe",
   "description": "Syntax highlighting, diagnostics, hover, navigation, and completion for Lithe",
   "version": "0.1.0",
+  "license": "Apache-2.0",
   "publisher": "lithe",
   "engines": { "vscode": "^1.82.0" },
   "categories": ["Programming Languages"],
