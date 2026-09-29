@@ -58,11 +58,9 @@ A contract is made of these declarations, in any order. Names are resolved acros
 | Upgrades | `upgradeable`, `upgrade guard is { ... }`, `migrate f() is { ... }` | [Upgrades](/language/upgrades) |
 | Receive and fallback | `payable receive is { ... }`, `fallback is { ... }`, `fallback delegates to target;` | [Functions](/language/functions#receive-and-fallback) |
 
-Every contract declares `storage is record`, even an empty one, and at least one external function:
+Every contract has at least one external function. A contract with no state declares no storage:
 
 ```lithe
-storage is record {}
-
 external pure function version() : uint is
   1
 ```

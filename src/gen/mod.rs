@@ -710,7 +710,8 @@ enum Region {
     /// The runtime code, where creation code writes the immutables into it.
     Deployed,
     /// A list a push moved, with room past its elements, and where that room ends. The list
-    /// is the one a local held then, so the room is its alone.
+    /// is the one a local held then, or one a nested write copied for a local, so the list
+    /// and its room are that local's alone.
     Room,
 }
 
@@ -1194,6 +1195,12 @@ struct Gen<'a> {
     blob_ptr: i32,
     /// For each local holding a list, the words `room` names.
     rooms: HashMap<i32, i32>,
+    /// For each local that nested writes pass through lists of, the paths to those lists.
+    owners: HashMap<usize, Vec<String>>,
+    /// The words `room` names for each local and path in `owners`.
+    owned: HashMap<(usize, String), i32>,
+    /// Locals the statements being compiled read lists out of: writes through them copy.
+    sharing: Vec<usize>,
     blob_base: i32,
     fn_ret: Vec<i32>,
     tuple_buf: i32,

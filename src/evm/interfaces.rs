@@ -17,7 +17,6 @@ contract T is {
   use ERC20 exposing IERC20, IERC20Metadata;
   use Uris exposing IERC1155MetadataURI;
   supports IERC20, IERC20Metadata, IERC1155MetadataURI;
-  storage is record {}
 }
 "#;
 
@@ -128,8 +127,8 @@ fn supports_rejects_what_the_contract_cannot_announce() {
         "{unknown}"
     );
     let own = err(ERC165_SRC.replace(
-        "storage is record {}",
-        "storage is record {}\n  external pure function supportsInterface(const interfaceId : bytes4) : bool is interfaceId = 0x01ffc9a7",
+        "supports IERC20, IERC20Metadata, IERC1155MetadataURI;",
+        "supports IERC20, IERC20Metadata, IERC1155MetadataURI;\n  external pure function supportsInterface(const interfaceId : bytes4) : bool is interfaceId = 0x01ffc9a7",
     ));
     assert!(
         own.contains("the contract writes its own `supportsInterface`, which does not answer for the interfaces `supports` lists"),
@@ -142,8 +141,8 @@ fn supports_rejects_what_the_contract_cannot_announce() {
 #[test]
 fn own_supports_interface_extends_the_generated_answer() {
     let own = ERC165_SRC.replace(
-        "storage is record {}",
-        "storage is record {}\n  external pure function supportsInterface(const interfaceId : bytes4) : bool is\n    interfaceId = 0x49064906 or Abi.supports_interface(interfaceId)",
+        "supports IERC20, IERC20Metadata, IERC1155MetadataURI;",
+        "supports IERC20, IERC20Metadata, IERC1155MetadataURI;\n  external pure function supportsInterface(const interfaceId : bytes4) : bool is\n    interfaceId = 0x49064906 or Abi.supports_interface(interfaceId)",
     );
     let dir = std::env::temp_dir().join(format!("lithe-erc165-extend-{}", std::process::id()));
     std::fs::create_dir_all(&dir).expect("dir");
@@ -178,7 +177,7 @@ fn own_supports_interface_extends_the_generated_answer() {
     );
     // It answers for the contract, so a module's code cannot depend on it.
     let err = compile(
-        "import \"std/abi\"; module M is {\n  pure function has(const id : bytes4) : bool is Abi.supports_interface(id)\n}\ncontract T is {\n  use M;\n  storage is record {}\n  external pure function f(const id : bytes4) : bool is M.has(id)\n}\n",
+        "import \"std/abi\"; module M is {\n  pure function has(const id : bytes4) : bool is Abi.supports_interface(id)\n}\ncontract T is {\n  use M;\n  external pure function f(const id : bytes4) : bool is M.has(id)\n}\n",
     )
     .expect_err("module");
     assert!(

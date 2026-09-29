@@ -338,8 +338,6 @@ A `fallback` can pass the whole call to another contract instead of running a bo
 The target is an address or an interface value, computed for each call by an expression that only reads: a storage field, a constant, a `view` function, or a `query`. The calldata goes to it unchanged, and what it returns, or reverts with, comes back unchanged. A target with no code is refused, since it would answer every call with success and nothing.
 
 ```lithe
-storage is record {}
-
 storage proxy at "example.proxy" is record {
   implementation : address;
 }

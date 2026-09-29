@@ -36,6 +36,15 @@ impl<'a> Gen<'a> {
                         return Ok(());
                     }
                     Expr::Ident { sym: Some(sym), .. } => self.mload(self.local[*sym]),
+                    // A `var`'s own list: its length needs no copy of it.
+                    Expr::Field {
+                        root: Some(sym),
+                        leaf,
+                        base: record,
+                        ..
+                    } if self.checked.syms[*sym].mutable && fields_only(record) => {
+                        self.mload(self.addr(*sym, *leaf))
+                    }
                     other => self.compile_value(other)?,
                 }
                 self.op(MLOAD);
@@ -2305,4 +2314,13 @@ fn shift_one(bits: u16) -> Word {
     let off = bits % 64;
     word.0[limb] = 1u64 << off;
     word
+}
+
+/// Whether `e` is a local or a field of one, with no index on the way.
+fn fields_only(e: &Expr) -> bool {
+    match e {
+        Expr::Ident { .. } => true,
+        Expr::Field { base, .. } => fields_only(base),
+        _ => false,
+    }
 }
