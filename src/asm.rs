@@ -3429,6 +3429,8 @@ fn inst_len_wide(inst: &Inst) -> usize {
 
 /// Times a loop body is guessed to run each time its loop is entered.
 pub(crate) const LOOP_RUNS: f64 = 4.0;
+/// The deepest nest of loops, through calls too, whose runs multiply.
+const MAX_NEST: i32 = 3;
 /// Gas a byte of code is worth: the size budget leaves room to trade a byte for a few gas on
 /// every run of a path.
 pub(crate) const GAS_PER_BYTE: f64 = 5.0;
@@ -3593,10 +3595,13 @@ fn flow(code: &[Inst], starts_at: &[u32], sum: bool) -> (Vec<f64>, Vec<u32>) {
         }
     }
     // How often each block's code is entered, loops aside, and how often it runs.
-    // Entries by the entrypoint that owns the jump, the most runs of each.
-    let mut entered = vec![None::<Vec<(u32, f64)>>; blocks];
+    // Entries by the entrypoint that owns the jump, the most runs of each. Each count also
+    // has a plain one, where calls from loops run once: the loops a helper is called in and
+    // its own nest as deep as inlined loops do, `MAX_NEST` at most.
+    let mut entered = vec![None::<Vec<(u32, f64, f64)>>; blocks];
     let mut weight = vec![0.0f64; blocks];
-    let mut called = vec![None::<f64>; blocks];
+    let mut plain = vec![0.0f64; blocks];
+    let mut called = vec![None::<(f64, f64)>; blocks];
     let mut owner = vec![None::<u32>; blocks];
     for (k, l) in starts_at.iter().enumerate() {
         if let Some(&b) = at.get(l) {
@@ -3607,36 +3612,45 @@ fn flow(code: &[Inst], starts_at: &[u32], sum: bool) -> (Vec<f64>, Vec<u32>) {
     let mut ready: Vec<usize> = (0..blocks).filter(|&b| indeg[b] == 0).collect();
     while let Some(b) = ready.pop() {
         let own = *owner[b].get_or_insert(SHARED);
-        let entries = entered[b].as_ref().map(|e| {
-            let each = e.iter().map(|&(_, x)| x);
-            if sum {
-                each.sum::<f64>()
-            } else {
-                each.fold(0.0, f64::max)
+        let join = |pick: fn(&(u32, f64, f64)) -> f64, call: Option<f64>| {
+            let entries = entered[b].as_ref().map(|e| {
+                let each = e.iter().map(pick);
+                if sum {
+                    each.sum::<f64>()
+                } else {
+                    each.fold(0.0, f64::max)
+                }
+            });
+            match (entries, call) {
+                (None, None) => 1.0,
+                (Some(x), Some(y)) if sum => x + y,
+                (x, y) => x.unwrap_or(0.0).max(y.unwrap_or(0.0)),
             }
-        });
-        let base = match (entries, called[b]) {
-            (None, None) => 1.0,
-            (Some(x), Some(y)) if sum => x + y,
-            (x, y) => x.unwrap_or(0.0).max(y.unwrap_or(0.0)),
         };
-        weight[b] = if cold[b] {
-            0.0
-        } else {
-            base * LOOP_RUNS.powi(depth[b].min(3))
-        };
+        let base = join(|e| e.1, called[b].map(|c| c.0));
+        let flat = join(|e| e.2, called[b].map(|c| c.1));
+        if !cold[b] {
+            let nest = LOOP_RUNS.powi(MAX_NEST);
+            weight[b] = (base * LOOP_RUNS.powi(depth[b].min(MAX_NEST))).min(flat * nest);
+            plain[b] = flat;
+        }
         for &(t, call) in &succ[b] {
             if back[b].contains(&t) {
                 continue;
             }
             if call {
-                *called[t].get_or_insert(0.0) += weight[b];
+                let c = called[t].get_or_insert((0.0, 0.0));
+                c.0 += weight[b];
+                c.1 += plain[b];
             } else {
                 let from = if own == SHARED { SHARED } else { own };
                 let e = entered[t].get_or_insert_with(Vec::new);
-                match e.iter_mut().find(|(o, _)| *o == from) {
-                    Some((_, x)) => *x = x.max(base),
-                    None => e.push((from, base)),
+                match e.iter_mut().find(|(o, ..)| *o == from) {
+                    Some((_, x, y)) => {
+                        *x = x.max(base);
+                        *y = y.max(flat);
+                    }
+                    None => e.push((from, base, flat)),
                 }
             }
             if !roots.contains(&t) {
