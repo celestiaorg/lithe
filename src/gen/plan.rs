@@ -87,6 +87,7 @@ impl<'a> Gen<'a> {
             journal_at: 0,
             journal_base: 0,
             blob_ptr: 0,
+            rooms: HashMap::new(),
             blob_base: 0,
             fn_ret: Vec::new(),
             tuple_buf: 0,

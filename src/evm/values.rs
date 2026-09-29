@@ -3513,6 +3513,79 @@ external pure function d() : uint is { var xs : list(list(uint)) := [[1]]; List.
     }
 }
 
+/// Elements that own heap data are allocated past their list, so a push moves the list to a
+/// blob with room to grow into. The room is its list's alone.
+#[test]
+fn pushes_into_room_grow_only_their_own_list() {
+    let src = "\
+import \"std/list\";
+type v is tuple record { k : uint; data : bytes; }
+type f is tuple record { tag : uint; items : list(v); }
+storage is record { n : uint; }
+pure function sum(const xs : list(v)) : uint is { var s : uint := 0; for x : v in xs do { s := s + x.k * x.data.length; } } with s
+pure function build(const n : uint) : list(v) is { var xs : list(v) := []; for i : uint in 0 .. n do { List.push(xs, { k = i; data = 0x0102; }); } } with xs
+external pure function share() : uint is {
+  var xs : list(v) := [];
+  for i : uint in 0 .. 5 do { List.push(xs, { k = i; data = 0x01; }); }
+  const c : list(v) := xs;
+  var d : list(v) := xs;
+  for i : uint in 5 .. 10 do { List.push(xs, { k = i; data = 0x01; }); }
+  List.push(d, { k = 100; data = 0x01; });
+} with c.length * 1000000 + d.length * 10000 + xs.length * 100 + sum(c)
+external pure function interleave() : uint is {
+  var xs : list(v) := [];
+  var ys : list(bytes) := [];
+  for i : uint in 0 .. 20 do { List.push(xs, { k = i; data = 0x01; }); List.push(ys, 0x0102); }
+} with sum(xs) * 10000 + ys.length * 100 + ys[19].length
+external pure function poppush() : uint is {
+  var xs : list(v) := [];
+  for i : uint in 0 .. 10 do { List.push(xs, { k = i; data = 0x01; }); }
+  for i : uint in 0 .. 4 do { List.pop(xs); }
+  const c : list(v) := xs;
+  for i : uint in 10 .. 13 do { List.push(xs, { k = i; data = 0x01; }); }
+} with xs.length * 100000 + sum(xs) * 100 + c.length
+external pure function nested() : uint is {
+  var st : list(f) := [{ tag = 0; items = []; }];
+  for i : uint in 0 .. 6 do { List.push(st[0].items, { k = i; data = 0x01; }); }
+  const c : f := st[0];
+  for i : uint in 6 .. 9 do { List.push(st[0].items, { k = i; data = 0x01; }); }
+} with c.items.length * 10000 + st[0].items.length * 100 + sum(st[0].items) - sum(c.items)
+external pure function helpers() : uint is {
+  var a : list(v) := build(3);
+  var b : list(v) := build(3);
+  List.push(a, { k = 7; data = 0x01; });
+  List.push(b, { k = 9; data = 0x0102; });
+  List.push(a, { k = 5; data = 0x01; });
+} with a.length * 1000000 + b.length * 10000 + sum(a) * 100 + sum(b) - sum(a)
+external pure function iter() : uint is {
+  var xs : list(v) := [{ k = 1; data = 0x01; }, { k = 2; data = 0x01; }];
+  var s : uint := 0;
+  for x : v in xs do { List.push(xs, { k = x.k + 10; data = 0x01; }); s := s + 1; }
+} with s * 1000 + xs.length * 100 + xs[3].k
+external pure function field() : uint is {
+  var a : f := { tag = 1; items = []; };
+  var b : list(v) := [];
+  for i : uint in 0 .. 7 do { List.push(a.items, { k = i; data = 0x01; }); List.push(b, { k = 1; data = 0x01; }); }
+  const c : f := a;
+  List.push(a.items, { k = 50; data = 0x01; });
+} with c.items.length * 10000 + a.items.length * 100 + sum(a.items) - sum(c.items) + sum(b) * 1000000
+";
+    let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
+    for (f, want) in [
+        ("share()", 5_06_10_10),
+        ("interleave()", 190_20_02),
+        ("poppush()", 9_048_06),
+        ("nested()", 6_09_21),
+        ("helpers()", 5_04_18_06),
+        ("iter()", 2_4_12),
+        ("field()", 7_07_08_50),
+    ] {
+        let out = call(&runtime, f, &[]);
+        assert!(!out.reverted, "{f}: {}", pretty(&out.returndata));
+        assert_eq!(load_bytes(&out.returndata, 0), Word::from_u64(want), "{f}");
+    }
+}
+
 #[test]
 fn literals_take_their_type_from_context() {
     let src = r#"import "std/crypto"; import "std/uint"; 
