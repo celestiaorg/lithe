@@ -89,6 +89,7 @@ Both contracts have the same ABI, the same error selector, the same event topic,
 | `for (uint i = 0; i < xs.length; i++)` | `for (i, x) : (uint, T) in xs do { }` |
 | `while (cond)` | none. `for ... until cond bound n do { }` |
 | `break` | `until` |
+| `f(n - 1)` inside `f` | none. A `for` loop with an accumulator. See [Recursion](/by-example/recursion) |
 | `return x;` | `... is { ... } with x` |
 | `struct S { uint a; }` | `type s is record { a : uint; }` |
 | `function f(S calldata s)` | a `tuple record` parameter. See [Records in the ABI](/language/types#records-in-the-abi) |

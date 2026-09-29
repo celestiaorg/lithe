@@ -5,7 +5,7 @@ description: "Grouping values by position, returning several values, and destruc
 
 # Tuples
 
-Tuples group values by position. Use them to return several values, and destructure them with `const (a, b) : (T, U) := ...`.
+Tuples group values by position. Use them to return several values, and destructure them with `const (a, b) : (T, U) := ...` or `var (a, b) : (T, U) := ...`.
 
 ```lithe [tuples.lithe]
 import "std/evm";
@@ -31,4 +31,12 @@ external view function info() : (uint32, address) is
 
 external pure function div_rem(const a : uint; const b : uint) : (uint, uint) is
   Uint.div_rem(a, b)
+
+(* `var (a, b)` binds elements that `(a, b) := ...` can step together. *)
+external pure function gcd(const a : uint; const b : uint) : uint is {
+  var (x, y) : (uint, uint) := (a, b);
+  for _ : uint in 0 .. 256 until y = 0 do {
+    (x, y) := (y, x % y);
+  }
+} with x
 ```

@@ -536,10 +536,14 @@ impl<'a> Gen<'a> {
             Stmt::Var {
                 expr,
                 sym,
+                part_syms,
                 line,
                 col,
                 ..
             } => {
+                if !part_syms.is_empty() {
+                    return self.scatter(expr, part_syms);
+                }
                 let Some(sym) = *sym else {
                     return Err(error(*line, *col, "unbound local"));
                 };
@@ -1236,7 +1240,7 @@ impl<'a> Gen<'a> {
         let tail = std::mem::replace(&mut self.tail, false);
         if self.compiling.contains(&idx) {
             let f = &self.checked.prog.funcs[idx];
-            return Err(error(f.line, f.col, "recursion is not supported"));
+            return Err(error(f.line, f.col, "recursion is not supported: iteration is bounded, write a `for` loop"));
         }
         let inline = always || !self.plan.outline.contains(&idx);
         let aliased = self.bind_params(idx, args, inline)?;

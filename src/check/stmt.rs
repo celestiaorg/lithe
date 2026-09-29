@@ -29,38 +29,8 @@ impl Checker {
                     self.annotated(*line, *col, ty, expr.ty())?
                 };
                 if !parts.is_empty() {
-                    if self.types[id].kind != TyKind::Tuple {
-                        return Err(error(*line, *col, "destructuring expects a tuple"));
-                    }
-                    let elem_tys: Vec<usize> =
-                        self.types[id].fields.iter().map(|field| field.ty).collect();
-                    if elem_tys.len() != parts.len() {
-                        return Err(error(
-                            *line,
-                            *col,
-                            format!(
-                                "tuple pattern has {} names and the type has {} elements",
-                                parts.len(),
-                                elem_tys.len()
-                            ),
-                        ));
-                    }
                     let derived = self.reads_state(expr);
-                    for (name, elem) in parts.iter().zip(elem_tys) {
-                        let sid = self.add_sym(Sym {
-                            ty: elem,
-                            mutable: false,
-                            storage: false,
-                            slot: 0,
-                            span: 0,
-                        });
-                        part_syms.push(sid);
-                        if derived {
-                            self.state_syms.insert(sid);
-                        }
-                        self.define(*line, *col, name, sid)?;
-                    }
-                    return Ok(());
+                    return self.bind_parts(*line, *col, id, parts, part_syms, false, derived);
                 }
                 if id == self.storage
                     || self.types[id].words == 0 && self.types[id].kind != TyKind::Operation
@@ -89,13 +59,18 @@ impl Checker {
                 line,
                 col,
                 name,
+                parts,
                 ty,
                 expr,
                 sym,
+                part_syms,
             } => {
                 let want = self.build(ty)?;
                 self.check_expr_as(expr, Some(want))?;
                 let id = self.annotated(*line, *col, ty, expr.ty())?;
+                if !parts.is_empty() {
+                    return self.bind_parts(*line, *col, id, parts, part_syms, true, false);
+                }
                 if id == self.storage
                     || self.types[id].words == 0
                     || self.types[id].kind == TyKind::Operation
@@ -1219,5 +1194,51 @@ fn assign_parts(e: &Expr) -> Option<(Vec<String>, Vec<Expr>, Vec<(usize, String)
             Some((path, keys, fields))
         }
         _ => None,
+    }
+}
+
+impl Checker {
+    /// Binds each name of a `(a, b)` pattern to one element of tuple type `id`.
+    #[allow(clippy::too_many_arguments)]
+    fn bind_parts(
+        &mut self,
+        line: u32,
+        col: u32,
+        id: usize,
+        parts: &[String],
+        part_syms: &mut Vec<usize>,
+        mutable: bool,
+        derived: bool,
+    ) -> Result<(), Error> {
+        if self.types[id].kind != TyKind::Tuple {
+            return Err(error(line, col, "destructuring expects a tuple"));
+        }
+        let elem_tys: Vec<usize> = self.types[id].fields.iter().map(|field| field.ty).collect();
+        if elem_tys.len() != parts.len() {
+            return Err(error(
+                line,
+                col,
+                format!(
+                    "tuple pattern has {} names and the type has {} elements",
+                    parts.len(),
+                    elem_tys.len()
+                ),
+            ));
+        }
+        for (name, elem) in parts.iter().zip(elem_tys) {
+            let sid = self.add_sym(Sym {
+                ty: elem,
+                mutable,
+                storage: false,
+                slot: 0,
+                span: 0,
+            });
+            part_syms.push(sid);
+            if derived {
+                self.state_syms.insert(sid);
+            }
+            self.define(line, col, name, sid)?;
+        }
+        Ok(())
     }
 }

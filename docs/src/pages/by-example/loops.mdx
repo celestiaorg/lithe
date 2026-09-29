@@ -75,13 +75,11 @@ external function find(const target : address) is {
 }
 
 (* A tuple assignment steps two `var`s at once. *)
-external function euclid(const a : uint; const b : uint) is {
-  var x : uint := a;
-  var y : uint := b;
-  for _ : uint in 0 .. 256 until y = 0 do {
-    (x, y) := (y, x % y);
+external function euclid(var a : uint; var b : uint) is {
+  for _ : uint in 0 .. 256 until b = 0 do {
+    (a, b) := (b, a % b);
   }
-  storage.gcd := x;
+  storage.gcd := a;
 }
 
 (* Effects in a loop: one event and one deferred transfer per recipient. *)
@@ -125,6 +123,6 @@ external view function total() : uint is
 - `weighted` walks a fixed list with its index. A fixed list's length is in its type, so the loop's cost is known when the contract is compiled.
 - `mark_all` walks a storage list, which can grow. Its `bound 4` makes the worst case visible, and a fifth member makes the call revert with `Panic(0x01)`. Leave the bound off and the compiler warns that the loop's gas depends on storage.
 - `find` stops as soon as `until` is true. The condition is checked before every iteration, including the first.
-- `euclid` steps two `var`s together with a tuple assignment. With `b = 0` the loop runs zero times.
+- `euclid` takes `var` parameters and steps them together with a tuple assignment. With `b = 0` the loop runs zero times.
 - `pay` and `swap_all` show effects in a loop: one event and one deferred call per iteration, in order, and a continuation that sees its own iteration's `i`.
 - Maps cannot be iterated. Keep an [iterable set](/by-example/iterable-set) when members must be listed.

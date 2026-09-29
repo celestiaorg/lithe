@@ -1,0 +1,104 @@
+---
+title: "Recursion"
+description: "Recursive algorithms written as bounded loops."
+---
+
+# Recursion
+
+A function cannot call itself. Every loop's count is fixed when it starts, and a recursive call has no such count. Each function here is the loop form of a textbook recursive definition, with the recursive form in its comment.
+
+```lithe [recursion.lithe]
+(* Recursion. A function cannot call itself: every loop's count is fixed when it
+   starts, and a recursive call has no such count. Each function here is the loop form
+   of a textbook recursive definition. The recursive form is in the comment. *)
+
+storage is record {
+  result : uint;
+}
+
+(* fact(n) = if n = 0 then 1 else n * fact(n - 1)
+   The recursion counts down from n; the loop counts up to it. *)
+pure function fact(const n : uint) : uint is {
+  var acc : uint := 1;
+  for i : uint in 0 .. n do {
+    acc := acc * (i + 1);
+  }
+} with acc
+
+(* fib(n) = if n < 2 then n else fib(n - 1) + fib(n - 2)
+   Two calls per level would repeat work; the loop carries the last two values. *)
+pure function fib(const n : uint) : uint is {
+  var (a, b) : (uint, uint) := (0, 1);
+  for _ : uint in 0 .. n do {
+    (a, b) := (b, a + b);
+  }
+} with a
+
+(* gcd(a, b) = if b = 0 then a else gcd(b, a % b)
+   Each step halves one argument at least every two rounds, so 256 rounds always suffice for
+   a `uint`. `until` ends the loop when the recursion would have. The recursion rebinds its
+   arguments on each call; `var` parameters let the loop do the same. *)
+pure function gcd(var a : uint; var b : uint) : uint is {
+  for _ : uint in 0 .. 256 until b = 0 do {
+    (a, b) := (b, a % b);
+  }
+} with a
+
+(* pow(b, e) = if e = 0 then 1 else if e % 2 = 0 then pow(b * b, e / 2) else b * pow(b, e - 1)
+   The exponent has at most 256 bits, so at most 256 halvings. *)
+pure function pow(var b : uint; var e : uint) : uint is {
+  var acc : uint := 1;
+  for _ : uint in 0 .. 256 until e = 0 do {
+    if e % 2 = 1 then { acc := acc * b; }
+    e := e / 2;
+    if e <> 0 then { b := b * b; }
+  }
+} with acc
+
+(* search(xs, x, lo, hi) = if lo >= hi then none else let mid ... in search(xs, x, lo, mid) or search(xs, x, mid + 1, hi)
+   A sorted list of 8 halves at most 3 times, so the loop runs 4 rounds at most. *)
+pure function search(const xs : list(uint, 8); const x : uint) : option(uint) is {
+  var lo : uint := 0;
+  var hi : uint := 8;
+  var found : option(uint) := None;
+  for _ : uint in 0 .. 4 until lo >= hi do {
+    const mid : uint := (lo + hi) / 2;
+    if xs[mid] = x then {
+      found := Some(mid);
+      lo := hi;
+    } else if xs[mid] < x then {
+      lo := mid + 1;
+    } else {
+      hi := mid;
+    }
+  }
+} with found
+
+(* digits(n) = if n < 10 then 1 else 1 + digits(n / 10)
+   A `uint` has at most 78 decimal digits. *)
+pure function digits(const n : uint) : uint is {
+  var count : uint := 1;
+  var rest : uint := n;
+  for _ : uint in 0 .. 78 until rest < 10 do {
+    rest := rest / 10;
+    count := count + 1;
+  }
+} with count
+
+external function run(const n : uint; const m : uint) is {
+  storage.result := fact(n) + fib(n) + gcd(n, m) + pow(n, m) + digits(n);
+}
+
+external pure function find(const xs : list(uint, 8); const x : uint) : (bool, uint) is
+  case search(xs, x) of {
+  | Some(i) -> (true, i)
+  | None -> (false, 0)
+  }
+```
+
+- `fact` and `fib` recurse on `n`, so the loop runs `n` times. The recursive form counts down; the loop counts up, carrying the values the recursion would have returned.
+- `gcd`, `pow`, and `digits` recurse until a value is exhausted. The loop's range is the most steps the type allows, `256` bits or `78` digits, and `until` ends it where the recursion would have.
+- A recursive call rebinds the function's own parameters. `var` parameters do the same in a loop, as `gcd` and `pow` show, so no separate locals are needed. Where the inputs should keep their names, `var (a, b) : (uint, uint) := ...` binds the working pair at once, as `fib` shows.
+- `search` halves a fixed list, so its range is the depth of the halving. A recursive call that reads only one branch becomes an `until` that narrows `lo` and `hi`.
+- Two recursive calls per level, as in the naive `fib`, would repeat work. The loop does not.
+- A call that would not terminate, such as `fact` with no base case, has no loop form. That is the point: the bound is written down. See [Loops](/by-example/loops) for `until` and `bound`.

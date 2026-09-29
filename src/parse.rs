@@ -2241,21 +2241,7 @@ impl<'a> Parser<'a> {
         match self.kind() {
             Kind::Const => {
                 self.bump();
-                let (name, parts) = if self.kind() == Kind::LParen {
-                    self.bump();
-                    let mut names = vec![self.ident()?];
-                    if self.kind() != Kind::Comma {
-                        return Err(self.err("a tuple pattern needs at least two names"));
-                    }
-                    while self.kind() == Kind::Comma {
-                        self.bump();
-                        names.push(self.ident()?);
-                    }
-                    self.want(Kind::RParen)?;
-                    (String::new(), names)
-                } else {
-                    (self.ident()?, Vec::new())
-                };
+                let (name, parts) = self.binding_names()?;
                 let ty = self.binding_ty()?;
                 self.want(Kind::Assign)?;
                 let expr = self.expr()?;
@@ -2272,7 +2258,7 @@ impl<'a> Parser<'a> {
             }
             Kind::Var => {
                 self.bump();
-                let name = self.ident()?;
+                let (name, parts) = self.binding_names()?;
                 let ty = self.binding_ty()?;
                 self.want(Kind::Assign)?;
                 let expr = self.expr()?;
@@ -2280,9 +2266,11 @@ impl<'a> Parser<'a> {
                     line,
                     col,
                     name,
+                    parts,
                     ty,
                     expr,
                     sym: None,
+                    part_syms: Vec::new(),
                 })
             }
             Kind::If => {
@@ -2432,6 +2420,24 @@ impl<'a> Parser<'a> {
             expr,
             syms: Vec::new(),
         })
+    }
+
+    /// One name, or the names of a `(a, b)` tuple pattern with an empty name.
+    fn binding_names(&mut self) -> Result<(String, Vec<String>), Error> {
+        if self.kind() != Kind::LParen {
+            return Ok((self.ident()?, Vec::new()));
+        }
+        self.bump();
+        let mut names = vec![self.ident()?];
+        if self.kind() != Kind::Comma {
+            return Err(self.err("a tuple pattern needs at least two names"));
+        }
+        while self.kind() == Kind::Comma {
+            self.bump();
+            names.push(self.ident()?);
+        }
+        self.want(Kind::RParen)?;
+        Ok((String::new(), names))
     }
 
     fn binding_ty(&mut self) -> Result<TypeRef, Error> {

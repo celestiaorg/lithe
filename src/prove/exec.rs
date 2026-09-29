@@ -776,6 +776,12 @@ impl<'a> Exec<'a> {
                 sym,
                 part_syms,
                 ..
+            }
+            | Stmt::Var {
+                expr,
+                sym,
+                part_syms,
+                ..
             } => {
                 let v = self.eval(st, expr, ctx)?;
                 if let Some(sym) = sym {
@@ -794,12 +800,6 @@ impl<'a> Exec<'a> {
                             None => self.bind(st, *psym, "part"),
                         }
                     }
-                }
-            }
-            Stmt::Var { expr, sym, .. } => {
-                let v = self.eval(st, expr, ctx)?;
-                if let Some(sym) = sym {
-                    st.locals.insert(*sym, v);
                 }
             }
             Stmt::AssignTuple { expr, syms, .. } => {

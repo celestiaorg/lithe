@@ -1687,8 +1687,11 @@ fn bind_stmt(stmt: &Stmt, out: &mut HashSet<String>) {
             out.extend(parts.iter().cloned());
             bind_expr(expr, out);
         }
-        Stmt::Var { name, expr, .. } => {
+        Stmt::Var {
+            name, parts, expr, ..
+        } => {
             out.insert(name.clone());
+            out.extend(parts.iter().cloned());
             bind_expr(expr, out);
         }
         Stmt::If {

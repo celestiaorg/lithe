@@ -518,9 +518,12 @@ pub(crate) enum Stmt {
         line: u32,
         col: u32,
         name: String,
+        /// Element names when this binding is `var (a, b) : (T, U)`.
+        parts: Vec<String>,
         ty: TypeRef,
         expr: Expr,
         sym: Option<usize>,
+        part_syms: Vec<usize>,
     },
     Assign {
         line: u32,

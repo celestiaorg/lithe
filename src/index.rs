@@ -2048,13 +2048,19 @@ impl<'a> Builder<'a> {
                 line,
                 col,
                 name,
+                parts,
                 ty,
                 expr,
                 sym,
+                part_syms,
             } => {
                 self.expr(expr);
                 self.type_refs(ty);
-                self.local(*line, *col, name, *sym, "var", Kind::Local);
+                if parts.is_empty() {
+                    self.local(*line, *col, name, *sym, "var", Kind::Local);
+                } else {
+                    self.locals(*line, *col, parts, part_syms, "var");
+                }
             }
             Stmt::Assign {
                 line,

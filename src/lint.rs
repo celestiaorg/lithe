@@ -457,6 +457,17 @@ fn finish(checked: &Checked, src: &str, own: &str, label: &str, acc: &Acc) -> Ve
     let toks = lex::tokenize(src).unwrap_or_default();
     // One `_` rename per function is the safe fix: a second `_` in one scope is a duplicate name.
     let mut renamed = HashSet::new();
+    // The names of a `var (a, b)` pattern share one keyword: it becomes `const` only when
+    // no name is reassigned, and is reported once.
+    let pattern = |bind: &Bind| {
+        let names: Vec<&Bind> = acc
+            .binds
+            .iter()
+            .filter(|b| (b.func, b.line, b.col) == (bind.func, bind.line, bind.col))
+            .collect();
+        (names.len() > 1).then_some(names)
+    };
+    let mut patterns = HashSet::new();
     for bind in &acc.binds {
         if ignored(&bind.name) {
             continue;
@@ -464,7 +475,18 @@ fn finish(checked: &Checked, src: &str, own: &str, label: &str, acc: &Acc) -> Ve
         // simplify: a list `var` is copied on every read, and a `var` parameter can be
         // hoisted once it is `const`, so those rewrites can change bytecode.
         // Upgrade: flag them when the before/after bytecode is proved identical.
-        if bind.var && !acc.written.contains(&bind.sym) && !list_sym(checked, bind.sym) {
+        let mut name = format!("`{}`", bind.name);
+        let mut settled = !acc.written.contains(&bind.sym) && !list_sym(checked, bind.sym);
+        if let Some(names) = pattern(bind) {
+            settled = settled
+                && names
+                    .iter()
+                    .all(|b| !acc.written.contains(&b.sym) && !list_sym(checked, b.sym))
+                && patterns.insert((bind.func, bind.line, bind.col));
+            let all: Vec<String> = names.iter().map(|b| format!("`{}`", b.name)).collect();
+            name = all.join(", ");
+        }
+        if bind.var && settled {
             let edit =
                 keyword_span(&toks, bind.line, bind.col).map(|span| (span.0, span.1, "const"));
             out.push(Finding {
@@ -472,7 +494,7 @@ fn finish(checked: &Checked, src: &str, own: &str, label: &str, acc: &Acc) -> Ve
                 line: bind.line,
                 col: bind.col,
                 rule: "prefer-const",
-                message: format!("`{}` is never reassigned", bind.name),
+                message: format!("{name} is never reassigned"),
                 hint: "replace `var` with `const`",
                 edit,
             });
@@ -725,9 +747,11 @@ fn scan_stmt(stmt: &Stmt, here: bool, acc: &mut Acc) {
             line,
             col,
             name,
+            parts,
             ty,
             expr,
             sym,
+            part_syms,
         } => {
             scan_ty(ty, acc);
             scan_expr(expr, here, acc);
@@ -744,6 +768,20 @@ fn scan_stmt(stmt: &Stmt, here: bool, acc: &mut Acc) {
                         sym: *sym,
                         var: true,
                         keyword: true,
+                    });
+                }
+                for (name, sym) in parts.iter().zip(part_syms) {
+                    if name == "_" {
+                        acc.underscored.insert(acc.func);
+                    }
+                    acc.binds.push(Bind {
+                        func: acc.func,
+                        line: *line,
+                        col: *col,
+                        name: name.clone(),
+                        sym: *sym,
+                        var: true,
+                        keyword: false,
                     });
                 }
             }
@@ -1075,6 +1113,12 @@ mod tests {
         assert!(rules(&var_src).contains(&"prefer-const"));
         let assigned = format!("{STORE}external function go() is {{\n  var x : uint := 0;\n  x := 1;\n  storage.n := x;\n}}\n");
         assert!(!rules(&assigned).contains(&"prefer-const"));
+        let half = format!("{STORE}external function go() is {{\n  var (x, y) : (uint, uint) := (0, 1);\n  x := y;\n  storage.n := x;\n}}\n");
+        assert!(!rules(&half).contains(&"prefer-const"));
+        let pair = format!("{STORE}external function go() is {{\n  var (x, y) : (uint, uint) := (0, 1);\n  storage.n := x + y;\n}}\n");
+        let found = findings_in(&pair).expect("lint");
+        let messages: Vec<&str> = found.iter().map(|f| f.message.as_str()).collect();
+        assert_eq!(messages, ["`x`, `y` is never reassigned"]);
 
         let unused = format!("{STORE}function id(const n : uint; const extra : uint) : uint is n\nexternal function go() is {{\n  storage.n := id(1, 2);\n}}\n");
         assert!(rules(&unused).contains(&"unused-binding"));

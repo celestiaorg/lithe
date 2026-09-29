@@ -63,7 +63,7 @@ Lithe is new, and being honest about the trade matters more than winning the arg
 
 - **Maturity.** Solidity has a decade of production use and many audits. Lithe does not, yet.
 - **Ecosystem.** There's no Lithe equivalent of OpenZeppelin yet. You'll write or port more yourself. The [by-example](/by-example) programs are a start.
-- **Unbounded loops.** A `for` loop's iteration count is fixed when it starts, there is no `while`, and a loop over storage is warned about unless it carries a `bound`. Some algorithms must be restructured. See [Loops](/by-example/loops).
+- **Unbounded loops.** A `for` loop's iteration count is fixed when it starts, there is no `while` and no recursion, and a loop over storage is warned about unless it carries a `bound`. Some algorithms must be restructured. See [Loops](/by-example/loops) and [Recursion](/by-example/recursion).
 - **Low-level power.** There's no inline assembly. Raw calls, `delegatecall`, `receive`, and `fallback` exist, but each is spelled out and deferred or queried like any other call. If your design depends on hand-written EVM code, Lithe doesn't fit today.
 - **Synchronous call results.** A state-changing call's result arrives in a [continuation](/language/continuations), not inline. This is a different style to learn.
 

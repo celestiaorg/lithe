@@ -78,6 +78,7 @@ const byExample = [
       { text: "Ether and time units", link: "/by-example/units" },
       { text: "If / else", link: "/by-example/if-else" },
       { text: "Loops", link: "/by-example/loops" },
+      { text: "Recursion", link: "/by-example/recursion" },
     ],
   },
   {

@@ -197,6 +197,46 @@ external function f() is {
 external function `g` cannot be called from inside the contract
 ```
 
+## Recursion
+
+A function cannot call itself, directly or through another function. Every loop in Lithe has a count fixed when it starts, and a recursive call would be a loop with no such count. Write the loop instead:
+
+```lithe rejects
+storage is record {
+  n : uint;
+}
+
+pure function fact(const n : uint) : uint is
+  if n = 0 then 1 else n * fact(n - 1)
+
+external function set(const n : uint) is {
+  storage.n := fact(n);
+}
+```
+
+```text
+recursion is not supported: iteration is bounded, write a `for` loop
+```
+
+```lithe
+storage is record {
+  n : uint;
+}
+
+pure function fact(const n : uint) : uint is {
+  var acc : uint := 1;
+  for i : uint in 0 .. n do {
+    acc := acc * (i + 1);
+  }
+} with acc
+
+external function set(const n : uint) is {
+  storage.n := fact(n);
+}
+```
+
+See [Recursion](/by-example/recursion) for more rewrites.
+
 ## Generic functions
 
 A function can take type parameters, written in parentheses before its value parameters. Every use is specialized at compile time:

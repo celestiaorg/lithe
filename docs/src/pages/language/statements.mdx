@@ -10,7 +10,7 @@ A block is a sequence of statements in braces, each ending with `;`:
 | Statement | Form |
 | --- | --- |
 | Immutable binding | `const name : type := expr;` |
-| Tuple binding | `const (a, b) : (t, u) := expr;` |
+| Tuple binding | `const (a, b) : (t, u) := expr;`, `var (a, b) : (t, u) := expr;` |
 | Mutable binding | `var name : type := expr;` |
 | Assignment | `name := expr;`, `storage.path := expr;` |
 | Call | `f(args);`, `Module.f(args);` |
@@ -25,7 +25,7 @@ A block is a sequence of statements in braces, each ending with `;`:
 
 ## Bindings
 
-`const` binds a value that never changes. `var` binds a value that `:=` can reassign, whole or in part: a record's field (`p.x := v`) or a list's element (`xs[i] := v`). Either can hold any value, records, tuples, fixed lists, and variants included. Every binding states its type, and names cannot shadow other names in scope.
+`const` binds a value that never changes. `var` binds a value that `:=` can reassign, whole or in part: a record's field (`p.x := v`) or a list's element (`xs[i] := v`). Either can hold any value, records, tuples, fixed lists, and variants included, and either can name a tuple's elements: `const (a, b) : (t, u) := e;` or `var (a, b) : (t, u) := e;`. Every binding states its type, and names cannot shadow other names in scope.
 
 ```lithe
 storage is record {
@@ -159,7 +159,7 @@ external function triangle(const n : uint) is {
 
 The loop variables are `const`, bound afresh each iteration, and typed like every other binding. `_` binds nothing. A range's ends have the loop variable's type, which can be any integer type. Maps cannot be iterated: keep an [enumerable set](/by-example/iterable-set).
 
-The count is read once, at entry. A dynamic list that the body appends to does not extend the loop. There is no `while`.
+The count is read once, at entry. A dynamic list that the body appends to does not extend the loop. There is no `while`, and a function cannot [call itself](/language/functions#recursion).
 
 ### `until`
 
@@ -209,11 +209,10 @@ for (i, amount) : (uint, uint) in amounts do {
 
 ## Tuple assignment
 
-`(a, b) := expr;` assigns each element of a tuple to a `var`, at once, so two values can be stepped together:
+`(a, b) := expr;` assigns each element of a tuple to a `var`, at once, so two values can be stepped together. `var (a, b) : (t, u) := expr;` binds them the same way:
 
 ```lithe fragment
-var x : uint := a;
-var y : uint := b;
+var (x, y) : (uint, uint) := (a, b);
 for _ : uint in 0 .. 256 until y = 0 do {
   (x, y) := (y, x % y);
 }

@@ -1321,8 +1321,7 @@ fn loop_and_branch_locals_stay_on_the_stack() {
     let src = "
 storage is record { n : uint; }
 external pure function gcd(const a : uint; const b : uint) : uint is {
-  var x : uint := a;
-  var y : uint := b;
+  var (x, y) : (uint, uint) := (a, b);
   for _ : uint in 0 .. 370 until y = 0 do {
     (x, y) := (y, x % y);
   }
@@ -1372,4 +1371,54 @@ external pure function pick(const a : uint; const b : uint) : uint is {
     }
     assert_eq!(word("pick(uint256,uint256)", &[w(5), w(3)]), w(6));
     assert_eq!(word("pick(uint256,uint256)", &[w(3), w(5)]), w(11));
+}
+
+#[test]
+fn recursion_is_rejected_and_its_loop_forms_run() {
+    let err = compile(
+        "storage is record { n : uint; }
+pure function fact(const n : uint) : uint is if n = 0 then 1 else n * fact(n - 1)
+external pure function f(const n : uint) : uint is fact(n)
+",
+    )
+    .expect_err("recursion");
+    assert!(
+        err.to_string()
+            .contains("recursion is not supported: iteration is bounded, write a `for` loop"),
+        "{err}"
+    );
+    let err = compile(
+        "storage is record { n : uint; }
+pure function even(const n : uint) : bool is if n = 0 then true else odd(n - 1)
+pure function odd(const n : uint) : bool is if n = 0 then false else even(n - 1)
+external pure function f(const n : uint) : bool is even(n)
+",
+    )
+    .expect_err("mutual recursion");
+    assert!(err.to_string().contains("recursion is not supported"), "{err}");
+
+    let src = std::fs::read_to_string(
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("docs/src/pages/by-example/recursion.mdx"),
+    )
+    .expect("recursion page");
+    let src = src.split("```lithe [recursion.lithe]\n").nth(1).expect("program");
+    let src = src.split("```").next().expect("program end");
+    let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
+    let w = Word::from_u64;
+    // fact(5) + fib(5) + gcd(5, 3) + pow(5, 3) + digits(5) = 120 + 5 + 1 + 125 + 1
+    let out = call(&runtime, "run(uint256,uint256)", &[w(5), w(3)]);
+    assert!(!out.reverted, "run");
+    assert_eq!(slot(&out.storage, 0), w(252));
+    let out = call(&runtime, "run(uint256,uint256)", &[w(0), w(12)]);
+    assert!(!out.reverted, "run zero");
+    assert_eq!(slot(&out.storage, 0), w(1 + 0 + 12 + 0 + 1));
+    let mut args: Vec<Word> = [2u64, 3, 5, 7, 11, 13, 17, 19].iter().map(|&x| w(x)).collect();
+    args.push(w(13));
+    let out = call(&runtime, "find(uint256[8],uint256)", &args);
+    assert_eq!(load_bytes(&out.returndata, 0), w(1));
+    assert_eq!(load_bytes(&out.returndata, 32), w(5));
+    args[8] = w(4);
+    let out = call(&runtime, "find(uint256[8],uint256)", &args);
+    assert_eq!(load_bytes(&out.returndata, 0), w(0));
 }
