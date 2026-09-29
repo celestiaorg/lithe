@@ -218,6 +218,9 @@ pub(crate) fn codegen(checked: &Checked, shape: &Shape) -> Result<Built, Error> 
     };
     // Plans often emit the same program, which is optimized once.
     let done = std::sync::Mutex::new(HashMap::<Arc<Emitted>, Arc<Finished>>::new());
+    // The outline sets of builds over the limit. Inlining more only grows code, so later
+    // rounds skip the sets that inline at least as much, whose builds are also the slowest.
+    let too_big = std::sync::Mutex::new(Vec::<std::collections::HashSet<usize>>::new());
     let build_all = |plans: &[Plan]| -> Result<Vec<Candidate>, Error> {
         let emitted: Vec<(Arc<Emitted>, Vec<Facet>)> = parallel_map(plans, emit)
             .into_iter()
@@ -237,6 +240,14 @@ pub(crate) fn codegen(checked: &Checked, shape: &Shape) -> Result<Built, Error> 
         for (e, f) in todo.into_iter().zip(finished) {
             done.insert(e.clone(), Arc::new(f?));
         }
+        let mut too_big = too_big.lock().unwrap_or_else(|e| e.into_inner());
+        too_big.extend(
+            plans
+                .iter()
+                .zip(&emitted)
+                .filter(|(_, (e, _))| done[e].bytes > limit)
+                .map(|(p, _)| p.outline.clone()),
+        );
         Ok(plans
             .iter()
             .zip(emitted)
@@ -266,8 +277,14 @@ pub(crate) fn codegen(checked: &Checked, shape: &Shape) -> Result<Built, Error> 
         outlines.push(Default::default());
     }
     let variant_moves = |p: &Plan| -> Vec<Vec<Move>> {
+        let too_big = too_big.lock().unwrap_or_else(|e| e.into_inner());
         let mut dims = vec![
-            outlines.iter().filter(|o| **o != p.outline).cloned().map(Move::Outline).collect(),
+            outlines
+                .iter()
+                .filter(|o| **o != p.outline && !too_big.iter().any(|b| o.is_subset(b)))
+                .cloned()
+                .map(Move::Outline)
+                .collect(),
             slices.iter().filter(|s| **s != p.shared_slice).copied().map(Move::Slice).collect(),
             vec![Move::CacheSlots(!p.cache_slots)],
             vec![Move::Tight(!p.tight)],
