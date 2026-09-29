@@ -7,6 +7,7 @@ impl<'a> Gen<'a> {
             plan,
             shape,
             needs: Vec::new(),
+            entry_labels: Vec::new(),
             inlined: HashMap::new(),
             funcs: HashMap::new(),
             shared: false,
@@ -62,15 +63,21 @@ impl<'a> Gen<'a> {
             bytes_rep: None,
             dyn_key: None,
             slot_binds: HashMap::new(),
+            key_names: HashMap::new(),
             const_params: HashMap::new(),
             shared_temps: std::collections::HashSet::new(),
+            func_ctx: None,
+            func_calls: std::collections::HashSet::new(),
             transient_slot: false,
             data: Vec::new(),
             peer_built: HashMap::new(),
             literals: HashMap::new(),
             returned: None,
             slot_cache: HashMap::new(),
+            val_cache: HashMap::new(),
+            kept_store: false,
             cache_words: Vec::new(),
+            leaf_words: Vec::new(),
             failing: 0,
             ret_scratch: 0,
             args_buf: 0,
@@ -91,6 +98,7 @@ impl<'a> Gen<'a> {
             revert_kinds: 0,
             revert_head: None,
             branch: 0,
+            top_branch: 0,
             body: None,
             bodies: 0,
             loop_syms: Vec::new(),
@@ -227,28 +235,44 @@ impl<'a> Gen<'a> {
     pub(super) fn note_mem(&mut self, addr: i32) {
         let ix = (addr >> REGION_SHIFT) as usize - 1;
         let off = (addr & ((1 << REGION_SHIFT) - 1)) as u32;
-        let body = if self.shared {
-            None
-        } else {
-            self.body.as_ref().map(|b| b.id)
-        };
+        let user = self.region_user();
+        let shared = self.shared;
         let space = &mut self.spaces[ix];
         space.heat += 1;
         space.extent = space.extent.max(off + 32);
-        space.users = match (std::mem::replace(&mut space.users, Users::Nobody), body) {
+        space.users = match (std::mem::replace(&mut space.users, Users::Nobody), user) {
             (Users::Everyone, _) | (_, None) => Users::Everyone,
+            (Users::Nobody, Some(id)) if shared => Users::Shared([id].into_iter().collect()),
             (Users::Nobody, Some(id)) => Users::Bodies([id].into_iter().collect()),
-            (Users::Bodies(mut ids), Some(id)) => {
+            (Users::Bodies(mut ids), Some(id)) if !shared => {
                 ids.insert(id);
                 Users::Bodies(ids)
+            }
+            (Users::Bodies(mut ids) | Users::Shared(mut ids), Some(id)) => {
+                ids.insert(id);
+                Users::Shared(ids)
             }
         };
     }
 
-    /// Outline a function when its copies cost more than one copy plus a call per use.
+    /// The body, or the function compiled once, whose code is being emitted.
+    pub(super) fn region_user(&self) -> Option<usize> {
+        if self.shared {
+            self.func_ctx
+        } else {
+            self.body.as_ref().map(|b| b.id)
+        }
+    }
+
+    /// Outline a function when its copies cost more than one copy plus a call per use, the
+    /// gas each run of a call adds priced at `asm::byte_gas`. One transaction runs one
+    /// body, so the body that runs the calls most counts.
     pub(super) fn plan(&self) -> Plan {
         let mut outline = std::collections::HashSet::new();
-        for (&idx, &(calls, bytes)) in &self.inlined {
+        let mut looped = std::collections::HashSet::new();
+        for (&idx, (calls, bytes, runs)) in &self.inlined {
+            let (calls, bytes) = (*calls, *bytes);
+            let runs = runs.values().fold(0.0, |a: f64, &b| a.max(b));
             if calls < 2 || !self.outline_safe(idx, &mut Vec::new()) {
                 continue;
             }
@@ -256,8 +280,12 @@ impl<'a> Gen<'a> {
             let params = self.checked.prog.funcs[idx].params.len();
             let inline = calls * bytes;
             let shared = bytes + 3 + calls * (8 + 3 * params);
-            if inline > shared {
+            let slower = runs * (CALL_GAS + ARG_GAS * params as f64) / asm::byte_gas();
+            if inline as f64 > shared as f64 + slower {
                 outline.insert(idx);
+                if runs > 1.0 {
+                    looped.insert(idx);
+                }
             }
         }
         // A helper costs its body once plus a call per site; one site stays inline.
@@ -266,7 +294,10 @@ impl<'a> Gen<'a> {
             cache_slots: false,
             tight: false,
             hold_dups: false,
+            frames: false,
+            sink: false,
             outline,
+            looped,
             shared_bytes,
             shared_decode: self.decode_sites >= 2,
             shared_value: self.value_sites.map(|n| n >= 2),
@@ -505,6 +536,29 @@ impl<'a> Gen<'a> {
                 self.raised_syms(reason, out);
             }
             Stmt::Fail { reason, .. } => self.raised_syms(reason, out),
+        }
+    }
+
+    /// Every local a statement assigns.
+    pub(super) fn written_syms(st: &Stmt, out: &mut Vec<usize>) {
+        match st {
+            Stmt::Assign { root, .. } => out.extend(root),
+            Stmt::AssignTuple { syms, .. } => out.extend(syms),
+            Stmt::If {
+                then_body,
+                else_body,
+                ..
+            } => {
+                for s in then_body.iter().chain(else_body) {
+                    Self::written_syms(s, out);
+                }
+            }
+            Stmt::For { body, .. } => {
+                for s in body {
+                    Self::written_syms(s, out);
+                }
+            }
+            _ => {}
         }
     }
 
@@ -779,7 +833,6 @@ impl<'a> Gen<'a> {
                     Sub::JournalStore => (2, 0),
                     Sub::JournalFlush => (0, 0),
                     Sub::AllocBlob => (1, 1),
-                    Sub::BytesSpan => (1, 2),
                     Sub::BytesSlice(end) => (2 + usize::from(end), 1),
                     Sub::StoreBytes => (2, 0),
                     Sub::LoadBytes => (1, 1),
@@ -798,7 +851,8 @@ impl<'a> Gen<'a> {
                     Sub::RevertAbi => (3, 0),
                     Sub::ShortBlob => (1, 1),
                     Sub::BlobsAbi => (1, 1),
-                    Sub::DecodeBytes => (1, 1),
+                    Sub::DecodeBytes | Sub::CopyCdBytes => (1, 1),
+                    Sub::StoredTail => (3, 1),
                     Sub::BlobsEq => (2, 1),
                     Sub::BytesEq => (2, 1),
                     Sub::BytesValue(_) => (2, 1),
@@ -823,8 +877,10 @@ impl<'a> Gen<'a> {
             &calls,
             self.plan.tight,
             self.plan.hold_dups,
+            self.plan.sink,
         );
-        // String helpers reach storage through a slot they are given.
+        // String helpers reach storage through a slot they are given, and others write
+        // slots they are given, which may be a fixed list's.
         let opaque: std::collections::HashSet<u32> = self
             .funcs
             .values()
@@ -832,7 +888,7 @@ impl<'a> Gen<'a> {
             .chain(
                 self.subs
                     .iter()
-                    .filter(|(sub, _, _)| matches!(sub, Sub::StoreBytes | Sub::LoadBytes))
+                    .filter(|(sub, _, _)| matches!(sub, Sub::LoadBytes) || sub.writes_storage())
                     .map(|&(_, label, _)| label),
             )
             .collect();
@@ -840,10 +896,12 @@ impl<'a> Gen<'a> {
     }
 
     /// A word written only by `CALLDATALOAD` of a constant offset is read from calldata instead.
-    /// Calldata cannot change, and the one store precedes every load of its word.
+    /// Calldata cannot change, and the one store precedes every load of its word. A word
+    /// the read also shifts stays when it is loaded more than once.
     fn read_calldata(&mut self, tracked: &dyn Fn(u32) -> bool) {
         let mut stores: HashMap<u32, Vec<usize>> = HashMap::new();
         let mut first_load: HashMap<u32, usize> = HashMap::new();
+        let mut loads: HashMap<u32, usize> = HashMap::new();
         for i in 0..self.code.len() {
             let Inst::Mem(addr) = self.code[i] else {
                 continue;
@@ -855,6 +913,7 @@ impl<'a> Gen<'a> {
                 Some(Inst::Op(MSTORE)) => stores.entry(addr).or_default().push(i),
                 Some(Inst::Op(MLOAD)) => {
                     first_load.entry(addr).or_insert(i);
+                    *loads.entry(addr).or_default() += 1;
                 }
                 _ => {}
             }
@@ -882,7 +941,10 @@ impl<'a> Gen<'a> {
             if first_load.get(addr).is_some_and(|l| l < i) {
                 continue;
             }
-            if let Some(read) = read_at(&self.code, *i) {
+            // A read that also shifts costs more than a load from the word it was stored in.
+            if let Some(read) = read_at(&self.code, *i)
+                .filter(|read| read.len() < 4 || loads.get(addr).is_none_or(|&n| n < 2))
+            {
                 from.insert(*addr, read);
             }
         }
@@ -937,8 +999,45 @@ impl<'a> Gen<'a> {
                 .then(a.cmp(&b))
         });
         order.sort_by_key(|&i| self.spaces[i].region != Region::Base64);
+        // Each user and the functions that can run while it does.
+        let mut reach: HashMap<usize, std::collections::HashSet<usize>> = HashMap::new();
+        for &(from, to) in &self.func_calls {
+            reach.entry(from).or_default().insert(to);
+        }
+        loop {
+            let mut grew = false;
+            let keys: Vec<usize> = reach.keys().copied().collect();
+            for k in keys {
+                let next: Vec<usize> = reach[&k]
+                    .iter()
+                    .filter_map(|t| reach.get(t))
+                    .flatten()
+                    .copied()
+                    .filter(|t| !reach[&k].contains(t))
+                    .collect();
+                grew |= !next.is_empty();
+                reach.get_mut(&k).expect("key").extend(next);
+            }
+            if !grew {
+                break;
+            }
+        }
+        let anywhere = reach.get(&usize::MAX).cloned().unwrap_or_default();
+        let runs = |a: usize, b: usize| reach.get(&a).is_some_and(|r| r.contains(&b));
+        let together = |a: usize, b: usize| {
+            a == b || anywhere.contains(&a) || anywhere.contains(&b) || runs(a, b) || runs(b, a)
+        };
+        let frames = self.plan.frames;
         let clashes = |x: &Users, y: &Users| match (x, y) {
             (Users::Bodies(a), Users::Bodies(b)) => a.intersection(b).next().is_some(),
+            (Users::Bodies(_), Users::Shared(_)) | (Users::Shared(_), Users::Bodies(_))
+                if !frames =>
+            {
+                true
+            }
+            (Users::Bodies(a) | Users::Shared(a), Users::Bodies(b) | Users::Shared(b)) => {
+                a.iter().any(|&p| b.iter().any(|&q| together(p, q)))
+            }
             (Users::Nobody, _) | (_, Users::Nobody) => false,
             _ => true,
         };
@@ -1004,7 +1103,7 @@ impl<'a> Gen<'a> {
             .spaces
             .iter()
             .filter_map(|s| match &s.users {
-                Users::Bodies(ids) => Some(ids.iter().copied()),
+                Users::Bodies(ids) | Users::Shared(ids) => Some(ids.iter().copied()),
                 _ => None,
             })
             .flatten()
@@ -1024,7 +1123,7 @@ impl<'a> Gen<'a> {
         for &i in &order {
             let end = base[i] + lens[i];
             match &self.spaces[i].users {
-                Users::Bodies(ids) => {
+                Users::Bodies(ids) | Users::Shared(ids) => {
                     for id in ids {
                         let b = bodies.binary_search(id).expect("listed");
                         peak[b] = peak[b].max(end);
@@ -1042,8 +1141,11 @@ impl<'a> Gen<'a> {
         // between bodies uses never move up: any body may touch them.
         let limit: Vec<(u64, u64)> = (0..n)
             .map(|i| match &self.spaces[i].users {
-                Users::Bodies(ids) => (
-                    u64::MAX,
+                Users::Bodies(ids) | Users::Shared(ids) => (
+                    match self.spaces[i].users {
+                        Users::Shared(_) => base[i],
+                        _ => u64::MAX,
+                    },
                     ids.iter()
                         .map(|id| peak[bodies.binary_search(id).expect("listed")])
                         .min()

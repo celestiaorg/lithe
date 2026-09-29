@@ -498,3 +498,57 @@ fn zero_values_compile_to_no_value() {
     // A value that is not a literal zero is still sent.
     assert_ne!(build("external function f(const to : address; const d : bytes; const v : uint) is { defer Evm.call(to, d) with value = v; }"), none);
 }
+
+/// A `bytes` argument only asked for its length, or emitted, stays in calldata, checked as
+/// decoding it would be: it reverts exactly when a decoded one does, with the same length
+/// and log.
+#[test]
+fn length_only_bytes_argument_checks_like_decoding() {
+    let src = "\
+storage is record { x : uint; }
+external view function lens(const data : bytes) : uint is data.length
+external view function empty(const data : bytes) : bool is data.length = 0
+external view function dec(const data : bytes) : bytes is data
+view function size_of(const d : bytes) : uint is d.length
+external view function via(const data : bytes) : uint is size_of(data)
+anonymous event Noted of record { indexed id : uint; note : bytes; }
+external function note(const data : bytes) is { emit Noted { id = 1; note = data; }; }
+external function copied(const data : bytes) is {
+  const kept : bytes := data;
+  emit Noted { id = 1; note = kept; };
+}
+";
+    let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
+    let good = bytes_arg("dec(bytes)", &[], b"hello");
+    let mut cases = vec![good.clone(), good[..good.len() - 1].to_vec(), good[..36].to_vec()];
+    for at in [4, 36] {
+        for bad in [0x1000, u64::MAX, 3, 0x40, 0] {
+            let mut data = good.clone();
+            data[at..at + 32].copy_from_slice(&Word::from_u64(bad).to_be_bytes());
+            cases.push(data);
+        }
+    }
+    for data in cases {
+        let with = |sig: &str| {
+            let mut d = selector(sig).to_vec();
+            d.extend(&data[4..]);
+            exec(&runtime, &d, HashMap::new(), Word::from_u64(1), Word::from_u64(0), Word::from_u64(0))
+                .expect("run")
+        };
+        let (dec, lens, empty) = (with("dec(bytes)"), with("lens(bytes)"), with("empty(bytes)"));
+        let (note, copied) = (with("note(bytes)"), with("copied(bytes)"));
+        let via = with("via(bytes)");
+        assert_eq!(note.reverted, copied.reverted, "{}", hex(&data));
+        assert_eq!(via.reverted, dec.reverted, "{}", hex(&data));
+        assert_eq!(note.detail, copied.detail, "{}", hex(&data));
+        assert_eq!(lens.reverted, dec.reverted, "{}", hex(&data));
+        assert_eq!(empty.reverted, dec.reverted, "{}", hex(&data));
+        if !dec.reverted {
+            let len = dec.returndata[32..64].to_vec();
+            assert_eq!(lens.returndata, len, "{}", hex(&data));
+            assert_eq!(via.returndata, len, "{}", hex(&data));
+            let zero = Word::from_be_bytes(len.try_into().unwrap()).is_zero();
+            assert_eq!(empty.returndata[31] == 1, zero, "{}", hex(&data));
+        }
+    }
+}

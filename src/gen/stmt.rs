@@ -13,6 +13,48 @@ impl<'a> Gen<'a> {
         result
     }
 
+    /// Jumps to `target` when `cond` is `when`, and falls through otherwise. An `and` or `or`
+    /// that must not evaluate its right side eagerly jumps from each side, not from a bool.
+    pub(super) fn branch_on(&mut self, cond: &Expr, target: u32, when: bool) -> Result<(), Error> {
+        match cond {
+            Expr::Unary {
+                op: UnOp::Not,
+                expr,
+                ..
+            } => return self.branch_on(expr, target, !when),
+            Expr::Binary {
+                op: op @ (BinOp::And | BinOp::Or),
+                left,
+                right,
+                ..
+            } if !self.eager_ok(right) => {
+                // The left side alone decides `and` when false and `or` when true.
+                let decides = *op == BinOp::Or;
+                let skip = (decides != when).then(|| self.fresh());
+                self.branch_on(left, skip.unwrap_or(target), decides)?;
+                self.branch += 1;
+                let mark = self.facts.len();
+                self.assume(left, !decides);
+                let right = self.branch_on(right, target, when);
+                self.facts.truncate(mark);
+                self.branch -= 1;
+                right?;
+                if let Some(skip) = skip {
+                    self.jumpdest(skip);
+                }
+                return Ok(());
+            }
+            _ => {}
+        }
+        self.compile_value(cond)?;
+        if !when {
+            self.op(ISZERO);
+        }
+        self.push_label(target);
+        self.op(JUMPI);
+        Ok(())
+    }
+
     /// Only an `if`'s branches, an inlined call's body, and a `defer` see whether they are
     /// the last thing to run; everything nested in any other statement is not.
     pub(super) fn compile_stmt(&mut self, s: &Stmt) -> Result<(), Error> {
@@ -140,6 +182,17 @@ impl<'a> Gen<'a> {
                 let down = !mirrored
                     && matches!(iter, ForIter::Range { lo, .. }
                         if matches!(lo, Expr::Lit { lit: Lit::Uint(w) | Lit::Int(w, _), .. } if w.is_zero()));
+                // With the counter unread, `[end, p]` walks the elements' words or slots
+                // themselves: `p` starts at the first and steps by one element.
+                let packed_elem = elem.and_then(|e| self.packed(self.checked.syms[e].ty));
+                let step = match direct_list {
+                    Some((_, _, true)) if packed_elem.is_some() => None,
+                    Some((_, _, true)) => Some(1u64),
+                    Some((sym, _, false)) if !self.checked.syms[sym].mutable => Some(32),
+                    Some(_) => None,
+                    None => cd_list.map(|_| 32),
+                };
+                let walk = step.filter(|_| !mirrored && elem.is_some());
                 match iter {
                     ForIter::Range { hi, .. } if down => {
                         self.compile_value(hi)?;
@@ -166,7 +219,9 @@ impl<'a> Gen<'a> {
                                 self.push_u64(u64::from(n));
                             }
                         }
-                        self.op(PUSH0);
+                        if walk.is_none() {
+                            self.op(PUSH0);
+                        }
                     }
                 }
                 // `bound n`: more iterations than that is a broken invariant.
@@ -196,7 +251,7 @@ impl<'a> Gen<'a> {
                             self.jumpdest(empty);
                         }
                         ForIter::List(_) => {
-                            self.op(DUP1 + 1);
+                            self.op(if walk.is_some() { DUP1 } else { DUP1 + 1 });
                             self.push_u64(*cap);
                             self.op(LT);
                             self.revert_if_panic(0x01)?;
@@ -207,10 +262,10 @@ impl<'a> Gen<'a> {
                     if self.is_dynamic(self.peel_nominal(self.checked.syms[e].ty)) {
                         let mut other = false;
                         for st in body.iter() {
-                            self.stmt_uses(st, e, &mut other);
+                            self.stmt_uses(st, e, None, &mut other);
                         }
                         if let Some(c) = until {
-                            self.expr_uses(c, e, &mut other);
+                            self.expr_uses(c, e, None, &mut other);
                         }
                         if !other {
                             self.header_locals.insert(e);
@@ -220,8 +275,44 @@ impl<'a> Gen<'a> {
                 let list_base = self.temp();
                 if let Some((sym, leaf, true)) = direct_list {
                     self.stored_list_base(sym, leaf);
-                    self.mstore_off(list_base);
+                    if walk.is_none() {
+                        self.mstore_off(list_base);
+                    }
                 }
+                if let Some(step) = walk {
+                    match (cd_list, direct_list) {
+                        (Some(list), _) | (None, Some((list, _, false))) => {
+                            self.mload(self.local[list]);
+                            self.push_u64(32);
+                            self.op(ADD);
+                        }
+                        _ => {}
+                    }
+                    // `[len, first]` becomes `[first + len * step, first]`.
+                    self.op(SWAP1);
+                    if step > 1 {
+                        self.push_u64(step.trailing_zeros().into());
+                        self.op(SHL);
+                    }
+                    self.op(DUP1 + 1);
+                    self.op(ADD);
+                    self.op(SWAP1);
+                }
+                // A slot or value kept from before the loop is stale once the body rewrites
+                // its key, and a value once the body may write storage.
+                let mut written = Vec::new();
+                for st in body.iter() {
+                    Self::written_syms(st, &mut written);
+                }
+                self.forget_keys(&written);
+                let stores =
+                    body.iter().any(|st| self.stmt_any(st, &|n| self.stores(n), &mut Vec::new()));
+                if stores {
+                    self.forget_stored_values();
+                }
+                written.extend(declared.iter().copied());
+                self.hoist_lists(body, &written, !stores)?;
+                self.hoist_map_slots(body, &written)?;
                 let top = self.fresh();
                 let done = self.fresh();
                 self.jumpdest(top);
@@ -243,6 +334,20 @@ impl<'a> Gen<'a> {
                 self.branch += 1;
                 self.loop_syms.push(declared.clone());
                 self.loop_counters.push(counter);
+                let mark = self.facts.len();
+                let counter_expr = Expr::Ident {
+                    line: *line,
+                    col: *col,
+                    name: String::new(),
+                    sym: Some(counter),
+                    builtin: None,
+                    ty: self.checked.syms[counter].ty,
+                };
+                match (iter, length) {
+                    (ForIter::Range { lo, hi }, _) => self.assume_counter(counter_expr, Some(lo), hi),
+                    (ForIter::List(_), Some(len)) => self.assume_counter(counter_expr, None, len),
+                    _ => {}
+                }
                 // `until` that does not read the element is checked before the element is
                 // read, so the iteration it ends never touches the list.
                 let reads_elem = match (until, *elem) {
@@ -256,9 +361,7 @@ impl<'a> Gen<'a> {
                 let result = (|| -> Result<(), Error> {
                     let check = |g: &mut Self| -> Result<(), Error> {
                         if let Some(c) = until {
-                            g.compile_value(c)?;
-                            g.push_label(done);
-                            g.op(JUMPI);
+                            g.branch_on(c, done, true)?;
                         }
                         Ok(())
                     };
@@ -272,12 +375,14 @@ impl<'a> Gen<'a> {
                             // Element `i` of a calldata list is the word at `off + 32 + 32i`.
                             let word = self.peel_nominal(self.checked.syms[elem].ty);
                             self.op(DUP1);
-                            self.push_u64(32);
-                            self.op(MUL);
-                            self.mload(self.local[list]);
-                            self.op(ADD);
-                            self.push_u64(32);
-                            self.op(ADD);
+                            if walk.is_none() {
+                                self.push_u64(32);
+                                self.op(MUL);
+                                self.mload(self.local[list]);
+                                self.op(ADD);
+                                self.push_u64(32);
+                                self.op(ADD);
+                            }
                             self.cd_load();
                             if self.cd_lazy.contains(&list) {
                                 self.check_word(self.checked.syms[elem].ty, &|g: &mut Self| {
@@ -296,19 +401,23 @@ impl<'a> Gen<'a> {
                                 self.packed_at(pack, per);
                                 self.packed_load(pack, false);
                             } else if storage {
-                                self.mload(list_base);
-                                self.op(ADD);
+                                if walk.is_none() {
+                                    self.mload(list_base);
+                                    self.op(ADD);
+                                }
                                 self.load_slot(
                                     self.is_dynamic(self.peel_nominal(self.checked.syms[elem].ty))
                                         && !self.header_locals.contains(&elem),
                                 );
                             } else {
-                                self.push_u64(32);
-                                self.op(MUL);
-                                self.mload(self.local[sym]);
-                                self.op(ADD);
-                                self.push_u64(32);
-                                self.op(ADD);
+                                if walk.is_none() {
+                                    self.push_u64(32);
+                                    self.op(MUL);
+                                    self.mload(self.local[sym]);
+                                    self.op(ADD);
+                                    self.push_u64(32);
+                                    self.op(ADD);
+                                }
                                 self.op(MLOAD);
                             }
                             self.mstore_off(self.local[elem]);
@@ -324,11 +433,12 @@ impl<'a> Gen<'a> {
                     }
                     self.compile_stmts(body)
                 })();
+                self.facts.truncate(mark);
                 self.loop_counters.pop();
                 self.loop_syms.pop();
-                self.branch -= 1;
+                self.leave_branch();
                 result?;
-                self.push_u64(1);
+                self.push_u64(walk.unwrap_or(1));
                 if down {
                     self.op(SWAP1);
                     self.op(SUB);
@@ -346,19 +456,13 @@ impl<'a> Gen<'a> {
             }
             Stmt::Assert { cond, reason, .. } => {
                 if let Some(label) = self.constant_raise(reason) {
-                    self.compile_value(cond)?;
-                    self.op(ISZERO);
-                    self.push_label(label);
-                    self.op(JUMPI);
+                    self.branch_on(cond, label, false)?;
                     self.assume(cond, true);
                     return Ok(());
                 }
                 let ok = self.fresh();
                 let bad = self.fresh();
-                self.compile_value(cond)?;
-                self.op(ISZERO);
-                self.push_label(bad);
-                self.op(JUMPI);
+                self.branch_on(cond, bad, false)?;
                 self.push_label(ok);
                 self.op(JUMP);
                 self.jumpdest(bad);
@@ -392,10 +496,7 @@ impl<'a> Gen<'a> {
             } => {
                 let else_l = self.fresh();
                 let end_l = self.fresh();
-                self.compile_value(cond)?;
-                self.op(ISZERO);
-                self.push_label(else_l);
-                self.op(JUMPI);
+                self.branch_on(cond, else_l, false)?;
                 self.branch += 1;
                 let mark = self.facts.len();
                 self.assume(cond, true);
@@ -409,7 +510,7 @@ impl<'a> Gen<'a> {
                 self.tail = tail;
                 self.compile_stmts(else_body)?;
                 self.facts.truncate(mark);
-                self.branch -= 1;
+                self.leave_branch();
                 self.jumpdest(end_l);
                 Ok(())
             }
@@ -888,6 +989,11 @@ impl<'a> Gen<'a> {
     }
 
     fn store_expr(&mut self, sym: usize, expr: &Expr) -> Result<(), Error> {
+        // A local of code compiled once is only read there, so promotion may hold it.
+        if self.shared && self.local[sym] >= 0 {
+            self.shared_temps
+                .insert((self.local[sym] >> REGION_SHIFT) as usize - 1);
+        }
         self.store_value_of(sym, expr)?;
         if self.checked.syms[sym].mutable && !self.owned(expr) {
             self.own_lists(self.local[sym], self.checked.syms[sym].ty)?;
@@ -1115,12 +1221,24 @@ impl<'a> Gen<'a> {
     }
 
     pub(super) fn compile_call(&mut self, idx: usize, args: &[Expr]) -> Result<(), Error> {
+        self.compile_call_with(idx, args, false, |g| g.func_body(idx))
+    }
+
+    /// `compile_call`, with `body` compiling the inlined body. An `always` call is inlined
+    /// even when the plan outlines the function, and is not a site the plan counts.
+    pub(super) fn compile_call_with(
+        &mut self,
+        idx: usize,
+        args: &[Expr],
+        always: bool,
+        body: impl FnOnce(&mut Self) -> Result<(), Error>,
+    ) -> Result<(), Error> {
         let tail = std::mem::replace(&mut self.tail, false);
         if self.compiling.contains(&idx) {
             let f = &self.checked.prog.funcs[idx];
             return Err(error(f.line, f.col, "recursion is not supported"));
         }
-        let inline = !self.plan.outline.contains(&idx);
+        let inline = always || !self.plan.outline.contains(&idx);
         let aliased = self.bind_params(idx, args, inline)?;
         if !inline {
             return self.call_func(idx);
@@ -1139,12 +1257,12 @@ impl<'a> Gen<'a> {
         }
         // An inlined body that ends the caller's ends it too, unless a value follows it.
         self.tail = tail && self.checked.prog.funcs[idx].tail.is_none();
-        let result = self.inline_body(idx, |g| g.func_body(idx));
+        let result = self.inline_body(idx, !always, body);
         self.tail = false;
         for (sym, _) in consts {
             self.const_params.remove(&sym);
         }
-        self.unalias(aliased);
+        self.unalias(idx, aliased);
         result
     }
 
@@ -1169,10 +1287,10 @@ impl<'a> Gen<'a> {
         }
     }
 
-    /// Stores each argument in its parameter's words. An inlined call instead reads an
-    /// entrypoint's constant parameter from its word, which later reads from calldata, when
-    /// it is passed as a constant parameter. Returns the parameters it aliased, with their
-    /// own words.
+    /// Stores each argument in its parameter's words. An inlined call instead reads a
+    /// constant static local passed as a constant parameter from the local's own word; an
+    /// entrypoint's parameter's word later reads from calldata. Returns the parameters it
+    /// aliased, with their own words.
     fn bind_params(
         &mut self,
         idx: usize,
@@ -1182,32 +1300,12 @@ impl<'a> Gen<'a> {
         let params = self.checked.prog.funcs[idx].params.clone();
         let mut stacked: Vec<(usize, u32)> = Vec::new();
         let mut aliased = Vec::new();
-        let alias_ok = inline && self.loop_syms.is_empty();
         // A continuation is compiled after the body, when the alias is gone.
-        let later = std::cell::RefCell::new(Vec::new());
-        if alias_ok {
-            let conts = |node: Node<'_>| {
-                if let Node::Stmt(Stmt::Defer {
-                    then: Some(then), ..
-                }) = node
-                {
-                    for arm in then.arms() {
-                        for st in &arm.stmts {
-                            self.stmt_syms(st, &mut later.borrow_mut());
-                        }
-                    }
-                }
-                false
-            };
-            let f = &self.checked.prog.funcs[idx];
-            for st in &f.stmts {
-                self.stmt_any(st, &conts, &mut Vec::new());
-            }
-            if let Some(tail) = &f.tail {
-                self.expr_any(tail, &conts, &mut Vec::new());
-            }
-        }
-        let later = later.into_inner();
+        let later = if inline {
+            self.continuation_syms(idx)
+        } else {
+            Vec::new()
+        };
         for (arg, param) in args.iter().zip(&params) {
             let Some(sym) = param.sym else { continue };
             if self.checked.slot_syms.contains_key(&sym) {
@@ -1237,13 +1335,36 @@ impl<'a> Gen<'a> {
             } = arg
             {
                 let info = &self.checked.syms[*from];
-                let plain = self.cd_words.contains(from)
-                    && !info.mutable
-                    && self.checked.types[info.ty].words == n;
-                if alias_ok && plain && !self.checked.syms[sym].mutable && !later.contains(&sym) {
+                if inline && !self.checked.syms[sym].mutable && !info.storage {
+                    let name = self.key_names.get(from).copied().unwrap_or(*from);
+                    self.key_names.insert(sym, name);
+                }
+                if inline && !self.checked.syms[sym].mutable {
+                    if self.cd_bytes.contains(from) {
+                        self.cd_bytes.insert(sym);
+                        self.mload(self.local[*from]);
+                        stacked.push((sym, 1));
+                        self.cd_trees.insert(sym);
+                        continue;
+                    }
+                    if self.cd_trees.contains(from) {
+                        self.cd_trees.insert(sym);
+                    }
+                    if self.cd_lists.contains(from) {
+                        self.cd_lists.insert(sym);
+                    }
+                    if self.cd_lazy.contains(from) {
+                        self.cd_lazy.insert(sym);
+                    }
+                }
+                let plain = !info.mutable
+                    && self.checked.types[info.ty].words == n
+                    && (self.cd_words.contains(from)
+                        || self.local[*from] >= 0 && !self.is_dynamic(info.ty));
+                if inline && plain && !self.checked.syms[sym].mutable && !later.contains(&sym) {
                     aliased.push((sym, self.local[sym]));
                     self.local[sym] = self.local[*from];
-                    self.slot_cache.retain(|_, (_, deps)| !deps.contains(&sym));
+                    self.forget_keys(&[sym]);
                     continue;
                 }
             }
@@ -1279,17 +1400,53 @@ impl<'a> Gen<'a> {
         Ok(aliased)
     }
 
-    fn unalias(&mut self, aliased: Vec<(usize, i32)>) {
+    fn unalias(&mut self, idx: usize, aliased: Vec<(usize, i32)>) {
         for (sym, word) in aliased.into_iter().rev() {
             self.local[sym] = word;
-            self.slot_cache.retain(|_, (_, deps)| !deps.contains(&sym));
+            self.forget_keys(&[sym]);
         }
+        for param in &self.checked.prog.funcs[idx].params {
+            if let Some(sym) = param.sym {
+                self.key_names.remove(&sym);
+                self.cd_trees.remove(&sym);
+                self.cd_bytes.remove(&sym);
+                self.cd_lists.remove(&sym);
+                self.cd_lazy.remove(&sym);
+            }
+        }
+    }
+
+    /// The symbols a function's continuations read.
+    pub(super) fn continuation_syms(&self, idx: usize) -> Vec<usize> {
+        let later = std::cell::RefCell::new(Vec::new());
+        let conts = |node: Node<'_>| {
+            if let Node::Stmt(Stmt::Defer {
+                then: Some(then), ..
+            }) = node
+            {
+                for arm in then.arms() {
+                    for st in &arm.stmts {
+                        self.stmt_syms(st, &mut later.borrow_mut());
+                    }
+                }
+            }
+            false
+        };
+        let f = &self.checked.prog.funcs[idx];
+        for st in &f.stmts {
+            self.stmt_any(st, &conts, &mut Vec::new());
+        }
+        if let Some(tail) = &f.tail {
+            self.expr_any(tail, &conts, &mut Vec::new());
+        }
+        later.into_inner()
     }
 
     /// Compiles a call's body in place, noting its size for the outlining plan.
     fn inline_body(
         &mut self,
         idx: usize,
+        count: bool,
         body: impl FnOnce(&mut Self) -> Result<(), Error>,
     ) -> Result<(), Error> {
         let start = self.code.len();
@@ -1298,10 +1455,16 @@ impl<'a> Gen<'a> {
         let result = body(self);
         self.compiling.pop();
         self.facts.truncate(mark);
+        if !count {
+            return result;
+        }
         let bytes: usize = self.code[start..].iter().map(inst_bytes).sum();
-        let entry = self.inlined.entry(idx).or_insert((0, 0));
+        let runs = asm::LOOP_RUNS.powi(self.loop_syms.len().min(3) as i32);
+        let body = self.body.as_ref().map_or(usize::MAX, |b| b.id);
+        let entry = self.inlined.entry(idx).or_default();
         entry.0 += 1;
         entry.1 = entry.1.max(bytes);
+        *entry.2.entry(body).or_default() += runs;
         result
     }
 
@@ -1345,11 +1508,11 @@ impl<'a> Gen<'a> {
                 let aliased = self.bind_params(idx, args, true)?;
                 let f = &self.checked.prog.funcs[idx];
                 let (stmts, tail) = (f.stmts.clone(), f.tail.clone().expect("checked"));
-                let result = self.inline_body(idx, |g| {
+                let result = self.inline_body(idx, true, |g| {
                     stmts.iter().try_for_each(|s| g.compile_stmt(s))?;
                     g.push_record_words(&tail).map(|_| ())
                 });
-                self.unalias(aliased);
+                self.unalias(idx, aliased);
                 result?;
             }
             _ => {
@@ -1397,17 +1560,23 @@ impl<'a> Gen<'a> {
     /// Calls a function compiled once. Its arguments are already in its parameters.
     fn call_func(&mut self, idx: usize) -> Result<(), Error> {
         let key = (idx, self.direct);
+        let ctx = FUNC_CTX + 2 * idx + usize::from(self.direct);
+        let caller = self.region_user().unwrap_or(usize::MAX);
+        self.func_calls.insert((caller, ctx));
         if !self.funcs.contains_key(&key) {
             let label = self.fresh();
             let saved_code = std::mem::take(&mut self.code);
             let saved_body = self.body.take();
-            let saved_branch = self.branch;
+            let (saved_branch, saved_top) = (self.branch, self.top_branch);
             let saved_shared = self.shared;
+            let saved_ctx = self.func_ctx.replace(ctx);
             let saved_cache = std::mem::take(&mut self.slot_cache);
+            let saved_vals = std::mem::take(&mut self.val_cache);
             let saved_facts = std::mem::take(&mut self.facts);
             // A summary body collects the leaves it touches. Writes are never unconditional.
             self.body = Some(Body::default());
             self.branch = 1;
+            self.top_branch = 1;
             self.shared = true;
             self.jumpdest(label);
             self.compiling.push(idx);
@@ -1422,8 +1591,11 @@ impl<'a> Gen<'a> {
             let code = std::mem::replace(&mut self.code, saved_code);
             self.body = saved_body;
             self.branch = saved_branch;
+            self.top_branch = saved_top;
             self.shared = saved_shared;
+            self.func_ctx = saved_ctx;
             self.slot_cache = saved_cache;
+            self.val_cache = saved_vals;
             self.facts = saved_facts;
             result?;
             self.funcs.insert(
@@ -1438,6 +1610,9 @@ impl<'a> Gen<'a> {
                 },
             );
         }
+        if self.func_any(idx, &|n| self.stores(n), &mut Vec::new()) {
+            self.forget_stored_values();
+        }
         let f = &self.funcs[&key];
         let (label, reads, writes, journal) =
             (f.label, f.reads.clone(), f.writes.clone(), f.journal_stores);
@@ -1451,7 +1626,8 @@ impl<'a> Gen<'a> {
         self.push_label(ret);
         self.push_label(label);
         self.op(JUMP);
-        self.jumpdest(ret);
+        // Only the function's return jumps here.
+        self.code.push(Inst::Label(ret));
         Ok(())
     }
 }

@@ -180,7 +180,7 @@ impl<'a> Gen<'a> {
                 self.op(JUMP);
             }
         }
-        self.branch -= 1;
+        self.leave_branch();
         self.jumpdest(end);
         Ok(())
     }
@@ -251,7 +251,7 @@ impl<'a> Gen<'a> {
             }
             self.compile_stmts(&failed.stmts)?;
             self.arm_result(&failed.expr, sink)?;
-            self.branch -= 1;
+            self.leave_branch();
             self.jumpdest(end);
             let _ = (base, args, iface, method);
             return Ok(());
@@ -307,7 +307,7 @@ impl<'a> Gen<'a> {
             self.revert_data(sym)?;
         }
         self.run_arm(&failed, sink)?;
-        self.branch -= 1;
+        self.leave_branch();
         self.jumpdest(end);
         Ok(())
     }
@@ -504,7 +504,7 @@ impl<'a> Gen<'a> {
                 });
                 let words = self.arg_words(args);
                 let size = 4 + u64::from(words) * 32;
-                let data = if args.iter().any(|a| self.tree(a.ty())) {
+                let data = if args.iter().any(|a| self.tree(a.ty()) || self.cd_tree(a)) {
                     let slot = self.arena_alloc(1);
                     self.tree_calldata(sel, args, slot)?;
                     slot
@@ -894,15 +894,10 @@ impl<'a> Gen<'a> {
             .any(|a| self.is_dynamic(a.ty()) || self.list_value(a.ty()) || self.tree(a.ty()))
         {
             // Calldata in a blob: the selector, then the arguments ABI-encoded.
-            self.compile_abi_encode(args, None, true)?;
-            self.push_u64(1);
-            self.op(SHR);
-            self.mstore_off(self.scratch_b);
+            self.encode_values(args, true, 4)?;
+            self.mload(self.scratch_a);
             self.push_u64(u64::from(u32::from_be_bytes(sel)));
-            self.mstore_off(self.scratch_val);
-            self.prepend_saved_selector()?;
-            self.push_u64(1);
-            self.op(SHR);
+            self.put_selector();
             let blob = self.temp();
             self.mstore_off(blob);
             self.push_u64(32);
@@ -1473,7 +1468,10 @@ impl<'a> Gen<'a> {
                 .cloned()
                 .collect();
         }
-        let built = crate::split::build(&crate::check::check(unit)?, name, &self.shape.opts)?;
+        let byte_gas = asm::GAS_PER_BYTE + asm::DEPOSIT_GAS / asm::CREATED_RUNS;
+        let built = asm::with_byte_gas(byte_gas, || {
+            crate::split::build(&crate::check::check(unit)?, name, &self.shape.opts)
+        })?;
         Ok((built.creation.clone(), built.prerequisites()))
     }
 
@@ -1811,6 +1809,7 @@ impl<'a> Gen<'a> {
         self.direct = direct;
         self.branch = 0;
         let outer_cache = std::mem::take(&mut self.slot_cache);
+        let outer_vals = std::mem::take(&mut self.val_cache);
         let outer_facts = std::mem::take(&mut self.facts);
         let mut body = Body {
             id: outer.id,
@@ -1831,6 +1830,7 @@ impl<'a> Gen<'a> {
         self.direct = outer_direct;
         self.branch = outer_branch;
         self.slot_cache = outer_cache;
+        self.val_cache = outer_vals;
         self.facts = outer_facts;
         result
     }

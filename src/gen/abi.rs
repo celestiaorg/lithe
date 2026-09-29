@@ -23,37 +23,48 @@ impl<'a> Gen<'a> {
             }
             return Ok(());
         }
-        if args.iter().any(|a| self.tree_part(a.ty())) {
-            let refs: Vec<&Expr> = args.iter().collect();
-            self.tree_encode_exprs(&refs, call)?;
-        } else {
-            let values = self.blob_parts(args)?;
-            let parts: Vec<(i32, usize)> = values
-                .iter()
-                .copied()
-                .zip(args.iter().map(|a| a.ty()))
-                .collect();
-            self.encode_parts(&parts)?;
-        }
+        self.encode_values(args, call, if selector.is_some() { 4 } else { 0 })?;
+        self.mload(self.scratch_a);
         if let Some(sel) = selector {
-            self.prepend_selector(sel)?;
-        } else {
-            self.mload(self.scratch_a);
-            self.tag_blob();
+            self.compile_value(sel)?;
+            self.put_selector();
         }
+        self.tag_blob();
         Ok(())
     }
 
-    /// ABI-encodes values already held in memory words into a blob at `scratch_a`: the head,
-    /// then each string, bytes, or list after it.
-    pub(super) fn encode_parts(&mut self, parts: &[(i32, usize)]) -> Result<(), Error> {
+    /// Encodes `args` into a blob at `scratch_a`, `prefix` bytes into its data.
+    pub(super) fn encode_values(&mut self, args: &[Expr], call: bool, prefix: u32) -> Result<(), Error> {
+        if args.iter().any(|a| self.tree_part(a.ty()) || self.cd_tree(a)) {
+            let refs: Vec<&Expr> = args.iter().collect();
+            return self.tree_encode_exprs(&refs, call, prefix);
+        }
+        let values = self.blob_parts(args)?;
+        let parts: Vec<(i32, usize)> = values
+            .iter()
+            .copied()
+            .zip(args.iter().map(|a| a.ty()))
+            .collect();
+        self.encode_parts(&parts, prefix, &[])
+    }
+
+    /// ABI-encodes values already held in memory words into a blob at `scratch_a`, `prefix`
+    /// bytes into its data: the head, then each string, bytes, or list after it.
+    /// A part `cd` marks is a list of words still in calldata, already laid out as in the ABI.
+    pub(super) fn encode_parts(
+        &mut self,
+        parts: &[(i32, usize)],
+        prefix: u32,
+        cd: &[bool],
+    ) -> Result<(), Error> {
         let n = parts.len() as u64;
         let bytes = |g: &Self, ty: usize| g.is_dynamic(ty);
         let list = |g: &Self, ty: usize| g.list_value(ty);
+        let in_cd = |i: usize| cd.get(i).copied().unwrap_or(false);
         // Lists whose elements aren't ABI words yet are converted first, into copies.
         let mut ready = Vec::with_capacity(parts.len());
-        for &(at, ty) in parts {
-            if list(self, ty) {
+        for (i, &(at, ty)) in parts.iter().enumerate() {
+            if list(self, ty) && !in_cd(i) {
                 let elem = self.checked.types[self.peel_nominal(ty)].elem.unwrap_or(0);
                 if !self.elem_shifts(elem).is_empty() || self.is_dynamic(self.peel_nominal(elem)) {
                     let copy = self.temp();
@@ -67,8 +78,9 @@ impl<'a> Gen<'a> {
             ready.push((at, ty));
         }
         // The whole encoding's size: the head, then each tail's length word and data.
-        self.push_u64(32 * n);
-        for &(at, ty) in &ready {
+        let base = 32 + u64::from(prefix);
+        self.push_u64(32 * n + u64::from(prefix));
+        for (i, &(at, ty)) in ready.iter().enumerate() {
             if bytes(self, ty) {
                 self.mload(at);
                 self.bytes_span();
@@ -78,6 +90,10 @@ impl<'a> Gen<'a> {
                 self.push_u64(31);
                 self.op(NOT);
                 self.op(AND);
+                self.op(ADD);
+            } else if in_cd(i) {
+                self.mload(at);
+                self.cd_list_size();
                 self.op(ADD);
             } else if list(self, ty) {
                 self.mload(at);
@@ -94,7 +110,7 @@ impl<'a> Gen<'a> {
             self.mload(at);
             self.fit_static_word(ty);
             self.mload(self.scratch_a);
-            self.push_u64(32 + 32 * i as u64);
+            self.push_u64(base + 32 * i as u64);
             self.op(ADD);
             self.op(MSTORE);
         }
@@ -106,7 +122,7 @@ impl<'a> Gen<'a> {
         }
         // [cursor]: where the next tail goes.
         self.mload(self.scratch_a);
-        self.push_u64(32 + 32 * n);
+        self.push_u64(base + 32 * n);
         self.op(ADD);
         for (i, &(at, ty)) in ready.iter().enumerate() {
             if !bytes(self, ty) && !list(self, ty) {
@@ -115,12 +131,12 @@ impl<'a> Gen<'a> {
             // The head word: the tail's offset from the start of the data.
             self.op(DUP1);
             self.mload(self.scratch_a);
-            self.push_u64(32);
+            self.push_u64(base);
             self.op(ADD);
             self.op(SWAP1);
             self.op(SUB);
             self.mload(self.scratch_a);
-            self.push_u64(32 + 32 * i as u64);
+            self.push_u64(base + 32 * i as u64);
             self.op(ADD);
             self.op(MSTORE);
             self.mload(at);
@@ -144,12 +160,16 @@ impl<'a> Gen<'a> {
             } else {
                 // [cursor, ptr]: the length word and the elements are laid out as in the ABI.
                 self.op(DUP1);
-                self.abi_list_size(self.list_elem(ty));
+                if in_cd(i) {
+                    self.cd_list_size();
+                } else {
+                    self.abi_list_size(self.list_elem(ty));
+                }
                 self.op(SWAP1);
                 self.op(DUP1 + 1);
                 self.op(SWAP1);
                 self.op(DUP1 + 3);
-                self.op(MCOPY);
+                self.op(if in_cd(i) { CALLDATACOPY } else { MCOPY });
             }
             self.op(ADD);
         }
@@ -174,6 +194,15 @@ impl<'a> Gen<'a> {
         self.align_list_for_abi(copy, elem)?;
         self.mload(copy);
         Ok(())
+    }
+
+    /// `[pos]`, a list of words in calldata, becomes its encoding's size in bytes.
+    fn cd_list_size(&mut self) {
+        self.cd_load();
+        self.push_u64(5);
+        self.op(SHL);
+        self.push_u64(32);
+        self.op(ADD);
     }
 
     /// `[ptr]`, a list `abi_ready_list` made, becomes its encoding's size in bytes.
@@ -423,17 +452,15 @@ impl<'a> Gen<'a> {
             self.call_sub(Sub::ShortBlob);
             return Ok(());
         }
-        self.compile_abi_encode(args, None, false)?;
-        self.push_u64(1);
-        self.op(SHR);
-        self.mstore_off(self.scratch_b);
+        self.encode_values(args, false, 4)?;
+        self.mload(self.scratch_a);
         self.compile_value(sig)?;
         self.bytes_span();
         self.op(KECCAK);
         self.push_u64(224);
         self.op(SHR);
-        self.mstore_off(self.scratch_val);
-        self.prepend_saved_selector()?;
+        self.put_selector();
+        self.tag_blob();
         Ok(())
     }
 

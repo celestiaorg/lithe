@@ -4,6 +4,10 @@ use super::*;
 /// from which eight buckets are worth their bytes over four.
 const BUCKETS_FROM: usize = 18;
 const BUCKETS_FROM_8: usize = 32;
+/// Gas of one selector check in a linear scan: `DUP1 PUSH4 EQ PUSH2 JUMPI`.
+const CHECK_GAS: f64 = 22.0;
+/// Bytes a split of a linear scan adds: its comparison and the second scan's label.
+const SPLIT_BYTES: f64 = 12.0;
 
 impl<'a> Gen<'a> {
     pub(super) fn emit(&mut self) -> Result<(), Error> {
@@ -56,6 +60,8 @@ impl<'a> Gen<'a> {
             self.jumpdest(bad);
             self.revert_empty();
         }
+        self.entry_labels = targets.iter().map(|(label, _)| *label).collect();
+        self.entry_labels.extend(receive.iter().chain(&fallback).map(|(label, _)| *label));
         if let Some((label, index)) = receive {
             self.entry(label, index)?;
         }
@@ -350,10 +356,12 @@ impl<'a> Gen<'a> {
     }
 
     /// Jumps to the label of the selector on the stack. One that matches none falls
-    /// through. Below `BUCKETS_FROM` cases a linear scan is smallest; past it, jumping to
-    /// a bucket of the table first frees the start of the code for `asm::hoist`.
+    /// through. Below `BUCKETS_FROM` cases a linear scan is smallest, split in two where
+    /// that pays; past it, jumping to a bucket of the table first frees the start of the
+    /// code for `asm::hoist`.
     fn switch(&mut self, cases: &[(u32, [u8; 4])]) {
         match cases.len() {
+            n if n < BUCKETS_FROM && self.split_pays(n) => self.split(cases),
             n if n < BUCKETS_FROM => self.linear(cases),
             n if n < BUCKETS_FROM_8 => self.buckets(cases, 4),
             _ => self.buckets(cases, 8),
@@ -411,6 +419,35 @@ impl<'a> Gen<'a> {
                 self.linear(group);
             }
         }
+    }
+
+    /// Whether one comparison that halves a linear scan saves each call, on average over
+    /// the selectors, the gas its bytes are worth.
+    fn split_pays(&self, n: usize) -> bool {
+        let (a, b) = ((n / 2) as f64, (n - n / 2) as f64);
+        let n = n as f64;
+        let saved = CHECK_GAS * ((n + 1.0) / 2.0 - 1.0 - (a * (a + 1.0) + b * (b + 1.0)) / (2.0 * n));
+        saved >= SPLIT_BYTES * asm::byte_gas()
+    }
+
+    /// A linear scan of the selectors below the middle one, then of the rest, where a
+    /// selector from the middle on jumps first. One below that matches nothing falls into
+    /// the second scan, which it matches nothing in either. Each scan keeps the order of
+    /// `cases`, so what is declared first is found first.
+    fn split(&mut self, cases: &[(u32, [u8; 4])]) {
+        let mut sorted: Vec<[u8; 4]> = cases.iter().map(|&(_, sel)| sel).collect();
+        sorted.sort();
+        let middle = sorted[cases.len() / 2];
+        let (lo, hi): (Vec<_>, Vec<_>) = cases.iter().partition(|&&(_, sel)| sel < middle);
+        let high = self.fresh();
+        self.op(DUP1);
+        self.push_u64(u64::from(u32::from_be_bytes(middle) - 1));
+        self.op(LT);
+        self.push_label(high);
+        self.op(JUMPI);
+        self.linear(&lo);
+        self.jumpdest(high);
+        self.linear(&hi);
     }
 
     fn linear(&mut self, cases: &[(u32, [u8; 4])]) {
@@ -582,6 +619,7 @@ impl<'a> Gen<'a> {
         let mut returns: Option<(usize, usize)> = None;
         let mut record = None;
         let mut staged = false;
+        let mut lit = None;
         if let Some(func) = route.direct {
             self.decode_params(func)?;
             let f = &self.checked.prog.funcs[func];
@@ -615,6 +653,15 @@ impl<'a> Gen<'a> {
                 Some(tail) if declared && crate::check::abi_record(&self.checked.types, ret) => {
                     let at = self.value_addr(&tail)?;
                     record = Some(at);
+                    returns = Some((func, ret));
+                }
+                // A literal string or bytes value goes back laid out from code.
+                Some(tail)
+                    if declared
+                        && route_special != Some(ItemKind::Fallback)
+                        && self.lit_bytes(&tail).is_some() =>
+                {
+                    lit = self.lit_bytes(&tail);
                     returns = Some((func, ret));
                 }
                 Some(tail) if declared => {
@@ -675,6 +722,7 @@ impl<'a> Gen<'a> {
             self.release_nonreentrant();
         }
         match returns {
+            Some(_) if lit.is_some() => self.return_lit(&lit.unwrap_or_default()),
             Some(_) if staged => self.return_blob(),
             Some((_, ret)) if record.is_some() => {
                 self.return_record(record.unwrap_or(0), ret)?;
@@ -758,6 +806,8 @@ impl<'a> Gen<'a> {
             }
             let elem = self.checked.types[self.peel_nominal(ret)].elem.unwrap_or(0);
             self.return_list(elem)?;
+        } else if let Some(bytes) = self.lit_bytes(&tail) {
+            self.return_lit(&bytes);
         } else if self.is_dynamic(ret) {
             self.compile_value(&tail)?;
             self.return_dynamic();

@@ -34,7 +34,9 @@ Smaller code means cheaper deployment, and more room under the EIP-170 contract 
 
 ## Gas per transaction
 
-Execution gas is roughly even. Most transactions land within a couple of percent of the best `solc` build, some cheaper and some more expensive. Storage writes dominate the cost of most transactions, and both compilers write the same slots.
+Storage reads and writes dominate the cost of most transactions, and both compilers touch the same slots, so what separates them is everything else a transaction runs: dispatch, argument decoding, arithmetic, loops, memory, hashing, and encoding. On that part Lithe spends **about 28% less gas** than the best `solc` build across the benchmark suite, and about 4.5% less in total execution gas. The compiler weighs each choice between smaller and faster code by an estimate of how often the code runs, so a hot path can spend a few bytes to save gas on every call.
+
+Some transactions still cost more than their Solidity versions. A transition that defers an external call runs its storage writes first, so when the call then reverts, those writes were paid for. A Solidity contract that makes the call before writing reverts sooner.
 
 ## The comparison is like for like
 

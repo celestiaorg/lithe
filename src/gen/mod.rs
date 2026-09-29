@@ -7,7 +7,8 @@
 //! after storage. Memory is laid out last, hottest words first, with regions that
 //! no body shares overlapping.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
 use crate::asm::{self, Inst, Mark};
 use crate::ast::*;
@@ -39,6 +40,7 @@ mod stmt;
 mod storage;
 mod stored_bytes;
 mod tree;
+use errors::{raised_args, FLAT_ARGS};
 use tree::Addr;
 
 const KECCAK: u8 = 0x20;
@@ -126,6 +128,17 @@ const REVERT: u8 = 0xfd;
 const LOG0: u8 = 0xa0;
 const STOP: u8 = 0x00;
 
+/// How the names of values kept from calldata, which no store changes, begin.
+const CALLDATA_VALUE: &str = "@cd";
+/// Rounds of variant moves, and of one-function outline toggles, against the cheapest build.
+const MAX_VARIANT_ROUNDS: usize = 4;
+const MAX_TOGGLE_ROUNDS: usize = 16;
+/// How much more than the start a toggle can cost and still be tried in the next round.
+const RETRY_COST: f64 = 500.0;
+/// Gas a call to an outlined function adds: pushes, jumps and jumpdests there and back.
+const CALL_GAS: f64 = 24.0;
+/// Gas each argument of an outlined call adds, stored for the body to load.
+const ARG_GAS: f64 = 12.0;
 const MAX_OPS: usize = 8;
 const MAX_JOURNAL: i32 = 8;
 const TOPIC_WORDS: u32 = 8;
@@ -148,86 +161,298 @@ pub(crate) fn codegen(checked: &Checked, shape: &Shape) -> Result<Built, Error> 
         g.emit()?;
         g.plan()
     };
-    // Keeping a hashed slot saves gas, but can cost bytes where the optimizer would have
-    // shared the hashing instead, and a tight site can keep the outliner from sharing it.
-    // The smallest program wins; ties prefer kept slots, then tight sites.
-    let build = |plan: Plan| -> Result<Built, Error> {
+    let emit = |plan: &Plan| -> Result<(Emitted, Vec<Facet>), Error> {
         let mut g = Gen::new(checked, plan.clone(), shape)?;
         g.emit()?;
         g.drop_unread_caches();
         g.promote();
-        let mut code = g.resolve()?;
+        let code = g.resolve()?;
+        let mut leaves: Vec<(u32, usize)> = g.func_leaves_by_label().into_iter().collect();
+        leaves.sort_unstable();
+        let emitted = Emitted {
+            code,
+            entries: std::mem::take(&mut g.entry_labels),
+            leaves,
+            data: std::mem::take(&mut g.data),
+            tail_blobs: std::mem::take(&mut g.tail_blobs),
+        };
+        Ok((emitted, std::mem::take(&mut g.needs)))
+    };
+    let finish = |e: &Emitted, both: bool| -> Result<Finished, Error> {
+        let mut code = e.code.clone();
         asm::optimize(&mut code);
-        let leaves = g.func_leaves_by_label();
-        asm::outline(&mut code, |code| {
+        let leaves: HashMap<u32, usize> = e.leaves.iter().copied().collect();
+        asm::outline(&mut code, &e.entries, both, |code| {
             asm::tail_calls(code, &leaves);
+            asm::rotate_loops(code);
             asm::hoist(code);
             asm::rotate_exits(code);
         });
-        let (runtime, marks) = g.place_runtime(&code)?;
-        let mut needs = std::mem::take(&mut g.needs);
-        let (code, more) = creation(checked, &plan, runtime.clone(), &marks, true, shape)?;
-        needs.extend(more);
-        Ok(Built {
-            code,
+        let gas = asm::gas(&code, &e.entries);
+        let (runtime, marks) = immutable::place_runtime(&code, &e.data, &e.tail_blobs)?;
+        let cost = gas + runtime.len() as f64 * asm::byte_gas();
+        Ok(Finished {
             runtime,
-            needs,
+            marks,
+            cost,
         })
     };
+    // Plans often emit the same program, which is optimized once.
+    let done = std::sync::Mutex::new(HashMap::<Arc<Emitted>, Arc<Finished>>::new());
+    let build_all = |plans: &[Plan]| -> Result<Vec<Candidate>, Error> {
+        let emitted: Vec<(Arc<Emitted>, Vec<Facet>)> = parallel_map(plans, emit)
+            .into_iter()
+            .map(|e| e.map(|(e, needs)| (Arc::new(e), needs)))
+            .collect::<Result<_, _>>()?;
+        let todo: Vec<&Arc<Emitted>> = {
+            let done = done.lock().unwrap_or_else(|e| e.into_inner());
+            let mut seen = HashSet::new();
+            emitted
+                .iter()
+                .map(|(e, _)| e)
+                .filter(|&e| !done.contains_key(e) && seen.insert(e))
+                .collect()
+        };
+        let finished = parallel_map(&todo, |e| finish(e, false));
+        let mut done = done.lock().unwrap_or_else(|e| e.into_inner());
+        for (e, f) in todo.into_iter().zip(finished) {
+            done.insert(e.clone(), Arc::new(f?));
+        }
+        Ok(plans
+            .iter()
+            .zip(emitted)
+            .map(|(plan, (e, needs))| Candidate {
+                plan: plan.clone(),
+                built: done[&e].clone(),
+                emitted: e,
+                needs,
+            })
+            .collect())
+    };
+    // Keeping a hashed slot saves gas, but can cost bytes where the optimizer would have
+    // shared the hashing instead, and a tight site can keep the outliner from sharing it.
     // A shared slice helper can also cost bytes where the outliner would have shared the
     // inlined copies instead, so slices that could share are built both ways.
     let mut slices = vec![plan.shared_slice];
     if plan.shared_slice.contains(&true) {
         slices.push([false; 2]);
     }
-    let mut variants = Vec::new();
-    for shared_slice in slices {
-        for (cache_slots, tight) in [(true, true), (true, false), (false, true), (false, false)] {
-            for hold_dups in [false, true] {
-                if hold_dups && !tight {
-                    continue;
-                }
-                variants.push(Plan {
-                    cache_slots,
-                    tight,
-                    shared_slice,
-                    hold_dups,
-                    ..plan.clone()
-                });
+    // The outlining plan prices a call by its jumps and argument stores alone, so the
+    // builds that inline the functions called in loops, or every function, are tried too.
+    let mut outlines = vec![plan.outline.clone()];
+    if !plan.looped.is_empty() {
+        outlines.push(&plan.outline - &plan.looped);
+    }
+    if outlines.last().is_some_and(|o| !o.is_empty()) {
+        outlines.push(Default::default());
+    }
+    let variant_moves = |p: &Plan| -> Vec<Vec<Move>> {
+        let mut dims = vec![
+            outlines.iter().filter(|o| **o != p.outline).cloned().map(Move::Outline).collect(),
+            slices.iter().filter(|s| **s != p.shared_slice).copied().map(Move::Slice).collect(),
+            vec![Move::CacheSlots(!p.cache_slots)],
+            vec![Move::Tight(!p.tight)],
+            vec![Move::Frames(!p.frames)],
+            vec![Move::Sink(!p.sink)],
+        ];
+        if p.tight {
+            dims.push(vec![Move::HoldDups(!p.hold_dups)]);
+        }
+        dims
+    };
+    // Then each function the plan outlines, inlined or outlined alone.
+    let mut funcs: Vec<usize> = plan.outline.iter().copied().collect();
+    funcs.sort_unstable();
+    // A round builds each move alone. Several moves that each beat the start can cost more
+    // together, so they are then added one at a time, the cheapest first, each kept when
+    // the build gets cheaper. The cheapest program by `asm::byte_gas` wins; ties keep the
+    // start, which keeps slots and tight sites.
+    let round = |from: Candidate, dims: &[Vec<Move>]| -> Result<(Candidate, Vec<f64>), Error> {
+        let tried: Vec<(usize, &Move)> = dims
+            .iter()
+            .enumerate()
+            .flat_map(|(d, moves)| moves.iter().map(move |m| (d, m)))
+            .collect();
+        let plans: Vec<Plan> = tried.iter().map(|(_, m)| m.applied(&from.plan)).collect();
+        let mut chosen: Vec<Option<(f64, &Move)>> = vec![None; dims.len()];
+        let mut best = None::<Candidate>;
+        let mut deltas = vec![f64::INFINITY; dims.len()];
+        for (&(d, m), c) in tried.iter().zip(build_all(&plans)?) {
+            deltas[d] = deltas[d].min(c.cost() - from.cost());
+            if c.cost() >= from.cost() {
+                continue;
+            }
+            if chosen[d].is_none_or(|(cost, _)| c.cost() < cost) {
+                chosen[d] = Some((c.cost(), m));
+            }
+            if best.as_ref().is_none_or(|b| c.cost() < b.cost()) {
+                best = Some(c);
             }
         }
-    }
-    // The builds are independent, and each is most of a compile.
-    let builds = std::thread::scope(|s| {
-        let handles: Vec<_> = variants[1..]
-            .iter()
-            .map(|plan| {
-                std::thread::Builder::new()
-                    .stack_size(64 << 20)
-                    .spawn_scoped(s, move || build(plan.clone()))
-                    .expect("spawn a codegen thread")
-            })
-            .collect();
-        let first = build(variants[0].clone());
-        std::iter::once(first)
-            .chain(
-                handles
-                    .into_iter()
-                    .map(|h| h.join().unwrap_or_else(|e| std::panic::resume_unwind(e))),
-            )
-            .collect::<Vec<_>>()
-    });
-    let mut best: Option<Built> = None;
-    for built in builds {
-        let built = built?;
-        if best
-            .as_ref()
-            .is_none_or(|b| built.runtime.len() < b.runtime.len())
-        {
-            best = Some(built);
+        let Some(mut best) = best else {
+            return Ok((from, deltas));
+        };
+        let mut better: Vec<(f64, &Move)> = chosen.into_iter().flatten().collect();
+        better.sort_by(|a, b| a.0.total_cmp(&b.0));
+        for &(_, m) in &better[1..] {
+            let c = build_all(&[m.applied(&best.plan)])?.pop().expect("a build");
+            if c.cost() < best.cost() {
+                best = c;
+            }
+        }
+        Ok((best, deltas))
+    };
+    let start = Plan {
+        cache_slots: true,
+        tight: true,
+        hold_dups: false,
+        frames: true,
+        sink: false,
+        ..plan.clone()
+    };
+    let mut best = build_all(std::slice::from_ref(&start))?.pop().expect("a build");
+    for _ in 0..MAX_VARIANT_ROUNDS {
+        let cost = best.cost();
+        let moves = variant_moves(&best.plan);
+        best = round(best, &moves)?.0;
+        if best.cost() >= cost {
+            break;
         }
     }
-    Ok(best.expect("a build"))
+    // Later rounds try again the functions a round left as they were and whose toggle cost
+    // little more than the start, as the moves kept since can make it pay.
+    for _ in 0..MAX_TOGGLE_ROUNDS {
+        let cost = best.cost();
+        let was = best.plan.outline.clone();
+        let dims: Vec<Vec<Move>> = funcs.iter().map(|&f| vec![Move::Toggle(f)]).collect();
+        let (next, deltas) = round(best, &dims)?;
+        funcs = funcs
+            .into_iter()
+            .zip(deltas)
+            .filter(|&(f, d)| d < RETRY_COST && was.contains(&f) == next.plan.outline.contains(&f))
+            .map(|(f, _)| f)
+            .collect();
+        best = next;
+        if best.cost() >= cost || funcs.is_empty() {
+            break;
+        }
+    }
+    // The search leaves the exact copies out, which the chosen plan gets.
+    let built = finish(&best.emitted, true)?;
+    let (code, more) = creation(
+        checked,
+        &best.plan,
+        built.runtime.clone(),
+        &built.marks,
+        true,
+        shape,
+    )?;
+    let mut needs = best.needs;
+    needs.extend(more);
+    Ok(Built {
+        code,
+        runtime: built.runtime,
+        needs,
+    })
+}
+
+/// A plan's program before the bytecode passes, and what placing it needs.
+#[derive(Clone, PartialEq, Eq, Hash)]
+struct Emitted {
+    code: Vec<Inst>,
+    entries: Vec<u32>,
+    leaves: Vec<(u32, usize)>,
+    data: Vec<(Word, Vec<u8>, String)>,
+    tail_blobs: Vec<(Word, Vec<u32>)>,
+}
+
+/// An optimized runtime, and its estimated gas plus bytes weighed by `asm::byte_gas`.
+struct Finished {
+    runtime: Vec<u8>,
+    marks: Vec<Mark>,
+    cost: f64,
+}
+
+/// A plan and the runtime it builds.
+struct Candidate {
+    plan: Plan,
+    emitted: Arc<Emitted>,
+    built: Arc<Finished>,
+    needs: Vec<Facet>,
+}
+
+impl Candidate {
+    fn cost(&self) -> f64 {
+        self.built.cost
+    }
+}
+
+/// A change to a plan that `codegen` tries.
+#[derive(Clone)]
+enum Move {
+    Outline(std::collections::HashSet<usize>),
+    Slice([bool; 2]),
+    CacheSlots(bool),
+    Tight(bool),
+    HoldDups(bool),
+    Frames(bool),
+    Sink(bool),
+    /// Inline the function if the plan outlines it, else outline it.
+    Toggle(usize),
+}
+
+impl Move {
+    fn apply(&self, p: &mut Plan) {
+        match self {
+            Move::Outline(o) => p.outline = o.clone(),
+            Move::Slice(s) => p.shared_slice = *s,
+            Move::CacheSlots(b) => p.cache_slots = *b,
+            Move::Tight(b) => p.tight = *b,
+            Move::HoldDups(b) => p.hold_dups = *b,
+            Move::Frames(b) => p.frames = *b,
+            Move::Sink(b) => p.sink = *b,
+            Move::Toggle(f) => {
+                if !p.outline.remove(f) {
+                    p.outline.insert(*f);
+                }
+            }
+        }
+        // Only tight builds hold copies.
+        p.hold_dups &= p.tight;
+    }
+
+    fn applied(&self, p: &Plan) -> Plan {
+        let mut p = p.clone();
+        self.apply(&mut p);
+        p
+    }
+}
+
+/// `f` of each item, in order, on at most one thread per core, each with the caller's
+/// byte weight.
+fn parallel_map<T: Sync, R: Send>(items: &[T], f: impl Fn(&T) -> R + Sync) -> Vec<R> {
+    let byte_gas = asm::byte_gas();
+    let workers = std::thread::available_parallelism().map_or(1, |n| n.get());
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let done = std::sync::Mutex::new(Vec::with_capacity(items.len()));
+    let work = || loop {
+        let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let Some(item) = items.get(i) else { break };
+        let out = f(item);
+        done.lock().unwrap_or_else(|e| e.into_inner()).push((i, out));
+    };
+    std::thread::scope(|s| {
+        for _ in 1..workers.min(items.len()) {
+            std::thread::Builder::new()
+                .stack_size(64 << 20)
+                .spawn_scoped(s, || asm::with_byte_gas(byte_gas, work))
+                .expect("spawn a codegen thread");
+        }
+        work();
+    });
+    let mut done = done.into_inner().unwrap_or_else(|e| e.into_inner());
+    done.sort_by_key(|(i, _)| *i);
+    done.into_iter().map(|(_, out)| out).collect()
 }
 
 /// The creation code for a runtime: a `deploy` compiled around it, or a plain copy. A
@@ -257,8 +482,9 @@ fn creation(
     if optimize {
         asm::optimize(&mut code);
         let leaves = g.func_leaves_by_label();
-        asm::outline(&mut code, |code| {
+        asm::outline(&mut code, &g.entry_labels, true, |code| {
             asm::tail_calls(code, &leaves);
+            asm::rotate_loops(code);
             asm::hoist(code);
             asm::rotate_exits(code);
         });
@@ -317,7 +543,7 @@ pub(crate) fn codegen_unoptimized(checked: Checked) -> Result<Vec<u8>, Error> {
     let mut g = Gen::new(&checked, Plan::default(), &shape)?;
     g.emit()?;
     let code = g.resolve()?;
-    let (runtime, marks) = g.place_runtime(&code)?;
+    let (runtime, marks) = immutable::place_runtime(&code, &g.data, &g.tail_blobs)?;
     Ok(creation(&checked, &Plan::default(), runtime, &marks, false, &shape)?.0)
 }
 
@@ -425,8 +651,15 @@ enum Region {
 enum Users {
     Nobody,
     Bodies(std::collections::BTreeSet<usize>),
+    /// Bodies and functions compiled once, each as `FUNC_CTX` plus its key: two regions
+    /// can share memory when none of these that touch one can run while one that touches
+    /// the other does.
+    Shared(std::collections::BTreeSet<usize>),
     Everyone,
 }
+
+/// Where the ids of functions compiled once start among a region's users.
+const FUNC_CTX: usize = 1 << 40;
 
 struct Space {
     region: Region,
@@ -445,6 +678,9 @@ struct Plan {
     /// Whether a map slot with fixed keys is hashed once per body and kept.
     cache_slots: bool,
     outline: std::collections::HashSet<usize>,
+    /// The outlined functions called in a loop, where a call's arguments and jumps cost
+    /// each run, and inlined copies may read their arguments in place.
+    looped: std::collections::HashSet<usize>,
     /// Whether stored strings are written, and read, through one shared helper each.
     shared_bytes: (bool, bool),
     /// Whether `string` and `bytes` arguments are decoded by one shared helper.
@@ -472,6 +708,13 @@ struct Plan {
     /// Whether a value copied by `DUP1` to be stored stays on the stack under the copy.
     /// That can keep the outliner from sharing a tail, so tight builds try it both ways.
     hold_dups: bool,
+    /// Whether a body's own regions may overlap those of functions compiled once that it
+    /// never runs. Bodies then touch less memory, but alike bodies can place their regions
+    /// apart, which keeps the outliner from sharing their code, so both are built.
+    frames: bool,
+    /// Whether a promoted word may sink under an operand an op takes from beneath it. That
+    /// holds more words, but the swaps can keep the outliner from sharing code.
+    sink: bool,
 }
 
 /// A function compiled once. Calls merge what it reads and writes into their body.
@@ -500,7 +743,6 @@ enum Sub {
     JournalStore,
     JournalFlush,
     AllocBlob,
-    BytesSpan,
     /// `[value, slot, ret]`: writes a string or bytes value to a stored leaf.
     StoreBytes,
     /// `[slot, ret]` becomes the stored string or bytes value.
@@ -558,6 +800,11 @@ enum Sub {
     BlobsAbi,
     /// `[pos, ret]` becomes the `string` or `bytes` argument whose head is at `pos`.
     DecodeBytes,
+    /// `[pos, ret]` becomes a copy of the `string` or `bytes` whose length word is at `pos`.
+    CopyCdBytes,
+    /// `[at, word, slot, ret]` becomes `[end]`: the string or bytes value stored at `slot`,
+    /// whose slot word is `word`, laid out at `at` as its length and zero-padded bytes.
+    StoredTail,
     /// `[a, b, ret]` becomes whether two lists of strings or bytes are equal.
     BlobsEq,
     /// `[a, b, ret]` becomes whether two strings or bytes values hold the same bytes.
@@ -587,6 +834,54 @@ enum Sub {
     /// `[pos, cur, ret]` becomes `[end]`: the value of this type at calldata position
     /// `pos`, checked and ABI-encoded at `cur`.
     TreeCdEnc(usize),
+}
+
+impl Sub {
+    fn writes_storage(&self) -> bool {
+        match self {
+            Sub::JournalStore
+            | Sub::JournalFlush
+            | Sub::StoreBytes
+            | Sub::StoreList(..)
+            | Sub::StoreRecords(..)
+            | Sub::StorePacked(..)
+            | Sub::ZeroSlots(..)
+            | Sub::ClearElems(..)
+            | Sub::StoreSlotBytes(..) => true,
+            Sub::JournalLoad
+            | Sub::AllocBlob
+            | Sub::LoadBytes
+            | Sub::RevertData
+            | Sub::MulDiv
+            | Sub::CheckedMul
+            | Sub::CheckedExp(_)
+            | Sub::DecodeList(_)
+            | Sub::LoadList(..)
+            | Sub::LoadRecords(..)
+            | Sub::LoadPacked(..)
+            | Sub::LoadSlotBytes(..)
+            | Sub::QueuePush
+            | Sub::ListHead
+            | Sub::RevertAbi
+            | Sub::ShortBlob
+            | Sub::BlobsAbi
+            | Sub::DecodeBytes
+            | Sub::CopyCdBytes
+            | Sub::StoredTail
+            | Sub::BlobsEq
+            | Sub::BytesEq
+            | Sub::BytesValue(_)
+            | Sub::Base64Encode
+            | Sub::Base64Decode
+            | Sub::DecimalString(_)
+            | Sub::HexString
+            | Sub::ChecksumString
+            | Sub::BytesSlice(_)
+            | Sub::TreeEnc(_)
+            | Sub::TreeDec(..)
+            | Sub::TreeCdEnc(_) => false,
+        }
+    }
 }
 
 /// Where a helper copies bytes from.
@@ -680,11 +975,19 @@ struct Gen<'a> {
     shape: &'a Shape,
     /// Parts of the contracts this code creates.
     needs: Vec<Facet>,
-    /// Inlined calls per function, and the most bytes one inlined body took.
-    inlined: HashMap<usize, (usize, usize)>,
+    /// The label each entrypoint's code begins at.
+    entry_labels: Vec<u32>,
+    /// Inlined calls per function, the most bytes one inlined body took, and how often the
+    /// calls in each body run, each loop around one multiplying it by `asm::LOOP_RUNS`.
+    inlined: HashMap<usize, (usize, usize, HashMap<usize, f64>)>,
     funcs: HashMap<(usize, bool), FuncSub>,
-    /// Code shared by every body: its memory can never overlap a body's.
+    /// Code shared by every body: its memory overlaps only what never runs while it does.
     shared: bool,
+    /// The function compiled once whose code is being emitted, as a region user.
+    func_ctx: Option<usize>,
+    /// Calls between region users: a body or function, or `usize::MAX` for code outside
+    /// both, and the function it calls.
+    func_calls: std::collections::HashSet<(usize, usize)>,
     log_sites: usize,
     return_sites: usize,
     /// The body reads and writes storage in place. Nothing outside can run while it
@@ -775,6 +1078,9 @@ struct Gen<'a> {
     /// Map parameters of an inlined call, bound to the stored map the call passes: the
     /// body reaches it as if it named the map. An outlined body reads the slot instead.
     slot_binds: HashMap<usize, (usize, u32)>,
+    /// Parameters of an inlined call that the call passes a local: the local, which cannot
+    /// change while the body runs, so a slot or word kept by one's name serves the other.
+    key_names: HashMap<usize, usize>,
     /// Parameters of an inlined call that the call passes a literal word: the word.
     const_params: HashMap<usize, Word>,
     /// Temporaries of shared code. Each serves one site, so only the code that made it
@@ -793,10 +1099,19 @@ struct Gen<'a> {
     /// or raises it again, and makes no call that would replace it.
     returned: Option<usize>,
     /// Map slots already hashed on every path to here in the body: where each is kept,
-    /// and the locals its keys read.
-    slot_cache: HashMap<(usize, u32, Vec<String>), (i32, Vec<usize>)>,
-    /// Words holding a cached slot. A word nothing reads drops its store.
+    /// the locals its keys read, and the `branch` it was kept at.
+    slot_cache: HashMap<(usize, u32, Vec<String>), (i32, Vec<usize>, u32)>,
+    /// Storage words already read or written on every path to here, each kept in a memory
+    /// word, by the place they are read from, with the locals the place's keys read and
+    /// the `branch` it was kept at.
+    /// Anything that may write storage it does not account for drops them all.
+    val_cache: HashMap<String, (i32, Vec<usize>, u32)>,
+    /// Set around a store `val_cache` already accounts for.
+    kept_store: bool,
+    /// Words holding a cached slot or value. A word nothing reads drops its store.
     cache_words: Vec<i32>,
+    /// The words among them that hold a constant slot's word, with the slot.
+    leaf_words: Vec<(i32, Word)>,
     /// Inside an assertion's failure block, which runs only when it fails.
     failing: usize,
     ret_scratch: i32,
@@ -824,6 +1139,8 @@ struct Gen<'a> {
     revert_head: Option<i32>,
     /// Runtime branches around the code being compiled.
     branch: u32,
+    /// The `branch` of code that runs whenever the current body or shared function does.
+    top_branch: u32,
     body: Option<Body>,
     bodies: usize,
     /// The locals declared by each enclosing loop, innermost last.

@@ -326,13 +326,14 @@ fn parallel<T: Sync, R: Send>(
     f: impl Fn(&T) -> Result<R, Error> + Sync,
 ) -> Result<Vec<R>, Error> {
     let f = &f;
+    let byte_gas = crate::asm::byte_gas();
     std::thread::scope(|s| {
         let handles: Vec<_> = items
             .iter()
             .map(|item| {
                 std::thread::Builder::new()
                     .stack_size(64 << 20)
-                    .spawn_scoped(s, move || f(item))
+                    .spawn_scoped(s, move || crate::asm::with_byte_gas(byte_gas, || f(item)))
                     .expect("spawn a codegen thread")
             })
             .collect();
@@ -664,9 +665,10 @@ fn cache_path(checked: &Checked, name: &str, opts: &Options) -> Option<PathBuf> 
         },
     };
     let key = format!(
-        "{}\0{:?}\0{name}\0{opts:?}",
+        "{}\0{:?}\0{name}\0{opts:?}\0{}",
         env!("LITHE_BUILD_ID"),
-        checked.source
+        checked.source,
+        crate::asm::byte_gas()
     );
     Some(dir.join(crate::hex(&keccak256(key.as_bytes()))))
 }

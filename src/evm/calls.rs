@@ -1771,6 +1771,180 @@ contract Vault is {
     }
 }
 
+/// `bytes` and `string` parameters only ever encoded whole stay in calldata and are
+/// checked and copied where they are encoded, after a selector written in place.
+#[test]
+fn passed_through_bytes_encode_from_calldata() {
+    let src = "\
+import \"std/abi\"; 
+storage is record { n : uint; }
+external pure function fwd(const n : uint; const data : bytes; const s : string) : bytes is
+  Abi.encode_with_selector(0x12345678, n, data, s)
+";
+    let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
+    let w = Word::from_u64;
+    let run = |data: Vec<u8>| exec(&runtime, &data, HashMap::new(), w(7), w(0), w(0)).expect("run");
+    for (data, s) in [
+        (vec![], vec![]),
+        (vec![1, 2, 3], b"hi".to_vec()),
+        (vec![9; 70], vec![b'x'; 33]),
+    ] {
+        let args = [Arg::W(w(5)), Arg::B(data.clone()), Arg::B(s.clone())];
+        let out = run(encode_args("fwd(uint256,bytes,string)", &args));
+        assert!(!out.reverted, "{data:?}");
+        let mut want = vec![0x12, 0x34, 0x56, 0x78];
+        want.extend_from_slice(&encode_args("", &args)[4..]);
+        assert_eq!(abi_string_value(&out.returndata), want);
+    }
+    let mut past = encode_args("fwd(uint256,bytes,string)", &[Arg::W(w(5)), Arg::B(vec![1]), Arg::B(vec![2])]);
+    past[4 + 63] = 0xff;
+    assert!(run(past).reverted);
+}
+
+/// A parameter handed on to an inlined function that only encodes it whole stays in
+/// calldata too; the same function called with a value in memory still encodes that.
+#[test]
+fn bytes_passed_through_inlined_calls_encode_from_calldata() {
+    let src = "\
+import \"std/abi\"; import \"std/bytes\"; 
+storage is record { n : uint; }
+pure function wrap(const n : uint; const data : bytes) : bytes is
+  Abi.encode_with_selector(0x12345678, n, data)
+pure function twice(const data : bytes) : bytes is
+  wrap(2, data)
+external pure function fwd(const n : uint; const data : bytes) : bytes is
+  Bytes.concat(wrap(n, data), twice(data), wrap(3, Bytes.concat(0xabcd, 0xef)))
+";
+    let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
+    let w = Word::from_u64;
+    let run = |data: Vec<u8>| exec(&runtime, &data, HashMap::new(), w(7), w(0), w(0)).expect("run");
+    let wrapped = |n: u64, data: &[u8]| {
+        let mut out = vec![0x12, 0x34, 0x56, 0x78];
+        out.extend_from_slice(&encode_args("", &[Arg::W(w(n)), Arg::B(data.to_vec())])[4..]);
+        out
+    };
+    for data in [vec![], vec![1, 2, 3], vec![9; 70]] {
+        let out = run(encode_args("fwd(uint256,bytes)", &[Arg::W(w(5)), Arg::B(data.clone())]));
+        assert!(!out.reverted, "{data:?}");
+        let mut want = wrapped(5, &data);
+        want.extend(wrapped(2, &data));
+        want.extend(wrapped(3, &[0xab, 0xcd, 0xef]));
+        assert_eq!(abi_string_value(&out.returndata), want);
+    }
+}
+
+/// A list parameter read by index, logged, encoded, and handed to an inlined function that
+/// encodes it stays in calldata, and each of those reads it from there.
+#[test]
+fn calldata_lists_read_and_encode_in_place() {
+    let src = "\
+import \"std/abi\"; 
+event Got of record { indexed n : uint; xs : list(uint); tags : list(bytes4); }
+storage is record { n : uint; }
+pure function wrap(const xs : list(uint)) : bytes is Abi.encode_with_selector(0x12345678, xs)
+external function f(const xs : list(uint); const tags : list(bytes4); const i : uint) : (uint, bytes4, bytes, bytes) is {
+  emit Got { n = xs.length; xs = xs; tags = tags; };
+} with (xs[i], tags[i], Abi.encode(xs, tags), wrap(xs))
+";
+    let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
+    let w = |n: u64| Word::from_u64(n).to_be_bytes().to_vec();
+    let run = |data: Vec<u8>| {
+        let one = Word::from_u64(1);
+        let zero = Word::from_u64(0);
+        exec(&runtime, &data, HashMap::new(), one, zero, zero).expect("run")
+    };
+    let tag = |b: u8| [vec![b, 0xbe, 0xef, b], vec![0; 28]].concat();
+    let lists = [w(3), w(5), w(6), w(7), w(3), tag(1), tag(2), tag(3)].concat();
+    let encoded = [w(0x40), w(0xc0), lists.clone()].concat();
+    let wrapped = [vec![0x12, 0x34, 0x56, 0x78], w(0x20), lists[..128].to_vec()].concat();
+    let call = |i: u64| {
+        let sig = selector("f(uint256[],bytes4[],uint256)").to_vec();
+        run([sig, w(0x60), w(0xe0), w(i), lists.clone()].concat())
+    };
+    for i in 0..3u64 {
+        let out = call(i);
+        assert!(!out.reverted, "{i}: {}", pretty(&out.returndata));
+        // The results are one tuple, after its offset.
+        let r = &out.returndata[32..];
+        assert_eq!(r[..32], w(5 + i)[..]);
+        assert_eq!(r[32..64], tag(i as u8 + 1)[..]);
+        let dynamic = |k: usize| {
+            let at = |o: usize| u64::from_be_bytes(r[o + 24..o + 32].try_into().unwrap()) as usize;
+            let off = at(64 + 32 * k);
+            let len = at(off);
+            r[off + 32..off + 32 + len].to_vec()
+        };
+        assert_eq!(hex(&dynamic(0)), hex(&encoded));
+        assert_eq!(hex(&dynamic(1)), hex(&wrapped));
+        assert!(out.detail.iter().any(|d| d.ends_with(&hex(&encoded))), "{:?}", out.detail);
+    }
+    let out = call(3);
+    assert!(out.reverted);
+    assert_eq!(out.returndata[35], 0x32);
+    // A dirty element the index never reads still fails when the event encodes it.
+    let mut dirty = lists.clone();
+    dirty[7 * 32 + 31] = 1;
+    let sig = selector("f(uint256[],bytes4[],uint256)").to_vec();
+    assert!(run([sig, w(0x60), w(0xe0), w(0), dirty].concat()).reverted);
+}
+
+/// A string parameter whose uses are its length, concatenations, and errors stays in
+/// calldata: a concat copies it from there, and an error copies it out when it raises.
+#[test]
+fn calldata_strings_join_and_raise_in_place() {
+    let src = "\
+import \"std/string\"; 
+error Too_long of record { name : string; limit : uint; }
+storage is record { n : uint; }
+pure function greet(const s : string) : string is String.concat(\"<\", s, \">\")
+external pure function f(const s : string) : string raises Too_long is {
+  assert(s.length <= 40, Too_long { name = s; limit = 40; });
+} with String.concat(s, \": \", greet(s))
+";
+    let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
+    let w = Word::from_u64;
+    let run = |data: Vec<u8>| exec(&runtime, &data, HashMap::new(), w(7), w(0), w(0)).expect("run");
+    for text in [&b""[..], b"hi", &[b'x'; 33][..]] {
+        let out = run(encode_args("f(string)", &[Arg::B(text.to_vec())]));
+        assert!(!out.reverted, "{text:?}");
+        let want = [text, b": <", text, b">"].concat();
+        assert_eq!(abi_string_value(&out.returndata), want);
+    }
+    let long = vec![b'y'; 41];
+    let out = run(encode_args("f(string)", &[Arg::B(long.clone())]));
+    assert!(out.reverted);
+    let want = encode_args("", &[Arg::B(long), Arg::W(w(40))]);
+    assert_eq!(hex(&out.returndata[4..]), hex(&want[4..]));
+    let mut past = encode_args("f(string)", &[Arg::B(b"hi".to_vec())]);
+    past[4 + 63] = 0xff;
+    assert!(run(past).reverted);
+}
+
+/// A stored string joined by a concat is copied from its slots into the result, short
+/// and long, empty or not.
+#[test]
+fn stored_strings_join_from_their_slots() {
+    let src = "\
+import \"std/string\"; 
+storage is record { name : string; n : uint; }
+external function set(const s : string) is { storage.name := s; }
+external view function f(const s : string) : string is String.concat(s, \"|\", storage.name, \"|\", storage.name)
+";
+    let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
+    let w = Word::from_u64;
+    let mut storage = HashMap::new();
+    for name in [&b""[..], b"ab", &[b'q'; 31][..], &[b'r'; 32][..], &[b's'; 70][..], &[b't'; 40][..], b"z"] {
+        let set = exec(&runtime, &encode_args("set(string)", &[Arg::B(name.to_vec())]), storage.clone(), w(7), w(0), w(0))
+            .expect("set");
+        assert!(!set.reverted);
+        storage = set.storage.clone();
+        let out = exec(&runtime, &encode_args("f(string)", &[Arg::B(b"hi".to_vec())]), storage.clone(), w(7), w(0), w(0))
+            .expect("f");
+        assert!(!out.reverted);
+        assert_eq!(abi_string_value(&out.returndata), [&b"hi|"[..], name, b"|", name].concat(), "{}", name.len());
+    }
+}
+
 /// `Bytes.concat` and `String.concat` join values in order; `Abi.encode_call` checks its
 /// arguments against an interface method and encodes like Solidity's `abi.encodeCall`.
 #[test]

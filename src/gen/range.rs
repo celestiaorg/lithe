@@ -178,6 +178,12 @@ impl<'a> Gen<'a> {
                     && self.fixed(right)
             }
             Expr::Unary { expr, .. } => self.fixed(expr),
+            // A list or bytes that cannot be rebound never changes length.
+            Expr::Field { base, name, .. } => {
+                name == "length"
+                    && (self.list_value(base.ty()) || self.is_dynamic(base.ty()))
+                    && self.fixed(base)
+            }
             Expr::Call {
                 builtin: Some(Builtin::Cast),
                 args,
@@ -187,11 +193,60 @@ impl<'a> Gen<'a> {
         }
     }
 
+    /// Whether the facts prove `index` below the length of the list whose pointer is at
+    /// `at`: directly, or through one more ordering, such as an asserted equal length.
+    pub(super) fn index_below(&self, index: &Expr, at: i32) -> bool {
+        let length_at = |e: &Expr| {
+            matches!(e, Expr::Field { base, name, .. }
+                if name == "length" && self.addr_expr(base).ok() == Some(at))
+        };
+        self.facts.iter().any(|f| {
+            f.strict
+                && same_value(&f.lo, index)
+                && (length_at(&f.hi)
+                    || self
+                        .facts
+                        .iter()
+                        .any(|g| same_value(&g.lo, &f.hi) && length_at(&g.hi)))
+        })
+    }
+
+    /// Records `lo <= counter` and `counter < hi` for a loop's body.
+    pub(super) fn assume_counter(&mut self, counter: Expr, lo: Option<&Expr>, hi: &Expr) {
+        let kind = self.checked.types[self.peel_nominal(counter.ty())].kind;
+        if kind != TyKind::Uint {
+            return;
+        }
+        if let Some(lo) = lo.filter(|lo| self.fixed(lo)) {
+            self.facts.push(Fact {
+                lo: lo.clone(),
+                hi: counter.clone(),
+                strict: false,
+            });
+        }
+        if self.fixed(hi) {
+            self.facts.push(Fact {
+                lo: counter,
+                hi: hi.clone(),
+                strict: true,
+            });
+        }
+    }
+
     /// Whether unsigned `left op right` provably stays within 256 bits.
     pub(super) fn cannot_wrap(&self, op: BinOp, left: &Expr, right: &Expr) -> bool {
         let (a, b) = (self.range_of(left), self.range_of(right));
+        // `r <= m - l` bounds `l + r` by `m`.
+        let below_rest = |l: &Expr, r: &Expr| {
+            self.facts.iter().any(|f| {
+                same_value(&f.lo, r)
+                    && matches!(&f.hi, Expr::Binary { op: BinOp::Sub, right, .. } if same_value(right, l))
+            })
+        };
         match op {
-            BinOp::Add => !a.1.overflowing_add(b.1).1,
+            BinOp::Add => {
+                !a.1.overflowing_add(b.1).1 || below_rest(left, right) || below_rest(right, left)
+            }
             BinOp::Mul => !a.1.overflowing_mul(b.1).1,
             BinOp::Pow => !a.1.overflowing_pow(b.1).1,
             BinOp::Sub => {
@@ -277,6 +332,16 @@ impl<'a> Gen<'a> {
                 let w = self.const_params[s];
                 (w, w)
             }
+            // Decoding checks a length from calldata below 2^64, and memory could never hold
+            // as much; only storage keeps a length in a slot.
+            Expr::Field { base, name, .. }
+                if name == "length"
+                    && (self.list_value(base.ty()) || self.is_dynamic(base.ty()))
+                    && matches!(base.as_ref(), Expr::Ident { sym: Some(s), builtin: None, .. }
+                        if !self.checked.syms[*s].storage && !self.checked.slot_syms.contains_key(s)) =>
+            {
+                (Word::from_u64(0), Word::from_u64(u64::MAX))
+            }
             // A cast checks the word or reinterprets it; it never changes it.
             Expr::Call {
                 builtin: Some(Builtin::Cast | Builtin::FromBits(_)),
@@ -327,7 +392,11 @@ impl<'a> Gen<'a> {
                     BinOp::Shl if b.1.lt(Word::from_u64(256)) => {
                         let k = b.1 .0[0] as u32;
                         let top = a.1.shl(k);
-                        if top.shr(k) == a.1 {
+                        // A narrow shift masks what leaves its type.
+                        let bits = u32::from(self.integer_info(left.ty()).1);
+                        if top.shr(k) == a.1 && top.shr(bits).is_zero() {
+                            (a.0.shl(b.0 .0[0] as u32), top)
+                        } else if top.shr(k) == a.1 {
                             (zero, top)
                         } else {
                             full

@@ -163,9 +163,73 @@ impl<'a> Gen<'a> {
         self.jumpdest(short);
         self.mstore_off(self.addr(sym, leaf));
         self.mark_dirty(sym, leaf);
-        self.branch -= 1;
+        self.leave_branch();
         self.jumpdest(done);
         Ok(())
+    }
+
+    /// The stored place of a string or bytes field, if `e` names one.
+    pub(super) fn stored_str(&self, e: &Expr) -> Option<(usize, u32)> {
+        self.stored_place(e)
+            .filter(|_| self.is_dynamic(self.peel_nominal(e.ty())) && !self.place_transient(e))
+    }
+
+    /// `[start, cur]` becomes `[start, cur + len]`, the stored string or bytes value's bytes
+    /// written from `cur`: the packed slot's bytes, or each data slot in turn.
+    pub(super) fn copy_stored_bytes(&mut self, sym: usize, leaf: u32) {
+        let (long, top, end, done) = (self.fresh(), self.fresh(), self.fresh(), self.fresh());
+        self.mload(self.addr(sym, leaf));
+        self.op(DUP1);
+        self.push_u64(1);
+        self.op(AND);
+        self.push_label(long);
+        self.op(JUMPI);
+        // [start, cur, word]: the length is half the low byte, the bytes are above it.
+        self.op(DUP1);
+        self.push_u64(0xff);
+        self.op(AND);
+        self.push_u64(1);
+        self.op(SHR);
+        self.op(SWAP1);
+        self.push_u64(0xff);
+        self.op(NOT);
+        self.op(AND);
+        self.op(DUP1 + 2);
+        self.op(MSTORE);
+        self.push_label(done);
+        self.op(JUMP);
+        self.jumpdest(long);
+        self.push_u64(1);
+        self.op(SHR);
+        // [start, cur, len, slot, j]: `j` counts bytes, a slot at a time.
+        self.keccak_slot(sym, leaf);
+        self.op(PUSH0);
+        self.jumpdest(top);
+        self.op(DUP1 + 2);
+        self.op(DUP1 + 1);
+        self.op(LT);
+        self.op(ISZERO);
+        self.push_label(end);
+        self.op(JUMPI);
+        self.op(DUP1 + 1);
+        self.op(DUP1 + 1);
+        self.push_u64(5);
+        self.op(SHR);
+        self.op(ADD);
+        self.op(SLOAD);
+        self.op(DUP1 + 1);
+        self.op(DUP1 + 5);
+        self.op(ADD);
+        self.op(MSTORE);
+        self.push_u64(32);
+        self.op(ADD);
+        self.push_label(top);
+        self.op(JUMP);
+        self.jumpdest(end);
+        self.op(POP);
+        self.op(POP);
+        self.jumpdest(done);
+        self.op(ADD);
     }
 
     fn copy_keccak_data(&mut self, sym: usize, leaf: u32) -> Result<(), Error> {

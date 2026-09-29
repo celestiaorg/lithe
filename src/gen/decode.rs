@@ -40,18 +40,27 @@ impl<'a> Gen<'a> {
             // contract, stays in calldata: its position is kept, and each encoding checks and
             // copies it. One never used is not read, as Solidity reads no calldata argument it
             // doesn't use. A record's fields have no one offset, so it is always decoded.
-            if self.tree_param(p.ty_id)
+            // So does a string, bytes, or list passed on whole every time it is used.
+            let tree = self.tree_param(p.ty_id);
+            if (tree || (self.is_dynamic(p.ty_id) && !self.list_value(p.ty_id)))
                 && self.abi_dyn(p.ty_id)
                 && !self.init
                 && !crate::check::abi_record(&self.checked.types, p.ty_id)
             {
-                if let Some(used) = self.passed_through(func, sym) {
+                if let Some((used, length)) =
+                    self.passed_through(func, sym).filter(|&(u, _)| u || tree)
+                {
                     if used {
                         self.push_u64(4 + u64::from(head) * 32);
                         self.cd_load();
                         self.fits_64()?;
                         self.push_u64(4);
                         self.op(ADD);
+                        // A length read needs the bounds decoding would check.
+                        if length {
+                            self.blob_bounds()?;
+                            self.op(POP);
+                        }
                         self.mstore_off(self.local[sym]);
                         self.cd_trees.insert(sym);
                     }
@@ -91,20 +100,21 @@ impl<'a> Gen<'a> {
             } else if self.list_value(p.ty_id) && !self.tree(p.ty_id) {
                 self.decode_list(sym, head, p.ty_id)?;
                 head += 1;
-            } else if self.is_dynamic(p.ty_id) && self.only_decoded(func, sym) {
+            } else if self.is_dynamic(p.ty_id)
+                && if self.init {
+                    self.only_decoded(func, sym)
+                } else {
+                    self.read_in_place(func, sym)
+                }
+            {
                 // Checked as decoding it would be, and read in place.
                 self.push_u64(u64::from(4 + head * 32));
-                self.cd_load();
-                self.op(DUP1);
-                self.push_u64(64);
-                self.op(SHR);
-                self.revert_if_true()?;
-                self.push_u64(4);
-                self.op(ADD);
-                self.blob_bounds()?;
-                self.op(POP);
+                self.check_bytes_arg()?;
                 self.mstore_off(self.local[sym]);
                 self.cd_bytes.insert(sym);
+                if !self.init {
+                    self.cd_trees.insert(sym);
+                }
                 head += 1;
             } else if self.is_dynamic(p.ty_id) {
                 self.decode_dynamic(sym, head, init_sites)?;
@@ -158,10 +168,10 @@ impl<'a> Gen<'a> {
         let f = &self.checked.prog.funcs[func];
         let mut other = false;
         for st in &f.stmts {
-            self.stmt_uses(st, sym, &mut other);
+            self.stmt_uses(st, sym, Some(func), &mut other);
         }
         if let Some(tail) = &f.tail {
-            self.expr_uses(tail, sym, &mut other);
+            self.expr_uses(tail, sym, Some(func), &mut other);
         }
         !other
     }
@@ -197,11 +207,24 @@ impl<'a> Gen<'a> {
                     .is_some_and(|e| self.expr_any(e, &stops, &mut Vec::new())))
     }
 
-    pub(super) fn stmt_uses(&self, st: &Stmt, sym: usize, other: &mut bool) {
-        let mut e = |x: &Expr| self.expr_uses(x, sym, other);
+    pub(super) fn stmt_uses(&self, st: &Stmt, sym: usize, whole: Option<usize>, other: &mut bool) {
+        let mut e = |x: &Expr| self.expr_uses(x, sym, whole, other);
         match st {
             Stmt::Skip => {}
-            Stmt::Emit { fields, .. } => fields.iter().for_each(|(_, x)| e(x)),
+            Stmt::Emit { fields, name, .. } => {
+                let ev = self.checked.events.iter().find(|ev| &ev.name == name);
+                // An event whose data holds no tree is encoded from calldata in place.
+                let flat = ev.is_some_and(|ev| {
+                    !ev.fields.iter().any(|f| !f.indexed && self.tree_part(f.ty))
+                });
+                for (i, (_, x)) in fields.iter().enumerate() {
+                    let data = ev.is_some_and(|ev| ev.fields.get(i).is_some_and(|f| !f.indexed));
+                    let own = matches!(x, Expr::Ident { sym: Some(s), .. } if *s == sym);
+                    if !(whole.is_some() && !self.init && flat && data && own) {
+                        e(x);
+                    }
+                }
+            }
             Stmt::Defer {
                 expr,
                 value,
@@ -214,7 +237,7 @@ impl<'a> Gen<'a> {
                 if let Some(then) = then {
                     for arm in then.arms() {
                         for st in &arm.stmts {
-                            self.stmt_uses(st, sym, other);
+                            self.stmt_uses(st, sym, whole, other);
                         }
                     }
                 }
@@ -242,7 +265,7 @@ impl<'a> Gen<'a> {
             } => {
                 e(cond);
                 for st in then_body.iter().chain(else_body) {
-                    self.stmt_uses(st, sym, other);
+                    self.stmt_uses(st, sym, whole, other);
                 }
             }
             Stmt::For {
@@ -271,29 +294,57 @@ impl<'a> Gen<'a> {
                     None => {}
                 }
                 for st in body {
-                    self.stmt_uses(st, sym, other);
+                    self.stmt_uses(st, sym, whole, other);
                 }
             }
             Stmt::Assert { cond, reason, .. } => {
                 e(cond);
-                self.raised_uses(reason, sym, other);
+                self.raised_uses(reason, sym, whole, other);
             }
-            Stmt::Fail { reason, .. } => self.raised_uses(reason, sym, other),
+            Stmt::Fail { reason, .. } => self.raised_uses(reason, sym, whole, other),
         }
     }
 
-    fn raised_uses(&self, reason: &Raised, sym: usize, other: &mut bool) {
-        match &reason.form {
-            RaisedForm::Unit => {}
-            RaisedForm::Positional(x) => self.expr_uses(x, sym, other),
-            RaisedForm::Fields(fields) => fields
-                .iter()
-                .for_each(|(_, x)| self.expr_uses(x, sym, other)),
+    fn raised_uses(&self, reason: &Raised, sym: usize, whole: Option<usize>, other: &mut bool) {
+        let args = raised_args(reason);
+        let own = |x: &Expr| matches!(x, Expr::Ident { sym: Some(s), .. } if *s == sym);
+        // `revert_flat` copies a list from calldata when every other string, bytes, or list
+        // it raises is a literal or a string or bytes parameter read in place.
+        let ty = self.checked.syms[sym].ty;
+        let Some(func) = whole else {
+            args.iter().for_each(|x| self.expr_uses(x, sym, whole, other));
+            return;
+        };
+        let flat = !self.init
+            && self.list_value(ty)
+            && self.list_k(ty) == 1
+            && !self.is_dynamic(self.peel_nominal(self.list_elem(ty)))
+            && !self.needs_check(self.list_elem(ty))
+            && args.iter().filter(|x| !matches!(x, Expr::Lit { .. })).count() <= FLAT_ARGS
+            && args.iter().all(|x| match x {
+                Expr::Lit { .. } => true,
+                Expr::Ident { sym: Some(s), .. } if *s == sym => true,
+                Expr::Ident { sym: Some(s), .. }
+                    if self.is_dynamic(x.ty()) && !self.list_value(x.ty()) =>
+                {
+                    self.checked.prog.funcs[func].params.iter().any(|p| p.sym == Some(*s))
+                        && self.read_in_place(func, *s)
+                }
+                _ => !(self.is_dynamic(x.ty()) || self.list_value(x.ty()) || self.tree_part(x.ty())),
+            });
+        for x in args {
+            if !(flat && own(x)) {
+                self.expr_uses(x, sym, whole, other);
+            }
         }
     }
 
-    pub(super) fn expr_uses(&self, x: &Expr, sym: usize, other: &mut bool) {
-        let mut e = |y: &Expr| self.expr_uses(y, sym, other);
+    /// With `whole`, a calldata list's uses also include reading an element that needs no
+    /// check, and passing it on whole: to an event's data, to `Abi.encode` and its variants,
+    /// to another contract, or to an inlined call's constant parameter used so.
+    pub(super) fn expr_uses(&self, x: &Expr, sym: usize, whole: Option<usize>, other: &mut bool) {
+        let own = |y: &Expr| !self.init && matches!(y, Expr::Ident { sym: Some(s), .. } if *s == sym);
+        let mut e = |y: &Expr| self.expr_uses(y, sym, whole, other);
         match x {
             Expr::Lit { .. } => {}
             Expr::Ident { sym: s, .. } => *other |= *s == Some(sym),
@@ -306,21 +357,63 @@ impl<'a> Gen<'a> {
                 gas.iter().for_each(|g| e(g));
             }
             Expr::Unary { expr, .. } => e(expr),
+            Expr::Index { base, index, .. }
+                if whole.is_some()
+                    && own(base)
+                    && !self.needs_check(self.list_elem(self.checked.syms[sym].ty)) =>
+            {
+                e(index)
+            }
             Expr::Index { base, index, .. } => {
                 e(base);
                 e(index);
             }
-            Expr::Call { args, base, .. } => {
+            Expr::Call {
+                args,
+                base,
+                callee,
+                builtin,
+                iface,
+                ..
+            } => {
                 base.iter().for_each(|b| e(b));
-                args.iter().for_each(&mut e);
+                let encoded = iface.is_some()
+                    || matches!(
+                        builtin,
+                        Some(
+                            Builtin::AbiEncode
+                                | Builtin::AbiEncodeCall
+                                | Builtin::AbiEncodeSelector
+                                | Builtin::AbiEncodeSignature
+                        )
+                    );
+                let params = callee
+                    .filter(|idx| builtin.is_none() && !self.plan.outline.contains(idx))
+                    .map(|idx| (idx, self.continuation_syms(idx)));
+                for (j, arg) in args.iter().enumerate() {
+                    // Encoded whole, or read in place by an inlined call's constant parameter.
+                    let in_place = whole.is_some()
+                        && own(arg)
+                        && (encoded
+                            || params.as_ref().is_some_and(|(idx, later)| {
+                                self.checked.prog.funcs[*idx].params[j].sym.is_some_and(|p| {
+                                    !self.checked.syms[p].mutable
+                                        && !later.contains(&p)
+                                        && self.stays_in_calldata(*idx, p)
+                                })
+                            }));
+                    if !in_place {
+                        e(arg);
+                    }
+                }
             }
             Expr::Case { scrut, arms, .. } => {
                 e(scrut);
                 for arm in arms {
                     for st in &arm.stmts {
-                        self.stmt_uses(st, sym, other);
+                        self.stmt_uses(st, sym, whole, other);
                     }
-                    self.expr_uses(&arm.expr, sym, other);
+                    self.expr_uses(&arm.expr, sym, whole, other);
                 }
             }
             Expr::Binary { left, right, .. } => {
@@ -528,7 +621,7 @@ impl<'a> Gen<'a> {
                 self.op(MSTORE);
             }
         }
-        self.branch -= 1;
+        self.leave_branch();
         self.push_u64(32 * k);
         self.op(ADD);
         self.push_label(top);
@@ -555,6 +648,21 @@ impl<'a> Gen<'a> {
             self.decode_bytes_arg()?;
         }
         self.mstore_off(self.local[sym]);
+        Ok(())
+    }
+
+    /// `[pos]` becomes the calldata position of the length word of the `string` or `bytes`
+    /// argument whose head is at `pos`, checked as decoding it would be.
+    pub(super) fn check_bytes_arg(&mut self) -> Result<(), Error> {
+        self.cd_load();
+        self.op(DUP1);
+        self.push_u64(64);
+        self.op(SHR);
+        self.revert_if_true()?;
+        self.push_u64(4);
+        self.op(ADD);
+        self.blob_bounds()?;
+        self.op(POP);
         Ok(())
     }
 
@@ -603,6 +711,12 @@ impl<'a> Gen<'a> {
     /// copied into a blob.
     fn decode_blob(&mut self) -> Result<(), Error> {
         self.blob_bounds()?;
+        self.copy_cd_blob()
+    }
+
+    /// `[pos, len]`, a length word in calldata and the length it holds, becomes a blob of
+    /// the bytes after it.
+    pub(super) fn copy_cd_blob(&mut self) -> Result<(), Error> {
         // [data offset, len] becomes [header, len, data + 32, header + 32]
         self.alloc_blob()?;
         self.op(DUP1);

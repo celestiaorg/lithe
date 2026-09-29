@@ -563,6 +563,7 @@ raised by:
 #[test]
 fn proven_arithmetic_skips_its_check() {
     let head = "\
+import \"std/uint\"; 
 import \"std/uint\"; storage is record { n : uint; }
 error Low;
 pure function shifted(const y : uint112; const x : uint112) : uint is (uint(y) << 112) / uint(x)
@@ -614,6 +615,14 @@ is {{
             "if m <> 0 and m - 1 < n then { r := 1; }",
             "if m <> 0 and Uint.wrapping_sub(m, 1) < n then { r := 1; }",
         ),
+        (
+            "assert(m <= Uint.max - n, Low); r := n + m;",
+            "assert(m <= Uint.max - n, Low); r := Uint.wrapping_add(n, m);",
+        ),
+        (
+            "assert(m <= uint(a) - n, Low); r := m + n;",
+            "assert(m <= uint(a) - n, Low); r := Uint.wrapping_add(m, n);",
+        ),
     ];
     for (checked, wrapping) in pairs {
         assert_eq!(build(checked), build(wrapping), "{checked}");
@@ -622,6 +631,10 @@ is {{
     assert!(
         build("r := uint(uint32(n % 4294967296));").len()
             < build("r := uint(uint32(n % 4294967297));").len()
+    );
+    assert!(
+        build("assert(m <= uint(a) - uint(b), Low); r := n + m;").len()
+            > build("assert(m <= uint(a) - n, Low); r := n + m;").len()
     );
     assert!(
         build("assert(n <= uint(a), Low); r := uint(uint112(n));").len()
@@ -703,6 +716,156 @@ external view function cast(const n : uint) : uint32 is uint32(n % 4294967297)
     returns("narrow_sub(uint8,uint8)", &[w(5), w(3)], w(2));
     panics("cast(uint256)", &[Word::from_u64(1).shl(32)]);
     returns("cast(uint256)", &[w(5)], w(5));
+}
+
+/// A product with a constant factor panics exactly when it overflows, and `and` and `or`
+/// conditions skip their right side when the left decides, as each statement tests them.
+#[test]
+fn constant_factors_and_short_circuits() {
+    let src = "\
+storage is record { n : uint; }
+error Bad;
+external pure function by3(const x : uint) : uint is x * 3
+external pure function by8(const x : uint) : uint is 8 * x
+external pure function guarded(const x : uint) : uint is {
+  var r : uint := 0;
+  if x = 0 or 10 / x > 1 then {
+    r := 1;
+  }
+  if x <> 0 and 10 / x = 0 then {
+    r := r + 2;
+  }
+} with r
+external pure function asserted(const x : uint) : uint
+  raises Bad
+is {
+  assert(x = 0 or 10 / x < 5, Bad);
+} with x
+external pure function until_either(const x : uint) : uint is {
+  var i : uint := 0;
+  for _ : uint in 0 .. 10 until i = x or 12 / (x - i) = 0 do {
+    i := i + 1;
+  }
+} with i
+";
+    let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
+    let w = Word::from_u64;
+    let max = w(0).not();
+    let returns = |sig: &str, x: Word, want: Word| {
+        let out = call(&runtime, sig, &[x]);
+        assert!(!out.reverted, "{sig} {x:?}: {}", pretty(&out.returndata));
+        assert_eq!(load_bytes(&out.returndata, 0), want, "{sig} {x:?}");
+    };
+    let panics = |sig: &str, x: Word| {
+        let out = call(&runtime, sig, &[x]);
+        assert!(out.reverted, "{sig} {x:?}");
+        assert_eq!(load_bytes(&out.returndata, 4), w(0x11), "{sig} {x:?}");
+    };
+    let third = max.div(w(3));
+    returns("by3(uint256)", third, third.wrapping_mul(w(3)));
+    panics("by3(uint256)", third.wrapping_add(w(1)));
+    returns("by8(uint256)", max.shr(3), max.shr(3).shl(3));
+    panics("by8(uint256)", max.shr(3).wrapping_add(w(1)));
+    returns("guarded(uint256)", w(0), w(1));
+    returns("guarded(uint256)", w(3), w(1));
+    returns("guarded(uint256)", w(20), w(2));
+    returns("asserted(uint256)", w(0), w(0));
+    returns("asserted(uint256)", w(3), w(3));
+    let bad = call(&runtime, "asserted(uint256)", &[w(1)]);
+    assert!(bad.reverted && bad.returndata.starts_with(&selector("Bad()")));
+    returns("until_either(uint256)", w(0), w(0));
+    returns("until_either(uint256)", w(3), w(3));
+    returns("until_either(uint256)", w(20), w(0));
+}
+
+/// A loop counter indexes another list unchecked only when the facts tie that list's length
+/// to the one iterated; any other index into it still panics past the end.
+#[test]
+fn loop_counters_skip_only_proven_bounds() {
+    let src = "\
+storage is record { n : uint; }
+error Mismatch;
+external pure function paired(const xs : list(uint); const ys : list(uint)) : uint
+  raises Mismatch
+is {
+  assert(xs.length = ys.length, Mismatch);
+  var acc : uint := 0;
+  for (i, x) : (uint, uint) in xs do {
+    acc := acc + x * ys[i];
+  }
+} with acc
+external pure function shorter(const xs : list(uint); const ys : list(uint)) : uint
+  raises Mismatch
+is {
+  assert(ys.length <= xs.length, Mismatch);
+  var acc : uint := 0;
+  for (i, x) : (uint, uint) in xs do {
+    acc := acc + x * ys[i];
+  }
+} with acc
+external pure function unpaired(const xs : list(uint); const ys : list(uint)) : uint is {
+  var acc : uint := 0;
+  for (i, x) : (uint, uint) in xs do {
+    acc := acc + x * ys[i];
+  }
+} with acc
+external pure function ranged(const xs : list(uint); const n : uint) : uint is {
+  var acc : uint := 0;
+  for i : uint in 0 .. n do {
+    acc := acc + xs[i];
+  }
+} with acc
+external pure function to_length(const xs : list(uint)) : uint is {
+  var acc : uint := 0;
+  for i : uint in 0 .. xs.length do {
+    acc := acc + xs[i + 0] * 2;
+  }
+} with acc
+";
+    let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
+    let w = Word::from_u64;
+    let lists = |sig: &str, xs: &[u64], ys: &[u64]| {
+        let mut c = selector(sig).to_vec();
+        c.extend_from_slice(&w(64).to_be_bytes());
+        c.extend_from_slice(&w(96 + 32 * xs.len() as u64).to_be_bytes());
+        for list in [xs, ys] {
+            c.extend_from_slice(&w(list.len() as u64).to_be_bytes());
+            for &x in list {
+                c.extend_from_slice(&w(x).to_be_bytes());
+            }
+        }
+        call_raw(&runtime, &c)
+    };
+    let list_and = |sig: &str, xs: &[u64], n: u64| {
+        let mut c = selector(sig).to_vec();
+        c.extend_from_slice(&w(64).to_be_bytes());
+        c.extend_from_slice(&w(n).to_be_bytes());
+        c.extend_from_slice(&w(xs.len() as u64).to_be_bytes());
+        for &x in xs {
+            c.extend_from_slice(&w(x).to_be_bytes());
+        }
+        call_raw(&runtime, &c)
+    };
+    let value = |out: &Outcome| {
+        assert!(!out.reverted, "{}", pretty(&out.returndata));
+        load_bytes(&out.returndata, 0)
+    };
+    let panics = |out: &Outcome| out.reverted && load_bytes(&out.returndata, 4) == w(0x32);
+    let two = "(uint256[],uint256[])";
+    assert_eq!(value(&lists(&format!("paired{two}"), &[1, 2, 3], &[4, 5, 6])), w(32));
+    let short = lists(&format!("paired{two}"), &[1, 2, 3], &[4, 5]);
+    assert!(short.reverted && short.returndata.starts_with(&selector("Mismatch()")));
+    assert_eq!(value(&lists(&format!("shorter{two}"), &[1, 2], &[4, 5])), w(14));
+    assert!(panics(&lists(&format!("shorter{two}"), &[1, 2, 3], &[4, 5])));
+    assert_eq!(value(&lists(&format!("unpaired{two}"), &[1, 2], &[4, 5, 6])), w(14));
+    assert!(panics(&lists(&format!("unpaired{two}"), &[1, 2, 3], &[4, 5])));
+    assert_eq!(value(&list_and("ranged(uint256[],uint256)", &[1, 2, 3], 3)), w(6));
+    assert!(panics(&list_and("ranged(uint256[],uint256)", &[1, 2, 3], 4)));
+    let mut c = selector("to_length(uint256[])").to_vec();
+    for word in [32, 2, 7, 8] {
+        c.extend_from_slice(&w(word).to_be_bytes());
+    }
+    assert_eq!(value(&call_raw(&runtime, &c)), w(30));
 }
 
 #[test]

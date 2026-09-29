@@ -126,6 +126,8 @@ const SELFDESTRUCT: u8 = 0xff;
 const MAX_ROUNDS: usize = 500;
 /// A shared tail costs a `JUMPDEST` plus `PUSH2 tail JUMP` at the donor.
 const MIN_TAIL_BYTES: usize = 6;
+/// Gas the jump to a shared tail adds: a push, the jump, and its jumpdest.
+const TAIL_GAS: f64 = 12.0;
 
 pub(crate) fn optimize(code: &mut Vec<Inst>) {
     for _ in 0..MAX_ROUNDS {
@@ -769,6 +771,10 @@ fn rewrite(w: &[Inst]) -> Option<(usize, Vec<Inst>)> {
         }
         [Push(c), Op(op @ (LT | GT | SLT | SGT)), Op(ISZERO), ..] => flip_compare(*c, *op),
         [Push(o), Op(MUL), ..] if *o == one => Some((2, vec![])),
+        // A shift costs 3 gas to a multiply's 5, and `k` never takes more bytes than `2^k`.
+        [Push(c), Op(MUL), ..] if trailing_zeros(*c) < 256 && *c == one.shl(trailing_zeros(*c)) => {
+            Some((2, vec![Push(Word::from_u64(u64::from(trailing_zeros(*c)))), Op(SHL)]))
+        }
         [Push(z), Op(SWAP1), Op(SUB), ..] if z.is_zero() => Some((3, vec![])),
         [Push(o), Op(SWAP1), Op(DIV), ..] if *o == one => Some((3, vec![])),
         [Push(a), Op(MSTORE), Push(b), Op(MLOAD), ..] if a == b => {
@@ -1088,6 +1094,7 @@ fn dup_constants(code: &mut [Inst]) -> bool {
 /// Two exits that end the same way share the common tail.
 fn merge_tails(code: &mut Vec<Inst>) -> bool {
     let segs = segments(code);
+    let heat = heat(code);
     let mut refs: FxHashMap<u32, usize> = FxHashMap::default();
     for inst in code.iter() {
         match inst {
@@ -1110,7 +1117,6 @@ fn merge_tails(code: &mut Vec<Inst>) -> bool {
             .sum();
         (jumps + falls as usize).max(1)
     };
-    let mut best: Option<(usize, usize, usize, usize)> = None;
     // A segment ends in a one-byte exit, so a tail worth sharing is at least two long.
     let mut by_last: FxHashMap<(Inst, Inst), Vec<usize>> = FxHashMap::default();
     for (k, seg) in segs.iter().enumerate() {
@@ -1121,6 +1127,7 @@ fn merge_tails(code: &mut Vec<Inst>) -> bool {
                 .push(k);
         }
     }
+    let mut pairs: Vec<(usize, usize, usize, usize)> = Vec::new();
     for group in by_last.values() {
         for (x, &a) in group.iter().enumerate() {
             for &b in &group[x + 1..] {
@@ -1134,40 +1141,55 @@ fn merge_tails(code: &mut Vec<Inst>) -> bool {
                     bytes += inst_len(&code[sa.end - n]);
                     n += 1;
                 }
-                // Ties go to the earliest pair, so the output never depends on map order.
-                let better = best.is_none_or(|(ba, bb, _, have)| {
-                    bytes > have || (bytes == have && (a, b) < (ba, bb))
-                });
-                if bytes >= MIN_TAIL_BYTES && better && bytes + 1 >= MIN_TAIL_BYTES + calls(sb) {
-                    best = Some((a, b, n, bytes));
+                // The colder copy takes the jump, which must save a byte for each few gas
+                // it adds.
+                let (a, b) = if heat[sb.end] > heat[sa.end] { (b, a) } else { (a, b) };
+                let slower = heat[segs[b].end] * TAIL_GAS / byte_gas();
+                if bytes >= MIN_TAIL_BYTES
+                    && bytes + 1 >= MIN_TAIL_BYTES + calls(&segs[b])
+                    && (bytes + 1 - MIN_TAIL_BYTES) as f64 >= slower
+                {
+                    pairs.push((a, b, n, bytes));
                 }
             }
         }
     }
-    let Some((a, b, n, _)) = best else {
+    // The longest tails first, ties to the earliest pair, so the output never depends on
+    // map order. A segment takes part in at most its best merge a call, which keeps the
+    // others' indices and heat as they were, and waits when that partner is taken.
+    pairs.sort_unstable_by(|x, y| y.3.cmp(&x.3).then((x.0, x.1).cmp(&(y.0, y.1))));
+    let mut used = vec![false; segs.len()];
+    let mut next = fresh_label(code);
+    // Each edit replaces a range: a tail with a jump, or nothing with a label.
+    let mut edits: Vec<(std::ops::Range<usize>, Vec<Inst>)> = Vec::new();
+    for &(a, b, n, _) in &pairs {
+        let free = !used[a] && !used[b];
+        used[a] = true;
+        used[b] = true;
+        if !free {
+            continue;
+        }
+        let (keep, give) = (&segs[a], &segs[b]);
+        let whole = n == keep.end + 1 - keep.start && !keep.labels.is_empty();
+        let label = if whole {
+            label_of(&code[keep.labels.start])
+        } else {
+            next += 1;
+            next - 1
+        };
+        edits.push((give.end + 1 - n..give.end + 1, vec![PushLabel(label), Op(JUMP)]));
+        if !whole {
+            let at = keep.end + 1 - n;
+            edits.push((at..at, vec![Label(label)]));
+        }
+    }
+    if edits.is_empty() {
         return false;
-    };
-    let (keep, give) = (&segs[a], &segs[b]);
-    let whole = n == keep.end + 1 - keep.start && !keep.labels.is_empty();
-    let label = if whole {
-        label_of(&code[keep.labels.start])
-    } else {
-        fresh_label(code)
-    };
-    let give_from = give.end + 1 - n;
-    let give_end = give.end;
-    let keep_from = keep.end + 1 - n;
-    // Edit the later range first so the earlier indices stay valid.
-    if give_from > keep_from {
-        code.splice(give_from..=give_end, [PushLabel(label), Op(JUMP)]);
-        if !whole {
-            code.insert(keep_from, Label(label));
-        }
-    } else {
-        if !whole {
-            code.insert(keep_from, Label(label));
-        }
-        code.splice(give_from..=give_end, [PushLabel(label), Op(JUMP)]);
+    }
+    // Later edits first, so the earlier indices stay valid.
+    edits.sort_unstable_by(|x, y| y.0.start.cmp(&x.0.start));
+    for (range, with) in edits {
+        code.splice(range, with);
     }
     true
 }
@@ -1188,17 +1210,26 @@ fn fresh_label(code: &[Inst]) -> u32 {
 const MAX_OUTLINE: usize = 64;
 /// `PUSH2 ret PUSH2 helper JUMP JUMPDEST` at each call.
 const CALL_BYTES: usize = 8;
+/// Gas of a call and its return, but for the swaps: two pushes, two jumps, two jumpdests.
+const CALL_GAS: f64 = 24.0;
 
 /// Moves repeated straight-line runs into shared helpers until no run pays for its calls,
-/// then optimizes and runs `finish`. Sharing exact copies one best run at a time, and
-/// sharing runs that differ in pushed constants several at a time, can each win, so both
-/// are tried and the smaller program is kept.
-pub(crate) fn outline(code: &mut Vec<Inst>, finish: impl Fn(&mut Vec<Inst>) + Sync) {
+/// then optimizes and runs `finish`. A call's gas counts against the bytes it saves, by how
+/// often `entries`, the labels entrypoints begin at, run it. Sharing exact copies one best
+/// run at a time, and sharing runs that differ in pushed constants several at a time, can
+/// each win, so with `both` both are tried and the cheaper program is kept. Without, only
+/// the second, which is the most often cheaper and by the most.
+pub(crate) fn outline(
+    code: &mut Vec<Inst>,
+    entries: &[u32],
+    both: bool,
+    finish: impl Fn(&mut Vec<Inst>) + Sync,
+) {
     let run = |code: &mut Vec<Inst>, params: bool| {
         let mut t = Tokens::default();
         t.splice(0..0, code);
         let mut any = false;
-        while outline_once(code, &mut t, params) {
+        while outline_once(code, &mut t, entries, params) {
             any = true;
         }
         if any {
@@ -1206,13 +1237,17 @@ pub(crate) fn outline(code: &mut Vec<Inst>, finish: impl Fn(&mut Vec<Inst>) + Sy
         }
         finish(code);
     };
+    if !both {
+        run(code, true);
+        return;
+    }
     let mut exact = code.clone();
+    let gas = byte_gas();
     std::thread::scope(|s| {
-        s.spawn(|| run(&mut exact, false));
+        s.spawn(|| with_byte_gas(gas, || run(&mut exact, false)));
         run(code, true);
     });
-    let size = |code: &[Inst]| assemble(code).map_or(usize::MAX, |b| b.len());
-    if size(&exact) <= size(code) {
+    if cost(&exact) <= cost(code) {
         *code = exact;
     }
 }
@@ -1255,7 +1290,17 @@ impl Tokens {
 
 /// Labels that begin an exit which never reads a stack value it did not push.
 /// Jumps to them are safe from inside a helper, whatever lies below.
+/// `safe_exits`, for the code generator: a branch to one leaves a straight run intact.
+pub(crate) fn exit_labels(code: &[Inst]) -> HashSet<u32> {
+    safe_exits(code).into_iter().collect()
+}
+
 fn safe_exits(code: &[Inst]) -> FxHashSet<u32> {
+    safe_exits_reading(code, &|_| false)
+}
+
+/// `safe_exits`, also taking those that touch the words `usable` allows.
+fn safe_exits_reading(code: &[Inst], usable: &dyn Fn(u32) -> bool) -> FxHashSet<u32> {
     let mut out = FxHashSet::default();
     for (i, inst) in code.iter().enumerate() {
         let Label(l) = inst else { continue };
@@ -1263,6 +1308,7 @@ fn safe_exits(code: &[Inst]) -> FxHashSet<u32> {
         let mut ok = false;
         for inst in &code[body_at(code, i)..] {
             match inst {
+                Mem(a) if usable(*a) => depth += 1,
                 Push(_) | PushLabel(_) | Table(_) | Imm(..) => depth += 1,
                 Op(op) if matches!(*op, STOP | RETURN | REVERT | INVALID) => {
                     let (pops, _) = stack_io(*op).unwrap_or((0, 0));
@@ -1460,7 +1506,7 @@ fn repeats(
 
 /// Shares the best run. With `params`, also shares runs that differ in pushed constants,
 /// and every other run that stays clear of the ones already taken.
-fn outline_once(code: &mut Vec<Inst>, t: &mut Tokens, params: bool) -> bool {
+fn outline_once(code: &mut Vec<Inst>, t: &mut Tokens, entries: &[u32], params: bool) -> bool {
     let exits = safe_exits(code);
     let jumpi = t.of(&Op(JUMPI));
     let any_push = t.of(&Push(Word::from_u64(0)));
@@ -1472,6 +1518,7 @@ fn outline_once(code: &mut Vec<Inst>, t: &mut Tokens, params: bool) -> bool {
     }
     let (tok, bytes) = (&t.tok, &t.bytes);
     let n = code.len();
+    let (heat, owner) = flow(code, entries, false);
     let mut size = vec![0usize; n + 1];
     for i in 0..n {
         size[i + 1] = size[i] + bytes[i];
@@ -1513,9 +1560,21 @@ fn outline_once(code: &mut Vec<Inst>, t: &mut Tokens, params: bool) -> bool {
         let body = |s: usize| {
             size[s + len] - size[s] - params.iter().map(|&j| bytes[s + j]).sum::<usize>()
         };
-        let helper = 1 + prologue + body(first) + fetch.iter().sum::<usize>() + leaves + 1;
+        let swaps = prologue + fetch.iter().sum::<usize>() + leaves;
+        let helper = 1 + swaps + body(first) + 1;
         let inline: usize = picked.iter().map(|&s| body(s)).sum();
-        let saved = inline as i64 - (picked.len() * CALL_BYTES + helper) as i64;
+        // Each run pays for two pushes, two jumps, two jumpdests and the swaps. A call runs
+        // for one entrypoint at a time, so only the entrypoint that runs them most counts.
+        let mut per_entry: FxHashMap<u32, f64> = FxHashMap::default();
+        for &s in &picked {
+            *per_entry.entry(owner[s]).or_default() += heat[s];
+        }
+        let shared = per_entry.remove(&SHARED).unwrap_or(0.0);
+        let calls = shared + per_entry.into_values().fold(0.0, f64::max);
+        let slower = calls * (CALL_GAS + 3.0 * swaps as f64) / byte_gas();
+        let saved = inline as i64
+            - (picked.len() * CALL_BYTES + helper) as i64
+            - slower.ceil() as i64;
         Some(Outline {
             saved,
             first,
@@ -1901,13 +1960,17 @@ pub(crate) fn promote(
     calls: &Calls,
     consume: bool,
     hold_dups: bool,
+    sink: bool,
 ) -> bool {
     let mut any = false;
     // Holding a `DUP1` copy is tried once nothing else is left to promote, so it never
     // takes a run another promotion needs.
     let mut dups = false;
+    sink_exits(code, tracked);
+    // An exit may use words promotion never holds, which stay in memory.
+    let untracked = |a: u32| !tracked(a);
     for _ in 0..MAX_ROUNDS {
-        let exits = safe_exits(code);
+        let exits = safe_exits_reading(code, &untracked);
         let runs = runs(code, calls, &exits);
         let live = Live::new(code, tracked, calls);
         let mut edits: Vec<(usize, usize, Vec<Inst>)> = Vec::new();
@@ -1919,7 +1982,9 @@ pub(crate) fn promote(
             if !tracked(a) || busy.contains(&runs.run[i]) {
                 continue;
             }
-            if let Some(mut plan) = plan_promotion(code, i, a, &runs, &live, calls, consume, dups) {
+            if let Some(mut plan) =
+                plan_promotion(code, i, a, &runs, &live, calls, consume, dups, sink)
+            {
                 busy.insert(runs.run[i]);
                 edits.append(&mut plan);
             }
@@ -1940,6 +2005,67 @@ pub(crate) fn promote(
     any
 }
 
+/// Moves each exit a branch jumps over, `PUSH bad JUMPI PUSH ok JUMP bad: .. exit ok:`, to
+/// the end of the code, so the code around it is one straight run, where a word stored
+/// before the branch is loaded after it. Elsewhere the move only unsettles later passes.
+fn sink_exits(code: &mut Vec<Inst>, tracked: &dyn Fn(u32) -> bool) {
+    if !matches!(code.last(), Some(Op(op)) if is_terminal(*op)) {
+        return;
+    }
+    let mut sunk = Vec::new();
+    let mut i = 0;
+    while i + 4 < code.len() {
+        let (PushLabel(bad), Op(JUMPI), PushLabel(ok), Op(JUMP), Label(l)) =
+            (code[i], code[i + 1], code[i + 2], code[i + 3], code[i + 4])
+        else {
+            i += 1;
+            continue;
+        };
+        let end = code[i + 5..]
+            .iter()
+            .position(|inst| matches!(inst, Label(_)))
+            .map(|k| i + 5 + k);
+        let Some(end) = end.filter(|&e| {
+            l == bad && code[e] == Label(ok) && matches!(code[e - 1], Op(op) if is_terminal(op))
+        }) else {
+            i += 1;
+            continue;
+        };
+        let before = code[..i]
+            .iter()
+            .rev()
+            .take_while(|inst| !matches!(inst, Label(_) | Op(JUMP)))
+            .collect::<Vec<_>>();
+        let stored = |a: u32| {
+            before
+                .windows(2)
+                .any(|w| *w[0] == Op(MSTORE) && *w[1] == Mem(a))
+        };
+        let reloads = code[end + 1..]
+            .windows(2)
+            .take_while(|w| !matches!(w[0], Label(_)) && !matches!(w[0], Op(op) if is_terminal(op)))
+            .any(|w| matches!(w, [Mem(a), Op(MLOAD)] if tracked(*a) && stored(*a)));
+        if !reloads {
+            i += 1;
+            continue;
+        }
+        sunk.extend(code.drain(i + 4..end));
+        let others = code
+            .iter()
+            .filter(|inst| match inst {
+                PushLabel(t) => *t == ok,
+                Table(t) => entries(t).any(|e| e == ok),
+                _ => false,
+            })
+            .count()
+            > 1;
+        code.drain(i + 2..if others { i + 4 } else { i + 5 });
+        i += 2;
+    }
+    code.extend(sunk);
+}
+
+#[allow(clippy::too_many_arguments)]
 fn plan_promotion(
     code: &[Inst],
     i: usize,
@@ -1949,6 +2075,7 @@ fn plan_promotion(
     calls: &Calls,
     consume: bool,
     dups: bool,
+    sink: bool,
 ) -> Option<Vec<(usize, usize, Vec<Inst>)>> {
     let run = runs.run[i];
     // The stored value sits at position `p` once the store would have popped it.
@@ -2002,6 +2129,7 @@ fn plan_promotion(
             stop,
             run_end,
             consume && dead_after,
+            sink,
             runs,
             calls,
         )
@@ -2026,16 +2154,19 @@ fn plan_promotion(
 /// Keeps the value stored at `i` on the stack at position `p` until it is on top again,
 /// and turns each two-instruction load in `loads` into a `DUP` of it. The point where it
 /// is popped is searched for before `limit`; if there is none, the value may stay only
-/// when `limit` is the end of a run that abandons the stack.
+/// when `limit` is the end of a run that abandons the stack. With `sink`, an op that takes
+/// the word right under the value gets it by a `SWAP1` before the pushes that feed it,
+/// and the value is held one place lower from there.
 #[allow(clippy::too_many_arguments)]
 fn hold(
     code: &[Inst],
     i: usize,
-    p: i64,
+    mut p: i64,
     loads: &[usize],
     limit: usize,
     run_end: usize,
     consume: bool,
+    sink: bool,
     runs: &Runs,
     calls: &Calls,
 ) -> Option<Vec<(usize, usize, Vec<Inst>)>> {
@@ -2045,45 +2176,32 @@ fn hold(
     // A last load that finds the value on top, with nothing reading the word after it,
     // takes the value itself: nothing is left to pop. So does one just below the top that
     // feeds a commutative operation, which takes the value from under its other operand.
-    let consumed = consume
-        && (runs.depth[last] == p
-            || runs.depth[last] == p + 1
-                && matches!(code.get(last + 2), Some(Op(op)) if is_commutative(*op)));
-    // Where the value becomes the top of the stack again after its last use.
+    // The value may sink on the way, so this is settled at the last load.
+    let mut consumed = false;
+    // Every instruction the value lives under must leave it alone, up to where it becomes
+    // the top of the stack again after its last use.
     let mut pop_at: Option<usize> = None;
-    let mut k = last + 2;
-    while k < limit && !consumed {
-        if runs.depth[k] == p && !matches!(code[k], Label(_)) {
+    let mut k = i + 2;
+    while k < limit {
+        if consumed && k >= last + 2 {
+            break;
+        }
+        if k > last && runs.depth[k] == p && !matches!(code[k], Label(_)) {
             pop_at = Some(k);
             break;
         }
-        // Never split a call from its return label.
-        k += if call_at(code, k, calls).is_some() {
-            4
-        } else {
-            1
-        };
-    }
-    let range_end = match pop_at {
-        Some(q) => q,
-        None if consumed => last + 2,
-        None => {
-            // Left in place only if the run abandons the stack.
-            if limit != run_end || !runs.ends_in_exit[run] {
-                return None;
-            }
-            limit
-        }
-    };
-    // Every instruction the value lives under must leave it alone.
-    let mut k = i + 2;
-    while k < range_end {
         if loads.contains(&k) {
             let above = runs.depth[k] - p;
             if !(0..16).contains(&above) {
                 return None;
             }
-            if consumed && k == last {
+            if k == last
+                && consume
+                && (above == 0
+                    || above == 1
+                        && matches!(code.get(last + 2), Some(Op(op)) if is_commutative(*op)))
+            {
+                consumed = true;
                 edits.push((k, 2, Vec::new()));
                 k += 2;
                 continue;
@@ -2096,6 +2214,7 @@ fn hold(
             if runs.depth[k] - (takes as i64) < p {
                 return None;
             }
+            // Never split a call from its return label.
             k += 4;
             continue;
         }
@@ -2126,11 +2245,30 @@ fn hold(
             Op(op) => {
                 let (pops, _) = stack_io(op)?;
                 if d - (pops as i64) < p {
-                    return None;
+                    if !sink || d - (pops as i64) != p - 1 {
+                        return None;
+                    }
+                    let mut q = k;
+                    while runs.depth[q] != p {
+                        q -= 1;
+                        if q < i + 2
+                            || !matches!(code[q], Push(_) | PushLabel(_) | Mem(_) | Imm(..))
+                        {
+                            return None;
+                        }
+                    }
+                    edits.push((q, 0, vec![Op(SWAP1)]));
+                    p -= 1;
                 }
             }
         }
         k += 1;
+    }
+    if pop_at.is_none() && !consumed {
+        // Left in place only if the run abandons the stack.
+        if limit != run_end || !runs.ends_in_exit[run] {
+            return None;
+        }
     }
     if let Some(q) = pop_at {
         edits.push((q, 0, vec![Op(POP)]));
@@ -2196,15 +2334,19 @@ pub(crate) fn forward_storage(code: &mut Vec<Inst>, calls: &Calls, opaque: &Hash
         let mut edits: Vec<(usize, usize, Vec<Inst>)> = Vec::new();
         let mut busy: FxHashSet<usize> = FxHashSet::default();
         for i in 0..code.len().saturating_sub(1) {
-            let (Push(key), Op(store @ (SSTORE | TSTORE))) = (code[i], code[i + 1]) else {
+            let (Push(key), Op(op @ (SSTORE | TSTORE | SLOAD | TLOAD))) = (code[i], code[i + 1])
+            else {
                 continue;
             };
             if busy.contains(&runs.run[i]) {
                 continue;
             }
-            if let Some(mut plan) =
-                plan_storage(code, i, (key, store), &runs, calls, opaque, &reverts)
-            {
+            let plan = if matches!(op, SLOAD | TLOAD) {
+                plan_load(code, i, (key, op), &runs, calls, opaque)
+            } else {
+                plan_storage(code, i, (key, op), &runs, calls, opaque, &reverts)
+            };
+            if let Some(mut plan) = plan {
                 busy.insert(runs.run[i]);
                 edits.append(&mut plan);
             }
@@ -2276,17 +2418,190 @@ fn plan_storage(
     if loads.is_empty() {
         return overwritten.then(|| vec![(i, 2, vec![Op(POP)])]);
     }
-    if !overwritten && loads.len() < 2 {
-        return None;
-    }
     // A dropped store's value may stay on the stack past the store that replaces it.
     let limit = if overwritten { run_end } else { j };
-    let mut edits = hold(code, i, p, &loads, limit, run_end, false, runs, calls)?;
+    let mut edits = hold(code, i, p, &loads, limit, run_end, true, true, runs, calls)?;
     edits.push(if overwritten {
         (i, 2, Vec::new())
     } else {
         (i, 0, vec![Op(DUP1)])
     });
+    Some(edits)
+}
+
+/// Tests each top-tested loop at its bottom, so an iteration takes one jump, not two:
+/// `top: T PUSH done JUMPI B PUSH top JUMP` becomes
+/// `PUSH test JUMP body: B test: T' PUSH body JUMPI`, where `T'` is `T` with its result
+/// negated, and the exit falls through to `done` or jumps there. The same code runs in the
+/// same order, so any straight run `T` can move.
+pub(crate) fn rotate_loops(code: &mut Vec<Inst>) {
+    let mut next = fresh_label(code);
+    let mut i = 0;
+    while i < code.len() {
+        if !matches!(code[i], Label(_)) || (i > 0 && matches!(code[i - 1], Label(_))) {
+            i += 1;
+            continue;
+        }
+        let heads = code[i..]
+            .iter()
+            .position(|inst| !matches!(inst, Label(_)))
+            .map_or(code.len(), |n| i + n);
+        let tops: Vec<u32> = code[i..heads].iter().map(label_of).collect();
+        let Some(n) = code[heads..].iter().position(|inst| {
+            !matches!(inst, Op(op) if stack_io(*op).is_some() && !is_terminal(*op)
+                && !matches!(*op, JUMPI | JUMPDEST | 0x58))
+                && !matches!(inst, Push(_) | Imm(..))
+        }) else {
+            break;
+        };
+        let jumpi = heads + n + 1;
+        let (Some(PushLabel(done)), Some(Op(JUMPI))) = (code.get(jumpi - 1), code.get(jumpi))
+        else {
+            i = heads;
+            continue;
+        };
+        let done = *done;
+        let back = (jumpi + 1..code.len().saturating_sub(1))
+            .rev()
+            .find(|&e| matches!(code[e], PushLabel(l) if tops.contains(&l)) && code[e + 1] == Op(JUMP));
+        let Some(e) = back else {
+            i = heads;
+            continue;
+        };
+        // Only a loop: nothing outside the head and body jumps to the head or into the body.
+        let inner: FxHashSet<u32> = code[jumpi..e]
+            .iter()
+            .filter_map(|inst| match inst {
+                Label(l) => Some(*l),
+                _ => None,
+            })
+            .chain(tops.iter().copied())
+            .collect();
+        let entered = code.iter().enumerate().any(|(k, inst)| match inst {
+            PushLabel(l) => inner.contains(l) && !(jumpi..=e).contains(&k),
+            Table(t) => entries(t).any(|l| inner.contains(&l)),
+            _ => false,
+        });
+        if entered {
+            i = heads;
+            continue;
+        }
+        let (body, test) = (next, next + 1);
+        next += 2;
+        let mut bottom = vec![Label(test)];
+        bottom.extend_from_slice(&code[heads..jumpi - 1]);
+        if bottom.last() == Some(&Op(ISZERO)) {
+            bottom.pop();
+        } else {
+            bottom.push(Op(ISZERO));
+        }
+        bottom.extend([PushLabel(body), Op(JUMPI)]);
+        let falls = code[e + 2..]
+            .iter()
+            .take_while(|inst| matches!(inst, Label(_)))
+            .any(|inst| *inst == Label(done));
+        if !falls {
+            bottom.extend([PushLabel(done), Op(JUMP)]);
+        }
+        code.splice(e..e + 2, bottom);
+        if enters(&code[..i], &code[heads..jumpi - 1]) {
+            code.splice(i..jumpi + 1, [Label(body)]);
+        } else {
+            code.splice(i..jumpi + 1, [PushLabel(test), Op(JUMP), Label(body)]);
+        }
+        for inst in code.iter_mut() {
+            if matches!(inst, PushLabel(l) if tops.contains(l)) {
+                *inst = PushLabel(test);
+            }
+        }
+        i += 2;
+    }
+}
+
+/// Whether the constants pushed at the end of `before` make the loop test `t` false the
+/// first time, so the loop can fall into its body.
+fn enters(before: &[Inst], t: &[Inst]) -> bool {
+    let known = before
+        .iter()
+        .rev()
+        .take(16)
+        .take_while(|inst| matches!(inst, Push(_)))
+        .count();
+    let mut stack: Vec<Word> = before[before.len() - known..]
+        .iter()
+        .filter_map(|inst| match inst {
+            Push(w) => Some(*w),
+            _ => None,
+        })
+        .collect();
+    for inst in t {
+        let n = stack.len();
+        match *inst {
+            Push(w) => stack.push(w),
+            Op(op @ 0x80..=0x8f) if usize::from(op - 0x7f) <= n => {
+                stack.push(stack[n - usize::from(op - 0x7f)]);
+            }
+            Op(op @ 0x90..=0x9f) if usize::from(op - 0x8f) < n => {
+                stack.swap(n - 1, n - 1 - usize::from(op - 0x8f));
+            }
+            Op(ISZERO) if n > 0 => {
+                stack[n - 1] = Word::from_u64(u64::from(stack[n - 1].is_zero()));
+            }
+            Op(op) if n > 1 && stack_io(op) == Some((2, 1)) => {
+                let Some(v) = fold_binary(op, stack[n - 1], stack[n - 2]) else {
+                    return false;
+                };
+                stack.truncate(n - 2);
+                stack.push(v);
+            }
+            _ => return false,
+        }
+    }
+    stack.last().is_some_and(|w| w.is_zero())
+}
+
+/// A value loaded and loaded again in the same straight run, with no store of its key
+/// between, stays on the stack for the later loads.
+fn plan_load(
+    code: &[Inst],
+    i: usize,
+    (key, load): (Word, u8),
+    runs: &Runs,
+    calls: &Calls,
+    opaque: &HashSet<u32>,
+) -> Option<Vec<(usize, usize, Vec<Inst>)>> {
+    let store = if load == SLOAD { SSTORE } else { TSTORE };
+    let run = runs.run[i];
+    let n = code.len();
+    let mut run_end = i + 2;
+    while run_end < n && runs.run[run_end] == run {
+        run_end += 1;
+    }
+    let mut loads = Vec::new();
+    let mut j = i + 2;
+    while j < run_end {
+        if let Some(PushLabel(h)) = code.get(j + 1) {
+            if call_at(code, j, calls).is_some() && opaque.contains(h) {
+                break;
+            }
+        }
+        match (code[j], code.get(j + 1)) {
+            (Push(k), Some(&Op(op))) if k == key && op == load => {
+                loads.push(j);
+                j += 2;
+                continue;
+            }
+            (Push(k), Some(&Op(op))) if k == key && op == store => break,
+            (Op(op), _) if runs_other_code(op) => break,
+            _ => {}
+        }
+        j += 1;
+    }
+    if loads.is_empty() {
+        return None;
+    }
+    let mut edits = hold(code, i, runs.depth[i], &loads, run_end, run_end, true, true, runs, calls)?;
+    edits.push((i + 2, 0, vec![Op(DUP1)]));
     Some(edits)
 }
 
@@ -2419,6 +2734,274 @@ fn inst_len_wide(inst: &Inst) -> usize {
     }
 }
 
+/// Times a loop body is guessed to run each time its loop is entered.
+pub(crate) const LOOP_RUNS: f64 = 4.0;
+/// Gas a byte of code is worth: the size budget leaves room to trade a byte for a few gas on
+/// every run of a path.
+pub(crate) const GAS_PER_BYTE: f64 = 5.0;
+/// Gas a byte of deployed code costs to deposit.
+pub(crate) const DEPOSIT_GAS: f64 = 200.0;
+/// Times each path of a contract another one creates is guessed to run per creation. Its
+/// creator pays the deposit on a path that runs, spread over these.
+pub(crate) const CREATED_RUNS: f64 = 25.0;
+
+thread_local! {
+    static BYTE_GAS: std::cell::Cell<f64> = const { std::cell::Cell::new(GAS_PER_BYTE) };
+}
+
+/// Gas a byte of the code this thread builds is worth.
+pub(crate) fn byte_gas() -> f64 {
+    BYTE_GAS.with(|g| g.get())
+}
+
+/// Runs `f` with bytes worth `gas` each, as a thread it spawns must too.
+pub(crate) fn with_byte_gas<R>(gas: f64, f: impl FnOnce() -> R) -> R {
+    let old = BYTE_GAS.with(|g| g.replace(gas));
+    let out = f();
+    BYTE_GAS.with(|g| g.set(old));
+    out
+}
+
+/// A guess at how often each instruction runs when every entrypoint is called once. Both
+/// sides of a branch run as often as the code before it, a loop body `LOOP_RUNS` times per
+/// entry, a helper as often as all its calls together, and code that can only end in a
+/// revert never.
+fn heat(code: &[Inst]) -> Vec<f64> {
+    flow(code, &[], false).0
+}
+
+/// No single entrypoint owns the code: the dispatcher, and what several entrypoints reach.
+const SHARED: u32 = u32::MAX;
+
+/// `heat`, and the entrypoint each instruction belongs to: the one of `starts_at`, the labels
+/// entrypoints begin at, that alone reaches it, or `SHARED`. Blocks begin at labels and after
+/// jumps, and a jump from a block that also pushed a label is a call. With `sum`, code that
+/// several entrypoints jump into, or that is both called and jumped into, runs once for each.
+fn flow(code: &[Inst], starts_at: &[u32], sum: bool) -> (Vec<f64>, Vec<u32>) {
+    let n = code.len();
+    let mut starts = vec![0];
+    for i in 0..n.saturating_sub(1) {
+        let ends = matches!(code[i], Op(op) if is_terminal(op) || op == JUMPI);
+        if (ends || matches!(code[i + 1], Label(_))) && starts.last() != Some(&(i + 1)) {
+            starts.push(i + 1);
+        }
+    }
+    let blocks = starts.len();
+    let mut block_of = vec![0; n];
+    let mut at: FxHashMap<u32, usize> = FxHashMap::default();
+    for (b, &s) in starts.iter().enumerate() {
+        let e = starts.get(b + 1).copied().unwrap_or(n);
+        block_of[s..e].fill(b);
+        if let Some(Label(l)) = code.get(s) {
+            at.insert(*l, b);
+        }
+    }
+    // Successors, each marked when it is a call, and whether the block can only revert.
+    let mut succ: Vec<Vec<(usize, bool)>> = vec![Vec::new(); blocks];
+    let mut cold = vec![false; blocks];
+    for b in 0..blocks {
+        let (s, e) = (starts[b], starts.get(b + 1).copied().unwrap_or(n));
+        let target = match (e.checked_sub(2).map(|j| code[j]), code[e - 1]) {
+            (Some(PushLabel(t)), Op(JUMP | JUMPI)) if e - 2 >= s => at.get(&t).copied(),
+            _ => None,
+        };
+        let mut calls = false;
+        for (j, inst) in code[s..e].iter().enumerate() {
+            match inst {
+                PushLabel(l) if target.is_none() || s + j != e - 2 => {
+                    calls = true;
+                    succ[b].extend(at.get(l).map(|&t| (t, false)));
+                }
+                Table(t) => {
+                    succ[b].extend(entries(t).filter_map(|l| at.get(&l)).map(|&t| (t, false)))
+                }
+                _ => {}
+            }
+        }
+        match code[e - 1] {
+            Op(JUMP) => succ[b].extend(target.map(|t| (t, calls))),
+            Op(JUMPI) => succ[b].extend(target.map(|t| (t, false))),
+            Op(REVERT | INVALID) => cold[b] = true,
+            _ => {}
+        }
+        if e < n && !matches!(code[e - 1], Op(op) if is_terminal(op)) {
+            succ[b].push((block_of[e], false));
+        }
+    }
+    loop {
+        let mut changed = false;
+        for b in 0..blocks {
+            let mut normal = succ[b].iter().filter(|s| !s.1).peekable();
+            if !cold[b] && normal.peek().is_some() && normal.all(|s| cold[s.0]) {
+                cold[b] = true;
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    // Edges back to a block still being walked close loops.
+    let mut back = vec![Vec::new(); blocks];
+    let mut state = vec![0u8; blocks];
+    for root in 0..blocks {
+        if state[root] != 0 {
+            continue;
+        }
+        let mut stack = vec![(root, 0)];
+        state[root] = 1;
+        while let Some((b, k)) = stack.last_mut() {
+            let b = *b;
+            if let Some(&(t, _)) = succ[b].get(*k) {
+                *k += 1;
+                match state[t] {
+                    0 => {
+                        state[t] = 1;
+                        stack.push((t, 0));
+                    }
+                    1 => back[b].push(t),
+                    _ => {}
+                }
+            } else {
+                state[b] = 2;
+                stack.pop();
+            }
+        }
+    }
+    let mut preds = vec![Vec::new(); blocks];
+    for b in 0..blocks {
+        for &(t, call) in &succ[b] {
+            if !call {
+                preds[t].push(b);
+            }
+        }
+    }
+    let mut depth = vec![0i32; blocks];
+    let mut seen = vec![usize::MAX; blocks];
+    let headers: FxHashSet<usize> = back.iter().flatten().copied().collect();
+    for &h in &headers {
+        seen[h] = h;
+        depth[h] += 1;
+        let mut work: Vec<usize> = (0..blocks).filter(|&b| back[b].contains(&h)).collect();
+        while let Some(b) = work.pop() {
+            if seen[b] != h {
+                seen[b] = h;
+                depth[b] += 1;
+                work.extend(preds[b].iter().copied());
+            }
+        }
+    }
+    let mut indeg = vec![0; blocks];
+    for b in 0..blocks {
+        for &(t, _) in &succ[b] {
+            if !back[b].contains(&t) {
+                indeg[t] += 1;
+            }
+        }
+    }
+    // How often each block's code is entered, loops aside, and how often it runs.
+    // Entries by the entrypoint that owns the jump, the most runs of each.
+    let mut entered = vec![None::<Vec<(u32, f64)>>; blocks];
+    let mut weight = vec![0.0f64; blocks];
+    let mut called = vec![None::<f64>; blocks];
+    let mut owner = vec![None::<u32>; blocks];
+    for (k, l) in starts_at.iter().enumerate() {
+        if let Some(&b) = at.get(l) {
+            owner[b] = Some(k as u32);
+        }
+    }
+    let roots: FxHashSet<usize> = starts_at.iter().filter_map(|l| at.get(l).copied()).collect();
+    let mut ready: Vec<usize> = (0..blocks).filter(|&b| indeg[b] == 0).collect();
+    while let Some(b) = ready.pop() {
+        let own = *owner[b].get_or_insert(SHARED);
+        let entries = entered[b].as_ref().map(|e| {
+            let each = e.iter().map(|&(_, x)| x);
+            if sum {
+                each.sum::<f64>()
+            } else {
+                each.fold(0.0, f64::max)
+            }
+        });
+        let base = match (entries, called[b]) {
+            (None, None) => 1.0,
+            (Some(x), Some(y)) if sum => x + y,
+            (x, y) => x.unwrap_or(0.0).max(y.unwrap_or(0.0)),
+        };
+        weight[b] = if cold[b] {
+            0.0
+        } else {
+            base * LOOP_RUNS.powi(depth[b].min(3))
+        };
+        for &(t, call) in &succ[b] {
+            if back[b].contains(&t) {
+                continue;
+            }
+            if call {
+                *called[t].get_or_insert(0.0) += weight[b];
+            } else {
+                let from = if own == SHARED { SHARED } else { own };
+                let e = entered[t].get_or_insert_with(Vec::new);
+                match e.iter_mut().find(|(o, _)| *o == from) {
+                    Some((_, x)) => *x = x.max(base),
+                    None => e.push((from, base)),
+                }
+            }
+            if !roots.contains(&t) {
+                owner[t] = Some(owner[t].map_or(own, |o| if o == own { o } else { SHARED }));
+            }
+            indeg[t] -= 1;
+            if indeg[t] == 0 {
+                ready.push(t);
+            }
+        }
+    }
+    (
+        block_of.iter().map(|&b| weight[b]).collect(),
+        block_of.iter().map(|&b| owner[b].unwrap_or(SHARED)).collect(),
+    )
+}
+
+/// Rough gas of one run of an instruction, with accounts and slots warm and copies and
+/// hashes a word or two long.
+fn inst_gas(inst: &Inst) -> f64 {
+    match inst {
+        Push(w) if w.is_zero() => 2.0,
+        Push(_) | PushLabel(_) | Mem(_) | Table(_) | Imm(..) => 3.0,
+        Label(_) => 1.0,
+        Op(op) => match *op {
+            STOP | RETURN | REVERT | INVALID => 0.0,
+            0x30 | 0x32..=0x34 | 0x36 | 0x38 | 0x3a | 0x3d | 0x41..=0x46 | 0x48 | 0x4a => 2.0,
+            POP | 0x58..=0x5a => 2.0,
+            MUL | DIV | SDIV | MOD | SMOD | SIGNEXTEND | 0x47 => 5.0,
+            0x08 | 0x09 => 8.0,
+            EXP => 60.0,
+            JUMP => 8.0,
+            JUMPI => 10.0,
+            JUMPDEST => 1.0,
+            0x20 => 42.0,
+            0x37 | 0x39 | 0x3e | MCOPY => 9.0,
+            0x40 => 20.0,
+            0x31 | 0x3b | 0x3c | 0x3f | SLOAD | SSTORE | TLOAD | TSTORE => 100.0,
+            0xf1 | 0xf2 | 0xf4 | 0xfa => 100.0,
+            0xa0..=0xa4 => 375.0 * f64::from(op - 0x9f) + 256.0,
+            0xf0 | 0xf5 => 32000.0,
+            _ => 3.0,
+        },
+    }
+}
+
+/// Estimated gas of running every entrypoint once, by `heat`, where code the entrypoints
+/// that begin at `entries` share runs once for each of them.
+pub(crate) fn gas(code: &[Inst], entries: &[u32]) -> f64 {
+    let heat = flow(code, entries, true).0;
+    heat.iter().zip(code).map(|(h, inst)| h * inst_gas(inst)).sum()
+}
+
+/// What a program costs: its gas, and its bytes at `byte_gas`.
+pub(crate) fn cost(code: &[Inst]) -> f64 {
+    assemble(code).map_or(f64::INFINITY, |b| b.len() as f64 * byte_gas() + gas(code, &[]))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2487,6 +3070,52 @@ mod tests {
             }
         }
         assert!(applied > 30, "{applied}");
+    }
+
+    /// A loop body runs `LOOP_RUNS` times, a helper as often as its calls, a revert never,
+    /// and what follows the loop once.
+    #[test]
+    fn heat_follows_loops_calls_and_reverts() {
+        let w = Word::from_u64;
+        let code = [
+            Push(w(0)),
+            Label(1),
+            Op(DUP1),
+            Push(w(10)),
+            Op(LT),
+            Op(ISZERO),
+            PushLabel(3),
+            Op(JUMPI),
+            Op(DUP1),
+            Push(w(5)),
+            Op(GT),
+            PushLabel(2),
+            Op(JUMPI),
+            PushLabel(4),
+            PushLabel(5),
+            Op(JUMP),
+            Label(4),
+            Push(w(1)),
+            Op(ADD),
+            PushLabel(1),
+            Op(JUMP),
+            Label(2),
+            Push(w(0)),
+            Push(w(0)),
+            Op(REVERT),
+            Label(3),
+            Op(STOP),
+            Label(5),
+            Op(JUMP),
+        ];
+        let heat = heat(&code);
+        let at = |inst: Inst| heat[code.iter().position(|i| *i == inst).unwrap()];
+        assert_eq!(heat[0], 1.0);
+        assert_eq!(at(Label(1)), LOOP_RUNS);
+        assert_eq!(at(Label(4)), LOOP_RUNS);
+        assert_eq!(at(Label(5)), LOOP_RUNS);
+        assert_eq!(at(Label(2)), 0.0);
+        assert_eq!(at(Label(3)), 1.0);
     }
 
     /// A constant index into a fixed list at a constant slot checks and adds to nothing.

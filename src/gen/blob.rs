@@ -207,7 +207,20 @@ impl<'a> Gen<'a> {
 
     /// A bytes or string word becomes `[len, data]` with `data` on top.
     pub(super) fn bytes_span(&mut self) {
-        self.call_sub(Sub::BytesSpan);
+        // Only the empty value is a word, zero: its length is zero whatever `p` points at.
+        self.op(DUP1);
+        self.push_u64(1);
+        self.op(SHR);
+        self.op(DUP1);
+        self.op(MLOAD);
+        self.op(DUP1 + 2);
+        self.push_u64(1);
+        self.op(AND);
+        self.op(MUL);
+        self.op(SWAP1 + 1);
+        self.op(POP);
+        self.push_u64(32);
+        self.op(ADD);
     }
 
     /// Counts the digits, then writes them from the end, a `-` first when negative.
@@ -751,73 +764,19 @@ impl<'a> Gen<'a> {
         self.jumpdest(done);
     }
 
-    /// `[word, ret]` becomes `[len, data]`.
-    pub(super) fn sub_bytes_span(&mut self) {
-        self.op(SWAP1);
-        self.bytes_span_inline();
-        self.op(SWAP1);
-        self.op(SWAP1 + 1);
-        self.op(JUMP);
-    }
-
-    fn bytes_span_inline(&mut self) {
-        let short = self.fresh();
-        let done = self.fresh();
-        self.op(DUP1);
-        self.push_u64(1);
-        self.op(AND);
-        self.op(ISZERO);
-        self.push_label(short);
-        self.op(JUMPI);
-        self.push_u64(1);
-        self.op(SHR);
-        self.op(DUP1);
+    /// `[header, sel]`, a blob whose encoding starts 4 bytes into its data, becomes
+    /// `[header]` with the selector in those bytes. The store over the length word's low
+    /// bytes writes the length back with it.
+    pub(super) fn put_selector(&mut self) {
+        self.op(DUP1 + 1);
         self.op(MLOAD);
-        self.op(SWAP1);
         self.push_u64(32);
-        self.op(ADD);
-        self.push_label(done);
-        self.op(JUMP);
-        self.jumpdest(short);
-        // Only the empty value is a word: its length and data address are both zero.
-        self.op(PUSH0);
-        self.jumpdest(done);
-    }
-
-    pub(super) fn prepend_selector(&mut self, sel: &Expr) -> Result<(), Error> {
-        self.mload(self.scratch_a);
-        self.mstore_off(self.scratch_b);
-        self.compile_value(sel)?;
-        self.mstore_off(self.scratch_val);
-        self.prepend_saved_selector()
-    }
-
-    pub(super) fn prepend_saved_selector(&mut self) -> Result<(), Error> {
-        self.mload(self.scratch_b);
-        self.op(MLOAD);
+        self.op(SHL);
+        self.op(OR);
+        self.op(DUP1 + 1);
         self.push_u64(4);
         self.op(ADD);
-        self.alloc_blob()?;
-        self.mstore_off(self.scratch_a);
-        self.mload(self.scratch_val);
-        self.push_u64(224);
-        self.op(SHL);
-        self.mload(self.scratch_a);
-        self.push_u64(32);
-        self.op(ADD);
         self.op(MSTORE);
-        self.mload(self.scratch_b);
-        self.op(MLOAD);
-        self.mload(self.scratch_b);
-        self.push_u64(32);
-        self.op(ADD);
-        self.mload(self.scratch_a);
-        self.push_u64(36);
-        self.op(ADD);
-        self.op(MCOPY);
-        self.mload(self.scratch_a);
-        self.tag_blob();
-        Ok(())
     }
 
     pub(super) fn precompile(

@@ -7,6 +7,42 @@ impl<'a> Gen<'a> {
         leaf: u32,
         index: &Expr,
     ) -> Result<(), Error> {
+        if leaf == 0 && self.cd_lists.contains(&sym) {
+            // An element read by a fixed index is kept for later reads of it.
+            let mut deps = Vec::new();
+            let list = self.key_names.get(&sym).copied().unwrap_or(sym);
+            deps.push(list);
+            let name = self
+                .fixed_key(index, &mut deps)
+                .map(|key| format!("{CALLDATA_VALUE}{list}[{key}]"));
+            if let Some(at) = name.as_deref().and_then(|n| self.kept_value(n)) {
+                self.mload(at);
+                return Ok(());
+            }
+            // Element `i` of a calldata list is the word at `pos + 32 + 32i`.
+            let at = self.local[sym];
+            self.compile_value(index)?;
+            if !self.trusted_index && !self.index_below(index, at) {
+                self.op(DUP1);
+                self.mload(at);
+                self.cd_load();
+                self.op(GT);
+                self.op(ISZERO);
+                self.revert_if_panic(0x32)?;
+            }
+            self.push_u64(5);
+            self.op(SHL);
+            self.mload(at);
+            self.op(ADD);
+            self.push_u64(32);
+            self.op(ADD);
+            self.cd_load();
+            self.align_decoded(self.peel_nominal(self.list_elem(self.checked.syms[sym].ty)));
+            if let Some(name) = name {
+                self.keep_value(name, deps);
+            }
+            return Ok(());
+        }
         self.list_element_start(sym, leaf, index, false, false)?;
         self.op(MLOAD);
         Ok(())
@@ -241,6 +277,8 @@ impl<'a> Gen<'a> {
         let j = self.temp();
         self.mload(from);
         self.mstore_off(j);
+        // A store in the body would come after reads of the next pass.
+        self.val_cache.clear();
         self.jumpdest(top);
         self.mload(j);
         self.mload(to);
@@ -250,7 +288,7 @@ impl<'a> Gen<'a> {
         self.op(JUMPI);
         self.branch += 1;
         let result = body(self, j);
-        self.branch -= 1;
+        self.leave_branch();
         result?;
         self.mload(j);
         self.push_u64(1);
@@ -974,7 +1012,7 @@ impl<'a> Gen<'a> {
         }
         match target {
             Expr::Index { base, index, .. } if push => {
-                self.own_path(base)?;
+                self.own_path(target)?;
                 let list = self.temp();
                 self.push_mem_addr(base)?;
                 self.op(DUP1);
@@ -1190,7 +1228,7 @@ impl<'a> Gen<'a> {
     }
 
     /// Pushes the address of element `index` of a list value. A push appends: the list
-    /// moves to a blob one element longer.
+    /// grows in place at the top of the heap, or moves to a blob one element longer.
     /// `at` holds the list's pointer.
     pub(super) fn heap_element(
         &mut self,
@@ -1199,44 +1237,96 @@ impl<'a> Gen<'a> {
         k: u64,
         grow: bool,
     ) -> Result<bool, Error> {
-        let (i, list) = (self.temp(), self.temp());
-        self.compile_value(index)?;
-        self.mstore_off(i);
-        self.mload(at);
-        self.mstore_off(list);
-        if grow {
-            self.mload(i);
-            self.push_u64(1);
-            self.op(ADD);
-            self.alloc_list(k as u32)?;
-            self.mload(i);
+        if !grow && (self.trusted_index || self.index_below(index, at)) {
+            self.compile_value(index)?;
             self.push_u64(32 * k);
             self.op(MUL);
-            self.mload(list);
+            self.mload(at);
+            self.op(ADD);
             self.push_u64(32);
             self.op(ADD);
-            self.op(DUP1 + 2);
-            self.push_u64(32);
-            self.op(ADD);
-            self.op(MCOPY);
+            return Ok(false);
+        }
+        if !grow {
+            self.compile_value(index)?;
+            self.mload(at);
             self.op(DUP1);
-            self.mstore_off(list);
-            self.mstore_off(at);
-        } else if !self.trusted_index {
-            self.mload(i);
-            self.mload(list);
             self.op(MLOAD);
-            self.op(GT);
+            self.op(DUP1 + 2);
+            self.op(LT);
             self.op(ISZERO);
             self.revert_if_panic(0x32)?;
+            self.op(SWAP1);
+            self.push_u64(32 * k);
+            self.op(MUL);
+            self.op(ADD);
+            self.push_u64(32);
+            self.op(ADD);
+            return Ok(false);
         }
-        self.mload(i);
-        self.push_u64(32 * k);
+        // A list that ends at the top of the heap grows in place, so pushes in a loop cost
+        // one element each. The list is its holder's own, so no one else sees it grow.
+        let size = 32 * k;
+        let (fast, done) = (self.fresh(), self.fresh());
+        self.compile_value(index)?;
+        self.mload(at);
+        // [n, list, end]
+        self.op(DUP1 + 1);
+        self.push_u64(size);
         self.op(MUL);
-        self.mload(list);
+        self.op(DUP1 + 1);
         self.op(ADD);
         self.push_u64(32);
         self.op(ADD);
+        self.op(DUP1);
+        self.push_mem(self.blob_base);
+        self.op(SWAP1);
+        self.op(SUB);
+        // [n, list, end, end - base]
+        self.op(DUP1);
+        self.mload(self.blob_ptr);
+        self.op(EQ);
+        self.push_label(fast);
+        self.op(JUMPI);
+        self.op(POP);
+        self.op(POP);
+        // [n, list, new]
+        self.op(DUP1 + 1);
+        self.push_u64(1);
+        self.op(ADD);
+        self.alloc_list(k as u32)?;
+        self.op(DUP1 + 2);
+        self.push_u64(size);
+        self.op(MUL);
+        self.op(DUP1 + 2);
+        self.push_u64(32);
+        self.op(ADD);
+        self.op(DUP1 + 2);
+        self.push_u64(32);
+        self.op(ADD);
+        self.op(MCOPY);
+        self.op(SWAP1);
+        self.op(POP);
+        self.op(DUP1);
+        self.mstore_off(at);
+        self.op(SWAP1);
+        self.push_u64(size);
+        self.op(MUL);
+        self.op(ADD);
+        self.push_u64(32);
+        self.op(ADD);
+        self.push_label(done);
+        self.op(JUMP);
+        self.jumpdest(fast);
+        self.push_u64(size);
+        self.op(ADD);
+        self.mstore_off(self.blob_ptr);
+        self.op(SWAP1 + 1);
+        self.push_u64(1);
+        self.op(ADD);
+        self.op(SWAP1);
+        self.op(MSTORE);
+        self.jumpdest(done);
         Ok(false)
     }
 

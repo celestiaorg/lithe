@@ -112,18 +112,19 @@ impl<'a> Gen<'a> {
             .iter()
             .map(|&(at, ty)| Part { at, ty, cd: false })
             .collect();
-        self.tree_encode_parts(&parts)
+        self.tree_encode_parts(&parts, 0)
     }
 
     /// `tree_encode` of parts, some of which may be left in calldata: their words hold the
-    /// value's calldata position.
-    fn tree_encode_parts(&mut self, parts: &[Part]) -> Result<(), Error> {
+    /// value's calldata position. The encoding starts `prefix` bytes into the blob's data,
+    /// where `put_selector` writes a selector.
+    pub(super) fn tree_encode_parts(&mut self, parts: &[Part], prefix: u32) -> Result<(), Error> {
         let head: u32 = parts.iter().map(|p| self.abi_head(p.ty)).sum();
         self.op(PUSH0);
         self.alloc_blob()?;
         self.op(DUP1);
         self.mstore_off(self.scratch_a);
-        self.push_u64(32);
+        self.push_u64(u64::from(32 + prefix));
         self.op(ADD);
         self.op(DUP1);
         self.push_u64(u64::from(head));
@@ -154,6 +155,7 @@ impl<'a> Gen<'a> {
         }
         // [base, end]: the length, at the blob's header.
         self.op(SUB);
+        self.add_const(prefix);
         self.mload(self.scratch_a);
         self.op(MSTORE);
         self.claim_blob();
@@ -165,12 +167,20 @@ impl<'a> Gen<'a> {
     /// The values are evaluated first; the blob then grows past the heap from
     /// `[start, cur]` on the stack.
     pub(super) fn compile_packed(&mut self, args: &[Expr]) -> Result<(), Error> {
-        // A hex literal of up to a word is written as one, with no blob to copy it from.
+        // A string or hex literal of up to a word is written as one, with no blob to copy it
+        // from. A parameter in calldata is copied from there, and a stored string from its
+        // slots, when no other piece can change it meanwhile.
+        let pure = |g: &Self, a: &Expr| {
+            g.eager_ok(a) || g.short_bytes_lit(a).is_some() || g.cd_str(a).is_some() || g.stored_str(a).is_some()
+        };
+        let stored_ok = args.iter().all(|a| pure(self, a));
         let mut values = Vec::with_capacity(args.len());
         for arg in args {
-            values.push(match self.short_bytes_lit(arg) {
-                Some(lit) => Err(lit),
-                None => Ok((self.stage(arg)?, arg.ty())),
+            values.push(match (self.short_bytes_lit(arg), self.cd_str(arg), self.stored_str(arg)) {
+                (Some((w, n)), ..) => Piece::Word(w, n),
+                (None, Some(at), _) => Piece::Calldata(at),
+                (None, None, Some((sym, leaf))) if stored_ok => Piece::Stored(sym, leaf),
+                _ => Piece::Staged(self.stage(arg)?, arg.ty()),
             });
         }
         self.push_mem(self.blob_base);
@@ -183,12 +193,31 @@ impl<'a> Gen<'a> {
         self.op(DUP1);
         for value in values {
             let (at, ty) = match value {
-                Ok(staged) => staged,
-                Err((w, n)) => {
+                Piece::Staged(at, ty) => (at, ty),
+                Piece::Word(w, n) => {
                     self.push_word(w);
                     self.op(DUP1 + 1);
                     self.op(MSTORE);
                     self.add_const(n);
+                    continue;
+                }
+                Piece::Calldata(at) => {
+                    // [start, cur, len, data]
+                    self.mload(at);
+                    self.op(DUP1);
+                    self.cd_load();
+                    self.op(SWAP1);
+                    self.push_u64(32);
+                    self.op(ADD);
+                    self.op(DUP1 + 1);
+                    self.op(SWAP1);
+                    self.op(DUP1 + 3);
+                    self.op(CALLDATACOPY);
+                    self.op(ADD);
+                    continue;
+                }
+                Piece::Stored(sym, leaf) => {
+                    self.copy_stored_bytes(sym, leaf);
                     continue;
                 }
             };
@@ -255,8 +284,8 @@ impl<'a> Gen<'a> {
         }
     }
 
-    /// A hex literal of up to a word, where `bytes` are expected: its bytes, left-aligned
-    /// in a word, and how many there are.
+    /// A string literal of up to a word, or such a hex literal where `bytes` are expected:
+    /// its bytes, left-aligned in a word, and how many there are.
     pub(super) fn short_bytes_lit(&self, e: &Expr) -> Option<(Word, u32)> {
         match e {
             Expr::Lit {
@@ -267,6 +296,13 @@ impl<'a> Gen<'a> {
             {
                 let n = u32::from(*digits) / 2;
                 Some((if n < 32 { w.shl(8 * (32 - n)) } else { *w }, n))
+            }
+            Expr::Lit {
+                lit: Lit::Str(s), ..
+            } if (1..=32).contains(&s.len()) => {
+                let mut word = [0u8; 32];
+                word[..s.len()].copy_from_slice(s.as_bytes());
+                Some((Word::from_be_bytes(word), s.len() as u32))
             }
             _ => None,
         }
@@ -1327,13 +1363,20 @@ impl<'a> Gen<'a> {
     }
 
     /// Encodes expressions as `Abi.encode` does, into a blob at `scratch_a`, or as a call's
-    /// arguments when `call` is set, a record as its fields. Each is evaluated first, in
-    /// order. An argument left in calldata is encoded from there.
-    pub(super) fn tree_encode_exprs(&mut self, args: &[&Expr], call: bool) -> Result<(), Error> {
+    /// arguments when `call` is set, a record as its fields, `prefix` bytes into the data.
+    /// Each is evaluated first, in order. An argument left in calldata is encoded from there.
+    pub(super) fn tree_encode_exprs(
+        &mut self,
+        args: &[&Expr],
+        call: bool,
+        prefix: u32,
+    ) -> Result<(), Error> {
         let mut parts = Vec::with_capacity(args.len());
         for arg in args {
             match arg {
-                Expr::Ident { sym: Some(sym), .. } if self.cd_trees.contains(sym) => {
+                Expr::Ident { sym: Some(sym), .. }
+                    if self.cd_trees.contains(sym) || self.cd_lists.contains(sym) =>
+                {
                     parts.push(Part {
                         at: Addr::Mem(self.local[*sym]),
                         ty: arg.ty(),
@@ -1355,17 +1398,44 @@ impl<'a> Gen<'a> {
                 }
             }
         }
-        self.tree_encode_parts(&parts)
+        self.tree_encode_parts(&parts, prefix)
+    }
+
+    /// Whether an argument is a parameter left in calldata, which only these paths encode.
+    pub(super) fn cd_tree(&self, e: &Expr) -> bool {
+        self.cd_tree_sym(e).is_some() || self.cd_list(e)
+    }
+
+    pub(super) fn cd_tree_sym(&self, e: &Expr) -> Option<usize> {
+        match e {
+            Expr::Ident { sym: Some(sym), .. } if self.cd_trees.contains(sym) => Some(*sym),
+            _ => None,
+        }
+    }
+
+    /// Whether a value is a list parameter read from calldata in place.
+    pub(super) fn cd_list(&self, e: &Expr) -> bool {
+        matches!(e, Expr::Ident { sym: Some(sym), .. } if self.cd_lists.contains(sym))
     }
 
     /// Whether a parameter is only ever passed on whole: an argument of `Abi.encode` and
-    /// its variants, or of another contract's method. `Some(false)` when it is never used,
-    /// `None` when it is used any other way.
-    pub(super) fn passed_through(&self, func: usize, sym: usize) -> Option<bool> {
+    /// its variants, of another contract's method, of an event's data, or of an inlined call
+    /// whose parameter is only passed on whole, or else, for a string or bytes value, asked
+    /// for its length. `Some((false, _))` when it is never used, `None` when it is used any
+    /// other way; the second part is whether its length is read, here or by such a callee.
+    pub(super) fn passed_through(&self, func: usize, sym: usize) -> Option<(bool, bool)> {
         let (uses, whole) = (std::cell::Cell::new(0usize), std::cell::Cell::new(0usize));
+        let lengths = std::cell::Cell::new(0usize);
         let own = |e: &Expr| matches!(e, Expr::Ident { sym: Some(s), .. } if *s == sym);
+        let ty = self.checked.syms[sym].ty;
+        let blob = self.is_dynamic(ty) && !self.tree_param(ty);
         let count = |node: Node<'_>| {
             match node {
+                Node::Expr(Expr::Field { base, name, .. })
+                    if blob && name == "length" && own(base) =>
+                {
+                    lengths.set(lengths.get() + 1)
+                }
                 Node::Expr(Expr::Ident { sym: Some(s), .. }) if *s == sym => {
                     uses.set(uses.get() + 1)
                 }
@@ -1385,6 +1455,36 @@ impl<'a> Gen<'a> {
                     args,
                     ..
                 }) => whole.set(whole.get() + args.iter().filter(|a| own(a)).count()),
+                // An event's data field, which is encoded as `Abi.encode` would.
+                Node::Stmt(Stmt::Emit { name, fields, .. }) => {
+                    if let Some(ev) = self.checked.events.iter().find(|e| e.name == *name) {
+                        let data = ev.fields.iter().zip(fields);
+                        let n = data.filter(|(f, (_, x))| !f.indexed && own(x)).count();
+                        whole.set(whole.get() + n);
+                    }
+                }
+                // An inlined call's constant parameter reads the caller's word, so passing it
+                // on whole there passes this on whole, and a length it reads is this one's.
+                Node::Expr(Expr::Call {
+                    callee: Some(idx),
+                    builtin: None,
+                    args,
+                    ..
+                }) if !self.plan.outline.contains(idx) => {
+                    // A continuation runs after the call, when the parameter is gone.
+                    let later = self.continuation_syms(*idx);
+                    let params = &self.checked.prog.funcs[*idx].params;
+                    for (a, p) in args.iter().zip(params) {
+                        let passed = p.sym.filter(|&s| {
+                            own(a) && !self.checked.syms[s].mutable && !later.contains(&s)
+                        });
+                        match passed.and_then(|s| self.passed_through(*idx, s)) {
+                            Some((_, true)) => lengths.set(lengths.get() + 1),
+                            Some((_, false)) => whole.set(whole.get() + 1),
+                            None => {}
+                        }
+                    }
+                }
                 Node::Stmt(Stmt::Assign { root: Some(s), .. }) if *s == sym => {
                     uses.set(usize::MAX / 2)
                 }
@@ -1399,9 +1499,121 @@ impl<'a> Gen<'a> {
         if let Some(tail) = &f.tail {
             self.expr_any(tail, &count, &mut Vec::new());
         }
-        match (uses.get(), whole.get()) {
-            (0, _) => Some(false),
-            (n, w) if n == w => Some(true),
+        match (uses.get(), whole.get() + lengths.get()) {
+            (0, _) => Some((false, false)),
+            (n, w) if n == w => Some((true, lengths.get() > 0)),
+            _ => None,
+        }
+    }
+
+    /// Whether a `string` or `bytes` parameter can be read from calldata wherever it is used:
+    /// decoded by `Abi.decode`, passed on whole, asked for its length, joined by a concat, or
+    /// raised in an error, where it is copied out of calldata then. Each such copy costs
+    /// the code of one, so errors may raise it only when another use reads its bytes.
+    pub(super) fn read_in_place(&self, func: usize, sym: usize) -> bool {
+        let (uses, fine) = (std::cell::Cell::new(0usize), std::cell::Cell::new(0usize));
+        let (raised, read) = (std::cell::Cell::new(0usize), std::cell::Cell::new(0usize));
+        let own = |e: &Expr| matches!(e, Expr::Ident { sym: Some(s), .. } if *s == sym);
+        // A raise counts the arguments that are this parameter; uses inside other arguments
+        // count where they are. `revert_flat` copies it from calldata when every string,
+        // bytes, and list raised with it is a literal or a parameter, so it costs no copy of
+        // its own there.
+        let reason_uses = |r: &Raised| {
+            let args = raised_args(r);
+            let flat = args.iter().all(|x| {
+                !(self.is_dynamic(x.ty()) || self.list_value(x.ty()) || self.tree_part(x.ty()))
+                    || matches!(x, Expr::Lit { .. } | Expr::Ident { sym: Some(_), .. })
+            });
+            let n = args.iter().filter(|x| own(x)).count();
+            (n, if flat { 0 } else { n })
+        };
+        let count = |node: Node<'_>| {
+            let add = |n: usize| fine.set(fine.get() + n);
+            match node {
+                Node::Expr(e) if own(e) => uses.set(uses.get() + 1),
+                Node::Stmt(Stmt::Assert { reason, .. } | Stmt::Fail { reason, .. }) => {
+                    let (n, copied) = reason_uses(reason);
+                    raised.set(raised.get() + copied);
+                    add(n)
+                }
+                Node::Stmt(Stmt::Assign { root: Some(s), .. }) if *s == sym => {
+                    uses.set(usize::MAX / 2)
+                }
+                Node::Expr(Expr::Field { base, name, .. }) if name == "length" && own(base) => {
+                    add(1)
+                }
+                Node::Expr(Expr::Call {
+                    builtin,
+                    iface,
+                    callee,
+                    args,
+                    ..
+                }) => match builtin {
+                    Some(
+                        Builtin::AbiEncode
+                        | Builtin::AbiEncodeCall
+                        | Builtin::AbiEncodeSelector
+                        | Builtin::AbiEncodeSignature
+                        | Builtin::StringConcat
+                        | Builtin::BytesConcat,
+                    ) => {
+                        let n = args.iter().filter(|a| own(a)).count();
+                        read.set(read.get() + n);
+                        add(n)
+                    }
+                    Some(Builtin::AbiDecode) => {
+                        let n = usize::from(args.first().is_some_and(own));
+                        read.set(read.get() + n);
+                        add(n)
+                    }
+                    None if iface.is_some() => {
+                        let n = args.iter().filter(|a| own(a)).count();
+                        read.set(read.get() + n);
+                        add(n)
+                    }
+                    None => {
+                        let Some(idx) = callee.filter(|idx| !self.plan.outline.contains(idx)) else {
+                            return false;
+                        };
+                        let later = self.continuation_syms(idx);
+                        let params = &self.checked.prog.funcs[idx].params;
+                        let n = args
+                            .iter()
+                            .zip(params)
+                            .filter(|(a, p)| {
+                                own(a)
+                                    && p.sym.is_some_and(|s| {
+                                        !self.checked.syms[s].mutable
+                                            && !later.contains(&s)
+                                            && (matches!(self.passed_through(idx, s), Some((false, _)))
+                                                || self.read_in_place(idx, s))
+                                    })
+                            })
+                            .count();
+                        read.set(read.get() + n);
+                        add(n)
+                    }
+                    _ => {}
+                },
+                _ => {}
+            }
+            false
+        };
+        let f = &self.checked.prog.funcs[func];
+        for st in &f.stmts {
+            self.stmt_any(st, &count, &mut Vec::new());
+        }
+        if let Some(tail) = &f.tail {
+            self.expr_any(tail, &count, &mut Vec::new());
+        }
+        uses.get() > 0 && uses.get() == fine.get() && (raised.get() == 0 || read.get() > 0)
+    }
+
+    /// The word holding a `string` or `bytes` parameter's calldata position, if it is one
+    /// `read_in_place` keeps there.
+    pub(super) fn cd_str(&self, e: &Expr) -> Option<i32> {
+        match e {
+            Expr::Ident { sym: Some(s), .. } if self.cd_bytes.contains(s) => Some(self.local[*s]),
             _ => None,
         }
     }
@@ -1692,14 +1904,10 @@ impl<'a> Gen<'a> {
         slot: i32,
     ) -> Result<(), Error> {
         let refs: Vec<&Expr> = args.iter().collect();
-        self.tree_encode_exprs(&refs, true)?;
+        self.tree_encode_exprs(&refs, true, 4)?;
         self.mload(self.scratch_a);
-        self.mstore_off(self.scratch_b);
         self.push_u64(u64::from(u32::from_be_bytes(sel)));
-        self.mstore_off(self.scratch_val);
-        self.prepend_saved_selector()?;
-        self.push_u64(1);
-        self.op(SHR);
+        self.put_selector();
         self.mstore_off(slot);
         Ok(())
     }
@@ -1737,8 +1945,17 @@ struct Shape {
 /// One value an encoding holds: where its words are, its type, and whether those words hold
 /// instead the calldata position of an argument left there.
 #[derive(Clone, Copy)]
-struct Part {
-    at: Addr,
-    ty: usize,
-    cd: bool,
+pub(super) struct Part {
+    pub(super) at: Addr,
+    pub(super) ty: usize,
+    pub(super) cd: bool,
+}
+
+/// A piece of a concatenation: staged in a memory word, a literal word of `n` bytes, a
+/// parameter left in calldata, or a stored string or bytes value.
+enum Piece {
+    Staged(i32, usize),
+    Word(Word, u32),
+    Calldata(i32),
+    Stored(usize, u32),
 }

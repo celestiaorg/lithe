@@ -3496,6 +3496,24 @@ external pure function h() : uint is { var xs : list(list(uint)) := [[]]; List.p
 }
 
 #[test]
+fn pushes_grow_only_their_own_list() {
+    let src = "\
+import \"std/list\"; 
+storage is record { n : uint; }
+external pure function a() : uint is { var xs : list(uint) := [1, 2]; var s : uint := 0; for x : uint in xs do { List.push(xs, x + 10); s := s + 1; } } with s * 100 + xs.length * 10 + xs[3] - 10
+external pure function b() : uint is { var xs : list(uint) := []; List.push(xs, 1); var ys : list(uint) := xs; List.push(xs, 2); List.push(ys, 3); } with xs[1] * 10 + ys[1]
+external pure function c() : uint is { var xs : list(uint) := []; for i : uint in 0 .. 40 do { List.push(xs, i); } const ys : list(uint) := [7]; List.push(xs, 99); } with xs[39] * 1000 + xs[40] + ys[0] * 100000
+external pure function d() : uint is { var xs : list(list(uint)) := [[1]]; List.push(xs[0], 2); const y : list(uint) := xs[0]; List.push(xs[0], 3); } with y.length * 10 + xs[0].length
+";
+    let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
+    for (f, want) in [("a()", 242), ("b()", 23), ("c()", 739099), ("d()", 23)] {
+        let out = call(&runtime, f, &[]);
+        assert!(!out.reverted, "{f}: {}", pretty(&out.returndata));
+        assert_eq!(load_bytes(&out.returndata, 0), Word::from_u64(want), "{f}");
+    }
+}
+
+#[test]
 fn literals_take_their_type_from_context() {
     let src = r#"import "std/crypto"; import "std/uint"; 
 type pt is record { a : uint8; b : bool; }

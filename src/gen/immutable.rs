@@ -5,6 +5,26 @@
 
 use super::*;
 
+/// The runtime assembled with its appended `data`, and where each immutable's word goes in
+/// it, those of `tail_blobs` included.
+pub(super) fn place_runtime(
+    code: &[Inst],
+    data: &[(Word, Vec<u8>, String)],
+    tail_blobs: &[(Word, Vec<u32>)],
+) -> Result<(Vec<u8>, Vec<Mark>), Error> {
+    let (bytes, mut marks, offsets) = place_marked(code, data)?;
+    for (marker, words) in tail_blobs {
+        let at = offsets[marker];
+        marks.extend(
+            words
+                .iter()
+                .enumerate()
+                .map(|(j, &k)| (k, at + 32 * j - 1, 32)),
+        );
+    }
+    Ok((bytes, marks))
+}
+
 impl<'a> Gen<'a> {
     /// Pushes the value of an immutable leaf.
     pub(super) fn push_immutable(&mut self, leaf: u32) {
@@ -67,21 +87,6 @@ impl<'a> Gen<'a> {
             self.imm_tail[(leaf - from) as usize] = i as u32;
         }
         self.cd_tail = 32 * order.len() as u64;
-    }
-
-    /// The runtime assembled, and where each immutable's word goes in it.
-    pub(super) fn place_runtime(&self, code: &[Inst]) -> Result<(Vec<u8>, Vec<Mark>), Error> {
-        let (bytes, mut marks, offsets) = place_marked(code, &self.data)?;
-        for (marker, words) in &self.tail_blobs {
-            let at = offsets[marker];
-            marks.extend(
-                words
-                    .iter()
-                    .enumerate()
-                    .map(|(j, &k)| (k, at + 32 * j - 1, 32)),
-            );
-        }
-        Ok((bytes, marks))
     }
 
     /// Returns the runtime, `len` bytes at `code`, with each immutable written into it.

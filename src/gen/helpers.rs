@@ -14,12 +14,16 @@ impl<'a> Gen<'a> {
     }
 
     pub(super) fn call_sub(&mut self, sub: Sub) {
+        if sub.writes_storage() {
+            self.forget_stored_values();
+        }
         let label = self.sub_label(sub);
         let ret = self.fresh();
         self.push_label(ret);
         self.push_label(label);
         self.op(JUMP);
-        self.jumpdest(ret);
+        // Only the helper's return jumps here.
+        self.code.push(Inst::Label(ret));
     }
 
     /// Emits each helper that some call still reaches. Helpers may call helpers.
@@ -49,7 +53,6 @@ impl<'a> Gen<'a> {
                 Sub::JournalStore => self.sub_journal_store(),
                 Sub::JournalFlush => self.sub_journal_flush(),
                 Sub::AllocBlob => self.sub_alloc_blob(),
-                Sub::BytesSpan => self.sub_bytes_span(),
                 Sub::StoreBytes => self.bytes_helper(true)?,
                 Sub::LoadBytes => self.bytes_helper(false)?,
                 Sub::MulDiv => self.sub_mul_div()?,
@@ -152,6 +155,15 @@ impl<'a> Gen<'a> {
                     self.op(SWAP1);
                     self.op(JUMP);
                 }
+                Sub::CopyCdBytes => {
+                    self.op(SWAP1);
+                    self.op(DUP1);
+                    self.cd_load();
+                    self.copy_cd_blob()?;
+                    self.op(SWAP1);
+                    self.op(JUMP);
+                }
+                Sub::StoredTail => self.sub_stored_tail(),
                 Sub::Base64Encode => self.sub_base64_encode(),
                 Sub::Base64Decode => self.sub_base64_decode(),
                 Sub::DecimalString(signed) => self.sub_decimal_string(signed)?,
@@ -543,10 +555,8 @@ impl<'a> Gen<'a> {
     }
 
     pub(super) fn mstore_off(&mut self, addr: i32) {
-        if !self.slot_cache.is_empty() {
-            if let Region::Local(sym) = self.spaces[(addr >> REGION_SHIFT) as usize - 1].region {
-                self.slot_cache.retain(|_, (_, deps)| !deps.contains(&sym));
-            }
+        if let Region::Local(sym) = self.spaces[(addr >> REGION_SHIFT) as usize - 1].region {
+            self.forget_keys(&[sym]);
         }
         if let Some(leaf) = self.image_leaf(addr) {
             if self.checked.immutable_leaf(leaf) {
@@ -590,7 +600,7 @@ impl<'a> Gen<'a> {
     pub(super) fn return_record(&mut self, at: i32, ty: usize) -> Result<(), Error> {
         let mut parts = Vec::new();
         self.record_parts(at, ty, &mut parts);
-        self.encode_parts(&parts)?;
+        self.encode_parts(&parts, 0, &[])?;
         self.mload(self.scratch_a);
         self.op(DUP1);
         self.op(MLOAD);
@@ -649,6 +659,11 @@ impl<'a> Gen<'a> {
             self.code.push(Inst::Op(CALLDATASIZE));
             self.code.push(Inst::Op(SUB));
         } else {
+            if !self.kept_store
+                && matches!(b, SSTORE | TSTORE | CALL | DELEGATECALL | CREATE | CREATE2)
+            {
+                self.forget_stored_values();
+            }
             self.code.push(Inst::Op(b));
         }
     }
@@ -656,10 +671,6 @@ impl<'a> Gen<'a> {
     pub(super) fn fresh(&mut self) -> u32 {
         self.next_label += 1;
         self.next_label
-    }
-
-    pub(super) fn jumpdest(&mut self, id: u32) {
-        self.code.push(Inst::Label(id));
     }
 
     pub(super) fn push_label(&mut self, id: u32) {

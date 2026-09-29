@@ -148,6 +148,9 @@ impl<'a> Gen<'a> {
             .iter()
             .any(|arg| self.is_dynamic(arg.ty()) || self.list_value(arg.ty()))
         {
+            if self.revert_flat(sel, args)? {
+                return Ok(());
+            }
             return self.revert_encoded(sel, args);
         }
         for arg in args {
@@ -170,14 +173,10 @@ impl<'a> Gen<'a> {
     /// A payload with records, tuples, fixed lists, or nested dynamic values, encoded as
     /// `Abi.encode` would, after the selector.
     fn revert_tree(&mut self, sel: [u8; 4], args: &[&Expr], spread: bool) -> Result<(), Error> {
-        self.tree_encode_exprs(args, spread)?;
+        self.tree_encode_exprs(args, spread, 4)?;
         self.mload(self.scratch_a);
-        self.mstore_off(self.scratch_b);
         self.push_u64(u64::from(u32::from_be_bytes(sel)));
-        self.mstore_off(self.scratch_val);
-        self.prepend_saved_selector()?;
-        self.push_u64(1);
-        self.op(SHR);
+        self.put_selector();
         self.op(DUP1);
         self.op(MLOAD);
         self.op(SWAP1);
@@ -196,14 +195,10 @@ impl<'a> Gen<'a> {
             self.mstore_off(at);
             parts.push((at, arg.ty()));
         }
-        self.encode_parts(&parts)?;
+        self.encode_parts(&parts, 4, &[])?;
         self.mload(self.scratch_a);
-        self.mstore_off(self.scratch_b);
         self.push_u64(u64::from(u32::from_be_bytes(sel)));
-        self.mstore_off(self.scratch_val);
-        self.prepend_saved_selector()?;
-        self.push_u64(1);
-        self.op(SHR);
+        self.put_selector();
         self.op(DUP1);
         self.op(MLOAD);
         self.op(SWAP1);
@@ -211,6 +206,333 @@ impl<'a> Gen<'a> {
         self.op(ADD);
         self.op(REVERT);
         Ok(())
+    }
+
+    /// The bytes of a literal `string` or `bytes` value.
+    pub(super) fn lit_bytes(&self, e: &Expr) -> Option<Vec<u8>> {
+        let Expr::Lit { lit, ty, .. } = e else {
+            return None;
+        };
+        if !self.is_dynamic(self.peel_nominal(*ty)) {
+            return None;
+        }
+        match lit {
+            Lit::Str(s) => Some(s.as_bytes().to_vec()),
+            Lit::Bytes(b) => Some(b.clone()),
+            Lit::Int(w, digits) => {
+                let be = w.to_be_bytes();
+                let start = match digits {
+                    Some(d) => 32 - usize::from(d / 2),
+                    None => be.iter().position(|b| *b != 0).unwrap_or(32),
+                };
+                Some(be[start..].to_vec())
+            }
+            _ => None,
+        }
+    }
+
+    /// Stores a literal's length at `at` and its bytes in the words after it, zero-padded.
+    fn store_lit(&mut self, bytes: &[u8], at: u64) {
+        self.push_u64(bytes.len() as u64);
+        self.push_u64(at);
+        self.op(MSTORE);
+        for (c, chunk) in bytes.chunks(32).enumerate() {
+            let mut word = [0u8; 32];
+            word[..chunk.len()].copy_from_slice(chunk);
+            self.push_word(Word::from_be_bytes(word));
+            self.push_u64(at + 32 + 32 * c as u64);
+            self.op(MSTORE);
+        }
+    }
+
+    /// Returns a literal `string` or `bytes` value, ABI-encoded from address 0.
+    pub(super) fn return_lit(&mut self, bytes: &[u8]) {
+        self.push_u64(32);
+        self.op(PUSH0);
+        self.op(MSTORE);
+        self.store_lit(bytes, 32);
+        self.push_u64(64 + 32 * bytes.len().div_ceil(32) as u64);
+        self.op(PUSH0);
+        self.op(RETURN);
+    }
+
+    /// The dynamic value an error argument lays out straight from code or calldata, if it is
+    /// a literal or a parameter left in calldata.
+    fn flat_tail(&self, arg: &Expr) -> Option<Flat> {
+        let ty = self.peel_nominal(arg.ty());
+        if let Expr::Lit { .. } = arg {
+            return self.lit_bytes(arg).map(Flat::Lit);
+        }
+        if self.init {
+            return None;
+        }
+        if let Some(at) = self.cd_str(arg) {
+            return Some(Flat::Cd(at, false));
+        }
+        if let Some((sym, leaf)) = self.stored_str(arg).filter(|_| self.dyn_key.is_none()) {
+            let key = self.checked.leaf_keys[(self.checked.syms[sym].slot + leaf) as usize];
+            return Some(Flat::Stored(sym, leaf, key));
+        }
+        match arg {
+            Expr::Ident { sym: Some(sym), .. }
+                if self.cd_lists.contains(sym)
+                    && !self.cd_lazy.contains(sym)
+                    && !self.needs_check(self.list_elem(ty)) =>
+            {
+                Some(Flat::Cd(self.local[*sym], true))
+            }
+            _ => None,
+        }
+    }
+
+    /// An error whose strings, bytes, and lists are literals or parameters left in calldata,
+    /// laid out from address 0 in place and reverted. Nothing in memory is read, so the
+    /// payload may cover any of it. Returns whether it was.
+    fn revert_flat(&mut self, sel: [u8; 4], args: &[&Expr]) -> Result<bool, Error> {
+        let mut kinds = Vec::with_capacity(args.len());
+        for arg in args {
+            if self.is_dynamic(arg.ty()) || self.list_value(arg.ty()) {
+                match self.flat_tail(arg) {
+                    Some(kind) => kinds.push(kind),
+                    None => return Ok(false),
+                }
+            } else {
+                kinds.push(Flat::Word);
+            }
+        }
+        if kinds.iter().filter(|k| !matches!(k, Flat::Lit(_))).count() > FLAT_ARGS {
+            return Ok(false);
+        }
+        // Each word or calldata position is evaluated first, in order.
+        let mut slot = Vec::with_capacity(args.len());
+        let mut height = 0usize;
+        for (arg, kind) in args.iter().zip(&kinds) {
+            match kind {
+                Flat::Word => {
+                    self.compile_value(arg)?;
+                    self.fit_static_word(arg.ty());
+                }
+                Flat::Cd(at, _) => self.mload(*at),
+                Flat::Stored(sym, leaf, _) => self.mload(self.addr(*sym, *leaf)),
+                Flat::Lit(_) => {
+                    slot.push(usize::MAX);
+                    continue;
+                }
+            }
+            slot.push(height);
+            height += 1;
+        }
+        self.push_selector(sel);
+        self.op(PUSH0);
+        self.op(MSTORE);
+        // The next tail's address, while it is known here; after a calldata tail, the
+        // cursor on top of the stack holds it.
+        let mut tail = Some(32 + 32 * args.len() as u64);
+        let dup = |g: &mut Self, height: usize, at: usize| g.op(DUP1 + (height - at - 1) as u8);
+        // [.., cursor, value] or [.., value]: pushes the tail's address plus `k`.
+        let at = |g: &mut Self, tail: Option<u64>, k: u64| match tail {
+            Some(t) => g.push_u64(t + k),
+            None => {
+                g.op(DUP1 + 1);
+                if k > 0 {
+                    g.push_u64(k);
+                    g.op(ADD);
+                }
+            }
+        };
+        for (i, kind) in kinds.iter().enumerate() {
+            let head = 32 + 32 * i as u64;
+            if let Flat::Word = kind {
+                dup(self, height + usize::from(tail.is_none()), slot[i]);
+                self.push_u64(head);
+                self.op(MSTORE);
+                continue;
+            }
+            match tail {
+                Some(t) => self.push_u64(t - 32),
+                None => {
+                    self.push_u64(32);
+                    self.op(DUP1 + 1);
+                    self.op(SUB);
+                }
+            }
+            self.push_u64(head);
+            self.op(MSTORE);
+            match kind {
+                Flat::Lit(bytes) => {
+                    self.push_u64(bytes.len() as u64);
+                    at(self, tail, 0);
+                    self.op(MSTORE);
+                    for (c, chunk) in bytes.chunks(32).enumerate() {
+                        let mut word = [0u8; 32];
+                        word[..chunk.len()].copy_from_slice(chunk);
+                        self.push_word(Word::from_be_bytes(word));
+                        at(self, tail, 32 + 32 * c as u64);
+                        self.op(MSTORE);
+                    }
+                    let size = 32 + 32 * bytes.len().div_ceil(32) as u64;
+                    match &mut tail {
+                        Some(t) => *t += size,
+                        None => {
+                            self.push_u64(size);
+                            self.op(ADD);
+                        }
+                    }
+                }
+                Flat::Cd(_, list) => {
+                    // [.., n]: the length word and the data are copied at once.
+                    let h = height + usize::from(tail.is_none());
+                    dup(self, h, slot[i]);
+                    self.op(CALLDATALOAD);
+                    if *list {
+                        self.push_u64(5);
+                        self.op(SHL);
+                    }
+                    self.push_u64(32);
+                    self.op(ADD);
+                    self.op(DUP1);
+                    dup(self, h + 2, slot[i]);
+                    match tail {
+                        Some(t) => self.push_u64(t),
+                        None => self.op(DUP1 + 3),
+                    }
+                    self.op(CALLDATACOPY);
+                    if !*list {
+                        // The bytes past the data up to the next word are zeros.
+                        self.op(PUSH0);
+                        self.op(DUP1 + 1);
+                        match tail {
+                            Some(t) => self.push_u64(t),
+                            None => self.op(DUP1 + 3),
+                        }
+                        self.op(ADD);
+                        self.op(MSTORE);
+                        self.push_u64(31);
+                        self.op(ADD);
+                        self.push_u64(31);
+                        self.op(NOT);
+                        self.op(AND);
+                    }
+                    match tail {
+                        Some(t) => {
+                            self.push_u64(t);
+                            self.op(ADD);
+                        }
+                        None => self.op(ADD),
+                    }
+                    tail = None;
+                }
+                Flat::Stored(_, _, key) => {
+                    match tail {
+                        Some(t) => self.push_u64(t),
+                        None => self.op(DUP1),
+                    }
+                    let h = height + usize::from(tail.is_none()) + 1;
+                    dup(self, h, slot[i]);
+                    self.push_word(*key);
+                    self.call_sub(Sub::StoredTail);
+                    if tail.is_none() {
+                        self.op(SWAP1);
+                        self.op(POP);
+                    }
+                    tail = None;
+                }
+                Flat::Word => unreachable!(),
+            }
+        }
+        match tail {
+            Some(t) => self.push_u64(t - 28),
+            None => {
+                self.push_u64(28);
+                self.op(SWAP1);
+                self.op(SUB);
+            }
+        }
+        self.push_u64(28);
+        self.op(REVERT);
+        Ok(true)
+    }
+
+    pub(super) fn sub_stored_tail(&mut self) {
+        let (long, top, end, done) = (self.fresh(), self.fresh(), self.fresh(), self.fresh());
+        // [ret, at, slot, word]
+        self.op(SWAP1 + 2);
+        self.op(SWAP1 + 1);
+        self.op(DUP1);
+        self.push_u64(1);
+        self.op(AND);
+        self.push_label(long);
+        self.op(JUMPI);
+        // A packed slot: the bytes are above the low byte, which is twice the length.
+        self.op(DUP1);
+        self.push_u64(0xff);
+        self.op(NOT);
+        self.op(AND);
+        self.op(DUP1 + 3);
+        self.push_u64(32);
+        self.op(ADD);
+        self.op(MSTORE);
+        self.push_u64(0xff);
+        self.op(AND);
+        self.push_u64(1);
+        self.op(SHR);
+        self.push_label(done);
+        self.op(JUMP);
+        // The data slots start at the slot's hash, taken where the length goes next.
+        self.jumpdest(long);
+        self.push_u64(1);
+        self.op(SHR);
+        self.op(SWAP1);
+        self.op(DUP1 + 2);
+        self.op(MSTORE);
+        self.push_u64(32);
+        self.op(DUP1 + 2);
+        self.op(KECCAK);
+        self.op(SWAP1);
+        // [ret, at, first, len, j]: `j` counts bytes, a slot at a time.
+        self.op(PUSH0);
+        self.jumpdest(top);
+        self.op(DUP1 + 1);
+        self.op(DUP1 + 1);
+        self.op(LT);
+        self.op(ISZERO);
+        self.push_label(end);
+        self.op(JUMPI);
+        self.op(DUP1);
+        self.push_u64(5);
+        self.op(SHR);
+        self.op(DUP1 + 3);
+        self.op(ADD);
+        self.op(SLOAD);
+        self.op(DUP1 + 1);
+        self.op(DUP1 + 5);
+        self.op(ADD);
+        self.push_u64(32);
+        self.op(ADD);
+        self.op(MSTORE);
+        self.push_u64(32);
+        self.op(ADD);
+        self.push_label(top);
+        self.op(JUMP);
+        self.jumpdest(end);
+        self.op(POP);
+        // [ret, at, _, len]
+        self.jumpdest(done);
+        self.op(SWAP1);
+        self.op(POP);
+        self.op(DUP1);
+        self.op(DUP1 + 2);
+        self.op(MSTORE);
+        self.push_u64(31);
+        self.op(ADD);
+        self.push_u64(31);
+        self.op(NOT);
+        self.op(AND);
+        self.op(ADD);
+        self.push_u64(32);
+        self.op(ADD);
+        self.op(SWAP1);
+        self.op(JUMP);
     }
 
     /// The head words wait in a region of their own, and a shared helper reverts with them
@@ -483,7 +805,8 @@ impl<'a> Gen<'a> {
         // overwrite them. The layout lets emits in different bodies share memory.
         if schema
             .iter()
-            .any(|&(indexed, _, ty)| !indexed && self.tree_part(ty))
+            .zip(fields)
+            .any(|(&(indexed, _, ty), (_, e))| !indexed && (self.tree_part(ty) || self.cd_tree(e)))
         {
             return self.emit_tree(&schema, fields, topic, n_topics, reversed);
         }
@@ -569,14 +892,29 @@ impl<'a> Gen<'a> {
             self.reversed_topics(schema, fields)?;
         }
         for (&(indexed, hashed, ty), (_, expr)) in schema.iter().zip(fields) {
-            if !indexed {
+            if indexed {
+                if !reversed {
+                    self.compile_topic(expr, ty, hashed)?;
+                }
+            } else if let Some(sym) = self.cd_tree_sym(expr).or_else(|| match expr {
+                Expr::Ident { sym: Some(sym), .. } if self.cd_list(expr) => Some(*sym),
+                _ => None,
+            }) {
+                parts.push(tree::Part {
+                    at: Addr::Mem(self.local[sym]),
+                    ty,
+                    cd: true,
+                });
+            } else {
                 let at = self.stage(expr)?;
-                parts.push((Addr::Mem(at), ty));
-            } else if !reversed {
-                self.compile_topic(expr, ty, hashed)?;
+                parts.push(tree::Part {
+                    at: Addr::Mem(at),
+                    ty,
+                    cd: false,
+                });
             }
         }
-        self.tree_encode(&parts)?;
+        self.tree_encode_parts(&parts, 0)?;
         self.order_topics(if reversed { 0 } else { n_topics }, topic);
         self.mload(self.scratch_a);
         self.op(DUP1);
@@ -598,7 +936,7 @@ impl<'a> Gen<'a> {
         n_topics: u32,
         reversed: bool,
     ) -> Result<(), Error> {
-        let mut parts = Vec::new();
+        let (mut parts, mut cd) = (Vec::new(), Vec::new());
         if reversed {
             self.reversed_topics(schema, fields)?;
         }
@@ -608,11 +946,12 @@ impl<'a> Gen<'a> {
                 self.compile_value(expr)?;
                 self.mstore_off(at);
                 parts.push((at, ty));
+                cd.push(self.cd_list(expr));
             } else if !reversed {
                 self.compile_topic(expr, ty, hashed)?;
             }
         }
-        self.encode_parts(&parts)?;
+        self.encode_parts(&parts, 0, &cd)?;
         self.order_topics(if reversed { 0 } else { n_topics }, topic);
         self.mload(self.scratch_a);
         self.op(DUP1);
@@ -775,4 +1114,27 @@ impl<'a> Gen<'a> {
         self.op(KECCAK);
         Ok(())
     }
+}
+
+/// The most words and calldata positions `revert_flat` holds on the stack at once.
+pub(super) const FLAT_ARGS: usize = 12;
+
+/// An error's arguments, a record's fields each on its own.
+pub(super) fn raised_args(raised: &Raised) -> Vec<&Expr> {
+    match &raised.form {
+        RaisedForm::Unit => Vec::new(),
+        RaisedForm::Positional(expr) => vec![expr],
+        RaisedForm::Fields(fields) => fields.iter().map(|(_, expr)| expr).collect(),
+    }
+}
+
+/// How `revert_flat` lays out an error argument: a word in the head, a literal's bytes, the
+/// string, bytes, or list (when set) whose calldata position a local word holds, or a stored
+/// string or bytes value.
+enum Flat {
+    Word,
+    Lit(Vec<u8>),
+    Cd(i32, bool),
+    /// A stored string or bytes value: its place and its slot.
+    Stored(usize, u32, Word),
 }

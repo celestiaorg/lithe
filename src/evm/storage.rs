@@ -1360,3 +1360,186 @@ external function phases(const n : uint) is {
         }
     }
 }
+
+#[test]
+fn map_slots_follow_keys_a_loop_rewrites() {
+    let src = r#"
+storage is record {
+  m : map(uint, uint);
+}
+
+external view function f() : uint is {
+  var k : uint := 1;
+  var total : uint := storage.m[k];
+  for i : uint in 0 .. 3 do {
+    total := total + storage.m[k] * 10;
+    k := k + 1;
+  }
+} with total
+"#;
+    let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
+    let w = Word::from_u64;
+    let storage: HashMap<Word, Word> = (1..4).map(|k| (map_key(w(k), w(0)), w(k))).collect();
+    let out = run_ok(&runtime, &storage, "f()", &[]);
+    assert_eq!(load_bytes(&out.returndata, 0), w(61));
+}
+
+#[test]
+fn kept_storage_reads_see_every_write() {
+    let src = r#"import "std/list"; 
+type bag is record {
+  xs : list(uint);
+  n : uint;
+}
+
+storage is record {
+  count : uint;
+  m : map(uint, uint);
+  bags : map(uint, bag);
+}
+
+function bump() is {
+  storage.count := storage.count + 1;
+}
+
+external function alias(const a : uint; const b : uint) : uint is {
+  const first : uint := storage.m[a];
+  storage.m[b] := first + 5;
+} with storage.m[a] * 100 + first
+
+external function called() : uint is {
+  const before : uint := storage.count;
+  bump();
+  bump();
+} with storage.count * 100 + before
+
+external function pushes(const k : uint) : uint is {
+  var total : uint := storage.bags[k].xs.length;
+  for i : uint in 0 .. 3 do {
+    total := total + storage.bags[k].xs.length * 10 + storage.bags[k].xs[0] * 1000;
+    List.push(storage.bags[k].xs, i + 7);
+  }
+} with total
+
+external function branch(const k : uint; const c : bool) : uint is {
+  if c then {
+    storage.bags[k].n := storage.bags[k].n + 1;
+  }
+} with storage.bags[k].n
+"#;
+    let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
+    let w = Word::from_u64;
+    let empty = HashMap::new();
+    let word = |out: &Outcome| load_bytes(&out.returndata, 0);
+    assert_eq!(word(&run_ok(&runtime, &empty, "alias(uint256,uint256)", &[w(1), w(1)])), w(500));
+    assert_eq!(word(&run_ok(&runtime, &empty, "alias(uint256,uint256)", &[w(1), w(2)])), w(0));
+    assert_eq!(word(&run_ok(&runtime, &empty, "called()", &[])), w(200));
+    let seeded: HashMap<Word, Word> = [(map_key(w(3), w(2)), w(1))].into_iter().collect();
+    let data = Word::from_be_bytes(crate::keccak::keccak256(&map_key(w(3), w(2)).to_be_bytes()));
+    let mut seeded = seeded;
+    seeded.insert(data, w(4));
+    // A list starting [4]: each pass sees the length the last push left.
+    assert_eq!(word(&run_ok(&runtime, &seeded, "pushes(uint256)", &[w(3)])), w(1 + 10 + 20 + 30 + 3 * 4000));
+    let once = run_ok(&runtime, &empty, "branch(uint256,bool)", &[w(3), w(1)]);
+    assert_eq!(word(&once), w(1));
+    assert_eq!(word(&run_ok(&runtime, &once.storage, "branch(uint256,bool)", &[w(3), w(0)])), w(1));
+}
+
+#[test]
+fn kept_slot_words_follow_packed_writes() {
+    let src = r#"
+storage is record {
+  a : uint128;
+  b : uint128;
+}
+
+external function f(const x : uint128; const flag : bool) : uint is {
+  const before : uint128 := storage.a;
+  if flag then {
+    storage.b := x;
+  }
+  storage.a := before + uint128(1);
+} with uint(storage.a) * 1000 + uint(storage.b)
+"#;
+    let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
+    let w = Word::from_u64;
+    let word = |out: &Outcome| load_bytes(&out.returndata, 0);
+    let set = run_ok(&runtime, &HashMap::new(), "f(uint128,bool)", &[w(5), w(1)]);
+    assert_eq!(word(&set), w(1005));
+    let kept = run_ok(&runtime, &set.storage, "f(uint128,bool)", &[w(9), w(0)]);
+    assert_eq!(word(&kept), w(2005));
+    assert_eq!(kept.storage.get(&w(0)).copied(), Some(w(5).shl(128).wrapping_add(w(2))));
+}
+
+/// A narrow value with a slot to itself is stored without reading the slot: the slot
+/// holds the value's bytes and zeros, as Solidity leaves it.
+#[test]
+fn narrow_values_alone_in_a_slot_leave_the_rest_zero() {
+    let src = "\
+storage is record { a : uint8; n : uint; b : bytes4; m : uint; c : int16; d : map(uint, uint32); e : address; }
+external function put(const x : uint; const h : bytes32; const y : int16) is {
+  storage.a := uint8(x % 256);
+  storage.b := bytes4(h);
+  storage.c := y - 1;
+  storage.d[x] := uint32(x) + 1;
+  storage.e := address(uint160(x));
+}
+";
+    let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
+    let w = Word::from_u64;
+    let mut h = [0xffu8; 32];
+    h[..4].copy_from_slice(&[0xde, 0xad, 0xbe, 0xef]);
+    let out = run_ok(
+        &runtime,
+        &HashMap::new(),
+        "put(uint256,bytes32,int16)",
+        &[w(0x1234), Word::from_be_bytes(h), w(0).wrapping_sub(w(5))],
+    );
+    let at = |slot: Word| out.storage.get(&slot).copied().unwrap_or_else(|| w(0));
+    assert_eq!(at(w(0)), w(0x34));
+    assert_eq!(at(w(2)), w(0xdeadbeef));
+    assert_eq!(at(w(4)), w(0xfffa));
+    assert_eq!(at(map_key(w(0x1234), w(5))), w(0x1235));
+    assert_eq!(at(w(6)), w(0x1234));
+}
+
+#[test]
+fn loop_keeps_the_slot_of_fixed_map_keys() {
+    let src = r#"import "std/evm"; 
+storage is record { bal : map(address, map(uint, uint)); tag : map(uint, map(address, uint)); }
+function add(const who : address; const id : uint; const v : uint) is {
+  storage.bal[who][id] := storage.bal[who][id] + v;
+  storage.tag[7][who] := storage.tag[7][who] + id;
+}
+external function run(const who : address; const ids : list(uint)) : (uint, uint, uint, uint) is {
+  for (i, id) : (uint, uint) in ids do {
+    add(who, id, i + 1);
+    add(Evm.sender(), id, 1);
+  }
+} with (storage.bal[who][2], storage.bal[who][5], storage.tag[7][who], storage.bal[Evm.sender()][2])
+"#;
+    let rt = deploy(&compile(src).expect("compile")).expect("deploy");
+    let n = Word::from_u64;
+    let out = run_ok(&rt, &HashMap::new(), "run(address,uint256[])", &[n(9), n(64), n(3), n(2), n(5), n(2)]);
+    let words: Vec<Word> = (0..4).map(|i| load_bytes(&out.returndata, i * 32)).collect();
+    assert_eq!(words, [n(4), n(2), n(9), n(2)]);
+}
+
+#[test]
+fn calldata_element_read_twice_across_a_store() {
+    let src = r#"
+storage is record { a : map(uint, uint); }
+external function run(const xs : list(uint); const ys : list(uint)) : (uint, uint) is {
+  for (i, x) : (uint, uint) in xs do {
+    storage.a[x] := storage.a[x] + ys[i];
+    storage.a[x + 1] := storage.a[x + 1] + ys[i] * 2;
+  }
+} with (storage.a[2], storage.a[3])
+"#;
+    let rt = deploy(&compile(src).expect("compile")).expect("deploy");
+    let n = Word::from_u64;
+    let args = [n(64), n(160), n(2), n(2), n(1), n(2), n(5), n(7)];
+    let out = run_ok(&rt, &HashMap::new(), "run(uint256[],uint256[])", &args);
+    let words: Vec<Word> = (0..2).map(|i| load_bytes(&out.returndata, i * 32)).collect();
+    assert_eq!(words, [n(5 + 14), n(10)]);
+}

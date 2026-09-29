@@ -3,7 +3,7 @@ use super::*;
 impl<'a> Gen<'a> {
     pub(super) fn compile_value(&mut self, e: &Expr) -> Result<(), Error> {
         if self.deep(e) {
-            return self.deep_read(e);
+            return self.deep_read_word(e);
         }
         if let Some(()) = self.local_elem_read(e)? {
             return Ok(());
@@ -174,6 +174,10 @@ impl<'a> Gen<'a> {
                 }
                 if self.is_dynamic(ty) && self.checked.syms[*sid].storage {
                     self.load_storage_bytes(*sid, 0)?;
+                } else if let Some(at) = self.cd_str(e) {
+                    // A parameter kept in calldata is copied out where it is needed whole.
+                    self.mload(at);
+                    self.call_sub(Sub::CopyCdBytes);
                 } else {
                     self.mload(self.addr(*sid, 0));
                 }
@@ -198,8 +202,20 @@ impl<'a> Gen<'a> {
                     self.op(RETURNDATASIZE);
                     return Ok(());
                 }
+                if let Expr::Ident { sym: Some(sym), .. } = base.as_ref() {
+                    if self.cd_trees.contains(sym) {
+                        self.mload(self.local[*sym]);
+                        self.cd_load();
+                        return Ok(());
+                    }
+                }
                 if self.string_header(base)? {
                     self.header_length();
+                    return Ok(());
+                }
+                if let Some(at) = self.cd_str(base) {
+                    self.mload(at);
+                    self.cd_load();
                     return Ok(());
                 }
                 self.compile_value(base)?;
@@ -212,9 +228,20 @@ impl<'a> Gen<'a> {
                     return Err(error(*line, *col, "expected a word"));
                 }
                 let (index, value, start) = self.map_place(e).expect("checked");
-                self.map_chain(index)?;
-                let layout = self.slot_layout(value, self.transient_slot);
-                self.load_value_word(&layout, start);
+                let name = self.named(e).filter(|_| !self.place_transient(e));
+                let pack = self.place_pack(e);
+                // The slot's whole word is kept, and each read takes its bytes.
+                self.kept_load(name, |g| {
+                    g.map_chain(index)?;
+                    let (off, _) = g.slot_layout(value, g.transient_slot)[start as usize];
+                    if off > 0 {
+                        g.push_u64(off);
+                        g.op(ADD);
+                    }
+                    g.journal_load();
+                    Ok(())
+                })?;
+                self.unpack(pack);
                 Ok(())
             }
             Expr::Field {
@@ -275,9 +302,16 @@ impl<'a> Gen<'a> {
                 base,
                 ..
             } if matches!(base.as_ref(), Expr::Index { .. }) => {
-                self.map_chain(e)?;
-                self.load_slot(self.is_dynamic(self.peel_nominal(e.ty())));
-                Ok(())
+                if self.is_dynamic(self.peel_nominal(e.ty())) {
+                    self.map_chain(e)?;
+                    self.load_slot(true);
+                    return Ok(());
+                }
+                self.kept_load(self.named(e), |g| {
+                    g.map_chain(e)?;
+                    g.load_slot(false);
+                    Ok(())
+                })
             }
             Expr::Index {
                 root: Some(sid),
@@ -348,8 +382,13 @@ impl<'a> Gen<'a> {
                     if name == "length" && self.is_dynamic(base.ty()) && zero.is_zero() {
                         if self.is_returned(base) {
                             self.op(RETURNDATASIZE);
+                        } else if self.cd_tree(base) {
+                            self.compile_value(left)?;
                         } else if self.string_header(base)? {
                             self.header_length();
+                        } else if let Some(at) = self.cd_str(base) {
+                            self.mload(at);
+                            self.cd_load();
                         } else {
                             self.compile_value(base)?;
                             // The word times its blob's length; the zero word reads scratch.
@@ -382,7 +421,7 @@ impl<'a> Gen<'a> {
                     self.assume(left, *op == BinOp::And);
                     let right = self.compile_value(right);
                     self.facts.truncate(mark);
-                    self.branch -= 1;
+                    self.leave_branch();
                     right?;
                     self.jumpdest(end);
                     return Ok(());
@@ -419,6 +458,18 @@ impl<'a> Gen<'a> {
                 let proven = !signed
                     && matches!(*op, BinOp::Add | BinOp::Sub | BinOp::Mul)
                     && self.cannot_wrap(*op, left, right);
+                let lit = |x: &Expr| match x {
+                    Expr::Lit {
+                        lit: Lit::Uint(w), ..
+                    } => Some(*w),
+                    _ => None,
+                };
+                // Only a power of two beats a call to the shared multiply in bytes.
+                let pow2 = |c: Word| (1..256).find(|&k| c == Word::from_u64(1).shl(k));
+                let factor = (!signed && *op == BinOp::Mul)
+                    .then(|| lit(right).or_else(|| lit(left)))
+                    .flatten()
+                    .filter(|&c| !self.plan.shared_mul || pow2(c).is_some());
                 // A narrow difference that wraps is out of its type's range, which `narrow` checks.
                 if proven || (!signed && narrowed && *op == BinOp::Sub) {
                     match op {
@@ -428,6 +479,34 @@ impl<'a> Gen<'a> {
                             self.op(SWAP1);
                             self.op(SUB);
                         }
+                    }
+                } else if let Some(c) = factor {
+                    // By a constant, the product fits when dividing it back gives the other
+                    // factor; by `2^k`, when the top `k` bits are clear.
+                    if lit(right).is_none() {
+                        self.op(SWAP1);
+                    }
+                    if let Some(k) = pow2(c) {
+                        self.op(POP);
+                        self.op(DUP1);
+                        self.push_u64(u64::from(256 - k));
+                        self.op(SHR);
+                        self.revert_if_panic(0x11)?;
+                        self.push_u64(u64::from(k));
+                        self.op(SHL);
+                    } else {
+                        self.op(DUP1 + 1);
+                        self.op(DUP1 + 1);
+                        self.op(MUL);
+                        self.op(SWAP1);
+                        self.op(DUP1 + 1);
+                        self.op(DIV);
+                        self.op(DUP1 + 2);
+                        self.op(EQ);
+                        self.op(ISZERO);
+                        self.revert_if_panic(0x11)?;
+                        self.op(SWAP1);
+                        self.op(POP);
                     }
                 } else {
                     self.finish_bin(*op, signed, bits)?;
@@ -968,6 +1047,44 @@ impl<'a> Gen<'a> {
             if let Some(bytes) = constant {
                 self.push_word(Word::from_be_bytes(crate::keccak::keccak256(&bytes)));
                 return Ok(());
+            }
+        }
+        // A function that is only its result hashes that inlined, so the forms below see
+        // through it and no blob is built.
+        if let Expr::Call {
+            callee: Some(idx),
+            args: call_args,
+            ..
+        } = &args[0]
+        {
+            let f = &self.checked.prog.funcs[*idx];
+            if let Some(tail) = f
+                .tail
+                .clone()
+                .filter(|_| f.stmts.is_empty() && !self.compiling.contains(idx))
+                .filter(|tail| {
+                    matches!(
+                        tail,
+                        Expr::Lit { .. }
+                            | Expr::Call {
+                                builtin: Some(
+                                    Builtin::AbiEncode
+                                        | Builtin::AbiEncodePacked
+                                        | Builtin::BytesConcat
+                                        | Builtin::CreationCode
+                                ),
+                                ..
+                            }
+                            | Expr::Call {
+                                callee: Some(_),
+                                ..
+                            }
+                    )
+                })
+            {
+                return self.compile_call_with(*idx, call_args, true, |g| {
+                    g.compile_hash(std::slice::from_ref(&tail), precompile)
+                });
             }
         }
         // `keccak256(Abi.encode(a, b))` over static words hashes them from a buffer of its
@@ -1781,10 +1898,7 @@ impl<'a> Gen<'a> {
         let arm = |ctor: &str| arms.iter().find(|a| a.ctors[0] == ctor).unwrap();
         let else_l = self.fresh();
         let end_l = self.fresh();
-        self.compile_value(cond)?;
-        self.op(ISZERO);
-        self.push_label(else_l);
-        self.op(JUMPI);
+        self.branch_on(cond, else_l, false)?;
         self.branch += 1;
         let mark = self.facts.len();
         self.assume(cond, true);
@@ -1796,7 +1910,7 @@ impl<'a> Gen<'a> {
         self.assume(cond, false);
         self.run_arm(arm("false"), sink)?;
         self.facts.truncate(mark);
-        self.branch -= 1;
+        self.leave_branch();
         self.jumpdest(end_l);
         Ok(())
     }
@@ -1906,7 +2020,7 @@ impl<'a> Gen<'a> {
                 self.op(JUMP);
             }
         }
-        self.branch -= 1;
+        self.leave_branch();
         self.jumpdest(end);
         Ok(())
     }
@@ -2054,7 +2168,7 @@ impl<'a> Gen<'a> {
         self.op(JUMP);
         self.jumpdest(none_l);
         self.run_arm(none, sink)?;
-        self.branch -= 1;
+        self.leave_branch();
         self.jumpdest(end_l);
         Ok(())
     }
@@ -2092,7 +2206,7 @@ impl<'a> Gen<'a> {
             self.op(POP);
         }
         self.run_arm(none, sink)?;
-        self.branch -= 1;
+        self.leave_branch();
         self.jumpdest(end_l);
         Ok(())
     }

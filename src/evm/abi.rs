@@ -773,6 +773,128 @@ fn error_payloads_encode_strings_and_lists() {
     }
 }
 
+/// Errors laid out from literals and parameters left in calldata, among words, after memory
+/// that held other data: every tail at its offset and padded with zeros.
+#[test]
+fn error_payloads_copy_calldata_and_literals() {
+    let src = r#"import "std/abi"; 
+error Mixed of record { a : uint; name : string; ids : list(uint); note : string; b : uint; }
+error Lits of record { e : string; long : string; data : bytes; }
+error Ids of list(uint);
+storage is record { n : uint; }
+external function f(const name : string; const ids : list(uint); const k : uint) raises Mixed | Lits | Ids is {
+  const junk : bytes := Abi.encode(name, ids, name, ids);
+  assert(junk.length > 1000 or k <> 0, Mixed { a = 7; name = name; ids = ids; note = "x"; b = k; });
+  assert(k <> 1, Lits { e = ""; long = "a literal that is well past thirty one bytes"; data = 0xabcd; });
+  assert(k <> 2 or name.length = 0, Ids(ids));
+  storage.n := k;
+}
+"#;
+    let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
+    let w = |n: u64| Word::from_u64(n).to_be_bytes().to_vec();
+    let text = |s: &[u8]| {
+        let mut out = w(s.len() as u64);
+        out.extend_from_slice(s);
+        out.resize(32 + s.len().div_ceil(32) * 32, 0);
+        out
+    };
+    let long = b"a string that is well past thirty one bytes long";
+    for name in [&b""[..], b"hi", &long[..32], long] {
+        for ids in [vec![], vec![Word::from_u64(5), Word::from_u64(6)]] {
+            let args = |k: u64| {
+                let mut data = selector("f(string,uint256[],uint256)").to_vec();
+                data.extend(w(96));
+                data.extend(w(96 + text(name).len() as u64));
+                data.extend(w(k));
+                data.extend(text(name));
+                data.extend(abi_array(&ids));
+                data
+            };
+            let list = abi_array(&ids);
+            let out = call_raw(&runtime, &args(0));
+            assert!(out.reverted);
+            let (t1, t2) = (text(name).len() as u64, list.len() as u64);
+            let want = [
+                selector("Mixed(uint256,string,uint256[],string,uint256)").to_vec(),
+                w(7),
+                w(160),
+                w(160 + t1),
+                w(160 + t1 + t2),
+                w(0),
+                text(name),
+                list.clone(),
+                text(b"x"),
+            ]
+            .concat();
+            assert_eq!(hex(&out.returndata), hex(&want), "{name:?} {ids:?}");
+            let out = call_raw(&runtime, &args(1));
+            let lit = b"a literal that is well past thirty one bytes";
+            let want = [
+                selector("Lits(string,string,bytes)").to_vec(),
+                w(96),
+                w(128),
+                w(128 + text(lit).len() as u64),
+                text(b""),
+                text(lit),
+                text(&[0xab, 0xcd]),
+            ]
+            .concat();
+            assert_eq!(hex(&out.returndata), hex(&want));
+            let out = call_raw(&runtime, &args(2));
+            if name.is_empty() {
+                assert!(!out.reverted);
+            } else {
+                let want = [selector("Ids(uint256[])").to_vec(), w(32), list].concat();
+                assert_eq!(hex(&out.returndata), hex(&want));
+            }
+        }
+    }
+}
+
+/// A stored string in an error is copied from its slots, short or long, after another tail.
+#[test]
+fn error_payloads_copy_stored_strings() {
+    let src = r#"
+error Stored of record { name : string; a : uint; saved : string; }
+storage is record { n : uint; saved : string; }
+external function set(const s : string) is { storage.saved := s; }
+external function f(const name : string) raises Stored is {
+  assert(false, Stored { name = name; a = 3; saved = storage.saved; });
+}
+"#;
+    let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
+    let w = |n: u64| Word::from_u64(n).to_be_bytes().to_vec();
+    let text = |s: &[u8]| {
+        let mut out = w(s.len() as u64);
+        out.extend_from_slice(s);
+        out.resize(32 + s.len().div_ceil(32) * 32, 0);
+        out
+    };
+    let mut storage = HashMap::new();
+    for saved in [&b""[..], b"ab", &[b'q'; 31][..], &[b'r'; 32][..], &[b's'; 70][..], b"z"] {
+        let one = |sig: &str, s: &[u8]| [selector(sig).to_vec(), w(32), text(s)].concat();
+        let set = exec(&runtime, &one("set(string)", saved), storage, Word::from_u64(1), Word::from_u64(0), Word::from_u64(0))
+            .expect("set");
+        assert!(!set.reverted);
+        storage = set.storage.clone();
+        for name in [&b""[..], b"a name that is well past thirty one bytes"] {
+            let out = exec(&runtime, &one("f(string)", name), storage.clone(), Word::from_u64(1), Word::from_u64(0), Word::from_u64(0))
+                .expect("f");
+            assert!(out.reverted);
+            let want = [
+                selector("Stored(string,uint256,string)").to_vec(),
+                w(96),
+                w(3),
+                w(96 + text(name).len() as u64),
+                text(name),
+                text(saved),
+            ]
+            .concat();
+            assert_eq!(hex(&out.returndata), hex(&want), "{} {}", saved.len(), name.len());
+        }
+    }
+}
+
 /// Strings compare by their bytes, whichever form each is held in.
 #[test]
 fn strings_compare_by_content() {
