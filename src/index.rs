@@ -2430,7 +2430,7 @@ impl<'a> Builder<'a> {
                                 self.pseudo(
                                     "length",
                                     "xs.length : uint".to_string(),
-                                    "the number of elements of a dynamic list, or of bytes in `bytes` or a `string`".to_string(),
+                                    "the number of elements of a list, or of bytes in `bytes` or a `string`".to_string(),
                                 )
                             })
                         })

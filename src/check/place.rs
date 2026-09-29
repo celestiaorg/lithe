@@ -77,7 +77,7 @@ impl Checker {
                 let rec = &self.types[p.ty];
                 let dynamic =
                     rec.kind == TyKind::String || (rec.kind == TyKind::Bytes && rec.bits == 0);
-                if (rec.kind == TyKind::List && rec.bits == 0 || dynamic) && name == "length" {
+                if (rec.kind == TyKind::List || dynamic) && name == "length" {
                     *root = Some(p.sym);
                     *leaf = p.leaf;
                     *ty = TY_UINT;

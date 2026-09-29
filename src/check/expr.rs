@@ -124,6 +124,13 @@ impl Checker {
                     *ty = TY_UINT;
                     return Ok(());
                 }
+                if name == "length" && rec.kind == TyKind::List {
+                    return Err(error(
+                        *line,
+                        *col,
+                        "name this fixed list to read its length",
+                    ));
+                }
                 if rec.kind != TyKind::Record {
                     return Err(error(*line, *col, "field access on a non-record"));
                 }
@@ -149,6 +156,17 @@ impl Checker {
             }
             Expr::Field { .. } | Expr::Index { .. } => {
                 let p = self.place(e)?;
+                if let Expr::Field { base, line, col, .. } = e {
+                    if let Some(n) = self.fixed_length(base.ty()) {
+                        *e = Expr::Lit {
+                            line: *line,
+                            col: *col,
+                            lit: Lit::Uint(Word::from_u64(n)),
+                            ty: TY_UINT,
+                        };
+                        return Ok(());
+                    }
+                }
                 self.pure_storage(e.line(), e.col(), p.sym)?;
                 if matches!(e, Expr::Index { base, .. } if self.types[base.ty()].kind == TyKind::Bytes)
                 {
@@ -1433,6 +1451,11 @@ impl Checker {
     /// A dynamic list the ABI can carry: its elements are single ABI words.
     pub(super) fn abi_list(&self, ty: usize) -> bool {
         self.list_value(ty) && abi_parts(&self.types, ty).is_ok()
+    }
+
+    fn fixed_length(&self, ty: usize) -> Option<u64> {
+        let t = &self.types[peel_id(&self.types, ty)];
+        (t.kind == TyKind::List && t.bits > 0).then(|| u64::from(t.bits))
     }
 
     /// A dynamic list as a value: a pointer to its length, then its elements.

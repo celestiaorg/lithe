@@ -4180,3 +4180,26 @@ external pure function last(const xs : list(uint, slots())) : uint is xs[2]
         "division by zero",
     );
 }
+
+#[test]
+fn fixed_lists_have_a_constant_length() {
+    let src = "\
+storage is record { xs : list(uint, 4); }
+type pair is record { ys : list(bool, 3); }
+external view function lengths(const ps : list(uint, 2)) : (uint, uint, uint, uint) is {
+  const xs : list(uint8, 5) := [1, 2, 3, 4, 5];
+  const p : pair := { ys = [true, false, true]; };
+} with (xs.length, storage.xs.length, ps.length, p.ys.length)
+";
+    let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
+    let out = call(&runtime, "lengths(uint256[2])", &[Word::from_u64(0), Word::from_u64(0)]);
+    assert!(!out.reverted, "{}", pretty(&out.returndata));
+    for (i, n) in [5, 4, 2, 3].into_iter().enumerate() {
+        assert_eq!(load_bytes(&out.returndata, 32 * i), Word::from_u64(n));
+    }
+    let err = compile(
+        "storage is record { n : uint; }\npure function three() : list(uint, 3) is [1, 2, 3]\nexternal pure function f() : uint is three().length\n",
+    )
+    .expect_err("unnamed fixed list");
+    assert!(err.to_string().contains("name this fixed list"), "{err}");
+}
