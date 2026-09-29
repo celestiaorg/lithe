@@ -644,6 +644,9 @@ enum Region {
     Immutables,
     /// The runtime code, where creation code writes the immutables into it.
     Deployed,
+    /// A list a push moved, with room past its elements, and where that room ends. The list
+    /// is the one a local held then, so the room is its alone.
+    Room,
 }
 
 /// Which bodies touch a region. Two regions can share memory when no body touches both.
@@ -1122,6 +1125,8 @@ struct Gen<'a> {
     journal_at: i32,
     journal_base: i32,
     blob_ptr: i32,
+    /// For each local holding a list, the words `room` names.
+    rooms: HashMap<i32, i32>,
     blob_base: i32,
     fn_ret: Vec<i32>,
     tuple_buf: i32,

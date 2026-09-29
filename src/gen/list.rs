@@ -1265,9 +1265,12 @@ impl<'a> Gen<'a> {
             return Ok(false);
         }
         // A list that ends at the top of the heap grows in place, so pushes in a loop cost
-        // one element each. The list is its holder's own, so no one else sees it grow.
+        // one element each. The list is its holder's own, so no one else sees it grow. A local's
+        // list that must move, because something was allocated past it, moves to a blob with
+        // room for as many elements again, and grows into that room until it fills.
+        let room = self.room(at);
         let size = 32 * k;
-        let (fast, done) = (self.fresh(), self.fresh());
+        let (fast, bump) = (self.fresh(), self.fresh());
         self.compile_value(index)?;
         self.mload(at);
         // [n, list, end]
@@ -1289,12 +1292,41 @@ impl<'a> Gen<'a> {
         self.push_label(fast);
         self.op(JUMPI);
         self.op(POP);
+        if let Some(room) = room {
+            // The room is whole elements, so there is room for one more if it ends past `end`.
+            self.op(DUP1);
+            self.mload(room + 32);
+            self.op(GT);
+            self.mload(room);
+            self.op(DUP1 + 3);
+            self.op(EQ);
+            self.op(AND);
+            self.push_label(bump);
+            self.op(JUMPI);
+        }
         self.op(POP);
         // [n, list, new]
         self.op(DUP1 + 1);
         self.push_u64(1);
         self.op(ADD);
-        self.alloc_list(k as u32)?;
+        if let Some(room) = room {
+            self.push_u64(1);
+            self.op(SHL);
+            self.alloc_list(k as u32)?;
+            self.op(DUP1);
+            self.mstore_off(room);
+            self.op(DUP1);
+            self.op(DUP1);
+            self.op(MLOAD);
+            self.push_u64(size);
+            self.op(MUL);
+            self.op(ADD);
+            self.push_u64(32);
+            self.op(ADD);
+            self.mstore_off(room + 32);
+        } else {
+            self.alloc_list(k as u32)?;
+        }
         self.op(DUP1 + 2);
         self.push_u64(size);
         self.op(MUL);
@@ -1309,25 +1341,41 @@ impl<'a> Gen<'a> {
         self.op(POP);
         self.op(DUP1);
         self.mstore_off(at);
-        self.op(SWAP1);
+        self.op(DUP1 + 1);
         self.push_u64(size);
         self.op(MUL);
+        self.op(DUP1 + 1);
         self.op(ADD);
         self.push_u64(32);
         self.op(ADD);
-        self.push_label(done);
+        self.push_label(bump);
         self.op(JUMP);
         self.jumpdest(fast);
         self.push_u64(size);
         self.op(ADD);
         self.mstore_off(self.blob_ptr);
+        self.jumpdest(bump);
+        // [n, list, element]
         self.op(SWAP1 + 1);
         self.push_u64(1);
         self.op(ADD);
         self.op(SWAP1);
         self.op(MSTORE);
-        self.jumpdest(done);
         Ok(false)
+    }
+
+    /// The words that record the room past the list a local at `at` holds: the list, then
+    /// where the room ends. Lists held elsewhere get none.
+    fn room(&mut self, at: i32) -> Option<i32> {
+        if !matches!(self.spaces[(at >> REGION_SHIFT) as usize - 1].region, Region::Local(_)) {
+            return None;
+        }
+        if let Some(&room) = self.rooms.get(&at) {
+            return Some(room);
+        }
+        let room = self.region(Region::Room, 64);
+        self.rooms.insert(at, room);
+        Some(room)
     }
 
     pub(super) fn element_addr(&mut self, sym: usize, leaf: u32) {
