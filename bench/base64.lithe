@@ -3,8 +3,6 @@
 import "std/base64";
 
 contract Base64Bench is {
-  storage is record {}
-
   external pure function encode(const data : bytes) : string is
     Base64.encode(data)
 

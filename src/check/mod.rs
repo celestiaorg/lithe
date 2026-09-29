@@ -642,25 +642,12 @@ pub(crate) fn check_in(mut prog: Program, require_entries: bool) -> Result<Check
             ));
         }
     }
-    let has_entry = prog.funcs.iter().any(|func| {
-        matches!(
-            func.kind,
-            ItemKind::Entry
-                | ItemKind::View
-                | ItemKind::Migrate
-                | ItemKind::Receive
-                | ItemKind::Fallback
-        )
-    }) || prog.upgradeable;
-    let has_domains = !prog.domains.is_empty();
     let storage = if let Some(id) = c.named.get("storage").copied() {
         if c.types[id].kind != TyKind::Record {
             let (line, col) = c.decl_at.get("storage").copied().unwrap_or((1, 1));
             return Err(error(line, col, "`storage` must be a record"));
         }
         id
-    } else if has_entry && !has_domains {
-        return Err(error(1, 1, "missing `storage is record`"));
     } else {
         let id = c.types.len();
         c.types.push(RType {

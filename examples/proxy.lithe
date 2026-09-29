@@ -6,8 +6,6 @@ import "std/evm";
 
 error Not_admin;
 
-storage is record {}
-
 storage proxy at "example.proxy" is record {
   implementation : address;
   admin : address;

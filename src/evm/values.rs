@@ -4238,7 +4238,7 @@ fn builtins_are_imported_where_they_are_named() {
         "storage is record { a : address; }\nexternal function f() is { storage.a := Evm.sender(); }\n",
         "storage is record { a : address; }\nview function who() : address is Evm.sender()\nexternal function f() is { storage.a := who(); }\n",
         "storage is record { a : address; }\nexternal function f() is { const who : address := Evm.sender(); storage.a := who; }\n",
-        "module Own is {\n  storage own at \"t.own\" is record { a : address; }\n  function take() is { own.a := Evm.sender(); }\n}\ncontract C is {\n  use Own;\n  storage is record {}\n  external function f() is { Own.take(); }\n}\n",
+        "module Own is {\n  storage own at \"t.own\" is record { a : address; }\n  function take() is { own.a := Evm.sender(); }\n}\ncontract C is {\n  use Own;\n  external function f() is { Own.take(); }\n}\n",
         "upgradeable\nerror No;\nupgrade guard is { assert(Evm.sender() = address(0x0000000000000000000000000000000000000001), No); }\nstorage is record { n : uint; }\nexternal function f() is { storage.n := 1; }\n",
     ] {
         let err = compile(src).expect_err(src);
