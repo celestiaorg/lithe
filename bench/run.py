@@ -44,6 +44,8 @@ ADDR = {
 SOLC_BUILDS = {
     "solc ir r1": ["--optimize", "--optimize-runs", "1", "--via-ir"],
     "solc ir r200": ["--optimize", "--optimize-runs", "200", "--via-ir"],
+    "solc ir r10k": ["--optimize", "--optimize-runs", "10000", "--via-ir"],
+    "solc ir r1M": ["--optimize", "--optimize-runs", "1000000", "--via-ir"],
     "solc r200": ["--optimize", "--optimize-runs", "200"],
 }
 LONG = "a string that is well past thirty one bytes long"

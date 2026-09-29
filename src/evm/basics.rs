@@ -1312,3 +1312,64 @@ external pure function neg8(const x : int8) : int8 is -x
     assert_eq!(out("neg8(int8)", int(127, true)), Some(int(127, false)));
     assert_eq!(out("neg8(int8)", int(128, true)), None);
 }
+
+/// Locals carried around a loop, joined after a branch, or mirrored from a loop counter
+/// stay on the stack, and every result is right. The one read of memory left is `total`'s
+/// zero, which nothing stores before the loop loads it.
+#[test]
+fn loop_and_branch_locals_stay_on_the_stack() {
+    let src = "
+storage is record { n : uint; }
+external pure function gcd(const a : uint; const b : uint) : uint is {
+  var x : uint := a;
+  var y : uint := b;
+  for _ : uint in 0 .. 370 until y = 0 do {
+    (x, y) := (y, x % y);
+  }
+} with x
+external pure function mixed(const n : uint) : uint is {
+  var total : uint := 0;
+  for i : uint in 0 .. n do {
+    if i % 3 = 0 then {
+      total := total + i;
+    } else {
+      total := total * 2 + 1;
+    }
+  }
+} with total
+external pure function pick(const a : uint; const b : uint) : uint is {
+  var r : uint := a;
+  if b > a then {
+    r := b * 2;
+  }
+} with r + 1
+";
+    let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
+    let (mut i, mut loads) = (0, 0);
+    while i < runtime.len() {
+        let op = runtime[i];
+        loads += usize::from(op == 0x51);
+        i += 1 + if (0x60..=0x7f).contains(&op) { usize::from(op - 0x5f) } else { 0 };
+    }
+    assert_eq!(loads, 1);
+    let w = Word::from_u64;
+    let word = |sig: &str, args: &[Word]| load_bytes(&call(&runtime, sig, args).returndata, 0);
+    let gcd = |mut a: u64, mut b: u64| {
+        while b != 0 {
+            (a, b) = (b, a % b);
+        }
+        a
+    };
+    for (a, b) in [(0, 0), (12, 18), (18, 12), (7, 0), (0, 7), (1071, 462), (832040, 514229)] {
+        assert_eq!(word("gcd(uint256,uint256)", &[w(a), w(b)]), w(gcd(a, b)), "gcd({a}, {b})");
+    }
+    for n in [0u64, 1, 2, 5, 9, 20] {
+        let mut total = 0u64;
+        for i in 0..n {
+            total = if i % 3 == 0 { total + i } else { total * 2 + 1 };
+        }
+        assert_eq!(word("mixed(uint256)", &[w(n)]), w(total), "mixed({n})");
+    }
+    assert_eq!(word("pick(uint256,uint256)", &[w(5), w(3)]), w(6));
+    assert_eq!(word("pick(uint256,uint256)", &[w(3), w(5)]), w(11));
+}
