@@ -47,6 +47,11 @@ enum LexError {
         col: u32,
         message: String,
     },
+    BadEscape {
+        line: u32,
+        col: u32,
+        message: String,
+    },
 }
 
 #[derive(Logos, Debug, Clone)]
@@ -319,11 +324,50 @@ fn string_lit(lex: &mut Lexer<Raw>) -> Result<String, LexError> {
                 return Err(LexError::UnterminatedString { line, col });
             }
             lex.bump(n.len_utf8());
-            out.push(n);
+            let bad = |message: String| LexError::BadEscape { line, col, message };
+            out.push(match n {
+                'n' => '\n',
+                't' => '\t',
+                'r' => '\r',
+                '0' => '\0',
+                '\\' | '"' | '\'' => n,
+                'x' => {
+                    let hex = lex.remainder().get(..2).filter(|h| is_hex(h)).unwrap_or("");
+                    // simplify: \x stops at 7f because string literals are UTF-8; raw bytes use a hex literal.
+                    match u8::from_str_radix(hex, 16) {
+                        Ok(b) if b < 0x80 => {
+                            lex.bump(2);
+                            b as char
+                        }
+                        _ => return Err(bad("`\\x` takes two hex digits from 00 to 7f".into())),
+                    }
+                }
+                'u' => {
+                    let rest = lex.remainder();
+                    let ch = rest
+                        .strip_prefix('{')
+                        .and_then(|r| r.split_once('}'))
+                        .filter(|(h, _)| (1..=6).contains(&h.len()) && is_hex(h))
+                        .and_then(|(h, _)| u32::from_str_radix(h, 16).ok().map(|v| (h.len(), v)))
+                        .and_then(|(len, v)| char::from_u32(v).map(|c| (len, c)));
+                    match ch {
+                        Some((len, c)) => {
+                            lex.bump(len + 2);
+                            c
+                        }
+                        None => return Err(bad("`\\u` takes a code point like `\\u{1F600}`".into())),
+                    }
+                }
+                _ => return Err(bad(format!("unknown escape `\\{n}`"))),
+            });
             continue;
         }
         out.push(ch);
     }
+}
+
+fn is_hex(s: &str) -> bool {
+    s.bytes().all(|c| c.is_ascii_hexdigit())
 }
 
 fn number(lex: &mut Lexer<Raw>) -> Result<Num, LexError> {
@@ -613,7 +657,9 @@ fn lex_error(src: &str, lex: &Lexer<Raw>, err: LexError) -> Error {
         }
         LexError::UnterminatedComment { line, col } => error(line, col, "unterminated comment"),
         LexError::UnterminatedString { line, col } => error(line, col, "unterminated string"),
-        LexError::BadNumber { line, col, message } => error(line, col, message),
+        LexError::BadNumber { line, col, message } | LexError::BadEscape { line, col, message } => {
+            error(line, col, message)
+        }
     }
 }
 
@@ -819,5 +865,30 @@ pub(crate) fn kind_name(k: Kind) -> &'static str {
         Kind::Lt => "`<`",
         Kind::Gt => "`>`",
         Kind::At => "`@`",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::tokenize;
+
+    fn lit(src: &str) -> Result<String, String> {
+        tokenize(src)
+            .map(|t| t[0].string.clone().unwrap())
+            .map_err(|e| e.message)
+    }
+
+    #[test]
+    fn string_escapes() {
+        assert_eq!(
+            lit(r#""\x19Ethereum Signed Message:\n32""#).unwrap(),
+            "\x19Ethereum Signed Message:\n32"
+        );
+        assert_eq!(lit(r#""a\tb\r\0\\\"\'""#).unwrap(), "a\tb\r\0\\\"'");
+        assert_eq!(lit(r#""\u{1F600}\u{e9}""#).unwrap(), "\u{1F600}é");
+        for bad in [r#""\q""#, r#""\x8f""#, r#""\x+1""#, r#""\u{}""#, r#""\u{d800}""#, r#""\u{+1}""#] {
+            assert!(lit(bad).is_err(), "{bad}");
+        }
+        assert_eq!(lit(r#""\z""#).unwrap_err(), "unknown escape `\\z`");
     }
 }

@@ -1376,7 +1376,7 @@ pub(crate) fn fmt_expr(e: &Expr) -> String {
             Lit::Bool(false) => "false".into(),
             Lit::Unit => "Unit".into(),
             Lit::Nil => "nil".into(),
-            Lit::Str(s) => format!("\"{s}\""),
+            Lit::Str(s) => format!("\"{}\"", s.escape_default()),
             Lit::Bytes(b) => format!(
                 "0x{}",
                 b.iter().map(|x| format!("{x:02x}")).collect::<String>()

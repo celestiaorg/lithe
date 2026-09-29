@@ -86,11 +86,21 @@ external function set() is {
 
 ## Strings
 
-String literals are double-quoted. A backslash makes the next character literal, so `\"` is a quote and `\\` is a backslash. There are no other escapes, and a string cannot span lines.
+String literals are double-quoted and cannot span lines. A backslash starts an escape:
+
+| Escape | Meaning |
+| --- | --- |
+| `\n`, `\t`, `\r`, `\0` | newline, tab, carriage return, zero byte |
+| `\\`, `\"`, `\'` | backslash, double quote, single quote |
+| `\xHH` | the byte `HH`, from `00` to `7f` |
+| `\u{H…}` | a Unicode code point of 1 to 6 hex digits, stored as UTF-8 |
+
+Any other escape is an error. For bytes above `7f` that aren't UTF-8, use a hex literal.
 
 ```lithe fragment
 "Hello, world!"
 "say \"hi\""
+"\x19Ethereum Signed Message:\n32"
 ```
 
 ## Booleans and unit

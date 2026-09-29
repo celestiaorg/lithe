@@ -34,7 +34,7 @@ view function message_hash(const to : address; const amount : uint; const nonce 
   Crypto.keccak256(Abi.encode(Evm.self(), to, amount, nonce))
 
 pure function eth_signed(const hash : bytes32) : bytes32 is {
-  const prefix : bytes := 0x19457468657265756d205369676e6564204d6573736167653a0a3332;
+  const prefix : bytes := "\x19Ethereum Signed Message:\n32";
 } with Crypto.keccak256(Abi.encode_packed(prefix, hash))
 
 external function claim(
@@ -56,6 +56,5 @@ is {
 }
 ```
 
-- The EIP-191 prefix is written as hex bytes, because Lithe strings have no `\n` escape.
 - `ecrecover` returns `Address.zero` for an invalid signature, so check for it explicitly.
 - For production use, also reject high-`s` signatures, which are malleable.
