@@ -5,7 +5,7 @@ description: "Contracts over EIP-170's 24,576-byte limit run the modules they ex
 
 # Contract size limit
 
-[EIP-170](https://eips.ethereum.org/EIPS/eip-170) caps deployed code at 24,576 bytes. When a contract is over the limit, the compiler moves the modules it exposes with [`use M exposing`](/language/modules#exposing-a-modules-externals) into **facets**, and keeps the rest in a **router**. When the code is still too large, it runs large pure functions from **library facets**. Callers still see one contract: one address, one ABI, and the same return data, logs, and errors.
+[EIP-170](https://eips.ethereum.org/EIPS/eip-170) caps deployed code at 24,576 bytes. When a contract is over the limit, the compiler moves every module it exposes with [`use M exposing`](/language/modules#exposing-a-modules-externals) into **facets**, and keeps the rest in a **router**. When the router or a facet is still too large, it runs large pure functions from **library facets**. Callers still see one contract: one address, one ABI, and the same return data, logs, and errors.
 
 A contract that fits compiles exactly as it always does, byte for byte.
 
@@ -29,9 +29,9 @@ A facet's code is shared, so it can't have one contract's [immutables](/language
 
 ## Which modules move
 
-Only a module the contract exposes with `use M exposing` can move. What the contract writes itself always stays in the router, so a contract over the limit that exposes no modules is an error.
+Only a module the contract exposes with `use M exposing` can move. What the contract writes itself always stays in the router.
 
-With `--split auto`, the default, the compiler first builds the whole contract. If it fits, that's the output. If not, it moves the module that saves the most bytes into its facet, then the next, until the router fits. With `--split all`, every exposed module runs from its facet even when the contract fits, so a set of contracts shares the same facets however large each one is.
+With `--split auto`, the default, the compiler first builds the whole contract, outlining functions as it needs to, with no facets of any kind. If it fits, that's the output. If not, the output is exactly what `--split all` builds: every exposed module in its facet. With `--split all`, every exposed module runs from its facet even when the contract fits, so a set of contracts shares the same facets however large each one is, and a contract that outgrows the limit under `auto` deploys the same facets it would have with `all`.
 
 `lithe facets` shows what runs where:
 
@@ -58,7 +58,7 @@ That output is the [standard-library token](/stdlib/tokens), built with `--size-
 
 ## Library facets
 
-A `pure` function depends only on its arguments, so it can run anywhere. When outlining can't fit a contract, or a router, or a module's facet, the compiler runs large pure functions from library facets instead. That is how code that calls big pure code, such as JSON rendering or a document parser, stays under the limit, even with nothing to expose.
+A `pure` function depends only on its arguments, so it can run anywhere. Library facets are the last resort, and never stand in for module facets: a contract that exposes modules and doesn't fit whole gets every module in its facet first, and only a router or a module's facet that outlining still can't fit runs pure functions remotely. A contract that exposes no modules runs them remotely when outlining can't fit it. That is how code that calls big pure code, such as JSON rendering or a document parser, stays under the limit, even with nothing to expose.
 
 A library facet holds one function, as its only entrypoint, an `external pure function` with the function's own name and ABI. A call to it ABI-encodes the arguments as that entrypoint's calldata, calls the facet with `STATICCALL`, and decodes the result to where the function's result would have been. When the call fails, the contract reverts with the facet's revert data, so the function's errors and panics reach the caller exactly as they would have. Results are the same bytes as running the function in place.
 
@@ -121,7 +121,7 @@ Library facets are listed in `facets` with the module facets, each before anythi
 note: `Render` is 1,854 bytes; `render` runs from its library facet
 ```
 
-A contract that fits with library facets and has no module facets still prints a plan. Its creation code checks that each library facet has code, as a router's does.
+A contract that exposes no modules and fits with library facets still prints a plan. Its creation code checks that each library facet has code, as a router's does.
 
 An upgradeable router is listed with its own `address`, `to`, and `data`, so it can be deployed through the factory too, at an address known in advance.
 
@@ -159,7 +159,7 @@ A call to a function in a library facet costs about 2,600 gas the first time a t
 | Flag | Default | Meaning |
 | --- | --- | --- |
 | `--size-limit <bytes>` | `24576` | the most runtime code the router or any facet may have. Creation code may have twice this, as EIP-3860 allows |
-| `--split <auto\|off\|all>` | `auto` | when exposed modules run from their facets: when the contract is over the limit, never, or always. Pure functions run from library facets only when a build doesn't fit, and never with `off` |
+| `--split <auto\|off\|all>` | `auto` | when exposed modules run from their facets: every one when the contract doesn't fit with no facets, never, or always. Pure functions run from library facets only when a router, a facet, or a contract that exposes no modules doesn't fit, and never with `off` |
 | `--create2-deployer <address>` | `0x4e59…956C` | the `CREATE2` factory facets are deployed through, for chains where it lives elsewhere |
 
 `compile`, `facets`, `footprint`, `abi-tree`, `upgrade`, and `upgrade-check` take them. With `--split off`, a contract over the limit fails with what each module and the contract's own code add to its size:

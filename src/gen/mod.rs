@@ -504,7 +504,8 @@ pub(crate) fn codegen(checked: &Checked, shape: &Shape) -> Result<Built, Error> 
     let remote_ok = shape.opts.split != SplitMode::Off && !shape.opts.check_specs;
     let force = remote_all(shape);
     let local = best.built.bytes;
-    let libs: Vec<(usize, Remote, Facet)> = if (best.built.bytes > limit || force) && remote_ok {
+    let over = best.built.bytes > limit && !shape.local;
+    let libs: Vec<(usize, Remote, Facet)> = if (over || force) && remote_ok {
         libraries(checked, &plan, shape)
     } else {
         Vec::new()
