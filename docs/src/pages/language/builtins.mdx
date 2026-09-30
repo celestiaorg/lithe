@@ -220,7 +220,12 @@ From `import "std/bytes";` and `import "std/string";`.
 | --- | --- | --- |
 | `Bytes.concat(a, b, ...)` | `bytes` | `bytes.concat(a, b, ...)`. Arguments are `bytes` or `bytesN` |
 | `Bytes.word(b : bytes, offset : uint)` | `bytes32` | the 32 bytes at `offset`. `Panic(0x32)` if they run past the end |
+| `Bytes.join(xs : list(bytes))` | `bytes` | the values of `xs` one after another, copied once: build a long value by pushing its pieces onto a list, not by concatenating onto a growing one |
 | `String.concat(a, b, ...)` | `string` | `string.concat(a, b, ...)` |
+| `String.join(xs : list(string))` | `string` | the strings of `xs` one after another, as `Bytes.join` |
+| `String.escape_json(s)` | `string` | `LibString.escapeJSON(s)`: `"` and `\` backslashed, control characters as `\n`, `\t`, and the like, or `\u00XX`. `String.escape_json(s, quoted : bool)` is `LibString.escapeJSON(s, quoted)`: in double quotes when `quoted`. A slice argument, `s[i:j]`, is read in place, not copied |
+| `String.escape_html(s)` | `string` | `LibString.escapeHTML(s)`: `"`, `&`, `'`, `<`, and `>` as `&quot;`, `&amp;`, `&#39;`, `&lt;`, and `&gt;` |
+| `String.replace(s, needle, replacement)` | `string` | `LibString.replace(s, needle, replacement)`: every `needle`, left to right, replaced. An empty needle puts `replacement` before each byte and at the end |
 
 ```lithe
 import "std/bytes";

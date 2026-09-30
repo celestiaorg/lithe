@@ -1175,6 +1175,13 @@ enum Sub {
     Base64Encode,
     /// `[data, ret]` becomes the bytes a base64 string encodes.
     Base64Decode,
+    /// `[quoted, len, src, ret]` becomes the `len` bytes at `src` escaped for a JSON string,
+    /// in double quotes when `quoted` is 1, or with `true`, for HTML.
+    StringEscape(bool),
+    /// `[data, needle, replacement, ret]` becomes `data` with every `needle` replaced.
+    Replace,
+    /// `[list, ret]` becomes the strings or bytes of a list, one after another.
+    Join,
     /// `[n, ret]` becomes `n` in decimal, as a string: signed or unsigned.
     DecimalString(bool),
     /// `[value, len, ret]` becomes `value` as `0x` and hex digits, in the fewest whole
@@ -1232,6 +1239,9 @@ impl Sub {
             | Sub::BytesValue(_)
             | Sub::Base64Encode
             | Sub::Base64Decode
+            | Sub::StringEscape(_)
+            | Sub::Replace
+            | Sub::Join
             | Sub::DecimalString(_)
             | Sub::HexString
             | Sub::ChecksumString

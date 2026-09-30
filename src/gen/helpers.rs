@@ -165,6 +165,9 @@ impl<'a> Gen<'a> {
                 }
                 Sub::StoredTail => self.sub_stored_tail(),
                 Sub::Base64Encode => self.sub_base64_encode(),
+                Sub::StringEscape(html) => self.sub_string_escape(html),
+                Sub::Replace => self.sub_replace(),
+                Sub::Join => self.sub_join(),
                 Sub::Base64Decode => self.sub_base64_decode(),
                 Sub::DecimalString(signed) => self.sub_decimal_string(signed)?,
                 Sub::HexString => self.sub_hex_string()?,

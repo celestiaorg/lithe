@@ -3964,6 +3964,11 @@ const MEMBERS: &[Builtin] = &[
     Builtin::AbiEncodeCall,
     Builtin::BytesConcat,
     Builtin::StringConcat,
+    Builtin::Join(false),
+    Builtin::Join(true),
+    Builtin::StringEscape(false),
+    Builtin::StringEscape(true),
+    Builtin::StringReplace,
     Builtin::UintDivRem,
     Builtin::BytesWord,
     Builtin::Base64Encode,
@@ -4049,6 +4054,9 @@ fn module_member(kind: Builtin) -> bool {
         | Builtin::AbiEncodeCall
         | Builtin::BytesConcat
         | Builtin::StringConcat
+        | Builtin::Join(_)
+        | Builtin::StringEscape(_)
+        | Builtin::StringReplace
         | Builtin::UintDivRem
         | Builtin::BytesWord
         | Builtin::Base64Encode
