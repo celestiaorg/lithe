@@ -185,7 +185,7 @@ Two facets never call each other. A module that requires another carries a copy 
 
 ## Over the limit
 
-A contract over `--size-limit` still compiles and emits its bytecode, with a warning. It lists what takes the space: the contract's own entrypoints, by group, and for each module the contract runs in its own code, what marking it `facet` would save. Here the [standard-library token](/stdlib/tokens), with no modules marked, is built with `--size-limit 2000`:
+A contract over `--size-limit` still compiles and emits its bytecode, with a warning. It lists what takes the space: the contract's own entrypoints, by group, and for each module the contract runs in its own code, what marking it `delegated` would save. Here the [standard-library token](/stdlib/tokens), with no modules marked, is built with `--size-limit 2000`:
 
 ```text
 token.lithe:16:1: warning: contract `Token` is 2,894 bytes; the limit is 2,000
