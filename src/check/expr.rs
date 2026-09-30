@@ -148,7 +148,7 @@ impl Checker {
                 ..
             } if !is_named(base) => {
                 self.check_expr(base)?;
-                if self.types[base.ty()].kind != TyKind::Bytes {
+                if self.types[self.peel(base.ty())].kind != TyKind::Bytes {
                     return Err(error(*line, *col, "this value cannot be indexed"));
                 }
                 self.check_uint_index(index)?;
@@ -168,7 +168,7 @@ impl Checker {
                     }
                 }
                 self.pure_storage(e.line(), e.col(), p.sym)?;
-                if matches!(e, Expr::Index { base, .. } if self.types[base.ty()].kind == TyKind::Bytes)
+                if matches!(e, Expr::Index { base, .. } if self.types[self.peel(base.ty())].kind == TyKind::Bytes)
                 {
                     return self.byte_at(e);
                 }
@@ -587,7 +587,7 @@ impl Checker {
                     if let [code] = args.as_mut_slice() {
                         self.check_expr_as(code, Some(bytes))?;
                     }
-                    if args.len() != 1 || !self.same(args[0].ty(), bytes) {
+                    if args.len() != 1 || !self.same(self.peel(args[0].ty()), bytes) {
                         return Err(error(
                             *line,
                             *col,
@@ -1668,7 +1668,7 @@ impl Checker {
             return Ok(());
         }
         self.check_expr_as(&mut args[0], Some(bytes))?;
-        if !self.same(args[0].ty(), bytes) {
+        if !self.same(self.peel(args[0].ty()), bytes) {
             return Err(error(line, col, "only `bytes` can be sliced"));
         }
         for bound in &mut args[1..] {

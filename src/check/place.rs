@@ -74,7 +74,7 @@ impl Checker {
                     });
                 }
                 let p = self.place(base)?;
-                let rec = &self.types[p.ty];
+                let rec = &self.types[self.peel(p.ty)];
                 let dynamic =
                     rec.kind == TyKind::String || (rec.kind == TyKind::Bytes && rec.bits == 0);
                 if (rec.kind == TyKind::List || dynamic) && name == "length" {
@@ -117,7 +117,7 @@ impl Checker {
                 col,
             } => {
                 let p = self.place(base)?;
-                let kind = self.types[p.ty].kind;
+                let kind = self.types[self.peel(p.ty)].kind;
                 if kind == TyKind::Bytes {
                     self.check_uint_index(index)?;
                     let byte = self.bytes_n(1)?;
