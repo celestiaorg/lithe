@@ -1,4 +1,4 @@
-use super::split::{all_facets, checked_src, deploy_split, whole_build};
+use super::split::{checked_src, deploy_split, whole_build};
 use super::*;
 
 /// A module whose writes need the contract's say: `setPrice` is guarded per token, `secret`
@@ -139,7 +139,7 @@ fn words(ns: &[u64]) -> Vec<Word> {
 fn builds(src: &str, name: &str) -> [(&'static str, Vec<u8>); 2] {
     let checked = checked_src(src);
     let whole = deploy(&whole_build(&checked).code).expect("whole");
-    let split = crate::split::build(&checked, name, &all_facets()).expect("split");
+    let split = super::split::build_facets(&checked, name).expect("split");
     assert_eq!(split.facets.len(), 1, "{name} splits");
     [("whole", whole), ("split", deploy_split(&split))]
 }
@@ -204,8 +204,8 @@ fn guards_run_first() {
 #[test]
 fn a_shared_facet_takes_each_contracts_guards() {
     let (a, b) = (checked_src(&owned()), checked_src(&listed()));
-    let one = crate::split::build(&a, "Owned", &all_facets()).expect("owned");
-    let two = crate::split::build(&b, "Listed", &all_facets()).expect("listed");
+    let one = super::split::build_facets(&a, "Owned").expect("owned");
+    let two = super::split::build_facets(&b, "Listed").expect("listed");
     assert_eq!(one.facets[0].address, two.facets[0].address);
     assert_eq!(one.facets[0].init, two.facets[0].init);
     let (owned, listed) = (deploy_split(&one), deploy_split(&two));
@@ -245,7 +245,7 @@ fn a_shared_facet_takes_each_contracts_guards() {
 #[test]
 fn calling_a_facet_directly_touches_only_its_own_storage() {
     let checked = checked_src(&owned());
-    let split = crate::split::build(&checked, "Owned", &all_facets()).expect("split");
+    let split = super::split::build_facets(&checked, "Owned").expect("split");
     let router = deploy_split(&split);
     let facet = deploy(&split.facets[0].init).expect("facet");
     let mut r = Session {
@@ -743,8 +743,9 @@ fn tooling_shows_guards() {
         ),
         "{stubs}"
     );
-    let split =
-        crate::abi_tree(&memory(&src), Path::new(ENTRY), &all_facets()).expect("split tree");
+    let marked = src.replace("use Prices exposing", "use Prices delegated exposing");
+    let split = crate::abi_tree(&memory(&marked), Path::new(ENTRY), &crate::Options::default())
+        .expect("split tree");
     assert!(
         route_text(&split, "setPrice")
             .contains("runs in:\n    Prices\n    router, for guard Prices.editor(token_id)\n"),

@@ -232,7 +232,7 @@ A field holds a word: an integer of any width, `bool`, `address`, an interface, 
 
 - **A plain contract** builds them into its code, as Solidity does. Each read is a push of a constant that the creation code writes in after `deploy` returns, only as wide as its type: 20 bytes for an address, 2 for a `uint16`. Nothing is stored.
 - **An [upgradeable](/language/upgrades) contract** can't: its code is the implementation's, shared by every proxy. Its immutables are kept in the proxy's storage instead, laid out as named storage at the ERC-7201 root of their id. The contract's own block has the id `lithe.immutable`. `deploy` writes them there as it runs in the proxy, and a migration can set a field that a later version adds. They show in `lithe storage` and `lithe upgrade-check` with the rest of the layout.
-- **A facet** of a [split contract](/tooling/size-limit#immutables) reads its module's immutables from its router, after the calldata.
+- **A [facet](/tooling/size-limit#immutables)** reads its module's immutables from its router, after the calldata.
 
 ## What storage can hold
 

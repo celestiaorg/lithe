@@ -790,6 +790,7 @@ impl Checker {
                     ));
                 }
                 self.callee_effect(*line, *col, name, sig_kind)?;
+                self.check_private(idx, *line, *col)?;
                 if args.len() != params.len() {
                     return Err(error(
                         *line,

@@ -471,7 +471,7 @@ external view function unit() : uint is
 #[test]
 fn facets_read_immutables_after_their_calldata() {
     let checked = super::split::checked_src(SPLIT);
-    let split = crate::split::build(&checked, "Pool", &super::split::all_facets()).expect("split");
+    let split = super::split::build_facets(&checked, "Pool").expect("split");
     assert_eq!(super::split::facet_names(&split), ["Pool"]);
     assert_eq!(split.facets[0].immutables, ["split.base", "split.pool"]);
     OPAQUE_CODE.set(true);
@@ -506,11 +506,7 @@ fn facets_read_immutables_after_their_calldata() {
         "external view function unit() : uint is\n  Base.unit()",
         "external view function twice() : uint is\n  Base.unit() * 2",
     );
-    let other = crate::split::build(
-        &super::split::checked_src(&other),
-        "Other",
-        &super::split::all_facets(),
-    )
+    let other = super::split::build_facets(&super::split::checked_src(&other), "Other")
     .expect("other");
     assert_eq!(other.facets[0].address, split.facets[0].address);
     OPAQUE_CODE.set(false);
@@ -525,12 +521,8 @@ fn upgradeable_routers_append_stored_immutables() {
         "import \"std/address\"; {SPLIT}\nupgradeable\nerror Not_owner;\nupgrade guard is {{ assert(Evm.sender() = Address.zero, Not_owner); }}\n"
     );
     let checked = super::split::checked_src(&src);
-    let split = crate::split::build(&checked, "Pool", &super::split::all_facets()).expect("split");
-    let plain = crate::split::build(
-        &super::split::checked_src(SPLIT),
-        "Pool",
-        &super::split::all_facets(),
-    )
+    let split = super::split::build_facets(&checked, "Pool").expect("split");
+    let plain = super::split::build_facets(&super::split::checked_src(SPLIT), "Pool")
     .expect("plain");
     assert_eq!(split.facets[0].address, plain.facets[0].address);
     let router = super::split::deploy_split(&split);

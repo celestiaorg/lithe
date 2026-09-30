@@ -777,7 +777,7 @@ impl Resolver<'_> {
             }
             self.func(guard)?;
         }
-        for use_ in &mut prog.compose {
+        for use_ in prog.compose.iter_mut().chain(&mut prog.facets) {
             self.module_ref(&mut use_.name, use_.line, use_.col)?;
         }
         for exposed in &mut prog.exposes {

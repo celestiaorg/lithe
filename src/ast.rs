@@ -12,6 +12,9 @@ pub(crate) struct Program {
     pub domains: Vec<DomainDecl>,
     pub modules: Vec<ModuleDecl>,
     pub compose: Vec<NameAt>,
+    /// `use M delegated;` or `use M delegated exposing ...;`: the modules whose code runs from their
+    /// facets, never in the contract.
+    pub facets: Vec<NameAt>,
     /// `use M exposing { ... }`: the module externals the contract exposes.
     pub exposes: Vec<Exposing>,
     /// `supports I, J`: the interfaces the contract announces through ERC-165.

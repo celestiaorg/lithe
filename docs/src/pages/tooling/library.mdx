@@ -33,12 +33,12 @@ A `Contract` has:
 | Field | |
 | --- | --- |
 | `name` | The contract's name. |
-| `bytecode` | The creation code. For a [split](/tooling/size-limit) contract, the router's. |
+| `bytecode` | The creation code. For a contract with [facets](/tooling/size-limit), the router's. |
 | `deployed_bytecode` | The runtime code. |
 | `abi` | The typed ABI. |
 | `method_identifiers` | Each external's signature and selector. |
-| `plan` | What to deploy first, when the contract is split or creates one that is: each facet's address, code, and ABI, and the `CREATE2` factory. |
-| `warnings` | The warnings `lithe compile` prints. |
+| `plan` | What to deploy first, when the contract has facets or creates one that has: each facet's address, code, and ABI, and the `CREATE2` factory. |
+| `warnings` | The warnings `lithe compile` prints, a contract or facet over the size limit included. |
 
 `contract.plan_json()` renders the plan as `lithe compile` prints it.
 
@@ -105,4 +105,4 @@ The other functions take the same `sources` and entry path, and return what the 
 | `upgrade_plan` | `lithe upgrade` |
 | `compile_dir`, `abi_dir` | `lithe compile directory`, `lithe abi directory` |
 
-`Options` holds the [size flags](/tooling/cli#size-flags): `size_limit`, `split`, and `deployer`.
+`Options` holds the [size flags](/tooling/cli#size-flags), `size_limit` and `deployer`, and `check_specs`.

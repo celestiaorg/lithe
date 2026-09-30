@@ -73,7 +73,7 @@ pub use route::{
     Abi, AbiError, AbiItem, Constructor, Event, EventParam, Fallback, Function, Param, Receive,
     StateMutability,
 };
-pub use split::{Options, SplitMode, DEPLOYER, SIZE_LIMIT};
+pub use split::{Options, DEPLOYER, SIZE_LIMIT};
 
 /// Whether `path` is an import path: `std/`, `./`, or `../` and lowercase names.
 pub fn is_module_path(path: &str) -> bool {
@@ -260,38 +260,21 @@ impl Contract {
         Some(plan_json(plan, &self.bytecode, None))
     }
 
-    /// `note: ...` when the contract runs modules from their facets, or functions from their
-    /// library facets.
+    /// `note: ...` when the contract runs modules from their facets.
     pub fn note(&self) -> Option<String> {
-        let runs = |facets: &[split::Facet], kind: &str| {
-            let names: Vec<String> = facets
-                .iter()
-                .map(|facet| format!("`{}`", facet.name))
-                .collect();
-            let one = facets.len() == 1;
-            format!(
-                "{} run{} from {} {kind}{}",
-                names.join(", "),
-                if one { "s" } else { "" },
-                if one { "its" } else { "their" },
-                if one { "" } else { "s" }
-            )
-        };
-        let mut parts = Vec::new();
-        if !self.split.facets.is_empty() {
-            parts.push(runs(&self.split.facets, "facet"));
-        }
-        if !self.split.libraries.is_empty() {
-            parts.push(runs(&self.split.libraries, "library facet"));
-        }
-        if parts.is_empty() {
+        let facets = &self.split.facets;
+        if facets.is_empty() {
             return None;
         }
-        let size = match self.split.whole {
-            Some(n) => format!(" is {} bytes;", split::thousands(n)),
-            None => ":".to_string(),
-        };
-        Some(format!("note: `{}`{size} {}", self.name, parts.join("; ")))
+        let names: Vec<String> = facets.iter().map(|f| format!("`{}`", f.name)).collect();
+        let one = facets.len() == 1;
+        Some(format!(
+            "note: `{}` runs {} from {} facet{}",
+            self.name,
+            names.join(", "),
+            if one { "its" } else { "their" },
+            if one { "" } else { "s" }
+        ))
     }
 }
 
@@ -314,17 +297,6 @@ fn build(
             spec::check(prog.clone())?;
         }
         check::check(prog)?
-    };
-    // A checking build runs its modules' checks in the contract's own code, so it is whole.
-    let unsplit;
-    let opts = if opts.check_specs {
-        unsplit = Options {
-            split: SplitMode::Off,
-            ..opts.clone()
-        };
-        &unsplit
-    } else {
-        opts
     };
     let abi = route::abi(&checked)?;
     let method_identifiers = route::method_ids(&checked)?;
@@ -358,6 +330,7 @@ fn build(
         warnings: notes
             .into_iter()
             .chain(warnings_of(sources, entry, &checked))
+            .chain(split.warnings.iter().cloned())
             .collect(),
         split,
     })
@@ -683,7 +656,18 @@ pub fn facets(sources: &Sources, entry: &Path, opts: &Options) -> Result<String,
         ));
         let forwarded = built.forwarded(facet);
         let names: Vec<&str> = forwarded.iter().map(|entry| entry.name.as_str()).collect();
-        out.push_str(&format!("  {}\n", names.join(", ")));
+        if !names.is_empty() {
+            out.push_str(&format!("  {}\n", names.join(", ")));
+        }
+        let across: Vec<&str> = built
+            .across
+            .iter()
+            .filter(|(module, _)| module == &facet.name)
+            .map(|(_, func)| func.as_str())
+            .collect();
+        if !across.is_empty() {
+            out.push_str(&format!("  called across: {}\n", across.join(", ")));
+        }
         let unused = facet.entries.len().saturating_sub(forwarded.len());
         if unused > 0 {
             out.push_str(&format!(
@@ -691,20 +675,6 @@ pub fn facets(sources: &Sources, entry: &Path, opts: &Options) -> Result<String,
                 if unused == 1 { "" } else { "s" }
             ));
         }
-    }
-    for library in &built.libraries {
-        out.push_str(&format!(
-            "\nlibrary {}  {}  {} / {limit}\n",
-            library.name,
-            checksum(&library.address),
-            split::thousands(library.runtime.len())
-        ));
-        let sigs: Vec<&str> = library
-            .methods
-            .iter()
-            .map(|(sig, _)| sig.as_str())
-            .collect();
-        out.push_str(&format!("  {}\n", sigs.join(", ")));
     }
     Ok(out)
 }
@@ -1012,6 +982,7 @@ fn emit_file(
         if !artifact {
             continue;
         }
+        out.notes.extend(contract.split.warnings.iter().map(|w| w.trim_end().to_string()));
         if let Some(note) = contract.note() {
             out.notes.push(format!("{source}: {note}"));
         }
@@ -1065,24 +1036,6 @@ fn foundry_artifact(contract: &Contract) -> String {
                 "    {{\n      \"name\": {},\n      \"address\": \"{}\",\n      \"selectors\": [{}]\n    }}",
                 json_string(&part.name),
                 checksum(&part.address),
-                sels.join(", ")
-            ));
-        }
-        out.push_str("\n  ]");
-    }
-    if !contract.split.libraries.is_empty() {
-        out.push_str(",\n  \"libraries\": [");
-        for (i, library) in contract.split.libraries.iter().enumerate() {
-            out.push_str(if i == 0 { "\n" } else { ",\n" });
-            let sels: Vec<String> = library
-                .methods
-                .iter()
-                .map(|(_, sel)| format!("\"{}\"", hex(sel)))
-                .collect();
-            out.push_str(&format!(
-                "    {{\n      \"name\": {},\n      \"address\": \"{}\",\n      \"selectors\": [{}]\n    }}",
-                json_string(&library.name),
-                checksum(&library.address),
                 sels.join(", ")
             ));
         }
@@ -1208,14 +1161,7 @@ pub fn upgrade_check(
     let diff = storage_diff(sources, before, after)?;
     let old = compile(sources, before, opts)?.single()?;
     let new = compile(sources, after, opts)?.single()?;
-    let parts = |split: &split::Split| -> Vec<split::Facet> {
-        split
-            .facets
-            .iter()
-            .chain(&split.libraries)
-            .cloned()
-            .collect()
-    };
+    let parts = |split: &split::Split| -> Vec<split::Facet> { split.facets.clone() };
     if parts(&old.split).is_empty() && parts(&new.split).is_empty() {
         return Ok(diff);
     }
@@ -1232,11 +1178,7 @@ pub fn upgrade_check(
     )];
     for part in &parts(&new.split) {
         rows.push((
-            if part.library {
-                format!("library {}", part.name)
-            } else {
-                part.name.clone()
-            },
+            part.name.clone(),
             if had.contains(&part.address) {
                 "unchanged"
             } else {

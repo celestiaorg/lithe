@@ -29,7 +29,7 @@ lithe fmt --check path...
 lithe fmt -
 ```
 
-Commands that read one file need a file with exactly one contract. Errors and warnings go to stderr as `path:line:column: message`, where `path` is the file the error is in, whether that is the file you named or one it imports, relative to the working directory. The standard library's files are `std/...`. An error that belongs to no one line, such as a contract over the size limit, is `path: message`. The exit status is `0` on success, `1` on a compile error, and `2` on a usage error.
+Commands that read one file need a file with exactly one contract. Errors and warnings go to stderr as `path:line:column: message`, where `path` is the file the error is in, whether that is the file you named or one it imports, relative to the working directory. The standard library's files are `std/...`. An error that belongs to no one line, such as a contract too large to assemble, is `path: message`. The exit status is `0` on success, `1` on a compile error, and `2` on a usage error.
 
 ```text
 lib/fees.lithe:4:18: unknown name `rate`
@@ -41,11 +41,10 @@ lib/fees.lithe:4:18: unknown name `rate`
 
 | Flag | Default | Meaning |
 | --- | --- | --- |
-| `--size-limit <bytes>` | `24576` | the most runtime code the router or any facet may have |
-| `--split <auto\|off\|all>` | `auto` | run every exposed module from its facet when the contract doesn't fit with no facets, never, or always. Pure functions run from library facets only when a router, a facet, or a contract that exposes no modules doesn't fit, and never with `off` |
+| `--size-limit <bytes>` | `24576` | the most runtime code the contract or any facet should have. Code over it still builds, with a warning that lists what takes the space and what marking each module `delegated` would save |
 | `--create2-deployer <address>` | `0x4e59b44847b379578588920cA78FbF26c0B4956C` | the `CREATE2` factory facets are deployed through |
 
-See [Contract size limit](/tooling/size-limit).
+What runs from a facet is the source's choice, `use M delegated;`, never a flag's. See [Contract size limit](/tooling/size-limit).
 
 ## Building
 
@@ -57,7 +56,9 @@ Prints the contract's creation bytecode as `0x`-prefixed hex, which is ready to 
 cast send --private-key $KEY --create $(lithe compile counter.lithe)
 ```
 
-A contract over the size limit runs the modules it exposes from their facets, and large pure functions from library facets. Then it prints a JSON deployment plan instead: each facet's `CREATE2` transaction, then the router's creation code. It also prints a note on stderr. A contract that creates a split contract prints a plan too, because those facets must exist first. See [Deploying](/tooling/size-limit#deploying).
+A contract with `delegated` modules prints a JSON deployment plan instead: each facet's `CREATE2` transaction, then the router's creation code. It also prints a note on stderr. A contract that creates one with facets prints a plan too, because those facets must exist first. See [Deploying](/tooling/size-limit#deploying).
+
+A contract or facet over the size limit still prints its bytecode or plan, and warns on stderr. See [Over the limit](/tooling/size-limit#over-the-limit).
 
 ### `lithe compile directory`
 
@@ -75,11 +76,11 @@ Compiles every `.lithe` file under the directory, and writes one Foundry-style a
 
 It prints each path it writes. It keeps going after a failing file, reports every failure, and exits `1` if any file failed. Files that define several contracts are fine in this mode.
 
-A split contract's artifact has the whole contract's ABI and a `facets` field listing each facet's module, address, and the selectors the router forwards to it. Each facet is written once, to `./out/facets/<Module>.json`, however many contracts use it. A contract that calls library facets lists them in a `libraries` field, and each is written to `./out/facets/<name>.json`.
+The artifact of a contract with facets has the whole contract's ABI and a `facets` field listing each facet's module, address, and the selectors the router forwards to it. Each facet is written once, to `./out/facets/<Module>.json`, however many contracts use it. Size warnings go to stderr.
 
 ### `lithe compile --check-specs`
 
-Builds the contract to check its [specs](/language/verification) as it runs, for tests and fuzzing: a call that breaks one reverts with `SpecViolation(string)`, which says which. It reads the contract's spec file, never splits the contract, and is bigger and costs more gas than the plain build. Don't deploy it. See [Checking specs as the contract runs](/language/verification#checking-specs-as-the-contract-runs).
+Builds the contract to check its [specs](/language/verification) as it runs, for tests and fuzzing: a call that breaks one reverts with `SpecViolation(string)`, which says which. It reads the contract's spec file, runs every module in the contract, `delegated` or not, and is bigger and costs more gas than the plain build. Don't deploy it. See [Checking specs as the contract runs](/language/verification#checking-specs-as-the-contract-runs).
 
 ### `lithe abi file.lithe` / `lithe abi directory`
 
@@ -98,7 +99,7 @@ These commands summarize what each entrypoint does. See [Inspecting contracts](/
 | `lithe prove file.lithe` | [proves](/language/verification#proving-specs) the specs with Z3: each invariant phase by phase, and each claim of each function spec; a file of modules is proved as a contract that exposes them all; needs [Z3](/guide/getting-started#build-the-compiler); `--solver path` and `--timeout seconds` |
 | `lithe specs file.lithe` | the [formal verification](/language/verification) specs of the file and its `.spec.lithe`, checked, and what each claims |
 | `lithe storage file.lithe` | the storage and transient layout, slot by slot |
-| `lithe facets file.lithe` | the router, each facet, and each library facet: size against the limit, and the entrypoints each runs |
+| `lithe facets file.lithe` | the router and each facet: size against the limit, the entrypoints each runs, and the functions the router calls across |
 | `lithe stubs file.lithe Module` | the `use Module exposing` block that declares every external a module has |
 
 ## Upgrades
@@ -107,7 +108,7 @@ These commands summarize what each entrypoint does. See [Inspecting contracts](/
 
 Compares the storage layouts of two versions field by field, and ends with `compatible` or `incompatible`. See [Upgrades](/language/upgrades#storage-compatibility).
 
-When either version is split, `upgrade-check` also lists the facets the new version uses, and which of them the old version already has. See [Upgrades](/tooling/size-limit#upgrades).
+When either version has facets, `upgrade-check` also lists the facets the new version uses, and which of them the old version already has. See [Upgrades](/tooling/size-limit#upgrades).
 
 ### `lithe upgrade`
 
@@ -121,7 +122,7 @@ Prints the `to` address and the calldata for `upgradeToAndCall(newImpl, migratio
 cast send --private-key $KEY 0xProxy 0x4f1ef286...
 ```
 
-For a split contract, it prints the deployment plan with an `upgrade` entry holding the proxy's call. Deploy the facets and the router first. `--impl` is optional here: it defaults to the router's `CREATE2` address from the plan.
+For a contract with facets, it prints the deployment plan with an `upgrade` entry holding the proxy's call. Deploy the facets and the router first. `--impl` is optional here: it defaults to the router's `CREATE2` address from the plan.
 
 ## Formatting
 

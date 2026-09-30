@@ -495,6 +495,7 @@ impl<'a> Gen<'a> {
     /// Starts a body. Its storage loads are placed here once `finish_body` knows what it reads.
     pub(super) fn begin_body(&mut self, direct: bool) {
         self.direct = direct;
+        self.reading = false;
         self.bodies += 1;
         let id = self.bodies;
         let mut body = Body {

@@ -465,15 +465,7 @@ payable fallback is { storage.fell := storage.fell + 1; }
 external view function fell() : uint is storage.fell
 ";
     let checked = crate::check::check(loaded(src)).expect("check");
-    let split = crate::split::build(
-        &checked,
-        "Test",
-        &crate::Options {
-            split: crate::SplitMode::All,
-            ..crate::Options::default()
-        },
-    )
-    .expect("split");
+    let split = super::split::build_facets(&checked, "Test").expect("split");
     assert_eq!(split.facets.len(), 1);
     for facet in split.prerequisites() {
         let runtime = deploy(&facet.init).expect("facet");

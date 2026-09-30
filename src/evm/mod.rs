@@ -95,9 +95,9 @@ thread_local! {
     /// hash, and calls to itself see.
     /// A call or creation into another account pushes `None`: that account runs its own code.
     static ACCOUNT_CODE: std::cell::RefCell<Vec<Option<Vec<u8>>>> = const { std::cell::RefCell::new(Vec::new()) };
-    /// Deployed library facets. A call to one runs part of the caller's own code, so it is
-    /// not an effect, and what that code does is the caller's.
-    static LIBRARIES: std::cell::RefCell<std::collections::HashSet<Word>> =
+    /// Deployed facets. A static call to one runs part of the caller's own code, a pure
+    /// function of a module, so it is not an effect, and what that code does is the caller's.
+    static FACETS: std::cell::RefCell<std::collections::HashSet<Word>> =
         std::cell::RefCell::new(std::collections::HashSet::new());
     /// The address `ADDRESS` answers: the account a call into a created contract runs as,
     /// and `0x1000` for everything else, creation code included.
@@ -805,8 +805,8 @@ fn exec_state(
                 let ret_off = word_usize(pop(&mut stack)?)?;
                 let ret_size = word_usize(pop(&mut stack)?)?;
                 let input = read_slice(&mut mem, in_off, in_size);
-                let library = LIBRARIES.with(|l| l.borrow().contains(&to));
-                if !library {
+                let facet = FACETS.with(|f| f.borrow().contains(&to));
+                if !facet {
                     detail.push(format!("static {to:?} {}{}", hex(&input), gas_limit(gas)));
                 }
                 if let Some((child, child_storage)) = DEPLOYED
@@ -829,7 +829,7 @@ fn exec_state(
                         let n = ret_size.min(returndata.len());
                         write_mem(&mut mem, ret_off, &returndata[..n]);
                     }
-                    if library {
+                    if facet {
                         trace.extend(nested.trace);
                         detail.extend(nested.detail);
                     } else {

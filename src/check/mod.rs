@@ -317,6 +317,8 @@ struct FnSig {
     params: Vec<(usize, bool)>,
     ret: usize,
     kind: ItemKind,
+    /// A `private` function of a module: only that module's code calls it.
+    private_to: Option<String>,
 }
 
 struct Checker {
