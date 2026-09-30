@@ -10,8 +10,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Mutex, OnceLock};
 
 use crate::ast::{
-    Exposing, Expr, Func, ItemKind, Lit, ModuleDecl, NameAt, Program, Raises, Stmt,
-    TypeDecl, TypeRef,
+    Exposing, Expr, Func, ItemKind, Lit, ModuleDecl, NameAt, Program, Raises, Stmt, TypeDecl,
+    TypeRef,
 };
 use crate::check::Checked;
 use crate::gen::{self, Built, Entrypoint, Group};
@@ -119,7 +119,8 @@ pub(crate) struct Split {
     pub needs: Vec<Facet>,
     /// The library facets the router and its facets call.
     pub libraries: Vec<Facet>,
-    /// The unsplit runtime's size, when it did not fit and could be assembled at all.
+    /// The unsplit runtime's size, when it did not fit and could be assembled at all: for a
+    /// contract that fits with library facets, its smallest without them.
     pub whole: Option<usize>,
 }
 
@@ -195,7 +196,7 @@ fn build_uncached(checked: &Checked, name: &str, opts: &Options) -> Result<Split
                     facets: Vec::new(),
                     needs: built.needs,
                     libraries: built.libraries,
-                    whole: None,
+                    whole: built.local,
                 });
             }
             Ok(built) => whole = Some(built.runtime.len()),
@@ -533,9 +534,7 @@ pub(crate) fn library(
 ) -> Option<(Facet, f64)> {
     let (mut prog, name) = library_program(checked, func, calls)?;
     let scopes = std::mem::take(&mut prog.scopes);
-    let key = keccak256(
-        format!("{prog:?}\0{opts:?}\0{}", crate::asm::byte_gas()).as_bytes(),
-    );
+    let key = keccak256(format!("{prog:?}\0{opts:?}\0{}", crate::asm::byte_gas()).as_bytes());
     prog.scopes = scopes;
     type Libraries = HashMap<[u8; 32], Option<(Facet, f64)>>;
     static BUILT: OnceLock<Mutex<Libraries>> = OnceLock::new();
@@ -610,7 +609,9 @@ fn library_program(checked: &Checked, func: usize, calls: &[usize]) -> Option<(P
         m.funcs.retain(|f| kept(f));
         m.domains.clear();
         m.specs.clear();
+        m.guards.clear();
     }
+    prog.guards.clear();
     prog.domains.clear();
     prog.exposes.clear();
     prog.supports.clear();

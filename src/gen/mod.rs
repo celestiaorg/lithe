@@ -162,6 +162,8 @@ pub(crate) struct Built {
     /// The library facets this code calls, each after those it calls itself. `needs` has them
     /// too.
     pub libraries: Vec<Facet>,
+    /// With library facets, the smallest runtime found without them.
+    pub local: Option<usize>,
     /// The runtime's estimated gas, by `asm::gas`.
     pub gas: f64,
 }
@@ -319,7 +321,9 @@ pub(crate) fn codegen(checked: &Checked, shape: &Shape) -> Result<Built, Error> 
         let mut dims = vec![
             outlines
                 .iter()
-                .filter(|o| **o != p.outline && !too_big.iter().any(|b| no_smaller(o, &p.remote, b)))
+                .filter(|o| {
+                    **o != p.outline && !too_big.iter().any(|b| no_smaller(o, &p.remote, b))
+                })
                 .cloned()
                 .map(Move::Outline)
                 .collect(),
@@ -454,42 +458,43 @@ pub(crate) fn codegen(checked: &Checked, shape: &Shape) -> Result<Built, Error> 
     // add them in order of bytes saved per gas added, and the cheapest set that fits wins, or
     // failing that the smallest, which the next round starts from. One that never fits is
     // split.
-    let fit = |mut best: Candidate, moves: &dyn Fn(&Plan) -> Vec<Move>| -> Result<Candidate, Error> {
-        while best.built.bytes > limit {
-            let moves = moves(&best.plan);
-            let alone: Vec<Plan> = moves.iter().map(|m| m.applied(&best.plan)).collect();
-            let (b0, g0) = (best.built.bytes, best.built.gas);
-            let mut order: Vec<(f64, &Move)> = moves
-                .iter()
-                .zip(build_each(&alone))
-                .filter_map(|(m, c)| Some((m, c.ok()?)))
-                .filter(|(_, c)| c.built.bytes < b0)
-                .map(|(m, c)| ((b0 - c.built.bytes) as f64 / (c.built.gas - g0).max(1.0), m))
-                .collect();
-            order.sort_by(|a, b| b.0.total_cmp(&a.0));
-            let sets: Vec<Plan> = (1..=order.len())
-                .map(|k| {
-                    let mut p = best.plan.clone();
-                    order[..k].iter().for_each(|(_, m)| m.apply(&mut p));
-                    p
-                })
-                .collect();
-            let rank = |c: &Candidate| match c.built.bytes {
-                b if b <= limit => c.cost(),
-                b => OVER_LIMIT + b as f64,
-            };
-            let Some(next) = build_each(&sets)
-                .into_iter()
-                .flatten()
-                .min_by(|a, b| rank(a).total_cmp(&rank(b)))
-                .filter(|c| c.built.bytes < b0)
-            else {
-                break;
-            };
-            best = next;
-        }
-        Ok(best)
-    };
+    let fit =
+        |mut best: Candidate, moves: &dyn Fn(&Plan) -> Vec<Move>| -> Result<Candidate, Error> {
+            while best.built.bytes > limit {
+                let moves = moves(&best.plan);
+                let alone: Vec<Plan> = moves.iter().map(|m| m.applied(&best.plan)).collect();
+                let (b0, g0) = (best.built.bytes, best.built.gas);
+                let mut order: Vec<(f64, &Move)> = moves
+                    .iter()
+                    .zip(build_each(&alone))
+                    .filter_map(|(m, c)| Some((m, c.ok()?)))
+                    .filter(|(_, c)| c.built.bytes < b0)
+                    .map(|(m, c)| ((b0 - c.built.bytes) as f64 / (c.built.gas - g0).max(1.0), m))
+                    .collect();
+                order.sort_by(|a, b| b.0.total_cmp(&a.0));
+                let sets: Vec<Plan> = (1..=order.len())
+                    .map(|k| {
+                        let mut p = best.plan.clone();
+                        order[..k].iter().for_each(|(_, m)| m.apply(&mut p));
+                        p
+                    })
+                    .collect();
+                let rank = |c: &Candidate| match c.built.bytes {
+                    b if b <= limit => c.cost(),
+                    b => OVER_LIMIT + b as f64,
+                };
+                let Some(next) = build_each(&sets)
+                    .into_iter()
+                    .flatten()
+                    .min_by(|a, b| rank(a).total_cmp(&rank(b)))
+                    .filter(|c| c.built.bytes < b0)
+                else {
+                    break;
+                };
+                best = next;
+            }
+            Ok(best)
+        };
     let fell_back = best.built.bytes > limit;
     best = fit(best, &|p| {
         let mut rest: Vec<usize> = (&plan.outlinable - &p.outline).into_iter().collect();
@@ -498,6 +503,7 @@ pub(crate) fn codegen(checked: &Checked, shape: &Shape) -> Result<Built, Error> 
     })?;
     let remote_ok = shape.opts.split != SplitMode::Off && !shape.opts.check_specs;
     let force = remote_all(shape);
+    let local = best.built.bytes;
     let libs: Vec<(usize, Remote, Facet)> = if (best.built.bytes > limit || force) && remote_ok {
         libraries(checked, &plan, shape)
     } else {
@@ -522,7 +528,12 @@ pub(crate) fn codegen(checked: &Checked, shape: &Shape) -> Result<Built, Error> 
     // cost less are brought back one at a time, the most gas saved per byte added first, each
     // kept while the build still costs less.
     if fell_back && best.built.bytes <= limit {
-        let mut back: Vec<Move> = best.plan.remote.iter().map(|(&f, &r)| Move::Remote(f, r)).collect();
+        let mut back: Vec<Move> = best
+            .plan
+            .remote
+            .iter()
+            .map(|(&f, &r)| Move::Remote(f, r))
+            .collect();
         let mut outlined: Vec<usize> = best.plan.outline.iter().copied().collect();
         outlined.sort_unstable();
         back.extend(outlined.into_iter().map(Move::Toggle));
@@ -567,11 +578,14 @@ pub(crate) fn codegen(checked: &Checked, shape: &Shape) -> Result<Built, Error> 
         true,
         shape,
     )?;
-    let mut libraries = Vec::new();
+    let mut libraries: Vec<Facet> = Vec::new();
     for (f, _, facet) in &libs {
         if best.plan.remote.contains_key(f) {
-            libraries.extend(facet.needs.iter().cloned());
-            libraries.push(facet.clone());
+            for lib in facet.needs.iter().chain([facet]) {
+                if libraries.iter().all(|have| have.address != lib.address) {
+                    libraries.push(lib.clone());
+                }
+            }
         }
     }
     let mut needs = best.needs;
@@ -581,6 +595,7 @@ pub(crate) fn codegen(checked: &Checked, shape: &Shape) -> Result<Built, Error> 
         code,
         runtime: built.runtime,
         needs,
+        local: (!libraries.is_empty() && local != usize::MAX).then_some(local),
         libraries,
         gas: built.gas,
     })

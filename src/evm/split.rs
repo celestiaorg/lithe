@@ -969,7 +969,10 @@ fn remote_preserves_behavior() {
         compare_builds(&rel, &methods, &reference, &ours, steps, true);
         compared += 1;
     }
-    assert!(compared >= 10, "only {compared} programs ran functions remotely");
+    assert!(
+        compared >= 10,
+        "only {compared} programs ran functions remotely"
+    );
 }
 
 const RENDER: &str = r#"import "std/string";
@@ -1019,11 +1022,24 @@ external view function last() : string is storage.last
 
 /// `show(uint256,string,uint256[])`'s calldata.
 fn show_data(n: u64, name: &[u8], tags: &[u64]) -> Vec<u8> {
+    uint_string_list("show(uint256,string,uint256[])", n, name, tags)
+}
+
+/// Calldata for `sig`, which takes `(uint256,string,uint256[])`.
+fn uint_string_list(sig: &str, n: u64, name: &[u8], tags: &[u64]) -> Vec<u8> {
     let w = |x: u64| Word::from_u64(x).to_be_bytes().to_vec();
     let mut padded = name.to_vec();
     padded.resize(name.len().div_ceil(32) * 32, 0);
-    let mut data = selector("show(uint256,string,uint256[])").to_vec();
-    data.extend([w(n), w(96), w(128 + padded.len() as u64), w(name.len() as u64)].concat());
+    let mut data = selector(sig).to_vec();
+    data.extend(
+        [
+            w(n),
+            w(96),
+            w(128 + padded.len() as u64),
+            w(name.len() as u64),
+        ]
+        .concat(),
+    );
     data.extend(padded);
     data.extend(w(tags.len() as u64));
     for &t in tags {
@@ -1044,13 +1060,19 @@ fn a_large_pure_function_runs_from_its_library_facet() {
     let names: Vec<&str> = split.libraries.iter().map(|l| l.name.as_str()).collect();
     assert_eq!(names, ["render"]);
     assert!(split.runtime.len() <= opts.size_limit);
-    assert_eq!(split.libraries[0].methods[0].0, "render(uint256,string,uint256[])");
+    assert_eq!(
+        split.libraries[0].methods[0].0,
+        "render(uint256,string,uint256[])"
+    );
     install_mocks();
     let reference = deploy(&whole.code).expect("whole");
     let ours = deploy_split(&split);
     let cases = [
         (show_data(5, b"ab", &[3, 7]), None),
-        (show_data(1, &[b'x'; 41], &[]), Some(selector("TooLong(uint256)"))),
+        (
+            show_data(1, &[b'x'; 41], &[]),
+            Some(selector("TooLong(uint256)")),
+        ),
         (show_data(1, b"a", &[4, 0]), Some([0x4e, 0x48, 0x7b, 0x71])),
     ];
     for (data, reverts) in cases {
@@ -1125,7 +1147,11 @@ external function keep(const n : uint) raises Too_long is {
 
 external view function last() : string is storage.last
 "#;
-    let sources = Sources::memory([("render.lithe", RENDER_MODULE), ("a.lithe", a), ("b.lithe", b)]);
+    let sources = Sources::memory([
+        ("render.lithe", RENDER_MODULE),
+        ("a.lithe", a),
+        ("b.lithe", b),
+    ]);
     let mut libraries = Vec::new();
     for entry in ["a.lithe", "b.lithe"] {
         let path = Path::new(entry);
@@ -1162,14 +1188,26 @@ fn deploy_calls_remote_functions() {
     let split = crate::split::build(&checked, "Render", &opts).expect("split");
     assert_eq!(split.libraries.len(), 1);
     let args = Word::from_u64(12).to_be_bytes();
-    let missing = construct(&[split.creation.clone(), args.to_vec()].concat(), Word::from_u64(1), Word::from_u64(0))
-        .expect("construct");
+    let missing = construct(
+        &[split.creation.clone(), args.to_vec()].concat(),
+        Word::from_u64(1),
+        Word::from_u64(0),
+    )
+    .expect("construct");
     assert!(missing.reverted, "creation ran without its library facet");
     deploy_facets(&split);
-    let ours = construct(&[split.creation.clone(), args.to_vec()].concat(), Word::from_u64(1), Word::from_u64(0))
-        .expect("construct");
-    let want = construct(&[whole.code.clone(), args.to_vec()].concat(), Word::from_u64(1), Word::from_u64(0))
-        .expect("construct");
+    let ours = construct(
+        &[split.creation.clone(), args.to_vec()].concat(),
+        Word::from_u64(1),
+        Word::from_u64(0),
+    )
+    .expect("construct");
+    let want = construct(
+        &[whole.code.clone(), args.to_vec()].concat(),
+        Word::from_u64(1),
+        Word::from_u64(0),
+    )
+    .expect("construct");
     assert!(!ours.reverted, "{}", pretty(&ours.returndata));
     let read = |runtime: &[u8], storage: &HashMap<Word, Word>| {
         run_ok(runtime, storage, "last()", &[]).returndata
@@ -1252,3 +1290,181 @@ fn remote_calls_in_loops_cost_their_runs() {
     assert!(split.runtime.len() <= opts.size_limit);
 }
 
+const CARDS: &str = r#"import "std/evm";
+import "std/string";
+import "std/uint";
+
+module Cards is {
+  storage cards at "remote.cards" is record {
+    names : map(uint, string);
+  }
+
+  error Too_long of uint;
+
+  guard editor(const id : uint);
+
+  pure function render(const n : uint; const name : string; const tags : list(uint)) : string is {
+    assert(name.length <= 40, Too_long(name.length));
+    var out : string := String.concat("{\"name\":\"", name, "\",\"n\":", Uint.to_string(n), ",\"tags\":[");
+    for i : uint in 0 .. tags.length do {
+      if i > 0 then {
+        out := String.concat(out, ",");
+      }
+      out := String.concat(out, Uint.to_string(tags[i]), ":", Uint.to_string(100 / tags[i]));
+    }
+    out := String.concat(out, "],\"hex\":\"", Uint.to_hex_string(n), "\"}");
+  } with out
+
+  external function set_card(const id : uint; const name : string; const tags : list(uint))
+    guarded editor(id)
+    raises Too_long
+  is {
+    cards.names[id] := render(id, name, tags);
+  }
+
+  external view function card(const id : uint) : string is cards.names[id]
+}
+
+contract Deck is {
+  storage is record {
+    owner : address;
+  }
+
+  error Not_owner of uint;
+
+  use Cards exposing {
+    function set_card(id : uint; name : string; tags : list(uint)) raises Too_long | Not_owner;
+    view function card(id : uint) : string;
+  }
+
+  guard Cards.editor(const id : uint) raises Not_owner is {
+    assert(Evm.sender() = storage.owner, Not_owner(id));
+  }
+
+  external function claim() is {
+    storage.owner := Evm.sender();
+  }
+}
+"#;
+
+/// A guarded external whose body calls a remote function, split: the router runs the guard,
+/// the module's facet runs the body, and the facet calls the library facet.
+#[test]
+fn guarded_facets_call_library_facets() {
+    let checked = checked_src(CARDS);
+    let plain = crate::split::build(&checked, "Deck", &all_facets()).expect("split");
+    let limit = plain.facets[0].runtime.len() - 1;
+    let opts = crate::Options {
+        size_limit: limit,
+        ..all_facets()
+    };
+    let split = crate::split::build(&checked, "Deck", &opts).expect("split");
+    assert_eq!(facet_names(&split), ["Cards"]);
+    let names: Vec<&str> = split.libraries.iter().map(|l| l.name.as_str()).collect();
+    assert_eq!(names, ["Cards.render"]);
+    assert!(split.facets[0].runtime.len() <= limit);
+    let whole = whole_build(&checked);
+    install_mocks();
+    let reference = deploy(&whole.code).expect("whole");
+    let ours = deploy_split(&split);
+    let set = |tags: &[u64], name: &[u8]| {
+        uint_string_list("set_card(uint256,string,uint256[])", 7, name, tags)
+    };
+    let card = word_data("card(uint256)", &[Word::from_u64(7)]);
+    for runtime in [&reference, &ours] {
+        let run = |data: &[u8], storage: &HashMap<Word, Word>, caller: u64| {
+            exec(
+                runtime,
+                data,
+                storage.clone(),
+                Word::from_u64(caller),
+                Word::from_u64(0),
+                Word::from_u64(0),
+            )
+            .expect("run")
+        };
+        let claimed = run(&word_data("claim()", &[]), &HashMap::new(), 5);
+        assert!(!claimed.reverted);
+        let stranger = run(&set(&[3], b"ab"), &claimed.storage, 6);
+        assert!(stranger.reverted);
+        assert_eq!(stranger.returndata[..4], selector("NotOwner(uint256)"));
+        let long = run(&set(&[3], &[b'x'; 41]), &claimed.storage, 5);
+        assert_eq!(long.returndata[..4], selector("TooLong(uint256)"));
+        let panicked = run(&set(&[0], b"ab"), &claimed.storage, 5);
+        assert_eq!(panicked.returndata[..4], [0x4e, 0x48, 0x7b, 0x71]);
+        let stored = run(&set(&[3, 7], b"ab"), &claimed.storage, 5);
+        assert!(!stored.reverted, "{}", pretty(&stored.returndata));
+        let read = run(&card, &stored.storage, 1);
+        assert!(String::from_utf8_lossy(&read.returndata).contains("\"n\":7,\"tags\":[3:33,7:14]"));
+    }
+    let methods = crate::route::method_ids(&checked).expect("methods");
+    compare_builds("cards", &methods, &reference, &ours, 300, true);
+}
+
+/// An upgradeable contract's implementation calls its library facets from the proxy's
+/// frame: a proxy upgraded from the whole build answers the same.
+#[test]
+fn upgradeable_contracts_call_library_facets() {
+    let src = RENDER
+        .replacen("import \"std/string\";", "import \"std/evm\";\nimport \"std/string\";", 1)
+        .replace(
+            "storage is record {\n  last : string;\n}",
+            "upgradeable\n\nerror Not_owner;\n\nstorage is record {\n  owner : address;\n  last : string;\n}\n\nupgrade guard is {\n  assert(Evm.sender() = storage.owner, Not_owner);\n}",
+        );
+    let checked = checked_src(&src);
+    let whole = whole_build(&checked);
+    let split = crate::split::build(&checked, "Render", &split_opts(whole.runtime.len() * 4 / 5))
+        .expect("split");
+    let names: Vec<&str> = split.libraries.iter().map(|l| l.name.as_str()).collect();
+    assert_eq!(names, ["render"]);
+    let whole = deploy(&whole.code).expect("whole");
+    let router = deploy_split(&split);
+    let (a, b) = (Word::from_u64(0xa11), Word::from_u64(0xb22));
+    DEPLOYED.with(|d| {
+        let mut d = d.borrow_mut();
+        d.insert(a, (whole, HashMap::new()));
+        d.insert(b, (router, HashMap::new()));
+    });
+    let slot = crate::keccak::erc1967_implementation();
+    let owner = Word::from_u64(1);
+    let storage: std::cell::RefCell<HashMap<Word, Word>> = std::cell::RefCell::new(
+        [(slot, a), (Word::from_u64(0), owner)]
+            .into_iter()
+            .collect(),
+    );
+    let proxy = proxy_runtime();
+    let send = |data: Vec<u8>| {
+        let now = storage.borrow().clone();
+        let out = exec(
+            &proxy,
+            &data,
+            now,
+            owner,
+            Word::from_u64(0),
+            Word::from_u64(0),
+        )
+        .expect("run");
+        if !out.reverted {
+            *storage.borrow_mut() = out.storage.clone();
+        }
+        out
+    };
+    let shown = send(show_data(5, b"ab", &[3, 7]));
+    assert!(!shown.reverted);
+    let keep = uint_string_list("keep(uint256,string)", 9, b"kept", &[]);
+    let keep = [&keep[..36], &Word::from_u64(64).to_be_bytes(), &keep[100..]].concat();
+    assert!(!send(keep.clone()).reverted);
+    let last = send(word_data("last()", &[])).returndata;
+    assert!(!send(upgrade_to_and_call(b, &[])).reverted, "upgrade");
+    assert_eq!(storage.borrow()[&slot], b);
+    assert_eq!(
+        send(show_data(5, b"ab", &[3, 7])).returndata,
+        shown.returndata
+    );
+    assert_eq!(send(word_data("last()", &[])).returndata, last);
+    assert!(!send(keep).reverted);
+    assert_eq!(send(word_data("last()", &[])).returndata, last);
+    let panicked = send(show_data(1, b"a", &[0]));
+    assert!(panicked.reverted);
+    assert_eq!(panicked.returndata[..4], [0x4e, 0x48, 0x7b, 0x71]);
+}

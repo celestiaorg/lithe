@@ -38,7 +38,7 @@ Commands that read one file need a file with exactly one contract. Errors and wa
 | Flag | Default | Meaning |
 | --- | --- | --- |
 | `--size-limit <bytes>` | `24576` | the most runtime code the router or any facet may have |
-| `--split <auto\|off\|all>` | `auto` | run exposed modules from their facets when the contract is over the limit, never, or always |
+| `--split <auto\|off\|all>` | `auto` | run exposed modules from their facets when the contract is over the limit, never, or always. Pure functions run from library facets only when a build doesn't fit, and never with `off` |
 | `--create2-deployer <address>` | `0x4e59b44847b379578588920cA78FbF26c0B4956C` | the `CREATE2` factory facets are deployed through |
 
 See [Contract size limit](/tooling/size-limit).
@@ -53,7 +53,7 @@ Prints the contract's creation bytecode as `0x`-prefixed hex, which is ready to 
 cast send --private-key $KEY --create $(lithe compile counter.lithe)
 ```
 
-A contract over the size limit runs the modules it exposes from their facets. Then it prints a JSON deployment plan instead: each facet's `CREATE2` transaction, then the router's creation code. It also prints a note on stderr. A contract that creates a split contract prints a plan too, because those facets must exist first. See [Deploying](/tooling/size-limit#deploying).
+A contract over the size limit runs the modules it exposes from their facets, and large pure functions from library facets. Then it prints a JSON deployment plan instead: each facet's `CREATE2` transaction, then the router's creation code. It also prints a note on stderr. A contract that creates a split contract prints a plan too, because those facets must exist first. See [Deploying](/tooling/size-limit#deploying).
 
 ### `lithe compile directory`
 
@@ -71,7 +71,7 @@ Compiles every `.lithe` file under the directory, and writes one Foundry-style a
 
 It prints each path it writes. It keeps going after a failing file, reports every failure, and exits `1` if any file failed. Files that define several contracts are fine in this mode.
 
-A split contract's artifact has the whole contract's ABI and a `facets` field listing each facet's module, address, and the selectors the router forwards to it. Each facet is written once, to `./out/facets/<Module>.json`, however many contracts use it.
+A split contract's artifact has the whole contract's ABI and a `facets` field listing each facet's module, address, and the selectors the router forwards to it. Each facet is written once, to `./out/facets/<Module>.json`, however many contracts use it. A contract that calls library facets lists them in a `libraries` field, and each is written to `./out/facets/<name>.json`.
 
 ### `lithe compile --check-specs`
 
@@ -94,7 +94,7 @@ These commands summarize what each entrypoint does. See [Inspecting contracts](/
 | `lithe prove file.lithe` | [proves](/language/verification#proving-specs) the specs with Z3: each invariant phase by phase, and each claim of each function spec; a file of modules is proved as a contract that exposes them all; needs [Z3](/guide/getting-started#build-the-compiler); `--solver path` and `--timeout seconds` |
 | `lithe specs file.lithe` | the [formal verification](/language/verification) specs of the file and its `.spec.lithe`, checked, and what each claims |
 | `lithe storage file.lithe` | the storage and transient layout, slot by slot |
-| `lithe facets file.lithe` | the router and each facet: size against the limit, and the entrypoints each runs |
+| `lithe facets file.lithe` | the router, each facet, and each library facet: size against the limit, and the entrypoints each runs |
 | `lithe stubs file.lithe Module` | the `use Module exposing` block that declares every external a module has |
 
 ## Upgrades

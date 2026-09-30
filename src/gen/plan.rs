@@ -297,7 +297,11 @@ impl<'a> Gen<'a> {
         }
         // The pure functions whose copies here are large enough to run remotely, with what
         // each calls, which its library facet holds.
-        let least = if remote_all(self.shape) { 0 } else { MIN_REMOTE_BYTES };
+        let least = if remote_all(self.shape) {
+            0
+        } else {
+            MIN_REMOTE_BYTES
+        };
         let mut remotable: Vec<(usize, Vec<usize>)> = self
             .inlined
             .iter()
@@ -359,7 +363,8 @@ impl<'a> Gen<'a> {
             && self.abi_value(f.ret_ty)
             && f.params.iter().all(|p| {
                 !p.storage
-                    && p.sym.is_some_and(|s| !self.checked.slot_syms.contains_key(&s))
+                    && p.sym
+                        .is_some_and(|s| !self.checked.slot_syms.contains_key(&s))
                     && self.abi_value(p.ty_id)
             })
     }

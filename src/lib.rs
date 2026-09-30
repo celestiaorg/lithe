@@ -639,7 +639,11 @@ pub fn facets(sources: &Sources, entry: &Path, opts: &Options) -> Result<String,
             checksum(&library.address),
             split::thousands(library.runtime.len())
         ));
-        let sigs: Vec<&str> = library.methods.iter().map(|(sig, _)| sig.as_str()).collect();
+        let sigs: Vec<&str> = library
+            .methods
+            .iter()
+            .map(|(sig, _)| sig.as_str())
+            .collect();
         out.push_str(&format!("  {}\n", sigs.join(", ")));
     }
     Ok(out)
@@ -1142,7 +1146,12 @@ pub fn upgrade_check(
     let old = compile(sources, before, opts)?.single()?;
     let new = compile(sources, after, opts)?.single()?;
     let parts = |split: &split::Split| -> Vec<split::Facet> {
-        split.facets.iter().chain(&split.libraries).cloned().collect()
+        split
+            .facets
+            .iter()
+            .chain(&split.libraries)
+            .cloned()
+            .collect()
     };
     if parts(&old.split).is_empty() && parts(&new.split).is_empty() {
         return Ok(diff);
@@ -1160,7 +1169,11 @@ pub fn upgrade_check(
     )];
     for part in &parts(&new.split) {
         rows.push((
-            part.name.clone(),
+            if part.library {
+                format!("library {}", part.name)
+            } else {
+                part.name.clone()
+            },
             if had.contains(&part.address) {
                 "unchanged"
             } else {

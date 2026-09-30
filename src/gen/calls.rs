@@ -1652,7 +1652,11 @@ impl<'a> Gen<'a> {
     }
 
     /// Copies the return data's words of `ty` and stores each, checked, where `dest` says.
-    pub(super) fn decode_returned_words(&mut self, ty: usize, dest: Vec<(u32, i32)>) -> Result<(), Error> {
+    pub(super) fn decode_returned_words(
+        &mut self,
+        ty: usize,
+        dest: Vec<(u32, i32)>,
+    ) -> Result<(), Error> {
         let words = self.checked.types[ty].words;
         self.return_sites += 1;
         let buf = self.region(Region::Returned(self.return_sites), words * 32);
