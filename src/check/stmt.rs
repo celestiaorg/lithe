@@ -1237,7 +1237,9 @@ impl Checker {
             if derived {
                 self.state_syms.insert(sid);
             }
-            self.define(line, col, name, sid)?;
+            if name != "_" {
+                self.define(line, col, name, sid)?;
+            }
         }
         Ok(())
     }
