@@ -1,9 +1,14 @@
 //! Immutables. A plain contract builds each into its code: every read is a push of zero
 //! bytes that the creation code overwrites with the value `deploy` left, as Solidity does. A
 //! facet reads them after its calldata, where its router appends them. An upgradeable
-//! contract keeps them in storage, so they never reach here.
+//! contract keeps them in storage, so they never reach here. Its code holds one word the
+//! creation code writes instead: the implementation's own address, as OpenZeppelin's
+//! `__self`, which tells a call through a proxy from one to the implementation itself.
 
 use super::*;
+
+/// The mark of the implementation's own address in an upgradeable contract's code.
+pub(crate) const SELF_MARK: u32 = u32::MAX;
 
 /// The runtime assembled with its appended `data`, and where each immutable's word goes in
 /// it, those of `tail_blobs` included.
@@ -42,6 +47,11 @@ impl<'a> Gen<'a> {
             let pack = self.checked.leaf_pack[leaf as usize];
             self.code.push(Inst::Imm(k, pack.width));
         }
+    }
+
+    /// Pushes the address the implementation was created at.
+    pub(super) fn push_self(&mut self) {
+        self.code.push(Inst::Imm(SELF_MARK, 20));
     }
 
     /// Writes the word on the stack to an immutable leaf. Only creation code writes one:

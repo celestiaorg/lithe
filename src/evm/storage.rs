@@ -353,12 +353,15 @@ fn named_storage_and_upgrade_migrate_once() {
         )),
         "{layout}"
     );
-    let runtime = deploy(&compile_file(&path).expect("compile")).expect("deploy");
+    let impl_at = Word::from_u64(0xa11);
+    let runtime = deploy_at(&compile_file(&path).expect("compile"), impl_at);
+    let proxy = super::split::proxy_runtime();
+    let slot = crate::keccak::erc1967_implementation();
     let owner = Word::from_u64(0xab);
     let claimed = exec(
-        &runtime,
+        &proxy,
         &word_data("claim()", &[]),
-        HashMap::new(),
+        [(slot, impl_at)].into_iter().collect(),
         owner,
         Word::from_u64(0),
         Word::from_u64(0),
@@ -369,13 +372,13 @@ fn named_storage_and_upgrade_migrate_once() {
         &Sources::disk(),
         &path,
         "init",
-        "0x1000",
+        "0xa11",
         &["9".to_string()],
     )
     .expect("calldata");
     let raw = hex_decode(data.strip_prefix("0x").unwrap());
     let upgraded = exec(
-        &runtime,
+        &proxy,
         &raw,
         claimed.storage.clone(),
         owner,
@@ -390,7 +393,7 @@ fn named_storage_and_upgrade_migrate_once() {
         Some(Word::from_u64(9))
     );
     let denied = exec(
-        &runtime,
+        &proxy,
         &raw,
         claimed.storage,
         Word::from_u64(0xcd),
@@ -409,14 +412,16 @@ fn named_storage_and_upgrade_migrate_once() {
     )
     .expect("direct");
     assert!(direct.reverted, "migrate is not a public entry");
-    let uuid = exec(
-        &runtime,
-        selector("proxiableUUID()").as_ref(),
-        HashMap::new(),
-        owner,
-        Word::from_u64(0),
-        Word::from_u64(0),
-    )
+    let uuid = elsewhere(impl_at, || {
+        exec(
+            &runtime,
+            selector("proxiableUUID()").as_ref(),
+            HashMap::new(),
+            owner,
+            Word::from_u64(0),
+            Word::from_u64(0),
+        )
+    })
     .expect("uuid");
     assert!(!uuid.reverted, "{}", pretty(&uuid.returndata));
     assert_eq!(

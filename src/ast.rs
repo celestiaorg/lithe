@@ -194,6 +194,8 @@ pub(crate) struct GuardDecl {
     pub line: u32,
     pub col: u32,
     pub stmts: Vec<Stmt>,
+    /// `upgrade guard is f;`: the function its body calls.
+    pub via: Option<NameAt>,
 }
 
 #[derive(Debug, Clone)]

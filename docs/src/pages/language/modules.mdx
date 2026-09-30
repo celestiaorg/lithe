@@ -226,7 +226,7 @@ A guarded external raises its module's errors and its guard's. The interface tha
 
 A guard is contract code, so it runs where the contract's code runs. In a contract that fits the size limit, it is the first thing the entrypoint does. In a [split](/tooling/size-limit) contract, the router decodes the call's arguments, runs the guard, and only then forwards the call to the module's facet. The facet is built from the module alone and runs its externals unguarded, so every contract that exposes the module shares one facet at one address, whatever its guards. Calling a facet directly skips every guard, but a facet called directly runs against its own storage, not the storage of any contract that uses it, so there is nothing there to protect.
 
-The [upgrade guard](/language/upgrades#upgradeable-contracts) is the same idea for the upgrade machinery: the check `upgradeToAndCall` runs before it changes anything, with the same rules.
+The [upgrade guard](/language/upgrades#upgradeable-contracts) is the same idea for the upgrade machinery: the check `upgradeToAndCall` runs before it changes anything, with the same rules, `upgrade guard is f;` included.
 
 ### Mistakes
 

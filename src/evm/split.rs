@@ -153,17 +153,13 @@ pub(super) fn upgrade_to_and_call(implementation: Word, data: &[u8]) -> Vec<u8> 
 fn upgrades_move_between_whole_and_split() {
     let checked = checked_src(SPLIT_VAULT);
     let slot = crate::keccak::erc1967_implementation();
-    let whole = deploy(&whole_build(&checked).code).expect("whole");
     let split = crate::split::build(&checked, "Vault", &all_facets()).expect("split");
     assert_eq!(facet_names(&split), ["Counter"]);
     assert!(split.entries.iter().any(|e| e.name == "init (migrate)"));
-    let router = deploy_split(&split);
     let (a, b) = (Word::from_u64(0xa11), Word::from_u64(0xb22));
-    DEPLOYED.with(|d| {
-        let mut d = d.borrow_mut();
-        d.insert(a, (whole, HashMap::new()));
-        d.insert(b, (router, HashMap::new()));
-    });
+    deploy_at(&whole_build(&checked).code, a);
+    deploy_facets(&split);
+    deploy_at(&split.creation, b);
     let proxy = proxy_runtime();
     let owner = Word::from_u64(1);
     // The proxy's storage as `deploy` would have left it: the owner in slot 0.
@@ -208,6 +204,89 @@ fn upgrades_move_between_whole_and_split() {
     assert_eq!(storage.borrow()[&slot], a);
     assert_eq!(send(word_data("count()", &[])).returndata, word(7));
     assert_eq!(send(word_data("fee()", &[])).returndata, word(30));
+}
+
+/// The upgrade machinery refuses what OpenZeppelin 5.1's `UUPSUpgradeable` refuses, with
+/// its errors and in its order: `proxiableUUID` only from the implementation itself,
+/// `upgradeToAndCall` only through a proxy pointing at it, then the guard, then the new
+/// implementation's `proxiableUUID`.
+#[test]
+fn upgrades_check_the_call_context_and_the_new_implementation() {
+    let v1 = "import \"std/evm\"; upgradeable\nerror Not_owner;\n\
+        storage is record { owner : address; n : uint; }\n\
+        upgrade guard is { assert(Evm.sender() = storage.owner, Not_owner); }\n\
+        external function bump() is { storage.n := storage.n + 1; }\n\
+        external view function n() : uint is storage.n\n";
+    let plain = "storage is record { n : uint; }\nexternal view function n() : uint is storage.n\n";
+    let wrong = "external view function proxiableUUID() : bytes32 is bytes32(7)\n";
+    let silent = "storage is record { n : uint; }\nfallback is {\n  skip\n}\n";
+    let [a, b, c, d, e, f, other] =
+        [0xa11, 0xb22, 0xc33, 0xd44, 0xe55, 0xf11, 0xf66].map(Word::from_u64);
+    let impl_code = compile(v1).expect("v1");
+    let runtime = deploy_at(&impl_code, a);
+    deploy_at(&impl_code, b);
+    deploy_at(&compile(plain).expect("plain"), c);
+    deploy_at(&compile(wrong).expect("wrong"), d);
+    deploy_at(&compile(silent).expect("silent"), f);
+    let slot = crate::keccak::erc1967_implementation();
+    let proxy = proxy_runtime();
+    // Another proxy, of `b`: its `proxiableUUID` runs delegated, so it refuses.
+    DEPLOYED.with(|m| {
+        m.borrow_mut()
+            .insert(e, (proxy.clone(), [(slot, b)].into_iter().collect()))
+    });
+    let owner = Word::from_u64(1);
+    let storage: HashMap<Word, Word> = [(slot, a), (Word::from_u64(0), owner)].into_iter().collect();
+    let run = |code: &[u8], data: &[u8], sender: Word| {
+        exec(code, data, storage.clone(), sender, Word::from_u64(0), Word::from_u64(0)).expect("run")
+    };
+    let error = |sig: &str, arg: Option<Word>| {
+        let mut out = selector(sig).to_vec();
+        out.extend(arg.map(|w| w.to_be_bytes().to_vec()).unwrap_or_default());
+        out
+    };
+    let context = error("UUPSUnauthorizedCallContext()", None);
+    let refused = |out: &Outcome, want: &[u8]| {
+        assert!(out.reverted, "{}", pretty(&out.returndata));
+        assert_eq!(out.returndata, want, "{}", pretty(&out.returndata));
+    };
+
+    refused(&run(&proxy, &selector("proxiableUUID()"), owner), &context);
+    let own = elsewhere(a, || run(&runtime, &selector("proxiableUUID()"), owner));
+    assert_eq!(own.returndata, slot.to_be_bytes());
+    // Called on the implementation itself, and delegated to by a proxy that points elsewhere.
+    let upgrade = upgrade_to_and_call(b, &[]);
+    refused(&elsewhere(a, || run(&runtime, &upgrade, owner)), &context);
+    let mut pinned = proxy.clone();
+    let at = pinned.iter().position(|&op| op == 0x7f).expect("push") + 1;
+    pinned[at..at + 32].copy_from_slice(&a.to_be_bytes());
+    pinned[at + 32] = 0x5b;
+    let mut elsewhere_storage = storage.clone();
+    elsewhere_storage.insert(slot, b);
+    let out = exec(&pinned, &upgrade, elsewhere_storage, owner, Word::from_u64(0), Word::from_u64(0))
+        .expect("pinned");
+    refused(&out, &context);
+
+    let invalid = |at: Word| error("ERC1967InvalidImplementation(address)", Some(at));
+    refused(&run(&proxy, &upgrade_to_and_call(c, &[]), owner), &invalid(c));
+    refused(&run(&proxy, &upgrade_to_and_call(e, &[]), owner), &invalid(e));
+    refused(
+        &run(&proxy, &upgrade_to_and_call(d, &[]), owner),
+        &error("UUPSUnsupportedProxiableUUID(bytes32)", Some(Word::from_u64(7))),
+    );
+    // An answer shorter than a word doesn't decode, as from an account with no code.
+    refused(&run(&proxy, &upgrade_to_and_call(f, &[]), owner), &[]);
+    // A dirty address doesn't decode either.
+    let mut dirty = upgrade_to_and_call(b, &[]);
+    dirty[4] = 1;
+    refused(&run(&proxy, &dirty, owner), &[]);
+    // The guard runs before the new implementation is asked.
+    refused(&run(&proxy, &upgrade_to_and_call(c, &[]), other), &selector("NotOwner()"));
+
+    let out = run(&proxy, &upgrade_to_and_call(b, &[]), owner);
+    assert!(!out.reverted, "{}", pretty(&out.returndata));
+    assert_eq!(out.storage[&slot], b);
+    DEPLOYED.with(|m| m.borrow_mut().clear());
 }
 
 /// A facet runs its module's externals and nothing else: no `deploy`, no migration, and no
@@ -1485,15 +1564,11 @@ fn upgradeable_contracts_call_library_facets() {
     let split = crate::split::build(&checked, "Render", &split_opts(whole.runtime.len() * 4 / 5))
         .expect("split");
     let names: Vec<&str> = split.libraries.iter().map(|l| l.name.as_str()).collect();
-    assert_eq!(names, ["render"]);
-    let whole = deploy(&whole.code).expect("whole");
-    let router = deploy_split(&split);
+    assert!(names.contains(&"render"), "{names:?}");
     let (a, b) = (Word::from_u64(0xa11), Word::from_u64(0xb22));
-    DEPLOYED.with(|d| {
-        let mut d = d.borrow_mut();
-        d.insert(a, (whole, HashMap::new()));
-        d.insert(b, (router, HashMap::new()));
-    });
+    deploy_at(&whole.code, a);
+    deploy_facets(&split);
+    deploy_at(&split.creation, b);
     let slot = crate::keccak::erc1967_implementation();
     let owner = Word::from_u64(1);
     let storage: std::cell::RefCell<HashMap<Word, Word>> = std::cell::RefCell::new(

@@ -99,6 +99,9 @@ thread_local! {
     /// not an effect, and what that code does is the caller's.
     static LIBRARIES: std::cell::RefCell<std::collections::HashSet<Word>> =
         std::cell::RefCell::new(std::collections::HashSet::new());
+    /// The address `ADDRESS` answers: the account a call into a created contract runs as,
+    /// and `0x1000` for everything else, creation code included.
+    static SELF: std::cell::Cell<Word> = std::cell::Cell::new(Word::from_u64(0x1000));
 }
 
 /// A call's gas, in its detail line, when it is not all of what `GAS` answers.
@@ -121,10 +124,12 @@ fn account_code(code: &[u8]) -> Vec<u8> {
     })
 }
 
-/// Runs `f` as another account, which runs its own code.
-fn elsewhere<T>(f: impl FnOnce() -> T) -> T {
+/// Runs `f` as the account at `at`, which runs its own code.
+fn elsewhere<T>(at: Word, f: impl FnOnce() -> T) -> T {
     ACCOUNT_CODE.with(|a| a.borrow_mut().push(None));
+    let was = SELF.replace(at);
     let out = f();
+    SELF.set(was);
     ACCOUNT_CODE.with(|a| a.borrow_mut().pop());
     out
 }
@@ -219,6 +224,16 @@ fn deploy(init: &[u8]) -> Result<Vec<u8>, String> {
     Ok(out.returndata)
 }
 
+/// Runs creation code at `at` as account 1, and keeps what it deploys there.
+fn deploy_at(init: &[u8], at: Word) -> Vec<u8> {
+    let was = SELF.replace(at);
+    let runtime = deploy(init);
+    SELF.set(was);
+    let runtime = runtime.unwrap_or_else(|e| panic!("{e}"));
+    DEPLOYED.with(|d| d.borrow_mut().insert(at, (runtime.clone(), HashMap::new())));
+    runtime
+}
+
 /// Runs creation code, with any arguments already appended, as `caller` sending `value`.
 fn construct(init: &[u8], caller: Word, value: Word) -> Result<Outcome, String> {
     let was = CONSTRUCTING.replace(true);
@@ -266,7 +281,7 @@ fn exec_state(
     let mut trace = Vec::new();
     let mut detail: Vec<String> = Vec::new();
     let mut stopped = false;
-    let self_addr = Word::from_u64(0x1000);
+    let self_addr = SELF.get();
     let mut self_balance = balance;
     let mut storage = storage;
     for _ in 0..200_000 {
@@ -657,7 +672,7 @@ fn exec_state(
                     continue;
                 }
                 let was = CONSTRUCTING.replace(true);
-                let born = elsewhere(|| {
+                let born = elsewhere(self_addr, || {
                     exec_state(
                         &init,
                         &[],
@@ -697,12 +712,13 @@ fn exec_state(
                 ));
                 if self_balance.lt(val) {
                     stack.push(Word::from_u64(0));
-                } else if let Some((child, child_storage)) =
-                    DEPLOYED.with(|d| d.borrow().get(&to).cloned())
+                } else if let Some((child, child_storage)) = DEPLOYED
+                    .with(|d| d.borrow().get(&to).cloned())
+                    .filter(|_| to != self_addr)
                 {
                     // A contract this run created runs its own code on its own storage.
                     let input = read_slice(&mut mem, in_off, in_size);
-                    let nested = elsewhere(|| {
+                    let nested = elsewhere(to, || {
                         exec_state(
                             &child,
                             &input,
@@ -793,10 +809,11 @@ fn exec_state(
                 if !library {
                     detail.push(format!("static {to:?} {}{}", hex(&input), gas_limit(gas)));
                 }
-                if let Some((child, child_storage)) =
-                    DEPLOYED.with(|d| d.borrow().get(&to).cloned())
+                if let Some((child, child_storage)) = DEPLOYED
+                    .with(|d| d.borrow().get(&to).cloned())
+                    .filter(|_| to != self_addr)
                 {
-                    let nested = elsewhere(|| {
+                    let nested = elsewhere(to, || {
                         exec_state(
                             &child,
                             &input,

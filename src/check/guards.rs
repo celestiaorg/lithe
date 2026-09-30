@@ -226,11 +226,22 @@ pub(super) fn place_guards(prog: &mut Program, needs: &[Need]) -> Result<(), Err
             ));
         }
         if let Some(via) = &of.via {
-            pass_params(prog, &mut guard, via, sig.params.len())?;
+            pass_params(
+                &prog.funcs,
+                &guard.params,
+                &mut guard.stmts,
+                via,
+                sig.params.len(),
+            )?;
         }
         written.push((module.clone(), of.name.clone(), line, col));
         guard.name = guard_fn(&module, &of.name);
         prog.funcs.push(guard);
+    }
+    if let Some(guard) = &mut prog.guard {
+        if let Some(via) = &guard.via {
+            pass_params(&prog.funcs, &[], &mut guard.stmts, via, 0)?;
+        }
     }
     for need in needs {
         if written
@@ -263,10 +274,15 @@ pub(super) fn place_guards(prog: &mut Program, needs: &[Need]) -> Result<(), Err
 }
 
 /// `guard M.editor is f;` calls `f`, a check of the contract's or a module's, with none of
-/// the guard's parameters or all of them.
-fn pass_params(prog: &Program, guard: &mut Func, via: &NameAt, count: usize) -> Result<(), Error> {
-    let params: Vec<Expr> = guard
-        .params
+/// the guard's parameters or all of them. `upgrade guard is f;` has none.
+fn pass_params(
+    funcs: &[Func],
+    guard_params: &[Param],
+    stmts: &mut [Stmt],
+    via: &NameAt,
+    count: usize,
+) -> Result<(), Error> {
+    let params: Vec<Expr> = guard_params
         .iter()
         .map(|p| Expr::Ident {
             line: via.line,
@@ -282,7 +298,7 @@ fn pass_params(prog: &Program, guard: &mut Func, via: &NameAt, count: usize) -> 
             name, base, args, ..
         },
         ..
-    }) = guard.stmts.first_mut()
+    }) = stmts.first_mut()
     else {
         return Ok(());
     };
@@ -290,7 +306,7 @@ fn pass_params(prog: &Program, guard: &mut Func, via: &NameAt, count: usize) -> 
         Some(Expr::Ident { name: module, .. }) => format!("{module}.{name}"),
         _ => name.clone(),
     };
-    let found: Vec<&Func> = prog.funcs.iter().filter(|f| f.name == target).collect();
+    let found: Vec<&Func> = funcs.iter().filter(|f| f.name == target).collect();
     if found.is_empty() {
         return Ok(());
     }
@@ -306,6 +322,17 @@ fn pass_params(prog: &Program, guard: &mut Func, via: &NameAt, count: usize) -> 
     }
     if found.iter().any(|f| f.params.is_empty()) {
         return Ok(());
+    }
+    if count == 0 {
+        return Err(error(
+            via.line,
+            via.col,
+            format!(
+                "`{}` takes {} parameters; the guard has none to pass it",
+                via.name,
+                found[0].params.len()
+            ),
+        ));
     }
     if !found.iter().any(|f| f.params.len() == count) {
         return Err(error(
