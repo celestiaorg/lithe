@@ -205,29 +205,38 @@ impl Contract {
         Some(plan_json(plan, &self.bytecode, None))
     }
 
-    /// `note: ...` when the contract runs modules from their facets.
+    /// `note: ...` when the contract runs modules from their facets, or functions from their
+    /// library facets.
     pub fn note(&self) -> Option<String> {
-        let facets = &self.split.facets;
-        if facets.is_empty() {
+        let runs = |facets: &[split::Facet], kind: &str| {
+            let names: Vec<String> = facets
+                .iter()
+                .map(|facet| format!("`{}`", facet.name))
+                .collect();
+            let one = facets.len() == 1;
+            format!(
+                "{} run{} from {} {kind}{}",
+                names.join(", "),
+                if one { "s" } else { "" },
+                if one { "its" } else { "their" },
+                if one { "" } else { "s" }
+            )
+        };
+        let mut parts = Vec::new();
+        if !self.split.facets.is_empty() {
+            parts.push(runs(&self.split.facets, "facet"));
+        }
+        if !self.split.libraries.is_empty() {
+            parts.push(runs(&self.split.libraries, "library facet"));
+        }
+        if parts.is_empty() {
             return None;
         }
-        let names: Vec<String> = facets
-            .iter()
-            .map(|facet| format!("`{}`", facet.name))
-            .collect();
         let size = match self.split.whole {
             Some(n) => format!(" is {} bytes;", split::thousands(n)),
-            None => String::new(),
+            None => ":".to_string(),
         };
-        let one = facets.len() == 1;
-        Some(format!(
-            "note: `{}`{size} {} run{} from {} facet{}",
-            self.name,
-            names.join(", "),
-            if one { "s" } else { "" },
-            if one { "its" } else { "their" },
-            if one { "" } else { "s" }
-        ))
+        Some(format!("note: `{}`{size} {}", self.name, parts.join("; ")))
     }
 }
 
@@ -623,6 +632,16 @@ pub fn facets(sources: &Sources, entry: &Path, opts: &Options) -> Result<String,
             ));
         }
     }
+    for library in &built.libraries {
+        out.push_str(&format!(
+            "\nlibrary {}  {}  {} / {limit}\n",
+            library.name,
+            checksum(&library.address),
+            split::thousands(library.runtime.len())
+        ));
+        let sigs: Vec<&str> = library.methods.iter().map(|(sig, _)| sig.as_str()).collect();
+        out.push_str(&format!("  {}\n", sigs.join(", ")));
+    }
     Ok(out)
 }
 
@@ -954,6 +973,24 @@ fn foundry_artifact(contract: &Contract) -> String {
         }
         out.push_str("\n  ]");
     }
+    if !contract.split.libraries.is_empty() {
+        out.push_str(",\n  \"libraries\": [");
+        for (i, library) in contract.split.libraries.iter().enumerate() {
+            out.push_str(if i == 0 { "\n" } else { ",\n" });
+            let sels: Vec<String> = library
+                .methods
+                .iter()
+                .map(|(_, sel)| format!("\"{}\"", hex(sel)))
+                .collect();
+            out.push_str(&format!(
+                "    {{\n      \"name\": {},\n      \"address\": \"{}\",\n      \"selectors\": [{}]\n    }}",
+                json_string(&library.name),
+                checksum(&library.address),
+                sels.join(", ")
+            ));
+        }
+        out.push_str("\n  ]");
+    }
     out.push_str(",\n  \"contractName\": ");
     out.push_str(&json_string(&contract.name));
     out.push_str("\n}\n");
@@ -1074,11 +1111,14 @@ pub fn upgrade_check(
     let diff = storage_diff(sources, before, after)?;
     let old = compile(sources, before, opts)?.single()?;
     let new = compile(sources, after, opts)?.single()?;
-    if old.split.facets.is_empty() && new.split.facets.is_empty() {
+    let parts = |split: &split::Split| -> Vec<split::Facet> {
+        split.facets.iter().chain(&split.libraries).cloned().collect()
+    };
+    if parts(&old.split).is_empty() && parts(&new.split).is_empty() {
         return Ok(diff);
     }
     let had: std::collections::HashSet<[u8; 20]> =
-        old.split.facets.iter().map(|part| part.address).collect();
+        parts(&old.split).iter().map(|part| part.address).collect();
     let mut rows = vec![(
         "router".to_string(),
         if old.deployed_bytecode == new.deployed_bytecode {
@@ -1088,7 +1128,7 @@ pub fn upgrade_check(
         },
         String::new(),
     )];
-    for part in &new.split.facets {
+    for part in &parts(&new.split) {
         rows.push((
             part.name.clone(),
             if had.contains(&part.address) {

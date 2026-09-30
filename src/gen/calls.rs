@@ -1515,10 +1515,13 @@ impl<'a> Gen<'a> {
                 {
                     direct.set(direct.get() + 1)
                 }
-                // A query, or a later phase's call, replaces the return data.
+                // A query, a later phase's call, or a remote call replaces the return data.
                 Node::Expr(Expr::Query { .. }) | Node::Stmt(Stmt::Defer { then: Some(_), .. }) => {
                     total.set(total.get() + 1000)
                 }
+                Node::Expr(Expr::Call {
+                    callee: Some(f), ..
+                }) if self.plan.remote.contains_key(f) => total.set(total.get() + 1000),
                 _ => {}
             }
             false
@@ -1649,7 +1652,7 @@ impl<'a> Gen<'a> {
     }
 
     /// Copies the return data's words of `ty` and stores each, checked, where `dest` says.
-    fn decode_returned_words(&mut self, ty: usize, dest: Vec<(u32, i32)>) -> Result<(), Error> {
+    pub(super) fn decode_returned_words(&mut self, ty: usize, dest: Vec<(u32, i32)>) -> Result<(), Error> {
         let words = self.checked.types[ty].words;
         self.return_sites += 1;
         let buf = self.region(Region::Returned(self.return_sites), words * 32);
@@ -1686,7 +1689,7 @@ impl<'a> Gen<'a> {
     }
 
     /// Pushes the string or bytes value the last call returned, ABI-decoded and checked.
-    fn returned_bytes_value(&mut self) -> Result<(), Error> {
+    pub(super) fn returned_bytes_value(&mut self) -> Result<(), Error> {
         self.return_sites += 1;
         let buf = self.region(Region::Returned(self.return_sites), 32);
         self.push_u64(32);

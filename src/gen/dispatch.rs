@@ -933,8 +933,7 @@ impl<'a> Gen<'a> {
         if words > 0 {
             self.imm_mem = self.region(Region::Immutables, words as u32 * 32);
         }
-        let shape = self.shape;
-        for &part in &shape.parts {
+        for part in self.plan.prerequisites(self.shape) {
             self.push_word(part);
             self.op(EXTCODESIZE);
             self.op(ISZERO);

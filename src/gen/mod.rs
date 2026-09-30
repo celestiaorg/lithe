@@ -18,7 +18,7 @@ use crate::check::{
 };
 use crate::error;
 use crate::keccak::selector;
-use crate::split::{Facet, Shape};
+use crate::split::{Facet, Shape, SplitMode};
 use crate::word::Word;
 use crate::Error;
 
@@ -141,6 +141,12 @@ const OVER_LIMIT: f64 = 1e15;
 const CALL_GAS: f64 = 24.0;
 /// Gas each argument of an outlined call adds, stored for the body to load.
 const ARG_GAS: f64 = 12.0;
+/// Gas the first call to a library facet adds for its cold account, past the warm call the
+/// cost model already prices.
+const COLD_CALL_GAS: f64 = 2_500.0;
+/// The fewest bytes a function's inlined copies take for it to be worth running remotely: a
+/// call site takes about this much itself.
+const MIN_REMOTE_BYTES: usize = 200;
 const MAX_OPS: usize = 8;
 const MAX_JOURNAL: i32 = 8;
 const TOPIC_WORDS: u32 = 8;
@@ -153,6 +159,11 @@ pub(crate) struct Built {
     pub code: Vec<u8>,
     pub runtime: Vec<u8>,
     pub needs: Vec<Facet>,
+    /// The library facets this code calls, each after those it calls itself. `needs` has them
+    /// too.
+    pub libraries: Vec<Facet>,
+    /// The runtime's estimated gas, by `asm::gas`.
+    pub gas: f64,
 }
 
 /// The creation code, and the runtime code it deploys, for the entrypoints `shape` keeps.
@@ -177,6 +188,11 @@ pub(crate) fn codegen(checked: &Checked, shape: &Shape) -> Result<Built, Error> 
             leaves,
             data: std::mem::take(&mut g.data),
             tail_blobs: std::mem::take(&mut g.tail_blobs),
+            remote: plan
+                .remote
+                .values()
+                .map(|r| (r.address, r.gas.round() as u64))
+                .collect(),
         };
         Ok((emitted, std::mem::take(&mut g.needs)))
     };
@@ -191,7 +207,7 @@ pub(crate) fn codegen(checked: &Checked, shape: &Shape) -> Result<Built, Error> 
             asm::hoist(code);
             asm::rotate_exits(code);
         });
-        let gas = asm::gas(&code, &e.entries);
+        let gas = asm::gas(&code, &e.entries) + remote_gas(&code, &e.entries, &e.remote);
         let (runtime, marks) = match immutable::place_runtime(&code, &e.data, &e.tail_blobs) {
             Ok(placed) => placed,
             Err(err) if err.line == 0 && err.message == "contract too large" => {
@@ -220,44 +236,66 @@ pub(crate) fn codegen(checked: &Checked, shape: &Shape) -> Result<Built, Error> 
     let done = std::sync::Mutex::new(HashMap::<Arc<Emitted>, Arc<Finished>>::new());
     // The outline sets of builds over the limit. Inlining more only grows code, so later
     // rounds skip the sets that inline at least as much, whose builds are also the slowest.
-    let too_big = std::sync::Mutex::new(Vec::<std::collections::HashSet<usize>>::new());
-    let build_all = |plans: &[Plan]| -> Result<Vec<Candidate>, Error> {
-        let emitted: Vec<(Arc<Emitted>, Vec<Facet>)> = parallel_map(plans, emit)
+    let too_big = std::sync::Mutex::new(Vec::<Big>::new());
+    // Each plan's build, or the error building it hit.
+    let build_each = |plans: &[Plan]| -> Vec<Result<Candidate, Error>> {
+        let emitted: Vec<Result<(Arc<Emitted>, Vec<Facet>), Error>> = parallel_map(plans, emit)
             .into_iter()
             .map(|e| e.map(|(e, needs)| (Arc::new(e), needs)))
-            .collect::<Result<_, _>>()?;
+            .collect();
         let todo: Vec<&Arc<Emitted>> = {
             let done = done.lock().unwrap_or_else(|e| e.into_inner());
             let mut seen = HashSet::new();
             emitted
                 .iter()
+                .flatten()
                 .map(|(e, _)| e)
                 .filter(|&e| !done.contains_key(e) && seen.insert(e))
                 .collect()
         };
         let finished = parallel_map(&todo, |e| finish(e, false));
+        let mut failed = HashMap::new();
         let mut done = done.lock().unwrap_or_else(|e| e.into_inner());
         for (e, f) in todo.into_iter().zip(finished) {
-            done.insert(e.clone(), Arc::new(f?));
+            match f {
+                Ok(f) => {
+                    done.insert(e.clone(), Arc::new(f));
+                }
+                Err(err) => {
+                    failed.insert(e.clone(), err);
+                }
+            }
         }
         let mut too_big = too_big.lock().unwrap_or_else(|e| e.into_inner());
         too_big.extend(
             plans
                 .iter()
                 .zip(&emitted)
-                .filter(|(_, (e, _))| done[e].bytes > limit)
-                .map(|(p, _)| p.outline.clone()),
+                .filter(|(_, e)| {
+                    e.as_ref()
+                        .is_ok_and(|(e, _)| done.get(e).is_some_and(|f| f.bytes > limit))
+                })
+                .map(|(p, _)| (p.outline.clone(), p.remote.keys().copied().collect())),
         );
-        Ok(plans
+        plans
             .iter()
             .zip(emitted)
-            .map(|(plan, (e, needs))| Candidate {
-                plan: plan.clone(),
-                built: done[&e].clone(),
-                emitted: e,
-                needs,
+            .map(|(plan, e)| {
+                let (e, needs) = e?;
+                let Some(built) = done.get(&e).cloned() else {
+                    return Err(failed[&e].clone());
+                };
+                Ok(Candidate {
+                    plan: plan.clone(),
+                    built,
+                    emitted: e,
+                    needs,
+                })
             })
-            .collect())
+            .collect()
+    };
+    let build_all = |plans: &[Plan]| -> Result<Vec<Candidate>, Error> {
+        build_each(plans).into_iter().collect()
     };
     // Keeping a hashed slot saves gas, but can cost bytes where the optimizer would have
     // shared the hashing instead, and a tight site can keep the outliner from sharing it.
@@ -281,7 +319,7 @@ pub(crate) fn codegen(checked: &Checked, shape: &Shape) -> Result<Built, Error> 
         let mut dims = vec![
             outlines
                 .iter()
-                .filter(|o| **o != p.outline && !too_big.iter().any(|b| o.is_subset(b)))
+                .filter(|o| **o != p.outline && !too_big.iter().any(|b| no_smaller(o, &p.remote, b)))
                 .cloned()
                 .map(Move::Outline)
                 .collect(),
@@ -336,7 +374,7 @@ pub(crate) fn codegen(checked: &Checked, shape: &Shape) -> Result<Built, Error> 
                 let too_big = too_big.lock().unwrap_or_else(|e| e.into_inner());
                 (0..plans.len())
                     .filter(|&i| later[i] == wave)
-                    .filter(|&i| !wave || !too_big.iter().any(|b| plans[i].outline.is_subset(b)))
+                    .filter(|&i| !wave || !too_big.iter().any(|b| plans[i].no_smaller(b)))
                     .collect()
             };
             if picked.is_empty() {
@@ -411,70 +449,106 @@ pub(crate) fn codegen(checked: &Checked, shape: &Shape) -> Result<Built, Error> 
             break;
         }
     }
-    // A build over the limit outlines more: each function alone is built, then the sets that
+    // A build over the limit outlines more, and when outlining all it can still does not fit,
+    // runs pure functions from library facets. Each move alone is built, then the sets that
     // add them in order of bytes saved per gas added, and the cheapest set that fits wins, or
     // failing that the smallest, which the next round starts from. One that never fits is
     // split.
+    let fit = |mut best: Candidate, moves: &dyn Fn(&Plan) -> Vec<Move>| -> Result<Candidate, Error> {
+        while best.built.bytes > limit {
+            let moves = moves(&best.plan);
+            let alone: Vec<Plan> = moves.iter().map(|m| m.applied(&best.plan)).collect();
+            let (b0, g0) = (best.built.bytes, best.built.gas);
+            let mut order: Vec<(f64, &Move)> = moves
+                .iter()
+                .zip(build_each(&alone))
+                .filter_map(|(m, c)| Some((m, c.ok()?)))
+                .filter(|(_, c)| c.built.bytes < b0)
+                .map(|(m, c)| ((b0 - c.built.bytes) as f64 / (c.built.gas - g0).max(1.0), m))
+                .collect();
+            order.sort_by(|a, b| b.0.total_cmp(&a.0));
+            let sets: Vec<Plan> = (1..=order.len())
+                .map(|k| {
+                    let mut p = best.plan.clone();
+                    order[..k].iter().for_each(|(_, m)| m.apply(&mut p));
+                    p
+                })
+                .collect();
+            let rank = |c: &Candidate| match c.built.bytes {
+                b if b <= limit => c.cost(),
+                b => OVER_LIMIT + b as f64,
+            };
+            let Some(next) = build_each(&sets)
+                .into_iter()
+                .flatten()
+                .min_by(|a, b| rank(a).total_cmp(&rank(b)))
+                .filter(|c| c.built.bytes < b0)
+            else {
+                break;
+            };
+            best = next;
+        }
+        Ok(best)
+    };
     let fell_back = best.built.bytes > limit;
-    while best.built.bytes > limit {
-        let mut rest: Vec<usize> = (&plan.outlinable - &best.plan.outline).into_iter().collect();
+    best = fit(best, &|p| {
+        let mut rest: Vec<usize> = (&plan.outlinable - &p.outline).into_iter().collect();
         rest.sort_unstable();
-        let alone: Vec<Plan> = rest
-            .iter()
-            .map(|&f| Move::Toggle(f).applied(&best.plan))
-            .collect();
-        let (b0, g0) = (best.built.bytes, best.built.gas);
-        let mut order: Vec<(f64, usize)> = rest
-            .iter()
-            .zip(build_all(&alone)?)
-            .filter(|(_, c)| c.built.bytes < b0)
-            .map(|(&f, c)| ((b0 - c.built.bytes) as f64 / (c.built.gas - g0).max(1.0), f))
-            .collect();
-        order.sort_by(|a, b| b.0.total_cmp(&a.0));
-        let sets: Vec<Plan> = (1..=order.len())
-            .map(|k| {
-                let mut p = best.plan.clone();
-                p.outline.extend(order[..k].iter().map(|&(_, f)| f));
-                p
-            })
-            .collect();
-        let rank = |c: &Candidate| match c.built.bytes {
-            b if b <= limit => c.cost(),
-            b => OVER_LIMIT + b as f64,
-        };
-        let Some(next) = build_all(&sets)?
-            .into_iter()
-            .min_by(|a, b| rank(a).total_cmp(&rank(b)))
-            .filter(|c| c.built.bytes < b0)
-        else {
-            break;
-        };
-        best = next;
+        rest.into_iter().map(Move::Toggle).collect()
+    })?;
+    let remote_ok = shape.opts.split != SplitMode::Off && !shape.opts.check_specs;
+    let force = remote_all(shape);
+    let libs: Vec<(usize, Remote, Facet)> = if (best.built.bytes > limit || force) && remote_ok {
+        libraries(checked, &plan, shape)
+    } else {
+        Vec::new()
+    };
+    if force && !libs.is_empty() {
+        let mut p = best.plan.clone();
+        for &(f, r, _) in &libs {
+            Move::Remote(f, r).apply(&mut p);
+        }
+        best = build_all(&[p])?.pop().expect("a build");
+    } else if !libs.is_empty() {
+        best = fit(best, &|p| {
+            libs.iter()
+                .filter(|(f, ..)| !p.remote.contains_key(f))
+                .map(|&(f, r, _)| Move::Remote(f, r))
+                .collect()
+        })?;
     }
-    // Once one fits, each function it outlines is built inlined again, skipping the sets known
-    // to be over the limit, and those that cost less are inlined one at a time, the most gas
-    // saved per byte added first, each kept while the build still costs less.
+    // Once one fits, each function it outlines is built inlined again, and each it runs
+    // remotely is built here again, skipping the sets known to be over the limit. Those that
+    // cost less are brought back one at a time, the most gas saved per byte added first, each
+    // kept while the build still costs less.
     if fell_back && best.built.bytes <= limit {
+        let mut back: Vec<Move> = best.plan.remote.iter().map(|(&f, &r)| Move::Remote(f, r)).collect();
         let mut outlined: Vec<usize> = best.plan.outline.iter().copied().collect();
         outlined.sort_unstable();
-        let (funcs, alone): (Vec<usize>, Vec<Plan>) = {
+        back.extend(outlined.into_iter().map(Move::Toggle));
+        let (moves, alone): (Vec<Move>, Vec<Plan>) = {
             let too_big = too_big.lock().unwrap_or_else(|e| e.into_inner());
-            outlined
-                .iter()
-                .map(|&f| (f, Move::Toggle(f).applied(&best.plan)))
-                .filter(|(_, p)| !too_big.iter().any(|b| p.outline.is_subset(b)))
+            back.into_iter()
+                .map(|m| {
+                    let p = m.applied(&best.plan);
+                    (m, p)
+                })
+                .filter(|(_, p)| !too_big.iter().any(|b| p.no_smaller(b)))
                 .unzip()
         };
         let (b0, g0) = (best.built.bytes as f64, best.built.gas);
-        let mut order: Vec<(f64, usize)> = funcs
+        let mut order: Vec<(f64, &Move)> = moves
             .iter()
-            .zip(build_all(&alone)?)
+            .zip(build_each(&alone))
+            .filter_map(|(m, c)| Some((m, c.ok()?)))
             .filter(|(_, c)| c.cost() < best.cost())
-            .map(|(&f, c)| ((g0 - c.built.gas) / (c.built.bytes as f64 - b0).max(1.0), f))
+            .map(|(m, c)| ((g0 - c.built.gas) / (c.built.bytes as f64 - b0).max(1.0), m))
             .collect();
         order.sort_by(|a, b| b.0.total_cmp(&a.0));
-        for (_, f) in order {
-            let c = build_all(&[Move::Toggle(f).applied(&best.plan)])?.pop().expect("a build");
+        for (_, m) in order {
+            let Some(Ok(c)) = build_each(&[m.applied(&best.plan)]).pop() else {
+                continue;
+            };
             if c.cost() < best.cost() {
                 best = c;
             }
@@ -493,12 +567,22 @@ pub(crate) fn codegen(checked: &Checked, shape: &Shape) -> Result<Built, Error> 
         true,
         shape,
     )?;
+    let mut libraries = Vec::new();
+    for (f, _, facet) in &libs {
+        if best.plan.remote.contains_key(f) {
+            libraries.extend(facet.needs.iter().cloned());
+            libraries.push(facet.clone());
+        }
+    }
     let mut needs = best.needs;
     needs.extend(more);
+    needs.extend(libraries.iter().cloned());
     Ok(Built {
         code,
         runtime: built.runtime,
         needs,
+        libraries,
+        gas: built.gas,
     })
 }
 
@@ -510,6 +594,81 @@ struct Emitted {
     leaves: Vec<(u32, usize)>,
     data: Vec<(Word, Vec<u8>, String)>,
     tail_blobs: Vec<(Word, Vec<u32>)>,
+    /// Each library facet the code calls, and the gas one call's run there costs.
+    remote: Vec<(Word, u64)>,
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Tests run every pure function a library facet can run from one, in a contract's own
+    /// code, however small the function.
+    pub(crate) static REMOTE_ALL: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+fn remote_all(shape: &Shape) -> bool {
+    #[cfg(test)]
+    return REMOTE_ALL.get() && !shape.part;
+    #[cfg(not(test))]
+    {
+        let _ = shape;
+        false
+    }
+}
+
+/// What the calls to library facets cost past their code here: each run pays for the
+/// function's run in its facet, and the first also for the facet's cold account. A call runs
+/// as often as the push of its facet's address.
+fn remote_gas(code: &[Inst], entries: &[u32], remote: &[(Word, u64)]) -> f64 {
+    if remote.is_empty() {
+        return 0.0;
+    }
+    let words: Vec<Word> = remote.iter().map(|&(w, _)| w).collect();
+    asm::push_runs(code, entries, &words)
+        .into_iter()
+        .zip(remote)
+        .map(|(runs, &(_, gas))| runs * gas as f64 + runs.min(1.0) * COLD_CALL_GAS)
+        .sum()
+}
+
+/// A pure function's library facet, for each function this code calls that can run from one.
+fn libraries(checked: &Checked, plan: &Plan, shape: &Shape) -> Vec<(usize, Remote, Facet)> {
+    parallel_map(&plan.remotable, |(f, calls)| {
+        let (facet, gas) = crate::split::library(checked, *f, calls, &shape.opts)?;
+        let remote = Remote {
+            address: crate::split::address_word(facet.address),
+            sel: facet.entries.first()?.sel,
+            gas,
+        };
+        Some((*f, remote, facet))
+    })
+    .into_iter()
+    .flatten()
+    .collect()
+}
+
+/// The outline set and remote functions of a build over the size limit.
+type Big = (
+    std::collections::HashSet<usize>,
+    std::collections::BTreeSet<usize>,
+);
+
+/// Whether a build that outlines `outline` and runs `remote` remotely is at least as large as
+/// the one over the limit, `big`: it inlines at least as much, and runs no more remotely.
+fn no_smaller(
+    outline: &std::collections::HashSet<usize>,
+    remote: &std::collections::BTreeMap<usize, Remote>,
+    big: &Big,
+) -> bool {
+    outline.is_subset(&big.0) && remote.keys().all(|f| big.1.contains(f))
+}
+
+/// A function run from its library facet: the facet's address, its entrypoint's selector,
+/// and the gas a call's run there costs.
+#[derive(Clone, Copy)]
+struct Remote {
+    address: Word,
+    sel: [u8; 4],
+    gas: f64,
 }
 
 /// An optimized runtime, and its estimated gas plus bytes weighed by `asm::byte_gas`, plus
@@ -531,6 +690,19 @@ struct Candidate {
     needs: Vec<Facet>,
 }
 
+impl Plan {
+    fn no_smaller(&self, big: &Big) -> bool {
+        no_smaller(&self.outline, &self.remote, big)
+    }
+
+    /// The code the creation code checks for before it deploys: the facets and library facets.
+    fn prerequisites(&self, shape: &Shape) -> Vec<Word> {
+        let mut out = shape.parts.clone();
+        out.extend(self.remote.values().map(|r| r.address));
+        out
+    }
+}
+
 impl Candidate {
     fn cost(&self) -> f64 {
         self.built.cost
@@ -549,6 +721,9 @@ enum Move {
     Sink(bool),
     /// Inline the function if the plan outlines it, else outline it.
     Toggle(usize),
+    /// Run the function here if the plan runs it remotely, else from its library facet,
+    /// through one shared call if it is called more than once.
+    Remote(usize, Remote),
 }
 
 impl Move {
@@ -564,6 +739,14 @@ impl Move {
             Move::Toggle(f) => {
                 if !p.outline.remove(f) {
                     p.outline.insert(*f);
+                }
+            }
+            Move::Remote(f, r) => {
+                if p.remote.remove(f).is_none() {
+                    p.remote.insert(*f, *r);
+                    if p.outlinable.contains(f) {
+                        p.outline.insert(*f);
+                    }
                 }
             }
         }
@@ -621,7 +804,7 @@ fn creation(
         .deploy_func()
         .filter(|_| !checked.prog.upgradeable && !shape.part)
     else {
-        return Ok((wrap_init(&runtime, &shape.parts)?, Vec::new()));
+        return Ok((wrap_init(&runtime, &plan.prerequisites(shape))?, Vec::new()));
     };
     g.emit_init(func, runtime, marks)?;
     if optimize {
@@ -837,6 +1020,11 @@ struct Plan {
     looped: std::collections::HashSet<usize>,
     /// Every function called more than once that can be outlined, for builds too big to fit.
     outlinable: std::collections::HashSet<usize>,
+    /// Functions run from their library facets instead of here.
+    remote: std::collections::BTreeMap<usize, Remote>,
+    /// Pure functions called here that a library facet could run, each with every function
+    /// it calls, for builds that outlining can't fit.
+    remotable: Vec<(usize, Vec<usize>)>,
     /// Whether stored strings are written, and read, through one shared helper each.
     shared_bytes: (bool, bool),
     /// Whether `string` and `bytes` arguments are decoded by one shared helper.

@@ -1498,7 +1498,7 @@ impl<'a> Gen<'a> {
             Expr::Call {
                 callee: Some(idx), ..
             } if self.checked.types[e.ty()].kind == TyKind::Record
-                && !self.plan.outline.contains(idx)
+                && self.inlines(*idx)
                 && !self.compiling.contains(idx)
                 && !seen.contains(idx) =>
             {
@@ -1545,6 +1545,9 @@ impl<'a> Gen<'a> {
 
     /// Statements, then the tail: one word on the stack, a tuple in `fn_ret`, or nothing.
     fn func_body(&mut self, idx: usize) -> Result<(), Error> {
+        if let Some(&remote) = self.plan.remote.get(&idx) {
+            return self.remote_body(idx, remote);
+        }
         let stmts = self.checked.prog.funcs[idx].stmts.clone();
         let tail = self.checked.prog.funcs[idx].tail.clone();
         let ret = self.checked.prog.funcs[idx].ret_ty;
@@ -1564,6 +1567,88 @@ impl<'a> Gen<'a> {
             }
         }
         Ok(())
+    }
+
+    /// A function its library facet runs: the parameters ABI-encoded as the facet's calldata,
+    /// a `STATICCALL`, and the result decoded to where the body's tail would leave it. A call
+    /// that fails reverts with the facet's revert data, so its errors and panics reach the
+    /// caller as they are.
+    fn remote_body(&mut self, idx: usize, remote: Remote) -> Result<(), Error> {
+        let f = &self.checked.prog.funcs[idx];
+        let args: Vec<Expr> = f
+            .params
+            .iter()
+            .map(|p| Expr::Ident {
+                line: p.line,
+                col: p.col,
+                name: p.name.clone(),
+                sym: p.sym,
+                builtin: None,
+                ty: p.ty_id,
+            })
+            .collect();
+        let ret = f.ret_ty;
+        self.encode_values(&args, true, 4)?;
+        self.mload(self.scratch_a);
+        self.push_u64(u64::from(u32::from_be_bytes(remote.sel)));
+        self.put_selector();
+        let blob = self.temp();
+        self.mstore_off(blob);
+        self.op(PUSH0);
+        self.op(PUSH0);
+        self.mload(blob);
+        self.op(MLOAD);
+        self.mload(blob);
+        self.push_u64(32);
+        self.op(ADD);
+        self.push_word(remote.address);
+        self.op(GAS);
+        self.op(STATICCALL);
+        let ok = self.fresh();
+        self.push_label(ok);
+        self.op(JUMPI);
+        self.op(RETURNDATASIZE);
+        self.op(PUSH0);
+        self.op(PUSH0);
+        self.op(RETURNDATACOPY);
+        self.op(RETURNDATASIZE);
+        self.op(PUSH0);
+        self.op(REVERT);
+        self.jumpdest(ok);
+        let tret = &self.checked.types[ret];
+        let words = tret.words;
+        if matches!(tret.kind, TyKind::Tuple | TyKind::Record) || self.fixed_list(ret) {
+            let at = self.fn_ret[idx];
+            if self.tree(ret) {
+                return self.decode_ret(ret, tree::Addr::Mem(at));
+            }
+            let dest = (0..words).map(|i| (i, at + i as i32 * 32)).collect();
+            return self.decode_returned_words(ret, dest);
+        }
+        if words != 1 {
+            return Ok(());
+        }
+        if self.tree(ret) {
+            let at = self.temp();
+            self.decode_ret(ret, tree::Addr::Mem(at))?;
+            self.mload(at);
+            return Ok(());
+        }
+        if self.list_value(ret) {
+            return self.tree_value(SrcKind::Ret, ret);
+        }
+        if self.is_dynamic(ret) {
+            return self.returned_bytes_value();
+        }
+        let at = self.temp();
+        self.decode_returned_words(ret, vec![(0, at)])?;
+        self.mload(at);
+        Ok(())
+    }
+
+    /// Whether a call's body is compiled at the call, where the caller can see into it.
+    pub(super) fn inlines(&self, idx: usize) -> bool {
+        !self.plan.outline.contains(&idx) && !self.plan.remote.contains_key(&idx)
     }
 
     fn func_leaves(&self, idx: usize) -> usize {

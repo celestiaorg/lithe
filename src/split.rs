@@ -9,7 +9,10 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Mutex, OnceLock};
 
-use crate::ast::{Exposing, Func, ItemKind, ModuleDecl, NameAt, Program, TypeDecl, TypeRef};
+use crate::ast::{
+    Exposing, Expr, Func, ItemKind, Lit, ModuleDecl, NameAt, Program, Raises, Stmt,
+    TypeDecl, TypeRef,
+};
 use crate::check::Checked;
 use crate::gen::{self, Built, Entrypoint, Group};
 use crate::keccak::keccak256;
@@ -98,6 +101,8 @@ pub(crate) struct Facet {
     pub needs: Vec<Facet>,
     /// The ids of the immutables it reads after its calldata.
     pub immutables: Vec<String>,
+    /// A library facet: it runs one pure function, which code calls with `STATICCALL`.
+    pub library: bool,
 }
 
 /// A contract as it deploys: the router's code, and the facets it forwards to. A contract
@@ -110,8 +115,10 @@ pub(crate) struct Split {
     /// The entrypoints the router forwards to a facet, grouped under the facet's module.
     pub routed: Vec<Entrypoint>,
     pub facets: Vec<Facet>,
-    /// Facets of contracts the router creates.
+    /// Facets of contracts the router creates, and the library facets it and its facets call.
     pub needs: Vec<Facet>,
+    /// The library facets the router and its facets call.
+    pub libraries: Vec<Facet>,
     /// The unsplit runtime's size, when it did not fit and could be assembled at all.
     pub whole: Option<usize>,
 }
@@ -187,6 +194,7 @@ fn build_uncached(checked: &Checked, name: &str, opts: &Options) -> Result<Split
                     routed: Vec::new(),
                     facets: Vec::new(),
                     needs: built.needs,
+                    libraries: built.libraries,
                     whole: None,
                 });
             }
@@ -198,7 +206,7 @@ fn build_uncached(checked: &Checked, name: &str, opts: &Options) -> Result<Split
             let mut err = oversized(checked, name, opts, &entries, whole);
             if opts.split != SplitMode::Off {
                 err.message.push_str(
-                    "\n\nonly a module exposed with `use M exposing` can move out of the contract; its own entrypoints stay in the router",
+                    "\n\nonly a module exposed with `use M exposing`, or a pure function a library facet runs, can move out of the contract; its own entrypoints stay in the router",
                 );
             }
             return Err(err);
@@ -254,13 +262,21 @@ fn build_uncached(checked: &Checked, name: &str, opts: &Options) -> Result<Split
     let (routed, entries): (Vec<Entrypoint>, Vec<Entrypoint>) = entries
         .into_iter()
         .partition(|entry| is_module(entry, &chosen, &facets));
+    let facets: Vec<Facet> = chosen.iter().map(|&i| facets[i].clone()).collect();
+    let mut libraries = built.libraries;
+    for lib in facets.iter().flat_map(|f| &f.needs).filter(|f| f.library) {
+        if libraries.iter().all(|have| have.address != lib.address) {
+            libraries.push(lib.clone());
+        }
+    }
     Ok(Split {
         creation: built.code,
         runtime: built.runtime,
         entries,
         routed,
-        facets: chosen.iter().map(|&i| facets[i].clone()).collect(),
+        facets,
         needs: built.needs,
+        libraries,
         whole,
     })
 }
@@ -418,6 +434,7 @@ fn facet(checked: &Checked, module: &str, opts: &Options) -> Result<Facet, Error
             .iter()
             .map(|block| block.id.clone())
             .collect(),
+        library: false,
     };
     if let Ok(mut memo) = memo.lock() {
         memo.insert(key, facet.clone());
@@ -494,6 +511,198 @@ pub(crate) fn facet_program(source: &Program, module: &str) -> Program {
     prog.contract_name = Some(module.to_string());
     prog.siblings.clear();
     prog
+}
+
+/// The library facet that runs the pure function `func`, whose calls reach the functions in
+/// `calls`, and the gas a call's run of it costs there, when it can be built and fits. It is
+/// built from the function and what it calls alone, so every contract that calls the same
+/// function gets the same code at the same address.
+pub(crate) fn library(
+    checked: &Checked,
+    func: usize,
+    calls: &[usize],
+    opts: &Options,
+) -> Option<(Facet, f64)> {
+    let (mut prog, name) = library_program(checked, func, calls)?;
+    let scopes = std::mem::take(&mut prog.scopes);
+    let key = keccak256(
+        format!("{prog:?}\0{opts:?}\0{}", crate::asm::byte_gas()).as_bytes(),
+    );
+    prog.scopes = scopes;
+    type Libraries = HashMap<[u8; 32], Option<(Facet, f64)>>;
+    static BUILT: OnceLock<Mutex<Libraries>> = OnceLock::new();
+    let memo = BUILT.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Some(built) = memo.lock().ok().and_then(|memo| memo.get(&key).cloned()) {
+        return built;
+    }
+    let built = crate::check::check(prog).ok().and_then(|lib| {
+        let shape = Shape {
+            part: true,
+            opts: opts.clone(),
+            ..Shape::default()
+        };
+        let built = measure(&lib, &shape, opts).ok()??;
+        let facet = Facet {
+            name,
+            address: create2(&opts.deployer, &built.code),
+            init: built.code,
+            runtime: built.runtime,
+            entries: gen::entrypoints(&lib).ok()?,
+            abi: crate::route::abi(&lib).ok()?,
+            methods: crate::route::method_ids(&lib).ok()?,
+            needs: built.needs,
+            immutables: Vec::new(),
+            library: true,
+        };
+        Some((facet, built.gas))
+    });
+    if let Ok(mut memo) = memo.lock() {
+        memo.insert(key, built.clone());
+    }
+    built
+}
+
+/// The program a library facet is built from, and how the facet is listed: the function, as
+/// its one entrypoint, an `external pure function`, then every function it calls, the
+/// constants and declarations they can name, and the modules they belong to. A function that
+/// returns `unit` returns `true` from the entrypoint, since an external must return a value.
+fn library_program(checked: &Checked, func: usize, calls: &[usize]) -> Option<(Program, String)> {
+    let at = |f: &Func| (f.origin.clone(), f.line, f.col);
+    let target = &checked.prog.funcs[func];
+    let keep: HashSet<(String, u32, u32)> =
+        calls.iter().map(|&i| at(&checked.prog.funcs[i])).collect();
+    let kept = |f: &Func| {
+        keep.contains(&at(f))
+            || f.kind == ItemKind::Pure && f.params.is_empty() && f.type_params.is_empty()
+    };
+    let mut prog = checked.source.clone();
+    let decl = prog
+        .funcs
+        .iter()
+        .chain(prog.modules.iter().flat_map(|m| &m.funcs))
+        .find(|f| at(f) == at(target) && f.kind == ItemKind::Pure)?
+        .clone();
+    if !decl.type_params.is_empty() || target.errors.contains(&crate::check::FORWARDED) {
+        return None;
+    }
+    let module = prog
+        .modules
+        .iter()
+        .find(|m| m.funcs.iter().any(|f| at(f) == at(&decl)))
+        .map(|m| m.name.clone());
+    let mut needed = Vec::new();
+    for &i in calls {
+        if let Some(m) = &checked.prog.funcs[i].module {
+            closure(&prog.modules, m, &mut needed);
+        }
+    }
+    prog.compose.retain(|m| needed.contains(&m.name));
+    prog.funcs.retain(|f| kept(f));
+    for m in &mut prog.modules {
+        m.funcs.retain(|f| kept(f));
+        m.domains.clear();
+        m.specs.clear();
+    }
+    prog.domains.clear();
+    prog.exposes.clear();
+    prog.supports.clear();
+    prog.specs.clear();
+    prog.siblings.clear();
+    prog.peers.clear();
+    prog.upgradeable = false;
+    prog.guard = None;
+    prog.types.retain(|decl| decl.name != "storage");
+    prog.types.push(TypeDecl {
+        line: 0,
+        col: 0,
+        private: false,
+        origin: String::new(),
+        name: "storage".to_string(),
+        ty: TypeRef::Record {
+            line: 0,
+            col: 0,
+            fields: Vec::new(),
+            tuple: false,
+        },
+    });
+    // The function itself becomes the entrypoint. Nothing it calls can call it back.
+    let (line, col) = (decl.line, decl.col);
+    let mut entry = decl.clone();
+    entry.kind = ItemKind::View;
+    entry.external_pure = true;
+    entry.private = false;
+    if entry.raises.is_none() && !target.errors.is_empty() {
+        entry.raises = Some(Raises {
+            parts: target
+                .errors
+                .iter()
+                .map(|&id| NameAt {
+                    line,
+                    col,
+                    name: checked.errors[id].name.clone(),
+                })
+                .collect(),
+        });
+    }
+    if entry.ret.is_none() {
+        if let Some(tail) = entry.tail.take() {
+            if !matches!(tail, Expr::Call { .. }) {
+                return None;
+            }
+            entry.stmts.push(Stmt::Call {
+                line,
+                col,
+                expr: tail,
+            });
+        }
+        entry.ret = Some(TypeRef::Name {
+            line,
+            col,
+            name: "bool".to_string(),
+        });
+        entry.tail = Some(Expr::Lit {
+            line,
+            col,
+            lit: Lit::Bool(true),
+            ty: 0,
+        });
+    }
+    let short = decl
+        .name
+        .rsplit(['.', ':'])
+        .next()
+        .unwrap_or(&decl.name)
+        .split(['@', '#'])
+        .next()
+        .unwrap_or(&decl.name)
+        .to_string();
+    let same = |f: &Func| at(f) == at(&decl) && f.kind == ItemKind::Pure;
+    let name = match &module {
+        Some(m) => {
+            let owner = prog.modules.iter_mut().find(|d| &d.name == m)?;
+            let own = owner.funcs.iter_mut().find(|f| same(f))?;
+            *own = entry.clone();
+            prog.exposes.push(Exposing {
+                line,
+                col,
+                module: m.clone(),
+                interfaces: Vec::new(),
+                decls: vec![Func {
+                    stmts: Vec::new(),
+                    tail: None,
+                    ..entry
+                }],
+            });
+            format!("{m}.{short}")
+        }
+        None => {
+            let own = prog.funcs.iter_mut().find(|f| same(f))?;
+            *own = entry;
+            short.clone()
+        }
+    };
+    prog.contract_name = Some(short);
+    Some((prog, name))
 }
 
 /// `module` after everything it requires, each once, required modules in name order.
@@ -699,6 +908,7 @@ fn encode(split: &Split) -> Vec<u8> {
     put_entries(&mut out, &split.routed);
     put_facets(&mut out, &split.facets);
     put_facets(&mut out, &split.needs);
+    put_facets(&mut out, &split.libraries);
     put_len(&mut out, split.whole.map_or(0, |n| n + 1));
     out
 }
@@ -747,6 +957,7 @@ fn put_facets(out: &mut Vec<u8>, facets: &[Facet]) {
         for id in &facet.immutables {
             put_bytes(out, id.as_bytes());
         }
+        put_len(out, facet.library as usize);
     }
 }
 
@@ -829,6 +1040,7 @@ fn decode(bytes: &[u8]) -> Option<Split> {
         routed: r.entries()?,
         facets: r.facets()?,
         needs: r.facets()?,
+        libraries: r.facets()?,
         whole: r.len()?.checked_sub(1),
     };
     r.0.is_empty().then_some(split)
@@ -969,6 +1181,7 @@ impl Reader<'_> {
                     immutables: (0..self.len()?)
                         .map(|_| self.string())
                         .collect::<Option<_>>()?,
+                    library: self.flag()?,
                 })
             })
             .collect()

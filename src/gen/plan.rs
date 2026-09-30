@@ -295,6 +295,21 @@ impl<'a> Gen<'a> {
                 }
             }
         }
+        // The pure functions whose copies here are large enough to run remotely, with what
+        // each calls, which its library facet holds.
+        let least = if remote_all(self.shape) { 0 } else { MIN_REMOTE_BYTES };
+        let mut remotable: Vec<(usize, Vec<usize>)> = self
+            .inlined
+            .iter()
+            .filter(|(&idx, (calls, bytes, _))| calls * bytes >= least && self.remotable(idx))
+            .map(|(&idx, _)| {
+                let mut calls = Vec::new();
+                self.func_any(idx, &|_| false, &mut calls);
+                calls.sort_unstable();
+                (idx, calls)
+            })
+            .collect();
+        remotable.sort_unstable();
         // A helper costs its body once plus a call per site; one site stays inline.
         let shared_bytes = (self.bytes_sites.0 >= 2, self.bytes_sites.1 >= 2);
         Plan {
@@ -306,6 +321,8 @@ impl<'a> Gen<'a> {
             outline,
             looped,
             outlinable,
+            remote: Default::default(),
+            remotable,
             shared_bytes,
             shared_decode: self.decode_sites >= 2,
             shared_value: self.value_sites.map(|n| n >= 2),
@@ -332,6 +349,31 @@ impl<'a> Gen<'a> {
 
     /// A function compiles the same way wherever it is called unless it defers, queries,
     /// or cases on a dispatched variant.
+    /// Whether a library facet can run a function: it is pure, and takes and returns only
+    /// values the ABI encodes as they are, so no option, variant with payloads, map, or
+    /// storage.
+    fn remotable(&self, idx: usize) -> bool {
+        let f = &self.checked.prog.funcs[idx];
+        f.kind == ItemKind::Pure
+            && f.exported.is_none()
+            && self.abi_value(f.ret_ty)
+            && f.params.iter().all(|p| {
+                !p.storage
+                    && p.sym.is_some_and(|s| !self.checked.slot_syms.contains_key(&s))
+                    && self.abi_value(p.ty_id)
+            })
+    }
+
+    fn abi_value(&self, ty: usize) -> bool {
+        let t = &self.checked.types[ty];
+        !matches!(
+            t.kind,
+            TyKind::Option | TyKind::Map | TyKind::Variant | TyKind::Operation
+        ) && !is_sum(&self.checked.types, ty)
+            && t.elem.is_none_or(|e| self.abi_value(e))
+            && t.fields.iter().all(|f| self.abi_value(f.ty))
+    }
+
     fn outline_safe(&self, idx: usize, seen: &mut Vec<usize>) -> bool {
         let bad = |node: Node<'_>| match node {
             Node::Stmt(st) => matches!(st, Stmt::Defer { .. }),

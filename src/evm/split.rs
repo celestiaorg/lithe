@@ -11,12 +11,11 @@ pub(super) fn deploy_split(split: &crate::split::Split) -> Vec<u8> {
 fn deploy_facets(split: &crate::split::Split) {
     for facet in split.prerequisites() {
         let runtime = deploy(&facet.init).unwrap_or_else(|e| panic!("{}: {e}", facet.name));
-        DEPLOYED.with(|d| {
-            d.borrow_mut().insert(
-                crate::split::address_word(facet.address),
-                (runtime, HashMap::new()),
-            )
-        });
+        let address = crate::split::address_word(facet.address);
+        DEPLOYED.with(|d| d.borrow_mut().insert(address, (runtime, HashMap::new())));
+        if facet.library {
+            LIBRARIES.with(|l| l.borrow_mut().insert(address));
+        }
     }
 }
 
@@ -565,7 +564,7 @@ fn split_errors_say_what_cannot_move() {
         .expect("nothing can move")
         .to_string();
     assert!(
-        err.contains("only a module exposed with `use M exposing` can move"),
+        err.contains("only a module exposed with `use M exposing`, or a pure function a library facet runs, can move"),
         "{err}"
     );
     // Small enough for the facet, but not for the router with everything else.
@@ -778,7 +777,7 @@ fn split_tooling_output() {
     assert!(plan.contains("\"to\": \"0x4e59b44847b379578588920cA78FbF26c0B4956C\""));
     assert!(plan.contains("\"name\": \"Beta\""), "{plan}");
     let note = compiled.note().expect("note");
-    assert_eq!(note, "note: `Pair` `Alpha`, `Beta` run from their facets");
+    assert_eq!(note, "note: `Pair`: `Alpha`, `Beta` run from their facets");
     let facets = crate::facets(&Sources::disk(), &pair, &opts).expect("facets");
     assert!(facets.starts_with("router  "), "{facets}");
     assert!(facets.contains("  Pair: mix\n"), "{facets}");
@@ -941,3 +940,315 @@ fn stubs_keep_tuple_records() {
         }
     }
 }
+
+/// Every program with pure functions, each run from its library facet, behaves exactly like
+/// its whole build: the same return data, reverts, effects, and storage. `LITHE_REMOTE_STEPS`
+/// sets calls per program.
+#[test]
+fn remote_preserves_behavior() {
+    let steps = steps_from_env("LITHE_REMOTE_STEPS", 100);
+    let mut compared = 0;
+    for (path, rel) in differential_targets() {
+        let checked =
+            crate::check::check(crate::modules::load(&Sources::disk(), &path).expect("load"))
+                .expect("check");
+        crate::gen::REMOTE_ALL.set(true);
+        let split = crate::split::build(&checked, "Test", &crate::Options::default());
+        crate::gen::REMOTE_ALL.set(false);
+        let split = split.unwrap_or_else(|e| panic!("{rel}: {e}"));
+        if split.libraries.is_empty() {
+            continue;
+        }
+        let whole = whole_build(&checked);
+        OPAQUE_CODE.set(true);
+        install_mocks();
+        let reference = deploy(&whole.code).unwrap_or_else(|e| panic!("{rel}: {e}"));
+        let ours = deploy_split(&split);
+        let methods = crate::route::method_ids(&checked).expect("methods");
+        eprintln!("{rel}: {} library facets", split.libraries.len());
+        compare_builds(&rel, &methods, &reference, &ours, steps, true);
+        compared += 1;
+    }
+    assert!(compared >= 10, "only {compared} programs ran functions remotely");
+}
+
+const RENDER: &str = r#"import "std/string";
+import "std/uint";
+
+error Too_long of uint;
+
+type pair is record {
+  total : uint;
+  label : string;
+}
+
+storage is record {
+  last : string;
+}
+
+pure function render(const n : uint; const name : string; const tags : list(uint)) : string is {
+  assert(name.length <= 40, Too_long(name.length));
+  var out : string := String.concat("{\"name\":\"", name, "\",\"n\":", Uint.to_string(n), ",\"tags\":[");
+  for i : uint in 0 .. tags.length do {
+    if i > 0 then {
+      out := String.concat(out, ",");
+    }
+    out := String.concat(out, Uint.to_string(tags[i]), ":", Uint.to_string(100 / tags[i]));
+  }
+  out := String.concat(out, "],\"hex\":\"", Uint.to_hex_string(n), "\"}");
+} with out
+
+pure function summary(const tags : list(uint)) : pair is {
+  var total : uint := 0;
+  for i : uint in 0 .. tags.length do {
+    total := total + tags[i] * tags[i];
+  }
+} with { total = total; label = String.concat("sum ", Uint.to_string(total)); }
+
+external view function show(const n : uint; const name : string; const tags : list(uint)) : string raises Too_long is
+  render(n, name, tags)
+
+external pure function sum(const tags : list(uint)) : pair is summary(tags)
+
+external function keep(const n : uint; const name : string) raises Too_long is {
+  storage.last := render(n, name, []);
+}
+
+external view function last() : string is storage.last
+"#;
+
+/// `show(uint256,string,uint256[])`'s calldata.
+fn show_data(n: u64, name: &[u8], tags: &[u64]) -> Vec<u8> {
+    let w = |x: u64| Word::from_u64(x).to_be_bytes().to_vec();
+    let mut padded = name.to_vec();
+    padded.resize(name.len().div_ceil(32) * 32, 0);
+    let mut data = selector("show(uint256,string,uint256[])").to_vec();
+    data.extend([w(n), w(96), w(128 + padded.len() as u64), w(name.len() as u64)].concat());
+    data.extend(padded);
+    data.extend(w(tags.len() as u64));
+    for &t in tags {
+        data.extend(w(t));
+    }
+    data
+}
+
+/// A contract over the limit only because of a large pure function runs that function from
+/// its library facet, and answers as its whole build does, errors and panics included.
+#[test]
+fn a_large_pure_function_runs_from_its_library_facet() {
+    let checked = checked_src(RENDER);
+    let whole = whole_build(&checked);
+    let opts = split_opts(whole.runtime.len() * 4 / 5);
+    let split = crate::split::build(&checked, "Render", &opts).expect("split");
+    assert!(split.facets.is_empty());
+    let names: Vec<&str> = split.libraries.iter().map(|l| l.name.as_str()).collect();
+    assert_eq!(names, ["render"]);
+    assert!(split.runtime.len() <= opts.size_limit);
+    assert_eq!(split.libraries[0].methods[0].0, "render(uint256,string,uint256[])");
+    install_mocks();
+    let reference = deploy(&whole.code).expect("whole");
+    let ours = deploy_split(&split);
+    let cases = [
+        (show_data(5, b"ab", &[3, 7]), None),
+        (show_data(1, &[b'x'; 41], &[]), Some(selector("TooLong(uint256)"))),
+        (show_data(1, b"a", &[4, 0]), Some([0x4e, 0x48, 0x7b, 0x71])),
+    ];
+    for (data, reverts) in cases {
+        let want = call_raw(&reference, &data);
+        let got = call_raw(&ours, &data);
+        assert_eq!(want.reverted, reverts.is_some());
+        assert_eq!(got.reverted, want.reverted);
+        assert_eq!(hex(&got.returndata), hex(&want.returndata));
+        if let Some(sel) = reverts {
+            assert_eq!(got.returndata[..4], sel);
+        }
+    }
+    let methods = crate::route::method_ids(&checked).expect("methods");
+    compare_builds("render", &methods, &reference, &ours, 300, true);
+}
+
+const RENDER_MODULE: &str = r#"import "std/string";
+import "std/uint";
+
+module Render is {
+  error Too_long of uint;
+
+  pure function render(const n : uint; const name : string; const tags : list(uint)) : string is {
+    assert(name.length <= 40, Too_long(name.length));
+    var out : string := String.concat("{\"name\":\"", name, "\",\"n\":", Uint.to_string(n), ",\"tags\":[");
+    for i : uint in 0 .. tags.length do {
+      if i > 0 then {
+        out := String.concat(out, ",");
+      }
+      out := String.concat(out, Uint.to_string(tags[i]), ":", Uint.to_string(100 / tags[i]));
+    }
+    out := String.concat(out, "],\"hex\":\"", Uint.to_hex_string(n), "\"}");
+  } with out
+}
+"#;
+
+/// Two different contracts that call the same pure function share its library facet: the
+/// same code at the same address.
+#[test]
+fn contracts_share_library_facets() {
+    let a = r#"import "./render";
+use Render;
+
+error Nope;
+
+storage is record {
+  count : uint;
+}
+
+external function bump() raises Nope is {
+  assert(storage.count < 10, Nope);
+  storage.count := storage.count + 1;
+}
+
+external view function show(const n : uint; const name : string; const tags : list(uint)) : string raises Too_long is
+  Render.render(n, name, tags)
+"#;
+    let b = r#"import "std/string";
+import "./render";
+use Render;
+
+storage is record {
+  owner : address;
+  last : string;
+}
+
+pure function shout(const s : string) : string is String.concat(s, "!")
+
+external function keep(const n : uint) raises Too_long is {
+  storage.last := shout(Render.render(n, "b", []));
+}
+
+external view function last() : string is storage.last
+"#;
+    let sources = Sources::memory([("render.lithe", RENDER_MODULE), ("a.lithe", a), ("b.lithe", b)]);
+    let mut libraries = Vec::new();
+    for entry in ["a.lithe", "b.lithe"] {
+        let path = Path::new(entry);
+        let checked = crate::check::check(crate::modules::load(&sources, path).expect("load"))
+            .expect("check");
+        let opts = split_opts(whole_build(&checked).runtime.len() - 1);
+        let split = crate::split::build(&checked, entry, &opts).expect("split");
+        assert!(split.runtime.len() <= opts.size_limit, "{entry}");
+        let facets = crate::facets(&sources, path, &opts).expect("facets");
+        assert!(facets.contains("\nlibrary Render.render  0x"), "{facets}");
+        libraries.push(split.libraries);
+    }
+    let named = |libs: &[crate::split::Facet]| -> Vec<(String, [u8; 20], Vec<u8>)> {
+        libs.iter()
+            .map(|l| (l.name.clone(), l.address, l.init.clone()))
+            .collect()
+    };
+    assert_eq!(named(&libraries[0]).len(), 1);
+    assert_eq!(named(&libraries[0]), named(&libraries[1]));
+    assert_eq!(libraries[0][0].name, "Render.render");
+}
+
+/// `deploy` calls a function its library facet runs, and the creation code reverts unless
+/// the library facet is deployed.
+#[test]
+fn deploy_calls_remote_functions() {
+    let src = RENDER.replace(
+        "external view function last()",
+        "deploy(const n : uint) raises Too_long is {\n  storage.last := render(n, \"deployed\", [n]);\n}\n\nexternal view function last()",
+    );
+    let checked = checked_src(&src);
+    let whole = whole_build(&checked);
+    let opts = split_opts(whole.runtime.len() * 4 / 5);
+    let split = crate::split::build(&checked, "Render", &opts).expect("split");
+    assert_eq!(split.libraries.len(), 1);
+    let args = Word::from_u64(12).to_be_bytes();
+    let missing = construct(&[split.creation.clone(), args.to_vec()].concat(), Word::from_u64(1), Word::from_u64(0))
+        .expect("construct");
+    assert!(missing.reverted, "creation ran without its library facet");
+    deploy_facets(&split);
+    let ours = construct(&[split.creation.clone(), args.to_vec()].concat(), Word::from_u64(1), Word::from_u64(0))
+        .expect("construct");
+    let want = construct(&[whole.code.clone(), args.to_vec()].concat(), Word::from_u64(1), Word::from_u64(0))
+        .expect("construct");
+    assert!(!ours.reverted, "{}", pretty(&ours.returndata));
+    let read = |runtime: &[u8], storage: &HashMap<Word, Word>| {
+        run_ok(runtime, storage, "last()", &[]).returndata
+    };
+    let got = read(&ours.returndata, &ours.storage);
+    assert_eq!(hex(&got), hex(&read(&want.returndata, &want.storage)));
+    assert!(String::from_utf8_lossy(&got).contains("\"n\":12,\"tags\":[12:8]"));
+}
+
+const LOOPED: &str = r#"import "std/string";
+import "std/uint";
+
+storage is record {
+  out : string;
+}
+
+pure function label(const n : uint; const name : string) : string is
+  String.concat("<li id=\"", Uint.to_hex_string(n), "\" title=\"", name, "\">", Uint.to_string(n * 3), " of ", Uint.to_string(n + 7), " / ", Uint.to_hex_string(n * n), "<b>", Uint.to_string(n * n * 11), "</b><i>", Uint.to_hex_string(n + 99), "</i><em>", Uint.to_string(n / 3 + 1), "</em></li>")
+
+pure function title(const n : uint; const name : string) : string is
+  String.concat("<h1 id=\"", Uint.to_hex_string(n + 1), "\" class=\"", name, "\">", Uint.to_string(n * 5), " in ", Uint.to_string(n + 9), " : ", Uint.to_hex_string(n * 7), "<s>", Uint.to_string(n * n * 13), "</s><u>", Uint.to_hex_string(n + 77), "</u><q>", Uint.to_string(n / 5 + 2), "</q></h1>")
+
+external function once(const n : uint; const name : string) is {
+  storage.out := title(n, name);
+}
+
+external function each(const xs : list(uint); const name : string) is {
+  var out : string := "";
+  for i : uint in 0 .. xs.length do {
+    out := String.concat(out, label(xs[i], name));
+  }
+  storage.out := out;
+}
+
+external view function out() : string is storage.out
+"#;
+
+const NESTED: &str = r#"storage is record {
+  total : uint;
+}
+
+pure function mix(const a : uint; const b : uint) : uint is
+  ((a * 31 + b) ^ (a / 7 + b * 3)) % 1_000_003 + (a & 0xff) * (b | 0x10) + (a + b) / 11
+
+external function grid(const n : uint; const m : uint) is {
+  var acc : uint := 0;
+  for i : uint in 0 .. n do {
+    for j : uint in 0 .. m do {
+      acc := acc + mix(i, j) + mix(j, i + acc % 5);
+    }
+  }
+  storage.total := acc;
+}
+
+external view function total() : uint is storage.total
+"#;
+
+/// A remote call costs each time it runs. Of two functions that each fit the contract when
+/// they run remotely, the one a loop calls stays local, although it saves more bytes; and a
+/// function called in loops is outlined, not run remotely, when outlining fits.
+#[test]
+fn remote_calls_in_loops_cost_their_runs() {
+    let checked = checked_src(LOOPED);
+    let whole = whole_build(&checked).runtime.len();
+    let remote = |limit: usize| -> Vec<String> {
+        let split = crate::split::build(&checked, "Looped", &split_opts(limit)).expect("split");
+        assert!(split.runtime.len() <= limit);
+        split.libraries.iter().map(|l| l.name.clone()).collect()
+    };
+    // Either fits 200 bytes under: `title`, which runs once, goes.
+    assert_eq!(remote(whole - 200), ["title"]);
+    // Only `label` saves 280 bytes.
+    assert_eq!(remote(whole - 280), ["label"]);
+
+    let checked = checked_src(NESTED);
+    let whole = whole_build(&checked).runtime.len();
+    let opts = split_opts(whole - 40);
+    let split = crate::split::build(&checked, "Nested", &opts).expect("split");
+    assert!(split.libraries.is_empty());
+    assert!(split.runtime.len() <= opts.size_limit);
+}
+
