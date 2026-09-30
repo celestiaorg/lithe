@@ -840,6 +840,9 @@ pub(crate) enum Builtin {
     AbiSupportsInterface,
     /// `Evm.creation_code(C)`: the creation code `create C(...)` runs, before its arguments.
     CreationCode,
+    /// `Evm.facet_address(M)`: the address of the facet of a module `M` the contract uses
+    /// `delegated`.
+    FacetAddress,
     /// `Uint.wrapping_add(a, b)`, `Int.wrapping_mul(a, b)`, and so on: the operation on two
     /// values of one integer type, wrapped to its width instead of checked. `true` is `Int`.
     Wrapping(BinOp, bool),

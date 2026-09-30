@@ -378,6 +378,8 @@ struct Checker {
     asks_interfaces: bool,
     requires: Vec<String>,
     known_modules: HashSet<String>,
+    /// The modules the contract uses `delegated`.
+    delegated: Vec<String>,
     used_modules: HashSet<String>,
     modules: Vec<ModuleDecl>,
     /// The functions a list length may name: pure, with no parameters, by name and by
@@ -534,6 +536,7 @@ fn check_program(mut prog: Program, require_entries: bool) -> Result<Checked, Er
         asks_interfaces: false,
         requires: Vec::new(),
         known_modules: HashSet::new(),
+        delegated: prog.facets.iter().map(|m| m.name.clone()).collect(),
         used_modules: HashSet::new(),
         modules: prog.modules.clone(),
         const_fns: const_fns(&prog),

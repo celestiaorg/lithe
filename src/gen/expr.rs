@@ -853,6 +853,27 @@ impl<'a> Gen<'a> {
                 }
                 self.call_sub(Sub::MulDiv);
             }
+            Builtin::FacetAddress => {
+                let Expr::Ident { name, .. } = &args[0] else {
+                    return Err(error(line, col, "`Evm.facet_address` takes the name of a module"));
+                };
+                if self.shape.opts.check_specs {
+                    return Err(error(
+                        line,
+                        col,
+                        "`Evm.facet_address` needs the contract's facets, and a spec-checking build runs every module in the contract",
+                    ));
+                }
+                // Builds that only measure the contract, before its facets exist, use the
+                // stand-in address calls across do.
+                let address = self
+                    .shape
+                    .facet_at
+                    .get(name)
+                    .copied()
+                    .unwrap_or_else(|| crate::split::address_word([0xfa; 20]));
+                self.push_word(address);
+            }
             Builtin::CreationCode => {
                 let name = self.creation_code_of(&args[0], line, col)?;
                 let (marker, len) = self.peer_code(name, line, col)?;

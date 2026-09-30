@@ -3994,6 +3994,7 @@ const MEMBERS: &[Builtin] = &[
     Builtin::ListPush,
     Builtin::AbiSupportsInterface,
     Builtin::CreationCode,
+    Builtin::FacetAddress,
     Builtin::Wrapping(BinOp::Add, false),
     Builtin::Wrapping(BinOp::Sub, false),
     Builtin::Wrapping(BinOp::Mul, false),
@@ -4080,6 +4081,7 @@ fn module_member(kind: Builtin) -> bool {
         | Builtin::ListPush
         | Builtin::AbiSupportsInterface
         | Builtin::CreationCode
+        | Builtin::FacetAddress
         | Builtin::Wrapping(..)
         | Builtin::Transfer
         | Builtin::RawCall
