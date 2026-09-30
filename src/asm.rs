@@ -2088,6 +2088,7 @@ pub(crate) fn promote(
     // An exit may use words promotion never holds, which stay in memory.
     let untracked = |a: u32| !tracked(a);
     let (mut runs, mut live) = (Runs::default(), Live::default());
+    let mut plans = RegionPlans::default();
     for _ in 0..MAX_ROUNDS {
         let exits = safe_exits_reading(code, &untracked);
         runs = self::runs(code, calls, &exits, std::mem::take(&mut runs));
@@ -2109,7 +2110,7 @@ pub(crate) fn promote(
             }
         }
         if edits.is_empty() {
-            if promote_region(code, tracked, calls, &exits, &live) {
+            if promote_region(code, tracked, calls, &exits, &live, &mut plans) {
                 any = true;
                 continue;
             }
@@ -2120,6 +2121,7 @@ pub(crate) fn promote(
             continue;
         }
         any = true;
+        plans.clear();
         apply_edits(code, edits);
     }
     any
@@ -2285,7 +2287,16 @@ fn promote_region(
     calls: &Calls,
     exits: &FxHashSet<u32>,
     live: &Live,
+    plans: &mut RegionPlans,
 ) -> bool {
+    if plans.exits != *exits {
+        plans.clear();
+        plans.exits.clone_from(exits);
+    }
+    if plans.ids.is_empty() {
+        plans.ids.extend(0..code.len() as u32);
+        plans.next = code.len() as u32;
+    }
     let labels = LabelIndex::new(code);
     // Where each tracked word is loaded and stored, to bound what a region can save.
     let mut uses: FxHashMap<u32, (Vec<usize>, Vec<usize>)> = FxHashMap::default();
@@ -2297,23 +2308,57 @@ fn promote_region(
             }
         }
     }
-    let mut best: Option<Region> = None;
+    let mut best: Option<(Entry, u32, i64)> = None;
     let mut consider = |entry: Entry, a: u32| {
-        let (start, entry_saved) = match entry {
-            Entry::Store(i) | Entry::StoreUnder(i) => (i + 2, 3),
-            Entry::Load(s) => (s, -3),
-        };
-        let after = |at: &[usize]| (at.len() - at.partition_point(|&k| k < start)) as i64;
-        let bound = uses.get(&a).map_or(entry_saved, |(loads, stores)| {
-            entry_saved + 2 * after(loads) + after(stores)
-        });
-        if bound <= best.as_ref().map_or(0, |b| b.saved) {
-            return;
-        }
-        if let Some(region) = plan_region(code, entry, a, calls, exits, live, &labels) {
-            if best.as_ref().is_none_or(|b| region.saved > b.saved) {
-                best = Some(region);
+        let key = plans.key(entry, a);
+        let saved = match plans.plans.get_mut(&key) {
+            // No plan saves more than the bound below.
+            Some(plan) if !plan.recheck => plan.saved,
+            plan => {
+                let (start, entry_saved) = match entry {
+                    Entry::Store(i) | Entry::StoreUnder(i) => (i + 2, 3),
+                    Entry::Load(s) => (s, -3),
+                };
+                let after = |at: &[usize]| (at.len() - at.partition_point(|&k| k < start)) as i64;
+                let bound = uses.get(&a).map_or(entry_saved, |(loads, stores)| {
+                    entry_saved + 2 * after(loads) + after(stores)
+                });
+                if bound <= best.map_or(0, |b| b.2) {
+                    return;
+                }
+                let same = |plan: &&mut RegionPlan| {
+                    plan.reads
+                        .iter()
+                        .all(|&(at, read)| live.after(code, at, a) == read)
+                };
+                match plan.filter(same) {
+                    Some(plan) => {
+                        plan.recheck = false;
+                        plan.saved
+                    }
+                    None => {
+                        let mut trace = Trace {
+                            reach: start,
+                            reads: Vec::new(),
+                        };
+                        let saved =
+                            plan_region(code, entry, a, calls, exits, live, &labels, &mut trace)
+                                .map(|r| r.saved);
+                        let plan = RegionPlan {
+                            saved,
+                            from: entry.at().saturating_sub(1),
+                            to: trace.reach + 4,
+                            reads: trace.reads,
+                            recheck: false,
+                        };
+                        plans.plans.insert(key, plan);
+                        saved
+                    }
+                }
             }
+        };
+        if let Some(saved) = saved.filter(|&s| best.is_none_or(|b| s > b.2)) {
+            best = Some((entry, a, saved));
         }
     };
     for i in 0..code.len().saturating_sub(1) {
@@ -2362,11 +2407,114 @@ fn promote_region(
             }
         }
     }
-    let Some(region) = best else {
-        return alias_copies(code, tracked, calls, exits, &labels);
+    let Some((entry, a, _)) = best else {
+        let aliased = alias_copies(code, tracked, calls, exits, &labels);
+        if aliased {
+            plans.clear();
+        }
+        return aliased;
     };
+    let mut trace = Trace::default();
+    let region = plan_region(code, entry, a, calls, exits, live, &labels, &mut trace);
+    let region = region.expect("planned");
+    plans.applied(&region.edits, a);
     apply_edits(code, region.edits);
     true
+}
+
+/// What a `plan_region` walk read: the code up to `reach`, and whether the word is read
+/// after each of `reads`.
+#[derive(Default)]
+struct Trace {
+    reach: usize,
+    reads: Vec<(usize, bool)>,
+}
+
+/// A candidate's `plan_region` saving, the span of code its walk read, and the liveness it
+/// asked about, which `recheck` says may have changed.
+struct RegionPlan {
+    saved: Option<i64>,
+    from: usize,
+    to: usize,
+    reads: Vec<(usize, bool)>,
+    recheck: bool,
+}
+
+/// `plan_region` results kept from round to round, which spares replanning every
+/// candidate for each region applied. A plan depends on nothing a region changes but the
+/// code in its span and the liveness of the region's word, so a region drops the plans
+/// whose span its edits touch, shifts the rest, and has those for its word recheck.
+#[derive(Default)]
+struct RegionPlans {
+    /// Keyed by the entry's kind, the id of its instruction, and the word.
+    plans: FxHashMap<(std::mem::Discriminant<Entry>, u32, u32), RegionPlan>,
+    /// Each instruction's id, kept while it stays.
+    ids: Vec<u32>,
+    next: u32,
+    exits: FxHashSet<u32>,
+}
+
+impl RegionPlans {
+    /// Forgets every plan, for edits made elsewhere.
+    fn clear(&mut self) {
+        self.plans.clear();
+        self.ids.clear();
+    }
+
+    fn key(&self, entry: Entry, a: u32) -> (std::mem::Discriminant<Entry>, u32, u32) {
+        (std::mem::discriminant(&entry), self.ids[entry.at()], a)
+    }
+
+    /// Updates the plans for `edits`, the region applied for word `a`.
+    fn applied(&mut self, edits: &[(usize, usize, Vec<Inst>)], a: u32) {
+        // In `apply_edits` order: each edit's position, the furthest any edit up to it
+        // reaches, and how far code after it moves.
+        let mut order: Vec<&(usize, usize, Vec<Inst>)> = edits.iter().collect();
+        order.sort_by_key(|e| e.0);
+        let (mut end, mut shift) = (0, 0);
+        let reach: Vec<(usize, usize, isize)> = order
+            .iter()
+            .map(|(at, len, with)| {
+                end = end.max(at + len);
+                shift += with.len() as isize - *len as isize;
+                (*at, end, shift)
+            })
+            .collect();
+        self.plans.retain(|&(_, _, w), plan| {
+            let before = reach.partition_point(|e| e.0 <= plan.to + 1);
+            if before > 0 && reach[before - 1].1 >= plan.from {
+                return false;
+            }
+            let shift = before.checked_sub(1).map_or(0, |k| reach[k].2);
+            let moved = |p: usize| p.checked_add_signed(shift).expect("in the code");
+            plan.from = moved(plan.from);
+            plan.to = moved(plan.to);
+            for read in &mut plan.reads {
+                read.0 = moved(read.0);
+            }
+            plan.recheck |= w == a;
+            true
+        });
+        let mut ids = Vec::with_capacity(self.ids.len() + 16);
+        let (mut next, mut g) = (0, 0);
+        while g < order.len() {
+            let at = order[g].0;
+            ids.extend_from_slice(&self.ids[next..at]);
+            let (mut front, mut taken) = (0, 0);
+            while g < order.len() && order[g].0 == at {
+                let (_, len, with) = order[g];
+                let own = (*len).min(front);
+                front = front - own + with.len();
+                taken += len - own;
+                g += 1;
+            }
+            ids.extend(self.next..self.next + front as u32);
+            self.next += front as u32;
+            next = at + taken;
+        }
+        ids.extend_from_slice(&self.ids[next..]);
+        self.ids = ids;
+    }
 }
 
 /// A word stored from a `DUP1` copy, as a loop counter mirrored for its body, is still on
@@ -2602,6 +2750,15 @@ enum Entry {
     Load(usize),
 }
 
+impl Entry {
+    fn at(self) -> usize {
+        match self {
+            Entry::Store(i) | Entry::StoreUnder(i) | Entry::Load(i) => i,
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 fn plan_region(
     code: &[Inst],
     entry: Entry,
@@ -2610,6 +2767,7 @@ fn plan_region(
     exits: &FxHashSet<u32>,
     live: &Live,
     labels: &LabelIndex,
+    trace: &mut Trace,
 ) -> Option<Region> {
     let (start, entry_edit, entry_saved, above) = match entry {
         Entry::Store(i) => (i + 2, (i, 2, Vec::new()), 3i64, 0),
@@ -2632,6 +2790,7 @@ fn plan_region(
     let mut ends: Vec<RegionEnd> = Vec::new();
     let mut k = start;
     loop {
+        trace.reach = k;
         // An end: nothing above the value, and no jump waiting to land past here.
         let label_here = match code.get(k) {
             Some(Label(l)) => Some(*l),
@@ -2809,11 +2968,15 @@ fn plan_region(
         let mut saved = end.saved;
         let mut read_later = false;
         if end.reached || end.landing.is_some() {
-            read_later = match code.get(end.at) {
-                Some(Label(_)) => live.after(code, end.at, a),
-                Some(_) => live.after(code, end.at - 1, a),
-                None => false,
+            let at = match code.get(end.at) {
+                Some(Label(_)) => Some(end.at),
+                Some(_) => Some(end.at - 1),
+                None => None,
             };
+            if let Some(at) = at {
+                read_later = live.after(code, at, a);
+                trace.reads.push((at, read_later));
+            }
             saved -= if read_later { 3 } else { 1 };
             if end.landing.is_some() {
                 saved -= 1;

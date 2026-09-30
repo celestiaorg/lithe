@@ -158,10 +158,10 @@ pub(crate) struct Built {
 /// The creation code, and the runtime code it deploys, for the entrypoints `shape` keeps.
 pub(crate) fn codegen(checked: &Checked, shape: &Shape) -> Result<Built, Error> {
     // The first pass inlines every call and measures what each function costs.
-    let plan = {
+    let (plan, inlined) = {
         let mut g = Gen::new(checked, Plan::default(), shape)?;
         g.emit()?;
-        g.plan()
+        (g.plan(), g.code.len())
     };
     let emit = |plan: &Plan| -> Result<(Emitted, Vec<Facet>), Error> {
         let mut g = Gen::new(checked, plan.clone(), shape)?;
@@ -310,10 +310,48 @@ pub(crate) fn codegen(checked: &Checked, shape: &Shape) -> Result<Built, Error> 
             .flat_map(|(d, moves)| moves.iter().map(move |m| (d, m)))
             .collect();
         let plans: Vec<Plan> = tried.iter().map(|(_, m)| m.applied(&from.plan)).collect();
+        // When inlining everything takes more instructions than the limit has bytes, an
+        // outline set inside another tried with it, which inlines more, is built after that
+        // one, and not at all if that one is over the limit. Elsewhere waiting would cost
+        // time for builds that fit.
+        fn outline(m: &Move) -> Option<&std::collections::HashSet<usize>> {
+            match m {
+                Move::Outline(o) => Some(o),
+                _ => None,
+            }
+        }
+        let later: Vec<bool> = tried
+            .iter()
+            .map(|(_, m)| {
+                inlined > limit
+                    && outline(m).is_some_and(|o| {
+                        let mut sets = tried.iter().filter_map(|(_, t)| outline(t));
+                        sets.any(|b| o.is_subset(b) && o != b)
+                    })
+            })
+            .collect();
+        let mut built: Vec<Option<Candidate>> = plans.iter().map(|_| None).collect();
+        for wave in [false, true] {
+            let picked: Vec<usize> = {
+                let too_big = too_big.lock().unwrap_or_else(|e| e.into_inner());
+                (0..plans.len())
+                    .filter(|&i| later[i] == wave)
+                    .filter(|&i| !wave || !too_big.iter().any(|b| plans[i].outline.is_subset(b)))
+                    .collect()
+            };
+            if picked.is_empty() {
+                continue;
+            }
+            let wave: Vec<Plan> = picked.iter().map(|&i| plans[i].clone()).collect();
+            for (i, c) in picked.into_iter().zip(build_all(&wave)?) {
+                built[i] = Some(c);
+            }
+        }
         let mut chosen: Vec<Option<(f64, &Move)>> = vec![None; dims.len()];
         let mut best = None::<Candidate>;
         let mut deltas = vec![f64::INFINITY; dims.len()];
-        for (&(d, m), c) in tried.iter().zip(build_all(&plans)?) {
+        for (&(d, m), c) in tried.iter().zip(built) {
+            let Some(c) = c else { continue };
             deltas[d] = deltas[d].min(c.cost() - from.cost());
             if c.cost() >= from.cost() {
                 continue;
