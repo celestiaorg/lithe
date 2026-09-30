@@ -523,7 +523,8 @@ impl Printer<'_> {
     }
 
     fn continues(&self, kind: Kind, blank: bool) -> bool {
-        if blank || fresh(kind) {
+        // `if` starts expressions too, so the line before decides, as for any other token.
+        if blank || (fresh(kind) && kind != Kind::If) {
             return false;
         }
         !matches!(
@@ -1000,6 +1001,7 @@ mod tests {
             format!("const ok : bool := a = b and c <> d or {pad} < 1 and b + 1 > 2\n"),
             format!("const n : uint := case x of {{ Some(v) -> v + 1 | None -> {pad} }}\n"),
             format!("const s : string := \"{pad}{pad}\"\n(* {pad}{pad} *)\n"),
+            format!("function f(const a : bool) : uint is if a then 1 else {pad}\n"),
         ];
         let wants = [
             "function f() is {\n  assert(\n    account <> Address.zero,\n    ERC20InvalidSender(Address.zero),\n    X\n  );\n}\n",
@@ -1012,6 +1014,7 @@ mod tests {
             "const ok : bool := a = b and c <> d\n  or X < 1 and b + 1 > 2\n",
             "const n : uint := case x of {\n  Some(v) -> v + 1\n  | None -> X\n}\n",
             "const s : string := \"XX\"\n(* XX *)\n",
+            "function f(const a : bool) : uint is\n  if a then 1 else X\n",
         ];
         for (src, want) in cases.iter().zip(wants) {
             let out = format_source(src, 100).unwrap_or_else(|err| panic!("{err}\n{src}"));

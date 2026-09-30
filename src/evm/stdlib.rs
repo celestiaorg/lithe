@@ -1140,6 +1140,304 @@ contract T is {
     assert_eq!(abi_string_value(&out.returndata), b"bGl0aGU_Pg");
 }
 
+/// `String.escape_json` and `escape_html` with Solady's vectors and every byte,
+/// `String.replace` against a naive replace, and `Bytes.join` / `String.join` of lists
+/// built every way.
+#[test]
+fn string_escape_replace_and_join() {
+    let src = r#"import "std/string"; import "std/bytes"; import "std/base64"; import "std/list";
+type blob is bytes;
+storage is record { last : string; names : list(string); }
+
+external pure function json(const s : string) : string is String.escape_json(s)
+
+external function add(const s : string) is {
+  List.push(storage.names, s);
+}
+
+external view function names() : string is String.join(storage.names)
+external pure function html(const s : string) : string is String.escape_html(s)
+
+(* A slice escaped where it lies, quoted or not. *)
+external pure function part(const s : bytes; const from : uint; const to : uint; const quoted : bool) : string is
+  String.escape_json(string(s[from:to]), quoted)
+
+external pure function tail(const s : string; const from : uint) : string is
+  String.concat(String.escape_json(string(bytes(s)[from:]), true), "|", String.escape_html(bytes(s)[from:]))
+
+(* Every helper that uses the table space at address 0, in one expression. *)
+external pure function mixed(const s : bytes) : string is
+  String.concat(String.escape_json(string(s)), "|", Base64.encode(s), "|", String.escape_html(string(s)), "|", string(Base64.decode(Base64.encode(s))))
+
+external function keep(const s : string) is {
+  storage.last := String.escape_json(s);
+}
+
+external view function kept() : string is storage.last
+
+external pure function replace(const s : string; const n : string; const r : string) : string is String.replace(s, n, r)
+
+external pure function join(const xs : list(string)) : string is String.join(xs)
+
+(* `s` cut every `step` bytes, then joined back with `sep` after each piece. *)
+external pure function rejoin(const s : bytes; const step : uint; const sep : bytes) : bytes is {
+  var parts : list(blob) := [];
+  var pos : uint := 0;
+  for _ : uint in 0 .. s.length + 1 until pos >= s.length do {
+    const stop : uint := if pos + step > s.length then s.length else pos + step;
+    List.push(parts, blob(s[pos:stop]));
+    List.push(parts, blob(sep));
+    pos := stop;
+  }
+} with Bytes.join(parts)
+
+external pure function literal() : string is String.join(["a", "", "bc", String.escape_json("\"")])
+"#;
+    let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
+    let call = |sig: &str, args: &[Arg]| {
+        let out = exec(
+            &runtime,
+            &encode_args(sig, args),
+            HashMap::new(),
+            Word::from_u64(1),
+            Word::from_u64(0),
+            Word::from_u64(0),
+        )
+        .expect("exec");
+        assert!(!out.reverted, "{sig}: {}", pretty(&out.returndata));
+        abi_string_value(&out.returndata)
+    };
+    let run = |f: &str, s: &[u8]| call(&format!("{f}(string)"), &[Arg::B(s.to_vec())]);
+    for (s, want) in [
+        (&b""[..], &b""[..]),
+        (b"abc", b"abc"),
+        (b"abc\"_123", b"abc\\\"_123"),
+        (b"abc\\_123", b"abc\\\\_123"),
+        (b"abc\x08_123", b"abc\\b_123"),
+        (b"abc\x0c_123", b"abc\\f_123"),
+        (b"abc\n_123", b"abc\\n_123"),
+        (b"abc\r_123", b"abc\\r_123"),
+        (b"abc\t_123", b"abc\\t_123"),
+        (b"\x00\x01\x1f\x7f", b"\\u0000\\u0001\\u001f\x7f"),
+    ] {
+        assert_eq!(run("json", s), want, "{s:?}");
+    }
+    for (s, want) in [
+        (&b""[..], &b""[..]),
+        (b"abc", b"abc"),
+        (b"abc\"_123", b"abc&quot;_123"),
+        (b"abc&_123", b"abc&amp;_123"),
+        (b"abc'_123", b"abc&#39;_123"),
+        (b"abc<_123", b"abc&lt;_123"),
+        (b"abc>_123", b"abc&gt;_123"),
+    ] {
+        assert_eq!(run("html", s), want, "{s:?}");
+    }
+    // Every byte, ASCII and not, over lengths around a word.
+    let all: Vec<u8> = (0..=255u8).collect();
+    for len in [1, 31, 32, 33, 64, 100, 256] {
+        let s: Vec<u8> = all.iter().cycle().skip(len * 7).take(len).copied().collect();
+        let mut json = Vec::new();
+        let mut html = Vec::new();
+        for &b in &s {
+            match b {
+                b'"' | b'\\' => json.extend([b'\\', b]),
+                8 => json.extend(b"\\b"),
+                9 => json.extend(b"\\t"),
+                10 => json.extend(b"\\n"),
+                12 => json.extend(b"\\f"),
+                13 => json.extend(b"\\r"),
+                0..=0x1f => json.extend(format!("\\u{b:04x}").as_bytes()),
+                _ => json.push(b),
+            }
+            match b {
+                b'"' => html.extend(b"&quot;"),
+                b'&' => html.extend(b"&amp;"),
+                b'\'' => html.extend(b"&#39;"),
+                b'<' => html.extend(b"&lt;"),
+                b'>' => html.extend(b"&gt;"),
+                _ => html.push(b),
+            }
+        }
+        assert_eq!(run("json", &s), json, "{len}");
+        assert_eq!(run("html", &s), html, "{len}");
+    }
+    // Clean runs, whole words of them copied at once, around one byte that needs escaping.
+    for len in 0..100usize {
+        for at in [0, 1, 31, 32, 33, 63, 64, len.saturating_sub(1)] {
+            for c in [b'"', b'\\', b'\n', 0x1f, b'&', b'<', 0x7f, 0x80] {
+                let mut s: Vec<u8> = (0..len).map(|i| b'a' + (i % 26) as u8).collect();
+                if at < len {
+                    s[at] = c;
+                }
+                let (mut json, mut html) = (s.clone(), s.clone());
+                if at < len {
+                    let j: &[u8] = match c {
+                        b'"' => b"\\\"",
+                        b'\\' => b"\\\\",
+                        b'\n' => b"\\n",
+                        0x1f => b"\\u001f",
+                        _ => &[c],
+                    };
+                    let h: &[u8] = match c {
+                        b'"' => b"&quot;",
+                        b'&' => b"&amp;",
+                        b'<' => b"&lt;",
+                        _ => &[c],
+                    };
+                    json.splice(at..=at, j.iter().copied());
+                    html.splice(at..=at, h.iter().copied());
+                }
+                assert_eq!(run("json", &s), json, "{len} {at} {c}");
+                assert_eq!(run("html", &s), html, "{len} {at} {c}");
+            }
+        }
+    }
+    let quote = |s: &[u8]| [&b"\""[..], &run("json", s), b"\""].concat();
+    for len in [0usize, 5, 40, 70] {
+        let s: Vec<u8> = (0..len).map(|i| b"ab\"\n<c"[i % 6]).collect();
+        for (from, to) in [(0, len), (1, len), (0, len / 2), (len / 3, len / 3 + 32), (len, len)] {
+            if to > len || from > to {
+                continue;
+            }
+            for quoted in [false, true] {
+                let args = [
+                    Arg::B(s.clone()),
+                    Arg::W(Word::from_u64(from as u64)),
+                    Arg::W(Word::from_u64(to as u64)),
+                    Arg::W(Word::from_u64(u64::from(quoted))),
+                ];
+                let want = if quoted { quote(&s[from..to]) } else { run("json", &s[from..to]) };
+                assert_eq!(call("part(bytes,uint256,uint256,bool)", &args), want, "{len} {from} {to}");
+            }
+        }
+        let from = len / 2;
+        let want = [quote(&s[from..]), b"|".to_vec(), run("html", &s[from..])].concat();
+        assert_eq!(call("tail(string,uint256)", &[Arg::B(s.clone()), Arg::W(Word::from_u64(from as u64))]), want);
+    }
+    // Out of range, a slice still panics as it does anywhere.
+    for (from, to) in [(3u64, 2u64), (0, 6)] {
+        let out = exec(
+            &runtime,
+            &encode_args(
+                "part(bytes,uint256,uint256,bool)",
+                &[Arg::B(b"abcde".to_vec()), Arg::W(Word::from_u64(from)), Arg::W(Word::from_u64(to)), Arg::W(Word::from_u64(1))],
+            ),
+            HashMap::new(),
+            Word::from_u64(1),
+            Word::from_u64(0),
+            Word::from_u64(0),
+        )
+        .expect("exec");
+        assert!(out.reverted);
+        assert_eq!(out.returndata[..4], selector("Panic(uint256)"));
+        assert_eq!(load_bytes(&out.returndata, 4), Word::from_u64(0x32));
+    }
+    assert_eq!(
+        call("mixed(bytes)", &[Arg::B(b"<\"a\">\n".to_vec())]),
+        b"<\\\"a\\\">\\n|PCJhIj4K|&lt;&quot;a&quot;&gt;\n|<\"a\">\n".to_vec()
+    );
+    let mut d = Session {
+        runtime: runtime.clone(),
+        storage: HashMap::new(),
+        last: None,
+    };
+    assert!(d.send(1, "keep(string)", &[Arg::B(b"say \"hi\"".repeat(5))]));
+    d.send(1, "kept()", &[]);
+    assert_eq!(abi_string_value(&d.returned()), b"say \\\"hi\\\"".repeat(5));
+    for name in [&b"ann"[..], b"", &[b'z'; 40]] {
+        assert!(d.send(1, "add(string)", &[Arg::B(name.to_vec())]));
+    }
+    d.send(1, "names()", &[]);
+    assert_eq!(abi_string_value(&d.returned()), [&b"ann"[..], &[b'z'; 40]].concat());
+
+    fn next(seed: &mut u64) -> u64 {
+        *seed ^= *seed << 13;
+        *seed ^= *seed >> 7;
+        *seed ^= *seed << 17;
+        *seed
+    }
+    let mut seed = 0x9e37_79b9_7f4a_7c15u64;
+    for round in 0..300 {
+        let len = (next(&mut seed) % 80) as usize;
+        let subject: Vec<u8> = (0..len).map(|_| b"ab"[(next(&mut seed) % 2) as usize]).collect();
+        let n = match round % 4 {
+            0 => (next(&mut seed) % 4) as usize,
+            1 => (next(&mut seed) % 40) as usize,
+            _ => 30 + (next(&mut seed) % 5) as usize,
+        };
+        let needle: Vec<u8> = if n <= len && round % 3 > 0 {
+            let at = (next(&mut seed) % (len - n + 1) as u64) as usize;
+            subject[at..at + n].to_vec()
+        } else {
+            (0..n).map(|_| b"ab"[(next(&mut seed) % 2) as usize]).collect()
+        };
+        let replacement: Vec<u8> = (0..next(&mut seed) % 40).map(|k| b'x' + (k % 3) as u8).collect();
+        let mut expect = Vec::new();
+        if needle.is_empty() {
+            for &c in &subject {
+                expect.extend(&replacement);
+                expect.push(c);
+            }
+            expect.extend(&replacement);
+        } else {
+            let mut i = 0;
+            while i < subject.len() {
+                if subject[i..].starts_with(&needle) {
+                    expect.extend(&replacement);
+                    i += needle.len();
+                } else {
+                    expect.push(subject[i]);
+                    i += 1;
+                }
+            }
+        }
+        let got = call(
+            "replace(string,string,string)",
+            &[Arg::B(subject.clone()), Arg::B(needle), Arg::B(replacement)],
+        );
+        assert_eq!(got, expect, "replace {:?}", String::from_utf8_lossy(&subject));
+    }
+    assert_eq!(run("json", b""), b"");
+
+    // A `string[]` argument, then lists pushed in a loop and written as a literal.
+    let strings = |xs: &[&[u8]]| {
+        let mut c = selector("join(string[])").to_vec();
+        let mut heads = Vec::new();
+        let mut tails = Vec::new();
+        for x in xs {
+            heads.extend_from_slice(&Word::from_u64((32 * xs.len() + tails.len()) as u64).to_be_bytes());
+            tails.extend_from_slice(&Word::from_u64(x.len() as u64).to_be_bytes());
+            tails.extend_from_slice(x);
+            tails.resize(tails.len().div_ceil(32) * 32, 0);
+        }
+        c.extend_from_slice(&Word::from_u64(32).to_be_bytes());
+        c.extend_from_slice(&Word::from_u64(xs.len() as u64).to_be_bytes());
+        c.extend(heads);
+        c.extend(tails);
+        c
+    };
+    let long = vec![b'z'; 70];
+    for xs in [&[][..], &[&b""[..]], &[b"a", b"", b"bcd"], &[&long[..], b"q", &long[..]]] {
+        let out = exec(&runtime, &strings(xs), HashMap::new(), Word::from_u64(1), Word::from_u64(0), Word::from_u64(0))
+            .expect("exec");
+        assert!(!out.reverted);
+        assert_eq!(abi_string_value(&out.returndata), xs.concat());
+    }
+    for len in [0usize, 1, 31, 33, 100] {
+        let s: Vec<u8> = (0..len).map(|i| b'a' + (i % 26) as u8).collect();
+        for step in [1usize, 5, 32, 40] {
+            let got = call(
+                "rejoin(bytes,uint256,bytes)",
+                &[Arg::B(s.clone()), Arg::W(Word::from_u64(step as u64)), Arg::B(b",".to_vec())],
+            );
+            let want: Vec<u8> = s.chunks(step).flat_map(|c| [c, b","].concat()).collect();
+            assert_eq!(got, want, "{len} {step}");
+        }
+    }
+    assert_eq!(call("literal()", &[]), b"abc\\\"");
+}
+
 /// `std/utils`: ERC-1167 clones that delegate to a real implementation, clone arguments,
 /// SSTORE2 data, and CREATE3 addresses.
 #[test]
