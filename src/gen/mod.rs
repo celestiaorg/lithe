@@ -377,6 +377,7 @@ pub(crate) fn codegen(checked: &Checked, shape: &Shape) -> Result<Built, Error> 
     // add them in order of bytes saved per gas added, and the cheapest set that fits wins, or
     // failing that the smallest, which the next round starts from. One that never fits is
     // split.
+    let fell_back = best.built.bytes > limit;
     while best.built.bytes > limit {
         let mut rest: Vec<usize> = (&plan.outlinable - &best.plan.outline).into_iter().collect();
         rest.sort_unstable();
@@ -411,6 +412,35 @@ pub(crate) fn codegen(checked: &Checked, shape: &Shape) -> Result<Built, Error> 
             break;
         };
         best = next;
+    }
+    // Once one fits, each function it outlines is built inlined again, skipping the sets known
+    // to be over the limit, and those that cost less are inlined one at a time, the most gas
+    // saved per byte added first, each kept while the build still costs less.
+    if fell_back && best.built.bytes <= limit {
+        let mut outlined: Vec<usize> = best.plan.outline.iter().copied().collect();
+        outlined.sort_unstable();
+        let (funcs, alone): (Vec<usize>, Vec<Plan>) = {
+            let too_big = too_big.lock().unwrap_or_else(|e| e.into_inner());
+            outlined
+                .iter()
+                .map(|&f| (f, Move::Toggle(f).applied(&best.plan)))
+                .filter(|(_, p)| !too_big.iter().any(|b| p.outline.is_subset(b)))
+                .unzip()
+        };
+        let (b0, g0) = (best.built.bytes as f64, best.built.gas);
+        let mut order: Vec<(f64, usize)> = funcs
+            .iter()
+            .zip(build_all(&alone)?)
+            .filter(|(_, c)| c.cost() < best.cost())
+            .map(|(&f, c)| ((g0 - c.built.gas) / (c.built.bytes as f64 - b0).max(1.0), f))
+            .collect();
+        order.sort_by(|a, b| b.0.total_cmp(&a.0));
+        for (_, f) in order {
+            let c = build_all(&[Move::Toggle(f).applied(&best.plan)])?.pop().expect("a build");
+            if c.cost() < best.cost() {
+                best = c;
+            }
+        }
     }
     // The search leaves the exact copies out, which the chosen plan gets.
     let built = finish(&best.emitted, true)?;
