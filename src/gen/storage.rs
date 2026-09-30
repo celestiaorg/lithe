@@ -909,7 +909,7 @@ impl<'a> Gen<'a> {
                     iface: None,
                     args: given,
                     ..
-                } if !self.plan.outline.contains(idx) && !calls.contains(idx) && calls.len() < 4 => {
+                } if self.inlines(*idx) && !calls.contains(idx) && calls.len() < 4 => {
                     let func = &self.checked.prog.funcs[*idx];
                     let bound: HashMap<usize, Expr> = func
                         .params

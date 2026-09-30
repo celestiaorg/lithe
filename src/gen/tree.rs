@@ -1470,7 +1470,7 @@ impl<'a> Gen<'a> {
                     builtin: None,
                     args,
                     ..
-                }) if !self.plan.outline.contains(idx) => {
+                }) if self.inlines(*idx) => {
                     // A continuation runs after the call, when the parameter is gone.
                     let later = self.continuation_syms(*idx);
                     let params = &self.checked.prog.funcs[*idx].params;
@@ -1572,7 +1572,7 @@ impl<'a> Gen<'a> {
                         add(n)
                     }
                     None => {
-                        let Some(idx) = callee.filter(|idx| !self.plan.outline.contains(idx)) else {
+                        let Some(idx) = callee.filter(|&idx| self.inlines(idx)) else {
                             return false;
                         };
                         let later = self.continuation_syms(idx);

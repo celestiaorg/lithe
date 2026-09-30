@@ -95,6 +95,10 @@ thread_local! {
     /// hash, and calls to itself see.
     /// A call or creation into another account pushes `None`: that account runs its own code.
     static ACCOUNT_CODE: std::cell::RefCell<Vec<Option<Vec<u8>>>> = const { std::cell::RefCell::new(Vec::new()) };
+    /// Deployed library facets. A call to one runs part of the caller's own code, so it is
+    /// not an effect, and what that code does is the caller's.
+    static LIBRARIES: std::cell::RefCell<std::collections::HashSet<Word>> =
+        std::cell::RefCell::new(std::collections::HashSet::new());
 }
 
 /// A call's gas, in its detail line, when it is not all of what `GAS` answers.
@@ -266,7 +270,9 @@ fn exec_state(
     let mut self_balance = balance;
     let mut storage = storage;
     for _ in 0..200_000 {
+        // Running off the end of the code stops, as `STOP` does, with no output.
         if pc >= code.len() {
+            returndata.clear();
             stopped = true;
             break;
         }
@@ -286,6 +292,7 @@ fn exec_state(
         let pop = |stack: &mut Vec<Word>| stack.pop().ok_or_else(|| "stack underflow".to_string());
         match op {
             0x00 => {
+                returndata.clear();
                 stopped = true;
                 break;
             }
@@ -782,7 +789,10 @@ fn exec_state(
                 let ret_off = word_usize(pop(&mut stack)?)?;
                 let ret_size = word_usize(pop(&mut stack)?)?;
                 let input = read_slice(&mut mem, in_off, in_size);
-                detail.push(format!("static {to:?} {}{}", hex(&input), gas_limit(gas)));
+                let library = LIBRARIES.with(|l| l.borrow().contains(&to));
+                if !library {
+                    detail.push(format!("static {to:?} {}{}", hex(&input), gas_limit(gas)));
+                }
                 if let Some((child, child_storage)) =
                     DEPLOYED.with(|d| d.borrow().get(&to).cloned())
                 {
@@ -802,7 +812,12 @@ fn exec_state(
                         let n = ret_size.min(returndata.len());
                         write_mem(&mut mem, ret_off, &returndata[..n]);
                     }
-                    trace.push(Ev::Static);
+                    if library {
+                        trace.extend(nested.trace);
+                        detail.extend(nested.detail);
+                    } else {
+                        trace.push(Ev::Static);
+                    }
                     stack.push(Word::from_u64(u64::from(!nested.reverted)));
                     continue;
                 }

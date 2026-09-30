@@ -388,7 +388,7 @@ impl<'a> Gen<'a> {
                         )
                     );
                 let params = callee
-                    .filter(|idx| builtin.is_none() && !self.plan.outline.contains(idx))
+                    .filter(|&idx| builtin.is_none() && self.inlines(idx))
                     .map(|idx| (idx, self.continuation_syms(idx)));
                 for (j, arg) in args.iter().enumerate() {
                     // Encoded whole, or read in place by an inlined call's constant parameter.

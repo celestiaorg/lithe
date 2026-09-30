@@ -1,11 +1,11 @@
 ---
 title: "Contract size limit"
-description: "Contracts over EIP-170's 24,576-byte limit run the modules they expose from shared facets."
+description: "Contracts over EIP-170's 24,576-byte limit run the modules they expose from shared facets, and large pure functions from shared library facets."
 ---
 
 # Contract size limit
 
-[EIP-170](https://eips.ethereum.org/EIPS/eip-170) caps deployed code at 24,576 bytes. When a contract is over the limit, the compiler moves the modules it exposes with [`use M exposing`](/language/modules#exposing-a-modules-externals) into **facets**, and keeps the rest in a **router**. Callers still see one contract: one address, one ABI, and the same return data, logs, and errors.
+[EIP-170](https://eips.ethereum.org/EIPS/eip-170) caps deployed code at 24,576 bytes. When a contract is over the limit, the compiler moves the modules it exposes with [`use M exposing`](/language/modules#exposing-a-modules-externals) into **facets**, and keeps the rest in a **router**. When the code is still too large, it runs large pure functions from **library facets**. Callers still see one contract: one address, one ABI, and the same return data, logs, and errors.
 
 A contract that fits compiles exactly as it always does, byte for byte.
 
@@ -56,6 +56,36 @@ facet ERC20Permit  0xCf7c2a6CeB11CBFAE62cEbE5D4268776a3E7CcE1  1,233 / 2,000
 
 That output is the [standard-library token](/stdlib/tokens), built with `--size-limit 2000` so that it splits. A facet holds every external its module declares; the router forwards only the ones the contract declares, so the others can't be reached through it. `lithe footprint` and `lithe abi-tree` also show where each entrypoint runs when the contract is split.
 
+## Library facets
+
+A `pure` function depends only on its arguments, so it can run anywhere. When outlining can't fit a contract, or a router, or a module's facet, the compiler runs large pure functions from library facets instead. That is how code that calls big pure code, such as JSON rendering or a document parser, stays under the limit, even with nothing to expose.
+
+A library facet holds one function, as its only entrypoint, an `external pure function` with the function's own name and ABI. A call to it ABI-encodes the arguments as that entrypoint's calldata, calls the facet with `STATICCALL`, and decodes the result to where the function's result would have been. When the call fails, the contract reverts with the facet's revert data, so the function's errors and panics reach the caller exactly as they would have. Results are the same bytes as running the function in place.
+
+Nothing in the source changes. The call is still a pure call, so it is allowed wherever one is: in `deploy`, views, stateful functions, and continuations. It sees no storage, and nothing it runs can call back, so a body's writes before it behave as they always do.
+
+A library facet is built from its function and the functions it calls, and nothing else of the contract, so **every contract that calls the same function gets the same facet at the same address**, and a contract deploys only the functions it calls. A library facet that is over the limit itself runs what it calls from library facets of their own.
+
+A function can run remotely when its parameters and result are ABI values: not an `option`, a variant with payloads, a map, or a `storage` parameter. A generic function stays in the contract too. Its callers can still run remotely instead, and so can the functions it calls.
+
+The size search chooses. After outlining everything it can, a build still over the limit tries each pure function whose inline copies take at least 200 bytes remotely on its own, then adds them in order of bytes saved per gas added, and keeps the cheapest set that fits. The gas counts every run of every call: each runs the function in its facet, estimated as any code is, with each loop multiplying it, plus 2,500 gas for the facet's cold account. So a function called in a loop stays in the contract when another one can go. Once the build fits, each function it runs remotely is built in place again, and stays in place when the build still fits and costs less.
+
+`lithe facets` lists library facets after the router and module facets:
+
+```bash
+lithe facets render.lithe --size-limit 1500
+```
+
+```text
+router  1,409 / 1,500
+  Render: keep, show, sum, last
+
+library render  0xb94ce249fcf3b3319A74D23d93799c8cc6943EBa  931 / 1,500
+  render(uint256,string,uint256[])
+```
+
+With `--split all`, exposed modules always run from their facets, but pure functions run remotely only when a build doesn't fit. A remote call costs gas every time it runs, while sharing a facet saves bytes once, when it is deployed. With `--split off`, a contract never runs a function remotely, and neither does a `--check-specs` build.
+
 ## Deploying
 
 Each facet is deployed with `CREATE2` through the deterministic deployment proxy at `0x4e59b44847b379578588920cA78FbF26c0B4956C`, the same factory Foundry uses, with a zero salt. So a facet's address depends only on its code. The compiler knows every address in advance and builds them into the router. The router can only ever reach the exact code it was compiled against.
@@ -85,11 +115,19 @@ note: `Token` is 3,395 bytes; `ERC20`, `ERC20Permit` run from their facets
 
 Send each facet's `data` to its `to`, in order, then deploy the router's `bytecode` as you would any creation code, with its `deploy` arguments appended. Skip a facet whose address already has code, because another contract already deployed it: `CREATE2` can't deploy to it twice, and it is already the right code. The router's creation code checks that every facet has code, and reverts if one is missing.
 
+Library facets are listed in `facets` with the module facets, each before anything that calls it, and deployed the same way. The note on stderr names them:
+
+```text
+note: `Render` is 1,854 bytes; `render` runs from its library facet
+```
+
+A contract that fits with library facets and has no module facets still prints a plan. Its creation code checks that each library facet has code, as a router's does.
+
 An upgradeable router is listed with its own `address`, `to`, and `data`, so it can be deployed through the factory too, at an address known in advance.
 
 A contract that creates a split contract with `defer create` lists that contract's facets in its plan as well. They must exist before it creates anything.
 
-`lithe compile directory` writes the router's artifact to `out/<file>/<Contract>.json` as usual. Its ABI is the whole contract's, because that is what callers use, and it gains a `facets` field listing each facet's module, address, and the selectors the router forwards to it. Each facet gets one artifact, `out/facets/<Module>.json`, shared by every contract in the directory that uses it.
+`lithe compile directory` writes the router's artifact to `out/<file>/<Contract>.json` as usual. Its ABI is the whole contract's, because that is what callers use, and it gains a `facets` field listing each facet's module, address, and the selectors the router forwards to it. Each facet gets one artifact, `out/facets/<Module>.json`, shared by every contract in the directory that uses it. A contract that calls library facets gains a `libraries` field listing each one's name, address, and selector, and each library facet gets an artifact too, `out/facets/<name>.json`, such as `out/facets/KV.parse.json` for a module's function.
 
 ## Upgrades
 
@@ -97,7 +135,7 @@ An upgradeable contract's router is the implementation behind its ERC-1967 proxy
 
 A contract that grows past the limit upgrades into a split implementation behind the same proxy, at the same address, with the same storage. The reverse works too.
 
-Every upgrade of a split contract deploys a new router, because the router has its facets' addresses built in. A facet whose module didn't change keeps its address and is reused. `lithe upgrade-check` shows which facets are reused:
+Every upgrade of a split contract deploys a new router, because the router has its facets' addresses built in. A facet whose module didn't change keeps its address and is reused, and so does a library facet whose function didn't change. `lithe upgrade-check` shows which facets are reused:
 
 ```text
 facets
@@ -114,12 +152,14 @@ For a split contract, `lithe upgrade` prints the deployment plan with the proxy'
 
 A call to an entrypoint in a facet costs one extra `delegatecall`, measured at about 2,700 gas: the facet's address is cold, and the calldata and return data are copied once more. A call whose code reads immutables costs a little more, for copying them, and behind a proxy the router reads each word of them from storage. Entrypoints in the router cost nothing extra. A guarded one also decodes its arguments in the router, for the guard, before the facet decodes them again. Each facet carries its own dispatcher and a copy of the modules it requires, so a single split contract deploys more bytes in total than its unsplit build would have. Contracts that share facets deploy them once.
 
+A call to a function in a library facet costs about 2,600 gas the first time a transaction makes one, for the cold account, and 100 after that, plus encoding its arguments, the facet decoding them and encoding its result, and decoding that. Its own work costs what it would in place. On the KV document module's harness, built to 9,000 bytes so that six of its functions run remotely, a call that runs one of them costs 2,000 to 2,700 gas more than the whole build, and one that runs several up to 5,100 more. A result that is a large value costs more again: the facet encodes it, and the caller decodes and copies it into its own memory. Each call site takes 100 to 200 bytes, so a function called from many places saves less. Each call pays again, which is why the search prices calls by how often they run.
+
 ## Flags
 
 | Flag | Default | Meaning |
 | --- | --- | --- |
 | `--size-limit <bytes>` | `24576` | the most runtime code the router or any facet may have. Creation code may have twice this, as EIP-3860 allows |
-| `--split <auto\|off\|all>` | `auto` | when exposed modules run from their facets: when the contract is over the limit, never, or always |
+| `--split <auto\|off\|all>` | `auto` | when exposed modules run from their facets: when the contract is over the limit, never, or always. Pure functions run from library facets only when a build doesn't fit, and never with `off` |
 | `--create2-deployer <address>` | `0x4e59…956C` | the `CREATE2` factory facets are deployed through, for chains where it lives elsewhere |
 
 `compile`, `facets`, `footprint`, `abi-tree`, `upgrade`, and `upgrade-check` take them. With `--split off`, a contract over the limit fails with what each module and the contract's own code add to its size:
@@ -135,6 +175,6 @@ contract `Token` is 3,395 bytes; the limit is 2,000
   (dispatch and shared code)    636
 ```
 
-A contract is also an error when splitting can't fit it: when a module's facet is over the limit on its own, or when the router is, with every exposed module moved out. Then move more of the contract's entrypoints into modules.
+A contract is also an error when splitting can't fit it: when a module's facet is over the limit on its own, or when the router is, with every exposed module moved out and every pure function it can run remotely. Then move more of the contract's entrypoints into modules.
 
 `lithe stubs file.lithe Module` prints the `use Module exposing` block that declares every external a module has, to copy into a contract and trim.

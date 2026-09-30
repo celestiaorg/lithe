@@ -3867,6 +3867,21 @@ pub(crate) fn gas(code: &[Inst], entries: &[u32]) -> f64 {
     heat.iter().zip(code).map(|(h, inst)| h * inst_gas(inst)).sum()
 }
 
+/// How often each of `words` is pushed, by `heat` as `gas` counts it, summed over its pushes.
+pub(crate) fn push_runs(code: &[Inst], entries: &[u32], words: &[Word]) -> Vec<f64> {
+    let heat = flow(code, entries, true).0;
+    words
+        .iter()
+        .map(|w| {
+            code.iter()
+                .zip(&heat)
+                .filter(|(inst, _)| matches!(inst, Push(x) if x == w))
+                .map(|(_, h)| h)
+                .sum()
+        })
+        .collect()
+}
+
 /// What a program costs: its gas, and its bytes at `byte_gas`.
 pub(crate) fn cost(code: &[Inst]) -> f64 {
     assemble(code).map_or(f64::INFINITY, |b| b.len() as f64 * byte_gas() + gas(code, &[]))
