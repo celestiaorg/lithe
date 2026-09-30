@@ -258,20 +258,24 @@ pub(crate) fn link(units: &mut [Unit]) -> Result<Scopes, Error> {
                     id,
                     Some(k),
                     via,
-                )?;
+                )
+                .map_err(|err| err.in_file(&unit.key.0))?;
             }
             for &id in file_modules.get(target).into_iter().flatten() {
                 let name = spell(&scopes.decls[id].name);
-                insert_module(&scopes.decls, &mut scope, name, id, Some(k), via)?;
+                insert_module(&scopes.decls, &mut scope, name, id, Some(k), via)
+                    .map_err(|err| err.in_file(&unit.key.0))?;
             }
         }
         for &id in &own[&unit.key] {
             let name = scopes.decls[id].name.clone();
-            insert(&scopes.decls, &mut groups, &mut scope, name, id, None, None)?;
+            insert(&scopes.decls, &mut groups, &mut scope, name, id, None, None)
+                .map_err(|err| err.in_file(&unit.key.0))?;
         }
         for &id in &file_modules[&unit.key.0] {
             let name = scopes.decls[id].name.clone();
-            insert_module(&scopes.decls, &mut scope, name, id, None, None)?;
+            insert_module(&scopes.decls, &mut scope, name, id, None, None)
+                .map_err(|err| err.in_file(&unit.key.0))?;
         }
         scopes.scopes.insert(unit.key.clone(), scope);
     }
@@ -407,7 +411,8 @@ pub(crate) fn link(units: &mut [Unit]) -> Result<Scopes, Error> {
             type_params: HashSet::new(),
             locals: HashSet::new(),
         };
-        r.program(unit.prog, &module_names)?;
+        r.program(unit.prog, &module_names)
+            .map_err(|err| err.in_file(&unit.key.0))?;
         scopes.scopes.insert(unit.key.clone(), scope);
     }
     Ok(scopes)

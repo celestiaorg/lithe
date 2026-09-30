@@ -128,7 +128,19 @@ external function bump() : uint is {
 } with double(storage.count)
 ```
 
-A function without `: type` returns `unit`. `external view` and `external pure` functions must have a result. An `external` stateful function can return one too. The value goes back to the caller after the function's deferred calls have run.
+A function without `: type` returns `unit`. `external view` and `external pure` functions must return a value, because deciding to revert is the caller's call: a check returns a `bool` the caller branches on, and the caller fails if it must. An `external` stateful function can return one too. The value goes back to the caller after the function's deferred calls have run.
+
+```lithe rejects
+storage is record { limit : uint; }
+
+external view function check(const n : uint) is {
+  assert(n <= storage.limit);
+}
+```
+
+```text
+gate.lithe:3:46: an `external view` function must return a value: return a `bool` the caller can check, and let the caller fail
+```
 
 A result can be any ABI value. A record result is flattened into named ABI outputs, one per field, as a Solidity function with several results has. A tuple or `tuple record` result is one output, a Solidity tuple, as a function returning a struct has. For words alone the two lay out the same bytes.
 

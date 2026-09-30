@@ -29,7 +29,11 @@ lithe fmt --check path...
 lithe fmt -
 ```
 
-Commands that read one file need a file with exactly one contract. Errors and warnings go to stderr as `line:column: message`. The exit status is `0` on success, `1` on a compile error, and `2` on a usage error.
+Commands that read one file need a file with exactly one contract. Errors and warnings go to stderr as `path:line:column: message`, where `path` is the file the error is in, whether that is the file you named or one it imports, relative to the working directory. The standard library's files are `std/...`. An error that belongs to no one line, such as a contract over the size limit, is `path: message`. The exit status is `0` on success, `1` on a compile error, and `2` on a usage error.
+
+```text
+lib/fees.lithe:4:18: unknown name `rate`
+```
 
 ## Size flags
 
@@ -177,7 +181,7 @@ allow = ["reentry", "stale-capture"]
 
 ### `lithe lsp`
 
-Runs a language server on stdin and stdout. As you type, it reports the first error, for each contract in the file, and what [`lithe lint`](#linting) finds, honoring `lithe-ignore` comments you have not saved yet. A finding `lithe lint --fix` can fix is offered as a quick fix, and so is the import a name needs when another file or the standard library declares it. Formatting the document formats it as [`lithe fmt`](#formatting) does. Imports resolve from the file's saved location. The VS Code extension and the Recur bundle in `extensions/` run it, and find `lithe` on your `PATH`. In VS Code, the `lithe.path` setting points to a different binary.
+Runs a language server on stdin and stdout. As you type, it reports the first error, for each contract in the file, and what [`lithe lint`](#linting) finds, honoring `lithe-ignore` comments you have not saved yet. A finding `lithe lint --fix` can fix is offered as a quick fix, and so is the import a name needs when another file or the standard library declares it. Formatting the document formats it as [`lithe fmt`](#formatting) does. Imports resolve from the file's saved location. An error inside an imported file is shown on the `import` that brings the file in, or on the first `import` when it comes in through another file, with the imported file's path, line, and column in the message. The VS Code extension and the Recur bundle in `extensions/` run it, and find `lithe` on your `PATH`. In VS Code, the `lithe.path` setting points to a different binary.
 
 It also answers from the last version of the file that checked, so answers survive a half-typed line:
 
@@ -195,7 +199,7 @@ It also answers from the last version of the file that checked, so answers survi
 The compiler warns, but still compiles, when an entrypoint's deferred calls could let another entrypoint re-enter the contract before the transaction finishes:
 
 ```text
-7:18: warning: `pay` performs deferred external operations and may
+shop.lithe:7:18: warning: `pay` performs deferred external operations and may
 be re-entered through `pay`
 
 consider `nonreentrant` if the protocol requires serialized

@@ -1908,7 +1908,18 @@ impl<'a> Parser<'a> {
         }
         let ret = match kind {
             ItemKind::View => {
-                self.want(Kind::Colon)?;
+                if self.kind() != Kind::Colon {
+                    let what = match (self.declaring, external_pure) {
+                        (true, true) => "a `pure` method",
+                        (true, false) => "a `view` method",
+                        (false, true) => "an `external pure` function",
+                        (false, false) => "an `external view` function",
+                    };
+                    return Err(self.err(format!(
+                        "{what} must return a value: return a `bool` the caller can check, and let the caller fail"
+                    )));
+                }
+                self.bump();
                 Some(self.ty()?)
             }
             ItemKind::Function | ItemKind::Readonly | ItemKind::Pure

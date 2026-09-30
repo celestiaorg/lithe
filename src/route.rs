@@ -60,7 +60,7 @@ pub(crate) fn discover(checked: &Checked, require_entries: bool) -> Result<Vec<R
     let mut seen = Vec::new();
     for (i, f) in checked.prog.funcs.iter().enumerate() {
         if matches!(f.kind, ItemKind::Receive | ItemKind::Fallback) {
-            routes.push(special(checked, i, f)?);
+            routes.push(special(checked, i, f).map_err(|err| err.in_file(&f.origin))?);
             continue;
         }
         if f.kind != ItemKind::Entry {
@@ -75,14 +75,15 @@ pub(crate) fn discover(checked: &Checked, require_entries: bool) -> Result<Vec<R
                         "`{}` is dispatched as one entrypoint per case, so its guard cannot take it",
                         arg.name
                     ),
-                ));
+                ).in_file(&f.origin));
             }
             if f.ret.is_some() {
                 return Err(error(
                     f.line,
                     f.col,
                     "an entry that dispatches on its argument cannot return a value",
-                ));
+                )
+                .in_file(&f.origin));
             }
             let path = vec![f.name.clone()];
             walk(
@@ -94,13 +95,15 @@ pub(crate) fn discover(checked: &Checked, require_entries: bool) -> Result<Vec<R
                 f.nonreentrant,
                 &mut routes,
                 &mut seen,
-            )?;
+            )
+            .map_err(|err| err.in_file(&f.origin))?;
         } else if contains_case(&checked.types, f) {
             return Err(error(
                 f.line,
                 f.col,
                 "ABI routing must be a static case on the entry parameter",
-            ));
+            )
+            .in_file(&f.origin));
         } else if f
             .params
             .first()
@@ -110,9 +113,10 @@ pub(crate) fn discover(checked: &Checked, require_entries: bool) -> Result<Vec<R
                 f.line,
                 f.col,
                 "a variant entry must dispatch with a static case",
-            ));
+            )
+            .in_file(&f.origin));
         } else {
-            routes.push(direct(checked, i, f, &mut seen)?);
+            routes.push(direct(checked, i, f, &mut seen).map_err(|err| err.in_file(&f.origin))?);
         }
     }
     if require_entries

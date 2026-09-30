@@ -354,7 +354,7 @@ impl Checker {
                             header(&of.module.name, &of.name, &sig.params),
                             header(&of.module.name, &of.name, &func.params)
                         ),
-                    ));
+                    ).in_file(&func.origin));
                 }
             }
             let (Some(guarded), Some(module)) = (&func.guarded, &func.promoted) else {
@@ -381,7 +381,8 @@ impl Checker {
                             param.name,
                             shape_ty(&param.ty)
                         ),
-                    ));
+                    )
+                    .in_file(&func.origin));
                 }
             }
         }

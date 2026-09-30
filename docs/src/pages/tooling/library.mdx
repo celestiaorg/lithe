@@ -84,7 +84,7 @@ for item in &counter.abi.items {
 
 ## Errors
 
-A failed `compile` returns an `Error` for each contract that fails, so a file with ten contracts and three broken ones reports all three. Each `Error` has a 1-based `line` and `column`, and a `message`. Its `Display` is `line:column: message`, as the command prints it.
+A failed `compile` returns an `Error` for each contract that fails, so a file with ten contracts and three broken ones reports all three. Each `Error` has the `file` it is in, a 1-based `line` and `column`, and a `message`. `file` is the path the compiler read, canonical on disk and as given for `Sources::memory`, and `None` for an error about no one file. Its `Display` is `path:line:column: message`, with the path relative to the working directory, as the command prints it.
 
 ## Everything else
 

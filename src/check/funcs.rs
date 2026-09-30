@@ -2,6 +2,11 @@ use super::*;
 
 impl Checker {
     pub(super) fn check_func(&mut self, f: &mut Func) -> Result<(), Error> {
+        let origin = f.origin.clone();
+        self.check_body(f).map_err(|err| err.in_file(&origin))
+    }
+
+    fn check_body(&mut self, f: &mut Func) -> Result<(), Error> {
         self.origin = f.origin.clone();
         let idx = self.cur_fn;
         self.module_name = f.module.clone();
@@ -182,11 +187,7 @@ impl Checker {
                 continue;
             }
             let Some(idx) = self.errors.iter().position(|e| e.name == part.name) else {
-                return Err(error(
-                    part.line,
-                    part.col,
-                    format!("unknown error `{}`", part.name),
-                ));
+                return Err(self.unknown(part.line, part.col, "error", &part.name));
             };
             push_unique(&mut out, idx);
         }
@@ -292,7 +293,7 @@ impl Checker {
                     ),
                     None => describe(func.kind, source_name(&func.name)),
                 };
-                offending(&self.pieces[i], &who)?;
+                offending(&self.pieces[i], &who).map_err(|err| err.in_file(&func.origin))?;
             }
         }
         Ok(())
@@ -330,11 +331,7 @@ impl Checker {
             ));
         }
         let Some(idx) = self.errors.iter().position(|e| e.name == raised.name) else {
-            return Err(error(
-                raised.line,
-                raised.col,
-                format!("unknown error `{}`", raised.name),
-            ));
+            return Err(self.unknown(raised.line, raised.col, "error", &raised.name));
         };
         let payload = self.errors[idx].payload;
         let field_tys = self.errors[idx].field_tys.clone();
@@ -462,7 +459,8 @@ impl Checker {
                         line,
                         col,
                         raise_mismatch(&self.errors, kind, &name, &extra, declared, &inferred),
-                    ));
+                    )
+                    .in_file(&funcs[i].origin));
                 }
                 effective[i] = declared.clone();
             } else if matches!(
@@ -481,7 +479,8 @@ impl Checker {
                     line,
                     col,
                     must_declare(&self.errors, kind, &name, &inferred),
-                ));
+                )
+                .in_file(&funcs[i].origin));
             } else {
                 effective[i] = inferred;
             }
@@ -637,7 +636,7 @@ impl Checker {
                     msg.push_str(&format!(" raises {}", raises.join(" | ")));
                 }
             }
-            return Err(error(decl.line, decl.col, msg));
+            return Err(error(decl.line, decl.col, msg).in_file(&decl.origin));
         }
         Ok(())
     }
@@ -715,7 +714,8 @@ impl Checker {
                     decl.line,
                     decl.col,
                     interface_mismatch(decl, impl_, &reason),
-                ));
+                )
+                .in_file(&decl.origin));
             }
         }
         Ok(())

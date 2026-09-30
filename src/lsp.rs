@@ -119,8 +119,49 @@ fn update(output: &mut impl Write, uri: &str, doc: &mut Doc) {
         doc.index = analysis.index;
     }
     doc.lints = analysis.lints;
-    doc.error = analysis.error;
+    doc.error = analysis
+        .error
+        .map(|err| in_document(&file_path(uri), &doc.text, err));
     publish(output, uri, doc);
+}
+
+/// `err` as the document `path` shows it. One in another file is shown at the `import` that
+/// brings that file in, or at the first import when it comes in through another file, with
+/// its file, line, and column in the message.
+fn in_document(path: &std::path::Path, text: &str, err: lithe::Error) -> lithe::Error {
+    let canon = |path: &std::path::Path| {
+        path.canonicalize()
+            .unwrap_or_else(|_| path.to_path_buf())
+            .display()
+            .to_string()
+    };
+    let Some(file) = err.file.clone().filter(|file| *file != canon(path)) else {
+        return err;
+    };
+    let mut first = None;
+    let mut direct = None;
+    for (i, line) in text.lines().enumerate() {
+        let Some(rest) = line.trim_start().strip_prefix("import \"") else {
+            continue;
+        };
+        let at = (
+            i as u32 + 1,
+            (line.len() - line.trim_start().len()) as u32 + 1,
+        );
+        first.get_or_insert(at);
+        let import = rest.split('"').next().unwrap_or("");
+        if canon(&lithe::import_path(path, import)) == file {
+            direct = Some(at);
+            break;
+        }
+    }
+    let (line, column) = direct.or(first).unwrap_or((1, 1));
+    lithe::Error {
+        file: None,
+        line,
+        column,
+        message: err.to_string(),
+    }
 }
 
 /// The whole document as `lithe fmt` writes it, with the width `lithe.toml` sets.
@@ -566,8 +607,6 @@ fn range(text: &str, at: Span) -> String {
     )
 }
 
-// simplify: an error carries no file, so one inside an imported file is shown at its line
-// and column in the importing file. Needs a source path on `lithe::Error`.
 fn publish(output: &mut impl Write, uri: &str, doc: &Doc) {
     let mut items: Vec<String> = doc
         .lints
@@ -932,6 +971,35 @@ mod tests {
         );
         assert!(bodies[3].contains(r#""id":7,"error":{"code":-32601"#));
         assert_eq!(bodies[4], r#"{"jsonrpc":"2.0","id":8,"result":null}"#);
+    }
+
+    #[test]
+    fn places_errors_of_imported_files_at_their_import() {
+        let dir = std::env::temp_dir().join(format!("lithe-lsp-import-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("lib")).unwrap();
+        std::fs::write(
+            dir.join("lib/util.lithe"),
+            "pure function twice(const n : uint) : uint is n + nope\n",
+        )
+        .unwrap();
+        let main = dir.join("main.lithe");
+        let text = "(* counter *)\nimport \"./lib/util\";\nstorage is record { count : uint; }\n\
+                    external function bump(const n : uint) is { storage.count := twice(n); }\n";
+        let (_, bodies) = session(&[
+            open(&format!("file://{}", main.display()), text),
+            frame(r#"{"jsonrpc":"2.0","method":"exit"}"#),
+        ]);
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert!(
+            bodies[0].contains(r#""range":{"start":{"line":1,"character":0},"end":{"line":1,"character":6}},"severity":1"#),
+            "{}",
+            bodies[0]
+        );
+        assert!(
+            bodies[0].contains(r#"util.lithe:1:51: unknown name `nope`"#),
+            "{}",
+            bodies[0]
+        );
     }
 
     fn request(id: u32, method: &str, uri: &str, line: u32, character: u32) -> String {

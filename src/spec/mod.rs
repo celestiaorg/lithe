@@ -151,7 +151,7 @@ pub(crate) fn check(mut prog: Program) -> Result<Specs, Error> {
     let blocks = std::mem::take(&mut prog.specs);
     let mut funcs = Vec::new();
     for block in &blocks {
-        specs.add(&base, &prog, block, &mut funcs)?;
+        add_block(&mut specs, &base, &prog, block, &mut funcs)?;
     }
     prog.funcs.extend(funcs);
     for i in 0..prog.modules.len() {
@@ -168,12 +168,13 @@ pub(crate) fn check(mut prog: Program) -> Result<Specs, Error> {
                     "generic module `{}` cannot have spec blocks yet",
                     module.name
                 ),
-            ));
+            )
+            .in_file(&blocks[0].origin));
         }
         let requires: Vec<String> = module.requires.iter().map(|r| r.name.clone()).collect();
         let mut funcs = Vec::new();
         for block in &blocks {
-            specs.add(&base, &prog, block, &mut funcs)?;
+            add_block(&mut specs, &base, &prog, block, &mut funcs)?;
         }
         for func in &mut funcs {
             func.module = Some(module.name.clone());
@@ -183,6 +184,24 @@ pub(crate) fn check(mut prog: Program) -> Result<Specs, Error> {
     }
     let checked = check::check(prog)?;
     specs.finish(checked)
+}
+
+/// A block's functions are checked as part of the file the block is written in.
+fn add_block(
+    specs: &mut SpecBuild,
+    base: &Checked,
+    prog: &Program,
+    block: &SpecBlock,
+    funcs: &mut Vec<Func>,
+) -> Result<(), Error> {
+    let from = funcs.len();
+    specs
+        .add(base, prog, block, funcs)
+        .map_err(|err| err.in_file(&block.origin))?;
+    for func in &mut funcs[from..] {
+        func.origin = block.origin.clone();
+    }
+    Ok(())
 }
 
 /// `spec for module M` blocks, from a spec file or the top of a file, join `M`'s own. They
@@ -199,7 +218,8 @@ fn attach_module_specs(prog: &mut Program) -> Result<(), Error> {
                 block.line,
                 block.col,
                 format!("no module `{name}` for this spec block to describe"),
-            ));
+            )
+            .in_file(&block.origin));
         }
         if let Some(module) = prog.modules.iter_mut().find(|m| m.name == name) {
             module.specs.push(block);

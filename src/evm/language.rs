@@ -1131,7 +1131,7 @@ fn duplicates_say_where_the_first_is() {
     };
     assert_eq!(
         errors[0].to_string(),
-        "2:1: ambiguous symbol `f`\n\ndefined in:\n- a.lithe:1:6\n- b.lithe:1:6\n\nrename one, or import `./b` with an alias: `import \"./b\" as Name;`"
+        "main.lithe:2:1: ambiguous symbol `f`\n\ndefined in:\n- a.lithe:1:6\n- b.lithe:1:6\n\nrename one, or import `./b` with an alias: `import \"./b\" as Name;`"
     );
 }
 
@@ -1224,6 +1224,131 @@ module Tally is {
 ";
 
 const SCOPE_A: &str = "import \"./b\";\npure function make() : amount is amount(3)\n";
+
+#[test]
+fn errors_name_the_file_they_are_in() {
+    let main = "import \"./lib/util\";\nstorage is record { n : uint; }\n\
+                external function go() is { storage.n := twice(1); }\n";
+    for (lib, want) in [
+        (
+            "pure function twice(const n : uint) : uint is n + nope\n",
+            "lib/util.lithe:1:51: unknown name `nope`",
+        ),
+        ("pure function twice(const n : uint) : uint is\n", "lib/util.lithe:2:1: "),
+        (
+            "type t is record { a : uint; a : uint; }\npure function twice(const n : uint) : uint is n\n",
+            "lib/util.lithe:1:30: duplicate field `a`",
+        ),
+        (
+            "error E of record { a : nope; }\npure function twice(const n : uint) : uint is n\n",
+            "lib/util.lithe:1:",
+        ),
+    ] {
+        let err = build_files(&[("lib/util.lithe", lib), ("main.lithe", main)]).expect_err(want);
+        assert!(err.starts_with(want), "{want}\n---\n{err}");
+    }
+    let err = build_files(&[(
+        "main.lithe",
+        "storage is record { n : uint; }\nexternal function go() is { storage.n := nope; }\n",
+    )])
+    .expect_err("main");
+    assert!(
+        err.starts_with("main.lithe:2:42: unknown name `nope`"),
+        "{err}"
+    );
+}
+
+#[test]
+fn checks_called_from_outside_return_a_value() {
+    for (src, want) in [
+        (
+            "external view function ok(const x : uint) is { assert(x > 0); }\n",
+            "2:43: an `external view` function must return a value: return a `bool` the caller can check, and let the caller fail",
+        ),
+        (
+            "external pure function ok(const x : uint) is { assert(x > 0); }\n",
+            "2:43: an `external pure` function must return a value",
+        ),
+        (
+            "interface I is { view function ok(x : uint); }\nexternal function go() is { skip; }\n",
+            "2:44: a `view` method must return a value",
+        ),
+    ] {
+        let err = compile(&format!("storage is record {{ n : uint; }}\n{src}")).expect_err(want);
+        assert!(err.to_string().contains(want), "{want}\n---\n{err}");
+    }
+}
+
+#[test]
+fn unknown_members_name_the_module_and_member() {
+    let lib = "module Counter is {\n\
+               \x20 storage counter at \"x.counter\" is record { total : uint; }\n\
+               \x20 pure function double(const n : uint) : uint is n + n\n\
+               \x20 pure function limit() : uint is 5\n\
+               \x20 function add(const n : uint) is { counter.total := counter.total + n; }\n\
+               \x20 type Amount is uint;\n\
+               \x20 error Bad;\n\
+               \x20 event Bumped of record { n : uint; }\n\
+               }\n";
+    for (body, want) in [
+        (
+            "Counter.ad(n);",
+            "module `Counter` has no member `ad`\n\ndid you mean `Counter.add`?",
+        ),
+        ("Counter.nope(n);", "module `Counter` has no member `nope`"),
+        (
+            "storage.n := Counter.limt();",
+            "did you mean `Counter.limit`?",
+        ),
+        (
+            "storage.n := Counter.limt;",
+            "module `Counter` has no member `limt`",
+        ),
+        (
+            "storage.n := Counter.limit;",
+            "`Counter.limit` is a constant; call it: `Counter.limit()`",
+        ),
+        (
+            "storage.n := Counter.double;",
+            "`Counter.double` is a function; call it",
+        ),
+        (
+            "Counter.countr.total := n;",
+            "did you mean `Counter.counter`?",
+        ),
+        (
+            "Counter.counter(n);",
+            "`Counter.counter` is storage, not a function",
+        ),
+        (
+            "fail Counter.Bda;",
+            "module `Counter` has no member `Bda`\n\ndid you mean `Bad`?",
+        ),
+        (
+            "fail Counter.Bad;",
+            "which is named without its module: `Bad`",
+        ),
+        ("emit Counter.Bumpd { n = n };", "did you mean `Bumped`?"),
+        ("const a : Counter.Amont := n;", "did you mean `Amount`?"),
+        (
+            "storage.n := String.nope(n);",
+            "module `String` has no member `nope`",
+        ),
+        (
+            "storage.n := Uint.maxx;",
+            "module `Uint` has no member `maxx`\n\ndid you mean `Uint.max`?",
+        ),
+        ("storage.n := Nope.x();", "unknown name `Nope`"),
+    ] {
+        let main = format!(
+            "import \"./lib/m\";\nimport \"std/string\";\nimport \"std/uint\";\nuse Counter;\n\
+             storage is record {{ n : uint; }}\n\
+             external function go(const n : uint) is {{ {body} }}\n"
+        );
+        let err = build_files(&[("lib/m.lithe", lib), ("main.lithe", &main)]).expect_err(body);
+        assert!(err.contains(want), "{body}: {err}");
+    }
+}
 
 #[test]
 fn a_file_sees_only_what_it_imports() {
@@ -1478,7 +1603,7 @@ fn import_paths_name_modules() {
         let src = format!("import \"{bad}\";\nstorage is record {{ n : uint; }}\n");
         let err = build_files(&[("main.lithe", &src)]).expect_err(bad);
         assert!(
-            err.starts_with(&format!("1:8: invalid import path `{bad}`")),
+            err.starts_with(&format!("main.lithe:1:8: invalid import path `{bad}`")),
             "{bad}: {err}"
         );
     }

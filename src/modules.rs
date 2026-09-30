@@ -123,7 +123,12 @@ pub fn import_path(from: &Path, import: &str) -> PathBuf {
 /// files the entry imports may have spec files too, for their modules, and the standard
 /// library's do.
 pub(crate) fn load_specs(sources: &Sources, entry: &Path, prog: &mut Program) -> Result<(), Error> {
-    load_entry_specs(sources, entry, prog)?;
+    load_entry_specs(sources, entry, prog).map_err(|err| {
+        match spec_path(entry).and_then(|path| sources.canonicalize(&path).ok()) {
+            Some(path) => err.in_file(&path.display().to_string()),
+            None => err,
+        }
+    })?;
     let own = sources.canonicalize(entry).ok();
     let mut files: Vec<String> = Vec::new();
     for module in &prog.modules {
@@ -153,30 +158,29 @@ pub(crate) fn load_specs(sources: &Sources, entry: &Path, prog: &mut Program) ->
                 }
             },
         };
-        let label = file_label(&path);
-        let parsed = parse::parse_specs(&src)
-            .map_err(|err| error(err.line, err.column, format!("{label}: {}", err.message)))?;
+        let origin = path.display().to_string();
+        let at = |err: Error| err.in_file(&origin);
+        let parsed = parse::parse_specs(&src).map_err(at)?;
         if let Some(block) = parsed.bare.first() {
-            return Err(error(
+            return Err(at(error(
                 block.line,
                 block.col,
-                format!(
-                    "{label}: an imported file's spec file writes `spec for module M is {{ ... }}`"
-                ),
-            ));
+                "an imported file's spec file writes `spec for module M is { ... }`",
+            )));
         }
         if let Some((name, _)) = parsed.contracts.first() {
-            return Err(error(
+            return Err(at(error(
                 name.line,
                 name.col,
-                format!("{label}: an imported file's spec file describes its modules"),
-            ));
+                "an imported file's spec file describes its modules",
+            )));
         }
         for (_, mut blocks) in parsed.modules {
             for block in &mut blocks {
-                block.origin = path.display().to_string();
+                block.origin = origin.clone();
             }
-            crate::resolve::resolve_specs(&prog.scopes, &(file.clone(), None), &mut blocks)?;
+            crate::resolve::resolve_specs(&prog.scopes, &(file.clone(), None), &mut blocks)
+                .map_err(at)?;
             for sibling in &mut prog.siblings {
                 sibling.specs.extend(blocks.iter().cloned());
             }
@@ -345,7 +349,7 @@ fn load_inner(
     };
     let mut peers = Vec::new();
     for peer in std::mem::take(&mut root.peers) {
-        add_peer(&mut peers, peer, 1, 1)?;
+        add_peer(&mut peers, peer, 1, 1).map_err(|err| err.in_file(&root.origin))?;
     }
     let unit = |own: Program| -> Result<Program, Error> {
         let mut dst = empty();
@@ -363,10 +367,11 @@ fn load_inner(
         dst.scopes = scopes.clone();
         Ok(dst)
     };
-    let mut merged = unit(root.prog.clone())?;
+    let at = |err: Error| err.in_file(&root.origin);
+    let mut merged = unit(root.prog.clone()).map_err(at)?;
     let mut linked = Vec::new();
     for sibling in siblings {
-        linked.push(unit(sibling)?);
+        linked.push(unit(sibling).map_err(at)?);
     }
     merged.siblings = linked;
     let _ = &root.canon;
@@ -411,6 +416,25 @@ fn gather(
         msg.push_str(&label);
         return Err(error(1, 1, msg));
     }
+    let origin = canon.display().to_string();
+    gather_file(
+        sources, path, canon, label, text, stack, files, contracts, root,
+    )
+    .map_err(|err| err.in_file(&origin))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn gather_file(
+    sources: &Sources,
+    path: &Path,
+    canon: PathBuf,
+    label: String,
+    text: Option<&str>,
+    stack: &mut Vec<Frame>,
+    files: &mut Vec<Source>,
+    contracts: &mut HashMap<PathBuf, Vec<Program>>,
+    root: bool,
+) -> Result<Loaded, Error> {
     let src = match text.or(std_source(&canon)) {
         Some(src) => src.to_string(),
         None if canon.starts_with(STD_ROOT) => {
@@ -670,7 +694,7 @@ fn append(dst: &mut Program, src: Program, own: bool) -> Result<(), Error> {
                         have.name,
                         have_site.place(&site)
                     ),
-                ));
+                ).in_file(&decl.origin));
             }
             let what = if have.origin == decl.origin {
                 "duplicate"
@@ -902,7 +926,12 @@ pub(crate) fn clash(
     } else {
         format!("defined in:\n- {}\n- {}", have.place(new), new.place(have))
     };
-    error(line, col, format!("{headline}\n\n{body}\n\n{fix}"))
+    let err = error(line, col, format!("{headline}\n\n{body}\n\n{fix}"));
+    // Through an import, the error is at the importing file's `import`.
+    match via {
+        Some(_) => err,
+        None => err.in_file(new.origin),
+    }
 }
 
 fn at(via: Option<&UseDecl>, line: u32, col: u32) -> (u32, u32) {

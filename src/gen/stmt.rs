@@ -1250,7 +1250,7 @@ impl<'a> Gen<'a> {
         let tail = std::mem::replace(&mut self.tail, false);
         if self.compiling.contains(&idx) {
             let f = &self.checked.prog.funcs[idx];
-            return Err(error(f.line, f.col, "recursion is not supported: iteration is bounded, write a `for` loop"));
+            return Err(error(f.line, f.col, "recursion is not supported: iteration is bounded, write a `for` loop").in_file(&f.origin));
         }
         let inline = always || !self.plan.outline.contains(&idx);
         let aliased = self.bind_params(idx, args, inline)?;

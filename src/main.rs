@@ -123,7 +123,7 @@ fn main() {
             }
             print!("{text}");
         }
-        Err(errors) => fail(&errors),
+        Err(errors) => fail(&errors, Some(file)),
     }
 }
 
@@ -165,7 +165,7 @@ fn prove(args: Vec<String>) -> ! {
                 0
             });
         }
-        Err(err) => fail(&[err]),
+        Err(err) => fail(&[err], Some(Path::new(file))),
     }
 }
 
@@ -174,8 +174,19 @@ fn usage_exit(msg: &str) -> ! {
     std::process::exit(2);
 }
 
-fn fail(errors: &[lithe::Error]) -> ! {
-    let errors: Vec<String> = errors.iter().map(ToString::to_string).collect();
+/// Prints `errors`, placing one with a line but no file in `file`, the file the command reads.
+fn fail(errors: &[lithe::Error], file: Option<&Path>) -> ! {
+    let errors: Vec<String> = errors
+        .iter()
+        .map(|err| match file {
+            Some(file) if err.file.is_none() && err.line > 0 => lithe::Error {
+                file: Some(file.display().to_string()),
+                ..err.clone()
+            }
+            .to_string(),
+            _ => err.to_string(),
+        })
+        .collect();
     eprintln!("{}", errors.join("\n\n"));
     std::process::exit(1);
 }
@@ -276,7 +287,7 @@ fn tool(cmd: &str, args: &[String], opts: &lithe::Options) -> ! {
     };
     match result {
         Ok(text) => print!("{text}"),
-        Err(errors) => fail(&errors),
+        Err(errors) => fail(&errors, None),
     }
     std::process::exit(0);
 }

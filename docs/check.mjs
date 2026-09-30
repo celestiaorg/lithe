@@ -4,7 +4,8 @@
 // change that:
 //   ```lithe fragment         not a whole program; skipped
 //   ```lithe rejects          must fail to compile; when the next block is ```text,
-//                             the compiler's error must contain that text
+//                             the compiler's error must contain that text. Text that starts
+//                             with `name.lithe:` names the file the block is compiled as
 //   ```lithe [path.lithe]     a file of a multi-file example, written under that path
 //                             next to the page's other named files; every named file
 //                             not under lib/ must compile. A named `x.spec.lithe` holds
@@ -13,7 +14,7 @@
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, relative } from "node:path";
+import { dirname, join, relative, resolve } from "node:path";
 
 const docs = import.meta.dirname;
 const pages = join(docs, "src", "pages");
@@ -42,11 +43,11 @@ function run(args, cwd) {
 }
 
 // A file with several contracts builds one bytecode per contract, so it compiles as a directory.
-function compile(file) {
-  const result = run(["compile", file]);
+function compile(file, cwd) {
+  const result = run(["compile", file], cwd);
   if (result.ok || !result.message.includes("one bytecode needs a single contract")) return result;
   const dir = mkdtempSync(join(scratch, "contracts-"));
-  writeFileSync(join(dir, "main.lithe"), readFileSync(file));
+  writeFileSync(join(dir, "main.lithe"), readFileSync(resolve(cwd ?? ".", file)));
   return run(["compile", dir], dir);
 }
 
@@ -85,12 +86,15 @@ for (const [p, page] of walk(pages).entries()) {
       } else if (!title[1].split("/").includes("lib")) named.push({ file, where });
       return;
     }
-    const file = join(scratch, `block${checked++}.lithe`);
-    writeFileSync(file, block.code);
-    const result = compile(file);
-    if (/\brejects\b/.test(block.meta)) {
-      const next = found[n + 1];
-      const expected = next?.lang === "text" ? next.code.trim() : "";
+    const rejects = /\brejects\b/.test(block.meta);
+    const next = found[n + 1];
+    const expected = rejects && next?.lang === "text" ? next.code.trim() : "";
+    const own = join(scratch, `block${checked++}`);
+    const name = expected.match(/^([\w-]+\.lithe):\d/)?.[1] ?? "main.lithe";
+    mkdirSync(own);
+    writeFileSync(join(own, name), block.code);
+    const result = compile(name, own);
+    if (rejects) {
       if (result.ok) failures.push(`${where}: expected a compile error`);
       else if (!result.message.includes(expected))
         failures.push(`${where}: expected\n${expected}\ngot\n${result.message}`);
