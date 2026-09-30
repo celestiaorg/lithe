@@ -333,6 +333,14 @@ fn upgrades_check_the_call_context_and_the_new_implementation() {
     let mut dirty = upgrade_to_and_call(b, &[]);
     dirty[4] = 1;
     refused(&run(&proxy, &dirty, owner), &[]);
+    // Nor does migration data that runs past the calldata, even when the context is wrong.
+    let mut past = upgrade_to_and_call(b, &[]);
+    past[67] = 0xff;
+    refused(&run(&proxy, &past, owner), &[]);
+    refused(&elsewhere(a, || run(&runtime, &past, owner)), &[]);
+    let mut short = upgrade_to_and_call(b, &[1; 40]);
+    short.truncate(short.len() - 25);
+    refused(&run(&proxy, &short, owner), &[]);
     // The guard runs before the new implementation is asked.
     refused(&run(&proxy, &upgrade_to_and_call(c, &[]), other), &selector("NotOwner()"));
 
@@ -355,6 +363,125 @@ fn upgrades_check_the_call_context_and_the_new_implementation() {
         .collect();
     assert_eq!(logs, [&vec![upgraded, b]], "ERC-1967's Upgraded event");
     DEPLOYED.with(|m| m.borrow_mut().clear());
+}
+
+/// A failed migration reverts `upgradeToAndCall` with the migration's own revert data, as
+/// OpenZeppelin 5.1's `Address.functionDelegateCall` bubbles it, or `FailedCall()` when there
+/// is none. A migration's arguments can be any length. Both hold with the module the
+/// migration calls inline or delegated.
+#[test]
+fn upgrades_bubble_migration_failures_and_take_long_arguments() {
+    let v1 = "import \"std/evm\"; upgradeable\nerror Not_owner;\n\
+        storage is record { owner : address; n : uint; }\n\
+        upgrade guard is { assert(Evm.sender() = storage.owner, Not_owner); }\n\
+        external view function n() : uint is storage.n\n";
+    let v2 = |marks: &str| {
+        format!(
+            "import \"std/evm\"; upgradeable\nerror Not_owner;\n\
+            error Why of string;\n\
+            module Checks is {{\n\
+              error Too_large of uint;\n\
+              function limit(const x : uint) is {{\n\
+                assert(x < 5, Too_large(x));\n\
+              }}\n\
+            }}\n\
+            use Checks{marks};\n\
+            storage is record {{ owner : address; n : uint; }}\n\
+            storage extra at \"t.extra\" is record {{ s : string; xs : list(uint); }}\n\
+            upgrade guard is {{ assert(Evm.sender() = storage.owner, Not_owner); }}\n\
+            migrate too_large(const x : uint) raises Too_large is {{ Checks.limit(x); storage.n := x; }}\n\
+            external function too_large_now(const x : uint) raises Too_large is {{ Checks.limit(x); storage.n := x; }}\n\
+            migrate why(const s : string) raises Why is {{ fail Why(s); }}\n\
+            external function why_now(const s : string) raises Why is {{ fail Why(s); }}\n\
+            migrate divide(const x : uint) is {{ storage.n := 10 / x; }}\n\
+            external function divide_now(const x : uint) is {{ storage.n := 10 / x; }}\n\
+            migrate long(const s : string; const xs : list(uint)) is {{ extra.s := s; extra.xs := xs; }}\n\
+            external view function n() : uint is storage.n\n\
+            external view function s() : string is extra.s\n\
+            external view function xs() : list(uint) is extra.xs\n"
+        )
+    };
+    let [a, b] = [0xa11, 0xb22].map(Word::from_u64);
+    let slot = crate::keccak::erc1967_implementation();
+    let proxy = proxy_runtime();
+    let owner = Word::from_u64(1);
+    let word = |n: u64| Word::from_u64(n).to_be_bytes().to_vec();
+    let string = |text: &str| {
+        let mut out = word(32);
+        out.extend(word(text.len() as u64));
+        out.extend(text.as_bytes());
+        out.resize(out.len() + (32 - text.len() % 32) % 32, 0);
+        out
+    };
+    let reason = "a reason long enough that its encoding spans several words, past 128 bytes";
+    let mut long = selector("long(string,uint256[])").to_vec();
+    long.extend(word(64));
+    long.extend(word(64 + string(reason).len() as u64 - 32));
+    long.extend(&string(reason)[32..]);
+    let xs: Vec<u64> = (1..=6).collect();
+    let mut list = word(xs.len() as u64);
+    for &x in &xs {
+        list.extend(word(x));
+    }
+    long.extend(&list);
+    assert!(long.len() > 128 + 4);
+    let mut why = selector("why(string)").to_vec();
+    why.extend(string(reason));
+    let mut why_now = selector("why_now(string)").to_vec();
+    why_now.extend(string(reason));
+    let failed_call = selector("FailedCall()").to_vec();
+
+    for marks in ["", " delegated"] {
+        let checked = checked_src(&v2(marks));
+        let v2_code = if marks.is_empty() {
+            whole_build(&checked).code
+        } else {
+            let split = crate::split::build(&checked, "T", &crate::Options::default()).expect("split");
+            assert_eq!(facet_names(&split), ["Checks"]);
+            deploy_facets(&split);
+            split.creation
+        };
+        deploy_at(&compile(v1).expect("v1"), a);
+        let v2_runtime = deploy_at(&v2_code, b);
+        let storage: HashMap<Word, Word> =
+            [(slot, a), (Word::from_u64(0), owner)].into_iter().collect();
+        let run = |code: &[u8], data: &[u8], storage: &HashMap<Word, Word>, value: u64| {
+            exec(code, data, storage.clone(), owner, Word::from_u64(value), Word::from_u64(value))
+                .expect("run")
+        };
+        let inline = |data: &[u8]| elsewhere(b, || run(&v2_runtime, data, &storage, 0));
+        for (migration, now) in [
+            (word_data("too_large(uint256)", &[Word::from_u64(9)]), word_data("too_large_now(uint256)", &[Word::from_u64(9)])),
+            (why.clone(), why_now.clone()),
+            (word_data("divide(uint256)", &[Word::from_u64(0)]), word_data("divide_now(uint256)", &[Word::from_u64(0)])),
+        ] {
+            let want = inline(&now);
+            assert!(want.reverted && !want.returndata.is_empty(), "{marks}: {}", pretty(&want.returndata));
+            let out = run(&proxy, &upgrade_to_and_call(b, &migration), &storage, 0);
+            assert!(out.reverted, "{marks}");
+            assert_eq!(out.returndata, want.returndata, "{marks}: {}", pretty(&out.returndata));
+        }
+        // A migration that reverts empty, as one whose arguments don't decode does, and one
+        // sent value it doesn't take.
+        for (data, value) in [(selector("too_large(uint256)").to_vec(), 0), (long.clone(), 1)] {
+            let out = run(&proxy, &upgrade_to_and_call(b, &data), &storage, value);
+            assert!(out.reverted, "{marks}");
+            assert_eq!(out.returndata, failed_call, "{marks}: {}", pretty(&out.returndata));
+        }
+
+        let out = run(&proxy, &upgrade_to_and_call(b, &long), &storage, 0);
+        assert!(!out.reverted, "{marks}: {}", pretty(&out.returndata));
+        assert_eq!(out.storage[&slot], b);
+        assert_eq!(run(&proxy, &selector("s()"), &out.storage, 0).returndata, string(reason));
+        let mut want = word(32);
+        want.extend(&list);
+        assert_eq!(run(&proxy, &selector("xs()"), &out.storage, 0).returndata, want);
+        let out = run(&proxy, &upgrade_to_and_call(b, &word_data("too_large(uint256)", &[Word::from_u64(3)])), &storage, 0);
+        assert!(!out.reverted, "{marks}: {}", pretty(&out.returndata));
+        assert_eq!(run(&proxy, &selector("n()"), &out.storage, 0).returndata, word(3));
+        DEPLOYED.with(|m| m.borrow_mut().clear());
+        FACETS.with(|f| f.borrow_mut().clear());
+    }
 }
 
 /// A facet runs its module's externals and nothing else: no `deploy`, no migration, and no

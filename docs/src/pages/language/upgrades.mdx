@@ -49,6 +49,7 @@ Both refuse what OpenZeppelin 5.1's `UUPSUpgradeable` refuses, with the same err
 | the new implementation's `proxiableUUID()` fails, as a contract without one does, or a proxy's does | `ERC1967InvalidImplementation(address)` |
 | it answers something other than the implementation slot | `UUPSUnsupportedProxiableUUID(bytes32)` |
 | value sent with no migration to take it | `ERC1967NonPayable()` |
+| the migration fails | the migration's own revert data, or `FailedCall()` when it has none |
 
 `upgradeToAndCall` checks the call context first, then runs the guard, then asks the new implementation, as OpenZeppelin does. The implementation knows its own address because its creation code writes it into its code, as OpenZeppelin's `__self` immutable is.
 
