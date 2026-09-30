@@ -41,6 +41,26 @@ contract Numerics {
         return Math.log10(a);
     }
 
+    function log256(uint256 a) external pure returns (uint256) {
+        return Math.log256(a);
+    }
+
+    function log2_up(uint256 a) external pure returns (uint256) {
+        return Math.log2(a, Math.Rounding.Ceil);
+    }
+
+    function log10_up(uint256 a) external pure returns (uint256) {
+        return Math.log10(a, Math.Rounding.Ceil);
+    }
+
+    function log256_up(uint256 a) external pure returns (uint256) {
+        return Math.log256(a, Math.Rounding.Ceil);
+    }
+
+    function clz(uint256 a) external pure returns (uint256) {
+        return Math.clz(a);
+    }
+
     function abs(int256 x) external pure returns (uint256) {
         return SignedMath.abs(x);
     }

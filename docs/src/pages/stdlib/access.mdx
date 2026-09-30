@@ -1,6 +1,6 @@
 ---
 title: "Access control"
-description: "Ownable, two-step ownership, role-based access control, and pausing."
+description: "Ownable, two-step ownership, role bitmasks, role-based access control, and pausing."
 ---
 
 # Access control
@@ -51,6 +51,70 @@ contract Vault is {
   }
 }
 ```
+
+## `OwnableRoles`
+
+`std/access/ownable_roles.lithe`, on top of `Ownable`, as Solady's `OwnableRoles`. Up to 256 roles, kept as one `roles` bitmask per account in one slot, so checking or granting several roles at once costs the same as one. A `roles` is a [nominal type](/language/types#nominal-types) over `uint`, a `uint256` in the ABI: `role(n)` is Solady's `_ROLE_n`, and masks combine with `|`. The owner grants and revokes, and an account can renounce its own roles. Every change logs Solady's `RolesUpdated`, and a failed role check raises its `Unauthorized`. Grants and revokes that need the owner raise `Ownable`'s `OwnableUnauthorizedAccount`.
+
+```lithe
+import "std/access/ownable_roles";
+import "std/access/ownable";
+import "std/evm";
+
+contract Minter is {
+  use Ownable exposing IOwnable;
+  use OwnableRoles exposing IOwnableRoles;
+
+  storage is record {
+    minted : map(address, uint);
+    paused : bool;
+  }
+
+  pure function minter() : roles is OwnableRoles.role(0)
+  pure function pauser() : roles is OwnableRoles.role(1)
+
+  deploy()
+    raises OwnableInvalidOwner
+  is {
+    Ownable.init(Evm.sender());
+    OwnableRoles.grant(Evm.sender(), minter() | pauser());
+  }
+
+  external function mint(const to : address; const amount : uint)
+    raises Unauthorized
+  is {
+    OwnableRoles.check_roles(minter());
+    storage.minted[to] := storage.minted[to] + amount;
+  }
+
+  external function pause()
+    raises Unauthorized
+  is {
+    OwnableRoles.check_owner_or_roles(pauser());
+    storage.paused := true;
+  }
+}
+```
+
+| Function | |
+| --- | --- |
+| `grantRoles`, `revokeRoles`, `renounceRoles`, `rolesOf`, `hasAnyRole`, `hasAllRoles` | the role externals of Solady's `OwnableRoles`, `IOwnableRoles` |
+| `role(ordinal : uint8) : roles` | the one role numbered `ordinal` |
+| `roles_of(user) : roles` | |
+| `has_any_role(user, r)`, `has_all_roles(user, r)` | whether `user` holds any, or all, of the roles in `r` |
+| `check_roles(r)` | raises `Unauthorized` unless the caller holds one of `r` |
+| `check_owner_or_roles(r)`, `check_roles_or_owner(r)` | the same, but the owner passes too; they differ only in which is read first |
+| `grant_roles(user, r)`, `revoke_roles(user, r)` | owner only |
+| `renounce_roles(r)` | the caller gives up its own roles |
+| `grant(user, r)`, `revoke(user, r)`, `set_roles(user, r)` | unchecked, for `deploy` and the contract's own rules; `set_roles` replaces the whole mask |
+| `roles_from_ordinals(ordinals : list(uint8)) : roles` | the roles numbered by `ordinals`, together: Solady's `_rolesFromOrdinals` |
+| `ordinals_from_roles(r) : list(uint8)` | the ordinals of the roles in `r`, ascending: Solady's `_ordinalsFromRoles` |
+
+`ordinals_from_roles` visits only the set bits, so it costs 1,199 gas for a mask of four roles, highest 255, where Solady's, which visits every bit up to the highest, costs 21,914. `roles_from_ordinals` costs 1,059 for four ordinals, against Solady's 1,093.
+
+Solady marks `grantRoles`, `revokeRoles`, and `renounceRoles` `payable`, which saves about 15 gas of the check that rejects ether. Here they are not payable, as `Ownable`'s externals and OpenZeppelin's are not: ether sent with a role change would be stuck in the contract, and the check runs once per call of a function the owner rarely calls. A contract that wants Solady's ABI exactly writes its own `external payable function` around `grant_roles`, `revoke_roles`, or `renounce_roles`.
+
+`OwnableRoles` suits a fixed set of roles the owner hands out. `AccessControl` suits roles named by hash, each administered by another role.
 
 ## `AccessControl`
 

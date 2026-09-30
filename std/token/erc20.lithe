@@ -208,3 +208,9 @@ interface IERC20Approvals is {
   function approve(spender : address; value : uint) : bool
     raises ERC20InvalidApprover | ERC20InvalidSpender;
 }
+
+(* `IERC20Metadata` without `decimals`, for a token that writes its own, such as a vault. *)
+interface IERC20Name is {
+  view function name() : string;
+  view function symbol() : string;
+}

@@ -1,0 +1,129 @@
+(* Calls to ERC-20 tokens that also accept tokens returning nothing, as OpenZeppelin's
+   `SafeERC20` and Solady's `SafeTransferLib` do. A call succeeds when the token returns
+   `true`, or returns nothing and has code. `false` raises OpenZeppelin's
+   `SafeERC20FailedOperation`, and a token's own revert passes through unchanged.
+
+   Each call is deferred, so it runs after the transition's own effects:
+
+     external nonreentrant function withdraw(const value : uint)
+       raises SafeERC20FailedOperation | forwarded
+     is {
+       storage.balances[Evm.sender()] := storage.balances[Evm.sender()] - value;
+       SafeERC20.safe_transfer(storage.token, Evm.sender(), value);
+     } *)
+
+import "std/interfaces/erc20";
+import "std/evm";
+
+error SafeERC20FailedOperation of address;
+
+error SafeERC20FailedDecreaseAllowance of record {
+  spender : address;
+  currentAllowance : uint;
+  requestedDecrease : uint;
+}
+
+(* `IERC20`'s state-changing methods, with the result a token may leave out. *)
+interface IERC20OptionalReturn is {
+  function transfer(to : address; value : uint) : option(bool);
+  function transferFrom(from : address; to : address; value : uint) : option(bool);
+  function approve(spender : address; value : uint) : option(bool);
+}
+
+module SafeERC20 is {
+  function safe_transfer(const token : IERC20; const to : address; const value : uint)
+    raises SafeERC20FailedOperation | forwarded
+  is {
+    defer IERC20OptionalReturn(address(token)).transfer(to, value) then {
+      | Ok(ok : option(bool)) -> {
+          assert(ok <> Some(false), SafeERC20FailedOperation(address(token)));
+        }
+      | Error(reason : bytes) -> {
+          forward reason;
+        }
+    };
+  }
+
+  function safe_transfer_from(const token : IERC20; const from : address; const to : address; const value : uint)
+    raises SafeERC20FailedOperation | forwarded
+  is {
+    defer IERC20OptionalReturn(address(token)).transferFrom(from, to, value) then {
+      | Ok(ok : option(bool)) -> {
+          assert(ok <> Some(false), SafeERC20FailedOperation(address(token)));
+        }
+      | Error(reason : bytes) -> {
+          forward reason;
+        }
+    };
+  }
+
+  (* Approves `value`. If the token refuses, as USDT does to change an allowance that
+     isn't zero, approves zero and then `value`. The retry is written out in both arms,
+     which compile to one copy; a helper would copy its parameters, which is larger. *)
+  function force_approve(const token : IERC20; const spender : address; const value : uint)
+    raises SafeERC20FailedOperation | forwarded
+  is {
+    const t : IERC20OptionalReturn := IERC20OptionalReturn(address(token));
+    defer t.approve(spender, value) then {
+      | Ok(ok : option(bool)) -> {
+          if ok = Some(false) then {
+            defer t.approve(spender, 0) then {
+              | Ok(zeroed : option(bool)) -> {
+                  assert(zeroed <> Some(false), SafeERC20FailedOperation(address(t)));
+                  defer t.approve(spender, value) then {
+                    | Ok(ok : option(bool)) -> {
+                        assert(ok <> Some(false), SafeERC20FailedOperation(address(t)));
+                      }
+                    | Error(reason : bytes) -> {
+                        forward reason;
+                      }
+                  };
+                }
+              | Error(reason : bytes) -> {
+                  forward reason;
+                }
+            };
+          }
+        }
+      | Error(_) -> {
+          defer t.approve(spender, 0) then {
+            | Ok(zeroed : option(bool)) -> {
+                assert(zeroed <> Some(false), SafeERC20FailedOperation(address(t)));
+                defer t.approve(spender, value) then {
+                  | Ok(ok : option(bool)) -> {
+                      assert(ok <> Some(false), SafeERC20FailedOperation(address(t)));
+                    }
+                  | Error(reason : bytes) -> {
+                      forward reason;
+                    }
+                };
+              }
+            | Error(reason : bytes) -> {
+                forward reason;
+              }
+          };
+        }
+    };
+  }
+
+  function safe_increase_allowance(const token : IERC20; const spender : address; const value : uint)
+    raises SafeERC20FailedOperation | forwarded
+  is {
+    force_approve(token, spender, query token.allowance(Evm.self(), spender) + value);
+  }
+
+  function safe_decrease_allowance(const token : IERC20; const spender : address; const requestedDecrease : uint)
+    raises SafeERC20FailedOperation | SafeERC20FailedDecreaseAllowance | forwarded
+  is {
+    const current : uint := query token.allowance(Evm.self(), spender);
+    assert(
+      current >= requestedDecrease,
+      SafeERC20FailedDecreaseAllowance {
+        spender = spender;
+        currentAllowance = current;
+        requestedDecrease = requestedDecrease;
+      }
+    );
+    force_approve(token, spender, current - requestedDecrease);
+  }
+}

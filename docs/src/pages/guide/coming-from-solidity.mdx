@@ -101,6 +101,7 @@ Both contracts have the same ABI, the same error selector, the same event topic,
 | `bytes32 constant ROLE = keccak256("ROLE");` | `pure function role() : bytes32 is Crypto.keccak256("ROLE")` |
 | `uint[MAX]` | `list(uint, max())` |
 | `mapping(address => uint)` | `map(address, uint)` |
+| `delete x;` | `delete x;` |
 | `address(0)` | `Address.zero` |
 | `type(uint256).max` | `Uint.max` |
 | `unchecked { a + b }` | `Uint.wrapping_add(a, b)`, and `wrapping_sub`, `wrapping_mul` |

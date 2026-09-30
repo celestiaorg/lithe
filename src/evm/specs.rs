@@ -998,3 +998,31 @@ external function walk(const n : uint) is {
         Err(violation("loop invariant at 6:3"))
     );
 }
+
+/// A `delete` of a map entry a total counts keeps the total, as writing zero does.
+#[test]
+fn delete_keeps_checked_totals() {
+    let src = r#"import "std/evm";
+storage is record { balances : map(address, uint); total : uint; }
+external function deposit(const amount : uint) is {
+  storage.balances[Evm.sender()] := storage.balances[Evm.sender()] + amount;
+  storage.total := storage.total + amount;
+}
+external function close() is {
+  storage.total := storage.total - storage.balances[Evm.sender()];
+  delete storage.balances[Evm.sender()];
+}
+external function leak() is { delete storage.balances[Evm.sender()]; }
+"#;
+    let spec = "spec is { invariant ledger is storage.total = sum(storage.balances); invariant holders is count(storage.balances) <= storage.total; }";
+    let mut c = Checked::new(src, spec);
+    c.call(1, 0, "deposit(uint256)", &[Word::from_u64(5)])
+        .expect("deposit");
+    c.call(1, 0, "close()", &[]).expect("close");
+    c.call(1, 0, "deposit(uint256)", &[Word::from_u64(3)])
+        .expect("deposit");
+    assert!(
+        c.call(1, 0, "leak()", &[]).is_err(),
+        "a delete that breaks the ledger"
+    );
+}

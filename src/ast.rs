@@ -163,6 +163,8 @@ pub(crate) enum Tag {
     IntMin,
     IntMax,
     AddressZero,
+    /// `Evm.osaka`: whether the target fork has Osaka's opcodes, a `bool` constant.
+    EvmOsaka,
     /// `Abi.selector(I.method)` and `Abi.interface_id(I)`: `bytes4` constants.
     AbiSelector,
     AbiInterfaceId,
@@ -805,8 +807,12 @@ pub(crate) enum Builtin {
     Base64EncodeWith,
     /// `Base64.decode(data)`: the bytes a base64 string encodes, in either alphabet.
     Base64Decode,
+    /// `String.lower(s)`, or with `true`, `String.upper(s)`: ASCII letters recased.
+    StringCase(bool),
     /// `String.escape_json(s)`, or with `true`, `String.escape_html(s)`.
     StringEscape(bool),
+    /// `String.index_of(s, needle, from)`: where `needle` first starts, from `from` on.
+    StringIndexOf,
     /// `String.replace(s, needle, replacement)`: every `needle` replaced, left to right.
     StringReplace,
     /// `Bytes.join(xs)`, or with `true`, `String.join(xs)`: a list's values one after another.
@@ -815,6 +821,10 @@ pub(crate) enum Builtin {
     UintMulDiv,
     UintMulMod,
     UintAddMod,
+    /// `Uint.pop_count(x)`: how many bits of `x` are set.
+    UintPopCount,
+    /// `Uint.clz(x)`: how many zero bits lead `x`'s highest set bit, 256 for zero.
+    UintClz,
     IntDivRem,
     /// `Uint.to_string(n)`: an unsigned integer in decimal, as a `string`.
     UintToString,
@@ -835,6 +845,9 @@ pub(crate) enum Builtin {
     /// `List.push(xs, v)`: appends to a dynamic list. Checked into an assignment at the
     /// list's length that grows it.
     ListPush,
+    /// `List.resized(xs, n)`: a new list of `xs`'s first `n` elements, padded with zero
+    /// values when `xs` is shorter.
+    ListResized,
     /// `Abi.supports_interface(id)`: whether `id` is ERC-165's or one the contract's
     /// `supports` lists, as the `supportsInterface` the compiler generates answers.
     AbiSupportsInterface,
@@ -935,7 +948,7 @@ impl Pre {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Hash)]
 pub(crate) enum Lit {
     Uint(Word),
     /// Hex literals keep how many digits were written.
@@ -948,6 +961,8 @@ pub(crate) enum Lit {
     Bytes(Vec<u8>),
     Unit,
     Nil,
+    /// What `delete place;` assigns: the place type's zero value, filled in by the checker.
+    Zero,
 }
 
 #[derive(Debug, Clone)]

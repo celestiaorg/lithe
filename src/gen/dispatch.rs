@@ -6,8 +6,27 @@ const BUCKETS_FROM: usize = 18;
 const BUCKETS_FROM_8: usize = 32;
 /// Gas of one selector check in a linear scan: `DUP1 PUSH4 EQ PUSH2 JUMPI`.
 const CHECK_GAS: f64 = 22.0;
-/// Bytes a split of a linear scan adds: its comparison and the second scan's label.
+/// Bytes a split of a linear scan adds, its test and the second scan's label: a comparison
+/// with a selector, or a mask of the selector's last byte.
 const SPLIT_BYTES: f64 = 12.0;
+const MASK_BYTES: f64 = 9.0;
+
+/// What splits a linear scan: the selectors it sends ahead are those with a bit of the mask
+/// set in their last byte, or those from the middle one on.
+#[derive(Clone, Copy)]
+enum Test {
+    Mask(u8),
+    Below([u8; 4]),
+}
+
+impl Test {
+    fn high(self, sel: [u8; 4]) -> bool {
+        match self {
+            Test::Mask(mask) => sel[3] & mask != 0,
+            Test::Below(middle) => sel >= middle,
+        }
+    }
+}
 
 impl<'a> Gen<'a> {
     pub(super) fn emit(&mut self) -> Result<(), Error> {
@@ -426,7 +445,7 @@ impl<'a> Gen<'a> {
                 .filter(|(_, &pay)| pay == pass)
                 .map(|((label, target), _)| (*label, target.sel()))
                 .collect();
-            self.switch(&cases);
+            self.switch(&cases, targets.len() as f64);
         }
         if fallback.is_none() {
             self.jumpdest(bad);
@@ -436,15 +455,14 @@ impl<'a> Gen<'a> {
     }
 
     /// Jumps to the label of the selector on the stack. One that matches none falls
-    /// through. Below `BUCKETS_FROM` cases a linear scan is smallest, split in two where
-    /// that pays; past it, jumping to a bucket of the table first frees the start of the
+    /// through. Below `BUCKETS_FROM` cases a linear scan is smallest, split where that
+    /// pays; past it, jumping to a bucket of the table first frees the start of the
     /// code for `asm::hoist`.
-    fn switch(&mut self, cases: &[(u32, [u8; 4])]) {
+    fn switch(&mut self, cases: &[(u32, [u8; 4])], calls: f64) {
         match cases.len() {
-            n if n < BUCKETS_FROM && self.split_pays(n) => self.split(cases),
-            n if n < BUCKETS_FROM => self.linear(cases),
-            n if n < BUCKETS_FROM_8 => self.buckets(cases, 4),
-            _ => self.buckets(cases, 8),
+            n if n < BUCKETS_FROM => self.scan_tree(cases, calls),
+            n if n < BUCKETS_FROM_8 => self.buckets(cases, 4, calls),
+            _ => self.buckets(cases, 8, calls),
         }
     }
 
@@ -452,7 +470,7 @@ impl<'a> Gen<'a> {
     /// so the buckets hold the fewest checks. A selector that matches nothing in its
     /// bucket falls through the buckets after it. An empty bucket is the last one's
     /// label: every check there fails too.
-    fn buckets(&mut self, cases: &[(u32, [u8; 4])], count: usize) {
+    fn buckets(&mut self, cases: &[(u32, [u8; 4])], count: usize, calls: f64) {
         let slice =
             |shift: u32, sel: [u8; 4]| (u32::from_be_bytes(sel) >> shift) as usize & (count - 1);
         let checks = |shift: u32| {
@@ -496,38 +514,76 @@ impl<'a> Gen<'a> {
         for (&label, group) in table.iter().zip(&groups) {
             if !group.is_empty() {
                 self.jumpdest(label);
-                self.linear(group);
+                self.scan_tree(group, calls);
             }
         }
     }
 
-    /// Whether one comparison that halves a linear scan saves each call, on average over
-    /// the selectors, the gas its bytes are worth.
-    fn split_pays(&self, n: usize) -> bool {
-        let (a, b) = ((n / 2) as f64, (n - n / 2) as f64);
-        let n = n as f64;
-        let saved = CHECK_GAS * ((n + 1.0) / 2.0 - 1.0 - (a * (a + 1.0) + b * (b + 1.0)) / (2.0 * n));
-        saved >= SPLIT_BYTES * asm::byte_gas()
-    }
-
-    /// A linear scan of the selectors below the middle one, then of the rest, where a
-    /// selector from the middle on jumps first. One below that matches nothing falls into
-    /// the second scan, which it matches nothing in either. Each scan keeps the order of
-    /// `cases`, so what is declared first is found first.
-    fn split(&mut self, cases: &[(u32, [u8; 4])]) {
+    /// The cheapest way to find one of `cases`, as the gas it costs every call to reach them
+    /// plus the gas its bytes are worth over `calls` calls, each to a different selector: a
+    /// linear scan, or a test that sends some of them ahead to a second scan, each found the
+    /// same way. The test is one bit or more of the selector's last byte, or a comparison
+    /// with the middle one, which halves the scan exactly but takes three bytes more.
+    fn plan_tree(cases: &[(u32, [u8; 4])], calls: f64) -> (f64, Option<Test>) {
+        let n = cases.len();
+        let linear = CHECK_GAS * (n * (n + 1) / 2) as f64;
+        if n < 4 {
+            return (linear, None);
+        }
+        let halves = |test: Test| -> (usize, usize) {
+            let high = cases.iter().filter(|&&(_, sel)| test.high(sel)).count();
+            (n - high, high)
+        };
+        let balance = |(a, b): (usize, usize)| a * (a + 1) + b * (b + 1);
+        let mask = (1..=255u8)
+            .map(Test::Mask)
+            .min_by_key(|&t| balance(halves(t)))
+            .unwrap_or(Test::Mask(1));
         let mut sorted: Vec<[u8; 4]> = cases.iter().map(|&(_, sel)| sel).collect();
         sorted.sort();
-        let middle = sorted[cases.len() / 2];
-        let (lo, hi): (Vec<_>, Vec<_>) = cases.iter().partition(|&&(_, sel)| sel < middle);
+        let mut best = (linear, None);
+        for (test, bytes) in [(mask, MASK_BYTES), (Test::Below(sorted[n / 2]), SPLIT_BYTES)] {
+            let (lo, hi): (Vec<_>, Vec<_>) = cases.iter().partition(|&&(_, sel)| !test.high(sel));
+            if lo.is_empty() || hi.is_empty() {
+                continue;
+            }
+            let cost = bytes * asm::byte_gas() * calls
+                + CHECK_GAS * n as f64
+                + hi.len() as f64
+                + Self::plan_tree(&lo, calls).0
+                + Self::plan_tree(&hi, calls).0;
+            if cost < best.0 {
+                best = (cost, Some(test));
+            }
+        }
+        best
+    }
+
+    /// Finds `cases` as `plan_tree` chose. Each scan keeps the order of `cases`, so what is
+    /// declared first is found first. Every jump goes forward, so a selector that matches
+    /// nothing in its scan falls into the scans after it, and out past the last.
+    fn scan_tree(&mut self, cases: &[(u32, [u8; 4])], calls: f64) {
+        let Some(test) = Self::plan_tree(cases, calls).1 else {
+            return self.linear(cases);
+        };
+        let (lo, hi): (Vec<_>, Vec<_>) = cases.iter().partition(|&&(_, sel)| !test.high(sel));
         let high = self.fresh();
         self.op(DUP1);
-        self.push_u64(u64::from(u32::from_be_bytes(middle) - 1));
-        self.op(LT);
+        match test {
+            Test::Mask(mask) => {
+                self.push_u64(u64::from(mask));
+                self.op(AND);
+            }
+            Test::Below(middle) => {
+                self.push_u64(u64::from(u32::from_be_bytes(middle) - 1));
+                self.op(LT);
+            }
+        }
         self.push_label(high);
         self.op(JUMPI);
-        self.linear(&lo);
+        self.scan_tree(&lo, calls);
         self.jumpdest(high);
-        self.linear(&hi);
+        self.scan_tree(&hi, calls);
     }
 
     fn linear(&mut self, cases: &[(u32, [u8; 4])]) {
@@ -872,7 +928,7 @@ impl<'a> Gen<'a> {
             .tail
             .clone()
             .ok_or_else(|| error(1, 1, "view is missing a value"))?;
-        self.compile_stmts(&stmts)?;
+        self.compile_seq(&stmts)?;
         let ret = self.checked.prog.funcs[func].ret_ty;
         if self.tree_ret(ret) {
             let at = self.stage(&tail)?;
@@ -943,7 +999,7 @@ impl<'a> Gen<'a> {
         self.decode_params(func)?;
         let stmts = self.checked.prog.funcs[func].stmts.clone();
         let tail = self.checked.prog.funcs[func].tail.clone();
-        self.compile_stmts(&stmts)?;
+        self.compile_seq(&stmts)?;
         if let Some(tail) = tail {
             self.compile_effect(&tail)?;
         }
@@ -1036,26 +1092,29 @@ impl<'a> Gen<'a> {
             self.op(CALLVALUE);
             self.revert_if_true()?;
         }
-        self.push_word(self.code_end);
-        self.op(CODESIZE);
-        self.op(SUB);
-        self.op(DUP1);
-        self.alloc_blob()?;
-        self.push_u64(32);
-        self.op(ADD);
-        self.op(DUP1);
-        self.push_u64(4);
-        self.op(SWAP1);
-        self.op(SUB);
-        self.mstore_off(self.code_args);
-        self.push_word(self.code_end);
-        self.op(SWAP1);
-        self.op(CODECOPY);
+        // The arguments follow the code: copied to memory, where decoding reads them.
+        if !self.checked.prog.funcs[func].params.is_empty() {
+            self.push_word(self.code_end);
+            self.op(CODESIZE);
+            self.op(SUB);
+            self.op(DUP1);
+            self.alloc_blob()?;
+            self.push_u64(32);
+            self.op(ADD);
+            self.op(DUP1);
+            self.push_u64(4);
+            self.op(SWAP1);
+            self.op(SUB);
+            self.mstore_off(self.code_args);
+            self.push_word(self.code_end);
+            self.op(SWAP1);
+            self.op(CODECOPY);
+        }
         self.begin_body(self.func_direct_ok(func));
         self.decode_params(func)?;
         let stmts = self.checked.prog.funcs[func].stmts.clone();
         let tail = self.checked.prog.funcs[func].tail.clone();
-        self.compile_stmts(&stmts)?;
+        self.compile_seq(&stmts)?;
         if let Some(tail) = tail {
             self.compile_effect(&tail)?;
         }

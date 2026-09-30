@@ -50,7 +50,7 @@
       "patterns": [
         {
           "name": "keyword.control.lithe",
-          "match": "\\b(if|then|else|for|in|do|until|bound|case|of|with|skip|is|end)\\b"
+          "match": "\\b(if|then|else|for|in|do|until|bound|case|of|with|skip|delete|is|end)\\b"
         },
         {
           "name": "keyword.other.declaration.lithe",

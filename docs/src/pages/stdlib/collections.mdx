@@ -1,6 +1,6 @@
 ---
 title: "Collections"
-description: "Sets, enumerable sets, bitmaps, and queues in storage."
+description: "Sets, enumerable sets and maps, bitmaps, and queues in storage."
 ---
 
 # Collections
@@ -11,6 +11,7 @@ A collection lives in storage. A collection function takes the collection as its
 import "std/evm";
 import "std/collections/set";
 import "std/collections/set_enumerable";
+import "std/collections/map_enumerable";
 import "std/collections/bitmap";
 import "std/collections/queue";
 
@@ -20,6 +21,7 @@ contract Airdrop is {
   storage is record {
     admins : Set(address);
     holders : SetEnumerable(address);
+    claims : MapEnumerable(address, uint);
     claimed : bitmap;
     waiting : Queue(address);
   }
@@ -27,9 +29,22 @@ contract Airdrop is {
   external function claim(const index : uint) is {
     if not Bitmap.get(storage.claimed, index) then {
       Bitmap.set(storage.claimed, index);
-      SetEnumerable.add(storage.holders, Evm.sender());
+      const _ : bool := SetEnumerable.add(storage.holders, Evm.sender());
+      const _ : bool := MapEnumerable.set(storage.claims, Evm.sender(), index);
     }
   }
+
+  external function claim_range(const start : uint; const amount : uint) is {
+    Bitmap.set_batch(storage.claimed, start, amount);
+  }
+
+  external view function claimed_in(const start : uint; const amount : uint) : uint is
+    Bitmap.pop_count(storage.claimed, start, amount)
+
+  external view function claim_of(const who : address) : uint
+    raises EnumerableMapNonexistentKey
+  is
+    MapEnumerable.get(storage.claims, who)
 
   external function wait() is {
     Queue.push(storage.waiting, Evm.sender());
@@ -47,9 +62,13 @@ contract Airdrop is {
 | --- | --- | --- |
 | `Set(T)` | a map from `T` to `bool` | `contains`, `add`, `remove` |
 | `SetEnumerable(T)` | a list and an index map | `contains`, `add`, `remove`, `length`, `at` |
-| `Bitmap` | `bitmap`, 256 flags a slot | `get`, `set`, `unset`, `set_to` |
+| `MapEnumerable(K, V)` | an enumerable set of keys and a map of values | `contains`, `set`, `remove`, `get`, `try_get`, `length`, `at` |
+| `Bitmap` | `bitmap`, 256 flags a slot | `get`, `set`, `unset`, `set_to`, `set_batch`, `unset_batch`, `pop_count` |
 | `Queue(T)` | a map and two counters | `push`, `pop`, `front`, `back`, `at`, `length`, `is_empty` |
 
 - `Set` and `SetEnumerable` take a `map_key`: an integer, `bool`, `address`, `bytesN`, or a nominal type over one. `SetEnumerable` costs more to write, because it keeps a list as well as the map.
-- `remove` in `SetEnumerable` moves the last element into the gap, so order isn't kept.
-- `Queue.pop` leaves the element in storage, because a generic `T` has no zero value to write back.
+- `SetEnumerable.add` and `remove`, and `MapEnumerable.set` and `remove`, answer whether they changed membership, as OpenZeppelin's do: `add` and `set` whether the element or key is new, `remove` whether it was there. A call statement must return nothing, so bind an answer you don't need to `_`, as in `const _ : bool := SetEnumerable.add(storage.holders, who);`. An answer bound to `_` isn't computed: the code is the same as for a function that answers nothing.
+- `remove` in `SetEnumerable` and `MapEnumerable` moves the last element into the gap, so order isn't kept.
+- `MapEnumerable` is OpenZeppelin's `EnumerableMap` for any key and value. `get` raises its `EnumerableMapNonexistentKey`, with the key's ABI word as the `bytes32`. `try_get` answers an option instead, and `at(index)` a `(key, value)` pair, raising `OutOfBounds` past the end. `remove` leaves the old value in storage, where nothing reads it: its slot is cold by then, so deleting it would cost more than its refund, and setting the key again costs less.
+- `Bitmap.set_batch(bits, start, amount)` and `unset_batch` change the `amount` flags from `start`, a whole slot at a time, and `pop_count(bits, start, amount)` counts those that are set, as Solady's `LibBitmap` does.
+- `Queue.pop` deletes the element it returns, which refunds its slots: about 1,800 gas a pop for a one-slot `T`.

@@ -1,6 +1,6 @@
 ---
 title: "Utilities"
-description: "CREATE2 addresses, clones, SSTORE2, CREATE3, nonces, and checkpointed history."
+description: "CREATE and CREATE2 addresses, clones, SSTORE2, CREATE3, nonces, checkpointed history, old block hashes, string search, calendar dates, and ERC-7821 batch execution."
 ---
 
 # Utilities
@@ -10,6 +10,10 @@ description: "CREATE2 addresses, clones, SSTORE2, CREATE3, nonces, and checkpoin
 `std/utils/create2.lithe`. `compute_address(salt, init_code_hash, deployer)` is where a `CREATE2` from `deployer` lands, and `compute_address_here(salt, init_code_hash)` is where [`defer create`](/language/effects#create) with that salt would put a contract from this one. `init_code_hash` is the hash of the created contract's creation code, with its [`deploy`](/language/deploy) arguments appended: `Crypto.keccak256(Evm.creation_code(C))` for a contract `C` without arguments, a constant.
 
 The file also declares `FailedDeployment`, which the deployers below raise when a salted creation fails.
+
+## `Create`
+
+`std/utils/create.lithe`. `compute_address(deployer, nonce)` is where a plain `CREATE` from `deployer` lands when its nonce is `nonce`, as Solady's `LibRLP.computeAddress` computes it: the hash of the RLP list of the two. A contract's nonce starts at 1, and each creation moves it on, so the contract's first [`defer create`](/language/effects#create) lands at `Create.compute_address(Evm.self(), 1)`. Any nonce works, up to 32 bytes.
 
 ## `Clones`
 
@@ -178,3 +182,272 @@ A lookup is a binary search over the sorted history, so it costs a few reads how
 | `length(history)`, `at(history, i)` | the checkpoints, oldest first; `at` past the end panics, as a list index does |
 | `upper_lookup(history, key)` | the value as of `key`: the last checkpoint at or before it, or zero |
 | `upper_lookup_recent(history, key)` | the same, faster for a recent key: it checks the newest square root of the history first |
+
+## `ERC7821`
+
+`std/accounts/erc7821.lithe`. A minimal batch executor, as Solady's `ERC7821`: `execute(mode, executionData)` runs a list of calls in order, each a target, a value, and calldata, and a failed call reverts the batch with the callee's own revert data. A call to `Address.zero` calls the account itself. Only the account may execute, which is what an [EIP-7702](https://eips.ethereum.org/EIPS/eip-7702) delegated EOA does when it sends a transaction to itself: approve and swap in one transaction.
+
+```lithe
+import "std/accounts/erc7821";
+import "std/interfaces/erc7821";
+
+contract Delegate is {
+  use ERC7821 exposing IERC7821;
+
+  storage is record {}
+
+  payable receive is {
+    skip
+  }
+}
+```
+
+`execute` is payable, and each call's value comes out of the account's balance. `receive` lets the account take plain transfers once its code is delegated. Two modes are supported, as `supportsExecutionMode` answers:
+
+| Mode | `executionData` |
+| --- | --- |
+| `0x01000000000000000000…` | `abi.encode(calls)`, `calls` a `(address,uint256,bytes)[]` |
+| `0x01000000000078210001…` | `abi.encode(calls)`, or `abi.encode(calls, opData)` with extra `bytes` |
+
+Bytes 2 to 5 and 10 to 31 of a mode are free. Another mode raises `UnsupportedExecutionMode`, and another caller `AccountUnauthorized(caller)`, both OpenZeppelin's. The module's `execute` does not read `opData`. Malformed `executionData` reverts before any call.
+
+To let others submit batches, such as a relayer carrying a signature in `opData`, write your own `execute` from the pieces. Here a batch runs when the account's own key signed it with the next nonce:
+
+```lithe
+import "std/accounts/erc7821";
+import "std/crypto/ecdsa";
+import "std/utils/nonce";
+import "std/interfaces/erc7821";
+import "std/abi";
+import "std/evm";
+import "std/crypto";
+
+contract Account is {
+  use ERC7821 exposing {
+    view function supportsExecutionMode(mode : bytes32) : bool;
+  }
+  use ECDSA;
+  use Nonces exposing {
+    view function nonces(owner : address) : uint;
+  }
+
+  storage is record {}
+
+  payable receive is {
+    skip
+  }
+
+  external payable function execute(const mode : bytes32; const executionData : bytes)
+    raises UnsupportedExecutionMode | AccountUnauthorized | ECDSAInvalidSignature
+      | ECDSAInvalidSignatureLength | ECDSAInvalidSignatureS | forwarded
+  is {
+    const id : uint := ERC7821.execution_mode_id(mode);
+    assert(id <> 0, UnsupportedExecutionMode);
+    const calls : erc7821_calls := Abi.decode(executionData, erc7821_calls);
+    const signature : bytes := ERC7821.op_data_of(id, executionData);
+    if signature.length <> 0 then {
+      const digest : bytes32 := ECDSA.to_eth_signed_message_hash(Crypto.keccak256(Abi.encode(
+        Evm.chain_id(), Evm.self(), Nonces.use_nonce(Evm.self()), calls
+      )));
+      assert(ECDSA.recover_signature(digest, signature) = Evm.self(), AccountUnauthorized(Evm.sender()));
+    } else {
+      assert(Evm.sender() = Evm.self(), AccountUnauthorized(Evm.sender()));
+    };
+    ERC7821.execute_calls(calls);
+  }
+}
+```
+
+| Piece | |
+| --- | --- |
+| `erc7821_call`, `erc7821_calls` | a call, `{ to; value; data }`, and a list of them: decode a batch with `Abi.decode(executionData, erc7821_calls)` |
+| `execution_mode_id(mode) : uint` | 1 for a batch, 2 for a batch with optional `opData`, 0 for an unsupported mode |
+| `op_data_of(id, executionData) : bytes` | a batch's `opData`, or empty when `id` is not 2 or there is none |
+| `execute_calls(calls)` | defers each call, in order, with its value; a failed one reverts with its revert data, so this raises `forwarded` |
+
+### Batches of batches
+
+Solady's third mode, `0x01000000000078210002…`, runs a batch of batches: `executionData` is `abi.encode(batches)`, a `bytes[]` whose every element is a batch in mode `0x01000000000078210001…`, with or without its own `opData`. It is useful for batches signed by different signers. `ERC7821Batches`, in the same file, adds it. It is opt-in, so an executor without it doesn't pay for it:
+
+```lithe
+import "std/accounts/erc7821";
+import "std/interfaces/erc7821";
+
+contract Delegate is {
+  use ERC7821;
+  use ERC7821Batches exposing IERC7821Batches;
+
+  storage is record {}
+
+  payable receive is {
+    skip
+  }
+}
+```
+
+`IERC7821Batches` is `IERC7821` with Solady's `BatchOfBatchesDecodingError`, which `execute` raises where Solady's does: an offset past 64 bits, or a list or batch that runs past the end of `executionData`. The module's `execute` authorizes each batch as `ERC7821` does, by the caller being the account.
+
+Every batch is decoded and authorized before any call runs, since a transition's checks come before its calls. Solady runs each batch before it decodes the next, so there a batch's calls can change how a later batch is authorized, for example by rotating the signer. Here they can't, and a malformed batch anywhere reverts before any call.
+
+An account that authorizes each batch with its own `opData` writes `execute` from the pieces. A single batch is `executionData[0 : executionData.length]`:
+
+```lithe
+import "std/accounts/erc7821";
+import "std/interfaces/erc7821";
+import "std/abi";
+import "std/crypto";
+
+contract Signed is {
+  error BadOpData;
+
+  use ERC7821;
+  use ERC7821Batches exposing {
+    view function supportsExecutionMode(mode : bytes32) : bool;
+  }
+
+  storage is record {
+    key : bytes32;
+  }
+
+  external payable function execute(const mode : bytes32; const executionData : bytes)
+    raises UnsupportedExecutionMode | BatchOfBatchesDecodingError | BadOpData | forwarded
+  is {
+    const id : uint := ERC7821Batches.execution_mode_id(mode);
+    assert(id >= 2, UnsupportedExecutionMode);
+    const n : uint := if id = 3 then ERC7821Batches.batch_count(executionData) else 1;
+    for i : uint in 0 .. n do {
+      var start : uint := 0;
+      var finish : uint := executionData.length;
+      if id = 3 then {
+        (start, finish) := ERC7821Batches.batch(executionData, i);
+      } else {
+        skip
+      };
+      const calls : erc7821_calls := Abi.decode(executionData[start:finish], erc7821_calls);
+      const op_data : bytes := ERC7821Batches.op_data_in(executionData, start, finish);
+      assert(Crypto.keccak256(op_data) = storage.key, BadOpData);
+      ERC7821.execute_calls(calls);
+    }
+  }
+}
+```
+
+| Piece | |
+| --- | --- |
+| `execution_mode_id(mode) : uint` | as `ERC7821`'s, and 3 for a batch of batches |
+| `batch_count(executionData) : uint` | how many batches a batch of batches holds |
+| `batch(executionData, i) : (uint, uint)` | where batch `i` lies: `executionData[start:finish]` |
+| `op_data_in(executionData, start, finish) : bytes` | the `opData` of the batch `executionData[start:finish]`, or empty |
+
+`Abi.decode(executionData[start:finish], erc7821_calls)` checks the batch where it lies in the calldata, with no copy, and each call reads its target, value, and data from there.
+
+| Build | Runtime bytes | `execute`, 2 calls | batch of 2 batches of 2 calls |
+| --- | --- | --- | --- |
+| `ERC7821` | 524 | 4,218 | |
+| `ERC7821` and `ERC7821Batches` | 1,080 | 4,376 | 7,856 |
+| Solady `ERC7821` | 673 | 3,817 | 5,457 |
+
+Gas is execution gas, calls to an account with no code. The extra over Solady is checking every call's encoding before the first one runs, as decoding would, where Solady reads each call unchecked as it makes it; a batch of batches also queues its calls until every batch is checked.
+
+## `BlockHash`
+
+`std/utils/block_hash.lithe`. `block_hash(n)` is the hash of block `n` as Solady's `BlockHashLib.blockHash` finds it: `Evm.block_hash(n)` for the last 256 blocks, and before them a query of the [EIP-2935](https://eips.ethereum.org/EIPS/eip-2935) history contract at `0x0000F90827F1C53a10cb7A02335B175320002935`, which keeps the last 8191. It is zero for this block and later ones, for blocks older than the history, and on a chain without the contract. `history()` is the contract's address.
+
+```lithe
+import "std/utils/block_hash";
+import "std/evm";
+
+contract Beacon is {
+  use BlockHash;
+
+  storage is record {
+    committed : uint;
+  }
+
+  external function commit() is {
+    storage.committed := Evm.block_number();
+  }
+
+  (* A seed from a block that was in the future when it was committed to. *)
+  external view function seed() : bytes32 is
+    BlockHash.block_hash(storage.committed + 1)
+}
+```
+
+## `Strings`
+
+`std/utils/strings.lithe`. Searching strings, as Solady's `LibString` searches them. Offsets count bytes, not characters. Changing case, escaping, searching, and replacing are built-ins: [`String.lower`, `String.upper`, `String.escape_json`, `String.escape_html`, `String.index_of`, and `String.replace`](/language/builtins#bytes-and-string).
+
+| Function | |
+| --- | --- |
+| `index_of(subject, needle)`, `index_of(subject, needle, from)` | where `needle` first starts, at or after `from`, or `Uint.max` if it isn't there. An empty needle is found at `from`, or at the end if `from` is past it |
+| `contains(subject, needle) : bool` | whether `needle` is in `subject` |
+| `starts_with(subject, needle) : bool`, `ends_with(subject, needle) : bool` | whether `subject` starts or ends with `needle` |
+| `replace(subject, needle, replacement) : string` | every `needle`, left to right, replaced. An empty needle puts `replacement` before each byte and at the end |
+
+```lithe
+import "std/utils/strings";
+import "std/string";
+import "std/crypto";
+
+contract Names is {
+  use Strings;
+
+  error NameHasSpace;
+
+  storage is record {
+    names : map(bytes32, string);
+  }
+
+  external function register(const name : string)
+    raises NameHasSpace
+  is {
+    assert(not Strings.contains(name, " "), NameHasSpace);
+    storage.names[Crypto.keccak256(String.lower(name))] := name;
+  }
+
+  external pure function slug(const title : string) : string is
+    Strings.replace(String.lower(title), " ", "-")
+}
+```
+
+## `DateTime`
+
+`std/utils/date_time.lithe`. Gregorian dates in UTC, as Solady's `DateTimeLib` computes them. Months and days count from 1, and weekdays from Monday, 1, to Sunday, 7, as in ISO 8601. Times are `timestamp`s. Dates from 1970-01-01 to the year `0xffffffff` are supported; outside them, as in Solady, results are unspecified. `is_supported_date` checks a date.
+
+```lithe
+import "std/utils/date_time";
+import "std/evm";
+
+contract Subscription is {
+  use DateTime;
+
+  storage is record {
+    paid_until : map(address, timestamp);
+  }
+
+  (* A month from now, or from the end of the current month paid for. 31 January
+     and one month is 28 or 29 February. *)
+  external function renew() is {
+    const now : timestamp := Evm.block_timestamp();
+    const from : timestamp := if storage.paid_until[Evm.sender()] > now then storage.paid_until[Evm.sender()] else now;
+    storage.paid_until[Evm.sender()] := DateTime.add_months(from, 1);
+  }
+
+  external view function renews_on(const who : address) : (uint, uint, uint) is
+    DateTime.timestamp_to_date(storage.paid_until[who])
+}
+```
+
+| Function | |
+| --- | --- |
+| `date_to_epoch_day(year, month, day) : uint`, `epoch_day_to_date(day) : (uint, uint, uint)` | days since 1970-01-01, and back |
+| `date_to_timestamp(year, month, day)`, `timestamp_to_date(t)` | the same for the start of the day, as a `timestamp` |
+| `date_time_to_timestamp(year, month, day, hour, minute, second)`, `timestamp_to_date_time(t)` | with the time of day |
+| `is_leap_year(year) : bool`, `days_in_month(year, month) : uint` | `days_in_month` is 0 for a month past 12 |
+| `weekday(t) : uint` | 1 for Monday to 7 for Sunday |
+| `is_supported_date(year, month, day) : bool` | whether the date exists and is in the supported range |
+| `add_years(t, n)`, `sub_years(t, n)`, `add_months(t, n)`, `sub_months(t, n)` | the same day of the month and time of day, or the month's last day if it has fewer |
+| `diff_years(from, to) : uint`, `diff_months(from, to) : uint` | calendar years or months between: 1 from 31 December to 1 January. Panics if `to` is before `from` |
+
+Days, hours, minutes, and seconds need no library: `t + 3days`, and `(later - earlier) / 1days`.

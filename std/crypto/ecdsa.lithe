@@ -30,7 +30,7 @@ module ECDSA is {
     raises ECDSAInvalidSignature | ECDSAInvalidSignatureLength | ECDSAInvalidSignatureS
   is {
     assert(signature.length = 65, ECDSAInvalidSignatureLength(signature.length));
-    const r : bytes32 := Bytes.word(signature, 0);
+    const r : bytes32 := bytes32(signature);
     const s : bytes32 := Bytes.word(signature, 32);
     (* The word ending at the last byte holds `v` in its low byte. *)
     const v : uint8 := uint8(uint(Bytes.word(signature, 33)) & 255);
@@ -43,6 +43,32 @@ module ECDSA is {
     const s : bytes32 := bytes32(uint(vs) & ((1 << 255) - 1));
     const v : uint8 := uint8((uint(vs) >> 255) + 27);
   } with recover(hash, v, r, s)
+
+  (* The signer of `hash`, or `None` where `recover` would raise. *)
+  pure function try_recover(
+    const hash : bytes32;
+    const v : uint8;
+    const r : bytes32;
+    const s : bytes32
+  ) : option(address) is {
+    var signer : address := Address.zero;
+    if uint(s) <= half_order() then {
+      signer := Crypto.ecrecover(hash, uint(v), r, s);
+    }
+  } with if signer = Address.zero then None else Some(signer)
+
+  pure function try_recover_signature(const hash : bytes32; const signature : bytes) : option(address) is {
+    var signer : address := Address.zero;
+    if signature.length = 65 then {
+      const s : bytes32 := Bytes.word(signature, 32);
+      if uint(s) <= half_order() then {
+        signer := Crypto.ecrecover(hash, uint(Bytes.word(signature, 33)) & 255, bytes32(signature), s);
+      }
+    }
+  } with if signer = Address.zero then None else Some(signer)
+
+  pure function try_recover_compact(const hash : bytes32; const r : bytes32; const vs : bytes32) : option(address) is
+    try_recover(hash, uint8((uint(vs) >> 255) + 27), r, bytes32(uint(vs) & ((1 << 255) - 1)))
 
   (* The hash `eth_sign` and `personal_sign` sign for a 32-byte message (EIP-191). *)
   pure function to_eth_signed_message_hash(const message : bytes32) : bytes32 is {

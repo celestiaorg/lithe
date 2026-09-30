@@ -42,7 +42,7 @@ module ERC2981 is {
   }
 
   function delete_default_royalty() is {
-    erc2981.default_royalty := { receiver = Address.zero; fraction = 0; };
+    delete erc2981.default_royalty;
   }
 
   function set_token_royalty(const tokenId : uint; const receiver : address; const fee : uint96)
@@ -61,7 +61,7 @@ module ERC2981 is {
 
   (* The token falls back to the default royalty. *)
   function reset_token_royalty(const tokenId : uint) is {
-    erc2981.token_royalties[tokenId] := { receiver = Address.zero; fraction = 0; };
+    delete erc2981.token_royalties[tokenId];
   }
 
   external view function royaltyInfo(const tokenId : uint; const salePrice : uint) : (address, uint) is

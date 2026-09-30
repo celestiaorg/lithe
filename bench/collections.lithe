@@ -1,0 +1,43 @@
+(* Benchmark: std's queue and enumerable map, filled, then popped and removed. Popping
+   deletes the element, for the storage refund. Mirrors collections.sol. *)
+
+import "std/collections/queue";
+import "std/collections/map_enumerable";
+
+storage is record {
+  pending : Queue(address);
+  balances : MapEnumerable(address, uint);
+}
+
+external function enqueue(const who : address) is {
+  Queue.push(storage.pending, who);
+}
+
+external function dequeue() : address
+  raises QueueEmpty
+is
+  Queue.pop(storage.pending)
+
+external view function queued() : uint is
+  Queue.length(storage.pending)
+
+external function set(const key : address; const value : uint) is {
+  const _ : bool := MapEnumerable.set(storage.balances, key, value);
+}
+
+external function remove(const key : address) is {
+  const _ : bool := MapEnumerable.remove(storage.balances, key);
+}
+
+external view function get(const key : address) : uint
+  raises EnumerableMapNonexistentKey
+is
+  MapEnumerable.get(storage.balances, key)
+
+external view function length() : uint is
+  MapEnumerable.length(storage.balances)
+
+external view function at(const index : uint) : (address, uint)
+  raises Out_of_bounds
+is
+  MapEnumerable.at(storage.balances, index)

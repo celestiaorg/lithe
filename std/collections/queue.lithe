@@ -1,6 +1,6 @@
 (* A first-in, first-out queue. Pushing and popping each touch one element and a
-   counter, however long the queue is. Popping leaves the element in storage: a generic
-   `T` has no zero value to write back.
+   counter, however long the queue is. Popping deletes the element, which refunds its
+   storage.
 
      storage is record {
        pending : Queue(address);
@@ -53,8 +53,10 @@ module Queue(T) is {
   function pop(storage q : self) : T
     raises QueueEmpty
   is {
-    assert(q.tail > q.head, QueueEmpty);
-    const value : T := q.items[q.head];
-    q.head := q.head + 1;
+    const head : uint := q.head;
+    assert(q.tail > head, QueueEmpty);
+    const value : T := q.items[head];
+    delete q.items[head];
+    q.head := head + 1;
   } with value
 }

@@ -94,4 +94,9 @@ module Evm is {
 
   (* `to.staticcall(data)`, run with `query`: the return data. *)
   intrinsic view function static_call(to : address; data : bytes) : bytes;
+
+  (* osaka : bool
+     Whether the code is built for Osaka or later, as `--evm-version` sets. A constant, so
+     `pure` functions read it, and an `if` on it builds only the target's branch. *)
+  intrinsic osaka;
 }

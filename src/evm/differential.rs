@@ -164,6 +164,55 @@ fn optimizer_preserves_behavior() {
     }
 }
 
+/// Builds that read stored constants as constants and place allocations where the heap's
+/// top is known must behave as builds without them, for every program, whichever build is
+/// smaller. `LITHE_FUZZ_STEPS` sets calls per program.
+#[test]
+fn static_heap_preserves_behavior() {
+    let steps = steps_from_env("LITHE_FUZZ_STEPS", 200);
+    let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let mut bench = Vec::new();
+    lithe_files(&root.join("bench"), &mut bench);
+    let bench = bench.into_iter().filter_map(|path| {
+        let src = std::fs::read_to_string(&path).ok()?;
+        let rel = path
+            .strip_prefix(&root)
+            .ok()?
+            .to_string_lossy()
+            .replace('\\', "/");
+        (is_program(&src) && contracts(&src) <= 1 && !needs_deploy_args(&src))
+            .then_some((path, rel))
+    });
+    let build = |path: &std::path::Path, rel: &str, on: bool| {
+        crate::gen::FORCE_STATIC_HEAP.set(Some(on));
+        let code = compile_file(path);
+        crate::gen::FORCE_STATIC_HEAP.set(None);
+        deploy(&code.unwrap_or_else(|e| panic!("{rel}: {e}")))
+            .unwrap_or_else(|e| panic!("{rel}: deploy: {e}"))
+    };
+    let mut differ = 0;
+    for (path, rel) in differential_targets().into_iter().chain(bench) {
+        OPAQUE_CODE.set(true);
+        install_mocks();
+        let (off, on) = (build(&path, &rel, false), build(&path, &rel, true));
+        if off == on {
+            continue;
+        }
+        differ += 1;
+        let checked = crate::check::check(
+            crate::modules::load(&Sources::disk(), &path).expect("load"),
+            Default::default(),
+        )
+        .expect("check");
+        let mut methods = crate::route::method_ids(&checked).expect("methods");
+        // Other characters than an alphabet's decode to whatever memory the lookups reach,
+        // which the builds lay out differently.
+        methods.retain(|(sig, _)| !sig.starts_with("decode("));
+        compare_builds(&rel, &methods, &off, &on, steps, true);
+    }
+    assert!(differ > 20, "only {differ} programs placed an allocation");
+}
+
 /// Runs every program against creation code built by another compiler revision and demands
 /// identical behavior. `LITHE_REF_DIR` holds `<path>.hex` for each `examples/` and `fuzz/`
 /// program. Without it the test does nothing. `LITHE_REF_STEPS` sets calls per program.
@@ -197,7 +246,7 @@ fn differential(path: &std::path::Path, rel: &str, reference: &[u8], steps: usiz
     install_mocks();
     let ours = deploy(&compile_file(path).unwrap_or_else(|e| panic!("{rel}: {e}")))
         .unwrap_or_else(|e| panic!("{rel}: deploy: {e}"));
-    let checked = crate::check::check(crate::modules::load(&Sources::disk(), path).expect("load"))
+    let checked = crate::check::check(crate::modules::load(&Sources::disk(), path).expect("load"), Default::default())
         .expect("check");
     let methods = crate::route::method_ids(&checked).expect("methods");
     compare_builds(rel, &methods, reference, &ours, steps, slots);

@@ -1,0 +1,55 @@
+(* ERC-6909 minimal multi-tokens and their metadata, content URI, and token supply
+   extensions, with the errors OpenZeppelin's `ERC6909` raises. Each interface is exactly
+   its standard's functions, so its ERC-165 id is the standard's: `0x0f632fb3` for
+   `IERC6909`, and each extension's own functions for the others. *)
+
+error ERC6909InsufficientBalance of record {
+  sender : address;
+  balance : uint;
+  needed : uint;
+  id : uint;
+}
+
+error ERC6909InsufficientAllowance of record {
+  spender : address;
+  allowance : uint;
+  needed : uint;
+  id : uint;
+}
+
+error ERC6909InvalidApprover of address;
+
+error ERC6909InvalidReceiver of address;
+
+error ERC6909InvalidSender of address;
+
+error ERC6909InvalidSpender of address;
+
+interface IERC6909 is {
+  view function balanceOf(owner : address; id : uint) : uint;
+  view function allowance(owner : address; spender : address; id : uint) : uint;
+  view function isOperator(owner : address; spender : address) : bool;
+  function approve(spender : address; id : uint; amount : uint) : bool
+    raises ERC6909InvalidApprover | ERC6909InvalidSpender;
+  function setOperator(spender : address; approved : bool) : bool
+    raises ERC6909InvalidApprover | ERC6909InvalidSpender;
+  function transfer(receiver : address; id : uint; amount : uint) : bool
+    raises ERC6909InvalidSender | ERC6909InvalidReceiver | ERC6909InsufficientBalance;
+  function transferFrom(sender : address; receiver : address; id : uint; amount : uint) : bool
+    raises ERC6909InsufficientAllowance | ERC6909InvalidSender | ERC6909InvalidReceiver | ERC6909InsufficientBalance;
+}
+
+interface IERC6909Metadata is {
+  view function name(id : uint) : string;
+  view function symbol(id : uint) : string;
+  view function decimals(id : uint) : uint8;
+}
+
+interface IERC6909ContentURI is {
+  view function contractURI() : string;
+  view function tokenURI(id : uint) : string;
+}
+
+interface IERC6909TokenSupply is {
+  view function totalSupply(id : uint) : uint;
+}

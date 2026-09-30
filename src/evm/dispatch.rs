@@ -82,6 +82,8 @@ fn check_dispatch(runtime: &[u8], sigs: &[(String, u64, bool)], missed: impl Fn(
 fn dispatch_shapes_hit_and_miss() {
     for (plain, shape) in [
         (4, vec![]),
+        (12, vec![]),
+        (13, vec![]),
         (16, vec![]),
         (17, vec![4]),
         (30, vec![4]),
@@ -106,7 +108,7 @@ fn dispatch_shapes_keep_fallback_and_receive() {
     let extra = "\
 payable receive is { storage.n := 7; }
 fallback : bytes is { skip } with Evm.calldata()";
-    for (plain, shape) in [(4, vec![]), (19, vec![4]), (40, vec![8])] {
+    for (plain, shape) in [(4, vec![]), (13, vec![]), (19, vec![4]), (40, vec![8])] {
         let (src, sigs) = entries(plain, 0, extra);
         let runtime = deploy(&compile(&src).expect("compile")).expect("deploy");
         assert_eq!(tables(&runtime), shape, "{plain} entrypoints");
@@ -131,6 +133,7 @@ fallback : bytes is { skip } with Evm.calldata()";
 fn dispatch_shapes_split_payable_entries() {
     // Payable entries dispatch first: a miss among them still reaches the others.
     for (plain, payable, shape) in [
+        (3, 14, vec![]),
         (3, 20, vec![4]),
         (20, 3, vec![4]),
         (20, 20, vec![4, 4]),

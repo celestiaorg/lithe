@@ -1,0 +1,16 @@
+(* ERC-5267: a contract describes its EIP-712 domain. `fields` has a bit set for each
+   field in use: name, version, chain id, verifying contract, then salt. *)
+
+type eip712_domain is record {
+  fields : bytes1;
+  name : string;
+  version : string;
+  chainId : uint;
+  verifyingContract : address;
+  salt : bytes32;
+  extensions : list(uint);
+}
+
+interface IERC5267 is {
+  view function eip712Domain() : eip712_domain;
+}

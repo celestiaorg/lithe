@@ -392,6 +392,9 @@ impl<'a> Gen<'a> {
                     pending.retain(|(at, _)| !here.iter().any(|q| (q.0, q.1) == *at));
                 }
             }
+            if tail && self.share_tail(&stmts[i..]) {
+                break;
+            }
             self.tail = tail && i + 1 == stmts.len();
             self.compile_stmt(st)?;
         }
@@ -531,6 +534,9 @@ impl<'a> Gen<'a> {
             for &(at, len) in &body.op_checks {
                 edits.push((at, len, Vec::new()));
             }
+        }
+        if body.queued && body.ops.is_empty() {
+            edits.push((body.queue_init.0, body.queue_init.1, Vec::new()));
         }
         if !body.journal_stores {
             for &at in &body.journal_loads {

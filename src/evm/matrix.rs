@@ -442,6 +442,11 @@ enum Kind {
     Revert,
     /// `echo` returns its parameter.
     Calldata,
+    /// The place's `load` deletes what `write` wrote. `get{k}` writes sample `k`, deletes
+    /// it, and reads it back in one call, and must read what unwritten storage reads. A
+    /// place with storage also runs `put{k}` and `del` in separate transactions, which must
+    /// leave storage as `write` leaves it with every sample replaced by that zero value.
+    Deleted,
     /// A module's `echo` returns its parameter, guarded by a check that fails with it as an
     /// error's payload for caller 2: whole, and with the module in its facet.
     Guard,
@@ -498,6 +503,27 @@ const fn stored(
         storage,
         write,
         load: "",
+        read,
+    }
+}
+
+const fn deleted(
+    name: &'static str,
+    needs: &'static str,
+    decl: &'static str,
+    storage: &'static str,
+    write: &'static str,
+    delete: &'static str,
+    read: &'static str,
+) -> Place {
+    Place {
+        name,
+        kind: Kind::Deleted,
+        needs,
+        decl,
+        storage,
+        write,
+        load: delete,
         read,
     }
 }
@@ -833,6 +859,47 @@ const PLACES: &[Place] = &[
         load: "",
         read: "storage.m[$V]",
     },
+    deleted("delete local", "", "", "", "var x : $T := $V;", "delete x;", "x"),
+    deleted("delete local record field", "nest", HOLDER, "", "var h : holder := { pre = 9; x = $V; post = true; };", "delete h.x;", "h.x"),
+    deleted("delete local list element", "elem", "", "", "var xs : list($T) := [$W, $V];", "delete xs[1];", "xs[1]"),
+    deleted("delete transient", "fixed", "transient storage is record { x : $T; }", "", "transient.x := $V;", "delete transient.x;", "transient.x"),
+    deleted("delete storage", "", "", "x : $T;", "storage.x := $V;", "delete storage.x;", "storage.x"),
+    deleted("delete map value", "nest", "", "m : map(uint, $T);", "storage.m[3] := $V;", "delete storage.m[3];", "storage.m[3]"),
+    deleted(
+        "delete nested map value",
+        "nest",
+        "",
+        "m : map(address, map(uint, $T));",
+        "storage.m[Evm.sender()][3] := $V;",
+        "delete storage.m[Evm.sender()][3];",
+        "storage.m[0x0000000000000000000000000000000000000001][3]",
+    ),
+    deleted("delete stored record", "nest", HOLDER, "h : holder;", "storage.h := { pre = 0; x = $V; post = false; };", "delete storage.h;", "storage.h.x"),
+    deleted("delete stored record field", "nest", HOLDER, "h : holder;", "storage.h := { pre = 9; x = $V; post = true; };", "delete storage.h.x;", "storage.h.x"),
+    deleted("delete map record", "nest", HOLDER, "m : map(uint, holder);", "storage.m[2] := { pre = 0; x = $V; post = false; };", "delete storage.m[2];", "storage.m[2].x"),
+    deleted("delete map record field", "nest", HOLDER, "m : map(uint, holder);", "storage.m[2] := { pre = 9; x = $V; post = true; };", "delete storage.m[2].x;", "storage.m[2].x"),
+    deleted("delete stored list element", "elem", "", "xs : list($T);", "storage.xs := [$V, $V];", "delete storage.xs[1]; delete storage.xs[0];", "storage.xs[1]"),
+    deleted("delete stored fixed list element", "elem", "", "xs : list($T, 2);", "storage.xs[0] := $V; storage.xs[1] := $V;", "delete storage.xs[0]; delete storage.xs[1];", "storage.xs[1]"),
+    deleted("delete map list element", "elem nest", "", "m : map(uint, list($T));", "storage.m[1] := [$V, $V];", "delete storage.m[1][0]; delete storage.m[1][1];", "storage.m[1][1]"),
+    deleted("delete map fixed list element", "elem nest", "", "m : map(uint, list($T, 3));", "storage.m[1][2] := $V;", "delete storage.m[1][2];", "storage.m[1][2]"),
+    deleted(
+        "delete stored list record field",
+        "elem nest",
+        HOLDER,
+        "hs : list(holder);",
+        "storage.hs := [{ pre = 1; x = $V; post = true; }];",
+        "delete storage.hs[0].x;",
+        "storage.hs[0].x",
+    ),
+    deleted(
+        "delete before a query",
+        "nest",
+        "interface Echo is { view function echo(x : uint) : uint; }",
+        "m : map(uint, $T); n : map(uint, uint);",
+        "storage.m[1] := $V;",
+        "for i : uint in 0 .. 9 do { storage.n[i] := 0; } delete storage.m[1]; storage.n[1] := query Echo(address(0xcd)).echo(0);",
+        "storage.m[1]",
+    ),
     Place { name: "event", kind: Kind::Log, needs: "abi", decl: "event Seen of record { x : $T; }", storage: "", write: "emit Seen { x = $V; };", load: "", read: "" },
     Place { name: "error", kind: Kind::Revert, needs: "abi", decl: "error Bad of $T;", storage: "", write: "fail Bad($V);", load: "", read: "" },
     Place { name: "calldata", kind: Kind::Calldata, needs: "abi", decl: "", storage: "", write: "", load: "", read: "" },
@@ -884,8 +951,14 @@ fn program(ty: &Ty, place: &Place) -> String {
     if !ty.name.chars().all(|c| c.is_alphanumeric() || c == '_') && place.name == "abi codec" {
         src += &format!("type tn is {};\n", ty.name);
     }
+    let zero = if place.kind == Kind::Deleted {
+        "z : $T;"
+    } else {
+        ""
+    };
     src += &format!(
-        "storage is record {{ pre : uint8; {} post : uint8; }}\n",
+        "storage is record {{ pre : uint8; {} {} post : uint8; }}\n",
+        fill(zero, ty, "", ""),
         fill(place.storage, ty, "", "")
     );
     src += &format!(
@@ -925,7 +998,23 @@ fn program(ty: &Ty, place: &Place) -> String {
             Kind::Revert => {
                 src += &format!("external function get{k}() raises Bad is {{ {write} }}\n")
             }
+            Kind::Deleted => {
+                src += &format!("external function get{k}() : {shown} is {{ {write} {load} }} with out({read})\n");
+                if !place.storage.is_empty() {
+                    src += &format!("external function put{k}() is {{ {write} }}\n");
+                }
+            }
             Kind::Calldata | Kind::Guard => {}
+        }
+    }
+    if place.kind == Kind::Deleted {
+        src += &format!("external view function zero() : {shown} is out(storage.z)\n");
+        if !place.storage.is_empty() {
+            let (delete, read) = (fill(place.load, ty, "", ""), fill(place.read, ty, "", ""));
+            let refill = fill(place.write, ty, "storage.z", "storage.z");
+            src += &format!("external function del() is {{ {delete} }}\n");
+            src += &format!("external function refill() is {{ {refill} }}\n");
+            src += &format!("external view function get() : {shown} is out({read})\n");
         }
     }
     if place.kind == Kind::Stored {
@@ -1007,6 +1096,12 @@ fn run_cell(ty: &Ty, place: &Place, runtime: &[u8]) -> Result<(), String> {
         Ok(())
     };
     ok(runtime, storage, "fence_set()", true)?;
+    let fenced = storage.clone();
+    let live = |st: &HashMap<Word, Word>| {
+        let mut st = st.clone();
+        st.retain(|_, v| !v.is_zero());
+        st
+    };
     let mut counts = vec![0u64; n];
     for k in (0..n).chain([0]) {
         let v = ty.samples[k];
@@ -1103,6 +1198,38 @@ fn run_cell(ty: &Ty, place: &Place, runtime: &[u8]) -> Result<(), String> {
                     ));
                 }
             }
+            Kind::Deleted => {
+                let zero = ok(runtime, storage, "zero()", false)?;
+                let got = ok(runtime, storage, &format!("get{k}()"), false)?;
+                if got != zero {
+                    return Err(format!(
+                        "delete {v}: want {}, got {}",
+                        hex(&zero),
+                        hex(&got)
+                    ));
+                }
+                if !place.storage.is_empty() {
+                    ok(runtime, storage, &format!("put{k}()"), true)?;
+                    ok(runtime, storage, "del()", true)?;
+                    let got = ok(runtime, storage, "get()", false)?;
+                    if got != zero {
+                        return Err(format!(
+                            "after delete {v}: want {}, got {}",
+                            hex(&zero),
+                            hex(&got)
+                        ));
+                    }
+                    let mut want = fenced.clone();
+                    ok(runtime, &mut want, "refill()", true)?;
+                    if live(storage) != live(&want) {
+                        return Err(format!(
+                            "delete {v} left {:?}, want {:?}",
+                            live(storage),
+                            live(&want)
+                        ));
+                    }
+                }
+            }
             Kind::Guard => {
                 let sig = format!("echo({})", ty.sig);
                 let mut data = selector(&sig).to_vec();
@@ -1152,7 +1279,7 @@ fn run_cell(ty: &Ty, place: &Place, runtime: &[u8]) -> Result<(), String> {
 
 /// Runs a cell with every module in its facet.
 fn run_split(ty: &Ty, place: &Place, src: &str) -> Result<(), String> {
-    let checked = crate::check::check(loaded(src)).map_err(|err| err.to_string())?;
+    let checked = crate::check::check(loaded(src), Default::default()).map_err(|err| err.to_string())?;
     let split = super::split::build_facets(&checked, "Cell")
         .map_err(|err| err.to_string())?;
     let runtime = super::split::deploy_split(&split);
@@ -1209,13 +1336,26 @@ fn check_type(ty: &Ty) -> Vec<String> {
 
 #[test]
 fn every_type_works_in_every_place() {
+    matrix(None);
+}
+
+/// Again with constants forwarded and allocations placed statically wherever they can be.
+#[test]
+fn every_type_works_in_every_place_with_a_static_heap() {
+    matrix(Some(true));
+}
+
+fn matrix(static_heap: Option<bool>) {
     let failures: Vec<String> = std::thread::scope(|s| {
         let handles: Vec<_> = TYPES
             .iter()
             .map(|ty| {
                 std::thread::Builder::new()
                     .stack_size(64 << 20)
-                    .spawn_scoped(s, move || check_type(ty))
+                    .spawn_scoped(s, move || {
+                        crate::gen::FORCE_STATIC_HEAP.set(static_heap);
+                        check_type(ty)
+                    })
                     .expect("spawn")
             })
             .collect();

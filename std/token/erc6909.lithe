@@ -1,0 +1,209 @@
+(* The ERC-6909 minimal multi-token standard. Errors and events match OpenZeppelin's
+   `ERC6909`, and so does the order of its checks.
+
+     use ERC6909 exposing IERC6909;
+     supports IERC6909;
+
+   An operator moves any amount of any of an owner's ids; an allowance is per spender and
+   id, and an operator's transfers leave it untouched. An allowance of `Uint.max` is never
+   spent down. Every balance change goes through `update`, like OpenZeppelin's `_update`.
+   There are no receiver callbacks. *)
+
+import "std/interfaces/erc165";
+import "std/interfaces/erc6909";
+import "std/abi";
+import "std/evm";
+import "std/address";
+import "std/uint";
+
+module ERC6909 is {
+  storage erc6909 at "lithe.std.erc6909" is record {
+    balances : map(address, map(uint, uint));
+    operator_approvals : map(address, map(address, bool));
+    allowances : map(address, map(address, map(uint, uint)));
+  }
+
+  event Transfer of record {
+    caller : address;
+    indexed sender : address;
+    indexed receiver : address;
+    indexed id : uint;
+    amount : uint;
+  }
+
+  event OperatorSet of record {
+    indexed owner : address;
+    indexed spender : address;
+    approved : bool;
+  }
+
+  event Approval of record {
+    indexed owner : address;
+    indexed spender : address;
+    indexed id : uint;
+    amount : uint;
+  }
+
+  (* ERC-6909 and ERC-165 itself. *)
+  pure function supports_interface(const interfaceId : bytes4) : bool is
+    interfaceId = Abi.interface_id(IERC6909) or interfaceId = Abi.interface_id(IERC165)
+
+  view function balance_of(const owner : address; const id : uint) : uint is
+    erc6909.balances[owner][id]
+
+  view function allowance(const owner : address; const spender : address; const id : uint) : uint is
+    erc6909.allowances[owner][spender][id]
+
+  view function is_operator(const owner : address; const spender : address) : bool is
+    erc6909.operator_approvals[owner][spender]
+
+  function approve(const spender : address; const id : uint; const amount : uint) : bool
+    raises ERC6909InvalidApprover | ERC6909InvalidSpender
+  is {
+    approve_as(Evm.sender(), spender, id, amount);
+  } with true
+
+  function set_operator(const spender : address; const approved : bool) : bool
+    raises ERC6909InvalidApprover | ERC6909InvalidSpender
+  is {
+    set_operator_as(Evm.sender(), spender, approved);
+  } with true
+
+  function transfer(const receiver : address; const id : uint; const amount : uint) : bool
+    raises ERC6909InvalidSender | ERC6909InvalidReceiver | ERC6909InsufficientBalance
+  is {
+    move(Evm.sender(), receiver, id, amount);
+  } with true
+
+  (* The owner and its operators move any amount; anyone else spends an allowance. *)
+  function transfer_from(const sender : address; const receiver : address; const id : uint; const amount : uint) : bool
+    raises ERC6909InsufficientAllowance | ERC6909InvalidSender | ERC6909InvalidReceiver | ERC6909InsufficientBalance
+  is {
+    if sender <> Evm.sender() and not erc6909.operator_approvals[sender][Evm.sender()] then {
+      spend_allowance(sender, Evm.sender(), id, amount);
+    }
+    move(sender, receiver, id, amount);
+  } with true
+
+  (* A transfer between two real accounts, without checking approvals. *)
+  function move(const sender : address; const receiver : address; const id : uint; const amount : uint)
+    raises ERC6909InvalidSender | ERC6909InvalidReceiver | ERC6909InsufficientBalance
+  is {
+    assert(sender <> Address.zero, ERC6909InvalidSender(Address.zero));
+    assert(receiver <> Address.zero, ERC6909InvalidReceiver(Address.zero));
+    update(sender, receiver, id, amount);
+  }
+
+  function mint(const to : address; const id : uint; const amount : uint)
+    raises ERC6909InvalidReceiver | ERC6909InsufficientBalance
+  is {
+    assert(to <> Address.zero, ERC6909InvalidReceiver(Address.zero));
+    update(Address.zero, to, id, amount);
+  }
+
+  function burn(const from : address; const id : uint; const amount : uint)
+    raises ERC6909InvalidSender | ERC6909InsufficientBalance
+  is {
+    assert(from <> Address.zero, ERC6909InvalidSender(Address.zero));
+    update(from, Address.zero, id, amount);
+  }
+
+  (* Moves, mints (`from` is zero), or burns (`to` is zero), and logs the `Transfer`. *)
+  function update(const from : address; const to : address; const id : uint; const amount : uint)
+    raises ERC6909InsufficientBalance
+  is {
+    if from <> Address.zero then {
+      const balance : uint := erc6909.balances[from][id];
+      assert(
+        balance >= amount,
+        ERC6909InsufficientBalance { sender = from; balance = balance; needed = amount; id = id; }
+      );
+      erc6909.balances[from][id] := balance - amount;
+    }
+    if to <> Address.zero then {
+      erc6909.balances[to][id] := erc6909.balances[to][id] + amount;
+    }
+    emit Transfer {
+      caller = Evm.sender();
+      sender = from;
+      receiver = to;
+      id = id;
+      amount = amount;
+    };
+  }
+
+  function approve_as(const owner : address; const spender : address; const id : uint; const amount : uint)
+    raises ERC6909InvalidApprover | ERC6909InvalidSpender
+  is {
+    assert(owner <> Address.zero, ERC6909InvalidApprover(Address.zero));
+    assert(spender <> Address.zero, ERC6909InvalidSpender(Address.zero));
+    erc6909.allowances[owner][spender][id] := amount;
+    emit Approval {
+      owner = owner;
+      spender = spender;
+      id = id;
+      amount = amount;
+    };
+  }
+
+  function set_operator_as(const owner : address; const spender : address; const approved : bool)
+    raises ERC6909InvalidApprover | ERC6909InvalidSpender
+  is {
+    assert(owner <> Address.zero, ERC6909InvalidApprover(Address.zero));
+    assert(spender <> Address.zero, ERC6909InvalidSpender(Address.zero));
+    erc6909.operator_approvals[owner][spender] := approved;
+    emit OperatorSet {
+      owner = owner;
+      spender = spender;
+      approved = approved;
+    };
+  }
+
+  (* Spends from an allowance without logging. `Uint.max` is never spent down. *)
+  function spend_allowance(const owner : address; const spender : address; const id : uint; const amount : uint)
+    raises ERC6909InsufficientAllowance
+  is {
+    const current : uint := erc6909.allowances[owner][spender][id];
+    if current < Uint.max then {
+      assert(
+        current >= amount,
+        ERC6909InsufficientAllowance { spender = spender; allowance = current; needed = amount; id = id; }
+      );
+      erc6909.allowances[owner][spender][id] := current - amount;
+    }
+  }
+
+  external view function balanceOf(const owner : address; const id : uint) : uint is
+    erc6909.balances[owner][id]
+
+  external view function allowance(const owner : address; const spender : address; const id : uint) : uint is
+    erc6909.allowances[owner][spender][id]
+
+  external view function isOperator(const owner : address; const spender : address) : bool is
+    erc6909.operator_approvals[owner][spender]
+
+  external function approve(const spender : address; const id : uint; const amount : uint) : bool
+    raises ERC6909InvalidApprover | ERC6909InvalidSpender
+  is
+    approve(spender, id, amount)
+
+  external function setOperator(const spender : address; const approved : bool) : bool
+    raises ERC6909InvalidApprover | ERC6909InvalidSpender
+  is
+    set_operator(spender, approved)
+
+  external function transfer(const receiver : address; const id : uint; const amount : uint) : bool
+    raises ERC6909InvalidSender | ERC6909InvalidReceiver | ERC6909InsufficientBalance
+  is
+    transfer(receiver, id, amount)
+
+  external function transferFrom(
+    const sender : address;
+    const receiver : address;
+    const id : uint;
+    const amount : uint
+  ) : bool
+    raises ERC6909InsufficientAllowance | ERC6909InvalidSender | ERC6909InvalidReceiver | ERC6909InsufficientBalance
+  is
+    transfer_from(sender, receiver, id, amount)
+}

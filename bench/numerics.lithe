@@ -20,6 +20,11 @@ contract Numerics is {
   external pure function sqrt(const a : uint) : uint is Math.sqrt(a)
   external pure function log2(const a : uint) : uint is Math.log2(a)
   external pure function log10(const a : uint) : uint is Math.log10(a)
+  external pure function log256(const a : uint) : uint is Math.log256(a)
+  external pure function log2_up(const a : uint) : uint is Math.log2_up(a)
+  external pure function log10_up(const a : uint) : uint is Math.log10_up(a)
+  external pure function log256_up(const a : uint) : uint is Math.log256_up(a)
+  external pure function clz(const a : uint) : uint is Uint.clz(a)
 
   external pure function abs(const x : int) : uint is Math.abs(x)
   external pure function min(const a : int; const b : int) : int is Math.min(a, b)

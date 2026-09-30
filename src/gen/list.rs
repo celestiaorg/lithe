@@ -101,6 +101,152 @@ impl<'a> Gen<'a> {
         Ok(())
     }
 
+    /// `List.resized(xs, n)`: a new list of `n` elements, `xs`'s first ones and then zero
+    /// values. The lists in the new elements are one shared empty list, as elements read out
+    /// of a list share theirs until a nested write copies them.
+    pub(super) fn compile_resized(&mut self, args: &[Expr], ty: usize) -> Result<(), Error> {
+        let size = 32 * u64::from(self.list_k(ty));
+        self.compile_value(&args[1])?;
+        if Word::from_u64(u64::MAX).lt(self.range_of(&args[1]).1) {
+            self.op(DUP1);
+            self.push_u64(64);
+            self.op(SHR);
+            self.revert_if_panic(0x41)?;
+        }
+        let cd = self.cd_list_copy(&args[0]);
+        match &args[0] {
+            Expr::Ident { sym: Some(sym), .. } if cd || !self.checked.syms[*sym].storage => {
+                self.mload(self.local[*sym])
+            }
+            Expr::Field {
+                root: Some(sym),
+                leaf,
+                ..
+            } if !self.checked.syms[*sym].storage && !self.nested_mem(&args[0]) => {
+                self.mload(self.addr(*sym, *leaf))
+            }
+            xs => self.compile_value(xs)?,
+        }
+        // [n, xs]
+        self.op(DUP1);
+        if cd {
+            self.cd_load();
+        } else {
+            self.op(MLOAD);
+        }
+        self.op(SWAP1);
+        self.push_u64(32);
+        self.op(ADD);
+        // [n, len, data, new]
+        self.op(DUP1 + 2);
+        self.alloc_list(self.list_k(ty))?;
+        // [.., m]: the lesser of `n` and `len`, which is `len` when `n` adds to it.
+        let len = super::range::length_of(&args[0], &args[1]);
+        let grows = Self::addends(&args[1]).is_some_and(|(x, y)| {
+            (self.known_equal(x, &len) || self.known_equal(y, &len))
+                && self.cannot_wrap(BinOp::Add, x, y)
+        });
+        if grows {
+            self.op(DUP1 + 2);
+        } else {
+            self.op(DUP1 + 3);
+            self.op(DUP1 + 3);
+            self.op(DUP1 + 1);
+            self.op(DUP1 + 1);
+            self.op(GT);
+            self.op(DUP1 + 2);
+            self.op(DUP1 + 2);
+            self.op(XOR);
+            self.op(MUL);
+            self.op(XOR);
+            self.op(SWAP1);
+            self.op(POP);
+        }
+        self.op(DUP1);
+        self.push_u64(size);
+        self.op(MUL);
+        self.op(DUP1 + 3);
+        self.op(DUP1 + 3);
+        self.push_u64(32);
+        self.op(ADD);
+        if cd {
+            self.cd_copy();
+        } else {
+            self.op(MCOPY);
+        }
+        // Freed memory may hold anything, so the new elements are zeroed from past calldata.
+        self.op(DUP1);
+        self.op(DUP1 + 5);
+        self.op(SUB);
+        self.push_u64(size);
+        self.op(MUL);
+        self.op(CALLDATASIZE);
+        self.op(DUP1 + 2);
+        self.push_u64(size);
+        self.op(MUL);
+        self.op(DUP1 + 4);
+        self.op(ADD);
+        self.push_u64(32);
+        self.op(ADD);
+        self.op(CALLDATACOPY);
+        let mut words = Vec::new();
+        self.dyn_words(self.list_elem(ty), 0, &mut words);
+        words.retain(|&(_, t)| self.list_value(t));
+        if !words.is_empty() {
+            let (top, done) = (self.fresh(), self.fresh());
+            // [n, len, data, new, m, empty], then the address of element `m` onward.
+            self.op(PUSH0);
+            self.alloc_list(1)?;
+            self.op(DUP1 + 1);
+            self.push_u64(size);
+            self.op(MUL);
+            self.op(DUP1 + 3);
+            self.op(ADD);
+            self.push_u64(32);
+            self.op(ADD);
+            self.op(DUP1 + 6);
+            self.push_u64(size);
+            self.op(MUL);
+            self.op(DUP1 + 4);
+            self.op(ADD);
+            self.push_u64(32);
+            self.op(ADD);
+            // [.., empty, at, end]
+            self.jumpdest(top);
+            self.op(DUP1);
+            self.op(DUP1 + 2);
+            self.op(LT);
+            self.op(ISZERO);
+            self.push_label(done);
+            self.op(JUMPI);
+            for &(w, _) in &words {
+                self.op(DUP1 + 2);
+                self.op(DUP1 + 2);
+                if w > 0 {
+                    self.push_u64(32 * u64::from(w));
+                    self.op(ADD);
+                }
+                self.op(MSTORE);
+            }
+            self.op(SWAP1);
+            self.push_u64(size);
+            self.op(ADD);
+            self.op(SWAP1);
+            self.push_label(top);
+            self.op(JUMP);
+            self.jumpdest(done);
+            self.op(POP);
+            self.op(POP);
+            self.op(POP);
+        }
+        self.op(POP);
+        self.op(SWAP1 + 2);
+        self.op(POP);
+        self.op(POP);
+        self.op(POP);
+        Ok(())
+    }
+
     /// `[ptr]` becomes a copy, so that a `var` never shares its elements.
     pub(super) fn copy_list(&mut self, k: u32) -> Result<(), Error> {
         self.op(DUP1);
@@ -123,7 +269,7 @@ impl<'a> Gen<'a> {
     /// Whether a value's lists belong to no one else: built here, read from storage or
     /// decoded, or copied as a `var`'s lists are when it is read.
     pub(super) fn owned(&self, e: &Expr) -> bool {
-        if self.owned_by_type(e.ty()) || self.stored_place(e).is_some() {
+        if self.owned_by_type(e.ty()) || self.stored_place(e).is_some() || self.cd_list_copy(e) {
             return true;
         }
         match e {
@@ -139,7 +285,7 @@ impl<'a> Gen<'a> {
             } => args.iter().all(|x| self.owned(x)),
             Expr::Query { .. }
             | Expr::Call {
-                builtin: Some(Builtin::AbiDecode),
+                builtin: Some(Builtin::AbiDecode | Builtin::ListResized),
                 ..
             } => true,
             Expr::Ident { sym: Some(sym), .. }
@@ -152,6 +298,16 @@ impl<'a> Gen<'a> {
             }
             _ => false,
         }
+    }
+
+    /// Whether `e` is a list parameter left in calldata whose one-word elements need no
+    /// check, which a copy takes straight from calldata.
+    pub(super) fn cd_list_copy(&self, e: &Expr) -> bool {
+        matches!(e, Expr::Ident { sym: Some(sym), .. }
+            if self.cd_lists.contains(sym) && !self.cd_lazy.contains(sym))
+            && self.list_value(e.ty())
+            && self.list_k(e.ty()) == 1
+            && !self.needs_check(self.list_elem(e.ty()))
     }
 
     /// Whether none of a value's own words, `dyn_words` finds, is a dynamic list.
@@ -230,6 +386,28 @@ impl<'a> Gen<'a> {
                     }
                 }
                 self.mload(list);
+                Ok(true)
+            }
+            // A list left in calldata is copied out of it, whole.
+            Expr::Ident { sym: Some(sym), .. } if self.cd_list_copy(e) => {
+                self.mload(self.local[*sym]);
+                self.op(DUP1);
+                self.cd_load();
+                self.alloc_list(1)?;
+                // [pos, list]: the elements after the length word, into the list's.
+                self.op(DUP1);
+                self.op(MLOAD);
+                self.push_u64(5);
+                self.op(SHL);
+                self.op(DUP1 + 2);
+                self.push_u64(32);
+                self.op(ADD);
+                self.op(DUP1 + 2);
+                self.push_u64(32);
+                self.op(ADD);
+                self.cd_copy();
+                self.op(SWAP1);
+                self.op(POP);
                 Ok(true)
             }
             Expr::Ident { sym: Some(sym), .. } => {
@@ -1489,6 +1667,40 @@ impl<'a> Gen<'a> {
         Ok(buf)
     }
 
+    /// `xs[i]` of a list in memory whose elements are `n`-word records: the list and the
+    /// index, for copying the element whole.
+    pub(super) fn heap_record_elem<'e>(&self, e: &'e Expr, n: u32) -> Option<(usize, u32, &'e Expr)> {
+        let Expr::Index {
+            base,
+            root: Some(sym),
+            leaf,
+            index,
+            ..
+        } = e
+        else {
+            return None;
+        };
+        let lty = self.type_at(self.checked.syms[*sym].ty, *leaf);
+        (n >= 2
+            && matches!(base.as_ref(), Expr::Ident { .. })
+            && self.mem_path(base)
+            && self.list_value(lty)
+            && self.list_stride(lty) == n)
+        .then_some((*sym, *leaf, index.as_ref()))
+    }
+
+    /// `[src]` becomes `[]`, or with `keep` stays: the `n` words at `src` copied to the
+    /// local at `dst`.
+    pub(super) fn copy_element_to(&mut self, dst: i32, n: u32, keep: bool) {
+        if let Region::Local(sym) = self.spaces[(dst >> REGION_SHIFT) as usize - 1].region {
+            self.forget_keys(&[sym]);
+        }
+        self.push_u64(u64::from(n) * 32);
+        self.op(if keep { DUP1 + 1 } else { SWAP1 });
+        self.push_mem(dst);
+        self.op(MCOPY);
+    }
+
     /// Writes `value` to element `index` of a list of several-word elements.
     pub(super) fn store_list_element(
         &mut self,
@@ -1534,6 +1746,24 @@ impl<'a> Gen<'a> {
         grow: bool,
         own: Option<i32>,
     ) -> Result<bool, Error> {
+        if let Some(c) = self.const_word(index).filter(|c| !grow && c.lt(Word::from_u64(1 << 32))) {
+            let c = c.to_be_bytes();
+            let c = u64::from(u32::from_be_bytes([c[28], c[29], c[30], c[31]]));
+            self.mload(at);
+            if !self.trusted_index && !self.index_below(index, at) {
+                self.op(DUP1);
+                self.op(MLOAD);
+                if c > 0 {
+                    self.push_u64(c);
+                    self.op(LT);
+                }
+                self.op(ISZERO);
+                self.revert_if_panic(0x32)?;
+            }
+            self.push_u64(32 * k * c + 32);
+            self.op(ADD);
+            return Ok(false);
+        }
         if !grow && (self.trusted_index || self.index_below(index, at)) {
             self.compile_value(index)?;
             self.push_u64(32 * k);

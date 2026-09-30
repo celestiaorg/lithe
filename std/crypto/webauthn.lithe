@@ -1,0 +1,160 @@
+(* WebAuthn passkey assertions, like Solady's `WebAuthn`. `verify` checks what a relying
+   party that trusts its authenticator needs: the client data is a "webauthn.get" for the
+   challenge, the authenticator saw the user present (and verified, when required), and
+   `(r, s)` signs `sha256(authenticator_data ++ sha256(client_data_json))` for the P-256
+   key `(x, y)`. It does not check the origin, `topOrigin`, the RP ID hash, backup state,
+   extensions, the signature counter, or attestation.
+
+   An `s` in the upper half of the curve order is rejected, as Solady's
+   `P256.verifySignature` does. Verification uses the EIP-7951 precompile at 0x100. A
+   build for a fork before Osaka, where the precompile may be missing, asks Solady's P256
+   verifier contract about a signature the precompile does not accept, unless Solady's
+   canary contract has code, which marks a chain with the precompile.
+
+   `try_decode_auth` reads `Abi.encode(auth)` and `try_decode_auth_compact` Solady's
+   compact encoding, which `try_encode_auth_compact` makes; neither reverts. *)
+
+import "std/base64";
+import "std/crypto";
+import "std/bytes";
+import "std/evm";
+import "std/abi";
+
+(* Solady's `WebAuthnAuth`, with the same ABI. The indexes are where `"challenge":"` and
+   `"type":"` start in `client_data_json`. *)
+type webauthn_auth is tuple record {
+  authenticator_data : bytes;
+  client_data_json : string;
+  challenge_index : uint;
+  type_index : uint;
+  r : bytes32;
+  s : bytes32;
+}
+
+module WebAuthn is {
+  pure function half_order() : uint is
+    uint(0x7fffffff800000007fffffffffffffffde737d56d38bcf4279dce5617e3192a8)
+
+  (* Solady's P256 verifier, which answers 1 or 0 and never reverts. *)
+  pure function verifier() : address is 0x000000000000D01eA45F9eFD5c54f037Fa57Ea1a
+
+  (* Code at Solady's canary means the chain has the precompile. *)
+  pure function canary() : address is 0x0000000000001Ab2e8006Fd8B71907bf06a5BDEE
+
+  (* Whether `(r, s)` signs `hash` for the P-256 key `(x, y)`, with `s` in the lower half
+     of the curve order, as Solady's `P256.verifySignature` answers. Never reverts. *)
+  view function verify_signature(
+    const hash : bytes32;
+    const r : bytes32;
+    const s : bytes32;
+    const x : bytes32;
+    const y : bytes32
+  ) : bool is
+    uint(s) <= half_order()
+      and if Evm.osaka then Crypto.p256_verify(hash, r, s, x, y)
+      else Crypto.p256_verify(hash, r, s, x, y)
+        or Evm.code_size(canary()) = 0
+          and case query Evm.static_call(verifier(), Abi.encode(hash, r, s, x, y)) of {
+            | Ok(answer) -> uint(bytes32(answer)) = 1 and answer.length >= 32
+            | Error(_) -> false
+          }
+
+  (* Whether `auth` asserts `challenge` for the key `(x, y)`. Never reverts. *)
+  view function verify(
+    const challenge : bytes;
+    const require_user_verification : bool;
+    const auth : webauthn_auth;
+    const x : bytes32;
+    const y : bytes32
+  ) : bool is {
+    (* The challenge as the client data quotes it: base64url, unpadded. *)
+    const encoded : bytes := bytes(Base64.encode_url(challenge));
+    const json : bytes := bytes(auth.client_data_json);
+    const data : bytes := auth.authenticator_data;
+    const n : uint := json.length;
+    const t : uint := auth.type_index;
+    const c : uint := auth.challenge_index;
+    (* `"challenge":"`, the encoding, and its closing `"`. *)
+    const q : uint := encoded.length + 14;
+    const flags : uint := uint(require_user_verification) << 2 | 1;
+  } with
+    t < n and n - t > 20
+  (* "type":"webauthn.get" *)
+      and bytes21(json[t:t + 21]) = 0x2274797065223a22776562617574686e2e67657422
+      and q <= n and c <= n - q
+      and Crypto.keccak256(json[c:c + q]) = Crypto.keccak256(Bytes.concat(0x226368616c6c656e6765223a22, encoded, 0x22))
+  (* The flags byte, 32, ends the word at 1. *)
+      and data.length > 32 and uint(Bytes.word(data, 1)) & flags = flags
+      and uint(auth.s) <= half_order()
+  (* Written out for Osaka, where there is no fallback: a call copies its arguments. *)
+      and if Evm.osaka then Crypto.p256_verify(
+        Crypto.sha256(Bytes.concat(data, Crypto.sha256(json))),
+        auth.r,
+        auth.s,
+        x,
+        y
+      )
+      else verify_signature(Crypto.sha256(Bytes.concat(data, Crypto.sha256(json))), auth.r, auth.s, x, y)
+
+  (* `Abi.decode(encoded, webauthn_auth)`, or `None` where it would revert, as Solady's
+     `tryDecodeAuth` reads it. *)
+  pure function try_decode_auth(const encoded : bytes) : option(webauthn_auth) is {
+    const n : uint := encoded.length;
+    var decoded : option(webauthn_auth) := None;
+    if n >= 0xc0 then {
+      const p : uint := uint(bytes32(encoded));
+      if p <= n - 0xc0 then {
+        const a : uint := uint(Bytes.word(encoded, p));
+        const j : uint := uint(Bytes.word(encoded, p + 32));
+        if a <= n - p - 32 and j <= n - p - 32 then {
+          const la : uint := uint(Bytes.word(encoded, p + a));
+          const lj : uint := uint(Bytes.word(encoded, p + j));
+          if la <= n - p - a - 32 and lj <= n - p - j - 32 then {
+            decoded := Some({
+              authenticator_data = encoded[p + a + 32:p + a + 32 + la];
+              client_data_json = string(encoded[p + j + 32:p + j + 32 + lj]);
+              challenge_index = uint(Bytes.word(encoded, p + 64));
+              type_index = uint(Bytes.word(encoded, p + 96));
+              r = Bytes.word(encoded, p + 128);
+              s = Bytes.word(encoded, p + 160);
+            });
+          }
+        }
+      }
+    }
+  } with decoded
+
+  (* Solady's compact encoding: the authenticator data's length in two bytes, the
+     authenticator data, the client data, the two indexes in two bytes each, `r`, and `s`.
+     Empty if a length or index takes more than two bytes. *)
+  pure function try_encode_auth_compact(const auth : webauthn_auth) : bytes is {
+    const data : bytes := auth.authenticator_data;
+    const json : bytes := bytes(auth.client_data_json);
+    const c : uint := auth.challenge_index;
+    const t : uint := auth.type_index;
+  } with if (data.length | json.length | c | t) >> 16 = 0 then
+    Bytes.concat(bytes2(uint16(data.length)), data, json, bytes4(uint32(c << 16 | t)), auth.r, auth.s)
+  else Bytes.concat()
+
+  (* The auth `try_encode_auth_compact` encoded, or `None` if `encoded` is too short for
+     its lengths, as Solady's `tryDecodeAuthCompact` reads it. *)
+  pure function try_decode_auth_compact(const encoded : bytes) : option(webauthn_auth) is {
+    const n : uint := encoded.length;
+    var decoded : option(webauthn_auth) := None;
+    if n >= 0x46 then {
+      const c : uint := (uint(bytes32(encoded)) >> 240) + 2;
+      const j : uint := n - 0x44;
+      if c <= j then {
+        const indexes : uint := uint(Bytes.word(encoded, j)) >> 224;
+        decoded := Some({
+          authenticator_data = encoded[2:c];
+          client_data_json = string(encoded[c:j]);
+          challenge_index = indexes >> 16;
+          type_index = indexes & 0xffff;
+          r = Bytes.word(encoded, j + 4);
+          s = Bytes.word(encoded, j + 36);
+        });
+      }
+    }
+  } with decoded
+}

@@ -11,6 +11,8 @@ no Solidity layout has. Each pair must also expose the same functions, and answe
 measured with entrypoints the other lacks.
 
 Needs `anvil` and `cast` (Foundry) and solc. `SOLC` overrides the solc binary.
+`EVM_VERSION` (`osaka` by default, or `prague`) is the fork Lithe and solc build for
+and anvil runs.
 Run from the repository root: `python3 bench/run.py [name ...]`.
 """
 
@@ -41,6 +43,7 @@ ADDR = {
     "A": "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266",
     "B": "0x70997970C51812dC3A010C7d01b50e0d17dc79C8",
 }
+EVM = os.environ.get("EVM_VERSION", "osaka")
 SOLC_BUILDS = {
     "solc ir r1": ["--optimize", "--optimize-runs", "1", "--via-ir"],
     "solc ir r200": ["--optimize", "--optimize-runs", "200", "--via-ir"],
@@ -249,6 +252,25 @@ SCENARIOS = {
         ("call", "A", "deposit()", [], None),
         ("call", "A", "blob_fee()", [], None),
     ],
+    # Solady's DateTimeLib and the standard library's port: a plan's dates in storage,
+    # then conversions each way.
+    "date_time": [
+        ("send", "A", "start_on(uint256,uint256,uint256)", ["2024", "1", "31"], None),
+        ("send", "A", "renew(uint256)", ["1"], None),
+        ("send", "A", "renew(uint256)", ["13"], None),
+        ("send", "A", "extend(uint256)", ["4"], None),
+        ("call", "A", "renewal_date()", [], None),
+        ("call", "A", "months_active(uint256)", ["1727600000"], None),
+        ("call", "A", "years_active(uint256)", ["1727600000"], None),
+        ("call", "A", "months_active(uint256)", ["1000"], None),
+        ("call", "A", "stamp(uint256,uint256,uint256,uint256,uint256,uint256)", ["2024", "9", "29", "10", "20", "30"], None),
+        ("call", "A", "parts(uint256)", ["1727600000"], None),
+        ("call", "A", "weekday_of(uint256)", ["1727600000"], None),
+        ("call", "A", "valid(uint256,uint256,uint256)", ["2023", "2", "29"], None),
+        ("call", "A", "valid(uint256,uint256,uint256)", ["2024", "2", "29"], None),
+        ("call", "A", "days_in(uint256,uint256)", ["2024", "2"], None),
+        ("call", "A", "days_in(uint256,uint256)", ["2023", "13"], None),
+    ],
     "math": [
         ("call", "A", "mul_div(uint256,uint256,uint256)", ["10", "20", "3"], None),
         ("call", "A", "mul_div(uint256,uint256,uint256)", ["1", "2", "0"], None),
@@ -300,6 +322,41 @@ SCENARIOS = {
         ("call", "A", "log10(uint256)", ["10"], None),
         ("call", "A", "log10(uint256)", [str(10**64)], None),
         ("call", "A", "log10(uint256)", [str(2**256 - 1)], None),
+        ("call", "A", "log256(uint256)", ["0"], None),
+        ("call", "A", "log256(uint256)", ["1"], None),
+        ("call", "A", "log256(uint256)", ["2"], None),
+        ("call", "A", "log256(uint256)", ["1000000000000000000"], None),
+        ("call", "A", "log256(uint256)", ["340282366920938463463374607431768211456"], None),
+        ("call", "A", "log256(uint256)", ["340282366920938463463374607431768211457"], None),
+        ("call", "A", "log256(uint256)", ["115792089237316195423570985008687907853269984665640564039457584007913129639935"], None),
+        ("call", "A", "log2_up(uint256)", ["0"], None),
+        ("call", "A", "log2_up(uint256)", ["1"], None),
+        ("call", "A", "log2_up(uint256)", ["2"], None),
+        ("call", "A", "log2_up(uint256)", ["1000000000000000000"], None),
+        ("call", "A", "log2_up(uint256)", ["340282366920938463463374607431768211456"], None),
+        ("call", "A", "log2_up(uint256)", ["340282366920938463463374607431768211457"], None),
+        ("call", "A", "log2_up(uint256)", ["115792089237316195423570985008687907853269984665640564039457584007913129639935"], None),
+        ("call", "A", "log10_up(uint256)", ["0"], None),
+        ("call", "A", "log10_up(uint256)", ["1"], None),
+        ("call", "A", "log10_up(uint256)", ["2"], None),
+        ("call", "A", "log10_up(uint256)", ["1000000000000000000"], None),
+        ("call", "A", "log10_up(uint256)", ["340282366920938463463374607431768211456"], None),
+        ("call", "A", "log10_up(uint256)", ["340282366920938463463374607431768211457"], None),
+        ("call", "A", "log10_up(uint256)", ["115792089237316195423570985008687907853269984665640564039457584007913129639935"], None),
+        ("call", "A", "log256_up(uint256)", ["0"], None),
+        ("call", "A", "log256_up(uint256)", ["1"], None),
+        ("call", "A", "log256_up(uint256)", ["2"], None),
+        ("call", "A", "log256_up(uint256)", ["1000000000000000000"], None),
+        ("call", "A", "log256_up(uint256)", ["340282366920938463463374607431768211456"], None),
+        ("call", "A", "log256_up(uint256)", ["340282366920938463463374607431768211457"], None),
+        ("call", "A", "log256_up(uint256)", ["115792089237316195423570985008687907853269984665640564039457584007913129639935"], None),
+        ("call", "A", "clz(uint256)", ["0"], None),
+        ("call", "A", "clz(uint256)", ["1"], None),
+        ("call", "A", "clz(uint256)", ["2"], None),
+        ("call", "A", "clz(uint256)", ["1000000000000000000"], None),
+        ("call", "A", "clz(uint256)", ["340282366920938463463374607431768211456"], None),
+        ("call", "A", "clz(uint256)", ["340282366920938463463374607431768211457"], None),
+        ("call", "A", "clz(uint256)", ["115792089237316195423570985008687907853269984665640564039457584007913129639935"], None),
         ("call", "A", "abs(int256)", ["0"], None),
         ("call", "A", "abs(int256)", ["-1"], None),
         ("call", "A", "abs(int256)", [str(2**255 - 1)], None),
@@ -335,6 +392,85 @@ SCENARIOS = {
         ("send", "A", "set_scale(uint8)", ["18"], None),
         ("send", "A", "set_scale(uint8)", ["78"], None),
         ("send", "A", "set_scale(uint8)", ["6"], None),
+    ],
+    # Solady's FixedPointMathLib and its Lithe port at their edges. Where Lithe panics and
+    # Solady raises its own error (sMulWad and sDivWad overflow, rpow overflow), the input
+    # is left out; ExpOverflow and LnWadUndefined match byte for byte.
+    "fixed_point": [
+        ("call", "A", "wad_mul_up(uint256,uint256)", ["3", "333333333333333333"], None),
+        ("call", "A", "wad_mul_up(uint256,uint256)", ["1000000000000000000", "1000000000000000000"], None),
+        ("call", "A", "wad_mul_up(uint256,uint256)", ["0", "5"], None),
+        ("call", "A", "wad_mul_up(uint256,uint256)", ["1606938044258990275541962092341162602522202993782792835301376", "100000000000000000000"], None),
+        ("call", "A", "wad_div_up(uint256,uint256)", ["1", "3"], None),
+        ("call", "A", "wad_div_up(uint256,uint256)", ["1000000000000000000", "3"], None),
+        ("call", "A", "wad_div_up(uint256,uint256)", ["1532495540865888858358347027150309183618739122183602176", "7"], None),
+        ("call", "A", "div_wad(uint256,uint256)", ["5", "3"], None),
+        ("call", "A", "div_wad(uint256,uint256)", ["1569275433846670190958947355801916604025588861116008628224", "1000000000000000000"], None),
+        ("call", "A", "s_mul_wad(int256,int256)", ["-3", "333333333333333333"], None),
+        ("call", "A", "s_mul_wad(int256,int256)", ["-100000000000000000000", "2000000000000000000"], None),
+        ("call", "A", "s_div_wad(int256,int256)", ["-1", "3"], None),
+        ("call", "A", "s_div_wad(int256,int256)", ["100000000000000000000", "-7000000000000000000"], None),
+        ("call", "A", "exp_wad(int256)", ["0"], None),
+        ("call", "A", "exp_wad(int256)", ["1000000000000000000"], None),
+        ("call", "A", "exp_wad(int256)", ["-41446531673892822313"], None),
+        ("call", "A", "exp_wad(int256)", ["-41446531673892822312"], None),
+        ("call", "A", "exp_wad(int256)", ["135305999368893231588"], None),
+        ("call", "A", "exp_wad(int256)", ["135305999368893231589"], None),
+        ("call", "A", "exp_wad(int256)", ["-3000000000000000000"], None),
+        ("call", "A", "ln_wad(int256)", ["1"], None),
+        ("call", "A", "ln_wad(int256)", ["1000000000000000000"], None),
+        ("call", "A", "ln_wad(int256)", ["2718281828459045235"], None),
+        ("call", "A", "ln_wad(int256)", ["57896044618658097711785492504343953926634992332820282019728792003956564819967"], None),
+        ("call", "A", "ln_wad(int256)", ["0"], None),
+        ("call", "A", "ln_wad(int256)", ["-5"], None),
+        ("call", "A", "pow_wad(int256,int256)", ["2000000000000000000", "500000000000000000"], None),
+        ("call", "A", "pow_wad(int256,int256)", ["300000000000000000", "-2000000000000000000"], None),
+        ("call", "A", "pow_wad(int256,int256)", ["0", "1000000000000000000"], None),
+        ("call", "A", "sqrt_wad(uint256)", ["0"], None),
+        ("call", "A", "sqrt_wad(uint256)", ["2"], None),
+        ("call", "A", "sqrt_wad(uint256)", ["2000000000000000000"], None),
+        ("call", "A", "sqrt_wad(uint256)", ["115792089237316195423570985008687907853269984665640564039457584007913129639935"], None),
+        ("call", "A", "cbrt_wad(uint256)", ["0"], None),
+        ("call", "A", "cbrt_wad(uint256)", ["2000000000000000000"], None),
+        ("call", "A", "cbrt_wad(uint256)", ["1393796574908163946345982392040522594123776"], None),
+        ("call", "A", "cbrt_wad(uint256)", ["1725436586697640946858688965569256363112777243042596638790631055949824"], None),
+        ("call", "A", "cbrt_wad(uint256)", ["115792089237316195423570985008687907853269984665640564039457584007913129639935"], None),
+        ("call", "A", "rpow(uint256,uint256,uint256)", ["1000000001000000000", "31536000", "1000000000000000000000000000"], None),
+        ("call", "A", "rpow(uint256,uint256,uint256)", ["0", "0", "1000000000000000000"], None),
+        ("call", "A", "rpow(uint256,uint256,uint256)", ["0", "3", "1000000000000000000"], None),
+        ("call", "A", "rpow(uint256,uint256,uint256)", ["2000000000000000000", "10", "1000000000000000000"], None),
+        ("call", "A", "rpow(uint256,uint256,uint256)", ["3000000000000000000000000000", "5", "1000000000000000000000000000"], None),
+        ("call", "A", "cbrt(uint256)", ["0"], None),
+        ("call", "A", "cbrt(uint256)", ["7"], None),
+        ("call", "A", "cbrt(uint256)", ["8"], None),
+        ("call", "A", "cbrt(uint256)", ["115792089237316195423570985008687907853269984665640564039457584007913129639935"], None),
+        ("call", "A", "dist(uint256,uint256)", ["3", "10"], None),
+        ("call", "A", "dist(uint256,uint256)", ["10", "3"], None),
+        ("call", "A", "dist(uint256,uint256)", ["0", "115792089237316195423570985008687907853269984665640564039457584007913129639935"], None),
+        ("call", "A", "dist_int(int256,int256)", ["-3", "10"], None),
+        ("call", "A", "dist_int(int256,int256)", ["57896044618658097711785492504343953926634992332820282019728792003956564819967", "-57896044618658097711785492504343953926634992332820282019728792003956564819968"], None),
+        ("call", "A", "gcd(uint256,uint256)", ["12", "18"], None),
+        ("call", "A", "gcd(uint256,uint256)", ["0", "0"], None),
+        ("call", "A", "gcd(uint256,uint256)", ["0", "7"], None),
+        ("call", "A", "gcd(uint256,uint256)", ["1606938044258990275541962092341162602522202993782792835301376", "3802951800684688204490109616128"], None),
+        ("call", "A", "saturating_add(uint256,uint256)", ["1", "2"], None),
+        ("call", "A", "saturating_add(uint256,uint256)", ["115792089237316195423570985008687907853269984665640564039457584007913129639935", "1"], None),
+        ("call", "A", "saturating_sub(uint256,uint256)", ["5", "2"], None),
+        ("call", "A", "saturating_sub(uint256,uint256)", ["2", "5"], None),
+        ("call", "A", "saturating_mul(uint256,uint256)", ["0", "115792089237316195423570985008687907853269984665640564039457584007913129639935"], None),
+        ("call", "A", "saturating_mul(uint256,uint256)", ["340282366920938463463374607431768211456", "340282366920938463463374607431768211456"], None),
+        ("call", "A", "saturating_mul(uint256,uint256)", ["3", "5"], None),
+        ("call", "A", "lerp(uint256,uint256,uint256,uint256,uint256)", ["100", "200", "5", "0", "10"], None),
+        ("call", "A", "lerp(uint256,uint256,uint256,uint256,uint256)", ["200", "100", "5", "0", "10"], None),
+        ("call", "A", "lerp(uint256,uint256,uint256,uint256,uint256)", ["100", "200", "5", "10", "0"], None),
+        ("call", "A", "lerp(uint256,uint256,uint256,uint256,uint256)", ["1", "2", "7", "7", "7"], None),
+        ("call", "A", "lerp(uint256,uint256,uint256,uint256,uint256)", ["1", "2", "8", "7", "7"], None),
+        ("call", "A", "lerp_int(int256,int256,int256,int256,int256)", ["-100", "200", "5", "0", "10"], None),
+        ("call", "A", "lerp_int(int256,int256,int256,int256,int256)", ["200", "-100", "-5", "0", "-10"], None),
+        ("call", "A", "lerp_int(int256,int256,int256,int256,int256)", ["1", "2", "-3", "-7", "5"], None),
+        ("send", "A", "set_last(int256)", ["1000000000000000000"], None),
+        ("send", "A", "set_last(int256)", ["-50000000000000000000"], None),
+        ("send", "A", "set_last(int256)", ["135305999368893231589"], None),
     ],
     "layout": [
         ("send", "A", "set_level(uint256,uint8)", ["0", "11"], None),
@@ -580,6 +716,36 @@ SCENARIOS = {
         ("call", "A", "votes_for(bytes32)", ["0x" + "01" * 32], None),
         ("call", "A", "votes_for(bytes32)", ["0x" + "03" * 32], None),
         ("call", "A", "total_votes()", [], None),
+    ],
+    # A queue and an enumerable map: pops and removes delete what they held, for a refund.
+    "collections": [
+        ("send", "A", "enqueue(address)", [ADDR["A"]], None),
+        ("send", "A", "enqueue(address)", [ADDR["B"]], None),
+        ("send", "B", "enqueue(address)", [ADDR["A"]], None),
+        ("call", "A", "queued()", [], None),
+        ("send", "A", "dequeue()", [], None),
+        ("send", "B", "dequeue()", [], None),
+        ("call", "A", "queued()", [], None),
+        ("send", "A", "dequeue()", [], None),
+        ("send", "A", "dequeue()", [], None),
+        ("send", "A", "set(address,uint256)", [ADDR["A"], "5"], None),
+        ("send", "A", "set(address,uint256)", [ADDR["B"], "7"], None),
+        ("send", "B", "set(address,uint256)", ["0x0000000000000000000000000000000000000000", "9"], None),
+        ("send", "A", "set(address,uint256)", [ADDR["A"], "6"], None),
+        ("call", "A", "length()", [], None),
+        ("call", "A", "at(uint256)", ["1"], None),
+        ("call", "A", "get(address)", [ADDR["B"]], None),
+        ("send", "A", "remove(address)", [ADDR["A"]], None),
+        ("send", "A", "remove(address)", [ADDR["A"]], None),
+        ("call", "A", "get(address)", [ADDR["A"]], None),
+        ("call", "A", "at(uint256)", ["0"], None),
+        ("send", "B", "remove(address)", ["0x0000000000000000000000000000000000000000"], None),
+        ("send", "B", "remove(address)", [ADDR["B"]], None),
+        ("call", "A", "length()", [], None),
+        # A removed key's value is left in storage, so setting the key again costs less.
+        ("send", "A", "set(address,uint256)", [ADDR["A"], "8"], None),
+        ("call", "A", "get(address)", [ADDR["A"]], None),
+        ("call", "A", "at(uint256)", ["0"], None),
     ],
     "registry": [
         ("send", "A", "rename(string)", ["hello"], None),
@@ -1367,6 +1533,127 @@ def erc20_full_steps():
 PERMIT2 = "0x000000000022D473030F116dDEE9F6B43aC78BA3"
 
 
+def erc6909_steps():
+    """OpenZeppelin's minimal multi-token: operators against allowances, an unlimited
+    allowance that is never spent, supply through mints and burns, metadata and URIs,
+    and every error in OpenZeppelin's order of checks."""
+    m, a, b, c = "mt", ADDR["A"], ADDR["B"], "0x000000000000000000000000000000000000c0de"
+    mint = "mint(address,uint256,uint256)"
+    burn = "burn(address,uint256,uint256)"
+    transfer = "transfer(address,uint256,uint256)"
+    transfer_from = "transferFrom(address,address,uint256,uint256)"
+    approve = "approve(address,uint256,uint256)"
+    operator = "setOperator(address,bool)"
+    describe = "describe(uint256,string,string,uint8,string)"
+    send = lambda sender, f, args: ("send", sender, m, f, args, None)
+    call = lambda f, args: ("call", "A", m, f, args, None)
+    return [
+        call("owner()", []),
+        call("contractURI()", []),
+        *[call("supportsInterface(bytes4)", [i])
+          for i in ["0x0f632fb3", "0x01ffc9a7", "0xbd85b039", "0x71abc795", "0x20d88258", "0xd9b67a26", "0xffffffff"]],
+        send("A", mint, [a, "1", "100"]),
+        send("A", mint, [a, "2", "50"]),
+        send("B", mint, [b, "1", "1"]),
+        send("A", mint, [ZERO, "1", "1"]),
+        send("A", mint, [b, "3", MAX]),
+        send("A", mint, [b, "3", "1"]),
+        send("A", transfer, [b, "1", "10"]),
+        send("A", transfer, [b, "1", "0"]),
+        send("A", transfer, [ZERO, "1", "1"]),
+        send("A", transfer, [b, "1", "1000"]),
+        send("A", transfer, [a, "1", "5"]),
+        # Without an operator or an allowance, then with one per id.
+        send("B", transfer_from, [a, c, "1", "1"]),
+        send("A", approve, [b, "1", "30"]),
+        send("A", approve, [ZERO, "1", "30"]),
+        call("allowance(address,address,uint256)", [a, b, "1"]),
+        send("B", transfer_from, [a, c, "2", "1"]),
+        send("B", transfer_from, [a, c, "1", "20"]),
+        send("B", transfer_from, [a, c, "1", "11"]),
+        send("B", transfer_from, [a, ZERO, "1", "11"]),
+        send("B", transfer_from, [a, ZERO, "1", "1"]),
+        call("allowance(address,address,uint256)", [a, b, "1"]),
+        # The owner needs no allowance; an unlimited one is never spent.
+        send("A", transfer_from, [a, c, "2", "5"]),
+        send("A", approve, [b, "2", MAX]),
+        send("B", transfer_from, [a, c, "2", "5"]),
+        call("allowance(address,address,uint256)", [a, b, "2"]),
+        # An operator moves anything and leaves allowances alone.
+        send("A", operator, [b, "true"]),
+        send("A", operator, [ZERO, "true"]),
+        call("isOperator(address,address)", [a, b]),
+        send("B", transfer_from, [a, b, "1", "50"]),
+        send("B", transfer_from, [a, b, "1", "1000"]),
+        call("allowance(address,address,uint256)", [a, b, "1"]),
+        send("A", operator, [b, "false"]),
+        send("B", transfer_from, [a, b, "1", "20"]),
+        # Burns: by the holder, a spender, an operator, and past a balance.
+        send("B", burn, [b, "1", "10"]),
+        send("B", burn, [a, "1", "5"]),
+        send("B", burn, [a, "2", "5"]),
+        send("A", burn, [a, "1", "1000"]),
+        send("A", burn, [ZERO, "1", "0"]),
+        send("A", operator, [b, "true"]),
+        send("B", burn, [a, "2", "10"]),
+        *[call("totalSupply(uint256)", [i]) for i in ["1", "2", "3", "9"]],
+        *[call("balanceOf(address,uint256)", [who, i]) for who in [a, b, c] for i in ["1", "2"]],
+        send("B", describe, ["1", "Claim", "CLM", "6", "ipfs://claim/1"]),
+        send("A", describe, ["1", "Claim", "CLM", "6", "ipfs://claim/1"]),
+        send("A", describe, ["2", LONG, "", "18", LONG]),
+        *[call(f, [i]) for f in ["name(uint256)", "symbol(uint256)", "decimals(uint256)", "tokenURI(uint256)"]
+          for i in ["1", "2", "3"]],
+    ]
+
+
+def erc4626_steps():
+    """A vault over the `erc20` token: deposits and mints, a donation that makes the rate
+    uneven so each preview rounds, withdrawals and redemptions for others, the `max*`
+    limits, and the asset's own revert passed through."""
+    v, t, a, b = "vault", "asset", ADDR["A"], ADDR["B"]
+    send = lambda sender, role, f, args: ("send", sender, role, f, args, None)
+    call = lambda f, args=(): ("call", "A", v, f, list(args), None)
+    dep, mint = "deposit(uint256,address)", "mint(uint256,address)"
+    wd, rd = "withdraw(uint256,address,address)", "redeem(uint256,address,address)"
+    views = ["convertToShares(uint256)", "convertToAssets(uint256)", "previewDeposit(uint256)",
+             "previewMint(uint256)", "previewWithdraw(uint256)", "previewRedeem(uint256)"]
+    return [
+        *[call(f) for f in ["name()", "symbol()", "decimals()", "asset()", "totalAssets()", "totalSupply()"]],
+        call("maxDeposit(address)", [a]),
+        call("maxMint(address)", [a]),
+        send("A", t, "mint(address,uint256)", [a, str(1000 * E18)]),
+        send("A", t, "mint(address,uint256)", [b, str(1000 * E18)]),
+        send("A", v, dep, [str(E18), a]),
+        send("A", t, "approve(address,uint256)", ["$vault", MAX]),
+        send("B", t, "approve(address,uint256)", ["$vault", str(500 * E18)]),
+        send("A", v, dep, [str(E18), ZERO]),
+        send("A", v, dep, [str(100 * E18), a]),
+        send("A", v, dep, ["0", a]),
+        send("B", v, mint, [str(50 * E18), b]),
+        send("B", v, mint, [str(10**30), b]),
+        send("A", t, "transfer(address,uint256)", ["$vault", "7"]),
+        *[call(f, [x]) for f in views for x in ["0", "1", "999", str(E18)]],
+        call("maxWithdraw(address)", [a]),
+        call("maxRedeem(address)", [a]),
+        send("A", v, wd, [str(200 * E18), a, a]),
+        send("A", v, rd, [str(200 * E18), a, a]),
+        send("A", v, wd, [str(10 * E18), b, a]),
+        send("A", v, rd, [str(10 * E18), b, a]),
+        send("B", v, rd, [str(E18), b, a]),
+        send("A", v, "approve(address,uint256)", [b, str(5 * E18)]),
+        send("B", v, rd, [str(2 * E18), b, a]),
+        send("B", v, wd, [str(E18), b, a]),
+        send("B", v, wd, [str(10 * E18), b, a]),
+        send("A", v, wd, ["1", ZERO, a]),
+        send("B", v, rd, [str(50 * E18), b, b]),
+        call("maxWithdraw(address)", [b]),
+        call("totalAssets()"),
+        call("totalSupply()"),
+        *[call("balanceOf(address)", [who]) for who in [a, b]],
+        ("call", "A", t, "balanceOf(address)", ["$vault"], None),
+    ]
+
+
 def solady_erc20_steps():
     """Solady's token: no zero-address checks, a total supply that must not overflow, the
     fixed Permit2 allowance, and permits signed by account A."""
@@ -1668,9 +1955,70 @@ SUITES = {
         ],
         "steps": erc1155_steps(),
     },
+    # The standard library's modules keep storage at their own ERC-7201 roots.
+    "erc6909": {
+        "deploy": [("mt", "erc6909", "(address)", [ADDR["A"]])],
+        "steps": erc6909_steps(),
+        "own_layout": ["mt"],
+    },
     "erc721_full": {
         "deploy": [("nft", "erc721_full", "(address)", [ADDR["A"]]), ("receiver", "receiver")],
         "steps": erc721_full_steps(),
+    },
+    # The standard library keeps the vault's slots at ERC-7201 roots, which OpenZeppelin's
+    # plain `ERC20` doesn't; the asset's are compared.
+    "erc4626": {
+        "deploy": [
+            ("asset", "erc20", "(address)", [ADDR["A"]]),
+            ("vault", "erc4626", "(address)", ["$asset"]),
+        ],
+        "steps": erc4626_steps(),
+        "own_layout": ["vault"],
+    },
+    # OpenZeppelin's SafeERC20 and the standard library's, paying out of and pulling into
+    # a contract that holds the bench token.
+    "safe_erc20": {
+        "deploy": [("token", "erc20", "(address)", [ADDR["A"]]), ("payer", "safe_erc20")],
+        "steps": [
+            ("send", "A", "token", "mint(address,uint256)", ["$payer", "1000000"], None),
+            ("send", "A", "token", "mint(address,uint256)", [ADDR["B"], "1000000"], None),
+            ("send", "A", "payer", "pay(address,address,uint256)", ["$token", ADDR["B"], "1000"], None),
+            ("send", "A", "payer", "pay(address,address,uint256)", ["$token", ADDR["B"], "1000"], None),
+            ("send", "A", "payer", "pay(address,address,uint256)", ["$token", ADDR["A"], "5000000"], None),
+            ("send", "B", "token", "approve(address,uint256)", ["$payer", "5000"], None),
+            ("send", "A", "payer", "pull(address,address,uint256)", ["$token", ADDR["B"], "2000"], None),
+            ("send", "A", "payer", "pull(address,address,uint256)", ["$token", ADDR["B"], "2000"], None),
+            ("send", "A", "payer", "pull(address,address,uint256)", ["$token", ADDR["B"], "2000"], None),
+            ("send", "A", "payer", "allow(address,address,uint256)", ["$token", ADDR["B"], "5"], None),
+            ("send", "A", "payer", "allow(address,address,uint256)", ["$token", ADDR["B"], "7"], None),
+            ("call", "A", "token", "allowance(address,address)", ["$payer", ADDR["B"]], None),
+        ],
+    },
+    # Role masks on the standard library's OwnableRoles and a Solidity port of Solady's.
+    # The roles sit at the module's ERC-7201 root.
+    "ownable_roles": {
+        "deploy": [("roles", "ownable_roles")],
+        "steps": [
+            ("send", "A", "roles", "grantRoles(address,uint256)", [ADDR["B"], "1"], None),
+            ("send", "A", "roles", "grantRoles(address,uint256)", [ADDR["B"], "2"], None),
+            ("send", "B", "roles", "grantRoles(address,uint256)", [ADDR["B"], "4"], None),
+            ("send", "B", "roles", "mint(address,uint256)", [ADDR["A"], "10"], None),
+            ("send", "B", "roles", "mint(address,uint256)", [ADDR["A"], "10"], None),
+            ("send", "A", "roles", "mint(address,uint256)", [ADDR["A"], "10"], None),
+            ("send", "A", "roles", "pause()", [], None),
+            ("send", "B", "roles", "unpause()", [], None),
+            ("send", "B", "roles", "pause()", [], None),
+            ("send", "A", "roles", "unpause()", [], None),
+            ("call", "A", "roles", "hasAnyRole(address,uint256)", [ADDR["B"], "1"], None),
+            ("call", "A", "roles", "hasAllRoles(address,uint256)", [ADDR["B"], "7"], None),
+            ("call", "A", "roles", "rolesOf(address)", [ADDR["B"]], None),
+            ("call", "A", "roles", "minted(address)", [ADDR["A"]], None),
+            ("send", "A", "roles", "revokeRoles(address,uint256)", [ADDR["B"], "1"], None),
+            ("send", "B", "roles", "renounceRoles(uint256)", ["2"], None),
+            ("send", "B", "roles", "mint(address,uint256)", [ADDR["A"], "10"], None),
+            ("send", "B", "roles", "pause()", [], None),
+        ],
+        "own_layout": ["roles"],
     },
     "erc20_full": {
         "deploy": [
@@ -1846,7 +2194,7 @@ REMAPPINGS = [
 def solc(path, flags):
     """Creation code, runtime size, and function signatures of the contract `path` defines,
     imports resolved."""
-    out = run([SOLC, *flags, "--no-cbor-metadata", *REMAPPINGS, "--allow-paths", BENCH,
+    out = run([SOLC, *flags, "--evm-version", EVM, "--no-cbor-metadata", *REMAPPINGS, "--allow-paths", BENCH,
                "--combined-json", "abi,bin,bin-runtime", path]).stdout
     contracts = json.loads(out)["contracts"]
     mine = [v for k, v in contracts.items() if k.split(":")[0].endswith(os.path.basename(path))]
@@ -1878,7 +2226,7 @@ def lithe_builds():
     """Each pair's creation code, runtime size, and function signatures, from the
     Foundry-style artifacts."""
     out = tempfile.mkdtemp()
-    result = subprocess.run([*LITHE, "compile", BENCH], cwd=out, capture_output=True, text=True)
+    result = subprocess.run([*LITHE, "compile", BENCH, "--evm-version", EVM], cwd=out, capture_output=True, text=True)
     if result.returncode:
         sys.exit(result.stderr)
     builds = {}
@@ -1900,7 +2248,7 @@ class Chain:
     def __init__(self):
         # Port 0 lets the OS pick a free port, so runs in other checkouts never share a chain.
         self.log = tempfile.TemporaryFile("w+")
-        self.proc = subprocess.Popen(["anvil", "--port", "0"], stdout=self.log,
+        self.proc = subprocess.Popen(["anvil", "--port", "0", "--hardfork", EVM], stdout=self.log,
                                      stderr=subprocess.DEVNULL)
         for _ in range(100):
             self.log.seek(0)

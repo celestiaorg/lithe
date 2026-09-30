@@ -13,7 +13,7 @@ A block is a sequence of statements in braces, each ending with `;`:
 | Tuple binding | `const (a, b) : (t, u) := expr;`, `var (a, b) : (t, u) := expr;` |
 | Mutable binding | `var name : type := expr;` |
 | Assignment | `name := expr;`, `storage.path := expr;` |
-| Call | `f(args);`, `Module.f(args);` |
+| Call | `f(args);`, `Module.f(args);` for a function that returns nothing; `const _ : T := f(args);` drops a result |
 | Conditional | `if cond then { ... } else if cond then { ... } else { ... }` |
 | Loop | `for x : T in xs [until cond] [bound n] do { ... }`, or over `lo .. hi` |
 | Tuple assignment | `(a, b) := expr;` |
@@ -83,6 +83,33 @@ external function pay(const to : address) is {
 
 ```text
 storage field `paid` must be qualified as `storage.paid`
+```
+
+## `delete`
+
+`delete place;` writes the place's zero value: what storage that was never written reads as. Numbers become `0`, `bool` `false`, addresses `Address.zero`, strings, bytes, and lists empty, options `None`, a variant its first case with a zero payload, and a record, tuple, or fixed list each of its parts' zero values:
+
+```lithe fragment
+delete storage.balances[who];
+delete storage.orders[id];
+delete storage.orders[id].note;
+delete storage.pending[i];
+```
+
+It is exactly `place := zero`, so it goes wherever `:=` does, including a `var` or a `T` inside a generic module, and nowhere else: a whole map, or a record holding one, has no value to write, and a `const` can't be written. In storage, it clears every slot the old value used, a long string's data and a list's elements included, so each cleared slot earns the refund for zeroing storage.
+
+```lithe rejects
+storage is record {
+  balances : map(address, uint);
+}
+
+external function reset() is {
+  delete storage.balances;
+}
+```
+
+```text
+a map cannot be assigned or deleted
 ```
 
 ## `if`

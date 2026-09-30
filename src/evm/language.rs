@@ -2012,3 +2012,278 @@ contract Token is {
     .expect("delegate");
     assert!(!delegated.reverted, "{}", pretty(&delegated.returndata));
 }
+
+/// Constant operands fold; slices hash and join where they lie, checked unless the
+/// guard around them proves them in bounds; `_` in a pattern binds nothing.
+#[test]
+fn folds_and_slices_in_place() {
+    let src = r#"import "std/bytes"; import "std/crypto"; 
+storage is record { n : uint; }
+
+pure function trio(const x : uint) : (uint, uint, uint) is (x, x + 1, x + 2)
+
+external pure function parts(const x : uint) : uint is {
+  const (a, _, _) : (uint, uint, uint) := trio(x);
+  const (_, b, _) : (uint, uint, uint) := trio(x);
+  const _ : uint := x - 1;
+} with a + b
+
+external pure function mask(const x : uint) : uint is x & ((1 << 160) - 1)
+external pure function thirds(const x : uint) : (uint, uint) is (x / 3, x % 3)
+external pure function negate(const x : int; const d : int) : int is x / d
+
+external pure function hash(const b : bytes; const i : uint; const j : uint) : bool is
+  Crypto.keccak256(b[i:j]) = Crypto.keccak256(Bytes.concat(b[i:j]))
+
+external pure function join(const a : bytes; const b : bytes; const i : uint) : bytes is
+  Bytes.concat(a[i:], 0xff, b[:i], a[:i])
+
+external pure function head(const a : bytes; const n : uint) : bytes32 is
+  if n <= a.length then Crypto.keccak256(a[:n]) else Crypto.keccak256(a[a.length - n:])
+"#;
+    let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
+    let one = |sig: &str, args: &[Word]| {
+        let out = call(&runtime, sig, args);
+        assert!(!out.reverted, "{sig}");
+        out.returndata
+    };
+    let panic = |sig: &str, args: &[Arg]| {
+        let out = exec(
+            &runtime,
+            &encode_args(sig, args),
+            HashMap::new(),
+            Word::from_u64(1),
+            Word::from_u64(0),
+            Word::from_u64(0),
+        )
+        .unwrap();
+        assert!(out.reverted, "{sig}");
+        load_bytes(&out.returndata, 4)
+    };
+    assert_eq!(
+        load_bytes(&one("parts(uint256)", &[Word::from_u64(5)]), 0),
+        Word::from_u64(11)
+    );
+    assert_eq!(
+        panic("parts(uint256)", &[Arg::W(Word::from_u64(0))]),
+        Word::from_u64(0x11)
+    );
+    let x = Word::from_u64(0).not();
+    assert_eq!(load_bytes(&one("mask(uint256)", &[x]), 0), x.shr(96));
+    let t = one("thirds(uint256)", &[Word::from_u64(100)]);
+    assert_eq!(
+        (load_bytes(&t, 0), load_bytes(&t, 32)),
+        (Word::from_u64(33), Word::from_u64(1))
+    );
+    let min = Word::from_u64(1).shl(255);
+    assert_eq!(
+        panic("negate(int256,int256)", &[Arg::W(min), Arg::W(x)]),
+        Word::from_u64(0x11)
+    );
+    assert_eq!(
+        panic(
+            "negate(int256,int256)",
+            &[Arg::W(min), Arg::W(Word::from_u64(0))]
+        ),
+        Word::from_u64(0x12)
+    );
+
+    let data: Vec<u8> = (0..70u8).collect();
+    for (i, j) in [(0, 0), (0, 70), (3, 40), (33, 65), (70, 70)] {
+        let r = exec(
+            &runtime,
+            &encode_args(
+                "hash(bytes,uint256,uint256)",
+                &[Arg::B(data.clone()), w_arg(i), w_arg(j)],
+            ),
+            HashMap::new(),
+            Word::from_u64(1),
+            Word::from_u64(0),
+            Word::from_u64(0),
+        )
+        .unwrap();
+        assert!(
+            !r.reverted && load_bytes(&r.returndata, 0) == Word::from_u64(1),
+            "{i} {j}"
+        );
+    }
+    for (i, j) in [(4, 3), (0, 71)] {
+        assert_eq!(
+            panic(
+                "hash(bytes,uint256,uint256)",
+                &[Arg::B(data.clone()), w_arg(i), w_arg(j)]
+            ),
+            Word::from_u64(0x32)
+        );
+    }
+    let b: Vec<u8> = (100..140u8).collect();
+    for i in [0usize, 5, 33, 40] {
+        let r = exec(
+            &runtime,
+            &encode_args(
+                "join(bytes,bytes,uint256)",
+                &[Arg::B(data.clone()), Arg::B(b.clone()), w_arg(i as u64)],
+            ),
+            HashMap::new(),
+            Word::from_u64(1),
+            Word::from_u64(0),
+            Word::from_u64(0),
+        )
+        .unwrap();
+        assert!(!r.reverted, "{i}");
+        let want = [&data[i..], &[0xff], &b[..i], &data[..i]].concat();
+        assert_eq!(abi_string_value(&r.returndata), want, "{i}");
+    }
+    assert_eq!(
+        panic(
+            "join(bytes,bytes,uint256)",
+            &[Arg::B(data.clone()), Arg::B(b.clone()), w_arg(41)]
+        ),
+        Word::from_u64(0x32)
+    );
+    let head = |n: u64| {
+        let r = exec(
+            &runtime,
+            &encode_args("head(bytes,uint256)", &[Arg::B(data.clone()), w_arg(n)]),
+            HashMap::new(),
+            Word::from_u64(1),
+            Word::from_u64(0),
+            Word::from_u64(0),
+        )
+        .unwrap();
+        (
+            r.reverted,
+            load_bytes(&r.returndata, if r.reverted { 4 } else { 0 }),
+        )
+    };
+    assert_eq!(head(10), (false, keccak_word(&data[..10])));
+    assert_eq!(head(70), (false, keccak_word(&data)));
+    assert_eq!(head(71), (true, Word::from_u64(0x11)));
+}
+
+/// Slices compared, hashed, or cut to `bytesN` are read where they lie: out of bounds they
+/// still panic, and behind guards that prove them in bounds they never revert, even for
+/// huge indexes.
+#[test]
+fn read_only_slices() {
+    let src = r#"
+contract S is {
+  storage is record {}
+
+  external pure function eq(const b : bytes; const i : uint; const j : uint; const s : bytes) : (bool, bool) is
+    (b[i:j] = s, s <> b[i:j])
+
+  external pure function word(const b : bytes; const i : uint; const j : uint) : bytes21 is bytes21(b[i:j])
+
+  external pure function wide(const b : bytes; const i : uint) : bytes4 is bytes4(b[i:i + 6])
+
+  external pure function guarded(const b : bytes; const i : uint) : bytes21 is {
+    const n : uint := b.length;
+  } with if i < n and n - i > 20 then bytes21(b[i:i + 21]) else bytes21(b[0:0])
+
+  external pure function found(const b : bytes; const c : uint; const s : bytes) : bool is {
+    const n : uint := b.length;
+    const q : uint := s.length;
+  } with q <= n and c <= n - q and b[c:c + q] = s
+}
+"#;
+    let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
+    let run = |sig: &str, args: &[Arg]| {
+        let out = exec(
+            &runtime,
+            &encode_args(sig, args),
+            HashMap::new(),
+            Word::from_u64(1),
+            Word::from_u64(0),
+            Word::from_u64(0),
+        )
+        .unwrap();
+        (out.reverted, out.returndata)
+    };
+    let bytes21 = |b: &[u8]| {
+        let mut w = [0u8; 32];
+        let n = b.len().min(21);
+        w[..n].copy_from_slice(&b[..n]);
+        Word::from_be_bytes(w)
+    };
+    let data: Vec<u8> = (0..70u8).collect();
+    for (i, j) in [(0, 0), (0, 21), (3, 10), (30, 70), (49, 70), (70, 70)] {
+        for s in [data[i..j].to_vec(), data[i..j.max(i + 1).min(70)].to_vec(), b"x".to_vec()] {
+            let (reverted, out) = run(
+                "eq(bytes,uint256,uint256,bytes)",
+                &[Arg::B(data.clone()), w_arg(i as u64), w_arg(j as u64), Arg::B(s.clone())],
+            );
+            let same = Word::from_u64(u64::from(data[i..j] == s[..]));
+            assert!(!reverted);
+            assert_eq!(load_bytes(&out, 0), same, "{i} {j}");
+            assert_eq!(load_bytes(&out, 32), Word::from_u64(1).bitxor(same), "{i} {j}");
+        }
+        let (reverted, out) = run(
+            "word(bytes,uint256,uint256)",
+            &[Arg::B(data.clone()), w_arg(i as u64), w_arg(j as u64)],
+        );
+        assert!(!reverted);
+        assert_eq!(load_bytes(&out, 0), bytes21(&data[i..j]), "{i} {j}");
+    }
+    for (i, j) in [(4, 3), (0, 71)] {
+        for sig in ["word(bytes,uint256,uint256)"] {
+            let (reverted, out) = run(sig, &[Arg::B(data.clone()), w_arg(i), w_arg(j)]);
+            assert!(reverted);
+            assert_eq!(load_bytes(&out, 4), Word::from_u64(0x32));
+        }
+        let (reverted, out) = run(
+            "eq(bytes,uint256,uint256,bytes)",
+            &[Arg::B(data.clone()), w_arg(i), w_arg(j), Arg::B(vec![])],
+        );
+        assert!(reverted);
+        assert_eq!(load_bytes(&out, 4), Word::from_u64(0x32));
+    }
+    let (_, out) = run("wide(bytes,uint256)", &[Arg::B(data.clone()), w_arg(5)]);
+    assert_eq!(load_bytes(&out, 0), Word::from_u64(0x05060708).shl(224));
+    let (reverted, out) = run("wide(bytes,uint256)", &[Arg::B(data.clone()), w_arg(65)]);
+    assert!(reverted);
+    assert_eq!(load_bytes(&out, 4), Word::from_u64(0x32));
+    let huge = Word::from_u64(0).not();
+    for i in [0u64, 20, 49, 50, 69, 70, 1000] {
+        let (reverted, out) = run("guarded(bytes,uint256)", &[Arg::B(data.clone()), w_arg(i)]);
+        let i = i as usize;
+        let want = if i + 21 <= 70 { bytes21(&data[i..i + 21]) } else { Word::from_u64(0) };
+        assert!(!reverted);
+        assert_eq!(load_bytes(&out, 0), want, "{i}");
+    }
+    let (reverted, out) = run("guarded(bytes,uint256)", &[Arg::B(data.clone()), Arg::W(huge)]);
+    assert!(!reverted && load_bytes(&out, 0).is_zero());
+    let s = data[40..52].to_vec();
+    for c in [0u64, 39, 40, 41, 58, 59, 70] {
+        let (reverted, out) =
+            run("found(bytes,uint256,bytes)", &[Arg::B(data.clone()), w_arg(c), Arg::B(s.clone())]);
+        assert!(!reverted);
+        assert_eq!(load_bytes(&out, 0), Word::from_u64(u64::from(c == 40)), "{c}");
+    }
+    let (reverted, out) = run("found(bytes,uint256,bytes)", &[Arg::B(data.clone()), Arg::W(huge), Arg::B(s)]);
+    assert!(!reverted && load_bytes(&out, 0).is_zero());
+}
+
+fn w_arg(n: u64) -> Arg {
+    Arg::W(Word::from_u64(n))
+}
+
+/// An `if` branch or case arm can be a block that ends `with` its value, and an `if` on
+/// `Evm.osaka` keeps only the branch for the target fork.
+#[test]
+fn block_arms_with_values() {
+    let src = r#"import "std/evm"; 
+storage is record { n : uint; }
+external pure function f(const a : uint) : uint is
+  if a > 10 then {
+    const b : uint := a * 2;
+  } with b + 1 else a
+external pure function fork() : uint is if Evm.osaka then 1 else { const z : uint := 7; } with z
+"#;
+    let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
+    let word = |sig: &str, args: &[Word]| load_bytes(&call(&runtime, sig, args).returndata, 0);
+    assert_eq!(word("f(uint256)", &[Word::from_u64(20)]), Word::from_u64(41));
+    assert_eq!(word("f(uint256)", &[Word::from_u64(3)]), Word::from_u64(3));
+    let osaka = crate::EvmVersion::default() >= crate::EvmVersion::Osaka;
+    assert_eq!(word("fork()", &[]), Word::from_u64(if osaka { 1 } else { 7 }));
+}

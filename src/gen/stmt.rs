@@ -3,14 +3,80 @@ use super::*;
 impl<'a> Gen<'a> {
     pub(super) fn compile_stmts(&mut self, stmts: &[Stmt]) -> Result<(), Error> {
         let mark = self.facts.len();
-        let tail = std::mem::replace(&mut self.tail, false);
-        let result = stmts.iter().enumerate().try_for_each(|(i, s)| {
-            self.tail = tail && i + 1 == stmts.len();
-            self.compile_stmt(s)
-        });
-        self.tail = false;
+        let result = self.compile_seq(stmts);
         self.facts.truncate(mark);
         result
+    }
+
+    /// Statements whose facts stay in scope for what follows them, such as a result.
+    pub(super) fn compile_seq(&mut self, stmts: &[Stmt]) -> Result<(), Error> {
+        let tail = std::mem::replace(&mut self.tail, false);
+        let result = (|| {
+            for (i, s) in stmts.iter().enumerate() {
+                if tail && self.share_tail(&stmts[i..]) {
+                    break;
+                }
+                self.tail = tail && i + 1 == stmts.len();
+                self.compile_stmt(s)?;
+            }
+            Ok(())
+        })();
+        self.tail = false;
+        result
+    }
+
+    /// A write kills the facts that read the locals it writes: after the statement when it
+    /// reads everything before it writes a whole local, before it otherwise. An element
+    /// write keeps what is known of the list's length.
+    pub(super) fn compile_stmt(&mut self, s: &Stmt) -> Result<(), Error> {
+        let (written, late) = match s {
+            Stmt::Assign {
+                root: Some(sym),
+                index,
+                target,
+                ..
+            } => (vec![*sym], index.is_none() && target.is_none()),
+            Stmt::AssignTuple { syms, .. } => (syms.clone(), true),
+            Stmt::Var { sym, .. } => (sym.iter().copied().collect(), false),
+            Stmt::Const { sym, part_syms, .. } => {
+                (sym.iter().chain(part_syms).copied().collect(), false)
+            }
+            _ => (Vec::new(), false),
+        };
+        let elements = Self::keeps_length(s);
+        let forget = |g: &mut Self| {
+            for &sym in &written {
+                if elements {
+                    g.forget_elements(sym);
+                } else {
+                    g.forget(sym);
+                }
+            }
+        };
+        if !late {
+            forget(self);
+        }
+        let result = self.compile_stmt_body(s);
+        if late {
+            forget(self);
+        }
+        if let (
+            Ok(()),
+            Stmt::Const { expr, .. } | Stmt::Var { expr, .. } | Stmt::Assign { expr, .. },
+        ) = (&result, s)
+        {
+            // A divisor's facts are of its value before the statement's writes.
+            let mark = self.facts.len();
+            self.assume_divided(expr);
+            self.forget_since(mark, &written);
+        }
+        result
+    }
+
+    /// `xs[i] := v` on a local's list: its elements change, its length does not.
+    pub(super) fn keeps_length(s: &Stmt) -> bool {
+        matches!(s, Stmt::Assign { index: Some(_), target: None, push: false, expr, .. }
+            if !matches!(expr, Expr::Call { builtin: Some(Builtin::ListPop), .. }))
     }
 
     /// Jumps to `target` when `cond` is `when`, and falls through otherwise. An `and` or `or`
@@ -40,7 +106,7 @@ impl<'a> Gen<'a> {
                 self.branch -= 1;
                 right?;
                 if let Some(skip) = skip {
-                    self.jumpdest(skip);
+                    self.join(skip);
                 }
                 return Ok(());
             }
@@ -57,7 +123,7 @@ impl<'a> Gen<'a> {
 
     /// Only an `if`'s branches, an inlined call's body, and a `defer` see whether they are
     /// the last thing to run; everything nested in any other statement is not.
-    pub(super) fn compile_stmt(&mut self, s: &Stmt) -> Result<(), Error> {
+    fn compile_stmt_body(&mut self, s: &Stmt) -> Result<(), Error> {
         let mark = self.sharing.len();
         if !self.owners.is_empty() {
             self.share_lists(s);
@@ -94,13 +160,9 @@ impl<'a> Gen<'a> {
             }
             Stmt::AssignTuple { expr, syms, .. } => {
                 // Word locals take a tuple literal straight off the stack, last first.
-                let words = syms.iter().all(|&sym| {
-                    let ty = self.checked.syms[sym].ty;
-                    self.checked.types[ty].words == 1
-                        && self.checked.types[self.peel_nominal(ty)].kind != TyKind::Option
-                        && self.is_word_ty(self.peel_nominal(ty))
-                });
-                if let (Expr::Tuple { elems, .. }, true) = (expr, words) {
+                if let (Expr::Tuple { elems, .. }, true) =
+                    (expr, syms.iter().all(|&sym| self.word_local(sym)))
+                {
                     for elem in elems {
                         self.compile_value(elem)?;
                     }
@@ -155,7 +217,8 @@ impl<'a> Gen<'a> {
                                 .checked
                                 .transient_leaf(self.checked.syms[*sym].slot + *leaf);
                         let heap = !self.checked.syms[*sym].storage
-                            && matches!(base.as_ref(), Expr::Ident { .. });
+                            && matches!(base.as_ref(), Expr::Ident { sym: Some(s), .. }
+                                if !self.cd_checked.contains(s));
                         // A stored list's slot holds its length, not the list.
                         let stored = self.checked.syms[*sym].storage && !self.list_value(elem_ty);
                         if one_word && (stored || heap) {
@@ -173,6 +236,45 @@ impl<'a> Gen<'a> {
                     },
                     _ => None,
                 };
+                // A list `cd_checked` keeps in calldata: `p` walks its head, and each element
+                // is its position there, or its word when it is one.
+                let cd_rec = match elem_init {
+                    Some(Expr::Index { base, .. }) => match base.as_ref() {
+                        Expr::Ident { sym: Some(s), .. } if self.cd_checked.contains(s) => {
+                            let elem = self.checked.types[self.peel_nominal(base.ty())]
+                                .elem
+                                .unwrap_or(0);
+                            let head = if self.abi_dyn(elem) {
+                                1
+                            } else {
+                                self.checked.types[self.peel_nominal(elem)].words.max(1)
+                            };
+                            Some((*s, self.abi_dyn(elem), u64::from(head) * 32))
+                        }
+                        _ => None,
+                    },
+                    _ => None,
+                };
+                if let Some(e) = *elem {
+                    if cd_rec.is_some() && !self.cd_static(self.checked.syms[e].ty) {
+                        self.cd_checked.insert(e);
+                    } else {
+                        self.cd_checked.remove(&e);
+                    }
+                }
+                // An immutable list of several-word records in memory: `p` walks it, and
+                // each element is copied into the loop's local whole.
+                let record_list = match (elem_init, *elem) {
+                    (Some(init), Some(e))
+                        if cd_list.is_none() && direct_list.is_none() && cd_rec.is_none() =>
+                    {
+                        let n = self.checked.types[self.checked.syms[e].ty].words;
+                        self.heap_record_elem(init, n)
+                            .filter(|&(sym, _, _)| !self.checked.syms[sym].mutable)
+                            .map(|(sym, leaf, _)| (sym, leaf, n))
+                    }
+                    _ => None,
+                };
                 // The limit and the counter live on the stack, `[limit, i]`, for the loop's
                 // duration. The counter is also kept in its local when the body reads it,
                 // or when the element is read through the general path.
@@ -185,10 +287,14 @@ impl<'a> Gen<'a> {
                         self.expr_syms(c, &mut read);
                     }
                     read.contains(&counter)
-                        || (elem.is_some() && cd_list.is_none() && direct_list.is_none())
+                        || (elem.is_some()
+                            && cd_list.is_none()
+                            && direct_list.is_none()
+                            && record_list.is_none()
+                            && cd_rec.is_none())
                 };
-                // A range from zero whose counter nothing reads counts down instead: one
-                // stack word, and a test against zero.
+                // A range from zero whose counter nothing reads counts up from `-hi`
+                // instead: one stack word, and a test against zero.
                 let down = !mirrored
                     && matches!(iter, ForIter::Range { lo, .. }
                         if matches!(lo, Expr::Lit { lit: Lit::Uint(w) | Lit::Int(w, _), .. } if w.is_zero()));
@@ -200,7 +306,10 @@ impl<'a> Gen<'a> {
                     Some((_, _, true)) => Some(1u64),
                     Some((sym, _, false)) if !self.checked.syms[sym].mutable => Some(32),
                     Some(_) => None,
-                    None => cd_list.map(|_| 32),
+                    None => cd_list
+                        .map(|_| 32)
+                        .or(cd_rec.map(|(_, _, head)| head))
+                        .or(record_list.map(|(_, _, n)| 32 * u64::from(n))),
                 };
                 let walk = step.filter(|_| !mirrored && elem.is_some());
                 match iter {
@@ -268,6 +377,10 @@ impl<'a> Gen<'a> {
                         }
                     }
                 }
+                if down {
+                    self.op(PUSH0);
+                    self.op(SUB);
+                }
                 if let (Some(e), Some((_, _, true))) = (*elem, direct_list) {
                     if self.is_dynamic(self.peel_nominal(self.checked.syms[e].ty)) {
                         let mut other = false;
@@ -298,9 +411,22 @@ impl<'a> Gen<'a> {
                         }
                         _ => {}
                     }
+                    if let Some((list, _, _)) = cd_rec {
+                        self.mload(self.local[list]);
+                        self.push_u64(32);
+                        self.op(ADD);
+                    }
+                    if let Some((sym, leaf, _)) = record_list {
+                        self.mload(self.addr(sym, leaf));
+                        self.push_u64(32);
+                        self.op(ADD);
+                    }
                     // `[len, first]` becomes `[first + len * step, first]`.
                     self.op(SWAP1);
-                    if step > 1 {
+                    if !step.is_power_of_two() {
+                        self.push_u64(step);
+                        self.op(MUL);
+                    } else if step > 1 {
                         self.push_u64(step.trailing_zeros().into());
                         self.op(SHL);
                     }
@@ -323,24 +449,63 @@ impl<'a> Gen<'a> {
                 written.extend(declared.iter().copied());
                 self.hoist_lists(body, &written, !stores)?;
                 self.hoist_map_slots(body, &written)?;
+                // A loop that could fire its calls in place, over a calldata list checked as
+                // it is read, checks every element first: no call runs before a bad one
+                // reverts.
+                let lazy = cd_list.filter(|l| self.cd_lazy.contains(l));
+                let checked_ahead = match (lazy, *elem) {
+                    (Some(list), Some(e)) if tail && self.fires_loop(body, until.as_ref()) => {
+                        self.check_list_ahead(list, self.checked.syms[e].ty, walk.is_some())?;
+                        true
+                    }
+                    _ => false,
+                };
+                let outer_spans = self.hoist_spans(body, until.as_ref(), &written)?;
                 let top = self.fresh();
                 let done = self.fresh();
+                self.forget_written(body, until.as_ref());
+                // `until x >> i = 0` ends the loop at any counter from 256 on, before the
+                // body runs, so a limit of 256 or more never does.
+                let shifted_out = !down
+                    && !signed
+                    && matches!(iter, ForIter::Range { hi, .. }
+                        if !self.range_of(hi).0.lt(Word::from_u64(256)))
+                    && until.as_ref().is_some_and(|c| self.shifts_out(c, counter));
                 self.jumpdest(top);
-                if down {
-                    self.op(DUP1);
-                    self.op(ISZERO);
-                } else {
-                    self.op(DUP1 + 1);
-                    self.op(DUP1 + 1);
-                    self.op(if signed { SLT } else { LT });
-                    self.op(ISZERO);
+                if !shifted_out {
+                    if down {
+                        self.op(DUP1);
+                        self.op(ISZERO);
+                    } else {
+                        self.op(DUP1 + 1);
+                        self.op(DUP1 + 1);
+                        self.op(if signed { SLT } else { LT });
+                        self.op(ISZERO);
+                    }
+                    self.push_label(done);
+                    self.op(JUMPI);
                 }
-                self.push_label(done);
-                self.op(JUMPI);
                 if mirrored {
                     self.op(DUP1);
                     self.mstore_off(self.local[counter]);
                 }
+                // Elements come from memory, or from calldata checked before the loop.
+                let unchecked = match elem_init {
+                    Some(Expr::Index { base, .. }) => match base.as_ref() {
+                        Expr::Ident { sym: Some(s), .. } => match cd_list {
+                            Some(list) => checked_ahead || !self.cd_lazy.contains(&list),
+                            None => {
+                                !(self.checked.syms[*s].storage
+                                    || self.cd_trees.contains(s)
+                                    || self.cd_bytes.contains(s))
+                            }
+                        },
+                        _ => false,
+                    },
+                    _ => true,
+                };
+                let fire = tail && unchecked && self.fires_loop(body, until.as_ref());
+                let outer_fire = std::mem::replace(&mut self.fire_loop, fire);
                 self.branch += 1;
                 self.loop_syms.push(declared.clone());
                 self.loop_counters.push(counter);
@@ -368,10 +533,14 @@ impl<'a> Gen<'a> {
                     }
                     _ => false,
                 };
+                if let (Some(e), Some(init)) = (*elem, elem_init) {
+                    self.note_bound(e, init);
+                }
                 let result = (|| -> Result<(), Error> {
                     let check = |g: &mut Self| -> Result<(), Error> {
                         if let Some(c) = until {
                             g.branch_on(c, done, true)?;
+                            g.assume(c, false);
                         }
                         Ok(())
                     };
@@ -381,7 +550,32 @@ impl<'a> Gen<'a> {
                     if let (Some(elem), Some(init)) = (*elem, elem_init) {
                         // The counter is below the length read at entry, and a list
                         // never shrinks, so the element read needs no bounds check.
-                        if let Some(list) = cd_list {
+                        if let Some((list, dynamic, head)) = cd_rec {
+                            // The head of element `i` is at `off + 32 + head * i`; a
+                            // dynamic one holds its offset from `off + 32`.
+                            self.op(DUP1);
+                            if walk.is_none() {
+                                self.push_u64(head);
+                                self.op(MUL);
+                                self.mload(self.local[list]);
+                                self.op(ADD);
+                                self.push_u64(32);
+                                self.op(ADD);
+                            }
+                            if dynamic {
+                                self.cd_load();
+                                self.mload(self.local[list]);
+                                self.op(ADD);
+                                self.push_u64(32);
+                                self.op(ADD);
+                            }
+                            let ty = self.checked.syms[elem].ty;
+                            if self.cd_static(ty) {
+                                self.cd_load();
+                                self.align_decoded(ty);
+                            }
+                            self.mstore_off(self.local[elem]);
+                        } else if let Some(list) = cd_list {
                             // Element `i` of a calldata list is the word at `off + 32 + 32i`.
                             let word = self.peel_nominal(self.checked.syms[elem].ty);
                             self.op(DUP1);
@@ -394,7 +588,7 @@ impl<'a> Gen<'a> {
                                 self.op(ADD);
                             }
                             self.cd_load();
-                            if self.cd_lazy.contains(&list) {
+                            if self.cd_lazy.contains(&list) && !checked_ahead {
                                 self.check_word(self.checked.syms[elem].ty, &|g: &mut Self| {
                                     g.op(DUP1)
                                 })?;
@@ -431,6 +625,11 @@ impl<'a> Gen<'a> {
                                 self.op(MLOAD);
                             }
                             self.mstore_off(self.local[elem]);
+                        } else if let (Some((_, _, n)), Some(_)) = (record_list, walk) {
+                            self.copy_element_to(self.local[elem], n, true);
+                            if self.checked.syms[elem].mutable {
+                                self.own_lists(self.local[elem], self.checked.syms[elem].ty)?;
+                            }
                         } else {
                             self.trusted_index = true;
                             let stored = self.store_expr(elem, init);
@@ -447,14 +646,11 @@ impl<'a> Gen<'a> {
                 self.loop_counters.pop();
                 self.loop_syms.pop();
                 self.leave_branch();
+                self.fire_loop = outer_fire;
+                (self.span_temps, self.mask_temps) = outer_spans;
                 result?;
                 self.push_u64(walk.unwrap_or(1));
-                if down {
-                    self.op(SWAP1);
-                    self.op(SUB);
-                } else {
-                    self.op(ADD);
-                }
+                self.op(ADD);
                 self.push_label(top);
                 self.op(JUMP);
                 self.jumpdest(done);
@@ -475,12 +671,12 @@ impl<'a> Gen<'a> {
                 self.branch_on(cond, bad, false)?;
                 self.push_label(ok);
                 self.op(JUMP);
-                self.jumpdest(bad);
+                self.join(bad);
                 self.failing += 1;
                 let raised = self.compile_raised(reason);
                 self.failing -= 1;
                 raised?;
-                self.jumpdest(ok);
+                self.join(ok);
                 self.assume(cond, true);
                 Ok(())
             }
@@ -498,6 +694,21 @@ impl<'a> Gen<'a> {
                 self.tail = tail;
                 self.compile_stmts(then_body)
             }
+            // A condition known from literals: only its branch runs.
+            Stmt::If {
+                cond,
+                then_body,
+                else_body,
+                ..
+            } if self.const_word(cond).is_some() => {
+                let taken = if self.const_word(cond).is_some_and(|w| !w.is_zero()) {
+                    then_body
+                } else {
+                    else_body
+                };
+                self.tail = tail;
+                self.compile_stmts(taken)
+            }
             Stmt::If {
                 cond,
                 then_body,
@@ -509,10 +720,15 @@ impl<'a> Gen<'a> {
                 self.branch_on(cond, else_l, false)?;
                 self.branch += 1;
                 let mark = self.facts.len();
+                // What one branch writes kills facts for the code after the `if`, not for
+                // the other branch.
+                let before = self.killed();
                 self.assume(cond, true);
                 self.tail = tail;
                 self.compile_stmts(then_body)?;
                 self.facts.truncate(mark);
+                let killed = self.killed();
+                self.kill_only(&before, true);
                 self.push_label(end_l);
                 self.op(JUMP);
                 self.jumpdest(else_l);
@@ -520,8 +736,9 @@ impl<'a> Gen<'a> {
                 self.tail = tail;
                 self.compile_stmts(else_body)?;
                 self.facts.truncate(mark);
+                self.kill_only(&killed, false);
                 self.leave_branch();
-                self.jumpdest(end_l);
+                self.join(end_l);
                 Ok(())
             }
             Stmt::Const {
@@ -530,10 +747,18 @@ impl<'a> Gen<'a> {
                 part_syms,
                 line,
                 col,
+                name,
                 ..
             } => {
                 if !part_syms.is_empty() {
                     return self.scatter(expr, part_syms);
+                }
+                // A call's result bound to `_` is dropped, as a call statement's is.
+                if name == "_"
+                    && matches!(expr, Expr::Call { callee: Some(idx), .. }
+                        if self.checked.types[self.checked.prog.funcs[*idx].ret_ty].words <= 1)
+                {
+                    return self.compile_effect(expr);
                 }
                 let Some(sym) = *sym else {
                     return Err(error(*line, *col, "unbound local"));
@@ -541,7 +766,17 @@ impl<'a> Gen<'a> {
                 if self.fresh_zero(sym, expr) {
                     return Ok(());
                 }
-                self.store_expr(sym, expr)
+                if matches!(expr, Expr::Call { builtin: Some(Builtin::AbiDecode), .. })
+                    && self.bind_cd_checked(self.home_func(sym), sym, expr)?
+                {
+                    self.mstore_off(self.local[sym]);
+                    return Ok(());
+                }
+                self.cd_checked.remove(&sym);
+                self.store_expr(sym, expr)?;
+                self.assume_bound(sym, expr);
+                self.note_bound(sym, expr);
+                Ok(())
             }
             Stmt::Var {
                 expr,
@@ -560,7 +795,9 @@ impl<'a> Gen<'a> {
                 if self.fresh_zero(sym, expr) {
                     return Ok(());
                 }
-                self.store_expr(sym, expr)
+                self.store_expr(sym, expr)?;
+                self.assume_bound(sym, expr);
+                Ok(())
             }
             Stmt::Assign {
                 expr,
@@ -659,7 +896,16 @@ impl<'a> Gen<'a> {
                         *push,
                     );
                 }
-                self.assign_named(root, *leaf, expr)?;
+                if keys.is_empty()
+                    && fields.is_empty()
+                    && self.grows(root, expr)
+                    && self.appendable(root)
+                {
+                    self.append_to = Some(root);
+                }
+                let assigned = self.assign_named(root, *leaf, expr);
+                self.append_to = None;
+                assigned?;
                 if !self.checked.syms[root].storage && !self.owned(expr) {
                     self.own_lists(self.addr(root, *leaf), expr.ty())?;
                 }
@@ -685,6 +931,111 @@ impl<'a> Gen<'a> {
                 result
             }
         }
+    }
+
+    /// Whether `expr` appends to `x` a piece of any length, which can make `x` long enough
+    /// that growing it in place beats copying it. Word-sized pieces keep it short.
+    fn grows(&self, x: usize, expr: &Expr) -> bool {
+        let Expr::Call { args, .. } = strip_casts(expr) else {
+            return false;
+        };
+        self_append(x, expr)
+            && args[1..]
+                .iter()
+                .any(|a| self.is_dynamic(self.peel_nominal(a.ty())) || self.list_value(a.ty()))
+    }
+
+    /// Whether `x`, a `bytes` or `string` local, can grow its blob in place when it is
+    /// appended to: no other value can share its blob. It is a `var` of a function without
+    /// continuations, only ever bound to a new concatenation or the empty string, and read
+    /// only where its bytes are copied or looked at, or in the function's result, which
+    /// the function reaches after every append.
+    fn appendable(&mut self, x: usize) -> bool {
+        if let Some(&known) = self.appendable.get(&x) {
+            return known;
+        }
+        let known = self.find_appendable(x);
+        self.appendable.insert(x, known);
+        known
+    }
+
+    fn find_appendable(&self, x: usize) -> bool {
+        let info = &self.checked.syms[x];
+        let t = &self.checked.types[self.peel_nominal(info.ty)];
+        if !info.mutable
+            || info.storage
+            || !matches!(t.kind, TyKind::Bytes | TyKind::String)
+            || t.bits > 0
+        {
+            return false;
+        }
+        let funcs = &self.checked.prog.funcs;
+        let declares = |st: &Stmt| {
+            let found =
+                |n: Node<'_>| matches!(n, Node::Stmt(Stmt::Var { sym: Some(s), .. }) if *s == x);
+            self.stmt_any(st, &found, &mut (0..funcs.len()).collect())
+        };
+        let Some(f) = funcs.iter().find(|f| f.stmts.iter().any(declares)) else {
+            return false;
+        };
+        let fresh = |e: &Expr| match strip_casts(e) {
+            Expr::Lit {
+                lit: Lit::Str(s), ..
+            } => s.is_empty(),
+            Expr::Call {
+                builtin: Some(Builtin::BytesConcat | Builtin::StringConcat),
+                ..
+            } => true,
+            _ => false,
+        };
+        let is_x = |e: &Expr| matches!(strip_casts(e), Expr::Ident { sym: Some(s), .. } if *s == x);
+        let (reads, allowed, bad) = (
+            std::cell::Cell::new(0),
+            std::cell::Cell::new(0),
+            std::cell::Cell::new(false),
+        );
+        let visit = |n: Node<'_>| {
+            match n {
+                Node::Stmt(Stmt::Defer { .. }) => bad.set(true),
+                Node::Stmt(Stmt::Var {
+                    sym: Some(s), expr, ..
+                }) if *s == x => bad.set(bad.get() || !fresh(expr)),
+                Node::Stmt(Stmt::Assign {
+                    root: Some(r),
+                    expr,
+                    index,
+                    keys,
+                    fields,
+                    target,
+                    ..
+                }) if *r == x => {
+                    let plain =
+                        index.is_none() && keys.is_empty() && fields.is_empty() && target.is_none();
+                    bad.set(bad.get() || !plain || !fresh(expr));
+                    if self_append(x, expr) {
+                        allowed.set(allowed.get() + 1);
+                    }
+                }
+                Node::Expr(Expr::Ident { sym: Some(s), .. }) if *s == x => {
+                    reads.set(reads.get() + 1)
+                }
+                Node::Expr(Expr::Field { base, name, .. }) if name == "length" && is_x(base) => {
+                    allowed.set(allowed.get() + 1)
+                }
+                Node::Expr(Expr::Call {
+                    builtin: Some(Builtin::BytesAt | Builtin::BytesSlice | Builtin::BytesWord),
+                    args,
+                    ..
+                }) if args.first().is_some_and(is_x) => allowed.set(allowed.get() + 1),
+                _ => {}
+            }
+            false
+        };
+        let mut seen: Vec<usize> = (0..funcs.len()).collect();
+        for st in &f.stmts {
+            self.stmt_any(st, &visit, &mut seen);
+        }
+        !bad.get() && reads.get() == allowed.get()
     }
 
     /// `[ptr]`: the length of the list in memory there drops by one.
@@ -760,6 +1111,17 @@ impl<'a> Gen<'a> {
         let len_addr = self.addr(root, leaf);
         if !self.checked.syms[root].storage {
             self.mload(len_addr);
+            if leaf == 0 && self.nonempty(root) {
+                // [ptr]: the length drops by one.
+                self.op(DUP1);
+                self.op(MLOAD);
+                self.push_u64(1);
+                self.op(SWAP1);
+                self.op(SUB);
+                self.op(SWAP1);
+                self.op(MSTORE);
+                return Ok(());
+            }
             return self.pop_list();
         }
         let ty = self.type_at(self.checked.syms[root].ty, leaf);
@@ -1002,6 +1364,243 @@ impl<'a> Gen<'a> {
         Ok(())
     }
 
+    /// Reads the length and data address of each `bytes` or `string` parameter of `idx`
+    /// that its body reads twice or more, once, at its start, as `hoist_spans` does for a
+    /// loop. A call whose argument has kept its span shares it. Returns the parameters.
+    fn hoist_param_spans(&mut self, idx: usize) -> Result<Vec<usize>, Error> {
+        let f = &self.checked.prog.funcs[idx];
+        let params: Vec<usize> = f.params.iter().filter_map(|p| p.sym).collect();
+        let (stmts, tail) = (f.stmts.clone(), f.tail.clone());
+        let later = self.continuation_syms(idx);
+        let mut hoisted = Vec::new();
+        for sym in params {
+            let info = &self.checked.syms[sym];
+            let t = &self.checked.types[self.peel_nominal(info.ty)];
+            if !matches!(t.kind, TyKind::Bytes | TyKind::String)
+                || t.bits > 0
+                || info.storage
+                || info.mutable
+                || later.contains(&sym)
+                || self.span_temps.contains_key(&sym)
+                || self.cd_bytes.contains(&sym)
+                || self.cd_trees.contains(&sym)
+                || self.cd_checked.contains(&sym)
+                || self.local[sym] < 0
+            {
+                continue;
+            }
+            // Reads, less those only passed on to a compiled call, which takes the word.
+            let reads = std::cell::Cell::new(0i32);
+            let note = |n: Node<'_>| {
+                match n {
+                    Node::Expr(Expr::Ident { sym: Some(s), .. }) if *s == sym => {
+                        reads.set(reads.get() + 1)
+                    }
+                    Node::Expr(Expr::Call {
+                        callee: Some(c),
+                        args,
+                        ..
+                    }) if !self.inlines(*c) => {
+                        let passed = args
+                            .iter()
+                            .filter(|a| matches!(a, Expr::Ident { sym: Some(s), .. } if *s == sym))
+                            .count();
+                        reads.set(reads.get() - passed as i32);
+                    }
+                    _ => {}
+                }
+                false
+            };
+            let mut callees: Vec<usize> = (0..self.checked.prog.funcs.len()).collect();
+            for st in &stmts {
+                self.stmt_any(st, &note, &mut callees);
+            }
+            if let Some(e) = &tail {
+                self.expr_any(e, &note, &mut callees);
+            }
+            if reads.get() < 2 {
+                continue;
+            }
+            let (len, data) = (self.temp(), self.temp());
+            let ident = Expr::Ident {
+                line: 0,
+                col: 0,
+                name: String::new(),
+                sym: Some(sym),
+                builtin: None,
+                ty: info.ty,
+            };
+            self.span_of(&ident)?;
+            self.mstore_off(data);
+            self.mstore_off(len);
+            self.span_temps.insert(sym, (len, data));
+            hoisted.push(sym);
+        }
+        Ok(hoisted)
+    }
+
+    /// Reads the length and data address of each `bytes` or `string` local in memory that
+    /// the loop reads and never writes, and the mask of each width it cuts `bytesN` slices
+    /// by, once, before it. A loop that defers keeps none: its continuations run apart
+    /// from it. Returns the spans and masks kept before.
+    #[allow(clippy::type_complexity)]
+    fn hoist_spans(
+        &mut self,
+        body: &[Stmt],
+        until: Option<&Expr>,
+        written: &[usize],
+    ) -> Result<(HashMap<usize, (i32, i32)>, HashMap<usize, i32>), Error> {
+        let outer = (self.span_temps.clone(), self.mask_temps.clone());
+        let defers = body
+            .iter()
+            .any(|st| self.stmt_any(st, &|n| matches!(n, Node::Stmt(Stmt::Defer { .. })), &mut Vec::new()));
+        if defers {
+            return Ok(outer);
+        }
+        let read = std::cell::RefCell::new(Vec::new());
+        let note = |n: Node<'_>| {
+            if let Node::Expr(Expr::Ident { sym: Some(s), .. }) = n {
+                read.borrow_mut().push(*s);
+            }
+            false
+        };
+        // Callees' own locals are not bound yet, so the scans stay in this body.
+        let mut callees: Vec<usize> = (0..self.checked.prog.funcs.len()).collect();
+        for st in body {
+            self.stmt_any(st, &note, &mut callees);
+        }
+        if let Some(c) = until {
+            self.expr_any(c, &note, &mut callees);
+        }
+        let mut read = read.into_inner();
+        read.sort_unstable();
+        read.dedup();
+        for sym in read {
+            let info = &self.checked.syms[sym];
+            let t = &self.checked.types[self.peel_nominal(info.ty)];
+            let bytes = matches!(t.kind, TyKind::Bytes | TyKind::String) && t.bits == 0;
+            if !bytes
+                || info.storage
+                || info.mutable
+                || written.contains(&sym)
+                || self.span_temps.contains_key(&sym)
+                || self.cd_bytes.contains(&sym)
+                || self.cd_trees.contains(&sym)
+                || self.local[sym] < 0
+            {
+                continue;
+            }
+            let (len, data) = (self.temp(), self.temp());
+            let ident = Expr::Ident {
+                line: 0,
+                col: 0,
+                name: String::new(),
+                sym: Some(sym),
+                builtin: None,
+                ty: info.ty,
+            };
+            self.span_of(&ident)?;
+            self.mstore_off(data);
+            self.mstore_off(len);
+            self.span_temps.insert(sym, (len, data));
+        }
+        let widths = std::cell::RefCell::new(Vec::new());
+        let find = |n: Node<'_>| {
+            if let Node::Expr(Expr::Call {
+                builtin: Some(Builtin::Cast),
+                args,
+                ty,
+                ..
+            }) = n
+            {
+                let t = &self.checked.types[self.peel_nominal(*ty)];
+                if let (TyKind::Bytes, true, Some(Expr::Call { builtin: Some(Builtin::BytesSlice), args: inner, .. })) =
+                    (t.kind, t.bits > 0, args.first())
+                {
+                    if let Some(Expr::Binary {
+                        op: BinOp::Add,
+                        left,
+                        right,
+                        ..
+                    }) = inner.get(2)
+                    {
+                        if let (true, Expr::Ident { sym: Some(k), .. }) =
+                            (range::same_value(left, &inner[1]), right.as_ref())
+                        {
+                            widths.borrow_mut().push((*k, right.as_ref().clone()));
+                        }
+                    }
+                }
+            }
+            false
+        };
+        for st in body {
+            self.stmt_any(st, &find, &mut callees);
+        }
+        for (k, width) in widths.into_inner() {
+            let info = &self.checked.syms[k];
+            if info.storage
+                || info.mutable
+                || written.contains(&k)
+                || self.mask_temps.contains_key(&k)
+                || self.local[k] < 0
+            {
+                continue;
+            }
+            let at = self.temp();
+            self.compile_value(&width)?;
+            self.leading_mask();
+            self.mstore_off(at);
+            self.mask_temps.insert(k, at);
+        }
+        Ok(outer)
+    }
+
+    /// `[k]` becomes the mask of a word's first `k` bytes, every byte from 32 on.
+    pub(super) fn leading_mask(&mut self) {
+        self.push_u64(3);
+        self.op(SHL);
+        self.op(PUSH0);
+        self.op(NOT);
+        self.op(SWAP1);
+        self.op(SHR);
+        self.op(NOT);
+    }
+
+    /// Checks each element of a calldata list, with the loop's `[end, p]` or `[len, i]` on
+    /// the stack and left there.
+    fn check_list_ahead(&mut self, list: usize, ty: usize, walk: bool) -> Result<(), Error> {
+        let (top, done) = (self.fresh(), self.fresh());
+        self.op(DUP1 + 1);
+        self.op(DUP1 + 1);
+        self.jumpdest(top);
+        self.op(DUP1 + 1);
+        self.op(DUP1 + 1);
+        self.op(LT);
+        self.op(ISZERO);
+        self.push_label(done);
+        self.op(JUMPI);
+        self.op(DUP1);
+        if !walk {
+            self.push_u64(32);
+            self.op(MUL);
+            self.mload(self.local[list]);
+            self.op(ADD);
+            self.push_u64(32);
+            self.op(ADD);
+        }
+        self.cd_load();
+        self.check_word(ty, &|_| {})?;
+        self.push_u64(if walk { 32 } else { 1 });
+        self.op(ADD);
+        self.push_label(top);
+        self.op(JUMP);
+        self.jumpdest(done);
+        self.op(POP);
+        self.op(POP);
+        Ok(())
+    }
+
     fn store_expr(&mut self, sym: usize, expr: &Expr) -> Result<(), Error> {
         // A local of code compiled once is only read there, so promotion may hold it.
         if self.shared && self.local[sym] >= 0 {
@@ -1053,6 +1652,12 @@ impl<'a> Gen<'a> {
     }
 
     fn scatter(&mut self, expr: &Expr, syms: &[usize]) -> Result<(), Error> {
+        if syms.iter().all(|&sym| self.word_local(sym)) && self.push_record_words(expr)? {
+            for &sym in syms.iter().rev() {
+                self.mstore_off(self.local[sym]);
+            }
+            return Ok(());
+        }
         self.write_words(expr, self.tuple_buf)?;
         let fields: Vec<(u32, u32)> = self.checked.types[expr.ty()]
             .fields
@@ -1109,9 +1714,14 @@ impl<'a> Gen<'a> {
                 args,
                 ..
             } => {
+                let n = self.checked.types[self.checked.prog.funcs[*idx].ret_ty].words;
+                if !self.plan.outline.contains(idx) && self.push_record_words(expr)? {
+                    for i in (0..n).rev() {
+                        self.mstore_off(dst + i as i32 * 32);
+                    }
+                    return Ok(());
+                }
                 self.compile_call(*idx, args)?;
-                let ret = self.checked.prog.funcs[*idx].ret_ty;
-                let n = self.checked.types[ret].words;
                 self.copy_words(self.fn_ret[*idx], dst, n);
                 Ok(())
             }
@@ -1166,10 +1776,17 @@ impl<'a> Gen<'a> {
         }
         let Expr::Record { fields, .. } = expr else {
             let n = self.checked.types[ty].words;
-            if self.push_record_words(expr)? {
+            let compiled = matches!(expr, Expr::Call { callee: Some(idx), .. } if self.plan.outline.contains(idx));
+            if !compiled && self.push_record_words(expr)? {
                 for i in (0..n).rev() {
                     self.mstore_off(dst + i as i32 * 32);
                 }
+                return Ok(());
+            }
+            let heap = self.heap_record_elem(expr, n).filter(|_| self.image_leaf(dst).is_none());
+            if let Some((sym, leaf, index)) = heap {
+                self.heap_element(self.addr(sym, leaf), index, u64::from(n), false, None)?;
+                self.copy_element_to(dst, n, false);
                 return Ok(());
             }
             let src = self.value_addr(expr)?;
@@ -1194,6 +1811,14 @@ impl<'a> Gen<'a> {
         self.write_value(expr, dst, ty)
     }
 
+    /// A one-word local that is not an option: a tuple element it takes off the stack.
+    fn word_local(&self, sym: usize) -> bool {
+        let ty = self.checked.syms[sym].ty;
+        self.checked.types[ty].words == 1
+            && self.checked.types[self.peel_nominal(ty)].kind != TyKind::Option
+            && self.is_word_ty(self.peel_nominal(ty))
+    }
+
     fn payload_words(&self, expr: &Expr, ty: usize) -> u32 {
         if let Expr::Ident { sym: Some(sid), .. } = expr {
             if self.checked.syms[*sid].span > 0 {
@@ -1210,8 +1835,27 @@ impl<'a> Gen<'a> {
                 args,
                 ..
             } => {
-                self.compile_call(*idx, args)?;
-                let ret = self.checked.prog.funcs[*idx].ret_ty;
+                // An inlined body whose result nobody reads leaves out a tail that can't fail,
+                // and discards a tail that is a call the same way.
+                let (idx, f) = (*idx, &self.checked.prog.funcs[*idx]);
+                let tail = f.tail.clone().filter(|t| {
+                    self.checked.types[f.ret_ty].words == 1
+                        && self.inlines(idx)
+                        && (self.inert(t) || matches!(t, Expr::Call { callee: Some(_), .. }))
+                });
+                if let Some(tail) = tail {
+                    return self.compile_call_with(idx, args, false, |g| {
+                        let stmts = g.checked.prog.funcs[idx].stmts.clone();
+                        stmts.iter().try_for_each(|s| g.compile_stmt(s))?;
+                        if g.inert(&tail) {
+                            Ok(())
+                        } else {
+                            g.compile_effect(&tail)
+                        }
+                    });
+                }
+                self.compile_call(idx, args)?;
+                let ret = self.checked.prog.funcs[idx].ret_ty;
                 if self.checked.types[ret].words == 1 {
                     self.op(POP);
                 }
@@ -1253,10 +1897,6 @@ impl<'a> Gen<'a> {
             return Err(error(f.line, f.col, "recursion is not supported: iteration is bounded, write a `for` loop").in_file(&f.origin));
         }
         let inline = always || !self.plan.outline.contains(&idx);
-        let aliased = self.bind_params(idx, args, inline)?;
-        if !inline {
-            return self.call_func(idx);
-        }
         let consts: Vec<(usize, Word)> = self.checked.prog.funcs[idx]
             .params
             .iter()
@@ -1266,15 +1906,53 @@ impl<'a> Gen<'a> {
                 Some((sym, self.const_word(arg)?))
             })
             .collect();
+        let strs: Vec<(usize, Vec<u8>)> = self.checked.prog.funcs[idx]
+            .params
+            .iter()
+            .zip(args)
+            .filter_map(|(param, arg)| {
+                let sym = param.sym.filter(|&s| !self.checked.syms[s].mutable)?;
+                Some((sym, self.const_str(arg)?))
+            })
+            .collect();
+        // A literal string argument that every read folds away is never built.
+        let mut unbuilt = Vec::new();
+        if inline && !strs.is_empty() {
+            let saved = (self.const_params.clone(), self.const_strs.clone());
+            self.const_params.extend(consts.iter().copied());
+            self.const_strs.extend(strs.iter().cloned());
+            let later = self.continuation_syms(idx);
+            let f = &self.checked.prog.funcs[idx];
+            unbuilt = strs
+                .iter()
+                .map(|&(sym, _)| sym)
+                .filter(|&sym| !later.contains(&sym) && self.folds_reads(&f.stmts, f.tail.as_ref(), sym))
+                .collect();
+            (self.const_params, self.const_strs) = saved;
+        }
+        let aliased = self.bind_params(idx, args, inline, &unbuilt)?;
+        if !inline {
+            return self.call_func(idx);
+        }
         for &(sym, w) in &consts {
             self.const_params.insert(sym, w);
         }
+        for (sym, bytes) in &strs {
+            self.const_strs.insert(*sym, bytes.clone());
+        }
         // An inlined body that ends the caller's ends it too, unless a value follows it.
         self.tail = tail && self.checked.prog.funcs[idx].tail.is_none();
-        let result = self.inline_body(idx, !always, body);
+        let result = self.inline_body(idx, !always, |g| {
+            g.hoist_param_spans(idx)?;
+            body(g)
+        });
+        self.note_ret_blob(idx);
         self.tail = false;
         for (sym, _) in consts {
             self.const_params.remove(&sym);
+        }
+        for (sym, _) in strs {
+            self.const_strs.remove(&sym);
         }
         self.unalias(idx, aliased);
         result
@@ -1297,6 +1975,173 @@ impl<'a> Gen<'a> {
                 builtin: None,
                 ..
             } => self.const_params.get(s).copied(),
+            Expr::Lit {
+                lit: Lit::Bool(b), ..
+            } => Some(Word::from_u64(u64::from(*b))),
+            Expr::Field {
+                root: Some(r), leaf, ty, ..
+            } if self.checked.syms[*r].storage
+                && self.checked.types[*ty].words == 1
+                && !self.is_dynamic(*ty) =>
+            {
+                self.imm_const(self.checked.syms[*r].slot + leaf)
+            }
+            Expr::Field { base, name, .. } if name == "length" => {
+                self.const_str(base).map(|s| Word::from_u64(s.len() as u64))
+            }
+            Expr::Call {
+                builtin: Some(Builtin::Cast),
+                args,
+                ty,
+                ..
+            } if args.len() == 1 => {
+                let dst = &self.checked.types[self.peel_nominal(*ty)];
+                let src = &self.checked.types[self.peel_nominal(args[0].ty())];
+                let word32 = |t: &crate::check::RType| {
+                    (t.kind == TyKind::Bytes && t.bits == 32) || (t.kind == TyKind::Uint && (t.bits == 0 || t.bits == 256))
+                };
+                if word32(dst) && word32(src) {
+                    return self.const_word(&args[0]);
+                }
+                // `bytes32(s)`: the first 32 bytes, zero past the end.
+                if dst.kind == TyKind::Bytes && dst.bits == 32 {
+                    let bytes = self.const_str(&args[0])?;
+                    let mut word = [0u8; 32];
+                    let n = bytes.len().min(32);
+                    word[..n].copy_from_slice(&bytes[..n]);
+                    return Some(Word::from_be_bytes(word));
+                }
+                None
+            }
+            Expr::Binary {
+                op: op @ (BinOp::BitOr | BinOp::BitAnd | BinOp::BitXor),
+                left,
+                right,
+                ..
+            } => {
+                let (l, r) = (self.const_word(left)?, self.const_word(right)?);
+                Some(match op {
+                    BinOp::BitOr => l.bitor(r),
+                    BinOp::BitAnd => l.bitand(r),
+                    _ => l.bitxor(r),
+                })
+            }
+            Expr::Binary {
+                op: op @ (BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Shl | BinOp::Shr),
+                left,
+                right,
+                ..
+            } => {
+                let t = &self.checked.types[e.ty()];
+                if t.kind != TyKind::Uint {
+                    return None;
+                }
+                let bits = if t.bits == 0 { 256 } else { u32::from(t.bits) };
+                let (l, r) = (self.const_word(left)?, self.const_word(right)?);
+                let n = if r.lt(Word::from_u64(256)) {
+                    r.0[0] as u32
+                } else {
+                    256
+                };
+                let (w, over) = match op {
+                    BinOp::Add => l.overflowing_add(r),
+                    BinOp::Sub => (l.wrapping_sub(r), l.lt(r)),
+                    BinOp::Mul => l.overflowing_mul(r),
+                    BinOp::Shr if n < 256 => (l.shr(n), false),
+                    BinOp::Shl if n < bits => (
+                        l.shl(n).bitand(Word::from_u64(0).not().shr(256 - bits)),
+                        false,
+                    ),
+                    BinOp::Shr | BinOp::Shl => (Word::from_u64(0), false),
+                    _ => return None,
+                };
+                (!over && (bits == 256 || w.lt(Word::from_u64(1).shl(bits)))).then_some(w)
+            }
+            Expr::Binary {
+                op, left, right, ..
+            } => {
+                let ordered = matches!(op, BinOp::Lt | BinOp::Gt | BinOp::Le | BinOp::Ge);
+                if ordered && self.checked.types[left.ty()].kind != TyKind::Uint {
+                    return None;
+                }
+                let (l, r) = (self.const_word(left)?, self.const_word(right)?);
+                let holds = match op {
+                    BinOp::Eq => l == r,
+                    BinOp::Neq => l != r,
+                    BinOp::Lt => l.lt(r),
+                    BinOp::Gt => r.lt(l),
+                    BinOp::Le => !r.lt(l),
+                    BinOp::Ge => !l.lt(r),
+                    BinOp::And => !l.is_zero() && !r.is_zero(),
+                    BinOp::Or => !l.is_zero() || !r.is_zero(),
+                    _ => return None,
+                };
+                Some(Word::from_u64(u64::from(holds)))
+            }
+            _ => None,
+        }
+    }
+
+    /// The bytes of a string literal, or of a parameter bound to one, through `bytes(s)`
+    /// and `string(b)`.
+    pub(super) fn const_str(&self, e: &Expr) -> Option<Vec<u8>> {
+        match e {
+            Expr::Lit {
+                lit: Lit::Str(s), ..
+            } => Some(s.as_bytes().to_vec()),
+            Expr::Ident {
+                sym: Some(s),
+                builtin: None,
+                ..
+            } => self.const_strs.get(s).cloned(),
+            Expr::Call {
+                builtin: Some(Builtin::Cast),
+                args,
+                ty,
+                ..
+            } if args.len() == 1 => {
+                let blob = |ty: usize| {
+                    let t = &self.checked.types[self.peel_nominal(ty)];
+                    t.kind == TyKind::String || (t.kind == TyKind::Bytes && t.bits == 0)
+                };
+                if blob(*ty) && blob(args[0].ty()) {
+                    self.const_str(&args[0])
+                } else {
+                    None
+                }
+            }
+            // A `bytesN` piece is its N bytes, which the word holds right-aligned.
+            Expr::Call {
+                builtin: Some(Builtin::BytesConcat | Builtin::StringConcat),
+                args,
+                ..
+            } => args.iter().try_fold(Vec::new(), |mut out, a| {
+                let t = &self.checked.types[self.peel_nominal(a.ty())];
+                if t.kind == TyKind::Bytes && t.bits > 0 {
+                    let n = usize::from(t.bits);
+                    out.extend_from_slice(&self.const_word(a)?.to_be_bytes()[32 - n..]);
+                } else {
+                    out.extend(self.const_str(a)?);
+                }
+                Some(out)
+            }),
+            Expr::Call {
+                builtin: Some(Builtin::BytesSlice),
+                args,
+                ..
+            } => {
+                let bytes = self.const_str(&args[0])?;
+                let small = |e: &Expr| {
+                    let w = self.const_word(e)?;
+                    (w.0[1] | w.0[2] | w.0[3] == 0).then_some(w.0[0] as usize)
+                };
+                let start = small(&args[1])?;
+                let end = match args.get(2) {
+                    Some(e) => small(e)?,
+                    None => bytes.len(),
+                };
+                (start <= end && end <= bytes.len()).then(|| bytes[start..end].to_vec())
+            }
             _ => None,
         }
     }
@@ -1305,11 +2150,54 @@ impl<'a> Gen<'a> {
     /// constant static local passed as a constant parameter from the local's own word; an
     /// entrypoint's parameter's word later reads from calldata. Returns the parameters it
     /// aliased, with their own words.
+    /// Whether every read of `sym`, a parameter bound to a literal string, compiles to a
+    /// constant: a hashed, assigned, or bound value known from literals, or one in a branch
+    /// a literal condition skips.
+    fn folds_reads(&self, stmts: &[Stmt], tail: Option<&Expr>, sym: usize) -> bool {
+        let read = |n: Node<'_>| matches!(n, Node::Expr(Expr::Ident { sym: Some(s), .. }) if *s == sym);
+        let reads = |e: &Expr| self.expr_any(e, &read, &mut Vec::new());
+        let folds = |e: &Expr| {
+            !reads(e)
+                || matches!(e, Expr::Binary { .. } | Expr::Field { .. } | Expr::Call { builtin: Some(Builtin::Cast), .. })
+                    && self.const_word(e).is_some()
+                || matches!(e, Expr::Call { builtin: Some(Builtin::Keccak256), args, .. }
+                    if args.len() == 1 && self.const_str(&args[0]).is_some())
+        };
+        stmts.iter().all(|st| match st {
+            Stmt::If {
+                cond,
+                then_body,
+                else_body,
+                ..
+            } => match self.const_word(cond) {
+                Some(w) => self.folds_reads(if w.is_zero() { else_body } else { then_body }, None, sym),
+                None => {
+                    !reads(cond)
+                        && self.folds_reads(then_body, None, sym)
+                        && self.folds_reads(else_body, None, sym)
+                }
+            },
+            Stmt::Assign {
+                index,
+                keys,
+                expr,
+                target,
+                ..
+            } => {
+                folds(expr)
+                    && !index.iter().chain(keys).chain(target.as_deref()).any(|e| reads(e))
+            }
+            Stmt::Const { expr, .. } | Stmt::Var { expr, .. } => folds(expr),
+            other => !self.stmt_any(other, &read, &mut Vec::new()),
+        }) && tail.is_none_or(folds)
+    }
+
     fn bind_params(
         &mut self,
         idx: usize,
         args: &[Expr],
         inline: bool,
+        unbuilt: &[usize],
     ) -> Result<Vec<(usize, i32)>, Error> {
         let params = self.checked.prog.funcs[idx].params.clone();
         let mut stacked: Vec<(usize, u32)> = Vec::new();
@@ -1320,8 +2208,54 @@ impl<'a> Gen<'a> {
         } else {
             Vec::new()
         };
+        // What a continuation reads gets words of its own for this call when the body
+        // inlines the function again, since the call runs its continuation after later
+        // calls have bound theirs. A loop's queue copies them into each call's node.
+        if let Some(id) = self.body.as_ref().map(|b| b.id).filter(|_| !later.is_empty()) {
+            *self.inst_sites.entry((id, idx)).or_default() += 1;
+            let split = self.plan.split_insts.contains(&(id, idx));
+            let declared = self.continuation_declared(idx);
+            let mut own: Vec<usize> = later
+                .iter()
+                .copied()
+                .filter(|&s| {
+                    !declared.contains(&s)
+                        && !self.checked.syms[s].storage
+                        && !self.checked.slot_syms.contains_key(&s)
+                        && self.local[s] >= 0
+                        && !self.inst_syms.contains(&s)
+                })
+                .collect();
+            own.sort_unstable();
+            own.dedup();
+            for sym in own {
+                aliased.push((sym, self.local[sym]));
+                self.inst_syms.insert(sym);
+                if split {
+                    self.local[sym] = self.arena_alloc(self.sym_words(sym));
+                    self.forget_keys(&[sym]);
+                }
+            }
+        }
         for (arg, param) in args.iter().zip(&params) {
-            let Some(sym) = param.sym else { continue };
+            if let Some(sym) = param.sym {
+                let blob = !unbuilt.contains(&sym) && self.known_blob(arg);
+                *self.blob_sites.entry(sym).or_insert(true) &= blob;
+            }
+            let Some(sym) = param.sym.filter(|s| !unbuilt.contains(s)) else {
+                continue;
+            };
+            self.note_blob(sym, inline && !later.contains(&sym) && self.known_blob(arg));
+            match self.kept_span(arg).copied() {
+                Some(span)
+                    if inline && !later.contains(&sym) && !self.checked.syms[sym].mutable =>
+                {
+                    self.span_temps.insert(sym, span);
+                }
+                _ => {
+                    self.span_temps.remove(&sym);
+                }
+            }
             if self.checked.slot_syms.contains_key(&sym) {
                 match self.stored_map(arg).filter(|_| inline) {
                     Some(place) => {
@@ -1340,6 +2274,10 @@ impl<'a> Gen<'a> {
             }
             let n = self.checked.types[param.ty_id].words;
             if n == 0 {
+                continue;
+            }
+            if inline && !later.contains(&sym) && self.bind_cd_checked(Some(idx), sym, arg)? {
+                stacked.push((sym, 1));
                 continue;
             }
             if let Expr::Ident {
@@ -1375,7 +2313,16 @@ impl<'a> Gen<'a> {
                     && self.checked.types[info.ty].words == n
                     && (self.cd_words.contains(from)
                         || self.local[*from] >= 0 && !self.is_dynamic(info.ty));
-                if inline && plain && !self.checked.syms[sym].mutable && !later.contains(&sym) {
+                // Calldata can't change, so what a continuation reads may stay an alias of an
+                // entrypoint's parameter, which each `defer` snapshots, unless a queue must
+                // copy it.
+                let settled = self.cd_word(self.local[*from])
+                    && self.body.as_ref().is_some_and(|b| !b.queued);
+                if inline
+                    && plain
+                    && !self.checked.syms[sym].mutable
+                    && (!later.contains(&sym) || settled)
+                {
                     aliased.push((sym, self.local[sym]));
                     self.local[sym] = self.local[*from];
                     self.forget_keys(&[sym]);
@@ -1393,12 +2340,11 @@ impl<'a> Gen<'a> {
             }
             stacked.push((sym, n));
         }
-        for (sym, n) in stacked.into_iter().rev() {
-            let base = self.local[sym];
-            for i in (0..n).rev() {
-                self.mstore_off(base + i as i32 * 32);
-            }
+        // A compiled function that takes its arguments on the stack stores them itself.
+        if !inline && self.stack_params(idx).is_some() {
+            return Ok(aliased);
         }
+        self.store_params(&stacked);
         for (arg, param) in args.iter().zip(&params) {
             match param.sym {
                 Some(sym)
@@ -1418,18 +2364,83 @@ impl<'a> Gen<'a> {
         Ok(aliased)
     }
 
+    /// Whether `addr` is an entrypoint's static parameter's word, read from calldata.
+    pub(super) fn cd_word(&self, addr: i32) -> bool {
+        addr >= 0 && self.cd_words.iter().any(|&c| self.local[c] == addr)
+    }
+
+    /// Whether `c` holds once `counter` is 256 or more: it is `x >> counter = 0` for an
+    /// unsigned `x`, or an `or` with that on one side.
+    fn shifts_out(&self, c: &Expr, counter: usize) -> bool {
+        let Expr::Binary {
+            op, left, right, ..
+        } = c
+        else {
+            return false;
+        };
+        let shifted = |e: &Expr| {
+            matches!(e, Expr::Binary { op: BinOp::Shr, left, right, .. }
+                if matches!(right.as_ref(), Expr::Ident { sym: Some(s), .. } if *s == counter)
+                    && self.checked.types[self.peel_nominal(left.ty())].kind == TyKind::Uint)
+        };
+        let zero = |e: &Expr| self.const_word(e).is_some_and(|w| w.is_zero());
+        match op {
+            BinOp::Or => self.shifts_out(left, counter) || self.shifts_out(right, counter),
+            BinOp::Eq => shifted(left) && zero(right) || shifted(right) && zero(left),
+            _ => false,
+        }
+    }
+
+    fn store_params(&mut self, stacked: &[(usize, u32)]) {
+        for &(sym, n) in stacked.iter().rev() {
+            let base = self.local[sym];
+            for i in (0..n).rev() {
+                self.mstore_off(base + i as i32 * 32);
+            }
+        }
+    }
+
+    /// The words a compiled function takes on the stack, the last on top, under the return
+    /// address, when there are at most 16 and it copies no argument. Otherwise its callers
+    /// store the arguments in its parameters.
+    pub(super) fn stack_params(&self, idx: usize) -> Option<Vec<(usize, u32)>> {
+        let mut out = Vec::new();
+        for param in &self.checked.prog.funcs[idx].params {
+            let Some(sym) = param.sym else { continue };
+            if self.checked.slot_syms.contains_key(&sym) {
+                out.push((sym, 1));
+                continue;
+            }
+            let info = &self.checked.syms[sym];
+            if info.storage {
+                continue;
+            }
+            if info.mutable {
+                return None;
+            }
+            let n = self.checked.types[param.ty_id].words;
+            if n > 0 {
+                out.push((sym, n));
+            }
+        }
+        (out.iter().map(|&(_, n)| n).sum::<u32>() <= 16).then_some(out)
+    }
+
     fn unalias(&mut self, idx: usize, aliased: Vec<(usize, i32)>) {
         for (sym, word) in aliased.into_iter().rev() {
             self.local[sym] = word;
+            self.inst_syms.remove(&sym);
             self.forget_keys(&[sym]);
         }
         for param in &self.checked.prog.funcs[idx].params {
             if let Some(sym) = param.sym {
                 self.key_names.remove(&sym);
+                self.span_temps.remove(&sym);
                 self.cd_trees.remove(&sym);
                 self.cd_bytes.remove(&sym);
                 self.cd_lists.remove(&sym);
                 self.cd_lazy.remove(&sym);
+                self.cd_checked.remove(&sym);
             }
         }
     }
@@ -1496,9 +2507,27 @@ impl<'a> Gen<'a> {
                     && parts.len() == self.checked.types[*ty].words as usize
                     && parts.iter().all(|p| self.stack_value(p.ty()))
             }
+            Expr::Tuple { elems, ty, .. } => {
+                elems.len() == self.checked.types[*ty].words as usize
+                    && elems.iter().all(|x| {
+                        self.checked.types[x.ty()].words == 1 && self.stack_value(x.ty())
+                    })
+            }
+            // A compiled function's words are read from its result buffer.
             Expr::Call {
                 callee: Some(idx), ..
-            } if self.checked.types[e.ty()].kind == TyKind::Record
+            } if self.plan.outline.contains(idx) => {
+                let t = &self.checked.types[e.ty()];
+                t.kind == TyKind::Tuple
+                    && self.fn_ret[*idx] >= 0
+                    && t.fields.len() == t.words as usize
+                    && t.fields.iter().all(|f| {
+                        self.checked.types[f.ty].words == 1 && self.stack_value(f.ty)
+                    })
+            }
+            Expr::Call {
+                callee: Some(idx), ..
+            } if matches!(self.checked.types[e.ty()].kind, TyKind::Record | TyKind::Tuple)
                 && self.inlines(*idx)
                 && !self.compiling.contains(idx)
                 && !seen.contains(idx) =>
@@ -1521,17 +2550,33 @@ impl<'a> Gen<'a> {
                 callee: Some(idx),
                 args,
                 ..
+            } if self.plan.outline.contains(idx) => {
+                self.compile_call(*idx, args)?;
+                for i in 0..self.checked.types[e.ty()].words {
+                    self.mload(self.fn_ret[*idx] + i as i32 * 32);
+                }
+            }
+            Expr::Call {
+                callee: Some(idx),
+                args,
+                ..
             } => {
                 let idx = *idx;
-                let aliased = self.bind_params(idx, args, true)?;
+                let aliased = self.bind_params(idx, args, true, &[])?;
                 let f = &self.checked.prog.funcs[idx];
                 let (stmts, tail) = (f.stmts.clone(), f.tail.clone().expect("checked"));
                 let result = self.inline_body(idx, true, |g| {
                     stmts.iter().try_for_each(|s| g.compile_stmt(s))?;
                     g.push_record_words(&tail).map(|_| ())
                 });
+                self.note_ret_blob(idx);
                 self.unalias(idx, aliased);
                 result?;
+            }
+            Expr::Tuple { elems, .. } => {
+                for elem in elems {
+                    self.compile_value(elem)?;
+                }
             }
             _ => {
                 let mut parts = Vec::new();
@@ -1657,7 +2702,7 @@ impl<'a> Gen<'a> {
                 return self.decode_ret(ret, tree::Addr::Mem(at));
             }
             let dest = (0..words).map(|i| (i, at + i as i32 * 32)).collect();
-            return self.decode_returned_words(ret, dest);
+            return self.decode_returned_words(ret, dest, None);
         }
         if words != 1 {
             return Ok(());
@@ -1675,9 +2720,19 @@ impl<'a> Gen<'a> {
             return self.returned_bytes_value();
         }
         let at = self.temp();
-        self.decode_returned_words(ret, vec![(0, at)])?;
+        self.decode_returned_words(ret, vec![(0, at)], None)?;
         self.mload(at);
         Ok(())
+    }
+
+    /// Notes whether the body of `idx` just inlined left blobs only, with its parameters and
+    /// locals still bound.
+    fn note_ret_blob(&mut self, idx: usize) {
+        let blob = self.checked.prog.funcs[idx]
+            .tail
+            .as_ref()
+            .is_some_and(|t| self.known_blob(t));
+        *self.ret_sites.entry(idx).or_insert(true) &= blob;
     }
 
     /// Whether a call's body is compiled at the call, where the caller can see into it.
@@ -1693,7 +2748,7 @@ impl<'a> Gen<'a> {
         usize::from(f.tail.is_some() && !aggregate && tret.words == 1)
     }
 
-    /// Calls a function compiled once. Its arguments are already in its parameters.
+    /// Calls a function compiled once. Its arguments are on the stack, or in its parameters.
     fn call_func(&mut self, idx: usize) -> Result<(), Error> {
         let key = (idx, self.direct);
         let ctx = FUNC_CTX + 2 * idx + usize::from(self.direct);
@@ -1715,8 +2770,26 @@ impl<'a> Gen<'a> {
             self.top_branch = 1;
             self.shared = true;
             self.jumpdest(label);
+            for p in &self.checked.prog.funcs[idx].params {
+                if let Some(sym) = p.sym {
+                    self.blobs.remove(&sym);
+                }
+            }
+            let params = self.stack_params(idx);
+            if let Some(params) = &params {
+                // The return address goes under the arguments.
+                let takes: u32 = params.iter().map(|&(_, n)| n).sum();
+                for k in (1..=takes).rev() {
+                    self.op(SWAP1 + k as u8 - 1);
+                }
+                self.store_params(params);
+            }
             self.compiling.push(idx);
-            let result = self.func_body(idx);
+            let saved_spans = std::mem::take(&mut self.span_temps);
+            let result = self
+                .hoist_param_spans(idx)
+                .and_then(|_| self.func_body(idx));
+            self.span_temps = saved_spans;
             self.compiling.pop();
             let leaves = self.func_leaves(idx);
             if leaves == 1 {
@@ -1743,6 +2816,7 @@ impl<'a> Gen<'a> {
                     writes: summary.writes,
                     journal_stores: summary.journal_stores,
                     leaves,
+                    takes: params.map_or(0, |p| p.iter().map(|&(_, n)| n as usize).sum()),
                 },
             );
         }
@@ -1782,4 +2856,29 @@ fn inst_bytes(inst: &Inst) -> usize {
         Inst::Table(t) => 1 + 2 * t.iter().filter(|l| **l != 0).count(),
         Inst::Imm(_, width) => 1 + usize::from(*width),
     }
+}
+
+/// `e` without the casts between `bytes`, `string`, and their nominal types around it.
+fn strip_casts(mut e: &Expr) -> &Expr {
+    while let Expr::Call {
+        builtin: Some(Builtin::Cast),
+        args,
+        ..
+    } = e
+    {
+        match args.as_slice() {
+            [inner] => e = inner,
+            _ => break,
+        }
+    }
+    e
+}
+
+/// Whether `expr` is `Bytes.concat(x, ...)` or `String.concat(x, ...)`, appending to `x`.
+fn self_append(x: usize, expr: &Expr) -> bool {
+    matches!(strip_casts(expr), Expr::Call {
+        builtin: Some(Builtin::BytesConcat | Builtin::StringConcat),
+        args,
+        ..
+    } if args.len() >= 2 && matches!(strip_casts(&args[0]), Expr::Ident { sym: Some(s), .. } if *s == x))
 }

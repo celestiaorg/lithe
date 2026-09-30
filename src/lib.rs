@@ -63,7 +63,7 @@ mod word;
 use std::fmt;
 use std::path::{Path, PathBuf};
 
-pub use config::{format_width, DEFAULT_WIDTH};
+pub use config::{build_options, format_width, set_build_option, BUILD_KEYS, DEFAULT_WIDTH};
 pub use format::format_source;
 pub use index::{Completion, Def, File, Index, Kind, Ref, Signature, Span};
 pub use lint::{lint_paths, lithe_files, Lint};
@@ -73,7 +73,7 @@ pub use route::{
     Abi, AbiError, AbiItem, Constructor, Event, EventParam, Fallback, Function, Param, Receive,
     StateMutability,
 };
-pub use split::{Options, DEPLOYER, SIZE_LIMIT};
+pub use split::{EvmVersion, Options, DEPLOYER, SIZE_LIMIT};
 
 /// Whether `path` is an import path: `std/`, `./`, or `../` and lowercase names.
 pub fn is_module_path(path: &str) -> bool {
@@ -287,16 +287,16 @@ fn build(
 ) -> Result<Contract, Error> {
     let mut notes = Vec::new();
     let checked = if opts.check_specs {
-        let specs = spec::check(prog.clone())?;
+        let specs = spec::check(prog.clone(), opts.evm)?;
         let instrumented = spec::instrument(prog, &specs)?;
         notes = instrumented.warnings;
-        check::check(instrumented.prog)?
+        check::check(instrumented.prog, opts.evm)?
     } else {
         // A spec block builds nothing, but a wrong one fails the build as a type error does.
         if spec::has_specs(&prog) {
-            spec::check(prog.clone())?;
+            spec::check(prog.clone(), opts.evm)?;
         }
-        check::check(prog)?
+        check::check(prog, opts.evm)?
     };
     let abi = route::abi(&checked)?;
     let method_identifiers = route::method_ids(&checked)?;
@@ -351,7 +351,12 @@ fn warnings_of(sources: &Sources, entry: &Path, checked: &check::Checked) -> Vec
 }
 
 fn checked(sources: &Sources, entry: &Path) -> Result<check::Checked, Error> {
-    check::check(modules::load(sources, entry)?)
+    check::check(modules::load(sources, entry)?, evm_near(entry))
+}
+
+/// The fork the nearest `lithe.toml` builds for.
+fn evm_near(entry: &Path) -> EvmVersion {
+    build_options(entry).map(|opts| opts.evm).unwrap_or_default()
 }
 
 /// The ABI needs the checked program, not its code: a contract over the size limit that
@@ -368,7 +373,7 @@ pub fn warnings(sources: &Sources, entry: &Path) -> Result<Vec<String>, Error> {
 pub fn abi_tree(sources: &Sources, entry: &Path, opts: &Options) -> Result<String, Error> {
     let prog = modules::load(sources, entry)?;
     let name = artifact_contract_name(&prog, entry);
-    let checked = check::check(prog)?;
+    let checked = check::check(prog, opts.evm)?;
     let parts = part_names(&checked, &name, opts)?;
     Ok(route::render(&checked.routes, parts.as_ref()))
 }
@@ -406,8 +411,13 @@ pub struct Analysis {
     pub index: Option<Index>,
 }
 
-/// Checks every contract `src` defines, as `lithe compile directory` does.
+/// Checks every contract `src` defines, as `lithe compile directory` does, with the build
+/// options the nearest `lithe.toml` sets.
 pub fn analyze(path: &Path, src: &str) -> Analysis {
+    let (opts, mut failed) = match build_options(path) {
+        Ok(opts) => (opts, None),
+        Err(err) => (Options::default(), Some(err)),
+    };
     let sources = Sources::disk();
     let prog = match modules::load_source(&sources, path, src) {
         Ok(prog) => prog,
@@ -421,13 +431,12 @@ pub fn analyze(path: &Path, src: &str) -> Analysis {
     };
     let units = modules::split_units(prog);
     let mut checked = Vec::new();
-    let mut failed = None;
     for unit in units.clone() {
         let name = artifact_contract_name(&unit, path);
-        match check::check(unit.clone()) {
+        match check::check(unit.clone(), opts.evm) {
             Ok(unit_checked) => {
                 if failed.is_none() {
-                    failed = build(&sources, path, unit, &name, &Options::default()).err();
+                    failed = build(&sources, path, unit, &name, &opts).err();
                 }
                 checked.push(unit_checked);
             }
@@ -455,7 +464,7 @@ pub fn analyze(path: &Path, src: &str) -> Analysis {
 pub fn footprint(sources: &Sources, entry: &Path, opts: &Options) -> Result<String, Error> {
     let prog = modules::load(sources, entry)?;
     let name = artifact_contract_name(&prog, entry);
-    let checked = check::check(prog)?;
+    let checked = check::check(prog, opts.evm)?;
     let parts = part_names(&checked, &name, opts)?;
     Ok(route::render_footprints(&checked, parts.as_ref()))
 }
@@ -484,7 +493,7 @@ pub fn prove(sources: &Sources, entry: &Path, opts: &ProveOptions) -> Result<Pro
     if !prog.siblings.is_empty() {
         return Err(check::several_contracts(&prog));
     }
-    prove::prove(&spec::check(prog)?, opts)
+    prove::prove(&spec::check(prog, evm_near(entry))?, opts)
 }
 
 /// For a file of modules, with no contract: a contract beside it that uses each of its
@@ -537,7 +546,18 @@ fn module_contract(
             format!("`{stem}` is not a module name, so no contract can import this file's modules"),
         ));
     }
-    let mut src = format!("import \"{import}\";\n\ncontract Modules is {{\n");
+    // The file's own imports name what its modules' externals raise and take.
+    let text = sources
+        .read(entry)
+        .map_err(|err| error(1, 1, format!("cannot read `{}`: {err}", entry.display())))?;
+    let mut src = format!("import \"{import}\";\n");
+    for used in parse::parse(&text)?.uses {
+        match used.alias {
+            Some(alias) => src.push_str(&format!("import \"{}\" as {alias};\n", used.path)),
+            None => src.push_str(&format!("import \"{}\";\n", used.path)),
+        }
+    }
+    src.push_str("\ncontract Modules is {\n");
     for decl in order {
         if let Some(param) = decl.params.first() {
             return Err(error(
@@ -569,7 +589,7 @@ pub fn specs(sources: &Sources, entry: &Path) -> Result<String, Error> {
     if !prog.siblings.is_empty() {
         return Err(check::several_contracts(&prog));
     }
-    Ok(spec::render(&spec::check(prog)?))
+    Ok(spec::render(&spec::check(prog, evm_near(entry))?))
 }
 
 /// The same program without the optimizer, for checking that optimization preserves behavior.
@@ -634,7 +654,7 @@ fn checksum(address: &[u8; 20]) -> String {
 pub fn facets(sources: &Sources, entry: &Path, opts: &Options) -> Result<String, Error> {
     let prog = modules::load(sources, entry)?;
     let name = artifact_contract_name(&prog, entry);
-    let checked = check::check(prog)?;
+    let checked = check::check(prog, opts.evm)?;
     let built = split::build(&checked, &name, opts)?;
     let router = if built.facets.is_empty() {
         gen::entrypoints(&checked)?

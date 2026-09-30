@@ -52,7 +52,9 @@ impl Checker {
                 if self.reads_state(expr) {
                     self.state_syms.insert(sid);
                 }
-                self.define(*line, *col, name, sid)?;
+                if name != "_" {
+                    self.define(*line, *col, name, sid)?;
+                }
                 Ok(())
             }
             Stmt::Var {

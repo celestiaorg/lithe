@@ -578,21 +578,16 @@ impl<'a> Gen<'a> {
             self.fresh(),
         );
         self.op(SWAP1 + 1);
-        self.op(DUP1 + 1);
-        self.mstore_off(self.hash_buf);
-        self.push_u64(32);
-        self.push_mem(self.hash_buf);
-        self.op(KECCAK);
-        // [ret, slot, value, base, kept slots]
+        // [ret, slot, value, kept slots]
         self.op(PUSH0);
-        self.op(DUP1 + 2);
+        self.op(DUP1 + 1);
         self.push_u64(1);
         self.op(AND);
         self.op(ISZERO);
         self.push_label(keep);
         self.op(JUMPI);
         self.op(POP);
-        self.op(DUP1 + 1);
+        self.op(DUP1);
         self.push_u64(1);
         self.op(SHR);
         self.op(MLOAD);
@@ -608,7 +603,7 @@ impl<'a> Gen<'a> {
         self.op(MUL);
         self.jumpdest(keep);
         // The old value's data slots: `ceil(len / 32)` when it is long, else none.
-        self.op(DUP1 + 3);
+        self.op(DUP1 + 2);
         self.transient_slot = transient;
         self.journal_load();
         self.op(DUP1);
@@ -623,34 +618,46 @@ impl<'a> Gen<'a> {
         self.op(SHR);
         self.op(MUL);
         self.op(SWAP1);
-        // [ret, slot, value, base, old slots, i]
-        self.jumpdest(clear);
+        // [ret, slot, value, old slots, i]. Only a clear hashes the data area here.
         self.op(DUP1 + 1);
         self.op(DUP1 + 1);
         self.op(LT);
         self.op(ISZERO);
         self.push_label(cleared);
         self.op(JUMPI);
+        self.op(DUP1 + 3);
+        self.mstore_off(self.hash_buf);
+        self.push_u64(32);
+        self.push_mem(self.hash_buf);
+        self.op(KECCAK);
+        // [ret, slot, value, old slots, i, base] while `i < old slots`
+        self.jumpdest(clear);
         self.op(PUSH0);
         self.op(DUP1 + 1);
-        self.op(DUP1 + 4);
+        self.op(DUP1 + 3);
         self.op(ADD);
         self.transient_slot = transient;
         self.journal_store();
+        self.op(SWAP1);
         self.push_u64(1);
         self.op(ADD);
+        self.op(SWAP1);
+        self.op(DUP1 + 2);
+        self.op(DUP1 + 2);
+        self.op(LT);
         self.push_label(clear);
-        self.op(JUMP);
+        self.op(JUMPI);
+        self.op(POP);
         self.jumpdest(cleared);
         self.op(POP);
         self.op(POP);
-        self.op(DUP1 + 1);
+        // [ret, slot, value]
+        self.op(DUP1);
         self.push_u64(1);
         self.op(AND);
         self.op(ISZERO);
         self.push_label(short);
         self.op(JUMPI);
-        self.op(SWAP1);
         self.push_u64(1);
         self.op(SHR);
         self.op(DUP1);
@@ -660,7 +667,7 @@ impl<'a> Gen<'a> {
         self.op(LT);
         self.push_label(long);
         self.op(JUMPI);
-        // [ret, slot, base, ptr, len]. A short blob, empty included, packs into the slot.
+        // [ret, slot, ptr, len]. A short blob, empty included, packs into the slot.
         self.op(SWAP1);
         self.push_u64(32);
         self.op(ADD);
@@ -673,7 +680,6 @@ impl<'a> Gen<'a> {
         self.push_u64(1);
         self.op(SHL);
         self.op(OR);
-        self.op(SWAP1);
         self.push_label(short);
         self.op(JUMP);
         self.jumpdest(long);
@@ -681,11 +687,17 @@ impl<'a> Gen<'a> {
         self.op(SHL);
         self.push_u64(1);
         self.op(OR);
-        self.op(DUP1 + 3);
+        self.op(DUP1 + 2);
         self.transient_slot = transient;
         self.journal_store();
+        self.op(SWAP1);
+        self.mstore_off(self.hash_buf);
+        self.push_u64(32);
+        self.push_mem(self.hash_buf);
+        self.op(KECCAK);
+        self.op(SWAP1);
         self.op(PUSH0);
-        // [ret, slot, base, ptr, i] while `32 * i < len`
+        // [ret, base, ptr, i] while `32 * i < len`
         self.jumpdest(top);
         self.op(DUP1 + 1);
         self.op(MLOAD);
@@ -714,13 +726,12 @@ impl<'a> Gen<'a> {
         self.push_label(top);
         self.op(JUMP);
         self.jumpdest(done);
-        for _ in 0..4 {
+        for _ in 0..3 {
             self.op(POP);
         }
         self.op(JUMP);
         self.jumpdest(short);
-        // [ret, slot, value, base]
-        self.op(POP);
+        // [ret, slot, value]
         self.op(SWAP1);
         self.transient_slot = transient;
         self.journal_store();

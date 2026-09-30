@@ -1,11 +1,21 @@
 (* Fixed-point numbers with 18 decimals, and basis points. A `wad` is its own type, so
    a plain `uint` can't be mixed in by accident: convert with `to_wad` and `from_wad`.
-   Products and quotients keep a 512-bit intermediate and round down. *)
+   An `swad` is a signed one. Unsigned products and quotients keep a 512-bit
+   intermediate and round down unless named `_up`. The exponential, the logarithm, the
+   roots, and `rpow` are Solady's `FixedPointMathLib`, constant for constant. *)
 
+import "std/int";
 import "std/uint";
+import "std/math/math";
 
 module FixedPoint is {
+  requires Math;
+
   type wad is uint;
+  type swad is int;
+
+  error ExpOverflow;
+  error LnWadUndefined;
 
   pure function scale() : uint is
     10 ** 18
@@ -29,9 +39,177 @@ module FixedPoint is {
   pure function wad_div(const a : wad; const b : wad) : wad is
     wad(Uint.mul_div(uint(a), scale(), uint(b)))
 
+  pure function wad_mul_up(const a : wad; const b : wad) : wad is
+    wad(Math.mul_div_up(uint(a), uint(b), scale()))
+
+  pure function wad_div_up(const a : wad; const b : wad) : wad is
+    wad(Math.mul_div_up(uint(a), scale(), uint(b)))
+
   (* `amount` scaled by a `wad` factor: a fee rate of `0.003e18` takes 0.3%. *)
   pure function mul_wad(const amount : uint; const factor : wad) : uint is
     Uint.mul_div(amount, uint(factor), scale())
+
+  pure function mul_wad_up(const amount : uint; const factor : wad) : uint is
+    Math.mul_div_up(amount, uint(factor), scale())
+
+  (* `amount` divided by a `wad` factor: a factor of `2e18` halves it. *)
+  pure function div_wad(const amount : uint; const factor : wad) : uint is
+    Uint.mul_div(amount, scale(), uint(factor))
+
+  pure function div_wad_up(const amount : uint; const factor : wad) : uint is
+    Math.mul_div_up(amount, scale(), uint(factor))
+
+  (* Signed products and quotients round toward zero, and the product `a * b` must fit
+     in an `int`, as in Solady's `sMulWad` and `sDivWad`. *)
+  pure function s_mul_wad(const a : swad; const b : swad) : swad is
+    swad(int(a) * int(b) / 1_000_000_000_000_000_000)
+
+  pure function s_div_wad(const a : swad; const b : swad) : swad is
+    swad(int(a) * 1_000_000_000_000_000_000 / int(b))
+
+  (* `e ** x`: 0 below `x = -41.446531673892822313`, where the result rounds to zero, and
+     `ExpOverflow` from `x = 135.305999368893231589`, where it would pass `Int.max / 1e18`.
+     `x` moves to a base of `2 ** 96`, `2 ** k` is factored out, and a (6, 7)-term rational
+     approximation covers the rest. `q` has no real roots and `p / q` is in `(0.09, 0.25)`,
+     so both are positive and divide as `uint`s. *)
+  pure function exp_wad(const x : swad) : swad
+    raises ExpOverflow
+  is {
+    const c : int := int(x);
+    assert(c < 135305999368893231589, ExpOverflow);
+    var r : uint := 0;
+    if c > -41446531673892822313 then {
+      const a : int := (c << 78) / 3814697265625;
+      const k : int :=
+        Int.wrapping_add((a << 96) / 54916777467707473351141471128, 39614081257132168796771975168) >> 96;
+      const v : int := Int.wrapping_sub(a, Int.wrapping_mul(k, 54916777467707473351141471128));
+      var y : int := Int.wrapping_add(v, 1346386616545796478920950773328);
+      y := Int.wrapping_add(Int.wrapping_mul(y, v) >> 96, 57155421227552351082224309758442);
+      var p : int := Int.wrapping_sub(Int.wrapping_add(y, v), 94201549194550492254356042504812);
+      p := Int.wrapping_add(Int.wrapping_mul(p, y) >> 96, 28719021644029726153956944680412240);
+      p := Int.wrapping_add(
+        Int.wrapping_mul(p, v),
+        347437083999162433888837515002539729507623920905942392673140736);
+      var q : int := Int.wrapping_sub(v, 2855989394907223263936484059900);
+      q := Int.wrapping_add(Int.wrapping_mul(q, v) >> 96, 50020603652535783019961831881945);
+      q := Int.wrapping_sub(Int.wrapping_mul(q, v) >> 96, 533845033583426703283633433725380);
+      q := Int.wrapping_add(Int.wrapping_mul(q, v) >> 96, 3604857256930695427073651918091429);
+      q := Int.wrapping_sub(Int.wrapping_mul(q, v) >> 96, 14423608567350463180887372962807573);
+      q := Int.wrapping_add(Int.wrapping_mul(q, v) >> 96, 26449188498355588339934803723976023);
+      r := Uint.wrapping_mul(Uint.from_bits(p) / Uint.from_bits(q), 3822833074963236453042738258902158003155416615667)
+        >> Uint.from_bits(Int.wrapping_sub(195, k));
+    }
+  } with swad(Int.from_bits(r))
+
+  (* The natural logarithm. `LnWadUndefined` unless `x > 0`. `x` is scaled into `[1, 2)`
+     by its bit length, and an (8, 8)-term rational approximation covers the rest, where
+     `p` and `q` are positive and divide as `uint`s. *)
+  pure function ln_wad(const x : swad) : swad
+    raises LnWadUndefined
+  is {
+    assert(int(x) > 0, LnWadUndefined);
+    const n : uint := Uint.from_bits(int(x));
+    const r : uint := Uint.clz(n);
+    const v : int := Int.from_bits((n << r) >> 159);
+    var p : int := Int.wrapping_add(v, 3273285459638523848632254066296);
+    p := Int.wrapping_add(Int.wrapping_mul(p, v) >> 96, 24828157081833163892658089445524);
+    p := Int.wrapping_add(Int.wrapping_mul(p, v) >> 96, 43456485725739037958740375743393);
+    p := Int.wrapping_sub(Int.wrapping_mul(p, v) >> 96, 11111509109440967052023855526967);
+    p := Int.wrapping_sub(Int.wrapping_mul(p, v) >> 96, 45023709667254063763336534515857);
+    p := Int.wrapping_sub(Int.wrapping_mul(p, v) >> 96, 14706773417378608786704636184526);
+    p := Int.wrapping_sub(
+      Int.wrapping_mul(p, v),
+      62999401287715976015676079709131874438408901006995465699328);
+    var q : int := Int.wrapping_add(v, 5573035233440673466300451813936);
+    q := Int.wrapping_add(Int.wrapping_mul(v, q) >> 96, 71694874799317883764090561454958);
+    q := Int.wrapping_add(Int.wrapping_mul(v, q) >> 96, 283447036172924575727196451306956);
+    q := Int.wrapping_add(Int.wrapping_mul(v, q) >> 96, 401686690394027663651624208769553);
+    q := Int.wrapping_add(Int.wrapping_mul(v, q) >> 96, 204048457590392012362485061816622);
+    q := Int.wrapping_add(Int.wrapping_mul(v, q) >> 96, 31853899698501571402653359427138);
+    q := Int.wrapping_add(Int.wrapping_mul(v, q) >> 96, 909429971244387300277376558375);
+    p := Int.wrapping_mul(
+      Int.from_bits(Uint.from_bits(p) / Uint.from_bits(q)),
+      1677202110996718588342820967067443963516166
+    );
+    p := Int.wrapping_add(
+      Int.wrapping_mul(
+        Int.wrapping_sub(159, Int.from_bits(r)),
+        16597577552685614221487285958193947469193820559219878177908093499208371),
+      p);
+    p := Int.wrapping_add(p, 600920179829731861736702779321621459595472258049074101567377883020018308);
+  } with swad(p >> 174)
+
+  (* `x ** y` as `e ** (ln(x) * y)`: `LnWadUndefined` unless `x > 0`. *)
+  pure function pow_wad(const x : swad; const y : swad) : swad
+    raises LnWadUndefined | ExpOverflow
+  is exp_wad(swad(int(ln_wad(x)) * int(y) / 1_000_000_000_000_000_000))
+
+  (* The square root, rounded down. Past `Uint.max / 1e18`, a Newton step from
+     `z = sqrt(x) * 1e9` and a final correction. `z < 2 ** 158`, so `x * 1e18 / z` is
+     `(x / z) * 1e18 + (x % z) * 1e18 / z` without overflow. *)
+  pure function sqrt_wad(const x : wad) : wad is {
+    const a : uint := uint(x);
+    const small : bool := a <= Uint.max / scale();
+    var z : uint := Math.sqrt(if small then Uint.wrapping_mul(a, scale()) else a);
+    if not small then {
+      z := Uint.wrapping_mul(Uint.wrapping_add(z, 1), 1_000_000_000);
+      const (q, rest) : (uint, uint) := Uint.div_rem(a, z);
+      z := Uint.wrapping_add(Uint.wrapping_add(Uint.wrapping_mul(q, scale()), Uint.wrapping_mul(rest, scale()) / z), z)
+        >> 1;
+      z := Uint.wrapping_sub(z, uint(999_999_999_999_999_999 > Uint.wrapping_sub(Uint.mul_mod(z, z, a), 1)));
+    }
+  } with wad(z)
+
+  (* The cube root, rounded down. Past `Uint.max / 1e36`, a Newton step from
+     `cbrt(x) * 1e12` with a 512-bit quotient, and a final correction. *)
+  pure function cbrt_wad(const x : wad) : wad is {
+    const a : uint := uint(x);
+    const small : bool := a <= Uint.max / 10 ** 36;
+    var z : uint := Math.cbrt(if small then Uint.wrapping_mul(a, 10 ** 36) else a);
+    if not small then {
+      z := Uint.wrapping_mul(Uint.wrapping_add(z, 1), 1_000_000_000_000);
+      z := Uint.wrapping_add(Uint.wrapping_add(Uint.mul_div(a, 10 ** 36, Uint.wrapping_mul(z, z)), z), z) / 3;
+      (* `x` scaled by a power of ten as far as a word allows, for the rounding check. *)
+      const p : uint := Uint.wrapping_mul(a,
+        if a >> 199 = 0 then 10 ** 17
+        else if a >> 229 = 0 then 10 ** 8
+        else if a >> 249 = 0 then 100
+        else 1);
+      const t : uint := Uint.mul_mod(Uint.wrapping_mul(z, z), z, p);
+      z := Uint.wrapping_sub(z, uint(t < p >> 1) * uint(t > 0));
+    }
+  } with wad(z)
+
+  (* `x ** n` in fixed point with `base` for one, by squaring, each product rounded to
+     nearest. `0 ** 0` is `base`. Panics when a product doesn't fit, or when `base` is 0
+     and `n > 1`. *)
+  pure function rpow(const x : uint; const n : uint; const base : uint) : uint is {
+    const unit : uint := base;
+    const e : uint := n;
+    const y : uint := x;
+    var z : uint := unit * uint(e = 0);
+    if y > 0 then {
+      z := unit ^ (unit ^ y) * (e & 1);
+      (* The first step runs alone: once it has divided by `unit`, the loop's divisions
+         need no zero check. *)
+      if e > 1 then {
+        const half : uint := unit >> 1;
+        (* Past `2 ** 128`, `b * b` overflows: the narrowing panics as the product would. *)
+        const a : uint128 := uint128(y);
+        var b : uint := (uint(a) * uint(a) + half) / unit;
+        if e & 2 > 0 then {
+          z := (z * b + half) / unit;
+        }
+        for i : uint in 2 .. 256 until e >> i = 0 do {
+          const c : uint128 := uint128(b);
+          b := (uint(c) * uint(c) + half) / unit;
+          if (e >> i) & 1 > 0 then {
+            z := (z * b + half) / unit;
+          }
+        }
+      }
+    }
+  } with z
 
   (* `bps` basis points of `amount`: 25 is 0.25%. *)
   pure function apply_bps(const amount : uint; const bps : uint) : uint is

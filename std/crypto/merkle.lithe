@@ -1,38 +1,76 @@
 (* Merkle proof verification, compatible with OpenZeppelin's `MerkleProof` and the
    `@openzeppelin/merkle-tree` library: each pair of nodes is hashed in sorted order.
 
-   A proof is `bytes`: the sibling hashes, 32 bytes each, from the leaf up, as
-   `concat(proof)` off-chain. A proof whose length is not a multiple of 32 raises
-   `MerkleProofInvalidLength`. *)
+   A proof is the list of sibling hashes from the leaf up, `bytes32[]` in the ABI. *)
 
 import "std/abi";
-import "std/bytes";
 import "std/crypto";
+import "std/uint";
+import "std/list";
 
 module Merkle is {
-  error MerkleProofInvalidLength of uint;
+  error MerkleProofInvalidMultiproof;
 
-  pure function verify(const proof : bytes; const root : bytes32; const leaf : bytes32) : bool
-    raises MerkleProofInvalidLength
-  is
+  pure function verify(const proof : list(bytes32); const root : bytes32; const leaf : bytes32) : bool is
     process_proof(proof, leaf) = root
 
   (* The root that `proof` leads to from `leaf`: one level up per node. *)
-  pure function process_proof(const proof : bytes; const leaf : bytes32) : bytes32
-    raises MerkleProofInvalidLength
-  is {
-    assert(proof.length % 32 = 0, MerkleProofInvalidLength(proof.length));
+  pure function process_proof(const proof : list(bytes32); const leaf : bytes32) : bytes32 is {
     var node : bytes32 := leaf;
-    for level : uint in 0 .. proof.length / 32 do {
-      node := hash_pair(node, Bytes.word(proof, level * 32));
+    for sibling : bytes32 in proof do {
+      node := hash_pair(node, sibling);
     }
   } with node
 
+  (* Whether `leaves` are all in the tree of `root`, from a multiproof: `proof` holds the
+     siblings the leaves don't provide, and `flags` says, for each hash on the way up,
+     whether its second node is the next leaf or computed hash (`true`) or the next proof
+     node (`false`). The leaves come in the order `@openzeppelin/merkle-tree` gives them.
+     As in OpenZeppelin, no leaves and a one-node proof prove `proof[0]`. *)
+  pure function verify_multi(
+    const proof : list(bytes32);
+    const flags : list(bool);
+    const root : bytes32;
+    const leaves : list(bytes32)
+  ) : bool
+    raises MerkleProofInvalidMultiproof
+  is
+    process_multi_proof(proof, flags, leaves) = root
+
+  (* The root a multiproof rebuilds. The leaves, then each hash made, form one queue of
+     `leaves.length + flags.length` nodes: a hash takes the queue's next node and, by its
+     flag, the queue's next or the proof's next. A node the queue has not made yet reads as
+     zero, and reading past the queue or the proof panics, as in OpenZeppelin. Raises
+     `MerkleProofInvalidMultiproof` unless the lengths agree and the flags use every
+     proof node. *)
+  pure function process_multi_proof(
+    const proof : list(bytes32);
+    const flags : list(bool);
+    const leaves : list(bytes32)
+  ) : bytes32
+    raises MerkleProofInvalidMultiproof
+  is {
+    const count : uint := flags.length;
+    const n : uint := leaves.length;
+    assert(Uint.wrapping_add(n, proof.length) = Uint.wrapping_add(count, 1), MerkleProofInvalidMultiproof);
+    var queue : list(bytes32) := List.resized(leaves, Uint.wrapping_add(n, count));
+    (* Each hash takes two nodes, so after `i` of them the proof has given `2i - front`. *)
+    var front : uint := 0;
+    for (i, merge) : (uint, bool) in flags do {
+      const a : bytes32 := queue[front];
+      const b : bytes32 := if merge then queue[Uint.wrapping_add(front, 1)]
+      else proof[Uint.wrapping_sub(Uint.wrapping_add(i, i), front)];
+      front := Uint.wrapping_add(Uint.wrapping_add(front, 1), uint(merge));
+      queue[Uint.wrapping_add(n, i)] := hash_pair(a, b);
+    }
+    assert(
+      Uint.wrapping_sub(Uint.wrapping_add(count, count), front) = proof.length or count = 0,
+      MerkleProofInvalidMultiproof
+    );
+  } with if queue.length = 0 then proof[0] else queue[Uint.wrapping_sub(queue.length, 1)]
+
   (* The parent of two nodes, whichever order they come in. *)
   pure function hash_pair(const a : bytes32; const b : bytes32) : bytes32 is {
-    var pair : bytes32 := Crypto.keccak256(Abi.encode_packed(b, a));
-    if uint(a) < uint(b) then {
-      pair := Crypto.keccak256(Abi.encode_packed(a, b));
-    }
-  } with pair
+    const swap : uint := Uint.wrapping_mul(uint(a) ^ uint(b), uint(a > b));
+  } with Crypto.keccak256(Abi.encode_packed(bytes32(uint(a) ^ swap), bytes32(uint(b) ^ swap)))
 }

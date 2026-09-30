@@ -1097,6 +1097,31 @@ mod tests {
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
+    #[test]
+    fn deleted_places_name_what_they_delete() {
+        let dir = std::env::temp_dir().join(format!("lithe-lsp-delete-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("main.lithe");
+        let text = "type pos is record { x : uint; y : uint; }\nstorage is record { m : map(uint, pos); }\nexternal function f(const k : uint) is {\n  delete storage.m[k].x;\n}\n";
+        std::fs::write(&path, text).unwrap();
+        let index = lithe::analyze(&path, text).index.expect("index");
+        let named = |line: u32, col: u32| {
+            let r = index
+                .at(0, text, line, col)
+                .unwrap_or_else(|| panic!("no ref at {line}:{col}"));
+            let def = &index.defs[r.def];
+            (def.name.clone(), def.at.map(|at| at.line))
+        };
+        assert_eq!(named(4, 18).0, "m");
+        assert_eq!(named(4, 20), ("k".to_string(), Some(3)));
+        assert_eq!(named(4, 23), ("x".to_string(), Some(1)));
+        assert!(index
+            .completions(text, 4, 3)
+            .iter()
+            .any(|c| c.label == "delete"));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
     /// Every example and standard library file indexes, and each builtin call in it resolves
     /// to its declaration.
     #[test]

@@ -20,7 +20,7 @@ impl<'a> Gen<'a> {
             reject_value: None,
             decoding_args: false,
             tree_at: 0,
-            tree_len: 0,
+            tree_end: 0,
             code: Vec::new(),
             next_label: 0,
             spaces: Vec::new(),
@@ -32,6 +32,9 @@ impl<'a> Gen<'a> {
             query_gas: None,
             tail: false,
             fire_tail: false,
+            fire_loop: false,
+            next_share: None,
+            share: None,
             hoisted: HashMap::new(),
             skip_queries: std::collections::HashSet::new(),
             scratch_a: 0,
@@ -41,7 +44,8 @@ impl<'a> Gen<'a> {
             scratch_val: 0,
             key_scratch: 0,
             base64_tbl: 0,
-            mul_div_buf: 0,
+            imm_consts: Vec::new(),
+            imm_stores: HashMap::new(),
             init: false,
             code_args: 0,
             code_end: Word::from_u64(0),
@@ -50,6 +54,7 @@ impl<'a> Gen<'a> {
             value_sites: [0; 3],
             eq_sites: 0,
             slice_sites: [0; 2],
+            base64_opts: std::collections::HashSet::new(),
             mul_sites: 0,
             exp_sites: [0; 2],
             queued_sites: 0,
@@ -57,15 +62,20 @@ impl<'a> Gen<'a> {
             trusted_index: false,
             cd_lists: std::collections::HashSet::new(),
             cd_bytes: std::collections::HashSet::new(),
+            rd_first: std::collections::HashSet::new(),
             cd_lazy: std::collections::HashSet::new(),
             cd_words: std::collections::HashSet::new(),
+            inst_syms: std::collections::HashSet::new(),
+            ret_out: None,
             cd_trees: std::collections::HashSet::new(),
+            cd_checked: std::collections::HashSet::new(),
             slot_hint: None,
             bytes_rep: None,
             dyn_key: None,
             slot_binds: HashMap::new(),
             key_names: HashMap::new(),
             const_params: HashMap::new(),
+            const_strs: HashMap::new(),
             shared_temps: std::collections::HashSet::new(),
             func_ctx: None,
             func_calls: std::collections::HashSet::new(),
@@ -93,12 +103,14 @@ impl<'a> Gen<'a> {
             owned: HashMap::new(),
             sharing: Vec::new(),
             blob_base: 0,
+            heap: None,
             fn_ret: Vec::new(),
             tuple_buf: 0,
             compiling: Vec::new(),
             fails: Vec::new(),
             raises: Vec::new(),
             raise_sites: HashMap::new(),
+            inst_sites: HashMap::new(),
             subs: Vec::new(),
             revert_kinds: 0,
             revert_head: None,
@@ -108,8 +120,15 @@ impl<'a> Gen<'a> {
             bodies: 0,
             loop_syms: Vec::new(),
             header_locals: std::collections::HashSet::new(),
+            span_temps: HashMap::new(),
+            mask_temps: HashMap::new(),
+            blobs: std::collections::HashSet::new(),
+            blob_sites: HashMap::new(),
+            ret_sites: HashMap::new(),
+            append_to: None,
+            appendable: HashMap::new(),
             loop_counters: Vec::new(),
-            facts: Vec::new(),
+            facts: Default::default(),
             imm_mem: 0,
             cd_tail: 0,
             imm_tail: Vec::new(),
@@ -174,9 +193,8 @@ impl<'a> Gen<'a> {
         g.scratch_val = g.region(Region::Scratch(4), 32);
         g.key_scratch = g.region(Region::Scratch(5), 32);
         g.code_args = g.region(Region::Scratch(6), 32);
-        g.mul_div_buf = g.region(Region::Scratch(7), 160);
         g.tree_at = g.region(Region::Scratch(8), 32);
-        g.tree_len = g.region(Region::Scratch(9), 32);
+        g.tree_end = g.region(Region::Scratch(9), 32);
         g.ret_scratch = g.region(Region::Ret, 96);
         g.args_buf = g.region(Region::Args, 128);
         g.hash_buf = g.region(Region::Hash, 0);
@@ -284,7 +302,7 @@ impl<'a> Gen<'a> {
                 continue;
             }
             outlinable.insert(idx);
-            // Each call also stores its arguments, which inlined copies may read in place.
+            // Each call also passes its arguments, which inlined copies may read in place.
             let params = self.checked.prog.funcs[idx].params.len();
             let inline = calls * bytes;
             let shared = bytes + 3 + calls * (8 + 3 * params);
@@ -304,14 +322,35 @@ impl<'a> Gen<'a> {
             hold_dups: false,
             frames: false,
             sink: false,
+            outline_raises: false,
+            forward_consts: false,
+            static_heap: false,
+            every_bump: false,
             outline,
             looped,
             outlinable,
+            blob_params: self
+                .blob_sites
+                .iter()
+                .filter(|&(_, &all)| all)
+                .map(|(&s, _)| s)
+                .collect(),
+            blob_rets: self
+                .ret_sites
+                .iter()
+                .filter(|&(_, &all)| all)
+                .map(|(&f, _)| f)
+                .collect(),
             shared_bytes,
             shared_decode: self.decode_sites >= 2,
             shared_value: self.value_sites.map(|n| n >= 2),
             shared_eq: self.eq_sites >= 2,
             shared_slice: self.slice_sites.map(|n| n >= 2),
+            // One routine serves every site, so only a lone option set is worth fixing.
+            base64_fixed: match self.base64_opts.iter().collect::<Vec<_>>()[..] {
+                [&opts] => opts,
+                _ => None,
+            },
             // A call costs 8 bytes to the 18 of the check inlined.
             shared_mul: self.mul_sites >= 3,
             shared_exp: self.exp_sites.map(|n| n >= 2),
@@ -322,6 +361,12 @@ impl<'a> Gen<'a> {
                 .filter(|(_, &n)| n == 1)
                 .map(|(&q, _)| q)
                 .collect(),
+            split_insts: self
+                .inst_sites
+                .iter()
+                .filter(|(_, &n)| n >= 2)
+                .map(|(&key, _)| key)
+                .collect(),
             shared_raises: self
                 .raise_sites
                 .iter()
@@ -331,8 +376,6 @@ impl<'a> Gen<'a> {
         }
     }
 
-    /// A function compiles the same way wherever it is called unless it defers, queries,
-    /// or cases on a dispatched variant.
     /// How contract code calls `idx`, a function of a module its facet runs: across, with
     /// `delegatecall` unless it is pure, or `None` where it runs in the contract: a constant,
     /// which folds into it, or a function that writes an immutable, which only `deploy` and
@@ -408,13 +451,24 @@ impl<'a> Gen<'a> {
             && t.fields.iter().all(|f| self.abi_value(f.ty))
     }
 
+    /// A function compiles the same way wherever it is called unless it defers or cases on
+    /// a dispatched variant. Queries only the entrypoint's own body hoists, so one in a
+    /// function is the same everywhere.
     fn outline_safe(&self, idx: usize, seen: &mut Vec<usize>) -> bool {
+        // The interface call a query makes: `expr_any` visits the query before it.
+        let queried = std::cell::RefCell::new(std::collections::HashSet::new());
         let bad = |node: Node<'_>| match node {
             Node::Stmt(st) => matches!(st, Stmt::Defer { .. }),
             Node::Expr(e) => match e {
-                Expr::Query { .. } => true,
+                Expr::Query { expr, .. } => {
+                    queried
+                        .borrow_mut()
+                        .insert(std::ptr::from_ref(expr.as_ref()));
+                    false
+                }
                 Expr::Call { builtin, iface, .. } => {
-                    iface.is_some() || *builtin == Some(Builtin::Transfer)
+                    (iface.is_some() && !queried.borrow().contains(&std::ptr::from_ref(e)))
+                        || *builtin == Some(Builtin::Transfer)
                 }
                 Expr::Case { scrut, .. } => self.checked.types[scrut.ty()].kind == TyKind::Variant,
                 _ => false,
@@ -751,16 +805,73 @@ impl<'a> Gen<'a> {
             if info.storage || self.local[sym] < 0 {
                 continue;
             }
-            let words = if info.span > 0 {
-                info.span
-            } else {
-                self.checked.types[info.ty].words
-            };
+            let words = self.sym_words(sym);
             if words > 0 {
                 out.push((self.local[sym], words));
             }
         }
         out
+    }
+
+    /// The memory words a local occupies.
+    pub(super) fn sym_words(&self, sym: usize) -> u32 {
+        let info = &self.checked.syms[sym];
+        if info.span > 0 {
+            info.span
+        } else {
+            self.checked.types[info.ty].words
+        }
+    }
+
+    /// The names a function's continuations declare: their results and their own locals.
+    pub(super) fn continuation_declared(&self, idx: usize) -> Vec<usize> {
+        let declared = std::cell::RefCell::new(Vec::new());
+        let note = |node: Node<'_>| {
+            let mut d = declared.borrow_mut();
+            match node {
+                Node::Stmt(Stmt::Const { sym, part_syms, .. }) => {
+                    d.extend(sym.iter().chain(part_syms));
+                }
+                Node::Stmt(Stmt::Var { sym, .. }) => d.extend(sym.iter()),
+                Node::Stmt(Stmt::For {
+                    counter,
+                    elem,
+                    limit,
+                    list,
+                    declared,
+                    ..
+                }) => {
+                    d.extend(counter.iter().chain(elem).chain(limit).chain(list).chain(declared));
+                }
+                Node::Expr(Expr::Case { arms, .. }) => {
+                    d.extend(arms.iter().flat_map(|a| a.bind_sym.iter().chain(&a.tuple_syms)));
+                }
+                _ => {}
+            }
+            false
+        };
+        let conts = |node: Node<'_>| {
+            if let Node::Stmt(Stmt::Defer {
+                then: Some(then), ..
+            }) = node
+            {
+                for arm in then.arms() {
+                    declared.borrow_mut().extend(&arm.syms);
+                    for st in &arm.stmts {
+                        self.stmt_any(st, &note, &mut Vec::new());
+                    }
+                }
+            }
+            false
+        };
+        let f = &self.checked.prog.funcs[idx];
+        for st in &f.stmts {
+            self.stmt_any(st, &conts, &mut Vec::new());
+        }
+        if let Some(tail) = &f.tail {
+            self.expr_any(tail, &conts, &mut Vec::new());
+        }
+        declared.into_inner()
     }
 
     fn raised_any(
@@ -837,6 +948,49 @@ impl<'a> Gen<'a> {
             Expr::Field {
                 root: Some(_), ty, ..
             } => plain(e) && self.map_place(e).is_none() && !self.is_dynamic(*ty),
+            // A local's length, or a word of a local record, is read with no check.
+            Expr::Field {
+                root: None,
+                base,
+                name,
+                ty,
+                ..
+            } => {
+                let local = matches!(base.as_ref(), Expr::Ident { sym: Some(s), builtin: None, .. }
+                    if !self.checked.syms[*s].storage);
+                let kind = self.checked.types[self.peel_nominal(base.ty())].kind;
+                local
+                    && if name == "length" {
+                        self.is_dynamic(self.peel_nominal(base.ty()))
+                    } else {
+                        matches!(kind, TyKind::Record | TyKind::Tuple) && self.stack_value(*ty)
+                    }
+            }
+            // A cast to a full word that checks nothing.
+            Expr::Call {
+                builtin: Some(Builtin::Cast),
+                args,
+                ty,
+                ..
+            } if args.len() == 1 => {
+                let dst = &self.checked.types[self.peel_nominal(*ty)];
+                let src = &self.checked.types[self.peel_nominal(args[0].ty())];
+                dst.kind == TyKind::Uint
+                    && (dst.bits == 0 || dst.bits == 256)
+                    && matches!(src.kind, TyKind::Uint | TyKind::Bytes | TyKind::Bool)
+                    && !self.is_dynamic(self.peel_nominal(args[0].ty()))
+                    && self.eager_ok(&args[0])
+            }
+            // A function that is only a constant.
+            Expr::Call {
+                builtin: None,
+                callee: Some(idx),
+                args,
+                ..
+            } if args.is_empty() => {
+                let f = &self.checked.prog.funcs[*idx];
+                f.stmts.is_empty() && f.tail.as_ref().is_some_and(|t| self.const_word(t).is_some())
+            }
             Expr::Ident {
                 sym: Some(sym),
                 builtin: None,
@@ -881,12 +1035,19 @@ impl<'a> Gen<'a> {
 
     /// Each compiled function's label, and how many words it returns on the stack.
     pub(super) fn func_leaves_by_label(&self) -> HashMap<u32, usize> {
-        self.funcs.values().map(|f| (f.label, f.leaves)).collect()
+        // A call that passes arguments needs its own return address.
+        self.funcs
+            .values()
+            .filter(|f| f.takes == 0)
+            .map(|f| (f.label, f.leaves))
+            .collect()
     }
 
     /// Moves memory words that only one body, or one function compiled once, uses, and whose
     /// address never escapes, onto the stack.
-    pub(super) fn promote(&mut self) {
+    /// Returns whether the plan's last optional pass changed anything: placing allocations at
+    /// constant addresses in static-heap builds, else forwarding stored constants.
+    pub(super) fn promote(&mut self) -> bool {
         let mask = (1u32 << REGION_SHIFT) - 1;
         let mut escapes = vec![false; self.spaces.len()];
         for (i, inst) in self.code.iter().enumerate() {
@@ -906,6 +1067,7 @@ impl<'a> Gen<'a> {
                 !escaped
                     && (matches!(&space.users, Users::Bodies(_))
                         || self.shared_temps.contains(&ix)
+                        || self.function_local(ix)
                         || matches!(&space.users, Users::Shared(ids) if ids.len() == 1 && ids.iter().all(|&i| i >= FUNC_CTX)))
             })
             .collect();
@@ -943,24 +1105,40 @@ impl<'a> Gen<'a> {
                     Sub::BlobsEq => (2, 1),
                     Sub::BytesEq => (2, 1),
                     Sub::BytesValue(_) => (2, 1),
-                    Sub::Base64Encode => (3, 1),
+                    Sub::Base64Encode(opts) => (if opts.is_some() { 1 } else { 3 }, 1),
                     Sub::Base64Decode => (1, 1),
-                    Sub::Join => (1, 1),
+                    Sub::StringCase => (2, 1),
                     Sub::StringEscape(_) => (3, 1),
-                    Sub::Replace => (3, 1),
+                    Sub::IndexOf | Sub::Replace => (4, 1),
+                    Sub::Join => (1, 1),
                     Sub::DecimalString(_) => (1, 1),
                     Sub::HexString => (2, 1),
                     Sub::ChecksumString => (1, 1),
                     Sub::TreeEnc(_) => (2, 1),
                     Sub::TreeDec(..) => (2, 0),
+                    Sub::TreeCheck(..) => (2, 0),
                     Sub::TreeCdEnc(_) => (2, 1),
                 };
                 (label, effect)
             })
             .collect();
         for f in self.funcs.values() {
-            calls.insert(f.label, (0, f.leaves));
+            calls.insert(f.label, (f.takes, f.leaves));
         }
+        let alloc = self.subs.iter().find(|(sub, _, _)| *sub == Sub::AllocBlob);
+        let placed = match alloc {
+            Some(&(_, alloc, _)) if self.plan.static_heap => asm::static_heap(
+                &mut self.code,
+                self.blob_ptr as u32,
+                self.blob_base as u32,
+                alloc,
+                &calls,
+                self.plan.every_bump,
+            ),
+            _ => false,
+        };
+        let forwarded =
+            self.plan.forward_consts && asm::forward_constants(&mut self.code, &tracked, &calls);
         asm::promote(
             &mut self.code,
             &tracked,
@@ -983,6 +1161,22 @@ impl<'a> Gen<'a> {
             )
             .collect();
         asm::forward_storage(&mut self.code, &calls, &opaque);
+        if self.plan.static_heap {
+            placed
+        } else {
+            forwarded
+        }
+    }
+
+    /// A function's local, and not the parameter of one its callers write: each call, and
+    /// each inlined copy, sets it before reading it, so it can live on the stack.
+    fn function_local(&self, ix: usize) -> bool {
+        let Region::Local(sym) = self.spaces[ix].region else {
+            return false;
+        };
+        !self.funcs.iter().any(|(&(f, _), sub)| {
+            sub.takes == 0 && self.checked.prog.funcs[f].params.iter().any(|p| p.sym == Some(sym))
+        })
     }
 
     /// A word written only by `CALLDATALOAD` of a constant offset is read from calldata instead.
@@ -1273,6 +1467,11 @@ impl<'a> Gen<'a> {
                 base[i] = top;
             }
         }
+        let ptr = (self.blob_ptr >> REGION_SHIFT) as usize;
+        self.heap = (ptr > 0 && self.spaces[ptr - 1].heat > 0).then(|| asm::Heap {
+            ptr: base[ptr - 1] + u64::from(self.blob_ptr as u32 & mask),
+            base: top,
+        });
         let mut out = Vec::with_capacity(self.code.len());
         for inst in std::mem::take(&mut self.code) {
             out.push(match inst {

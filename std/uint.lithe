@@ -46,4 +46,11 @@ module Uint is {
 
   (* `uint256(i)`: the same 256 bits, unchecked. *)
   intrinsic pure function from_bits(i : int) : uint;
+
+  (* Solady's `LibBit.popCount(x)`: how many bits are set. *)
+  intrinsic pure function pop_count(x : uint) : uint;
+
+  (* `LibBit.clz(x)`: the zero bits above the highest set bit, 256 for zero. One `CLZ` on
+     Osaka. *)
+  intrinsic pure function clz(x : uint) : uint;
 }

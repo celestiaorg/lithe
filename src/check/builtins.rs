@@ -261,8 +261,40 @@ impl Checker {
                     }
                 }
             }
-            Builtin::UintMulDiv | Builtin::UintMulMod | Builtin::UintAddMod => {
+            Builtin::StringCase(_) => {
+                need(args.len(), 1)?;
+                self.check_expr(&mut args[0])?;
+                if !self.is_dyn_ty(args[0].ty()) {
+                    return Err(error(
+                        args[0].line(),
+                        args[0].col(),
+                        format!("`{call}` expects `string` or `bytes`"),
+                    ));
+                }
+            }
+            Builtin::StringIndexOf => {
                 need(args.len(), 3)?;
+                for arg in args.iter_mut().take(2) {
+                    self.check_expr(arg)?;
+                    if !self.is_dyn_ty(arg.ty()) {
+                        return Err(error(
+                            arg.line(),
+                            arg.col(),
+                            format!("`{call}` expects `string` or `bytes`"),
+                        ));
+                    }
+                }
+                self.check_expr_as(&mut args[2], Some(TY_UINT))?;
+                if !self.same(args[2].ty(), TY_UINT) {
+                    return Err(error(
+                        args[2].line(),
+                        args[2].col(),
+                        format!("`{call}` starts from a `uint` offset"),
+                    ));
+                }
+            }
+            Builtin::UintMulDiv | Builtin::UintMulMod | Builtin::UintAddMod | Builtin::UintPopCount | Builtin::UintClz => {
+                need(args.len(), if matches!(kind, Builtin::UintPopCount | Builtin::UintClz) { 1 } else { 3 })?;
                 for arg in args.iter_mut() {
                     self.check_expr_as(arg, Some(TY_UINT))?;
                     if !self.same(arg.ty(), TY_UINT) {
@@ -613,6 +645,32 @@ impl Checker {
                 return Ok(());
             }
             Builtin::ListPush => return Err(error(line, col, format!("`{call}` is a statement"))),
+            Builtin::ListResized => {
+                need(args.len(), 2)?;
+                let expect = self.expect.filter(|&t| self.list_value(t));
+                self.check_expr_as(&mut args[0], expect)?;
+                let list = self.peel(args[0].ty());
+                if !self.list_value(list) {
+                    return Err(error(
+                        args[0].line(),
+                        args[0].col(),
+                        format!("`{call}` expects a dynamic list"),
+                    ));
+                }
+                let elem = self.types[list].elem.unwrap_or(0);
+                self.zero_value(line, col, elem)?;
+                self.check_expr_as(&mut args[1], Some(TY_UINT))?;
+                if !self.same(args[1].ty(), TY_UINT) {
+                    return Err(error(
+                        args[1].line(),
+                        args[1].col(),
+                        format!("`{call}` takes a `uint` length"),
+                    ));
+                }
+                *builtin = Some(kind);
+                *ty = args[0].ty();
+                return Ok(());
+            }
             // The contract's interfaces are known once it is checked, and a module's code is
             // the same in every contract that uses it.
             Builtin::AbiSupportsInterface => {
@@ -961,11 +1019,17 @@ impl Checker {
 
     fn builtin_ret(&self, kind: Builtin) -> Result<usize, Error> {
         Ok(match kind {
-            Builtin::UintMulDiv | Builtin::UintMulMod | Builtin::UintAddMod => TY_UINT,
+            Builtin::UintMulDiv
+            | Builtin::UintMulMod
+            | Builtin::UintAddMod
+            | Builtin::UintPopCount
+            | Builtin::UintClz
+            | Builtin::StringIndexOf => TY_UINT,
             Builtin::BytesWord => self.bytes_n(32)?,
-            Builtin::Base64Encode | Builtin::Base64EncodeUrl | Builtin::Base64EncodeWith => {
-                TY_STRING
-            }
+            Builtin::Base64Encode
+            | Builtin::Base64EncodeUrl
+            | Builtin::Base64EncodeWith
+            | Builtin::StringCase(_) => TY_STRING,
             Builtin::Base64Decode => self.bytes_n(0)?,
             Builtin::Sender
             | Builtin::TxOrigin
@@ -1014,7 +1078,7 @@ impl Checker {
             | Builtin::UintToHexString
             | Builtin::AddressToHexString(_) => TY_STRING,
             Builtin::AbiSupportsInterface => TY_BOOL,
-            Builtin::ListPop | Builtin::ListPush => TY_UNIT,
+            Builtin::ListPop | Builtin::ListPush | Builtin::ListResized => TY_UNIT,
             Builtin::Precompile(_) => TY_UNIT,
             Builtin::AbiDecode
             | Builtin::UintDivRem
@@ -1072,6 +1136,7 @@ pub(crate) fn intrinsic_tag(module: &str, name: &str) -> Option<Tag> {
         ("Int", "min") => Some(Tag::IntMin),
         ("Int", "max") => Some(Tag::IntMax),
         ("Address", "zero") => Some(Tag::AddressZero),
+        ("Evm", "osaka") => Some(Tag::EvmOsaka),
         ("Abi", "selector") => Some(Tag::AbiSelector),
         ("Abi", "interface_id") => Some(Tag::AbiInterfaceId),
         _ => None,
@@ -1143,13 +1208,18 @@ fn module_builtin(module: &str, name: &str) -> Option<Builtin> {
         ("Base64", "decode") => Builtin::Base64Decode,
         ("String", "concat") => Builtin::StringConcat,
         ("String", "join") => Builtin::Join(true),
+        ("String", "lower") => Builtin::StringCase(false),
+        ("String", "upper") => Builtin::StringCase(true),
         ("String", "escape_json") => Builtin::StringEscape(false),
         ("String", "escape_html") => Builtin::StringEscape(true),
+        ("String", "index_of") => Builtin::StringIndexOf,
         ("String", "replace") => Builtin::StringReplace,
         ("Uint", "div_rem") => Builtin::UintDivRem,
         ("Uint", "mul_div") => Builtin::UintMulDiv,
         ("Uint", "mul_mod") => Builtin::UintMulMod,
         ("Uint", "add_mod") => Builtin::UintAddMod,
+        ("Uint", "pop_count") => Builtin::UintPopCount,
+        ("Uint", "clz") => Builtin::UintClz,
         ("Int", "div_rem") => Builtin::IntDivRem,
         ("Uint", "to_string") => Builtin::UintToString,
         ("Int", "to_string") => Builtin::IntToString,
@@ -1160,6 +1230,7 @@ fn module_builtin(module: &str, name: &str) -> Option<Builtin> {
         ("Int", "from_bits") => Builtin::FromBits(true),
         ("List", "pop") => Builtin::ListPop,
         ("List", "push") => Builtin::ListPush,
+        ("List", "resized") => Builtin::ListResized,
         ("Abi", "supports_interface") => Builtin::AbiSupportsInterface,
         ("Uint" | "Int", "wrapping_add" | "wrapping_sub" | "wrapping_mul") => Builtin::Wrapping(
             match name {

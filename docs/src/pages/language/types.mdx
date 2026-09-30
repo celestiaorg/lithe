@@ -234,6 +234,7 @@ external pure function third() : uint is {
 - `xs[i]` reads and `xs[i] := v` writes.
 - `List.push(xs, v);` appends `v` to a dynamic list, reading and writing its length.
 - `List.pop(xs);` drops a dynamic list's last element. A stored list clears the element and whatever it holds, a long string's data and an inner list's elements included, as Solidity's `pop` does. An empty list reverts with `Panic(0x31)`.
+- `List.resized(xs, n)` is a new list of `xs`'s first `n` elements, padded with zero values; `List.resized([], n)` is Solidity's `new T[](n)`.
 - `xs.length` is the length of a dynamic list.
 - An index past the end, read or written, reverts with `Panic(0x32)`.
 - Elements can be any value: words, strings, bytes, records, tuples, [options](#options), and other lists, to any depth. `list(list(uint))` is `uint256[][]`, and a list of records with strings is an array of tuples, `(string,uint256[])[]`.
@@ -298,7 +299,7 @@ external pure function pair(const a : uint; const b : uint) : list(uint) is {
 
 ## Maps
 
-`map(K, V)` is a Solidity mapping. It exists only in storage. A key that was never written reads as the zero value, and a key is cleared by writing the zero value.
+`map(K, V)` is a Solidity mapping. It exists only in storage. A key that was never written reads as the zero value, and `delete m[k];` clears a key by writing the zero value back.
 
 ```lithe fragment
 storage is record {

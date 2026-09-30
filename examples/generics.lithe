@@ -36,11 +36,11 @@ is
   SetEnumerable.at(storage.validators, index)
 
 external function add_validator(const account : address) is {
-  SetEnumerable.add(storage.validators, account);
+  const _ : bool := SetEnumerable.add(storage.validators, account);
 }
 
 external function drop_validator(const account : address) is {
-  SetEnumerable.remove(storage.validators, account);
+  const _ : bool := SetEnumerable.remove(storage.validators, account);
 }
 
 external function track(const id : bytes32) is {
@@ -55,11 +55,11 @@ module Watchlist is {
   }
 
   external function watch(const account : address) is {
-    SetEnumerable.add(watchlist.watched, account);
+    const _ : bool := SetEnumerable.add(watchlist.watched, account);
   }
 
   external function unwatch(const account : address) is {
-    SetEnumerable.remove(watchlist.watched, account);
+    const _ : bool := SetEnumerable.remove(watchlist.watched, account);
   }
 
   external view function is_watched(const account : address) : bool is

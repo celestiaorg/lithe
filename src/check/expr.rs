@@ -33,6 +33,14 @@ impl Checker {
     }
 
     pub(super) fn check_expr(&mut self, e: &mut Expr) -> Result<(), Error> {
+        self.check_expr_in(e)?;
+        while let Some(arm) = taken_branch(e).filter(|arm| arm.stmts.is_empty()) {
+            *e = arm.expr;
+        }
+        Ok(())
+    }
+
+    fn check_expr_in(&mut self, e: &mut Expr) -> Result<(), Error> {
         if let Some(constant) = self.type_constant(e)?.or(self.abi_constant(e)?) {
             *e = constant;
             return Ok(());
@@ -42,6 +50,18 @@ impl Checker {
             return Ok(());
         }
         match e {
+            Expr::Lit {
+                lit: Lit::Zero,
+                line,
+                col,
+                ..
+            } => {
+                let Some(ty) = self.expect else {
+                    return Err(error(*line, *col, "`delete` needs a place"));
+                };
+                *e = self.zero_value(*line, *col, ty)?;
+                Ok(())
+            }
             Expr::Lit { lit, ty, line, col } => {
                 let bytes = self.named["bytes"];
                 let wants_bytes = self.expect.is_some_and(|t| self.peel(t) == bytes);
@@ -67,6 +87,7 @@ impl Checker {
                     Lit::Bytes(_) => bytes,
                     Lit::Unit => TY_UNIT,
                     Lit::Nil => self.op_list(),
+                    Lit::Zero => unreachable!(),
                 };
                 Ok(())
             }
@@ -1088,6 +1109,80 @@ impl Checker {
         }))
     }
 
+    /// The value unwritten storage reads as: zero words, empty strings, bytes, and lists,
+    /// `None`, and a variant's first case.
+    pub(super) fn zero_value(&self, line: u32, col: u32, ty: usize) -> Result<Expr, Error> {
+        let t = &self.types[ty];
+        let zero = |ty| self.zero_value(line, col, ty);
+        let lit = |lit| Expr::Lit { line, col, lit, ty };
+        let call = |name: String, args, builtin| Expr::Call {
+            line,
+            col,
+            name,
+            args,
+            base: None,
+            callee: None,
+            builtin: Some(builtin),
+            iface: None,
+            method: None,
+            ty,
+        };
+        Ok(match t.kind {
+            TyKind::Map => return Err(error(line, col, "a map cannot be assigned or deleted")),
+            TyKind::Variant => {
+                self.value_variant(line, col, ty)?;
+                unreachable!()
+            }
+            TyKind::Record if is_sum(&self.types, ty) => {
+                let case = &t.variants[0];
+                let args = case.payload.map(zero).transpose()?.into_iter().collect();
+                call(case.name.clone(), args, Builtin::Ctor(0))
+            }
+            TyKind::Record => Expr::Record {
+                line,
+                col,
+                fields: t
+                    .fields
+                    .iter()
+                    .map(|f| Ok((f.name.clone(), zero(f.ty)?)))
+                    .collect::<Result<_, Error>>()?,
+                ty,
+            },
+            TyKind::Tuple => Expr::Tuple {
+                line,
+                col,
+                elems: t
+                    .fields
+                    .iter()
+                    .map(|f| zero(f.ty))
+                    .collect::<Result<_, _>>()?,
+                ty,
+            },
+            TyKind::List => Expr::List {
+                line,
+                col,
+                elems: vec![zero(t.elem.unwrap_or(ty))?; usize::from(t.bits)],
+                ty,
+            },
+            TyKind::Option => Expr::Ident {
+                line,
+                col,
+                name: "None".into(),
+                sym: None,
+                builtin: Some(Builtin::None),
+                ty,
+            },
+            TyKind::Nominal if t.variants.is_empty() => {
+                let under = t.elem.unwrap_or(ty);
+                call(self.type_name(ty), vec![zero(under)?], Builtin::Cast)
+            }
+            TyKind::String | TyKind::Bytes if t.bits == 0 => lit(Lit::Str(String::new())),
+            TyKind::Bool => lit(Lit::Bool(false)),
+            TyKind::Unit => lit(Lit::Unit),
+            _ => lit(Lit::Int(Word::default(), None)),
+        })
+    }
+
     /// Rejects building a value of a variant whose payloads are not all fixed-size.
     fn value_variant(&self, line: u32, col: u32, vty: usize) -> Result<(), Error> {
         if self.types[vty].kind == TyKind::Variant {
@@ -1126,7 +1221,7 @@ impl Checker {
                 .any(|&ty| self.types[ty].variants.iter().any(|v| &v.name == name))
     }
 
-    /// `Uint.max`, `Int.min`, `Int.max`, and `Address.zero`, as literals. A bound takes
+    /// `Uint.max`, `Int.min`, `Int.max`, `Address.zero`, and `Evm.osaka`, as literals. A bound takes
     /// its width from the type the context expects, as a bare literal does, and is 256
     /// bits without one.
     fn type_constant(&self, e: &Expr) -> Result<Option<Expr>, Error> {
@@ -1147,6 +1242,14 @@ impl Checker {
             return Ok(None);
         }
         let tag = self.intrinsic(base, name);
+        if tag == Some(Tag::EvmOsaka) {
+            return Ok(Some(Expr::Lit {
+                lit: Lit::Bool(self.evm >= crate::EvmVersion::Osaka),
+                ty: TY_BOOL,
+                line: *line,
+                col: *col,
+            }));
+        }
         let expected = |kind: TyKind, default: usize| {
             self.expect
                 .filter(|&t| self.types[self.peel(t)].kind == kind)
@@ -1738,4 +1841,21 @@ fn bit_name(op: BinOp) -> &'static str {
         BinOp::Shr => ">>",
         _ => "operator",
     }
+}
+
+/// The branch an `if` on a literal takes, such as one on `Evm.osaka`. Both branches are
+/// checked; only this one is built.
+pub(super) fn taken_branch(e: &Expr) -> Option<Arm> {
+    let Expr::Case { scrut, arms, .. } = e else {
+        return None;
+    };
+    let Expr::Lit {
+        lit: Lit::Bool(b), ..
+    } = scrut.as_ref()
+    else {
+        return None;
+    };
+    arms.iter()
+        .find(|arm| arm.ctors[0] == if *b { "true" } else { "false" })
+        .cloned()
 }

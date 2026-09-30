@@ -164,17 +164,20 @@ impl<'a> Gen<'a> {
                     self.op(JUMP);
                 }
                 Sub::StoredTail => self.sub_stored_tail(),
-                Sub::Base64Encode => self.sub_base64_encode(),
-                Sub::StringEscape(html) => self.sub_string_escape(html),
-                Sub::Replace => self.sub_replace(),
+                Sub::Base64Encode(opts) => self.sub_base64_encode(opts),
                 Sub::Join => self.sub_join(),
                 Sub::Base64Decode => self.sub_base64_decode(),
+                Sub::StringCase => self.sub_string_case(),
+                Sub::StringEscape(html) => self.sub_string_escape(html),
+                Sub::IndexOf => self.sub_index_of(),
+                Sub::Replace => self.sub_replace(),
                 Sub::DecimalString(signed) => self.sub_decimal_string(signed)?,
                 Sub::HexString => self.sub_hex_string()?,
                 Sub::ChecksumString => self.sub_checksum_string(),
                 Sub::BytesSlice(end) => self.sub_slice(end)?,
                 Sub::TreeEnc(ty) => self.sub_tree_enc(ty)?,
                 Sub::TreeDec(ty, kind, args) => self.sub_tree_dec(ty, kind, args)?,
+                Sub::TreeCheck(ty, kind, args) => self.sub_tree_check(ty, kind, args)?,
                 Sub::TreeCdEnc(ty) => self.sub_tree_cd_enc(ty)?,
             }
         }
@@ -215,112 +218,117 @@ impl<'a> Gen<'a> {
         Ok(())
     }
 
-    /// Full-precision `x * y / d`, as OpenZeppelin's `Math.mulDiv`: the 512-bit product is
-    /// divided exactly, with `d`'s modular inverse once its factors of two are gone.
+    /// Full-precision `x * y / d`, as Solady's `fullMulDiv`: the 512-bit product is
+    /// divided exactly, with `d`'s modular inverse once its factors of two are gone. All on
+    /// the stack: `[x, y, d, ret]` becomes `[x * y / d]`.
     fn sub_mul_div(&mut self) -> Result<(), Error> {
-        let [p0, p1, d, x, y] = std::array::from_fn(|i| self.mul_div_buf + 32 * i as i32);
-        let small = self.fresh();
-        self.op(SWAP1);
-        self.mstore_off(d);
-        self.op(SWAP1);
-        self.mstore_off(y);
-        self.op(SWAP1);
-        self.mstore_off(x);
-        self.mload(x);
-        self.mload(y);
-        self.op(MUL);
-        self.mstore_off(p0);
-        // prod1 = mulmod(x, y, ~0) - prod0 - borrow: the product's high word.
-        self.push_word(Word::from_u64(0).not());
-        self.mload(y);
-        self.mload(x);
-        self.op(MULMOD);
-        self.mload(p0);
+        let wide = self.fresh();
+        let done = self.fresh();
         self.op(DUP1 + 1);
-        self.op(LT);
-        self.op(SWAP1);
-        self.mload(p0);
-        self.op(SWAP1);
-        self.op(SUB);
-        self.op(SUB);
-        self.op(DUP1);
-        self.mstore_off(p1);
-        self.op(ISZERO);
-        self.push_label(small);
-        self.op(JUMPI);
-        self.mload(d);
         self.op(ISZERO);
         self.revert_if_panic(0x12)?;
-        self.mload(p1);
-        self.mload(d);
+        // [x y d ret z]: the product's low word.
+        self.op(DUP1 + 3);
+        self.op(DUP1 + 3);
+        self.op(MUL);
+        // p1 = mulmod(x, y, ~0) - z - (mm < z): the high word.
+        self.op(PUSH0);
+        self.op(NOT);
+        self.op(DUP1 + 4);
+        self.op(DUP1 + 6);
+        self.op(MULMOD);
+        self.op(DUP1 + 1);
+        self.op(DUP1 + 1);
+        self.op(LT);
+        self.op(DUP1 + 2);
+        self.op(ADD);
+        self.op(SWAP1);
+        self.op(SUB);
+        // [x y d ret z p1]
+        self.op(DUP1);
+        self.push_label(wide);
+        self.op(JUMPI);
+        self.op(POP);
+        self.op(DUP1 + 2);
+        self.op(SWAP1);
+        self.op(DIV);
+        self.jumpdest(done);
+        // [x y d ret q] becomes [q ret].
+        self.op(SWAP1 + 3);
+        self.op(POP);
+        self.op(SWAP1 + 1);
+        self.op(POP);
+        self.op(POP);
+        self.op(JUMP);
+        self.jumpdest(wide);
+        // The quotient fits only when d > p1.
+        self.op(DUP1);
+        self.op(DUP1 + 4);
         self.op(GT);
         self.op(ISZERO);
         self.revert_if_panic(0x11)?;
-        // Subtract the remainder, so the division is exact.
-        self.mload(d);
-        self.mload(y);
-        self.mload(x);
+        // [x y d ret z p1 r]: subtracting the remainder makes the division exact.
+        self.op(DUP1 + 3);
+        self.op(DUP1 + 5);
+        self.op(DUP1 + 7);
         self.op(MULMOD);
-        self.mload(p0);
-        self.op(DUP1 + 1);
-        self.op(GT);
-        self.mload(p1);
-        self.op(SUB);
-        self.mstore_off(p1);
-        self.mload(p0);
-        self.op(SUB);
-        self.mstore_off(p0);
-        // Divide out d's largest power of two, and move prod1's bits into prod0.
-        self.mload(d);
-        self.op(DUP1);
+        // [.. r t]: d's largest power of two.
+        self.op(DUP1 + 4);
         self.op(PUSH0);
         self.op(SUB);
+        self.op(DUP1 + 5);
         self.op(AND);
-        self.op(DUP1);
-        self.mload(d);
+        // [.. r t lo]: (z - r) / t.
+        self.op(DUP1 + 1);
+        self.op(DUP1 + 4);
+        self.op(SUB);
+        self.op(DUP1 + 1);
+        self.op(SWAP1);
         self.op(DIV);
-        self.mstore_off(d);
-        self.op(DUP1);
-        self.mload(p0);
-        self.op(DIV);
-        self.mstore_off(p0);
-        self.op(DUP1);
+        // (p1 - (r > z)) * (2^256 / t), p1's bits moved into the low word.
+        self.op(DUP1 + 4);
+        self.op(DUP1 + 3);
+        self.op(GT);
+        self.op(DUP1 + 4);
+        self.op(SUB);
+        self.op(DUP1 + 2);
         self.op(PUSH0);
         self.op(SUB);
+        self.op(DUP1 + 3);
+        self.op(SWAP1);
         self.op(DIV);
         self.push_u64(1);
         self.op(ADD);
-        self.mload(p1);
         self.op(MUL);
-        self.mload(p0);
         self.op(OR);
-        self.mstore_off(p0);
-        // d is odd now: Newton's iteration doubles the inverse's correct bits each step.
-        self.mload(d);
+        // [.. t z' d'], d' = d / t is odd: Newton's iteration doubles the inverse's correct
+        // bits each step, from four.
+        self.op(DUP1 + 1);
+        self.op(DUP1 + 7);
+        self.op(DIV);
+        self.op(DUP1);
         self.push_u64(3);
         self.op(MUL);
         self.push_u64(2);
         self.op(XOR);
         for _ in 0..6 {
             self.op(DUP1);
-            self.mload(d);
+            self.op(DUP1 + 2);
             self.op(MUL);
             self.push_u64(2);
             self.op(SUB);
             self.op(MUL);
         }
-        self.mload(p0);
+        self.op(SWAP1);
+        self.op(POP);
         self.op(MUL);
-        self.op(SWAP1);
-        self.op(JUMP);
-        self.jumpdest(small);
-        self.mload(d);
-        self.op(DUP1);
-        self.op(ISZERO);
-        self.revert_if_panic(0x12)?;
-        self.mload(p0);
-        self.op(DIV);
-        self.op(SWAP1);
+        // [x y d ret z p1 r t q] becomes [x y d ret q].
+        self.op(SWAP1 + 3);
+        self.op(POP);
+        self.op(POP);
+        self.op(POP);
+        self.op(POP);
+        self.push_label(done);
         self.op(JUMP);
         Ok(())
     }
@@ -526,7 +534,7 @@ impl<'a> Gen<'a> {
     }
 
     /// The storage leaf behind an image address, if it is one.
-    fn image_leaf(&self, addr: i32) -> Option<u32> {
+    pub(super) fn image_leaf(&self, addr: i32) -> Option<u32> {
         let leaves = self.checked.leaves as i32;
         (addr >= self.image && addr < self.image + leaves * 32)
             .then(|| ((addr - self.image) / 32) as u32)

@@ -1169,3 +1169,152 @@ external pure function cat_hash(const a : address; const b : bytes3) : bytes32 i
         crate::keccak::keccak256(&cat).to_vec()
     );
 }
+
+/// Lists of records `Abi.decode` checks and leaves in calldata, and list arguments read in
+/// place, against the same lists decoded into memory: every broken word, truncation, and
+/// huge offset or length reverts the same way, and valid data reads the same.
+#[test]
+fn checked_calldata_lists_match_decoding() {
+    use T::*;
+    let mut rng = Rng(0xc0ff_ee15_7a11_0001);
+    let elems = [
+        Tuple(vec![Address, Uint(256), Bytes]),
+        Tuple(vec![Bytes, Uint(8)]),
+        Tuple(vec![Uint(256), Str, Bool, Bytes]),
+        Tuple(vec![Uint(8), Address]),
+        Tuple(vec![Fixed(4), Bytes, Int(16)]),
+        Uint(8),
+        Fixed(2),
+        Int(8),
+        Bool,
+    ];
+    for elem in elems {
+        let t = arr(elem.clone());
+        let fields = match &elem {
+            Tuple(fields) => fields.clone(),
+            _ => Vec::new(),
+        };
+        let decl = match &elem {
+            Tuple(_) => {
+                let decl: Vec<String> = fields
+                    .iter()
+                    .enumerate()
+                    .map(|(i, f)| format!("f{i} : {};", lithe(f)))
+                    .collect();
+                format!("record {{ {} }}", decl.join(" "))
+            }
+            e => lithe(e),
+        };
+        let reads: Vec<String> = match &elem {
+            Tuple(_) => (0..fields.len()).map(|i| format!("x.f{i}")).collect(),
+            _ => vec!["x".into()],
+        };
+        let lens: Vec<String> = fields
+            .iter()
+            .enumerate()
+            .filter(|(_, f)| matches!(f, Bytes | Str))
+            .map(|(i, _)| format!(" + x.f{i}.length"))
+            .collect();
+        let body = |list: &str| {
+            format!(
+                "var out : bytes := \"\"; var n : uint := {list}.length;
+  for x : rec in {list} do {{
+    out := Bytes.concat(out, Abi.encode({}));
+    n := n{};
+  }}
+  for (i, x) : (uint, rec) in {list} do {{
+    out := Bytes.concat(out, Abi.encode(i, {}));
+  }}",
+                reads.join(", "),
+                lens.concat(),
+                reads.join(", ")
+            )
+        };
+        let src = format!(
+            "\
+import \"std/abi\"; import \"std/bytes\";
+type rec is {};
+type recs is list(rec);
+storage is record {{ n : uint; }}
+external pure function kept(const b : bytes) : bytes is {{
+  const xs : recs := Abi.decode(b, recs);
+  {}
+}} with Abi.encode(n, out)
+external pure function copied(const b : bytes) : bytes is {{
+  const ys : recs := Abi.decode(b, recs);
+  const xs : recs := ys;
+  {}
+}} with Abi.encode(n, out)
+external pure function arg(const xs : recs) : bytes is {{
+  {}
+}} with Abi.encode(n, out)
+external pure function arg_copied(const ys : recs) : bytes is {{
+  const xs : recs := ys;
+  {}
+}} with Abi.encode(n, out)
+",
+            decl,
+            body("xs"),
+            body("xs"),
+            body("xs"),
+            body("xs")
+        );
+        let runtime = deploy(&compile(&src).unwrap_or_else(|e| panic!("{e}\n{src}"))).expect("deploy");
+        let mut cases = Vec::new();
+        for _ in 0..3 {
+            let v = value(&t, &mut rng);
+            let enc = encode(std::slice::from_ref(&t), std::slice::from_ref(&v));
+            cases.push(enc.clone());
+            for at in (0..enc.len()).step_by(32) {
+                for bad in [
+                    Word::from_u64(0x1000),
+                    Word::from_u64(u64::MAX),
+                    Word::from_u64(1).shl(64),
+                    Word::from_u64(1).shl(160),
+                    Word::from_u64(1).shl(255),
+                    Word::from_u64(256),
+                    Word::from_u64(3),
+                    Word::from_u64(0),
+                    rng.word(),
+                ] {
+                    let mut data = enc.clone();
+                    data[at..at + 32].copy_from_slice(&bad.to_be_bytes());
+                    cases.push(data);
+                }
+            }
+            for cut in [0, 16, 32, enc.len() / 2, enc.len().saturating_sub(1)] {
+                cases.push(enc[..cut.min(enc.len())].to_vec());
+            }
+        }
+        let bytes_arg = |data: &[u8]| {
+            let mut out = Word::from_u64(32).to_be_bytes().to_vec();
+            out.extend(Word::from_u64(data.len() as u64).to_be_bytes());
+            out.extend(data);
+            out.resize(64 + data.len().div_ceil(32) * 32, 0);
+            out
+        };
+        let mut succeeded = 0;
+        for (i, data) in cases.iter().enumerate() {
+            let a = run_call(&runtime, &with_sel("kept(bytes)", &bytes_arg(data)));
+            let b = run_call(&runtime, &with_sel("copied(bytes)", &bytes_arg(data)));
+            assert_eq!(
+                (a.reverted, &a.returndata),
+                (b.reverted, &b.returndata),
+                "{} decode case {i}",
+                canon(&t)
+            );
+            let sig = format!("arg({})", canon(&t));
+            let a = run_call(&runtime, &with_sel(&sig, data));
+            let sig = format!("arg_copied({})", canon(&t));
+            let b = run_call(&runtime, &with_sel(&sig, data));
+            assert_eq!(
+                (a.reverted, &a.returndata),
+                (b.reverted, &b.returndata),
+                "{} argument case {i}",
+                canon(&t)
+            );
+            succeeded += usize::from(!a.reverted);
+        }
+        assert!(succeeded >= 3, "{}", canon(&t));
+    }
+}

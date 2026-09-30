@@ -69,7 +69,7 @@ For a result of words only, like this one, a tuple works too, since both lay out
 
 ### Optional results
 
-Some contracts return nothing where their interface promises a value: older tokens return nothing from `transfer`. Declare such a result `option(T)`. No return data is `None`, and anything else is decoded as `T`, checked as any result is, and is `Some`:
+Some contracts return nothing where their interface promises a value: older tokens return nothing from `transfer`. Declare such a result `option(T)`. No return data from an account with code is `None`, and anything else is decoded as `T`, checked as any result is, and is `Some`:
 
 ```lithe
 interface Token is {
@@ -91,7 +91,7 @@ is {
 }
 ```
 
-This is Solidity's `(bool ok, bytes memory data) = token.call(...)` followed by `data.length == 0 || abi.decode(data, (bool))`. `T` is a static value, and a queried one is a single word. An option is not an ABI value, so an optional result can't be one a contract exposes.
+This is OpenZeppelin's `SafeERC20` and Solady's `SafeTransferLib`: `(bool ok, bytes memory data) = token.call(...)` followed by `data.length == 0 ? token.code.length > 0 : abi.decode(data, (bool))`. No data from an account with no code reverts, as a too-short result does, even under an `Error` arm, so a transfer of a token that doesn't exist fails. `T` is a static value, and a queried one is a single word. An option is not an ABI value, so an optional result can't be one a contract exposes.
 
 The same interfaces say what a contract exposes from a module: `use M exposing I` declares every method of `I`. See [Modules and contracts](/language/modules#exposing-a-modules-externals). And `supports I` announces `I` through ERC-165, with the XOR of its methods' selectors as its id. See [ERC-165](/language/modules#erc-165).
 
@@ -184,7 +184,7 @@ The target, arguments, value, and gas limit are **evaluated at the `defer`**, an
 
 Deferred calls forward all remaining gas, unless they set a [gas limit](#limiting-a-calls-gas). If a deferred call reverts, the whole transaction reverts, unless its continuation has [`Ok` and `Error` arms](/language/continuations#recovering-from-failed-calls). When a [continuation](/language/continuations) binds the call's result, the result is decoded and checked first, and a malformed result reverts.
 
-A call to an account with no code succeeds on the EVM, so as in Solidity it is checked. A method without a result reverts before the call when the account has no code, and a result nothing decodes must still be as long as its head words. An [optional result](#optional-results) may be missing.
+A call to an account with no code succeeds on the EVM, so as in Solidity it is checked. A method without a result reverts before the call when the account has no code, and a result nothing decodes must still be as long as its head words. An [optional result](#optional-results) may be missing only when the account has code: one nothing decodes reverts before the call when there is none, as a method without a result does, and a decoded one checks for code only when no data came back.
 
 ### Sending ether with a call
 

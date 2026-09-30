@@ -5,7 +5,7 @@ description: "Interface declarations for common ERC standards: for typed queries
 
 # Interfaces
 
-`std/interfaces` declares the common standards as [interfaces](/language/effects#interfaces), for typed `query` and `defer` against other contracts, for exposing a module's externals with [`use M exposing`](/language/modules#exposing-a-modules-externals), and for announcing them with [`supports`](/language/modules#erc-165). Each interface is exactly its standard's functions, so its ERC-165 id is the standard's. Interfaces for part of a module's externals, such as `IERC20Views` or `IOwnable`, are declared next to the module, not here. The ERC-20, ERC-721, and ERC-1155 files also declare the errors of ERC-6093 that OpenZeppelin, and the standard library's tokens, raise.
+`std/interfaces` declares the common standards as [interfaces](/language/effects#interfaces), for typed `query` and `defer` against other contracts, for exposing a module's externals with [`use M exposing`](/language/modules#exposing-a-modules-externals), and for announcing them with [`supports`](/language/modules#erc-165). Each interface is exactly its standard's functions, so its ERC-165 id is the standard's. Interfaces for part of a module's externals, such as `IERC20Views` or `IOwnable`, are declared next to the module, not here. The ERC-20, ERC-721, and ERC-1155 files also declare the errors of ERC-6093 that OpenZeppelin, and the standard library's tokens, raise, and the ERC-6909 file declares OpenZeppelin's `ERC6909` errors.
 
 ```lithe
 import "std/evm";
@@ -32,9 +32,12 @@ is {
 | `std/interfaces/erc20.lithe` | `IERC20`, `IERC20Metadata`, `IERC20Permit` |
 | `std/interfaces/erc721.lithe` | `IERC721`, `IERC721Metadata`, `IERC721Enumerable`, `IERC721Receiver` |
 | `std/interfaces/erc1155.lithe` | `IERC1155`, `IERC1155MetadataURI`, `IERC1155Receiver` |
+| `std/interfaces/erc6909.lithe` | `IERC6909`, `IERC6909Metadata`, `IERC6909ContentURI`, `IERC6909TokenSupply` |
 | `std/interfaces/erc1271.lithe` | `IERC1271` |
 | `std/interfaces/erc2981.lithe` | `IERC2981` |
 | `std/interfaces/erc3156.lithe` | `IERC3156FlashLender`, `IERC3156FlashBorrower` |
 | `std/interfaces/erc5805.lithe` | `IERC6372`, `IVotes` |
+| `std/interfaces/erc5267.lithe` | `IERC5267`, and its result type `eip712_domain` |
 | `std/interfaces/erc4626.lithe` | `IERC4626` |
+| `std/interfaces/erc7821.lithe` | `IERC7821` |
 

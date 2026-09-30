@@ -1,0 +1,22 @@
+(* Benchmark: OpenZeppelin's ERC-4626 vault with no decimals offset, from the standard
+   library's `ERC4626` over its `ERC20`. Mirrors erc4626.sol, which imports OpenZeppelin.
+   The standard library keeps its storage at ERC-7201 roots, so the slots differ. *)
+
+import "std/token/erc4626";
+import "std/token/erc20";
+import "std/token/safe_erc20";
+import "std/interfaces/erc20";
+import "std/interfaces/erc4626";
+
+contract BenchVault is {
+  use SafeERC20;
+  use ERC20 exposing IERC20, IERC20Name;
+  use ERC4626 exposing IERC4626, {
+    view function decimals() : uint8;
+  }
+
+  deploy(const asset : address) is {
+    ERC20.init("Bench Vault", "vBENCH");
+    ERC4626.init(asset, ERC4626.asset_decimals(asset), 0);
+  }
+}

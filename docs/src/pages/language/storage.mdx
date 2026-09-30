@@ -250,7 +250,9 @@ Solidity has no options, so their layout is Lithe's own. See [Options](/language
 
 ## Reading and writing
 
-A missing map key, an unwritten field, and an unwritten list slot all read as zero. Writing zero clears a slot, and there is no `delete`.
+A missing map key, an unwritten field, and an unwritten list slot all read as zero. `delete place;` writes that zero value back, for a value of any type: a number becomes `0`, a string or list empty, an option `None`, a record each of its fields' zeros. It clears every slot the old value held, a long string's data and a list's elements included, as Solidity's `delete` does. See [`delete`](/language/statements#delete).
+
+Zeroing a slot refunds gas, up to a fifth of the transaction's, so deleting pays when the slot is already warm: read in the same transaction. Deleting a slot nothing else touches costs its cold access, more than the refund.
 
 You can write one field of a stored record, or a whole record into a field or a map entry. A record that holds strings, bytes, or lists writes each of them as its own type does:
 

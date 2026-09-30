@@ -813,3 +813,27 @@ spec for module Counter is {
     };
     assert_eq!(proof.failed, 1, "{}", proof.text);
 }
+
+#[test]
+fn delete_proves_as_writing_zero() {
+    let src = r#"import "std/evm";
+type limits is record { cap : uint; open : bool; }
+storage is record { balances : map(address, uint); total : uint; cfg : limits; }
+external function deposit(const amount : uint) is {
+  storage.balances[Evm.sender()] := storage.balances[Evm.sender()] + amount;
+  storage.total := storage.total + amount;
+}
+external function close() is {
+  storage.total := storage.total - storage.balances[Evm.sender()];
+  delete storage.balances[Evm.sender()];
+}
+external function reset() is { delete storage.cfg; }
+"#;
+    let spec = "spec is { invariant ledger is storage.total = sum(storage.balances); }
+spec for close is partial { ensures new.storage.balances[Evm.sender()] = 0; }
+spec for reset is { ensures new.storage.cfg.cap = 0 and not new.storage.cfg.open; }";
+    let Some(proof) = prove(src, spec) else {
+        return;
+    };
+    assert_eq!((proof.failed, proof.unknown), (0, 0), "{}", proof.text);
+}

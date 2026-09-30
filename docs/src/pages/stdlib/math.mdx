@@ -18,9 +18,15 @@ Everything here is checked, like the rest of Lithe's arithmetic: a result that d
 | `average(a, b)` | without overflow in `a + b`; a `uint` mean rounds down, an `int` one toward zero |
 | `ceil_div(a, b)` | `a / b` rounded up |
 | `mul_div_up(a, b, d)` | `a * b / d` rounded up, with a 512-bit product |
-| `sqrt(a)` | the integer square root, rounded down |
-| `log2(a)`, `log10(a)` | the base-2 or base-10 logarithm, rounded down; 0 for 0 |
+| `sqrt(a)`, `cbrt(a)` | the integer square or cube root, rounded down |
+| `log2(a)`, `log10(a)`, `log256(a)` | the base-2, base-10, or base-256 logarithm, rounded down; 0 for 0 |
+| `log2_up(a)`, `log10_up(a)`, `log256_up(a)` | the same, rounded up, as OpenZeppelin's `Rounding.Ceil` |
 | `abs(x)` | the magnitude of an `int`, as a `uint`, so `abs(Int.min)` is `2^255` |
+| `dist(a, b)` | `\|a - b\|` for `uint` or `int`, as a `uint` |
+| `gcd(a, b)` | the greatest common divisor; `gcd(0, 0)` is 0 |
+| `saturating_add(a, b)`, `saturating_mul(a, b)` | the result, or `Uint.max` where it would overflow |
+| `saturating_sub(a, b)` | `a - b`, or 0 where it would underflow, as Solady's `zeroFloorSub` |
+| `lerp(a, b, t, t0, t1)` | for `uint` or `int`: `t`'s point between `t0` and `t1`, from `a` to `b`, as Solady's `lerp`. `t` is clamped to the range, `t0` may be above `t1`, and the step rounds toward `a` |
 
 `a * b / d` rounded down is the built-in [`Uint.mul_div`](/language/builtins#uint-int-and-address). Its product is kept in 512 bits, so `Uint.mul_div(amount, price, 1e18)` doesn't overflow where `amount * price` would.
 
@@ -30,12 +36,14 @@ Everything here is checked, like the rest of Lithe's arithmetic: a result that d
 
 ## `FixedPoint`
 
-`std/math/fixed_point.lithe`. A `wad` is a number with 18 decimals, its own type so that a plain `uint` can't be mixed in by mistake.
+`std/math/fixed_point.lithe`. A `wad` is a number with 18 decimals, its own type so that a plain `uint` can't be mixed in by mistake, and a `swad` is a signed one. `FixedPoint` requires `Math`, so a contract that uses it uses both.
 
 ```lithe
 import "std/math/fixed_point";
+import "std/math/math";
 
 contract Fees is {
+  use Math;
   use FixedPoint;
 
   storage is record {
@@ -62,5 +70,38 @@ contract Fees is {
 | `one()`, `scale()` | `1e18` as a `wad`, and as a `uint` |
 | `to_wad(n)`, `from_wad(x)` | whole numbers in and out, rounding down |
 | `wad_mul(a, b)`, `wad_div(a, b)` | products and quotients of two `wad`s, rounding down |
-| `mul_wad(amount, factor)` | an amount scaled by a `wad` |
+| `wad_mul_up(a, b)`, `wad_div_up(a, b)` | the same, rounding up |
+| `mul_wad(amount, factor)`, `mul_wad_up(amount, factor)` | an amount scaled by a `wad`, rounding down or up |
+| `div_wad(amount, factor)`, `div_wad_up(amount, factor)` | an amount divided by a `wad`, rounding down or up |
 | `apply_bps(amount, bps)` | `bps` basis points of `amount` |
+| `s_mul_wad(a, b)`, `s_div_wad(a, b)` | products and quotients of two `swad`s, rounding toward zero. The product `a * b`, or `a * 1e18`, must fit an `int` |
+| `exp_wad(x)` | `e ** x` for an `swad`; 0 below `-41.45`, `ExpOverflow` from `135.31` |
+| `ln_wad(x)` | the natural logarithm of an `swad`; `LnWadUndefined` unless `x > 0` |
+| `pow_wad(x, y)` | `x ** y` as `exp_wad(ln_wad(x) * y)`, for `swad`s |
+| `sqrt_wad(x)`, `cbrt_wad(x)` | the square or cube root of a `wad`, rounded down |
+| `rpow(x, n, base)` | `x ** n` in a fixed point with `base` for one, each product rounded to nearest; `0 ** 0` is `base`. Panics when `base` is 0 and `n > 1` |
+
+The unsigned products and quotients keep a 512-bit intermediate, so they succeed wherever the result fits, past where Solady's `mulWad` and `divWad` revert. The rest are Solady's `FixedPointMathLib`, constant for constant, and give its results bit for bit: `exp_wad`, `ln_wad`, and `pow_wad` are approximations, and they raise Solady's `ExpOverflow` and `LnWadUndefined`. Where Solady raises `SMulWadFailed`, `SDivWadFailed`, or `RPowOverflow`, the overflow panics with `Panic(0x11)`, and a division by zero with `Panic(0x12)`, like the rest of Lithe's arithmetic.
+
+```lithe
+import "std/math/fixed_point";
+import "std/math/math";
+
+contract Curve is {
+  use Math;
+  use FixedPoint;
+
+  storage is record {
+    rate : swad;
+  }
+
+  (* Continuous compounding: `principal * e ** (rate * years)`. *)
+  external view function grown(const principal : uint; const years : swad) : uint
+    raises ExpOverflow
+  is FixedPoint.mul_wad(principal, wad(uint(int(FixedPoint.exp_wad(FixedPoint.s_mul_wad(storage.rate, years))))))
+
+  (* Per-second interest in ray, 27 decimals, compounded over `seconds`. *)
+  external pure function compound(const per_second : uint; const seconds : uint) : uint is
+    FixedPoint.rpow(per_second, seconds, 10 ** 27)
+}
+```

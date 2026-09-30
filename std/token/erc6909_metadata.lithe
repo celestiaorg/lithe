@@ -1,0 +1,79 @@
+(* A name, symbol, and decimals per ERC-6909 id, like OpenZeppelin's `ERC6909Metadata`.
+   Each setter logs its own event. An id nothing was set for has an empty name and symbol
+   and zero decimals.
+
+     use ERC6909Metadata exposing IERC6909Metadata;
+     supports IERC6909Metadata; *)
+
+import "std/token/erc6909";
+
+module ERC6909Metadata is {
+  requires ERC6909;
+
+  type token_metadata is record {
+    name : string;
+    symbol : string;
+    decimals : uint8;
+  }
+
+  storage erc6909_metadata at "lithe.std.erc6909_metadata" is record {
+    tokens : map(uint, token_metadata);
+  }
+
+  event ERC6909NameUpdated of record {
+    indexed id : uint;
+    newName : string;
+  }
+
+  event ERC6909SymbolUpdated of record {
+    indexed id : uint;
+    newSymbol : string;
+  }
+
+  event ERC6909DecimalsUpdated of record {
+    indexed id : uint;
+    newDecimals : uint8;
+  }
+
+  view function name(const id : uint) : string is
+    erc6909_metadata.tokens[id].name
+
+  view function symbol(const id : uint) : string is
+    erc6909_metadata.tokens[id].symbol
+
+  view function decimals(const id : uint) : uint8 is
+    erc6909_metadata.tokens[id].decimals
+
+  function set_name(const id : uint; const newName : string) is {
+    erc6909_metadata.tokens[id].name := newName;
+    emit ERC6909NameUpdated {
+      id = id;
+      newName = newName;
+    };
+  }
+
+  function set_symbol(const id : uint; const newSymbol : string) is {
+    erc6909_metadata.tokens[id].symbol := newSymbol;
+    emit ERC6909SymbolUpdated {
+      id = id;
+      newSymbol = newSymbol;
+    };
+  }
+
+  function set_decimals(const id : uint; const newDecimals : uint8) is {
+    erc6909_metadata.tokens[id].decimals := newDecimals;
+    emit ERC6909DecimalsUpdated {
+      id = id;
+      newDecimals = newDecimals;
+    };
+  }
+
+  external view function name(const id : uint) : string is
+    erc6909_metadata.tokens[id].name
+
+  external view function symbol(const id : uint) : string is
+    erc6909_metadata.tokens[id].symbol
+
+  external view function decimals(const id : uint) : uint8 is
+    erc6909_metadata.tokens[id].decimals
+}

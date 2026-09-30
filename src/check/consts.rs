@@ -595,6 +595,15 @@ impl Fold<'_> {
             Some(Builtin::FromBits(_)) if vals.len() == 1 && self.num(ty).is_some() => {
                 Ok(Some(vals[0]))
             }
+            Some(Builtin::UintPopCount) if vals.len() == 1 => Ok(Some(Word::from_u64(
+                vals[0].0.iter().map(|l| u64::from(l.count_ones())).sum(),
+            ))),
+            Some(Builtin::UintClz) if vals.len() == 1 => {
+                let high = vals[0].0.iter().rposition(|l| *l != 0);
+                Ok(Some(Word::from_u64(high.map_or(256, |i| {
+                    64 * (3 - i as u64) + u64::from(vals[0].0[i].leading_zeros())
+                }))))
+            }
             Some(Builtin::UintMulMod | Builtin::UintAddMod | Builtin::Precompile(Pre::PowMod))
                 if vals.len() == 3 =>
             {

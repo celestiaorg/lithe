@@ -322,6 +322,7 @@ struct FnSig {
 }
 
 struct Checker {
+    evm: crate::EvmVersion,
     types: Vec<RType>,
     named: HashMap<String, usize>,
     decls: HashMap<String, TypeRef>,
@@ -440,17 +441,26 @@ fn const_fns(prog: &Program) -> HashMap<String, Func> {
     fns
 }
 
-pub(crate) fn check(prog: Program) -> Result<Checked, Error> {
-    check_in(prog, true)
+/// `evm` is the fork `Evm.osaka` answers for.
+pub(crate) fn check(prog: Program, evm: crate::EvmVersion) -> Result<Checked, Error> {
+    check_in(prog, true, evm)
 }
 
 /// `require_entries` is false for `lithe lint`, which still reports on a library file.
-pub(crate) fn check_in(prog: Program, require_entries: bool) -> Result<Checked, Error> {
+pub(crate) fn check_in(
+    prog: Program,
+    require_entries: bool,
+    evm: crate::EvmVersion,
+) -> Result<Checked, Error> {
     let origin = prog.origin.clone();
-    check_program(prog, require_entries).map_err(|err| err.in_file(&origin))
+    check_program(prog, require_entries, evm).map_err(|err| err.in_file(&origin))
 }
 
-fn check_program(mut prog: Program, require_entries: bool) -> Result<Checked, Error> {
+fn check_program(
+    mut prog: Program,
+    require_entries: bool,
+    evm: crate::EvmVersion,
+) -> Result<Checked, Error> {
     if !prog.siblings.is_empty() {
         return Err(several_contracts(&prog));
     }
@@ -524,6 +534,7 @@ fn check_program(mut prog: Program, require_entries: bool) -> Result<Checked, Er
         once: None,
         guard_label: None,
         forwarding: false,
+        evm,
         phase_floors: Vec::new(),
         op_returns: HashMap::new(),
         state_syms: HashSet::new(),
@@ -1069,7 +1080,7 @@ fn check_program(mut prog: Program, require_entries: bool) -> Result<Checked, Er
         peer_builds: Default::default(),
     };
     let routes = crate::route::discover(&checked, require_entries)?;
-    supports_interface(Checked { routes, ..checked }, &known)
+    supports_interface(Checked { routes, ..checked }, &known, evm)
 }
 
 const TY_UNIT: usize = 0;

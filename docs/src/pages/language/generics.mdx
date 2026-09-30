@@ -84,6 +84,7 @@ module Set(T : map_key) is {
 - `Set.add(storage.admins, who)` calls the specialization picked by the argument's type.
 - `Set(order_id)` and `Set(bytes32)` are different types, because [nominal types](/language/types#nominal-types) stay distinct in generics too.
 - A module's other types are reached through a specialization: `SetEnumerable(address).iterator`.
+- A generic module's types can use other generic modules at its own parameters. The standard library's `MapEnumerable(K, V)` keeps its keys in a `SetEnumerable(K)`.
 
 ## Constraints
 

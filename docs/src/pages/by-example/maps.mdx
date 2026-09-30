@@ -24,9 +24,9 @@ external function set_balance(const amount : uint) is {
   storage.balances[Evm.sender()] := amount;
 }
 
-(* Deleting is writing the zero value. *)
+(* Deleting writes the zero value back. *)
 external function clear() is {
-  storage.balances[Evm.sender()] := 0;
+  delete storage.balances[Evm.sender()];
 }
 
 external function approve(const spender : address; const amount : uint) is {
@@ -37,5 +37,5 @@ external view function allowance(const owner : address; const spender : address)
   storage.allowances[owner][spender]
 ```
 
-- There is no `delete`. Write the zero value.
+- `delete` writes a value's zero, for any type: `delete storage.orders[id];` empties a record's strings and lists too.
 - Map keys are single words (integers, `bool`, `address`, `bytesN`, and nominal types over them), strings, or bytes. Values can be words, maps, or records of words.

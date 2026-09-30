@@ -1,20 +1,33 @@
 ---
 title: "Project configuration"
-description: "lithe.toml: the line width for lithe fmt, and the lint rules a project allows."
+description: "lithe.toml: the fork and size limits a project builds for, the line width for lithe fmt, and the lint rules a project allows."
 ---
 
 # Project configuration
 
-`lithe fmt` and `lithe lint` read settings from a `lithe.toml`. For each source file they use the nearest one: in the file's own directory, or the first directory above it that has one. `lithe fmt -` looks from the current directory. Without a `lithe.toml`, every setting has its default.
+The build commands, `lithe fmt`, `lithe lint`, and the language server read settings from a `lithe.toml`. For each source file they use the nearest one: in the file's own directory, or the first directory above it that has one. `lithe fmt -` looks from the current directory. Without a `lithe.toml`, every setting has its default.
 
 ```toml
 # lithe.toml
+[build]
+evm-version = "prague"
+
 [fmt]
 width = 100
 
 [lint]
 allow = ["reentry", "stale-capture"]
 ```
+
+## `[build]`
+
+The [build flags](/tooling/cli#build-flags), for every command that builds: `compile`, `abi`, `facets`, `footprint`, `abi-tree`, `upgrade`, and `upgrade-check`, a directory build, and the language server's diagnostics. A flag on the command line overrides the file.
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `evm-version` | `"osaka"` | the fork the code runs on, `"osaka"` or `"prague"`. See [Target fork](/tooling/cli#target-fork) |
+| `size-limit` | `24576` | the most runtime code the contract or any facet should have, a number. Code over it still builds, with a warning |
+| `create2-deployer` | `"0x4e59b44847b379578588920cA78FbF26c0B4956C"` | the `CREATE2` factory facets are deployed through |
 
 ## `[fmt]`
 

@@ -1,0 +1,31 @@
+(* Benchmark: token payments through the standard library's `SafeERC20`, which accepts
+   tokens that return nothing as OpenZeppelin's does: pays out, pulls in, and approves
+   with a retry. Mirrors safe_erc20.sol, which imports OpenZeppelin. *)
+
+import "std/token/safe_erc20";
+import "std/interfaces/erc20";
+import "std/evm";
+
+contract Payer is {
+  use SafeERC20;
+
+  storage is record {}
+
+  external function pay(const token : IERC20; const to : address; const amount : uint)
+    raises SafeERC20FailedOperation | forwarded
+  is {
+    SafeERC20.safe_transfer(token, to, amount);
+  }
+
+  external function pull(const token : IERC20; const from : address; const amount : uint)
+    raises SafeERC20FailedOperation | forwarded
+  is {
+    SafeERC20.safe_transfer_from(token, from, Evm.self(), amount);
+  }
+
+  external function allow(const token : IERC20; const spender : address; const amount : uint)
+    raises SafeERC20FailedOperation | forwarded
+  is {
+    SafeERC20.force_approve(token, spender, amount);
+  }
+}

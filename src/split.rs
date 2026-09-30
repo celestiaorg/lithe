@@ -33,7 +33,26 @@ pub const DEPLOYER: [u8; 20] = [
     0xc0, 0xb4, 0x95, 0x6c,
 ];
 
-/// How contracts are built.
+/// The hardfork the code runs on, which decides the opcodes it may use.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum EvmVersion {
+    Prague,
+    /// Adds `CLZ` (EIP-7939).
+    Osaka,
+}
+
+impl Default for EvmVersion {
+    fn default() -> Self {
+        // `LITHE_EVM_VERSION=prague cargo test` runs the suite for the older fork.
+        if cfg!(test) && std::env::var("LITHE_EVM_VERSION").as_deref() == Ok("prague") {
+            Self::Prague
+        } else {
+            Self::Osaka
+        }
+    }
+}
+
+/// How contracts are built, and the fork they target.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Options {
     /// The most runtime code the contract or any facet should have. Creation code may have
@@ -41,6 +60,7 @@ pub struct Options {
     pub size_limit: usize,
     /// The `CREATE2` factory facets are deployed through.
     pub deployer: [u8; 20],
+    pub evm: EvmVersion,
     /// A test build that checks the contract's specs as it runs, and reverts with
     /// `SpecViolation(string)` when a call breaks one. It reads the contract's spec file,
     /// and runs every module in the contract, facets included.
@@ -52,6 +72,7 @@ impl Default for Options {
         Self {
             size_limit: SIZE_LIMIT,
             deployer: DEPLOYER,
+            evm: EvmVersion::default(),
             check_specs: false,
         }
     }
@@ -462,7 +483,7 @@ fn facet(
         ..err
     };
     // A module that leans on something only the contract declares can't be built alone.
-    let checked = crate::check::check(prog).map_err(whose)?;
+    let checked = crate::check::check(prog, opts.evm).map_err(whose)?;
     let shape = Shape {
         part: true,
         opts: opts.clone(),

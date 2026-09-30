@@ -1,4 +1,4 @@
-//! SHA-256, RIPEMD-160, and secp256k1 recovery for the interpreter's precompiles.
+//! SHA-256, RIPEMD-160, secp256k1 recovery, and secp256r1 verification for the interpreter's precompiles.
 
 use crate::keccak::keccak256;
 use crate::word::Word;
@@ -138,7 +138,8 @@ pub(crate) fn ripemd160(data: &[u8]) -> [u8; 20] {
 /// half of the curve order, as wallets sign.
 pub(crate) fn sign(hash: Word, key: Word, k: Word) -> (u8, Word, Word) {
     let n = order();
-    let point = mul(k, generator());
+    let c = secp256k1();
+    let point = mul(&c, k, c.g);
     let r = mod_n(point.x);
     let e = mod_n(hash);
     let kinv = invmod(k, n).expect("nonce");
@@ -153,7 +154,8 @@ pub(crate) fn sign(hash: Word, key: Word, k: Word) -> (u8, Word, Word) {
 
 /// The Ethereum address of private key `key`.
 pub(crate) fn address_of(key: Word) -> Word {
-    let point = mul(key, generator());
+    let c = secp256k1();
+    let point = mul(&c, key, c.g);
     let mut buf = [0u8; 64];
     buf[..32].copy_from_slice(&point.x.to_be_bytes());
     buf[32..].copy_from_slice(&point.y.to_be_bytes());
@@ -203,7 +205,8 @@ pub(crate) fn ecrecover(input: &[u8]) -> Option<Word> {
     let rinv = invmod(r, order())?;
     let u1 = mulmod(submod(order(), e, order()), rinv, order());
     let u2 = mulmod(s, rinv, order());
-    let point = add(mul(u1, generator()), mul(u2, point_r));
+    let c = secp256k1();
+    let point = add(&c, mul(&c, u1, c.g), mul(&c, u2, point_r));
     if point.inf {
         return None;
     }
@@ -214,6 +217,38 @@ pub(crate) fn ecrecover(input: &[u8]) -> Option<Word> {
     let mut addr = [0u8; 32];
     addr[12..].copy_from_slice(&digest[12..]);
     Some(Word::from_be_bytes(addr))
+}
+
+/// EIP-7951 secp256r1 verification. `input` is the 160-byte precompile argument:
+/// hash, r, s, and the public key's x and y.
+pub(crate) fn p256_verify(input: &[u8]) -> bool {
+    if input.len() != 160 {
+        return false;
+    }
+    let word = |i: usize| Word::from_be_bytes(input[i * 32..i * 32 + 32].try_into().unwrap());
+    let (hash, r, s, x, y) = (word(0), word(1), word(2), word(3), word(4));
+    let c = secp256r1();
+    if r.is_zero() || s.is_zero() || !r.lt(c.n) || !s.lt(c.n) || !x.lt(c.p) || !y.lt(c.p) {
+        return false;
+    }
+    let b =
+        Word::from_hex("5ac635d8aa3a93e7b3ebbd55769886bc651d06b0cc53b0f63bce3c3e27d2604b").unwrap();
+    let rhs = addmod(
+        addmod(mulmod(mulmod(x, x, c.p), x, c.p), mulmod(c.a, x, c.p), c.p),
+        b,
+        c.p,
+    );
+    if mulmod(y, y, c.p) != rhs {
+        return false;
+    }
+    let sinv = invmod(s, c.n).unwrap();
+    let key = Pt { x, y, inf: false };
+    let point = add(
+        &c,
+        mul(&c, mulmod(hash, sinv, c.n), c.g),
+        mul(&c, mulmod(r, sinv, c.n), key),
+    );
+    !point.inf && mod_word(point.x, c.n) == r
 }
 
 fn mod_n(w: Word) -> Word {
@@ -242,25 +277,99 @@ fn submod(a: Word, b: Word, m: Word) -> Word {
     }
 }
 
-/// `(a * b) % m`, without overflow in the product.
+/// `(a * b) % m`, without overflow in the product: the 512-bit product, divided by `m`.
 pub(crate) fn mulmod(a: Word, b: Word, m: Word) -> Word {
-    let mut result = Word::from_u64(0);
-    let mut base = if a.lt(m) { a } else { mod_word(a, m) };
-    for i in 0..256 {
-        if b.bit(i) {
-            result = addmod(result, base, m);
+    let mut p = [0u64; 8];
+    for i in 0..4 {
+        let mut carry = 0u128;
+        for j in 0..4 {
+            let t = u128::from(a.0[i]) * u128::from(b.0[j]) + u128::from(p[i + j]) + carry;
+            p[i + j] = t as u64;
+            carry = t >> 64;
         }
-        base = addmod(base, base, m);
+        p[i + 4] = carry as u64;
     }
-    result
+    rem512(p, m)
+}
+
+/// The remainder of a 512-bit number, little-endian limbs, by `m`, by Knuth's long
+/// division in 64-bit digits (Hacker's Delight's `divmnu`). Zero for a zero `m`.
+fn rem512(u: [u64; 8], m: Word) -> Word {
+    let Some(top) = (0..4).rev().find(|&i| m.0[i] != 0) else {
+        return Word::from_u64(0);
+    };
+    let n = top + 1;
+    if n == 1 {
+        let d = u128::from(m.0[0]);
+        let r = u
+            .iter()
+            .rev()
+            .fold(0u128, |r, &limb| ((r << 64) | u128::from(limb)) % d);
+        return Word::from_u64(r as u64);
+    }
+    // Normalize so the divisor's top digit has its high bit set.
+    let s = m.0[top].leading_zeros();
+    let shl = |x: u64, below: u64| {
+        if s == 0 {
+            x
+        } else {
+            (x << s) | (below >> (64 - s))
+        }
+    };
+    let mut v = [0u64; 4];
+    for i in (0..n).rev() {
+        v[i] = shl(m.0[i], if i > 0 { m.0[i - 1] } else { 0 });
+    }
+    let mut un = [0u64; 9];
+    un[8] = if s == 0 { 0 } else { u[7] >> (64 - s) };
+    for i in (0..8).rev() {
+        un[i] = shl(u[i], if i > 0 { u[i - 1] } else { 0 });
+    }
+    let b = 1u128 << 64;
+    for j in (0..=8 - n).rev() {
+        let num = (u128::from(un[j + n]) << 64) | u128::from(un[j + n - 1]);
+        let mut qhat = num / u128::from(v[n - 1]);
+        let mut rhat = num % u128::from(v[n - 1]);
+        while qhat >= b || qhat * u128::from(v[n - 2]) > (rhat << 64) + u128::from(un[j + n - 2]) {
+            qhat -= 1;
+            rhat += u128::from(v[n - 1]);
+            if rhat >= b {
+                break;
+            }
+        }
+        // Subtract `qhat * v`; if that went below zero, add `v` back once.
+        let mut k = 0i128;
+        for i in 0..n {
+            let p = qhat * u128::from(v[i]);
+            let t = i128::from(un[i + j]) - k - i128::from(p as u64);
+            un[i + j] = t as u64;
+            k = (p >> 64) as i128 - (t >> 64);
+        }
+        let t = i128::from(un[j + n]) - k;
+        un[j + n] = t as u64;
+        if t < 0 {
+            let mut carry = 0u128;
+            for i in 0..n {
+                let t = u128::from(un[i + j]) + u128::from(v[i]) + carry;
+                un[i + j] = t as u64;
+                carry = t >> 64;
+            }
+            un[j + n] = un[j + n].wrapping_add(carry as u64);
+        }
+    }
+    let mut r = Word::from_u64(0);
+    for i in 0..n {
+        r.0[i] = if s == 0 {
+            un[i]
+        } else {
+            (un[i] >> s) | (un[i + 1] << (64 - s))
+        };
+    }
+    r
 }
 
 fn mod_word(w: Word, m: Word) -> Word {
-    let mut w = w;
-    while !w.lt(m) {
-        w = w.wrapping_sub(m);
-    }
-    w
+    w.rem(m)
 }
 
 fn powmod(mut base: Word, exp: Word, m: Word) -> Word {
@@ -291,17 +400,48 @@ struct Pt {
     inf: bool,
 }
 
-fn generator() -> Pt {
-    Pt {
-        x: Word::from_hex("79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798")
-            .unwrap(),
-        y: Word::from_hex("483ada7726a3c4655da4fbfc0e1108a8fd17b448a68554199c47d08ffb10d4b8")
-            .unwrap(),
-        inf: false,
+struct Curve {
+    p: Word,
+    n: Word,
+    a: Word,
+    g: Pt,
+}
+
+fn curve(p: &str, n: &str, a: &str, gx: &str, gy: &str) -> Curve {
+    let w = |h: &str| Word::from_hex(h).unwrap();
+    Curve {
+        p: w(p),
+        n: w(n),
+        a: w(a),
+        g: Pt {
+            x: w(gx),
+            y: w(gy),
+            inf: false,
+        },
     }
 }
 
-fn add(p: Pt, q: Pt) -> Pt {
+fn secp256k1() -> Curve {
+    curve(
+        "fffffffffffffffffffffffffffffffffffffffffffffffffffffffefffffc2f",
+        "fffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141",
+        "0",
+        "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
+        "483ada7726a3c4655da4fbfc0e1108a8fd17b448a68554199c47d08ffb10d4b8",
+    )
+}
+
+fn secp256r1() -> Curve {
+    curve(
+        "ffffffff00000001000000000000000000000000ffffffffffffffffffffffff",
+        "ffffffff00000000ffffffffffffffffbce6faada7179e84f3b9cac2fc632551",
+        "ffffffff00000001000000000000000000000000fffffffffffffffffffffffc",
+        "6b17d1f2e12c4247f8bce6e563a440f277037d812deb33a0f4a13945d898c296",
+        "4fe342e2fe1a7f9b8ee7eb4a7c0f9e162bce33576b315ececbb6406837bf51f5",
+    )
+}
+
+fn add(c: &Curve, p: Pt, q: Pt) -> Pt {
     if p.inf {
         return q;
     }
@@ -316,19 +456,15 @@ fn add(p: Pt, q: Pt) -> Pt {
                 inf: true,
             };
         }
-        return double(p);
+        return double(c, p);
     }
     let lam = mulmod(
-        submod(q.y, p.y, prime()),
-        invmod(submod(q.x, p.x, prime()), prime()).unwrap(),
-        prime(),
+        submod(q.y, p.y, c.p),
+        invmod(submod(q.x, p.x, c.p), c.p).unwrap(),
+        c.p,
     );
-    let x3 = submod(
-        submod(mulmod(lam, lam, prime()), p.x, prime()),
-        q.x,
-        prime(),
-    );
-    let y3 = submod(mulmod(lam, submod(p.x, x3, prime()), prime()), p.y, prime());
+    let x3 = submod(submod(mulmod(lam, lam, c.p), p.x, c.p), q.x, c.p);
+    let y3 = submod(mulmod(lam, submod(p.x, x3, c.p), c.p), p.y, c.p);
     Pt {
         x: x3,
         y: y3,
@@ -336,7 +472,7 @@ fn add(p: Pt, q: Pt) -> Pt {
     }
 }
 
-fn double(p: Pt) -> Pt {
+fn double(c: &Curve, p: Pt) -> Pt {
     if p.inf || p.y.is_zero() {
         return Pt {
             x: Word::from_u64(0),
@@ -345,16 +481,16 @@ fn double(p: Pt) -> Pt {
         };
     }
     let lam = mulmod(
-        mulmod(Word::from_u64(3), mulmod(p.x, p.x, prime()), prime()),
-        invmod(addmod(p.y, p.y, prime()), prime()).unwrap(),
-        prime(),
+        addmod(
+            mulmod(Word::from_u64(3), mulmod(p.x, p.x, c.p), c.p),
+            c.a,
+            c.p,
+        ),
+        invmod(addmod(p.y, p.y, c.p), c.p).unwrap(),
+        c.p,
     );
-    let x3 = submod(
-        mulmod(lam, lam, prime()),
-        addmod(p.x, p.x, prime()),
-        prime(),
-    );
-    let y3 = submod(mulmod(lam, submod(p.x, x3, prime()), prime()), p.y, prime());
+    let x3 = submod(mulmod(lam, lam, c.p), addmod(p.x, p.x, c.p), c.p);
+    let y3 = submod(mulmod(lam, submod(p.x, x3, c.p), c.p), p.y, c.p);
     Pt {
         x: x3,
         y: y3,
@@ -362,7 +498,7 @@ fn double(p: Pt) -> Pt {
     }
 }
 
-fn mul(k: Word, p: Pt) -> Pt {
+fn mul(c: &Curve, k: Word, p: Pt) -> Pt {
     let mut acc = Pt {
         x: Word::from_u64(0),
         y: Word::from_u64(0),
@@ -371,9 +507,9 @@ fn mul(k: Word, p: Pt) -> Pt {
     let mut base = p;
     for i in 0..256 {
         if k.bit(i) {
-            acc = add(acc, base);
+            acc = add(c, acc, base);
         }
-        base = double(base);
+        base = double(c, base);
     }
     acc
 }
@@ -434,11 +570,11 @@ const K: [u32; 64] = [
 ];
 
 fn prime() -> Word {
-    Word::from_hex("fffffffffffffffffffffffffffffffffffffffffffffffffffffffefffffc2f").unwrap()
+    secp256k1().p
 }
 
 fn order() -> Word {
-    Word::from_hex("fffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141").unwrap()
+    secp256k1().n
 }
 
 fn sqrt_exp() -> Word {
@@ -450,6 +586,65 @@ fn sqrt_exp() -> Word {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `mulmod` against double-and-add, for moduli of every limb count and the curves'.
+    #[test]
+    fn mulmod_matches_double_and_add() {
+        fn slow(a: Word, b: Word, m: Word) -> Word {
+            let mut result = Word::from_u64(0);
+            let mut base = a.rem(m);
+            for i in 0..256 {
+                if b.bit(i) {
+                    result = addmod(result, base, m);
+                }
+                base = addmod(base, base, m);
+            }
+            result
+        }
+        let mut x = 0x2545_f491_4f6c_dd1du64;
+        let mut next = || {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            x
+        };
+        let word = |next: &mut dyn FnMut() -> u64| {
+            Word([next(), next(), next(), next()]).shr((next() % 256) as u32)
+        };
+        let ones = Word::from_u64(0).not();
+        for _ in 0..3000 {
+            let (a, b) = (word(&mut next), word(&mut next));
+            for m in [
+                word(&mut next),
+                ones,
+                prime(),
+                order(),
+                secp256r1().p,
+                Word::from_u64(1),
+            ] {
+                if !m.is_zero() {
+                    assert_eq!(mulmod(a, b, m), slow(a, b, m), "{a:?} * {b:?} % {m:?}");
+                }
+            }
+        }
+        // A digit estimate one too high, which only the add-back step corrects.
+        let (u, m) = (
+            Word([u64::MAX - 2, 1, 0, 1]),
+            Word([u64::MAX, 0, 1 << 63, 0]),
+        );
+        for b in [Word::from_u64(1), Word([0, 1, 0, 0])] {
+            assert_eq!(mulmod(u, b, m), slow(u, b, m));
+        }
+        assert_eq!(
+            mulmod(u, Word::from_u64(1), m),
+            Word([u64::MAX - 1, 0, 1 << 63, 0])
+        );
+        assert_eq!(mulmod(ones, ones, ones), Word::from_u64(0));
+        assert_eq!(
+            mulmod(ones, ones, ones.wrapping_sub(Word::from_u64(1))),
+            Word::from_u64(1)
+        );
+    }
 
     #[test]
     fn sha256_abc() {
@@ -500,6 +695,24 @@ mod tests {
         let mut addr = [0u8; 32];
         addr[12..].copy_from_slice(&digest[12..]);
         assert_eq!(ecrecover(&input), Some(Word::from_be_bytes(addr)));
+    }
+
+    #[test]
+    fn p256_verify_matches_wycheproof() {
+        let mut input: Vec<u8> = [
+            "532eaabd9574880dbf76b9b8cc00832c20a6ec113d682299550d7a6e0f345e25",
+            "5",
+            "1",
+            "4a03ef9f92eb268cafa601072489a56380fa0dc43171d7712813b3a19a1eb5e5",
+            "3e213e28a608ce9a2f4a17fd830c6654018a79b3e0263d91a8ba90622df6f2f0",
+        ]
+        .iter()
+        .flat_map(|h| Word::from_hex(h).unwrap().to_be_bytes())
+        .collect();
+        assert!(p256_verify(&input));
+        input[63] = 6;
+        assert!(!p256_verify(&input));
+        assert!(!p256_verify(&input[..128]));
     }
 
     fn hex(bytes: &[u8]) -> String {

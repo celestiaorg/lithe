@@ -43,10 +43,24 @@ impl<'a> Gen<'a> {
             self.code.push(Inst::Op(CALLDATASIZE));
             self.op(SUB);
             self.op(CALLDATALOAD);
+        } else if let Some(w) = self.imm_const(leaf) {
+            self.push_word(w);
         } else {
             let pack = self.checked.leaf_pack[leaf as usize];
             self.code.push(Inst::Imm(k, pack.width));
         }
+    }
+
+    /// The value of an immutable leaf that `deploy` always sets to one constant, as the
+    /// runtime reads it.
+    pub(super) fn imm_const(&self, leaf: u32) -> Option<Word> {
+        if self.init || self.shape.part || !self.checked.immutable_leaf(leaf) {
+            return None;
+        }
+        let k = (leaf - self.checked.immutable_from as u32) as usize;
+        let w = (*self.imm_consts.get(k)?)?;
+        let width = self.checked.leaf_pack[leaf as usize].width;
+        Some(if width < 32 { w.bitand(byte_mask(width)) } else { w })
     }
 
     /// Pushes the address the implementation was created at.
@@ -59,6 +73,11 @@ impl<'a> Gen<'a> {
     pub(super) fn store_immutable(&mut self, leaf: u32) {
         if self.init {
             let k = leaf - self.checked.immutable_from as u32;
+            let value = match self.code.last() {
+                Some(Inst::Push(w)) if self.branch == self.top_branch && !self.shared => Some(*w),
+                _ => None,
+            };
+            self.imm_stores.insert(k, value);
             self.push_mem(self.imm_mem + k as i32 * 32);
             self.op(MSTORE);
         } else {

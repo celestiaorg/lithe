@@ -1,0 +1,29 @@
+(* Fuzz target: `Base64.decode` of arbitrary strings, bytes outside both alphabets
+   included, alone, after the escape tables are written, and beside other memory. *)
+
+import "std/base64";
+import "std/string";
+import "std/crypto";
+import "std/bytes";
+import "std/abi";
+
+storage is record {
+  last : bytes;
+  count : uint;
+}
+
+external pure function decode(const data : string) : bytes is
+  Base64.decode(data)
+
+external pure function escaped(const data : string) : bytes is {
+  const text : string := String.escape_json(data);
+} with Bytes.concat(bytes(text), Base64.decode(data))
+
+external function keep(const data : string; const salt : bytes32) is {
+  const hash : bytes32 := Crypto.keccak256(Abi.encode(salt, storage.count));
+  storage.last := Base64.decode(Bytes.concat(bytes(data), bytes(Base64.encode(Bytes.concat(hash)))));
+  storage.count := storage.count + 1;
+}
+
+external view function last() : bytes is
+  storage.last

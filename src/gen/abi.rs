@@ -48,6 +48,40 @@ impl<'a> Gen<'a> {
         self.encode_parts(&parts, prefix, &[])
     }
 
+    /// `[len, data]` of an encoding a call sends as it is, with no `bytes` value made of
+    /// it. False, with nothing done, for any other data.
+    pub(super) fn abi_encode_span(&mut self, e: &Expr) -> Result<bool, Error> {
+        let Expr::Call {
+            builtin: Some(b),
+            args,
+            ..
+        } = e
+        else {
+            return Ok(false);
+        };
+        let (args, selector) = match b {
+            Builtin::AbiEncode => (&args[..], None),
+            Builtin::AbiEncodeSelector | Builtin::AbiEncodeCall => (&args[1..], Some(&args[0])),
+            _ => return Ok(false),
+        };
+        if args.is_empty() {
+            return Ok(false);
+        }
+        let call = *b == Builtin::AbiEncodeCall;
+        self.encode_values(args, call, if selector.is_some() { 4 } else { 0 })?;
+        self.mload(self.scratch_a);
+        if let Some(sel) = selector {
+            self.compile_value(sel)?;
+            self.put_selector();
+        }
+        self.op(DUP1);
+        self.op(MLOAD);
+        self.op(SWAP1);
+        self.push_u64(32);
+        self.op(ADD);
+        Ok(true)
+    }
+
     /// ABI-encodes values already held in memory words into a blob at `scratch_a`, `prefix`
     /// bytes into its data: the head, then each string, bytes, or list after it.
     /// A part `cd` marks is a list of words still in calldata, already laid out as in the ABI.
@@ -464,11 +498,60 @@ impl<'a> Gen<'a> {
         Ok(())
     }
 
+    /// Whether every value `x` can have is one of `ty`'s, an unsigned integer's or a
+    /// variant's with no payloads, so its word needs no check.
+    fn fits(&self, x: &Expr, ty: usize) -> bool {
+        let xt = &self.checked.types[self.peel_nominal(x.ty())];
+        if !matches!(xt.kind, TyKind::Uint | TyKind::Bool) && self.enum_cases(x.ty()).is_none() {
+            return false;
+        }
+        let most = match self.enum_cases(ty) {
+            Some(cases) => Word::from_u64(cases as u64 - 1),
+            None => {
+                let t = &self.checked.types[self.peel_nominal(ty)];
+                match t.kind {
+                    TyKind::Uint if t.bits == 0 || t.bits == 256 => return true,
+                    TyKind::Uint => Word::from_u64(0).not().shr(256 - u32::from(t.bits)),
+                    TyKind::Bool => Word::from_u64(1),
+                    _ => return false,
+                }
+            }
+        };
+        !most.lt(self.range_of(x).1)
+    }
+
     pub(super) fn compile_abi_decode(&mut self, data: &Expr, ty: usize) -> Result<(), Error> {
         let in_calldata =
             matches!(data, Expr::Ident { sym: Some(sym), .. } if self.cd_bytes.contains(sym));
         let word = self.peel_nominal(ty);
         if !in_calldata && !self.list_value(ty) && !self.is_dynamic(word) {
+            // `Abi.decode(Abi.encode(x), T)` for a one-word `x` reads `x`'s ABI word directly.
+            if let Expr::Call {
+                builtin: Some(Builtin::AbiEncode),
+                args,
+                ..
+            } = data
+            {
+                if let [x] = args.as_slice() {
+                    let xt = x.ty();
+                    if !self.tree_part(xt)
+                        && !self.list_value(xt)
+                        && !self.is_dynamic(self.peel_nominal(xt))
+                    {
+                        self.compile_value(x)?;
+                        let shift = self.abi_shift(xt);
+                        if shift > 0 {
+                            self.push_u64(u64::from(shift));
+                            self.op(SHL);
+                        }
+                        if shift > 0 || !self.fits(x, ty) {
+                            self.check_word(ty, &|g: &mut Self| g.op(DUP1))?;
+                        }
+                        self.align_decoded(word);
+                        return Ok(());
+                    }
+                }
+            }
             // [len, data]: data shorter than a word reverts, as in Solidity.
             self.compile_value(data)?;
             self.bytes_span();

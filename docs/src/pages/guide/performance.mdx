@@ -45,6 +45,7 @@ The benchmark contracts are real programs, not microbenchmarks:
 - **erc20**: OpenZeppelin's wizard token, burnable, pausable, and ownable, on the upgradeable contracts deployed without a proxy
 - **erc20_full**: the wizard token with every common add-on: roles for minting and pausing, a cap, permits, votes with delegation and a checkpointed history, and flash loans through a borrower contract
 - **erc721**: OpenZeppelin's wizard NFT with the same extensions, plus `safeTransferFrom` against a receiver contract
+- **erc6909**: OpenZeppelin's `ERC6909` with its token supply, metadata, and content URI extensions, built from the standard library's modules, whose storage sits at their own ERC-7201 roots, so its slots are left out like Solady's
 - **staking**: Synthetix's `StakingRewards` on OpenZeppelin's `Ownable` and `Initializable`
 - **uniswap_v2_factory** and **uniswap_v2_pair**: Uniswap v2-core, ported to Solidity 0.8, with the factory creating each pair with `CREATE2`. A pair lands at a different address in each build, so the comparison names it by role, and swaps both ways, liquidity, the protocol fee, and a signed permit replay on each
 - **executor** and **exchange**: calls whose results feed continuations
@@ -63,6 +64,6 @@ python3 bench/run.py            # every contract
 python3 bench/run.py erc20      # one contract
 ```
 
-The Lithe and Solidity sources are side by side in `bench/`: `erc20.lithe` next to `erc20.sol`, and so on. A contract answers ERC-165 only where it implements it, in both languages: `erc721`, `erc1155`, and `erc20_full` list their standards in `supports`, and `erc721_full` writes its own `supportsInterface` to add ERC-4906.
+The Lithe and Solidity sources are side by side in `bench/`: `erc20.lithe` next to `erc20.sol`, and so on. A contract answers ERC-165 only where it implements it, in both languages: `erc721`, `erc1155`, `erc6909`, and `erc20_full` list their standards in `supports`, and `erc721_full` writes its own `supportsInterface` to add ERC-4906.
 
 These numbers come from the compiler version this site was built with. Rerun the benchmark for current figures.

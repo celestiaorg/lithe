@@ -59,7 +59,7 @@ impl<'a> Gen<'a> {
                 .and_then(|()| {
                     self.op(ISZERO);
                     self.revert_if_true()?;
-                    self.returned_option_word(ty)
+                    self.returned_option_word(ty, base)
                 })
         } else {
             self.static_call(base, sel, args)
@@ -81,9 +81,10 @@ impl<'a> Gen<'a> {
         Ok(())
     }
 
-    /// The one-word option a query answered, from its first word at `ret_scratch`: `None`
-    /// when it returned no data, and otherwise `Some` of the word, checked as the payload.
-    fn returned_option_word(&mut self, oty: usize) -> Result<(), Error> {
+    /// The one-word option a query of `base` answered, from its first word at `ret_scratch`:
+    /// `None` when it returned no data from an account with code, and otherwise `Some` of
+    /// the word, checked as the payload.
+    fn returned_option_word(&mut self, oty: usize, base: &Expr) -> Result<(), Error> {
         let elem = self.checked.types[oty].elem.unwrap_or(0);
         let Some(flip) = self.flip(oty) else {
             return Err(error(0, 0, "internal: a query's option takes one word"));
@@ -105,6 +106,10 @@ impl<'a> Gen<'a> {
         self.push_label(done);
         self.op(JUMP);
         self.jumpdest(none);
+        self.compile_value(base)?;
+        self.op(EXTCODESIZE);
+        self.op(ISZERO);
+        self.revert_if_true()?;
         self.op(PUSH0);
         self.jumpdest(done);
         Ok(())
@@ -113,10 +118,25 @@ impl<'a> Gen<'a> {
     /// `STATICCALL`s `to` with the `bytes` value `data` as its whole calldata, keeping none
     /// of the answer. Leaves whether the call succeeded.
     fn raw_static_call(&mut self, to: &Expr, data: &Expr) -> Result<(), Error> {
-        self.op(PUSH0);
-        self.op(PUSH0);
-        self.compile_value(data)?;
-        self.bytes_span();
+        self.raw_static_call_into(to, data, false)
+    }
+
+    /// `raw_static_call`, writing the answer's first word to `ret_scratch` when `first`.
+    fn raw_static_call_into(&mut self, to: &Expr, data: &Expr, first: bool) -> Result<(), Error> {
+        if first {
+            self.push_u64(32);
+            self.push_mem(self.ret_scratch);
+        } else {
+            self.op(PUSH0);
+            self.op(PUSH0);
+        }
+        if !self.abi_encode_span(data)? && !self.static_bytes(data, None)? {
+            self.span_of(data)?;
+        }
+        if first {
+            self.op(PUSH0);
+            self.mstore_off(self.ret_scratch);
+        }
         self.compile_value(to)?;
         self.query_gas()?;
         self.op(STATICCALL);
@@ -158,8 +178,13 @@ impl<'a> Gen<'a> {
         };
         let failed_l = self.fresh();
         let end = self.fresh();
+        // An answer only measured and cut to its first word is never copied: the call
+        // writes that word over a zeroed scratch word, and the length is the return data's.
+        let first = ok
+            .bind_sym
+            .filter(|&sym| ok.stmts.is_empty() && self.first_word_only(&ok.expr, sym));
         self.in_query = true;
-        let called = self.raw_static_call(&args[0], &args[1]);
+        let called = self.raw_static_call_into(&args[0], &args[1], first.is_some());
         self.in_query = false;
         called?;
         self.op(ISZERO);
@@ -170,11 +195,18 @@ impl<'a> Gen<'a> {
             if let Some(at) = at {
                 self.jumpdest(at);
             }
-            if let Some(sym) = arm.bind_sym {
-                self.revert_data(sym)?;
+            match arm.bind_sym {
+                Some(sym) if at.is_none() && first.is_some() => {
+                    self.rd_first.insert(sym);
+                }
+                Some(sym) => self.revert_data(sym)?,
+                None => {}
             }
             self.compile_stmts(&arm.stmts)?;
             self.arm_result(&arm.expr, sink)?;
+            if let Some(sym) = first.filter(|_| at.is_none()) {
+                self.rd_first.remove(&sym);
+            }
             if at.is_none() {
                 self.push_label(end);
                 self.op(JUMP);
@@ -268,7 +300,7 @@ impl<'a> Gen<'a> {
         self.op(JUMPI);
         let optional = self.checked.types[ty].kind == TyKind::Option;
         if optional {
-            self.returned_option_word(ty)?;
+            self.returned_option_word(ty, base)?;
         } else {
             self.push_u64(32);
             self.op(RETURNDATASIZE);
@@ -375,9 +407,11 @@ impl<'a> Gen<'a> {
                     needs_code: false,
                     unread: 0,
                     raw: None,
+                    cd_data: false,
                     then: then.cloned(),
                     record: (0, 0),
                     captures: self.loop_captures(then),
+                    locals: Vec::new(),
                 })
             }
             Expr::Call {
@@ -411,10 +445,19 @@ impl<'a> Gen<'a> {
                     needs_code: false,
                     unread: 0,
                     raw: None,
+                    cd_data: false,
                     then: then.cloned(),
                     record: (0, 0),
                     captures: self.loop_captures(then),
+                    locals: Vec::new(),
                 })
+            }
+            Expr::Call {
+                builtin: Some(kind @ (Builtin::RawCall | Builtin::DelegateCall)),
+                args,
+                ..
+            } if *kind == Builtin::RawCall && self.calls_now(args, value, gas) => {
+                self.call_now(&args[0], Some(&args[1]), value, gas, then)
             }
             Expr::Call {
                 builtin: Some(kind @ (Builtin::RawCall | Builtin::DelegateCall)),
@@ -426,7 +469,17 @@ impl<'a> Gen<'a> {
                 let to = self.arena_alloc(2);
                 self.compile_value(&args[0])?;
                 self.mstore_off(to);
-                self.compile_value(&args[1])?;
+                // Checked calldata bytes are copied only when the call runs.
+                let cd_data = match self.cd_field(&args[1]) {
+                    Some((x, off, ty)) if self.is_dynamic(self.peel_nominal(ty)) => {
+                        self.cd_field_pos(x, off);
+                        true
+                    }
+                    _ => {
+                        self.compile_value(&args[1])?;
+                        false
+                    }
+                };
                 self.mstore_off(to + 32);
                 let value_at = self.capture_value(value)?;
                 let gas = self.arena_word(gas)?;
@@ -445,9 +498,11 @@ impl<'a> Gen<'a> {
                     needs_code: delegate,
                     unread: 0,
                     raw: Some(if delegate { DELEGATECALL } else { CALL }),
+                    cd_data,
                     then: then.cloned(),
                     record: (0, 0),
                     captures: self.loop_captures(then),
+                    locals: Vec::new(),
                 })
             }
             Expr::Call {
@@ -461,6 +516,9 @@ impl<'a> Gen<'a> {
                         args[0].col(),
                         "transfer already sets its value",
                     ));
+                }
+                if self.calls_now(args, None, gas) {
+                    return self.call_now(&args[0], None, Some(&args[1]), gas, then);
                 }
                 let to = self.arena_alloc(2);
                 self.compile_value(&args[0])?;
@@ -480,9 +538,11 @@ impl<'a> Gen<'a> {
                     needs_code: false,
                     unread: 0,
                     raw: None,
+                    cd_data: false,
                     then: then.cloned(),
                     record: (0, 0),
                     captures: self.loop_captures(then),
+                    locals: Vec::new(),
                 })
             }
             Expr::Call {
@@ -494,9 +554,15 @@ impl<'a> Gen<'a> {
             } => {
                 let sig = self.checked.ifaces[iface][*method].sig.clone();
                 let sel = selector(&sig);
-                let to = self.arena_alloc(1);
-                self.compile_value(base)?;
-                self.mstore_off(to);
+                let to = match self.settled_word(base) {
+                    Some(at) => at,
+                    None => {
+                        let to = self.arena_alloc(1);
+                        self.compile_value(base)?;
+                        self.mstore_off(to);
+                        to
+                    }
+                };
                 let value_at = self.capture_value(value)?;
                 let gas = self.arena_word(gas)?;
                 let dynamic = args.iter().any(|a| {
@@ -526,13 +592,14 @@ impl<'a> Gen<'a> {
                     dynamic,
                     create: None,
                     fired: None,
-                    needs_code: self.checked.types[self.checked.ifaces[iface][*method].ret].kind
-                        == TyKind::Unit,
+                    needs_code: self.needs_code(self.checked.ifaces[iface][*method].ret, then),
                     unread: self.unread_result(self.checked.ifaces[iface][*method].ret, then),
                     raw: None,
+                    cd_data: false,
                     then: then.cloned(),
                     record: (0, 0),
                     captures: self.loop_captures(then),
+                    locals: Vec::new(),
                 })
             }
             Expr::Call {
@@ -555,6 +622,126 @@ impl<'a> Gen<'a> {
                 "defer expects an operation",
             )),
         }
+    }
+
+    /// Whether a raw call or transfer runs where it stands with operands that can neither
+    /// fail nor see a change, so that the order they are computed in does not matter.
+    fn calls_now(&mut self, args: &[Expr], value: Option<&Expr>, gas: Option<&Expr>) -> bool {
+        let inert = args.iter().chain(value).chain(gas).all(|e| self.inert(e));
+        if self.fire_loop {
+            return true;
+        }
+        let now = self.fire_tail && inert && self.fires_now();
+        if now {
+            self.fire_tail = false;
+        }
+        now
+    }
+
+    /// `[pos]`, the calldata position of checked `bytes`, becomes `[len, top, 0, 0, len,
+    /// top]`: the bytes copied to the heap's top, unallocated, then a call's return and
+    /// input words. Nothing may allocate before the call, and `cd_scratch_clear` after it
+    /// zeroes them again, as memory past the top must be.
+    fn cd_scratch_span(&mut self) {
+        self.op(DUP1);
+        self.cd_load();
+        self.mload(self.blob_ptr);
+        self.push_mem(self.blob_base);
+        self.op(ADD);
+        // [pos, len, top]
+        self.op(DUP1 + 1);
+        self.op(DUP1 + 3);
+        self.push_u64(32);
+        self.op(ADD);
+        self.op(DUP1 + 2);
+        self.cd_copy();
+        self.op(SWAP1);
+        self.op(SWAP1 + 1);
+        self.op(POP);
+        self.op(PUSH0);
+        self.op(PUSH0);
+        self.op(DUP1 + 3);
+        self.op(DUP1 + 3);
+    }
+
+    /// `[len, top, ok]` becomes `[ok]`, the bytes `cd_scratch_span` copied zeroed: copying
+    /// from past the calldata's end writes zeros.
+    fn cd_scratch_clear(&mut self) {
+        self.op(SWAP1 + 1);
+        self.op(SWAP1);
+        self.op(CALLDATASIZE);
+        self.op(SWAP1);
+        self.op(CALLDATACOPY);
+    }
+
+    /// A raw call or transfer that runs where it stands, its operands pushed as `CALL`
+    /// takes them.
+    fn call_now(
+        &mut self,
+        to: &Expr,
+        data: Option<&Expr>,
+        value: Option<&Expr>,
+        gas: Option<&Expr>,
+        then: Option<&Then>,
+    ) -> Result<(), Error> {
+        // Calldata bytes kept in place go to the heap's top unallocated, when nothing
+        // computed before the call allocates, and are zeroed after it, as memory past
+        // the top must be. `[len, top]` stays under the call for that.
+        let word = |g: &Self, e: &Expr| g.inert(e) && g.is_word_ty(g.peel_nominal(e.ty()));
+        let scratch = data
+            .and_then(|d| self.cd_field(d))
+            .filter(|&(_, _, ty)| self.is_dynamic(self.peel_nominal(ty)))
+            .filter(|_| word(self, to) && value.into_iter().chain(gas).all(|e| word(self, e)));
+        if let Some((x, off, _)) = scratch {
+            self.cd_field_pos(x, off);
+            self.cd_scratch_span();
+        } else {
+            self.op(PUSH0);
+            self.op(PUSH0);
+        }
+        match data {
+            _ if scratch.is_some() => {}
+            Some(data) => self.span_of(data)?,
+            None => {
+                self.op(PUSH0);
+                self.op(PUSH0);
+            }
+        }
+        match value {
+            Some(v) if !self.const_word(v).is_some_and(|w| w.is_zero()) => self.compile_value(v)?,
+            _ => self.op(PUSH0),
+        }
+        self.compile_value(to)?;
+        match gas {
+            Some(g) => self.compile_value(g)?,
+            None => self.op(GAS),
+        }
+        self.op(CALL);
+        if scratch.is_some() {
+            self.cd_scratch_clear();
+        }
+        let op = OpSite {
+            to: 0,
+            value: None,
+            gas: None,
+            data: None,
+            size: 0,
+            dynamic: false,
+            create: None,
+            fired: None,
+            needs_code: false,
+            unread: 0,
+            raw: data.map(|_| CALL),
+            cd_data: false,
+            then: then.cloned(),
+            record: (0, 0),
+            captures: Vec::new(),
+            locals: Vec::new(),
+        };
+        let skip = self.fresh();
+        self.after_call(&op, skip)?;
+        self.jumpdest(skip);
+        Ok(())
     }
 
     /// A `with` option's word, kept in the arena until the call runs.
@@ -932,7 +1119,29 @@ impl<'a> Gen<'a> {
     /// its calls, in which case each `defer` appends a node: `[next, site, words...]`,
     /// holding the site's captured arena words and the loop locals its continuation reads.
     fn push_op(&mut self, mut site: OpSite) -> Result<(), Error> {
-        let queued = self.body.as_ref().is_some_and(|b| b.queued);
+        let queued = !self.fire_loop && self.body.as_ref().is_some_and(|b| b.queued);
+        if let Some(then) = &site.then {
+            let mut read = Vec::new();
+            for arm in then.arms() {
+                for s in &arm.stmts {
+                    self.stmt_syms(s, &mut read);
+                }
+            }
+            read.sort_unstable();
+            read.dedup();
+            site.locals = read
+                .into_iter()
+                .filter(|s| self.inst_syms.contains(s))
+                .map(|s| (s, self.local[s]))
+                .collect();
+            if queued {
+                for &(sym, at) in &site.locals {
+                    if !site.captures.iter().any(|c| c.0 == at) {
+                        site.captures.push((at, self.sym_words(sym)));
+                    }
+                }
+            }
+        }
         if queued {
             let body = self.body.as_ref().expect("body");
             let end = body.arena + body.arena_next;
@@ -1009,13 +1218,8 @@ impl<'a> Gen<'a> {
         }
         // The last thing a body runs, with nothing captured before it and storage already
         // written in place, runs where it stands: no one can tell it from the epilogue's.
-        let fire = std::mem::take(&mut self.fire_tail)
-            && self.direct
-            && !self.any_nonreentrant
-            && self.body.as_ref().is_some_and(|b| {
-                b.ops.is_empty() && !b.nested && b.writes.is_empty() && !b.journal_stores
-            });
-        if fire {
+        let tail = std::mem::take(&mut self.fire_tail);
+        if self.fire_loop || (tail && self.fires_now()) {
             let skip = self.fresh();
             self.replay_op(&site, skip)?;
             self.jumpdest(skip);
@@ -1040,6 +1244,160 @@ impl<'a> Gen<'a> {
         Ok(())
     }
 
+    /// Whether a call made now runs as it would at the end of the transition: nothing
+    /// was captured before it, storage is already written in place, and no lock window
+    /// needs to open around it.
+    pub(super) fn fires_now(&self) -> bool {
+        self.direct
+            && !self.shared
+            && !self.any_nonreentrant
+            && self.body.as_ref().is_some_and(|b| {
+                b.ops.is_empty() && !b.nested && b.writes.is_empty() && !b.journal_stores
+            })
+    }
+
+    /// Whether a loop that ends its body can run its `defer`s where they stand. Between
+    /// one call and the next the loop may only compute from memory: no storage, no
+    /// events, no queries, nothing a call could change, and nothing that can fail, since
+    /// a failure after an early call would come after calls the queue never made.
+    pub(super) fn fires_loop(&self, body: &[Stmt], until: Option<&Expr>) -> bool {
+        let mut calls = 0;
+        body.iter().all(|s| self.inert_stmt(s, &mut calls))
+            && until.is_none_or(|c| self.inert(c))
+            && calls > 0
+            && self.fires_now()
+    }
+
+    fn inert_stmt(&self, s: &Stmt, calls: &mut usize) -> bool {
+        match s {
+            Stmt::Skip => true,
+            Stmt::Const { expr, .. } | Stmt::Var { expr, .. } => self.inert(expr),
+            Stmt::Assign {
+                root: Some(root),
+                index: None,
+                keys,
+                fields,
+                target: None,
+                expr,
+                ..
+            } => {
+                !self.checked.syms[*root].storage
+                    && keys.is_empty()
+                    && fields.is_empty()
+                    && self.inert(expr)
+            }
+            Stmt::If {
+                cond,
+                then_body,
+                else_body,
+                ..
+            } => {
+                self.inert(cond)
+                    && then_body
+                        .iter()
+                        .chain(else_body)
+                        .all(|s| self.inert_stmt(s, calls))
+            }
+            Stmt::Defer {
+                expr:
+                    Expr::Call {
+                        args,
+                        base,
+                        builtin,
+                        iface,
+                        ..
+                    },
+                value,
+                gas,
+                ..
+            } => {
+                let call = match builtin {
+                    Some(Builtin::RawCall | Builtin::DelegateCall | Builtin::Transfer) => true,
+                    None => iface.is_some() && base.as_deref().is_some_and(|b| self.inert(b)),
+                    _ => false,
+                };
+                *calls += 1;
+                call && args.iter().chain(value).chain(gas).all(|e| self.inert(e))
+            }
+            _ => false,
+        }
+    }
+
+    /// An expression that reads only memory and fixed context, and cannot fail.
+    pub(super) fn inert(&self, e: &Expr) -> bool {
+        let fixed = |b: &Option<Builtin>| {
+            matches!(
+                b,
+                Some(
+                    Builtin::Sender
+                        | Builtin::Value
+                        | Builtin::Selector
+                        | Builtin::TxOrigin
+                        | Builtin::ChainId
+                        | Builtin::SelfAddr
+                        | Builtin::Some
+                        | Builtin::None
+                        | Builtin::Ctor(_)
+                )
+            )
+        };
+        match e {
+            Expr::Lit { .. } => true,
+            Expr::Ident { sym: Some(s), .. } => !self.checked.syms[*s].storage,
+            Expr::Ident { builtin, .. } => fixed(builtin),
+            Expr::Field { base, root, .. } => {
+                root.is_none_or(|r| !self.checked.syms[r].storage) && self.inert(base)
+            }
+            Expr::Call {
+                builtin: Some(Builtin::Cast),
+                args,
+                ty,
+                ..
+            } => {
+                let dst = &self.checked.types[self.peel_nominal(*ty)];
+                let widens = args.first().is_some_and(|a| {
+                    self.checked.types[self.peel_nominal(a.ty())].kind != TyKind::Int
+                }) && matches!(dst.bits, 0 | 256)
+                    && dst.kind != TyKind::Int;
+                let numeric = matches!(
+                    dst.kind,
+                    TyKind::Uint | TyKind::Int | TyKind::Wei | TyKind::Timestamp
+                );
+                (widens || !numeric) && args.iter().all(|a| self.inert(a))
+            }
+            Expr::Call { builtin, args, .. } => fixed(builtin) && args.iter().all(|a| self.inert(a)),
+            Expr::Unary { op, expr, .. } => *op != UnOp::Neg && self.inert(expr),
+            Expr::Binary {
+                op, left, right, ..
+            } => {
+                (op.is_cmp()
+                    || matches!(
+                        op,
+                        BinOp::And
+                            | BinOp::Or
+                            | BinOp::BitAnd
+                            | BinOp::BitOr
+                            | BinOp::BitXor
+                            | BinOp::Shl
+                            | BinOp::Shr
+                    ))
+                    && self.inert(left)
+                    && self.inert(right)
+            }
+            Expr::Case { scrut, arms, .. } => {
+                self.inert(scrut)
+                    && arms.iter().all(|a| {
+                        a.stmts.is_empty() && self.inert(&a.expr)
+                    })
+            }
+            Expr::Tuple { elems, .. } | Expr::List { elems, .. } => {
+                elems.iter().all(|x| self.inert(x))
+            }
+            Expr::Record { fields, .. } => fields.iter().all(|(_, x)| self.inert(x)),
+            _ => false,
+        }
+    }
+
     /// A body whose loops defer keeps its calls in a runtime list. Decided before the
     /// body compiles, so every `defer` in it takes the queued form.
     pub(super) fn begin_queue(&mut self, stmts: &[Stmt], tail: Option<&Expr>) {
@@ -1051,12 +1409,15 @@ impl<'a> Gen<'a> {
         // word the next node is linked into: the head word itself at first, then the
         // newest node's `next`.
         self.note_mem(queue);
+        let at = self.code.len();
         self.push_mem(queue);
         self.mstore_off(queue + 32);
+        let len = self.code.len() - at;
         self.note_mem(queue + 64);
         let body = self.body_mut().expect("body");
         body.queued = true;
         body.queue = queue;
+        body.queue_init = (at, len);
     }
 
     /// Runs every captured call in the order it was deferred. A failed call reverts.
@@ -1065,7 +1426,7 @@ impl<'a> Gen<'a> {
             return Ok(());
         };
         let ops = std::mem::take(&mut body.ops);
-        if body.queued {
+        if body.queued && !ops.is_empty() {
             let queue = body.queue;
             let cursor = queue + 64;
             let top = self.fresh();
@@ -1151,6 +1512,43 @@ impl<'a> Gen<'a> {
         Ok(())
     }
 
+    /// The word of an entrypoint's static parameter that `e` is, through conversions
+    /// between addresses and interfaces, which change nothing: calldata stays put until a
+    /// call runs. A queue copies what it keeps, so its calls get words of their own.
+    fn settled_word(&self, e: &Expr) -> Option<i32> {
+        if self.body.as_ref().is_none_or(|b| b.queued) {
+            return None;
+        }
+        let address = |ty: usize| {
+            let t = &self.checked.types[self.peel_nominal(ty)];
+            matches!(t.kind, TyKind::Address | TyKind::Interface)
+        };
+        match e {
+            Expr::Call {
+                builtin: Some(Builtin::Cast),
+                args,
+                ty,
+                ..
+            } if args.len() == 1 && address(*ty) && address(args[0].ty()) => self.settled_word(&args[0]),
+            Expr::Ident {
+                sym: Some(sym),
+                builtin: None,
+                ..
+            } if !self.checked.syms[*sym].mutable && self.cd_word(self.local[*sym]) => Some(self.local[*sym]),
+            _ => None,
+        }
+    }
+
+    /// Whether a call's account must have code before the call: when it has no result, or
+    /// an optional one nothing decodes, since nothing would check the return data after.
+    fn needs_code(&self, ret: usize, then: Option<&Then>) -> bool {
+        match self.checked.types[ret].kind {
+            TyKind::Unit => true,
+            TyKind::Option => then.is_none_or(|then| then.names.is_empty()),
+            _ => false,
+        }
+    }
+
     /// The return data a call's result needs when nothing decodes it: its head, so that
     /// a call to an account without code fails, as Solidity's does. None when the
     /// result is optional, decoded, or nothing.
@@ -1168,6 +1566,19 @@ impl<'a> Gen<'a> {
     /// One captured call: the call itself, then its continuation. `skip` is where the
     /// code after the call continues.
     fn replay_op(&mut self, op: &OpSite, skip: u32) -> Result<(), Error> {
+        let saved: Vec<(usize, i32)> = op
+            .locals
+            .iter()
+            .map(|&(sym, at)| (sym, std::mem::replace(&mut self.local[sym], at)))
+            .collect();
+        let result = self.replay_call(op, skip);
+        for (sym, at) in saved.into_iter().rev() {
+            self.local[sym] = at;
+        }
+        result
+    }
+
+    fn replay_call(&mut self, op: &OpSite, skip: u32) -> Result<(), Error> {
         if let Some((marker, len, salt, args)) = op.create {
             match op.data {
                 Some(code) => {
@@ -1192,9 +1603,26 @@ impl<'a> Gen<'a> {
             self.op(ISZERO);
             self.revert_if_true()?;
         }
-        self.op(PUSH0);
-        self.op(PUSH0);
+        // A result of fixed words is written by the call into the buffer that decodes it.
+        match self.fixed_result(op) {
+            _ if op.cd_data => {}
+            Some(words) => {
+                self.return_sites += 1;
+                let buf = self.region(Region::Returned(self.return_sites), words * 32);
+                self.push_u64(u64::from(words) * 32);
+                self.push_mem(buf);
+                self.ret_out = Some(buf);
+            }
+            None => {
+                self.op(PUSH0);
+                self.op(PUSH0);
+            }
+        }
         match op.data {
+            Some(slot) if op.cd_data => {
+                self.mload(slot);
+                self.cd_scratch_span();
+            }
             Some(slot) if op.raw.is_some() => {
                 self.mload(slot);
                 self.bytes_span();
@@ -1228,6 +1656,17 @@ impl<'a> Gen<'a> {
             None => self.op(GAS),
         }
         self.op(opcode);
+        if op.cd_data {
+            self.cd_scratch_clear();
+        }
+        self.after_call(op, skip)
+    }
+
+    /// `[success]` after a call: its `Error` phase or a revert on failure, the checks on
+    /// its return data, then its continuation. `skip` is where the code after continues.
+    fn after_call(&mut self, op: &OpSite, skip: u32) -> Result<(), Error> {
+        let out = self.ret_out.take();
+        let mut share = None;
         match op.then.as_ref().and_then(|then| then.error.as_deref()) {
             // A recoverable call's failure runs its `Error` phase on the revert data.
             Some(failed) => {
@@ -1243,6 +1682,12 @@ impl<'a> Gen<'a> {
                     (Some(_), Some(sym)) => self.returned = Some(sym),
                     (Some(&sym), None) => self.revert_data(sym)?,
                     _ => {}
+                }
+                let key = self.shape(&failed.stmts);
+                if op.then.as_ref().is_some_and(|then| self.ends_like(&then.stmts, &key)) {
+                    let start = self.fresh();
+                    self.jumpdest(start);
+                    share = Some((key, start));
                 }
                 let phase = self.run_phase(failed);
                 self.returned = None;
@@ -1264,12 +1709,129 @@ impl<'a> Gen<'a> {
         }
         if let Some(then) = &op.then {
             if op.raw.is_some() {
+                self.next_share = share;
                 return self.raw_phase(then);
             }
-            self.decode_returned(then)?;
+            self.decode_returned(then, op.to, out)?;
+            self.next_share = share;
             self.run_phase(then)?;
         }
         Ok(())
+    }
+
+    /// Statements as their code depends on them: without source positions, and with the
+    /// names they declare numbered in order, so two copies of the same code match.
+    pub(super) fn shape(&self, stmts: &[Stmt]) -> String {
+        let declared = std::cell::RefCell::new(std::collections::HashSet::<usize>::new());
+        let note = |node: Node<'_>| {
+            let mut d = declared.borrow_mut();
+            match node {
+                Node::Stmt(Stmt::Const { sym, part_syms, .. }) => {
+                    d.extend(sym.iter().chain(part_syms));
+                }
+                Node::Stmt(Stmt::Var { sym, .. }) => d.extend(sym.iter()),
+                Node::Stmt(Stmt::For {
+                    counter,
+                    elem,
+                    limit,
+                    list,
+                    declared,
+                    ..
+                }) => {
+                    d.extend(counter.iter().chain(elem).chain(limit).chain(list).chain(declared));
+                }
+                Node::Stmt(Stmt::Defer {
+                    then: Some(then), ..
+                }) => d.extend(then.arms().flat_map(|arm| &arm.syms)),
+                Node::Expr(Expr::Case { arms, .. }) => {
+                    d.extend(arms.iter().flat_map(|a| a.bind_sym.iter().chain(&a.tuple_syms)));
+                }
+                _ => {}
+            }
+            false
+        };
+        for st in stmts {
+            self.stmt_any(st, &note, &mut Vec::new());
+        }
+        let declared = declared.into_inner();
+        let raw = format!("{stmts:?}");
+        let mut out = String::with_capacity(raw.len());
+        let mut names: HashMap<usize, usize> = HashMap::new();
+        let mut in_list = false;
+        let bytes = raw.as_bytes();
+        let mut i = 0;
+        while i < bytes.len() {
+            if raw[i..].starts_with("line: ") {
+                // `line: N, col: M, `
+                let end = raw[i..].find("col: ").map(|at| i + at + 5).unwrap_or(i);
+                let mut j = end;
+                while j < bytes.len() && bytes[j].is_ascii_digit() {
+                    j += 1;
+                }
+                i = if raw[j..].starts_with(", ") { j + 2 } else { j };
+                continue;
+            }
+            if bytes[i].is_ascii_digit() {
+                let mut j = i;
+                while j < bytes.len() && bytes[j].is_ascii_digit() {
+                    j += 1;
+                }
+                let n: usize = raw[i..j].parse().unwrap_or(usize::MAX);
+                let named = in_list
+                    || ["sym: Some(", "root: Some(", "counter: Some(", "elem: Some(", "limit: Some(", "list: Some("]
+                        .iter()
+                        .any(|k| out.ends_with(k));
+                if named && declared.contains(&n) {
+                    let next = names.len();
+                    out.push_str(&format!("#{}", names.entry(n).or_insert(next)));
+                } else {
+                    out.push_str(&raw[i..j]);
+                }
+                i = j;
+                continue;
+            }
+            let c = bytes[i] as char;
+            out.push(c);
+            if c == '[' {
+                in_list = out.ends_with("syms: [") || out.ends_with("declared: [");
+            } else if c == ']' {
+                in_list = false;
+            }
+            i += 1;
+        }
+        out
+    }
+
+    /// Whether some tail of `stmts`, the last statements that run, has shape `key`.
+    fn ends_like(&self, stmts: &[Stmt], key: &str) -> bool {
+        (0..stmts.len()).any(|i| self.shape(&stmts[i..]) == key)
+            || match stmts.last() {
+                Some(Stmt::If {
+                    then_body,
+                    else_body,
+                    ..
+                }) => self.ends_like(then_body, key) || self.ends_like(else_body, key),
+                _ => false,
+            }
+    }
+
+    /// At a tail of the `Ok` phase shaped as its `Error` phase, with nothing of this phase
+    /// left to run after, jumps to that phase: the rest runs as a phase of its own would.
+    pub(super) fn share_tail(&mut self, stmts: &[Stmt]) -> bool {
+        let Some((key, label, depth)) = &self.share else {
+            return false;
+        };
+        let clean = self.compiling.len() == *depth
+            && self.body.as_ref().is_some_and(|b| {
+                b.ops.is_empty() && b.writes.is_empty() && !b.journal_stores
+            });
+        if !clean || stmts.iter().all(|s| matches!(s, Stmt::Skip)) || self.shape(stmts) != *key {
+            return false;
+        }
+        let label = *label;
+        self.push_label(label);
+        self.op(JUMP);
+        true
     }
 
     /// A raw call's continuation: its result is the return data, whole.
@@ -1470,7 +2032,7 @@ impl<'a> Gen<'a> {
         }
         let byte_gas = asm::GAS_PER_BYTE + asm::DEPOSIT_GAS / asm::CREATED_RUNS;
         let built = asm::with_byte_gas(byte_gas, || {
-            crate::split::build(&crate::check::check(unit)?, name, &self.shape.opts)
+            crate::split::build(&crate::check::check(unit, self.shape.opts.evm)?, name, &self.shape.opts)
         })?;
         Ok((built.creation.clone(), built.prerequisites()))
     }
@@ -1537,6 +2099,31 @@ impl<'a> Gen<'a> {
     }
 
     /// Binds the last call's raw revert data to `sym` as `bytes`, through one shared helper.
+    /// Whether `e` reads the answer `sym` only as `sym.length` and `bytes32(sym)`, and
+    /// makes no call that would replace the return data first.
+    fn fixed_bytes(&self, ty: usize) -> bool {
+        let t = &self.checked.types[self.peel_nominal(ty)];
+        t.kind == TyKind::Bytes && t.bits > 0
+    }
+
+    fn first_word_only(&self, e: &Expr, sym: usize) -> bool {
+        let own = |x: &Expr| matches!(x, Expr::Ident { sym: Some(s), .. } if *s == sym);
+        match e {
+            Expr::Lit { .. } => true,
+            Expr::Ident { sym: s, .. } => *s != Some(sym),
+            Expr::Field { base, name, .. } => (name == "length" && own(base)) || self.first_word_only(base, sym),
+            Expr::Binary { left, right, .. } => self.first_word_only(left, sym) && self.first_word_only(right, sym),
+            Expr::Unary { expr, .. } => self.first_word_only(expr, sym),
+            Expr::Call {
+                builtin: Some(Builtin::Cast),
+                args,
+                ty,
+                ..
+            } if args.len() == 1 => (own(&args[0]) && self.fixed_bytes(*ty)) || self.first_word_only(&args[0], sym),
+            _ => false,
+        }
+    }
+
     fn revert_data(&mut self, sym: usize) -> Result<(), Error> {
         self.call_sub(Sub::RevertData);
         self.mstore_off(self.local[sym]);
@@ -1562,7 +2149,23 @@ impl<'a> Gen<'a> {
 
     /// Validates the last call's return data and binds it to the continuation's names.
     /// Too little data, a word its type cannot hold, or a dynamic value out of bounds reverts.
-    fn decode_returned(&mut self, then: &Then) -> Result<(), Error> {
+    /// The words of a result `decode_returned` copies whole from the start of the return
+    /// data: a static value, or an option's payload.
+    fn fixed_result(&self, op: &OpSite) -> Option<u32> {
+        let then = op.then.as_ref().filter(|t| op.raw.is_none() && op.create.is_none() && !t.names.is_empty())?;
+        let ret = then.ret;
+        if self.tree(ret) || self.list_value(ret) || self.is_dynamic(ret) {
+            return None;
+        }
+        let t = &self.checked.types[ret];
+        let words = match t.kind {
+            TyKind::Option => self.checked.types[t.elem.unwrap_or(0)].words,
+            _ => t.words,
+        };
+        (words > 0).then_some(words)
+    }
+
+    fn decode_returned(&mut self, then: &Then, to: i32, out: Option<i32>) -> Result<(), Error> {
         if then.names.is_empty() {
             return Ok(());
         }
@@ -1595,7 +2198,7 @@ impl<'a> Gen<'a> {
             return self.decode_returned_bytes(then.syms[0]);
         }
         if self.checked.types[ret].kind == TyKind::Option {
-            return self.decode_returned_option(ret, self.local[then.syms[0]]);
+            return self.decode_returned_option(ret, self.local[then.syms[0]], to, out);
         }
         let words = self.checked.types[ret].words;
         // Where each word goes: the one name, or the tuple element that holds it.
@@ -1616,33 +2219,56 @@ impl<'a> Gen<'a> {
                 dest.push((i, self.local[then.syms[0]] + i as i32 * 32));
             }
         }
-        self.decode_returned_words(ret, dest)
+        self.decode_returned_words(ret, dest, out)
     }
 
-    /// An optional result at `at`: `None` when the call returned no data, and otherwise
-    /// `Some` of the payload, decoded and checked as any result is.
-    fn decode_returned_option(&mut self, oty: usize, at: i32) -> Result<(), Error> {
+    /// An optional result at `at`: `None` when the call to the address at `to` returned no
+    /// data and that account has code, and otherwise `Some` of the payload, decoded and
+    /// checked as any result is.
+    fn decode_returned_option(
+        &mut self,
+        oty: usize,
+        at: i32,
+        to: i32,
+        out: Option<i32>,
+    ) -> Result<(), Error> {
         let elem = self.checked.types[oty].elem.unwrap_or(0);
         let (none, done) = (self.fresh(), self.fresh());
         self.op(RETURNDATASIZE);
         self.op(ISZERO);
         self.push_label(none);
         self.op(JUMPI);
+        // A one-word option leaves its word on the stack on either path, stored once where
+        // they join.
         if let Some(flip) = self.flip(oty) {
-            self.decode_returned_words(elem, vec![(0, at)])?;
+            self.decode_returned_words(elem, vec![(0, at)], out)?;
             self.mload(at);
             self.apply_flip(flip);
+            self.push_label(done);
+            self.op(JUMP);
+            self.jumpdest(none);
+            self.mload(to);
+            self.op(EXTCODESIZE);
+            self.op(ISZERO);
+            self.revert_if_true()?;
+            self.op(PUSH0);
+            self.jumpdest(done);
             self.mstore_off(at);
+            return Ok(());
         } else {
             let words = self.checked.types[elem].words;
             let dest = (0..words).map(|i| (i, at + 32 + i as i32 * 32)).collect();
-            self.decode_returned_words(elem, dest)?;
+            self.decode_returned_words(elem, dest, out)?;
             self.push_u64(1);
             self.mstore_off(at);
         }
         self.push_label(done);
         self.op(JUMP);
         self.jumpdest(none);
+        self.mload(to);
+        self.op(EXTCODESIZE);
+        self.op(ISZERO);
+        self.revert_if_true()?;
         for i in 0..self.checked.types[oty].words {
             self.op(PUSH0);
             self.mstore_off(at + i as i32 * 32);
@@ -1652,22 +2278,31 @@ impl<'a> Gen<'a> {
     }
 
     /// Copies the return data's words of `ty` and stores each, checked, where `dest` says.
+    /// With `out`, the call wrote the words there itself.
     pub(super) fn decode_returned_words(
         &mut self,
         ty: usize,
         dest: Vec<(u32, i32)>,
+        out: Option<i32>,
     ) -> Result<(), Error> {
         let words = self.checked.types[ty].words;
-        self.return_sites += 1;
-        let buf = self.region(Region::Returned(self.return_sites), words * 32);
+        let buf = match out {
+            Some(buf) => buf,
+            None => {
+                self.return_sites += 1;
+                self.region(Region::Returned(self.return_sites), words * 32)
+            }
+        };
         self.push_u64(u64::from(words) * 32);
         self.op(RETURNDATASIZE);
         self.op(LT);
         self.revert_if_true()?;
-        self.push_u64(u64::from(words) * 32);
-        self.op(PUSH0);
-        self.push_mem(buf);
-        self.op(RETURNDATACOPY);
+        if out.is_none() {
+            self.push_u64(u64::from(words) * 32);
+            self.op(PUSH0);
+            self.push_mem(buf);
+            self.op(RETURNDATACOPY);
+        }
         let mut types = Vec::new();
         self.word_types(ty, &mut types);
         for (word, at) in dest {
@@ -1777,7 +2412,7 @@ impl<'a> Gen<'a> {
     }
 
     /// `[at]`, a position from `src_origin`, becomes the word there.
-    fn src_load(&mut self, src: Src) {
+    pub(super) fn src_load(&mut self, src: Src) {
         match src {
             Src::Mem(..) => self.op(MLOAD),
             Src::Cd(..) => self.cd_load(),
@@ -1818,6 +2453,8 @@ impl<'a> Gen<'a> {
         let outer_cache = std::mem::take(&mut self.slot_cache);
         let outer_vals = std::mem::take(&mut self.val_cache);
         let outer_facts = std::mem::take(&mut self.facts);
+        let outer_fire = std::mem::take(&mut self.fire_loop);
+        let outer_share = std::mem::take(&mut self.share);
         let mut body = Body {
             id: outer.id,
             prologue: self.code.len(),
@@ -1827,7 +2464,10 @@ impl<'a> Gen<'a> {
         body.arena = self.region(Region::Arena(outer.id), 0);
         self.body = Some(body);
         self.begin_queue(&then.stmts, None);
+        let share = self.next_share.take().filter(|_| picks.is_empty());
+        self.share = share.map(|(key, label)| (key, label, self.compiling.len()));
         let result = (|| {
+            self.tail = self.share.is_some();
             self.compile_top(&then.stmts, &mut picks)?;
             self.store_image();
             self.exec_ops()
@@ -1839,6 +2479,8 @@ impl<'a> Gen<'a> {
         self.slot_cache = outer_cache;
         self.val_cache = outer_vals;
         self.facts = outer_facts;
+        self.fire_loop = outer_fire;
+        self.share = outer_share;
         result
     }
 }

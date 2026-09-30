@@ -331,7 +331,7 @@ fn commit(path: &Path, original: &str, edited: &str) -> bool {
         .and_then(|units| {
             units
                 .into_iter()
-                .try_for_each(|unit| check::check_in(unit, false).map(|_| ()))
+                .try_for_each(|unit| check::check_in(unit, false, crate::EvmVersion::default()).map(|_| ()))
         })
         .is_ok();
     let same = match &before {
@@ -402,7 +402,7 @@ fn findings_at(
         if let Some(scope) = unit.scopes.scope(&key) {
             used.extend(scope.used.iter().copied());
         }
-        let checked = check::check_in(unit, false)?;
+        let checked = check::check_in(unit, false, crate::EvmVersion::default())?;
         let mut acc = Acc::default();
         collect(&checked, own, &mut acc);
         findings.extend(finish(&checked, src, own, label, &acc));
@@ -1078,7 +1078,7 @@ fn scan_ty(ty: &TypeRef, acc: &mut Acc) {
 fn findings_in(src: &str) -> Result<Vec<Finding>, Error> {
     let path = Path::new("test.lithe");
     let prog = modules::load(&Sources::memory([(path, src)]), path)?;
-    let checked = check::check(prog)?;
+    let checked = check::check(prog, crate::EvmVersion::default())?;
     let mut acc = Acc::default();
     collect(&checked, "test.lithe", &mut acc);
     let mut findings = finish(&checked, src, "test.lithe", "test.lithe", &acc);

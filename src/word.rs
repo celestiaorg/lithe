@@ -264,19 +264,41 @@ impl Word {
         if rhs.is_zero() {
             return (Self::from_u64(0), Self::from_u64(0));
         }
+        if self.lt(rhs) {
+            return (Self::from_u64(0), self);
+        }
         let mut q = Self::from_u64(0);
-        let mut r = Self::from_u64(0);
-        for i in (0..256).rev() {
-            r = r.shl(1);
-            if self.bit(i) {
-                r.0[0] |= 1;
+        if rhs.0[1..] == [0; 3] {
+            // One limb: long division a limb at a time.
+            let d = u128::from(rhs.0[0]);
+            let mut r = 0u128;
+            for i in (0..4).rev() {
+                let cur = (r << 64) | u128::from(self.0[i]);
+                q.0[i] = (cur / d) as u64;
+                r = cur % d;
             }
-            if !r.lt(rhs) {
-                r = r.wrapping_sub(rhs);
-                q.0[(i / 64) as usize] |= 1u64 << (i % 64);
+            return (q, Self::from_u64(r as u64));
+        }
+        // Shift and subtract, one step for each bit the quotient can have.
+        let shift = self.bits() - rhs.bits();
+        let mut d = rhs.shl(shift);
+        let mut r = self;
+        for s in (0..=shift).rev() {
+            if !r.lt(d) {
+                r = r.wrapping_sub(d);
+                q.0[(s / 64) as usize] |= 1u64 << (s % 64);
             }
+            d = d.shr(1);
         }
         (q, r)
+    }
+
+    /// The number of bits up to the highest set one.
+    pub(crate) fn bits(self) -> u32 {
+        (0..4)
+            .rev()
+            .find(|&i| self.0[i] != 0)
+            .map_or(0, |i| 64 * i as u32 + 64 - self.0[i].leading_zeros())
     }
 
     /// Arithmetic right shift. A shift of 256 or more yields `0` or `-1`.
@@ -368,5 +390,47 @@ impl Word {
         } else {
             r
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Word;
+
+    /// Division against the bit-at-a-time definition, across limb boundaries.
+    #[test]
+    fn divmod_matches_long_division() {
+        fn slow(a: Word, b: Word) -> (Word, Word) {
+            let (mut q, mut r) = (Word::from_u64(0), Word::from_u64(0));
+            for i in (0..256).rev() {
+                r = r.shl(1);
+                if a.bit(i) {
+                    r.0[0] |= 1;
+                }
+                if !r.lt(b) {
+                    r = r.wrapping_sub(b);
+                    q.0[(i / 64) as usize] |= 1u64 << (i % 64);
+                }
+            }
+            (q, r)
+        }
+        let mut x = 0x9e37_79b9_7f4a_7c15u64;
+        let mut next = || {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            x
+        };
+        let ones = Word::from_u64(0).not();
+        for _ in 0..2000 {
+            let a = Word([next(), next(), next(), next()]).shr((next() % 256) as u32);
+            let b = Word([next(), next(), next(), next()]).shr((next() % 256) as u32);
+            if !b.is_zero() {
+                assert_eq!((a.div(b), a.rem(b)), slow(a, b), "{a:?} / {b:?}");
+                assert_eq!((ones.div(b), ones.rem(b)), slow(ones, b), "~0 / {b:?}");
+            }
+        }
+        let zero = Word::from_u64(0);
+        assert_eq!((ones.div(zero), ones.rem(zero)), (zero, zero));
     }
 }

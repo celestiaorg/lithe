@@ -26,14 +26,18 @@ module SetEnumerable(T : map_key) is {
     assert(index < items.values.length, Out_of_bounds);
   } with items.values[index]
 
-  function add(storage items : self; const value : T) is {
+  (* Adds `value`; whether it was not there yet. *)
+  function add(storage items : self; const value : T) : bool is {
+    var fresh : bool := false;
     if items.indexes[value] = 0 then {
       List.push(items.values, value);
       items.indexes[value] := items.values.length;
+      fresh := true;
     }
-  }
+  } with fresh
 
-  function remove(storage items : self; const value : T) is {
+  (* Removes `value`; whether it was there. *)
+  function remove(storage items : self; const value : T) : bool is {
     const found : uint := items.indexes[value];
     if found = 0 then {
       skip
@@ -44,5 +48,5 @@ module SetEnumerable(T : map_key) is {
       items.indexes[value] := 0;
       List.pop(items.values);
     }
-  }
+  } with found <> 0
 }

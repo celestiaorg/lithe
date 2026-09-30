@@ -7,6 +7,9 @@
 
 use super::*;
 
+/// The bytes from which appending to a blob at the heap top grows it there.
+const GROW_FROM: u64 = 256;
+
 /// Where a value's words start: a fixed address, or an offset from an address a word holds.
 #[derive(Clone, Copy)]
 pub(super) enum Addr {
@@ -110,7 +113,7 @@ impl<'a> Gen<'a> {
     pub(super) fn tree_encode(&mut self, parts: &[(Addr, usize)]) -> Result<(), Error> {
         let parts: Vec<Part> = parts
             .iter()
-            .map(|&(at, ty)| Part { at, ty, cd: false })
+            .map(|&(at, ty)| Part { at, ty, cd: false, checked: false })
             .collect();
         self.tree_encode_parts(&parts, 0)
     }
@@ -130,7 +133,7 @@ impl<'a> Gen<'a> {
         self.push_u64(u64::from(head));
         self.op(ADD);
         let mut off = 0;
-        for &Part { at, ty, cd } in parts {
+        for &Part { at, ty, cd, checked } in parts {
             if self.abi_dyn(ty) {
                 // [base, cur]: the head word is where the tail starts, from `base`.
                 self.op(DUP1 + 1);
@@ -139,7 +142,31 @@ impl<'a> Gen<'a> {
                 self.op(DUP1 + 2);
                 self.add_const(off);
                 self.op(MSTORE);
-                if cd {
+                let bytes = matches!(self.shape_of(ty).kind, TyKind::String | TyKind::Bytes);
+                if checked && bytes {
+                    // A `bytes` or `string` parameter checked on entry: its length word and
+                    // bytes, then the cursor past their padding.
+                    self.load_at(at);
+                    self.op(DUP1);
+                    self.op(CALLDATALOAD);
+                    self.op(DUP1);
+                    self.op(DUP1 + 3);
+                    self.op(MSTORE);
+                    self.op(DUP1);
+                    self.op(DUP1 + 2);
+                    self.push_u64(32);
+                    self.op(ADD);
+                    self.op(DUP1 + 4);
+                    self.push_u64(32);
+                    self.op(ADD);
+                    self.op(CALLDATACOPY);
+                    self.op(SWAP1);
+                    self.op(POP);
+                    self.round_word();
+                    self.op(ADD);
+                    self.push_u64(32);
+                    self.op(ADD);
+                } else if cd {
                     self.load_at(at);
                     self.op(SWAP1);
                     self.call_sub(Sub::TreeCdEnc(self.peel_nominal(ty)));
@@ -167,9 +194,28 @@ impl<'a> Gen<'a> {
     /// The values are evaluated first; the blob then grows past the heap from
     /// `[start, cur]` on the stack.
     pub(super) fn compile_packed(&mut self, args: &[Expr]) -> Result<(), Error> {
+        self.pack(args, true)
+    }
+
+    /// `pack`ed bytes that are only read before anything else allocates, as a hash reads
+    /// them: `[len, data]` past the heap, which keeps no blob of them.
+    pub(super) fn packed_span(&mut self, args: &[Expr]) -> Result<(), Error> {
+        self.pack(args, false)
+    }
+
+    fn pack(&mut self, args: &[Expr], claim: bool) -> Result<(), Error> {
+        // `x := Bytes.concat(x, ...)` writes after `x`'s bytes when its blob ends at the heap
+        // top, and copies it otherwise.
+        let append = self.append_to.take().filter(|&x| {
+            claim && matches!(args.first(), Some(Expr::Ident { sym: Some(s), .. }) if *s == x)
+        });
+        let (grown, args) = match append {
+            Some(_) => (Some(&args[0]), &args[1..]),
+            None => (None, args),
+        };
         // A string or hex literal of up to a word is written as one, with no blob to copy it
-        // from. A parameter in calldata is copied from there, and a stored string from its
-        // slots, when no other piece can change it meanwhile.
+        // from. A parameter in calldata is copied from there, a slice from where it lies,
+        // and a stored string from its slots, when no other piece can change it meanwhile.
         let pure = |g: &Self, a: &Expr| {
             g.eager_ok(a) || g.short_bytes_lit(a).is_some() || g.cd_str(a).is_some() || g.stored_str(a).is_some()
         };
@@ -180,17 +226,49 @@ impl<'a> Gen<'a> {
                 (Some((w, n)), ..) => Piece::Word(w, n),
                 (None, Some(at), _) => Piece::Calldata(at),
                 (None, None, Some((sym, leaf))) if stored_ok => Piece::Stored(sym, leaf),
-                _ => Piece::Staged(self.stage(arg)?, arg.ty()),
+                _ => match arg {
+                    Expr::Call {
+                        builtin: Some(Builtin::BytesSlice),
+                        args: inner,
+                        ..
+                    } if !matches!(
+                        &inner[0],
+                        Expr::Call {
+                            builtin: Some(Builtin::Code),
+                            ..
+                        }
+                    ) && self.cd_str(&inner[0]).is_none() =>
+                    {
+                        let checked = !self.slice_proven(inner);
+                        let kept = self.kept_span(&inner[0]).copied();
+                        let mut staged = Vec::with_capacity(inner.len());
+                        for (j, e) in inner.iter().enumerate() {
+                            staged.push(if j == 0 && kept.is_some() { 0 } else { self.stage(e)? });
+                        }
+                        Piece::Slice(staged, checked, kept)
+                    }
+                    _ => match self.kept_span(arg) {
+                        Some(&(len, data)) => Piece::Kept(len, data),
+                        None => Piece::Staged(self.stage(arg)?, arg.ty()),
+                    },
+                },
             });
         }
         self.push_mem(self.blob_base);
         self.mload(self.blob_ptr);
         self.op(ADD);
-        self.op(DUP1);
-        self.mstore_off(self.scratch_a);
-        self.push_u64(32);
-        self.op(ADD);
-        self.op(DUP1);
+        match grown {
+            Some(x) => self.grow_or_copy(x)?,
+            None => {
+                if claim {
+                    self.op(DUP1);
+                    self.mstore_off(self.scratch_a);
+                    self.push_u64(32);
+                    self.op(ADD);
+                }
+                self.op(DUP1);
+            }
+        }
         for value in values {
             let (at, ty) = match value {
                 Piece::Staged(at, ty) => (at, ty),
@@ -218,6 +296,41 @@ impl<'a> Gen<'a> {
                 }
                 Piece::Stored(sym, leaf) => {
                     self.copy_stored_bytes(sym, leaf);
+                    continue;
+                }
+                Piece::Kept(len, data) => {
+                    // [start, cur, len, data]
+                    self.mload(len);
+                    self.mload(data);
+                    self.op(DUP1 + 1);
+                    self.op(SWAP1);
+                    self.op(DUP1 + 3);
+                    self.op(MCOPY);
+                    self.op(ADD);
+                    continue;
+                }
+                Piece::Slice(staged, checked, kept) => {
+                    // [start, cur] becomes [start, cur, n, src], copied as a value's bytes.
+                    match kept {
+                        Some((len, data)) => {
+                            self.mload(len);
+                            self.mload(data);
+                        }
+                        None => {
+                            self.mload(staged[0]);
+                            self.bytes_span();
+                        }
+                    }
+                    for &at in &staged[1..] {
+                        self.mload(at);
+                    }
+                    self.slice_span(staged.len() == 3, checked)?;
+                    self.op(SWAP1);
+                    self.op(DUP1 + 1);
+                    self.op(SWAP1);
+                    self.op(DUP1 + 3);
+                    self.op(MCOPY);
+                    self.op(ADD);
                     continue;
                 }
             };
@@ -261,6 +374,14 @@ impl<'a> Gen<'a> {
             self.op(MSTORE);
             self.add_const(n);
         }
+        if !claim {
+            // [start, end] becomes [len, start].
+            self.op(DUP1 + 1);
+            self.op(SWAP1);
+            self.op(SUB);
+            self.op(SWAP1);
+            return Ok(());
+        }
         // [start, end]: the length, at the blob's header.
         self.op(SUB);
         self.mload(self.scratch_a);
@@ -268,6 +389,66 @@ impl<'a> Gen<'a> {
         self.claim_blob();
         self.mload(self.scratch_a);
         self.tag_blob();
+        Ok(())
+    }
+
+    /// `[top]`, the heap top, becomes `[start, cur]` just past `x`'s bytes, with the header
+    /// at `scratch_a`. A blob of `GROW_FROM` bytes or more that ends at the top grows there;
+    /// a shorter one, or one something was allocated after, is copied to the top, which
+    /// costs less than the check for a few words.
+    fn grow_or_copy(&mut self, x: &Expr) -> Result<(), Error> {
+        let [copy, joined] = std::array::from_fn(|_| self.fresh());
+        self.compile_value(x)?;
+        self.bytes_span();
+        // [top, len, data]
+        self.push_u64(GROW_FROM);
+        self.op(DUP1 + 2);
+        self.op(LT);
+        self.push_label(copy);
+        self.op(JUMPI);
+        self.op(DUP1 + 1);
+        self.push_u64(31);
+        self.op(ADD);
+        self.push_u64(31);
+        self.op(NOT);
+        self.op(AND);
+        self.op(DUP1 + 1);
+        self.op(ADD);
+        self.op(DUP1 + 3);
+        self.op(EQ);
+        self.op(ISZERO);
+        self.push_label(copy);
+        self.op(JUMPI);
+        self.push_u64(32);
+        self.op(DUP1 + 1);
+        self.op(SUB);
+        self.mstore_off(self.scratch_a);
+        self.op(SWAP1);
+        self.op(DUP1 + 1);
+        self.op(ADD);
+        self.op(SWAP1 + 1);
+        self.op(POP);
+        self.op(SWAP1);
+        self.push_label(joined);
+        self.op(JUMP);
+        self.jumpdest(copy);
+        // [top, len, data]: the header at the top, the bytes after it.
+        self.op(DUP1 + 2);
+        self.mstore_off(self.scratch_a);
+        self.op(DUP1 + 2);
+        self.push_u64(32);
+        self.op(ADD);
+        // [top, len, data, start]
+        self.op(DUP1 + 2);
+        self.op(DUP1 + 2);
+        self.op(DUP1 + 2);
+        self.op(MCOPY);
+        self.op(SWAP1 + 2);
+        self.op(POP);
+        self.op(POP);
+        self.op(DUP1 + 1);
+        self.op(ADD);
+        self.jumpdest(joined);
         Ok(())
     }
 
@@ -850,10 +1031,11 @@ impl<'a> Gen<'a> {
     }
 
     /// The data a decoder reads, from the words holding where it starts and its length.
+    /// The data as the decoders read it: by position, up to its end.
     fn tree_src(&self, kind: SrcKind) -> Src {
         match kind {
-            SrcKind::Mem => Src::Mem(self.tree_at, self.tree_len),
-            SrcKind::Cd => Src::Cd(self.tree_at, self.tree_len),
+            SrcKind::Mem => Src::Mem(self.tree_at, self.tree_end),
+            SrcKind::Cd => Src::Cd(self.tree_at, self.tree_end),
             SrcKind::Ret => Src::Ret,
         }
     }
@@ -861,6 +1043,7 @@ impl<'a> Gen<'a> {
     /// Reverts unless `n` bytes of head are inside the data.
     pub(super) fn tree_head(&mut self, kind: SrcKind, n: u32) -> Result<(), Error> {
         self.push_u64(u64::from(n));
+        self.src_origin(self.tree_src(kind));
         self.within(self.tree_src(kind))
     }
 
@@ -887,10 +1070,12 @@ impl<'a> Gen<'a> {
             }
             return Ok(());
         }
-        // An offset from the data's start, in 64 bits: the value's position.
+        // An offset from the data's start, in 64 bits: the value's position, where the
+        // decoders read it.
         self.push_u64(u64::from(off));
         self.src_word(src);
         self.fits_64()?;
+        self.src_origin(src);
         self.push_addr(dst);
         self.call_sub(Sub::TreeDec(
             self.peel_nominal(ty),
@@ -910,9 +1095,13 @@ impl<'a> Gen<'a> {
         Ok(())
     }
 
-    /// `[end]` reverts when it is past the end of the data.
+    /// `[end]` reverts when it is past the end of the data. The arguments end with the
+    /// calldata.
     fn within(&mut self, src: Src) -> Result<(), Error> {
-        self.src_size(src);
+        match src {
+            Src::Cd(_, end) if end == self.tree_end && self.decoding_args => self.cd_size(),
+            _ => self.src_size(src),
+        }
         self.op(LT);
         self.revert_if_true()
     }
@@ -967,7 +1156,7 @@ impl<'a> Gen<'a> {
                 self.op(ADD);
                 self.within(src)?;
                 self.op(DUP1);
-                self.src_word(src);
+                self.src_load(src);
                 self.length_fits()?;
                 // [ret, dst, at, len]
                 self.op(DUP1);
@@ -979,7 +1168,6 @@ impl<'a> Gen<'a> {
                 self.op(SWAP1);
                 self.push_u64(32);
                 self.op(ADD);
-                self.src_origin(src);
                 self.op(SWAP1);
                 self.bytes_value_from(src)?;
                 // [ret, dst, value]
@@ -997,7 +1185,7 @@ impl<'a> Gen<'a> {
                 self.op(DUP1);
                 self.within(src)?;
                 self.op(SWAP1);
-                self.src_word(src);
+                self.src_load(src);
                 self.length_fits()?;
                 // Every element, or every head word, inside the data before any is read.
                 self.op(DUP1);
@@ -1043,12 +1231,15 @@ impl<'a> Gen<'a> {
                 self.add_const(head);
                 self.within(src)?;
                 let mut off = 0;
+                // Static words wait, so that a run of them that needs no check is copied at once.
+                let mut words: Vec<(u32, u32, Option<usize>)> = Vec::new();
                 for f in &t.fields {
                     if self.abi_dyn(f.ty) {
+                        self.dec_words(src, &std::mem::take(&mut words))?;
                         // [ret, dst, at, pos]
                         self.op(DUP1);
                         self.add_const(off);
-                        self.src_word(src);
+                        self.src_load(src);
                         self.fits_64()?;
                         self.op(DUP1 + 1);
                         self.op(ADD);
@@ -1063,25 +1254,58 @@ impl<'a> Gen<'a> {
                         let mut types = Vec::new();
                         self.word_types(f.ty, &mut types);
                         for (j, wt) in types.iter().enumerate() {
-                            self.op(DUP1);
-                            self.add_const(off + 32 * j as u32);
-                            self.src_word(src);
-                            if let Some(wt) = *wt {
-                                self.check_decoded(wt)?;
-                            }
-                            self.op(DUP1 + 2);
-                            self.add_const(f.slot * 32 + 32 * j as u32);
-                            self.op(MSTORE);
+                            words.push((off + 32 * j as u32, f.slot * 32 + 32 * j as u32, *wt));
                         }
                     }
                     off += self.abi_head(f.ty);
                 }
+                self.dec_words(src, &words)?;
                 self.op(POP);
                 self.op(POP);
             }
             _ => return Err(error(0, 0, "internal: not a dynamic ABI value")),
         }
         self.op(JUMP);
+        Ok(())
+    }
+
+    /// `[ret, dst, at]` stays: static words at `at + from`, each stored at `dst + to`. Words
+    /// that need no check and lie in the same order in both are copied as one run.
+    fn dec_words(&mut self, src: Src, words: &[(u32, u32, Option<usize>)]) -> Result<(), Error> {
+        let plain = |g: &Self, wt: Option<usize>| {
+            wt.is_none_or(|t| !g.needs_check(t) && g.abi_shift(t) == 0)
+        };
+        let mut i = 0;
+        while i < words.len() {
+            let (from, to, wt) = words[i];
+            let mut n = 1;
+            while plain(self, wt)
+                && words.get(i + n).is_some_and(|&(f, t, w)| {
+                    f == from + 32 * n as u32 && t == to + 32 * n as u32 && plain(self, w)
+                })
+            {
+                n += 1;
+            }
+            if n > 1 {
+                self.push_u64(32 * n as u64);
+                self.op(DUP1 + 1);
+                self.add_const(from);
+                self.op(DUP1 + 3);
+                self.add_const(to);
+                self.src_copy(src);
+            } else {
+                self.op(DUP1);
+                self.add_const(from);
+                self.src_load(src);
+                if let Some(wt) = wt {
+                    self.check_decoded(wt)?;
+                }
+                self.op(DUP1 + 2);
+                self.add_const(to);
+                self.op(MSTORE);
+            }
+            i += n;
+        }
         Ok(())
     }
 
@@ -1110,7 +1334,6 @@ impl<'a> Gen<'a> {
             self.push_u64(32 * k);
             self.op(MUL);
             self.op(DUP1 + 3);
-            self.src_origin(src);
             self.op(DUP1 + 2);
             self.add_const(skip);
             self.src_copy(src);
@@ -1134,7 +1357,7 @@ impl<'a> Gen<'a> {
                 self.add_const(32 * j as u32);
                 self.op(DUP1 + 4);
                 self.op(ADD);
-                self.src_word(src);
+                self.src_load(src);
                 if let Some(t) = *t {
                     self.check_decoded(t)?;
                 }
@@ -1153,7 +1376,7 @@ impl<'a> Gen<'a> {
             self.op(SHL);
             self.op(DUP1 + 4);
             self.op(ADD);
-            self.src_word(src);
+            self.src_load(src);
             self.fits_64()?;
             self.op(DUP1 + 4);
             self.op(ADD);
@@ -1176,6 +1399,333 @@ impl<'a> Gen<'a> {
         self.jumpdest(done);
         self.op(POP);
         Ok(())
+    }
+
+    /// `[acc, at, ret]` becomes `[]`: the checks `sub_tree_dec` makes of the value of type
+    /// `ty` at `at`, in the same order, with nothing copied, for a value read where it lies.
+    /// `acc` holds the terms of the checks before, which revert as a bad offset does.
+    pub(super) fn sub_tree_check(
+        &mut self,
+        ty: usize,
+        kind: SrcKind,
+        args: bool,
+    ) -> Result<(), Error> {
+        let was = std::mem::replace(&mut self.decoding_args, args);
+        let result = self.tree_check_body(ty, kind);
+        self.decoding_args = was;
+        result
+    }
+
+    fn tree_check_body(&mut self, ty: usize, kind: SrcKind) -> Result<(), Error> {
+        // [ret, end, at, acc]: each check ORs into `acc` a term with bits from 64 up just
+        // when it fails, as long as the checks before it held; valid data keeps every term
+        // below 2^64, since the data ends below it. A run of checks that revert alike takes
+        // one jump, before the first that reverts otherwise, so the first to fail still
+        // decides how it reverts.
+        let src = self.tree_src(kind);
+        self.op(SWAP1 + 1);
+        self.src_size(src);
+        self.op(SWAP1 + 1);
+        self.op(SWAP1);
+        let mut pending = None;
+        let classify = self.fresh();
+        self.check_at(ty, src, 3, &mut pending, classify)?;
+        self.push_u64(64);
+        self.op(SHR);
+        self.revert_with(pending)?;
+        self.op(POP);
+        self.op(POP);
+        self.op(JUMP);
+        // [acc, len]: the run so far failed first, or else the length.
+        self.jumpdest(classify);
+        self.op(POP);
+        self.push_u64(64);
+        self.op(SHR);
+        self.revert_if_true()?;
+        self.op(PUSH0);
+        self.op(ISZERO);
+        self.revert_if_panic(0x41)
+    }
+
+    fn revert_with(&mut self, panic: Option<u64>) -> Result<(), Error> {
+        match panic {
+            Some(code) => self.revert_if_panic(code),
+            None => self.revert_if_true(),
+        }
+    }
+
+    /// `[acc, term]` becomes `[acc]`: a check's term, for one that reverts as `panic` says.
+    fn check_term(&mut self, panic: Option<u64>, pending: &mut Option<u64>) -> Result<(), Error> {
+        if *pending == panic {
+            self.op(OR);
+            return Ok(());
+        }
+        self.op(SWAP1);
+        self.push_u64(64);
+        self.op(SHR);
+        self.revert_with(*pending)?;
+        *pending = panic;
+        Ok(())
+    }
+
+    /// `[.., acc, x]` becomes `[.., acc]`: `end - x`, which is past 2^64 when `x` is past
+    /// the data's end. `DUP{end}` reaches the end under `x`.
+    fn check_within(&mut self, end: u8, pending: &mut Option<u64>) -> Result<(), Error> {
+        self.op(DUP1 + end);
+        self.op(SUB);
+        self.check_term(None, pending)
+    }
+
+    /// `[pos, acc]` stays: the checks `sub_tree_dec` makes of the value of type `ty` at the
+    /// data position `pos`, in its order. `DUP{end}` reaches the data's end.
+    fn check_at(
+        &mut self,
+        ty: usize,
+        src: Src,
+        end: u8,
+        pending: &mut Option<u64>,
+        classify: u32,
+    ) -> Result<(), Error> {
+        let t = self.shape_of(ty);
+        let length = if self.decoding_args { None } else { Some(0x41) };
+        // `[acc, len]` becomes `[acc]`: a length past 64 bits panics, unless a check before
+        // it in the run already failed. The run goes on past it.
+        let length_term = |g: &mut Self, pending: &mut Option<u64>| -> Result<(), Error> {
+            if length.is_none() || pending.is_some() {
+                return g.check_term(length, pending);
+            }
+            g.op(DUP1 + 1);
+            g.op(DUP1 + 1);
+            g.op(OR);
+            g.push_u64(64);
+            g.op(SHR);
+            g.push_label(classify);
+            g.op(JUMPI);
+            g.op(POP);
+            Ok(())
+        };
+        match t.kind {
+            TyKind::String | TyKind::Bytes => {
+                // With lengths reverting as the rest do, `pos + 32 <= end` follows from
+                // the length and the end.
+                if length.is_some() {
+                    self.op(DUP1 + 1);
+                    self.add_const(32);
+                    self.check_within(end, pending)?;
+                }
+                self.op(DUP1 + 1);
+                self.src_load(src);
+                length_term(self, pending)?;
+                self.op(DUP1 + 1);
+                self.op(DUP1);
+                self.src_load(src);
+                self.op(ADD);
+                self.add_const(32);
+                self.check_within(end, pending)?;
+            }
+            TyKind::List => {
+                let elem = t.elem.unwrap_or(0);
+                let dynamic = self.abi_dyn(elem);
+                let k = self.checked.types[elem].words.max(1);
+                let head = if dynamic { 32 } else { 32 * k };
+                // Where the elements' heads start, and their offsets are from.
+                let base = if t.bits == 0 { 32 } else { 0 };
+                if t.bits == 0 {
+                    // The length word, the length, and the heads' end.
+                    if length.is_some() {
+                        self.op(DUP1 + 1);
+                        self.add_const(32);
+                        self.check_within(end, pending)?;
+                    }
+                    self.op(DUP1 + 1);
+                    self.src_load(src);
+                    length_term(self, pending)?;
+                    self.op(DUP1 + 1);
+                    self.op(DUP1);
+                    self.src_load(src);
+                    self.push_u64(u64::from(head));
+                    self.op(MUL);
+                    self.op(ADD);
+                    self.add_const(32);
+                    self.check_within(end, pending)?;
+                } else {
+                    self.op(DUP1 + 1);
+                    self.add_const(32 * u32::from(t.bits));
+                    self.check_within(end, pending)?;
+                }
+                let mut types = Vec::new();
+                self.word_types(elem, &mut types);
+                let checked: Vec<(u32, usize)> = types
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(j, t)| t.filter(|&t| self.needs_check(t)).map(|t| (32 * j as u32, t)))
+                    .collect();
+                if !dynamic && checked.is_empty() {
+                    return Ok(());
+                }
+                // The walk's end is only sound once the heads are known to fit.
+                self.push_u64(64);
+                self.op(SHR);
+                self.revert_with(*pending)?;
+                self.op(PUSH0);
+                // [pos, first, last, p, acc]: `p` walks the heads from `first` to `last`.
+                self.op(DUP1 + 1);
+                self.add_const(base);
+                self.op(SWAP1);
+                self.op(DUP1 + 1);
+                if t.bits == 0 {
+                    self.op(DUP1 + 3);
+                    self.src_load(src);
+                    self.push_u64(u64::from(head));
+                    self.op(MUL);
+                    self.op(ADD);
+                } else {
+                    self.add_const(head * u32::from(t.bits));
+                }
+                self.op(SWAP1);
+                self.op(DUP1 + 2);
+                self.op(SWAP1);
+                let (top, done) = (self.fresh(), self.fresh());
+                let entry = *pending;
+                self.jumpdest(top);
+                self.op(DUP1 + 2);
+                self.op(DUP1 + 2);
+                self.op(LT);
+                self.op(ISZERO);
+                self.push_label(done);
+                self.op(JUMPI);
+                if dynamic {
+                    // Its offset from `first`, and its position.
+                    self.op(DUP1 + 1);
+                    self.src_load(src);
+                    self.check_term(None, pending)?;
+                    self.op(DUP1 + 1);
+                    self.src_load(src);
+                    self.op(DUP1 + 4);
+                    self.op(ADD);
+                    self.op(SWAP1);
+                    self.check_at(self.peel_nominal(elem), src, end + 4, pending, classify)?;
+                    self.op(SWAP1);
+                    self.op(POP);
+                } else {
+                    for &(off, wt) in &checked {
+                        self.op(DUP1 + 1);
+                        self.add_const(off);
+                        self.src_load(src);
+                        self.word_term(wt);
+                        self.check_term(None, pending)?;
+                    }
+                }
+                // Each iteration starts with the checks reverting as they did at entry.
+                if *pending != entry {
+                    self.push_u64(64);
+                    self.op(SHR);
+                    self.revert_with(*pending)?;
+                    self.op(PUSH0);
+                    *pending = entry;
+                }
+                self.op(SWAP1);
+                self.add_const(head);
+                self.op(SWAP1);
+                self.push_label(top);
+                self.op(JUMP);
+                self.jumpdest(done);
+                self.op(SWAP1 + 2);
+                self.op(POP);
+                self.op(POP);
+                self.op(POP);
+            }
+            TyKind::Record | TyKind::Tuple => {
+                let head: u32 = t.fields.iter().map(|f| self.abi_head(f.ty)).sum();
+                self.op(DUP1 + 1);
+                self.add_const(head);
+                self.check_within(end, pending)?;
+                let mut off = 0;
+                // Static words are checked where the decoder copies them: before the next
+                // dynamic field, or at the end.
+                let mut words: Vec<(u32, usize)> = Vec::new();
+                let flush = |g: &mut Self, words: &mut Vec<(u32, usize)>, pending: &mut Option<u64>| {
+                    for (off, wt) in std::mem::take(words) {
+                        g.op(DUP1 + 1);
+                        g.add_const(off);
+                        g.src_load(src);
+                        g.word_term(wt);
+                        g.check_term(None, pending)?;
+                    }
+                    Ok::<(), Error>(())
+                };
+                for f in &t.fields {
+                    if self.abi_dyn(f.ty) {
+                        flush(self, &mut words, pending)?;
+                        // Its offset, then the field at `pos + offset`.
+                        self.op(DUP1 + 1);
+                        self.add_const(off);
+                        self.src_load(src);
+                        self.check_term(None, pending)?;
+                        self.op(DUP1 + 1);
+                        self.op(DUP1);
+                        self.add_const(off);
+                        self.src_load(src);
+                        self.op(ADD);
+                        self.op(SWAP1);
+                        self.check_at(self.peel_nominal(f.ty), src, end + 1, pending, classify)?;
+                        self.op(SWAP1);
+                        self.op(POP);
+                    } else {
+                        let mut types = Vec::new();
+                        self.word_types(f.ty, &mut types);
+                        for (j, wt) in types.iter().enumerate() {
+                            if let Some(wt) = wt.filter(|&wt| self.needs_check(wt)) {
+                                words.push((off + 32 * j as u32, wt));
+                            }
+                        }
+                    }
+                    off += self.abi_head(f.ty);
+                }
+                flush(self, &mut words, pending)?;
+            }
+            _ => return Err(error(0, 0, "internal: not a dynamic ABI value")),
+        }
+        Ok(())
+    }
+
+    /// `[w]` becomes a term with bits from 64 up just when the word has bits a value of
+    /// type `ty` cannot hold.
+    fn word_term(&mut self, ty: usize) {
+        let t = &self.checked.types[self.peel_nominal(ty)];
+        let (kind, bits) = (t.kind, t.bits);
+        match kind {
+            _ if self.enum_cases(ty).is_some() => self.word_flag(ty),
+            TyKind::Address | TyKind::Interface => {
+                self.push_u64(96);
+                self.op(SHR);
+                return;
+            }
+            TyKind::Uint if bits >= 64 => {
+                if bits > 64 {
+                    self.push_u64(u64::from(bits) - 64);
+                    self.op(SHR);
+                }
+                return;
+            }
+            TyKind::Uint => {
+                self.push_u64((1 << bits) - 1);
+                self.op(LT);
+            }
+            TyKind::Bytes if bits >= 8 => {
+                self.word_flag(ty);
+                return;
+            }
+            // The rest's flags are 0 or 1, or any bits at all.
+            TyKind::Bool | TyKind::Int => self.word_flag(ty),
+            _ => {
+                self.word_flag(ty);
+                self.op(ISZERO);
+                self.op(ISZERO);
+            }
+        }
+        self.push_u64(64);
+        self.op(SHL);
     }
 
     /// A value's in-place encoding, as Solidity hashes an indexed list, record, or tuple:
@@ -1381,6 +1931,7 @@ impl<'a> Gen<'a> {
                         at: Addr::Mem(self.local[*sym]),
                         ty: arg.ty(),
                         cd: true,
+                        checked: self.cd_bytes.contains(sym),
                     });
                 }
                 _ => {
@@ -1393,7 +1944,7 @@ impl<'a> Gen<'a> {
                     parts.extend(
                         fields
                             .into_iter()
-                            .map(|(ty, at)| Part { at, ty, cd: false }),
+                            .map(|(ty, at)| Part { at, ty, cd: false, checked: false }),
                     );
                 }
             }
@@ -1547,8 +2098,14 @@ impl<'a> Gen<'a> {
                     iface,
                     callee,
                     args,
+                    ty,
                     ..
                 }) => match builtin {
+                    Some(Builtin::BytesSlice) => {
+                        let n = usize::from(args.first().is_some_and(own));
+                        read.set(read.get() + n);
+                        add(n)
+                    }
                     Some(
                         Builtin::AbiEncode
                         | Builtin::AbiEncodeCall
@@ -1561,7 +2118,12 @@ impl<'a> Gen<'a> {
                         read.set(read.get() + n);
                         add(n)
                     }
-                    Some(Builtin::AbiDecode) => {
+                    Some(Builtin::AbiDecode | Builtin::BytesWord) => {
+                        let n = usize::from(args.first().is_some_and(own));
+                        read.set(read.get() + n);
+                        add(n)
+                    }
+                    Some(Builtin::Cast) if self.word32_bytes(*ty) => {
                         let n = usize::from(args.first().is_some_and(own));
                         read.set(read.get() + n);
                         add(n)
@@ -1607,6 +2169,279 @@ impl<'a> Gen<'a> {
             self.expr_any(tail, &count, &mut Vec::new());
         }
         uses.get() > 0 && uses.get() == fine.get() && (raised.get() == 0 || read.get() > 0)
+    }
+
+    /// Whether a field or element of this type is read from calldata where it lies: one
+    /// static word, or a `string` or `bytes`, which is copied out where it is needed.
+    fn cd_readable(&self, ty: usize) -> bool {
+        let id = self.peel_nominal(ty);
+        let t = &self.checked.types[id];
+        match t.kind {
+            TyKind::String | TyKind::Bytes => t.bits == 0 || t.words == 1,
+            TyKind::Record | TyKind::Tuple | TyKind::List | TyKind::Option => false,
+            _ => t.words == 1 && !self.abi_dyn(id),
+        }
+    }
+
+    /// One static word read from calldata where it lies.
+    pub(super) fn cd_static(&self, ty: usize) -> bool {
+        self.cd_readable(ty) && !self.is_dynamic(self.peel_nominal(ty))
+    }
+
+    /// Whether a constant list or record, decoded from calldata, can stay there, checked
+    /// once where it is decoded: a list of records or words only walked by `for` and asked
+    /// for its length, a record only read by field, or either passed to an inlined call's
+    /// constant parameter that can. Nothing a continuation reads.
+    pub(super) fn cd_checkable(&self, func: usize, sym: usize) -> bool {
+        let info = &self.checked.syms[sym];
+        if info.mutable || info.storage || self.continuation_syms(func).contains(&sym) {
+            return false;
+        }
+        let t = &self.checked.types[self.peel_nominal(info.ty)];
+        let record = |ty: usize| {
+            let t = &self.checked.types[self.peel_nominal(ty)];
+            t.kind == TyKind::Record && t.fields.iter().all(|f| self.cd_readable(f.ty))
+        };
+        let list = t.kind == TyKind::List && t.bits == 0;
+        match t.elem {
+            Some(elem) if list && (record(elem) || self.cd_static(elem)) => {}
+            _ if !list && record(info.ty) => {}
+            _ => return false,
+        }
+        let (uses, fine) = (std::cell::Cell::new(0usize), std::cell::Cell::new(0usize));
+        let bad = std::cell::Cell::new(false);
+        let own = |e: &Expr| matches!(e, Expr::Ident { sym: Some(s), builtin: None, .. } if *s == sym);
+        let count = |node: Node<'_>| {
+            let add = |n: usize| fine.set(fine.get() + n);
+            match node {
+                Node::Expr(e) if own(e) => uses.set(uses.get() + 1),
+                Node::Expr(Expr::Field { base, name, .. }) if own(base) => {
+                    if !list || name == "length" {
+                        add(1)
+                    }
+                }
+                // A loop over the list names it in its element read, `xs[i]`.
+                Node::Stmt(Stmt::For {
+                    elem_init: Some(Expr::Index { base, .. }),
+                    elem,
+                    list: None,
+                    ..
+                }) if list && own(base) => {
+                    match elem {
+                        Some(e) if !self.cd_static(self.checked.syms[*e].ty)
+                            && !self.cd_checkable(func, *e) => bad.set(true),
+                        _ => {}
+                    }
+                    add(1)
+                }
+                Node::Expr(Expr::Call {
+                    callee: Some(idx),
+                    builtin: None,
+                    args,
+                    ..
+                }) if self.inlines(*idx) => {
+                    let later = self.continuation_syms(*idx);
+                    let params = &self.checked.prog.funcs[*idx].params;
+                    for (a, p) in args.iter().zip(params) {
+                        if own(a)
+                            && p.sym.is_some_and(|s| !later.contains(&s) && self.cd_checkable(*idx, s))
+                        {
+                            add(1)
+                        }
+                    }
+                }
+                _ => {}
+            }
+            false
+        };
+        let f = &self.checked.prog.funcs[func];
+        for st in &f.stmts {
+            self.stmt_any(st, &count, &mut Vec::new());
+        }
+        if let Some(tail) = &f.tail {
+            self.expr_any(tail, &count, &mut Vec::new());
+        }
+        !bad.get() && uses.get() == fine.get()
+    }
+
+    /// Pushes the calldata position of `init`, bound to the constant `sym` of `func`, and
+    /// keeps `sym` in calldata, when `init` is a value `cd_checked` keeps or an
+    /// `Abi.decode` of calldata, which is checked here as decoding it would be. Returns
+    /// whether it was one.
+    pub(super) fn bind_cd_checked(
+        &mut self,
+        func: Option<usize>,
+        sym: usize,
+        init: &Expr,
+    ) -> Result<bool, Error> {
+        self.cd_checked.remove(&sym);
+        let decoded = match init {
+            Expr::Ident { sym: Some(from), builtin: None, .. } if self.cd_checked.contains(from) => {
+                None
+            }
+            Expr::Call {
+                builtin: Some(Builtin::AbiDecode),
+                args,
+                ty,
+                ..
+            } if !matches!(args.get(1), Some(Expr::Tuple { .. }))
+                && self.abi_dyn(*ty)
+                && self.cd_source(&args[0]) =>
+            {
+                Some((&args[0], *ty))
+            }
+            _ => return Ok(false),
+        };
+        if self.init || !func.is_some_and(|f| self.cd_checkable(f, sym)) {
+            return Ok(false);
+        }
+        match decoded {
+            None => {
+                let Expr::Ident { sym: Some(from), .. } = init else { unreachable!() };
+                self.mload(self.local[*from]);
+            }
+            Some((data, ty)) => {
+                // The head word inside the data, and the offset in it, begin the checker's
+                // first run of checks.
+                let kind = self.decode_src(data)?;
+                let src = self.tree_src(kind);
+                self.push_u64(32);
+                self.src_origin(src);
+                self.src_size(src);
+                self.op(SUB);
+                self.op(PUSH0);
+                self.src_word(src);
+                self.op(SWAP1);
+                self.op(DUP1 + 1);
+                self.op(OR);
+                self.op(SWAP1);
+                self.src_origin(src);
+                self.op(DUP1);
+                self.op(SWAP1 + 1);
+                self.op(SWAP1);
+                self.call_sub(Sub::TreeCheck(self.peel_nominal(ty), kind, false));
+            }
+        }
+        self.cd_checked.insert(sym);
+        Ok(true)
+    }
+
+    /// Whether `Abi.decode` reads `data` from calldata: a `bytes` parameter kept there, or
+    /// a slice of one.
+    fn cd_source(&self, data: &Expr) -> bool {
+        match data {
+            Expr::Call {
+                builtin: Some(Builtin::BytesSlice),
+                args,
+                ..
+            } => self.cd_str(&args[0]).is_some(),
+            e => self.cd_str(e).is_some(),
+        }
+    }
+
+    /// The function whose body declares the constant `sym`.
+    pub(super) fn home_func(&self, sym: usize) -> Option<usize> {
+        let declares = |node: Node<'_>| matches!(node, Node::Stmt(Stmt::Const { sym: Some(s), .. }) if *s == sym);
+        // Every function counts as seen, so the walk stays out of callees.
+        let n = self.checked.prog.funcs.len();
+        (0..n).find(|&i| {
+            let f = &self.checked.prog.funcs[i];
+            f.stmts.iter().any(|st| self.stmt_any(st, &declares, &mut (0..n).collect()))
+        })
+    }
+
+    /// `x.f` of a record `cd_checked` keeps: `x`, the field's head offset, and its type.
+    pub(super) fn cd_field(&self, e: &Expr) -> Option<(usize, u32, usize)> {
+        let Expr::Field { base, name, .. } = e else { return None };
+        let Expr::Ident { sym: Some(x), builtin: None, .. } = base.as_ref() else { return None };
+        if !self.cd_checked.contains(x) {
+            return None;
+        }
+        let t = &self.checked.types[self.peel_nominal(self.checked.syms[*x].ty)];
+        if t.kind != TyKind::Record {
+            return None;
+        }
+        let mut off = 0;
+        for f in &t.fields {
+            if &f.name == name {
+                return Some((*x, off, f.ty));
+            }
+            off += self.abi_head(f.ty);
+        }
+        None
+    }
+
+    /// Pushes the calldata position of a `string` or `bytes` field `cd_field` finds: its
+    /// length word.
+    pub(super) fn cd_field_pos(&mut self, x: usize, off: u32) {
+        self.mload(self.local[x]);
+        self.op(DUP1);
+        self.add_const(off);
+        self.cd_load();
+        self.op(ADD);
+    }
+
+    /// Compiles a read of a value `cd_checked` keeps in calldata: a record's field, the
+    /// length of a list or of a record's `bytes`. Returns whether `e` was one.
+    pub(super) fn cd_checked_read(&mut self, e: &Expr) -> Result<bool, Error> {
+        if let Some((x, off, ty)) = self.cd_field(e) {
+            if self.is_dynamic(self.peel_nominal(ty)) {
+                // Copied out, as a value in memory.
+                self.cd_field_pos(x, off);
+                self.call_sub(Sub::CopyCdBytes);
+            } else {
+                self.mload(self.local[x]);
+                self.add_const(off);
+                self.cd_load();
+                self.align_decoded(self.peel_nominal(ty));
+            }
+            return Ok(true);
+        }
+        let Expr::Field { base, name, .. } = e else { return Ok(false) };
+        if name != "length" {
+            return Ok(false);
+        }
+        match base.as_ref() {
+            Expr::Ident { sym: Some(s), builtin: None, .. } if self.cd_checked.contains(s) => {
+                self.mload(self.local[*s]);
+            }
+            b => match self.cd_field(b) {
+                Some((x, off, ty)) if self.is_dynamic(self.peel_nominal(ty)) => {
+                    self.cd_field_pos(x, off)
+                }
+                _ => return Ok(false),
+            },
+        }
+        self.cd_load();
+        Ok(true)
+    }
+
+    /// `[len, data]` of a `string` or `bytes` field `cd_field` finds, copied from calldata
+    /// into a new blob. Returns whether `e` was one.
+    pub(super) fn cd_field_span(&mut self, e: &Expr) -> Result<bool, Error> {
+        let Some((x, off, ty)) = self.cd_field(e) else { return Ok(false) };
+        if !self.is_dynamic(self.peel_nominal(ty)) {
+            return Ok(false);
+        }
+        // [pos, len, header] becomes [len, header + 32], the bytes copied after the header.
+        self.cd_field_pos(x, off);
+        self.op(DUP1);
+        self.cd_load();
+        self.op(DUP1);
+        self.alloc_blob()?;
+        self.op(SWAP1 + 1);
+        self.push_u64(32);
+        self.op(ADD);
+        self.op(DUP1 + 1);
+        self.op(SWAP1);
+        self.op(DUP1 + 3);
+        self.push_u64(32);
+        self.op(ADD);
+        self.cd_copy();
+        self.op(SWAP1);
+        self.push_u64(32);
+        self.op(ADD);
+        Ok(true)
     }
 
     /// The word holding a `string` or `bytes` parameter's calldata position, if it is one
@@ -1681,7 +2516,6 @@ impl<'a> Gen<'a> {
         ty: usize,
         dst: i32,
     ) -> Result<(), Error> {
-        let kind = self.decode_src(data)?;
         let fields: Vec<(usize, Addr)> = if matches!(types, Expr::Tuple { .. }) {
             self.checked.types[self.peel_nominal(ty)]
                 .fields
@@ -1691,6 +2525,7 @@ impl<'a> Gen<'a> {
         } else {
             vec![(ty, Addr::Mem(dst))]
         };
+        let kind = self.decode_src(data)?;
         self.tree_tuple(kind, &fields)
     }
 
@@ -1753,12 +2588,13 @@ impl<'a> Gen<'a> {
 
     /// Whether a value lives in memory, found from a local through lists, fixed lists, and
     /// record fields.
-    fn mem_path(&self, e: &Expr) -> bool {
+    pub(super) fn mem_path(&self, e: &Expr) -> bool {
         match e {
             Expr::Ident { sym: Some(s), .. } => {
                 !self.checked.syms[*s].storage
                     && !self.cd_lists.contains(s)
                     && !self.cd_bytes.contains(s)
+                    && !self.cd_checked.contains(s)
                     && Some(*s) != self.returned
             }
             Expr::Index { base, .. } => {
@@ -1846,24 +2682,59 @@ impl<'a> Gen<'a> {
     }
 
     /// Where `Abi.decode` reads, set in the words the decoders read it from: a `bytes`
-    /// parameter still in calldata, or a value in memory.
+    /// parameter still in calldata, or a value in memory. The decoders read it by
+    /// position, so where it starts and ends is kept.
     pub(super) fn decode_src(&mut self, data: &Expr) -> Result<SrcKind, Error> {
         match data {
+            // A slice is decoded where it lies, bounded by its span.
+            Expr::Call {
+                builtin: Some(Builtin::BytesSlice),
+                args,
+                ..
+            } if !matches!(&args[0], Expr::Call { builtin: Some(Builtin::Code), .. }) => {
+                let cd = self.cd_str(&args[0]);
+                if let Some(at) = cd {
+                    self.mload(at);
+                    self.op(DUP1);
+                    self.cd_load();
+                    self.op(SWAP1);
+                    self.push_u64(32);
+                    self.op(ADD);
+                } else {
+                    self.span_of(&args[0])?;
+                }
+                for arg in &args[1..] {
+                    self.compile_value(arg)?;
+                }
+                let checked = !self.slice_proven(args);
+                self.slice_span(args.len() == 3, checked)?;
+                // [src, n] becomes the start and the end.
+                self.op(DUP1 + 1);
+                self.op(ADD);
+                self.mstore_off(self.tree_end);
+                self.mstore_off(self.tree_at);
+                Ok(if cd.is_some() { SrcKind::Cd } else { SrcKind::Mem })
+            }
             Expr::Ident { sym: Some(sym), .. } if self.cd_bytes.contains(sym) => {
+                // [len, p + 32]: the length word at `p`, the bytes after it.
                 self.mload(self.local[*sym]);
                 self.op(DUP1);
                 self.cd_load();
-                self.mstore_off(self.tree_len);
+                self.op(SWAP1);
                 self.push_u64(32);
                 self.op(ADD);
+                self.op(DUP1);
                 self.mstore_off(self.tree_at);
+                self.op(ADD);
+                self.mstore_off(self.tree_end);
                 Ok(SrcKind::Cd)
             }
             _ => {
-                self.compile_value(data)?;
-                self.bytes_span();
+                self.span_of(data)?;
+                self.op(DUP1);
                 self.mstore_off(self.tree_at);
-                self.mstore_off(self.tree_len);
+                self.op(ADD);
+                self.mstore_off(self.tree_end);
                 Ok(SrcKind::Mem)
             }
         }
@@ -1949,6 +2820,8 @@ pub(super) struct Part {
     pub(super) at: Addr,
     pub(super) ty: usize,
     pub(super) cd: bool,
+    /// Left in calldata and already checked as decoding would check it.
+    pub(super) checked: bool,
 }
 
 /// A piece of a concatenation: staged in a memory word, a literal word of `n` bytes, a
@@ -1958,4 +2831,9 @@ enum Piece {
     Word(Word, u32),
     Calldata(i32),
     Stored(usize, u32),
+    /// A slice's staged value and bounds, whether they need checking, and the words a loop
+    /// keeps the value's span in, when it does.
+    Slice(Vec<i32>, bool, Option<(i32, i32)>),
+    /// A `bytes` or `string` value whose length and data a loop keeps.
+    Kept(i32, i32),
 }

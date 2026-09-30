@@ -537,6 +537,120 @@ fn abi_decode_checks_what_it_reads() {
     assert!(!c.send(0, "to_small(bytes)", &[Arg::B(word(256))]));
     assert!(!c.send(0, "to_small(bytes)", &[Arg::B(word(200)[..31].to_vec())]));
     assert!(!c.send(0, "to_small(bytes)", &[Arg::B(vec![])]));
+
+    // A one-word value decoded from its own encoding keeps the ABI word and its checks.
+    let low = Word::from_u64(1).shl(160).wrapping_sub(Word::from_u64(1));
+    assert_eq!(c.word("as_address(uint256)", &[Arg::W(low)]), low);
+    assert!(!c.send(
+        0,
+        "as_address(uint256)",
+        &[Arg::W(low.wrapping_add(Word::from_u64(1)))]
+    ));
+    let selector = Word::from_u64(0x1234_5678).shl(224);
+    assert_eq!(c.word("as_word(bytes4)", &[Arg::W(selector)]), selector);
+    assert_eq!(
+        c.word("as_selector(bytes32)", &[Arg::W(selector)]),
+        selector
+    );
+    assert!(!c.send(
+        0,
+        "as_selector(bytes32)",
+        &[Arg::W(selector.bitor(Word::from_u64(1)))]
+    ));
+}
+
+/// `Abi.decode` of a slice reads the slice where it lies, in calldata or memory, with
+/// offsets from the slice's start; and a guard proves the words a `Bytes.word` reads.
+#[test]
+fn abi_decode_reads_slices_in_place() {
+    let runtime = deploy(
+        &compile(
+            "\
+import \"std/abi\"; import \"std/bytes\";
+contract Slices is {
+  type uints is list(uint);
+  error Short;
+  storage is record {}
+  external pure function from_calldata(const data : bytes; const s : uint; const e : uint)
+    : list(uint)
+  is
+    Abi.decode(data[s : e], uints)
+  external pure function from_memory(const data : bytes; const s : uint) : list(uint) is {
+    var copy : bytes := data;
+    copy := Bytes.concat(copy, \"\");
+  } with Abi.decode(copy[s:], uints)
+  external pure function guarded(const data : bytes; const i : uint) : bytes32
+    raises Short
+  is {
+    assert(i + 32 <= data.length, Short);
+  } with Bytes.word(data, i)
+  external pure function cut(const data : bytes; const s : uint; const e : uint) : bytes is
+    data[s:e]
+  external pure function last(const data : bytes) : bytes32 is
+    Bytes.word(data, data.length - 32)
+}
+",
+        )
+        .expect("compile"),
+    )
+    .expect("deploy");
+    let word = |n: u64| Word::from_u64(n).to_be_bytes().to_vec();
+    let list = [word(32), word(2), word(7), word(9)].concat();
+    let data = [vec![0xaa; 5], list.clone(), vec![0xbb; 3]].concat();
+    let w = Word::from_u64;
+    let cd = |s: u64, e: u64| {
+        call_raw(
+            &runtime,
+            &encode_args(
+                "from_calldata(bytes,uint256,uint256)",
+                &[Arg::B(data.clone()), Arg::W(w(s)), Arg::W(w(e))],
+            ),
+        )
+    };
+    let out = cd(5, 5 + list.len() as u64);
+    assert!(!out.reverted);
+    assert_eq!(out.returndata, [word(32), list[32..].to_vec()].concat());
+    // The slice bounds the data: one byte short of the list is too short.
+    assert!(cd(5, 4 + list.len() as u64).reverted);
+    let panic = |out: &Outcome| out.reverted && out.returndata[..4] == selector("Panic(uint256)");
+    assert!(panic(&cd(6, 5)));
+    assert!(panic(&cd(5, data.len() as u64 + 1)));
+    let out = call_raw(
+        &runtime,
+        &encode_args(
+            "from_memory(bytes,uint256)",
+            &[Arg::B([vec![1; 3], list.clone()].concat()), Arg::W(w(3))],
+        ),
+    );
+    assert!(!out.reverted);
+    assert_eq!(out.returndata, [word(32), list[32..].to_vec()].concat());
+    let guarded = |i: u64| {
+        call_raw(
+            &runtime,
+            &encode_args("guarded(bytes,uint256)", &[Arg::B(data.clone()), Arg::W(w(i))]),
+        )
+    };
+    assert_eq!(guarded(5).returndata, word(32));
+    assert_eq!(guarded(data.len() as u64 - 32).returndata, data[data.len() - 32..].to_vec());
+    assert_eq!(guarded(data.len() as u64 - 31).returndata, selector("Short()").to_vec());
+    // A slice of a calldata parameter is copied from calldata, bounds checked.
+    let cut = |s: u64, e: u64| {
+        call_raw(
+            &runtime,
+            &encode_args(
+                "cut(bytes,uint256,uint256)",
+                &[Arg::B(data.clone()), Arg::W(w(s)), Arg::W(w(e))],
+            ),
+        )
+    };
+    assert_eq!(abi_string_value(&cut(3, 40).returndata), data[3..40].to_vec());
+    assert_eq!(abi_string_value(&cut(7, 7).returndata), Vec::<u8>::new());
+    assert!(panic(&cut(8, 7)));
+    assert!(panic(&cut(0, data.len() as u64 + 1)));
+    let last = |d: Vec<u8>| call_raw(&runtime, &encode_args("last(bytes)", &[Arg::B(d)]));
+    assert_eq!(last(data.clone()).returndata, data[data.len() - 32..].to_vec());
+    assert_eq!(last(vec![9; 32]).returndata, vec![9; 32]);
+    assert!(panic(&last(vec![9; 31])));
 }
 
 /// Strings, bytes, lists of them, and nominal strings compare by content.

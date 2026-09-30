@@ -1344,6 +1344,43 @@ external function refuse() raises Refused is {{
     );
 }
 
+/// An inlined call's literal string argument that every read folds, down to a branch
+/// its length rules out, is never built; one a read needs is, and both store alike.
+#[test]
+fn literal_string_arguments_fold_or_build() {
+    const LONG: &str = "a string that is longer than one word";
+    let src = format!(
+        "\
+import \"std/crypto\";
+storage is record {{ h : bytes32; n : uint; w : bytes32; s : string; }}
+function note(const s : string) is {{
+  storage.h := Crypto.keccak256(s);
+  storage.n := s.length;
+  storage.w := bytes32(uint(bytes32(bytes(s))) | s.length);
+  if s.length > 31 then {{
+    storage.s := s;
+  }}
+}}
+external function short() is note(\"short\")
+external function long() is note(\"{LONG}\")
+"
+    );
+    let runtime = deploy(&compile(&src).expect("compile")).expect("deploy");
+    for (sig, text) in [("short()", "short"), ("long()", LONG)] {
+        let out = call(&runtime, sig, &[]);
+        assert!(!out.reverted, "{}", pretty(&out.returndata));
+        assert_eq!(slot(&out.storage, 0), keccak_word(text.as_bytes()), "{sig}");
+        assert_eq!(slot(&out.storage, 1), Word::from_u64(text.len() as u64), "{sig}");
+        let mut word = [0u8; 32];
+        let n = text.len().min(32);
+        word[..n].copy_from_slice(&text.as_bytes()[..n]);
+        word[31] |= text.len() as u8;
+        assert_eq!(slot(&out.storage, 2), Word::from_be_bytes(word), "{sig}");
+        let header = if text.len() > 31 { 2 * text.len() as u64 + 1 } else { 0 };
+        assert_eq!(slot(&out.storage, 3), Word::from_u64(header), "{sig}");
+    }
+}
+
 /// A list literal passed to a function whose list parameter could be a stored list takes
 /// its type from the parameter, as it does for any other function.
 #[test]
@@ -2302,6 +2339,49 @@ external pure function checksum(const a : address) : string is
     let err = compile("import \"std/uint\"; storage is record { n : uint; }\nexternal pure function f(const n : uint; const m : int) : string is Uint.to_hex_string(n, m)\n")
         .expect_err("signed length");
     assert!(err.to_string().contains("a length must be `uint`"), "{err}");
+}
+
+/// `Uint.pop_count` and `Uint.clz` agree with Rust's `count_ones` and `leading_zeros` at
+/// the edges, on runtime values and folded constants alike.
+#[test]
+fn uint_bits_count() {
+    let src = r#"import "std/list"; import "std/uint"; 
+storage is record { n : uint; }
+
+external pure function pop_count(const x : uint) : uint is Uint.pop_count(x)
+
+external pure function clz(const x : uint) : uint is Uint.clz(x)
+
+external pure function folded() : (uint, uint, uint, uint) is
+  (Uint.pop_count(Uint.max), Uint.clz(0), Uint.clz(1), Uint.pop_count(0xf0f0))
+"#;
+    let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
+    let w = Word::from_u64;
+    let word = |sig: &str, x: Word| {
+        let out = call(&runtime, sig, &[x]);
+        assert!(!out.reverted, "{sig}: {}", pretty(&out.returndata));
+        load_bytes(&out.returndata, 0)
+    };
+    let mut xs = vec![w(0), w(1), w(3), w(0).not(), w(0).not().shr(1), w(0x5555_5555)];
+    for k in 0..256 {
+        xs.extend([w(1).shl(k), w(1).shl(k).wrapping_sub(w(1)), w(0).not().shl(k)]);
+    }
+    let mut seed = w(0x9e37_79b9_7f4a_7c15);
+    for _ in 0..64 {
+        seed = seed.wrapping_mul(w(0x5851_f42d_4c95_7f2d)).wrapping_add(w(0x1405_7b7e_f767_814f));
+        xs.extend([seed, seed.shr(seed.0[0] as u32 % 256)]);
+    }
+    for x in xs {
+        let ones: u32 = x.0.iter().map(|l| l.count_ones()).sum();
+        let zeros = x.0.iter().rposition(|l| *l != 0).map_or(256, |i| 64 * (3 - i as u32) + x.0[i].leading_zeros());
+        assert_eq!(word("pop_count(uint256)", x), w(u64::from(ones)), "pop_count {x:?}");
+        assert_eq!(word("clz(uint256)", x), w(u64::from(zeros)), "clz {x:?}");
+    }
+    let out = call(&runtime, "folded()", &[]);
+    assert_eq!(
+        (0..4).map(|i| load_bytes(&out.returndata, 32 * i)).collect::<Vec<_>>(),
+        [w(256), w(256), w(255), w(8)]
+    );
 }
 
 /// `List.pop` drops the last element of a stored list, clearing its slots as Solidity's
@@ -3968,10 +4048,13 @@ const MEMBERS: &[Builtin] = &[
     Builtin::AbiEncodeCall,
     Builtin::BytesConcat,
     Builtin::StringConcat,
+    Builtin::StringCase(false),
+    Builtin::StringCase(true),
     Builtin::Join(false),
     Builtin::Join(true),
     Builtin::StringEscape(false),
     Builtin::StringEscape(true),
+    Builtin::StringIndexOf,
     Builtin::StringReplace,
     Builtin::UintDivRem,
     Builtin::BytesWord,
@@ -3982,6 +4065,8 @@ const MEMBERS: &[Builtin] = &[
     Builtin::UintMulDiv,
     Builtin::UintMulMod,
     Builtin::UintAddMod,
+    Builtin::UintPopCount,
+    Builtin::UintClz,
     Builtin::IntDivRem,
     Builtin::UintToString,
     Builtin::IntToString,
@@ -3992,6 +4077,7 @@ const MEMBERS: &[Builtin] = &[
     Builtin::FromBits(true),
     Builtin::ListPop,
     Builtin::ListPush,
+    Builtin::ListResized,
     Builtin::AbiSupportsInterface,
     Builtin::CreationCode,
     Builtin::FacetAddress,
@@ -4059,8 +4145,10 @@ fn module_member(kind: Builtin) -> bool {
         | Builtin::AbiEncodeCall
         | Builtin::BytesConcat
         | Builtin::StringConcat
+        | Builtin::StringCase(_)
         | Builtin::Join(_)
         | Builtin::StringEscape(_)
+        | Builtin::StringIndexOf
         | Builtin::StringReplace
         | Builtin::UintDivRem
         | Builtin::BytesWord
@@ -4071,6 +4159,8 @@ fn module_member(kind: Builtin) -> bool {
         | Builtin::UintMulDiv
         | Builtin::UintMulMod
         | Builtin::UintAddMod
+        | Builtin::UintPopCount
+        | Builtin::UintClz
         | Builtin::IntDivRem
         | Builtin::UintToString
         | Builtin::IntToString
@@ -4079,6 +4169,7 @@ fn module_member(kind: Builtin) -> bool {
         | Builtin::FromBits(_)
         | Builtin::ListPop
         | Builtin::ListPush
+        | Builtin::ListResized
         | Builtin::AbiSupportsInterface
         | Builtin::CreationCode
         | Builtin::FacetAddress
@@ -4147,6 +4238,7 @@ fn intrinsics_state_what_the_checker_enforces() {
         Tag::IntMin,
         Tag::IntMax,
         Tag::AddressZero,
+        Tag::EvmOsaka,
         Tag::AbiSelector,
         Tag::AbiInterfaceId,
     ] {
@@ -4436,6 +4528,80 @@ external view function lengths(const ps : list(uint, 2)) : (uint, uint, uint, ui
     )
     .expect_err("unnamed fixed list");
     assert!(err.to_string().contains("name this fixed list"), "{err}");
+}
+
+/// `List.resized` copies a list's first elements and pads it with zero values, from
+/// calldata, memory, storage, and nothing; the padded lists of records hold empty strings
+/// and lists that fill independently, and a length of 2^64 or more panics with `0x41`.
+#[test]
+fn resized_lists_copy_and_pad() {
+    let src = "\
+import \"std/list\";
+type h is record { s : string; xs : list(uint); o : option(uint); }
+storage is record { kept : list(uint); }
+pure function sum(const xs : list(uint)) : uint is {
+  var total : uint := 0;
+  for (i, x) : (uint, uint) in xs do {
+    total := total + (i + 1) * x;
+  }
+} with total * 1000 + xs.length
+external pure function cd(const xs : list(uint); const n : uint) : uint is sum(List.resized(xs, n))
+external pure function grown(const xs : list(uint); const n : uint) : uint is {
+  var ys : list(uint) := List.resized(xs, xs.length + n);
+  for i : uint in 0 .. n do {
+    ys[xs.length + i] := i + 7;
+  }
+} with sum(ys)
+external pure function mem(const n : uint) : uint is {
+  var xs : list(uint) := [1, 2, 3];
+  const ys : list(uint) := List.resized(xs, n);
+  xs[0] := 9;
+} with sum(ys) * 10 + xs[0]
+external pure function zeros(const n : uint) : uint is {
+  const ys : list(uint) := List.resized([], n);
+} with sum(ys)
+external function stored(const n : uint) : uint is {
+  storage.kept := [4, 5, 6];
+  storage.kept := List.resized(storage.kept, n);
+} with sum(storage.kept)
+external pure function records() : uint is {
+  var hs : list(h) := List.resized([{ s = \"a\"; xs = [1]; o = Some(3); }], 3);
+  List.push(hs[1].xs, 5);
+  List.push(hs[2].xs, 6);
+  List.push(hs[2].xs, 7);
+  const none : uint := case hs[2].o of { | Some(v) -> v + 100 | None -> 0 };
+} with hs[0].xs.length * 100000 + hs[1].xs.length * 10000 + hs[2].xs[1] * 100 + none + (if hs[1].s = \"\" then 1 else 0)
+";
+    let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
+    let w = Word::from_u64;
+    let word = |sig: &str, args: &[Word]| {
+        let out = call(&runtime, sig, args);
+        assert!(!out.reverted, "{sig}: {}", pretty(&out.returndata));
+        load_bytes(&out.returndata, 0)
+    };
+    // `(xs, n)` with `xs = [1, 2, 3]`.
+    let with = |n: u64| [w(0x40), w(n), w(3), w(1), w(2), w(3)];
+    assert_eq!(word("cd(uint256[],uint256)", &with(2)), w(5_002));
+    assert_eq!(word("cd(uint256[],uint256)", &with(5)), w(14_005));
+    assert_eq!(word("cd(uint256[],uint256)", &with(0)), w(0));
+    assert_eq!(word("grown(uint256[],uint256)", &with(2)), w((14 + 4 * 7 + 5 * 8) * 1000 + 5));
+    assert_eq!(word("mem(uint256)", &[w(2)]), w(50_029));
+    assert_eq!(word("mem(uint256)", &[w(4)]), w(140_049));
+    assert_eq!(word("zeros(uint256)", &[w(3)]), w(3));
+    assert_eq!(word("stored(uint256)", &[w(2)]), w(14_002));
+    assert_eq!(word("stored(uint256)", &[w(4)]), w(32_004));
+    assert_eq!(word("records()", &[]), w(100_000 + 10_000 + 700 + 1));
+    for sig in ["zeros(uint256)", "mem(uint256)"] {
+        let out = call(&runtime, sig, &[w(1).shl(64)]);
+        assert!(out.reverted, "{sig}");
+        assert_eq!(load_bytes(&out.returndata, 4), w(0x41), "{sig}");
+    }
+    // A variant pads with its first case, as unwritten storage reads.
+    let src = "import \"std/list\";\ntype v is | A of uint | B of uint\nstorage is record { n : uint; }\n\
+               external pure function f() : uint is { const vs : list(v) := [B(1)]; const ws : list(v) := List.resized(vs, 3); }\n\
+               with case ws[2] of { | A(x) -> x + 10 | B(x) -> x + 20 }\n";
+    let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
+    assert_eq!(load_bytes(&call(&runtime, "f()", &[]).returndata, 0), w(10));
 }
 
 /// A record of one string is one word, the string's, and still a record when it is an

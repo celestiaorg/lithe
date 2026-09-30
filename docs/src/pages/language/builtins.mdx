@@ -131,6 +131,29 @@ external function go() is {
 external function `go` reads `Evm.value()`; write `external payable function`
 ```
 
+### Target fork
+
+`Evm.osaka` is a `bool` constant: whether the code is built for Osaka or later, as [`--evm-version`](/tooling/cli#target-fork) sets. Unlike the rest of `Evm`, a `pure` function can read it. An `if` on it builds only the branch for the target. Both branches are still checked:
+
+```lithe
+import "std/evm";
+import "std/uint";
+
+storage is record {
+  n : uint;
+}
+
+external pure function bit_length(const x : uint) : uint is
+  if Evm.osaka then 256 - Uint.clz(x) else {
+    var n : uint := 0;
+    for _ : uint in 0 .. 256 until x >> n = 0 do {
+      n := n + 1;
+    }
+  } with n
+```
+
+`Uint.clz` works on every fork. The branch is worth writing only when the older fork has a cheaper way than the built-in's own fallback.
+
 ## `Crypto`
 
 Hash functions and signature recovery, from `import "std/crypto";`. Usable in any function, `pure` ones included.
@@ -169,7 +192,7 @@ BLS12-381 points and field elements are `bytes` in EIP-2537's encoding: a field 
 
 A precompile that rejects its input, such as a point off its curve, reverts the transaction, except where the result is a `bool`: `kzg_point_evaluation` and `p256_verify` answer `false` for a proof or signature that does not verify. The pairings answer whether the product of pairings is one, and revert on malformed input.
 
-Each call also checks the size of the answer. On a chain without the precompile, the call reaches an account with no code, which succeeds with no answer: that reverts, or reads as `false`, never as zeros. `Crypto.p256_verify` answers `false` on chains before EIP-7951.
+Each call also checks the size of the answer. On a chain without the precompile, the call reaches an account with no code, which succeeds with no answer: that reverts, or reads as `false`, never as zeros. `Crypto.p256_verify` answers `false` on chains before EIP-7951; `WebAuthn.verify_signature` in [`std/crypto/webauthn`](/stdlib/crypto#webauthn) falls back to Solady's verifier contract there.
 
 The identity precompile, `0x04`, copies its input, which a value already is. `query Evm.static_call(to, data)` reaches any precompile directly.
 
@@ -223,9 +246,11 @@ From `import "std/bytes";` and `import "std/string";`.
 | `Bytes.word(b : bytes, offset : uint)` | `bytes32` | the 32 bytes at `offset`. `Panic(0x32)` if they run past the end |
 | `Bytes.join(xs : list(bytes))` | `bytes` | the values of `xs` one after another, copied once: build a long value by pushing its pieces onto a list, not by concatenating onto a growing one |
 | `String.concat(a, b, ...)` | `string` | `string.concat(a, b, ...)` |
+| `String.lower(s)`, `String.upper(s)` | `string` | Solady's `LibString.lower(s)` and `upper(s)`: ASCII letters recased, every other byte, UTF-8 included, as it was |
 | `String.join(xs : list(string))` | `string` | the strings of `xs` one after another, as `Bytes.join` |
 | `String.escape_json(s)` | `string` | `LibString.escapeJSON(s)`: `"` and `\` backslashed, control characters as `\n`, `\t`, and the like, or `\u00XX`. `String.escape_json(s, quoted : bool)` is `LibString.escapeJSON(s, quoted)`: in double quotes when `quoted`. A slice argument, `s[i:j]`, is read in place, not copied |
 | `String.escape_html(s)` | `string` | `LibString.escapeHTML(s)`: `"`, `&`, `'`, `<`, and `>` as `&quot;`, `&amp;`, `&#39;`, `&lt;`, and `&gt;` |
+| `String.index_of(s, needle, from : uint)` | `uint` | `LibString.indexOf(s, needle, from)`: the byte offset where `needle` first starts, at `from` or later, or `Uint.max`. An empty needle is found at `from`, or at the end if `from` is past it |
 | `String.replace(s, needle, replacement)` | `string` | `LibString.replace(s, needle, replacement)`: every `needle`, left to right, replaced. An empty needle puts `replacement` before each byte and at the end |
 
 ```lithe
@@ -242,7 +267,12 @@ external function greet(const name : string) is {
 
 external pure function tagged(const tag : bytes4; const data : bytes) : bytes is
   Bytes.concat(tag, data)
+
+external pure function attribute(const name : string; const value : string) : string is
+  String.concat("{\"trait_type\":\"", String.escape_json(name), "\",\"value\":\"", String.escape_json(value), "\"}")
 ```
+
+Searching strings is in the standard library's [`Strings`](/stdlib/utils#strings). A slice passed to `Bytes.concat` or `Crypto.keccak256` is read where it lies, not copied first.
 
 `bytes` values index and slice as in Solidity. Each works on parameters, locals, stored values, and call results such as `Evm.calldata()`:
 
@@ -293,7 +323,7 @@ RFC 4648 base64, from `import "std/base64";`, with the same algorithm and lookup
 | `Base64.encode_with(data, file_safe : bool, no_padding : bool)` | `string` | `Base64.encode(data, fileSafe, noPadding)` |
 | `Base64.decode(data)` | `bytes` | `Base64.decode(data)`: either alphabet, padded or not, and `,` for 63 as in RFC 3501 |
 
-Like Solady's, `Base64.decode` does not check its input: other characters decode to unspecified bytes.
+Like Solady's, `Base64.decode` does not check its input. A character Solady's lookup table covers decodes as it does there: `[` as 63, and other characters outside both alphabets below `{` as zero bits. So do `{` to DEL and the control characters, and a byte from `0x80` up decodes as its low seven bits.
 
 ```lithe
 import "std/base64";
@@ -315,6 +345,7 @@ From `import "std/list";`.
 | --- | --- | --- |
 | `List.push(xs, v)` | statement | `xs.push(v)`: appends `v` to a dynamic list |
 | `List.pop(xs)` | statement | `xs.pop()`: drops a dynamic list's last element. `Panic(0x31)` if it is empty |
+| `List.resized(xs, n : uint)` | the type of `xs` | a new list of `xs`'s first `n` elements, padded with zero values to `n`: `List.resized([], n)` is `new T[](n)`. `Panic(0x41)` if `n` is 2^64 or more |
 
 `xs` is a stored list or a `var`, and `List.push(xs, v);` and `List.pop(xs);` are statements: they write `xs` as an assignment would, so a `view` function cannot push to or pop a stored list. A stored list clears the element's slots. To remove an element from the middle, move the last one into its place first:
 
@@ -331,6 +362,21 @@ external function remove(const i : uint) is {
 }
 ```
 
+`List.resized` is an expression, and works on any dynamic list: a parameter, a local, or a stored list, which it reads. The padding is the value unwritten storage reads as: zero words, empty strings, bytes, and lists, `None`, and a variant's first case. Sizing a list once and writing its elements costs less than pushing them one by one:
+
+```lithe
+import "std/list";
+
+storage is record { n : uint; }
+
+external pure function squares(const n : uint) : list(uint) is {
+  var xs : list(uint) := List.resized([], n);
+  for i : uint in 0 .. n do {
+    xs[i] := i * i;
+  }
+} with xs
+```
+
 ## `Uint`, `Int`, and `Address`
 
 From `import "std/uint";`, `import "std/int";`, and `import "std/address";`. Constants take their width from the type the context expects. With no expected type, they are 256-bit.
@@ -343,6 +389,8 @@ From `import "std/uint";`, `import "std/int";`, and `import "std/address";`. Con
 | `Uint.div_rem(a, b)` | `(T, T)` | `(a / b, a % b)` |
 | `Uint.mul_div(a, b, d : uint)` | `uint` | `Math.mulDiv(a, b, d)`: `a * b / d` with the product in 512 bits. `Panic(0x11)` if the result doesn't fit, `Panic(0x12)` if `d` is zero |
 | `Uint.mul_mod(a, b, d : uint)`, `Uint.add_mod(a, b, d : uint)` | `uint` | `mulmod(a, b, d)`, `addmod(a, b, d)`, without overflow. `Panic(0x12)` if `d` is zero |
+| `Uint.pop_count(x : uint)` | `uint` | Solady's `LibBit.popCount(x)`: how many bits are set |
+| `Uint.clz(x : uint)` | `uint` | `LibBit.clz(x)`, `Math.clz(x)`: the zero bits above the highest set bit, 256 for zero. One `CLZ` on Osaka |
 | `Uint.wrapping_add(a, b)`, `Uint.wrapping_sub(a, b)`, `Uint.wrapping_mul(a, b)` | `T`, the unsigned type of both | `unchecked { a + b }` and the like: the result modulo 2^N for `T`'s N bits |
 | `Int.wrapping_add(a, b)`, `Int.wrapping_sub(a, b)`, `Int.wrapping_mul(a, b)` | `T`, the signed type of both | the same for signed types, in two's complement |
 | `Int.div_rem(a, b)` | `(T, T)` | `(a / b, a % b)`, truncating |

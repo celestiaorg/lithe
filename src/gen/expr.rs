@@ -1,7 +1,77 @@
 use super::*;
 
 impl<'a> Gen<'a> {
+    /// `[len, data]` for a `bytes` parameter left in calldata, as `bytes_span` leaves them
+    /// for a value in memory, `data` a calldata position.
+    fn cd_bytes_span(&mut self, sym: usize) {
+        self.mload(self.local[sym]);
+        self.op(DUP1);
+        self.cd_load();
+        self.op(SWAP1);
+        self.push_u64(32);
+        self.op(ADD);
+    }
+
+    pub(super) fn cd_bytes_arg(&self, e: &Expr) -> Option<usize> {
+        match e {
+            Expr::Ident { sym: Some(sym), builtin: None, .. } if self.cd_bytes.contains(sym) => Some(*sym),
+            _ => None,
+        }
+    }
+
     pub(super) fn compile_value(&mut self, e: &Expr) -> Result<(), Error> {
+        if !self.cd_checked.is_empty() && self.cd_checked_read(e)? {
+            return Ok(());
+        }
+        // A value known from literals, as an inlined call's string argument makes one.
+        if matches!(e, Expr::Binary { .. } | Expr::Field { .. } | Expr::Call { builtin: Some(Builtin::Cast), .. }) {
+            if let Some(w) = self.const_word(e) {
+                self.push_word(w);
+                return Ok(());
+            }
+        }
+        // A string or bytes value known from literals and constants is one.
+        if matches!(e, Expr::Call { builtin: Some(Builtin::Cast | Builtin::BytesSlice | Builtin::BytesConcat | Builtin::StringConcat), .. })
+            && self.is_dynamic(self.peel_nominal(e.ty()))
+        {
+            if let Some(bytes) = self.const_str(e) {
+                if bytes.len() > 31 {
+                    return self.push_long(&bytes);
+                }
+                self.push_short(Word::short_dyn(&bytes));
+                return Ok(());
+            }
+        }
+        let answer = |x: &Expr| matches!(x, Expr::Ident { sym: Some(s), .. } if self.rd_first.contains(s));
+        match e {
+            Expr::Field { base, name, .. } if name == "length" && answer(base) => {
+                self.op(RETURNDATASIZE);
+                return Ok(());
+            }
+            Expr::Call {
+                builtin: Some(Builtin::Cast),
+                args,
+                ty,
+                ..
+            } if args.len() == 1 && answer(&args[0]) => {
+                // The call zeroed the word past the answer's end; `bytesN` keeps N bytes.
+                self.mload(self.ret_scratch);
+                let n = self.checked.types[self.peel_nominal(*ty)].bits;
+                if n < 32 {
+                    self.push_u64(256 - 8 * u64::from(n));
+                    self.op(SHR);
+                }
+                return Ok(());
+            }
+            _ => {}
+        }
+        if let Expr::Field { base, name, .. } = e {
+            if let Some(sym) = self.cd_bytes_arg(base).filter(|_| name == "length") {
+                self.mload(self.local[sym]);
+                self.cd_load();
+                return Ok(());
+            }
+        }
         if self.deep(e) {
             return self.deep_read_word(e);
         }
@@ -91,6 +161,21 @@ impl<'a> Gen<'a> {
                 }
                 return Ok(());
             }
+            let mem_slice = |e: &Expr| {
+                matches!(e, Expr::Call { builtin: Some(Builtin::BytesSlice), args, .. }
+                    if !matches!(&args[0], Expr::Call { builtin: Some(Builtin::Code), .. }))
+            };
+            // A slice is compared where it lies, by its hash.
+            if self.is_dynamic(self.peel_nominal(left.ty())) && (mem_slice(left) || mem_slice(right)) {
+                for side in [left, right] {
+                    self.compile_hash(std::slice::from_ref(side.as_ref()), None)?;
+                }
+                self.op(EQ);
+                if *op == BinOp::Neq {
+                    self.op(ISZERO);
+                }
+                return Ok(());
+            }
             if self.is_dynamic(self.peel_nominal(left.ty())) {
                 self.eq_sites += 1;
                 if self.plan.shared_eq {
@@ -99,8 +184,7 @@ impl<'a> Gen<'a> {
                     self.call_sub(Sub::BytesEq);
                 } else {
                     for side in [left, right] {
-                        self.compile_value(side)?;
-                        self.bytes_span();
+                        self.span_of(side)?;
                         self.op(KECCAK);
                     }
                     self.op(EQ);
@@ -162,7 +246,7 @@ impl<'a> Gen<'a> {
                     self.push_u64(0);
                     Ok(())
                 }
-                Lit::Nil => Err(error(*line, *col, "this value is not a word")),
+                Lit::Nil | Lit::Zero => Err(error(*line, *col, "this value is not a word")),
             },
             Expr::Ident {
                 builtin: Some(b),
@@ -225,6 +309,17 @@ impl<'a> Gen<'a> {
                 if let Some(at) = self.cd_str(base) {
                     self.mload(at);
                     self.cd_load();
+                    return Ok(());
+                }
+                if let Some(&(len, _)) = self.kept_span(base) {
+                    self.mload(len);
+                    return Ok(());
+                }
+                if self.known_blob(base) {
+                    self.compile_value(base)?;
+                    self.push_u64(1);
+                    self.op(SHR);
+                    self.op(MLOAD);
                     return Ok(());
                 }
                 self.compile_value(base)?;
@@ -325,11 +420,28 @@ impl<'a> Gen<'a> {
             Expr::Index {
                 root: Some(sid),
                 leaf,
+                base,
                 index,
                 line,
                 col,
                 ..
-            } => self.compile_index_read(*sid, *leaf, index, *line, *col, false),
+            } => {
+                let proven = self.trusted_index || self.index_proven(base, index);
+                let trusted = std::mem::replace(&mut self.trusted_index, proven);
+                let result = self.compile_index_read(*sid, *leaf, index, *line, *col, false);
+                self.trusted_index = trusted;
+                result
+            }
+            // A negated constant is the constant: `-Int.min` still panics.
+            Expr::Unary {
+                op: UnOp::Neg,
+                expr,
+                ..
+            } if self.const_word(expr).is_some_and(|w| w != Word::from_u64(1).shl(255)) => {
+                let w = self.const_word(expr).expect("constant");
+                self.push_word(w.wrapping_neg());
+                Ok(())
+            }
             Expr::Unary { op, expr, .. } => {
                 self.compile_value(expr)?;
                 match op {
@@ -378,6 +490,10 @@ impl<'a> Gen<'a> {
                 if *op == BinOp::Cons {
                     return Err(error(*line, *col, "`#` is not a word"));
                 }
+                if let Some(w) = self.const_word(e) {
+                    self.push_word(w);
+                    return Ok(());
+                }
                 // A string or bytes value is empty when its word is zero or its blob's length is.
                 if let (
                     BinOp::Gt | BinOp::Neq | BinOp::Eq,
@@ -415,6 +531,45 @@ impl<'a> Gen<'a> {
                     }
                 }
                 // `and` and `or` evaluate their right side only when the left does not decide.
+                // A chain of them jumps to one block that pushes the deciding value.
+                let mut chain = Vec::new();
+                if matches!(op, BinOp::And | BinOp::Or) {
+                    self.chain(e, *op, &mut chain);
+                }
+                if chain.len() >= 4 {
+                    let (decided, end) = (self.fresh(), self.fresh());
+                    let mark = self.facts.len();
+                    let last = chain.len() - 1;
+                    self.branch += 1;
+                    let result = chain.iter().enumerate().try_for_each(|(i, group)| {
+                        for (j, x) in group.iter().enumerate() {
+                            self.compile_value(x)?;
+                            if j > 0 {
+                                self.op(if *op == BinOp::And { AND } else { OR });
+                            }
+                        }
+                        if i < last {
+                            if *op == BinOp::And {
+                                self.op(ISZERO);
+                            }
+                            self.push_label(decided);
+                            self.op(JUMPI);
+                            for x in group {
+                                self.assume(x, *op == BinOp::And);
+                            }
+                        }
+                        Ok(())
+                    });
+                    self.facts.truncate(mark);
+                    self.branch -= 1;
+                    result?;
+                    self.push_label(end);
+                    self.op(JUMP);
+                    self.jumpdest(decided);
+                    self.push_u64(u64::from(*op == BinOp::Or));
+                    self.jumpdest(end);
+                    return Ok(());
+                }
                 if matches!(op, BinOp::And | BinOp::Or) && !self.eager_ok(right) {
                     let end = self.fresh();
                     self.compile_value(left)?;
@@ -444,8 +599,18 @@ impl<'a> Gen<'a> {
                 if *op == BinOp::Pow {
                     return self.compile_pow(e, left, right);
                 }
-                self.compile_value(left)?;
-                self.compile_value(right)?;
+                // With a constant side, which can't fail, the simple forms below take the
+                // right side first, so the operation needs no swap.
+                let swapless = matches!(*op, BinOp::Div | BinOp::Mod | BinOp::Sub)
+                    && (self.const_word(right).is_some() || self.const_word(left).is_some())
+                    && self.simple_bin(*op, left, right);
+                if swapless {
+                    self.compile_value(right)?;
+                    self.compile_value(left)?;
+                } else {
+                    self.compile_value(left)?;
+                    self.compile_value(right)?;
+                }
                 // A loop counter is below its limit, so one more always fits its type.
                 if *op == BinOp::Add
                     && matches!(left.as_ref(), Expr::Ident { sym: Some(c), .. } if self.loop_counters.contains(c))
@@ -479,15 +644,22 @@ impl<'a> Gen<'a> {
                     .then(|| lit(right).or_else(|| lit(left)))
                     .flatten()
                     .filter(|&c| !self.plan.shared_mul || pow2(c).is_some());
-                // A narrow difference that wraps is out of its type's range, which `narrow` checks.
-                if proven || (!signed && narrowed && *op == BinOp::Sub) {
+                if self.simple_bin(*op, left, right) {
+                    if !swapless && *op != BinOp::Add && *op != BinOp::Mul {
+                        self.op(SWAP1);
+                    }
                     match op {
                         BinOp::Add => self.op(ADD),
                         BinOp::Mul => self.op(MUL),
-                        _ => {
-                            self.op(SWAP1);
-                            self.op(SUB);
+                        BinOp::Div | BinOp::Mod => {
+                            self.op(match (op, signed) {
+                                (BinOp::Div, false) => DIV,
+                                (BinOp::Div, true) => SDIV,
+                                (_, false) => MOD,
+                                _ => SMOD,
+                            });
                         }
+                        _ => self.op(SUB),
                     }
                 } else if let Some(c) = factor {
                     // By a constant, the product fits when dividing it back gives the other
@@ -517,6 +689,19 @@ impl<'a> Gen<'a> {
                         self.op(SWAP1);
                         self.op(POP);
                     }
+                } else if let Some(on_top) = (*op == BinOp::Mul && signed)
+                    .then(|| self.plain_factor(right).then_some(true).or(self.plain_factor(left).then_some(false)))
+                    .flatten()
+                {
+                    self.checked_mul_by_constant(on_top)?;
+                } else if matches!(*op, BinOp::Div | BinOp::Mod) && self.divisor_safe(right, signed) {
+                    self.op(SWAP1);
+                    self.op(match (*op, signed) {
+                        (BinOp::Div, false) => DIV,
+                        (BinOp::Div, true) => SDIV,
+                        (_, false) => MOD,
+                        (_, true) => SMOD,
+                    });
                 } else {
                     self.finish_bin(*op, signed, bits)?;
                 }
@@ -707,6 +892,7 @@ impl<'a> Gen<'a> {
                 self.call_sub(Sub::ChecksumString);
             }
             Builtin::FromBits(_) => self.compile_value(&args[0])?,
+            Builtin::ListResized => return self.compile_resized(args, ty),
             Builtin::ListPop | Builtin::ListPush => {
                 return Err(error(
                     line,
@@ -728,8 +914,35 @@ impl<'a> Gen<'a> {
             }
             // Reading past the end panics with `0x32`, as an array index out of bounds does.
             Builtin::BytesWord => {
-                self.compile_value(&args[0])?;
-                self.bytes_span();
+                let cd = self.cd_bytes_arg(&args[0]);
+                if self.word_proven(&args[0], &args[1]) {
+                    match cd {
+                        Some(sym) => {
+                            self.mload(self.local[sym]);
+                            match self.const_word(&args[1]) {
+                                Some(k) => self.push_word(k.wrapping_add(Word::from_u64(32))),
+                                None => {
+                                    self.compile_value(&args[1])?;
+                                    self.op(ADD);
+                                    self.push_u64(32);
+                                }
+                            }
+                            self.op(ADD);
+                            self.cd_load();
+                        }
+                        None => {
+                            self.span_data(&args[0])?;
+                            self.compile_value(&args[1])?;
+                            self.op(ADD);
+                            self.op(MLOAD);
+                        }
+                    }
+                    return Ok(());
+                }
+                match cd {
+                    Some(sym) => self.cd_bytes_span(sym),
+                    None => self.span_of(&args[0])?,
+                }
                 self.compile_value(&args[1])?;
                 self.op(DUP1);
                 self.push_u64(32);
@@ -742,14 +955,18 @@ impl<'a> Gen<'a> {
                 self.op(OR);
                 self.revert_if_panic(0x32)?;
                 self.op(ADD);
-                self.op(MLOAD);
+                if cd.is_some() {
+                    self.cd_load();
+                } else {
+                    self.op(MLOAD);
+                }
                 self.op(SWAP1);
                 self.op(POP);
             }
             Builtin::BytesAt => {
                 let n = u64::from(self.checked.types[args[0].ty()].bits);
-                self.compile_value(&args[0])?;
                 if n > 0 {
+                    self.compile_value(&args[0])?;
                     self.compile_value(&args[1])?;
                     self.push_u64(n);
                     self.op(DUP1 + 1);
@@ -763,7 +980,16 @@ impl<'a> Gen<'a> {
                     self.op(BYTE);
                     return Ok(());
                 }
-                self.bytes_span();
+                if self.index_proven(&args[0], &args[1]) {
+                    self.span_data(&args[0])?;
+                    self.compile_value(&args[1])?;
+                    self.op(ADD);
+                    self.op(MLOAD);
+                    self.push_u64(248);
+                    self.op(SHR);
+                    return Ok(());
+                }
+                self.span_of(&args[0])?;
                 self.compile_value(&args[1])?;
                 self.op(DUP1 + 2);
                 self.op(DUP1 + 1);
@@ -790,13 +1016,39 @@ impl<'a> Gen<'a> {
             {
                 return self.code_slice(args);
             }
+            // A slice of a `bytes` parameter kept in calldata is copied from there.
+            Builtin::BytesSlice if self.cd_str(&args[0]).is_some() => {
+                let at = self.cd_str(&args[0]).expect("in calldata");
+                self.mload(at);
+                self.op(DUP1);
+                self.cd_load();
+                self.op(SWAP1);
+                self.push_u64(32);
+                self.op(ADD);
+                for arg in &args[1..] {
+                    self.compile_value(arg)?;
+                }
+                let checked = !self.slice_proven(args);
+                self.slice_span(args.len() == 3, checked)?;
+                self.op(DUP1);
+                self.alloc_blob()?;
+                self.op(SWAP1 + 1);
+                self.op(DUP1 + 2);
+                self.push_u64(32);
+                self.op(ADD);
+                self.op(CALLDATACOPY);
+                self.tag_blob();
+            }
             Builtin::BytesSlice => {
                 let end = args.len() == 3;
                 self.slice_sites[usize::from(end)] += 1;
                 let shared = self.plan.shared_slice[usize::from(end)];
-                self.compile_value(&args[0])?;
-                if !shared {
-                    self.bytes_span();
+                let checked = !self.slice_proven(args);
+                let shared = shared && checked;
+                if shared {
+                    self.compile_value(&args[0])?;
+                } else {
+                    self.span_of(&args[0])?;
                 }
                 for arg in &args[1..] {
                     self.compile_value(arg)?;
@@ -804,29 +1056,61 @@ impl<'a> Gen<'a> {
                 if shared {
                     self.call_sub(Sub::BytesSlice(end));
                 } else {
-                    self.slice_inline(end)?;
+                    self.slice_inline(end, checked)?;
                 }
             }
             Builtin::Base64Encode
             | Builtin::Base64EncodeUrl
             | Builtin::Base64EncodeWith
             | Builtin::Base64Decode => {
-                for arg in args {
-                    self.compile_value(arg)?;
-                }
-                let flags = match b {
-                    Builtin::Base64Encode => Some(0),
-                    Builtin::Base64EncodeUrl => Some(1),
+                let bool_lit = |e: &Expr| match e {
+                    Expr::Lit {
+                        lit: Lit::Bool(v), ..
+                    } => Some(*v),
                     _ => None,
                 };
-                if let Some(flag) = flags {
-                    self.push_u64(flag);
-                    self.push_u64(flag);
+                let opts = match b {
+                    Builtin::Base64Encode => Some([false, false]),
+                    Builtin::Base64EncodeUrl => Some([true, true]),
+                    Builtin::Base64EncodeWith => bool_lit(&args[1]).zip(bool_lit(&args[2])).map(|(a, b)| [a, b]),
+                    _ => None,
+                };
+                if b != Builtin::Base64Decode {
+                    self.base64_opts.insert(opts);
+                }
+                let opts = opts.filter(|_| self.plan.base64_fixed == opts);
+                if b == Builtin::Base64EncodeWith && opts.is_none() {
+                    for arg in args {
+                        self.compile_value(arg)?;
+                    }
+                } else {
+                    self.compile_value(&args[0])?;
+                    if b != Builtin::Base64Decode && opts.is_none() {
+                        let flag = u64::from(b == Builtin::Base64EncodeUrl);
+                        self.push_u64(flag);
+                        self.push_u64(flag);
+                    }
                 }
                 self.call_sub(if b == Builtin::Base64Decode {
                     Sub::Base64Decode
                 } else {
-                    Sub::Base64Encode
+                    Sub::Base64Encode(opts)
+                });
+            }
+            Builtin::StringCase(upper) => {
+                self.compile_value(&args[0])?;
+                self.push_u64(u64::from(upper));
+                self.call_sub(Sub::StringCase);
+            }
+            Builtin::StringIndexOf | Builtin::StringReplace => {
+                self.compile_span(&args[0])?;
+                for arg in &args[1..] {
+                    self.compile_value(arg)?;
+                }
+                self.call_sub(if b == Builtin::StringIndexOf {
+                    Sub::IndexOf
+                } else {
+                    Sub::Replace
                 });
             }
             Builtin::StringEscape(html) => {
@@ -836,12 +1120,6 @@ impl<'a> Gen<'a> {
                 }
                 self.compile_span(&args[0])?;
                 self.call_sub(Sub::StringEscape(html));
-            }
-            Builtin::StringReplace => {
-                for arg in args {
-                    self.compile_value(arg)?;
-                }
-                self.call_sub(Sub::Replace);
             }
             Builtin::Join(_) => {
                 self.compile_value(&args[0])?;
@@ -888,14 +1166,21 @@ impl<'a> Gen<'a> {
                 self.tag_blob();
             }
             Builtin::Wrapping(op, signed) => {
-                self.compile_value(&args[0])?;
-                self.compile_value(&args[1])?;
-                match op {
-                    BinOp::Add => self.op(ADD),
-                    BinOp::Mul => self.op(MUL),
-                    _ => {
-                        self.op(SWAP1);
-                        self.op(SUB);
+                // A constant side can't fail, so a difference takes the right side first.
+                if op == BinOp::Sub && args.iter().any(|a| self.const_word(a).is_some()) {
+                    self.compile_value(&args[1])?;
+                    self.compile_value(&args[0])?;
+                    self.op(SUB);
+                } else {
+                    self.compile_value(&args[0])?;
+                    self.compile_value(&args[1])?;
+                    match op {
+                        BinOp::Add => self.op(ADD),
+                        BinOp::Mul => self.op(MUL),
+                        _ => {
+                            self.op(SWAP1);
+                            self.op(SUB);
+                        }
                     }
                 }
                 let bits = u32::from(self.checked.types[self.peel_nominal(args[0].ty())].bits);
@@ -923,6 +1208,85 @@ impl<'a> Gen<'a> {
                     ADDMOD
                 });
             }
+            // Solady's `LibBit.popCount`: bits summed in pairs, then nibbles, then bytes,
+            // which a multiply gathers into the top byte. All 256 set wraps that byte to 0.
+            Builtin::UintPopCount => {
+                let mask = |d| Word::from_u64(0).not().div(Word::from_u64(d));
+                self.compile_value(&args[0])?;
+                self.op(DUP1);
+                self.push_word(mask(3));
+                self.op(DUP1 + 1);
+                self.push_u64(1);
+                self.op(SHR);
+                self.op(AND);
+                self.op(SWAP1);
+                self.op(SUB);
+                self.push_word(mask(5));
+                self.op(DUP1);
+                self.op(DUP1 + 2);
+                self.op(AND);
+                self.op(SWAP1 + 1);
+                self.push_u64(2);
+                self.op(SHR);
+                self.op(AND);
+                self.op(ADD);
+                self.op(DUP1);
+                self.push_u64(4);
+                self.op(SHR);
+                self.op(ADD);
+                self.push_word(mask(17));
+                self.op(AND);
+                self.push_word(mask(255));
+                self.op(MUL);
+                self.push_u64(248);
+                self.op(SHR);
+                self.op(SWAP1);
+                self.op(NOT);
+                self.op(ISZERO);
+                self.push_u64(8);
+                self.op(SHL);
+                self.op(OR);
+            }
+            Builtin::UintClz if self.shape.opts.evm >= crate::EvmVersion::Osaka => {
+                self.compile_value(&args[0])?;
+                self.op(CLZ);
+            }
+            // Before Osaka, the bit length by halving, as `Math.log2`, then
+            // `255 - log2 + (x = 0)`.
+            Builtin::UintClz => {
+                self.compile_value(&args[0])?;
+                self.push_word(Word::from_u64(0).not().shr(128));
+                self.op(DUP1 + 1);
+                self.op(GT);
+                self.push_u64(7);
+                self.op(SHL);
+                for k in (1..7u32).rev() {
+                    self.push_word(Word::from_u64(0).not().shr(256 - (1 << k)));
+                    self.op(DUP1 + 2);
+                    self.op(DUP1 + 2);
+                    self.op(SHR);
+                    self.op(GT);
+                    if k == 1 {
+                        self.op(DUP1);
+                        self.op(ADD);
+                    } else {
+                        self.push_u64(u64::from(k));
+                        self.op(SHL);
+                    }
+                    self.op(OR);
+                }
+                self.op(DUP1 + 1);
+                self.op(DUP1 + 1);
+                self.op(SHR);
+                self.push_u64(1);
+                self.op(SHR);
+                self.op(OR);
+                self.push_u64(255);
+                self.op(XOR);
+                self.op(SWAP1);
+                self.op(ISZERO);
+                self.op(ADD);
+            }
             Builtin::Transfer => {
                 return Err(error(line, col, "defer the transfer"));
             }
@@ -940,7 +1304,14 @@ impl<'a> Gen<'a> {
                 let Some(arg) = args.first() else {
                     return Err(error(line, col, "cast needs a value"));
                 };
-                self.compile_value(arg)?;
+                if self.fixed_of_slice(arg, ty)? {
+                    return Ok(());
+                }
+                let cd = self.cd_bytes_arg(arg).filter(|_| self.word32_bytes(ty));
+                match cd {
+                    Some(sym) => self.cd_bytes_span(sym),
+                    None => self.compile_value(arg)?,
+                }
                 let dst = &self.checked.types[self.peel_nominal(ty)];
                 let src = &self.checked.types[self.peel_nominal(arg.ty())];
                 // `bytesN(b)` takes the first N bytes of `b`, zero past its end.
@@ -950,8 +1321,21 @@ impl<'a> Gen<'a> {
                     && dst.bits > 0
                 {
                     let n = u64::from(dst.bits);
-                    self.bytes_span();
-                    self.op(MLOAD);
+                    if cd.is_some() {
+                        self.cd_load();
+                    } else {
+                        self.bytes_span();
+                        self.op(MLOAD);
+                    }
+                    if self.length_at_least(arg, n) {
+                        self.op(SWAP1);
+                        self.op(POP);
+                        if n < 32 {
+                            self.push_u64(256 - 8 * n);
+                            self.op(SHR);
+                        }
+                        return Ok(());
+                    }
                     self.op(SWAP1);
                     self.push_u64(3);
                     self.op(SHL);
@@ -1063,7 +1447,151 @@ impl<'a> Gen<'a> {
         Ok(())
     }
 
+    /// The operands of a chain of `op`s, in order, each tested before the next runs. A
+    /// right side that is safe to evaluate anyway joins the operand before it.
+    fn chain<'e>(&self, e: &'e Expr, op: BinOp, out: &mut Vec<Vec<&'e Expr>>) {
+        match e {
+            Expr::Binary {
+                op: o,
+                left,
+                right,
+                ..
+            } if *o == op && self.const_word(e).is_none() => {
+                self.chain(left, op, out);
+                match out.last_mut() {
+                    Some(last) if self.eager_ok(right) => last.push(right),
+                    _ => out.push(vec![right]),
+                }
+            }
+            _ => out.push(vec![e]),
+        }
+    }
+
+    /// `bytesN(b[start:end])` reads the slice's first word where it lies. A slice of a
+    /// known width of at least N, in bounds, needs neither its end nor a mask.
+    fn fixed_of_slice(&mut self, arg: &Expr, ty: usize) -> Result<bool, Error> {
+        let Expr::Call {
+            builtin: Some(Builtin::BytesSlice),
+            args: inner,
+            ..
+        } = arg
+        else {
+            return Ok(false);
+        };
+        let dst = &self.checked.types[self.peel_nominal(ty)];
+        let src = &self.checked.types[self.peel_nominal(arg.ty())];
+        if matches!(&inner[0], Expr::Call { builtin: Some(Builtin::Code), .. })
+            || src.kind != TyKind::Bytes
+            || src.bits != 0
+            || dst.kind != TyKind::Bytes
+            || dst.bits == 0
+        {
+            return Ok(false);
+        }
+        let n = u64::from(dst.bits);
+        let checked = !self.slice_proven(inner);
+        let width = match inner.get(2) {
+            Some(Expr::Binary {
+                op: BinOp::Add,
+                left,
+                right,
+                ..
+            }) if range::same_value(left, &inner[1]) => self.const_word(right).map(|w| (w, right)),
+            _ => None,
+        };
+        match width {
+            Some((w, k)) if !checked && !w.lt(Word::from_u64(n)) && self.cannot_wrap(BinOp::Add, &inner[1], k) => {
+                self.span_data(&inner[0])?;
+                self.compile_value(&inner[1])?;
+                self.op(ADD);
+                self.op(MLOAD);
+            }
+            // `b[i:i + k]`, proven: the word at `i`, masked to its first `k` bytes.
+            _ if !checked && self.slice_width(inner).is_some() => {
+                let k = self.slice_width(inner).expect("width");
+                self.span_data(&inner[0])?;
+                self.compile_value(&inner[1])?;
+                self.op(ADD);
+                self.op(MLOAD);
+                match k {
+                    Expr::Ident { sym: Some(s), .. } if self.mask_temps.contains_key(s) => {
+                        self.mload(self.mask_temps[s]);
+                    }
+                    _ => {
+                        self.compile_value(k)?;
+                        self.leading_mask();
+                    }
+                }
+                self.op(AND);
+            }
+            _ => {
+                self.span_of(&inner[0])?;
+                for a in &inner[1..] {
+                    self.compile_value(a)?;
+                }
+                self.slice_span(inner.len() == 3, checked)?;
+                self.op(SWAP1);
+                self.op(MLOAD);
+                self.op(SWAP1);
+                self.push_u64(3);
+                self.op(SHL);
+                self.op(PUSH0);
+                self.op(NOT);
+                self.op(SWAP1);
+                self.op(SHR);
+                self.op(NOT);
+                self.op(AND);
+            }
+        }
+        if n < 32 {
+            self.push_u64(256 - 8 * n);
+            self.op(SHR);
+        }
+        Ok(true)
+    }
+
+    /// `k` of a slice `b[i:i + k]` whose end cannot wrap.
+    fn slice_width<'e>(&self, inner: &'e [Expr]) -> Option<&'e Expr> {
+        match inner.get(2) {
+            Some(Expr::Binary {
+                op: BinOp::Add,
+                left,
+                right,
+                ..
+            }) if range::same_value(left, &inner[1]) && self.cannot_wrap(BinOp::Add, left, right) => {
+                Some(right)
+            }
+            _ => None,
+        }
+    }
+
+    /// Whether `left op right` compiles to the bare operation: a sum, difference, or
+    /// product that cannot wrap, a division by a constant that is not zero (nor -1, when
+    /// signed), or a narrow unsigned difference, which is out of its type's range when it
+    /// wraps, as `narrow` checks after.
+    fn simple_bin(&self, op: BinOp, left: &Expr, right: &Expr) -> bool {
+        let int = self.checked.types[left.ty()].kind == TyKind::Int;
+        let bits = self.checked.types[left.ty()].bits;
+        let narrowed = bits > 0 && bits < 256;
+        let proven = !int && matches!(op, BinOp::Add | BinOp::Sub | BinOp::Mul) && self.cannot_wrap(op, left, right);
+        let divisor = matches!(op, BinOp::Div | BinOp::Mod)
+            && self
+                .const_word(right)
+                .is_some_and(|w| !(w.is_zero() || int && w == Word::from_u64(0).not()));
+        proven || divisor || (!int && narrowed && op == BinOp::Sub)
+    }
+
     fn compile_hash(&mut self, args: &[Expr], precompile: Option<u64>) -> Result<(), Error> {
+        self.hash_into(args, precompile, None)
+    }
+
+    /// A hash, left on the stack, or with `dst`, a precompile's answer written there.
+    pub(super) fn hash_into(
+        &mut self,
+        args: &[Expr],
+        precompile: Option<u64>,
+        dst: Option<i32>,
+    ) -> Result<(), Error> {
         // The hash of a literal, or of a contract's creation code, is a constant.
         if precompile.is_none() {
             let constant = match &args[0] {
@@ -1090,7 +1618,7 @@ impl<'a> Gen<'a> {
                     let name = self.creation_code_of(&inner[0], *line, *col)?;
                     Some(self.peer_creation(name, *line, *col)?)
                 }
-                _ => None,
+                other => self.const_str(other),
             };
             if let Some(bytes) = constant {
                 self.push_word(Word::from_be_bytes(crate::keccak::keccak256(&bytes)));
@@ -1131,10 +1659,98 @@ impl<'a> Gen<'a> {
                 })
             {
                 return self.compile_call_with(*idx, call_args, true, |g| {
-                    g.compile_hash(std::slice::from_ref(&tail), precompile)
+                    g.hash_into(std::slice::from_ref(&tail), precompile, dst)
                 });
             }
         }
+        match &args[0] {
+            _ if self.static_bytes(&args[0], None)? => {}
+            // Packed bytes are hashed where they are built, past the heap.
+            Expr::Call {
+                builtin: Some(Builtin::AbiEncodePacked | Builtin::BytesConcat),
+                args: inner,
+                ..
+            } => self.packed_span(inner)?,
+            // A slice is hashed where it lies, with no copy.
+            Expr::Call {
+                builtin: Some(Builtin::BytesSlice),
+                args: inner,
+                ..
+            } if !matches!(
+                &inner[0],
+                Expr::Call {
+                    builtin: Some(Builtin::Code),
+                    ..
+                }
+            ) =>
+            {
+                if !self.static_bytes(&inner[0], None)? {
+                    self.span_of(&inner[0])?;
+                }
+                let checked = !self.slice_proven(inner);
+                let width = self.slice_width(inner).filter(|_| !checked);
+                match self.const_word(&inner[1]).filter(|_| !checked && inner.len() == 3) {
+                    // `b[i:i + k]`: `[k, data + i]`.
+                    _ if width.is_some() => {
+                        self.op(SWAP1);
+                        self.op(POP);
+                        self.compile_value(&inner[1])?;
+                        self.op(ADD);
+                        self.compile_value(width.expect("width"))?;
+                        self.op(SWAP1);
+                    }
+                    // `[len, data]` becomes `[end - c, data + c]`, folded where `data` is known.
+                    Some(c) => {
+                        self.op(SWAP1);
+                        self.op(POP);
+                        self.push_word(c);
+                        self.op(ADD);
+                        self.compile_value(&inner[2])?;
+                        self.push_word(c);
+                        self.op(SWAP1);
+                        self.op(SUB);
+                        self.op(SWAP1);
+                    }
+                    None => {
+                        for arg in &inner[1..] {
+                            self.compile_value(arg)?;
+                        }
+                        self.slice_span(inner.len() == 3, checked)?;
+                        self.op(SWAP1);
+                    }
+                }
+            }
+            _ => self.span_of(&args[0])?,
+        }
+        // [len, data]
+        match precompile {
+            Some(addr) => {
+                let out = dst.unwrap_or(self.ret_scratch);
+                self.push_u64(32);
+                self.op(SWAP1 + 1);
+                self.push_mem(out);
+                self.op(SWAP1 + 1);
+                self.push_u64(addr);
+                self.op(GAS);
+                self.op(STATICCALL);
+                self.op(ISZERO);
+                self.revert_if_true()?;
+                if dst.is_none() {
+                    self.mload(out);
+                }
+            }
+            None => self.op(KECCAK),
+        }
+        Ok(())
+    }
+
+    /// `[len, data]` for an encoding of static values that a hash reads from a buffer of
+    /// its own, with no blob; nothing, and false, for any other value.
+    pub(super) fn static_bytes(
+        &mut self,
+        e: &Expr,
+        precompile: Option<u64>,
+    ) -> Result<bool, Error> {
         // `keccak256(Abi.encode(a, b))` over static words hashes them from a buffer of its
         // own, with no blob: the idiom behind struct hashes, domain separators, and proofs.
         if let (
@@ -1144,7 +1760,7 @@ impl<'a> Gen<'a> {
                 args: inner,
                 ..
             },
-        ) = (precompile, &args[0])
+        ) = (precompile, e)
         {
             let packed = *kind == Builtin::AbiEncodePacked;
             if !inner.is_empty() && inner.iter().all(|a| self.hash_word(a.ty(), packed)) {
@@ -1158,8 +1774,7 @@ impl<'a> Gen<'a> {
                 }
                 self.push_u64(u64::from(n) * 32);
                 self.push_mem(buf);
-                self.op(KECCAK);
-                return Ok(());
+                return Ok(true);
             }
         }
         // Packed static values and short hex literals, the same way, each at its offset:
@@ -1171,7 +1786,7 @@ impl<'a> Gen<'a> {
                 args: inner,
                 ..
             },
-        ) = (precompile, &args[0])
+        ) = (precompile, e)
         {
             let fixed = |a: &Expr| {
                 self.short_bytes_lit(a).is_some() || {
@@ -1210,23 +1825,10 @@ impl<'a> Gen<'a> {
                 }
                 self.push_u64(u64::from(total));
                 self.push_mem(buf);
-                self.op(KECCAK);
-                return Ok(());
+                return Ok(true);
             }
         }
-        self.compile_value(&args[0])?;
-        self.bytes_span();
-        self.op(SWAP1);
-        self.mstore_off(self.scratch_c);
-        self.mstore_off(self.scratch_b);
-        if let Some(addr) = precompile {
-            self.precompile(addr, self.scratch_b, self.scratch_c, 32)?;
-        } else {
-            self.mload(self.scratch_c);
-            self.mload(self.scratch_b);
-            self.op(KECCAK);
-        }
-        Ok(())
+        Ok(false)
     }
 
     /// A value that `Abi.encode` writes as exactly one word, or that `Abi.encode_packed`
@@ -1435,6 +2037,40 @@ impl<'a> Gen<'a> {
             self.op(AND);
             self.op(OR);
         }
+        self.revert_if_panic(0x11)?;
+        self.op(SWAP1 + 1);
+        self.op(POP);
+        self.op(POP);
+        Ok(())
+    }
+
+    /// A constant factor other than 0, -1, and `Int.min`: the product overflows exactly
+    /// when dividing it by the factor misses the other operand.
+    fn plain_factor(&self, e: &Expr) -> bool {
+        self.const_word(e).is_some_and(|w| {
+            !w.is_zero() && w != Word::from_u64(0).not() && w != Word::from_u64(1).shl(255)
+        })
+    }
+
+    /// Stack: `a b` becomes the signed `a * b`, where the constant factor is `b` when
+    /// `on_top`, else `a`.
+    fn checked_mul_by_constant(&mut self, on_top: bool) -> Result<(), Error> {
+        self.op(DUP1 + 1);
+        self.op(DUP1 + 1);
+        self.op(MUL);
+        if on_top {
+            self.op(DUP1 + 1);
+            self.op(DUP1 + 1);
+            self.op(SDIV);
+            self.op(DUP1 + 3);
+        } else {
+            self.op(DUP1 + 2);
+            self.op(DUP1 + 1);
+            self.op(SDIV);
+            self.op(DUP1 + 2);
+        }
+        self.op(EQ);
+        self.op(ISZERO);
         self.revert_if_panic(0x11)?;
         self.op(SWAP1 + 1);
         self.op(POP);
@@ -1662,6 +2298,16 @@ impl<'a> Gen<'a> {
         Ok(())
     }
 
+    /// Whether a divisor can be neither zero nor, for a signed one, -1, so the division
+    /// needs no guards.
+    fn divisor_safe(&self, right: &Expr, signed: bool) -> bool {
+        if signed {
+            self.const_word(right).is_some_and(|w| !w.is_zero() && w != Word::from_u64(0).not())
+        } else {
+            !self.range_of(right).0.is_zero()
+        }
+    }
+
     /// Division by zero panics with `0x12`. Signed `MIN / -1` panics with `0x11`.
     fn div_guards(&mut self, signed: bool) -> Result<(), Error> {
         self.op(DUP1);
@@ -1869,11 +2515,15 @@ impl<'a> Gen<'a> {
 
     /// An arm's statements, then its value. An arm that ends in `fail` has none.
     pub(super) fn run_arm(&mut self, arm: &crate::ast::Arm, sink: Sink) -> Result<(), Error> {
-        self.compile_stmts(&arm.stmts)?;
-        if arm.fails() {
-            return Ok(());
-        }
-        self.arm_result(&arm.expr, sink)
+        let mark = self.facts.len();
+        let result = self.compile_seq(&arm.stmts).and_then(|()| {
+            if arm.fails() {
+                return Ok(());
+            }
+            self.arm_result(&arm.expr, sink)
+        });
+        self.facts.truncate(mark);
+        result
     }
 
     /// Where an arm's value goes: on the stack, or written to memory.
@@ -1908,6 +2558,13 @@ impl<'a> Gen<'a> {
             let result = self.compile_query_case(call, scrut.ty(), arms, line, col, sink);
             self.query_gas = None;
             return result;
+        }
+        // What an arm binds is part of the value it matched.
+        let blob = self.known_blob(scrut);
+        for arm in arms {
+            for &sym in arm.bind_sym.iter().chain(&arm.tuple_syms) {
+                self.note_blob(sym, blob);
+            }
         }
         let sty = scrut.ty();
         if self.checked.types[sty].kind == TyKind::Option {
@@ -1944,6 +2601,10 @@ impl<'a> Gen<'a> {
         sink: Sink,
     ) -> Result<(), Error> {
         let arm = |ctor: &str| arms.iter().find(|a| a.ctors[0] == ctor).unwrap();
+        // A condition known from literals and constants builds only its arm.
+        if let Some(w) = self.const_word(cond) {
+            return self.run_arm(arm(if w.is_zero() { "false" } else { "true" }), sink);
+        }
         let else_l = self.fresh();
         let end_l = self.fresh();
         self.branch_on(cond, else_l, false)?;
@@ -2306,6 +2967,31 @@ impl<'a> Gen<'a> {
             return Ok(());
         }
         let n = self.checked.types[left.ty()].words;
+        // `None` zeroes its payload, so against `Some` of a nonzero constant only the
+        // payload word tells.
+        let some_const = |g: &Self, e: &Expr| match e {
+            Expr::Call {
+                builtin: Some(Builtin::Some),
+                args,
+                ..
+            } => g.const_word(&args[0]).filter(|w| !w.is_zero()),
+            _ => None,
+        };
+        if n == 2 {
+            let found = some_const(self, right)
+                .map(|c| (left, c))
+                .or_else(|| some_const(self, left).map(|c| (right, c)));
+            if let Some((other, c)) = found {
+                let src = self.value_addr(other)?;
+                self.mload(src + 32);
+                self.push_word(c);
+                self.op(EQ);
+                if neq {
+                    self.op(ISZERO);
+                }
+                return Ok(());
+            }
+        }
         // The left words go on the stack first: the right side may reuse the same buffer.
         let src = self.value_addr(left)?;
         for i in 0..n {

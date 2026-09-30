@@ -221,21 +221,25 @@ impl<'a> Gen<'a> {
 
     /// Stores each argument's words, in order, in a buffer of its own. Returns it.
     fn words_input(&mut self, args: &[Expr]) -> Result<i32, Error> {
-        let mut words = Vec::new();
-        for arg in args {
-            let at = self.stage(arg)?;
-            words.push((at, self.checked.types[arg.ty()].words.max(1)));
-        }
-        let total: u32 = words.iter().map(|&(_, n)| n).sum();
+        let words = |g: &Self, a: &Expr| g.checked.types[a.ty()].words.max(1);
+        let total: u32 = args.iter().map(|a| words(self, a)).sum();
         self.return_sites += 1;
         let buf = self.region(Region::Returned(self.return_sites), total * 32);
-        let mut i = 0;
-        for (at, n) in words {
-            for j in 0..n {
-                self.mload(at + 32 * j as i32);
-                self.mstore_off(buf + 32 * i);
-                i += 1;
+        let mut at = buf;
+        for arg in args {
+            match arg {
+                // A hash precompile answers straight into the input.
+                Expr::Call {
+                    builtin: Some(b @ (Builtin::Sha256 | Builtin::Ripemd160)),
+                    args: data,
+                    ..
+                } => {
+                    let pre = if *b == Builtin::Sha256 { 2 } else { 3 };
+                    self.hash_into(data, Some(pre), Some(at))?;
+                }
+                _ => self.write_value(arg, at, arg.ty())?,
             }
+            at += 32 * words(self, arg) as i32;
         }
         Ok(buf)
     }

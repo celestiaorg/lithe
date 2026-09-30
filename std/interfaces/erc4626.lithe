@@ -1,5 +1,34 @@
 (* ERC-4626 tokenized vaults. Shares are an ERC-20; `asset` is the token they are shares
-   of. *)
+   of. The errors are OpenZeppelin's: a deposit, mint, withdrawal, or redemption past its
+   `max*` limit, and `SafeERC20`'s, for an asset transfer that answered `false`. An asset's
+   own revert passes through unchanged. *)
+
+import "std/token/safe_erc20";
+import "std/interfaces/erc20";
+
+error ERC4626ExceededMaxDeposit of record {
+  receiver : address;
+  assets : uint;
+  max : uint;
+}
+
+error ERC4626ExceededMaxMint of record {
+  receiver : address;
+  shares : uint;
+  max : uint;
+}
+
+error ERC4626ExceededMaxWithdraw of record {
+  owner : address;
+  assets : uint;
+  max : uint;
+}
+
+error ERC4626ExceededMaxRedeem of record {
+  owner : address;
+  shares : uint;
+  max : uint;
+}
 
 interface IERC4626 is {
   view function asset() : address;
@@ -14,8 +43,16 @@ interface IERC4626 is {
   view function previewWithdraw(assets : uint) : uint;
   view function maxRedeem(owner : address) : uint;
   view function previewRedeem(shares : uint) : uint;
-  function deposit(assets : uint; receiver : address) : uint;
-  function mint(shares : uint; receiver : address) : uint;
-  function withdraw(assets : uint; receiver : address; owner : address) : uint;
-  function redeem(shares : uint; receiver : address; owner : address) : uint;
+  function deposit(assets : uint; receiver : address) : uint
+    raises ERC4626ExceededMaxDeposit | SafeERC20FailedOperation | ERC20InvalidReceiver | ERC20InsufficientBalance
+      | forwarded;
+  function mint(shares : uint; receiver : address) : uint
+    raises ERC4626ExceededMaxMint | SafeERC20FailedOperation | ERC20InvalidReceiver | ERC20InsufficientBalance
+      | forwarded;
+  function withdraw(assets : uint; receiver : address; owner : address) : uint
+    raises ERC4626ExceededMaxWithdraw | ERC20InsufficientAllowance | ERC20InvalidApprover | ERC20InvalidSpender
+      | ERC20InvalidSender | ERC20InsufficientBalance | SafeERC20FailedOperation | forwarded;
+  function redeem(shares : uint; receiver : address; owner : address) : uint
+    raises ERC4626ExceededMaxRedeem | ERC20InsufficientAllowance | ERC20InvalidApprover | ERC20InvalidSpender
+      | ERC20InvalidSender | ERC20InsufficientBalance | SafeERC20FailedOperation | forwarded;
 }

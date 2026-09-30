@@ -1,0 +1,19 @@
+(* ERC-7821: minimal batch executor, with OpenZeppelin's errors. *)
+
+error UnsupportedExecutionMode;
+error AccountUnauthorized of address;
+error BatchOfBatchesDecodingError;
+
+interface IERC7821 is {
+  payable function execute(mode : bytes32; executionData : bytes)
+    raises UnsupportedExecutionMode | AccountUnauthorized | forwarded;
+  view function supportsExecutionMode(mode : bytes32) : bool;
+}
+
+(* `IERC7821` for an executor that also runs batches of batches, which raise Solady's
+   `BatchOfBatchesDecodingError` when malformed. *)
+interface IERC7821Batches is {
+  payable function execute(mode : bytes32; executionData : bytes)
+    raises UnsupportedExecutionMode | AccountUnauthorized | BatchOfBatchesDecodingError | forwarded;
+  view function supportsExecutionMode(mode : bytes32) : bool;
+}

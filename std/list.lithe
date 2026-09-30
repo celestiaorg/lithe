@@ -9,4 +9,10 @@ module List is {
   (* pop(xs : list(T))
      `List.pop(xs);`: drops the last element. `Panic(0x31)` if the list is empty. *)
   intrinsic pop;
+
+  (* resized(xs : list(T); n : uint) : list(T)
+     A new list of `xs`'s first `n` elements, padded with zero values to `n` when `xs` is
+     shorter: `List.resized([], n)` is Solidity's `new T[](n)`. `Panic(0x41)` if `n` is
+     2^64 or more. *)
+  intrinsic resized;
 }

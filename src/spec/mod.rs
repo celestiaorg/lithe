@@ -143,10 +143,10 @@ fn used(prog: &Program, module: &str) -> bool {
     prog.compose.iter().any(|u| u.name == module)
 }
 
-pub(crate) fn check(mut prog: Program) -> Result<Specs, Error> {
+pub(crate) fn check(mut prog: Program, evm: crate::EvmVersion) -> Result<Specs, Error> {
     prog.proving = true;
     attach_module_specs(&mut prog)?;
-    let base = check::check(prog.clone())?;
+    let base = check::check(prog.clone(), evm)?;
     let mut specs = SpecBuild::default();
     let blocks = std::mem::take(&mut prog.specs);
     let mut funcs = Vec::new();
@@ -182,7 +182,7 @@ pub(crate) fn check(mut prog: Program) -> Result<Specs, Error> {
         }
         prog.modules[i].funcs.extend(funcs);
     }
-    let checked = check::check(prog)?;
+    let checked = check::check(prog, evm)?;
     specs.finish(checked)
 }
 

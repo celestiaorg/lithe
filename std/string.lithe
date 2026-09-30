@@ -5,6 +5,15 @@ module String is {
      `string.concat(a, b, ...)`. *)
   intrinsic concat;
 
+  (* lower(s : T) : string
+     Solady's `LibString.lower(s)`, for a `string` or `bytes`: ASCII letters in lower case,
+     every other byte, UTF-8 included, as it was. *)
+  intrinsic lower;
+
+  (* upper(s : T) : string
+     `LibString.upper(s)`: ASCII letters in upper case. *)
+  intrinsic upper;
+
   (* join(xs : list(string)) : string
      The strings of `xs`, one after another. *)
   intrinsic join;
@@ -20,6 +29,12 @@ module String is {
      `LibString.escapeHTML(s)`: `"`, `&`, `'`, `<`, and `>` as `&quot;`, `&amp;`, `&#39;`,
      `&lt;`, and `&gt;`. *)
   intrinsic escape_html;
+
+  (* index_of(s : T; needle : T; from : uint) : uint
+     `LibString.indexOf(s, needle, from)`: the byte offset where `needle` first starts in
+     `s`, at `from` or later, or `Uint.max` when it doesn't. An empty needle is found at
+     `from`, or at the end of `s` when `from` is past it. *)
+  intrinsic index_of;
 
   (* replace(s : T; needle : T; replacement : T) : string
      `LibString.replace(s, needle, replacement)`: every `needle` in `s`, left to right,

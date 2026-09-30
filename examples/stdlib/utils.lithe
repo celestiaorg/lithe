@@ -8,6 +8,7 @@ import "std/math/fixed_point";
 import "std/crypto/ecdsa";
 import "std/crypto/eip712";
 import "std/crypto/merkle";
+import "std/crypto/signature_checker";
 import "std/utils/create2";
 import "std/utils/nonce";
 import "std/utils/checkpoint";
@@ -15,14 +16,18 @@ import "std/collections/bitmap";
 import "std/collections/queue";
 import "std/collections/set";
 import "std/collections/set_enumerable";
+import "std/collections/map_enumerable";
+import "std/address";
+import "std/interfaces/erc5267";
 
 contract Utils is {
   use Math;
   use SafeCast;
   use FixedPoint;
   use ECDSA;
-  use EIP712;
+  use EIP712 exposing IERC5267;
   use Merkle;
+  use SignatureChecker;
   use Create2;
   use Nonces;
   use Checkpoints;
@@ -34,6 +39,9 @@ contract Utils is {
     pending : Queue(address);
     members : Set(address);
     listed : SetEnumerable(address);
+    balances : MapEnumerable(address, uint);
+    tags : MapEnumerable(bytes4, address);
+    flags : bitmap;
   }
 
   deploy() is {
@@ -43,6 +51,10 @@ contract Utils is {
   external pure function sqrt(const a : uint) : uint is Math.sqrt(a)
   external pure function log2(const a : uint) : uint is Math.log2(a)
   external pure function log10(const a : uint) : uint is Math.log10(a)
+  external pure function log256(const a : uint) : uint is Math.log256(a)
+  external pure function log2_up(const a : uint) : uint is Math.log2_up(a)
+  external pure function log10_up(const a : uint) : uint is Math.log10_up(a)
+  external pure function log256_up(const a : uint) : uint is Math.log256_up(a)
   external pure function abs(const x : int) : uint is Math.abs(x)
   external pure function average(const a : uint; const b : uint) : uint is Math.average(a, b)
   external pure function average_int(const a : int; const b : int) : int is Math.average(a, b)
@@ -64,9 +76,8 @@ contract Utils is {
     raises ECDSAInvalidSignature | ECDSAInvalidSignatureLength | ECDSAInvalidSignatureS
   is ECDSA.recover_signature(hash, signature)
   external view function domain() : bytes32 is EIP712.domain_separator()
-  external pure function root(const proof : bytes; const leaf : bytes32) : bytes32
-    raises MerkleProofInvalidLength
-  is Merkle.process_proof(proof, leaf)
+  external pure function root(const proof : list(bytes32); const leaf : bytes32) : bytes32 is
+    Merkle.process_proof(proof, leaf)
   external view function predict(const salt : bytes32; const code_hash : bytes32) : address is
     Create2.compute_address_here(salt, code_hash)
   external function use_nonce(const owner : address) : uint is Nonces.use_nonce(owner)
@@ -83,13 +94,27 @@ contract Utils is {
   external view function queued() : uint is Queue.length(storage.pending)
   external function join() is {
     Set.add(storage.members, Evm.sender());
-    SetEnumerable.add(storage.listed, Evm.sender());
+    const _ : bool := SetEnumerable.add(storage.listed, Evm.sender());
   }
   external view function member(const who : address) : bool is Set.contains(storage.members, who)
   external view function listed_count() : uint is SetEnumerable.length(storage.listed)
-  external view function verify(const proof : bytes; const root_hash : bytes32; const leaf : bytes32) : bool
-    raises MerkleProofInvalidLength
-  is Merkle.verify(proof, root_hash, leaf)
+  external view function verify(const proof : list(bytes32); const root_hash : bytes32; const leaf : bytes32) : bool is
+    Merkle.verify(proof, root_hash, leaf)
+  external pure function verify_multi(
+    const proof : list(bytes32);
+    const flags : list(bool);
+    const root_hash : bytes32;
+    const leaves : list(bytes32)
+  ) : bool
+    raises MerkleProofInvalidMultiproof
+  is Merkle.verify_multi(proof, flags, root_hash, leaves)
+  external pure function multi_root(
+    const proof : list(bytes32);
+    const flags : list(bool);
+    const leaves : list(bytes32)
+  ) : bytes32
+    raises MerkleProofInvalidMultiproof
+  is Merkle.process_multi_proof(proof, flags, leaves)
   external pure function create2_address(
     const salt : bytes32;
     const code_hash : bytes32;
@@ -104,6 +129,32 @@ contract Utils is {
   ) : address
     raises ECDSAInvalidSignature | ECDSAInvalidSignatureS
   is ECDSA.recover(hash, v, r, s)
+  external pure function try_recover(const hash : bytes32; const signature : bytes) : address is
+    case ECDSA.try_recover_signature(hash, signature) of { Some(signer) -> signer | None -> Address.zero }
+  external pure function try_recover_vrs(
+    const hash : bytes32;
+    const v : uint8;
+    const r : bytes32;
+    const s : bytes32
+  ) : address is
+    case ECDSA.try_recover(hash, v, r, s) of { Some(signer) -> signer | None -> Address.zero }
+  external pure function try_recover_compact(const hash : bytes32; const r : bytes32; const vs : bytes32) : address is
+    case ECDSA.try_recover_compact(hash, r, vs) of { Some(signer) -> signer | None -> Address.zero }
+  external pure function recover_compact(const hash : bytes32; const r : bytes32; const vs : bytes32) : address
+    raises ECDSAInvalidSignature | ECDSAInvalidSignatureS
+  is ECDSA.recover_compact(hash, r, vs)
+  external view function is_valid_signature_now(
+    const signer : address;
+    const hash : bytes32;
+    const signature : bytes
+  ) : bool is
+    SignatureChecker.is_valid_signature_now(signer, hash, signature)
+  external view function is_valid_erc1271_signature_now(
+    const signer : address;
+    const hash : bytes32;
+    const signature : bytes
+  ) : bool is
+    SignatureChecker.is_valid_erc1271_signature_now(signer, hash, signature)
   external pure function to_int(const x : uint) : int
     raises SafeCastOverflowedUintToInt
   is SafeCast.to_int(x)
@@ -115,4 +166,36 @@ contract Utils is {
   external function dequeue() : address
     raises QueueEmpty
   is Queue.pop(storage.pending)
+  external function flag(const start : uint; const amount : uint) is { Bitmap.set_batch(storage.flags, start, amount); }
+  external function unflag(const start : uint; const amount : uint) is {
+    Bitmap.unset_batch(storage.flags, start, amount);
+  }
+  external view function flagged(const start : uint; const amount : uint) : uint is
+    Bitmap.pop_count(storage.flags, start, amount)
+  external view function is_flagged(const index : uint) : bool is Bitmap.get(storage.flags, index)
+  external function map_set(const key : address; const value : uint) is {
+    const _ : bool := MapEnumerable.set(storage.balances, key, value);
+  }
+  external function map_remove(const key : address) is {
+    const _ : bool := MapEnumerable.remove(storage.balances, key);
+  }
+  external view function map_get(const key : address) : uint
+    raises EnumerableMapNonexistentKey
+  is MapEnumerable.get(storage.balances, key)
+  external view function map_try_get(const key : address) : (bool, uint) is
+    case MapEnumerable.try_get(storage.balances, key) of {
+      | Some(value) -> (true, value)
+      | None -> (false, 0)
+    }
+  external view function map_contains(const key : address) : bool is MapEnumerable.contains(storage.balances, key)
+  external view function map_length() : uint is MapEnumerable.length(storage.balances)
+  external view function map_at(const index : uint) : (address, uint)
+    raises Out_of_bounds
+  is MapEnumerable.at(storage.balances, index)
+  external function tag(const key : bytes4; const value : address) is {
+    const _ : bool := MapEnumerable.set(storage.tags, key, value);
+  }
+  external view function tagged(const key : bytes4) : address
+    raises EnumerableMapNonexistentKey
+  is MapEnumerable.get(storage.tags, key)
 }

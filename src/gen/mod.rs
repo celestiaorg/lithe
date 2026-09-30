@@ -68,6 +68,7 @@ const NOT: u8 = 0x19;
 const SHL: u8 = 0x1b;
 const SHR: u8 = 0x1c;
 const SAR: u8 = 0x1d;
+const CLZ: u8 = 0x1e;
 const BYTE: u8 = 0x1a;
 const ADDRESS: u8 = 0x30;
 const BALANCE: u8 = 0x31;
@@ -155,16 +156,42 @@ pub(crate) struct Built {
     pub needs: Vec<Facet>,
 }
 
+#[cfg(test)]
+thread_local! {
+    /// Keeps only the builds that forward constants and place allocations statically
+    /// (`Some(true)`), or only those that do neither, so a test can compare the two.
+    pub(crate) static FORCE_STATIC_HEAP: std::cell::Cell<Option<bool>> =
+        const { std::cell::Cell::new(None) };
+}
+
 /// The creation code, and the runtime code it deploys, for the entrypoints `shape` keeps.
 pub(crate) fn codegen(checked: &Checked, shape: &Shape) -> Result<Built, Error> {
-    // The first pass inlines every call and measures what each function costs.
+    let imm_consts = init_constants(checked, shape);
+    // The first pass inlines every call and measures what each function costs. What it
+    // learns of the blobs calls pass and return lets it see further, so it runs again
+    // while that grows.
     let (plan, inlined) = {
-        let mut g = Gen::new(checked, Plan::default(), shape)?;
-        g.emit()?;
-        (g.plan(), g.code.len())
+        let mut known = Plan::default();
+        loop {
+            let mut g = Gen::new(checked, known.clone(), shape)?;
+            g.imm_consts = imm_consts.clone();
+            g.emit()?;
+            let plan = g.plan();
+            let grew = plan.blob_params.len() + plan.blob_rets.len()
+                > known.blob_params.len() + known.blob_rets.len();
+            if !grew {
+                break (plan, g.code.len());
+            }
+            known = Plan {
+                blob_params: plan.blob_params,
+                blob_rets: plan.blob_rets,
+                ..Plan::default()
+            };
+        }
     };
     let emit = |plan: &Plan| -> Result<(Emitted, Vec<Facet>), Error> {
         let mut g = Gen::new(checked, plan.clone(), shape)?;
+        g.imm_consts = imm_consts.clone();
         g.emit()?;
         g.drop_unread_caches();
         g.promote();
@@ -177,6 +204,7 @@ pub(crate) fn codegen(checked: &Checked, shape: &Shape) -> Result<Built, Error> 
             leaves,
             data: std::mem::take(&mut g.data),
             tail_blobs: std::mem::take(&mut g.tail_blobs),
+            heap: g.heap,
         };
         Ok((emitted, std::mem::take(&mut g.needs)))
     };
@@ -191,7 +219,7 @@ pub(crate) fn codegen(checked: &Checked, shape: &Shape) -> Result<Built, Error> 
             asm::hoist(code);
             asm::rotate_exits(code);
         });
-        let gas = asm::gas(&code, &e.entries);
+        let gas = asm::gas(&code, &e.entries, e.heap);
         let (runtime, marks) = match immutable::place_runtime(&code, &e.data, &e.tail_blobs) {
             Ok(placed) => placed,
             Err(err) if err.line == 0 && err.message == "contract too large" => {
@@ -315,6 +343,7 @@ pub(crate) fn codegen(checked: &Checked, shape: &Shape) -> Result<Built, Error> 
         ];
         if p.tight {
             dims.push(vec![Move::HoldDups(!p.hold_dups)]);
+            dims.push(vec![Move::OutlineRaises(!p.outline_raises)]);
         }
         dims
     };
@@ -398,12 +427,20 @@ pub(crate) fn codegen(checked: &Checked, shape: &Shape) -> Result<Built, Error> 
         }
         Ok((best, deltas))
     };
+    #[cfg(test)]
+    let forced = FORCE_STATIC_HEAP.get();
+    #[cfg(not(test))]
+    let forced: Option<bool> = None;
+    let on = forced == Some(true);
     let start = Plan {
         cache_slots: true,
         tight: true,
         hold_dups: false,
         frames: true,
         sink: false,
+        forward_consts: on,
+        static_heap: on,
+        every_bump: on,
         ..plan.clone()
     };
     let mut best = build_all(std::slice::from_ref(&start))?.pop().expect("a build");
@@ -531,6 +568,16 @@ pub(crate) fn codegen(checked: &Checked, shape: &Shape) -> Result<Built, Error> 
             }
         }
     }
+    // Constants and static allocations are tried on the chosen plan only: across every
+    // move they would double the builds for a few more bytes.
+    if forced.is_none() {
+        let tries = [Move::ForwardConsts, Move::StaticHeap].map(|m| m.applied(&best.plan));
+        for c in build_all(&tries)? {
+            if c.cost() < best.cost() {
+                best = c;
+            }
+        }
+    }
     // The search leaves the exact copies out, which the chosen plan gets.
     let built = finish(&best.emitted, true)?;
     if built.bytes == usize::MAX {
@@ -561,6 +608,7 @@ struct Emitted {
     leaves: Vec<(u32, usize)>,
     data: Vec<(Word, Vec<u8>, String)>,
     tail_blobs: Vec<(Word, Vec<u32>)>,
+    heap: Option<asm::Heap>,
 }
 
 /// The outline sets of builds over the size limit.
@@ -621,6 +669,11 @@ enum Move {
     HoldDups(bool),
     Frames(bool),
     Sink(bool),
+    OutlineRaises(bool),
+    /// Forward stored constants.
+    ForwardConsts,
+    /// Forward stored constants, and place allocations at constant addresses.
+    StaticHeap,
     /// Inline the function if the plan outlines it, else outline it.
     Toggle(usize),
 }
@@ -635,14 +688,21 @@ impl Move {
             Move::HoldDups(b) => p.hold_dups = *b,
             Move::Frames(b) => p.frames = *b,
             Move::Sink(b) => p.sink = *b,
+            Move::OutlineRaises(b) => p.outline_raises = *b,
+            Move::ForwardConsts => p.forward_consts = true,
+            Move::StaticHeap => {
+                p.forward_consts = true;
+                p.static_heap = true;
+            }
             Move::Toggle(f) => {
                 if !p.outline.remove(f) {
                     p.outline.insert(*f);
                 }
             }
         }
-        // Only tight builds hold copies.
+        // Only tight builds hold copies or outline lone raises.
         p.hold_dups &= p.tight;
+        p.outline_raises &= p.tight;
     }
 
     fn applied(&self, p: &Plan) -> Plan {
@@ -719,6 +779,26 @@ fn creation(
         });
     }
     Ok((place_data(&code, &g.data)?, g.needs))
+}
+
+/// The immutables `deploy` always sets to a constant, found by building its code with
+/// every call inlined. The runtime reads those as constants.
+fn init_constants(checked: &Checked, shape: &Shape) -> Vec<Option<Word>> {
+    let n = checked.transient_from - checked.immutable_from;
+    let none = vec![None; n];
+    if n == 0 || checked.prog.upgradeable || shape.part {
+        return none;
+    }
+    let Ok(mut g) = Gen::new(checked, Plan::default(), shape) else {
+        return none;
+    };
+    let Some(func) = g.deploy_func() else {
+        return none;
+    };
+    if g.emit_init(func, Vec::new(), &[]).is_err() {
+        return none;
+    }
+    (0..n as u32).map(|k| g.imm_stores.get(&k).copied().flatten()).collect()
 }
 
 /// Assembles the code with the creation code it embeds appended, each placeholder replaced
@@ -1105,6 +1185,11 @@ struct Plan {
     looped: std::collections::HashSet<usize>,
     /// Every function called more than once that can be outlined, for builds too big to fit.
     outlinable: std::collections::HashSet<usize>,
+    /// The parameters every call binds to blobs only, as the first pass, which inlines every
+    /// call, found them.
+    blob_params: std::collections::HashSet<usize>,
+    /// The functions whose every result is blobs only, found the same way.
+    blob_rets: std::collections::HashSet<usize>,
     /// Whether stored strings are written, and read, through one shared helper each.
     shared_bytes: (bool, bool),
     /// Whether `string` and `bytes` arguments are decoded by one shared helper.
@@ -1115,6 +1200,8 @@ struct Plan {
     shared_eq: bool,
     /// Whether slices share one helper, for those with an end and for those without.
     shared_slice: [bool; 2],
+    /// The options every `Base64` encoding uses, when they are all the same constants.
+    base64_fixed: Option<[bool; 2]>,
     /// Whether unsigned checked multiplications share one helper.
     shared_mul: bool,
     /// Whether checked powers share one helper, unsigned and signed.
@@ -1124,8 +1211,14 @@ struct Plan {
     /// Queues with one `defer` site, by their words' address: their nodes carry no site
     /// number, and their walk needs no dispatch.
     single_queues: std::collections::HashSet<i32>,
+    /// The bodies, by id, and functions inlined in them more than once whose continuations
+    /// read their parameters or constants: each call binds those to words of its own.
+    split_insts: std::collections::HashSet<(usize, usize)>,
     /// Constant raises with several sites, which share one block.
     shared_raises: std::collections::HashSet<String>,
+    /// Whether a constant raise with one site also goes out of line, so the code around it
+    /// stays one straight run whose values can stay on the stack.
+    outline_raises: bool,
     /// Whether each site takes its smallest form even where that keeps the outliner from
     /// sharing it with other sites.
     tight: bool,
@@ -1136,8 +1229,18 @@ struct Plan {
     /// never runs. Bodies then touch less memory, but alike bodies can place their regions
     /// apart, which keeps the outliner from sharing their code, so both are built.
     frames: bool,
-    /// Whether a promoted word may sink under an operand an op takes from beneath it. That
-    /// holds more words, but the swaps can keep the outliner from sharing code.
+    /// Whether constants stored to locals are read as constants, which costs bytes over a
+    /// `DUP` unless the constant folds.
+    forward_consts: bool,
+    /// Whether allocations where the heap's top is known also bump it inline at a constant
+    /// address, which costs bytes over a call unless the helper goes or the address folds.
+    static_heap: bool,
+    /// Whether every allocation where the top is unknown bumps it inline too, not only
+    /// those the cost model picks, so tests reach each site.
+    every_bump: bool,
+    /// Whether a promoted word may sink under an operand an op takes from beneath it, and
+    /// a stored value be rotated under the items above it to stay on the stack. That holds
+    /// more words, but the swaps can keep the outliner from sharing code.
     sink: bool,
 }
 
@@ -1149,6 +1252,8 @@ struct FuncSub {
     writes: std::collections::BTreeSet<u32>,
     journal_stores: bool,
     leaves: usize,
+    /// The argument words it takes from under its return address.
+    takes: usize,
 }
 
 /// Where ABI-encoded data is decoded from: memory or calldata, given the words holding
@@ -1236,13 +1341,19 @@ enum Sub {
     /// `[at, len, ret]` becomes a `string` or `bytes` value of the bytes at `at`, in
     /// memory, calldata, or the return data.
     BytesValue(SrcKind),
-    /// `[data, file_safe, no_padding, ret]` becomes `data` in base64, as a string.
-    Base64Encode,
+    /// `[data, file_safe, no_padding, ret]` becomes `data` in base64, as a string. With the
+    /// options fixed, `[data, ret]`.
+    Base64Encode(Option<[bool; 2]>),
     /// `[data, ret]` becomes the bytes a base64 string encodes.
     Base64Decode,
+    /// `[data, upper, ret]` becomes `data` with its ASCII letters in lower or upper case.
+    StringCase,
     /// `[quoted, len, src, ret]` becomes the `len` bytes at `src` escaped for a JSON string,
     /// in double quotes when `quoted` is 1, or with `true`, for HTML.
     StringEscape(bool),
+    /// `[data, needle, from, ret]` becomes where `needle` first starts in `data` at `from`
+    /// or later, or `Uint.max`.
+    IndexOf,
     /// `[data, needle, replacement, ret]` becomes `data` with every `needle` replaced.
     Replace,
     /// `[list, ret]` becomes the strings or bytes of a list, one after another.
@@ -1262,6 +1373,9 @@ enum Sub {
     /// `[at, dst, ret]` becomes `[]`: the dynamic value of this type at data position
     /// `at` decoded into its words at `dst`: from where, and whether as an argument.
     TreeDec(usize, SrcKind, bool),
+    /// `[acc, at, ret]` becomes `[]`: `TreeDec`'s checks of the value at `at`, with nothing
+    /// decoded, for a value read in place, after those `acc` holds.
+    TreeCheck(usize, SrcKind, bool),
     /// `[pos, cur, ret]` becomes `[end]`: the value of this type at calldata position
     /// `pos`, checked and ABI-encoded at `cur`.
     TreeCdEnc(usize),
@@ -1302,9 +1416,11 @@ impl Sub {
             | Sub::BlobsEq
             | Sub::BytesEq
             | Sub::BytesValue(_)
-            | Sub::Base64Encode
+            | Sub::Base64Encode(_)
             | Sub::Base64Decode
+            | Sub::StringCase
             | Sub::StringEscape(_)
+            | Sub::IndexOf
             | Sub::Replace
             | Sub::Join
             | Sub::DecimalString(_)
@@ -1313,6 +1429,7 @@ impl Sub {
             | Sub::BytesSlice(_)
             | Sub::TreeEnc(_)
             | Sub::TreeDec(..)
+            | Sub::TreeCheck(..)
             | Sub::TreeCdEnc(_) => false,
         }
     }
@@ -1340,14 +1457,16 @@ struct OpSite {
     /// `Evm.create` has no placeholder: `data` holds its creation code as a `bytes` value.
     create: Option<(Word, u64, Option<i32>, Option<i32>)>,
     fired: Option<i32>,
-    /// A method with no result, whose call to an account without code would succeed: as
-    /// in Solidity, the account must have code.
+    /// A method with no result, or an optional one nothing decodes, whose call to an
+    /// account without code would succeed: as in Solidity, the account must have code.
     needs_code: bool,
     /// The bytes of return data a result nothing decodes must have, as in Solidity.
     unread: u64,
     /// `Evm.call` or `Evm.delegate_call`: the opcode. `data` holds a `bytes` value, the
     /// whole calldata, and the continuation gets the return data as it came back.
     raw: Option<u8>,
+    /// `data` holds the calldata position of checked `bytes`, copied when the call runs.
+    cd_data: bool,
     /// The phase that runs when the call returns, with its result.
     then: Option<Then>,
     /// The arena words the `defer` captured: where they start, and how many. A queued
@@ -1356,6 +1475,9 @@ struct OpSite {
     /// Locals declared inside enclosing loops that the continuation reads: where each
     /// lives, and its words. Snapshotted with the record, since the loop rebinds them.
     captures: Vec<(i32, u32)>,
+    /// The words of the inlined parameters and constants the continuation reads, as this
+    /// `defer` left them: another inlined call of the same function binds its own.
+    locals: Vec<(usize, i32)>,
 }
 
 /// What one entry body did, gathered while it compiles.
@@ -1391,6 +1513,8 @@ struct Body {
     queued: bool,
     /// The list's head, tail, and cursor words, in the arena.
     queue: i32,
+    /// The instructions that start the list, dropped when nothing joins it.
+    queue_init: (usize, usize),
 }
 
 /// A storage place past a key or an index, with its slot on the stack: its type, where
@@ -1438,9 +1562,9 @@ struct Gen<'a> {
     reject_value: Option<u32>,
     /// Decoding a function's arguments, whose oversized lengths revert with no data.
     decoding_args: bool,
-    /// Where the data the tree decoders read starts, and its length.
+    /// Where the data the tree decoders read starts and ends, as positions.
     tree_at: i32,
-    tree_len: i32,
+    tree_end: i32,
     code: Vec<Inst>,
     next_label: u32,
     spaces: Vec<Space>,
@@ -1455,6 +1579,14 @@ struct Gen<'a> {
     tail: bool,
     /// The `defer` being compiled is the last thing its body runs.
     fire_tail: bool,
+    /// The loop being compiled ends its body and nothing in it can tell a call run now
+    /// from one run after the transition, so its `defer`s run where they stand.
+    fire_loop: bool,
+    /// A recoverable call's `Error` phase, by its statements' shape, for the `Ok` phase
+    /// about to compile: a tail of `Ok` shaped the same jumps to it instead.
+    next_share: Option<(String, u32)>,
+    /// That phase while its `Ok` phase compiles, with how many inlined calls deep it is.
+    share: Option<(String, u32, usize)>,
     /// Queries issued at the start of the body, by source position: their buffer holds
     /// whether each succeeded, then its word.
     hoisted: HashMap<(u32, u32), i32>,
@@ -1468,8 +1600,6 @@ struct Gen<'a> {
     /// Where a shared string helper keeps the slot it was given.
     key_scratch: i32,
     base64_tbl: i32,
-    /// `Uint.mul_div`'s five words.
-    mul_div_buf: i32,
     /// Creation code: arguments are read from a copy of what follows the code, not calldata.
     init: bool,
     /// Where that copy sits, minus the 4 bytes a selector takes in calldata.
@@ -1484,6 +1614,8 @@ struct Gen<'a> {
     value_sites: [usize; 3],
     eq_sites: usize,
     slice_sites: [usize; 2],
+    /// The option sets `Base64` encodings use: `None` for options known only at runtime.
+    base64_opts: std::collections::HashSet<Option<[bool; 2]>>,
     mul_sites: usize,
     exp_sites: [usize; 2],
     /// `defer` sites inside loops, whose calls are queued.
@@ -1501,13 +1633,25 @@ struct Gen<'a> {
     /// `bytes` and `string` parameters left in calldata for `Abi.decode`: each local holds
     /// its length word's position.
     cd_bytes: std::collections::HashSet<usize>,
+    /// Raw query answers read in place: `.length` is the return data's size, and the first
+    /// word is at `ret_scratch`.
+    rd_first: std::collections::HashSet<usize>,
     /// Calldata lists whose elements are checked as loops read them.
     cd_lazy: std::collections::HashSet<usize>,
     /// Static parameters of the entrypoint being compiled, decoded from calldata.
     cd_words: std::collections::HashSet<usize>,
+    /// Parameters and constants of inlined calls that continuations read, bound to fresh
+    /// arena words for the call.
+    inst_syms: std::collections::HashSet<usize>,
+    /// Where the call just emitted writes its result, for `after_call` to decode.
+    ret_out: Option<i32>,
     /// Arguments with nested dynamic values left in calldata: each local holds the value's
     /// calldata position, and encoding it copies from there.
     cd_trees: std::collections::HashSet<usize>,
+    /// Lists and records left in calldata, checked where they were decoded as decoding
+    /// would check them: each local holds the value's calldata position, and every read
+    /// is a calldata read.
+    cd_checked: std::collections::HashSet<usize>,
     bytes_rep: Option<(usize, u32)>,
     /// A leaf whose slot is read from memory instead of pushed, inside a shared helper.
     dyn_key: Option<(u32, i32)>,
@@ -1519,6 +1663,8 @@ struct Gen<'a> {
     key_names: HashMap<usize, usize>,
     /// Parameters of an inlined call that the call passes a literal word: the word.
     const_params: HashMap<usize, Word>,
+    /// Parameters of an inlined call that the call passes a string literal: its bytes.
+    const_strs: HashMap<usize, Vec<u8>>,
     /// Temporaries of shared code. Each serves one site, so only the code that made it
     /// names it, and it can live on the stack as a body's words do.
     shared_temps: std::collections::HashSet<usize>,
@@ -1567,6 +1713,8 @@ struct Gen<'a> {
     /// Locals the statements being compiled read lists out of: writes through them copy.
     sharing: Vec<usize>,
     blob_base: i32,
+    /// Where `resolve` placed the heap, when code uses it.
+    heap: Option<asm::Heap>,
     fn_ret: Vec<i32>,
     tuple_buf: i32,
     compiling: Vec<usize>,
@@ -1575,6 +1723,9 @@ struct Gen<'a> {
     raises: Vec<(String, u32, Raised)>,
     /// Sites of each constant raise, for the plan.
     raise_sites: HashMap<String, usize>,
+    /// Calls inlined in each body, by body id and function, of functions whose
+    /// continuations read their parameters or constants.
+    inst_sites: HashMap<(usize, usize), usize>,
     subs: Vec<(Sub, u32, bool)>,
     /// The payloads some encoded error reverts with: 1 for string or bytes values, 2 for
     /// lists, and 4 for string literals, which reach it still packed in their words.
@@ -1583,6 +1734,11 @@ struct Gen<'a> {
     revert_head: Option<i32>,
     /// Runtime branches around the code being compiled.
     branch: u32,
+    /// Each immutable's value where `deploy` always sets it to one constant.
+    imm_consts: Vec<Option<Word>>,
+    /// While building creation code: each immutable's value where every store so far
+    /// runs whenever `deploy` does and pushes a constant.
+    imm_stores: HashMap<u32, Option<Word>>,
     /// The `branch` of code that runs whenever the current body or shared function does.
     top_branch: u32,
     body: Option<Body>,
@@ -1592,10 +1748,27 @@ struct Gen<'a> {
     /// Loop elements from a stored string list that are only asked for their length:
     /// each holds its slot's word, not a copy of the string.
     header_locals: std::collections::HashSet<usize>,
+    /// `bytes` and `string` locals a loop reads and never writes, with the words their
+    /// length and data address were read into before it.
+    span_temps: HashMap<usize, (i32, i32)>,
+    /// Widths `k` that a loop cuts `bytesN(b[i:i + k])` by and never writes, with the word
+    /// the mask of `k` leading bytes was computed into before it.
+    mask_temps: HashMap<usize, i32>,
+    /// `bytes` and `string` locals that hold a blob, never the empty word, as a decoded
+    /// argument does.
+    blobs: std::collections::HashSet<usize>,
+    /// Whether each parameter bound so far was bound to blobs only, at every call.
+    blob_sites: HashMap<usize, bool>,
+    /// Whether each function inlined so far left blobs only, at every call.
+    ret_sites: HashMap<usize, bool>,
+    /// The local whose blob the `Bytes.concat` being compiled may grow in place.
+    append_to: Option<usize>,
+    /// Whether each `bytes` or `string` local is `appendable`.
+    appendable: HashMap<usize, bool>,
     /// The counters of the enclosing loops: each is below its limit while its loop runs.
     loop_counters: Vec<usize>,
     /// Orderings the enclosing guards prove, innermost last.
-    facts: Vec<range::Fact>,
+    facts: range::Facts,
     /// Where creation code keeps the immutables' values.
     imm_mem: i32,
     /// A facet's immutables follow its calldata, from the router: their bytes, and where
@@ -1858,9 +2031,7 @@ fn record_words<'e>(
 fn same_expr(a: &Expr, b: &Expr) -> bool {
     match (a, b) {
         (Expr::Ident { sym: Some(x), .. }, Expr::Ident { sym: Some(y), .. }) => x == y,
-        (Expr::Lit { lit: x, .. }, Expr::Lit { lit: y, .. }) => {
-            format!("{x:?}") == format!("{y:?}")
-        }
+        (Expr::Lit { lit: x, .. }, Expr::Lit { lit: y, .. }) => x == y,
         (
             Expr::Field {
                 base: x, name: n, ..

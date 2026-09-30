@@ -47,7 +47,7 @@ impl<'a> Gen<'a> {
         }
         // The first build counts the sites; one site keeps its raise inline.
         *self.raise_sites.entry(key.clone()).or_default() += 1;
-        if !self.plan.shared_raises.contains(&key) {
+        if !self.plan.outline_raises && !self.plan.shared_raises.contains(&key) {
             return None;
         }
         if let Some(&(_, label, _)) = self.raises.iter().find(|(have, ..)| *have == key) {
@@ -904,6 +904,7 @@ impl<'a> Gen<'a> {
                     at: Addr::Mem(self.local[sym]),
                     ty,
                     cd: true,
+                    checked: self.cd_bytes.contains(&sym),
                 });
             } else {
                 let at = self.stage(expr)?;
@@ -911,6 +912,7 @@ impl<'a> Gen<'a> {
                     at: Addr::Mem(at),
                     ty,
                     cd: false,
+                    checked: false,
                 });
             }
         }

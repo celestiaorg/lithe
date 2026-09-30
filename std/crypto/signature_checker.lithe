@@ -1,0 +1,112 @@
+(* Signatures from accounts and contracts alike, as OpenZeppelin's `SignatureChecker`
+   checks them. An account without code signs with ECDSA, a 65-byte signature with a
+   low `s`; a contract answers ERC-1271's `isValidSignature`. Neither check reverts: a
+   bad signature, a failing wallet, or a malformed answer is `false`.
+
+   Solady's `SignatureCheckerLib` also takes the code-size branch, but accepts 64-byte
+   EIP-2098 signatures and high-`s` twins from accounts without code; this module rejects
+   them, as OpenZeppelin does.
+
+   ERC-6492 signs for a wallet before it is deployed: the signature is
+   `abi.encode(factory, factoryCalldata, signature)` and the 32-byte suffix
+   `0x6492...6492`, and the factory call deploys the wallet. Deploying changes state, so
+   `check_erc6492_signature` defers the factory call and checks the signature in its
+   continuation, raising `ERC6492InvalidSignature` if it doesn't hold; the view
+   `is_valid_erc6492_signature_now` answers at once, false for a wallet not deployed. *)
+
+import "std/crypto/ecdsa";
+import "std/interfaces/erc1271";
+import "std/evm";
+import "std/abi";
+import "std/bytes";
+import "std/uint";
+
+error ERC6492InvalidSignature of address;
+
+module SignatureChecker is {
+  requires ECDSA;
+
+  (* The ERC-1271 check is written out again, not called: a call of it is outlined, and
+     costs a contract that checks only this way 19 bytes. *)
+  view function is_valid_signature_now(const signer : address; const hash : bytes32; const signature : bytes) : bool is
+    if Evm.code_size(signer) = 0 then
+      ECDSA.try_recover_signature(hash, signature) = Some(signer)
+    else case query Evm.static_call(signer, Abi.encode_call(IERC1271.isValidSignature, hash, signature)) of {
+      | Ok(result) -> bytes32(result) = 0x1626ba7e00000000000000000000000000000000000000000000000000000000
+      and result.length >= 32
+      | Error(_) -> false
+    }
+
+  (* Whether `signer` answers `isValidSignature(hash, signature)` with its selector, in a
+     whole word. *)
+  view function is_valid_erc1271_signature_now(
+    const signer : address;
+    const hash : bytes32;
+    const signature : bytes
+  ) : bool is
+    case query Evm.static_call(signer, Abi.encode_call(IERC1271.isValidSignature, hash, signature)) of {
+      | Ok(result) -> bytes32(result) = 0x1626ba7e00000000000000000000000000000000000000000000000000000000
+      and result.length >= 32
+      | Error(_) -> false
+    }
+
+  (* Whether `signature` ends with ERC-6492's suffix. *)
+  pure function is_erc6492_signature(const signature : bytes) : bool is
+    signature.length >= 32
+      and Bytes.word(signature, signature.length - 32)
+        = 0x6492649264926492649264926492649264926492649264926492649264926492
+
+  (* The parts of an ERC-6492 signature, `abi.encode(factory, factoryCalldata, signature)`
+     before the suffix: the factory, and where the factory's calldata and the wallet's own
+     signature lie in it, `signature[start:finish]`. A part that runs past the end
+     panics. *)
+  pure function erc6492_factory(const signature : bytes) : address is
+    address(uint160(uint(bytes32(signature))))
+
+  pure function erc6492_part(const signature : bytes; const head : uint) : (uint, uint) is {
+    const o : uint := uint(Bytes.word(signature, head));
+    const start : uint := Uint.wrapping_add(o, 32);
+  } with (start, Uint.wrapping_add(start, uint(Bytes.word(signature, o))))
+
+  (* `is_valid_signature_now`, and for an ERC-6492 signature the wallet's own signature
+     through ERC-1271, or false while the wallet has no code. *)
+  view function is_valid_erc6492_signature_now(
+    const signer : address;
+    const hash : bytes32;
+    const signature : bytes
+  ) : bool is {
+    var valid : bool := false;
+    if not is_erc6492_signature(signature) then {
+      valid := is_valid_signature_now(signer, hash, signature);
+    } else if Evm.code_size(signer) <> 0 then {
+      const (start, finish) : (uint, uint) := erc6492_part(signature, 64);
+      valid := is_valid_erc1271_signature_now(signer, hash, signature[start:finish]);
+    };
+  } with valid
+
+  (* Raises `ERC6492InvalidSignature(signer)` unless `signature` is valid for `hash`. An
+     ERC-6492 signature that doesn't hold now runs its factory call, deferred, to deploy
+     or prepare the wallet, and is checked in the call's continuation: the wallet stays
+     deployed when the transition succeeds. *)
+  function check_erc6492_signature(const signer : address; const hash : bytes32; const signature : bytes)
+    raises ERC6492InvalidSignature
+  is {
+    if not is_erc6492_signature(signature) then {
+      assert(is_valid_signature_now(signer, hash, signature), ERC6492InvalidSignature(signer));
+    } else {
+      const (start, finish) : (uint, uint) := erc6492_part(signature, 64);
+      const inner : bytes := signature[start:finish];
+      if Evm.code_size(signer) = 0 or not is_valid_erc1271_signature_now(signer, hash, inner) then {
+        const (data_start, data_finish) : (uint, uint) := erc6492_part(signature, 32);
+        defer Evm.call(erc6492_factory(signature), signature[data_start:data_finish]) then {
+          | Ok -> {
+              assert(is_valid_erc1271_signature_now(signer, hash, inner), ERC6492InvalidSignature(signer));
+            }
+          | Error(_) -> {
+              fail ERC6492InvalidSignature(signer);
+            }
+        };
+      }
+    }
+  }
+}

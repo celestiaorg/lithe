@@ -28,6 +28,7 @@ impl<'a> Gen<'a> {
         self.cd_lazy.clear();
         self.cd_words.clear();
         self.cd_trees.clear();
+        self.cd_checked.clear();
         let mut args = false;
         for p in params {
             let Some(sym) = p.sym else { continue };
@@ -67,6 +68,32 @@ impl<'a> Gen<'a> {
                     head += 1;
                     continue;
                 }
+            }
+            // A list of records only walked and read by field stays in calldata, checked
+            // here as decoding it would be.
+            if self.tree_param(p.ty_id)
+                && !self.init
+                && self.list_value(p.ty_id)
+                && self.cd_checkable(func, sym)
+            {
+                if !args {
+                    self.args_src();
+                    args = true;
+                }
+                let src = Src::Cd(self.tree_at, self.tree_end);
+                // [pos, offset, pos]: the offset is the checker's first term.
+                self.push_u64(u64::from(head) * 32);
+                self.src_word(src);
+                self.op(DUP1);
+                self.src_origin(src);
+                self.op(DUP1);
+                self.op(SWAP1 + 1);
+                self.op(SWAP1);
+                self.call_sub(Sub::TreeCheck(self.peel_nominal(p.ty_id), SrcKind::Cd, true));
+                self.mstore_off(self.local[sym]);
+                self.cd_checked.insert(sym);
+                head += 1;
+                continue;
             }
             if self.tree_param(p.ty_id) {
                 if !args {
@@ -176,35 +203,117 @@ impl<'a> Gen<'a> {
         !other
     }
 
+    /// Whether `sym` is a list of plain words, which a copy takes straight from calldata.
+    fn cd_copyable(&self, sym: usize) -> bool {
+        let ty = self.checked.syms[sym].ty;
+        self.list_value(ty)
+            && self.list_k(ty) == 1
+            && !self.is_dynamic(self.peel_nominal(self.list_elem(ty)))
+            && !self.needs_check(self.list_elem(ty))
+    }
+
+    /// `bytes32`, the one cut of `bytes` read from calldata in place.
+    pub(super) fn word32_bytes(&self, ty: usize) -> bool {
+        let t = &self.checked.types[self.peel_nominal(ty)];
+        t.kind == TyKind::Bytes && t.bits == 32
+    }
+
     /// Whether a loop the function always runs walks a calldata list to its end, and no
     /// loop stops early, so checking each element as it is read checks them all, as
-    /// decoding would have.
+    /// decoding would have. The loop may be in a function it always calls with the list,
+    /// which inlines the call and reads the same calldata.
     fn walked_whole(&self, func: usize, sym: usize) -> bool {
+        self.always_walks(func, sym, 4) && !self.may_stop(func, sym, 4)
+    }
+
+    /// The parameter of `callee` that each argument naming `sym` binds.
+    fn passed_as(&self, callee: usize, args: &[Expr], sym: usize) -> Vec<usize> {
+        let params = &self.checked.prog.funcs[callee].params;
+        args.iter()
+            .zip(params)
+            .filter(|(a, _)| matches!(a, Expr::Ident { sym: Some(s), builtin: None, .. } if *s == sym))
+            .filter_map(|(_, p)| p.sym)
+            .collect()
+    }
+
+    fn always_walks(&self, func: usize, sym: usize, depth: u32) -> bool {
+        let f = &self.checked.prog.funcs[func];
         let over = |init: &Option<Expr>| {
             matches!(init, Some(Expr::Index { base, .. })
                 if matches!(base.as_ref(), Expr::Ident { sym: Some(s), .. } if *s == sym))
         };
+        // A call every evaluation of `e` makes: not behind `and`, `or`, or a branch.
+        fn sure_calls<'e>(e: &'e Expr, out: &mut Vec<(usize, &'e [Expr])>) {
+            match e {
+                Expr::Call { callee, builtin, args, .. } => {
+                    if let (Some(idx), None) = (callee, builtin) {
+                        out.push((*idx, args));
+                    }
+                    for a in args {
+                        sure_calls(a, out);
+                    }
+                }
+                Expr::Binary { op: BinOp::And | BinOp::Or, left, .. } => sure_calls(left, out),
+                Expr::Binary { left, right, .. } => {
+                    sure_calls(left, out);
+                    sure_calls(right, out);
+                }
+                Expr::Unary { expr, .. } => sure_calls(expr, out),
+                _ => {}
+            }
+        }
+        let mut calls = Vec::new();
+        for st in &f.stmts {
+            match st {
+                Stmt::For { until: None, elem_init, .. } if over(elem_init) => return true,
+                Stmt::Const { expr, .. } | Stmt::Var { expr, .. } | Stmt::Call { expr, .. } => {
+                    sure_calls(expr, &mut calls)
+                }
+                _ => {}
+            }
+        }
+        if let Some(tail) = &f.tail {
+            sure_calls(tail, &mut calls);
+        }
+        depth > 0
+            && calls.into_iter().any(|(callee, args)| {
+                self.passed_as(callee, args, sym)
+                    .into_iter()
+                    .any(|p| self.always_walks(callee, p, depth - 1))
+            })
+    }
+
+    /// Whether some loop over the list, here or in a function it is passed to, can stop
+    /// before its end. Past `depth` calls, assume one can.
+    fn may_stop(&self, func: usize, sym: usize, depth: u32) -> bool {
+        let over = |init: &Option<Expr>| {
+            matches!(init, Some(Expr::Index { base, .. })
+                if matches!(base.as_ref(), Expr::Ident { sym: Some(s), .. } if *s == sym))
+        };
+        let passed = std::cell::RefCell::new(Vec::new());
         let stops = |node: Node<'_>| match node {
-            Node::Stmt(Stmt::For {
-                until: Some(_),
-                elem_init,
-                ..
-            }) => over(elem_init),
+            Node::Stmt(Stmt::For { until: Some(_), elem_init, .. }) => over(elem_init),
+            Node::Expr(Expr::Call { callee: Some(idx), builtin: None, args, .. }) => {
+                passed.borrow_mut().extend(self.passed_as(*idx, args, sym).into_iter().map(|p| (*idx, p)));
+                false
+            }
             _ => false,
         };
         let f = &self.checked.prog.funcs[func];
-        let always = f
-            .stmts
-            .iter()
-            .any(|s| matches!(s, Stmt::For { until: None, elem_init, .. } if over(elem_init)));
-        always
-            && !(f
-                .stmts
-                .iter()
-                .any(|s| self.stmt_any(s, &stops, &mut Vec::new()))
-                || f.tail
-                    .as_ref()
-                    .is_some_and(|e| self.expr_any(e, &stops, &mut Vec::new())))
+        // Only this function's own statements: a callee is checked with its parameter.
+        let here = |st: &Stmt| {
+            let mut seen: Vec<usize> = (0..self.checked.prog.funcs.len()).collect();
+            self.stmt_any(st, &stops, &mut seen)
+        };
+        let direct = f.stmts.iter().any(here)
+            || f.tail.as_ref().is_some_and(|e| {
+                let mut seen: Vec<usize> = (0..self.checked.prog.funcs.len()).collect();
+                self.expr_any(e, &stops, &mut seen)
+            });
+        let passed = passed.into_inner();
+        direct
+            || !passed.is_empty() && depth == 0
+            || passed.into_iter().any(|(callee, p)| self.may_stop(callee, p, depth - 1))
     }
 
     pub(super) fn stmt_uses(&self, st: &Stmt, sym: usize, whole: Option<usize>, other: &mut bool) {
@@ -242,6 +351,12 @@ impl<'a> Gen<'a> {
                     }
                 }
             }
+            // A `var` of a list of plain words copies it straight out of calldata.
+            Stmt::Var { expr, .. }
+                if whole.is_some()
+                    && !self.init
+                    && matches!(expr, Expr::Ident { sym: Some(s), .. } if *s == sym)
+                    && self.cd_copyable(sym) => {}
             Stmt::Const { expr, .. }
             | Stmt::Var { expr, .. }
             | Stmt::Call { expr, .. }
@@ -391,10 +506,12 @@ impl<'a> Gen<'a> {
                     .filter(|&idx| builtin.is_none() && self.inlines(idx))
                     .map(|idx| (idx, self.continuation_syms(idx)));
                 for (j, arg) in args.iter().enumerate() {
-                    // Encoded whole, or read in place by an inlined call's constant parameter.
+                    // Encoded whole, read in place by an inlined call's constant parameter, or
+                    // copied out of calldata by `List.resized`.
                     let in_place = whole.is_some()
                         && own(arg)
                         && (encoded
+                            || j == 0 && *builtin == Some(Builtin::ListResized) && self.cd_copyable(sym)
                             || params.as_ref().is_some_and(|(idx, later)| {
                                 self.checked.prog.funcs[*idx].params[j].sym.is_some_and(|p| {
                                     !self.checked.syms[p].mutable
@@ -654,6 +771,9 @@ impl<'a> Gen<'a> {
             self.decode_bytes_arg()?;
         }
         self.mstore_off(self.local[sym]);
+        if !self.checked.syms[sym].mutable {
+            self.blobs.insert(sym);
+        }
         Ok(())
     }
 
@@ -854,10 +974,7 @@ impl<'a> Gen<'a> {
         self.push_u64(4);
         self.mstore_off(self.tree_at);
         self.cd_size();
-        self.push_u64(4);
-        self.op(SWAP1);
-        self.op(SUB);
-        self.mstore_off(self.tree_len);
+        self.mstore_off(self.tree_end);
     }
 
     /// Decodes the argument at head word `head` into `sym`, a record as its fields. Returns
@@ -874,6 +991,7 @@ impl<'a> Gen<'a> {
             words += self.abi_head_words(fty);
         }
         self.decoding_args = false;
+        self.note_blob(sym, true);
         Ok(words)
     }
 
@@ -946,46 +1064,49 @@ impl<'a> Gen<'a> {
     /// Reverts when the word `load` pushes has bits its type cannot hold, as Solidity's
     /// decoder does for calldata and return data alike.
     pub(super) fn check_word(&mut self, ty: usize, load: &dyn Fn(&mut Self)) -> Result<(), Error> {
+        if !self.needs_check(ty) {
+            return Ok(());
+        }
+        load(self);
+        self.word_flag(ty);
+        self.revert_if_true()
+    }
+
+    /// `[w]` becomes whether the word has bits a value of type `ty`, one `needs_check`
+    /// checks, cannot hold.
+    pub(super) fn word_flag(&mut self, ty: usize) {
         if let Some(cases) = self.enum_cases(ty) {
-            load(self);
             self.push_u64(cases as u64 - 1);
             self.op(LT);
-            return self.revert_if_true();
+            return;
         }
         let t = &self.checked.types[self.peel_nominal(ty)];
         let (kind, bits) = (t.kind, t.bits);
         match kind {
-            TyKind::Uint if bits > 0 && bits < 256 => {
-                load(self);
+            TyKind::Uint => {
                 self.push_u64(u64::from(bits));
                 self.op(SHR);
             }
             TyKind::Address | TyKind::Interface => {
-                load(self);
                 self.push_u64(160);
                 self.op(SHR);
             }
             TyKind::Bool => {
-                load(self);
                 self.push_u64(1);
                 self.op(LT);
             }
-            TyKind::Int if bits > 0 && bits < 256 => {
-                load(self);
+            TyKind::Int => {
                 self.op(DUP1);
                 self.push_u64(u64::from(bits / 8 - 1));
                 self.op(SIGNEXTEND);
                 self.op(EQ);
                 self.op(ISZERO);
             }
-            TyKind::Bytes if bits > 0 && bits < 32 => {
-                load(self);
+            _ => {
                 self.push_u64(u64::from(bits) * 8);
                 self.op(SHL);
             }
-            _ => return Ok(()),
         }
-        self.revert_if_true()
     }
 
     /// How many cases a variant with no payloads has, through any nominal types over it.

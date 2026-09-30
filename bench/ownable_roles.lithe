@@ -1,0 +1,53 @@
+(* Benchmark: role checks on the standard library's `OwnableRoles`, roles as bits of one
+   mask per account in the style of Solady's, on OpenZeppelin's `Ownable`. A minter mints,
+   the owner or a pauser pauses. Mirrors ownable_roles.sol. *)
+
+import "std/access/ownable_roles";
+import "std/access/ownable";
+import "std/evm";
+
+contract Minter is {
+  use Ownable exposing IOwnable;
+  use OwnableRoles exposing IOwnableRoles;
+
+  storage is record {
+    minted : map(address, uint);
+    paused : bool;
+  }
+
+  pure function minter() : roles is OwnableRoles.role(0)
+  pure function pauser() : roles is OwnableRoles.role(1)
+
+  deploy()
+    raises OwnableInvalidOwner
+  is {
+    Ownable.init(Evm.sender());
+  }
+
+  external function mint(const to : address; const amount : uint)
+    raises Unauthorized
+  is {
+    OwnableRoles.check_roles(minter());
+    storage.minted[to] := storage.minted[to] + amount;
+  }
+
+  external view function minted(const who : address) : uint is
+    storage.minted[who]
+
+  external function pause()
+    raises Unauthorized
+  is {
+    OwnableRoles.check_owner_or_roles(pauser());
+    storage.paused := true;
+  }
+
+  external function unpause()
+    raises Unauthorized
+  is {
+    OwnableRoles.check_roles_or_owner(pauser() | minter());
+    storage.paused := false;
+  }
+
+  external view function paused() : bool is
+    storage.paused
+}

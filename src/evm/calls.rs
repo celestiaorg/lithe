@@ -245,7 +245,55 @@ external function ping() is {
 }
 
 /// An `option(T)` result is `None` when the callee returns no data, as tokens that return
-/// nothing from `transfer` do, and `Some` of the decoded value otherwise.
+/// nothing from `transfer` do, and `Some` of the decoded value otherwise. No data from an
+/// account without code reverts, even in a continuation with an `Error` arm.
+#[test]
+fn continuations_read_their_own_calls_arguments() {
+    install_mocks();
+    let src = "\
+interface Echo is {
+  function amount(value : uint) : uint;
+}
+storage is record { seen : map(uint, uint); }
+function note(const e : Echo; const tag : uint; const v : uint) is {
+  const shifted : uint := tag + 100;
+  defer e.amount(v) then (r : uint) {
+    storage.seen[tag] := r;
+    storage.seen[shifted] := r + 1;
+  };
+}
+external function twice(const e : Echo) is {
+  note(e, 1, 10);
+  note(e, 2, 20);
+}
+external function each(const e : Echo; const tags : list(uint)) is {
+  for tag : uint in tags do {
+    note(e, tag, tag * 10);
+  }
+}
+";
+    let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
+    let w = Word::from_u64;
+    let seen = |out: &Outcome, tag: u64| {
+        let mut key = [0u8; 64];
+        key[..32].copy_from_slice(&w(tag).to_be_bytes());
+        let at = keccak_word(&key);
+        out.storage.get(&at).copied().unwrap_or_default()
+    };
+    let out = call(&runtime, "twice(address)", &[w(0xcd)]);
+    assert!(!out.reverted, "{}", pretty(&out.returndata));
+    for (tag, v) in [(1, 10), (2, 20), (101, 11), (102, 21)] {
+        assert_eq!(seen(&out, tag), w(v), "twice: seen[{tag}]");
+    }
+    let tags = [w(0xcd), w(0x40), w(3), w(3), w(4), w(5)];
+    let out = exec(&runtime, &word_data("each(address,uint256[])", &tags), HashMap::new(), w(0xab), w(0), w(0))
+        .expect("each");
+    assert!(!out.reverted, "{}", pretty(&out.returndata));
+    for (tag, v) in [(3, 30), (4, 40), (5, 50), (103, 31), (104, 41), (105, 51)] {
+        assert_eq!(seen(&out, tag), w(v), "each: seen[{tag}]");
+    }
+}
+
 #[test]
 fn optional_results() {
     install_mocks();
@@ -305,6 +353,10 @@ external function try_peek(const e : Echo; const v : uint) is {
         ("amount", 0xcd, 41, 1, Some(42)),
         ("amount", 1, 0, 1, None),
         ("amount", 0xef, 0, 3, Some(1)),
+        ("flag", 0x4242, 0, 0, None),
+        ("amount", 0x4242, 0, 1, None),
+        ("peek", 0x4242, 0, 2, None),
+        ("try_peek", 0x4242, 0, 2, None),
         ("peek", 0xce, 0, 2, Some(1)),
         ("peek", 0xcd, 1, 2, Some(3)),
         ("peek", 0xcd, 2, 2, None),
@@ -340,7 +392,7 @@ external function try_peek(const e : Echo; const v : uint) is {
 }
 
 /// As in Solidity, a call to an account without code fails when nothing else would catch
-/// it: a method with no result, or a result nothing decodes. An optional result is `None`.
+/// it: a method with no result, or a result nothing decodes, optional or not.
 #[test]
 fn calls_to_accounts_without_code_fail() {
     install_mocks();
@@ -373,11 +425,15 @@ external function maybe(const h : Hook) is { defer h.maybe(); }
             "{sig} with no return data"
         );
     }
-    for sig in ["ping(address)", "count(address)", "ignore(address)"] {
+    for sig in [
+        "ping(address)",
+        "count(address)",
+        "ignore(address)",
+        "maybe(address)",
+    ] {
         let out = call(&runtime, sig, &[nobody]);
         assert!(out.reverted && out.returndata.is_empty(), "{sig}");
     }
-    assert!(!call(&runtime, "maybe(address)", &[nobody]).reverted);
 }
 
 /// A file that imports a file of contracts can create them. `Evm.creation_code` is the
@@ -842,9 +898,12 @@ fn recoverable_calls_branch_on_the_outcome() {
 
     let read = run("read(address,uint256)", &[ok, w(42)]);
     assert_eq!(layout.get(&read.storage, 4), w(42));
-    let unavailable = run("read(address,uint256)", &[missing, w(42)]);
+    let unavailable = run("read(address,uint256)", &[refuse, w(42)]);
     assert!(unavailable.reverted);
     assert_eq!(unavailable.returndata, selector("Unavailable()").to_vec());
+    // An account without code answers nothing, which is too short, not an `Error`.
+    let codeless = run("read(address,uint256)", &[missing, w(42)]);
+    assert!(codeless.reverted && codeless.returndata.is_empty());
     let small = run("read_small(address,uint256)", &[ok, w(200)]);
     assert_eq!(layout.get(&small.storage, 5), w(200));
     // A dirty word is malformed, not an `Error`.
@@ -2154,4 +2213,217 @@ external function each(const e : Echo) is {
         err.to_string().contains("`create` takes no `with gas`"),
         "{err}"
     );
+}
+
+/// A function that queries is outlined like any other, so callers share its call where the
+/// cost model outlines it, and it answers the same from every caller.
+#[test]
+fn querying_functions_are_shared() {
+    install_mocks();
+    let src = "
+interface Echo is { view function peek(v : uint) : uint; }
+storage is record { n : uint; }
+view function ask(const e : Echo; const v : uint) : uint is query e.peek(v + 1)
+external view function a(const e : Echo) : uint is ask(e, 1)
+external view function b(const e : Echo) : uint is ask(e, 2) * 2
+external view function c(const e : Echo) : uint is ask(e, 3) + 1
+external function d(const e : Echo) is { storage.n := ask(e, 4); }
+";
+    let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
+    let (mut pc, mut calls) = (0, 0);
+    while pc < runtime.len() {
+        calls += usize::from(runtime[pc] == 0xfa);
+        pc += 1 + usize::from(runtime[pc].wrapping_sub(0x5f)).min(32)
+            * usize::from((0x60..=0x7f).contains(&runtime[pc]));
+    }
+    assert!(calls < 4, "{calls} calls");
+    let e = Word::from_u64(0xcd);
+    for (sig, want) in [("a(address)", 2), ("b(address)", 6), ("c(address)", 5)] {
+        let out = call(&runtime, sig, &[e]);
+        assert_eq!(
+            load_bytes(&out.returndata, 0),
+            Word::from_u64(want),
+            "{sig}"
+        );
+    }
+    assert_eq!(
+        slot(&call(&runtime, "d(address)", &[e]).storage, 0),
+        Word::from_u64(5)
+    );
+}
+
+/// Creation spends the creator's nonce as the chain does: a creation whose code reverts
+/// still uses one, and a transition that reverts gives back the nonces its creations used,
+/// with the contracts they made.
+#[test]
+fn a_revert_gives_back_creation_nonces() {
+    let src = "\
+contract Factory is {
+  error Refused;
+
+  storage is record { last : address; failed : uint; }
+
+  external function open(const refuse : bool)
+    raises Refused
+  is {
+    defer create Vault(false) then (vault : address) {
+      storage.last := vault;
+      assert(not refuse, Refused);
+    };
+  }
+
+  external function open_failing() is {
+    defer create Vault(true) then {
+      | Ok(vault : address) -> { storage.last := vault; }
+      | Error(_) -> { storage.failed := storage.failed + 1; }
+    };
+  }
+}
+
+contract Vault is {
+  error Refused;
+
+  storage is record { n : uint; }
+  deploy(const refuse : bool)
+    raises Refused
+  is {
+    assert(not refuse, Refused);
+  }
+
+  external view function n() : uint is storage.n
+}
+";
+    let contracts = compile_contracts(src).expect("compile");
+    let factory = contracts
+        .iter()
+        .find(|(n, _)| n == "Factory")
+        .expect("factory")
+        .1
+        .clone();
+    let factory = deploy(&factory).expect("deploy");
+    let w = Word::from_u64;
+    let mut storage = HashMap::new();
+    let run = |storage: &mut HashMap<Word, Word>, sig: &str, args: &[Word]| {
+        let out = exec(
+            &factory,
+            &word_data(sig, args),
+            storage.clone(),
+            w(1),
+            w(0),
+            w(0),
+        )
+        .expect(sig);
+        if !out.reverted {
+            *storage = out.storage.clone();
+        }
+        out
+    };
+    let at = |nonce: u64| created_address_for_nonce(w(0x1000), nonce);
+    let start = NONCE.get();
+    let known = DEPLOYED.with(|d| d.borrow().len());
+
+    assert!(run(&mut storage, "open(bool)", &[w(1)]).reverted);
+    assert_eq!(NONCE.get(), start);
+    assert_eq!(DEPLOYED.with(|d| d.borrow().len()), known);
+
+    assert!(!run(&mut storage, "open(bool)", &[w(0)]).reverted);
+    assert_eq!(slot(&storage, 0), at(start));
+
+    let failed = run(&mut storage, "open_failing()", &[]);
+    assert!(!failed.reverted, "{}", pretty(&failed.returndata));
+    assert_eq!(slot(&storage, 1), w(1));
+    assert_eq!(NONCE.get(), start + 2);
+
+    assert!(!run(&mut storage, "open(bool)", &[w(0)]).reverted);
+    assert_eq!(slot(&storage, 0), at(start + 2));
+    assert_eq!(DEPLOYED.with(|d| d.borrow().len()), known + 2);
+}
+
+/// A shared function takes its arguments on the stack under its return address: words, a
+/// record, and a map, from a loop and from another shared function, with tuple results.
+#[test]
+fn shared_functions_take_arguments_on_the_stack() {
+    let src = "
+type pt is record { x : uint; y : uint; }
+storage is record { m : map(uint, uint); }
+pure function mix(const a : uint; const p : pt; const b : uint) : (uint, uint) is
+  ((a * 1000 + p.x * 100 + b) % 1000003, (p.y * 7 + a * 13 + b * 17) % 1000033)
+view function look(storage m : map(uint, uint); const k : uint; const d : uint) : uint is
+  m[k] * 3 + d * 5 + k % 7 + (m[k + 1] ^ d) * 11
+view function both(const a : uint; const b : uint) : uint is {
+  const (u, v) : (uint, uint) := mix(a, { x = b; y = a; }, a + b);
+  const (w, _) : (uint, uint) := mix(v, { x = u; y = b; }, 9);
+} with look(storage.m, w % 5, u) + w
+external function put(const k : uint; const v : uint) is { storage.m[k] := v; }
+external view function f(const a : uint; const b : uint) : uint is {
+  var acc : uint := 0;
+  for i : uint in 0 .. 3 do {
+    const (u, v) : (uint, uint) := mix(a + i, { x = b; y = i; }, acc % 1000);
+    acc := acc + u * 3 + v + look(storage.m, i, a);
+  }
+} with acc + both(a, b) + both(b, a)
+";
+    let mix = |a: u64, p: (u64, u64), b: u64| {
+        ((a * 1000 + p.0 * 100 + b) % 1000003, (p.1 * 7 + a * 13 + b * 17) % 1000033)
+    };
+    let m = |k: u64| [0, 40, 50, 60, 0, 0, 0][k as usize % 7] * u64::from(k < 4);
+    let look = |k: u64, d: u64| m(k) * 3 + d * 5 + k % 7 + (m(k + 1) ^ d) * 11;
+    let both = |a: u64, b: u64| {
+        let (u, v) = mix(a, (b, a), a + b);
+        let (w, _) = mix(v, (u, b), 9);
+        look(w % 5, u) + w
+    };
+    let f = |a: u64, b: u64| {
+        let mut acc = 0;
+        for i in 0..3 {
+            let (u, v) = mix(a + i, (b, i), acc % 1000);
+            acc += u * 3 + v + look(i, a);
+        }
+        acc + both(a, b) + both(b, a)
+    };
+    let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
+    let mut storage = HashMap::new();
+    for (k, v) in [(1, 40), (2, 50), (3, 60)] {
+        let data = word_data("put(uint256,uint256)", &[Word::from_u64(k), Word::from_u64(v)]);
+        let n = Word::from_u64;
+        storage = exec(&runtime, &data, storage, n(1), n(0), n(0)).expect("put").storage;
+    }
+    for (a, b) in [(0, 0), (1, 2), (5, 3), (123, 456)] {
+        let data = word_data("f(uint256,uint256)", &[Word::from_u64(a), Word::from_u64(b)]);
+        let n = Word::from_u64;
+        let out = exec(&runtime, &data, storage.clone(), n(1), n(0), n(0)).expect("f");
+        assert!(!out.reverted, "{a} {b}");
+        assert_eq!(load_bytes(&out.returndata, 0), Word::from_u64(f(a, b)), "{a} {b}");
+    }
+}
+
+#[test]
+fn calldata_lists_are_checked_before_calls_fire_in_place() {
+    let src = "\
+import \"std/evm\"; storage is record {}
+external payable function payout(const tos : list(address)) is {
+  for to : address in tos do {
+    defer Evm.transfer(to, 1wei);
+  }
+}
+";
+    let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
+    let run = |second: Word| {
+        let args = [Word::from_u64(0x20), Word::from_u64(2), Word::from_u64(0xcd), second];
+        exec(
+            &runtime,
+            &word_data("payout(address[])", &args),
+            HashMap::new(),
+            Word::from_u64(7),
+            Word::from_u64(0),
+            Word::from_u64(10),
+        )
+        .expect("exec")
+    };
+    let paid = run(Word::from_u64(0xce));
+    assert!(!paid.reverted, "{}", pretty(&paid.returndata));
+    assert_eq!(trace_kinds(&paid.trace), ["call", "call"]);
+    let bad = run(Word::from_u64(1).shl(160));
+    assert!(bad.reverted);
+    assert!(trace_kinds(&bad.trace).is_empty(), "{:?}", trace_kinds(&bad.trace));
 }

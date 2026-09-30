@@ -215,9 +215,47 @@ external view function outcome(const to : address; const data : bytes) : bytes i
   | Ok(answer) -> Bytes.concat(answer, answer)
   | Error(reason) -> reason
   }
+external view function head4(const to : address; const data : bytes) : bytes4 is
+  case query Evm.static_call(to, data) of {
+  | Ok(answer) -> bytes4(answer)
+  | Error(_) -> 0xffffffff
+  }
+external view function head32(const to : address; const data : bytes) : (bytes32, uint) is
+  case query Evm.static_call(to, data) of {
+  | Ok(answer) -> (bytes32(answer), answer.length)
+  | Error(_) -> (0x0000000000000000000000000000000000000000000000000000000000000000, 0)
+  }
 ";
     let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
     let data = b"\x09\x08\x07\x06payload".to_vec();
+    // An answer read only through `bytesN` and `.length` is its first word, zero past its
+    // end and cut to N bytes.
+    let padded = |b: &[u8]| {
+        let mut w = b.to_vec();
+        w.resize(32, 0);
+        w
+    };
+    for (body, want4) in [(&b"payload"[..], &b"payl"[..]), (&b"ab"[..], &b"ab"[..])] {
+        let arg = [&data[..4], body].concat();
+        let four = call_raw(
+            &runtime,
+            &bytes_arg("head4(address,bytes)", &[Word::from_u64(0xcd)], &arg),
+        );
+        assert!(!four.reverted, "{}", pretty(&four.returndata));
+        assert_eq!(four.returndata, padded(want4));
+        let whole = call_raw(
+            &runtime,
+            &bytes_arg("head32(address,bytes)", &[Word::from_u64(0xcd)], &arg),
+        );
+        assert!(!whole.reverted, "{}", pretty(&whole.returndata));
+        assert_eq!(whole.returndata[..32], padded(body)[..]);
+        assert_eq!(whole.returndata[32..], Word::from_u64(body.len() as u64).to_be_bytes());
+    }
+    let refused = call_raw(
+        &runtime,
+        &bytes_arg("head4(address,bytes)", &[Word::from_u64(0xee)], &data),
+    );
+    assert_eq!(refused.returndata, padded(&[0xff; 4]));
     let peeked = call_raw(
         &runtime,
         &bytes_arg("peek(address,bytes)", &[Word::from_u64(0xcd)], &data),

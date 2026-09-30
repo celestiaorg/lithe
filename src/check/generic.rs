@@ -631,7 +631,12 @@ impl Checker {
                     .iter()
                     .map(|field| (field.name.clone(), field.ty))
                     .collect();
-                for field in fields {
+                // A field such as `SetEnumerable(K)` can only be built once `K` is bound,
+                // so generic applications unify after the other fields.
+                let (applied, plain): (Vec<_>, Vec<_>) = fields
+                    .iter()
+                    .partition(|field| matches!(field.ty, TypeRef::Apply { .. }));
+                for field in plain.into_iter().chain(applied) {
                     let Some((_, fty)) = concrete.iter().find(|(name, _)| name == &field.name)
                     else {
                         return Err(error(line, col, "argument has the wrong type"));
@@ -657,7 +662,11 @@ impl Checker {
                 Ok(())
             }
             other => {
-                let id = self.build(other)?;
+                let bound = subst_bound(other, env);
+                if mentions_params(&bound, params) {
+                    return Ok(());
+                }
+                let id = self.build(&bound)?;
                 if !self.same(id, arg) {
                     return Err(error(line, col, "argument has the wrong type"));
                 }

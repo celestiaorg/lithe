@@ -17,12 +17,19 @@ fn main() {
     if cmd == "fmt" {
         fmt_cmd(&args);
     }
-    // Size and facet flags apply wherever code is built and placed.
+    // Build flags apply wherever code is built and placed, over the source's `lithe.toml`.
     let opts = if matches!(
         cmd.as_str(),
         "compile" | "abi" | "facets" | "abi-tree" | "footprint" | "upgrade" | "upgrade-check"
     ) {
-        match options(&mut args) {
+        let flags = build_flags(&mut args);
+        // `upgrade` and `upgrade-check` build their second file.
+        let source = if matches!(cmd.as_str(), "upgrade" | "upgrade-check") {
+            args.get(1)
+        } else {
+            args.first()
+        };
+        match build_options(Path::new(source.map_or(".", String::as_str)), &flags) {
             Ok(opts) => opts,
             Err(msg) => {
                 eprintln!("{msg}");
@@ -191,45 +198,43 @@ fn fail(errors: &[lithe::Error], file: Option<&Path>) -> ! {
     std::process::exit(1);
 }
 
-/// Takes `--size-limit`, `--check-specs`, and `--create2-deployer` out of `args`.
-fn options(args: &mut Vec<String>) -> Result<lithe::Options, String> {
-    let mut opts = lithe::Options::default();
+/// Takes each `--key value` build flag, and `--check-specs`, out of `args`.
+fn build_flags(args: &mut Vec<String>) -> Vec<(&'static str, Option<String>)> {
+    let mut flags = Vec::new();
     let mut rest = Vec::new();
     let mut it = std::mem::take(args).into_iter();
     while let Some(arg) = it.next() {
-        match arg.as_str() {
-            "--size-limit" => {
-                let value = it.next().ok_or("--size-limit needs a number of bytes")?;
-                opts.size_limit = value
-                    .replace('_', "")
-                    .parse()
-                    .ok()
-                    .filter(|n| *n > 0)
-                    .ok_or_else(|| format!("--size-limit: `{value}` is not a number of bytes"))?;
-            }
-            "--check-specs" => opts.check_specs = true,
-            "--create2-deployer" => {
-                let value = it.next().ok_or("--create2-deployer needs an address")?;
-                opts.deployer = address(&value)
-                    .ok_or_else(|| format!("--create2-deployer: `{value}` is not an address"))?;
-            }
-            _ => rest.push(arg),
+        if arg == "--check-specs" {
+            flags.push(("check-specs", None));
+            continue;
+        }
+        match lithe::BUILD_KEYS
+            .iter()
+            .find(|key| arg.strip_prefix("--") == Some(key))
+        {
+            Some(key) => flags.push((*key, it.next())),
+            None => rest.push(arg),
         }
     }
     *args = rest;
-    Ok(opts)
+    flags
 }
 
-fn address(text: &str) -> Option<[u8; 20]> {
-    let digits = text.strip_prefix("0x")?;
-    if digits.len() != 40 {
-        return None;
+/// The `[build]` options of the `lithe.toml` nearest `source`, with `flags` over them.
+fn build_options(
+    source: &Path,
+    flags: &[(&str, Option<String>)],
+) -> Result<lithe::Options, String> {
+    let mut opts = lithe::build_options(source).map_err(|err| err.to_string())?;
+    for (key, value) in flags {
+        if *key == "check-specs" {
+            opts.check_specs = true;
+            continue;
+        }
+        let value = value.as_deref().ok_or(format!("--{key} needs a value"))?;
+        lithe::set_build_option(&mut opts, key, value).map_err(|msg| format!("--{key} {msg}"))?;
     }
-    let mut out = [0u8; 20];
-    for (i, byte) in out.iter_mut().enumerate() {
-        *byte = u8::from_str_radix(digits.get(i * 2..i * 2 + 2)?, 16).ok()?;
-    }
-    Some(out)
+    Ok(opts)
 }
 
 fn finish_dir(result: Result<lithe::DirOutput, lithe::Error>) -> ! {
@@ -481,6 +486,8 @@ compile, abi, facets, abi-tree, footprint, upgrade, and upgrade-check also take
        --size-limit <bytes>          largest runtime code, default 24576; code over it
                                      still builds, with a warning of what fills it
        --create2-deployer <address>  the CREATE2 factory for facets
+       --evm-version <prague|osaka>  the fork the code runs on, default osaka; prague
+                                     leaves out Osaka's CLZ
 
 compile also takes
        --check-specs                 a test build that checks the contract's specs as it
@@ -489,4 +496,77 @@ compile also takes
 directory commands write to ./out
 builds are cached in ~/.cache/lithe; set LITHE_CACHE_DIR to move it, or empty to turn it off"
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A directory build takes the fork from `lithe.toml`, and `--evm-version` overrides it.
+    #[test]
+    fn build_flags_override_lithe_toml() {
+        let dir = std::env::temp_dir().join(format!("lithe-build-config-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("lithe.toml"),
+            "[build]\nevm-version = \"prague\"\nsize-limit = 30_000\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("clz.lithe"),
+            "import \"std/uint\";\ncontract C is {\n  storage is record { n : uint; }\n  \
+             external pure function clz(const a : uint) : uint is Uint.clz(a)\n}\n",
+        )
+        .unwrap();
+        let has_clz = |flags: &[(&str, Option<String>)]| {
+            let opts = build_options(&dir, flags).unwrap();
+            assert_eq!(opts.size_limit, 30_000);
+            let out = dir.join("out");
+            let built = lithe::compile_dir(&dir, &out, &opts).unwrap();
+            assert!(built.failed.is_empty());
+            let json = std::fs::read_to_string(out.join("clz.lithe/C.json")).unwrap();
+            let (_, rest) = json.split_once("\"deployedBytecode\"").unwrap();
+            let (_, hex) = rest.split_once("0x").unwrap();
+            let hex: String = hex.chars().take_while(char::is_ascii_hexdigit).collect();
+            let code: Vec<u8> = (0..hex.len())
+                .step_by(2)
+                .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).unwrap())
+                .collect();
+            let mut i = 0;
+            while i < code.len() {
+                if code[i] == 0x1e {
+                    return true;
+                }
+                i += 1 + if (0x60..=0x7f).contains(&code[i]) {
+                    usize::from(code[i] - 0x5f)
+                } else {
+                    0
+                };
+            }
+            false
+        };
+        assert!(!has_clz(&[]));
+        assert!(has_clz(&[("evm-version", Some("osaka".to_string()))]));
+        assert_eq!(
+            build_options(&dir, &[("evm-version", Some("cancun".to_string()))]).err(),
+            Some("--evm-version takes `prague` or `osaka`, not `cancun`".to_string())
+        );
+        assert_eq!(
+            build_options(&dir, &[("size-limit", None)]).err(),
+            Some("--size-limit needs a value".to_string())
+        );
+        let mut args = ["x.lithe", "--size-limit", "9000", "--evm-version", "osaka"]
+            .map(String::from)
+            .to_vec();
+        assert_eq!(
+            build_flags(&mut args),
+            [
+                ("size-limit", Some("9000".to_string())),
+                ("evm-version", Some("osaka".to_string()))
+            ]
+        );
+        assert_eq!(args, ["x.lithe"]);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 }

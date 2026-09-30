@@ -1,0 +1,58 @@
+(* A map whose keys can be listed, like OpenZeppelin's `EnumerableMap`. The keys are a
+   `SetEnumerable(K)`, and the values sit in a map beside it.
+
+     storage is record {
+       balances : MapEnumerable(address, uint);
+     }
+
+     const _ : bool := MapEnumerable.set(storage.balances, account, 100);
+     const (account, amount) : (address, uint) := MapEnumerable.at(storage.balances, 0); *)
+
+import "std/collections/set_enumerable";
+import "std/abi";
+
+error EnumerableMapNonexistentKey of bytes32;
+
+module MapEnumerable(K : map_key, V) is {
+  type self is record {
+    keys : SetEnumerable(K);
+    values : map(K, V);
+  }
+
+  view function contains(storage m : self; const key : K) : bool is
+    SetEnumerable.contains(m.keys, key)
+
+  view function length(storage m : self) : uint is
+    SetEnumerable.length(m.keys)
+
+  (* The entry at `index`, in no particular order. *)
+  view function at(storage m : self; const index : uint) : (K, V)
+    raises Out_of_bounds
+  is {
+    const key : K := SetEnumerable.at(m.keys, index);
+  } with (key, m.values[key])
+
+  (* The key's ABI word is OpenZeppelin's `bytes32` payload for every key type. *)
+  view function get(storage m : self; const key : K) : V
+    raises EnumerableMapNonexistentKey
+  is {
+    assert(
+      SetEnumerable.contains(m.keys, key),
+      EnumerableMapNonexistentKey(Abi.decode(Abi.encode(key), bytes32))
+    );
+  } with m.values[key]
+
+  view function try_get(storage m : self; const key : K) : option(V) is
+    if SetEnumerable.contains(m.keys, key) then Some(m.values[key]) else None
+
+  (* Sets the key's value; whether the key is new. *)
+  function set(storage m : self; const key : K; const value : V) : bool is {
+    m.values[key] := value;
+  } with SetEnumerable.add(m.keys, key)
+
+  (* Removes the key; whether it was there. The value stays in storage, unread: its slot
+     is cold here, so deleting it would cost more than it refunds, and a later `set` of the
+     key costs less. *)
+  function remove(storage m : self; const key : K) : bool is
+    SetEnumerable.remove(m.keys, key)
+}

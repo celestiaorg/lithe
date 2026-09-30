@@ -2457,6 +2457,11 @@ impl<'a> Parser<'a> {
         if self.kind() == Kind::LBrace && !self.brace_is_record() {
             let (line, col) = self.at();
             let stmts = self.block()?;
+            // `{ ... } with e`: the statements, then a value, as a function body ends.
+            if self.kind() == Kind::With {
+                self.bump();
+                return Ok((stmts, self.expr()?));
+            }
             Ok((
                 stmts,
                 Expr::Lit {
@@ -2591,7 +2596,12 @@ impl<'a> Parser<'a> {
             Kind::Defer => self.defer_stmt(line, col),
             Kind::For => self.for_stmt(line, col),
             Kind::LParen => self.assign_tuple(line, col),
-            Kind::Ident => self.assign_or_call(line, col),
+            Kind::Ident if self.slice() == "delete" && self.peek_kind(1) == Kind::Ident => {
+                self.bump();
+                let (line, col) = self.at();
+                self.assign_or_call(line, col, true)
+            }
+            Kind::Ident => self.assign_or_call(line, col, false),
             _ => Err(self.err(format!("expected a statement, found {}", self.found()))),
         }
     }
@@ -2934,8 +2944,12 @@ impl<'a> Parser<'a> {
         Ok(())
     }
 
-    fn assign_or_call(&mut self, line: u32, col: u32) -> Result<Stmt, Error> {
+    /// `place := expr;`, `f(...);`, or with `delete`, `delete place;`.
+    fn assign_or_call(&mut self, line: u32, col: u32, delete: bool) -> Result<Stmt, Error> {
         let name = self.ident()?;
+        if self.kind() == Kind::LParen && delete {
+            return Err(self.err("`delete` takes a place, not a call"));
+        }
         if self.kind() == Kind::LParen {
             self.bump();
             let args = self.args()?;
@@ -2950,6 +2964,9 @@ impl<'a> Parser<'a> {
             self.bump();
             let (fline, fcol) = self.at();
             let field = self.member_name()?;
+            if self.kind() == Kind::LParen && delete {
+                return Err(self.err("`delete` takes a place, not a call"));
+            }
             if self.kind() == Kind::LParen {
                 self.bump();
                 let args = self.args()?;
@@ -2979,8 +2996,17 @@ impl<'a> Parser<'a> {
         } else {
             Some(keys.remove(0))
         };
-        self.want(Kind::Assign)?;
-        let expr = self.expr()?;
+        let expr = if delete {
+            Expr::Lit {
+                line,
+                col,
+                lit: Lit::Zero,
+                ty: 0,
+            }
+        } else {
+            self.want(Kind::Assign)?;
+            self.expr()?
+        };
         Ok(Stmt::Assign {
             line,
             col,

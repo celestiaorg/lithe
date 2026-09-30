@@ -1,0 +1,61 @@
+(* Benchmark: OpenZeppelin's ERC6909 with token supply, metadata, and content URIs, and an
+   owner who mints and describes ids; holders, their operators, and spenders burn. Built
+   from the standard library's modules, so storage sits at their ERC-7201 roots. Mirrors
+   erc6909.sol, which imports OpenZeppelin. *)
+
+import "std/token/erc6909_token_supply";
+import "std/token/erc6909_metadata";
+import "std/token/erc6909_content_uri";
+import "std/access/ownable";
+import "std/interfaces/erc6909";
+import "std/evm";
+import "std/token/erc6909";
+
+contract BenchClaims is {
+  use ERC6909 exposing IERC6909;
+  use ERC6909TokenSupply exposing IERC6909TokenSupply;
+  use ERC6909Metadata exposing IERC6909Metadata;
+  use ERC6909ContentURI exposing IERC6909ContentURI;
+  use Ownable exposing IOwnable;
+
+  supports IERC6909, IERC6909TokenSupply, IERC6909Metadata, IERC6909ContentURI;
+
+  deploy(const initialOwner : address)
+    raises OwnableInvalidOwner
+  is {
+    Ownable.init(initialOwner);
+    ERC6909ContentURI.set_contract_uri("https://bench.example/claims.json");
+  }
+
+  external function mint(const to : address; const id : uint; const amount : uint)
+    raises OwnableUnauthorizedAccount | ERC6909InvalidReceiver | ERC6909InsufficientBalance
+  is {
+    Ownable.check_owner();
+    ERC6909TokenSupply.mint(to, id, amount);
+  }
+
+  external function burn(const from : address; const id : uint; const amount : uint)
+    raises ERC6909InsufficientAllowance | ERC6909InvalidSender | ERC6909InsufficientBalance
+  is {
+    if from <> Evm.sender() and not ERC6909.is_operator(from, Evm.sender()) then {
+      ERC6909.spend_allowance(from, Evm.sender(), id, amount);
+    }
+    ERC6909TokenSupply.burn(from, id, amount);
+  }
+
+  external function describe(
+    const id : uint;
+    const name : string;
+    const symbol : string;
+    const decimals : uint8;
+    const uri : string
+  )
+    raises OwnableUnauthorizedAccount
+  is {
+    Ownable.check_owner();
+    ERC6909Metadata.set_name(id, name);
+    ERC6909Metadata.set_symbol(id, symbol);
+    ERC6909Metadata.set_decimals(id, decimals);
+    ERC6909ContentURI.set_token_uri(id, uri);
+  }
+}

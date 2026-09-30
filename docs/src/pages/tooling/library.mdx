@@ -105,4 +105,4 @@ The other functions take the same `sources` and entry path, and return what the 
 | `upgrade_plan` | `lithe upgrade` |
 | `compile_dir`, `abi_dir` | `lithe compile directory`, `lithe abi directory` |
 
-`Options` holds the [size flags](/tooling/cli#size-flags), `size_limit` and `deployer`, and `check_specs`.
+`Options` holds the [build flags](/tooling/cli#build-flags): `size_limit`, `deployer`, and `evm`, an `EvmVersion`, and `check_specs`. The library doesn't read `lithe.toml` on its own: `lithe::build_options(path)` answers the `Options` the `[build]` table nearest `path` sets, each unset key at its default, and `lithe::set_build_option(&mut opts, key, value)` applies one flag as the command line spells it.

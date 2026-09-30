@@ -5,6 +5,8 @@
        claimed : bitmap;
      } *)
 
+import "std/uint";
+
 module Bitmap is {
   type bitmap is map(uint, uint);
 
@@ -26,4 +28,64 @@ module Bitmap is {
       unset(bits, index);
     }
   }
+
+  (* Sets the `amount` flags from `start`: the first slot from `start` on, whole slots
+     between, then the last one up to the end, as Solady's `setBatch` does. *)
+  function set_batch(storage bits : bitmap; const start : uint; const amount : uint) is {
+    const _ : uint := start + amount;
+    var bucket : uint := start >> 8;
+    var shift : uint := start & 255;
+    var n : uint := amount;
+    const total : uint := Uint.wrapping_add(shift, amount);
+    if total > 256 then {
+      bits[bucket] := bits[bucket] | (Uint.max << shift);
+      const last : uint := Uint.wrapping_add(bucket, total >> 8);
+      for b : uint in Uint.wrapping_add(bucket, 1) .. last do {
+        bits[b] := Uint.max;
+      }
+      bucket := last;
+      n := total & 255;
+      shift := 0;
+    }
+    bits[bucket] := bits[bucket] | (Uint.max >> Uint.wrapping_sub(256, n)) << shift;
+  }
+
+  function unset_batch(storage bits : bitmap; const start : uint; const amount : uint) is {
+    const _ : uint := start + amount;
+    var bucket : uint := start >> 8;
+    var shift : uint := start & 255;
+    var n : uint := amount;
+    const total : uint := Uint.wrapping_add(shift, amount);
+    if total > 256 then {
+      bits[bucket] := bits[bucket] & ~(Uint.max << shift);
+      const last : uint := Uint.wrapping_add(bucket, total >> 8);
+      for b : uint in Uint.wrapping_add(bucket, 1) .. last do {
+        bits[b] := 0;
+      }
+      bucket := last;
+      n := total & 255;
+      shift := 0;
+    }
+    bits[bucket] := bits[bucket] & ~((Uint.max >> Uint.wrapping_sub(256, n)) << shift);
+  }
+
+  (* How many of the `amount` flags from `start` are set. *)
+  view function pop_count(storage bits : bitmap; const start : uint; const amount : uint) : uint is {
+    const _ : uint := start + amount;
+    var bucket : uint := start >> 8;
+    var shift : uint := start & 255;
+    var n : uint := amount;
+    var count : uint := 0;
+    const total : uint := Uint.wrapping_add(shift, amount);
+    if total > 256 then {
+      count := Uint.pop_count(bits[bucket] >> shift);
+      const last : uint := Uint.wrapping_add(bucket, total >> 8);
+      for b : uint in Uint.wrapping_add(bucket, 1) .. last do {
+        count := Uint.wrapping_add(Uint.pop_count(bits[b]), count);
+      }
+      bucket := last;
+      n := total & 255;
+      shift := 0;
+    }
+  } with Uint.wrapping_add(Uint.pop_count((bits[bucket] >> shift) << Uint.wrapping_sub(256, n)), count)
 }

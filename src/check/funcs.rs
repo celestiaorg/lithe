@@ -127,6 +127,10 @@ impl Checker {
                         "body type does not match its return type",
                     ));
                 }
+                while let Some(arm) = super::expr::taken_branch(tail).filter(|arm| !arm.fails()) {
+                    f.stmts.extend(arm.stmts);
+                    *tail = arm.expr;
+                }
             }
             None => {
                 if ret != TY_UNIT {

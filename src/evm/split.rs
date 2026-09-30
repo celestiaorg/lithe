@@ -25,7 +25,7 @@ fn limit_opts(limit: usize) -> crate::Options {
 }
 
 pub(super) fn checked_src(src: &str) -> crate::check::Checked {
-    crate::check::check(loaded(src)).expect("check")
+    crate::check::check(loaded(src), Default::default()).expect("check")
 }
 
 /// `prog` with the modules it exposes marked `delegated`, or with every module it uses and that
@@ -61,7 +61,7 @@ pub(super) fn build_facets(
     checked: &crate::check::Checked,
     name: &str,
 ) -> Result<crate::split::Split, crate::Error> {
-    let marked = crate::check::check(mark_facets(checked.source.clone(), false))?;
+    let marked = crate::check::check(mark_facets(checked.source.clone(), false), Default::default())?;
     crate::split::build(&marked, name, &crate::Options::default())
 }
 
@@ -89,13 +89,13 @@ fn facets_preserve_behavior() {
     let (mut compared, mut crossed) = (0, 0);
     for (path, rel) in differential_targets() {
         let prog = crate::modules::load(&Sources::disk(), &path).expect("load");
-        let checked = crate::check::check(prog.clone()).expect("check");
+        let checked = crate::check::check(prog.clone(), Default::default()).expect("check");
         let mut marked = mark_facets(prog, true);
         let split = loop {
             if marked.facets.is_empty() {
                 break None;
             }
-            let checked = crate::check::check(marked.clone()).expect("check marked");
+            let checked = crate::check::check(marked.clone(), Default::default()).expect("check marked");
             match crate::split::build(&checked, "Test", &crate::Options::default()) {
                 Ok(split) => break Some(split),
                 Err(e) => {
@@ -779,7 +779,7 @@ fn module_transient_storage_has_one_slot() {
          use Lock exposing {{ function enter(); }}\n\
          external function go() is {{ transient.busy := true; }}\n"
     ));
-    let facet = crate::check::check(crate::split::facet_program(&a.source, "Lock", &[]))
+    let facet = crate::check::check(crate::split::facet_program(&a.source, "Lock", &[]), Default::default())
         .expect("facet");
     assert_eq!(slot_of(&a), slot_of(&b));
     assert_eq!(slot_of(&a), slot_of(&facet));
@@ -860,7 +860,7 @@ fn factories_create_split_contracts() {
         .into_iter()
         .find(|unit| unit.contract_name.as_deref() == Some("Factory"))
         .expect("factory");
-    let checked = crate::check::check(factory).expect("check");
+    let checked = crate::check::check(factory, Default::default()).expect("check");
     let split = crate::split::build(&checked, "Factory", &crate::Options::default()).expect("split");
     assert!(
         split.facets.is_empty(),
@@ -1652,12 +1652,12 @@ fn facet_address_is_the_facets_create2_address() {
 #[test]
 fn facet_address_needs_a_delegated_module_and_contract_code() {
     let unmarked = FACET_ADDRESS.replace("use Counter delegated exposing", "use Counter exposing");
-    let err = crate::check::check(loaded(&unmarked)).err().expect("rejected");
+    let err = crate::check::check(loaded(&unmarked), Default::default()).err().expect("rejected");
     assert!(err.message.contains("`Counter` has no facet: the contract doesn't use it `delegated`"), "{}", err.message);
     let in_module = FACET_ADDRESS.replace(
         "  external view function count() : uint is counter.n\n",
         "  external view function count() : uint is counter.n\n  pure function here() : address is Evm.facet_address(Counter)\n",
     );
-    let err = crate::check::check(loaded(&in_module)).err().expect("rejected");
+    let err = crate::check::check(loaded(&in_module), Default::default()).err().expect("rejected");
     assert!(err.message.contains("is for contract code"), "{}", err.message);
 }

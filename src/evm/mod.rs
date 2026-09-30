@@ -136,7 +136,10 @@ fn elsewhere<T>(at: Word, f: impl FnOnce() -> T) -> T {
 
 /// Where `CREATE` puts a contract: from the creator and a running count, standing in for
 /// the account nonce. `CREATE2` uses the real rule: `keccak(0xff . creator . salt . keccak(code))`.
+/// Either counts toward the nonce, as every creation that gets to run its code does.
 fn created_address(creator: Word, salt: Option<Word>, init: &[u8]) -> Word {
+    let nonce = NONCE.get();
+    NONCE.set(nonce + 1);
     let hash = match salt {
         Some(salt) => {
             let mut buf = vec![0xff];
@@ -145,14 +148,18 @@ fn created_address(creator: Word, salt: Option<Word>, init: &[u8]) -> Word {
             buf.extend_from_slice(&crate::keccak::keccak256(init));
             crate::keccak::keccak256(&buf)
         }
-        None => {
-            let nonce = NONCE.get();
-            NONCE.set(nonce + 1);
-            let mut buf = creator.to_be_bytes().to_vec();
-            buf.extend_from_slice(&Word::from_u64(nonce).to_be_bytes());
-            crate::keccak::keccak256(&buf)
-        }
+        None => return created_address_for_nonce(creator, nonce),
     };
+    let mut word = [0u8; 32];
+    word[12..].copy_from_slice(&hash[12..]);
+    Word::from_be_bytes(word)
+}
+
+/// Where `CREATE` puts the contract `creator` makes with `nonce`.
+fn created_address_for_nonce(creator: Word, nonce: u64) -> Word {
+    let mut buf = creator.to_be_bytes().to_vec();
+    buf.extend_from_slice(&Word::from_u64(nonce).to_be_bytes());
+    let hash = crate::keccak::keccak256(&buf);
     let mut word = [0u8; 32];
     word[12..].copy_from_slice(&hash[12..]);
     Word::from_be_bytes(word)
@@ -187,6 +194,22 @@ fn install_mocks() {
     fn quiet(_: &[u8]) -> Result<Vec<u8>, Vec<u8>> {
         Ok(Vec::new())
     }
+    /// An ERC-1271 wallet whose signature for a hash is the hash itself. `short` and
+    /// `dirty` answer with the selector in less than a word and in a word with more set.
+    fn wallet(input: &[u8]) -> Result<Vec<u8>, Vec<u8>> {
+        let hash = input.get(4..36).unwrap_or_default();
+        let len = input.get(68..100).map_or(0, |w| usize::from(w[31]));
+        let signature = input.get(100..100 + len).unwrap_or_default();
+        let mut answer = vec![0u8; 32];
+        answer[..4].copy_from_slice(&[0x16, 0x26, 0xba, 0x7e]);
+        match signature {
+            b"short" => answer.truncate(4),
+            b"dirty" => answer[31] = 1,
+            sig if sig == hash => {}
+            _ => answer[..4].copy_from_slice(&[0xff; 4]),
+        }
+        Ok(answer)
+    }
     MOCKS.with(|m| {
         let mut m = m.borrow_mut();
         m.insert(Word::from_u64(0xcd), echo as Mock);
@@ -195,6 +218,7 @@ fn install_mocks() {
         m.insert(Word::from_u64(0xee), refuse as Mock);
         m.insert(Word::from_u64(0xef), silent as Mock);
         m.insert(Word::from_u64(0xce), quiet as Mock);
+        m.insert(Word::from_u64(0x1271), wallet as Mock);
     });
 }
 
@@ -272,6 +296,10 @@ fn exec_state(
 ) -> Result<Outcome, String> {
     let snap_storage = storage.clone();
     let snap_transient = transient.clone();
+    // A revert undoes what the contracts this frame called or created did, and the nonces
+    // its creations used, as it undoes its own writes. Saved before the first call or
+    // creation, so a frame that makes none copies nothing.
+    let mut snap_world = None;
     let mut balances = HashMap::new();
     let mut mem = Vec::new();
     let mut stack: Vec<Word> = Vec::new();
@@ -304,6 +332,9 @@ fn exec_state(
             continue;
         }
         pc += 1;
+        if matches!(op, 0xf0 | 0xf1 | 0xf2 | 0xf4 | 0xf5 | 0xfa) && snap_world.is_none() {
+            snap_world = Some((DEPLOYED.with(|d| d.borrow().clone()), NONCE.get()));
+        }
         let pop = |stack: &mut Vec<Word>| stack.pop().ok_or_else(|| "stack underflow".to_string());
         match op {
             0x00 => {
@@ -439,6 +470,10 @@ fn exec_state(
                     _ => v.shr(n),
                 });
             }
+            0x1e => {
+                let a = pop(&mut stack)?;
+                stack.push(Word::from_u64(u64::from(256 - a.bits())));
+            }
             0x30 => stack.push(self_addr),
             0x31 => {
                 let addr = pop(&mut stack)?;
@@ -456,13 +491,15 @@ fn exec_state(
             0x33 => stack.push(caller),
             0x34 => stack.push(value),
             0x35 => {
-                let off = word_usize(pop(&mut stack)?)?;
-                stack.push(load_bytes(calldata, off));
+                let off = pop(&mut stack)?;
+                // Past the end of calldata reads zeros, however far.
+                let far = off.0[1] | off.0[2] | off.0[3] != 0;
+                stack.push(if far { Word::from_u64(0) } else { load_bytes(calldata, off.0[0] as usize) });
             }
             0x36 => stack.push(Word::from_u64(calldata.len() as u64)),
             0x37 => {
                 let dest = word_usize(pop(&mut stack)?)?;
-                let off = word_usize(pop(&mut stack)?)?;
+                let off = word_usize(pop(&mut stack)?).unwrap_or(usize::MAX);
                 let len = word_usize(pop(&mut stack)?)?;
                 let data = slice_pad(calldata, off, len);
                 write_mem(&mut mem, dest, &data);
@@ -517,7 +554,7 @@ fn exec_state(
             }
             0x40 => {
                 let n = pop(&mut stack)?;
-                let block = Word::from_u64(100);
+                let block = Word::from_u64(BLOCK.with(|b| b.get()));
                 let recent = n.lt(block) && block.wrapping_sub(n).lt(Word::from_u64(257));
                 if recent {
                     stack.push(Word::from_be_bytes(crate::keccak::keccak256(
@@ -671,6 +708,7 @@ fn exec_state(
                     stack.push(Word::from_u64(0));
                     continue;
                 }
+                let at = created_address(self_addr, salt, &init);
                 let was = CONSTRUCTING.replace(true);
                 let born = elsewhere(self_addr, || {
                     exec_state(
@@ -690,7 +728,6 @@ fn exec_state(
                     stack.push(Word::from_u64(0));
                     continue;
                 }
-                let at = created_address(self_addr, salt, &init);
                 DEPLOYED.with(|d| d.borrow_mut().insert(at, (born.returndata, born.storage)));
                 self_balance = self_balance.wrapping_sub(val);
                 trace.push(Ev::Call { to: at, value: val });
@@ -876,6 +913,20 @@ fn exec_state(
                     stack.push(Word::from_u64(u64::from(ok)));
                     continue;
                 }
+                if to == Word::from_u64(0x100) {
+                    returndata = if crate::hash::p256_verify(&input) {
+                        Word::from_u64(1).to_be_bytes().to_vec()
+                    } else {
+                        Vec::new()
+                    };
+                    if ret_size > 0 {
+                        let n = ret_size.min(returndata.len());
+                        write_mem(&mut mem, ret_off, &returndata[..n]);
+                    }
+                    trace.push(Ev::Static);
+                    stack.push(Word::from_u64(1));
+                    continue;
+                }
                 let precompile = if to == Word::from_u64(1) && in_size == 128 {
                     crate::hash::ecrecover(&input).unwrap_or_else(|| Word::from_u64(0))
                 } else if to == Word::from_u64(2) {
@@ -888,8 +939,10 @@ fn exec_state(
                 } else if to == Word::from_u64(1) {
                     Word::from_u64(7)
                 } else {
+                    // An account without code answers nothing, successfully.
                     returndata.clear();
-                    stack.push(Word::from_u64(0));
+                    trace.push(Ev::Static);
+                    stack.push(Word::from_u64(1));
                     continue;
                 };
                 let word = precompile.to_be_bytes();
@@ -1009,6 +1062,10 @@ fn exec_state(
     if reverted {
         storage = snap_storage;
         transient = snap_transient;
+        if let Some((deployed, nonce)) = snap_world {
+            DEPLOYED.with(|d| *d.borrow_mut() = deployed);
+            NONCE.set(nonce);
+        }
         balances.clear();
         self_balance = balance;
     }
@@ -1042,7 +1099,7 @@ fn word_usize(w: Word) -> Result<usize, String> {
 fn load_bytes(src: &[u8], off: usize) -> Word {
     let mut b = [0u8; 32];
     for i in 0..32 {
-        if let Some(byte) = src.get(off + i) {
+        if let Some(byte) = off.checked_add(i).and_then(|at| src.get(at)) {
             b[i] = *byte;
         }
     }
@@ -1052,7 +1109,7 @@ fn load_bytes(src: &[u8], off: usize) -> Word {
 fn slice_pad(src: &[u8], off: usize, len: usize) -> Vec<u8> {
     let mut out = vec![0u8; len];
     for i in 0..len {
-        if let Some(b) = src.get(off + i) {
+        if let Some(b) = off.checked_add(i).and_then(|k| src.get(k)) {
             out[i] = *b;
         }
     }
@@ -1123,7 +1180,7 @@ fn loaded(src: &str) -> crate::ast::Program {
 }
 
 fn leaves(src: &str) -> Leaves {
-    let checked = crate::check::check(loaded(src)).expect("check");
+    let checked = crate::check::check(loaded(src), Default::default()).expect("check");
     Leaves {
         keys: checked.leaf_keys,
         packs: checked.leaf_pack,
@@ -1320,10 +1377,11 @@ struct Session {
     last: Option<Outcome>,
 }
 
-/// An ABI argument: a static word, or `bytes` / `string` data.
+/// An ABI argument: a static word, `bytes` / `string` data, or a list of words.
 enum Arg {
     W(Word),
     B(Vec<u8>),
+    L(Vec<Word>),
 }
 
 fn encode_args(sig: &str, args: &[Arg]) -> Vec<u8> {
@@ -1339,6 +1397,14 @@ fn encode_args(sig: &str, args: &[Arg]) -> Vec<u8> {
                 tail.extend_from_slice(data);
                 tail.resize(tail.len().div_ceil(32) * 32, 0);
             }
+            Arg::L(words) => {
+                let offset = 32 * args.len() + tail.len();
+                head.extend_from_slice(&Word::from_u64(offset as u64).to_be_bytes());
+                tail.extend_from_slice(&Word::from_u64(words.len() as u64).to_be_bytes());
+                for word in words {
+                    tail.extend_from_slice(&word.to_be_bytes());
+                }
+            }
         }
     }
     let mut out = selector(sig).to_vec();
@@ -1351,7 +1417,16 @@ impl Session {
     fn new(path: &str) -> Session {
         let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let init = compile_file(&root.join(path)).unwrap_or_else(|e| panic!("{path}: {e}"));
-        let made = construct(&init, Word::from_u64(1), Word::from_u64(0)).expect("construct");
+        Session::deployed(&init, path)
+    }
+
+    fn source(src: &str) -> Session {
+        let init = compile(src).unwrap_or_else(|e| panic!("{e}"));
+        Session::deployed(&init, "source")
+    }
+
+    fn deployed(init: &[u8], path: &str) -> Session {
+        let made = construct(init, Word::from_u64(1), Word::from_u64(0)).expect("construct");
         assert!(!made.reverted, "{path}: {}", pretty(&made.returndata));
         Session {
             runtime: made.returndata.clone(),
@@ -1466,6 +1541,7 @@ mod matrix;
 mod precompiles;
 mod prove;
 mod raw;
+mod solady_math;
 mod specs;
 mod split;
 mod stdlib;

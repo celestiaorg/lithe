@@ -1,6 +1,6 @@
 ---
 title: "Cryptography"
-description: "ECDSA recovery, EIP-712 typed data, and Merkle proofs."
+description: "ECDSA recovery, signature checks for accounts and contracts, EIP-712 typed data, Merkle proofs, and WebAuthn passkeys."
 ---
 
 # Cryptography
@@ -14,13 +14,128 @@ description: "ECDSA recovery, EIP-712 typed data, and Merkle proofs."
 | `recover(hash, v, r, s) : address` | |
 | `recover_signature(hash, signature : bytes) : address` | a 65-byte signature: `r`, `s`, then `v` |
 | `recover_compact(hash, r, vs) : address` | an EIP-2098 64-byte signature |
+| `try_recover(hash, v, r, s) : option(address)` | |
+| `try_recover_signature(hash, signature : bytes) : option(address)` | |
+| `try_recover_compact(hash, r, vs) : option(address)` | |
 | `to_eth_signed_message_hash(message)` | the hash that `eth_sign` signs for a 32-byte message |
 
-The errors are OpenZeppelin's: `ECDSAInvalidSignature`, `ECDSAInvalidSignatureLength`, and `ECDSAInvalidSignatureS`.
+The errors are OpenZeppelin's: `ECDSAInvalidSignature`, `ECDSAInvalidSignatureLength`, and `ECDSAInvalidSignatureS`. Each `try_` function answers `None` where its `recover` would raise, for code that must not revert on a bad signature:
+
+```lithe
+import "std/crypto/ecdsa";
+
+contract Votes is {
+  use ECDSA;
+
+  storage is record {
+    ballots : map(address, uint);
+  }
+
+  (* Counts a ballot for each signature that recovers, and skips the rest. *)
+  external function tally(const hash : bytes32; const first : bytes; const second : bytes) is {
+    case ECDSA.try_recover_signature(hash, first) of {
+    | Some(voter) -> { storage.ballots[voter] := storage.ballots[voter] + 1; }
+    | None -> { skip }
+    };
+    case ECDSA.try_recover_signature(hash, second) of {
+    | Some(voter) -> { storage.ballots[voter] := storage.ballots[voter] + 1; }
+    | None -> { skip }
+    };
+  }
+}
+```
+
+## `SignatureChecker`
+
+`std/crypto/signature_checker.lithe`. Checks a signature from an account or a contract, as OpenZeppelin's `SignatureChecker` does:
+
+| Function | |
+| --- | --- |
+| `is_valid_signature_now(signer, hash, signature : bytes) : bool` | ECDSA if `signer` has no code, ERC-1271 if it has |
+| `is_valid_erc1271_signature_now(signer, hash, signature : bytes) : bool` | ERC-1271 only |
+| `check_erc6492_signature(signer, hash, signature : bytes)`, `is_valid_erc6492_signature_now(...) : bool` | also [ERC-6492](#erc-6492) signatures for wallets not deployed yet |
+
+- An account without code must have signed with ECDSA: a 65-byte signature with a low `s`, through `ECDSA.try_recover_signature`.
+- A contract is asked `isValidSignature(hash, signature)` with a [recoverable query](/language/continuations#recovering-from-failed-calls). It is valid only if the call succeeds and its first word is the selector `0x1626ba7e` followed by zeros. A contract is never checked with ECDSA, so an account with EIP-7702 code signs through its code.
+- Neither reverts. A revert, an answer of the wrong size, or any other answer is `false`.
+
+Solady's `SignatureCheckerLib` takes the same branch on code, but also accepts 64-byte EIP-2098 signatures and signatures with a high `s` from accounts without code. This module rejects them, as OpenZeppelin does. For a compact signature, recover it with `ECDSA.try_recover_compact` and compare.
+
+Both are `view`, since the ERC-1271 check is a query.
+
+### ERC-6492
+
+[ERC-6492](https://eips.ethereum.org/EIPS/eip-6492) signs for a wallet before it is deployed. The signature is `abi.encode(factory, factoryCalldata, signature)` followed by the 32-byte suffix `0x6492…6492`, and calling the factory with its calldata deploys the wallet, or prepares one already deployed, so that the wallet's own signature holds through ERC-1271.
+
+Deploying the wallet changes state, so a check that needs it can't answer at once, as a `view` does: the factory call is [deferred](/language/effects), and the signature can only be checked in its continuation, after the transition's own effects. `check_erc6492_signature` does that, and raises instead of answering:
+
+| Function | |
+| --- | --- |
+| `check_erc6492_signature(signer, hash, signature)` | raises `ERC6492InvalidSignature(signer)` unless the signature holds. A plain signature is checked as `is_valid_signature_now` checks it, at once; an ERC-6492 one through ERC-1271 with the wallet's own signature, at once if the wallet has code and it holds, and otherwise after the deferred factory call, in its continuation |
+| `is_valid_erc6492_signature_now(signer, hash, signature) : bool` | a `view`: `is_valid_signature_now` for a plain signature, and for an ERC-6492 one the wallet's own signature through ERC-1271, false while the wallet has no code |
+| `is_erc6492_signature(signature) : bool` | whether it ends with the suffix |
+| `erc6492_factory(signature) : address`, `erc6492_part(signature, head) : (uint, uint)` | the factory, and where a part lies, `signature[start:finish]`: the factory's calldata for `head` 32, the wallet's signature for 64 |
+
+When the check succeeds, the transition succeeds and the wallet stays deployed, as with Solady's `isValidERC6492SignatureNowAllowSideEffects`. A factory call that fails, or a wallet that still doesn't hold the signature after it, raises `ERC6492InvalidSignature`, and the whole transition reverts, deployment included. Because the verdict arrives in a continuation, whatever depends on it must be an effect the transition makes anyway, undone when the check raises: a signature that authorizes the transition, not one whose answer picks between two paths. For that, `is_valid_erc6492_signature_now` answers at once for wallets already deployed.
+
+```lithe
+import "std/crypto/signature_checker";
+import "std/crypto/ecdsa";
+
+contract Permits is {
+  use ECDSA;
+  use SignatureChecker;
+
+  storage is record {
+    used : map(bytes32, bool);
+  }
+
+  external function redeem(const signer : address; const hash : bytes32; const signature : bytes)
+    raises ERC6492InvalidSignature
+  is {
+    storage.used[hash] := true;
+    SignatureChecker.check_erc6492_signature(signer, hash, signature);
+  }
+}
+```
+
+A part that runs past the signature's end panics, where Solady reads whatever lies there.
+
+| `spend`, execution gas | undeployed wallet | deployed, ERC-6492 | deployed, plain | account, ECDSA | runtime bytes |
+| --- | --- | --- | --- | --- | --- |
+| `check_erc6492_signature` | 122,365 | 26,860 | 26,488 | 28,566 | 1,158 |
+| Solady `isValidERC6492SignatureNowAllowSideEffects` | 124,243 | 26,561 | 26,500 | 28,626 | 656 |
+
+Solady's check calls a verifier contract that must be deployed at `0x0000bc370E4DC924F427d84e2f4B9Ec81626ba7E`, which deploys the wallet and checks the signature; this one calls the factory itself. The deployed-wallet row is higher because the wallet's signature is copied out of the calldata before it is sent, where Solady points at it in place.
+
+```lithe
+import "std/crypto/signature_checker";
+import "std/crypto/ecdsa";
+
+contract Registry is {
+  use ECDSA;
+  use SignatureChecker;
+
+  error Bad_signature of address;
+
+  storage is record {
+    approved : map(address, bytes32);
+  }
+
+  external function approve(const owner : address; const hash : bytes32; const signature : bytes)
+    raises Bad_signature
+  is {
+    assert(SignatureChecker.is_valid_signature_now(owner, hash, signature), Bad_signature(owner));
+    storage.approved[owner] := hash;
+  }
+}
+```
 
 ## `EIP712`
 
-`std/crypto/eip712.lithe`. Hashes typed structured data under a domain of name, version, chain id, and contract address. `init` records the hashes of the name and version as [immutables](/language/storage#immutables), so it runs only from `deploy` or a migration. The chain id and address are read when a hash is made, so the domain stays right after a fork. Its one external is `DOMAIN_SEPARATOR`.
+`std/crypto/eip712.lithe`. Hashes typed structured data under a domain of name, version, chain id, and contract address. `init` records the hashes of the name and version as [immutables](/language/storage#immutables), so it runs only from `deploy` or a migration. The chain id and address are read when a hash is made, so the domain stays right after a fork.
+
+Its externals are `DOMAIN_SEPARATOR` and ERC-5267's `eip712Domain`, which `IERC5267` in `std/interfaces/erc5267.lithe` declares. `eip712Domain` answers OpenZeppelin's tuple: fields `0x0f`, the name, the version, the chain id, this contract, a zero salt, and no extensions. For it, `init` also keeps the name and version as OpenZeppelin's `ShortStrings` does: each is an immutable word when both are under 32 bytes, and otherwise both are stored. A contract that doesn't expose `eip712Domain` still pays for this in its creation code, never in its runtime code.
 
 ```lithe
 import "std/abi";
@@ -28,9 +143,10 @@ import "std/crypto";
 import "std/evm";
 import "std/crypto/eip712";
 import "std/crypto/ecdsa";
+import "std/interfaces/erc5267";
 
 contract Mailbox is {
-  use EIP712 exposing {
+  use EIP712 exposing IERC5267, {
     view function DOMAIN_SEPARATOR() : bytes32;
   }
 
@@ -69,9 +185,17 @@ contract Mailbox is {
 
 ## `Merkle`
 
-`std/crypto/merkle.lithe`. Verifies a leaf against a Merkle root. Pairs are hashed in sorted order, as in OpenZeppelin's `MerkleProof` and the `@openzeppelin/merkle-tree` library, so trees built with that library verify unchanged.
+`std/crypto/merkle.lithe`. Verifies leaves against a Merkle root. Pairs are hashed in sorted order, as in OpenZeppelin's `MerkleProof` and the `@openzeppelin/merkle-tree` library, so trees built with that library verify unchanged.
 
-A proof is `bytes`: the sibling hashes from the leaf up, 32 bytes each, concatenated. A proof whose length isn't a multiple of 32 raises `MerkleProofInvalidLength`.
+| Function | |
+| --- | --- |
+| `verify(proof : list(bytes32), root, leaf) : bool` | |
+| `process_proof(proof : list(bytes32), leaf) : bytes32` | the root that `proof` leads to |
+| `verify_multi(proof : list(bytes32), flags : list(bool), root, leaves : list(bytes32)) : bool` | |
+| `process_multi_proof(proof, flags, leaves) : bytes32` | |
+| `hash_pair(a, b) : bytes32` | the parent of two nodes |
+
+A proof is the sibling hashes from the leaf up, `bytes32[]` in the ABI. A multiproof proves several leaves at once, with the `proof`, `proofFlags`, and `leaves` that the library's `getMultiProof` gives. It raises `MerkleProofInvalidMultiproof` unless `leaves.length + proof.length = flags.length + 1` and the flags use every proof node. The leaves and the hashes made form one queue, as in OpenZeppelin and Solady; flags that take a hash the queue has not made yet read it as zero, as OpenZeppelin's zeroed array does, and flags that take more nodes than the queue or the proof holds panic with `0x32`, as OpenZeppelin's reads past its arrays do. As in OpenZeppelin, no leaves and a one-node proof prove that node, so check that `leaves` isn't empty if that matters.
 
 ```lithe
 import "std/abi";
@@ -91,14 +215,80 @@ contract Allowlist is {
     storage.root := root;
   }
 
-  external function join(const proof : bytes) : bool
-    raises MerkleProofInvalidLength
-  is {
+  external function join(const proof : list(bytes32)) : bool is {
     const leaf : bytes32 := Crypto.keccak256(Abi.encode(Evm.sender()));
     const allowed : bool := Merkle.verify(proof, storage.root, leaf);
     if allowed then {
       storage.joined[Evm.sender()] := true;
     }
   } with allowed
+
+  external view function all_listed(const proof : list(bytes32); const flags : list(bool); const leaves : list(bytes32)) : bool
+    raises MerkleProofInvalidMultiproof
+  is
+    leaves.length > 0 and Merkle.verify_multi(proof, flags, storage.root, leaves)
+}
+```
+
+## `WebAuthn`
+
+`std/crypto/webauthn.lithe`. Verifies a WebAuthn assertion, the signature a passkey makes, as Solady's `WebAuthn` does. `WebAuthn.verify(challenge, require_user_verification, auth, x, y) : bool`, a `view` function, answers whether `auth` asserts `challenge` for the P-256 public key `(x, y)`, and never reverts. It checks that:
+
+- `client_data_json` has `"type":"webauthn.get"` at `type_index`,
+- it has `"challenge":"`, then `challenge` in unpadded base64url, then `"`, at `challenge_index`,
+- the authenticator data's flags byte, its 33rd, has "user present" set, and "user verified" too if `require_user_verification`,
+- `(r, s)` signs `sha256(authenticator_data ++ sha256(client_data_json))`, with `s` in the lower half of the curve order.
+
+Like Solady's, it does not check the origin, `topOrigin`, the RP ID hash, the backup flags, extensions, the signature counter, or an attestation: it trusts the authenticator to keep each credential to its own relying party. An upper-half `s` is rejected because `(r, n - s)` is a second valid signature for the same assertion, as Solady's `P256.verifySignature` rejects it.
+
+The signature is checked by `WebAuthn.verify_signature(hash, r, s, x, y) : bool`, Solady's `P256.verifySignature`: `s` in the lower half of the curve order, then the EIP-7951 precompile at `0x100`, through [`Crypto.p256_verify`](/language/builtins#precompiles). Osaka has the precompile, so a build for it (the default) asks nothing else. A build for Prague, where the precompile may be missing, asks Solady's P256 verifier contract (`0x000000000000D01eA45F9eFD5c54f037Fa57Ea1a`, with `query Evm.static_call`) about a signature the precompile does not accept, unless Solady's canary (`0x0000000000001Ab2e8006Fd8B71907bf06a5BDEE`) has code, which marks a chain with the precompile. Only a whole word 1 from the verifier accepts; a failing call, or one without the verifier, answers `false`.
+
+`auth` is a `webauthn_auth`, a `tuple record` of `authenticator_data : bytes`, `client_data_json : string`, `challenge_index : uint`, `type_index : uint`, `r : bytes32`, and `s : bytes32`. As a parameter it is one Solidity tuple, the ABI of Solady's `WebAuthnAuth`, so `Abi.encode(auth)` is Solady's `encodeAuth` and `Abi.decode(data, webauthn_auth)` decodes it. None of these revert:
+
+| Function | |
+| --- | --- |
+| `try_decode_auth(encoded : bytes) : option(webauthn_auth)` | Solady's `tryDecodeAuth`: the auth `Abi.encode` wrote, or `None` where `Abi.decode` would revert |
+| `try_encode_auth_compact(auth) : bytes` | Solady's `tryEncodeAuthCompact`: the authenticator data's length in two bytes, the authenticator data, the client data, both indexes in two bytes each, `r`, and `s`; empty if a length or index takes more than two bytes |
+| `try_decode_auth_compact(encoded : bytes) : option(webauthn_auth)` | Solady's `tryDecodeAuthCompact`: `None` unless `encoded` has at least `0x46` bytes and room for the authenticator data before its last `0x44` |
+
+```lithe
+import "std/crypto/webauthn";
+import "std/evm";
+import "std/abi";
+
+contract PasskeyCounter is {
+  use WebAuthn;
+
+  error Not_signed;
+
+  storage is record {
+    x : bytes32;
+    y : bytes32;
+    count : uint;
+  }
+
+  deploy(const x : bytes32; const y : bytes32) is {
+    storage.x := x;
+    storage.y := y;
+  }
+
+  external function bump(const auth : webauthn_auth) : uint raises Not_signed is {
+    const challenge : bytes := Abi.encode(Evm.self(), storage.count);
+    assert(WebAuthn.verify(challenge, true, auth, storage.x, storage.y), Not_signed);
+    storage.count := storage.count + 1;
+  } with storage.count
+
+  (* The same, with the auth in Solady's compact encoding. *)
+  external function bump_compact(const compact : bytes) : uint raises Not_signed is {
+    const challenge : bytes := Abi.encode(Evm.self(), storage.count);
+    assert(
+      case WebAuthn.try_decode_auth_compact(compact) of {
+        | Some(auth) -> WebAuthn.verify(challenge, true, auth, storage.x, storage.y)
+        | None -> false
+      },
+      Not_signed
+    );
+    storage.count := storage.count + 1;
+  } with storage.count
 }
 ```

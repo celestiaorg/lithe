@@ -1,0 +1,20 @@
+(* Block hashes past the 256 that `BLOCKHASH` sees, from the EIP-2935 history contract,
+   which keeps the last 8191. Matches Solady's `BlockHashLib.blockHash`. *)
+
+import "std/evm";
+import "std/uint";
+import "std/abi";
+
+module BlockHash is {
+  (* The EIP-2935 system contract. *)
+  pure function history() : address is 0x0000F90827F1C53a10cb7A02335B175320002935
+
+  (* The hash of block `n`: zero for this block and later ones, before the history
+     contract's window, and on a chain without it. *)
+  view function block_hash(const n : uint) : bytes32 is
+    if Evm.block_number() <= Uint.wrapping_add(n, 256) then Evm.block_hash(n)
+    else case query Evm.static_call(history(), Abi.encode(n)) of {
+      | Ok(hash) -> bytes32(hash)
+      | Error(_) -> 0x0000000000000000000000000000000000000000000000000000000000000000
+    }
+}

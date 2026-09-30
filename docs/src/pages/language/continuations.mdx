@@ -151,7 +151,7 @@ external nonreentrant function publish(const id : uint) is {
 - `forward reason` reverts with exactly those bytes, passing the callee's failure on unchanged. It is not one of the contract's declared errors, so the function [raises `forwarded`](/language/errors#forwarded-failures). `reason.length` is its length in bytes, so `if reason.length = 0 then { fail My_error; } forward reason;` replaces only an empty reason.
 - Both arms are required: ``a recoverable call needs both `Ok` and `Error` arms``.
 - Each arm is a new phase, like any continuation. The failed call's own effects are undone, but the first phase's writes stay.
-- A call that succeeds but returns data that does not decode as `T` still reverts the transaction. It is not an `Error`.
+- A call that succeeds but returns data that does not decode as `T` still reverts the transaction, as does no data for an [optional result](/language/effects#optional-results) from an account without code. It is not an `Error`.
 
 `defer Evm.transfer(to, amount)` recovers the same way, with `Ok` and `Error(_)` arms.
 

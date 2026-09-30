@@ -122,7 +122,7 @@ fn exported_twice(
     )
 }
 
-fn mentions_params(ty: &TypeRef, params: &[TypeParam]) -> bool {
+pub(super) fn mentions_params(ty: &TypeRef, params: &[TypeParam]) -> bool {
     match ty {
         TypeRef::Name { name, .. } => params.iter().any(|param| param.name == *name),
         TypeRef::Record { fields, .. } => fields
@@ -675,6 +675,7 @@ pub(super) type Supported = (NameAt, Vec<(String, [u8; 4], Vec<String>)>);
 pub(super) fn supports_interface(
     mut checked: Checked,
     known: &[Supported],
+    evm: crate::EvmVersion,
 ) -> Result<Checked, Error> {
     if known.is_empty() && !checked.asks_interfaces {
         return Ok(checked);
@@ -776,7 +777,7 @@ pub(super) fn supports_interface(
     source
         .funcs
         .push(erc165_func(line, col, &source.origin, &ids));
-    let mut again = check(source)?;
+    let mut again = check(source, evm)?;
     again.source.supports = supports;
     again.interface_ids = ids;
     Ok(again)

@@ -2,6 +2,7 @@
    division by zero, panics as ordinary arithmetic does. For `a * b / d` without overflow
    in the product, use the built-in `Uint.mul_div`. *)
 
+import "std/evm";
 import "std/int";
 import "std/uint";
 
@@ -52,23 +53,16 @@ module Math is {
   } with Int.wrapping_add(mean, Int.from_bits(Uint.from_bits(mean) >> 255) & (a ^ b))
 
   (* `a / b` rounded up. Panics when `b` is zero, even for `a = 0`. *)
-  pure function ceil_div(const a : uint; const b : uint) : uint is {
-    var q : uint := a / b;
-    if a % b > 0 then {
-      q := q + 1;
-    }
-  } with q
+  pure function ceil_div(const a : uint; const b : uint) : uint is
+    Uint.wrapping_add(a / b, uint(a % b > 0))
 
   (* `a * b / d` rounded up, with the product kept in 512 bits. *)
-  pure function mul_div_up(const a : uint; const b : uint; const d : uint) : uint is {
-    var q : uint := Uint.mul_div(a, b, d);
-    if Uint.mul_mod(a, b, d) > 0 then {
-      q := q + 1;
-    }
-  } with q
+  pure function mul_div_up(const a : uint; const b : uint; const d : uint) : uint is
+    Uint.mul_div(a, b, d) + uint(Uint.mul_mod(a, b, d) > 0)
 
-  (* The base-2 logarithm, rounded down, by halving the range of bits: 0 for 0. *)
-  pure function log2(const a : uint) : uint is {
+  (* The base-2 logarithm, rounded down: 0 for 0. From Osaka's `CLZ`, or before it by
+     halving the range of bits. *)
+  pure function log2(const a : uint) : uint is if Evm.osaka then 255 ^ Uint.clz(a | 1) else {
     const x : uint := a;
     var r : uint := uint(x > 0xffffffffffffffffffffffffffffffff) << 7;
     r := uint(x >> r > 0xffffffffffffffff) << 6 | r;
@@ -79,47 +73,176 @@ module Math is {
     r := uint(x >> r > 3) << 1 | r;
   } with (x >> r) >> 1 | r
 
-  (* The base-10 logarithm, rounded down: 0 for 0. *)
+  (* The base-10 logarithm, rounded down: 0 for 0. Solady's steps: 38, 20, 10, and 5
+     digits, each dropped where `a` has them, leave fewer than 5 to count. *)
   pure function log10(const a : uint) : uint is {
-    var rest : uint := a;
-    var result : uint := 0;
-    if rest >= 10 ** 64 then { rest := rest / 10 ** 64; result := result | 64; }
-    if rest >= 10 ** 32 then { rest := rest / 10 ** 32; result := result | 32; }
-    if rest >= 10 ** 16 then { rest := rest / 10 ** 16; result := result | 16; }
-    if rest >= 10 ** 8 then { rest := rest / 10 ** 8; result := result | 8; }
-    if rest >= 10 ** 4 then { rest := rest / 10 ** 4; result := result | 4; }
-    if rest >= 10 ** 2 then { rest := rest / 10 ** 2; result := result | 2; }
-    if rest >= 10 then { result := result | 1; }
-  } with result
+    var x : uint := a;
+    var r : uint := 0;
+    if x >= 10 ** 38 then { x := x / 10 ** 38; r := 38; }
+    if x >= 10 ** 20 then { x := x / 10 ** 20; r := Uint.wrapping_add(r, 20); }
+    if x >= 10 ** 10 then { x := x / 10 ** 10; r := Uint.wrapping_add(r, 10); }
+    if x >= 100000 then { x := x / 100000; r := Uint.wrapping_add(r, 5); }
+  } with Uint.wrapping_add(
+    Uint.wrapping_add(uint(x > 9), uint(x > 99)),
+    Uint.wrapping_add(Uint.wrapping_add(uint(x > 999), uint(x > 9999)), r))
 
-  (* The integer square root, rounded down. A first guess within a factor of two of the
-     root, from the bit length of `a`, then six Newton steps, each doubling the correct
-     bits: enough for all 256. The guesses stay near the root, so their sums fit. *)
-  pure function sqrt(const a : uint) : uint is {
-    var result : uint := a;
-    if a > 1 then {
-      const x : uint := a;
-      var r : uint := uint(x > 0xffffffffffffffffffffffffffffffff) << 7;
-      r := uint(x >> r > 0xffffffffffffffff) << 6 | r;
-      r := uint(x >> r > 0xffffffff) << 5 | r;
-      r := uint(x >> r > 0xffff) << 4 | r;
-      r := uint(x >> r > 0xff) << 3 | r;
-      r := uint(x >> r > 0xf) << 2 | r;
-      r := uint(x >> r > 3) << 1 | r;
-      var guess : uint := (3 << (r >> 1)) >> 1;
-      guess := Uint.wrapping_add(guess, x / guess) >> 1;
-      guess := Uint.wrapping_add(guess, x / guess) >> 1;
-      guess := Uint.wrapping_add(guess, x / guess) >> 1;
-      guess := Uint.wrapping_add(guess, x / guess) >> 1;
-      guess := Uint.wrapping_add(guess, x / guess) >> 1;
-      guess := Uint.wrapping_add(guess, x / guess) >> 1;
-      result := Uint.wrapping_sub(guess, uint(guess > x / guess));
+  (* The base-256 logarithm, rounded down: 0 for 0. One less than the bytes `a` takes. *)
+  pure function log256(const a : uint) : uint is if Evm.osaka then (255 ^ Uint.clz(a | 1)) >> 3 else {
+    const x : uint := a;
+    var r : uint := uint(x > 0xffffffffffffffffffffffffffffffff) << 7;
+    r := uint(x >> r > 0xffffffffffffffff) << 6 | r;
+    r := uint(x >> r > 0xffffffff) << 5 | r;
+    r := uint(x >> r > 0xffff) << 4 | r;
+  } with uint(x >> r > 0xff) | r >> 3
+
+  (* The logarithms rounded up: one more where `a` is past the power rounded down to. *)
+  pure function log2_up(const a : uint) : uint is {
+    const r : uint := log2(a);
+  } with Uint.wrapping_add(r, uint(1 << r < a))
+
+  pure function log256_up(const a : uint) : uint is {
+    const r : uint := log256(a);
+  } with Uint.wrapping_add(r, uint(1 << (r << 3) < a))
+
+  (* Past 1, one more than the logarithm of `a - 1` rounded down, which spares `10 ** r`. *)
+  pure function log10_up(const a : uint) : uint is
+    Uint.wrapping_add(log10(Uint.wrapping_sub(a, uint(a > 0))), uint(a > 1))
+
+  (* The integer square root, rounded down: Solady's. A first guess from the bit length of
+     `a`, within a factor of 2.84 of the root, then seven Newton steps. The steps divide by
+     the guess, which stays positive once `a` is at least 1, so they run on `a | 1` for 0
+     and the rounding down still sees `a`. `r` is the least multiple of 16 that leaves
+     `x >> r` under 24 bits. *)
+  pure function sqrt(const a : uint) : uint is if Evm.osaka then {
+    const x : uint := a;
+    const y : uint := x | uint(x = 0);
+    const r : uint := Uint.wrapping_sub(247, Uint.clz(x | 0xffffff)) & 0xf0;
+    var z : uint := Uint.wrapping_mul(181 << (r >> 1), Uint.wrapping_add(x >> r, 65536)) >> 18;
+    z := Uint.wrapping_add(z, y / z) >> 1;
+    z := Uint.wrapping_add(z, y / z) >> 1;
+    z := Uint.wrapping_add(z, y / z) >> 1;
+    z := Uint.wrapping_add(z, y / z) >> 1;
+    z := Uint.wrapping_add(z, y / z) >> 1;
+    z := Uint.wrapping_add(z, y / z) >> 1;
+    z := Uint.wrapping_add(z, y / z) >> 1;
+  } with Uint.wrapping_sub(z, uint(x / z < z)) else {
+    const x : uint := a;
+    const y : uint := x | uint(x = 0);
+    var r : uint := uint(x > 0xffffffffffffffffffffffffffffffffff) << 7;
+    r := uint(x >> r > 0xffffffffffffffffff) << 6 | r;
+    r := uint(x >> r > 0xffffffffff) << 5 | r;
+    r := uint(x >> r > 0xffffff) << 4 | r;
+    var z : uint := Uint.wrapping_mul(181 << (r >> 1), Uint.wrapping_add(x >> r, 65536)) >> 18;
+    z := Uint.wrapping_add(z, y / z) >> 1;
+    z := Uint.wrapping_add(z, y / z) >> 1;
+    z := Uint.wrapping_add(z, y / z) >> 1;
+    z := Uint.wrapping_add(z, y / z) >> 1;
+    z := Uint.wrapping_add(z, y / z) >> 1;
+    z := Uint.wrapping_add(z, y / z) >> 1;
+    z := Uint.wrapping_add(z, y / z) >> 1;
+  } with Uint.wrapping_sub(z, uint(x / z < z))
+
+  (* The integer cube root, rounded down: Solady's, from a first guess by the bit length of
+     `a`, then seven Newton steps, on `a | 1` for 0 as in `sqrt`. `7 - r % 3` is Solady's
+     `7 ^ r % 3`. `r` is the base-2 logarithm rounded down to a multiple of 8. *)
+  pure function cbrt(const a : uint) : uint is if Evm.osaka then {
+    const x : uint := a;
+    const y : uint := x | uint(x = 0);
+    const r : uint := (255 ^ Uint.clz(x | 1)) & 0xf8;
+    var z : uint := ((15 << uint(x >> r > 0xf)) << r / 3) / (7 - r % 3);
+    for _ : uint in 0 .. 7 do {
+      z := Uint.wrapping_add(Uint.wrapping_add(y / Uint.wrapping_mul(z, z), z), z) / 3;
     }
-  } with result
+  } with Uint.wrapping_sub(z, uint(x / Uint.wrapping_mul(z, z) < z)) else {
+    const x : uint := a;
+    const y : uint := x | uint(x = 0);
+    var r : uint := uint(x > 0xffffffffffffffffffffffffffffffff) << 7;
+    r := uint(x >> r > 0xffffffffffffffff) << 6 | r;
+    r := uint(x >> r > 0xffffffff) << 5 | r;
+    r := uint(x >> r > 0xffff) << 4 | r;
+    r := uint(x >> r > 0xff) << 3 | r;
+    var z : uint := ((15 << uint(x >> r > 0xf)) << r / 3) / (7 - r % 3);
+    for _ : uint in 0 .. 7 do {
+      z := Uint.wrapping_add(Uint.wrapping_add(y / Uint.wrapping_mul(z, z), z), z) / 3;
+    }
+  } with Uint.wrapping_sub(z, uint(x / Uint.wrapping_mul(z, z) < z))
 
   (* The magnitude of `x`, as a `uint` so that `Int.min` has one: `x`, or `~x + 1` where
      the sign mask is all ones. *)
   pure function abs(const x : int) : uint is {
     const mask : int := x >> 255;
   } with Uint.wrapping_sub(Uint.from_bits(x ^ mask), Uint.from_bits(mask))
+
+  (* `|a - b|`. *)
+  pure function dist(const a : uint; const b : uint) : uint is {
+    const gt : uint := uint(a > b);
+  } with Uint.wrapping_add(Uint.wrapping_sub(0, gt) ^ Uint.wrapping_sub(b, a), gt)
+
+  pure function dist(const a : int; const b : int) : uint is {
+    const gt : uint := uint(a > b);
+  } with Uint.wrapping_add(Uint.wrapping_sub(0, gt) ^ Uint.wrapping_sub(Uint.from_bits(b), Uint.from_bits(a)), gt)
+
+  (* The greatest common divisor, by Euclid's algorithm: `gcd(0, 0)` is 0. No pair of
+     words takes more than 370 steps. *)
+  pure function gcd(const a : uint; const b : uint) : uint is {
+    var x : uint := a;
+    var y : uint := b;
+    for _ : uint in 0 .. 370 until y = 0 do {
+      (x, y) := (y, x % y);
+    }
+  } with x
+
+  (* `a + b`, or `Uint.max` where it would overflow. *)
+  pure function saturating_add(const a : uint; const b : uint) : uint is {
+    const sum : uint := Uint.wrapping_add(a, b);
+  } with Uint.wrapping_sub(0, uint(sum < a)) | sum
+
+  (* `a - b`, or 0 where it would underflow. *)
+  pure function saturating_sub(const a : uint; const b : uint) : uint is
+    Uint.wrapping_sub(a, b) * uint(a > b)
+
+  (* `a * b`, or `Uint.max` where it would overflow. *)
+  pure function saturating_mul(const a : uint; const b : uint) : uint is {
+    const product : uint := Uint.wrapping_mul(a, b);
+  } with Uint.wrapping_sub(0, uint(a > 0 and product / a <> b)) | product
+
+  (* The point `t` of the way from `t0` to `t1` between `a` and `b`, with `t` clamped to
+     that range: `a + (b - a) * (t - t0) / (t1 - t0)` rounded toward `a`, with the product
+     in 512 bits. `t0` may be above `t1`: flipping every bit reverses the order. When they're
+     equal, `a` if `t <= t0`, else `b`. The step toward `b` is negated by the mask `down`,
+     `(x ^ down) - down`, when `b < a`. *)
+  pure function lerp(const a : uint; const b : uint; const t : uint; const t0 : uint; const t1 : uint) : uint is {
+    const flip : uint := Uint.wrapping_sub(0, uint(t0 > t1));
+    const pos : uint := t ^ flip;
+    const lo : uint := t0 ^ flip;
+    const hi : uint := t1 ^ flip;
+    const down : uint := Uint.wrapping_sub(0, uint(b < a));
+  } with
+    if pos <= lo then a
+    else if pos >= hi then b
+    else Uint.wrapping_add(a, Uint.wrapping_sub(
+      Uint.mul_div(
+        Uint.wrapping_sub(Uint.wrapping_sub(b, a) ^ down, down),
+        Uint.wrapping_sub(pos, lo),
+        Uint.wrapping_sub(hi, lo)
+      )
+      ^ down,
+      down))
+
+  pure function lerp(const a : int; const b : int; const t : int; const t0 : int; const t1 : int) : int is {
+    const flip : int := Int.from_bits(Uint.wrapping_sub(0, uint(t0 > t1)));
+    const pos : int := t ^ flip;
+    const lo : int := t0 ^ flip;
+    const hi : int := t1 ^ flip;
+    const down : uint := Uint.wrapping_sub(0, uint(b < a));
+  } with
+    if pos <= lo then a
+    else if pos >= hi then b
+    else Int.from_bits(Uint.wrapping_add(Uint.from_bits(a), Uint.wrapping_sub(
+      Uint.mul_div(
+        Uint.wrapping_sub(Uint.from_bits(Int.wrapping_sub(b, a)) ^ down, down),
+        Uint.from_bits(Int.wrapping_sub(pos, lo)),
+        Uint.from_bits(Int.wrapping_sub(hi, lo)))
+      ^ down,
+      down)))
 }

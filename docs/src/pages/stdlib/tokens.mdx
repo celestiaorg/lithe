@@ -1,6 +1,6 @@
 ---
 title: "Tokens"
-description: "ERC-20 with burning, permits, a cap, votes, and flash loans, ERC-721 with enumeration, per-token URIs, and royalties, and ERC-1155 with supply tracking."
+description: "ERC-20 with burning, permits, a cap, votes, flash loans, safe calls to other tokens, and ERC-4626 vaults, ERC-721 with enumeration, per-token URIs, and royalties, ERC-1155 with supply tracking, and ERC-6909 with supply, metadata, and content URIs."
 ---
 
 # Tokens
@@ -58,6 +58,8 @@ is {
 use ERC20 exposing IERC20Metadata, IERC20Views, IERC20Approvals;
 supports IERC20, IERC20Metadata;
 ```
+
+A token with its own `decimals`, such as a [vault](#erc4626), exposes `name` and `symbol` as the file's `IERC20Name`.
 
 `ERC20` ships a [spec file](/language/verification#modules), `std/token/erc20.spec.lithe`: its balances add up to its supply, the zero address holds nothing, and it lists exactly when `transfer`, `approve`, and `transferFrom` revert. `lithe prove` proves them for your contract, whose own code can change the module's storage too:
 
@@ -239,6 +241,182 @@ contract Token is {
 ```
 
 `flashLoan` mints and burns with `ERC20`. A token whose balance changes follow other rules, such as votes or a pause, writes its own `flashLoan` around `check_loan(token, amount)`, which returns the fee, and `repay(receiver, answer, amount, fee)`, with its own mint and burn, and exposes the rest as `IERC3156FlashLenderViews`. `examples/stdlib/governance_token.lithe` does, with roles, a pause, a cap, permits, and votes.
+
+## `SafeERC20`
+
+`std/token/safe_erc20.lithe`. Calls to other ERC-20 tokens, like OpenZeppelin's `SafeERC20` and Solady's `SafeTransferLib`. A call succeeds when the token answers `true`, or answers nothing and has code, as USDT does: the methods are `IERC20OptionalReturn`'s, whose results are [optional](/language/effects#optional-results). `false` raises `SafeERC20FailedOperation(token)`, and a token's own revert passes through unchanged, so a function that calls these raises `forwarded`. Each call is [deferred](/language/effects), so it runs after the transition's own effects:
+
+```lithe
+import "std/token/safe_erc20";
+import "std/interfaces/erc20";
+import "std/evm";
+
+use SafeERC20;
+
+storage is record {
+  token : IERC20;
+  deposits : map(address, uint);
+}
+
+external nonreentrant function deposit(const value : uint)
+  raises SafeERC20FailedOperation | forwarded
+is {
+  storage.deposits[Evm.sender()] := storage.deposits[Evm.sender()] + value;
+  SafeERC20.safe_transfer_from(storage.token, Evm.sender(), Evm.self(), value);
+}
+
+external nonreentrant function withdraw(const value : uint)
+  raises SafeERC20FailedOperation | forwarded
+is {
+  storage.deposits[Evm.sender()] := storage.deposits[Evm.sender()] - value;
+  SafeERC20.safe_transfer(storage.token, Evm.sender(), value);
+}
+```
+
+| Function | |
+| --- | --- |
+| `safe_transfer(token, to, value)`, `safe_transfer_from(token, from, to, value)` | |
+| `force_approve(token, spender, value)` | approves `value`; if the token reverts or answers `false`, as USDT does to change an allowance that isn't zero, approves zero and then `value` |
+| `safe_increase_allowance(token, spender, value)` | `force_approve` of this contract's allowance plus `value` |
+| `safe_decrease_allowance(token, spender, value)` | `force_approve` of the allowance less `value`; raises `SafeERC20FailedDecreaseAllowance` when it is less than `value` |
+
+`false` raises `SafeERC20FailedOperation`, as in OpenZeppelin. A token with no code, or an answer that isn't a clean `bool`, such as the word 2, reverts with no data, where OpenZeppelin raises `SafeERC20FailedOperation`: an [optional result](/language/effects#optional-results) checks both itself and reverts. OpenZeppelin's error costs gas on every call that succeeds, measured in `bench/erc4626.lithe`, whose deposits and withdrawals go through these:
+
+| Answer taken as | covers | per successful transfer | `erc4626` suite, exec gas | runtime bytes |
+| --- | --- | --- | --- | --- |
+| `option(bool)`, here | `false` | | 885,470 | 4,627 |
+| `option(uint)`, check for 1 | every word but 1 | +131 on `withdraw` | +1,716 | +119 |
+| `option(uint248)`, check for 1 | words below 2^248 | +18 to +28 | +158 to +246 | +20 to +26 |
+
+For a token with no code, a check of the token's code before every call costs 120 more gas on each call that succeeds, and a raw call whose answer is decoded here 312 more. None is worth an error that only a broken token triggers, so none is done.
+
+OpenZeppelin's `trySafeTransfer` has no counterpart, since a deferred call's outcome reaches only its continuation: write the call with [`Ok` and `Error` arms](/language/continuations#recovering-from-failed-calls) instead.
+
+## `ERC4626`
+
+`std/token/erc4626.lithe`. ERC-4626 tokenized vaults, like OpenZeppelin's `ERC4626`: the shares are the vault's [`ERC20`](#erc20), and depositing the `asset` mints them. Errors, events, rounding, and the order of checks are OpenZeppelin's. The asset moves through [optional results](/language/effects#optional-results), so tokens that return nothing work, and an asset's own revert passes through unchanged, as with [`SafeERC20`](#safeerc20), which a vault also uses. `init(asset, decimals, offset)` sets the asset, its decimals, which `asset_decimals(asset)` reads, or 18 when the asset has none, and the decimals offset, as [immutables](/language/storage#immutables):
+
+```lithe
+import "std/token/erc4626";
+import "std/token/erc20";
+import "std/token/safe_erc20";
+import "std/interfaces/erc20";
+import "std/interfaces/erc4626";
+
+contract Vault is {
+  use SafeERC20;
+  use ERC20 exposing IERC20, IERC20Name;
+  use ERC4626 exposing IERC4626, {
+    view function decimals() : uint8;
+  }
+  supports IERC20, IERC20Metadata, IERC4626;
+
+  deploy(const asset : address) is {
+    ERC20.init("Vault", "vTKN");
+    ERC4626.init(asset, ERC4626.asset_decimals(asset), 0);
+  }
+}
+```
+
+The vault's `decimals` is the asset's plus the offset, so it exposes `decimals` from `ERC4626`, and `name` and `symbol` from `ERC20` with the file's `IERC20Name`.
+
+**Inflation.** Conversions count `10 ** offset` virtual shares and one virtual asset: `shares = assets * (supply + 10 ** offset) / (totalAssets + 1)`. An attacker who deposits first and donates assets to round a later deposit down to nothing loses more than the victim does, and each unit of offset multiplies the attacker's cost by ten. The offset is at most 19.
+
+**Order.** The asset moves in [deferred calls](/language/effects), after the transition's own effects, so a deposit can't take the asset and then mint in one transition. Minting first and pulling the asset after would leave the vault, while the asset's `transferFrom` runs, with the new shares but not their assets: an asset with transfer hooks, such as an ERC-777, could re-enter at a price the deposit had lowered, and any contract reading `convertToAssets` then would see it. So a deposit defers the `transferFrom` and mints in its continuation, and while the asset runs, the vault is exactly as it was before the deposit. That is OpenZeppelin's order, transfer then mint, for the same reason. A withdrawal burns the shares first and sends the assets after, which also leaves nothing half done while the asset runs, as OpenZeppelin's burn-then-transfer does. `deposit`, `mint`, `withdraw`, and `redeem` log `Deposit` and `Withdraw` as OpenZeppelin's do, and within the vault's own logs, in the same order.
+
+| Function | |
+| --- | --- |
+| `asset`, `totalAssets`, `convertToShares`, `convertToAssets`, `maxDeposit`, `previewDeposit`, `maxMint`, `previewMint`, `maxWithdraw`, `previewWithdraw`, `maxRedeem`, `previewRedeem`, `deposit`, `mint`, `withdraw`, `redeem` | the standard's externals, `IERC4626` |
+| `decimals` | the asset's decimals plus the offset |
+| `init(asset, decimals, offset)`, `asset_decimals(asset)` | |
+| `asset()`, `decimals()`, `total_assets()` | views; `total_assets` is the vault's balance of the asset |
+| `convert_to_shares(assets, up)`, `convert_to_assets(shares, up)` | the conversions, rounded down, or up if `up` |
+| `max_deposit(r)`, `max_mint(r)`, `max_withdraw(o)`, `max_redeem(o)`, `preview_deposit`, `preview_mint`, `preview_withdraw`, `preview_redeem` | as OpenZeppelin's: deposits and mints are unlimited, and each preview rounds against the caller |
+| `deposit(assets, receiver)`, `mint(shares, receiver)`, `withdraw(assets, receiver, owner)`, `redeem(shares, receiver, owner)` | what the standard's entrypoints do, for a contract's own entrypoints to call |
+| `deposit_as(caller, receiver, assets, shares)` | takes `assets` from `caller`, then mints `shares` to `receiver` in the continuation |
+| `withdraw_as(caller, receiver, owner, assets, shares)` | spends `caller`'s allowance unless it owns the shares, burns them, then sends `assets` to `receiver` |
+
+A vault with a limit or a fee writes the entrypoint itself around these pieces, raising `ERC4626ExceededMaxDeposit` and the rest from `std/interfaces/erc4626.lithe`, and exposes the rest of `IERC4626` from the module. A cap on the assets held:
+
+```lithe
+import "std/token/erc4626";
+import "std/token/erc20";
+import "std/interfaces/erc4626";
+import "std/token/safe_erc20";
+import "std/interfaces/erc20";
+import "std/evm";
+
+contract CappedVault is {
+  use SafeERC20;
+  use ERC20 exposing IERC20, IERC20Name;
+  use ERC4626 exposing {
+    view function decimals() : uint8;
+    view function asset() : address;
+    view function totalAssets() : uint;
+    view function convertToShares(assets : uint) : uint;
+    view function convertToAssets(shares : uint) : uint;
+    view function previewDeposit(assets : uint) : uint;
+    view function maxWithdraw(owner : address) : uint;
+    view function previewWithdraw(assets : uint) : uint;
+    view function maxRedeem(owner : address) : uint;
+    view function previewRedeem(shares : uint) : uint;
+    function withdraw(assets : uint; receiver : address; owner : address) : uint
+      raises ERC4626ExceededMaxWithdraw | ERC20InsufficientAllowance | ERC20InvalidApprover
+        | ERC20InvalidSpender | ERC20InvalidSender | ERC20InsufficientBalance
+        | SafeERC20FailedOperation | forwarded;
+    function redeem(shares : uint; receiver : address; owner : address) : uint
+      raises ERC4626ExceededMaxRedeem | ERC20InsufficientAllowance | ERC20InvalidApprover
+        | ERC20InvalidSpender | ERC20InvalidSender | ERC20InsufficientBalance
+        | SafeERC20FailedOperation | forwarded;
+  }
+  supports IERC20, IERC20Metadata, IERC4626;
+
+  deploy(const asset : address) is {
+    ERC20.init("Capped Vault", "cvTKN");
+    ERC4626.init(asset, ERC4626.asset_decimals(asset), 6);
+  }
+
+  (* What fits under a cap of a million assets. *)
+  view function room() : uint is {
+    const held : uint := ERC4626.total_assets();
+    var room : uint := 0;
+    if held < 1_000_000 then {
+      room := 1_000_000 - held;
+    }
+  } with room
+
+  external view function maxDeposit(const receiver : address) : uint is
+    room()
+
+  external view function maxMint(const receiver : address) : uint is
+    ERC4626.convert_to_shares(room(), false)
+
+  external view function previewMint(const shares : uint) : uint is
+    ERC4626.preview_mint(shares)
+
+  external function deposit(const assets : uint; const receiver : address) : uint
+    raises ERC4626ExceededMaxDeposit | SafeERC20FailedOperation | ERC20InvalidReceiver
+      | ERC20InsufficientBalance | forwarded
+  is {
+    const most : uint := room();
+    assert(assets <= most, ERC4626ExceededMaxDeposit { receiver = receiver; assets = assets; max = most; });
+    const shares : uint := ERC4626.preview_deposit(assets);
+    ERC4626.deposit_as(Evm.sender(), receiver, assets, shares);
+  } with shares
+
+  external function mint(const shares : uint; const receiver : address) : uint
+    raises ERC4626ExceededMaxMint | SafeERC20FailedOperation | ERC20InvalidReceiver
+      | ERC20InsufficientBalance | forwarded
+  is {
+    const most : uint := ERC4626.convert_to_shares(room(), false);
+    assert(shares <= most, ERC4626ExceededMaxMint { receiver = receiver; shares = shares; max = most; });
+    const assets : uint := ERC4626.preview_mint(shares);
+    ERC4626.deposit_as(Evm.sender(), receiver, assets, shares);
+  } with assets
+}
+```
+
+Solady's vault can turn the virtual shares off, or count its assets some other way; here `total_assets` is always the vault's balance, and a vault that counts otherwise writes its own conversions from `Uint.mul_div`.
 
 ## `ERC721`
 
@@ -432,3 +610,90 @@ is {
 ## `ERC1155Supply`
 
 `std/token/erc1155_supply.lithe`. Each id's total supply and the total of every id, like OpenZeppelin's `ERC1155Supply`. Only mints and burns change a supply, so a contract mints and burns with this module's `mint`, `mint_batch`, `burn`, and `burn_batch`, which go through its `update`, and transfers with `ERC1155`'s. Its externals are `IERC1155Supply`: `totalSupply(id)`, `totalSupply()`, and `exists(id)`; the views `total_supply(id)`, `total_supply_all()`, and `exists(id)` answer the same inside the contract. `examples/stdlib/multi_token.lithe` is a collection built on both.
+
+## `ERC6909`
+
+`std/token/erc6909.lithe`. The ERC-6909 minimal multi-token standard, with OpenZeppelin's errors, events, and order of checks. An owner approves spenders two ways: an operator, set with `setOperator`, moves any amount of any id, and an allowance, set with `approve`, is per spender and id. `transferFrom` by the owner or one of its operators spends no allowance; anyone else's spends one, and an allowance of `Uint.max` is never spent down. Every balance change goes through `update`, which logs `Transfer` with the caller. There are no receiver callbacks and no batch methods.
+
+```lithe
+import "std/token/erc6909";
+import "std/access/ownable";
+import "std/evm";
+import "std/interfaces/erc6909";
+
+contract Claims is {
+  use Ownable;
+  use ERC6909 exposing IERC6909;
+  supports IERC6909;
+
+  deploy()
+    raises OwnableInvalidOwner
+  is {
+    Ownable.init(Evm.sender());
+  }
+
+  external function mint(const to : address; const id : uint; const amount : uint)
+    raises OwnableUnauthorizedAccount | ERC6909InvalidReceiver | ERC6909InsufficientBalance
+  is {
+    Ownable.check_owner();
+    ERC6909.mint(to, id, amount);
+  }
+}
+```
+
+`supports` answers for `IERC6909` with `0x0f632fb3`.
+
+| Function | |
+| --- | --- |
+| `balanceOf`, `allowance`, `isOperator`, `approve`, `setOperator`, `transfer`, `transferFrom` | the standard's externals |
+| `balance_of(owner, id)`, `allowance(owner, spender, id)`, `is_operator(owner, spender)` | views |
+| `approve`, `set_operator`, `transfer`, `transfer_from` | what the standard's externals do, for a contract's own entrypoints to call |
+| `update(from, to, id, amount)` | every balance change; `from` zero mints, `to` zero burns |
+| `move(sender, receiver, id, amount)` | a transfer between two accounts, checking no approval |
+| `mint(to, id, amount)`, `burn(from, id, amount)` | |
+| `approve_as(owner, spender, id, amount)`, `set_operator_as(owner, spender, approved)` | |
+| `spend_allowance(owner, spender, id, amount)` | spend without logging; `Uint.max` is never spent |
+
+To burn from another account as `transferFrom` spends, a contract checks the operator before the allowance:
+
+```lithe fragment
+external function burn(const from : address; const id : uint; const amount : uint)
+  raises ERC6909InsufficientAllowance | ERC6909InvalidSender | ERC6909InsufficientBalance
+is {
+  if from <> Evm.sender() and not ERC6909.is_operator(from, Evm.sender()) then {
+    ERC6909.spend_allowance(from, Evm.sender(), id, amount);
+  }
+  ERC6909.burn(from, id, amount);
+}
+```
+
+## ERC-6909 extensions
+
+Each is a small module that `requires ERC6909` and exposes its standard's interface, like OpenZeppelin's extension of the same name. `examples/stdlib/claims.lithe` puts all three together with `Ownable`.
+
+| Module | Externals | Internals |
+| --- | --- | --- |
+| `ERC6909TokenSupply`, `std/token/erc6909_token_supply.lithe` | `IERC6909TokenSupply`: `totalSupply(id)` | `total_supply(id)`; `update`, `mint`, and `burn`, which keep each id's supply |
+| `ERC6909Metadata`, `std/token/erc6909_metadata.lithe` | `IERC6909Metadata`: `name(id)`, `symbol(id)`, `decimals(id)` | `set_name`, `set_symbol`, and `set_decimals`, which log `ERC6909NameUpdated`, `ERC6909SymbolUpdated`, and `ERC6909DecimalsUpdated` |
+| `ERC6909ContentURI`, `std/token/erc6909_content_uri.lithe` | `IERC6909ContentURI`: `contractURI()`, `tokenURI(id)` | `set_contract_uri(uri)`, which logs ERC-7572's `ContractURIUpdated`, and `set_token_uri(id, uri)`, which logs `URI` |
+
+Only mints and burns change a supply, so a contract with `ERC6909TokenSupply` mints and burns through it, and transfers through `ERC6909`:
+
+```lithe
+import "std/token/erc6909_token_supply";
+import "std/interfaces/erc6909";
+import "std/evm";
+import "std/token/erc6909";
+
+contract Shares is {
+  use ERC6909 exposing IERC6909;
+  use ERC6909TokenSupply exposing IERC6909TokenSupply;
+  supports IERC6909, IERC6909TokenSupply;
+
+  external payable function deposit(const id : uint)
+    raises ERC6909InvalidReceiver | ERC6909InsufficientBalance
+  is {
+    ERC6909TokenSupply.mint(Evm.sender(), id, uint(Evm.value()));
+  }
+}
+```

@@ -1389,6 +1389,26 @@ external view function f() : uint is {
     assert_eq!(load_bytes(&out.returndata, 0), w(61));
 }
 
+/// A slot hashed on the right side of an `or` is kept only on the path that ran it: a
+/// store after a guard whose left side decided hashes it again.
+#[test]
+fn slots_kept_under_or_stay_on_their_path() {
+    let src = r#"
+error Nope;
+storage is record { m : map(uint, uint); }
+external function set(const k : uint; const v : uint) raises Nope is {
+  assert(v = 0 or storage.m[k] = 0, Nope);
+  storage.m[k] := v;
+}
+"#;
+    let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
+    let w = Word::from_u64;
+    let storage = HashMap::from([(map_key(w(7), w(0)), w(5))]);
+    let out = run_ok(&runtime, &storage, "set(uint256,uint256)", &[w(7), w(0)]);
+    assert_eq!(out.storage.get(&map_key(w(7), w(0))).copied().unwrap_or_default(), w(0));
+    assert!(out.storage.get(&w(0)).is_none_or(|v| v.is_zero()));
+}
+
 #[test]
 fn kept_storage_reads_see_every_write() {
     let src = r#"import "std/list"; 
@@ -1547,4 +1567,78 @@ external function run(const xs : list(uint); const ys : list(uint)) : (uint, uin
     let out = run_ok(&rt, &HashMap::new(), "run(uint256[],uint256[])", &args);
     let words: Vec<Word> = (0..2).map(|i| load_bytes(&out.returndata, i * 32)).collect();
     assert_eq!(words, [n(5 + 14), n(10)]);
+}
+
+/// `delete` inside generic modules: std's `Queue.pop` of values holding long strings and
+/// lists, and a module of its own deleting a `T` field and a `T` in a map.
+#[test]
+fn delete_in_generic_modules_leaves_no_data() {
+    let src = r#"import "std/collections/queue";
+type doc is record { n : uint8; s : string; xs : list(uint); o : option(string); }
+module Slot(T) is {
+  type self is record { one : T; many : map(uint, T); }
+  function fill(storage s : self; const v : T) is { s.one := v; s.many[7] := v; }
+  function clear(storage s : self) is { delete s.one; delete s.many[7]; }
+}
+storage is record { q : Queue(doc); s : Slot(doc); t : Slot(list(string)); }
+external function fill() is {
+  const long : string := "a string well past thirty-two bytes, to spill into data slots";
+  const d : doc := { n = 1; s = long; xs = [4, 5]; o = Some(long); };
+  Queue.push(storage.q, d); Queue.push(storage.q, d);
+  Slot.fill(storage.s, d); Slot.fill(storage.t, [long, "short"]);
+}
+external function clear() : string raises QueueEmpty is {
+  const first : doc := Queue.pop(storage.q);
+  const second : doc := Queue.pop(storage.q);
+  Slot.clear(storage.s); Slot.clear(storage.t);
+} with second.s
+"#;
+    let rt = deploy(&compile(src).expect("compile")).expect("deploy");
+    let live = |st: &HashMap<Word, Word>| {
+        let mut st = st.clone();
+        st.retain(|_, v| !v.is_zero());
+        st
+    };
+    let full = run_ok(&rt, &HashMap::new(), "fill()", &[]).storage;
+    let out = run_ok(&rt, &full, "clear()", &[]);
+    assert_eq!(
+        abi_string_value(&out.returndata),
+        b"a string well past thirty-two bytes, to spill into data slots"
+    );
+    // Only the queue's head and tail are left, both at 2.
+    let left = live(&out.storage);
+    assert_eq!(left.len(), 2, "{left:?} of {}", live(&full).len());
+    assert!(left.values().all(|v| *v == Word::from_u64(2)));
+}
+
+/// `delete` goes wherever `:=` does, and nowhere else.
+#[test]
+fn delete_is_rejected_where_assignment_is() {
+    let base = "import \"std/evm\";\ntype acct is record { n : uint; m : map(uint, uint); }\nstorage is record { m : map(uint, uint); a : acct; x : uint; }\n";
+    for (body, want) in [
+        ("external function f() is { delete storage.m; }", "map"),
+        ("external function f() is { delete storage.a; }", "map"),
+        (
+            "external function f() is { const c : uint := 1; delete c; }",
+            "const",
+        ),
+        (
+            "external view function f() : uint is { delete storage.x; } with 1",
+            "storage",
+        ),
+        (
+            "external function f() is { delete storage.x := 1; }",
+            "`:=`",
+        ),
+        (
+            "external function f() is { delete Evm.sender(); }",
+            "not a call",
+        ),
+    ] {
+        let err = compile(&format!("{base}{body}")).expect_err(body);
+        assert!(err.to_string().contains(want), "{body}: {err}");
+    }
+    // `delete` still names things, and a field of a record holding a map can go.
+    let ok = "external function f() is { const delete : uint := 2; storage.x := delete; delete storage.a.n; delete storage.m[1]; }";
+    compile(&format!("{base}{ok}")).expect("delete as a name");
 }

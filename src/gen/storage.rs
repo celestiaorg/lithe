@@ -2420,6 +2420,18 @@ impl<'a> Gen<'a> {
             {
                 Some(format!("{b:?}"))
             }
+            // Operators over fixed keys are fixed: `m[i >> 8]` read and then written hashes
+            // its slot once.
+            Expr::Binary {
+                op, left, right, ty, ..
+            } => {
+                let (l, r) = (self.fixed_key(left, deps)?, self.fixed_key(right, deps)?);
+                Some(format!("({l} {op:?} {r}):{ty}"))
+            }
+            Expr::Unary { op, expr, ty, .. } => {
+                let x = self.fixed_key(expr, deps)?;
+                Some(format!("({op:?} {x}):{ty}"))
+            }
             _ => None,
         }
     }
@@ -2475,11 +2487,21 @@ impl<'a> Gen<'a> {
     }
 
     /// A label other code may jump to. Under a branch, it may join a path that did not
-    /// run what the branch kept so far.
+    /// run what the branch kept so far; anywhere, one that skipped a branch already left,
+    /// such as the right side of an `or`.
     pub(super) fn jumpdest(&mut self, id: u32) {
         if self.branch > self.top_branch {
             self.forget_from(self.branch);
+        } else {
+            self.forget_from(self.branch + 1);
         }
+        self.code.push(Inst::Label(id));
+    }
+
+    /// A label only reached from code that ran everything kept at this level, such as the
+    /// end of an `if` or a check: only what deeper branches kept is dropped.
+    pub(super) fn join(&mut self, id: u32) {
+        self.forget_from(self.branch + 1);
         self.code.push(Inst::Label(id));
     }
 

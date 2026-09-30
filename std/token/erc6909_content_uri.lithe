@@ -1,0 +1,49 @@
+(* A contract URI and a URI per ERC-6909 id, like OpenZeppelin's `ERC6909ContentURI`.
+   Setting the contract URI logs ERC-7572's `ContractURIUpdated`, and an id's URI logs
+   `URI`, as ERC-1155 does.
+
+     use ERC6909ContentURI exposing IERC6909ContentURI;
+     supports IERC6909ContentURI; *)
+
+import "std/token/erc6909";
+
+module ERC6909ContentURI is {
+  requires ERC6909;
+
+  storage erc6909_content_uri at "lithe.std.erc6909_content_uri" is record {
+    contract_uri : string;
+    token_uris : map(uint, string);
+  }
+
+  event ContractURIUpdated of record {}
+
+  event URI of record {
+    value : string;
+    indexed id : uint;
+  }
+
+  view function contract_uri() : string is
+    erc6909_content_uri.contract_uri
+
+  view function token_uri(const id : uint) : string is
+    erc6909_content_uri.token_uris[id]
+
+  function set_contract_uri(const uri : string) is {
+    erc6909_content_uri.contract_uri := uri;
+    emit ContractURIUpdated {};
+  }
+
+  function set_token_uri(const id : uint; const uri : string) is {
+    erc6909_content_uri.token_uris[id] := uri;
+    emit URI {
+      value = uri;
+      id = id;
+    };
+  }
+
+  external view function contractURI() : string is
+    erc6909_content_uri.contract_uri
+
+  external view function tokenURI(const id : uint) : string is
+    erc6909_content_uri.token_uris[id]
+}

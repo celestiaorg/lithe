@@ -11,20 +11,38 @@
        Crypto.keccak256(Abi.encode(mail_typehash(), from, to, contents_hash))
      );
 
-   and exposes the domain separator for signers:
+   and exposes the domain separator for signers, and ERC-5267's description of it:
 
-     use EIP712 exposing {
+     use EIP712 exposing IERC5267, {
        view function DOMAIN_SEPARATOR() : bytes32;
-     } *)
+     }
+
+   The name and version are kept for `eip712Domain` much as OpenZeppelin's `ShortStrings`
+   keeps them: a string under 32 bytes is an immutable word of its bytes and its length.
+   If either is longer, both are stored, and the name's word is 255. *)
+
+import "std/interfaces/erc5267";
 
 import "std/abi";
 import "std/crypto";
 import "std/evm";
+import "std/bytes";
 
 module EIP712 is {
   immutable eip712 at "lithe.std.eip712" is record {
     hashed_name : bytes32;
     hashed_version : bytes32;
+    name : bytes32;
+    version : bytes32;
+  }
+
+  type names is record {
+    name : string;
+    version : string;
+  }
+
+  storage eip712_strings at "lithe.std.eip712.strings" is record {
+    long : names;
   }
 
   pure function domain_typehash() : bytes32 is
@@ -33,7 +51,16 @@ module EIP712 is {
   function init(const name : string; const version : string) is {
     eip712.hashed_name := Crypto.keccak256(name);
     eip712.hashed_version := Crypto.keccak256(version);
+    eip712.name := bytes32(uint(bytes32(bytes(name))) | name.length);
+    eip712.version := bytes32(uint(bytes32(bytes(version))) | version.length);
+    if name.length > 31 or version.length > 31 then {
+      eip712.name := bytes32(255);
+      eip712_strings.long := { name = name; version = version; };
+    }
   }
+
+  pure function from_short_string(const s : bytes32) : string is
+    string(Bytes.concat(s)[:uint(s) & 255])
 
   view function domain_separator() : bytes32 is
     Crypto.keccak256(Abi.encode(
@@ -54,4 +81,20 @@ module EIP712 is {
 
   external view function DOMAIN_SEPARATOR() : bytes32 is
     domain_separator()
+
+  external view function eip712Domain() : eip712_domain is {
+    const extensions : list(uint) := [];
+    const both : names := if eip712.name = bytes32(255) then eip712_strings.long else {
+      name = from_short_string(eip712.name);
+      version = from_short_string(eip712.version);
+    };
+  } with {
+    fields = 0x0f;
+    name = both.name;
+    version = both.version;
+    chainId = Evm.chain_id();
+    verifyingContract = Evm.self();
+    salt = bytes32(0);
+    extensions = extensions;
+  }
 }

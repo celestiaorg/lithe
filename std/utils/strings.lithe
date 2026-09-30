@@ -1,0 +1,36 @@
+(* Searching strings, matching Solady's `LibString`. Offsets count bytes, not characters,
+   and `index_of` answers `Uint.max` when the needle isn't there. `String.lower`,
+   `String.upper`, `String.escape_json`, `String.escape_html`, `String.join`, and the
+   search and replace themselves, `String.index_of` and `String.replace`, are built-ins. *)
+
+import "std/crypto";
+import "std/uint";
+import "std/bytes";
+import "std/string";
+
+module Strings is {
+  (* Where `needle` first starts in `subject`, at or after `from`. An empty needle is
+     found at `from`, or at the end if `from` is past it. *)
+  pure function index_of(const subject : string; const needle : string; const from : uint) : uint is
+    String.index_of(subject, needle, from)
+
+  pure function index_of(const subject : string; const needle : string) : uint is
+    String.index_of(subject, needle, 0)
+
+  pure function contains(const subject : string; const needle : string) : bool is
+    String.index_of(subject, needle, 0) <> Uint.max
+
+  pure function starts_with(const subject : string; const needle : string) : bool is {
+    const n : uint := bytes(needle).length;
+  } with n <= bytes(subject).length and Crypto.keccak256(bytes(subject)[:n]) = Crypto.keccak256(needle)
+
+  pure function ends_with(const subject : string; const needle : string) : bool is {
+    const n : uint := bytes(needle).length;
+    const len : uint := bytes(subject).length;
+  } with n <= len and Crypto.keccak256(bytes(subject)[Uint.wrapping_sub(len, n):]) = Crypto.keccak256(needle)
+
+  (* `subject` with every `needle` replaced, left to right. An empty needle puts
+     `replacement` before each byte and at the end. *)
+  pure function replace(const subject : string; const needle : string; const replacement : string) : string is
+    String.replace(subject, needle, replacement)
+}

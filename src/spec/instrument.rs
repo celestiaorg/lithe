@@ -892,6 +892,11 @@ fn total_update(
         leaf: 0,
         ty: 0,
     };
+    let zero = int_lit(0, line, col);
+    let value = match value {
+        Expr::Lit { lit: Lit::Zero, .. } => &zero,
+        _ => value,
+    };
     let (old, new) = if g.count {
         let nonzero = |e: Expr| {
             call_expr(

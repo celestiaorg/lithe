@@ -1,0 +1,60 @@
+(* Roles as bits of one mask per account, granted by the owner. A minter mints, and the
+   owner or a pauser pauses. *)
+
+import "std/access/ownable_roles";
+import "std/evm";
+import "std/access/ownable";
+
+contract Minter is {
+  use Ownable exposing IOwnable;
+  use OwnableRoles exposing IOwnableRoles;
+
+  storage is record {
+    minted : map(address, uint);
+    paused : bool;
+  }
+
+  pure function minter() : roles is OwnableRoles.role(0)
+  pure function pauser() : roles is OwnableRoles.role(255)
+
+  deploy()
+    raises OwnableInvalidOwner
+  is {
+    Ownable.init(Evm.sender());
+  }
+
+  external function mint(const to : address; const amount : uint)
+    raises Unauthorized
+  is {
+    OwnableRoles.check_roles(minter());
+    storage.minted[to] := storage.minted[to] + amount;
+  }
+
+  external view function minted(const who : address) : uint is
+    storage.minted[who]
+
+  external function pause()
+    raises Unauthorized
+  is {
+    OwnableRoles.check_owner_or_roles(pauser());
+    storage.paused := true;
+  }
+
+  external function unpause()
+    raises Unauthorized
+  is {
+    OwnableRoles.check_roles_or_owner(pauser() | minter());
+    storage.paused := false;
+  }
+
+  external view function paused() : bool is
+    storage.paused
+
+  (* Replaces an account's roles outright, as the contract's own rule. *)
+  external function reset_roles(const who : address)
+    raises OwnableUnauthorizedAccount
+  is {
+    Ownable.check_owner();
+    OwnableRoles.set_roles(who, 0);
+  }
+}

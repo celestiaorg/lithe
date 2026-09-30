@@ -1,0 +1,96 @@
+(* Fuzz target: recoverable calls whose `Ok` phase ends the way their `Error` phase
+   runs. The shared tail must behave as each arm written out would, including after
+   writes, events, and checks earlier in `Ok`, and must not share a tail that reads the
+   revert data. The interpreter answers 0xcd with the call's own arguments, 0xee reverts
+   with them, 0xef reverts empty, and 0x1 with one malformed byte. *)
+
+error Refused of uint;
+
+interface Echo is {
+  function echo(x : uint) : uint;
+  function poke(x : uint) : option(bool);
+}
+
+storage is record {
+  n : uint;
+  last : uint;
+  seen : map(address, uint);
+}
+
+event Retried of record {
+  indexed to : address;
+  x : uint;
+}
+
+external function retry(const to : Echo; const x : uint)
+  raises Refused | forwarded
+is {
+  defer to.poke(x) then {
+    | Ok(ok : option(bool)) -> {
+        if ok = Some(false) then {
+          defer to.echo(x + 1) then {
+            | Ok(r : uint) -> {
+                assert(r <> 7, Refused(r));
+                storage.last := r;
+              }
+            | Error(reason : bytes) -> {
+                forward reason;
+              }
+          };
+        }
+      }
+    | Error(_) -> {
+        defer to.echo(x + 1) then {
+          | Ok(r : uint) -> {
+              assert(r <> 7, Refused(r));
+              storage.last := r;
+            }
+          | Error(reason : bytes) -> {
+              forward reason;
+            }
+        };
+      }
+  };
+}
+
+external function after_write(const to : Echo; const x : uint) raises Refused is {
+  defer to.echo(x) then {
+    | Ok(r : uint) -> {
+        storage.n := storage.n + r % 100;
+        emit Retried { to = address(to); x = r; };
+        assert(r <> 5, Refused(r));
+        storage.seen[address(to)] := storage.seen[address(to)] + 1;
+        storage.last := x;
+      }
+    | Error(_) -> {
+        storage.seen[address(to)] := storage.seen[address(to)] + 1;
+        storage.last := x;
+      }
+  };
+}
+
+external function same_arms(const to : Echo; const x : uint) is {
+  defer to.echo(x) then {
+    | Ok -> {
+        storage.n := storage.n + 1;
+        emit Retried { to = address(to); x = x; };
+      }
+    | Error -> {
+        storage.n := storage.n + 1;
+        emit Retried { to = address(to); x = x; };
+      }
+  };
+}
+
+external function reads_reason(const to : Echo; const x : uint) is {
+  defer to.echo(x) then {
+    | Ok(r : uint) -> {
+        storage.last := r;
+      }
+    | Error(reason : bytes) -> {
+        storage.last := reason.length;
+      }
+  };
+}
+
+external view function state() : (uint, uint) is (storage.n, storage.last)

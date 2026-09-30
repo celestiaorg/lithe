@@ -35,16 +35,25 @@ Commands that read one file need a file with exactly one contract. Errors and wa
 lib/fees.lithe:4:18: unknown name `rate`
 ```
 
-## Size flags
+## Build flags
 
-`compile`, `abi`, `facets`, `footprint`, `abi-tree`, `upgrade`, and `upgrade-check` also take these flags, anywhere after the command:
+`compile`, `abi`, `facets`, `footprint`, `abi-tree`, `upgrade`, and `upgrade-check` also take these flags, anywhere after the command. A project can set them in its [`lithe.toml`](/tooling/config#build), and a flag overrides the file:
 
 | Flag | Default | Meaning |
 | --- | --- | --- |
 | `--size-limit <bytes>` | `24576` | the most runtime code the contract or any facet should have. Code over it still builds, with a warning that lists what takes the space and what marking each module `delegated` would save |
 | `--create2-deployer <address>` | `0x4e59b44847b379578588920cA78FbF26c0B4956C` | the `CREATE2` factory facets are deployed through |
+| `--evm-version <prague\|osaka>` | `osaka` | the fork the code runs on. See [Target fork](#target-fork) |
 
 What runs from a facet is the source's choice, `use M delegated;`, never a flag's. See [Contract size limit](/tooling/size-limit).
+
+### Target fork
+
+The default is `osaka`, the fork Ethereum mainnet has run since December 2025, and solc's default too. Osaka adds `CLZ` (EIP-7939), a one-byte count of leading zero bits. `Uint.clz` is that one opcode, and `Math.log2`, `log256`, `sqrt`, and `cbrt` start from it. Code built for Osaka fails with an invalid opcode on a chain that hasn't adopted it, which some L2s and test chains lag on.
+
+For such a chain, build with `--evm-version prague`, or set `evm-version = "prague"` in the project's [`lithe.toml`](/tooling/config#build). Then those functions find the bit length by halving the range of bits instead, which costs 35 to 90 more bytes for each of them a contract uses. Before running the Osaka build on anvil, start anvil with `--hardfork osaka`. Its default fork is older.
+
+Code reads the target as [`Evm.osaka`](/language/builtins#target-fork).
 
 ## Building
 

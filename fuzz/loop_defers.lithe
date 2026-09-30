@@ -1,0 +1,95 @@
+(* Fuzz target: deferred calls in loops. A loop that ends its body and only reads memory
+   between calls may run each call where it stands; any other loop queues them. Either
+   way every call must behave as if it ran after the transition, in order. The
+   interpreter answers 0xcd with the call's own arguments, 0xee reverts with them, 0xef
+   reverts empty, and 0x1 with one malformed byte. *)
+
+import "std/evm";
+
+error Odd of uint;
+
+interface Echo is {
+  payable function echo(x : uint) : uint;
+}
+
+storage is record {
+  n : uint;
+  last : uint;
+  total : uint;
+}
+
+event Seen of record {
+  value : uint;
+}
+
+external payable function pay(const tos : list(address)) is {
+  storage.n := storage.n + 1;
+  for to : address in tos do {
+    defer Evm.transfer(to, wei(1));
+  }
+}
+
+external function relay(const targets : list(address); const data : bytes)
+  raises forwarded
+is {
+  for target : address in targets do {
+    defer Evm.call(target, data) then {
+      | Ok -> { skip }
+      | Error(reason : bytes) -> { forward reason; }
+    };
+  }
+}
+
+external payable function echo_all(const to : Echo; const xs : list(uint))
+  raises Odd
+is {
+  storage.n := storage.n + 1;
+  emit Seen { value = xs.length; };
+  for (i, x) : (uint, uint) in xs do {
+    const odd : uint := x & 1;
+    defer to.echo(x) with value = odd then (r : uint) {
+      assert(r <> 7, Odd(i));
+      storage.total := storage.total ^ r;
+      storage.last := i;
+      emit Seen { value = r; };
+    };
+  }
+}
+
+external function echo_then_count(const to : Echo; const xs : list(uint))
+  raises Odd
+is {
+  for x : uint in xs do {
+    defer to.echo(x) then (r : uint) {
+      assert(r <> 7, Odd(r));
+      storage.last := r;
+    };
+  }
+  storage.n := storage.n + 1;
+}
+
+external function echo_checked(const to : Echo; const xs : list(uint)) is {
+  for x : uint in xs do {
+    defer to.echo(x + 1) then (r : uint) {
+      storage.total := storage.total + r % 1000;
+    };
+  }
+}
+
+external function pick(const to : Echo; const a : uint; const b : uint; const c : uint; const data : bytes)
+  raises forwarded
+is {
+  const ys : list(uint) := [a, b, c];
+  for y : uint in ys do {
+    if y > 3 then {
+      defer Evm.call(if y > 100 then address(to) else Evm.self(), data) then {
+        | Ok -> { skip }
+        | Error(reason : bytes) -> { forward reason; }
+      };
+    } else {
+      skip
+    };
+  }
+}
+
+external view function state() : (uint, uint, uint) is (storage.n, storage.last, storage.total)

@@ -18,3 +18,13 @@ external pure function to_bytes(const data : bytes) : bytes is
 
 external pure function to_small(const data : bytes) : uint8 is
   Abi.decode(data, uint8)
+
+(* One word re-read as another type: the value's ABI word, checked against the new type. *)
+external pure function as_address(const n : uint) : address is
+  Abi.decode(Abi.encode(n), address)
+
+external pure function as_word(const selector : bytes4) : bytes32 is
+  Abi.decode(Abi.encode(selector), bytes32)
+
+external pure function as_selector(const word : bytes32) : bytes4 is
+  Abi.decode(Abi.encode(word), bytes4)

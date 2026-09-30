@@ -382,7 +382,7 @@ external view function name_of(const who : address) : string is storage.names[wh
         "{}",
         pretty(&named.returndata)
     );
-    let checked = crate::check::check(loaded(src)).expect("check");
+    let checked = crate::check::check(loaded(src), Default::default()).expect("check");
     let copies = checked
         .prog
         .funcs

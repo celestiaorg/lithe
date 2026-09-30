@@ -15,7 +15,8 @@ module Base64 is {
   intrinsic encode_with;
 
   (* decode(data : bytes | string) : bytes
-     The bytes either alphabet encodes, padded or not. Other characters decode to
-     unspecified bytes. *)
+     The bytes either alphabet encodes, padded or not. Other characters decode as
+     Solady's table has them, or as zero bits where it has none; a byte from 0x80 decodes
+     as its low seven bits. *)
   intrinsic decode;
 }

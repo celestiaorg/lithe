@@ -1,6 +1,6 @@
 ---
 title: "Standard library"
-description: "Audited-once building blocks shipped with the compiler: access control, tokens, collections, math, cryptography, and interfaces."
+description: "Audited-once building blocks shipped with the compiler: access control, tokens, collections, math, cryptography, accounts, and interfaces."
 ---
 
 # Standard library
@@ -48,7 +48,7 @@ Every module follows the ordinary rules for [modules](/language/modules):
 - **Modules declare the standard interfaces; contracts choose what to expose.** A module's internal functions are `snake_case`, and its externals carry the standard's ABI names: `ERC20.balance_of` is internal, and `balanceOf` is an external of `IERC20`, which a token exposes with `use ERC20 exposing IERC20`, and announces through ERC-165 with `supports IERC20`. A contract that needs different behavior writes its own entrypoint instead, and exposes the rest with the interfaces the module's file declares for its parts, such as `IERC20Views`, `IOwnable`, and `IPausable`; only whole standards are in `std/interfaces`. `lithe stubs file.lithe ERC20` prints a module's whole block.
 - **Each module owns its storage**, at an ERC-7201 root named `lithe.std.<module>`: `lithe.std.erc20`, `lithe.std.ownable`, and so on. Contracts don't redeclare a module's schema, and two modules never collide.
 - **Extensions add behavior, and never change a base module silently.** A pause, a cap, or a fee is written in the contract's own `transfer`, around the module's pieces.
-- **Errors and events match OpenZeppelin's**, so wallets, explorers, and indexers decode them as they already do.
+- **Errors and events match OpenZeppelin's**, or Solady's where OpenZeppelin has no such module, so wallets, explorers, and indexers decode them as they already do.
 
 ## Modules
 
@@ -56,6 +56,7 @@ Every module follows the ordinary rules for [modules](/language/modules):
 | --- | --- | --- |
 | `std/access/ownable.lithe` | `Ownable` | [Access control](/stdlib/access) |
 | `std/access/ownable_two_step.lithe` | `Ownable2Step` | |
+| `std/access/ownable_roles.lithe` | `OwnableRoles` | |
 | `std/access/access_control.lithe` | `AccessControl` | |
 | `std/security/pausable.lithe` | `Pausable` | |
 | `std/token/erc20.lithe` | `ERC20` | [Tokens](/stdlib/tokens) |
@@ -64,12 +65,21 @@ Every module follows the ordinary rules for [modules](/language/modules):
 | `std/token/erc20_capped.lithe` | `ERC20Capped` | |
 | `std/token/erc20_votes.lithe` | `ERC20Votes` | |
 | `std/token/erc20_flash_mint.lithe` | `ERC20FlashMint` | |
+| `std/token/safe_erc20.lithe` | `SafeERC20` | |
+| `std/token/erc4626.lithe` | `ERC4626` | |
 | `std/token/erc721.lithe` | `ERC721` | |
 | `std/token/erc721_enumerable.lithe` | `ERC721Enumerable` | |
 | `std/token/erc721_uri_storage.lithe` | `ERC721URIStorage` | |
 | `std/token/erc2981.lithe` | `ERC2981` | |
+| `std/token/erc1155.lithe` | `ERC1155` | |
+| `std/token/erc1155_supply.lithe` | `ERC1155Supply` | |
+| `std/token/erc6909.lithe` | `ERC6909` | |
+| `std/token/erc6909_token_supply.lithe` | `ERC6909TokenSupply` | |
+| `std/token/erc6909_metadata.lithe` | `ERC6909Metadata` | |
+| `std/token/erc6909_content_uri.lithe` | `ERC6909ContentURI` | |
 | `std/collections/set.lithe` | `Set(T)` | [Collections](/stdlib/collections) |
 | `std/collections/set_enumerable.lithe` | `SetEnumerable(T)` | |
+| `std/collections/map_enumerable.lithe` | `MapEnumerable(K, V)` | |
 | `std/collections/bitmap.lithe` | `Bitmap` | |
 | `std/collections/queue.lithe` | `Queue(T)` | |
 | `std/math/math.lithe` | `Math` | [Math](/stdlib/math) |
@@ -78,17 +88,23 @@ Every module follows the ordinary rules for [modules](/language/modules):
 | `std/crypto/ecdsa.lithe` | `ECDSA` | [Cryptography](/stdlib/crypto) |
 | `std/crypto/eip712.lithe` | `EIP712` | |
 | `std/crypto/merkle.lithe` | `Merkle` | |
-| `std/utils/create2.lithe` | `Create2` | [Utilities](/stdlib/utils) |
+| `std/crypto/webauthn.lithe` | `WebAuthn` | |
+| `std/crypto/signature_checker.lithe` | `SignatureChecker` | |
+| `std/utils/create.lithe` | `Create` | [Utilities](/stdlib/utils) |
+| `std/utils/create2.lithe` | `Create2` | |
 | `std/utils/clones.lithe` | `Clones` | |
 | `std/utils/sstore2.lithe` | `SSTORE2` | |
 | `std/utils/create3.lithe` | `Create3` | |
 | `std/utils/nonce.lithe` | `Nonces` | |
 | `std/utils/checkpoint.lithe` | `Checkpoints` | |
-| `std/interfaces/*.lithe` | `IERC165`, `IERC20`, `IERC20Metadata`, `IERC20Permit`, `IERC721`, `IERC721Metadata`, `IERC721Enumerable`, `IERC721Receiver`, `IERC1155`, `IERC1155MetadataURI`, `IERC1155Receiver`, `IERC1271`, `IERC2981`, `IERC3156FlashLender`, `IERC3156FlashBorrower`, `IERC4626`, `IERC6372`, `IVotes` | [Interfaces](/stdlib/interfaces) |
+| `std/utils/block_hash.lithe` | `BlockHash` | |
+| `std/utils/strings.lithe` | `Strings` | |
+| `std/utils/date_time.lithe` | `DateTime` | |
+| `std/accounts/erc7821.lithe` | `ERC7821` | |
+| `std/interfaces/*.lithe` | `IERC165`, `IERC20`, `IERC20Metadata`, `IERC20Permit`, `IERC721`, `IERC721Metadata`, `IERC721Enumerable`, `IERC721Receiver`, `IERC1155`, `IERC1155MetadataURI`, `IERC1155Receiver`, `IERC6909`, `IERC6909Metadata`, `IERC6909ContentURI`, `IERC6909TokenSupply`, `IERC1271`, `IERC2981`, `IERC3156FlashLender`, `IERC3156FlashBorrower`, `IERC4626`, `IERC5267`, `IERC6372`, `IVotes`, `IERC7821` | [Interfaces](/stdlib/interfaces) |
 
 ## What isn't here
 
 - **A reentrancy guard.** [`nonreentrant`](/language/reentrancy) is a language feature, and deferred calls already run after a transition's own effects.
-- **Byte and arithmetic primitives.** `Bytes.concat`, `Bytes.word`, `Base64.encode`, `Uint.mul_div`, and the rest are [built-ins](/language/builtins), because the compiler does them better than a library could.
-- **ERC-1155.** Not yet. The interface, batch methods included, is in `std/interfaces/erc1155.lithe`.
+- **Byte and arithmetic primitives.** `Bytes.concat`, `Bytes.word`, `String.lower`, `String.escape_json`, `Base64.encode`, `Uint.mul_div`, and the rest are [built-ins](/language/builtins), because the compiler does them better than a library could. Anything that builds a string a byte at a time is one: a library can only join slices.
 - **Applications**, such as AMMs, lending markets, or auctions. They are too opinionated for a foundation.

@@ -1,0 +1,171 @@
+(* Up to 256 roles on top of `Ownable`, like Solady's `OwnableRoles`. An account's roles
+   are one `roles` bitmask in one slot, so granting, revoking, and checking several roles
+   at once costs the same as one. The owner grants and revokes; an account may renounce
+   its own. Build a mask with `role(n)` and `|`:
+
+     pure function minter() : roles is OwnableRoles.role(0)
+     pure function pauser() : roles is OwnableRoles.role(1)
+
+     external function mint(const to : address; const amount : uint)
+       raises Unauthorized
+     is {
+       OwnableRoles.check_owner_or_roles(minter() | pauser());
+       ...
+     }
+
+     use Ownable;
+     use OwnableRoles exposing IOwnableRoles; *)
+
+import "std/access/ownable";
+import "std/evm";
+import "std/list";
+import "std/uint";
+
+type roles is uint;
+
+error Unauthorized;
+
+module OwnableRoles is {
+  requires Ownable;
+
+  storage ownable_roles at "lithe.std.ownable_roles" is record {
+    of_account : map(address, roles);
+  }
+
+  event RolesUpdated of record {
+    indexed user : address;
+    indexed roles : roles;
+  }
+
+  (* The role numbered `ordinal`, from 0 to 255: Solady's `_ROLE_<ordinal>`. *)
+  pure function role(const ordinal : uint8) : roles is
+    roles(1 << uint(ordinal))
+
+  (* The roles numbered by `ordinals`, together: Solady's `_rolesFromOrdinals`. *)
+  pure function roles_from_ordinals(const ordinals : list(uint8)) : roles is {
+    var r : uint := 0;
+    for o : uint8 in ordinals do {
+      r := 1 << uint(o) | r;
+    }
+  } with roles(r)
+
+  (* The ordinals of the roles in `r`, ascending: Solady's `_ordinalsFromRoles`. *)
+  pure function ordinals_from_roles(const r : roles) : list(uint8) is {
+    var ordinals : list(uint8) := [];
+    var t : uint := uint(r);
+    for _ : uint in 0 .. 256 until t = 0 do {
+      const low : uint := t & Uint.wrapping_sub(0, t);
+      List.push(ordinals, uint8(255 ^ Uint.clz(low)));
+      t := t ^ low;
+    }
+  } with ordinals
+
+  view function roles_of(const user : address) : roles is
+    ownable_roles.of_account[user]
+
+  view function has_any_role(const user : address; const r : roles) : bool is
+    ownable_roles.of_account[user] & r <> 0
+
+  view function has_all_roles(const user : address; const r : roles) : bool is
+    ownable_roles.of_account[user] & r = r
+
+  view function check_roles(const r : roles)
+    raises Unauthorized
+  is {
+    assert(ownable_roles.of_account[Evm.sender()] & r <> 0, Unauthorized);
+  }
+
+  view function check_owner_or_roles(const r : roles)
+    raises Unauthorized
+  is {
+    assert(
+      Ownable.owner() = Evm.sender() or ownable_roles.of_account[Evm.sender()] & r <> 0,
+      Unauthorized
+    );
+  }
+
+  view function check_roles_or_owner(const r : roles)
+    raises Unauthorized
+  is {
+    assert(
+      ownable_roles.of_account[Evm.sender()] & r <> 0 or Ownable.owner() = Evm.sender(),
+      Unauthorized
+    );
+  }
+
+  (* Replaces `user`'s roles without checking the caller. *)
+  function set_roles(const user : address; const r : roles) is {
+    ownable_roles.of_account[user] := r;
+    emit RolesUpdated { user = user; roles = r; };
+  }
+
+  (* Adds and removes roles without checking the caller, for `deploy` and the contract's
+     own rules. *)
+  function grant(const user : address; const r : roles) is {
+    update(user, r, true);
+  }
+
+  function revoke(const user : address; const r : roles) is {
+    update(user, r, false);
+  }
+
+  (* Adds `r` to `user`'s roles, or with `add` false removes them: `(current | r) ^ r`
+     clears them. *)
+  function update(const user : address; const r : roles; const add : bool) is {
+    const next : roles := (ownable_roles.of_account[user] | r) ^ (r & roles(Uint.wrapping_sub(0, uint(not add))));
+    ownable_roles.of_account[user] := next;
+    emit RolesUpdated { user = user; roles = next; };
+  }
+
+  function grant_roles(const user : address; const r : roles)
+    raises OwnableUnauthorizedAccount
+  is {
+    Ownable.check_owner();
+    grant(user, r);
+  }
+
+  function revoke_roles(const user : address; const r : roles)
+    raises OwnableUnauthorizedAccount
+  is {
+    Ownable.check_owner();
+    revoke(user, r);
+  }
+
+  function renounce_roles(const r : roles) is {
+    revoke(Evm.sender(), r);
+  }
+
+  external function grantRoles(const user : address; const roles : roles)
+    raises OwnableUnauthorizedAccount
+  is
+    grant_roles(user, roles)
+
+  external function revokeRoles(const user : address; const roles : roles)
+    raises OwnableUnauthorizedAccount
+  is
+    revoke_roles(user, roles)
+
+  external function renounceRoles(const roles : roles) is
+    renounce_roles(roles)
+
+  external view function rolesOf(const user : address) : roles is
+    ownable_roles.of_account[user]
+
+  external view function hasAnyRole(const user : address; const roles : roles) : bool is
+    has_any_role(user, roles)
+
+  external view function hasAllRoles(const user : address; const roles : roles) : bool is
+    has_all_roles(user, roles)
+}
+
+(* Solady's `OwnableRoles` role functions. A `roles` mask is a `uint256` in the ABI. *)
+interface IOwnableRoles is {
+  function grantRoles(user : address; roles : roles)
+    raises OwnableUnauthorizedAccount;
+  function revokeRoles(user : address; roles : roles)
+    raises OwnableUnauthorizedAccount;
+  function renounceRoles(roles : roles);
+  view function rolesOf(user : address) : roles;
+  view function hasAnyRole(user : address; roles : roles) : bool;
+  view function hasAllRoles(user : address; roles : roles) : bool;
+}

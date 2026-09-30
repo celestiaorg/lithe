@@ -181,4 +181,13 @@ external pure function nonzero(const x : uint) : uint raises Zero is
   if x > 0 then x else fail Zero
 ```
 
-Its branches are `case` arms, so a branch can be `fail E`, or in a stateful function a block. There is no ternary operator.
+Its branches are `case` arms, so a branch can be `fail E`, or a block. A block that ends `with` a value gives the branch that value, as a function body does:
+
+```lithe fragment
+external pure function scaled(const x : uint) : uint is
+  if x > 1000 then {
+    const k : uint := x / 1000;
+  } with k * k else x
+```
+
+There is no ternary operator.
