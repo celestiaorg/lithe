@@ -38,7 +38,7 @@ The compiler produces a [UUPS](https://eips.ethereum.org/EIPS/eip-1822) implemen
 | Entrypoint | Behavior |
 | --- | --- |
 | `proxiableUUID()` | returns the ERC-1967 implementation slot, when called on the implementation itself |
-| `upgradeToAndCall(address, bytes)` | runs the upgrade guard, checks the new implementation, stores it, then runs the migration encoded in `bytes`, if any |
+| `upgradeToAndCall(address, bytes)` | runs the upgrade guard, checks the new implementation, stores it, logs ERC-1967's `Upgraded(address indexed implementation)`, then runs the migration encoded in `bytes`, if any |
 
 Both refuse what OpenZeppelin 5.1's `UUPSUpgradeable` refuses, with the same errors, so an upgrade can't point the proxy at code that can't upgrade it again:
 
@@ -48,6 +48,7 @@ Both refuse what OpenZeppelin 5.1's `UUPSUpgradeable` refuses, with the same err
 | `upgradeToAndCall` called other than through an ERC-1967 proxy that points at this implementation | `UUPSUnauthorizedCallContext()` |
 | the new implementation's `proxiableUUID()` fails, as a contract without one does, or a proxy's does | `ERC1967InvalidImplementation(address)` |
 | it answers something other than the implementation slot | `UUPSUnsupportedProxiableUUID(bytes32)` |
+| value sent with no migration to take it | `ERC1967NonPayable()` |
 
 `upgradeToAndCall` checks the call context first, then runs the guard, then asks the new implementation, as OpenZeppelin does. The implementation knows its own address because its creation code writes it into its code, as OpenZeppelin's `__self` immutable is.
 

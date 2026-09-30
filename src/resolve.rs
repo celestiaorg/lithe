@@ -1449,6 +1449,19 @@ impl Resolver<'_> {
                     name, line, col, ..
                 }, ..],
             ) => self.visible_contract(name, *line, *col),
+            (
+                Tag::Call(Builtin::FacetAddress),
+                [Expr::Ident {
+                    name, line, col, ..
+                }, ..],
+            ) => {
+                if let Some(canonical) = self.lookup_module(name) {
+                    *name = canonical;
+                    return Ok(());
+                }
+                let spelled = name.clone();
+                self.missing(&spelled, &[Cat::Module], "module", *line, *col)
+            }
             _ => Ok(()),
         }
     }

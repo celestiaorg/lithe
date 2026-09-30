@@ -1930,7 +1930,7 @@ pub(crate) fn abi(checked: &Checked) -> Result<Abi, Error> {
                 Param::named("data", "bytes"),
             ],
             outputs: Vec::new(),
-            state_mutability: StateMutability::NonPayable,
+            state_mutability: StateMutability::Payable,
         }));
     }
     for err in &checked.errors {

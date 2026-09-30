@@ -336,9 +336,24 @@ fn upgrades_check_the_call_context_and_the_new_implementation() {
     // The guard runs before the new implementation is asked.
     refused(&run(&proxy, &upgrade_to_and_call(c, &[]), other), &selector("NotOwner()"));
 
+    // Value without a migration to take it, as `ERC1967Utils` refuses it.
+    let paid = exec(&proxy, &upgrade_to_and_call(b, &[]), storage.clone(), owner, Word::from_u64(1), Word::from_u64(1))
+        .expect("paid");
+    refused(&paid, &error("ERC1967NonPayable()", None));
+
     let out = run(&proxy, &upgrade_to_and_call(b, &[]), owner);
     assert!(!out.reverted, "{}", pretty(&out.returndata));
     assert_eq!(out.storage[&slot], b);
+    let upgraded = Word::from_be_bytes(crate::keccak::keccak256(b"Upgraded(address)"));
+    let logs: Vec<&Vec<Word>> = out
+        .trace
+        .iter()
+        .filter_map(|ev| match ev {
+            Ev::Log { topics } => Some(topics),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(logs, [&vec![upgraded, b]], "ERC-1967's Upgraded event");
     DEPLOYED.with(|m| m.borrow_mut().clear());
 }
 
@@ -1602,4 +1617,47 @@ external view function first() : uint is
         call(&ours, "first()", &[]).returndata
     );
     DEPLOYED.with(|d| d.borrow_mut().clear());
+}
+
+const FACET_ADDRESS: &str = "import \"std/evm\";
+module Counter is {
+  storage counter at \"example.facet.address\" is record { n : uint; }
+  function bump() is { counter.n := counter.n + 1; }
+  external view function count() : uint is counter.n
+}
+contract App is {
+  use Counter delegated exposing { view function count() : uint; }
+  external pure function counterFacet() : address is Evm.facet_address(Counter)
+  external function create() : uint is { Counter.bump(); } with 1
+}
+";
+
+/// `Evm.facet_address(M)` is the address the router forwards `M`'s externals to, and an
+/// external may be named `create`, which is otherwise a keyword.
+#[test]
+fn facet_address_is_the_facets_create2_address() {
+    let checked = checked_src(FACET_ADDRESS);
+    let split = crate::split::build(&checked, "App", &crate::Options::default()).expect("split");
+    let facet = &split.facets[0];
+    deploy_facets(&split);
+    let router = deploy(&split.creation).expect("router");
+    let out = call(&router, "counterFacet()", &[]);
+    assert!(!out.reverted, "{}", pretty(&out.returndata));
+    assert_eq!(out.returndata, crate::split::address_word(facet.address).to_be_bytes());
+    let out = call(&router, "create()", &[]);
+    assert!(!out.reverted, "{}", pretty(&out.returndata));
+    assert_eq!(out.returndata, Word::from_u64(1).to_be_bytes());
+}
+
+#[test]
+fn facet_address_needs_a_delegated_module_and_contract_code() {
+    let unmarked = FACET_ADDRESS.replace("use Counter delegated exposing", "use Counter exposing");
+    let err = crate::check::check(loaded(&unmarked)).err().expect("rejected");
+    assert!(err.message.contains("`Counter` has no facet: the contract doesn't use it `delegated`"), "{}", err.message);
+    let in_module = FACET_ADDRESS.replace(
+        "  external view function count() : uint is counter.n\n",
+        "  external view function count() : uint is counter.n\n  pure function here() : address is Evm.facet_address(Counter)\n",
+    );
+    let err = crate::check::check(loaded(&in_module)).err().expect("rejected");
+    assert!(err.message.contains("is for contract code"), "{}", err.message);
 }

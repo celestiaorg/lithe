@@ -669,6 +669,8 @@ impl<'a> Gen<'a> {
                 Guarding::Func(func) => self.checked.prog.funcs[func].payable,
                 Guarding::Route(index) => self.checked.routes[index].payable,
             },
+            // OpenZeppelin's takes value for the migration it runs.
+            Target::Upgrade { .. } => true,
             _ => false,
         }
     }
@@ -1161,8 +1163,9 @@ impl<'a> Gen<'a> {
         let context = self.fresh();
         let invalid = self.fresh();
         let unsupported = self.fresh();
+        let unpaid = self.fresh();
         let slot = crate::keccak::erc1967_implementation();
-        self.enter(label, false);
+        self.enter(label, true);
         self.push_u64(68);
         self.op(CALLDATASIZE);
         self.op(LT);
@@ -1244,6 +1247,12 @@ impl<'a> Gen<'a> {
         self.mload(self.scratch_to);
         self.push_word(slot);
         self.op(SSTORE);
+        // ERC-1967's `Upgraded(address indexed implementation)`, before the migration runs.
+        self.mload(self.scratch_to);
+        self.push_word(Word::from_be_bytes(crate::keccak::keccak256(b"Upgraded(address)")));
+        self.push_u64(0);
+        self.push_u64(0);
+        self.op(LOG0 + 2);
         self.mload(self.scratch_val);
         self.op(ISZERO);
         self.push_label(skip);
@@ -1267,8 +1276,15 @@ impl<'a> Gen<'a> {
         self.op(ISZERO);
         self.push_label(bad);
         self.op(JUMPI);
-        self.jumpdest(skip);
         self.op(STOP);
+        // With no migration to take it, value is refused, as `ERC1967Utils` refuses it.
+        self.jumpdest(skip);
+        self.op(CALLVALUE);
+        self.push_label(unpaid);
+        self.op(JUMPI);
+        self.op(STOP);
+        self.jumpdest(unpaid);
+        self.revert_selector(selector("ERC1967NonPayable()"), None);
         self.jumpdest(bad);
         self.revert_empty();
         self.jumpdest(context);

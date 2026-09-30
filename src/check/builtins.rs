@@ -405,6 +405,37 @@ impl Checker {
                 *ty = self.bytes_n(0)?;
                 return Ok(());
             }
+            Builtin::FacetAddress => {
+                need(args.len(), 1)?;
+                let Expr::Ident { name: module, .. } = &args[0] else {
+                    return Err(error(
+                        args[0].line(),
+                        args[0].col(),
+                        format!("`{call}` takes the name of a module"),
+                    ));
+                };
+                if let Some(own) = &self.module_name {
+                    return Err(error(
+                        line,
+                        col,
+                        format!("`{call}` is for contract code: `{own}`'s facet is built from the module alone, which knows no other facet"),
+                    ));
+                }
+                if !self.delegated.iter().any(|m| m == module) {
+                    return Err(error(
+                        args[0].line(),
+                        args[0].col(),
+                        format!(
+                            "`{}` has no facet: the contract doesn't use it `{}`",
+                            crate::split::display_name(module),
+                            crate::parse::DELEGATED
+                        ),
+                    ));
+                }
+                *builtin = Some(kind);
+                *ty = TY_ADDRESS;
+                return Ok(());
+            }
             Builtin::AbiDecode => {
                 need(args.len(), 2)?;
                 self.check_blob(&mut args[0])?;
@@ -940,6 +971,7 @@ impl Checker {
             | Builtin::TxOrigin
             | Builtin::BlockCoinbase
             | Builtin::SelfAddr
+            | Builtin::FacetAddress
             | Builtin::Ecrecover => TY_ADDRESS,
             Builtin::Value
             | Builtin::TxGasPrice
@@ -1071,6 +1103,7 @@ fn module_builtin(module: &str, name: &str) -> Option<Builtin> {
         ("Evm", "code_hash") => Builtin::CodeHash,
         ("Evm", "code") => Builtin::Code,
         ("Evm", "creation_code") => Builtin::CreationCode,
+        ("Evm", "facet_address") => Builtin::FacetAddress,
         ("Evm", "gas_left") => Builtin::GasLeft,
         ("Evm", "transfer") => Builtin::Transfer,
         ("Evm", "call") => Builtin::RawCall,

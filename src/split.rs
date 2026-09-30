@@ -66,6 +66,8 @@ pub(crate) struct Shape {
     pub forward: Vec<([u8; 4], usize)>,
     /// The addresses of the facets selectors are forwarded to.
     pub parts: Vec<Word>,
+    /// Every facet's address, by module, for `Evm.facet_address`.
+    pub facet_at: HashMap<String, Word>,
     /// The ids of the immutables each facet reads after its calldata, in order.
     pub tails: Vec<Vec<String>>,
     /// The functions of facet modules this code calls across, by index.
@@ -320,6 +322,10 @@ fn router_shape(
         }
     }
     shape.keep = Some(keep);
+    shape.facet_at = facets
+        .iter()
+        .map(|f| (f.name.clone(), address_word(f.address)))
+        .collect();
     shape.parts = parts
         .iter()
         .map(|&i| address_word(facets[i].address))

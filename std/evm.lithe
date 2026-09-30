@@ -73,6 +73,11 @@ module Evm is {
      constant. *)
   intrinsic creation_code;
 
+  (* facet_address(M) : address
+     The address of the facet the contract runs a module `M` from, one it uses
+     `delegated`. A constant, known once the facet is built; for contract code only. *)
+  intrinsic facet_address;
+
   (* `gasleft()`. *)
   intrinsic view function gas_left() : uint;
 

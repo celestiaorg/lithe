@@ -865,7 +865,7 @@ impl<'a> Parser<'a> {
         }
         self.want(Kind::Function)?;
         let (fline, fcol) = self.at();
-        let name = self.ident()?;
+        let name = self.member_name()?;
         self.want(Kind::LParen)?;
         let mut params = Vec::new();
         while self.kind() != Kind::RParen {
@@ -1920,7 +1920,7 @@ impl<'a> Parser<'a> {
         let name = if kind == ItemKind::Deploy {
             "deploy".to_string()
         } else {
-            self.ident()?
+            self.member_name()?
         };
         // An interface's `f(a : T)` has parameters, never type parameters.
         let type_params = if !self.declaring && self.looks_like_type_params() {
@@ -2949,7 +2949,7 @@ impl<'a> Parser<'a> {
         while self.kind() == Kind::Dot {
             self.bump();
             let (fline, fcol) = self.at();
-            let field = self.ident()?;
+            let field = self.member_name()?;
             if self.kind() == Kind::LParen {
                 self.bump();
                 let args = self.args()?;
@@ -3350,7 +3350,7 @@ impl<'a> Parser<'a> {
             }
             self.bump();
             let (fline, fcol) = self.at();
-            let name = self.ident()?;
+            let name = self.member_name()?;
             if self.kind() == Kind::LParen {
                 self.bump();
                 let args = self.args()?;
@@ -3580,6 +3580,16 @@ impl<'a> Parser<'a> {
         let name = self.ident()?;
         self.want(Kind::RParen)?;
         Ok((Some(name), Vec::new()))
+    }
+
+    /// A function's name, or a member's after `.`: an identifier, or `create`, which
+    /// Solidity ABIs use for factories' functions.
+    fn member_name(&mut self) -> Result<String, Error> {
+        if self.kind() == Kind::Create {
+            self.bump();
+            return Ok("create".to_string());
+        }
+        self.ident()
     }
 
     fn ident(&mut self) -> Result<String, Error> {

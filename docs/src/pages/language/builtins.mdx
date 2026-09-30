@@ -91,6 +91,7 @@ Execution context, from `import "std/evm";`. Readable in `view` and stateful fun
 | `Evm.code_hash(a : address)` | `bytes32` | `a.codehash` |
 | `Evm.code(a : address)` | `bytes` | `a.code` |
 | `Evm.gas_left()` | `uint` | `gasleft()` |
+| `Evm.facet_address(M)` | `address` | the address of the [facet](/tooling/size-limit) of a module `M` the contract uses `delegated`. A constant, in contract code only |
 | `Evm.creation_code(C)` | `bytes` | `type(C).creationCode`, for a contract `C` that [`defer create`](/language/effects#create) can create. Usable in `pure` functions, and its hash is a constant |
 
 ### Sending ether
