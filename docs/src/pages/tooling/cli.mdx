@@ -38,7 +38,7 @@ Commands that read one file need a file with exactly one contract. Errors and wa
 | Flag | Default | Meaning |
 | --- | --- | --- |
 | `--size-limit <bytes>` | `24576` | the most runtime code the router or any facet may have |
-| `--split <auto\|off\|all>` | `auto` | run exposed modules from their facets when the contract is over the limit, never, or always. Pure functions run from library facets only when a build doesn't fit, and never with `off` |
+| `--split <auto\|off\|all>` | `auto` | run every exposed module from its facet when the contract doesn't fit with no facets, never, or always. Pure functions run from library facets only when a router, a facet, or a contract that exposes no modules doesn't fit, and never with `off` |
 | `--create2-deployer <address>` | `0x4e59b44847b379578588920cA78FbF26c0B4956C` | the `CREATE2` factory facets are deployed through |
 
 See [Contract size limit](/tooling/size-limit).

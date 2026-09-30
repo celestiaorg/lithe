@@ -479,11 +479,12 @@ usage: lithe compile file.lithe
 
 compile, abi, facets, abi-tree, footprint, upgrade, and upgrade-check also take
        --size-limit <bytes>          largest runtime code, default 24576
-       --split <auto|off|all>        run exposed modules from their facets: when the
-                                     contract is over the limit (auto, the default),
-                                     never (off), or always (all); pure functions run
-                                     from library facets only when a build doesn't fit,
-                                     and never with off
+       --split <auto|off|all>        run every exposed module from its facet: when the
+                                     contract doesn't fit with no facets (auto, the
+                                     default), never (off), or always (all); pure
+                                     functions run from library facets only when a
+                                     router, a facet, or a contract that exposes no
+                                     modules doesn't fit, and never with off
        --create2-deployer <address>  the CREATE2 factory for facets
 
 compile also takes

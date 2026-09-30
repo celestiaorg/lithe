@@ -397,36 +397,41 @@ contract Other is {{
     DEPLOYED.with(|d| d.borrow_mut().clear());
 }
 
-/// Over the limit, `auto` moves the module that saves the most into its facet first, and
-/// stops as soon as the router fits.
+/// A contract that fits is built whole. Over the limit, `auto` builds exactly what `all`
+/// does: every exposed module in its facet.
 #[test]
-fn auto_moves_the_largest_module_first() {
+fn auto_over_the_limit_moves_every_module() {
     let checked = checked_src(&pair_src(""));
     let whole = whole_build(&checked).runtime.len();
     let fits = crate::split::build(&checked, "Pair", &split_opts(whole)).expect("fits");
     assert!(fits.facets.is_empty());
     assert_eq!(fits.creation, whole_build(&checked).code);
-    let first = (1..whole)
+    let (limit, auto) = (1..whole)
         .rev()
         .step_by(4)
         .find_map(|limit| {
             crate::split::build(&checked, "Pair", &split_opts(limit))
                 .ok()
                 .filter(|split| !split.facets.is_empty())
+                .map(|split| (limit, split))
         })
         .expect("a limit that splits");
-    assert_eq!(facet_names(&first), ["Alpha"]);
-    assert!(first.whole == Some(whole));
-    let both = (1..whole)
-        .rev()
-        .step_by(4)
-        .find_map(|limit| {
-            crate::split::build(&checked, "Pair", &split_opts(limit))
-                .ok()
-                .filter(|split| split.facets.len() == 2)
-        })
-        .expect("a limit that needs both");
-    assert_eq!(facet_names(&both), ["Alpha", "Beta"]);
+    assert_eq!(facet_names(&auto), ["Alpha", "Beta"]);
+    assert!(auto.whole == Some(whole));
+    let all = crate::Options {
+        split: crate::SplitMode::All,
+        ..split_opts(limit)
+    };
+    let all = crate::split::build(&checked, "Pair", &all).expect("all");
+    assert_eq!((&auto.creation, &auto.runtime), (&all.creation, &all.runtime));
+    let placed = |split: &crate::split::Split| -> Vec<([u8; 20], Vec<u8>)> {
+        split
+            .prerequisites()
+            .into_iter()
+            .map(|f| (f.address, f.init))
+            .collect()
+    };
+    assert_eq!(placed(&auto), placed(&all));
 }
 
 /// A contract whose cheapest build is over the limit outlines the functions it shares until
@@ -1048,8 +1053,9 @@ fn uint_string_list(sig: &str, n: u64, name: &[u8], tags: &[u64]) -> Vec<u8> {
     data
 }
 
-/// A contract over the limit only because of a large pure function runs that function from
-/// its library facet, and answers as its whole build does, errors and panics included.
+/// A contract with no module to move, over the limit only because of a large pure function,
+/// runs that function from its library facet under `auto` and `all` alike, and answers as its
+/// whole build does, errors and panics included.
 #[test]
 fn a_large_pure_function_runs_from_its_library_facet() {
     let checked = checked_src(RENDER);
@@ -1060,6 +1066,12 @@ fn a_large_pure_function_runs_from_its_library_facet() {
     let names: Vec<&str> = split.libraries.iter().map(|l| l.name.as_str()).collect();
     assert_eq!(names, ["render"]);
     assert!(split.runtime.len() <= opts.size_limit);
+    let all = crate::Options {
+        split: crate::SplitMode::All,
+        ..opts.clone()
+    };
+    let all = crate::split::build(&checked, "Render", &all).expect("all");
+    assert_eq!(all.creation, split.creation);
     assert_eq!(
         split.libraries[0].methods[0].0,
         "render(uint256,string,uint256[])"
@@ -1087,6 +1099,63 @@ fn a_large_pure_function_runs_from_its_library_facet() {
     }
     let methods = crate::route::method_ids(&checked).expect("methods");
     compare_builds("render", &methods, &reference, &ours, 300, true);
+}
+
+/// A contract that exposes a module and fits whole only when a pure function runs from its
+/// library facet gets every exposed module in its facet instead, as `all` builds it. The
+/// router, still over the limit, is what runs the function from its library facet.
+#[test]
+fn library_facets_never_stand_in_for_modules() {
+    let src = format!(
+        "{RENDER}
+module Tally is {{
+  storage tally at \"split.tally\" is record {{
+    n : uint;
+  }}
+
+  external function tick() is {{
+    tally.n := tally.n + 1;
+  }}
+
+  external view function ticks() : uint is
+    tally.n
+}}
+
+use Tally exposing {{
+  function tick();
+  view function ticks() : uint;
+}}
+"
+    );
+    let checked = checked_src(&src);
+    let whole = whole_build(&checked);
+    let opts = split_opts(whole.runtime.len() * 4 / 5);
+    let with_libraries = crate::gen::codegen(
+        &checked,
+        &crate::split::Shape {
+            opts: opts.clone(),
+            ..crate::split::Shape::default()
+        },
+    )
+    .expect("whole with library facets");
+    assert!(with_libraries.runtime.len() <= opts.size_limit);
+    assert!(!with_libraries.libraries.is_empty());
+    let split = crate::split::build(&checked, "Render", &opts).expect("split");
+    assert_eq!(facet_names(&split), ["Tally"]);
+    let names: Vec<&str> = split.libraries.iter().map(|l| l.name.as_str()).collect();
+    assert_eq!(names, ["render"]);
+    let all = crate::Options {
+        split: crate::SplitMode::All,
+        ..opts.clone()
+    };
+    let all = crate::split::build(&checked, "Render", &all).expect("all");
+    assert_eq!(split.creation, all.creation);
+    install_mocks();
+    let reference = deploy(&whole.code).expect("whole");
+    let ours = deploy_split(&split);
+    let methods = crate::route::method_ids(&checked).expect("methods");
+    compare_builds("render", &methods, &reference, &ours, 300, true);
+    DEPLOYED.with(|d| d.borrow_mut().clear());
 }
 
 const RENDER_MODULE: &str = r#"import "std/string";

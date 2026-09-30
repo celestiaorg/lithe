@@ -37,8 +37,7 @@ pub const DEPLOYER: [u8; 20] = [
 pub enum SplitMode {
     /// Never: a contract over the limit is an error.
     Off,
-    /// When the contract is over the limit: the modules that save the most move first, until
-    /// the router fits.
+    /// When the contract does not fit with no facets: then every one, as `All` has it.
     Auto,
     /// Always, for every exposed module, so that contracts share the same facets.
     All,
@@ -83,6 +82,8 @@ pub(crate) struct Shape {
     pub tails: Vec<Vec<String>>,
     /// A facet: its creation code only copies it, since it has no `deploy`.
     pub part: bool,
+    /// No library facets: the code fits on its own or not at all.
+    pub local: bool,
     pub opts: Options,
 }
 
@@ -182,7 +183,9 @@ fn build_uncached(checked: &Checked, name: &str, opts: &Options) -> Result<Split
     let modules = exposed(checked, &entries);
     let mut whole = None;
     if opts.split != SplitMode::All || modules.is_empty() {
+        // Library facets never stand in for module facets.
         let whole_shape = Shape {
+            local: !modules.is_empty(),
             opts: opts.clone(),
             ..Shape::default()
         };
@@ -212,44 +215,18 @@ fn build_uncached(checked: &Checked, name: &str, opts: &Options) -> Result<Split
             }
             return Err(err);
         }
+        let all = Options {
+            split: SplitMode::All,
+            ..opts.clone()
+        };
+        let mut split = build(checked, name, &all)?;
+        split.whole = whole;
+        return Ok(split);
     }
     let facets = parallel(&modules, |module| facet(checked, module, opts))?;
-    let router = |chosen: &[usize]| -> Result<Option<Built>, Error> {
-        measure(
-            checked,
-            &router_shape(&entries, &facets, chosen, opts),
-            opts,
-        )
-    };
-    let chosen: Vec<usize> = match opts.split {
-        SplitMode::All => (0..facets.len()).collect(),
-        _ => {
-            // Each module's saving on its own decides the order; the one that saves the most
-            // moves first, and more follow until the router fits.
-            let alone: Vec<Option<usize>> =
-                parallel(&(0..facets.len()).collect::<Vec<_>>(), |&i| {
-                    let shape = router_shape(&entries, &facets, &[i], opts);
-                    Ok(match gen::codegen(checked, &shape) {
-                        Ok(built) => Some(built.runtime.len()),
-                        Err(err) if too_large(&err) => None,
-                        Err(err) => return Err(err),
-                    })
-                })?;
-            let mut order: Vec<usize> = (0..facets.len()).collect();
-            order.sort_by_key(|&i| (alone[i].unwrap_or(usize::MAX), facets[i].name.clone()));
-            let mut chosen = Vec::new();
-            for i in order {
-                chosen.push(i);
-                if router(&chosen)?.is_some() {
-                    break;
-                }
-            }
-            chosen.sort_unstable();
-            chosen
-        }
-    };
-    let Some(built) = router(&chosen)? else {
-        let shape = router_shape(&entries, &facets, &chosen, opts);
+    let chosen: Vec<usize> = (0..facets.len()).collect();
+    let shape = router_shape(&entries, &facets, &chosen, opts);
+    let Some(built) = measure(checked, &shape, opts)? else {
         let built = gen::codegen(checked, &shape).ok();
         return Err(error(
             0,
@@ -332,8 +309,8 @@ fn router_shape(
             .iter()
             .map(|&i| facets[i].immutables.clone())
             .collect(),
-        part: false,
         opts: opts.clone(),
+        ..Shape::default()
     }
 }
 
