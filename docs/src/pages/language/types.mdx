@@ -504,6 +504,20 @@ external view function amount_out(const id : uint) : uint raises NotComplete is
 - An arm for several cases binds a payload when each case binds the same names and carries the same payload type: `| Queued(reason) | Held(reason) -> reason`. Written without names, `| Filled | Unwound ->`, it ignores the payloads.
 - An arm that fails has no value, so it fits a `case` of any type.
 - A case name is resolved from the type the context expects. With no expected type, it must belong to only one variant in scope.
+- `Some` and `None` are the cases of every [option](#options), so no variant can name a case either:
+
+  ```lithe rejects
+  type value_type is None | String | Int
+
+  storage is record {
+    t : value_type;
+  }
+  ```
+
+  ```text
+  `None` is a case of every option; name this case differently
+  ```
+
 - `=` and `<>` compare two variants of the same type, payloads included. Comparing with a case that has no payload, like `status = New`, reads only the tag.
 - A variant value can be a local, a parameter or result of an internal function, a storage field, a map value, a record field, a list element, or an option's payload. It isn't a number: there is no arithmetic, no ordering, no integer literal, and no `order_status(n)`. `uint8(m)` gives a variant's case index when it has no payloads.
 

@@ -1382,7 +1382,8 @@ impl<'a> Gen<'a> {
                     continue;
                 }
             }
-            if n == 1 {
+            let kind = self.checked.types[self.peel_nominal(arg.ty())].kind;
+            if n == 1 && !matches!(kind, TyKind::Record | TyKind::Tuple) {
                 self.compile_value(arg)?;
             } else if !self.push_record_words(arg)? {
                 let src = self.value_addr(arg)?;

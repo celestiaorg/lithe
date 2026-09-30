@@ -462,6 +462,16 @@ impl Checker {
                 let mut built = Vec::with_capacity(variants.len());
                 let mut names = HashSet::new();
                 for v in variants {
+                    if matches!(v.name.as_str(), "Some" | "None") {
+                        return Err(error(
+                            v.line,
+                            v.col,
+                            format!(
+                                "`{}` is a case of every option; name this case differently",
+                                v.name
+                            ),
+                        ));
+                    }
                     if !names.insert(v.name.clone()) {
                         return Err(error(
                             v.line,

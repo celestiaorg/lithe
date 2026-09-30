@@ -429,8 +429,14 @@ impl<'a> Gen<'a> {
     /// every element is inside calldata and holds a value of its type.
     fn decode_list(&mut self, sym: usize, head: u32, lty: usize) -> Result<(), Error> {
         let elem = self.checked.types[self.peel_nominal(lty)].elem.unwrap_or(0);
+        // A variant keeps its type, so its elements are checked against its cases.
+        let elem = if self.enum_cases(elem).is_some() {
+            elem
+        } else {
+            self.peel_nominal(elem)
+        };
         self.push_u64(u64::from(4 + head * 32));
-        self.call_sub(Sub::DecodeList(self.peel_nominal(elem)));
+        self.call_sub(Sub::DecodeList(elem));
         self.mstore_off(self.local[sym]);
         Ok(())
     }

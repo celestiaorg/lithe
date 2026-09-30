@@ -4431,3 +4431,88 @@ external view function lengths(const ps : list(uint, 2)) : (uint, uint, uint, ui
     .expect_err("unnamed fixed list");
     assert!(err.to_string().contains("name this fixed list"), "{err}");
 }
+
+/// A record of one string is one word, the string's, and still a record when it is an
+/// argument: built from a literal, or passed on from a parameter, to an inlined or an
+/// outlined function. `_` can be bound more than once.
+#[test]
+fn one_word_record_arguments() {
+    let src = "\
+import \"std/string\";
+type req is tuple record { name : string; }
+storage is record { s : string; t : string; u : string; }
+function put(const r : req) is {
+  storage.s := String.concat(r.name, \"a\", r.name, \"b\", r.name, \"c\", r.name, \"d\", r.name);
+  storage.t := String.concat(r.name, \"e\", r.name, \"f\", r.name, \"g\", r.name, \"h\", r.name);
+  storage.u := String.concat(r.name, \"i\", r.name, \"j\", r.name, \"k\", r.name, \"l\", r.name);
+}
+function once(const r : req) is { storage.s := r.name; }
+external function f(const data : req) is put(data)
+external function g(const data : req) is put(data)
+external function h(const n : string) is put({ name = n; })
+external function i(const n : string) is once({ name = String.concat(n, n); })
+external pure function j(const n : uint) : uint is {
+  const (a, _, _) : (uint, uint, uint) := (n, 1, 2);
+} with a
+";
+    let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
+    let expect = |sig: &str, arg: &[u8], want: &[u8]| {
+        let mut data = abi_string(sig, arg);
+        if sig.contains("((") {
+            // The tuple's offset, then the tuple: its string's offset, and the string.
+            data.splice(4..4, Word::from_u64(32).to_be_bytes());
+        }
+        let out = exec(
+            &runtime,
+            &data,
+            HashMap::new(),
+            Word::from_u64(1),
+            Word::from_u64(0),
+            Word::from_u64(0),
+        )
+        .expect(sig);
+        assert!(!out.reverted, "{sig}: {}", pretty(&out.returndata));
+        assert_eq!(slot(&out.storage, 0), Word::short_dyn(want), "{sig}");
+    };
+    expect("f((string))", b"x", b"xaxbxcxdx");
+    expect("g((string))", b"y", b"yaybycydy");
+    expect("h(string)", b"z", b"zazbzczdz");
+    expect("i(string)", b"w", b"ww");
+    assert_eq!(read_ok(&runtime, &HashMap::new(), "j(uint256)", &[Word::from_u64(7)]), Word::from_u64(7));
+}
+
+/// `Some` and `None` are every option's cases, so a variant can't declare them: its case
+/// would take the place of the option's everywhere the variant's file is imported.
+#[test]
+fn variants_cannot_name_option_cases() {
+    for case in ["None", "Some"] {
+        let err = compile(&format!(
+            "type t is {case} | Other\nstorage is record {{ v : t; }}\nexternal function f() is {{ storage.v := Other; }}\n"
+        ))
+        .expect_err(case);
+        assert!(err.to_string().contains(&format!("`{case}` is a case of every option")), "{err}");
+    }
+}
+
+/// A list of variants decodes its elements against the variant's cases, not the `uint8`
+/// that holds them, as Solidity's decoder checks an enum array, whether or not the
+/// function reads them.
+#[test]
+fn variant_list_elements_are_checked() {
+    let src = "\
+type t is A | B | C
+storage is record { n : uint; }
+external function unused(const xs : list(t)) is { storage.n := 1; }
+external function read(const xs : list(t)) is { storage.n := if xs[0] = C then 1 else 2; }
+";
+    let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
+    for (sig, case, reverts) in [("unused(uint8[])", 2, false), ("unused(uint8[])", 3, true), ("read(uint8[])", 8, true)] {
+        let mut data = selector(sig).to_vec();
+        for w in [32, 1, case] {
+            data.extend_from_slice(&Word::from_u64(w).to_be_bytes());
+        }
+        let out = exec(&runtime, &data, HashMap::new(), Word::from_u64(1), Word::from_u64(0), Word::from_u64(0))
+            .expect(sig);
+        assert_eq!(out.reverted, reverts, "{sig} {case}");
+    }
+}
