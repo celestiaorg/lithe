@@ -270,6 +270,107 @@ impl Checker {
         error(line, col, format!("unknown name `{name}`"))
     }
 
+    /// For `module.name` where `module` is a module: that it has no member `name`, with the
+    /// closest one it has, or what `name` is when it is a member of another kind than `want`,
+    /// `"a function"` or `"a value"` or `"a type"` and so on. `None` when `module` is no module.
+    pub(super) fn no_member(
+        &self,
+        line: u32,
+        col: u32,
+        module: &str,
+        name: &str,
+        want: &str,
+    ) -> Option<Error> {
+        let decl = self.modules.iter().find(|m| m.name == module)?;
+        let shown = crate::modules::shown(module);
+        // Types, errors, and events are named without their module once it is used.
+        let members: Vec<(&str, &str, bool)> = decl
+            .funcs
+            .iter()
+            .map(|f| {
+                let constant = f.params.is_empty() && f.kind == ItemKind::Pure;
+                let what = match f.kind {
+                    ItemKind::Entry | ItemKind::View => "an external function",
+                    _ if constant => "a constant",
+                    _ => "a function",
+                };
+                (source_name(&f.name), what, true)
+            })
+            .chain(decl.intrinsics.iter().map(|i| {
+                let what = if i.sig.is_some() {
+                    "a function"
+                } else {
+                    "a value"
+                };
+                (i.name.as_str(), what, true)
+            }))
+            .chain(
+                decl.domains
+                    .iter()
+                    .map(|d| (d.name.as_str(), "storage", true)),
+            )
+            .chain(
+                decl.types
+                    .iter()
+                    .map(|d| (d.name.as_str(), "a type", false)),
+            )
+            .chain(
+                decl.errors
+                    .iter()
+                    .map(|d| (d.name.as_str(), "an error", false)),
+            )
+            .chain(
+                decl.error_sets
+                    .iter()
+                    .map(|d| (d.name.as_str(), "an error set", false)),
+            )
+            .chain(
+                decl.events
+                    .iter()
+                    .map(|d| (d.name.as_str(), "an event", false)),
+            )
+            .collect();
+        let spell = |member: &str, qualified: bool| {
+            if qualified {
+                format!("{shown}.{member}")
+            } else {
+                member.to_string()
+            }
+        };
+        let msg = match members.iter().find(|(member, _, _)| *member == name) {
+            Some(&(_, what @ ("a function" | "a constant"), _)) if want != "a function" => {
+                let args = if what == "a constant" { "" } else { "..." };
+                format!("`{shown}.{name}` is {what}; call it: `{shown}.{name}({args})`")
+            }
+            Some(&(_, what, false)) => format!(
+                "`{shown}.{name}` is {what} of `{shown}`, which is named without its module: `{name}`"
+            ),
+            Some(&(_, what, true)) => format!("`{shown}.{name}` is {what}, not {want}"),
+            None => {
+                let mut msg = format!("module `{shown}` has no member `{name}`");
+                let near = crate::closest(name, members.iter().map(|(member, _, _)| *member));
+                if let Some(&(member, _, qualified)) =
+                    near.and_then(|near| members.iter().find(|(member, _, _)| *member == near))
+                {
+                    msg.push_str(&format!("\n\ndid you mean `{}`?", spell(member, qualified)));
+                }
+                msg
+            }
+        };
+        Some(error(line, col, msg))
+    }
+
+    /// `unknown {what} `name``, or for `M.name` with a module `M`, what `no_member` says.
+    pub(super) fn unknown(&self, line: u32, col: u32, what: &str, name: &str) -> Error {
+        let want = match what {
+            "error" | "event" => format!("an {what}"),
+            _ => format!("a {what}"),
+        };
+        name.split_once('.')
+            .and_then(|(module, member)| self.no_member(line, col, module, member, &want))
+            .unwrap_or_else(|| error(line, col, format!("unknown {what} `{name}`")))
+    }
+
     fn open_module_domain(
         &self,
         line: u32,
@@ -302,12 +403,8 @@ impl Checker {
         {
             return Ok(found.sym);
         }
-        if self.known_modules.contains(module) {
-            return Err(error(
-                line,
-                col,
-                format!("module `{module}` has no storage `{domain}`"),
-            ));
+        if let Some(err) = self.no_member(line, col, module, domain, "a value") {
+            return Err(err);
         }
         Err(error(line, col, format!("unknown module `{module}`")))
     }

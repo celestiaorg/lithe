@@ -18,7 +18,8 @@ impl Checker {
             named: HashMap::new(),
         };
         for idx in 0..funcs.len() {
-            fold.func(idx)?;
+            fold.func(idx)
+                .map_err(|err| err.in_file(&funcs[idx].origin))?;
         }
         if let Some(guard) = guard {
             fold.stmts(&guard.stmts)?;

@@ -11,7 +11,8 @@ fn publish_generic(prog: &mut Program) -> Result<(), Error> {
                 module.line,
                 module.col,
                 "a generic module cannot declare storage",
-            ));
+            )
+            .in_file(&module.origin));
         }
         if module
             .types
@@ -24,7 +25,8 @@ fn publish_generic(prog: &mut Program) -> Result<(), Error> {
                 module.line,
                 module.col,
                 format!("module `{}` declares `self` more than once", module.name),
-            ));
+            )
+            .in_file(&module.origin));
         }
         for param in &module.params {
             if let Some(constraint) = &param.constraint {
@@ -33,7 +35,8 @@ fn publish_generic(prog: &mut Program) -> Result<(), Error> {
                         param.line,
                         param.col,
                         format!("unknown type constraint `{constraint}`"),
-                    ));
+                    )
+                    .in_file(&module.origin));
                 }
             }
         }
@@ -47,7 +50,8 @@ fn publish_generic(prog: &mut Program) -> Result<(), Error> {
                     decl.line,
                     decl.col,
                     "a generic error cannot use a type parameter",
-                ));
+                )
+                .in_file(&decl.origin));
             }
             if let Some(have) = prog.errors.iter().find(|have| have.name == decl.name) {
                 return Err(exported_twice(
@@ -70,7 +74,8 @@ fn publish_generic(prog: &mut Program) -> Result<(), Error> {
                     decl.line,
                     decl.col,
                     "a generic event cannot use a type parameter",
-                ));
+                )
+                .in_file(&decl.origin));
             }
             if let Some(have) = prog.events.iter().find(|have| have.name == decl.name) {
                 return Err(exported_twice(
@@ -147,7 +152,8 @@ pub(super) fn compose(prog: &mut Program) -> Result<(), Error> {
                 module.line,
                 module.col,
                 format!("duplicate module `{}`", module.name),
-            ));
+            )
+            .in_file(&module.origin));
         }
     }
     for module in prog
@@ -167,7 +173,8 @@ pub(super) fn compose(prog: &mut Program) -> Result<(), Error> {
                     "generic module `{}` cannot declare external functions",
                     module.name
                 ),
-            ));
+            )
+            .in_file(&func.origin));
         }
     }
     publish_generic(prog)?;
@@ -195,25 +202,25 @@ pub(super) fn compose(prog: &mut Program) -> Result<(), Error> {
         let module = &prog.modules[by_name[name]];
         for req in &module.requires {
             if !by_name.contains_key(&req.name) {
-                return Err(error(
-                    req.line,
-                    req.col,
-                    format!("unknown module `{}`", req.name),
-                ));
+                return Err(
+                    error(req.line, req.col, format!("unknown module `{}`", req.name))
+                        .in_file(&module.origin),
+                );
             }
             if !used.contains_key(&req.name) {
                 return Err(error(
                     req.line,
                     req.col,
                     format!("module `{}` requires `{}`", module.name, req.name),
-                ));
+                )
+                .in_file(&module.origin));
             }
         }
     }
     let order: Vec<String> = prog.compose.iter().map(|use_| use_.name.clone()).collect();
     for name in order {
         let module = prog.modules[by_name[&name]].clone();
-        check_guarded(&module)?;
+        check_guarded(&module).map_err(|err| err.in_file(&module.origin))?;
         if !module.params.is_empty() {
             let (line, col) = used[&name];
             return Err(error(
@@ -654,6 +661,7 @@ pub(crate) fn several_contracts(prog: &Program) -> Error {
             names.join(", ")
         ),
     )
+    .in_file(&prog.origin)
 }
 
 /// A `supports` entry, and each of its methods' signature, selector, and ABI result.

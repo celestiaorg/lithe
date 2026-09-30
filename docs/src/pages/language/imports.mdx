@@ -99,7 +99,7 @@ A file is loaded once, however many files import it and under whichever aliases.
 A plain import, `import "./lib/math";`, makes the file's names available directly, as `min`. Two plain imports that define the same name are an error, whether or not the name is used. The error says where each is, and how to resolve it:
 
 ```text
-2:1: ambiguous symbol `calculate_fee`
+main.lithe:2:1: ambiguous symbol `calculate_fee`
 
 defined in:
 - left.lithe:1:6
@@ -111,7 +111,7 @@ rename one, or import `./right` with an alias: `import "./right" as Name;`
 Declaring one name twice in a file is an error too, and it points at the first declaration:
 
 ```text
-8:6: duplicate function `scale`
+main.lithe:8:6: duplicate function `scale`
 
 `scale` is already declared at 5:6 as a pure function
 

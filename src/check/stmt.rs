@@ -280,7 +280,7 @@ impl Checker {
                     .events
                     .iter()
                     .find(|e| e.name == *name)
-                    .ok_or_else(|| error(*line, *col, format!("unknown event `{name}`")))?;
+                    .ok_or_else(|| self.unknown(*line, *col, "event", name))?;
                 let expected: Vec<(String, usize)> = ev
                     .fields
                     .iter()

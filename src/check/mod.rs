@@ -179,10 +179,20 @@ pub(crate) struct Note {
     pub hint: &'static str,
 }
 
-pub(crate) fn format_note(note: &Note) -> String {
+/// A warning as `lithe compile` prints it. A note with no origin is in `entry`.
+pub(crate) fn format_note(note: &Note, entry: &str) -> String {
+    let file = if note.origin.is_empty() {
+        entry
+    } else {
+        &note.origin
+    };
     format!(
-        "{}:{}: warning: {}\n\n{}\n",
-        note.line, note.col, note.message, note.hint
+        "{}:{}:{}: warning: {}\n\n{}\n",
+        crate::shown_path(file),
+        note.line,
+        note.col,
+        note.message,
+        note.hint
     )
 }
 
@@ -314,6 +324,8 @@ struct Checker {
     named: HashMap<String, usize>,
     decls: HashMap<String, TypeRef>,
     decl_at: HashMap<String, (u32, u32)>,
+    /// The file each type declaration is in.
+    decl_origin: HashMap<String, String>,
     syms: Vec<Sym>,
     scopes: Vec<Scope>,
     scope: usize,
@@ -429,7 +441,12 @@ pub(crate) fn check(prog: Program) -> Result<Checked, Error> {
 }
 
 /// `require_entries` is false for `lithe lint`, which still reports on a library file.
-pub(crate) fn check_in(mut prog: Program, require_entries: bool) -> Result<Checked, Error> {
+pub(crate) fn check_in(prog: Program, require_entries: bool) -> Result<Checked, Error> {
+    let origin = prog.origin.clone();
+    check_program(prog, require_entries).map_err(|err| err.in_file(&origin))
+}
+
+fn check_program(mut prog: Program, require_entries: bool) -> Result<Checked, Error> {
     if !prog.siblings.is_empty() {
         return Err(several_contracts(&prog));
     }
@@ -463,6 +480,7 @@ pub(crate) fn check_in(mut prog: Program, require_entries: bool) -> Result<Check
         named: HashMap::new(),
         decls: HashMap::new(),
         decl_at: HashMap::new(),
+        decl_origin: HashMap::new(),
         syms: Vec::new(),
         scopes: vec![Scope {
             parent: None,
@@ -592,10 +610,13 @@ pub(crate) fn check_in(mut prog: Program, require_entries: bool) -> Result<Check
     let mut seen = HashSet::new();
     for d in &prog.types {
         if !seen.insert(d.name.clone()) {
-            return Err(error(d.line, d.col, format!("duplicate type `{}`", d.name)));
+            return Err(
+                error(d.line, d.col, format!("duplicate type `{}`", d.name)).in_file(&d.origin)
+            );
         }
         c.decls.insert(d.name.clone(), d.ty.clone());
         c.decl_at.insert(d.name.clone(), (d.line, d.col));
+        c.decl_origin.insert(d.name.clone(), d.origin.clone());
     }
     // Interfaces first, so a storage field or a type can hold one.
     c.register_interfaces(&prog)?;
@@ -708,7 +729,8 @@ pub(crate) fn check_in(mut prog: Program, require_entries: bool) -> Result<Check
                 decl.line,
                 decl.col,
                 format!("duplicate storage domain `{qualified}`"),
-            ));
+            )
+            .in_file(&decl.origin));
         }
         let shape = shape_ty(&decl.ty);
         if let Some((prev_label, prev_qualified, prev_shape)) = seen_ids.get(&decl.id) {
@@ -721,10 +743,10 @@ pub(crate) fn check_in(mut prog: Program, require_entries: bool) -> Result<Check
                     "\n\nschema mismatch:\n  {prev_qualified}: {prev_shape}\n  {qualified}: {shape}"
                 ));
             }
-            return Err(error(decl.line, decl.col, msg));
+            return Err(error(decl.line, decl.col, msg).in_file(&decl.origin));
         }
         seen_ids.insert(decl.id.clone(), (label, qualified.clone(), shape));
-        let ty = c.build(&decl.ty)?;
+        let ty = c.build(&decl.ty).map_err(|err| err.in_file(&decl.origin))?;
         c.domain_tys.insert(qualified.clone(), ty);
         if c.types[ty].kind != TyKind::Record {
             return Err(error(
@@ -735,18 +757,20 @@ pub(crate) fn check_in(mut prog: Program, require_entries: bool) -> Result<Check
                 } else {
                     "storage domain must be a record"
                 },
-            ));
+            )
+            .in_file(&decl.origin));
         }
         layout(&mut c.types, ty);
         if decl.immutable {
             check_immutable_shape(&c.types, ty, &decl.name)
-                .map_err(|msg| error(decl.line, decl.col, msg))?;
+                .map_err(|msg| error(decl.line, decl.col, msg).in_file(&decl.origin))?;
             if !prog.upgradeable {
                 code_immutables.push((decl, ty));
                 continue;
             }
         } else {
-            check_storage_shape(&c.types, ty, &decl.name)?;
+            check_storage_shape(&c.types, ty, &decl.name)
+                .map_err(|err| err.in_file(&decl.origin))?;
         }
         let start = leaf_keys.len() as u32;
         let root = crate::keccak::erc7201(&decl.id);
@@ -766,14 +790,17 @@ pub(crate) fn check_in(mut prog: Program, require_entries: bool) -> Result<Check
             });
         }
         let start = start as usize;
-        layout_info.push(domain_layout(
-            &qualified,
-            &decl.id,
-            root,
-            &c.types,
-            ty,
-            (&leaf_keys[start..], &leaf_pack[start..]),
-        )?);
+        layout_info.push(
+            domain_layout(
+                &qualified,
+                &decl.id,
+                root,
+                &c.types,
+                ty,
+                (&leaf_keys[start..], &leaf_pack[start..]),
+            )
+            .map_err(|err| err.in_file(&decl.origin))?,
+        );
     }
     // Immutables built into the code come next, one leaf per word. A leaf's pack is how many
     // bytes its value takes, so its constant can be that short.
@@ -825,19 +852,19 @@ pub(crate) fn check_in(mut prog: Program, require_entries: bool) -> Result<Check
                 decl.line,
                 decl.col,
                 format!("duplicate storage domain `{qualified}`"),
-            ));
+            )
+            .in_file(&decl.origin));
         }
-        let ty = c.build(&decl.ty)?;
+        let ty = c.build(&decl.ty).map_err(|err| err.in_file(&decl.origin))?;
         c.domain_tys.insert(qualified.clone(), ty);
         if c.types[ty].kind != TyKind::Record {
-            return Err(error(
-                decl.line,
-                decl.col,
-                "transient storage must be a record",
-            ));
+            return Err(
+                error(decl.line, decl.col, "transient storage must be a record")
+                    .in_file(&decl.origin),
+            );
         }
         layout(&mut c.types, ty);
-        check_transient_shape(&c.types, ty, &decl.name)?;
+        check_transient_shape(&c.types, ty, &decl.name).map_err(|err| err.in_file(&decl.origin))?;
         let start = leaf_keys.len();
         let words = c.types[ty].words as u64;
         let base = match &decl.owner {
@@ -851,7 +878,8 @@ pub(crate) fn check_in(mut prog: Program, require_entries: bool) -> Result<Check
                         decl.line,
                         decl.col,
                         format!("transient storage `{qualified}` overlaps `{other}`; rename one"),
-                    ));
+                    )
+                    .in_file(&decl.origin));
                 }
                 module_slots.push((base, words.max(1), qualified.clone()));
                 base
@@ -872,14 +900,17 @@ pub(crate) fn check_in(mut prog: Program, require_entries: bool) -> Result<Check
             slot: start as u32,
             immutable: false,
         });
-        transient_layout.push(domain_layout(
-            &qualified,
-            "",
-            Word::from_u64(0),
-            &c.types,
-            ty,
-            (&leaf_keys[start..], &leaf_pack[start..]),
-        )?);
+        transient_layout.push(
+            domain_layout(
+                &qualified,
+                "",
+                Word::from_u64(0),
+                &c.types,
+                ty,
+                (&leaf_keys[start..], &leaf_pack[start..]),
+            )
+            .map_err(|err| err.in_file(&decl.origin))?,
+        );
     }
     let leaves = leaf_keys.len();
     c.register_events(&prog)?;
@@ -887,7 +918,8 @@ pub(crate) fn check_in(mut prog: Program, require_entries: bool) -> Result<Check
     for iface in &prog.interfaces {
         for member in &iface.methods {
             if let Some(raises) = &member.raises {
-                c.resolve_raises(raises)?;
+                c.resolve_raises(raises)
+                    .map_err(|err| err.in_file(&iface.origin))?;
             }
         }
     }
@@ -906,7 +938,7 @@ pub(crate) fn check_in(mut prog: Program, require_entries: bool) -> Result<Check
         let mut storage_param = false;
         if internal {
             for p in &func.params {
-                let id = c.build(&p.ty)?;
+                let id = c.build(&p.ty).map_err(|err| err.in_file(&func.origin))?;
                 storage_param |= p.storage || c.storage_only(id);
             }
         }

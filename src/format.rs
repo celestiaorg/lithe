@@ -72,6 +72,7 @@ fn print(src: &str, pieces: &[Piece]) -> (String, Vec<usize>) {
         forall_dot: false,
         col: 0,
         starts: Vec::new(),
+        ifs: Vec::new(),
     };
     for piece in pieces {
         p.emit(piece);
@@ -390,6 +391,14 @@ struct Group {
     spec: bool,
 }
 
+/// An `if` still waiting for its `else`.
+struct OpenIf {
+    /// The indent of the line with the `if`. An `else` that starts a line lines up with it.
+    indent: usize,
+    /// How many groups are open around it.
+    depth: usize,
+}
+
 struct Printer<'a> {
     src: &'a str,
     out: String,
@@ -416,6 +425,7 @@ struct Printer<'a> {
     col: usize,
     /// Output offset of each piece.
     starts: Vec<usize>,
+    ifs: Vec<OpenIf>,
 }
 
 impl Printer<'_> {
@@ -488,6 +498,11 @@ impl Printer<'_> {
         if kind == Kind::Is {
             return self.decl_indent;
         }
+        if kind == Kind::Else {
+            if let Some(open) = self.open_if() {
+                return self.ifs[open].indent;
+            }
+        }
         if kind == Kind::Raises && self.groups.last().is_some_and(|g| g.spec) {
             return self.structural();
         }
@@ -505,6 +520,10 @@ impl Printer<'_> {
         }
         if kind == Kind::LBrace && self.prev_kind == Some(Kind::Of) {
             return self.prev_indent;
+        }
+        // A branch's body on its own line belongs to the branch, even `fail`.
+        if !blank && matches!(self.prev_line_last, Some(Kind::Then | Kind::Else)) {
+            return self.prev_indent + 2;
         }
         if self.groups.last().is_some_and(|g| g.open == Open::Flat) {
             return self.groups.last().map(|g| g.content).unwrap_or(0);
@@ -556,6 +575,23 @@ impl Printer<'_> {
             self.in_raises = false;
         }
         match kind {
+            Kind::If => self.ifs.push(OpenIf {
+                indent: self.line_indent,
+                depth: self.groups.len(),
+            }),
+            Kind::Else => {
+                if let Some(open) = self.open_if() {
+                    self.ifs.remove(open);
+                }
+            }
+            // A statement's `if`s are done with it.
+            Kind::Semi => {
+                let depth = self.groups.len();
+                self.ifs.retain(|open| open.depth < depth);
+            }
+            _ => {}
+        }
+        match kind {
             Kind::LParen | Kind::LBrack => self.groups.push(Group {
                 content: self.line_indent + 2,
                 close: self.line_indent,
@@ -566,9 +602,17 @@ impl Printer<'_> {
             Kind::LBrace => self.groups.push(self.brace(bol)),
             Kind::RParen | Kind::RBrack | Kind::RBrace => {
                 self.groups.pop();
+                let depth = self.groups.len();
+                self.ifs.retain(|open| open.depth <= depth);
             }
             _ => {}
         }
+    }
+
+    /// The innermost open `if` of this group, which an `else` belongs to.
+    fn open_if(&self) -> Option<usize> {
+        let depth = self.groups.len();
+        self.ifs.iter().rposition(|open| open.depth == depth)
     }
 
     fn brace(&self, bol: bool) -> Group {
@@ -887,7 +931,7 @@ mod tests {
     fn lithe_files() -> Vec<PathBuf> {
         let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let mut out = Vec::new();
-        for dir in ["examples", "std", "bench", "fuzz"] {
+        for dir in ["examples", "std", "bench", "fuzz", "ports"] {
             walk(&root.join(dir), &mut out);
         }
         out.sort();
@@ -979,6 +1023,30 @@ mod tests {
             (
                 "external function f(const id : uint)\nguarded g(id)\nraises E\nis { skip }\nguard M.g(const id : uint)\nraises E\nis { skip }\n",
                 "external function f(const id : uint)\n  guarded g(id)\n  raises E\nis { skip }\nguard M.g(const id : uint)\n  raises E\nis { skip }\n",
+            ),
+            (
+                "pure function f(const n : uint) : string raises Bad is\n  if n = 1 then\n    \"a\"\n      else if n = 2 then\n        \"b\"\n          else\nfail Bad\n",
+                "pure function f(const n : uint) : string raises Bad is\n  if n = 1 then\n    \"a\"\n  else if n = 2 then\n    \"b\"\n  else\n    fail Bad\n",
+            ),
+            (
+                "external function f(const n : uint) : uint is {\n  skip;\n} with if n = 1 then\n  1\n    else if n = 2 then\n      2\n        else\n          3\n",
+                "external function f(const n : uint) : uint is {\n  skip;\n} with if n = 1 then\n  1\nelse if n = 2 then\n  2\nelse\n  3\n",
+            ),
+            (
+                "function f(const n : uint) is {\n  const x : uint := if n = 1 then\n    1\n      else if n = 2 then\n        2\n          else\n            3;\n  skip;\n}\n",
+                "function f(const n : uint) is {\n  const x : uint := if n = 1 then\n    1\n  else if n = 2 then\n    2\n  else\n    3;\n  skip;\n}\n",
+            ),
+            (
+                "function f(const n : option(uint)) : uint is case n of {\n  Some(v) -> if v = 1 then\n    1\n      else\n        2\n  | None -> 0\n}\n",
+                "function f(const n : option(uint)) : uint is case n of {\n  Some(v) -> if v = 1 then\n    1\n  else\n    2\n  | None -> 0\n}\n",
+            ),
+            (
+                "function f(const a : bool; const b : bool) : uint is\n  if a\n    then 1\n      else if b\n        then 2\n          else 3\n",
+                "function f(const a : bool; const b : bool) : uint is\n  if a\n    then 1\n  else if b\n    then 2\n  else 3\n",
+            ),
+            (
+                "function f(const a : bool) is {\n  if a then {\n    skip;\n  }\n      else if a then {\n    skip;\n  }\n  else {\n    skip;\n  }\n}\n",
+                "function f(const a : bool) is {\n  if a then {\n    skip;\n  }\n  else if a then {\n    skip;\n  }\n  else {\n    skip;\n  }\n}\n",
             ),
         ];
         for (src, want) in cases {

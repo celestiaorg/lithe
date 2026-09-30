@@ -101,7 +101,7 @@ The continuation is a **new phase**. It runs after the swap returns, with storag
 Deferring removes mid-update reentrancy, but a callee can still call back into your contract before your *later* deferred calls run. The compiler warns about every entrypoint where that can happen, and names the functions it could be re-entered through:
 
 ```text
-12:10: warning: `settle` performs deferred external operations and may
+vault.lithe:12:10: warning: `settle` performs deferred external operations and may
 be re-entered through `cancel`
 
 consider `nonreentrant` if the protocol requires serialized

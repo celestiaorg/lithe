@@ -2,6 +2,14 @@ use super::*;
 
 impl Checker {
     pub(super) fn resolve_decl(&mut self, name: &str) -> Result<usize, Error> {
+        self.resolve_named(name)
+            .map_err(|err| match self.decl_origin.get(name) {
+                Some(origin) => err.in_file(origin),
+                None => err,
+            })
+    }
+
+    fn resolve_named(&mut self, name: &str) -> Result<usize, Error> {
         if let Some(&id) = self.named.get(name) {
             if self.visiting.contains(name) {
                 let (line, col) = self.decl_at.get(name).copied().unwrap_or((1, 1));
@@ -86,7 +94,8 @@ impl Checker {
                     iface.line,
                     iface.col,
                     format!("duplicate name `{}`", iface.name),
-                ));
+                )
+                .in_file(&iface.origin));
             }
             let id = self.types.len();
             self.types.push(RType {
@@ -112,7 +121,7 @@ impl Checker {
                 let mut abi = Vec::new();
                 for p in &m.params {
                     let ty = &p.ty;
-                    let pid = self.build(ty)?;
+                    let pid = self.build(ty).map_err(|err| err.in_file(&iface.origin))?;
                     let parts = abi_value(&self.types, pid)
                         .then(|| abi_parts(&self.types, pid).ok())
                         .flatten();
@@ -121,21 +130,23 @@ impl Checker {
                             ty.line(),
                             ty.col(),
                             "interface arguments must be ABI values",
-                        ));
+                        )
+                        .in_file(&iface.origin));
                     };
                     abi.extend(parts);
                     params.push(pid);
                 }
                 let sig = format!("{}({})", m.name, abi.join(","));
                 if !seen.insert(sig.clone()) {
-                    return Err(error(m.line, m.col, format!("duplicate method `{sig}`")));
+                    return Err(error(m.line, m.col, format!("duplicate method `{sig}`"))
+                        .in_file(&iface.origin));
                 }
                 let ret = match &m.ret {
-                    Some(ty) => self.build(ty)?,
+                    Some(ty) => self.build(ty).map_err(|err| err.in_file(&iface.origin))?,
                     None => TY_UNIT,
                 };
                 if m.kind == ItemKind::View && ret == TY_UNIT {
-                    return Err(error(m.line, m.col, "a view method returns a value"));
+                    return Err(error(m.line, m.col, "a view method must return a value: return a `bool` the caller can check, and let the caller fail").in_file(&iface.origin));
                 }
                 methods.push(IfaceMethod {
                     query: m.kind == ItemKind::View,
@@ -155,11 +166,10 @@ impl Checker {
         let mut seen = HashSet::new();
         for ev in &prog.events {
             if !seen.insert(ev.name.clone()) || self.named.contains_key(&ev.name) {
-                return Err(error(
-                    ev.line,
-                    ev.col,
-                    format!("duplicate name `{}`", ev.name),
-                ));
+                return Err(
+                    error(ev.line, ev.col, format!("duplicate name `{}`", ev.name))
+                        .in_file(&ev.origin),
+                );
             }
             let indexed: Vec<_> = ev.fields.iter().filter(|field| field.indexed).collect();
             let limit = if ev.anonymous { 4 } else { 3 };
@@ -174,7 +184,7 @@ impl Checker {
                         indexed.len(),
                         if ev.anonymous { "anonymous" } else { "non-anonymous" },
                     ),
-                ));
+                ).in_file(&ev.origin));
             }
             let data_fields = ev.fields.len() - indexed.len();
             if data_fields > 4 {
@@ -182,7 +192,8 @@ impl Checker {
                     ev.line,
                     ev.col,
                     "events can have at most 4 non-indexed fields",
-                ));
+                )
+                .in_file(&ev.origin));
             }
             let mut fields = Vec::new();
             let mut abi = Vec::new();
@@ -193,11 +204,14 @@ impl Checker {
                         f.line,
                         f.col,
                         format!("duplicate event field `{}`", f.name),
-                    ));
+                    )
+                    .in_file(&ev.origin));
                 }
-                let id = self.build(&f.ty)?;
-                let hashed = self.event_hashed(f.line, f.col, &f.name, id, f.indexed)?;
-                abi.push(event_sig_type(&self.types, id)?);
+                let id = self.build(&f.ty).map_err(|err| err.in_file(&ev.origin))?;
+                let hashed = self
+                    .event_hashed(f.line, f.col, &f.name, id, f.indexed)
+                    .map_err(|err| err.in_file(&ev.origin))?;
+                abi.push(event_sig_type(&self.types, id).map_err(|err| err.in_file(&ev.origin))?);
                 fields.push(EventField {
                     name: f.name.clone(),
                     ty: id,
@@ -223,20 +237,21 @@ impl Checker {
                     err.line,
                     err.col,
                     format!("`{}` is not an error name", err.name),
-                ));
+                )
+                .in_file(&err.origin));
             }
             if !seen.insert(err.name.clone()) {
-                return Err(error(
-                    err.line,
-                    err.col,
-                    format!("duplicate error `{}`", err.name),
-                ));
+                return Err(
+                    error(err.line, err.col, format!("duplicate error `{}`", err.name))
+                        .in_file(&err.origin),
+                );
             }
             let (payload, field_tys, fields) = match &err.payload {
                 None => (None, Vec::new(), Vec::new()),
                 Some(ty) => {
-                    let id = self.build(ty)?;
-                    self.error_payload(err.line, err.col, id)?
+                    let id = self.build(ty).map_err(|e| e.in_file(&err.origin))?;
+                    self.error_payload(err.line, err.col, id)
+                        .map_err(|e| e.in_file(&err.origin))?
                 }
             };
             let abi_name = if err.name == crate::spec::VIOLATION {
@@ -255,7 +270,8 @@ impl Checker {
                         "error selector `{abi_sig}` collides with `{}`",
                         prev.abi_sig
                     ),
-                ));
+                )
+                .in_file(&err.origin));
             }
             self.errors.push(ErrInfo {
                 name: err.name.clone(),
@@ -269,34 +285,31 @@ impl Checker {
         let mut set_names = HashSet::new();
         for set in &prog.error_sets {
             if set.name == "forwarded" {
-                return Err(error(
-                    set.line,
-                    set.col,
-                    "`forwarded` is not an error set name",
-                ));
+                return Err(
+                    error(set.line, set.col, "`forwarded` is not an error set name")
+                        .in_file(&set.origin),
+                );
             }
             if !set_names.insert(set.name.clone()) || seen.contains(&set.name) {
-                return Err(error(
-                    set.line,
-                    set.col,
-                    format!("duplicate name `{}`", set.name),
-                ));
+                return Err(
+                    error(set.line, set.col, format!("duplicate name `{}`", set.name))
+                        .in_file(&set.origin),
+                );
             }
             let mut members = Vec::new();
             for member in &set.members {
                 let Some(idx) = self.errors.iter().position(|e| e.name == member.name) else {
-                    return Err(error(
-                        member.line,
-                        member.col,
-                        format!("unknown error `{}`", member.name),
-                    ));
+                    return Err(self
+                        .unknown(member.line, member.col, "error", &member.name)
+                        .in_file(&set.origin));
                 };
                 if members.contains(&idx) {
                     return Err(error(
                         member.line,
                         member.col,
                         format!("duplicate error `{}`", member.name),
-                    ));
+                    )
+                    .in_file(&set.origin));
                 }
                 members.push(idx);
             }
@@ -414,12 +427,13 @@ impl Checker {
 
     pub(super) fn prepare_sig(&mut self, f: &Func) -> Result<(), Error> {
         let mut params = Vec::with_capacity(f.params.len());
+        let at = |err: Error| err.in_file(&f.origin);
         for p in &f.params {
-            let id = self.build(&p.ty)?;
+            let id = self.build(&p.ty).map_err(at)?;
             params.push((id, id == self.storage));
         }
         let ret = match &f.ret {
-            Some(ty) => self.build(ty)?,
+            Some(ty) => self.build(ty).map_err(at)?,
             None => TY_UNIT,
         };
         self.fn_names.push(f.name.clone());
@@ -735,7 +749,7 @@ impl Checker {
                     if self.decls.contains_key(name) {
                         self.resolve_decl(name)
                     } else {
-                        Err(error(*line, *col, format!("unknown type `{name}`")))
+                        Err(self.unknown(*line, *col, "type", name))
                     }
                 })
             }

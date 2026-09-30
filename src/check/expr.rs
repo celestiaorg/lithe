@@ -454,6 +454,15 @@ impl Checker {
                                     "external function `{qualified}` cannot be called from inside the contract; move the shared logic into an internal function"
                                 ),
                             ));
+                        } else if builtin.is_none()
+                            && self.lookup(alias).is_none()
+                            && !self.intrinsic_module(alias)
+                        {
+                            if let Some(err) =
+                                self.no_member(*line, *col, alias, name, "a function")
+                            {
+                                return Err(err);
+                            }
                         }
                     }
                 }
@@ -1165,12 +1174,11 @@ impl Checker {
             }
             Some(Tag::AddressZero) => (TY_ADDRESS, Word::from_u64(0)),
             _ => {
-                let module = crate::modules::shown(module);
-                return Err(error(
-                    *line,
-                    *col,
-                    format!("unknown name `{module}.{name}`"),
-                ));
+                return Err(self
+                    .no_member(*line, *col, module, name, "a value")
+                    .unwrap_or_else(|| {
+                        error(*line, *col, format!("unknown name `{module}.{name}`"))
+                    }));
             }
         };
         Ok(Some(Expr::Lit {

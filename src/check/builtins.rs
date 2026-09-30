@@ -25,14 +25,14 @@ impl Checker {
         if !self.intrinsic_module(module) {
             return Ok(false);
         }
-        let module = crate::modules::shown(module);
         let Some(Tag::Call(kind)) = self.intrinsic(base_expr, name) else {
-            return Err(error(
-                line,
-                col,
-                format!("unknown function `{module}.{name}`"),
-            ));
+            return Err(self
+                .no_member(line, col, module, name, "a function")
+                .unwrap_or_else(|| {
+                    error(line, col, format!("unknown function `{module}.{name}`"))
+                }));
         };
+        let module = crate::modules::shown(module);
         self.check_builtin(line, col, kind, name, module, args, builtin, ty)?;
         Ok(true)
     }

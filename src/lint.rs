@@ -79,7 +79,15 @@ pub fn lint_paths(paths: &[PathBuf], fix: bool) -> LintResult {
             }
             Err(err) => {
                 status = 1;
-                stderr.push_str(&format!("{}: {err}\n", path.display()));
+                let placed = match err.file {
+                    Some(_) => err,
+                    None if err.line > 0 => err.in_file(&path.display().to_string()),
+                    None => {
+                        stderr.push_str(&format!("{}: {err}\n", path.display()));
+                        continue;
+                    }
+                };
+                stderr.push_str(&format!("{placed}\n"));
             }
         }
     }

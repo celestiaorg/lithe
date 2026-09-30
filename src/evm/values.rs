@@ -34,7 +34,11 @@ external view function top16() : int16 is Int.max
         "import \"std/uint\"; storage is record { n : uint; }\nexternal function f() is { storage.n := Uint.min; }\n",
     )
     .expect_err("no Uint.min");
-    assert!(err.to_string().contains("unknown name `Uint.min`"), "{err}");
+    assert!(
+        err.to_string()
+            .contains("module `Uint` has no member `min`"),
+        "{err}"
+    );
 }
 
 /// An option with a payload narrower than a word is one slot: zero is `None`, and `Some`

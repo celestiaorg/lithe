@@ -95,22 +95,76 @@ pub fn std_text(import: &str) -> Option<&'static str> {
     modules::std_source(&Path::new(modules::STD_ROOT).join(format!("{import}.lithe")))
 }
 
-/// A compile error at a 1-based line and column. Line 0 has no place in the source.
+/// A compile error at a 1-based line and column of `file`. Line 0 has no place in the source.
+///
+/// It prints as `file:line:column: message`, with the file relative to the working directory.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Error {
+    /// The file the error is in, as the compiler read it: canonical on disk, as given in
+    /// memory. `None` for an error about no one file.
+    pub file: Option<String>,
     pub line: u32,
     pub column: u32,
     pub message: String,
 }
 
+impl Error {
+    /// Places the error in `file`, unless it already has one.
+    pub(crate) fn in_file(mut self, file: &str) -> Self {
+        if self.file.is_none() && !file.is_empty() {
+            self.file = Some(file.to_string());
+        }
+        self
+    }
+}
+
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if let Some(file) = &self.file {
+            write!(f, "{}:", shown_path(file))?;
+            if self.line == 0 {
+                f.write_str(" ")?;
+            }
+        }
         if self.line == 0 {
             f.write_str(&self.message)
         } else {
             write!(f, "{}:{}: {}", self.line, self.column, self.message)
         }
     }
+}
+
+/// `file` as a diagnostic names it: relative to the working directory, and `std/...` for the
+/// standard library.
+pub(crate) fn shown_path(file: &str) -> String {
+    let path = Path::new(file);
+    if let Ok(rel) = path.strip_prefix(modules::STD_ROOT) {
+        return rel.display().to_string();
+    }
+    if !path.is_absolute() {
+        return file.to_string();
+    }
+    let Some(cwd) = std::env::current_dir()
+        .ok()
+        .and_then(|cwd| cwd.canonicalize().ok())
+    else {
+        return file.to_string();
+    };
+    let shared = path
+        .components()
+        .zip(cwd.components())
+        .take_while(|(a, b)| a == b)
+        .count();
+    // Only the root in common: the absolute path reads better than a climb to `/`.
+    if shared <= 1 {
+        return file.to_string();
+    }
+    let mut rel = PathBuf::new();
+    for _ in shared..cwd.components().count() {
+        rel.push("..");
+    }
+    rel.extend(path.components().skip(shared));
+    rel.display().to_string()
 }
 
 impl std::error::Error for Error {}
@@ -133,9 +187,10 @@ pub fn compile(sources: &Sources, entry: &Path, opts: &Options) -> Result<Output
     let mut errors = Vec::new();
     for unit in modules::split_units(prog) {
         let name = artifact_contract_name(&unit, entry);
+        let origin = unit.origin.clone();
         match build(sources, entry, unit, &name, opts) {
             Ok(contract) => contracts.push(contract),
-            Err(err) => errors.push(err),
+            Err(err) => errors.push(err.in_file(&origin)),
         }
     }
     if !errors.is_empty() {
@@ -311,9 +366,14 @@ fn build(
 fn warnings_of(sources: &Sources, entry: &Path, checked: &check::Checked) -> Vec<String> {
     let mut notes = route::reentry_notes(checked);
     notes.extend(checked.warnings.iter().cloned());
+    let own = sources
+        .canonicalize(entry)
+        .unwrap_or_else(|_| entry.to_path_buf())
+        .display()
+        .to_string();
     lint::unsilenced(sources, entry, notes)
         .iter()
-        .map(check::format_note)
+        .map(|note| check::format_note(note, &own))
         .collect()
 }
 
@@ -779,7 +839,10 @@ pub struct SourceError {
 
 impl fmt::Display for SourceError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}: {}", self.path, self.error)
+        match self.error.file {
+            Some(_) => write!(f, "{}", self.error),
+            None => write!(f, "{}: {}", self.path, self.error),
+        }
     }
 }
 
@@ -1414,8 +1477,49 @@ fn word_hex(word: word::Word) -> String {
     format!("0x{}", hex(&word.to_be_bytes()))
 }
 
+/// The option nearest `name` by edit distance, when one is near enough to be a misspelling.
+/// Each edit is an insertion, a deletion, a substitution, or a swap of neighbours; case is
+/// free.
+pub(crate) fn closest<'a>(
+    name: &str,
+    options: impl IntoIterator<Item = &'a str>,
+) -> Option<&'a str> {
+    let distance = |a: &str, b: &str| {
+        let a: Vec<char> = a.chars().map(|c| c.to_ascii_lowercase()).collect();
+        let b: Vec<char> = b.chars().map(|c| c.to_ascii_lowercase()).collect();
+        let mut d = vec![vec![0usize; b.len() + 1]; a.len() + 1];
+        for (i, row) in d.iter_mut().enumerate() {
+            row[0] = i;
+        }
+        for j in 0..=b.len() {
+            d[0][j] = j;
+        }
+        for i in 1..=a.len() {
+            for j in 1..=b.len() {
+                let cost = usize::from(a[i - 1] != b[j - 1]);
+                d[i][j] = (d[i - 1][j] + 1)
+                    .min(d[i][j - 1] + 1)
+                    .min(d[i - 1][j - 1] + cost);
+                if i > 1 && j > 1 && a[i - 1] == b[j - 2] && a[i - 2] == b[j - 1] {
+                    d[i][j] = d[i][j].min(d[i - 2][j - 2] + 1);
+                }
+            }
+        }
+        d[a.len()][b.len()]
+    };
+    let limit = (name.chars().count() / 3).max(1);
+    options
+        .into_iter()
+        .filter(|option| *option != name)
+        .map(|option| (distance(name, option), option))
+        .filter(|(d, _)| *d <= limit)
+        .min_by_key(|(d, _)| *d)
+        .map(|(_, option)| option)
+}
+
 pub(crate) fn error(line: u32, column: u32, message: impl Into<String>) -> Error {
     Error {
+        file: None,
         line,
         column,
         message: message.into(),
