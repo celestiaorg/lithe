@@ -523,6 +523,7 @@ impl Checker {
             spec_places: self.spec_places.clone(),
             in_spec: self.in_spec,
             origin: self.origin.clone(),
+            guard_label: self.guard_label.clone(),
         };
         self.cur_fn = idx;
         self.spec_module = target.module.map(|index| self.modules[index].name.clone());
@@ -547,6 +548,7 @@ impl Checker {
         self.spec_places = saved.spec_places;
         self.in_spec = saved.in_spec;
         self.origin = saved.origin;
+        self.guard_label = saved.guard_label;
         checked?;
         self.work[idx] = func;
         Ok(idx)

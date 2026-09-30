@@ -187,9 +187,6 @@ impl Checker {
                 if self.is_pure() {
                     return Err(self.weaker(*line, *col, "queries another contract"));
                 }
-                if self.in_guard {
-                    return Err(error(*line, *col, "upgrade guard cannot query"));
-                }
                 let saved = self.in_query;
                 self.in_query = true;
                 let checked = self.check_expr(expr).and_then(|()| match gas {

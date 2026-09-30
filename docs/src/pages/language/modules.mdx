@@ -1,6 +1,6 @@
 ---
 title: "Modules and contracts"
-description: "Modules own storage, errors, events, and functions, and declare the externals a contract may expose. Contracts compose modules and declare their whole interface."
+description: "Modules own storage, errors, events, and functions, and declare the externals a contract may expose and the guards it must write. Contracts compose modules and declare their whole interface."
 ---
 
 # Modules and contracts
@@ -143,6 +143,338 @@ module `Ledger` does not have the contract's inline interface: `balance` is stat
 An interface never adds behavior, so its methods have no body. To change what an external does, leave it out of the contract's interfaces, and write the contract's own external instead. A module's externals are not functions: nothing inside the contract calls them. Put shared logic in an internal function that the external and the contract both call.
 
 When a contract is over the [size limit](/tooling/size-limit), a module it exposes can run from the module's **facet**, compiled from the module alone and shared by every contract that exposes it. The interfaces' methods are what the router forwards to it. `lithe stubs file.lithe M` prints a `use M exposing` block with every external `M` has.
+
+## Guards
+
+Some of a module's externals need a check that only the contract can write: who may price a token, pause trading, or mint depends on the contract's own roles and state. Solidity leaves an abstract `_canSetX()` for the contract to override. In Lithe, the module declares a **guard**, its externals name it with `guarded`, and every contract that exposes them writes the check:
+
+```lithe
+import "std/evm";
+
+module Prices is {
+  storage prices at "example.prices" is record {
+    of_token : map(uint, uint);
+  }
+
+  error Zero_price;
+
+  (* Who may price a token is the contract's to say. *)
+  guard pricer(const token_id : uint);
+
+  external function set_price(const token_id : uint; const price : uint)
+    guarded pricer(token_id)
+    raises Zero_price
+  is {
+    assert(price > 0, Zero_price);
+    prices.of_token[token_id] := price;
+  }
+
+  external view function price(const token_id : uint) : uint is
+    prices.of_token[token_id]
+}
+
+contract Shop is {
+  storage is record {
+    makers : map(uint, address);
+  }
+
+  error Not_maker of uint;
+
+  use Prices exposing {
+    function set_price(token_id : uint; price : uint)
+      raises Zero_price | Not_maker;
+    view function price(token_id : uint) : uint;
+  }
+
+  (* A token's maker prices it. *)
+  guard Prices.pricer(const token_id : uint)
+    raises Not_maker
+  is {
+    assert(Evm.sender() = storage.makers[token_id], Not_maker(token_id));
+  }
+
+  external function make(const token_id : uint) is {
+    storage.makers[token_id] := Evm.sender();
+  }
+}
+```
+
+A call to `set_price` runs `Shop`'s check first, with the call's `token_id`, then the module's body. The module never sees the check, so its code is the same in every contract, and two contracts that expose `Prices` can guard it differently.
+
+- A module declares `guard name(params);`: a name and typed parameters, with no body. A guard with no parameters is `guard name;`.
+- An external names one guard with `guarded name(args)`, after its result and before `raises`. The arguments are the external's own parameters, by name, one for each of the guard's, of the same types: the check sees exactly what the caller sent. An external that dispatches on its argument into several entrypoints can't pass that argument, since each case is an entrypoint of its own.
+- A contract that exposes an external guarded by `M.name` writes exactly one `guard M.name(params) raises E is { ... }`, whose parameters have the types `M` declares; the names are the contract's. Leaving it out, writing it twice, writing one with other parameters, or writing one that no exposed external needs, is an error.
+- `guard M.name is f;` checks by calling `f`, a function of the contract's or of a module it uses, that returns nothing. It passes `f` none of the guard's parameters, or all of them. It raises what `f` does:
+
+```lithe fragment
+use Ownable;
+
+guard Prices.pricer is Ownable.check_owner;
+```
+
+A guard only fails. Its body is checked as a `view`: it can read storage, the call's context, such as `Evm.sender()`, and other contracts with `query`, but it can't write, `emit`, or `defer`. It runs once, before the external's body, and can't see or change what the body does. There are no default guards and no overrides: a check that lets everyone through is written as one, with a body of `skip`.
+
+Guards cover entrypoints. When the contract's own code calls a module's internal functions, no guard runs: that is the contract trusting itself.
+
+### Errors
+
+A guarded external raises its module's errors and its guard's. The interface that exposes it lists both, as `set_price` lists `Zero_price | Not_maker` above; the ABI and `lithe errors` show the same. `lithe stubs` can't know the contract's guard, so it prints a guarded external with the module's errors and a reminder to write the check and add its errors.
+
+`lithe errors` lists each guard with the errors it raises, `lithe footprint` shows the guard of each entrypoint that has one, and `lithe abi-tree` lists it under the entrypoint's `guards`.
+
+### Where a guard runs
+
+A guard is contract code, so it runs where the contract's code runs. In a contract that fits the size limit, it is the first thing the entrypoint does. In a [split](/tooling/size-limit) contract, the router decodes the call's arguments, runs the guard, and only then forwards the call to the module's facet. The facet is built from the module alone and runs its externals unguarded, so every contract that exposes the module shares one facet at one address, whatever its guards. Calling a facet directly skips every guard, but a facet called directly runs against its own storage, not the storage of any contract that uses it, so there is nothing there to protect.
+
+The [upgrade guard](/language/upgrades#upgradeable-contracts) is the same idea for the upgrade machinery: the check `upgradeToAndCall` runs before it changes anything, with the same rules.
+
+### Mistakes
+
+A contract that exposes a guarded external must write its guard:
+
+```lithe rejects
+module Notes is {
+  storage notes at "example.notes" is record {
+    of_id : map(uint, uint);
+  }
+
+  guard writer(const id : uint);
+
+  external function write(const id : uint; const note : uint) guarded writer(id) is {
+    notes.of_id[id] := note;
+  }
+}
+
+contract Board is {
+  use Notes exposing {
+    function write(id : uint; note : uint);
+  }
+}
+```
+
+```text
+the contract exposes `write`, which `Notes` guards with `writer`, so it must write the check:
+
+  guard Notes.writer(const id : uint) raises ... is { ... }
+```
+
+Once, with the module's parameter types:
+
+```lithe rejects
+module Notes is {
+  storage notes at "example.notes" is record {
+    of_id : map(uint, uint);
+  }
+
+  guard writer(const id : uint);
+
+  external function write(const id : uint; const note : uint) guarded writer(id) is {
+    notes.of_id[id] := note;
+  }
+}
+
+contract Board is {
+  use Notes exposing {
+    function write(id : uint; note : uint);
+  }
+
+  guard Notes.writer(const id : uint) is { skip }
+  guard Notes.writer(const id : uint) is { skip }
+}
+```
+
+```text
+`guard Notes.writer` is written twice
+```
+
+```lithe rejects
+module Notes is {
+  storage notes at "example.notes" is record {
+    of_id : map(uint, uint);
+  }
+
+  guard writer(const id : uint);
+
+  external function write(const id : uint; const note : uint) guarded writer(id) is {
+    notes.of_id[id] := note;
+  }
+}
+
+contract Board is {
+  use Notes exposing {
+    function write(id : uint; note : uint);
+  }
+
+  guard Notes.writer(const id : address) is { skip }
+}
+```
+
+```text
+`guard Notes.writer` takes different parameters than `Notes` declares
+
+  module:    guard Notes.writer(const id : uint)
+  contract:  guard Notes.writer(const id : address)
+```
+
+And only for a guard that an external it exposes names:
+
+```lithe rejects
+module Notes is {
+  storage notes at "example.notes" is record {
+    of_id : map(uint, uint);
+  }
+
+  guard writer(const id : uint);
+
+  external function write(const id : uint; const note : uint) guarded writer(id) is {
+    notes.of_id[id] := note;
+  }
+
+  external view function note(const id : uint) : uint is
+    notes.of_id[id]
+}
+
+contract Board is {
+  use Notes exposing {
+    view function note(id : uint) : uint;
+  }
+
+  guard Notes.writer(const id : uint) is { skip }
+}
+```
+
+```text
+no external the contract exposes is guarded by `Notes.writer`; remove this guard
+```
+
+A guard reads, and nothing else:
+
+```lithe rejects
+import "std/evm";
+
+module Notes is {
+  storage notes at "example.notes" is record {
+    of_id : map(uint, uint);
+  }
+
+  guard writer(const id : uint);
+
+  external function write(const id : uint; const note : uint) guarded writer(id) is {
+    notes.of_id[id] := note;
+  }
+}
+
+contract Board is {
+  storage is record {
+    checks : uint;
+  }
+
+  use Notes exposing {
+    function write(id : uint; note : uint);
+  }
+
+  guard Notes.writer(const id : uint) is {
+    storage.checks := storage.checks + 1;
+  }
+}
+```
+
+```text
+guard `Notes.writer` writes storage; a guard only reads, and reverts or lets the call through
+```
+
+```lithe rejects
+module Notes is {
+  storage notes at "example.notes" is record {
+    of_id : map(uint, uint);
+  }
+
+  guard writer(const id : uint);
+
+  external function write(const id : uint; const note : uint) guarded writer(id) is {
+    notes.of_id[id] := note;
+  }
+}
+
+contract Board is {
+  event Checked of record {
+    id : uint;
+  }
+
+  use Notes exposing {
+    function write(id : uint; note : uint);
+  }
+
+  guard Notes.writer(const id : uint) is {
+    emit Checked { id = id; };
+  }
+}
+```
+
+```text
+guard `Notes.writer` cannot emit; a guard only reads
+```
+
+```lithe rejects
+import "std/evm";
+
+module Notes is {
+  storage notes at "example.notes" is record {
+    of_id : map(uint, uint);
+  }
+
+  guard writer(const id : uint);
+
+  external function write(const id : uint; const note : uint) guarded writer(id) is {
+    notes.of_id[id] := note;
+  }
+}
+
+contract Board is {
+  use Notes exposing {
+    function write(id : uint; note : uint);
+  }
+
+  guard Notes.writer(const id : uint) is {
+    defer Evm.transfer(Evm.sender(), 1wei);
+  }
+}
+```
+
+```text
+guard `Notes.writer` cannot defer an operation; a guard only reads
+```
+
+A module passes a guard its external's parameters, and nothing else:
+
+```lithe rejects
+import "std/evm";
+
+module Notes is {
+  storage notes at "example.notes" is record {
+    of_id : map(uint, uint);
+    owner : address;
+  }
+
+  guard writer(const id : uint);
+
+  external function write(const id : uint; const note : uint) guarded writer(owner) is {
+    notes.of_id[id] := note;
+  }
+}
+
+contract Board is {
+  use Notes exposing {
+    function write(id : uint; note : uint);
+  }
+
+  guard Notes.writer(const id : uint) is { skip }
+}
+```
+
+```text
+`owner` is not a parameter of `write`; a guard takes the external's parameters, by name
+```
 
 ## ERC-165
 

@@ -154,6 +154,7 @@ struct Body {
     supports: Vec<NameAt>,
     upgradeable: bool,
     guard: Option<GuardDecl>,
+    guards: Vec<Func>,
     specs: Vec<SpecBlock>,
 }
 
@@ -175,6 +176,7 @@ impl Body {
             supports: Vec::new(),
             upgradeable: false,
             guard: None,
+            guards: Vec::new(),
             specs: Vec::new(),
         }
     }
@@ -196,6 +198,7 @@ impl Body {
             supports: self.supports,
             upgradeable: self.upgradeable,
             guard: self.guard,
+            guards: self.guards,
             contract_name: self.name,
             contract_line: if named { self.line } else { 0 },
             contract_col: if named { self.col } else { 0 },
@@ -418,7 +421,15 @@ impl<'a> Parser<'a> {
                 if let (true, Some(word)) = (private, special_word(deco.kind)) {
                     return Err(self.err(format!("`{word}` cannot be private")));
                 }
-                body.funcs.push(self.item(deco, private)?);
+                let func = self.item(deco, private)?;
+                if let Some(guarded) = &func.guarded {
+                    return Err(error(
+                        guarded.line,
+                        guarded.col,
+                        "`guarded` names a guard of the external's module; a contract's own external checks in its body",
+                    ));
+                }
+                body.funcs.push(func);
             }
             Kind::Ident if self.spec_ahead() => {
                 if private {
@@ -494,6 +505,13 @@ impl<'a> Parser<'a> {
             }
             Kind::Contract => {
                 return Err(self.err("a contract cannot contain another contract"));
+            }
+            Kind::Ident if self.slice() == "guard" && self.peek_kind(1) == Kind::Ident => {
+                if private {
+                    return Err(self.err("a guard cannot be private"));
+                }
+                let func = self.guard_impl()?;
+                body.guards.push(func);
             }
             Kind::Ident if !private && self.slice() == "supports" => {
                 let names = self.supports_list()?;
@@ -610,6 +628,7 @@ impl<'a> Parser<'a> {
         let mut funcs = Vec::new();
         let mut specs = Vec::new();
         let mut intrinsics = Vec::new();
+        let mut guards = Vec::new();
         while self.kind() != Kind::RBrace && self.kind() != Kind::Eof {
             if self.kind() == Kind::Semi {
                 self.bump();
@@ -717,6 +736,20 @@ impl<'a> Parser<'a> {
                     }
                     intrinsics.push(decl);
                 }
+                Kind::Ident if self.slice() == "guard" && self.peek_kind(1) == Kind::Ident => {
+                    let decl = self.guard_sig()?;
+                    if guards.iter().any(|have: &Func| have.name == decl.name) {
+                        return Err(error(
+                            decl.line,
+                            decl.col,
+                            format!(
+                                "module `{name}` declares guard `{}` more than once",
+                                decl.name
+                            ),
+                        ));
+                    }
+                    guards.push(decl);
+                }
                 Kind::Type => types.push(self.type_decl()?),
                 Kind::ErrorKw => errors.push(self.error_decl()?),
                 Kind::ErrorsKw => error_sets.push(self.error_set_decl()?),
@@ -760,7 +793,7 @@ impl<'a> Parser<'a> {
         }
         self.want(Kind::RBrace)?;
         let require_names: Vec<String> = requires.iter().map(|s| s.name.clone()).collect();
-        for func in &mut funcs {
+        for func in funcs.iter_mut().chain(&mut guards) {
             func.module = Some(name.clone());
             func.requires = require_names.clone();
         }
@@ -778,6 +811,7 @@ impl<'a> Parser<'a> {
             events,
             funcs,
             specs,
+            guards,
             intrinsics,
         })
     }
@@ -867,6 +901,8 @@ impl<'a> Parser<'a> {
                 interface: None,
                 exported: None,
                 forward: None,
+                guarded: None,
+                guard_of: None,
             }),
             tag: None,
         })
@@ -1854,6 +1890,263 @@ impl<'a> Parser<'a> {
         } else {
             Vec::new()
         };
+        let params = self.params()?;
+        if !matches!(
+            kind,
+            ItemKind::Function | ItemKind::Readonly | ItemKind::Pure
+        ) {
+            if let Some(p) = params.iter().find(|p| p.storage) {
+                return Err(error(
+                    p.line,
+                    p.col,
+                    format!(
+                        "`{}` is called from outside, so its parameters are values: take `{}` as `const` or `var`",
+                        name, p.name
+                    ),
+                ));
+            }
+        }
+        let ret = match kind {
+            ItemKind::View => {
+                self.want(Kind::Colon)?;
+                Some(self.ty()?)
+            }
+            ItemKind::Function | ItemKind::Readonly | ItemKind::Pure
+                if self.kind() == Kind::Colon =>
+            {
+                self.bump();
+                Some(self.ty()?)
+            }
+            ItemKind::Function | ItemKind::Readonly | ItemKind::Pure => None,
+            // An entry may return a value to its caller, after its effects have run.
+            ItemKind::Entry if self.kind() == Kind::Colon => {
+                self.bump();
+                Some(self.ty()?)
+            }
+            ItemKind::Entry => None,
+            ItemKind::Migrate => {
+                if self.kind() == Kind::Colon {
+                    return Err(self.err("a migration does not declare a return type"));
+                }
+                None
+            }
+            ItemKind::Deploy => {
+                if self.kind() == Kind::Colon {
+                    return Err(self.err("`deploy` does not declare a return type"));
+                }
+                None
+            }
+            ItemKind::Receive | ItemKind::Fallback => None,
+        };
+        let guarded = if self.kind() == Kind::Ident && self.slice() == "guarded" {
+            if self.declaring {
+                return Err(self.err(
+                    "an interface doesn't say how an external is guarded; `guarded` goes on the module's external",
+                ));
+            }
+            if !matches!(kind, ItemKind::Entry | ItemKind::View) {
+                return Err(self.err("only an external function can be guarded"));
+            }
+            Some(self.guarded()?)
+        } else {
+            None
+        };
+        let raises = if self.kind() == Kind::Raises {
+            Some(self.raises_clause()?)
+        } else {
+            None
+        };
+        let (stmts, tail) = if self.declaring {
+            if self.kind() == Kind::Is {
+                return Err(self.err(
+                    "an interface's methods have no body; to wrap a module's function, write an external of the contract's own",
+                ));
+            }
+            self.want(Kind::Semi)?;
+            (Vec::new(), None)
+        } else {
+            self.want(Kind::Is)?;
+            self.item_body()?
+        };
+        Ok(Func {
+            line,
+            col,
+            kind,
+            private,
+            origin: String::new(),
+            name,
+            type_params,
+            params,
+            ret,
+            ret_ty: 0,
+            payable,
+            nonreentrant,
+            external_pure,
+            raises,
+            errors: Vec::new(),
+            stmts,
+            tail,
+            module: None,
+            requires: Vec::new(),
+            promoted: None,
+            declares: None,
+            interface: None,
+            exported: None,
+            forward: None,
+            guarded,
+            guard_of: None,
+        })
+    }
+
+    /// `guarded editor(id)` on a module's external: its guard, and the parameters it takes.
+    fn guarded(&mut self) -> Result<Guarded, Error> {
+        self.bump();
+        let (line, col) = self.at();
+        let name = self.ident()?;
+        let mut args = Vec::new();
+        if self.kind() == Kind::LParen {
+            self.bump();
+            while self.kind() != Kind::RParen {
+                let (aline, acol) = self.at();
+                if self.kind() != Kind::Ident || self.peek_kind(1) == Kind::Dot {
+                    return Err(self.err(format!(
+                        "a guard takes the external's parameters, by name; found {}",
+                        self.found()
+                    )));
+                }
+                let name = self.ident()?;
+                args.push(NameAt {
+                    line: aline,
+                    col: acol,
+                    name,
+                });
+                if self.kind() != Kind::Comma {
+                    break;
+                }
+                self.bump();
+            }
+            if self.kind() != Kind::RParen {
+                return Err(self.err(format!(
+                    "a guard takes the external's parameters, by name; found {}",
+                    self.found()
+                )));
+            }
+            self.bump();
+        }
+        Ok(Guarded {
+            line,
+            col,
+            name,
+            args,
+        })
+    }
+
+    /// `guard editor(const id : uint);` in a module: a guard's name and parameters.
+    fn guard_sig(&mut self) -> Result<Func, Error> {
+        self.bump();
+        let (line, col) = self.at();
+        let name = self.ident()?;
+        let params = if self.kind() == Kind::LParen {
+            self.params()?
+        } else {
+            Vec::new()
+        };
+        if self.kind() == Kind::Is {
+            return Err(self.err(
+                "a module's guard has no body: each contract that exposes its externals writes the check",
+            ));
+        }
+        self.want(Kind::Semi)?;
+        Ok(guard_func(line, col, name, params))
+    }
+
+    /// `guard M.editor(const id : uint) raises E is { ... }`, or `guard M.editor is f;`: the
+    /// contract's check for a module's guard.
+    fn guard_impl(&mut self) -> Result<Func, Error> {
+        self.bump();
+        let (line, col) = self.at();
+        let path = self.dotted()?;
+        let Some((module, name)) = path.rsplit_once('.') else {
+            return Err(error(
+                line,
+                col,
+                format!("a guard is a module's: write `guard M.{path}`"),
+            ));
+        };
+        let params = if self.kind() == Kind::LParen {
+            self.params()?
+        } else {
+            Vec::new()
+        };
+        let raises = if self.kind() == Kind::Raises {
+            Some(self.raises_clause()?)
+        } else {
+            None
+        };
+        self.want(Kind::Is)?;
+        let mut func = guard_func(line, col, name.to_string(), params);
+        let mut via = None;
+        if self.kind() == Kind::LBrace {
+            func.stmts = self.block()?;
+        } else {
+            if raises.is_some() {
+                return Err(self.err(
+                    "a guard that names a function raises what the function does; drop `raises`",
+                ));
+            }
+            let (vline, vcol) = self.at();
+            let path = self.dotted()?;
+            let mut pieces: Vec<&str> = path.split('.').collect();
+            let last = pieces.pop().unwrap_or_default().to_string();
+            let base = pieces.iter().fold(None, |base, piece| {
+                let name = piece.to_string();
+                Some(match base {
+                    None => Expr::Ident {
+                        line: vline,
+                        col: vcol,
+                        name,
+                        sym: None,
+                        builtin: None,
+                        ty: 0,
+                    },
+                    Some(base) => Expr::Field {
+                        line: vline,
+                        col: vcol,
+                        base: Box::new(base),
+                        name,
+                        root: None,
+                        leaf: 0,
+                        ty: 0,
+                    },
+                })
+            });
+            func.stmts = vec![Stmt::Call {
+                line: vline,
+                col: vcol,
+                expr: self.call(vline, vcol, last, Vec::new(), base),
+            }];
+            via = Some(NameAt {
+                line: vline,
+                col: vcol,
+                name: path,
+            });
+            self.want(Kind::Semi)?;
+        }
+        func.raises = raises;
+        func.guard_of = Some(GuardOf {
+            module: NameAt {
+                line,
+                col,
+                name: module.to_string(),
+            },
+            name: name.to_string(),
+            via,
+        });
+        Ok(func)
+    }
+
+    /// `(const a : T; var b : U)`, or an interface's `(a : T; b : U)`.
+    fn params(&mut self) -> Result<Vec<Param>, Error> {
         self.want(Kind::LParen)?;
         let mut params = Vec::new();
         if self.kind() != Kind::RParen {
@@ -1919,96 +2212,7 @@ impl<'a> Parser<'a> {
             }
         }
         self.want(Kind::RParen)?;
-        if !matches!(
-            kind,
-            ItemKind::Function | ItemKind::Readonly | ItemKind::Pure
-        ) {
-            if let Some(p) = params.iter().find(|p| p.storage) {
-                return Err(error(
-                    p.line,
-                    p.col,
-                    format!(
-                        "`{}` is called from outside, so its parameters are values: take `{}` as `const` or `var`",
-                        name, p.name
-                    ),
-                ));
-            }
-        }
-        let ret = match kind {
-            ItemKind::View => {
-                self.want(Kind::Colon)?;
-                Some(self.ty()?)
-            }
-            ItemKind::Function | ItemKind::Readonly | ItemKind::Pure
-                if self.kind() == Kind::Colon =>
-            {
-                self.bump();
-                Some(self.ty()?)
-            }
-            ItemKind::Function | ItemKind::Readonly | ItemKind::Pure => None,
-            // An entry may return a value to its caller, after its effects have run.
-            ItemKind::Entry if self.kind() == Kind::Colon => {
-                self.bump();
-                Some(self.ty()?)
-            }
-            ItemKind::Entry => None,
-            ItemKind::Migrate => {
-                if self.kind() == Kind::Colon {
-                    return Err(self.err("a migration does not declare a return type"));
-                }
-                None
-            }
-            ItemKind::Deploy => {
-                if self.kind() == Kind::Colon {
-                    return Err(self.err("`deploy` does not declare a return type"));
-                }
-                None
-            }
-            ItemKind::Receive | ItemKind::Fallback => None,
-        };
-        let raises = if self.kind() == Kind::Raises {
-            Some(self.raises_clause()?)
-        } else {
-            None
-        };
-        let (stmts, tail) = if self.declaring {
-            if self.kind() == Kind::Is {
-                return Err(self.err(
-                    "an interface's methods have no body; to wrap a module's function, write an external of the contract's own",
-                ));
-            }
-            self.want(Kind::Semi)?;
-            (Vec::new(), None)
-        } else {
-            self.want(Kind::Is)?;
-            self.item_body()?
-        };
-        Ok(Func {
-            line,
-            col,
-            kind,
-            private,
-            origin: String::new(),
-            name,
-            type_params,
-            params,
-            ret,
-            ret_ty: 0,
-            payable,
-            nonreentrant,
-            external_pure,
-            raises,
-            errors: Vec::new(),
-            stmts,
-            tail,
-            module: None,
-            requires: Vec::new(),
-            promoted: None,
-            declares: None,
-            interface: None,
-            exported: None,
-            forward: None,
-        })
+        Ok(params)
     }
 
     /// `payable receive [raises E] is ...`, `[payable] fallback [: bytes] [raises E] is ...`,
@@ -2110,6 +2314,8 @@ impl<'a> Parser<'a> {
             interface: None,
             exported: None,
             forward,
+            guarded: None,
+            guard_of: None,
         })
     }
 
@@ -3495,6 +3701,38 @@ fn infix(k: Kind) -> Option<(BinOp, u8, u8)> {
         Kind::StarStar => (BinOp::Pow, 23, 23),
         _ => return None,
     })
+}
+
+/// A guard as a function: a `view` that only fails, whose body the contract writes.
+fn guard_func(line: u32, col: u32, name: String, params: Vec<Param>) -> Func {
+    Func {
+        line,
+        col,
+        kind: ItemKind::Readonly,
+        private: false,
+        origin: String::new(),
+        name,
+        type_params: Vec::new(),
+        params,
+        ret: None,
+        ret_ty: 0,
+        payable: false,
+        nonreentrant: false,
+        external_pure: false,
+        raises: None,
+        errors: Vec::new(),
+        stmts: Vec::new(),
+        tail: None,
+        module: None,
+        requires: Vec::new(),
+        promoted: None,
+        declares: None,
+        interface: None,
+        exported: None,
+        forward: None,
+        guarded: None,
+        guard_of: None,
+    }
 }
 
 #[cfg(test)]

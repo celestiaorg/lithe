@@ -597,6 +597,21 @@ fn check_import(src: &Program, via: &UseDecl) -> Result<(), Error> {
             "an imported file cannot declare `supports`; the contract declares what it supports",
         ));
     }
+    if let Some(guard) = src.guards.first() {
+        let module = guard
+            .guard_of
+            .as_ref()
+            .map_or("", |of| of.module.name.as_str());
+        return Err(error(
+            line,
+            col,
+            format!(
+                "an imported file cannot write `guard {}.{}`; the contract that exposes the module's externals writes its guards",
+                shown(module),
+                guard.name
+            ),
+        ));
+    }
     if let Some(func) = src
         .funcs
         .iter()
@@ -694,6 +709,7 @@ fn append(dst: &mut Program, src: Program, own: bool) -> Result<(), Error> {
     if own {
         dst.upgradeable = src.upgradeable;
         dst.guard = src.guard;
+        dst.guards = src.guards;
     }
     Ok(())
 }
@@ -735,6 +751,7 @@ fn empty() -> Program {
         supports: Vec::new(),
         upgradeable: false,
         guard: None,
+        guards: Vec::new(),
         contract_name: None,
         contract_line: 0,
         contract_col: 0,
@@ -780,7 +797,7 @@ fn stamp(prog: &mut Program, origin: &str) {
     for decl in &mut prog.error_sets {
         decl.origin = origin.to_string();
     }
-    for func in &mut prog.funcs {
+    for func in prog.funcs.iter_mut().chain(&mut prog.guards) {
         func.origin = origin.to_string();
     }
     for decl in &mut prog.domains {
@@ -808,7 +825,7 @@ fn stamp(prog: &mut Program, origin: &str) {
         for decl in &mut module.error_sets {
             decl.origin = origin.to_string();
         }
-        for func in &mut module.funcs {
+        for func in module.funcs.iter_mut().chain(&mut module.guards) {
             func.origin = origin.to_string();
         }
         for decl in &mut module.domains {

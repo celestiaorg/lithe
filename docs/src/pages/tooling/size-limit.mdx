@@ -19,6 +19,8 @@ The router runs what the contract writes itself, its upgrade machinery, and any 
 
 A facet is built from its module alone: the module's externals, and the modules it `requires`. None of the contract is in it, so it doesn't matter which contract exposes the module, which of its externals the contract declares, or what else the contract does. **Every contract that exposes the same module gets the same facet at the same address**, so ten collections built on the same modules deploy each facet once. A facet changes, and moves to a new address, only when its module or a module it requires changes.
 
+A module's [guards](/language/modules#guards) are the contract's code, so they run in the router: for a guarded external, the router decodes the call's arguments and runs the contract's check before it forwards the call. The facet runs the module's externals unguarded, which is what lets contracts with different guards share it. Called directly, a facet runs against its own storage, so skipping the router's guards there changes nothing of any contract's.
+
 This is safe because a module never depends on the contract that uses it: its storage is its own, it can call only the modules it requires, and a module's transient storage sits at a slot derived from its name. Continuations run in the frame that deferred the call.
 
 ## Immutables
@@ -110,7 +112,7 @@ For a split contract, `lithe upgrade` prints the deployment plan with the proxy'
 
 ## Cost
 
-A call to an entrypoint in a facet costs one extra `delegatecall`, measured at about 2,700 gas: the facet's address is cold, and the calldata and return data are copied once more. A call whose code reads immutables costs a little more, for copying them, and behind a proxy the router reads each word of them from storage. Entrypoints in the router cost nothing extra. Each facet carries its own dispatcher and a copy of the modules it requires, so a single split contract deploys more bytes in total than its unsplit build would have. Contracts that share facets deploy them once.
+A call to an entrypoint in a facet costs one extra `delegatecall`, measured at about 2,700 gas: the facet's address is cold, and the calldata and return data are copied once more. A call whose code reads immutables costs a little more, for copying them, and behind a proxy the router reads each word of them from storage. Entrypoints in the router cost nothing extra. A guarded one also decodes its arguments in the router, for the guard, before the facet decodes them again. Each facet carries its own dispatcher and a copy of the modules it requires, so a single split contract deploys more bytes in total than its unsplit build would have. Contracts that share facets deploy them once.
 
 ## Flags
 

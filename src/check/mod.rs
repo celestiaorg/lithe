@@ -12,6 +12,7 @@ mod consts;
 mod expr;
 mod funcs;
 mod generic;
+mod guards;
 mod layout;
 mod payable;
 mod place;
@@ -23,6 +24,7 @@ use abi::*;
 use builtins::*;
 use compose::*;
 use funcs::*;
+use guards::*;
 use layout::*;
 use payable::*;
 use place::*;
@@ -338,7 +340,8 @@ struct Checker {
     domain_syms: Vec<VisibleDomain>,
     /// `migrate` or `deploy`, while checking one: code that runs once and calls nobody.
     once: Option<&'static str>,
-    in_guard: bool,
+    /// While checking a guard, how messages name it: a guard only reads, and fails or not.
+    guard_label: Option<String>,
     /// Checking a forwarding `fallback`'s target, which only reads.
     forwarding: bool,
     fn_name: String,
@@ -388,8 +391,6 @@ struct Checker {
     transient_from: usize,
     /// Symbols naming a block of immutables.
     imm_syms: HashSet<usize>,
-    /// What the upgrade guard calls and writes.
-    guard_pieces: Vec<Piece>,
     /// Checking a spec block, which `crate::spec` has made a function no code calls.
     in_spec: bool,
 }
@@ -499,7 +500,7 @@ pub(crate) fn check_in(mut prog: Program, require_entries: bool) -> Result<Check
         domain_binds: Vec::new(),
         domain_syms: Vec::new(),
         once: None,
-        in_guard: false,
+        guard_label: None,
         forwarding: false,
         phase_floors: Vec::new(),
         op_returns: HashMap::new(),
@@ -529,7 +530,6 @@ pub(crate) fn check_in(mut prog: Program, require_entries: bool) -> Result<Check
         slot_params: Vec::new(),
         transient_from: 0,
         imm_syms: HashSet::new(),
-        guard_pieces: Vec::new(),
         in_spec: false,
     };
     c.types.push(prim(TyKind::Unit, 0));
@@ -934,6 +934,7 @@ pub(crate) fn check_in(mut prog: Program, require_entries: bool) -> Result<Check
         c.prepare_sig(f)?;
     }
     c.match_declared_types(&prog.funcs)?;
+    c.match_guards(&prog)?;
     for module in &prog.modules {
         c.known_modules.insert(module.name.clone());
     }
@@ -1086,6 +1087,7 @@ struct CheckSave {
     spec_places: Vec<String>,
     in_spec: bool,
     origin: String,
+    guard_label: Option<String>,
 }
 
 struct Place {

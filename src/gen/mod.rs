@@ -930,7 +930,7 @@ pub(crate) fn entrypoints(checked: &Checked) -> Result<Vec<Entrypoint>, Error> {
             Target::Deploy { func, .. } => (funcs[*func].name.clone(), Group::Contract),
             Target::Proxiable { .. } => ("proxiableUUID".to_string(), Group::Upgrade),
             Target::Upgrade { .. } => ("upgradeToAndCall".to_string(), Group::Upgrade),
-            Target::Forward { .. } => continue,
+            Target::Forward { .. } | Target::Guarded { .. } => continue,
         };
         out.push(Entrypoint {
             sel: target.sel(),
@@ -1542,6 +1542,21 @@ enum Target {
     Forward {
         sel: [u8; 4],
     },
+    /// A forwarded selector whose external is guarded: the router runs the contract's
+    /// check, then goes on to the facet's stub at `to`.
+    Guarded {
+        sel: [u8; 4],
+        to: u32,
+        first: Guarding,
+    },
+}
+
+/// Where a guarded entrypoint's call to its guard is: the first statement of an entry or a
+/// view, or the first of a route's guards, for an external that dispatches on its argument.
+#[derive(Clone, Copy)]
+enum Guarding {
+    Func(usize),
+    Route(usize),
 }
 
 impl Target {
@@ -1553,7 +1568,8 @@ impl Target {
             | Self::Deploy { sel, .. }
             | Self::Proxiable { sel }
             | Self::Upgrade { sel }
-            | Self::Forward { sel } => *sel,
+            | Self::Forward { sel }
+            | Self::Guarded { sel, .. } => *sel,
         }
     }
 }

@@ -58,6 +58,36 @@ external function go() is {
 upgradeable contract requires an upgrade guard
 ```
 
+The upgrade guard is the upgrade machinery's [guard](/language/modules#guards), with the same rules as the guards modules declare: it only fails. It can read storage, the call's context, and other contracts with `query`, but it can't write, `emit`, or `defer`, and it runs before `upgradeToAndCall` changes anything:
+
+```lithe rejects
+import "std/evm";
+
+upgradeable
+
+error Not_owner;
+
+storage is record {
+  owner : address;
+  upgrades : uint;
+}
+
+upgrade guard is {
+  assert(Evm.sender() = storage.owner, Not_owner);
+  storage.upgrades := storage.upgrades + 1;
+}
+
+external function claim() is {
+  storage.owner := Evm.sender();
+}
+```
+
+```text
+the upgrade guard writes storage; a guard only reads, and reverts or lets the call through
+```
+
+Count upgrades in a migration instead, which runs inside the upgrade and may write.
+
 Other proxy designs, such as a beacon or a proxy whose admin lives outside the implementation, can be written with [`fallback delegates to`](/language/functions#passing-a-call-on). `upgradeable` is still the way to make a contract's own code upgradeable: its guard, migrations, and layout checks come with it.
 
 ## Deploying
