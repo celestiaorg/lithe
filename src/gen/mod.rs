@@ -819,7 +819,12 @@ fn creation(
         .deploy_func()
         .filter(|_| !checked.prog.upgradeable && !shape.part)
     else {
-        return Ok((wrap_init(&runtime, &plan.prerequisites(shape))?, Vec::new()));
+        let parts = plan.prerequisites(shape);
+        if checked.prog.upgradeable && !marks.is_empty() {
+            let sites: Vec<usize> = marks.iter().map(|&(_, at, _)| at).collect();
+            return Ok((wrap_init_self(&runtime, &parts, &sites)?, Vec::new()));
+        }
+        return Ok((wrap_init(&runtime, &parts)?, Vec::new()));
     };
     g.emit_init(func, runtime, marks)?;
     if optimize {
@@ -1694,6 +1699,58 @@ fn wrap_init_checked(runtime: &[u8], parts: &[Word]) -> Result<Vec<u8>, Error> {
     if code.len() != start {
         return Err(error(0, 0, "internal: init code size"));
     }
+    code.extend_from_slice(runtime);
+    Ok(code)
+}
+
+/// An upgradeable implementation's creation code: the parts' checks, as `wrap_init_checked`
+/// makes them, then a copy of the runtime a word into memory with the creating address ORed
+/// into each `PUSH20` at `sites`, whose bytes are zero.
+fn wrap_init_self(runtime: &[u8], parts: &[Word], sites: &[usize]) -> Result<Vec<u8>, Error> {
+    let push2 = |code: &mut Vec<u8>, n: usize| {
+        code.push(0x61);
+        code.extend_from_slice(&(n as u16).to_be_bytes());
+    };
+    let prefix = |start: usize| {
+        let mut code = Vec::new();
+        for (i, part) in parts.iter().enumerate() {
+            code.push(0x73);
+            code.extend_from_slice(&part.to_be_bytes()[12..]);
+            code.push(EXTCODESIZE);
+            code.push(ISZERO);
+            if i > 0 {
+                code.push(OR);
+            }
+        }
+        if !parts.is_empty() {
+            // `bad` is the last four bytes, before the runtime.
+            push2(&mut code, start - 4);
+            code.push(JUMPI);
+        }
+        push2(&mut code, runtime.len());
+        push2(&mut code, start);
+        code.extend_from_slice(&[0x60, 32, CODECOPY]);
+        for &at in sites {
+            // The word ending with the push's last byte.
+            code.push(ADDRESS);
+            push2(&mut code, at + 21);
+            code.push(MLOAD);
+            code.push(OR);
+            push2(&mut code, at + 21);
+            code.push(MSTORE);
+        }
+        push2(&mut code, runtime.len());
+        code.extend_from_slice(&[0x60, 32, RETURN]);
+        if !parts.is_empty() {
+            code.extend_from_slice(&[0x5b, PUSH0, PUSH0, REVERT]);
+        }
+        code
+    };
+    let start = prefix(0).len();
+    if start + runtime.len() > 0xffff {
+        return Err(error(0, 0, "contract too large"));
+    }
+    let mut code = prefix(start);
     code.extend_from_slice(runtime);
     Ok(code)
 }

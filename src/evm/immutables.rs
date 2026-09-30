@@ -329,20 +329,15 @@ external view function cap() : uint is limits.cap
 /// of their id, and a migration can set a field a later version adds.
 #[test]
 fn upgradeable_immutables_live_in_proxy_storage() {
-    let v1 = deploy(&compile(UPGRADEABLE_V1).expect("v1")).expect("v1 runtime");
     let v2_src = UPGRADEABLE_V1
         .replace("  cap : uint;\n}", "  cap : uint;\n  floor : uint;\n}")
         .replace(
             "external view function cap()",
             "migrate set_floor(const floor : uint) is {\n  limits.floor := floor;\n}\n\nexternal view function floor() : uint is limits.floor\nexternal view function cap()",
         );
-    let v2 = deploy(&compile(&v2_src).expect("v2")).expect("v2 runtime");
     let (a, b) = (w(0xa11), w(0xb22));
-    DEPLOYED.with(|d| {
-        let mut d = d.borrow_mut();
-        d.insert(a, (v1, HashMap::new()));
-        d.insert(b, (v2, HashMap::new()));
-    });
+    deploy_at(&compile(UPGRADEABLE_V1).expect("v1"), a);
+    deploy_at(&compile(&v2_src).expect("v2"), b);
     let proxy = super::split::proxy_runtime();
     let implementation = crate::keccak::erc1967_implementation();
     let owner = w(0x0e);

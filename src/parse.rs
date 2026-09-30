@@ -1323,8 +1323,22 @@ impl<'a> Parser<'a> {
         }
         self.bump();
         self.want(Kind::Is)?;
-        let stmts = self.block()?;
-        Ok(GuardDecl { line, col, stmts })
+        if self.kind() == Kind::LBrace {
+            let stmts = self.block()?;
+            return Ok(GuardDecl {
+                line,
+                col,
+                stmts,
+                via: None,
+            });
+        }
+        let (stmts, via) = self.guard_via()?;
+        Ok(GuardDecl {
+            line,
+            col,
+            stmts,
+            via: Some(via),
+        })
     }
 
     fn type_decl(&mut self) -> Result<TypeDecl, Error> {
@@ -2094,43 +2108,9 @@ impl<'a> Parser<'a> {
                     "a guard that names a function raises what the function does; drop `raises`",
                 ));
             }
-            let (vline, vcol) = self.at();
-            let path = self.dotted()?;
-            let mut pieces: Vec<&str> = path.split('.').collect();
-            let last = pieces.pop().unwrap_or_default().to_string();
-            let base = pieces.iter().fold(None, |base, piece| {
-                let name = piece.to_string();
-                Some(match base {
-                    None => Expr::Ident {
-                        line: vline,
-                        col: vcol,
-                        name,
-                        sym: None,
-                        builtin: None,
-                        ty: 0,
-                    },
-                    Some(base) => Expr::Field {
-                        line: vline,
-                        col: vcol,
-                        base: Box::new(base),
-                        name,
-                        root: None,
-                        leaf: 0,
-                        ty: 0,
-                    },
-                })
-            });
-            func.stmts = vec![Stmt::Call {
-                line: vline,
-                col: vcol,
-                expr: self.call(vline, vcol, last, Vec::new(), base),
-            }];
-            via = Some(NameAt {
-                line: vline,
-                col: vcol,
-                name: path,
-            });
-            self.want(Kind::Semi)?;
+            let (stmts, named) = self.guard_via()?;
+            func.stmts = stmts;
+            via = Some(named);
         }
         func.raises = raises;
         func.guard_of = Some(GuardOf {
@@ -2143,6 +2123,50 @@ impl<'a> Parser<'a> {
             via,
         });
         Ok(func)
+    }
+
+    /// `is f;` after a guard: a body that calls `f`, and where `f` is named.
+    fn guard_via(&mut self) -> Result<(Vec<Stmt>, NameAt), Error> {
+        let (vline, vcol) = self.at();
+        let path = self.dotted()?;
+        let mut pieces: Vec<&str> = path.split('.').collect();
+        let last = pieces.pop().unwrap_or_default().to_string();
+        let base = pieces.iter().fold(None, |base, piece| {
+            let name = piece.to_string();
+            Some(match base {
+                None => Expr::Ident {
+                    line: vline,
+                    col: vcol,
+                    name,
+                    sym: None,
+                    builtin: None,
+                    ty: 0,
+                },
+                Some(base) => Expr::Field {
+                    line: vline,
+                    col: vcol,
+                    base: Box::new(base),
+                    name,
+                    root: None,
+                    leaf: 0,
+                    ty: 0,
+                },
+            })
+        });
+        let stmts = vec![Stmt::Call {
+            line: vline,
+            col: vcol,
+            expr: self.call(vline, vcol, last, Vec::new(), base),
+        }];
+        self.want(Kind::Semi)?;
+        Ok((
+            stmts,
+            NameAt {
+                line: vline,
+                col: vcol,
+                name: path,
+            },
+        ))
     }
 
     /// `(const a : T; var b : U)`, or an interface's `(a : T; b : U)`.

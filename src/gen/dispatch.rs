@@ -1116,24 +1116,72 @@ impl<'a> Gen<'a> {
         }
     }
 
+    /// OpenZeppelin's `notDelegated`: only the implementation itself answers, so a proxy
+    /// can't be upgraded to another proxy.
     fn proxiable_body(&mut self, label: u32) -> Result<(), Error> {
-        let bad = self.fresh();
+        let context = self.fresh();
         self.enter(label, false);
+        self.push_self();
+        self.op(ADDRESS);
+        self.op(XOR);
+        self.push_label(context);
+        self.op(JUMPI);
         self.push_word(crate::keccak::erc1967_implementation());
         self.return_word();
-        self.jumpdest(bad);
-        self.revert_empty();
+        self.jumpdest(context);
+        self.revert_selector(selector("UUPSUnauthorizedCallContext()"), None);
         Ok(())
     }
 
+    /// Reverts with an error that has no parameters, or one word at `arg`.
+    fn revert_selector(&mut self, sel: [u8; 4], arg: Option<i32>) {
+        let size = if let Some(arg) = arg {
+            self.mload(arg);
+            self.push_u64(32);
+            self.op(MSTORE);
+            36
+        } else {
+            4
+        };
+        self.push_selector(sel);
+        self.op(PUSH0);
+        self.op(MSTORE);
+        self.push_u64(size);
+        self.push_u64(28);
+        self.op(REVERT);
+    }
+
+    /// OpenZeppelin 5.1's `upgradeToAndCall`, in its order: the arguments decode, the call
+    /// runs through a proxy that points at this implementation (`onlyProxy`), the guard
+    /// passes, and the new implementation's `proxiableUUID` is the implementation slot.
     fn upgrade_body(&mut self, label: u32) -> Result<(), Error> {
         let bad = self.fresh();
         let skip = self.fresh();
+        let context = self.fresh();
+        let invalid = self.fresh();
+        let unsupported = self.fresh();
+        let slot = crate::keccak::erc1967_implementation();
         self.enter(label, false);
         self.push_u64(68);
         self.op(CALLDATASIZE);
         self.op(LT);
+        self.push_u64(4);
+        self.op(CALLDATALOAD);
+        self.push_u64(160);
+        self.op(SHR);
+        self.op(OR);
         self.push_label(bad);
+        self.op(JUMPI);
+        self.push_self();
+        self.op(DUP1);
+        self.op(ADDRESS);
+        self.op(EQ);
+        self.op(SWAP1);
+        self.push_word(slot);
+        self.op(SLOAD);
+        self.op(XOR);
+        self.op(OR);
+        self.push_label(context);
         self.op(JUMPI);
         let direct = self
             .checked
@@ -1164,11 +1212,36 @@ impl<'a> Gen<'a> {
         self.compile_stmts(&guard.stmts)?;
         self.store_image();
         self.finish_body();
+        // A failed call is ERC1967InvalidImplementation; a result too short to decode reverts
+        // empty, as Solidity's `try` does.
+        self.push_selector(selector("proxiableUUID()"));
+        self.push_mem(self.args_buf);
+        self.op(MSTORE);
+        self.push_u64(32);
+        self.push_mem(self.args_buf);
+        self.push_u64(4);
+        self.push_mem(self.args_buf + 28);
+        self.mload(self.scratch_to);
+        self.op(GAS);
+        self.op(STATICCALL);
+        self.op(ISZERO);
+        self.push_label(invalid);
+        self.op(JUMPI);
+        self.push_u64(32);
+        self.op(RETURNDATASIZE);
+        self.op(LT);
+        self.push_label(bad);
+        self.op(JUMPI);
+        self.mload(self.args_buf);
+        self.push_word(slot);
+        self.op(XOR);
+        self.push_label(unsupported);
+        self.op(JUMPI);
         self.push_u64(1);
         self.push_u64(UPGRADE_SLOT);
         self.op(TSTORE);
         self.mload(self.scratch_to);
-        self.push_word(crate::keccak::erc1967_implementation());
+        self.push_word(slot);
         self.op(SSTORE);
         self.mload(self.scratch_val);
         self.op(ISZERO);
@@ -1197,6 +1270,18 @@ impl<'a> Gen<'a> {
         self.op(STOP);
         self.jumpdest(bad);
         self.revert_empty();
+        self.jumpdest(context);
+        self.revert_selector(selector("UUPSUnauthorizedCallContext()"), None);
+        self.jumpdest(invalid);
+        self.revert_selector(
+            selector("ERC1967InvalidImplementation(address)"),
+            Some(self.scratch_to),
+        );
+        self.jumpdest(unsupported);
+        self.revert_selector(
+            selector("UUPSUnsupportedProxiableUUID(bytes32)"),
+            Some(self.args_buf),
+        );
         Ok(())
     }
 }

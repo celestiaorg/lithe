@@ -665,6 +665,56 @@ fn the_upgrade_guard_only_reads() {
     );
 }
 
+/// `upgrade guard is f;` calls `f`, with the rules of `guard M.g is f;`: `f` returns
+/// nothing and takes no parameters, since the upgrade guard has none.
+#[test]
+fn the_upgrade_guard_names_a_function() {
+    let src = |guard: &str| {
+        format!(
+            "import \"std/evm\";\nimport \"std/access/ownable\";\nupgradeable\nuse Ownable;\n\
+             storage is record {{ n : uint; }}\n{guard}\n\
+             external function own() raises OwnableInvalidOwner is {{ Ownable.init(Evm.sender()); }}\n"
+        )
+    };
+    let code = compile(&src("upgrade guard is Ownable.check_owner;")).expect("compile");
+    let (a, b) = (Word::from_u64(0xa11), Word::from_u64(0xb22));
+    deploy_at(&code, a);
+    deploy_at(&code, b);
+    let proxy = super::split::proxy_runtime();
+    let slot = crate::keccak::erc1967_implementation();
+    let mut s = Session {
+        runtime: &proxy,
+        storage: [(slot, a)].into_iter().collect(),
+    };
+    assert!(!s.send(1, "own()", &[]).reverted);
+    let upgrade = super::split::upgrade_to_and_call(b, &[]);
+    let denied = exec(&proxy, &upgrade, s.storage.clone(), Word::from_u64(2), Word::from_u64(0), Word::from_u64(0))
+        .expect("stranger");
+    assert_eq!(
+        denied.returndata,
+        word_data("OwnableUnauthorizedAccount(address)", &words(&[2]))
+    );
+    let done = exec(&proxy, &upgrade, s.storage.clone(), Word::from_u64(1), Word::from_u64(0), Word::from_u64(0))
+        .expect("owner");
+    assert!(!done.reverted, "{}", pretty(&done.returndata));
+    assert_eq!(done.storage[&slot], b);
+    DEPLOYED.with(|d| d.borrow_mut().clear());
+
+    rejects(
+        &src("view function two(const a : uint) is { skip }\nupgrade guard is two;"),
+        "`two` takes 1 parameters; the guard has none to pass it",
+    );
+    rejects(
+        &src("view function yes() : bool is true\nupgrade guard is yes;"),
+        "`yes` returns a value; a guard names a function that only checks",
+    );
+    rejects(
+        &src("function note() is { storage.n := 1; }\nupgrade guard is note;"),
+        "the upgrade guard calls `note`, which is stateful",
+    );
+    rejects(&src("upgrade guard is missing;"), "missing");
+}
+
 /// Inspection shows each guard: where it runs, what it raises, and which externals it
 /// guards.
 #[test]

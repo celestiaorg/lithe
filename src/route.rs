@@ -1948,6 +1948,23 @@ pub(crate) fn abi(checked: &Checked) -> Result<Abi, Error> {
             inputs: params(&inputs),
         }));
     }
+    if checked.prog.upgradeable {
+        for (name, input) in [
+            ("ERC1967InvalidImplementation", Some(("implementation", "address"))),
+            ("UUPSUnauthorizedCallContext", None),
+            ("UUPSUnsupportedProxiableUUID", Some(("slot", "bytes32"))),
+        ] {
+            let taken = items
+                .iter()
+                .any(|item| matches!(item, AbiItem::Error(e) if e.name == name));
+            if !taken {
+                items.push(AbiItem::Error(AbiError {
+                    name: name.to_string(),
+                    inputs: input.map(|(n, ty)| Param::named(n, ty)).into_iter().collect(),
+                }));
+            }
+        }
+    }
     Ok(Abi { items })
 }
 

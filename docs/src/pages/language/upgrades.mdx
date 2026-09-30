@@ -37,8 +37,19 @@ The compiler produces a [UUPS](https://eips.ethereum.org/EIPS/eip-1822) implemen
 
 | Entrypoint | Behavior |
 | --- | --- |
-| `proxiableUUID()` | returns the ERC-1967 implementation slot |
-| `upgradeToAndCall(address, bytes)` | runs the upgrade guard, stores the new implementation, then runs the migration encoded in `bytes`, if any |
+| `proxiableUUID()` | returns the ERC-1967 implementation slot, when called on the implementation itself |
+| `upgradeToAndCall(address, bytes)` | runs the upgrade guard, checks the new implementation, stores it, then runs the migration encoded in `bytes`, if any |
+
+Both refuse what OpenZeppelin 5.1's `UUPSUpgradeable` refuses, with the same errors, so an upgrade can't point the proxy at code that can't upgrade it again:
+
+| Check | Error |
+| --- | --- |
+| `proxiableUUID` called through a proxy | `UUPSUnauthorizedCallContext()` |
+| `upgradeToAndCall` called other than through an ERC-1967 proxy that points at this implementation | `UUPSUnauthorizedCallContext()` |
+| the new implementation's `proxiableUUID()` fails, as a contract without one does, or a proxy's does | `ERC1967InvalidImplementation(address)` |
+| it answers something other than the implementation slot | `UUPSUnsupportedProxiableUUID(bytes32)` |
+
+`upgradeToAndCall` checks the call context first, then runs the guard, then asks the new implementation, as OpenZeppelin does. The implementation knows its own address because its creation code writes it into its code, as OpenZeppelin's `__self` immutable is.
 
 The guard is required. An upgradeable contract without one, or a guard in a contract that is not upgradeable, is a compile error:
 
@@ -87,6 +98,27 @@ the upgrade guard writes storage; a guard only reads, and reverts or lets the ca
 ```
 
 Count upgrades in a migration instead, which runs inside the upgrade and may write.
+
+When a function already makes the check, name it: `upgrade guard is f;` is a guard whose body calls `f`, as [`guard M.g is f;`](/language/modules#guards) is. `f` returns nothing and takes no parameters, and the guard raises what `f` does:
+
+```lithe
+import "std/evm";
+import "std/access/ownable";
+
+upgradeable
+
+use Ownable;
+
+storage is record {
+  n : uint;
+}
+
+upgrade guard is Ownable.check_owner;
+
+external function own() raises OwnableInvalidOwner is {
+  Ownable.init(Evm.sender());
+}
+```
 
 Other proxy designs, such as a beacon or a proxy whose admin lives outside the implementation, can be written with [`fallback delegates to`](/language/functions#passing-a-call-on). `upgradeable` is still the way to make a contract's own code upgradeable: its guard, migrations, and layout checks come with it.
 
@@ -186,4 +218,4 @@ Named domains help here. Each domain sits at its own ERC-7201 root, so adding a 
 
 ## Contracts over the size limit
 
-An upgradeable contract over the 24,576-byte limit runs the modules it exposes from their facets. The router is the implementation behind the proxy, and it keeps the upgrade guard, `upgradeToAndCall`, and every migration. Upgrades work exactly as above. A contract that grows past the limit upgrades into a split implementation behind the same proxy, with the same storage. See [Contract size limit](/tooling/size-limit#upgrades).
+An upgradeable contract over the 24,576-byte limit runs the modules it exposes from their facets. The router is the implementation behind the proxy, and it keeps the upgrade guard, `proxiableUUID`, `upgradeToAndCall`, and every migration. Facets answer neither, so a proxy can't be pointed at one. Upgrades work exactly as above. A contract that grows past the limit upgrades into a split implementation behind the same proxy, with the same storage. See [Contract size limit](/tooling/size-limit#upgrades).
