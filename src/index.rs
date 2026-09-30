@@ -105,7 +105,7 @@ struct Ty {
     item: Option<usize>,
 }
 
-const KEYWORDS: [&str; 61] = [
+const KEYWORDS: [&str; 62] = [
     "type",
     "is",
     "record",
@@ -134,6 +134,7 @@ const KEYWORDS: [&str; 61] = [
     "upgradeable",
     "upgrade",
     "guard",
+    "guarded",
     "at",
     "contract",
     "fail",

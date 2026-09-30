@@ -54,6 +54,7 @@ A contract is made of these declarations, in any order. Names are resolved acros
 | Function | `external function f() is { ... }` | [Functions](/language/functions) |
 | Module | `module Ledger is { ... }` | [Modules](/language/modules) |
 | Use | `use Ledger;` | [Modules](/language/modules) |
+| Guard | `guard M.editor(const id : uint) is { ... }`, for a module's `guard editor(const id : uint);` | [Guards](/language/modules#guards) |
 | Import | `import "./lib";` | [Imports](/language/imports) |
 | Upgrades | `upgradeable`, `upgrade guard is { ... }`, `migrate f() is { ... }` | [Upgrades](/language/upgrades) |
 | Receive and fallback | `payable receive is { ... }`, `fallback is { ... }`, `fallback delegates to target;` | [Functions](/language/functions#receive-and-fallback) |
@@ -119,4 +120,4 @@ is list migrate module nil nonreentrant not of or payable private pure query rai
 record requires skip then true type Unit until upgrade upgradeable use var view with
 ```
 
-`storage`, `transient`, `guard`, `receive`, and `fallback` are keywords only where a declaration expects them, `delegates`, `forwards`, and `to` only after `fallback`, and `forward` only before a name at the start of a statement. Elsewhere they are names like any other.
+`storage`, `transient`, `guard`, `receive`, and `fallback` are keywords only where a declaration expects them, `guarded` only after an external's header, `delegates`, `forwards`, and `to` only after `fallback`, and `forward` only before a name at the start of a statement. Elsewhere they are names like any other.

@@ -543,7 +543,8 @@ impl Printer<'_> {
                 | Kind::Interface
                 | Kind::Module
                 | Kind::Deploy
-        ) {
+        ) || (bol && kind == Kind::Ident && self.line_head == "guard")
+        {
             self.decl_indent = self.line_indent;
         }
         if kind == Kind::Raises && !self.groups.last().is_some_and(|g| g.spec) {
@@ -973,6 +974,10 @@ mod tests {
             (
                 "function f() is {\n  (* kept\n     here *)\n  skip\n}\n",
                 "function f() is {\n  (* kept\n     here *)\n  skip\n}\n",
+            ),
+            (
+                "external function f(const id : uint)\nguarded g(id)\nraises E\nis { skip }\nguard M.g(const id : uint)\nraises E\nis { skip }\n",
+                "external function f(const id : uint)\n  guarded g(id)\n  raises E\nis { skip }\nguard M.g(const id : uint)\n  raises E\nis { skip }\n",
             ),
         ];
         for (src, want) in cases {

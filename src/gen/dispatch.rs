@@ -42,7 +42,13 @@ impl<'a> Gen<'a> {
             } else {
                 stub
             };
-            targets.push((to, Target::Forward { sel }));
+            match self.guarding(sel)? {
+                Some(first) => {
+                    let label = self.fresh();
+                    targets.push((label, Target::Guarded { sel, to, first }));
+                }
+                None => targets.push((to, Target::Forward { sel })),
+            }
         }
         let special = |kind: ItemKind| {
             self.checked
@@ -74,6 +80,7 @@ impl<'a> Gen<'a> {
                 Target::Proxiable { .. } => self.proxiable_body(label)?,
                 Target::Upgrade { .. } => self.upgrade_body(label)?,
                 Target::Forward { .. } => {}
+                Target::Guarded { to, first, .. } => self.guard_then_forward(label, to, first)?,
             }
         }
         if !stubs.is_empty() {
@@ -175,6 +182,79 @@ impl<'a> Gen<'a> {
         self.op(RETURNDATASIZE);
         self.op(PUSH0);
         self.op(RETURN);
+    }
+
+    /// A forwarded selector's guard call, when its external is guarded.
+    fn guarding(&self, sel: [u8; 4]) -> Result<Option<Guarding>, Error> {
+        let funcs = &self.checked.prog.funcs;
+        let guarded = |func: usize| funcs[func].guarded.is_some();
+        for (index, route) in self.checked.routes.iter().enumerate() {
+            if !route.by_selector() || route.sel != sel {
+                continue;
+            }
+            return Ok(match route.direct {
+                Some(func) => guarded(func).then_some(Guarding::Func(func)),
+                None => route
+                    .path
+                    .first()
+                    .and_then(|top| {
+                        funcs
+                            .iter()
+                            .position(|f| f.kind == ItemKind::Entry && &f.name == top)
+                    })
+                    .filter(|&func| guarded(func))
+                    .map(|_| Guarding::Route(index)),
+            });
+        }
+        for func in (0..funcs.len()).filter(|&f| funcs[f].kind == ItemKind::View && guarded(f)) {
+            if selector(&self.view_sig(func)?) == sel {
+                return Ok(Some(Guarding::Func(func)));
+            }
+        }
+        Ok(None)
+    }
+
+    /// A router's guarded selector: the contract's check, on the arguments decoded as the
+    /// external decodes them, then on to the facet. A locked `nonreentrant` external is
+    /// rejected first, as it is when it runs in the contract.
+    fn guard_then_forward(&mut self, label: u32, to: u32, first: Guarding) -> Result<(), Error> {
+        let bad = self.fresh();
+        let (payable, locked) = match first {
+            Guarding::Func(func) => {
+                let f = &self.checked.prog.funcs[func];
+                (f.payable, f.nonreentrant)
+            }
+            Guarding::Route(index) => {
+                let route = &self.checked.routes[index];
+                (route.payable, route.nonreentrant)
+            }
+        };
+        self.enter(label, payable);
+        if locked {
+            self.push_u64(NONREENTRANT_SLOT);
+            self.op(TLOAD);
+            self.push_label(bad);
+            self.op(JUMPI);
+        }
+        self.begin_body(self.lists_in_order);
+        let call = match first {
+            Guarding::Func(func) => {
+                self.decode_params(func)?;
+                self.checked.prog.funcs[func].stmts.first().cloned()
+            }
+            Guarding::Route(index) => self.checked.routes[index].guards.first().cloned(),
+        };
+        let call =
+            call.ok_or_else(|| error(1, 1, "internal: a guarded entrypoint calls its guard"))?;
+        self.compile_stmts(&[call])?;
+        self.finish_body();
+        self.push_label(to);
+        self.op(JUMP);
+        if locked {
+            self.jumpdest(bad);
+            self.revert_empty();
+        }
+        Ok(())
     }
 
     /// Every selector the whole contract dispatches, each with a fresh label.
@@ -584,6 +664,11 @@ impl<'a> Gen<'a> {
             Target::Deploy { func, .. } => self.checked.prog.funcs[*func].payable,
             // The part checks the value: `delegatecall` passes it through.
             Target::Forward { .. } => true,
+            // Rejected before the guard runs, as the unsplit contract does.
+            Target::Guarded { first, .. } => match *first {
+                Guarding::Func(func) => self.checked.prog.funcs[func].payable,
+                Guarding::Route(index) => self.checked.routes[index].payable,
+            },
             _ => false,
         }
     }

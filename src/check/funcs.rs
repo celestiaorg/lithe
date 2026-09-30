@@ -15,6 +15,13 @@ impl Checker {
         self.kind = f.kind;
         self.external_pure = f.external_pure;
         self.fn_name = source_name(&f.name).to_string();
+        self.guard_label = f.guard_of.as_ref().map(|of| {
+            format!(
+                "guard `{}.{}`",
+                crate::modules::shown(&of.module.name),
+                of.name
+            )
+        });
         self.in_spec = crate::spec::is_spec_fn(&f.name);
         self.once = match f.kind {
             ItemKind::Migrate => Some("migrate"),
@@ -202,9 +209,7 @@ impl Checker {
     }
 
     fn note(&mut self, piece: Piece) {
-        if self.cur_fn == GUARD_FN {
-            self.guard_pieces.push(piece);
-        } else if self.cur_fn < self.pieces.len() {
+        if self.cur_fn < self.pieces.len() {
             self.pieces[self.cur_fn].push(piece);
         }
     }
@@ -290,7 +295,7 @@ impl Checker {
                 offending(&self.pieces[i], &who)?;
             }
         }
-        offending(&self.guard_pieces, "the upgrade guard")
+        Ok(())
     }
 
     pub(super) fn check_reason(&mut self, reason: &mut Raised) -> Result<(), Error> {
@@ -487,7 +492,13 @@ impl Checker {
 
     /// Whether a declared type restates its module's. An inline record is a type of its own
     /// wherever it is written, so the same one written again matches.
-    fn declared_alike(&self, x: usize, y: usize, p: Option<&TypeRef>, q: Option<&TypeRef>) -> bool {
+    pub(super) fn declared_alike(
+        &self,
+        x: usize,
+        y: usize,
+        p: Option<&TypeRef>,
+        q: Option<&TypeRef>,
+    ) -> bool {
         self.same(x, y)
             || matches!((p, q), (Some(p @ TypeRef::Record { .. }), Some(q)) if shape_ty(p) == shape_ty(q))
     }
@@ -511,6 +522,14 @@ impl Checker {
                         && self.declared_alike(a.ty_id, b.ty_id, Some(&a.ty), Some(&b.ty))
                 });
             let mut want: Vec<usize> = impl_.errors.clone();
+            // A guarded external raises its guard's errors too, which only the contract knows.
+            let guard = decl.guarded.as_ref().and_then(|guarded| {
+                let name = format!("{}#guard", guarded.name);
+                funcs.iter().find(|func| func.name == name)
+            });
+            for &id in guard.iter().flat_map(|guard| &guard.errors) {
+                push_unique(&mut want, id);
+            }
             let mut have: Vec<usize> = decl.errors.clone();
             want.sort_unstable();
             have.sort_unstable();
@@ -526,12 +545,19 @@ impl Checker {
                     impl_.ret.as_ref(),
                 )
                 && want == have
-                && (decl.raises.is_some() || impl_.raises.is_none());
+                && (decl.raises.is_some() || want.is_empty());
             if same {
                 continue;
             }
             let label = iface_label(decl);
-            let module = format!("`{}`", impl_.module.as_deref().unwrap_or(""));
+            let module = match &decl.guarded {
+                Some(guarded) => format!(
+                    "`{}` with guard `{}`",
+                    impl_.module.as_deref().unwrap_or(""),
+                    guarded.name
+                ),
+                None => format!("`{}`", impl_.module.as_deref().unwrap_or("")),
+            };
             let effect = |kind: ItemKind, pure: bool| match kind {
                 ItemKind::View if pure => "`pure`",
                 ItemKind::View => "`view`",
@@ -599,7 +625,18 @@ impl Checker {
                         names(&want)
                     )
                 };
-            let msg = interface_mismatch(decl, impl_, &reason);
+            let mut msg = interface_mismatch(decl, impl_, &reason);
+            if let (Some(guarded), Some(guard)) = (&decl.guarded, guard) {
+                let raises: Vec<&str> = guard
+                    .errors
+                    .iter()
+                    .map(|&id| err_name(&self.errors, id))
+                    .collect();
+                msg.push_str(&format!("\n  guard:      {}", guarded.name));
+                if !raises.is_empty() {
+                    msg.push_str(&format!(" raises {}", raises.join(" | ")));
+                }
+            }
             return Err(error(decl.line, decl.col, msg));
         }
         Ok(())
@@ -730,11 +767,11 @@ impl Checker {
         self.origin.clear();
         let parent = self.scope;
         self.scope = self.push_scope(parent);
-        self.kind = ItemKind::Entry;
+        self.kind = ItemKind::Readonly;
         self.external_pure = false;
         self.module_name = None;
         self.requires.clear();
-        self.in_guard = true;
+        self.guard_label = Some("the upgrade guard".to_string());
         self.once = None;
         let cur_fn = std::mem::replace(&mut self.cur_fn, GUARD_FN);
         self.bind_storage(guard.line, guard.col)?;
@@ -743,7 +780,7 @@ impl Checker {
         }
         self.cur_fn = cur_fn;
         self.scope = parent;
-        self.in_guard = false;
+        self.guard_label = None;
         Ok(())
     }
 
@@ -751,8 +788,12 @@ impl Checker {
         if let Some(once) = self.once {
             return Err(error(line, col, format!("{once} cannot {kind}")));
         }
-        if self.in_guard {
-            return Err(error(line, col, format!("upgrade guard cannot {kind}")));
+        if let Some(label) = &self.guard_label {
+            return Err(error(
+                line,
+                col,
+                format!("{label} cannot {kind}{ONLY_FAILS}"),
+            ));
         }
         match self.kind {
             ItemKind::View | ItemKind::Readonly | ItemKind::Pure => {
@@ -924,6 +965,9 @@ impl Checker {
     }
 
     pub(super) fn weaker(&self, line: u32, col: u32, did: &str) -> Error {
+        if let Some(label) = &self.guard_label {
+            return error(line, col, format!("{label} {did}{ONLY_FAILS}"));
+        }
         if self.forwarding {
             return error(
                 line,
@@ -970,6 +1014,9 @@ fn push_unique(xs: &mut Vec<usize>, id: usize) {
         xs.push(id);
     }
 }
+
+/// Why a guard's body can do nothing but read.
+const ONLY_FAILS: &str = "; a guard only reads, and reverts or lets the call through";
 
 pub(super) fn kind_word(kind: ItemKind) -> &'static str {
     match kind {

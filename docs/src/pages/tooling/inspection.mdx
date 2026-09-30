@@ -96,6 +96,8 @@ set_pause   writes: paused                           raises: NotOwner           
 
 `during defers` says whether the entrypoint can run while another transition's deferred calls are running: `callable`, or `rejected` for a `nonreentrant` function. See [Reentrancy](/language/reentrancy).
 
+An entrypoint of a guarded module external shows its [guard](/language/modules#guards), such as `guard: Prices.pricer`, which `abi-tree` lists under `guards`, and `errors` lists each guard with the errors it raises.
+
 When the contract is [split](/tooling/size-limit), each line ends with where the entrypoint runs: the facet of a module, such as `runs in: ERC20`, or `runs in: router`. `abi-tree` shows the same as a `runs in:` section.
 
 ## `abi-tree`

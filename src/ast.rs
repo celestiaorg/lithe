@@ -18,6 +18,8 @@ pub(crate) struct Program {
     pub supports: Vec<NameAt>,
     pub upgradeable: bool,
     pub guard: Option<GuardDecl>,
+    /// `guard M.editor(...) is { ... }`: the contract's checks for its modules' guards.
+    pub guards: Vec<Func>,
     /// Set when the file names its contract. An implicit file leaves this empty;
     /// tooling may still label artifacts from the file name.
     pub contract_name: Option<String>,
@@ -129,6 +131,9 @@ pub(crate) struct ModuleDecl {
     pub funcs: Vec<Func>,
     /// The spec blocks written inside the module.
     pub specs: Vec<SpecBlock>,
+    /// `guard editor(const id : uint);`: checks the module's externals name with `guarded`,
+    /// which each contract that exposes them writes. Only a header: no body.
+    pub guards: Vec<Func>,
     /// The members the compiler implements, in a module of the standard library.
     pub intrinsics: Vec<Intrinsic>,
 }
@@ -480,6 +485,29 @@ pub(crate) struct Func {
     pub exported: Option<Exported>,
     /// On a `fallback` that passes its call on: how. Its tail is the target.
     pub forward: Option<Forward>,
+    /// On a module's external, `guarded editor(id)`, and on the entrypoints that expose it,
+    /// with the guard's name qualified: the guard that runs first. An entrypoint's first
+    /// statement then calls the contract's check.
+    pub guarded: Option<Guarded>,
+    /// On the contract's check for a module's guard: which guard it is.
+    pub guard_of: Option<GuardOf>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct Guarded {
+    pub line: u32,
+    pub col: u32,
+    pub name: String,
+    /// The external's parameters the guard takes, by name.
+    pub args: Vec<NameAt>,
+}
+
+/// `guard M.editor(...) is { ... }`, or `guard M.editor is f;`, which checks by calling `f`.
+#[derive(Debug, Clone)]
+pub(crate) struct GuardOf {
+    pub module: NameAt,
+    pub name: String,
+    pub via: Option<NameAt>,
 }
 
 #[derive(Debug, Clone)]

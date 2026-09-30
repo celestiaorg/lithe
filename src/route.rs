@@ -67,6 +67,16 @@ pub(crate) fn discover(checked: &Checked, require_entries: bool) -> Result<Vec<R
             continue;
         }
         if let Some(case) = dispatcher(&checked.types, f) {
+            if let Some(arg) = f.guarded.as_ref().and_then(|g| g.args.first()) {
+                return Err(error(
+                    arg.line,
+                    arg.col,
+                    format!(
+                        "`{}` is dispatched as one entrypoint per case, so its guard cannot take it",
+                        arg.name
+                    ),
+                ));
+            }
             if f.ret.is_some() {
                 return Err(error(
                     f.line,
@@ -131,6 +141,12 @@ pub(crate) fn render(routes: &[Route], parts: Option<&HashMap<[u8; 4], String>>)
         {
             out.push_str("  runs in:\n    ");
             out.push_str(part);
+            // A guard is contract code: the router checks it before it forwards the call.
+            if part != "router" {
+                for guard in r.guard_txt.iter().filter(|g| g.starts_with("guard ")) {
+                    out.push_str(&format!("\n    router, for {guard}"));
+                }
+            }
             out.push_str("\n\n");
         }
         section(&mut out, "calls", &r.calls);
@@ -172,6 +188,29 @@ pub(crate) fn render(routes: &[Route], parts: Option<&HashMap<[u8; 4], String>>)
     out
 }
 
+/// A route's checks as `lithe abi-tree` lists them: its asserts, and the module guard the
+/// contract checks first, as `guard M.editor(id)`.
+fn guard_texts(stmts: &[Stmt]) -> Vec<String> {
+    stmts
+        .iter()
+        .filter_map(|s| match s {
+            Stmt::Assert { cond, .. } => Some(fmt_expr(cond)),
+            Stmt::Call {
+                expr: Expr::Call { name, args, .. },
+                ..
+            } => name.strip_suffix("#guard").map(|guard| {
+                let guard = format!("guard {}", crate::modules::shown(guard));
+                if args.is_empty() {
+                    return guard;
+                }
+                let args: Vec<String> = args.iter().map(fmt_expr).collect();
+                format!("{guard}({})", args.join(", "))
+            }),
+            _ => None,
+        })
+        .collect()
+}
+
 fn section(out: &mut String, title: &str, items: &[String]) {
     out.push_str("  ");
     out.push_str(title);
@@ -195,8 +234,9 @@ fn dispatcher<'a>(types: &[RType], f: &'a Func) -> Option<&'a Expr> {
     {
         return None;
     }
-    for s in &f.stmts {
-        if !matches!(s, Stmt::Assert { .. } | Stmt::Skip | Stmt::Const { .. }) {
+    for (i, s) in f.stmts.iter().enumerate() {
+        let guard = i == 0 && f.guarded.is_some();
+        if !guard && !matches!(s, Stmt::Assert { .. } | Stmt::Skip | Stmt::Const { .. }) {
             return None;
         }
     }
@@ -317,13 +357,7 @@ fn walk(
                 path: leaf_path,
                 calls,
                 reads,
-                guard_txt: guards
-                    .iter()
-                    .filter_map(|s| match s {
-                        Stmt::Assert { cond, .. } => Some(fmt_expr(cond)),
-                        _ => None,
-                    })
-                    .collect(),
+                guard_txt: guard_texts(guards),
                 writes,
                 queries,
                 events,
@@ -397,14 +431,7 @@ fn direct(checked: &Checked, idx: usize, f: &Func, seen: &mut Vec<String>) -> Re
         path: vec![f.name.clone()],
         calls,
         reads,
-        guard_txt: f
-            .stmts
-            .iter()
-            .filter_map(|s| match s {
-                Stmt::Assert { cond, .. } => Some(fmt_expr(cond)),
-                _ => None,
-            })
-            .collect(),
+        guard_txt: guard_texts(&f.stmts),
         writes,
         queries,
         events,
@@ -946,8 +973,14 @@ fn walk_expr(checked: &Checked, e: &Expr, fx: &mut Effects<'_>) {
             base,
             ..
         } => {
-            push(fx.calls, checked.prog.funcs[*idx].name.clone());
             let f = &checked.prog.funcs[*idx];
+            push(
+                fx.calls,
+                match f.name.strip_suffix("#guard") {
+                    Some(guard) => format!("guard {}", crate::modules::shown(guard)),
+                    None => f.name.clone(),
+                },
+            );
             let slots: Vec<(usize, String)> = f
                 .params
                 .iter()
@@ -1411,6 +1444,16 @@ pub(crate) fn render_footprints(
             })
             .collect()
     };
+    // A module guard the contract checks first gets a column, when any entrypoint has one.
+    let funcs = &checked.prog.funcs;
+    let guarded = funcs.iter().any(|f| f.guarded.is_some());
+    let guard = |func: Option<usize>| -> Vec<(&str, Vec<String>)> {
+        match func.and_then(|func| funcs[func].guarded.as_ref()) {
+            Some(g) => vec![("guard", vec![crate::modules::shown(&g.name).to_string()])],
+            None if guarded => vec![("", Vec::new())],
+            None => Vec::new(),
+        }
+    };
     let mut rows: Vec<(String, Vec<(&str, Vec<String>)>)> = Vec::new();
     for r in &checked.routes {
         let (mut writes, mut events, mut defers) =
@@ -1454,16 +1497,24 @@ pub(crate) fn render_footprints(
                 ("during defers", vec![window(r.nonreentrant)]),
             ],
         };
+        let top = r.direct.or_else(|| {
+            let top = r.path.first()?;
+            funcs
+                .iter()
+                .position(|f| f.kind == ItemKind::Entry && &f.name == top)
+        });
+        fields.extend(guard(top));
         if r.by_selector() {
             fields.extend(part(r.sel));
         }
         rows.push((r.name.clone(), fields));
     }
-    for f in checked
+    for (i, f) in checked
         .prog
         .funcs
         .iter()
-        .filter(|f| f.kind == ItemKind::View)
+        .enumerate()
+        .filter(|(_, f)| f.kind == ItemKind::View)
     {
         let mut reads = Vec::new();
         collect(
@@ -1488,6 +1539,7 @@ pub(crate) fn render_footprints(
             ("", Vec::new()),
             ("during defers", vec![window(f.nonreentrant)]),
         ];
+        fields.extend(guard(Some(i)));
         if let Ok(sig) = view_sig(checked, f) {
             fields.extend(part(selector(&sig)));
         }
@@ -2095,6 +2147,26 @@ pub(crate) fn render_errors(checked: &Checked) -> Result<String, Error> {
             parts.extend(abi_parts(&checked.types, param.ty_id)?);
         }
         let sig = format!("{}({})", func.name, parts.join(","));
+        let raises = func
+            .errors
+            .iter()
+            .map(|id| checked.raise_sig(*id))
+            .collect();
+        blocks.push((sig, raises));
+    }
+    // The contract's module guards, whose errors the externals they guard raise too.
+    for func in &checked.prog.funcs {
+        let Some(of) = &func.guard_of else { continue };
+        let mut parts = Vec::new();
+        for param in &func.params {
+            parts.extend(abi_parts(&checked.types, param.ty_id)?);
+        }
+        let sig = format!(
+            "guard {}.{}({})",
+            crate::modules::shown(&of.module.name),
+            of.name,
+            parts.join(",")
+        );
         let raises = func
             .errors
             .iter()

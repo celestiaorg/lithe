@@ -696,6 +696,36 @@ fn exposing(decl: &ast::ModuleDecl) -> Option<String> {
         out.push_str(";\n");
     }
     out.push_str("}\n");
+    // Each guard the externals name is the contract's to write, and its errors join theirs.
+    for guard in &decl.guards {
+        let guarded: Vec<&str> = decl
+            .funcs
+            .iter()
+            .filter(|func| func.guarded.as_ref().is_some_and(|g| g.name == guard.name))
+            .map(|func| func.name.as_str())
+            .collect();
+        if guarded.is_empty() {
+            continue;
+        }
+        let params: Vec<String> = guard
+            .params
+            .iter()
+            .map(|p| format!("const {} : {}", p.name, check::shape_ty(&p.ty)))
+            .collect();
+        let params = if params.is_empty() {
+            String::new()
+        } else {
+            format!("({})", params.join("; "))
+        };
+        out.push_str(&format!(
+            "\n(* {} guards {}: write the check, and add its errors to {} `raises`.\n\nguard {}.{}{params} raises ... is {{ ... }} *)\n",
+            decl.name,
+            guarded.iter().map(|name| format!("`{name}`")).collect::<Vec<_>>().join(", "),
+            if guarded.len() == 1 { "its" } else { "their" },
+            decl.name,
+            guard.name
+        ));
+    }
     Some(out)
 }
 

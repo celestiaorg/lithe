@@ -259,7 +259,7 @@ fn immutables_are_written_only_while_setting_up() {
              upgrade guard is { claim(); }\n\
              external function go() is { storage.n := 1; }\n"
                 .to_string(),
-            "the upgrade guard calls `claim`, which writes immutable `immutable.owner`; call it only from `deploy`, a migration, or the functions they call",
+            "the upgrade guard calls `claim`, which is stateful; a guard only reads",
         ),
         (
             format!("{head}immutable other at \"lithe.immutable\" is record {{ y : uint; }}\n"),

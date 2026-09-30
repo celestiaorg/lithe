@@ -766,6 +766,12 @@ impl Resolver<'_> {
         for func in &mut prog.funcs {
             self.func(func)?;
         }
+        for guard in &mut prog.guards {
+            if let Some(of) = &mut guard.guard_of {
+                self.module_ref(&mut of.module.name, of.module.line, of.module.col)?;
+            }
+            self.func(guard)?;
+        }
         for use_ in &mut prog.compose {
             self.module_ref(&mut use_.name, use_.line, use_.col)?;
         }
@@ -866,6 +872,10 @@ impl Resolver<'_> {
                 func.module = Some(module.name.clone());
                 func.requires = requires.clone();
                 self.func(func)?;
+            }
+            for guard in &mut module.guards {
+                guard.module = Some(module.name.clone());
+                self.header(guard)?;
             }
             for block in &mut module.specs {
                 block.module = Some(module.name.clone());
