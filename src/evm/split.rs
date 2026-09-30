@@ -467,6 +467,69 @@ fn outlining_fits_the_limit() {
     compare_builds("fit", &methods, &reference, &ours, 200, true);
 }
 
+/// Once outlining fits a build with room to spare, a function outlined on the way that saves
+/// more gas than its bytes cost is inlined back, and the build still fits and behaves the same.
+#[test]
+fn fitting_inlines_back_what_still_fits() {
+    let checked = checked_src(
+        "storage is record { a : uint; b : uint; }\n\
+         pure function h0(const a : uint; const i : uint) : uint is (a * 86 + i) % 1000003 + (a / 74) % 59 + (a / 62) % 33 + (a / 68) % 59 + (a / 78) % 17 + (a / 26) % 56 + (a / 68) % 35 + (a / 83) % 44 + (a / 26) % 11 + (a / 60) % 24 + (a / 21) % 10 + (a / 71) % 56 + (a / 91) % 45 + (a / 8) % 43 + (a / 53) % 33\n\
+         pure function h1(const a : uint; const i : uint) : uint is (a * 3 + i) % 1000003 + (a / 81) % 46 + (a / 23) % 44 + (a / 4) % 58 + (a / 70) % 9 + (a / 10) % 7 + (a / 27) % 20 + (a / 79) % 6 + (a / 62) % 25 + (a / 59) % 42 + (a / 28) % 38 + (a / 32) % 45 + (a / 40) % 36\n\
+         pure function h2(const a : uint; const i : uint) : uint is (a * 11 + i) % 1000003 + (a / 13) % 34 + (a / 86) % 22 + (a / 55) % 40 + (a / 13) % 50 + (a / 35) % 25 + (a / 32) % 37 + (a / 39) % 6 + (a / 11) % 41 + (a / 16) % 30 + (a / 16) % 59 + (a / 40) % 29\n\
+         pure function h3(const a : uint; const i : uint) : uint is (a * 30 + i) % 1000003 + (a / 90) % 5\n\
+         pure function h4(const a : uint; const i : uint) : uint is (a * 83 + i) % 1000003 + (a / 9) % 35 + (a / 51) % 50 + (a / 53) % 31 + (a / 12) % 41\n\
+         pure function h5(const a : uint; const i : uint) : uint is (a * 18 + i) % 1000003 + (a / 89) % 22 + (a / 46) % 10 + (a / 42) % 26 + (a / 4) % 31\n\
+         pure function h6(const a : uint; const i : uint) : uint is (a * 65 + i) % 1000003 + (a / 34) % 50 + (a / 15) % 5 + (a / 10) % 34\n\
+         external pure function e0(const x : uint; const y : uint) : uint is {\n\
+           var a : uint := x;\n\
+           for i : uint in 0 .. y do { for j : uint in 0 .. i do { a := h4(a, i + j); } }\n\
+           for i : uint in 0 .. y do { for j : uint in 0 .. i do { a := h4(a, i + j); } }\n\
+           a := h5(a, y) + h3(a, 7);\n\
+         } with a\n\
+         external pure function e1(const x : uint; const y : uint) : uint is {\n\
+           var a : uint := x;\n\
+           for i : uint in 0 .. y do { a := h3(a, i); }\n\
+         } with a\n\
+         external pure function e2(const x : uint; const y : uint) : uint is {\n\
+           var a : uint := x;\n\
+           for i : uint in 0 .. y do { for j : uint in 0 .. i do { a := h0(a, i + j); } }\n\
+         } with a\n\
+         external pure function e3(const x : uint; const y : uint) : uint is {\n\
+           var a : uint := x;\n\
+           a := h2(a, y) + h0(a, 4);\n\
+           for i : uint in 0 .. y do { for j : uint in 0 .. i do { a := h1(a, i + j); } }\n\
+           for i : uint in 0 .. y do { a := h6(a, i); }\n\
+         } with a\n\
+         external pure function e4(const x : uint; const y : uint) : uint is {\n\
+           var a : uint := x;\n\
+           for i : uint in 0 .. y do { for j : uint in 0 .. i do { a := h0(a, i + j); } }\n\
+           for i : uint in 0 .. y do { for j : uint in 0 .. i do { a := h1(a, i + j); } }\n\
+           for i : uint in 0 .. y do { for j : uint in 0 .. i do { a := h2(a, i + j); } }\n\
+         } with a\n",
+    );
+    let limit = |size_limit| crate::Options {
+        size_limit,
+        split: crate::SplitMode::Off,
+        ..crate::Options::default()
+    };
+    let err = crate::split::build(&checked, "Fit", &limit(1)).err().expect("too big");
+    let smallest: usize = err
+        .message
+        .split(" is ")
+        .nth(1)
+        .and_then(|s| s.split(' ').next())
+        .and_then(|n| n.replace(',', "").parse().ok())
+        .expect("the smallest size");
+    let fit = crate::split::build(&checked, "Fit", &limit(smallest + 60)).expect("fits");
+    assert!(fit.runtime.len() <= smallest + 60);
+    assert!(fit.runtime.len() > smallest, "nothing inlined back: {smallest}");
+    OPAQUE_CODE.set(true);
+    let reference = deploy(&whole_build(&checked).code).expect("whole");
+    let ours = deploy(&fit.creation).expect("fit");
+    let methods = crate::route::method_ids(&checked).expect("methods");
+    compare_builds("fit", &methods, &reference, &ours, 200, true);
+}
+
 /// Only exposed modules can move: a contract over the limit that exposes none, or whose own
 /// code is still too big, is an error that says so. With splitting off, the error lists
 /// what takes the space.
