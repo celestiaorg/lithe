@@ -1515,13 +1515,13 @@ impl<'a> Gen<'a> {
                 {
                     direct.set(direct.get() + 1)
                 }
-                // A query, a later phase's call, or a remote call replaces the return data.
+                // A query, a later phase's call, or a call across into a facet replaces the return data.
                 Node::Expr(Expr::Query { .. }) | Node::Stmt(Stmt::Defer { then: Some(_), .. }) => {
                     total.set(total.get() + 1000)
                 }
                 Node::Expr(Expr::Call {
                     callee: Some(f), ..
-                }) if self.plan.remote.contains_key(f) => total.set(total.get() + 1000),
+                }) if self.shape.cross.contains_key(f) => total.set(total.get() + 1000),
                 _ => {}
             }
             false

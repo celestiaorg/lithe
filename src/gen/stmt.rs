@@ -1546,8 +1546,8 @@ impl<'a> Gen<'a> {
 
     /// Statements, then the tail: one word on the stack, a tuple in `fn_ret`, or nothing.
     fn func_body(&mut self, idx: usize) -> Result<(), Error> {
-        if let Some(&remote) = self.plan.remote.get(&idx) {
-            return self.remote_body(idx, remote);
+        if let Some(cross) = self.shape.cross.get(&idx) {
+            return self.cross_body(idx, cross);
         }
         let stmts = self.checked.prog.funcs[idx].stmts.clone();
         let tail = self.checked.prog.funcs[idx].tail.clone();
@@ -1570,12 +1570,26 @@ impl<'a> Gen<'a> {
         Ok(())
     }
 
-    /// A function its library facet runs: the parameters ABI-encoded as the facet's calldata,
-    /// a `STATICCALL`, and the result decoded to where the body's tail would leave it. A call
-    /// that fails reverts with the facet's revert data, so its errors and panics reach the
-    /// caller as they are.
-    fn remote_body(&mut self, idx: usize, remote: Remote) -> Result<(), Error> {
+    /// A function its module's facet runs: the parameters ABI-encoded as the calldata of the
+    /// facet's entrypoint for it, with the facet's immutables after them, a `STATICCALL` for
+    /// a pure function or a `DELEGATECALL` that runs on this contract's storage, and the
+    /// result decoded to where the body's tail would leave it. A call that fails reverts
+    /// with the facet's revert data, so its errors and panics reach the caller as they are.
+    fn cross_body(&mut self, idx: usize, cross: &Cross) -> Result<(), Error> {
         let f = &self.checked.prog.funcs[idx];
+        if cross.delegate && !self.direct && (f.kind != ItemKind::Readonly || !self.reading) {
+            let module = f.module.clone().unwrap_or_default();
+            return Err(error(
+                f.line,
+                f.col,
+                format!(
+                    "`{}` runs in `{module}`'s facet, which sees storage as it is when called, but a body that calls it runs a query after writing storage, so it keeps its writes until it ends; query before the first write, or use `{module}` without `{}`",
+                    crate::split::display_name(&f.name),
+                    crate::parse::DELEGATED
+                ),
+            )
+            .in_file(&f.origin));
+        }
         let args: Vec<Expr> = f
             .params
             .iter()
@@ -1589,22 +1603,38 @@ impl<'a> Gen<'a> {
             })
             .collect();
         let ret = f.ret_ty;
+        let writes = f.kind == ItemKind::Function;
         self.encode_values(&args, true, 4)?;
         self.mload(self.scratch_a);
-        self.push_u64(u64::from(u32::from_be_bytes(remote.sel)));
+        self.push_u64(u64::from(u32::from_be_bytes(cross.sel)));
         self.put_selector();
         let blob = self.temp();
         self.mstore_off(blob);
+        let tail = self.tail_order(&cross.tail);
+        for (j, &leaf) in tail.iter().enumerate() {
+            self.mload(self.image + leaf as i32 * 32);
+            self.mload(blob);
+            self.op(DUP1);
+            self.op(MLOAD);
+            self.op(ADD);
+            self.push_u64(32 * (j as u64 + 1));
+            self.op(ADD);
+            self.op(MSTORE);
+        }
         self.op(PUSH0);
         self.op(PUSH0);
         self.mload(blob);
         self.op(MLOAD);
+        if !tail.is_empty() {
+            self.push_u64(32 * tail.len() as u64);
+            self.op(ADD);
+        }
         self.mload(blob);
         self.push_u64(32);
         self.op(ADD);
-        self.push_word(remote.address);
+        self.push_word(cross.address);
         self.op(GAS);
-        self.op(STATICCALL);
+        self.op(if cross.delegate { DELEGATECALL } else { STATICCALL });
         let ok = self.fresh();
         self.push_label(ok);
         self.op(JUMPI);
@@ -1616,6 +1646,9 @@ impl<'a> Gen<'a> {
         self.op(PUSH0);
         self.op(REVERT);
         self.jumpdest(ok);
+        if writes {
+            self.forget_stored_values();
+        }
         let tret = &self.checked.types[ret];
         let words = tret.words;
         if matches!(tret.kind, TyKind::Tuple | TyKind::Record) || self.fixed_list(ret) {
@@ -1649,7 +1682,7 @@ impl<'a> Gen<'a> {
 
     /// Whether a call's body is compiled at the call, where the caller can see into it.
     pub(super) fn inlines(&self, idx: usize) -> bool {
-        !self.plan.outline.contains(&idx) && !self.plan.remote.contains_key(&idx)
+        !self.plan.outline.contains(&idx) && !self.shape.cross.contains_key(&idx)
     }
 
     fn func_leaves(&self, idx: usize) -> usize {

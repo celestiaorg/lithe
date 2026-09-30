@@ -441,6 +441,7 @@ impl Checker {
             params,
             ret,
             kind: f.kind,
+            private_to: f.module.clone().filter(|_| f.private),
         });
         Ok(())
     }

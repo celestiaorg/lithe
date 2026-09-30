@@ -17,7 +17,7 @@ fn main() {
     if cmd == "fmt" {
         fmt_cmd(&args);
     }
-    // Size and splitting flags apply wherever code is built and placed.
+    // Size and facet flags apply wherever code is built and placed.
     let opts = if matches!(
         cmd.as_str(),
         "compile" | "abi" | "facets" | "abi-tree" | "footprint" | "upgrade" | "upgrade-check"
@@ -191,7 +191,7 @@ fn fail(errors: &[lithe::Error], file: Option<&Path>) -> ! {
     std::process::exit(1);
 }
 
-/// Takes `--size-limit`, `--split`, and `--create2-deployer` out of `args`.
+/// Takes `--size-limit`, `--check-specs`, and `--create2-deployer` out of `args`.
 fn options(args: &mut Vec<String>) -> Result<lithe::Options, String> {
     let mut opts = lithe::Options::default();
     let mut rest = Vec::new();
@@ -207,17 +207,6 @@ fn options(args: &mut Vec<String>) -> Result<lithe::Options, String> {
                     .filter(|n| *n > 0)
                     .ok_or_else(|| format!("--size-limit: `{value}` is not a number of bytes"))?;
             }
-            "--split" => match it.next().as_deref() {
-                Some("auto") => opts.split = lithe::SplitMode::Auto,
-                Some("off") => opts.split = lithe::SplitMode::Off,
-                Some("all") => opts.split = lithe::SplitMode::All,
-                Some(other) => {
-                    return Err(format!(
-                        "--split takes `auto`, `off`, or `all`, not `{other}`"
-                    ))
-                }
-                None => return Err("--split takes `auto`, `off`, or `all`".to_string()),
-            },
             "--check-specs" => opts.check_specs = true,
             "--create2-deployer" => {
                 let value = it.next().ok_or("--create2-deployer needs an address")?;
@@ -489,13 +478,8 @@ usage: lithe compile file.lithe
        lithe fmt -
 
 compile, abi, facets, abi-tree, footprint, upgrade, and upgrade-check also take
-       --size-limit <bytes>          largest runtime code, default 24576
-       --split <auto|off|all>        run every exposed module from its facet: when the
-                                     contract doesn't fit with no facets (auto, the
-                                     default), never (off), or always (all); pure
-                                     functions run from library facets only when a
-                                     router, a facet, or a contract that exposes no
-                                     modules doesn't fit, and never with off
+       --size-limit <bytes>          largest runtime code, default 24576; code over it
+                                     still builds, with a warning of what fills it
        --create2-deployer <address>  the CREATE2 factory for facets
 
 compile also takes

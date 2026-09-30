@@ -216,6 +216,6 @@ Named domains help here. Each domain sits at its own ERC-7201 root, so adding a 
 
 `upgrade-check` reports; it does not block. Run it in CI and fail the build when it prints `incompatible`.
 
-## Contracts over the size limit
+## Contracts with facets
 
-An upgradeable contract over the 24,576-byte limit runs the modules it exposes from their facets. The router is the implementation behind the proxy, and it keeps the upgrade guard, `proxiableUUID`, `upgradeToAndCall`, and every migration. Facets answer neither, so a proxy can't be pointed at one. Upgrades work exactly as above. A contract that grows past the limit upgrades into a split implementation behind the same proxy, with the same storage. See [Contract size limit](/tooling/size-limit#upgrades).
+An upgradeable contract can run modules from their [facets](/tooling/size-limit), as any contract can. The router is the implementation behind the proxy, and it keeps the upgrade guard, `proxiableUUID`, `upgradeToAndCall`, and every migration. Facets answer none of them, so a proxy can't be pointed at one. Upgrades work exactly as above. Marking a module `facet` in a new version, or unmarking it, is an upgrade like any other, behind the same proxy, with the same storage. See [Contract size limit](/tooling/size-limit#upgrades).

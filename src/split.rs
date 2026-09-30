@@ -1,21 +1,22 @@
-//! Contracts over the code size limit. What a contract writes itself stays in a router; a
-//! module it exposes with `use M exposing` can move into that module's facet, which the router
-//! reaches with `delegatecall`. A facet is built from its module alone, so every contract that
-//! exposes the module shares it. Facets are deployed with `CREATE2` through a factory, so
-//! their addresses are known here and built into the router.
+//! Facets. A contract marks a module it uses `delegated`, and the module's code runs from
+//! the module's own contract instead of this one: the contract's code is its router. The
+//! router reaches an external it exposes from the module with `delegatecall`, and so do the
+//! calls its own code makes into the module's functions, a pure one with `staticcall`. A
+//! facet is built from its module alone, so every contract that marks the module shares it.
+//! Facets are deployed with `CREATE2` through a factory, so their addresses are known here
+//! and built into the router.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Mutex, OnceLock};
 
 use crate::ast::{
-    Exposing, Expr, Func, ItemKind, Lit, ModuleDecl, NameAt, Program, Raises, Stmt, TypeDecl,
-    TypeRef,
+    Exposing, Expr, Func, ItemKind, Lit, NameAt, Program, Raises, Stmt, TypeDecl, TypeRef,
 };
 use crate::check::Checked;
 use crate::gen::{self, Built, Entrypoint, Group};
-use crate::keccak::keccak256;
+use crate::keccak::{keccak256, selector};
 use crate::word::Word;
 use crate::{
     error, Abi, AbiError, AbiItem, Constructor, Error, Event, EventParam, Fallback, Function,
@@ -32,29 +33,17 @@ pub const DEPLOYER: [u8; 20] = [
     0xc0, 0xb4, 0x95, 0x6c,
 ];
 
-/// When a contract's exposed modules run from their facets.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum SplitMode {
-    /// Never: a contract over the limit is an error.
-    Off,
-    /// When the contract does not fit with no facets: then every one, as `All` has it.
-    Auto,
-    /// Always, for every exposed module, so that contracts share the same facets.
-    All,
-}
-
-/// How contracts are fitted to the size limit.
+/// How contracts are built.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Options {
-    /// The most runtime code the router or any facet may have. Creation code may have twice
-    /// this, as EIP-3860 allows.
+    /// The most runtime code the contract or any facet should have. Creation code may have
+    /// twice this, as EIP-3860 allows. Code over it still builds, with a warning.
     pub size_limit: usize,
-    pub split: SplitMode,
     /// The `CREATE2` factory facets are deployed through.
     pub deployer: [u8; 20],
     /// A test build that checks the contract's specs as it runs, and reverts with
     /// `SpecViolation(string)` when a call breaks one. It reads the contract's spec file,
-    /// and is never split.
+    /// and runs every module in the contract, facets included.
     pub check_specs: bool,
 }
 
@@ -62,7 +51,6 @@ impl Default for Options {
     fn default() -> Self {
         Self {
             size_limit: SIZE_LIMIT,
-            split: SplitMode::Auto,
             deployer: DEPLOYER,
             check_specs: false,
         }
@@ -76,15 +64,26 @@ pub(crate) struct Shape {
     pub keep: Option<HashSet<[u8; 4]>>,
     /// Selectors forwarded to a facet, by the facet's index.
     pub forward: Vec<([u8; 4], usize)>,
-    /// The facets' addresses.
+    /// The addresses of the facets selectors are forwarded to.
     pub parts: Vec<Word>,
     /// The ids of the immutables each facet reads after its calldata, in order.
     pub tails: Vec<Vec<String>>,
+    /// The functions of facet modules this code calls across, by index.
+    pub cross: BTreeMap<usize, Cross>,
     /// A facet: its creation code only copies it, since it has no `deploy`.
     pub part: bool,
-    /// No library facets: the code fits on its own or not at all.
-    pub local: bool,
     pub opts: Options,
+}
+
+/// A call across into a facet: the facet's address, the selector of its entrypoint for the
+/// function, whether it runs with `delegatecall`, on the caller's storage, rather than
+/// `staticcall`, and the ids of the immutables the facet reads after its calldata.
+#[derive(Clone)]
+pub(crate) struct Cross {
+    pub address: Word,
+    pub sel: [u8; 4],
+    pub delegate: bool,
+    pub tail: Vec<String>,
 }
 
 /// A module's facet: the module's name, its `CREATE2` address, its code, and every external
@@ -102,12 +101,33 @@ pub(crate) struct Facet {
     pub needs: Vec<Facet>,
     /// The ids of the immutables it reads after its calldata.
     pub immutables: Vec<String>,
-    /// A library facet: it runs one pure function, which code calls with `STATICCALL`.
-    pub library: bool,
+    /// The entrypoints contract code calls the module's functions through.
+    pub hidden: Vec<Hidden>,
 }
 
-/// A contract as it deploys: the router's code, and the facets it forwards to. A contract
-/// that fits has none, and its router is exactly the code an unsplit build produces.
+/// A facet's entrypoint for one of its module's functions, which no ABI lists: where the
+/// function is declared, its selector, and whether it is called with `delegatecall`.
+#[derive(Clone)]
+pub(crate) struct Hidden {
+    pub at: Site,
+    pub sel: [u8; 4],
+    pub delegate: bool,
+}
+
+/// Where a function is declared: its file, line, and column.
+pub(crate) type Site = (String, u32, u32);
+
+/// A function contract code can call across into its module's facet: where it is declared,
+/// whether it runs with `delegatecall`, and the errors it raises.
+#[derive(Clone, Debug)]
+pub(crate) struct Crossing {
+    pub at: Site,
+    pub delegate: bool,
+    pub raises: Vec<String>,
+}
+
+/// A contract as it deploys: the router's code, and the facets it runs modules from. A
+/// contract with no facets is its router, the code a build with no marks produces.
 pub(crate) struct Split {
     pub creation: Vec<u8>,
     pub runtime: Vec<u8>,
@@ -116,13 +136,12 @@ pub(crate) struct Split {
     /// The entrypoints the router forwards to a facet, grouped under the facet's module.
     pub routed: Vec<Entrypoint>,
     pub facets: Vec<Facet>,
-    /// Facets of contracts the router creates, and the library facets it and its facets call.
+    /// Facets of contracts the router creates.
     pub needs: Vec<Facet>,
-    /// The library facets the router and its facets call.
-    pub libraries: Vec<Facet>,
-    /// The unsplit runtime's size, when it did not fit and could be assembled at all: for a
-    /// contract that fits with library facets, its smallest without them.
-    pub whole: Option<usize>,
+    /// The functions the router's code calls across into a facet, by module.
+    pub across: Vec<(String, String)>,
+    /// Code over the size limit, and what takes its space.
+    pub warnings: Vec<String>,
 }
 
 impl Split {
@@ -160,8 +179,8 @@ impl Split {
     }
 }
 
-/// Compiles a contract, splitting it when it does not fit. A build this compiler already did
-/// for the same program and options is read back from the cache instead.
+/// Compiles a contract, with each module it marks `delegated` in its facet. A build this compiler
+/// already did for the same program and options is read back from the cache instead.
 pub(crate) fn build(checked: &Checked, name: &str, opts: &Options) -> Result<Split, Error> {
     let path = cache_path(checked, name, opts);
     if let Some(split) = path
@@ -180,71 +199,61 @@ pub(crate) fn build(checked: &Checked, name: &str, opts: &Options) -> Result<Spl
 
 fn build_uncached(checked: &Checked, name: &str, opts: &Options) -> Result<Split, Error> {
     let entries = gen::entrypoints(checked)?;
-    let modules = exposed(checked, &entries);
-    let mut whole = None;
-    if opts.split != SplitMode::All || modules.is_empty() {
-        // Library facets never stand in for module facets.
-        let whole_shape = Shape {
-            local: !modules.is_empty(),
-            opts: opts.clone(),
-            ..Shape::default()
-        };
-        match gen::codegen(checked, &whole_shape) {
-            Ok(built) if fits(&built, opts.size_limit) => {
-                return Ok(Split {
-                    creation: built.code,
-                    runtime: built.runtime,
-                    entries: Vec::new(),
-                    routed: Vec::new(),
-                    facets: Vec::new(),
-                    needs: built.needs,
-                    libraries: built.libraries,
-                    whole: built.local,
-                });
-            }
-            Ok(built) => whole = Some(built.runtime.len()),
-            Err(err) if too_large(&err) => {}
-            Err(err) => return Err(err),
+    let marked = marked(checked, opts);
+    let crossing: Vec<(String, Vec<Crossing>)> = marked
+        .iter()
+        .map(|m| (m.clone(), gen::crossable(checked, m)))
+        .collect();
+    let crossed = gen::stray_calls(checked, &marked, &stand_ins(checked, &crossing))?;
+    let facets = parallel(&crossing, |(module, crossing)| {
+        facet(checked, module, crossing, opts)
+    })?;
+    let mut shape = router_shape(checked, &entries, &facets, opts)?;
+    shape.cross.retain(|idx, _| crossed.contains(idx));
+    let built = gen::codegen(checked, &shape).map_err(|err| {
+        if too_large(&err) {
+            error(
+                0,
+                0,
+                format!(
+                    "contract `{name}` is over 65,535 bytes, which can't be assembled{}",
+                    facet_hint(checked, &marked)
+                ),
+            )
+        } else {
+            err
         }
-        if opts.split == SplitMode::Off || modules.is_empty() {
-            let mut err = oversized(checked, name, opts, &entries, whole);
-            if opts.split != SplitMode::Off {
-                err.message.push_str(
-                    "\n\nonly a module exposed with `use M exposing`, or a pure function a library facet runs, can move out of the contract; its own entrypoints stay in the router",
-                );
-            }
-            return Err(err);
-        }
-        let all = Options {
-            split: SplitMode::All,
-            ..opts.clone()
-        };
-        let mut split = build(checked, name, &all)?;
-        split.whole = whole;
-        return Ok(split);
+    })?;
+    let mut warnings = Vec::new();
+    if !fits(&built, opts.size_limit) {
+        warnings.push(oversized(checked, name, opts, &shape, &marked, &built));
     }
-    let facets = parallel(&modules, |module| facet(checked, module, opts))?;
-    let chosen: Vec<usize> = (0..facets.len()).collect();
-    let shape = router_shape(&entries, &facets, &chosen, opts);
-    let Some(built) = measure(checked, &shape, opts)? else {
-        let built = gen::codegen(checked, &shape).ok();
-        return Err(error(
-            0,
-            0,
-            format!(
-                "contract `{name}` does not fit with every exposed module in its facet: its router {}\n\nwhat the contract writes itself stays in the router; move entrypoints into modules and expose them with `use M exposing`",
-                too_big(built.as_ref(), opts)
-            ),
-        ));
+    for facet in &facets {
+        if facet.runtime.len() > opts.size_limit || facet.init.len() > 2 * opts.size_limit {
+            let what = format!("module `{}`'s facet", facet.name);
+            warnings.push(warning(
+                checked,
+                &format!("{what} {}", too_big(facet.runtime.len(), facet.init.len(), opts)),
+                "a facet holds its module and copies of the modules it requires; split the module, or move what it requires into modules of their own",
+            ));
+        }
+    }
+    let (routed, entries): (Vec<Entrypoint>, Vec<Entrypoint>) = if facets.is_empty() {
+        (Vec::new(), Vec::new())
+    } else {
+        entries
+            .into_iter()
+            .partition(|entry| matches!(&entry.group, Group::Module(m) if marked.contains(m)))
     };
-    let (routed, entries): (Vec<Entrypoint>, Vec<Entrypoint>) = entries
-        .into_iter()
-        .partition(|entry| is_module(entry, &chosen, &facets));
-    let facets: Vec<Facet> = chosen.iter().map(|&i| facets[i].clone()).collect();
-    let mut libraries = built.libraries;
-    for lib in facets.iter().flat_map(|f| &f.needs).filter(|f| f.library) {
-        if libraries.iter().all(|have| have.address != lib.address) {
-            libraries.push(lib.clone());
+    let mut across: Vec<(String, String)> = Vec::new();
+    for &idx in shape.cross.keys() {
+        let func = &checked.prog.funcs[idx];
+        let pair = (
+            func.module.clone().unwrap_or_default(),
+            display_name(&func.name).to_string(),
+        );
+        if !across.contains(&pair) {
+            across.push(pair);
         }
     }
     Ok(Split {
@@ -254,64 +263,118 @@ fn build_uncached(checked: &Checked, name: &str, opts: &Options) -> Result<Split
         routed,
         facets,
         needs: built.needs,
-        libraries,
-        whole,
+        across,
+        warnings,
     })
 }
 
-fn is_module(entry: &Entrypoint, chosen: &[usize], facets: &[Facet]) -> bool {
-    matches!(&entry.group, Group::Module(m) if chosen.iter().any(|&i| &facets[i].name == m))
-}
-
-/// The modules whose externals the contract declares, in `use` order.
-fn exposed(checked: &Checked, entries: &[Entrypoint]) -> Vec<String> {
-    checked
-        .prog
-        .compose
+/// The modules the contract marks `delegated`, in `use` order. A spec-checking build runs every
+/// module in the contract, where it can check them.
+fn marked(checked: &Checked, opts: &Options) -> Vec<String> {
+    if opts.check_specs {
+        return Vec::new();
+    }
+    let prog = &checked.prog;
+    prog.compose
         .iter()
         .map(|module| module.name.clone())
-        .filter(|module| {
-            entries
-                .iter()
-                .any(|entry| matches!(&entry.group, Group::Module(m) if m == module))
-        })
+        .filter(|module| prog.facets.iter().any(|mark| &mark.name == module))
         .collect()
 }
 
-/// The router with the modules in `chosen` forwarded to their facets.
+/// The router: each exposed external of a facet module forwarded to its facet, and each call
+/// the contract's code makes into a facet module's function sent across to it.
 fn router_shape(
+    checked: &Checked,
     entries: &[Entrypoint],
     facets: &[Facet],
-    chosen: &[usize],
     opts: &Options,
-) -> Shape {
+) -> Result<Shape, Error> {
+    let mut shape = Shape {
+        opts: opts.clone(),
+        ..Shape::default()
+    };
+    if facets.is_empty() {
+        return Ok(shape);
+    }
     let mut keep = HashSet::new();
-    let mut forward = Vec::new();
+    let mut parts: Vec<usize> = Vec::new();
     for entry in entries {
-        let to = chosen
+        match facets
             .iter()
-            .position(|&i| matches!(&entry.group, Group::Module(m) if m == &facets[i].name));
-        match to {
-            Some(k) => forward.push((entry.sel, k)),
+            .position(|f| matches!(&entry.group, Group::Module(m) if m == &f.name))
+        {
+            Some(i) => {
+                let k = match parts.iter().position(|&p| p == i) {
+                    Some(k) => k,
+                    None => {
+                        parts.push(i);
+                        parts.len() - 1
+                    }
+                };
+                shape.forward.push((entry.sel, k));
+            }
             None => {
                 keep.insert(entry.sel);
             }
         }
     }
-    Shape {
-        keep: Some(keep),
-        forward,
-        parts: chosen
+    shape.keep = Some(keep);
+    shape.parts = parts
+        .iter()
+        .map(|&i| address_word(facets[i].address))
+        .collect();
+    shape.tails = parts.iter().map(|&i| facets[i].immutables.clone()).collect();
+    for (idx, func) in checked.prog.funcs.iter().enumerate() {
+        let Some(facet) = facets
             .iter()
-            .map(|&i| address_word(facets[i].address))
-            .collect(),
-        tails: chosen
-            .iter()
-            .map(|&i| facets[i].immutables.clone())
-            .collect(),
-        opts: opts.clone(),
-        ..Shape::default()
+            .find(|f| func.module.as_deref() == Some(f.name.as_str()))
+        else {
+            continue;
+        };
+        let at = (func.origin.clone(), func.line, func.col);
+        if let Some(hidden) = facet.hidden.iter().find(|h| h.at == at) {
+            shape.cross.insert(
+                idx,
+                Cross {
+                    address: address_word(facet.address),
+                    sel: hidden.sel,
+                    delegate: hidden.delegate,
+                    tail: facet.immutables.clone(),
+                },
+            );
+        }
     }
+    Ok(shape)
+}
+
+/// A call across for every function of the modules in `crossing` that contract code can call
+/// across, to a stand-in facet: what `gen::stray_calls` checks calls against before any facet
+/// is built.
+fn stand_ins(checked: &Checked, crossing: &[(String, Vec<Crossing>)]) -> BTreeMap<usize, Cross> {
+    let stand_in = address_word([0xfa; 20]);
+    let mut out = BTreeMap::new();
+    for (idx, func) in checked.prog.funcs.iter().enumerate() {
+        let Some((_, crossing)) = crossing
+            .iter()
+            .find(|(m, _)| func.module.as_deref() == Some(m.as_str()) && func.exported.is_none())
+        else {
+            continue;
+        };
+        let at = (func.origin.clone(), func.line, func.col);
+        if let Some(c) = crossing.iter().find(|c| c.at == at) {
+            out.insert(
+                idx,
+                Cross {
+                    address: stand_in,
+                    sel: selector(&func.name),
+                    delegate: c.delegate,
+                    tail: Vec::new(),
+                },
+            );
+        }
+    }
+    out
 }
 
 /// Runs `f` on each item on its own thread, keeping the order.
@@ -338,16 +401,6 @@ fn parallel<T: Sync, R: Send>(
     })
 }
 
-/// Compiles `shape`, or `None` when the code does not fit.
-fn measure(checked: &Checked, shape: &Shape, opts: &Options) -> Result<Option<Built>, Error> {
-    match gen::codegen(checked, shape) {
-        Ok(built) if fits(&built, opts.size_limit) => Ok(Some(built)),
-        Ok(_) => Ok(None),
-        Err(err) if too_large(&err) => Ok(None),
-        Err(err) => Err(err),
-    }
-}
-
 fn fits(built: &Built, limit: usize) -> bool {
     built.runtime.len() <= limit && built.code.len() <= 2 * limit
 }
@@ -358,61 +411,115 @@ fn too_large(err: &Error) -> bool {
 }
 
 /// A module's facet. It is built from the module and the modules it requires, and nothing of
-/// the contract, so every contract that exposes the module gets the same code at the same
+/// the contract, so every contract that marks the module gets the same code at the same
 /// address.
-fn facet(checked: &Checked, module: &str, opts: &Options) -> Result<Facet, Error> {
-    let prog = facet_program(&checked.source, module);
+fn facet(
+    checked: &Checked,
+    module: &str,
+    crossing: &[Crossing],
+    opts: &Options,
+) -> Result<Facet, Error> {
+    let externals = checked
+        .source
+        .modules
+        .iter()
+        .filter(|m| m.name == module)
+        .flat_map(|m| &m.funcs)
+        .any(|f| matches!(f.kind, ItemKind::Entry | ItemKind::View));
+    if crossing.is_empty() && !externals {
+        return Err(error(
+            0,
+            0,
+            format!(
+                "module `{module}` has nothing to run from a facet: no externals, and no function contract code can call across; use it without `{}`",
+                crate::parse::DELEGATED
+            ),
+        ));
+    }
+    let mut prog = facet_program(&checked.source, module, crossing);
+    let scopes = std::mem::take(&mut prog.scopes);
     let key = (
         keccak256(format!("{prog:?}\0{opts:?}").as_bytes()),
         module.to_string(),
     );
+    prog.scopes = scopes;
     static BUILT: OnceLock<Mutex<HashMap<([u8; 32], String), Facet>>> = OnceLock::new();
     let memo = BUILT.get_or_init(|| Mutex::new(HashMap::new()));
     if let Some(facet) = memo.lock().ok().and_then(|memo| memo.get(&key).cloned()) {
         return Ok(facet);
     }
-    // A module that leans on something only the contract declares can't be built alone.
-    let checked = crate::check::check(prog).map_err(|err| Error {
+    let whose = |err: Error| Error {
         message: format!(
             "module `{module}`'s facet is built from the module alone: {}",
             err.message
         ),
         ..err
-    })?;
+    };
+    // A module that leans on something only the contract declares can't be built alone.
+    let checked = crate::check::check(prog).map_err(whose)?;
     let shape = Shape {
         part: true,
         opts: opts.clone(),
         ..Shape::default()
     };
-    let built = match measure(&checked, &shape, opts)? {
-        Some(built) => built,
-        None => {
-            let built = gen::codegen(&checked, &shape).ok();
-            return Err(error(
+    let built = gen::codegen(&checked, &shape).map_err(|err| {
+        if too_large(&err) {
+            error(
                 0,
                 0,
-                format!(
-                    "module `{module}`'s facet {}",
-                    too_big(built.as_ref(), opts)
-                ),
-            ));
+                format!("module `{module}`'s facet is over 65,535 bytes, which can't be assembled"),
+            )
+        } else {
+            err
         }
-    };
+    })?;
+    let mut hidden = Vec::new();
+    for Crossing { at, delegate, .. } in crossing {
+        let entry = entry_name(module, at, &checked);
+        let sel = checked
+            .prog
+            .funcs
+            .iter()
+            .find(|f| Some(&f.name) == entry.as_ref())
+            .and_then(|f| match f.kind {
+                ItemKind::View => crate::route::view_sig(&checked, f).ok().map(|s| selector(&s)),
+                _ => checked
+                    .routes
+                    .iter()
+                    .find(|r| r.name == f.name && r.by_selector())
+                    .map(|r| r.sel),
+            })
+            .ok_or_else(|| error(0, 0, format!("internal: `{module}`'s facet lost an entrypoint")))?;
+        hidden.push(Hidden {
+            at: at.clone(),
+            sel,
+            delegate: *delegate,
+        });
+    }
+    let mut abi = crate::route::abi(&checked)?;
+    abi.items
+        .retain(|item| !matches!(item, AbiItem::Function(f) if is_hidden(&f.name)));
     let facet = Facet {
         name: module.to_string(),
         address: create2(&opts.deployer, &built.code),
         init: built.code,
         runtime: built.runtime,
-        entries: gen::entrypoints(&checked)?,
-        abi: crate::route::abi(&checked)?,
-        methods: crate::route::method_ids(&checked)?,
+        entries: gen::entrypoints(&checked)?
+            .into_iter()
+            .filter(|entry| !is_hidden(&entry.name))
+            .collect(),
+        abi,
+        methods: crate::route::method_ids(&checked)?
+            .into_iter()
+            .filter(|(sig, _)| !is_hidden(sig))
+            .collect(),
         needs: built.needs,
         immutables: checked
             .immutables
             .iter()
             .map(|block| block.id.clone())
             .collect(),
-        library: false,
+        hidden,
     };
     if let Ok(mut memo) = memo.lock() {
         memo.insert(key, facet.clone());
@@ -420,15 +527,43 @@ fn facet(checked: &Checked, module: &str, opts: &Options) -> Result<Facet, Error
     Ok(facet)
 }
 
+/// What a hidden entrypoint's name ends with: no source can write it, and no ABI lists it.
+const HIDDEN: &str = "#facet";
+
+fn is_hidden(name: &str) -> bool {
+    name.contains(HIDDEN)
+}
+
+/// The name of the facet's entrypoint for the function declared at `at`, if it has one.
+fn entry_name(module: &str, at: &Site, checked: &Checked) -> Option<String> {
+    checked
+        .prog
+        .funcs
+        .iter()
+        .find(|f| {
+            f.module.as_deref() == Some(module)
+                && f.exported.is_none()
+                && (f.origin.as_str(), f.line, f.col) == (at.0.as_str(), at.1, at.2)
+        })
+        .map(|f| format!("{}{HIDDEN}", f.name))
+}
+
+/// A name as source writes it: no overload or copy suffix, and no file a private name keeps.
+pub(crate) fn display_name(name: &str) -> &str {
+    crate::modules::shown(name.split(['@', '#']).next().unwrap_or(name))
+}
+
 /// The program a module's facet is built from: the module, what it requires in a fixed order,
-/// and every one of its externals declared. Everything the contract's own file declares
-/// outside its modules is gone; what imported files declare stays, for their modules.
-pub(crate) fn facet_program(source: &Program, module: &str) -> Program {
+/// every one of its externals declared, and an entrypoint for each function in `crossing`,
+/// which contract code calls across. Everything the contract's own file declares outside
+/// its modules is gone; what imported files declare stays, for their modules.
+pub(crate) fn facet_program(source: &Program, module: &str, crossing: &[Crossing]) -> Program {
     let mut prog = source.clone();
     let own = source.origin.as_str();
     prog.funcs.clear();
     prog.domains.clear();
     prog.exposes.clear();
+    prog.facets.clear();
     prog.types
         .retain(|decl| decl.name != "storage" && decl.origin != own);
     prog.errors.retain(|decl| decl.origin != own);
@@ -465,22 +600,37 @@ pub(crate) fn facet_program(source: &Program, module: &str) -> Program {
             col: decl.col,
             name: module.to_string(),
         });
-        prog.exposes.push(Exposing {
-            line: decl.line,
-            col: decl.col,
-            module: module.to_string(),
-            interfaces: Vec::new(),
-            decls: decl
-                .funcs
-                .iter()
-                .filter(|func| matches!(func.kind, ItemKind::Entry | ItemKind::View))
-                .map(|func| Func {
-                    stmts: Vec::new(),
-                    tail: None,
-                    ..func.clone()
-                })
-                .collect(),
-        });
+        let externals: Vec<Func> = decl
+            .funcs
+            .iter()
+            .filter(|func| matches!(func.kind, ItemKind::Entry | ItemKind::View))
+            .map(|func| Func {
+                stmts: Vec::new(),
+                tail: None,
+                ..func.clone()
+            })
+            .collect();
+        if !externals.is_empty() {
+            prog.exposes.push(Exposing {
+                line: decl.line,
+                col: decl.col,
+                module: module.to_string(),
+                interfaces: Vec::new(),
+                decls: externals,
+            });
+        }
+        let entries: Vec<Func> = crossing
+            .iter()
+            .filter_map(|crossing| {
+                let at = &crossing.at;
+                let func = decl
+                    .funcs
+                    .iter()
+                    .find(|f| (f.origin.as_str(), f.line, f.col) == (at.0.as_str(), at.1, at.2))?;
+                Some(across(module, decl, func, crossing))
+            })
+            .collect();
+        prog.funcs.extend(entries);
     }
     // A module's guards are the contract's to check, in its router: the facet runs every
     // external unguarded.
@@ -499,200 +649,107 @@ pub(crate) fn facet_program(source: &Program, module: &str) -> Program {
     prog
 }
 
-/// The library facet that runs the pure function `func`, whose calls reach the functions in
-/// `calls`, and the gas a call's run of it costs there, when it can be built and fits. It is
-/// built from the function and what it calls alone, so every contract that calls the same
-/// function gets the same code at the same address.
-pub(crate) fn library(
-    checked: &Checked,
-    func: usize,
-    calls: &[usize],
-    opts: &Options,
-) -> Option<(Facet, f64)> {
-    let (mut prog, name) = library_program(checked, func, calls)?;
-    let scopes = std::mem::take(&mut prog.scopes);
-    let key = keccak256(format!("{prog:?}\0{opts:?}\0{}", crate::asm::byte_gas()).as_bytes());
-    prog.scopes = scopes;
-    type Libraries = HashMap<[u8; 32], Option<(Facet, f64)>>;
-    static BUILT: OnceLock<Mutex<Libraries>> = OnceLock::new();
-    let memo = BUILT.get_or_init(|| Mutex::new(HashMap::new()));
-    if let Some(built) = memo.lock().ok().and_then(|memo| memo.get(&key).cloned()) {
-        return built;
-    }
-    let built = crate::check::check(prog).ok().and_then(|lib| {
-        let shape = Shape {
-            part: true,
-            opts: opts.clone(),
-            ..Shape::default()
-        };
-        let built = measure(&lib, &shape, opts).ok()??;
-        let facet = Facet {
-            name,
-            address: create2(&opts.deployer, &built.code),
-            init: built.code,
-            runtime: built.runtime,
-            entries: gen::entrypoints(&lib).ok()?,
-            abi: crate::route::abi(&lib).ok()?,
-            methods: crate::route::method_ids(&lib).ok()?,
-            needs: built.needs,
-            immutables: Vec::new(),
-            library: true,
-        };
-        Some((facet, built.gas))
-    });
-    if let Ok(mut memo) = memo.lock() {
-        memo.insert(key, built.clone());
-    }
-    built
-}
-
-/// The program a library facet is built from, and how the facet is listed: the function, as
-/// its one entrypoint, an `external pure function`, then every function it calls, the
-/// constants and declarations they can name, and the modules they belong to. A function that
-/// returns `unit` returns `true` from the entrypoint, since an external must return a value.
-fn library_program(checked: &Checked, func: usize, calls: &[usize]) -> Option<(Program, String)> {
-    let at = |f: &Func| (f.origin.clone(), f.line, f.col);
-    let target = &checked.prog.funcs[func];
-    let keep: HashSet<(String, u32, u32)> =
-        calls.iter().map(|&i| at(&checked.prog.funcs[i])).collect();
-    let kept = |f: &Func| {
-        keep.contains(&at(f))
-            || f.kind == ItemKind::Pure && f.params.is_empty() && f.type_params.is_empty()
-    };
-    let mut prog = checked.source.clone();
-    let decl = prog
+/// The facet's entrypoint for `func`: payable, since `delegatecall` passes the caller's
+/// value through, and returning `true` for a pure or view function with no result, as an
+/// external must return something.
+fn across(module: &str, decl: &crate::ast::ModuleDecl, func: &Func, crossing: &Crossing) -> Func {
+    let (line, col) = (func.line, func.col);
+    let overloads: Vec<&Func> = decl
         .funcs
         .iter()
-        .chain(prog.modules.iter().flat_map(|m| &m.funcs))
-        .find(|f| at(f) == at(target) && f.kind == ItemKind::Pure)?
-        .clone();
-    if !decl.type_params.is_empty() || target.errors.contains(&crate::check::FORWARDED) {
-        return None;
-    }
-    let module = prog
-        .modules
-        .iter()
-        .find(|m| m.funcs.iter().any(|f| at(f) == at(&decl)))
-        .map(|m| m.name.clone());
-    let mut needed = Vec::new();
-    for &i in calls {
-        if let Some(m) = &checked.prog.funcs[i].module {
-            closure(&prog.modules, m, &mut needed);
-        }
-    }
-    prog.compose.retain(|m| needed.contains(&m.name));
-    prog.funcs.retain(|f| kept(f));
-    for m in &mut prog.modules {
-        m.funcs.retain(|f| kept(f));
-        m.domains.clear();
-        m.specs.clear();
-        m.guards.clear();
-    }
-    prog.guards.clear();
-    prog.domains.clear();
-    prog.exposes.clear();
-    prog.supports.clear();
-    prog.specs.clear();
-    prog.siblings.clear();
-    prog.peers.clear();
-    prog.upgradeable = false;
-    prog.guard = None;
-    prog.types.retain(|decl| decl.name != "storage");
-    prog.types.push(TypeDecl {
-        line: 0,
-        col: 0,
-        private: false,
-        origin: String::new(),
-        name: "storage".to_string(),
-        ty: TypeRef::Record {
-            line: 0,
-            col: 0,
-            fields: Vec::new(),
-            tuple: false,
+        .filter(|f| f.name == func.name && !matches!(f.kind, ItemKind::Entry | ItemKind::View))
+        .collect();
+    let callee = match overloads.iter().position(|f| std::ptr::eq(*f, func)) {
+        Some(k) if overloads.len() > 1 => format!("{module}.{}@{}", func.name, k + 1),
+        _ => format!("{module}.{}", func.name),
+    };
+    let call = Expr::Call {
+        line,
+        col,
+        name: callee.clone(),
+        args: func
+            .params
+            .iter()
+            .map(|p| Expr::Ident {
+                line: p.line,
+                col: p.col,
+                name: p.name.clone(),
+                sym: None,
+                builtin: None,
+                ty: 0,
+            })
+            .collect(),
+        base: None,
+        callee: None,
+        builtin: None,
+        iface: None,
+        method: None,
+        ty: 0,
+    };
+    let mut entry = Func {
+        kind: if crossing.delegate && func.kind == ItemKind::Function {
+            ItemKind::Entry
+        } else {
+            ItemKind::View
         },
-    });
-    // The function itself becomes the entrypoint. Nothing it calls can call it back.
-    let (line, col) = (decl.line, decl.col);
-    let mut entry = decl.clone();
-    entry.kind = ItemKind::View;
-    entry.external_pure = true;
-    entry.private = false;
-    if entry.raises.is_none() && !target.errors.is_empty() {
-        entry.raises = Some(Raises {
-            parts: target
-                .errors
+        external_pure: func.kind == ItemKind::Pure,
+        payable: true,
+        private: false,
+        nonreentrant: false,
+        name: format!("{callee}{HIDDEN}"),
+        params: func
+            .params
+            .iter()
+            .map(|p| crate::ast::Param {
+                mutable: false,
+                ..p.clone()
+            })
+            .collect(),
+        raises: (!crossing.raises.is_empty()).then(|| Raises {
+            parts: crossing
+                .raises
                 .iter()
-                .map(|&id| NameAt {
+                .map(|name| NameAt {
                     line,
                     col,
-                    name: checked.errors[id].name.clone(),
+                    name: name.clone(),
                 })
                 .collect(),
-        });
-    }
-    if entry.ret.is_none() {
-        if let Some(tail) = entry.tail.take() {
-            if !matches!(tail, Expr::Call { .. }) {
-                return None;
-            }
-            entry.stmts.push(Stmt::Call {
-                line,
-                col,
-                expr: tail,
-            });
-        }
-        entry.ret = Some(TypeRef::Name {
-            line,
-            col,
-            name: "bool".to_string(),
-        });
-        entry.tail = Some(Expr::Lit {
-            line,
-            col,
-            lit: Lit::Bool(true),
-            ty: 0,
-        });
-    }
-    let short = decl
-        .name
-        .rsplit(['.', ':'])
-        .next()
-        .unwrap_or(&decl.name)
-        .split(['@', '#'])
-        .next()
-        .unwrap_or(&decl.name)
-        .to_string();
-    let same = |f: &Func| at(f) == at(&decl) && f.kind == ItemKind::Pure;
-    let name = match &module {
-        Some(m) => {
-            let owner = prog.modules.iter_mut().find(|d| &d.name == m)?;
-            let own = owner.funcs.iter_mut().find(|f| same(f))?;
-            *own = entry.clone();
-            prog.exposes.push(Exposing {
-                line,
-                col,
-                module: m.clone(),
-                interfaces: Vec::new(),
-                decls: vec![Func {
-                    stmts: Vec::new(),
-                    tail: None,
-                    ..entry
-                }],
-            });
-            format!("{m}.{short}")
-        }
-        None => {
-            let own = prog.funcs.iter_mut().find(|f| same(f))?;
-            *own = entry;
-            short.clone()
-        }
+        }),
+        stmts: Vec::new(),
+        tail: None,
+        module: None,
+        exported: None,
+        guarded: None,
+        ..func.clone()
     };
-    prog.contract_name = Some(short);
-    Some((prog, name))
+    if func.ret.is_some() {
+        entry.tail = Some(call);
+    } else {
+        entry.stmts.push(Stmt::Call {
+            line,
+            col,
+            expr: call,
+        });
+        if entry.kind == ItemKind::View {
+            entry.ret = Some(TypeRef::Name {
+                line,
+                col,
+                name: "bool".to_string(),
+            });
+            entry.tail = Some(Expr::Lit {
+                line,
+                col,
+                lit: Lit::Bool(true),
+                ty: 0,
+            });
+        }
+    }
+    entry
 }
 
 /// `module` after everything it requires, each once, required modules in name order.
-fn closure(modules: &[ModuleDecl], module: &str, out: &mut Vec<String>) {
+fn closure(modules: &[crate::ast::ModuleDecl], module: &str, out: &mut Vec<String>) {
     if out.iter().any(|name| name == module) {
         return;
     }
@@ -730,76 +787,210 @@ fn groups(checked: &Checked, entries: &[Entrypoint]) -> Vec<(Group, Vec<usize>)>
         .collect()
 }
 
-/// A contract over the limit that cannot split: its size, and what each group adds to it.
+/// `path:line:col: warning: message`, at the contract's name, and a hint after it.
+fn warning(checked: &Checked, message: &str, hint: &str) -> String {
+    let prog = &checked.prog;
+    let at = if prog.contract_line > 0 {
+        format!(":{}:{}", prog.contract_line, prog.contract_col)
+    } else {
+        String::new()
+    };
+    format!(
+        "{}{at}: warning: {message}\n\n{hint}\n",
+        crate::shown_path(&prog.origin)
+    )
+}
+
+/// What a router over the limit spends its bytes on: its own entrypoints, by group, and each
+/// module it runs in the contract, with what marking the module `delegated` would save.
 fn oversized(
     checked: &Checked,
     name: &str,
     opts: &Options,
-    entries: &[Entrypoint],
-    whole: Option<usize>,
-) -> Error {
-    let limit = thousands(opts.size_limit);
-    let Some(whole) = whole else {
-        return error(
-            0,
-            0,
-            format!("contract `{name}` is over 65,535 bytes; the limit is {limit}"),
-        );
-    };
-    let groups = groups(checked, entries);
-    let rows = parallel(&groups, |(group, idx)| {
-        let keep: HashSet<[u8; 4]> = entries
-            .iter()
-            .enumerate()
-            .filter(|(i, _)| !idx.contains(i))
-            .map(|(_, entry)| entry.sel)
-            .collect();
-        let shape = Shape {
-            keep: Some(keep),
-            opts: opts.clone(),
-            ..Shape::default()
-        };
-        let without = gen::codegen(checked, &shape).map_or(0, |built| built.runtime.len());
-        Ok((label(group, name), whole.saturating_sub(without)))
-    });
-    let mut rows = rows.unwrap_or_default();
+    shape: &Shape,
+    marked: &[String],
+    built: &Built,
+) -> String {
+    let whole = built.runtime.len();
+    let entries = gen::entrypoints(checked).unwrap_or_default();
+    let kept = |entry: &Entrypoint| shape.keep.as_ref().is_none_or(|k| k.contains(&entry.sel));
+    let own: Vec<(Group, Vec<usize>)> = groups(checked, &entries)
+        .into_iter()
+        .filter(|(group, _)| matches!(group, Group::Upgrade | Group::Contract))
+        .collect();
+    let unmarked: Vec<String> = checked
+        .prog
+        .compose
+        .iter()
+        .map(|m| m.name.clone())
+        .filter(|m| !marked.contains(m))
+        .collect();
+    enum Row {
+        Own(Group, Vec<usize>),
+        Module(String),
+    }
+    let rows: Vec<Row> = own
+        .into_iter()
+        .map(|(group, idx)| Row::Own(group, idx))
+        .chain(unmarked.into_iter().map(Row::Module))
+        .collect();
+    let measured = parallel(&rows, |row| {
+        Ok(match row {
+            Row::Own(group, idx) => {
+                let keep: HashSet<[u8; 4]> = entries
+                    .iter()
+                    .enumerate()
+                    .filter(|(i, entry)| !idx.contains(i) && kept(entry))
+                    .map(|(_, entry)| entry.sel)
+                    .collect();
+                let without = Shape {
+                    keep: Some(keep),
+                    ..shape.clone()
+                };
+                let size = gen::codegen(checked, &without).map_or(0, |b| b.runtime.len());
+                (label(group, name), Ok(whole.saturating_sub(size)))
+            }
+            Row::Module(module) => (module.clone(), marking_saves(checked, shape, module, whole)),
+        })
+    })
+    .unwrap_or_default();
+    let mut rows: Vec<(String, Option<usize>, String)> = measured
+        .into_iter()
+        .filter(|(_, saved)| !matches!(saved, Ok(0)))
+        .map(|(label, saved)| match saved {
+            Ok(n) => (label, Some(n), String::new()),
+            Err(why) => (label, None, why),
+        })
+        .collect();
     rows.sort_by_key(|row| std::cmp::Reverse(row.1));
-    let attributed: usize = rows.iter().map(|(_, n)| n).sum();
+    let attributed: usize = rows.iter().filter_map(|row| row.1).sum();
     rows.push((
         "(dispatch and shared code)".to_string(),
-        whole.saturating_sub(attributed),
+        Some(whole.saturating_sub(attributed)),
+        String::new(),
     ));
-    let width = rows.iter().map(|(label, _)| label.len()).max().unwrap_or(0);
+    let width = rows.iter().map(|row| row.0.len()).max().unwrap_or(0);
     let digits = rows
         .iter()
-        .map(|(_, n)| thousands(*n).len())
+        .filter_map(|row| row.1)
+        .map(|n| thousands(n).len())
         .max()
         .unwrap_or(0);
     let mut msg = format!(
-        "contract `{name}` is {} bytes; the limit is {limit}",
-        thousands(whole)
+        "contract `{name}` {}",
+        too_big(whole, built.code.len(), opts)
     );
-    for (label, n) in rows {
-        msg.push_str(&format!("\n  {label:width$}  {:>digits$}", thousands(n)));
+    for (label, n, why) in &rows {
+        let n = n.map(thousands).unwrap_or_default();
+        let line = format!("  {label:width$}  {n:>digits$}  {why}");
+        msg.push('\n');
+        msg.push_str(line.trim_end());
     }
-    error(0, 0, msg)
+    let hint = format!(
+        "each module's row is what the contract saves when the module runs from its own facet contract instead: mark it with `use M {f};` or `use M {f} exposing ...;`. The contract's own row is its entrypoints, which stay in it",
+        f = crate::parse::DELEGATED
+    );
+    warning(checked, &msg, &hint)
 }
 
-/// Why code on its own does not fit: its runtime, or its creation code, is over the limit.
-fn too_big(built: Option<&Built>, opts: &Options) -> String {
+/// What the router saves when `module` runs from a facet too: its exposed externals
+/// forwarded and its functions called across, measured against a stand-in facet. `Err` says
+/// why the module can't be a facet.
+fn marking_saves(
+    checked: &Checked,
+    shape: &Shape,
+    module: &str,
+    whole: usize,
+) -> Result<usize, String> {
+    let decl = checked.prog.modules.iter().find(|m| m.name == module);
+    if decl.is_some_and(|m| !m.params.is_empty()) {
+        return Err("can't be a facet: it is generic".to_string());
+    }
+    let stand_in = address_word([0xfa; 20]);
+    let mut marked = shape.clone();
+    let entries = gen::entrypoints(checked).unwrap_or_default();
+    let part = marked.parts.len();
+    let mut forwarded = false;
+    for entry in &entries {
+        if matches!(&entry.group, Group::Module(m) if m == module) {
+            if let Some(keep) = &mut marked.keep {
+                keep.remove(&entry.sel);
+            }
+            marked.forward.push((entry.sel, part));
+            forwarded = true;
+        }
+    }
+    if marked.keep.is_none() && forwarded {
+        marked.keep = Some(
+            entries
+                .iter()
+                .filter(|e| !matches!(&e.group, Group::Module(m) if m == module))
+                .map(|e| e.sel)
+                .collect(),
+        );
+    }
+    if forwarded {
+        marked.parts.push(stand_in);
+        marked.tails.push(Vec::new());
+    }
+    let crossing = [(module.to_string(), gen::crossable(checked, module))];
+    marked.cross.extend(stand_ins(checked, &crossing));
+    let mut facets: Vec<String> = checked
+        .prog
+        .facets
+        .iter()
+        .map(|m| m.name.clone())
+        .collect();
+    facets.push(module.to_string());
+    if let Ok((Some(stray), _)) = gen::stray_call(checked, &facets, &marked.cross) {
+        let callee = display_name(&checked.prog.funcs[stray.callee].name);
+        return Err(format!(
+            "can't be a facet: `{callee}` can't be called across, as {}",
+            stray.why
+        ));
+    }
+    let size = gen::codegen(checked, &marked)
+        .map_err(|err| format!("can't be a facet: {}", err.message))?
+        .runtime
+        .len();
+    Ok(whole.saturating_sub(size))
+}
+
+/// For a contract too large to assemble: the modules it could run from facets.
+fn facet_hint(checked: &Checked, marked: &[String]) -> String {
+    let unmarked: Vec<String> = checked
+        .prog
+        .compose
+        .iter()
+        .filter(|m| !marked.contains(&m.name))
+        .map(|m| format!("`{}`", m.name))
+        .collect();
+    if unmarked.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "; mark modules `{}` to run their code from facets: {}",
+            crate::parse::DELEGATED,
+            unmarked.join(", ")
+        )
+    }
+}
+
+/// How code is over the limit: its runtime, or its creation code.
+fn too_big(runtime: usize, creation: usize, opts: &Options) -> String {
     let limit = opts.size_limit;
-    match built {
-        Some(built) if built.runtime.len() <= limit => format!(
+    if runtime <= limit {
+        format!(
             "has {} bytes of creation code; the limit is {}",
-            thousands(built.code.len()),
+            thousands(creation),
             thousands(2 * limit)
-        ),
-        Some(built) => format!(
+        )
+    } else {
+        format!(
             "is {} bytes; the limit is {}",
-            thousands(built.runtime.len()),
+            thousands(runtime),
             thousands(limit)
-        ),
-        None => format!("is over 65,535 bytes; the limit is {}", thousands(limit)),
+        )
     }
 }
 
@@ -894,8 +1085,15 @@ fn encode(split: &Split) -> Vec<u8> {
     put_entries(&mut out, &split.routed);
     put_facets(&mut out, &split.facets);
     put_facets(&mut out, &split.needs);
-    put_facets(&mut out, &split.libraries);
-    put_len(&mut out, split.whole.map_or(0, |n| n + 1));
+    put_len(&mut out, split.across.len());
+    for (module, func) in &split.across {
+        put_bytes(&mut out, module.as_bytes());
+        put_bytes(&mut out, func.as_bytes());
+    }
+    put_len(&mut out, split.warnings.len());
+    for warning in &split.warnings {
+        put_bytes(&mut out, warning.as_bytes());
+    }
     out
 }
 
@@ -943,7 +1141,14 @@ fn put_facets(out: &mut Vec<u8>, facets: &[Facet]) {
         for id in &facet.immutables {
             put_bytes(out, id.as_bytes());
         }
-        put_len(out, facet.library as usize);
+        put_len(out, facet.hidden.len());
+        for hidden in &facet.hidden {
+            put_bytes(out, hidden.at.0.as_bytes());
+            put_len(out, hidden.at.1 as usize);
+            put_len(out, hidden.at.2 as usize);
+            out.extend_from_slice(&hidden.sel);
+            put_len(out, hidden.delegate as usize);
+        }
     }
 }
 
@@ -1026,8 +1231,10 @@ fn decode(bytes: &[u8]) -> Option<Split> {
         routed: r.entries()?,
         facets: r.facets()?,
         needs: r.facets()?,
-        libraries: r.facets()?,
-        whole: r.len()?.checked_sub(1),
+        across: (0..r.len()?)
+            .map(|_| Some((r.string()?, r.string()?)))
+            .collect::<Option<_>>()?,
+        warnings: (0..r.len()?).map(|_| r.string()).collect::<Option<_>>()?,
     };
     r.0.is_empty().then_some(split)
 }
@@ -1167,7 +1374,19 @@ impl Reader<'_> {
                     immutables: (0..self.len()?)
                         .map(|_| self.string())
                         .collect::<Option<_>>()?,
-                    library: self.flag()?,
+                    hidden: (0..self.len()?)
+                        .map(|_| {
+                            Some(Hidden {
+                                at: (
+                                    self.string()?,
+                                    u32::try_from(self.len()?).ok()?,
+                                    u32::try_from(self.len()?).ok()?,
+                                ),
+                                sel: self.array()?,
+                                delegate: self.flag()?,
+                            })
+                        })
+                        .collect::<Option<_>>()?,
                 })
             })
             .collect()

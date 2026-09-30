@@ -1,99 +1,247 @@
 ---
 title: "Contract size limit"
-description: "Contracts over EIP-170's 24,576-byte limit run the modules they expose from shared facets, and large pure functions from shared library facets."
+description: "A module marked `delegated` runs from its own shared contract, and none of its code is in the contract that uses it. A contract over EIP-170's 24,576-byte limit still compiles, with a warning of what fills it."
 ---
 
 # Contract size limit
 
-[EIP-170](https://eips.ethereum.org/EIPS/eip-170) caps deployed code at 24,576 bytes. When a contract is over the limit, the compiler moves every module it exposes with [`use M exposing`](/language/modules#exposing-a-modules-externals) into **facets**, and keeps the rest in a **router**. When the router or a facet is still too large, it runs large pure functions from **library facets**. Callers still see one contract: one address, one ABI, and the same return data, logs, and errors.
+[EIP-170](https://eips.ethereum.org/EIPS/eip-170) caps deployed code at 24,576 bytes. Lithe never moves code out of a contract on its own. You choose what runs elsewhere, by marking a module `delegated` where the contract uses it. A marked module runs from its **facet**, a contract of its own that is built from the module alone and shared by every contract that marks it. The contract that uses it becomes a **router**. Callers still see one contract: one address, one ABI, and the same return data, logs, and errors.
 
-A contract that fits compiles exactly as it always does, byte for byte.
+A contract that marks nothing compiles as it always does, byte for byte. When it is over the limit it still compiles, with a warning that says what takes the space and what marking each module would save. Only a contract over 65,535 bytes, which can't be assembled at all, is an error.
 
-## How a split contract works
+## Marking a module
 
-```text
-caller ──call──▶ router ──delegatecall──▶ ERC20 facet · ERC20Permit facet · ...
+`delegated` goes right after the module's name in a `use`, before `exposing` and the interfaces it exposes:
+
+```lithe
+import "std/evm";
+
+module Ledger is {
+  storage ledger at "example.ledger" is record {
+    balances : map(address, uint);
+    total : uint;
+  }
+
+  error Short of uint;
+
+  event Minted of record {
+    indexed to : address;
+    amount : uint;
+  }
+
+  pure function fee(const amount : uint) : uint is
+    amount * 30 / 10_000
+
+  view function balance(const who : address) : uint is
+    ledger.balances[who]
+
+  function mint(const to : address; const amount : uint) is {
+    ledger.balances[to] := ledger.balances[to] + amount;
+    ledger.total := ledger.total + amount;
+    emit Minted { to = to; amount = amount; };
+  }
+
+  function burn(const from : address; const amount : uint)
+    raises Short
+  is {
+    const have : uint := ledger.balances[from];
+    assert(have >= amount, Short(have));
+    ledger.balances[from] := have - amount;
+    ledger.total := ledger.total - amount;
+  }
+
+  external view function total() : uint is
+    ledger.total
+}
+
+contract Bank is {
+  use Ledger delegated exposing {
+    view function total() : uint;
+  }
+
+  storage is record {
+    deposits : uint;
+  }
+
+  external payable function deposit() is {
+    const amount : uint := uint(Evm.value());
+    Ledger.mint(Evm.sender(), amount - Ledger.fee(amount));
+    storage.deposits := storage.deposits + 1;
+  }
+
+  external function burn(const amount : uint)
+    raises Short
+  is {
+    Ledger.burn(Evm.sender(), amount);
+  }
+
+  external view function balance() : uint is
+    Ledger.balance(Evm.sender())
+}
 ```
 
-The router runs what the contract writes itself, its upgrade machinery, and any exposed module that stays inline. For every selector a moved module provides, it forwards the call to that module's facet with `delegatecall`, so the facet uses the router's storage, balance, and address. Nothing about storage changes: module storage stays at its ERC-7201 root, and the default record stays at slot 0. Events are logged from the router's address, and a facet's errors reach the caller unchanged.
+A module the contract uses without exposing anything is marked the same way: `use Ledger delegated;`. An unmarked module is always part of the contract.
 
-A facet is built from its module alone: the module's externals, and the modules it `requires`. None of the contract is in it, so it doesn't matter which contract exposes the module, which of its externals the contract declares, or what else the contract does. **Every contract that exposes the same module gets the same facet at the same address**, so ten collections built on the same modules deploy each facet once. A facet changes, and moves to a new address, only when its module or a module it requires changes.
+A delegated module and a [`fallback` that `delegates to`](/language/functions#passing-a-call-on) both run code that lives elsewhere as this contract, on its storage. The difference is where that code comes from: a delegated module's facet is built by the compiler from the module's own source, at an address derived from that code, and is reachable only through the router, while `delegates to` goes wherever its target expression says.
 
-A module's [guards](/language/modules#guards) are the contract's code, so they run in the router: for a guarded external, the router decodes the call's arguments and runs the contract's check before it forwards the call. The facet runs the module's externals unguarded, which is what lets contracts with different guards share it. Called directly, a facet runs against its own storage, so skipping the router's guards there changes nothing of any contract's.
+## What runs where
 
-This is safe because a module never depends on the contract that uses it: its storage is its own, it can call only the modules it requires, and a module's transient storage sits at a slot derived from its name. Continuations run in the frame that deferred the call.
+`delegated` means the module's code never lives in the contract. Everything the module does, the contract reaches in its facet:
+
+- **Its externals.** For each one the contract exposes, the router forwards the call to the facet with `delegatecall`, so the facet runs on the router's storage, balance, and address. A [guarded](/language/modules#guards) external runs the contract's check in the router first.
+- **Its functions, called from the contract's own code.** An entrypoint, a view, `deploy`, a migration, a guard, or a continuation that calls one of the module's functions calls it across, in the facet. A `pure` function is called with `staticcall`. A `view` or stateful one is called with `delegatecall`, so it reads and writes the contract's storage, and its events are the contract's. A `view` entrypoint can call a view function across: `delegatecall` is allowed inside a `staticcall`, and the function writes nothing.
+
+In the example, `deposit` calls `Ledger.fee` with `staticcall` and `Ledger.mint` with `delegatecall`, and `balance` calls `Ledger.balance` with `delegatecall` too. Each call ABI-encodes its arguments, the facet runs the function, and the result is decoded where the function's result would have been. When the function fails, the contract reverts with the facet's revert data, so its errors and panics reach the caller unchanged. What a function does is the same as it would be inline: the same results, errors, events in the same order, and storage.
+
+The module's constants, pure functions with no parameters, are values, and fold into the contract as they always do. A function that writes the module's [immutables](/language/storage#immutables) runs in the contract too: only `deploy` and migrations can call it, and they are where the contract's immutables are written.
+
+A module's externals are still not functions: nothing inside the contract calls them, delegated or not.
+
+### What can be called across
+
+A function can be called across when its parameters and result are ABI values, the values an external can take and return. These can't:
+
+- a generic function
+- a function with a `storage` parameter, or a parameter or result that is an `option`, a map, or a variant with payloads
+- a function that `defer`s, or calls one that does. A deferred call runs after the whole transition commits, and the facet's run of the function is its own
+- a `view` or stateful function that reads the call's calldata with `Evm.calldata()` or `Evm.selector()`, since its facet sees its own
+
+A call to one is an error that names the function and the reason:
+
+```lithe rejects
+import "std/evm";
+
+module Book is {
+  storage book at "example.book" is record {
+    pages : map(uint, uint);
+  }
+
+  function write(storage pages : map(uint, uint); const k : uint) is {
+    pages[k] := 1;
+  }
+}
+
+contract Shelf is {
+  use Book delegated;
+
+  storage is record {
+    mine : map(uint, uint);
+  }
+
+  external function note(const k : uint) is {
+    Book.write(storage.mine, k);
+  }
+}
+```
+
+```text
+`Book.write` runs in `Book`'s facet, and contract code can't call it across: its parameter `pages` is a storage reference; move the call into `Book`, or use `Book` without `delegated`
+```
+
+A `view` or stateful function in the facet sees storage as it is when it is called. A body that runs a [query](/language/effects#query) after writing storage keeps its writes until it ends, so that the query sees storage as the transition found it. Such a body can't call a `view` or stateful function across, since the function wouldn't see the writes:
+
+```lithe rejects
+module Book is {
+  storage book at "example.book" is record {
+    pages : map(uint, uint);
+  }
+
+  function note(const k : uint; const v : uint) is {
+    book.pages[k] := v;
+  }
+}
+
+interface Oracle is {
+  view function price() : uint;
+}
+
+contract Shelf is {
+  use Book delegated;
+
+  storage is record {
+    n : uint;
+  }
+
+  external function note(const oracle : Oracle) is {
+    storage.n := storage.n + 1;
+    Book.note(storage.n, query oracle.price());
+  }
+}
+```
+
+```text
+`Book.note` runs in `Book`'s facet, which sees storage as it is when called, but a body that calls it runs a query after writing storage, so it keeps its writes until it ends; query before the first write, or use `Book` without `delegated`
+```
+
+### The facet's own entrypoints
+
+A facet has an entrypoint for each function of its module that contract code can call across, whether or not a given contract calls it. A module's [`private`](/language/modules#delegated-modules) functions are only for its own code, so they have none, which keeps a facet's helpers from costing it bytes. Their names can't be written in source and no ABI lists them, so no external of the module can collide with one. The router never dispatches their selectors: it forwards only the externals the contract exposes, and a call with any other selector reaches the contract's own code, or reverts. Called directly, a facet runs against its own storage, not the storage of any contract that uses it, so there is nothing there to protect. The same argument covers guards: a facet runs its module's externals unguarded, which is what lets contracts with different guards share it.
+
+## Sharing
+
+A facet is built from its module alone: the module's externals, an entrypoint for each function contract code can call across, and copies of the modules it `requires`. None of the contract is in it, so it doesn't matter which contract marks the module, which of its externals the contract exposes, or which of its functions the contract calls. **Every contract that marks the same module gets the same facet at the same address**, so ten collections built on the same modules deploy each facet once. A facet changes, and moves to a new address, only when its module or a module it requires changes.
+
+Two facets never call each other. A module that requires another carries a copy of it in its facet, whether or not the contract marks that one too, and calls it there. Storage is shared all the same: each module's storage sits at its own ERC-7201 root, the same in the router and in every facet, and a module's transient storage sits at a slot derived from its name.
+
+## Over the limit
+
+A contract over `--size-limit` still compiles and emits its bytecode, with a warning. It lists what takes the space: the contract's own entrypoints, by group, and for each module the contract runs in its own code, what marking it `facet` would save. Here the [standard-library token](/stdlib/tokens), with no modules marked, is built with `--size-limit 2000`:
+
+```text
+token.lithe:16:1: warning: contract `Token` is 2,894 bytes; the limit is 2,000
+  ERC20                       758
+  Token                       621
+  ERC20Permit                 526
+  Ownable                      89
+  ERC20Burnable                83
+  Pausable                      1
+  (dispatch and shared code)  816
+
+each module's row is what the contract saves when the module runs from its own facet contract instead: mark it with `use M delegated;` or `use M delegated exposing ...;`. The contract's own row is its entrypoints, which stay in it
+```
+
+A module that can't be a facet says why instead of a number, such as `can't be a facet: it is generic`, or which of its functions the contract calls that can't be called across. A facet over the limit gets a warning of its own. Creation code has a limit of twice `--size-limit`, as [EIP-3860](https://eips.ethereum.org/EIPS/eip-3860) allows, and a contract or a facet over that is warned about the same way.
+
+Before any of that, the compiler fits a contract by outlining: code the contract repeats becomes shared subroutines, as few as it takes to fit. That changes code, not what runs where, so it never needs a mark.
 
 ## Immutables
 
-A facet's code is shared, so it can't have one contract's [immutables](/language/storage#immutables) built in. It reads them from its router instead. For each call it forwards, the router appends the values of every immutable block the facet has, its module's and those of the modules it requires, after the calldata, blocks in order of their ids. A plain router keeps them in its own code, where its creation code writes them, and copies them with one `CODECOPY`. An upgradeable router loads them from the proxy's storage. A call whose code reads no immutable gets words of the same length without the values, so it pays for neither. The facet reads each from the end of its calldata, and everything in it that reads the calldata or its size, such as the ABI decoder or `Evm.calldata()`, sees the calldata without them. What a facet reads is fixed by its module alone, so its address still depends only on its code.
+A facet's code is shared, so it can't have one contract's [immutables](/language/storage#immutables) built in. It reads them from its router instead. For each call it forwards, and each call across, the router appends the values of every immutable block the facet has, its module's and those of the modules it requires, after the calldata, blocks in order of their ids. A plain router keeps them in its own code, where its creation code writes them. An upgradeable router loads them from the proxy's storage. A forwarded call whose code reads no immutable gets words of the same length without the values, so it pays for neither. The facet reads each from the end of its calldata, and everything in it that reads the calldata or its size, such as the ABI decoder or `Evm.calldata()`, sees the calldata without them. What a facet reads is fixed by its module alone, so its address still depends only on its code.
 
-## Which modules move
+## Seeing what runs where
 
-Only a module the contract exposes with `use M exposing` can move. What the contract writes itself always stays in the router.
-
-With `--split auto`, the default, the compiler first builds the whole contract, outlining functions as it needs to, with no facets of any kind. If it fits, that's the output. If not, the output is exactly what `--split all` builds: every exposed module in its facet. With `--split all`, every exposed module runs from its facet even when the contract fits, so a set of contracts shares the same facets however large each one is, and a contract that outgrows the limit under `auto` deploys the same facets it would have with `all`.
-
-`lithe facets` shows what runs where:
+`lithe facets` shows the router and each facet, with the size of each against the limit:
 
 ```bash
 lithe facets token.lithe --size-limit 2000
 ```
 
 ```text
-router  1,989 / 2,000
-  Token: transfer, transferFrom, mint, pause, unpause
+router  1,630 / 2,000
+  Token: transfer, transferFrom, mint, pause, unpause, supportsInterface
   ERC20Burnable: burn, burnFrom
   Ownable: transferOwnership, renounceOwnership, owner
   Pausable: paused
 
-facet ERC20  0x2a69b5859Bd3dd4D83693b9CE6b60D29101A1fe0  1,438 / 2,000
+facet ERC20  0x13F9822a430D5E4E70Af364A11350407Be3bBD81  2,217 / 2,000
   approve, name, symbol, decimals, totalSupply, balanceOf, allowance
+  called across: ERC20.init, ERC20.total_supply, ERC20.move, ERC20.mint, ERC20.burn, ERC20.spend_allowance
   (2 more externals this contract does not declare)
 
-facet ERC20Permit  0xCf7c2a6CeB11CBFAE62cEbE5D4268776a3E7CcE1  1,233 / 2,000
+facet ERC20Permit  0x04d7e8AfDE9737f054132c9eEAD1E05d275Fd0DA  739 / 2,000
   permit, nonces, DOMAIN_SEPARATOR
 ```
 
-That output is the [standard-library token](/stdlib/tokens), built with `--size-limit 2000` so that it splits. A facet holds every external its module declares; the router forwards only the ones the contract declares, so the others can't be reached through it. `lithe footprint` and `lithe abi-tree` also show where each entrypoint runs when the contract is split.
-
-## Library facets
-
-A `pure` function depends only on its arguments, so it can run anywhere. Library facets are the last resort, and never stand in for module facets: a contract that exposes modules and doesn't fit whole gets every module in its facet first, and only a router or a module's facet that outlining still can't fit runs pure functions remotely. A contract that exposes no modules runs them remotely when outlining can't fit it. That is how code that calls big pure code, such as JSON rendering or a document parser, stays under the limit, even with nothing to expose.
-
-A library facet holds one function, as its only entrypoint, an `external pure function` with the function's own name and ABI. A call to it ABI-encodes the arguments as that entrypoint's calldata, calls the facet with `STATICCALL`, and decodes the result to where the function's result would have been. When the call fails, the contract reverts with the facet's revert data, so the function's errors and panics reach the caller exactly as they would have. Results are the same bytes as running the function in place.
-
-Nothing in the source changes. The call is still a pure call, so it is allowed wherever one is: in `deploy`, views, stateful functions, and continuations. It sees no storage, and nothing it runs can call back, so a body's writes before it behave as they always do.
-
-A library facet is built from its function and the functions it calls, and nothing else of the contract, so **every contract that calls the same function gets the same facet at the same address**, and a contract deploys only the functions it calls. A library facet that is over the limit itself runs what it calls from library facets of their own.
-
-A function can run remotely when its parameters and result are ABI values: not an `option`, a variant with payloads, a map, or a `storage` parameter. A generic function stays in the contract too. Its callers can still run remotely instead, and so can the functions it calls.
-
-The size search chooses. After outlining everything it can, a build still over the limit tries each pure function whose inline copies take at least 200 bytes remotely on its own, then adds them in order of bytes saved per gas added, and keeps the cheapest set that fits. The gas counts every run of every call: each runs the function in its facet, estimated as any code is, with each loop multiplying it, plus 2,500 gas for the facet's cold account. So a function called in a loop stays in the contract when another one can go. Once the build fits, each function it runs remotely is built in place again, and stays in place when the build still fits and costs less.
-
-`lithe facets` lists library facets after the router and module facets:
-
-```bash
-lithe facets render.lithe --size-limit 1500
-```
-
-```text
-router  1,409 / 1,500
-  Render: keep, show, sum, last
-
-library render  0xb94ce249fcf3b3319A74D23d93799c8cc6943EBa  931 / 1,500
-  render(uint256,string,uint256[])
-```
-
-With `--split all`, exposed modules always run from their facets, but pure functions run remotely only when a build doesn't fit. A remote call costs gas every time it runs, while sharing a facet saves bytes once, when it is deployed. With `--split off`, a contract never runs a function remotely, and neither does a `--check-specs` build.
+That is the same token with `delegated` on its `ERC20` and `ERC20Permit` uses. Under each facet are the externals the router forwards to it, and then the module's functions the contract's code calls across. A facet holds every external its module declares; the router forwards only the ones the contract declares, so the others can't be reached through it. `lithe footprint` and `lithe abi-tree` also show where each entrypoint runs.
 
 ## Deploying
 
 Each facet is deployed with `CREATE2` through the deterministic deployment proxy at `0x4e59b44847b379578588920cA78FbF26c0B4956C`, the same factory Foundry uses, with a zero salt. So a facet's address depends only on its code. The compiler knows every address in advance and builds them into the router. The router can only ever reach the exact code it was compiled against.
 
-For a split contract, `lithe compile` prints the deployment plan instead of bytecode, with a note on stderr:
+For a contract with facets, `lithe compile` prints the deployment plan instead of bytecode, with a note on stderr:
 
 ```text
-note: `Token` is 3,395 bytes; `ERC20`, `ERC20Permit` run from their facets
+note: `Token` runs `ERC20`, `ERC20Permit` from their facets
 ```
 
 ```json
@@ -101,7 +249,7 @@ note: `Token` is 3,395 bytes; `ERC20`, `ERC20Permit` run from their facets
   "facets": [
     {
       "name": "ERC20",
-      "address": "0x2a69b5859Bd3dd4D83693b9CE6b60D29101A1fe0",
+      "address": "0x13F9822a430D5E4E70Af364A11350407Be3bBD81",
       "to": "0x4e59b44847b379578588920cA78FbF26c0B4956C",
       "data": "0x0000…"
     },
@@ -113,68 +261,48 @@ note: `Token` is 3,395 bytes; `ERC20`, `ERC20Permit` run from their facets
 }
 ```
 
-Send each facet's `data` to its `to`, in order, then deploy the router's `bytecode` as you would any creation code, with its `deploy` arguments appended. Skip a facet whose address already has code, because another contract already deployed it: `CREATE2` can't deploy to it twice, and it is already the right code. The router's creation code checks that every facet has code, and reverts if one is missing.
-
-Library facets are listed in `facets` with the module facets, each before anything that calls it, and deployed the same way. The note on stderr names them:
-
-```text
-note: `Render` is 1,854 bytes; `render` runs from its library facet
-```
-
-A contract that exposes no modules and fits with library facets still prints a plan. Its creation code checks that each library facet has code, as a router's does.
+The plan lists exactly the facets the source marks. Send each facet's `data` to its `to`, in order, then deploy the router's `bytecode` as you would any creation code, with its `deploy` arguments appended. Skip a facet whose address already has code, because another contract already deployed it: `CREATE2` can't deploy to it twice, and it is already the right code. The router's creation code checks that every facet has code, and reverts if one is missing. `deploy` can call its facets' functions across as the router's code can.
 
 An upgradeable router is listed with its own `address`, `to`, and `data`, so it can be deployed through the factory too, at an address known in advance.
 
-A contract that creates a split contract with `defer create` lists that contract's facets in its plan as well. They must exist before it creates anything.
+A contract that creates a contract with facets, with `defer create`, lists that contract's facets in its plan as well. They must exist before it creates anything.
 
-`lithe compile directory` writes the router's artifact to `out/<file>/<Contract>.json` as usual. Its ABI is the whole contract's, because that is what callers use, and it gains a `facets` field listing each facet's module, address, and the selectors the router forwards to it. Each facet gets one artifact, `out/facets/<Module>.json`, shared by every contract in the directory that uses it. A contract that calls library facets gains a `libraries` field listing each one's name, address, and selector, and each library facet gets an artifact too, `out/facets/<name>.json`, such as `out/facets/KV.parse.json` for a module's function.
+`lithe compile directory` writes the router's artifact to `out/<file>/<Contract>.json` as usual. Its ABI is the whole contract's, because that is what callers use, and it gains a `facets` field listing each facet's module, address, and the selectors the router forwards to it. Each facet gets one artifact, `out/facets/<Module>.json`, shared by every contract in the directory that uses it. A facet's artifact lists its module's externals; the entrypoints for calls across are in its bytecode, but in no ABI.
 
 ## Upgrades
 
-An upgradeable contract's router is the implementation behind its ERC-1967 proxy. Its upgrade guard is the only way to change code, and an upgrade is still one `upgradeToAndCall`. Facets are deployed first, and deploying them changes nothing until the proxy points at the new router. `migrate` always runs in the router, inside the upgrade.
+An upgradeable contract's router is the implementation behind its ERC-1967 proxy. Its upgrade guard is the only way to change code, and an upgrade is still one `upgradeToAndCall`. Facets never answer the upgrade entrypoints: `proxiableUUID`, `upgradeToAndCall`, and every migration run in the router. Facets are deployed first, and deploying them changes nothing until the proxy points at the new router.
 
-A contract that grows past the limit upgrades into a split implementation behind the same proxy, at the same address, with the same storage. The reverse works too.
+Marking a module `delegated`, or unmarking it, is an upgrade like any other: the new router runs the module from its facet, or in its own code, behind the same proxy, at the same address, with the same storage.
 
-Every upgrade of a split contract deploys a new router, because the router has its facets' addresses built in. A facet whose module didn't change keeps its address and is reused, and so does a library facet whose function didn't change. `lithe upgrade-check` shows which facets are reused:
+Every upgrade of a contract with facets deploys a new router, because the router has its facets' addresses built in. A facet whose module didn't change keeps its address and is reused. `lithe upgrade-check` shows which:
 
 ```text
 facets
   router       changed
-  ERC20        unchanged  0x2a69b5859Bd3dd4D83693b9CE6b60D29101A1fe0
+  ERC20        unchanged  0x13F9822a430D5E4E70Af364A11350407Be3bBD81
   ERC20Permit  new        0x88a0…
 
 compatible
 ```
 
-For a split contract, `lithe upgrade` prints the deployment plan with the proxy's `upgradeToAndCall` added, and `--impl` defaults to the new router's `CREATE2` address.
+For a contract with facets, `lithe upgrade` prints the deployment plan with the proxy's `upgradeToAndCall` added, and `--impl` defaults to the new router's `CREATE2` address.
 
 ## Cost
 
-A call to an entrypoint in a facet costs one extra `delegatecall`, measured at about 2,700 gas: the facet's address is cold, and the calldata and return data are copied once more. A call whose code reads immutables costs a little more, for copying them, and behind a proxy the router reads each word of them from storage. Entrypoints in the router cost nothing extra. A guarded one also decodes its arguments in the router, for the guard, before the facet decodes them again. Each facet carries its own dispatcher and a copy of the modules it requires, so a single split contract deploys more bytes in total than its unsplit build would have. Contracts that share facets deploy them once.
+A call to an external that runs in a facet costs one extra `delegatecall`, measured at about 2,700 gas: the facet's address is cold, and the calldata and return data are copied once more. A call whose code reads immutables costs a little more, for copying them, and behind a proxy the router reads each word of them from storage. A guarded external also decodes its arguments in the router, for the guard, before the facet decodes them again.
 
-A call to a function in a library facet costs about 2,600 gas the first time a transaction makes one, for the cold account, and 100 after that, plus encoding its arguments, the facet decoding them and encoding its result, and decoding that. Its own work costs what it would in place. On the KV document module's harness, built to 9,000 bytes so that six of its functions run remotely, a call that runs one of them costs 2,000 to 2,700 gas more than the whole build, and one that runs several up to 5,100 more. A result that is a large value costs more again: the facet encodes it, and the caller decodes and copies it into its own memory. Each call site takes 100 to 200 bytes, so a function called from many places saves less. Each call pays again, which is why the search prices calls by how often they run.
+A call across costs a `staticcall` or `delegatecall`: about 2,600 gas the first time a transaction reaches the facet, for the cold account, and 100 after that. It also pays for encoding its arguments, the facet decoding them and encoding its result, and decoding that. A result that is a large value costs more again, since the caller decodes and copies it into its own memory. The function's own work costs what it would inline. A function called across in a loop pays on every run, so a module the contract calls from a hot loop may be cheaper unmarked.
+
+Each facet carries its own dispatcher and a copy of the modules it requires, so a single contract with facets deploys more bytes in total than its build without them. Contracts that share facets deploy them once.
 
 ## Flags
 
 | Flag | Default | Meaning |
 | --- | --- | --- |
-| `--size-limit <bytes>` | `24576` | the most runtime code the router or any facet may have. Creation code may have twice this, as EIP-3860 allows |
-| `--split <auto\|off\|all>` | `auto` | when exposed modules run from their facets: every one when the contract doesn't fit with no facets, never, or always. Pure functions run from library facets only when a router, a facet, or a contract that exposes no modules doesn't fit, and never with `off` |
+| `--size-limit <bytes>` | `24576` | the most runtime code the router or any facet should have. Creation code may have twice this, as EIP-3860 allows. Code over it still builds, with a warning |
 | `--create2-deployer <address>` | `0x4e59…956C` | the `CREATE2` factory facets are deployed through, for chains where it lives elsewhere |
 
-`compile`, `facets`, `footprint`, `abi-tree`, `upgrade`, and `upgrade-check` take them. With `--split off`, a contract over the limit fails with what each module and the contract's own code add to its size:
-
-```text
-contract `Token` is 3,395 bytes; the limit is 2,000
-  ERC20Permit                 1,077
-  Token                         606
-  ERC20                         596
-  Ownable                       264
-  ERC20Burnable                 174
-  Pausable                       42
-  (dispatch and shared code)    636
-```
-
-A contract is also an error when splitting can't fit it: when a module's facet is over the limit on its own, or when the router is, with every exposed module moved out and every pure function it can run remotely. Then move more of the contract's entrypoints into modules.
+`compile`, `facets`, `footprint`, `abi-tree`, `upgrade`, and `upgrade-check` take them.
 
 `lithe stubs file.lithe Module` prints the `use Module exposing` block that declares every external a module has, to copy into a contract and trim.

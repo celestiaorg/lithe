@@ -14,6 +14,7 @@ impl<'a> Gen<'a> {
             log_sites: 0,
             return_sites: 0,
             direct: false,
+            reading: false,
             lists_in_order: true,
             any_nonreentrant: false,
             reject_value: None,
@@ -295,25 +296,6 @@ impl<'a> Gen<'a> {
                 }
             }
         }
-        // The pure functions whose copies here are large enough to run remotely, with what
-        // each calls, which its library facet holds.
-        let least = if remote_all(self.shape) {
-            0
-        } else {
-            MIN_REMOTE_BYTES
-        };
-        let mut remotable: Vec<(usize, Vec<usize>)> = self
-            .inlined
-            .iter()
-            .filter(|(&idx, (calls, bytes, _))| calls * bytes >= least && self.remotable(idx))
-            .map(|(&idx, _)| {
-                let mut calls = Vec::new();
-                self.func_any(idx, &|_| false, &mut calls);
-                calls.sort_unstable();
-                (idx, calls)
-            })
-            .collect();
-        remotable.sort_unstable();
         // A helper costs its body once plus a call per site; one site stays inline.
         let shared_bytes = (self.bytes_sites.0 >= 2, self.bytes_sites.1 >= 2);
         Plan {
@@ -325,8 +307,6 @@ impl<'a> Gen<'a> {
             outline,
             looped,
             outlinable,
-            remote: Default::default(),
-            remotable,
             shared_bytes,
             shared_decode: self.decode_sites >= 2,
             shared_value: self.value_sites.map(|n| n >= 2),
@@ -353,20 +333,69 @@ impl<'a> Gen<'a> {
 
     /// A function compiles the same way wherever it is called unless it defers, queries,
     /// or cases on a dispatched variant.
-    /// Whether a library facet can run a function: it is pure, and takes and returns only
-    /// values the ABI encodes as they are, so no option, variant with payloads, map, or
-    /// storage.
-    fn remotable(&self, idx: usize) -> bool {
+    /// How contract code calls `idx`, a function of a module its facet runs: across, with
+    /// `delegatecall` unless it is pure, or `None` where it runs in the contract: a constant,
+    /// which folds into it, or a function that writes an immutable, which only `deploy` and
+    /// migrations call, where the contract's immutables are written. `Err` says why it can't
+    /// be called across.
+    pub(super) fn crossing(&self, idx: usize) -> Result<Option<bool>, String> {
         let f = &self.checked.prog.funcs[idx];
-        f.kind == ItemKind::Pure
-            && f.exported.is_none()
-            && self.abi_value(f.ret_ty)
-            && f.params.iter().all(|p| {
-                !p.storage
-                    && p.sym
-                        .is_some_and(|s| !self.checked.slot_syms.contains_key(&s))
-                    && self.abi_value(p.ty_id)
-            })
+        let pure = f.kind == ItemKind::Pure;
+        if pure && f.params.is_empty() && f.type_params.is_empty() {
+            return Ok(None);
+        }
+        let immutables = &self.checked.immutable_syms;
+        let writes = |node: Node<'_>| {
+            matches!(node, Node::Stmt(Stmt::Assign { root: Some(sym), .. }) if immutables.contains(sym))
+        };
+        if self.func_any(idx, &writes, &mut Vec::new()) {
+            return Ok(None);
+        }
+        if !f.type_params.is_empty() {
+            return Err("it is generic".to_string());
+        }
+        for p in &f.params {
+            if p.storage || p.sym.is_some_and(|s| self.checked.slot_syms.contains_key(&s)) {
+                return Err(format!("its parameter `{}` is a storage reference", p.name));
+            }
+            if let Some(what) = self.not_abi(p.ty_id) {
+                return Err(format!("its parameter `{}` is {what}", p.name));
+            }
+        }
+        if let Some(what) = self.not_abi(f.ret_ty) {
+            return Err(format!("its result is {what}"));
+        }
+        let defers = |node: Node<'_>| matches!(node, Node::Stmt(Stmt::Defer { .. }));
+        if self.func_any(idx, &defers, &mut Vec::new()) {
+            return Err(
+                "it defers a call, which runs only after the whole transition commits".to_string(),
+            );
+        }
+        let calldata = |node: Node<'_>| {
+            matches!(
+                node,
+                Node::Expr(Expr::Call {
+                    builtin: Some(Builtin::Calldata | Builtin::Selector),
+                    ..
+                })
+            )
+        };
+        if self.func_any(idx, &calldata, &mut Vec::new()) {
+            return Err("it reads the call's calldata, which its facet sees as its own".to_string());
+        }
+        Ok(Some(!pure))
+    }
+
+    /// What makes a type something the ABI can't carry as it is, if anything does.
+    fn not_abi(&self, ty: usize) -> Option<&'static str> {
+        match self.checked.types[self.peel_nominal(ty)].kind {
+            TyKind::Option => return Some("an option"),
+            TyKind::Map => return Some("a map"),
+            TyKind::Operation => return Some("an operation"),
+            _ if !self.abi_value(ty) => return Some("a variant with payloads, or holds one"),
+            _ => {}
+        }
+        None
     }
 
     fn abi_value(&self, ty: usize) -> bool {

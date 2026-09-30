@@ -316,7 +316,7 @@ A test run cannot check the rest of what a spec claims: that a reverting call re
 
 `sum` and `count` of a storage map are kept as the contract runs: the build updates a running total, in storage of its own, at each write to the map. A clause with `forall`, or with a `sum` or `count` of anything but a storage map, cannot be computed; the build skips it with a warning. The build also skips a contract's spec for an external that a module provides, which runs the module's code: write it in the module's spec.
 
-A checking build computes a spec's arithmetic as the code does, so a spec whose own arithmetic overflows stops the call with a panic. It reads the spec file, is never [split](/tooling/size-limit), and is bigger and slower than the plain build. Don't deploy it.
+A checking build computes a spec's arithmetic as the code does, so a spec whose own arithmetic overflows stops the call with a panic. It reads the spec file, runs every module in the contract, even a [`delegated`](/tooling/size-limit) one, and is bigger and slower than the plain build. Don't deploy it.
 
 ## Spec-only forms
 

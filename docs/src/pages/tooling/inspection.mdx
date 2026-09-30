@@ -98,7 +98,7 @@ set_pause   writes: paused                           raises: NotOwner           
 
 An entrypoint of a guarded module external shows its [guard](/language/modules#guards), such as `guard: Prices.pricer`, which `abi-tree` lists under `guards`, and `errors` lists each guard with the errors it raises.
 
-When the contract is [split](/tooling/size-limit), each line ends with where the entrypoint runs: the facet of a module, such as `runs in: ERC20`, or `runs in: router`. `abi-tree` shows the same as a `runs in:` section.
+When the contract has [facets](/tooling/size-limit), each line ends with where the entrypoint runs: the facet of a module, such as `runs in: ERC20`, or `runs in: router`. `abi-tree` shows the same as a `runs in:` section.
 
 ## `abi-tree`
 

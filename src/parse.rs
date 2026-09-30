@@ -5,6 +5,9 @@ use crate::error;
 use crate::lex::{self, Kind, Token};
 use crate::Error;
 
+/// The word after a module's name in `use M delegated ...` that runs the module from its facet.
+pub(crate) const DELEGATED: &str = "delegated";
+
 pub(crate) fn parse(src: &str) -> Result<Program, Error> {
     let toks = lex::tokenize(src)?;
     Parser {
@@ -150,6 +153,7 @@ struct Body {
     funcs: Vec<Func>,
     domains: Vec<DomainDecl>,
     compose: Vec<NameAt>,
+    facets: Vec<NameAt>,
     exposes: Vec<Exposing>,
     supports: Vec<NameAt>,
     upgradeable: bool,
@@ -172,6 +176,7 @@ impl Body {
             funcs: Vec::new(),
             domains: Vec::new(),
             compose: Vec::new(),
+            facets: Vec::new(),
             exposes: Vec::new(),
             supports: Vec::new(),
             upgradeable: false,
@@ -194,6 +199,7 @@ impl Body {
             domains: self.domains,
             modules,
             compose: self.compose,
+            facets: self.facets,
             exposes: self.exposes,
             supports: self.supports,
             upgradeable: self.upgradeable,
@@ -481,6 +487,14 @@ impl<'a> Parser<'a> {
                 let (line, col) = self.at();
                 self.bump();
                 let module = self.dotted()?;
+                if self.kind() == Kind::Ident && self.slice() == DELEGATED {
+                    self.bump();
+                    body.facets.push(NameAt {
+                        line,
+                        col,
+                        name: module.clone(),
+                    });
+                }
                 if self.kind() == Kind::Ident && self.slice() == "exposing" {
                     self.bump();
                     let exposed = self.use_exposing(line, col, module.clone())?;
@@ -494,7 +508,8 @@ impl<'a> Parser<'a> {
                         ));
                     }
                     body.exposes.push(exposed);
-                } else if self.kind() == Kind::Semi {
+                }
+                if self.kind() == Kind::Semi {
                     self.bump();
                 }
                 body.compose.push(NameAt {
@@ -562,9 +577,6 @@ impl<'a> Parser<'a> {
             if self.kind() != Kind::Comma {
                 break;
             }
-            self.bump();
-        }
-        if self.kind() == Kind::Semi {
             self.bump();
         }
         Ok(Exposing {
@@ -646,8 +658,15 @@ impl<'a> Parser<'a> {
                 specs.push(self.spec_block(Some(name.clone()))?);
                 continue;
             }
-            if self.kind() == Kind::Private {
-                return Err(self.err("module functions cannot be private"));
+            let private = self.kind() == Kind::Private;
+            if private {
+                self.bump();
+                if !matches!(
+                    self.kind(),
+                    Kind::View | Kind::Pure | Kind::Function | Kind::External | Kind::Payable
+                ) {
+                    return Err(self.err("only a module's internal functions can be private"));
+                }
             }
             match self.kind() {
                 Kind::Requires => {
@@ -769,7 +788,12 @@ impl<'a> Parser<'a> {
                             format!("`{word}` belongs to the contract"),
                         ));
                     }
-                    funcs.push(self.item(deco, false)?);
+                    if private && matches!(deco.kind, ItemKind::Entry | ItemKind::View) {
+                        return Err(error(at.0, at.1, "an external function cannot be private"));
+                    }
+                    let mut func = self.item(deco, false)?;
+                    func.private = private;
+                    funcs.push(func);
                 }
                 Kind::Ident if self.special_ahead() => {
                     return Err(self.err(format!("`{}` belongs to the contract", self.slice())));

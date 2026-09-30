@@ -934,6 +934,21 @@ impl Checker {
         self.kind == ItemKind::Pure || self.external_pure
     }
 
+    /// A module's `private` function is called only by the module's own code.
+    pub(super) fn check_private(&self, idx: usize, line: u32, col: u32) -> Result<(), Error> {
+        match &self.sigs[idx].private_to {
+            Some(owner) if self.module_name.as_ref() != Some(owner) && !self.in_spec => Err(error(
+                line,
+                col,
+                format!(
+                    "`{}` is private to `{owner}`; only `{owner}`'s own functions call it",
+                    source_name(&self.fn_names[idx])
+                ),
+            )),
+            _ => Ok(()),
+        }
+    }
+
     /// The body does something its declared effect does not allow.
     /// A callee's own body is checked against its declared kind, so the kind alone says
     /// what calling it does.

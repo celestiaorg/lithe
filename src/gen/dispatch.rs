@@ -863,6 +863,7 @@ impl<'a> Gen<'a> {
         }
         // A view cannot write, so reading storage in place is always equivalent.
         self.begin_body(self.lists_in_order);
+        self.reading = true;
         self.decode_params(func)?;
         let stmts = self.checked.prog.funcs[func].stmts.clone();
         let tail = self.checked.prog.funcs[func]
@@ -1018,7 +1019,7 @@ impl<'a> Gen<'a> {
         if words > 0 {
             self.imm_mem = self.region(Region::Immutables, words as u32 * 32);
         }
-        for part in self.plan.prerequisites(self.shape) {
+        for part in self.shape.prerequisites() {
             self.push_word(part);
             self.op(EXTCODESIZE);
             self.op(ISZERO);

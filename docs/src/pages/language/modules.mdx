@@ -142,7 +142,119 @@ module `Ledger` does not have the contract's inline interface: `balance` is stat
 
 An interface never adds behavior, so its methods have no body. To change what an external does, leave it out of the contract's interfaces, and write the contract's own external instead. A module's externals are not functions: nothing inside the contract calls them. Put shared logic in an internal function that the external and the contract both call.
 
-When a contract is over the [size limit](/tooling/size-limit), a module it exposes can run from the module's **facet**, compiled from the module alone and shared by every contract that exposes it. The interfaces' methods are what the router forwards to it. `lithe stubs file.lithe M` prints a `use M exposing` block with every external `M` has.
+`lithe stubs file.lithe M` prints a `use M exposing` block with every external `M` has.
+
+### Delegated modules
+
+`delegated` after the module's name in a `use` runs the module from its **facet**: a contract of its own, compiled from the module alone and shared by every contract that marks it. None of the module's code is in the contract, which is how a contract stays under the [size limit](/tooling/size-limit). The contract forwards the externals it exposes to the facet, and calls the module's functions across into it:
+
+```lithe
+import "std/evm";
+
+module Counter is {
+  storage counter at "example.facet.counter" is record {
+    count : uint;
+  }
+
+  function bump(const by : uint) : uint is {
+    counter.count := counter.count + by;
+  } with counter.count
+
+  external view function count() : uint is
+    counter.count
+}
+
+module Clock is {
+  view function now() : timestamp is
+    Evm.block_timestamp()
+}
+
+contract App is {
+  use Counter delegated exposing {
+    view function count() : uint;
+  }
+
+  use Clock delegated;
+
+  storage is record {
+    last : timestamp;
+  }
+
+  external function tick() : uint is {
+    storage.last := Clock.now();
+  } with Counter.bump(1)
+}
+```
+
+`count` runs in `Counter`'s facet. `tick` runs in `App`, and calls `Clock.now` and `Counter.bump` across, on `App`'s storage, with the results, errors, and events they would have inline. `use Clock delegated;` marks a module the contract uses without exposing anything, and `use Counter delegated exposing { ... }` one it exposes externals of.
+
+A function crosses when its parameters and result are ABI values, as an external's are. One that takes a `storage` reference, a map, or an `option`, returns one, is generic, or defers a call can't, and calling it from the contract is an error:
+
+```lithe rejects
+module Tally is {
+  storage tally at "example.facet.tally" is record {
+    n : uint;
+  }
+
+  pure function first(const xs : list(uint)) : option(uint) is
+    if xs.length = 0 then None else Some(xs[0])
+}
+
+contract App is {
+  use Tally delegated;
+
+  storage is record {
+    n : uint;
+  }
+
+  external function keep(const xs : list(uint)) is {
+    storage.n := case Tally.first(xs) of {
+    | Some(x) -> x
+    | None -> 0
+    };
+  }
+}
+```
+
+```text
+`Tally.first` runs in `Tally`'s facet, and contract code can't call it across: its result is an option; move the call into `Tally`, or use `Tally` without `delegated`
+```
+
+A module keeps a function to itself with `private`: only the module's own functions call it, so its facet has no entrypoint for it, and a contract, or another module, that calls it is an error:
+
+```lithe rejects
+module Tally is {
+  storage tally at "example.private.tally" is record {
+    n : uint;
+  }
+
+  private function step(const by : uint) is {
+    tally.n := tally.n + by;
+  }
+
+  function bump() is {
+    step(1);
+  }
+}
+
+contract App is {
+  use Tally;
+
+  storage is record {
+    n : uint;
+  }
+
+  external function go() is {
+    Tally.step(2);
+  }
+}
+```
+
+```text
+`Tally.step` is private to `Tally`; only `Tally`'s own functions call it
+```
+
+See [Contract size limit](/tooling/size-limit) for what runs where, what a call across costs, and how facets are deployed.
 
 ## Guards
 
@@ -224,7 +336,7 @@ A guarded external raises its module's errors and its guard's. The interface tha
 
 ### Where a guard runs
 
-A guard is contract code, so it runs where the contract's code runs. In a contract that fits the size limit, it is the first thing the entrypoint does. In a [split](/tooling/size-limit) contract, the router decodes the call's arguments, runs the guard, and only then forwards the call to the module's facet. The facet is built from the module alone and runs its externals unguarded, so every contract that exposes the module shares one facet at one address, whatever its guards. Calling a facet directly skips every guard, but a facet called directly runs against its own storage, not the storage of any contract that uses it, so there is nothing there to protect.
+A guard is contract code, so it runs where the contract's code runs. In a contract that runs the module itself, it is the first thing the entrypoint does. When the module is a [facet](/tooling/size-limit), the router decodes the call's arguments, runs the guard, and only then forwards the call to the module's facet. The facet is built from the module alone and runs its externals unguarded, so every contract that exposes the module shares one facet at one address, whatever its guards. Calling a facet directly skips every guard, but a facet called directly runs against its own storage, not the storage of any contract that uses it, so there is nothing there to protect.
 
 The [upgrade guard](/language/upgrades#upgradeable-contracts) is the same idea for the upgrade machinery: the check `upgradeToAndCall` runs before it changes anything, with the same rules, `upgrade guard is f;` included.
 

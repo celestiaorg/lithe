@@ -13,28 +13,56 @@ fn deploy_facets(split: &crate::split::Split) {
         let runtime = deploy(&facet.init).unwrap_or_else(|e| panic!("{}: {e}", facet.name));
         let address = crate::split::address_word(facet.address);
         DEPLOYED.with(|d| d.borrow_mut().insert(address, (runtime, HashMap::new())));
-        if facet.library {
-            LIBRARIES.with(|l| l.borrow_mut().insert(address));
-        }
+        FACETS.with(|f| f.borrow_mut().insert(address));
     }
 }
 
-fn split_opts(limit: usize) -> crate::Options {
+fn limit_opts(limit: usize) -> crate::Options {
     crate::Options {
         size_limit: limit,
         ..crate::Options::default()
     }
 }
 
-pub(super) fn all_facets() -> crate::Options {
-    crate::Options {
-        split: crate::SplitMode::All,
-        ..crate::Options::default()
-    }
-}
-
 pub(super) fn checked_src(src: &str) -> crate::check::Checked {
     crate::check::check(loaded(src)).expect("check")
+}
+
+/// `prog` with the modules it exposes marked `delegated`, or with every module it uses and that
+/// isn't generic.
+pub(super) fn mark_facets(mut prog: crate::ast::Program, every: bool) -> crate::ast::Program {
+    let names: Vec<String> = if every {
+        prog.compose
+            .iter()
+            .filter(|m| {
+                prog.modules
+                    .iter()
+                    .any(|d| d.name == m.name && d.params.is_empty())
+            })
+            .map(|m| m.name.clone())
+            .collect()
+    } else {
+        prog.exposes.iter().map(|e| e.module.clone()).collect()
+    };
+    for name in names {
+        if !prog.facets.iter().any(|m| m.name == name) {
+            prog.facets.push(crate::ast::NameAt {
+                line: 0,
+                col: 0,
+                name,
+            });
+        }
+    }
+    prog
+}
+
+/// The build with every module the contract exposes in its facet.
+pub(super) fn build_facets(
+    checked: &crate::check::Checked,
+    name: &str,
+) -> Result<crate::split::Split, crate::Error> {
+    let marked = crate::check::check(mark_facets(checked.source.clone(), false))?;
+    crate::split::build(&marked, name, &crate::Options::default())
 }
 
 pub(super) fn whole_build(checked: &crate::check::Checked) -> crate::gen::Built {
@@ -49,33 +77,58 @@ pub(super) fn facet_names(split: &crate::split::Split) -> Vec<&str> {
         .collect()
 }
 
-/// Every program that exposes a module, with every exposed module in its facet, behaves
-/// exactly like its unsplit build: the same return data, reverts, effects, and storage, slot
-/// for slot. `LITHE_SPLIT_STEPS` sets calls per program.
+/// Every program that uses a module, with every module it uses marked `delegated`, behaves
+/// exactly like its build with none: the same return data, reverts, effects, and storage,
+/// slot for slot. Its exposed externals run in the facets, and every call its own code makes
+/// into a module crosses into the module's facet. A module the program calls a function of
+/// that can't cross, or that can't be built alone, stays unmarked. `LITHE_SPLIT_STEPS` sets
+/// calls per program.
 #[test]
-fn split_preserves_behavior() {
+fn facets_preserve_behavior() {
     let steps = steps_from_env("LITHE_SPLIT_STEPS", 200);
-    let mut compared = 0;
+    let (mut compared, mut crossed) = (0, 0);
     for (path, rel) in differential_targets() {
-        let checked =
-            crate::check::check(crate::modules::load(&Sources::disk(), &path).expect("load"))
-                .expect("check");
-        let split = crate::split::build(&checked, "Test", &all_facets())
-            .unwrap_or_else(|e| panic!("{rel}: {e}"));
-        if split.facets.is_empty() {
-            continue;
-        }
+        let prog = crate::modules::load(&Sources::disk(), &path).expect("load");
+        let checked = crate::check::check(prog.clone()).expect("check");
+        let mut marked = mark_facets(prog, true);
+        let split = loop {
+            if marked.facets.is_empty() {
+                break None;
+            }
+            let checked = crate::check::check(marked.clone()).expect("check marked");
+            match crate::split::build(&checked, "Test", &crate::Options::default()) {
+                Ok(split) => break Some(split),
+                Err(e) => {
+                    let module = e
+                        .message
+                        .split('`')
+                        .nth(1)
+                        .map(|name| name.split('.').next().unwrap_or(name).to_string())
+                        .filter(|m| marked.facets.iter().any(|f| &f.name == m))
+                        .unwrap_or_else(|| panic!("{rel}: {e}"));
+                    marked.facets.retain(|f| f.name != module);
+                }
+            }
+        };
+        let Some(split) = split else { continue };
         let whole = whole_build(&checked);
         OPAQUE_CODE.set(true);
         install_mocks();
         let reference = deploy(&whole.code).unwrap_or_else(|e| panic!("{rel}: {e}"));
         let ours = deploy_split(&split);
         let methods = crate::route::method_ids(&checked).expect("methods");
-        eprintln!("{rel}: router and {} facets", split.facets.len());
+        eprintln!(
+            "{rel}: {} facets, {} functions called across",
+            split.facets.len(),
+            split.across.len()
+        );
         compare_builds(&rel, &methods, &reference, &ours, steps, true);
         compared += 1;
+        crossed += usize::from(!split.across.is_empty());
+        DEPLOYED.with(|d| d.borrow_mut().clear());
     }
-    assert!(compared >= 5, "only {compared} programs split");
+    assert!(compared >= 12, "only {compared} programs split");
+    assert!(crossed >= 8, "only {crossed} programs called across");
 }
 
 const SPLIT_VAULT: &str = r#"import "std/evm"; 
@@ -116,7 +169,7 @@ migrate init(const fee : uint) is {
   settings.fee := fee;
 }
 
-use Counter exposing {
+use Counter delegated exposing {
   function bump(by : uint);
   view function count() : uint;
 }
@@ -153,7 +206,7 @@ pub(super) fn upgrade_to_and_call(implementation: Word, data: &[u8]) -> Vec<u8> 
 fn upgrades_move_between_whole_and_split() {
     let checked = checked_src(SPLIT_VAULT);
     let slot = crate::keccak::erc1967_implementation();
-    let split = crate::split::build(&checked, "Vault", &all_facets()).expect("split");
+    let split = crate::split::build(&checked, "Vault", &crate::Options::default()).expect("split");
     assert_eq!(facet_names(&split), ["Counter"]);
     assert!(split.entries.iter().any(|e| e.name == "init (migrate)"));
     let (a, b) = (Word::from_u64(0xa11), Word::from_u64(0xb22));
@@ -294,7 +347,7 @@ fn upgrades_check_the_call_context_and_the_new_implementation() {
 #[test]
 fn facets_run_only_their_module() {
     let checked = checked_src(SPLIT_VAULT);
-    let split = crate::split::build(&checked, "Vault", &all_facets()).expect("split");
+    let split = crate::split::build(&checked, "Vault", &crate::Options::default()).expect("split");
     let facet = &split.facets[0];
     let names: Vec<&str> = facet.entries.iter().map(|e| e.name.as_str()).collect();
     assert_eq!(names, ["bump", "count"]);
@@ -324,13 +377,14 @@ fn routers_need_their_facets() {
           external view function sum() : uint is m.a + m.b\n\
         }\n\
         storage is record { n : uint; }\n\
-        use M exposing {\n\
+        use M delegated exposing {\n\
           function set_a(v : uint);\n\
           view function sum() : uint;\n\
         }\n";
     let constructed = format!("{plain}deploy(const a : uint) is {{ storage.n := a; }}\n");
     for src in [plain.to_string(), constructed] {
-        let split = crate::split::build(&checked_src(&src), "T", &all_facets()).expect("split");
+        let split = crate::split::build(&checked_src(&src), "T", &crate::Options::default())
+            .expect("split");
         let mut init = split.creation.clone();
         init.extend_from_slice(&Word::from_u64(4).to_be_bytes());
         let out = construct(&init, Word::from_u64(1), Word::from_u64(0)).expect("run");
@@ -383,7 +437,12 @@ module Beta is {
 }
 "#;
 
+/// The pair, with both modules marked `delegated`, or with neither.
 fn pair_src(extra: &str) -> String {
+    pair_with(extra, " delegated")
+}
+
+fn pair_with(extra: &str, marks: &str) -> String {
     format!(
         "{SPLIT_MODULES}
 contract Pair is {{
@@ -391,14 +450,14 @@ contract Pair is {{
     total : uint;
   }}
 
-  use Alpha exposing {{
+  use Alpha{marks} exposing {{
     function alpha_add(a : uint; b : uint);
     function alpha_mix(a : uint; b : uint; c : uint)
       raises Alpha_zero;
     view function alpha() : uint;
   }}
 
-  use Beta exposing {{
+  use Beta{marks} exposing {{
     function beta_add(a : uint; b : uint);
     view function beta() : uint;
   }}
@@ -419,8 +478,8 @@ contract Pair is {{
 #[test]
 fn facets_are_shared() {
     let pair = checked_src(&pair_src(""));
-    let one = crate::split::build(&pair, "Pair", &all_facets()).expect("one");
-    let two = crate::split::build(&pair, "Pair", &all_facets()).expect("two");
+    let one = crate::split::build(&pair, "Pair", &crate::Options::default()).expect("one");
+    let two = crate::split::build(&pair, "Pair", &crate::Options::default()).expect("two");
     assert_eq!(one.creation, two.creation);
     for (x, y) in one.facets.iter().zip(&two.facets) {
         assert_eq!((x.address, &x.init), (y.address, &y.init));
@@ -437,7 +496,7 @@ contract Other is {{
 
   use Beta;
 
-  use Alpha exposing {{
+  use Alpha delegated exposing {{
     view function alpha() : uint;
   }}
 
@@ -448,7 +507,8 @@ contract Other is {{
 }}
 "
     );
-    let other = crate::split::build(&checked_src(&other), "Other", &all_facets()).expect("other");
+    let other = crate::split::build(&checked_src(&other), "Other", &crate::Options::default())
+        .expect("other");
     assert_eq!(facet_names(&other), ["Alpha"]);
     let alpha = |split: &crate::split::Split| {
         let facet = split
@@ -476,41 +536,39 @@ contract Other is {{
     DEPLOYED.with(|d| d.borrow_mut().clear());
 }
 
-/// A contract that fits is built whole. Over the limit, `auto` builds exactly what `all`
-/// does: every exposed module in its facet.
+/// Code is split only where the source marks it. A contract over the limit with no marks
+/// still builds whole, the same code a limit it fits gives, with a warning that lists what
+/// takes the space and what marking each module `delegated` would save.
 #[test]
-fn auto_over_the_limit_moves_every_module() {
-    let checked = checked_src(&pair_src(""));
-    let whole = whole_build(&checked).runtime.len();
-    let fits = crate::split::build(&checked, "Pair", &split_opts(whole)).expect("fits");
-    assert!(fits.facets.is_empty());
-    assert_eq!(fits.creation, whole_build(&checked).code);
-    let (limit, auto) = (1..whole)
-        .rev()
-        .step_by(4)
-        .find_map(|limit| {
-            crate::split::build(&checked, "Pair", &split_opts(limit))
-                .ok()
-                .filter(|split| !split.facets.is_empty())
-                .map(|split| (limit, split))
-        })
-        .expect("a limit that splits");
-    assert_eq!(facet_names(&auto), ["Alpha", "Beta"]);
-    assert!(auto.whole == Some(whole));
-    let all = crate::Options {
-        split: crate::SplitMode::All,
-        ..split_opts(limit)
+fn over_the_limit_is_a_warning() {
+    let checked = checked_src(&pair_with("", ""));
+    let whole = whole_build(&checked);
+    let fits = crate::split::build(&checked, "Pair", &limit_opts(whole.runtime.len())).expect("fits");
+    assert!(fits.facets.is_empty() && fits.warnings.is_empty());
+    assert_eq!(fits.creation, whole.code);
+    let over = crate::split::build(&checked, "Pair", &limit_opts(whole.runtime.len() - 1))
+        .expect("over the limit still builds");
+    assert!(over.facets.is_empty(), "nothing moves unmarked");
+    assert!(over.runtime.len() >= whole.runtime.len());
+    let [warning] = over.warnings.as_slice() else {
+        panic!("one warning: {:?}", over.warnings)
     };
-    let all = crate::split::build(&checked, "Pair", &all).expect("all");
-    assert_eq!((&auto.creation, &auto.runtime), (&all.creation, &all.runtime));
-    let placed = |split: &crate::split::Split| -> Vec<([u8; 20], Vec<u8>)> {
-        split
-            .prerequisites()
-            .into_iter()
-            .map(|f| (f.address, f.init))
-            .collect()
-    };
-    assert_eq!(placed(&auto), placed(&all));
+    let head = format!(
+        "warning: contract `Pair` is {} bytes; the limit is {}",
+        crate::split::thousands(over.runtime.len()),
+        crate::split::thousands(whole.runtime.len() - 1)
+    );
+    assert!(warning.contains(&head), "{warning}");
+    for row in ["\n  Alpha ", "\n  Beta ", "\n  Pair ", "\n  (dispatch and shared code) "] {
+        assert!(warning.contains(row), "{row:?} in {warning}");
+    }
+    assert!(warning.contains("`use M delegated;`"), "{warning}");
+    // Marked, the same contract fits the same limit.
+    let marked = checked_src(&pair_src(""));
+    let split = crate::split::build(&marked, "Pair", &limit_opts(whole.runtime.len() - 1))
+        .expect("split");
+    assert!(split.warnings.is_empty(), "{:?}", split.warnings);
+    assert_eq!(facet_names(&split), ["Alpha", "Beta"]);
 }
 
 /// A contract whose cheapest build is over the limit outlines the functions it shares until
@@ -535,12 +593,9 @@ fn outlining_fits_the_limit() {
          } with a\n",
     );
     let whole = whole_build(&checked);
-    let off = crate::Options {
-        size_limit: whole.runtime.len() - 1,
-        split: crate::SplitMode::Off,
-        ..crate::Options::default()
-    };
-    let fit = crate::split::build(&checked, "Fit", &off).expect("fits by outlining");
+    let fit = crate::split::build(&checked, "Fit", &limit_opts(whole.runtime.len() - 1))
+        .expect("fits by outlining");
+    assert!(fit.warnings.is_empty());
     assert!(fit.facets.is_empty());
     assert!(fit.runtime.len() < whole.runtime.len());
     OPAQUE_CODE.set(true);
@@ -590,14 +645,9 @@ fn fitting_inlines_back_what_still_fits() {
            for i : uint in 0 .. y do { for j : uint in 0 .. i do { a := h2(a, i + j); } }\n\
          } with a\n",
     );
-    let limit = |size_limit| crate::Options {
-        size_limit,
-        split: crate::SplitMode::Off,
-        ..crate::Options::default()
-    };
-    let err = crate::split::build(&checked, "Fit", &limit(1)).err().expect("too big");
-    let smallest: usize = err
-        .message
+    let limit = limit_opts;
+    let over = crate::split::build(&checked, "Fit", &limit(1)).expect("too big, with a warning");
+    let smallest: usize = over.warnings[0]
         .split(" is ")
         .nth(1)
         .and_then(|s| s.split(' ').next())
@@ -613,60 +663,79 @@ fn fitting_inlines_back_what_still_fits() {
     compare_builds("fit", &methods, &reference, &ours, 200, true);
 }
 
-/// Only exposed modules can move: a contract over the limit that exposes none, or whose own
-/// code is still too big, is an error that says so. With splitting off, the error lists
-/// what takes the space.
+/// A module the contract only calls into still takes space, which marking it `delegated` saves;
+/// the warning lists it with what it would save, and what can't be a facet with why not.
+/// A facet over the limit gets a warning of its own.
 #[test]
-fn split_errors_say_what_cannot_move() {
-    let checked = checked_src(SPLIT_VAULT);
+fn warnings_name_the_modules_that_could_be_facets() {
+    let src = r#"import "std/string";
+import "std/uint";
+
+module Render is {
+  pure function render(const n : uint; const name : string) : string is
+    String.concat("{\"n\":", Uint.to_string(n), ",\"name\":\"", name, "\",\"hex\":\"", Uint.to_hex_string(n * n + 7), "\"}")
+}
+
+module Stash is {
+  storage stash at "t.stash" is record {
+    by : map(uint, uint);
+  }
+
+  function keep(storage m : map(uint, uint); const k : uint) is {
+    m[k] := m[k] + 1;
+  }
+}
+
+contract Shop is {
+  use Render;
+  use Stash;
+
+  storage is record {
+    last : string;
+    kept : map(uint, uint);
+  }
+
+  external function show(const n : uint; const name : string) is {
+    storage.last := Render.render(n, name);
+    Stash.keep(storage.kept, n);
+  }
+
+  external view function last() : string is storage.last
+}
+"#;
+    let checked = checked_src(src);
     let whole = whole_build(&checked).runtime.len();
-    let off = crate::Options {
-        size_limit: whole - 1,
-        split: crate::SplitMode::Off,
-        ..crate::Options::default()
+    let over = crate::split::build(&checked, "Shop", &limit_opts(whole / 2)).expect("builds");
+    let warning = &over.warnings[0];
+    let row = |name: &str| {
+        warning
+            .lines()
+            .find(|line| line.starts_with(&format!("  {name} ")))
+            .unwrap_or_else(|| panic!("no {name} row: {warning}"))
+            .to_string()
     };
-    let err = crate::split::build(&checked, "Vault", &off)
-        .err()
-        .expect("too big")
-        .to_string();
-    let head = format!(
-        "contract `Vault` is {} bytes; the limit is {}",
-        crate::split::thousands(whole),
-        crate::split::thousands(whole - 1)
-    );
-    assert!(err.starts_with(&head), "{err}");
-    assert!(err.contains("\n  Vault "), "{err}");
-    assert!(err.contains("\n  Counter "), "{err}");
-    assert!(err.contains("\n  upgrade "), "{err}");
-    assert!(err.contains("(dispatch and shared code)"), "{err}");
-    let plain = checked_src(
-        "storage is record { a : uint; }\n\
-         external function set(const v : uint) is { storage.a := v * 3 + storage.a; }\n",
-    );
-    let err = crate::split::build(&plain, "Plain", &split_opts(10))
-        .err()
-        .expect("nothing can move")
-        .to_string();
+    let saved: usize = row("Render")
+        .split_whitespace()
+        .nth(1)
+        .and_then(|n| n.replace(',', "").parse().ok())
+        .expect("what marking Render saves");
+    assert!(saved > 100, "{warning}");
     assert!(
-        err.contains("only a module exposed with `use M exposing`, or a pure function a library facet runs, can move"),
-        "{err}"
+        row("Stash").contains("can't be a facet: `Stash.keep` can't be called across, as its parameter `m` is a storage reference"),
+        "{warning}"
     );
-    // Small enough for the facet, but not for the router with everything else.
-    let split = crate::split::build(&checked, "Vault", &all_facets()).expect("split");
-    let facet = split.facets[0]
-        .runtime
-        .len()
-        .max(split.facets[0].init.len().div_ceil(2));
-    assert!(facet < split.runtime.len());
-    let err = crate::split::build(&checked, "Vault", &split_opts(facet))
-        .err()
-        .expect("the router is too big")
-        .to_string();
+    let marked = checked_src(&src.replace("use Render;", "use Render delegated;"));
+    let split = crate::split::build(&marked, "Shop", &limit_opts(whole)).expect("split");
+    assert!(split.runtime.len() + saved / 2 < whole, "marking saves");
+    let facet = split.facets[0].runtime.len();
+    let small = crate::split::build(&marked, "Shop", &limit_opts(facet - 1)).expect("builds");
     assert!(
-        err.contains(
-            "contract `Vault` does not fit with every exposed module in its facet: its router is "
-        ),
-        "{err}"
+        small.warnings.iter().any(|w| w.contains(&format!(
+            "warning: module `Render`'s facet is {} bytes",
+            crate::split::thousands(facet)
+        ))),
+        "{:?}",
+        small.warnings
     );
 }
 
@@ -695,7 +764,8 @@ fn module_transient_storage_has_one_slot() {
          use Lock exposing {{ function enter(); }}\n\
          external function go() is {{ transient.busy := true; }}\n"
     ));
-    let facet = crate::check::check(crate::split::facet_program(&a.source, "Lock")).expect("facet");
+    let facet = crate::check::check(crate::split::facet_program(&a.source, "Lock", &[]))
+        .expect("facet");
     assert_eq!(slot_of(&a), slot_of(&b));
     assert_eq!(slot_of(&a), slot_of(&facet));
 }
@@ -747,7 +817,7 @@ contract Vault is {
     storage.owner := owner;
   }
 
-  use Folds exposing {
+  use Folds delegated exposing {
     function fold(a : uint; b : uint; c : uint);
     function fold2(a : uint; b : uint; c : uint);
     function fold3(a : uint; b : uint; c : uint);
@@ -776,7 +846,7 @@ fn factories_create_split_contracts() {
         .find(|unit| unit.contract_name.as_deref() == Some("Factory"))
         .expect("factory");
     let checked = crate::check::check(factory).expect("check");
-    let split = crate::split::build(&checked, "Factory", &all_facets()).expect("split");
+    let split = crate::split::build(&checked, "Factory", &crate::Options::default()).expect("split");
     assert!(
         split.facets.is_empty(),
         "the factory itself exposes nothing"
@@ -852,7 +922,7 @@ fn split_tooling_output() {
     let pair2 = dir.join("pair2.lithe");
     let changed = pair_src("").replace("beta_state.m * 2", "beta_state.m * 3");
     std::fs::write(&pair2, changed).expect("write");
-    let opts = all_facets();
+    let opts = crate::Options::default();
     let compiled = crate::compile(&Sources::disk(), &pair, &opts)
         .and_then(crate::Output::single)
         .expect("compile");
@@ -861,7 +931,7 @@ fn split_tooling_output() {
     assert!(plan.contains("\"to\": \"0x4e59b44847b379578588920cA78FbF26c0B4956C\""));
     assert!(plan.contains("\"name\": \"Beta\""), "{plan}");
     let note = compiled.note().expect("note");
-    assert_eq!(note, "note: `Pair`: `Alpha`, `Beta` run from their facets");
+    assert_eq!(note, "note: `Pair` runs `Alpha`, `Beta` from their facets");
     let facets = crate::facets(&Sources::disk(), &pair, &opts).expect("facets");
     assert!(facets.starts_with("router  "), "{facets}");
     assert!(facets.contains("  Pair: mix\n"), "{facets}");
@@ -870,8 +940,9 @@ fn split_tooling_output() {
         facets.contains("\n  alpha_add, alpha_mix, alpha\n"),
         "{facets}"
     );
-    let unsplit =
-        crate::facets(&Sources::disk(), &pair, &crate::Options::default()).expect("facets");
+    let whole = dir.join("whole.lithe");
+    std::fs::write(&whole, pair_with("", "")).expect("write");
+    let unsplit = crate::facets(&Sources::disk(), &whole, &opts).expect("facets");
     assert!(!unsplit.contains("facet "), "{unsplit}");
     assert!(
         unsplit.contains("  Alpha: alpha_add, alpha_mix, alpha\n"),
@@ -903,6 +974,8 @@ fn split_tooling_output() {
     );
     let vault = dir.join("vault.lithe");
     std::fs::write(&vault, SPLIT_VAULT).expect("write");
+    let whole_vault = dir.join("whole_vault.lithe");
+    std::fs::write(&whole_vault, SPLIT_VAULT.replace("use Counter delegated exposing", "use Counter exposing")).expect("write");
     let args = ["30".to_string()];
     let plan = crate::upgrade_plan(
         &Sources::disk(),
@@ -924,12 +997,12 @@ fn split_tooling_output() {
     );
     let plain = crate::upgrade_plan(
         &Sources::disk(),
-        &vault,
+        &whole_vault,
         "0xProxy",
         "init",
         None,
         &args,
-        &crate::Options::default(),
+        &opts,
     );
     assert!(plain.is_err(), "an unsplit upgrade needs --impl");
     let stubs = crate::stubs(&Sources::disk(), &pair, "Alpha").expect("stubs");
@@ -970,10 +1043,11 @@ fn stubs_keep_tuple_records() {
         stubs,
         "use Orders exposing {\n  function place(o : order);\n  function run(j : job);\n  function mark(m : tuple record { at : uint; note : string });\n  view function last() : bytes32;\n}\n"
     );
-    let shop = format!("{ORDERS}\ncontract Shop is {{\n  storage is record {{}}\n{stubs}}}\n");
+    let marked = stubs.replacen(" exposing {", " delegated exposing {", 1);
+    let shop = format!("{ORDERS}\ncontract Shop is {{\n  storage is record {{}}\n{marked}}}\n");
     let checked = checked_src(&shop);
     let whole = deploy(&whole_build(&checked).code).expect("whole");
-    let split = crate::split::build(&checked, "Shop", &all_facets()).expect("split");
+    let split = crate::split::build(&checked, "Shop", &crate::Options::default()).expect("split");
     assert_eq!(facet_names(&split), ["Orders"]);
     let routed = deploy_split(&split);
     let n = |x: u64| Word::from_u64(x).to_be_bytes().to_vec();
@@ -1025,590 +1099,507 @@ fn stubs_keep_tuple_records() {
     }
 }
 
-/// Every program with pure functions, each run from its library facet, behaves exactly like
-/// its whole build: the same return data, reverts, effects, and storage. `LITHE_REMOTE_STEPS`
-/// sets calls per program.
-#[test]
-fn remote_preserves_behavior() {
-    let steps = steps_from_env("LITHE_REMOTE_STEPS", 100);
-    let mut compared = 0;
-    for (path, rel) in differential_targets() {
-        let checked =
-            crate::check::check(crate::modules::load(&Sources::disk(), &path).expect("load"))
-                .expect("check");
-        crate::gen::REMOTE_ALL.set(true);
-        let split = crate::split::build(&checked, "Test", &crate::Options::default());
-        crate::gen::REMOTE_ALL.set(false);
-        let split = split.unwrap_or_else(|e| panic!("{rel}: {e}"));
-        if split.libraries.is_empty() {
-            continue;
-        }
-        let whole = whole_build(&checked);
-        OPAQUE_CODE.set(true);
-        install_mocks();
-        let reference = deploy(&whole.code).unwrap_or_else(|e| panic!("{rel}: {e}"));
-        let ours = deploy_split(&split);
-        let methods = crate::route::method_ids(&checked).expect("methods");
-        eprintln!("{rel}: {} library facets", split.libraries.len());
-        compare_builds(&rel, &methods, &reference, &ours, steps, true);
-        compared += 1;
-    }
-    assert!(
-        compared >= 10,
-        "only {compared} programs ran functions remotely"
-    );
-}
 
-const RENDER: &str = r#"import "std/string";
-import "std/uint";
-
-error Too_long of uint;
-
-type pair is record {
-  total : uint;
-  label : string;
-}
-
-storage is record {
-  last : string;
-}
-
-pure function render(const n : uint; const name : string; const tags : list(uint)) : string is {
-  assert(name.length <= 40, Too_long(name.length));
-  var out : string := String.concat("{\"name\":\"", name, "\",\"n\":", Uint.to_string(n), ",\"tags\":[");
-  for i : uint in 0 .. tags.length do {
-    if i > 0 then {
-      out := String.concat(out, ",");
-    }
-    out := String.concat(out, Uint.to_string(tags[i]), ":", Uint.to_string(100 / tags[i]));
-  }
-  out := String.concat(out, "],\"hex\":\"", Uint.to_hex_string(n), "\"}");
-} with out
-
-pure function summary(const tags : list(uint)) : pair is {
-  var total : uint := 0;
-  for i : uint in 0 .. tags.length do {
-    total := total + tags[i] * tags[i];
-  }
-} with { total = total; label = String.concat("sum ", Uint.to_string(total)); }
-
-external view function show(const n : uint; const name : string; const tags : list(uint)) : string raises Too_long is
-  render(n, name, tags)
-
-external pure function sum(const tags : list(uint)) : pair is summary(tags)
-
-external function keep(const n : uint; const name : string) raises Too_long is {
-  storage.last := render(n, name, []);
-}
-
-external view function last() : string is storage.last
-"#;
-
-/// `show(uint256,string,uint256[])`'s calldata.
-fn show_data(n: u64, name: &[u8], tags: &[u64]) -> Vec<u8> {
-    uint_string_list("show(uint256,string,uint256[])", n, name, tags)
-}
-
-/// Calldata for `sig`, which takes `(uint256,string,uint256[])`.
-fn uint_string_list(sig: &str, n: u64, name: &[u8], tags: &[u64]) -> Vec<u8> {
-    let w = |x: u64| Word::from_u64(x).to_be_bytes().to_vec();
-    let mut padded = name.to_vec();
-    padded.resize(name.len().div_ceil(32) * 32, 0);
-    let mut data = selector(sig).to_vec();
-    data.extend(
-        [
-            w(n),
-            w(96),
-            w(128 + padded.len() as u64),
-            w(name.len() as u64),
-        ]
-        .concat(),
-    );
-    data.extend(padded);
-    data.extend(w(tags.len() as u64));
-    for &t in tags {
-        data.extend(w(t));
-    }
-    data
-}
-
-/// A contract with no module to move, over the limit only because of a large pure function,
-/// runs that function from its library facet under `auto` and `all` alike, and answers as its
-/// whole build does, errors and panics included.
-#[test]
-fn a_large_pure_function_runs_from_its_library_facet() {
-    let checked = checked_src(RENDER);
-    let whole = whole_build(&checked);
-    let opts = split_opts(whole.runtime.len() * 4 / 5);
-    let split = crate::split::build(&checked, "Render", &opts).expect("split");
-    assert!(split.facets.is_empty());
-    let names: Vec<&str> = split.libraries.iter().map(|l| l.name.as_str()).collect();
-    assert_eq!(names, ["render"]);
-    assert!(split.runtime.len() <= opts.size_limit);
-    let all = crate::Options {
-        split: crate::SplitMode::All,
-        ..opts.clone()
-    };
-    let all = crate::split::build(&checked, "Render", &all).expect("all");
-    assert_eq!(all.creation, split.creation);
-    assert_eq!(
-        split.libraries[0].methods[0].0,
-        "render(uint256,string,uint256[])"
-    );
-    install_mocks();
-    let reference = deploy(&whole.code).expect("whole");
-    let ours = deploy_split(&split);
-    let cases = [
-        (show_data(5, b"ab", &[3, 7]), None),
-        (
-            show_data(1, &[b'x'; 41], &[]),
-            Some(selector("TooLong(uint256)")),
-        ),
-        (show_data(1, b"a", &[4, 0]), Some([0x4e, 0x48, 0x7b, 0x71])),
-    ];
-    for (data, reverts) in cases {
-        let want = call_raw(&reference, &data);
-        let got = call_raw(&ours, &data);
-        assert_eq!(want.reverted, reverts.is_some());
-        assert_eq!(got.reverted, want.reverted);
-        assert_eq!(hex(&got.returndata), hex(&want.returndata));
-        if let Some(sel) = reverts {
-            assert_eq!(got.returndata[..4], sel);
-        }
-    }
-    let methods = crate::route::method_ids(&checked).expect("methods");
-    compare_builds("render", &methods, &reference, &ours, 300, true);
-}
-
-/// A contract that exposes a module and fits whole only when a pure function runs from its
-/// library facet gets every exposed module in its facet instead, as `all` builds it. The
-/// router, still over the limit, is what runs the function from its library facet.
-#[test]
-fn library_facets_never_stand_in_for_modules() {
-    let src = format!(
-        "{RENDER}
-module Tally is {{
-  storage tally at \"split.tally\" is record {{
-    n : uint;
-  }}
-
-  external function tick() is {{
-    tally.n := tally.n + 1;
-  }}
-
-  external view function ticks() : uint is
-    tally.n
-}}
-
-use Tally exposing {{
-  function tick();
-  view function ticks() : uint;
-}}
-"
-    );
-    let checked = checked_src(&src);
-    let whole = whole_build(&checked);
-    let opts = split_opts(whole.runtime.len() * 4 / 5);
-    let with_libraries = crate::gen::codegen(
-        &checked,
-        &crate::split::Shape {
-            opts: opts.clone(),
-            ..crate::split::Shape::default()
-        },
-    )
-    .expect("whole with library facets");
-    assert!(with_libraries.runtime.len() <= opts.size_limit);
-    assert!(!with_libraries.libraries.is_empty());
-    let split = crate::split::build(&checked, "Render", &opts).expect("split");
-    assert_eq!(facet_names(&split), ["Tally"]);
-    let names: Vec<&str> = split.libraries.iter().map(|l| l.name.as_str()).collect();
-    assert_eq!(names, ["render"]);
-    let all = crate::Options {
-        split: crate::SplitMode::All,
-        ..opts.clone()
-    };
-    let all = crate::split::build(&checked, "Render", &all).expect("all");
-    assert_eq!(split.creation, all.creation);
-    install_mocks();
-    let reference = deploy(&whole.code).expect("whole");
-    let ours = deploy_split(&split);
-    let methods = crate::route::method_ids(&checked).expect("methods");
-    compare_builds("render", &methods, &reference, &ours, 300, true);
-    DEPLOYED.with(|d| d.borrow_mut().clear());
-}
-
-const RENDER_MODULE: &str = r#"import "std/string";
-import "std/uint";
-
-module Render is {
-  error Too_long of uint;
-
-  pure function render(const n : uint; const name : string; const tags : list(uint)) : string is {
-    assert(name.length <= 40, Too_long(name.length));
-    var out : string := String.concat("{\"name\":\"", name, "\",\"n\":", Uint.to_string(n), ",\"tags\":[");
-    for i : uint in 0 .. tags.length do {
-      if i > 0 then {
-        out := String.concat(out, ",");
-      }
-      out := String.concat(out, Uint.to_string(tags[i]), ":", Uint.to_string(100 / tags[i]));
-    }
-    out := String.concat(out, "],\"hex\":\"", Uint.to_hex_string(n), "\"}");
-  } with out
-}
-"#;
-
-/// Two different contracts that call the same pure function share its library facet: the
-/// same code at the same address.
-#[test]
-fn contracts_share_library_facets() {
-    let a = r#"import "./render";
-use Render;
-
-error Nope;
-
-storage is record {
-  count : uint;
-}
-
-external function bump() raises Nope is {
-  assert(storage.count < 10, Nope);
-  storage.count := storage.count + 1;
-}
-
-external view function show(const n : uint; const name : string; const tags : list(uint)) : string raises Too_long is
-  Render.render(n, name, tags)
-"#;
-    let b = r#"import "std/string";
-import "./render";
-use Render;
-
-storage is record {
-  owner : address;
-  last : string;
-}
-
-pure function shout(const s : string) : string is String.concat(s, "!")
-
-external function keep(const n : uint) raises Too_long is {
-  storage.last := shout(Render.render(n, "b", []));
-}
-
-external view function last() : string is storage.last
-"#;
-    let sources = Sources::memory([
-        ("render.lithe", RENDER_MODULE),
-        ("a.lithe", a),
-        ("b.lithe", b),
-    ]);
-    let mut libraries = Vec::new();
-    for entry in ["a.lithe", "b.lithe"] {
-        let path = Path::new(entry);
-        let checked = crate::check::check(crate::modules::load(&sources, path).expect("load"))
-            .expect("check");
-        let opts = split_opts(whole_build(&checked).runtime.len() - 1);
-        let split = crate::split::build(&checked, entry, &opts).expect("split");
-        assert!(split.runtime.len() <= opts.size_limit, "{entry}");
-        let facets = crate::facets(&sources, path, &opts).expect("facets");
-        assert!(facets.contains("\nlibrary Render.render  0x"), "{facets}");
-        libraries.push(split.libraries);
-    }
-    let named = |libs: &[crate::split::Facet]| -> Vec<(String, [u8; 20], Vec<u8>)> {
-        libs.iter()
-            .map(|l| (l.name.clone(), l.address, l.init.clone()))
-            .collect()
-    };
-    assert_eq!(named(&libraries[0]).len(), 1);
-    assert_eq!(named(&libraries[0]), named(&libraries[1]));
-    assert_eq!(libraries[0][0].name, "Render.render");
-}
-
-/// `deploy` calls a function its library facet runs, and the creation code reverts unless
-/// the library facet is deployed.
-#[test]
-fn deploy_calls_remote_functions() {
-    let src = RENDER.replace(
-        "external view function last()",
-        "deploy(const n : uint) raises Too_long is {\n  storage.last := render(n, \"deployed\", [n]);\n}\n\nexternal view function last()",
-    );
-    let checked = checked_src(&src);
-    let whole = whole_build(&checked);
-    let opts = split_opts(whole.runtime.len() * 4 / 5);
-    let split = crate::split::build(&checked, "Render", &opts).expect("split");
-    assert_eq!(split.libraries.len(), 1);
-    let args = Word::from_u64(12).to_be_bytes();
-    let missing = construct(
-        &[split.creation.clone(), args.to_vec()].concat(),
-        Word::from_u64(1),
-        Word::from_u64(0),
-    )
-    .expect("construct");
-    assert!(missing.reverted, "creation ran without its library facet");
-    deploy_facets(&split);
-    let ours = construct(
-        &[split.creation.clone(), args.to_vec()].concat(),
-        Word::from_u64(1),
-        Word::from_u64(0),
-    )
-    .expect("construct");
-    let want = construct(
-        &[whole.code.clone(), args.to_vec()].concat(),
-        Word::from_u64(1),
-        Word::from_u64(0),
-    )
-    .expect("construct");
-    assert!(!ours.reverted, "{}", pretty(&ours.returndata));
-    let read = |runtime: &[u8], storage: &HashMap<Word, Word>| {
-        run_ok(runtime, storage, "last()", &[]).returndata
-    };
-    let got = read(&ours.returndata, &ours.storage);
-    assert_eq!(hex(&got), hex(&read(&want.returndata, &want.storage)));
-    assert!(String::from_utf8_lossy(&got).contains("\"n\":12,\"tags\":[12:8]"));
-}
-
-const LOOPED: &str = r#"import "std/string";
-import "std/uint";
-
-storage is record {
-  out : string;
-}
-
-pure function label(const n : uint; const name : string) : string is
-  String.concat("<li id=\"", Uint.to_hex_string(n), "\" title=\"", name, "\">", Uint.to_string(n * 3), " of ", Uint.to_string(n + 7), " / ", Uint.to_hex_string(n * n), "<b>", Uint.to_string(n * n * 11), "</b><i>", Uint.to_hex_string(n + 99), "</i><em>", Uint.to_string(n / 3 + 1), "</em></li>")
-
-pure function title(const n : uint; const name : string) : string is
-  String.concat("<h1 id=\"", Uint.to_hex_string(n + 1), "\" class=\"", name, "\">", Uint.to_string(n * 5), " in ", Uint.to_string(n + 9), " : ", Uint.to_hex_string(n * 7), "<s>", Uint.to_string(n * n * 13), "</s><u>", Uint.to_hex_string(n + 77), "</u><q>", Uint.to_string(n / 5 + 2), "</q></h1>")
-
-external function once(const n : uint; const name : string) is {
-  storage.out := title(n, name);
-}
-
-external function each(const xs : list(uint); const name : string) is {
-  var out : string := "";
-  for i : uint in 0 .. xs.length do {
-    out := String.concat(out, label(xs[i], name));
-  }
-  storage.out := out;
-}
-
-external view function out() : string is storage.out
-"#;
-
-const NESTED: &str = r#"storage is record {
-  total : uint;
-}
-
-pure function mix(const a : uint; const b : uint) : uint is
-  ((a * 31 + b) ^ (a / 7 + b * 3)) % 1_000_003 + (a & 0xff) * (b | 0x10) + (a + b) / 11
-
-external function grid(const n : uint; const m : uint) is {
-  var acc : uint := 0;
-  for i : uint in 0 .. n do {
-    for j : uint in 0 .. m do {
-      acc := acc + mix(i, j) + mix(j, i + acc % 5);
-    }
-  }
-  storage.total := acc;
-}
-
-external view function total() : uint is storage.total
-"#;
-
-/// A remote call costs each time it runs. Of two functions that each fit the contract when
-/// they run remotely, the one a loop calls stays local, although it saves more bytes; and a
-/// function called in loops is outlined, not run remotely, when outlining fits.
-#[test]
-fn remote_calls_in_loops_cost_their_runs() {
-    let checked = checked_src(LOOPED);
-    let whole = whole_build(&checked).runtime.len();
-    let remote = |limit: usize| -> Vec<String> {
-        let split = crate::split::build(&checked, "Looped", &split_opts(limit)).expect("split");
-        assert!(split.runtime.len() <= limit);
-        split.libraries.iter().map(|l| l.name.clone()).collect()
-    };
-    // Either fits 200 bytes under: `title`, which runs once, goes.
-    assert_eq!(remote(whole - 200), ["title"]);
-    // Only `label` saves 280 bytes.
-    assert_eq!(remote(whole - 280), ["label"]);
-
-    let checked = checked_src(NESTED);
-    let whole = whole_build(&checked).runtime.len();
-    let opts = split_opts(whole - 40);
-    let split = crate::split::build(&checked, "Nested", &opts).expect("split");
-    assert!(split.libraries.is_empty());
-    assert!(split.runtime.len() <= opts.size_limit);
-}
-
-const CARDS: &str = r#"import "std/evm";
+/// A module whose pure, view, and stateful functions the contract calls from its own code,
+/// in entrypoints, views, `deploy`, a migration's absence notwithstanding, and continuations.
+const CROSS: &str = r#"import "std/evm";
 import "std/string";
 import "std/uint";
 
-module Cards is {
-  storage cards at "remote.cards" is record {
-    names : map(uint, string);
+module Ledger is {
+  storage ledger at "cross.ledger" is record {
+    balances : map(address, uint);
+    total : uint;
+    last : string;
   }
 
-  error Too_long of uint;
+  error Short of uint;
 
-  guard editor(const id : uint);
+  event Moved of record {
+    indexed from : address;
+    indexed to : address;
+    amount : uint;
+  }
 
-  pure function render(const n : uint; const name : string; const tags : list(uint)) : string is {
-    assert(name.length <= 40, Too_long(name.length));
-    var out : string := String.concat("{\"name\":\"", name, "\",\"n\":", Uint.to_string(n), ",\"tags\":[");
-    for i : uint in 0 .. tags.length do {
-      if i > 0 then {
-        out := String.concat(out, ",");
-      }
-      out := String.concat(out, Uint.to_string(tags[i]), ":", Uint.to_string(100 / tags[i]));
-    }
-    out := String.concat(out, "],\"hex\":\"", Uint.to_hex_string(n), "\"}");
-  } with out
+  pure function fee(const amount : uint; const bps : uint) : uint is
+    amount * bps / 10_000
 
-  external function set_card(const id : uint; const name : string; const tags : list(uint))
-    guarded editor(id)
-    raises Too_long
+  pure function label(const n : uint) : string is
+    String.concat("n=", Uint.to_string(n))
+
+  pure function halves(const n : uint) : (uint, uint) is
+    (n / 2, n - n / 2)
+
+  view function balance(const who : address) : uint is
+    ledger.balances[who]
+
+  view function check(const who : address; const want : uint)
+    raises Short
   is {
-    cards.names[id] := render(id, name, tags);
+    assert(ledger.balances[who] >= want, Short(ledger.balances[who]));
   }
 
-  external view function card(const id : uint) : string is cards.names[id]
+  function mint(const to : address; const amount : uint) is {
+    ledger.balances[to] := ledger.balances[to] + amount;
+    ledger.total := ledger.total + amount;
+    emit Moved { from = to; to = to; amount = amount; };
+  }
+
+  function move(const from : address; const to : address; const amount : uint) : uint
+    raises Short
+  is {
+    check(from, amount);
+    ledger.balances[from] := ledger.balances[from] - amount;
+    ledger.balances[to] := ledger.balances[to] + amount;
+    emit Moved { from = from; to = to; amount = amount; };
+    ledger.last := label(amount);
+  } with ledger.balances[to]
+
+  external view function total() : uint is
+    ledger.total
+
+  external view function last() : string is
+    ledger.last
 }
 
-contract Deck is {
+interface Echo is {
+  function ping(n : uint) : uint;
+}
+
+contract Bank is {
+  use Ledger delegated exposing {
+    view function total() : uint;
+    view function last() : string;
+  }
+
   storage is record {
-    owner : address;
+    ops : uint;
+    cached : uint;
   }
 
-  error Not_owner of uint;
-
-  use Cards exposing {
-    function set_card(id : uint; name : string; tags : list(uint)) raises Too_long | Not_owner;
-    view function card(id : uint) : string;
+  event Op of record {
+    n : uint;
   }
 
-  guard Cards.editor(const id : uint) raises Not_owner is {
-    assert(Evm.sender() = storage.owner, Not_owner(id));
+  deploy() is {
+    Ledger.mint(Evm.sender(), 1_000);
+    storage.cached := Ledger.balance(Evm.sender());
   }
 
-  external function claim() is {
-    storage.owner := Evm.sender();
+  external function mint(const to : address; const amount : uint) is {
+    storage.ops := storage.ops + 1;
+    emit Op { n = storage.ops; };
+    Ledger.mint(to, amount);
+    storage.cached := Ledger.balance(to);
+    emit Op { n = storage.cached; };
   }
+
+  external function send(const to : address; const amount : uint) : uint
+    raises Short
+  is {
+    const before : uint := Ledger.balance(Evm.sender());
+    const got : uint := Ledger.move(Evm.sender(), to, amount - Ledger.fee(amount, 30));
+    storage.cached := before + got;
+  } with got
+
+  external nonreentrant function relay(const e : Echo; const n : uint) is {
+    defer e.ping(n) then (r : uint) {
+      Ledger.mint(Evm.sender(), r);
+      storage.cached := Ledger.balance(Evm.sender());
+    };
+  }
+
+  external view function quote(const amount : uint) : (uint, uint) is
+    Ledger.halves(Ledger.fee(amount, 30))
+
+  external view function afford(const who : address; const want : uint) : bool
+    raises Short
+  is {
+    Ledger.check(who, want);
+  } with true
+
+  external view function name_of(const n : uint) : string is
+    Ledger.label(n)
+
+  external view function mine() : uint is
+    Ledger.balance(Evm.sender()) + storage.ops
+
+  external view function cached() : uint is
+    storage.cached
 }
 "#;
 
-/// A guarded external whose body calls a remote function, split: the router runs the guard,
-/// the module's facet runs the body, and the facet calls the library facet.
-#[test]
-fn guarded_facets_call_library_facets() {
-    let checked = checked_src(CARDS);
-    let plain = crate::split::build(&checked, "Deck", &all_facets()).expect("split");
-    let limit = plain.facets[0].runtime.len() - 1;
-    let opts = crate::Options {
-        size_limit: limit,
-        ..all_facets()
-    };
-    let split = crate::split::build(&checked, "Deck", &opts).expect("split");
-    assert_eq!(facet_names(&split), ["Cards"]);
-    let names: Vec<&str> = split.libraries.iter().map(|l| l.name.as_str()).collect();
-    assert_eq!(names, ["Cards.render"]);
-    assert!(split.facets[0].runtime.len() <= limit);
-    let whole = whole_build(&checked);
-    install_mocks();
-    let reference = deploy(&whole.code).expect("whole");
-    let ours = deploy_split(&split);
-    let set = |tags: &[u64], name: &[u8]| {
-        uint_string_list("set_card(uint256,string,uint256[])", 7, name, tags)
-    };
-    let card = word_data("card(uint256)", &[Word::from_u64(7)]);
-    for runtime in [&reference, &ours] {
-        let run = |data: &[u8], storage: &HashMap<Word, Word>, caller: u64| {
-            exec(
-                runtime,
-                data,
-                storage.clone(),
-                Word::from_u64(caller),
-                Word::from_u64(0),
-                Word::from_u64(0),
-            )
-            .expect("run")
-        };
-        let claimed = run(&word_data("claim()", &[]), &HashMap::new(), 5);
-        assert!(!claimed.reverted);
-        let stranger = run(&set(&[3], b"ab"), &claimed.storage, 6);
-        assert!(stranger.reverted);
-        assert_eq!(stranger.returndata[..4], selector("NotOwner(uint256)"));
-        let long = run(&set(&[3], &[b'x'; 41]), &claimed.storage, 5);
-        assert_eq!(long.returndata[..4], selector("TooLong(uint256)"));
-        let panicked = run(&set(&[0], b"ab"), &claimed.storage, 5);
-        assert_eq!(panicked.returndata[..4], [0x4e, 0x48, 0x7b, 0x71]);
-        let stored = run(&set(&[3, 7], b"ab"), &claimed.storage, 5);
-        assert!(!stored.reverted, "{}", pretty(&stored.returndata));
-        let read = run(&card, &stored.storage, 1);
-        assert!(String::from_utf8_lossy(&read.returndata).contains("\"n\":7,\"tags\":[3:33,7:14]"));
-    }
-    let methods = crate::route::method_ids(&checked).expect("methods");
-    compare_builds("cards", &methods, &reference, &ours, 300, true);
+/// A session against one runtime, keeping its storage between calls.
+struct Run<'a> {
+    runtime: &'a [u8],
+    storage: HashMap<Word, Word>,
 }
 
-/// An upgradeable contract's implementation calls its library facets from the proxy's
-/// frame: a proxy upgraded from the whole build answers the same.
-#[test]
-fn upgradeable_contracts_call_library_facets() {
-    let src = RENDER
-        .replacen("import \"std/string\";", "import \"std/evm\";\nimport \"std/string\";", 1)
-        .replace(
-            "storage is record {\n  last : string;\n}",
-            "upgradeable\n\nerror Not_owner;\n\nstorage is record {\n  owner : address;\n  last : string;\n}\n\nupgrade guard is {\n  assert(Evm.sender() = storage.owner, Not_owner);\n}",
-        );
-    let checked = checked_src(&src);
-    let whole = whole_build(&checked);
-    let split = crate::split::build(&checked, "Render", &split_opts(whole.runtime.len() * 4 / 5))
-        .expect("split");
-    let names: Vec<&str> = split.libraries.iter().map(|l| l.name.as_str()).collect();
-    assert!(names.contains(&"render"), "{names:?}");
-    let (a, b) = (Word::from_u64(0xa11), Word::from_u64(0xb22));
-    deploy_at(&whole.code, a);
-    deploy_facets(&split);
-    deploy_at(&split.creation, b);
-    let slot = crate::keccak::erc1967_implementation();
-    let owner = Word::from_u64(1);
-    let storage: std::cell::RefCell<HashMap<Word, Word>> = std::cell::RefCell::new(
-        [(slot, a), (Word::from_u64(0), owner)]
-            .into_iter()
-            .collect(),
-    );
-    let proxy = proxy_runtime();
-    let send = |data: Vec<u8>| {
-        let now = storage.borrow().clone();
+impl Run<'_> {
+    fn send(&mut self, caller: u64, data: &[u8]) -> Outcome {
         let out = exec(
-            &proxy,
-            &data,
-            now,
-            owner,
+            self.runtime,
+            data,
+            self.storage.clone(),
+            Word::from_u64(caller),
             Word::from_u64(0),
             Word::from_u64(0),
         )
         .expect("run");
         if !out.reverted {
-            *storage.borrow_mut() = out.storage.clone();
+            self.storage = out.storage.clone();
         }
         out
+    }
+}
+
+fn address_arg(n: u64) -> Word {
+    Word::from_u64(n)
+}
+
+/// Contract code calls a facet module's pure functions with `staticcall`, and its view and
+/// stateful ones with `delegatecall` on the contract's storage: results, errors, panics,
+/// events, and storage are what the build with the module inline gives, call for call. The
+/// router holds none of the module's code, and a view entrypoint calls a view function
+/// across.
+#[test]
+fn calls_cross_into_facets() {
+    install_mocks();
+    let checked = checked_src(CROSS);
+    let split = crate::split::build(&checked, "Bank", &crate::Options::default()).expect("split");
+    assert_eq!(facet_names(&split), ["Ledger"]);
+    let across: Vec<&str> = split.across.iter().map(|(_, f)| f.as_str()).collect();
+    for f in ["Ledger.fee", "Ledger.halves", "Ledger.balance", "Ledger.check", "Ledger.mint", "Ledger.move"] {
+        assert!(across.contains(&f), "{f} in {across:?}");
+    }
+    let whole = whole_build(&checked);
+    assert!(split.runtime.len() < whole.runtime.len());
+    let facet = &split.facets[0];
+    let pure = |sel: [u8; 4]| facet.hidden.iter().any(|h| h.sel == sel && !h.delegate);
+    assert_eq!(facet.hidden.iter().filter(|h| pure(h.sel)).count(), 3);
+    let (deployer, other) = (7u64, 8u64);
+    let made_whole = construct(&whole.code, address_arg(deployer), Word::from_u64(0)).expect("whole");
+    let missing = construct(&split.creation, address_arg(deployer), Word::from_u64(0)).expect("router");
+    assert!(missing.reverted, "the router needs its facet");
+    deploy_facets(&split);
+    let made = construct(&split.creation, address_arg(deployer), Word::from_u64(0)).expect("router");
+    assert!(!made.reverted, "deploy: {}", pretty(&made.returndata));
+    assert_eq!(made.storage, made_whole.storage, "deploy writes the same storage");
+    assert_eq!(format!("{:?}", made.trace), format!("{:?}", made_whole.trace));
+    let mut a = Run {
+        runtime: &made_whole.returndata,
+        storage: made_whole.storage.clone(),
     };
-    let shown = send(show_data(5, b"ab", &[3, 7]));
-    assert!(!shown.reverted);
-    let keep = uint_string_list("keep(uint256,string)", 9, b"kept", &[]);
-    let keep = [&keep[..36], &Word::from_u64(64).to_be_bytes(), &keep[100..]].concat();
-    assert!(!send(keep.clone()).reverted);
-    let last = send(word_data("last()", &[])).returndata;
-    assert!(!send(upgrade_to_and_call(b, &[])).reverted, "upgrade");
-    assert_eq!(storage.borrow()[&slot], b);
-    assert_eq!(
-        send(show_data(5, b"ab", &[3, 7])).returndata,
-        shown.returndata
-    );
-    assert_eq!(send(word_data("last()", &[])).returndata, last);
-    assert!(!send(keep).reverted);
-    assert_eq!(send(word_data("last()", &[])).returndata, last);
-    let panicked = send(show_data(1, b"a", &[0]));
-    assert!(panicked.reverted);
+    let mut b = Run {
+        runtime: &made.returndata,
+        storage: made.storage.clone(),
+    };
+    let w = Word::from_u64;
+    let calls: Vec<(u64, Vec<u8>)> = vec![
+        (deployer, word_data("cached()", &[])),
+        (deployer, word_data("mine()", &[])),
+        (deployer, word_data("mint(address,uint256)", &[w(other), w(50)])),
+        (deployer, word_data("send(address,uint256)", &[w(other), w(400)])),
+        (other, word_data("send(address,uint256)", &[w(deployer), w(10_000)])),
+        (deployer, word_data("mint(address,uint256)", &[w(other), Word::from_u64(0).not()])),
+        (deployer, word_data("quote(uint256)", &[w(12_345)])),
+        (deployer, word_data("quote(uint256)", &[Word::from_u64(0).not()])),
+        (deployer, word_data("afford(address,uint256)", &[w(other), w(1)])),
+        (deployer, word_data("afford(address,uint256)", &[w(other), w(1_000_000)])),
+        (deployer, word_data("name_of(uint256)", &[w(42)])),
+        (other, word_data("mine()", &[])),
+        (deployer, word_data("total()", &[])),
+        (deployer, word_data("last()", &[])),
+        (deployer, word_data("relay(address,uint256)", &[w(0xcd), w(9)])),
+        (deployer, word_data("cached()", &[])),
+        (deployer, word_data("mine()", &[])),
+    ];
+    for (i, (caller, data)) in calls.iter().enumerate() {
+        let (want, got) = (a.send(*caller, data), b.send(*caller, data));
+        let ctx = hex(&data[..4]);
+        if [0, 2, 3, 6, 10, 13, 14, 16].contains(&i) {
+            assert!(!got.reverted, "call {i} {ctx}: {}", pretty(&got.returndata));
+        }
+        assert_eq!(want.reverted, got.reverted, "{ctx}");
+        assert_eq!(hex(&want.returndata), hex(&got.returndata), "{ctx}");
+        assert_eq!(format!("{:?}", want.trace), format!("{:?}", got.trace), "{ctx}");
+        assert_eq!(want.detail, got.detail, "{ctx}");
+        assert_eq!(a.storage, b.storage, "{ctx}");
+    }
+    let short = b.send(other, &word_data("send(address,uint256)", &[w(deployer), w(10_000)]));
+    assert_eq!(short.returndata[..4], selector("Short(uint256)"));
+    let panicked = b.send(deployer, &word_data("mint(address,uint256)", &[w(other), Word::from_u64(0).not()]));
     assert_eq!(panicked.returndata[..4], [0x4e, 0x48, 0x7b, 0x71]);
+    let methods = crate::route::method_ids(&checked).expect("methods");
+    OPAQUE_CODE.set(true);
+    compare_builds("cross", &methods, &made_whole.returndata, &made.returndata, 300, true);
+    DEPLOYED.with(|d| d.borrow_mut().clear());
+}
+
+/// The router never dispatches the selectors of its facets' entrypoints for the module's
+/// functions, and a facet called directly runs them on its own storage alone.
+#[test]
+fn hidden_entrypoints_stay_behind_the_router() {
+    let checked = checked_src(CROSS);
+    let split = crate::split::build(&checked, "Bank", &crate::Options::default()).expect("split");
+    let facet = split.facets[0].clone();
+    assert!(facet.methods.iter().all(|(sig, _)| !sig.contains('#')), "{:?}", facet.methods);
+    assert!(facet.abi.to_json().contains("\"total\"") && !facet.abi.to_json().contains('#'));
+    deploy_facets(&split);
+    let made = construct(&split.creation, Word::from_u64(7), Word::from_u64(0)).expect("router");
+    let mut r = Run {
+        runtime: &made.returndata,
+        storage: made.storage.clone(),
+    };
+    let before = r.storage.clone();
+    let mint = facet
+        .hidden
+        .iter()
+        .find(|h| h.at.1 == CROSS.lines().position(|l| l.contains("function mint(")).unwrap() as u32 + 1)
+        .expect("mint's entrypoint");
+    for hidden in &facet.hidden {
+        let mut data = hidden.sel.to_vec();
+        data.extend(Word::from_u64(9).to_be_bytes());
+        data.extend(Word::from_u64(5).to_be_bytes());
+        data.extend(Word::from_u64(5).to_be_bytes());
+        let out = r.send(9, &data);
+        assert!(out.reverted && out.returndata.is_empty(), "{}", hex(&hidden.sel));
+    }
+    assert_eq!(r.storage, before);
+    let runtime = deploy(&facet.init).expect("facet");
+    let mut data = mint.sel.to_vec();
+    data.extend(Word::from_u64(9).to_be_bytes());
+    data.extend(Word::from_u64(5).to_be_bytes());
+    let direct = call_raw(&runtime, &data);
+    assert!(!direct.reverted, "{}", pretty(&direct.returndata));
+    assert_eq!(direct.storage.len(), 2, "the facet's own balance and total");
+    assert_eq!(r.send(9, &word_data("total()", &[])).returndata, Word::from_u64(1_000).to_be_bytes());
+    DEPLOYED.with(|d| d.borrow_mut().clear());
+}
+
+/// Two contracts that mark the same module share its facet: its hidden entrypoints are the
+/// module's, whatever each contract calls.
+#[test]
+fn facets_with_crossings_are_shared() {
+    let one = crate::split::build(&checked_src(CROSS), "Bank", &crate::Options::default()).expect("one");
+    let other = CROSS
+        .replace(
+            "  external view function name_of(const n : uint) : string is\n    Ledger.label(n)\n\n",
+            "",
+        )
+        .replace("contract Bank is {", "contract Vault is {");
+    let two = crate::split::build(&checked_src(&other), "Vault", &crate::Options::default()).expect("two");
+    assert_eq!(one.facets[0].address, two.facets[0].address);
+    assert!(one.across.len() > two.across.len());
+}
+
+/// A call to a function that can't cross, and a crossing a body can't make, are errors that
+/// name the function and say why.
+#[test]
+fn calls_that_cannot_cross_are_errors() {
+    let module = r#"import "std/evm";
+module Book is {
+  storage book at "cross.book" is record {
+    pages : map(uint, uint);
+    n : uint;
+  }
+
+  pure function maybe(const x : uint) : option(uint) is
+    if x = 0 then None else Some(x)
+
+  function write(storage m : map(uint, uint); const k : uint) is {
+    m[k] := 1;
+  }
+
+  function note(const k : uint) is {
+    book.pages[k] := book.n;
+  }
+
+  function later(const to : address) is {
+    defer Evm.transfer(to, 1wei);
+  }
+}
+
+interface Oracle is {
+  view function price() : uint;
+}
+"#;
+    let cases = [
+        (
+            "external view function f(const x : uint) : uint is\n  case Book.maybe(x) of {\n  | Some(v) -> v\n  | None -> 0\n  }\n",
+            "`Book.maybe` runs in `Book`'s facet, and contract code can't call it across: its result is an option",
+        ),
+        (
+            "external function f(const k : uint) is {\n  Book.write(storage.m, k);\n}\n",
+            "`Book.write` runs in `Book`'s facet, and contract code can't call it across: its parameter `m` is a storage reference",
+        ),
+        (
+            "external nonreentrant function f() is {\n  Book.later(Evm.sender());\n}\n",
+            "`Book.later` runs in `Book`'s facet, and contract code can't call it across: it defers a call",
+        ),
+        (
+            "external function f(const o : Oracle) is {\n  storage.n := 1;\n  storage.n := query o.price();\n  Book.note(storage.n);\n}\n",
+            "`Book.note` runs in `Book`'s facet, which sees storage as it is when called, but a body that calls it runs a query after writing storage",
+        ),
+    ];
+    for (code, want) in cases {
+        let src = format!(
+            "{module}contract C is {{\n  use Book delegated;\n  storage is record {{ m : map(uint, uint); n : uint; }}\n{code}}}\n"
+        );
+        let checked = checked_src(&src);
+        let err = crate::split::build(&checked, "C", &crate::Options::default())
+            .err()
+            .unwrap_or_else(|| panic!("no error for {code}"));
+        assert!(err.message.contains(want), "{code}\n{err}");
+        // Inline, each builds.
+        let inline = checked_src(&src.replace("use Book delegated;", "use Book;"));
+        crate::split::build(&inline, "C", &crate::Options::default()).expect("inline builds");
+    }
+}
+
+/// A guard, run in the router, calls a facet module's view function across; a guarded
+/// external forwards to the facet after it, and an upgradeable router reaches the facet
+/// through its proxy. Both answer as their builds with the module inline do.
+#[test]
+fn guards_and_upgrades_call_across() {
+    let src = r#"import "std/evm";
+
+module Roles is {
+  storage roles at "cross.roles" is record {
+    admins : map(address, bool);
+    n : uint;
+  }
+
+  error Not_admin of address;
+
+  guard admin;
+
+  view function only_admin(const who : address)
+    raises Not_admin
+  is {
+    assert(roles.admins[who], Not_admin(who));
+  }
+
+  function grant(const who : address) is {
+    roles.admins[who] := true;
+  }
+
+  external function bump() guarded admin is {
+    roles.n := roles.n + 1;
+  }
+
+  external view function n() : uint is
+    roles.n
+}
+
+upgradeable
+
+storage is record {
+  owner : address;
+}
+
+error Not_owner;
+
+upgrade guard is {
+  Roles.only_admin(Evm.sender());
+}
+
+use Roles delegated exposing {
+  function bump() raises Not_admin;
+  view function n() : uint;
+}
+
+guard Roles.admin raises Not_admin is {
+  Roles.only_admin(Evm.sender());
+}
+
+external function claim() raises Not_owner is {
+  assert(storage.owner = Address.zero, Not_owner);
+  storage.owner := Evm.sender();
+  Roles.grant(Evm.sender());
+}
+"#;
+    let src = format!("import \"std/address\";\n{src}");
+    let checked = checked_src(&src);
+    let split = crate::split::build(&checked, "Admin", &crate::Options::default()).expect("split");
+    let whole = whole_build(&checked);
+    let (a, b) = (Word::from_u64(0xa11), Word::from_u64(0xb22));
+    deploy_at(&whole.code, a);
+    deploy_facets(&split);
+    deploy_at(&split.creation, b);
+    let slot = crate::keccak::erc1967_implementation();
+    let proxy = proxy_runtime();
+    for implementation in [a, b] {
+        let mut p = Run {
+            runtime: &proxy,
+            storage: [(slot, implementation)].into_iter().collect(),
+        };
+        assert!(p.send(2, &word_data("bump()", &[])).reverted);
+        assert!(!p.send(1, &word_data("claim()", &[])).reverted);
+        let denied = p.send(2, &word_data("bump()", &[]));
+        assert_eq!(denied.returndata, word_data("NotAdmin(address)", &[Word::from_u64(2)]));
+        assert!(!p.send(1, &word_data("bump()", &[])).reverted);
+        assert_eq!(p.send(3, &word_data("n()", &[])).returndata, Word::from_u64(1).to_be_bytes());
+        let refused = p.send(2, &upgrade_to_and_call(implementation, &[]));
+        assert_eq!(refused.returndata, word_data("NotAdmin(address)", &[Word::from_u64(2)]));
+        let moved = p.send(1, &upgrade_to_and_call(if implementation == a { b } else { a }, &[]));
+        assert!(!moved.reverted, "{}", pretty(&moved.returndata));
+        assert_eq!(p.send(3, &word_data("n()", &[])).returndata, Word::from_u64(1).to_be_bytes());
+    }
+    DEPLOYED.with(|d| d.borrow_mut().clear());
+}
+
+/// A crossed function that reads its module's immutables finds them after its calldata,
+/// where the router's call appends them, in `deploy` and after. A function that writes one
+/// runs in the contract's creation code, where immutables are written.
+#[test]
+fn crossings_carry_immutables() {
+    let src = r#"module Fees is {
+  immutable fees at "cross.fees" is record {
+    bps : uint;
+  }
+
+  function set_bps(const bps : uint) is {
+    fees.bps := bps;
+  }
+
+  view function cut(const amount : uint) : uint is
+    amount * fees.bps / 10_000
+}
+
+use Fees delegated;
+
+storage is record {
+  first : uint;
+}
+
+deploy() is {
+  Fees.set_bps(250);
+  storage.first := Fees.cut(1_000);
+}
+
+external view function cut(const amount : uint) : uint is
+  Fees.cut(amount)
+
+external view function first() : uint is
+  storage.first
+"#;
+    let checked = checked_src(src);
+    let split = crate::split::build(&checked, "Fees", &crate::Options::default()).expect("split");
+    assert_eq!(split.facets[0].immutables, ["cross.fees"]);
+    let across: Vec<&str> = split.across.iter().map(|(_, f)| f.as_str()).collect();
+    assert_eq!(across, ["Fees.cut"]);
+    let whole = deploy(&whole_build(&checked).code).expect("whole");
+    let ours = deploy_split(&split);
+    for runtime in [&whole, &ours] {
+        assert_eq!(
+            call(runtime, "cut(uint256)", &[Word::from_u64(4_000)]).returndata,
+            Word::from_u64(100).to_be_bytes()
+        );
+    }
+    assert_eq!(
+        call(&whole, "first()", &[]).returndata,
+        call(&ours, "first()", &[]).returndata
+    );
+    DEPLOYED.with(|d| d.borrow_mut().clear());
 }

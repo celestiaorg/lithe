@@ -420,6 +420,7 @@ impl Checker {
             }
         }
         self.callee_effect(line, col, &target.qualified, self.sigs[idx].kind)?;
+        self.check_private(idx, line, col)?;
         *args = kept_args;
         *callee = Some(idx);
         *ty = self.sigs[idx].ret;

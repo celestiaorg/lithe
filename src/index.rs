@@ -105,7 +105,7 @@ struct Ty {
     item: Option<usize>,
 }
 
-const KEYWORDS: [&str; 62] = [
+const KEYWORDS: [&str; 63] = [
     "type",
     "is",
     "record",
@@ -125,6 +125,7 @@ const KEYWORDS: [&str; 62] = [
     "module",
     "use",
     "exposing",
+    crate::parse::DELEGATED,
     "supports",
     "requires",
     "as",

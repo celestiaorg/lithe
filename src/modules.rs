@@ -728,6 +728,7 @@ fn append(dst: &mut Program, src: Program, own: bool) -> Result<(), Error> {
         }
         dst.compose.push(use_);
     }
+    dst.facets.extend(src.facets);
     dst.exposes.extend(src.exposes);
     dst.supports.extend(src.supports);
     if own {
@@ -771,6 +772,7 @@ fn empty() -> Program {
         domains: Vec::new(),
         modules: Vec::new(),
         compose: Vec::new(),
+        facets: Vec::new(),
         exposes: Vec::new(),
         supports: Vec::new(),
         upgradeable: false,
