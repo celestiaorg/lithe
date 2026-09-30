@@ -545,6 +545,23 @@ external view function as_discount() : discount_rate is
 
 A nominal type costs nothing at runtime, and in the ABI it appears as its representation. Integer literals take on nominal integer types directly: `const fee : basis_points := 500;`.
 
+A nominal type has its representation's operations, and works in every place the representation does: parameters, locals, storage fields, map keys and values, list elements, events, errors, and ABI parameters and results. For a type over `bytes` or `string`, that is `.length`, `=` and `<>`, and every built-in that takes `bytes` or `string`: `Bytes.concat`, `Bytes.word`, `String.concat`, `Crypto.keccak256` and the other hashes, `Base64`, `Abi.encode`, `Abi.encode_packed`, `Abi.encode_with_signature`'s signature, `Abi.decode`'s data, the data of `Evm.call`, the code of `create`, and precompile inputs. A type over `bytes` also indexes and slices: `d[i]` is a `bytes1`, and `d[start:end]` is `bytes`. Whatever a nominal type promises about its bytes, part of it or a join of it with others need not keep that promise, so these results are the representation's type: convert back with `doc(...)` where the result holds the promise. Only operations carry over, not assignability: a nominal type still passes to your own functions, and compares, only as itself.
+
+```lithe
+import "std/bytes";
+
+(* A length-prefixed record: its first byte counts the bytes after it. *)
+type doc is bytes;
+
+pure function body(const d : doc) : bytes is d[1:]
+
+pure function wrap(const b : bytes) : doc is doc(Bytes.concat(bytes1(uint8(b.length)), b))
+
+external pure function size(const d : doc) : uint8 is if d.length = 0 then 0 else uint8(d[0])
+
+external pure function append(const d : doc; const b : bytes) : doc is wrap(Bytes.concat(body(d), b))
+```
+
 ```lithe rejects
 type basis_points is uint16;
 type discount_rate is uint16;

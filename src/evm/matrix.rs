@@ -107,6 +107,22 @@ const TYPES: &[Ty] = &[
         out: None,
     },
     Ty {
+        name: "blob",
+        decl: "type blob is bytes;",
+        samples: &["blob(0x01)", "blob(bytes(\"\"))", "blob(0x0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f2021)"],
+        tags: DYN,
+        sig: "bytes",
+        out: None,
+    },
+    Ty {
+        name: "label",
+        decl: "type label is string;",
+        samples: &["label(\"hi\")", "label(\"\")", "label(\"a string that is longer than thirty-two bytes, to spill\")"],
+        tags: DYN,
+        sig: "string",
+        out: None,
+    },
+    Ty {
         name: "pt",
         decl: "type pt is record { a : uint8; b : address; c : int16; d : uint; }",
         samples: &[
@@ -1141,4 +1157,104 @@ fn every_type_works_in_every_place() {
         failures.len(),
         failures.join("\n")
     );
+}
+
+/// Every operation on `bytes` and `string`, on nominal types over them, in each place one
+/// lives. `$B` and `$S` are the types; a nominal build must be the plain one, byte for byte.
+const NOMINAL_OPS: &str = r#"import "std/abi";
+import "std/base64";
+import "std/bytes";
+import "std/crypto";
+import "std/evm";
+import "std/list";
+import "std/string";
+$D
+type holder is record { b : $B; s : $S; }
+storage is record {
+  b : $B;
+  s : $S;
+  h : holder;
+  bs : list($B);
+  by_b : map($B, $S);
+  by_s : map($S, $B);
+}
+event Seen of record { b : $B; s : $S; }
+error Bad of $B;
+pure function ops(const b : $B; const s : $S) : (uint, uint, bytes1, bytes, bytes, bytes32) is
+  (b.length, s.length, b[0], b[1:], b[:1], Bytes.word(b, 0))
+external pure function param(const b : $B; const s : $S) : (uint, uint, bytes1, bytes, bytes, bytes32) is ops(b, s)
+external pure function calldata(const b : $B; const s : $S) : (uint, uint, bytes1, bytes, bytes, bytes32) is
+  (b.length, s.length, b[0], b[1:], b[:1], Bytes.word(b, 0))
+external pure function local() : (uint, uint, bytes1, bytes, bytes) is {
+  const b : $B := $B(0x0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f2021);
+  var s : $S := $S("");
+  s := $S("hi");
+} with (b.length, s.length, b[32], b[1:3], b[:2])
+external pure function joined(const b : $B; const s : $S) : (bytes, string, bool, bool) is
+  (Bytes.concat(b, 0x01, b), String.concat(s, "!", s), b = b, s <> s)
+external pure function hashed(const b : $B; const s : $S) : (bytes32, bytes32, bytes32, bytes20, string, bytes) is
+  (Crypto.keccak256(b), Crypto.keccak256(s), Crypto.sha256(b), Crypto.ripemd160(s), Base64.encode(b), Base64.decode(s))
+external pure function coded(const b : $B; const s : $S) : (bytes, bytes, $B, $S) is
+  (Abi.encode(b, s), Abi.encode_packed(b, s), Abi.decode(Abi.encode(b), $B), Abi.decode(Abi.encode(s), $S))
+external pure function signed(const s : $S) : bytes is Abi.encode_with_signature(s, 1)
+external pure function precompiled(const b : $B) : bytes is Crypto.mod_exp(b, b, b)
+external function put(const b : $B; const s : $S) raises Bad is {
+  storage.b := b;
+  storage.s := s;
+  storage.h := { b = b; s = s; };
+  List.push(storage.bs, b);
+  storage.by_b[b] := s;
+  storage.by_s[s] := b;
+  emit Seen { b = b; s = s; };
+  defer Evm.call(address(0xcd), b);
+  defer create(b);
+  if b.length = 0 then {
+    fail Bad(b);
+  }
+}
+external view function stored(const s : $S) : (uint, uint, bytes1, bytes, bytes32, bool) is
+  (storage.b.length, storage.s.length, storage.bs[0][0], storage.h.b[1:], Bytes.word(storage.by_s[s], 0), storage.by_b[storage.b] = s)
+external view function listed() : (uint, bytes1, bytes, uint) is {
+  const bs : list($B) := storage.bs;
+  const h : holder := storage.h;
+} with (bs[0].length, bs[0][0], h.b[:1], h.s.length)
+"#;
+
+#[test]
+fn nominal_bytes_and_strings_have_their_representations_operations() {
+    let spell = |b: &str, s: &str, decl: &str| {
+        NOMINAL_OPS
+            .replace("$D", decl)
+            .replace("$B", b)
+            .replace("$S", s)
+    };
+    let plain = compile(&spell("bytes", "string", "")).expect("plain");
+    let nominal = compile(&spell(
+        "blob",
+        "label",
+        "type blob is bytes;\ntype label is string;",
+    ))
+    .expect("nominal");
+    assert!(plain == nominal, "a nominal type costs code");
+
+    for mixed in [
+        "external pure function f(const x : blob; const y : bytes) : bool is x = y",
+        "external pure function f(const x : blob; const y : note) : bool is x = y",
+        "external pure function f(const x : label; const y : string) : bool is x <> y",
+        "external pure function f(const x : bytes) : blob is x",
+        "external pure function f(const x : blob) : note is x",
+        "external pure function f(const x : blob) : blob is x[1:]",
+        "external pure function f(const x : blob) : blob is Bytes.concat(x)",
+        "external pure function f(const x : label) : bytes1 is x[0]",
+        "external pure function f(const x : label) : bytes is x[1:]",
+        "external view function f(const x : bytes) : uint is storage.m[x]",
+        "external function f(const x : bytes) is { storage.b := x; }",
+        "pure function g(const x : bytes) : uint is x.length\nexternal pure function f(const x : blob) : uint is g(x)",
+    ] {
+        let src = format!(
+            "import \"std/bytes\";\ntype blob is bytes;\ntype note is bytes;\ntype label is string;\n\
+             storage is record {{ b : blob; m : map(blob, uint); }}\n{mixed}\n"
+        );
+        assert!(compile(&src).is_err(), "accepted: {mixed}");
+    }
 }

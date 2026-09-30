@@ -214,7 +214,7 @@ impl Checker {
                 need(args.len(), 2)?;
                 let bytes = self.bytes_n(0)?;
                 self.check_expr_as(&mut args[0], Some(bytes))?;
-                if !self.same(args[0].ty(), bytes) {
+                if !self.same(self.peel(args[0].ty()), bytes) {
                     return Err(error(
                         args[0].line(),
                         args[0].col(),
@@ -373,7 +373,7 @@ impl Checker {
                     ));
                 }
                 self.check_expr_as(&mut args[0], Some(TY_STRING))?;
-                if !self.same(args[0].ty(), TY_STRING) {
+                if !self.same(self.peel(args[0].ty()), TY_STRING) {
                     return Err(error(
                         args[0].line(),
                         args[0].col(),
@@ -556,7 +556,7 @@ impl Checker {
                 self.expect_addr(args[0].line(), args[0].col(), args[0].ty())?;
                 let bytes = self.bytes_n(0)?;
                 self.check_expr_as(&mut args[1], Some(bytes))?;
-                if !self.same(args[1].ty(), bytes) {
+                if !self.same(self.peel(args[1].ty()), bytes) {
                     return Err(error(
                         args[1].line(),
                         args[1].col(),
@@ -809,7 +809,12 @@ impl Checker {
         }
         for (arg, want) in args.iter_mut().zip(params) {
             self.check_expr_as(arg, Some(want))?;
-            if !self.same(arg.ty(), want) {
+            let got = if want == bytes {
+                self.peel(arg.ty())
+            } else {
+                arg.ty()
+            };
+            if !self.same(got, want) {
                 return Err(error(
                     arg.line(),
                     arg.col(),
