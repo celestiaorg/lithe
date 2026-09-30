@@ -829,6 +829,24 @@ impl<'a> Gen<'a> {
                     Sub::Base64Encode
                 });
             }
+            Builtin::StringEscape(html) => {
+                match args.get(1) {
+                    Some(quoted) => self.compile_value(quoted)?,
+                    None => self.op(PUSH0),
+                }
+                self.compile_span(&args[0])?;
+                self.call_sub(Sub::StringEscape(html));
+            }
+            Builtin::StringReplace => {
+                for arg in args {
+                    self.compile_value(arg)?;
+                }
+                self.call_sub(Sub::Replace);
+            }
+            Builtin::Join(_) => {
+                self.compile_value(&args[0])?;
+                self.call_sub(Sub::Join);
+            }
             Builtin::UintMulDiv => {
                 for arg in args {
                     self.compile_value(arg)?;

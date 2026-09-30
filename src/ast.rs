@@ -772,6 +772,12 @@ pub(crate) enum Builtin {
     Base64EncodeWith,
     /// `Base64.decode(data)`: the bytes a base64 string encodes, in either alphabet.
     Base64Decode,
+    /// `String.escape_json(s)`, or with `true`, `String.escape_html(s)`.
+    StringEscape(bool),
+    /// `String.replace(s, needle, replacement)`: every `needle` replaced, left to right.
+    StringReplace,
+    /// `Bytes.join(xs)`, or with `true`, `String.join(xs)`: a list's values one after another.
+    Join(bool),
     /// `Uint.mul_div(a, b, d)`: `a * b / d` without overflow in the product.
     UintMulDiv,
     UintMulMod,

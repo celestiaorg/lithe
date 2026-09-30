@@ -448,6 +448,62 @@ impl Checker {
                     }
                 }
             }
+            Builtin::StringEscape(html) => {
+                if html || args.len() != 2 {
+                    need(args.len(), 1)?;
+                }
+                if let Some(quoted) = args.get_mut(1) {
+                    self.check_word_arg(quoted, TY_BOOL)?;
+                }
+                self.check_expr(&mut args[0])?;
+                if !self.is_dyn_ty(args[0].ty()) {
+                    return Err(error(
+                        args[0].line(),
+                        args[0].col(),
+                        format!("`{call}` expects `string` or `bytes`"),
+                    ));
+                }
+            }
+            Builtin::StringReplace => {
+                need(args.len(), 3)?;
+                for arg in args.iter_mut() {
+                    self.check_expr(arg)?;
+                    if !self.is_dyn_ty(arg.ty()) {
+                        return Err(error(
+                            arg.line(),
+                            arg.col(),
+                            format!("`{call}` expects `string` or `bytes`"),
+                        ));
+                    }
+                }
+            }
+            Builtin::Join(string) => {
+                need(args.len(), 1)?;
+                let elem = if string { TY_STRING } else { self.bytes_n(0)? };
+                let want = self.list_of(elem, 0);
+                self.check_expr_as(&mut args[0], Some(want))?;
+                let t = &self.types[self.peel(args[0].ty())];
+                let ok = t.kind == TyKind::List
+                    && t.bits == 0
+                    && t.elem.is_some_and(|e| {
+                        let e = &self.types[self.peel(e)];
+                        if string {
+                            e.kind == TyKind::String
+                        } else {
+                            e.kind == TyKind::Bytes && e.bits == 0
+                        }
+                    });
+                if !ok {
+                    return Err(error(
+                        args[0].line(),
+                        args[0].col(),
+                        format!(
+                            "`{call}` joins a `list({})`",
+                            if string { "string" } else { "bytes" }
+                        ),
+                    ));
+                }
+            }
             Builtin::UintToString | Builtin::IntToString => {
                 need(args.len(), 1)?;
                 self.check_expr_as(&mut args[0], None)?;
@@ -914,9 +970,13 @@ impl Checker {
             | Builtin::Code
             | Builtin::StaticCall
             | Builtin::BytesConcat
+            | Builtin::Join(false)
             | Builtin::BytesSlice => self.bytes_n(0)?,
             Builtin::BytesAt => self.bytes_n(1)?,
             Builtin::StringConcat
+            | Builtin::Join(true)
+            | Builtin::StringEscape(_)
+            | Builtin::StringReplace
             | Builtin::UintToString
             | Builtin::IntToString
             | Builtin::UintToHexString
@@ -1042,12 +1102,17 @@ fn module_builtin(module: &str, name: &str) -> Option<Builtin> {
         ("Abi", "encode_with_signature") => Builtin::AbiEncodeSignature,
         ("Abi", "encode_call") => Builtin::AbiEncodeCall,
         ("Bytes", "concat") => Builtin::BytesConcat,
+        ("Bytes", "join") => Builtin::Join(false),
         ("Bytes", "word") => Builtin::BytesWord,
         ("Base64", "encode") => Builtin::Base64Encode,
         ("Base64", "encode_url") => Builtin::Base64EncodeUrl,
         ("Base64", "encode_with") => Builtin::Base64EncodeWith,
         ("Base64", "decode") => Builtin::Base64Decode,
         ("String", "concat") => Builtin::StringConcat,
+        ("String", "join") => Builtin::Join(true),
+        ("String", "escape_json") => Builtin::StringEscape(false),
+        ("String", "escape_html") => Builtin::StringEscape(true),
+        ("String", "replace") => Builtin::StringReplace,
         ("Uint", "div_rem") => Builtin::UintDivRem,
         ("Uint", "mul_div") => Builtin::UintMulDiv,
         ("Uint", "mul_mod") => Builtin::UintMulMod,

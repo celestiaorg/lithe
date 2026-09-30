@@ -5,6 +5,10 @@ module Bytes is {
      `bytes.concat(a, b, ...)`, of `bytes` and `bytesN` values. *)
   intrinsic concat;
 
+  (* join(xs : list(bytes)) : bytes
+     The values of `xs`, one after another, in one copy. *)
+  intrinsic join;
+
   (* The 32 bytes of `b` from `offset`. `Panic(0x32)` if they run past the end. *)
   intrinsic pure function word(b : bytes; offset : uint) : bytes32;
 }
