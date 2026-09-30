@@ -489,6 +489,8 @@ fn spec_func(
         interface: None,
         exported: None,
         forward: None,
+        guarded: None,
+        guard_of: None,
     }
 }
 

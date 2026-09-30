@@ -442,6 +442,9 @@ enum Kind {
     Revert,
     /// `echo` returns its parameter.
     Calldata,
+    /// A module's `echo` returns its parameter, guarded by a check that fails with it as an
+    /// error's payload for caller 2: whole, and with the module in its facet.
+    Guard,
 }
 
 /// A place a value can live. In its text, `$T` is the type, `$V` the sample written, and
@@ -833,7 +836,14 @@ const PLACES: &[Place] = &[
     Place { name: "event", kind: Kind::Log, needs: "abi", decl: "event Seen of record { x : $T; }", storage: "", write: "emit Seen { x = $V; };", load: "", read: "" },
     Place { name: "error", kind: Kind::Revert, needs: "abi", decl: "error Bad of $T;", storage: "", write: "fail Bad($V);", load: "", read: "" },
     Place { name: "calldata", kind: Kind::Calldata, needs: "abi", decl: "", storage: "", write: "", load: "", read: "" },
+    Place { name: "guard", kind: Kind::Guard, needs: "abi", decl: "", storage: "", write: "", load: "", read: "" },
 ];
+
+/// A facet is built from its module alone, so a guard cell declares its type in the module.
+/// An interface can't be declared there: such a cell runs only whole.
+fn in_module(ty: &Ty) -> bool {
+    !ty.decl.contains("interface")
+}
 
 fn fill(text: &str, ty: &Ty, v: &str, w: &str) -> String {
     let named = ty.name.chars().all(|c| c.is_alphanumeric() || c == '_');
@@ -847,11 +857,30 @@ fn program(ty: &Ty, place: &Place) -> String {
     let n = ty.samples.len();
     let sample = |k: usize| ty.samples[k % n];
     let (shown, out) = ty.out.unwrap_or((ty.name, "v"));
+    let guarded = place.kind == Kind::Guard;
+    let (top, inner) = if guarded && in_module(ty) {
+        ("", ty.decl)
+    } else {
+        (ty.decl, "")
+    };
     let mut src = format!(
-        "import \"std/abi\";\nimport \"std/evm\";\nimport \"std/int\";\nimport \"std/list\";\nimport \"std/uint\";\n{}\n{}\n",
-        ty.decl,
+        "import \"std/abi\";\nimport \"std/evm\";\nimport \"std/int\";\nimport \"std/list\";\nimport \"std/uint\";\n{top}\n{}\n",
         fill(place.decl, ty, "", "")
     );
+    if guarded {
+        src += &fill(
+            &format!(
+                "module Guarded is {{\n{inner}\nguard seen(const x : $T);\n\
+                 external function echo(const x : $T) : $T guarded seen(x) is x\n}}\n\
+                 error Seen of $T;\n\
+                 use Guarded exposing {{ function echo(x : $T) : $T raises Seen; }}\n\
+                 guard Guarded.seen(const x : $T) raises Seen is {{ if Evm.sender() = address(2) then {{ fail Seen(x); }} }}\n"
+            ),
+            ty,
+            "",
+            "",
+        );
+    }
     if !ty.name.chars().all(|c| c.is_alphanumeric() || c == '_') && place.name == "abi codec" {
         src += &format!("type tn is {};\n", ty.name);
     }
@@ -896,7 +925,7 @@ fn program(ty: &Ty, place: &Place) -> String {
             Kind::Revert => {
                 src += &format!("external function get{k}() raises Bad is {{ {write} }}\n")
             }
-            Kind::Calldata => {}
+            Kind::Calldata | Kind::Guard => {}
         }
     }
     if place.kind == Kind::Stored {
@@ -1074,6 +1103,35 @@ fn run_cell(ty: &Ty, place: &Place, runtime: &[u8]) -> Result<(), String> {
                     ));
                 }
             }
+            Kind::Guard => {
+                let sig = format!("echo({})", ty.sig);
+                let mut data = selector(&sig).to_vec();
+                data.extend(&want);
+                let out = send(runtime, storage, &data, false)?;
+                if out.reverted || out.returndata != want {
+                    return Err(format!(
+                        "{sig} with {v}: want {}, got {}",
+                        hex(&want),
+                        pretty(&out.returndata)
+                    ));
+                }
+                let out = exec(
+                    runtime,
+                    &data,
+                    storage.clone(),
+                    Word::from_u64(2),
+                    Word::from_u64(0),
+                    Word::from_u64(0),
+                )?;
+                let payload = out.returndata.get(4..).unwrap_or_default().to_vec();
+                if !out.reverted || (payload != enc()? && payload != want) {
+                    return Err(format!(
+                        "guard on {v}: want payload {}, got {}",
+                        hex(&enc()?),
+                        pretty(&out.returndata)
+                    ));
+                }
+            }
             Kind::Calldata => {
                 let sig = format!("echo({})", ty.sig);
                 let mut data = selector(&sig).to_vec();
@@ -1090,6 +1148,15 @@ fn run_cell(ty: &Ty, place: &Place, runtime: &[u8]) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+/// Runs a cell with every module in its facet.
+fn run_split(ty: &Ty, place: &Place, src: &str) -> Result<(), String> {
+    let checked = crate::check::check(loaded(src)).map_err(|err| err.to_string())?;
+    let split = crate::split::build(&checked, "Cell", &super::split::all_facets())
+        .map_err(|err| err.to_string())?;
+    let runtime = super::split::deploy_split(&split);
+    run_cell(ty, place, &runtime)
 }
 
 fn allowed(ty: &Ty, place: &Place) -> bool {
@@ -1122,7 +1189,13 @@ fn check_type(ty: &Ty) -> Vec<String> {
             ),
             (Ok(Ok(init)), true) => deploy(&init)
                 .and_then(|runtime| run_cell(ty, place, &runtime))
-                .err(),
+                .err()
+                .or_else(|| {
+                    (place.kind == Kind::Guard && in_module(ty))
+                        .then(|| run_split(ty, place, &src).err())
+                        .flatten()
+                        .map(|err| format!("split: {err}"))
+                }),
         };
         if let Some(problem) = problem {
             failures.push(format!("{} in {}: {problem}", ty.name, place.name));

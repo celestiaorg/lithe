@@ -213,6 +213,7 @@ pub(super) fn compose(prog: &mut Program) -> Result<(), Error> {
     let order: Vec<String> = prog.compose.iter().map(|use_| use_.name.clone()).collect();
     for name in order {
         let module = prog.modules[by_name[&name]].clone();
+        check_guarded(&module)?;
         if !module.params.is_empty() {
             let (line, col) = used[&name];
             return Err(error(
@@ -303,6 +304,7 @@ pub(super) fn compose(prog: &mut Program) -> Result<(), Error> {
         }
     }
     let exposes = std::mem::take(&mut prog.exposes);
+    let mut needs = Vec::new();
     for exposed in &exposes {
         let mut members = Vec::new();
         for named in &exposed.interfaces {
@@ -328,11 +330,20 @@ pub(super) fn compose(prog: &mut Program) -> Result<(), Error> {
         members.extend(exposed.decls.iter().cloned());
         for decl in members {
             let entry = declared_entry(prog, &exposed.module, decl)?;
+            if let Some(guarded) = &entry.guarded {
+                needs.push(Need {
+                    module: exposed.module.clone(),
+                    guard: guarded.name.rsplit('.').next().unwrap_or("").to_string(),
+                    entry: entry.name.clone(),
+                    line: entry.line,
+                    col: entry.col,
+                });
+            }
             prog.funcs.push(entry);
         }
     }
     prog.exposes = exposes;
-    Ok(())
+    place_guards(prog, &needs)
 }
 
 /// The internal function a module's external becomes: `M.name#k`, which no source can name.
@@ -496,8 +507,18 @@ fn declared_entry(prog: &Program, module: &str, decl: Func) -> Result<Func, Erro
         .exported
         .as_ref()
         .is_some_and(|exported| exported.nonreentrant);
+    // A guarded external's entrypoint runs the contract's check first.
+    let mut stmts = impl_.stmts.clone();
+    if let Some(guarded) = &impl_.guarded {
+        stmts.insert(0, guard_call(module, guarded));
+    }
+    let guarded = impl_.guarded.clone().map(|guarded| Guarded {
+        name: format!("{module}.{}", guarded.name),
+        ..guarded
+    });
     Ok(Func {
-        stmts: impl_.stmts.clone(),
+        stmts,
+        guarded,
         tail: impl_.tail.clone(),
         module: impl_.module.clone(),
         requires: impl_.requires.clone(),
@@ -827,5 +848,7 @@ fn erc165_func(line: u32, col: u32, origin: &str, ids: &[u32]) -> Func {
         interface: None,
         exported: None,
         forward: None,
+        guarded: None,
+        guard_of: None,
     }
 }

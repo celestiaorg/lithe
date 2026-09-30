@@ -487,6 +487,14 @@ pub(crate) fn facet_program(source: &Program, module: &str) -> Program {
                 .collect(),
         });
     }
+    // A module's guards are the contract's to check, in its router: the facet runs every
+    // external unguarded.
+    for decl in &mut prog.modules {
+        for func in &mut decl.funcs {
+            func.guarded = None;
+        }
+    }
+    prog.guards.clear();
     prog.upgradeable = false;
     prog.guard = None;
     // The router answers ERC-165; a facet never sees the call.
