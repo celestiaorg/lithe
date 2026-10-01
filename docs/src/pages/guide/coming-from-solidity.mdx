@@ -203,6 +203,7 @@ Lithe error names are converted to PascalCase in the ABI, so `Not_owner` becomes
 | inherited public functions | a module's externals, exposed with `use B exposing I, { ... }` |
 | `ERC165` and `supportsInterface` overrides | `supports I, J;`, and the compiler writes `supportsInterface`. See [ERC-165](/language/modules#erc-165) |
 | an abstract `_canSetX()` hook the contract overrides | a module `guard`, which each contract that exposes the guarded externals writes. See [Guards](/language/modules#guards) |
+| a `virtual` function the contract overrides, such as `_beforeTokenTransfer`, `_update`, or `tokenURI` | a module `hook`, which the module's code calls and each contract that reaches it implements, or skips with `is skip`. Only the contract implements hooks, so it composes extensions in the hook's body. See [Hooks](/language/modules#hooks) |
 | `super.f()` | call the module function directly: `B.f()` |
 | `library L` | a `module`, or plain functions in an imported file |
 | `using L for T` | none. Call `L.f(x)` |

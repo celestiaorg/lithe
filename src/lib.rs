@@ -375,7 +375,7 @@ pub fn abi_tree(sources: &Sources, entry: &Path, opts: &Options) -> Result<Strin
     let name = artifact_contract_name(&prog, entry);
     let checked = check::check(prog, opts.evm)?;
     let parts = part_names(&checked, &name, opts)?;
-    Ok(route::render(&checked.routes, parts.as_ref()))
+    Ok(route::render(&checked, parts.as_ref()))
 }
 
 /// Where each selector runs, `router` or a facet's module, when the contract is split.
@@ -688,6 +688,20 @@ pub fn facets(sources: &Sources, entry: &Path, opts: &Options) -> Result<String,
         if !across.is_empty() {
             out.push_str(&format!("  called across: {}\n", across.join(", ")));
         }
+        // The hooks the facet calls back into the contract for, which the router answers.
+        let back: Vec<&str> = facet
+            .hooks
+            .iter()
+            .filter(|hook| {
+                built.entries.iter().any(|entry| {
+                    entry.name.strip_suffix("#callback") == Some(hook.as_str())
+                })
+            })
+            .map(|hook| modules::shown(hook))
+            .collect();
+        if !back.is_empty() {
+            out.push_str(&format!("  calls back: {}\n", back.join(", ")));
+        }
         let unused = facet.entries.len().saturating_sub(forwarded.len());
         if unused > 0 {
             out.push_str(&format!(
@@ -700,19 +714,109 @@ pub fn facets(sources: &Sources, entry: &Path, opts: &Options) -> Result<String,
 }
 
 /// The `use M exposing` block that exposes every external `module` declares, for a contract to
-/// copy and trim.
-pub fn stubs(sources: &Sources, entry: &Path, module: &str) -> Result<String, Error> {
+/// copy and trim, or, given `interfaces`, the line that exposes them. Either way, the hooks
+/// those externals reach follow, for the contract to implement.
+pub fn stubs(
+    sources: &Sources,
+    entry: &Path,
+    module: &str,
+    interfaces: &[String],
+) -> Result<String, Error> {
     let prog = modules::load(sources, entry)?;
     let Some(decl) = prog.modules.iter().find(|decl| decl.name == module) else {
         return Err(error(0, 0, format!("unknown module `{module}`")));
     };
-    exposing(decl).ok_or_else(|| {
-        error(
-            decl.line,
-            decl.col,
-            format!("module `{module}` declares no external functions"),
-        )
-    })
+    let mut out = if interfaces.is_empty() {
+        exposing(decl).ok_or_else(|| {
+            error(
+                decl.line,
+                decl.col,
+                format!("module `{module}` declares no external functions"),
+            )
+        })?
+    } else {
+        for name in interfaces {
+            if !prog.interfaces.iter().any(|iface| &iface.name == name) {
+                return Err(error(0, 0, format!("unknown interface `{name}`")));
+            }
+        }
+        format!("use {module} exposing {};\n", interfaces.join(", "))
+    };
+    let members: Vec<&str> = prog
+        .interfaces
+        .iter()
+        .filter(|iface| interfaces.contains(&iface.name))
+        .flat_map(|iface| iface.methods.iter().map(|m| m.name.as_str()))
+        .collect();
+    out.push_str(&hook_stubs(&prog, decl, |name| {
+        interfaces.is_empty() || members.contains(&name)
+    })?);
+    Ok(out)
+}
+
+/// The hooks `decl`'s externals that `wanted` names reach, through any module, as the
+/// contract writes them: `is skip;` for those without a result, a commented stub for those
+/// with one.
+fn hook_stubs(
+    prog: &ast::Program,
+    decl: &ast::ModuleDecl,
+    wanted: impl Fn(&str) -> bool,
+) -> Result<String, Error> {
+    let facet = split::facet_program(prog, &decl.name, &[]);
+    if !facet
+        .modules
+        .iter()
+        .any(|m| facet.compose.iter().any(|u| u.name == m.name) && !m.hooks.is_empty())
+    {
+        return Ok(String::new());
+    }
+    let checked = check::check_in(facet, false, evm_near(Path::new(&prog.origin)))?;
+    let funcs = &checked.prog.funcs;
+    let mut reached: Vec<usize> = Vec::new();
+    let mut todo: Vec<usize> = (0..funcs.len())
+        .filter(|&i| funcs[i].promoted.is_some() && wanted(&funcs[i].name))
+        .collect();
+    let mut seen = std::collections::HashSet::new();
+    while let Some(i) = todo.pop() {
+        if !seen.insert(i) {
+            continue;
+        }
+        for &j in checked.calls.get(i).into_iter().flatten() {
+            if funcs[j].hook_of.is_some() && !reached.contains(&j) {
+                reached.push(j);
+            }
+            todo.push(j);
+        }
+    }
+    if reached.is_empty() {
+        return Ok(String::new());
+    }
+    reached.sort_by_key(|&j| (&funcs[j].origin, funcs[j].line, funcs[j].col));
+    let mut out = String::from(
+        "\n(* The hooks these externals reach: the contract implements each, or skips one without a result. *)\n",
+    );
+    for j in reached {
+        let Some(of) = &funcs[j].hook_of else { continue };
+        let Some(sig) = checked
+            .prog
+            .modules
+            .iter()
+            .find(|m| m.name == of.module.name)
+            .and_then(|m| m.hooks.iter().find(|h| h.name == of.name))
+        else {
+            continue;
+        };
+        if sig.ret.is_some() {
+            out.push_str(&format!("(* {} *)\n", check::hook_stub(&of.module.name, sig)));
+        } else {
+            out.push_str(&format!(
+                "hook {}.{} is skip;\n",
+                modules::shown(&of.module.name),
+                of.name
+            ));
+        }
+    }
+    Ok(out)
 }
 
 /// `use M exposing { ... }` with each of the module's external functions, or `None` when it
@@ -805,7 +909,7 @@ fn exposing(decl: &ast::ModuleDecl) -> Option<String> {
 /// `  Group: a, b` for each group, in the order they first appear.
 fn group_lines(entries: &[gen::Entrypoint], contract: &str) -> String {
     let mut groups: Vec<(&gen::Group, Vec<&str>)> = Vec::new();
-    for entry in entries {
+    for entry in entries.iter().filter(|entry| !split::is_hidden(&entry.name)) {
         match groups.iter_mut().find(|(group, _)| *group == &entry.group) {
             Some((_, names)) => names.push(&entry.name),
             None => groups.push((&entry.group, vec![&entry.name])),

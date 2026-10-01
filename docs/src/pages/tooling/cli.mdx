@@ -18,7 +18,7 @@ lithe specs file.lithe
 lithe prove file.lithe
 lithe lint [--fix] path...
 lithe facets file.lithe
-lithe stubs file.lithe Module
+lithe stubs file.lithe Module [Interface...]
 lithe storage file.lithe
 lithe storage old.lithe new.lithe
 lithe upgrade-check old.lithe new.lithe
@@ -109,7 +109,7 @@ These commands summarize what each entrypoint does. See [Inspecting contracts](/
 | `lithe specs file.lithe` | the [formal verification](/language/verification) specs of the file and its `.spec.lithe`, checked, and what each claims |
 | `lithe storage file.lithe` | the storage and transient layout, slot by slot |
 | `lithe facets file.lithe` | the router and each facet: size against the limit, the entrypoints each runs, and the functions the router calls across |
-| `lithe stubs file.lithe Module` | the `use Module exposing` block that declares every external a module has |
+| `lithe stubs file.lithe Module [Interface...]` | the `use Module exposing` block that declares every external a module has, or the line that exposes the interfaces given, then the [hooks](/language/modules#hooks) those externals reach |
 
 ## Upgrades
 

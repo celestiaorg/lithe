@@ -563,7 +563,7 @@ impl Printer<'_> {
                 | Kind::Interface
                 | Kind::Module
                 | Kind::Deploy
-        ) || (bol && kind == Kind::Ident && self.line_head == "guard")
+        ) || (bol && kind == Kind::Ident && matches!(self.line_head.as_str(), "guard" | "hook"))
         {
             self.decl_indent = self.line_indent;
         }
@@ -1023,6 +1023,10 @@ mod tests {
             (
                 "external function f(const id : uint)\nguarded g(id)\nraises E\nis { skip }\nguard M.g(const id : uint)\nraises E\nis { skip }\n",
                 "external function f(const id : uint)\n  guarded g(id)\n  raises E\nis { skip }\nguard M.g(const id : uint)\n  raises E\nis { skip }\n",
+            ),
+            (
+                "hook M.h(const id : uint)\nraises E\nis {\nskip\n}\nhook M.g is skip;\n",
+                "hook M.h(const id : uint)\n  raises E\nis {\n  skip\n}\nhook M.g is skip;\n",
             ),
             (
                 "pure function f(const n : uint) : string raises Bad is\n  if n = 1 then\n    \"a\"\n      else if n = 2 then\n        \"b\"\n          else\nfail Bad\n",

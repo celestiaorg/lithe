@@ -56,7 +56,9 @@ impl<'a> Gen<'a> {
         for &(sel, part) in &shape.forward {
             let (stub, bare) = stubs[part];
             let tailed = shape.tails.get(part).is_some_and(|tail| !tail.is_empty());
-            let to = if tailed && blind.contains(&sel) {
+            // A facet that may call hooks back reads the word after its immutables.
+            let hooked = shape.masks.get(part).is_some_and(Option::is_some);
+            let to = if tailed && !hooked && blind.contains(&sel) {
                 bare
             } else {
                 stub
@@ -157,14 +159,19 @@ impl<'a> Gen<'a> {
                     .map_or_else(Vec::new, |ids| self.tail_order(ids))
             })
             .collect();
-        // A facet that reads immutables gets them after its calldata; the others share `go`.
+        let masks: Vec<Option<Word>> = (0..stubs.len())
+            .map(|i| shape.masks.get(i).copied().flatten())
+            .collect();
+        let tailed = |i: usize| !tails[i].is_empty() || masks[i].is_some();
+        // A facet that reads immutables gets them after its calldata, and one whose modules
+        // have hooks the word it calls them back by; the others share `go`.
         for (i, &(stub, bare)) in stubs.iter().enumerate() {
-            if !tails[i].is_empty() {
+            if tailed(i) {
                 self.jumpdest(stub);
-                self.tail_stub(shape.parts[i], &tails[i], bare, after);
+                self.tail_stub(shape.parts[i], &tails[i], masks[i], bare, after);
             }
         }
-        let plain: Vec<usize> = (0..stubs.len()).filter(|&i| tails[i].is_empty()).collect();
+        let plain: Vec<usize> = (0..stubs.len()).filter(|&i| !tailed(i)).collect();
         for (n, &i) in plain.iter().enumerate() {
             self.jumpdest(stubs[i].0);
             self.push_word(shape.parts[i]);
@@ -185,7 +192,7 @@ impl<'a> Gen<'a> {
         self.op(DUP1 + 4);
         self.op(GAS);
         self.op(DELEGATECALL);
-        if tails.iter().any(|tail| !tail.is_empty()) {
+        if (0..stubs.len()).any(tailed) {
             self.jumpdest(after);
         }
         self.op(RETURNDATASIZE);
@@ -607,6 +614,45 @@ impl<'a> Gen<'a> {
         }
     }
 
+    /// A stateful hook's way back in runs only when a facet this contract runs set the flag,
+    /// just before it called back, and clears it, so nothing the hook calls can come back in
+    /// through it. A view or pure hook's only reads: it answers whoever calls, since a static
+    /// call, as views are called, can't set a flag.
+    fn hook_gate(&mut self, index: usize) {
+        let Some(func) = self.checked.routes[index].direct else {
+            return;
+        };
+        let Some(of) = self.checked.prog.funcs[func]
+            .hook_of
+            .as_ref()
+            .filter(|of| of.form == HookForm::Entry)
+        else {
+            return;
+        };
+        let hook = crate::check::hook_fn(&of.module.name, &of.name);
+        let stateful = self
+            .checked
+            .prog
+            .funcs
+            .iter()
+            .any(|g| g.name == hook && g.kind == ItemKind::Function);
+        if !stateful {
+            return;
+        }
+        let ok = self.fresh();
+        self.op(PUSH0);
+        self.op(NOT);
+        self.op(TLOAD);
+        self.push_label(ok);
+        self.op(JUMPI);
+        self.revert_empty();
+        self.jumpdest(ok);
+        self.op(PUSH0);
+        self.op(PUSH0);
+        self.op(NOT);
+        self.op(TSTORE);
+    }
+
     /// Calldata no entrypoint takes. A `fallback` that is not payable rejects value first
     /// when short calldata can reach it past the table's own check.
     fn fallback_body(
@@ -737,6 +783,7 @@ impl<'a> Gen<'a> {
         let locked = self.checked.routes[index].nonreentrant;
         let bad = self.fresh();
         self.enter(label, self.checked.routes[index].payable);
+        self.hook_gate(index);
         if locked {
             self.acquire_nonreentrant(bad);
         }
@@ -1024,9 +1071,24 @@ impl<'a> Gen<'a> {
     /// from storage; any other has them in its code, in one piece the creation code fills.
     /// A call whose code reads none enters at `bare`, and the facet gets as many words of
     /// whatever memory holds, since it reads none of them.
-    fn tail_stub(&mut self, part: Word, leaves: &[u32], bare: u32, after: u32) {
-        let len = 32 * leaves.len() as u64;
-        if self.checked.prog.upgradeable {
+    fn tail_stub(
+        &mut self,
+        part: Word,
+        leaves: &[u32],
+        mask: Option<Word>,
+        bare: u32,
+        after: u32,
+    ) {
+        let len = 32 * (leaves.len() + usize::from(mask.is_some())) as u64;
+        if let Some(mask) = mask {
+            self.push_hook_word(mask);
+            self.push_u64(32 * leaves.len() as u64);
+            self.op(CALLDATASIZE);
+            self.op(ADD);
+            self.op(MSTORE);
+        }
+        if leaves.is_empty() {
+        } else if self.checked.prog.upgradeable {
             for (j, &leaf) in leaves.iter().enumerate() {
                 self.sload_leaf(leaf);
                 self.push_u64(32 * j as u64);
@@ -1035,13 +1097,14 @@ impl<'a> Gen<'a> {
                 self.op(MSTORE);
             }
         } else {
+            let bytes = 32 * leaves.len() as u64;
             let marker = self.data_marker();
             self.data
-                .push((marker, vec![0; len as usize], String::new()));
+                .push((marker, vec![0; bytes as usize], String::new()));
             let from = self.checked.immutable_from as u32;
             self.tail_blobs
                 .push((marker, leaves.iter().map(|leaf| leaf - from).collect()));
-            self.push_u64(len);
+            self.push_u64(bytes);
             self.push_word(marker);
             self.op(CALLDATASIZE);
             self.op(CODECOPY);

@@ -777,6 +777,12 @@ impl Resolver<'_> {
             }
             self.func(guard)?;
         }
+        for hook in &mut prog.hooks {
+            if let Some(of) = &mut hook.hook_of {
+                self.module_ref(&mut of.module.name, of.module.line, of.module.col)?;
+            }
+            self.func(hook)?;
+        }
         for use_ in prog.compose.iter_mut().chain(&mut prog.facets) {
             self.module_ref(&mut use_.name, use_.line, use_.col)?;
         }
@@ -840,7 +846,12 @@ impl Resolver<'_> {
         members.insert("self".to_string());
         self.module = Some(InModule {
             name: module.name.clone(),
-            funcs: module.funcs.iter().map(|f| f.name.clone()).collect(),
+            funcs: module
+                .funcs
+                .iter()
+                .chain(&module.hooks)
+                .map(|f| f.name.clone())
+                .collect(),
             members,
         });
         self.type_params = module.params.iter().map(|p| p.name.clone()).collect();
@@ -881,6 +892,10 @@ impl Resolver<'_> {
             for guard in &mut module.guards {
                 guard.module = Some(module.name.clone());
                 self.header(guard)?;
+            }
+            for hook in &mut module.hooks {
+                hook.module = Some(module.name.clone());
+                self.header(hook)?;
             }
             for block in &mut module.specs {
                 block.module = Some(module.name.clone());

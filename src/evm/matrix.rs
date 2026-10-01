@@ -450,6 +450,10 @@ enum Kind {
     /// A module's `echo` returns its parameter, guarded by a check that fails with it as an
     /// error's payload for caller 2: whole, and with the module in its facet.
     Guard,
+    /// A module's `echo` returns what its hook returns for its parameter: the contract's
+    /// implementation hands it back, or fails with it as an error's payload for caller 2:
+    /// whole, and with the module in its facet, which calls the hook back.
+    Hook,
 }
 
 /// A place a value can live. In its text, `$T` is the type, `$V` the sample written, and
@@ -904,6 +908,7 @@ const PLACES: &[Place] = &[
     Place { name: "error", kind: Kind::Revert, needs: "abi", decl: "error Bad of $T;", storage: "", write: "fail Bad($V);", load: "", read: "" },
     Place { name: "calldata", kind: Kind::Calldata, needs: "abi", decl: "", storage: "", write: "", load: "", read: "" },
     Place { name: "guard", kind: Kind::Guard, needs: "abi", decl: "", storage: "", write: "", load: "", read: "" },
+    Place { name: "hook", kind: Kind::Hook, needs: "abi", decl: "", storage: "", write: "", load: "", read: "" },
 ];
 
 /// A facet is built from its module alone, so a guard cell declares its type in the module.
@@ -925,7 +930,8 @@ fn program(ty: &Ty, place: &Place) -> String {
     let sample = |k: usize| ty.samples[k % n];
     let (shown, out) = ty.out.unwrap_or((ty.name, "v"));
     let guarded = place.kind == Kind::Guard;
-    let (top, inner) = if guarded && in_module(ty) {
+    let hooked = place.kind == Kind::Hook;
+    let (top, inner) = if (guarded || hooked) && in_module(ty) {
         ("", ty.decl)
     } else {
         (ty.decl, "")
@@ -942,6 +948,20 @@ fn program(ty: &Ty, place: &Place) -> String {
                  error Seen of $T;\n\
                  use Guarded exposing {{ function echo(x : $T) : $T raises Seen; }}\n\
                  guard Guarded.seen(const x : $T) raises Seen is {{ if Evm.sender() = address(2) then {{ fail Seen(x); }} }}\n"
+            ),
+            ty,
+            "",
+            "",
+        );
+    }
+    if hooked {
+        src += &fill(
+            &format!(
+                "module Hooked is {{\n{inner}\nhook seen(const x : $T) : $T;\n\
+                 external function echo(const x : $T) : $T is seen(x)\n}}\n\
+                 error Seen of $T;\n\
+                 use Hooked exposing {{ function echo(x : $T) : $T raises Seen; }}\n\
+                 hook Hooked.seen(const x : $T) : $T raises Seen is {{ if Evm.sender() = address(2) then {{ fail Seen(x); }} }} with x\n"
             ),
             ty,
             "",
@@ -1004,7 +1024,7 @@ fn program(ty: &Ty, place: &Place) -> String {
                     src += &format!("external function put{k}() is {{ {write} }}\n");
                 }
             }
-            Kind::Calldata | Kind::Guard => {}
+            Kind::Calldata | Kind::Guard | Kind::Hook => {}
         }
     }
     if place.kind == Kind::Deleted {
@@ -1230,7 +1250,7 @@ fn run_cell(ty: &Ty, place: &Place, runtime: &[u8]) -> Result<(), String> {
                     }
                 }
             }
-            Kind::Guard => {
+            Kind::Guard | Kind::Hook => {
                 let sig = format!("echo({})", ty.sig);
                 let mut data = selector(&sig).to_vec();
                 data.extend(&want);
@@ -1318,7 +1338,7 @@ fn check_type(ty: &Ty) -> Vec<String> {
                 .and_then(|runtime| run_cell(ty, place, &runtime))
                 .err()
                 .or_else(|| {
-                    (place.kind == Kind::Guard && in_module(ty))
+                    (matches!(place.kind, Kind::Guard | Kind::Hook) && in_module(ty))
                         .then(|| run_split(ty, place, &src).err())
                         .flatten()
                         .map(|err| format!("split: {err}"))

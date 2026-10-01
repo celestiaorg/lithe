@@ -42,8 +42,8 @@ fn main() {
     if cmd == "prove" {
         prove(args);
     }
-    if cmd == "stubs" && args.len() == 2 {
-        match lithe::stubs(&Sources::disk(), Path::new(&args[0]), &args[1]) {
+    if cmd == "stubs" && args.len() >= 2 {
+        match lithe::stubs(&Sources::disk(), Path::new(&args[0]), &args[1], &args[2..]) {
             Ok(text) => print!("{text}"),
             Err(err) => {
                 eprintln!("{err}");
@@ -474,7 +474,7 @@ usage: lithe compile file.lithe
        lithe storage file.lithe
        lithe storage old.lithe new.lithe
        lithe facets file.lithe
-       lithe stubs file.lithe Module
+       lithe stubs file.lithe Module [Interface...]
        lithe upgrade-check old.lithe new.lithe
        lithe upgrade 0xProxy file.lithe --migrate name [--impl 0xImpl] --args ...
        lithe lsp

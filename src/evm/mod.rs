@@ -1017,15 +1017,21 @@ fn exec_state(
                         self_balance,
                         transient.clone(),
                     )?;
+                    returndata = nested.returndata.clone();
+                    trace.extend(nested.trace);
+                    detail.extend(nested.detail);
                     if nested.reverted {
-                        returndata = nested.returndata;
-                        reverted = true;
-                        stopped = true;
-                        break;
+                        stack.push(Word::from_u64(0));
+                    } else {
+                        storage = nested.storage;
+                        transient = nested.transient;
+                        self_balance = nested.self_balance;
+                        if ret_size > 0 {
+                            let n = ret_size.min(returndata.len());
+                            write_mem(&mut mem, ret_off, &returndata[..n]);
+                        }
+                        stack.push(Word::from_u64(1));
                     }
-                    storage = nested.storage;
-                    transient = nested.transient;
-                    stack.push(Word::from_u64(1));
                 }
             }
             0xa0..=0xa4 => {
@@ -1534,6 +1540,7 @@ mod dispatch;
 mod examples;
 mod fallback;
 mod guards;
+mod hooks;
 mod immutables;
 mod interfaces;
 mod language;

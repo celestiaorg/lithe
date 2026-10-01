@@ -458,7 +458,24 @@ impl Checker {
                 if let Some(base_expr) = base.as_ref() {
                     if let Expr::Ident { name: alias, .. } = base_expr.as_ref() {
                         let qualified = format!("{alias}.{name}");
-                        if self.fn_names.iter().any(|n| n == &qualified)
+                        let hook = hook_fn(alias, name);
+                        if self.fn_names.iter().any(|n| n == &hook) {
+                            if self.module_name.as_deref() != Some(alias.as_str()) {
+                                return Err(error(
+                                    *line,
+                                    *col,
+                                    format!(
+                                        "`{}` is a hook of `{}`: only `{}`'s own code calls it, and the contract implements it with `hook {}`",
+                                        crate::modules::shown(&qualified),
+                                        crate::modules::shown(alias),
+                                        crate::modules::shown(alias),
+                                        crate::modules::shown(&qualified)
+                                    ),
+                                ));
+                            }
+                            *name = hook;
+                            *base = None;
+                        } else if self.fn_names.iter().any(|n| n == &qualified)
                             || self.named.contains_key(&qualified)
                         {
                             *name = qualified;
@@ -491,7 +508,10 @@ impl Checker {
                     if let Some(module) = self.module_name.clone() {
                         if !name.contains('.') {
                             let qualified = format!("{module}.{name}");
-                            if self.fn_names.iter().any(|n| n == &qualified) {
+                            let hook = hook_fn(&module, name);
+                            if self.fn_names.iter().any(|n| n == &hook) {
+                                *name = hook;
+                            } else if self.fn_names.iter().any(|n| n == &qualified) {
                                 *name = qualified;
                             }
                         }

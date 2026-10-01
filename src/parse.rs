@@ -159,6 +159,7 @@ struct Body {
     upgradeable: bool,
     guard: Option<GuardDecl>,
     guards: Vec<Func>,
+    hooks: Vec<Func>,
     specs: Vec<SpecBlock>,
 }
 
@@ -182,6 +183,7 @@ impl Body {
             upgradeable: false,
             guard: None,
             guards: Vec::new(),
+            hooks: Vec::new(),
             specs: Vec::new(),
         }
     }
@@ -205,6 +207,8 @@ impl Body {
             upgradeable: self.upgradeable,
             guard: self.guard,
             guards: self.guards,
+            hooks: self.hooks,
+            calls_back: false,
             contract_name: self.name,
             contract_line: if named { self.line } else { 0 },
             contract_col: if named { self.col } else { 0 },
@@ -411,6 +415,11 @@ impl<'a> Parser<'a> {
                 return Err(self.err("an interface cannot be private"));
             }
             Kind::Interface => body.interfaces.push(self.interface_decl()?),
+            Kind::View | Kind::Pure if self.hook_ahead() => {
+                return Err(self.err(
+                    "a contract implements a hook without restating its effect: write `hook M.h ...`; the module's declaration says what it may do",
+                ));
+            }
             Kind::External
             | Kind::Payable
             | Kind::Nonreentrant
@@ -520,6 +529,13 @@ impl<'a> Parser<'a> {
             }
             Kind::Contract => {
                 return Err(self.err("a contract cannot contain another contract"));
+            }
+            Kind::Ident if self.slice() == "hook" && self.peek_kind(1) == Kind::Ident => {
+                if private {
+                    return Err(self.err("a hook cannot be private"));
+                }
+                let func = self.hook_impl()?;
+                body.hooks.push(func);
             }
             Kind::Ident if self.slice() == "guard" && self.peek_kind(1) == Kind::Ident => {
                 if private {
@@ -641,6 +657,7 @@ impl<'a> Parser<'a> {
         let mut specs = Vec::new();
         let mut intrinsics = Vec::new();
         let mut guards = Vec::new();
+        let mut hooks = Vec::new();
         while self.kind() != Kind::RBrace && self.kind() != Kind::Eof {
             if self.kind() == Kind::Semi {
                 self.bump();
@@ -755,6 +772,23 @@ impl<'a> Parser<'a> {
                     }
                     intrinsics.push(decl);
                 }
+                _ if self.hook_ahead() => {
+                    if private {
+                        return Err(self.err("a hook cannot be private"));
+                    }
+                    let decl = self.hook_sig()?;
+                    if hooks.iter().any(|have: &Func| have.name == decl.name) {
+                        return Err(error(
+                            decl.line,
+                            decl.col,
+                            format!(
+                                "module `{name}` declares hook `{}` more than once",
+                                decl.name
+                            ),
+                        ));
+                    }
+                    hooks.push(decl);
+                }
                 Kind::Ident if self.slice() == "guard" && self.peek_kind(1) == Kind::Ident => {
                     let decl = self.guard_sig()?;
                     if guards.iter().any(|have: &Func| have.name == decl.name) {
@@ -817,9 +851,22 @@ impl<'a> Parser<'a> {
         }
         self.want(Kind::RBrace)?;
         let require_names: Vec<String> = requires.iter().map(|s| s.name.clone()).collect();
-        for func in funcs.iter_mut().chain(&mut guards) {
+        for func in funcs.iter_mut().chain(&mut guards).chain(&mut hooks) {
             func.module = Some(name.clone());
             func.requires = require_names.clone();
+        }
+        if let Some(hook) = hooks
+            .iter()
+            .find(|hook| funcs.iter().any(|f| f.name == hook.name))
+        {
+            return Err(error(
+                hook.line,
+                hook.col,
+                format!(
+                    "module `{name}` declares `{}` as a hook and as a function; rename one",
+                    hook.name
+                ),
+            ));
         }
         Ok(ModuleDecl {
             line,
@@ -836,6 +883,7 @@ impl<'a> Parser<'a> {
             funcs,
             specs,
             guards,
+            hooks,
             intrinsics,
         })
     }
@@ -927,6 +975,7 @@ impl<'a> Parser<'a> {
                 forward: None,
                 guarded: None,
                 guard_of: None,
+                hook_of: None,
             }),
             tag: None,
         })
@@ -2044,6 +2093,7 @@ impl<'a> Parser<'a> {
             forward: None,
             guarded,
             guard_of: None,
+            hook_of: None,
         })
     }
 
@@ -2156,6 +2206,126 @@ impl<'a> Parser<'a> {
             },
             name: name.to_string(),
             via,
+        });
+        Ok(func)
+    }
+
+    /// `hook name`, `view hook name`, or `pure hook name`: a module's hook.
+    fn hook_ahead(&self) -> bool {
+        let at = usize::from(matches!(self.kind(), Kind::View | Kind::Pure));
+        let Some(tok) = self.toks.get(self.i + at) else {
+            return false;
+        };
+        tok.kind == Kind::Ident
+            && &self.src[tok.start..tok.end] == "hook"
+            && self.peek_kind(at + 1) == Kind::Ident
+    }
+
+    /// `[view | pure] hook name(params) [: T];` in a module: a hook's header. Its effect is
+    /// the most the contract's implementation may do.
+    fn hook_sig(&mut self) -> Result<Func, Error> {
+        let kind = match self.kind() {
+            Kind::View => ItemKind::Readonly,
+            Kind::Pure => ItemKind::Pure,
+            _ => ItemKind::Function,
+        };
+        if kind != ItemKind::Function {
+            self.bump();
+        }
+        self.bump();
+        let (line, col) = self.at();
+        let name = self.ident()?;
+        let params = if self.kind() == Kind::LParen {
+            self.params()?
+        } else {
+            Vec::new()
+        };
+        let ret = if self.kind() == Kind::Colon {
+            self.bump();
+            Some(self.ty()?)
+        } else {
+            None
+        };
+        if self.kind() == Kind::Raises {
+            return Err(self.err(
+                "a module's hook declares no errors: the contract's implementation raises its own, and they join those of the externals that reach it",
+            ));
+        }
+        if self.kind() == Kind::Is {
+            return Err(self.err(
+                "a module's hook has no body: each contract that uses the module implements it",
+            ));
+        }
+        self.want(Kind::Semi)?;
+        let mut func = guard_func(line, col, name, params);
+        func.kind = kind;
+        func.ret = ret;
+        Ok(func)
+    }
+
+    /// `hook M.h(params) [: T] [raises E] is { ... } [with e]`, `hook M.h is f;`, or
+    /// `hook M.h is skip;`: the contract's implementation of a module's hook.
+    fn hook_impl(&mut self) -> Result<Func, Error> {
+        self.bump();
+        let (line, col) = self.at();
+        let path = self.dotted()?;
+        let Some((module, name)) = path.rsplit_once('.') else {
+            return Err(error(
+                line,
+                col,
+                format!("a hook is a module's: write `hook M.{path}`"),
+            ));
+        };
+        let params = if self.kind() == Kind::LParen {
+            self.params()?
+        } else {
+            Vec::new()
+        };
+        let ret = if self.kind() == Kind::Colon {
+            self.bump();
+            Some(self.ty()?)
+        } else {
+            None
+        };
+        let raises = if self.kind() == Kind::Raises {
+            Some(self.raises_clause()?)
+        } else {
+            None
+        };
+        self.want(Kind::Is)?;
+        let mut func = guard_func(line, col, name.to_string(), params);
+        func.ret = ret;
+        let form = if self.kind() == Kind::LBrace {
+            let (stmts, tail) = self.item_body()?;
+            func.stmts = stmts;
+            func.tail = tail;
+            HookForm::Body
+        } else if self.kind() == Kind::SkipKw {
+            if raises.is_some() {
+                return Err(self.err("a skipped hook runs nothing, so it raises nothing; drop `raises`"));
+            }
+            self.bump();
+            self.want(Kind::Semi)?;
+            HookForm::Skip
+        } else {
+            if raises.is_some() {
+                return Err(self.err(
+                    "a hook that names a function raises what the function does; drop `raises`",
+                ));
+            }
+            let (stmts, named) = self.guard_via()?;
+            func.stmts = stmts;
+            HookForm::Via(named)
+        };
+        func.raises = raises;
+        func.hook_of = Some(HookOf {
+            module: NameAt {
+                line,
+                col,
+                name: module.to_string(),
+            },
+            name: name.to_string(),
+            form,
         });
         Ok(func)
     }
@@ -2375,6 +2545,7 @@ impl<'a> Parser<'a> {
             forward,
             guarded: None,
             guard_of: None,
+            hook_of: None,
         })
     }
 
@@ -3827,6 +3998,7 @@ fn guard_func(line: u32, col: u32, name: String, params: Vec<Param>) -> Func {
         forward: None,
         guarded: None,
         guard_of: None,
+        hook_of: None,
     }
 }
 

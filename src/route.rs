@@ -129,11 +129,48 @@ pub(crate) fn discover(checked: &Checked, require_entries: bool) -> Result<Vec<R
     Ok(routes)
 }
 
+/// The routes a report lists: all but the hidden entrypoints facets call hooks back through.
+fn shown_routes(checked: &Checked) -> impl Iterator<Item = &Route> {
+    checked
+        .routes
+        .iter()
+        .filter(|route| !crate::split::is_hidden(&route.name))
+}
+
+/// The function a route's code starts in: its own, or the dispatching external's.
+fn route_root(checked: &Checked, route: &Route) -> Option<usize> {
+    route.direct.or_else(|| {
+        let top = route.path.first()?;
+        checked
+            .prog
+            .funcs
+            .iter()
+            .position(|f| f.kind == ItemKind::Entry && &f.name == top)
+    })
+}
+
+/// The hooks code from `root` reaches, as reports list them: `M.h (in the contract)`.
+fn hook_items(checked: &Checked, root: Option<usize>) -> Vec<String> {
+    root.map(|root| {
+        crate::check::reached_hooks(checked, root)
+            .iter()
+            .map(|reached| crate::check::hook_item(checked, reached))
+            .collect()
+    })
+    .unwrap_or_default()
+}
+
+/// Whether any module the contract uses has hooks, so reports have a place for them.
+fn has_hooks(checked: &Checked) -> bool {
+    checked.prog.funcs.iter().any(|f| f.hook_of.is_some())
+}
+
 /// Each entrypoint's dispatch path, guards, and effects. `parts` names where each selector
 /// runs when the contract is split.
-pub(crate) fn render(routes: &[Route], parts: Option<&HashMap<[u8; 4], String>>) -> String {
+pub(crate) fn render(checked: &Checked, parts: Option<&HashMap<[u8; 4], String>>) -> String {
     let mut out = String::new();
-    for r in routes {
+    let hooked = has_hooks(checked);
+    for r in shown_routes(checked) {
         out.push_str(&r.name);
         out.push('\n');
         out.push_str("  path:\n    ");
@@ -155,6 +192,9 @@ pub(crate) fn render(routes: &[Route], parts: Option<&HashMap<[u8; 4], String>>)
         }
         section(&mut out, "calls", &r.calls);
         section(&mut out, "guards", &r.guard_txt);
+        if hooked {
+            section(&mut out, "hooks", &hook_items(checked, route_root(checked, r)));
+        }
         section(&mut out, "storage reads", &r.reads);
         section(&mut out, "storage writes", &r.writes);
         section(&mut out, "queries", &r.queries);
@@ -473,14 +513,12 @@ fn special(checked: &Checked, idx: usize, f: &Func) -> Result<Route, Error> {
 }
 
 pub(crate) fn reentry_notes(checked: &Checked) -> Vec<Note> {
-    let names: Vec<&str> = checked
-        .routes
-        .iter()
+    let names: Vec<&str> = shown_routes(checked)
         .map(|route| route.name.as_str())
         .collect();
     let mut seen = Vec::new();
     let mut notes = Vec::new();
-    for route in &checked.routes {
+    for route in shown_routes(checked) {
         let forwards = route
             .direct
             .is_some_and(|func| checked.prog.funcs[func].forward.is_some());
@@ -980,9 +1018,10 @@ fn walk_expr(checked: &Checked, e: &Expr, fx: &mut Effects<'_>) {
             let f = &checked.prog.funcs[*idx];
             push(
                 fx.calls,
-                match f.name.strip_suffix("#guard") {
-                    Some(guard) => format!("guard {}", crate::modules::shown(guard)),
-                    None => f.name.clone(),
+                match (f.name.strip_suffix("#guard"), f.name.strip_suffix("#hook")) {
+                    (Some(guard), _) => format!("guard {}", crate::modules::shown(guard)),
+                    (_, Some(hook)) => format!("hook {}", crate::modules::shown(hook)),
+                    _ => f.name.clone(),
                 },
             );
             let slots: Vec<(usize, String)> = f
@@ -1459,8 +1498,17 @@ pub(crate) fn render_footprints(
             None => Vec::new(),
         }
     };
+    // The hooks each entrypoint reaches get a column, when any module the contract uses has hooks.
+    let hooked = has_hooks(checked);
+    let hooks = |func: Option<usize>| -> Vec<(&str, Vec<String>)> {
+        if hooked {
+            vec![("hooks", hook_items(checked, func))]
+        } else {
+            Vec::new()
+        }
+    };
     let mut rows: Vec<(String, Vec<(&str, Vec<String>)>)> = Vec::new();
-    for r in &checked.routes {
+    for r in shown_routes(checked) {
         let (mut writes, mut events, mut defers) =
             (r.writes.clone(), r.events.clone(), r.operations.clone());
         for phase in &r.phases {
@@ -1509,6 +1557,7 @@ pub(crate) fn render_footprints(
                 .position(|f| f.kind == ItemKind::Entry && &f.name == top)
         });
         fields.extend(guard(top));
+        fields.extend(hooks(top));
         if r.by_selector() {
             fields.extend(part(r.sel));
         }
@@ -1545,6 +1594,7 @@ pub(crate) fn render_footprints(
             ("during defers", vec![window(f.nonreentrant)]),
         ];
         fields.extend(guard(Some(i)));
+        fields.extend(hooks(Some(i)));
         if let Ok(sig) = view_sig(checked, f) {
             fields.extend(part(selector(&sig)));
         }
@@ -1626,7 +1676,7 @@ pub(crate) fn render_analysis(checked: &Checked) -> String {
         format!("[{}]", items.join(", "))
     };
     let mut entries = Vec::new();
-    for r in &checked.routes {
+    for r in shown_routes(checked) {
         let (mut reads, mut writes, mut events, mut defers) = (
             r.reads.clone(),
             r.writes.clone(),
@@ -1826,7 +1876,7 @@ fn params(fields: &[AbiField]) -> Vec<Param> {
 /// because they revert when value is attached.
 pub(crate) fn abi(checked: &Checked) -> Result<Abi, Error> {
     let mut items = Vec::new();
-    for route in &checked.routes {
+    for route in shown_routes(checked) {
         let state_mutability = StateMutability::paying(route.payable);
         items.push(match route.special {
             Some(ItemKind::Receive) => AbiItem::Receive(Receive { state_mutability }),
@@ -2122,7 +2172,7 @@ fn json_str(text: &str) -> String {
 
 pub(crate) fn method_ids(checked: &Checked) -> Result<Vec<(String, [u8; 4])>, Error> {
     let mut ids = Vec::new();
-    for route in checked.routes.iter().filter(|route| route.by_selector()) {
+    for route in shown_routes(checked).filter(|route| route.by_selector()) {
         ids.push((route.sig.clone(), route.sel));
     }
     for func in &checked.prog.funcs {
@@ -2141,6 +2191,25 @@ pub(crate) fn method_ids(checked: &Checked) -> Result<Vec<(String, [u8; 4])>, Er
     Ok(ids)
 }
 
+/// The signature of the contract's entrypoint a facet calls the hook `func` back through.
+pub(crate) fn callback_sig(checked: &Checked, func: &Func) -> Result<String, Error> {
+    let of = func
+        .hook_of
+        .as_ref()
+        .ok_or_else(|| error(func.line, func.col, "internal: a hook call back names a hook"))?;
+    let mut parts = Vec::new();
+    for p in &func.params {
+        for field in abi_fields(&checked.types, p.ty_id, &p.name)? {
+            parts.push(field.ty);
+        }
+    }
+    Ok(format!(
+        "{}({})",
+        crate::check::callback_fn(&of.module.name, &of.name),
+        parts.join(",")
+    ))
+}
+
 /// A view's ABI signature, as its selector is computed.
 pub(crate) fn view_sig(checked: &Checked, func: &Func) -> Result<String, Error> {
     let mut parts = Vec::new();
@@ -2157,8 +2226,10 @@ pub(crate) fn view_sig(checked: &Checked, func: &Func) -> Result<String, Error> 
 
 pub(crate) fn render_errors(checked: &Checked) -> Result<String, Error> {
     let mut blocks: Vec<(String, Vec<String>)> = Vec::new();
-    for route in &checked.routes {
+    let mut hooks: Vec<(String, Vec<String>)> = Vec::new();
+    for route in shown_routes(checked) {
         blocks.push((route.sig.clone(), route.raises.clone()));
+        hooks.push((route.sig.clone(), hook_items(checked, route_root(checked, route))));
     }
     for func in &checked.prog.funcs {
         if !matches!(func.kind, ItemKind::View | ItemKind::Deploy) {
@@ -2176,6 +2247,11 @@ pub(crate) fn render_errors(checked: &Checked) -> Result<String, Error> {
             .collect();
         blocks.push((sig, raises));
     }
+    for (i, func) in checked.prog.funcs.iter().enumerate() {
+        if func.kind == ItemKind::View {
+            hooks.push((view_sig(checked, func)?, hook_items(checked, Some(i))));
+        }
+    }
     // The contract's module guards, whose errors the externals they guard raise too.
     for func in &checked.prog.funcs {
         let Some(of) = &func.guard_of else { continue };
@@ -2185,6 +2261,32 @@ pub(crate) fn render_errors(checked: &Checked) -> Result<String, Error> {
         }
         let sig = format!(
             "guard {}.{}({})",
+            crate::modules::shown(&of.module.name),
+            of.name,
+            parts.join(",")
+        );
+        let raises = func
+            .errors
+            .iter()
+            .map(|id| checked.raise_sig(*id))
+            .collect();
+        blocks.push((sig, raises));
+    }
+    // The contract's hooks, whose errors the externals that reach them raise too.
+    for func in &checked.prog.funcs {
+        let Some(of) = func
+            .hook_of
+            .as_ref()
+            .filter(|of| matches!(of.form, HookForm::Body | HookForm::Via(_)))
+        else {
+            continue;
+        };
+        let mut parts = Vec::new();
+        for param in &func.params {
+            parts.extend(abi_parts(&checked.types, param.ty_id)?);
+        }
+        let sig = format!(
+            "hook {}.{}({})",
             crate::modules::shown(&of.module.name),
             of.name,
             parts.join(",")
@@ -2208,6 +2310,9 @@ pub(crate) fn render_errors(checked: &Checked) -> Result<String, Error> {
                 out.push_str(raise);
                 out.push('\n');
             }
+        }
+        if let Some((_, items)) = hooks.iter().find(|(s, items)| s == sig && !items.is_empty()) {
+            out.push_str(&format!("\n  hooks: {}\n", items.join(", ")));
         }
         out.push('\n');
     }
