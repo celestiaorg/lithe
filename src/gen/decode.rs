@@ -46,6 +46,7 @@ impl<'a> Gen<'a> {
             if (tree || (self.is_dynamic(p.ty_id) && !self.list_value(p.ty_id)))
                 && self.abi_dyn(p.ty_id)
                 && !self.init
+                && !self.crossed
                 && !crate::check::abi_record(&self.checked.types, p.ty_id)
             {
                 if let Some((used, length)) =
@@ -73,6 +74,7 @@ impl<'a> Gen<'a> {
             // here as decoding it would be.
             if self.tree_param(p.ty_id)
                 && !self.init
+                && !self.crossed
                 && self.list_value(p.ty_id)
                 && self.cd_checkable(func, sym)
             {
@@ -110,6 +112,7 @@ impl<'a> Gen<'a> {
             // function always runs checks each one as it reads it. Checking them all up
             // front costs as much as decoding, so such a list is decoded instead.
             let in_place = self.list_value(p.ty_id)
+                && !self.crossed
                 && !self.tree(p.ty_id)
                 && self.list_k(p.ty_id) == 1
                 && !self.is_dynamic(self.peel_nominal(elem))
@@ -128,6 +131,7 @@ impl<'a> Gen<'a> {
                 self.decode_list(sym, head, p.ty_id)?;
                 head += 1;
             } else if self.is_dynamic(p.ty_id)
+                && !self.crossed
                 && if self.init {
                     self.only_decoded(func, sym)
                 } else {

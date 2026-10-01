@@ -530,20 +530,286 @@ fn reentry_warnings_count_what_hooks_defer() {
             .any(|w| w.contains("`one` performs deferred external operations"))
     };
     assert!(warned(&paying("", DEFERS)));
+    assert!(warned(&paying(" delegated", DEFERS)));
     assert!(!warned(&paying("", "  hook Pay.paid is skip;\n")));
 }
 
-/// Phase 1: a hook that defers can't be called back from a facet, as a function that
-/// defers can't be called across.
+/// A delegated module's facet reaches a hook that defers: the hook's calls wait in transient
+/// storage for the transition that reached it, and run as they do inline, in order with the
+/// entrypoint's own, each continuation with its own bindings. Contract code calling the
+/// module across nests one more frame.
 #[test]
-fn delegated_modules_cannot_reach_deferring_hooks() {
-    let got = rejected(
-        &paying(" delegated", DEFERS).replace("    Pay.settle(a);\n    Pay.settle(b);\n", ""),
-    );
-    assert!(
-        got.contains("hook `Pay.paid` is called back from `Pay`'s facet, and it can't be: it defers a call, which runs only after the whole transition commits; move the deferred call out of the hook, or use `Pay` without `delegated`"),
-        "{got}"
-    );
+fn deferring_hooks_run_the_same_delegated() {
+    install_mocks();
+    let (mut inline, mut split, _) =
+        both(&paying("", DEFERS), &paying(" delegated", DEFERS), "Shop");
+    for data in [
+        word_data("one(uint256)", &words(&[4])),
+        word_data("two(uint256,uint256)", &words(&[2, 5])),
+        word_data("one(uint256)", &words(&[6])),
+    ] {
+        let (a, b) = (inline.send(1, &data), split.send(1, &data));
+        assert!(!a.reverted, "{}", pretty(&a.returndata));
+        assert_eq!(seen(&a), seen(&b), "{}", hex(&data));
+    }
+    assert_eq!(inline.storage, split.storage);
+    DEPLOYED.with(|d| d.borrow_mut().clear());
+}
+
+/// A module whose functions defer calls of their own, with results, recoverable failures, and
+/// failures passed on, and reach a hook that defers too.
+const VAULT: &str = r#"import "std/abi";
+import "std/evm";
+
+module Vault is {
+  storage vault at "hooks.vault" is record { got : uint; failed : uint; why : bytes; }
+
+  error Too_much of uint;
+
+  hook moved(const id : uint);
+
+  function pay(const ex : address; const id : uint) raises Too_much is {
+    const bump : uint := id * 3;
+    vault.got := vault.got + id;
+    defer Evm.call(ex, Abi.encode_with_selector(0x12345678, id)) then (answer : bytes) {
+      const r : uint := Abi.decode(answer, uint);
+      assert(r < 100, Too_much(r));
+      vault.got := vault.got + r + bump;
+    };
+    moved(id);
+  }
+
+  function risky(const to : address; const id : uint) is {
+    defer Evm.call(to, Abi.encode(id)) then {
+    | Ok(answer : bytes) -> { vault.got := vault.got + answer.length; }
+    | Error(reason : bytes) -> {
+        vault.failed := vault.failed + 1;
+        vault.why := reason;
+      }
+    };
+  }
+
+  function strict(const to : address; const id : uint) is {
+    defer Evm.call(to, Abi.encode(id));
+  }
+
+  function relay(const to : address; const id : uint) raises forwarded is {
+    defer Evm.call(to, Abi.encode(id)) then {
+    | Ok -> { skip }
+    | Error(reason : bytes) -> { forward reason; }
+    };
+  }
+
+  external function settle(const ex : address; const id : uint) raises Too_much is {
+    defer Evm.call(address(0xcd), Abi.encode(uint(7)));
+    pay(ex, id);
+    defer Evm.call(address(0xcd), Abi.encode(uint(8)));
+  }
+
+  external function many(const ex : address; const n : uint) raises Too_much is {
+    for i : uint in 1 .. n do {
+      pay(ex, i);
+      defer Evm.call(address(0xcd), Abi.encode(i));
+    }
+  }
+
+  external view function got() : (uint, uint, bytes) is (vault.got, vault.failed, vault.why)
+}
+"#;
+
+fn bank(marks: &str) -> String {
+    format!(
+        "{VAULT}
+interface Again is {{ function run(ex : address; to : address; id : uint); }}
+
+contract Bank is {{
+  storage is record {{ moves : uint; tags : uint; }}
+
+  use Vault{marks} exposing {{
+    function settle(ex : address; id : uint) raises Too_much;
+    function many(ex : address; n : uint) raises Too_much;
+    view function got() : (uint, uint, bytes);
+  }}
+
+  hook Vault.moved(const id : uint) is {{
+    const tag : uint := id + 1000;
+    storage.moves := storage.moves + 1;
+    defer Evm.call(address(0xcd), Abi.encode(tag)) then (answer : bytes) {{
+      storage.tags := storage.tags + tag + answer.length;
+    }};
+  }}
+
+  external function run(const ex : address; const to : address; const id : uint)
+    raises Too_much | forwarded
+  is {{
+    defer Evm.call(address(0xcd), Abi.encode(uint(1)));
+    Vault.pay(ex, id);
+    Vault.risky(to, id);
+    Vault.relay(address(0xcd), id);
+    defer Evm.call(address(0xcd), Abi.encode(uint(3)));
+    storage.moves := storage.moves + 10;
+  }}
+
+  external function strict(const to : address; const id : uint) is Vault.strict(to, id)
+
+  external function relay(const to : address; const id : uint) raises forwarded is
+    Vault.relay(to, id)
+
+  external function each(const ex : address; const n : uint) raises Too_much is {{
+    for i : uint in 0 .. n do {{
+      Vault.pay(ex, i);
+    }}
+  }}
+
+  external function twice(const ex : address; const a : uint; const b : uint) is {{
+    defer Again(Evm.self()).run(ex, address(0xcd), a);
+    defer Again(Evm.self()).run(ex, address(0xee), b);
+  }}
+
+  external function after(const ex : address; const id : uint) raises Too_much is {{
+    defer Evm.call(address(0xcd), Abi.encode(id)) then (answer : bytes) {{
+      Vault.pay(ex, id + answer.length);
+    }};
+  }}
+
+  external view function seen() : (uint, uint) is (storage.moves, storage.tags)
+}}
+"
+    )
+}
+
+/// Contract code calls deferring module functions across, and a facet's own external owns a
+/// transition whose hook defers: each runs as it does inline, the calls in the same order,
+/// with the same results, failures, and continuations, through nested frames, in loops,
+/// and with two transitions in one transaction, each draining only its own calls.
+#[test]
+fn deferring_module_functions_run_the_same_across() {
+    install_mocks();
+    let (mut inline, mut split, _) = both(&bank(""), &bank(" delegated"), "Bank");
+    let w = Word::from_u64;
+    let calls: Vec<(Vec<u8>, bool)> = vec![
+        (
+            word_data("run(address,address,uint256)", &[w(0xcd), w(0xcd), w(5)]),
+            false,
+        ),
+        (
+            word_data("run(address,address,uint256)", &[w(0xcd), w(0xee), w(6)]),
+            false,
+        ),
+        (
+            word_data("run(address,address,uint256)", &[w(0xcd), w(0xef), w(9)]),
+            false,
+        ),
+        (
+            word_data("run(address,address,uint256)", &[w(0xcd), w(0xcd), w(200)]),
+            true,
+        ),
+        (
+            word_data("strict(address,uint256)", &[w(0xcd), w(4)]),
+            false,
+        ),
+        (word_data("strict(address,uint256)", &[w(0xef), w(4)]), true),
+        (word_data("relay(address,uint256)", &[w(0xee), w(4)]), true),
+        (word_data("relay(address,uint256)", &[w(0xcd), w(4)]), false),
+        (
+            word_data("settle(address,uint256)", &[w(0xcd), w(11)]),
+            false,
+        ),
+        (
+            word_data("settle(address,uint256)", &[w(0xcd), w(150)]),
+            true,
+        ),
+        (word_data("each(address,uint256)", &[w(0xcd), w(3)]), false),
+        (word_data("many(address,uint256)", &[w(0xcd), w(4)]), false),
+        (word_data("many(address,uint256)", &[w(0xcd), w(120)]), true),
+        (word_data("after(address,uint256)", &[w(0xcd), w(1)]), false),
+        (word_data("after(address,uint256)", &[w(0xcd), w(90)]), true),
+        (
+            word_data("twice(address,uint256,uint256)", &[w(0xcd), w(2), w(3)]),
+            false,
+        ),
+        (word_data("got()", &[]), false),
+        (word_data("seen()", &[]), false),
+    ];
+    for (data, reverts) in &calls {
+        let (a, b) = (inline.send(1, data), split.send(1, data));
+        assert_eq!(
+            a.reverted,
+            *reverts,
+            "{}: {}",
+            hex(data),
+            pretty(&a.returndata)
+        );
+        assert_eq!(seen(&a), seen(&b), "{}", hex(data));
+        assert!(
+            b.transient.values().all(|v| v.is_zero()),
+            "{}: {:?}",
+            hex(data),
+            b.transient
+        );
+    }
+    assert_eq!(inline.storage, split.storage);
+    DEPLOYED.with(|d| d.borrow_mut().clear());
+}
+
+/// Behind a proxy, the facet drains a hook's calls through the implementation, and contract
+/// code drains a module function's through the facet, on the proxy's storage.
+#[test]
+fn upgradeable_contracts_drain_through_their_implementation() {
+    install_mocks();
+    let upgradeable = |marks: &str| {
+        bank(marks).replace(
+            "contract Bank is {\n",
+            "contract Bank is {\n  upgradeable\n  error Not_admin;\n  upgrade guard is { assert(Evm.sender() = address(1), Not_admin); }\n",
+        )
+    };
+    let slot = crate::keccak::erc1967_implementation();
+    let whole = compile(&upgradeable("")).expect("inline");
+    let split = crate::split::build(
+        &checked_src(&upgradeable(" delegated")),
+        "Bank",
+        &crate::Options::default(),
+    )
+    .expect("split");
+    let (a, b) = (Word::from_u64(0xa11), Word::from_u64(0xb22));
+    deploy_at(&whole, a);
+    super::split::deploy_split_facets(&split);
+    deploy_at(&split.creation, b);
+    let proxy = super::split::proxy_runtime();
+    let w = Word::from_u64;
+    let run = |implementation: Word| {
+        let mut storage: HashMap<Word, Word> = [(slot, implementation)].into_iter().collect();
+        let mut outs = Vec::new();
+        for data in [
+            word_data("run(address,address,uint256)", &[w(0xcd), w(0xee), w(5)]),
+            word_data("settle(address,uint256)", &[w(0xcd), w(11)]),
+            word_data("settle(address,uint256)", &[w(0xcd), w(150)]),
+            word_data("each(address,uint256)", &[w(0xcd), w(2)]),
+            word_data("many(address,uint256)", &[w(0xcd), w(3)]),
+            word_data("relay(address,uint256)", &[w(0xee), w(4)]),
+            word_data("got()", &[]),
+            word_data("seen()", &[]),
+        ] {
+            let out = exec(&proxy, &data, storage.clone(), w(1), w(0), w(0)).expect("run");
+            if !out.reverted {
+                storage = out.storage.clone();
+            }
+            outs.push(seen(&out));
+        }
+        storage.remove(&slot);
+        (outs, storage)
+    };
+    let (inline, inline_storage) = run(a);
+    let (routed, routed_storage) = run(b);
+    assert!(!inline[0].0 && inline[2].0, "{inline:?}");
+    assert_eq!(inline, routed);
+    assert_eq!(inline_storage, routed_storage);
+    DEPLOYED.with(|d| d.borrow_mut().clear());
+}
+
+/// A hook called back still can't read calldata: its frame's calldata is the facet's call.
+#[test]
+fn delegated_modules_cannot_reach_hooks_that_read_calldata() {
     let reads =
         "  hook Pay.paid(const id : uint) is {\n    storage.seen := Evm.calldata().length;\n  }\n";
     let got = rejected(
