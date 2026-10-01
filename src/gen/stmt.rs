@@ -2744,6 +2744,18 @@ impl<'a> Gen<'a> {
     /// in, if any, takes the call's place among this body's deferred calls, so they run in
     /// order with the body's own. The frame names its record in the slot below the flag.
     fn note_queued(&mut self, idx: usize) -> Result<(), Error> {
+        // A hook whose bit is clear wasn't called back, so it queued nothing.
+        let skipped = self.shape.cross.get(&idx).and_then(|c| c.bit).map(|bit| {
+            let label = self.fresh();
+            self.push_hook_word_read();
+            self.push_word(Word::from_u64(1).shl(bit));
+            self.op(AND);
+            self.op(ISZERO);
+            self.push_label(label);
+            self.op(JUMPI);
+            self.branch += 1;
+            label
+        });
         let none = self.fresh();
         self.push_u64(QUEUED_SLOT);
         self.op(NOT);
@@ -2798,6 +2810,10 @@ impl<'a> Gen<'a> {
         self.leave_branch();
         self.jumpdest(none);
         self.op(POP);
+        if let Some(label) = skipped {
+            self.leave_branch();
+            self.jumpdest(label);
+        }
         Ok(())
     }
 

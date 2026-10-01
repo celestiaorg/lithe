@@ -625,7 +625,7 @@ import "std/token/erc20";
 import "std/interfaces/erc20";
 
 contract Token is {
-  use ERC20 exposing IERC20;
+  use ERC20 exposing IERC20; hook ERC20.before_transfer is skip; hook ERC20.after_transfer is skip;
 
   deploy() raises ERC20InvalidReceiver | ERC20InsufficientBalance is {
     ERC20.init("Token", "TKN");
@@ -657,7 +657,7 @@ import "std/token/erc721";
 import "std/interfaces/erc721";
 
 contract Nft is {
-  use ERC721 exposing IERC721;
+  use ERC721 exposing IERC721; hook ERC721.before_transfer is skip; hook ERC721.after_transfer is skip;
 
   storage is record {
     next : uint;

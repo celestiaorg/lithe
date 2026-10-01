@@ -14,7 +14,7 @@ module Uris is {
 }
 
 contract T is {
-  use ERC20 exposing IERC20, IERC20Metadata;
+  use ERC20 exposing IERC20, IERC20Metadata; hook ERC20.before_transfer is skip; hook ERC20.after_transfer is skip;
   use Uris exposing IERC1155MetadataURI;
   supports IERC20, IERC20Metadata, IERC1155MetadataURI;
 }

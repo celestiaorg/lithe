@@ -15,6 +15,9 @@ contract BenchVault is {
     view function decimals() : uint8;
   }
 
+  hook ERC20.before_transfer is skip;
+  hook ERC20.after_transfer is skip;
+
   deploy(const asset : address) is {
     ERC20.init("Bench Vault", "vBENCH");
     ERC4626.init(asset, ERC4626.asset_decimals(asset), 0);

@@ -949,6 +949,8 @@ pub(crate) fn crossable(checked: &Checked, module: &str) -> Vec<crate::split::Cr
         .filter(|f| !f.type_params.is_empty())
         .map(site)
         .collect();
+    let mut closure = Vec::new();
+    crate::split::closure(&checked.source.modules, module, &mut closure);
     let mut out: Vec<crate::split::Crossing> = Vec::new();
     for (idx, f) in checked.prog.funcs.iter().enumerate() {
         let callable = f.module.as_deref() == Some(module)
@@ -965,11 +967,16 @@ pub(crate) fn crossable(checked: &Checked, module: &str) -> Vec<crate::split::Cr
             continue;
         }
         if let Ok(Some(delegate)) = g.crossing(idx) {
-            // What the contract's hooks raise passes through, but the facet is built without
-            // the contract, so its entrypoint lists only what the modules declare.
+            // What the contract's hooks raise passes through, but the facet is built from the
+            // module and what it requires, so its entrypoint lists only what those declare.
             let own = &checked.source.origin;
             let known = |name: &String| {
-                checked.source.modules.iter().any(|m| m.errors.iter().any(|e| &e.name == name))
+                checked
+                    .source
+                    .modules
+                    .iter()
+                    .filter(|m| closure.contains(&m.name))
+                    .any(|m| m.errors.iter().any(|e| &e.name == name))
                     || checked
                         .source
                         .errors

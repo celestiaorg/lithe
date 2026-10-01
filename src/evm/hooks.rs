@@ -1201,3 +1201,144 @@ contract Counter is {{
     assert_eq!(inline.storage, split.storage);
     DEPLOYED.with(|d| d.borrow_mut().clear());
 }
+
+/// A module that counts bumps and tells its contract each time.
+const BUMP: &str = r#"import "std/evm";
+
+module Log is {
+  storage log at "hooks.log" is record { total : uint; }
+
+  function add(const n : uint) is {
+    log.total := log.total + n;
+  }
+
+  external view function total() : uint is log.total
+}
+
+module Bump is {
+  storage bump at "hooks.bump" is record { count : uint; }
+
+  hook bumped(const n : uint);
+
+  function bump(const n : uint) is {
+    bump.count := bump.count + 1;
+    bumped(n);
+  }
+
+  external function bump(const n : uint) is bump(n)
+
+  external function twice(const n : uint) is {
+    bump(n);
+    bump(n + 1);
+  }
+}
+"#;
+
+/// `hook M.h is f;` passing every parameter is `f` itself: the module's code calls `f`, as
+/// if it named it, with no layer of parameter copies between.
+#[test]
+fn hooks_that_name_a_function_add_no_layer() {
+    let src = format!(
+        "{BUMP}
+contract C is {{
+  use Log exposing {{ view function total() : uint; }}
+  use Bump exposing {{ function bump(n : uint); function twice(n : uint); }}
+
+  hook Bump.bumped is Log.add;
+}}
+"
+    );
+    let checked = checked_src(&src);
+    let bump = checked
+        .prog
+        .funcs
+        .iter()
+        .find(|f| f.name == "Bump.bump")
+        .expect("Bump.bump");
+    let body = format!("{:?}", bump.stmts);
+    assert!(body.contains("\"Log.add\""), "{body}");
+    assert!(!body.contains("#hook"), "{body}");
+}
+
+/// A delegated module's facet takes a bit for each hook its code reaches, not for those of
+/// a module it only requires, so a contract calls it without the hook word.
+#[test]
+fn facets_take_bits_only_for_hooks_they_reach() {
+    let src = format!(
+        "{TOK}
+module Names is {{
+  requires Tok;
+
+  external view function owner(const id : uint) : address is Tok.tok.owner[id]
+}}
+
+contract C is {{
+  use Tok;
+  use Names delegated exposing {{ view function owner(id : uint) : address; }}
+}}
+"
+    );
+    let split = crate::split::build(&checked_src(&src), "C", &crate::Options::default())
+        .unwrap_or_else(|e| panic!("split: {e}"));
+    let names = split.facets.iter().find(|f| f.name == "Names").expect("facet");
+    assert!(names.hooks.is_empty(), "{:?}", names.hooks);
+}
+
+/// A contract's hook may raise an error another module declares: the facet, built without
+/// that module, passes the callback's revert through, and stays the one every contract
+/// shares.
+#[test]
+fn delegated_hooks_raise_other_modules_errors() {
+    let stop = "
+module Stop is {
+  storage stop at \"hooks.stop\" is record { on : bool; }
+
+  error Stopped;
+
+  view function check() raises Stopped is {
+    assert(not stop.on, Stopped);
+  }
+
+  external function halt() is {
+    stop.on := true;
+  }
+}
+";
+    let stopped = |marks: &str| {
+        frozen(marks)
+            .replace("contract Frozen is {", &format!("{stop}\ncontract Frozen is {{\n  use Stop exposing {{ function halt(); }}\n"))
+            .replace("raises Not_owner | Is_frozen;", "raises Not_owner | Stopped;")
+            .replace(
+                "  hook Tok.before_transfer(const from : address; const to : address; const id : uint)
+    raises Is_frozen
+  is {
+    assert(not storage.frozen[id], Is_frozen(id));
+    storage.moves := storage.moves + 1;
+    storage.last := Evm.sender();
+    emit Checked { id = id; by = Evm.sender(); };
+  }",
+                "  hook Tok.before_transfer is Stop.check;",
+            )
+    };
+    let (mut inline, mut split, built) = both(&stopped(""), &stopped(" delegated"), "Frozen");
+    let shared = crate::split::build(
+        &checked_src(&frozen(" delegated")),
+        "Frozen",
+        &crate::Options::default(),
+    )
+    .expect("frozen");
+    assert_eq!(built.facets[0].address, shared.facets[0].address);
+    let calls: Vec<(u64, Vec<u8>)> = vec![
+        (1, word_data("mint(address,uint256)", &words(&[1, 7]))),
+        (1, word_data("send(address,uint256)", &words(&[2, 7]))),
+        (1, word_data("halt()", &[])),
+        (2, word_data("send(address,uint256)", &words(&[1, 7]))),
+    ];
+    for (caller, data) in &calls {
+        let (a, b) = (inline.send(*caller, data), split.send(*caller, data));
+        assert_eq!(seen(&a), seen(&b), "{}", hex(data));
+    }
+    let last = split.send(2, &calls[3].1);
+    assert!(last.reverted);
+    assert_eq!(hex(&last.returndata), hex(&crate::keccak::selector("Stopped()")));
+}

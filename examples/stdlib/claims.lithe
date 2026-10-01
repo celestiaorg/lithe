@@ -18,6 +18,9 @@ contract Claims is {
 
   supports IERC6909, IERC6909TokenSupply, IERC6909Metadata, IERC6909ContentURI;
 
+  hook ERC6909.before_transfer is skip;
+  hook ERC6909.after_transfer is ERC6909TokenSupply.after_transfer;
+
   deploy()
     raises OwnableInvalidOwner
   is {
@@ -29,7 +32,7 @@ contract Claims is {
     raises OwnableUnauthorizedAccount | ERC6909InvalidReceiver | ERC6909InsufficientBalance
   is {
     Ownable.check_owner();
-    ERC6909TokenSupply.mint(to, id, amount);
+    ERC6909.mint(to, id, amount);
   }
 
   external function burn(const from : address; const id : uint; const amount : uint)
@@ -38,7 +41,7 @@ contract Claims is {
     if from <> Evm.sender() and not ERC6909.is_operator(from, Evm.sender()) then {
       ERC6909.spend_allowance(from, Evm.sender(), id, amount);
     }
-    ERC6909TokenSupply.burn(from, id, amount);
+    ERC6909.burn(from, id, amount);
   }
 
   external function describe(

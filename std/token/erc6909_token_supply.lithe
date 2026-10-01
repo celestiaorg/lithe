@@ -1,9 +1,12 @@
-(* Each id's total supply for ERC-6909, like OpenZeppelin's `ERC6909TokenSupply`. Only
-   mints and burns change a supply, so a contract mints and burns through this module, and
-   transfers through `ERC6909`.
+(* Each id's total supply for ERC-6909, like OpenZeppelin's `ERC6909TokenSupply`. Mints and
+   burns change it, through `ERC6909`'s `after_transfer` hook, which the contract points
+   here, or calls this from its own body with what else it runs after a balance change:
 
      use ERC6909TokenSupply exposing IERC6909TokenSupply;
-     supports IERC6909TokenSupply; *)
+     supports IERC6909TokenSupply;
+
+     hook ERC6909.before_transfer is skip;
+     hook ERC6909.after_transfer is ERC6909TokenSupply.after_transfer; *)
 
 import "std/token/erc6909";
 import "std/interfaces/erc6909";
@@ -20,32 +23,15 @@ module ERC6909TokenSupply is {
   view function total_supply(const id : uint) : uint is
     erc6909_token_supply.total_supplies[id]
 
-  (* `ERC6909.update`, then the supply it changes. A burn is bounded by a balance, which
-     the supply covers. *)
-  function update(const from : address; const to : address; const id : uint; const amount : uint)
-    raises ERC6909InsufficientBalance
-  is {
-    ERC6909.update(from, to, id, amount);
+  (* After `ERC6909` changes balances: a mint adds to the supply, a burn takes away. A burn
+     is bounded by a balance, which the supply covers. *)
+  function after_transfer(const from : address; const to : address; const id : uint; const amount : uint) is {
     if from = Address.zero then {
       erc6909_token_supply.total_supplies[id] := erc6909_token_supply.total_supplies[id] + amount;
     }
     if to = Address.zero then {
       erc6909_token_supply.total_supplies[id] := Uint.wrapping_sub(erc6909_token_supply.total_supplies[id], amount);
     }
-  }
-
-  function mint(const to : address; const id : uint; const amount : uint)
-    raises ERC6909InvalidReceiver | ERC6909InsufficientBalance
-  is {
-    assert(to <> Address.zero, ERC6909InvalidReceiver(Address.zero));
-    update(Address.zero, to, id, amount);
-  }
-
-  function burn(const from : address; const id : uint; const amount : uint)
-    raises ERC6909InvalidSender | ERC6909InsufficientBalance
-  is {
-    assert(from <> Address.zero, ERC6909InvalidSender(Address.zero));
-    update(from, Address.zero, id, amount);
   }
 
   external view function totalSupply(const id : uint) : uint is

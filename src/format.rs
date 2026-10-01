@@ -445,7 +445,11 @@ impl Printer<'_> {
         }
         let bol = self.col == 0;
         if bol {
-            let indent = self.indent_for(kind, breaks >= 2);
+            let word = match piece.kind {
+                PieceKind::Token(_) => &self.src[piece.start..piece.end],
+                PieceKind::Comment => "",
+            };
+            let indent = self.indent_for(kind, breaks >= 2, word);
             if kind.is_some() {
                 self.line_indent = indent;
             }
@@ -488,7 +492,7 @@ impl Printer<'_> {
         self.col += indent;
     }
 
-    fn indent_for(&self, kind: Option<Kind>, blank: bool) -> usize {
+    fn indent_for(&self, kind: Option<Kind>, blank: bool, word: &str) -> usize {
         let Some(kind) = kind else {
             return self.structural();
         };
@@ -528,7 +532,7 @@ impl Printer<'_> {
         if self.groups.last().is_some_and(|g| g.open == Open::Flat) {
             return self.groups.last().map(|g| g.content).unwrap_or(0);
         }
-        if self.continues(kind, blank) {
+        if self.continues(kind, blank, word) {
             if self.prev_clause.is_some_and(|prev| prev == kind) {
                 return self.prev_indent;
             }
@@ -541,9 +545,13 @@ impl Printer<'_> {
         self.groups.last().map(|g| g.content).unwrap_or(0)
     }
 
-    fn continues(&self, kind: Kind, blank: bool) -> bool {
+    fn continues(&self, kind: Kind, blank: bool, word: &str) -> bool {
         // `if` starts expressions too, so the line before decides, as for any other token.
-        if blank || (fresh(kind) && kind != Kind::If) {
+        // `guard` and `hook` are names elsewhere, but a line they start declares one.
+        if blank
+            || (fresh(kind) && kind != Kind::If)
+            || (kind == Kind::Ident && matches!(word, "guard" | "hook"))
+        {
             return false;
         }
         !matches!(
@@ -1027,6 +1035,10 @@ mod tests {
             (
                 "hook M.h(const id : uint)\nraises E\nis {\nskip\n}\nhook M.g is skip;\n",
                 "hook M.h(const id : uint)\n  raises E\nis {\n  skip\n}\nhook M.g is skip;\n",
+            ),
+            (
+                "view function f() : uint is\n  1\n\n(* after a function's value *)\nhook M.g is skip;\nguard M.e is f;\n",
+                "view function f() : uint is\n  1\n\n(* after a function's value *)\nhook M.g is skip;\nguard M.e is f;\n",
             ),
             (
                 "pure function f(const n : uint) : string raises Bad is\n  if n = 1 then\n    \"a\"\n      else if n = 2 then\n        \"b\"\n          else\nfail Bad\n",

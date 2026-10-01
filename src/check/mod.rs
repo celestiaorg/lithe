@@ -27,7 +27,7 @@ use compose::*;
 use funcs::*;
 use guards::*;
 use hooks::*;
-pub(crate) use hooks::{callback_fn, hook_fn, hook_item, reached_hooks, stub as hook_stub};
+pub(crate) use hooks::{callback_fn, hook_fn, hook_item, is_root, reached_hooks, stub as hook_stub};
 use layout::*;
 use payable::*;
 use place::*;
@@ -1029,6 +1029,7 @@ fn check_program(
     c.check_hook_reach(&prog)?;
     c.reject_failing_constants(&prog.funcs, prog.guard.as_ref())?;
     c.check_immutable_writes(&prog.funcs, prog.upgradeable)?;
+    hooks::forward_via_hooks(&mut prog.funcs);
     // Each interface `supports` lists, by the signatures, selectors, and results of its
     // methods.
     let mut known: Vec<Supported> = Vec::new();

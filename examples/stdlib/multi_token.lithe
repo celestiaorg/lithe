@@ -1,5 +1,6 @@
 (* An ERC-1155 collection of game items from the standard library, with supply tracking.
-   The owner mints and sets the URI; holders, and operators they approve, burn. *)
+   The owner mints and sets the URI; holders, and operators they approve, burn. The
+   supplies follow every mint and burn through `ERC1155`'s `after_transfer` hook. *)
 
 import "std/evm";
 import "std/token/erc1155_supply";
@@ -14,6 +15,9 @@ contract Items is {
 
   supports IERC1155, IERC1155MetadataURI;
 
+  hook ERC1155.before_transfer is skip;
+  hook ERC1155.after_transfer is ERC1155Supply.after_transfer;
+
   deploy()
     raises OwnableInvalidOwner
   is {
@@ -26,7 +30,7 @@ contract Items is {
       | forwarded
   is {
     Ownable.check_owner();
-    ERC1155Supply.mint(to, id, value, data);
+    ERC1155.mint(to, id, value, data);
   }
 
   external function mintBatch(const to : address; const ids : list(uint); const values : list(uint); const data : bytes)
@@ -34,21 +38,21 @@ contract Items is {
       | forwarded
   is {
     Ownable.check_owner();
-    ERC1155Supply.mint_batch(to, ids, values, data);
+    ERC1155.mint_batch(to, ids, values, data);
   }
 
   external function burn(const account : address; const id : uint; const value : uint)
     raises ERC1155MissingApprovalForAll | ERC1155InvalidSender | ERC1155InvalidArrayLength | ERC1155InsufficientBalance
   is {
     ERC1155.check_authorized(Evm.sender(), account);
-    ERC1155Supply.burn(account, id, value);
+    ERC1155.burn(account, id, value);
   }
 
   external function burnBatch(const account : address; const ids : list(uint); const values : list(uint))
     raises ERC1155MissingApprovalForAll | ERC1155InvalidSender | ERC1155InvalidArrayLength | ERC1155InsufficientBalance
   is {
     ERC1155.check_authorized(Evm.sender(), account);
-    ERC1155Supply.burn_batch(account, ids, values);
+    ERC1155.burn_batch(account, ids, values);
   }
 
   external function setURI(const uri : string)

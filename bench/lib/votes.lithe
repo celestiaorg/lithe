@@ -1,7 +1,7 @@
 (* Delegated voting power with a history, like OpenZeppelin's `ERC20VotesUpgradeable`: a
    holder's balance counts as votes for whomever it delegates to, and each delegate's
-   votes, and the total supply, are checkpointed by block number. The token calls
-   `update` after every balance change. *)
+   votes, and the total supply, are checkpointed by block number. The token runs
+   `update` from `ERC20`'s `after_transfer` hook. *)
 
 import "std/abi";
 import "std/address";

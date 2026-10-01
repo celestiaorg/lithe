@@ -663,7 +663,7 @@ contract Gallery is {
 }
 ```
 
-A call to `send` runs the module's `transfer`, which calls `Gallery`'s `before_transfer` before it moves the token. The module never sees the contract, so its code is the same in every contract, and two contracts that use `Tokens` can implement its hooks differently.
+A call to `send` runs the module's `transfer`, which calls `Gallery`'s `before_transfer` before it moves the token. The module never sees the contract, so its code is the same in every contract, and two contracts that use `Tokens` can implement its hooks differently. The standard library's tokens work this way: `ERC20`, `ERC721`, `ERC1155`, and `ERC6909` call `before_transfer` and `after_transfer` around every balance change, and their extensions are functions a contract calls from those hooks. See [Transfer hooks](/stdlib/tokens#transfer-hooks).
 
 - A module declares `[view | pure] hook name(params) [: T];`: a function's header, with no body. The effect is the most the contract's implementation may do. A `view hook` may read and `query`, a `pure hook` only computes from its parameters, and a plain `hook` may also write, `emit`, and `defer`.
 - The module's own code calls a hook by name, as it calls its own functions. Nothing else calls it: not the contract, and not another module. A function that calls a stateful hook is stateful, so a `view` function can call only `view` and `pure` hooks, and the module checks on its own.
@@ -1181,6 +1181,9 @@ import "std/token/erc721";
 contract Collection is {
   use ERC721 exposing IERC721, IERC721Name;
   supports IERC721, IERC721Metadata;
+
+  hook ERC721.before_transfer is skip;
+  hook ERC721.after_transfer is skip;
 }
 ```
 
@@ -1346,7 +1349,7 @@ module ERC20Votes is {
 }
 ```
 
-The contract that uses `ERC20` and `ERC20Votes` decides whether a transfer should also move votes, and says so in its own `transfer`. An extension cannot silently change the base's behavior.
+The contract that uses `ERC20` and `ERC20Votes` decides whether a transfer should also move votes, and says so in its `ERC20.after_transfer` [hook](#hooks): `hook ERC20.after_transfer is ERC20Votes.transfer_voting_units;`. An extension cannot silently change the base's behavior.
 
 ## Modules in other files
 

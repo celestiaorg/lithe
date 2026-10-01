@@ -539,14 +539,25 @@ fn facet(
     };
     // A module that leans on something only the contract declares can't be built alone.
     let checked = crate::check::check(prog, opts.evm).map_err(whose)?;
-    let mut stubs: Vec<(String, usize)> = checked
-        .prog
-        .funcs
+    // Only the hooks the facet's entries reach take a bit: a module it merely requires
+    // may declare hooks this facet never calls.
+    let funcs = &checked.prog.funcs;
+    let mut reached = vec![false; funcs.len()];
+    let mut todo: Vec<usize> = (0..funcs.len())
+        .filter(|&i| crate::check::is_root(&funcs[i]))
+        .collect();
+    while let Some(i) = todo.pop() {
+        if !std::mem::replace(&mut reached[i], true) {
+            todo.extend(checked.calls.get(i).into_iter().flatten());
+        }
+    }
+    let mut stubs: Vec<(String, usize)> = funcs
         .iter()
         .enumerate()
         .filter_map(|(i, f)| {
             let of = f.hook_of.as_ref()?;
-            (of.form == HookForm::Callback).then(|| (format!("{}.{}", of.module.name, of.name), i))
+            (of.form == HookForm::Callback && reached[i])
+                .then(|| (format!("{}.{}", of.module.name, of.name), i))
         })
         .collect();
     stubs.sort();

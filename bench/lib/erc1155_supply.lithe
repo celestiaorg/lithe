@@ -1,5 +1,6 @@
 (* Supply tracking for ERC-1155, like OpenZeppelin's `ERC1155SupplyUpgradeable`: each id's
-   total and the total of all ids. Call `update` after `ERC1155.update`. *)
+   total and the total of all ids. The contract runs `update` from `ERC1155`'s
+   `after_transfer` hook. *)
 
 import "std/address";
 

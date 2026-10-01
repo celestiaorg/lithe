@@ -56,8 +56,13 @@ fn stdlib_erc20_and_permit() {
     t.reverted_with("ERC20InsufficientAllowance(address,uint256,uint256)");
     assert!(t.send(3, "burn(uint256)", &[w(10)]));
     assert_eq!(t.word("totalSupply()", &[]), Word::from_u64(90));
+    // `ERC20`'s `before_transfer` hook checks the pause, so it stops mints and burns too.
     assert!(t.send(1, "pause()", &[]));
     assert!(!t.send(2, "transfer(address,uint256)", &[w(3), w(1)]));
+    t.reverted_with("EnforcedPause()");
+    assert!(!t.send(1, "mint(address,uint256)", &[w(2), w(1)]));
+    t.reverted_with("EnforcedPause()");
+    assert!(!t.send(3, "burn(uint256)", &[w(1)]));
     t.reverted_with("EnforcedPause()");
     assert!(t.send(1, "unpause()", &[]));
     let cap = Word::from_hex("d3c21bcecceda1000000").unwrap();
@@ -842,6 +847,19 @@ fn stdlib_erc1155() {
     assert_eq!(t.word("totalSupply()", &[]), Word::from_u64(90));
     assert_eq!(t.word("exists(uint256)", &[w(1)]), Word::from_u64(1));
     assert_eq!(t.word("exists(uint256)", &[w(2)]), Word::from_u64(0));
+    // `ERC1155`'s `after_transfer` hook sees a batch whole: each id's supply, and the total.
+    let ids = || Arg::L(vec![Word::from_u64(2), Word::from_u64(5)]);
+    let mint_batch = "mintBatch(address,uint256[],uint256[],bytes)";
+    let values = Arg::L(vec![Word::from_u64(7), Word::from_u64(11)]);
+    assert!(t.send(1, mint_batch, &[w(3), ids(), values, Arg::B(vec![])]));
+    let batch = "safeBatchTransferFrom(address,address,uint256[],uint256[],bytes)";
+    let moved = Arg::L(vec![Word::from_u64(1), Word::from_u64(1)]);
+    assert!(t.send(3, batch, &[w(3), w(2), ids(), moved, Arg::B(vec![])]));
+    let burned = Arg::L(vec![Word::from_u64(2), Word::from_u64(3)]);
+    assert!(t.send(3, "burnBatch(address,uint256[],uint256[])", &[w(3), ids(), burned]));
+    assert_eq!(t.word("totalSupply(uint256)", &[w(2)]), Word::from_u64(5));
+    assert_eq!(t.word("totalSupply(uint256)", &[w(5)]), Word::from_u64(8));
+    assert_eq!(t.word("totalSupply()", &[]), Word::from_u64(103));
     let id = |sel: u64| Arg::W(Word::from_u64(sel).shl(224));
     for (sel, want) in [(0xd9b67a26, 1), (0x0e89341c, 1), (0x80ac58cd, 0)] {
         assert_eq!(
@@ -3486,7 +3504,7 @@ fn stdlib_erc4626() {
 import "std/token/erc20"; import "std/interfaces/erc20";
 
 contract Asset is {
-  use ERC20 exposing IERC20, IERC20Metadata;
+  use ERC20 exposing IERC20, IERC20Metadata; hook ERC20.before_transfer is skip; hook ERC20.after_transfer is skip;
 
   external function mint(const to : address; const value : uint)
     raises ERC20InvalidReceiver | ERC20InsufficientBalance
@@ -3555,7 +3573,7 @@ import "std/interfaces/erc4626";
 
 contract Vault is {{
   use SafeERC20;
-  use ERC20 exposing IERC20, IERC20Name;
+  use ERC20 exposing IERC20, IERC20Name; hook ERC20.before_transfer is skip; hook ERC20.after_transfer is skip;
   use ERC4626 exposing IERC4626, {{
     view function decimals() : uint8;
   }}
