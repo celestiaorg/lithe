@@ -977,6 +977,64 @@ external view function popped(const ys : list(uint); const n : uint) : uint is {
     returns("popped(uint256[],uint256)", &args, w(10));
 }
 
+/// A guard that an address isn't zero decides later tests of it, also when an inlined call
+/// made the guard on its argument, but not past a write to the local, nor out of a branch.
+#[test]
+fn address_guards_decide_tests_only_where_they_hold() {
+    let src = "\
+import \"std/address\"; import \"std/evm\"; storage is record { n : uint; }
+error Zero;
+pure function check(const a : address) raises Zero is {
+  assert(a <> Address.zero, Zero);
+}
+pure function zero(const a : address) : uint is {
+  var r : uint := 2;
+  if a = Address.zero then {
+    r := 1;
+  }
+} with r
+external pure function guarded(const a : address) : uint raises Zero is {
+  check(a);
+} with zero(a)
+external view function sender() : uint raises Zero is {
+  check(Evm.sender());
+} with zero(Evm.sender())
+external pure function rewritten(const a : address) : uint raises Zero is {
+  var x : address := a;
+  check(x);
+  x := Address.zero;
+} with zero(x)
+external pure function branched(const a : address; const c : bool) : uint raises Zero is {
+  if c then {
+    check(a);
+  }
+} with zero(a)
+external pure function negated(const a : address) : uint is {
+  var r : uint := 0;
+  if a = Address.zero then {
+    r := 5;
+  } else if a <> Address.zero then {
+    r := zero(a);
+  }
+} with r
+";
+    let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
+    let w = Word::from_u64;
+    let returns = |sig: &str, args: &[Word], want: u64| {
+        let out = call(&runtime, sig, args);
+        assert!(!out.reverted, "{sig} {args:?}: {}", pretty(&out.returndata));
+        assert_eq!(load_bytes(&out.returndata, 0), w(want), "{sig} {args:?}");
+    };
+    returns("guarded(address)", &[w(7)], 2);
+    assert!(call(&runtime, "guarded(address)", &[w(0)]).reverted);
+    returns("sender()", &[], 2);
+    returns("rewritten(address)", &[w(7)], 1);
+    returns("branched(address,bool)", &[w(0), w(0)], 1);
+    returns("branched(address,bool)", &[w(7), w(1)], 2);
+    returns("negated(address)", &[w(0)], 5);
+    returns("negated(address)", &[w(7)], 2);
+}
+
 /// A division that ran proves its divisor nonzero for the statements after it, and only
 /// there: not past a condition that skipped it, a branch it sat in, or a write to the
 /// divisor.

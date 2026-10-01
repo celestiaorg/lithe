@@ -28,12 +28,12 @@ impl<'a> Gen<'a> {
 
     /// Emits each helper that some call still reaches. Helpers may call helpers.
     pub(super) fn emit_subs(&mut self) -> Result<(), Error> {
-        let mut funcs: Vec<((usize, bool, bool), Vec<Inst>)> = self
+        let mut funcs: Vec<(FuncKey, Vec<Inst>)> = self
             .funcs
             .iter_mut()
-            .map(|(key, f)| (*key, std::mem::take(&mut f.code)))
+            .map(|(key, f)| (key.clone(), std::mem::take(&mut f.code)))
             .collect();
-        funcs.sort_by_key(|(key, _)| *key);
+        funcs.sort_by(|a, b| a.0.cmp(&b.0));
         for (_, code) in funcs {
             self.code.extend(code);
         }

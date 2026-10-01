@@ -10,6 +10,7 @@ impl<'a> Gen<'a> {
             entry_labels: Vec::new(),
             inlined: HashMap::new(),
             funcs: HashMap::new(),
+            const_sites: HashSet::new(),
             shared: false,
             log_sites: 0,
             return_sites: 0,
@@ -346,6 +347,8 @@ impl<'a> Gen<'a> {
             every_bump: false,
             outline,
             looped,
+            specializable: &self.const_sites & &outlinable,
+            specialize: Default::default(),
             outlinable,
             blob_params: self
                 .blob_sites
@@ -1267,9 +1270,9 @@ impl<'a> Gen<'a> {
         let Region::Local(sym) = self.spaces[ix].region else {
             return false;
         };
-        !self.funcs.iter().any(|(&(f, _, _), sub)| {
+        !self.funcs.iter().any(|((f, ..), sub)| {
             sub.takes == 0
-                && self.checked.prog.funcs[f]
+                && self.checked.prog.funcs[*f]
                     .params
                     .iter()
                     .any(|p| p.sym == Some(sym))

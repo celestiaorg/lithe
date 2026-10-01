@@ -2602,8 +2602,8 @@ impl<'a> Gen<'a> {
     ) -> Result<(), Error> {
         let arm = |ctor: &str| arms.iter().find(|a| a.ctors[0] == ctor).unwrap();
         // A condition known from literals and constants builds only its arm.
-        if let Some(w) = self.const_word(cond) {
-            return self.run_arm(arm(if w.is_zero() { "false" } else { "true" }), sink);
+        if let Some(b) = self.cond_known(cond) {
+            return self.run_arm(arm(if b { "true" } else { "false" }), sink);
         }
         let else_l = self.fresh();
         let end_l = self.fresh();

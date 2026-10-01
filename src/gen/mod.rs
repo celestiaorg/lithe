@@ -178,6 +178,10 @@ thread_local! {
     /// (`Some(true)`), or only those that do neither, so a test can compare the two.
     pub(crate) static FORCE_STATIC_HEAP: std::cell::Cell<Option<bool>> =
         const { std::cell::Cell::new(None) };
+    /// Specializes every outlined function some call passes a constant (`Some(true)`), or
+    /// none (`Some(false)`), so a test can compare the two.
+    pub(crate) static FORCE_SPECIALIZE: std::cell::Cell<Option<bool>> =
+        const { std::cell::Cell::new(None) };
 }
 
 /// The creation code, and the runtime code it deploys, for the entrypoints `shape` keeps.
@@ -448,6 +452,10 @@ pub(crate) fn codegen(checked: &Checked, shape: &Shape) -> Result<Built, Error> 
     #[cfg(not(test))]
     let forced: Option<bool> = None;
     let on = forced == Some(true);
+    #[cfg(test)]
+    let forced_specs = FORCE_SPECIALIZE.get();
+    #[cfg(not(test))]
+    let forced_specs: Option<bool> = None;
     let start = Plan {
         cache_slots: true,
         tight: true,
@@ -457,6 +465,10 @@ pub(crate) fn codegen(checked: &Checked, shape: &Shape) -> Result<Built, Error> 
         forward_consts: on,
         static_heap: on,
         every_bump: on,
+        specialize: match forced_specs {
+            Some(true) => plan.specializable.clone(),
+            _ => Default::default(),
+        },
         ..plan.clone()
     };
     let variant_rounds = |mut best: Candidate| -> Result<Candidate, Error> {
@@ -474,21 +486,44 @@ pub(crate) fn codegen(checked: &Checked, shape: &Shape) -> Result<Built, Error> 
         .pop()
         .expect("a build");
     best = variant_rounds(best)?;
+    // Outlined functions some calls pass constants are also tried compiled once per set of
+    // constants their calls pass.
+    let mut specs: Vec<usize> = match forced_specs {
+        Some(_) => Vec::new(),
+        None => plan.specializable.iter().copied().collect(),
+    };
+    specs.sort_unstable();
     // Later rounds try again the functions a round left as they were and whose toggle cost
     // little more than the start, as the moves kept since can make it pay.
     for _ in 0..MAX_TOGGLE_ROUNDS {
         let cost = best.cost();
-        let was = best.plan.outline.clone();
-        let dims: Vec<Vec<Move>> = funcs.iter().map(|&f| vec![Move::Toggle(f)]).collect();
+        let was = (best.plan.outline.clone(), best.plan.specialize.clone());
+        specs.retain(|f| best.plan.outline.contains(f));
+        let dims: Vec<Vec<Move>> = funcs
+            .iter()
+            .map(|&f| vec![Move::Toggle(f)])
+            .chain(specs.iter().map(|&f| vec![Move::Specialize(f)]))
+            .collect();
         let (next, deltas) = round(best, &dims)?;
+        let (toggled, specialized) = deltas.split_at(funcs.len());
         funcs = funcs
             .into_iter()
-            .zip(deltas)
-            .filter(|&(f, d)| d < RETRY_COST && was.contains(&f) == next.plan.outline.contains(&f))
+            .zip(toggled)
+            .filter(|&(f, &d)| {
+                d < RETRY_COST && was.0.contains(&f) == next.plan.outline.contains(&f)
+            })
+            .map(|(f, _)| f)
+            .collect();
+        specs = specs
+            .into_iter()
+            .zip(specialized)
+            .filter(|&(f, &d)| {
+                d < RETRY_COST && was.1.contains(&f) == next.plan.specialize.contains(&f)
+            })
             .map(|(f, _)| f)
             .collect();
         best = next;
-        if best.cost() >= cost || funcs.is_empty() {
+        if best.cost() >= cost || funcs.is_empty() && specs.is_empty() {
             break;
         }
     }
@@ -702,6 +737,8 @@ enum Move {
     StaticHeap,
     /// Inline the function if the plan outlines it, else outline it.
     Toggle(usize),
+    /// Specialize an outlined function to the constants its calls pass, or stop.
+    Specialize(usize),
 }
 
 impl Move {
@@ -724,6 +761,11 @@ impl Move {
             Move::Toggle(f) => {
                 if !p.outline.remove(f) {
                     p.outline.insert(*f);
+                }
+            }
+            Move::Specialize(f) => {
+                if !p.specialize.remove(f) {
+                    p.specialize.insert(*f);
                 }
             }
         }
@@ -1342,6 +1384,12 @@ struct Plan {
     looped: std::collections::HashSet<usize>,
     /// Every function called more than once that can be outlined, for builds too big to fit.
     outlinable: std::collections::HashSet<usize>,
+    /// The functions some call passes a constant, as the first pass, which inlines every
+    /// call, found them.
+    specializable: std::collections::HashSet<usize>,
+    /// The outlined functions compiled once for each set of constants their calls pass,
+    /// rather than once for all.
+    specialize: std::collections::HashSet<usize>,
     /// The parameters every call binds to blobs only, as the first pass, which inlines every
     /// call, found them.
     blob_params: std::collections::HashSet<usize>,
@@ -1404,6 +1452,11 @@ struct Plan {
     /// before can then differ, which keeps them from being shared, so it is tried last.
     abandon: bool,
 }
+
+/// A compiled function, whether it runs storage in place, whether it has calls across of its
+/// own, and, when it is specialized, the constant each call of the copy passes for each
+/// parameter.
+type FuncKey = (usize, bool, bool, Vec<Option<[u64; 4]>>);
 
 /// A function compiled once. Calls merge what it reads and writes into their body.
 struct FuncSub {
@@ -1709,7 +1762,9 @@ struct Gen<'a> {
     /// Inlined calls per function, the most bytes one inlined body took, and how often the
     /// calls in each body run, each loop around one multiplying it by `asm::LOOP_RUNS`.
     inlined: HashMap<usize, (usize, usize, HashMap<usize, f64>)>,
-    funcs: HashMap<(usize, bool, bool), FuncSub>,
+    funcs: HashMap<FuncKey, FuncSub>,
+    /// The functions some call passes a constant.
+    const_sites: HashSet<usize>,
     /// Code shared by every body: its memory overlaps only what never runs while it does.
     shared: bool,
     /// The function compiled once whose code is being emitted, as a region user.
