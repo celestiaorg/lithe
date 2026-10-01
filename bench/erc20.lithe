@@ -27,18 +27,14 @@ contract BenchToken is {
   }
 
   (* `ERC20Pausable` checks the pause inside every balance update. *)
-  function update(const from : address; const to : address; const value : uint)
-    raises EnforcedPause | ERC20InsufficientBalance
-  is {
-    Pausable.require_not_paused();
-    ERC20.update(from, to, value);
-  }
+  hook ERC20.before_transfer is Pausable.require_not_paused;
+  hook ERC20.after_transfer is skip;
 
   external function transfer(const to : address; const value : uint) : bool
     raises ERC20InvalidSender | ERC20InvalidReceiver | EnforcedPause | ERC20InsufficientBalance
   is {
     ERC20.check_transfer(Evm.sender(), to);
-    update(Evm.sender(), to, value);
+    ERC20.update(Evm.sender(), to, value);
   } with true
 
   external function approve(const spender : address; const value : uint) : bool
@@ -53,13 +49,13 @@ contract BenchToken is {
   is {
     ERC20.spend_allowance(from, Evm.sender(), value);
     ERC20.check_transfer(from, to);
-    update(from, to, value);
+    ERC20.update(from, to, value);
   } with true
 
   external function burn(const value : uint)
     raises ERC20InvalidSender | EnforcedPause | ERC20InsufficientBalance
   is {
-    update(Evm.sender(), Address.zero, value);
+    ERC20.update(Evm.sender(), Address.zero, value);
   }
 
   external function burnFrom(const account : address; const value : uint)
@@ -71,7 +67,7 @@ contract BenchToken is {
       account <> Address.zero,
       ERC20InvalidSender(Address.zero)
     );
-    update(account, Address.zero, value);
+    ERC20.update(account, Address.zero, value);
   }
 
   external function mint(const to : address; const amount : uint)
@@ -82,7 +78,7 @@ contract BenchToken is {
       to <> Address.zero,
       ERC20InvalidReceiver(Address.zero)
     );
-    update(Address.zero, to, amount);
+    ERC20.update(Address.zero, to, amount);
   }
 
   external function pause()

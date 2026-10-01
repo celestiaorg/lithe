@@ -168,7 +168,7 @@ contract Minter is {
 
 ## `Pausable`
 
-`std/security/pausable.lithe`. An emergency stop. Pausing is policy, so the contract decides who may pause, and which entrypoints check `require_not_paused`.
+`std/security/pausable.lithe`. An emergency stop. Pausing is policy, so the contract decides who may pause, and which entrypoints check `require_not_paused`. A token pauses every transfer, mint, and burn, as OpenZeppelin's `ERC20Pausable` and its siblings do, from its module's [`before_transfer` hook](/stdlib/tokens#transfer-hooks): `hook ERC20.before_transfer is Pausable.require_not_paused;`.
 
 | Function | |
 | --- | --- |

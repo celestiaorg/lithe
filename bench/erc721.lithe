@@ -29,18 +29,15 @@ contract BenchNFT is {
   }
 
   (* `ERC721Pausable` checks the pause inside every ownership update. *)
-  function update(const to : address; const tokenId : uint; const auth : address) : address
-    raises EnforcedPause | ERC721NonexistentToken | ERC721InsufficientApproval
-  is {
-    Pausable.require_not_paused();
-  } with ERC721.update(to, tokenId, auth)
+  hook ERC721.before_transfer is Pausable.require_not_paused;
+  hook ERC721.after_transfer is skip;
 
   function transfer_from(const from : address; const to : address; const tokenId : uint)
     raises ERC721InvalidReceiver | ERC721IncorrectOwner | EnforcedPause | ERC721NonexistentToken
       | ERC721InsufficientApproval
   is {
     assert(to <> Address.zero, ERC721InvalidReceiver(Address.zero));
-    const previous : address := update(to, tokenId, Evm.sender());
+    const previous : address := ERC721.update(to, tokenId, Evm.sender());
     assert(
       previous = from,
       ERC721IncorrectOwner { sender = from; tokenId = tokenId; owner = previous; }
@@ -90,7 +87,7 @@ contract BenchNFT is {
   external function burn(const tokenId : uint)
     raises EnforcedPause | ERC721NonexistentToken | ERC721InsufficientApproval
   is {
-    const _ : address := update(Address.zero, tokenId, Evm.sender());
+    const _ : address := ERC721.update(Address.zero, tokenId, Evm.sender());
   }
 
   external function safeMint(const to : address; const tokenId : uint)
@@ -99,7 +96,7 @@ contract BenchNFT is {
   is {
     Ownable.check_owner();
     assert(to <> Address.zero, ERC721InvalidReceiver(Address.zero));
-    const previous : address := update(to, tokenId, Address.zero);
+    const previous : address := ERC721.update(to, tokenId, Address.zero);
     assert(previous = Address.zero, ERC721InvalidSender(Address.zero));
     ERC721.check_received(Evm.sender(), Address.zero, to, tokenId, "");
   }

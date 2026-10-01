@@ -118,11 +118,15 @@ module ERC721 is {
     }
   }
 
-  (* Moves, mints (`to` from zero), or burns (`to` is zero); returns the previous owner.
-     A nonzero `auth` must be allowed to move the token. *)
+  hook before_transfer(const to : address; const tokenId : uint; const auth : address);
+  hook after_transfer(const from : address; const to : address; const tokenId : uint);
+
+  (* Moves, mints (`to` from zero), or burns (`to` is zero), between the contract's hooks;
+     returns the previous owner. A nonzero `auth` must be allowed to move the token. *)
   function update(const to : address; const tokenId : uint; const auth : address) : address
     raises ERC721NonexistentToken | ERC721InsufficientApproval
   is {
+    before_transfer(to, tokenId, auth);
     const from : address := erc721.owners[tokenId];
     if auth <> Address.zero then {
       check_authorized(from, auth, tokenId);
@@ -140,6 +144,7 @@ module ERC721 is {
       to = to;
       tokenId = tokenId;
     };
+    after_transfer(from, to, tokenId);
   } with from
 
   function approve_as(const to : address; const tokenId : uint; const auth : address)

@@ -107,11 +107,16 @@ module ERC1155 is {
     );
   }
 
-  (* Moves, mints (`from` is zero), or burns (`to` is zero) each `values[i]` of `ids[i]`.
-     One id logs `TransferSingle`, any other count `TransferBatch`. *)
+  hook before_transfer(const from : address; const to : address; const ids : list(uint); const values : list(uint));
+  hook after_transfer(const from : address; const to : address; const ids : list(uint); const values : list(uint));
+
+  (* Moves, mints (`from` is zero), or burns (`to` is zero) each `values[i]` of `ids[i]`,
+     between the contract's hooks. One id logs `TransferSingle`, any other count
+     `TransferBatch`. *)
   function update(const from : address; const to : address; const ids : list(uint); const values : list(uint))
     raises ERC1155InvalidArrayLength | ERC1155InsufficientBalance
   is {
+    before_transfer(from, to, ids, values);
     assert(
       ids.length = values.length,
       ERC1155InvalidArrayLength { idsLength = ids.length; valuesLength = values.length; }
@@ -147,6 +152,7 @@ module ERC1155 is {
         values = values;
       };
     }
+    after_transfer(from, to, ids, values);
   }
 
   (* Like `ERC1155Utils.checkOnERC1155Received`: a contract receiver must answer with the

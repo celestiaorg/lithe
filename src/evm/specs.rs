@@ -789,7 +789,7 @@ import "std/token/erc20";
 import "std/interfaces/erc20";
 
 contract Token is {
-  use ERC20 exposing IERC20;
+  use ERC20 exposing IERC20; hook ERC20.before_transfer is skip; hook ERC20.after_transfer is skip;
 
   deploy() is {
     ERC20.init("Token", "TKN");

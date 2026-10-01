@@ -1,19 +1,17 @@
-(* A ceiling on the supply, like OpenZeppelin's `ERC20Capped`. Minting is the contract's own,
-   so it checks the cap after each mint:
+(* A ceiling on the supply, like OpenZeppelin's `ERC20Capped`. Each mint checks the cap,
+   through `ERC20`'s `after_transfer` hook, which the token points here, or calls this
+   from its own body with what else it runs after a balance change:
 
-     external function mint(const to : address; const value : uint)
-       raises ERC20InvalidReceiver | ERC20InsufficientBalance | ERC20ExceededCap
-     is {
-       ERC20.mint(to, value);
-       ERC20Capped.check(ERC20.total_supply());
-     }
+     use ERC20Capped exposing IERC20Capped;
 
-     use ERC20Capped exposing IERC20Capped; *)
+     hook ERC20.after_transfer is ERC20Capped.after_transfer; *)
 
-(* lithe-ignore unused-import: brings ERC20, which ERC20Capped extends *)
+import "std/address";
 import "std/token/erc20";
 
 module ERC20Capped is {
+  requires ERC20;
+
   immutable erc20_capped at "lithe.std.erc20.capped" is record {
     cap : uint;
   }
@@ -42,6 +40,15 @@ module ERC20Capped is {
   is {
     const cap : uint := erc20_capped.cap;
     assert(supply <= cap, ERC20ExceededCap { increasedSupply = supply; cap = cap; });
+  }
+
+  (* After `ERC20` changes balances: a mint can't take the supply past the cap. *)
+  view function after_transfer(const from : address; const to : address; const value : uint)
+    raises ERC20ExceededCap
+  is {
+    if from = Address.zero then {
+      check(ERC20.total_supply());
+    }
   }
 
   external view function cap() : uint is

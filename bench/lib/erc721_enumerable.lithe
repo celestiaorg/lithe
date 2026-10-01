@@ -1,6 +1,7 @@
 (* Enumeration of every token and of each owner's tokens, like OpenZeppelin's
    `ERC721EnumerableUpgradeable`: same storage, errors, and swap-and-pop removal, so the
-   order of the enumerations matches. Every ownership change goes through `update`. *)
+   order of the enumerations matches. The contract runs `after_transfer` from `ERC721`'s
+   hook of the same name. *)
 
 import "std/address";
 import "std/list";
@@ -43,22 +44,19 @@ module ERC721Enumerable is {
     );
   } with erc721_enumerable.ownedTokens[owner][index]
 
-  (* `ERC721.update`, then the enumerations follow the token. *)
-  function update(const to : address; const tokenId : uint; const auth : address) : address
-    raises ERC721NonexistentToken | ERC721InsufficientApproval
-  is {
-    const previous : address := ERC721.update(to, tokenId, auth);
-    if previous = Address.zero then {
+  (* After `ERC721.update`: the enumerations follow the token. *)
+  function after_transfer(const from : address; const to : address; const tokenId : uint) is {
+    if from = Address.zero then {
       add_to_all(tokenId);
-    } else if previous <> to then {
-      remove_from_owner(previous, tokenId);
+    } else if from <> to then {
+      remove_from_owner(from, tokenId);
     }
     if to = Address.zero then {
       remove_from_all(tokenId);
-    } else if previous <> to then {
+    } else if from <> to then {
       add_to_owner(to, tokenId);
     }
-  } with previous
+  }
 
   function add_to_owner(const to : address; const tokenId : uint) is {
     const length : uint := ERC721.erc721.balances[to] - 1;

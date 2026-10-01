@@ -6,8 +6,15 @@
 
    An operator moves any amount of any of an owner's ids; an allowance is per spender and
    id, and an operator's transfers leave it untouched. An allowance of `Uint.max` is never
-   spent down. Every balance change goes through `update`, like OpenZeppelin's `_update`.
-   There are no receiver callbacks. *)
+   spent down. There are no receiver callbacks.
+
+   Every balance change goes through `update`, like OpenZeppelin's `_update`, which calls
+   the contract's two hooks: at its start, `before_transfer`, and after the `Transfer` log,
+   `after_transfer`, where extensions such as `ERC6909TokenSupply` follow the change.
+   `from` is zero for a mint, `to` for a burn. A token without extensions skips both:
+
+     hook ERC6909.before_transfer is skip;
+     hook ERC6909.after_transfer is skip; *)
 
 import "std/interfaces/erc165";
 import "std/interfaces/erc6909";
@@ -22,6 +29,9 @@ module ERC6909 is {
     operator_approvals : map(address, map(address, bool));
     allowances : map(address, map(address, map(uint, uint)));
   }
+
+  hook before_transfer(const from : address; const to : address; const id : uint; const amount : uint);
+  hook after_transfer(const from : address; const to : address; const id : uint; const amount : uint);
 
   event Transfer of record {
     caller : address;
@@ -112,6 +122,7 @@ module ERC6909 is {
   function update(const from : address; const to : address; const id : uint; const amount : uint)
     raises ERC6909InsufficientBalance
   is {
+    before_transfer(from, to, id, amount);
     if from <> Address.zero then {
       const balance : uint := erc6909.balances[from][id];
       assert(
@@ -130,6 +141,7 @@ module ERC6909 is {
       id = id;
       amount = amount;
     };
+    after_transfer(from, to, id, amount);
   }
 
   function approve_as(const owner : address; const spender : address; const id : uint; const amount : uint)

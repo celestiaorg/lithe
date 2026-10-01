@@ -68,10 +68,14 @@ module ERC20 is {
     erc20.symbol := s;
   }
 
-  (* Moves, mints (`from` is zero), or burns (`to` is zero). *)
+  hook before_transfer(const from : address; const to : address; const value : uint);
+  hook after_transfer(const from : address; const to : address; const value : uint);
+
+  (* Moves, mints (`from` is zero), or burns (`to` is zero), between the contract's hooks. *)
   function update(const from : address; const to : address; const value : uint)
     raises ERC20InsufficientBalance
   is {
+    before_transfer(from, to, value);
     if from = Address.zero then {
       erc20.totalSupply := erc20.totalSupply + value;
     } else {
@@ -96,6 +100,7 @@ module ERC20 is {
       to = to;
       value = value;
     };
+    after_transfer(from, to, value);
   }
 
   view function check_transfer(const from : address; const to : address)

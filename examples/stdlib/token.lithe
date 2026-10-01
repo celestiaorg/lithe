@@ -1,6 +1,7 @@
 (* An ERC-20 token from the standard library: burnable, with ERC-2612 permits, and an
-   owner who may mint and pause. Transfers check the pause in the contract's own
-   `transfer` and `transferFrom`, so the base module's behavior never changes silently. *)
+   owner who may mint and pause. `ERC20` checks the pause before every balance change,
+   through its `before_transfer` hook, so a pause stops transfers, mints, and burns, as
+   OpenZeppelin's `ERC20Pausable` does. *)
 
 import "std/evm";
 import "std/token/erc20_permit";
@@ -18,8 +19,20 @@ contract Token is {
   use ECDSA;
   use Nonces;
 
-  use ERC20 exposing IERC20Metadata, IERC20Views, IERC20Approvals;
-  use ERC20Burnable exposing IERC20Burnable;
+  use ERC20 exposing IERC20Metadata, IERC20Views, IERC20Approvals, {
+    function transfer(to : address; value : uint) : bool
+      raises ERC20InvalidSender | ERC20InvalidReceiver | EnforcedPause | ERC20InsufficientBalance;
+    function transferFrom(from : address; to : address; value : uint) : bool
+      raises ERC20InsufficientAllowance | ERC20InvalidApprover | ERC20InvalidSpender | ERC20InvalidSender
+        | ERC20InvalidReceiver | EnforcedPause | ERC20InsufficientBalance;
+  }
+  use ERC20Burnable exposing {
+    function burn(value : uint)
+      raises ERC20InvalidSender | EnforcedPause | ERC20InsufficientBalance;
+    function burnFrom(account : address; value : uint)
+      raises ERC20InsufficientAllowance | ERC20InvalidApprover | ERC20InvalidSpender | ERC20InvalidSender
+        | EnforcedPause | ERC20InsufficientBalance;
+  }
   use ERC20Permit exposing IERC20Permit;
   use Ownable exposing IOwnable;
   use Pausable exposing IPausable;
@@ -35,6 +48,9 @@ contract Token is {
     cap : uint;
   }
 
+  hook ERC20.before_transfer is Pausable.require_not_paused;
+  hook ERC20.after_transfer is skip;
+
   deploy()
     raises OwnableInvalidOwner
   is {
@@ -44,24 +60,9 @@ contract Token is {
     storage.cap := 1_000_000 * 10 ** 18;
   }
 
-  external function transfer(const to : address; const value : uint) : bool
-    raises EnforcedPause | ERC20InvalidSender | ERC20InvalidReceiver | ERC20InsufficientBalance
-  is {
-    Pausable.require_not_paused();
-    ERC20.move(Evm.sender(), to, value);
-  } with true
-
-  external function transferFrom(const from : address; const to : address; const value : uint) : bool
-    raises EnforcedPause | ERC20InsufficientAllowance | ERC20InvalidApprover | ERC20InvalidSpender | ERC20InvalidSender
-      | ERC20InvalidReceiver | ERC20InsufficientBalance
-  is {
-    Pausable.require_not_paused();
-    ERC20.spend_allowance(from, Evm.sender(), value);
-    ERC20.move(from, to, value);
-  } with true
-
   external function mint(const to : address; const value : uint)
-    raises OwnableUnauthorizedAccount | ERC20ExceededCap | ERC20InvalidReceiver | ERC20InsufficientBalance
+    raises OwnableUnauthorizedAccount | ERC20ExceededCap | ERC20InvalidReceiver | EnforcedPause
+      | ERC20InsufficientBalance
   is {
     Ownable.check_owner();
     const supply : uint := ERC20.total_supply() + value;

@@ -1,8 +1,8 @@
 (* A collectible series from the standard library: enumerable, with its own URI for each
    token under a shared base, ERC-2981 royalties, and an owner who mints, pauses, and sets
-   royalties. Holders burn their own tokens. Every transfer, mint, and burn goes through
-   `ERC721Enumerable`, so the enumerations always match the owners, and each checks the
-   pause in the contract's own entrypoint.
+   royalties. Holders burn their own tokens. `ERC721` calls the contract's hooks around
+   every transfer, mint, and burn: before, the pause; after, the enumerations, so they
+   always match the owners.
 
    It answers ERC-165 for ERC-721 and its metadata and enumeration extensions, and for
    ERC-2981, which it lists in `supports`, and for ERC-4906, which `ERC721URIStorage`
@@ -23,7 +23,17 @@ import "std/interfaces/erc721";
 contract Collectible is {
   use ERC721URIStorage;
 
-  use ERC721 exposing IERC721Name, IERC721Views, IERC721Approvals;
+  use ERC721 exposing IERC721Name, IERC721Views, IERC721Approvals, {
+    function transferFrom(from : address; to : address; tokenId : uint)
+      raises ERC721InvalidReceiver | ERC721IncorrectOwner | EnforcedPause | ERC721NonexistentToken
+        | ERC721InsufficientApproval;
+    function safeTransferFrom(from : address; to : address; tokenId : uint)
+      raises ERC721InvalidReceiver | ERC721IncorrectOwner | EnforcedPause | ERC721NonexistentToken
+        | ERC721InsufficientApproval | forwarded;
+    function safeTransferFrom(from : address; to : address; tokenId : uint; data : bytes)
+      raises ERC721InvalidReceiver | ERC721IncorrectOwner | EnforcedPause | ERC721NonexistentToken
+        | ERC721InsufficientApproval | forwarded;
+  }
   use ERC721Enumerable exposing IERC721Enumerable;
   use ERC2981 exposing IERC2981;
   use Ownable exposing IOwnable;
@@ -34,6 +44,9 @@ contract Collectible is {
   storage is record {
     next_id : uint;
   }
+
+  hook ERC721.before_transfer is Pausable.require_not_paused;
+  hook ERC721.after_transfer is ERC721Enumerable.after_transfer;
 
   (* The creator owns the series and takes a 5% royalty until they set another. *)
   deploy()
@@ -52,36 +65,11 @@ contract Collectible is {
   is
     ERC721URIStorage.token_uri(tokenId, "ipfs://lithe-collectibles/")
 
-  external function transferFrom(const from : address; const to : address; const tokenId : uint)
-    raises EnforcedPause | ERC721InvalidReceiver | ERC721IncorrectOwner | ERC721NonexistentToken
-      | ERC721InsufficientApproval
-  is {
-    Pausable.require_not_paused();
-    ERC721Enumerable.transfer_from(from, to, tokenId);
-  }
-
-  external function safeTransferFrom(const from : address; const to : address; const tokenId : uint)
-    raises EnforcedPause | ERC721InvalidReceiver | ERC721IncorrectOwner | ERC721NonexistentToken
-      | ERC721InsufficientApproval | forwarded
-  is {
-    Pausable.require_not_paused();
-    ERC721Enumerable.safe_transfer_from(from, to, tokenId);
-  }
-
-  external function safeTransferFrom(const from : address; const to : address; const tokenId : uint; const data : bytes)
-    raises EnforcedPause | ERC721InvalidReceiver | ERC721IncorrectOwner | ERC721NonexistentToken
-      | ERC721InsufficientApproval | forwarded
-  is {
-    Pausable.require_not_paused();
-    ERC721Enumerable.safe_transfer_from_with_data(from, to, tokenId, data);
-  }
-
   (* The holder, or anyone they approved, burns a token. *)
   external function burn(const tokenId : uint)
     raises EnforcedPause | ERC721NonexistentToken | ERC721InsufficientApproval
   is {
-    Pausable.require_not_paused();
-    const _ : address := ERC721Enumerable.update(Address.zero, tokenId, Evm.sender());
+    const _ : address := ERC721.update(Address.zero, tokenId, Evm.sender());
   }
 
   (* Mints the next id, with its own URI under the base. *)
@@ -90,10 +78,9 @@ contract Collectible is {
       | ERC721NonexistentToken | ERC721InsufficientApproval | forwarded
   is {
     Ownable.check_owner();
-    Pausable.require_not_paused();
     const tokenId : uint := storage.next_id;
     storage.next_id := tokenId + 1;
-    ERC721Enumerable.safe_mint(to, tokenId, "");
+    ERC721.safe_mint(to, tokenId, "");
     ERC721URIStorage.set_token_uri(tokenId, uri);
   } with tokenId
 

@@ -7,12 +7,26 @@
      use ERC20 exposing IERC20, IERC20Metadata;
      supports IERC20, IERC20Metadata;
 
-   Every balance change goes through `update`. To add a rule, such as a pause, the
-   contract writes its own `transfer` and `transferFrom` around `move` and
-   `spend_allowance`: an extension never changes these functions silently. It exposes the
-   rest of `IERC20` as `IERC20Views` and `IERC20Approvals`:
+   Every balance change goes through `update`, which calls the contract's two hooks: at
+   its start, `before_transfer`, where OpenZeppelin's `_update` overrides check a pause,
+   and after the `Transfer` log, `after_transfer`, where extensions such as `ERC20Votes`
+   and `ERC20Capped` follow the change. `from` is zero for a mint, `to` for a burn. A
+   token without extensions skips both:
 
-     use ERC20 exposing IERC20Metadata, IERC20Views, IERC20Approvals; *)
+     hook ERC20.before_transfer is skip;
+     hook ERC20.after_transfer is skip;
+
+   A hook that raises adds its errors to the transfers, mints, and burns, so the token
+   exposes the rest of `IERC20` as `IERC20Views` and `IERC20Approvals`, and lists the
+   transfers with their errors:
+
+     use ERC20 exposing IERC20Metadata, IERC20Views, IERC20Approvals, {
+       function transfer(to : address; value : uint) : bool
+         raises ERC20InvalidSender | ERC20InvalidReceiver | ERC20InsufficientBalance | EnforcedPause;
+       ...
+     }
+
+     hook ERC20.before_transfer is Pausable.require_not_paused; *)
 
 import "std/address";
 import "std/evm";
@@ -39,6 +53,9 @@ module ERC20 is {
     indexed spender : address;
     value : uint;
   }
+
+  hook before_transfer(const from : address; const to : address; const value : uint);
+  hook after_transfer(const from : address; const to : address; const value : uint);
 
   function init(const name : string; const symbol : string) is {
     erc20.name := name;
@@ -110,6 +127,7 @@ module ERC20 is {
   function update(const from : address; const to : address; const value : uint)
     raises ERC20InsufficientBalance
   is {
+    before_transfer(from, to, value);
     if from = Address.zero then {
       erc20.total_supply := erc20.total_supply + value;
     } else {
@@ -130,6 +148,7 @@ module ERC20 is {
       to = to;
       value = value;
     };
+    after_transfer(from, to, value);
   }
 
   (* Sets an allowance. `announce` logs the `Approval`; spending one doesn't. *)

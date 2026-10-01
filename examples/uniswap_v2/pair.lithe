@@ -29,6 +29,9 @@ contract UniswapV2Pair is {
   use ERC20Permit exposing IERC20Permit;
   supports IERC20, IERC20Metadata, IERC20Permit;
 
+  hook ERC20.before_transfer is skip;
+  hook ERC20.after_transfer is skip;
+
   (* One slot, written at once. *)
   type reserves is record {
     reserve0 : uint112;

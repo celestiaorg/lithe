@@ -10,6 +10,9 @@ contract Collection is {
   use ERC721 exposing IERC721, IERC721Metadata;
   supports IERC721, IERC721Metadata;
 
+  hook ERC721.before_transfer is skip;
+  hook ERC721.after_transfer is skip;
+
   storage is record {
     next_id : uint;
   }

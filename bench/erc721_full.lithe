@@ -53,18 +53,15 @@ contract BenchNFTFull is {
 
   (* `ERC721Pausable` checks the pause inside every ownership update, then
      `ERC721Enumerable` keeps its lists. *)
-  function update(const to : address; const tokenId : uint; const auth : address) : address
-    raises EnforcedPause | ERC721NonexistentToken | ERC721InsufficientApproval
-  is {
-    Pausable.require_not_paused();
-  } with ERC721Enumerable.update(to, tokenId, auth)
+  hook ERC721.before_transfer is Pausable.require_not_paused;
+  hook ERC721.after_transfer is ERC721Enumerable.after_transfer;
 
   function transfer_from(const from : address; const to : address; const tokenId : uint)
     raises ERC721InvalidReceiver | ERC721IncorrectOwner | EnforcedPause | ERC721NonexistentToken
       | ERC721InsufficientApproval
   is {
     assert(to <> Address.zero, ERC721InvalidReceiver(Address.zero));
-    const previous : address := update(to, tokenId, Evm.sender());
+    const previous : address := ERC721.update(to, tokenId, Evm.sender());
     assert(
       previous = from,
       ERC721IncorrectOwner { sender = from; tokenId = tokenId; owner = previous; }
@@ -114,7 +111,7 @@ contract BenchNFTFull is {
   external function burn(const tokenId : uint)
     raises EnforcedPause | ERC721NonexistentToken | ERC721InsufficientApproval
   is {
-    const _ : address := update(Address.zero, tokenId, Evm.sender());
+    const _ : address := ERC721.update(Address.zero, tokenId, Evm.sender());
   }
 
   (* Mints the next id to `to` with its own URI. *)
@@ -126,7 +123,7 @@ contract BenchNFTFull is {
     const tokenId : uint := bench_nft.nextTokenId;
     bench_nft.nextTokenId := tokenId + 1;
     assert(to <> Address.zero, ERC721InvalidReceiver(Address.zero));
-    const previous : address := update(to, tokenId, Address.zero);
+    const previous : address := ERC721.update(to, tokenId, Address.zero);
     assert(previous = Address.zero, ERC721InvalidSender(Address.zero));
     ERC721.check_received(Evm.sender(), Address.zero, to, tokenId, "");
     ERC721URIStorage.set_token_uri(tokenId, uri);

@@ -782,3 +782,161 @@ pub(crate) fn hook_item(checked: &Checked, (hook, facet): &(usize, Option<String
     };
     format!("{} ({place})", label(&of.module.name, &of.name))
 }
+
+/// A hook the contract implements as `is f;`, passing `f` every parameter unchanged, is `f`
+/// itself: the module's calls go straight to `f`, so the hook adds no layer of parameter
+/// copies. Tooling still reports the hook, from the call graph built before this.
+pub(super) fn forward_via_hooks(funcs: &mut [Func]) {
+    let mut to: HashMap<usize, (usize, String)> = HashMap::new();
+    for (h, f) in funcs.iter().enumerate() {
+        if !f
+            .hook_of
+            .as_ref()
+            .is_some_and(|of| matches!(of.form, HookForm::Via(_)))
+        {
+            continue;
+        }
+        let call = match (&f.stmts[..], &f.tail) {
+            ([Stmt::Call { expr, .. }], None) | ([], Some(expr)) => expr,
+            _ => continue,
+        };
+        let Expr::Call {
+            callee: Some(g),
+            args,
+            builtin: None,
+            ..
+        } = call
+        else {
+            continue;
+        };
+        let target = &funcs[*g];
+        let passes = args.len() == f.params.len()
+            && target.params.len() == f.params.len()
+            && target.ret_ty == f.ret_ty
+            && args.iter().zip(&f.params).zip(&target.params).all(|((arg, p), q)| {
+                matches!(arg, Expr::Ident { sym: Some(s), .. } if Some(*s) == p.sym)
+                    && p.ty_id == q.ty_id
+                    && !q.storage
+            });
+        if passes && target.hook_of.is_none() {
+            to.insert(h, (*g, target.name.clone()));
+        }
+    }
+    if to.is_empty() {
+        return;
+    }
+    fn stmts(list: &mut [Stmt], to: &HashMap<usize, (usize, String)>) {
+        for s in list {
+            match s {
+                Stmt::Const { expr: e, .. }
+                | Stmt::Var { expr: e, .. }
+                | Stmt::Call { expr: e, .. }
+                | Stmt::AssignTuple { expr: e, .. } => expr(e, to),
+                Stmt::Assign {
+                    expr: e,
+                    index,
+                    keys,
+                    ..
+                } => {
+                    expr(e, to);
+                    index.iter_mut().chain(keys.iter_mut()).for_each(|k| expr(k, to));
+                }
+                Stmt::If {
+                    cond,
+                    then_body,
+                    else_body,
+                    ..
+                } => {
+                    expr(cond, to);
+                    stmts(then_body, to);
+                    stmts(else_body, to);
+                }
+                Stmt::Assert { cond, .. } => expr(cond, to),
+                Stmt::Emit { fields, .. } => fields.iter_mut().for_each(|(_, e)| expr(e, to)),
+                Stmt::Defer {
+                    expr: e,
+                    value,
+                    gas,
+                    then,
+                    ..
+                } => {
+                    expr(e, to);
+                    value.iter_mut().chain(gas.iter_mut()).for_each(|e| expr(e, to));
+                    if let Some(then) = then {
+                        stmts(&mut then.stmts, to);
+                        if let Some(error) = &mut then.error {
+                            stmts(&mut error.stmts, to);
+                        }
+                    }
+                }
+                Stmt::For {
+                    iter, until, body, ..
+                } => {
+                    match iter {
+                        ForIter::Range { lo, hi } => {
+                            expr(lo, to);
+                            expr(hi, to);
+                        }
+                        ForIter::List(e) => expr(e, to),
+                    }
+                    until.iter_mut().for_each(|e| expr(e, to));
+                    stmts(body, to);
+                }
+                Stmt::Fail { .. } | Stmt::Skip => {}
+            }
+        }
+    }
+    fn expr(e: &mut Expr, to: &HashMap<usize, (usize, String)>) {
+        match e {
+            Expr::Call {
+                callee,
+                name,
+                args,
+                base,
+                ..
+            } => {
+                if let Some((g, target)) = callee.and_then(|c| to.get(&c)) {
+                    *callee = Some(*g);
+                    *name = target.clone();
+                }
+                args.iter_mut().for_each(|a| expr(a, to));
+                if let Some(base) = base {
+                    expr(base, to);
+                }
+            }
+            Expr::Lit { .. } | Expr::Ident { .. } => {}
+            Expr::Field { base, .. } | Expr::Unary { expr: base, .. } => expr(base, to),
+            Expr::Index { base, index, .. } => {
+                expr(base, to);
+                expr(index, to);
+            }
+            Expr::Query { expr: inner, gas, .. } => {
+                expr(inner, to);
+                if let Some(gas) = gas {
+                    expr(gas, to);
+                }
+            }
+            Expr::Case { scrut, arms, .. } => {
+                expr(scrut, to);
+                for arm in arms {
+                    stmts(&mut arm.stmts, to);
+                    expr(&mut arm.expr, to);
+                }
+            }
+            Expr::Binary { left, right, .. } => {
+                expr(left, to);
+                expr(right, to);
+            }
+            Expr::Tuple { elems, .. } | Expr::List { elems, .. } => {
+                elems.iter_mut().for_each(|e| expr(e, to));
+            }
+            Expr::Record { fields, .. } => fields.iter_mut().for_each(|(_, e)| expr(e, to)),
+        }
+    }
+    for f in funcs.iter_mut() {
+        stmts(&mut f.stmts, &to);
+        if let Some(tail) = &mut f.tail {
+            expr(tail, &to);
+        }
+    }
+}

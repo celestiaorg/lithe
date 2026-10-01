@@ -7,12 +7,21 @@
      use ERC721 exposing IERC721, IERC721Metadata;
      supports IERC721, IERC721Metadata;
 
-   A collection that writes its own transfers or `tokenURI` exposes the rest as
-   `IERC721Views`, `IERC721Name`, and `IERC721Approvals`.
+   Every ownership change goes through `update`, like OpenZeppelin's `_update`, which
+   calls the contract's two hooks: `before_transfer` once it has read the owner, before
+   the approval check, where OpenZeppelin's overrides check a pause, and `after_transfer`
+   after the `Transfer` log, where extensions such as `ERC721Enumerable` follow the token.
+   `from` is zero for a mint, `to` for a burn. A collection without extensions skips both:
 
-   Every ownership change goes through `update`, like OpenZeppelin's `_update`. The safe
-   transfers call the receiver in a deferred call, after the transfer's own effects, and
-   pass a receiver's revert reason through unchanged. *)
+     hook ERC721.before_transfer is skip;
+     hook ERC721.after_transfer is skip;
+
+   A hook that raises adds its errors to the transfers, mints, and burns. A collection
+   with such hooks, or with its own `tokenURI`, exposes the rest as `IERC721Views`,
+   `IERC721Name`, and `IERC721Approvals`, and lists the transfers with their errors.
+
+   The safe transfers call the receiver in a deferred call, after the transfer's own
+   effects, and pass a receiver's revert reason through unchanged. *)
 
 import "std/abi";
 import "std/address";
@@ -47,6 +56,9 @@ module ERC721 is {
     indexed operator : address;
     approved : bool;
   }
+
+  hook before_transfer(const to : address; const tokenId : uint; const auth : address);
+  hook after_transfer(const from : address; const to : address; const tokenId : uint);
 
   function init(const name : string; const symbol : string) is {
     erc721.name := name;
@@ -117,6 +129,7 @@ module ERC721 is {
   function update(const to : address; const tokenId : uint; const auth : address) : address
     raises ERC721NonexistentToken | ERC721InsufficientApproval
   is {
+    before_transfer(to, tokenId, auth);
     const from : address := erc721.owners[tokenId];
     if auth <> Address.zero then {
       check_authorized(from, auth, tokenId);
@@ -134,6 +147,7 @@ module ERC721 is {
       to = to;
       tokenId = tokenId;
     };
+    after_transfer(from, to, tokenId);
   } with from
 
   function approve_as(const to : address; const tokenId : uint; const auth : address)

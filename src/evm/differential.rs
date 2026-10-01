@@ -102,7 +102,12 @@ pub(super) fn compare_builds(
             hex(&got.returndata),
             "{ctx}: returndata"
         );
-        assert_eq!(want.detail, got.detail, "{ctx}: effects");
+        // A delegated module's facet calls the contract's hooks back into its own code, which
+        // the inline build runs in place; the facets themselves aren't recorded.
+        let detail = |out: &Outcome| -> Vec<String> {
+            out.detail.iter().filter(|line| !line.starts_with("delegate ")).cloned().collect()
+        };
+        assert_eq!(detail(&want), detail(&got), "{ctx}: effects");
         // When storage is written is not observable; what it ends up holding is.
         let effects = |trace: &[Ev]| {
             let kept: Vec<&Ev> = trace
