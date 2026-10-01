@@ -104,10 +104,9 @@ A function can be called across when its parameters and result are ABI values, t
 
 - a generic function
 - a function with a `storage` parameter, or a parameter or result that is an `option`, a map, or a variant with payloads
-- a function that `defer`s, or calls one that does. A deferred call runs after the whole transition commits, and the facet's run of the function is its own
 - a `view` or stateful function that reads the call's calldata with `Evm.calldata()` or `Evm.selector()`, since its facet sees its own
 
-A call to one is an error that names the function and the reason:
+A function that `defer`s, or reaches a hook that does, can be called across: its calls wait for the contract's transition, as [deferred calls across frames](#deferred-calls-across-frames) describes. A call to one that can't is an error that names the function and the reason:
 
 ```lithe rejects
 import "std/evm";
@@ -174,6 +173,15 @@ contract Shelf is {
 `Book.note` runs in `Book`'s facet, which sees storage as it is when called, but a body that calls it runs a query after writing storage, so it keeps its writes until it ends; query before the first write, or use `Book` without `delegated`
 ```
 
+### Deferred calls across frames
+
+A function called across and a hook called back each run in a frame of their own, in the middle of another frame's transition: the external the transaction called, or one of its continuations. Their deferred calls belong to that transition, its owner, so they can't run when their frame ends. Every one of these frames runs at the contract's address, so they share its transient storage, and that is where the calls wait:
+
+- **Queueing.** A frame that deferred a call saves its memory, which holds the calls and everything their continuations read, as a record in transient storage, and names the record for its caller. The caller notes the record among its own deferred calls, where the call across stands.
+- **Draining.** Once the owner's body has committed, it runs its deferred calls in order. At a record, it makes a `delegatecall` into the code that queued it, through one more hidden entrypoint: that code puts its memory back and runs the calls and their continuations as its own epilogue would have. A hook's record goes back into the contract's code, through the same flag as the hook's way back in. A function's record goes back into its facet, with the immutables and the hook word its calls always carry. A record holds the records of the frames nested in it, and drains them the same way.
+- **The same as inline.** Calls run in the order the transition reached them, a hook reached twice queues twice, each continuation sees its own bindings, and failures, `Error` arms, and `forward` behave as they do inline: what a drained call reverts with, the transition reverts with. The lock is held while they run. Draining clears a record, so nothing is left once the transition ends, and two transitions in one transaction never see each other's calls.
+- **Calldata.** A frame that may queue calls decodes its arguments into memory, since the frame that drains them has other calldata.
+
 ### The facet's own entrypoints
 
 A facet has an entrypoint for each function of its module that contract code can call across, whether or not a given contract calls it. A module's [`private`](/language/modules#delegated-modules) functions are only for its own code, so they have none, which keeps a facet's helpers from costing it bytes. Their names can't be written in source and no ABI lists them, so no external of the module can collide with one. The router never dispatches their selectors: it forwards only the externals the contract exposes, and a call with any other selector reaches the contract's own code, or reverts. Called directly, a facet runs against its own storage, not the storage of any contract that uses it, so there is nothing there to protect. The same argument covers guards: a facet runs its module's externals unguarded, which is what lets contracts with different guards share it.
@@ -219,9 +227,8 @@ A delegated module's [hooks](/language/modules#hooks) are the contract's code, a
 - **Sharing.** None of this depends on the contract: two contracts that implement a module's hooks differently share its facet.
 - **Lock.** The hidden entrypoint doesn't take the `nonreentrant` lock: it runs inside the transition that reached the hook.
 
-A hook called back runs in a frame of its own, so a few things a hook may do inline it can't do there:
+A hook called back runs in a frame of its own. A hook that defers works there as it does inline, as [deferred calls across frames](#deferred-calls-across-frames) describes, but two things a hook may do inline it can't do there:
 
-- `defer`. A transition's deferred calls queue in its frame's memory, so a delegated module whose facet can reach a hook that defers is an error, for the reason a function that defers can't be called across.
 - Read the call's calldata, with `Evm.calldata()` or `Evm.selector()`: the hook would see the facet's call to it.
 - Run during `deploy` of a contract that isn't upgradeable, which has no code until `deploy` ends.
 
@@ -348,7 +355,9 @@ For a contract with facets, `lithe upgrade` prints the deployment plan with the 
 
 A call to an external that runs in a facet costs one extra `delegatecall`, measured at about 2,700 gas: the facet's address is cold, and the calldata and return data are copied once more. A call whose code reads immutables costs a little more, for copying them, and behind a proxy the router reads each word of them from storage. A guarded external also decodes its arguments in the router, for the guard, before the facet decodes them again.
 
-A hook a facet calls back costs a `delegatecall` into the contract's own code, whose address is warm, about 100 gas, plus encoding its arguments and decoding its result, and about 200 gas more for the flag of a stateful hook. A hook the contract skips costs a bit test. Every call to a facet whose modules have hooks carries one more word of calldata.
+A hook a facet calls back costs a `delegatecall` into the contract's own code, whose address is warm, about 100 gas, plus encoding its arguments and decoding its result, and about 200 gas more for the flag of a stateful hook, and 100 to look for calls it queued. A hook the contract skips costs a bit test. Every call to a facet whose modules have hooks carries one more word of calldata.
+
+A frame that queues calls for its owner costs about 4,000 to 5,000 gas more than one that doesn't, measured with one deferred call and its continuation, on top of what the calls cost inline: saving its memory to transient storage and reading it back, about 300 gas for each word that isn't zero and 100 for each that is, and the `delegatecall` that drains it. A transition whose frames nest pays for each frame that queues.
 
 A call across costs a `staticcall` or `delegatecall`: about 2,600 gas the first time a transaction reaches the facet, for the cold account, and 100 after that. It also pays for encoding its arguments, the facet decoding them and encoding its result, and decoding that. A result that is a large value costs more again, since the caller decodes and copies it into its own memory. The function's own work costs what it would inline. A function called across in a loop pays on every run, so a module the contract calls from a hot loop may be cheaper unmarked.
 

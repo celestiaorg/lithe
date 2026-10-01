@@ -188,7 +188,7 @@ contract App is {
 
 `count` runs in `Counter`'s facet. `tick` runs in `App`, and calls `Clock.now` and `Counter.bump` across, on `App`'s storage, with the results, errors, and events they would have inline. `use Clock delegated;` marks a module the contract uses without exposing anything, and `use Counter delegated exposing { ... }` one it exposes externals of.
 
-A function crosses when its parameters and result are ABI values, as an external's are. One that takes a `storage` reference, a map, or an `option`, returns one, is generic, or defers a call can't, and calling it from the contract is an error:
+A function crosses when its parameters and result are ABI values, as an external's are. One that takes a `storage` reference, a map, or an `option`, returns one, or is generic can't, and calling it from the contract is an error. A function that defers crosses too: its calls join the queue of the contract's transition, and run in order with its own after its body commits, as they would inline:
 
 ```lithe rejects
 module Tally is {
@@ -1126,7 +1126,7 @@ contract Counter is {
 `Tally.limit` is a hook of `Tally`: only `Tally`'s own code calls it, and the contract implements it with `hook Tally.limit`
 ```
 
-A delegated module's facet can't call back a hook that defers, since the deferred call belongs to the transition's queue, in another frame; see [hooks in delegated modules](/tooling/size-limit#hooks):
+A delegated module's facet calls a hook back in a frame of its own. A hook that defers works there as it does inline: its calls join the queue of the transition that reached it, and its continuations run then, with the hook's bindings. But the frame's calldata is the facet's call to the hook, not the transaction's, so a hook the facet reaches can't read it; see [hooks in delegated modules](/tooling/size-limit#hooks):
 
 ```lithe rejects
 import "std/evm";
@@ -1149,14 +1149,18 @@ contract Counter is {
     function add();
   }
 
+  storage is record {
+    size : uint;
+  }
+
   hook Tally.counted(const count : uint) is {
-    defer Evm.transfer(Evm.sender(), 1wei);
+    storage.size := Evm.calldata().length;
   }
 }
 ```
 
 ```text
-hook `Tally.counted` is called back from `Tally`'s facet, and it can't be: it defers a call, which runs only after the whole transition commits; move the deferred call out of the hook, or use `Tally` without `delegated`
+hook `Tally.counted` is called back from `Tally`'s facet, and it can't be: it reads the call's calldata, and a hook called back sees the facet's call to it, or use `Tally` without `delegated`
 ```
 
 ## ERC-165

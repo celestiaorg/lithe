@@ -47,6 +47,28 @@ impl<'a> Gen<'a> {
         if let Some(keep) = &shape.keep {
             targets.retain(|(_, target)| keep.contains(&target.sel()));
         }
+        // Entrypoints whose frames queue calls for another frame's transition get a way back
+        // in to drain them.
+        let nested: Vec<usize> = targets
+            .iter()
+            .filter_map(|(_, target)| match *target {
+                Target::Entry { index, .. } if self.queues_nested(index) => Some(index),
+                _ => None,
+            })
+            .collect();
+        self.drains = nested
+            .into_iter()
+            .map(|index| (index, self.fresh()))
+            .collect();
+        if !self.drains.is_empty() {
+            let label = self.fresh();
+            targets.push((
+                label,
+                Target::Drain {
+                    sel: selector(DRAIN_SIG),
+                },
+            ));
+        }
         // Every selector forwarded to one facet jumps to that facet's stub.
         let stubs: Vec<(u32, u32)> = shape
             .parts
@@ -100,6 +122,7 @@ impl<'a> Gen<'a> {
                 Target::Deploy { func, .. } => self.deploy_body(label, func)?,
                 Target::Proxiable { .. } => self.proxiable_body(label)?,
                 Target::Upgrade { .. } => self.upgrade_body(label)?,
+                Target::Drain { .. } => self.drain_entry(label)?,
                 Target::Forward { .. } => {}
                 Target::Guarded { to, first, .. } => self.guard_then_forward(label, to, first)?,
             }
@@ -773,6 +796,8 @@ impl<'a> Gen<'a> {
             },
             // OpenZeppelin's takes value for the migration it runs.
             Target::Upgrade { .. } => true,
+            // `delegatecall` passes the owner's value through.
+            Target::Drain { .. } => true,
             _ => false,
         }
     }
@@ -802,6 +827,8 @@ impl<'a> Gen<'a> {
         };
         let (direct, mut picks) = self.body_mode(&stmts, tail.as_ref());
         self.begin_body(direct);
+        let drain = self.drains.iter().position(|&(i, _)| i == index);
+        self.crossed = drain.is_some();
         self.begin_queue(&stmts, tail.as_ref());
         let route = &self.checked.routes[index];
         // What a direct entry returns: a word held on the stack through the epilogue, or
@@ -889,23 +916,13 @@ impl<'a> Gen<'a> {
             }
         }
         self.store_image();
-        // A transition running its deferred calls holds the lock, so no `nonreentrant`
-        // function can run until they finish. One that is not `nonreentrant` restores
-        // what it found: it may itself run inside another transition's window.
-        let window = !locked
-            && self.any_nonreentrant
-            && self.body.as_ref().is_some_and(|b| !b.ops.is_empty());
-        if window {
-            self.push_u64(NONREENTRANT_SLOT);
-            self.op(TLOAD);
-            self.push_u64(1);
-            self.push_u64(NONREENTRANT_SLOT);
-            self.op(TSTORE);
-        }
-        self.exec_ops()?;
-        if window {
-            self.push_u64(NONREENTRANT_SLOT);
-            self.op(TSTORE);
+        self.crossed = false;
+        match drain {
+            Some(k) => self.queue_for_owner(k)?,
+            None => {
+                self.windowed_ops(locked)?;
+                self.restore_records();
+            }
         }
         self.finish_body();
         if locked {
@@ -937,6 +954,306 @@ impl<'a> Gen<'a> {
             self.jumpdest(bad);
             self.revert_empty();
         }
+        Ok(())
+    }
+
+    /// Runs the body's deferred calls. A transition running them holds the lock, so no
+    /// `nonreentrant` function can run until they finish. One that is not `nonreentrant`
+    /// restores what it found: it may itself run inside another transition's window.
+    fn windowed_ops(&mut self, locked: bool) -> Result<(), Error> {
+        let window = !locked
+            && self.any_nonreentrant
+            && self.body.as_ref().is_some_and(|b| !b.ops.is_empty());
+        if window {
+            self.push_u64(NONREENTRANT_SLOT);
+            self.op(TLOAD);
+            self.push_u64(1);
+            self.push_u64(NONREENTRANT_SLOT);
+            self.op(TSTORE);
+        }
+        self.exec_ops()?;
+        if window {
+            self.push_u64(NONREENTRANT_SLOT);
+            self.op(TSTORE);
+        }
+        Ok(())
+    }
+
+    /// At the end of a transition or a phase, every record made since its first is drained,
+    /// so the count goes back to what it was before it. Records still waiting for an outer
+    /// owner were all made before.
+    pub(super) fn restore_records(&mut self) {
+        let first = self.body.as_ref().map_or(0, |b| b.first_record);
+        if first == 0 {
+            return;
+        }
+        let skip = self.fresh();
+        self.mload(first);
+        self.op(DUP1);
+        self.op(ISZERO);
+        self.push_label(skip);
+        self.op(JUMPI);
+        self.push_u64(1);
+        self.op(DUP1 + 1);
+        self.op(SUB);
+        self.push_u64(RECORDS_SLOT);
+        self.op(NOT);
+        self.op(TSTORE);
+        self.jumpdest(skip);
+        self.op(POP);
+    }
+
+    /// The end of a body that runs in a frame called into mid-transition, the `k`th of this
+    /// code's: its calls wait for the frame that owns the transition. When it queued any, its
+    /// memory becomes a new record in transient storage, which it names for its caller. The
+    /// owner drains the record after its own body commits, through `drain_entry`, which puts
+    /// the memory back and jumps to the calls, compiled here as the epilogue they would be.
+    fn queue_for_owner(&mut self, k: usize) -> Result<(), Error> {
+        let (_, drain) = self.drains[k];
+        let ret = self.fresh();
+        if self.body.as_ref().is_some_and(|b| !b.ops.is_empty()) {
+            let skip = self.fresh();
+            if self.push_ops_pending() {
+                self.op(ISZERO);
+                self.push_label(skip);
+                self.op(JUMPI);
+            }
+            self.push_u64(RECORDS_SLOT);
+            self.op(NOT);
+            self.op(TLOAD);
+            self.push_u64(1);
+            self.op(ADD);
+            self.op(DUP1);
+            self.push_u64(RECORDS_SLOT);
+            self.op(NOT);
+            self.op(TSTORE);
+            // [r]: its caller takes `first << 64 | r`.
+            self.op(DUP1);
+            match self.body.as_ref().map_or(0, |b| b.first_record) {
+                0 => self.op(DUP1),
+                first => {
+                    self.op(DUP1);
+                    self.mload(first);
+                    self.op(DUP1);
+                    self.op(ISZERO);
+                    self.op(SWAP1);
+                    self.op(SWAP1 + 1);
+                    self.op(MUL);
+                    self.op(ADD);
+                }
+            }
+            self.push_u64(64);
+            self.op(SHL);
+            self.op(OR);
+            self.push_u64(QUEUED_SLOT);
+            self.op(NOT);
+            self.op(TSTORE);
+            self.push_u64(32);
+            self.op(SHL);
+            // [base]: the header, then each word of memory.
+            self.push_word(Word::from_u64(k as u64).shl(64));
+            self.mload(self.blob_ptr);
+            self.op(OR);
+            self.push_u64(64);
+            self.op(SHL);
+            self.op(MSIZE);
+            self.op(OR);
+            self.op(DUP1 + 1);
+            self.push_u64(1);
+            self.op(OR);
+            self.op(NOT);
+            self.op(TSTORE);
+            // A record's slots are clear until it is made, so its zero words are skipped.
+            let (top, zero, done) = (self.fresh(), self.fresh(), self.fresh());
+            self.op(MSIZE);
+            self.op(PUSH0);
+            self.jumpdest(top);
+            self.op(DUP1 + 1);
+            self.op(DUP1 + 1);
+            self.op(LT);
+            self.op(ISZERO);
+            self.push_label(done);
+            self.op(JUMPI);
+            self.op(DUP1);
+            self.op(MLOAD);
+            self.op(DUP1);
+            self.op(ISZERO);
+            self.push_label(zero);
+            self.op(JUMPI);
+            self.op(DUP1 + 1);
+            self.op(DUP1 + 4);
+            self.op(OR);
+            self.op(NOT);
+            self.op(TSTORE);
+            self.push_u64(32);
+            self.op(ADD);
+            self.push_label(top);
+            self.op(JUMP);
+            self.jumpdest(zero);
+            self.op(POP);
+            self.push_u64(32);
+            self.op(ADD);
+            self.push_label(top);
+            self.op(JUMP);
+            self.jumpdest(done);
+            self.op(POP);
+            self.op(POP);
+            self.op(POP);
+            self.jumpdest(skip);
+        }
+        self.push_label(ret);
+        self.op(JUMP);
+        let start = self.code.len();
+        self.jumpdest(drain);
+        self.windowed_ops(false)?;
+        self.op(STOP);
+        let read: Vec<usize> = self.code[start..]
+            .iter()
+            .filter_map(|inst| match *inst {
+                Inst::Mem(addr) if addr >> REGION_SHIFT > 0 => {
+                    Some((addr >> REGION_SHIFT) as usize - 1)
+                }
+                _ => None,
+            })
+            .collect();
+        self.drain_spaces.extend(read);
+        self.jumpdest(ret);
+        Ok(())
+    }
+
+    /// Pushes whether the body queued any call, or returns false when it always does: a
+    /// call outside every branch.
+    fn push_ops_pending(&mut self) -> bool {
+        let body = self.body.as_ref().expect("body");
+        if body.queued {
+            let head = body.queue;
+            self.mload(head);
+            return true;
+        }
+        if body.ops.iter().any(|op| op.fired.is_none()) {
+            return false;
+        }
+        let flags: Vec<i32> = body.ops.iter().filter_map(|op| op.fired).collect();
+        for (i, &flag) in flags.iter().enumerate() {
+            self.mload(flag);
+            if i > 0 {
+                self.op(OR);
+            }
+        }
+        true
+    }
+
+    /// The way back in for the owner of a transition to drain a record of calls one of this
+    /// code's frames queued: its memory goes back, then the frame's calls run. The contract's
+    /// answers only while the hook flag is set, as its hooks' ways back in do; a facet's is
+    /// reached only by `delegatecall` from contract code, and a record a direct call finds
+    /// empty reverts.
+    fn drain_entry(&mut self, label: u32) -> Result<(), Error> {
+        self.enter(label, true);
+        if !self.shape.part {
+            let ok = self.fresh();
+            self.op(PUSH0);
+            self.op(NOT);
+            self.op(TLOAD);
+            self.push_label(ok);
+            self.op(JUMPI);
+            self.revert_empty();
+            self.jumpdest(ok);
+            self.op(PUSH0);
+            self.op(PUSH0);
+            self.op(NOT);
+            self.op(TSTORE);
+        }
+        let low = Word::from_u64(u64::MAX);
+        self.push_u64(4);
+        self.op(CALLDATALOAD);
+        self.push_u64(32);
+        self.op(SHL);
+        self.op(DUP1);
+        self.push_u64(1);
+        self.op(OR);
+        self.op(NOT);
+        self.op(TLOAD);
+        // [base, header]: each slot is cleared as it is read back.
+        let filled = self.fresh();
+        self.op(DUP1);
+        self.push_label(filled);
+        self.op(JUMPI);
+        self.revert_empty();
+        self.jumpdest(filled);
+        self.op(PUSH0);
+        self.op(DUP1 + 2);
+        self.push_u64(1);
+        self.op(OR);
+        self.op(NOT);
+        self.op(TSTORE);
+        let (top, zero, done) = (self.fresh(), self.fresh(), self.fresh());
+        self.op(DUP1);
+        self.push_word(low);
+        self.op(AND);
+        self.op(PUSH0);
+        self.jumpdest(top);
+        self.op(DUP1 + 1);
+        self.op(DUP1 + 1);
+        self.op(LT);
+        self.op(ISZERO);
+        self.push_label(done);
+        self.op(JUMPI);
+        self.op(DUP1 + 3);
+        self.op(DUP1 + 1);
+        self.op(OR);
+        self.op(NOT);
+        self.op(DUP1);
+        self.op(TLOAD);
+        self.op(DUP1);
+        self.op(ISZERO);
+        self.push_label(zero);
+        self.op(JUMPI);
+        self.op(DUP1 + 2);
+        self.op(MSTORE);
+        self.op(PUSH0);
+        self.op(SWAP1);
+        self.op(TSTORE);
+        self.push_u64(32);
+        self.op(ADD);
+        self.push_label(top);
+        self.op(JUMP);
+        self.jumpdest(zero);
+        self.op(POP);
+        self.op(POP);
+        self.push_u64(32);
+        self.op(ADD);
+        self.push_label(top);
+        self.op(JUMP);
+        self.jumpdest(done);
+        self.op(POP);
+        self.op(POP);
+        // The heap's top goes back through its own word, so what places allocations knows
+        // nothing of it here.
+        self.op(DUP1);
+        self.push_u64(64);
+        self.op(SHR);
+        self.push_word(low);
+        self.op(AND);
+        self.mstore_off(self.blob_ptr);
+        self.push_u64(128);
+        self.op(SHR);
+        self.op(SWAP1);
+        self.op(POP);
+        let drains: Vec<u32> = self.drains.iter().map(|&(_, label)| label).collect();
+        if let [only] = drains[..] {
+            self.push_label(only);
+            self.op(JUMP);
+            return Ok(());
+        }
+        for (k, &label) in drains.iter().enumerate() {
+            self.op(DUP1);
+            self.push_u64(k as u64);
+            self.op(EQ);
+            self.push_label(label);
+            self.op(JUMPI);
+        }
+        self.revert_empty();
         Ok(())
     }
 

@@ -115,6 +115,19 @@ const TSTORE: u8 = 0x5d;
 const NONREENTRANT_SLOT: u64 = 0;
 /// Transient slot an upgrade sets for its `migrate` call.
 const UPGRADE_SLOT: u64 = 1;
+/// Calls a frame called into mid-transition defers wait for the frame that owns the
+/// transition in transient storage. Each such frame that queued any saves its memory as a
+/// record: record `r`'s nonzero word at memory offset `p` is at slot `~(r << 32 | p)`, and its
+/// header, `k << 128 | heap top << 64 | memory size`, at `~(r << 32 | 1)`, where `k` says which
+/// of the code's entrypoints made it. Slot `~QUEUED_SLOT` holds `first << 64 | r` for the last
+/// record made, until its caller takes it, where `first` is the lowest record made in the
+/// frame or the frames nested in it. `~RECORDS_SLOT` counts the live records. Draining a record
+/// clears its slots, and the transition's owner puts the count back, so nothing is left when
+/// it ends. The hook flag is at `~0`.
+const QUEUED_SLOT: u64 = 1;
+const RECORDS_SLOT: u64 = 2;
+/// The hidden entrypoint a record is drained through, which no source can name.
+const DRAIN_SIG: &str = "#drain(uint256)";
 const JUMP: u8 = 0x56;
 const JUMPI: u8 = 0x57;
 const GAS: u8 = 0x5a;
@@ -906,7 +919,7 @@ pub(crate) fn entrypoints(checked: &Checked) -> Result<Vec<Entrypoint>, Error> {
             Target::Deploy { func, .. } => (funcs[*func].name.clone(), Group::Contract),
             Target::Proxiable { .. } => ("proxiableUUID".to_string(), Group::Upgrade),
             Target::Upgrade { .. } => ("upgradeToAndCall".to_string(), Group::Upgrade),
-            Target::Forward { .. } | Target::Guarded { .. } => continue,
+            Target::Forward { .. } | Target::Guarded { .. } | Target::Drain { .. } => continue,
         };
         out.push(Entrypoint {
             sel: target.sel(),
@@ -966,8 +979,11 @@ pub(crate) fn crossable(checked: &Checked, module: &str) -> Vec<crate::split::Cr
             let raises = f
                 .errors
                 .iter()
-                .map(|&e| checked.errors[e].name.clone())
-                .filter(known)
+                .map(|&e| match e {
+                    crate::check::FORWARDED => "forwarded".to_string(),
+                    e => checked.errors[e].name.clone(),
+                })
+                .filter(|name| name == "forwarded" || known(name))
                 .collect();
             out.push(crate::split::Crossing {
                 at,
@@ -1006,11 +1022,10 @@ pub(crate) fn stray_calls(
     .in_file(&stray.origin))
 }
 
-/// A hook a delegated module's facet calls back runs in a frame of its own, but a
-/// transition's deferred calls queue in its frame's memory, and its calldata is the
-/// transaction's, so a hook that defers or reads calldata can't be called back: the rules a
-/// function follows to be called across. Nor can one be called back while a contract that
-/// isn't upgradeable runs `deploy`, before it has code.
+/// A hook a delegated module's facet calls back runs in a frame of its own, whose calldata is
+/// the facet's call, not the transaction's, so a hook that reads calldata can't be called
+/// back: the rule a function follows to be called across. Nor can one be called back while a
+/// contract that isn't upgradeable runs `deploy`, before it has code.
 pub(crate) fn callback_rules(checked: &Checked, facets: &[String]) -> Result<(), Error> {
     let funcs = &checked.prog.funcs;
     let written: Vec<usize> = (0..funcs.len())
@@ -1064,7 +1079,6 @@ pub(crate) fn callback_rules(checked: &Checked, facets: &[String]) -> Result<(),
             }
         }
     }
-    let defers = |node: Node<'_>| matches!(node, Node::Stmt(Stmt::Defer { .. }));
     let calldata = |node: Node<'_>| {
         matches!(
             node,
@@ -1075,13 +1089,9 @@ pub(crate) fn callback_rules(checked: &Checked, facets: &[String]) -> Result<(),
         )
     };
     for &h in &written {
-        let why = if g.func_any(h, &defers, &mut Vec::new()) {
-            "it defers a call, which runs only after the whole transition commits; move the deferred call out of the hook"
-        } else if g.func_any(h, &calldata, &mut Vec::new()) {
-            "it reads the call's calldata, and a hook called back sees the facet's call to it"
-        } else {
+        if !g.func_any(h, &calldata, &mut Vec::new()) {
             continue;
-        };
+        }
         let calls = |node: Node<'_>| {
             matches!(node, Node::Expr(Expr::Call { callee: Some(j), .. }) if *j == h)
         };
@@ -1104,7 +1114,7 @@ pub(crate) fn callback_rules(checked: &Checked, facets: &[String]) -> Result<(),
                 line,
                 col,
                 format!(
-                    "hook `{}` is called back from `{module}`'s facet, and it can't be: {why}, or use `{module}` without `{}`",
+                    "hook `{}` is called back from `{module}`'s facet, and it can't be: it reads the call's calldata, and a hook called back sees the facet's call to it, or use `{module}` without `{}`",
                     crate::split::display_name(&f.name),
                     crate::parse::DELEGATED
                 ),
@@ -1604,6 +1614,9 @@ struct OpSite {
     /// The words of the inlined parameters and constants the continuation reads, as this
     /// `defer` left them: another inlined call of the same function binds its own.
     locals: Vec<(usize, i32)>,
+    /// Not a call but the calls a frame called across into left queued, from the function
+    /// called across: `to` holds the transient record they wait in.
+    drain: Option<usize>,
 }
 
 /// What one entry body did, gathered while it compiles.
@@ -1641,6 +1654,9 @@ struct Body {
     queue: i32,
     /// The instructions that start the list, dropped when nothing joins it.
     queue_init: (usize, usize),
+    /// The word holding the first record a call across left for this body, counted from the
+    /// records of the frames nested in it, or zero before any.
+    first_record: i32,
 }
 
 /// A storage place past a key or an index, with its slot on the stack: its type, where
@@ -1904,6 +1920,18 @@ struct Gen<'a> {
     /// Immutables a router appends to a facet's calldata, copied from its code: each
     /// block's placeholder, and its words.
     tail_blobs: Vec<(Word, Vec<u32>)>,
+    /// The body being compiled runs in a frame called into while another frame's transition
+    /// runs: a hook's way back in, or a facet's entrypoint for a module function. Its
+    /// deferred calls wait for that frame, which owns the transition, to drain them.
+    crossed: bool,
+    /// The entrypoints that run in such a frame and may queue calls, by route, each with the
+    /// label its queue runs from when the owner drains it.
+    drains: Vec<(usize, u32)>,
+    /// Regions drained code reads, which must stay in the memory a queue saves.
+    drain_spaces: HashSet<usize>,
+    /// What a stateful hook a facet calls back counts as for the walks that look for
+    /// deferred calls: the contract's implementation may defer.
+    queued_call: Stmt,
 }
 
 enum Target {
@@ -1927,6 +1955,10 @@ enum Target {
         sel: [u8; 4],
     },
     Upgrade {
+        sel: [u8; 4],
+    },
+    /// The way back in that drains calls this code's frames queued for another's transition.
+    Drain {
         sel: [u8; 4],
     },
     /// A selector a router hands to one of its facets.
@@ -1959,6 +1991,7 @@ impl Target {
             | Self::Deploy { sel, .. }
             | Self::Proxiable { sel }
             | Self::Upgrade { sel }
+            | Self::Drain { sel }
             | Self::Forward { sel }
             | Self::Guarded { sel, .. } => *sel,
         }

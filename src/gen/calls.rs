@@ -412,6 +412,7 @@ impl<'a> Gen<'a> {
                     record: (0, 0),
                     captures: self.loop_captures(then),
                     locals: Vec::new(),
+                    drain: None,
                 })
             }
             Expr::Call {
@@ -450,6 +451,7 @@ impl<'a> Gen<'a> {
                     record: (0, 0),
                     captures: self.loop_captures(then),
                     locals: Vec::new(),
+                    drain: None,
                 })
             }
             Expr::Call {
@@ -503,6 +505,7 @@ impl<'a> Gen<'a> {
                     record: (0, 0),
                     captures: self.loop_captures(then),
                     locals: Vec::new(),
+                    drain: None,
                 })
             }
             Expr::Call {
@@ -543,6 +546,7 @@ impl<'a> Gen<'a> {
                     record: (0, 0),
                     captures: self.loop_captures(then),
                     locals: Vec::new(),
+                    drain: None,
                 })
             }
             Expr::Call {
@@ -600,6 +604,7 @@ impl<'a> Gen<'a> {
                     record: (0, 0),
                     captures: self.loop_captures(then),
                     locals: Vec::new(),
+                    drain: None,
                 })
             }
             Expr::Call {
@@ -737,6 +742,7 @@ impl<'a> Gen<'a> {
             record: (0, 0),
             captures: Vec::new(),
             locals: Vec::new(),
+            drain: None,
         };
         let skip = self.fresh();
         self.after_call(&op, skip)?;
@@ -1118,7 +1124,7 @@ impl<'a> Gen<'a> {
     /// Records a captured call. At most `MAX_OPS` per transition, unless the body queues
     /// its calls, in which case each `defer` appends a node: `[next, site, words...]`,
     /// holding the site's captured arena words and the loop locals its continuation reads.
-    fn push_op(&mut self, mut site: OpSite) -> Result<(), Error> {
+    pub(super) fn push_op(&mut self, mut site: OpSite) -> Result<(), Error> {
         let queued = !self.fire_loop && self.body.as_ref().is_some_and(|b| b.queued);
         if let Some(then) = &site.then {
             let mut read = Vec::new();
@@ -1245,11 +1251,12 @@ impl<'a> Gen<'a> {
     }
 
     /// Whether a call made now runs as it would at the end of the transition: nothing
-    /// was captured before it, storage is already written in place, and no lock window
-    /// needs to open around it.
+    /// was captured before it, storage is already written in place, no lock window
+    /// needs to open around it, and the frame owns the transition.
     pub(super) fn fires_now(&self) -> bool {
         self.direct
             && !self.shared
+            && !self.crossed
             && !self.any_nonreentrant
             && self.body.as_ref().is_some_and(|b| {
                 b.ops.is_empty() && !b.nested && b.writes.is_empty() && !b.journal_stores
@@ -1579,6 +1586,9 @@ impl<'a> Gen<'a> {
     }
 
     fn replay_call(&mut self, op: &OpSite, skip: u32) -> Result<(), Error> {
+        if let Some(callee) = op.drain {
+            return self.drain_record(op.to, callee);
+        }
         if let Some((marker, len, salt, args)) = op.create {
             match op.data {
                 Some(code) => {
@@ -1660,6 +1670,84 @@ impl<'a> Gen<'a> {
             self.cd_scratch_clear();
         }
         self.after_call(op, skip)
+    }
+
+    /// Runs the calls a frame called across into left in the record whose number is at `at`,
+    /// with `delegatecall` into the code that queued them, which takes them back and runs
+    /// them as its own epilogue would have: the contract's, through the hook flag, or the
+    /// facet's, with the immutables and hook word its calldata always carries. What they
+    /// revert with, the transition reverts with.
+    fn drain_record(&mut self, at: i32, callee: usize) -> Result<(), Error> {
+        let cross = self.shape.cross[&callee].clone();
+        let back = cross.bit.is_some();
+        let tail = if back {
+            Vec::new()
+        } else {
+            self.tail_order(&cross.tail)
+        };
+        let mask = cross.mask.filter(|_| !back);
+        let words = tail.len() + usize::from(mask.is_some());
+        let len = 36 + 32 * words as u64;
+        if back {
+            self.push_u64(1);
+            self.op(PUSH0);
+            self.op(NOT);
+            self.op(TSTORE);
+        }
+        self.push_u64(len);
+        self.alloc_blob()?;
+        self.push_word(Word::from_u64(u64::from(u32::from_be_bytes(selector(DRAIN_SIG)))).shl(224));
+        self.op(DUP1 + 1);
+        self.push_u64(32);
+        self.op(ADD);
+        self.op(MSTORE);
+        self.mload(at);
+        self.op(DUP1 + 1);
+        self.push_u64(36);
+        self.op(ADD);
+        self.op(MSTORE);
+        for (j, &leaf) in tail.iter().enumerate() {
+            self.mload(self.image + leaf as i32 * 32);
+            self.op(DUP1 + 1);
+            self.push_u64(68 + 32 * j as u64);
+            self.op(ADD);
+            self.op(MSTORE);
+        }
+        if let Some(mask) = mask {
+            self.push_hook_word(mask);
+            self.op(DUP1 + 1);
+            self.push_u64(68 + 32 * tail.len() as u64);
+            self.op(ADD);
+            self.op(MSTORE);
+        }
+        self.op(PUSH0);
+        self.op(PUSH0);
+        self.push_u64(len);
+        self.op(DUP1 + 3);
+        self.push_u64(32);
+        self.op(ADD);
+        if back {
+            self.push_hook_word_read();
+            self.push_u64(96);
+            self.op(SHR);
+        } else {
+            self.push_word(cross.address);
+        }
+        self.op(GAS);
+        self.op(DELEGATECALL);
+        let ok = self.fresh();
+        self.push_label(ok);
+        self.op(JUMPI);
+        self.op(RETURNDATASIZE);
+        self.op(PUSH0);
+        self.op(PUSH0);
+        self.op(RETURNDATACOPY);
+        self.op(RETURNDATASIZE);
+        self.op(PUSH0);
+        self.op(REVERT);
+        self.jumpdest(ok);
+        self.op(POP);
+        Ok(())
     }
 
     /// `[success]` after a call: its `Error` phase or a revert on failure, the checks on
@@ -2470,7 +2558,9 @@ impl<'a> Gen<'a> {
             self.tail = self.share.is_some();
             self.compile_top(&then.stmts, &mut picks)?;
             self.store_image();
-            self.exec_ops()
+            self.exec_ops()?;
+            self.restore_records();
+            Ok(())
         })();
         self.finish_body();
         self.body = Some(outer);

@@ -1932,7 +1932,11 @@ impl<'a> Gen<'a> {
         }
         let aliased = self.bind_params(idx, args, inline, &unbuilt)?;
         if !inline {
-            return self.call_func(idx);
+            self.call_func(idx)?;
+            if self.queues_across(idx) {
+                self.note_queued(idx)?;
+            }
+            return Ok(());
         }
         for &(sym, w) in &consts {
             self.const_params.insert(sym, w);
@@ -1955,7 +1959,11 @@ impl<'a> Gen<'a> {
             self.const_strs.remove(&sym);
         }
         self.unalias(idx, aliased);
-        result
+        result?;
+        if self.queues_across(idx) {
+            self.note_queued(idx)?;
+        }
+        Ok(())
     }
 
     /// The word a literal, or a parameter bound to one, always is.
@@ -2786,6 +2794,78 @@ impl<'a> Gen<'a> {
         self.decode_returned_words(ret, vec![(0, at)], None)?;
         self.mload(at);
         Ok(())
+    }
+
+    /// After a call across into a frame that may have queued calls: the record it left them
+    /// in, if any, takes the call's place among this body's deferred calls, so they run in
+    /// order with the body's own. The frame names its record in the slot below the flag.
+    fn note_queued(&mut self, idx: usize) -> Result<(), Error> {
+        let none = self.fresh();
+        self.push_u64(QUEUED_SLOT);
+        self.op(NOT);
+        self.op(TLOAD);
+        self.op(DUP1);
+        self.op(ISZERO);
+        self.push_label(none);
+        self.op(JUMPI);
+        self.branch += 1;
+        self.op(PUSH0);
+        self.push_u64(QUEUED_SLOT);
+        self.op(NOT);
+        self.op(TSTORE);
+        let first = self.first_record();
+        // [v]: the body's first record becomes the frame's lowest, if it has none yet.
+        self.op(DUP1);
+        self.push_u64(64);
+        self.op(SHR);
+        self.mload(first);
+        self.op(DUP1);
+        self.op(ISZERO);
+        self.op(SWAP1);
+        self.op(SWAP1 + 1);
+        self.op(MUL);
+        self.op(ADD);
+        self.mstore_off(first);
+        let at = self.arena_alloc(1);
+        self.op(DUP1);
+        self.push_word(Word::from_u64(u64::MAX));
+        self.op(AND);
+        self.mstore_off(at);
+        let site = OpSite {
+            to: at,
+            value: None,
+            gas: None,
+            data: None,
+            size: 0,
+            dynamic: false,
+            create: None,
+            fired: None,
+            needs_code: false,
+            unread: 0,
+            raw: None,
+            cd_data: false,
+            then: None,
+            record: (0, 0),
+            captures: Vec::new(),
+            locals: Vec::new(),
+            drain: Some(idx),
+        };
+        self.push_op(site)?;
+        self.leave_branch();
+        self.jumpdest(none);
+        self.op(POP);
+        Ok(())
+    }
+
+    /// The body's word for the first record a call across left it.
+    pub(super) fn first_record(&mut self) -> i32 {
+        let have = self.body.as_ref().expect("body").first_record;
+        if have != 0 {
+            return have;
+        }
+        let at = self.arena_alloc(1);
+        self.body_mut().expect("body").first_record = at;
+        at
     }
 
     /// Notes whether the body of `idx` just inlined left blobs only, with its parameters and

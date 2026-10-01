@@ -133,6 +133,22 @@ impl<'a> Gen<'a> {
             cd_tail: 0,
             imm_tail: Vec::new(),
             tail_blobs: Vec::new(),
+            crossed: false,
+            drains: Vec::new(),
+            drain_spaces: HashSet::new(),
+            queued_call: Stmt::Defer {
+                line: 0,
+                col: 0,
+                expr: Expr::Lit {
+                    line: 0,
+                    col: 0,
+                    lit: Lit::Zero,
+                    ty: 0,
+                },
+                value: None,
+                gas: None,
+                then: None,
+            },
         };
         // Immutables are never in memory, so the image has no words for them.
         let leaves =
@@ -408,12 +424,6 @@ impl<'a> Gen<'a> {
         if let Some(what) = self.not_abi(f.ret_ty) {
             return Err(format!("its result is {what}"));
         }
-        let defers = |node: Node<'_>| matches!(node, Node::Stmt(Stmt::Defer { .. }));
-        if self.func_any(idx, &defers, &mut Vec::new()) {
-            return Err(
-                "it defers a call, which runs only after the whole transition commits".to_string(),
-            );
-        }
         let calldata = |node: Node<'_>| {
             matches!(
                 node,
@@ -427,6 +437,38 @@ impl<'a> Gen<'a> {
             return Err("it reads the call's calldata, which its facet sees as its own".to_string());
         }
         Ok(Some(!pure))
+    }
+
+    /// Whether `idx` is a stateful hook this facet calls back, whose implementation the
+    /// contract writes and may defer.
+    pub(super) fn calls_back_stateful(&self, idx: usize) -> bool {
+        self.shape.cross.get(&idx).is_some_and(|c| c.bit.is_some())
+            && self.checked.prog.funcs[idx].kind == ItemKind::Function
+    }
+
+    /// Whether a call across to `idx` may leave calls queued in transient storage: a stateful
+    /// hook called back, or a module function that defers or reaches a hook that does.
+    pub(super) fn queues_across(&self, idx: usize) -> bool {
+        let defers = |node: Node<'_>| matches!(node, Node::Stmt(Stmt::Defer { .. }));
+        self.shape.cross.get(&idx).is_some_and(|c| c.delegate)
+            && self.checked.prog.funcs[idx].kind == ItemKind::Function
+            && (self.calls_back_stateful(idx) || self.func_any(idx, &defers, &mut Vec::new()))
+    }
+
+    /// Whether the entrypoint of route `index` runs in a frame called into mid-transition and
+    /// may queue calls there: a stateful hook's way back in, or a facet's entrypoint for a
+    /// module function.
+    pub(super) fn queues_nested(&self, index: usize) -> bool {
+        let Some(func) = self.checked.routes[index].direct else {
+            return false;
+        };
+        let f = &self.checked.prog.funcs[func];
+        let nested = match &f.hook_of {
+            Some(of) => of.form == HookForm::Entry,
+            None => self.shape.part && crate::split::is_hidden(&f.name),
+        };
+        let defers = |node: Node<'_>| matches!(node, Node::Stmt(Stmt::Defer { .. }));
+        nested && f.kind == ItemKind::Entry && self.func_any(func, &defers, &mut Vec::new())
     }
 
     /// What makes a type something the ABI can't carry as it is, if anything does.
@@ -910,8 +952,10 @@ impl<'a> Gen<'a> {
             Expr::Call {
                 args, base, callee, ..
             } => {
-                callee.is_some_and(|idx| self.func_any(idx, bad, seen))
-                    || base.as_ref().is_some_and(|b| self.expr_any(b, bad, seen))
+                callee.is_some_and(|idx| {
+                    (self.calls_back_stateful(idx) && bad(Node::Stmt(&self.queued_call)))
+                        || self.func_any(idx, bad, seen)
+                }) || base.as_ref().is_some_and(|b| self.expr_any(b, bad, seen))
                     || args.iter().any(|a| self.expr_any(a, bad, seen))
             }
             Expr::Case { scrut, arms, .. } => {
@@ -1065,6 +1109,7 @@ impl<'a> Gen<'a> {
             .enumerate()
             .map(|(ix, (space, escaped))| {
                 !escaped
+                    && !self.drain_spaces.contains(&ix)
                     && (matches!(&space.users, Users::Bodies(_))
                         || self.shared_temps.contains(&ix)
                         || self.function_local(ix)
