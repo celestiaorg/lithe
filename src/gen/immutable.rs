@@ -130,19 +130,32 @@ impl<'a> Gen<'a> {
     }
 
     /// Pushes the word a router appends for a facet whose modules have hooks: where the facet
-    /// calls them back, this contract's code, over the bits of those it implements.
+    /// calls them back, this contract's code, over the bits of those it implements. The
+    /// address is kept as its difference from `ADDRESS`, which every frame of the contract
+    /// shares, so a plain contract's word is a constant.
     pub(super) fn push_hook_word(&mut self, mask: Word) {
-        if self.checked.prog.upgradeable {
-            self.push_self();
-        } else {
-            self.op(ADDRESS);
+        if !self.checked.prog.upgradeable {
+            self.push_word(mask);
+            return;
         }
+        self.push_self();
+        self.op(ADDRESS);
+        self.op(XOR);
         self.push_u64(96);
         self.op(SHL);
         if !mask.is_zero() {
             self.push_word(mask);
             self.op(OR);
         }
+    }
+
+    /// Pushes where a facet calls its hooks back, from the word its router appended.
+    pub(super) fn push_hook_target(&mut self) {
+        self.push_hook_word_read();
+        self.push_u64(96);
+        self.op(SHR);
+        self.op(ADDRESS);
+        self.op(XOR);
     }
 
     /// Returns the runtime, `len` bytes at `code`, with each immutable written into it.

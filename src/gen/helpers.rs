@@ -28,7 +28,7 @@ impl<'a> Gen<'a> {
 
     /// Emits each helper that some call still reaches. Helpers may call helpers.
     pub(super) fn emit_subs(&mut self) -> Result<(), Error> {
-        let mut funcs: Vec<((usize, bool), Vec<Inst>)> = self
+        let mut funcs: Vec<((usize, bool, bool), Vec<Inst>)> = self
             .funcs
             .iter_mut()
             .map(|(key, f)| (*key, std::mem::take(&mut f.code)))

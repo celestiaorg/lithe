@@ -1694,7 +1694,7 @@ struct Gen<'a> {
     /// Inlined calls per function, the most bytes one inlined body took, and how often the
     /// calls in each body run, each loop around one multiplying it by `asm::LOOP_RUNS`.
     inlined: HashMap<usize, (usize, usize, HashMap<usize, f64>)>,
-    funcs: HashMap<(usize, bool), FuncSub>,
+    funcs: HashMap<(usize, bool, bool), FuncSub>,
     /// Code shared by every body: its memory overlaps only what never runs while it does.
     shared: bool,
     /// The function compiled once whose code is being emitted, as a region user.
@@ -1944,6 +1944,9 @@ struct Gen<'a> {
     /// What a stateful hook a facet calls back counts as for the walks that look for
     /// deferred calls: the contract's implementation may defer.
     queued_call: Stmt,
+    /// Hooks the facet calls back that some call passes an argument other than an inert
+    /// one: their bodies test the hook's bit after the arguments, not each call before them.
+    untested_hooks: HashSet<usize>,
 }
 
 enum Target {
