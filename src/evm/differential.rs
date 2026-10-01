@@ -218,6 +218,38 @@ fn static_heap_preserves_behavior() {
     assert!(differ > 20, "only {differ} programs placed an allocation");
 }
 
+/// Copies of outlined functions specialized to the constants their calls pass must behave as
+/// the one copy every call shares. `LITHE_FUZZ_STEPS` sets calls per program.
+#[test]
+fn specialized_copies_preserve_behavior() {
+    let steps = steps_from_env("LITHE_FUZZ_STEPS", 200);
+    let build = |path: &std::path::Path, rel: &str, on: bool| {
+        crate::gen::FORCE_SPECIALIZE.set(Some(on));
+        let code = compile_file(path);
+        crate::gen::FORCE_SPECIALIZE.set(None);
+        deploy(&code.unwrap_or_else(|e| panic!("{rel}: {e}")))
+            .unwrap_or_else(|e| panic!("{rel}: deploy: {e}"))
+    };
+    let mut differ = 0;
+    for (path, rel) in differential_targets() {
+        OPAQUE_CODE.set(true);
+        install_mocks();
+        let (off, on) = (build(&path, &rel, false), build(&path, &rel, true));
+        if off == on {
+            continue;
+        }
+        differ += 1;
+        let checked = crate::check::check(
+            crate::modules::load(&Sources::disk(), &path).expect("load"),
+            Default::default(),
+        )
+        .expect("check");
+        let methods = crate::route::method_ids(&checked).expect("methods");
+        compare_builds(&rel, &methods, &off, &on, steps, true);
+    }
+    assert!(differ > 5, "only {differ} programs specialized a function");
+}
+
 /// Runs every program against creation code built by another compiler revision and demands
 /// identical behavior. `LITHE_REF_DIR` holds `<path>.hex` for each `examples/` and `fuzz/`
 /// program. Without it the test does nothing. `LITHE_REF_STEPS` sets calls per program.

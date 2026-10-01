@@ -266,6 +266,38 @@ fn reads_but_length(e: &Expr, sym: usize, length: bool) -> bool {
     }
 }
 
+/// `e` with each parameter in `bound` replaced by its argument, if it reads no other local.
+fn subst(e: &Expr, bound: &HashMap<usize, &Expr>) -> Option<Expr> {
+    let r = |x: &Expr| subst(x, bound).map(Box::new);
+    Some(match e {
+        Expr::Ident { sym: Some(s), .. } => (*bound.get(s)?).clone(),
+        Expr::Ident { .. } => return None,
+        Expr::Lit { .. } => e.clone(),
+        Expr::Binary { .. } | Expr::Unary { .. } | Expr::Field { .. } => {
+            let mut out = e.clone();
+            match &mut out {
+                Expr::Binary { left, right, .. } => {
+                    *left = r(left)?;
+                    *right = r(right)?;
+                }
+                Expr::Unary { expr, .. } | Expr::Field { base: expr, .. } => *expr = r(expr)?,
+                _ => {}
+            }
+            out
+        }
+        Expr::Call { args, .. } => {
+            let mut out = e.clone();
+            if let Expr::Call { args: to, .. } = &mut out {
+                for (t, a) in to.iter_mut().zip(args) {
+                    *t = subst(a, bound)?;
+                }
+            }
+            out
+        }
+        _ => return None,
+    })
+}
+
 /// `base.length`, typed as `like`.
 pub(super) fn length_of(base: &Expr, like: &Expr) -> Expr {
     Expr::Field {
@@ -342,13 +374,16 @@ impl<'a> Gen<'a> {
             _ => {}
         }
         let kind = self.checked.types[self.peel_nominal(left.ty())].kind;
-        if !matches!(kind, TyKind::Uint | TyKind::Wei | TyKind::Timestamp)
-            || !self.fixed(left)
-            || !self.fixed(right)
-        {
+        let zero = |g: &Self, e: &Expr| g.range_of(e) == (Word::from_u64(0), Word::from_u64(0));
+        // Other words are only ordered against zero, which an address or bool tested
+        // against it is.
+        let ordered = matches!(kind, TyKind::Uint | TyKind::Wei | TyKind::Timestamp)
+            || self.zero_ordered(left.ty())
+                && matches!(op, BinOp::Eq | BinOp::Neq)
+                && (zero(self, left) || zero(self, right));
+        if !ordered || !self.fixed(left) || !self.fixed(right) {
             return;
         }
-        let zero = |g: &Self, e: &Expr| g.range_of(e) == (Word::from_u64(0), Word::from_u64(0));
         let (l, r) = (left.as_ref(), right.as_ref());
         let facts: &[(&Expr, &Expr, bool)] = match (op, holds) {
             (BinOp::Lt, true) | (BinOp::Ge, false) => &[(l, r, true)],
@@ -362,6 +397,76 @@ impl<'a> Gen<'a> {
         };
         for &(lo, hi, strict) in facts {
             self.facts.push(Fact::new(lo.clone(), hi.clone(), strict));
+        }
+    }
+
+    /// A one-word type whose word, read as unsigned, is its value: zero is its least.
+    fn zero_ordered(&self, ty: usize) -> bool {
+        let t = &self.checked.types[self.peel_nominal(ty)];
+        t.words == 1
+            && !self.is_dynamic(self.peel_nominal(ty))
+            && (matches!(t.kind, TyKind::Address | TyKind::Interface | TyKind::Bool)
+                || t.kind == TyKind::Bytes && t.bits > 0)
+    }
+
+    /// What a condition of inert values evaluates to when the bounds on the sides of its
+    /// comparisons decide it.
+    pub(super) fn decided(&self, e: &Expr) -> Option<bool> {
+        if !self.inert(e) {
+            return None;
+        }
+        self.decide(e)
+    }
+
+    fn decide(&self, e: &Expr) -> Option<bool> {
+        let Expr::Binary {
+            op, left, right, ..
+        } = e
+        else {
+            return match e {
+                Expr::Unary {
+                    op: UnOp::Not,
+                    expr,
+                    ..
+                } => self.decide(expr).map(|b| !b),
+                _ => None,
+            };
+        };
+        match op {
+            BinOp::And | BinOp::Or => {
+                let short = *op == BinOp::Or;
+                return match (self.decide(left), self.decide(right)) {
+                    (Some(b), _) | (_, Some(b)) if b == short => Some(short),
+                    (Some(_), Some(_)) => Some(!short),
+                    _ => None,
+                };
+            }
+            _ if !op.is_cmp() => return None,
+            _ => {}
+        }
+        let kind = self.checked.types[self.peel_nominal(left.ty())].kind;
+        let ordered = matches!(kind, TyKind::Uint | TyKind::Wei | TyKind::Timestamp);
+        if !ordered && !(self.zero_ordered(left.ty()) && matches!(op, BinOp::Eq | BinOp::Neq)) {
+            return None;
+        }
+        let ((al, ah), (bl, bh)) = (self.range_of(left), self.range_of(right));
+        let (lt, gt) = (ah.lt(bl), bh.lt(al));
+        let (le, ge) = (!bl.lt(ah), !al.lt(bh));
+        let eq = al == ah && bl == bh && al == bl;
+        let (yes, no) = match op {
+            BinOp::Eq => (eq, lt || gt),
+            BinOp::Neq => (lt || gt, eq),
+            BinOp::Lt => (lt, ge),
+            BinOp::Le => (le, gt),
+            BinOp::Gt => (gt, le),
+            _ => (ge, lt),
+        };
+        if yes {
+            Some(true)
+        } else if no {
+            Some(false)
+        } else {
+            None
         }
     }
 
@@ -605,6 +710,14 @@ impl<'a> Gen<'a> {
                 args,
                 ..
             } => args.len() == 1 && self.fixed(&args[0]),
+            // What the frame was called with.
+            Expr::Call {
+                builtin:
+                    Some(Builtin::Sender | Builtin::SelfAddr | Builtin::TxOrigin | Builtin::Value),
+                callee: None,
+                args,
+                ..
+            } => args.is_empty(),
             Expr::Call {
                 builtin: Some(Builtin::Wrapping(..) | Builtin::UintClz),
                 args,
@@ -808,6 +921,7 @@ impl<'a> Gen<'a> {
         }
         let kind = self.checked.types[self.peel_nominal(e.ty())].kind;
         if !matches!(kind, TyKind::Uint | TyKind::Wei | TyKind::Timestamp)
+            && !self.zero_ordered(e.ty())
             || self.checked.syms[sym].storage
             || !self.fixed(e)
         {
@@ -823,6 +937,50 @@ impl<'a> Gen<'a> {
         };
         for (lo, hi) in [(x.clone(), e.clone()), (e.clone(), x)] {
             self.facts.push(Fact::new(lo, hi, false));
+        }
+    }
+
+    /// The live facts since `mark` that read nothing of inlined `idx` but its parameters bound
+    /// to fixed arguments, said of those arguments: what its guards proved holds once it
+    /// returns.
+    pub(super) fn proved(&self, idx: usize, args: &[Expr], mark: usize) -> Vec<(Expr, Expr, bool)> {
+        let bound: HashMap<usize, &Expr> = self.checked.prog.funcs[idx]
+            .params
+            .iter()
+            .zip(args)
+            .filter_map(|(p, a)| {
+                let sym = p.sym.filter(|&s| !self.checked.syms[s].mutable)?;
+                self.fixed(a).then_some((sym, a))
+            })
+            .collect();
+        if bound.is_empty() {
+            return Vec::new();
+        }
+        self.facts.list[mark.min(self.facts.list.len())..]
+            .iter()
+            .filter(|f| !f.dead)
+            .filter_map(|f| {
+                let (lo, hi) = (subst(&f.lo, &bound)?, subst(&f.hi, &bound)?);
+                (!same_value(&lo, &hi)).then_some((lo, hi, f.strict))
+            })
+            .collect()
+    }
+
+    pub(super) fn assume_proved(&mut self, proved: Vec<(Expr, Expr, bool)>) {
+        for (lo, hi, strict) in proved {
+            self.facts.push(Fact::new(lo, hi, strict));
+        }
+    }
+
+    /// An inlined call's word parameters equal the fixed arguments bound to them.
+    pub(super) fn assume_params(&mut self, idx: usize, args: &[Expr]) {
+        for (param, arg) in self.checked.prog.funcs[idx].params.iter().zip(args) {
+            if let Some(sym) = param.sym.filter(|&s| !self.checked.syms[s].mutable) {
+                if self.checked.types[param.ty_id].words == 1 {
+                    self.forget(sym);
+                    self.assume_bound(sym, arg);
+                }
+            }
         }
     }
 

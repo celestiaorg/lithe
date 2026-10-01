@@ -642,6 +642,7 @@ impl<'a> Gen<'a> {
                 }
                 Ok(())
             }
+            Stmt::Assert { cond, .. } if self.decided(cond) == Some(true) => Ok(()),
             Stmt::Assert { cond, reason, .. } => {
                 if let Some(label) = self.constant_raise(reason) {
                     self.branch_on(cond, label, false)?;
@@ -676,14 +677,15 @@ impl<'a> Gen<'a> {
                 self.tail = tail;
                 self.compile_stmts(then_body)
             }
-            // A condition known from literals: only its branch runs.
+            // A condition known from literals, or from what guards proved: only its branch
+            // runs.
             Stmt::If {
                 cond,
                 then_body,
                 else_body,
                 ..
-            } if self.const_word(cond).is_some() => {
-                let taken = if self.const_word(cond).is_some_and(|w| !w.is_zero()) {
+            } if self.cond_known(cond).is_some() => {
+                let taken = if self.cond_known(cond) == Some(true) {
                     then_body
                 } else {
                     else_body
@@ -1907,9 +1909,26 @@ impl<'a> Gen<'a> {
                 .collect();
             (self.const_params, self.const_strs) = saved;
         }
+        if !consts.is_empty() {
+            self.const_sites.insert(idx);
+        }
+        // A copy specialized to its calls' constants binds them itself.
+        let specialized = !inline && self.plan.specialize.contains(&idx);
+        if specialized {
+            unbuilt = consts.iter().map(|&(sym, _)| sym).collect();
+        }
         let aliased = self.bind_params(idx, args, inline, &unbuilt)?;
         if !inline {
-            self.call_func(idx)?;
+            let known = if specialized {
+                let f = &self.checked.prog.funcs[idx];
+                f.params
+                    .iter()
+                    .map(|p| consts.iter().find(|c| Some(c.0) == p.sym).map(|c| c.1 .0))
+                    .collect()
+            } else {
+                Vec::new()
+            };
+            self.call_func(idx, known)?;
             if self.queues_across(idx) {
                 self.note_queued(idx)?;
             }
@@ -1923,9 +1942,14 @@ impl<'a> Gen<'a> {
         }
         // An inlined body that ends the caller's ends it too, unless a value follows it.
         self.tail = tail && self.checked.prog.funcs[idx].tail.is_none();
+        let mut proved = Vec::new();
         let result = self.inline_body(idx, !always, |g| {
+            let mark = g.facts.len();
+            g.assume_params(idx, args);
             g.hoist_param_spans(idx)?;
-            body(g)
+            let done = body(g);
+            proved = g.proved(idx, args, mark);
+            done
         });
         self.note_ret_blob(idx);
         self.tail = false;
@@ -1937,10 +1961,19 @@ impl<'a> Gen<'a> {
         }
         self.unalias(idx, aliased);
         result?;
+        self.assume_proved(proved);
         if self.queues_across(idx) {
             self.note_queued(idx)?;
         }
         Ok(())
+    }
+
+    /// Whether `cond` holds, when literals or what guards proved decide it.
+    pub(super) fn cond_known(&self, cond: &Expr) -> Option<bool> {
+        match self.const_word(cond) {
+            Some(w) => Some(!w.is_zero()),
+            None => self.decided(cond),
+        }
     }
 
     /// The word a literal, or a parameter bound to one, always is.
@@ -2923,12 +2956,19 @@ impl<'a> Gen<'a> {
         usize::from(f.tail.is_some() && !aggregate && tret.words == 1)
     }
 
-    /// Calls a function compiled once. Its arguments are on the stack, or in its parameters.
-    fn call_func(&mut self, idx: usize) -> Result<(), Error> {
+    /// Calls a function compiled once, or once for each set of constants its calls pass, the
+    /// constant `known` has for each parameter. Its arguments are on the stack, or in its
+    /// parameters.
+    fn call_func(&mut self, idx: usize, known: Vec<Option<[u64; 4]>>) -> Result<(), Error> {
         // A frame whose memory may become a record clears the calldata of its calls across,
         // so such frames get a copy of their own of what makes those calls.
         let crossed = self.crossed && !self.drains.is_empty() && self.reaches_queue(idx);
-        let key = (idx, self.direct, crossed);
+        let known = if known.iter().all(Option::is_none) {
+            Vec::new()
+        } else {
+            known
+        };
+        let key = (idx, self.direct, crossed, known.clone());
         let copy = if crossed {
             self.checked.prog.funcs.len()
         } else {
@@ -2947,6 +2987,15 @@ impl<'a> Gen<'a> {
             let saved_cache = std::mem::take(&mut self.slot_cache);
             let saved_vals = std::mem::take(&mut self.val_cache);
             let saved_facts = std::mem::take(&mut self.facts);
+            // A copy for the constants its calls pass knows them, and binds them itself.
+            let fixed: Vec<(usize, Word)> = self.checked.prog.funcs[idx]
+                .params
+                .iter()
+                .zip(&known)
+                .filter_map(|(param, w)| Some((param.sym?, Word((*w)?))))
+                .collect();
+            let saved_consts = std::mem::take(&mut self.const_params);
+            self.const_params.extend(fixed.iter().copied());
             // A summary body collects the leaves it touches. Writes are never unconditional.
             self.body = Some(Body::default());
             self.branch = 1;
@@ -2958,7 +3007,11 @@ impl<'a> Gen<'a> {
                     self.blobs.remove(&sym);
                 }
             }
-            let params = self.stack_params(idx);
+            let params = self.stack_params(idx).map(|ps| {
+                ps.into_iter()
+                    .filter(|(sym, _)| !fixed.iter().any(|f| f.0 == *sym))
+                    .collect::<Vec<_>>()
+            });
             if let Some(params) = &params {
                 // The return address goes under the arguments.
                 let takes: u32 = params.iter().map(|&(_, n)| n).sum();
@@ -2966,6 +3019,21 @@ impl<'a> Gen<'a> {
                     self.op(SWAP1 + k as u8 - 1);
                 }
                 self.store_params(params);
+            }
+            let later = self.continuation_syms(idx);
+            let f = &self.checked.prog.funcs[idx];
+            let read: Vec<(usize, Word)> = fixed
+                .iter()
+                .copied()
+                .filter(|&(sym, _)| {
+                    self.local[sym] >= 0
+                        && (later.contains(&sym)
+                            || !self.folds_reads(&f.stmts, f.tail.as_ref(), sym))
+                })
+                .collect();
+            for (sym, w) in read {
+                self.push_word(w);
+                self.mstore_off(self.local[sym]);
             }
             self.compiling.push(idx);
             let saved_spans = std::mem::take(&mut self.span_temps);
@@ -2989,9 +3057,10 @@ impl<'a> Gen<'a> {
             self.slot_cache = saved_cache;
             self.val_cache = saved_vals;
             self.facts = saved_facts;
+            self.const_params = saved_consts;
             result?;
             self.funcs.insert(
-                key,
+                key.clone(),
                 FuncSub {
                     label,
                     code,
