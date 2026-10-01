@@ -1191,14 +1191,13 @@ impl<'a> Gen<'a> {
         self.push_word(crate::keccak::erc1967_implementation());
         self.return_word();
         self.jumpdest(context);
-        self.revert_selector(selector("UUPSUnauthorizedCallContext()"), None);
+        self.revert_selector(selector("UUPSUnauthorizedCallContext()"), false);
         Ok(())
     }
 
-    /// Reverts with an error that has no parameters, or one word at `arg`.
-    fn revert_selector(&mut self, sel: [u8; 4], arg: Option<i32>) {
-        let size = if let Some(arg) = arg {
-            self.mload(arg);
+    /// Reverts with an error that has no parameters, or one word on the stack.
+    fn revert_selector(&mut self, sel: [u8; 4], arg: bool) {
+        let size = if arg {
             self.push_u64(32);
             self.op(MSTORE);
             36
@@ -1217,12 +1216,14 @@ impl<'a> Gen<'a> {
     /// runs through a proxy that points at this implementation (`onlyProxy`), the guard
     /// passes, and the new implementation's `proxiableUUID` is the implementation slot.
     fn upgrade_body(&mut self, label: u32) -> Result<(), Error> {
-        let bad = self.fresh();
+        let bad = self.fail_label(None);
         let skip = self.fresh();
         let context = self.fresh();
         let invalid = self.fresh();
         let unsupported = self.fresh();
         let unpaid = self.fresh();
+        let done = self.fresh();
+        let failed = self.fresh();
         let slot = crate::keccak::erc1967_implementation();
         self.enter(label, true);
         self.push_u64(68);
@@ -1235,6 +1236,9 @@ impl<'a> Gen<'a> {
         self.op(OR);
         self.push_label(bad);
         self.op(JUMPI);
+        self.push_u64(36);
+        self.check_bytes_arg()?;
+        self.op(POP);
         self.push_self();
         self.op(DUP1);
         self.op(ADDRESS);
@@ -1253,19 +1257,6 @@ impl<'a> Gen<'a> {
             .as_ref()
             .is_some_and(|guard| self.direct_ok(&guard.stmts, None));
         self.begin_body(direct);
-        self.push_u64(4);
-        self.op(CALLDATALOAD);
-        self.mstore_off(self.scratch_to);
-        self.push_u64(36);
-        self.op(CALLDATALOAD);
-        self.push_u64(4);
-        self.op(ADD);
-        self.op(DUP1);
-        self.op(CALLDATALOAD);
-        self.mstore_off(self.scratch_val);
-        self.push_u64(32);
-        self.op(ADD);
-        self.mstore_off(self.scratch_a);
         let guard = self
             .checked
             .prog
@@ -1284,7 +1275,8 @@ impl<'a> Gen<'a> {
         self.push_mem(self.args_buf);
         self.push_u64(4);
         self.push_mem(self.args_buf + 28);
-        self.mload(self.scratch_to);
+        self.push_u64(4);
+        self.op(CALLDATALOAD);
         self.op(GAS);
         self.op(STATICCALL);
         self.op(ISZERO);
@@ -1303,38 +1295,65 @@ impl<'a> Gen<'a> {
         self.push_u64(1);
         self.push_u64(UPGRADE_SLOT);
         self.op(TSTORE);
-        self.mload(self.scratch_to);
+        self.push_u64(4);
+        self.op(CALLDATALOAD);
+        self.op(DUP1);
         self.push_word(slot);
         self.op(SSTORE);
         // ERC-1967's `Upgraded(address indexed implementation)`, before the migration runs.
-        self.mload(self.scratch_to);
         self.push_word(Word::from_be_bytes(crate::keccak::keccak256(b"Upgraded(address)")));
         self.push_u64(0);
         self.push_u64(0);
         self.op(LOG0 + 2);
-        self.mload(self.scratch_val);
+        // The migration's calldata, copied to the heap's top, as `Address.functionDelegateCall`
+        // copies its `bytes`: [pos, len, top], `pos` its length word in calldata.
+        self.push_u64(36);
+        self.op(CALLDATALOAD);
+        self.push_u64(4);
+        self.op(ADD);
+        self.op(DUP1);
+        self.op(CALLDATALOAD);
+        self.op(DUP1);
         self.op(ISZERO);
         self.push_label(skip);
         self.op(JUMPI);
-        self.push_u64(128);
-        self.mload(self.scratch_val);
-        self.op(GT);
-        self.push_label(bad);
-        self.op(JUMPI);
-        self.mload(self.scratch_val);
-        self.mload(self.scratch_a);
-        self.push_mem(self.args_buf);
+        self.mload(self.blob_ptr);
+        self.push_mem(self.blob_base);
+        self.op(ADD);
+        self.op(DUP1 + 1);
+        self.op(DUP1 + 3);
+        self.push_u64(32);
+        self.op(ADD);
+        self.op(DUP1 + 2);
         self.op(CALLDATACOPY);
-        self.push_u64(0);
-        self.push_u64(0);
-        self.mload(self.scratch_val);
-        self.push_mem(self.args_buf);
-        self.mload(self.scratch_to);
+        self.op(PUSH0);
+        self.op(PUSH0);
+        self.op(DUP1 + 3);
+        self.op(DUP1 + 3);
+        self.push_u64(4);
+        self.op(CALLDATALOAD);
         self.op(GAS);
         self.op(DELEGATECALL);
-        self.op(ISZERO);
-        self.push_label(bad);
+        self.push_label(done);
         self.op(JUMPI);
+        // A failed migration's revert data goes back as it is, or `FailedCall()` when it has
+        // none, as OpenZeppelin's `Address` bubbles it. A call that succeeds needs no
+        // `AddressEmptyCode` check: the implementation answered `proxiableUUID` in this
+        // transaction, and code only goes away at a transaction's end.
+        self.op(RETURNDATASIZE);
+        self.op(ISZERO);
+        self.push_label(failed);
+        self.op(JUMPI);
+        self.op(RETURNDATASIZE);
+        self.op(PUSH0);
+        self.op(PUSH0);
+        self.op(RETURNDATACOPY);
+        self.op(RETURNDATASIZE);
+        self.op(PUSH0);
+        self.op(REVERT);
+        self.jumpdest(failed);
+        self.revert_selector(selector("FailedCall()"), false);
+        self.jumpdest(done);
         self.op(STOP);
         // With no migration to take it, value is refused, as `ERC1967Utils` refuses it.
         self.jumpdest(skip);
@@ -1343,21 +1362,16 @@ impl<'a> Gen<'a> {
         self.op(JUMPI);
         self.op(STOP);
         self.jumpdest(unpaid);
-        self.revert_selector(selector("ERC1967NonPayable()"), None);
-        self.jumpdest(bad);
-        self.revert_empty();
+        self.revert_selector(selector("ERC1967NonPayable()"), false);
         self.jumpdest(context);
-        self.revert_selector(selector("UUPSUnauthorizedCallContext()"), None);
+        self.revert_selector(selector("UUPSUnauthorizedCallContext()"), false);
         self.jumpdest(invalid);
-        self.revert_selector(
-            selector("ERC1967InvalidImplementation(address)"),
-            Some(self.scratch_to),
-        );
+        self.push_u64(4);
+        self.op(CALLDATALOAD);
+        self.revert_selector(selector("ERC1967InvalidImplementation(address)"), true);
         self.jumpdest(unsupported);
-        self.revert_selector(
-            selector("UUPSUnsupportedProxiableUUID(bytes32)"),
-            Some(self.args_buf),
-        );
+        self.mload(self.args_buf);
+        self.revert_selector(selector("UUPSUnsupportedProxiableUUID(bytes32)"), true);
         Ok(())
     }
 }
