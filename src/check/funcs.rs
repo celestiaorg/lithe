@@ -3,7 +3,14 @@ use super::*;
 impl Checker {
     pub(super) fn check_func(&mut self, f: &mut Func) -> Result<(), Error> {
         let origin = f.origin.clone();
-        self.check_body(f).map_err(|err| err.in_file(&origin))
+        let notes = self.warnings.len();
+        let checked = self.check_body(f).map_err(|err| err.in_file(&origin));
+        // An exposed entrypoint runs a copy of its module external's body, which is checked
+        // in the module's own file and warns there.
+        if f.declares.is_some() {
+            self.warnings.truncate(notes);
+        }
+        checked
     }
 
     fn check_body(&mut self, f: &mut Func) -> Result<(), Error> {

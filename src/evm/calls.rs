@@ -571,6 +571,40 @@ storage is record {{ n : uint; }}
     );
 }
 
+/// An exposed external warns once, in its module's file, not again as the contract's entrypoint.
+#[test]
+fn exposed_externals_warn_once_in_their_module() {
+    let lib = "\
+interface Ex is {
+  function swap(amount : uint) : uint;
+}
+module M is {
+  storage m at \"t.m\" is record {
+    n : uint;
+    xs : map(uint, uint);
+  }
+  external function f(const ex : Ex; const k : uint) is {
+    const seen : uint := m.n;
+    defer ex.swap(k) then (r : uint) { m.n := r + seen; };
+  }
+  external function g() is {
+    for i : uint in 0 .. m.n do { m.xs[i] := i; }
+  }
+}
+";
+    let main = "import \"./lib\";\ncontract C is {\n  use M exposing {\n    function f(ex : Ex; k : uint);\n    function g();\n  }\n}\n";
+    let sources = Sources::memory([("contract.lithe", main), ("lib.lithe", lib)]);
+    let notes = crate::warnings(&sources, Path::new(ENTRY)).expect("warnings");
+    for (want, at) in [
+        ("captured value `seen`", "lib.lithe:11:51:"),
+        ("the number of iterations", "lib.lithe:14:5:"),
+    ] {
+        let found: Vec<&String> = notes.iter().filter(|n| n.contains(want)).collect();
+        assert_eq!(found.len(), 1, "{want}: {notes:?}");
+        assert!(found[0].contains(at), "{want}: {notes:?}");
+    }
+}
+
 fn kinds_of(trace: &[Ev], kind: &str) -> usize {
     trace_kinds(trace).iter().filter(|k| **k == kind).count()
 }
