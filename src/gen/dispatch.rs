@@ -919,10 +919,7 @@ impl<'a> Gen<'a> {
         self.crossed = false;
         match drain {
             Some(k) => self.queue_for_owner(k, returns.is_none(), locked)?,
-            None => {
-                self.windowed_ops(locked)?;
-                self.restore_records();
-            }
+            None => self.ops_then_records(|g| g.windowed_ops(locked))?,
         }
         self.finish_body();
         if locked {
@@ -979,6 +976,36 @@ impl<'a> Gen<'a> {
         Ok(())
     }
 
+    /// The body's deferred calls, run by `run`, then its records' count put back. When all
+    /// it defers are records calls across left, which are numbered from its first, there is
+    /// nothing to run unless it has a first. A queue's head already says so.
+    pub(super) fn ops_then_records(
+        &mut self,
+        run: impl FnOnce(&mut Self) -> Result<(), Error>,
+    ) -> Result<(), Error> {
+        let body = self.body.as_ref().expect("body");
+        let first = body.first_record;
+        let only = first != 0 && !body.queued && body.ops.iter().all(|op| op.drain.is_some());
+        if !only {
+            run(self)?;
+            self.restore_records();
+            return Ok(());
+        }
+        let skip = self.fresh();
+        self.mload(first);
+        self.op(ISZERO);
+        self.push_label(skip);
+        self.op(JUMPI);
+        self.branch += 1;
+        run(self)?;
+        self.mload(first);
+        self.records_back();
+        self.op(POP);
+        self.leave_branch();
+        self.jumpdest(skip);
+        Ok(())
+    }
+
     /// At the end of a transition or a phase, every record made since its first is drained,
     /// so the count goes back to what it was before it. Records still waiting for an outer
     /// owner were all made before.
@@ -993,14 +1020,19 @@ impl<'a> Gen<'a> {
         self.op(ISZERO);
         self.push_label(skip);
         self.op(JUMPI);
+        self.records_back();
+        self.jumpdest(skip);
+        self.op(POP);
+    }
+
+    /// `[first]` stays: the count goes back to one below the first record.
+    fn records_back(&mut self) {
         self.push_u64(1);
         self.op(DUP1 + 1);
         self.op(SUB);
         self.push_u64(RECORDS_SLOT);
         self.op(NOT);
         self.op(TSTORE);
-        self.jumpdest(skip);
-        self.op(POP);
     }
 
     /// The end of a body that runs in a frame called into mid-transition, the `k`th of this
@@ -1104,29 +1136,34 @@ impl<'a> Gen<'a> {
         self.mload(self.blob_ptr);
         self.op(PUSH0);
         self.mstore_off(self.blob_ptr);
+        // [base, top, end]: memory past the heap is clear, so a nonzero word at its end
+        // stops the scan up to it: ones are wide, and wide words check for the end first.
+        self.op(DUP1);
+        self.push_mem(self.blob_base);
+        self.op(ADD);
+        self.op(PUSH0);
+        self.op(NOT);
         self.op(DUP1 + 1);
+        self.op(MSTORE);
+        self.op(DUP1 + 2);
         self.push_u64(2);
         self.op(OR);
         self.op(NOT);
-        self.op(DUP1 + 2);
+        self.op(DUP1 + 3);
         self.push_u64(SMALLS);
         self.op(OR);
         self.op(NOT);
         self.op(PUSH0);
-        self.op(DUP1 + 3);
-        self.push_mem(self.blob_base);
-        self.op(ADD);
-        // [base, top, ~word key, ~small key, smalls, end]: memory past the heap is clear,
-        // so from the heap's end down, each nonzero word at offset `p` goes into the
-        // record. A word of 47 bits, or one whose last 209 are clear, is small,
-        // `p << 42 | word` or `1 << 84 | p << 42 | word >> 209`, three to a slot from
-        // `~(base | SMALLS)` down. Any other takes a slot from `~(base | 2)` down, as
-        // `p << 219 | word` when its top four bytes are clear, or
+        self.push_u64(31);
+        self.op(NOT);
+        // [base, top, end, ~word key, ~small key, smalls, p]: from the bottom up, each
+        // nonzero word at offset `p` goes into the record. A word of 47 bits, or one whose
+        // last 209 are clear, is small, `p << 42 | word` or `1 << 84 | p << 42 | word >> 209`,
+        // three to a slot from `~(base | SMALLS)` down. Any other takes a slot from
+        // `~(base | 2)` down, as `p << 219 | word` when its top four bytes are clear, or
         // `1 << 255 | p << 219 | word >> 32` when its last four are, or two: the word, then
         // `p << 219` below it.
-        let (top, small, next, done, wide, shifted, full, word, low, zero) = (
-            self.fresh(),
-            self.fresh(),
+        let (top, small, done, wide, shifted, full, word, low) = (
             self.fresh(),
             self.fresh(),
             self.fresh(),
@@ -1136,16 +1173,17 @@ impl<'a> Gen<'a> {
             self.fresh(),
             self.fresh(),
         );
+        let next = top;
         self.jumpdest(top);
         self.push_u64(32);
-        self.op(SWAP1);
-        self.op(SUB);
+        self.op(ADD);
         self.op(DUP1);
         self.op(MLOAD);
-        self.op(DUP1);
         self.op(ISZERO);
-        self.push_label(zero);
+        self.push_label(top);
         self.op(JUMPI);
+        self.op(DUP1);
+        self.op(MLOAD);
         self.op(DUP1);
         self.push_u64(47);
         self.op(SHR);
@@ -1168,11 +1206,7 @@ impl<'a> Gen<'a> {
         self.op(SHL);
         self.op(OR);
         self.op(SWAP1);
-        self.jumpdest(next);
-        self.op(DUP1);
-        self.push_label(top);
-        self.op(JUMPI);
-        self.push_label(done);
+        self.push_label(next);
         self.op(JUMP);
         self.jumpdest(full);
         self.op(DUP1 + 2);
@@ -1187,11 +1221,12 @@ impl<'a> Gen<'a> {
         self.op(SWAP1 + 1);
         self.push_label(next);
         self.op(JUMP);
-        self.jumpdest(zero);
-        self.op(POP);
-        self.push_label(next);
-        self.op(JUMP);
         self.jumpdest(wide);
+        self.op(DUP1 + 1);
+        self.op(DUP1 + 6);
+        self.op(EQ);
+        self.push_label(done);
+        self.op(JUMPI);
         self.op(DUP1);
         self.push_u64(47);
         self.op(SHL);
@@ -1259,7 +1294,10 @@ impl<'a> Gen<'a> {
         self.op(JUMP);
         self.jumpdest(done);
         self.op(POP);
-        // [base, top, ~word key, ~small key, smalls]: the last smalls' slot.
+        self.op(PUSH0);
+        self.op(SWAP1);
+        self.op(MSTORE);
+        // [base, top, end, ~word key, ~small key, smalls]: the last smalls' slot.
         let stored = self.fresh();
         self.op(DUP1);
         self.op(ISZERO);
@@ -1273,8 +1311,8 @@ impl<'a> Gen<'a> {
         self.op(PUSH0);
         self.jumpdest(stored);
         self.op(POP);
-        // [ret, base, top, ~word key, ~small key]: the heap's top and the slots past each
-        // kind's last.
+        // [ret, base, top, end, ~word key, ~small key]: the heap's top and the slots past
+        // each kind's last.
         let ends = Word::from_u64(u64::from(u32::MAX));
         self.op(NOT);
         self.push_word(ends);
@@ -1288,6 +1326,8 @@ impl<'a> Gen<'a> {
         self.push_u64(32);
         self.op(SHL);
         self.op(OR);
+        self.op(SWAP1);
+        self.op(POP);
         self.op(SWAP1);
         self.op(DUP1);
         self.mstore_off(self.blob_ptr);
@@ -1311,6 +1351,12 @@ impl<'a> Gen<'a> {
         }
         if body.ops.iter().any(|op| op.fired.is_none()) {
             return false;
+        }
+        // Records calls across left are numbered from the body's first.
+        if body.first_record != 0 && body.ops.iter().all(|op| op.drain.is_some()) {
+            let first = body.first_record;
+            self.mload(first);
+            return true;
         }
         let flags: Vec<i32> = body.ops.iter().filter_map(|op| op.fired).collect();
         for (i, &flag) in flags.iter().enumerate() {
@@ -1670,7 +1716,9 @@ impl<'a> Gen<'a> {
         after: u32,
     ) {
         let len = 32 * (leaves.len() + usize::from(mask.is_some())) as u64;
-        if let Some(mask) = mask {
+        // A plain router's hook word is a constant, kept after its immutables' values.
+        let coded = !self.checked.prog.upgradeable && !leaves.is_empty();
+        if let Some(mask) = mask.filter(|_| !coded) {
             self.push_hook_word(mask);
             self.push_u64(32 * leaves.len() as u64);
             self.op(CALLDATASIZE);
@@ -1687,10 +1735,13 @@ impl<'a> Gen<'a> {
                 self.op(MSTORE);
             }
         } else {
-            let bytes = 32 * leaves.len() as u64;
+            let mut data = vec![0; 32 * leaves.len()];
+            if let Some(mask) = mask {
+                data.extend(mask.to_be_bytes());
+            }
+            let bytes = data.len() as u64;
             let marker = self.data_marker();
-            self.data
-                .push((marker, vec![0; bytes as usize], String::new()));
+            self.data.push((marker, data, String::new()));
             let from = self.checked.immutable_from as u32;
             self.tail_blobs
                 .push((marker, leaves.iter().map(|leaf| leaf - from).collect()));

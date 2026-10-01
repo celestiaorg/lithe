@@ -1839,6 +1839,35 @@ impl<'a> Gen<'a> {
         always: bool,
         body: impl FnOnce(&mut Self) -> Result<(), Error>,
     ) -> Result<(), Error> {
+        // A hook the contract leaves unimplemented has its bit clear, and its call does
+        // nothing: with inert arguments, not even bind them.
+        let Some(bit) = self.site_tested(idx, args) else {
+            if self.skippable_hook(idx).is_some() && !self.untested_hooks.contains(&idx) {
+                return Err(error(0, 0, "internal: a hook's call binds its arguments untested"));
+            }
+            return self.compile_call_untested(idx, args, always, body);
+        };
+        let label = self.fresh();
+        self.push_hook_word_read();
+        self.push_word(Word::from_u64(1).shl(bit));
+        self.op(AND);
+        self.op(ISZERO);
+        self.push_label(label);
+        self.op(JUMPI);
+        self.branch += 1;
+        let result = self.compile_call_untested(idx, args, always, body);
+        self.leave_branch();
+        self.jumpdest(label);
+        result
+    }
+
+    fn compile_call_untested(
+        &mut self,
+        idx: usize,
+        args: &[Expr],
+        always: bool,
+        body: impl FnOnce(&mut Self) -> Result<(), Error>,
+    ) -> Result<(), Error> {
         let tail = std::mem::replace(&mut self.tail, false);
         if self.compiling.contains(&idx) {
             let f = &self.checked.prog.funcs[idx];
@@ -2615,7 +2644,8 @@ impl<'a> Gen<'a> {
         let writes = f.kind == ItemKind::Function;
         // A hook the contract leaves unimplemented has its bit clear: the call does nothing,
         // or, for one with a result, which the contract can't reach, reverts.
-        let skip = cross.bit.map(|bit| {
+        let tested = self.skippable_hook(idx).is_some() && !self.untested_hooks.contains(&idx);
+        let skip = cross.bit.filter(|_| !tested).map(|bit| {
             self.push_hook_word_read();
             self.push_word(Word::from_u64(1).shl(bit));
             self.op(AND);
@@ -2682,9 +2712,7 @@ impl<'a> Gen<'a> {
         self.push_u64(32);
         self.op(ADD);
         if cross.bit.is_some() {
-            self.push_hook_word_read();
-            self.push_u64(96);
-            self.op(SHR);
+            self.push_hook_target();
         } else {
             self.push_word(cross.address);
         }
@@ -2703,8 +2731,7 @@ impl<'a> Gen<'a> {
         self.jumpdest(ok);
         // A frame that may leave its memory as a record clears the calldata, which is spent,
         // when the callee left one: then this frame's follows.
-        let spent = (self.crossed || (self.shared && !self.drains.is_empty()))
-            && self.queues_across(idx);
+        let spent = self.crossed && self.queues_across(idx);
         let kept = self.fresh();
         if spent && self.checked.types[ret].kind == TyKind::Unit {
             self.op(RETURNDATASIZE);
@@ -2768,8 +2795,13 @@ impl<'a> Gen<'a> {
     /// order with the body's own. The frame names its record in its return data when the
     /// function has no result, and in the slot below the flag when it has one.
     fn note_queued(&mut self, idx: usize) -> Result<(), Error> {
-        // A hook whose bit is clear wasn't called back, so it queued nothing.
-        let skipped = self.shape.cross.get(&idx).and_then(|c| c.bit).map(|bit| {
+        // A hook whose bit is clear wasn't called back, so it queued nothing. Its calls
+        // test the bit before they run, unless an argument has to run first; one with a
+        // result reverts instead.
+        let untested = self
+            .skippable_hook(idx)
+            .filter(|_| self.untested_hooks.contains(&idx));
+        let skipped = untested.map(|bit| {
             let label = self.fresh();
             self.push_hook_word_read();
             self.push_word(Word::from_u64(1).shl(bit));
@@ -2893,8 +2925,16 @@ impl<'a> Gen<'a> {
 
     /// Calls a function compiled once. Its arguments are on the stack, or in its parameters.
     fn call_func(&mut self, idx: usize) -> Result<(), Error> {
-        let key = (idx, self.direct);
-        let ctx = FUNC_CTX + 2 * idx + usize::from(self.direct);
+        // A frame whose memory may become a record clears the calldata of its calls across,
+        // so such frames get a copy of their own of what makes those calls.
+        let crossed = self.crossed && !self.drains.is_empty() && self.reaches_queue(idx);
+        let key = (idx, self.direct, crossed);
+        let copy = if crossed {
+            self.checked.prog.funcs.len()
+        } else {
+            0
+        };
+        let ctx = FUNC_CTX + 2 * (copy + idx) + usize::from(self.direct);
         let caller = self.region_user().unwrap_or(usize::MAX);
         self.func_calls.insert((caller, ctx));
         if !self.funcs.contains_key(&key) {

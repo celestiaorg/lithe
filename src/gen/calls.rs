@@ -1243,7 +1243,11 @@ impl<'a> Gen<'a> {
         self.op(ADD);
         self.mstore_off(count);
         let check_len = self.code.len() - check_at;
-        site.fired = self.fired_flag();
+        // A record's number is never zero, so its word marks that the call left one.
+        site.fired = match site.drain {
+            Some(_) if self.branch > 0 => Some(site.to),
+            _ => self.fired_flag(),
+        };
         let body = self.body_mut().expect("body");
         body.op_checks.push((check_at, check_len));
         body.ops.push(site);
@@ -1727,9 +1731,7 @@ impl<'a> Gen<'a> {
         self.push_u64(32);
         self.op(ADD);
         if back {
-            self.push_hook_word_read();
-            self.push_u64(96);
-            self.op(SHR);
+            self.push_hook_target();
         } else {
             self.push_word(cross.address);
         }
@@ -2558,9 +2560,7 @@ impl<'a> Gen<'a> {
             self.tail = self.share.is_some();
             self.compile_top(&then.stmts, &mut picks)?;
             self.store_image();
-            self.exec_ops()?;
-            self.restore_records();
-            Ok(())
+            self.ops_then_records(|g| g.exec_ops())
         })();
         self.finish_body();
         self.body = Some(outer);

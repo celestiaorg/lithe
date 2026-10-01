@@ -148,6 +148,7 @@ impl<'a> Gen<'a> {
                 gas: None,
                 then: None,
             },
+            untested_hooks: HashSet::new(),
         };
         // Immutables are never in memory, so the image has no words for them.
         let leaves =
@@ -220,6 +221,7 @@ impl<'a> Gen<'a> {
         g.blob_base = g.region(Region::Blob, 0);
         g.base64_tbl = g.region(Region::Base64, 0);
         g.owners = g.find_owners();
+        g.untested_hooks = g.find_untested_hooks();
         Ok(g)
     }
 
@@ -438,11 +440,55 @@ impl<'a> Gen<'a> {
         Ok(Some(!pure))
     }
 
+    /// Hooks without a result this facet calls back, through a call whose arguments aren't
+    /// all inert. Every other call tests the hook's bit before its arguments.
+    fn find_untested_hooks(&self) -> HashSet<usize> {
+        let found = std::cell::RefCell::new(HashSet::new());
+        let note = |node: Node<'_>| {
+            if let Node::Expr(Expr::Call {
+                callee: Some(idx),
+                args,
+                ..
+            }) = node
+            {
+                if self.skippable_hook(*idx).is_some() && !args.iter().all(|a| self.inert(a)) {
+                    found.borrow_mut().insert(*idx);
+                }
+            }
+            false
+        };
+        let mut seen = Vec::new();
+        for idx in 0..self.checked.prog.funcs.len() {
+            self.func_any(idx, &note, &mut seen);
+        }
+        found.into_inner()
+    }
+
+    /// The bit of a hook without a result this facet calls back, which the contract may
+    /// leave unimplemented.
+    pub(super) fn skippable_hook(&self, idx: usize) -> Option<u32> {
+        let bit = self.shape.cross.get(&idx)?.bit?;
+        let ret = self.checked.prog.funcs[idx].ret_ty;
+        (self.checked.types[ret].kind == TyKind::Unit).then_some(bit)
+    }
+
+    /// The bit a call of `idx` with `args` tests before its arguments, if it does.
+    pub(super) fn site_tested(&self, idx: usize, args: &[Expr]) -> Option<u32> {
+        self.skippable_hook(idx)
+            .filter(|_| !self.untested_hooks.contains(&idx) && args.iter().all(|a| self.inert(a)))
+    }
+
     /// Whether `idx` is a stateful hook this facet calls back, whose implementation the
     /// contract writes and may defer.
     pub(super) fn calls_back_stateful(&self, idx: usize) -> bool {
         self.shape.cross.get(&idx).is_some_and(|c| c.bit.is_some())
             && self.checked.prog.funcs[idx].kind == ItemKind::Function
+    }
+
+    /// Whether `idx` is, or calls, a function called across that may leave calls queued.
+    pub(super) fn reaches_queue(&self, idx: usize) -> bool {
+        let queues = |node: Node<'_>| matches!(node, Node::Expr(Expr::Call { callee: Some(c), .. }) if self.queues_across(*c));
+        self.queues_across(idx) || self.func_any(idx, &queues, &mut Vec::new())
     }
 
     /// Whether a call across to `idx` may leave calls queued in transient storage: a stateful
@@ -1219,8 +1265,12 @@ impl<'a> Gen<'a> {
         let Region::Local(sym) = self.spaces[ix].region else {
             return false;
         };
-        !self.funcs.iter().any(|(&(f, _), sub)| {
-            sub.takes == 0 && self.checked.prog.funcs[f].params.iter().any(|p| p.sym == Some(sym))
+        !self.funcs.iter().any(|(&(f, _, _), sub)| {
+            sub.takes == 0
+                && self.checked.prog.funcs[f]
+                    .params
+                    .iter()
+                    .any(|p| p.sym == Some(sym))
         })
     }
 

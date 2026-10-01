@@ -451,6 +451,87 @@ module Pay is {
 }
 "#;
 
+/// A module that calls one hook with plain values, which its calls test the bit for before
+/// binding them, and another with an argument that can fail, which binds first.
+const TALLY: &str = r#"import "std/evm";
+
+module Tally is {
+  storage tally at "hooks.tally" is record { n : uint; }
+
+  hook plain(const id : uint);
+  hook doubled(const id : uint);
+
+  function bump(const id : uint) is {
+    tally.n := tally.n + 1;
+    plain(id);
+    doubled(id * 2);
+    plain(id);
+  }
+
+  external function run(const id : uint) is bump(id)
+
+  external view function count() : uint is tally.n
+}
+"#;
+
+fn tallied(marks: &str, hooks: &str) -> String {
+    format!(
+        "{TALLY}
+contract Counter is {{
+  storage is record {{ seen : uint; }}
+
+  use Tally{marks} exposing {{
+    function run(id : uint);
+    view function count() : uint;
+  }}
+
+{hooks}
+  external view function seen() : uint is storage.seen
+}}
+"
+    )
+}
+
+/// Skipped and implemented hooks behave the same delegated as inline, whether their calls
+/// test the bit before binding plain arguments or after one that overflows.
+#[test]
+fn skipped_hooks_test_their_bit_where_they_are_called() {
+    let plain = "  hook Tally.plain(const id : uint) is { storage.seen := storage.seen + id; }\n";
+    let doubled =
+        "  hook Tally.doubled(const id : uint) is { storage.seen := storage.seen + id * 10; }\n";
+    let skip_plain = "  hook Tally.plain is skip;\n";
+    let skip_doubled = "  hook Tally.doubled is skip;\n";
+    for hooks in [
+        format!("{skip_plain}{skip_doubled}"),
+        format!("{plain}{skip_doubled}"),
+        format!("{skip_plain}{doubled}"),
+        format!("{plain}{doubled}"),
+    ] {
+        let (mut inline, mut split, _) = both(
+            &tallied("", &hooks),
+            &tallied(" delegated", &hooks),
+            "Counter",
+        );
+        let huge = Word::from_u64(1).shl(255);
+        for data in [
+            word_data("run(uint256)", &words(&[3])),
+            word_data("run(uint256)", &[huge]),
+            word_data("run(uint256)", &words(&[5])),
+            word_data("seen()", &[]),
+            word_data("count()", &[]),
+        ] {
+            let (a, b) = (inline.send(1, &data), split.send(1, &data));
+            assert_eq!(seen(&a), seen(&b), "{hooks}{}", hex(&data));
+        }
+        assert!(
+            inline.send(1, &word_data("run(uint256)", &[huge])).reverted,
+            "{hooks}"
+        );
+        assert_eq!(inline.storage, split.storage, "{hooks}");
+    }
+    DEPLOYED.with(|d| d.borrow_mut().clear());
+}
+
 fn paying(marks: &str, hook: &str) -> String {
     format!(
         "{PAY}
