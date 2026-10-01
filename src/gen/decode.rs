@@ -25,7 +25,6 @@ impl<'a> Gen<'a> {
         let mut head = 0u32;
         self.cd_lists.clear();
         self.cd_bytes.clear();
-        self.cd_lazy.clear();
         self.cd_words.clear();
         self.cd_trees.clear();
         self.cd_checked.clear();
@@ -38,10 +37,13 @@ impl<'a> Gen<'a> {
             // A record, tuple, or fixed list with dynamic values in it, or a list of them:
             // decoded whole, each dynamic value from its offset in the arguments.
             // One at an offset, only ever passed on whole, to `Abi.encode` or another
-            // contract, stays in calldata: its position is kept, and each encoding checks and
-            // copies it. One never used is not read, as Solidity reads no calldata argument it
-            // doesn't use. A record's fields have no one offset, so it is always decoded.
-            // So does a string, bytes, or list passed on whole every time it is used.
+            // contract, stays in calldata: its position is kept, and each encoding copies it.
+            // One never used is not read, as Solidity reads no calldata argument it doesn't
+            // use. A record's fields have no one offset, so it is always decoded. So does a
+            // string, bytes, or list passed on whole every time it is used.
+            // Every argument kept in calldata is checked here, as decoding it would be, so a
+            // malformed one reverts before the body runs wherever the body reads it: inlined,
+            // outlined, or across a facet's call.
             let tree = self.tree_param(p.ty_id);
             if (tree || (self.is_dynamic(p.ty_id) && !self.list_value(p.ty_id)))
                 && self.abi_dyn(p.ty_id)
@@ -49,19 +51,17 @@ impl<'a> Gen<'a> {
                 && !self.crossed
                 && !crate::check::abi_record(&self.checked.types, p.ty_id)
             {
-                if let Some((used, length)) =
-                    self.passed_through(func, sym).filter(|&(u, _)| u || tree)
-                {
+                if let Some(used) = self.passed_through(func, sym).filter(|&u| u || tree) {
                     if used {
-                        self.push_u64(4 + u64::from(head) * 32);
-                        self.cd_load();
-                        self.fits_64()?;
-                        self.push_u64(4);
-                        self.op(ADD);
-                        // A length read needs the bounds decoding would check.
-                        if length {
-                            self.blob_bounds()?;
-                            self.op(POP);
+                        if tree {
+                            if !args {
+                                self.args_src();
+                                args = true;
+                            }
+                            self.cd_check_tree(p.ty_id, head);
+                        } else {
+                            self.push_u64(4 + u64::from(head) * 32);
+                            self.check_bytes_arg()?;
                         }
                         self.mstore_off(self.local[sym]);
                         self.cd_trees.insert(sym);
@@ -82,16 +82,7 @@ impl<'a> Gen<'a> {
                     self.args_src();
                     args = true;
                 }
-                let src = Src::Cd(self.tree_at, self.tree_end);
-                // [pos, offset, pos]: the offset is the checker's first term.
-                self.push_u64(u64::from(head) * 32);
-                self.src_word(src);
-                self.op(DUP1);
-                self.src_origin(src);
-                self.op(DUP1);
-                self.op(SWAP1 + 1);
-                self.op(SWAP1);
-                self.call_sub(Sub::TreeCheck(self.peel_nominal(p.ty_id), SrcKind::Cd, true));
+                self.cd_check_tree(p.ty_id, head);
                 self.mstore_off(self.local[sym]);
                 self.cd_checked.insert(sym);
                 head += 1;
@@ -109,8 +100,8 @@ impl<'a> Gen<'a> {
                 .elem
                 .unwrap_or(0);
             // A list stays in calldata when its elements need no check, or when a loop the
-            // function always runs checks each one as it reads it. Checking them all up
-            // front costs as much as decoding, so such a list is decoded instead.
+            // function always runs reads each one, and they are checked here. Otherwise
+            // checking them all costs about as much as decoding, so such a list is decoded.
             let in_place = self.list_value(p.ty_id)
                 && !self.crossed
                 && !self.tree(p.ty_id)
@@ -122,7 +113,7 @@ impl<'a> Gen<'a> {
                 self.push_u64(u64::from(4 + head * 32));
                 self.call_sub(Sub::ListHead);
                 if self.needs_check(elem) {
-                    self.cd_lazy.insert(sym);
+                    self.check_cd_elements(elem)?;
                 }
                 self.mstore_off(self.local[sym]);
                 self.cd_lists.insert(sym);
@@ -158,6 +149,52 @@ impl<'a> Gen<'a> {
             }
         }
         Ok(())
+    }
+
+    /// `[off]` stays: each element of the calldata list whose length word is at `off`,
+    /// checked as decoding it would be.
+    fn check_cd_elements(&mut self, elem: usize) -> Result<(), Error> {
+        let (top, done) = (self.fresh(), self.fresh());
+        // [off, end, at]: the last element's position, and the one checked next.
+        self.op(DUP1);
+        self.cd_load();
+        self.push_u64(5);
+        self.op(SHL);
+        self.op(DUP1 + 1);
+        self.op(ADD);
+        self.op(DUP1 + 1);
+        self.jumpdest(top);
+        self.push_u64(32);
+        self.op(ADD);
+        self.op(DUP1 + 1);
+        self.op(DUP1 + 1);
+        self.op(GT);
+        self.push_label(done);
+        self.op(JUMPI);
+        self.op(DUP1);
+        self.cd_load();
+        self.check_word(elem, &|_| {})?;
+        self.push_label(top);
+        self.op(JUMP);
+        self.jumpdest(done);
+        self.op(POP);
+        self.op(POP);
+        Ok(())
+    }
+
+    /// Pushes the calldata position of the argument of type `ty` whose offset is head word
+    /// `head`, checked as decoding it would be. `args_src` has set the source.
+    fn cd_check_tree(&mut self, ty: usize, head: u32) {
+        let src = Src::Cd(self.tree_at, self.tree_end);
+        // [pos, offset, pos]: the offset is the checker's first term.
+        self.push_u64(u64::from(head) * 32);
+        self.src_word(src);
+        self.op(DUP1);
+        self.src_origin(src);
+        self.op(DUP1);
+        self.op(SWAP1 + 1);
+        self.op(SWAP1);
+        self.call_sub(Sub::TreeCheck(self.peel_nominal(ty), SrcKind::Cd, true));
     }
 
     /// Whether a parameter is only ever the data `Abi.decode` reads, so it can stay in
@@ -784,16 +821,41 @@ impl<'a> Gen<'a> {
     /// `[pos]` becomes the calldata position of the length word of the `string` or `bytes`
     /// argument whose head is at `pos`, checked as decoding it would be.
     pub(super) fn check_bytes_arg(&mut self) -> Result<(), Error> {
+        if self.init {
+            // Arguments in memory are read only once their bounds hold.
+            self.cd_load();
+            self.fits_64()?;
+            self.push_u64(4);
+            self.op(ADD);
+            self.blob_bounds()?;
+            self.op(POP);
+            return Ok(());
+        }
+        // Solidity's bounds, which all revert alike, in one test: the offset and the length
+        // fit in 64 bits, and the length word and every byte are inside calldata. With both
+        // below 2^64, the end cannot wrap. [off, p, len] becomes [p, fail].
         self.cd_load();
+        self.push_u64(4);
+        self.op(DUP1 + 1);
+        self.op(ADD);
         self.op(DUP1);
+        self.cd_load();
+        self.op(SWAP1 + 1);
+        self.op(DUP1 + 2);
+        self.op(OR);
         self.push_u64(64);
         self.op(SHR);
-        self.revert_if_true()?;
-        self.push_u64(4);
+        self.op(SWAP1 + 1);
+        self.op(DUP1 + 1);
         self.op(ADD);
-        self.blob_bounds()?;
-        self.op(POP);
-        Ok(())
+        self.push_u64(32);
+        self.op(ADD);
+        self.cd_size();
+        self.op(LT);
+        self.op(SWAP1);
+        self.op(SWAP1 + 1);
+        self.op(OR);
+        self.revert_if_true()
     }
 
     /// `[pos]` becomes the `string` or `bytes` argument whose head is at `pos`.

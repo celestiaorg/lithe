@@ -95,13 +95,6 @@ fn facets_preserve_behavior() {
         let prog = crate::modules::load(&Sources::disk(), &path).expect("load");
         let checked = crate::check::check(prog.clone(), Default::default()).expect("check");
         let mut marked = mark_facets(prog, true);
-        // simplify: outlined in its facet, `balance_of_batch` decodes its lists before its
-        // length check, so a call with dirty addresses reverts without the error the inline
-        // build, which reads them in place, raises. Unmarked until decoding in place no
-        // longer depends on outlining.
-        if rel == "examples/stdlib/multi_token.lithe" {
-            marked.facets.retain(|f| f.name != "ERC1155");
-        }
         let split = loop {
             if marked.facets.is_empty() {
                 break None;
@@ -1800,4 +1793,129 @@ fn facet_address_needs_a_delegated_module_and_contract_code() {
     );
     let err = crate::check::check(loaded(&in_module), Default::default()).err().expect("rejected");
     assert!(err.message.contains("is for contract code"), "{}", err.message);
+}
+
+const MALFORMED: &str = r#"import "std/abi";
+import "std/address";
+import "std/evm";
+
+module Relay is {
+  error Zero;
+  error Mismatch;
+
+  event Sent of record {
+    indexed to : address;
+    data : bytes;
+  }
+
+  guard poster;
+
+  function send(const to : address; const data : bytes)
+    raises Zero
+  is {
+    assert(to <> Address.zero, Zero);
+    emit Sent { to = to; data = data; };
+  }
+
+  external function post(const data : bytes) guarded poster is {
+    emit Sent { to = Evm.sender(); data = data; };
+  }
+
+  pure function count(const xs : list(address); const n : uint) : uint
+    raises Mismatch
+  is {
+    assert(xs.length = n, Mismatch);
+    var set : uint := 0;
+    for x : address in xs do {
+      if x <> Address.zero then {
+        set := set + 1;
+      }
+    }
+  } with set
+
+  pure function pack(const to : address; const parts : list(list(uint))) : bytes
+    raises Zero
+  is {
+    assert(to <> Address.zero, Zero);
+  } with Abi.encode(parts)
+}
+
+contract Hub is {
+  error Denied;
+
+  use Relay delegated exposing {
+    function post(data : bytes) raises Denied;
+  }
+
+  guard Relay.poster raises Denied is {
+    assert(Evm.sender() = Address.zero, Denied);
+  }
+
+  external function send(const to : address; const data : bytes)
+    raises Zero
+  is {
+    Relay.send(to, data);
+  }
+
+  external pure function count(const xs : list(address); const n : uint) : uint
+    raises Mismatch
+  is
+    Relay.count(xs, n)
+
+  external pure function pack(const to : address; const parts : list(list(uint))) : bytes
+    raises Zero
+  is
+    Relay.pack(to, parts)
+}
+"#;
+
+/// A malformed argument reverts as decoding it does, before the body's own checks and
+/// before a guard, whether the module function that reads it is inline or across in its
+/// facet: a `bytes` passed through to an event, a list of addresses walked to its end, and a
+/// list of lists passed through to `Abi.encode`, each with an error the body or the guard
+/// raises first if the argument is read late.
+#[test]
+fn malformed_arguments_revert_before_the_body() {
+    let checked = checked_src(MALFORMED);
+    let split = crate::split::build(&checked, "Hub", &crate::Options::default()).expect("split");
+    assert_eq!(facet_names(&split), ["Relay"]);
+    let whole = deploy(&whole_build(&checked).code).expect("whole");
+    let ours = deploy_split(&split);
+    let w = |n: u64| Word::from_u64(n).to_be_bytes().to_vec();
+    let call = |sig: &str, words: &[Vec<u8>]| {
+        let mut data = selector(sig).to_vec();
+        words.iter().for_each(|x| data.extend_from_slice(x));
+        data
+    };
+    // `to` is zero, so each body raises its error if it gets that far.
+    let truncated = call("send(address,bytes)", &[w(0), w(0x40), w(5), vec![0xab; 3]]);
+    let far = call("send(address,bytes)", &[w(0), w(0x40), w(64), w(1)]);
+    let unguarded = call("post(bytes)", &[w(0x20), w(5), vec![0xab; 3]]);
+    let mut dirty = w(0);
+    dirty[0] = 1;
+    let mismatched = call("count(address[],uint256)", &[w(0x40), w(9), w(2), w(1), dirty]);
+    let parts = call(
+        "pack(address,uint256[][])",
+        &[w(0), w(0x40), w(1), w(0x20), w(100), w(7)],
+    );
+    // With a receiver the body accepts: each of Solidity's bounds alone.
+    let big = Word::from_u64(1).shl(64).to_be_bytes().to_vec();
+    let wide_offset = call("send(address,bytes)", &[w(1), big.clone(), w(0), w(0)]);
+    let wide_length = call("send(address,bytes)", &[w(1), w(0x40), big]);
+    let short = call("send(address,bytes)", &[w(1), w(0x40), w(33), vec![0xab; 32]]);
+    let fine = call("send(address,bytes)", &[w(1), w(0x40), w(32), vec![0xab; 32]]);
+    let run = |code: &[u8], data: &[u8]| {
+        exec(code, data, HashMap::new(), Word::from_u64(1), Word::from_u64(0), Word::from_u64(0))
+            .expect("run")
+    };
+    for data in [&truncated, &far, &unguarded, &mismatched, &parts, &wide_offset, &wide_length, &short] {
+        let (want, got) = (run(&whole, data), run(&ours, data));
+        let ctx = hex(data);
+        assert!(want.reverted && want.returndata.is_empty(), "{ctx}: {}", pretty(&want.returndata));
+        assert!(got.reverted && got.returndata.is_empty(), "{ctx}: {}", pretty(&got.returndata));
+    }
+    let (want, got) = (run(&whole, &fine), run(&ours, &fine));
+    assert!(!want.reverted && !got.reverted);
+    assert_eq!(format!("{:?}", want.trace), format!("{:?}", got.trace));
+    DEPLOYED.with(|d| d.borrow_mut().clear());
 }

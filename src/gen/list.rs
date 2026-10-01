@@ -304,7 +304,7 @@ impl<'a> Gen<'a> {
     /// check, which a copy takes straight from calldata.
     pub(super) fn cd_list_copy(&self, e: &Expr) -> bool {
         matches!(e, Expr::Ident { sym: Some(sym), .. }
-            if self.cd_lists.contains(sym) && !self.cd_lazy.contains(sym))
+            if self.cd_lists.contains(sym))
             && self.list_value(e.ty())
             && self.list_k(e.ty()) == 1
             && !self.needs_check(self.list_elem(e.ty()))

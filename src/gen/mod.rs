@@ -1513,7 +1513,7 @@ enum Sub {
     /// decoded, for a value read in place, after those `acc` holds.
     TreeCheck(usize, SrcKind, bool),
     /// `[pos, cur, ret]` becomes `[end]`: the value of this type at calldata position
-    /// `pos`, checked and ABI-encoded at `cur`.
+    /// `pos`, an argument checked on entry, ABI-encoded at `cur`.
     TreeCdEnc(usize),
 }
 
@@ -1778,8 +1778,6 @@ struct Gen<'a> {
     /// Raw query answers read in place: `.length` is the return data's size, and the first
     /// word is at `ret_scratch`.
     rd_first: std::collections::HashSet<usize>,
-    /// Calldata lists whose elements are checked as loops read them.
-    cd_lazy: std::collections::HashSet<usize>,
     /// Static parameters of the entrypoint being compiled, decoded from calldata.
     cd_words: std::collections::HashSet<usize>,
     /// Parameters and constants of inlined calls that continuations read, bound to fresh

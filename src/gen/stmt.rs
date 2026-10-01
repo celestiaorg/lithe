@@ -449,17 +449,6 @@ impl<'a> Gen<'a> {
                 written.extend(declared.iter().copied());
                 self.hoist_lists(body, &written, !stores)?;
                 self.hoist_map_slots(body, &written)?;
-                // A loop that could fire its calls in place, over a calldata list checked as
-                // it is read, checks every element first: no call runs before a bad one
-                // reverts.
-                let lazy = cd_list.filter(|l| self.cd_lazy.contains(l));
-                let checked_ahead = match (lazy, *elem) {
-                    (Some(list), Some(e)) if tail && self.fires_loop(body, until.as_ref()) => {
-                        self.check_list_ahead(list, self.checked.syms[e].ty, walk.is_some())?;
-                        true
-                    }
-                    _ => false,
-                };
                 let outer_spans = self.hoist_spans(body, until.as_ref(), &written)?;
                 let top = self.fresh();
                 let done = self.fresh();
@@ -492,14 +481,12 @@ impl<'a> Gen<'a> {
                 // Elements come from memory, or from calldata checked before the loop.
                 let unchecked = match elem_init {
                     Some(Expr::Index { base, .. }) => match base.as_ref() {
-                        Expr::Ident { sym: Some(s), .. } => match cd_list {
-                            Some(list) => checked_ahead || !self.cd_lazy.contains(&list),
-                            None => {
-                                !(self.checked.syms[*s].storage
+                        Expr::Ident { sym: Some(s), .. } => {
+                            cd_list.is_some()
+                                || !(self.checked.syms[*s].storage
                                     || self.cd_trees.contains(s)
                                     || self.cd_bytes.contains(s))
-                            }
-                        },
+                        }
                         _ => false,
                     },
                     _ => true,
@@ -588,11 +575,6 @@ impl<'a> Gen<'a> {
                                 self.op(ADD);
                             }
                             self.cd_load();
-                            if self.cd_lazy.contains(&list) && !checked_ahead {
-                                self.check_word(self.checked.syms[elem].ty, &|g: &mut Self| {
-                                    g.op(DUP1)
-                                })?;
-                            }
                             self.align_decoded(word);
                             self.mstore_off(self.local[elem]);
                         } else if let Some((sym, _, storage)) = direct_list {
@@ -1567,40 +1549,6 @@ impl<'a> Gen<'a> {
         self.op(NOT);
     }
 
-    /// Checks each element of a calldata list, with the loop's `[end, p]` or `[len, i]` on
-    /// the stack and left there.
-    fn check_list_ahead(&mut self, list: usize, ty: usize, walk: bool) -> Result<(), Error> {
-        let (top, done) = (self.fresh(), self.fresh());
-        self.op(DUP1 + 1);
-        self.op(DUP1 + 1);
-        self.jumpdest(top);
-        self.op(DUP1 + 1);
-        self.op(DUP1 + 1);
-        self.op(LT);
-        self.op(ISZERO);
-        self.push_label(done);
-        self.op(JUMPI);
-        self.op(DUP1);
-        if !walk {
-            self.push_u64(32);
-            self.op(MUL);
-            self.mload(self.local[list]);
-            self.op(ADD);
-            self.push_u64(32);
-            self.op(ADD);
-        }
-        self.cd_load();
-        self.check_word(ty, &|_| {})?;
-        self.push_u64(if walk { 32 } else { 1 });
-        self.op(ADD);
-        self.push_label(top);
-        self.op(JUMP);
-        self.jumpdest(done);
-        self.op(POP);
-        self.op(POP);
-        Ok(())
-    }
-
     fn store_expr(&mut self, sym: usize, expr: &Expr) -> Result<(), Error> {
         // A local of code compiled once is only read there, so promotion may hold it.
         if self.shared && self.local[sym] >= 0 {
@@ -2313,9 +2261,6 @@ impl<'a> Gen<'a> {
                     if self.cd_lists.contains(from) {
                         self.cd_lists.insert(sym);
                     }
-                    if self.cd_lazy.contains(from) {
-                        self.cd_lazy.insert(sym);
-                    }
                 }
                 let plain = !info.mutable
                     && self.checked.types[info.ty].words == n
@@ -2447,7 +2392,6 @@ impl<'a> Gen<'a> {
                 self.cd_trees.remove(&sym);
                 self.cd_bytes.remove(&sym);
                 self.cd_lists.remove(&sym);
-                self.cd_lazy.remove(&sym);
                 self.cd_checked.remove(&sym);
             }
         }

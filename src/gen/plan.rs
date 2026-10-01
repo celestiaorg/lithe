@@ -63,7 +63,6 @@ impl<'a> Gen<'a> {
             cd_lists: std::collections::HashSet::new(),
             cd_bytes: std::collections::HashSet::new(),
             rd_first: std::collections::HashSet::new(),
-            cd_lazy: std::collections::HashSet::new(),
             cd_words: std::collections::HashSet::new(),
             inst_syms: std::collections::HashSet::new(),
             ret_out: None,
