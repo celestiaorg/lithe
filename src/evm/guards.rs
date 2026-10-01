@@ -285,13 +285,13 @@ module Notes is {
   }
 
   guard writer(const id : uint);
-  guard admin;
+  guard admin(const id : uint);
 
   external function write(const id : uint; const note : uint) guarded writer(id) is {
     notes.by_id[id] := note;
   }
 
-  external function clear(const id : uint) guarded admin is {
+  external function clear(const id : uint) guarded admin(id) is {
     notes.by_id[id] := 0;
   }
 }
