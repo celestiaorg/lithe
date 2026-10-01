@@ -669,7 +669,14 @@ fn scan_func(func: &Func, here: bool, acc: &mut Acc) {
             func.kind,
             ItemKind::Entry | ItemKind::View | ItemKind::Migrate | ItemKind::Deploy
         );
-    if here && !external {
+    // `guard M.g is f;` and `hook M.h is f;` or `is skip;` take the module's parameters,
+    // which the contract never wrote.
+    let declared = func.guard_of.as_ref().is_some_and(|g| g.via.is_some())
+        || func
+            .hook_of
+            .as_ref()
+            .is_some_and(|h| matches!(h.form, HookForm::Via(_) | HookForm::Skip));
+    if here && !external && !declared {
         for param in &func.params {
             if let Some(sym) = param.sym {
                 if param.name == "_" {
@@ -1134,6 +1141,8 @@ mod tests {
         assert!(!rules(&used).contains(&"unused-binding"));
         let entry = format!("{STORE}external function go(const k : uint) is {{ skip; }}\n");
         assert!(!rules(&entry).contains(&"unused-binding"));
+        let named = "import \"std/evm\";\nmodule M is {\n  storage m at \"lint.m\" is record { n : uint; }\n  guard g(const id : uint);\n  hook h(const id : uint);\n  external function set(const id : uint) guarded g(id) is {\n    m.n := id;\n    h(id);\n  }\n}\ncontract C is {\n  use M exposing {\n    function set(id : uint);\n  }\n  view function check() is { skip; }\n  guard M.g is check;\n  hook M.h is skip;\n}\n";
+        assert!(!rules(named).contains(&"unused-binding"));
 
         let hidden = format!("{STORE}private function hidden() is {{ skip; }}\nexternal function go() is {{ skip; }}\n");
         assert!(rules(&hidden).contains(&"unused-private"));
