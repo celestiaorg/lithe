@@ -179,6 +179,7 @@ impl<'a> Gen<'a> {
                 Sub::TreeDec(ty, kind, args) => self.sub_tree_dec(ty, kind, args)?,
                 Sub::TreeCheck(ty, kind, args) => self.sub_tree_check(ty, kind, args)?,
                 Sub::TreeCdEnc(ty) => self.sub_tree_cd_enc(ty)?,
+                Sub::SaveRecord => self.sub_save_record(),
             }
         }
     }

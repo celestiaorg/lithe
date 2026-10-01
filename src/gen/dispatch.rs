@@ -918,7 +918,7 @@ impl<'a> Gen<'a> {
         self.store_image();
         self.crossed = false;
         match drain {
-            Some(k) => self.queue_for_owner(k)?,
+            Some(k) => self.queue_for_owner(k, returns.is_none(), locked)?,
             None => {
                 self.windowed_ops(locked)?;
                 self.restore_records();
@@ -1005,10 +1005,12 @@ impl<'a> Gen<'a> {
 
     /// The end of a body that runs in a frame called into mid-transition, the `k`th of this
     /// code's: its calls wait for the frame that owns the transition. When it queued any, its
-    /// memory becomes a new record in transient storage, which it names for its caller. The
-    /// owner drains the record after its own body commits, through `drain_entry`, which puts
-    /// the memory back and jumps to the calls, compiled here as the epilogue they would be.
-    fn queue_for_owner(&mut self, k: usize) -> Result<(), Error> {
+    /// memory becomes a new record in transient storage, which it names for its caller: as its
+    /// return data when it has no result (`unit`), so it returns here, after `locked`'s lock
+    /// is released, or in the queued slot. The owner drains the record after its own body
+    /// commits, through `drain_entry`, which puts the memory back and jumps to the calls,
+    /// compiled here as the epilogue they would be.
+    fn queue_for_owner(&mut self, k: usize, unit: bool, locked: bool) -> Result<(), Error> {
         let (_, drain) = self.drains[k];
         let ret = self.fresh();
         if self.body.as_ref().is_some_and(|b| !b.ops.is_empty()) {
@@ -1027,7 +1029,7 @@ impl<'a> Gen<'a> {
             self.push_u64(RECORDS_SLOT);
             self.op(NOT);
             self.op(TSTORE);
-            // [r]: its caller takes `first << 64 | r`.
+            // [r]: its caller takes `first << 224 | r` with the record's layout.
             self.op(DUP1);
             match self.body.as_ref().map_or(0, |b| b.first_record) {
                 0 => self.op(DUP1),
@@ -1042,63 +1044,35 @@ impl<'a> Gen<'a> {
                     self.op(ADD);
                 }
             }
-            self.push_u64(64);
+            self.push_u64(224);
             self.op(SHL);
             self.op(OR);
-            self.push_u64(QUEUED_SLOT);
-            self.op(NOT);
-            self.op(TSTORE);
+            self.op(SWAP1);
             self.push_u64(32);
             self.op(SHL);
-            // [base]: the header, then each word of memory.
-            self.push_word(Word::from_u64(k as u64).shl(64));
-            self.mload(self.blob_ptr);
+            // [first << 224 | r, base]: the handle names the record, the code's entrypoint that
+            // made it, and its layout.
+            self.call_sub(Sub::SaveRecord);
+            if k > 0 {
+                self.push_word(Word::from_u64(k as u64).shl(144));
+                self.op(OR);
+            }
             self.op(OR);
-            self.push_u64(64);
-            self.op(SHL);
-            self.op(MSIZE);
-            self.op(OR);
-            self.op(DUP1 + 1);
-            self.push_u64(1);
-            self.op(OR);
-            self.op(NOT);
-            self.op(TSTORE);
-            // A record's slots are clear until it is made, so its zero words are skipped.
-            let (top, zero, done) = (self.fresh(), self.fresh(), self.fresh());
-            self.op(MSIZE);
-            self.op(PUSH0);
-            self.jumpdest(top);
-            self.op(DUP1 + 1);
-            self.op(DUP1 + 1);
-            self.op(LT);
-            self.op(ISZERO);
-            self.push_label(done);
-            self.op(JUMPI);
-            self.op(DUP1);
-            self.op(MLOAD);
-            self.op(DUP1);
-            self.op(ISZERO);
-            self.push_label(zero);
-            self.op(JUMPI);
-            self.op(DUP1 + 1);
-            self.op(DUP1 + 4);
-            self.op(OR);
-            self.op(NOT);
-            self.op(TSTORE);
-            self.push_u64(32);
-            self.op(ADD);
-            self.push_label(top);
-            self.op(JUMP);
-            self.jumpdest(zero);
-            self.op(POP);
-            self.push_u64(32);
-            self.op(ADD);
-            self.push_label(top);
-            self.op(JUMP);
-            self.jumpdest(done);
-            self.op(POP);
-            self.op(POP);
-            self.op(POP);
+            if !unit {
+                self.push_u64(QUEUED_SLOT);
+                self.op(NOT);
+                self.op(TSTORE);
+            }
+            if unit {
+                if locked {
+                    self.release_nonreentrant();
+                }
+                self.op(PUSH0);
+                self.op(MSTORE);
+                self.push_u64(32);
+                self.op(PUSH0);
+                self.op(RETURN);
+            }
             self.jumpdest(skip);
         }
         self.push_label(ret);
@@ -1119,6 +1093,211 @@ impl<'a> Gen<'a> {
         self.drain_spaces.extend(read);
         self.jumpdest(ret);
         Ok(())
+    }
+
+    /// `[base, ret]` becomes `[top << 96 | small end << 64 | word end << 32]`: the frame's
+    /// memory saved as the record whose slots start at `base`, with where its slots end, and
+    /// the heap's top, put back.
+    pub(super) fn sub_save_record(&mut self) {
+        self.op(SWAP1);
+        // [base]: the heap's top goes in the handle, so its word stays out of the record.
+        self.mload(self.blob_ptr);
+        self.op(PUSH0);
+        self.mstore_off(self.blob_ptr);
+        self.op(DUP1 + 1);
+        self.push_u64(2);
+        self.op(OR);
+        self.op(NOT);
+        self.op(DUP1 + 2);
+        self.push_u64(SMALLS);
+        self.op(OR);
+        self.op(NOT);
+        self.op(PUSH0);
+        self.op(DUP1 + 3);
+        self.push_mem(self.blob_base);
+        self.op(ADD);
+        // [base, top, ~word key, ~small key, smalls, end]: memory past the heap is clear,
+        // so from the heap's end down, each nonzero word at offset `p` goes into the
+        // record. A word of 47 bits, or one whose last 209 are clear, is small,
+        // `p << 42 | word` or `1 << 84 | p << 42 | word >> 209`, three to a slot from
+        // `~(base | SMALLS)` down. Any other takes a slot from `~(base | 2)` down, as
+        // `p << 219 | word` when its top four bytes are clear, or
+        // `1 << 255 | p << 219 | word >> 32` when its last four are, or two: the word, then
+        // `p << 219` below it.
+        let (top, small, next, done, wide, shifted, full, word, low, zero) = (
+            self.fresh(),
+            self.fresh(),
+            self.fresh(),
+            self.fresh(),
+            self.fresh(),
+            self.fresh(),
+            self.fresh(),
+            self.fresh(),
+            self.fresh(),
+            self.fresh(),
+        );
+        self.jumpdest(top);
+        self.push_u64(32);
+        self.op(SWAP1);
+        self.op(SUB);
+        self.op(DUP1);
+        self.op(MLOAD);
+        self.op(DUP1);
+        self.op(ISZERO);
+        self.push_label(zero);
+        self.op(JUMPI);
+        self.op(DUP1);
+        self.push_u64(47);
+        self.op(SHR);
+        self.push_label(wide);
+        self.op(JUMPI);
+        // [~small key, smalls, p, word]: a full slot of smalls is stored first.
+        self.jumpdest(small);
+        self.op(DUP1 + 1);
+        self.push_u64(42);
+        self.op(SHL);
+        self.op(OR);
+        self.op(DUP1 + 2);
+        self.push_u64(170);
+        self.op(SHR);
+        self.push_label(full);
+        self.op(JUMPI);
+        self.op(SWAP1);
+        self.op(SWAP1 + 1);
+        self.push_u64(85);
+        self.op(SHL);
+        self.op(OR);
+        self.op(SWAP1);
+        self.jumpdest(next);
+        self.op(DUP1);
+        self.push_label(top);
+        self.op(JUMPI);
+        self.push_label(done);
+        self.op(JUMP);
+        self.jumpdest(full);
+        self.op(DUP1 + 2);
+        self.op(DUP1 + 4);
+        self.op(TSTORE);
+        self.op(SWAP1 + 1);
+        self.op(POP);
+        self.op(SWAP1 + 1);
+        self.op(PUSH0);
+        self.op(NOT);
+        self.op(ADD);
+        self.op(SWAP1 + 1);
+        self.push_label(next);
+        self.op(JUMP);
+        self.jumpdest(zero);
+        self.op(POP);
+        self.push_label(next);
+        self.op(JUMP);
+        self.jumpdest(wide);
+        self.op(DUP1);
+        self.push_u64(47);
+        self.op(SHL);
+        self.op(ISZERO);
+        self.push_label(shifted);
+        self.op(JUMPI);
+        self.op(DUP1);
+        self.push_u64(224);
+        self.op(SHR);
+        self.op(ISZERO);
+        self.push_label(word);
+        self.op(JUMPI);
+        self.op(DUP1);
+        self.push_u64(224);
+        self.op(SHL);
+        self.op(ISZERO);
+        self.push_label(low);
+        self.op(JUMPI);
+        self.op(DUP1 + 4);
+        self.op(TSTORE);
+        self.op(DUP1);
+        self.push_u64(219);
+        self.op(SHL);
+        self.op(DUP1 + 4);
+        self.op(PUSH0);
+        self.op(NOT);
+        self.op(ADD);
+        self.op(TSTORE);
+        self.op(SWAP1 + 2);
+        self.push_u64(2);
+        self.op(SWAP1);
+        self.op(SUB);
+        self.op(SWAP1 + 2);
+        self.push_label(next);
+        self.op(JUMP);
+        self.jumpdest(shifted);
+        self.push_u64(209);
+        self.op(SHR);
+        self.push_u64(1);
+        self.push_u64(84);
+        self.op(SHL);
+        self.op(OR);
+        self.push_label(small);
+        self.op(JUMP);
+        self.jumpdest(low);
+        self.push_u64(32);
+        self.op(SHR);
+        self.push_u64(1);
+        self.push_u64(255);
+        self.op(SHL);
+        self.op(OR);
+        self.jumpdest(word);
+        self.op(DUP1 + 1);
+        self.push_u64(219);
+        self.op(SHL);
+        self.op(OR);
+        self.op(DUP1 + 4);
+        self.op(TSTORE);
+        self.op(SWAP1 + 2);
+        self.op(PUSH0);
+        self.op(NOT);
+        self.op(ADD);
+        self.op(SWAP1 + 2);
+        self.push_label(next);
+        self.op(JUMP);
+        self.jumpdest(done);
+        self.op(POP);
+        // [base, top, ~word key, ~small key, smalls]: the last smalls' slot.
+        let stored = self.fresh();
+        self.op(DUP1);
+        self.op(ISZERO);
+        self.push_label(stored);
+        self.op(JUMPI);
+        self.op(DUP1 + 1);
+        self.op(TSTORE);
+        self.op(PUSH0);
+        self.op(NOT);
+        self.op(ADD);
+        self.op(PUSH0);
+        self.jumpdest(stored);
+        self.op(POP);
+        // [ret, base, top, ~word key, ~small key]: the heap's top and the slots past each
+        // kind's last.
+        let ends = Word::from_u64(u64::from(u32::MAX));
+        self.op(NOT);
+        self.push_word(ends);
+        self.op(AND);
+        self.push_u64(64);
+        self.op(SHL);
+        self.op(SWAP1);
+        self.op(NOT);
+        self.push_word(ends);
+        self.op(AND);
+        self.push_u64(32);
+        self.op(SHL);
+        self.op(OR);
+        self.op(SWAP1);
+        self.op(DUP1);
+        self.mstore_off(self.blob_ptr);
+        self.push_u64(96);
+        self.op(SHL);
+        self.op(OR);
+        self.op(SWAP1);
+        self.op(POP);
+        self.op(SWAP1);
+        self.op(JUMP);
     }
 
     /// Pushes whether the body queued any call, or returns false when it always does: a
@@ -1164,82 +1343,167 @@ impl<'a> Gen<'a> {
             self.op(NOT);
             self.op(TSTORE);
         }
-        let low = Word::from_u64(u64::MAX);
+        let ends = Word::from_u64(u64::from(u32::MAX));
+        // [handle, ~(base | 1)]: each slot is cleared as it is read back. Slot `~(base | j)`
+        // is `~(base | 1) + 1 - j`.
         self.push_u64(4);
         self.op(CALLDATALOAD);
+        self.op(DUP1);
+        self.push_word(ends);
+        self.op(AND);
         self.push_u64(32);
         self.op(SHL);
-        self.op(DUP1);
         self.push_u64(1);
         self.op(OR);
         self.op(NOT);
-        self.op(TLOAD);
-        // [base, header]: each slot is cleared as it is read back.
-        let filled = self.fresh();
-        self.op(DUP1);
-        self.push_label(filled);
-        self.op(JUMPI);
-        self.revert_empty();
-        self.jumpdest(filled);
-        self.op(PUSH0);
-        self.op(DUP1 + 2);
-        self.push_u64(1);
-        self.op(OR);
-        self.op(NOT);
-        self.op(TSTORE);
-        let (top, zero, done) = (self.fresh(), self.fresh(), self.fresh());
-        self.op(DUP1);
-        self.push_word(low);
+        self.op(DUP1 + 1);
+        self.push_u64(32);
+        self.op(SHR);
+        self.push_word(ends);
         self.op(AND);
-        self.op(PUSH0);
+        self.push_u64(2);
+        self.op(SWAP1);
+        self.op(SUB);
+        self.op(DUP1 + 1);
+        self.op(SUB);
+        // [handle, ~(base | 1), ~key]: up from the last word's slot to `~(base | 2)`.
+        let (top, put, big, next, words) = (
+            self.fresh(),
+            self.fresh(),
+            self.fresh(),
+            self.fresh(),
+            self.fresh(),
+        );
+        self.op(DUP1 + 1);
+        self.op(DUP1 + 1);
+        self.op(EQ);
+        self.push_label(words);
+        self.op(JUMPI);
         self.jumpdest(top);
-        self.op(DUP1 + 1);
-        self.op(DUP1 + 1);
-        self.op(LT);
+        self.take_slot();
+        // [.., ~key, x]
+        self.op(DUP1);
+        self.push_u64(219);
+        self.op(SHR);
+        self.push_word(Word::from_u64(0xf_ffff_ffe0));
+        self.op(AND);
+        self.op(SWAP1);
+        self.op(DUP1);
+        self.push_u64(32);
+        self.op(SHL);
+        self.op(SWAP1);
+        self.push_u64(255);
+        self.op(SHR);
+        self.push_label(put);
+        self.op(JUMPI);
+        self.push_u64(32);
+        self.op(SHR);
+        self.op(DUP1);
         self.op(ISZERO);
+        self.push_label(big);
+        self.op(JUMPI);
+        // [.., ~key, p, word]
+        self.jumpdest(put);
+        self.op(SWAP1);
+        self.op(MSTORE);
+        self.jumpdest(next);
+        self.push_u64(1);
+        self.op(ADD);
+        self.op(DUP1 + 1);
+        self.op(DUP1 + 1);
+        self.op(SUB);
+        self.push_label(top);
+        self.op(JUMPI);
+        self.push_label(words);
+        self.op(JUMP);
+        self.jumpdest(big);
+        self.op(POP);
+        self.op(SWAP1);
+        self.push_u64(1);
+        self.op(ADD);
+        self.take_slot();
+        self.op(SWAP1);
+        self.op(SWAP1 + 1);
+        self.op(MSTORE);
+        self.push_label(next);
+        self.op(JUMP);
+        self.jumpdest(words);
+        self.op(POP);
+        // [handle, ~(base | 1)]: then up from the last smalls' slot to `~(base | SMALLS)`.
+        let (slots, small, done) = (self.fresh(), self.fresh(), self.fresh());
+        self.op(DUP1 + 1);
+        self.push_u64(64);
+        self.op(SHR);
+        self.push_word(ends);
+        self.op(AND);
+        self.push_u64(2);
+        self.op(SWAP1);
+        self.op(SUB);
+        self.op(DUP1 + 1);
+        self.op(SUB);
+        self.op(SWAP1);
+        self.push_u64(SMALLS - 2);
+        self.op(SWAP1);
+        self.op(SUB);
+        self.op(SWAP1);
+        // [handle, ~(base | SMALLS) + 1, ~key]
+        self.op(DUP1 + 1);
+        self.op(DUP1 + 1);
+        self.op(EQ);
         self.push_label(done);
         self.op(JUMPI);
-        self.op(DUP1 + 3);
-        self.op(DUP1 + 1);
-        self.op(OR);
-        self.op(NOT);
+        self.jumpdest(slots);
+        self.take_slot();
+        // [.., ~key, x]: `p << 42 | word`, shifted up by 209 when bit 84 is set.
+        self.jumpdest(small);
         self.op(DUP1);
-        self.op(TLOAD);
+        self.push_word(Word::from_u64(1).shl(85).wrapping_sub(Word::from_u64(1)));
+        self.op(AND);
         self.op(DUP1);
-        self.op(ISZERO);
-        self.push_label(zero);
-        self.op(JUMPI);
-        self.op(DUP1 + 2);
-        self.op(MSTORE);
-        self.op(PUSH0);
+        self.push_u64(42);
+        self.op(SHR);
+        self.push_word(Word::from_u64(0x3ff_ffff_ffe0));
+        self.op(AND);
         self.op(SWAP1);
-        self.op(TSTORE);
-        self.push_u64(32);
-        self.op(ADD);
-        self.push_label(top);
-        self.op(JUMP);
-        self.jumpdest(zero);
+        self.op(DUP1);
+        self.push_word(Word::from_u64((1 << 47) - 1));
+        self.op(AND);
+        self.op(SWAP1);
+        self.push_u64(84);
+        self.op(SHR);
+        self.push_u64(209);
+        self.op(MUL);
+        self.op(SHL);
+        self.op(SWAP1);
+        self.op(MSTORE);
+        self.push_u64(85);
+        self.op(SHR);
+        self.op(DUP1);
+        self.push_label(small);
+        self.op(JUMPI);
         self.op(POP);
-        self.op(POP);
-        self.push_u64(32);
+        self.push_u64(1);
         self.op(ADD);
-        self.push_label(top);
-        self.op(JUMP);
+        self.op(DUP1 + 1);
+        self.op(DUP1 + 1);
+        self.op(SUB);
+        self.push_label(slots);
+        self.op(JUMPI);
         self.jumpdest(done);
         self.op(POP);
         self.op(POP);
         // The heap's top goes back through its own word, so what places allocations knows
         // nothing of it here.
         self.op(DUP1);
-        self.push_u64(64);
+        self.push_u64(96);
         self.op(SHR);
-        self.push_word(low);
+        self.push_word(Word::from_u64((1 << 48) - 1));
         self.op(AND);
         self.mstore_off(self.blob_ptr);
-        self.push_u64(128);
+        self.push_u64(144);
         self.op(SHR);
-        self.op(SWAP1);
-        self.op(POP);
+        self.push_u64(0xffff);
+        self.op(AND);
         let drains: Vec<u32> = self.drains.iter().map(|&(_, label)| label).collect();
         if let [only] = drains[..] {
             self.push_label(only);
@@ -1255,6 +1519,15 @@ impl<'a> Gen<'a> {
         }
         self.revert_empty();
         Ok(())
+    }
+
+    /// `[slot]` to `[slot, word]`: the word in the slot, which is cleared.
+    fn take_slot(&mut self) {
+        self.op(DUP1);
+        self.op(TLOAD);
+        self.op(PUSH0);
+        self.op(DUP1 + 2);
+        self.op(TSTORE);
     }
 
     fn acquire_nonreentrant(&mut self, bad: u32) {

@@ -1010,12 +1010,14 @@ impl<'a> Gen<'a> {
                 ..
             } if args.len() == 1 => sub(&args[0]),
             // A function that is only its result expression, bounded without the caller's facts.
+            // A hook called back answers with the contract's result, not its stand-in's.
             Expr::Call {
                 callee: Some(idx), ..
             } => {
                 let f = &self.checked.prog.funcs[*idx];
+                let back = self.shape.cross.get(idx).is_some_and(|c| c.bit.is_some());
                 match &f.tail {
-                    Some(tail) if f.stmts.is_empty() => self.range(tail, depth - 1, false),
+                    Some(tail) if f.stmts.is_empty() && !back => self.range(tail, depth - 1, false),
                     _ => full,
                 }
             }

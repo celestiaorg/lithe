@@ -752,6 +752,90 @@ fn deferring_module_functions_run_the_same_across() {
     DEPLOYED.with(|d| d.borrow_mut().clear());
 }
 
+/// A module whose deferred calls keep words of every shape a record packs: small ones, ones
+/// whose top or last bytes are clear, and whole hashes, with results across too.
+const SHAPES: &str = r#"import "std/abi";
+import "std/crypto";
+import "std/evm";
+
+module Rec is {
+  storage rec at "hooks.rec" is record { sum : uint; last : uint; }
+
+  hook kept(const x : uint) : uint;
+
+  function plain(const to : address; const seed : uint) is {
+    const full : uint := uint(Crypto.keccak256(Abi.encode(seed)));
+    const high : uint := (seed + 1) << 200 | 1;
+    const top : uint := (seed + 7) << 240 | 1 << 100;
+    const tiny : uint := (seed + 3) << 220;
+    defer Evm.call(to, Abi.encode(full, high, top, tiny)) then (answer : bytes) {
+      rec.sum := rec.sum + (full >> 128) + (high >> 100) + (top >> 200) + (tiny >> 200) + answer.length;
+      rec.last := full;
+    };
+  }
+
+  function shapes(const to : address; const seed : uint) : uint is {
+    plain(to, seed);
+    rec.last := rec.last + kept(seed);
+  } with seed + 1
+}
+"#;
+
+fn shaped(marks: &str) -> String {
+    format!(
+        "{SHAPES}
+contract Shaped is {{
+  storage is record {{ got : uint; }}
+
+  use Rec{marks};
+
+  hook Rec.kept(const x : uint) : uint is {{
+    const h : uint := uint(Crypto.keccak256(Abi.encode(x, x)));
+    defer Evm.call(address(0xcd), Abi.encode(x, h)) then (answer : bytes) {{
+      storage.got := storage.got + answer.length + (h >> 250);
+    }};
+  }} with x * 2
+
+  external function run(const to : address; const seed : uint) : uint is Rec.shapes(to, seed)
+
+  external function plain(const to : address; const seed : uint) is Rec.plain(to, seed)
+
+  external function many(const to : address; const n : uint) is {{
+    for i : uint in 0 .. n do {{
+      Rec.plain(to, i);
+      storage.got := storage.got + Rec.shapes(to, i + 100);
+    }}
+  }}
+
+  external view function seen() : (uint, uint, uint) is (Rec.rec.sum, Rec.rec.last, storage.got)
+}}
+"
+    )
+}
+
+/// Records keep every shape of word, through results and loops, as inline code sees them.
+#[test]
+fn records_keep_every_shape_of_word() {
+    install_mocks();
+    let (mut inline, mut split, _) = both(&shaped(""), &shaped(" delegated"), "Shaped");
+    let w = Word::from_u64;
+    for (data, reverts) in [
+        (word_data("run(address,uint256)", &[w(0xcd), w(5)]), false),
+        (word_data("plain(address,uint256)", &[w(0xcd), w(9)]), false),
+        (word_data("plain(address,uint256)", &[w(0xee), w(9)]), true),
+        (word_data("many(address,uint256)", &[w(0xcd), w(7)]), false),
+        (word_data("run(address,uint256)", &[w(0xef), w(3)]), true),
+        (word_data("seen()", &[]), false),
+    ] {
+        let (a, b) = (inline.send(1, &data), split.send(1, &data));
+        assert_eq!(a.reverted, reverts, "{}: {}", hex(&data), pretty(&a.returndata));
+        assert_eq!(seen(&a), seen(&b), "{}", hex(&data));
+        assert!(b.transient.values().all(|v| v.is_zero()), "{:?}", b.transient);
+    }
+    assert_eq!(inline.storage, split.storage);
+    DEPLOYED.with(|d| d.borrow_mut().clear());
+}
+
 /// Behind a proxy, the facet drains a hook's calls through the implementation, and contract
 /// code drains a module function's through the facet, on the proxy's storage.
 #[test]
@@ -1341,4 +1425,43 @@ module Stop is {
     let last = split.send(2, &calls[3].1);
     assert!(last.reverted);
     assert_eq!(hex(&last.returndata), hex(&crate::keccak::selector("Stopped()")));
+}
+
+/// A facet knows nothing of what a hook it calls back returns, so arithmetic on the result
+/// keeps its checks, as inline.
+#[test]
+fn called_back_results_keep_their_checks() {
+    let src = |marks: &str| {
+        format!(
+            r#"import "std/evm";
+
+module M is {{
+  storage m at "m" is record {{ last : uint; }}
+  hook h(const x : uint) : uint;
+  function f(const x : uint) : uint is {{
+    m.last := m.last + h(x);
+  }} with x % 7
+  function set(const v : uint) is {{ m.last := v; }}
+}}
+
+storage is record {{ got : uint; }}
+use M{marks};
+hook M.h(const x : uint) : uint is {{
+  storage.got := storage.got + 1;
+}} with x * 2
+
+external function run(const x : uint) : uint is M.f(x)
+external function set(const v : uint) is M.set(v)
+"#
+        )
+    };
+    let (mut inline, mut split, _) = both(&src(""), &src(" delegated"), "Test");
+    let set = word_data("set(uint256)", &[Word::from_u64(1).shl(255)]);
+    let run = word_data("run(uint256)", &[Word::from_u64(1).shl(254)]);
+    for data in [set, run] {
+        let (a, b) = (inline.send(1, &data), split.send(1, &data));
+        assert_eq!(seen(&a), seen(&b), "{}", hex(&data));
+    }
+    assert!(inline.send(1, &word_data("run(uint256)", &[Word::from_u64(1).shl(254)])).reverted);
+    DEPLOYED.with(|d| d.borrow_mut().clear());
 }

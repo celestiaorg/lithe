@@ -116,16 +116,19 @@ const NONREENTRANT_SLOT: u64 = 0;
 /// Transient slot an upgrade sets for its `migrate` call.
 const UPGRADE_SLOT: u64 = 1;
 /// Calls a frame called into mid-transition defers wait for the frame that owns the
-/// transition in transient storage. Each such frame that queued any saves its memory as a
-/// record: record `r`'s nonzero word at memory offset `p` is at slot `~(r << 32 | p)`, and its
-/// header, `k << 128 | heap top << 64 | memory size`, at `~(r << 32 | 1)`, where `k` says which
-/// of the code's entrypoints made it. Slot `~QUEUED_SLOT` holds `first << 64 | r` for the last
-/// record made, until its caller takes it, where `first` is the lowest record made in the
-/// frame or the frames nested in it. `~RECORDS_SLOT` counts the live records. Draining a record
-/// clears its slots, and the transition's owner puts the count back, so nothing is left when
-/// it ends. The hook flag is at `~0`.
+/// transition in transient storage. Each such frame that queued any saves the nonzero words of
+/// its memory as record `r`, in slots `~(r << 32 | j)`: small words three to a slot from
+/// `j = SMALLS`, the rest from `j = 2`. Its handle, `first << 224 | k << 144 | heap top << 96 |
+/// small end << 64 | word end << 32 | r`, says where the slots end and which of the code's
+/// entrypoints made it, and `first` is the lowest record made in the frame or the frames nested
+/// in it. The frame returns the handle when its function has no result, and leaves it in slot
+/// `~QUEUED_SLOT` for its caller to take when it has one. `~RECORDS_SLOT` counts the live
+/// records. Draining a record clears its slots, and the transition's owner puts the count back,
+/// so nothing is left when it ends. The hook flag is at `~0`.
 const QUEUED_SLOT: u64 = 1;
 const RECORDS_SLOT: u64 = 2;
+/// Where a record's slots of small words start, past its slots of whole words.
+const SMALLS: u64 = 1 << 31;
 /// The hidden entrypoint a record is drained through, which no source can name.
 const DRAIN_SIG: &str = "#drain(uint256)";
 const JUMP: u8 = 0x56;
@@ -1522,6 +1525,9 @@ enum Sub {
     /// `[pos, cur, ret]` becomes `[end]`: the value of this type at calldata position
     /// `pos`, an argument checked on entry, ABI-encoded at `cur`.
     TreeCdEnc(usize),
+    /// `[base, ret]` becomes the layout of the record of this frame's memory it saves from
+    /// slot `~(base | 2)`.
+    SaveRecord,
 }
 
 impl Sub {
@@ -1573,7 +1579,8 @@ impl Sub {
             | Sub::TreeEnc(_)
             | Sub::TreeDec(..)
             | Sub::TreeCheck(..)
-            | Sub::TreeCdEnc(_) => false,
+            | Sub::TreeCdEnc(_)
+            | Sub::SaveRecord => false,
         }
     }
 }
