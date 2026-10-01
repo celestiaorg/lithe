@@ -44,6 +44,11 @@ impl<'a> Gen<'a> {
         } else {
             Default::default()
         };
+        let unpayable: std::collections::HashSet<[u8; 4]> = targets
+            .iter()
+            .filter(|(_, target)| !self.target_payable(target))
+            .map(|(_, target)| target.sel())
+            .collect();
         if let Some(keep) = &shape.keep {
             targets.retain(|(_, target)| keep.contains(&target.sel()));
         }
@@ -90,7 +95,13 @@ impl<'a> Gen<'a> {
                     let label = self.fresh();
                     targets.push((label, Target::Guarded { sel, to, first }));
                 }
-                None => targets.push((to, Target::Forward { sel })),
+                None => targets.push((
+                    to,
+                    Target::Forward {
+                        sel,
+                        payable: !unpayable.contains(&sel),
+                    },
+                )),
             }
         }
         let special = |kind: ItemKind| {
@@ -787,8 +798,8 @@ impl<'a> Gen<'a> {
         match target {
             Target::Entry { index, .. } => self.checked.routes[*index].payable,
             Target::Deploy { func, .. } => self.checked.prog.funcs[*func].payable,
-            // The part checks the value: `delegatecall` passes it through.
-            Target::Forward { .. } => true,
+            // Value for an entry that takes none is rejected here, as the facet would.
+            Target::Forward { payable, .. } => *payable,
             // Rejected before the guard runs, as the unsplit contract does.
             Target::Guarded { first, .. } => match *first {
                 Guarding::Func(func) => self.checked.prog.funcs[func].payable,
