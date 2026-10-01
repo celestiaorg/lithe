@@ -3560,6 +3560,7 @@ pub(crate) fn promote(
     consume: bool,
     hold_dups: bool,
     sink: bool,
+    abandon: bool,
 ) -> bool {
     let region_sink = if sink { MAX_SINK } else { 0 };
     let mut any = false;
@@ -3690,7 +3691,20 @@ pub(crate) fn promote(
             assert_eq!(edits, straight(&mut (0..code.len().saturating_sub(1))).0, "straight");
         }
         if edits.is_empty() {
-            match promote_region(code, tracked, calls, exits, &live, &runs, &uses, &loops, &labels, region_sink, &mut plans) {
+            match promote_region(
+                code,
+                tracked,
+                calls,
+                exits,
+                &live,
+                &runs,
+                &uses,
+                &loops,
+                &labels,
+                region_sink,
+                abandon,
+                &mut plans,
+            ) {
                 Promoted::Region(sp, a, gone) => {
                     any = true;
                     last = Some((sp, vec![a], gone));
@@ -3889,6 +3903,7 @@ fn promote_region(
     loops: &Loops,
     labels: &LabelIndex,
     sink: i64,
+    abandon: bool,
     plans: &mut RegionPlans,
 ) -> Promoted {
     if plans.exits != *exits {
@@ -3947,15 +3962,18 @@ fn promote_region(
                         let mut trace = Trace {
                             reach: start,
                             reads: Vec::new(),
+                            also: Vec::new(),
                         };
-                        let saved =
-                            plan_region(code, entry, a, calls, exits, live, labels, &mut trace, false)
-                                .map(|r| r.saved);
+                        let saved = plan_region(
+                            code, entry, a, calls, exits, live, labels, abandon, &mut trace, false,
+                        )
+                        .map(|r| r.saved);
                         let plan = RegionPlan {
                             saved,
                             from: entry.at().saturating_sub(1),
                             to: trace.reach + 4,
                             reads: trace.reads,
+                            also: trace.also,
                             recheck: false,
                         };
                         plans.put(id, kind, a, slot, plan);
@@ -3965,6 +3983,21 @@ fn promote_region(
             }
         };
         assert!(!verify() || saved.is_none_or(|s| s > 0 && s <= bound), "bound");
+        if verify() {
+            let fresh = plan_region(
+                code,
+                entry,
+                a,
+                calls,
+                exits,
+                live,
+                labels,
+                abandon,
+                &mut Trace::default(),
+                false,
+            );
+            assert_eq!(saved, fresh.map(|r| r.saved), "cached region plan");
+        }
         assert!(!verify() || bound == {
             let (entry_saved, from) = match entry {
                 Entry::Store(i, under) => (3 - i64::from(under), i + 2),
@@ -4048,7 +4081,9 @@ fn promote_region(
         return Promoted::Nothing;
     };
     let mut trace = Trace::default();
-    let region = plan_region(code, entry, a, calls, exits, live, labels, &mut trace, true);
+    let region = plan_region(
+        code, entry, a, calls, exits, live, labels, abandon, &mut trace, true,
+    );
     let region = region.expect("planned");
     let sp = Splice::of(&region.edits, code.len());
     let gone = code[sp.lo..sp.old_hi].to_vec();
@@ -4063,6 +4098,8 @@ fn promote_region(
 struct Trace {
     reach: usize,
     reads: Vec<(usize, bool)>,
+    /// Code read past the walk, in the blocks it jumps to that abandon the stack.
+    also: Vec<(usize, usize)>,
 }
 
 /// A candidate's `plan_region` saving, the span of code its walk read, and the liveness it
@@ -4072,6 +4109,7 @@ struct RegionPlan {
     from: usize,
     to: usize,
     reads: Vec<(usize, bool)>,
+    also: Vec<(usize, usize)>,
     recheck: bool,
 }
 
@@ -4143,14 +4181,29 @@ impl RegionPlans {
                 (*at, end, shift)
             })
             .collect();
+        // How far a span's code moves, or `None` if an edit touches it.
+        let span_shift = |from: usize, to: usize| {
+            let before = reach.partition_point(|e| e.0 <= to + 1);
+            if before > 0 && reach[before - 1].1 >= from {
+                return None;
+            }
+            Some(before.checked_sub(1).map_or(0, |k| reach[k].2))
+        };
         for list in &mut self.plans {
             list.retain_mut(|(_, w, plan)| {
-                let before = reach.partition_point(|e| e.0 <= plan.to + 1);
-                if before > 0 && reach[before - 1].1 >= plan.from {
+                let Some(shift) = span_shift(plan.from, plan.to) else {
                     return false;
-                }
-                let shift = before.checked_sub(1).map_or(0, |k| reach[k].2);
+                };
                 let moved = |p: usize| p.checked_add_signed(shift).expect("in the code");
+                let mut also = Vec::with_capacity(plan.also.len());
+                for &(f, t) in &plan.also {
+                    let Some(s) = span_shift(f, t) else {
+                        return false;
+                    };
+                    let moved = |p: usize| p.checked_add_signed(s).expect("in the code");
+                    also.push((moved(f), moved(t)));
+                }
+                plan.also = also;
                 plan.from = moved(plan.from);
                 plan.to = moved(plan.to);
                 for read in &mut plan.reads {
@@ -4484,6 +4537,83 @@ impl Entry {
 /// The most items a stored value is rotated under, one `SWAP` each.
 const MAX_SINK: i64 = 3;
 
+/// A block a region jumps to that abandons the stack, walked with the value held `d` items
+/// down: its loads of `a` become `DUP`s and what reaches below the value shifts past it, as
+/// in the region. Only the block's own code is edited, not the tails it jumps on to, which
+/// must not reach the value. The edits, the bytes they save, and the code read; `None` if
+/// the block does not abandon the stack or would need more.
+fn abandon_walk(
+    code: &[Inst],
+    pos: usize,
+    a: u32,
+    mut d: i64,
+    labels: &LabelIndex,
+) -> Option<(Vec<(usize, usize, Vec<Inst>)>, i64, Vec<(usize, usize)>)> {
+    let (mut edits, mut saved, mut read) = (Vec::new(), 0, Vec::new());
+    let (mut from, mut k) = (pos, body_at(code, pos));
+    let (mut own, mut hops) = (true, 0);
+    loop {
+        let inst = *code.get(k)?;
+        if let (PushLabel(t), Some(Op(JUMP))) = (inst, code.get(k + 1)) {
+            let to = *labels.at.get(&t)?;
+            hops += 1;
+            if hops > 4 {
+                return None;
+            }
+            read.push((from, k + 2));
+            (from, k, own) = (to, body_at(code, to), false);
+            continue;
+        }
+        match inst {
+            Mem(m) if m == a => {
+                if !own || d >= 16 || code.get(k + 1) != Some(&Op(MLOAD)) {
+                    return None;
+                }
+                edits.push((k, 2, vec![Op(DUP1 + d as u8)]));
+                saved += 2;
+                d += 1;
+                k += 2;
+                continue;
+            }
+            Push(_) | Mem(_) | Imm(..) => d += 1,
+            PushLabel(_) if !matches!(code.get(k + 1), Some(Op(JUMPI))) => d += 1,
+            Op(op) if (0x80..=0x9f).contains(&op) => {
+                let swap = op >= 0x90;
+                let reach = i64::from(op & 0x0f) + 1 + i64::from(swap);
+                if swap && d == 0 {
+                    return None;
+                }
+                if reach > d {
+                    if !own || op & 0x0f == 0x0f {
+                        return None;
+                    }
+                    edits.push((k, 1, vec![Op(op + 1)]));
+                }
+                if !swap {
+                    d += 1;
+                }
+            }
+            Op(op @ (STOP | RETURN | REVERT | INVALID)) => {
+                let (pops, _) = stack_io(op)?;
+                if pops as i64 > d {
+                    return None;
+                }
+                read.push((from, (k + 2).min(code.len())));
+                return Some((edits, saved, read));
+            }
+            Op(op) => {
+                let (pops, pushes) = stack_io(op)?;
+                if is_terminal(op) || op == JUMPI || pops as i64 > d {
+                    return None;
+                }
+                d += pushes as i64 - pops as i64;
+            }
+            _ => return None,
+        }
+        k += 1;
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 #[inline(never)]
 fn plan_region(
@@ -4494,6 +4624,7 @@ fn plan_region(
     exits: &FxHashSet<u32>,
     live: &Live,
     labels: &LabelIndex,
+    abandon: bool,
     trace: &mut Trace,
     keep: bool,
 ) -> Option<Region> {
@@ -4520,6 +4651,9 @@ fn plan_region(
     // The depth at each label already passed.
     let mut passed: FxHashMap<u32, i64> = FxHashMap::default();
     let mut ends: Vec<RegionEnd> = Vec::new();
+    // Blocks jumped to that abandon the stack, by label: the depth the jump leaves, and the
+    // edits made by then if the walk edited the block, which only the region may then reach.
+    let mut abandoned: FxHashMap<u32, (i64, Option<usize>)> = FxHashMap::default();
     let mut k = start;
     loop {
         trace.reach = k;
@@ -4569,6 +4703,16 @@ fn plan_region(
         }
         let inst = code[k];
         if let Label(l) = inst {
+            if abandoned.contains_key(&l) {
+                if depth.is_some() {
+                    break;
+                }
+                k += 1;
+                while k < n && !matches!(code[k], Label(_)) {
+                    k += 1;
+                }
+                continue;
+            }
             match (depth, landing.get(&l)) {
                 (Some(d), Some(&want)) if d != want => break,
                 // An exit only jumps reach: it abandons the stack, so skip to the next label.
@@ -4617,7 +4761,45 @@ fn plan_region(
                 if after < 0 {
                     break;
                 }
-                if !exits.contains(&t) {
+                let free = abandon
+                    && !exits.contains(&t)
+                    && !landing.contains_key(&t)
+                    && !passed.contains_key(&t);
+                let abandons = free
+                    && match abandoned.get(&t).copied() {
+                        Some((want, _)) if want == after => true,
+                        Some((_, Some(_))) => break,
+                        prior => {
+                            let pos = *at.get(&t)?;
+                            match abandon_walk(code, pos, a, after, labels) {
+                                Some((block, _, read)) if block.is_empty() => {
+                                    trace.also.extend(read);
+                                    abandoned.entry(t).or_insert((after, None));
+                                    true
+                                }
+                                // Edited, the block must be reached only from the region, at
+                                // one depth, and lie ahead, where the bound counts its loads.
+                                Some((block, more, read))
+                                    if prior.is_none()
+                                        && pos > k
+                                        && body_at(code, pos) == pos + 1
+                                        && matches!(code[pos - 1], Op(op) if is_terminal(op)) =>
+                                {
+                                    trace.also.extend(read);
+                                    abandoned.insert(t, (after, Some(edits.len())));
+                                    for (p, len, with) in block {
+                                        edits.push(p, len, &with);
+                                    }
+                                    saved += more;
+                                    true
+                                }
+                                // The walk skips the block, which runs here as it is.
+                                _ if prior.is_some() => break,
+                                _ => false,
+                            }
+                        }
+                    };
+                if !exits.contains(&t) && !abandons {
                     let pos = *at.get(&t)?;
                     if pos < start {
                         break;
@@ -4692,7 +4874,7 @@ fn plan_region(
     for end in &ends {
         for p in scanned..end.at {
             let Label(l) = code[p] else { continue };
-            if exits.contains(&l) || at[&l] != p {
+            if exits.contains(&l) || abandoned.contains_key(&l) || at[&l] != p {
                 continue;
             }
             if let Some((lo, hi)) = labels.span(l) {
@@ -4702,6 +4884,12 @@ fn plan_region(
         }
         scanned = scanned.max(end.at);
         if from_before || furthest >= end.at {
+            continue;
+        }
+        let edited_outside = abandoned.iter().any(|(&l, &(_, edited))| {
+            edited.is_some_and(|e| e < end.edits) && labels.reached_outside(l, start, end.at)
+        });
+        if edited_outside {
             continue;
         }
         let mut saved = end.saved;
@@ -7458,9 +7646,17 @@ mod tests {
     fn incremental_analyses_agree_with_fresh_ones() {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
         VERIFY.store(true, std::sync::atomic::Ordering::Relaxed);
-        for file in ["bench/erc20_full.lithe", "bench/codec.lithe"] {
-            crate::compile(&crate::Sources::disk(), &root.join(file), &crate::Options::default())
-                .unwrap_or_else(|e| panic!("{file}: {e:?}"));
+        for file in [
+            "bench/erc20_full.lithe",
+            "bench/codec.lithe",
+            "examples/stdlib/claims.lithe",
+        ] {
+            crate::compile(
+                &crate::Sources::disk(),
+                &root.join(file),
+                &crate::Options::default(),
+            )
+            .unwrap_or_else(|e| panic!("{file}: {e:?}"));
         }
         VERIFY.store(false, std::sync::atomic::Ordering::Relaxed);
     }
