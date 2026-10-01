@@ -276,7 +276,6 @@ impl<'a> Gen<'a> {
         match arg {
             Expr::Ident { sym: Some(sym), .. }
                 if self.cd_lists.contains(sym)
-                    && !self.cd_lazy.contains(sym)
                     && !self.needs_check(self.list_elem(ty)) =>
             {
                 Some(Flat::Cd(self.local[*sym], true))

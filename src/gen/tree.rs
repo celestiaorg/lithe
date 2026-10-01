@@ -785,29 +785,17 @@ impl<'a> Gen<'a> {
     }
 
     /// `[pos, cur, ret]` becomes `[end]`: the value of type `ty` whose encoding starts at
-    /// calldata position `pos`, checked as decoding it would be, and its canonical
-    /// encoding written at `cur`.
+    /// calldata position `pos`, an argument checked on entry, its canonical encoding
+    /// written at `cur`.
     pub(super) fn sub_tree_cd_enc(&mut self, ty: usize) -> Result<(), Error> {
         let t = self.shape_of(ty);
         // [ret, cur, pos]
         self.op(SWAP1 + 1);
         match t.kind {
             TyKind::String | TyKind::Bytes => {
-                // The length word and every byte inside calldata.
-                self.op(DUP1);
-                self.push_u64(32);
-                self.op(ADD);
-                self.cd_within()?;
-                self.op(DUP1);
-                self.op(CALLDATALOAD);
-                self.fits_64()?;
                 // [ret, cur, pos, len]
                 self.op(DUP1);
-                self.op(DUP1 + 2);
-                self.op(ADD);
-                self.push_u64(32);
-                self.op(ADD);
-                self.cd_within()?;
+                self.op(CALLDATALOAD);
                 // The length word and the bytes; memory past the heap is zero, so the padding is.
                 self.op(DUP1);
                 self.op(DUP1 + 3);
@@ -832,12 +820,7 @@ impl<'a> Gen<'a> {
                 let elem = t.elem.unwrap_or(0);
                 // [ret, cur, pos]: the length, then the elements from `pos + 32` to `cur + 32`.
                 self.op(DUP1);
-                self.push_u64(32);
-                self.op(ADD);
-                self.cd_within()?;
-                self.op(DUP1);
                 self.op(CALLDATALOAD);
-                self.fits_64()?;
                 self.op(DUP1);
                 self.op(DUP1 + 3);
                 self.op(MSTORE);
@@ -858,9 +841,6 @@ impl<'a> Gen<'a> {
             }
             TyKind::Record | TyKind::Tuple => {
                 let head: u32 = t.fields.iter().map(|f| self.abi_head(f.ty)).sum();
-                self.op(DUP1);
-                self.add_const(head);
-                self.cd_within()?;
                 // [ret, base, pos, cur]
                 self.op(DUP1 + 1);
                 self.add_const(head);
@@ -876,7 +856,6 @@ impl<'a> Gen<'a> {
                         self.op(DUP1 + 1);
                         self.add_const(off);
                         self.op(CALLDATALOAD);
-                        self.fits_64()?;
                         self.op(DUP1 + 2);
                         self.op(ADD);
                         self.op(SWAP1);
@@ -884,17 +863,12 @@ impl<'a> Gen<'a> {
                     } else {
                         let mut types = Vec::new();
                         self.word_types(f.ty, &mut types);
-                        for (j, wt) in types.iter().enumerate() {
+                        for j in 0..types.len() as u32 {
                             self.op(DUP1 + 1);
-                            self.add_const(off + 32 * j as u32);
+                            self.add_const(off + 32 * j);
                             self.op(CALLDATALOAD);
-                            if let Some(wt) = *wt {
-                                if self.needs_check(wt) {
-                                    self.check_word(wt, &|g: &mut Self| g.op(DUP1))?;
-                                }
-                            }
                             self.op(DUP1 + 3);
-                            self.add_const(off + 32 * j as u32);
+                            self.add_const(off + 32 * j);
                             self.op(MSTORE);
                         }
                     }
@@ -911,27 +885,13 @@ impl<'a> Gen<'a> {
         Ok(())
     }
 
-    /// `[end]` reverts when it is past the end of calldata.
-    fn cd_within(&mut self) -> Result<(), Error> {
-        self.op(CALLDATASIZE);
-        self.op(LT);
-        self.revert_if_true()
-    }
-
     /// `[ret, out, in, n]` becomes `[ret, end]`: the `n` elements of type `elem` whose
-    /// encoding is a tuple from calldata position `in`, checked and encoded from `out`.
+    /// encoding is a tuple from calldata position `in`, encoded from `out`.
     fn cd_elements(&mut self, elem: usize) -> Result<(), Error> {
         let (top, done) = (self.fresh(), self.fresh());
         let w = u64::from(self.abi_head(elem));
-        // Every element, or every head word, inside calldata.
-        self.op(DUP1);
-        self.push_u64(w);
-        self.op(MUL);
-        self.op(DUP1 + 2);
-        self.op(ADD);
-        self.cd_within()?;
         if !self.abi_dyn(elem) {
-            // The words are the encoding: one copy, then each checked where it lies.
+            // The words are the encoding: one copy.
             self.op(DUP1);
             self.push_u64(w);
             self.op(MUL);
@@ -940,39 +900,6 @@ impl<'a> Gen<'a> {
             self.op(DUP1 + 3);
             self.op(DUP1 + 5);
             self.op(CALLDATACOPY);
-            let mut types = Vec::new();
-            self.word_types(elem, &mut types);
-            let checked: Vec<(usize, usize)> = types
-                .iter()
-                .enumerate()
-                .filter_map(|(j, t)| t.filter(|&t| self.needs_check(t)).map(|t| (j, t)))
-                .collect();
-            if !checked.is_empty() {
-                // [ret, out, in, n, size, i]: `i` counts bytes, an element at a time.
-                self.op(PUSH0);
-                self.jumpdest(top);
-                self.op(DUP1 + 1);
-                self.op(DUP1 + 1);
-                self.op(LT);
-                self.op(ISZERO);
-                self.push_label(done);
-                self.op(JUMPI);
-                for &(j, t) in &checked {
-                    self.op(DUP1);
-                    self.add_const(32 * j as u32);
-                    self.op(DUP1 + 5);
-                    self.op(ADD);
-                    self.op(MLOAD);
-                    self.check_word(t, &|g: &mut Self| g.op(DUP1))?;
-                    self.op(POP);
-                }
-                self.push_u64(w);
-                self.op(ADD);
-                self.push_label(top);
-                self.op(JUMP);
-                self.jumpdest(done);
-                self.op(POP);
-            }
             // [ret, out, in, n, size] becomes [ret, out + size].
             self.op(SWAP1 + 1);
             self.op(POP);
@@ -1010,7 +937,6 @@ impl<'a> Gen<'a> {
         self.op(DUP1 + 4);
         self.op(ADD);
         self.op(CALLDATALOAD);
-        self.fits_64()?;
         self.op(DUP1 + 4);
         self.op(ADD);
         self.op(SWAP1);
@@ -1972,11 +1898,10 @@ impl<'a> Gen<'a> {
     /// Whether a parameter is only ever passed on whole: an argument of `Abi.encode` and
     /// its variants, of another contract's method, of an event's data, or of an inlined call
     /// whose parameter is only passed on whole, or else, for a string or bytes value, asked
-    /// for its length. `Some((false, _))` when it is never used, `None` when it is used any
-    /// other way; the second part is whether its length is read, here or by such a callee.
-    pub(super) fn passed_through(&self, func: usize, sym: usize) -> Option<(bool, bool)> {
+    /// for its length. `Some(false)` when it is never used, `None` when it is used any
+    /// other way.
+    pub(super) fn passed_through(&self, func: usize, sym: usize) -> Option<bool> {
         let (uses, whole) = (std::cell::Cell::new(0usize), std::cell::Cell::new(0usize));
-        let lengths = std::cell::Cell::new(0usize);
         let own = |e: &Expr| matches!(e, Expr::Ident { sym: Some(s), .. } if *s == sym);
         let ty = self.checked.syms[sym].ty;
         let blob = self.is_dynamic(ty) && !self.tree_param(ty);
@@ -1985,7 +1910,7 @@ impl<'a> Gen<'a> {
                 Node::Expr(Expr::Field { base, name, .. })
                     if blob && name == "length" && own(base) =>
                 {
-                    lengths.set(lengths.get() + 1)
+                    whole.set(whole.get() + 1)
                 }
                 Node::Expr(Expr::Ident { sym: Some(s), .. }) if *s == sym => {
                     uses.set(uses.get() + 1)
@@ -2015,7 +1940,7 @@ impl<'a> Gen<'a> {
                     }
                 }
                 // An inlined call's constant parameter reads the caller's word, so passing it
-                // on whole there passes this on whole, and a length it reads is this one's.
+                // on whole there passes this on whole.
                 Node::Expr(Expr::Call {
                     callee: Some(idx),
                     builtin: None,
@@ -2029,10 +1954,8 @@ impl<'a> Gen<'a> {
                         let passed = p.sym.filter(|&s| {
                             own(a) && !self.checked.syms[s].mutable && !later.contains(&s)
                         });
-                        match passed.and_then(|s| self.passed_through(*idx, s)) {
-                            Some((_, true)) => lengths.set(lengths.get() + 1),
-                            Some((_, false)) => whole.set(whole.get() + 1),
-                            None => {}
+                        if passed.and_then(|s| self.passed_through(*idx, s)).is_some() {
+                            whole.set(whole.get() + 1);
                         }
                     }
                 }
@@ -2050,9 +1973,9 @@ impl<'a> Gen<'a> {
         if let Some(tail) = &f.tail {
             self.expr_any(tail, &count, &mut Vec::new());
         }
-        match (uses.get(), whole.get() + lengths.get()) {
-            (0, _) => Some((false, false)),
-            (n, w) if n == w => Some((true, lengths.get() > 0)),
+        match (uses.get(), whole.get()) {
+            (0, _) => Some(false),
+            (n, w) if n == w => Some(true),
             _ => None,
         }
     }
@@ -2147,7 +2070,7 @@ impl<'a> Gen<'a> {
                                     && p.sym.is_some_and(|s| {
                                         !self.checked.syms[s].mutable
                                             && !later.contains(&s)
-                                            && (matches!(self.passed_through(idx, s), Some((false, _)))
+                                            && (self.passed_through(idx, s) == Some(false)
                                                 || self.read_in_place(idx, s))
                                     })
                             })
