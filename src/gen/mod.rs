@@ -459,15 +459,21 @@ pub(crate) fn codegen(checked: &Checked, shape: &Shape) -> Result<Built, Error> 
         every_bump: on,
         ..plan.clone()
     };
-    let mut best = build_all(std::slice::from_ref(&start))?.pop().expect("a build");
-    for _ in 0..MAX_VARIANT_ROUNDS {
-        let cost = best.cost();
-        let moves = variant_moves(&best.plan);
-        best = round(best, &moves)?.0;
-        if best.cost() >= cost {
-            break;
+    let variant_rounds = |mut best: Candidate| -> Result<Candidate, Error> {
+        for _ in 0..MAX_VARIANT_ROUNDS {
+            let cost = best.cost();
+            let moves = variant_moves(&best.plan);
+            best = round(best, &moves)?.0;
+            if best.cost() >= cost {
+                break;
+            }
         }
-    }
+        Ok(best)
+    };
+    let mut best = build_all(std::slice::from_ref(&start))?
+        .pop()
+        .expect("a build");
+    best = variant_rounds(best)?;
     // Later rounds try again the functions a round left as they were and whose toggle cost
     // little more than the start, as the moves kept since can make it pay.
     for _ in 0..MAX_TOGGLE_ROUNDS {
@@ -486,6 +492,16 @@ pub(crate) fn codegen(checked: &Checked, shape: &Shape) -> Result<Built, Error> 
             break;
         }
     }
+    // Holding words across blocks that abandon the stack changes the code every other
+    // choice sees, and a search that starts with it can end worse than one without it. So
+    // it is tried on the plan found, and kept only where cheaper, with the variants tried
+    // again from there.
+    let held = build_all(&[Move::Abandon(true).applied(&best.plan)])?
+        .pop()
+        .expect("a build");
+    if held.cost() < best.cost() {
+        best = variant_rounds(held)?;
+    }
     // A build over the limit outlines more. Each function alone is outlined, then the sets
     // that add them in order of bytes saved per gas added, and the cheapest set that fits
     // wins, or failing that the smallest, which the next round starts from.
@@ -497,14 +513,7 @@ pub(crate) fn codegen(checked: &Checked, shape: &Shape) -> Result<Built, Error> 
         if best.built.bytes <= limit {
             break;
         }
-        for _ in 0..MAX_VARIANT_ROUNDS {
-            let cost = best.cost();
-            let moves = variant_moves(&best.plan);
-            best = round(best, &moves)?.0;
-            if best.cost() >= cost {
-                break;
-            }
-        }
+        best = variant_rounds(best)?;
     }
     while best.built.bytes > limit {
         let mut rest: Vec<usize> = (&plan.outlinable - &best.plan.outline).into_iter().collect();
@@ -685,6 +694,7 @@ enum Move {
     HoldDups(bool),
     Frames(bool),
     Sink(bool),
+    Abandon(bool),
     OutlineRaises(bool),
     /// Forward stored constants.
     ForwardConsts,
@@ -704,6 +714,7 @@ impl Move {
             Move::HoldDups(b) => p.hold_dups = *b,
             Move::Frames(b) => p.frames = *b,
             Move::Sink(b) => p.sink = *b,
+            Move::Abandon(b) => p.abandon = *b,
             Move::OutlineRaises(b) => p.outline_raises = *b,
             Move::ForwardConsts => p.forward_consts = true,
             Move::StaticHeap => {
@@ -1388,6 +1399,10 @@ struct Plan {
     /// a stored value be rotated under the items above it to stay on the stack. That holds
     /// more words, but the swaps can keep the outliner from sharing code.
     sink: bool,
+    /// Whether a promoted word stays on the stack across jumps to blocks that abandon it, as
+    /// reverts with an error's fields, whose loads of the word become `DUP`s. Blocks alike
+    /// before can then differ, which keeps them from being shared, so it is tried last.
+    abandon: bool,
 }
 
 /// A function compiled once. Calls merge what it reads and writes into their body.

@@ -339,6 +339,7 @@ impl<'a> Gen<'a> {
             hold_dups: false,
             frames: false,
             sink: false,
+            abandon: false,
             outline_raises: false,
             forward_consts: false,
             static_heap: false,
@@ -1237,6 +1238,7 @@ impl<'a> Gen<'a> {
             self.plan.tight,
             self.plan.hold_dups,
             self.plan.sink,
+            self.plan.abandon,
         );
         // String helpers reach storage through a slot they are given, and others write
         // slots they are given, which may be a fixed list's.

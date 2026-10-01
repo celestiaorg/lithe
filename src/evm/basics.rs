@@ -785,6 +785,84 @@ is {{
     }
 }
 
+/// A shared function's parameters held on the stack still reach the error a revert builds
+/// from them, whichever caller's constants they hold.
+#[test]
+fn reverts_read_held_parameters() {
+    let src = "\
+import \"std/address\"; storage is record { balances : map(address, uint); }
+error Short of record { sender : address; balance : uint; needed : uint; tag : uint; }
+event Moved of record { indexed from : address; indexed to : address; amount : uint; }
+function update(const from : address; const to : address; const tag : uint; const amount : uint) raises Short is {
+  if from <> Address.zero then {
+    const balance : uint := storage.balances[from];
+    assert(balance >= amount, Short { sender = from; balance = balance; needed = amount; tag = tag; });
+    storage.balances[from] := balance - amount;
+  }
+  if to <> Address.zero then {
+    storage.balances[to] := storage.balances[to] + amount;
+  }
+  emit Moved { from = from; to = to; amount = amount; };
+}
+external function mint(const to : address; const amount : uint) raises Short is
+  update(Address.zero, to, 1, amount)
+external function burn(const from : address; const amount : uint) raises Short is
+  update(from, Address.zero, 2, amount)
+external function move(const from : address; const to : address; const amount : uint) raises Short is
+  update(from, to, 3, amount)
+";
+    let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
+    let w = Word::from_u64;
+    let mut storage = HashMap::new();
+    let mut send = |sig: &str, args: &[Word]| {
+        let out = exec(
+            &runtime,
+            &word_data(sig, args),
+            storage.clone(),
+            w(1),
+            w(0),
+            w(0),
+        )
+        .expect(sig);
+        if !out.reverted {
+            storage = out.storage.clone();
+        }
+        out
+    };
+    let short = |sender: u64, balance: u64, needed: u64, tag: u64| {
+        word_data(
+            "Short(address,uint256,uint256,uint256)",
+            &[w(sender), w(balance), w(needed), w(tag)],
+        )
+    };
+    assert!(!send("mint(address,uint256)", &[w(0x55), w(100)]).reverted);
+    let out = send("move(address,address,uint256)", &[w(0x55), w(0x66), w(150)]);
+    assert!(out.reverted);
+    assert_eq!(
+        out.returndata,
+        short(0x55, 100, 150, 3),
+        "{}",
+        pretty(&out.returndata)
+    );
+    assert!(!send("move(address,address,uint256)", &[w(0x55), w(0x66), w(40)]).reverted);
+    assert!(!send("burn(address,uint256)", &[w(0x55), w(30)]).reverted);
+    let out = send("burn(address,uint256)", &[w(0x55), w(31)]);
+    assert!(out.reverted);
+    assert_eq!(
+        out.returndata,
+        short(0x55, 30, 31, 2),
+        "{}",
+        pretty(&out.returndata)
+    );
+    let out = send("burn(address,uint256)", &[w(0x66), w(41)]);
+    assert_eq!(
+        out.returndata,
+        short(0x66, 40, 41, 2),
+        "{}",
+        pretty(&out.returndata)
+    );
+}
+
 /// A write to a local kills what guards proved about it, on every path after the write
 /// and at the top of every later iteration of a loop that writes it.
 #[test]
