@@ -1162,6 +1162,7 @@ impl<'a> Gen<'a> {
                     Sub::TreeDec(..) => (2, 0),
                     Sub::TreeCheck(..) => (2, 0),
                     Sub::TreeCdEnc(_) => (2, 1),
+                    Sub::SaveRecord => (1, 1),
                 };
                 (label, effect)
             })

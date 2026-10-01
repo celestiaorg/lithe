@@ -1,0 +1,86 @@
+(* Fuzz target: deferred calls that wait for another frame. Marked `delegated`, the module's
+   functions run in its facet and its hooks back in the contract, so each frame that defers
+   leaves its memory as a record for the transition's owner: words of every shape, from
+   loops, with results, failures, and hooks nested in hooks. The interpreter answers 0xcd
+   with the call's own arguments, 0xee reverts with them, 0xef reverts empty, and 0x1 with
+   one malformed byte. *)
+
+import "std/abi";
+import "std/crypto";
+import "std/evm";
+
+module Ledger is {
+  storage ledger at "fuzz.ledger" is record { sum : uint; last : uint; failed : uint; }
+
+  error Big of uint;
+
+  hook moved(const id : uint);
+  hook priced(const id : uint) : uint;
+
+  function note(const to : address; const seed : uint) is {
+    const full : uint := uint(Crypto.keccak256(Abi.encode(seed)));
+    const high : uint := (seed % 1000 + 1) << 200 | 1;
+    const top : uint := (seed % 200 + 7) << 240 | 1 << 100;
+    const tiny : uint := (seed % 50 + 3) << 220;
+    defer Evm.call(to, Abi.encode(full, high, top, tiny)) then {
+      | Ok(answer : bytes) -> {
+          ledger.sum := ledger.sum + (full >> 128) + (high >> 100) + (top >> 200) + answer.length;
+          ledger.last := full ^ tiny;
+        }
+      | Error(reason : bytes) -> { ledger.failed := ledger.failed + reason.length + 1; }
+    };
+    moved(seed);
+  }
+
+  function price(const to : address; const seed : uint) : uint raises Big is {
+    defer Evm.call(to, Abi.encode(seed)) then (answer : bytes) {
+      const r : uint := Abi.decode(answer, uint);
+      assert(r < 1000, Big(r));
+      ledger.sum := ledger.sum + r;
+    };
+    ledger.last := ledger.last + priced(seed);
+  } with seed % 7
+
+  function batch(const to : address; const n : uint) is {
+    for i : uint in 0 .. n % 5 do {
+      note(to, i);
+      defer Evm.call(address(0xcd), Abi.encode(i, ledger.sum));
+    }
+  }
+
+  external view function totals() : (uint, uint, uint) is (ledger.sum, ledger.last, ledger.failed)
+}
+
+storage is record { moves : uint; tags : uint; }
+
+use Ledger exposing { view function totals() : (uint, uint, uint); }
+
+hook Ledger.moved(const id : uint) is {
+  storage.moves := storage.moves + 1;
+  if id % 3 = 0 then {
+    defer Evm.call(address(0xcd), Abi.encode(id + 1000)) then (answer : bytes) {
+      storage.tags := storage.tags + answer.length;
+    };
+  }
+}
+
+hook Ledger.priced(const id : uint) : uint is {
+  defer Evm.call(address(0xcd), Abi.encode(id, uint(Crypto.keccak256(Abi.encode(id))))) then (answer : bytes) {
+    storage.tags := storage.tags + answer.length + id;
+  };
+} with id * 2
+
+external function note(const to : address; const seed : uint) is Ledger.note(to, seed)
+
+external function price(const to : address; const seed : uint) : uint raises Big is
+  Ledger.price(to, seed)
+
+external function batch(const to : address; const n : uint) is Ledger.batch(to, n)
+
+external function mixed(const to : address; const seed : uint) : uint raises Big is {
+  defer Evm.call(address(0xcd), Abi.encode(seed));
+  Ledger.note(to, seed);
+  storage.tags := storage.tags + 1;
+} with Ledger.price(address(0xcd), seed % 900)
+
+external view function seen() : (uint, uint) is (storage.moves, storage.tags)

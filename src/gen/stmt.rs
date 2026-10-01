@@ -2701,6 +2701,29 @@ impl<'a> Gen<'a> {
         self.op(PUSH0);
         self.op(REVERT);
         self.jumpdest(ok);
+        // A frame that may leave its memory as a record clears the calldata, which is spent,
+        // when the callee left one: then this frame's follows.
+        let spent = (self.crossed || (self.shared && !self.drains.is_empty()))
+            && self.queues_across(idx);
+        let kept = self.fresh();
+        if spent && self.checked.types[ret].kind == TyKind::Unit {
+            self.op(RETURNDATASIZE);
+            self.op(ISZERO);
+            self.push_label(kept);
+            self.op(JUMPI);
+        }
+        if spent {
+            self.mload(blob);
+            self.op(MLOAD);
+            self.push_u64(32 * (words as u64 + 1));
+            self.op(ADD);
+            self.code.push(Inst::Op(CALLDATASIZE));
+            self.mload(blob);
+            self.op(CALLDATACOPY);
+            self.op(PUSH0);
+            self.mstore_off(blob);
+            self.jumpdest(kept);
+        }
         if writes {
             self.forget_stored_values();
         }
@@ -2742,7 +2765,8 @@ impl<'a> Gen<'a> {
 
     /// After a call across into a frame that may have queued calls: the record it left them
     /// in, if any, takes the call's place among this body's deferred calls, so they run in
-    /// order with the body's own. The frame names its record in the slot below the flag.
+    /// order with the body's own. The frame names its record in its return data when the
+    /// function has no result, and in the slot below the flag when it has one.
     fn note_queued(&mut self, idx: usize) -> Result<(), Error> {
         // A hook whose bit is clear wasn't called back, so it queued nothing.
         let skipped = self.shape.cross.get(&idx).and_then(|c| c.bit).map(|bit| {
@@ -2757,22 +2781,37 @@ impl<'a> Gen<'a> {
             label
         });
         let none = self.fresh();
-        self.push_u64(QUEUED_SLOT);
-        self.op(NOT);
-        self.op(TLOAD);
+        let unit = self.checked.types[self.checked.prog.funcs[idx].ret_ty].kind == TyKind::Unit;
+        if unit {
+            self.op(RETURNDATASIZE);
+        } else {
+            self.push_u64(QUEUED_SLOT);
+            self.op(NOT);
+            self.op(TLOAD);
+        }
         self.op(DUP1);
         self.op(ISZERO);
         self.push_label(none);
         self.op(JUMPI);
         self.branch += 1;
-        self.op(PUSH0);
-        self.push_u64(QUEUED_SLOT);
-        self.op(NOT);
-        self.op(TSTORE);
+        let at = self.arena_alloc(1);
+        if unit {
+            self.op(POP);
+            self.push_u64(32);
+            self.op(PUSH0);
+            self.push_mem(at);
+            self.op(RETURNDATACOPY);
+            self.mload(at);
+        } else {
+            self.op(PUSH0);
+            self.push_u64(QUEUED_SLOT);
+            self.op(NOT);
+            self.op(TSTORE);
+        }
         let first = self.first_record();
-        // [v]: the body's first record becomes the frame's lowest, if it has none yet.
+        // [handle]: the body's first record becomes the frame's lowest, if it has none yet.
         self.op(DUP1);
-        self.push_u64(64);
+        self.push_u64(224);
         self.op(SHR);
         self.mload(first);
         self.op(DUP1);
@@ -2782,10 +2821,11 @@ impl<'a> Gen<'a> {
         self.op(MUL);
         self.op(ADD);
         self.mstore_off(first);
-        let at = self.arena_alloc(1);
         self.op(DUP1);
-        self.push_word(Word::from_u64(u64::MAX));
-        self.op(AND);
+        self.push_u64(32);
+        self.op(SHL);
+        self.push_u64(32);
+        self.op(SHR);
         self.mstore_off(at);
         let site = OpSite {
             to: at,
