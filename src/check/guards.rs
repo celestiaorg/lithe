@@ -226,6 +226,9 @@ pub(super) fn place_guards(prog: &mut Program, needs: &[Need]) -> Result<(), Err
             ));
         }
         if let Some(via) = &of.via {
+            if guard.params.is_empty() {
+                guard.params = sig.params.clone();
+            }
             pass_params(
                 &prog.funcs,
                 &guard.params,
