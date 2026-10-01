@@ -350,7 +350,8 @@ pub(super) fn compose(prog: &mut Program) -> Result<(), Error> {
         }
     }
     prog.exposes = exposes;
-    place_guards(prog, &needs)
+    place_guards(prog, &needs)?;
+    place_hooks(prog)
 }
 
 /// The internal function a module's external becomes: `M.name#k`, which no source can name.
@@ -859,5 +860,6 @@ fn erc165_func(line: u32, col: u32, origin: &str, ids: &[u32]) -> Func {
         forward: None,
         guarded: None,
         guard_of: None,
+        hook_of: None,
     }
 }

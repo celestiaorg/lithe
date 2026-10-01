@@ -2624,6 +2624,18 @@ impl<'a> Gen<'a> {
         let f = &self.checked.prog.funcs[idx];
         if cross.delegate && !self.direct && (f.kind != ItemKind::Readonly || !self.reading) {
             let module = f.module.clone().unwrap_or_default();
+            if cross.bit.is_some() {
+                return Err(error(
+                    f.line,
+                    f.col,
+                    format!(
+                        "hook `{}` runs in the contract, which `{module}`'s facet calls back, but a body that calls it runs a query after writing storage, so it keeps its writes until it ends; query before the first write, or use `{module}` without `{}`",
+                        crate::split::display_name(&f.name),
+                        crate::parse::DELEGATED
+                    ),
+                )
+                .in_file(&f.origin));
+            }
             return Err(error(
                 f.line,
                 f.col,
@@ -2649,6 +2661,35 @@ impl<'a> Gen<'a> {
             .collect();
         let ret = f.ret_ty;
         let writes = f.kind == ItemKind::Function;
+        // A hook the contract leaves unimplemented has its bit clear: the call does nothing,
+        // or, for one with a result, which the contract can't reach, reverts.
+        let skip = cross.bit.map(|bit| {
+            self.push_hook_word_read();
+            self.push_word(Word::from_u64(1).shl(bit));
+            self.op(AND);
+            let label = self.fresh();
+            if self.checked.types[ret].kind == TyKind::Unit {
+                self.op(ISZERO);
+                self.push_label(label);
+                self.op(JUMPI);
+                self.branch += 1;
+                Some(label)
+            } else {
+                self.push_label(label);
+                self.op(JUMPI);
+                self.revert_empty();
+                self.jumpdest(label);
+                None
+            }
+        });
+        // Only this contract's code sets the flag its hidden entrypoint for a stateful hook
+        // checks, just before calling back.
+        if cross.bit.is_some() && writes {
+            self.push_u64(1);
+            self.op(PUSH0);
+            self.op(NOT);
+            self.op(TSTORE);
+        }
         self.encode_values(&args, true, 4)?;
         self.mload(self.scratch_a);
         self.push_u64(u64::from(u32::from_be_bytes(cross.sel)));
@@ -2666,18 +2707,35 @@ impl<'a> Gen<'a> {
             self.op(ADD);
             self.op(MSTORE);
         }
+        let words = tail.len() + usize::from(cross.mask.is_some());
+        if let Some(mask) = cross.mask {
+            self.push_hook_word(mask);
+            self.mload(blob);
+            self.op(DUP1);
+            self.op(MLOAD);
+            self.op(ADD);
+            self.push_u64(32 * words as u64);
+            self.op(ADD);
+            self.op(MSTORE);
+        }
         self.op(PUSH0);
         self.op(PUSH0);
         self.mload(blob);
         self.op(MLOAD);
-        if !tail.is_empty() {
-            self.push_u64(32 * tail.len() as u64);
+        if words > 0 {
+            self.push_u64(32 * words as u64);
             self.op(ADD);
         }
         self.mload(blob);
         self.push_u64(32);
         self.op(ADD);
-        self.push_word(cross.address);
+        if cross.bit.is_some() {
+            self.push_hook_word_read();
+            self.push_u64(96);
+            self.op(SHR);
+        } else {
+            self.push_word(cross.address);
+        }
         self.op(GAS);
         self.op(if cross.delegate { DELEGATECALL } else { STATICCALL });
         let ok = self.fresh();
@@ -2693,6 +2751,11 @@ impl<'a> Gen<'a> {
         self.jumpdest(ok);
         if writes {
             self.forget_stored_values();
+        }
+        if let Some(Some(label)) = skip {
+            self.leave_branch();
+            self.jumpdest(label);
+            return Ok(());
         }
         let tret = &self.checked.types[ret];
         let words = tret.words;

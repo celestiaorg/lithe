@@ -511,6 +511,7 @@ fn spec_func(
         forward: None,
         guarded: None,
         guard_of: None,
+        hook_of: None,
     }
 }
 

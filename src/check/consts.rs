@@ -279,7 +279,10 @@ impl Fold<'_> {
             Stmt::Const { sym: Some(sym), .. } => self.locals.contains_key(sym),
             _ => false,
         });
-        let v = tail.filter(|_| f.kind == ItemKind::Pure && f.params.is_empty() && only_consts);
+        // What a hook returns is the contract's to say, so a hook is never a named constant.
+        let v = tail.filter(|_| {
+            f.kind == ItemKind::Pure && f.params.is_empty() && only_consts && f.hook_of.is_none()
+        });
         self.named.insert(idx, v);
         Ok(v)
     }

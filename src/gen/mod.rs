@@ -644,7 +644,7 @@ impl Shape {
     /// calls across into.
     fn prerequisites(&self) -> Vec<Word> {
         let mut out = self.parts.clone();
-        for cross in self.cross.values() {
+        for cross in self.cross.values().filter(|cross| cross.bit.is_none()) {
             if !out.contains(&cross.address) {
                 out.push(cross.address);
             }
@@ -941,6 +941,7 @@ pub(crate) fn crossable(checked: &Checked, module: &str) -> Vec<crate::split::Cr
         let callable = f.module.as_deref() == Some(module)
             && f.exported.is_none()
             && f.guard_of.is_none()
+            && f.hook_of.is_none()
             && !f.private
             && matches!(
                 f.kind,
@@ -951,7 +952,23 @@ pub(crate) fn crossable(checked: &Checked, module: &str) -> Vec<crate::split::Cr
             continue;
         }
         if let Ok(Some(delegate)) = g.crossing(idx) {
-            let raises = f.errors.iter().map(|&e| checked.errors[e].name.clone()).collect();
+            // What the contract's hooks raise passes through, but the facet is built without
+            // the contract, so its entrypoint lists only what the modules declare.
+            let own = &checked.source.origin;
+            let known = |name: &String| {
+                checked.source.modules.iter().any(|m| m.errors.iter().any(|e| &e.name == name))
+                    || checked
+                        .source
+                        .errors
+                        .iter()
+                        .any(|e| &e.name == name && &e.origin != own)
+            };
+            let raises = f
+                .errors
+                .iter()
+                .map(|&e| checked.errors[e].name.clone())
+                .filter(known)
+                .collect();
             out.push(crate::split::Crossing {
                 at,
                 delegate,
@@ -987,6 +1004,115 @@ pub(crate) fn stray_calls(
         ),
     )
     .in_file(&stray.origin))
+}
+
+/// A hook a delegated module's facet calls back runs in a frame of its own, but a
+/// transition's deferred calls queue in its frame's memory, and its calldata is the
+/// transaction's, so a hook that defers or reads calldata can't be called back: the rules a
+/// function follows to be called across. Nor can one be called back while a contract that
+/// isn't upgradeable runs `deploy`, before it has code.
+pub(crate) fn callback_rules(checked: &Checked, facets: &[String]) -> Result<(), Error> {
+    let funcs = &checked.prog.funcs;
+    let written: Vec<usize> = (0..funcs.len())
+        .filter(|&i| {
+            funcs[i].hook_of.as_ref().is_some_and(|of| {
+                matches!(
+                    of.form,
+                    crate::ast::HookForm::Body | crate::ast::HookForm::Via(_)
+                )
+            })
+        })
+        .collect();
+    if facets.is_empty() || written.is_empty() {
+        return Ok(());
+    }
+    let shape = Shape::default();
+    let g = Gen::new(checked, Plan::default(), &shape)?;
+    // A contract that isn't upgradeable has no code until `deploy` ends, so no facet `deploy`
+    // calls across can call a hook back.
+    if let Some(deploy) = funcs
+        .iter()
+        .position(|f| f.kind == ItemKind::Deploy)
+        .filter(|_| !checked.prog.upgradeable)
+    {
+        let in_facet = |j: usize| {
+            funcs[j].module.as_ref().is_some_and(|m| facets.contains(m))
+                && matches!(g.crossing(j), Ok(Some(_)))
+        };
+        let mut todo = vec![(deploy, false)];
+        let mut seen = HashSet::new();
+        while let Some((i, across)) = todo.pop() {
+            if !seen.insert((i, across)) {
+                continue;
+            }
+            for &j in checked.calls.get(i).into_iter().flatten() {
+                if across && written.contains(&j) {
+                    let f = &funcs[deploy];
+                    let module = funcs[i].module.clone().unwrap_or_default();
+                    return Err(error(
+                        f.line,
+                        f.col,
+                        format!(
+                            "`deploy` reaches hook `{}` through `{module}`'s facet, which calls hooks back into the contract's code, and the contract has no code until `deploy` ends; call it after deployment, or use `{module}` without `{}`",
+                            crate::split::display_name(&funcs[j].name),
+                            crate::parse::DELEGATED
+                        ),
+                    )
+                    .in_file(&f.origin));
+                }
+                todo.push((j, across || in_facet(j)));
+            }
+        }
+    }
+    let defers = |node: Node<'_>| matches!(node, Node::Stmt(Stmt::Defer { .. }));
+    let calldata = |node: Node<'_>| {
+        matches!(
+            node,
+            Node::Expr(Expr::Call {
+                builtin: Some(Builtin::Calldata | Builtin::Selector),
+                ..
+            })
+        )
+    };
+    for &h in &written {
+        let why = if g.func_any(h, &defers, &mut Vec::new()) {
+            "it defers a call, which runs only after the whole transition commits; move the deferred call out of the hook"
+        } else if g.func_any(h, &calldata, &mut Vec::new()) {
+            "it reads the call's calldata, and a hook called back sees the facet's call to it"
+        } else {
+            continue;
+        };
+        let calls = |node: Node<'_>| {
+            matches!(node, Node::Expr(Expr::Call { callee: Some(j), .. }) if *j == h)
+        };
+        for module in facets {
+            let reached = (0..funcs.len())
+                .filter(|&i| {
+                    funcs[i].module.as_deref() == Some(module.as_str())
+                        && funcs[i].hook_of.is_none()
+                })
+                .any(|i| g.func_any(i, &calls, &mut Vec::new()));
+            if !reached {
+                continue;
+            }
+            let f = &funcs[h];
+            let (line, col) = f
+                .hook_of
+                .as_ref()
+                .map_or((f.line, f.col), |of| (of.module.line, of.module.col));
+            return Err(error(
+                line,
+                col,
+                format!(
+                    "hook `{}` is called back from `{module}`'s facet, and it can't be: {why}, or use `{module}` without `{}`",
+                    crate::split::display_name(&f.name),
+                    crate::parse::DELEGATED
+                ),
+            )
+            .in_file(&f.origin));
+        }
+    }
+    Ok(())
 }
 
 /// A call from contract code that can't cross into its callee's facet: the callee, where the

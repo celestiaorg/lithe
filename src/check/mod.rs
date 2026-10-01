@@ -13,6 +13,7 @@ mod expr;
 mod funcs;
 mod generic;
 mod guards;
+mod hooks;
 mod layout;
 mod payable;
 mod place;
@@ -25,6 +26,8 @@ use builtins::*;
 use compose::*;
 use funcs::*;
 use guards::*;
+use hooks::*;
+pub(crate) use hooks::{callback_fn, hook_fn, hook_item, reached_hooks, stub as hook_stub};
 use layout::*;
 use payable::*;
 use place::*;
@@ -245,6 +248,8 @@ pub(crate) struct Checked {
     /// Peers' creation code and prerequisites, built once per compile however many passes
     /// embed them.
     pub peer_builds: std::sync::Mutex<Vec<PeerBuild>>,
+    /// The functions each function calls, by index.
+    pub calls: Vec<Vec<usize>>,
 }
 
 /// `forwarded` in a `raises` clause: raw revert data passed on with `forward`. It is no
@@ -357,6 +362,10 @@ struct Checker {
     once: Option<&'static str>,
     /// While checking a guard, how messages name it: a guard only reads, and fails or not.
     guard_label: Option<String>,
+    /// While checking a hook's implementation, how messages name it: `view hook `M.h``.
+    hook_label: Option<String>,
+    /// The functions the upgrade guard calls.
+    guard_calls: Vec<usize>,
     /// Checking a forwarding `fallback`'s target, which only reads.
     forwarding: bool,
     fn_name: String,
@@ -425,7 +434,12 @@ enum Piece {
 
 fn const_fns(prog: &Program) -> HashMap<String, Func> {
     let candidate =
-        |f: &&Func| f.kind == ItemKind::Pure && f.params.is_empty() && f.type_params.is_empty();
+        |f: &&Func| {
+            f.kind == ItemKind::Pure
+                && f.params.is_empty()
+                && f.type_params.is_empty()
+                && f.hook_of.is_none()
+        };
     let mut fns: HashMap<String, Func> = prog
         .funcs
         .iter()
@@ -533,6 +547,8 @@ fn check_program(
         domain_syms: Vec::new(),
         once: None,
         guard_label: None,
+        hook_label: None,
+        guard_calls: Vec::new(),
         forwarding: false,
         evm,
         phase_floors: Vec::new(),
@@ -945,12 +961,14 @@ fn check_program(
     // given, so it is copied for what it is given, as a generic module's functions are. A
     // map is reached through its slot alone, so one copy serves every map of its type; any
     // other storage gets a copy per storage path.
+    c.check_hook_decls(&prog)?;
     let mut templates = Vec::new();
     for func in std::mem::take(&mut prog.funcs) {
+        // A hook takes values, whatever its caller holds them in, so it is never copied.
         let internal = matches!(
             func.kind,
             ItemKind::Function | ItemKind::Readonly | ItemKind::Pure
-        );
+        ) && func.hook_of.is_none();
         let mut storage_param = false;
         if internal {
             for p in &func.params {
@@ -983,6 +1001,7 @@ fn check_program(
     }
     c.match_declared_types(&prog.funcs)?;
     c.match_guards(&prog)?;
+    c.match_hooks(&prog)?;
     for module in &prog.modules {
         c.known_modules.insert(module.name.clone());
     }
@@ -1007,6 +1026,7 @@ fn check_program(
     if let Some(guard) = &mut prog.guard {
         c.check_guard(guard)?;
     }
+    c.check_hook_reach(&prog)?;
     c.reject_failing_constants(&prog.funcs, prog.guard.as_ref())?;
     c.check_immutable_writes(&prog.funcs, prog.upgradeable)?;
     // Each interface `supports` lists, by the signatures, selectors, and results of its
@@ -1078,6 +1098,21 @@ fn check_program(
         interface_ids: Vec::new(),
         asks_interfaces: c.asks_interfaces,
         peer_builds: Default::default(),
+        calls: c
+            .pieces
+            .iter()
+            .map(|pieces| {
+                let mut out = Vec::new();
+                for piece in pieces {
+                    if let Piece::Call(j, ..) = piece {
+                        if !out.contains(j) {
+                            out.push(*j);
+                        }
+                    }
+                }
+                out
+            })
+            .collect(),
     };
     let routes = crate::route::discover(&checked, require_entries)?;
     supports_interface(Checked { routes, ..checked }, &known, evm)
@@ -1136,6 +1171,7 @@ struct CheckSave {
     in_spec: bool,
     origin: String,
     guard_label: Option<String>,
+    hook_label: Option<String>,
 }
 
 struct Place {

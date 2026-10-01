@@ -588,6 +588,577 @@ contract Board is {
 `owner` is not a parameter of `write`; a guard takes the external's parameters, by name
 ```
 
+## Hooks
+
+A module sometimes needs the contract's code in the middle of its own: to react to a transfer, or to supply a value only the contract knows, such as a token's name. Solidity leaves a `virtual` function, `_beforeTokenTransfer` or `tokenURI`, for the contract to override. In Lithe, the module declares a **hook**, its code calls the hook by name, and the contract that uses the module implements it:
+
+```lithe
+import "std/evm";
+
+module Tokens is {
+  storage tokens at "example.tokens" is record {
+    owner_of : map(uint, address);
+  }
+
+  error Not_owner of uint;
+
+  (* What the contract does around every transfer. *)
+  hook before_transfer(const from : address; const to : address; const token_id : uint);
+  hook after_transfer(const from : address; const to : address; const token_id : uint);
+
+  (* A token's name, which only the contract knows. *)
+  view hook name_of(const token_id : uint) : string;
+
+  function transfer(const to : address; const token_id : uint) raises Not_owner is {
+    const from : address := tokens.owner_of[token_id];
+    assert(from = Evm.sender(), Not_owner(token_id));
+    before_transfer(from, to, token_id);
+    tokens.owner_of[token_id] := to;
+    after_transfer(from, to, token_id);
+  }
+
+  external function mint(const token_id : uint) is {
+    tokens.owner_of[token_id] := Evm.sender();
+  }
+
+  external function send(const to : address; const token_id : uint) raises Not_owner is
+    transfer(to, token_id)
+
+  external view function tokenName(const token_id : uint) : string is
+    name_of(token_id)
+}
+
+contract Gallery is {
+  storage is record {
+    frozen : map(uint, bool);
+    moves : uint;
+  }
+
+  error Frozen of uint;
+
+  use Tokens exposing {
+    function mint(token_id : uint);
+    function send(to : address; token_id : uint) raises Not_owner | Frozen;
+    view function tokenName(token_id : uint) : string;
+  }
+
+  (* A frozen token doesn't move, and the gallery counts the moves of the others. *)
+  hook Tokens.before_transfer(const from : address; const to : address; const id : uint)
+    raises Frozen
+  is {
+    assert(not storage.frozen[id], Frozen(id));
+    storage.moves := storage.moves + 1;
+  }
+
+  hook Tokens.after_transfer is skip;
+
+  hook Tokens.name_of is label;
+
+  view function label(const token_id : uint) : string is
+    if storage.frozen[token_id] then "a frozen piece" else "a gallery piece"
+
+  external function freeze(const token_id : uint) is {
+    storage.frozen[token_id] := true;
+  }
+}
+```
+
+A call to `send` runs the module's `transfer`, which calls `Gallery`'s `before_transfer` before it moves the token. The module never sees the contract, so its code is the same in every contract, and two contracts that use `Tokens` can implement its hooks differently.
+
+- A module declares `[view | pure] hook name(params) [: T];`: a function's header, with no body. The effect is the most the contract's implementation may do. A `view hook` may read and `query`, a `pure hook` only computes from its parameters, and a plain `hook` may also write, `emit`, and `defer`.
+- The module's own code calls a hook by name, as it calls its own functions. Nothing else calls it: not the contract, and not another module. A function that calls a stateful hook is stateful, so a `view` function can call only `view` and `pure` hooks, and the module checks on its own.
+- A hook's parameters and result are ABI values, whatever the module does with them, so any module with hooks can be [delegated](#delegated-modules). A generic module can't declare hooks.
+- Only the contract implements hooks. There are no default implementations, no overrides, and no `super`, and an extension module can't attach to another module's hook: a contract that wants two things to happen in `before_transfer` calls both in its body, in the order it writes them.
+
+The contract implements a hook in one of three ways:
+
+| Form | Meaning |
+| --- | --- |
+| `hook M.h(params) [: T] [raises E] is { ... } [with e]` | a body, like a function's. The parameter names are the contract's; their types, and the result, are the module's |
+| `hook M.h is f;` | calls `f`, a function of the contract or of a module it uses, with none of the hook's parameters or all of them, and returns what `f` returns. It raises what `f` does |
+| `hook M.h is skip;` | explicitly unimplemented: calling it does nothing. Only for a hook without a result |
+
+### Which hooks a contract implements
+
+A contract implements a hook exactly when code it runs can reach it, and then exactly once. That code starts at the contract's entrypoints, the module externals it exposes, `deploy`, migrations, guards, and hook bodies, and runs through the functions they call, in any module; an external that dispatches on its argument reaches what each of its cases does. A hook that only an external the contract doesn't expose reaches isn't required, and implementing it anyway is an error, as for a guard no exposed external names. Exposing that external makes the hook required.
+
+`lithe stubs file.lithe M` prints the hooks `M`'s externals reach after its `use M exposing` block, as `is skip;` for a hook without a result and as a stub for one with a result. Given interfaces, `lithe stubs file.lithe M I J` prints the hooks the externals of `I` and `J` reach.
+
+### What a hook may do
+
+Anything an internal function of its declared effect may do. A stateful hook may `defer` a call. The call joins the queue of the transition that reached the hook, in the order the transition's code reached it, and runs after that transition's body commits, not at the end of the hook. Its continuation, the `then` block, runs then too, and sees the hook's bindings:
+
+```lithe
+import "std/abi";
+import "std/evm";
+
+interface Registry is {
+  function moved(token_id : uint) : uint;
+}
+
+module Tokens is {
+  storage tokens at "example.tokens" is record {
+    owner_of : map(uint, address);
+  }
+
+  hook after_transfer(const to : address; const token_id : uint);
+
+  external function send(const to : address; const token_id : uint) is {
+    tokens.owner_of[token_id] := to;
+    after_transfer(to, token_id);
+  }
+}
+
+contract Tracked is {
+  storage is record {
+    registry : Registry;
+    receipts : map(uint, uint);
+  }
+
+  use Tokens exposing {
+    function send(to : address; token_id : uint);
+  }
+
+  hook Tokens.after_transfer(const to : address; const id : uint) is {
+    defer storage.registry.moved(id) then (receipt : uint) {
+      storage.receipts[id] := receipt;
+    }
+  }
+}
+```
+
+`send` moves the token, and only after its body ends does it call the registry. A hook reached twice in one transition queues its calls twice, and a transition's own deferred calls and those of the hooks it reaches run in the order its code reached them. The [reentrancy warning](/language/reentrancy#reentrancy-warnings) of an external counts what its hooks defer.
+
+A hook that reaches itself again, through the module's code, is recursion, which Lithe doesn't have: the error shows the loop.
+
+### Errors
+
+A module declares no errors for its hooks. What the contract's implementation raises joins what every external that reaches the hook raises, whatever the module's functions on the way declare. The interface that exposes those externals lists them, as `send` lists `Not_owner | Frozen` above, and the ABI and `lithe errors` show the same.
+
+`lithe errors` lists each hook the contract implements with the errors it raises, and each external's hooks. `lithe footprint` and `lithe abi-tree` show the hooks each entrypoint reaches and where each runs: in the contract, called back from a facet, or skipped.
+
+### Where a hook runs
+
+A hook is contract code. When the contract runs the module's code itself, a hook is a plain internal call, and `is skip` compiles to nothing. When the module is [delegated](/tooling/size-limit#hooks), its facet is built from the module alone, so it calls each hook back into the contract, which costs a round trip; a hook the contract skips, or that its code doesn't reach, costs the facet one bit test.
+
+### Mistakes
+
+A contract implements each hook its code reaches. The error names the way there and prints what to write:
+
+```lithe rejects
+module Tally is {
+  storage tally at "example.tally" is record {
+    count : uint;
+  }
+
+  hook counted(const count : uint);
+
+  function bump() is {
+    tally.count := tally.count + 1;
+    counted(tally.count);
+  }
+
+  external function add() is bump()
+}
+
+contract Counter is {
+  use Tally exposing {
+    function add();
+  }
+}
+```
+
+```text
+Tally.counted is reached through `add` (exposed) → Tally.bump; implement it:
+
+  hook Tally.counted(const count : uint) is { ... }
+
+or declare it unimplemented: hook Tally.counted is skip;
+```
+
+And only those:
+
+```lithe rejects
+module Tally is {
+  storage tally at "example.tally" is record {
+    count : uint;
+  }
+
+  hook counted(const count : uint);
+
+  external function add() is {
+    tally.count := tally.count + 1;
+    counted(tally.count);
+  }
+
+  external view function count() : uint is tally.count
+}
+
+contract Counter is {
+  use Tally exposing {
+    view function count() : uint;
+  }
+
+  hook Tally.counted is skip;
+}
+```
+
+```text
+no code the contract runs calls `Tally.counted`; remove this hook
+```
+
+Once, with the module's parameter types:
+
+```lithe rejects
+module Tally is {
+  storage tally at "example.tally" is record {
+    count : uint;
+  }
+
+  hook counted(const count : uint);
+
+  external function add() is {
+    tally.count := tally.count + 1;
+    counted(tally.count);
+  }
+}
+
+contract Counter is {
+  use Tally exposing {
+    function add();
+  }
+
+  hook Tally.counted is skip;
+  hook Tally.counted is skip;
+}
+```
+
+```text
+`hook Tally.counted` is written twice
+```
+
+```lithe rejects
+module Tally is {
+  storage tally at "example.tally" is record {
+    count : uint;
+  }
+
+  hook counted(const count : uint);
+
+  external function add() is {
+    tally.count := tally.count + 1;
+    counted(tally.count);
+  }
+}
+
+contract Counter is {
+  use Tally exposing {
+    function add();
+  }
+
+  hook Tally.counted(const count : address) is { skip }
+}
+```
+
+```text
+`hook Tally.counted` doesn't match `Tally`'s declaration: its `count` is `address`, and `Tally`'s `count` is `uint`
+
+  module:    hook Tally.counted(const count : uint)
+  contract:  hook Tally.counted(const count : address)
+```
+
+A hook with a result can't be skipped:
+
+```lithe rejects
+module Tally is {
+  storage tally at "example.tally" is record {
+    count : uint;
+  }
+
+  pure hook step() : uint;
+
+  external function add() is {
+    tally.count := tally.count + step();
+  }
+}
+
+contract Counter is {
+  use Tally exposing {
+    function add();
+  }
+
+  hook Tally.step is skip;
+}
+```
+
+```text
+`Tally.step` returns a value, so it can't be skipped; implement it:
+
+  hook Tally.step : uint is { ... } with ...
+```
+
+An implementation does no more than the module's declaration allows:
+
+```lithe rejects
+module Tally is {
+  storage tally at "example.tally" is record {
+    count : uint;
+  }
+
+  view hook limit() : uint;
+
+  external function add() is {
+    if tally.count < limit() then {
+      tally.count := tally.count + 1;
+    }
+  }
+}
+
+contract Counter is {
+  storage is record {
+    asked : uint;
+  }
+
+  use Tally exposing {
+    function add();
+  }
+
+  hook Tally.limit() : uint is {
+    storage.asked := storage.asked + 1;
+  } with 10
+}
+```
+
+```text
+declared effect is weaker than the body's: view hook `Tally.limit` writes storage
+```
+
+```lithe rejects
+import "std/evm";
+
+module Tally is {
+  storage tally at "example.tally" is record {
+    count : uint;
+  }
+
+  view hook limit() : uint;
+
+  external function add() is {
+    if tally.count < limit() then {
+      tally.count := tally.count + 1;
+    }
+  }
+}
+
+contract Counter is {
+  use Tally exposing {
+    function add();
+  }
+
+  hook Tally.limit() : uint is {
+    defer Evm.transfer(Evm.sender(), 1wei);
+  } with 10
+}
+```
+
+```text
+declared effect is weaker than the body's: view hook `Tally.limit` cannot defer
+```
+
+`is f` passes the function none of the hook's parameters, or all of them:
+
+```lithe rejects
+module Tally is {
+  storage tally at "example.tally" is record {
+    count : uint;
+  }
+
+  hook counted(const count : uint);
+
+  external function add() is {
+    tally.count := tally.count + 1;
+    counted(tally.count);
+  }
+}
+
+contract Counter is {
+  storage is record {
+    last : uint;
+  }
+
+  use Tally exposing {
+    function add();
+  }
+
+  function note(const count : uint; const by : uint) is {
+    storage.last := count + by;
+  }
+
+  hook Tally.counted is note;
+}
+```
+
+```text
+`note` takes 2 parameters; a hook that names a function passes it none of its parameters, or all 1
+```
+
+A hook takes and returns ABI values:
+
+```lithe rejects
+module Tally is {
+  storage tally at "example.tally" is record {
+    count : uint;
+  }
+
+  hook counted(const counts : map(uint, uint));
+}
+
+contract Counter is {
+  use Tally;
+}
+```
+
+```text
+hook `counted` takes `counts` as `map(uint, uint)`; a hook's parameters and result are ABI values, so any module with hooks can be `delegated`
+```
+
+A hook that reaches itself is rejected with the loop:
+
+```lithe rejects
+module Tally is {
+  storage tally at "example.tally" is record {
+    count : uint;
+  }
+
+  hook counted(const count : uint);
+
+  function bump() is {
+    tally.count := tally.count + 1;
+    counted(tally.count);
+  }
+
+  external function add() is bump()
+}
+
+contract Counter is {
+  use Tally exposing {
+    function add();
+  }
+
+  hook Tally.counted(const count : uint) is {
+    if count < 10 then {
+      Tally.bump();
+    }
+  }
+}
+```
+
+```text
+hook `Tally.counted` reaches itself: Tally.counted → Tally.bump → Tally.counted
+```
+
+The interface that exposes an external lists what its hooks raise:
+
+```lithe rejects
+module Tally is {
+  storage tally at "example.tally" is record {
+    count : uint;
+  }
+
+  hook counted(const count : uint);
+
+  external function add() is {
+    tally.count := tally.count + 1;
+    counted(tally.count);
+  }
+}
+
+contract Counter is {
+  error Too_many;
+
+  use Tally exposing {
+    function add();
+  }
+
+  hook Tally.counted(const count : uint) raises Too_many is {
+    assert(count <= 10, Too_many);
+  }
+}
+```
+
+```text
+`add` raises `Too_many` in `Tally` with hook `Tally.counted`, and the inline interface lists no errors
+
+  interface:  function add()
+  module:     function add()
+  hook:       Tally.counted raises Too_many
+```
+
+Only the module's own code calls a hook:
+
+```lithe rejects
+module Tally is {
+  storage tally at "example.tally" is record {
+    count : uint;
+  }
+
+  view hook limit() : uint;
+
+  external function add() is {
+    if tally.count < limit() then {
+      tally.count := tally.count + 1;
+    }
+  }
+}
+
+contract Counter is {
+  use Tally exposing {
+    function add();
+  }
+
+  hook Tally.limit() : uint is { skip } with 10
+
+  external view function limit() : uint is Tally.limit()
+}
+```
+
+```text
+`Tally.limit` is a hook of `Tally`: only `Tally`'s own code calls it, and the contract implements it with `hook Tally.limit`
+```
+
+A delegated module's facet can't call back a hook that defers, since the deferred call belongs to the transition's queue, in another frame; see [hooks in delegated modules](/tooling/size-limit#hooks):
+
+```lithe rejects
+import "std/evm";
+
+module Tally is {
+  storage tally at "example.tally" is record {
+    count : uint;
+  }
+
+  hook counted(const count : uint);
+
+  external function add() is {
+    tally.count := tally.count + 1;
+    counted(tally.count);
+  }
+}
+
+contract Counter is {
+  use Tally delegated exposing {
+    function add();
+  }
+
+  hook Tally.counted(const count : uint) is {
+    defer Evm.transfer(Evm.sender(), 1wei);
+  }
+}
+```
+
+```text
+hook `Tally.counted` is called back from `Tally`'s facet, and it can't be: it defers a call, which runs only after the whole transition commits; move the deferred call out of the hook, or use `Tally` without `delegated`
+```
+
 ## ERC-165
 
 A contract announces interfaces through ERC-165 with `supports`, which lists named interfaces:

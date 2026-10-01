@@ -105,7 +105,7 @@ struct Ty {
     item: Option<usize>,
 }
 
-const KEYWORDS: [&str; 64] = [
+const KEYWORDS: [&str; 65] = [
     "type",
     "is",
     "record",
@@ -136,6 +136,7 @@ const KEYWORDS: [&str; 64] = [
     "upgrade",
     "guard",
     "guarded",
+    "hook",
     "at",
     "contract",
     "fail",
@@ -1281,6 +1282,10 @@ impl<'a> Builder<'a> {
             .collect();
         self.funcs.clear();
         for f in &prog.funcs {
+            if let Some(d) = self.hook_def(f) {
+                self.funcs.push(d);
+                continue;
+            }
             let file = self.file(&f.origin);
             let name = short(&f.name);
             // A member of a named interface is written there, not at the `exposing` naming it.
@@ -1352,6 +1357,70 @@ impl<'a> Builder<'a> {
             );
             self.funcs.push(d);
         }
+    }
+
+    /// A module's hook, as its code calls it: declared in the module, with what the contract
+    /// does for it. The contract's entrypoint a facet calls a hook back through is written
+    /// nowhere.
+    fn hook_def(&mut self, f: &Func) -> Option<usize> {
+        let of = f.hook_of.as_ref()?;
+        let c = self.c();
+        let hidden = Def {
+            name: published(&f.name).to_string(),
+            kind: Kind::External,
+            at: None,
+            detail: String::new(),
+            hover: String::new(),
+            parent: None,
+            ty: None,
+            params: Vec::new(),
+        };
+        let found = c
+            .prog
+            .modules
+            .iter()
+            .find(|m| m.name == of.module.name)
+            .and_then(|m| Some((m, m.hooks.iter().find(|h| h.name == of.name)?)));
+        let (Some((m, sig)), false) = (found, of.form == HookForm::Entry) else {
+            return Some(self.def(None, hidden));
+        };
+        let file = self.file(&m.origin);
+        let at = self.span(file, self.locate(file, sig.line, sig.col, &sig.name), &sig.name);
+        let effect = match sig.kind {
+            ItemKind::Readonly => "view ",
+            ItemKind::Pure => "pure ",
+            _ => "",
+        };
+        let params: Vec<String> = sig.params.iter().map(param_text).collect();
+        let ret = sig
+            .ret
+            .as_ref()
+            .map(|t| format!(" : {}", ty_ref(t)))
+            .unwrap_or_default();
+        let text = format!("{effect}hook {}({}){ret}", sig.name, params.join("; "));
+        let hook = format!("{}.{}", crate::modules::shown(&m.name), sig.name);
+        let status = match of.form {
+            HookForm::Body | HookForm::Via(_) => {
+                format!("the contract implements it: `hook {hook} ...`")
+            }
+            HookForm::Skip => format!("the contract skips it: `hook {hook} is skip;`"),
+            _ => "the contract that uses the module implements it".to_string(),
+        };
+        let hover = join(vec![code(&text), self.doc(file, sig.line), status]);
+        let parent = self.names.get(&('m', m.name.clone())).copied();
+        Some(self.def(
+            Some(at),
+            Def {
+                name: sig.name.clone(),
+                kind: Kind::Function,
+                at: None,
+                detail: text,
+                hover,
+                parent,
+                ty: Some(self.key(f.ret_ty)),
+                params,
+            },
+        ))
     }
 
     /// Declares the fields and variants a type spells out, under `parent`. `path` names a

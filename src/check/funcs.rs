@@ -27,6 +27,22 @@ impl Checker {
                 of.name
             )
         });
+        self.hook_label = f
+            .hook_of
+            .as_ref()
+            .filter(|of| of.form != HookForm::Entry)
+            .map(|of| {
+                let effect = match f.kind {
+                    ItemKind::Readonly => "view ",
+                    ItemKind::Pure => "pure ",
+                    _ => "",
+                };
+                format!(
+                    "{effect}hook `{}.{}`",
+                    crate::modules::shown(&of.module.name),
+                    of.name
+                )
+            });
         self.in_spec = crate::spec::is_spec_fn(&f.name);
         self.once = match f.kind {
             ItemKind::Migrate => Some("migrate"),
@@ -216,6 +232,8 @@ impl Checker {
     fn note(&mut self, piece: Piece) {
         if self.cur_fn < self.pieces.len() {
             self.pieces[self.cur_fn].push(piece);
+        } else if let (GUARD_FN, Piece::Call(j, ..)) = (self.cur_fn, &piece) {
+            self.guard_calls.push(*j);
         }
     }
 
@@ -408,7 +426,19 @@ impl Checker {
 
     pub(super) fn solve_errors(&self, funcs: &mut [Func]) -> Result<(), Error> {
         let n = funcs.len();
+        // A module declares no errors for its hooks: what the contract's implementations raise
+        // passes through the module's code, whatever it declares.
+        let hook: Vec<bool> = funcs
+            .iter()
+            .map(|f| f.hook_of.as_ref().is_some_and(|of| of.form != HookForm::Entry))
+            .collect();
+        let module_code: Vec<bool> = funcs
+            .iter()
+            .zip(&hook)
+            .map(|(f, &hook)| f.module.is_some() && f.declares.is_none() && !hook)
+            .collect();
         let mut effective = vec![Vec::new(); n];
+        let mut through = vec![Vec::new(); n];
         for (i, declared) in self.declared.iter().enumerate() {
             if let Some(set) = declared {
                 effective[i] = set.clone();
@@ -417,12 +447,38 @@ impl Checker {
         loop {
             let mut changed = false;
             for i in 0..n {
-                if self.declared[i].is_some() {
-                    continue;
+                if module_code[i] {
+                    let mut passed = Vec::new();
+                    for piece in &self.pieces[i] {
+                        let Piece::Call(j, ..) = piece else { continue };
+                        let from = if hook.get(*j) == Some(&true) {
+                            &effective[*j]
+                        } else if module_code.get(*j) == Some(&true) {
+                            &through[*j]
+                        } else {
+                            continue;
+                        };
+                        for &id in from {
+                            push_unique(&mut passed, id);
+                        }
+                    }
+                    if passed != through[i] {
+                        through[i] = passed;
+                        changed = true;
+                    }
                 }
-                let inferred = expand(&self.pieces[i], &effective);
-                if inferred != effective[i] {
-                    effective[i] = inferred;
+                let next = match &self.declared[i] {
+                    Some(set) => {
+                        let mut next = set.clone();
+                        for &id in &through[i] {
+                            push_unique(&mut next, id);
+                        }
+                        next
+                    }
+                    None => expand(&self.pieces[i], &effective),
+                };
+                if next != effective[i] {
+                    effective[i] = next;
                     changed = true;
                 }
             }
@@ -455,7 +511,7 @@ impl Checker {
                 let extra: Vec<usize> = inferred
                     .iter()
                     .copied()
-                    .filter(|id| !declared.contains(id))
+                    .filter(|id| !declared.contains(id) && !through[i].contains(id))
                     .collect();
                 // An interface's method is held to its module's external instead.
                 if !extra.is_empty() && funcs[i].declares.is_none() {
@@ -467,6 +523,9 @@ impl Checker {
                     .in_file(&funcs[i].origin));
                 }
                 effective[i] = declared.clone();
+                for &id in &through[i] {
+                    push_unique(&mut effective[i], id);
+                }
             } else if matches!(
                 kind,
                 ItemKind::Entry
@@ -475,9 +534,11 @@ impl Checker {
                     | ItemKind::Deploy
                     | ItemKind::Receive
                     | ItemKind::Fallback
-            ) && !inferred.is_empty()
+            ) && inferred.iter().any(|id| !through[i].contains(id))
                 // An interface's method is held to its module's external instead.
                 && funcs[i].declares.is_none()
+                // A facet's way back into a hook raises what the hook does.
+                && funcs[i].hook_of.is_none()
             {
                 return Err(error(
                     line,
@@ -553,13 +614,31 @@ impl Checker {
                 continue;
             }
             let label = iface_label(decl);
-            let module = match &decl.guarded {
-                Some(guarded) => format!(
+            let hooks: Vec<&Func> = funcs
+                .iter()
+                .position(|func| &func.name == target)
+                .map(|j| self.raising_hooks(funcs, j))
+                .unwrap_or_default()
+                .into_iter()
+                .map(|h| &funcs[h])
+                .collect();
+            let hook_names: Vec<String> = hooks
+                .iter()
+                .map(|h| format!("`{}`", source_name(&h.name)))
+                .collect();
+            let module = match (&decl.guarded, hook_names.is_empty()) {
+                (Some(guarded), _) => format!(
                     "`{}` with guard `{}`",
                     impl_.module.as_deref().unwrap_or(""),
                     guarded.name
                 ),
-                None => format!("`{}`", impl_.module.as_deref().unwrap_or("")),
+                (None, false) => format!(
+                    "`{}` with hook{} {}",
+                    impl_.module.as_deref().unwrap_or(""),
+                    if hook_names.len() == 1 { "" } else { "s" },
+                    hook_names.join(", ")
+                ),
+                (None, true) => format!("`{}`", impl_.module.as_deref().unwrap_or("")),
             };
             let effect = |kind: ItemKind, pure: bool| match kind {
                 ItemKind::View if pure => "`pure`",
@@ -639,6 +718,18 @@ impl Checker {
                 if !raises.is_empty() {
                     msg.push_str(&format!(" raises {}", raises.join(" | ")));
                 }
+            }
+            for hook in &hooks {
+                let raises: Vec<&str> = hook
+                    .errors
+                    .iter()
+                    .map(|&id| err_name(&self.errors, id))
+                    .collect();
+                msg.push_str(&format!(
+                    "\n  hook:       {} raises {}",
+                    source_name(&hook.name),
+                    raises.join(" | ")
+                ));
             }
             return Err(error(decl.line, decl.col, msg).in_file(&decl.origin));
         }
@@ -992,6 +1083,13 @@ impl Checker {
                 line,
                 col,
                 format!("a `fallback` that passes its call on only reads; its target {did}"),
+            );
+        }
+        if let Some(label) = &self.hook_label {
+            return error(
+                line,
+                col,
+                format!("declared effect is weaker than the body's: {label} {did}"),
             );
         }
         let declared = if self.external_pure {

@@ -1274,6 +1274,33 @@ mod tests {
     }
 
     #[test]
+    fn answers_for_hooks() {
+        let dir = std::env::temp_dir().join(format!("lithe-lsp-hooks-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("hooks.lithe");
+        let text = "module Tally is {\n  storage tally at \"lsp.tally\" is record { n : uint; }\n  (* Tells the contract. *)\n  view hook limit() : uint;\n  external function add() is {\n    if tally.n < limit() then {\n      tally.n := tally.n + 1;\n    }\n  }\n}\ncontract C is {\n  use Tally exposing { function add(); }\n  hook Tally.limit : uint is { skip } with 3\n}\n";
+        std::fs::write(&path, text).unwrap();
+        let analysis = lithe::analyze(&path, text);
+        assert!(analysis.error.is_none(), "{:?}", analysis.error.map(|e| e.to_string()));
+        let index = analysis.index.expect("index");
+        let call = index.at(0, text, 6, 18).expect("the call to `limit`");
+        let hover = index.hover(call);
+        assert!(
+            hover.contains("view hook limit() : uint")
+                && hover.contains("Tells the contract.")
+                && hover.contains("the contract implements it: `hook Tally.limit ...`"),
+            "{hover}"
+        );
+        let labels: Vec<String> = index
+            .completions(text, 7, 7)
+            .into_iter()
+            .map(|c| c.label)
+            .collect();
+        assert!(labels.iter().any(|l| l == "limit") && labels.iter().any(|l| l == "hook"), "{labels:?}");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
     fn lints_fixes_and_formats_unsaved_text() {
         let uri = "file:///tmp/lithe-lsp-test/probe.lithe";
         let src = "storage is record {  n : uint; }\n\nexternal function go(const a : uint) is {\n  var b : uint := a;\n  (* lithe-ignore unused-binding: kept *)\n  const kept : uint := 1;\n  storage.n := b;\n}\n";

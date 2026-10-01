@@ -735,7 +735,7 @@ fn tooling_shows_guards() {
         route_text(&tree, "setPrice").contains("guards:\n    - guard Prices.editor(token_id)\n"),
         "{tree}"
     );
-    let stubs = crate::stubs(&memory(&src), Path::new(ENTRY), "Prices").expect("stubs");
+    let stubs = crate::stubs(&memory(&src), Path::new(ENTRY), "Prices", &[]).expect("stubs");
     assert!(
         stubs.contains(
             "(* Prices guards `setPrice`: write the check, and add its errors to its `raises`.\n\n\

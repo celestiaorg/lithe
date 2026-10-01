@@ -12,7 +12,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Mutex, OnceLock};
 
 use crate::ast::{
-    Exposing, Expr, Func, ItemKind, Lit, NameAt, Program, Raises, Stmt, TypeDecl, TypeRef,
+    Exposing, Expr, Func, HookForm, ItemKind, Lit, NameAt, Program, Raises, Stmt, TypeDecl,
+    TypeRef,
 };
 use crate::check::Checked;
 use crate::gen::{self, Built, Entrypoint, Group};
@@ -91,6 +92,9 @@ pub(crate) struct Shape {
     pub facet_at: HashMap<String, Word>,
     /// The ids of the immutables each facet reads after its calldata, in order.
     pub tails: Vec<Vec<String>>,
+    /// For each facet whose modules have hooks: which of them this contract implements, a
+    /// bit each, in the word that follows the immutables after its calldata.
+    pub masks: Vec<Option<Word>>,
     /// The functions of facet modules this code calls across, by index.
     pub cross: BTreeMap<usize, Cross>,
     /// A facet: its creation code only copies it, since it has no `deploy`.
@@ -107,6 +111,10 @@ pub(crate) struct Cross {
     pub sel: [u8; 4],
     pub delegate: bool,
     pub tail: Vec<String>,
+    /// Into a facet whose modules have hooks: the hooks this contract implements.
+    pub mask: Option<Word>,
+    /// In a facet: a hook, called back into the contract when its bit is set.
+    pub bit: Option<u32>,
 }
 
 /// A module's facet: the module's name, its `CREATE2` address, its code, and every external
@@ -126,6 +134,8 @@ pub(crate) struct Facet {
     pub immutables: Vec<String>,
     /// The entrypoints contract code calls the module's functions through.
     pub hidden: Vec<Hidden>,
+    /// The hooks of the modules it runs, `M.h`, in the order of their bits.
+    pub hooks: Vec<String>,
 }
 
 /// A facet's entrypoint for one of its module's functions, which no ABI lists: where the
@@ -223,6 +233,7 @@ pub(crate) fn build(checked: &Checked, name: &str, opts: &Options) -> Result<Spl
 fn build_uncached(checked: &Checked, name: &str, opts: &Options) -> Result<Split, Error> {
     let entries = gen::entrypoints(checked)?;
     let marked = marked(checked, opts);
+    gen::callback_rules(checked, &marked)?;
     let crossing: Vec<(String, Vec<Crossing>)> = marked
         .iter()
         .map(|m| (m.clone(), gen::crossable(checked, m)))
@@ -337,9 +348,10 @@ fn router_shape(
                 };
                 shape.forward.push((entry.sel, k));
             }
-            None => {
+            None if called_back(checked, entry, facets) => {
                 keep.insert(entry.sel);
             }
+            None => {}
         }
     }
     shape.keep = Some(keep);
@@ -352,6 +364,8 @@ fn router_shape(
         .map(|&i| address_word(facets[i].address))
         .collect();
     shape.tails = parts.iter().map(|&i| facets[i].immutables.clone()).collect();
+    let masks: Vec<Option<Word>> = facets.iter().map(|f| hook_mask(checked, f)).collect();
+    shape.masks = parts.iter().map(|&i| masks[i]).collect();
     for (idx, func) in checked.prog.funcs.iter().enumerate() {
         let Some(facet) = facets
             .iter()
@@ -368,11 +382,50 @@ fn router_shape(
                     sel: hidden.sel,
                     delegate: hidden.delegate,
                     tail: facet.immutables.clone(),
+                    mask: hook_mask(checked, facet),
+                    bit: None,
                 },
             );
         }
     }
     Ok(shape)
+}
+
+/// Whether the router runs `entry`: any but a hook's way back in, which it runs when a facet
+/// it forwards to calls that hook.
+fn called_back(checked: &Checked, entry: &Entrypoint, facets: &[Facet]) -> bool {
+    let Some(of) = checked
+        .prog
+        .funcs
+        .iter()
+        .find(|f| f.name == entry.name)
+        .and_then(|f| f.hook_of.as_ref())
+    else {
+        return true;
+    };
+    let hook = format!("{}.{}", of.module.name, of.name);
+    facets.iter().any(|f| f.hooks.contains(&hook))
+}
+
+/// The bits of `facet`'s hooks this contract implements, or `None` for a facet whose modules
+/// have no hooks.
+fn hook_mask(checked: &Checked, facet: &Facet) -> Option<Word> {
+    if facet.hooks.is_empty() {
+        return None;
+    }
+    let mut mask = Word::from_u64(0);
+    for (bit, hook) in facet.hooks.iter().enumerate() {
+        let written = checked.prog.funcs.iter().any(|f| {
+            f.hook_of.as_ref().is_some_and(|of| {
+                matches!(of.form, HookForm::Body | HookForm::Via(_))
+                    && format!("{}.{}", of.module.name, of.name) == *hook
+            })
+        });
+        if written {
+            mask = mask.bitor(Word::from_u64(1).shl(bit as u32));
+        }
+    }
+    Some(mask)
 }
 
 /// A call across for every function of the modules in `crossing` that contract code can call
@@ -397,6 +450,8 @@ fn stand_ins(checked: &Checked, crossing: &[(String, Vec<Crossing>)]) -> BTreeMa
                     sel: selector(&func.name),
                     delegate: c.delegate,
                     tail: Vec::new(),
+                    mask: None,
+                    bit: None,
                 },
             );
         }
@@ -484,8 +539,45 @@ fn facet(
     };
     // A module that leans on something only the contract declares can't be built alone.
     let checked = crate::check::check(prog, opts.evm).map_err(whose)?;
+    let mut stubs: Vec<(String, usize)> = checked
+        .prog
+        .funcs
+        .iter()
+        .enumerate()
+        .filter_map(|(i, f)| {
+            let of = f.hook_of.as_ref()?;
+            (of.form == HookForm::Callback).then(|| (format!("{}.{}", of.module.name, of.name), i))
+        })
+        .collect();
+    stubs.sort();
+    if stubs.len() > HOOK_BITS {
+        return Err(error(
+            0,
+            0,
+            format!(
+                "module `{module}`'s facet runs {} hooks; one facet calls back at most {HOOK_BITS}",
+                stubs.len()
+            ),
+        ));
+    }
+    let mut cross = BTreeMap::new();
+    for (bit, (_, idx)) in stubs.iter().enumerate() {
+        let f = &checked.prog.funcs[*idx];
+        cross.insert(
+            *idx,
+            Cross {
+                address: Word::from_u64(0),
+                sel: selector(&crate::route::callback_sig(&checked, f)?),
+                delegate: true,
+                tail: Vec::new(),
+                mask: None,
+                bit: Some(bit as u32),
+            },
+        );
+    }
     let shape = Shape {
         part: true,
+        cross,
         opts: opts.clone(),
         ..Shape::default()
     };
@@ -547,6 +639,7 @@ fn facet(
             .map(|block| block.id.clone())
             .collect(),
         hidden,
+        hooks: stubs.into_iter().map(|(hook, _)| hook).collect(),
     };
     if let Ok(mut memo) = memo.lock() {
         memo.insert(key, facet.clone());
@@ -557,8 +650,14 @@ fn facet(
 /// What a hidden entrypoint's name ends with: no source can write it, and no ABI lists it.
 const HIDDEN: &str = "#facet";
 
-fn is_hidden(name: &str) -> bool {
-    name.contains(HIDDEN)
+/// The hooks one facet can call back: a bit each, below the router's address in one word.
+/// simplify: a facet with more hooks is an error; a second word would lift it.
+pub(crate) const HOOK_BITS: usize = 96;
+
+/// A facet's entrypoint for a module function, or a contract's for a facet's hook call:
+/// names no source can write, which no ABI lists.
+pub(crate) fn is_hidden(name: &str) -> bool {
+    name.contains(HIDDEN) || name.contains("#callback")
 }
 
 /// The name of the facet's entrypoint for the function declared at `at`, if it has one.
@@ -667,6 +766,9 @@ pub(crate) fn facet_program(source: &Program, module: &str, crossing: &[Crossing
         }
     }
     prog.guards.clear();
+    // A module's hooks are the contract's to implement: the facet calls them back.
+    prog.hooks.clear();
+    prog.calls_back = true;
     prog.upgradeable = false;
     prog.guard = None;
     // The router answers ERC-165; a facet never sees the call.
@@ -776,7 +878,7 @@ fn across(module: &str, decl: &crate::ast::ModuleDecl, func: &Func, crossing: &C
 }
 
 /// `module` after everything it requires, each once, required modules in name order.
-fn closure(modules: &[crate::ast::ModuleDecl], module: &str, out: &mut Vec<String>) {
+pub(crate) fn closure(modules: &[crate::ast::ModuleDecl], module: &str, out: &mut Vec<String>) {
     if out.iter().any(|name| name == module) {
         return;
     }
@@ -1176,6 +1278,10 @@ fn put_facets(out: &mut Vec<u8>, facets: &[Facet]) {
             out.extend_from_slice(&hidden.sel);
             put_len(out, hidden.delegate as usize);
         }
+        put_len(out, facet.hooks.len());
+        for hook in &facet.hooks {
+            put_bytes(out, hook.as_bytes());
+        }
     }
 }
 
@@ -1413,6 +1519,9 @@ impl Reader<'_> {
                                 delegate: self.flag()?,
                             })
                         })
+                        .collect::<Option<_>>()?,
+                    hooks: (0..self.len()?)
+                        .map(|_| self.string())
                         .collect::<Option<_>>()?,
                 })
             })

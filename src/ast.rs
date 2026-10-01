@@ -23,6 +23,11 @@ pub(crate) struct Program {
     pub guard: Option<GuardDecl>,
     /// `guard M.editor(...) is { ... }`: the contract's checks for its modules' guards.
     pub guards: Vec<Func>,
+    /// `hook M.h(...) is { ... }`, `hook M.h is f;`, and `hook M.h is skip;`: the contract's
+    /// implementations of its modules' hooks.
+    pub hooks: Vec<Func>,
+    /// A facet's program: its modules' hooks call back into the contract that runs it.
+    pub calls_back: bool,
     /// Set when the file names its contract. An implicit file leaves this empty;
     /// tooling may still label artifacts from the file name.
     pub contract_name: Option<String>,
@@ -137,6 +142,9 @@ pub(crate) struct ModuleDecl {
     /// `guard editor(const id : uint);`: checks the module's externals name with `guarded`,
     /// which each contract that exposes them writes. Only a header: no body.
     pub guards: Vec<Func>,
+    /// `[view | pure] hook name(params) [: T];`: calls the module's code makes into the
+    /// contract that uses it, which that contract implements. Only a header: no body.
+    pub hooks: Vec<Func>,
     /// The members the compiler implements, in a module of the standard library.
     pub intrinsics: Vec<Intrinsic>,
 }
@@ -240,7 +248,7 @@ pub(crate) struct ErrorSetDecl {
     pub members: Vec<NameAt>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct NameAt {
     pub line: u32,
     pub col: u32,
@@ -498,6 +506,9 @@ pub(crate) struct Func {
     pub guarded: Option<Guarded>,
     /// On the contract's check for a module's guard: which guard it is.
     pub guard_of: Option<GuardOf>,
+    /// On the function a module's code calls for one of its hooks, and on a contract's
+    /// entrypoint a facet calls it back through: which hook it is.
+    pub hook_of: Option<HookOf>,
 }
 
 #[derive(Debug, Clone)]
@@ -515,6 +526,30 @@ pub(crate) struct GuardOf {
     pub module: NameAt,
     pub name: String,
     pub via: Option<NameAt>,
+}
+
+/// `hook M.h ... is ...`: which of `M`'s hooks a function is, and what it is.
+#[derive(Debug, Clone)]
+pub(crate) struct HookOf {
+    pub module: NameAt,
+    pub name: String,
+    pub form: HookForm,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum HookForm {
+    /// `is { ... }`: a body the contract writes.
+    Body,
+    /// `is f;`: calls `f`.
+    Via(NameAt),
+    /// `is skip;`: explicitly unimplemented.
+    Skip,
+    /// Not written. An error once code the contract runs reaches it.
+    Missing,
+    /// In a facet: a call back into the contract that runs the facet.
+    Callback,
+    /// The contract's hidden entrypoint a facet calls the hook back through.
+    Entry,
 }
 
 #[derive(Debug, Clone)]

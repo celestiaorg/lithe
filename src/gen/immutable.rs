@@ -115,7 +115,34 @@ impl<'a> Gen<'a> {
         for (i, leaf) in order.iter().enumerate() {
             self.imm_tail[(leaf - from) as usize] = i as u32;
         }
-        self.cd_tail = 32 * order.len() as u64;
+        // A facet whose modules have hooks reads the word after them: its router's address,
+        // and a bit for each hook the contract implements.
+        let hooked = self.shape.cross.values().any(|c| c.bit.is_some());
+        self.cd_tail = 32 * (order.len() + usize::from(hooked)) as u64;
+    }
+
+    /// In a facet whose modules have hooks, pushes the word its router appended last.
+    pub(super) fn push_hook_word_read(&mut self) {
+        self.push_u64(32);
+        self.code.push(Inst::Op(CALLDATASIZE));
+        self.op(SUB);
+        self.op(CALLDATALOAD);
+    }
+
+    /// Pushes the word a router appends for a facet whose modules have hooks: where the facet
+    /// calls them back, this contract's code, over the bits of those it implements.
+    pub(super) fn push_hook_word(&mut self, mask: Word) {
+        if self.checked.prog.upgradeable {
+            self.push_self();
+        } else {
+            self.op(ADDRESS);
+        }
+        self.push_u64(96);
+        self.op(SHL);
+        if !mask.is_zero() {
+            self.push_word(mask);
+            self.op(OR);
+        }
     }
 
     /// Returns the runtime, `len` bytes at `code`, with each immutable written into it.

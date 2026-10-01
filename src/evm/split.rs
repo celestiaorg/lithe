@@ -8,6 +8,10 @@ pub(super) fn deploy_split(split: &crate::split::Split) -> Vec<u8> {
     deploy(&split.creation).unwrap_or_else(|e| panic!("router: {e}"))
 }
 
+pub(super) fn deploy_split_facets(split: &crate::split::Split) {
+    deploy_facets(split);
+}
+
 fn deploy_facets(split: &crate::split::Split) {
     for facet in split.prerequisites() {
         let runtime = deploy(&facet.init).unwrap_or_else(|e| panic!("{}: {e}", facet.name));
@@ -1147,7 +1151,7 @@ fn split_tooling_output() {
         &opts,
     );
     assert!(plain.is_err(), "an unsplit upgrade needs --impl");
-    let stubs = crate::stubs(&Sources::disk(), &pair, "Alpha").expect("stubs");
+    let stubs = crate::stubs(&Sources::disk(), &pair, "Alpha", &[]).expect("stubs");
     assert_eq!(
         stubs,
         "use Alpha exposing {\n  function alpha_add(a : uint; b : uint);\n  function alpha_mix(a : uint; b : uint; c : uint)\n    raises Alpha_zero;\n  view function alpha() : uint;\n}\n"
@@ -1179,7 +1183,7 @@ fn stubs_keep_tuple_records() {
     std::fs::create_dir_all(&dir).expect("dir");
     let path = dir.join("orders.lithe");
     std::fs::write(&path, ORDERS).expect("write");
-    let stubs = crate::stubs(&Sources::disk(), &path, "Orders").expect("stubs");
+    let stubs = crate::stubs(&Sources::disk(), &path, "Orders", &[]).expect("stubs");
     let _ = std::fs::remove_dir_all(&dir);
     assert_eq!(
         stubs,
