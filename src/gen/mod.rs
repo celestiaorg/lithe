@@ -2046,9 +2046,10 @@ enum Target {
     Drain {
         sel: [u8; 4],
     },
-    /// A selector a router hands to one of its facets.
+    /// A selector a router hands to one of its facets, payable if the facet's entry is.
     Forward {
         sel: [u8; 4],
+        payable: bool,
     },
     /// A forwarded selector whose external is guarded: the router runs the contract's
     /// check, then goes on to the facet's stub at `to`.
@@ -2077,7 +2078,7 @@ impl Target {
             | Self::Proxiable { sel }
             | Self::Upgrade { sel }
             | Self::Drain { sel }
-            | Self::Forward { sel }
+            | Self::Forward { sel, .. }
             | Self::Guarded { sel, .. } => *sel,
         }
     }

@@ -1284,6 +1284,57 @@ fn hidden_hook_entrypoints_stay_behind_the_router() {
     DEPLOYED.with(|d| d.borrow_mut().clear());
 }
 
+/// A router rejects value for a forwarded entrypoint that takes none, as its facet does,
+/// and a hook's way back in takes value only when code that runs with value reaches the hook.
+#[test]
+fn forwarded_and_callback_entrypoints_take_value_as_their_callers_do() {
+    let callback_payable = |src: &str| {
+        let checked = checked_src(src);
+        let f = checked
+            .prog
+            .funcs
+            .iter()
+            .find(|f| f.name == "Tok.before_transfer#callback")
+            .expect("callback");
+        f.payable
+    };
+    let paid = |src: String| {
+        src.replace(
+            "external function send(",
+            "external payable function send(",
+        )
+        .replace(
+            "    function send(to : address; id : uint)",
+            "    payable function send(to : address; id : uint)",
+        )
+    };
+    assert!(!callback_payable(&frozen(" delegated")));
+    assert!(callback_payable(&paid(frozen(" delegated"))));
+    let with_value = |session: &Session, data: &[u8]| {
+        exec(
+            &session.runtime,
+            data,
+            session.storage.clone(),
+            Word::from_u64(1),
+            Word::from_u64(5),
+            Word::from_u64(5),
+        )
+        .expect("exec")
+    };
+    let mint = word_data("mint(address,uint256)", &words(&[1, 7]));
+    let send = word_data("send(address,uint256)", &words(&[3, 7]));
+    let (_, mut split, _) = both(&frozen(""), &frozen(" delegated"), "Frozen");
+    assert!(!split.send(1, &mint).reverted);
+    let out = with_value(&split, &send);
+    assert!(out.reverted && out.returndata.is_empty());
+    let (mut inline, mut split, _) = both(&paid(frozen("")), &paid(frozen(" delegated")), "Frozen");
+    assert!(!inline.send(1, &mint).reverted && !split.send(1, &mint).reverted);
+    let (a, b) = (with_value(&inline, &send), with_value(&split, &send));
+    assert!(!a.reverted, "{}", pretty(&a.returndata));
+    assert_eq!(seen(&a), seen(&b));
+    DEPLOYED.with(|d| d.borrow_mut().clear());
+}
+
 /// Two contracts that implement a module's hooks differently share its facet.
 #[test]
 fn contracts_with_different_hooks_share_a_facet() {

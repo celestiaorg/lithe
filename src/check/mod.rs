@@ -1027,6 +1027,7 @@ fn check_program(
         c.check_guard(guard)?;
     }
     c.check_hook_reach(&prog)?;
+    c.price_callbacks(&mut prog.funcs);
     c.reject_failing_constants(&prog.funcs, prog.guard.as_ref())?;
     c.check_immutable_writes(&prog.funcs, prog.upgradeable)?;
     hooks::forward_via_hooks(&mut prog.funcs);

@@ -224,8 +224,8 @@ pub(super) fn place_hooks(prog: &mut Program) -> Result<(), Error> {
     Ok(())
 }
 
-/// The hidden entrypoint a facet calls `imp` back through: payable, since `delegatecall`
-/// passes the caller's value through, and calling the implementation with its parameters.
+/// The hidden entrypoint a facet calls `imp` back through, calling the implementation with
+/// its parameters. It starts payable; `price_callbacks` keeps it so when value can reach it.
 fn callback_entry(imp: &Func, module: &str, name: &str) -> Func {
     let (line, col) = (imp.line, imp.col);
     let call = Expr::Call {
@@ -681,6 +681,52 @@ impl Checker {
             .in_file(&funcs[h].origin));
         }
         Ok(())
+    }
+
+    /// A facet calls a hook back with `delegatecall`, which passes on the value of the call
+    /// that runs it, so the hook's entrypoint takes value only when code that runs with value
+    /// reaches the hook: a payable entrypoint, `deploy`, `receive`, or `fallback`, a migration,
+    /// which `upgradeToAndCall` runs, or a guard. Every other one dispatches with the
+    /// entrypoints that reject value.
+    pub(super) fn price_callbacks(&self, funcs: &mut [Func]) {
+        let n = funcs.len().min(self.pieces.len());
+        let valued = |f: &Func| {
+            is_root(f)
+                && match f.kind {
+                    ItemKind::Migrate | ItemKind::Receive => true,
+                    ItemKind::View => false,
+                    _ => f.payable,
+                }
+        };
+        let mut seen = vec![false; n];
+        let mut queue: VecDeque<usize> = (0..n)
+            .filter(|&i| valued(&funcs[i]))
+            .chain(self.guard_calls.iter().copied().filter(|&j| j < n))
+            .collect();
+        for &i in &queue {
+            seen[i] = true;
+        }
+        while let Some(i) = queue.pop_front() {
+            for piece in &self.pieces[i] {
+                if let Piece::Call(j, ..) = *piece {
+                    if j < n && !seen[j] {
+                        seen[j] = true;
+                        queue.push_back(j);
+                    }
+                }
+            }
+        }
+        for i in 0..n {
+            if funcs[i]
+                .hook_of
+                .as_ref()
+                .is_some_and(|of| of.form == HookForm::Entry)
+            {
+                funcs[i].payable = self.pieces[i]
+                    .iter()
+                    .any(|piece| matches!(*piece, Piece::Call(j, ..) if j < n && seen[j]));
+            }
+        }
     }
 }
 
