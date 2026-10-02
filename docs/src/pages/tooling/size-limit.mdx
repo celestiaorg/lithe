@@ -192,6 +192,65 @@ A facet is built from its module alone: the module's externals, an entrypoint fo
 
 Two facets never call each other. A module that requires another carries a copy of it in its facet, whether or not the contract marks that one too, and calls it there. Storage is shared all the same: each module's storage sits at its own ERC-7201 root, the same in the router and in every facet, and a module's transient storage sits at a slot derived from its name.
 
+### Code the contract and a facet both run
+
+`delegated` holds for the whole module, always: none of a marked module's code is in the contract, and every call the contract's code makes to it goes across. To share code between the contract and a facet, put it in a module of its own that neither marks. The contract uses it unmarked, so it runs in the router. The delegated module requires it, so its facet carries a copy and calls that.
+
+```lithe
+import "std/evm";
+
+module RoleStore is {
+  storage roles at "example.roles" is record {
+    minters : map(address, bool);
+  }
+
+  error Unauthorized;
+
+  view function only_minter() raises Unauthorized is {
+    assert(roles.minters[Evm.sender()], Unauthorized);
+  }
+
+  function grant(const account : address) is {
+    roles.minters[account] := true;
+  }
+}
+
+module Drop is {
+  requires RoleStore;
+
+  storage drop at "example.drop" is record {
+    owners : map(uint, address);
+  }
+
+  external function mint(const to : address; const id : uint) raises Unauthorized is {
+    RoleStore.only_minter();
+    drop.owners[id] := to;
+  }
+}
+
+contract Shop is {
+  use RoleStore;
+  use Drop delegated exposing {
+    function mint(to : address; id : uint) raises Unauthorized;
+  }
+
+  storage is record {
+    paused : bool;
+  }
+
+  deploy(const minter : address) is {
+    RoleStore.grant(minter);
+  }
+
+  external function pause() raises Unauthorized is {
+    RoleStore.only_minter();
+    storage.paused := true;
+  }
+}
+```
+
+`deploy` and `pause` run `RoleStore` in the router, and `mint` runs the facet's copy of it, against the same storage. Marking `RoleStore` too would put its code in a facet of its own, and `pause` would then call `only_minter` across, paying a `delegatecall` each time. So the split follows where the code runs. Code that runs in a facet, and that contract code calls only through externals, goes in the delegated module. Code the contract calls itself goes in a module it uses unmarked.
+
 ## Over the limit
 
 A contract over `--size-limit` still compiles and emits its bytecode, with a warning. It lists what takes the space: the contract's own entrypoints, by group, and for each module the contract runs in its own code, what marking it `delegated` would save. Here the [standard-library token](/stdlib/tokens), with no modules marked, is built with `--size-limit 2000`:
