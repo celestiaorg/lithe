@@ -147,5 +147,5 @@ set_fee
 ## Rules
 
 - Routing must be static. A dispatcher is a guard block plus a `case`, and it cannot choose a branch from storage or other runtime state.
-- Every flattened entrypoint must be unique. A case `Deposit of uint` and an `external function deposit(const x : uint)` collide as `deposit(uint256)`.
+- Every flattened entrypoint must be unique. A case `Deposit of uint` and an `external function deposit(const x : uint)` collide as `deposit(uint256)`. Distinct signatures whose 4-byte selectors are equal, such as `transferFrom(address,address,uint256)` and `gasprice_bit_ether(int128)`, are rejected too, as are ones equal to a selector the compiler adds: `supportsInterface(bytes4)`, `proxiableUUID()`, `upgradeToAndCall(address,bytes)`, and the `#drain(uint256)` entry for hooks that defer calls.
 - Variant values exist only along a dispatch path. They cannot yet be constructed, stored, or returned.

@@ -201,6 +201,10 @@ const REJECT_RULES: &[(&str, &str)] = &[
         "duplicate entrypoint `transfer(uint256)`",
     ),
     (
+        "reject/selector_collision.lithe",
+        "entrypoint selector `gasprice_bit_ether(int128)` collides with `transferFrom(address,address,uint256)`",
+    ),
+    (
         "reject/missing_requires.lithe",
         "module `Guarded` requires `Ledger`",
     ),

@@ -319,18 +319,26 @@ impl<'a> Gen<'a> {
 
     /// Every selector the whole contract dispatches, each with a fresh label.
     pub(super) fn targets(&mut self) -> Result<Vec<(u32, Target)>, Error> {
-        let sels: Vec<(usize, [u8; 4])> = self
+        let entries: Vec<(usize, [u8; 4], String)> = self
             .checked
             .routes
             .iter()
             .enumerate()
             .filter(|(_, r)| r.by_selector())
-            .map(|(i, r)| (i, r.sel))
+            .map(|(i, r)| (i, r.sel, r.sig.clone()))
             .collect();
+        let mut seen: Vec<String> = Vec::new();
         let mut targets: Vec<(u32, Target)> = Vec::new();
-        for (i, sel) in sels {
+        for (i, sel, sig) in entries {
+            seen.push(sig);
             let label = self.fresh();
             targets.push((label, Target::Entry { index: i, sel }));
+        }
+        // `emit` adds the drain entry when any of these queues calls for another frame.
+        if targets.iter().any(|(_, target)| {
+            matches!(*target, Target::Entry { index, .. } if self.queues_nested(index))
+        }) {
+            crate::route::claim(&mut seen, DRAIN_SIG, 1, 1)?;
         }
         let views: Vec<usize> = self
             .checked
@@ -344,19 +352,8 @@ impl<'a> Gen<'a> {
         for fi in views {
             let sig = self.view_sig(fi)?;
             let sel = selector(&sig);
-            if self
-                .checked
-                .routes
-                .iter()
-                .any(|r| r.by_selector() && r.sel == sel)
-            {
-                let f = &self.checked.prog.funcs[fi];
-                return Err(error(
-                    f.line,
-                    f.col,
-                    format!("duplicate entrypoint `{sig}`"),
-                ));
-            }
+            let f = &self.checked.prog.funcs[fi];
+            crate::route::claim(&mut seen, &sig, f.line, f.col)?;
             let label = self.fresh();
             targets.push((label, Target::View { func: fi, sel }));
         }
@@ -372,37 +369,22 @@ impl<'a> Gen<'a> {
         for fi in migrates {
             let sig = self.view_sig(fi)?;
             let sel = selector(&sig);
-            if targets.iter().any(|(_, target)| target.sel() == sel) {
-                let f = &self.checked.prog.funcs[fi];
-                return Err(error(
-                    f.line,
-                    f.col,
-                    format!("duplicate entrypoint `{sig}`"),
-                ));
-            }
+            let f = &self.checked.prog.funcs[fi];
+            crate::route::claim(&mut seen, &sig, f.line, f.col)?;
             let label = self.fresh();
             targets.push((label, Target::Migrate { func: fi, sel }));
         }
         if let (Some(fi), true) = (self.deploy_func(), self.checked.prog.upgradeable) {
             let sig = self.view_sig(fi)?;
             let sel = selector(&sig);
-            if targets.iter().any(|(_, target)| target.sel() == sel) {
-                let f = &self.checked.prog.funcs[fi];
-                return Err(error(
-                    f.line,
-                    f.col,
-                    format!("duplicate entrypoint `{sig}`"),
-                ));
-            }
+            let f = &self.checked.prog.funcs[fi];
+            crate::route::claim(&mut seen, &sig, f.line, f.col)?;
             let label = self.fresh();
             targets.push((label, Target::Deploy { func: fi, sel }));
         }
         if self.checked.prog.upgradeable {
             for sig in ["proxiableUUID()", "upgradeToAndCall(address,bytes)"] {
-                let sel = selector(sig);
-                if targets.iter().any(|(_, target)| target.sel() == sel) {
-                    return Err(error(1, 1, format!("duplicate entrypoint `{sig}`")));
-                }
+                crate::route::claim(&mut seen, sig, 1, 1)?;
             }
             let label = self.fresh();
             targets.push((

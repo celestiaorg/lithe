@@ -1,0 +1,11 @@
+storage is record {
+  count : uint;
+}
+
+external function transferFrom(const a : address; const b : address; const n : uint) is {
+  skip
+}
+
+external function gasprice_bit_ether(const x : int128) is {
+  skip
+}

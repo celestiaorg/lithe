@@ -355,14 +355,7 @@ fn walk(
                     .collect::<Vec<_>>()
                     .join(",")
             );
-            if seen.iter().any(|s| s == &sig) {
-                return Err(error(
-                    arm.line,
-                    arm.col,
-                    format!("duplicate entrypoint `{sig}`"),
-                ));
-            }
-            seen.push(sig.clone());
+            claim(seen, &sig, arm.line, arm.col)?;
             let mut leaf_path = path.clone();
             leaf_path.push(name.clone());
             let tail = match &arm.expr {
@@ -422,6 +415,21 @@ fn walk(
     Ok(())
 }
 
+/// Takes `sig`'s selector for one entrypoint, refused when an earlier one in `seen` has it.
+pub(crate) fn claim(seen: &mut Vec<String>, sig: &str, line: u32, col: u32) -> Result<(), Error> {
+    let sel = selector(sig);
+    if let Some(prev) = seen.iter().find(|prev| selector(prev) == sel) {
+        let message = if prev == sig {
+            format!("duplicate entrypoint `{sig}`")
+        } else {
+            format!("entrypoint selector `{sig}` collides with `{prev}`")
+        };
+        return Err(error(line, col, message));
+    }
+    seen.push(sig.to_string());
+    Ok(())
+}
+
 fn direct(checked: &Checked, idx: usize, f: &Func, seen: &mut Vec<String>) -> Result<Route, Error> {
     let mut inputs = Vec::new();
     for p in &f.params {
@@ -436,14 +444,7 @@ fn direct(checked: &Checked, idx: usize, f: &Func, seen: &mut Vec<String>) -> Re
             .collect::<Vec<_>>()
             .join(",")
     );
-    if seen.iter().any(|s| s == &sig) {
-        return Err(error(
-            f.line,
-            f.col,
-            format!("duplicate entrypoint `{sig}`"),
-        ));
-    }
-    seen.push(sig.clone());
+    claim(seen, &sig, f.line, f.col)?;
     let mut calls = Vec::new();
     let mut reads = Vec::new();
     let mut writes = Vec::new();
