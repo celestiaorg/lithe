@@ -84,7 +84,7 @@ unknown type `Amount`
 
 Naming is what needs the import. A value can come from anywhere: `main` can call `a`'s function that returns `b`'s `Amount`, and pass the result along, without importing `b`.
 
-So a file's imports list everything it depends on. A file that doesn't import `std/evm` doesn't read the caller, the block, or balances, and a reviewer can see that from its first lines. `lithe lint` reports an import the file doesn't use, and the [language server](/tooling/editors) adds the import a name needs.
+So a file's imports list everything it depends on. A file that doesn't import `std/evm` doesn't read the caller, the block, or balances, and a reviewer can see that from its first lines. `lithe lint` reports an import the file doesn't use, and the [language server](/tooling/cli#lithe-lsp) adds the import a name needs.
 
 ### Code resolves where it's written
 
