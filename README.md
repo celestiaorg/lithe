@@ -2,6 +2,9 @@
 
 Lithe is a smart-contract language for the EVM. Entrypoints are state transitions with explicit effects, typed failures, and deterministic storage. The compiler enforces the security rules that Solidity leaves to convention.
 
+> [!WARNING]
+> Lithe is in early development and experimental. The language, standard library, and compiler output can change without notice, and neither the compiler nor the standard library has been audited.
+
 ```lithe
 storage is record {
   count : uint;
@@ -21,7 +24,7 @@ external function inc() is {
 - **Formal verification.** Specs beside the contract are proved with `lithe prove`.
 - **Deterministic storage.** The default layout matches Solidity's; named domains sit at ERC-7201 roots.
 - **Modules, not inheritance**, and built-in UUPS upgrades.
-- **Smaller bytecode.** About 30% less runtime code than optimized `solc` across real contracts.
+- **Smaller bytecode.** About 32% less runtime code than optimized `solc` across real contracts.
 
 ## Getting started
 
@@ -49,6 +52,7 @@ Run `lithe` with no arguments for every command. [`lithe prove`](docs/src/pages/
 | `src/` | the compiler, CLI, and LSP server |
 | `std/` | the standard library, embedded in the compiler at build time |
 | `docs/` | the documentation site ([Vocs](https://vocs.dev)); see [docs/README.md](docs/README.md) |
+| `playground/` | the compiler built to WebAssembly for the docs site's browser playground |
 | `examples/` | example contracts |
 | `bench/` | Lithe and Solidity versions of the same contracts, for size and gas comparison (`bench/run.py`) |
 | `extensions/` | editor support: a TextMate grammar and a VS Code extension |
