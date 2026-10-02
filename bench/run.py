@@ -32,8 +32,6 @@ import time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 BENCH = os.path.join(ROOT, "bench")
-# Through cargo so the bench always measures the compiler in this tree.
-LITHE = ["cargo", "run", "--release", "--quiet", "--manifest-path", os.path.join(ROOT, "Cargo.toml"), "--"]
 # anvil's first two default accounts.
 KEYS = {
     "A": "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80",
@@ -2222,11 +2220,38 @@ def push4s(code):
     return out
 
 
-def lithe_builds():
+def lithe_binary():
+    """The compiler in this tree, built first so the bench always measures it."""
+    out = run(["cargo", "build", "--release", "--quiet", "--message-format=json-render-diagnostics",
+               "--manifest-path", os.path.join(ROOT, "Cargo.toml")]).stdout
+    exe = next(m["executable"] for m in map(json.loads, out.splitlines()) if m.get("executable"))
+    # macOS checks a new binary on its first launch; keep that out of the timings.
+    subprocess.run([exe], capture_output=True)
+    return exe
+
+
+def lithe_times(pairs, cache):
+    """Seconds each pair takes to compile into an empty build cache, then from it warm."""
+    env = {**os.environ, "LITHE_CACHE_DIR": cache}
+    times = {}
+    for name in pairs:
+        cmd = [LITHE, "compile", os.path.join(BENCH, name + ".lithe"), "--evm-version", EVM]
+        times[name] = []
+        for _ in range(2):
+            start = time.perf_counter()
+            result = subprocess.run(cmd, capture_output=True, text=True, env=env)
+            times[name].append(time.perf_counter() - start)
+            if result.returncode:
+                sys.exit(result.stderr)
+    return times
+
+
+def lithe_builds(cache):
     """Each pair's creation code, runtime size, and function signatures, from the
     Foundry-style artifacts."""
     out = tempfile.mkdtemp()
-    result = subprocess.run([*LITHE, "compile", BENCH, "--evm-version", EVM], cwd=out, capture_output=True, text=True)
+    env = {**os.environ, "LITHE_CACHE_DIR": cache}
+    result = subprocess.run([LITHE, "compile", BENCH, "--evm-version", EVM], cwd=out, capture_output=True, text=True, env=env)
     if result.returncode:
         sys.exit(result.stderr)
     builds = {}
@@ -2344,14 +2369,19 @@ def main():
     wanted = sys.argv[1:] or sorted(suites())
     order = ["lithe", *SOLC_BUILDS]
     code = {}
-    builds = lithe_builds()
+    cache = tempfile.mkdtemp()
+    seconds = lithe_times(pairs, cache)
+    builds = lithe_builds(cache)
+    shutil.rmtree(cache)
     print("Runtime bytecode (bytes)\n")
     header = ["contract", "lithe", *SOLC_BUILDS, "lithe vs best solc"]
     rows = []
     for name in pairs:
         code[name] = {"lithe": builds[name]}
         for label, flags in SOLC_BUILDS.items():
+            start = time.perf_counter()
             code[name][label] = solc(os.path.join(BENCH, name + ".sol"), flags)
+            seconds[name].append(time.perf_counter() - start)
         sizes = [code[name][b][1] for b in order]
         best = min(sizes[1:])
         rows.append([name, *map(str, sizes), f"{(sizes[0] - best) * 100 / best:+.1f}%"])
@@ -2359,6 +2389,12 @@ def main():
     best = min(totals[1:])
     rows.append(["total", *map(str, totals), f"{(totals[0] - best) * 100 / best:+.1f}%"])
     table(header, rows)
+
+    print("\nCompile time (ms); lithe cached reads its build cache warm\n")
+    rows = [[name, *seconds[name]] for name in pairs]
+    rows.append(["total", *(sum(col) for col in zip(*(seconds[n] for n in pairs)))])
+    rows = [[r[0], *(f"{t * 1000:.0f}" for t in r[1:]), f"{r[1] / min(r[3:]):.1f}x"] for r in rows]
+    table(["contract", "lithe", "lithe cached", *SOLC_BUILDS, "lithe vs fastest solc"], rows)
 
     # A pair is only a fair comparison when both sides have the same entrypoints.
     mismatches = 0
@@ -2537,6 +2573,7 @@ def table(header, rows):
 
 
 SOLC = solc_binary()
+LITHE = lithe_binary()
 
 if __name__ == "__main__":
     main()

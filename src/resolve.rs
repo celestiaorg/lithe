@@ -3,7 +3,7 @@
 //! name, whichever files import it and however they spell it, and the loader rewrites each
 //! file's references to those names before the files are merged into one program.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::{Component, Path, PathBuf};
 use std::sync::OnceLock;
 
@@ -71,14 +71,14 @@ pub(crate) struct Import {
 /// The names one file sees, or one contract of a file of contracts.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct Scope {
-    pub names: HashMap<String, Vec<Entry>>,
-    pub modules: HashMap<String, Entry>,
-    pub aliases: HashMap<String, usize>,
+    pub names: BTreeMap<String, Vec<Entry>>,
+    pub modules: BTreeMap<String, Entry>,
+    pub aliases: BTreeMap<String, usize>,
     pub imports: Vec<Import>,
     /// The contracts it may create by name: its file's and those of the files it imports.
-    pub contracts: HashSet<String>,
+    pub contracts: BTreeSet<String>,
     /// The imports its references use.
-    pub used: HashSet<usize>,
+    pub used: BTreeSet<usize>,
 }
 
 /// A scope's key: a file, and the contract when the file declares several.
@@ -88,12 +88,12 @@ pub(crate) type Key = (String, Option<String>);
 #[derive(Debug, Clone, Default)]
 pub(crate) struct Scopes {
     pub decls: Vec<Decl>,
-    pub scopes: HashMap<Key, Scope>,
+    pub scopes: BTreeMap<Key, Scope>,
     /// Names declared inside modules, which `use` publishes: they keep their names.
-    members: HashSet<String>,
-    ctors: HashSet<String>,
+    members: BTreeSet<String>,
+    ctors: BTreeSet<String>,
     /// The intrinsics of each module the compiler implements, by its canonical name.
-    pub intrinsics: HashMap<String, HashMap<String, Tag>>,
+    pub intrinsics: BTreeMap<String, BTreeMap<String, Tag>>,
 }
 
 /// One file, or one contract of a file of contracts, with its imports.
@@ -442,7 +442,7 @@ pub(crate) fn resolve_specs(
     r.specs(blocks)
 }
 
-fn collect_ctors(ty: &TypeRef, out: &mut HashSet<String>) {
+fn collect_ctors(ty: &TypeRef, out: &mut BTreeSet<String>) {
     if let TypeRef::Variant { variants, .. } = ty {
         out.extend(variants.iter().map(|v| v.name.clone()));
     }
@@ -721,9 +721,9 @@ struct InModule {
 struct Resolver<'a> {
     scope: &'a mut Scope,
     decls: &'a [Decl],
-    members: &'a HashSet<String>,
-    ctors: &'a HashSet<String>,
-    intrinsics: &'a HashMap<String, HashMap<String, Tag>>,
+    members: &'a BTreeSet<String>,
+    ctors: &'a BTreeSet<String>,
+    intrinsics: &'a BTreeMap<String, BTreeMap<String, Tag>>,
     origin: &'a str,
     module: Option<InModule>,
     type_params: HashSet<String>,
