@@ -18,11 +18,16 @@ fn main() {
         fmt_cmd(&args);
     }
     // Build flags apply wherever code is built and placed, over the source's `lithe.toml`.
-    let opts = if matches!(
+    let builds = matches!(
         cmd.as_str(),
         "compile" | "abi" | "facets" | "abi-tree" | "footprint" | "upgrade" | "upgrade-check"
-    ) {
-        let flags = build_flags(&mut args);
+    );
+    let flags = if builds {
+        build_flags(&mut args)
+    } else {
+        Vec::new()
+    };
+    let opts = if builds {
         // `upgrade` and `upgrade-check` build their second file.
         let source = if matches!(cmd.as_str(), "upgrade" | "upgrade-check") {
             args.get(1)
@@ -76,8 +81,12 @@ fn main() {
     };
     if meta.is_dir() {
         let result = match cmd.as_str() {
-            "compile" => lithe::compile_dir(Path::new(&path), Path::new("out"), &opts),
-            "abi" => lithe::abi_dir(Path::new(&path), Path::new("out"), &opts),
+            "compile" => lithe::compile_dir(Path::new(&path), Path::new("out"), &|file| {
+                build_options(file, &flags)
+            }),
+            "abi" => lithe::abi_dir(Path::new(&path), Path::new("out"), &|file| {
+                build_options(file, &flags)
+            }),
             cmd => {
                 eprintln!("{cmd} reads one file");
                 std::process::exit(2);
@@ -502,30 +511,35 @@ builds are cached in ~/.cache/lithe; set LITHE_CACHE_DIR to move it, or empty to
 mod tests {
     use super::*;
 
-    /// A directory build takes the fork from `lithe.toml`, and `--evm-version` overrides it.
+    /// A directory build takes each file's fork from its nearest `lithe.toml`, and
+    /// `--evm-version` overrides it.
     #[test]
     fn build_flags_override_lithe_toml() {
         let dir = std::env::temp_dir().join(format!("lithe-build-config-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::create_dir_all(dir.join("osaka")).unwrap();
         std::fs::write(
             dir.join("lithe.toml"),
             "[build]\nevm-version = \"prague\"\nsize-limit = 30_000\n",
         )
         .unwrap();
         std::fs::write(
-            dir.join("clz.lithe"),
-            "import \"std/uint\";\ncontract C is {\n  storage is record { n : uint; }\n  \
-             external pure function clz(const a : uint) : uint is Uint.clz(a)\n}\n",
+            dir.join("osaka/lithe.toml"),
+            "[build]\nevm-version = \"osaka\"\n",
         )
         .unwrap();
-        let has_clz = |flags: &[(&str, Option<String>)]| {
+        let src = "import \"std/uint\";\ncontract C is {\n  storage is record { n : uint; }\n  \
+             external pure function clz(const a : uint) : uint is Uint.clz(a)\n}\n";
+        std::fs::write(dir.join("clz.lithe"), src).unwrap();
+        std::fs::write(dir.join("osaka/new.lithe"), src).unwrap();
+        let has_clz = |flags: &[(&str, Option<String>)], file: &str| {
             let opts = build_options(&dir, flags).unwrap();
             assert_eq!(opts.size_limit, 30_000);
             let out = dir.join("out");
-            let built = lithe::compile_dir(&dir, &out, &opts).unwrap();
+            let built =
+                lithe::compile_dir(&dir, &out, &|file| build_options(file, flags)).unwrap();
             assert!(built.failed.is_empty());
-            let json = std::fs::read_to_string(out.join("clz.lithe/C.json")).unwrap();
+            let json = std::fs::read_to_string(out.join(file).join("C.json")).unwrap();
             let (_, rest) = json.split_once("\"deployedBytecode\"").unwrap();
             let (_, hex) = rest.split_once("0x").unwrap();
             let hex: String = hex.chars().take_while(char::is_ascii_hexdigit).collect();
@@ -546,8 +560,16 @@ mod tests {
             }
             false
         };
-        assert!(!has_clz(&[]));
-        assert!(has_clz(&[("evm-version", Some("osaka".to_string()))]));
+        assert!(!has_clz(&[], "clz.lithe"));
+        assert!(has_clz(&[], "new.lithe"));
+        assert!(has_clz(
+            &[("evm-version", Some("osaka".to_string()))],
+            "clz.lithe"
+        ));
+        assert!(!has_clz(
+            &[("evm-version", Some("prague".to_string()))],
+            "new.lithe"
+        ));
         assert_eq!(
             build_options(&dir, &[("evm-version", Some("cancun".to_string()))]).err(),
             Some("--evm-version takes `prague` or `osaka`, not `cancun`".to_string())

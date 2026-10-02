@@ -335,15 +335,43 @@ fn directory_compile_writes_bytecode_and_abi() {
     std::fs::create_dir_all(&dir).expect("temp");
     let nested = dir.join("nested");
     std::fs::create_dir_all(&nested).expect("nested");
-    std::fs::write(nested.join("skip.lithe"), PAY).expect("skip");
+    std::fs::write(nested.join("deep.lithe"), PAY).expect("deep");
+    std::fs::write(nested.join("lib.lithe"), "module M is {\n  function one() : uint is 1;\n}\n")
+        .expect("lib");
+    std::fs::write(nested.join("helpers.lithe"), "view function two() : uint is 2\n")
+        .expect("helpers");
+    std::fs::write(
+        nested.join("empty.lithe"),
+        "contract Empty is {\n  storage is record { n : uint; }\n}\n",
+    )
+    .expect("empty");
+    std::fs::create_dir_all(dir.join("z")).expect("z");
+    let other = PAY.replace("storage is", "contract Other is {\nstorage is") + "}\n";
+    std::fs::write(dir.join("z").join("PAY.lithe"), other).expect("clash");
+    std::fs::create_dir_all(dir.join(".hidden")).expect("hidden");
+    std::fs::write(dir.join(".hidden").join("hid.lithe"), PAY).expect("hid");
     std::fs::write(dir.join("pay.lithe"), PAY).expect("pay");
     std::fs::write(dir.join("bad.lithe"), "nope\n").expect("bad");
 
     let out_dir = dir.join("out");
-    let out = crate::compile_dir(&dir, &out_dir, &Options::default()).expect("compile dir");
+    let out =
+        crate::compile_dir(&dir, &out_dir, &|_| Ok(Options::default())).expect("compile dir");
     let msgs: Vec<_> = out.failed.iter().map(ToString::to_string).collect();
-    assert_eq!(msgs.len(), 1, "{msgs:?}");
+    assert_eq!(msgs.len(), 3, "{msgs:?}");
     assert!(msgs[0].contains("bad.lithe"), "{msgs:?}");
+    assert!(
+        msgs[1].contains("empty.lithe") && msgs[1].contains(crate::route::NO_ENTRIES),
+        "{msgs:?}"
+    );
+    assert!(
+        msgs[2].contains("PAY.lithe") && msgs[2].contains("also writes"),
+        "{msgs:?}"
+    );
+    assert!(out_dir.join("deep.lithe").join("Deep.json").exists());
+    assert!(!out_dir.join("lib.lithe").exists());
+    assert!(!out_dir.join("helpers.lithe").exists());
+    assert!(!out_dir.join("hid.lithe").exists());
+    assert!(!out_dir.join("pay.lithe").join("Other.json").exists());
     let code = compile(PAY).expect("pay code");
     let artifact =
         std::fs::read_to_string(out_dir.join("pay.lithe").join("Pay.json")).expect("artifact");
@@ -373,13 +401,13 @@ fn directory_compile_writes_bytecode_and_abi() {
     assert!(!dir.join("pay.bin").exists());
     assert!(!dir.join("pay.json").exists());
     assert!(!dir.join("pay.abi.json").exists());
-    assert!(!out_dir.join("skip.lithe").exists());
 
     let abi_only = dir.join("abi-only");
     std::fs::create_dir_all(&abi_only).expect("abi-only");
     std::fs::write(abi_only.join("pay.lithe"), PAY).expect("pay");
     let abi_out = dir.join("abi-out");
-    let out = crate::abi_dir(&abi_only, &abi_out, &Options::default()).expect("abi dir");
+    let out =
+        crate::abi_dir(&abi_only, &abi_out, &|_| Ok(Options::default())).expect("abi dir");
     assert!(out.failed.is_empty());
     let abi = std::fs::read_to_string(abi_out.join("pay.lithe").join("Pay.abi.json")).expect("abi");
     assert_eq!(abi, super::abi(PAY).expect("pay abi"));

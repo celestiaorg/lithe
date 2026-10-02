@@ -948,16 +948,20 @@ pub struct DirOutput {
     pub notes: Vec<String>,
 }
 
-/// Compile every `.lithe` file directly in `dir` into Foundry-style artifacts.
+/// The build options for each source file of a directory build.
+pub type OptionsFor<'a> = &'a (dyn Fn(&Path) -> Result<Options, String> + Sync);
+
+/// Compile every `.lithe` file under `dir`, outside hidden and symlinked directories, into
+/// Foundry-style artifacts, skipping library files, which declare no contract.
 /// `examples/bank.lithe` becomes `out/bank.lithe/bank.json`, and every facet a split contract
 /// uses `facets/<Module>.json`, shared by the contracts that use it.
-pub fn compile_dir(dir: &Path, out_dir: &Path, opts: &Options) -> Result<DirOutput, Error> {
+pub fn compile_dir(dir: &Path, out_dir: &Path, opts: OptionsFor) -> Result<DirOutput, Error> {
     emit_dir(dir, out_dir, true, opts)
 }
 
-/// Write a bare ABI file for every `.lithe` file directly in `dir`.
+/// Write a bare ABI file for every contract file under `dir`.
 /// `examples/bank.lithe` becomes `out/bank.lithe/bank.abi.json`.
-pub fn abi_dir(dir: &Path, out_dir: &Path, opts: &Options) -> Result<DirOutput, Error> {
+pub fn abi_dir(dir: &Path, out_dir: &Path, opts: OptionsFor) -> Result<DirOutput, Error> {
     emit_dir(dir, out_dir, false, opts)
 }
 
@@ -965,7 +969,7 @@ fn emit_dir(
     dir: &Path,
     out_dir: &Path,
     artifact: bool,
-    opts: &Options,
+    opts: OptionsFor,
 ) -> Result<DirOutput, Error> {
     let files = lithe_sources(dir)?;
     // Files compile independently, so they share the machine; the output keeps file order.
@@ -991,8 +995,51 @@ fn emit_dir(
     done.sort_by_key(|(i, _)| *i);
     let mut all = DirOutput::default();
     let mut facets: Vec<(String, Facet)> = Vec::new();
-    for (_, (out, used)) in done {
-        all.wrote.extend(out.wrote);
+    // Folder names compare case-folded, as case-insensitive file systems do.
+    let mut folders: Vec<(String, &Path)> = Vec::new();
+    for (i, (out, writes, used)) in done {
+        let path = &files[i];
+        let source = path.display().to_string();
+        let folder = contract_dir(out_dir, path);
+        if !writes.is_empty() {
+            let name = path
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .to_lowercase();
+            if let Some((_, first)) = folders.iter().find(|(seen, _)| *seen == name) {
+                all.failed.push(SourceError {
+                    path: source,
+                    error: error(
+                        0,
+                        0,
+                        format!(
+                            "{} also writes `{}`; rename one of the files",
+                            first.display(),
+                            folder.display()
+                        ),
+                    ),
+                });
+                continue;
+            }
+            folders.push((name, path));
+            if let Err(err) = std::fs::create_dir_all(&folder) {
+                all.failed.push(SourceError {
+                    path: source,
+                    error: error(0, 0, err.to_string()),
+                });
+                continue;
+            }
+        }
+        for (dest, body) in writes {
+            match std::fs::write(&dest, body) {
+                Ok(()) => all.wrote.push(dest),
+                Err(err) => all.failed.push(SourceError {
+                    path: source.clone(),
+                    error: error(0, 0, err.to_string()),
+                }),
+            }
+        }
         all.failed.extend(out.failed);
         all.notes.extend(out.notes);
         facets.extend(used);
@@ -1003,36 +1050,38 @@ fn emit_dir(
     Ok(all)
 }
 
-/// Writes `facets/<Module>.json` once for each facet the contracts use. Two different facets
-/// of modules with the same name cannot share a file, so that is an error.
+/// Writes `facets/<Module>.json` once for each facet the contracts use. When contracts build
+/// one module into different facets, each is `facets/<Module>-<address prefix>.json`.
 fn write_facets(out_dir: &Path, facets: Vec<(String, Facet)>, all: &mut DirOutput) {
     let dir = out_dir.join("facets");
-    let mut written: Vec<(String, [u8; 20], String)> = Vec::new();
+    let mut unique: Vec<(String, Facet)> = Vec::new();
     for (source, facet) in facets {
-        if let Some((_, address, first)) = written.iter().find(|(name, _, _)| name == &facet.name) {
-            if *address != facet.address {
-                all.failed.push(SourceError {
-                    path: source,
-                    error: error(
-                        0,
-                        0,
-                        format!(
-                            "module `{}` has a different facet than in {first}; two modules with one name cannot share `facets/{}.json`",
-                            facet.name, facet.name
-                        ),
-                    ),
-                });
-            }
-            continue;
+        if !unique
+            .iter()
+            .any(|(_, seen)| seen.name == facet.name && seen.address == facet.address)
+        {
+            unique.push((source, facet));
         }
-        written.push((facet.name.clone(), facet.address, source.clone()));
-        let dest = dir.join(format!("{}.json", facet.name));
+    }
+    for (source, facet) in &unique {
+        let shared = unique.iter().filter(|(_, other)| other.name == facet.name).count() > 1;
+        let file = match shared {
+            true => format!("{}-{}.json", facet.name, hex(&facet.address[..4])),
+            false => format!("{}.json", facet.name),
+        };
+        let dest = dir.join(file);
+        // A `<Module>.json` from a build with one facet of the module would read as current.
+        let stale = dir.join(format!("{}.json", facet.name));
         let wrote = std::fs::create_dir_all(&dir)
-            .and_then(|_| std::fs::write(&dest, facet_artifact(&facet)));
+            .and_then(|_| match shared.then(|| std::fs::remove_file(&stale)) {
+                Some(Err(err)) if err.kind() != std::io::ErrorKind::NotFound => Err(err),
+                _ => Ok(()),
+            })
+            .and_then(|_| std::fs::write(&dest, facet_artifact(facet)));
         match wrote {
             Ok(()) => all.wrote.push(dest),
             Err(err) => all.failed.push(SourceError {
-                path: source,
+                path: source.clone(),
                 error: error(0, 0, err.to_string()),
             }),
         }
@@ -1057,34 +1106,38 @@ fn facet_artifact(facet: &Facet) -> String {
     out
 }
 
+/// Builds one file of a directory build, returning the artifacts to write rather than writing
+/// them, so a clash between files writes neither.
 fn emit_file(
     path: &Path,
     out_dir: &Path,
     artifact: bool,
-    opts: &Options,
-) -> (DirOutput, Vec<(String, Facet)>) {
+    opts: OptionsFor,
+) -> (DirOutput, Vec<(PathBuf, String)>, Vec<(String, Facet)>) {
     let mut out = DirOutput::default();
+    let mut writes = Vec::new();
     let mut facets = Vec::new();
     let source = path.display().to_string();
     let failed = |error| SourceError {
         path: source.clone(),
         error,
     };
-    let compiled = match compile(&Sources::disk(), path, opts) {
-        Ok(compiled) => compiled,
-        Err(errors) => {
-            out.failed.extend(errors.into_iter().map(failed));
-            return (out, facets);
+    let opts = match opts(path) {
+        Ok(opts) => opts,
+        Err(msg) => {
+            out.failed.push(failed(error(0, 0, msg)));
+            return (out, writes, facets);
         }
     };
-    let Some(folder) = contract_dir(out_dir, path) else {
-        out.failed.push(failed(error(0, 0, "missing file name")));
-        return (out, facets);
+    let compiled = match compile(&Sources::disk(), path, &opts) {
+        Ok(compiled) => compiled,
+        Err(errors) if is_library(path, &errors) => return (out, writes, facets),
+        Err(errors) => {
+            out.failed.extend(errors.into_iter().map(failed));
+            return (out, writes, facets);
+        }
     };
-    if let Err(err) = std::fs::create_dir_all(&folder) {
-        out.failed.push(failed(error(0, 0, err.to_string())));
-        return (out, facets);
-    }
+    let folder = contract_dir(out_dir, path);
     for contract in compiled.contracts {
         let (file_name, body) = if artifact {
             (
@@ -1097,12 +1150,7 @@ fn emit_file(
                 contract.abi.to_json(),
             )
         };
-        let dest = folder.join(file_name);
-        if let Err(err) = std::fs::write(&dest, body) {
-            out.failed.push(failed(error(0, 0, err.to_string())));
-            continue;
-        }
-        out.wrote.push(dest);
+        writes.push((folder.join(file_name), body));
         if !artifact {
             continue;
         }
@@ -1114,12 +1162,42 @@ fn emit_file(
             facets.push((source.clone(), facet));
         }
     }
-    (out, facets)
+    (out, writes, facets)
 }
 
-fn contract_dir(out_dir: &Path, source: &Path) -> Option<PathBuf> {
-    let name = source.file_name()?;
-    Some(out_dir.join(name))
+/// A file that failed only for having no entrypoints, and declares no contract: modules,
+/// interfaces, internal functions, and shared declarations.
+fn is_library(path: &Path, errors: &[Error]) -> bool {
+    if !errors.iter().all(|err| err.message == route::NO_ENTRIES) {
+        return false;
+    }
+    let Some(prog) = std::fs::read_to_string(path)
+        .ok()
+        .and_then(|text| parse::parse(&text).ok())
+    else {
+        return false;
+    };
+    prog.contract_name.is_none()
+        && prog.funcs.iter().all(|func| {
+            matches!(
+                func.kind,
+                ast::ItemKind::Function | ast::ItemKind::Readonly | ast::ItemKind::Pure
+            )
+        })
+        && prog.domains.is_empty()
+        && prog.compose.is_empty()
+        && prog.facets.is_empty()
+        && prog.exposes.is_empty()
+        && prog.supports.is_empty()
+        && prog.hooks.is_empty()
+        && prog.guards.is_empty()
+        && prog.guard.is_none()
+        && !prog.upgradeable
+        && !prog.types.iter().any(|decl| decl.name == "storage")
+}
+
+fn contract_dir(out_dir: &Path, source: &Path) -> PathBuf {
+    out_dir.join(source.file_name().unwrap_or_default())
 }
 
 fn artifact_contract_name(prog: &ast::Program, source: &Path) -> String {
@@ -1233,19 +1311,9 @@ pub(crate) fn is_spec_file(path: &Path) -> bool {
 }
 
 fn lithe_sources(dir: &Path) -> Result<Vec<PathBuf>, Error> {
-    let entries =
-        std::fs::read_dir(dir).map_err(|err| error(0, 0, format!("{}: {err}", dir.display())))?;
     let mut files = Vec::new();
-    for entry in entries {
-        let entry = entry.map_err(|err| error(0, 0, format!("{}: {err}", dir.display())))?;
-        let path = entry.path();
-        if path.extension().and_then(|ext| ext.to_str()) == Some("lithe")
-            && !is_spec_file(&path)
-            && path.is_file()
-        {
-            files.push(path);
-        }
-    }
+    lithe_files(dir, &mut files).map_err(|err| error(0, 0, format!("{}: {err}", dir.display())))?;
+    files.retain(|path| !is_spec_file(path));
     files.sort();
     if files.is_empty() {
         return Err(error(0, 0, format!("no .lithe files in {}", dir.display())));

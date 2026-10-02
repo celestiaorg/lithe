@@ -736,7 +736,7 @@ contract Vault is {
 ";
     std::fs::write(dir.join("named.lithe"), one).expect("named");
     let out_dir = dir.join("out");
-    let out = crate::compile_dir(&dir, &out_dir, &Options::default()).expect("dir");
+    let out = crate::compile_dir(&dir, &out_dir, &|_| Ok(Options::default())).expect("dir");
     let failed: Vec<_> = out.failed.iter().map(ToString::to_string).collect();
     assert!(failed.is_empty(), "{failed:?}");
     let vault =

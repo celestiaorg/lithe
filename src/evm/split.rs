@@ -1100,7 +1100,7 @@ fn split_tooling_output() {
     assert!(check.contains("\n  Beta    new        0x"), "{check}");
     assert!(check.ends_with("\ncompatible\n"), "{check}");
     let out = dir.join("out");
-    let built = crate::compile_dir(&dir.join("src"), &out, &opts).expect("dir");
+    let built = crate::compile_dir(&dir.join("src"), &out, &|_| Ok(opts.clone())).expect("dir");
     assert!(
         built.failed.is_empty(),
         "{}",
@@ -1118,6 +1118,28 @@ fn split_tooling_output() {
         router.contains("\"facets\": [\n    {\n      \"name\": \"Alpha\""),
         "{router}"
     );
+    // A second contract with another `Beta` facet: each `Beta` is named by its address, and
+    // the `Beta.json` of the build before is gone.
+    assert!(out.join("facets/Beta.json").exists());
+    let changed = pair_src("").replace("beta_state.m * 2", "beta_state.m * 3");
+    std::fs::write(dir.join("src/pair2.lithe"), changed).expect("write");
+    let built = crate::compile_dir(&dir.join("src"), &out, &|_| Ok(opts.clone())).expect("dir");
+    assert!(built.failed.is_empty());
+    assert!(out.join("facets/Alpha.json").exists());
+    assert!(!out.join("facets/Beta.json").exists());
+    let mut betas = Vec::new();
+    for file in ["pair.lithe/Pair.json", "pair2.lithe/Pair.json"] {
+        let router = std::fs::read_to_string(out.join(file)).expect("router artifact");
+        let (_, rest) = router
+            .split_once("\"name\": \"Beta\",\n      \"address\": \"0x")
+            .expect("beta facet");
+        let prefix = rest[..8].to_lowercase();
+        let facet = std::fs::read_to_string(out.join(format!("facets/Beta-{prefix}.json")))
+            .expect("beta artifact");
+        assert!(facet.contains(&rest[..40]), "{facet}");
+        betas.push(prefix);
+    }
+    assert_ne!(betas[0], betas[1]);
     let vault = dir.join("vault.lithe");
     std::fs::write(&vault, SPLIT_VAULT).expect("write");
     let whole_vault = dir.join("whole_vault.lithe");

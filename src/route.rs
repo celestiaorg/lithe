@@ -55,6 +55,9 @@ pub(crate) struct Phase {
     pub operations: Vec<String>,
 }
 
+/// A directory build skips a file that fails only with this and declares no contract.
+pub(crate) const NO_ENTRIES: &str = "contract has no entrypoints";
+
 pub(crate) fn discover(checked: &Checked, require_entries: bool) -> Result<Vec<Route>, Error> {
     let mut routes = Vec::new();
     let mut seen = Vec::new();
@@ -124,7 +127,7 @@ pub(crate) fn discover(checked: &Checked, require_entries: bool) -> Result<Vec<R
         && !checked.prog.funcs.iter().any(|f| f.kind == ItemKind::View)
         && !checked.prog.upgradeable
     {
-        return Err(error(1, 1, "contract has no entrypoints"));
+        return Err(error(1, 1, NO_ENTRIES));
     }
     Ok(routes)
 }

@@ -389,7 +389,7 @@ An upgradeable router is listed with its own `address`, `to`, and `data`, so it 
 
 A contract that creates a contract with facets, with `defer create`, lists that contract's facets in its plan as well. They must exist before it creates anything.
 
-`lithe compile directory` writes the router's artifact to `out/<file>/<Contract>.json` as usual. Its ABI is the whole contract's, because that is what callers use, and it gains a `facets` field listing each facet's module, address, and the selectors the router forwards to it. Each facet gets one artifact, `out/facets/<Module>.json`, shared by every contract in the directory that uses it. A facet's artifact lists its module's externals; the entrypoints for calls across are in its bytecode, but in no ABI.
+`lithe compile directory` writes the router's artifact to `out/<file>/<Contract>.json` as usual. Its ABI is the whole contract's, because that is what callers use, and it gains a `facets` field listing each facet's module, address, and the selectors the router forwards to it. Each facet gets one artifact, `out/facets/<Module>.json`, shared by every contract in the directory that uses it, or `out/facets/<Module>-<address prefix>.json` for each when contracts build the module into different facets, which removes a `<Module>.json` an earlier build left. A facet's artifact lists its module's externals; the entrypoints for calls across are in its bytecode, but in no ABI.
 
 ## Upgrades
 

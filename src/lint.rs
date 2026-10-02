@@ -98,7 +98,8 @@ pub fn lint_paths(paths: &[PathBuf], fix: bool) -> LintResult {
     }
 }
 
-/// `path` if it is a file, or every `.lithe` file under it.
+/// `path` if it is a file, or every `.lithe` file under it, outside hidden and symlinked
+/// directories.
 pub fn lithe_files(path: &Path, out: &mut Vec<PathBuf>) -> std::io::Result<()> {
     if path.is_file() {
         out.push(path.to_path_buf());
@@ -109,9 +110,13 @@ pub fn lithe_files(path: &Path, out: &mut Vec<PathBuf>) -> std::io::Result<()> {
         for entry in std::fs::read_dir(&dir)? {
             let entry = entry?;
             let child = entry.path();
-            if child.is_dir() {
-                dirs.push(child);
-            } else if child.extension().and_then(|ext| ext.to_str()) == Some("lithe") {
+            if entry.file_type()?.is_dir() {
+                if !entry.file_name().to_string_lossy().starts_with('.') {
+                    dirs.push(child);
+                }
+            } else if child.is_file()
+                && child.extension().and_then(|ext| ext.to_str()) == Some("lithe")
+            {
                 out.push(child);
             }
         }

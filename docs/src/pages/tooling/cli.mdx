@@ -71,7 +71,7 @@ A contract or facet over the size limit still prints its bytecode or plan, and w
 
 ### `lithe compile directory`
 
-Compiles every `.lithe` file under the directory, and writes one Foundry-style artifact per contract to `./out/<file>/<Contract>.json`:
+Compiles every `.lithe` file under the directory and its subdirectories, but hidden and symlinked ones, so point it at your sources, such as `src`, rather than a project root that vendors dependencies under `lib/`. Each file builds with its nearest `lithe.toml`. Library files, which declare no contract, only modules, interfaces, and shared declarations, are skipped. It writes one Foundry-style artifact per contract to `./out/<file>/<Contract>.json`:
 
 ```json
 {
@@ -83,9 +83,9 @@ Compiles every `.lithe` file under the directory, and writes one Foundry-style a
 }
 ```
 
-It prints each path it writes. It keeps going after a failing file, reports every failure, and exits `1` if any file failed. Files that define several contracts are fine in this mode.
+It prints each path it writes. It keeps going after a failing file, reports every failure, and exits `1` if any file failed. Files that define several contracts are fine in this mode. Two contract files with one name in different subdirectories, even differing only in case, would share `./out/<file>`, so the second fails and writes nothing.
 
-The artifact of a contract with facets has the whole contract's ABI and a `facets` field listing each facet's module, address, and the selectors the router forwards to it. Each facet is written once, to `./out/facets/<Module>.json`, however many contracts use it. Size warnings go to stderr.
+The artifact of a contract with facets has the whole contract's ABI and a `facets` field listing each facet's module, address, and the selectors the router forwards to it. Each facet is written once, to `./out/facets/<Module>.json`, however many contracts use it. When contracts build one module into different facets, each is `./out/facets/<Module>-<address prefix>.json`, the first 4 bytes of its address in lowercase hex, and a `<Module>.json` from an earlier build is removed. Size warnings go to stderr.
 
 ### `lithe compile --check-specs`
 
@@ -137,7 +137,7 @@ For a contract with facets, it prints the deployment plan with an `upgrade` entr
 
 ### `lithe fmt path...`
 
-Rewrites each file in place, in the one Lithe style, and prints the path of every file it changes. A directory is every `.lithe` file under it. `lithe fmt -` reads source on stdin and writes the formatted source to stdout.
+Rewrites each file in place, in the one Lithe style, and prints the path of every file it changes. A directory is every `.lithe` file under it, outside hidden and symlinked directories. `lithe fmt -` reads source on stdin and writes the formatted source to stdout.
 
 Line breaks you wrote stay, except inside a `raises` list, which is refilled so each line holds as many errors as fit. A line over 120 columns, or the `width` a [`lithe.toml`](/tooling/config) sets, is broken at its outermost structure until it fits: a long header puts `raises` and the body on their own lines and one parameter per line; a bracket, record, or block puts one element per line; a long expression breaks before its loosest operators; a `case` puts one arm per line. Strings and comments are never broken, so a line holding a long one can stay over the width.
 
@@ -147,7 +147,7 @@ A lex error is `path:line:column: message` and exits `1`. A usage error exits `2
 
 ## Linting
 
-`lithe lint` reads each file, and every `.lithe` file under a directory. Findings go to stderr as `path:line:col: warning[rule]: message`, then a hint line when there is one. The exit status is `0` when nothing is wrong, `1` when there is a finding or a compile error, and `2` on a usage error. Imports are loaded, but only the files you named are reported.
+`lithe lint` reads each file, and every `.lithe` file under a directory, outside hidden and symlinked directories. Findings go to stderr as `path:line:col: warning[rule]: message`, then a hint line when there is one. The exit status is `0` when nothing is wrong, `1` when there is a finding or a compile error, and `2` on a usage error. Imports are loaded, but only the files you named are reported.
 
 `lithe lint --fix` applies the fixes that cannot change behavior or bytecode, prints each file it changed, and reports whatever is left.
 
