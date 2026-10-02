@@ -35,7 +35,7 @@ Each is a known pattern with a known fix, and each is still a common source of l
 | Storage gaps, ERC-7201 annotations | [Named storage](/language/storage#named-storage) as a language feature, with `lithe upgrade-check` |
 | Check `(bool ok, ) = x.call(...)` | Failures revert unless handled with `Ok` / `Error` |
 | `revert("message")`, errors discoverable by reading code | Typed errors, with every external function's `raises` checked |
-| `unchecked { }` for gas | Always checked. Where wrapping is the intent, it is named: `Uint.wrapping_add` |
+| `unchecked { }` for gas | Always checked. Where wrapping is the intent, it is named: `Uint.wrappingAdd` |
 
 ## Why not Solidity plus linters?
 

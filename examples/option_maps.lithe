@@ -2,7 +2,7 @@
 
 import "std/evm";
 
-type entry is record {
+type Entry is record {
   amount : uint;
   expiry : option(uint64);
   note : option(uint);
@@ -12,7 +12,7 @@ storage is record {
   small : map(address, option(uint64));
   wide : map(uint, option(uint));
   nested : map(address, map(uint, option(uint)));
-  entries : map(uint, entry);
+  entries : map(uint, Entry);
   pts : map(uint, option((uint, uint)));
   seen : uint;
 }
@@ -24,56 +24,56 @@ transient storage is record {
   tm8 : map(uint, option(uint8));
 }
 
-pure function or_zero(const o : option(uint)) : uint is
+pure function orZero(const o : option(uint)) : uint is
   case o of { Some(v) -> v | None -> 0 }
 
-external function set_small(const v : uint64) is { storage.small[Evm.sender()] := Some(v); }
-external function clear_small() is { storage.small[Evm.sender()] := None; }
-external view function small_or(const who : address) : uint is
+external function setSmall(const v : uint64) is { storage.small[Evm.sender()] := Some(v); }
+external function clearSmall() is { storage.small[Evm.sender()] := None; }
+external view function smallOr(const who : address) : uint is
   case storage.small[who] of { Some(v) -> uint(v) | None -> 1000 }
 
-external function set_wide(const k : uint; const v : uint) is { storage.wide[k] := Some(v); }
-external function clear_wide(const k : uint) is { storage.wide[k] := None; }
-external view function wide_or(const k : uint) : uint is
+external function setWide(const k : uint; const v : uint) is { storage.wide[k] := Some(v); }
+external function clearWide(const k : uint) is { storage.wide[k] := None; }
+external view function wideOr(const k : uint) : uint is
   case storage.wide[k] of { Some(v) -> v | None -> 1000 }
-external view function wide_passed(const k : uint) : uint is or_zero(storage.wide[k])
-external view function wide_is_none(const k : uint) : bool is storage.wide[k] = None
-external view function wide_is(const k : uint; const v : uint) : bool is storage.wide[k] = Some(v)
-external function copy_wide(const from : uint; const to : uint) is {
+external view function widePassed(const k : uint) : uint is orZero(storage.wide[k])
+external view function wideIsNone(const k : uint) : bool is storage.wide[k] = None
+external view function wideIs(const k : uint; const v : uint) : bool is storage.wide[k] = Some(v)
+external function copyWide(const from : uint; const to : uint) is {
   const o : option(uint) := storage.wide[from];
   storage.wide[to] := o;
 }
 
-external function set_nested(const k : uint; const v : uint) is { storage.nested[Evm.sender()][k] := Some(v); }
-external view function nested_or(const who : address; const k : uint) : uint is
+external function setNested(const k : uint; const v : uint) is { storage.nested[Evm.sender()][k] := Some(v); }
+external view function nestedOr(const who : address; const k : uint) : uint is
   case storage.nested[who][k] of { Some(v) -> v | None -> 1000 }
 
-external function set_entry(const k : uint; const a : uint) is {
+external function setEntry(const k : uint; const a : uint) is {
   storage.entries[k] := { amount = a; expiry = Some(uint64(5)); note = None; };
 }
-external function set_note(const k : uint; const v : uint) is { storage.entries[k].note := Some(v); }
-external function clear_expiry(const k : uint) is { storage.entries[k].expiry := None; }
-external view function entry_sum(const k : uint) : uint is
+external function setNote(const k : uint; const v : uint) is { storage.entries[k].note := Some(v); }
+external function clearExpiry(const k : uint) is { storage.entries[k].expiry := None; }
+external view function entrySum(const k : uint) : uint is
   storage.entries[k].amount
     + (case storage.entries[k].expiry of { Some(e) -> uint(e) * 10 | None -> 0 })
     + (case storage.entries[k].note of { Some(v) -> v * 100 | None -> 0 })
 
-external function set_pt(const k : uint; const x : uint; const y : uint) is { storage.pts[k] := Some((x, y)); }
-external view function pt_sum(const k : uint) : uint is
+external function setPt(const k : uint; const x : uint; const y : uint) is { storage.pts[k] := Some((x, y)); }
+external view function ptSum(const k : uint) : uint is
   case storage.pts[k] of { Some((x, y)) -> x + y * 10 | None -> 1000 }
 
-view function read_t() : uint is
+view function readT() : uint is
   (case transient.t1 of { Some(_) -> 1 | None -> 0 })
     + (case transient.t2 of { Some(v) -> v * 10 | None -> 0 })
     + (case transient.tm[1] of { Some(v) -> v * 100 | None -> 0 })
     + (case transient.tm8[2] of { Some(v) -> uint(v) * 1000 | None -> 0 })
 
-external function use_transient(const v : uint) is {
-  const before : uint := read_t();
+external function useTransient(const v : uint) is {
+  const before : uint := readT();
   transient.t1 := Some(Evm.sender());
   transient.t2 := Some(v);
   transient.tm[1] := Some(v);
   transient.tm8[2] := Some(uint8(3));
-  storage.seen := before * 100000 + read_t();
+  storage.seen := before * 100000 + readT();
 }
-external view function fresh_t() : uint is read_t()
+external view function freshT() : uint is readT()

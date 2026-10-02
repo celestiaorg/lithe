@@ -14,16 +14,16 @@ Each bid must beat the current highest. Outbid bidders withdraw their refunds th
 import "std/address";
 import "std/evm";
 
-error Not_seller;
-error Already_started;
-error Not_started;
+error NotSeller;
+error AlreadyStarted;
+error NotStarted;
 error Ended;
-error Not_ended;
-error Bid_too_low of record {
+error NotEnded;
+error BidTooLow of record {
   bid : wei;
   highest : wei;
 }
-error Already_settled;
+error AlreadySettled;
 
 event Bid of record {
   indexed bidder : address;
@@ -37,37 +37,37 @@ event Settled of record {
 
 storage is record {
   seller : address;
-  ends_at : timestamp;
-  highest_bidder : address;
-  highest_bid : wei;
+  endsAt : timestamp;
+  highestBidder : address;
+  highestBid : wei;
   settled : bool;
   refunds : map(address, wei);
 }
 
 external function start(const reserve : wei; const duration : uint)
-  raises Already_started
+  raises AlreadyStarted
 is {
-  assert(storage.seller = Address.zero, Already_started);
+  assert(storage.seller = Address.zero, AlreadyStarted);
   storage.seller := Evm.sender();
-  storage.highest_bid := reserve;
-  storage.ends_at := Evm.block_timestamp() + duration;
+  storage.highestBid := reserve;
+  storage.endsAt := Evm.blockTimestamp() + duration;
 }
 
 external payable function bid()
-  raises Not_started | Ended | Bid_too_low
+  raises NotStarted | Ended | BidTooLow
 is {
-  assert(storage.seller <> Address.zero, Not_started);
-  assert(Evm.block_timestamp() < storage.ends_at, Ended);
+  assert(storage.seller <> Address.zero, NotStarted);
+  assert(Evm.blockTimestamp() < storage.endsAt, Ended);
   assert(
-    Evm.value() > storage.highest_bid,
-    Bid_too_low { bid = Evm.value(); highest = storage.highest_bid; }
+    Evm.value() > storage.highestBid,
+    BidTooLow { bid = Evm.value(); highest = storage.highestBid; }
   );
-  if storage.highest_bidder <> Address.zero then {
-    storage.refunds[storage.highest_bidder] :=
-      storage.refunds[storage.highest_bidder] + storage.highest_bid;
+  if storage.highestBidder <> Address.zero then {
+    storage.refunds[storage.highestBidder] :=
+      storage.refunds[storage.highestBidder] + storage.highestBid;
   }
-  storage.highest_bidder := Evm.sender();
-  storage.highest_bid := Evm.value();
+  storage.highestBidder := Evm.sender();
+  storage.highestBid := Evm.value();
   emit Bid { bidder = Evm.sender(); amount = Evm.value(); };
 }
 
@@ -78,14 +78,14 @@ external nonreentrant function withdraw() is {
 }
 
 external nonreentrant function settle()
-  raises Not_ended | Already_settled
+  raises NotEnded | AlreadySettled
 is {
-  assert(Evm.block_timestamp() >= storage.ends_at, Not_ended);
-  assert(not storage.settled, Already_settled);
+  assert(Evm.blockTimestamp() >= storage.endsAt, NotEnded);
+  assert(not storage.settled, AlreadySettled);
   storage.settled := true;
-  emit Settled { winner = storage.highest_bidder; amount = storage.highest_bid; };
-  if storage.highest_bidder <> Address.zero then {
-    defer Evm.transfer(storage.seller, storage.highest_bid);
+  emit Settled { winner = storage.highestBidder; amount = storage.highestBid; };
+  if storage.highestBidder <> Address.zero then {
+    defer Evm.transfer(storage.seller, storage.highestBid);
   }
 }
 ```

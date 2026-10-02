@@ -29,10 +29,10 @@ contract BenchNFT is {
   }
 
   (* `ERC721Pausable` checks the pause inside every ownership update. *)
-  hook ERC721.before_transfer is Pausable.require_not_paused;
-  hook ERC721.after_transfer is skip;
+  hook ERC721.beforeTransfer is Pausable.requireNotPaused;
+  hook ERC721.afterTransfer is skip;
 
-  function transfer_from(const from : address; const to : address; const tokenId : uint)
+  function move(const from : address; const to : address; const tokenId : uint)
     raises ERC721InvalidReceiver | ERC721IncorrectOwner | EnforcedPause | ERC721NonexistentToken
       | ERC721InsufficientApproval
   is {
@@ -47,28 +47,28 @@ contract BenchNFT is {
   external function approve(const to : address; const tokenId : uint)
     raises ERC721NonexistentToken | ERC721InvalidApprover
   is {
-    ERC721.approve_as(to, tokenId, Evm.sender());
+    ERC721.approveAs(to, tokenId, Evm.sender());
   }
 
   external function setApprovalForAll(const operator : address; const approved : bool)
     raises ERC721InvalidApprover | ERC721InvalidOperator
   is {
-    ERC721.set_approval_for_all(Evm.sender(), operator, approved);
+    ERC721.setApprovalForAll(Evm.sender(), operator, approved);
   }
 
   external function transferFrom(const from : address; const to : address; const tokenId : uint)
     raises ERC721InvalidReceiver | ERC721IncorrectOwner | EnforcedPause | ERC721NonexistentToken
       | ERC721InsufficientApproval
   is {
-    transfer_from(from, to, tokenId);
+    move(from, to, tokenId);
   }
 
   external function safeTransferFrom(const from : address; const to : address; const tokenId : uint)
     raises ERC721InvalidReceiver | ERC721IncorrectOwner | EnforcedPause | ERC721NonexistentToken
       | ERC721InsufficientApproval | forwarded
   is {
-    transfer_from(from, to, tokenId);
-    ERC721.check_received(Evm.sender(), from, to, tokenId, "");
+    move(from, to, tokenId);
+    ERC721.checkReceived(Evm.sender(), from, to, tokenId, "");
   }
 
   external function safeTransferFrom(
@@ -80,8 +80,8 @@ contract BenchNFT is {
     raises ERC721InvalidReceiver | ERC721IncorrectOwner | EnforcedPause | ERC721NonexistentToken
       | ERC721InsufficientApproval | forwarded
   is {
-    transfer_from(from, to, tokenId);
-    ERC721.check_received(Evm.sender(), from, to, tokenId, data);
+    move(from, to, tokenId);
+    ERC721.checkReceived(Evm.sender(), from, to, tokenId, data);
   }
 
   external function burn(const tokenId : uint)
@@ -94,24 +94,24 @@ contract BenchNFT is {
     raises OwnableUnauthorizedAccount | ERC721InvalidReceiver | ERC721InvalidSender | EnforcedPause
       | ERC721NonexistentToken | ERC721InsufficientApproval | forwarded
   is {
-    Ownable.check_owner();
+    Ownable.checkOwner();
     assert(to <> Address.zero, ERC721InvalidReceiver(Address.zero));
     const previous : address := ERC721.update(to, tokenId, Address.zero);
     assert(previous = Address.zero, ERC721InvalidSender(Address.zero));
-    ERC721.check_received(Evm.sender(), Address.zero, to, tokenId, "");
+    ERC721.checkReceived(Evm.sender(), Address.zero, to, tokenId, "");
   }
 
   external function pause()
     raises OwnableUnauthorizedAccount | EnforcedPause
   is {
-    Ownable.check_owner();
+    Ownable.checkOwner();
     Pausable.pause();
   }
 
   external function unpause()
     raises OwnableUnauthorizedAccount | ExpectedPause
   is {
-    Ownable.check_owner();
+    Ownable.checkOwner();
     Pausable.unpause();
   }
 }

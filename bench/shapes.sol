@@ -33,7 +33,7 @@ contract Shapes {
         sold += 1;
     }
 
-    function buy_all(uint256[] calldata ids, string calldata note) external {
+    function buyAll(uint256[] calldata ids, string calldata note) external {
         if (ids.length == 0) revert BadBatch(note, ids);
         if (ids.length > 4) revert BadBatch("batch too large", ids);
         for (uint256 i = 0; i < ids.length; i++) {

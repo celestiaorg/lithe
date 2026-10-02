@@ -302,15 +302,10 @@ impl SpecBuild {
             }
             return Ok(());
         };
-        let resolved = resolve(base, prog, module.as_deref(), target, block.external)?;
-        // A module's function and its external of the same name are two targets.
-        let kind = match &resolved.body {
-            Body::Func { external: true, .. } | Body::Exposed => "external",
-            _ => "function",
-        };
+        let resolved = resolve(base, prog, module.as_deref(), target)?;
         if !self
             .seen
-            .insert((module.clone(), format!("for {kind} {}", target.name)))
+            .insert((module.clone(), format!("for {}", target.name)))
         {
             return Err(error(
                 target.line,
@@ -342,7 +337,7 @@ impl SpecBuild {
                 part_syms: Vec::new(),
             });
         }
-        let fname = format!("{TAG}for {kind} {}", target.name);
+        let fname = format!("{TAG}for {}", target.name);
         funcs.push(spec_func(
             &fname,
             block.line,
@@ -523,14 +518,12 @@ struct Resolved {
 }
 
 /// What `spec for f` names: an entrypoint's route, a guard, or a function. `module` is set
-/// for a module's block, whose `f` is one of the module's functions. `external` is the
-/// block's `spec for external f` or `spec for function f`, for a name both kinds have.
+/// for a module's block, whose `f` is one of the module's functions.
 fn resolve(
     base: &Checked,
     prog: &Program,
     module: Option<&str>,
     target: &NameAt,
-    external: Option<bool>,
 ) -> Result<Resolved, Error> {
     let name = &target.name;
     let err = |msg: String| error(target.line, target.col, msg);
@@ -594,11 +587,9 @@ fn resolve(
             }
         }
     }
-    if let Some(external) = external {
-        found.retain(|(is_external, _)| *is_external == external);
-    } else if found.iter().any(|(e, _)| *e) && found.iter().any(|(e, _)| !*e) {
+    if found.iter().any(|(e, _)| *e) && found.iter().any(|(e, _)| !*e) {
         return Err(err(format!(
-            "`{name}` names both a function and an external; write `spec for function {name}` or `spec for external {name}`"
+            "`{name}` names both a function and an entrypoint; rename one of them"
         )));
     }
     match found.as_slice() {
@@ -617,11 +608,7 @@ fn resolve(
                 None => prog.funcs.iter().find(|f| &f.name == name),
             }
             .filter(|_| copied);
-            let what = match external {
-                Some(true) => "external",
-                Some(false) => "function",
-                None => "entrypoint or function",
-            };
+            let what = "entrypoint or function";
             Err(unknown_target(declared, &err, || match module {
                 Some(module) => format!("module `{module}` has no {what} `{name}`"),
                 None => format!("no {what} `{name}` for this spec block to describe"),
@@ -744,7 +731,7 @@ fn leaf_params(
     let Some((arm, ctor)) = arms.iter().find_map(|arm| {
         arm.ctors
             .iter()
-            .find(|ctor| crate::route::abi_name(ctor) == route.name)
+            .find(|ctor| route.case.as_ref() == Some(*ctor))
             .map(|ctor| (arm, ctor))
     }) else {
         return Err(err("internal: a route with no arm"));
@@ -1036,7 +1023,7 @@ impl<'a> Rules<'a> {
         state: Option<State>,
     ) -> Result<Read, Error> {
         match b {
-            Builtin::GasLeft => Err(error(line, col, "a spec cannot read `Evm.gas_left`")),
+            Builtin::GasLeft => Err(error(line, col, "a spec cannot read `Evm.gasLeft`")),
             Builtin::Balance | Builtin::CodeSize | Builtin::CodeHash | Builtin::Code => {
                 self.state(line, col, state)
             }

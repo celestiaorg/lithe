@@ -17,7 +17,7 @@ import "std/evm";
 
 upgradeable
 
-error Not_owner;
+error NotOwner;
 
 storage is record {
   owner : address;
@@ -29,10 +29,10 @@ storage settings at "vault.settings" is record {
 }
 
 upgrade guard is {
-  assert(Evm.sender() = storage.owner, Not_owner);
+  assert(Evm.sender() = storage.owner, NotOwner);
 }
 
-migrate init_settings(const fee : uint; const treasury : address) is {
+migrate initSettings(const fee : uint; const treasury : address) is {
   settings.fee := fee;
   settings.treasury := treasury;
 }
@@ -54,7 +54,7 @@ new ERC1967Proxy(implementation, abi.encodeCall(Vault.deploy, (owner)));
 Build the upgrade transaction:
 
 ```bash
-lithe upgrade 0xProxy upgradeable.lithe --migrate init_settings --impl 0xNewImpl --args 30 0xTreasury
+lithe upgrade 0xProxy upgradeable.lithe --migrate initSettings --impl 0xNewImpl --args 30 0xTreasury
 ```
 
 Check storage compatibility against the previous version:

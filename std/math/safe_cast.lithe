@@ -8,15 +8,15 @@ module SafeCast is {
   error SafeCastOverflowedIntToUint of int;
   error SafeCastOverflowedUintToInt of uint;
 
-  pure function to_uint(const x : int) : uint
+  pure function toUint(const x : int) : uint
     raises SafeCastOverflowedIntToUint
   is {
     assert(x >= 0, SafeCastOverflowedIntToUint(x));
-  } with Uint.from_bits(x)
+  } with Uint.fromBits(x)
 
-  pure function to_int(const x : uint) : int
+  pure function toInt(const x : uint) : int
     raises SafeCastOverflowedUintToInt
   is {
     assert(x <= uint(Int.max), SafeCastOverflowedUintToInt(x));
-  } with Int.from_bits(x)
+  } with Int.fromBits(x)
 }

@@ -7,8 +7,8 @@
        EIP712.init("My Token", "1");
      }
 
-     const digest : bytes32 := EIP712.hash_typed_data(
-       Crypto.keccak256(Abi.encode(mail_typehash(), from, to, contents_hash))
+     const digest : bytes32 := EIP712.hashTypedData(
+       Crypto.keccak256(Abi.encode(mailTypehash(), from, to, contentsHash))
      );
 
    and exposes the domain separator for signers, and ERC-5267's description of it:
@@ -30,69 +30,69 @@ import "std/bytes";
 
 module EIP712 is {
   immutable eip712 at "lithe.std.eip712" is record {
-    hashed_name : bytes32;
-    hashed_version : bytes32;
+    hashedName : bytes32;
+    hashedVersion : bytes32;
     name : bytes32;
     version : bytes32;
   }
 
-  type names is record {
+  type Names is record {
     name : string;
     version : string;
   }
 
-  storage eip712_strings at "lithe.std.eip712.strings" is record {
-    long : names;
+  storage eip712Strings at "lithe.std.eip712.strings" is record {
+    long : Names;
   }
 
-  pure function domain_typehash() : bytes32 is
+  pure function domainTypehash() : bytes32 is
     Crypto.keccak256("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)")
 
   function init(const name : string; const version : string) is {
-    eip712.hashed_name := Crypto.keccak256(name);
-    eip712.hashed_version := Crypto.keccak256(version);
+    eip712.hashedName := Crypto.keccak256(name);
+    eip712.hashedVersion := Crypto.keccak256(version);
     eip712.name := bytes32(uint(bytes32(bytes(name))) | name.length);
     eip712.version := bytes32(uint(bytes32(bytes(version))) | version.length);
     if name.length > 31 or version.length > 31 then {
       eip712.name := bytes32(255);
-      eip712_strings.long := { name = name; version = version; };
+      eip712Strings.long := { name = name; version = version; };
     }
   }
 
-  pure function from_short_string(const s : bytes32) : string is
+  pure function fromShortString(const s : bytes32) : string is
     string(Bytes.concat(s)[:uint(s) & 255])
 
-  view function domain_separator() : bytes32 is
+  view function domainSeparator() : bytes32 is
     Crypto.keccak256(Abi.encode(
-      domain_typehash(),
-      eip712.hashed_name,
-      eip712.hashed_version,
-      Evm.chain_id(),
+      domainTypehash(),
+      eip712.hashedName,
+      eip712.hashedVersion,
+      Evm.chainId(),
       Evm.self()
     ))
 
   (* The digest to sign for a struct, given the struct's `hashStruct`. *)
-  view function hash_typed_data(const struct_hash : bytes32) : bytes32 is
-    to_typed_data_hash(domain_separator(), struct_hash)
+  view function hashTypedData(const structHash : bytes32) : bytes32 is
+    toTypedDataHash(domainSeparator(), structHash)
 
-  pure function to_typed_data_hash(const domain : bytes32; const struct_hash : bytes32) : bytes32 is {
+  pure function toTypedDataHash(const domain : bytes32; const structHash : bytes32) : bytes32 is {
     const prefix : bytes2 := 0x1901;
-  } with Crypto.keccak256(Abi.encode_packed(prefix, domain, struct_hash))
+  } with Crypto.keccak256(Abi.encodePacked(prefix, domain, structHash))
 
   external view function DOMAIN_SEPARATOR() : bytes32 is
-    domain_separator()
+    domainSeparator()
 
-  external view function eip712Domain() : eip712_domain is {
+  external view function eip712Domain() : EIP712Domain is {
     const extensions : list(uint) := [];
-    const both : names := if eip712.name = bytes32(255) then eip712_strings.long else {
-      name = from_short_string(eip712.name);
-      version = from_short_string(eip712.version);
+    const both : Names := if eip712.name = bytes32(255) then eip712Strings.long else {
+      name = fromShortString(eip712.name);
+      version = fromShortString(eip712.version);
     };
   } with {
     fields = 0x0f;
     name = both.name;
     version = both.version;
-    chainId = Evm.chain_id();
+    chainId = Evm.chainId();
     verifyingContract = Evm.self();
     salt = bytes32(0);
     extensions = extensions;

@@ -1,14 +1,14 @@
 import "std/evm";
 
 contract Vault upgradeable is {
-  error Not_owner;
+  error NotOwner;
 
   storage is record {
     owner : address;
   }
 
   upgrade guard is {
-    assert(Evm.sender() = storage.owner, Not_owner);
+    assert(Evm.sender() = storage.owner, NotOwner);
   }
 
   external function claim() is {

@@ -21,7 +21,7 @@ pure function clamp(const x : uint; const hi : uint) : uint is {
   }
 } with out
 
-function add_to(const who : address; const amount : uint) : uint
+function addTo(const who : address; const amount : uint) : uint
   raises Over
 is {
   const next : uint := storage.totals[who] + amount;
@@ -37,7 +37,7 @@ is {
 pure function split(const x : uint) : (uint, uint) is
   (x / 3, x % 3)
 
-view function spare_or(const d : uint) : uint is
+view function spareOr(const d : uint) : uint is
   case storage.spare of
   {
   | Some(v) -> v + d
@@ -55,7 +55,7 @@ function touch(const x : uint) is {
 external function one(const who : address; const amount : uint)
   raises Over
 is {
-  const got : uint := add_to(who, clamp(amount, 5000));
+  const got : uint := addTo(who, clamp(amount, 5000));
   touch(got);
   storage.pair := split(got);
 }
@@ -63,17 +63,17 @@ is {
 external function two(const a : address; const b : address; const amount : uint)
   raises Over
 is {
-  const x : uint := add_to(a, amount);
-  const y : uint := add_to(b, clamp(x, 700));
+  const x : uint := addTo(a, amount);
+  const y : uint := addTo(b, clamp(x, 700));
   touch(y);
   const (q, r) : (uint, uint) := split(x + y);
-  storage.last := q + r + spare_or(q);
+  storage.last := q + r + spareOr(q);
 }
 
 external function three(const amount : uint) is {
   touch(amount);
   touch(amount + 1);
-  storage.last := spare_or(clamp(amount, 9)) + clamp(amount, 3);
+  storage.last := spareOr(clamp(amount, 9)) + clamp(amount, 3);
 }
 
 external function reset() is {
@@ -82,7 +82,7 @@ external function reset() is {
 }
 
 external view function peek(const who : address; const d : uint) : uint is
-  storage.totals[who] + spare_or(d) + spare_or(7)
+  storage.totals[who] + spareOr(d) + spareOr(7)
 
 external view function parts(const x : uint) : (uint, uint) is
   split(x)

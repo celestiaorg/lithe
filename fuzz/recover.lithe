@@ -61,7 +61,7 @@ is {
   }
 }
 
-external function read_small(const ex : Ext; const asset : uint) is {
+external function readSmall(const ex : Ext; const asset : uint) is {
   case query ex.small(asset) of {
     | Ok(value) -> {
         storage.small := value;
@@ -73,13 +73,13 @@ external function read_small(const ex : Ext; const asset : uint) is {
 }
 
 (* A plain query reverts on failure, and on an answer that does not fit its type. *)
-external function read_plain(const ex : Ext; const asset : uint) is {
+external function readPlain(const ex : Ext; const asset : uint) is {
   const value : uint8 := query ex.small(asset);
   storage.small := value;
 }
 
 (* The same, with the query issued before the write that precedes it. *)
-external function read_early(const ex : Ext; const asset : uint) is {
+external function readEarly(const ex : Ext; const asset : uint) is {
   storage.status := 9;
   const value : uint8 := query ex.small(asset);
   storage.small := value;

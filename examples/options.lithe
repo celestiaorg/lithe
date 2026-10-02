@@ -2,19 +2,19 @@
 
 import "std/evm";
 
-type point is record {
+type Point is record {
   x : uint;
   y : uint;
 }
 
-type slot is record {
+type Slot is record {
   held : option(uint);
   small : option(uint8);
   n : uint;
 }
 
 storage is record {
-  pos : option(point);
+  pos : option(Point);
   deep : option(option(uint));
   deep8 : option(option(uint8));
   pair : (option(uint), option(address));
@@ -25,10 +25,10 @@ storage is record {
 pure function bump(const o : option(uint)) : option(uint) is
   case o of { Some(v) -> Some(v + 1) | None -> None }
 
-pure function or_zero(const o : option(uint)) : uint is
+pure function orZero(const o : option(uint)) : uint is
   case o of { Some(v) -> v | None -> 0 }
 
-pure function first_some(const a : option(uint); const b : option(uint)) : option(uint) is
+pure function firstSome(const a : option(uint); const b : option(uint)) : option(uint) is
   case a of { Some(v) -> Some(v) | None -> b }
 
 pure function split(const k : uint) : (option(uint), uint) is
@@ -47,13 +47,13 @@ external function pick(const k : uint) is {
   storage.flag := case s of { Some(_) -> true | None -> false };
 }
 
-external view function last_or() : uint is or_zero(storage.last)
+external view function lastOr() : uint is orZero(storage.last)
 
-external view function via_case(const k : uint) : uint is
+external view function viaCase(const k : uint) : uint is
   case bump(Some(k)) of { Some(v) -> v | None -> 0 }
 
-external view function direct_args(const k : uint) : uint is
-  or_zero(first_some(None, Some(k))) + or_zero(first_some(Some(1), None))
+external view function directArgs(const k : uint) : uint is
+  orZero(firstSome(None, Some(k))) + orZero(firstSome(Some(1), None))
 
 external view function eqs(const k : uint) : uint is {
   const a : option(uint) := Some(k);
@@ -74,30 +74,30 @@ external view function tuples(const k : uint) : uint is {
   const (o, n) : (option(uint), uint) := split(k);
   const t : (option(uint8), option(uint), uint) := (Some(uint8(2)), None, 3);
   const (p, q, r) : (option(uint8), option(uint), uint) := t;
-} with or_zero(o) + n + (case p of { Some(v) -> uint(v) | None -> 0 }) + or_zero(q) + r
+} with orZero(o) + n + (case p of { Some(v) -> uint(v) | None -> 0 }) + orZero(q) + r
 
 external view function records(const k : uint) : uint is {
-  const s : slot := { held = Some(k); small = None; n = 4; };
+  const s : Slot := { held = Some(k); small = None; n = 4; };
 } with (case s.held of { Some(v) -> v | None -> 0 }) + (case s.small of { Some(_) -> 1000 | None -> 0 }) + s.n
 
-external function set_pos(const x : uint; const y : uint) is {
+external function setPos(const x : uint; const y : uint) is {
   storage.pos := Some({ x = x; y = y; });
 }
-external view function pos_sum() : uint is
+external view function posSum() : uint is
   case storage.pos of { Some(p) -> p.x + p.y | None -> 0 }
 
-external function set_deep(const k : uint) is {
+external function setDeep(const k : uint) is {
   storage.deep := Some(Some(k));
   storage.deep8 := Some(None);
 }
-external view function deep_or() : uint is
+external view function deepOr() : uint is
   case storage.deep of { Some(inner) -> (case inner of { Some(v) -> v | None -> 1 }) | None -> 2 }
-external view function deep8_or() : uint is
+external view function deep8Or() : uint is
   case storage.deep8 of { Some(inner) -> (case inner of { Some(v) -> uint(v) | None -> 1 }) | None -> 2 }
 
-external function set_pair(const k : uint) is {
+external function setPair(const k : uint) is {
   storage.pair := (Some(k), Some(Evm.sender()));
 }
-external view function pair_or() : uint is {
+external view function pairOr() : uint is {
   const (a, b) : (option(uint), option(address)) := storage.pair;
-} with or_zero(a) + (case b of { Some(_) -> 1000 | None -> 0 })
+} with orZero(a) + (case b of { Some(_) -> 1000 | None -> 0 })

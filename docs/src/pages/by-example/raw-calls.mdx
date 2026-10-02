@@ -5,7 +5,7 @@ description: "Calls whose calldata is only known at runtime: a smart wallet, a b
 
 # Raw calls
 
-An interface describes calls whose shape is known when the contract is written. A wallet, a timelock, or a multisig runs calls chosen later, so it sends calldata as `bytes`. `Evm.call` and `Evm.delegate_call` are deferred like every state-changing call, and `Evm.static_call` is queried.
+An interface describes calls whose shape is known when the contract is written. A wallet, a timelock, or a multisig runs calls chosen later, so it sends calldata as `bytes`. `Evm.call` and `Evm.delegateCall` are deferred like every state-changing call, and `Evm.staticCall` is queried.
 
 ```lithe [raw_calls.lithe]
 (* A wallet that runs whatever calls its owner asks for: any target, any calldata, any
@@ -15,8 +15,8 @@ An interface describes calls whose shape is known when the contract is written. 
 import "std/bytes";
 import "std/evm";
 
-error Not_owner;
-error Mismatched_lengths;
+error NotOwner;
+error MismatchedLengths;
 
 event Executed of record {
   indexed target : address;
@@ -38,9 +38,9 @@ payable receive is {
 }
 
 external nonreentrant function execute(const target : address; const value : uint; const data : bytes)
-  raises Not_owner
+  raises NotOwner
 is {
-  assert(Evm.sender() = storage.owner, Not_owner);
+  assert(Evm.sender() = storage.owner, NotOwner);
   storage.nonce := storage.nonce + 1;
   defer Evm.call(target, data) with value = value then (result : bytes) {
     emit Executed { target = target; value = value; result = result; };
@@ -49,10 +49,10 @@ is {
 
 (* One call per target, in order. A failed call passes its revert data on unchanged. *)
 external nonreentrant function batch(const targets : list(address); const calls : list(bytes))
-  raises Not_owner | Mismatched_lengths | forwarded
+  raises NotOwner | MismatchedLengths | forwarded
 is {
-  assert(Evm.sender() = storage.owner, Not_owner);
-  assert(targets.length = calls.length, Mismatched_lengths);
+  assert(Evm.sender() = storage.owner, NotOwner);
+  assert(targets.length = calls.length, MismatchedLengths);
   for (i, target) : (uint, address) in targets do {
     defer Evm.call(target, calls[i]) then {
     | Ok -> { skip }
@@ -62,8 +62,8 @@ is {
 }
 
 (* A read-only call with calldata of your own: here, the SHA-256 precompile. *)
-external view function sha256_of(const data : bytes) : bytes32 is
-  Bytes.word(query Evm.static_call(0x0000000000000000000000000000000000000002, data), 0)
+external view function sha256Of(const data : bytes) : bytes32 is
+  Bytes.word(query Evm.staticCall(0x0000000000000000000000000000000000000002, data), 0)
 
 external view function nonce() : uint is
   storage.nonce
@@ -72,7 +72,7 @@ external view function nonce() : uint is
 - `execute` bumps `nonce` before the target runs: the deferred call sees the wallet's state already written.
 - The continuation's `result` is the return data exactly as it came back. Read it with `Abi.decode` when you know its shape.
 - In `batch`, a failed call reverts the whole batch with the target's own revert data, through `forward reason`, so it raises `forwarded`.
-- `Evm.static_call` reaches precompiles, whose input is not ABI-encoded. Address `0x…02` is SHA-256.
+- `Evm.staticCall` reaches precompiles, whose input is not ABI-encoded. Address `0x…02` is SHA-256.
 - `payable receive` lets the wallet hold the ether it sends.
 
-See [Raw calls](/language/effects#raw-calls) for the rules, including `Evm.delegate_call`.
+See [Raw calls](/language/effects#raw-calls) for the rules, including `Evm.delegateCall`.

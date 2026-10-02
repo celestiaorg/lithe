@@ -10,47 +10,47 @@ storage is record {
   notes : list(string);
 }
 
-external function set_name(const id : uint; const n : string) is {
+external function setName(const id : uint; const n : string) is {
   storage.names[id] := n;
 }
 
 external view function name(const id : uint) : string is
   storage.names[id]
 
-external function set_blob(const key : bytes32; const b : bytes) is {
+external function setBlob(const key : bytes32; const b : bytes) is {
   storage.blobs[key] := b;
 }
 
 external view function blob(const key : bytes32) : bytes is
   storage.blobs[key]
 
-external function set_label(const id : uint; const l : string) is {
+external function setLabel(const id : uint; const l : string) is {
   storage.labels[Evm.sender()][id] := l;
 }
 
 external view function label(const who : address; const id : uint) : string is
   storage.labels[who][id]
 
-external function add_note(const n : string) is {
+external function addNote(const n : string) is {
   List.push(storage.notes, n);
 }
 
-external function set_note(const i : uint; const n : string) is {
+external function setNote(const i : uint; const n : string) is {
   storage.notes[i] := n;
 }
 
 external view function note(const i : uint) : string is
   storage.notes[i]
 
-external function set_notes(const a : string; const b : string) is {
+external function setNotes(const a : string; const b : string) is {
   storage.notes := [a, b];
 }
 
-external view function note_copy(const i : uint) : string is {
+external view function noteCopy(const i : uint) : string is {
   const ns : list(string) := storage.notes;
 } with ns[i]
 
-external view function notes_length() : uint is {
+external view function notesLength() : uint is {
   var total : uint := 0;
   for n : string in storage.notes bound 8 do {
     total := total + n.length;

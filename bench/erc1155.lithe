@@ -26,39 +26,39 @@ contract BenchMultiToken is {
     raises InvalidInitialization | OwnableInvalidOwner
   is {
     Initializable.begin();
-    ERC1155.set_uri("https://bench.example/token/{id}.json");
+    ERC1155.setURI("https://bench.example/token/{id}.json");
     Ownable.init(initialOwner);
     Initializable.finish();
   }
 
   (* `ERC1155Pausable` checks the pause, and `ERC1155Supply` counts after the balances. *)
-  hook ERC1155.before_transfer is Pausable.require_not_paused;
-  hook ERC1155.after_transfer is ERC1155Supply.update;
+  hook ERC1155.beforeTransfer is Pausable.requireNotPaused;
+  hook ERC1155.afterTransfer is ERC1155Supply.update;
 
   function transfer(const from : address; const to : address; const ids : list(uint); const values : list(uint))
     raises ERC1155MissingApprovalForAll | ERC1155InvalidReceiver | ERC1155InvalidSender | EnforcedPause
       | ERC1155InvalidArrayLength | ERC1155InsufficientBalance
   is {
-    ERC1155.check_authorized(Evm.sender(), from);
+    ERC1155.checkAuthorized(Evm.sender(), from);
     assert(to <> Address.zero, ERC1155InvalidReceiver(Address.zero));
     assert(from <> Address.zero, ERC1155InvalidSender(Address.zero));
     ERC1155.update(from, to, ids, values);
   }
 
-  function burn_from(const account : address; const ids : list(uint); const values : list(uint))
+  function burnFrom(const account : address; const ids : list(uint); const values : list(uint))
     raises ERC1155MissingApprovalForAll | ERC1155InvalidSender | EnforcedPause | ERC1155InvalidArrayLength
       | ERC1155InsufficientBalance
   is {
-    ERC1155.check_authorized(Evm.sender(), account);
+    ERC1155.checkAuthorized(Evm.sender(), account);
     assert(account <> Address.zero, ERC1155InvalidSender(Address.zero));
     ERC1155.update(account, Address.zero, ids, values);
   }
 
-  function mint_to(const to : address; const ids : list(uint); const values : list(uint))
+  function mintTo(const to : address; const ids : list(uint); const values : list(uint))
     raises OwnableUnauthorizedAccount | ERC1155InvalidReceiver | EnforcedPause | ERC1155InvalidArrayLength
       | ERC1155InsufficientBalance
   is {
-    Ownable.check_owner();
+    Ownable.checkOwner();
     assert(to <> Address.zero, ERC1155InvalidReceiver(Address.zero));
     ERC1155.update(Address.zero, to, ids, values);
   }
@@ -66,7 +66,7 @@ contract BenchMultiToken is {
   external function setApprovalForAll(const operator : address; const approved : bool)
     raises ERC1155InvalidApprover | ERC1155InvalidOperator
   is {
-    ERC1155.set_approval_for_all(Evm.sender(), operator, approved);
+    ERC1155.setApprovalForAll(Evm.sender(), operator, approved);
   }
 
   external function safeTransferFrom(
@@ -80,7 +80,7 @@ contract BenchMultiToken is {
       | ERC1155InvalidArrayLength | ERC1155InsufficientBalance | forwarded
   is {
     transfer(from, to, [id], [value]);
-    ERC1155.check_received(from, to, id, value, data);
+    ERC1155.checkReceived(from, to, id, value, data);
   }
 
   external function safeBatchTransferFrom(
@@ -94,29 +94,29 @@ contract BenchMultiToken is {
       | ERC1155InvalidArrayLength | ERC1155InsufficientBalance | forwarded
   is {
     transfer(from, to, ids, values);
-    ERC1155.check_batch_received(from, to, ids, values, data);
+    ERC1155.checkBatchReceived(from, to, ids, values, data);
   }
 
   external function burn(const account : address; const id : uint; const value : uint)
     raises ERC1155MissingApprovalForAll | ERC1155InvalidSender | EnforcedPause | ERC1155InvalidArrayLength
       | ERC1155InsufficientBalance
   is {
-    burn_from(account, [id], [value]);
+    burnFrom(account, [id], [value]);
   }
 
   external function burnBatch(const account : address; const ids : list(uint); const values : list(uint))
     raises ERC1155MissingApprovalForAll | ERC1155InvalidSender | EnforcedPause | ERC1155InvalidArrayLength
       | ERC1155InsufficientBalance
   is {
-    burn_from(account, ids, values);
+    burnFrom(account, ids, values);
   }
 
   external function mint(const account : address; const id : uint; const amount : uint; const data : bytes)
     raises OwnableUnauthorizedAccount | ERC1155InvalidReceiver | EnforcedPause | ERC1155InvalidArrayLength
       | ERC1155InsufficientBalance | forwarded
   is {
-    mint_to(account, [id], [amount]);
-    ERC1155.check_received(Address.zero, account, id, amount, data);
+    mintTo(account, [id], [amount]);
+    ERC1155.checkReceived(Address.zero, account, id, amount, data);
   }
 
   external function mintBatch(
@@ -128,28 +128,28 @@ contract BenchMultiToken is {
     raises OwnableUnauthorizedAccount | ERC1155InvalidReceiver | EnforcedPause | ERC1155InvalidArrayLength
       | ERC1155InsufficientBalance | forwarded
   is {
-    mint_to(to, ids, amounts);
-    ERC1155.check_batch_received(Address.zero, to, ids, amounts, data);
+    mintTo(to, ids, amounts);
+    ERC1155.checkBatchReceived(Address.zero, to, ids, amounts, data);
   }
 
   external function setURI(const newuri : string)
     raises OwnableUnauthorizedAccount
   is {
-    Ownable.check_owner();
-    ERC1155.set_uri(newuri);
+    Ownable.checkOwner();
+    ERC1155.setURI(newuri);
   }
 
   external function pause()
     raises OwnableUnauthorizedAccount | EnforcedPause
   is {
-    Ownable.check_owner();
+    Ownable.checkOwner();
     Pausable.pause();
   }
 
   external function unpause()
     raises OwnableUnauthorizedAccount | ExpectedPause
   is {
-    Ownable.check_owner();
+    Ownable.checkOwner();
     Pausable.unpause();
   }
 }

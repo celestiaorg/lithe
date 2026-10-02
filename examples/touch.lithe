@@ -2,7 +2,7 @@
 
 import "std/evm";
 
-error Not_guard;
+error NotGuard;
 
 storage is record {
   updated : timestamp;
@@ -10,16 +10,16 @@ storage is record {
 }
 
 external function touch()
-  raises Not_guard
+  raises NotGuard
 is {
-  assert(Evm.sender() = storage.guard, Not_guard);
-  storage.updated := Evm.block_timestamp();
+  assert(Evm.sender() = storage.guard, NotGuard);
+  storage.updated := Evm.blockTimestamp();
 }
 
-external function set_guard(const who : address)
-  raises Not_guard
+external function setGuard(const who : address)
+  raises NotGuard
 is {
-  assert(Evm.sender() = storage.guard, Not_guard);
+  assert(Evm.sender() = storage.guard, NotGuard);
   storage.guard := who;
 }
 

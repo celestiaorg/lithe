@@ -122,7 +122,7 @@ When either version has facets, `upgrade-check` also lists the facets the new ve
 ### `lithe upgrade`
 
 ```bash
-lithe upgrade 0xProxy vault.lithe --migrate init_settings --impl 0xNewImpl --args 30 0xTreasury
+lithe upgrade 0xProxy vault.lithe --migrate initSettings --impl 0xNewImpl --args 30 0xTreasury
 ```
 
 Prints the `to` address and the calldata for `upgradeToAndCall(newImpl, migrationCall)`, which runs the named migration with the given arguments. Send it with any wallet or tool:

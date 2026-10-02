@@ -296,7 +296,7 @@ fn with_sel(sig: &str, args: &[u8]) -> Vec<u8> {
     out
 }
 
-/// Each type under test, declared as `tt` and written as its uses spell it: every shape as
+/// Each type under test, declared as `Tt` and written as its uses spell it: every shape as
 /// itself, and each tuple again as a `tuple record`, which the ABI must carry the same way.
 fn forms() -> Vec<(T, String, String)> {
     let mut out = Vec::new();
@@ -311,7 +311,7 @@ fn forms() -> Vec<(T, String, String)> {
             out.push((
                 t.clone(),
                 format!("tuple record {{ {} }}", fields.join(" ")),
-                "tt".into(),
+                "Tt".into(),
             ));
         }
     }
@@ -327,7 +327,7 @@ fn program(t: &T) -> String {
 fn program_as(decl: &str, ty: &str) -> String {
     format!(
         "\
-import \"std/abi\"; type tt is {decl};
+import \"std/abi\"; type Tt is {decl};
 interface Echo is {{
   view function echo(x : {ty}) : {ty};
   function call(x : {ty}) : {ty};
@@ -339,16 +339,16 @@ storage is record {{ n : uint; }}
 external pure function echo(const x : {ty}) : {ty} is x
 external function kept(const x : {ty}) : {ty} is {{ storage.n := 1; }} with x
 external pure function enc(const x : {ty}) : bytes is Abi.encode(x)
-external pure function enc_pair(const x : {ty}; const y : uint) : bytes is Abi.encode(y, x, y)
-external pure function enc_call(const x : {ty}) : bytes is Abi.encode_call(Echo.call, x)
-external pure function enc_sel(const x : {ty}) : bytes is Abi.encode_with_selector(0x12345678, x, 1)
-external pure function dec(const b : bytes) : tt is Abi.decode(b, tt)
-external pure function dec_pair(const b : bytes) : (tt, uint) is Abi.decode(b, (tt, uint))
+external pure function encPair(const x : {ty}; const y : uint) : bytes is Abi.encode(y, x, y)
+external pure function encCall(const x : {ty}) : bytes is Abi.encodeCall(Echo.call, x)
+external pure function encSel(const x : {ty}) : bytes is Abi.encodeWithSelector(0x12345678, x, 1)
+external pure function dec(const b : bytes) : Tt is Abi.decode(b, Tt)
+external pure function decPair(const b : bytes) : (Tt, uint) is Abi.decode(b, (Tt, uint))
 external function log(const x : {ty}) is {{ emit Logged {{ x = x; }}; }}
 external function topic(const x : {ty}) is {{ emit Topic {{ x = x; }}; }}
 external function bad(const x : {ty}) raises Bad is {{ fail Bad(x); }}
 external view function ask(const e : Echo; const x : {ty}) : {ty} is query e.echo(x)
-external view function ask_or(const e : Echo; const x : {ty}; const y : {ty}) : {ty} is
+external view function askOr(const e : Echo; const x : {ty}; const y : {ty}) : {ty} is
   case query e.echo(x) of {{ | Ok(r) -> r | Error(_) -> y }}
 external nonreentrant function later(const e : Echo; const x : {ty}) is {{
   defer e.call(x) then (r : {ty}) {{ emit Logged {{ x = r; }}; }};
@@ -391,7 +391,7 @@ fn every_abi_type_everywhere() {
             let pair = encode(&[t.clone(), T::Uint(256)], &[v.clone(), seven.clone()]);
             let out = run_call(
                 &runtime,
-                &with_sel(&format!("enc_pair({name},uint256)"), &pair),
+                &with_sel(&format!("encPair({name},uint256)"), &pair),
             );
             let inner = encode(
                 &[T::Uint(256), t.clone(), T::Uint(256)],
@@ -400,16 +400,16 @@ fn every_abi_type_everywhere() {
             assert_eq!(
                 hex(&out.returndata),
                 hex(&encode(&[T::Bytes], &[V::B(inner)])),
-                "enc_pair {what}"
+                "encPair {what}"
             );
-            let out = run_call(&runtime, &with_sel(&format!("enc_call({name})"), &enc));
+            let out = run_call(&runtime, &with_sel(&format!("encCall({name})"), &enc));
             let call = with_sel(&format!("call({name})"), &enc);
             assert_eq!(
                 hex(&out.returndata),
                 hex(&encode(&[T::Bytes], &[V::B(call)])),
-                "enc_call {what}"
+                "encCall {what}"
             );
-            let out = run_call(&runtime, &with_sel(&format!("enc_sel({name})"), &enc));
+            let out = run_call(&runtime, &with_sel(&format!("encSel({name})"), &enc));
             let mut sel = vec![0x12, 0x34, 0x56, 0x78];
             sel.extend(encode(
                 &[t.clone(), T::Uint(256)],
@@ -418,7 +418,7 @@ fn every_abi_type_everywhere() {
             assert_eq!(
                 hex(&out.returndata),
                 hex(&encode(&[T::Bytes], &[V::B(sel)])),
-                "enc_sel {what}"
+                "encSel {what}"
             );
             // `Abi.decode` of one value, and of a list of types.
             let bytes_arg = encode(&[T::Bytes], &[V::B(enc.clone())]);
@@ -429,13 +429,13 @@ fn every_abi_type_everywhere() {
             let out = run_call(
                 &runtime,
                 &with_sel(
-                    "dec_pair(bytes)",
+                    "decPair(bytes)",
                     &encode(&[T::Bytes], &[V::B(two.clone())]),
                 ),
             );
             assert!(
                 !out.reverted,
-                "dec_pair {what}: {}",
+                "decPair {what}: {}",
                 pretty(&out.returndata)
             );
             let tuple = T::Tuple(vec![t.clone(), T::Uint(256)]);
@@ -443,7 +443,7 @@ fn every_abi_type_everywhere() {
                 std::slice::from_ref(&tuple),
                 &[V::L(vec![v.clone(), seven.clone()])],
             );
-            assert_eq!(hex(&out.returndata), hex(&want), "dec_pair {what}");
+            assert_eq!(hex(&out.returndata), hex(&want), "decPair {what}");
             // An event's data, and an indexed value's topic.
             let out = run_call(&runtime, &with_sel(&format!("log({name})"), &enc));
             assert!(!out.reverted, "log {what}: {}", pretty(&out.returndata));
@@ -484,9 +484,9 @@ fn every_abi_type_everywhere() {
             );
             let out = run_call(
                 &runtime,
-                &with_sel(&format!("ask_or(address,{name},{name})"), &args),
+                &with_sel(&format!("askOr(address,{name},{name})"), &args),
             );
-            assert_eq!(hex(&out.returndata), hex(&enc), "ask_or {what}");
+            assert_eq!(hex(&out.returndata), hex(&enc), "askOr {what}");
             let refuse = Word::from_u64(0xef);
             let args = encode(
                 &[T::Address, t.clone(), t.clone()],
@@ -494,10 +494,10 @@ fn every_abi_type_everywhere() {
             );
             let out = run_call(
                 &runtime,
-                &with_sel(&format!("ask_or(address,{name},{name})"), &args),
+                &with_sel(&format!("askOr(address,{name},{name})"), &args),
             );
             let w_enc = encode(std::slice::from_ref(&t), std::slice::from_ref(&w));
-            assert_eq!(hex(&out.returndata), hex(&w_enc), "ask_or failed {what}");
+            assert_eq!(hex(&out.returndata), hex(&w_enc), "askOr failed {what}");
             // A deferred call's result, in its continuation.
             let args = encode(&[T::Address, t.clone()], &[V::W(echo), v.clone()]);
             let out = run_call(
@@ -532,7 +532,7 @@ fn deploy_takes_every_abi_type() {
     for (t, decl, ty) in forms() {
         let name = decl.clone();
         let src = format!(
-            "type tt is {decl};\nevent Made of record {{ x : {ty}; }}\nstorage is record {{ n : uint; }}\ndeploy(const x : {ty}) is {{ emit Made {{ x = x; }}; }}\nexternal function f() is {{ skip }}\n"
+            "type Tt is {decl};\nevent Made of record {{ x : {ty}; }}\nstorage is record {{ n : uint; }}\ndeploy(const x : {ty}) is {{ emit Made {{ x = x; }}; }}\nexternal function f() is {{ skip }}\n"
         );
         let init = compile(&src).unwrap_or_else(|e| panic!("{name}: {e}"));
         for _ in 0..3 {
@@ -645,10 +645,10 @@ fn malformed_nested_arguments_revert() {
 #[test]
 fn nested_values_index_and_loop() {
     let src = "\
-import \"std/list\"; type item is record { name : string; tags : list(uint); }
+import \"std/list\"; type Item is record { name : string; tags : list(uint); }
 storage is record { n : uint; }
 external pure function cell(const xs : list(list(uint)); const i : uint; const j : uint) : uint is xs[i][j]
-external pure function row_len(const xs : list(list(uint)); const i : uint) : uint is xs[i].length
+external pure function rowLen(const xs : list(list(uint)); const i : uint) : uint is xs[i].length
 external pure function total(const xs : list(list(uint))) : uint is {
   var sum : uint := 0;
   for row : list(uint) in xs do {
@@ -658,14 +658,14 @@ external pure function total(const xs : list(list(uint))) : uint is {
   }
 } with sum
 external pure function built(const a : uint) : list(list(uint)) is [[a, a + 1], [], [a * 2]]
-external pure function names(const items : list(item)) : list(string) is {
+external pure function names(const items : list(Item)) : list(string) is {
   var out : list(string) := [];
-  for it : item in items do {
+  for it : Item in items do {
     List.push(out, it.name);
   }
 } with out
-external pure function tag(const items : list(item); const i : uint; const j : uint) : uint is items[i].tags[j]
-external pure function make(const s : string; const t : uint) : list(item) is [{ name = s; tags = [t, t]; }]
+external pure function tag(const items : list(Item); const i : uint; const j : uint) : uint is items[i].tags[j]
+external pure function make(const s : string; const t : uint) : list(Item) is [{ name = s; tags = [t, t]; }]
 external pure function swap(const p : (string, list(uint))) : (list(uint), string) is {
   const (s, xs) : (string, list(uint)) := p;
 } with (xs, s)
@@ -698,7 +698,7 @@ external pure function swap(const p : (string, list(uint))) : (list(uint), strin
     );
     assert_eq!(
         word(call(
-            "row_len(uint256[][],uint256)",
+            "rowLen(uint256[][],uint256)",
             &[gt.clone(), T::Uint(256)],
             &[grid.clone(), n(1)]
         )),
@@ -780,24 +780,24 @@ external pure function swap(const p : (string, list(uint))) : (list(uint), strin
     );
 }
 
-/// `Abi.encode_packed` lays out what Solidity's `abi.encodePacked` does, fixed lists included:
+/// `Abi.encodePacked` lays out what Solidity's `abi.encodePacked` does, fixed lists included:
 /// each element padded to a word, `bytesN` in its high bytes. The expected bytes are solc's.
 #[test]
 fn packed_fixed_lists_match_solidity() {
     let src = "\
 import \"std/abi\"; storage is record { n : uint; }
-external pure function f(const a : list(bytes2, 2)) : bytes is Abi.encode_packed(a)
-external pure function g(const a : list(uint8)) : bytes is Abi.encode_packed(a)
-external pure function h(const a : list(bool, 2); const x : address) : bytes is Abi.encode_packed(a, x)
-type status is
+external pure function f(const a : list(bytes2, 2)) : bytes is Abi.encodePacked(a)
+external pure function g(const a : list(uint8)) : bytes is Abi.encodePacked(a)
+external pure function h(const a : list(bool, 2); const x : address) : bytes is Abi.encodePacked(a, x)
+type Status is
   | New
   | Pending
   | Complete
 interface Target is {
   function foo(amount : uint);
 }
-external pure function k(const s : status; const t : Target; const x : int8; const b : bytes3; const ys : list(bytes2)) : bytes is
-  Abi.encode_packed(s, t, x, b, ys)
+external pure function k(const s : Status; const t : Target; const x : int8; const b : bytes3; const ys : list(bytes2)) : bytes is
+  Abi.encodePacked(s, t, x, b, ys)
 ";
     let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
     let packed = |data: Vec<u8>| {
@@ -867,46 +867,46 @@ external pure function k(const s : status; const t : Target; const x : int8; con
 /// Records one Lithe contract sends another through an interface, each stored by the
 /// target as the hash of its `Abi.encode`.
 const RECORD_TARGET: &str = "\
-import \"std/abi\"; import \"std/crypto\"; type job is record { a : uint; label : string; ids : list(uint); b : address; }
-type params is record { x : uint; y : uint; z : uint; }
-type order is tuple record { who : address; memo : string; amount : uint; }
+import \"std/abi\"; import \"std/crypto\"; type Job is record { a : uint; label : string; ids : list(uint); b : address; }
+type Params is record { x : uint; y : uint; z : uint; }
+type Order is tuple record { who : address; memo : string; amount : uint; }
 storage is record { h : bytes32; n : uint; }
-external function run(const j : job) is { storage.h := Crypto.keccak256(Abi.encode(j)); }
-external function execute(const p : params) is { storage.h := Crypto.keccak256(Abi.encode(p)); }
-external function place(const o : order) is { storage.h := Crypto.keccak256(Abi.encode(o)); }
-external function after(const j : job; const n : uint) is { storage.n := n; }
-external view function weigh(const j : job) : bytes32 is Crypto.keccak256(Abi.encode(j))
-external view function quote(const o : order) : order is { who = o.who; memo = o.memo; amount = o.amount + 1; }
+external function run(const j : Job) is { storage.h := Crypto.keccak256(Abi.encode(j)); }
+external function execute(const p : Params) is { storage.h := Crypto.keccak256(Abi.encode(p)); }
+external function place(const o : Order) is { storage.h := Crypto.keccak256(Abi.encode(o)); }
+external function after(const j : Job; const n : uint) is { storage.n := n; }
+external view function weigh(const j : Job) : bytes32 is Crypto.keccak256(Abi.encode(j))
+external view function quote(const o : Order) : Order is { who = o.who; memo = o.memo; amount = o.amount + 1; }
 ";
 
 const RECORD_CALLER: &str = "\
-import \"std/abi\"; import \"std/evm\"; type job is record { a : uint; label : string; ids : list(uint); b : address; }
-type params is record { x : uint; y : uint; z : uint; }
-type order is tuple record { who : address; memo : string; amount : uint; }
+import \"std/abi\"; import \"std/evm\"; type Job is record { a : uint; label : string; ids : list(uint); b : address; }
+type Params is record { x : uint; y : uint; z : uint; }
+type Order is tuple record { who : address; memo : string; amount : uint; }
 interface Target is {
-  function run(j : job);
-  function execute(p : params);
-  function place(o : order);
-  function after(j : job; n : uint);
-  view function weigh(j : job) : bytes32;
-  view function quote(o : order) : order;
+  function run(j : Job);
+  function execute(p : Params);
+  function place(o : Order);
+  function after(j : Job; n : uint);
+  view function weigh(j : Job) : bytes32;
+  view function quote(o : Order) : Order;
 }
 storage is record { target : Target; h : bytes32; amount : uint; }
 external function run(const a : uint; const label : string) is {
   defer storage.target.run({ a = a; label = label; ids = [a, a + 1]; b = Evm.sender(); });
 }
-external function relay(const j : job) is { defer storage.target.run(j); }
+external function relay(const j : Job) is { defer storage.target.run(j); }
 external function execute(const x : uint; const y : uint; const z : uint) is {
   defer storage.target.execute({ x = x; y = y; z = z; });
 }
-external function place(const o : order) is { defer storage.target.place(o); }
-external function after(const j : job; const n : uint) is { defer storage.target.after(j, n); }
-external function weigh(const j : job) is { storage.h := query storage.target.weigh(j); }
-external function quote(const o : order) is {
-  const r : order := query storage.target.quote(o);
+external function place(const o : Order) is { defer storage.target.place(o); }
+external function after(const j : Job; const n : uint) is { defer storage.target.after(j, n); }
+external function weigh(const j : Job) is { storage.h := query storage.target.weigh(j); }
+external function quote(const o : Order) is {
+  const r : Order := query storage.target.quote(o);
   storage.amount := r.amount;
 }
-external pure function call_data(const j : job) : bytes is Abi.encode_call(Target.run, j)
+external pure function callData(const j : Job) : bytes is Abi.encodeCall(Target.run, j)
 ";
 
 /// A record argument is its fields, in an interface as at an entrypoint, so one Lithe contract
@@ -1007,14 +1007,14 @@ fn record_arguments_cross_interfaces() {
         &encode(&both, &args),
     ));
     assert_eq!(theirs(1), Word::from_u64(42));
-    // A query's record argument, and `Abi.encode_call`'s.
+    // A query's record argument, and `Abi.encodeCall`'s.
     let out = send(with_sel(
         "weigh(uint256,string,uint256[],address)",
         &encode(&job_fields, &fields(&j2)),
     ));
     assert_eq!(slot(&out.storage, 1), hash_of(&job, &j2));
     let out = send(with_sel(
-        "call_data(uint256,string,uint256[],address)",
+        "callData(uint256,string,uint256[],address)",
         &encode(&job_fields, &fields(&j2)),
     ));
     let want = with_sel(
@@ -1058,16 +1058,16 @@ fn record_arguments_cross_interfaces() {
 #[test]
 fn case_payloads_decode_like_parameters() {
     let src = "\
-import \"std/abi\"; import \"std/crypto\"; type key is tuple record { token : address; fee : uint24; }
-type ticket is tuple record { holder : address; note : string; }
-type named is record { s : string; n : uint; }
-type action is
-  | Swap of key
-  | Hold of ticket
-  | Name of named
-  | Tag of string
+import \"std/abi\"; import \"std/crypto\"; type Key is tuple record { token : address; fee : uint24; }
+type Ticket is tuple record { holder : address; note : string; }
+type Named is record { s : string; n : uint; }
+type Action is
+  | Swap external swap of Key
+  | Hold external hold of Ticket
+  | Name external name of Named
+  | Tag external tag of string
 storage is record { h : bytes32; }
-external function act(const a : action) is case a of {
+external function act(const a : Action) is case a of {
   | Swap(k) -> { storage.h := Crypto.keccak256(Abi.encode(k)); }
   | Hold(t) -> { storage.h := Crypto.keccak256(Abi.encode(t)); }
   | Name(m) -> { storage.h := Crypto.keccak256(Abi.encode(m)); }
@@ -1118,16 +1118,16 @@ external function act(const a : action) is case a of {
 fn packed_hashes_match_their_encoding() {
     let src = "\
 import \"std/abi\"; import \"std/bytes\"; import \"std/crypto\"; storage is record { n : uint; }
-type status is
+type Status is
   | New
   | Pending
-external pure function enc(const s : status; const a : address; const x : int8; const b : bytes3; const w : uint96; const f : bool; const h : bytes32) : bytes is
-  Abi.encode_packed(s, a, x, b, w, f, h)
-external pure function hash(const s : status; const a : address; const x : int8; const b : bytes3; const w : uint96; const f : bool; const h : bytes32) : bytes32 is
-  Crypto.keccak256(Abi.encode_packed(s, a, x, b, w, f, h))
+external pure function enc(const s : Status; const a : address; const x : int8; const b : bytes3; const w : uint96; const f : bool; const h : bytes32) : bytes is
+  Abi.encodePacked(s, a, x, b, w, f, h)
+external pure function hash(const s : Status; const a : address; const x : int8; const b : bytes3; const w : uint96; const f : bool; const h : bytes32) : bytes32 is
+  Crypto.keccak256(Abi.encodePacked(s, a, x, b, w, f, h))
 external pure function cat(const a : address; const b : bytes3) : bytes is
   Bytes.concat(0xd694, bytes20(a), 0x01, b, 0x000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e)
-external pure function cat_hash(const a : address; const b : bytes3) : bytes32 is
+external pure function catHash(const a : address; const b : bytes3) : bytes32 is
   Crypto.keccak256(Bytes.concat(0xd694, bytes20(a), 0x01, b, 0x000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e))
 ";
     let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
@@ -1165,7 +1165,7 @@ external pure function cat_hash(const a : address; const b : bytes3) : bytes32 i
     assert_eq!(&cat[..2], &[0xd6, 0x94]);
     assert_eq!(&cat[22..26], &[0x01, 0x61, 0x62, 0x63]);
     assert_eq!(
-        answer("cat_hash(address,bytes3)", &[args[1], args[3]]),
+        answer("catHash(address,bytes3)", &[args[1], args[3]]),
         crate::keccak::keccak256(&cat).to_vec()
     );
 }
@@ -1218,11 +1218,11 @@ fn checked_calldata_lists_match_decoding() {
         let body = |list: &str| {
             format!(
                 "var out : bytes := \"\"; var n : uint := {list}.length;
-  for x : rec in {list} do {{
+  for x : Rec in {list} do {{
     out := Bytes.concat(out, Abi.encode({}));
     n := n{};
   }}
-  for (i, x) : (uint, rec) in {list} do {{
+  for (i, x) : (uint, Rec) in {list} do {{
     out := Bytes.concat(out, Abi.encode(i, {}));
   }}",
                 reads.join(", "),
@@ -1233,23 +1233,23 @@ fn checked_calldata_lists_match_decoding() {
         let src = format!(
             "\
 import \"std/abi\"; import \"std/bytes\";
-type rec is {};
-type recs is list(rec);
+type Rec is {};
+type Recs is list(Rec);
 storage is record {{ n : uint; }}
 external pure function kept(const b : bytes) : bytes is {{
-  const xs : recs := Abi.decode(b, recs);
+  const xs : Recs := Abi.decode(b, Recs);
   {}
 }} with Abi.encode(n, out)
 external pure function copied(const b : bytes) : bytes is {{
-  const ys : recs := Abi.decode(b, recs);
-  const xs : recs := ys;
+  const ys : Recs := Abi.decode(b, Recs);
+  const xs : Recs := ys;
   {}
 }} with Abi.encode(n, out)
-external pure function arg(const xs : recs) : bytes is {{
+external pure function arg(const xs : Recs) : bytes is {{
   {}
 }} with Abi.encode(n, out)
-external pure function arg_copied(const ys : recs) : bytes is {{
-  const xs : recs := ys;
+external pure function argCopied(const ys : Recs) : bytes is {{
+  const xs : Recs := ys;
   {}
 }} with Abi.encode(n, out)
 ",
@@ -1305,7 +1305,7 @@ external pure function arg_copied(const ys : recs) : bytes is {{
             );
             let sig = format!("arg({})", canon(&t));
             let a = run_call(&runtime, &with_sel(&sig, data));
-            let sig = format!("arg_copied({})", canon(&t));
+            let sig = format!("argCopied({})", canon(&t));
             let b = run_call(&runtime, &with_sel(&sig, data));
             assert_eq!(
                 (a.reverted, &a.returndata),

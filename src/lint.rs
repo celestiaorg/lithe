@@ -1326,7 +1326,7 @@ external function go() is {
         );
         let cases = [
             ("raises.lithe", "import \"./errors\";\ninterface Gate is {\n  function open() raises Denied;\n}\nstorage is record { g : Gate; }\nexternal function go() is { skip; }\n"),
-            ("peer.lithe", "import \"std/crypto\"; import \"std/evm\"; import \"./child\";\nstorage is record { h : bytes32; }\nexternal function go() is {\n  storage.h := Crypto.keccak256(Evm.creation_code(Child));\n}\n"),
+            ("peer.lithe", "import \"std/crypto\"; import \"std/evm\"; import \"./child\";\nstorage is record { h : bytes32; }\nexternal function go() is {\n  storage.h := Crypto.keccak256(Evm.creationCode(Child));\n}\n"),
             ("exposed.lithe", "import \"./lib\";\ncontract Main is {\n  storage is record { n : uint; }\n  use Lib exposing IPeek;\n}\n"),
         ];
         for (name, src) in cases {

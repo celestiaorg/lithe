@@ -56,7 +56,7 @@ fn stdlib_erc20_and_permit() {
     t.reverted_with("ERC20InsufficientAllowance(address,uint256,uint256)");
     assert!(t.send(3, "burn(uint256)", &[w(10)]));
     assert_eq!(t.word("totalSupply()", &[]), Word::from_u64(90));
-    // `ERC20`'s `before_transfer` hook checks the pause, so it stops mints and burns too.
+    // `ERC20`'s `beforeTransfer` hook checks the pause, so it stops mints and burns too.
     assert!(t.send(1, "pause()", &[]));
     assert!(!t.send(2, "transfer(address,uint256)", &[w(3), w(1)]));
     t.reverted_with("EnforcedPause()");
@@ -265,9 +265,9 @@ fn stdlib_math_crypto_and_collections() {
         );
         let ten_pow = (0..l10).fold(one, |p, _| p.wrapping_mul(Word::from_u64(10)));
         for (sig, want) in [
-            ("log2_up(uint256)", up(a, bits(a), one.shl(bits(a) as u32))),
-            ("log10_up(uint256)", up(a, l10, ten_pow)),
-            ("log256_up(uint256)", up(a, l256, one.shl(8 * l256 as u32))),
+            ("log2Up(uint256)", up(a, bits(a), one.shl(bits(a) as u32))),
+            ("log10Up(uint256)", up(a, l10, ten_pow)),
+            ("log256Up(uint256)", up(a, l256, one.shl(8 * l256 as u32))),
         ] {
             assert_eq!(u.word(sig, &[Arg::W(a)]), Word::from_u64(want), "{sig} {a:?}");
         }
@@ -293,21 +293,21 @@ fn stdlib_math_crypto_and_collections() {
         (int_min, int_max, int(0)),
     ] {
         assert_eq!(
-            u.word("average_int(int256,int256)", &[Arg::W(a), Arg::W(b)]),
+            u.word("averageInt(int256,int256)", &[Arg::W(a), Arg::W(b)]),
             mean
         );
     }
     assert_eq!(
-        u.word("min_int(int256,int256)", &[Arg::W(int(-5)), w(2)]),
+        u.word("minInt(int256,int256)", &[Arg::W(int(-5)), w(2)]),
         int(-5)
     );
     assert_eq!(
-        u.word("max_int(int256,int256)", &[Arg::W(int(-5)), w(2)]),
+        u.word("maxInt(int256,int256)", &[Arg::W(int(-5)), w(2)]),
         int(2)
     );
     assert_eq!(
         u.word(
-            "max_int(int256,int256)",
+            "maxInt(int256,int256)",
             &[Arg::W(int_min), Arg::W(int(-1))]
         ),
         int(-1)
@@ -338,7 +338,7 @@ fn stdlib_math_crypto_and_collections() {
     );
     let mut clamp_int = |x: i64, lo: i64, hi: i64| {
         u.word(
-            "clamp_int(int256,int256,int256)",
+            "clampInt(int256,int256,int256)",
             &[Arg::W(int(x)), Arg::W(int(lo)), Arg::W(int(hi))],
         )
     };
@@ -360,15 +360,15 @@ fn stdlib_math_crypto_and_collections() {
         hexw(max)
     );
     assert_eq!(
-        u.word("ceil_div(uint256,uint256)", &[w(7), w(2)]),
+        u.word("ceilDiv(uint256,uint256)", &[w(7), w(2)]),
         Word::from_u64(4)
     );
     assert_eq!(
-        u.word("ceil_div(uint256,uint256)", &[w(0), w(2)]),
+        u.word("ceilDiv(uint256,uint256)", &[w(0), w(2)]),
         Word::from_u64(0)
     );
     assert_eq!(
-        u.word("mul_div_up(uint256,uint256,uint256)", &[w(7), w(3), w(2)]),
+        u.word("mulDivUp(uint256,uint256,uint256)", &[w(7), w(3), w(2)]),
         Word::from_u64(11)
     );
     assert_eq!(
@@ -379,25 +379,25 @@ fn stdlib_math_crypto_and_collections() {
     u.reverted_with("MathInvalidRange(uint256,uint256)");
     assert!(!u.send(
         0,
-        "clamp_int(int256,int256,int256)",
+        "clampInt(int256,int256,int256)",
         &[w(0), w(1), Arg::W(int(-1))]
     ));
     u.reverted_with("MathInvalidSignedRange(int256,int256)");
-    assert!(!u.send(0, "to_uint(int256)", &[Arg::W(Word::from_u64(3).not())]));
+    assert!(!u.send(0, "toUint(int256)", &[Arg::W(Word::from_u64(3).not())]));
     u.reverted_with("SafeCastOverflowedIntToUint(int256)");
-    assert!(!u.send(0, "to_int(uint256)", &[Arg::W(hexw(max))]));
+    assert!(!u.send(0, "toInt(uint256)", &[Arg::W(hexw(max))]));
     u.reverted_with("SafeCastOverflowedUintToInt(uint256)");
     let e18 = 1_000_000_000_000_000_000u64;
     assert_eq!(
-        u.word("wad_mul(uint256,uint256)", &[w(3 * e18 / 2), w(4 * e18)]),
+        u.word("wadMul(uint256,uint256)", &[w(3 * e18 / 2), w(4 * e18)]),
         Word::from_u64(6 * e18)
     );
     assert_eq!(
-        u.word("wad_div(uint256,uint256)", &[w(3 * e18), w(2 * e18)]),
+        u.word("wadDiv(uint256,uint256)", &[w(3 * e18), w(2 * e18)]),
         Word::from_u64(3 * e18 / 2)
     );
     assert_eq!(
-        u.word("apply_bps(uint256,uint256)", &[w(20_000), w(25)]),
+        u.word("applyBps(uint256,uint256)", &[w(20_000), w(25)]),
         Word::from_u64(50)
     );
 
@@ -466,7 +466,7 @@ fn stdlib_math_crypto_and_collections() {
     );
     assert_eq!(
         u.word(
-            "recover_vrs(bytes32,uint8,bytes32,bytes32)",
+            "recoverVrs(bytes32,uint8,bytes32,bytes32)",
             &[Arg::W(hash), w(u64::from(v)), Arg::W(r), Arg::W(s)]
         ),
         signer
@@ -476,7 +476,7 @@ fn stdlib_math_crypto_and_collections() {
     let twin = if v == 27 { 28 } else { 27 };
     assert!(!u.send(
         0,
-        "recover_vrs(bytes32,uint8,bytes32,bytes32)",
+        "recoverVrs(bytes32,uint8,bytes32,bytes32)",
         &[Arg::W(hash), w(twin), Arg::W(r), Arg::W(high)]
     ));
     u.reverted_with("ECDSAInvalidSignatureS(bytes32)");
@@ -489,7 +489,7 @@ fn stdlib_math_crypto_and_collections() {
     let mut prefixed = b"\x19Ethereum Signed Message:\n32".to_vec();
     prefixed.extend_from_slice(&hash.to_be_bytes());
     assert_eq!(
-        u.word("eth_message(bytes32)", &[Arg::W(hash)]),
+        u.word("ethMessage(bytes32)", &[Arg::W(hash)]),
         keccak_word(&prefixed)
     );
 
@@ -503,16 +503,16 @@ fn stdlib_math_crypto_and_collections() {
     addr[12..].copy_from_slice(&crate::keccak::keccak256(&data)[12..]);
     assert_eq!(
         u.word(
-            "create2_address(bytes32,bytes32,address)",
+            "create2Address(bytes32,bytes32,address)",
             &[Arg::W(salt), Arg::W(code), w(0xdead)]
         ),
         Word::from_be_bytes(addr)
     );
 
     // Nonces count up per account; each call here uses one.
-    assert_eq!(u.word("use_nonce(address)", &[w(5)]), Word::from_u64(0));
-    assert_eq!(u.word("use_nonce(address)", &[w(5)]), Word::from_u64(1));
-    assert_eq!(u.word("use_nonce(address)", &[w(6)]), Word::from_u64(0));
+    assert_eq!(u.word("useNonce(address)", &[w(5)]), Word::from_u64(0));
+    assert_eq!(u.word("useNonce(address)", &[w(5)]), Word::from_u64(1));
+    assert_eq!(u.word("useNonce(address)", &[w(6)]), Word::from_u64(0));
 
     // A bitmap packs 256 flags to a slot.
     for i in [0u64, 255, 256, 1000] {
@@ -527,14 +527,14 @@ fn stdlib_math_crypto_and_collections() {
         (1000, true),
     ] {
         assert_eq!(
-            u.word("is_claimed(uint256)", &[w(i)]),
+            u.word("isClaimed(uint256)", &[w(i)]),
             Word::from_u64(u64::from(set)),
             "{i}"
         );
     }
     assert!(u.send(0, "unclaim(uint256)", &[w(255)]));
-    assert_eq!(u.word("is_claimed(uint256)", &[w(255)]), Word::from_u64(0));
-    assert_eq!(u.word("is_claimed(uint256)", &[w(0)]), Word::from_u64(1));
+    assert_eq!(u.word("isClaimed(uint256)", &[w(255)]), Word::from_u64(0));
+    assert_eq!(u.word("isClaimed(uint256)", &[w(0)]), Word::from_u64(1));
 
     // A queue pops in push order.
     for caller in [11u64, 12, 13] {
@@ -548,13 +548,13 @@ fn stdlib_math_crypto_and_collections() {
     u.reverted_with("QueueEmpty()");
 
     // Checkpoints at block 100: a second push at the same key replaces the value.
-    assert!(u.send(0, "checkpoint_value(uint256)", &[w(5)]));
-    assert!(u.send(0, "checkpoint_value(uint256)", &[w(8)]));
+    assert!(u.send(0, "checkpointValue(uint256)", &[w(5)]));
+    assert!(u.send(0, "checkpointValue(uint256)", &[w(8)]));
     assert_eq!(u.word("checkpoints()", &[]), Word::from_u64(1));
     assert_eq!(u.word("latest()", &[]), Word::from_u64(8));
-    assert_eq!(u.word("value_at(uint256)", &[w(100)]), Word::from_u64(8));
-    assert_eq!(u.word("value_at(uint256)", &[w(150)]), Word::from_u64(8));
-    assert_eq!(u.word("value_at(uint256)", &[w(99)]), Word::from_u64(0));
+    assert_eq!(u.word("valueAt(uint256)", &[w(100)]), Word::from_u64(8));
+    assert_eq!(u.word("valueAt(uint256)", &[w(150)]), Word::from_u64(8));
+    assert_eq!(u.word("valueAt(uint256)", &[w(99)]), Word::from_u64(0));
 
     // Sets.
     assert!(u.send(21, "join()", &[]));
@@ -562,7 +562,7 @@ fn stdlib_math_crypto_and_collections() {
     assert!(u.send(22, "join()", &[]));
     assert_eq!(u.word("member(address)", &[w(21)]), Word::from_u64(1));
     assert_eq!(u.word("member(address)", &[w(23)]), Word::from_u64(0));
-    assert_eq!(u.word("listed_count()", &[]), Word::from_u64(2));
+    assert_eq!(u.word("listedCount()", &[]), Word::from_u64(2));
 }
 
 /// `std/token/erc20_votes.lithe` with roles, a pause, a cap, and permits: votes follow
@@ -704,8 +704,8 @@ fn stdlib_access_control() {
     let minter = Arg::W(keccak_word(b"MINTER_ROLE"));
     let pauser = || Arg::W(keccak_word(b"PAUSER_ROLE"));
     let admin = Arg::W(Word::from_u64(0));
-    assert!(a.send(1, "record_entry(address,uint256)", &[w(5), w(3)]));
-    assert!(!a.send(2, "record_entry(address,uint256)", &[w(5), w(3)]));
+    assert!(a.send(1, "recordEntry(address,uint256)", &[w(5), w(3)]));
+    assert!(!a.send(2, "recordEntry(address,uint256)", &[w(5), w(3)]));
     a.reverted_with("AccessControlUnauthorizedAccount(address,bytes32)");
     assert!(!a.send(
         2,
@@ -713,7 +713,7 @@ fn stdlib_access_control() {
         &[Arg::W(keccak_word(b"MINTER_ROLE")), w(2)]
     ));
     assert!(a.send(1, "grantRole(bytes32,address)", &[minter, w(2)]));
-    assert!(a.send(2, "record_entry(address,uint256)", &[w(5), w(4)]));
+    assert!(a.send(2, "recordEntry(address,uint256)", &[w(5), w(4)]));
     assert_eq!(a.word("entry(address)", &[w(5)]), Word::from_u64(7));
     assert!(!a.send(
         3,
@@ -744,9 +744,9 @@ fn stdlib_access_control() {
 
     assert!(!a.send(1, "pause()", &[]));
     a.reverted_with("AccessControlUnauthorizedAccount(address,bytes32)");
-    assert!(a.send(1, "set_pauser(address,bool)", &[w(4), w(1)]));
+    assert!(a.send(1, "setPauser(address,bool)", &[w(4), w(1)]));
     assert!(a.send(4, "pause()", &[]));
-    assert!(!a.send(1, "record_entry(address,uint256)", &[w(5), w(1)]));
+    assert!(!a.send(1, "recordEntry(address,uint256)", &[w(5), w(1)]));
     a.reverted_with("EnforcedPause()");
     assert!(a.send(4, "unpause()", &[]));
     assert!(!a.send(4, "unpause()", &[]));
@@ -760,8 +760,8 @@ fn stdlib_access_control() {
     assert!(a.send(9, "acceptOwnership()", &[]));
     assert_eq!(a.word("owner()", &[]), Word::from_u64(9));
     assert_eq!(a.word("pendingOwner()", &[]), Word::from_u64(0));
-    assert!(!a.send(1, "set_pauser(address,bool)", &[w(4), w(0)]));
-    assert!(a.send(9, "set_pauser(address,bool)", &[w(4), w(0)]));
+    assert!(!a.send(1, "setPauser(address,bool)", &[w(4), w(0)]));
+    assert!(a.send(9, "setPauser(address,bool)", &[w(4), w(0)]));
     assert!(!a.send(4, "pause()", &[]));
 }
 
@@ -847,7 +847,7 @@ fn stdlib_erc1155() {
     assert_eq!(t.word("totalSupply()", &[]), Word::from_u64(90));
     assert_eq!(t.word("exists(uint256)", &[w(1)]), Word::from_u64(1));
     assert_eq!(t.word("exists(uint256)", &[w(2)]), Word::from_u64(0));
-    // `ERC1155`'s `after_transfer` hook sees a batch whole: each id's supply, and the total.
+    // `ERC1155`'s `afterTransfer` hook sees a batch whole: each id's supply, and the total.
     let ids = || Arg::L(vec![Word::from_u64(2), Word::from_u64(5)]);
     let mint_batch = "mintBatch(address,uint256[],uint256[],bytes)";
     let values = Arg::L(vec![Word::from_u64(7), Word::from_u64(11)]);
@@ -1276,21 +1276,21 @@ contract T is {
     last : string;
   }
 
-  external pure function enc(const data : bytes; const file_safe : bool; const no_padding : bool) : string is
-    Base64.encode_with(data, file_safe, no_padding)
+  external pure function enc(const data : bytes; const fileSafe : bool; const noPadding : bool) : string is
+    Base64.encodeWith(data, fileSafe, noPadding)
 
   external pure function dec(const data : string) : bytes is
     Base64.decode(data)
 
   external pure function same(const data : bytes) : bool is
     Crypto.keccak256(Base64.decode(Base64.encode(data))) = Crypto.keccak256(data)
-    and Crypto.keccak256(Base64.encode(data)) = Crypto.keccak256(Base64.encode_with(data, false, false))
+    and Crypto.keccak256(Base64.encode(data)) = Crypto.keccak256(Base64.encodeWith(data, false, false))
 
   external pure function text(const s : string) : string is
-    Base64.encode_url(s)
+    Base64.encodeUrl(s)
 
   external pure function escaped(const data : string) : bytes is {
-    const html : string := String.escape_html(data);
+    const html : string := String.escapeHtml(data);
   } with Bytes.concat(Base64.decode(data), bytes(html))
 
   external function keep(const data : bytes) is {
@@ -1331,7 +1331,7 @@ contract T is {
         .iter()
         .map(|(a, b)| {
             let src = format!(
-                "import \"std/base64\";\ncontract F is {{\n  storage is record {{}}\n  external pure function f(const data : bytes) : string is\n    Base64.encode_with(data, {a}, {b})\n}}\n"
+                "import \"std/base64\";\ncontract F is {{\n  storage is record {{}}\n  external pure function f(const data : bytes) : string is\n    Base64.encodeWith(data, {a}, {b})\n}}\n"
             );
             deploy(&compile(&src).expect("compile")).expect("deploy")
         })
@@ -1422,37 +1422,37 @@ contract T is {
     }
 }
 
-/// `String.escape_json` and `escape_html` with Solady's vectors and every byte,
+/// `String.escapeJson` and `escapeHtml` with Solady's vectors and every byte,
 /// `String.replace` against a naive replace, and `Bytes.join` / `String.join` of lists
 /// built every way.
 #[test]
 fn string_escape_replace_and_join() {
     let src = r#"import "std/string"; import "std/bytes"; import "std/base64"; import "std/list";
-type blob is bytes;
+type Blob is bytes;
 storage is record { last : string; names : list(string); }
 
-external pure function json(const s : string) : string is String.escape_json(s)
+external pure function json(const s : string) : string is String.escapeJson(s)
 
 external function add(const s : string) is {
   List.push(storage.names, s);
 }
 
 external view function names() : string is String.join(storage.names)
-external pure function html(const s : string) : string is String.escape_html(s)
+external pure function html(const s : string) : string is String.escapeHtml(s)
 
 (* A slice escaped where it lies, quoted or not. *)
 external pure function part(const s : bytes; const from : uint; const to : uint; const quoted : bool) : string is
-  String.escape_json(string(s[from:to]), quoted)
+  String.escapeJson(string(s[from:to]), quoted)
 
 external pure function tail(const s : string; const from : uint) : string is
-  String.concat(String.escape_json(string(bytes(s)[from:]), true), "|", String.escape_html(bytes(s)[from:]))
+  String.concat(String.escapeJson(string(bytes(s)[from:]), true), "|", String.escapeHtml(bytes(s)[from:]))
 
 (* Every helper that uses the table space at address 0, in one expression. *)
 external pure function mixed(const s : bytes) : string is
-  String.concat(String.escape_json(string(s)), "|", Base64.encode(s), "|", String.escape_html(string(s)), "|", string(Base64.decode(Base64.encode(s))))
+  String.concat(String.escapeJson(string(s)), "|", Base64.encode(s), "|", String.escapeHtml(string(s)), "|", string(Base64.decode(Base64.encode(s))))
 
 external function keep(const s : string) is {
-  storage.last := String.escape_json(s);
+  storage.last := String.escapeJson(s);
 }
 
 external view function kept() : string is storage.last
@@ -1463,17 +1463,17 @@ external pure function join(const xs : list(string)) : string is String.join(xs)
 
 (* `s` cut every `step` bytes, then joined back with `sep` after each piece. *)
 external pure function rejoin(const s : bytes; const step : uint; const sep : bytes) : bytes is {
-  var parts : list(blob) := [];
+  var parts : list(Blob) := [];
   var pos : uint := 0;
   for _ : uint in 0 .. s.length + 1 until pos >= s.length do {
     const stop : uint := if pos + step > s.length then s.length else pos + step;
-    List.push(parts, blob(s[pos:stop]));
-    List.push(parts, blob(sep));
+    List.push(parts, Blob(s[pos:stop]));
+    List.push(parts, Blob(sep));
     pos := stop;
   }
 } with Bytes.join(parts)
 
-external pure function literal() : string is String.join(["a", "", "bc", String.escape_json("\"")])
+external pure function literal() : string is String.join(["a", "", "bc", String.escapeJson("\"")])
 "#;
     let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
     let call = |sig: &str, args: &[Arg]| {
@@ -1766,13 +1766,13 @@ external function bump() is { storage.n := storage.n + 1; }
     .expect("bump");
     assert!(!bumped.reverted, "{}", pretty(&bumped.returndata));
     assert_eq!(slot(&bumped.storage, 0), Word::from_u64(1));
-    assert!(d.word("args_of(address)", &[Arg::W(instance)]) == Word::from_u64(32));
+    assert!(d.word("argsOf(address)", &[Arg::W(instance)]) == Word::from_u64(32));
     assert!(abi_string_value(&d.returned()).is_empty());
 
-    // With a salt, the clone lands where `predict_clone` says.
+    // With a salt, the clone lands where `predictClone` says.
     let salt = Word::from_u64(0x5a17);
     let predicted = d.word(
-        "predict_clone(address,bytes32)",
+        "predictClone(address,bytes32)",
         &[Arg::W(implementation), Arg::W(salt)],
     );
     let mut init = unhex("3d602d80600a3d3981f3");
@@ -1780,7 +1780,7 @@ external function bump() is { storage.n := storage.n + 1; }
     assert_eq!(predicted, created_address(this, Some(salt), &init));
     assert_eq!(
         d.word(
-            "clone_deterministic(address,bytes32)",
+            "cloneDeterministic(address,bytes32)",
             &[Arg::W(implementation), Arg::W(salt)]
         ),
         predicted
@@ -1791,7 +1791,7 @@ external function bump() is { storage.n := storage.n + 1; }
     let args = b"immutable arguments, read back with EXTCODECOPY".to_vec();
     assert!(d.send(
         1,
-        "clone_with_args(address,bytes)",
+        "cloneWithArgs(address,bytes)",
         &[Arg::W(implementation), Arg::B(args.clone())]
     ));
     let instance = slot(&d.storage, 0);
@@ -1799,11 +1799,11 @@ external function bump() is { storage.n := storage.n + 1; }
         DEPLOYED.with(|m| m.borrow()[&instance].0.clone()),
         clone_code(&args)
     );
-    d.word("args_of(address)", &[Arg::W(instance)]);
+    d.word("argsOf(address)", &[Arg::W(instance)]);
     assert_eq!(abi_string_value(&d.returned()), args);
     assert!(!d.send(
         1,
-        "clone_with_args(address,bytes)",
+        "cloneWithArgs(address,bytes)",
         &[Arg::W(implementation), Arg::B(vec![7; 24532])]
     ));
     d.reverted_with("CloneArgumentsTooLong()");
@@ -1814,7 +1814,7 @@ external function bump() is { storage.n := storage.n + 1; }
     d.word("read()", &[]);
     assert_eq!(abi_string_value(&d.returned()), data);
     let pointer = d.word(
-        "write_counterfactual(bytes,bytes32)",
+        "writeCounterfactual(bytes,bytes32)",
         &[Arg::B(data[..9].to_vec()), Arg::W(salt)],
     );
     let mut init = unhex("61000a80600a3d393df300");
@@ -1873,27 +1873,27 @@ contract Funded is {
   storage is record { last : address; }
 
   external function plain(const target : address; const salt : bytes32) : address raises FailedDeployment is {
-    storage.last := Clones.clone_deterministic(target, salt);
+    storage.last := Clones.cloneDeterministic(target, salt);
   } with storage.last
 
   external payable function funded(const target : address; const salt : bytes32) : address raises FailedDeployment is {
-    storage.last := Clones.clone_deterministic(target, salt, uint(Evm.value()));
+    storage.last := Clones.cloneDeterministic(target, salt, uint(Evm.value()));
   } with storage.last
 
-  external payable function funded_with_args(const target : address; const args : bytes; const salt : bytes32) : address
+  external payable function fundedWithArgs(const target : address; const args : bytes; const salt : bytes32) : address
     raises CloneArgumentsTooLong | FailedDeployment
   is {
-    storage.last := Clones.clone_deterministic_with_args(target, args, salt, uint(Evm.value()));
+    storage.last := Clones.cloneDeterministicWithArgs(target, args, salt, uint(Evm.value()));
   } with storage.last
 
-  external function plain_with_args(const target : address; const args : bytes; const salt : bytes32) : address
+  external function plainWithArgs(const target : address; const args : bytes; const salt : bytes32) : address
     raises CloneArgumentsTooLong | FailedDeployment
   is {
-    storage.last := Clones.clone_deterministic_with_args(target, args, salt);
+    storage.last := Clones.cloneDeterministicWithArgs(target, args, salt);
   } with storage.last
 
   external function deploy3(const code : bytes; const salt : bytes32) : address raises FailedDeployment is {
-    storage.last := Create3.deploy_deterministic(code, salt);
+    storage.last := Create3.deployDeterministic(code, salt);
   } with storage.last
 }
 ";
@@ -1932,13 +1932,13 @@ contract Funded is {
     assert_eq!(plain, funded, "the value does not move the address");
     let args = || Arg::B(b"config".to_vec());
     let (with_args, sent) = run(
-        "plain_with_args(address,bytes,bytes32)",
+        "plainWithArgs(address,bytes,bytes32)",
         &[Arg::W(target), args(), salt()],
         0,
     );
     assert_eq!(sent, Some(Word::from_u64(0)));
     let (funded_args, sent) = run(
-        "funded_with_args(address,bytes,bytes32)",
+        "fundedWithArgs(address,bytes,bytes32)",
         &[Arg::W(target), args(), salt()],
         3,
     );
@@ -2175,13 +2175,13 @@ contract Keyed is {
   external payable function execute(const mode : bytes32; const executionData : bytes)
     raises UnsupportedExecutionMode | BadOpData | forwarded
   is {
-    assert(ERC7821.execution_mode_id(mode) = 2, UnsupportedExecutionMode);
-    const calls : erc7821_calls := Abi.decode(executionData, erc7821_calls);
+    assert(ERC7821.executionModeId(mode) = 2, UnsupportedExecutionMode);
+    const calls : ERC7821Calls := Abi.decode(executionData, ERC7821Calls);
     assert(
-      ERC7821.op_data_of(2, executionData) = Abi.encode(calls.length),
+      ERC7821.opDataOf(2, executionData) = Abi.encode(calls.length),
       BadOpData
     );
-    ERC7821.execute_calls(calls);
+    ERC7821.executeCalls(calls);
   }
 }
 ",
@@ -2328,21 +2328,21 @@ contract Signed is {
   external payable function execute(const mode : bytes32; const executionData : bytes)
     raises UnsupportedExecutionMode | BatchOfBatchesDecodingError | BadOpData | forwarded
   is {
-    const id : uint := ERC7821Batches.execution_mode_id(mode);
+    const id : uint := ERC7821Batches.executionModeId(mode);
     assert(id >= 2, UnsupportedExecutionMode);
-    const n : uint := if id = 3 then ERC7821Batches.batch_count(executionData) else 1;
+    const n : uint := if id = 3 then ERC7821Batches.batchCount(executionData) else 1;
     for i : uint in 0 .. n do {
       var start : uint := 0;
       var finish : uint := executionData.length;
       if id = 3 then {
         (start, finish) := ERC7821Batches.batch(executionData, i);
       } else { skip };
-      const calls : erc7821_calls := Abi.decode(executionData[start : finish], erc7821_calls);
+      const calls : ERC7821Calls := Abi.decode(executionData[start : finish], ERC7821Calls);
       assert(
-        ERC7821Batches.op_data_in(executionData, start, finish) = Abi.encode(calls.length),
+        ERC7821Batches.opDataIn(executionData, start, finish) = Abi.encode(calls.length),
         BadOpData
       );
-      ERC7821.execute_calls(calls);
+      ERC7821.executeCalls(calls);
     }
   }
 }
@@ -2443,10 +2443,10 @@ fn stdlib_ownable_roles() {
     assert_eq!(r.word("rolesOf(address)", &[w(2)]), Word::from_u64(0));
     assert!(!r.send(2, "pause()", &[]));
 
-    // `set_roles` replaces the whole mask.
+    // `setRoles` replaces the whole mask.
     assert!(r.send(1, "grantRoles(address,uint256)", &[w(4), w(7)]));
-    assert!(!r.send(4, "reset_roles(address)", &[w(4)]));
-    assert!(r.send(1, "reset_roles(address)", &[w(4)]));
+    assert!(!r.send(4, "resetRoles(address)", &[w(4)]));
+    assert!(r.send(1, "resetRoles(address)", &[w(4)]));
     assert_eq!(updated(&r), vec![Word::from_u64(4), Word::from_u64(0)]);
     assert_eq!(r.word("rolesOf(address)", &[w(4)]), Word::from_u64(0));
 
@@ -2465,10 +2465,10 @@ contract Conv is {
   use Ownable;
   use OwnableRoles;
   storage is record {}
-  external pure function rolesFromOrdinals(const ordinals : list(uint8)) : roles is
-    OwnableRoles.roles_from_ordinals(ordinals)
-  external pure function ordinalsFromRoles(const r : roles) : list(uint8) is
-    OwnableRoles.ordinals_from_roles(r)
+  external pure function rolesFromOrdinals(const ordinals : list(uint8)) : Roles is
+    OwnableRoles.rolesFromOrdinals(ordinals)
+  external pure function ordinalsFromRoles(const r : Roles) : list(uint8) is
+    OwnableRoles.ordinalsFromRoles(r)
 }
 ",
         )
@@ -2518,7 +2518,7 @@ contract Factory is {
     defer create Wallet() with salt = salt;
   }
   external view function predict(const salt : bytes32) : address is
-    Create2.compute_address_here(salt, Crypto.keccak256(Evm.creation_code(Wallet)))
+    Create2.computeAddressHere(salt, Crypto.keccak256(Evm.creationCode(Wallet)))
 }
 contract Wallet is {
   storage is record {}
@@ -2540,13 +2540,13 @@ contract Checker is {
   external function spend(const signer : address; const hash : bytes32; const signature : bytes)
     raises ERC6492InvalidSignature
   is {
-    SignatureChecker.check_erc6492_signature(signer, hash, signature);
+    SignatureChecker.checkERC6492Signature(signer, hash, signature);
     storage.used := storage.used + 1;
   }
-  external view function valid_now(const signer : address; const hash : bytes32; const signature : bytes)
+  external view function validNow(const signer : address; const hash : bytes32; const signature : bytes)
     : bool
   is
-    SignatureChecker.is_valid_erc6492_signature_now(signer, hash, signature)
+    SignatureChecker.isValidERC6492SignatureNow(signer, hash, signature)
 }
 ",
         )
@@ -2581,7 +2581,7 @@ contract Checker is {
         .expect(sig)
     };
     let valid_now = |signer: Word, signature: &[u8]| {
-        load_bytes(&run("valid_now(address,bytes32,bytes)", signer, signature).returndata, 0) == w(1)
+        load_bytes(&run("validNow(address,bytes32,bytes)", signer, signature).returndata, 0) == w(1)
     };
     let spend = "spend(address,bytes32,bytes)";
     let invalid = |out: &Outcome, signer: Word| {
@@ -2677,42 +2677,42 @@ fn stdlib_map_enumerable() {
         let out = u.returned();
         (load_bytes(&out, 0), load_bytes(&out, 32))
     };
-    assert_eq!(u.word("map_length()", &[]), Word::from_u64(0));
-    assert!(!u.send(0, "map_get(address)", &[w(7)]));
+    assert_eq!(u.word("mapLength()", &[]), Word::from_u64(0));
+    assert!(!u.send(0, "mapGet(address)", &[w(7)]));
     u.reverted_with("EnumerableMapNonexistentKey(bytes32)");
     assert_eq!(load_bytes(&u.returned()[4..], 0), Word::from_u64(7));
-    assert!(u.send(0, "map_try_get(address)", &[w(7)]));
+    assert!(u.send(0, "mapTryGet(address)", &[w(7)]));
     assert_eq!(pair(&u), (Word::from_u64(0), Word::from_u64(0)));
-    assert!(!u.send(0, "map_at(uint256)", &[w(0)]));
+    assert!(!u.send(0, "mapAt(uint256)", &[w(0)]));
     u.reverted_with("OutOfBounds()");
 
     for (key, value) in [(7u64, 70u64), (8, 0), (9, 90), (7, 71)] {
-        assert!(u.send(0, "map_set(address,uint256)", &[w(key), w(value)]));
+        assert!(u.send(0, "mapSet(address,uint256)", &[w(key), w(value)]));
     }
-    assert_eq!(u.word("map_length()", &[]), Word::from_u64(3));
-    assert_eq!(u.word("map_get(address)", &[w(7)]), Word::from_u64(71));
+    assert_eq!(u.word("mapLength()", &[]), Word::from_u64(3));
+    assert_eq!(u.word("mapGet(address)", &[w(7)]), Word::from_u64(71));
     // A key set to zero is still present.
-    assert_eq!(u.word("map_contains(address)", &[w(8)]), Word::from_u64(1));
-    assert!(u.send(0, "map_try_get(address)", &[w(8)]));
+    assert_eq!(u.word("mapContains(address)", &[w(8)]), Word::from_u64(1));
+    assert!(u.send(0, "mapTryGet(address)", &[w(8)]));
     assert_eq!(pair(&u), (Word::from_u64(1), Word::from_u64(0)));
-    assert!(u.send(0, "map_at(uint256)", &[w(2)]));
+    assert!(u.send(0, "mapAt(uint256)", &[w(2)]));
     assert_eq!(pair(&u), (Word::from_u64(9), Word::from_u64(90)));
 
     // Removing moves the last entry into the gap.
-    assert!(u.send(0, "map_remove(address)", &[w(7)]));
-    assert!(u.send(0, "map_remove(address)", &[w(7)]));
-    assert_eq!(u.word("map_length()", &[]), Word::from_u64(2));
-    assert_eq!(u.word("map_contains(address)", &[w(7)]), Word::from_u64(0));
-    assert!(!u.send(0, "map_get(address)", &[w(7)]));
+    assert!(u.send(0, "mapRemove(address)", &[w(7)]));
+    assert!(u.send(0, "mapRemove(address)", &[w(7)]));
+    assert_eq!(u.word("mapLength()", &[]), Word::from_u64(2));
+    assert_eq!(u.word("mapContains(address)", &[w(7)]), Word::from_u64(0));
+    assert!(!u.send(0, "mapGet(address)", &[w(7)]));
     u.reverted_with("EnumerableMapNonexistentKey(bytes32)");
-    assert!(u.send(0, "map_at(uint256)", &[w(0)]));
+    assert!(u.send(0, "mapAt(uint256)", &[w(0)]));
     assert_eq!(pair(&u), (Word::from_u64(9), Word::from_u64(90)));
-    assert!(u.send(0, "map_at(uint256)", &[w(1)]));
+    assert!(u.send(0, "mapAt(uint256)", &[w(1)]));
     assert_eq!(pair(&u), (Word::from_u64(8), Word::from_u64(0)));
-    assert!(!u.send(0, "map_at(uint256)", &[w(2)]));
+    assert!(!u.send(0, "mapAt(uint256)", &[w(2)]));
     u.reverted_with("OutOfBounds()");
-    assert!(u.send(0, "map_set(address,uint256)", &[w(7), w(5)]));
-    assert_eq!(u.word("map_get(address)", &[w(7)]), Word::from_u64(5));
+    assert!(u.send(0, "mapSet(address,uint256)", &[w(7), w(5)]));
+    assert_eq!(u.word("mapGet(address)", &[w(7)]), Word::from_u64(5));
 
     // A `bytes4` key's error payload is left-aligned, as OpenZeppelin's `bytes32` is.
     let selector = Word::from_u64(0xdead_beef).shl(224);
@@ -2726,7 +2726,7 @@ fn stdlib_map_enumerable() {
     );
 }
 
-/// `Bitmap.set_batch`, `unset_batch`, and `pop_count` over runs inside one slot, across
+/// `Bitmap.setBatch`, `unsetBatch`, and `popCount` over runs inside one slot, across
 /// slot edges, and over whole slots, against a model of the flags.
 #[test]
 fn stdlib_bitmap_batches() {
@@ -2777,7 +2777,7 @@ fn stdlib_bitmap_batches() {
         assert_eq!(
             u.word("flagged(uint256,uint256)", &[w(a), w(b)]),
             Word::from_u64(want as u64),
-            "pop_count({a}, {b}) after {sig} {start} {amount}"
+            "popCount({a}, {b}) after {sig} {start} {amount}"
         );
         for i in [
             start.saturating_sub(1),
@@ -2786,7 +2786,7 @@ fn stdlib_bitmap_batches() {
             start + amount,
         ] {
             assert_eq!(
-                u.word("is_flagged(uint256)", &[w(i)]),
+                u.word("isFlagged(uint256)", &[w(i)]),
                 Word::from_u64(u64::from(model[i as usize])),
                 "flag {i} after {sig} {start} {amount}"
             );
@@ -2821,21 +2821,21 @@ contract Passkeys is {
 
   external view function verify(
     const challenge : bytes;
-    const require_user_verification : bool;
-    const auth : webauthn_auth;
+    const requireUserVerification : bool;
+    const auth : WebauthnAuth;
     const x : bytes32;
     const y : bytes32
   ) : bool is
-    WebAuthn.verify(challenge, require_user_verification, auth, x, y)
+    WebAuthn.verify(challenge, requireUserVerification, auth, x, y)
 
   external pure function decode(const encoded : bytes) : bytes is
-    case WebAuthn.try_decode_auth(encoded) of { Some(auth) -> Abi.encode(auth) | None -> Bytes.concat() }
+    case WebAuthn.tryDecodeAuth(encoded) of { Some(auth) -> Abi.encode(auth) | None -> Bytes.concat() }
 
-  external pure function encode_compact(const auth : webauthn_auth) : bytes is
-    WebAuthn.try_encode_auth_compact(auth)
+  external pure function encodeCompact(const auth : WebauthnAuth) : bytes is
+    WebAuthn.tryEncodeAuthCompact(auth)
 
-  external pure function decode_compact(const encoded : bytes) : bytes is
-    case WebAuthn.try_decode_auth_compact(encoded) of { Some(auth) -> Abi.encode(auth) | None -> Bytes.concat() }
+  external pure function decodeCompact(const encoded : bytes) : bytes is
+    case WebAuthn.tryDecodeAuthCompact(encoded) of { Some(auth) -> Abi.encode(auth) | None -> Bytes.concat() }
 }
 "#;
 
@@ -3089,9 +3089,9 @@ fn solady_try_decode_auth(e: &[u8]) -> Option<(Vec<u8>, Vec<u8>, [Word; 4])> {
     Some((a, j, [0x40, 0x60, 0x80, 0xa0].map(|k| word(p + k).unwrap())))
 }
 
-/// `try_decode_auth` reads what `Abi.encode` wrote, and with any word or length broken
-/// answers as Solady's `tryDecodeAuth` does; `try_encode_auth_compact` packs as Solady's
-/// test expects, and `try_decode_auth_compact` reads it back or refuses as Solady does.
+/// `tryDecodeAuth` reads what `Abi.encode` wrote, and with any word or length broken
+/// answers as Solady's `tryDecodeAuth` does; `tryEncodeAuthCompact` packs as Solady's
+/// test expects, and `tryDecodeAuthCompact` reads it back or refuses as Solady does.
 #[test]
 fn webauthn_decodes_auths_as_solady() {
     let runtime = passkeys(crate::EvmVersion::Osaka);
@@ -3158,7 +3158,7 @@ fn webauthn_decodes_auths_as_solady() {
 
         let fits = a.len() < 1 << 16 && j.len() < 1 << 16 && w[..2].iter().all(|&v| word_usize(v).is_ok_and(|v| v < 1 << 16));
         let args = encode(&a, &j, w);
-        let mut call = selector("encode_compact((bytes,string,uint256,uint256,bytes32,bytes32))").to_vec();
+        let mut call = selector("encodeCompact((bytes,string,uint256,uint256,bytes32,bytes32))").to_vec();
         call.extend(&args);
         let out = call_raw(&runtime, &call);
         assert!(!out.reverted);
@@ -3180,7 +3180,7 @@ fn webauthn_decodes_auths_as_solady() {
         assert_eq!(packed, want);
         if fits {
             compact += 1;
-            assert_eq!(bytes_out("decode_compact(bytes)", &packed), encoded);
+            assert_eq!(bytes_out("decodeCompact(bytes)", &packed), encoded);
         }
         // Solady's rules for any bytes: at least 0x46 of them, and the authenticator data
         // before the last 0x44.
@@ -3203,7 +3203,7 @@ fn webauthn_decodes_auths_as_solady() {
         } else {
             Vec::new()
         };
-        assert_eq!(bytes_out("decode_compact(bytes)", &raw), want);
+        assert_eq!(bytes_out("decodeCompact(bytes)", &raw), want);
     }
     assert!(accepted > 30 && refused > 30 && compact > 100, "{accepted} {refused} {compact}");
 }
@@ -3363,27 +3363,27 @@ storage is record { n : uint; }
 external nonreentrant function pay(const token : IERC20; const to : address; const value : uint)
   raises SafeERC20FailedOperation | forwarded
 is {
-  SafeERC20.safe_transfer(token, to, value);
+  SafeERC20.safeTransfer(token, to, value);
 }
 external nonreentrant function pull(const token : IERC20; const from : address; const value : uint)
   raises SafeERC20FailedOperation | forwarded
 is {
-  SafeERC20.safe_transfer_from(token, from, Evm.self(), value);
+  SafeERC20.safeTransferFrom(token, from, Evm.self(), value);
 }
 external nonreentrant function allow(const token : IERC20; const spender : address; const value : uint)
   raises SafeERC20FailedOperation | forwarded
 is {
-  SafeERC20.force_approve(token, spender, value);
+  SafeERC20.forceApprove(token, spender, value);
 }
 external nonreentrant function raise(const token : IERC20; const spender : address; const value : uint)
   raises SafeERC20FailedOperation | forwarded
 is {
-  SafeERC20.safe_increase_allowance(token, spender, value);
+  SafeERC20.safeIncreaseAllowance(token, spender, value);
 }
 external nonreentrant function lower(const token : IERC20; const spender : address; const value : uint)
   raises SafeERC20FailedOperation | SafeERC20FailedDecreaseAllowance | forwarded
 is {
-  SafeERC20.safe_decrease_allowance(token, spender, value);
+  SafeERC20.safeDecreaseAllowance(token, spender, value);
 }
 ",
         )
@@ -3504,7 +3504,7 @@ fn stdlib_erc4626() {
 import "std/token/erc20"; import "std/interfaces/erc20";
 
 contract Asset is {
-  use ERC20 exposing IERC20, IERC20Metadata; hook ERC20.before_transfer is skip; hook ERC20.after_transfer is skip;
+  use ERC20 exposing IERC20, IERC20Metadata; hook ERC20.beforeTransfer is skip; hook ERC20.afterTransfer is skip;
 
   external function mint(const to : address; const value : uint)
     raises ERC20InvalidReceiver | ERC20InsufficientBalance
@@ -3573,7 +3573,7 @@ import "std/interfaces/erc4626";
 
 contract Vault is {{
   use SafeERC20;
-  use ERC20 exposing IERC20, IERC20Name; hook ERC20.before_transfer is skip; hook ERC20.after_transfer is skip;
+  use ERC20 exposing IERC20, IERC20Name; hook ERC20.beforeTransfer is skip; hook ERC20.afterTransfer is skip;
   use ERC4626 exposing IERC4626, {{
     view function decimals() : uint8;
   }}
@@ -3582,7 +3582,7 @@ contract Vault is {{
   deploy() is {{
     const asset : address := address(0x{asset:040x});
     ERC20.init("Vault", "vTKN");
-    ERC4626.init(asset, ERC4626.asset_decimals(asset), {offset});
+    ERC4626.init(asset, ERC4626.assetDecimals(asset), {offset});
   }}
   {extra}
 }}
@@ -3751,24 +3751,24 @@ contract Vault is {{
     let capped = r#"
   error Cap of uint;
 
-  view function max_deposit() : uint is {
+  view function depositLimit() : uint is {
     var room : uint := 0;
-    if ERC4626.total_assets() < 500 then {
-      room := 500 - ERC4626.total_assets();
+    if ERC4626.heldAssets() < 500 then {
+      room := 500 - ERC4626.heldAssets();
     }
   } with room
 
   external view function maxDeposit(const receiver : address) : uint is
-    max_deposit()
+    depositLimit()
 
   external function deposit(const assets : uint; const receiver : address) : uint
     raises ERC4626ExceededMaxDeposit | SafeERC20FailedOperation | ERC20InvalidReceiver
       | ERC20InsufficientBalance | forwarded
   is {
-    const most : uint := max_deposit();
+    const most : uint := depositLimit();
     assert(assets <= most, ERC4626ExceededMaxDeposit { receiver = receiver; assets = assets; max = most; });
-    const shares : uint := ERC4626.preview_deposit(assets);
-    ERC4626.deposit_as(Evm.sender(), receiver, assets, shares);
+    const shares : uint := ERC4626.sharesFor(assets, false);
+    ERC4626.depositAs(Evm.sender(), receiver, assets, shares);
   } with shares
 "#;
     let src = vault_src(0xa3, 0, capped)
@@ -3829,7 +3829,7 @@ fn words_of(data: &[u8]) -> Vec<u64> {
         .collect()
 }
 
-/// `Create.compute_address`, built for Prague and for Osaka, against `cast compute-address`
+/// `Create.computeAddress`, built for Prague and for Osaka, against `cast compute-address`
 /// and an RLP encoder of its own.
 #[test]
 fn stdlib_create_addresses() {
@@ -3846,7 +3846,7 @@ contract T is {
   use Create;
   storage is record { n : uint; }
   external pure function compute(const deployer : address; const nonce : uint) : address is
-    Create.compute_address(deployer, nonce)
+    Create.computeAddress(deployer, nonce)
 }
 "#;
     let opts = Options { evm, ..Options::default() };
@@ -3911,7 +3911,7 @@ contract T is {
     }
 }
 
-/// `BlockHash.block_hash` reads `BLOCKHASH` in its window, and the EIP-2935 contract
+/// `BlockHash.blockHash` reads `BLOCKHASH` in its window, and the EIP-2935 contract
 /// before it, with zero where neither knows the block.
 #[test]
 fn stdlib_block_hash() {
@@ -3931,7 +3931,7 @@ contract T is {
   use BlockHash;
   storage is record { n : uint; }
   external view function hash(const n : uint) : bytes32 is
-    BlockHash.block_hash(n)
+    BlockHash.blockHash(n)
 }
 "#;
     let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
@@ -3958,7 +3958,7 @@ contract T is {
     BLOCK.with(|b| b.set(100));
 }
 
-/// `String.lower`, `upper`, `escape_json`, and `escape_html`, with Solady's vectors.
+/// `String.lower`, `upper`, `escapeJson`, and `escapeHtml`, with Solady's vectors.
 #[test]
 fn string_builtins() {
     let src = r#"import "std/string"; import "std/base64"; 
@@ -3966,15 +3966,15 @@ storage is record { last : string; }
 
 external pure function lower(const s : string) : string is String.lower(s)
 external pure function upper(const s : string) : string is String.upper(s)
-external pure function json(const s : string) : string is String.escape_json(s)
-external pure function html(const s : string) : string is String.escape_html(s)
+external pure function json(const s : string) : string is String.escapeJson(s)
+external pure function html(const s : string) : string is String.escapeHtml(s)
 
 (* Every helper that uses the table space at address 0, in one expression. *)
 external pure function mixed(const s : bytes) : string is
-  String.concat(String.escape_json(string(s)), "|", Base64.encode(s), "|", String.escape_html(string(s)), "|", String.upper(string(s)))
+  String.concat(String.escapeJson(string(s)), "|", Base64.encode(s), "|", String.escapeHtml(string(s)), "|", String.upper(string(s)))
 
 external function keep(const s : string) is {
-  storage.last := String.escape_json(s);
+  storage.last := String.escapeJson(s);
 }
 
 external view function kept() : string is storage.last
@@ -4078,7 +4078,7 @@ external view function kept() : string is storage.last
 }
 
 /// `Strings`, with Solady's vectors.
-/// `String.index_of` and `Strings.replace` answer as a byte-by-byte search does, over
+/// `String.indexOf` and `Strings.replace` answer as a byte-by-byte search does, over
 /// subjects and needles on both sides of a word, from every offset.
 #[test]
 fn string_search_matches_a_naive_search() {
@@ -4089,11 +4089,11 @@ import "std/string";
 contract T is {
   use Strings;
   storage is record { n : uint; }
-  external pure function index_of(const s : bytes; const n : bytes; const from : uint) : uint is String.index_of(s, n, from)
+  external pure function indexOf(const s : bytes; const n : bytes; const from : uint) : uint is String.indexOf(s, n, from)
   external pure function replace(const s : string; const n : string; const r : string) : string is Strings.replace(s, n, r)
-  external pure function index_in(const s : bytes; const a : uint; const b : uint; const n : bytes; const from : uint) : uint is
-    String.index_of(s[a:b], n, from)
-  external pure function replace_in(const s : bytes; const a : uint; const b : uint; const n : string; const r : string) : string is
+  external pure function indexIn(const s : bytes; const a : uint; const b : uint; const n : bytes; const from : uint) : uint is
+    String.indexOf(s[a:b], n, from)
+  external pure function replaceIn(const s : bytes; const a : uint; const b : uint; const n : string; const r : string) : string is
     String.replace(string(s[a:b]), n, r)
 }
 "#;
@@ -4130,7 +4130,7 @@ contract T is {
         let got = load_bytes(
             &ok_call(
                 &runtime,
-                "index_of(bytes,bytes,uint256)",
+                "indexOf(bytes,bytes,uint256)",
                 &[Arg::B(subject.clone()), Arg::B(needle.clone()), Arg::W(Word::from_u64(from))],
             ),
             0,
@@ -4149,7 +4149,7 @@ contract T is {
         let got = load_bytes(
             &ok_call(
                 &runtime,
-                "index_in(bytes,uint256,uint256,bytes,uint256)",
+                "indexIn(bytes,uint256,uint256,bytes,uint256)",
                 &[
                     Arg::B(framed.clone()),
                     Arg::W(a),
@@ -4189,7 +4189,7 @@ contract T is {
         assert_eq!(abi_string_value(&out), expect, "replace {:?}", String::from_utf8_lossy(&subject));
         let out = ok_call(
             &runtime,
-            "replace_in(bytes,uint256,uint256,string,string)",
+            "replaceIn(bytes,uint256,uint256,string,string)",
             &[Arg::B(framed), Arg::W(a), Arg::W(b), Arg::B(needle.clone()), Arg::B(replacement)],
         );
         assert_eq!(abi_string_value(&out), expect, "sliced replace");
@@ -4256,11 +4256,11 @@ import "std/utils/strings";
 contract T is {
   use Strings;
   storage is record { n : uint; }
-  external pure function index_of(const s : string; const n : string; const from : uint) : uint is Strings.index_of(s, n, from)
-  external pure function index_of(const s : string; const n : string) : uint is Strings.index_of(s, n)
+  external pure function indexOf(const s : string; const n : string; const from : uint) : uint is Strings.indexOf(s, n, from)
+  external pure function indexOf(const s : string; const n : string) : uint is Strings.indexOf(s, n)
   external pure function contains(const s : string; const n : string) : bool is Strings.contains(s, n)
-  external pure function starts_with(const s : string; const n : string) : bool is Strings.starts_with(s, n)
-  external pure function ends_with(const s : string; const n : string) : bool is Strings.ends_with(s, n)
+  external pure function startsWith(const s : string; const n : string) : bool is Strings.startsWith(s, n)
+  external pure function endsWith(const s : string; const n : string) : bool is Strings.endsWith(s, n)
   external pure function replace(const s : string; const n : string; const r : string) : string is Strings.replace(s, n, r)
 }
 "#;
@@ -4282,7 +4282,7 @@ contract T is {
     ] {
         assert_eq!(
             word(
-                "index_of(string,string,uint256)",
+                "indexOf(string,string,uint256)",
                 &[b(subject), b(needle), w(from)]
             ),
             want.map_or(not_found, Word::from_u64),
@@ -4301,7 +4301,7 @@ contract T is {
         ("", "bcd", None),
     ] {
         assert_eq!(
-            word("index_of(string,string)", &[b(s), b(needle)]),
+            word("indexOf(string,string)", &[b(s), b(needle)]),
             want.map_or(not_found, Word::from_u64),
             "{s} {needle}"
         );
@@ -4312,7 +4312,7 @@ contract T is {
     }
     assert_eq!(
         word(
-            "index_of(string,string,uint256)",
+            "indexOf(string,string,uint256)",
             &[b("abcabcabc"), b("abc"), w(1)]
         ),
         Word::from_u64(3)
@@ -4341,12 +4341,12 @@ contract T is {
         ("", "abc", false, false),
     ] {
         assert_eq!(
-            word("starts_with(string,string)", &[b(s), b(needle)]),
+            word("startsWith(string,string)", &[b(s), b(needle)]),
             Word::from_u64(u64::from(starts)),
             "{s} {needle}"
         );
         assert_eq!(
-            word("ends_with(string,string)", &[b(s), b(needle)]),
+            word("endsWith(string,string)", &[b(s), b(needle)]),
             Word::from_u64(u64::from(ends)),
             "{s} {needle}"
         );
@@ -4410,7 +4410,7 @@ contract T is {
                 .map(|i| i as u64)
         };
         assert_eq!(
-            word("index_of(string,string,uint256)", &[b(&s), b(&needle), w(from)]),
+            word("indexOf(string,string,uint256)", &[b(&s), b(&needle), w(from)]),
             want.map_or(not_found, Word::from_u64),
             "{s} {needle} {from}"
         );
@@ -4429,22 +4429,22 @@ import "std/utils/date_time";
 contract T is {
   use DateTime;
   storage is record { n : uint; }
-  external pure function date_to_epoch_day(const y : uint; const m : uint; const d : uint) : uint is DateTime.date_to_epoch_day(y, m, d)
-  external pure function epoch_day_to_date(const e : uint) : (uint, uint, uint) is DateTime.epoch_day_to_date(e)
-  external pure function date_to_timestamp(const y : uint; const m : uint; const d : uint) : timestamp is DateTime.date_to_timestamp(y, m, d)
-  external pure function timestamp_to_date(const t : timestamp) : (uint, uint, uint) is DateTime.timestamp_to_date(t)
-  external pure function date_time_to_timestamp(const y : uint; const m : uint; const d : uint; const h : uint; const mi : uint; const s : uint) : timestamp is DateTime.date_time_to_timestamp(y, m, d, h, mi, s)
-  external pure function timestamp_to_date_time(const t : timestamp) : (uint, uint, uint, uint, uint, uint) is DateTime.timestamp_to_date_time(t)
-  external pure function is_leap_year(const y : uint) : bool is DateTime.is_leap_year(y)
-  external pure function days_in_month(const y : uint; const m : uint) : uint is DateTime.days_in_month(y, m)
+  external pure function dateToEpochDay(const y : uint; const m : uint; const d : uint) : uint is DateTime.dateToEpochDay(y, m, d)
+  external pure function epochDayToDate(const e : uint) : (uint, uint, uint) is DateTime.epochDayToDate(e)
+  external pure function dateToTimestamp(const y : uint; const m : uint; const d : uint) : timestamp is DateTime.dateToTimestamp(y, m, d)
+  external pure function timestampToDate(const t : timestamp) : (uint, uint, uint) is DateTime.timestampToDate(t)
+  external pure function dateTimeToTimestamp(const y : uint; const m : uint; const d : uint; const h : uint; const mi : uint; const s : uint) : timestamp is DateTime.dateTimeToTimestamp(y, m, d, h, mi, s)
+  external pure function timestampToDateTime(const t : timestamp) : (uint, uint, uint, uint, uint, uint) is DateTime.timestampToDateTime(t)
+  external pure function isLeapYear(const y : uint) : bool is DateTime.isLeapYear(y)
+  external pure function daysInMonth(const y : uint; const m : uint) : uint is DateTime.daysInMonth(y, m)
   external pure function weekday(const t : timestamp) : uint is DateTime.weekday(t)
-  external pure function is_supported_date(const y : uint; const m : uint; const d : uint) : bool is DateTime.is_supported_date(y, m, d)
-  external pure function add_years(const t : timestamp; const n : uint) : timestamp is DateTime.add_years(t, n)
-  external pure function sub_years(const t : timestamp; const n : uint) : timestamp is DateTime.sub_years(t, n)
-  external pure function add_months(const t : timestamp; const n : uint) : timestamp is DateTime.add_months(t, n)
-  external pure function sub_months(const t : timestamp; const n : uint) : timestamp is DateTime.sub_months(t, n)
-  external pure function diff_years(const a : timestamp; const b : timestamp) : uint is DateTime.diff_years(a, b)
-  external pure function diff_months(const a : timestamp; const b : timestamp) : uint is DateTime.diff_months(a, b)
+  external pure function isSupportedDate(const y : uint; const m : uint; const d : uint) : bool is DateTime.isSupportedDate(y, m, d)
+  external pure function addYears(const t : timestamp; const n : uint) : timestamp is DateTime.addYears(t, n)
+  external pure function subYears(const t : timestamp; const n : uint) : timestamp is DateTime.subYears(t, n)
+  external pure function addMonths(const t : timestamp; const n : uint) : timestamp is DateTime.addMonths(t, n)
+  external pure function subMonths(const t : timestamp; const n : uint) : timestamp is DateTime.subMonths(t, n)
+  external pure function diffYears(const a : timestamp; const b : timestamp) : uint is DateTime.diffYears(a, b)
+  external pure function diffMonths(const a : timestamp; const b : timestamp) : uint is DateTime.diffMonths(a, b)
 }
 "#;
     let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
@@ -4481,17 +4481,17 @@ contract T is {
         (0xffffffff, 12, 31, 0x16d3e098039),
     ] {
         assert_eq!(
-            words("date_to_epoch_day(uint256,uint256,uint256)", &[y, m, d]),
+            words("dateToEpochDay(uint256,uint256,uint256)", &[y, m, d]),
             [day],
             "{y}-{m}-{d}"
         );
         assert_eq!(
-            words("epoch_day_to_date(uint256)", &[day]),
+            words("epochDayToDate(uint256)", &[day]),
             [y, m, d],
             "{day}"
         );
         assert_eq!(
-            words("date_to_timestamp(uint256,uint256,uint256)", &[y, m, d]),
+            words("dateToTimestamp(uint256,uint256,uint256)", &[y, m, d]),
             [day * 86400]
         );
     }
@@ -4500,24 +4500,24 @@ contract T is {
         (18321, 2020, 2, 29),
         (156468, 2398, 5, 25),
     ] {
-        assert_eq!(words("epoch_day_to_date(uint256)", &[day]), [y, m, d]);
+        assert_eq!(words("epochDayToDate(uint256)", &[day]), [y, m, d]);
     }
     // The last supported timestamp, and the first past it.
     assert_eq!(
-        words("timestamp_to_date(uint256)", &[0x1e18549868c76ff]),
+        words("timestampToDate(uint256)", &[0x1e18549868c76ff]),
         [0xffffffff, 12, 31]
     );
     assert_ne!(
-        words("timestamp_to_date(uint256)", &[0x1e18549868c76ff + 1]),
+        words("timestampToDate(uint256)", &[0x1e18549868c76ff + 1]),
         [0xffffffff, 12, 31]
     );
     assert_eq!(
-        words("timestamp_to_date_time(uint256)", &[1709251199]),
+        words("timestampToDateTime(uint256)", &[1709251199]),
         [2024, 2, 29, 23, 59, 59]
     );
     assert_eq!(
         words(
-            "date_time_to_timestamp(uint256,uint256,uint256,uint256,uint256,uint256)",
+            "dateTimeToTimestamp(uint256,uint256,uint256,uint256,uint256,uint256)",
             &[2024, 2, 29, 23, 59, 59]
         ),
         [1709251199]
@@ -4525,10 +4525,10 @@ contract T is {
     for y in [
         2000, 2024, 2048, 2072, 2104, 2128, 10032, 10124, 10296, 10400, 10916,
     ] {
-        assert_eq!(words("is_leap_year(uint256)", &[y]), [1], "{y}");
+        assert_eq!(words("isLeapYear(uint256)", &[y]), [1], "{y}");
     }
     for y in [1900, 2100, 2023, 1] {
-        assert_eq!(words("is_leap_year(uint256)", &[y]), [0], "{y}");
+        assert_eq!(words("isLeapYear(uint256)", &[y]), [0], "{y}");
     }
     for (m, d) in [
         (1, 31),
@@ -4544,10 +4544,10 @@ contract T is {
         (11, 30),
         (12, 31),
     ] {
-        assert_eq!(words("days_in_month(uint256,uint256)", &[2022, m]), [d]);
+        assert_eq!(words("daysInMonth(uint256,uint256)", &[2022, m]), [d]);
     }
-    assert_eq!(words("days_in_month(uint256,uint256)", &[2024, 2]), [29]);
-    assert_eq!(words("days_in_month(uint256,uint256)", &[1900, 2]), [28]);
+    assert_eq!(words("daysInMonth(uint256,uint256)", &[2024, 2]), [29]);
+    assert_eq!(words("daysInMonth(uint256,uint256)", &[1900, 2]), [28]);
     for (t, day) in [
         (1, 4),
         (86400, 5),
@@ -4572,7 +4572,7 @@ contract T is {
         (0xffffffff, 5, 31),
     ] {
         assert_eq!(
-            words("is_supported_date(uint256,uint256,uint256)", &[y, m, d]),
+            words("isSupportedDate(uint256,uint256,uint256)", &[y, m, d]),
             [1],
             "{y}-{m}-{d}"
         );
@@ -4596,52 +4596,52 @@ contract T is {
         (u64::MAX, 5, 31),
     ] {
         assert_eq!(
-            words("is_supported_date(uint256,uint256,uint256)", &[y, m, d]),
+            words("isSupportedDate(uint256,uint256,uint256)", &[y, m, d]),
             [0],
             "{y}-{m}-{d}"
         );
     }
     // 29 February 2024, 12:34:56: a year on is 28 February, a month on 29 March.
     let t = 1709210096;
-    let at = |y, m, d| (words("date_to_timestamp(uint256,uint256,uint256)", &[y, m, d])[0]) + 45296;
+    let at = |y, m, d| (words("dateToTimestamp(uint256,uint256,uint256)", &[y, m, d])[0]) + 45296;
     assert_eq!(
-        words("add_years(uint256,uint256)", &[t, 1]),
+        words("addYears(uint256,uint256)", &[t, 1]),
         [at(2025, 2, 28)]
     );
     assert_eq!(
-        words("add_years(uint256,uint256)", &[t, 4]),
+        words("addYears(uint256,uint256)", &[t, 4]),
         [at(2028, 2, 29)]
     );
     assert_eq!(
-        words("sub_years(uint256,uint256)", &[t, 1]),
+        words("subYears(uint256,uint256)", &[t, 1]),
         [at(2023, 2, 28)]
     );
     assert_eq!(
-        words("add_months(uint256,uint256)", &[t, 1]),
+        words("addMonths(uint256,uint256)", &[t, 1]),
         [at(2024, 3, 29)]
     );
     assert_eq!(
-        words("add_months(uint256,uint256)", &[t, 23]),
+        words("addMonths(uint256,uint256)", &[t, 23]),
         [at(2026, 1, 29)]
     );
     assert_eq!(
-        words("sub_months(uint256,uint256)", &[t, 3]),
+        words("subMonths(uint256,uint256)", &[t, 3]),
         [at(2023, 11, 29)]
     );
     assert_eq!(
-        words("sub_months(uint256,uint256)", &[at(2024, 3, 31), 1]),
+        words("subMonths(uint256,uint256)", &[at(2024, 3, 31), 1]),
         [at(2024, 2, 29)]
     );
     assert_eq!(
         words(
-            "diff_years(uint256,uint256)",
+            "diffYears(uint256,uint256)",
             &[at(2023, 12, 31), at(2024, 1, 1)]
         ),
         [1]
     );
     assert_eq!(
         words(
-            "diff_months(uint256,uint256)",
+            "diffMonths(uint256,uint256)",
             &[at(2023, 12, 31), at(2025, 2, 1)]
         ),
         [14]
@@ -4650,12 +4650,12 @@ contract T is {
     let big = Word::from_u64(0).not().shr(128);
     let half = Word::from_u64(0).not().shr(1);
     for (sig, a, b) in [
-        ("add_years(uint256,uint256)", big, half),
-        ("sub_years(uint256,uint256)", big, half),
-        ("diff_years(uint256,uint256)", big, big.shr(1)),
-        ("add_months(uint256,uint256)", big, half),
-        ("sub_months(uint256,uint256)", big, half),
-        ("diff_months(uint256,uint256)", big, big.shr(1)),
+        ("addYears(uint256,uint256)", big, half),
+        ("subYears(uint256,uint256)", big, half),
+        ("diffYears(uint256,uint256)", big, big.shr(1)),
+        ("addMonths(uint256,uint256)", big, half),
+        ("subMonths(uint256,uint256)", big, half),
+        ("diffMonths(uint256,uint256)", big, big.shr(1)),
     ] {
         let out = call(&runtime, sig, &[a, b]);
         assert!(out.reverted, "{sig}");
@@ -4701,13 +4701,13 @@ fn stdlib_signatures_and_multiproofs() {
     malleable.extend_from_slice(&twin.1.to_be_bytes());
     malleable.push(twin.0);
 
-    // `try_recover` answers where `recover` would raise, with zero for `None` here.
-    let try_bytes = "try_recover(bytes32,bytes)";
+    // `tryRecover` answers where `recover` would raise, with zero for `None` here.
+    let try_bytes = "tryRecover(bytes32,bytes)";
     assert_eq!(u.word(try_bytes, &[Arg::W(hash), Arg::B(sig.clone())]), signer);
     assert_eq!(u.word(try_bytes, &[Arg::W(hash), Arg::B(malleable.clone())]), zero);
     assert_eq!(u.word(try_bytes, &[Arg::W(hash), Arg::B(sig[..64].to_vec())]), zero);
     assert_eq!(u.word(try_bytes, &[Arg::W(hash), Arg::B(vec![])]), zero);
-    let try_vrs = "try_recover_vrs(bytes32,uint8,bytes32,bytes32)";
+    let try_vrs = "tryRecoverVrs(bytes32,uint8,bytes32,bytes32)";
     assert_eq!(
         u.word(try_vrs, &[Arg::W(hash), w(u64::from(v)), Arg::W(r), Arg::W(s)]),
         signer
@@ -4721,28 +4721,28 @@ fn stdlib_signatures_and_multiproofs() {
         u.word(try_vrs, &[Arg::W(hash), w(29), Arg::W(r), Arg::W(s)]),
         zero
     );
-    assert!(!u.send(0, "recover_vrs(bytes32,uint8,bytes32,bytes32)", &[Arg::W(hash), w(29), Arg::W(r), Arg::W(s)]));
+    assert!(!u.send(0, "recoverVrs(bytes32,uint8,bytes32,bytes32)", &[Arg::W(hash), w(29), Arg::W(r), Arg::W(s)]));
     u.reverted_with("ECDSAInvalidSignature()");
     // EIP-2098: `v - 27` in the top bit of `s`.
     let vs = if v == 28 { s.bitor(Word::from_u64(1).shl(255)) } else { s };
     assert_eq!(
-        u.word("try_recover_compact(bytes32,bytes32,bytes32)", &[Arg::W(hash), Arg::W(r), Arg::W(vs)]),
+        u.word("tryRecoverCompact(bytes32,bytes32,bytes32)", &[Arg::W(hash), Arg::W(r), Arg::W(vs)]),
         signer
     );
     assert_eq!(
-        u.word("recover_compact(bytes32,bytes32,bytes32)", &[Arg::W(hash), Arg::W(r), Arg::W(vs)]),
+        u.word("recoverCompact(bytes32,bytes32,bytes32)", &[Arg::W(hash), Arg::W(r), Arg::W(vs)]),
         signer
     );
     // The other `v` recovers someone else.
     let flipped = vs.bitxor(Word::from_u64(1).shl(255));
     assert_ne!(
-        u.word("try_recover_compact(bytes32,bytes32,bytes32)", &[Arg::W(hash), Arg::W(r), Arg::W(flipped)]),
+        u.word("tryRecoverCompact(bytes32,bytes32,bytes32)", &[Arg::W(hash), Arg::W(r), Arg::W(flipped)]),
         signer
     );
 
     // An account without code signs with ECDSA; a contract answers ERC-1271.
-    let now = "is_valid_signature_now(address,bytes32,bytes)";
-    let erc1271 = "is_valid_erc1271_signature_now(address,bytes32,bytes)";
+    let now = "isValidSignatureNow(address,bytes32,bytes)";
+    let erc1271 = "isValidERC1271SignatureNow(address,bytes32,bytes)";
     let check = |u: &mut Session, sig: &str, who: Word, data: &[u8]| {
         u.word(sig, &[Arg::W(who), Arg::W(hash), Arg::B(data.to_vec())]) == Word::from_u64(1)
     };
@@ -4832,8 +4832,8 @@ fn stdlib_signatures_and_multiproofs() {
             &[false, false],
         ),
     ];
-    let verify = "verify_multi(bytes32[],bool[],bytes32,bytes32[])";
-    let multi_root = "multi_root(bytes32[],bool[],bytes32[])";
+    let verify = "verifyMulti(bytes32[],bool[],bytes32,bytes32[])";
+    let multi_root = "multiRoot(bytes32[],bool[],bytes32[])";
     for (leaves, proof, fl) in vectors {
         let args = [words(proof), flags(fl), Arg::W(root), words(leaves)];
         assert_eq!(u.word(verify, &args), Word::from_u64(1), "{leaves:?}");
@@ -4881,7 +4881,7 @@ fn stdlib_signatures_and_multiproofs() {
         ("", ""),
     ] {
         let mut d = Session::source(&format!(
-            "import \"std/crypto/eip712\"; import \"std/interfaces/erc5267\";\ncontract D is {{\n  use EIP712 exposing IERC5267;\n  storage is record {{ n : uint; }}\n  deploy() is {{ EIP712.init(\"{name}\", \"{version}\"); }}\n  external view function domain() : bytes32 is EIP712.domain_separator()\n}}\n"
+            "import \"std/crypto/eip712\"; import \"std/interfaces/erc5267\";\ncontract D is {{\n  use EIP712 exposing IERC5267;\n  storage is record {{ n : uint; }}\n  deploy() is {{ EIP712.init(\"{name}\", \"{version}\"); }}\n  external view function domain() : bytes32 is EIP712.domainSeparator()\n}}\n"
         ));
         assert!(d.send(0, "eip712Domain()", &[]));
         let ret = d.returned();
@@ -4986,7 +4986,7 @@ fn multiproofs_match_openzeppelin() {
             Arg::L(flags.iter().map(|&f| Word::from_u64(u64::from(f))).collect()),
             Arg::L(leaves.clone()),
         ];
-        let ok = u.send(0, "multi_root(bytes32[],bool[],bytes32[])", &args);
+        let ok = u.send(0, "multiRoot(bytes32[],bool[],bytes32[])", &args);
         let got = if ok {
             Want::Root(load_bytes(&u.returned(), 0))
         } else if u.returned().get(..4) == Some(&selector("MerkleProofInvalidMultiproof()")[..]) {

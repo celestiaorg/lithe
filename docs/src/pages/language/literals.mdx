@@ -17,20 +17,20 @@ description: "Number, hex, string, boolean, list, record, and tuple literals, an
 An integer literal takes the type its context expects: a binding's annotation, an assignment's target, a parameter, or a return type. It must fit that type. `const x : uint8 := 300;` is a compile error:
 
 ```lithe rejects
-type tiny is uint8;
+type Tiny is uint8;
 
 storage is record {
   n : uint;
 }
 
 external function go() is {
-  const x : tiny := 300;
+  const x : Tiny := 300;
   skip
 }
 ```
 
 ```text
-literal 300 does not fit type `tiny`
+literal 300 does not fit type `Tiny`
 ```
 
 With no context, an integer literal is a `uint`. In arithmetic and comparisons, a literal takes the type of the other side, so `level > 3` and `level + 1` work for a `uint8`.
@@ -59,7 +59,7 @@ storage is record {
 }
 
 external function start() is {
-  storage.deadline := Evm.block_timestamp() + 1days + 12hours;
+  storage.deadline := Evm.blockTimestamp() + 1days + 12hours;
   storage.period := 30minutes;
 }
 ```
@@ -117,17 +117,17 @@ Any other escape is an error. For bytes above `7f` that aren't UTF-8, use a hex 
 | `Some(x)`, `None` | an option |
 
 ```lithe
-type payment is record {
+type Payment is record {
   to : address;
   amount : uint;
 }
 
 storage is record {
-  payments : map(uint, payment);
+  payments : map(uint, Payment);
 }
 
 external function pay(const id : uint; const to : address) is {
-  const p : payment := { to = to; amount = 5; };
+  const p : Payment := { to = to; amount = 5; };
   storage.payments[id] := p;
 }
 

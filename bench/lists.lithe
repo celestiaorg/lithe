@@ -29,7 +29,7 @@ external function push(const x : uint) is {
   List.push(storage.saved, x);
 }
 
-external function set_owners(const owners : list(address)) is {
+external function setOwners(const owners : list(address)) is {
   storage.owners := owners;
 }
 
@@ -39,7 +39,7 @@ external view function saved() : list(uint) is
 external view function owners() : list(address) is
   storage.owners
 
-external view function owner_at(const i : uint) : address is
+external view function ownerAt(const i : uint) : address is
   storage.owners[i]
 
 external pure function first(const xs : list(uint)) : uint is

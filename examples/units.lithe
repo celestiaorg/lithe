@@ -1,17 +1,17 @@
-(* Value and time units. A duration added to Evm.block_timestamp() is a timestamp. *)
+(* Value and time units. A duration added to Evm.blockTimestamp() is a timestamp. *)
 
 import "std/evm";
 
 storage is record {
   price : wei;
   wait : uint;
-  unlock_at : timestamp;
+  unlockAt : timestamp;
   elapsed : uint;
 }
 
 external function set() is {
   storage.price := 20gwei + 1wei;
   storage.wait := 1hours + 30minutes + 15seconds;
-  storage.unlock_at := Evm.block_timestamp() + 2days;
-  storage.elapsed := storage.unlock_at - Evm.block_timestamp();
+  storage.unlockAt := Evm.blockTimestamp() + 2days;
+  storage.elapsed := storage.unlockAt - Evm.blockTimestamp();
 }

@@ -7,7 +7,7 @@ import "std/evm";
 
 upgradeable
 
-error Not_owner;
+error NotOwner;
 
 storage is record {
   owner : address;
@@ -15,7 +15,7 @@ storage is record {
 }
 
 upgrade guard is {
-  assert(Evm.sender() = storage.owner, Not_owner);
+  assert(Evm.sender() = storage.owner, NotOwner);
 }
 
 deploy(const owner : address; const cap : uint) is {

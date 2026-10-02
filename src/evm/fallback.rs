@@ -201,10 +201,10 @@ external view function n() : uint is storage.n
 
 /// An implementation behind a proxy: its `n` sits in slot 1, clear of the proxy's slot 0.
 const IMPLEMENTATION: &str = "\
-import \"std/evm\"; error Too_big of uint;
+import \"std/evm\"; error TooBig of uint;
 storage is record { pad : address; n : uint; }
-external function set(const n : uint) raises Too_big is {
-  assert(n < 100, Too_big(n));
+external function set(const n : uint) raises TooBig is {
+  assert(n < 100, TooBig(n));
   storage.n := n;
 }
 external payable function fund() is { storage.n := uint(Evm.value()); }
@@ -301,13 +301,13 @@ payable fallback delegates to storage.implementation;
 fn fallback_forwards_by_selector() {
     let implementation = put_contract(0x5102, IMPLEMENTATION);
     let src = "\
-import \"std/address\"; import \"std/evm\"; error Unknown_selector of bytes4;
+import \"std/address\"; import \"std/evm\"; error UnknownSelector of bytes4;
 storage is record { routes : map(bytes4, address); }
 view function route(const sel : bytes4) : address is {
   const to : address := storage.routes[sel];
-  assert(to <> Address.zero, Unknown_selector(sel));
+  assert(to <> Address.zero, UnknownSelector(sel));
 } with to
-fallback raises Unknown_selector forwards to route(Evm.selector());
+fallback raises UnknownSelector forwards to route(Evm.selector());
 external function add(const sel : bytes4; const to : address) raises none is {
   storage.routes[sel] := to;
 }

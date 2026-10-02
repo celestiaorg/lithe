@@ -25,5 +25,5 @@ is {
   defer Evm.transfer(Evm.sender(), amount);
 }
 
-external view function balance_of(const owner : address) : wei is
+external view function balanceOf(const owner : address) : wei is
   storage.balances[owner]

@@ -1,5 +1,5 @@
 (* Single-owner access control. Set the first owner with `init`, usually from `deploy`,
-   and guard owner-only functions with `check_owner`. Errors and events match
+   and guard owner-only functions with `checkOwner`. Errors and events match
    OpenZeppelin's `Ownable`.
 
    A contract exposes OpenZeppelin's interface:
@@ -22,45 +22,27 @@ module Ownable is {
     indexed newOwner : address;
   }
 
-  view function owner() : address is
-    ownable.owner
-
-  view function check_owner()
+  view function checkOwner()
     raises OwnableUnauthorizedAccount
   is {
     assert(ownable.owner = Evm.sender(), OwnableUnauthorizedAccount(Evm.sender()));
   }
 
-  function init(const initial_owner : address)
+  function init(const initialOwner : address)
     raises OwnableInvalidOwner
   is {
-    assert(initial_owner <> Address.zero, OwnableInvalidOwner(Address.zero));
-    set_owner(initial_owner);
+    assert(initialOwner <> Address.zero, OwnableInvalidOwner(Address.zero));
+    setOwner(initialOwner);
   }
 
   (* Moves ownership without any check. *)
-  function set_owner(const new_owner : address) is {
+  function setOwner(const newOwner : address) is {
     const previous : address := ownable.owner;
-    ownable.owner := new_owner;
+    ownable.owner := newOwner;
     emit OwnershipTransferred {
       previousOwner = previous;
-      newOwner = new_owner;
+      newOwner = newOwner;
     };
-  }
-
-  function transfer_ownership(const new_owner : address)
-    raises OwnableUnauthorizedAccount | OwnableInvalidOwner
-  is {
-    check_owner();
-    assert(new_owner <> Address.zero, OwnableInvalidOwner(Address.zero));
-    set_owner(new_owner);
-  }
-
-  function renounce_ownership()
-    raises OwnableUnauthorizedAccount
-  is {
-    check_owner();
-    set_owner(Address.zero);
   }
 
   external view function owner() : address is
@@ -68,13 +50,18 @@ module Ownable is {
 
   external function transferOwnership(const newOwner : address)
     raises OwnableUnauthorizedAccount | OwnableInvalidOwner
-  is
-    transfer_ownership(newOwner)
+  is {
+    checkOwner();
+    assert(newOwner <> Address.zero, OwnableInvalidOwner(Address.zero));
+    setOwner(newOwner);
+  }
 
   external function renounceOwnership()
     raises OwnableUnauthorizedAccount
-  is
-    renounce_ownership()
+  is {
+    checkOwner();
+    setOwner(Address.zero);
+  }
 }
 
 interface IOwnable is {

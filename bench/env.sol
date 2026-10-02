@@ -10,7 +10,7 @@ contract Env {
         return address(this).balance;
     }
 
-    function blob_fee() external view returns (uint256) {
+    function blobFee() external view returns (uint256) {
         return block.blobbasefee;
     }
 }

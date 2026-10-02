@@ -7,45 +7,45 @@ import "std/uint";
 
 module DateTime is {
   (* Days since 1970-01-01, by Howard Hinnant's algorithm. *)
-  pure function date_to_epoch_day(const year : uint; const month : uint; const day : uint) : uint is {
-    const y : uint := Uint.wrapping_sub(year, uint(month < 3));
-    const doy : uint := Uint.wrapping_add(
-      (Uint.wrapping_add(Uint.wrapping_mul(62719, Uint.wrapping_add(month, 9) % 12), 769) >> 11),
+  pure function dateToEpochDay(const year : uint; const month : uint; const day : uint) : uint is {
+    const y : uint := Uint.wrappingSub(year, uint(month < 3));
+    const doy : uint := Uint.wrappingAdd(
+      (Uint.wrappingAdd(Uint.wrappingMul(62719, Uint.wrappingAdd(month, 9) % 12), 769) >> 11),
       day
     );
     const yoe : uint := y % 400;
-    const doe : uint := Uint.wrapping_sub(
-      Uint.wrapping_add(Uint.wrapping_add(Uint.wrapping_mul(yoe, 365), yoe >> 2), doy),
+    const doe : uint := Uint.wrappingSub(
+      Uint.wrappingAdd(Uint.wrappingAdd(Uint.wrappingMul(yoe, 365), yoe >> 2), doy),
       yoe / 100
     );
-  } with Uint.wrapping_sub(Uint.wrapping_add(Uint.wrapping_mul(y / 400, 146097), doe), 719469)
+  } with Uint.wrappingSub(Uint.wrappingAdd(Uint.wrappingMul(y / 400, 146097), doe), 719469)
 
-  pure function epoch_day_to_date(const epoch_day : uint) : (uint, uint, uint) is {
-    const d : uint := Uint.wrapping_add(epoch_day, 719468);
+  pure function epochDayToDate(const epochDay : uint) : (uint, uint, uint) is {
+    const d : uint := Uint.wrappingAdd(epochDay, 719468);
     const doe : uint := d % 146097;
-    const yoe : uint := Uint.wrapping_sub(
-      Uint.wrapping_sub(Uint.wrapping_add(doe, doe / 36524), doe / 1460),
+    const yoe : uint := Uint.wrappingSub(
+      Uint.wrappingSub(Uint.wrappingAdd(doe, doe / 36524), doe / 1460),
       uint(doe = 146096)
     ) / 365;
-    const doy : uint := Uint.wrapping_sub(
+    const doy : uint := Uint.wrappingSub(
       doe,
-      Uint.wrapping_sub(Uint.wrapping_add(Uint.wrapping_mul(365, yoe), yoe >> 2), yoe / 100)
+      Uint.wrappingSub(Uint.wrappingAdd(Uint.wrappingMul(365, yoe), yoe >> 2), yoe / 100)
     );
-    const mp : uint := Uint.wrapping_add(Uint.wrapping_mul(5, doy), 2) / 153;
-    const month : uint := Uint.wrapping_add(Uint.wrapping_add(mp, 2) % 12, 1);
+    const mp : uint := Uint.wrappingAdd(Uint.wrappingMul(5, doy), 2) / 153;
+    const month : uint := Uint.wrappingAdd(Uint.wrappingAdd(mp, 2) % 12, 1);
   } with (
-    Uint.wrapping_add(Uint.wrapping_add(yoe, Uint.wrapping_mul(d / 146097, 400)), uint(month < 3)),
+    Uint.wrappingAdd(Uint.wrappingAdd(yoe, Uint.wrappingMul(d / 146097, 400)), uint(month < 3)),
     month,
-    Uint.wrapping_add(Uint.wrapping_sub(doy, Uint.wrapping_add(Uint.wrapping_mul(mp, 62719), 769) >> 11), 1)
+    Uint.wrappingAdd(Uint.wrappingSub(doy, Uint.wrappingAdd(Uint.wrappingMul(mp, 62719), 769) >> 11), 1)
   )
 
-  pure function date_to_timestamp(const year : uint; const month : uint; const day : uint) : timestamp is
-    timestamp(Uint.wrapping_mul(date_to_epoch_day(year, month, day), 86400))
+  pure function dateToTimestamp(const year : uint; const month : uint; const day : uint) : timestamp is
+    timestamp(Uint.wrappingMul(dateToEpochDay(year, month, day), 86400))
 
-  pure function timestamp_to_date(const t : timestamp) : (uint, uint, uint) is
-    epoch_day_to_date(uint(t) / 86400)
+  pure function timestampToDate(const t : timestamp) : (uint, uint, uint) is
+    epochDayToDate(uint(t) / 86400)
 
-  pure function date_time_to_timestamp(
+  pure function dateTimeToTimestamp(
     const year : uint;
     const month : uint;
     const day : uint;
@@ -53,81 +53,81 @@ module DateTime is {
     const minute : uint;
     const second : uint
   ) : timestamp is
-    timestamp(Uint.wrapping_add(
-      Uint.wrapping_add(
-        Uint.wrapping_add(Uint.wrapping_mul(date_to_epoch_day(year, month, day), 86400), Uint.wrapping_mul(hour, 3600)),
-        Uint.wrapping_mul(minute, 60)
+    timestamp(Uint.wrappingAdd(
+      Uint.wrappingAdd(
+        Uint.wrappingAdd(Uint.wrappingMul(dateToEpochDay(year, month, day), 86400), Uint.wrappingMul(hour, 3600)),
+        Uint.wrappingMul(minute, 60)
       ),
       second
     ))
 
-  pure function timestamp_to_date_time(const t : timestamp) : (uint, uint, uint, uint, uint, uint) is {
-    const (year, month, day) : (uint, uint, uint) := epoch_day_to_date(uint(t) / 86400);
+  pure function timestampToDateTime(const t : timestamp) : (uint, uint, uint, uint, uint, uint) is {
+    const (year, month, day) : (uint, uint, uint) := epochDayToDate(uint(t) / 86400);
     const secs : uint := uint(t) % 86400;
   } with (year, month, day, secs / 3600, secs % 3600 / 60, secs % 60)
 
-  pure function is_leap_year(const year : uint) : bool is
-    year & Uint.wrapping_add(Uint.wrapping_mul(12, uint(year % 25 = 0)), 3) = 0
+  pure function isLeapYear(const year : uint) : bool is
+    year & Uint.wrappingAdd(Uint.wrappingMul(12, uint(year % 25 = 0)), 3) = 0
 
   (* 0 for a month that is not from 1 to 12. *)
-  pure function days_in_month(const year : uint; const month : uint) : uint is
-    Uint.wrapping_add(
-      (0x1f1c1f1e1f1e1f1f1e1f1e1f << Uint.wrapping_add(152, month << 3)) >> 248,
-      uint(month = 2) & uint(is_leap_year(year))
+  pure function daysInMonth(const year : uint; const month : uint) : uint is
+    Uint.wrappingAdd(
+      (0x1f1c1f1e1f1e1f1f1e1f1e1f << Uint.wrappingAdd(152, month << 3)) >> 248,
+      uint(month = 2) & uint(isLeapYear(year))
     )
 
   pure function weekday(const t : timestamp) : uint is
-    Uint.wrapping_add(Uint.wrapping_add(uint(t) / 86400, 3) % 7, 1)
+    Uint.wrappingAdd(Uint.wrappingAdd(uint(t) / 86400, 3) % 7, 1)
 
   (* Whether the year is from 1970 to 0xffffffff, the month from 1 to 12, and the day
      in the month. *)
-  pure function is_supported_date(const year : uint; const month : uint; const day : uint) : bool is
-    uint(Uint.wrapping_sub(year, 1970) < 4294965326)
-      & uint(Uint.wrapping_sub(month, 1) < 12)
-      & uint(Uint.wrapping_sub(day, 1) < days_in_month(year, month)) <> 0
+  pure function isSupportedDate(const year : uint; const month : uint; const day : uint) : bool is
+    uint(Uint.wrappingSub(year, 1970) < 4294965326)
+      & uint(Uint.wrappingSub(month, 1) < 12)
+      & uint(Uint.wrappingSub(day, 1) < daysInMonth(year, month)) <> 0
 
   (* The same day of the month `n` years on, or the last day of the month if it has
      fewer days: 29 February one year on is 28 February. The time of day stays. *)
-  pure function add_years(const t : timestamp; const n : uint) : timestamp is {
-    const (year, month, day) : (uint, uint, uint) := timestamp_to_date(t);
+  pure function addYears(const t : timestamp; const n : uint) : timestamp is {
+    const (year, month, day) : (uint, uint, uint) := timestampToDate(t);
   } with offset(year + n, month, day, t)
 
-  pure function sub_years(const t : timestamp; const n : uint) : timestamp is {
-    const (year, month, day) : (uint, uint, uint) := timestamp_to_date(t);
+  pure function subYears(const t : timestamp; const n : uint) : timestamp is {
+    const (year, month, day) : (uint, uint, uint) := timestampToDate(t);
   } with offset(year - n, month, day, t)
 
-  pure function add_months(const t : timestamp; const n : uint) : timestamp is {
-    const (year, month, day) : (uint, uint, uint) := timestamp_to_date(t);
-    const months : uint := Uint.wrapping_sub(month + n, 1);
-  } with offset(year + months / 12, Uint.wrapping_add(months % 12, 1), day, t)
+  pure function addMonths(const t : timestamp; const n : uint) : timestamp is {
+    const (year, month, day) : (uint, uint, uint) := timestampToDate(t);
+    const months : uint := Uint.wrappingSub(month + n, 1);
+  } with offset(year + months / 12, Uint.wrappingAdd(months % 12, 1), day, t)
 
-  pure function sub_months(const t : timestamp; const n : uint) : timestamp is {
-    const (year, month, day) : (uint, uint, uint) := timestamp_to_date(t);
-    const months : uint := Uint.wrapping_add(Uint.wrapping_mul(year, 12), month) - Uint.wrapping_add(n, 1);
-  } with offset(months / 12, Uint.wrapping_add(months % 12, 1), day, t)
+  pure function subMonths(const t : timestamp; const n : uint) : timestamp is {
+    const (year, month, day) : (uint, uint, uint) := timestampToDate(t);
+    const months : uint := Uint.wrappingAdd(Uint.wrappingMul(year, 12), month) - Uint.wrappingAdd(n, 1);
+  } with offset(months / 12, Uint.wrappingAdd(months % 12, 1), day, t)
 
   (* Calendar years between two times: 1 from 31 December to 1 January. Panics if `to`
      is before `from`. *)
-  pure function diff_years(const from : timestamp; const to : timestamp) : uint is {
+  pure function diffYears(const from : timestamp; const to : timestamp) : uint is {
     const _ : uint := to - from;
-    const (a, _, _) : (uint, uint, uint) := timestamp_to_date(from);
-    const (b, _, _) : (uint, uint, uint) := timestamp_to_date(to);
-  } with Uint.wrapping_sub(b, a)
+    const (a, _, _) : (uint, uint, uint) := timestampToDate(from);
+    const (b, _, _) : (uint, uint, uint) := timestampToDate(to);
+  } with Uint.wrappingSub(b, a)
 
-  pure function diff_months(const from : timestamp; const to : timestamp) : uint is {
+  pure function diffMonths(const from : timestamp; const to : timestamp) : uint is {
     const _ : uint := to - from;
-    const (a, m, _) : (uint, uint, uint) := timestamp_to_date(from);
-    const (b, n, _) : (uint, uint, uint) := timestamp_to_date(to);
-  } with Uint.wrapping_sub(
-    Uint.wrapping_add(Uint.wrapping_mul(b, 12), n),
-    Uint.wrapping_add(Uint.wrapping_mul(a, 12), m)
+    const (a, m, _) : (uint, uint, uint) := timestampToDate(from);
+    const (b, n, _) : (uint, uint, uint) := timestampToDate(to);
+  } with Uint.wrappingSub(
+    Uint.wrappingAdd(Uint.wrappingMul(b, 12), n),
+    Uint.wrappingAdd(Uint.wrappingMul(a, 12), m)
   )
 
   (* The date's time of day from `t`, and its day clamped to the month. *)
   pure function offset(const year : uint; const month : uint; const day : uint; const t : timestamp) : timestamp is {
-    const last : uint := days_in_month(year, month);
-  } with timestamp(Uint.wrapping_add(
-    date_to_epoch_day(year, month, last ^ (day ^ last) * uint(day < last)) * 86400,
+    const last : uint := daysInMonth(year, month);
+  } with timestamp(Uint.wrappingAdd(
+    dateToEpochDay(year, month, last ^ (day ^ last) * uint(day < last)) * 86400,
     uint(t) % 86400
   ))
 }

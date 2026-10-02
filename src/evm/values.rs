@@ -46,7 +46,7 @@ external view function top16() : int16 is Int.max
 #[test]
 fn narrow_options_take_one_slot() {
     let src = r#"import "std/evm"; 
-type inner is record {
+type Inner is record {
   small : option(uint8);
   n : uint;
 }
@@ -58,55 +58,55 @@ storage is record {
   flag : option(bool);
   tag : option(bytes4);
   wide : option(uint);
-  nested : inner;
+  nested : Inner;
 }
 
 pure function wrap(const k : uint8) : option(uint8) is
   Some(k)
 
-pure function or_seven(const o : option(uint8)) : uint is
+pure function orSeven(const o : option(uint8)) : uint is
   case o of { | Some(v) -> uint(v) | None -> 7 }
 
-external function set_who() is { storage.who := Some(Evm.sender()); }
-external view function who_or() : address is
+external function setWho() is { storage.who := Some(Evm.sender()); }
+external view function whoOr() : address is
   case storage.who of { | Some(w) -> w | None -> Evm.self() }
 
-external function set_small(const v : uint8) is { storage.small := Some(v); }
-external function clear_small() is { storage.small := None; }
-external view function small_or() : uint is
+external function setSmall(const v : uint8) is { storage.small := Some(v); }
+external function clearSmall() is { storage.small := None; }
+external view function smallOr() : uint is
   case storage.small of { | Some(v) -> uint(v) | None -> 1000 }
-external view function has_small() : bool is
+external view function hasSmall() : bool is
   case storage.small of { | Some(v) -> true | None -> false }
 
-external function set_tiny(const v : int8) is { storage.tiny := Some(v); }
-external view function tiny_or() : int is
+external function setTiny(const v : int8) is { storage.tiny := Some(v); }
+external view function tinyOr() : int is
   case storage.tiny of { | Some(v) -> int(v) | None -> 1000 }
 
-external function set_flag(const v : bool) is { storage.flag := Some(v); }
-external view function flag_or(const d : bool) : bool is
+external function setFlag(const v : bool) is { storage.flag := Some(v); }
+external view function flagOr(const d : bool) : bool is
   case storage.flag of { | Some(b) -> b | None -> d }
 
-external function set_tag(const v : bytes4) is { storage.tag := Some(v); }
-external view function tag_or(const d : bytes4) : bytes4 is
+external function setTag(const v : bytes4) is { storage.tag := Some(v); }
+external view function tagOr(const d : bytes4) : bytes4 is
   case storage.tag of { | Some(t) -> t | None -> d }
 
-external function set_wide(const v : uint) is { storage.wide := Some(v); }
-external view function wide_or() : uint is
+external function setWide(const v : uint) is { storage.wide := Some(v); }
+external view function wideOr() : uint is
   case storage.wide of { | Some(v) -> v | None -> 1000 }
 
-external function set_nested(const v : uint8) is { storage.nested.small := Some(v); }
-external function copy_small() is {
+external function setNested(const v : uint8) is { storage.nested.small := Some(v); }
+external function copySmall() is {
   const held : option(uint8) := storage.small;
   storage.nested.small := held;
 }
-external view function nested_or() : uint is
+external view function nestedOr() : uint is
   case storage.nested.small of { | Some(v) -> uint(v) | None -> 1000 }
 
 external view function through(const k : uint8) : uint is {
   const o : option(uint8) := wrap(k);
-} with case o of { | Some(v) -> uint(v) + or_seven(None) | None -> 0 }
+} with case o of { | Some(v) -> uint(v) + orSeven(None) | None -> 0 }
 external view function direct(const k : uint8) : uint is
-  case wrap(k) of { | Some(v) -> or_seven(Some(v)) | None -> 0 }
+  case wrap(k) of { | Some(v) -> orSeven(Some(v)) | None -> 0 }
 "#;
     let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
     let caller = Word::from_u64(1);
@@ -131,64 +131,64 @@ external view function direct(const k : uint8) : uint is
     let neg = |v: u64| n(v - 1).not();
 
     // Unset storage is `None`.
-    assert_eq!(read(&empty, "who_or()", &[]), n(0x1000));
-    assert_eq!(read(&empty, "small_or()", &[]), n(1000));
-    assert_eq!(read(&empty, "has_small()", &[]), n(0));
-    assert_eq!(read(&empty, "tiny_or()", &[]), n(1000));
-    assert_eq!(read(&empty, "wide_or()", &[]), n(1000));
+    assert_eq!(read(&empty, "whoOr()", &[]), n(0x1000));
+    assert_eq!(read(&empty, "smallOr()", &[]), n(1000));
+    assert_eq!(read(&empty, "hasSmall()", &[]), n(0));
+    assert_eq!(read(&empty, "tinyOr()", &[]), n(1000));
+    assert_eq!(read(&empty, "wideOr()", &[]), n(1000));
 
-    let who = run(&empty, "set_who()", &[]).storage;
+    let who = run(&empty, "setWho()", &[]).storage;
     assert_eq!(slot(&who, 0), caller.not());
-    assert_eq!(read(&who, "who_or()", &[]), caller);
+    assert_eq!(read(&who, "whoOr()", &[]), caller);
 
     // `Some(0)` and `Some(255)` both stay distinct from `None`.
     for v in [0, 1, 255] {
-        let set = run(&empty, "set_small(uint8)", &[n(v)]).storage;
+        let set = run(&empty, "setSmall(uint8)", &[n(v)]).storage;
         assert_eq!(slot(&set, 1), n(v).not());
         assert_eq!(slot(&set, 2), n(0));
-        assert_eq!(read(&set, "small_or()", &[]), n(v));
-        assert_eq!(read(&set, "has_small()", &[]), n(1));
-        let cleared = run(&set, "clear_small()", &[]).storage;
+        assert_eq!(read(&set, "smallOr()", &[]), n(v));
+        assert_eq!(read(&set, "hasSmall()", &[]), n(1));
+        let cleared = run(&set, "clearSmall()", &[]).storage;
         assert_eq!(slot(&cleared, 1), n(0));
-        assert_eq!(read(&cleared, "small_or()", &[]), n(1000));
+        assert_eq!(read(&cleared, "smallOr()", &[]), n(1000));
     }
 
     // A signed payload is flipped at its sign's next bit, so -1 is not `None` either.
     for v in [n(0), n(1), n(127), neg(1), neg(128)] {
-        let set = run(&empty, "set_tiny(int8)", &[v]).storage;
+        let set = run(&empty, "setTiny(int8)", &[v]).storage;
         assert_eq!(slot(&set, 2), v.bitxor(n(0x80)));
         assert_ne!(slot(&set, 2), n(0));
-        assert_eq!(read(&set, "tiny_or()", &[]), v);
+        assert_eq!(read(&set, "tinyOr()", &[]), v);
     }
 
     for v in [0, 1] {
-        let set = run(&empty, "set_flag(bool)", &[n(v)]).storage;
+        let set = run(&empty, "setFlag(bool)", &[n(v)]).storage;
         assert_eq!(slot(&set, 3), n(v).not());
-        assert_eq!(read(&set, "flag_or(bool)", &[n(1 - v)]), n(v));
+        assert_eq!(read(&set, "flagOr(bool)", &[n(1 - v)]), n(v));
     }
-    assert_eq!(read(&empty, "flag_or(bool)", &[n(1)]), n(1));
+    assert_eq!(read(&empty, "flagOr(bool)", &[n(1)]), n(1));
 
     let ones = n(0xffff_ffff).shl(224);
-    let tagged = run(&empty, "set_tag(bytes4)", &[ones]).storage;
+    let tagged = run(&empty, "setTag(bytes4)", &[ones]).storage;
     assert_ne!(slot(&tagged, 4), n(0));
-    assert_eq!(read(&tagged, "tag_or(bytes4)", &[n(0)]), ones);
-    let zero_tag = run(&empty, "set_tag(bytes4)", &[n(0)]).storage;
-    assert_eq!(read(&zero_tag, "tag_or(bytes4)", &[ones]), n(0));
+    assert_eq!(read(&tagged, "tagOr(bytes4)", &[n(0)]), ones);
+    let zero_tag = run(&empty, "setTag(bytes4)", &[n(0)]).storage;
+    assert_eq!(read(&zero_tag, "tagOr(bytes4)", &[ones]), n(0));
 
     // A full-width payload has no spare bit: a tag word, then the payload.
-    let wide = run(&empty, "set_wide(uint256)", &[n(0)]).storage;
+    let wide = run(&empty, "setWide(uint256)", &[n(0)]).storage;
     assert_eq!(slot(&wide, 5), n(1));
     assert_eq!(slot(&wide, 6), n(0));
-    assert_eq!(read(&wide, "wide_or()", &[]), n(0));
+    assert_eq!(read(&wide, "wideOr()", &[]), n(0));
 
-    let nested = run(&empty, "set_nested(uint8)", &[n(0)]).storage;
+    let nested = run(&empty, "setNested(uint8)", &[n(0)]).storage;
     assert_eq!(slot(&nested, 7), n(0).not());
-    assert_eq!(read(&nested, "nested_or()", &[]), n(0));
-    let small = run(&empty, "set_small(uint8)", &[n(42)]).storage;
-    let copied = run(&small, "copy_small()", &[]).storage;
-    assert_eq!(read(&copied, "nested_or()", &[]), n(42));
-    let unset = run(&nested, "copy_small()", &[]).storage;
-    assert_eq!(read(&unset, "nested_or()", &[]), n(1000));
+    assert_eq!(read(&nested, "nestedOr()", &[]), n(0));
+    let small = run(&empty, "setSmall(uint8)", &[n(42)]).storage;
+    let copied = run(&small, "copySmall()", &[]).storage;
+    assert_eq!(read(&copied, "nestedOr()", &[]), n(42));
+    let unset = run(&nested, "copySmall()", &[]).storage;
+    assert_eq!(read(&unset, "nestedOr()", &[]), n(1000));
 
     assert_eq!(read(&empty, "through(uint8)", &[n(0)]), n(7));
     assert_eq!(read(&empty, "through(uint8)", &[n(200)]), n(207));
@@ -207,47 +207,47 @@ fn options_work_as_values() {
     let read = |st: &HashMap<Word, Word>, sig: &str, args: &[Word]| read_ok(&rt, st, sig, args);
 
     let none = run_ok(&rt, &empty, "pick(uint256)", &[n(0)]).storage;
-    assert_eq!(read(&none, "last_or()", &[]), n(0));
+    assert_eq!(read(&none, "lastOr()", &[]), n(0));
     assert_eq!(slot(&none, 13), n(0));
     let some = run_ok(&rt, &empty, "pick(uint256)", &[n(5)]).storage;
     assert_eq!(slot(&some, 11), n(1));
     assert_eq!(slot(&some, 12), n(6));
-    assert_eq!(read(&some, "last_or()", &[]), n(6));
+    assert_eq!(read(&some, "lastOr()", &[]), n(6));
     assert_eq!(slot(&some, 13), n(1));
 
-    assert_eq!(read(&empty, "via_case(uint256)", &[n(41)]), n(42));
-    assert_eq!(read(&empty, "direct_args(uint256)", &[n(9)]), n(10));
+    assert_eq!(read(&empty, "viaCase(uint256)", &[n(41)]), n(42));
+    assert_eq!(read(&empty, "directArgs(uint256)", &[n(9)]), n(10));
     assert_eq!(read(&empty, "eqs(uint256)", &[n(5)]), n(101_111));
     assert_eq!(read(&empty, "eqs(uint256)", &[n(4)]), n(101_110));
     assert_eq!(read(&empty, "inferred(uint256)", &[n(7)]), n(8));
     assert_eq!(read(&empty, "tuples(uint256)", &[n(10)]), n(35));
     assert_eq!(read(&empty, "records(uint256)", &[n(10)]), n(14));
 
-    assert_eq!(read(&empty, "pos_sum()", &[]), n(0));
-    let pos = run_ok(&rt, &empty, "set_pos(uint256,uint256)", &[n(3), n(4)]).storage;
+    assert_eq!(read(&empty, "posSum()", &[]), n(0));
+    let pos = run_ok(&rt, &empty, "setPos(uint256,uint256)", &[n(3), n(4)]).storage;
     assert_eq!(
         (slot(&pos, 0), slot(&pos, 1), slot(&pos, 2)),
         (n(1), n(3), n(4))
     );
-    assert_eq!(read(&pos, "pos_sum()", &[]), n(7));
+    assert_eq!(read(&pos, "posSum()", &[]), n(7));
 
-    assert_eq!(read(&empty, "deep_or()", &[]), n(2));
-    assert_eq!(read(&empty, "deep8_or()", &[]), n(2));
-    let deep = run_ok(&rt, &empty, "set_deep(uint256)", &[n(9)]).storage;
+    assert_eq!(read(&empty, "deepOr()", &[]), n(2));
+    assert_eq!(read(&empty, "deep8Or()", &[]), n(2));
+    let deep = run_ok(&rt, &empty, "setDeep(uint256)", &[n(9)]).storage;
     assert_eq!(
         (slot(&deep, 3), slot(&deep, 4), slot(&deep, 5)),
         (n(1), n(1), n(9))
     );
     // `Some(None)` of a one-word inner option: a tag, then the inner `None` as zero.
     assert_eq!((slot(&deep, 6), slot(&deep, 7)), (n(1), n(0)));
-    assert_eq!(read(&deep, "deep_or()", &[]), n(9));
-    assert_eq!(read(&deep, "deep8_or()", &[]), n(1));
+    assert_eq!(read(&deep, "deepOr()", &[]), n(9));
+    assert_eq!(read(&deep, "deep8Or()", &[]), n(1));
 
-    assert_eq!(read(&empty, "pair_or()", &[]), n(0));
-    let pair = run_ok(&rt, &empty, "set_pair(uint256)", &[n(8)]).storage;
+    assert_eq!(read(&empty, "pairOr()", &[]), n(0));
+    let pair = run_ok(&rt, &empty, "setPair(uint256)", &[n(8)]).storage;
     assert_eq!((slot(&pair, 8), slot(&pair, 9)), (n(1), n(8)));
     assert_eq!(slot(&pair, 10), n(1).not());
-    assert_eq!(read(&pair, "pair_or()", &[]), n(1008));
+    assert_eq!(read(&pair, "pairOr()", &[]), n(1008));
 }
 
 /// A function's record result binds to a name, has its fields read, and is stored whole.
@@ -259,14 +259,14 @@ fn record_results_are_values() {
     let empty = HashMap::new();
     let read = |st: &HashMap<Word, Word>, sig: &str, args: &[Word]| read_ok(&rt, st, sig, args);
     assert_eq!(read(&empty, "spread(uint256)", &[n(5)]), n(5 + 7 + 105));
-    assert_eq!(read(&empty, "low_plus(uint256)", &[n(5)]), n(6 + 15));
-    assert_eq!(read(&empty, "span_high(uint256)", &[n(4)]), n(8));
-    let quote = run_ok(&rt, &empty, "quote_of(uint256)", &[n(3)]).returndata;
+    assert_eq!(read(&empty, "lowPlus(uint256)", &[n(5)]), n(6 + 15));
+    assert_eq!(read(&empty, "spanHigh(uint256)", &[n(4)]), n(8));
+    let quote = run_ok(&rt, &empty, "quoteOf(uint256)", &[n(3)]).returndata;
     let words: Vec<Word> = (0..4).map(|i| load_bytes(&quote, i * 32)).collect();
     assert_eq!(words, [n(1), n(3), n(4), n(5)]);
     let saved = run_ok(&rt, &empty, "save(uint256)", &[n(7)]).storage;
     assert_eq!(read(&saved, "last()", &[]), n(7008));
-    assert_eq!(read(&saved, "high_of(uint256)", &[n(7)]), n(9));
+    assert_eq!(read(&saved, "highOf(uint256)", &[n(7)]), n(9));
     let flipped = run_ok(&rt, &saved, "flip()", &[]).storage;
     assert_eq!(read(&flipped, "last()", &[]), n(8007));
 }
@@ -281,22 +281,22 @@ interface Echo is {
   view function echo(n : uint) : uint;
 }
 
-type inner is record { a : uint; b : int16; }
-type v is record { ok : bool; d : int16; i : inner; }
+type Inner is record { a : uint; b : int16; }
+type V is record { ok : bool; d : int16; i : Inner; }
 
-storage is record { r : v; k : uint; }
+storage is record { r : V; k : uint; }
 
-transient storage t is record { r : v; }
+transient storage t is record { r : V; }
 
-pure function mk(const n : uint; const d : int16) : v is {
+pure function mk(const n : uint; const d : int16) : V is {
   ok = true;
   d = d;
   i = { a = n; b = d - int16(1); };
 }
 
-pure function wrap(const n : uint) : v is mk(n + 1, int16(-3))
+pure function wrap(const n : uint) : V is mk(n + 1, int16(-3))
 
-pure function total(const x : v) : uint is x.i.a
+pure function total(const x : V) : uint is x.i.a
 
 external function later(const e : Echo; const n : uint) is {
   storage.r := mk(n, int16(-2));
@@ -312,19 +312,19 @@ external view function chain(const n : uint) : uint is
 
 external view function neg() : int16 is wrap(1).i.b
 
-external view function r_d() : int16 is storage.r.d
+external view function rD() : int16 is storage.r.d
 
-external view function r_b() : int16 is storage.r.i.b
+external view function rB() : int16 is storage.r.i.b
 
 external view function k() : uint is storage.k
 
-pure function once(const n : uint) : v is {
+pure function once(const n : uint) : V is {
   ok = false;
   d = int16(-9);
   i = { a = n * 2; b = int16(4); };
 }
 
-external view function once_d(const n : uint) : int16 is int16(1) + once(n).d
+external view function onceD(const n : uint) : int16 is int16(1) + once(n).d
 "#;
     let rt = deploy(&compile(src).expect("compile")).expect("deploy");
     let n = Word::from_u64;
@@ -336,19 +336,19 @@ external view function once_d(const n : uint) : int16 is int16(1) + once(n).d
     assert_eq!(read(&empty, "flash(uint256)", &[n(1)]), neg(15));
     let later = run_ok(&rt, &empty, "later(address,uint256)", &[n(0xcd), n(6)]).storage;
     assert_eq!(read(&later, "k()", &[]), n(6));
-    assert_eq!(read(&later, "r_d()", &[]), neg(2));
-    assert_eq!(read(&later, "r_b()", &[]), neg(3));
-    assert_eq!(read(&empty, "once_d(uint256)", &[n(2)]), neg(8));
+    assert_eq!(read(&later, "rD()", &[]), neg(2));
+    assert_eq!(read(&later, "rB()", &[]), neg(3));
+    assert_eq!(read(&empty, "onceD(uint256)", &[n(2)]), neg(8));
     let overflow = exec(
         &rt,
-        &word_data("once_d(uint256)", &[n(0).not()]),
+        &word_data("onceD(uint256)", &[n(0).not()]),
         empty.clone(),
         n(1),
         n(0),
         n(0),
     );
     assert!(
-        overflow.expect("once_d").reverted,
+        overflow.expect("onceD").reverted,
         "an unread field still fails"
     );
 }
@@ -366,75 +366,75 @@ fn options_live_in_maps_and_transient_storage() {
         |st: &HashMap<Word, Word>, sig: &str, args: &[Word]| run_ok(&rt, st, sig, args).storage;
     let at = |st: &HashMap<Word, Word>, key: Word| st.get(&key).copied().unwrap_or(n(0));
 
-    assert_eq!(read(&empty, "small_or(address)", &[n(1)]), n(1000));
-    let small = run(&empty, "set_small(uint64)", &[n(0)]);
+    assert_eq!(read(&empty, "smallOr(address)", &[n(1)]), n(1000));
+    let small = run(&empty, "setSmall(uint64)", &[n(0)]);
     assert_eq!(at(&small, map_key(n(1), n(0))), n(0).not());
-    assert_eq!(read(&small, "small_or(address)", &[n(1)]), n(0));
-    assert_eq!(read(&small, "small_or(address)", &[n(2)]), n(1000));
-    let cleared = run(&small, "clear_small()", &[]);
+    assert_eq!(read(&small, "smallOr(address)", &[n(1)]), n(0));
+    assert_eq!(read(&small, "smallOr(address)", &[n(2)]), n(1000));
+    let cleared = run(&small, "clearSmall()", &[]);
     assert_eq!(at(&cleared, map_key(n(1), n(0))), n(0));
-    assert_eq!(read(&cleared, "small_or(address)", &[n(1)]), n(1000));
+    assert_eq!(read(&cleared, "smallOr(address)", &[n(1)]), n(1000));
 
     // A two-word option takes two slots from its key's slot on, like a record.
-    let wide = run(&empty, "set_wide(uint256,uint256)", &[n(7), n(0)]);
+    let wide = run(&empty, "setWide(uint256,uint256)", &[n(7), n(0)]);
     let base = map_key(n(7), n(1));
     assert_eq!(at(&wide, base), n(1));
     assert_eq!(at(&wide, base.wrapping_add(n(1))), n(0));
-    assert_eq!(read(&wide, "wide_or(uint256)", &[n(7)]), n(0));
-    assert_eq!(read(&wide, "wide_or(uint256)", &[n(8)]), n(1000));
-    assert_eq!(read(&wide, "wide_passed(uint256)", &[n(7)]), n(0));
-    assert_eq!(read(&wide, "wide_is_none(uint256)", &[n(7)]), n(0));
-    assert_eq!(read(&wide, "wide_is_none(uint256)", &[n(8)]), n(1));
-    assert_eq!(read(&wide, "wide_is(uint256,uint256)", &[n(7), n(0)]), n(1));
-    assert_eq!(read(&wide, "wide_is(uint256,uint256)", &[n(7), n(1)]), n(0));
-    assert_eq!(read(&wide, "wide_is(uint256,uint256)", &[n(8), n(0)]), n(0));
-    let copied = run(&wide, "copy_wide(uint256,uint256)", &[n(7), n(9)]);
-    assert_eq!(read(&copied, "wide_or(uint256)", &[n(9)]), n(0));
-    let wiped = run(&copied, "copy_wide(uint256,uint256)", &[n(8), n(7)]);
+    assert_eq!(read(&wide, "wideOr(uint256)", &[n(7)]), n(0));
+    assert_eq!(read(&wide, "wideOr(uint256)", &[n(8)]), n(1000));
+    assert_eq!(read(&wide, "widePassed(uint256)", &[n(7)]), n(0));
+    assert_eq!(read(&wide, "wideIsNone(uint256)", &[n(7)]), n(0));
+    assert_eq!(read(&wide, "wideIsNone(uint256)", &[n(8)]), n(1));
+    assert_eq!(read(&wide, "wideIs(uint256,uint256)", &[n(7), n(0)]), n(1));
+    assert_eq!(read(&wide, "wideIs(uint256,uint256)", &[n(7), n(1)]), n(0));
+    assert_eq!(read(&wide, "wideIs(uint256,uint256)", &[n(8), n(0)]), n(0));
+    let copied = run(&wide, "copyWide(uint256,uint256)", &[n(7), n(9)]);
+    assert_eq!(read(&copied, "wideOr(uint256)", &[n(9)]), n(0));
+    let wiped = run(&copied, "copyWide(uint256,uint256)", &[n(8), n(7)]);
     assert_eq!(at(&wiped, base), n(0));
-    assert_eq!(read(&wiped, "wide_or(uint256)", &[n(7)]), n(1000));
-    let wide = run(&wide, "set_wide(uint256,uint256)", &[n(7), n(5)]);
-    let gone = run(&wide, "clear_wide(uint256)", &[n(7)]);
+    assert_eq!(read(&wiped, "wideOr(uint256)", &[n(7)]), n(1000));
+    let wide = run(&wide, "setWide(uint256,uint256)", &[n(7), n(5)]);
+    let gone = run(&wide, "clearWide(uint256)", &[n(7)]);
     assert_eq!(
         (at(&gone, base), at(&gone, base.wrapping_add(n(1)))),
         (n(0), n(0))
     );
 
-    let nested = run(&empty, "set_nested(uint256,uint256)", &[n(3), n(4)]);
+    let nested = run(&empty, "setNested(uint256,uint256)", &[n(3), n(4)]);
     assert_eq!(
-        read(&nested, "nested_or(address,uint256)", &[n(1), n(3)]),
+        read(&nested, "nestedOr(address,uint256)", &[n(1), n(3)]),
         n(4)
     );
     assert_eq!(
-        read(&nested, "nested_or(address,uint256)", &[n(1), n(4)]),
+        read(&nested, "nestedOr(address,uint256)", &[n(1), n(4)]),
         n(1000)
     );
     assert_eq!(
-        read(&nested, "nested_or(address,uint256)", &[n(2), n(3)]),
+        read(&nested, "nestedOr(address,uint256)", &[n(2), n(3)]),
         n(1000)
     );
 
-    assert_eq!(read(&empty, "entry_sum(uint256)", &[n(1)]), n(0));
-    let entry = run(&empty, "set_entry(uint256,uint256)", &[n(1), n(2)]);
-    assert_eq!(read(&entry, "entry_sum(uint256)", &[n(1)]), n(52));
-    let noted = run(&entry, "set_note(uint256,uint256)", &[n(1), n(3)]);
-    assert_eq!(read(&noted, "entry_sum(uint256)", &[n(1)]), n(352));
-    let expired = run(&noted, "clear_expiry(uint256)", &[n(1)]);
-    assert_eq!(read(&expired, "entry_sum(uint256)", &[n(1)]), n(302));
+    assert_eq!(read(&empty, "entrySum(uint256)", &[n(1)]), n(0));
+    let entry = run(&empty, "setEntry(uint256,uint256)", &[n(1), n(2)]);
+    assert_eq!(read(&entry, "entrySum(uint256)", &[n(1)]), n(52));
+    let noted = run(&entry, "setNote(uint256,uint256)", &[n(1), n(3)]);
+    assert_eq!(read(&noted, "entrySum(uint256)", &[n(1)]), n(352));
+    let expired = run(&noted, "clearExpiry(uint256)", &[n(1)]);
+    assert_eq!(read(&expired, "entrySum(uint256)", &[n(1)]), n(302));
 
     let pt = run(
         &empty,
-        "set_pt(uint256,uint256,uint256)",
+        "setPt(uint256,uint256,uint256)",
         &[n(1), n(2), n(3)],
     );
-    assert_eq!(read(&pt, "pt_sum(uint256)", &[n(1)]), n(32));
-    assert_eq!(read(&pt, "pt_sum(uint256)", &[n(2)]), n(1000));
+    assert_eq!(read(&pt, "ptSum(uint256)", &[n(1)]), n(32));
+    assert_eq!(read(&pt, "ptSum(uint256)", &[n(2)]), n(1000));
 
     // Transient options start each transaction as `None`, and every slot is transient.
-    let used = run_ok(&rt, &empty, "use_transient(uint256)", &[n(4)]);
+    let used = run_ok(&rt, &empty, "useTransient(uint256)", &[n(4)]);
     assert_eq!(slot(&used.storage, 5), n(3441));
     assert_eq!(used.storage.len(), 1);
-    assert_eq!(read(&used.storage, "fresh_t()", &[]), n(0));
+    assert_eq!(read(&used.storage, "freshT()", &[]), n(0));
 }
 
 /// Lists of options: a two-word option takes two slots per element, in stored and local
@@ -456,14 +456,14 @@ fn options_live_in_lists() {
     let at = |st: &HashMap<Word, Word>, key: Word| st.get(&key).copied().unwrap_or(n(0));
     let elems = |slot: u64| Word::from_be_bytes(keccak256(&n(slot).to_be_bytes()));
 
-    let small = run(&empty, "push_small(uint8)", &[n(0)]);
+    let small = run(&empty, "pushSmall(uint8)", &[n(0)]);
     assert_eq!(slot(&small, 0), n(1));
     assert_eq!(at(&small, elems(0)), n(0).not());
-    assert_eq!(read(&small, "small_at(uint256)", &[n(0)]), n(0));
-    assert!(reverts(&small, "small_at(uint256)", &[n(1)]));
+    assert_eq!(read(&small, "smallAt(uint256)", &[n(0)]), n(0));
+    assert!(reverts(&small, "smallAt(uint256)", &[n(1)]));
 
-    let wide = run(&empty, "push_wide(uint256)", &[n(5)]);
-    let wide = run(&wide, "push_wide(uint256)", &[n(0)]);
+    let wide = run(&empty, "pushWide(uint256)", &[n(5)]);
+    let wide = run(&wide, "pushWide(uint256)", &[n(0)]);
     assert_eq!(slot(&wide, 1), n(2));
     let base = elems(1);
     assert_eq!(
@@ -472,43 +472,43 @@ fn options_live_in_lists() {
     );
     assert_eq!(at(&wide, base.wrapping_add(n(2))), n(1));
     assert_eq!(at(&wide, base.wrapping_add(n(3))), n(0));
-    assert_eq!(read(&wide, "wide_at(uint256)", &[n(0)]), n(5));
-    assert_eq!(read(&wide, "wide_at(uint256)", &[n(1)]), n(0));
-    assert!(reverts(&wide, "clear_wide(uint256)", &[n(2)]));
-    let cleared = run(&wide, "clear_wide(uint256)", &[n(0)]);
-    assert_eq!(read(&cleared, "wide_at(uint256)", &[n(0)]), n(1000));
-    assert_eq!(read(&cleared, "wide_len()", &[]), n(2));
+    assert_eq!(read(&wide, "wideAt(uint256)", &[n(0)]), n(5));
+    assert_eq!(read(&wide, "wideAt(uint256)", &[n(1)]), n(0));
+    assert!(reverts(&wide, "clearWide(uint256)", &[n(2)]));
+    let cleared = run(&wide, "clearWide(uint256)", &[n(0)]);
+    assert_eq!(read(&cleared, "wideAt(uint256)", &[n(0)]), n(1000));
+    assert_eq!(read(&cleared, "wideLen()", &[]), n(2));
 
-    let fixed = run(&empty, "put_fixed(uint256,uint256)", &[n(1), n(7)]);
+    let fixed = run(&empty, "putFixed(uint256,uint256)", &[n(1), n(7)]);
     assert_eq!((slot(&fixed, 7), slot(&fixed, 8)), (n(1), n(7)));
     assert_eq!(slot(&fixed, 3), n(1).not());
     assert_eq!(slot(&fixed, 11), n(1));
-    assert_eq!(read(&fixed, "fixed_at(uint256)", &[n(1)]), n(7));
-    assert_eq!(read(&fixed, "fixed_at(uint256)", &[n(0)]), n(1000));
-    assert!(reverts(&fixed, "fixed_at(uint256)", &[n(3)]));
-    assert_eq!(read(&fixed, "fixed8_at(uint256)", &[n(1)]), n(1));
-    assert_eq!(read(&fixed, "fixed8_at(uint256)", &[n(0)]), n(1000));
-    assert_eq!(read(&fixed, "fixed_passed(uint256)", &[n(1)]), n(7));
-    assert_eq!(read(&fixed, "fixed_is_none(uint256)", &[n(1)]), n(0));
-    assert_eq!(read(&fixed, "fixed_is_none(uint256)", &[n(2)]), n(1));
-    let moved = run(&fixed, "move_fixed(uint256,uint256)", &[n(1), n(2)]);
-    assert_eq!(read(&moved, "fixed_at(uint256)", &[n(2)]), n(7));
-    let wiped = run(&moved, "move_fixed(uint256,uint256)", &[n(0), n(1)]);
+    assert_eq!(read(&fixed, "fixedAt(uint256)", &[n(1)]), n(7));
+    assert_eq!(read(&fixed, "fixedAt(uint256)", &[n(0)]), n(1000));
+    assert!(reverts(&fixed, "fixedAt(uint256)", &[n(3)]));
+    assert_eq!(read(&fixed, "fixed8At(uint256)", &[n(1)]), n(1));
+    assert_eq!(read(&fixed, "fixed8At(uint256)", &[n(0)]), n(1000));
+    assert_eq!(read(&fixed, "fixedPassed(uint256)", &[n(1)]), n(7));
+    assert_eq!(read(&fixed, "fixedIsNone(uint256)", &[n(1)]), n(0));
+    assert_eq!(read(&fixed, "fixedIsNone(uint256)", &[n(2)]), n(1));
+    let moved = run(&fixed, "moveFixed(uint256,uint256)", &[n(1), n(2)]);
+    assert_eq!(read(&moved, "fixedAt(uint256)", &[n(2)]), n(7));
+    let wiped = run(&moved, "moveFixed(uint256,uint256)", &[n(0), n(1)]);
     assert_eq!((slot(&wiped, 7), slot(&wiped, 8)), (n(0), n(0)));
-    let cleared = run(&wiped, "clear_fixed(uint256)", &[n(2)]);
-    assert_eq!(read(&cleared, "fixed_at(uint256)", &[n(2)]), n(1000));
+    let cleared = run(&wiped, "clearFixed(uint256)", &[n(2)]);
+    assert_eq!(read(&cleared, "fixedAt(uint256)", &[n(2)]), n(1000));
 
     // Through the storage image: written, read back after a query, and flushed.
     let image = run(
         &empty,
-        "put_fixed_image(address,uint256,uint256)",
+        "putFixedImage(address,uint256,uint256)",
         &[n(2), n(2), n(9)],
     );
     assert_eq!((slot(&image, 9), slot(&image, 10)), (n(1), n(9)));
     assert_eq!(slot(&image, 11), n(9));
     let image = run(
         &image,
-        "move_fixed_image(address,uint256,uint256)",
+        "moveFixedImage(address,uint256,uint256)",
         &[n(2), n(2), n(0)],
     );
     assert_eq!((slot(&image, 5), slot(&image, 6)), (n(1), n(9)));
@@ -581,7 +581,7 @@ fn collections_live_in_storage() {
     .expect("slot");
     assert_eq!(load_bytes(&kept.returndata, 0), Word::from_u64(7));
 
-    let fresh = call(&runtime, "admin_or_sender()", &[]);
+    let fresh = call(&runtime, "adminOrSender()", &[]);
     assert_eq!(load_bytes(&fresh.returndata, 0), caller);
     let appointed = call(&runtime, "appoint()", &[]);
     assert!(!appointed.reverted, "{}", pretty(&appointed.returndata));
@@ -590,7 +590,7 @@ fn collections_live_in_storage() {
     assert_eq!(slot(&appointed.storage, 8), Word::from_u64(0));
     let admin = exec(
         &runtime,
-        &word_data("admin_or_sender()", &[]),
+        &word_data("adminOrSender()", &[]),
         appointed.storage,
         Word::from_u64(9),
         Word::from_u64(0),
@@ -651,7 +651,7 @@ fn loops_run_bounded_work() {
     }
     let marked = exec(
         &runtime,
-        &word_data("mark_all()", &[]),
+        &word_data("markAll()", &[]),
         storage.clone(),
         w(1),
         w(0),
@@ -703,7 +703,7 @@ fn loops_run_bounded_work() {
     }
     let too_many = exec(
         &runtime,
-        &word_data("mark_all()", &[]),
+        &word_data("markAll()", &[]),
         storage,
         w(1),
         w(0),
@@ -763,17 +763,17 @@ fn loops_run_bounded_work() {
 
     // Each continuation sees its own iteration's index. The echo mock returns its argument.
     install_mocks();
-    let set = call(&runtime, "set_exchange(address)", &[w(0xcd)]);
+    let set = call(&runtime, "setExchange(address)", &[w(0xcd)]);
     assert!(!set.reverted, "{}", pretty(&set.returndata));
     let swapped = exec(
         &runtime,
-        &word_data("swap_all(uint256[2])", &[w(11), w(22)]),
+        &word_data("swapAll(uint256[2])", &[w(11), w(22)]),
         set.storage,
         w(1),
         w(0),
         w(0),
     )
-    .expect("swap_all");
+    .expect("swapAll");
     assert!(!swapped.reverted, "{}", pretty(&swapped.returndata));
     assert_eq!(swapped.storage.get(&map_key(w(0), w(6))), Some(&w(11)));
     assert_eq!(swapped.storage.get(&map_key(w(1), w(6))), Some(&w(22)));
@@ -789,10 +789,10 @@ fn loops_run_bounded_work() {
 fn braces_group_records_blocks_and_cases() {
     let src = include_str!("../../examples/brackets.lithe");
     let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
-    let first = call(&runtime, "first_admin()", &[]);
+    let first = call(&runtime, "firstAdmin()", &[]);
     assert!(!first.reverted, "{}", pretty(&first.returndata));
     assert_eq!(load_bytes(&first.returndata, 0), Word::from_u64(1));
-    let count = call(&runtime, "admin_count()", &[]);
+    let count = call(&runtime, "adminCount()", &[]);
     assert!(!count.reverted, "{}", pretty(&count.returndata));
     assert_eq!(load_bytes(&count.returndata, 0), Word::from_u64(2));
     let second = call(&runtime, "second()", &[]);
@@ -1051,7 +1051,7 @@ import \"std/abi\"; interface Token is {
 }
 storage is record { n : uint; }
 external pure function sel() : bytes4 is Abi.selector(Token.transfer)
-external pure function id() : bytes4 is Abi.interface_id(Token)
+external pure function id() : bytes4 is Abi.interfaceId(Token)
 ";
     let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
     let transfer = selector("transfer(address,uint256)");
@@ -1080,7 +1080,7 @@ external pure function id() : bytes4 is Abi.interface_id(Token)
             "Abi.selector(Token)",
             "`Abi.selector` expects an interface method",
         ),
-        ("Abi.interface_id(Nope)", "unknown interface `Nope`"),
+        ("Abi.interfaceId(Nope)", "unknown interface `Nope`"),
         (
             "Abi.selector(Pair.put)",
             "`Pair.put` is overloaded: put(uint256), put(address)",
@@ -1157,12 +1157,12 @@ external function f() is { skip }
 #[test]
 fn hex_literals_keep_their_written_width_as_bytes() {
     let src = "\
-error Bad_data of bytes;
+error BadData of bytes;
 storage is record { n : uint; }
 external pure function zero() : bytes is 0x00
 external pure function one() : bytes is 0x0001
 external pure function ff() : bytes is 0x0000_00ff
-external pure function reject() : uint raises Bad_data is { assert(false, Bad_data(0x00)); } with 0
+external pure function reject() : uint raises BadData is { assert(false, BadData(0x00)); } with 0
 ";
     let abi_bytes = |data: &[u8]| abi_string("x()", data)[4..].to_vec();
     let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
@@ -1454,12 +1454,12 @@ external pure function ge(const a : bytes2; const b : bytes2) : bool is a >= b
 fn wrapping_arithmetic() {
     let src = "\
 import \"std/int\"; import \"std/uint\"; storage is record { n : uint; }
-external pure function add(const a : uint; const b : uint) : uint is Uint.wrapping_add(a, b)
-external pure function sub32(const a : uint32; const b : uint32) : uint32 is Uint.wrapping_sub(a, b)
-external pure function mul8(const a : uint8; const b : uint8) : uint8 is Uint.wrapping_mul(a, b)
-external pure function add8(const a : uint8) : uint8 is Uint.wrapping_add(a, 1)
-external pure function sub16(const a : int16; const b : int16) : int16 is Int.wrapping_sub(a, b)
-external pure function mul(const a : int; const b : int) : int is Int.wrapping_mul(a, b)
+external pure function add(const a : uint; const b : uint) : uint is Uint.wrappingAdd(a, b)
+external pure function sub32(const a : uint32; const b : uint32) : uint32 is Uint.wrappingSub(a, b)
+external pure function mul8(const a : uint8; const b : uint8) : uint8 is Uint.wrappingMul(a, b)
+external pure function add8(const a : uint8) : uint8 is Uint.wrappingAdd(a, 1)
+external pure function sub16(const a : int16; const b : int16) : int16 is Int.wrappingSub(a, b)
+external pure function mul(const a : int; const b : int) : int is Int.wrappingMul(a, b)
 ";
     let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
     let max = Word::from_u64(0).not();
@@ -1482,7 +1482,7 @@ external pure function mul(const a : int; const b : int) : int is Int.wrapping_m
         assert_eq!(load_bytes(&out.returndata, 0), *want, "{sig} {args:?}");
     }
     let err = compile(
-        "import \"std/uint\"; storage is record { n : uint; }\nexternal pure function f(const a : int8) : int8 is Uint.wrapping_add(a, a)\n",
+        "import \"std/uint\"; storage is record { n : uint; }\nexternal pure function f(const a : int8) : int8 is Uint.wrappingAdd(a, a)\n",
     )
     .expect_err("signed");
     assert!(
@@ -1493,15 +1493,15 @@ external pure function mul(const a : int; const b : int) : int is Int.wrapping_m
 
 /// Sending ether is `Evm.transfer`, like every other built-in reached through its module.
 /// A bare `transfer` is an ordinary name, free for a contract's own function.
-/// `Uint.mul_div` keeps the full 512-bit product, as OpenZeppelin's `Math.mulDiv` does;
-/// `Uint.mul_mod` and `Uint.add_mod` are the EVM's modular operations.
+/// `Uint.mulDiv` keeps the full 512-bit product, as OpenZeppelin's `Math.mulDiv` does;
+/// `Uint.mulMod` and `Uint.addMod` are the EVM's modular operations.
 #[test]
 fn full_precision_arithmetic() {
     let src = "\
 import \"std/uint\"; storage is record { n : uint; }
-external pure function mul_div(const a : uint; const b : uint; const d : uint) : uint is Uint.mul_div(a, b, d)
-external pure function mul_mod(const a : uint; const b : uint; const d : uint) : uint is Uint.mul_mod(a, b, d)
-external pure function add_mod(const a : uint; const b : uint; const d : uint) : uint is Uint.add_mod(a, b, d)
+external pure function mulDiv(const a : uint; const b : uint; const d : uint) : uint is Uint.mulDiv(a, b, d)
+external pure function mulMod(const a : uint; const b : uint; const d : uint) : uint is Uint.mulMod(a, b, d)
+external pure function addMod(const a : uint; const b : uint; const d : uint) : uint is Uint.addMod(a, b, d)
 ";
     let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
     let hexw = |s: &str| {
@@ -1559,7 +1559,7 @@ external pure function add_mod(const a : uint; const b : uint; const d : uint) :
     };
     for &(a, b, d, q, m, s) in cases {
         let args = [hexw(a), hexw(b), hexw(d)];
-        let out = run("mul_div(uint256,uint256,uint256)", &args);
+        let out = run("mulDiv(uint256,uint256,uint256)", &args);
         match q {
             Some(q) => {
                 assert!(!out.reverted, "{a} {b} {d}: {}", pretty(&out.returndata));
@@ -1572,23 +1572,23 @@ external pure function add_mod(const a : uint; const b : uint; const d : uint) :
         }
         assert_eq!(
             load_bytes(
-                &run("mul_mod(uint256,uint256,uint256)", &args).returndata,
+                &run("mulMod(uint256,uint256,uint256)", &args).returndata,
                 0
             ),
             hexw(m)
         );
         assert_eq!(
             load_bytes(
-                &run("add_mod(uint256,uint256,uint256)", &args).returndata,
+                &run("addMod(uint256,uint256,uint256)", &args).returndata,
                 0
             ),
             hexw(s)
         );
     }
     for sig in [
-        "mul_div(uint256,uint256,uint256)",
-        "mul_mod(uint256,uint256,uint256)",
-        "add_mod(uint256,uint256,uint256)",
+        "mulDiv(uint256,uint256,uint256)",
+        "mulMod(uint256,uint256,uint256)",
+        "addMod(uint256,uint256,uint256)",
     ] {
         for a in ["5", max] {
             let out = run(sig, &[hexw(a), hexw(a), hexw("0")]);
@@ -1665,9 +1665,9 @@ fn byte_indexing_slicing_and_conversions() {
     let src = "\
 import \"std/abi\"; import \"std/bytes\"; import \"std/crypto\"; import \"std/evm\"; storage is record { blob : bytes; notes : map(uint, bytes); }
 external function save(const b : bytes) is { storage.blob := b; storage.notes[7] := b; }
-external view function stored_at(const i : uint) : (bytes1, bytes1) is (storage.blob[i], storage.notes[7][i])
+external view function storedAt(const i : uint) : (bytes1, bytes1) is (storage.blob[i], storage.notes[7][i])
 external pure function at(const b : bytes; const i : uint) : bytes1 is b[i]
-external pure function fixed_at(const h : bytes4; const i : uint) : bytes1 is h[i]
+external pure function fixedAt(const h : bytes4; const i : uint) : bytes1 is h[i]
 external pure function slice(const b : bytes; const s : uint; const e : uint) : bytes is b[s:e]
 external pure function tail(const b : bytes; const s : uint) : bytes is b[s:]
 external pure function head(const b : bytes; const e : uint) : bytes is b[:e]
@@ -1678,12 +1678,12 @@ external pure function lead(const b : bytes) : (bytes4, bytes32) is (bytes4(b), 
 external pure function text(const s : string) : string is string(bytes(s)[1:])
 external pure function resize(const h : bytes32; const s : bytes4) : (bytes4, bytes32, bytes2, bytes4) is
   (bytes4(h), bytes32(s), bytes2(s), bytes4(Crypto.keccak256(\"LowBalance(uint256)\")))
-external view function msg_sender() : address is {
+external view function msgSender() : address is {
   const data : bytes := Evm.calldata();
 } with address(bytes20(data[data.length - 20:]))
 external view function first() : bytes1 is Evm.calldata()[0]
 external view function reason(const data : bytes) : (bytes4, uint) is
-  case query Evm.static_call(0x00000000000000000000000000000000000000ee, data) of {
+  case query Evm.staticCall(0x00000000000000000000000000000000000000ee, data) of {
   | Ok(_) -> (bytes4(data), 0)
   | Error(r) -> (bytes4(r), Abi.decode(r[4:], uint))
   }
@@ -1715,13 +1715,13 @@ external view function reason(const data : bytes) : (bytes4, uint) is
     h[..4].copy_from_slice(&[0xde, 0xad, 0xbe, 0xef]);
     for (i, b) in [0xde, 0xad, 0xbe, 0xef].into_iter().enumerate() {
         let out = run(&encode_args(
-            "fixed_at(bytes4,uint256)",
+            "fixedAt(bytes4,uint256)",
             &[Arg::W(Word::from_be_bytes(h)), Arg::W(w(i as u64))],
         ));
         assert_eq!(load_bytes(&out.returndata, 0), byte(b), "{i}");
     }
     assert!(panics(&run(&encode_args(
-        "fixed_at(bytes4,uint256)",
+        "fixedAt(bytes4,uint256)",
         &[Arg::W(Word::from_be_bytes(h)), Arg::W(w(4))]
     ))));
 
@@ -1814,7 +1814,7 @@ external view function reason(const data : bytes) : (bytes4, uint) is
     assert_eq!(&out.returndata[96..100], &[0x4d, 0x4f, 0x8a, 0xa6]);
 
     // ERC-2771: the trusted forwarder appends the sender to the calldata.
-    let mut c = selector("msg_sender()").to_vec();
+    let mut c = selector("msgSender()").to_vec();
     c.extend_from_slice(&[0x42; 20]);
     let out = run(&c);
     assert!(!out.reverted, "{}", pretty(&out.returndata));
@@ -1833,8 +1833,8 @@ external view function reason(const data : bytes) : (bytes4, uint) is
     let saved = run(&encode_args("save(bytes)", &[Arg::B(data.clone())]));
     assert!(!saved.reverted, "{}", pretty(&saved.returndata));
     for i in [0u64, 31, 32, 39] {
-        let c = encode_args("stored_at(uint256)", &[Arg::W(w(i))]);
-        let out = exec(&runtime, &c, saved.storage.clone(), w(1), w(0), w(0)).expect("stored_at");
+        let c = encode_args("storedAt(uint256)", &[Arg::W(w(i))]);
+        let out = exec(&runtime, &c, saved.storage.clone(), w(1), w(0), w(0)).expect("storedAt");
         assert_eq!(
             load_bytes(&out.returndata, 0),
             byte(data[i as usize]),
@@ -1968,7 +1968,7 @@ import \"std/evm\"; storage is record { balances : map(address, uint); }
 external function transfer(const to : address; const amount : uint) is {
   storage.balances[to] := storage.balances[to] + amount;
 }
-external view function balance_of(const who : address) : uint is storage.balances[who]
+external view function balanceOf(const who : address) : uint is storage.balances[who]
 ";
     let runtime = deploy(&compile(own).expect("own transfer")).expect("deploy");
     let w = Word::from_u64;
@@ -2135,30 +2135,30 @@ fn operators_divide_shift_and_return_tuples() {
     assert_eq!(load_bytes(&payee.returndata, 0), Word::from_u64(7));
     assert_eq!(load_bytes(&payee.returndata, 32), Word::from_u64(1));
 
-    let nested = call(&runtime, "nested_quote()", &[]);
+    let nested = call(&runtime, "nestedQuote()", &[]);
     assert!(!nested.reverted, "{}", pretty(&nested.returndata));
     assert_eq!(load_bytes(&nested.returndata, 0), Word::from_u64(1));
     assert_eq!(load_bytes(&nested.returndata, 32), Word::from_u64(0x1000));
     assert_eq!(load_bytes(&nested.returndata, 64), Word::from_u64(1));
 
-    let summed = call(&runtime, "sum_some()", &[]);
+    let summed = call(&runtime, "sumSome()", &[]);
     assert!(!summed.reverted, "{}", pretty(&summed.returndata));
     assert_eq!(load_bytes(&summed.returndata, 0), Word::from_u64(9));
 
-    let masked = call(&runtime, "mask_some()", &[]);
+    let masked = call(&runtime, "maskSome()", &[]);
     assert!(!masked.reverted, "{}", pretty(&masked.returndata));
     assert_eq!(load_bytes(&masked.returndata, 0), Word::from_u64(0x0f));
 
-    let zero = call(&runtime, "mod_zero(uint256)", &[Word::from_u64(0)]);
+    let zero = call(&runtime, "modZero(uint256)", &[Word::from_u64(0)]);
     assert!(zero.reverted);
     assert!(zero.returndata.starts_with(&selector("Panic(uint256)")));
     assert_eq!(load_bytes(&zero.returndata, 4), Word::from_u64(0x12));
 
     let min = Word::from_u64(1).shl(255);
-    let min_div = call(&runtime, "min_div(int256)", &[min]);
+    let min_div = call(&runtime, "minDiv(int256)", &[min]);
     assert!(min_div.reverted);
     assert_eq!(load_bytes(&min_div.returndata, 4), Word::from_u64(0x11));
-    let min_mod = call(&runtime, "min_mod(int256)", &[min]);
+    let min_mod = call(&runtime, "minMod(int256)", &[min]);
     assert!(min_mod.reverted);
     assert_eq!(load_bytes(&min_mod.returndata, 4), Word::from_u64(0x11));
 }
@@ -2194,7 +2194,7 @@ external pure function lit() : int8 is -128
     );
 }
 
-/// `Uint.to_string` and `Int.to_string` write decimal, as OpenZeppelin's `Strings` does,
+/// `Uint.toString` and `Int.toString` write decimal, as OpenZeppelin's `Strings` does,
 /// at every width, the extremes included.
 #[test]
 fn integers_convert_to_decimal_strings() {
@@ -2204,16 +2204,16 @@ storage is record {
 }
 
 external pure function uint(const n : uint) : string is
-  Uint.to_string(n)
+  Uint.toString(n)
 
 external pure function int(const n : int) : string is
-  Int.to_string(n)
+  Int.toString(n)
 
 external pure function small(const n : uint8; const m : int8) : string is
-  String.concat(Uint.to_string(n), "/", Int.to_string(m))
+  String.concat(Uint.toString(n), "/", Int.toString(m))
 
 external function keep(const n : uint) is {
-  storage.uri := String.concat("ipfs://base/", Uint.to_string(n));
+  storage.uri := String.concat("ipfs://base/", Uint.toString(n));
 }
 
 external view function uri() : string is
@@ -2260,7 +2260,7 @@ external view function uri() : string is
     )
     .expect("uri");
     assert_eq!(abi_string_value(&uri.returndata), b"ipfs://base/7");
-    let err = compile("import \"std/uint\"; storage is record { n : uint; }\nexternal pure function f(const n : int) : string is Uint.to_string(n)\n")
+    let err = compile("import \"std/uint\"; storage is record { n : uint; }\nexternal pure function f(const n : int) : string is Uint.toString(n)\n")
         .expect_err("signed");
     assert!(
         err.to_string().contains("expects an unsigned integer"),
@@ -2276,19 +2276,19 @@ fn integers_and_addresses_convert_to_hex_strings() {
 storage is record { n : uint; }
 
 external pure function hex(const n : uint) : string is
-  Uint.to_hex_string(n)
+  Uint.toHexString(n)
 
 external pure function fixed(const n : uint; const len : uint) : string is
-  Uint.to_hex_string(n, len)
+  Uint.toHexString(n, len)
 
 external pure function small(const n : uint8) : string is
-  Uint.to_hex_string(n)
+  Uint.toHexString(n)
 
 external pure function addr(const a : address) : string is
-  Address.to_hex_string(a)
+  Address.toHexString(a)
 
 external pure function checksum(const a : address) : string is
-  Address.to_checksum_string(a)
+  Address.toChecksumString(a)
 "#;
     let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
     let w = Word::from_u64;
@@ -2336,24 +2336,24 @@ external pure function checksum(const a : address) : string is
         assert_eq!(text("addr(address)", &[a]), want.to_lowercase());
         assert_eq!(text("checksum(address)", &[a]), want);
     }
-    let err = compile("import \"std/uint\"; storage is record { n : uint; }\nexternal pure function f(const n : uint; const m : int) : string is Uint.to_hex_string(n, m)\n")
+    let err = compile("import \"std/uint\"; storage is record { n : uint; }\nexternal pure function f(const n : uint; const m : int) : string is Uint.toHexString(n, m)\n")
         .expect_err("signed length");
     assert!(err.to_string().contains("a length must be `uint`"), "{err}");
 }
 
-/// `Uint.pop_count` and `Uint.clz` agree with Rust's `count_ones` and `leading_zeros` at
+/// `Uint.popCount` and `Uint.clz` agree with Rust's `count_ones` and `leading_zeros` at
 /// the edges, on runtime values and folded constants alike.
 #[test]
 fn uint_bits_count() {
     let src = r#"import "std/list"; import "std/uint"; 
 storage is record { n : uint; }
 
-external pure function pop_count(const x : uint) : uint is Uint.pop_count(x)
+external pure function popCount(const x : uint) : uint is Uint.popCount(x)
 
 external pure function clz(const x : uint) : uint is Uint.clz(x)
 
 external pure function folded() : (uint, uint, uint, uint) is
-  (Uint.pop_count(Uint.max), Uint.clz(0), Uint.clz(1), Uint.pop_count(0xf0f0))
+  (Uint.popCount(Uint.max), Uint.clz(0), Uint.clz(1), Uint.popCount(0xf0f0))
 "#;
     let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
     let w = Word::from_u64;
@@ -2374,7 +2374,7 @@ external pure function folded() : (uint, uint, uint, uint) is
     for x in xs {
         let ones: u32 = x.0.iter().map(|l| l.count_ones()).sum();
         let zeros = x.0.iter().rposition(|l| *l != 0).map_or(256, |i| 64 * (3 - i as u32) + x.0[i].leading_zeros());
-        assert_eq!(word("pop_count(uint256)", x), w(u64::from(ones)), "pop_count {x:?}");
+        assert_eq!(word("popCount(uint256)", x), w(u64::from(ones)), "popCount {x:?}");
         assert_eq!(word("clz(uint256)", x), w(u64::from(zeros)), "clz {x:?}");
     }
     let out = call(&runtime, "folded()", &[]);
@@ -2521,16 +2521,16 @@ contract T is {
     assert!(err.to_string().contains("writes storage"), "{err}");
     // A generic module pops a list in the storage its caller passes.
     let generic = r#"import "std/list"; 
-module Stack(T : map_key) is {
-  type self is record {
+module Stack(T : MapKey) is {
+  type Self is record {
     items : list(T);
   }
 
-  function push(storage s : self; const value : T) is {
+  function push(storage s : Self; const value : T) is {
     List.push(s.items, value);
   }
 
-  function pop(storage s : self) : T is {
+  function pop(storage s : Self) : T is {
     const top : T := s.items[s.items.length - 1];
     List.pop(s.items);
   } with top
@@ -2574,14 +2574,14 @@ external view function size() : uint is
 #[test]
 fn list_push_is_the_only_growing_write() {
     let src = r#"import "std/evm"; import "std/list"; 
-type pair is record {
+type Pair is record {
   a : uint;
   b : uint;
 }
 
 storage is record {
   ids : list(uint);
-  pairs : list(pair);
+  pairs : list(Pair);
   by : map(address, list(uint));
 }
 
@@ -2591,15 +2591,15 @@ external function push(const n : uint) is {
   List.push(storage.by[Evm.sender()], n);
 }
 
-external function set_id(const i : uint) is { storage.ids[i] := 7; }
-external function set_pair(const i : uint) is { storage.pairs[i] := { a = 7; b = 7; }; }
-external function set_by(const i : uint) is { storage.by[Evm.sender()][i] := 7; }
+external function setId(const i : uint) is { storage.ids[i] := 7; }
+external function setPair(const i : uint) is { storage.pairs[i] := { a = 7; b = 7; }; }
+external function setBy(const i : uint) is { storage.by[Evm.sender()][i] := 7; }
 
 external view function sums() : (uint, uint, uint) is {
   var s : uint := 0;
   for x : uint in storage.ids do { s := s + x; }
   var p : uint := 0;
-  for q : pair in storage.pairs do { p := p + q.a + q.b; }
+  for q : Pair in storage.pairs do { p := p + q.a + q.b; }
   var m : uint := 0;
   for x : uint in storage.by[Evm.sender()] do { m := m + x; }
 } with (s, p, m)
@@ -2607,7 +2607,7 @@ external view function sums() : (uint, uint, uint) is {
 external pure function local(const i : uint) : uint is {
   var xs : list(uint) := [];
   List.push(xs, 5);
-  var ps : list(pair) := [];
+  var ps : list(Pair) := [];
   List.push(ps, { a = 1; b = 2; });
   xs[i] := 6;
   ps[i] := { a = 3; b = 4; };
@@ -2634,7 +2634,7 @@ external pure function local(const i : uint) : uint is {
         .map(|k| load_bytes(&sums.returndata, 32 * k))
         .collect();
     assert_eq!(got, [w(30), w(62), w(30)]);
-    for sig in ["set_id(uint256)", "set_pair(uint256)", "set_by(uint256)"] {
+    for sig in ["setId(uint256)", "setPair(uint256)", "setBy(uint256)"] {
         let out = run(word_data(sig, &[w(1)]), storage.clone());
         assert!(!out.reverted, "{sig}: {}", pretty(&out.returndata));
         assert!(
@@ -2677,50 +2677,50 @@ external pure function local(const i : uint) : uint is {
 #[test]
 fn stored_variants_track_states() {
     let src = r#"import "std/evm"; import "std/list"; 
-type fill is record {
-  amount_out : uint;
+type Fill is record {
+  amountOut : uint;
   at : uint64;
 }
 
-type order_status is
+type OrderStatus is
   | New
   | Pending
-  | Filled of fill
+  | Filled of Fill
   | Unwound
 
-type mode is
+type Mode is
   | Open
   | Paused
   | Closed
 
-type order is record {
+type Order is record {
   owner : address;
-  status : order_status;
+  status : OrderStatus;
 }
 
 error AlreadyPlaced of uint;
 error NotComplete of uint;
 
 storage is record {
-  mode : mode;
+  mode : Mode;
   flag : bool;
-  orders : map(uint, order);
-  history : list(order_status);
-  last : option(mode);
+  orders : map(uint, Order);
+  history : list(OrderStatus);
+  last : option(Mode);
 }
 
-external function set_mode(const m : mode) is {
+external function setMode(const m : Mode) is {
   storage.mode := m;
   storage.flag := true;
   storage.last := Some(m);
 }
 
-external view function get_mode() : mode is storage.mode
-external view function is_open() : bool is storage.mode = Open
-external view function mode_code() : uint8 is uint8(storage.mode)
-external view function mode_name() : uint is
+external view function getMode() : Mode is storage.mode
+external view function isOpen() : bool is storage.mode = Open
+external view function modeCode() : uint8 is uint8(storage.mode)
+external view function modeName() : uint is
   case storage.mode of { | Open -> 10 | Paused -> 20 | Closed -> 30 }
-external view function last_code() : uint is
+external view function lastCode() : uint is
   case storage.last of { | Some(m) -> uint(uint8(m)) | None -> 99 }
 
 external function place(const id : uint) raises AlreadyPlaced is {
@@ -2729,8 +2729,8 @@ external function place(const id : uint) raises AlreadyPlaced is {
   storage.orders[id].status := Pending;
 }
 
-external function fill_order(const id : uint; const out : uint) is {
-  storage.orders[id].status := Filled({ amount_out = out; at = uint64(7) });
+external function fillOrder(const id : uint; const out : uint) is {
+  storage.orders[id].status := Filled({ amountOut = out; at = uint64(7) });
   List.push(storage.history, storage.orders[id].status);
 }
 
@@ -2740,7 +2740,7 @@ external function unwind(const id : uint) is {
 
 external view function amount(const id : uint) : uint raises NotComplete is
   case storage.orders[id].status of {
-  | Filled(f) -> f.amount_out
+  | Filled(f) -> f.amountOut
   | New | Pending | Unwound -> fail NotComplete(id);
   }
 
@@ -2751,9 +2751,9 @@ external view function stage(const id : uint) : uint is
   | Filled | Unwound -> 2
   }
 
-external view function first_fill() : uint is
+external view function firstFill() : uint is
   case storage.history[0] of {
-  | Filled(f) -> f.amount_out + uint(f.at)
+  | Filled(f) -> f.amountOut + uint(f.at)
   | New | Pending | Unwound -> 0
   }
 "#;
@@ -2774,24 +2774,24 @@ external view function first_fill() : uint is
     };
 
     let mut st = HashMap::new();
-    assert_eq!(read_ok(&runtime, &st, "last_code()", &[]), w(99));
+    assert_eq!(read_ok(&runtime, &st, "lastCode()", &[]), w(99));
     assert!(
-        fails(&st, "set_mode(uint8)", &[w(3)]),
+        fails(&st, "setMode(uint8)", &[w(3)]),
         "a mode past the last case"
     );
-    st = run_ok(&runtime, &st, "set_mode(uint8)", &[w(2)]).storage;
+    st = run_ok(&runtime, &st, "setMode(uint8)", &[w(2)]).storage;
     // `mode` and `flag` share slot 0: a byte each.
     assert_eq!(st.get(&w(0)).copied(), Some(w(0x0102)));
     assert_eq!(layout.get(&st, 0), w(2));
-    assert_eq!(read_ok(&runtime, &st, "get_mode()", &[]), w(2));
-    assert_eq!(read_ok(&runtime, &st, "mode_code()", &[]), w(2));
-    assert_eq!(read_ok(&runtime, &st, "mode_name()", &[]), w(30));
-    assert_eq!(read_ok(&runtime, &st, "is_open()", &[]), w(0));
-    assert_eq!(read_ok(&runtime, &st, "last_code()", &[]), w(2));
-    st = run_ok(&runtime, &st, "set_mode(uint8)", &[w(0)]).storage;
-    assert_eq!(read_ok(&runtime, &st, "is_open()", &[]), w(1));
-    assert_eq!(read_ok(&runtime, &st, "mode_name()", &[]), w(10));
-    assert_eq!(read_ok(&runtime, &st, "last_code()", &[]), w(0));
+    assert_eq!(read_ok(&runtime, &st, "getMode()", &[]), w(2));
+    assert_eq!(read_ok(&runtime, &st, "modeCode()", &[]), w(2));
+    assert_eq!(read_ok(&runtime, &st, "modeName()", &[]), w(30));
+    assert_eq!(read_ok(&runtime, &st, "isOpen()", &[]), w(0));
+    assert_eq!(read_ok(&runtime, &st, "lastCode()", &[]), w(2));
+    st = run_ok(&runtime, &st, "setMode(uint8)", &[w(0)]).storage;
+    assert_eq!(read_ok(&runtime, &st, "isOpen()", &[]), w(1));
+    assert_eq!(read_ok(&runtime, &st, "modeName()", &[]), w(10));
+    assert_eq!(read_ok(&runtime, &st, "lastCode()", &[]), w(0));
 
     assert_eq!(read_ok(&runtime, &st, "stage(uint256)", &[w(1)]), w(0));
     st = run_ok(&runtime, &st, "place(uint256)", &[w(1)]).storage;
@@ -2801,10 +2801,10 @@ external view function first_fill() : uint is
         fails(&st, "amount(uint256)", &[w(1)]),
         "pending has no amount"
     );
-    st = run_ok(&runtime, &st, "fill_order(uint256,uint256)", &[w(1), w(42)]).storage;
+    st = run_ok(&runtime, &st, "fillOrder(uint256,uint256)", &[w(1), w(42)]).storage;
     assert_eq!(read_ok(&runtime, &st, "stage(uint256)", &[w(1)]), w(2));
     assert_eq!(read_ok(&runtime, &st, "amount(uint256)", &[w(1)]), w(42));
-    assert_eq!(read_ok(&runtime, &st, "first_fill()", &[]), w(49));
+    assert_eq!(read_ok(&runtime, &st, "firstFill()", &[]), w(49));
     assert!(
         fails(&st, "place(uint256)", &[w(1)]),
         "a filled order is placed"
@@ -2816,7 +2816,7 @@ external view function first_fill() : uint is
         "unwound has no amount"
     );
     // Unwinding cleared the payload words the fill had written.
-    assert_eq!(read_ok(&runtime, &st, "first_fill()", &[]), w(49));
+    assert_eq!(read_ok(&runtime, &st, "firstFill()", &[]), w(49));
     let slot = map_key(w(1), w(1));
     let payload = slot.wrapping_add(w(2));
     assert_eq!(st.get(&payload).copied().unwrap_or(w(0)), w(0));
@@ -2827,36 +2827,36 @@ external view function first_fill() : uint is
 #[test]
 fn variant_values_work_everywhere() {
     let src = r#"
-type status is
+type Status is
   | Idle
   | Busy of uint
   | Done of (uint, bool)
 
-type light is | Red | Amber | Green
+type Light is | Red | Amber | Green
 
 storage is record {
-  by_id : map(uint, status);
-  lights : list(light, 3);
-  maybe : option(status);
+  byId : map(uint, Status);
+  lights : list(Light, 3);
+  maybe : option(Status);
   n : uint;
 }
 
 transient storage scratch is record {
-  s : status;
-  l : light;
+  s : Status;
+  l : Light;
 }
 
-pure function next(const l : light) : light is
+pure function next(const l : Light) : Light is
   case l of { | Red -> Green | Green -> Amber | Amber -> Red }
 
-pure function weight(const s : status) : uint is
+pure function weight(const s : Status) : uint is
   case s of {
   | Idle -> 0
   | Busy(n) -> n
   | Done((n, ok)) -> n * 2
   }
 
-pure function bump(const s : status) : status is
+pure function bump(const s : Status) : Status is
   case s of {
   | Idle -> Busy(1)
   | Busy(n) -> Busy(n + 1)
@@ -2864,15 +2864,15 @@ pure function bump(const s : status) : status is
   }
 
 external function step(const id : uint) is {
-  const s : status := bump(storage.by_id[id]);
-  storage.by_id[id] := s;
+  const s : Status := bump(storage.byId[id]);
+  storage.byId[id] := s;
   scratch.s := s;
   storage.maybe := Some(s);
   storage.n := weight(scratch.s);
 }
 
 external function finish(const id : uint; const ok : bool) is {
-  storage.by_id[id] := Done(weight(storage.by_id[id]), ok);
+  storage.byId[id] := Done(weight(storage.byId[id]), ok);
 }
 
 external function cycle(const i : uint) is {
@@ -2881,38 +2881,38 @@ external function cycle(const i : uint) is {
   storage.n := uint(uint8(scratch.l));
 }
 
-external view function weight_of(const id : uint) : uint is weight(storage.by_id[id])
-external view function same(const a : uint; const b : uint) : bool is storage.by_id[a] = storage.by_id[b]
-external view function idle(const id : uint) : bool is storage.by_id[id] = Idle
-external view function busy_one(const id : uint) : bool is storage.by_id[id] <> Busy(1)
-external view function light_at(const i : uint) : light is storage.lights[i]
-external view function maybe_weight() : uint is
+external view function weightOf(const id : uint) : uint is weight(storage.byId[id])
+external view function same(const a : uint; const b : uint) : bool is storage.byId[a] = storage.byId[b]
+external view function idle(const id : uint) : bool is storage.byId[id] = Idle
+external view function busyOne(const id : uint) : bool is storage.byId[id] <> Busy(1)
+external view function lightAt(const i : uint) : Light is storage.lights[i]
+external view function maybeWeight() : uint is
   case storage.maybe of { | Some(s) -> weight(s) | None -> 999 }
 external view function n() : uint is storage.n
 "#;
     let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
     let w = Word::from_u64;
     let mut st = HashMap::new();
-    assert_eq!(read_ok(&runtime, &st, "maybe_weight()", &[]), w(999));
+    assert_eq!(read_ok(&runtime, &st, "maybeWeight()", &[]), w(999));
     assert_eq!(read_ok(&runtime, &st, "idle(uint256)", &[w(5)]), w(1));
     st = run_ok(&runtime, &st, "step(uint256)", &[w(5)]).storage;
     assert_eq!(read_ok(&runtime, &st, "idle(uint256)", &[w(5)]), w(0));
-    assert_eq!(read_ok(&runtime, &st, "busy_one(uint256)", &[w(5)]), w(0));
+    assert_eq!(read_ok(&runtime, &st, "busyOne(uint256)", &[w(5)]), w(0));
     assert_eq!(read_ok(&runtime, &st, "n()", &[]), w(1));
     st = run_ok(&runtime, &st, "step(uint256)", &[w(5)]).storage;
     st = run_ok(&runtime, &st, "step(uint256)", &[w(5)]).storage;
-    assert_eq!(read_ok(&runtime, &st, "busy_one(uint256)", &[w(5)]), w(1));
-    assert_eq!(read_ok(&runtime, &st, "weight_of(uint256)", &[w(5)]), w(3));
-    assert_eq!(read_ok(&runtime, &st, "maybe_weight()", &[]), w(3));
+    assert_eq!(read_ok(&runtime, &st, "busyOne(uint256)", &[w(5)]), w(1));
+    assert_eq!(read_ok(&runtime, &st, "weightOf(uint256)", &[w(5)]), w(3));
+    assert_eq!(read_ok(&runtime, &st, "maybeWeight()", &[]), w(3));
     assert_eq!(read_ok(&runtime, &st, "n()", &[]), w(3));
     assert_eq!(
         read_ok(&runtime, &st, "same(uint256,uint256)", &[w(5), w(6)]),
         w(0)
     );
     st = run_ok(&runtime, &st, "finish(uint256,bool)", &[w(5), w(1)]).storage;
-    assert_eq!(read_ok(&runtime, &st, "weight_of(uint256)", &[w(5)]), w(6));
+    assert_eq!(read_ok(&runtime, &st, "weightOf(uint256)", &[w(5)]), w(6));
     st = run_ok(&runtime, &st, "step(uint256)", &[w(5)]).storage;
-    assert_eq!(read_ok(&runtime, &st, "weight_of(uint256)", &[w(5)]), w(6));
+    assert_eq!(read_ok(&runtime, &st, "weightOf(uint256)", &[w(5)]), w(6));
     st = run_ok(&runtime, &st, "finish(uint256,bool)", &[w(6), w(1)]).storage;
     assert_eq!(
         read_ok(&runtime, &st, "same(uint256,uint256)", &[w(5), w(6)]),
@@ -2927,13 +2927,13 @@ external view function n() : uint is storage.n
         w(1)
     );
 
-    assert_eq!(read_ok(&runtime, &st, "light_at(uint256)", &[w(1)]), w(0));
+    assert_eq!(read_ok(&runtime, &st, "lightAt(uint256)", &[w(1)]), w(0));
     st = run_ok(&runtime, &st, "cycle(uint256)", &[w(1)]).storage;
-    assert_eq!(read_ok(&runtime, &st, "light_at(uint256)", &[w(1)]), w(2));
+    assert_eq!(read_ok(&runtime, &st, "lightAt(uint256)", &[w(1)]), w(2));
     assert_eq!(read_ok(&runtime, &st, "n()", &[]), w(2));
     st = run_ok(&runtime, &st, "cycle(uint256)", &[w(1)]).storage;
-    assert_eq!(read_ok(&runtime, &st, "light_at(uint256)", &[w(1)]), w(1));
-    assert_eq!(read_ok(&runtime, &st, "light_at(uint256)", &[w(0)]), w(0));
+    assert_eq!(read_ok(&runtime, &st, "lightAt(uint256)", &[w(1)]), w(1));
+    assert_eq!(read_ok(&runtime, &st, "lightAt(uint256)", &[w(0)]), w(0));
 }
 
 #[test]
@@ -2942,7 +2942,7 @@ fn variant_values_are_checked() {
         let err = compile(src).expect_err(want);
         assert!(err.to_string().contains(want), "{err}");
     };
-    let base = "type mode is | Open | Closed\ntype st is | Idle | Busy of uint\ntype act is | Put of bytes | Stop\nstorage is record { m : mode; s : st; }\n";
+    let base = "type Mode is | Open | Closed\ntype St is | Idle | Busy of uint\ntype Act is | Put of bytes | Stop\nstorage is record { m : Mode; s : St; }\n";
     let with = |body: &str| format!("{base}{body}");
     rejects(
         &with("external view function f() : uint is case storage.m of { | Open -> 1 }"),
@@ -2953,16 +2953,16 @@ fn variant_values_are_checked() {
         "every case of an arm must bind the same names",
     );
     rejects(
-        "type st is | A of uint | B of bool\nstorage is record { s : st; }\nexternal view function f() : uint is case storage.s of { | A(n) | B(n) -> 1 }",
+        "type St is | A of uint | B of bool\nstorage is record { s : St; }\nexternal view function f() : uint is case storage.s of { | A(n) | B(n) -> 1 }",
         "`A` and `B` carry different payloads",
     );
     rejects(
         &with("external function f() is { storage.m := 1; }"),
-        "`mode` is a variant",
+        "`Mode` is a variant",
     );
     rejects(
-        &with("external function f() is { storage.m := mode(uint8(1)); }"),
-        "cannot convert to `mode`",
+        &with("external function f() is { storage.m := Mode(uint8(1)); }"),
+        "cannot convert to `Mode`",
     );
     rejects(
         &with("external function f() is { storage.m := storage.m | Closed; }"),
@@ -2977,20 +2977,20 @@ fn variant_values_are_checked() {
         "`Idle` has no payload",
     );
     rejects(
-        &with("external function f(const s : st) is { storage.s := s; }"),
+        &with("external function f(const s : St) is { storage.s := s; }"),
         "a variant with a payload cannot be an ABI value",
     );
     rejects(
-        &with("external view function f() : st is storage.s"),
+        &with("external view function f() : St is storage.s"),
         "variants with payloads cannot be ABI values",
     );
     rejects(
-        "type act is | Put of map(uint, uint) | Stop\nstorage is record { n : uint; }\nexternal function f() is { const a : act := Stop; }",
+        "type Act is | Put of map(uint, uint) | Stop\nstorage is record { n : uint; }\nexternal function f() is { const a : Act := Stop; }",
         "only dispatches entrypoints",
     );
     rejects(
         &format!(
-            "type other is | Open | Shut\n{base}external view function f() : bool is Open = Open"
+            "type Other is | Open | Shut\n{base}external view function f() : bool is Open = Open"
         ),
         "annotate which type is meant",
     );
@@ -3001,37 +3001,37 @@ fn variant_values_are_checked() {
 #[test]
 fn variants_cross_the_abi_as_case_indexes() {
     let src = r#"import "std/abi"; 
-type admin is
-  | Pause
-  | Unpause
-  | Halt
+type Admin is
+  | Pause external pause
+  | Unpause external unpause
+  | Halt external halt
 
-type mode is | On | Off
+type Mode is | On | Off
 
-error Bad of mode;
+error Bad of Mode;
 
 storage is record {
   paused : bool;
-  counts : map(mode, uint);
+  counts : map(Mode, uint);
 }
 
-external function main(const a : admin) is
+external function main(const a : Admin) is
   case a of {
   | Pause | Halt -> { storage.paused := true; }
   | Unpause -> { storage.paused := false; }
   }
 
-external function bump(const m : mode) raises Bad is {
+external function bump(const m : Mode) raises Bad is {
   assert(m <> Off, Bad(m));
   storage.counts[m] := storage.counts[m] + 1;
 }
 
 external view function paused() : bool is storage.paused
-external view function count(const m : mode) : uint is storage.counts[m]
-external pure function decoded(const data : bytes) : mode is Abi.decode(data, mode)
-external pure function ons(const ms : list(mode)) : uint is {
+external view function count(const m : Mode) : uint is storage.counts[m]
+external pure function decoded(const data : bytes) : Mode is Abi.decode(data, Mode)
+external pure function ons(const ms : list(Mode)) : uint is {
   var n : uint := 0;
-  for m : mode in ms do {
+  for m : Mode in ms do {
     if m = On then { n := n + 1; }
   }
 } with n
@@ -3077,26 +3077,26 @@ external pure function ons(const ms : list(mode)) : uint is {
 #[test]
 fn stored_variants_pack() {
     let src = r#"import "std/evm"; 
-type fill is record { amount_out : uint; at : uint64; }
-type status is | New | Filled of fill
-type small is | Empty | Stamp of uint64 | Flag of bool | Delta of int16 | Who of address
+type Fill is record { amountOut : uint; at : uint64; }
+type Status is | New | Filled of Fill
+type Small is | Empty | Stamp of uint64 | Flag of bool | Delta of int16 | Who of address
 storage is record {
-  s : status;
-  t : small;
+  s : Status;
+  t : Small;
 }
-external function fill(const out : uint) is { storage.s := Filled({ amount_out = out; at = uint64(9) }); }
+external function fill(const out : uint) is { storage.s := Filled({ amountOut = out; at = uint64(9) }); }
 external function delta(const d : int16) is { storage.t := Delta(d); }
 external function who() is { storage.t := Who(Evm.sender()); }
-external view function at() : uint is case storage.s of { | Filled(f) -> uint(f.at) + f.amount_out | New -> 0 }
+external view function at() : uint is case storage.s of { | Filled(f) -> uint(f.at) + f.amountOut | New -> 0 }
 external view function d() : int is
   case storage.t of { | Delta(d) -> int(d) | Empty | Stamp | Flag | Who -> 0 }
-external view function is_who() : bool is
+external view function isWho() : bool is
   case storage.t of { | Who(a) -> a = Evm.sender() | Empty | Stamp | Flag | Delta -> false }
 "#;
     let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
     let w = Word::from_u64;
     let st = run_ok(&runtime, &HashMap::new(), "fill(uint256)", &[w(40)]).storage;
-    // Slot 0: the tag, 1, and `at`, 9, from byte 1. Slot 1: `amount_out`.
+    // Slot 0: the tag, 1, and `at`, 9, from byte 1. Slot 1: `amountOut`.
     assert_eq!(st.get(&w(0)).copied(), Some(w(0x0901)));
     assert_eq!(st.get(&w(1)).copied(), Some(w(40)));
     assert_eq!(read_ok(&runtime, &st, "at()", &[]), w(49));
@@ -3105,7 +3105,7 @@ external view function is_who() : bool is
     assert_eq!(read_ok(&runtime, &st, "d()", &[]), minus_two);
     assert!(!st.contains_key(&w(3)), "`t` is one slot");
     let st = run_ok(&runtime, &st, "who()", &[]).storage;
-    assert_eq!(read_ok(&runtime, &st, "is_who()", &[]), w(1));
+    assert_eq!(read_ok(&runtime, &st, "isWho()", &[]), w(1));
     assert_eq!(read_ok(&runtime, &st, "d()", &[]), w(0));
 }
 
@@ -3114,18 +3114,18 @@ external view function is_who() : bool is
 #[test]
 fn variants_hold_dynamic_payloads() {
     let src = r#"import "std/evm"; 
-type memo is record { who : address; text : string; }
-type job is
+type Memo is record { who : address; text : string; }
+type Job is
   | Idle
   | Queued of string
-  | Tagged of memo
+  | Tagged of Memo
   | Batch of list(uint)
   | Held of string
   | Count of uint64
 
 storage is record {
-  cur : job;
-  jobs : map(uint, job);
+  cur : Job;
+  jobs : map(uint, Job);
 }
 
 external function queue(const id : uint; const why : string) is { storage.jobs[id] := Queued(why); }
@@ -3152,7 +3152,7 @@ external view function total(const id : uint) : uint is {
   };
 } with t
 external view function idle(const id : uint) : bool is storage.jobs[id] = Idle
-external view function cur_text() : string is
+external view function curText() : string is
   case storage.cur of { | Tagged(m) -> m.text | Idle | Queued | Batch | Held | Count -> "none" }
 "#;
     let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
@@ -3193,7 +3193,7 @@ external view function cur_text() : string is
         &[Arg::W(w(2)), Arg::B(b"tagged".to_vec())],
     );
     assert_eq!(text(&st, "why(uint256)", &[w(2)]), b"tagged".to_vec());
-    assert_eq!(text(&st, "cur_text()", &[]), b"tagged".to_vec());
+    assert_eq!(text(&st, "curText()", &[]), b"tagged".to_vec());
     let mut data = selector("batch(uint256,uint256[])").to_vec();
     for word in [3, 64, 3, 5, 6, 7] {
         data.extend_from_slice(&w(word).to_be_bytes());
@@ -3211,26 +3211,26 @@ external view function cur_text() : string is
     }
     let left = st.values().filter(|v| !v.is_zero()).count();
     assert!(left < before, "{before} -> {left}");
-    assert_eq!(text(&st, "cur_text()", &[]), b"tagged".to_vec());
+    assert_eq!(text(&st, "curText()", &[]), b"tagged".to_vec());
 }
 
 /// A stored record that holds a string or a list is written whole, field by field.
 #[test]
 fn stored_records_with_dynamic_fields_are_written_whole() {
     let src = r#"
-type note is record { tag : uint8; memo : string; ids : list(uint); }
+type Note is record { tag : uint8; memo : string; ids : list(uint); }
 storage is record {
-  one : note;
-  by : map(uint, note);
+  one : Note;
+  by : map(uint, Note);
 }
 external function set(const k : uint; const m : string) is {
-  const n : note := { tag = uint8(7); memo = m; ids = [1, 2, 3]; };
+  const n : Note := { tag = uint8(7); memo = m; ids = [1, 2, 3]; };
   storage.one := n;
   storage.by[k] := storage.one;
 }
 external view function memo(const k : uint) : string is storage.by[k].memo
 external view function sum(const k : uint) : uint is {
-  const n : note := storage.by[k];
+  const n : Note := storage.by[k];
 } with n.ids[0] + n.ids[2] + uint(n.tag)
 "#;
     let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
@@ -3256,11 +3256,11 @@ external view function sum(const k : uint) : uint is {
 #[test]
 fn records_read_their_dynamic_fields() {
     let w = Word::from_u64;
-    let base = "type note is record { tag : uint8; memo : string; ids : list(uint); }\nstorage is record { one : note; }\nexternal function set() is { storage.one.memo := \"hey\"; storage.one.ids := [1, 2, 3]; }\n";
+    let base = "type Note is record { tag : uint8; memo : string; ids : list(uint); }\nstorage is record { one : Note; }\nexternal function set() is { storage.one.memo := \"hey\"; storage.one.ids := [1, 2, 3]; }\n";
     for (view, want) in [
-        ("external view function s() : uint is { const n : note := storage.one; } with n.ids[2]", 3),
-        ("external view function s() : uint is { const n : note := storage.one; } with n.memo.length", 3),
-        ("external view function s() : uint is { const n : note := { tag = uint8(1); memo = \"\"; ids = [4, 5, 6]; }; } with n.ids[2]", 6),
+        ("external view function s() : uint is { const n : Note := storage.one; } with n.ids[2]", 3),
+        ("external view function s() : uint is { const n : Note := storage.one; } with n.memo.length", 3),
+        ("external view function s() : uint is { const n : Note := { tag = uint8(1); memo = \"\"; ids = [4, 5, 6]; }; } with n.ids[2]", 6),
     ] {
         let runtime = deploy(&compile(&format!("{base}{view}")).expect("compile")).expect("deploy");
         let st = run_ok(&runtime, &HashMap::new(), "set()", &[]).storage;
@@ -3273,14 +3273,14 @@ fn records_read_their_dynamic_fields() {
 fn variant_cases_clear_each_others_payloads() {
     let w = Word::from_u64;
     let src = r#"
-type review is
+type Review is
   | Draft
   | Rejected of string
   | Withdrawn of string
   | Approved of list(address)
 
 storage is record {
-  reviews : map(uint, review);
+  reviews : map(uint, Review);
 }
 
 external function reject(const id : uint; const why : string) is {
@@ -3355,10 +3355,10 @@ external function draft(const id : uint) is { storage.reviews[id] := Draft; }
 fn dynamic_variants_are_list_elements() {
     let w = Word::from_u64;
     let src = r#"import "std/list"; 
-type dyn is | Name of string | Nums of list(uint) | Blank
-type row is record { k : uint8; d : dyn; }
-storage is record { xs : list(dyn); rows : map(uint, list(row)); }
-pure function tag(const d : dyn) : uint is case d of { Name(s) -> s.length | Nums(xs) -> 100 + xs.length | Blank -> 999 }
+type Dyn is | Name of string | Nums of list(uint) | Blank
+type Row is record { k : uint8; d : Dyn; }
+storage is record { xs : list(Dyn); rows : map(uint, list(Row)); }
+pure function tag(const d : Dyn) : uint is case d of { Name(s) -> s.length | Nums(xs) -> 100 + xs.length | Blank -> 999 }
 external function name(const i : uint; const s : string) is {
   for _ : uint in storage.xs.length .. i + 1 do { List.push(storage.xs, Blank); }
   storage.xs[i] := Name(s);
@@ -3372,17 +3372,17 @@ external function blank(const i : uint) is { storage.xs[i] := Blank; }
 external function shrink() is { storage.xs := [Blank]; }
 external view function at(const i : uint) : uint is tag(storage.xs[i])
 external function row() is { List.push(storage.rows[1], { k = 3; d = Name("row") }); }
-external view function row_at() : uint is tag(storage.rows[1][0].d)
+external view function rowAt() : uint is tag(storage.rows[1][0].d)
 external pure function local() : uint is {
-  var xs : list(dyn) := [Blank, Nums([1, 2])];
-  var ys : list(dyn) := xs;
+  var xs : list(Dyn) := [Blank, Nums([1, 2])];
+  var ys : list(Dyn) := xs;
   List.push(xs, Name("four"));
   xs[0] := Name("a string that is longer than thirty-two bytes, to spill");
 } with tag(xs[0]) * 1000000 + tag(xs[2]) * 1000 + tag(ys[1]) + ys.length * 0
 external pure function pairs() : uint is {
-  var ts : list((uint8, dyn)) := [(uint8(1), Blank)];
+  var ts : list((uint8, Dyn)) := [(uint8(1), Blank)];
   List.push(ts, (uint8(2), Name("tuple")));
-  const (k, d) : (uint8, dyn) := ts[1];
+  const (k, d) : (uint8, Dyn) := ts[1];
 } with uint(k) * 1000 + tag(d)
 "#;
     let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
@@ -3421,7 +3421,7 @@ external pure function pairs() : uint is {
     let st = run(&st, word_data("shrink()", &[]));
     assert_eq!(read_ok(&runtime, &st, "at(uint256)", &[w(0)]), w(999));
     let st = run(&st, word_data("row()", &[]));
-    assert_eq!(read_ok(&runtime, &st, "row_at()", &[]), w(3));
+    assert_eq!(read_ok(&runtime, &st, "rowAt()", &[]), w(3));
     assert_eq!(read_ok(&runtime, &st, "local()", &[]), w(55_004_102));
     assert_eq!(read_ok(&runtime, &st, "pairs()", &[]), w(2005));
 }
@@ -3431,21 +3431,21 @@ external pure function pairs() : uint is {
 #[test]
 fn values_with_options_and_strings_compare() {
     let src = r#"
-type dyn is | Name of string | Nums of list(uint) | Blank
-type mix is record { o : option(uint); s : string; }
-type holds is record { d : dyn; n : uint; }
-storage is record { d : dyn; ds : list(dyn); }
+type Dyn is | Name of string | Nums of list(uint) | Blank
+type Mix is record { o : option(uint); s : string; }
+type Holds is record { d : Dyn; n : uint; }
+storage is record { d : Dyn; ds : list(Dyn); }
 external function keep() is { storage.d := Nums([1, 2]); storage.ds := [Blank, Name("x")]; }
-external pure function a() : bool is { var d : dyn := Name("x"); d := Nums([1]); } with d = Nums([1])
+external pure function a() : bool is { var d : Dyn := Name("x"); d := Nums([1]); } with d = Nums([1])
 external pure function b() : bool is Name("") = Blank
 external pure function c() : bool is Name("x") <> Name("y")
 external pure function d() : bool is { const xs : list(option(string)) := [Some("a"), None]; } with xs = [Some("a"), None]
 external pure function e() : bool is { const xs : list(option(string)) := [Some("a"), None]; } with xs = [Some("a"), Some("")]
 external pure function f() : bool is { const t : (option(string), uint) := (Some("a"), 1); } with t = (Some("a"), 2)
-external pure function g() : bool is { const m : mix := { o = None; s = "s"; }; } with m = { o = Some(0); s = "s"; }
-external pure function h() : bool is { const m : mix := { o = Some(0); s = "s"; }; } with m = { o = Some(0); s = "s"; }
-external pure function i() : bool is { const x : holds := { d = Nums([]); n = 1; }; } with x = { d = Nums([]); n = 1; }
-external pure function j() : bool is { const x : holds := { d = Nums([]); n = 1; }; } with x = { d = Blank; n = 1; }
+external pure function g() : bool is { const m : Mix := { o = None; s = "s"; }; } with m = { o = Some(0); s = "s"; }
+external pure function h() : bool is { const m : Mix := { o = Some(0); s = "s"; }; } with m = { o = Some(0); s = "s"; }
+external pure function i() : bool is { const x : Holds := { d = Nums([]); n = 1; }; } with x = { d = Nums([]); n = 1; }
+external pure function j() : bool is { const x : Holds := { d = Nums([]); n = 1; }; } with x = { d = Blank; n = 1; }
 external view function k() : bool is storage.d = Nums([1, 2])
 external view function l() : bool is storage.ds = [Blank, Name("x")]
 external view function m() : bool is storage.ds[1] = Name("")
@@ -3482,8 +3482,8 @@ external pure function p() : bool is { const o : option(list(uint)) := None; } w
 fn options_of_dynamic_values_clear_their_payloads() {
     let w = Word::from_u64;
     let src = r#"import "std/list"; 
-type doc is record { n : uint8; s : string; xs : list(uint); }
-storage is record { o : option(list(uint)); m : map(uint, option(doc)); ds : list(option(doc)); }
+type Doc is record { n : uint8; s : string; xs : list(uint); }
+storage is record { o : option(list(uint)); m : map(uint, option(Doc)); ds : list(option(Doc)); }
 external function set() is {
   storage.o := Some([1, 2, 3]);
   storage.m[1] := Some({ n = 1; s = "a string that is longer than thirty-two bytes, to spill"; xs = [4]; });
@@ -3506,19 +3506,19 @@ external view function sum() : uint is
 #[test]
 fn opening_pipes_are_optional() {
     let src = r#"
-type phase is Open | Paused | Closed
-type one is Only of uint
-type multi is
+type Phase is Open | Paused | Closed
+type One is Only of uint
+type Multi is
   | X
   | Y of uint
 error Shut;
-storage is record { phase : phase; fee : uint; m : multi; }
-external function set(const p : phase) is { storage.phase := p; storage.fee := 5; storage.m := Y(9); }
+storage is record { phase : Phase; fee : uint; m : Multi; }
+external function set(const p : Phase) is { storage.phase := p; storage.fee := 5; storage.m := Y(9); }
 external view function fee() : uint raises Shut is
   case storage.phase of { Open | Paused -> storage.fee | Closed -> fail Shut }
 external view function y() : uint is case storage.m of { X -> 0 | Y(n) -> n }
 external pure function only(const n : uint) : uint is {
-  const o : one := Only(n);
+  const o : One := Only(n);
 } with case o of { Only(k) -> k }
 "#;
     let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
@@ -3534,7 +3534,7 @@ external pure function only(const n : uint) : uint is {
             .reverted
     );
     let err = compile(
-        "type phase is Open | Closed\nstorage is record { p : phase; }\nexternal view function f() : uint is case storage.p of { Open -> 1 Closed -> 2 }",
+        "type Phase is Open | Closed\nstorage is record { p : Phase; }\nexternal view function f() : uint is case storage.p of { Open -> 1 Closed -> 2 }",
     )
     .expect_err("arms after the first need `|`");
     assert!(err.to_string().contains("expected `|`"), "{err}");
@@ -3543,15 +3543,15 @@ external pure function only(const n : uint) : uint is {
 #[test]
 fn nested_list_writes_leave_copies_alone() {
     let src = "\
-import \"std/list\"; type holder is record { pre : uint8; x : list(uint); post : bool; }
+import \"std/list\"; type Holder is record { pre : uint8; x : list(uint); post : bool; }
 storage is record { n : uint; }
 external pure function a() : uint is { var xs : list(list(uint)) := [[1]]; const b : list(uint) := xs[0]; xs[0][0] := 2; } with b[0]
-external pure function b() : uint is { var hs : list(holder) := [{ pre = 1; x = [1]; post = true; }]; const y : list(uint) := hs[0].x; hs[0].x[0] := 2; } with y[0]
+external pure function b() : uint is { var hs : list(Holder) := [{ pre = 1; x = [1]; post = true; }]; const y : list(uint) := hs[0].x; hs[0].x[0] := 2; } with y[0]
 external pure function c() : uint is { var xs : list(list(list(uint))) := [[[1]]]; const y : list(uint) := xs[0][0]; xs[0][0][0] := 2; } with y[0]
 external pure function d() : uint is { var xs : list(list(uint)) := [[1]]; const y : list(list(uint)) := xs; xs[0][0] := 2; } with y[0][0]
 external pure function e() : uint is { var xs : list(list(uint)) := [[1]]; const y : list(list(uint)) := xs; List.pop(xs[0]); } with y[0].length
 external pure function f() : uint is { var xs : list(list(uint)) := [[1]]; const y : list(uint) := xs[0]; List.push(xs[0], 5); } with y.length * 10 + xs[0][1]
-external pure function g() : uint is { var hs : list(holder) := [{ pre = 1; x = [1]; post = true; }]; List.push(hs[0].x, 7); List.push(hs[0].x, 8); List.pop(hs[0].x); } with hs[0].x.length * 10 + hs[0].x[1]
+external pure function g() : uint is { var hs : list(Holder) := [{ pre = 1; x = [1]; post = true; }]; List.push(hs[0].x, 7); List.push(hs[0].x, 8); List.pop(hs[0].x); } with hs[0].x.length * 10 + hs[0].x[1]
 external pure function h() : uint is { var xs : list(list(uint)) := [[]]; List.pop(xs[0]); } with 1
 ";
     let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
@@ -3603,54 +3603,54 @@ external pure function d() : uint is { var xs : list(list(uint)) := [[1]]; List.
 fn pushes_into_room_grow_only_their_own_list() {
     let src = "\
 import \"std/list\";
-type v is tuple record { k : uint; data : bytes; }
-type f is tuple record { tag : uint; items : list(v); }
+type V is tuple record { k : uint; data : bytes; }
+type F is tuple record { tag : uint; items : list(V); }
 storage is record { n : uint; }
-pure function sum(const xs : list(v)) : uint is { var s : uint := 0; for x : v in xs do { s := s + x.k * x.data.length; } } with s
-pure function build(const n : uint) : list(v) is { var xs : list(v) := []; for i : uint in 0 .. n do { List.push(xs, { k = i; data = 0x0102; }); } } with xs
+pure function sum(const xs : list(V)) : uint is { var s : uint := 0; for x : V in xs do { s := s + x.k * x.data.length; } } with s
+pure function build(const n : uint) : list(V) is { var xs : list(V) := []; for i : uint in 0 .. n do { List.push(xs, { k = i; data = 0x0102; }); } } with xs
 external pure function share() : uint is {
-  var xs : list(v) := [];
+  var xs : list(V) := [];
   for i : uint in 0 .. 5 do { List.push(xs, { k = i; data = 0x01; }); }
-  const c : list(v) := xs;
-  var d : list(v) := xs;
+  const c : list(V) := xs;
+  var d : list(V) := xs;
   for i : uint in 5 .. 10 do { List.push(xs, { k = i; data = 0x01; }); }
   List.push(d, { k = 100; data = 0x01; });
 } with c.length * 1000000 + d.length * 10000 + xs.length * 100 + sum(c)
 external pure function interleave() : uint is {
-  var xs : list(v) := [];
+  var xs : list(V) := [];
   var ys : list(bytes) := [];
   for i : uint in 0 .. 20 do { List.push(xs, { k = i; data = 0x01; }); List.push(ys, 0x0102); }
 } with sum(xs) * 10000 + ys.length * 100 + ys[19].length
 external pure function poppush() : uint is {
-  var xs : list(v) := [];
+  var xs : list(V) := [];
   for i : uint in 0 .. 10 do { List.push(xs, { k = i; data = 0x01; }); }
   for i : uint in 0 .. 4 do { List.pop(xs); }
-  const c : list(v) := xs;
+  const c : list(V) := xs;
   for i : uint in 10 .. 13 do { List.push(xs, { k = i; data = 0x01; }); }
 } with xs.length * 100000 + sum(xs) * 100 + c.length
 external pure function nested() : uint is {
-  var st : list(f) := [{ tag = 0; items = []; }];
+  var st : list(F) := [{ tag = 0; items = []; }];
   for i : uint in 0 .. 6 do { List.push(st[0].items, { k = i; data = 0x01; }); }
-  const c : f := st[0];
+  const c : F := st[0];
   for i : uint in 6 .. 9 do { List.push(st[0].items, { k = i; data = 0x01; }); }
 } with c.items.length * 10000 + st[0].items.length * 100 + sum(st[0].items) - sum(c.items)
 external pure function helpers() : uint is {
-  var a : list(v) := build(3);
-  var b : list(v) := build(3);
+  var a : list(V) := build(3);
+  var b : list(V) := build(3);
   List.push(a, { k = 7; data = 0x01; });
   List.push(b, { k = 9; data = 0x0102; });
   List.push(a, { k = 5; data = 0x01; });
 } with a.length * 1000000 + b.length * 10000 + sum(a) * 100 + sum(b) - sum(a)
 external pure function iter() : uint is {
-  var xs : list(v) := [{ k = 1; data = 0x01; }, { k = 2; data = 0x01; }];
+  var xs : list(V) := [{ k = 1; data = 0x01; }, { k = 2; data = 0x01; }];
   var s : uint := 0;
-  for x : v in xs do { List.push(xs, { k = x.k + 10; data = 0x01; }); s := s + 1; }
+  for x : V in xs do { List.push(xs, { k = x.k + 10; data = 0x01; }); s := s + 1; }
 } with s * 1000 + xs.length * 100 + xs[3].k
 external pure function field() : uint is {
-  var a : f := { tag = 1; items = []; };
-  var b : list(v) := [];
+  var a : F := { tag = 1; items = []; };
+  var b : list(V) := [];
   for i : uint in 0 .. 7 do { List.push(a.items, { k = i; data = 0x01; }); List.push(b, { k = 1; data = 0x01; }); }
-  const c : f := a;
+  const c : F := a;
   List.push(a.items, { k = 50; data = 0x01; });
 } with c.items.length * 10000 + a.items.length * 100 + sum(a.items) - sum(c.items) + sum(b) * 1000000
 ";
@@ -3674,92 +3674,92 @@ external pure function field() : uint is {
 fn nested_pushes_skip_copies_only_while_nothing_shares() {
     let src = "\
 import \"std/list\";
-type v is tuple record { k : uint; data : bytes; }
-type f is tuple record { tag : uint; items : list(v); }
-type g is tuple record { id : uint; inner : f; }
+type V is tuple record { k : uint; data : bytes; }
+type F is tuple record { tag : uint; items : list(V); }
+type G is tuple record { id : uint; inner : F; }
 storage is record { n : uint; }
-pure function sum(const xs : list(v)) : uint is { var s : uint := 0; for x : v in xs do { s := s + x.k * x.data.length + 1; } } with s
-pure function total(const st : list(f)) : uint is { var s : uint := 0; for x : f in st do { s := s + sum(x.items) * 7 + x.items.length; } } with s
-pure function grow(var st : list(f)) : list(f) is { List.push(st[0].items, { k = 50; data = 0x01; }); } with st
-pure function frame(const x : f) : uint is sum(x.items) * 3 + x.items.length
-pure function items(const x : f) : list(v) is x.items
+pure function sum(const xs : list(V)) : uint is { var s : uint := 0; for x : V in xs do { s := s + x.k * x.data.length + 1; } } with s
+pure function total(const st : list(F)) : uint is { var s : uint := 0; for x : F in st do { s := s + sum(x.items) * 7 + x.items.length; } } with s
+pure function grow(var st : list(F)) : list(F) is { List.push(st[0].items, { k = 50; data = 0x01; }); } with st
+pure function frame(const x : F) : uint is sum(x.items) * 3 + x.items.length
+pure function items(const x : F) : list(V) is x.items
 external pure function outer() : uint is {
-  var st : list(f) := [{ tag = 0; items = []; }, { tag = 1; items = []; }];
+  var st : list(F) := [{ tag = 0; items = []; }, { tag = 1; items = []; }];
   for i : uint in 0 .. 5 do { List.push(st[0].items, { k = i; data = 0x01; }); }
-  const c : list(f) := st;
+  const c : list(F) := st;
   for i : uint in 5 .. 8 do { List.push(st[0].items, { k = i; data = 0x0102; }); }
 } with total(c) * 1000000 + total(st)
 external pure function elem(const t : uint) : uint is {
-  var st : list(f) := [{ tag = 0; items = []; }, { tag = 1; items = []; }];
+  var st : list(F) := [{ tag = 0; items = []; }, { tag = 1; items = []; }];
   for i : uint in 0 .. 5 do { List.push(st[t].items, { k = i; data = 0x01; }); }
-  const c : f := st[t];
+  const c : F := st[t];
   for i : uint in 5 .. 9 do { List.push(st[t].items, { k = i; data = 0x0102; }); }
-  const d : f := st[t];
+  const d : F := st[t];
   List.push(st[t].items, { k = 77; data = 0x01; });
 } with frame(c) * 1000000000000 + frame(d) * 1000000 + total(st)
 external pure function inner(const t : uint) : uint is {
-  var st : list(f) := [{ tag = 0; items = []; }, { tag = 1; items = []; }];
+  var st : list(F) := [{ tag = 0; items = []; }, { tag = 1; items = []; }];
   for i : uint in 0 .. 5 do { List.push(st[t].items, { k = i; data = 0x01; }); }
-  const c : list(v) := st[t].items;
+  const c : list(V) := st[t].items;
   List.push(st[t].items, { k = 20; data = 0x01; });
-  const d : list(v) := st[t].items;
+  const d : list(V) := st[t].items;
   for i : uint in 0 .. 6 do { List.push(st[t].items, { k = 30 + i; data = 0x010203; }); }
 } with sum(c) * 1000000000000 + sum(d) * 1000000 + total(st) * 100 + c.length + d.length
 external pure function calls() : uint is {
-  var st : list(f) := [{ tag = 0; items = []; }, { tag = 1; items = []; }];
+  var st : list(F) := [{ tag = 0; items = []; }, { tag = 1; items = []; }];
   var s : uint := 0;
   for i : uint in 0 .. 6 do {
     List.push(st[0].items, { k = i; data = 0x01; });
     s := s * 3 + total(st) + frame(st[0]);
     List.push(st[0].items, { k = i + 10; data = 0x01; });
   }
-  const r : list(f) := grow(st);
+  const r : list(F) := grow(st);
   List.push(st[0].items, { k = 60; data = 0x01; });
-  const w : list(v) := items(st[0]);
+  const w : list(V) := items(st[0]);
   List.push(st[0].items, { k = 70; data = 0x01; });
 } with s * 1000000 + total(r) * 1000 + total(st) + sum(w) * 1000000000000
 external pure function poppush() : uint is {
-  var st : list(f) := [{ tag = 0; items = []; }];
+  var st : list(F) := [{ tag = 0; items = []; }];
   for i : uint in 0 .. 10 do { List.push(st[0].items, { k = i; data = 0x01; }); }
   for i : uint in 0 .. 4 do { List.pop(st[0].items); }
-  const c : list(v) := st[0].items;
+  const c : list(V) := st[0].items;
   for i : uint in 10 .. 13 do { List.push(st[0].items, { k = i; data = 0x01; }); }
   List.pop(st[0].items);
   List.pop(st[0].items);
-  const d : f := st[0];
+  const d : F := st[0];
   List.push(st[0].items, { k = 99; data = 0x0102; });
 } with sum(c) * 1000000000000 + frame(d) * 1000000 + total(st)
 external pure function two() : uint is {
-  var st : list(f) := [{ tag = 0; items = []; }, { tag = 1; items = []; }];
+  var st : list(F) := [{ tag = 0; items = []; }, { tag = 1; items = []; }];
   var s : uint := 0;
   for i : uint in 0 .. 8 do {
     List.push(st[i % 2].items, { k = i; data = 0x01; });
     List.push(st[1 - i % 2].items, { k = i * 2; data = 0x0102; });
     if i = 3 then { s := frame(st[0]) * 1000 + frame(st[1]); } else { skip }
   }
-  const c : f := st[1];
+  const c : F := st[1];
   List.push(st[1].items, { k = 5; data = 0x01; });
 } with s * 1000000000 + frame(c) * 1000000 + total(st)
 external pure function iterate() : uint is {
-  var st : list(f) := [{ tag = 0; items = [{ k = 1; data = 0x01; }]; }, { tag = 1; items = []; }];
+  var st : list(F) := [{ tag = 0; items = [{ k = 1; data = 0x01; }]; }, { tag = 1; items = []; }];
   var s : uint := 0;
-  for x : f in st do {
+  for x : F in st do {
     List.push(st[1].items, { k = x.tag + 5; data = 0x01; });
     List.push(st[1].items, { k = x.items.length; data = 0x01; });
     s := s * 100 + x.items.length * 10 + sum(x.items);
   }
-  for y : v in st[0].items do {
+  for y : V in st[0].items do {
     List.push(st[0].items, { k = y.k + 100; data = 0x01; });
     s := s + y.k;
   }
 } with s * 1000000 + total(st)
 external pure function fields() : uint is {
-  var a : f := { tag = 1; items = []; };
-  var r : g := { id = 2; inner = { tag = 3; items = []; }; };
+  var a : F := { tag = 1; items = []; };
+  var r : G := { id = 2; inner = { tag = 3; items = []; }; };
   for i : uint in 0 .. 7 do { List.push(a.items, { k = i; data = 0x01; }); List.push(r.inner.items, { k = i * 3; data = 0x0102; }); }
-  const c : f := a;
-  const d : g := r;
-  const e : list(v) := r.inner.items;
+  const c : F := a;
+  const d : G := r;
+  const e : list(V) := r.inner.items;
   List.push(a.items, { k = 50; data = 0x01; });
   List.push(r.inner.items, { k = 51; data = 0x01; });
 } with frame(c) * 1000000000000 + frame(d.inner) * 100000000 + sum(e) * 10000 + frame(a) + frame(r.inner) + a.items.length * 1000
@@ -3820,19 +3820,19 @@ external pure function arm(const n : uint) : uint is {
 #[test]
 fn literals_take_their_type_from_context() {
     let src = r#"import "std/crypto"; import "std/uint"; 
-type pt is record { a : uint8; b : bool; }
-type doc is record { n : uint8; s : string; xs : list(uint); }
-type dyn is | Name of string | Blank
-error Whole of doc;
-error Named of doc;
+type Pt is record { a : uint8; b : bool; }
+type Doc is record { n : uint8; s : string; xs : list(uint); }
+type Dyn is | Name of string | Blank
+error Whole of Doc;
+error Named of Doc;
 storage is record { n : uint; }
 pure function opt(const n : uint8) : option(uint8) is { var o : option(uint8) := None; if n <> 0 then { o := Some(n); } } with o
 pure function iopt(const n : int8) : option(int8) is { var o : option(int8) := None; if n <> 0 then { o := Some(n); } } with o
-pure function tag(const d : dyn) : uint is case d of { Name(_) -> 1 | Blank -> 2 }
+pure function tag(const d : Dyn) : uint is case d of { Name(_) -> 1 | Blank -> 2 }
 external pure function arms(const n : uint8) : bool is case opt(n) of { None -> 255 | Some(x) -> x } = uint8(255)
 external pure function neg(const n : int8) : bool is -1 = case iopt(n) of { None -> -1 | Some(x) -> x }
 external pure function opts(const n : uint8) : bool is None = case opt(n) of { None -> None | Some(x) -> Some(x) }
-external pure function recs(const p : pt) : bool is case Some(p.b) of { None -> { a = 2; b = false; } | Some(v) -> { a = 1; b = v; } } = p
+external pure function recs(const p : Pt) : bool is case Some(p.b) of { None -> { a = 2; b = false; } | Some(v) -> { a = 1; b = v; } } = p
 external pure function lists(const xs : list(uint)) : bool is [] = xs
 external pure function max(const x : uint8) : bool is Uint.max = x
 external pure function long(const b : bytes) : bool is 0x0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f2021 = b
@@ -3841,7 +3841,7 @@ external pure function blank() : uint is tag(Blank)
 external pure function hash(const b : bytes) : (bool, bool) is
   (Crypto.keccak256(b) = Crypto.keccak256(0xdeadbeef), Crypto.keccak256(b) = Crypto.keccak256(0x0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f2021))
 external function whole() raises Whole is {
-  const d : doc := { n = 7; s = "a string that is longer than thirty-two bytes, to spill"; xs = [1, 2]; };
+  const d : Doc := { n = 7; s = "a string that is longer than thirty-two bytes, to spill"; xs = [1, 2]; };
   fail Whole(d);
 }
 external function named() raises Named is {
@@ -3882,24 +3882,24 @@ external function named() raises Named is {
 #[test]
 fn vars_never_share_their_values() {
     let src = "\
-type h is record { n : uint; xs : list(uint); }
+type H is record { n : uint; xs : list(uint); }
 storage is record { n : uint; t : (uint, uint); }
 pure function id(const x : list(uint)) : list(uint) is x
 pure function first(const t : (uint, uint)) : uint is { const (a, b) : (uint, uint) := t; } with a
 pure function setp(var xs : list(uint)) : uint is { xs[0] := 2; } with xs[0]
-pure function seth(var a : h) : uint is { a.xs[0] := 2; } with a.xs[0]
+pure function seth(var a : H) : uint is { a.xs[0] := 2; } with a.xs[0]
 external pure function decl() : uint is { const ys : list(uint) := [1]; var xs : list(uint) := ys; xs[0] := 2; } with ys[0]
 external pure function assign() : uint is { const ys : list(uint) := [1]; var xs : list(uint) := []; xs := ys; xs[0] := 2; } with ys[0]
 external pure function param() : uint is { const ys : list(uint) := [1]; const z : uint := setp(ys); } with ys[0] * 10 + z
 external pure function elem() : uint is { const ys : list(list(uint)) := [[1]]; var xs : list(uint) := ys[0]; xs[0] := 2; } with ys[0][0]
 external pure function tup() : uint is { const ys : list(uint) := [1]; var xs : list(uint) := []; var n : uint := 0; (xs, n) := (ys, 1); xs[0] := 2; } with ys[0]
 external pure function call() : uint is { const ys : list(uint) := [1]; var xs : list(uint) := id(ys); xs[0] := 2; } with ys[0]
-external pure function rec() : uint is { const g : h := { n = 1; xs = [1]; }; var a : h := g; a.xs[0] := 2; } with g.xs[0]
-external pure function field() : uint is { const ys : list(uint) := [1]; var a : h := { n = 1; xs = []; }; a.xs := ys; a.xs[0] := 2; } with ys[0]
-external pure function lit() : uint is { const ys : list(uint) := [1]; var a : h := { n = 1; xs = ys; }; a.xs[0] := 2; } with ys[0]
-external pure function recparam() : uint is { const g : h := { n = 1; xs = [1]; }; const z : uint := seth(g); } with g.xs[0] * 10 + z
-external pure function out() : uint is { var a : h := { n = 1; xs = [1]; }; const b : h := a; a.xs[0] := 2; } with b.xs[0] * 10 + a.xs[0]
-external pure function records() : uint is { const gs : list(h) := [{ n = 1; xs = [1]; }]; var hs : list(h) := gs; hs[0].xs[0] := 2; } with gs[0].xs[0]
+external pure function rec() : uint is { const g : H := { n = 1; xs = [1]; }; var a : H := g; a.xs[0] := 2; } with g.xs[0]
+external pure function field() : uint is { const ys : list(uint) := [1]; var a : H := { n = 1; xs = []; }; a.xs := ys; a.xs[0] := 2; } with ys[0]
+external pure function lit() : uint is { const ys : list(uint) := [1]; var a : H := { n = 1; xs = ys; }; a.xs[0] := 2; } with ys[0]
+external pure function recparam() : uint is { const g : H := { n = 1; xs = [1]; }; const z : uint := seth(g); } with g.xs[0] * 10 + z
+external pure function out() : uint is { var a : H := { n = 1; xs = [1]; }; const b : H := a; a.xs[0] := 2; } with b.xs[0] * 10 + a.xs[0]
+external pure function records() : uint is { const gs : list(H) := [{ n = 1; xs = [1]; }]; var hs : list(H) := gs; hs[0].xs[0] := 2; } with gs[0].xs[0]
 external pure function swap() : uint is { var t : (uint, uint) := (1, 2); t := (3, first(t)); const (a, b) : (uint, uint) := t; } with a * 10 + b
 external function stored() : uint is { storage.t := (1, 2); storage.t := (3, first(storage.t)); const (a, b) : (uint, uint) := storage.t; } with a * 10 + b
 ";
@@ -4297,7 +4297,7 @@ fn intrinsics_state_what_the_checker_enforces() {
                 );
                 if ret == "operation" {
                     format!("{head} is {{ defer {call}; }}")
-                } else if sig.name == "static_call" {
+                } else if sig.name == "staticCall" {
                     format!("{head} : {ret} is query {call}")
                 } else {
                     format!("{head} : {ret} is {call}")
@@ -4408,16 +4408,16 @@ module Grid is {
     const s : uint := uint(side());
   } with s * s
 
-  type board is list(uint, cells());
+  type Board is list(uint, cells());
 
-  pure function empty() : board is [0, 0, 0, 0]
+  pure function empty() : Board is [0, 0, 0, 0]
 }
 
 use Grid;
 
 storage is record {
   ring : list(uint, slots());
-  owners : list(address, Limits.max_owners());
+  owners : list(address, Limits.maxOwners());
   wide : list(uint, slots() * 2 + 1);
   after : uint;
 }
@@ -4431,7 +4431,7 @@ external pure function board() : list(uint, Grid.cells()) is Grid.empty()
 
 external pure function last(const xs : list(uint, slots())) : uint is xs[2]
 ";
-    let limits = "module Limits is {\n  pure function max_owners() : uint is 1 << 2\n}\n";
+    let limits = "module Limits is {\n  pure function maxOwners() : uint is 1 << 2\n}\n";
     let sources = Sources::memory([(ENTRY, main), ("limits.lithe", limits)]);
     let out = crate::compile(&sources, Path::new(ENTRY), &Options::default())
         .and_then(crate::Output::single)
@@ -4470,39 +4470,39 @@ external pure function last(const xs : list(uint, slots())) : uint is xs[2]
     };
     let named = "is not a named constant: a pure function of no parameters";
     rejects(
-        "pure function f(const x : uint) : uint is x\ntype t is list(uint, f(1));",
+        "pure function f(const x : uint) : uint is x\ntype T is list(uint, f(1));",
         named,
     );
     rejects(
-        "view function n() : uint is 3\ntype t is list(uint, n());",
+        "view function n() : uint is 3\ntype T is list(uint, n());",
         named,
     );
     rejects(
-        "pure function n() : bool is true\ntype t is list(uint, n());",
+        "pure function n() : bool is true\ntype T is list(uint, n());",
         "`n` is not one",
     );
     rejects(
-        "pure function a() : uint is b()\npure function b() : uint is a()\ntype t is list(uint, a());",
+        "pure function a() : uint is b()\npure function b() : uint is a()\ntype T is list(uint, a());",
         "depends on itself",
     );
     rejects(
-        "pure function n() : uint is 3\ntype t is list(uint, n() - 3);",
+        "pure function n() : uint is 3\ntype T is list(uint, n() - 3);",
         "from 1 to 1024",
     );
     rejects(
-        "pure function n() : uint is 3\ntype t is list(uint, n() - 4);",
+        "pure function n() : uint is 3\ntype T is list(uint, n() - 4);",
         "overflows",
     );
     rejects(
-        "pure function n() : uint is 2000\ntype t is list(uint, n());",
+        "pure function n() : uint is 2000\ntype T is list(uint, n());",
         "from 1 to 1024",
     );
     rejects(
-        "pure function n() : uint is 2\ntype t is list(uint, uint8(n() * 200));",
+        "pure function n() : uint is 2\ntype T is list(uint, uint8(n() * 200));",
         "does not fit",
     );
     rejects(
-        "pure function n() : uint is 0\ntype t is list(uint, 4 / n());",
+        "pure function n() : uint is 0\ntype T is list(uint, 4 / n());",
         "division by zero",
     );
 }
@@ -4511,10 +4511,10 @@ external pure function last(const xs : list(uint, slots())) : uint is xs[2]
 fn fixed_lists_have_a_constant_length() {
     let src = "\
 storage is record { xs : list(uint, 4); }
-type pair is record { ys : list(bool, 3); }
+type Pair is record { ys : list(bool, 3); }
 external view function lengths(const ps : list(uint, 2)) : (uint, uint, uint, uint) is {
   const xs : list(uint8, 5) := [1, 2, 3, 4, 5];
-  const p : pair := { ys = [true, false, true]; };
+  const p : Pair := { ys = [true, false, true]; };
 } with (xs.length, storage.xs.length, ps.length, p.ys.length)
 ";
     let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
@@ -4537,7 +4537,7 @@ external view function lengths(const ps : list(uint, 2)) : (uint, uint, uint, ui
 fn resized_lists_copy_and_pad() {
     let src = "\
 import \"std/list\";
-type h is record { s : string; xs : list(uint); o : option(uint); }
+type H is record { s : string; xs : list(uint); o : option(uint); }
 storage is record { kept : list(uint); }
 pure function sum(const xs : list(uint)) : uint is {
   var total : uint := 0;
@@ -4565,7 +4565,7 @@ external function stored(const n : uint) : uint is {
   storage.kept := List.resized(storage.kept, n);
 } with sum(storage.kept)
 external pure function records() : uint is {
-  var hs : list(h) := List.resized([{ s = \"a\"; xs = [1]; o = Some(3); }], 3);
+  var hs : list(H) := List.resized([{ s = \"a\"; xs = [1]; o = Some(3); }], 3);
   List.push(hs[1].xs, 5);
   List.push(hs[2].xs, 6);
   List.push(hs[2].xs, 7);
@@ -4597,8 +4597,8 @@ external pure function records() : uint is {
         assert_eq!(load_bytes(&out.returndata, 4), w(0x41), "{sig}");
     }
     // A variant pads with its first case, as unwritten storage reads.
-    let src = "import \"std/list\";\ntype v is | A of uint | B of uint\nstorage is record { n : uint; }\n\
-               external pure function f() : uint is { const vs : list(v) := [B(1)]; const ws : list(v) := List.resized(vs, 3); }\n\
+    let src = "import \"std/list\";\ntype V is | A of uint | B of uint\nstorage is record { n : uint; }\n\
+               external pure function f() : uint is { const vs : list(V) := [B(1)]; const ws : list(V) := List.resized(vs, 3); }\n\
                with case ws[2] of { | A(x) -> x + 10 | B(x) -> x + 20 }\n";
     let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
     assert_eq!(load_bytes(&call(&runtime, "f()", &[]).returndata, 0), w(10));
@@ -4611,16 +4611,16 @@ external pure function records() : uint is {
 fn one_word_record_arguments() {
     let src = "\
 import \"std/string\";
-type req is tuple record { name : string; }
+type Req is tuple record { name : string; }
 storage is record { s : string; t : string; u : string; }
-function put(const r : req) is {
+function put(const r : Req) is {
   storage.s := String.concat(r.name, \"a\", r.name, \"b\", r.name, \"c\", r.name, \"d\", r.name);
   storage.t := String.concat(r.name, \"e\", r.name, \"f\", r.name, \"g\", r.name, \"h\", r.name);
   storage.u := String.concat(r.name, \"i\", r.name, \"j\", r.name, \"k\", r.name, \"l\", r.name);
 }
-function once(const r : req) is { storage.s := r.name; }
-external function f(const data : req) is put(data)
-external function g(const data : req) is put(data)
+function once(const r : Req) is { storage.s := r.name; }
+external function f(const data : Req) is put(data)
+external function g(const data : Req) is put(data)
 external function h(const n : string) is put({ name = n; })
 external function i(const n : string) is once({ name = String.concat(n, n); })
 external pure function j(const n : uint) : uint is {
@@ -4659,7 +4659,7 @@ external pure function j(const n : uint) : uint is {
 fn variants_cannot_name_option_cases() {
     for case in ["None", "Some"] {
         let err = compile(&format!(
-            "type t is {case} | Other\nstorage is record {{ v : t; }}\nexternal function f() is {{ storage.v := Other; }}\n"
+            "type T is {case} | Other\nstorage is record {{ v : T; }}\nexternal function f() is {{ storage.v := Other; }}\n"
         ))
         .expect_err(case);
         assert!(err.to_string().contains(&format!("`{case}` is a case of every option")), "{err}");
@@ -4672,10 +4672,10 @@ fn variants_cannot_name_option_cases() {
 #[test]
 fn variant_list_elements_are_checked() {
     let src = "\
-type t is A | B | C
+type T is A | B | C
 storage is record { n : uint; }
-external function unused(const xs : list(t)) is { storage.n := 1; }
-external function read(const xs : list(t)) is { storage.n := if xs[0] = C then 1 else 2; }
+external function unused(const xs : list(T)) is { storage.n := 1; }
+external function read(const xs : list(T)) is { storage.n := if xs[0] = C then 1 else 2; }
 ";
     let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
     for (sig, case, reverts) in [("unused(uint8[])", 2, false), ("unused(uint8[])", 3, true), ("read(uint8[])", 8, true)] {

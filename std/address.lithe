@@ -6,8 +6,8 @@ module Address is {
   intrinsic zero;
 
   (* `0x` and 40 lowercase hex digits. *)
-  intrinsic pure function to_hex_string(a : address) : string;
+  intrinsic pure function toHexString(a : address) : string;
 
   (* EIP-55 mixed case. *)
-  intrinsic pure function to_checksum_string(a : address) : string;
+  intrinsic pure function toChecksumString(a : address) : string;
 }

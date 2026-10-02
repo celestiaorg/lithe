@@ -4,32 +4,32 @@
 import "std/abi";
 import "std/list";
 
-type order is record {
+type Order is record {
   id : uint;
   note : string;
   legs : list(uint);
 }
 
-type reserves is record {
+type Reserves is record {
   reserve0 : uint112;
   reserve1 : uint112;
   last : uint32;
 }
 
 interface Pair is {
-  view function getReserves() : reserves;
+  view function getReserves() : Reserves;
 }
 
 interface Book is {
-  function place(orders : list(order)) : list(uint);
+  function place(orders : list(Order)) : list(uint);
 }
 
 event Placed of record {
-  indexed batch : list(order);
-  orders : list(order);
+  indexed batch : list(Order);
+  orders : list(Order);
 }
 
-error Empty_leg of record {
+error EmptyLeg of record {
   order : uint;
   legs : list(list(uint));
 }
@@ -39,22 +39,22 @@ storage is record {
 }
 
 (* The legs of every order, as a list of lists. *)
-external pure function legs(const orders : list(order)) : list(list(uint)) is {
+external pure function legs(const orders : list(Order)) : list(list(uint)) is {
   var out : list(list(uint)) := [];
-  for o : order in orders do {
+  for o : Order in orders do {
     List.push(out, o.legs);
   }
 } with out
 
-external pure function leg(const orders : list(order); const i : uint; const j : uint) : uint is
+external pure function leg(const orders : list(Order); const i : uint; const j : uint) : uint is
   orders[i].legs[j]
 
-external nonreentrant function place(const book : Book; const orders : list(order))
-  raises Empty_leg
+external nonreentrant function place(const book : Book; const orders : list(Order))
+  raises EmptyLeg
 is {
-  for o : order in orders do {
+  for o : Order in orders do {
     if o.legs.length = 0 then {
-      fail Empty_leg { order = o.id; legs = [o.legs]; };
+      fail EmptyLeg { order = o.id; legs = [o.legs]; };
     }
   }
   storage.placed := storage.placed + orders.length;
@@ -63,7 +63,7 @@ is {
 }
 
 (* Several results in one record: Uniswap's `getReserves`. *)
-external view function reserves_of(const pair : Pair) : reserves is
+external view function reservesOf(const pair : Pair) : Reserves is
   query pair.getReserves()
 
 (* Several values from `bytes`, as `abi.decode(data, (address, uint256))`. *)

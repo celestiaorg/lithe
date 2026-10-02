@@ -257,7 +257,7 @@ impl Checker {
             let abi_name = if err.name == crate::spec::VIOLATION {
                 "SpecViolation".to_string()
             } else {
-                abi_error_name(crate::modules::shown(&err.name))
+                crate::modules::shown(&err.name).to_string()
             };
             let abi_types: Vec<&str> = fields.iter().map(|(_, abi)| abi.as_str()).collect();
             let abi_sig = format!("{abi_name}({})", abi_types.join(","));
@@ -509,6 +509,7 @@ impl Checker {
                         name: v.name.clone(),
                         payload,
                         param: v.param.clone(),
+                        external: v.external.clone().unwrap_or_else(|| v.name.clone()),
                         at: Vec::new(),
                     });
                 }
@@ -615,6 +616,7 @@ impl Checker {
                     name: v.name.clone(),
                     payload: None,
                     param: String::new(),
+                    external: v.external.clone(),
                     at: Vec::new(),
                 })
                 .collect(),
@@ -1148,16 +1150,16 @@ impl Checker {
         let mut ids = Vec::new();
         for (arg, param) in args.iter().zip(self.modules[index].params.clone()) {
             let id = self.build(arg)?;
-            if param.constraint.as_deref() == Some("map_key") && !self.map_key_ok(id) {
+            if param.constraint.as_deref() == Some("MapKey") && !self.map_key_ok(id) {
                 return Err(error(
                     arg.line(),
                     arg.col(),
-                    format!("type `{}` does not satisfy `map_key`", self.ty_label(id)),
+                    format!("type `{}` does not satisfy `MapKey`", self.ty_label(id)),
                 ));
             }
             ids.push(id);
         }
-        let member_name = member.clone().unwrap_or_else(|| "self".to_string());
+        let member_name = member.clone().unwrap_or_else(|| "Self".to_string());
         let key = (name.clone(), member_name.clone(), ids.clone());
         if let Some(id) = self.inst.get(&key).copied() {
             return Ok(id);

@@ -29,4 +29,4 @@ view function price(const asset : address) : uint is {
 
 external view function listed() : list(address) is all()
 
-external view function price_of(const asset : address) : uint raises forwarded is price(asset)
+external view function priceOf(const asset : address) : uint raises forwarded is price(asset)

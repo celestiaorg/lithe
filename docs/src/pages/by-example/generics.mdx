@@ -5,23 +5,23 @@ description: "Type-parameterized collections, specialized at compile time."
 
 # Generic modules
 
-A generic module like `Set(T : map_key)` is specialized for each element type it is used with. `Set(order_id)` and `Set(address)` are distinct types with their own code.
+A generic module like `Set(T : MapKey)` is specialized for each element type it is used with. `Set(OrderId)` and `Set(address)` are distinct types with their own code.
 
 :::code-group
 
 ```lithe [generics.lithe]
 (* Generic modules specialize at compile time: no runtime cost, no casts.
-   `Set(T : map_key)` accepts any type that can key a map. *)
+   `Set(T : mapKey)` accepts any type that can key a map. *)
 
 import "std/evm";
 import "./lib/set";
 import "./lib/set_enumerable";
 
-type order_id is bytes32;
+type OrderId is bytes32;
 
 storage is record {
   admins : Set(address);
-  orders : Set(order_id);
+  orders : Set(OrderId);
   members : SetEnumerable(address);
 }
 
@@ -29,27 +29,27 @@ storage is record {
 pure function first(T)(const a : T; const b : T) : T is
   a
 
-external function add_admin(const who : address) is {
+external function addAdmin(const who : address) is {
   Set.add(storage.admins, who);
 }
 
-external view function is_admin(const who : address) : bool is
+external view function isAdmin(const who : address) : bool is
   Set.contains(storage.admins, who)
 
-(* `Set(order_id)` is not `Set(bytes32)`: the element type is checked. *)
+(* `Set(OrderId)` is not `Set(bytes32)`: the element type is checked. *)
 external function track(const id : bytes32) is {
-  Set.add(storage.orders, order_id(id));
+  Set.add(storage.orders, OrderId(id));
 }
 
 external function join() is {
-  SetEnumerable.add(storage.members, first(Evm.sender(), Evm.tx_origin()));
+  SetEnumerable.add(storage.members, first(Evm.sender(), Evm.txOrigin()));
 }
 
-external view function member_count() : uint is
+external view function memberCount() : uint is
   SetEnumerable.length(storage.members)
 
-external view function member_at(const i : uint) : address
-  raises Out_of_bounds
+external view function memberAt(const i : uint) : address
+  raises OutOfBounds
 is
   SetEnumerable.at(storage.members, i)
 
@@ -63,30 +63,30 @@ module Watchlist is {
     SetEnumerable.add(watchlist.watched, who);
   }
 
-  external view function watched_count() : uint is
+  external view function watchedCount() : uint is
     SetEnumerable.length(watchlist.watched)
 }
 
 use Watchlist exposing {
   function watch(who : address);
-  view function watched_count() : uint;
+  view function watchedCount() : uint;
 }
 ```
 
 ```lithe [lib/set.lithe]
 (* Membership set. One mapping, no enumeration. *)
 
-module Set(T : map_key) is {
-  type self is map(T, bool);
+module Set(T : MapKey) is {
+  type Self is map(T, bool);
 
-  view function contains(storage set : self; const value : T) : bool is
+  view function contains(storage set : Self; const value : T) : bool is
     set[value]
 
-  function add(storage set : self; const value : T) is {
+  function add(storage set : Self; const value : T) is {
     set[value] := true;
   }
 
-  function remove(storage set : self; const value : T) is {
+  function remove(storage set : Self; const value : T) is {
     set[value] := false;
   }
 }
@@ -97,38 +97,38 @@ module Set(T : map_key) is {
 
 import "std/list";
 
-module SetEnumerable(T : map_key) is {
-  type self is record {
+module SetEnumerable(T : MapKey) is {
+  type Self is record {
     values : list(T);
     indexes : map(T, uint);
   }
 
-  type iterator is record {
+  type Iterator is record {
     index : uint;
   }
 
-  error Out_of_bounds;
+  error OutOfBounds;
 
-  view function contains(storage items : self; const value : T) : bool is
+  view function contains(storage items : Self; const value : T) : bool is
     items.indexes[value] > 0
 
-  view function length(storage items : self) : uint is
+  view function length(storage items : Self) : uint is
     items.values.length
 
-  view function at(storage items : self; const index : uint) : T
-    raises Out_of_bounds
+  view function at(storage items : Self; const index : uint) : T
+    raises OutOfBounds
   is {
-    assert(index < items.values.length, Out_of_bounds);
+    assert(index < items.values.length, OutOfBounds);
   } with items.values[index]
 
-  function add(storage items : self; const value : T) is {
+  function add(storage items : Self; const value : T) is {
     if items.indexes[value] = 0 then {
       List.push(items.values, value);
       items.indexes[value] := items.values.length;
     }
   }
 
-  function remove(storage items : self; const value : T) is {
+  function remove(storage items : Self; const value : T) is {
     const found : uint := items.indexes[value];
     if found = 0 then {
       skip
@@ -147,4 +147,4 @@ module SetEnumerable(T : map_key) is {
 
 - `Set.add(storage.admins, who)` works on the storage location it is given. The set module owns no storage of its own.
 - `Watchlist` hands `watchlist.watched`, from its own storage, to `SetEnumerable` just as the contract hands over `storage.members`.
-- `map_key` limits `T` to types that can key a map. `Set(string)` is rejected.
+- `MapKey` limits `T` to types that can key a map. `Set(string)` is rejected.

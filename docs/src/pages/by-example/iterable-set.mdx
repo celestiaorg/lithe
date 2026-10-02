@@ -14,7 +14,7 @@ Maps can't be enumerated. To list members, keep a list and an index map in sync.
 
 import "std/evm";
 
-error Out_of_range of uint;
+error OutOfRange of uint;
 
 storage is record {
   members : list(address);
@@ -50,9 +50,9 @@ external view function length() : uint is
 
 (* Clients page through members one index at a time. *)
 external view function at(const i : uint) : address
-  raises Out_of_range
+  raises OutOfRange
 is {
-  assert(i < storage.count, Out_of_range(i));
+  assert(i < storage.count, OutOfRange(i));
 } with storage.members[i]
 ```
 

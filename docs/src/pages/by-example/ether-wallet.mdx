@@ -13,8 +13,8 @@ A minimal wallet: deposits are open to anyone, and withdrawals are limited to th
 import "std/address";
 import "std/evm";
 
-error Not_owner;
-error Already_initialized;
+error NotOwner;
+error AlreadyInitialized;
 error Insufficient of wei;
 
 event Deposit of record {
@@ -27,9 +27,9 @@ storage is record {
 }
 
 external function init()
-  raises Already_initialized
+  raises AlreadyInitialized
 is {
-  assert(storage.owner = Address.zero, Already_initialized);
+  assert(storage.owner = Address.zero, AlreadyInitialized);
   storage.owner := Evm.sender();
 }
 
@@ -38,9 +38,9 @@ external payable function deposit() is {
 }
 
 external function withdraw(const amount : wei)
-  raises Not_owner | Insufficient
+  raises NotOwner | Insufficient
 is {
-  assert(Evm.sender() = storage.owner, Not_owner);
+  assert(Evm.sender() = storage.owner, NotOwner);
   assert(Evm.balance(Evm.self()) >= amount, Insufficient(Evm.balance(Evm.self())));
   defer Evm.transfer(storage.owner, amount);
 }

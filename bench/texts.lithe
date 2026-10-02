@@ -6,8 +6,8 @@ import "std/bytes";
 import "std/evm";
 import "std/list";
 
-type blobs is list(bytes);
-type notes is list(string);
+type Blobs is list(bytes);
+type Notes is list(string);
 
 storage is record {
   saved : list(bytes);
@@ -29,14 +29,14 @@ external function push(const x : bytes) is {
   List.push(storage.saved, x);
 }
 
-external function set_at(const i : uint; const x : bytes) is {
+external function setAt(const i : uint; const x : bytes) is {
   storage.saved[i] := x;
 }
 
 external view function saved() : list(bytes) is
   storage.saved
 
-external view function saved_at(const i : uint) : bytes is
+external view function savedAt(const i : uint) : bytes is
   storage.saved[i]
 
 external view function joined() : bytes is {
@@ -47,7 +47,7 @@ external view function joined() : bytes is {
   }
 } with out
 
-external function set_names(const names : list(string)) is {
+external function setNames(const names : list(string)) is {
   storage.names := names;
   emit Named { who = Evm.sender(); names = names; };
 }
@@ -59,13 +59,13 @@ external function label(const k : uint; const v : string) is {
   storage.labels[k] := v;
 }
 
-external view function label_of(const k : uint) : string is
+external view function labelOf(const k : uint) : string is
   storage.labels[k]
 
 external pure function first(const xs : list(bytes)) : bytes is
   xs[0]
 
-external pure function concat_all(const xs : list(bytes)) : bytes is {
+external pure function concatAll(const xs : list(bytes)) : bytes is {
   var out : bytes := "";
   for x : bytes in xs do {
     out := Bytes.concat(out, x);
@@ -88,34 +88,34 @@ external pure function encoded(const k : uint; const xs : list(string)) : bytes 
   Abi.encode(k, xs)
 
 external pure function decoded(const data : bytes) : list(bytes) is
-  Abi.decode(data, blobs)
+  Abi.decode(data, Blobs)
 
-external pure function small_of(const data : bytes) : uint8 is
+external pure function smallOf(const data : bytes) : uint8 is
   Abi.decode(data, uint8)
 
-external pure function text_of(const data : bytes) : string is
+external pure function textOf(const data : bytes) : string is
   Abi.decode(data, string)
 
-external pure function addr_mem(const data : bytes) : address is {
+external pure function addrMem(const data : bytes) : address is {
   const copy : bytes := data;
 } with Abi.decode(copy, address)
 
-external pure function text_mem(const data : bytes) : string is {
+external pure function textMem(const data : bytes) : string is {
   const copy : bytes := data;
 } with Abi.decode(copy, string)
 
-external pure function names_mem(const data : bytes) : list(string) is {
+external pure function namesMem(const data : bytes) : list(string) is {
   const copy : bytes := data;
-} with Abi.decode(copy, notes)
+} with Abi.decode(copy, Notes)
 
-external pure function same_text(const a : string; const data : bytes) : bool is
+external pure function sameText(const a : string; const data : bytes) : bool is
   Abi.decode(data, string) = a
 
-external pure function empty_text(const data : bytes) : bool is {
+external pure function emptyText(const data : bytes) : bool is {
   const s : string := Abi.decode(data, string);
 } with s.length = 0
 
-external function keep_text(const k : uint; const data : bytes) is {
+external function keepText(const k : uint; const data : bytes) is {
   storage.labels[k] := Abi.decode(data, string);
   storage.note := Abi.decode(data, string);
 }
@@ -123,5 +123,5 @@ external function keep_text(const k : uint; const data : bytes) is {
 external view function note() : string is
   storage.note
 
-external pure function selector_only() : bytes is
-  Abi.encode_with_selector(0x12345678)
+external pure function selectorOnly() : bytes is
+  Abi.encodeWithSelector(0x12345678)

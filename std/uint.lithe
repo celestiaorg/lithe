@@ -7,48 +7,48 @@ module Uint is {
   intrinsic max;
 
   (* `0x05` on words: `base ** exponent % modulus`. `Panic(0x12)` if `modulus` is zero. *)
-  intrinsic pure function pow_mod(base : uint; exponent : uint; modulus : uint) : uint;
+  intrinsic pure function powMod(base : uint; exponent : uint; modulus : uint) : uint;
 
-  (* div_rem(a : T; b : T) : (T, T)
+  (* divRem(a : T; b : T) : (T, T)
      `(a / b, a % b)`, for two values of one unsigned type. *)
-  intrinsic div_rem;
+  intrinsic divRem;
 
   (* `a * b / d` with the product in 512 bits. `Panic(0x11)` if the result doesn't fit,
      `Panic(0x12)` if `d` is zero. *)
-  intrinsic pure function mul_div(a : uint; b : uint; d : uint) : uint;
+  intrinsic pure function mulDiv(a : uint; b : uint; d : uint) : uint;
 
   (* `mulmod(a, b, d)`. `Panic(0x12)` if `d` is zero. *)
-  intrinsic pure function mul_mod(a : uint; b : uint; d : uint) : uint;
+  intrinsic pure function mulMod(a : uint; b : uint; d : uint) : uint;
 
   (* `addmod(a, b, d)`. `Panic(0x12)` if `d` is zero. *)
-  intrinsic pure function add_mod(a : uint; b : uint; d : uint) : uint;
+  intrinsic pure function addMod(a : uint; b : uint; d : uint) : uint;
 
-  (* wrapping_add(a : T; b : T) : T
+  (* wrappingAdd(a : T; b : T) : T
      `unchecked { a + b }`: the sum modulo 2^N for the values' N bits. *)
-  intrinsic wrapping_add;
+  intrinsic wrappingAdd;
 
-  (* wrapping_sub(a : T; b : T) : T
+  (* wrappingSub(a : T; b : T) : T
      `unchecked { a - b }`. *)
-  intrinsic wrapping_sub;
+  intrinsic wrappingSub;
 
-  (* wrapping_mul(a : T; b : T) : T
+  (* wrappingMul(a : T; b : T) : T
      `unchecked { a * b }`. *)
-  intrinsic wrapping_mul;
+  intrinsic wrappingMul;
 
-  (* to_string(n : T) : string
+  (* toString(n : T) : string
      An unsigned integer of any width in decimal. *)
-  intrinsic to_string;
+  intrinsic toString;
 
-  (* to_hex_string(n : T [; length : uint]) : string
+  (* toHexString(n : T [; length : uint]) : string
      `0x` and lowercase hex in the fewest whole bytes, or with a second argument exactly
      that many bytes. *)
-  intrinsic to_hex_string;
+  intrinsic toHexString;
 
   (* `uint256(i)`: the same 256 bits, unchecked. *)
-  intrinsic pure function from_bits(i : int) : uint;
+  intrinsic pure function fromBits(i : int) : uint;
 
   (* Solady's `LibBit.popCount(x)`: how many bits are set. *)
-  intrinsic pure function pop_count(x : uint) : uint;
+  intrinsic pure function popCount(x : uint) : uint;
 
   (* `LibBit.clz(x)`: the zero bits above the highest set bit, 256 for zero. One `CLZ` on
      Osaka. *)

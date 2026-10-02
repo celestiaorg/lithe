@@ -48,8 +48,8 @@ const REJECT_RULES: &[(&str, &str)] = &[
         "`Vault` has no `deploy` parameters, so it takes no arguments",
     ),
     (
-        "reject/error_collision.lithe",
-        "error selector `NotOwner()` collides",
+        "reject/error_collision/main.lithe",
+        "error selector `Denied()` collides with `Denied()`",
     ),
     (
         "reject/event_indexed_emit.lithe",
@@ -93,7 +93,7 @@ const REJECT_RULES: &[(&str, &str)] = &[
         "reject/type_storage.lithe",
         "declare contract storage as `storage is record`",
     ),
-    ("reject/literal_range.lithe", "does not fit type `tiny`"),
+    ("reject/literal_range.lithe", "does not fit type `Tiny`"),
     (
         "reject/nominal_assign.lithe",
         "initializer type does not match",
@@ -149,7 +149,7 @@ const REJECT_RULES: &[(&str, &str)] = &[
     ),
     (
         "reject/clash/main.lithe",
-        "ambiguous symbol `calculate_fee`",
+        "ambiguous symbol `calculateFee`",
     ),
     (
         "reject/private_call/main.lithe",
@@ -181,7 +181,7 @@ const REJECT_RULES: &[(&str, &str)] = &[
     ),
     (
         "reject/generic_key.lithe",
-        "type `string` does not satisfy `map_key`",
+        "type `string` does not satisfy `MapKey`",
     ),
     ("reject/view_defers.lithe", "declared effect is weaker than the body's: external view function `balance` cannot defer an operation"),
     (
@@ -236,7 +236,7 @@ const REJECT_RULES: &[(&str, &str)] = &[
     ("reject/import_path.lithe", "2:8: invalid import path `./fees.lithe`"),
     (
         "reject/transitive/main.lithe",
-        "unknown type `amount`\n\n`amount` is declared in `./b`",
+        "unknown type `Amount`\n\n`Amount` is declared in `./b`",
     ),
     ("reject/hygiene/main.lithe", "unknown error `Denied`"),
     (

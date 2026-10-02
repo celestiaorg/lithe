@@ -14,7 +14,7 @@ Ether sent to the contract vests linearly between `start` and `start + duration`
 import "std/address";
 import "std/evm";
 
-error Already_initialized;
+error AlreadyInitialized;
 
 event Released of record {
   amount : wei;
@@ -28,9 +28,9 @@ storage is record {
 }
 
 external function init(const beneficiary : address; const start : timestamp; const duration : uint)
-  raises Already_initialized
+  raises AlreadyInitialized
 is {
-  assert(storage.beneficiary = Address.zero, Already_initialized);
+  assert(storage.beneficiary = Address.zero, AlreadyInitialized);
   storage.beneficiary := beneficiary;
   storage.start := start;
   storage.duration := duration;
@@ -40,7 +40,7 @@ external payable function fund() is {
   skip
 }
 
-view function vested_at(const time : timestamp) : wei is {
+view function vestedAt(const time : timestamp) : wei is {
   const total : wei := Evm.balance(Evm.self()) + storage.released;
   var vested : wei := 0wei;
   if time >= storage.start + storage.duration then {
@@ -51,10 +51,10 @@ view function vested_at(const time : timestamp) : wei is {
 } with vested
 
 external view function releasable() : wei is
-  vested_at(Evm.block_timestamp()) - storage.released
+  vestedAt(Evm.blockTimestamp()) - storage.released
 
 external nonreentrant function release() is {
-  const amount : wei := vested_at(Evm.block_timestamp()) - storage.released;
+  const amount : wei := vestedAt(Evm.blockTimestamp()) - storage.released;
   storage.released := storage.released + amount;
   emit Released { amount = amount; };
   defer Evm.transfer(storage.beneficiary, amount);

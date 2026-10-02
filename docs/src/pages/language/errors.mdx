@@ -16,19 +16,19 @@ Errors take one of three forms:
 error Unauthorized;
 
 (* One value. In the ABI: TooLarge(uint256) *)
-error Too_large of uint;
+error TooLarge of uint;
 
 (* Named fields. In the ABI: InsufficientBalance(uint256 available, uint256 required) *)
-error Insufficient_balance of record {
+error InsufficientBalance of record {
   available : uint;
   required : uint;
 }
 
 (* Strings, bytes, and lists too. In the ABI: UnknownKey(string) *)
-error Unknown_key of string;
+error UnknownKey of string;
 
 (* In the ABI: AttributeNotFound(uint256 tokenId, string traitType) *)
-error Attribute_not_found of record {
+error AttributeNotFound of record {
   tokenId : uint;
   traitType : string;
 }
@@ -38,21 +38,21 @@ storage is record {
 }
 
 external function check(const n : uint)
-  raises Too_large
+  raises TooLarge
 is {
-  assert(n <= 100, Too_large(n));
+  assert(n <= 100, TooLarge(n));
   storage.n := n;
 }
 
-external function lookup(const token_id : uint)
-  raises Unknown_key | Attribute_not_found
+external function lookup(const tokenId : uint)
+  raises UnknownKey | AttributeNotFound
 is {
-  assert(token_id > 0, Unknown_key("token 0"));
-  assert(token_id <= storage.n, Attribute_not_found { tokenId = token_id; traitType = "Background"; });
+  assert(tokenId > 0, UnknownKey("token 0"));
+  assert(tokenId <= storage.n, AttributeNotFound { tokenId = tokenId; traitType = "Background"; });
 }
 ```
 
-Each error compiles to a Solidity custom error. The ABI name is the declared name in PascalCase, so `Insufficient_balance` becomes `InsufficientBalance`, with the selector Solidity would compute. Payloads are any ABI values, ABI-encoded as Solidity would. A record payload is the error's parameters, one per field. Two errors whose ABI names collide, such as `Not_owner` and `NotOwner`, are rejected.
+Each error compiles to a Solidity custom error. The ABI name is the declared name, with the selector Solidity would compute. Payloads are any ABI values, ABI-encoded as Solidity would. A record payload is the error's parameters, one per field. Two errors whose selectors collide, such as errors of one name and payload from two imported files, are rejected.
 
 ## Raising errors
 
@@ -62,8 +62,8 @@ Each error compiles to a Solidity custom error. The ABI name is the declared nam
 import "std/evm";
 
 error Unauthorized;
-error Too_large of uint;
-error Insufficient_balance of record {
+error TooLarge of uint;
+error InsufficientBalance of record {
   available : uint;
   required : uint;
 }
@@ -74,19 +74,19 @@ storage is record {
 }
 
 external function withdraw(const amount : uint)
-  raises Unauthorized | Too_large | Insufficient_balance
+  raises Unauthorized | TooLarge | InsufficientBalance
 is {
   assert(Evm.sender() = storage.owner, Unauthorized);
-  assert(amount <= 1_000_000, Too_large(amount));
+  assert(amount <= 1_000_000, TooLarge(amount));
   const have : uint := storage.balances[Evm.sender()];
   if have < amount then {
-    fail Insufficient_balance { available = have; required = amount; };
+    fail InsufficientBalance { available = have; required = amount; };
   }
   storage.balances[Evm.sender()] := have - amount;
 }
 ```
 
-A record payload can also be passed as one value: with `error Bad_point of point`, where `point` is a record type, `fail Bad_point(p)` raises it for a `p : point`. The record's fields are still the error's parameters.
+A record payload can also be passed as one value: with `error BadPoint of Point`, where `Point` is a record type, `fail BadPoint(p)` raises it for a `p : point`. The record's fields are still the error's parameters.
 
 ## `raises`
 
@@ -95,7 +95,7 @@ An external function must list every error its body can raise, directly or throu
 ```lithe rejects
 import "std/evm";
 
-error Not_owner;
+error NotOwner;
 error Closed;
 
 storage is record {
@@ -104,9 +104,9 @@ storage is record {
 }
 
 external function go()
-  raises Not_owner
+  raises NotOwner
 is {
-  assert(Evm.sender() = storage.owner, Not_owner);
+  assert(Evm.sender() = storage.owner, NotOwner);
   assert(storage.open, Closed);
 }
 ```
@@ -121,7 +121,7 @@ If `raises` is missing entirely, the compiler says what it inferred:
 main.lithe:7:10: external function `go` must declare its errors
 
 inferred:
-  Not_owner
+  NotOwner
 ```
 
 A function's ABI, its `raises` clause, and the output of `lithe errors` therefore always agree. Callers and auditors can rely on the full set of failures.
@@ -131,21 +131,21 @@ Internal functions may leave `raises` off. Their errors are inferred and propaga
 ```lithe
 import "std/evm";
 
-error Not_owner;
+error NotOwner;
 
 storage is record {
   owner : address;
   value : uint;
 }
 
-view function only_owner() is {
-  assert(Evm.sender() = storage.owner, Not_owner);
+view function onlyOwner() is {
+  assert(Evm.sender() = storage.owner, NotOwner);
 }
 
 external function set(const value : uint)
-  raises Not_owner
+  raises NotOwner
 is {
-  only_owner();
+  onlyOwner();
   storage.value := value;
 }
 ```
@@ -192,12 +192,12 @@ Name a group of errors once and reuse it:
 
 ```lithe
 error Paused;
-error Too_small of uint;
+error TooSmall of uint;
 error Insufficient of uint;
 
-errors withdraw_errors is
+errors withdrawErrors is
   | Paused
-  | Too_small
+  | TooSmall
   | Insufficient
 
 storage is record {
@@ -206,16 +206,16 @@ storage is record {
 }
 
 external function withdraw(const amount : uint)
-  raises withdraw_errors
+  raises withdrawErrors
 is {
   assert(not storage.paused, Paused);
-  assert(amount >= 10, Too_small(amount));
+  assert(amount >= 10, TooSmall(amount));
   assert(storage.balance >= amount, Insufficient(storage.balance));
   storage.balance := storage.balance - amount;
 }
 ```
 
-A `raises` clause can mix sets and errors: `raises withdraw_errors | Not_owner`. Sets cannot contain other sets.
+A `raises` clause can mix sets and errors: `raises withdrawErrors | NotOwner`. Sets cannot contain other sets.
 
 ## Panics
 
@@ -223,7 +223,7 @@ Some failures are not declared errors. They are violated invariants, and they re
 
 | Code | Cause |
 | --- | --- |
-| `0x11` | arithmetic overflow or underflow, a conversion out of range, or a value too wide for `Uint.to_hex_string`'s length |
+| `0x11` | arithmetic overflow or underflow, a conversion out of range, or a value too wide for `Uint.toHexString`'s length |
 | `0x12` | division or remainder by zero |
 | `0x32` | list index out of range |
 

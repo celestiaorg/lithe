@@ -12,13 +12,13 @@ module Merkle is {
   error MerkleProofInvalidMultiproof;
 
   pure function verify(const proof : list(bytes32); const root : bytes32; const leaf : bytes32) : bool is
-    process_proof(proof, leaf) = root
+    processProof(proof, leaf) = root
 
   (* The root that `proof` leads to from `leaf`: one level up per node. *)
-  pure function process_proof(const proof : list(bytes32); const leaf : bytes32) : bytes32 is {
+  pure function processProof(const proof : list(bytes32); const leaf : bytes32) : bytes32 is {
     var node : bytes32 := leaf;
     for sibling : bytes32 in proof do {
-      node := hash_pair(node, sibling);
+      node := hashPair(node, sibling);
     }
   } with node
 
@@ -27,7 +27,7 @@ module Merkle is {
      whether its second node is the next leaf or computed hash (`true`) or the next proof
      node (`false`). The leaves come in the order `@openzeppelin/merkle-tree` gives them.
      As in OpenZeppelin, no leaves and a one-node proof prove `proof[0]`. *)
-  pure function verify_multi(
+  pure function verifyMulti(
     const proof : list(bytes32);
     const flags : list(bool);
     const root : bytes32;
@@ -35,7 +35,7 @@ module Merkle is {
   ) : bool
     raises MerkleProofInvalidMultiproof
   is
-    process_multi_proof(proof, flags, leaves) = root
+    processMultiProof(proof, flags, leaves) = root
 
   (* The root a multiproof rebuilds. The leaves, then each hash made, form one queue of
      `leaves.length + flags.length` nodes: a hash takes the queue's next node and, by its
@@ -43,7 +43,7 @@ module Merkle is {
      zero, and reading past the queue or the proof panics, as in OpenZeppelin. Raises
      `MerkleProofInvalidMultiproof` unless the lengths agree and the flags use every
      proof node. *)
-  pure function process_multi_proof(
+  pure function processMultiProof(
     const proof : list(bytes32);
     const flags : list(bool);
     const leaves : list(bytes32)
@@ -52,25 +52,25 @@ module Merkle is {
   is {
     const count : uint := flags.length;
     const n : uint := leaves.length;
-    assert(Uint.wrapping_add(n, proof.length) = Uint.wrapping_add(count, 1), MerkleProofInvalidMultiproof);
-    var queue : list(bytes32) := List.resized(leaves, Uint.wrapping_add(n, count));
+    assert(Uint.wrappingAdd(n, proof.length) = Uint.wrappingAdd(count, 1), MerkleProofInvalidMultiproof);
+    var queue : list(bytes32) := List.resized(leaves, Uint.wrappingAdd(n, count));
     (* Each hash takes two nodes, so after `i` of them the proof has given `2i - front`. *)
     var front : uint := 0;
     for (i, merge) : (uint, bool) in flags do {
       const a : bytes32 := queue[front];
-      const b : bytes32 := if merge then queue[Uint.wrapping_add(front, 1)]
-      else proof[Uint.wrapping_sub(Uint.wrapping_add(i, i), front)];
-      front := Uint.wrapping_add(Uint.wrapping_add(front, 1), uint(merge));
-      queue[Uint.wrapping_add(n, i)] := hash_pair(a, b);
+      const b : bytes32 := if merge then queue[Uint.wrappingAdd(front, 1)]
+      else proof[Uint.wrappingSub(Uint.wrappingAdd(i, i), front)];
+      front := Uint.wrappingAdd(Uint.wrappingAdd(front, 1), uint(merge));
+      queue[Uint.wrappingAdd(n, i)] := hashPair(a, b);
     }
     assert(
-      Uint.wrapping_sub(Uint.wrapping_add(count, count), front) = proof.length or count = 0,
+      Uint.wrappingSub(Uint.wrappingAdd(count, count), front) = proof.length or count = 0,
       MerkleProofInvalidMultiproof
     );
-  } with if queue.length = 0 then proof[0] else queue[Uint.wrapping_sub(queue.length, 1)]
+  } with if queue.length = 0 then proof[0] else queue[Uint.wrappingSub(queue.length, 1)]
 
   (* The parent of two nodes, whichever order they come in. *)
-  pure function hash_pair(const a : bytes32; const b : bytes32) : bytes32 is {
-    const swap : uint := Uint.wrapping_mul(uint(a) ^ uint(b), uint(a > b));
-  } with Crypto.keccak256(Abi.encode_packed(bytes32(uint(a) ^ swap), bytes32(uint(b) ^ swap)))
+  pure function hashPair(const a : bytes32; const b : bytes32) : bytes32 is {
+    const swap : uint := Uint.wrappingMul(uint(a) ^ uint(b), uint(a > b));
+  } with Crypto.keccak256(Abi.encodePacked(bytes32(uint(a) ^ swap), bytes32(uint(b) ^ swap)))
 }

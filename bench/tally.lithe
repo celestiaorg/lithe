@@ -3,19 +3,19 @@
 
 import "std/evm";
 
-module Tally(K : map_key) is {
-  type self is record {
+module Tally(K : MapKey) is {
+  type Self is record {
     counts : map(K, uint);
     total : uint;
   }
 
-  view function count(storage tally : self; const key : K) : uint is
+  view function count(storage tally : Self; const key : K) : uint is
     tally.counts[key]
 
-  view function total(storage tally : self) : uint is
+  view function total(storage tally : Self) : uint is
     tally.total
 
-  function add(storage tally : self; const key : K; const n : uint) is {
+  function add(storage tally : Self; const key : K; const n : uint) is {
     tally.counts[key] := tally.counts[key] + n;
     tally.total := tally.total + n;
   }
@@ -23,36 +23,36 @@ module Tally(K : map_key) is {
 
 module Votes is {
   storage votes at "bench.votes" is record {
-    by_voter : Tally(address);
-    by_topic : Tally(bytes32);
+    byVoter : Tally(address);
+    byTopic : Tally(bytes32);
   }
 
-  error Zero_weight;
+  error ZeroWeight;
 
   external function vote(const topic : bytes32; const weight : uint)
-    raises Zero_weight
+    raises ZeroWeight
   is {
-    assert(weight > 0, Zero_weight);
-    Tally.add(votes.by_voter, Evm.sender(), weight);
-    Tally.add(votes.by_topic, topic, weight);
+    assert(weight > 0, ZeroWeight);
+    Tally.add(votes.byVoter, Evm.sender(), weight);
+    Tally.add(votes.byTopic, topic, weight);
   }
 
-  external view function votes_of(const voter : address) : uint is
-    Tally.count(votes.by_voter, voter)
+  external view function votesOf(const voter : address) : uint is
+    Tally.count(votes.byVoter, voter)
 
-  external view function votes_for(const topic : bytes32) : uint is
-    Tally.count(votes.by_topic, topic)
+  external view function votesFor(const topic : bytes32) : uint is
+    Tally.count(votes.byTopic, topic)
 
-  external view function total_votes() : uint is
-    Tally.total(votes.by_topic)
+  external view function totalVotes() : uint is
+    Tally.total(votes.byTopic)
 }
 
 interface ITally is {
   function vote(topic : bytes32; weight : uint)
-    raises Zero_weight;
-  view function votes_of(voter : address) : uint;
-  view function votes_for(topic : bytes32) : uint;
-  view function total_votes() : uint;
+    raises ZeroWeight;
+  view function votesOf(voter : address) : uint;
+  view function votesFor(topic : bytes32) : uint;
+  view function totalVotes() : uint;
 }
 
 use Votes exposing ITally;

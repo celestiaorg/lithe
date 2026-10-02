@@ -2,7 +2,7 @@
 
 import "std/evm";
 
-error Too_small of record {
+error TooSmall of record {
   amount : uint;
 }
 
@@ -10,21 +10,21 @@ event Paid of record {
   amount : uint;
 }
 
-type payment is record {
+type Payment is record {
   recipient : address;
   amount : uint;
-  expires_at : timestamp;
+  expiresAt : timestamp;
 }
 
 storage is record {
   paid : uint;
 }
 
-type action is
-  | Pay of (n : uint)
-  | Stop
+type Action is
+  | Pay external pay of (n : uint)
+  | Stop external stop
 
-external view function first_admin() : address is {
+external view function firstAdmin() : address is {
   const alice : address := 0x0000000000000000000000000000000000000001;
   const bob : address := 0x0000000000000000000000000000000000000002;
   const carol : address := 0x0000000000000000000000000000000000000003;
@@ -36,7 +36,7 @@ external view function first_admin() : address is {
   const first : address := admins[0];
 } with first
 
-external view function admin_count() : uint is {
+external view function adminCount() : uint is {
   const alice : address := 0x0000000000000000000000000000000000000001;
   const bob : address := 0x0000000000000000000000000000000000000002;
   const admins : list(address) := [alice, bob];
@@ -49,19 +49,19 @@ external view function second() : uint is {
 
 external view function owed() : uint is {
   const account : address := Evm.sender();
-  const payment : payment := {
+  const payment : Payment := {
     amount = 9;
-    expires_at = Evm.block_timestamp();
+    expiresAt = Evm.blockTimestamp();
     recipient = account;
   };
 } with payment.amount
 
-external function main(const action : action)
-  raises Too_small
+external function main(const action : Action)
+  raises TooSmall
 is
   case action of {
     | Pay(n) -> {
-        assert(n > 0, Too_small { amount = n });
+        assert(n > 0, TooSmall { amount = n });
         storage.paid := storage.paid + n;
         emit Paid { amount = n };
       }

@@ -24,34 +24,8 @@ module ERC20Permit is {
   requires ECDSA;
   requires Nonces;
 
-  pure function permit_typehash() : bytes32 is
+  pure function permitTypehash() : bytes32 is
     Crypto.keccak256("Permit(address owner,address spender,uint256 value,uint256 nonce,uint256 deadline)")
-
-  function permit(
-    const owner : address;
-    const spender : address;
-    const value : uint;
-    const deadline : uint;
-    const v : uint8;
-    const r : bytes32;
-    const s : bytes32
-  )
-    raises ERC2612ExpiredSignature | ERC2612InvalidSigner | ECDSAInvalidSignature | ECDSAInvalidSignatureS
-      | ERC20InvalidApprover | ERC20InvalidSpender
-  is {
-    assert(uint(Evm.block_timestamp()) <= deadline, ERC2612ExpiredSignature(deadline));
-    const struct_hash : bytes32 := Crypto.keccak256(Abi.encode(
-      permit_typehash(),
-      owner,
-      spender,
-      value,
-      Nonces.use_nonce(owner),
-      deadline
-    ));
-    const signer : address := ECDSA.recover(EIP712.hash_typed_data(struct_hash), v, r, s);
-    assert(signer = owner, ERC2612InvalidSigner { signer = signer; owner = owner; });
-    ERC20.approve_as(owner, spender, value, true);
-  }
 
   external function permit(
     const owner : address;
@@ -64,12 +38,24 @@ module ERC20Permit is {
   )
     raises ERC2612ExpiredSignature | ERC2612InvalidSigner | ECDSAInvalidSignature | ECDSAInvalidSignatureS
       | ERC20InvalidApprover | ERC20InvalidSpender
-  is
-    permit(owner, spender, value, deadline, v, r, s)
+  is {
+    assert(uint(Evm.blockTimestamp()) <= deadline, ERC2612ExpiredSignature(deadline));
+    const structHash : bytes32 := Crypto.keccak256(Abi.encode(
+      permitTypehash(),
+      owner,
+      spender,
+      value,
+      Nonces.useNonce(owner),
+      deadline
+    ));
+    const signer : address := ECDSA.recover(EIP712.hashTypedData(structHash), v, r, s);
+    assert(signer = owner, ERC2612InvalidSigner { signer = signer; owner = owner; });
+    ERC20.approveAs(owner, spender, value, true);
+  }
 
   external view function nonces(const owner : address) : uint is
-    Nonces.nonces(owner)
+    Nonces.nonceState.counts[owner]
 
   external view function DOMAIN_SEPARATOR() : bytes32 is
-    EIP712.domain_separator()
+    EIP712.domainSeparator()
 }

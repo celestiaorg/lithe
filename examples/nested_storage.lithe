@@ -4,39 +4,39 @@
 
 import "std/list";
 
-type checkpoint is record {
+type Checkpoint is record {
   key : uint48;
   value : uint208;
 }
 
-type role is record {
+type Role is record {
   members : map(address, bool);
   admin : bytes32;
 }
 
-type card is record {
+type Card is record {
   name : string;
   age : uint8;
   inner : record { bio : string; score : uint16; };
 }
 
-type account is record {
+type Account is record {
   name : string;
   tags : list(uint);
 }
 
 storage is record {
-  total : list(checkpoint);
-  history : map(address, list(checkpoint));
-  roles : map(bytes32, role);
-  accounts : map(uint, account);
+  total : list(Checkpoint);
+  history : map(address, list(Checkpoint));
+  roles : map(bytes32, Role);
+  accounts : map(uint, Account);
   counts : map(address, list(uint));
-  fixed : list(checkpoint, 3);
-  cards : map(uint, card);
+  fixed : list(Checkpoint, 3);
+  cards : map(uint, Card);
 }
 
 (* The newest value, or zero. *)
-view function latest(storage points : list(checkpoint)) : uint208 is {
+view function latest(storage points : list(Checkpoint)) : uint208 is {
   var value : uint208 := 0;
   if points.length > 0 then {
     value := points[points.length - 1].value;
@@ -44,7 +44,7 @@ view function latest(storage points : list(checkpoint)) : uint208 is {
 } with value
 
 (* A second push at the newest key replaces its value. *)
-function push(storage points : list(checkpoint); const key : uint48; const value : uint208) is {
+function push(storage points : list(Checkpoint); const key : uint48; const value : uint208) is {
   const count : uint := points.length;
   if count > 0 and points[count - 1].key = key then {
     points[count - 1].value := value;
@@ -53,7 +53,7 @@ function push(storage points : list(checkpoint); const key : uint48; const value
   }
 }
 
-external function record_total(const key : uint48; const value : uint208) is {
+external function recordTotal(const key : uint48; const value : uint208) is {
   push(storage.total, key, value);
 }
 
@@ -62,16 +62,16 @@ external function note(const who : address; const key : uint48; const value : ui
   push(storage.total, key, latest(storage.total) + value);
 }
 
-external view function total_count() : uint is
+external view function totalCount() : uint is
   storage.total.length
 
-external view function total_at(const i : uint) : checkpoint is
+external view function totalAt(const i : uint) : Checkpoint is
   storage.total[i]
 
-external view function history_count(const who : address) : uint is
+external view function historyCount(const who : address) : uint is
   storage.history[who].length
 
-external view function history_value(const who : address; const i : uint) : uint is
+external view function historyValue(const who : address; const i : uint) : uint is
   uint(storage.history[who][i].value)
 
 external view function newest(const who : address) : uint is
@@ -82,11 +82,11 @@ external function bump(const who : address; const i : uint) is {
 }
 
 (* The whole history, read and written as a list. *)
-external function copy_history(const from : address; const to : address) is {
+external function copyHistory(const from : address; const to : address) is {
   storage.history[to] := storage.history[from];
 }
 
-external function restart_total(const who : address) is {
+external function restartTotal(const who : address) is {
   storage.total := storage.history[who];
 }
 
@@ -94,7 +94,7 @@ external function grant(const r : bytes32; const who : address) is {
   storage.roles[r].members[who] := true;
 }
 
-external function set_admin(const r : bytes32; const admin : bytes32) is {
+external function setAdmin(const r : bytes32; const admin : bytes32) is {
   storage.roles[r].admin := admin;
 }
 
@@ -112,16 +112,16 @@ external function tag(const id : uint; const t : uint) is {
   List.push(storage.accounts[id].tags, t);
 }
 
-external view function name_of(const id : uint) : string is
+external view function nameOf(const id : uint) : string is
   storage.accounts[id].name
 
-external view function name_length(const id : uint) : uint is
+external view function nameLength(const id : uint) : uint is
   storage.accounts[id].name.length
 
 external view function tags(const id : uint) : list(uint) is
   storage.accounts[id].tags
 
-external function set_counts(const who : address; const xs : list(uint)) is {
+external function setCounts(const who : address; const xs : list(uint)) is {
   storage.counts[who] := xs;
 }
 
@@ -130,10 +130,10 @@ external view function counts(const who : address) : list(uint) is
 
 (* A local list of records, element fields read and written in place. *)
 external pure function locals(const k : uint208) : uint is {
-  var points : list(checkpoint) := [{ key = 1; value = 2; }, { key = 3; value = 4; }];
+  var points : list(Checkpoint) := [{ key = 1; value = 2; }, { key = 3; value = 4; }];
   points[1].value := k;
   List.push(points, { key = 5; value = k + 1; });
-  const last : checkpoint := points[2];
+  const last : Checkpoint := points[2];
 } with uint(points[1].value) + uint(points[0].key) * 1000 + uint(last.value) * 1000000 + points.length
 
 interface Oracle is {
@@ -142,28 +142,28 @@ interface Oracle is {
 
 (* A query makes the body work on an image of storage; computed slots go through the
    journal and land the same. *)
-external function note_priced(const o : Oracle; const who : address; const key : uint48) is {
+external function notePriced(const o : Oracle; const who : address; const key : uint48) is {
   const p : uint := query o.price(1);
   push(storage.history[who], key, uint208(p - p + 77));
   storage.roles[0x0000000000000000000000000000000000000000000000000000000000000001].members[who] := p = p;
 }
 
-external function set_fixed(const i : uint; const key : uint48; const value : uint208) is {
+external function setFixed(const i : uint; const key : uint48; const value : uint208) is {
   storage.fixed[i] := { key = key; value = value; };
   storage.fixed[i].value := storage.fixed[i].value + 1;
 }
 
 (* In the image, a fixed list's elements are leaves: written, read back, and flushed. *)
-external function set_fixed_priced(const o : Oracle; const i : uint; const key : uint48) is {
+external function setFixedPriced(const o : Oracle; const i : uint; const key : uint48) is {
   const p : uint := query o.price(1);
   storage.fixed[i].key := key;
   storage.fixed[i].value := uint208(p - p + 5) + storage.fixed[i].value;
 }
 
-external view function fixed_at(const i : uint) : checkpoint is
+external view function fixedAt(const i : uint) : Checkpoint is
   storage.fixed[i]
 
-external view function fixed_key(const i : uint) : uint is
+external view function fixedKey(const i : uint) : uint is
   uint(storage.fixed[i].key)
 
 (* Popping clears the last element's slot, in a map's list as in a named one. *)
@@ -173,9 +173,9 @@ external function pop(const who : address) is {
 }
 
 (* A record with strings, read and written whole: each string at its own slot. *)
-external function set_card(const id : uint; const name : string; const bio : string) is {
+external function setCard(const id : uint; const name : string; const bio : string) is {
   storage.cards[id] := { name = name; age = 3; inner = { bio = bio; score = 9; }; };
 }
 
-external view function card_of(const id : uint) : card is
+external view function cardOf(const id : uint) : Card is
   storage.cards[id]

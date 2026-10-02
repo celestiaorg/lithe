@@ -2,74 +2,74 @@
 
 import "std/evm";
 
-error Invalid_owner_access;
+error InvalidOwnerAccess;
 
 storage is record {
   count : uint;
   owner : address;
 }
 
-event Count_changed of record {
-  old_count : uint;
-  new_count : uint;
+event CountChanged of record {
+  oldCount : uint;
+  newCount : uint;
 }
 
-type owner_action is
-  | Reset
+type OwnerAction is
+  | Reset external reset
 
-type public_action is
-  | Increment of (n : uint)
+type PublicAction is
+  | Increment external increment of (n : uint)
 
-type action is
-  | Owner_action of owner_action
-  | Public_action of public_action
+type Action is
+  | OwnerAction of OwnerAction
+  | PublicAction of PublicAction
 
 function add(const n : uint) is {
   if n > 0 then {
-    const old_count : uint := storage.count;
+    const oldCount : uint := storage.count;
 
     storage.count := storage.count + n;
 
-    emit Count_changed {
-      old_count = old_count;
-      new_count = storage.count;
+    emit CountChanged {
+      oldCount = oldCount;
+      newCount = storage.count;
     };
   }
 }
 
-function owner_main(const action : owner_action)
-  raises Invalid_owner_access
+function ownerMain(const action : OwnerAction)
+  raises InvalidOwnerAccess
 is {
-  assert(Evm.sender() = storage.owner, Invalid_owner_access);
+  assert(Evm.sender() = storage.owner, InvalidOwnerAccess);
 }
 with case action of
 {
 | Reset -> {
-    const old_count : uint := storage.count;
+    const oldCount : uint := storage.count;
 
     storage.count := 0;
 
-    emit Count_changed {
-      old_count = old_count;
-      new_count = 0;
+    emit CountChanged {
+      oldCount = oldCount;
+      newCount = 0;
     };
   }
 }
 
-function public_main(const action : public_action) is
+function publicMain(const action : PublicAction) is
   case action of
   {
   | Increment(n) -> add(n)
   }
 
-external function main(const action : action)
-  raises Invalid_owner_access
+external function main(const action : Action)
+  raises InvalidOwnerAccess
 is
   case action of
   {
-  | Owner_action(a) -> owner_main(a)
-  | Public_action(a) -> public_main(a)
+  | OwnerAction(a) -> ownerMain(a)
+  | PublicAction(a) -> publicMain(a)
   }
 
-external view function get_count() : uint is
+external view function getCount() : uint is
   storage.count

@@ -10,7 +10,7 @@
      const next : address := Queue.pop(storage.pending); *)
 
 module Queue(T) is {
-  type self is record {
+  type Self is record {
     items : map(uint, T);
     head : uint;
     tail : uint;
@@ -19,38 +19,38 @@ module Queue(T) is {
   error QueueEmpty;
   error QueueOutOfBounds of uint;
 
-  view function length(storage q : self) : uint is
+  view function length(storage q : Self) : uint is
     q.tail - q.head
 
-  view function is_empty(storage q : self) : bool is
+  view function isEmpty(storage q : Self) : bool is
     q.tail = q.head
 
   (* The element `index` places from the front. *)
-  view function at(storage q : self; const index : uint) : T
+  view function at(storage q : Self; const index : uint) : T
     raises QueueOutOfBounds
   is {
     assert(index < q.tail - q.head, QueueOutOfBounds(index));
   } with q.items[q.head + index]
 
-  view function front(storage q : self) : T
+  view function front(storage q : Self) : T
     raises QueueEmpty
   is {
     assert(q.tail > q.head, QueueEmpty);
   } with q.items[q.head]
 
-  view function back(storage q : self) : T
+  view function back(storage q : Self) : T
     raises QueueEmpty
   is {
     assert(q.tail > q.head, QueueEmpty);
   } with q.items[q.tail - 1]
 
-  function push(storage q : self; const value : T) is {
+  function push(storage q : Self; const value : T) is {
     q.items[q.tail] := value;
     q.tail := q.tail + 1;
   }
 
   (* Removes and returns the front element. *)
-  function pop(storage q : self) : T
+  function pop(storage q : Self) : T
     raises QueueEmpty
   is {
     const head : uint := q.head;

@@ -1,10 +1,10 @@
-type tiny is uint8;
+type Tiny is uint8;
 
 storage is record {
   n : uint;
 }
 
 external function go() is {
-  const x : tiny := 300;
+  const x : Tiny := 300;
   skip
 }

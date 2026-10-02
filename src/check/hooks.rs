@@ -1,4 +1,4 @@
-//! Module hooks. A module declares `hook before_transfer(const id : uint);` and its code
+//! Module hooks. A module declares `hook beforeTransfer(const id : uint);` and its code
 //! calls it by name. The contract implements each hook its code can reach, exactly once:
 //! `hook M.h(...) is { ... }`, `hook M.h is f;`, or `hook M.h is skip;`. The implementation
 //! becomes the contract's internal function `M.h#hook`, which the module's calls reach. A

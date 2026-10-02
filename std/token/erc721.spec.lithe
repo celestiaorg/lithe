@@ -6,20 +6,20 @@ spec for module ERC721 is {
     (* Each owned token counts once in its owner's balance. *)
     invariant counted is sum(erc721.balances) = count(erc721.owners);
     (* The zero address owns nothing, and approves no one. *)
-    invariant nothing_at_zero is erc721.balances[Address.zero] = 0;
-    invariant no_zero_operator is
-      forall a : address . not erc721.operator_approvals[Address.zero][a];
+    invariant nothingAtZero is erc721.balances[Address.zero] = 0;
+    invariant noZeroOperator is
+      forall a : address . not erc721.operatorApprovals[Address.zero][a];
     (* Only a token that exists has an approval. *)
-    invariant approvals_owned is
+    invariant approvalsOwned is
       forall id : uint . erc721.owners[id] <> Address.zero
-        or erc721.token_approvals[id] = Address.zero;
+        or erc721.tokenApprovals[id] = Address.zero;
   }
 
-  spec for external transferFrom is partial {
+  spec for transferFrom is partial {
     raises ERC721InvalidReceiver when to = Address.zero;
     raises ERC721NonexistentToken when old.erc721.owners[tokenId] = Address.zero;
     ensures new.erc721.owners[tokenId] = to;
-    ensures new.erc721.token_approvals[tokenId] = Address.zero;
+    ensures new.erc721.tokenApprovals[tokenId] = Address.zero;
     ensures from = to or new.erc721.balances[to] = old.erc721.balances[to] + 1;
   }
 }

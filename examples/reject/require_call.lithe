@@ -1,12 +1,12 @@
 module Pausable is {
-  function require_unpaused() is {
+  function requireUnpaused() is {
     skip
   }
 }
 
 module Guarded is {
   external function go() is {
-    Pausable.require_unpaused();
+    Pausable.requireUnpaused();
   }
 }
 

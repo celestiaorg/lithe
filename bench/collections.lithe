@@ -38,6 +38,6 @@ external view function length() : uint is
   MapEnumerable.length(storage.balances)
 
 external view function at(const index : uint) : (address, uint)
-  raises Out_of_bounds
+  raises OutOfBounds
 is
   MapEnumerable.at(storage.balances, index)

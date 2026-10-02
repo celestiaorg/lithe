@@ -11,7 +11,7 @@ description: "Dynamic and fixed-length lists in storage and memory."
 import "std/evm";
 import "std/list";
 
-error Out_of_range of uint;
+error OutOfRange of uint;
 
 storage is record {
   (* A dynamic list has a length, which `List.push` grows. *)
@@ -29,15 +29,15 @@ external function drop() is {
 }
 
 external view function get(const i : uint) : uint
-  raises Out_of_range
+  raises OutOfRange
 is {
-  assert(i < storage.items.length, Out_of_range(i));
+  assert(i < storage.items.length, OutOfRange(i));
 } with storage.items[i]
 
 external view function length() : uint is
   storage.items.length
 
-external function set_slot(const i : uint) is {
+external function setSlot(const i : uint) is {
   storage.slots[i] := Evm.sender();
 }
 

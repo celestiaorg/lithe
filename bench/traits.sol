@@ -14,15 +14,15 @@ contract Traits {
         minted += count;
     }
 
-    function tag(uint256 token_id, string calldata trait_type) external {
-        if (bytes(trait_type).length == 0) revert EmptyTrait("trait type is empty");
-        if (token_id >= minted) revert AttributeNotFound(token_id, trait_type);
-        tagged = token_id;
+    function tag(uint256 tokenId, string calldata traitType) external {
+        if (bytes(traitType).length == 0) revert EmptyTrait("trait type is empty");
+        if (tokenId >= minted) revert AttributeNotFound(tokenId, traitType);
+        tagged = tokenId;
     }
 
-    function background(uint256 token_id) external view returns (uint256) {
-        if (token_id >= minted) revert AttributeNotFound(token_id, "Background");
-        return token_id;
+    function background(uint256 tokenId) external view returns (uint256) {
+        if (tokenId >= minted) revert AttributeNotFound(tokenId, "Background");
+        return tokenId;
     }
 
     function check(uint256[] calldata ids) external view returns (uint256) {

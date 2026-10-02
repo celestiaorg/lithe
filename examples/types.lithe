@@ -2,33 +2,33 @@
 
 import "std/evm";
 
-type basis_points is uint16;
-type discount_rate is uint16;
+type BasisPoints is uint16;
+type DiscountRate is uint16;
 
 interface Fees is {
-  view function fee_of(amount : uint) : basis_points;
+  view function feeOf(amount : uint) : BasisPoints;
 }
 
 storage is record {
   paid : wei;
   updated : timestamp;
-  fee : basis_points;
+  fee : BasisPoints;
 }
 
-external function quote(const fee : basis_points) is {
-  const discount : discount_rate := discount_rate(uint16(fee));
-  const _kept : discount_rate := discount;
+external function quote(const fee : BasisPoints) is {
+  const discount : DiscountRate := DiscountRate(uint16(fee));
+  const _kept : DiscountRate := discount;
   storage.fee := fee;
   storage.paid := 1eth;
-  storage.updated := Evm.block_timestamp() + 1days;
+  storage.updated := Evm.blockTimestamp() + 1days;
 }
 
 (* An answer too wide for its nominal type reverts, as for the type it wraps. *)
-external view function fee_from(const fees : Fees; const amount : uint) : basis_points is
-  query fees.fee_of(amount)
+external view function feeFrom(const fees : Fees; const amount : uint) : BasisPoints is
+  query fees.feeOf(amount)
 
-external view function has_fee(const fees : Fees; const amount : uint) : bool is
-  case query fees.fee_of(amount) of {
+external view function hasFee(const fees : Fees; const amount : uint) : bool is
+  case query fees.feeOf(amount) of {
     | Ok(_) -> true
     | Error(_) -> false
   }

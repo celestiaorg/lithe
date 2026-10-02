@@ -42,7 +42,7 @@ fn records_in_maps_lay_out_like_solidity_structs() {
     assert_eq!(at(&bumped.storage, slot(3)), w(0xfed301));
     assert_eq!(at(&bumped.storage, slot(4)), w(8));
     assert_eq!(at(&bumped.storage, w(3)), w(2));
-    let delta = run(&bumped.storage, "delta_of(uint256)", &[w(1)]);
+    let delta = run(&bumped.storage, "deltaOf(uint256)", &[w(1)]);
     assert_eq!(load_bytes(&delta.returndata, 0), neg(301));
     assert!(run(&placed.storage, "bump(uint256,uint256)", &[w(2), w(1)]).reverted);
     let low = run(
@@ -59,7 +59,7 @@ fn records_in_maps_lay_out_like_solidity_structs() {
     let copy = |i: u64| map_key(w(4), w(1)).wrapping_add(w(i));
     assert_eq!(at(&copied.storage, copy(0)), w(0x702));
     assert_eq!(at(&copied.storage, copy(3)), w(0xfed300));
-    let order = run(&copied.storage, "order_of(uint256)", &[w(4)]);
+    let order = run(&copied.storage, "orderOf(uint256)", &[w(4)]);
     let words: Vec<Word> = (0..7)
         .map(|i| load_bytes(&order.returndata, i * 32))
         .collect();
@@ -71,7 +71,7 @@ fn records_in_maps_lay_out_like_solidity_structs() {
     let queried = run(&bumped.storage, "priced(address,uint256)", &[w(2), w(1)]);
     let direct = run(
         &bumped.storage,
-        "set_price(uint256,uint256)",
+        "setPrice(uint256,uint256)",
         &[w(1), price],
     );
     assert!(!queried.reverted && !direct.reverted);
@@ -80,7 +80,7 @@ fn records_in_maps_lay_out_like_solidity_structs() {
 
     let paired = run(
         &HashMap::new(),
-        "pair_set(uint256,uint128,uint128)",
+        "pairSet(uint256,uint128,uint128)",
         &[w(7), w(1), w(2)],
     );
     let inner = map_key(w(7), w(2));
@@ -91,7 +91,7 @@ fn records_in_maps_lay_out_like_solidity_structs() {
     assert_eq!(at(&paired.storage, map_key(w(8), inner)), w(2).shl(128));
 
     let program = |body: &str| {
-        format!("type r is record {{ a : uint8; b : uint; }}\nstorage is record {{ m : map(uint, r); n : map(uint, uint); }}\nexternal function f(const k : uint) is {{\n  {body}\n}}\n")
+        format!("type R is record {{ a : uint8; b : uint; }}\nstorage is record {{ m : map(uint, R); n : map(uint, uint); }}\nexternal function f(const k : uint) is {{\n  {body}\n}}\n")
     };
     for (body, want) in [
         ("storage.m[k].c := 1;", "no field `c`"),
@@ -137,7 +137,7 @@ fn nested_storage_lays_out_like_solidity() {
     );
     let st = run(&st, "note(address,uint48,uint208)", &[n(2), n(10), n(7)]);
     let st = run(&st, "note(address,uint48,uint208)", &[n(3), n(11), n(1)]);
-    let st = run(&st, "record_total(uint48,uint208)", &[n(12), n(100)]);
+    let st = run(&st, "recordTotal(uint48,uint208)", &[n(12), n(100)]);
     assert_eq!(slot(&st, 0), n(3));
     let total = elems(n(0));
     assert_eq!(at(&st, total), point(10, 12));
@@ -147,20 +147,20 @@ fn nested_storage_lays_out_like_solidity() {
     assert_eq!(at(&st, history(2)), n(1));
     assert_eq!(at(&st, elems(history(2))), point(10, 7));
     assert_eq!(at(&st, elems(history(3))), point(11, 1));
-    assert_eq!(read(&st, "total_count()", &[]), n(3));
-    let out = run_ok(&rt, &st, "total_at(uint256)", &[n(1)]).returndata;
+    assert_eq!(read(&st, "totalCount()", &[]), n(3));
+    let out = run_ok(&rt, &st, "totalAt(uint256)", &[n(1)]).returndata;
     assert_eq!((load_bytes(&out, 0), load_bytes(&out, 32)), (n(11), n(13)));
-    assert!(reverts(&st, "total_at(uint256)", &[n(3)]));
+    assert!(reverts(&st, "totalAt(uint256)", &[n(3)]));
     assert_eq!(
-        read(&st, "history_value(address,uint256)", &[n(2), n(0)]),
+        read(&st, "historyValue(address,uint256)", &[n(2), n(0)]),
         n(7)
     );
     assert_eq!(read(&st, "newest(address)", &[n(3)]), n(1));
     assert_eq!(read(&st, "newest(address)", &[n(9)]), n(0));
-    assert_eq!(read(&st, "history_count(address)", &[n(9)]), n(0));
+    assert_eq!(read(&st, "historyCount(address)", &[n(9)]), n(0));
     assert!(reverts(
         &st,
-        "history_value(address,uint256)",
+        "historyValue(address,uint256)",
         &[n(9), n(0)]
     ));
 
@@ -173,11 +173,11 @@ fn nested_storage_lays_out_like_solidity() {
     let st = run(&st, "bump(address,uint256)", &[n(2), n(0)]);
     assert_eq!(at(&st, elems(history(2))), point(10, 8));
     assert!(reverts(&st, "bump(address,uint256)", &[n(2), n(1)]));
-    let copied = run(&st, "copy_history(address,address)", &[n(2), n(5)]);
+    let copied = run(&st, "copyHistory(address,address)", &[n(2), n(5)]);
     assert_eq!(at(&copied, history(5)), n(1));
     assert_eq!(at(&copied, elems(history(5))), point(10, 8));
     // A shorter list clears the slots it no longer uses.
-    let restarted = run(&st, "restart_total(address)", &[n(3)]);
+    let restarted = run(&st, "restartTotal(address)", &[n(3)]);
     assert_eq!(slot(&restarted, 0), n(1));
     assert_eq!(at(&restarted, total), point(11, 1));
     assert_eq!(at(&restarted, total.wrapping_add(n(1))), n(0));
@@ -186,13 +186,13 @@ fn nested_storage_lays_out_like_solidity() {
     // Through the journal: a query first, then the same pushes land in the same slots.
     let priced = run(
         &st,
-        "note_priced(address,address,uint48)",
+        "notePriced(address,address,uint48)",
         &[n(2), n(3), n(11)],
     );
     assert_eq!(at(&priced, elems(history(3))), point(11, 77));
     let priced = run(
         &priced,
-        "note_priced(address,address,uint48)",
+        "notePriced(address,address,uint48)",
         &[n(2), n(3), n(12)],
     );
     assert_eq!(at(&priced, history(3)), n(2));
@@ -205,7 +205,7 @@ fn nested_storage_lays_out_like_solidity() {
 
     let role = n(0xabc);
     let st = run(&st, "grant(bytes32,address)", &[role, n(2)]);
-    let st = run(&st, "set_admin(bytes32,bytes32)", &[role, n(0xdef)]);
+    let st = run(&st, "setAdmin(bytes32,bytes32)", &[role, n(0xdef)]);
     let base = map_key(role, n(2));
     assert_eq!(at(&st, map_key(n(2), base)), n(1));
     assert_eq!(at(&st, base.wrapping_add(n(1))), n(0xdef));
@@ -236,10 +236,10 @@ fn nested_storage_lays_out_like_solidity() {
     );
     assert_eq!(at(&renamed.storage, account), n(long.len() as u64 * 2 + 1));
     assert_eq!(
-        read(&renamed.storage, "name_length(uint256)", &[n(7)]),
+        read(&renamed.storage, "nameLength(uint256)", &[n(7)]),
         n(long.len() as u64)
     );
-    let out = run_ok(&rt, &renamed.storage, "name_of(uint256)", &[n(7)]).returndata;
+    let out = run_ok(&rt, &renamed.storage, "nameOf(uint256)", &[n(7)]).returndata;
     assert_eq!(&out[64..64 + long.len()], long);
     let st = run(&named.storage, "tag(uint256,uint256)", &[n(7), n(42)]);
     let st = run(&st, "tag(uint256,uint256)", &[n(7), n(43)]);
@@ -253,7 +253,7 @@ fn nested_storage_lays_out_like_solidity() {
     let set = |st: &HashMap<Word, Word>, xs: &[u64]| {
         let mut args = vec![n(2), n(64), n(xs.len() as u64)];
         args.extend(xs.iter().map(|x| n(*x)));
-        run(st, "set_counts(address,uint256[])", &args)
+        run(st, "setCounts(address,uint256[])", &args)
     };
     let counted = set(&st, &[1, 2, 3]);
     let counts = map_key(n(2), n(4));
@@ -274,29 +274,29 @@ fn nested_storage_lays_out_like_solidity() {
     // A fixed list of records from slot 5, each element a slot, directly and in the image.
     let fixed = run(
         &HashMap::new(),
-        "set_fixed(uint256,uint48,uint208)",
+        "setFixed(uint256,uint48,uint208)",
         &[n(1), n(4), n(9)],
     );
     assert_eq!(slot(&fixed, 6), point(4, 10));
     let fixed = run(
         &fixed,
-        "set_fixed_priced(address,uint256,uint48)",
+        "setFixedPriced(address,uint256,uint48)",
         &[n(2), n(1), n(8)],
     );
     assert_eq!(slot(&fixed, 6), point(8, 15));
     let fixed = run(
         &fixed,
-        "set_fixed_priced(address,uint256,uint48)",
+        "setFixedPriced(address,uint256,uint48)",
         &[n(2), n(2), n(3)],
     );
     assert_eq!(slot(&fixed, 7), point(3, 5));
-    let out = run_ok(&rt, &fixed, "fixed_at(uint256)", &[n(1)]).returndata;
+    let out = run_ok(&rt, &fixed, "fixedAt(uint256)", &[n(1)]).returndata;
     assert_eq!((load_bytes(&out, 0), load_bytes(&out, 32)), (n(8), n(15)));
-    assert_eq!(read(&fixed, "fixed_key(uint256)", &[n(2)]), n(3));
-    assert!(reverts(&fixed, "fixed_at(uint256)", &[n(3)]));
+    assert_eq!(read(&fixed, "fixedKey(uint256)", &[n(2)]), n(3));
+    assert!(reverts(&fixed, "fixedAt(uint256)", &[n(3)]));
     assert!(reverts(
         &fixed,
-        "set_fixed_priced(address,uint256,uint48)",
+        "setFixedPriced(address,uint256,uint48)",
         &[n(2), n(3), n(1)]
     ));
 
@@ -306,7 +306,7 @@ fn nested_storage_lays_out_like_solidity() {
     let carded = call(
         &HashMap::new(),
         encode_args(
-            "set_card(uint256,string,string)",
+            "setCard(uint256,string,string)",
             &[Arg::W(n(4)), Arg::B(b"bo".to_vec()), Arg::B(long.clone())],
         ),
     );
@@ -323,7 +323,7 @@ fn nested_storage_lays_out_like_solidity() {
     );
     assert_eq!(at(&carded.storage, card.wrapping_add(n(3))), n(9));
     // The record's fields are its results; the inner record is one, a tuple.
-    let out = run_ok(&rt, &carded.storage, "card_of(uint256)", &[n(4)]).returndata;
+    let out = run_ok(&rt, &carded.storage, "cardOf(uint256)", &[n(4)]).returndata;
     let words: Vec<Word> = (0..3).map(|i| load_bytes(&out, i * 32)).collect();
     assert_eq!(words, [n(96), n(3), n(160)]);
     assert_eq!(&out[96..128], &n(2).to_be_bytes());
@@ -455,29 +455,29 @@ storage is record {
 external view function peek() : uint is storage.n
 external function put(const k : uint; const d : bytes) is { storage.m[bytes32(k)] := d; }
 external view function get(const k : uint) : bytes is storage.m[bytes32(k)]
-external function put_s(const k : uint; const d : string) is { storage.s[k] := d; }
-external view function get_s(const k : uint) : string is storage.s[k]
-external function put_mm(const k : uint; const d : string) is { storage.mm[k][2] := d; }
-external view function get_mm(const k : uint) : string is storage.mm[k][2]
-external function put_l(const k : uint; const d : string) is {
+external function putS(const k : uint; const d : string) is { storage.s[k] := d; }
+external view function getS(const k : uint) : string is storage.s[k]
+external function putMm(const k : uint; const d : string) is { storage.mm[k][2] := d; }
+external view function getMm(const k : uint) : string is storage.mm[k][2]
+external function putL(const k : uint; const d : string) is {
   if storage.l.length = 0 then { List.push(storage.l, d); } else { storage.l[k] := d; }
 }
-external view function get_l(const k : uint) : string is storage.l[k]
-external function put_all(const k : uint; const d : string) is {
+external view function getL(const k : uint) : string is storage.l[k]
+external function putAll(const k : uint; const d : string) is {
   var xs : list(string) := storage.l;
   if xs.length = 0 then { List.push(xs, d); } else { xs[k] := d; }
   storage.l := xs;
 }
-external view function get_all(const k : uint) : string is {
+external view function getAll(const k : uint) : string is {
   const xs : list(string) := storage.l;
 } with xs[k]
-external function put_j(const me : Me; const k : uint; const d : bytes) is {
+external function putJ(const me : Me; const k : uint; const d : bytes) is {
   storage.n := storage.n + 1;
   storage.m[bytes32(k)] := d;
   storage.n := query me.peek();
   storage.n := storage.m[bytes32(k)].length;
 }
-external view function get_j(const k : uint) : bytes is storage.m[bytes32(k)]
+external view function getJ(const k : uint) : bytes is storage.m[bytes32(k)]
 external view function total() : uint is {
   var n : uint := 0;
   for x : string in storage.l do { n := n + x.length; }
@@ -489,17 +489,17 @@ external view function total() : uint is {
     let lens = [0usize, 31, 32, 40, 61, 64, 100, 20, 33, 0];
     for (put, get, ty) in [
         ("put", "get", "bytes"),
-        ("put_s", "get_s", "string"),
-        ("put_mm", "get_mm", "string"),
-        ("put_l", "get_l", "string"),
-        ("put_all", "get_all", "string"),
-        ("put_j", "get_j", "bytes"),
+        ("putS", "getS", "string"),
+        ("putMm", "getMm", "string"),
+        ("putL", "getL", "string"),
+        ("putAll", "getAll", "string"),
+        ("putJ", "getJ", "bytes"),
     ] {
         let mut storage = HashMap::new();
         for len in lens {
             let data: Vec<u8> = (0..len as u8).map(|i| i ^ 0xa5).collect();
             let (sig, mut args) = match put {
-                "put_j" => ("put_j(address,uint256,bytes)".to_string(), vec![Arg::W(me)]),
+                "putJ" => ("putJ(address,uint256,bytes)".to_string(), vec![Arg::W(me)]),
                 _ => (format!("{put}(uint256,{ty})"), vec![]),
             };
             args.extend([Arg::W(w(0)), Arg::B(data.clone())]);
@@ -532,14 +532,14 @@ external view function total() : uint is {
                 data,
                 "{get} {len}"
             );
-            if put == "put_j" {
+            if put == "putJ" {
                 assert_eq!(
                     slot(&storage, 5),
                     w(len as u64),
-                    "put_j reads its write {len}"
+                    "putJ reads its write {len}"
                 );
             }
-            if put == "put_l" {
+            if put == "putL" {
                 assert_eq!(
                     load_bytes(&read("total()"), 0),
                     w(len as u64),
@@ -724,7 +724,7 @@ fn string_and_bytes_keys_hash_like_solidity() {
     let src = r#"import "std/evm"; 
 storage is record { pre : uint8; names : map(string, uint); raw : map(address, map(bytes, uint)); }
 external function set(const k : string; const v : uint) is { storage.names[k] := v; }
-external function set_raw(const k : bytes; const v : uint) is { storage.raw[Evm.sender()][k] := v; }
+external function setRaw(const k : bytes; const v : uint) is { storage.raw[Evm.sender()][k] := v; }
 external view function get(const k : string) : uint is storage.names[k]
 "#;
     let rt = deploy(&compile(src).expect("compile")).expect("deploy");
@@ -751,7 +751,7 @@ external view function get(const k : string) : uint is storage.names[k]
         assert_eq!(st.get(&slot_of(&k, n(1))).copied(), Some(n(v)));
         st = call(
             &st,
-            "set_raw(bytes,uint256)",
+            "setRaw(bytes,uint256)",
             &[Arg::B(k.clone()), Arg::W(n(v + 10))],
         )
         .storage;
@@ -769,8 +769,8 @@ external view function get(const k : string) : uint is storage.names[k]
 #[test]
 fn nested_stored_lists_lay_out_like_solidity() {
     let src = r#"import "std/list"; 
-type doc is record { n : uint8; s : string; xs : list(uint); }
-storage is record { pre : uint8; xs : list(list(uint)); ds : list(doc); t : (uint8, string); post : uint8; }
+type Doc is record { n : uint8; s : string; xs : list(uint); }
+storage is record { pre : uint8; xs : list(list(uint)); ds : list(Doc); t : (uint8, string); post : uint8; }
 external function put() is {
   List.push(storage.xs, [1, 2]);
   List.push(storage.xs, []);
@@ -782,7 +782,7 @@ external function put() is {
 external function pop() is { List.pop(storage.xs); List.pop(storage.ds); }
 external function whole() is { storage.xs := [[3], [4, 5, 6]]; }
 external view function get() : list(list(uint)) is storage.xs
-external view function doc0() : (uint8, string, list(uint)) is { const d : doc := storage.ds[0]; } with (d.n, d.s, d.xs)
+external view function doc0() : (uint8, string, list(uint)) is { const d : Doc := storage.ds[0]; } with (d.n, d.s, d.xs)
 "#;
     let rt = deploy(&compile(src).expect("compile")).expect("deploy");
     let n = Word::from_u64;
@@ -845,19 +845,19 @@ external view function doc0() : (uint8, string, list(uint)) is { const d : doc :
 #[test]
 fn transient_storage_takes_a_slot_per_word() {
     let src = r#"import "std/evm"; 
-type flags is record { on : bool; depth : uint8; count : uint16; }
-type pt is record { a : uint8; b : address; c : int16; d : uint; }
-type box is | Empty | Full of uint8 | Other of uint
+type Flags is record { on : bool; depth : uint8; count : uint16; }
+type Pt is record { a : uint8; b : address; c : int16; d : uint; }
+type Box is | Empty | Full of uint8 | Other of uint
 transient storage is record {
   on : bool;
-  f : flags;
+  f : Flags;
   t : (uint16, address);
   xs : list(uint8, 8);
-  ps : list(pt, 2);
+  ps : list(Pt, 2);
   o : option(uint);
   o8 : option(uint8);
-  b : box;
-  m : map(uint, flags);
+  b : Box;
+  m : map(uint, Flags);
   mm : map(address, map(uint, uint8));
   ml : map(uint, list(uint8, 3));
 }
@@ -879,8 +879,8 @@ external function run(const i : uint) : (uint8, uint8, int16, uint16, uint8, uin
   transient.mm[Evm.sender()][3] := 12;
   transient.ml[6][i - 3] := 13;
   const whole : list(uint8, 8) := transient.xs;
-  const p : pt := transient.ps[1];
-  const e : flags := transient.m[4];
+  const p : Pt := transient.ps[1];
+  const e : Flags := transient.m[4];
   const (u, _) : (uint16, address) := transient.t;
 } with (transient.f.depth, whole[5], p.c, e.count, transient.ml[6][2], transient.mm[Evm.sender()][3],
   case transient.o of { Some(v) -> v | None -> 0 }, u)
@@ -963,25 +963,25 @@ interface Echo is { view function echo(x : uint) : uint; }
 storage is record { pre : uint8; a : list(uint8); b : list(uint16); c : list(address); d : list(bool); e : list(uint8, 3); f : list(int8); g : map(uint, list(uint16)); h : list(list(uint8)); post : uint8; }
 external function fence() is { storage.pre := 0xa5; storage.post := 0x5a; }
 external function push(const x : uint8; const y : uint16; const z : bool; const w : int8) is { pushes(x, y, z, w); }
-external function push_ask(const x : uint8; const y : uint16; const z : bool; const w : int8) : uint is { pushes(x, y, z, w); } with query Echo(address(0xcd)).echo(storage.a.length)
+external function pushAsk(const x : uint8; const y : uint16; const z : bool; const w : int8) : uint is { pushes(x, y, z, w); } with query Echo(address(0xcd)).echo(storage.a.length)
 function pushes(const x : uint8; const y : uint16; const z : bool; const w : int8) is {
   List.push(storage.a, x); List.push(storage.b, y); List.push(storage.d, z); List.push(storage.f, w);
   List.push(storage.g[5], y);
   if storage.h.length = 0 then { List.push(storage.h, []); }
   List.push(storage.h[0], x);
 }
-external function push_c(const who : address) is { List.push(storage.c, who); }
+external function pushC(const who : address) is { List.push(storage.c, who); }
 external function pop() is { pops(); }
-external function pop_ask() : uint is { pops(); } with query Echo(address(0xcd)).echo(storage.a.length)
+external function popAsk() : uint is { pops(); } with query Echo(address(0xcd)).echo(storage.a.length)
 function pops() is { List.pop(storage.a); List.pop(storage.b); List.pop(storage.d); List.pop(storage.f);
   List.pop(storage.g[5]); List.pop(storage.h[0]);
 }
 external function set(const i : uint; const x : uint8; const w : int8) is { sets(i, x, w); }
-external function set_ask(const i : uint; const x : uint8; const w : int8) : uint is { sets(i, x, w); } with query Echo(address(0xcd)).echo(uint(storage.a[i]))
+external function setAsk(const i : uint; const x : uint8; const w : int8) : uint is { sets(i, x, w); } with query Echo(address(0xcd)).echo(uint(storage.a[i]))
 function sets(const i : uint; const x : uint8; const w : int8) is { storage.a[i] := x; storage.f[i] := w; storage.h[0][i] := x; }
-external function set_e(const i : uint; const v : uint8) is { storage.e[i] := v; }
+external function setE(const i : uint; const v : uint8) is { storage.e[i] := v; }
 external function assign(const xs : list(uint8)) is { storage.a := xs; storage.h[0] := xs; }
-external function assign_ask(const xs : list(uint8)) : uint is { storage.a := xs; storage.h[0] := xs; } with query Echo(address(0xcd)).echo(storage.a.length)
+external function assignAsk(const xs : list(uint8)) : uint is { storage.a := xs; storage.h[0] := xs; } with query Echo(address(0xcd)).echo(storage.a.length)
 external view function a() : list(uint8) is storage.a
 external view function b() : list(uint16) is storage.b
 external view function f() : list(int8) is storage.f
@@ -1076,11 +1076,11 @@ external view function sum() : uint is { var s : uint := 0; for x : uint8 in sto
         f.push(w);
     }
     for who in [0xabcd_u64, 0x1234] {
-        st = run_ok(&rt, &st, "push_c(address)", &[n(who)]).storage;
+        st = run_ok(&rt, &st, "pushC(address)", &[n(who)]).storage;
         c.push(who);
     }
     for (i, v) in [(0u64, 7u64), (2, 255)] {
-        st = run_ok(&rt, &st, "set_e(uint256,uint8)", &[n(i), n(v)]).storage;
+        st = run_ok(&rt, &st, "setE(uint256,uint8)", &[n(i), n(v)]).storage;
         e[i as usize] = v;
     }
     assert_eq!(live(&st), expect(&a, &b, &c, &d, &e, &f), "pushed");
@@ -1125,7 +1125,7 @@ external view function sum() : uint is { var s : uint := 0; for x : uint8 in sto
     // Popping down past a slot boundary clears each element's bytes, and pushing again
     // fills the part-full slot, directly and through the journal.
     for i in 0..9 {
-        st = run_ok(&rt, &st, ["pop()", "pop_ask()"][i % 2], &[]).storage;
+        st = run_ok(&rt, &st, ["pop()", "popAsk()"][i % 2], &[]).storage;
         a.pop();
         b.pop();
         d.pop();
@@ -1135,7 +1135,7 @@ external view function sum() : uint is { var s : uint := 0; for x : uint8 in sto
     st = run_ok(
         &rt,
         &st,
-        "push_ask(uint8,uint16,bool,int8)",
+        "pushAsk(uint8,uint16,bool,int8)",
         &[n(200), n(0xffff), n(1), signed(-128)],
     )
     .storage;
@@ -1146,7 +1146,7 @@ external view function sum() : uint is { var s : uint := 0; for x : uint8 in sto
     st = run_ok(
         &rt,
         &st,
-        "set_ask(uint256,uint8,int8)",
+        "setAsk(uint256,uint8,int8)",
         &[n(5), n(0xee), signed(-2)],
     )
     .storage;
@@ -1164,7 +1164,7 @@ external view function sum() : uint is { var s : uint := 0; for x : uint8 in sto
         let mut args = vec![n(32), n(xs.len() as u64)];
         args.extend(xs.iter().map(|&x| n(x)));
         let sig = if xs.len() == 3 {
-            "assign_ask(uint8[])"
+            "assignAsk(uint8[])"
         } else {
             "assign(uint8[])"
         };
@@ -1188,18 +1188,18 @@ external view function sum() : uint is { var s : uint := 0; for x : uint8 in sto
 fn popped_and_shrunk_elements_leave_no_data() {
     let src = r#"import "std/list"; 
 interface Echo is { view function echo(x : uint) : uint; }
-type doc is record { n : uint8; s : string; xs : list(uint); bs : list(uint16); o : option(string); }
-type dyn is | Name of string | Nums of list(uint) | Blank
-type memo is record { s : string; xs : list(uint); }
-type note is | Gone | Plain of memo | Pair of (uint, list(string))
+type Doc is record { n : uint8; s : string; xs : list(uint); bs : list(uint16); o : option(string); }
+type Dyn is | Name of string | Nums of list(uint) | Blank
+type Memo is record { s : string; xs : list(uint); }
+type Note is | Gone | Plain of Memo | Pair of (uint, list(string))
 storage is record {
-  xs : list(list(uint)); ys : list(list(list(uint8))); ds : list(doc); m : map(uint, list(doc));
-  ss : list(list(string)); fs : list(list(string, 2)); vs : list(dyn); os : list(option(memo));
-  ol : list(option(list(uint))); ns : list(note);
+  xs : list(list(uint)); ys : list(list(list(uint8))); ds : list(Doc); m : map(uint, list(Doc));
+  ss : list(list(string)); fs : list(list(string, 2)); vs : list(Dyn); os : list(option(Memo));
+  ol : list(option(list(uint))); ns : list(Note);
 }
 external function fill() is {
   const long : string := "a string well past thirty-two bytes, to spill into data slots";
-  const d : doc := { n = 1; s = long; xs = [4, 5]; bs = [6, 7, 8]; o = Some(long); };
+  const d : Doc := { n = 1; s = long; xs = [4, 5]; bs = [6, 7, 8]; o = Some(long); };
   List.push(storage.xs, [1, 2, 3]);
   List.push(storage.ys, [[uint8(1), 2], [3]]);
   List.push(storage.ds, d);
@@ -1213,15 +1213,15 @@ external function fill() is {
   List.push(storage.ns, Plain({ s = long; xs = [6]; }));
   List.push(storage.ns, Pair((7, [long])));
 }
-external function pop_all() is { pops(); }
+external function popAll() is { pops(); }
 function pops() is {
   List.pop(storage.xs); List.pop(storage.ys); List.pop(storage.ds); List.pop(storage.m[3]);
   List.pop(storage.ss); List.pop(storage.fs);
   List.pop(storage.vs); List.pop(storage.vs); List.pop(storage.os); List.pop(storage.ol);
   List.pop(storage.ns); List.pop(storage.ns);
 }
-external function pop_then_ask() : uint is { pops(); } with query Echo(address(0xcd)).echo(storage.xs.length)
-external function keep_one() is {
+external function popThenAsk() : uint is { pops(); } with query Echo(address(0xcd)).echo(storage.xs.length)
+external function keepOne() is {
   storage.xs := [storage.xs[0]]; storage.ys := [storage.ys[0]]; storage.ds := [storage.ds[0]];
   storage.m[3] := [storage.m[3][0]]; storage.ss := [storage.ss[0]]; storage.fs := [storage.fs[0]];
   storage.vs := [storage.vs[0], storage.vs[1]]; storage.os := [storage.os[0]];
@@ -1242,17 +1242,17 @@ external function clear() is {
     let run = |st: &HashMap<Word, Word>, sig: &str| run_ok(&rt, st, sig, &[]).storage;
     let once = run(&HashMap::new(), "fill()");
     assert_eq!(live(&once).len(), 85);
-    assert!(live(&run(&once, "pop_all()")).is_empty(), "popped");
+    assert!(live(&run(&once, "popAll()")).is_empty(), "popped");
     // Through the journal: a query after the pops.
-    assert!(live(&run(&once, "pop_then_ask()")).is_empty(), "journaled");
+    assert!(live(&run(&once, "popThenAsk()")).is_empty(), "journaled");
     let twice = run(&once, "fill()");
     assert_eq!(
-        live(&run(&twice, "keep_one()")),
+        live(&run(&twice, "keepOne()")),
         live(&once),
         "shrunk to one"
     );
     assert!(live(&run(&twice, "clear()")).is_empty(), "cleared");
-    let popped = run(&twice, "pop_all()");
+    let popped = run(&twice, "popAll()");
     assert_eq!(live(&popped), live(&once), "popped one of two");
 }
 
@@ -1412,7 +1412,7 @@ external function set(const k : uint; const v : uint) raises Nope is {
 #[test]
 fn kept_storage_reads_see_every_write() {
     let src = r#"import "std/list"; 
-type bag is record {
+type Bag is record {
   xs : list(uint);
   n : uint;
 }
@@ -1420,7 +1420,7 @@ type bag is record {
 storage is record {
   count : uint;
   m : map(uint, uint);
-  bags : map(uint, bag);
+  bags : map(uint, Bag);
 }
 
 function bump() is {
@@ -1574,22 +1574,22 @@ external function run(const xs : list(uint); const ys : list(uint)) : (uint, uin
 #[test]
 fn delete_in_generic_modules_leaves_no_data() {
     let src = r#"import "std/collections/queue";
-type doc is record { n : uint8; s : string; xs : list(uint); o : option(string); }
+type Doc is record { n : uint8; s : string; xs : list(uint); o : option(string); }
 module Slot(T) is {
-  type self is record { one : T; many : map(uint, T); }
-  function fill(storage s : self; const v : T) is { s.one := v; s.many[7] := v; }
-  function clear(storage s : self) is { delete s.one; delete s.many[7]; }
+  type Self is record { one : T; many : map(uint, T); }
+  function fill(storage s : Self; const v : T) is { s.one := v; s.many[7] := v; }
+  function clear(storage s : Self) is { delete s.one; delete s.many[7]; }
 }
-storage is record { q : Queue(doc); s : Slot(doc); t : Slot(list(string)); }
+storage is record { q : Queue(Doc); s : Slot(Doc); t : Slot(list(string)); }
 external function fill() is {
   const long : string := "a string well past thirty-two bytes, to spill into data slots";
-  const d : doc := { n = 1; s = long; xs = [4, 5]; o = Some(long); };
+  const d : Doc := { n = 1; s = long; xs = [4, 5]; o = Some(long); };
   Queue.push(storage.q, d); Queue.push(storage.q, d);
   Slot.fill(storage.s, d); Slot.fill(storage.t, [long, "short"]);
 }
 external function clear() : string raises QueueEmpty is {
-  const first : doc := Queue.pop(storage.q);
-  const second : doc := Queue.pop(storage.q);
+  const first : Doc := Queue.pop(storage.q);
+  const second : Doc := Queue.pop(storage.q);
   Slot.clear(storage.s); Slot.clear(storage.t);
 } with second.s
 "#;
@@ -1614,7 +1614,7 @@ external function clear() : string raises QueueEmpty is {
 /// `delete` goes wherever `:=` does, and nowhere else.
 #[test]
 fn delete_is_rejected_where_assignment_is() {
-    let base = "import \"std/evm\";\ntype acct is record { n : uint; m : map(uint, uint); }\nstorage is record { m : map(uint, uint); a : acct; x : uint; }\n";
+    let base = "import \"std/evm\";\ntype Acct is record { n : uint; m : map(uint, uint); }\nstorage is record { m : map(uint, uint); a : Acct; x : uint; }\n";
     for (body, want) in [
         ("external function f() is { delete storage.m; }", "map"),
         ("external function f() is { delete storage.a; }", "map"),

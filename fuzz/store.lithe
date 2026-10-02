@@ -3,13 +3,13 @@
 import "std/crypto";
 import "std/evm";
 
-error Too_big of uint;
-error Bad_pair of record {
+error TooBig of uint;
+error BadPair of record {
   left : uint;
   right : uint;
 }
 
-type point is record {
+type Point is record {
   x : uint;
   y : uint;
 }
@@ -21,7 +21,7 @@ storage is record {
   ids : list(uint);
   slots : list(uint, 4);
   admin : option(address);
-  spot : point;
+  spot : Point;
   name : string;
   blob : bytes;
   count : uint;
@@ -53,9 +53,9 @@ function credit(const who : address; const amount : uint) is {
 }
 
 external function deposit(const who : address; const amount : uint)
-  raises Too_big
+  raises TooBig
 is {
-  assert(amount < 1000000, Too_big(amount));
+  assert(amount < 1000000, TooBig(amount));
   credit(who, amount);
   credit(Evm.sender(), 1);
   const c : uint := bump(amount);
@@ -78,14 +78,14 @@ external function push(const v : uint) is {
   const _ : uint := bump(1);
 }
 
-external function set_slot(const i : uint; const v : uint) is {
+external function setSlot(const i : uint; const v : uint) is {
   storage.slots[i] := v;
 }
 
-external view function get_slot(const i : uint) : uint is
+external view function getSlot(const i : uint) : uint is
   storage.slots[i]
 
-external view function get_id(const i : uint) : uint is
+external view function getId(const i : uint) : uint is
   storage.ids[i]
 
 external function appoint(const who : address) is {
@@ -96,7 +96,7 @@ external function appoint(const who : address) is {
   }
 }
 
-external view function admin_or(const d : address) : address is
+external view function adminOr(const d : address) : address is
   case storage.admin of
   {
   | Some(who) -> who
@@ -104,15 +104,15 @@ external view function admin_or(const d : address) : address is
   }
 
 external function place(const x : uint; const y : uint)
-  raises Bad_pair
+  raises BadPair
 is {
-  assert(x <> y, Bad_pair { left = x; right = y; });
+  assert(x <> y, BadPair { left = x; right = y; });
   storage.spot.x := x;
   storage.spot.y := y;
   storage.pair := (y, x);
 }
 
-external view function spot_sum() : uint is
+external view function spotSum() : uint is
   storage.spot.x + storage.spot.y
 
 external view function pair() : (uint, uint) is

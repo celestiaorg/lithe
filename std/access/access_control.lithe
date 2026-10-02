@@ -1,4 +1,4 @@
-(* Role-based access control, like OpenZeppelin's `AccessControl`. A role is a `role`, a
+(* Role-based access control, like OpenZeppelin's `AccessControl`. A role is a `Role`, a
    distinct type over `bytes32`, so a role can't be passed where some other hash is meant.
    Each role has an admin role whose members grant and revoke it; the default admin role
    is `role(0x00...)` and administers itself.
@@ -6,13 +6,13 @@
      pure function minter() : role is role(Crypto.keccak256("MINTER_ROLE"))
 
      deploy(const admin : address) is {
-       AccessControl.grant(AccessControl.default_admin_role(), admin);
+       AccessControl.grant(AccessControl.defaultAdminRole(), admin);
      }
 
      external function mint(const to : address; const amount : uint)
        raises AccessControlUnauthorizedAccount
      is {
-       AccessControl.check_role(minter());
+       AccessControl.checkRole(minter());
        ...
      }
 
@@ -21,7 +21,7 @@
 
 import "std/evm";
 
-type role is bytes32;
+type Role is bytes32;
 
 error AccessControlUnauthorizedAccount of record {
   account : address;
@@ -32,8 +32,8 @@ error AccessControlBadConfirmation;
 
 module AccessControl is {
   storage access at "lithe.std.access_control" is record {
-    members : map(role, map(address, bool));
-    admins : map(role, role);
+    members : map(Role, map(address, bool));
+    admins : map(Role, Role);
   }
 
   event RoleAdminChanged of record {
@@ -54,22 +54,16 @@ module AccessControl is {
     indexed sender : address;
   }
 
-  pure function default_admin_role() : role is
-    role(0x0000000000000000000000000000000000000000000000000000000000000000)
+  pure function defaultAdminRole() : Role is
+    Role(0x0000000000000000000000000000000000000000000000000000000000000000)
 
-  view function has_role(const r : role; const account : address) : bool is
-    access.members[r][account]
-
-  view function get_role_admin(const r : role) : role is
-    access.admins[r]
-
-  view function check_role(const r : role)
+  view function checkRole(const r : Role)
     raises AccessControlUnauthorizedAccount
   is {
-    check_role_of(r, Evm.sender());
+    checkRoleOf(r, Evm.sender());
   }
 
-  view function check_role_of(const r : role; const account : address)
+  view function checkRoleOf(const r : Role; const account : address)
     raises AccessControlUnauthorizedAccount
   is {
     assert(
@@ -78,32 +72,9 @@ module AccessControl is {
     );
   }
 
-  function grant_role(const r : role; const account : address)
-    raises AccessControlUnauthorizedAccount
-  is {
-    check_role(access.admins[r]);
-    grant(r, account);
-  }
-
-  function revoke_role(const r : role; const account : address)
-    raises AccessControlUnauthorizedAccount
-  is {
-    check_role(access.admins[r]);
-    revoke(r, account);
-  }
-
-  (* An account gives up its own role. `confirmation` must be the caller, so a role
-     can't be renounced by mistake on another account's behalf. *)
-  function renounce_role(const r : role; const confirmation : address)
-    raises AccessControlBadConfirmation
-  is {
-    assert(confirmation = Evm.sender(), AccessControlBadConfirmation);
-    revoke(r, confirmation);
-  }
-
   (* Grants without checking the caller, for `deploy` and the contract's own rules.
      Granting a role an account already has changes nothing and logs nothing. *)
-  function grant(const r : role; const account : address) is {
+  function grant(const r : Role; const account : address) is {
     if not access.members[r][account] then {
       access.members[r][account] := true;
       emit RoleGranted {
@@ -114,7 +85,7 @@ module AccessControl is {
     }
   }
 
-  function revoke(const r : role; const account : address) is {
+  function revoke(const r : Role; const account : address) is {
     if access.members[r][account] then {
       access.members[r][account] := false;
       emit RoleRevoked {
@@ -125,8 +96,8 @@ module AccessControl is {
     }
   }
 
-  function set_role_admin(const r : role; const admin : role) is {
-    const previous : role := access.admins[r];
+  function setRoleAdmin(const r : Role; const admin : Role) is {
+    const previous : Role := access.admins[r];
     access.admins[r] := admin;
     emit RoleAdminChanged {
       role = bytes32(r);
@@ -135,37 +106,45 @@ module AccessControl is {
     };
   }
 
-  external view function hasRole(const role : role; const account : address) : bool is
-    has_role(role, account)
+  external view function hasRole(const role : Role; const account : address) : bool is
+    access.members[role][account]
 
-  external view function getRoleAdmin(const role : role) : role is
-    get_role_admin(role)
+  external view function getRoleAdmin(const role : Role) : Role is
+    access.admins[role]
 
-  external function grantRole(const role : role; const account : address)
+  external function grantRole(const role : Role; const account : address)
     raises AccessControlUnauthorizedAccount
-  is
-    grant_role(role, account)
+  is {
+    checkRole(access.admins[role]);
+    grant(role, account);
+  }
 
-  external function revokeRole(const role : role; const account : address)
+  external function revokeRole(const role : Role; const account : address)
     raises AccessControlUnauthorizedAccount
-  is
-    revoke_role(role, account)
+  is {
+    checkRole(access.admins[role]);
+    revoke(role, account);
+  }
 
-  external function renounceRole(const role : role; const callerConfirmation : address)
+  (* An account gives up its own role. `callerConfirmation` must be the caller, so a role
+     can't be renounced by mistake on another account's behalf. *)
+  external function renounceRole(const role : Role; const callerConfirmation : address)
     raises AccessControlBadConfirmation
-  is
-    renounce_role(role, callerConfirmation)
+  is {
+    assert(callerConfirmation = Evm.sender(), AccessControlBadConfirmation);
+    revoke(role, callerConfirmation);
+  }
 }
 
-(* OpenZeppelin's `IAccessControl`. A `role` is a `bytes32` in the ABI, so its ERC-165 id is
+(* OpenZeppelin's `IAccessControl`. A `Role` is a `bytes32` in the ABI, so its ERC-165 id is
    OpenZeppelin's, `0x7965db0b`. *)
 interface IAccessControl is {
-  view function hasRole(role : role; account : address) : bool;
-  view function getRoleAdmin(role : role) : role;
-  function grantRole(role : role; account : address)
+  view function hasRole(role : Role; account : address) : bool;
+  view function getRoleAdmin(role : Role) : Role;
+  function grantRole(role : Role; account : address)
     raises AccessControlUnauthorizedAccount;
-  function revokeRole(role : role; account : address)
+  function revokeRole(role : Role; account : address)
     raises AccessControlUnauthorizedAccount;
-  function renounceRole(role : role; callerConfirmation : address)
+  function renounceRole(role : Role; callerConfirmation : address)
     raises AccessControlBadConfirmation;
 }

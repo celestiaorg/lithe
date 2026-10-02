@@ -15,20 +15,20 @@ contract Deployers {
         last = Clones.clone(implementation);
     }
 
-    function clone_with_args(address implementation, bytes calldata args) external {
+    function cloneWithArgs(address implementation, bytes calldata args) external {
         last = Clones.cloneWithImmutableArgs(implementation, args);
     }
 
-    function clone_deterministic(address implementation, bytes32 salt) external returns (address) {
+    function cloneDeterministic(address implementation, bytes32 salt) external returns (address) {
         last = Clones.cloneDeterministic(implementation, salt);
         return last;
     }
 
-    function predict_clone(address implementation, bytes32 salt) external view returns (address) {
+    function predictClone(address implementation, bytes32 salt) external view returns (address) {
         return Clones.predictDeterministicAddress(implementation, salt);
     }
 
-    function args_of(address instance) external view returns (bytes memory) {
+    function argsOf(address instance) external view returns (bytes memory) {
         return Clones.fetchCloneArgs(instance);
     }
 
@@ -36,7 +36,7 @@ contract Deployers {
         pointer = SSTORE2.write(data);
     }
 
-    function write_counterfactual(bytes calldata data, bytes32 salt) external returns (address) {
+    function writeCounterfactual(bytes calldata data, bytes32 salt) external returns (address) {
         pointer = SSTORE2.writeCounterfactual(data, salt);
         return pointer;
     }

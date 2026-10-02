@@ -91,7 +91,7 @@ fn raw_call_recovers_and_passes_failures_on() {
     install_mocks();
     let src = "\
 import \"std/evm\"; storage is record { failures : uint; kept : bytes; }
-external function try_call(const to : address; const data : bytes) is {
+external function tryCall(const to : address; const data : bytes) is {
   defer Evm.call(to, data) then {
   | Ok(answer : bytes) -> { storage.kept := answer; }
   | Error(reason : bytes) -> {
@@ -111,7 +111,7 @@ external function must(const to : address; const data : bytes) raises forwarded 
     let data = b"\x01\x02\x03\x04why not".to_vec();
     let failed = call_raw(
         &runtime,
-        &bytes_arg("try_call(address,bytes)", &[Word::from_u64(0xee)], &data),
+        &bytes_arg("tryCall(address,bytes)", &[Word::from_u64(0xee)], &data),
     );
     assert!(!failed.reverted, "{}", pretty(&failed.returndata));
     assert_eq!(slot(&failed.storage, 0), Word::from_u64(1));
@@ -174,7 +174,7 @@ external function set(const n : uint) : uint is { storage.n := n; } with n * 2
 import \"std/abi\"; import \"std/evm\"; interface Library is { function set(n : uint) : uint; }
 storage is record { library : address; n : uint; doubled : uint; }
 external function run(const n : uint) is {
-  defer Evm.delegate_call(storage.library, Abi.encode_call(Library.set, n)) then (answer : bytes) {
+  defer Evm.delegateCall(storage.library, Abi.encodeCall(Library.set, n)) then (answer : bytes) {
     storage.doubled := Abi.decode(answer, uint);
   };
 }
@@ -207,21 +207,21 @@ fn static_call_reads_raw_answers_and_precompiles() {
     let src = "\
 import \"std/bytes\"; import \"std/evm\"; storage is record { n : uint; }
 external view function peek(const to : address; const data : bytes) : bytes is
-  query Evm.static_call(to, data)
+  query Evm.staticCall(to, data)
 external view function digest(const data : bytes) : bytes32 is
-  Bytes.word(query Evm.static_call(0x0000000000000000000000000000000000000002, data), 0)
+  Bytes.word(query Evm.staticCall(0x0000000000000000000000000000000000000002, data), 0)
 external view function outcome(const to : address; const data : bytes) : bytes is
-  case query Evm.static_call(to, data) of {
+  case query Evm.staticCall(to, data) of {
   | Ok(answer) -> Bytes.concat(answer, answer)
   | Error(reason) -> reason
   }
 external view function head4(const to : address; const data : bytes) : bytes4 is
-  case query Evm.static_call(to, data) of {
+  case query Evm.staticCall(to, data) of {
   | Ok(answer) -> bytes4(answer)
   | Error(_) -> 0xffffffff
   }
 external view function head32(const to : address; const data : bytes) : (bytes32, uint) is
-  case query Evm.static_call(to, data) of {
+  case query Evm.staticCall(to, data) of {
   | Ok(answer) -> (bytes32(answer), answer.length)
   | Error(_) -> (0x0000000000000000000000000000000000000000000000000000000000000000, 0)
   }
@@ -376,14 +376,14 @@ fn raw_create_rules() {
 #[test]
 fn raw_call_rules() {
     let cases = [
-        ("import \"std/evm\"; storage is record { n : uint; }\nexternal view function f(const to : address; const d : bytes) : bytes is Evm.static_call(to, d)\n", "`Evm.static_call` is read-only; write `query Evm.static_call(...)`"),
+        ("import \"std/evm\"; storage is record { n : uint; }\nexternal view function f(const to : address; const d : bytes) : bytes is Evm.staticCall(to, d)\n", "`Evm.staticCall` is read-only; write `query Evm.staticCall(...)`"),
         ("import \"std/evm\"; storage is record { n : uint; }\nexternal view function f(const to : address; const d : bytes) : bytes is query Evm.call(to, d)\n", "`Evm.call` can change state; `defer` it"),
         ("import \"std/evm\"; storage is record { n : uint; }\nexternal view function f(const to : address; const d : bytes) : uint is { defer Evm.call(to, d); } with 1\n", "cannot defer an operation"),
-        ("import \"std/evm\"; storage is record { n : uint; }\nexternal function f(const to : address; const d : bytes) is { defer Evm.delegate_call(to, d) with value = 1; }\n", "a delegate call runs with this call's own value; it takes no `with value`"),
+        ("import \"std/evm\"; storage is record { n : uint; }\nexternal function f(const to : address; const d : bytes) is { defer Evm.delegateCall(to, d) with value = 1; }\n", "a delegate call runs with this call's own value; it takes no `with value`"),
         ("import \"std/evm\"; storage is record { n : uint; }\nexternal function f(const to : address; const d : string) is { defer Evm.call(to, d); }\n", "`Evm.call` sends a `bytes` value as the calldata"),
         ("import \"std/evm\"; storage is record { n : uint; }\nexternal function f(const to : uint; const d : bytes) is { defer Evm.call(to, d); }\n", "expected an address"),
         ("import \"std/evm\"; storage is record { n : uint; }\nexternal function f(const to : address; const d : bytes) is { defer Evm.call(to, d) then (x : uint) { storage.n := x; }; }\n", "the result type does not match what the call returns"),
-        ("import \"std/evm\"; storage is record { n : uint; }\npure function f(const to : address; const d : bytes) : bytes is query Evm.static_call(to, d)\nexternal function g() is { skip }\n", "queries another contract"),
+        ("import \"std/evm\"; storage is record { n : uint; }\npure function f(const to : address; const d : bytes) : bytes is query Evm.staticCall(to, d)\nexternal function g() is { skip }\n", "queries another contract"),
     ];
     for (src, want) in cases {
         let err = compile(src).expect_err(want);
@@ -547,8 +547,8 @@ storage is record { x : uint; }
 external view function lens(const data : bytes) : uint is data.length
 external view function empty(const data : bytes) : bool is data.length = 0
 external view function dec(const data : bytes) : bytes is data
-view function size_of(const d : bytes) : uint is d.length
-external view function via(const data : bytes) : uint is size_of(data)
+view function sizeOf(const d : bytes) : uint is d.length
+external view function via(const data : bytes) : uint is sizeOf(data)
 anonymous event Noted of record { indexed id : uint; note : bytes; }
 external function note(const data : bytes) is { emit Noted { id = 1; note = data; }; }
 external function copied(const data : bytes) is {

@@ -74,7 +74,7 @@ module ERC721 is {
   external view function ownerOf(const tokenId : uint) : address
     raises ERC721NonexistentToken
   is
-    require_owned(tokenId)
+    requireOwned(tokenId)
 
   external view function name() : string is
     erc721.name
@@ -86,26 +86,26 @@ module ERC721 is {
   external view function tokenURI(const tokenId : uint) : string
     raises ERC721NonexistentToken
   is {
-    const owner : address := require_owned(tokenId);
+    const owner : address := requireOwned(tokenId);
   } with ""
 
   external view function getApproved(const tokenId : uint) : address
     raises ERC721NonexistentToken
   is {
-    const owner : address := require_owned(tokenId);
+    const owner : address := requireOwned(tokenId);
   } with erc721.tokenApprovals[tokenId]
 
   external view function isApprovedForAll(const owner : address; const operator : address) : bool is
     erc721.operatorApprovals[owner][operator]
 
-  view function require_owned(const tokenId : uint) : address
+  view function requireOwned(const tokenId : uint) : address
     raises ERC721NonexistentToken
   is {
     const owner : address := erc721.owners[tokenId];
     assert(owner <> Address.zero, ERC721NonexistentToken(tokenId));
   } with owner
 
-  view function check_authorized(const owner : address; const spender : address; const tokenId : uint)
+  view function checkAuthorized(const owner : address; const spender : address; const tokenId : uint)
     raises ERC721NonexistentToken | ERC721InsufficientApproval
   is {
     const authorized : bool := spender <> Address.zero
@@ -118,18 +118,18 @@ module ERC721 is {
     }
   }
 
-  hook before_transfer(const to : address; const tokenId : uint; const auth : address);
-  hook after_transfer(const from : address; const to : address; const tokenId : uint);
+  hook beforeTransfer(const to : address; const tokenId : uint; const auth : address);
+  hook afterTransfer(const from : address; const to : address; const tokenId : uint);
 
   (* Moves, mints (`to` from zero), or burns (`to` is zero), between the contract's hooks;
      returns the previous owner. A nonzero `auth` must be allowed to move the token. *)
   function update(const to : address; const tokenId : uint; const auth : address) : address
     raises ERC721NonexistentToken | ERC721InsufficientApproval
   is {
-    before_transfer(to, tokenId, auth);
+    beforeTransfer(to, tokenId, auth);
     const from : address := erc721.owners[tokenId];
     if auth <> Address.zero then {
-      check_authorized(from, auth, tokenId);
+      checkAuthorized(from, auth, tokenId);
     }
     if from <> Address.zero then {
       erc721.tokenApprovals[tokenId] := Address.zero;
@@ -144,13 +144,13 @@ module ERC721 is {
       to = to;
       tokenId = tokenId;
     };
-    after_transfer(from, to, tokenId);
+    afterTransfer(from, to, tokenId);
   } with from
 
-  function approve_as(const to : address; const tokenId : uint; const auth : address)
+  function approveAs(const to : address; const tokenId : uint; const auth : address)
     raises ERC721NonexistentToken | ERC721InvalidApprover
   is {
-    const owner : address := require_owned(tokenId);
+    const owner : address := requireOwned(tokenId);
     assert(
       auth = Address.zero or owner = auth or erc721.operatorApprovals[owner][auth],
       ERC721InvalidApprover(auth)
@@ -163,7 +163,7 @@ module ERC721 is {
     erc721.tokenApprovals[tokenId] := to;
   }
 
-  function set_approval_for_all(const owner : address; const operator : address; const approved : bool)
+  function setApprovalForAll(const owner : address; const operator : address; const approved : bool)
     raises ERC721InvalidApprover | ERC721InvalidOperator
   is {
     assert(owner <> Address.zero, ERC721InvalidApprover(Address.zero));
@@ -179,7 +179,7 @@ module ERC721 is {
   (* Like `ERC721Utils.checkOnERC721Received`: a contract receiver must answer with the
      selector. The call runs after the transfer's effects, as in Solidity. A receiver that
      reverts without a reason is invalid; its own reason is passed on unchanged. *)
-  function check_received(
+  function checkReceived(
     const operator : address;
     const from : address;
     const to : address;
@@ -188,7 +188,7 @@ module ERC721 is {
   )
     raises ERC721InvalidReceiver | forwarded
   is {
-    if Evm.code_size(to) > 0 then {
+    if Evm.codeSize(to) > 0 then {
       const receiver : ERC721Receiver := ERC721Receiver(to);
       defer receiver.onERC721Received(operator, from, tokenId, data) then {
         | Ok(answer : bytes4) -> {

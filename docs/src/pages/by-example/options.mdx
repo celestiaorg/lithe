@@ -24,13 +24,13 @@ external function resign() is {
   storage.admin := None;
 }
 
-external view function admin_or(const fallback : address) : address is
+external view function adminOr(const fallback : address) : address is
   case storage.admin of {
   | Some(who) -> who
   | None -> fallback
   }
 
-external view function has_admin() : bool is
+external view function hasAdmin() : bool is
   case storage.admin of {
   | Some(who) -> true
   | None -> false

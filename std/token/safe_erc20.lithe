@@ -9,7 +9,7 @@
        raises SafeERC20FailedOperation | forwarded
      is {
        storage.balances[Evm.sender()] := storage.balances[Evm.sender()] - value;
-       SafeERC20.safe_transfer(storage.token, Evm.sender(), value);
+       SafeERC20.safeTransfer(storage.token, Evm.sender(), value);
      } *)
 
 import "std/interfaces/erc20";
@@ -31,7 +31,7 @@ interface IERC20OptionalReturn is {
 }
 
 module SafeERC20 is {
-  function safe_transfer(const token : IERC20; const to : address; const value : uint)
+  function safeTransfer(const token : IERC20; const to : address; const value : uint)
     raises SafeERC20FailedOperation | forwarded
   is {
     defer IERC20OptionalReturn(address(token)).transfer(to, value) then {
@@ -44,7 +44,7 @@ module SafeERC20 is {
     };
   }
 
-  function safe_transfer_from(const token : IERC20; const from : address; const to : address; const value : uint)
+  function safeTransferFrom(const token : IERC20; const from : address; const to : address; const value : uint)
     raises SafeERC20FailedOperation | forwarded
   is {
     defer IERC20OptionalReturn(address(token)).transferFrom(from, to, value) then {
@@ -60,7 +60,7 @@ module SafeERC20 is {
   (* Approves `value`. If the token refuses, as USDT does to change an allowance that
      isn't zero, approves zero and then `value`. The retry is written out in both arms,
      which compile to one copy; a helper would copy its parameters, which is larger. *)
-  function force_approve(const token : IERC20; const spender : address; const value : uint)
+  function forceApprove(const token : IERC20; const spender : address; const value : uint)
     raises SafeERC20FailedOperation | forwarded
   is {
     const t : IERC20OptionalReturn := IERC20OptionalReturn(address(token));
@@ -106,13 +106,13 @@ module SafeERC20 is {
     };
   }
 
-  function safe_increase_allowance(const token : IERC20; const spender : address; const value : uint)
+  function safeIncreaseAllowance(const token : IERC20; const spender : address; const value : uint)
     raises SafeERC20FailedOperation | forwarded
   is {
-    force_approve(token, spender, query token.allowance(Evm.self(), spender) + value);
+    forceApprove(token, spender, query token.allowance(Evm.self(), spender) + value);
   }
 
-  function safe_decrease_allowance(const token : IERC20; const spender : address; const requestedDecrease : uint)
+  function safeDecreaseAllowance(const token : IERC20; const spender : address; const requestedDecrease : uint)
     raises SafeERC20FailedOperation | SafeERC20FailedDecreaseAllowance | forwarded
   is {
     const current : uint := query token.allowance(Evm.self(), spender);
@@ -124,6 +124,6 @@ module SafeERC20 is {
         requestedDecrease = requestedDecrease;
       }
     );
-    force_approve(token, spender, current - requestedDecrease);
+    forceApprove(token, spender, current - requestedDecrease);
   }
 }

@@ -13,7 +13,7 @@ interface IBook {
     }
 
     function place(Order[] calldata os) external returns (uint256[] memory);
-    function note_of(uint256 id) external view returns (string memory);
+    function noteOf(uint256 id) external view returns (string memory);
 }
 
 contract Dialer is ReentrancyGuardTransient {
@@ -39,7 +39,7 @@ contract Dialer is ReentrancyGuardTransient {
     }
 
     function note(address book, uint256 id) external view returns (string memory) {
-        (bool ok, bytes memory answer) = book.staticcall(abi.encodeWithSignature("note_of(uint256)", id));
+        (bool ok, bytes memory answer) = book.staticcall(abi.encodeWithSignature("noteOf(uint256)", id));
         require(ok);
         return abi.decode(answer, (string));
     }

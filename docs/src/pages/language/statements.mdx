@@ -131,9 +131,9 @@ The condition must be a `bool`. Both branches are blocks, and `else if` chains a
 `assert(cond, Error)` reverts with `Error` when `cond` is false. `fail Error` reverts unconditionally. Both take a declared error, never a string:
 
 ```lithe fragment
-assert(Evm.sender() = storage.owner, Not_owner);
-assert(amount <= limit, Too_large(amount));
-fail Insufficient_balance { available = have; required = amount; };
+assert(Evm.sender() = storage.owner, NotOwner);
+assert(amount <= limit, TooLarge(amount));
+fail InsufficientBalance { available = have; required = amount; };
 ```
 
 The error must appear in the function's `raises` clause, or be inferable for an internal function. See [Errors](/language/errors).
@@ -159,13 +159,13 @@ A `for` loop runs its body once per element of a list, or once per number in a h
 ```lithe
 storage is record {
   owners : list(address, 3);
-  is_owner : map(address, bool);
+  isOwner : map(address, bool);
   total : uint;
 }
 
 external function mark() is {
   for owner : address in storage.owners do {
-    storage.is_owner[owner] := true;
+    storage.isOwner[owner] := true;
   }
 }
 
@@ -207,7 +207,7 @@ for (i, who) : (uint, address) in storage.members until hit <> 0 do {
 
 ```lithe fragment
 for who : address in storage.members bound 50 do {
-  storage.is_member[who] := true;
+  storage.isMember[who] := true;
 }
 ```
 

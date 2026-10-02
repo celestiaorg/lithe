@@ -18,28 +18,28 @@ contract Claims is {
 
   supports IERC6909, IERC6909TokenSupply, IERC6909Metadata, IERC6909ContentURI;
 
-  hook ERC6909.before_transfer is skip;
-  hook ERC6909.after_transfer is ERC6909TokenSupply.after_transfer;
+  hook ERC6909.beforeTransfer is skip;
+  hook ERC6909.afterTransfer is ERC6909TokenSupply.afterTransfer;
 
   deploy()
     raises OwnableInvalidOwner
   is {
-    ERC6909ContentURI.set_contract_uri("https://claims.example/contract.json");
+    ERC6909ContentURI.setContractURI("https://claims.example/contract.json");
     Ownable.init(Evm.sender());
   }
 
   external function mint(const to : address; const id : uint; const amount : uint)
     raises OwnableUnauthorizedAccount | ERC6909InvalidReceiver | ERC6909InsufficientBalance
   is {
-    Ownable.check_owner();
+    Ownable.checkOwner();
     ERC6909.mint(to, id, amount);
   }
 
   external function burn(const from : address; const id : uint; const amount : uint)
     raises ERC6909InsufficientAllowance | ERC6909InvalidSender | ERC6909InsufficientBalance
   is {
-    if from <> Evm.sender() and not ERC6909.is_operator(from, Evm.sender()) then {
-      ERC6909.spend_allowance(from, Evm.sender(), id, amount);
+    if from <> Evm.sender() and not ERC6909.erc6909.operatorApprovals[from][Evm.sender()] then {
+      ERC6909.spendAllowance(from, Evm.sender(), id, amount);
     }
     ERC6909.burn(from, id, amount);
   }
@@ -53,10 +53,10 @@ contract Claims is {
   )
     raises OwnableUnauthorizedAccount
   is {
-    Ownable.check_owner();
-    ERC6909Metadata.set_name(id, name);
-    ERC6909Metadata.set_symbol(id, symbol);
-    ERC6909Metadata.set_decimals(id, decimals);
-    ERC6909ContentURI.set_token_uri(id, uri);
+    Ownable.checkOwner();
+    ERC6909Metadata.setName(id, name);
+    ERC6909Metadata.setSymbol(id, symbol);
+    ERC6909Metadata.setDecimals(id, decimals);
+    ERC6909ContentURI.setTokenURI(id, uri);
   }
 }

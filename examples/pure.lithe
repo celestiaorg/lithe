@@ -4,15 +4,15 @@ storage is record {
   rate : uint;
 }
 
-pure function calculate_fee(const amount : uint; const fee_bps : uint) : uint is
-  amount * fee_bps / 10_000
+pure function calculateFee(const amount : uint; const feeBps : uint) : uint is
+  amount * feeBps / 10_000
 
-pure function fee_of(const amount : uint) : uint is
-  calculate_fee(amount, 25)
+pure function feeOf(const amount : uint) : uint is
+  calculateFee(amount, 25)
 
 external view function preview(const amount : uint) : uint is
-  fee_of(amount)
+  feeOf(amount)
 
 external function quote(const amount : uint) is {
-  storage.rate := fee_of(amount);
+  storage.rate := feeOf(amount);
 }

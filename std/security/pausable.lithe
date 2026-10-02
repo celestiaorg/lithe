@@ -1,5 +1,5 @@
 (* An emergency stop. Pausing is policy, so the contract decides who may pause and which
-   functions stop: each checks `require_not_paused` itself. Errors and events match
+   functions stop: each checks `requireNotPaused` itself. Errors and events match
    OpenZeppelin's `Pausable`.
 
      use Pausable exposing IPausable;
@@ -7,7 +7,7 @@
      external function pause()
        raises OwnableUnauthorizedAccount | EnforcedPause
      is {
-       Ownable.check_owner();
+       Ownable.checkOwner();
        Pausable.pause();
      } *)
 
@@ -29,16 +29,13 @@ module Pausable is {
     account : address;
   }
 
-  view function paused() : bool is
-    pausable.paused
-
-  view function require_not_paused()
+  view function requireNotPaused()
     raises EnforcedPause
   is {
     assert(not pausable.paused, EnforcedPause);
   }
 
-  view function require_paused()
+  view function requirePaused()
     raises ExpectedPause
   is {
     assert(pausable.paused, ExpectedPause);
@@ -47,7 +44,7 @@ module Pausable is {
   function pause()
     raises EnforcedPause
   is {
-    require_not_paused();
+    requireNotPaused();
     pausable.paused := true;
     emit Paused {
       account = Evm.sender();
@@ -57,7 +54,7 @@ module Pausable is {
   function unpause()
     raises ExpectedPause
   is {
-    require_paused();
+    requirePaused();
     pausable.paused := false;
     emit Unpaused {
       account = Evm.sender();

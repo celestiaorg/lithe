@@ -104,7 +104,7 @@ Both contracts have the same ABI, the same error selector, the same event topic,
 | `delete x;` | `delete x;` |
 | `address(0)` | `Address.zero` |
 | `type(uint256).max` | `Uint.max` |
-| `unchecked { a + b }` | `Uint.wrapping_add(a, b)`, and `wrapping_sub`, `wrapping_mul` |
+| `unchecked { a + b }` | `Uint.wrappingAdd(a, b)`, and `wrappingSub`, `wrappingMul` |
 | `1 ether`, `1 days` | `1eth`, `1days` |
 | `10 ** decimals` | `10 ** decimals`: any unsigned exponent, and the result has the base's type |
 
@@ -138,13 +138,13 @@ Both contracts have the same ABI, the same error selector, the same event topic,
 | `msg.sender` | `Evm.sender()` |
 | `msg.value` | `Evm.value()` (only in `payable` functions) |
 | `msg.data`, `msg.sig` | `Evm.calldata()`, `Evm.selector()` |
-| `I.f.selector`, `type(I).interfaceId` | `Abi.selector(I.f)`, `Abi.interface_id(I)` |
-| `tx.origin`, `tx.gasprice` | `Evm.tx_origin()`, `Evm.tx_gas_price()` |
-| `block.timestamp`, `block.number` | `Evm.block_timestamp()`, `Evm.block_number()` |
-| `block.chainid`, `block.basefee` | `Evm.chain_id()`, `Evm.block_base_fee()` |
+| `I.f.selector`, `type(I).interfaceId` | `Abi.selector(I.f)`, `Abi.interfaceId(I)` |
+| `tx.origin`, `tx.gasprice` | `Evm.txOrigin()`, `Evm.txGasPrice()` |
+| `block.timestamp`, `block.number` | `Evm.blockTimestamp()`, `Evm.blockNumber()` |
+| `block.chainid`, `block.basefee` | `Evm.chainId()`, `Evm.blockBaseFee()` |
 | `address(this)` | `Evm.self()` |
 | `addr.balance` | `Evm.balance(addr)` |
-| `gasleft()` | `Evm.gas_left()` |
+| `gasleft()` | `Evm.gasLeft()` |
 | `keccak256(x)` | `Crypto.keccak256(x)` |
 | `ecrecover(h, v, r, s)` | `Crypto.ecrecover(h, v, r, s)` |
 | `abi.encode(...)` | `Abi.encode(...)` |
@@ -154,7 +154,7 @@ Both contracts have the same ABI, the same error selector, the same event topic,
 | `function f() returns (uint a, string b)` | a record result, `: result`, whose fields are the results |
 | `function f() returns (S memory)` | a tuple result, `: (uint, string)` |
 | `uint[][]`, `S[]` with strings inside | `list(list(uint))`, `list(s)`: lists nest to any depth |
-| precompiles by address, in assembly | `Crypto.bn254_pairing`, `Crypto.p256_verify`, and the rest. See [Precompiles](/language/builtins#precompiles) |
+| precompiles by address, in assembly | `Crypto.bn254Pairing`, `Crypto.p256Verify`, and the rest. See [Precompiles](/language/builtins#precompiles) |
 
 The full list is in [Built-ins](/language/builtins).
 
@@ -162,16 +162,16 @@ The full list is in [Built-ins](/language/builtins).
 
 | Solidity | Lithe |
 | --- | --- |
-| `error NotOwner();` | `error Not_owner;` |
-| `error TooSmall(uint256);` | `error Too_small of uint;` |
+| `error NotOwner();` | `error NotOwner;` |
+| `error TooSmall(uint256);` | `error TooSmall of uint;` |
 | `error Low(uint256 have, uint256 want);` | `error Low of record { have : uint; want : uint; }` |
 | `error Missing(string key, uint256[] ids);` | `error Missing of record { key : string; ids : list(uint); }` |
-| `if (!c) revert NotOwner();` | `assert(c, Not_owner);` |
-| `revert NotOwner();` | `fail Not_owner;` |
+| `if (!c) revert NotOwner();` | `assert(c, NotOwner);` |
+| `revert NotOwner();` | `fail NotOwner;` |
 | `require(c, "message")` | not allowed. Errors are typed |
-| (nothing) | `raises Not_owner \| Too_small`, checked by the compiler |
+| (nothing) | `raises NotOwner \| TooSmall`, checked by the compiler |
 
-Lithe error names are converted to PascalCase in the ABI, so `Not_owner` becomes `NotOwner()` with the selector Solidity would compute.
+A Lithe error's ABI name is its declared name, so `NotOwner` is `NotOwner()`, with the selector Solidity would compute.
 
 ## External calls
 
@@ -188,12 +188,12 @@ Lithe error names are converted to PascalCase in the ABI, so `Not_owner` becomes
 | `try` on a view call | `case query c.f() of { Ok(r) -> ... \| Error(e) -> ... }` |
 | `new C{salt: s}(...)` | `defer create C(...) with salt = s`. See [`create`](/language/effects#create) |
 | `create(v, p, n)`, `create2(v, p, n, s)` in assembly | `defer create(code) with { value = v; salt = s; }`. See [Creation code as bytes](/language/effects#creation-code-as-bytes) |
-| `type(C).creationCode` | `Evm.creation_code(C)` |
+| `type(C).creationCode` | `Evm.creationCode(C)` |
 | `a.code`, `Clones.clone(impl)`, `SSTORE2.write(data)` | `Evm.code(a)`, `defer create(Clones.code(impl))`, `defer create(SSTORE2.code(data))`. See [Utilities](/stdlib/utils#clones) |
 | `token.call(...)` accepting empty return data | a result of `option(T)`: `None` when nothing comes back. See [Optional results](/language/effects#optional-results) |
 | `to.call{value: v}(data)` | `defer Evm.call(to, data) with value = v then (result : bytes) { ... }`. See [Raw calls](/language/effects#raw-calls) |
-| `to.staticcall(data)` | `query Evm.static_call(to, data)` |
-| `to.delegatecall(data)` | `defer Evm.delegate_call(to, data)`. For a contract's own upgrades, use `upgradeable` |
+| `to.staticcall(data)` | `query Evm.staticCall(to, data)` |
+| `to.delegatecall(data)` | `defer Evm.delegateCall(to, data)`. For a contract's own upgrades, use `upgradeable` |
 
 ## Inheritance and libraries
 
@@ -203,7 +203,7 @@ Lithe error names are converted to PascalCase in the ABI, so `Not_owner` becomes
 | inherited public functions | a module's externals, exposed with `use B exposing I, { ... }` |
 | `ERC165` and `supportsInterface` overrides | `supports I, J;`, and the compiler writes `supportsInterface`. See [ERC-165](/language/modules#erc-165) |
 | an abstract `_canSetX()` hook the contract overrides | a module `guard`, which each contract that exposes the guarded externals writes. See [Guards](/language/modules#guards) |
-| a `virtual` function the contract overrides, such as `_beforeTokenTransfer`, `_update`, or `tokenURI` | a module `hook`, which the module's code calls and each contract that reaches it implements, or skips with `is skip`. Only the contract implements hooks, so it composes extensions in the hook's body. See [Hooks](/language/modules#hooks), and the standard library's tokens' `before_transfer` and `after_transfer`, where an `_update` override's code before and after `super._update` goes: [Transfer hooks](/stdlib/tokens#transfer-hooks) |
+| a `virtual` function the contract overrides, such as `_beforeTokenTransfer`, `_update`, or `tokenURI` | a module `hook`, which the module's code calls and each contract that reaches it implements, or skips with `is skip`. Only the contract implements hooks, so it composes extensions in the hook's body. See [Hooks](/language/modules#hooks), and the standard library's tokens' `beforeTransfer` and `afterTransfer`, where an `_update` override's code before and after `super._update` goes: [Transfer hooks](/stdlib/tokens#transfer-hooks) |
 | `super.f()` | call the module function directly: `B.f()` |
 | `library L` | a `module`, or plain functions in an imported file |
 | `using L for T` | none. Call `L.f(x)` |

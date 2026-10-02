@@ -20,7 +20,7 @@ module Ownable is {
   external view function owner() : address is
     ownable.owner
 
-  view function check_owner()
+  view function checkOwner()
     raises OwnableUnauthorizedAccount
   is {
     assert(ownable.owner = Evm.sender(), OwnableUnauthorizedAccount(Evm.sender()));
@@ -33,10 +33,10 @@ module Ownable is {
       initialOwner <> Address.zero,
       OwnableInvalidOwner(Address.zero)
     );
-    set_owner(initialOwner);
+    setOwner(initialOwner);
   }
 
-  function set_owner(const newOwner : address) is {
+  function setOwner(const newOwner : address) is {
     const previous : address := ownable.owner;
     ownable.owner := newOwner;
     emit OwnershipTransferred {
@@ -48,19 +48,19 @@ module Ownable is {
   external function transferOwnership(const newOwner : address)
     raises OwnableUnauthorizedAccount | OwnableInvalidOwner
   is {
-    check_owner();
+    checkOwner();
     assert(
       newOwner <> Address.zero,
       OwnableInvalidOwner(Address.zero)
     );
-    set_owner(newOwner);
+    setOwner(newOwner);
   }
 
   external function renounceOwnership()
     raises OwnableUnauthorizedAccount
   is {
-    check_owner();
-    set_owner(Address.zero);
+    checkOwner();
+    setOwner(Address.zero);
   }
 }
 

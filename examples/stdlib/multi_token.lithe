@@ -1,6 +1,6 @@
 (* An ERC-1155 collection of game items from the standard library, with supply tracking.
    The owner mints and sets the URI; holders, and operators they approve, burn. The
-   supplies follow every mint and burn through `ERC1155`'s `after_transfer` hook. *)
+   supplies follow every mint and burn through `ERC1155`'s `afterTransfer` hook. *)
 
 import "std/evm";
 import "std/token/erc1155_supply";
@@ -15,13 +15,13 @@ contract Items is {
 
   supports IERC1155, IERC1155MetadataURI;
 
-  hook ERC1155.before_transfer is skip;
-  hook ERC1155.after_transfer is ERC1155Supply.after_transfer;
+  hook ERC1155.beforeTransfer is skip;
+  hook ERC1155.afterTransfer is ERC1155Supply.afterTransfer;
 
   deploy()
     raises OwnableInvalidOwner
   is {
-    ERC1155.set_uri("https://items.example/api/item/{id}.json");
+    ERC1155.setURI("https://items.example/api/item/{id}.json");
     Ownable.init(Evm.sender());
   }
 
@@ -29,7 +29,7 @@ contract Items is {
     raises OwnableUnauthorizedAccount | ERC1155InvalidReceiver | ERC1155InvalidArrayLength | ERC1155InsufficientBalance
       | forwarded
   is {
-    Ownable.check_owner();
+    Ownable.checkOwner();
     ERC1155.mint(to, id, value, data);
   }
 
@@ -37,28 +37,28 @@ contract Items is {
     raises OwnableUnauthorizedAccount | ERC1155InvalidReceiver | ERC1155InvalidArrayLength | ERC1155InsufficientBalance
       | forwarded
   is {
-    Ownable.check_owner();
-    ERC1155.mint_batch(to, ids, values, data);
+    Ownable.checkOwner();
+    ERC1155.mintBatch(to, ids, values, data);
   }
 
   external function burn(const account : address; const id : uint; const value : uint)
     raises ERC1155MissingApprovalForAll | ERC1155InvalidSender | ERC1155InvalidArrayLength | ERC1155InsufficientBalance
   is {
-    ERC1155.check_authorized(Evm.sender(), account);
+    ERC1155.checkAuthorized(Evm.sender(), account);
     ERC1155.burn(account, id, value);
   }
 
   external function burnBatch(const account : address; const ids : list(uint); const values : list(uint))
     raises ERC1155MissingApprovalForAll | ERC1155InvalidSender | ERC1155InvalidArrayLength | ERC1155InsufficientBalance
   is {
-    ERC1155.check_authorized(Evm.sender(), account);
-    ERC1155.burn_batch(account, ids, values);
+    ERC1155.checkAuthorized(Evm.sender(), account);
+    ERC1155.burnBatch(account, ids, values);
   }
 
   external function setURI(const uri : string)
     raises OwnableUnauthorizedAccount
   is {
-    Ownable.check_owner();
-    ERC1155.set_uri(uri);
+    Ownable.checkOwner();
+    ERC1155.setURI(uri);
   }
 }

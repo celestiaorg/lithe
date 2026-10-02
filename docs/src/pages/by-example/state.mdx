@@ -12,13 +12,13 @@ import "std/evm";
 
 storage is record {
   value : uint;
-  updated_by : address;
+  updatedBy : address;
 }
 
 (* A stateful external function may write storage. *)
 external function set(const value : uint) is {
   storage.value := value;
-  storage.updated_by := Evm.sender();
+  storage.updatedBy := Evm.sender();
 }
 
 (* A view may read storage but never write it. The compiler checks. *)

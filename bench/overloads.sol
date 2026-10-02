@@ -60,15 +60,15 @@ contract Overloads {
         move(to, amount);
     }
 
-    function transfer_staked(address to, uint256 amount) external {
+    function transferStaked(address to, uint256 amount) external {
         move(to, Shares.wrap(amount));
     }
 
-    function balance_of(address who) external view returns (uint256) {
+    function balanceOf(address who) external view returns (uint256) {
         return balances[who];
     }
 
-    function staked_of(address who) external view returns (uint256) {
+    function stakedOf(address who) external view returns (uint256) {
         return staked[who];
     }
 

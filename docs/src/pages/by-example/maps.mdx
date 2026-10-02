@@ -17,10 +17,10 @@ storage is record {
 }
 
 (* A missing key reads as the zero value. *)
-external view function balance_of(const who : address) : uint is
+external view function balanceOf(const who : address) : uint is
   storage.balances[who]
 
-external function set_balance(const amount : uint) is {
+external function setBalance(const amount : uint) is {
   storage.balances[Evm.sender()] := amount;
 }
 

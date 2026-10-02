@@ -138,7 +138,7 @@ fn facets_preserve_behavior() {
 const SPLIT_VAULT: &str = r#"import "std/evm"; 
 upgradeable
 
-error Not_owner;
+error NotOwner;
 
 module Counter is {
   storage counter at "split.counter" is record {
@@ -162,7 +162,7 @@ storage settings at "split.settings" is record {
 }
 
 upgrade guard is {
-  assert(Evm.sender() = storage.owner, Not_owner);
+  assert(Evm.sender() = storage.owner, NotOwner);
 }
 
 deploy(const owner : address) is {
@@ -269,9 +269,9 @@ fn upgrades_move_between_whole_and_split() {
 /// implementation's `proxiableUUID`.
 #[test]
 fn upgrades_check_the_call_context_and_the_new_implementation() {
-    let v1 = "import \"std/evm\"; upgradeable\nerror Not_owner;\n\
+    let v1 = "import \"std/evm\"; upgradeable\nerror NotOwner;\n\
         storage is record { owner : address; n : uint; }\n\
-        upgrade guard is { assert(Evm.sender() = storage.owner, Not_owner); }\n\
+        upgrade guard is { assert(Evm.sender() = storage.owner, NotOwner); }\n\
         external function bump() is { storage.n := storage.n + 1; }\n\
         external view function n() : uint is storage.n\n";
     let plain = "storage is record { n : uint; }\nexternal view function n() : uint is storage.n\n";
@@ -375,30 +375,30 @@ fn upgrades_check_the_call_context_and_the_new_implementation() {
 /// migration calls inline or delegated.
 #[test]
 fn upgrades_bubble_migration_failures_and_take_long_arguments() {
-    let v1 = "import \"std/evm\"; upgradeable\nerror Not_owner;\n\
+    let v1 = "import \"std/evm\"; upgradeable\nerror NotOwner;\n\
         storage is record { owner : address; n : uint; }\n\
-        upgrade guard is { assert(Evm.sender() = storage.owner, Not_owner); }\n\
+        upgrade guard is { assert(Evm.sender() = storage.owner, NotOwner); }\n\
         external view function n() : uint is storage.n\n";
     let v2 = |marks: &str| {
         format!(
-            "import \"std/evm\"; upgradeable\nerror Not_owner;\n\
+            "import \"std/evm\"; upgradeable\nerror NotOwner;\n\
             error Why of string;\n\
             module Checks is {{\n\
-              error Too_large of uint;\n\
+              error TooLarge of uint;\n\
               function limit(const x : uint) is {{\n\
-                assert(x < 5, Too_large(x));\n\
+                assert(x < 5, TooLarge(x));\n\
               }}\n\
             }}\n\
             use Checks{marks};\n\
             storage is record {{ owner : address; n : uint; }}\n\
             storage extra at \"t.extra\" is record {{ s : string; xs : list(uint); }}\n\
-            upgrade guard is {{ assert(Evm.sender() = storage.owner, Not_owner); }}\n\
-            migrate too_large(const x : uint) raises Too_large is {{ Checks.limit(x); storage.n := x; }}\n\
-            external function too_large_now(const x : uint) raises Too_large is {{ Checks.limit(x); storage.n := x; }}\n\
+            upgrade guard is {{ assert(Evm.sender() = storage.owner, NotOwner); }}\n\
+            migrate tooLarge(const x : uint) raises TooLarge is {{ Checks.limit(x); storage.n := x; }}\n\
+            external function tooLargeNow(const x : uint) raises TooLarge is {{ Checks.limit(x); storage.n := x; }}\n\
             migrate why(const s : string) raises Why is {{ fail Why(s); }}\n\
-            external function why_now(const s : string) raises Why is {{ fail Why(s); }}\n\
+            external function whyNow(const s : string) raises Why is {{ fail Why(s); }}\n\
             migrate divide(const x : uint) is {{ storage.n := 10 / x; }}\n\
-            external function divide_now(const x : uint) is {{ storage.n := 10 / x; }}\n\
+            external function divideNow(const x : uint) is {{ storage.n := 10 / x; }}\n\
             migrate long(const s : string; const xs : list(uint)) is {{ extra.s := s; extra.xs := xs; }}\n\
             external view function n() : uint is storage.n\n\
             external view function s() : string is extra.s\n\
@@ -431,7 +431,7 @@ fn upgrades_bubble_migration_failures_and_take_long_arguments() {
     assert!(long.len() > 128 + 4);
     let mut why = selector("why(string)").to_vec();
     why.extend(string(reason));
-    let mut why_now = selector("why_now(string)").to_vec();
+    let mut why_now = selector("whyNow(string)").to_vec();
     why_now.extend(string(reason));
     let failed_call = selector("FailedCall()").to_vec();
 
@@ -455,9 +455,9 @@ fn upgrades_bubble_migration_failures_and_take_long_arguments() {
         };
         let inline = |data: &[u8]| elsewhere(b, || run(&v2_runtime, data, &storage, 0));
         for (migration, now) in [
-            (word_data("too_large(uint256)", &[Word::from_u64(9)]), word_data("too_large_now(uint256)", &[Word::from_u64(9)])),
+            (word_data("tooLarge(uint256)", &[Word::from_u64(9)]), word_data("tooLargeNow(uint256)", &[Word::from_u64(9)])),
             (why.clone(), why_now.clone()),
-            (word_data("divide(uint256)", &[Word::from_u64(0)]), word_data("divide_now(uint256)", &[Word::from_u64(0)])),
+            (word_data("divide(uint256)", &[Word::from_u64(0)]), word_data("divideNow(uint256)", &[Word::from_u64(0)])),
         ] {
             let want = inline(&now);
             assert!(want.reverted && !want.returndata.is_empty(), "{marks}: {}", pretty(&want.returndata));
@@ -467,7 +467,7 @@ fn upgrades_bubble_migration_failures_and_take_long_arguments() {
         }
         // A migration that reverts empty, as one whose arguments don't decode does, and one
         // sent value it doesn't take.
-        for (data, value) in [(selector("too_large(uint256)").to_vec(), 0), (long.clone(), 1)] {
+        for (data, value) in [(selector("tooLarge(uint256)").to_vec(), 0), (long.clone(), 1)] {
             let out = run(&proxy, &upgrade_to_and_call(b, &data), &storage, value);
             assert!(out.reverted, "{marks}");
             assert_eq!(out.returndata, failed_call, "{marks}: {}", pretty(&out.returndata));
@@ -480,7 +480,7 @@ fn upgrades_bubble_migration_failures_and_take_long_arguments() {
         let mut want = word(32);
         want.extend(&list);
         assert_eq!(run(&proxy, &selector("xs()"), &out.storage, 0).returndata, want);
-        let out = run(&proxy, &upgrade_to_and_call(b, &word_data("too_large(uint256)", &[Word::from_u64(3)])), &storage, 0);
+        let out = run(&proxy, &upgrade_to_and_call(b, &word_data("tooLarge(uint256)", &[Word::from_u64(3)])), &storage, 0);
         assert!(!out.reverted, "{marks}: {}", pretty(&out.returndata));
         assert_eq!(run(&proxy, &selector("n()"), &out.storage, 0).returndata, word(3));
         DEPLOYED.with(|m| m.borrow_mut().clear());
@@ -519,12 +519,12 @@ fn facets_run_only_their_module() {
 fn routers_need_their_facets() {
     let plain = "module M is {\n\
           storage m at \"t.m\" is record { a : uint; b : uint; }\n\
-          external function set_a(const v : uint) is { m.a := v * 3 + m.b; }\n\
+          external function setA(const v : uint) is { m.a := v * 3 + m.b; }\n\
           external view function sum() : uint is m.a + m.b\n\
         }\n\
         storage is record { n : uint; }\n\
         use M delegated exposing {\n\
-          function set_a(v : uint);\n\
+          function setA(v : uint);\n\
           view function sum() : uint;\n\
         }\n";
     let constructed = format!("{plain}deploy(const a : uint) is {{ storage.n := a; }}\n");
@@ -544,42 +544,42 @@ fn routers_need_their_facets() {
 
 const SPLIT_MODULES: &str = r#"
 module Alpha is {
-  storage alpha_state at "split.alpha" is record {
+  storage alphaState at "split.alpha" is record {
     n : uint;
   }
 
-  error Alpha_zero;
+  error AlphaZero;
 
   function add(const a : uint; const b : uint) is {
-    alpha_state.n := alpha_state.n + a * b + a / (b + 1);
+    alphaState.n := alphaState.n + a * b + a / (b + 1);
   }
 
-  external function alpha_add(const a : uint; const b : uint) is
+  external function alphaAdd(const a : uint; const b : uint) is
     add(a, b)
 
-  external function alpha_mix(const a : uint; const b : uint; const c : uint)
-    raises Alpha_zero
+  external function alphaMix(const a : uint; const b : uint; const c : uint)
+    raises AlphaZero
   is {
-    assert(c > 0, Alpha_zero);
-    alpha_state.n := alpha_state.n * 3 + a * b * c + (a + b) / c + (a * c) % (b + 5);
+    assert(c > 0, AlphaZero);
+    alphaState.n := alphaState.n * 3 + a * b * c + (a + b) / c + (a * c) % (b + 5);
     add(a % 7, c);
   }
 
   external view function alpha() : uint is
-    alpha_state.n
+    alphaState.n
 }
 
 module Beta is {
-  storage beta_state at "split.beta" is record {
+  storage betaState at "split.beta" is record {
     m : uint;
   }
 
-  external function beta_add(const a : uint; const b : uint) is {
-    beta_state.m := beta_state.m * 2 + a % (b + 3) + b;
+  external function betaAdd(const a : uint; const b : uint) is {
+    betaState.m := betaState.m * 2 + a % (b + 3) + b;
   }
 
   external view function beta() : uint is
-    beta_state.m
+    betaState.m
 }
 "#;
 
@@ -597,14 +597,14 @@ contract Pair is {{
   }}
 
   use Alpha{marks} exposing {{
-    function alpha_add(a : uint; b : uint);
-    function alpha_mix(a : uint; b : uint; c : uint)
-      raises Alpha_zero;
+    function alphaAdd(a : uint; b : uint);
+    function alphaMix(a : uint; b : uint; c : uint)
+      raises AlphaZero;
     view function alpha() : uint;
   }}
 
   use Beta{marks} exposing {{
-    function beta_add(a : uint; b : uint);
+    function betaAdd(a : uint; b : uint);
     view function beta() : uint;
   }}
 
@@ -672,7 +672,7 @@ contract Other is {{
     let runtime = deploy_split(&other);
     let out = call(
         &runtime,
-        "alpha_add(uint256,uint256)",
+        "alphaAdd(uint256,uint256)",
         &[Word::from_u64(1), Word::from_u64(2)],
     );
     assert!(
@@ -819,7 +819,7 @@ import "std/uint";
 
 module Render is {
   pure function render(const n : uint; const name : string) : string is
-    String.concat("{\"n\":", Uint.to_string(n), ",\"name\":\"", name, "\",\"hex\":\"", Uint.to_hex_string(n * n + 7), "\"}")
+    String.concat("{\"n\":", Uint.toString(n), ",\"name\":\"", name, "\",\"hex\":\"", Uint.toHexString(n * n + 7), "\"}")
 }
 
 module Stash is {
@@ -1066,7 +1066,7 @@ fn split_tooling_output() {
     let pair = dir.join("src/pair.lithe");
     std::fs::write(&pair, pair_src("")).expect("write");
     let pair2 = dir.join("pair2.lithe");
-    let changed = pair_src("").replace("beta_state.m * 2", "beta_state.m * 3");
+    let changed = pair_src("").replace("betaState.m * 2", "betaState.m * 3");
     std::fs::write(&pair2, changed).expect("write");
     let opts = crate::Options::default();
     let compiled = crate::compile(&Sources::disk(), &pair, &opts)
@@ -1083,7 +1083,7 @@ fn split_tooling_output() {
     assert!(facets.contains("  Pair: mix\n"), "{facets}");
     assert!(facets.contains("\nfacet Alpha  0x"), "{facets}");
     assert!(
-        facets.contains("\n  alpha_add, alpha_mix, alpha\n"),
+        facets.contains("\n  alphaAdd, alphaMix, alpha\n"),
         "{facets}"
     );
     let whole = dir.join("whole.lithe");
@@ -1091,7 +1091,7 @@ fn split_tooling_output() {
     let unsplit = crate::facets(&Sources::disk(), &whole, &opts).expect("facets");
     assert!(!unsplit.contains("facet "), "{unsplit}");
     assert!(
-        unsplit.contains("  Alpha: alpha_add, alpha_mix, alpha\n"),
+        unsplit.contains("  Alpha: alphaAdd, alphaMix, alpha\n"),
         "{unsplit}"
     );
     let check = crate::upgrade_check(&Sources::disk(), &pair, &pair2, &opts).expect("check");
@@ -1111,7 +1111,7 @@ fn split_tooling_output() {
             .collect::<String>()
     );
     let artifact = std::fs::read_to_string(out.join("facets/Alpha.json")).expect("facet artifact");
-    assert!(artifact.contains("\"name\": \"alpha_mix\""), "{artifact}");
+    assert!(artifact.contains("\"name\": \"alphaMix\""), "{artifact}");
     let router =
         std::fs::read_to_string(out.join("pair.lithe/Pair.json")).expect("router artifact");
     assert!(
@@ -1176,19 +1176,19 @@ fn split_tooling_output() {
     let stubs = crate::stubs(&Sources::disk(), &pair, "Alpha", &[]).expect("stubs");
     assert_eq!(
         stubs,
-        "use Alpha exposing {\n  function alpha_add(a : uint; b : uint);\n  function alpha_mix(a : uint; b : uint; c : uint)\n    raises Alpha_zero;\n  view function alpha() : uint;\n}\n"
+        "use Alpha exposing {\n  function alphaAdd(a : uint; b : uint);\n  function alphaMix(a : uint; b : uint; c : uint)\n    raises AlphaZero;\n  view function alpha() : uint;\n}\n"
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
 
 const ORDERS: &str = "\
 import \"std/abi\"; import \"std/crypto\"; module Orders is {
-  type order is tuple record { who : address; memo : string; }
-  type job is record { a : uint; label : string; }
+  type Order is tuple record { who : address; memo : string; }
+  type Job is record { a : uint; label : string; }
   storage orders at \"t.orders\" is record { h : bytes32; }
 
-  external function place(const o : order) is { orders.h := Crypto.keccak256(Abi.encode(o)); }
-  external function run(const j : job) is { orders.h := Crypto.keccak256(Abi.encode(j)); }
+  external function place(const o : Order) is { orders.h := Crypto.keccak256(Abi.encode(o)); }
+  external function run(const j : Job) is { orders.h := Crypto.keccak256(Abi.encode(j)); }
   external function mark(const m : tuple record { at : uint; note : string; }) is {
     orders.h := Crypto.keccak256(Abi.encode(m.at, m.note));
   }
@@ -1209,7 +1209,7 @@ fn stubs_keep_tuple_records() {
     let _ = std::fs::remove_dir_all(&dir);
     assert_eq!(
         stubs,
-        "use Orders exposing {\n  function place(o : order);\n  function run(j : job);\n  function mark(m : tuple record { at : uint; note : string });\n  view function last() : bytes32;\n}\n"
+        "use Orders exposing {\n  function place(o : Order);\n  function run(j : Job);\n  function mark(m : tuple record { at : uint; note : string });\n  view function last() : bytes32;\n}\n"
     );
     let marked = stubs.replacen(" exposing {", " delegated exposing {", 1);
     let shop = format!("{ORDERS}\ncontract Shop is {{\n  storage is record {{}}\n{marked}}}\n");
@@ -1293,7 +1293,7 @@ module Ledger is {
     amount * bps / 10_000
 
   pure function label(const n : uint) : string is
-    String.concat("n=", Uint.to_string(n))
+    String.concat("n=", Uint.toString(n))
 
   pure function halves(const n : uint) : (uint, uint) is
     (n / 2, n - n / 2)
@@ -1386,7 +1386,7 @@ contract Bank is {
     Ledger.check(who, want);
   } with true
 
-  external view function name_of(const n : uint) : string is
+  external view function nameOf(const n : uint) : string is
     Ledger.label(n)
 
   external view function mine() : uint is
@@ -1474,7 +1474,7 @@ fn calls_cross_into_facets() {
         (deployer, word_data("quote(uint256)", &[Word::from_u64(0).not()])),
         (deployer, word_data("afford(address,uint256)", &[w(other), w(1)])),
         (deployer, word_data("afford(address,uint256)", &[w(other), w(1_000_000)])),
-        (deployer, word_data("name_of(uint256)", &[w(42)])),
+        (deployer, word_data("nameOf(uint256)", &[w(42)])),
         (other, word_data("mine()", &[])),
         (deployer, word_data("total()", &[])),
         (deployer, word_data("last()", &[])),
@@ -1552,7 +1552,7 @@ fn facets_with_crossings_are_shared() {
     let one = crate::split::build(&checked_src(CROSS), "Bank", &crate::Options::default()).expect("one");
     let other = CROSS
         .replace(
-            "  external view function name_of(const n : uint) : string is\n    Ledger.label(n)\n\n",
+            "  external view function nameOf(const n : uint) : string is\n    Ledger.label(n)\n\n",
             "",
         )
         .replace("contract Bank is {", "contract Vault is {");
@@ -1640,14 +1640,14 @@ module Roles is {
     n : uint;
   }
 
-  error Not_admin of address;
+  error NotAdmin of address;
 
   guard admin;
 
-  view function only_admin(const who : address)
-    raises Not_admin
+  view function onlyAdmin(const who : address)
+    raises NotAdmin
   is {
-    assert(roles.admins[who], Not_admin(who));
+    assert(roles.admins[who], NotAdmin(who));
   }
 
   function grant(const who : address) is {
@@ -1668,23 +1668,23 @@ storage is record {
   owner : address;
 }
 
-error Not_owner;
+error NotOwner;
 
 upgrade guard is {
-  Roles.only_admin(Evm.sender());
+  Roles.onlyAdmin(Evm.sender());
 }
 
 use Roles delegated exposing {
-  function bump() raises Not_admin;
+  function bump() raises NotAdmin;
   view function n() : uint;
 }
 
-guard Roles.admin raises Not_admin is {
-  Roles.only_admin(Evm.sender());
+guard Roles.admin raises NotAdmin is {
+  Roles.onlyAdmin(Evm.sender());
 }
 
-external function claim() raises Not_owner is {
-  assert(storage.owner = Address.zero, Not_owner);
+external function claim() raises NotOwner is {
+  assert(storage.owner = Address.zero, NotOwner);
   storage.owner := Evm.sender();
   Roles.grant(Evm.sender());
 }
@@ -1729,7 +1729,7 @@ fn crossings_carry_immutables() {
     bps : uint;
   }
 
-  function set_bps(const bps : uint) is {
+  function setBps(const bps : uint) is {
     fees.bps := bps;
   }
 
@@ -1744,7 +1744,7 @@ storage is record {
 }
 
 deploy() is {
-  Fees.set_bps(250);
+  Fees.setBps(250);
   storage.first := Fees.cut(1_000);
 }
 
@@ -1782,12 +1782,12 @@ module Counter is {
 }
 contract App is {
   use Counter delegated exposing { view function count() : uint; }
-  external pure function counterFacet() : address is Evm.facet_address(Counter)
+  external pure function counterFacet() : address is Evm.facetAddress(Counter)
   external function create() : uint is { Counter.bump(); } with 1
 }
 ";
 
-/// `Evm.facet_address(M)` is the address the router forwards `M`'s externals to, and an
+/// `Evm.facetAddress(M)` is the address the router forwards `M`'s externals to, and an
 /// external may be named `create`, which is otherwise a keyword.
 #[test]
 fn facet_address_is_the_facets_create2_address() {
@@ -1811,7 +1811,7 @@ fn facet_address_needs_a_delegated_module_and_contract_code() {
     assert!(err.message.contains("`Counter` has no facet: the contract doesn't use it `delegated`"), "{}", err.message);
     let in_module = FACET_ADDRESS.replace(
         "  external view function count() : uint is counter.n\n",
-        "  external view function count() : uint is counter.n\n  pure function here() : address is Evm.facet_address(Counter)\n",
+        "  external view function count() : uint is counter.n\n  pure function here() : address is Evm.facetAddress(Counter)\n",
     );
     let err = crate::check::check(loaded(&in_module), Default::default()).err().expect("rejected");
     assert!(err.message.contains("is for contract code"), "{}", err.message);

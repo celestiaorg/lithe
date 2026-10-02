@@ -22,7 +22,7 @@ module SSTORE2 is {
 
   (* Writes with `CREATE2`, and answers the pointer. Raises `FailedDeployment` if the
      salt was used for this data before. *)
-  function write_counterfactual(const data : bytes; const salt : bytes32) : address
+  function writeCounterfactual(const data : bytes; const salt : bytes32) : address
     raises FailedDeployment
   is {
     const init : bytes := code(data);
@@ -30,10 +30,10 @@ module SSTORE2 is {
       | Ok(_) -> { skip }
       | Error(_) -> { fail FailedDeployment; }
     };
-  } with Create2.compute_address_here(salt, Crypto.keccak256(init))
+  } with Create2.computeAddressHere(salt, Crypto.keccak256(init))
 
-  pure function predict_counterfactual(const data : bytes; const salt : bytes32; const deployer : address) : address is
-    Create2.compute_address(salt, Crypto.keccak256(code(data)), deployer)
+  pure function predictCounterfactual(const data : bytes; const salt : bytes32; const deployer : address) : address is
+    Create2.computeAddress(salt, Crypto.keccak256(code(data)), deployer)
 
   (* The data, which panics if `pointer` has no code. *)
   view function read(const pointer : address) : bytes is

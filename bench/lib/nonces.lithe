@@ -6,23 +6,23 @@ error InvalidAccountNonce of record {
 }
 
 module Nonces is {
-  storage nonce_state at "openzeppelin.storage.Nonces" is record {
+  storage nonceState at "openzeppelin.storage.Nonces" is record {
     nonces : map(address, uint);
   }
 
   external view function nonces(const owner : address) : uint is
-    nonce_state.nonces[owner]
+    nonceState.nonces[owner]
 
   (* Returns the current nonce and moves the counter on. *)
-  function use_nonce(const owner : address) : uint is {
-    const current : uint := nonce_state.nonces[owner];
-    nonce_state.nonces[owner] := current + 1;
+  function useNonce(const owner : address) : uint is {
+    const current : uint := nonceState.nonces[owner];
+    nonceState.nonces[owner] := current + 1;
   } with current
 
-  function use_checked_nonce(const owner : address; const nonce : uint)
+  function useCheckedNonce(const owner : address; const nonce : uint)
     raises InvalidAccountNonce
   is {
-    const current : uint := use_nonce(owner);
+    const current : uint := useNonce(owner);
     assert(nonce = current, InvalidAccountNonce { account = owner; currentNonce = current; });
   }
 }

@@ -15,11 +15,11 @@ import "std/evm";
 
 storage is record {
   total : uint;
-  last_caller : address;
+  lastCaller : address;
 }
 
 transient storage is record {
-  calls_this_tx : uint;
+  callsThisTx : uint;
 }
 
 external function track(const amount : uint) is {
@@ -34,15 +34,15 @@ external function track(const amount : uint) is {
 
   (* Contract state is always qualified: `storage.` or `transient.` *)
   storage.total := storage.total + amount + bonus;
-  storage.last_caller := caller;
-  transient.calls_this_tx := transient.calls_this_tx + 1;
+  storage.lastCaller := caller;
+  transient.callsThisTx := transient.callsThisTx + 1;
 }
 
 (* Execution context comes from `Evm`, not magic globals. *)
 external view function context() : (address, uint, timestamp) is
-  (Evm.sender(), Evm.block_number(), Evm.block_timestamp())
+  (Evm.sender(), Evm.blockNumber(), Evm.blockTimestamp())
 ```
 
 - Every local binding names its type: `const caller : address := ...`. There is no inference for bindings.
 - `transient` storage is cleared at the end of every transaction. See [Transient storage](/by-example/transient-storage).
-- `Evm.sender()`, `Evm.block_number()`, and the rest of the context are listed in [Built-ins](/language/builtins).
+- `Evm.sender()`, `Evm.blockNumber()`, and the rest of the context are listed in [Built-ins](/language/builtins).

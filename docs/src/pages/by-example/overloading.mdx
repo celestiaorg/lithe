@@ -13,7 +13,7 @@ Internal and external functions can share a name when their parameter types diff
 
 import "std/evm";
 
-type shares is uint;
+type Shares is uint;
 
 storage is record {
   balances : map(address, uint);
@@ -38,8 +38,8 @@ function credit(const to : address; const amount : uint) is {
   storage.total := storage.total + amount;
 }
 
-(* `shares` is its own type, so a `shares` argument picks this overload. *)
-function credit(const to : address; const amount : shares) is {
+(* `Shares` is its own type, so a `Shares` argument picks this overload. *)
+function credit(const to : address; const amount : Shares) is {
   credit(storage.staked, to, uint(amount));
 }
 
@@ -54,13 +54,13 @@ external function deposit(const amount : uint; const bps : uint) is {
 }
 
 external function stake(const amount : uint) is {
-  credit(Evm.sender(), shares(amount));
+  credit(Evm.sender(), Shares(amount));
 }
 
-external view function balance_of(const who : address) : uint is
+external view function balanceOf(const who : address) : uint is
   storage.balances[who]
 
-external view function staked_of(const who : address) : uint is
+external view function stakedOf(const who : address) : uint is
   storage.staked[who]
 
 external view function total() : uint is
@@ -68,6 +68,6 @@ external view function total() : uint is
 ```
 
 - Overloads of one name are all internal or all external, and no two take the same parameter types.
-- A nominal type like `shares` is its own type, so it tells overloads apart from `uint`.
+- A nominal type like `Shares` is its own type, so it tells overloads apart from `uint`.
 - When the argument types decide, literals keep their own types: `1` is a `uint`. Convert a value to pick another overload.
 - Generic functions and functions of a module overload the same way.

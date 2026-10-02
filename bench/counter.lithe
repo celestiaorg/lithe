@@ -2,7 +2,7 @@
 
 import "std/evm";
 
-error Not_owner;
+error NotOwner;
 
 immutable is record {
   owner : address;
@@ -12,9 +12,9 @@ storage is record {
   count : uint;
 }
 
-event Count_changed of record {
-  old_count : uint;
-  new_count : uint;
+event CountChanged of record {
+  oldCount : uint;
+  newCount : uint;
 }
 
 deploy() is {
@@ -25,24 +25,24 @@ external function increment(const n : uint) is {
   if n > 0 then {
     const old : uint := storage.count;
     storage.count := old + n;
-    emit Count_changed {
-      old_count = old;
-      new_count = storage.count;
+    emit CountChanged {
+      oldCount = old;
+      newCount = storage.count;
     };
   }
 }
 
 external function reset()
-  raises Not_owner
+  raises NotOwner
 is {
-  assert(Evm.sender() = immutable.owner, Not_owner);
+  assert(Evm.sender() = immutable.owner, NotOwner);
   const old : uint := storage.count;
   storage.count := 0;
-  emit Count_changed {
-    old_count = old;
-    new_count = 0;
+  emit CountChanged {
+    oldCount = old;
+    newCount = 0;
   };
 }
 
-external view function get_count() : uint is
+external view function getCount() : uint is
   storage.count

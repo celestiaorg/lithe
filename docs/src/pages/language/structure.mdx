@@ -46,9 +46,9 @@ A contract is made of these declarations, in any order. Names are resolved acros
 | Storage | `storage is record { ... }` | [Storage](/language/storage) |
 | Named storage | `storage config at "app.config" is record { ... }` | [Storage](/language/storage#named-storage) |
 | Transient storage | `transient storage is record { ... }` | [Storage](/language/storage#transient-storage) |
-| Type | `type order_id is bytes32;` | [Types](/language/types) |
-| Error | `error Not_owner;` | [Errors](/language/errors) |
-| Error set | `errors admin_errors is \| Not_owner \| Paused` | [Errors](/language/errors#error-sets) |
+| Type | `type OrderId is bytes32;` | [Types](/language/types) |
+| Error | `error NotOwner;` | [Errors](/language/errors) |
+| Error set | `errors admin_errors is \| NotOwner \| Paused` | [Errors](/language/errors#error-sets) |
 | Event | `event Paid of record { ... }` | [Events](/language/events) |
 | Interface | `interface Token is { ... }` | [Queries and deferred calls](/language/effects) |
 | Function | `external function f() is { ... }` | [Functions](/language/functions) |
@@ -99,15 +99,17 @@ const fee : uint := scale(1_000, 25);
 
 ## Naming
 
-Lithe does not enforce a naming style, but its examples and standard modules follow these conventions:
+Lithe does not enforce a naming style, but its examples and standard modules follow the EVM's, so the names a contract declares are the names its ABI shows:
 
 | Kind | Convention | Example |
 | --- | --- | --- |
-| Types, functions, fields, locals | `snake_case` | `basis_points`, `transfer_from` |
-| Errors, events, variant cases | `Capitalized_snake` or `PascalCase` | `Not_owner`, `Transfer` |
+| Functions, fields, locals, parameters, constants | `camelCase` | `transferFrom`, `basisPoints` |
+| Types, errors, events, variant cases | `PascalCase` | `BasisPoints`, `NotOwner`, `Transfer` |
 | Modules, interfaces, contracts | `PascalCase` | `Ledger`, `IERC20` |
 
-Error names are converted to PascalCase in the ABI (`Not_owner` becomes `NotOwner()`), so they match Solidity conventions. Two errors whose ABI names would collide are rejected. Function and event names appear in the ABI exactly as written. To match an existing Solidity interface, write `transferFrom`.
+An acronym keeps its capitals, as in OpenZeppelin's names: `tokenURI`, `ERC20`, `EIP712Domain`. The built-in types are lowercase: `uint`, `address`, `bytes32`, `map`, `list`.
+
+Every name appears in the ABI exactly as written, so a name a standard fixes, such as `DOMAIN_SEPARATOR`, is written as the standard spells it. A variant case a contract [dispatches](/language/dispatch) on names its entrypoint with `external`: `| SetFee external setFee of uint`.
 
 ## Keywords
 

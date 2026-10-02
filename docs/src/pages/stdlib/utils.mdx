@@ -7,13 +7,13 @@ description: "CREATE and CREATE2 addresses, clones, SSTORE2, CREATE3, nonces, ch
 
 ## `Create2`
 
-`std/utils/create2.lithe`. `compute_address(salt, init_code_hash, deployer)` is where a `CREATE2` from `deployer` lands, and `compute_address_here(salt, init_code_hash)` is where [`defer create`](/language/effects#create) with that salt would put a contract from this one. `init_code_hash` is the hash of the created contract's creation code, with its [`deploy`](/language/deploy) arguments appended: `Crypto.keccak256(Evm.creation_code(C))` for a contract `C` without arguments, a constant.
+`std/utils/create2.lithe`. `computeAddress(salt, initCodeHash, deployer)` is where a `CREATE2` from `deployer` lands, and `computeAddressHere(salt, initCodeHash)` is where [`defer create`](/language/effects#create) with that salt would put a contract from this one. `initCodeHash` is the hash of the created contract's creation code, with its [`deploy`](/language/deploy) arguments appended: `Crypto.keccak256(Evm.creationCode(C))` for a contract `C` without arguments, a constant.
 
 The file also declares `FailedDeployment`, which the deployers below raise when a salted creation fails.
 
 ## `Create`
 
-`std/utils/create.lithe`. `compute_address(deployer, nonce)` is where a plain `CREATE` from `deployer` lands when its nonce is `nonce`, as Solady's `LibRLP.computeAddress` computes it: the hash of the RLP list of the two. A contract's nonce starts at 1, and each creation moves it on, so the contract's first [`defer create`](/language/effects#create) lands at `Create.compute_address(Evm.self(), 1)`. Any nonce works, up to 32 bytes.
+`std/utils/create.lithe`. `computeAddress(deployer, nonce)` is where a plain `CREATE` from `deployer` lands when its nonce is `nonce`, as Solady's `LibRLP.computeAddress` computes it: the hash of the RLP list of the two. A contract's nonce starts at 1, and each creation moves it on, so the contract's first [`defer create`](/language/effects#create) lands at `Create.computeAddress(Evm.self(), 1)`. Any nonce works, up to 32 bytes.
 
 ## `Clones`
 
@@ -39,27 +39,27 @@ contract Factory is {
     };
   }
 
-  external function open_at(const salt : bytes32) : address
+  external function openAt(const salt : bytes32) : address
     raises FailedDeployment
   is {
-    const instance : address := Clones.clone_deterministic(storage.implementation, salt);
+    const instance : address := Clones.cloneDeterministic(storage.implementation, salt);
     List.push(storage.instances, instance);
   } with instance
 }
 ```
 
-A clone with arguments carries them after its code, where the implementation reads them with `Clones.args_of(Evm.self())`: fixed configuration, such as a token and an owner, with no storage to initialize.
+A clone with arguments carries them after its code, where the implementation reads them with `Clones.argsOf(Evm.self())`: fixed configuration, such as a token and an owner, with no storage to initialize.
 
 | Function | |
 | --- | --- |
 | `code(implementation) : bytes` | a clone's creation code |
-| `code_with_args(implementation, args) : bytes` | the same, with `args` after the clone's code; raises `CloneArgumentsTooLong` past 24531 bytes |
-| `clone_deterministic(implementation, salt) : address` | creates a clone with `CREATE2`, and answers where it lands; raises `FailedDeployment` if it is already there |
-| `clone_deterministic(implementation, salt, value) : address` | the same, sending `value` wei to the clone |
-| `clone_deterministic_with_args(implementation, args, salt)`, `(implementation, args, salt, value)` | the same, with arguments |
-| `predict(implementation, salt, deployer)`, `predict_with_args(implementation, args, salt, deployer)` | where `deployer` would create the clone |
-| `predict_here(implementation, salt) : address` | where this contract would |
-| `args_of(instance) : bytes` | the arguments a clone was created with; empty for a clone without them |
+| `codeWithArgs(implementation, args) : bytes` | the same, with `args` after the clone's code; raises `CloneArgumentsTooLong` past 24531 bytes |
+| `cloneDeterministic(implementation, salt) : address` | creates a clone with `CREATE2`, and answers where it lands; raises `FailedDeployment` if it is already there |
+| `cloneDeterministic(implementation, salt, value) : address` | the same, sending `value` wei to the clone |
+| `cloneDeterministicWithArgs(implementation, args, salt)`, `(implementation, args, salt, value)` | the same, with arguments |
+| `predict(implementation, salt, deployer)`, `predictWithArgs(implementation, args, salt, deployer)` | where `deployer` would create the clone |
+| `predictHere(implementation, salt) : address` | where this contract would |
+| `argsOf(instance) : bytes` | the arguments a clone was created with; empty for a clone without them |
 
 ## `SSTORE2`
 
@@ -91,8 +91,8 @@ contract Art is {
 | Function | |
 | --- | --- |
 | `code(data) : bytes` | the creation code that stores `data` |
-| `write_counterfactual(data, salt) : address` | stores `data` with `CREATE2`, and answers the pointer; raises `FailedDeployment` if the same data was stored with the salt before |
-| `predict_counterfactual(data, salt, deployer) : address` | where `deployer` would store it |
+| `writeCounterfactual(data, salt) : address` | stores `data` with `CREATE2`, and answers the pointer; raises `FailedDeployment` if the same data was stored with the salt before |
+| `predictCounterfactual(data, salt, deployer) : address` | where `deployer` would store it |
 | `read(pointer) : bytes` | the data; panics if `pointer` has no code |
 
 `SSTORE2.read(p)[start:end]` reads the whole data first. `Evm.code(p)[1 + start:1 + end]` copies only the range.
@@ -114,24 +114,24 @@ contract Deployer is {
     last : address;
   }
 
-  external payable function deploy_at(const code : bytes; const salt : bytes32) : address
+  external payable function deployAt(const code : bytes; const salt : bytes32) : address
     raises FailedDeployment
   is {
-    storage.last := Create3.deploy_deterministic(code, salt, uint(Evm.value()));
+    storage.last := Create3.deployDeterministic(code, salt, uint(Evm.value()));
   } with storage.last
 
   external view function predict(const salt : bytes32) : address is
-    Create3.predict_here(salt)
+    Create3.predictHere(salt)
 }
 ```
 
 | Function | |
 | --- | --- |
-| `deploy_deterministic(code, salt) : address` | creates `code`, and answers its address; raises `FailedDeployment` if the salt was used or the creation fails |
-| `deploy_deterministic(code, salt, value) : address` | the same, sending `value` wei to the new contract |
+| `deployDeterministic(code, salt) : address` | creates `code`, and answers its address; raises `FailedDeployment` if the salt was used or the creation fails |
+| `deployDeterministic(code, salt, value) : address` | the same, sending `value` wei to the new contract |
 | `predict(salt, deployer) : address` | where `deployer` would create a contract with `salt` |
-| `predict_here(salt) : address` | where this contract would |
-| `proxy_code_hash() : bytes32` | the hash of the proxy's creation code |
+| `predictHere(salt) : address` | where this contract would |
+| `proxyCodeHash() : bytes32` | the hash of the proxy's creation code |
 
 ## `Nonces`
 
@@ -139,13 +139,13 @@ contract Deployer is {
 
 | Function | |
 | --- | --- |
-| `nonces(owner) : uint` | the next nonce; also an external |
-| `use_nonce(owner) : uint` | returns the next nonce and moves the counter on |
-| `use_checked_nonce(owner, nonce)` | the same, raising `InvalidAccountNonce` unless `nonce` is the next one |
+| `nonces(owner) : uint` | the external: the next nonce |
+| `useNonce(owner) : uint` | returns the next nonce and moves the counter on |
+| `useCheckedNonce(owner, nonce)` | the same, raising `InvalidAccountNonce` unless `nonce` is the next one |
 
 ## `Checkpoints`
 
-`std/utils/checkpoint.lithe`. A history of values, each from a key onward, such as a block number or a timestamp: voting power, balances at a snapshot, or any value you need to read as of the past. A `trace` holds a list of `checkpoint`s, each a `uint48` key and a `uint208` value in one storage slot, laid out as OpenZeppelin's `Checkpoints.Trace208`. A trace can be a storage field or a map's value, and each function takes either: `Checkpoints.latest(storage.votes[account])`.
+`std/utils/checkpoint.lithe`. A history of values, each from a key onward, such as a block number or a timestamp: voting power, balances at a snapshot, or any value you need to read as of the past. A `Trace` holds a list of `Checkpoint`s, each a `uint48` key and a `uint208` value in one storage slot, laid out as OpenZeppelin's `Checkpoints.Trace208`. A trace can be a storage field or a map's value, and each function takes either: `Checkpoints.latest(storage.votes[account])`.
 
 ```lithe
 import "std/math/math";
@@ -157,7 +157,7 @@ contract Supply is {
   use Checkpoints;
 
   storage is record {
-    history : trace;
+    history : Trace;
     total : uint;
   }
 
@@ -165,11 +165,11 @@ contract Supply is {
     raises CheckpointUnorderedInsertion
   is {
     storage.total := storage.total + amount;
-    Checkpoints.push(storage.history, uint48(Evm.block_number()), uint208(storage.total));
+    Checkpoints.push(storage.history, uint48(Evm.blockNumber()), uint208(storage.total));
   }
 
-  external view function total_at(const block : uint) : uint is
-    uint(Checkpoints.upper_lookup(storage.history, uint48(block)))
+  external view function totalAt(const block : uint) : uint is
+    uint(Checkpoints.upperLookup(storage.history, uint48(block)))
 }
 ```
 
@@ -180,8 +180,8 @@ A lookup is a binary search over the sorted history, so it costs a few reads how
 | `push(history, key, value)` | keys must not go down; a second push at the newest key replaces its value |
 | `latest(history)` | the newest value, or zero |
 | `length(history)`, `at(history, i)` | the checkpoints, oldest first; `at` past the end panics, as a list index does |
-| `upper_lookup(history, key)` | the value as of `key`: the last checkpoint at or before it, or zero |
-| `upper_lookup_recent(history, key)` | the same, faster for a recent key: it checks the newest square root of the history first |
+| `upperLookup(history, key)` | the value as of `key`: the last checkpoint at or before it, or zero |
+| `upperLookupRecent(history, key)` | the same, faster for a recent key: it checks the newest square root of the history first |
 
 ## `ERC7821`
 
@@ -241,29 +241,29 @@ contract Account is {
     raises UnsupportedExecutionMode | AccountUnauthorized | ECDSAInvalidSignature
       | ECDSAInvalidSignatureLength | ECDSAInvalidSignatureS | forwarded
   is {
-    const id : uint := ERC7821.execution_mode_id(mode);
+    const id : uint := ERC7821.executionModeId(mode);
     assert(id <> 0, UnsupportedExecutionMode);
-    const calls : erc7821_calls := Abi.decode(executionData, erc7821_calls);
-    const signature : bytes := ERC7821.op_data_of(id, executionData);
+    const calls : ERC7821Calls := Abi.decode(executionData, ERC7821Calls);
+    const signature : bytes := ERC7821.opDataOf(id, executionData);
     if signature.length <> 0 then {
-      const digest : bytes32 := ECDSA.to_eth_signed_message_hash(Crypto.keccak256(Abi.encode(
-        Evm.chain_id(), Evm.self(), Nonces.use_nonce(Evm.self()), calls
+      const digest : bytes32 := ECDSA.toEthSignedMessageHash(Crypto.keccak256(Abi.encode(
+        Evm.chainId(), Evm.self(), Nonces.useNonce(Evm.self()), calls
       )));
-      assert(ECDSA.recover_signature(digest, signature) = Evm.self(), AccountUnauthorized(Evm.sender()));
+      assert(ECDSA.recoverSignature(digest, signature) = Evm.self(), AccountUnauthorized(Evm.sender()));
     } else {
       assert(Evm.sender() = Evm.self(), AccountUnauthorized(Evm.sender()));
     };
-    ERC7821.execute_calls(calls);
+    ERC7821.executeCalls(calls);
   }
 }
 ```
 
 | Piece | |
 | --- | --- |
-| `erc7821_call`, `erc7821_calls` | a call, `{ to; value; data }`, and a list of them: decode a batch with `Abi.decode(executionData, erc7821_calls)` |
-| `execution_mode_id(mode) : uint` | 1 for a batch, 2 for a batch with optional `opData`, 0 for an unsupported mode |
-| `op_data_of(id, executionData) : bytes` | a batch's `opData`, or empty when `id` is not 2 or there is none |
-| `execute_calls(calls)` | defers each call, in order, with its value; a failed one reverts with its revert data, so this raises `forwarded` |
+| `ERC7821Call`, `ERC7821Calls` | a call, `{ to; value; data }`, and a list of them: decode a batch with `Abi.decode(executionData, ERC7821Calls)` |
+| `executionModeId(mode) : uint` | 1 for a batch, 2 for a batch with optional `opData`, 0 for an unsupported mode |
+| `opDataOf(id, executionData) : bytes` | a batch's `opData`, or empty when `id` is not 2 or there is none |
+| `executeCalls(calls)` | defers each call, in order, with its value; a failed one reverts with its revert data, so this raises `forwarded` |
 
 ### Batches of batches
 
@@ -312,9 +312,9 @@ contract Signed is {
   external payable function execute(const mode : bytes32; const executionData : bytes)
     raises UnsupportedExecutionMode | BatchOfBatchesDecodingError | BadOpData | forwarded
   is {
-    const id : uint := ERC7821Batches.execution_mode_id(mode);
+    const id : uint := ERC7821Batches.executionModeId(mode);
     assert(id >= 2, UnsupportedExecutionMode);
-    const n : uint := if id = 3 then ERC7821Batches.batch_count(executionData) else 1;
+    const n : uint := if id = 3 then ERC7821Batches.batchCount(executionData) else 1;
     for i : uint in 0 .. n do {
       var start : uint := 0;
       var finish : uint := executionData.length;
@@ -323,10 +323,10 @@ contract Signed is {
       } else {
         skip
       };
-      const calls : erc7821_calls := Abi.decode(executionData[start:finish], erc7821_calls);
-      const op_data : bytes := ERC7821Batches.op_data_in(executionData, start, finish);
-      assert(Crypto.keccak256(op_data) = storage.key, BadOpData);
-      ERC7821.execute_calls(calls);
+      const calls : ERC7821Calls := Abi.decode(executionData[start:finish], ERC7821Calls);
+      const opData : bytes := ERC7821Batches.opDataIn(executionData, start, finish);
+      assert(Crypto.keccak256(opData) = storage.key, BadOpData);
+      ERC7821.executeCalls(calls);
     }
   }
 }
@@ -334,12 +334,12 @@ contract Signed is {
 
 | Piece | |
 | --- | --- |
-| `execution_mode_id(mode) : uint` | as `ERC7821`'s, and 3 for a batch of batches |
-| `batch_count(executionData) : uint` | how many batches a batch of batches holds |
+| `executionModeId(mode) : uint` | as `ERC7821`'s, and 3 for a batch of batches |
+| `batchCount(executionData) : uint` | how many batches a batch of batches holds |
 | `batch(executionData, i) : (uint, uint)` | where batch `i` lies: `executionData[start:finish]` |
-| `op_data_in(executionData, start, finish) : bytes` | the `opData` of the batch `executionData[start:finish]`, or empty |
+| `opDataIn(executionData, start, finish) : bytes` | the `opData` of the batch `executionData[start:finish]`, or empty |
 
-`Abi.decode(executionData[start:finish], erc7821_calls)` checks the batch where it lies in the calldata, with no copy, and each call reads its target, value, and data from there.
+`Abi.decode(executionData[start:finish], ERC7821Calls)` checks the batch where it lies in the calldata, with no copy, and each call reads its target, value, and data from there.
 
 | Build | Runtime bytes | `execute`, 2 calls | batch of 2 batches of 2 calls |
 | --- | --- | --- | --- |
@@ -365,24 +365,24 @@ contract Beacon is {
   }
 
   external function commit() is {
-    storage.committed := Evm.block_number();
+    storage.committed := Evm.blockNumber();
   }
 
   (* A seed from a block that was in the future when it was committed to. *)
   external view function seed() : bytes32 is
-    BlockHash.block_hash(storage.committed + 1)
+    BlockHash.blockHash(storage.committed + 1)
 }
 ```
 
 ## `Strings`
 
-`std/utils/strings.lithe`. Searching strings, as Solady's `LibString` searches them. Offsets count bytes, not characters. Changing case, escaping, searching, and replacing are built-ins: [`String.lower`, `String.upper`, `String.escape_json`, `String.escape_html`, `String.index_of`, and `String.replace`](/language/builtins#bytes-and-string).
+`std/utils/strings.lithe`. Searching strings, as Solady's `LibString` searches them. Offsets count bytes, not characters. Changing case, escaping, searching, and replacing are built-ins: [`String.lower`, `String.upper`, `String.escapeJson`, `String.escapeHtml`, `String.indexOf`, and `String.replace`](/language/builtins#bytes-and-string).
 
 | Function | |
 | --- | --- |
-| `index_of(subject, needle)`, `index_of(subject, needle, from)` | where `needle` first starts, at or after `from`, or `Uint.max` if it isn't there. An empty needle is found at `from`, or at the end if `from` is past it |
+| `indexOf(subject, needle)`, `indexOf(subject, needle, from)` | where `needle` first starts, at or after `from`, or `Uint.max` if it isn't there. An empty needle is found at `from`, or at the end if `from` is past it |
 | `contains(subject, needle) : bool` | whether `needle` is in `subject` |
-| `starts_with(subject, needle) : bool`, `ends_with(subject, needle) : bool` | whether `subject` starts or ends with `needle` |
+| `startsWith(subject, needle) : bool`, `endsWith(subject, needle) : bool` | whether `subject` starts or ends with `needle` |
 | `replace(subject, needle, replacement) : string` | every `needle`, left to right, replaced. An empty needle puts `replacement` before each byte and at the end |
 
 ```lithe
@@ -413,7 +413,7 @@ contract Names is {
 
 ## `DateTime`
 
-`std/utils/date_time.lithe`. Gregorian dates in UTC, as Solady's `DateTimeLib` computes them. Months and days count from 1, and weekdays from Monday, 1, to Sunday, 7, as in ISO 8601. Times are `timestamp`s. Dates from 1970-01-01 to the year `0xffffffff` are supported; outside them, as in Solady, results are unspecified. `is_supported_date` checks a date.
+`std/utils/date_time.lithe`. Gregorian dates in UTC, as Solady's `DateTimeLib` computes them. Months and days count from 1, and weekdays from Monday, 1, to Sunday, 7, as in ISO 8601. Times are `timestamp`s. Dates from 1970-01-01 to the year `0xffffffff` are supported; outside them, as in Solady, results are unspecified. `isSupportedDate` checks a date.
 
 ```lithe
 import "std/utils/date_time";
@@ -423,31 +423,31 @@ contract Subscription is {
   use DateTime;
 
   storage is record {
-    paid_until : map(address, timestamp);
+    paidUntil : map(address, timestamp);
   }
 
   (* A month from now, or from the end of the current month paid for. 31 January
      and one month is 28 or 29 February. *)
   external function renew() is {
-    const now : timestamp := Evm.block_timestamp();
-    const from : timestamp := if storage.paid_until[Evm.sender()] > now then storage.paid_until[Evm.sender()] else now;
-    storage.paid_until[Evm.sender()] := DateTime.add_months(from, 1);
+    const now : timestamp := Evm.blockTimestamp();
+    const from : timestamp := if storage.paidUntil[Evm.sender()] > now then storage.paidUntil[Evm.sender()] else now;
+    storage.paidUntil[Evm.sender()] := DateTime.addMonths(from, 1);
   }
 
-  external view function renews_on(const who : address) : (uint, uint, uint) is
-    DateTime.timestamp_to_date(storage.paid_until[who])
+  external view function renewsOn(const who : address) : (uint, uint, uint) is
+    DateTime.timestampToDate(storage.paidUntil[who])
 }
 ```
 
 | Function | |
 | --- | --- |
-| `date_to_epoch_day(year, month, day) : uint`, `epoch_day_to_date(day) : (uint, uint, uint)` | days since 1970-01-01, and back |
-| `date_to_timestamp(year, month, day)`, `timestamp_to_date(t)` | the same for the start of the day, as a `timestamp` |
-| `date_time_to_timestamp(year, month, day, hour, minute, second)`, `timestamp_to_date_time(t)` | with the time of day |
-| `is_leap_year(year) : bool`, `days_in_month(year, month) : uint` | `days_in_month` is 0 for a month past 12 |
+| `dateToEpochDay(year, month, day) : uint`, `epochDayToDate(day) : (uint, uint, uint)` | days since 1970-01-01, and back |
+| `dateToTimestamp(year, month, day)`, `timestampToDate(t)` | the same for the start of the day, as a `timestamp` |
+| `dateTimeToTimestamp(year, month, day, hour, minute, second)`, `timestampToDateTime(t)` | with the time of day |
+| `isLeapYear(year) : bool`, `daysInMonth(year, month) : uint` | `daysInMonth` is 0 for a month past 12 |
 | `weekday(t) : uint` | 1 for Monday to 7 for Sunday |
-| `is_supported_date(year, month, day) : bool` | whether the date exists and is in the supported range |
-| `add_years(t, n)`, `sub_years(t, n)`, `add_months(t, n)`, `sub_months(t, n)` | the same day of the month and time of day, or the month's last day if it has fewer |
-| `diff_years(from, to) : uint`, `diff_months(from, to) : uint` | calendar years or months between: 1 from 31 December to 1 January. Panics if `to` is before `from` |
+| `isSupportedDate(year, month, day) : bool` | whether the date exists and is in the supported range |
+| `addYears(t, n)`, `subYears(t, n)`, `addMonths(t, n)`, `subMonths(t, n)` | the same day of the month and time of day, or the month's last day if it has fewer |
+| `diffYears(from, to) : uint`, `diffMonths(from, to) : uint` | calendar years or months between: 1 from 31 December to 1 January. Panics if `to` is before `from` |
 
 Days, hours, minutes, and seconds need no library: `t + 3days`, and `(later - earlier) / 1days`.

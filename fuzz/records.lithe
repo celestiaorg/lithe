@@ -1,26 +1,26 @@
 (* Fuzz target: records stored in maps, laid out like Solidity structs from the value's
    slot. Fields pack, a nested record starts a new slot, and a map of maps holds records
    too. Reads and writes go field by field or a whole record at a time. `priced` queries,
-   so its storage goes through the journal; `set_price` does the same work directly.
+   so its storage goes through the journal; `setPrice` does the same work directly.
    Address 2 is the SHA-256 precompile, which answers any query with a word. *)
 
 import "std/evm";
 
-type inner is record {
+type Inner is record {
   flag : bool;
   delta : int16;
 }
 
-type order is record {
+type Order is record {
   status : uint8;
   owner : address;
   amount : uint;
   small : uint32;
-  inner : inner;
+  inner : Inner;
   last : uint64;
 }
 
-type pair is record {
+type Pair is record {
   a : uint128;
   b : uint128;
 }
@@ -39,8 +39,8 @@ event Placed of record {
 
 storage is record {
   count : uint;
-  orders : map(uint, order);
-  pairs : map(address, map(uint, pair));
+  orders : map(uint, Order);
+  pairs : map(address, map(uint, Pair));
   tail : uint8;
 }
 
@@ -69,12 +69,12 @@ is {
 }
 
 external function copy(const src : uint; const dst : uint) is {
-  const o : order := storage.orders[src];
+  const o : Order := storage.orders[src];
   storage.orders[dst] := o;
   storage.orders[dst].inner := { flag = not o.inner.flag; delta = o.inner.delta; };
 }
 
-external function pair_set(const k : uint; const a : uint128; const b : uint128) is {
+external function pairSet(const k : uint; const a : uint128; const b : uint128) is {
   storage.pairs[Evm.sender()][k] := { a = a; b = b; };
   storage.pairs[Evm.sender()][k + 1].b := b;
 }
@@ -92,16 +92,16 @@ external function priced(const o : Oracle; const id : uint) is {
   reprice(id, query o.price(id));
 }
 
-external function set_price(const id : uint; const p : uint) is {
+external function setPrice(const id : uint; const p : uint) is {
   reprice(id, p);
 }
 
 external view function probe(const o : Oracle; const id : uint) : uint is query o.price(id)
 
-external view function order_of(const id : uint) : order is storage.orders[id]
+external view function orderOf(const id : uint) : Order is storage.orders[id]
 
-external view function status_of(const id : uint) : uint8 is storage.orders[id].status
+external view function statusOf(const id : uint) : uint8 is storage.orders[id].status
 
-external view function delta_of(const id : uint) : int16 is storage.orders[id].inner.delta
+external view function deltaOf(const id : uint) : int16 is storage.orders[id].inner.delta
 
-external view function pair_of(const who : address; const k : uint) : pair is storage.pairs[who][k]
+external view function pairOf(const who : address; const k : uint) : Pair is storage.pairs[who][k]

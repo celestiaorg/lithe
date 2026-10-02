@@ -6,7 +6,7 @@
 
 import "std/evm";
 
-error Too_small of uint;
+error TooSmall of uint;
 
 interface Exchange is {
   payable function swap(amount : uint) : uint;
@@ -31,21 +31,21 @@ storage is record {
 
 event Executed of record {
   indexed who : address;
-  amount_out : uint;
+  amountOut : uint;
 }
 
 external function execute(const ex : Exchange; const amount : uint)
-  raises Too_small
+  raises TooSmall
 is {
   const before : uint := storage.out;
   storage.status := 1;
   defer ex.swap(amount % 1000)
     then (result : uint) {
-      assert(result >= before % 7, Too_small(result));
+      assert(result >= before % 7, TooSmall(result));
       storage.status := storage.status + 1;
       storage.out := result;
       storage.seen[Evm.sender()] := storage.seen[Evm.sender()] + result;
-      emit Executed { who = Evm.sender(); amount_out = result; };
+      emit Executed { who = Evm.sender(); amountOut = result; };
     };
   storage.steps := storage.steps + 1;
 }

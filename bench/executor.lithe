@@ -2,40 +2,40 @@
    phase after its call returns; the order is marked pending before the exchange runs.
    Mirrors executor.sol, which assigns the results inline. *)
 
-type swap_result is record {
-  amount_out : uint;
+type SwapResult is record {
+  amountOut : uint;
   fee : uint;
 }
 
 interface Exchange is {
-  function swap(amount_in : uint; min_out : uint) : swap_result;
+  function swap(amountIn : uint; minOut : uint) : SwapResult;
   function deposit(amount : uint) : uint;
   function split(shares : uint) : (uint, uint);
 }
 
-type order_status is
+type OrderStatus is
   | New
   | Pending
   | Complete
   | Unwound
 
-type order is record {
-  status : order_status;
-  amount_in : uint;
-  amount_out : uint;
+type Order is record {
+  status : OrderStatus;
+  amountIn : uint;
+  amountOut : uint;
   shares : uint;
 }
 
 error AlreadyExecuted of uint;
 error NotComplete of uint;
 error TooLittle of record {
-  amount_out : uint;
+  amountOut : uint;
   floor : uint;
 }
 
 event Executed of record {
   indexed id : uint;
-  amount_out : uint;
+  amountOut : uint;
   fee : uint;
 }
 
@@ -51,10 +51,10 @@ immutable is record {
 
 storage is record {
   executed : uint;
-  total_out : uint;
+  totalOut : uint;
   left : uint;
   right : uint;
-  orders : map(uint, order);
+  orders : map(uint, Order);
 }
 
 deploy(const exchange : Exchange; const floor : uint) is {
@@ -62,37 +62,37 @@ deploy(const exchange : Exchange; const floor : uint) is {
   immutable.floor := floor;
 }
 
-external function execute(const id : uint; const amount_in : uint; const min_out : uint)
+external function execute(const id : uint; const amountIn : uint; const minOut : uint)
   raises AlreadyExecuted | TooLittle
 is {
   assert(storage.orders[id].status = New, AlreadyExecuted(id));
   storage.orders[id].status := Pending;
-  storage.orders[id].amount_in := amount_in;
-  defer immutable.exchange.swap(amount_in, min_out)
-    then (result : swap_result) {
+  storage.orders[id].amountIn := amountIn;
+  defer immutable.exchange.swap(amountIn, minOut)
+    then (result : SwapResult) {
       assert(
-        result.amount_out >= immutable.floor,
-        TooLittle { amount_out = result.amount_out; floor = immutable.floor; }
+        result.amountOut >= immutable.floor,
+        TooLittle { amountOut = result.amountOut; floor = immutable.floor; }
       );
       storage.orders[id].status := Complete;
-      storage.orders[id].amount_out := result.amount_out;
+      storage.orders[id].amountOut := result.amountOut;
       storage.executed := storage.executed + 1;
-      storage.total_out := storage.total_out + result.amount_out;
-      emit Executed { id = id; amount_out = result.amount_out; fee = result.fee; };
+      storage.totalOut := storage.totalOut + result.amountOut;
+      emit Executed { id = id; amountOut = result.amountOut; fee = result.fee; };
     };
 }
 
-external function execute_and_deposit(const id : uint; const amount_in : uint)
+external function executeAndDeposit(const id : uint; const amountIn : uint)
   raises AlreadyExecuted | TooLittle
 is {
   assert(storage.orders[id].status = New, AlreadyExecuted(id));
   storage.orders[id].status := Pending;
-  storage.orders[id].amount_in := amount_in;
-  defer immutable.exchange.swap(amount_in, 0)
-    then (result : swap_result) {
+  storage.orders[id].amountIn := amountIn;
+  defer immutable.exchange.swap(amountIn, 0)
+    then (result : SwapResult) {
       storage.orders[id].status := Complete;
-      storage.orders[id].amount_out := result.amount_out;
-      defer immutable.exchange.deposit(result.amount_out)
+      storage.orders[id].amountOut := result.amountOut;
+      defer immutable.exchange.deposit(result.amountOut)
         then (shares : uint) {
           storage.orders[id].shares := shares;
           emit Deposited { id = id; shares = shares; };
@@ -112,4 +112,4 @@ is {
     };
 }
 
-external view function order_of(const id : uint) : order is storage.orders[id]
+external view function orderOf(const id : uint) : Order is storage.orders[id]

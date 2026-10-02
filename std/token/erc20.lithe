@@ -8,13 +8,13 @@
      supports IERC20, IERC20Metadata;
 
    Every balance change goes through `update`, which calls the contract's two hooks: at
-   its start, `before_transfer`, where OpenZeppelin's `_update` overrides check a pause,
-   and after the `Transfer` log, `after_transfer`, where extensions such as `ERC20Votes`
+   its start, `beforeTransfer`, where OpenZeppelin's `_update` overrides check a pause,
+   and after the `Transfer` log, `afterTransfer`, where extensions such as `ERC20Votes`
    and `ERC20Capped` follow the change. `from` is zero for a mint, `to` for a burn. A
    token without extensions skips both:
 
-     hook ERC20.before_transfer is skip;
-     hook ERC20.after_transfer is skip;
+     hook ERC20.beforeTransfer is skip;
+     hook ERC20.afterTransfer is skip;
 
    A hook that raises adds its errors to the transfers, mints, and burns, so the token
    exposes the rest of `IERC20` as `IERC20Views` and `IERC20Approvals`, and lists the
@@ -26,7 +26,7 @@
        ...
      }
 
-     hook ERC20.before_transfer is Pausable.require_not_paused; *)
+     hook ERC20.beforeTransfer is Pausable.requireNotPaused; *)
 
 import "std/address";
 import "std/evm";
@@ -37,7 +37,7 @@ module ERC20 is {
   storage erc20 at "lithe.std.erc20" is record {
     balances : map(address, uint);
     allowances : map(address, map(address, uint));
-    total_supply : uint;
+    totalSupply : uint;
     name : string;
     symbol : string;
   }
@@ -54,51 +54,13 @@ module ERC20 is {
     value : uint;
   }
 
-  hook before_transfer(const from : address; const to : address; const value : uint);
-  hook after_transfer(const from : address; const to : address; const value : uint);
+  hook beforeTransfer(const from : address; const to : address; const value : uint);
+  hook afterTransfer(const from : address; const to : address; const value : uint);
 
   function init(const name : string; const symbol : string) is {
     erc20.name := name;
     erc20.symbol := symbol;
   }
-
-  view function name() : string is
-    erc20.name
-
-  view function symbol() : string is
-    erc20.symbol
-
-  pure function decimals() : uint8 is
-    18
-
-  view function total_supply() : uint is
-    erc20.total_supply
-
-  view function balance_of(const account : address) : uint is
-    erc20.balances[account]
-
-  view function allowance(const owner : address; const spender : address) : uint is
-    erc20.allowances[owner][spender]
-
-  function transfer(const to : address; const value : uint) : bool
-    raises ERC20InvalidSender | ERC20InvalidReceiver | ERC20InsufficientBalance
-  is {
-    move(Evm.sender(), to, value);
-  } with true
-
-  function approve(const spender : address; const value : uint) : bool
-    raises ERC20InvalidApprover | ERC20InvalidSpender
-  is {
-    approve_as(Evm.sender(), spender, value, true);
-  } with true
-
-  function transfer_from(const from : address; const to : address; const value : uint) : bool
-    raises ERC20InsufficientAllowance | ERC20InvalidApprover | ERC20InvalidSpender | ERC20InvalidSender
-      | ERC20InvalidReceiver | ERC20InsufficientBalance
-  is {
-    spend_allowance(from, Evm.sender(), value);
-    move(from, to, value);
-  } with true
 
   (* A transfer between two real accounts. *)
   function move(const from : address; const to : address; const value : uint)
@@ -127,9 +89,9 @@ module ERC20 is {
   function update(const from : address; const to : address; const value : uint)
     raises ERC20InsufficientBalance
   is {
-    before_transfer(from, to, value);
+    beforeTransfer(from, to, value);
     if from = Address.zero then {
-      erc20.total_supply := erc20.total_supply + value;
+      erc20.totalSupply := erc20.totalSupply + value;
     } else {
       const balance : uint := erc20.balances[from];
       assert(
@@ -139,7 +101,7 @@ module ERC20 is {
       erc20.balances[from] := balance - value;
     }
     if to = Address.zero then {
-      erc20.total_supply := erc20.total_supply - value;
+      erc20.totalSupply := erc20.totalSupply - value;
     } else {
       erc20.balances[to] := erc20.balances[to] + value;
     }
@@ -148,11 +110,11 @@ module ERC20 is {
       to = to;
       value = value;
     };
-    after_transfer(from, to, value);
+    afterTransfer(from, to, value);
   }
 
   (* Sets an allowance. `announce` logs the `Approval`; spending one doesn't. *)
-  function approve_as(const owner : address; const spender : address; const value : uint; const announce : bool)
+  function approveAs(const owner : address; const spender : address; const value : uint; const announce : bool)
     raises ERC20InvalidApprover | ERC20InvalidSpender
   is {
     assert(owner <> Address.zero, ERC20InvalidApprover(Address.zero));
@@ -168,7 +130,7 @@ module ERC20 is {
   }
 
   (* Spends from an allowance. An unlimited allowance, `Uint.max`, is never spent down. *)
-  function spend_allowance(const owner : address; const spender : address; const value : uint)
+  function spendAllowance(const owner : address; const spender : address; const value : uint)
     raises ERC20InsufficientAllowance | ERC20InvalidApprover | ERC20InvalidSpender
   is {
     const current : uint := erc20.allowances[owner][spender];
@@ -177,7 +139,7 @@ module ERC20 is {
         current >= value,
         ERC20InsufficientAllowance { spender = spender; allowance = current; needed = value; }
       );
-      approve_as(owner, spender, current - value, false);
+      approveAs(owner, spender, current - value, false);
     }
   }
 
@@ -191,7 +153,7 @@ module ERC20 is {
     18
 
   external view function totalSupply() : uint is
-    erc20.total_supply
+    erc20.totalSupply
 
   external view function balanceOf(const account : address) : uint is
     erc20.balances[account]
@@ -201,19 +163,23 @@ module ERC20 is {
 
   external function transfer(const to : address; const value : uint) : bool
     raises ERC20InvalidSender | ERC20InvalidReceiver | ERC20InsufficientBalance
-  is
-    transfer(to, value)
+  is {
+    move(Evm.sender(), to, value);
+  } with true
 
   external function approve(const spender : address; const value : uint) : bool
     raises ERC20InvalidApprover | ERC20InvalidSpender
-  is
-    approve(spender, value)
+  is {
+    approveAs(Evm.sender(), spender, value, true);
+  } with true
 
   external function transferFrom(const from : address; const to : address; const value : uint) : bool
     raises ERC20InsufficientAllowance | ERC20InvalidApprover | ERC20InvalidSpender | ERC20InvalidSender
       | ERC20InvalidReceiver | ERC20InsufficientBalance
-  is
-    transfer_from(from, to, value)
+  is {
+    spendAllowance(from, Evm.sender(), value);
+    move(from, to, value);
+  } with true
 }
 
 (* `IERC20` without its transfers and approvals, for a token that writes its own. *)

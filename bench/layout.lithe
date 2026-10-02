@@ -1,6 +1,6 @@
 (* Benchmark: packed fixed lists, records, and tuples. Mirrors layout.sol slot for slot. *)
 
-type pos is record {
+type Pos is record {
   x : uint16;
   y : uint16;
   live : bool;
@@ -11,21 +11,21 @@ storage is record {
   levels : list(uint8, 40);
   flags : list(bool, 5);
   deltas : list(int16, 3);
-  spot : pos;
+  spot : Pos;
   pair : (uint32, address);
   tail : uint64;
   total : uint;
 }
 
-external function set_level(const i : uint; const v : uint8) is {
+external function setLevel(const i : uint; const v : uint8) is {
   storage.levels[i] := v;
 }
 
-external function set_flag(const i : uint; const f : bool) is {
+external function setFlag(const i : uint; const f : bool) is {
   storage.flags[i] := f;
 }
 
-external function set_delta(const i : uint; const d : int16) is {
+external function setDelta(const i : uint; const d : int16) is {
   storage.deltas[i] := d;
 }
 
@@ -35,7 +35,7 @@ external function place(const x : uint16; const y : uint16) is {
   storage.spot.live := true;
 }
 
-external function set_pair(const a : uint32; const who : address) is {
+external function setPair(const a : uint32; const who : address) is {
   storage.pair := (a, who);
 }
 

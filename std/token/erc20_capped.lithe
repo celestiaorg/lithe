@@ -1,10 +1,10 @@
 (* A ceiling on the supply, like OpenZeppelin's `ERC20Capped`. Each mint checks the cap,
-   through `ERC20`'s `after_transfer` hook, which the token points here, or calls this
+   through `ERC20`'s `afterTransfer` hook, which the token points here, or calls this
    from its own body with what else it runs after a balance change:
 
      use ERC20Capped exposing IERC20Capped;
 
-     hook ERC20.after_transfer is ERC20Capped.after_transfer; *)
+     hook ERC20.afterTransfer is ERC20Capped.afterTransfer; *)
 
 import "std/address";
 import "std/token/erc20";
@@ -12,7 +12,7 @@ import "std/token/erc20";
 module ERC20Capped is {
   requires ERC20;
 
-  immutable erc20_capped at "lithe.std.erc20.capped" is record {
+  immutable erc20Capped at "lithe.std.erc20.capped" is record {
     cap : uint;
   }
 
@@ -29,30 +29,27 @@ module ERC20Capped is {
     raises ERC20InvalidCap
   is {
     assert(cap > 0, ERC20InvalidCap(0));
-    erc20_capped.cap := cap;
+    erc20Capped.cap := cap;
   }
-
-  view function cap() : uint is
-    erc20_capped.cap
 
   view function check(const supply : uint)
     raises ERC20ExceededCap
   is {
-    const cap : uint := erc20_capped.cap;
+    const cap : uint := erc20Capped.cap;
     assert(supply <= cap, ERC20ExceededCap { increasedSupply = supply; cap = cap; });
   }
 
   (* After `ERC20` changes balances: a mint can't take the supply past the cap. *)
-  view function after_transfer(const from : address; const to : address; const value : uint)
+  view function afterTransfer(const from : address; const to : address; const value : uint)
     raises ERC20ExceededCap
   is {
     if from = Address.zero then {
-      check(ERC20.total_supply());
+      check(ERC20.erc20.totalSupply);
     }
   }
 
   external view function cap() : uint is
-    erc20_capped.cap
+    erc20Capped.cap
 }
 
 interface IERC20Capped is {

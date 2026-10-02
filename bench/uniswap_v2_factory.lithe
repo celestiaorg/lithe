@@ -65,10 +65,10 @@ contract UniswapV2Factory is {
     }
     assert(token0 <> Address.zero, Error("UniswapV2: ZERO_ADDRESS"));
     assert(storage.getPair[token0][token1] = Address.zero, Error("UniswapV2: PAIR_EXISTS"));
-    const salt : bytes32 := Crypto.keccak256(Abi.encode_packed(token0, token1));
-    const pair : address := Create2.compute_address_here(
+    const salt : bytes32 := Crypto.keccak256(Abi.encodePacked(token0, token1));
+    const pair : address := Create2.computeAddressHere(
       salt,
-      Crypto.keccak256(Evm.creation_code(UniswapV2Pair))
+      Crypto.keccak256(Evm.creationCode(UniswapV2Pair))
     );
     defer create UniswapV2Pair() with salt = salt;
     defer IUniswapV2Pair(pair).initialize(token0, token1);

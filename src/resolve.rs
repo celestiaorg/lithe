@@ -698,7 +698,7 @@ fn universe_type(name: &str) -> bool {
             | "timestamp"
             | "bytes"
             | "storage"
-            | "self"
+            | "Self"
     ) {
         return true;
     }
@@ -843,7 +843,7 @@ impl Resolver<'_> {
             .chain(module.error_sets.iter().map(|d| d.name.clone()))
             .chain(module.events.iter().map(|d| d.name.clone()))
             .collect();
-        members.insert("self".to_string());
+        members.insert("Self".to_string());
         self.module = Some(InModule {
             name: module.name.clone(),
             funcs: module
@@ -1438,8 +1438,8 @@ impl Resolver<'_> {
         }
     }
 
-    /// The interfaces and types an intrinsic's arguments name: `Abi.interface_id(I)`,
-    /// `Abi.selector(I.method)`, `Abi.encode_call(I.method, ...)`, and `Abi.decode(data, T)`.
+    /// The interfaces and types an intrinsic's arguments name: `Abi.interfaceId(I)`,
+    /// `Abi.selector(I.method)`, `Abi.encodeCall(I.method, ...)`, and `Abi.decode(data, T)`.
     fn intrinsic_args(&mut self, tag: Tag, args: &mut [Expr]) -> Result<(), Error> {
         match (tag, args) {
             (Tag::AbiInterfaceId, [iface, ..]) => {
@@ -1529,7 +1529,7 @@ impl Resolver<'_> {
         ))
     }
 
-    /// A contract named by `create C(...)` or `Evm.creation_code(C)`: its file's import is
+    /// A contract named by `create C(...)` or `Evm.creationCode(C)`: its file's import is
     /// used.
     fn contract_ref(&mut self, name: &str) {
         for (k, import) in self.scope.imports.iter().enumerate() {

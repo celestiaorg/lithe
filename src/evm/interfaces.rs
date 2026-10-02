@@ -14,7 +14,7 @@ module Uris is {
 }
 
 contract T is {
-  use ERC20 exposing IERC20, IERC20Metadata; hook ERC20.before_transfer is skip; hook ERC20.after_transfer is skip;
+  use ERC20 exposing IERC20, IERC20Metadata; hook ERC20.beforeTransfer is skip; hook ERC20.afterTransfer is skip;
   use Uris exposing IERC1155MetadataURI;
   supports IERC20, IERC20Metadata, IERC1155MetadataURI;
 }
@@ -96,7 +96,7 @@ fn erc165_answers_for_supported_interfaces() {
 }
 
 /// `supports` names interfaces the contract has, each once, and a contract that writes its
-/// own `supportsInterface` answers for them with `Abi.supports_interface`.
+/// own `supportsInterface` answers for them with `Abi.supportsInterface`.
 #[test]
 fn supports_rejects_what_the_contract_cannot_announce() {
     let err = |src: String| compile(&src).expect_err("rejected").to_string();
@@ -136,13 +136,13 @@ fn supports_rejects_what_the_contract_cannot_announce() {
     );
 }
 
-/// `Abi.supports_interface` is the generated answer, for a contract that writes its own
+/// `Abi.supportsInterface` is the generated answer, for a contract that writes its own
 /// `supportsInterface` to add an id no interface derives, such as ERC-4906's.
 #[test]
 fn own_supports_interface_extends_the_generated_answer() {
     let own = ERC165_SRC.replace(
         "supports IERC20, IERC20Metadata, IERC1155MetadataURI;",
-        "supports IERC20, IERC20Metadata, IERC1155MetadataURI;\n  external pure function supportsInterface(const interfaceId : bytes4) : bool is\n    interfaceId = 0x49064906 or Abi.supports_interface(interfaceId)",
+        "supports IERC20, IERC20Metadata, IERC1155MetadataURI;\n  external pure function supportsInterface(const interfaceId : bytes4) : bool is\n    interfaceId = 0x49064906 or Abi.supportsInterface(interfaceId)",
     );
     let dir = std::env::temp_dir().join(format!("lithe-erc165-extend-{}", std::process::id()));
     std::fs::create_dir_all(&dir).expect("dir");
@@ -177,7 +177,7 @@ fn own_supports_interface_extends_the_generated_answer() {
     );
     // It answers for the contract, so a module's code cannot depend on it.
     let err = compile(
-        "import \"std/abi\"; module M is {\n  pure function has(const id : bytes4) : bool is Abi.supports_interface(id)\n}\ncontract T is {\n  use M;\n  external pure function f(const id : bytes4) : bool is M.has(id)\n}\n",
+        "import \"std/abi\"; module M is {\n  pure function has(const id : bytes4) : bool is Abi.supportsInterface(id)\n}\ncontract T is {\n  use M;\n  external pure function f(const id : bytes4) : bool is M.has(id)\n}\n",
     )
     .expect_err("module");
     assert!(
@@ -294,8 +294,8 @@ fn overloads_example_picks_by_arguments() {
     );
     let out = send(out.storage, "stake(uint256)", &[w(500)]);
     for (sig, args, want) in [
-        ("balance_of(address)", vec![sender], 9_970 + 9_900),
-        ("staked_of(address)", vec![sender], 500),
+        ("balanceOf(address)", vec![sender], 9_970 + 9_900),
+        ("stakedOf(address)", vec![sender], 500),
         ("total()", vec![], 9_970 + 9_900),
     ] {
         let read = send(out.storage.clone(), sig, &args);
@@ -325,7 +325,7 @@ function bump(storage m : map(address, uint); const by : uint) is {
   m[Evm.sender()] := m[Evm.sender()] + by;
 }
 
-function bump_twice(storage m : map(address, uint)) is {
+function bumpTwice(storage m : map(address, uint)) is {
   bump(m, 1);
   bump(m, 1);
 }
@@ -341,7 +341,7 @@ function name(storage m : map(address, string); const v : string) is {
 external function go(const k : address) : uint is {
   bump(storage.a, 5);
   bump(storage.b, 7);
-  bump_twice(storage.a);
+  bumpTwice(storage.a);
   bump(scratch.t, 100);
   bump(scratch.t, 1);
   put(storage.nested, k, 9);
@@ -349,11 +349,11 @@ external function go(const k : address) : uint is {
 } with storage.a[Evm.sender()] * 1000000 + storage.b[Evm.sender()] * 1000
   + scratch.t[Evm.sender()]
 
-external view function a_of(const who : address) : uint is storage.a[who]
-external view function b_of(const who : address) : uint is storage.b[who]
-external view function nested_of(const who : address; const k : address) : uint is
+external view function aOf(const who : address) : uint is storage.a[who]
+external view function bOf(const who : address) : uint is storage.b[who]
+external view function nestedOf(const who : address; const k : address) : uint is
   storage.nested[who][k]
-external view function name_of(const who : address) : string is storage.names[who]
+external view function nameOf(const who : address) : string is storage.names[who]
 "#;
     let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
     let w = Word::from_u64;
@@ -369,14 +369,14 @@ external view function name_of(const who : address) : string is storage.names[wh
         w(7 * 1_000_000 + 7 * 1000 + 101)
     );
     for (sig, args, want) in [
-        ("a_of(address)", vec![me], 7),
-        ("b_of(address)", vec![me], 7),
-        ("nested_of(address,address)", vec![me, k], 9),
+        ("aOf(address)", vec![me], 7),
+        ("bOf(address)", vec![me], 7),
+        ("nestedOf(address,address)", vec![me, k], 9),
     ] {
         let read = run(out.storage.clone(), sig, &args);
         assert_eq!(load_bytes(&read.returndata, 0), w(want), "{sig}");
     }
-    let named = run(out.storage.clone(), "name_of(address)", &[me]);
+    let named = run(out.storage.clone(), "nameOf(address)", &[me]);
     assert!(
         named.returndata.windows(10).any(|win| win == b"a string t"),
         "{}",
@@ -551,11 +551,11 @@ fn external_use_combines_interfaces() {
     let module = r#"
 module Vault is {
   storage vault at "t.vault" is record { total : uint; }
-  error Too_much;
+  error TooMuch;
 
   external view function total() : uint is vault.total
-  external nonreentrant function add(var by : uint) raises Too_much is {
-    assert(by < 1000, Too_much);
+  external nonreentrant function add(var by : uint) raises TooMuch is {
+    assert(by < 1000, TooMuch);
     by := by * 2;
     vault.total := vault.total + by;
   }
@@ -567,7 +567,7 @@ interface ITotal is {
 }
 
 interface IAdd is {
-  function add(by : uint) raises Too_much;
+  function add(by : uint) raises TooMuch;
 }
 "#;
     let src = format!(

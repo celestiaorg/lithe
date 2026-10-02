@@ -38,7 +38,7 @@ contract Selectors {
         return handled_[selector];
     }
 
-    function transfer_call(address to, uint256 amount) external pure returns (bytes memory) {
+    function transferCall(address to, uint256 amount) external pure returns (bytes memory) {
         return abi.encodeWithSelector(Token.transfer.selector, to, amount);
     }
 

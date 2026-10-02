@@ -33,11 +33,11 @@ external function rename(const n : string) is {
   };
 }
 
-external function set_blob(const b : bytes) is {
+external function setBlob(const b : bytes) is {
   storage.blob := b;
 }
 
-external function set_both(const n : string; const b : bytes) is {
+external function setBoth(const n : string; const b : bytes) is {
   storage.name := n;
   storage.blob := b;
 }
@@ -51,7 +51,7 @@ external view function blob() : bytes is
 external view function digest() : bytes32 is
   Crypto.keccak256(storage.blob)
 
-external function set_tag(const t : bytes4; const level : uint8) is {
+external function setTag(const t : bytes4; const level : uint8) is {
   storage.tag := t;
   storage.level := level;
   emit Tagged {

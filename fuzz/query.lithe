@@ -4,8 +4,8 @@
 
 import "std/evm";
 
-error Not_owner of address;
-error Too_big of record {
+error NotOwner of address;
+error TooBig of record {
   have : uint;
   limit : uint;
 }
@@ -30,10 +30,10 @@ event Moved of record {
   amount : uint;
 }
 
-view function check_owner()
-  raises Not_owner
+view function checkOwner()
+  raises NotOwner
 is {
-  assert(storage.owner = Evm.sender() or not storage.ready, Not_owner(storage.owner));
+  assert(storage.owner = Evm.sender() or not storage.ready, NotOwner(storage.owner));
 }
 
 function bump(const k : uint) is {
@@ -48,9 +48,9 @@ external function claim() is {
 }
 
 external function refresh(const o : Oracle; const k : uint)
-  raises Not_owner | Too_big
+  raises NotOwner | TooBig
 is {
-  check_owner();
+  checkOwner();
   bump(k);
   const p : uint := query o.price(k);
   if p % 2 = 0 then {
@@ -59,7 +59,7 @@ is {
     storage.small := uint8(p % 200);
     bump(p % 7);
   }
-  assert(storage.b < 1000000000, Too_big { have = storage.b; limit = storage.total; });
+  assert(storage.b < 1000000000, TooBig { have = storage.b; limit = storage.total; });
   storage.total := storage.total + 1;
   emit Moved {
     who = Evm.sender();
@@ -68,9 +68,9 @@ is {
 }
 
 external function poke(const k : uint)
-  raises Not_owner
+  raises NotOwner
 is {
-  check_owner();
+  checkOwner();
   bump(k);
 }
 

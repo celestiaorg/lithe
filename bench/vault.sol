@@ -3,7 +3,7 @@
 pragma solidity ^0.8.24;
 
 contract Vault {
-    error Not_owner();
+    error NotOwner();
     error Paused();
     error Insufficient(uint256 available, uint256 required);
 
@@ -34,12 +34,12 @@ contract Vault {
         if (!ok) revert();
     }
 
-    function set_paused(bool flag) external {
-        if (msg.sender != owner) revert Not_owner();
+    function setPaused(bool flag) external {
+        if (msg.sender != owner) revert NotOwner();
         paused = flag;
     }
 
-    function deposit_of(address who) external view returns (uint256) {
+    function depositOf(address who) external view returns (uint256) {
         return deposits[who];
     }
 }

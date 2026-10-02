@@ -17,6 +17,8 @@ pub(crate) struct Route {
     pub tail: Option<Expr>,
     pub direct: Option<usize>,
     pub path: Vec<String>,
+    /// The variant case a dispatched route is for. A direct entry has none.
+    pub case: Option<String>,
     pub guard_txt: Vec<String>,
     pub calls: Vec<String>,
     pub reads: Vec<String>,
@@ -336,7 +338,8 @@ fn walk(
             continue;
         }
         for ctor in &arm.ctors {
-            let name = abi_name(ctor);
+            let name = variant_of(checked, scrut, ctor)
+                .map_or_else(|| ctor.clone(), |v| v.external.clone());
             let inputs = match variant_of(checked, scrut, ctor) {
                 Some(RVariant {
                     payload: Some(ty),
@@ -395,6 +398,7 @@ fn walk(
                 tail,
                 direct: None,
                 path: leaf_path,
+                case: Some(ctor.clone()),
                 calls,
                 reads,
                 guard_txt: guard_texts(guards),
@@ -477,6 +481,7 @@ fn direct(checked: &Checked, idx: usize, f: &Func, seen: &mut Vec<String>) -> Re
         tail: None,
         direct: Some(idx),
         path: vec![f.name.clone()],
+        case: None,
         calls,
         reads,
         guard_txt: guard_texts(&f.stmts),
@@ -697,17 +702,6 @@ fn reason_case(types: &[RType], reason: &Raised) -> bool {
         RaisedForm::Positional(e) => expr_case(types, e),
         RaisedForm::Fields(fields) => fields.iter().any(|(_, e)| expr_case(types, e)),
     }
-}
-
-pub(crate) fn abi_name(ctor: &str) -> String {
-    let mut chars = ctor.chars();
-    let Some(first) = chars.next() else {
-        return String::new();
-    };
-    let mut name = String::new();
-    name.extend(first.to_lowercase());
-    name.push_str(chars.as_str());
-    name
 }
 
 struct Effects<'a> {
@@ -1002,7 +996,7 @@ fn walk_expr(checked: &Checked, e: &Expr, fx: &mut Effects<'_>) {
             } = expr.as_ref()
             {
                 let target = args.first().map(fmt_expr).unwrap_or_default();
-                push(fx.queries, format!("Evm.static_call({target})"));
+                push(fx.queries, format!("Evm.staticCall({target})"));
             } else if let Expr::Call {
                 name,
                 base: Some(b),

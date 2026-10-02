@@ -9,7 +9,7 @@ import "./erc721";
 module ERC721URIStorage is {
   requires ERC721;
 
-  storage erc721_uri_storage at "openzeppelin.storage.ERC721URIStorage" is record {
+  storage erc721URIStorage at "openzeppelin.storage.ERC721URIStorage" is record {
     tokenURIs : map(uint, string);
   }
 
@@ -17,24 +17,24 @@ module ERC721URIStorage is {
     tokenId : uint;
   }
 
-  function set_token_uri(const tokenId : uint; const uri : string) is {
-    erc721_uri_storage.tokenURIs[tokenId] := uri;
+  function setTokenURI(const tokenId : uint; const uri : string) is {
+    erc721URIStorage.tokenURIs[tokenId] := uri;
     emit MetadataUpdate {
       tokenId = tokenId;
     };
   }
 
-  view function token_uri(const tokenId : uint; const base : string) : string
+  view function tokenURI(const tokenId : uint; const base : string) : string
     raises ERC721NonexistentToken
   is {
-    const owner : address := ERC721.require_owned(tokenId);
-    const suffix : string := erc721_uri_storage.tokenURIs[tokenId];
+    const owner : address := ERC721.requireOwned(tokenId);
+    const suffix : string := erc721URIStorage.tokenURIs[tokenId];
     var uri : string := suffix;
     if base.length > 0 then {
       if suffix.length > 0 then {
         uri := String.concat(base, suffix);
       } else {
-        uri := String.concat(base, Uint.to_string(tokenId));
+        uri := String.concat(base, Uint.toString(tokenId));
       }
     }
   } with uri

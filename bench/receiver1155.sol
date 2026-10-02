@@ -7,15 +7,15 @@ pragma solidity ^0.8.24;
 contract Receiver1155 {
     error Refused(uint256 count);
 
-    address last_operator;
-    address last_from;
-    uint256[] last_ids;
-    uint256[] last_values;
-    bytes last_data;
+    address lastOperator;
+    address lastFrom;
+    uint256[] lastIds;
+    uint256[] lastValues;
+    bytes lastData;
     uint256 calls;
     uint256 mode;
 
-    function set_mode(uint256 m) external {
+    function setMode(uint256 m) external {
         mode = m;
     }
 
@@ -47,11 +47,11 @@ contract Receiver1155 {
     {
         if (mode == 2) revert Refused(ids.length);
         if (mode == 3) revert();
-        last_operator = operator;
-        last_from = from;
-        last_ids = ids;
-        last_values = values;
-        last_data = data;
+        lastOperator = operator;
+        lastFrom = from;
+        lastIds = ids;
+        lastValues = values;
+        lastData = data;
         calls += 1;
     }
 }

@@ -28,7 +28,7 @@ Lithe is statically typed. Every local binding names its type, and nothing conve
 
 Arithmetic on every integer type is checked. Overflow, underflow, and conversions out of range revert with `Panic(0x11)`, and division by zero reverts with `Panic(0x12)`, as in Solidity. Each fixed width is its own type: a `uint8` does not mix with a `uint16` or a `uint` without an explicit conversion.
 
-Where wrapping is the point, as for a price accumulator meant to overflow, name it: `Uint.wrapping_add`, `Uint.wrapping_sub`, and `Uint.wrapping_mul` take two values of one unsigned type and keep the result's low bits, as Solidity's `unchecked` arithmetic does. `Int.wrapping_*` do the same for signed types. See [Built-ins](/language/builtins#uint-int-and-address).
+Where wrapping is the point, as for a price accumulator meant to overflow, name it: `Uint.wrappingAdd`, `Uint.wrappingSub`, and `Uint.wrappingMul` take two values of one unsigned type and keep the result's low bits, as Solidity's `unchecked` arithmetic does. `Int.wrapping_*` do the same for signed types. See [Built-ins](/language/builtins#uint-int-and-address).
 
 ```lithe
 storage is record {
@@ -53,7 +53,7 @@ external function add(const a : uint8; const b : uint) is {
 | `timestamp + duration`, `timestamp + uint` | `timestamp` |
 | `timestamp - timestamp` | `uint` (seconds) |
 | `Evm.value()`, `Evm.balance(a)` | `wei` |
-| `Evm.block_timestamp()` | `timestamp` |
+| `Evm.blockTimestamp()` | `timestamp` |
 
 Ether literals such as `1eth` and `3gwei` are `wei`. Duration literals such as `2days` are durations. See [Literals and units](/language/literals).
 
@@ -85,7 +85,7 @@ external pure function convert(const x : uint8; const raw : bytes20; const amoun
 | `uint(b)` or `uint8(b)` for `b : bool` | 1 for `true`, 0 for `false` |
 | to or from a [nominal type](#nominal-types) | exact |
 
-To reinterpret the 256 bits between `int` and `uint`, as Solidity's `uint256(i)` and `int256(n)` do, name the bit-cast: `Uint.from_bits(i)` and `Int.from_bits(n)`, so that `Uint.from_bits(-1)` is `Uint.max`.
+To reinterpret the 256 bits between `int` and `uint`, as Solidity's `uint256(i)` and `int256(n)` do, name the bit-cast: `Uint.fromBits(i)` and `Int.fromBits(n)`, so that `Uint.fromBits(-1)` is `Uint.max`.
 
 ## Records
 
@@ -94,21 +94,21 @@ A record is a struct: a fixed set of named, typed fields.
 ```lithe
 import "std/evm";
 
-type position is record {
+type Position is record {
   owner : address;
   amount : uint;
-  opened_at : timestamp;
+  openedAt : timestamp;
 }
 
 storage is record {
-  positions : map(uint, position);
+  positions : map(uint, Position);
 }
 
 external function open(const id : uint; const amount : uint) is {
   storage.positions[id] := {
     owner = Evm.sender();
     amount = amount;
-    opened_at = Evm.block_timestamp();
+    openedAt = Evm.blockTimestamp();
   };
 }
 
@@ -132,7 +132,7 @@ A `tuple record` is a record in every other way: fields, literals, storage, and 
 ```lithe
 import "std/evm";
 
-type exact_input_single is tuple record {
+type ExactInputSingle is tuple record {
   tokenIn : address;
   tokenOut : address;
   fee : uint24;
@@ -143,7 +143,7 @@ type exact_input_single is tuple record {
 }
 
 interface SwapRouter is {
-  payable function exactInputSingle(params : exact_input_single) : uint;
+  payable function exactInputSingle(params : ExactInputSingle) : uint;
 }
 
 storage is record {
@@ -172,7 +172,7 @@ A record's fields can be strings, bytes, and dynamic lists too. An external func
 ```lithe
 import "std/evm";
 
-type domain is record {
+type Domain is record {
   fields : bytes1;
   name : string;
   chainId : uint;
@@ -183,12 +183,12 @@ storage is record {
   name : string;
 }
 
-external view function eip712Domain() : domain is {
+external view function eip712Domain() : Domain is {
   const extensions : list(uint) := [];
 } with {
   fields = 0x0f;
   name = storage.name;
-  chainId = Evm.chain_id();
+  chainId = Evm.chainId();
   extensions = extensions;
 }
 ```
@@ -210,7 +210,7 @@ In the ABI, a tuple is always one Solidity tuple, as a struct is: a tuple parame
 
 ## Lists
 
-`list(T)` is a dynamic list and `list(T, n)` is a fixed list of length `n`, from 1 to 1024. `n` is a number or a constant expression: a [named constant](/by-example/constants), `M.n()` from a module, a cast, or arithmetic over those, such as `list(uint, max_owners() * 2)`.
+`list(T)` is a dynamic list and `list(T, n)` is a fixed list of length `n`, from 1 to 1024. `n` is a number or a constant expression: a [named constant](/by-example/constants), `M.n()` from a module, a cast, or arithmetic over those, such as `list(uint, maxOwners() * 2)`.
 
 ```lithe
 import "std/evm";
@@ -248,24 +248,24 @@ A list of records is a Solidity array of structs. In storage each element starts
 import "std/evm";
 import "std/list";
 
-type checkpoint is record {
+type Checkpoint is record {
   key : uint48;
   value : uint208;
 }
 
 storage is record {
-  history : list(checkpoint);
+  history : list(Checkpoint);
 }
 
 external function note(const value : uint208) is {
-  List.push(storage.history, { key = uint48(Evm.block_number()); value = value; });
+  List.push(storage.history, { key = uint48(Evm.blockNumber()); value = value; });
 }
 
 external function bump(const i : uint) is {
   storage.history[i].value := storage.history[i].value + 1;
 }
 
-external view function all() : list(checkpoint) is
+external view function all() : list(Checkpoint) is
   storage.history
 ```
 
@@ -316,13 +316,13 @@ Keys are single-word values (integers, `bool`, `address`, `bytesN`, `wei`, `time
 import "std/evm";
 import "std/list";
 
-type role is record {
+type Role is record {
   members : map(address, bool);
   admin : bytes32;
 }
 
 storage is record {
-  roles : map(bytes32, role);
+  roles : map(bytes32, Role);
   deposits : map(address, list(uint));
 }
 
@@ -356,7 +356,7 @@ external function appoint() is {
   storage.admin := Some(Evm.sender());
 }
 
-external view function admin_or_zero() : address is
+external view function adminOrZero() : address is
   case storage.admin of {
   | Some(who) -> who
   | None -> Address.zero
@@ -390,10 +390,10 @@ external function revoke(const who : address) is {
   storage.expiry[who] := None;
 }
 
-external view function has_grant(const who : address) : bool is
+external view function hasGrant(const who : address) : bool is
   storage.expiry[who] <> None
 
-external view function expiry_or_zero(const who : address) : uint is
+external view function expiryOrZero(const who : address) : uint is
   case storage.expiry[who] of {
   | Some(expiry) -> uint(expiry)
   | None -> 0
@@ -411,7 +411,7 @@ external view function expiry_or_zero(const who : address) : uint is
     limit : option(uint);
   }
 
-  external function set_limit(const limit : option(uint)) is {
+  external function setLimit(const limit : option(uint)) is {
     storage.limit := limit;
   }
   ```
@@ -446,9 +446,9 @@ In a map or a dynamic list, an option's words take consecutive slots, as a Solid
 A variant type is a closed set of cases, where each case may carry a payload:
 
 ```lithe fragment
-type action is
-  | Deposit of uint
-  | Withdraw of uint
+type Action is
+  | Deposit external deposit of uint
+  | Withdraw external withdraw of uint
   | Close
 ```
 
@@ -461,27 +461,27 @@ A case is written by name, with its payload in parentheses: `Close`, `Deposit(5)
 ```lithe
 import "std/evm";
 
-type fill is record {
-  amount_out : uint;
+type Fill is record {
+  amountOut : uint;
   at : uint64;
 }
 
-type order_status is
+type OrderStatus is
   | New
   | Pending
-  | Filled of fill
+  | Filled of Fill
   | Unwound
 
-type order is record {
+type Order is record {
   owner : address;
-  status : order_status;
+  status : OrderStatus;
 }
 
 error AlreadyPlaced of uint;
 error NotComplete of uint;
 
 storage is record {
-  orders : map(uint, order);
+  orders : map(uint, Order);
 }
 
 external function place(const id : uint) raises AlreadyPlaced is {
@@ -491,27 +491,27 @@ external function place(const id : uint) raises AlreadyPlaced is {
 }
 
 external function settle(const id : uint; const out : uint) is {
-  storage.orders[id].status := Filled({ amount_out = out; at = uint64(Evm.block_timestamp()); });
+  storage.orders[id].status := Filled({ amountOut = out; at = uint64(Evm.blockTimestamp()); });
 }
 
-external view function amount_out(const id : uint) : uint raises NotComplete is
+external view function amountOut(const id : uint) : uint raises NotComplete is
   case storage.orders[id].status of {
-  | Filled(f) -> f.amount_out
+  | Filled(f) -> f.amountOut
   | New | Pending | Unwound -> fail NotComplete(id)
   }
 ```
 
-- `| New | Pending | Unwound ->` is one arm for several cases. Listing the cases instead of using a wildcard keeps the match exhaustive: adding a case to `order_status` makes every `case` that doesn't handle it a compile error.
+- `| New | Pending | Unwound ->` is one arm for several cases. Listing the cases instead of using a wildcard keeps the match exhaustive: adding a case to `OrderStatus` makes every `case` that doesn't handle it a compile error.
 - An arm for several cases binds a payload when each case binds the same names and carries the same payload type: `| Queued(reason) | Held(reason) -> reason`. Written without names, `| Filled | Unwound ->`, it ignores the payloads.
 - An arm that fails has no value, so it fits a `case` of any type.
 - A case name is resolved from the type the context expects. With no expected type, it must belong to only one variant in scope.
 - `Some` and `None` are the cases of every [option](#options), so no variant can name a case either:
 
   ```lithe rejects
-  type value_type is None | String | Int
+  type ValueType is None | String | Int
 
   storage is record {
-    t : value_type;
+    t : ValueType;
   }
   ```
 
@@ -520,13 +520,13 @@ external view function amount_out(const id : uint) : uint raises NotComplete is
   ```
 
 - `=` and `<>` compare two variants of the same type, payloads included. Comparing with a case that has no payload, like `status = New`, reads only the tag.
-- A variant value can be a local, a parameter or result of an internal function, a storage field, a map value, a record field, a list element, or an option's payload. It isn't a number: there is no arithmetic, no ordering, no integer literal, and no `order_status(n)`. `uint8(m)` gives a variant's case index when it has no payloads.
+- A variant value can be a local, a parameter or result of an internal function, a storage field, a map value, a record field, a list element, or an option's payload. It isn't a number: there is no arithmetic, no ordering, no integer literal, and no `OrderStatus(n)`. `uint8(m)` gives a variant's case index when it has no payloads.
 
 ### Representation
 
 A variant with **no payloads** is its case's index, from 0, like a Solidity `enum`. It takes one byte in storage and packs with the fields around it, and it's a `uint8` in the ABI. A decoded value past the last case reverts, as Solidity's decoder does. A variant has at most 256 cases.
 
-A variant **with payloads** starts a slot, as a record does. The case's index takes its first byte. The cases share their payloads' words by position: the first word of every payload lives in one place, the second in another, and so on. A position whose words are all narrower than a slot is stored as the narrowest integer that holds each of them, and these pack after the index, low bytes first. A position that is a whole word in any case takes a slot. The other cases leave a position zero. The layout above keeps `status` at `keccak256(id . slot) + 1`: the index and `at` share that slot, and `amount_out` takes the next. A variant whose payloads are all narrow, such as `Empty | Stamp of uint64 | Who of address`, is one slot.
+A variant **with payloads** starts a slot, as a record does. The case's index takes its first byte. The cases share their payloads' words by position: the first word of every payload lives in one place, the second in another, and so on. A position whose words are all narrower than a slot is stored as the narrowest integer that holds each of them, and these pack after the index, low bytes first. A position that is a whole word in any case takes a slot. The other cases leave a position zero. The layout above keeps `status` at `keccak256(id . slot) + 1`: the index and `at` share that slot, and `amountOut` takes the next. A variant whose payloads are all narrow, such as `Empty | Stamp of uint64 | Who of address`, is one slot.
 
 A payload may hold a string, bytes, or a list. Each such word keeps a slot of its own, shared only with the same type at the same position in another case, and stored as that type is. Writing another case clears it. As a record holding a string can't, such a variant can't be in transient storage.
 
@@ -536,58 +536,58 @@ A new map entry or an unwritten field reads as the first case, so put the initia
 
 ### Variants in entrypoint dispatch
 
-An external function whose body is a `case` on its variant parameter exposes one ABI function per case instead of taking the variant. A variant whose payload holds a map only shapes entrypoints and has no values. See [Entrypoint dispatch](/language/dispatch).
+An external function whose body is a `case` on its variant parameter exposes one ABI function per case instead of taking the variant, named by the case's `external` name, `| SetFee external setFee of uint`, or by the case itself. A variant whose payload holds a map only shapes entrypoints and has no values. See [Entrypoint dispatch](/language/dispatch).
 
 ## Nominal types
 
 `type name is T` declares a **new** type with `T`'s representation. It does not mix with `T`, or with any other type declared over `T`:
 
 ```lithe
-type basis_points is uint16;
-type discount_rate is uint16;
+type BasisPoints is uint16;
+type DiscountRate is uint16;
 
 storage is record {
-  fee : basis_points;
+  fee : BasisPoints;
 }
 
-external function set_fee(const fee : basis_points) is {
+external function setFee(const fee : BasisPoints) is {
   storage.fee := fee;
 }
 
-external view function as_discount() : discount_rate is
-  discount_rate(uint16(storage.fee))
+external view function asDiscount() : DiscountRate is
+  DiscountRate(uint16(storage.fee))
 ```
 
-A nominal type costs nothing at runtime, and in the ABI it appears as its representation. Integer literals take on nominal integer types directly: `const fee : basis_points := 500;`.
+A nominal type costs nothing at runtime, and in the ABI it appears as its representation. Integer literals take on nominal integer types directly: `const fee : BasisPoints := 500;`.
 
-A nominal type has its representation's operations, and works in every place the representation does: parameters, locals, storage fields, map keys and values, list elements, events, errors, and ABI parameters and results. For a type over `bytes` or `string`, that is `.length`, `=` and `<>`, and every built-in that takes `bytes` or `string`: `Bytes.concat`, `Bytes.word`, `String.concat`, `Crypto.keccak256` and the other hashes, `Base64`, `Abi.encode`, `Abi.encode_packed`, `Abi.encode_with_signature`'s signature, `Abi.decode`'s data, the data of `Evm.call`, the code of `create`, and precompile inputs. A type over `bytes` also indexes and slices: `d[i]` is a `bytes1`, and `d[start:end]` is `bytes`. Whatever a nominal type promises about its bytes, part of it or a join of it with others need not keep that promise, so these results are the representation's type: convert back with `doc(...)` where the result holds the promise. Only operations carry over, not assignability: a nominal type still passes to your own functions, and compares, only as itself.
+A nominal type has its representation's operations, and works in every place the representation does: parameters, locals, storage fields, map keys and values, list elements, events, errors, and ABI parameters and results. For a type over `bytes` or `string`, that is `.length`, `=` and `<>`, and every built-in that takes `bytes` or `string`: `Bytes.concat`, `Bytes.word`, `String.concat`, `Crypto.keccak256` and the other hashes, `Base64`, `Abi.encode`, `Abi.encodePacked`, `Abi.encodeWithSignature`'s signature, `Abi.decode`'s data, the data of `Evm.call`, the code of `create`, and precompile inputs. A type over `bytes` also indexes and slices: `d[i]` is a `bytes1`, and `d[start:end]` is `bytes`. Whatever a nominal type promises about its bytes, part of it or a join of it with others need not keep that promise, so these results are the representation's type: convert back with `doc(...)` where the result holds the promise. Only operations carry over, not assignability: a nominal type still passes to your own functions, and compares, only as itself.
 
 ```lithe
 import "std/bytes";
 
 (* A length-prefixed record: its first byte counts the bytes after it. *)
-type doc is bytes;
+type Doc is bytes;
 
-pure function body(const d : doc) : bytes is d[1:]
+pure function body(const d : Doc) : bytes is d[1:]
 
-pure function wrap(const b : bytes) : doc is doc(Bytes.concat(bytes1(uint8(b.length)), b))
+pure function wrap(const b : bytes) : Doc is Doc(Bytes.concat(bytes1(uint8(b.length)), b))
 
-external pure function size(const d : doc) : uint8 is if d.length = 0 then 0 else uint8(d[0])
+external pure function size(const d : Doc) : uint8 is if d.length = 0 then 0 else uint8(d[0])
 
-external pure function append(const d : doc; const b : bytes) : doc is wrap(Bytes.concat(body(d), b))
+external pure function append(const d : Doc; const b : bytes) : Doc is wrap(Bytes.concat(body(d), b))
 ```
 
 ```lithe rejects
-type basis_points is uint16;
-type discount_rate is uint16;
+type BasisPoints is uint16;
+type DiscountRate is uint16;
 
 storage is record {
   n : uint;
 }
 
 external function go() is {
-  const fee : basis_points := 500;
-  const discount : discount_rate := fee;
+  const fee : BasisPoints := 500;
+  const discount : DiscountRate := fee;
   skip
 }
 ```

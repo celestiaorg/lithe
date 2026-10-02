@@ -29,8 +29,8 @@ external function run(const amount : uint) is {
 external view function info() : (uint32, address) is
   storage.pair
 
-external pure function div_rem(const a : uint; const b : uint) : (uint, uint) is
-  Uint.div_rem(a, b)
+external pure function divRem(const a : uint; const b : uint) : (uint, uint) is
+  Uint.divRem(a, b)
 
 (* `var (a, b)` binds elements that `(a, b) := ...` can step together. *)
 external pure function gcd(const a : uint; const b : uint) : uint is {

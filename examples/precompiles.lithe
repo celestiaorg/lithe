@@ -6,36 +6,36 @@ import "std/crypto";
 import "std/evm";
 import "std/uint";
 
-error Bad_signature;
+error BadSignature;
 
 storage is record {
-  owner_x : bytes32;
-  owner_y : bytes32;
+  ownerX : bytes32;
+  ownerY : bytes32;
   nonce : uint;
 }
 
 deploy(const x : bytes32; const y : bytes32) is {
-  storage.owner_x := x;
-  storage.owner_y := y;
+  storage.ownerX := x;
+  storage.ownerY := y;
 }
 
 (* A WebAuthn passkey signs with P-256. `false` on chains without EIP-7951. *)
 external function act(const r : bytes32; const s : bytes32)
-  raises Bad_signature
+  raises BadSignature
 is {
   const digest : bytes32 := Crypto.keccak256(Abi.encode(Evm.self(), storage.nonce));
-  assert(Crypto.p256_verify(digest, r, s, storage.owner_x, storage.owner_y), Bad_signature);
+  assert(Crypto.p256Verify(digest, r, s, storage.ownerX, storage.ownerY), BadSignature);
   storage.nonce := storage.nonce + 1;
 }
 
 (* Whether the product of the pairings is one, as a Groth16 verifier's final check asks. *)
-external view function pairing_holds(const pairs : list((uint, uint, uint, uint, uint, uint))) : bool is
-  Crypto.bn254_pairing(pairs)
+external view function pairingHolds(const pairs : list((uint, uint, uint, uint, uint, uint))) : bool is
+  Crypto.bn254Pairing(pairs)
 
 (* A point's negation and double, on BN254's G1. *)
 external pure function double(const p : (uint, uint)) : (uint, uint) is
-  Crypto.bn254_add(p, p)
+  Crypto.bn254Add(p, p)
 
 (* An inverse modulo a prime, by Fermat: a^(p-2) mod p. *)
 external pure function inverse(const a : uint; const p : uint) : uint is
-  Uint.pow_mod(a, p - 2, p)
+  Uint.powMod(a, p - 2, p)

@@ -1,6 +1,6 @@
 (* Raw calls with calldata built by hand and answers decoded by hand: the patterns for
    calling a contract you have no interface for, or one chosen at runtime. The calldata
-   comes from `Abi.encode_call`, `Abi.encode_with_selector`, or `Abi.encode_with_signature`;
+   comes from `Abi.encodeCall`, `Abi.encodeWithSelector`, or `Abi.encodeWithSignature`;
    the return data from `Abi.decode`; a custom error's payload from the revert data. *)
 
 import "std/abi";
@@ -16,39 +16,39 @@ interface Pair is {
   view function getReserves() : (uint112, uint112, uint32);
 }
 
-type reserves is record {
+type Reserves is record {
   reserve0 : uint112;
   reserve1 : uint112;
   last : uint32;
 }
 
-error Transfer_refused;
+error TransferRefused;
 
 storage is record {
   sent : uint;
   refusals : uint;
-  last_error : bytes4;
+  lastError : bytes4;
 }
 
 (* A read: `STATICCALL` with typed calldata, and one word decoded. *)
 external view function balance(const token : address; const owner : address) : uint is
-  Abi.decode(query Evm.static_call(token, Abi.encode_call(Token.balanceOf, owner)), uint)
+  Abi.decode(query Evm.staticCall(token, Abi.encodeCall(Token.balanceOf, owner)), uint)
 
 (* Several results decoded at once, from calldata built from a signature. *)
-external view function reserves_of(const pair : address) : reserves is {
-  const answer : bytes := query Evm.static_call(pair, Abi.encode_with_signature("getReserves()"));
+external view function reservesOf(const pair : address) : Reserves is {
+  const answer : bytes := query Evm.staticCall(pair, Abi.encodeWithSignature("getReserves()"));
   const (r0, r1, last) : (uint112, uint112, uint32) := Abi.decode(answer, (uint112, uint112, uint32));
 } with { reserve0 = r0; reserve1 = r1; last = last; }
 
 (* A write: a token that answers nothing, `true`, or `false` from `transfer`, as tokens
    do. No answer is success; an answer must decode as `true`. *)
 external nonreentrant function send(const token : address; const to : address; const amount : uint)
-  raises Transfer_refused
+  raises TransferRefused
 is {
-  defer Evm.call(token, Abi.encode_with_selector(0xa9059cbb, to, amount)) then {
+  defer Evm.call(token, Abi.encodeWithSelector(0xa9059cbb, to, amount)) then {
     | Ok(answer : bytes) -> {
         if answer.length > 0 then {
-          assert(Abi.decode(answer, bool), Transfer_refused);
+          assert(Abi.decode(answer, bool), TransferRefused);
         }
         storage.sent := storage.sent + amount;
       }
@@ -57,7 +57,7 @@ is {
            whole word, so the reason is padded first: an error with no payload is 4 bytes. *)
         const pad : bytes32 := 0x00;
         if reason.length >= 4 then {
-          storage.last_error := bytes4(uint32(uint(Bytes.word(Bytes.concat(reason, pad), 0)) >> 224));
+          storage.lastError := bytes4(uint32(uint(Bytes.word(Bytes.concat(reason, pad), 0)) >> 224));
         }
         storage.refusals := storage.refusals + 1;
       }

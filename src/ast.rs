@@ -57,8 +57,6 @@ pub(crate) struct SpecBlock {
     pub origin: String,
     /// The function or route the block describes. `None` for `spec is`, the invariants.
     pub target: Option<NameAt>,
-    /// `spec for external f` or `spec for function f`, for a module that has both.
-    pub external: Option<bool>,
     /// `spec for f is partial`: the listed `raises` and `panics` conditions need not be the
     /// only ways `f` reverts.
     pub partial: bool,
@@ -119,7 +117,7 @@ pub(crate) struct TypeParam {
     pub line: u32,
     pub col: u32,
     pub name: String,
-    /// Compiler-known constraint, currently `map_key`.
+    /// Compiler-known constraint, currently `MapKey`.
     pub constraint: Option<String>,
 }
 
@@ -173,7 +171,7 @@ pub(crate) enum Tag {
     AddressZero,
     /// `Evm.osaka`: whether the target fork has Osaka's opcodes, a `bool` constant.
     EvmOsaka,
-    /// `Abi.selector(I.method)` and `Abi.interface_id(I)`: `bytes4` constants.
+    /// `Abi.selector(I.method)` and `Abi.interfaceId(I)`: `bytes4` constants.
     AbiSelector,
     AbiInterfaceId,
 }
@@ -332,7 +330,7 @@ pub(crate) enum TypeRef {
         elem: Box<TypeRef>,
         /// `None` is a dynamic list. `Some(n)` is a fixed list of length `n`.
         len: Option<u32>,
-        /// A fixed length written as a constant expression, `list(T, max_owners())`, which
+        /// A fixed length written as a constant expression, `list(T, maxOwners())`, which
         /// the checker evaluates. `len` is then `None`.
         size: Option<Box<Expr>>,
     },
@@ -462,6 +460,8 @@ pub(crate) struct VariantRef {
     pub payload: Option<TypeRef>,
     /// The ABI parameter name of a single-value payload, from `of (name : ty)`.
     pub param: String,
+    /// `| Case external name`: the name of the entrypoint a dispatched case becomes.
+    pub external: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -836,43 +836,43 @@ pub(crate) enum Builtin {
     BytesSlice,
     /// `Base64.encode(data)`: RFC 4648 base64, padded, as a `string`.
     Base64Encode,
-    /// `Base64.encode_url(data)`: the URL and filename safe alphabet, unpadded.
+    /// `Base64.encodeUrl(data)`: the URL and filename safe alphabet, unpadded.
     Base64EncodeUrl,
-    /// `Base64.encode_with(data, file_safe, no_padding)`.
+    /// `Base64.encodeWith(data, fileSafe, noPadding)`.
     Base64EncodeWith,
     /// `Base64.decode(data)`: the bytes a base64 string encodes, in either alphabet.
     Base64Decode,
     /// `String.lower(s)`, or with `true`, `String.upper(s)`: ASCII letters recased.
     StringCase(bool),
-    /// `String.escape_json(s)`, or with `true`, `String.escape_html(s)`.
+    /// `String.escapeJson(s)`, or with `true`, `String.escapeHtml(s)`.
     StringEscape(bool),
-    /// `String.index_of(s, needle, from)`: where `needle` first starts, from `from` on.
+    /// `String.indexOf(s, needle, from)`: where `needle` first starts, from `from` on.
     StringIndexOf,
     /// `String.replace(s, needle, replacement)`: every `needle` replaced, left to right.
     StringReplace,
     /// `Bytes.join(xs)`, or with `true`, `String.join(xs)`: a list's values one after another.
     Join(bool),
-    /// `Uint.mul_div(a, b, d)`: `a * b / d` without overflow in the product.
+    /// `Uint.mulDiv(a, b, d)`: `a * b / d` without overflow in the product.
     UintMulDiv,
     UintMulMod,
     UintAddMod,
-    /// `Uint.pop_count(x)`: how many bits of `x` are set.
+    /// `Uint.popCount(x)`: how many bits of `x` are set.
     UintPopCount,
     /// `Uint.clz(x)`: how many zero bits lead `x`'s highest set bit, 256 for zero.
     UintClz,
     IntDivRem,
-    /// `Uint.to_string(n)`: an unsigned integer in decimal, as a `string`.
+    /// `Uint.toString(n)`: an unsigned integer in decimal, as a `string`.
     UintToString,
-    /// `Int.to_string(n)`: a signed integer in decimal, with a `-` when negative.
+    /// `Int.toString(n)`: a signed integer in decimal, with a `-` when negative.
     IntToString,
-    /// `Uint.to_hex_string(n)`: `0x` and the fewest whole bytes in lowercase hex. With a
+    /// `Uint.toHexString(n)`: `0x` and the fewest whole bytes in lowercase hex. With a
     /// second argument, exactly that many bytes.
     UintToHexString,
-    /// `Address.to_hex_string(a)`: `0x` and 40 lowercase hex digits. `true` is
-    /// `Address.to_checksum_string`, cased as EIP-55.
+    /// `Address.toHexString(a)`: `0x` and 40 lowercase hex digits. `true` is
+    /// `Address.toChecksumString`, cased as EIP-55.
     AddressToHexString(bool),
-    /// `Uint.from_bits(i)` and `Int.from_bits(n)`, the unchecked bit-cast between `int` and
-    /// `uint`. `true` is `Int.from_bits`.
+    /// `Uint.fromBits(i)` and `Int.fromBits(n)`, the unchecked bit-cast between `int` and
+    /// `uint`. `true` is `Int.fromBits`.
     FromBits(bool),
     /// `List.pop(xs)`: drops a dynamic list's last element. Checked into an assignment of
     /// the list, `xs := List.pop(xs)`, so it writes what an assignment writes.
@@ -883,24 +883,24 @@ pub(crate) enum Builtin {
     /// `List.resized(xs, n)`: a new list of `xs`'s first `n` elements, padded with zero
     /// values when `xs` is shorter.
     ListResized,
-    /// `Abi.supports_interface(id)`: whether `id` is ERC-165's or one the contract's
+    /// `Abi.supportsInterface(id)`: whether `id` is ERC-165's or one the contract's
     /// `supports` lists, as the `supportsInterface` the compiler generates answers.
     AbiSupportsInterface,
-    /// `Evm.creation_code(C)`: the creation code `create C(...)` runs, before its arguments.
+    /// `Evm.creationCode(C)`: the creation code `create C(...)` runs, before its arguments.
     CreationCode,
-    /// `Evm.facet_address(M)`: the address of the facet of a module `M` the contract uses
+    /// `Evm.facetAddress(M)`: the address of the facet of a module `M` the contract uses
     /// `delegated`.
     FacetAddress,
-    /// `Uint.wrapping_add(a, b)`, `Int.wrapping_mul(a, b)`, and so on: the operation on two
+    /// `Uint.wrappingAdd(a, b)`, `Int.wrappingMul(a, b)`, and so on: the operation on two
     /// values of one integer type, wrapped to its width instead of checked. `true` is `Int`.
     Wrapping(BinOp, bool),
     Transfer,
     /// `Evm.call(to, data)`: a `CALL` with `data` as the whole calldata. Its continuation
     /// gets the raw return data.
     RawCall,
-    /// `Evm.delegate_call(to, data)`: `to`'s code runs as this contract, on `data`.
+    /// `Evm.delegateCall(to, data)`: `to`'s code runs as this contract, on `data`.
     DelegateCall,
-    /// `Evm.static_call(to, data)`: a `STATICCALL` with `data` as the calldata, queried.
+    /// `Evm.staticCall(to, data)`: a `STATICCALL` with `data` as the calldata, queried.
     StaticCall,
     /// `Evm.create(code)`: runs `code` as creation code. `base` holds the `CREATE2` salt,
     /// if any.
@@ -930,35 +930,35 @@ pub(crate) enum Builtin {
 /// The precompiled contracts past the hashes and `ecrecover`, each a built-in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Pre {
-    /// `Crypto.mod_exp(base, exponent, modulus)`: 0x05 on byte strings.
+    /// `Crypto.modExp(base, exponent, modulus)`: 0x05 on byte strings.
     ModExp,
-    /// `Uint.pow_mod(base, exponent, modulus)`: 0x05 on words.
+    /// `Uint.powMod(base, exponent, modulus)`: 0x05 on words.
     PowMod,
-    /// `Crypto.bn254_add(a, b)`: 0x06.
+    /// `Crypto.bn254Add(a, b)`: 0x06.
     Bn254Add,
-    /// `Crypto.bn254_mul(p, s)`: 0x07.
+    /// `Crypto.bn254Mul(p, s)`: 0x07.
     Bn254Mul,
-    /// `Crypto.bn254_pairing(pairs)`: 0x08.
+    /// `Crypto.bn254Pairing(pairs)`: 0x08.
     Bn254Pairing,
     /// `Crypto.blake2f(rounds, h, m, t, final)`: 0x09.
     Blake2f,
-    /// `Crypto.kzg_point_evaluation(versioned_hash, z, y, commitment, proof)`: 0x0a.
+    /// `Crypto.kzgPointEvaluation(versionedHash, z, y, commitment, proof)`: 0x0a.
     PointEvaluation,
-    /// `Crypto.bls12_g1_add(a, b)`: 0x0b.
+    /// `Crypto.bls12G1Add(a, b)`: 0x0b.
     Bls12G1Add,
-    /// `Crypto.bls12_g1_msm(pairs)`: 0x0c.
+    /// `Crypto.bls12G1Msm(pairs)`: 0x0c.
     Bls12G1Msm,
-    /// `Crypto.bls12_g2_add(a, b)`: 0x0d.
+    /// `Crypto.bls12G2Add(a, b)`: 0x0d.
     Bls12G2Add,
-    /// `Crypto.bls12_g2_msm(pairs)`: 0x0e.
+    /// `Crypto.bls12G2Msm(pairs)`: 0x0e.
     Bls12G2Msm,
-    /// `Crypto.bls12_pairing(pairs)`: 0x0f.
+    /// `Crypto.bls12Pairing(pairs)`: 0x0f.
     Bls12Pairing,
-    /// `Crypto.bls12_map_fp_to_g1(fp)`: 0x10.
+    /// `Crypto.bls12MapFpToG1(fp)`: 0x10.
     Bls12MapFpToG1,
-    /// `Crypto.bls12_map_fp2_to_g2(fp2)`: 0x11.
+    /// `Crypto.bls12MapFp2ToG2(fp2)`: 0x11.
     Bls12MapFp2ToG2,
-    /// `Crypto.p256_verify(hash, r, s, x, y)`: 0x100, EIP-7951.
+    /// `Crypto.p256Verify(hash, r, s, x, y)`: 0x100, EIP-7951.
     P256Verify,
 }
 

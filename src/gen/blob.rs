@@ -662,7 +662,7 @@ impl<'a> Gen<'a> {
     /// Solady's `Base64.encode`: each round turns three bytes into four characters, looked
     /// up in a table whose byte for index `i` sits at `i + 31`, so `MLOAD(i)` ends in it.
     /// The word after the data is zeroed while the rounds read past its end, then restored.
-    /// With `opts`, `[file_safe, no_padding]` are fixed and the routine takes only `[data, ret]`.
+    /// With `opts`, `[fileSafe, noPadding]` are fixed and the routine takes only `[data, ret]`.
     pub(super) fn sub_base64_encode(&mut self, opts: Option<[bool; 2]>) {
         const ALPHABET: &[u8; 64] =
             b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
@@ -693,7 +693,7 @@ impl<'a> Gen<'a> {
         self.op(MSTORE);
         self.op(if opts.is_none() { SWAP1 + 1 } else { SWAP1 });
         self.bytes_span();
-        // [no_padding, ret, len, data], with no `no_padding` when it is fixed.
+        // [no_padding, ret, len, data], with no `noPadding` when it is fixed.
         self.op(DUP1 + 1);
         self.op(ISZERO);
         self.push_label(empty);
@@ -1050,7 +1050,7 @@ impl<'a> Gen<'a> {
     }
 
     /// Solady's `LibBytes.replace`: the result is written past the heap top as the subject
-    /// is scanned, each position compared as `index_of` compares it, and allocated at the
+    /// is scanned, each position compared as `indexOf` compares it, and allocated at the
     /// end. A byte that is not a match is written as a whole word, which later writes and
     /// the zeroed word after the result cover.
     pub(super) fn sub_replace(&mut self) {

@@ -12,28 +12,28 @@ contract Billing is {
     renews : uint;
   }
 
-  external function start_on(const year : uint; const month : uint; const day : uint) is {
-    const t : uint := uint(DateTime.date_to_timestamp(year, month, day));
+  external function startOn(const year : uint; const month : uint; const day : uint) is {
+    const t : uint := uint(DateTime.dateToTimestamp(year, month, day));
     storage.started := t;
     storage.renews := t;
   }
 
   external function renew(const months : uint) is {
-    storage.renews := uint(DateTime.add_months(timestamp(storage.renews), months));
+    storage.renews := uint(DateTime.addMonths(timestamp(storage.renews), months));
   }
 
   external function extend(const years : uint) is {
-    storage.renews := uint(DateTime.add_years(timestamp(storage.renews), years));
+    storage.renews := uint(DateTime.addYears(timestamp(storage.renews), years));
   }
 
-  external view function months_active(const now : uint) : uint is
-    DateTime.diff_months(timestamp(storage.started), timestamp(now))
+  external view function monthsActive(const now : uint) : uint is
+    DateTime.diffMonths(timestamp(storage.started), timestamp(now))
 
-  external view function years_active(const now : uint) : uint is
-    DateTime.diff_years(timestamp(storage.started), timestamp(now))
+  external view function yearsActive(const now : uint) : uint is
+    DateTime.diffYears(timestamp(storage.started), timestamp(now))
 
-  external view function renewal_date() : (uint, uint, uint) is
-    DateTime.timestamp_to_date(timestamp(storage.renews))
+  external view function renewalDate() : (uint, uint, uint) is
+    DateTime.timestampToDate(timestamp(storage.renews))
 
   external pure function stamp(
     const year : uint;
@@ -43,17 +43,17 @@ contract Billing is {
     const minute : uint;
     const second : uint
   ) : uint is
-    uint(DateTime.date_time_to_timestamp(year, month, day, hour, minute, second))
+    uint(DateTime.dateTimeToTimestamp(year, month, day, hour, minute, second))
 
   external pure function parts(const t : uint) : (uint, uint, uint, uint, uint, uint) is
-    DateTime.timestamp_to_date_time(timestamp(t))
+    DateTime.timestampToDateTime(timestamp(t))
 
-  external pure function weekday_of(const t : uint) : uint is
+  external pure function weekdayOf(const t : uint) : uint is
     DateTime.weekday(timestamp(t))
 
   external pure function valid(const year : uint; const month : uint; const day : uint) : bool is
-    DateTime.is_supported_date(year, month, day)
+    DateTime.isSupportedDate(year, month, day)
 
-  external pure function days_in(const year : uint; const month : uint) : uint is
-    DateTime.days_in_month(year, month)
+  external pure function daysIn(const year : uint; const month : uint) : uint is
+    DateTime.daysInMonth(year, month)
 }

@@ -1,5 +1,5 @@
 private view function hidden(const x : uint) : uint is
   x + 1
 
-view function add_one(const x : uint) : uint is
+view function addOne(const x : uint) : uint is
   hidden(x)

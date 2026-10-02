@@ -9,12 +9,12 @@
    spent down. There are no receiver callbacks.
 
    Every balance change goes through `update`, like OpenZeppelin's `_update`, which calls
-   the contract's two hooks: at its start, `before_transfer`, and after the `Transfer` log,
-   `after_transfer`, where extensions such as `ERC6909TokenSupply` follow the change.
+   the contract's two hooks: at its start, `beforeTransfer`, and after the `Transfer` log,
+   `afterTransfer`, where extensions such as `ERC6909TokenSupply` follow the change.
    `from` is zero for a mint, `to` for a burn. A token without extensions skips both:
 
-     hook ERC6909.before_transfer is skip;
-     hook ERC6909.after_transfer is skip; *)
+     hook ERC6909.beforeTransfer is skip;
+     hook ERC6909.afterTransfer is skip; *)
 
 import "std/interfaces/erc165";
 import "std/interfaces/erc6909";
@@ -26,12 +26,12 @@ import "std/uint";
 module ERC6909 is {
   storage erc6909 at "lithe.std.erc6909" is record {
     balances : map(address, map(uint, uint));
-    operator_approvals : map(address, map(address, bool));
+    operatorApprovals : map(address, map(address, bool));
     allowances : map(address, map(address, map(uint, uint)));
   }
 
-  hook before_transfer(const from : address; const to : address; const id : uint; const amount : uint);
-  hook after_transfer(const from : address; const to : address; const id : uint; const amount : uint);
+  hook beforeTransfer(const from : address; const to : address; const id : uint; const amount : uint);
+  hook afterTransfer(const from : address; const to : address; const id : uint; const amount : uint);
 
   event Transfer of record {
     caller : address;
@@ -55,45 +55,8 @@ module ERC6909 is {
   }
 
   (* ERC-6909 and ERC-165 itself. *)
-  pure function supports_interface(const interfaceId : bytes4) : bool is
-    interfaceId = Abi.interface_id(IERC6909) or interfaceId = Abi.interface_id(IERC165)
-
-  view function balance_of(const owner : address; const id : uint) : uint is
-    erc6909.balances[owner][id]
-
-  view function allowance(const owner : address; const spender : address; const id : uint) : uint is
-    erc6909.allowances[owner][spender][id]
-
-  view function is_operator(const owner : address; const spender : address) : bool is
-    erc6909.operator_approvals[owner][spender]
-
-  function approve(const spender : address; const id : uint; const amount : uint) : bool
-    raises ERC6909InvalidApprover | ERC6909InvalidSpender
-  is {
-    approve_as(Evm.sender(), spender, id, amount);
-  } with true
-
-  function set_operator(const spender : address; const approved : bool) : bool
-    raises ERC6909InvalidApprover | ERC6909InvalidSpender
-  is {
-    set_operator_as(Evm.sender(), spender, approved);
-  } with true
-
-  function transfer(const receiver : address; const id : uint; const amount : uint) : bool
-    raises ERC6909InvalidSender | ERC6909InvalidReceiver | ERC6909InsufficientBalance
-  is {
-    move(Evm.sender(), receiver, id, amount);
-  } with true
-
-  (* The owner and its operators move any amount; anyone else spends an allowance. *)
-  function transfer_from(const sender : address; const receiver : address; const id : uint; const amount : uint) : bool
-    raises ERC6909InsufficientAllowance | ERC6909InvalidSender | ERC6909InvalidReceiver | ERC6909InsufficientBalance
-  is {
-    if sender <> Evm.sender() and not erc6909.operator_approvals[sender][Evm.sender()] then {
-      spend_allowance(sender, Evm.sender(), id, amount);
-    }
-    move(sender, receiver, id, amount);
-  } with true
+  pure function supportsInterface(const interfaceId : bytes4) : bool is
+    interfaceId = Abi.interfaceId(IERC6909) or interfaceId = Abi.interfaceId(IERC165)
 
   (* A transfer between two real accounts, without checking approvals. *)
   function move(const sender : address; const receiver : address; const id : uint; const amount : uint)
@@ -122,7 +85,7 @@ module ERC6909 is {
   function update(const from : address; const to : address; const id : uint; const amount : uint)
     raises ERC6909InsufficientBalance
   is {
-    before_transfer(from, to, id, amount);
+    beforeTransfer(from, to, id, amount);
     if from <> Address.zero then {
       const balance : uint := erc6909.balances[from][id];
       assert(
@@ -141,10 +104,10 @@ module ERC6909 is {
       id = id;
       amount = amount;
     };
-    after_transfer(from, to, id, amount);
+    afterTransfer(from, to, id, amount);
   }
 
-  function approve_as(const owner : address; const spender : address; const id : uint; const amount : uint)
+  function approveAs(const owner : address; const spender : address; const id : uint; const amount : uint)
     raises ERC6909InvalidApprover | ERC6909InvalidSpender
   is {
     assert(owner <> Address.zero, ERC6909InvalidApprover(Address.zero));
@@ -158,12 +121,12 @@ module ERC6909 is {
     };
   }
 
-  function set_operator_as(const owner : address; const spender : address; const approved : bool)
+  function setOperatorAs(const owner : address; const spender : address; const approved : bool)
     raises ERC6909InvalidApprover | ERC6909InvalidSpender
   is {
     assert(owner <> Address.zero, ERC6909InvalidApprover(Address.zero));
     assert(spender <> Address.zero, ERC6909InvalidSpender(Address.zero));
-    erc6909.operator_approvals[owner][spender] := approved;
+    erc6909.operatorApprovals[owner][spender] := approved;
     emit OperatorSet {
       owner = owner;
       spender = spender;
@@ -172,7 +135,7 @@ module ERC6909 is {
   }
 
   (* Spends from an allowance without logging. `Uint.max` is never spent down. *)
-  function spend_allowance(const owner : address; const spender : address; const id : uint; const amount : uint)
+  function spendAllowance(const owner : address; const spender : address; const id : uint; const amount : uint)
     raises ERC6909InsufficientAllowance
   is {
     const current : uint := erc6909.allowances[owner][spender][id];
@@ -192,23 +155,27 @@ module ERC6909 is {
     erc6909.allowances[owner][spender][id]
 
   external view function isOperator(const owner : address; const spender : address) : bool is
-    erc6909.operator_approvals[owner][spender]
+    erc6909.operatorApprovals[owner][spender]
 
   external function approve(const spender : address; const id : uint; const amount : uint) : bool
     raises ERC6909InvalidApprover | ERC6909InvalidSpender
-  is
-    approve(spender, id, amount)
+  is {
+    approveAs(Evm.sender(), spender, id, amount);
+  } with true
 
   external function setOperator(const spender : address; const approved : bool) : bool
     raises ERC6909InvalidApprover | ERC6909InvalidSpender
-  is
-    set_operator(spender, approved)
+  is {
+    setOperatorAs(Evm.sender(), spender, approved);
+  } with true
 
   external function transfer(const receiver : address; const id : uint; const amount : uint) : bool
     raises ERC6909InvalidSender | ERC6909InvalidReceiver | ERC6909InsufficientBalance
-  is
-    transfer(receiver, id, amount)
+  is {
+    move(Evm.sender(), receiver, id, amount);
+  } with true
 
+  (* The owner and its operators move any amount; anyone else spends an allowance. *)
   external function transferFrom(
     const sender : address;
     const receiver : address;
@@ -216,6 +183,10 @@ module ERC6909 is {
     const amount : uint
   ) : bool
     raises ERC6909InsufficientAllowance | ERC6909InvalidSender | ERC6909InvalidReceiver | ERC6909InsufficientBalance
-  is
-    transfer_from(sender, receiver, id, amount)
+  is {
+    if sender <> Evm.sender() and not erc6909.operatorApprovals[sender][Evm.sender()] then {
+      spendAllowance(sender, Evm.sender(), id, amount);
+    }
+    move(sender, receiver, id, amount);
+  } with true
 }

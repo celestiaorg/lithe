@@ -28,17 +28,17 @@ external pure function decode(const data : bytes) : uint is
   Abi.decode(data, uint)
 
 external pure function packed(const tag : string; const who : address) : bytes is
-  Abi.encode_packed(tag, who)
+  Abi.encodePacked(tag, who)
 
 (* Calldata for `transfer(address,uint256)`, three ways. *)
-external pure function by_selector(const to : address; const amount : uint) : bytes is
-  Abi.encode_with_selector(0xa9059cbb, to, amount)
+external pure function bySelector(const to : address; const amount : uint) : bytes is
+  Abi.encodeWithSelector(0xa9059cbb, to, amount)
 
-external pure function by_signature(const to : address; const amount : uint) : bytes is
-  Abi.encode_with_signature("transfer(address,uint256)", to, amount)
+external pure function bySignature(const to : address; const amount : uint) : bytes is
+  Abi.encodeWithSignature("transfer(address,uint256)", to, amount)
 
-external pure function by_call(const to : address; const amount : uint) : bytes is
-  Abi.encode_call(Token.transfer, to, amount)
+external pure function byCall(const to : address; const amount : uint) : bytes is
+  Abi.encodeCall(Token.transfer, to, amount)
 
 (* The raw calldata of the current call. *)
 external function remember() is {
@@ -47,7 +47,7 @@ external function remember() is {
 ```
 
 - `Abi.decode` takes a type name as its second argument.
-- `by_selector`, `by_signature`, and `by_call` produce identical bytes. Only `encode_call` checks the arguments against the method's parameter types.
+- `bySelector`, `bySignature`, and `byCall` produce identical bytes. Only `encodeCall` checks the arguments against the method's parameter types.
 
 ## Several values, and nested ones
 
@@ -56,15 +56,15 @@ A tuple of type names decodes one value of each, as Solidity's `abi.decode(data,
 ```lithe [nested.lithe]
 import "std/abi";
 
-type order is record {
+type Order is record {
   id : uint;
   note : string;
   legs : list(uint);
 }
 
-type orders is list(order);
+type Orders is list(Order);
 
-type transfer is record {
+type Transfer is record {
   to : address;
   amount : uint;
   memo : string;
@@ -74,15 +74,15 @@ storage is record {
   n : uint;
 }
 
-external pure function unpack(const data : bytes) : transfer is {
+external pure function unpack(const data : bytes) : Transfer is {
   const (to, amount, memo) : (address, uint, string) := Abi.decode(data, (address, uint, string));
 } with { to = to; amount = amount; memo = memo; }
 
-external pure function round_trip(const os : list(order)) : list(order) is
-  Abi.decode(Abi.encode(os), orders)
+external pure function roundTrip(const os : list(Order)) : list(Order) is
+  Abi.decode(Abi.encode(os), Orders)
 
-external pure function second_leg(const data : bytes) : uint is {
-  const os : list(order) := Abi.decode(data, orders);
+external pure function secondLeg(const data : bytes) : uint is {
+  const os : list(Order) := Abi.decode(data, Orders);
 } with os[0].legs[1]
 ```
 
@@ -106,10 +106,10 @@ storage is record {
 }
 
 external view function balance(const token : address; const owner : address) : uint is
-  Abi.decode(query Evm.static_call(token, Abi.encode_call(Token.balanceOf, owner)), uint)
+  Abi.decode(query Evm.staticCall(token, Abi.encodeCall(Token.balanceOf, owner)), uint)
 
 external view function reserves(const pair : address) : (uint112, uint112) is {
-  const answer : bytes := query Evm.static_call(pair, Abi.encode_with_signature("getReserves()"));
+  const answer : bytes := query Evm.staticCall(pair, Abi.encodeWithSignature("getReserves()"));
   const (r0, r1, last) : (uint112, uint112, uint32) := Abi.decode(answer, (uint112, uint112, uint32));
 } with (r0, r1)
 ```

@@ -33,50 +33,50 @@ storage is record {
   ripe : bytes20;
   round : uint;
   packed : bytes;
-  blob_fee : wei;
+  blobFee : wei;
 }
 
 external payable function take() is {
   storage.caller := Evm.sender();
   storage.paid := Evm.value();
-  storage.time := Evm.block_timestamp();
-  storage.number := Evm.block_number();
-  storage.chain := Evm.chain_id();
+  storage.time := Evm.blockTimestamp();
+  storage.number := Evm.blockNumber();
+  storage.chain := Evm.chainId();
   storage.mine := Evm.self();
   storage.bal := Evm.balance(Evm.self());
   storage.sel := Evm.selector();
-  storage.origin := Evm.tx_origin();
-  storage.price := Evm.tx_gas_price();
-  storage.coin := Evm.block_coinbase();
-  storage.fee := Evm.block_base_fee();
-  storage.rand := Evm.block_prevrandao();
-  storage.limit := Evm.block_gas_limit();
-  storage.codesz := Evm.code_size(Evm.self());
-  storage.codehash := Evm.code_hash(Evm.self());
-  storage.bhash := Evm.block_hash(1);
-  storage.blob := Evm.blob_hash(0);
-  storage.blob_fee := Evm.blob_base_fee();
-  storage.gas := Evm.gas_left();
+  storage.origin := Evm.txOrigin();
+  storage.price := Evm.txGasPrice();
+  storage.coin := Evm.blockCoinbase();
+  storage.fee := Evm.blockBaseFee();
+  storage.rand := Evm.blockPrevrandao();
+  storage.limit := Evm.blockGasLimit();
+  storage.codesz := Evm.codeSize(Evm.self());
+  storage.codehash := Evm.codeHash(Evm.self());
+  storage.bhash := Evm.blockHash(1);
+  storage.blob := Evm.blobHash(0);
+  storage.blobFee := Evm.blobBaseFee();
+  storage.gas := Evm.gasLeft();
   const raw : bytes := 0x616263;
   storage.digest := Crypto.keccak256(raw);
   storage.sha := Crypto.sha256(raw);
   storage.ripe := Crypto.ripemd160(raw);
   const encoded : bytes := Abi.encode(7);
   storage.round := Abi.decode(encoded, uint);
-  storage.packed := Abi.encode_packed(Evm.sender());
+  storage.packed := Abi.encodePacked(Evm.sender());
 }
 
 external view function payload() : bytes is
   Evm.calldata()
 
 external view function framed() : bytes is
-  Abi.encode_with_selector(0xaabbccdd, 7)
+  Abi.encodeWithSelector(0xaabbccdd, 7)
 
 external view function signed() : bytes is
-  Abi.encode_with_signature("foo(uint256)", 7)
+  Abi.encodeWithSignature("foo(uint256)", 7)
 
 external view function called() : bytes is
-  Abi.encode_call(Target.foo, 7)
+  Abi.encodeCall(Target.foo, 7)
 
 external view function recovered() : address is
   Crypto.ecrecover(0x00, 0, 0x00, 0x00)

@@ -4,7 +4,7 @@
 pragma solidity ^0.8.24;
 
 contract Tally {
-    error Zero_weight();
+    error ZeroWeight();
 
     struct AddressTally {
         mapping(address => uint256) counts;
@@ -18,8 +18,8 @@ contract Tally {
 
     /// @custom:storage-location erc7201:bench.votes
     struct VotesStorage {
-        AddressTally by_voter;
-        Bytes32Tally by_topic;
+        AddressTally byVoter;
+        Bytes32Tally byTopic;
     }
 
     // keccak256(abi.encode(uint256(keccak256("bench.votes")) - 1)) & ~bytes32(uint256(0xff))
@@ -32,23 +32,23 @@ contract Tally {
     }
 
     function vote(bytes32 topic, uint256 weight) external {
-        if (weight == 0) revert Zero_weight();
+        if (weight == 0) revert ZeroWeight();
         VotesStorage storage $ = _votes();
-        $.by_voter.counts[msg.sender] += weight;
-        $.by_voter.total += weight;
-        $.by_topic.counts[topic] += weight;
-        $.by_topic.total += weight;
+        $.byVoter.counts[msg.sender] += weight;
+        $.byVoter.total += weight;
+        $.byTopic.counts[topic] += weight;
+        $.byTopic.total += weight;
     }
 
-    function votes_of(address voter) external view returns (uint256) {
-        return _votes().by_voter.counts[voter];
+    function votesOf(address voter) external view returns (uint256) {
+        return _votes().byVoter.counts[voter];
     }
 
-    function votes_for(bytes32 topic) external view returns (uint256) {
-        return _votes().by_topic.counts[topic];
+    function votesFor(bytes32 topic) external view returns (uint256) {
+        return _votes().byTopic.counts[topic];
     }
 
-    function total_votes() external view returns (uint256) {
-        return _votes().by_topic.total;
+    function totalVotes() external view returns (uint256) {
+        return _votes().byTopic.total;
     }
 }

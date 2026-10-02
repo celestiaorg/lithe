@@ -67,11 +67,11 @@ contract GovernanceToken is {
   supports IERC20, IERC20Metadata, IERC20Permit, IERC6372, IVotes, IERC3156FlashLender,
     IAccessControl;
 
-  pure function minter() : role is
-    role(Crypto.keccak256("MINTER_ROLE"))
+  pure function minter() : Role is
+    Role(Crypto.keccak256("MINTER_ROLE"))
 
-  pure function pauser() : role is
-    role(Crypto.keccak256("PAUSER_ROLE"))
+  pure function pauser() : Role is
+    Role(Crypto.keccak256("PAUSER_ROLE"))
 
   (* The deployer administers the roles, and holds both to begin with. *)
   deploy()
@@ -80,39 +80,39 @@ contract GovernanceToken is {
     ERC20.init("Lithe Governance", "LGOV");
     EIP712.init("Lithe Governance", "1");
     ERC20Capped.init(10_000_000 * 10 ** 18);
-    AccessControl.grant(AccessControl.default_admin_role(), Evm.sender());
+    AccessControl.grant(AccessControl.defaultAdminRole(), Evm.sender());
     AccessControl.grant(minter(), Evm.sender());
     AccessControl.grant(pauser(), Evm.sender());
   }
 
-  hook ERC20.before_transfer is Pausable.require_not_paused;
+  hook ERC20.beforeTransfer is Pausable.requireNotPaused;
 
-  hook ERC20.after_transfer(const from : address; const to : address; const value : uint)
+  hook ERC20.afterTransfer(const from : address; const to : address; const value : uint)
     raises ERC20ExceededCap | ERC20ExceededSafeSupply | CheckpointUnorderedInsertion
   is {
-    ERC20Capped.after_transfer(from, to, value);
-    ERC20Votes.transfer_voting_units(from, to, value);
+    ERC20Capped.afterTransfer(from, to, value);
+    ERC20Votes.transferVotingUnits(from, to, value);
   }
 
   external function mint(const to : address; const value : uint)
     raises AccessControlUnauthorizedAccount | ERC20InvalidReceiver | EnforcedPause | ERC20InsufficientBalance
       | ERC20ExceededCap | ERC20ExceededSafeSupply | CheckpointUnorderedInsertion
   is {
-    AccessControl.check_role(minter());
+    AccessControl.checkRole(minter());
     ERC20.mint(to, value);
   }
 
   external function pause()
     raises AccessControlUnauthorizedAccount | EnforcedPause
   is {
-    AccessControl.check_role(pauser());
+    AccessControl.checkRole(pauser());
     Pausable.pause();
   }
 
   external function unpause()
     raises AccessControlUnauthorizedAccount | ExpectedPause
   is {
-    AccessControl.check_role(pauser());
+    AccessControl.checkRole(pauser());
     Pausable.unpause();
   }
 }

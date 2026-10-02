@@ -58,7 +58,7 @@ fn decorators_split_visibility_and_effects() {
 fn pure_functions_depend_only_on_arguments() {
     let src = include_str!("../../examples/pure.lithe");
     let abi = abi(src).expect("abi");
-    for hidden in ["calculate_fee", "fee_of"] {
+    for hidden in ["calculateFee", "feeOf"] {
         assert!(!abi.contains(&format!("\"name\": \"{hidden}\"")), "{abi}");
     }
     assert!(abi.contains("\"name\": \"preview\""), "{abi}");
@@ -73,18 +73,18 @@ fn pure_functions_depend_only_on_arguments() {
     assert_eq!(slot(&quoted.storage, 0), Word::from_u64(25));
 
     let raised = r#"
-error Too_small;
+error TooSmall;
 
 storage is record { n : uint; }
 
 pure function need(const n : uint) : uint
-  raises Too_small
+  raises TooSmall
 is {
-  assert(n > 0, Too_small);
+  assert(n > 0, TooSmall);
 } with n
 
 external function go(const n : uint)
-  raises Too_small
+  raises TooSmall
 is {
   storage.n := need(n);
 }
@@ -105,8 +105,8 @@ external function store(const data : bytes) is {
 
     let module = r#"
 module Fees is {
-  pure function calculate_fee(const amount : uint; const fee_bps : uint) : uint is
-    amount * fee_bps / 10_000
+  pure function calculateFee(const amount : uint; const feeBps : uint) : uint is
+    amount * feeBps / 10_000
 }
 
 use Fees;
@@ -114,7 +114,7 @@ use Fees;
 storage is record { rate : uint; }
 
 external function quote(const amount : uint) is {
-  storage.rate := Fees.calculate_fee(amount, 25);
+  storage.rate := Fees.calculateFee(amount, 25);
 }
 "#;
     compile(module).expect("a module can define a pure function");
@@ -243,7 +243,7 @@ external function set(const n : uint) is { storage.n := twice(n); }
 fn generics_specialize_sets() {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/generics.lithe");
     let abi = crate::abi(&Sources::disk(), &path).expect("abi").to_json();
-    assert!(abi.contains("\"name\": \"is_admin\""), "{abi}");
+    assert!(abi.contains("\"name\": \"isAdmin\""), "{abi}");
     assert!(abi.contains("\"name\": \"grant\""), "{abi}");
     assert!(!abi.contains("\"name\": \"contains\""), "{abi}");
     assert!(!abi.contains("\"name\": \"identity\""), "{abi}");
@@ -261,7 +261,7 @@ fn generics_specialize_sets() {
     assert!(!granted.reverted, "{}", pretty(&granted.returndata));
     let admin = exec(
         &runtime,
-        &word_data("is_admin(address)", &[alice]),
+        &word_data("isAdmin(address)", &[alice]),
         granted.storage.clone(),
         caller,
         Word::from_u64(0),
@@ -282,7 +282,7 @@ fn generics_specialize_sets() {
     assert!(!revoked.reverted, "{}", pretty(&revoked.returndata));
     let gone = exec(
         &runtime,
-        &word_data("is_admin(address)", &[alice]),
+        &word_data("isAdmin(address)", &[alice]),
         revoked.storage.clone(),
         caller,
         Word::from_u64(0),
@@ -291,11 +291,11 @@ fn generics_specialize_sets() {
     .expect("gone");
     assert_eq!(load_bytes(&gone.returndata, 0), Word::from_u64(0));
 
-    let first = call(&runtime, "add_validator(address)", &[alice]);
+    let first = call(&runtime, "addValidator(address)", &[alice]);
     assert!(!first.reverted, "{}", pretty(&first.returndata));
     let second = exec(
         &runtime,
-        &word_data("add_validator(address)", &[bob]),
+        &word_data("addValidator(address)", &[bob]),
         first.storage.clone(),
         caller,
         Word::from_u64(0),
@@ -305,7 +305,7 @@ fn generics_specialize_sets() {
     assert!(!second.reverted, "{}", pretty(&second.returndata));
     let again = exec(
         &runtime,
-        &word_data("add_validator(address)", &[alice]),
+        &word_data("addValidator(address)", &[alice]),
         second.storage.clone(),
         caller,
         Word::from_u64(0),
@@ -315,7 +315,7 @@ fn generics_specialize_sets() {
     assert!(!again.reverted, "{}", pretty(&again.returndata));
     let count = exec(
         &runtime,
-        &word_data("validator_count()", &[]),
+        &word_data("validatorCount()", &[]),
         again.storage.clone(),
         caller,
         Word::from_u64(0),
@@ -325,7 +325,7 @@ fn generics_specialize_sets() {
     assert_eq!(load_bytes(&count.returndata, 0), Word::from_u64(2));
     let at0 = exec(
         &runtime,
-        &word_data("validator_at(uint256)", &[Word::from_u64(0)]),
+        &word_data("validatorAt(uint256)", &[Word::from_u64(0)]),
         again.storage.clone(),
         caller,
         Word::from_u64(0),
@@ -336,7 +336,7 @@ fn generics_specialize_sets() {
     assert_eq!(load_bytes(&at0.returndata, 0), alice);
     let at1 = exec(
         &runtime,
-        &word_data("validator_at(uint256)", &[Word::from_u64(1)]),
+        &word_data("validatorAt(uint256)", &[Word::from_u64(1)]),
         again.storage.clone(),
         caller,
         Word::from_u64(0),
@@ -346,7 +346,7 @@ fn generics_specialize_sets() {
     assert_eq!(load_bytes(&at1.returndata, 0), bob);
     let dropped = exec(
         &runtime,
-        &word_data("drop_validator(address)", &[alice]),
+        &word_data("dropValidator(address)", &[alice]),
         again.storage.clone(),
         caller,
         Word::from_u64(0),
@@ -356,7 +356,7 @@ fn generics_specialize_sets() {
     assert!(!dropped.reverted, "{}", pretty(&dropped.returndata));
     let left = exec(
         &runtime,
-        &word_data("validator_count()", &[]),
+        &word_data("validatorCount()", &[]),
         dropped.storage.clone(),
         caller,
         Word::from_u64(0),
@@ -366,7 +366,7 @@ fn generics_specialize_sets() {
     assert_eq!(load_bytes(&left.returndata, 0), Word::from_u64(1));
     let now0 = exec(
         &runtime,
-        &word_data("validator_at(uint256)", &[Word::from_u64(0)]),
+        &word_data("validatorAt(uint256)", &[Word::from_u64(0)]),
         dropped.storage.clone(),
         caller,
         Word::from_u64(0),
@@ -376,7 +376,7 @@ fn generics_specialize_sets() {
     assert_eq!(load_bytes(&now0.returndata, 0), bob);
     let bounds = exec(
         &runtime,
-        &word_data("validator_at(uint256)", &[Word::from_u64(1)]),
+        &word_data("validatorAt(uint256)", &[Word::from_u64(1)]),
         dropped.storage.clone(),
         caller,
         Word::from_u64(0),
@@ -407,10 +407,10 @@ fn generics_specialize_sets() {
         state = sent.storage;
     }
     for (sig, args, want) in [
-        ("watched_count()", vec![], 1),
-        ("is_watched(address)", vec![alice], 0),
-        ("is_watched(address)", vec![bob], 1),
-        ("validator_count()", vec![], 0),
+        ("watchedCount()", vec![], 1),
+        ("isWatched(address)", vec![alice], 0),
+        ("isWatched(address)", vec![bob], 1),
+        ("validatorCount()", vec![], 0),
     ] {
         let got = exec(
             &runtime,
@@ -429,14 +429,14 @@ fn generics_specialize_sets() {
     }
 
     let mixed = r#"
-module Set(T : map_key) is {
-  type self is map(T, bool);
-  function add(storage set : self; const value : T) is {
+module Set(T : MapKey) is {
+  type Self is map(T, bool);
+  function add(storage set : Self; const value : T) is {
     set[value] := true;
   }
 }
-type order_id is bytes32;
-storage is record { orders : Set(order_id); }
+type OrderId is bytes32;
+storage is record { orders : Set(OrderId); }
 external function bad(const id : bytes32) is {
   Set.add(storage.orders, id);
 }
@@ -444,13 +444,13 @@ external function bad(const id : bytes32) is {
     let err = compile(mixed).expect_err("nominal");
     assert!(
         err.to_string()
-            .contains("type parameter `T` is both `order_id` and `bytes32`"),
+            .contains("type parameter `T` is both `OrderId` and `bytes32`"),
         "{err}"
     );
 
     let used = r#"
-module Set(T : map_key) is {
-  type self is map(T, bool);
+module Set(T : MapKey) is {
+  type Self is map(T, bool);
 }
 use Set;
 storage is record { n : uint; }
@@ -470,11 +470,11 @@ fn queries_see_storage_as_the_transition_found_it() {
 error Bad;
 interface Me is {
   view function peek() : uint;
-  view function peek_plus(k : uint) : uint;
+  view function peekPlus(k : uint) : uint;
 }
 storage is record { n : uint; seen : uint; }
 external view function peek() : uint is storage.n
-external view function peek_plus(const k : uint) : uint is storage.n + k
+external view function peekPlus(const k : uint) : uint is storage.n + k
 external function early(const me : Me; const k : uint)
   raises Bad
 is {
@@ -485,7 +485,7 @@ is {
 }
 external function late(const me : Me) is {
   storage.n := storage.n + 1;
-  const before : uint := query me.peek_plus(storage.n);
+  const before : uint := query me.peekPlus(storage.n);
   storage.seen := before;
 }
 ";
@@ -542,35 +542,35 @@ fn declarations_restate_the_module_external() {
     let program = |exposed: &str| {
         format!(
             "\
-import \"std/evm\"; module Vault_ops is {{
+import \"std/evm\"; module VaultOps is {{
   storage vault at \"vault.ops\" is record {{ deposits : map(address, wei); }}
-  error Too_much of wei;
-  function take(const amount : wei) raises Too_much is {{
-    assert(amount <= vault.deposits[Evm.sender()], Too_much(amount));
+  error TooMuch of wei;
+  function take(const amount : wei) raises TooMuch is {{
+    assert(amount <= vault.deposits[Evm.sender()], TooMuch(amount));
     vault.deposits[Evm.sender()] := vault.deposits[Evm.sender()] - amount;
   }}
-  external function withdraw(const amount : wei) raises Too_much is take(amount)
+  external function withdraw(const amount : wei) raises TooMuch is take(amount)
   external payable function deposit() is {{
     vault.deposits[Evm.sender()] := vault.deposits[Evm.sender()] + Evm.value();
   }}
-  external view function deposit_of(const who : address) : wei is vault.deposits[who]
+  external view function depositOf(const who : address) : wei is vault.deposits[who]
   external pure function fee(const amount : wei) : wei is amount / 100wei
   external view function hidden() : wei is 0wei
 }}
-use Vault_ops exposing {{
+use VaultOps exposing {{
 {exposed}
 }}
 "
         )
     };
     let all = "\
-  function withdraw(amount : wei) raises Too_much;
+  function withdraw(amount : wei) raises TooMuch;
   payable function deposit();
-  view function deposit_of(who : address) : wei;
+  view function depositOf(who : address) : wei;
   pure function fee(amount : wei) : wei;";
     let good = program(all);
     let abi = abi(&good).expect("declarations");
-    for name in ["withdraw", "deposit", "deposit_of", "fee"] {
+    for name in ["withdraw", "deposit", "depositOf", "fee"] {
         assert!(
             abi.contains(&format!("\"name\": \"{name}\"")),
             "{name}: {abi}"
@@ -582,7 +582,7 @@ use Vault_ops exposing {{
     assert!(abi.contains("\"stateMutability\": \"pure\""), "{abi}");
     let footprint = footprint(&good).expect("footprint");
     assert!(
-        footprint.contains("writes: Vault_ops.vault.deposits"),
+        footprint.contains("writes: VaultOps.vault.deposits"),
         "{footprint}"
     );
     let runtime = deploy(&compile(&good).expect("compile")).expect("deploy");
@@ -590,51 +590,51 @@ use Vault_ops exposing {{
     assert_eq!(load_bytes(&out.returndata, 0), Word::from_u64(5));
     for (exposed, want) in [
         (
-            "  view function withdraw(amount : wei) : wei raises Too_much;",
-            "`withdraw` returns `wei` in the inline interface and nothing in `Vault_ops`",
+            "  view function withdraw(amount : wei) : wei raises TooMuch;",
+            "`withdraw` returns `wei` in the inline interface and nothing in `VaultOps`",
         ),
         (
             "  function deposit();",
-            "module `Vault_ops` does not have the contract's inline interface: `deposit` is `payable` in `Vault_ops` but not in the inline interface\n\n  interface:  function deposit()\n  module:     payable function deposit()",
+            "module `VaultOps` does not have the contract's inline interface: `deposit` is `payable` in `VaultOps` but not in the inline interface\n\n  interface:  function deposit()\n  module:     payable function deposit()",
         ),
         (
             "  view function fee(amount : wei) : wei;",
-            "`fee` is `view` in the inline interface and `pure` in `Vault_ops`",
+            "`fee` is `view` in the inline interface and `pure` in `VaultOps`",
         ),
         (
-            "  view function deposit_of(account : address) : wei;",
-            "parameter 1 of `deposit_of` is `account` in the inline interface and `who` in `Vault_ops`",
+            "  view function depositOf(account : address) : wei;",
+            "parameter 1 of `depositOf` is `account` in the inline interface and `who` in `VaultOps`",
         ),
         (
-            "  view function deposit_of(who : address) : uint;",
-            "`deposit_of` returns `uint` in the inline interface and `wei` in `Vault_ops`",
+            "  view function depositOf(who : address) : uint;",
+            "`depositOf` returns `uint` in the inline interface and `wei` in `VaultOps`",
         ),
         (
             "  function withdraw(amount : wei);",
-            "`withdraw` raises `Too_much` in `Vault_ops`, and the inline interface lists no errors",
+            "`withdraw` raises `TooMuch` in `VaultOps`, and the inline interface lists no errors",
         ),
         (
-            "  function withdraw(amount : wei) raises Too_much | Other;",
+            "  function withdraw(amount : wei) raises TooMuch | Other;",
             "unknown error `Other`",
         ),
         (
-            "  function take(amount : wei) raises Too_much;",
-            "`Vault_ops.take` is an internal function; declare it `external` in `Vault_ops` to offer it",
+            "  function take(amount : wei) raises TooMuch;",
+            "`VaultOps.take` is an internal function; declare it `external` in `VaultOps` to offer it",
         ),
         (
             "  function missing();",
-            "module `Vault_ops` does not have the contract's inline interface: it has no external `missing`",
+            "module `VaultOps` does not have the contract's inline interface: it has no external `missing`",
         ),
         (
-            "  external function withdraw(amount : wei) raises Too_much;",
+            "  external function withdraw(amount : wei) raises TooMuch;",
             "an interface's methods are external; drop `external`",
         ),
         (
-            "  function withdraw(const amount : wei) raises Too_much;",
+            "  function withdraw(const amount : wei) raises TooMuch;",
             "an interface's parameters are `name : type`, without `const`",
         ),
         (
-            "  nonreentrant function withdraw(amount : wei) raises Too_much;",
+            "  nonreentrant function withdraw(amount : wei) raises TooMuch;",
             "`nonreentrant` is not part of an interface",
         ),
     ] {
@@ -643,13 +643,13 @@ use Vault_ops exposing {{
     }
     // A module's external is not a function the contract can call.
     let src = good.replace(
-        "use Vault_ops exposing {",
-        "external function again(const amount : wei) raises Too_much is Vault_ops.withdraw(amount)\nuse Vault_ops exposing {",
+        "use VaultOps exposing {",
+        "external function again(const amount : wei) raises TooMuch is VaultOps.withdraw(amount)\nuse VaultOps exposing {",
     );
     let err = compile(&src).expect_err("an external is not callable");
     assert!(
         err.to_string().contains(
-            "external function `Vault_ops.withdraw` cannot be called from inside the contract"
+            "external function `VaultOps.withdraw` cannot be called from inside the contract"
         ),
         "{err}"
     );
@@ -819,16 +819,16 @@ fn types_reject_implicit_conversions() {
         "{err}"
     );
     let err = compile(
-        "type tiny is uint8;\nstorage is record { n : uint; }\nexternal function go() is { const x : tiny := 300; skip }\n",
+        "type Tiny is uint8;\nstorage is record { n : uint; }\nexternal function go() is { const x : Tiny := 300; skip }\n",
     )
     .expect_err("range");
     assert!(
-        err.to_string().contains("does not fit type `tiny`"),
+        err.to_string().contains("does not fit type `Tiny`"),
         "{err}"
     );
     assert!(err.to_string().contains("uint8"), "{err}");
     let err = compile(
-        "type basis_points is uint16;\ntype discount_rate is uint16;\nstorage is record { n : uint; }\nexternal function go() is { const fee : basis_points := 500; const discount : discount_rate := fee; skip }\n",
+        "type BasisPoints is uint16;\ntype DiscountRate is uint16;\nstorage is record { n : uint; }\nexternal function go() is { const fee : BasisPoints := 500; const discount : DiscountRate := fee; skip }\n",
     )
     .expect_err("nominal");
     assert!(
@@ -857,7 +857,7 @@ fn types_reject_implicit_conversions() {
     );
     install_mocks();
     let echo = Word::from_u64(0xcd);
-    for sig in ["fee_from(address,uint256)", "has_fee(address,uint256)"] {
+    for sig in ["feeFrom(address,uint256)", "hasFee(address,uint256)"] {
         let out = call(&runtime, sig, &[echo, Word::from_u64(500)]);
         assert!(!out.reverted, "{sig}");
         assert!(
@@ -867,7 +867,7 @@ fn types_reject_implicit_conversions() {
     }
     let out = call(
         &runtime,
-        "fee_from(address,uint256)",
+        "feeFrom(address,uint256)",
         &[echo, Word::from_u64(500)],
     );
     assert_eq!(load_bytes(&out.returndata, 0), Word::from_u64(500));
@@ -1003,43 +1003,43 @@ fn constant_operations_that_must_panic_are_rejected() {
         ),
         (
             "uint",
-            "storage.n := Uint.mul_div(1, 1, 0);",
-            "division by zero in `Uint.mul_div(1, 1, 0)`",
+            "storage.n := Uint.mulDiv(1, 1, 0);",
+            "division by zero in `Uint.mulDiv(1, 1, 0)`",
         ),
         (
             "uint",
-            "storage.n := Uint.mul_div(Uint.max, 2, 1);",
-            "`Uint.mul_div(Uint.max, 2, 1)` overflows `uint`",
+            "storage.n := Uint.mulDiv(Uint.max, 2, 1);",
+            "`Uint.mulDiv(Uint.max, 2, 1)` overflows `uint`",
         ),
         (
             "uint",
-            "storage.n := Uint.mul_mod(1, 2, 0);",
-            "division by zero in `Uint.mul_mod(1, 2, 0)`",
+            "storage.n := Uint.mulMod(1, 2, 0);",
+            "division by zero in `Uint.mulMod(1, 2, 0)`",
         ),
         (
             "uint",
-            "storage.n := Uint.add_mod(1, 2, 0);",
-            "division by zero in `Uint.add_mod(1, 2, 0)`",
+            "storage.n := Uint.addMod(1, 2, 0);",
+            "division by zero in `Uint.addMod(1, 2, 0)`",
         ),
         (
             "uint",
-            "storage.n := Uint.pow_mod(2, 3, 0);",
-            "division by zero in `Uint.pow_mod(2, 3, 0)`",
+            "storage.n := Uint.powMod(2, 3, 0);",
+            "division by zero in `Uint.powMod(2, 3, 0)`",
         ),
         (
             "uint",
-            "const (q, r) : (uint, uint) := Uint.div_rem(1, 0); storage.n := q;",
-            "division by zero in `Uint.div_rem(1, 0)`",
+            "const (q, r) : (uint, uint) := Uint.divRem(1, 0); storage.n := q;",
+            "division by zero in `Uint.divRem(1, 0)`",
         ),
         (
             "int",
-            "const (q, r) : (int, int) := Int.div_rem(Int.min, -1); storage.n := q;",
-            "`Int.div_rem(Int.min, -1)` overflows `int`",
+            "const (q, r) : (int, int) := Int.divRem(Int.min, -1); storage.n := q;",
+            "`Int.divRem(Int.min, -1)` overflows `int`",
         ),
         (
             "uint",
-            "storage.n := Uint.to_hex_string(256, 1).length;",
-            "`Uint.to_hex_string(256, 1)` does not fit its length in bytes",
+            "storage.n := Uint.toHexString(256, 1).length;",
+            "`Uint.toHexString(256, 1)` does not fit its length in bytes",
         ),
     ] {
         let err = compile(&program(ty, body)).expect_err(body);
@@ -1062,7 +1062,7 @@ fn constant_operations_that_must_panic_are_rejected() {
         ("int", "storage.n := Int.min / 1 + 0 ** 0;"),
         (
             "uint",
-            "storage.n := Uint.mul_div(Uint.max, Uint.max, Uint.max);",
+            "storage.n := Uint.mulDiv(Uint.max, Uint.max, Uint.max);",
         ),
         (
             "uint",
@@ -1080,7 +1080,7 @@ fn constant_operations_that_must_panic_are_rejected() {
     let main = dir.join("main.lithe");
     std::fs::write(
         &main,
-        "import \"std/int\"; import \"std/uint\"; import \"std/math/math\";\nuse Math;\nstorage is record { n : uint; }\nexternal function go() is { storage.n := Math.ceil_div(1, 0); }\n",
+        "import \"std/int\"; import \"std/uint\"; import \"std/math/math\";\nuse Math;\nstorage is record { n : uint; }\nexternal function go() is { storage.n := Math.ceilDiv(1, 0); }\n",
     )
     .unwrap();
     let runtime = deploy(&compile_file(&main).expect("std call")).expect("deploy");
@@ -1098,8 +1098,10 @@ fn duplicates_say_where_the_first_is() {
             "2:6: duplicate name `x`\n\n`x` is already declared at 1:1 as a type\n\nrename one of them",
         ),
         (
-            "private type t is uint;\nprivate type t is bool;\n",
-            "2:9: duplicate type `t`\n\n`t` is already declared at 1:9 as a type",
+            "private type T is uint;\nprivate type T is bool;\n",
+            "2:9: duplicate type `T`
+
+`T` is already declared at 1:9 as a type",
         ),
         (
             "storage a at \"x\" is record { n : uint; }\nstorage b at \"x\" is record { n : uint; }\n",
@@ -1110,8 +1112,12 @@ fn duplicates_say_where_the_first_is() {
             "3:8: duplicate function `M.a(uint)`\n\n`M.a` is already declared at 2:8",
         ),
         (
-            "module M is {\n  type t is uint;\n  type t is bool;\n}\nuse M;\n",
-            "`t` is already declared at 2:3",
+            "module M is {\n  view function a() : uint is 1\n  external view function a() : uint is 1\n}\nuse M;\n",
+            "an external and an internal function cannot share a name",
+        ),
+        (
+            "module M is {\n  type T is uint;\n  type T is bool;\n}\nuse M;\n",
+            "`T` is already declared at 2:3",
         ),
     ] {
         let err = compile(&format!("{src}{tail}")).expect_err(want);
@@ -1212,18 +1218,18 @@ fn build_files(files: &[(&str, &str)]) -> Result<Vec<u8>, String> {
 }
 
 const SCOPE_B: &str = "\
-type amount is uint;
+type Amount is uint;
 error Low;
 event Moved of record { n : uint; }
 interface Poke is { function poke(); }
-pure function double(const x : amount) : amount is amount(uint(x) * 2)
+pure function double(const x : Amount) : Amount is Amount(uint(x) * 2)
 module Tally is {
   storage tally at \"t.tally\" is record { n : uint; }
   function bump() is { tally.n := tally.n + 1; }
 }
 ";
 
-const SCOPE_A: &str = "import \"./b\";\npure function make() : amount is amount(3)\n";
+const SCOPE_A: &str = "import \"./b\";\npure function make() : Amount is Amount(3)\n";
 
 #[test]
 fn errors_name_the_file_they_are_in() {
@@ -1236,11 +1242,11 @@ fn errors_name_the_file_they_are_in() {
         ),
         ("pure function twice(const n : uint) : uint is\n", "lib/util.lithe:2:1: "),
         (
-            "type t is record { a : uint; a : uint; }\npure function twice(const n : uint) : uint is n\n",
+            "type T is record { a : uint; a : uint; }\npure function twice(const n : uint) : uint is n\n",
             "lib/util.lithe:1:30: duplicate field `a`",
         ),
         (
-            "error E of record { a : nope; }\npure function twice(const n : uint) : uint is n\n",
+            "error E of record { a : Nope; }\npure function twice(const n : uint) : uint is n\n",
             "lib/util.lithe:1:",
         ),
     ] {
@@ -1357,8 +1363,8 @@ fn a_file_sees_only_what_it_imports() {
     };
     for (body, want) in [
         (
-            "external function go() is { const x : amount := make(); }",
-            "unknown type `amount`\n\n`amount` is declared in `./b`: `import \"./b\";`",
+            "external function go() is { const x : Amount := make(); }",
+            "unknown type `Amount`\n\n`Amount` is declared in `./b`: `import \"./b\";`",
         ),
         (
             "external function go() is { assert(false, Low); }",
@@ -1446,18 +1452,18 @@ fn a_file_sees_only_what_it_imports() {
 
 #[test]
 fn imported_code_resolves_where_it_is_written() {
-    let util = "error Denied;\ntype amount is uint;\npure function helper(const x : uint) : uint is x + 1\n";
+    let util = "error Denied;\ntype Amount is uint;\npure function helper(const x : uint) : uint is x + 1\n";
     let lib = "\
 import \"./util\";
 module Box(T) is {
   pure function wrap(const x : T) : T is x
-  pure function size(const x : T) : amount is amount(7)
+  pure function size(const x : T) : Amount is Amount(7)
 }
 module Keeper is {
   storage keeper at \"t.keeper\" is record { n : uint; }
   function set(const v : uint) raises Denied is {
     assert(v > 0, Denied);
-    keeper.n := uint(amount(v));
+    keeper.n := uint(Amount(v));
   }
 }
 ";
@@ -1465,11 +1471,11 @@ module Keeper is {
 import \"./lib\";
 import \"./util\" as U;
 contract C is {
-  type amount is bytes32;
+  type Amount is bytes32;
   error Denied of uint;
   pure function helper() : uint is 5
   use Keeper;
-  storage is record { n : uint; a : amount; }
+  storage is record { n : uint; a : Amount; }
   external function go(const v : uint) raises U.Denied is {
     Keeper.set(v);
     storage.n := Box.wrap(v) + uint(Box.size(v)) + helper();
@@ -1503,7 +1509,7 @@ fn one_file_imported_many_ways_is_one_declaration() {
     let b = "\
 error Stop;
 event Ping of record { n : uint; }
-pure function add_one(const x : uint) : uint is x + 1
+pure function addOne(const x : uint) : uint is x + 1
 module Counter is {
   storage counter at \"d.counter\" is record { n : uint; }
   function bump() raises Stop is {
@@ -1512,8 +1518,8 @@ module Counter is {
   }
 }
 ";
-    let a = "import \"./b\" as M;\npure function twice(const x : uint) : uint is M.add_one(M.add_one(x))\n";
-    let c = "import \"./b\";\npure function thrice(const x : uint) : uint is add_one(add_one(add_one(x)))\n";
+    let a = "import \"./b\" as M;\npure function twice(const x : uint) : uint is M.addOne(M.addOne(x))\n";
+    let c = "import \"./b\";\npure function thrice(const x : uint) : uint is addOne(addOne(addOne(x)))\n";
     let main = "\
 import \"./a\";
 import \"./c\";
@@ -1523,7 +1529,7 @@ contract D is {
   storage is record { n : uint; }
   external function go() raises Z.Stop is {
     Z.Counter.bump();
-    storage.n := twice(1) + thrice(1) + Z.add_one(0);
+    storage.n := twice(1) + thrice(1) + Z.addOne(0);
     emit Z.Ping { n = storage.n; };
   }
 }
@@ -1570,11 +1576,11 @@ fn an_alias_covers_modules() {
 
 #[test]
 fn spec_files_see_what_their_file_sees() {
-    let lib = "type amount is uint;\n";
-    let a = "import \"./lib\";\npure function make() : amount is amount(3)\n";
+    let lib = "type Amount is uint;\n";
+    let a = "import \"./lib\";\npure function make() : Amount is Amount(3)\n";
     let main = "import \"./a\";\nstorage is record { n : uint; }\nexternal function set(const v : uint) is { storage.n := v; }\n";
     let spec =
-        "spec for set is {\n  const x : amount := amount(1);\n  ensures new.storage.n = v;\n}\n";
+        "spec for set is {\n  const x : Amount := Amount(1);\n  ensures new.storage.n = v;\n}\n";
     let files = |main: &str| {
         Sources::memory([
             ("lib.lithe", lib.to_string()),
@@ -1584,7 +1590,7 @@ fn spec_files_see_what_their_file_sees() {
         ])
     };
     let err = crate::specs(&files(main), Path::new("main.lithe")).expect_err("transitive");
-    assert!(err.to_string().contains("unknown type `amount`"), "{err}");
+    assert!(err.to_string().contains("unknown type `Amount`"), "{err}");
     let direct = format!("import \"./lib\";\n{main}");
     crate::specs(&files(&direct), Path::new("main.lithe")).expect("direct");
 }
@@ -1663,7 +1669,7 @@ fn imports_are_typed_declarations() {
     std::fs::copy(examples.join("fee.lithe"), dir.join("fee.lithe")).expect("fee");
     std::fs::write(
         dir.join("other.lithe"),
-        "function calculate_fee(const amount : uint) : uint is amount\n",
+        "function calculateFee(const amount : uint) : uint is amount\n",
     )
     .expect("other");
     std::fs::write(
@@ -1673,7 +1679,7 @@ fn imports_are_typed_declarations() {
     .expect("clash");
     let err = compile_file(&dir.join("clash.lithe")).expect_err("clash");
     assert!(
-        err.to_string().contains("ambiguous symbol `calculate_fee`"),
+        err.to_string().contains("ambiguous symbol `calculateFee`"),
         "{err}"
     );
     std::fs::write(dir.join("a.lithe"), "import \"./b\";\n").expect("a");
@@ -1694,7 +1700,7 @@ fn modules_compose_without_inheritance() {
     let src = include_str!("../../examples/compose.lithe");
     let abi = abi(src).expect("abi");
     assert!(abi.contains("\"name\": \"transfer\""), "{abi}");
-    assert!(abi.contains("\"name\": \"balance_of\""), "{abi}");
+    assert!(abi.contains("\"name\": \"balanceOf\""), "{abi}");
     assert!(!abi.contains("Ledger.transfer"), "{abi}");
     assert!(abi.contains("InsufficientBalance"), "{abi}");
     assert!(abi.contains("Paused"), "{abi}");
@@ -1702,7 +1708,7 @@ fn modules_compose_without_inheritance() {
 
     let tree = abi_tree(src).expect("abi-tree");
     let transfer_route = route_text(&tree, "transfer");
-    assert!(transfer_route.contains("  - Ledger.transfer\n"), "{tree}");
+    assert!(transfer_route.contains("  - Ledger.send\n"), "{tree}");
     assert!(
         transfer_route.contains("Ledger.ledger.balances"),
         "{transfer_route}"
@@ -1721,7 +1727,7 @@ fn modules_compose_without_inheritance() {
         "{report}"
     );
     assert!(
-        report.contains("guarded_transfer(address,uint256)") && report.contains("Paused()"),
+        report.contains("guardedTransfer(address,uint256)") && report.contains("Paused()"),
         "{report}"
     );
 
@@ -1761,7 +1767,7 @@ contract Token is {
 
     let owed = exec(
         &runtime,
-        &word_data("balance_of(address)", &[caller]),
+        &word_data("balanceOf(address)", &[caller]),
         storage.clone(),
         caller,
         Word::from_u64(0),
@@ -1773,7 +1779,7 @@ contract Token is {
 
     let open = exec(
         &runtime,
-        &word_data("is_paused()", &[]),
+        &word_data("isPaused()", &[]),
         storage.clone(),
         caller,
         Word::from_u64(0),
@@ -1809,7 +1815,7 @@ contract Token is {
 
     let left = exec(
         &runtime,
-        &word_data("balance_of(address)", &[caller]),
+        &word_data("balanceOf(address)", &[caller]),
         storage.clone(),
         caller,
         Word::from_u64(0),
@@ -1819,7 +1825,7 @@ contract Token is {
     assert_eq!(load_bytes(&left.returndata, 0), Word::from_u64(60));
     let gained = exec(
         &runtime,
-        &word_data("balance_of(address)", &[other]),
+        &word_data("balanceOf(address)", &[other]),
         storage.clone(),
         caller,
         Word::from_u64(0),
@@ -1855,7 +1861,7 @@ contract Token is {
     storage = paused.storage.clone();
     let flag = exec(
         &runtime,
-        &word_data("is_paused()", &[]),
+        &word_data("isPaused()", &[]),
         storage.clone(),
         caller,
         Word::from_u64(0),
@@ -1886,7 +1892,7 @@ contract Token is {
     assert!(!still.reverted, "{}", pretty(&still.returndata));
     let after = exec(
         &runtime,
-        &word_data("balance_of(address)", &[caller]),
+        &word_data("balanceOf(address)", &[caller]),
         still.storage.clone(),
         caller,
         Word::from_u64(0),
@@ -1898,7 +1904,7 @@ contract Token is {
     let blocked = exec(
         &runtime,
         &word_data(
-            "guarded_transfer(address,uint256)",
+            "guardedTransfer(address,uint256)",
             &[other, Word::from_u64(1)],
         ),
         storage.clone(),
@@ -1912,7 +1918,7 @@ contract Token is {
     let safer = exec(
         &runtime,
         &word_data(
-            "safe_transfer(address,uint256)",
+            "safeTransfer(address,uint256)",
             &[other, Word::from_u64(1)],
         ),
         storage,
@@ -1989,7 +1995,7 @@ contract Token is {
     assert!(!minted.reverted, "{}", pretty(&minted.returndata));
     let supply = exec(
         &votes,
-        &word_data("total_supply()", &[]),
+        &word_data("totalSupply()", &[]),
         minted.storage.clone(),
         caller,
         Word::from_u64(0),

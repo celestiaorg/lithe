@@ -14,10 +14,10 @@ When an external function takes a [variant](/language/types#variants), the compi
 ```lithe
 import "std/evm";
 
-type action is
-  | Deposit of (amount : uint)
-  | Withdraw of (amount : uint)
-  | Reset
+type Action is
+  | Deposit external deposit of (amount : uint)
+  | Withdraw external withdraw of (amount : uint)
+  | Reset external reset
 
 error Insufficient of uint;
 
@@ -25,7 +25,7 @@ storage is record {
   balances : map(address, uint);
 }
 
-external function main(const action : action)
+external function main(const action : Action)
   raises Insufficient
 is
   case action of {
@@ -47,13 +47,13 @@ A function dispatches when its first parameter is a variant and its body is a `c
 
 | Case | ABI function |
 | --- | --- |
-| name | the case name with its first letter lowercased: `Set_fee` becomes `set_fee`, and `SetFee` becomes `setFee` |
+| name | the name after `external`: `SetFee external setFee` is `setFee`. A case without one is named as written, so `SetFee` alone is `SetFee` |
 | no payload | no parameters |
-| a single value | one parameter, named by the declaration: `Set_fee of (fee : uint)` is `set_fee(uint256 fee)`, and `Set_fee of uint` leaves it unnamed |
+| a single value | one parameter, named by the declaration: `SetFee of (fee : uint)` is `setFee(uint256 fee)`, and `SetFee of uint` leaves it unnamed |
 | a record | one parameter per field, with the field names |
 | a `tuple record` | one tuple parameter, named like a single value, with the fields as its components |
 
-The ABI is read off the type declaration, never the function body: renaming the binding in `| Set_fee(f) ->` changes nothing callers see.
+The ABI is read off the type declaration, never the function body, so a case's `external` name and its payload together are the entrypoint's signature: renaming the binding in `| SetFee(f) ->` changes nothing callers see.
 
 `case` must cover every case, and each entrypoint's `raises` includes only what its own path can raise.
 
@@ -64,19 +64,19 @@ Cases can carry other variants. A function that handles a group can run a **guar
 ```lithe
 import "std/evm";
 
-error Not_owner;
+error NotOwner;
 error Paused;
 
-type owner_action is
-  | Set_fee of (fee : uint)
-  | Pause
+type OwnerAction is
+  | SetFee external setFee of (fee : uint)
+  | Pause external pause
 
-type user_action is
-  | Deposit of (amount : uint)
+type UserAction is
+  | Deposit external deposit of (amount : uint)
 
-type action is
-  | Owner of owner_action
-  | User of user_action
+type Action is
+  | Owner of OwnerAction
+  | User of UserAction
 
 storage is record {
   owner : address;
@@ -85,17 +85,17 @@ storage is record {
   deposits : map(address, uint);
 }
 
-function owner_main(const action : owner_action)
-  raises Not_owner
+function ownerMain(const action : OwnerAction)
+  raises NotOwner
 is {
-  assert(Evm.sender() = storage.owner, Not_owner);
+  assert(Evm.sender() = storage.owner, NotOwner);
 }
 with case action of {
-| Set_fee(fee) -> { storage.fee := fee; }
+| SetFee(fee) -> { storage.fee := fee; }
 | Pause -> { storage.paused := true; }
 }
 
-function user_main(const action : user_action)
+function userMain(const action : UserAction)
   raises Paused
 is {
   assert(not storage.paused, Paused);
@@ -106,25 +106,25 @@ with case action of {
   }
 }
 
-external function main(const action : action)
-  raises Not_owner | Paused
+external function main(const action : Action)
+  raises NotOwner | Paused
 is
   case action of {
-  | Owner(a) -> owner_main(a)
-  | User(a) -> user_main(a)
+  | Owner(a) -> ownerMain(a)
+  | User(a) -> userMain(a)
   }
 ```
 
-The ABI is flat: `set_fee(uint256)`, `pause()`, and `deposit(uint256)`. Each entrypoint runs the guards on its path through the tree. Here `set_fee` checks the owner, `deposit` checks the pause flag, and `set_fee` does not check the pause flag. To add an owner-only action, add a case to `owner_action`. It cannot be added without the guard.
+The ABI is flat: `setFee(uint256)`, `pause()`, and `deposit(uint256)`. Each entrypoint runs the guards on its path through the tree. Here `setFee` checks the owner, `deposit` checks the pause flag, and `setFee` does not check the pause flag. To add an owner-only action, add a case to `OwnerAction`. It cannot be added without the guard.
 
 ## Inspecting the tree
 
 `lithe abi-tree` prints each flattened entrypoint with its path, guards, and effects:
 
 ```text
-set_fee
+setFee
   path:
-    main -> owner_main -> set_fee
+    main -> ownerMain -> setFee
 
   calls:
     none

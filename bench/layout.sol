@@ -24,15 +24,15 @@ contract Layout {
     uint64 tail;
     uint256 total;
 
-    function set_level(uint256 i, uint8 v) external {
+    function setLevel(uint256 i, uint8 v) external {
         levels[i] = v;
     }
 
-    function set_flag(uint256 i, bool f) external {
+    function setFlag(uint256 i, bool f) external {
         flags[i] = f;
     }
 
-    function set_delta(uint256 i, int16 d) external {
+    function setDelta(uint256 i, int16 d) external {
         deltas[i] = d;
     }
 
@@ -42,7 +42,7 @@ contract Layout {
         _spot.live = true;
     }
 
-    function set_pair(uint32 a, address who) external {
+    function setPair(uint32 a, address who) external {
         _pair = Pair(a, who);
     }
 

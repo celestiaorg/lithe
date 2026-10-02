@@ -13,25 +13,25 @@ A deferred call's result arrives after the transition that deferred it. `then (r
    the transition: it may write storage, emit, and defer again. *)
 
 interface Exchange is {
-  function swap(amount_in : uint) : uint;
+  function swap(amountIn : uint) : uint;
   function split(amount : uint) : (uint, uint);
 }
 
-error Already_filled of uint;
+error AlreadyFilled of uint;
 
 event Filled of record {
   indexed id : uint;
-  amount_out : uint;
+  amountOut : uint;
 }
 
-type order is record {
+type Order is record {
   status : uint8;
-  amount_out : uint;
+  amountOut : uint;
 }
 
 storage is record {
   exchange : Exchange;
-  orders : map(uint, order);
+  orders : map(uint, Order);
   left : uint;
   right : uint;
 }
@@ -40,17 +40,17 @@ external function init(const exchange : Exchange) is {
   storage.exchange := exchange;
 }
 
-external nonreentrant function fill(const id : uint; const amount_in : uint)
-  raises Already_filled
+external nonreentrant function fill(const id : uint; const amountIn : uint)
+  raises AlreadyFilled
 is {
-  assert(storage.orders[id].status = uint8(0), Already_filled(id));
+  assert(storage.orders[id].status = uint8(0), AlreadyFilled(id));
   (* The exchange sees this order as pending while it runs. *)
   storage.orders[id].status := uint8(1);
-  defer storage.exchange.swap(amount_in)
-    then (amount_out : uint) {
+  defer storage.exchange.swap(amountIn)
+    then (amountOut : uint) {
       storage.orders[id].status := uint8(2);
-      storage.orders[id].amount_out := amount_out;
-      emit Filled { id = id; amount_out = amount_out; };
+      storage.orders[id].amountOut := amountOut;
+      emit Filled { id = id; amountOut = amountOut; };
     };
 }
 

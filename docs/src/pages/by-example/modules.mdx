@@ -19,15 +19,15 @@ module Ownable is {
     owner : address;
   }
 
-  error Not_owner;
+  error NotOwner;
 
   external view function owner() : address is
     ownable.owner
 
-  view function only_owner()
-    raises Not_owner
+  view function onlyOwner()
+    raises NotOwner
   is {
-    assert(Evm.sender() = ownable.owner, Not_owner);
+    assert(Evm.sender() = ownable.owner, NotOwner);
   }
 
   external function claim() is {
@@ -45,13 +45,13 @@ module Pausable is {
   external view function paused() : bool is
     pausable.paused
 
-  view function when_not_paused()
+  view function whenNotPaused()
     raises Paused
   is {
     assert(not pausable.paused, Paused);
   }
 
-  function set_paused(const paused : bool) is {
+  function setPaused(const paused : bool) is {
     pausable.paused := paused;
   }
 }
@@ -62,10 +62,10 @@ module Admin is {
   requires Pausable;
 
   external function pause()
-    raises Not_owner
+    raises NotOwner
   is {
-    Ownable.only_owner();
-    Pausable.set_paused(true);
+    Ownable.onlyOwner();
+    Pausable.setPaused(true);
   }
 }
 
@@ -83,7 +83,7 @@ contract Vault is {
 
   use Admin exposing {
     function pause()
-      raises Not_owner;
+      raises NotOwner;
   }
 
   storage is record {
@@ -95,11 +95,11 @@ contract Vault is {
   external function deposit(const amount : uint)
     raises Paused
   is {
-    Pausable.when_not_paused();
+    Pausable.whenNotPaused();
     storage.total := storage.total + amount;
   }
 
-  external view function is_paused() : bool is
+  external view function isPaused() : bool is
     Pausable.pausable.paused
 }
 ```

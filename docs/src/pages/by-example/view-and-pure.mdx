@@ -16,29 +16,29 @@ Each function declares how much it may do: `pure` reads only its arguments, `vie
      function           also writes storage, emits events, and defers calls *)
 
 storage is record {
-  rate_bps : uint;
+  rateBps : uint;
 }
 
-pure function fee(const amount : uint; const rate_bps : uint) : uint is
-  amount * rate_bps / 10_000
+pure function fee(const amount : uint; const rateBps : uint) : uint is
+  amount * rateBps / 10_000
 
-view function current_fee(const amount : uint) : uint is
-  fee(amount, storage.rate_bps)
+view function currentFee(const amount : uint) : uint is
+  fee(amount, storage.rateBps)
 
-function set_rate(const rate_bps : uint) is {
-  storage.rate_bps := rate_bps;
+function setRate(const rateBps : uint) is {
+  storage.rateBps := rateBps;
 }
 
 (* `external` exposes a function in the ABI. External views are `view` in the ABI,
    external pure functions are `pure`. *)
-external pure function quote(const amount : uint; const rate_bps : uint) : uint is
-  fee(amount, rate_bps)
+external pure function quote(const amount : uint; const rateBps : uint) : uint is
+  fee(amount, rateBps)
 
 external view function preview(const amount : uint) : uint is
-  current_fee(amount)
+  currentFee(amount)
 
-external function configure(const rate_bps : uint) is {
-  set_rate(rate_bps);
+external function configure(const rateBps : uint) is {
+  setRate(rateBps);
 }
 ```
 

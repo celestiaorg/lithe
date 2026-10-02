@@ -9,43 +9,43 @@ import {FixedPointMathLib as F} from "solady/utils/FixedPointMathLib.sol";
 contract FixedPointBench {
     uint256 last;
 
-    function wad_mul_up(uint256 a, uint256 b) external pure returns (uint256) {
+    function wadMulUp(uint256 a, uint256 b) external pure returns (uint256) {
         return F.fullMulDivUp(a, b, 1e18);
     }
 
-    function wad_div_up(uint256 a, uint256 b) external pure returns (uint256) {
+    function wadDivUp(uint256 a, uint256 b) external pure returns (uint256) {
         return F.fullMulDivUp(a, 1e18, b);
     }
 
-    function div_wad(uint256 a, uint256 b) external pure returns (uint256) {
+    function divWad(uint256 a, uint256 b) external pure returns (uint256) {
         return F.fullMulDiv(a, 1e18, b);
     }
 
-    function s_mul_wad(int256 a, int256 b) external pure returns (int256) {
+    function sMulWad(int256 a, int256 b) external pure returns (int256) {
         return F.sMulWad(a, b);
     }
 
-    function s_div_wad(int256 a, int256 b) external pure returns (int256) {
+    function sDivWad(int256 a, int256 b) external pure returns (int256) {
         return F.sDivWad(a, b);
     }
 
-    function exp_wad(int256 x) external pure returns (int256) {
+    function expWad(int256 x) external pure returns (int256) {
         return F.expWad(x);
     }
 
-    function ln_wad(int256 x) external pure returns (int256) {
+    function lnWad(int256 x) external pure returns (int256) {
         return F.lnWad(x);
     }
 
-    function pow_wad(int256 x, int256 y) external pure returns (int256) {
+    function powWad(int256 x, int256 y) external pure returns (int256) {
         return F.powWad(x, y);
     }
 
-    function sqrt_wad(uint256 x) external pure returns (uint256) {
+    function sqrtWad(uint256 x) external pure returns (uint256) {
         return F.sqrtWad(x);
     }
 
-    function cbrt_wad(uint256 x) external pure returns (uint256) {
+    function cbrtWad(uint256 x) external pure returns (uint256) {
         return F.cbrtWad(x);
     }
 
@@ -61,7 +61,7 @@ contract FixedPointBench {
         return F.dist(a, b);
     }
 
-    function dist_int(int256 a, int256 b) external pure returns (uint256) {
+    function distInt(int256 a, int256 b) external pure returns (uint256) {
         return F.dist(a, b);
     }
 
@@ -69,15 +69,15 @@ contract FixedPointBench {
         return F.gcd(a, b);
     }
 
-    function saturating_add(uint256 a, uint256 b) external pure returns (uint256) {
+    function saturatingAdd(uint256 a, uint256 b) external pure returns (uint256) {
         return F.saturatingAdd(a, b);
     }
 
-    function saturating_sub(uint256 a, uint256 b) external pure returns (uint256) {
+    function saturatingSub(uint256 a, uint256 b) external pure returns (uint256) {
         return F.saturatingSub(a, b);
     }
 
-    function saturating_mul(uint256 a, uint256 b) external pure returns (uint256) {
+    function saturatingMul(uint256 a, uint256 b) external pure returns (uint256) {
         return F.saturatingMul(a, b);
     }
 
@@ -85,11 +85,11 @@ contract FixedPointBench {
         return F.lerp(a, b, t, t0, t1);
     }
 
-    function lerp_int(int256 a, int256 b, int256 t, int256 t0, int256 t1) external pure returns (int256) {
+    function lerpInt(int256 a, int256 b, int256 t, int256 t0, int256 t1) external pure returns (int256) {
         return F.lerp(a, b, t, t0, t1);
     }
 
-    function set_last(int256 x) external {
+    function setLast(int256 x) external {
         last = uint256(F.expWad(x));
     }
 }

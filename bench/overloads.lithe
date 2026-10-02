@@ -3,7 +3,7 @@
 
 import "std/evm";
 
-type shares is uint;
+type Shares is uint;
 
 storage is record {
   balances : map(address, uint);
@@ -26,7 +26,7 @@ function credit(const to : address; const amount : uint) is {
   storage.total := storage.total + amount;
 }
 
-function credit(const to : address; const amount : shares) is {
+function credit(const to : address; const amount : Shares) is {
   credit(storage.staked, to, uint(amount));
 }
 
@@ -39,7 +39,7 @@ function move(const to : address; const amount : uint) is {
   move(storage.balances, to, amount);
 }
 
-function move(const to : address; const amount : shares) is {
+function move(const to : address; const amount : Shares) is {
   move(storage.staked, to, uint(amount));
 }
 
@@ -52,21 +52,21 @@ external function deposit(const amount : uint; const bps : uint) is {
 }
 
 external function stake(const amount : uint) is {
-  credit(Evm.sender(), shares(amount));
+  credit(Evm.sender(), Shares(amount));
 }
 
 external function transfer(const to : address; const amount : uint) is {
   move(to, amount);
 }
 
-external function transfer_staked(const to : address; const amount : uint) is {
-  move(to, shares(amount));
+external function transferStaked(const to : address; const amount : uint) is {
+  move(to, Shares(amount));
 }
 
-external view function balance_of(const who : address) : uint is
+external view function balanceOf(const who : address) : uint is
   storage.balances[who]
 
-external view function staked_of(const who : address) : uint is
+external view function stakedOf(const who : address) : uint is
   storage.staked[who]
 
 external view function total() : uint is

@@ -18,23 +18,23 @@ module String is {
      The strings of `xs`, one after another. *)
   intrinsic join;
 
-  (* escape_json(s : T) : string
+  (* escapeJson(s : T) : string
      `LibString.escapeJSON(s)`: `"` and `\` backslashed, control characters as `\n`, `\t`,
      and the like, or `\u00XX`. With a second argument, `quoted : bool`, as
      `LibString.escapeJSON(s, quoted)`: in double quotes when it is `true`. A slice of `s`
      is read where it lies. *)
-  intrinsic escape_json;
+  intrinsic escapeJson;
 
-  (* escape_html(s : T) : string
+  (* escapeHtml(s : T) : string
      `LibString.escapeHTML(s)`: `"`, `&`, `'`, `<`, and `>` as `&quot;`, `&amp;`, `&#39;`,
      `&lt;`, and `&gt;`. *)
-  intrinsic escape_html;
+  intrinsic escapeHtml;
 
-  (* index_of(s : T; needle : T; from : uint) : uint
+  (* indexOf(s : T; needle : T; from : uint) : uint
      `LibString.indexOf(s, needle, from)`: the byte offset where `needle` first starts in
      `s`, at `from` or later, or `Uint.max` when it doesn't. An empty needle is found at
      `from`, or at the end of `s` when `from` is past it. *)
-  intrinsic index_of;
+  intrinsic indexOf;
 
   (* replace(s : T; needle : T; replacement : T) : string
      `LibString.replace(s, needle, replacement)`: every `needle` in `s`, left to right,

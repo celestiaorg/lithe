@@ -2,12 +2,12 @@
    the ERC-20 balances add up to the supply. *)
 
 spec is {
-  invariant capped is ERC20.erc20.total_supply <= storage.cap;
+  invariant capped is ERC20.erc20.totalSupply <= storage.cap;
 }
 
 spec for mint is partial {
-  raises Not_owner when Evm.sender() <> old.storage.owner;
-  raises Over_cap when old.ERC20.erc20.total_supply + value > old.storage.cap;
-  ensures new.ERC20.erc20.total_supply = old.ERC20.erc20.total_supply + value;
+  raises NotOwner when Evm.sender() <> old.storage.owner;
+  raises OverCap when old.ERC20.erc20.totalSupply + value > old.storage.cap;
+  ensures new.ERC20.erc20.totalSupply = old.ERC20.erc20.totalSupply + value;
   ensures new.ERC20.erc20.balances[to] = old.ERC20.erc20.balances[to] + value;
 }

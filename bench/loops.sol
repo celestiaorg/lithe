@@ -29,7 +29,7 @@ contract Loops {
         owners.push(who);
     }
 
-    function mark_all() external {
+    function markAll() external {
         for (uint256 i = 0; i < owners.length; i++) {
             is_owner_[owners[i]] = true;
         }
@@ -53,7 +53,7 @@ contract Loops {
         return x;
     }
 
-    function hash_chain(bytes32 seed, uint256 n) external pure returns (bytes32 h) {
+    function hashChain(bytes32 seed, uint256 n) external pure returns (bytes32 h) {
         h = seed;
         for (uint256 i = 0; i < n; i++) {
             h = keccak256(abi.encode(h));
@@ -69,11 +69,11 @@ contract Loops {
         }
     }
 
-    function balance_of(address who) external view returns (uint256) {
+    function balanceOf(address who) external view returns (uint256) {
         return balances[who];
     }
 
-    function is_owner(address who) external view returns (bool) {
+    function isOwner(address who) external view returns (bool) {
         return is_owner_[who];
     }
 }

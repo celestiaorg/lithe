@@ -1,0 +1,13 @@
+(* `a` and `b` each declare an error `Denied`. The alias keeps their names apart in
+   Lithe, but the ABI has one name for both, so their selectors collide. *)
+import "./a" as A;
+import "./b" as B;
+
+storage is record {
+  count : uint;
+}
+
+external function go() raises A.Denied | B.Denied is {
+  A.a();
+  B.b();
+}

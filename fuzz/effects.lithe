@@ -2,7 +2,7 @@
 
 import "std/evm";
 
-error Not_owner;
+error NotOwner;
 error Low of uint;
 
 interface Oracle is {
@@ -22,10 +22,10 @@ storage is record {
   calls : uint;
 }
 
-view function only_owner()
-  raises Not_owner
+view function onlyOwner()
+  raises NotOwner
 is {
-  assert(Evm.sender() = storage.owner, Not_owner);
+  assert(Evm.sender() = storage.owner, NotOwner);
 }
 
 external function read(const o : Oracle; const amount : uint) is {
@@ -48,16 +48,16 @@ is {
 }
 
 external function sweep(const to : address)
-  raises Not_owner
+  raises NotOwner
 is {
-  only_owner();
+  onlyOwner();
   defer Evm.transfer(to, Evm.balance(Evm.self()));
 }
 
 external function claim(const next : address)
-  raises Not_owner
+  raises NotOwner
 is {
-  only_owner();
+  onlyOwner();
   storage.owner := next;
 }
 

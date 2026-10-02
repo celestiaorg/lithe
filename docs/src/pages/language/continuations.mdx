@@ -9,31 +9,31 @@ A deferred call runs after the transition that defers it. So how do you use its 
 
 ```lithe
 interface Exchange is {
-  function swap(amount_in : uint) : uint;
+  function swap(amountIn : uint) : uint;
 }
 
 event Swapped of record {
   indexed id : uint;
-  amount_out : uint;
+  amountOut : uint;
 }
 
-type order is record {
+type Order is record {
   status : uint8;
-  amount_out : uint;
+  amountOut : uint;
 }
 
 storage is record {
   exchange : Exchange;
-  orders : map(uint, order);
+  orders : map(uint, Order);
 }
 
-external nonreentrant function execute(const id : uint; const amount_in : uint) is {
+external nonreentrant function execute(const id : uint; const amountIn : uint) is {
   storage.orders[id].status := uint8(1);
-  defer storage.exchange.swap(amount_in)
-    then (amount_out : uint) {
+  defer storage.exchange.swap(amountIn)
+    then (amountOut : uint) {
       storage.orders[id].status := uint8(2);
-      storage.orders[id].amount_out := amount_out;
-      emit Swapped { id = id; amount_out = amount_out; };
+      storage.orders[id].amountOut := amountOut;
+      emit Swapped { id = id; amountOut = amountOut; };
     };
 }
 ```
@@ -78,8 +78,8 @@ external nonreentrant function redeem(const shares : uint) is {
       storage.principal := storage.principal + principal;
       storage.earned := storage.earned + earned;
       defer storage.vault.deposit(earned)
-        then (new_shares : uint) {
-          storage.shares := storage.shares + new_shares;
+        then (newShares : uint) {
+          storage.shares := storage.shares + newShares;
         };
     };
 }
@@ -130,7 +130,7 @@ storage is record {
   registry : Registry;
   notified : map(uint, bool);
   failures : uint;
-  last_error : bytes;
+  lastError : bytes;
 }
 
 external nonreentrant function publish(const id : uint) is {
@@ -140,7 +140,7 @@ external nonreentrant function publish(const id : uint) is {
       }
     | Error(reason : bytes) -> {
         storage.failures := storage.failures + 1;
-        storage.last_error := reason;
+        storage.lastError := reason;
       }
   };
 }
@@ -148,7 +148,7 @@ external nonreentrant function publish(const id : uint) is {
 
 - `Ok(x : T)` binds the decoded result. For a method that returns `unit`, write `Ok` with no binding.
 - `Error(reason : bytes)` binds the raw revert data, and `Error(_)` ignores it.
-- `forward reason` reverts with exactly those bytes, passing the callee's failure on unchanged. It is not one of the contract's declared errors, so the function [raises `forwarded`](/language/errors#forwarded-failures). `reason.length` is its length in bytes, so `if reason.length = 0 then { fail My_error; } forward reason;` replaces only an empty reason.
+- `forward reason` reverts with exactly those bytes, passing the callee's failure on unchanged. It is not one of the contract's declared errors, so the function [raises `forwarded`](/language/errors#forwarded-failures). `reason.length` is its length in bytes, so `if reason.length = 0 then { fail MyError; } forward reason;` replaces only an empty reason.
 - Both arms are required: ``a recoverable call needs both `Ok` and `Error` arms``.
 - Each arm is a new phase, like any continuation. The failed call's own effects are undone, but the first phase's writes stay.
 - A call that succeeds but returns data that does not decode as `T` still reverts the transaction, as does no data for an [optional result](/language/effects#optional-results) from an account without code. It is not an `Error`.
@@ -164,13 +164,13 @@ interface Oracle is {
 
 storage is record {
   oracle : Oracle;
-  fallback_price : uint;
+  fallbackPrice : uint;
 }
 
-external view function price_or_fallback(const asset : address) : uint is
+external view function priceOrFallback(const asset : address) : uint is
   case query storage.oracle.price(asset) of {
   | Ok(price) -> price
-  | Error(_) -> storage.fallback_price
+  | Error(_) -> storage.fallbackPrice
   }
 ```
 

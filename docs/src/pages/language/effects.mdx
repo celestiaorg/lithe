@@ -46,14 +46,14 @@ A method's arguments and result can be any ABI value: words, strings, bytes, lis
 Records follow the [same rule as external functions](/language/types#records-in-the-abi): a record argument or result is its fields, and a `tuple record` is one tuple. A method that takes a Solidity struct, like Uniswap's `exactInputSingle`, takes a `tuple record`. A tuple result is one Solidity tuple, as a function `returns (S memory)` gives. For a method with several results, `returns (uint112, uint112, uint32)`, declare a record, whose fields are its results in order:
 
 ```lithe
-type reserves is record {
+type Reserves is record {
   reserve0 : uint112;
   reserve1 : uint112;
   last : uint32;
 }
 
 interface Pair is {
-  view function getReserves() : reserves;
+  view function getReserves() : Reserves;
 }
 
 storage is record {
@@ -61,7 +61,7 @@ storage is record {
 }
 
 external view function price() : uint is {
-  const r : reserves := query storage.pair.getReserves();
+  const r : Reserves := query storage.pair.getReserves();
 } with uint(r.reserve1) * 1_000_000 / uint(r.reserve0)
 ```
 
@@ -76,17 +76,17 @@ interface Token is {
   function transfer(to : address; value : uint) : option(bool);
 }
 
-error Transfer_failed;
+error TransferFailed;
 
 storage is record {
   token : Token;
 }
 
 external nonreentrant function pay(const to : address; const value : uint)
-  raises Transfer_failed
+  raises TransferFailed
 is {
   defer storage.token.transfer(to, value) then (ok : option(bool)) {
-    assert(ok <> Some(false), Transfer_failed);
+    assert(ok <> Some(false), TransferFailed);
   };
 }
 ```
@@ -118,7 +118,7 @@ interface Oracle is {
   view function price(asset : address) : uint;
 }
 
-error Price_too_low of uint;
+error PriceTooLow of uint;
 
 storage is record {
   oracle : Oracle;
@@ -129,10 +129,10 @@ external view function price(const asset : address) : uint is
   query storage.oracle.price(asset)
 
 external function check(const asset : address)
-  raises Price_too_low
+  raises PriceTooLow
 is {
   const p : uint := query storage.oracle.price(asset);
-  assert(p >= storage.floor, Price_too_low(p));
+  assert(p >= storage.floor, PriceTooLow(p));
   storage.floor := p;
 }
 ```
@@ -415,7 +415,7 @@ contract Vault is {
 
 `with salt = s` takes a `bytes32` and deploys with `CREATE2`. The address then depends only on the factory, the salt, and the created contract's creation code, arguments included, so it can be computed before deployment. Without a salt, `create` uses `CREATE`, and the address depends on the factory's nonce.
 
-`Evm.creation_code(Name)` is the creation code `create` runs, before the arguments it appends. Its hash is a constant, so a factory knows where a `CREATE2` lands before the contract exists, and can return the address from the transition that creates it:
+`Evm.creationCode(Name)` is the creation code `create` runs, before the arguments it appends. Its hash is a constant, so a factory knows where a `CREATE2` lands before the contract exists, and can return the address from the transition that creates it:
 
 ```lithe
 import "std/crypto";
@@ -432,7 +432,7 @@ contract Factory is {
   external function open(const salt : bytes32) : address is {
     defer create Vault() with salt = salt;
     storage.count := storage.count + 1;
-  } with Create2.compute_address_here(salt, Crypto.keccak256(Evm.creation_code(Vault)))
+  } with Create2.computeAddressHere(salt, Crypto.keccak256(Evm.creationCode(Vault)))
 }
 
 contract Vault is {
@@ -455,17 +455,17 @@ contract Factory is {
     last : address;
   }
 
-  external payable function open_funded() is {
+  external payable function openFunded() is {
     defer create Vault() with value = uint(Evm.value());
   }
 
-  external function open_at(const salt : bytes32) is {
+  external function openAt(const salt : bytes32) is {
     defer create Vault() with salt = salt then (vault : address) {
       storage.last := vault;
     };
   }
 
-  external payable function open_funded_at(const salt : bytes32) is {
+  external payable function openFundedAt(const salt : bytes32) is {
     defer create Vault() with { value = uint(Evm.value()); salt = salt; } then (vault : address) {
       storage.last := vault;
     };
@@ -493,7 +493,7 @@ contract Factory is {
     failed : uint;
   }
 
-  external function open_at(const salt : bytes32) is {
+  external function openAt(const salt : bytes32) is {
     defer create Vault() with salt = salt then {
       | Ok(vault : address) -> {
           storage.last := vault;
@@ -554,16 +554,16 @@ When the calldata is only known at runtime, as it is for a wallet, a timelock, o
 
 | Call | Compiles to | Result |
 | --- | --- | --- |
-| `query Evm.static_call(to, data)` | `STATICCALL` | the return data, as `bytes` |
+| `query Evm.staticCall(to, data)` | `STATICCALL` | the return data, as `bytes` |
 | `defer Evm.call(to, data)` | `CALL`, with optional `with value = amount` | the return data, to a continuation |
-| `defer Evm.delegate_call(to, data)` | `DELEGATECALL` | the return data, to a continuation |
+| `defer Evm.delegateCall(to, data)` | `DELEGATECALL` | the return data, to a continuation |
 
-`to` is an address or an interface value, and `data` is the whole calldata, selector included. Build it with [`Abi.encode_call`](/language/builtins#abi), `Abi.encode_with_selector`, or take it as a parameter. Nothing decodes the answer: a continuation's `bytes` are the return data exactly as it came back, and `Abi.decode` reads them.
+`to` is an address or an interface value, and `data` is the whole calldata, selector included. Build it with [`Abi.encodeCall`](/language/builtins#abi), `Abi.encodeWithSelector`, or take it as a parameter. Nothing decodes the answer: a continuation's `bytes` are the return data exactly as it came back, and `Abi.decode` reads them.
 
 ```lithe
 import "std/evm";
 
-error Not_owner;
+error NotOwner;
 
 storage is record {
   owner : address;
@@ -571,9 +571,9 @@ storage is record {
 }
 
 external nonreentrant function execute(const target : address; const value : uint; const data : bytes)
-  raises Not_owner
+  raises NotOwner
 is {
-  assert(Evm.sender() = storage.owner, Not_owner);
+  assert(Evm.sender() = storage.owner, NotOwner);
   storage.nonce := storage.nonce + 1;
   defer Evm.call(target, data) with value = value;
 }
@@ -588,7 +588,7 @@ storage is record {
   failures : uint;
 }
 
-external nonreentrant function try_call(const target : address; const data : bytes) is {
+external nonreentrant function tryCall(const target : address; const data : bytes) is {
   defer Evm.call(target, data) then {
     | Ok(result : bytes) -> { skip }
     | Error(reason : bytes) -> {
@@ -598,10 +598,10 @@ external nonreentrant function try_call(const target : address; const data : byt
 }
 ```
 
-- `Evm.call` to an account with no code succeeds, as the EVM's `CALL` does: an ether transfer with data to a wallet is a call like any other. `Evm.delegate_call` to an account with no code reverts, because it would run nothing and report success.
-- `Evm.delegate_call` runs the target's code as this contract, on its storage, after the transition's own writes have landed. The continuation reads storage again, so it sees what the code changed. That code can write any slot, so delegate only to code you trust. It takes no `with value`: the code sees the value of the call that deferred it.
-- `Evm.static_call` reaches precompiles, which have no ABI of their own. `query Evm.static_call(0x0000000000000000000000000000000000000002, data)` is SHA-256 of `data`.
-- `lithe footprint` lists raw calls as `Evm.call`, `Evm.delegate_call`, and `Evm.static_call`.
+- `Evm.call` to an account with no code succeeds, as the EVM's `CALL` does: an ether transfer with data to a wallet is a call like any other. `Evm.delegateCall` to an account with no code reverts, because it would run nothing and report success.
+- `Evm.delegateCall` runs the target's code as this contract, on its storage, after the transition's own writes have landed. The continuation reads storage again, so it sees what the code changed. That code can write any slot, so delegate only to code you trust. It takes no `with value`: the code sees the value of the call that deferred it.
+- `Evm.staticCall` reaches precompiles, which have no ABI of their own. `query Evm.staticCall(0x0000000000000000000000000000000000000002, data)` is SHA-256 of `data`.
+- `lithe footprint` lists raw calls as `Evm.call`, `Evm.delegateCall`, and `Evm.staticCall`.
 
 A `pure` function cannot query, and a `view` cannot defer, for raw calls as for any other:
 
@@ -613,11 +613,11 @@ storage is record {
 }
 
 external view function peek(const to : address; const data : bytes) : bytes is
-  Evm.static_call(to, data)
+  Evm.staticCall(to, data)
 ```
 
 ```text
-`Evm.static_call` is read-only; write `query Evm.static_call(...)`
+`Evm.staticCall` is read-only; write `query Evm.staticCall(...)`
 ```
 
 ## What cannot be written

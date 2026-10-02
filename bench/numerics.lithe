@@ -14,16 +14,16 @@ contract Numerics is {
 
   external pure function pow(const base : uint; const exponent : uint) : uint is base ** exponent
   external pure function units(const decimals : uint8) : uint is 10 ** decimals
-  external pure function pow_signed(const base : int; const exponent : uint) : int is base ** exponent
+  external pure function powSigned(const base : int; const exponent : uint) : int is base ** exponent
   external pure function pow2(const exponent : uint) : uint is 2 ** exponent
 
   external pure function sqrt(const a : uint) : uint is Math.sqrt(a)
   external pure function log2(const a : uint) : uint is Math.log2(a)
   external pure function log10(const a : uint) : uint is Math.log10(a)
   external pure function log256(const a : uint) : uint is Math.log256(a)
-  external pure function log2_up(const a : uint) : uint is Math.log2_up(a)
-  external pure function log10_up(const a : uint) : uint is Math.log10_up(a)
-  external pure function log256_up(const a : uint) : uint is Math.log256_up(a)
+  external pure function log2Up(const a : uint) : uint is Math.log2Up(a)
+  external pure function log10Up(const a : uint) : uint is Math.log10Up(a)
+  external pure function log256Up(const a : uint) : uint is Math.log256Up(a)
   external pure function clz(const a : uint) : uint is Uint.clz(a)
 
   external pure function abs(const x : int) : uint is Math.abs(x)
@@ -34,12 +34,12 @@ contract Numerics is {
     raises MathInvalidSignedRange
   is Math.clamp(x, low, high)
 
-  external pure function hex_nat(const n : uint) : string is Uint.to_hex_string(n)
-  external pure function hex_fixed(const n : uint; const length : uint) : string is Uint.to_hex_string(n, length)
-  external pure function hex_address(const a : address) : string is Address.to_hex_string(a)
-  external pure function checksum(const a : address) : string is Address.to_checksum_string(a)
+  external pure function hexNat(const n : uint) : string is Uint.toHexString(n)
+  external pure function hexFixed(const n : uint; const length : uint) : string is Uint.toHexString(n, length)
+  external pure function hexAddress(const a : address) : string is Address.toHexString(a)
+  external pure function checksum(const a : address) : string is Address.toChecksumString(a)
 
-  external function set_scale(const decimals : uint8) is {
+  external function setScale(const decimals : uint8) is {
     storage.scale := 10 ** decimals;
   }
 }

@@ -15,8 +15,8 @@ contract Minter is {
     paused : bool;
   }
 
-  pure function minter() : roles is OwnableRoles.role(0)
-  pure function pauser() : roles is OwnableRoles.role(1)
+  pure function minter() : Roles is OwnableRoles.role(0)
+  pure function pauser() : Roles is OwnableRoles.role(1)
 
   deploy()
     raises OwnableInvalidOwner
@@ -27,7 +27,7 @@ contract Minter is {
   external function mint(const to : address; const amount : uint)
     raises Unauthorized
   is {
-    OwnableRoles.check_roles(minter());
+    OwnableRoles.checkRoles(minter());
     storage.minted[to] := storage.minted[to] + amount;
   }
 
@@ -37,14 +37,14 @@ contract Minter is {
   external function pause()
     raises Unauthorized
   is {
-    OwnableRoles.check_owner_or_roles(pauser());
+    OwnableRoles.checkOwnerOrRoles(pauser());
     storage.paused := true;
   }
 
   external function unpause()
     raises Unauthorized
   is {
-    OwnableRoles.check_roles_or_owner(pauser() | minter());
+    OwnableRoles.checkRolesOrOwner(pauser() | minter());
     storage.paused := false;
   }
 

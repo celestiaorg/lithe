@@ -10,26 +10,26 @@ module Int is {
      `type(int256).max`, or the expected signed type's. *)
   intrinsic max;
 
-  (* div_rem(a : T; b : T) : (T, T)
+  (* divRem(a : T; b : T) : (T, T)
      `(a / b, a % b)`, truncating, for two values of one signed type. *)
-  intrinsic div_rem;
+  intrinsic divRem;
 
-  (* wrapping_add(a : T; b : T) : T
+  (* wrappingAdd(a : T; b : T) : T
      `unchecked { a + b }`, in two's complement. *)
-  intrinsic wrapping_add;
+  intrinsic wrappingAdd;
 
-  (* wrapping_sub(a : T; b : T) : T
+  (* wrappingSub(a : T; b : T) : T
      `unchecked { a - b }`. *)
-  intrinsic wrapping_sub;
+  intrinsic wrappingSub;
 
-  (* wrapping_mul(a : T; b : T) : T
+  (* wrappingMul(a : T; b : T) : T
      `unchecked { a * b }`. *)
-  intrinsic wrapping_mul;
+  intrinsic wrappingMul;
 
-  (* to_string(n : T) : string
+  (* toString(n : T) : string
      A signed integer of any width in decimal, with `-` first when negative. *)
-  intrinsic to_string;
+  intrinsic toString;
 
   (* `int256(n)`: the same 256 bits, unchecked. *)
-  intrinsic pure function from_bits(n : uint) : int;
+  intrinsic pure function fromBits(n : uint) : int;
 }

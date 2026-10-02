@@ -47,7 +47,7 @@ storage is record {
   owner : address;
   name : string;
   symbol : string;
-  total_supply : uint;
+  totalSupply : uint;
   balances : map(address, uint);
   allowances : map(address, map(address, uint));
 }
@@ -64,7 +64,7 @@ is {
 external view function name() : string is storage.name
 external view function symbol() : string is storage.symbol
 external pure function decimals() : uint8 is 18
-external view function totalSupply() : uint is storage.total_supply
+external view function totalSupply() : uint is storage.totalSupply
 external view function balanceOf(const account : address) : uint is storage.balances[account]
 
 external view function allowance(const owner : address; const spender : address) : uint is
@@ -115,7 +115,7 @@ external function mint(const to : address; const value : uint)
 is {
   assert(Evm.sender() = storage.owner, OwnableUnauthorizedAccount(Evm.sender()));
   assert(to <> Address.zero, ERC20InvalidReceiver(to));
-  storage.total_supply := storage.total_supply + value;
+  storage.totalSupply := storage.totalSupply + value;
   storage.balances[to] := storage.balances[to] + value;
   emit Transfer { from = Address.zero; to = to; value = value; };
 }

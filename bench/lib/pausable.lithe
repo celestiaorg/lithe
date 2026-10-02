@@ -22,7 +22,7 @@ module Pausable is {
   external view function paused() : bool is
     pausable.paused
 
-  view function require_not_paused()
+  view function requireNotPaused()
     raises EnforcedPause
   is {
     assert(not pausable.paused, EnforcedPause);
@@ -31,7 +31,7 @@ module Pausable is {
   function pause()
     raises EnforcedPause
   is {
-    require_not_paused();
+    requireNotPaused();
     pausable.paused := true;
     emit Paused {
       account = Evm.sender();

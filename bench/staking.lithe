@@ -73,39 +73,39 @@ contract StakingRewards is {
     Initializable.finish();
   }
 
-  view function last_time_reward_applicable() : timestamp is {
-    var applicable : timestamp := Evm.block_timestamp();
+  view function rewardEnd() : timestamp is {
+    var applicable : timestamp := Evm.blockTimestamp();
     if storage.periodFinish < applicable then {
       applicable := storage.periodFinish;
     }
   } with applicable
 
-  view function reward_per_token() : uint is {
+  view function currentRewardPerToken() : uint is {
     var per : uint := storage.rewardPerTokenStored;
     if storage.totalSupply <> 0 then {
       per := storage.rewardPerTokenStored
-        + (last_time_reward_applicable() - storage.lastUpdateTime)
+        + (rewardEnd() - storage.lastUpdateTime)
           * storage.rewardRate * 10 ** 18 / storage.totalSupply;
     }
   } with per
 
-  view function earned_by(const account : address) : uint is
-    storage.balances[account] * (reward_per_token() - storage.userRewardPerTokenPaid[account])
+  view function earnedBy(const account : address) : uint is
+    storage.balances[account] * (currentRewardPerToken() - storage.userRewardPerTokenPaid[account])
       / 10 ** 18 + storage.rewards[account]
 
-  function update_reward(const account : address) is {
-    storage.rewardPerTokenStored := reward_per_token();
-    storage.lastUpdateTime := last_time_reward_applicable();
+  function updateReward(const account : address) is {
+    storage.rewardPerTokenStored := currentRewardPerToken();
+    storage.lastUpdateTime := rewardEnd();
     if account <> Address.zero then {
-      storage.rewards[account] := earned_by(account);
+      storage.rewards[account] := earnedBy(account);
       storage.userRewardPerTokenPaid[account] := storage.rewardPerTokenStored;
     }
   }
 
-  function withdraw_as_sender(const amount : uint)
+  function withdrawAsSender(const amount : uint)
     raises CannotWithdrawZero
   is {
-    update_reward(Evm.sender());
+    updateReward(Evm.sender());
     assert(amount <> 0, CannotWithdrawZero);
     storage.totalSupply := storage.totalSupply - amount;
     storage.balances[Evm.sender()] := storage.balances[Evm.sender()] - amount;
@@ -116,8 +116,8 @@ contract StakingRewards is {
     defer storage.stakingToken.transfer(Evm.sender(), amount);
   }
 
-  function reward_sender() is {
-    update_reward(Evm.sender());
+  function rewardSender() is {
+    updateReward(Evm.sender());
     const reward : uint := storage.rewards[Evm.sender()];
     if reward > 0 then {
       storage.rewards[Evm.sender()] := 0;
@@ -132,7 +132,7 @@ contract StakingRewards is {
   external nonreentrant function stake(const amount : uint)
     raises CannotStakeZero
   is {
-    update_reward(Evm.sender());
+    updateReward(Evm.sender());
     assert(amount <> 0, CannotStakeZero);
     storage.totalSupply := storage.totalSupply + amount;
     storage.balances[Evm.sender()] := storage.balances[Evm.sender()] + amount;
@@ -146,36 +146,36 @@ contract StakingRewards is {
   external nonreentrant function withdraw(const amount : uint)
     raises CannotWithdrawZero
   is {
-    withdraw_as_sender(amount);
+    withdrawAsSender(amount);
   }
 
   external nonreentrant function getReward() is {
-    reward_sender();
+    rewardSender();
   }
 
   external nonreentrant function exit()
     raises CannotWithdrawZero
   is {
-    withdraw_as_sender(storage.balances[Evm.sender()]);
-    reward_sender();
+    withdrawAsSender(storage.balances[Evm.sender()]);
+    rewardSender();
   }
 
   external function notifyRewardAmount(const reward : uint)
     raises OwnableUnauthorizedAccount | RewardTooHigh
   is {
-    Ownable.check_owner();
-    update_reward(Address.zero);
-    if Evm.block_timestamp() >= storage.periodFinish then {
+    Ownable.checkOwner();
+    updateReward(Address.zero);
+    if Evm.blockTimestamp() >= storage.periodFinish then {
       storage.rewardRate := reward / storage.rewardsDuration;
     } else {
-      const remaining : uint := storage.periodFinish - Evm.block_timestamp();
+      const remaining : uint := storage.periodFinish - Evm.blockTimestamp();
       const leftover : uint := remaining * storage.rewardRate;
       storage.rewardRate := (reward + leftover) / storage.rewardsDuration;
     }
     const balance : uint := query storage.rewardsToken.balanceOf(Evm.self());
     assert(storage.rewardRate <= balance / storage.rewardsDuration, RewardTooHigh);
-    storage.lastUpdateTime := Evm.block_timestamp();
-    storage.periodFinish := Evm.block_timestamp() + storage.rewardsDuration;
+    storage.lastUpdateTime := Evm.blockTimestamp();
+    storage.periodFinish := Evm.blockTimestamp() + storage.rewardsDuration;
     emit RewardAdded {
       reward = reward;
     };
@@ -184,8 +184,8 @@ contract StakingRewards is {
   external function setRewardsDuration(const duration : uint)
     raises OwnableUnauthorizedAccount | RewardPeriodActive
   is {
-    Ownable.check_owner();
-    assert(Evm.block_timestamp() > storage.periodFinish, RewardPeriodActive);
+    Ownable.checkOwner();
+    assert(Evm.blockTimestamp() > storage.periodFinish, RewardPeriodActive);
     storage.rewardsDuration := duration;
     emit RewardsDurationUpdated {
       newDuration = duration;
@@ -226,13 +226,13 @@ contract StakingRewards is {
     storage.balances[account]
 
   external view function lastTimeRewardApplicable() : timestamp is
-    last_time_reward_applicable()
+    rewardEnd()
 
   external view function rewardPerToken() : uint is
-    reward_per_token()
+    currentRewardPerToken()
 
   external view function earned(const account : address) : uint is
-    earned_by(account)
+    earnedBy(account)
 
   external view function getRewardForDuration() : uint is
     storage.rewardRate * storage.rewardsDuration

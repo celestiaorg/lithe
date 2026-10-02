@@ -8,7 +8,7 @@ contract Billing {
     uint256 private started;
     uint256 private renews;
 
-    function start_on(uint256 year, uint256 month, uint256 day) external {
+    function startOn(uint256 year, uint256 month, uint256 day) external {
         uint256 t = DateTimeLib.dateToTimestamp(year, month, day);
         started = t;
         renews = t;
@@ -22,15 +22,15 @@ contract Billing {
         renews = DateTimeLib.addYears(renews, count);
     }
 
-    function months_active(uint256 now_) external view returns (uint256) {
+    function monthsActive(uint256 now_) external view returns (uint256) {
         return DateTimeLib.diffMonths(started, now_);
     }
 
-    function years_active(uint256 now_) external view returns (uint256) {
+    function yearsActive(uint256 now_) external view returns (uint256) {
         return DateTimeLib.diffYears(started, now_);
     }
 
-    function renewal_date() external view returns (uint256, uint256, uint256) {
+    function renewalDate() external view returns (uint256, uint256, uint256) {
         return DateTimeLib.timestampToDate(renews);
     }
 
@@ -46,7 +46,7 @@ contract Billing {
         return DateTimeLib.timestampToDateTime(t);
     }
 
-    function weekday_of(uint256 t) external pure returns (uint256) {
+    function weekdayOf(uint256 t) external pure returns (uint256) {
         return DateTimeLib.weekday(t);
     }
 
@@ -54,7 +54,7 @@ contract Billing {
         return DateTimeLib.isSupportedDate(year, month, day);
     }
 
-    function days_in(uint256 year, uint256 month) external pure returns (uint256) {
+    function daysIn(uint256 year, uint256 month) external pure returns (uint256) {
         return DateTimeLib.daysInMonth(year, month);
     }
 }

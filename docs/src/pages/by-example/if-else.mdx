@@ -14,7 +14,7 @@ storage is record {
   size : uint;
 }
 
-external function record_size(const x : uint) is {
+external function recordSize(const x : uint) is {
   if x < 10 then {
     storage.size := 1;
   } else if x < 100 then {

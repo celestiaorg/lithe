@@ -154,7 +154,7 @@ impl<'a> Gen<'a> {
         }
     }
 
-    /// `case query Evm.static_call(to, data) of`: `Ok` gets the return data, whole, and
+    /// `case query Evm.staticCall(to, data) of`: `Ok` gets the return data, whole, and
     /// `Error` the revert data.
     fn compile_raw_query_case(
         &mut self,
@@ -2127,7 +2127,7 @@ impl<'a> Gen<'a> {
         Ok((built.creation.clone(), built.prerequisites()))
     }
 
-    /// The contract `Evm.creation_code` names.
+    /// The contract `Evm.creationCode` names.
     pub(super) fn creation_code_of<'e>(
         &self,
         name: &'e Expr,
@@ -2139,7 +2139,7 @@ impl<'a> Gen<'a> {
             _ => Err(error(
                 line,
                 col,
-                "`Evm.creation_code` takes the name of a contract",
+                "`Evm.creationCode` takes the name of a contract",
             )),
         }
     }

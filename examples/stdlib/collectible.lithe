@@ -42,11 +42,11 @@ contract Collectible is {
   supports IERC721, IERC721Metadata, IERC721Enumerable, IERC2981;
 
   storage is record {
-    next_id : uint;
+    nextId : uint;
   }
 
-  hook ERC721.before_transfer is Pausable.require_not_paused;
-  hook ERC721.after_transfer is ERC721Enumerable.after_transfer;
+  hook ERC721.beforeTransfer is Pausable.requireNotPaused;
+  hook ERC721.afterTransfer is ERC721Enumerable.afterTransfer;
 
   (* The creator owns the series and takes a 5% royalty until they set another. *)
   deploy()
@@ -54,16 +54,16 @@ contract Collectible is {
   is {
     ERC721.init("Lithe Collectibles", "LCOL");
     Ownable.init(Evm.sender());
-    ERC2981.set_default_royalty(Evm.sender(), 500);
+    ERC2981.setDefaultRoyalty(Evm.sender(), 500);
   }
 
   external pure function supportsInterface(const interfaceId : bytes4) : bool is
-    ERC721URIStorage.supports_interface(interfaceId) or Abi.supports_interface(interfaceId)
+    ERC721URIStorage.supportsInterface(interfaceId) or Abi.supportsInterface(interfaceId)
 
   external view function tokenURI(const tokenId : uint) : string
     raises ERC721NonexistentToken
   is
-    ERC721URIStorage.token_uri(tokenId, "ipfs://lithe-collectibles/")
+    ERC721URIStorage.tokenURI(tokenId, "ipfs://lithe-collectibles/")
 
   (* The holder, or anyone they approved, burns a token. *)
   external function burn(const tokenId : uint)
@@ -77,45 +77,45 @@ contract Collectible is {
     raises OwnableUnauthorizedAccount | EnforcedPause | ERC721InvalidReceiver | ERC721InvalidSender
       | ERC721NonexistentToken | ERC721InsufficientApproval | forwarded
   is {
-    Ownable.check_owner();
-    const tokenId : uint := storage.next_id;
-    storage.next_id := tokenId + 1;
-    ERC721.safe_mint(to, tokenId, "");
-    ERC721URIStorage.set_token_uri(tokenId, uri);
+    Ownable.checkOwner();
+    const tokenId : uint := storage.nextId;
+    storage.nextId := tokenId + 1;
+    ERC721.safeMint(to, tokenId, "");
+    ERC721URIStorage.setTokenURI(tokenId, uri);
   } with tokenId
 
   external function pause()
     raises OwnableUnauthorizedAccount | EnforcedPause
   is {
-    Ownable.check_owner();
+    Ownable.checkOwner();
     Pausable.pause();
   }
 
   external function unpause()
     raises OwnableUnauthorizedAccount | ExpectedPause
   is {
-    Ownable.check_owner();
+    Ownable.checkOwner();
     Pausable.unpause();
   }
 
   external function setDefaultRoyalty(const receiver : address; const fee : uint96)
     raises OwnableUnauthorizedAccount | ERC2981InvalidDefaultRoyalty | ERC2981InvalidDefaultRoyaltyReceiver
   is {
-    Ownable.check_owner();
-    ERC2981.set_default_royalty(receiver, fee);
+    Ownable.checkOwner();
+    ERC2981.setDefaultRoyalty(receiver, fee);
   }
 
   external function setTokenRoyalty(const tokenId : uint; const receiver : address; const fee : uint96)
     raises OwnableUnauthorizedAccount | ERC2981InvalidTokenRoyalty | ERC2981InvalidTokenRoyaltyReceiver
   is {
-    Ownable.check_owner();
-    ERC2981.set_token_royalty(tokenId, receiver, fee);
+    Ownable.checkOwner();
+    ERC2981.setTokenRoyalty(tokenId, receiver, fee);
   }
 
   external function resetTokenRoyalty(const tokenId : uint)
     raises OwnableUnauthorizedAccount
   is {
-    Ownable.check_owner();
-    ERC2981.reset_token_royalty(tokenId);
+    Ownable.checkOwner();
+    ERC2981.resetTokenRoyalty(tokenId);
   }
 }

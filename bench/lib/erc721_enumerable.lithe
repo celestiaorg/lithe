@@ -1,6 +1,6 @@
 (* Enumeration of every token and of each owner's tokens, like OpenZeppelin's
    `ERC721EnumerableUpgradeable`: same storage, errors, and swap-and-pop removal, so the
-   order of the enumerations matches. The contract runs `after_transfer` from `ERC721`'s
+   order of the enumerations matches. The contract runs `afterTransfer` from `ERC721`'s
    hook of the same name. *)
 
 import "std/address";
@@ -15,7 +15,7 @@ error ERC721OutOfBoundsIndex of record {
 module ERC721Enumerable is {
   requires ERC721;
 
-  storage erc721_enumerable at "openzeppelin.storage.ERC721Enumerable" is record {
+  storage erc721Enumerable at "openzeppelin.storage.ERC721Enumerable" is record {
     ownedTokens : map(address, map(uint, uint));
     ownedTokensIndex : map(uint, uint);
     allTokens : list(uint);
@@ -23,16 +23,16 @@ module ERC721Enumerable is {
   }
 
   external view function totalSupply() : uint is
-    erc721_enumerable.allTokens.length
+    erc721Enumerable.allTokens.length
 
   external view function tokenByIndex(const index : uint) : uint
     raises ERC721OutOfBoundsIndex
   is {
     assert(
-      index < erc721_enumerable.allTokens.length,
+      index < erc721Enumerable.allTokens.length,
       ERC721OutOfBoundsIndex { owner = Address.zero; index = index; }
     );
-  } with erc721_enumerable.allTokens[index]
+  } with erc721Enumerable.allTokens[index]
 
   external view function tokenOfOwnerByIndex(const owner : address; const index : uint) : uint
     raises ERC721InvalidOwner | ERC721OutOfBoundsIndex
@@ -42,54 +42,54 @@ module ERC721Enumerable is {
       index < ERC721.erc721.balances[owner],
       ERC721OutOfBoundsIndex { owner = owner; index = index; }
     );
-  } with erc721_enumerable.ownedTokens[owner][index]
+  } with erc721Enumerable.ownedTokens[owner][index]
 
   (* After `ERC721.update`: the enumerations follow the token. *)
-  function after_transfer(const from : address; const to : address; const tokenId : uint) is {
+  function afterTransfer(const from : address; const to : address; const tokenId : uint) is {
     if from = Address.zero then {
-      add_to_all(tokenId);
+      addToAll(tokenId);
     } else if from <> to then {
-      remove_from_owner(from, tokenId);
+      removeFromOwner(from, tokenId);
     }
     if to = Address.zero then {
-      remove_from_all(tokenId);
+      removeFromAll(tokenId);
     } else if from <> to then {
-      add_to_owner(to, tokenId);
+      addToOwner(to, tokenId);
     }
   }
 
-  function add_to_owner(const to : address; const tokenId : uint) is {
+  function addToOwner(const to : address; const tokenId : uint) is {
     const length : uint := ERC721.erc721.balances[to] - 1;
-    erc721_enumerable.ownedTokens[to][length] := tokenId;
-    erc721_enumerable.ownedTokensIndex[tokenId] := length;
+    erc721Enumerable.ownedTokens[to][length] := tokenId;
+    erc721Enumerable.ownedTokensIndex[tokenId] := length;
   }
 
-  function add_to_all(const tokenId : uint) is {
-    erc721_enumerable.allTokensIndex[tokenId] := erc721_enumerable.allTokens.length;
-    List.push(erc721_enumerable.allTokens, tokenId);
+  function addToAll(const tokenId : uint) is {
+    erc721Enumerable.allTokensIndex[tokenId] := erc721Enumerable.allTokens.length;
+    List.push(erc721Enumerable.allTokens, tokenId);
   }
 
   (* The owner's last token moves into the removed token's place. *)
-  function remove_from_owner(const from : address; const tokenId : uint) is {
+  function removeFromOwner(const from : address; const tokenId : uint) is {
     const lastTokenIndex : uint := ERC721.erc721.balances[from];
-    const tokenIndex : uint := erc721_enumerable.ownedTokensIndex[tokenId];
+    const tokenIndex : uint := erc721Enumerable.ownedTokensIndex[tokenId];
     if tokenIndex <> lastTokenIndex then {
-      const lastTokenId : uint := erc721_enumerable.ownedTokens[from][lastTokenIndex];
-      erc721_enumerable.ownedTokens[from][tokenIndex] := lastTokenId;
-      erc721_enumerable.ownedTokensIndex[lastTokenId] := tokenIndex;
+      const lastTokenId : uint := erc721Enumerable.ownedTokens[from][lastTokenIndex];
+      erc721Enumerable.ownedTokens[from][tokenIndex] := lastTokenId;
+      erc721Enumerable.ownedTokensIndex[lastTokenId] := tokenIndex;
     }
-    erc721_enumerable.ownedTokensIndex[tokenId] := 0;
-    erc721_enumerable.ownedTokens[from][lastTokenIndex] := 0;
+    erc721Enumerable.ownedTokensIndex[tokenId] := 0;
+    erc721Enumerable.ownedTokens[from][lastTokenIndex] := 0;
   }
 
-  function remove_from_all(const tokenId : uint) is {
-    const lastTokenIndex : uint := erc721_enumerable.allTokens.length - 1;
-    const tokenIndex : uint := erc721_enumerable.allTokensIndex[tokenId];
-    const lastTokenId : uint := erc721_enumerable.allTokens[lastTokenIndex];
-    erc721_enumerable.allTokens[tokenIndex] := lastTokenId;
-    erc721_enumerable.allTokensIndex[lastTokenId] := tokenIndex;
-    erc721_enumerable.allTokensIndex[tokenId] := 0;
-    List.pop(erc721_enumerable.allTokens);
+  function removeFromAll(const tokenId : uint) is {
+    const lastTokenIndex : uint := erc721Enumerable.allTokens.length - 1;
+    const tokenIndex : uint := erc721Enumerable.allTokensIndex[tokenId];
+    const lastTokenId : uint := erc721Enumerable.allTokens[lastTokenIndex];
+    erc721Enumerable.allTokens[tokenIndex] := lastTokenId;
+    erc721Enumerable.allTokensIndex[lastTokenId] := tokenIndex;
+    erc721Enumerable.allTokensIndex[tokenId] := 0;
+    List.pop(erc721Enumerable.allTokens);
   }
 }
 

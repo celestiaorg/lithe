@@ -3,7 +3,7 @@
 
      defer create(Clones.code(implementation)) then (instance : address) { ... };
 
-   `code_with_args` appends immutable arguments after the clone's code, where `args_of`
+   `codeWithArgs` appends immutable arguments after the clone's code, where `argsOf`
    reads them back. The deterministic forms create with `CREATE2` and answer where the
    clone lands. *)
 
@@ -21,7 +21,7 @@ module Clones is {
     Bytes.concat(0x3d602d80600a3d3981f3363d3d373d3d3d363d73, bytes20(implementation), 0x5af43d82803e903d91602b57fd5bf3)
 
   (* A clone's code is 45 bytes, and the arguments must fit after it. *)
-  pure function code_with_args(const implementation : address; const args : bytes) : bytes
+  pure function codeWithArgs(const implementation : address; const args : bytes) : bytes
     raises CloneArgumentsTooLong
   is {
     assert(args.length <= 24531, CloneArgumentsTooLong);
@@ -35,28 +35,28 @@ module Clones is {
   )
 
   (* Raises `FailedDeployment` if the clone is already there. *)
-  function clone_deterministic(const implementation : address; const salt : bytes32) : address
+  function cloneDeterministic(const implementation : address; const salt : bytes32) : address
     raises FailedDeployment
-  is clone_deterministic(implementation, salt, 0)
+  is cloneDeterministic(implementation, salt, 0)
 
-  function clone_deterministic(const implementation : address; const salt : bytes32; const value : uint) : address
+  function cloneDeterministic(const implementation : address; const salt : bytes32; const value : uint) : address
     raises FailedDeployment
   is {
     defer create(code(implementation)) with { value = value; salt = salt; } then {
       | Ok(_) -> { skip }
       | Error(_) -> { fail FailedDeployment; }
     };
-  } with predict_here(implementation, salt)
+  } with predictHere(implementation, salt)
 
-  function clone_deterministic_with_args(
+  function cloneDeterministicWithArgs(
     const implementation : address;
     const args : bytes;
     const salt : bytes32
   ) : address
     raises CloneArgumentsTooLong | FailedDeployment
-  is clone_deterministic_with_args(implementation, args, salt, 0)
+  is cloneDeterministicWithArgs(implementation, args, salt, 0)
 
-  function clone_deterministic_with_args(
+  function cloneDeterministicWithArgs(
     const implementation : address;
     const args : bytes;
     const salt : bytes32;
@@ -64,29 +64,29 @@ module Clones is {
   ) : address
     raises CloneArgumentsTooLong | FailedDeployment
   is {
-    const init : bytes := code_with_args(implementation, args);
+    const init : bytes := codeWithArgs(implementation, args);
     defer create(init) with { value = value; salt = salt; } then {
       | Ok(_) -> { skip }
       | Error(_) -> { fail FailedDeployment; }
     };
-  } with Create2.compute_address_here(salt, Crypto.keccak256(init))
+  } with Create2.computeAddressHere(salt, Crypto.keccak256(init))
 
   pure function predict(const implementation : address; const salt : bytes32; const deployer : address) : address is
-    Create2.compute_address(salt, Crypto.keccak256(code(implementation)), deployer)
+    Create2.computeAddress(salt, Crypto.keccak256(code(implementation)), deployer)
 
-  view function predict_here(const implementation : address; const salt : bytes32) : address is
+  view function predictHere(const implementation : address; const salt : bytes32) : address is
     predict(implementation, salt, Evm.self())
 
-  pure function predict_with_args(
+  pure function predictWithArgs(
     const implementation : address;
     const args : bytes;
     const salt : bytes32;
     const deployer : address
   ) : address
     raises CloneArgumentsTooLong
-  is Create2.compute_address(salt, Crypto.keccak256(code_with_args(implementation, args)), deployer)
+  is Create2.computeAddress(salt, Crypto.keccak256(codeWithArgs(implementation, args)), deployer)
 
   (* The arguments a clone was created with; empty for a clone without them. *)
-  view function args_of(const instance : address) : bytes is
+  view function argsOf(const instance : address) : bytes is
     Evm.code(instance)[45:]
 }

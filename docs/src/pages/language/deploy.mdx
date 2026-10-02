@@ -8,27 +8,27 @@ description: "Setting up a contract as it is created, with deploy, and initializ
 A `deploy` declaration runs once, when the contract is created. It plays the part of a Solidity constructor:
 
 ```lithe
-error Fee_too_high of uint;
+error FeeTooHigh of uint;
 
 storage is record {
   owner : address;
-  fee_bps : uint;
+  feeBps : uint;
 }
 
 event Configured of record {
   indexed owner : address;
-  fee_bps : uint;
+  feeBps : uint;
 }
 
-deploy(const owner : address; const fee_bps : uint)
-  raises Fee_too_high
+deploy(const owner : address; const feeBps : uint)
+  raises FeeTooHigh
 is {
-  assert(fee_bps <= 1000, Fee_too_high(fee_bps));
+  assert(feeBps <= 1000, FeeTooHigh(feeBps));
   storage.owner := owner;
-  storage.fee_bps := fee_bps;
+  storage.feeBps := feeBps;
   emit Configured {
     owner = owner;
-    fee_bps = fee_bps;
+    feeBps = feeBps;
   };
 }
 
@@ -100,7 +100,7 @@ import "std/evm";
 
 upgradeable
 
-error Not_owner;
+error NotOwner;
 
 storage is record {
   owner : address;
@@ -108,7 +108,7 @@ storage is record {
 }
 
 upgrade guard is {
-  assert(Evm.sender() = storage.owner, Not_owner);
+  assert(Evm.sender() = storage.owner, NotOwner);
 }
 
 deploy(const owner : address; const cap : uint) is {

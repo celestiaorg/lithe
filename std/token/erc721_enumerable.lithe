@@ -2,15 +2,15 @@
    like OpenZeppelin's `ERC721Enumerable`. A removed token's place goes to the last token,
    so enumerations are unordered.
 
-   The lists follow every ownership change, through `ERC721`'s `after_transfer` hook, which
+   The lists follow every ownership change, through `ERC721`'s `afterTransfer` hook, which
    the contract points here, or calls this from its own body with what else it runs after a
    transfer:
 
      use ERC721 exposing IERC721, IERC721Metadata;
      use ERC721Enumerable exposing IERC721Enumerable;
 
-     hook ERC721.before_transfer is skip;
-     hook ERC721.after_transfer is ERC721Enumerable.after_transfer; *)
+     hook ERC721.beforeTransfer is skip;
+     hook ERC721.afterTransfer is ERC721Enumerable.afterTransfer; *)
 
 import "std/address";
 import "std/list";
@@ -20,91 +20,78 @@ import "std/interfaces/erc721";
 module ERC721Enumerable is {
   requires ERC721;
 
-  storage erc721_enumerable at "lithe.std.erc721.enumerable" is record {
-    owned_tokens : map(address, map(uint, uint));
-    owned_tokens_index : map(uint, uint);
-    all_tokens : list(uint);
-    all_tokens_index : map(uint, uint);
+  storage erc721Enumerable at "lithe.std.erc721.enumerable" is record {
+    ownedTokens : map(address, map(uint, uint));
+    ownedTokensIndex : map(uint, uint);
+    allTokens : list(uint);
+    allTokensIndex : map(uint, uint);
   }
-
-  view function total_supply() : uint is
-    erc721_enumerable.all_tokens.length
-
-  view function token_by_index(const index : uint) : uint
-    raises ERC721OutOfBoundsIndex
-  is {
-    assert(
-      index < erc721_enumerable.all_tokens.length,
-      ERC721OutOfBoundsIndex { owner = Address.zero; index = index; }
-    );
-  } with erc721_enumerable.all_tokens[index]
-
-  view function token_of_owner_by_index(const owner : address; const index : uint) : uint
-    raises ERC721InvalidOwner | ERC721OutOfBoundsIndex
-  is {
-    assert(
-      index < ERC721.balance_of(owner),
-      ERC721OutOfBoundsIndex { owner = owner; index = index; }
-    );
-  } with erc721_enumerable.owned_tokens[owner][index]
 
   (* After `ERC721` moves, mints, or burns a token: the enumerations follow it. *)
-  function after_transfer(const from : address; const to : address; const tokenId : uint) is {
+  function afterTransfer(const from : address; const to : address; const tokenId : uint) is {
     if from = Address.zero then {
-      add_to_all(tokenId);
+      addToAll(tokenId);
     } else if from <> to then {
-      remove_from_owner(from, tokenId);
+      removeFromOwner(from, tokenId);
     }
     if to = Address.zero then {
-      remove_from_all(tokenId);
+      removeFromAll(tokenId);
     } else if from <> to then {
-      add_to_owner(to, tokenId);
+      addToOwner(to, tokenId);
     }
   }
 
-  function add_to_owner(const to : address; const tokenId : uint) is {
+  function addToOwner(const to : address; const tokenId : uint) is {
     const length : uint := ERC721.erc721.balances[to] - 1;
-    erc721_enumerable.owned_tokens[to][length] := tokenId;
-    erc721_enumerable.owned_tokens_index[tokenId] := length;
+    erc721Enumerable.ownedTokens[to][length] := tokenId;
+    erc721Enumerable.ownedTokensIndex[tokenId] := length;
   }
 
-  function add_to_all(const tokenId : uint) is {
-    erc721_enumerable.all_tokens_index[tokenId] := erc721_enumerable.all_tokens.length;
-    List.push(erc721_enumerable.all_tokens, tokenId);
+  function addToAll(const tokenId : uint) is {
+    erc721Enumerable.allTokensIndex[tokenId] := erc721Enumerable.allTokens.length;
+    List.push(erc721Enumerable.allTokens, tokenId);
   }
 
-  function remove_from_owner(const from : address; const tokenId : uint) is {
-    const last_index : uint := ERC721.erc721.balances[from];
-    const index : uint := erc721_enumerable.owned_tokens_index[tokenId];
-    if index <> last_index then {
-      const last_id : uint := erc721_enumerable.owned_tokens[from][last_index];
-      erc721_enumerable.owned_tokens[from][index] := last_id;
-      erc721_enumerable.owned_tokens_index[last_id] := index;
+  function removeFromOwner(const from : address; const tokenId : uint) is {
+    const lastIndex : uint := ERC721.erc721.balances[from];
+    const index : uint := erc721Enumerable.ownedTokensIndex[tokenId];
+    if index <> lastIndex then {
+      const lastId : uint := erc721Enumerable.ownedTokens[from][lastIndex];
+      erc721Enumerable.ownedTokens[from][index] := lastId;
+      erc721Enumerable.ownedTokensIndex[lastId] := index;
     }
-    erc721_enumerable.owned_tokens_index[tokenId] := 0;
-    erc721_enumerable.owned_tokens[from][last_index] := 0;
+    erc721Enumerable.ownedTokensIndex[tokenId] := 0;
+    erc721Enumerable.ownedTokens[from][lastIndex] := 0;
   }
 
-  function remove_from_all(const tokenId : uint) is {
-    const last_index : uint := erc721_enumerable.all_tokens.length - 1;
-    const index : uint := erc721_enumerable.all_tokens_index[tokenId];
-    const last_id : uint := erc721_enumerable.all_tokens[last_index];
-    erc721_enumerable.all_tokens[index] := last_id;
-    erc721_enumerable.all_tokens_index[last_id] := index;
-    erc721_enumerable.all_tokens_index[tokenId] := 0;
-    List.pop(erc721_enumerable.all_tokens);
+  function removeFromAll(const tokenId : uint) is {
+    const lastIndex : uint := erc721Enumerable.allTokens.length - 1;
+    const index : uint := erc721Enumerable.allTokensIndex[tokenId];
+    const lastId : uint := erc721Enumerable.allTokens[lastIndex];
+    erc721Enumerable.allTokens[index] := lastId;
+    erc721Enumerable.allTokensIndex[lastId] := index;
+    erc721Enumerable.allTokensIndex[tokenId] := 0;
+    List.pop(erc721Enumerable.allTokens);
   }
 
   external view function totalSupply() : uint is
-    total_supply()
+    erc721Enumerable.allTokens.length
 
   external view function tokenByIndex(const index : uint) : uint
     raises ERC721OutOfBoundsIndex
-  is
-    token_by_index(index)
+  is {
+    assert(
+      index < erc721Enumerable.allTokens.length,
+      ERC721OutOfBoundsIndex { owner = Address.zero; index = index; }
+    );
+  } with erc721Enumerable.allTokens[index]
 
   external view function tokenOfOwnerByIndex(const owner : address; const index : uint) : uint
     raises ERC721InvalidOwner | ERC721OutOfBoundsIndex
-  is
-    token_of_owner_by_index(owner, index)
+  is {
+    assert(
+      index < ERC721.checkedBalance(owner),
+      ERC721OutOfBoundsIndex { owner = owner; index = index; }
+    );
+  } with erc721Enumerable.ownedTokens[owner][index]
 }

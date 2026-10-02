@@ -5,16 +5,16 @@
 import "std/abi";
 import "std/crypto";
 
-type order is record {
+type Order is record {
   id : uint;
   note : string;
   legs : list(uint);
 }
 
-type orders is list(order);
-type grid is list(list(uint));
+type Orders is list(Order);
+type Grid is list(list(uint));
 
-type transfer is record {
+type Transfer is record {
   to : address;
   amount : uint;
   memo : string;
@@ -25,30 +25,30 @@ storage is record {
 }
 
 (* Several values, and back. *)
-external pure function pack_transfer(const to : address; const amount : uint; const memo : string) : bytes is
+external pure function packTransfer(const to : address; const amount : uint; const memo : string) : bytes is
   Abi.encode(to, amount, memo)
 
-external pure function unpack_transfer(const data : bytes) : transfer is {
+external pure function unpackTransfer(const data : bytes) : Transfer is {
   const (to, amount, memo) : (address, uint, string) := Abi.decode(data, (address, uint, string));
 } with { to = to; amount = amount; memo = memo; }
 
 (* A record is one tuple, as a Solidity struct is. *)
-external pure function pack_order(const id : uint; const note : string) : bytes is {
-  const o : order := { id = id; note = note; legs = [id, id * 2]; };
+external pure function packOrder(const id : uint; const note : string) : bytes is {
+  const o : Order := { id = id; note = note; legs = [id, id * 2]; };
 } with Abi.encode(o)
 
 (* Nested values, and back. *)
-external pure function round_orders(const os : list(order)) : list(order) is
-  Abi.decode(Abi.encode(os), orders)
+external pure function roundOrders(const os : list(Order)) : list(Order) is
+  Abi.decode(Abi.encode(os), Orders)
 
-external pure function round_grid(const g : list(list(uint))) : list(list(uint)) is
-  Abi.decode(Abi.encode(g), grid)
+external pure function roundGrid(const g : list(list(uint))) : list(list(uint)) is
+  Abi.decode(Abi.encode(g), Grid)
 
 (* A decoded value works as any other: here, the second leg of the first order. *)
-external pure function first_second_leg(const data : bytes) : uint is {
-  const os : list(order) := Abi.decode(data, orders);
+external pure function firstSecondLeg(const data : bytes) : uint is {
+  const os : list(Order) := Abi.decode(data, Orders);
 } with os[0].legs[1]
 
 (* Packed, as `abi.encodePacked`: each value in its own width, no offsets or lengths. *)
 external pure function key(const who : address; const nonce : uint96) : bytes32 is
-  Crypto.keccak256(Abi.encode_packed(who, nonce))
+  Crypto.keccak256(Abi.encodePacked(who, nonce))

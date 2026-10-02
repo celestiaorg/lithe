@@ -135,18 +135,18 @@ fn a_broken_phase_fails_with_a_counterexample() {
 fn modules_continuations_loops_and_routes_are_phases() {
     let src = r#"import "std/evm"; 
 error Full;
-error Not_owner;
+error NotOwner;
 
 interface Echo is {
   function echo(n : uint) : uint;
 }
 
-type owner_action is
-  | Set_cap of uint
-  | Grow
+type OwnerAction is
+  | SetCap external setCap of uint
+  | Grow external grow
 
-type action is
-  | Owner of owner_action
+type Action is
+  | Owner of OwnerAction
 
 module Ledger is {
   storage ledger at "t.ledger" is record {
@@ -189,24 +189,24 @@ deploy() is {
   storage.cap := 100;
 }
 
-function owner_main(const action : owner_action)
-  raises Not_owner
+function ownerMain(const action : OwnerAction)
+  raises NotOwner
 is {
-  assert(Evm.sender() = storage.owner, Not_owner);
+  assert(Evm.sender() = storage.owner, NotOwner);
 }
 with case action of {
-| Set_cap(cap) -> {
-    assert(cap >= storage.pending, Not_owner);
+| SetCap(cap) -> {
+    assert(cap >= storage.pending, NotOwner);
     storage.cap := cap;
   }
 | Grow -> { storage.cap := storage.cap + 1; }
 }
 
-external function main(const action : action)
-  raises Not_owner
+external function main(const action : Action)
+  raises NotOwner
 is
   case action of {
-  | Owner(a) -> owner_main(a)
+  | Owner(a) -> ownerMain(a)
   }
 
 external nonreentrant function start(const echo : Echo; const n : uint)
@@ -238,7 +238,7 @@ spec is {
     assert_eq!((proof.failed, proof.unknown), (0, 0), "{}", proof.text);
     for phase in [
         "deploy",
-        "set_cap",
+        "setCap",
         "grow",
         "start",
         "start, after echo.echo",
@@ -275,12 +275,12 @@ spec is {
         proof.text
     );
     // A route that lowers the cap past what is pending.
-    let broken = src.replace("    assert(cap >= storage.pending, Not_owner);\n", "");
+    let broken = src.replace("    assert(cap >= storage.pending, NotOwner);\n", "");
     let Some(proof) = prove(&broken, specs) else {
         return;
     };
     assert!(
-        outcome(&proof, "bounded", "set_cap").contains("FAILED"),
+        outcome(&proof, "bounded", "setCap").contains("FAILED"),
         "{}",
         proof.text
     );
@@ -468,15 +468,15 @@ fn function_specs_prove_and_wrong_ones_fail() {
 #[test]
 fn routes_answer_for_their_guards_and_functions_start_anywhere() {
     let src = r#"import "std/evm"; 
-error Not_owner;
-error Too_high;
+error NotOwner;
+error TooHigh;
 
-type owner_action is
-  | Set_fee of uint
-  | Pause
+type OwnerAction is
+  | SetFee external setFee of uint
+  | Pause external pause
 
-type action is
-  | Owner of owner_action
+type Action is
+  | Owner of OwnerAction
 
 storage is record {
   owner : address;
@@ -489,24 +489,24 @@ deploy() is {
   storage.n := 1;
 }
 
-function owner_main(const action : owner_action)
-  raises Not_owner | Too_high
+function ownerMain(const action : OwnerAction)
+  raises NotOwner | TooHigh
 is {
-  assert(Evm.sender() = storage.owner, Not_owner);
+  assert(Evm.sender() = storage.owner, NotOwner);
 }
 with case action of {
-| Set_fee(fee) -> {
-    assert(fee <= 100, Too_high);
+| SetFee(fee) -> {
+    assert(fee <= 100, TooHigh);
     storage.fee := fee;
   }
 | Pause -> { storage.paused := true; }
 }
 
-external function main(const action : action)
-  raises Not_owner | Too_high
+external function main(const action : Action)
+  raises NotOwner | TooHigh
 is
   case action of {
-  | Owner(a) -> owner_main(a)
+  | Owner(a) -> ownerMain(a)
   }
 
 function take() is {
@@ -524,12 +524,12 @@ spec is {
   invariant some is storage.n >= 1;
 }
 
-spec for owner_main is {
-  raises Not_owner when Evm.sender() <> old.storage.owner;
+spec for ownerMain is {
+  raises NotOwner when Evm.sender() <> old.storage.owner;
 }
 
-spec for set_fee is {
-  raises Too_high when fee > 100;
+spec for setFee is {
+  raises TooHigh when fee > 100;
   ensures new.storage.fee = fee;
 }
 
@@ -548,21 +548,21 @@ spec for take is partial {
     assert!(
         outcome(
             &proof,
-            "pause (inherits owner_main)",
+            "pause (inherits ownerMain)",
             "reverts in no other case"
         )
         .contains("proved"),
         "{}",
         proof.text
     );
-    // `set_fee` forgets that it rejects a fee over 100.
-    let forgot = specs.replace("  raises Too_high when fee > 100;\n", "");
+    // `setFee` forgets that it rejects a fee over 100.
+    let forgot = specs.replace("  raises TooHigh when fee > 100;\n", "");
     let Some(proof) = prove(src, &forgot) else {
         return;
     };
-    let complete = outcome(&proof, "spec for set_fee", "reverts in no other case");
+    let complete = outcome(&proof, "spec for setFee", "reverts in no other case");
     assert!(
-        complete.contains("FAILED") && complete.contains("reverts with = Too_high"),
+        complete.contains("FAILED") && complete.contains("reverts with = TooHigh"),
         "{complete}"
     );
     assert!(complete.contains("fee = "), "{complete}");
@@ -625,7 +625,7 @@ import "std/token/erc20";
 import "std/interfaces/erc20";
 
 contract Token is {
-  use ERC20 exposing IERC20; hook ERC20.before_transfer is skip; hook ERC20.after_transfer is skip;
+  use ERC20 exposing IERC20; hook ERC20.beforeTransfer is skip; hook ERC20.afterTransfer is skip;
 
   deploy() raises ERC20InvalidReceiver | ERC20InsufficientBalance is {
     ERC20.init("Token", "TKN");
@@ -657,7 +657,7 @@ import "std/token/erc721";
 import "std/interfaces/erc721";
 
 contract Nft is {
-  use ERC721 exposing IERC721; hook ERC721.before_transfer is skip; hook ERC721.after_transfer is skip;
+  use ERC721 exposing IERC721; hook ERC721.beforeTransfer is skip; hook ERC721.afterTransfer is skip;
 
   storage is record {
     next : uint;
@@ -684,7 +684,7 @@ contract Nft is {
     let Some(proof) = prove(nft, "") else { return };
     assert_eq!((proof.failed, proof.unknown), (0, 0), "{}", proof.text);
     assert!(
-        outcome(&proof, "ERC721.approvals_owned", "burn").contains("proved"),
+        outcome(&proof, "ERC721.approvalsOwned", "burn").contains("proved"),
         "{}",
         proof.text
     );
@@ -817,8 +817,8 @@ spec for module Counter is {
 #[test]
 fn delete_proves_as_writing_zero() {
     let src = r#"import "std/evm";
-type limits is record { cap : uint; open : bool; }
-storage is record { balances : map(address, uint); total : uint; cfg : limits; }
+type Limits is record { cap : uint; open : bool; }
+storage is record { balances : map(address, uint); total : uint; cfg : Limits; }
 external function deposit(const amount : uint) is {
   storage.balances[Evm.sender()] := storage.balances[Evm.sender()] + amount;
   storage.total := storage.total + amount;

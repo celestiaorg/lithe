@@ -22,7 +22,7 @@ storage is record {
   total : uint;
 }
 
-external function set_hook(const hook : Hook) is {
+external function setHook(const hook : Hook) is {
   storage.hook := hook;
 }
 
@@ -44,7 +44,7 @@ external view function total() : uint is
 `lithe footprint` shows which entrypoints are locked while deferred calls run:
 
 ```text
-set_hook   writes: hook                                during defers: callable
+setHook   writes: hook                                during defers: callable
 add        writes: total      defers: hook.notify      during defers: rejected
 reset      writes: total                               during defers: rejected
 total      reads: total                                during defers: callable

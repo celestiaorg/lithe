@@ -36,7 +36,7 @@ external function appoint() is {
   storage.admin := Some(Evm.sender());
 }
 
-external view function admin_or_sender() : address is
+external view function adminOrSender() : address is
   case storage.admin of
   {
   | Some(who) -> who
@@ -48,4 +48,4 @@ external function miss() is {
 }
 
 external view function context() : uint is
-  Evm.block_number() + Evm.chain_id()
+  Evm.blockNumber() + Evm.chainId()

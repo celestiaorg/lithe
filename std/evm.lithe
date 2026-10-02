@@ -17,40 +17,40 @@ module Evm is {
 
   (* `tx.origin`: the account that signed the transaction. Do not use it for
      authorization. *)
-  intrinsic view function tx_origin() : address;
+  intrinsic view function txOrigin() : address;
 
   (* `tx.gasprice`. *)
-  intrinsic view function tx_gas_price() : wei;
+  intrinsic view function txGasPrice() : wei;
 
   (* `block.number`. *)
-  intrinsic view function block_number() : uint;
+  intrinsic view function blockNumber() : uint;
 
   (* `block.timestamp`. *)
-  intrinsic view function block_timestamp() : timestamp;
+  intrinsic view function blockTimestamp() : timestamp;
 
   (* `block.coinbase`. *)
-  intrinsic view function block_coinbase() : address;
+  intrinsic view function blockCoinbase() : address;
 
   (* `block.basefee`. *)
-  intrinsic view function block_base_fee() : wei;
+  intrinsic view function blockBaseFee() : wei;
 
   (* `block.blobbasefee`. *)
-  intrinsic view function blob_base_fee() : wei;
+  intrinsic view function blobBaseFee() : wei;
 
   (* `block.chainid`. *)
-  intrinsic view function chain_id() : uint;
+  intrinsic view function chainId() : uint;
 
   (* `block.prevrandao`. *)
-  intrinsic view function block_prevrandao() : bytes32;
+  intrinsic view function blockPrevrandao() : bytes32;
 
   (* `block.gaslimit`. *)
-  intrinsic view function block_gas_limit() : uint;
+  intrinsic view function blockGasLimit() : uint;
 
   (* `blockhash(n)`: the hash of one of the 256 most recent blocks, zero for any other. *)
-  intrinsic view function block_hash(n : uint) : bytes32;
+  intrinsic view function blockHash(n : uint) : bytes32;
 
   (* `blobhash(i)`: the versioned hash of the transaction's `i`th blob. *)
-  intrinsic view function blob_hash(i : uint) : bytes32;
+  intrinsic view function blobHash(i : uint) : bytes32;
 
   (* `address(this)`. *)
   intrinsic view function self() : address;
@@ -59,27 +59,27 @@ module Evm is {
   intrinsic view function balance(a : address) : wei;
 
   (* `a.code.length`. *)
-  intrinsic view function code_size(a : address) : uint;
+  intrinsic view function codeSize(a : address) : uint;
 
   (* `a.codehash`. *)
-  intrinsic view function code_hash(a : address) : bytes32;
+  intrinsic view function codeHash(a : address) : bytes32;
 
   (* `a.code`. *)
   intrinsic view function code(a : address) : bytes;
 
-  (* creation_code(C) : bytes
+  (* creationCode(C) : bytes
      `type(C).creationCode`: the creation code `create C(...)` runs, for a contract `C` of
      this file or of a file it imports. Usable in `pure` functions; its hash is a
      constant. *)
-  intrinsic creation_code;
+  intrinsic creationCode;
 
-  (* facet_address(M) : address
+  (* facetAddress(M) : address
      The address of the facet the contract runs a module `M` from, one it uses
      `delegated`. A constant, known once the facet is built; for contract code only. *)
-  intrinsic facet_address;
+  intrinsic facetAddress;
 
   (* `gasleft()`. *)
-  intrinsic view function gas_left() : uint;
+  intrinsic view function gasLeft() : uint;
 
   (* `payable(to).call{value: amount}("")`, as an operation: `defer Evm.transfer(to,
      amount);`. *)
@@ -90,10 +90,10 @@ module Evm is {
   intrinsic function call(to : address; data : bytes) : operation;
 
   (* `to.delegatecall(data)`, as an operation: `to`'s code runs as this contract. *)
-  intrinsic function delegate_call(to : address; data : bytes) : operation;
+  intrinsic function delegateCall(to : address; data : bytes) : operation;
 
   (* `to.staticcall(data)`, run with `query`: the return data. *)
-  intrinsic view function static_call(to : address; data : bytes) : bytes;
+  intrinsic view function staticCall(to : address; data : bytes) : bytes;
 
   (* osaka : bool
      Whether the code is built for Osaka or later, as `--evm-version` sets. A constant, so

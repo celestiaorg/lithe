@@ -45,7 +45,7 @@ interface Token is {
   function transfer(to : address; amount : uint) : bool;
 }
 
-error Too_cheap of uint;
+error TooCheap of uint;
 
 storage is record {
   oracle : Oracle;
@@ -54,16 +54,16 @@ storage is record {
 }
 
 external function sell(const asset : address; const amount : uint)
-  raises Too_cheap
+  raises TooCheap
 is {
   const price : uint := query storage.oracle.price(asset);
-  assert(price >= 100, Too_cheap(price));
+  assert(price >= 100, TooCheap(price));
   storage.sold := storage.sold + amount;
   defer storage.token.transfer(Evm.sender(), amount * price);
 }
 ```
 
-Reading `sell`, you know exactly what it can do. It reads the oracle, it may fail with `Too_cheap`, it writes `sold`, and after all of that it asks the token to transfer. The compiler knows too, and it can print that summary for every entrypoint. See [Inspecting contracts](/tooling/inspection).
+Reading `sell`, you know exactly what it can do. It reads the oracle, it may fail with `TooCheap`, it writes `sold`, and after all of that it asks the token to transfer. The compiler knows too, and it can print that summary for every entrypoint. See [Inspecting contracts](/tooling/inspection).
 
 ## Design principles
 

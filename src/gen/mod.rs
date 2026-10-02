@@ -1555,7 +1555,7 @@ enum Sub {
     /// `[at, len, ret]` becomes a `string` or `bytes` value of the bytes at `at`, in
     /// memory, calldata, or the return data.
     BytesValue(SrcKind),
-    /// `[data, file_safe, no_padding, ret]` becomes `data` in base64, as a string. With the
+    /// `[data, fileSafe, noPadding, ret]` becomes `data` in base64, as a string. With the
     /// options fixed, `[data, ret]`.
     Base64Encode(Option<[bool; 2]>),
     /// `[data, ret]` becomes the bytes a base64 string encodes.
@@ -1680,7 +1680,7 @@ struct OpSite {
     needs_code: bool,
     /// The bytes of return data a result nothing decodes must have, as in Solidity.
     unread: u64,
-    /// `Evm.call` or `Evm.delegate_call`: the opcode. `data` holds a `bytes` value, the
+    /// `Evm.call` or `Evm.delegateCall`: the opcode. `data` holds a `bytes` value, the
     /// whole calldata, and the continuation gets the return data as it came back.
     raw: Option<u8>,
     /// `data` holds the calldata position of checked `bytes`, copied when the call runs.
@@ -2309,7 +2309,7 @@ fn same_expr(a: &Expr, b: &Expr) -> bool {
                 ..
             },
         ) => x == y && xs.len() == ys.len() && xs.iter().zip(ys).all(|(p, q)| same_expr(p, q)),
-        // Fixed for the whole call, as `fixed_key` treats them: `Evm.sender()` and the like.
+        // Fixed for the whole call, as `fixedKey` treats them: `Evm.sender()` and the like.
         (
             Expr::Call {
                 builtin: Some(x),

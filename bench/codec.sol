@@ -17,27 +17,27 @@ contract Codec {
     uint256 seen_;
     bytes32 digest_;
 
-    function enc_flat(address who, uint256 amount, string calldata memo) external pure returns (bytes memory) {
+    function encFlat(address who, uint256 amount, string calldata memo) external pure returns (bytes memory) {
         return abi.encode(who, amount, memo);
     }
 
-    function dec_flat(bytes calldata data) external pure returns (address who, uint256 amount, string memory memo) {
+    function decFlat(bytes calldata data) external pure returns (address who, uint256 amount, string memory memo) {
         (who, amount, memo) = abi.decode(data, (address, uint256, string));
     }
 
-    function enc_orders(IBook.Order[] calldata os) external pure returns (bytes memory) {
+    function encOrders(IBook.Order[] calldata os) external pure returns (bytes memory) {
         return abi.encode(os);
     }
 
-    function dec_orders(bytes calldata data) external pure returns (IBook.Order[] memory) {
+    function decOrders(bytes calldata data) external pure returns (IBook.Order[] memory) {
         return abi.decode(data, (IBook.Order[]));
     }
 
-    function enc_grid(uint256[][] calldata g) external pure returns (bytes memory) {
+    function encGrid(uint256[][] calldata g) external pure returns (bytes memory) {
         return abi.encode(g);
     }
 
-    function dec_grid(bytes calldata data) external pure returns (uint256[][] memory) {
+    function decGrid(bytes calldata data) external pure returns (uint256[][] memory) {
         return abi.decode(data, (uint256[][]));
     }
 
@@ -45,7 +45,7 @@ contract Codec {
         return abi.encodePacked(who, amount, memo);
     }
 
-    function calldata_for(IBook.Order[] calldata os) external pure returns (bytes memory) {
+    function calldataFor(IBook.Order[] calldata os) external pure returns (bytes memory) {
         return abi.encodeCall(IBook.place, (os));
     }
 

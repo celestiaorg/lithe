@@ -63,23 +63,23 @@ Execution context, from `import "std/evm";`. Readable in `view` and stateful fun
 
 | Built-in | Type | Solidity |
 | --- | --- | --- |
-| `Evm.tx_origin()` | `address` | `tx.origin`. Do not use for authorization |
-| `Evm.tx_gas_price()` | `wei` | `tx.gasprice` |
+| `Evm.txOrigin()` | `address` | `tx.origin`. Do not use for authorization |
+| `Evm.txGasPrice()` | `wei` | `tx.gasprice` |
 
 ### Block
 
 | Built-in | Type | Solidity |
 | --- | --- | --- |
-| `Evm.block_number()` | `uint` | `block.number` |
-| `Evm.block_timestamp()` | `timestamp` | `block.timestamp` |
-| `Evm.block_coinbase()` | `address` | `block.coinbase` |
-| `Evm.block_base_fee()` | `wei` | `block.basefee` |
-| `Evm.block_prevrandao()` | `bytes32` | `block.prevrandao` |
-| `Evm.block_gas_limit()` | `uint` | `block.gaslimit` |
-| `Evm.chain_id()` | `uint` | `block.chainid` |
+| `Evm.blockNumber()` | `uint` | `block.number` |
+| `Evm.blockTimestamp()` | `timestamp` | `block.timestamp` |
+| `Evm.blockCoinbase()` | `address` | `block.coinbase` |
+| `Evm.blockBaseFee()` | `wei` | `block.basefee` |
+| `Evm.blockPrevrandao()` | `bytes32` | `block.prevrandao` |
+| `Evm.blockGasLimit()` | `uint` | `block.gaslimit` |
+| `Evm.chainId()` | `uint` | `block.chainid` |
 | `Evm.block_hash(n : uint)` | `bytes32` | `blockhash(n)` |
-| `Evm.blob_hash(i : uint)` | `bytes32` | `blobhash(i)` |
-| `Evm.blob_base_fee()` | `wei` | `block.blobbasefee` |
+| `Evm.blobHash(i : uint)` | `bytes32` | `blobhash(i)` |
+| `Evm.blobBaseFee()` | `wei` | `block.blobbasefee` |
 
 ### Accounts
 
@@ -87,12 +87,12 @@ Execution context, from `import "std/evm";`. Readable in `view` and stateful fun
 | --- | --- | --- |
 | `Evm.self()` | `address` | `address(this)` |
 | `Evm.balance(a : address)` | `wei` | `a.balance` |
-| `Evm.code_size(a : address)` | `uint` | `a.code.length` |
-| `Evm.code_hash(a : address)` | `bytes32` | `a.codehash` |
+| `Evm.codeSize(a : address)` | `uint` | `a.code.length` |
+| `Evm.codeHash(a : address)` | `bytes32` | `a.codehash` |
 | `Evm.code(a : address)` | `bytes` | `a.code` |
-| `Evm.gas_left()` | `uint` | `gasleft()` |
-| `Evm.facet_address(M)` | `address` | the address of the [facet](/tooling/size-limit) of a module `M` the contract uses `delegated`. A constant, in contract code only |
-| `Evm.creation_code(C)` | `bytes` | `type(C).creationCode`, for a contract `C` that [`defer create`](/language/effects#create) can create. Usable in `pure` functions, and its hash is a constant |
+| `Evm.gasLeft()` | `uint` | `gasleft()` |
+| `Evm.facetAddress(M)` | `address` | the address of the [facet](/tooling/size-limit) of a module `M` the contract uses `delegated`. A constant, in contract code only |
+| `Evm.creationCode(C)` | `bytes` | `type(C).creationCode`, for a contract `C` that [`defer create`](/language/effects#create) can create. Usable in `pure` functions, and its hash is a constant |
 
 ### Sending ether
 
@@ -107,10 +107,10 @@ Execution context, from `import "std/evm";`. Readable in `view` and stateful fun
 | Built-in | Type | Solidity |
 | --- | --- | --- |
 | `Evm.call(to : address, data : bytes)` | `operation` | `to.call{value: v}(data)`, with `with value = v` |
-| `Evm.delegate_call(to : address, data : bytes)` | `operation` | `to.delegatecall(data)` |
-| `Evm.static_call(to : address, data : bytes)` | `bytes` | `to.staticcall(data)` |
+| `Evm.delegateCall(to : address, data : bytes)` | `operation` | `to.delegatecall(data)` |
+| `Evm.staticCall(to : address, data : bytes)` | `bytes` | `to.staticcall(data)` |
 
-`Evm.call` and `Evm.delegate_call` are deferred, and a continuation gets the return data as `bytes`. `Evm.static_call` runs with `query`. See [Raw calls](/language/effects#raw-calls).
+`Evm.call` and `Evm.delegateCall` are deferred, and a continuation gets the return data as `bytes`. `Evm.staticCall` runs with `query`. See [Raw calls](/language/effects#raw-calls).
 
 Reading `Evm.value()` outside a `payable` function is an error, so a function cannot rely on ether it could never receive:
 
@@ -143,7 +143,7 @@ storage is record {
   n : uint;
 }
 
-external pure function bit_length(const x : uint) : uint is
+external pure function bitLength(const x : uint) : uint is
   if Evm.osaka then 256 - Uint.clz(x) else {
     var n : uint := 0;
     for _ : uint in 0 .. 256 until x >> n = 0 do {
@@ -175,26 +175,26 @@ Every precompiled contract is a built-in, given its input as the precompile lays
 
 | Built-in | Type | Precompile |
 | --- | --- | --- |
-| `Crypto.mod_exp(base : bytes, exponent : bytes, modulus : bytes)` | `bytes`, as long as `modulus` | `0x05`, EIP-198 |
-| `Uint.pow_mod(base : uint, exponent : uint, modulus : uint)` | `uint` | `0x05` on words. `Panic(0x12)` if `modulus` is zero |
-| `Crypto.bn254_add(a : (uint, uint), b : (uint, uint))` | `(uint, uint)` | `0x06`, EIP-196 |
-| `Crypto.bn254_mul(p : (uint, uint), s : uint)` | `(uint, uint)` | `0x07`, EIP-196 |
-| `Crypto.bn254_pairing(pairs : list((uint, uint, uint, uint, uint, uint)))` | `bool` | `0x08`, EIP-197. Each pair is `(g1_x, g1_y, g2_x_im, g2_x_re, g2_y_im, g2_y_re)` |
+| `Crypto.modExp(base : bytes, exponent : bytes, modulus : bytes)` | `bytes`, as long as `modulus` | `0x05`, EIP-198 |
+| `Uint.powMod(base : uint, exponent : uint, modulus : uint)` | `uint` | `0x05` on words. `Panic(0x12)` if `modulus` is zero |
+| `Crypto.bn254Add(a : (uint, uint), b : (uint, uint))` | `(uint, uint)` | `0x06`, EIP-196 |
+| `Crypto.bn254Mul(p : (uint, uint), s : uint)` | `(uint, uint)` | `0x07`, EIP-196 |
+| `Crypto.bn254Pairing(pairs : list((uint, uint, uint, uint, uint, uint)))` | `bool` | `0x08`, EIP-197. Each pair is `(g1X, g1Y, g2XIm, g2XRe, g2YIm, g2YRe)` |
 | `Crypto.blake2f(rounds : uint32, h : list(bytes32, 2), m : list(bytes32, 4), t : bytes16, final : bool)` | `list(bytes32, 2)` | `0x09`, EIP-152. `h`, `m`, and `t` hold their little-endian words as the EIP lays them out |
-| `Crypto.kzg_point_evaluation(versioned_hash : bytes32, z : uint, y : uint, commitment : bytes, proof : bytes)` | `bool` | `0x0a`, EIP-4844. `commitment` and `proof` are 48 bytes |
-| `Crypto.bls12_g1_add(a : bytes, b : bytes)`, `Crypto.bls12_g2_add(a, b)` | `bytes` | `0x0b`, `0x0d`, EIP-2537 |
-| `Crypto.bls12_g1_msm(pairs : bytes)`, `Crypto.bls12_g2_msm(pairs)` | `bytes` | `0x0c`, `0x0e`. Each pair is a point, then a 32-byte scalar |
-| `Crypto.bls12_pairing(pairs : bytes)` | `bool` | `0x0f` |
-| `Crypto.bls12_map_fp_to_g1(fp : bytes)`, `Crypto.bls12_map_fp2_to_g2(fp2 : bytes)` | `bytes` | `0x10`, `0x11` |
-| `Crypto.p256_verify(hash : bytes32, r : bytes32, s : bytes32, x : bytes32, y : bytes32)` | `bool` | `0x100`, EIP-7951 |
+| `Crypto.kzgPointEvaluation(versionedHash : bytes32, z : uint, y : uint, commitment : bytes, proof : bytes)` | `bool` | `0x0a`, EIP-4844. `commitment` and `proof` are 48 bytes |
+| `Crypto.bls12G1Add(a : bytes, b : bytes)`, `Crypto.bls12G2Add(a, b)` | `bytes` | `0x0b`, `0x0d`, EIP-2537 |
+| `Crypto.bls12G1Msm(pairs : bytes)`, `Crypto.bls12G2Msm(pairs)` | `bytes` | `0x0c`, `0x0e`. Each pair is a point, then a 32-byte scalar |
+| `Crypto.bls12Pairing(pairs : bytes)` | `bool` | `0x0f` |
+| `Crypto.bls12MapFpToG1(fp : bytes)`, `Crypto.bls12MapFp2ToG2(fp2 : bytes)` | `bytes` | `0x10`, `0x11` |
+| `Crypto.p256Verify(hash : bytes32, r : bytes32, s : bytes32, x : bytes32, y : bytes32)` | `bool` | `0x100`, EIP-7951 |
 
 BLS12-381 points and field elements are `bytes` in EIP-2537's encoding: a field element is 64 bytes, a G1 point 128, and a G2 point 256.
 
-A precompile that rejects its input, such as a point off its curve, reverts the transaction, except where the result is a `bool`: `kzg_point_evaluation` and `p256_verify` answer `false` for a proof or signature that does not verify. The pairings answer whether the product of pairings is one, and revert on malformed input.
+A precompile that rejects its input, such as a point off its curve, reverts the transaction, except where the result is a `bool`: `kzgPointEvaluation` and `p256Verify` answer `false` for a proof or signature that does not verify. The pairings answer whether the product of pairings is one, and revert on malformed input.
 
-Each call also checks the size of the answer. On a chain without the precompile, the call reaches an account with no code, which succeeds with no answer: that reverts, or reads as `false`, never as zeros. `Crypto.p256_verify` answers `false` on chains before EIP-7951; `WebAuthn.verify_signature` in [`std/crypto/webauthn`](/stdlib/crypto#webauthn) falls back to Solady's verifier contract there.
+Each call also checks the size of the answer. On a chain without the precompile, the call reaches an account with no code, which succeeds with no answer: that reverts, or reads as `false`, never as zeros. `Crypto.p256Verify` answers `false` on chains before EIP-7951; `WebAuthn.verifySignature` in [`std/crypto/webauthn`](/stdlib/crypto#webauthn) falls back to Solady's verifier contract there.
 
-The identity precompile, `0x04`, copies its input, which a value already is. `query Evm.static_call(to, data)` reaches any precompile directly.
+The identity precompile, `0x04`, copies its input, which a value already is. `query Evm.staticCall(to, data)` reaches any precompile directly.
 
 ## `Abi`
 
@@ -203,18 +203,18 @@ ABI encoding and decoding, from `import "std/abi";`. Usable in any function, `pu
 | Built-in | Type | Solidity |
 | --- | --- | --- |
 | `Abi.encode(a, b, ...)` | `bytes` | `abi.encode(a, b, ...)` |
-| `Abi.encode_packed(a, b, ...)` | `bytes` | `abi.encodePacked(a, b, ...)` |
-| `Abi.encode_with_selector(sel : bytes4, a, ...)` | `bytes` | `abi.encodeWithSelector(sel, a, ...)` |
-| `Abi.encode_with_signature(sig : string, a, ...)` | `bytes` | `abi.encodeWithSignature(sig, a, ...)` |
-| `Abi.encode_call(Interface.method, a, ...)` | `bytes` | `abi.encodeCall(I.method, (a, ...))`. Arguments are type-checked |
+| `Abi.encodePacked(a, b, ...)` | `bytes` | `abi.encodePacked(a, b, ...)` |
+| `Abi.encodeWithSelector(sel : bytes4, a, ...)` | `bytes` | `abi.encodeWithSelector(sel, a, ...)` |
+| `Abi.encodeWithSignature(sig : string, a, ...)` | `bytes` | `abi.encodeWithSignature(sig, a, ...)` |
+| `Abi.encodeCall(Interface.method, a, ...)` | `bytes` | `abi.encodeCall(I.method, (a, ...))`. Arguments are type-checked |
 | `Abi.decode(data : bytes, T)` | `T` | `abi.decode(data, (T))` |
 | `Abi.selector(Interface.method)` | `bytes4` | `I.method.selector`. A constant. An overloaded method has no single selector: hash its signature with `Crypto.keccak256` |
-| `Abi.interface_id(Interface)` | `bytes4` | `type(I).interfaceId`: the XOR of its methods' selectors. A constant |
-| `Abi.supports_interface(id : bytes4)` | `bool` | whether `id` is ERC-165's or one `supports` lists, as the generated `supportsInterface` answers. See [ERC-165](/language/modules#erc-165) |
+| `Abi.interfaceId(Interface)` | `bytes4` | `type(I).interfaceId`: the XOR of its methods' selectors. A constant |
+| `Abi.supportsInterface(id : bytes4)` | `bool` | whether `id` is ERC-165's or one `supports` lists, as the generated `supportsInterface` answers. See [ERC-165](/language/modules#erc-165) |
 
 `Abi.decode` takes a type name as its second argument: `Abi.decode(data, uint)`, which decodes one value, as Solidity's `abi.decode(data, (uint256))`. Any ABI value can be decoded; name a list or record type first, as `type ids is list(uint);`, then `Abi.decode(data, ids)`. A tuple of type names decodes one value of each, as `abi.decode(data, (address, uint256))` does: `const (who, amount) : (address, uint) := Abi.decode(data, (address, uint));`. Malformed data reverts, with Solidity's checks on every offset, length, and word.
 
-`Abi.encode` takes any ABI values, each one argument: a record or tuple is a Solidity tuple. `Abi.encode_packed` packs what Solidity's `abi.encodePacked` does: words, strings, bytes, and lists of words, each element padded to 32 bytes. It has no layout for records, tuples, nested lists, or lists of strings or bytes.
+`Abi.encode` takes any ABI values, each one argument: a record or tuple is a Solidity tuple. `Abi.encodePacked` packs what Solidity's `abi.encodePacked` does: words, strings, bytes, and lists of words, each element padded to 32 bytes. It has no layout for records, tuples, nested lists, or lists of strings or bytes.
 
 ```lithe
 import "std/abi";
@@ -229,11 +229,11 @@ external function commit(const amount : uint; const salt : bytes32) is {
   storage.digest := Crypto.keccak256(Abi.encode(Evm.sender(), amount, salt));
 }
 
-external pure function round_trip(const n : uint) : uint is
+external pure function roundTrip(const n : uint) : uint is
   Abi.decode(Abi.encode(n), uint)
 
-external pure function transfer_call(const to : address; const amount : uint) : bytes is
-  Abi.encode_with_signature("transfer(address,uint256)", to, amount)
+external pure function transferCall(const to : address; const amount : uint) : bytes is
+  Abi.encodeWithSignature("transfer(address,uint256)", to, amount)
 ```
 
 ## `Bytes` and `String`
@@ -248,9 +248,9 @@ From `import "std/bytes";` and `import "std/string";`.
 | `String.concat(a, b, ...)` | `string` | `string.concat(a, b, ...)` |
 | `String.lower(s)`, `String.upper(s)` | `string` | Solady's `LibString.lower(s)` and `upper(s)`: ASCII letters recased, every other byte, UTF-8 included, as it was |
 | `String.join(xs : list(string))` | `string` | the strings of `xs` one after another, as `Bytes.join` |
-| `String.escape_json(s)` | `string` | `LibString.escapeJSON(s)`: `"` and `\` backslashed, control characters as `\n`, `\t`, and the like, or `\u00XX`. `String.escape_json(s, quoted : bool)` is `LibString.escapeJSON(s, quoted)`: in double quotes when `quoted`. A slice argument, `s[i:j]`, is read in place, not copied |
-| `String.escape_html(s)` | `string` | `LibString.escapeHTML(s)`: `"`, `&`, `'`, `<`, and `>` as `&quot;`, `&amp;`, `&#39;`, `&lt;`, and `&gt;` |
-| `String.index_of(s, needle, from : uint)` | `uint` | `LibString.indexOf(s, needle, from)`: the byte offset where `needle` first starts, at `from` or later, or `Uint.max`. An empty needle is found at `from`, or at the end if `from` is past it |
+| `String.escapeJson(s)` | `string` | `LibString.escapeJSON(s)`: `"` and `\` backslashed, control characters as `\n`, `\t`, and the like, or `\u00XX`. `String.escapeJson(s, quoted : bool)` is `LibString.escapeJSON(s, quoted)`: in double quotes when `quoted`. A slice argument, `s[i:j]`, is read in place, not copied |
+| `String.escapeHtml(s)` | `string` | `LibString.escapeHTML(s)`: `"`, `&`, `'`, `<`, and `>` as `&quot;`, `&amp;`, `&#39;`, `&lt;`, and `&gt;` |
+| `String.indexOf(s, needle, from : uint)` | `uint` | `LibString.indexOf(s, needle, from)`: the byte offset where `needle` first starts, at `from` or later, or `Uint.max`. An empty needle is found at `from`, or at the end if `from` is past it |
 | `String.replace(s, needle, replacement)` | `string` | `LibString.replace(s, needle, replacement)`: every `needle`, left to right, replaced. An empty needle puts `replacement` before each byte and at the end |
 
 ```lithe
@@ -269,7 +269,7 @@ external pure function tagged(const tag : bytes4; const data : bytes) : bytes is
   Bytes.concat(tag, data)
 
 external pure function attribute(const name : string; const value : string) : string is
-  String.concat("{\"trait_type\":\"", String.escape_json(name), "\",\"value\":\"", String.escape_json(value), "\"}")
+  String.concat("{\"trait_type\":\"", String.escapeJson(name), "\",\"value\":\"", String.escapeJson(value), "\"}")
 ```
 
 Searching strings is in the standard library's [`Strings`](/stdlib/utils#strings). A slice passed to `Bytes.concat` or `Crypto.keccak256` is read where it lies, not copied first.
@@ -295,7 +295,7 @@ storage is record {
 }
 
 (* ERC-2771: a trusted forwarder appends the original sender to the calldata. *)
-external view function msg_sender() : address is {
+external view function msgSender() : address is {
   const data : bytes := Evm.calldata();
   var sender : address := Evm.sender();
   if sender = storage.forwarder and data.length >= 20 then {
@@ -304,7 +304,7 @@ external view function msg_sender() : address is {
 } with sender
 
 (* The payload of a custom error `LowBalance(uint256)`, from its revert data. *)
-external pure function low_balance(const reason : bytes) : uint is {
+external pure function lowBalance(const reason : bytes) : uint is {
   var have : uint := 0;
   if reason.length >= 36 and bytes4(reason) = bytes4(Crypto.keccak256("LowBalance(uint256)")) then {
     have := Abi.decode(reason[4:], uint);
@@ -319,8 +319,8 @@ RFC 4648 base64, from `import "std/base64";`, with the same algorithm and lookup
 | Built-in | Type | Solidity |
 | --- | --- | --- |
 | `Base64.encode(data)` | `string` | `Base64.encode(data)`: the standard alphabet, padded with `=` |
-| `Base64.encode_url(data)` | `string` | `Base64.encode(data, true, true)`: `-` and `_` for `+` and `/`, no padding |
-| `Base64.encode_with(data, file_safe : bool, no_padding : bool)` | `string` | `Base64.encode(data, fileSafe, noPadding)` |
+| `Base64.encodeUrl(data)` | `string` | `Base64.encode(data, true, true)`: `-` and `_` for `+` and `/`, no padding |
+| `Base64.encodeWith(data, fileSafe : bool, noPadding : bool)` | `string` | `Base64.encode(data, fileSafe, noPadding)` |
 | `Base64.decode(data)` | `bytes` | `Base64.decode(data)`: either alphabet, padded or not, and `,` for 63 as in RFC 3501 |
 
 Like Solady's, `Base64.decode` does not check its input. A character Solady's lookup table covers decodes as it does there: `[` as 63, and other characters outside both alphabets below `{` as zero bits. So do `{` to DEL and the control characters, and a byte from `0x80` up decodes as its low seven bits.
@@ -386,21 +386,21 @@ From `import "std/uint";`, `import "std/int";`, and `import "std/address";`. Con
 | `Uint.max` | `uint`, or the expected unsigned type | `type(uint256).max` |
 | `Int.min`, `Int.max` | `int`, or the expected signed type | `type(int256).min`, `.max` |
 | `Address.zero` | `address` | `address(0)` |
-| `Uint.div_rem(a, b)` | `(T, T)` | `(a / b, a % b)` |
-| `Uint.mul_div(a, b, d : uint)` | `uint` | `Math.mulDiv(a, b, d)`: `a * b / d` with the product in 512 bits. `Panic(0x11)` if the result doesn't fit, `Panic(0x12)` if `d` is zero |
-| `Uint.mul_mod(a, b, d : uint)`, `Uint.add_mod(a, b, d : uint)` | `uint` | `mulmod(a, b, d)`, `addmod(a, b, d)`, without overflow. `Panic(0x12)` if `d` is zero |
-| `Uint.pop_count(x : uint)` | `uint` | Solady's `LibBit.popCount(x)`: how many bits are set |
+| `Uint.divRem(a, b)` | `(T, T)` | `(a / b, a % b)` |
+| `Uint.mulDiv(a, b, d : uint)` | `uint` | `Math.mulDiv(a, b, d)`: `a * b / d` with the product in 512 bits. `Panic(0x11)` if the result doesn't fit, `Panic(0x12)` if `d` is zero |
+| `Uint.mulMod(a, b, d : uint)`, `Uint.addMod(a, b, d : uint)` | `uint` | `mulmod(a, b, d)`, `addmod(a, b, d)`, without overflow. `Panic(0x12)` if `d` is zero |
+| `Uint.popCount(x : uint)` | `uint` | Solady's `LibBit.popCount(x)`: how many bits are set |
 | `Uint.clz(x : uint)` | `uint` | `LibBit.clz(x)`, `Math.clz(x)`: the zero bits above the highest set bit, 256 for zero. One `CLZ` on Osaka |
-| `Uint.wrapping_add(a, b)`, `Uint.wrapping_sub(a, b)`, `Uint.wrapping_mul(a, b)` | `T`, the unsigned type of both | `unchecked { a + b }` and the like: the result modulo 2^N for `T`'s N bits |
-| `Int.wrapping_add(a, b)`, `Int.wrapping_sub(a, b)`, `Int.wrapping_mul(a, b)` | `T`, the signed type of both | the same for signed types, in two's complement |
-| `Int.div_rem(a, b)` | `(T, T)` | `(a / b, a % b)`, truncating |
-| `Uint.from_bits(i : int)`, `Int.from_bits(n : uint)` | `uint`, `int` | `uint256(i)`, `int256(n)`: the same 256 bits, unchecked. `uint(i)` and `int(n)` check |
-| `Uint.to_string(n)` | `string` | `Strings.toString(n)`: an unsigned integer of any width in decimal |
-| `Int.to_string(n)` | `string` | `Strings.toStringSigned(n)`: a signed integer in decimal, `-` first when negative |
-| `Uint.to_hex_string(n)` | `string` | `Strings.toHexString(n)`: `0x` and lowercase hex in the fewest whole bytes, `0x00` for zero |
-| `Uint.to_hex_string(n, length : uint)` | `string` | `Strings.toHexString(n, length)`: exactly `length` bytes, zero-padded. `Panic(0x11)` if `n` doesn't fit |
-| `Address.to_hex_string(a)` | `string` | `Strings.toHexString(a)`: `0x` and 40 lowercase hex digits |
-| `Address.to_checksum_string(a)` | `string` | `Strings.toChecksumHexString(a)`: EIP-55 mixed case |
+| `Uint.wrappingAdd(a, b)`, `Uint.wrappingSub(a, b)`, `Uint.wrappingMul(a, b)` | `T`, the unsigned type of both | `unchecked { a + b }` and the like: the result modulo 2^N for `T`'s N bits |
+| `Int.wrappingAdd(a, b)`, `Int.wrappingSub(a, b)`, `Int.wrappingMul(a, b)` | `T`, the signed type of both | the same for signed types, in two's complement |
+| `Int.divRem(a, b)` | `(T, T)` | `(a / b, a % b)`, truncating |
+| `Uint.fromBits(i : int)`, `Int.fromBits(n : uint)` | `uint`, `int` | `uint256(i)`, `int256(n)`: the same 256 bits, unchecked. `uint(i)` and `int(n)` check |
+| `Uint.toString(n)` | `string` | `Strings.toString(n)`: an unsigned integer of any width in decimal |
+| `Int.toString(n)` | `string` | `Strings.toStringSigned(n)`: a signed integer in decimal, `-` first when negative |
+| `Uint.toHexString(n)` | `string` | `Strings.toHexString(n)`: `0x` and lowercase hex in the fewest whole bytes, `0x00` for zero |
+| `Uint.toHexString(n, length : uint)` | `string` | `Strings.toHexString(n, length)`: exactly `length` bytes, zero-padded. `Panic(0x11)` if `n` doesn't fit |
+| `Address.toHexString(a)` | `string` | `Strings.toHexString(a)`: `0x` and 40 lowercase hex digits |
+| `Address.toChecksumString(a)` | `string` | `Strings.toChecksumHexString(a)`: EIP-55 mixed case |
 
 ```lithe
 import "std/int";
@@ -413,7 +413,7 @@ storage is record {
 }
 
 external function name(const id : uint) is {
-  storage.label := String.concat("token #", Uint.to_string(id));
+  storage.label := String.concat("token #", Uint.toString(id));
 }
 
 external function reset() is {
@@ -424,7 +424,7 @@ external pure function bounds() : (int16, int16) is
   (Int.min, Int.max)
 
 external pure function elapsed(const later : uint32; const earlier : uint32) : uint32 is
-  Uint.wrapping_sub(later, earlier)
+  Uint.wrappingSub(later, earlier)
 ```
 
 Here `storage.cap := Uint.max` stores 255, because the target is a `uint8`, and `elapsed(1, 3)` is 4294967294: the difference wraps to 32 bits.

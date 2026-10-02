@@ -5,7 +5,7 @@ description: "New types over existing representations, for domain safety at no r
 
 # Nominal types
 
-`type token_id is uint` declares a new type that is stored and encoded as a `uint`, but that the type checker keeps apart from `uint` and from every other type over `uint`.
+`type tokenId is uint` declares a new type that is stored and encoded as a `uint`, but that the type checker keeps apart from `uint` and from every other type over `uint`.
 
 ```lithe [nominal-types.lithe]
 (* `type x is T` makes a new type with T's representation. It does not mix with T,
@@ -13,35 +13,35 @@ description: "New types over existing representations, for domain safety at no r
 
 import "std/evm";
 
-type basis_points is uint16;
-type token_id is uint;
-type order_id is bytes32;
+type BasisPoints is uint16;
+type TokenId is uint;
+type OrderId is bytes32;
 
 storage is record {
-  fee : basis_points;
-  owners : map(token_id, address);
+  fee : BasisPoints;
+  owners : map(TokenId, address);
 }
 
-external function set_fee(const fee : basis_points) is {
+external function setFee(const fee : BasisPoints) is {
   storage.fee := fee;
 }
 
-external function claim(const id : token_id) is {
+external function claim(const id : TokenId) is {
   storage.owners[id] := Evm.sender();
 }
 
 (* Convert out with the underlying type's name, and in with the new type's name. *)
-external view function fee_on(const amount : uint) : uint is
+external view function feeOn(const amount : uint) : uint is
   amount * uint(uint16(storage.fee)) / 10_000
 
-external pure function next(const id : token_id) : token_id is
-  token_id(uint(id) + 1)
+external pure function next(const id : TokenId) : TokenId is
+  TokenId(uint(id) + 1)
 ```
 
-Binding a raw `uint` to a `token_id` is a compile error:
+Binding a raw `uint` to a `tokenId` is a compile error:
 
 ```text
 initializer type does not match its annotation
 ```
 
-Integer literals take on nominal types directly: `const fee : basis_points := 500;`.
+Integer literals take on nominal types directly: `const fee : BasisPoints := 500;`.

@@ -9,7 +9,7 @@
    asset's revert on unchanged, as `SafeERC20` does. A deposit mints in the continuation
    of its `transferFrom`, so while the asset runs, the vault's shares and assets are those
    of before the deposit, as in OpenZeppelin's order. A withdrawal burns first and sends
-   the assets with `SafeERC20.safe_transfer` after, also in OpenZeppelin's order.
+   the assets with `SafeERC20.safeTransfer` after, also in OpenZeppelin's order.
 
      use SafeERC20;
      use ERC20 exposing IERC20, IERC20Name;
@@ -19,8 +19,8 @@
      supports IERC20, IERC20Metadata, IERC4626;
 
    `decimals` is the asset's plus the offset. A vault with limits or fees writes its own
-   entrypoints around `convert_to_shares`, `convert_to_assets`, `deposit_as`, and
-   `withdraw_as`, and exposes the rest of `IERC4626`. *)
+   entrypoints around `convertToShares`, `convertToAssets`, `depositAs`, and
+   `withdrawAs`, and exposes the rest of `IERC4626`. *)
 
 import "std/token/erc20";
 import "std/interfaces/erc4626";
@@ -38,7 +38,7 @@ module ERC4626 is {
   immutable erc4626 at "lithe.std.erc4626" is record {
     asset : IERC20;
     decimals : uint8;
-    virtual_shares : uint64;
+    virtualShares : uint64;
   }
 
   event Deposit of record {
@@ -57,19 +57,19 @@ module ERC4626 is {
   }
 
   (* Set once, from `deploy` or a migration. `decimals` is the asset's, which
-     `asset_decimals` reads, and `offset` adds decimals to the shares.
+     `assetDecimals` reads, and `offset` adds decimals to the shares.
      simplify: `10 ** offset` is kept in 64 bits, so an offset past 19 panics here; widen
-     `virtual_shares` if a vault ever needs more. *)
+     `virtualShares` if a vault ever needs more. *)
   function init(const asset : address; const decimals : uint8; const offset : uint8) is {
     erc4626.asset := IERC20(asset);
     erc4626.decimals := decimals + offset;
-    erc4626.virtual_shares := uint64(10 ** uint(offset));
+    erc4626.virtualShares := uint64(10 ** uint(offset));
   }
 
   (* The asset's `decimals`, or 18 when it has none that fits a `uint8`. *)
-  view function asset_decimals(const asset : address) : uint8 is {
+  view function assetDecimals(const asset : address) : uint8 is {
     var decimals : uint8 := 18;
-    case query Evm.static_call(asset, Abi.encode_call(IERC20Metadata.decimals)) of {
+    case query Evm.staticCall(asset, Abi.encodeCall(IERC20Metadata.decimals)) of {
       | Ok(data) -> {
           if data.length >= 32 and uint(Bytes.word(data, 0)) < 256 then {
             decimals := uint8(uint(Bytes.word(data, 0)));
@@ -79,96 +79,22 @@ module ERC4626 is {
     };
   } with decimals
 
-  view function asset() : address is
-    address(erc4626.asset)
-
-  view function decimals() : uint8 is
-    erc4626.decimals
-
-  view function total_assets() : uint is
+  view function heldAssets() : uint is
     query erc4626.asset.balanceOf(Evm.self())
 
   (* `assets` in shares, rounded up if `up`. *)
-  view function convert_to_shares(const assets : uint; const up : bool) : uint is
-    mul_div(assets, ERC20.total_supply() + uint(erc4626.virtual_shares), total_assets() + 1, up)
+  view function sharesFor(const assets : uint; const up : bool) : uint is
+    mulDiv(assets, ERC20.erc20.totalSupply + uint(erc4626.virtualShares), heldAssets() + 1, up)
 
-  view function convert_to_assets(const shares : uint; const up : bool) : uint is
-    mul_div(shares, total_assets() + 1, ERC20.total_supply() + uint(erc4626.virtual_shares), up)
+  view function assetsFor(const shares : uint; const up : bool) : uint is
+    mulDiv(shares, heldAssets() + 1, ERC20.erc20.totalSupply + uint(erc4626.virtualShares), up)
 
-  pure function mul_div(const a : uint; const b : uint; const d : uint; const up : bool) : uint is
-    Uint.mul_div(a, b, d) + uint(up) * uint(Uint.mul_mod(a, b, d) > 0)
-
-  view function max_deposit(const receiver : address) : uint is
-    Uint.max
-
-  view function max_mint(const receiver : address) : uint is
-    Uint.max
-
-  view function max_withdraw(const owner : address) : uint is
-    convert_to_assets(ERC20.balance_of(owner), false)
-
-  view function max_redeem(const owner : address) : uint is
-    ERC20.balance_of(owner)
-
-  view function preview_deposit(const assets : uint) : uint is
-    convert_to_shares(assets, false)
-
-  view function preview_mint(const shares : uint) : uint is
-    convert_to_assets(shares, true)
-
-  view function preview_withdraw(const assets : uint) : uint is
-    convert_to_shares(assets, true)
-
-  view function preview_redeem(const shares : uint) : uint is
-    convert_to_assets(shares, false)
-
-  function deposit(const assets : uint; const receiver : address) : uint
-    raises ERC4626ExceededMaxDeposit | SafeERC20FailedOperation | ERC20InvalidReceiver | ERC20InsufficientBalance
-      | forwarded
-  is {
-    (* `max_deposit` and `max_mint` are unlimited, so no deposit or mint exceeds them. A
-       vault with a limit checks it in its own entrypoint. *)
-    const shares : uint := preview_deposit(assets);
-    deposit_as(Evm.sender(), receiver, assets, shares);
-  } with shares
-
-  function mint(const shares : uint; const receiver : address) : uint
-    raises ERC4626ExceededMaxMint | SafeERC20FailedOperation | ERC20InvalidReceiver | ERC20InsufficientBalance
-      | forwarded
-  is {
-    const assets : uint := preview_mint(shares);
-    deposit_as(Evm.sender(), receiver, assets, shares);
-  } with assets
-
-  function withdraw(const assets : uint; const receiver : address; const owner : address) : uint
-    raises ERC4626ExceededMaxWithdraw | ERC20InsufficientAllowance | ERC20InvalidApprover | ERC20InvalidSpender
-      | ERC20InvalidSender | ERC20InsufficientBalance | SafeERC20FailedOperation | forwarded
-  is {
-    const most : uint := max_withdraw(owner);
-    assert(
-      assets <= most,
-      ERC4626ExceededMaxWithdraw { owner = owner; assets = assets; max = most; }
-    );
-    const shares : uint := preview_withdraw(assets);
-    withdraw_as(Evm.sender(), receiver, owner, assets, shares);
-  } with shares
-
-  function redeem(const shares : uint; const receiver : address; const owner : address) : uint
-    raises ERC4626ExceededMaxRedeem | ERC20InsufficientAllowance | ERC20InvalidApprover | ERC20InvalidSpender
-      | ERC20InvalidSender | ERC20InsufficientBalance | SafeERC20FailedOperation | forwarded
-  is {
-    const most : uint := max_redeem(owner);
-    assert(
-      shares <= most,
-      ERC4626ExceededMaxRedeem { owner = owner; shares = shares; max = most; }
-    );
-    const assets : uint := preview_redeem(shares);
-    withdraw_as(Evm.sender(), receiver, owner, assets, shares);
-  } with assets
+  pure function mulDiv(const a : uint; const b : uint; const d : uint; const up : bool) : uint is
+    Uint.mulDiv(a, b, d) + uint(up) * uint(Uint.mulMod(a, b, d) > 0)
 
   (* Takes `assets` from `caller`, then mints `shares` to `receiver`, in the transfer's
      continuation. *)
-  function deposit_as(const caller : address; const receiver : address; const assets : uint; const shares : uint)
+  function depositAs(const caller : address; const receiver : address; const assets : uint; const shares : uint)
     raises SafeERC20FailedOperation | ERC20InvalidReceiver | ERC20InsufficientBalance | forwarded
   is {
     defer IERC20OptionalReturn(address(erc4626.asset)).transferFrom(caller, Evm.self(), assets) then {
@@ -190,7 +116,7 @@ module ERC4626 is {
 
   (* Burns `shares` from `owner`, spending `caller`'s allowance unless it is the owner,
      then sends `assets` to `receiver` in a deferred call. *)
-  function withdraw_as(
+  function withdrawAs(
     const caller : address;
     const receiver : address;
     const owner : address;
@@ -201,7 +127,7 @@ module ERC4626 is {
       | ERC20InsufficientBalance | SafeERC20FailedOperation | forwarded
   is {
     if caller <> owner then {
-      ERC20.spend_allowance(owner, caller, shares);
+      ERC20.spendAllowance(owner, caller, shares);
     }
     ERC20.burn(owner, shares);
     emit Withdraw {
@@ -211,7 +137,7 @@ module ERC4626 is {
       assets = assets;
       shares = shares;
     };
-    SafeERC20.safe_transfer(erc4626.asset, receiver, assets);
+    SafeERC20.safeTransfer(erc4626.asset, receiver, assets);
   }
 
   external view function asset() : address is
@@ -221,59 +147,79 @@ module ERC4626 is {
     erc4626.decimals
 
   external view function totalAssets() : uint is
-    total_assets()
+    heldAssets()
 
   external view function convertToShares(const assets : uint) : uint is
-    convert_to_shares(assets, false)
+    sharesFor(assets, false)
 
   external view function convertToAssets(const shares : uint) : uint is
-    convert_to_assets(shares, false)
+    assetsFor(shares, false)
 
   external view function maxDeposit(const receiver : address) : uint is
-    max_deposit(receiver)
+    Uint.max
 
   external view function previewDeposit(const assets : uint) : uint is
-    preview_deposit(assets)
+    sharesFor(assets, false)
 
   external view function maxMint(const receiver : address) : uint is
-    max_mint(receiver)
+    Uint.max
 
   external view function previewMint(const shares : uint) : uint is
-    preview_mint(shares)
+    assetsFor(shares, true)
 
   external view function maxWithdraw(const owner : address) : uint is
-    max_withdraw(owner)
+    assetsFor(ERC20.erc20.balances[owner], false)
 
   external view function previewWithdraw(const assets : uint) : uint is
-    preview_withdraw(assets)
+    sharesFor(assets, true)
 
   external view function maxRedeem(const owner : address) : uint is
-    max_redeem(owner)
+    ERC20.erc20.balances[owner]
 
   external view function previewRedeem(const shares : uint) : uint is
-    preview_redeem(shares)
+    assetsFor(shares, false)
 
   external function deposit(const assets : uint; const receiver : address) : uint
     raises ERC4626ExceededMaxDeposit | SafeERC20FailedOperation | ERC20InvalidReceiver | ERC20InsufficientBalance
       | forwarded
-  is
-    deposit(assets, receiver)
+  is {
+    (* `maxDeposit` and `maxMint` are unlimited, so no deposit or mint exceeds them. A
+       vault with a limit checks it in its own entrypoint. *)
+    const shares : uint := sharesFor(assets, false);
+    depositAs(Evm.sender(), receiver, assets, shares);
+  } with shares
 
   external function mint(const shares : uint; const receiver : address) : uint
     raises ERC4626ExceededMaxMint | SafeERC20FailedOperation | ERC20InvalidReceiver | ERC20InsufficientBalance
       | forwarded
-  is
-    mint(shares, receiver)
+  is {
+    const assets : uint := assetsFor(shares, true);
+    depositAs(Evm.sender(), receiver, assets, shares);
+  } with assets
 
   external function withdraw(const assets : uint; const receiver : address; const owner : address) : uint
     raises ERC4626ExceededMaxWithdraw | ERC20InsufficientAllowance | ERC20InvalidApprover | ERC20InvalidSpender
       | ERC20InvalidSender | ERC20InsufficientBalance | SafeERC20FailedOperation | forwarded
-  is
-    withdraw(assets, receiver, owner)
+  is {
+    const most : uint := assetsFor(ERC20.erc20.balances[owner], false);
+    assert(
+      assets <= most,
+      ERC4626ExceededMaxWithdraw { owner = owner; assets = assets; max = most; }
+    );
+    const shares : uint := sharesFor(assets, true);
+    withdrawAs(Evm.sender(), receiver, owner, assets, shares);
+  } with shares
 
   external function redeem(const shares : uint; const receiver : address; const owner : address) : uint
     raises ERC4626ExceededMaxRedeem | ERC20InsufficientAllowance | ERC20InvalidApprover | ERC20InvalidSpender
       | ERC20InvalidSender | ERC20InsufficientBalance | SafeERC20FailedOperation | forwarded
-  is
-    redeem(shares, receiver, owner)
+  is {
+    const most : uint := ERC20.erc20.balances[owner];
+    assert(
+      shares <= most,
+      ERC4626ExceededMaxRedeem { owner = owner; shares = shares; max = most; }
+    );
+    const assets : uint := assetsFor(shares, false);
+    withdrawAs(Evm.sender(), receiver, owner, assets, shares);
+  } with assets
 }

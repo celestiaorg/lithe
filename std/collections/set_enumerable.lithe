@@ -2,32 +2,32 @@
 
 import "std/list";
 
-module SetEnumerable(T : map_key) is {
-  type self is record {
+module SetEnumerable(T : MapKey) is {
+  type Self is record {
     values : list(T);
     indexes : map(T, uint);
   }
 
-  type iterator is record {
+  type Iterator is record {
     index : uint;
   }
 
-  error Out_of_bounds;
+  error OutOfBounds;
 
-  view function contains(storage items : self; const value : T) : bool is
+  view function contains(storage items : Self; const value : T) : bool is
     items.indexes[value] > 0
 
-  view function length(storage items : self) : uint is
+  view function length(storage items : Self) : uint is
     items.values.length
 
-  view function at(storage items : self; const index : uint) : T
-    raises Out_of_bounds
+  view function at(storage items : Self; const index : uint) : T
+    raises OutOfBounds
   is {
-    assert(index < items.values.length, Out_of_bounds);
+    assert(index < items.values.length, OutOfBounds);
   } with items.values[index]
 
   (* Adds `value`; whether it was not there yet. *)
-  function add(storage items : self; const value : T) : bool is {
+  function add(storage items : Self; const value : T) : bool is {
     var fresh : bool := false;
     if items.indexes[value] = 0 then {
       List.push(items.values, value);
@@ -37,7 +37,7 @@ module SetEnumerable(T : map_key) is {
   } with fresh
 
   (* Removes `value`; whether it was there. *)
-  function remove(storage items : self; const value : T) : bool is {
+  function remove(storage items : Self; const value : T) : bool is {
     const found : uint := items.indexes[value];
     if found = 0 then {
       skip

@@ -16,7 +16,7 @@ external pure function decode(const data : string) : bytes is
   Base64.decode(data)
 
 external pure function escaped(const data : string) : bytes is {
-  const text : string := String.escape_json(data);
+  const text : string := String.escapeJson(data);
 } with Bytes.concat(bytes(text), Base64.decode(data))
 
 external function keep(const data : string; const salt : bytes32) is {

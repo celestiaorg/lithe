@@ -6,11 +6,11 @@ import "std/bytes";
 import "std/evm";
 import "std/list";
 
-type notes is list(string);
+type Notes is list(string);
 
 storage is record {
   notes : list(string);
-  by_id : map(uint, string);
+  byId : map(uint, string);
 }
 
 event Noted of record {
@@ -18,27 +18,27 @@ event Noted of record {
   notes : list(string);
 }
 
-external function set_notes(const xs : list(string)) is {
+external function setNotes(const xs : list(string)) is {
   storage.notes := xs;
   emit Noted { who = Evm.sender(); notes = xs; };
 }
 
-external function add_note(const x : string) is {
+external function addNote(const x : string) is {
   List.push(storage.notes, x);
 }
 
 external view function notes() : list(string) is
   storage.notes
 
-external view function note_at(const i : uint) : string is
+external view function noteAt(const i : uint) : string is
   storage.notes[i]
 
 external function name(const id : uint; const v : string) is {
-  storage.by_id[id] := v;
+  storage.byId[id] := v;
 }
 
-external view function name_of(const id : uint) : string is
-  storage.by_id[id]
+external view function nameOf(const id : uint) : string is
+  storage.byId[id]
 
 external pure function joined(const xs : list(bytes)) : bytes is {
   var out : bytes := "";
@@ -53,5 +53,5 @@ external pure function pair(const a : string; const b : string) : list(string) i
 external pure function same(const a : list(bytes); const b : list(bytes)) : bool is
   a = b
 
-external pure function round_trip(const xs : list(string)) : list(string) is
-  Abi.decode(Abi.encode(xs), notes)
+external pure function roundTrip(const xs : list(string)) : list(string) is
+  Abi.decode(Abi.encode(xs), Notes)

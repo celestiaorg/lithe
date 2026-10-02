@@ -25,7 +25,7 @@ contract UniswapV2Pair is {
   }
 
   (* Solidity's three packed variables, one slot written at once. *)
-  type reserves is record {
+  type Reserves is record {
     reserve0 : uint112;
     reserve1 : uint112;
     blockTimestampLast : uint32;
@@ -43,7 +43,7 @@ contract UniswapV2Pair is {
     nonces : map(address, uint);
     token0 : IERC20;
     token1 : IERC20;
-    reserves : reserves;
+    reserves : Reserves;
     price0CumulativeLast : uint;
     price1CumulativeLast : uint;
     kLast : uint;
@@ -97,7 +97,7 @@ contract UniswapV2Pair is {
       Crypto.keccak256("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)"),
       Crypto.keccak256("Uniswap V2"),
       Crypto.keccak256("1"),
-      Evm.chain_id(),
+      Evm.chainId(),
       Evm.self()
     ));
     storage.unlocked := 1;
@@ -130,24 +130,24 @@ contract UniswapV2Pair is {
   pure function uqdiv(const y : uint112; const x : uint112) : uint is
     (uint(y) << 112) / uint(x)
 
-  function mint_to(const to : address; const value : uint) is {
+  function mintTo(const to : address; const value : uint) is {
     storage.totalSupply := storage.totalSupply + value;
     storage.balanceOf[to] := storage.balanceOf[to] + value;
     emit Transfer { from = Address.zero; to = to; value = value; };
   }
 
-  function burn_from(const from : address; const value : uint) is {
+  function burnFrom(const from : address; const value : uint) is {
     storage.balanceOf[from] := storage.balanceOf[from] - value;
     storage.totalSupply := storage.totalSupply - value;
     emit Transfer { from = from; to = Address.zero; value = value; };
   }
 
-  function approve_as(const owner : address; const spender : address; const value : uint) is {
+  function approveAs(const owner : address; const spender : address; const value : uint) is {
     storage.allowance[owner][spender] := value;
     emit Approval { owner = owner; spender = spender; value = value; };
   }
 
-  function transfer_from(const from : address; const to : address; const value : uint) is {
+  function move(const from : address; const to : address; const value : uint) is {
     storage.balanceOf[from] := storage.balanceOf[from] - value;
     storage.balanceOf[to] := storage.balanceOf[to] + value;
     emit Transfer { from = from; to = to; value = value; };
@@ -208,11 +208,11 @@ contract UniswapV2Pair is {
     (storage.reserves.reserve0, storage.reserves.reserve1, storage.reserves.blockTimestampLast)
 
   external function approve(const spender : address; const value : uint) : bool is {
-    approve_as(Evm.sender(), spender, value);
+    approveAs(Evm.sender(), spender, value);
   } with true
 
   external function transfer(const to : address; const value : uint) : bool is {
-    transfer_from(Evm.sender(), to, value);
+    move(Evm.sender(), to, value);
   } with true
 
   external function transferFrom(const from : address; const to : address; const value : uint) : bool is {
@@ -220,7 +220,7 @@ contract UniswapV2Pair is {
     if allowed <> Uint.max then {
       storage.allowance[from][Evm.sender()] := allowed - value;
     }
-    transfer_from(from, to, value);
+    move(from, to, value);
   } with true
 
   external function permit(
@@ -234,11 +234,11 @@ contract UniswapV2Pair is {
   )
     raises Error
   is {
-    assert(deadline >= uint(Evm.block_timestamp()), Error("UniswapV2: EXPIRED"));
+    assert(deadline >= uint(Evm.blockTimestamp()), Error("UniswapV2: EXPIRED"));
     const nonce : uint := storage.nonces[owner];
     storage.nonces[owner] := nonce + 1;
     const prefix : bytes2 := 0x1901;
-    const digest : bytes32 := Crypto.keccak256(Abi.encode_packed(
+    const digest : bytes32 := Crypto.keccak256(Abi.encodePacked(
       prefix,
       immutable.DOMAIN_SEPARATOR,
       Crypto.keccak256(Abi.encode(
@@ -252,7 +252,7 @@ contract UniswapV2Pair is {
     ));
     const recovered : address := Crypto.ecrecover(digest, uint(v), r, s);
     assert(recovered <> Address.zero and recovered = owner, Error("UniswapV2: INVALID_SIGNATURE"));
-    approve_as(owner, spender, value);
+    approveAs(owner, spender, value);
   }
 
   function lock() is {
@@ -262,7 +262,7 @@ contract UniswapV2Pair is {
 
   (* `_safeTransfer`: a failed call, or `false`, is `TRANSFER_FAILED`. A token that
      returns nothing succeeds. *)
-  function safe_transfer(const token : IERC20; const to : address; const value : uint) is {
+  function safeTransfer(const token : IERC20; const to : address; const value : uint) is {
     defer token.transfer(to, value) then {
       | Ok(ok : option(bool)) -> {
           assert(ok <> Some(false), Error("UniswapV2: TRANSFER_FAILED"));
@@ -285,48 +285,48 @@ contract UniswapV2Pair is {
   function update(const balance0 : uint; const balance1 : uint; const reserve0 : uint112; const reserve1 : uint112) is {
     const most : uint112 := Uint.max;
     assert(balance0 <= uint(most) and balance1 <= uint(most), Error("UniswapV2: OVERFLOW"));
-    const block_timestamp : uint32 := uint32(uint(Evm.block_timestamp()) % 4294967296);
-    const time_elapsed : uint32 := Uint.wrapping_sub(block_timestamp, storage.reserves.blockTimestampLast);
-    if time_elapsed > 0 and reserve0 <> 0 and reserve1 <> 0 then {
-      storage.price0CumulativeLast := Uint.wrapping_add(
+    const blockTimestamp : uint32 := uint32(uint(Evm.blockTimestamp()) % 4294967296);
+    const timeElapsed : uint32 := Uint.wrappingSub(blockTimestamp, storage.reserves.blockTimestampLast);
+    if timeElapsed > 0 and reserve0 <> 0 and reserve1 <> 0 then {
+      storage.price0CumulativeLast := Uint.wrappingAdd(
         storage.price0CumulativeLast,
-        uqdiv(reserve1, reserve0) * uint(time_elapsed)
+        uqdiv(reserve1, reserve0) * uint(timeElapsed)
       );
-      storage.price1CumulativeLast := Uint.wrapping_add(
+      storage.price1CumulativeLast := Uint.wrappingAdd(
         storage.price1CumulativeLast,
-        uqdiv(reserve0, reserve1) * uint(time_elapsed)
+        uqdiv(reserve0, reserve1) * uint(timeElapsed)
       );
     }
     storage.reserves := {
       reserve0 = uint112(balance0);
       reserve1 = uint112(balance1);
-      blockTimestampLast = block_timestamp;
+      blockTimestampLast = blockTimestamp;
     };
     emit Sync { reserve0 = storage.reserves.reserve0; reserve1 = storage.reserves.reserve1; };
   }
 
   (* With the fee on, mints the fee recipient 1/6th of the growth in sqrt(k). The caller
      asks the factory for the recipient. *)
-  function mint_fee(const fee_to : address; const reserve0 : uint112; const reserve1 : uint112) : bool is {
-    const fee_on : bool := fee_to <> Address.zero;
-    const k_last : uint := storage.kLast;
-    if fee_on then {
-      if k_last <> 0 then {
-        const root_k : uint := sqrt(uint(reserve0) * uint(reserve1));
-        const root_k_last : uint := sqrt(k_last);
-        if root_k > root_k_last then {
-          const numerator : uint := storage.totalSupply * (root_k - root_k_last);
-          const denominator : uint := root_k * 5 + root_k_last;
+  function mintFee(const feeTo : address; const reserve0 : uint112; const reserve1 : uint112) : bool is {
+    const feeOn : bool := feeTo <> Address.zero;
+    const kLast : uint := storage.kLast;
+    if feeOn then {
+      if kLast <> 0 then {
+        const rootK : uint := sqrt(uint(reserve0) * uint(reserve1));
+        const rootKLast : uint := sqrt(kLast);
+        if rootK > rootKLast then {
+          const numerator : uint := storage.totalSupply * (rootK - rootKLast);
+          const denominator : uint := rootK * 5 + rootKLast;
           const liquidity : uint := numerator / denominator;
           if liquidity > 0 then {
-            mint_to(fee_to, liquidity);
+            mintTo(feeTo, liquidity);
           }
         }
       }
-    } else if k_last <> 0 then {
+    } else if kLast <> 0 then {
       storage.kLast := 0;
     }
-  } with fee_on
+  } with feeOn
 
   external function mint(const to : address) : uint
     raises Error
@@ -338,19 +338,19 @@ contract UniswapV2Pair is {
     const balance1 : uint := query storage.token1.balanceOf(Evm.self());
     const amount0 : uint := balance0 - uint(reserve0);
     const amount1 : uint := balance1 - uint(reserve1);
-    const fee_on : bool := mint_fee(query IUniswapV2Factory(immutable.factory).feeTo(), reserve0, reserve1);
-    const total_supply : uint := storage.totalSupply;
+    const feeOn : bool := mintFee(query IUniswapV2Factory(immutable.factory).feeTo(), reserve0, reserve1);
+    const totalSupply : uint := storage.totalSupply;
     var liquidity : uint := 0;
-    if total_supply = 0 then {
+    if totalSupply = 0 then {
       liquidity := sqrt(amount0 * amount1) - 1000;
-      mint_to(Address.zero, 1000);
+      mintTo(Address.zero, 1000);
     } else {
-      liquidity := min(amount0 * total_supply / uint(reserve0), amount1 * total_supply / uint(reserve1));
+      liquidity := min(amount0 * totalSupply / uint(reserve0), amount1 * totalSupply / uint(reserve1));
     }
     assert(liquidity > 0, Error("UniswapV2: INSUFFICIENT_LIQUIDITY_MINTED"));
-    mint_to(to, liquidity);
+    mintTo(to, liquidity);
     update(balance0, balance1, reserve0, reserve1);
-    if fee_on then {
+    if feeOn then {
       storage.kLast := uint(storage.reserves.reserve0) * uint(storage.reserves.reserve1);
     }
     emit Mint { sender = Evm.sender(); amount0 = amount0; amount1 = amount1; };
@@ -368,18 +368,18 @@ contract UniswapV2Pair is {
     const balance0 : uint := query token0.balanceOf(Evm.self());
     const balance1 : uint := query token1.balanceOf(Evm.self());
     const liquidity : uint := storage.balanceOf[Evm.self()];
-    const fee_on : bool := mint_fee(query IUniswapV2Factory(immutable.factory).feeTo(), reserve0, reserve1);
-    const total_supply : uint := storage.totalSupply;
-    const amount0 : uint := liquidity * balance0 / total_supply;
-    const amount1 : uint := liquidity * balance1 / total_supply;
+    const feeOn : bool := mintFee(query IUniswapV2Factory(immutable.factory).feeTo(), reserve0, reserve1);
+    const totalSupply : uint := storage.totalSupply;
+    const amount0 : uint := liquidity * balance0 / totalSupply;
+    const amount1 : uint := liquidity * balance1 / totalSupply;
     assert(amount0 > 0 and amount1 > 0, Error("UniswapV2: INSUFFICIENT_LIQUIDITY_BURNED"));
-    burn_from(Evm.self(), liquidity);
-    safe_transfer(token0, to, amount0);
+    burnFrom(Evm.self(), liquidity);
+    safeTransfer(token0, to, amount0);
     defer token1.transfer(to, amount1) then {
       | Ok(ok : option(bool)) -> {
           assert(ok <> Some(false), Error("UniswapV2: TRANSFER_FAILED"));
           update(query token0.balanceOf(Evm.self()), query token1.balanceOf(Evm.self()), reserve0, reserve1);
-          if fee_on then {
+          if feeOn then {
             storage.kLast := uint(storage.reserves.reserve0) * uint(storage.reserves.reserve1);
           }
           emit Burn { sender = Evm.sender(); amount0 = amount0; amount1 = amount1; to = to; };
@@ -393,7 +393,7 @@ contract UniswapV2Pair is {
 
   (* After the transfers and the callback: the input is what arrived beyond the
      reserves, and the balances, less the 0.3% fee on it, must keep k. *)
-  function settle_swap(
+  function settleSwap(
     const balance0 : uint;
     const balance1 : uint;
     const amount0Out : uint;
@@ -443,14 +443,14 @@ contract UniswapV2Pair is {
     assert(to <> address(token0) and to <> address(token1), Error("UniswapV2: INVALID_TO"));
     (* The last call settles: the callback, or else the last transfer. *)
     if amount0Out > 0 and (amount1Out > 0 or data.length > 0) then {
-      safe_transfer(token0, to, amount0Out);
+      safeTransfer(token0, to, amount0Out);
     }
     if data.length > 0 then {
       if amount1Out > 0 then {
-        safe_transfer(token1, to, amount1Out);
+        safeTransfer(token1, to, amount1Out);
       }
       defer IUniswapV2Callee(to).uniswapV2Call(Evm.sender(), amount0Out, amount1Out, data) then {
-        settle_swap(
+        settleSwap(
           query token0.balanceOf(Evm.self()),
           query token1.balanceOf(Evm.self()),
           amount0Out,
@@ -470,7 +470,7 @@ contract UniswapV2Pair is {
       defer last.transfer(to, amount) then {
         | Ok(ok : option(bool)) -> {
             assert(ok <> Some(false), Error("UniswapV2: TRANSFER_FAILED"));
-            settle_swap(
+            settleSwap(
               query token0.balanceOf(Evm.self()),
               query token1.balanceOf(Evm.self()),
               amount0Out,

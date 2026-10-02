@@ -1,5 +1,5 @@
 (* Access control from the standard library: roles for minting and pausing, and an owner
-   handed over in two steps. A role is a `role`, so a stray `bytes32` can't be passed
+   handed over in two steps. A role is a `Role`, so a stray `bytes32` can't be passed
    where a role is meant. *)
 
 import "std/crypto";
@@ -22,25 +22,25 @@ contract Registry is {
     entries : map(address, uint);
   }
 
-  pure function minter() : role is
-    role(Crypto.keccak256("MINTER_ROLE"))
+  pure function minter() : Role is
+    Role(Crypto.keccak256("MINTER_ROLE"))
 
-  pure function pauser() : role is
-    role(Crypto.keccak256("PAUSER_ROLE"))
+  pure function pauser() : Role is
+    Role(Crypto.keccak256("PAUSER_ROLE"))
 
   deploy()
     raises OwnableInvalidOwner
   is {
     Ownable.init(Evm.sender());
-    AccessControl.grant(AccessControl.default_admin_role(), Evm.sender());
+    AccessControl.grant(AccessControl.defaultAdminRole(), Evm.sender());
     AccessControl.grant(minter(), Evm.sender());
   }
 
-  external function record_entry(const account : address; const amount : uint)
+  external function recordEntry(const account : address; const amount : uint)
     raises AccessControlUnauthorizedAccount | EnforcedPause
   is {
-    AccessControl.check_role(minter());
-    Pausable.require_not_paused();
+    AccessControl.checkRole(minter());
+    Pausable.requireNotPaused();
     storage.entries[account] := storage.entries[account] + amount;
   }
 
@@ -48,10 +48,10 @@ contract Registry is {
     storage.entries[account]
 
   (* The owner decides who may pause. *)
-  external function set_pauser(const account : address; const allowed : bool)
+  external function setPauser(const account : address; const allowed : bool)
     raises OwnableUnauthorizedAccount
   is {
-    Ownable.check_owner();
+    Ownable.checkOwner();
     if allowed then {
       AccessControl.grant(pauser(), account);
     } else {
@@ -62,14 +62,14 @@ contract Registry is {
   external function pause()
     raises AccessControlUnauthorizedAccount | EnforcedPause
   is {
-    AccessControl.check_role(pauser());
+    AccessControl.checkRole(pauser());
     Pausable.pause();
   }
 
   external function unpause()
     raises AccessControlUnauthorizedAccount | ExpectedPause
   is {
-    AccessControl.check_role(pauser());
+    AccessControl.checkRole(pauser());
     Pausable.unpause();
   }
 }

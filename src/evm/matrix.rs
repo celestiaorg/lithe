@@ -72,11 +72,11 @@ const TYPES: &[Ty] = &[
     },
     Ty { name: "wei", decl: "", samples: &["1eth", "0wei", "wei(Uint.max)"], tags: SCALAR, sig: "uint256", out: None },
     Ty { name: "timestamp", decl: "", samples: &["timestamp(1700000000)", "timestamp(0)"], tags: SCALAR, sig: "uint256", out: None },
-    Ty { name: "bps", decl: "type bps is uint16;", samples: &["500", "0", "65535"], tags: SCALAR, sig: "uint16", out: None },
+    Ty { name: "Bps", decl: "type Bps is uint16;", samples: &["500", "0", "65535"], tags: SCALAR, sig: "uint16", out: None },
     Ty {
-        name: "owner",
-        decl: "type owner is address;",
-        samples: &["owner(0x00000000000000000000000000000000000000ab)", "owner(0xffffffffffffffffffffffffffffffffffffffff)"],
+        name: "Owner",
+        decl: "type Owner is address;",
+        samples: &["Owner(0x00000000000000000000000000000000000000ab)", "Owner(0xffffffffffffffffffffffffffffffffffffffff)"],
         tags: SCALAR,
         sig: "address",
         out: None,
@@ -89,7 +89,7 @@ const TYPES: &[Ty] = &[
         sig: "address",
         out: None,
     },
-    Ty { name: "phase", decl: "type phase is Open | Paused | Closed", samples: &["Closed", "Open", "Paused"], tags: SCALAR, sig: "uint8", out: None },
+    Ty { name: "Phase", decl: "type Phase is Open | Paused | Closed", samples: &["Closed", "Open", "Paused"], tags: SCALAR, sig: "uint8", out: None },
     Ty {
         name: "string",
         decl: "",
@@ -107,24 +107,24 @@ const TYPES: &[Ty] = &[
         out: None,
     },
     Ty {
-        name: "blob",
-        decl: "type blob is bytes;",
-        samples: &["blob(0x01)", "blob(bytes(\"\"))", "blob(0x0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f2021)"],
+        name: "Blob",
+        decl: "type Blob is bytes;",
+        samples: &["Blob(0x01)", "Blob(bytes(\"\"))", "Blob(0x0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f2021)"],
         tags: DYN,
         sig: "bytes",
         out: None,
     },
     Ty {
-        name: "label",
-        decl: "type label is string;",
-        samples: &["label(\"hi\")", "label(\"\")", "label(\"a string that is longer than thirty-two bytes, to spill\")"],
+        name: "Label",
+        decl: "type Label is string;",
+        samples: &["Label(\"hi\")", "Label(\"\")", "Label(\"a string that is longer than thirty-two bytes, to spill\")"],
         tags: DYN,
         sig: "string",
         out: None,
     },
     Ty {
-        name: "pt",
-        decl: "type pt is record { a : uint8; b : address; c : int16; d : uint; }",
+        name: "Pt",
+        decl: "type Pt is record { a : uint8; b : address; c : int16; d : uint; }",
         samples: &[
             "{ a = 1; b = 0x00000000000000000000000000000000000000ab; c = -2; d = 3; }",
             "{ a = 255; b = 0xffffffffffffffffffffffffffffffffffffffff; c = -32768; d = Uint.max; }",
@@ -135,16 +135,16 @@ const TYPES: &[Ty] = &[
         out: None,
     },
     Ty {
-        name: "outer",
-        decl: "type inner is record { a : uint8; b : bool; }\ntype outer is record { p : inner; k : int8; }",
+        name: "Outer",
+        decl: "type Inner is record { a : uint8; b : bool; }\ntype Outer is record { p : Inner; k : int8; }",
         samples: &["{ p = { a = 1; b = true; }; k = -1; }", "{ p = { a = 255; b = false; }; k = 127; }"],
         tags: STATIC,
         sig: "(uint8,bool),int8",
         out: None,
     },
     Ty {
-        name: "doc",
-        decl: "type doc is record { n : uint8; s : string; xs : list(uint); }",
+        name: "Doc",
+        decl: "type Doc is record { n : uint8; s : string; xs : list(uint); }",
         samples: &[
             "{ n = 1; s = \"a string that is longer than thirty-two bytes, to spill\"; xs = [1, 2, 3]; }",
             "{ n = 2; s = \"\"; xs = []; }",
@@ -155,8 +155,8 @@ const TYPES: &[Ty] = &[
         out: None,
     },
     Ty {
-        name: "tr",
-        decl: "type tr is tuple record { a : uint; s : string; }",
+        name: "Tr",
+        decl: "type Tr is tuple record { a : uint; s : string; }",
         samples: &["{ a = 1; s = \"one\"; }", "{ a = 0; s = \"\"; }"],
         tags: DYNAMIC,
         sig: "(uint256,string)",
@@ -204,8 +204,8 @@ const TYPES: &[Ty] = &[
         out: None,
     },
     Ty {
-        name: "list(pt)",
-        decl: "type pt is record { a : uint8; b : address; c : int16; d : uint; }",
+        name: "list(Pt)",
+        decl: "type Pt is record { a : uint8; b : address; c : int16; d : uint; }",
         samples: &["[{ a = 1; b = 0x00000000000000000000000000000000000000ab; c = -2; d = 3; }]", "[]"],
         tags: DYNAMIC,
         sig: "(uint8,address,int16,uint256)[]",
@@ -270,16 +270,16 @@ const TYPES: &[Ty] = &[
         out: Some(("(bool, bytes32)", "case v of { Some(x) -> (true, x) | None -> (false, bytes32(0x07)) }")),
     },
     Ty {
-        name: "option(phase)",
-        decl: "type phase is Open | Paused | Closed",
+        name: "option(Phase)",
+        decl: "type Phase is Open | Paused | Closed",
         samples: &["Some(Open)", "None", "Some(Closed)"],
         tags: OPTION,
         sig: "",
-        out: Some(("(bool, phase)", "case v of { Some(x) -> (true, x) | None -> (false, Paused) }")),
+        out: Some(("(bool, Phase)", "case v of { Some(x) -> (true, x) | None -> (false, Paused) }")),
     },
     Ty {
-        name: "option(pt)",
-        decl: "type pt is record { a : uint8; b : address; c : int16; d : uint; }",
+        name: "option(Pt)",
+        decl: "type Pt is record { a : uint8; b : address; c : int16; d : uint; }",
         samples: &["Some({ a = 1; b = 0x00000000000000000000000000000000000000ab; c = -2; d = 3; })", "None", "Some({ a = 0; b = 0; c = 0; d = 0; })"],
         tags: OPTION,
         sig: "",
@@ -335,8 +335,8 @@ const TYPES: &[Ty] = &[
         out: Some(("(bool, list(uint))", "case v of { Some(x) -> (true, x) | None -> (false, [7]) }")),
     },
     Ty {
-        name: "option(doc)",
-        decl: "type doc is record { n : uint8; s : string; xs : list(uint); }",
+        name: "option(Doc)",
+        decl: "type Doc is record { n : uint8; s : string; xs : list(uint); }",
         samples: &[
             "Some({ n = 1; s = \"a string that is longer than thirty-two bytes, to spill\"; xs = [1, 2, 3]; })",
             "None",
@@ -350,8 +350,8 @@ const TYPES: &[Ty] = &[
         )),
     },
     Ty {
-        name: "option(dyn)",
-        decl: "type dyn is | Name of string | Nums of list(uint) | Blank",
+        name: "option(Dyn)",
+        decl: "type Dyn is | Name of string | Nums of list(uint) | Blank",
         samples: &["Some(Name(\"a string that is longer than thirty-two bytes, to spill\"))", "None", "Some(Blank)", "Some(Nums([1]))"],
         tags: "eq nest elem opt",
         sig: "",
@@ -361,8 +361,8 @@ const TYPES: &[Ty] = &[
         )),
     },
     Ty {
-        name: "stamp",
-        decl: "type stamp is | Nil | Stamp of uint64 | Who of address",
+        name: "Stamp",
+        decl: "type Stamp is | Nil | Stamp of uint64 | Who of address",
         samples: &["Stamp(18446744073709551615)", "Nil", "Who(0x00000000000000000000000000000000000000ab)", "Stamp(0)"],
         tags: OPTION,
         sig: "",
@@ -372,8 +372,8 @@ const TYPES: &[Ty] = &[
         )),
     },
     Ty {
-        name: "big",
-        decl: "type big is | A of uint | B of (uint8, int) | C",
+        name: "Big",
+        decl: "type Big is | A of uint | B of (uint8, int) | C",
         samples: &["A(Uint.max)", "C", "B((uint8(255), Int.min))", "A(0)"],
         tags: OPTION,
         sig: "",
@@ -383,8 +383,8 @@ const TYPES: &[Ty] = &[
         )),
     },
     Ty {
-        name: "dyn",
-        decl: "type dyn is | Name of string | Nums of list(uint) | Blank",
+        name: "Dyn",
+        decl: "type Dyn is | Name of string | Nums of list(uint) | Blank",
         samples: &["Name(\"a string that is longer than thirty-two bytes, to spill\")", "Blank", "Nums([1, 2])", "Name(\"\")"],
         tags: "eq nest elem opt",
         sig: "",
@@ -394,8 +394,8 @@ const TYPES: &[Ty] = &[
         )),
     },
     Ty {
-        name: "note",
-        decl: "type memo is record { n : uint8; s : string; }\ntype note is | Gone | Plain of memo | Pair of (uint, list(string))",
+        name: "Note",
+        decl: "type Memo is record { n : uint8; s : string; }\ntype Note is | Gone | Plain of Memo | Pair of (uint, list(string))",
         samples: &[
             "Plain({ n = 255; s = \"a string that is longer than thirty-two bytes, to spill\"; })",
             "Pair((Uint.max, [\"\", \"b\"]))",
@@ -411,8 +411,8 @@ const TYPES: &[Ty] = &[
         )),
     },
     Ty {
-        name: "mix",
-        decl: "type mix is record { o : option(uint); s : string; b : option(bytes); }",
+        name: "Mix",
+        decl: "type Mix is record { o : option(uint); s : string; b : option(bytes); }",
         samples: &[
             "{ o = Some(0); s = \"a string that is longer than thirty-two bytes, to spill\"; b = None; }",
             "{ o = None; s = \"\"; b = Some(0x01); }",
@@ -469,8 +469,8 @@ struct Place {
     read: &'static str,
 }
 
-const HOLDER: &str = "type holder is record { pre : uint8; x : $T; post : bool; }";
-const BOX: &str = "type box is | Empty | Full of $T | Other of uint";
+const HOLDER: &str = "type Holder is record { pre : uint8; x : $T; post : bool; }";
+const BOX: &str = "type Box is | Empty | Full of $T | Other of uint";
 
 const fn local(
     name: &'static str,
@@ -545,8 +545,8 @@ const PLACES: &[Place] = &[
         "x",
     ),
     local("tuple assign", "nest", "", "var x : $T := $W; var p : uint8 := 0; (p, x) := (uint8(1), $V);", "x"),
-    local("record field", "nest", HOLDER, "const h : holder := { pre = 9; x = $V; post = true; };", "h.x"),
-    local("var record field", "nest", HOLDER, "var h : holder := { pre = 9; x = $W; post = true; }; h.x := $V;", "h.x"),
+    local("record field", "nest", HOLDER, "const h : Holder := { pre = 9; x = $V; post = true; };", "h.x"),
+    local("var record field", "nest", HOLDER, "var h : Holder := { pre = 9; x = $W; post = true; }; h.x := $V;", "h.x"),
     local("list literal", "elem", "", "const xs : list($T) := [$W, $V, $W];", "xs[1]"),
     local(
         "list push pop",
@@ -559,7 +559,7 @@ const PLACES: &[Place] = &[
     local("fixed list", "elem", "", "const xs : list($T, 3) := [$W, $V, $W];", "xs[1]"),
     local("fixed list write", "elem", "", "var xs : list($T, 2) := [$W, $W]; xs[1] := $V;", "xs[1]"),
     local("nested list", "elem", "", "const xs : list(list($T)) := [[$W], [$W, $V]];", "xs[1][1]"),
-    local("list of records", "elem nest", HOLDER, "const hs : list(holder) := [{ pre = 1; x = $W; post = false; }, { pre = 2; x = $V; post = true; }];", "hs[1].x"),
+    local("list of records", "elem nest", HOLDER, "const hs : list(Holder) := [{ pre = 1; x = $W; post = false; }, { pre = 2; x = $V; post = true; }];", "hs[1].x"),
     local("nested list write", "elem", "", "var xs : list(list($T)) := [[$W], [$W, $W]]; xs[1][1] := $V;", "xs[1][1]"),
     local(
         "nested list push pop",
@@ -589,10 +589,10 @@ const PLACES: &[Place] = &[
         "const xs : list(list($T)) := wrap($V, $W);",
         "xs[1][1]",
     ),
-    local("list of records write", "elem nest", HOLDER, "var hs : list(holder) := [{ pre = 1; x = $W; post = false; }, { pre = 2; x = $W; post = true; }]; hs[1].x := $V;", "hs[1].x"),
-    local("list of records element", "elem nest", HOLDER, "const hs : list(holder) := [{ pre = 1; x = $W; post = false; }, { pre = 2; x = $V; post = true; }]; const h : holder := hs[1];", "h.x"),
+    local("list of records write", "elem nest", HOLDER, "var hs : list(Holder) := [{ pre = 1; x = $W; post = false; }, { pre = 2; x = $W; post = true; }]; hs[1].x := $V;", "hs[1].x"),
+    local("list of records element", "elem nest", HOLDER, "const hs : list(Holder) := [{ pre = 1; x = $W; post = false; }, { pre = 2; x = $V; post = true; }]; const h : Holder := hs[1];", "h.x"),
     local("option", "opt", "", "const o : option($T) := Some($V);", "case o of { Some(x) -> x | None -> $W }"),
-    local("variant payload", "nest", BOX, "const b : box := Full($V);", "case b of { Full(x) -> x | Empty | Other -> $W }"),
+    local("variant payload", "nest", BOX, "const b : Box := Full($V);", "case b of { Full(x) -> x | Empty | Other -> $W }"),
     local("equality", "eq", "", "const a : $T := $V; const same : bool := a = a;", "a"),
     local("abi codec", "abi decode", "", "const a : $T := $V; const d : bytes := Abi.encode(a);", "Abi.decode(d, $N)"),
     local("query", "abi", "interface Echo is { view function echo(x : $T) : $T; }", "skip;", "query Echo(address(0xcd)).echo($V)"),
@@ -620,7 +620,7 @@ const PLACES: &[Place] = &[
     local(
         "transient record",
         "fixed nest",
-        "type holder is record { pre : uint8; x : $T; post : bool; } transient storage is record { h : holder; }",
+        "type Holder is record { pre : uint8; x : $T; post : bool; } transient storage is record { h : Holder; }",
         "transient.h := { pre = 1; x = $W; post = true; }; transient.h.x := $V;",
         "transient.h.x",
     ),
@@ -638,7 +638,7 @@ const PLACES: &[Place] = &[
         name: "transient list of records",
         kind: Kind::Local,
         needs: "fixed elem nest",
-        decl: "type holder is record { pre : uint8; x : $T; post : bool; } transient storage is record { hs : list(holder, 2); }",
+        decl: "type Holder is record { pre : uint8; x : $T; post : bool; } transient storage is record { hs : list(Holder, 2); }",
         storage: "",
         write: "transient.hs[uint(storage.pre) - 164] := { pre = 1; x = $W; post = true; }; transient.hs[1].x := $V;",
         load: "",
@@ -647,7 +647,7 @@ const PLACES: &[Place] = &[
     local(
         "transient variant",
         "fixed nest",
-        "type box is | Empty | Full of $T | Other of uint transient storage is record { b : box; }",
+        "type Box is | Empty | Full of $T | Other of uint transient storage is record { b : Box; }",
         "transient.b := Other(5); transient.b := Full($V);",
         "case transient.b of { Full(x) -> x | Empty | Other -> $W }",
     ),
@@ -665,7 +665,7 @@ const PLACES: &[Place] = &[
         name: "transient map of records",
         kind: Kind::Local,
         needs: "fixed nest",
-        decl: "type holder is record { pre : uint8; x : $T; post : bool; } transient storage is record { m : map(uint, holder); }",
+        decl: "type Holder is record { pre : uint8; x : $T; post : bool; } transient storage is record { m : map(uint, Holder); }",
         storage: "",
         write: "transient.m[2] := { pre = 1; x = $W; post = true; }; transient.m[2].x := $V;",
         load: "",
@@ -774,18 +774,18 @@ const PLACES: &[Place] = &[
         load: "const ys : list(list($T)) := storage.xs;",
         read: "ys[1][1]",
     },
-    stored("stored record field", "nest", HOLDER, "h : holder;", "storage.h.x := $V;", "storage.h.x"),
+    stored("stored record field", "nest", HOLDER, "h : Holder;", "storage.h.x := $V;", "storage.h.x"),
     Place {
         name: "stored record whole",
         kind: Kind::Stored,
         needs: "nest",
         decl: HOLDER,
-        storage: "h : holder;",
+        storage: "h : Holder;",
         write: "storage.h := { pre = 9; x = $V; post = true; };",
-        load: "const h : holder := storage.h;",
+        load: "const h : Holder := storage.h;",
         read: "h.x",
     },
-    stored("map of records", "nest", HOLDER, "m : map(uint, holder);", "storage.m[2].x := $V;", "storage.m[2].x"),
+    stored("map of records", "nest", HOLDER, "m : map(uint, Holder);", "storage.m[2].x := $V;", "storage.m[2].x"),
     stored("map of lists", "elem nest", "", "m : map(uint, list($T));", "List.push(storage.m[1], $V);", "storage.m[1][storage.m[1].length - 1]"),
     stored(
         "map of lists pop",
@@ -819,13 +819,13 @@ const PLACES: &[Place] = &[
         "stored list of records",
         "elem nest",
         HOLDER,
-        "hs : list(holder);",
+        "hs : list(Holder);",
         "if storage.hs.length = 0 then { List.push(storage.hs, { pre = 1; x = $W; post = true; }); } storage.hs[0].x := $V;",
         "storage.hs[0].x",
     ),
     stored("stored option", "opt", "", "o : option($T);", "storage.o := None; storage.o := Some($V);", "case storage.o of { Some(x) -> x | None -> $W }"),
     stored("map of options", "opt nest", "", "m : map(uint, option($T));", "storage.m[4] := Some($V);", "case storage.m[4] of { Some(x) -> x | None -> $W }"),
-    stored("stored variant", "nest", BOX, "b : box;", "storage.b := Other(5); storage.b := Full($V);", "case storage.b of { Full(x) -> x | Empty | Other -> $W }"),
+    stored("stored variant", "nest", BOX, "b : Box;", "storage.b := Other(5); storage.b := Full($V);", "case storage.b of { Full(x) -> x | Empty | Other -> $W }"),
     Place {
         name: "stored tuple",
         kind: Kind::Stored,
@@ -864,7 +864,7 @@ const PLACES: &[Place] = &[
         read: "storage.m[$V]",
     },
     deleted("delete local", "", "", "", "var x : $T := $V;", "delete x;", "x"),
-    deleted("delete local record field", "nest", HOLDER, "", "var h : holder := { pre = 9; x = $V; post = true; };", "delete h.x;", "h.x"),
+    deleted("delete local record field", "nest", HOLDER, "", "var h : Holder := { pre = 9; x = $V; post = true; };", "delete h.x;", "h.x"),
     deleted("delete local list element", "elem", "", "", "var xs : list($T) := [$W, $V];", "delete xs[1];", "xs[1]"),
     deleted("delete transient", "fixed", "transient storage is record { x : $T; }", "", "transient.x := $V;", "delete transient.x;", "transient.x"),
     deleted("delete storage", "", "", "x : $T;", "storage.x := $V;", "delete storage.x;", "storage.x"),
@@ -878,10 +878,10 @@ const PLACES: &[Place] = &[
         "delete storage.m[Evm.sender()][3];",
         "storage.m[0x0000000000000000000000000000000000000001][3]",
     ),
-    deleted("delete stored record", "nest", HOLDER, "h : holder;", "storage.h := { pre = 0; x = $V; post = false; };", "delete storage.h;", "storage.h.x"),
-    deleted("delete stored record field", "nest", HOLDER, "h : holder;", "storage.h := { pre = 9; x = $V; post = true; };", "delete storage.h.x;", "storage.h.x"),
-    deleted("delete map record", "nest", HOLDER, "m : map(uint, holder);", "storage.m[2] := { pre = 0; x = $V; post = false; };", "delete storage.m[2];", "storage.m[2].x"),
-    deleted("delete map record field", "nest", HOLDER, "m : map(uint, holder);", "storage.m[2] := { pre = 9; x = $V; post = true; };", "delete storage.m[2].x;", "storage.m[2].x"),
+    deleted("delete stored record", "nest", HOLDER, "h : Holder;", "storage.h := { pre = 0; x = $V; post = false; };", "delete storage.h;", "storage.h.x"),
+    deleted("delete stored record field", "nest", HOLDER, "h : Holder;", "storage.h := { pre = 9; x = $V; post = true; };", "delete storage.h.x;", "storage.h.x"),
+    deleted("delete map record", "nest", HOLDER, "m : map(uint, Holder);", "storage.m[2] := { pre = 0; x = $V; post = false; };", "delete storage.m[2];", "storage.m[2].x"),
+    deleted("delete map record field", "nest", HOLDER, "m : map(uint, Holder);", "storage.m[2] := { pre = 9; x = $V; post = true; };", "delete storage.m[2].x;", "storage.m[2].x"),
     deleted("delete stored list element", "elem", "", "xs : list($T);", "storage.xs := [$V, $V];", "delete storage.xs[1]; delete storage.xs[0];", "storage.xs[1]"),
     deleted("delete stored fixed list element", "elem", "", "xs : list($T, 2);", "storage.xs[0] := $V; storage.xs[1] := $V;", "delete storage.xs[0]; delete storage.xs[1];", "storage.xs[1]"),
     deleted("delete map list element", "elem nest", "", "m : map(uint, list($T));", "storage.m[1] := [$V, $V];", "delete storage.m[1][0]; delete storage.m[1][1];", "storage.m[1][1]"),
@@ -890,7 +890,7 @@ const PLACES: &[Place] = &[
         "delete stored list record field",
         "elem nest",
         HOLDER,
-        "hs : list(holder);",
+        "hs : list(Holder);",
         "storage.hs := [{ pre = 1; x = $V; post = true; }];",
         "delete storage.hs[0].x;",
         "storage.hs[0].x",
@@ -920,7 +920,7 @@ fn in_module(ty: &Ty) -> bool {
 fn fill(text: &str, ty: &Ty, v: &str, w: &str) -> String {
     let named = ty.name.chars().all(|c| c.is_alphanumeric() || c == '_');
     text.replace("$T", ty.name)
-        .replace("$N", if named { ty.name } else { "tn" })
+        .replace("$N", if named { ty.name } else { "Tn" })
         .replace("$V", v)
         .replace("$W", w)
 }
@@ -969,7 +969,7 @@ fn program(ty: &Ty, place: &Place) -> String {
         );
     }
     if !ty.name.chars().all(|c| c.is_alphanumeric() || c == '_') && place.name == "abi codec" {
-        src += &format!("type tn is {};\n", ty.name);
+        src += &format!("type Tn is {};\n", ty.name);
     }
     let zero = if place.kind == Kind::Deleted {
         "z : $T;"
@@ -985,7 +985,7 @@ fn program(ty: &Ty, place: &Place) -> String {
         "pure function out(const v : {}) : {shown} is {out}\n",
         ty.name
     );
-    src += "external function fence_set() is { storage.pre := 0xa5; storage.post := 0x5a; }\n";
+    src += "external function fenceSet() is { storage.pre := 0xa5; storage.post := 0x5a; }\n";
     src += "external view function fence() : (uint8, uint8) is (storage.pre, storage.post)\n";
     let eq = ty.tags.contains("eq");
     for k in 0..n {
@@ -1115,7 +1115,7 @@ fn run_cell(ty: &Ty, place: &Place, runtime: &[u8]) -> Result<(), String> {
         }
         Ok(())
     };
-    ok(runtime, storage, "fence_set()", true)?;
+    ok(runtime, storage, "fenceSet()", true)?;
     let fenced = storage.clone();
     let live = |st: &HashMap<Word, Word>| {
         let mut st = st.clone();
@@ -1402,14 +1402,14 @@ import "std/evm";
 import "std/list";
 import "std/string";
 $D
-type holder is record { b : $B; s : $S; }
+type Holder is record { b : $B; s : $S; }
 storage is record {
   b : $B;
   s : $S;
-  h : holder;
+  h : Holder;
   bs : list($B);
-  by_b : map($B, $S);
-  by_s : map($S, $B);
+  byB : map($B, $S);
+  byS : map($S, $B);
 }
 event Seen of record { b : $B; s : $S; }
 error Bad of $B;
@@ -1428,16 +1428,16 @@ external pure function joined(const b : $B; const s : $S) : (bytes, string, bool
 external pure function hashed(const b : $B; const s : $S) : (bytes32, bytes32, bytes32, bytes20, string, bytes) is
   (Crypto.keccak256(b), Crypto.keccak256(s), Crypto.sha256(b), Crypto.ripemd160(s), Base64.encode(b), Base64.decode(s))
 external pure function coded(const b : $B; const s : $S) : (bytes, bytes, $B, $S) is
-  (Abi.encode(b, s), Abi.encode_packed(b, s), Abi.decode(Abi.encode(b), $B), Abi.decode(Abi.encode(s), $S))
-external pure function signed(const s : $S) : bytes is Abi.encode_with_signature(s, 1)
-external pure function precompiled(const b : $B) : bytes is Crypto.mod_exp(b, b, b)
+  (Abi.encode(b, s), Abi.encodePacked(b, s), Abi.decode(Abi.encode(b), $B), Abi.decode(Abi.encode(s), $S))
+external pure function signed(const s : $S) : bytes is Abi.encodeWithSignature(s, 1)
+external pure function precompiled(const b : $B) : bytes is Crypto.modExp(b, b, b)
 external function put(const b : $B; const s : $S) raises Bad is {
   storage.b := b;
   storage.s := s;
   storage.h := { b = b; s = s; };
   List.push(storage.bs, b);
-  storage.by_b[b] := s;
-  storage.by_s[s] := b;
+  storage.byB[b] := s;
+  storage.byS[s] := b;
   emit Seen { b = b; s = s; };
   defer Evm.call(address(0xcd), b);
   defer create(b);
@@ -1446,10 +1446,10 @@ external function put(const b : $B; const s : $S) raises Bad is {
   }
 }
 external view function stored(const s : $S) : (uint, uint, bytes1, bytes, bytes32, bool) is
-  (storage.b.length, storage.s.length, storage.bs[0][0], storage.h.b[1:], Bytes.word(storage.by_s[s], 0), storage.by_b[storage.b] = s)
+  (storage.b.length, storage.s.length, storage.bs[0][0], storage.h.b[1:], Bytes.word(storage.byS[s], 0), storage.byB[storage.b] = s)
 external view function listed() : (uint, bytes1, bytes, uint) is {
   const bs : list($B) := storage.bs;
-  const h : holder := storage.h;
+  const h : Holder := storage.h;
 } with (bs[0].length, bs[0][0], h.b[:1], h.s.length)
 "#;
 
@@ -1463,30 +1463,30 @@ fn nominal_bytes_and_strings_have_their_representations_operations() {
     };
     let plain = compile(&spell("bytes", "string", "")).expect("plain");
     let nominal = compile(&spell(
-        "blob",
-        "label",
-        "type blob is bytes;\ntype label is string;",
+        "Blob",
+        "Label",
+        "type Blob is bytes;\ntype Label is string;",
     ))
     .expect("nominal");
     assert!(plain == nominal, "a nominal type costs code");
 
     for mixed in [
-        "external pure function f(const x : blob; const y : bytes) : bool is x = y",
-        "external pure function f(const x : blob; const y : note) : bool is x = y",
-        "external pure function f(const x : label; const y : string) : bool is x <> y",
-        "external pure function f(const x : bytes) : blob is x",
-        "external pure function f(const x : blob) : note is x",
-        "external pure function f(const x : blob) : blob is x[1:]",
-        "external pure function f(const x : blob) : blob is Bytes.concat(x)",
-        "external pure function f(const x : label) : bytes1 is x[0]",
-        "external pure function f(const x : label) : bytes is x[1:]",
+        "external pure function f(const x : Blob; const y : bytes) : bool is x = y",
+        "external pure function f(const x : Blob; const y : Note) : bool is x = y",
+        "external pure function f(const x : Label; const y : string) : bool is x <> y",
+        "external pure function f(const x : bytes) : Blob is x",
+        "external pure function f(const x : Blob) : Note is x",
+        "external pure function f(const x : Blob) : Blob is x[1:]",
+        "external pure function f(const x : Blob) : Blob is Bytes.concat(x)",
+        "external pure function f(const x : Label) : bytes1 is x[0]",
+        "external pure function f(const x : Label) : bytes is x[1:]",
         "external view function f(const x : bytes) : uint is storage.m[x]",
         "external function f(const x : bytes) is { storage.b := x; }",
-        "pure function g(const x : bytes) : uint is x.length\nexternal pure function f(const x : blob) : uint is g(x)",
+        "pure function g(const x : bytes) : uint is x.length\nexternal pure function f(const x : Blob) : uint is g(x)",
     ] {
         let src = format!(
-            "import \"std/bytes\";\ntype blob is bytes;\ntype note is bytes;\ntype label is string;\n\
-             storage is record {{ b : blob; m : map(blob, uint); }}\n{mixed}\n"
+            "import \"std/bytes\";\ntype Blob is bytes;\ntype Note is bytes;\ntype Label is string;\n\
+             storage is record {{ b : Blob; m : map(Blob, uint); }}\n{mixed}\n"
         );
         assert!(compile(&src).is_err(), "accepted: {mixed}");
     }

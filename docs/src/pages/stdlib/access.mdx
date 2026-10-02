@@ -7,17 +7,14 @@ description: "Ownable, two-step ownership, role bitmasks, role-based access cont
 
 ## `Ownable`
 
-`std/access/ownable.lithe`. One owner. Set it with `init`, usually from [`deploy`](/language/deploy), and guard owner-only entrypoints with `check_owner`.
+`std/access/ownable.lithe`. One owner. Set it with `init`, usually from [`deploy`](/language/deploy), and guard owner-only entrypoints with `checkOwner`.
 
 | Function | |
 | --- | --- |
-| `owner`, `transferOwnership`, `renounceOwnership` | the externals of OpenZeppelin's `Ownable`, `IOwnable` |
-| `owner() : address` | the owner |
-| `check_owner()` | raises `OwnableUnauthorizedAccount` unless the caller is the owner |
-| `init(initial_owner)` | sets the first owner; raises `OwnableInvalidOwner` for the zero address |
-| `transfer_ownership(new_owner)` | owner only; the zero address is rejected |
-| `renounce_ownership()` | owner only; leaves the contract without an owner |
-| `set_owner(new_owner)` | moves ownership with no checks, for the contract's own rules |
+| `owner`, `transferOwnership`, `renounceOwnership` | the externals of OpenZeppelin's `Ownable`, `IOwnable`: only the owner transfers, never to the zero address, or renounces, which leaves no owner |
+| `checkOwner()` | raises `OwnableUnauthorizedAccount` unless the caller is the owner |
+| `init(initialOwner)` | sets the first owner; raises `OwnableInvalidOwner` for the zero address |
+| `setOwner(newOwner)` | moves ownership with no checks, for the contract's own rules |
 
 ## `Ownable2Step`
 
@@ -43,10 +40,10 @@ contract Vault is {
     Ownable.init(Evm.sender());
   }
 
-  external function set_limit(const limit : uint)
+  external function setLimit(const limit : uint)
     raises OwnableUnauthorizedAccount
   is {
-    Ownable.check_owner();
+    Ownable.checkOwner();
     storage.limit := limit;
   }
 }
@@ -54,7 +51,7 @@ contract Vault is {
 
 ## `OwnableRoles`
 
-`std/access/ownable_roles.lithe`, on top of `Ownable`, as Solady's `OwnableRoles`. Up to 256 roles, kept as one `roles` bitmask per account in one slot, so checking or granting several roles at once costs the same as one. A `roles` is a [nominal type](/language/types#nominal-types) over `uint`, a `uint256` in the ABI: `role(n)` is Solady's `_ROLE_n`, and masks combine with `|`. The owner grants and revokes, and an account can renounce its own roles. Every change logs Solady's `RolesUpdated`, and a failed role check raises its `Unauthorized`. Grants and revokes that need the owner raise `Ownable`'s `OwnableUnauthorizedAccount`.
+`std/access/ownable_roles.lithe`, on top of `Ownable`, as Solady's `OwnableRoles`. Up to 256 roles, kept as one `Roles` bitmask per account in one slot, so checking or granting several roles at once costs the same as one. A `roles` is a [nominal type](/language/types#nominal-types) over `uint`, a `uint256` in the ABI: `role(n)` is Solady's `_ROLE_n`, and masks combine with `|`. The owner grants and revokes, and an account can renounce its own roles. Every change logs Solady's `RolesUpdated`, and a failed role check raises its `Unauthorized`. Grants and revokes that need the owner raise `Ownable`'s `OwnableUnauthorizedAccount`.
 
 ```lithe
 import "std/access/ownable_roles";
@@ -70,8 +67,8 @@ contract Minter is {
     paused : bool;
   }
 
-  pure function minter() : roles is OwnableRoles.role(0)
-  pure function pauser() : roles is OwnableRoles.role(1)
+  pure function minter() : Roles is OwnableRoles.role(0)
+  pure function pauser() : Roles is OwnableRoles.role(1)
 
   deploy()
     raises OwnableInvalidOwner
@@ -83,14 +80,14 @@ contract Minter is {
   external function mint(const to : address; const amount : uint)
     raises Unauthorized
   is {
-    OwnableRoles.check_roles(minter());
+    OwnableRoles.checkRoles(minter());
     storage.minted[to] := storage.minted[to] + amount;
   }
 
   external function pause()
     raises Unauthorized
   is {
-    OwnableRoles.check_owner_or_roles(pauser());
+    OwnableRoles.checkOwnerOrRoles(pauser());
     storage.paused := true;
   }
 }
@@ -98,27 +95,23 @@ contract Minter is {
 
 | Function | |
 | --- | --- |
-| `grantRoles`, `revokeRoles`, `renounceRoles`, `rolesOf`, `hasAnyRole`, `hasAllRoles` | the role externals of Solady's `OwnableRoles`, `IOwnableRoles` |
-| `role(ordinal : uint8) : roles` | the one role numbered `ordinal` |
-| `roles_of(user) : roles` | |
-| `has_any_role(user, r)`, `has_all_roles(user, r)` | whether `user` holds any, or all, of the roles in `r` |
-| `check_roles(r)` | raises `Unauthorized` unless the caller holds one of `r` |
-| `check_owner_or_roles(r)`, `check_roles_or_owner(r)` | the same, but the owner passes too; they differ only in which is read first |
-| `grant_roles(user, r)`, `revoke_roles(user, r)` | owner only |
-| `renounce_roles(r)` | the caller gives up its own roles |
-| `grant(user, r)`, `revoke(user, r)`, `set_roles(user, r)` | unchecked, for `deploy` and the contract's own rules; `set_roles` replaces the whole mask |
-| `roles_from_ordinals(ordinals : list(uint8)) : roles` | the roles numbered by `ordinals`, together: Solady's `_rolesFromOrdinals` |
-| `ordinals_from_roles(r) : list(uint8)` | the ordinals of the roles in `r`, ascending: Solady's `_ordinalsFromRoles` |
+| `grantRoles`, `revokeRoles`, `renounceRoles`, `rolesOf`, `hasAnyRole`, `hasAllRoles` | the role externals of Solady's `OwnableRoles`, `IOwnableRoles`: only the owner grants and revokes, and a caller renounces its own roles |
+| `role(ordinal : uint8) : Roles` | the one role numbered `ordinal` |
+| `checkRoles(r)` | raises `Unauthorized` unless the caller holds one of `r` |
+| `checkOwnerOrRoles(r)`, `checkRolesOrOwner(r)` | the same, but the owner passes too; they differ only in which is read first |
+| `grant(user, r)`, `revoke(user, r)`, `setRoles(user, r)` | unchecked, for `deploy` and the contract's own rules; `setRoles` replaces the whole mask |
+| `rolesFromOrdinals(ordinals : list(uint8)) : Roles` | the roles numbered by `ordinals`, together: Solady's `_rolesFromOrdinals` |
+| `ordinalsFromRoles(r) : list(uint8)` | the ordinals of the roles in `r`, ascending: Solady's `_ordinalsFromRoles` |
 
-`ordinals_from_roles` visits only the set bits, so it costs 1,199 gas for a mask of four roles, highest 255, where Solady's, which visits every bit up to the highest, costs 21,914. `roles_from_ordinals` costs 1,059 for four ordinals, against Solady's 1,093.
+`ordinalsFromRoles` visits only the set bits, so it costs 1,199 gas for a mask of four roles, highest 255, where Solady's, which visits every bit up to the highest, costs 21,914. `rolesFromOrdinals` costs 1,059 for four ordinals, against Solady's 1,093.
 
-Solady marks `grantRoles`, `revokeRoles`, and `renounceRoles` `payable`, which saves about 15 gas of the check that rejects ether. Here they are not payable, as `Ownable`'s externals and OpenZeppelin's are not: ether sent with a role change would be stuck in the contract, and the check runs once per call of a function the owner rarely calls. A contract that wants Solady's ABI exactly writes its own `external payable function` around `grant_roles`, `revoke_roles`, or `renounce_roles`.
+Solady marks `grantRoles`, `revokeRoles`, and `renounceRoles` `payable`, which saves about 15 gas of the check that rejects ether. Here they are not payable, as `Ownable`'s externals and OpenZeppelin's are not: ether sent with a role change would be stuck in the contract, and the check runs once per call of a function the owner rarely calls. A contract that wants Solady's ABI exactly writes its own `external payable function` around `grantRoles`, `revokeRoles`, or `renounceRoles`.
 
 `OwnableRoles` suits a fixed set of roles the owner hands out. `AccessControl` suits roles named by hash, each administered by another role.
 
 ## `AccessControl`
 
-`std/access/access_control.lithe`. Roles, each with an admin role whose members grant and revoke it. A role is a `role`, a [nominal type](/language/types#nominal-types) over `bytes32`, so a stray hash can't be passed where a role is meant. In the ABI, a role is a `bytes32`, so the file's `IAccessControl` is OpenZeppelin's, and a contract that exposes it can announce it with [`supports`](/language/modules#erc-165).
+`std/access/access_control.lithe`. Roles, each with an admin role whose members grant and revoke it. A role is a `Role`, a [nominal type](/language/types#nominal-types) over `bytes32`, so a stray hash can't be passed where a role is meant. In the ABI, a role is a `bytes32`, so the file's `IAccessControl` is OpenZeppelin's, and a contract that exposes it can announce it with [`supports`](/language/modules#erc-165).
 
 ```lithe
 import "std/crypto";
@@ -127,12 +120,12 @@ import "std/access/access_control";
 
 contract Minter is {
   use AccessControl exposing {
-    view function hasRole(role : role; account : address) : bool;
-    function grantRole(role : role; account : address)
+    view function hasRole(role : Role; account : address) : bool;
+    function grantRole(role : Role; account : address)
       raises AccessControlUnauthorizedAccount;
-    function revokeRole(role : role; account : address)
+    function revokeRole(role : Role; account : address)
       raises AccessControlUnauthorizedAccount;
-    function renounceRole(role : role; callerConfirmation : address)
+    function renounceRole(role : Role; callerConfirmation : address)
       raises AccessControlBadConfirmation;
   }
 
@@ -140,17 +133,17 @@ contract Minter is {
     minted : map(address, uint);
   }
 
-  pure function minter() : role is
-    role(Crypto.keccak256("MINTER_ROLE"))
+  pure function minter() : Role is
+    Role(Crypto.keccak256("MINTER_ROLE"))
 
   deploy() is {
-    AccessControl.grant(AccessControl.default_admin_role(), Evm.sender());
+    AccessControl.grant(AccessControl.defaultAdminRole(), Evm.sender());
   }
 
   external function mint(const to : address; const amount : uint)
     raises AccessControlUnauthorizedAccount
   is {
-    AccessControl.check_role(minter());
+    AccessControl.checkRole(minter());
     storage.minted[to] := storage.minted[to] + amount;
   }
 }
@@ -158,21 +151,16 @@ contract Minter is {
 
 | Function | |
 | --- | --- |
-| `hasRole`, `getRoleAdmin`, `grantRole`, `revokeRole`, `renounceRole` | the externals of OpenZeppelin's `AccessControl`, `IAccessControl` |
-| `has_role(r, account) : bool` | |
-| `get_role_admin(r) : role` | the default admin role, until `set_role_admin` changes it |
-| `check_role(r)`, `check_role_of(r, account)` | raise `AccessControlUnauthorizedAccount` |
-| `grant_role(r, account)`, `revoke_role(r, account)` | the caller must hold `r`'s admin role |
-| `renounce_role(r, confirmation)` | the caller gives up its own role; `confirmation` must be the caller |
-| `grant(r, account)`, `revoke(r, account)`, `set_role_admin(r, admin)` | unchecked, for `deploy` and the contract's own rules |
+| `hasRole`, `getRoleAdmin`, `grantRole`, `revokeRole`, `renounceRole` | the externals of OpenZeppelin's `AccessControl`, `IAccessControl`: a role's admin is the default admin role until `setRoleAdmin` changes it, only a role's admin grants and revokes it, and a caller renounces its own role, naming itself as the confirmation |
+| `checkRole(r)`, `checkRoleOf(r, account)` | raise `AccessControlUnauthorizedAccount` |
+| `grant(r, account)`, `revoke(r, account)`, `setRoleAdmin(r, admin)` | unchecked, for `deploy` and the contract's own rules |
 
 ## `Pausable`
 
-`std/security/pausable.lithe`. An emergency stop. Pausing is policy, so the contract decides who may pause, and which entrypoints check `require_not_paused`. A token pauses every transfer, mint, and burn, as OpenZeppelin's `ERC20Pausable` and its siblings do, from its module's [`before_transfer` hook](/stdlib/tokens#transfer-hooks): `hook ERC20.before_transfer is Pausable.require_not_paused;`.
+`std/security/pausable.lithe`. An emergency stop. Pausing is policy, so the contract decides who may pause, and which entrypoints check `requireNotPaused`. A token pauses every transfer, mint, and burn, as OpenZeppelin's `ERC20Pausable` and its siblings do, from its module's [`beforeTransfer` hook](/stdlib/tokens#transfer-hooks): `hook ERC20.beforeTransfer is Pausable.requireNotPaused;`.
 
 | Function | |
 | --- | --- |
 | `paused` | the external, `IPausable`; pausing and unpausing are the contract's own entrypoints |
-| `paused() : bool` | |
-| `require_not_paused()`, `require_paused()` | raise `EnforcedPause` and `ExpectedPause` |
+| `requireNotPaused()`, `requirePaused()` | raise `EnforcedPause` and `ExpectedPause` |
 | `pause()`, `unpause()` | no access check of their own |

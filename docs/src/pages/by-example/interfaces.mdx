@@ -16,24 +16,24 @@ interface Oracle is {
   view function decimals() : uint8;
 }
 
-error Stale_price of uint;
+error StalePrice of uint;
 
 storage is record {
   oracle : Oracle;
-  last_price : uint;
+  lastPrice : uint;
 }
 
 (* An interface value is an address in the ABI. *)
-external function set_oracle(const oracle : Oracle) is {
+external function setOracle(const oracle : Oracle) is {
   storage.oracle := oracle;
 }
 
 external function refresh(const asset : address)
-  raises Stale_price
+  raises StalePrice
 is {
   const price : uint := query storage.oracle.price(asset);
-  assert(price > 0, Stale_price(price));
-  storage.last_price := price;
+  assert(price > 0, StalePrice(price));
+  storage.lastPrice := price;
 }
 
 external view function quote(const asset : address; const amount : uint) : uint is

@@ -1,4 +1,4 @@
-(* A token whose owner mints, up to a cap. Its specs, in capped_token.spec.lithe, state
+(* A token whose owner mints, up to a cap. Its specs, in cappedToken.spec.lithe, state
    that the supply never passes the cap, that the balances add up to the supply, and when
    minting fails. *)
 
@@ -9,11 +9,11 @@ import "std/interfaces/erc20";
 contract CappedToken is {
   use ERC20 exposing IERC20;
 
-  hook ERC20.before_transfer is skip;
-  hook ERC20.after_transfer is skip;
+  hook ERC20.beforeTransfer is skip;
+  hook ERC20.afterTransfer is skip;
 
-  error Not_owner;
-  error Over_cap of uint;
+  error NotOwner;
+  error OverCap of uint;
 
   storage is record {
     owner : address;
@@ -27,11 +27,11 @@ contract CappedToken is {
   }
 
   external function mint(const to : address; const value : uint)
-    raises Not_owner | Over_cap | ERC20InvalidReceiver | ERC20InsufficientBalance
+    raises NotOwner | OverCap | ERC20InvalidReceiver | ERC20InsufficientBalance
   is {
-    assert(Evm.sender() = storage.owner, Not_owner);
-    const supply : uint := ERC20.erc20.total_supply;
-    assert(value <= storage.cap - supply, Over_cap(storage.cap - supply));
+    assert(Evm.sender() = storage.owner, NotOwner);
+    const supply : uint := ERC20.erc20.totalSupply;
+    assert(value <= storage.cap - supply, OverCap(storage.cap - supply));
     ERC20.mint(to, value);
   }
 }

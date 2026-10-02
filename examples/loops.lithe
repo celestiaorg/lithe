@@ -18,7 +18,7 @@ storage is record {
   gcd : uint;
   found : uint;
   members : list(address);
-  is_member : map(address, bool);
+  isMember : map(address, bool);
   exchange : Exchange;
   results : map(uint, uint);
   paid : uint;
@@ -47,9 +47,9 @@ external function join(const who : address) is {
 }
 
 (* A storage list can grow, so its loop carries a bound. Past it, the call panics. *)
-external function mark_all() is {
+external function markAll() is {
   for who : address in storage.members bound 4 do {
-    storage.is_member[who] := true;
+    storage.isMember[who] := true;
   }
 }
 
@@ -84,12 +84,12 @@ external function pay(const tos : list(address, 2); const amounts : list(uint, 2
   }
 }
 
-external function set_exchange(const exchange : Exchange) is {
+external function setExchange(const exchange : Exchange) is {
   storage.exchange := exchange;
 }
 
 (* A continuation in a loop sees that iteration's bindings. *)
-external nonreentrant function swap_all(const amounts : list(uint, 2)) is {
+external nonreentrant function swapAll(const amounts : list(uint, 2)) is {
   for (i, amount) : (uint, uint) in amounts do {
     defer storage.exchange.swap(amount) then (out : uint) {
       storage.results[i] := out;

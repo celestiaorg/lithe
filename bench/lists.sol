@@ -18,7 +18,7 @@ contract Lists {
         saved_.push(x);
     }
 
-    function set_owners(address[] calldata owners) external {
+    function setOwners(address[] calldata owners) external {
         owners_ = owners;
     }
 
@@ -30,7 +30,7 @@ contract Lists {
         return owners_;
     }
 
-    function owner_at(uint256 i) external view returns (address) {
+    function ownerAt(uint256 i) external view returns (address) {
         return owners_[i];
     }
 

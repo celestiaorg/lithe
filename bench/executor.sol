@@ -5,11 +5,11 @@ pragma solidity ^0.8.24;
 
 interface IExchange {
     struct SwapResult {
-        uint256 amount_out;
+        uint256 amountOut;
         uint256 fee;
     }
 
-    function swap(uint256 amount_in, uint256 min_out) external returns (SwapResult memory);
+    function swap(uint256 amountIn, uint256 minOut) external returns (SwapResult memory);
     function deposit(uint256 amount) external returns (uint256);
     function split(uint256 shares) external returns (uint256, uint256);
 }
@@ -17,22 +17,22 @@ interface IExchange {
 contract Executor {
     struct Order {
         uint8 status;
-        uint256 amount_in;
-        uint256 amount_out;
+        uint256 amountIn;
+        uint256 amountOut;
         uint256 shares;
     }
 
     error AlreadyExecuted(uint256 id);
     error NotComplete(uint256 id);
-    error TooLittle(uint256 amount_out, uint256 floor);
+    error TooLittle(uint256 amountOut, uint256 floor);
 
-    event Executed(uint256 indexed id, uint256 amount_out, uint256 fee);
+    event Executed(uint256 indexed id, uint256 amountOut, uint256 fee);
     event Deposited(uint256 indexed id, uint256 shares);
 
     IExchange immutable exchange;
     uint256 immutable floor;
     uint256 executed;
-    uint256 total_out;
+    uint256 totalOut;
     uint256 left;
     uint256 right;
     mapping(uint256 => Order) orders;
@@ -42,29 +42,29 @@ contract Executor {
         floor = floor_;
     }
 
-    function execute(uint256 id, uint256 amount, uint256 min_out) external {
+    function execute(uint256 id, uint256 amount, uint256 minOut) external {
         Order storage o = orders[id];
         if (o.status != 0) revert AlreadyExecuted(id);
         o.status = 1;
-        o.amount_in = amount;
-        IExchange.SwapResult memory result = exchange.swap(amount, min_out);
-        if (result.amount_out < floor) revert TooLittle(result.amount_out, floor);
+        o.amountIn = amount;
+        IExchange.SwapResult memory result = exchange.swap(amount, minOut);
+        if (result.amountOut < floor) revert TooLittle(result.amountOut, floor);
         o.status = 2;
-        o.amount_out = result.amount_out;
+        o.amountOut = result.amountOut;
         executed += 1;
-        total_out += result.amount_out;
-        emit Executed(id, result.amount_out, result.fee);
+        totalOut += result.amountOut;
+        emit Executed(id, result.amountOut, result.fee);
     }
 
-    function execute_and_deposit(uint256 id, uint256 amount) external {
+    function executeAndDeposit(uint256 id, uint256 amount) external {
         Order storage o = orders[id];
         if (o.status != 0) revert AlreadyExecuted(id);
         o.status = 1;
-        o.amount_in = amount;
+        o.amountIn = amount;
         IExchange.SwapResult memory result = exchange.swap(amount, 0);
         o.status = 2;
-        o.amount_out = result.amount_out;
-        uint256 minted = exchange.deposit(result.amount_out);
+        o.amountOut = result.amountOut;
+        uint256 minted = exchange.deposit(result.amountOut);
         o.shares = minted;
         emit Deposited(id, minted);
     }
@@ -78,7 +78,7 @@ contract Executor {
         right += b;
     }
 
-    function order_of(uint256 id) external view returns (Order memory) {
+    function orderOf(uint256 id) external view returns (Order memory) {
         return orders[id];
     }
 }

@@ -21,7 +21,7 @@ storage is record {
 }
 
 external pure function supportsInterface(const interfaceId : bytes4) : bool is
-  interfaceId = Abi.interface_id(Vault) or interfaceId = Abi.interface_id(IERC165)
+  interfaceId = Abi.interfaceId(Vault) or interfaceId = Abi.interfaceId(IERC165)
 
 (* Counts calls by the method they name, and refuses any other selector. *)
 external function handle(const selector : bytes4)
@@ -39,8 +39,8 @@ is {
 external view function handled(const selector : bytes4) : uint is
   storage.handled[selector]
 
-external pure function transfer_call(const to : address; const amount : uint) : bytes is
-  Abi.encode_with_selector(Abi.selector(Token.transfer), to, amount)
+external pure function transferCall(const to : address; const amount : uint) : bytes is
+  Abi.encodeWithSelector(Abi.selector(Token.transfer), to, amount)
 
 external pure function ids() : (bytes4, bytes4, bytes4) is
-  (Abi.interface_id(Vault), Abi.interface_id(Token), Abi.selector(Vault.balanceOf))
+  (Abi.interfaceId(Vault), Abi.interfaceId(Token), Abi.selector(Vault.balanceOf))

@@ -7,24 +7,24 @@ storage is record {
   decoded : uint;
 }
 
-external pure function round_bytes(const value : bytes) : bytes is
+external pure function roundBytes(const value : bytes) : bytes is
   Abi.decode(Abi.encode(value), bytes)
 
-external pure function round_string(const value : string) : string is
+external pure function roundString(const value : string) : string is
   Abi.decode(Abi.encode(value), string)
 
-external pure function to_bytes(const data : bytes) : bytes is
+external pure function toBytes(const data : bytes) : bytes is
   Abi.decode(data, bytes)
 
-external pure function to_small(const data : bytes) : uint8 is
+external pure function toSmall(const data : bytes) : uint8 is
   Abi.decode(data, uint8)
 
 (* One word re-read as another type: the value's ABI word, checked against the new type. *)
-external pure function as_address(const n : uint) : address is
+external pure function asAddress(const n : uint) : address is
   Abi.decode(Abi.encode(n), address)
 
-external pure function as_word(const selector : bytes4) : bytes32 is
+external pure function asWord(const selector : bytes4) : bytes32 is
   Abi.decode(Abi.encode(selector), bytes32)
 
-external pure function as_selector(const word : bytes32) : bytes4 is
+external pure function asSelector(const word : bytes32) : bytes4 is
   Abi.decode(Abi.encode(word), bytes4)

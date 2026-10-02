@@ -1,12 +1,12 @@
-type basis_points is uint16;
-type discount_rate is uint16;
+type BasisPoints is uint16;
+type DiscountRate is uint16;
 
 storage is record {
   n : uint;
 }
 
 external function go() is {
-  const fee : basis_points := 500;
-  const discount : discount_rate := fee;
+  const fee : BasisPoints := 500;
+  const discount : DiscountRate := fee;
   skip
 }

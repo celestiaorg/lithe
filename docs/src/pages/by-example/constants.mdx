@@ -16,35 +16,35 @@ import "std/int";
 import "std/uint";
 
 storage is record {
-  fee_bps : uint;
-  admins : list(address, max_admins());
+  feeBps : uint;
+  admins : list(address, maxAdmins());
 }
 
-pure function max_fee_bps() : uint is
+pure function maxFeeBps() : uint is
   1_000
 
 pure function denominator() : uint is
   10_000
 
 (* The hash of a literal is a constant too. *)
-pure function pauser_role() : bytes32 is
+pure function pauserRole() : bytes32 is
   Crypto.keccak256("PAUSER_ROLE")
 
 (* A named constant can be a fixed list's length. *)
-pure function max_admins() : uint is
+pure function maxAdmins() : uint is
   3
 
-error Fee_too_high of uint;
+error FeeTooHigh of uint;
 
-external function set_fee(const fee_bps : uint)
-  raises Fee_too_high
+external function setFee(const feeBps : uint)
+  raises FeeTooHigh
 is {
-  assert(fee_bps <= max_fee_bps(), Fee_too_high(fee_bps));
-  storage.fee_bps := fee_bps;
+  assert(feeBps <= maxFeeBps(), FeeTooHigh(feeBps));
+  storage.feeBps := feeBps;
 }
 
-external view function fee_on(const amount : uint) : uint is
-  amount * storage.fee_bps / denominator()
+external view function feeOn(const amount : uint) : uint is
+  amount * storage.feeBps / denominator()
 
 (* Built-in constants take their width from context. *)
 external pure function limits() : (uint, uint16, int, address) is
@@ -54,5 +54,5 @@ external pure function limits() : (uint, uint16, int, address) is
 - `1_000` uses `_` as a digit separator.
 - `Uint.max` is `type(uint256).max`, or the maximum of whatever width the context expects. Here `limits` returns it both as a `uint` and as a `uint16`.
 - `Crypto.keccak256("PAUSER_ROLE")` compiles to the 32-byte hash, so a role id or an EIP-712 typehash is written as its preimage, not pasted in.
-- A fixed list's length can be a named constant, `M.n()` from a module, or arithmetic over those: `list(address, max_admins())`, `list(uint, max_admins() * 2)`.
-- Arithmetic on constants is checked when the contract compiles: `max_fee_bps() * Uint.max` is a compile error, not a panic at run time.
+- A fixed list's length can be a named constant, `M.n()` from a module, or arithmetic over those: `list(address, maxAdmins())`, `list(uint, maxAdmins() * 2)`.
+- Arithmetic on constants is checked when the contract compiles: `maxFeeBps() * Uint.max` is a compile error, not a panic at run time.

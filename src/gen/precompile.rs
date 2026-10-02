@@ -68,7 +68,7 @@ impl<'a> Gen<'a> {
                     self.compile_value(arg)?;
                     self.mstore_off(buf + 96 + 32 * i as i32);
                 }
-                // A zero modulus is a division by zero, as `Uint.mul_mod`'s is.
+                // A zero modulus is a division by zero, as `Uint.mulMod`'s is.
                 self.mload(buf + 160);
                 self.op(ISZERO);
                 self.revert_if_panic(0x12)?;
@@ -321,7 +321,7 @@ impl<'a> Gen<'a> {
         Ok(())
     }
 
-    /// `Crypto.mod_exp(base, exponent, modulus)`: EIP-198's input, the three lengths then
+    /// `Crypto.modExp(base, exponent, modulus)`: EIP-198's input, the three lengths then
     /// the three values, and an answer as long as the modulus.
     fn mod_exp(&mut self, args: &[Expr]) -> Result<(), Error> {
         let values = self.blob_values(args)?;

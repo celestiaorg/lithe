@@ -13,13 +13,13 @@ Three owners, two confirmations required. The owners are a fixed-size `list(addr
 
 import "std/evm";
 
-error Not_owner;
-error Already_initialized;
-error No_such_tx of uint;
-error Already_executed of uint;
-error Already_confirmed of uint;
-error Not_confirmed of uint;
-error Not_enough_confirmations of record {
+error NotOwner;
+error AlreadyInitialized;
+error NoSuchTx of uint;
+error AlreadyExecuted of uint;
+error AlreadyConfirmed of uint;
+error NotConfirmed of uint;
+error NotEnoughConfirmations of record {
   id : uint;
   confirmations : uint;
 }
@@ -44,7 +44,7 @@ event Executed of record {
   indexed id : uint;
 }
 
-type payment is record {
+type Payment is record {
   to : address;
   value : wei;
   executed : bool;
@@ -52,19 +52,19 @@ type payment is record {
 }
 
 storage is record {
-  is_owner : map(address, bool);
+  isOwner : map(address, bool);
   threshold : uint;
   count : uint;
-  payments : map(uint, payment);
+  payments : map(uint, Payment);
   confirmed : map(uint, map(address, bool));
 }
 
 external function init(const owners : list(address, 3))
-  raises Already_initialized
+  raises AlreadyInitialized
 is {
-  assert(storage.threshold = 0, Already_initialized);
+  assert(storage.threshold = 0, AlreadyInitialized);
   for owner : address in owners do {
-    storage.is_owner[owner] := true;
+    storage.isOwner[owner] := true;
   }
   storage.threshold := 2;
 }
@@ -73,19 +73,19 @@ external payable function deposit() is {
   skip
 }
 
-view function only_owner() is {
-  assert(storage.is_owner[Evm.sender()], Not_owner);
+view function onlyOwner() is {
+  assert(storage.isOwner[Evm.sender()], NotOwner);
 }
 
 view function pending(const id : uint) is {
-  assert(id < storage.count, No_such_tx(id));
-  assert(not storage.payments[id].executed, Already_executed(id));
+  assert(id < storage.count, NoSuchTx(id));
+  assert(not storage.payments[id].executed, AlreadyExecuted(id));
 }
 
 external function submit(const to : address; const value : wei) : uint
-  raises Not_owner
+  raises NotOwner
 is {
-  only_owner();
+  onlyOwner();
   const id : uint := storage.count;
   storage.payments[id] := { to = to; value = value; executed = false; confirmations = 0; };
   storage.count := id + 1;
@@ -93,42 +93,42 @@ is {
 } with id
 
 external function confirm(const id : uint)
-  raises Not_owner | No_such_tx | Already_executed | Already_confirmed
+  raises NotOwner | NoSuchTx | AlreadyExecuted | AlreadyConfirmed
 is {
-  only_owner();
+  onlyOwner();
   pending(id);
-  assert(not storage.confirmed[id][Evm.sender()], Already_confirmed(id));
+  assert(not storage.confirmed[id][Evm.sender()], AlreadyConfirmed(id));
   storage.confirmed[id][Evm.sender()] := true;
   storage.payments[id].confirmations := storage.payments[id].confirmations + 1;
   emit Confirmed { id = id; owner = Evm.sender(); };
 }
 
 external function revoke(const id : uint)
-  raises Not_owner | No_such_tx | Already_executed | Not_confirmed
+  raises NotOwner | NoSuchTx | AlreadyExecuted | NotConfirmed
 is {
-  only_owner();
+  onlyOwner();
   pending(id);
-  assert(storage.confirmed[id][Evm.sender()], Not_confirmed(id));
+  assert(storage.confirmed[id][Evm.sender()], NotConfirmed(id));
   storage.confirmed[id][Evm.sender()] := false;
   storage.payments[id].confirmations := storage.payments[id].confirmations - 1;
   emit Revoked { id = id; owner = Evm.sender(); };
 }
 
 external nonreentrant function execute(const id : uint)
-  raises No_such_tx | Already_executed | Not_enough_confirmations
+  raises NoSuchTx | AlreadyExecuted | NotEnoughConfirmations
 is {
   pending(id);
-  const p : payment := storage.payments[id];
+  const p : Payment := storage.payments[id];
   assert(
     p.confirmations >= storage.threshold,
-    Not_enough_confirmations { id = id; confirmations = p.confirmations; }
+    NotEnoughConfirmations { id = id; confirmations = p.confirmations; }
   );
   storage.payments[id].executed := true;
   emit Executed { id = id; };
   defer Evm.transfer(p.to, p.value);
 }
 
-external view function payment_of(const id : uint) : payment is
+external view function paymentOf(const id : uint) : Payment is
   storage.payments[id]
 ```
 

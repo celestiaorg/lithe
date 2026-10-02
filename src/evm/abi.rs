@@ -33,7 +33,7 @@ fn record_lists_cross_the_abi() {
         out
     };
     let pts: &[&[Word]] = &[&[n(1), n(2)], &[n(3), n(4)]];
-    let set = call(&HashMap::new(), args("set_all((uint48,uint208)[])", pts));
+    let set = call(&HashMap::new(), args("setAll((uint48,uint208)[])", pts));
     assert!(!set.reverted, "{}", pretty(&set.returndata));
     let base = Word::from_be_bytes(keccak256(&n(0).to_be_bytes()));
     assert_eq!(slot(&set.storage, 0), n(2));
@@ -80,9 +80,9 @@ fn record_lists_cross_the_abi() {
         &[tag([0xde, 0xad, 0xbe, 0xef]), n(1), minus5],
         &[tag([1, 2, 3, 4]), n(0), n(7)],
     ];
-    let tagged = call(&st, args("set_tags((bytes4,bool,int16)[])", tags));
+    let tagged = call(&st, args("setTags((bytes4,bool,int16)[])", tags));
     assert!(!tagged.reverted, "{}", pretty(&tagged.returndata));
-    let out = call(&tagged.storage, word_data("tag_at(uint256)", &[n(1)]));
+    let out = call(&tagged.storage, word_data("tagAt(uint256)", &[n(1)]));
     assert_eq!(load_bytes(&out.returndata, 0), tag([1, 2, 3, 4]));
     assert_eq!(
         call(&tagged.storage, word_data("tags()", &[])).returndata,
@@ -93,9 +93,9 @@ fn record_lists_cross_the_abi() {
         [tag([1, 2, 3, 4]).wrapping_add(n(1)), n(0), n(7)],
         [tag([1, 2, 3, 4]), n(0), n(1 << 15)],
     ] {
-        assert!(call(&st, args("set_tags((bytes4,bool,int16)[])", &[&bad])).reverted);
+        assert!(call(&st, args("setTags((bytes4,bool,int16)[])", &[&bad])).reverted);
     }
-    let mut missing = args("set_all((uint48,uint208)[])", pts);
+    let mut missing = args("setAll((uint48,uint208)[])", pts);
     missing.truncate(missing.len() - 32);
     assert!(call(&st, missing).reverted);
 }
@@ -108,7 +108,7 @@ fn counter_abi_tree_matches_the_dispatch() {
         "\
 reset
   path:
-    main -> owner_main -> reset
+    main -> ownerMain -> reset
 
   calls:
     none
@@ -127,7 +127,7 @@ reset
     none
 
   events:
-    - Count_changed
+    - CountChanged
 
   operations:
     none
@@ -137,7 +137,7 @@ reset
 
 increment
   path:
-    main -> public_main -> increment
+    main -> publicMain -> increment
 
   calls:
     - add
@@ -155,7 +155,7 @@ increment
     none
 
   events:
-    - Count_changed
+    - CountChanged
 
   operations:
     none
@@ -194,7 +194,7 @@ const BANK_ABI: &str = r#"[
         "type": "bool"
       }
     ],
-    "name": "set_pause",
+    "name": "setPause",
     "outputs": [],
     "stateMutability": "nonpayable",
     "type": "function"
@@ -319,11 +319,11 @@ fn counter_abi_flattens_dispatch_and_views() {
     assert!(abi.contains("\"name\": \"reset\""), "{abi}");
     assert!(abi.contains("\"name\": \"increment\""), "{abi}");
     assert!(abi.contains("\"name\": \"n\""), "{abi}");
-    assert!(abi.contains("\"name\": \"get_count\""), "{abi}");
+    assert!(abi.contains("\"name\": \"getCount\""), "{abi}");
     assert!(abi.contains("\"stateMutability\": \"view\""), "{abi}");
     assert!(abi.contains("\"stateMutability\": \"nonpayable\""), "{abi}");
     assert!(!abi.contains("\"stateMutability\": \"payable\""), "{abi}");
-    assert!(abi.contains("\"name\": \"Count_changed\""), "{abi}");
+    assert!(abi.contains("\"name\": \"CountChanged\""), "{abi}");
     assert!(abi.contains("\"name\": \"InvalidOwnerAccess\""), "{abi}");
     assert!(abi.contains("\"indexed\": false"), "{abi}");
 }
@@ -502,7 +502,7 @@ fn dynamic_lists_cross_the_abi() {
     assert_eq!(out.returndata, want);
 
     // An event's list is ABI-encoded in its data.
-    let out = run(&mut l, list("log_batch(uint256[])", &[w(3), w(4)]));
+    let out = run(&mut l, list("logBatch(uint256[])", &[w(3), w(4)]));
     assert!(!out.reverted, "{}", pretty(&out.returndata));
     let logs: Vec<&Ev> = out
         .trace
@@ -547,9 +547,9 @@ fn abi_decode_checks_what_it_reads() {
     for value in [vec![], vec![1, 2], vec![7; 31], vec![7; 32], long] {
         let encoded = encode_args("", &[Arg::B(value.clone())])[4..].to_vec();
         for (sig, arg) in [
-            ("round_bytes(bytes)", value.clone()),
-            ("round_string(string)", value.clone()),
-            ("to_bytes(bytes)", encoded),
+            ("roundBytes(bytes)", value.clone()),
+            ("roundString(string)", value.clone()),
+            ("toBytes(bytes)", encoded),
         ] {
             assert!(c.send(0, sig, &[Arg::B(arg)]), "{sig} {value:?}");
             assert_eq!(abi_string_value(&c.returned()), value, "{sig}");
@@ -557,32 +557,32 @@ fn abi_decode_checks_what_it_reads() {
     }
     let word = |n: u64| Word::from_u64(n).to_be_bytes().to_vec();
     let past = [word(32), word(33), vec![0; 32]].concat();
-    assert!(!c.send(0, "to_bytes(bytes)", &[Arg::B(past)]));
+    assert!(!c.send(0, "toBytes(bytes)", &[Arg::B(past)]));
     assert_eq!(
-        c.word("to_small(bytes)", &[Arg::B(word(200))]),
+        c.word("toSmall(bytes)", &[Arg::B(word(200))]),
         Word::from_u64(200)
     );
-    assert!(!c.send(0, "to_small(bytes)", &[Arg::B(word(256))]));
-    assert!(!c.send(0, "to_small(bytes)", &[Arg::B(word(200)[..31].to_vec())]));
-    assert!(!c.send(0, "to_small(bytes)", &[Arg::B(vec![])]));
+    assert!(!c.send(0, "toSmall(bytes)", &[Arg::B(word(256))]));
+    assert!(!c.send(0, "toSmall(bytes)", &[Arg::B(word(200)[..31].to_vec())]));
+    assert!(!c.send(0, "toSmall(bytes)", &[Arg::B(vec![])]));
 
     // A one-word value decoded from its own encoding keeps the ABI word and its checks.
     let low = Word::from_u64(1).shl(160).wrapping_sub(Word::from_u64(1));
-    assert_eq!(c.word("as_address(uint256)", &[Arg::W(low)]), low);
+    assert_eq!(c.word("asAddress(uint256)", &[Arg::W(low)]), low);
     assert!(!c.send(
         0,
-        "as_address(uint256)",
+        "asAddress(uint256)",
         &[Arg::W(low.wrapping_add(Word::from_u64(1)))]
     ));
     let selector = Word::from_u64(0x1234_5678).shl(224);
-    assert_eq!(c.word("as_word(bytes4)", &[Arg::W(selector)]), selector);
+    assert_eq!(c.word("asWord(bytes4)", &[Arg::W(selector)]), selector);
     assert_eq!(
-        c.word("as_selector(bytes32)", &[Arg::W(selector)]),
+        c.word("asSelector(bytes32)", &[Arg::W(selector)]),
         selector
     );
     assert!(!c.send(
         0,
-        "as_selector(bytes32)",
+        "asSelector(bytes32)",
         &[Arg::W(selector.bitor(Word::from_u64(1)))]
     ));
 }
@@ -596,17 +596,17 @@ fn abi_decode_reads_slices_in_place() {
             "\
 import \"std/abi\"; import \"std/bytes\";
 contract Slices is {
-  type uints is list(uint);
+  type Uints is list(uint);
   error Short;
   storage is record {}
-  external pure function from_calldata(const data : bytes; const s : uint; const e : uint)
+  external pure function fromCalldata(const data : bytes; const s : uint; const e : uint)
     : list(uint)
   is
-    Abi.decode(data[s : e], uints)
-  external pure function from_memory(const data : bytes; const s : uint) : list(uint) is {
+    Abi.decode(data[s : e], Uints)
+  external pure function fromMemory(const data : bytes; const s : uint) : list(uint) is {
     var copy : bytes := data;
     copy := Bytes.concat(copy, \"\");
-  } with Abi.decode(copy[s:], uints)
+  } with Abi.decode(copy[s:], Uints)
   external pure function guarded(const data : bytes; const i : uint) : bytes32
     raises Short
   is {
@@ -630,7 +630,7 @@ contract Slices is {
         call_raw(
             &runtime,
             &encode_args(
-                "from_calldata(bytes,uint256,uint256)",
+                "fromCalldata(bytes,uint256,uint256)",
                 &[Arg::B(data.clone()), Arg::W(w(s)), Arg::W(w(e))],
             ),
         )
@@ -646,7 +646,7 @@ contract Slices is {
     let out = call_raw(
         &runtime,
         &encode_args(
-            "from_memory(bytes,uint256)",
+            "fromMemory(bytes,uint256)",
             &[Arg::B([vec![1; 3], list.clone()].concat()), Arg::W(w(3))],
         ),
     );
@@ -692,14 +692,14 @@ fn strings_and_bytes_compare_by_content() {
     let long = b"a name long enough to need a blob of its own".as_slice();
     let longer = b"a name long enough to need a blob of its owN".as_slice();
     assert!(c.send(0, "remember(string,string)", &[b(long), b(b"short")]));
-    let names = "are_names(string,string)";
+    let names = "areNames(string,string)";
     assert_eq!(c.word(names, &[b(long), b(b"short")]), yes);
     assert_eq!(c.word(names, &[b(longer), b(b"short")]), no);
     assert_eq!(c.word(names, &[b(b"short"), b(long)]), no);
-    assert_eq!(c.word("is_name(string)", &[b(long)]), yes);
-    assert_eq!(c.word("is_name(string)", &[b(longer)]), no);
-    assert_eq!(c.word("is_name(string)", &[b(b"short")]), no);
-    let pair = "same_pair(string,string,string,string)";
+    assert_eq!(c.word("isName(string)", &[b(long)]), yes);
+    assert_eq!(c.word("isName(string)", &[b(longer)]), no);
+    assert_eq!(c.word("isName(string)", &[b(b"short")]), no);
+    let pair = "samePair(string,string,string,string)";
     assert_eq!(
         c.word(pair, &[b(long), b(b"short"), b(long), b(b"short")]),
         yes
@@ -712,7 +712,7 @@ fn strings_and_bytes_compare_by_content() {
         c.word(pair, &[b(long), b(b"short"), b(long), b(b"shorT")]),
         no
     );
-    let one = "pair_is_one(string,string,string)";
+    let one = "pairIsOne(string,string,string)";
     assert_eq!(c.word(one, &[b(long), b(long), b(long)]), no);
     for (x, y, want) in [
         (long, long, yes),
@@ -721,12 +721,12 @@ fn strings_and_bytes_compare_by_content() {
         (b"".as_slice(), b"".as_slice(), yes),
         (b"".as_slice(), b"\x00".as_slice(), no),
     ] {
-        assert_eq!(c.word("same_bytes(bytes,bytes)", &[b(x), b(y)]), want);
-        assert_eq!(c.word("same_label(string,string)", &[b(x), b(y)]), want);
+        assert_eq!(c.word("sameBytes(bytes,bytes)", &[b(x), b(y)]), want);
+        assert_eq!(c.word("sameLabel(string,string)", &[b(x), b(y)]), want);
         let differ = if want == yes { no } else { yes };
         assert_eq!(c.word("differ(string,string)", &[b(x), b(y)]), differ);
     }
-    assert!(c.send(0, "echo_label(string)", &[b(long)]));
+    assert!(c.send(0, "echoLabel(string)", &[b(long)]));
     assert_eq!(abi_string_value(&c.returned()), long);
 }
 
@@ -774,14 +774,14 @@ fn lists_and_strings_through_calls() {
     );
     send(
         &mut c,
-        with_list("ask_case(address,uint256[])", &[w(1), w(2), w(3), w(4)]),
+        with_list("askCase(address,uint256[])", &[w(1), w(2), w(3), w(4)]),
     );
     assert_eq!(
         load_bytes(&send(&mut c, word_data("total()", &[])).returndata, 0),
         w(4)
     );
     let name = b"a name long enough to need a blob of its own";
-    let mut data = selector("ask_name(address,string)").to_vec();
+    let mut data = selector("askName(address,string)").to_vec();
     data.extend_from_slice(&echo.to_be_bytes());
     data.extend_from_slice(&w(64).to_be_bytes());
     data.extend_from_slice(&w(name.len() as u64).to_be_bytes());
@@ -795,12 +795,12 @@ fn lists_and_strings_through_calls() {
     let encoded = list_result(&[w(1), w(2)]);
     let out = send(
         &mut c,
-        encode_args("decoded_length(bytes)", &[Arg::B(encoded)]),
+        encode_args("decodedLength(bytes)", &[Arg::B(encoded)]),
     );
     assert_eq!(load_bytes(&out.returndata, 0), w(2));
     let out = exec(
         &c.runtime,
-        &encode_args("decoded_length(bytes)", &[Arg::B(vec![0; 40])]),
+        &encode_args("decodedLength(bytes)", &[Arg::B(vec![0; 40])]),
         HashMap::new(),
         w(7),
         w(0),
@@ -813,7 +813,7 @@ fn lists_and_strings_through_calls() {
     );
     let out = exec(
         &c.runtime,
-        &encode_args("decoded_length(bytes)", &[Arg::B(vec![0xff; 64])]),
+        &encode_args("decodedLength(bytes)", &[Arg::B(vec![0xff; 64])]),
         HashMap::new(),
         w(7),
         w(0),
@@ -1095,7 +1095,7 @@ external pure function each(const xs : list(bytes)) : bytes is {
   var out : bytes := "";
   for x : bytes in xs do { out := Bytes.concat(out, x); }
 } with out
-external pure function pk(const xs : list(string)) : bytes is Abi.encode_packed(xs[0])
+external pure function pk(const xs : list(string)) : bytes is Abi.encodePacked(xs[0])
 "#;
     let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
     let w = |n: u64| Word::from_u64(n).to_be_bytes().to_vec();
@@ -1216,7 +1216,7 @@ interface Echo is {
   view function same(xs : list(bytes)) : list(bytes);
   function keep(xs : list(string)) : list(string);
 }
-type blobs is list(bytes);
+type Blobs is list(bytes);
 event E of record { indexed who : address; xs : list(string); }
 storage is record { bs : list(bytes); ss : list(string); }
 external pure function echo(const xs : list(bytes)) : list(bytes) is xs
@@ -1226,7 +1226,7 @@ external pure function build(const a : bytes; const b : bytes) : list(bytes) is 
 } with out
 external pure function enc(const xs : list(bytes)) : bytes is Abi.encode(xs)
 external pure function enc2(const k : uint; const xs : list(string)) : bytes is Abi.encode(k, xs)
-external pure function dec(const b : bytes) : list(bytes) is Abi.decode(b, blobs)
+external pure function dec(const b : bytes) : list(bytes) is Abi.decode(b, Blobs)
 external pure function first(const a : bytes; const b : bytes) : bytes is a
 external pure function same(const a : list(bytes); const b : list(bytes)) : bool is a = b
 external function log(const xs : list(string)) is { emit E { who = Evm.sender(); xs = xs; }; }
@@ -1238,9 +1238,9 @@ external function send(const e : Echo; const xs : list(string)) is {
   };
 }
 external function save(const xs : list(bytes)) is { storage.bs := xs; }
-external function ask_save(const e : Echo; const xs : list(bytes)) is { storage.bs := query e.same(xs); }
+external function askSave(const e : Echo; const xs : list(bytes)) is { storage.bs := query e.same(xs); }
 external view function saved() : list(bytes) is storage.bs
-external function set_at(const i : uint; const b : bytes) is { storage.bs[i] := b; }
+external function setAt(const i : uint; const b : bytes) is { storage.bs[i] := b; }
 external view function ss() : list(string) is storage.ss
 "#;
     let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
@@ -1387,22 +1387,22 @@ external view function ss() : list(string) is storage.ss
         "saved"
     );
     let short = [w(1), w(0x40), w(1), [&[9u8][..], &[0; 31]].concat()].concat();
-    run(&mut storage, "set_at(uint256,bytes)", short);
+    run(&mut storage, "setAt(uint256,bytes)", short);
     let want = [w(0x20), abi_blobs(&[&[1, 2], &[9], &[]])].concat();
     assert_eq!(
         hexed(&run(&mut storage, "saved()", vec![])),
         hex(&want),
-        "set_at"
+        "setAt"
     );
     run(
         &mut storage,
-        "ask_save(address,bytes[])",
+        "askSave(address,bytes[])",
         [w(0xcd), w(0x40), abi_blobs(&items)].concat(),
     );
     assert_eq!(
         hexed(&run(&mut storage, "saved()", vec![])),
         hex(&list),
-        "ask_save"
+        "askSave"
     );
 }
 
@@ -1411,19 +1411,19 @@ external view function ss() : list(string) is storage.ss
 #[test]
 fn decoded_short_values_are_packed() {
     let src = r#"import "std/abi"; 
-type notes is list(string);
+type Notes is list(string);
 storage is record { s : string; ss : list(string); b : bytes; }
-external pure function eq_short(const data : bytes) : bool is Abi.decode(data, string) = "hi"
-external pure function eq_long(const a : string; const data : bytes) : bool is Abi.decode(data, string) = a
+external pure function eqShort(const data : bytes) : bool is Abi.decode(data, string) = "hi"
+external pure function eqLong(const a : string; const data : bytes) : bool is Abi.decode(data, string) = a
 external pure function empty(const data : bytes) : bool is {
   const s : string := Abi.decode(data, string);
 } with s.length = 0
 external function keep(const text : bytes; const data : bytes) is {
   storage.s := Abi.decode(text, string);
-  storage.ss := Abi.decode(data, notes);
+  storage.ss := Abi.decode(data, Notes);
 }
-external function sel() is { storage.b := Abi.encode_with_selector(0x12345678); }
-external pure function signed() : bytes is Abi.encode_with_signature("f()")
+external function sel() is { storage.b := Abi.encodeWithSelector(0x12345678); }
+external pure function signed() : bytes is Abi.encodeWithSignature("f()")
 "#;
     let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
     let w = |n: u64| Word::from_u64(n).to_be_bytes().to_vec();
@@ -1448,11 +1448,11 @@ external pure function signed() : bytes is Abi.encode_with_signature("f()")
     };
     let t = hex(&w(1));
     assert_eq!(
-        hex(&call("eq_short(bytes)", &[Arg::B(text(b"hi"))], HashMap::new()).returndata),
+        hex(&call("eqShort(bytes)", &[Arg::B(text(b"hi"))], HashMap::new()).returndata),
         t
     );
     let eq_long = call(
-        "eq_long(string,bytes)",
+        "eqLong(string,bytes)",
         &[Arg::B(long.to_vec()), Arg::B(text(long))],
         HashMap::new(),
     );
@@ -1575,17 +1575,17 @@ external pure function echo(const a : bytes; const n : uint) : bytes is a
 #[test]
 fn case_parameter_names_come_from_the_declaration() {
     let src = "\
-type pair is tuple record { a : uint; b : uint; }
-type action is
-  | Set_fee of (fee : uint)
-  | Set_cap of uint
-  | Set_pair of (limits : pair)
+type Pair is tuple record { a : uint; b : uint; }
+type Action is
+  | SetFee external setFee of (fee : uint)
+  | SetCap external setCap of uint
+  | SetPair external setPair of (limits : Pair)
 storage is record { fee : uint; }
-external function main(const action : action) is
+external function main(const action : Action) is
   case action of {
-  | Set_fee(whatever) -> { storage.fee := whatever; }
-  | Set_cap(whatever) -> { storage.fee := whatever; }
-  | Set_pair(whatever) -> { storage.fee := whatever.a; }
+  | SetFee(whatever) -> { storage.fee := whatever; }
+  | SetCap(whatever) -> { storage.fee := whatever; }
+  | SetPair(whatever) -> { storage.fee := whatever.a; }
   }
 ";
     let abi = abi(src).expect("abi");
@@ -1593,4 +1593,31 @@ external function main(const action : action) is
     assert!(abi.contains("\"name\": \"limits\""), "{abi}");
     assert!(abi.contains("\"name\": \"\""), "{abi}");
     assert!(!abi.contains("whatever"), "{abi}");
+}
+
+#[test]
+fn dispatched_cases_name_their_entrypoints() {
+    let src = "\
+type Action is
+  | SetFee external setFee of (fee : uint)
+  | Pause
+storage is record { fee : uint; }
+external function main(const action : Action) is
+  case action of {
+  | SetFee(f) -> { storage.fee := f; }
+  | Pause -> { storage.fee := 0; }
+  }
+";
+    let abi = abi(src).expect("abi");
+    assert!(abi.contains("\"name\": \"setFee\""), "{abi}");
+    assert!(abi.contains("\"name\": \"Pause\""), "{abi}");
+    assert!(!abi.contains("\"name\": \"SetFee\""), "{abi}");
+    let twice = src
+        .replace("  | Pause\n", "  | Pause external setFee of uint\n")
+        .replace("| Pause -> {", "| Pause(f) -> {");
+    let err = compile(&twice).expect_err("one entrypoint for two cases");
+    assert!(
+        err.to_string().contains("duplicate entrypoint `setFee(uint256)`"),
+        "{err}"
+    );
 }

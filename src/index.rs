@@ -1603,11 +1603,10 @@ impl<'a> Builder<'a> {
 
     /// The entrypoint a dispatch arm becomes, for a variant of that name.
     fn entrypoint(&self, variant: &str) -> String {
-        let name = route::abi_name(variant);
         self.c()
             .routes
             .iter()
-            .filter(|r| r.path.len() > 1 && r.path.last() == Some(&name))
+            .filter(|r| r.path.len() > 1 && r.case.as_deref() == Some(variant))
             .map(route_line)
             .collect::<Vec<_>>()
             .join("\n")
@@ -2407,7 +2406,7 @@ impl<'a> Builder<'a> {
                     .as_deref()
                     .and_then(|ns| self.module_named(ns))
                     .filter(|ns| self.namespace(ns).is_some());
-                // `Abi.interface_id(I)` and `Abi.selector(I.f)` fold to their `bytes4`.
+                // `Abi.interfaceId(I)` and `Abi.selector(I.f)` fold to their `bytes4`.
                 let arg: Option<String> = text[at + word.len()..].strip_prefix('(').map(|inner| {
                     inner
                         .chars()
@@ -2895,9 +2894,15 @@ fn ty_ref(t: &TypeRef) -> String {
         ),
         TypeRef::Variant { variants, .. } => variants
             .iter()
-            .map(|v| match &v.payload {
-                Some(p) => format!("| {} of {}", v.name, ty_ref(p)),
-                None => format!("| {}", v.name),
+            .map(|v| {
+                let name = match &v.external {
+                    Some(e) => format!("{} external {e}", v.name),
+                    None => v.name.clone(),
+                };
+                match &v.payload {
+                    Some(p) => format!("| {name} of {}", ty_ref(p)),
+                    None => format!("| {name}"),
+                }
             })
             .collect::<Vec<_>>()
             .join(" "),
@@ -2945,9 +2950,15 @@ fn ty_ref_long(t: &TypeRef) -> String {
         TypeRef::Variant { variants, .. } => {
             let lines: Vec<String> = variants
                 .iter()
-                .map(|v| match &v.payload {
-                    Some(p) => format!("  | {} of {}", v.name, ty_ref(p)),
-                    None => format!("  | {}", v.name),
+                .map(|v| {
+                    let name = match &v.external {
+                        Some(e) => format!("{} external {e}", v.name),
+                        None => v.name.clone(),
+                    };
+                    match &v.payload {
+                        Some(p) => format!("  | {name} of {}", ty_ref(p)),
+                        None => format!("  | {name}"),
+                    }
                 })
                 .collect();
             format!("\n{}", lines.join("\n"))

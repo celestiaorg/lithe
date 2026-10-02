@@ -9,41 +9,41 @@ description: "keccak256 and a commit-reveal game."
 
 ```lithe [hashing.lithe]
 (* A commit-reveal guessing game. `Crypto.keccak256` hashes `bytes` or `string`;
-   encode several values with `Abi.encode` first, since `encode_packed` of
+   encode several values with `Abi.encode` first, since `encodePacked` of
    adjacent dynamic values can collide. *)
 
 import "std/abi";
 import "std/crypto";
 import "std/evm";
 
-error Wrong_guess;
-error Already_solved;
+error WrongGuess;
+error AlreadySolved;
 
 event Solved of record {
   indexed by : address;
 }
 
 storage is record {
-  answer_hash : bytes32;
+  answerHash : bytes32;
   solved : bool;
 }
 
-external function set_puzzle(const answer_hash : bytes32) is {
-  storage.answer_hash := answer_hash;
+external function setPuzzle(const answerHash : bytes32) is {
+  storage.answerHash := answerHash;
   storage.solved := false;
 }
 
-external pure function hash_answer(const answer : string; const salt : bytes32) : bytes32 is
+external pure function hashAnswer(const answer : string; const salt : bytes32) : bytes32 is
   Crypto.keccak256(Abi.encode(answer, salt))
 
 external function solve(const answer : string; const salt : bytes32)
-  raises Wrong_guess | Already_solved
+  raises WrongGuess | AlreadySolved
 is {
-  assert(not storage.solved, Already_solved);
-  assert(Crypto.keccak256(Abi.encode(answer, salt)) = storage.answer_hash, Wrong_guess);
+  assert(not storage.solved, AlreadySolved);
+  assert(Crypto.keccak256(Abi.encode(answer, salt)) = storage.answerHash, WrongGuess);
   storage.solved := true;
   emit Solved { by = Evm.sender(); };
 }
 ```
 
-Prefer `Abi.encode` over `Abi.encode_packed` when hashing several values. With packed encoding, `("ab", "c")` and `("a", "bc")` produce the same bytes.
+Prefer `Abi.encode` over `Abi.encodePacked` when hashing several values. With packed encoding, `("ab", "c")` and `("a", "bc")` produce the same bytes.

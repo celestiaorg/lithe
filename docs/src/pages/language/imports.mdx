@@ -14,11 +14,11 @@ import "./lib/math";
 import "./lib/fees" as Fees;
 
 storage is record {
-  fee : Fees.basis_points;
+  fee : Fees.BasisPoints;
   cap : uint;
 }
 
-external function configure(const fee : Fees.basis_points; const cap : uint) is {
+external function configure(const fee : Fees.BasisPoints; const cap : uint) is {
   storage.fee := fee;
   storage.cap := cap;
 }
@@ -35,9 +35,9 @@ pure function min(const a : uint; const b : uint) : uint is {
 ```
 
 ```lithe [lib/fees.lithe]
-type basis_points is uint16;
+type BasisPoints is uint16;
 
-pure function apply(const fee : basis_points; const amount : uint) : uint is
+pure function apply(const fee : BasisPoints; const amount : uint) : uint is
   amount * uint(uint16(fee)) / 10_000
 
 private pure function unused() : uint is
@@ -77,12 +77,12 @@ A file's names are exactly:
 Nothing else. A name reaches a file only through that file's own imports, never through another file's. If `main.lithe` imports `./a`, and `a` imports `./b`, then `main` can't name anything `b` declares until it imports `./b` itself:
 
 ```text
-unknown type `amount`
+unknown type `Amount`
 
-`amount` is declared in `./b`: `import "./b";`
+`Amount` is declared in `./b`: `import "./b";`
 ```
 
-Naming is what needs the import. A value can come from anywhere: `main` can call `a`'s function that returns `b`'s `amount`, and pass the result along, without importing `b`.
+Naming is what needs the import. A value can come from anywhere: `main` can call `a`'s function that returns `b`'s `Amount`, and pass the result along, without importing `b`.
 
 So a file's imports list everything it depends on. A file that doesn't import `std/evm` doesn't read the caller, the block, or balances, and a reviewer can see that from its first lines. `lithe lint` reports an import the file doesn't use, and the [language server](/tooling/editors) adds the import a name needs.
 
@@ -92,14 +92,14 @@ Code always sees the names of the file that declares it, wherever it runs. A mod
 
 ### One file, however it is imported
 
-A file is loaded once, however many files import it and under whichever aliases. If `a` imports `./b` as `M`, `c` imports it plainly, and `main` imports it as `B`, then `M.add_one` in `a`, `add_one` in `c`, and `B.add_one` in `main` are one function. `b`'s modules have one storage, and its errors and events have one selector.
+A file is loaded once, however many files import it and under whichever aliases. If `a` imports `./b` as `M`, `c` imports it plainly, and `main` imports it as `B`, then `M.addOne` in `a`, `addOne` in `c`, and `B.addOne` in `main` are one function. `b`'s modules have one storage, and its errors and events have one selector.
 
 ## Plain and aliased imports
 
 A plain import, `import "./lib/math";`, makes the file's names available directly, as `min`. Two plain imports that define the same name are an error, whether or not the name is used. The error says where each is, and how to resolve it:
 
 ```text
-main.lithe:2:1: ambiguous symbol `calculate_fee`
+main.lithe:2:1: ambiguous symbol `calculateFee`
 
 defined in:
 - left.lithe:1:6
@@ -118,7 +118,7 @@ main.lithe:8:6: duplicate function `scale`
 overloads need different parameter types; rename one or change its parameters
 ```
 
-An aliased import, `import "./lib/fees" as Fees;`, keeps the file's names behind the alias: `Fees.apply`, `Fees.basis_points`. That includes its modules: `import "std/math/math" as M;` names the module `M.Math`, so a call is `M.Math.sqrt(x)` and a contract writes `use M.Math;`. An alias doesn't shorten a module's name; it keeps two files' names apart, so two files that each declare a module `Tool` can both be imported, as `P.Tool` and `Q.Tool`. Aliases avoid clashes, and they make it obvious at each use where a name comes from.
+An aliased import, `import "./lib/fees" as Fees;`, keeps the file's names behind the alias: `Fees.apply`, `Fees.BasisPoints`. That includes its modules: `import "std/math/math" as M;` names the module `M.Math`, so a call is `M.Math.sqrt(x)` and a contract writes `use M.Math;`. An alias doesn't shorten a module's name; it keeps two files' names apart, so two files that each declare a module `Tool` can both be imported, as `P.Tool` and `Q.Tool`. Aliases avoid clashes, and they make it obvious at each use where a name comes from.
 
 ## Built-in modules
 
@@ -150,7 +150,7 @@ import "./lib/ledger";
 contract Token is {
   use Ledger exposing {
     function mint(to : address; amount : uint);
-    view function balance_of(who : address) : uint;
+    view function balanceOf(who : address) : uint;
   }
 }
 ```
@@ -161,7 +161,7 @@ module Ledger is {
     balances : map(address, uint);
   }
 
-  external view function balance_of(const who : address) : uint is
+  external view function balanceOf(const who : address) : uint is
     ledger.balances[who]
 
   external function mint(const to : address; const amount : uint) is {

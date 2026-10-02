@@ -59,24 +59,24 @@ fn bytes_args(sig: &str, parts: &[Vec<u8>]) -> Vec<u8> {
 
 const SRC: &str = "\
 import \"std/crypto\"; import \"std/uint\"; storage is record { n : uint; }
-external pure function add(const a : (uint, uint); const b : (uint, uint)) : (uint, uint) is Crypto.bn254_add(a, b)
-external pure function mul(const p : (uint, uint); const s : uint) : (uint, uint) is Crypto.bn254_mul(p, s)
-external pure function pair(const ps : list((uint, uint, uint, uint, uint, uint))) : bool is Crypto.bn254_pairing(ps)
+external pure function add(const a : (uint, uint); const b : (uint, uint)) : (uint, uint) is Crypto.bn254Add(a, b)
+external pure function mul(const p : (uint, uint); const s : uint) : (uint, uint) is Crypto.bn254Mul(p, s)
+external pure function pair(const ps : list((uint, uint, uint, uint, uint, uint))) : bool is Crypto.bn254Pairing(ps)
 external pure function blake(const r : uint32; const h : list(bytes32, 2); const m : list(bytes32, 4); const t : bytes16; const f : bool) : list(bytes32, 2) is
   Crypto.blake2f(r, h, m, t, f)
-external pure function modexp(const b : bytes; const e : bytes; const m : bytes) : bytes is Crypto.mod_exp(b, e, m)
-external pure function powmod(const b : uint; const e : uint; const m : uint) : uint is Uint.pow_mod(b, e, m)
+external pure function modexp(const b : bytes; const e : bytes; const m : bytes) : bytes is Crypto.modExp(b, e, m)
+external pure function powmod(const b : uint; const e : uint; const m : uint) : uint is Uint.powMod(b, e, m)
 external pure function kzg(const h : bytes32; const z : uint; const y : uint; const c : bytes; const p : bytes) : bool is
-  Crypto.kzg_point_evaluation(h, z, y, c, p)
-external pure function g1_add(const a : bytes; const b : bytes) : bytes is Crypto.bls12_g1_add(a, b)
-external pure function g1_msm(const pairs : bytes) : bytes is Crypto.bls12_g1_msm(pairs)
-external pure function g2_add(const a : bytes; const b : bytes) : bytes is Crypto.bls12_g2_add(a, b)
-external pure function g2_msm(const pairs : bytes) : bytes is Crypto.bls12_g2_msm(pairs)
-external pure function bls_pair(const pairs : bytes) : bool is Crypto.bls12_pairing(pairs)
-external pure function map_g1(const fp : bytes) : bytes is Crypto.bls12_map_fp_to_g1(fp)
-external pure function map_g2(const fp2 : bytes) : bytes is Crypto.bls12_map_fp2_to_g2(fp2)
+  Crypto.kzgPointEvaluation(h, z, y, c, p)
+external pure function g1Add(const a : bytes; const b : bytes) : bytes is Crypto.bls12G1Add(a, b)
+external pure function g1Msm(const pairs : bytes) : bytes is Crypto.bls12G1Msm(pairs)
+external pure function g2Add(const a : bytes; const b : bytes) : bytes is Crypto.bls12G2Add(a, b)
+external pure function g2Msm(const pairs : bytes) : bytes is Crypto.bls12G2Msm(pairs)
+external pure function blsPair(const pairs : bytes) : bool is Crypto.bls12Pairing(pairs)
+external pure function mapG1(const fp : bytes) : bytes is Crypto.bls12MapFpToG1(fp)
+external pure function mapG2(const fp2 : bytes) : bytes is Crypto.bls12MapFp2ToG2(fp2)
 external pure function p256(const h : bytes32; const r : bytes32; const s : bytes32; const x : bytes32; const y : bytes32) : bool is
-  Crypto.p256_verify(h, r, s, x, y)
+  Crypto.p256Verify(h, r, s, x, y)
 ";
 
 #[test]
@@ -268,59 +268,59 @@ fn bls12_calls_concatenate_their_inputs() {
     answer(Ok(vec![0x11; 128]));
     let out = run(
         &runtime,
-        &bytes_args("g1_add(bytes,bytes)", &[a.clone(), b.clone()]),
+        &bytes_args("g1Add(bytes,bytes)", &[a.clone(), b.clone()]),
     );
     assert!(!out.reverted, "{}", pretty(&out.returndata));
     assert_eq!(seen(), [a.clone(), b.clone()].concat());
     assert_eq!(abi_string_value(&out.returndata), vec![0x11; 128]);
-    let out = run(&runtime, &bytes_args("g1_msm(bytes)", &[vec![0xcc; 320]]));
+    let out = run(&runtime, &bytes_args("g1Msm(bytes)", &[vec![0xcc; 320]]));
     assert_eq!(seen(), vec![0xcc; 320]);
     assert_eq!(abi_string_value(&out.returndata), vec![0x11; 128]);
-    let out = run(&runtime, &bytes_args("map_g1(bytes)", &[vec![0xdd; 64]]));
+    let out = run(&runtime, &bytes_args("mapG1(bytes)", &[vec![0xdd; 64]]));
     assert_eq!(seen(), vec![0xdd; 64]);
     assert_eq!(abi_string_value(&out.returndata), vec![0x11; 128]);
     // A G2 point is 256 bytes; an answer of another size reverts.
     assert!(
         run(
             &runtime,
-            &bytes_args("g2_add(bytes,bytes)", &[vec![1; 256], vec![2; 256]])
+            &bytes_args("g2Add(bytes,bytes)", &[vec![1; 256], vec![2; 256]])
         )
         .reverted
     );
     answer(Ok(vec![0x22; 256]));
     let out = run(
         &runtime,
-        &bytes_args("g2_add(bytes,bytes)", &[vec![1; 256], vec![2; 256]]),
+        &bytes_args("g2Add(bytes,bytes)", &[vec![1; 256], vec![2; 256]]),
     );
     assert_eq!(seen(), [vec![1; 256], vec![2; 256]].concat());
     assert_eq!(abi_string_value(&out.returndata), vec![0x22; 256]);
-    let out = run(&runtime, &bytes_args("g2_msm(bytes)", &[vec![3; 288]]));
+    let out = run(&runtime, &bytes_args("g2Msm(bytes)", &[vec![3; 288]]));
     assert_eq!(abi_string_value(&out.returndata), vec![0x22; 256]);
-    let out = run(&runtime, &bytes_args("map_g2(bytes)", &[vec![4; 128]]));
+    let out = run(&runtime, &bytes_args("mapG2(bytes)", &[vec![4; 128]]));
     assert_eq!(seen(), vec![4; 128]);
     assert_eq!(abi_string_value(&out.returndata), vec![0x22; 256]);
     answer(Ok(w(1)));
-    let out = run(&runtime, &bytes_args("bls_pair(bytes)", &[vec![5; 384]]));
+    let out = run(&runtime, &bytes_args("blsPair(bytes)", &[vec![5; 384]]));
     assert_eq!(seen(), vec![5; 384]);
     assert_eq!(out.returndata, w(1));
     answer(Err(Vec::new()));
-    assert!(run(&runtime, &bytes_args("bls_pair(bytes)", &[vec![5; 384]])).reverted);
+    assert!(run(&runtime, &bytes_args("blsPair(bytes)", &[vec![5; 384]])).reverted);
 }
 
 #[test]
 fn precompile_arguments_are_typed() {
     for (body, want) in [
         (
-            "Crypto.bn254_add((1, 2), true)",
-            "`Crypto.bn254_add` takes `(uint256,uint256)` here",
+            "Crypto.bn254Add((1, 2), true)",
+            "`Crypto.bn254Add` takes `(uint256,uint256)` here",
         ),
         (
-            "Crypto.p256_verify(0x01, 0x02, 0x03, 0x04)",
-            "`Crypto.p256_verify` expects 5 arguments",
+            "Crypto.p256Verify(0x01, 0x02, 0x03, 0x04)",
+            "`Crypto.p256Verify` expects 5 arguments",
         ),
         (
-            "Crypto.mod_exp(true, false, true)",
-            "`Crypto.mod_exp` takes `bytes` here",
+            "Crypto.modExp(true, false, true)",
+            "`Crypto.modExp` takes `bytes` here",
         ),
     ] {
         let src = format!("import \"std/crypto\"; storage is record {{ n : uint; }}\nexternal pure function f() : uint is {{ const x : bool := {body} = {body}; }} with 1\n");

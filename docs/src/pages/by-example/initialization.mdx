@@ -11,7 +11,7 @@ description: "Setting up a contract as it is deployed."
 (* `deploy` runs once, in the creation code, on the deployment's arguments. Nobody can
    call it later, so there is no "already initialized" flag to keep. *)
 
-error Cap_is_zero;
+error CapIsZero;
 
 storage is record {
   owner : address;
@@ -19,9 +19,9 @@ storage is record {
 }
 
 deploy(const owner : address; const cap : uint)
-  raises Cap_is_zero
+  raises CapIsZero
 is {
-  assert(cap > 0, Cap_is_zero);
+  assert(cap > 0, CapIsZero);
   storage.owner := owner;
   storage.cap := cap;
 }

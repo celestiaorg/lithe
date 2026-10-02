@@ -49,19 +49,19 @@ spec for withdraw is {
 "#;
 
 const OWNED: &str = r#"import "std/evm"; 
-error Not_owner;
+error NotOwner;
 error Paused;
 
-type owner_action is
-  | Set_fee of uint
-  | Pause
+type OwnerAction is
+  | SetFee external setFee of uint
+  | Pause external pause
 
-type user_action is
-  | Deposit of uint
+type UserAction is
+  | Deposit external deposit of uint
 
-type action is
-  | Owner of owner_action
-  | User of user_action
+type Action is
+  | Owner of OwnerAction
+  | User of UserAction
 
 storage is record {
   owner : address;
@@ -70,17 +70,17 @@ storage is record {
   deposits : map(address, uint);
 }
 
-function owner_main(const action : owner_action)
-  raises Not_owner
+function ownerMain(const action : OwnerAction)
+  raises NotOwner
 is {
-  assert(Evm.sender() = storage.owner, Not_owner);
+  assert(Evm.sender() = storage.owner, NotOwner);
 }
 with case action of {
-| Set_fee(fee) -> { storage.fee := fee; }
+| SetFee(fee) -> { storage.fee := fee; }
 | Pause -> { storage.paused := true; }
 }
 
-function user_main(const action : user_action)
+function userMain(const action : UserAction)
   raises Paused
 is {
   assert(not storage.paused, Paused);
@@ -91,12 +91,12 @@ with case action of {
   }
 }
 
-external function main(const action : action)
-  raises Not_owner | Paused
+external function main(const action : Action)
+  raises NotOwner | Paused
 is
   case action of {
-  | Owner(a) -> owner_main(a)
-  | User(a) -> user_main(a)
+  | Owner(a) -> ownerMain(a)
+  | User(a) -> userMain(a)
   }
 "#;
 
@@ -107,10 +107,15 @@ error Short;
 module Coin is {
   storage coin at "t.coin" is record {
     balances : map(address, uint);
-    total_supply : uint;
+    totalSupply : uint;
   }
 
-  function transfer(const to : address; const value : uint) : bool
+  function mint(const to : address; const value : uint) is {
+    coin.balances[to] := coin.balances[to] + value;
+    coin.totalSupply := coin.totalSupply + value;
+  }
+
+  external function transfer(const to : address; const value : uint) : bool
     raises Short
   is {
     const from : address := Evm.sender();
@@ -118,16 +123,6 @@ module Coin is {
     coin.balances[from] := coin.balances[from] - value;
     coin.balances[to] := coin.balances[to] + value;
   } with true
-
-  function mint(const to : address; const value : uint) is {
-    coin.balances[to] := coin.balances[to] + value;
-    coin.total_supply := coin.total_supply + value;
-  }
-
-  external function transfer(const to : address; const value : uint) : bool
-    raises Short
-  is
-    transfer(to, value)
 }
 
 interface ICoin is {
@@ -146,14 +141,14 @@ external function mint(const to : address; const value : uint) is {
 const TOKEN_SPECS: &str = r#"
 spec for module Coin is {
   spec is {
-    invariant supply is coin.total_supply = sum(coin.balances);
+    invariant supply is coin.totalSupply = sum(coin.balances);
   }
 
-  spec for function transfer is partial {
+  spec for transfer is partial {
     const from : address := Evm.sender();
     raises Short when old.coin.balances[from] < value;
     ensures from = to or new.coin.balances[to] = old.coin.balances[to] + value;
-    ensures new.coin.total_supply = old.coin.total_supply;
+    ensures new.coin.totalSupply = old.coin.totalSupply;
   }
 }
 "#;
@@ -179,10 +174,10 @@ spec for withdraw(amount : wei) (entrypoint)
 #[test]
 fn spec_blocks_never_change_the_code() {
     let owned_specs = r#"
-spec for owner_main is {
-  raises Not_owner when Evm.sender() <> old.storage.owner;
+spec for ownerMain is {
+  raises NotOwner when Evm.sender() <> old.storage.owner;
 }
-spec for set_fee is {
+spec for setFee is {
   ensures new.storage.fee = fee;
 }
 "#;
@@ -212,10 +207,10 @@ fn routes_inherit_their_guards_specs() {
     let out = specs(&format!(
         "{OWNED}{}",
         r#"
-spec for owner_main is {
-  raises Not_owner when Evm.sender() <> old.storage.owner;
+spec for ownerMain is {
+  raises NotOwner when Evm.sender() <> old.storage.owner;
 }
-spec for set_fee is {
+spec for setFee is {
   ensures new.storage.fee = fee;
 }
 spec for deposit is partial {
@@ -227,10 +222,10 @@ spec for deposit is partial {
     .expect("specs");
     assert_eq!(
         out,
-        "spec for owner_main(action : owner_action) (guard of set_fee, pause)
-  raises Not_owner when Evm.sender() <> old.storage.owner
+        "spec for ownerMain(action : OwnerAction) (guard of setFee, pause)
+  raises NotOwner when Evm.sender() <> old.storage.owner
   reverts in no other case
-spec for set_fee(fee : uint) (entrypoint, inherits owner_main)
+spec for setFee(fee : uint) (entrypoint, inherits ownerMain)
   ensures new.storage.fee = fee
   reverts in no other case
 spec for deposit(amount : uint) (entrypoint)
@@ -244,12 +239,12 @@ spec for deposit(amount : uint) (entrypoint)
 #[test]
 fn module_specs_come_from_the_module_or_a_spec_file() {
     let expected = "spec is
-  invariant Coin.supply: coin.total_supply = sum(coin.balances)
-spec for Coin.transfer(to : address; value : uint) (function)
+  invariant Coin.supply: coin.totalSupply = sum(coin.balances)
+spec for Coin.transfer(to : address; value : uint) (external)
   const from := Evm.sender()
   raises Short when old.coin.balances[from] < value
   ensures from = to or new.coin.balances[to] = old.coin.balances[to] + value
-  ensures new.coin.total_supply = old.coin.total_supply
+  ensures new.coin.totalSupply = old.coin.totalSupply
   may revert in other ways (partial)
 ";
     assert_eq!(
@@ -381,8 +376,8 @@ fn spec_rules() {
             "`old.` starts a path, such as `old.storage.x`",
         ),
         (
-            "spec for withdraw is { ensures Evm.gas_left() > 0; }",
-            "a spec cannot read `Evm.gas_left`",
+            "spec for withdraw is { ensures Evm.gasLeft() > 0; }",
+            "a spec cannot read `Evm.gasLeft`",
         ),
         ("spec is partial { invariant a is true; }", "only `spec for f` can be `partial`"),
         (
@@ -450,19 +445,19 @@ fn spec_reads() {
 #[test]
 fn a_spec_names_the_file_s_private_functions_and_a_route_s_payload() {
     let src = r#"
-type fees is record { a : uint; b : uint; }
+type Fees is record { a : uint; b : uint; }
 
-type action is
-  | Set_fees of fees
-  | Reset
+type Action is
+  | SetFees external setFees of Fees
+  | Reset external reset
 
 storage is record { a : uint; b : uint; count : uint; }
 
 private view function total() : uint is storage.a + storage.b
 
-external function main(const action : action) is
+external function main(const action : Action) is
   case action of {
-  | Set_fees(f) -> {
+  | SetFees(f) -> {
       storage.a := f.a;
       storage.b := f.b;
     }
@@ -473,7 +468,7 @@ external function main(const action : action) is
   }
 "#;
     let spec = r#"
-spec for set_fees is {
+spec for setFees is {
   ensures new.storage.a = f.a;
   ensures new.total() = f.a + f.b;
 }
@@ -484,36 +479,18 @@ spec is {
 "#;
     let out = specs(&format!("{src}{spec}")).expect("in file");
     assert!(
-        out.contains("spec for set_fees(f : fees) (entrypoint)"),
+        out.contains("spec for setFees(f : Fees) (entrypoint)"),
         "{out}"
     );
     assert_eq!(specs_with(src, spec).expect("spec file"), out);
 }
 
 #[test]
-fn spec_for_names_a_function_or_an_external() {
-    let err = specs(&format!(
+fn spec_for_names_a_module_s_external() {
+    let out = specs(&format!(
         "{TOKEN}spec for module Coin is {{ spec for transfer is partial {{ ensures true; }} }}"
     ))
-    .expect_err("ambiguous");
-    assert!(
-        err.to_string().contains(
-            "`transfer` names both a function and an external; write `spec for function transfer` or `spec for external transfer`"
-        ),
-        "{err}"
-    );
-    let out = specs(&format!(
-        "{TOKEN}spec for module Coin is {{ spec for external transfer is partial {{ ensures true; }} }}"
-    ))
     .expect("external");
-    let both = specs(&format!(
-        "{TOKEN}spec for module Coin is {{ spec for external transfer is partial {{ ensures true; }} spec for function transfer is partial {{ ensures true; }} }}"
-    ))
-    .expect("a function and an external are two targets");
-    assert!(
-        both.contains("(function)") && both.contains("(external)"),
-        "{both}"
-    );
     assert!(
         out.contains("spec for Coin.transfer(to : address; value : uint) (external)"),
         "{out}"
@@ -695,14 +672,14 @@ fn a_checking_build_stops_a_call_that_breaks_a_spec() {
 #[test]
 fn a_checking_build_checks_guards_routes_and_results() {
     let src = r#"import "std/evm"; 
-error Not_owner;
+error NotOwner;
 
-type owner_action is
-  | Set_fee of uint
-  | Pause
+type OwnerAction is
+  | SetFee external setFee of uint
+  | Pause external pause
 
-type action is
-  | Owner of owner_action
+type Action is
+  | Owner of OwnerAction
 
 storage is record {
   owner : address;
@@ -714,21 +691,21 @@ deploy() is {
   storage.owner := Evm.sender();
 }
 
-function owner_main(const action : owner_action)
-  raises Not_owner
+function ownerMain(const action : OwnerAction)
+  raises NotOwner
 is {
-  assert(Evm.sender() = storage.owner, Not_owner);
+  assert(Evm.sender() = storage.owner, NotOwner);
 }
 with case action of {
-| Set_fee(fee) -> { storage.fee := fee; }
+| SetFee(fee) -> { storage.fee := fee; }
 | Pause -> { storage.paused := true; }
 }
 
-external function main(const action : action)
-  raises Not_owner
+external function main(const action : Action)
+  raises NotOwner
 is
   case action of {
-  | Owner(a) -> owner_main(a)
+  | Owner(a) -> ownerMain(a)
   }
 
 external function bump(var by : uint) : uint is {
@@ -741,11 +718,11 @@ spec is {
   invariant capped is storage.fee < 1000;
 }
 
-spec for owner_main is {
-  raises Not_owner when Evm.sender() <> old.storage.owner;
+spec for ownerMain is {
+  raises NotOwner when Evm.sender() <> old.storage.owner;
 }
 
-spec for set_fee is {
+spec for setFee is {
   ensures new.storage.fee = fee;
 }
 
@@ -754,16 +731,16 @@ spec for bump is {
 }
 "#;
     let mut c = Checked::new(src, specs);
-    c.call(1, 0, "set_fee(uint256)", &[Word::from_u64(10)])
+    c.call(1, 0, "setFee(uint256)", &[Word::from_u64(10)])
         .expect("owner");
     let err = c
-        .call(2, 0, "set_fee(uint256)", &[Word::from_u64(10)])
+        .call(2, 0, "setFee(uint256)", &[Word::from_u64(10)])
         .expect_err("not the owner");
     assert_eq!(err[..4], selector("NotOwner()"));
     c.call(1, 0, "bump(uint256)", &[Word::from_u64(4)])
         .expect("bump");
     assert_eq!(
-        c.call(1, 0, "set_fee(uint256)", &[Word::from_u64(5000)]),
+        c.call(1, 0, "setFee(uint256)", &[Word::from_u64(5000)]),
         Err(violation("invariant capped"))
     );
     // A guard whose spec says it rejects more callers than it does.
@@ -772,12 +749,12 @@ spec for bump is {
         "when old.storage.fee > 12",
     );
     let mut c = Checked::new(src, &wrong);
-    c.call(1, 0, "set_fee(uint256)", &[Word::from_u64(20)])
+    c.call(1, 0, "setFee(uint256)", &[Word::from_u64(20)])
         .expect("fee was 0");
     assert_eq!(
         c.call(1, 0, "pause()", &[]),
         Err(violation(
-            "owner_main: `raises Not_owner when` at 7:3 held, but the call did not revert"
+            "ownerMain: `raises NotOwner when` at 7:3 held, but the call did not revert"
         ))
     );
 }
@@ -789,7 +766,7 @@ import "std/token/erc20";
 import "std/interfaces/erc20";
 
 contract Token is {
-  use ERC20 exposing IERC20; hook ERC20.before_transfer is skip; hook ERC20.after_transfer is skip;
+  use ERC20 exposing IERC20; hook ERC20.beforeTransfer is skip; hook ERC20.afterTransfer is skip;
 
   deploy() is {
     ERC20.init("Token", "TKN");

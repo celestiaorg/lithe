@@ -1,26 +1,26 @@
 import "std/evm";
 
-error Not_owner;
+error NotOwner;
 
 storage is record {
   count : uint;
   owner : address;
 }
 
-type owner_action is
-  | Reset
+type OwnerAction is
+  | Reset external reset
 
-type public_action is
-  | Increment of (n : uint)
+type PublicAction is
+  | Increment external increment of (n : uint)
 
-type action is
-  | Owner_action of owner_action
-  | Public_action of public_action
+type Action is
+  | OwnerAction of OwnerAction
+  | PublicAction of PublicAction
 
-function owner_main(const action : owner_action)
-  raises Not_owner
+function ownerMain(const action : OwnerAction)
+  raises NotOwner
 is {
-  assert(Evm.sender() = storage.owner, Not_owner);
+  assert(Evm.sender() = storage.owner, NotOwner);
 }
 with case action of
 {
@@ -29,7 +29,7 @@ with case action of
   }
 }
 
-function public_main(const action : public_action) is
+function publicMain(const action : PublicAction) is
   case action of
   {
   | Increment(n) -> {
@@ -37,14 +37,14 @@ function public_main(const action : public_action) is
     }
   }
 
-external function main(const action : action)
-  raises Not_owner
+external function main(const action : Action)
+  raises NotOwner
 is
   case action of
   {
-  | Owner_action(a) -> owner_main(a)
-  | Public_action(a) -> public_main(a)
+  | OwnerAction(a) -> ownerMain(a)
+  | PublicAction(a) -> publicMain(a)
   }
 
-external view function get_count() : uint is
+external view function getCount() : uint is
   storage.count

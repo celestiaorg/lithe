@@ -56,7 +56,7 @@ is {
   storage.balances[to] := storage.balances[to] + amount;
 }
 
-external function set_limit(const limit : uint)
+external function setLimit(const limit : uint)
   raises Denied | Failed
 is {
   assert(Evm.sender() = immutable.owner, Denied { who = Evm.sender(); reason = "not the owner"; });
@@ -73,7 +73,7 @@ is {
   storage.paused := on;
 }
 
-external view function balance_of(const who : address) : uint
+external view function balanceOf(const who : address) : uint
   raises Failed
 is {
   assert(who =/= Address.zero, Failed("zero address"));

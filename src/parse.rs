@@ -1045,17 +1045,8 @@ impl<'a> Parser<'a> {
     fn spec_block(&mut self, module: Option<String>) -> Result<SpecBlock, Error> {
         let (line, col) = self.at();
         self.bump();
-        let mut external = None;
         let target = if self.kind() == Kind::For {
             self.bump();
-            match self.kind() {
-                Kind::External => external = Some(true),
-                Kind::Function => external = Some(false),
-                _ => {}
-            }
-            if external.is_some() {
-                self.bump();
-            }
             let (tline, tcol) = self.at();
             Some(NameAt {
                 line: tline,
@@ -1090,7 +1081,6 @@ impl<'a> Parser<'a> {
             col,
             origin: String::new(),
             target,
-            external,
             partial,
             clauses,
             module,
@@ -1755,6 +1745,12 @@ impl<'a> Parser<'a> {
         loop {
             let (vline, vcol) = self.at();
             let name = self.ident()?;
+            let external = if self.kind() == Kind::External && self.peek_kind(1) == Kind::Ident {
+                self.bump();
+                Some(self.ident()?)
+            } else {
+                None
+            };
             let mut param = String::new();
             let payload = if self.kind() == Kind::Of {
                 self.bump();
@@ -1780,6 +1776,7 @@ impl<'a> Parser<'a> {
                 name,
                 payload,
                 param,
+                external,
             });
             if self.kind() != Kind::Pipe {
                 break;
@@ -4036,7 +4033,7 @@ mod tests {
 
     #[test]
     fn unit_value_is_not_the_unit_type() {
-        let src = "type t is Unit\n";
+        let src = "type T is Unit\n";
         let err = parse(src).expect_err("Unit");
         assert!(
             err.message

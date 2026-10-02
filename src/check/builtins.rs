@@ -171,9 +171,9 @@ impl Checker {
                 };
                 if !ok {
                     let msg = if signed {
-                        "`Int.div_rem` expects a signed integer"
+                        "`Int.divRem` expects a signed integer"
                     } else {
-                        "`Uint.div_rem` expects an unsigned integer"
+                        "`Uint.divRem` expects an unsigned integer"
                     };
                     return Err(error(line, col, msg));
                 }
@@ -340,7 +340,7 @@ impl Checker {
                     self.encodable(arg)?;
                 }
             }
-            // `Abi.encode_call(Token.transfer, to, amount)` names an interface method: its
+            // `Abi.encodeCall(Token.transfer, to, amount)` names an interface method: its
             // arguments are checked against the method, and its selector is taken from it.
             Builtin::AbiEncodeCall => {
                 let target = match args.first() {
@@ -753,7 +753,7 @@ impl Checker {
         Ok(())
     }
 
-    /// `Abi.selector(Token.transfer)` and `Abi.interface_id(Token)`, as `bytes4` literals.
+    /// `Abi.selector(Token.transfer)` and `Abi.interfaceId(Token)`, as `bytes4` literals.
     /// An interface's id is the XOR of its methods' selectors, as ERC-165 has it.
     pub(super) fn abi_constant(&self, e: &Expr) -> Result<Option<Expr>, Error> {
         let Expr::Call {
@@ -828,17 +828,17 @@ impl Checker {
                     "`Abi.selector` expects an interface method, like `Token.transfer`",
                 ));
             }
-            ("interface_id", [Expr::Ident { name: iface, .. }]) => {
+            ("interfaceId", [Expr::Ident { name: iface, .. }]) => {
                 let Some(methods) = iface_methods(iface) else {
                     return Err(error(line, col, format!("unknown interface `{iface}`")));
                 };
                 methods.iter().fold(0, |id, m| id ^ sel(&m.sig))
             }
-            ("interface_id", _) => {
+            ("interfaceId", _) => {
                 return Err(error(
                     line,
                     col,
-                    "`Abi.interface_id` expects an interface, like `IERC721`",
+                    "`Abi.interfaceId` expects an interface, like `IERC721`",
                 ));
             }
             _ => return Ok(None),
@@ -970,7 +970,7 @@ impl Checker {
         Ok(ret)
     }
 
-    /// A value `Abi.encode_packed` has a layout for, as Solidity's `abi.encodePacked` does.
+    /// A value `Abi.encodePacked` has a layout for, as Solidity's `abi.encodePacked` does.
     fn packable(&self, ty: usize) -> bool {
         let id = self.peel(ty);
         let t = &self.types[id];
@@ -1138,7 +1138,7 @@ pub(crate) fn intrinsic_tag(module: &str, name: &str) -> Option<Tag> {
         ("Address", "zero") => Some(Tag::AddressZero),
         ("Evm", "osaka") => Some(Tag::EvmOsaka),
         ("Abi", "selector") => Some(Tag::AbiSelector),
-        ("Abi", "interface_id") => Some(Tag::AbiInterfaceId),
+        ("Abi", "interfaceId") => Some(Tag::AbiInterfaceId),
         _ => None,
     };
     constant.or_else(|| module_builtin(module, name).map(Tag::Call))
@@ -1150,92 +1150,92 @@ fn module_builtin(module: &str, name: &str) -> Option<Builtin> {
         ("Evm", "value") => Builtin::Value,
         ("Evm", "calldata") => Builtin::Calldata,
         ("Evm", "selector") => Builtin::Selector,
-        ("Evm", "tx_origin") => Builtin::TxOrigin,
-        ("Evm", "tx_gas_price") => Builtin::TxGasPrice,
-        ("Evm", "block_number") => Builtin::BlockNumber,
-        ("Evm", "block_timestamp") => Builtin::BlockTimestamp,
-        ("Evm", "block_coinbase") => Builtin::BlockCoinbase,
-        ("Evm", "block_base_fee") => Builtin::BlockBaseFee,
-        ("Evm", "blob_base_fee") => Builtin::BlobBaseFee,
-        ("Evm", "chain_id") => Builtin::ChainId,
-        ("Evm", "block_prevrandao") => Builtin::BlockPrevrandao,
-        ("Evm", "block_gas_limit") => Builtin::BlockGasLimit,
-        ("Evm", "block_hash") => Builtin::BlockHash,
-        ("Evm", "blob_hash") => Builtin::BlobHash,
+        ("Evm", "txOrigin") => Builtin::TxOrigin,
+        ("Evm", "txGasPrice") => Builtin::TxGasPrice,
+        ("Evm", "blockNumber") => Builtin::BlockNumber,
+        ("Evm", "blockTimestamp") => Builtin::BlockTimestamp,
+        ("Evm", "blockCoinbase") => Builtin::BlockCoinbase,
+        ("Evm", "blockBaseFee") => Builtin::BlockBaseFee,
+        ("Evm", "blobBaseFee") => Builtin::BlobBaseFee,
+        ("Evm", "chainId") => Builtin::ChainId,
+        ("Evm", "blockPrevrandao") => Builtin::BlockPrevrandao,
+        ("Evm", "blockGasLimit") => Builtin::BlockGasLimit,
+        ("Evm", "blockHash") => Builtin::BlockHash,
+        ("Evm", "blobHash") => Builtin::BlobHash,
         ("Evm", "self") => Builtin::SelfAddr,
         ("Evm", "balance") => Builtin::Balance,
-        ("Evm", "code_size") => Builtin::CodeSize,
-        ("Evm", "code_hash") => Builtin::CodeHash,
+        ("Evm", "codeSize") => Builtin::CodeSize,
+        ("Evm", "codeHash") => Builtin::CodeHash,
         ("Evm", "code") => Builtin::Code,
-        ("Evm", "creation_code") => Builtin::CreationCode,
-        ("Evm", "facet_address") => Builtin::FacetAddress,
-        ("Evm", "gas_left") => Builtin::GasLeft,
+        ("Evm", "creationCode") => Builtin::CreationCode,
+        ("Evm", "facetAddress") => Builtin::FacetAddress,
+        ("Evm", "gasLeft") => Builtin::GasLeft,
         ("Evm", "transfer") => Builtin::Transfer,
         ("Evm", "call") => Builtin::RawCall,
-        ("Evm", "delegate_call") => Builtin::DelegateCall,
-        ("Evm", "static_call") => Builtin::StaticCall,
-        ("Crypto", "mod_exp") => Builtin::Precompile(Pre::ModExp),
-        ("Uint", "pow_mod") => Builtin::Precompile(Pre::PowMod),
-        ("Crypto", "bn254_add") => Builtin::Precompile(Pre::Bn254Add),
-        ("Crypto", "bn254_mul") => Builtin::Precompile(Pre::Bn254Mul),
-        ("Crypto", "bn254_pairing") => Builtin::Precompile(Pre::Bn254Pairing),
+        ("Evm", "delegateCall") => Builtin::DelegateCall,
+        ("Evm", "staticCall") => Builtin::StaticCall,
+        ("Crypto", "modExp") => Builtin::Precompile(Pre::ModExp),
+        ("Uint", "powMod") => Builtin::Precompile(Pre::PowMod),
+        ("Crypto", "bn254Add") => Builtin::Precompile(Pre::Bn254Add),
+        ("Crypto", "bn254Mul") => Builtin::Precompile(Pre::Bn254Mul),
+        ("Crypto", "bn254Pairing") => Builtin::Precompile(Pre::Bn254Pairing),
         ("Crypto", "blake2f") => Builtin::Precompile(Pre::Blake2f),
-        ("Crypto", "kzg_point_evaluation") => Builtin::Precompile(Pre::PointEvaluation),
-        ("Crypto", "bls12_g1_add") => Builtin::Precompile(Pre::Bls12G1Add),
-        ("Crypto", "bls12_g1_msm") => Builtin::Precompile(Pre::Bls12G1Msm),
-        ("Crypto", "bls12_g2_add") => Builtin::Precompile(Pre::Bls12G2Add),
-        ("Crypto", "bls12_g2_msm") => Builtin::Precompile(Pre::Bls12G2Msm),
-        ("Crypto", "bls12_pairing") => Builtin::Precompile(Pre::Bls12Pairing),
-        ("Crypto", "bls12_map_fp_to_g1") => Builtin::Precompile(Pre::Bls12MapFpToG1),
-        ("Crypto", "bls12_map_fp2_to_g2") => Builtin::Precompile(Pre::Bls12MapFp2ToG2),
-        ("Crypto", "p256_verify") => Builtin::Precompile(Pre::P256Verify),
+        ("Crypto", "kzgPointEvaluation") => Builtin::Precompile(Pre::PointEvaluation),
+        ("Crypto", "bls12G1Add") => Builtin::Precompile(Pre::Bls12G1Add),
+        ("Crypto", "bls12G1Msm") => Builtin::Precompile(Pre::Bls12G1Msm),
+        ("Crypto", "bls12G2Add") => Builtin::Precompile(Pre::Bls12G2Add),
+        ("Crypto", "bls12G2Msm") => Builtin::Precompile(Pre::Bls12G2Msm),
+        ("Crypto", "bls12Pairing") => Builtin::Precompile(Pre::Bls12Pairing),
+        ("Crypto", "bls12MapFpToG1") => Builtin::Precompile(Pre::Bls12MapFpToG1),
+        ("Crypto", "bls12MapFp2ToG2") => Builtin::Precompile(Pre::Bls12MapFp2ToG2),
+        ("Crypto", "p256Verify") => Builtin::Precompile(Pre::P256Verify),
         ("Crypto", "keccak256") => Builtin::Keccak256,
         ("Crypto", "sha256") => Builtin::Sha256,
         ("Crypto", "ripemd160") => Builtin::Ripemd160,
         ("Crypto", "ecrecover") => Builtin::Ecrecover,
         ("Abi", "encode") => Builtin::AbiEncode,
         ("Abi", "decode") => Builtin::AbiDecode,
-        ("Abi", "encode_packed") => Builtin::AbiEncodePacked,
-        ("Abi", "encode_with_selector") => Builtin::AbiEncodeSelector,
-        ("Abi", "encode_with_signature") => Builtin::AbiEncodeSignature,
-        ("Abi", "encode_call") => Builtin::AbiEncodeCall,
+        ("Abi", "encodePacked") => Builtin::AbiEncodePacked,
+        ("Abi", "encodeWithSelector") => Builtin::AbiEncodeSelector,
+        ("Abi", "encodeWithSignature") => Builtin::AbiEncodeSignature,
+        ("Abi", "encodeCall") => Builtin::AbiEncodeCall,
         ("Bytes", "concat") => Builtin::BytesConcat,
         ("Bytes", "join") => Builtin::Join(false),
         ("Bytes", "word") => Builtin::BytesWord,
         ("Base64", "encode") => Builtin::Base64Encode,
-        ("Base64", "encode_url") => Builtin::Base64EncodeUrl,
-        ("Base64", "encode_with") => Builtin::Base64EncodeWith,
+        ("Base64", "encodeUrl") => Builtin::Base64EncodeUrl,
+        ("Base64", "encodeWith") => Builtin::Base64EncodeWith,
         ("Base64", "decode") => Builtin::Base64Decode,
         ("String", "concat") => Builtin::StringConcat,
         ("String", "join") => Builtin::Join(true),
         ("String", "lower") => Builtin::StringCase(false),
         ("String", "upper") => Builtin::StringCase(true),
-        ("String", "escape_json") => Builtin::StringEscape(false),
-        ("String", "escape_html") => Builtin::StringEscape(true),
-        ("String", "index_of") => Builtin::StringIndexOf,
+        ("String", "escapeJson") => Builtin::StringEscape(false),
+        ("String", "escapeHtml") => Builtin::StringEscape(true),
+        ("String", "indexOf") => Builtin::StringIndexOf,
         ("String", "replace") => Builtin::StringReplace,
-        ("Uint", "div_rem") => Builtin::UintDivRem,
-        ("Uint", "mul_div") => Builtin::UintMulDiv,
-        ("Uint", "mul_mod") => Builtin::UintMulMod,
-        ("Uint", "add_mod") => Builtin::UintAddMod,
-        ("Uint", "pop_count") => Builtin::UintPopCount,
+        ("Uint", "divRem") => Builtin::UintDivRem,
+        ("Uint", "mulDiv") => Builtin::UintMulDiv,
+        ("Uint", "mulMod") => Builtin::UintMulMod,
+        ("Uint", "addMod") => Builtin::UintAddMod,
+        ("Uint", "popCount") => Builtin::UintPopCount,
         ("Uint", "clz") => Builtin::UintClz,
-        ("Int", "div_rem") => Builtin::IntDivRem,
-        ("Uint", "to_string") => Builtin::UintToString,
-        ("Int", "to_string") => Builtin::IntToString,
-        ("Uint", "to_hex_string") => Builtin::UintToHexString,
-        ("Address", "to_hex_string") => Builtin::AddressToHexString(false),
-        ("Address", "to_checksum_string") => Builtin::AddressToHexString(true),
-        ("Uint", "from_bits") => Builtin::FromBits(false),
-        ("Int", "from_bits") => Builtin::FromBits(true),
+        ("Int", "divRem") => Builtin::IntDivRem,
+        ("Uint", "toString") => Builtin::UintToString,
+        ("Int", "toString") => Builtin::IntToString,
+        ("Uint", "toHexString") => Builtin::UintToHexString,
+        ("Address", "toHexString") => Builtin::AddressToHexString(false),
+        ("Address", "toChecksumString") => Builtin::AddressToHexString(true),
+        ("Uint", "fromBits") => Builtin::FromBits(false),
+        ("Int", "fromBits") => Builtin::FromBits(true),
         ("List", "pop") => Builtin::ListPop,
         ("List", "push") => Builtin::ListPush,
         ("List", "resized") => Builtin::ListResized,
-        ("Abi", "supports_interface") => Builtin::AbiSupportsInterface,
-        ("Uint" | "Int", "wrapping_add" | "wrapping_sub" | "wrapping_mul") => Builtin::Wrapping(
+        ("Abi", "supportsInterface") => Builtin::AbiSupportsInterface,
+        ("Uint" | "Int", "wrappingAdd" | "wrappingSub" | "wrappingMul") => Builtin::Wrapping(
             match name {
-                "wrapping_add" => BinOp::Add,
-                "wrapping_sub" => BinOp::Sub,
+                "wrappingAdd" => BinOp::Add,
+                "wrappingSub" => BinOp::Sub,
                 _ => BinOp::Mul,
             },
             module == "Int",
@@ -1249,10 +1249,10 @@ pub(super) fn retired_builtin(name: &str) -> Option<&'static str> {
         "sender" => "Evm.sender()",
         "self" => "Evm.self()",
         "value" => "Evm.value()",
-        "now" => "Evm.block_timestamp()",
+        "now" => "Evm.blockTimestamp()",
         "balance" => "Evm.balance(address)",
-        "block_number" => "Evm.block_number()",
-        "chain_id" => "Evm.chain_id()",
+        "blockNumber" => "Evm.blockNumber()",
+        "chainId" => "Evm.chainId()",
         _ => return None,
     })
 }

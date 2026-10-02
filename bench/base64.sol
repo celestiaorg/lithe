@@ -7,7 +7,7 @@ contract Base64Bench {
         return Base64.encode(data);
     }
 
-    function encode_with(bytes memory data, bool fileSafe, bool noPadding) external pure returns (string memory) {
+    function encodeWith(bytes memory data, bool fileSafe, bool noPadding) external pure returns (string memory) {
         return Base64.encode(data, fileSafe, noPadding);
     }
 

@@ -1,28 +1,28 @@
-(* Benchmark: `Abi.encode`, `Abi.decode`, and `Abi.encode_packed` on their own, over flat
+(* Benchmark: `Abi.encode`, `Abi.decode`, and `Abi.encodePacked` on their own, over flat
    values, several values at once, and nested ones: a list of records with strings and
    lists, and a list of lists. Mirrors codec.sol. *)
 
 import "std/abi";
 import "std/crypto";
 
-type order is record {
+type Order is record {
   id : uint;
   note : string;
   legs : list(uint);
 }
 
-type orders is list(order);
-type grid is list(list(uint));
+type Orders is list(Order);
+type Grid is list(list(uint));
 
 (* Several values decoded at once, returned as several results. *)
-type flat is record {
+type Flat is record {
   who : address;
   amount : uint;
   memo : string;
 }
 
 interface Book is {
-  function place(os : list(order)) : list(uint);
+  function place(os : list(Order)) : list(uint);
 }
 
 storage is record {
@@ -30,34 +30,34 @@ storage is record {
   digest : bytes32;
 }
 
-external pure function enc_flat(const who : address; const amount : uint; const memo : string) : bytes is
+external pure function encFlat(const who : address; const amount : uint; const memo : string) : bytes is
   Abi.encode(who, amount, memo)
 
-external pure function dec_flat(const data : bytes) : flat is {
+external pure function decFlat(const data : bytes) : Flat is {
   const (who, amount, memo) : (address, uint, string) := Abi.decode(data, (address, uint, string));
 } with { who = who; amount = amount; memo = memo; }
 
-external pure function enc_orders(const os : list(order)) : bytes is
+external pure function encOrders(const os : list(Order)) : bytes is
   Abi.encode(os)
 
-external pure function dec_orders(const data : bytes) : list(order) is
-  Abi.decode(data, orders)
+external pure function decOrders(const data : bytes) : list(Order) is
+  Abi.decode(data, Orders)
 
-external pure function enc_grid(const g : list(list(uint))) : bytes is
+external pure function encGrid(const g : list(list(uint))) : bytes is
   Abi.encode(g)
 
-external pure function dec_grid(const data : bytes) : list(list(uint)) is
-  Abi.decode(data, grid)
+external pure function decGrid(const data : bytes) : list(list(uint)) is
+  Abi.decode(data, Grid)
 
 external pure function packed(const who : address; const amount : uint96; const memo : string) : bytes is
-  Abi.encode_packed(who, amount, memo)
+  Abi.encodePacked(who, amount, memo)
 
-external pure function calldata_for(const os : list(order)) : bytes is
-  Abi.encode_call(Book.place, os)
+external pure function calldataFor(const os : list(Order)) : bytes is
+  Abi.encodeCall(Book.place, os)
 
 (* Decoded, then hashed and kept: gas for decoding in a transaction. *)
 external function keep(const data : bytes) is {
-  const os : list(order) := Abi.decode(data, orders);
+  const os : list(Order) := Abi.decode(data, Orders);
   storage.seen := os.length;
   storage.digest := Crypto.keccak256(Abi.encode(os));
 }

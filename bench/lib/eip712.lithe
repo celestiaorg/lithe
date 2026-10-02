@@ -7,7 +7,7 @@ import "std/abi";
 import "std/crypto";
 import "std/evm";
 
-type domain is record {
+type Domain is record {
   fields : bytes1;
   name : string;
   version : string;
@@ -30,27 +30,27 @@ module EIP712 is {
     eip712.version := version;
   }
 
-  view function domain_separator() : bytes32 is
+  view function domainSeparator() : bytes32 is
     Crypto.keccak256(Abi.encode(
       Crypto.keccak256("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)"),
       Crypto.keccak256(eip712.name),
       Crypto.keccak256(eip712.version),
-      Evm.chain_id(),
+      Evm.chainId(),
       Evm.self()
     ))
 
-  view function hash_typed_data(const struct_hash : bytes32) : bytes32 is {
+  view function hashTypedData(const structHash : bytes32) : bytes32 is {
     const prefix : bytes2 := 0x1901;
-  } with Crypto.keccak256(Abi.encode_packed(prefix, domain_separator(), struct_hash))
+  } with Crypto.keccak256(Abi.encodePacked(prefix, domainSeparator(), structHash))
 
   (* The name, the version, the chain id, and the verifying contract. *)
-  external view function eip712Domain() : domain is {
+  external view function eip712Domain() : Domain is {
     const extensions : list(uint) := [];
   } with {
     fields = 0x0f;
     name = eip712.name;
     version = eip712.version;
-    chainId = Evm.chain_id();
+    chainId = Evm.chainId();
     verifyingContract = Evm.self();
     salt = 0x0000000000000000000000000000000000000000000000000000000000000000;
     extensions = extensions;
@@ -58,5 +58,5 @@ module EIP712 is {
 }
 
 interface IERC5267 is {
-  view function eip712Domain() : domain;
+  view function eip712Domain() : Domain;
 }

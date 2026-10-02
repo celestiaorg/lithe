@@ -3,7 +3,7 @@
 
 import "std/list";
 
-type order is record {
+type Order is record {
   id : uint;
   note : string;
   legs : list(uint);
@@ -16,11 +16,11 @@ storage is record {
   placed : uint;
 }
 
-external function place(const os : list(order)) : list(uint)
+external function place(const os : list(Order)) : list(uint)
   raises Rejected
 is {
   var ids : list(uint) := [];
-  for o : order in os do {
+  for o : Order in os do {
     assert(o.legs.length > 0, Rejected(o.id));
     storage.notes[o.id] := o.note;
     List.push(ids, o.id);
@@ -28,7 +28,7 @@ is {
   storage.placed := storage.placed + os.length;
 } with ids
 
-external view function note_of(const id : uint) : string is
+external view function noteOf(const id : uint) : string is
   storage.notes[id]
 
 external view function placed() : uint is

@@ -11,9 +11,9 @@ module BlockHash is {
 
   (* The hash of block `n`: zero for this block and later ones, before the history
      contract's window, and on a chain without it. *)
-  view function block_hash(const n : uint) : bytes32 is
-    if Evm.block_number() <= Uint.wrapping_add(n, 256) then Evm.block_hash(n)
-    else case query Evm.static_call(history(), Abi.encode(n)) of {
+  view function blockHash(const n : uint) : bytes32 is
+    if Evm.blockNumber() <= Uint.wrappingAdd(n, 256) then Evm.blockHash(n)
+    else case query Evm.staticCall(history(), Abi.encode(n)) of {
       | Ok(hash) -> bytes32(hash)
       | Error(_) -> 0x0000000000000000000000000000000000000000000000000000000000000000
     }

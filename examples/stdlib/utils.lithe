@@ -34,14 +34,14 @@ contract Utils is {
   use Bitmap;
 
   storage is record {
-    claimed : bitmap;
-    history : trace;
+    claimed : Bitmap;
+    history : Trace;
     pending : Queue(address);
     members : Set(address);
     listed : SetEnumerable(address);
     balances : MapEnumerable(address, uint);
     tags : MapEnumerable(bytes4, address);
-    flags : bitmap;
+    flags : Bitmap;
   }
 
   deploy() is {
@@ -52,44 +52,44 @@ contract Utils is {
   external pure function log2(const a : uint) : uint is Math.log2(a)
   external pure function log10(const a : uint) : uint is Math.log10(a)
   external pure function log256(const a : uint) : uint is Math.log256(a)
-  external pure function log2_up(const a : uint) : uint is Math.log2_up(a)
-  external pure function log10_up(const a : uint) : uint is Math.log10_up(a)
-  external pure function log256_up(const a : uint) : uint is Math.log256_up(a)
+  external pure function log2Up(const a : uint) : uint is Math.log2Up(a)
+  external pure function log10Up(const a : uint) : uint is Math.log10Up(a)
+  external pure function log256Up(const a : uint) : uint is Math.log256Up(a)
   external pure function abs(const x : int) : uint is Math.abs(x)
   external pure function average(const a : uint; const b : uint) : uint is Math.average(a, b)
-  external pure function average_int(const a : int; const b : int) : int is Math.average(a, b)
-  external pure function min_int(const a : int; const b : int) : int is Math.min(a, b)
-  external pure function max_int(const a : int; const b : int) : int is Math.max(a, b)
-  external pure function ceil_div(const a : uint; const b : uint) : uint is Math.ceil_div(a, b)
-  external pure function mul_div_up(const a : uint; const b : uint; const d : uint) : uint is Math.mul_div_up(a, b, d)
+  external pure function averageInt(const a : int; const b : int) : int is Math.average(a, b)
+  external pure function minInt(const a : int; const b : int) : int is Math.min(a, b)
+  external pure function maxInt(const a : int; const b : int) : int is Math.max(a, b)
+  external pure function ceilDiv(const a : uint; const b : uint) : uint is Math.ceilDiv(a, b)
+  external pure function mulDivUp(const a : uint; const b : uint; const d : uint) : uint is Math.mulDivUp(a, b, d)
   external pure function clamp(const x : uint; const lo : uint; const hi : uint) : uint
     raises MathInvalidRange
   is Math.clamp(x, lo, hi)
-  external pure function clamp_int(const x : int; const lo : int; const hi : int) : int
+  external pure function clampInt(const x : int; const lo : int; const hi : int) : int
     raises MathInvalidSignedRange
   is Math.clamp(x, lo, hi)
-  external pure function to_uint(const x : int) : uint
+  external pure function toUint(const x : int) : uint
     raises SafeCastOverflowedIntToUint
-  is SafeCast.to_uint(x)
-  external pure function wad_mul(const a : uint; const b : uint) : uint is uint(FixedPoint.wad_mul(wad(a), wad(b)))
+  is SafeCast.toUint(x)
+  external pure function wadMul(const a : uint; const b : uint) : uint is uint(FixedPoint.wadMul(Wad(a), Wad(b)))
   external pure function recover(const hash : bytes32; const signature : bytes) : address
     raises ECDSAInvalidSignature | ECDSAInvalidSignatureLength | ECDSAInvalidSignatureS
-  is ECDSA.recover_signature(hash, signature)
-  external view function domain() : bytes32 is EIP712.domain_separator()
+  is ECDSA.recoverSignature(hash, signature)
+  external view function domain() : bytes32 is EIP712.domainSeparator()
   external pure function root(const proof : list(bytes32); const leaf : bytes32) : bytes32 is
-    Merkle.process_proof(proof, leaf)
-  external view function predict(const salt : bytes32; const code_hash : bytes32) : address is
-    Create2.compute_address_here(salt, code_hash)
-  external function use_nonce(const owner : address) : uint is Nonces.use_nonce(owner)
+    Merkle.processProof(proof, leaf)
+  external view function predict(const salt : bytes32; const codeHash : bytes32) : address is
+    Create2.computeAddressHere(salt, codeHash)
+  external function useNonce(const owner : address) : uint is Nonces.useNonce(owner)
   external function claim(const index : uint) is { Bitmap.set(storage.claimed, index); }
-  external view function is_claimed(const index : uint) : bool is Bitmap.get(storage.claimed, index)
-  external function checkpoint_value(const value : uint)
+  external view function isClaimed(const index : uint) : bool is Bitmap.get(storage.claimed, index)
+  external function checkpointValue(const value : uint)
     raises CheckpointUnorderedInsertion
   is {
-    Checkpoints.push(storage.history, uint48(Evm.block_number()), uint208(value));
+    Checkpoints.push(storage.history, uint48(Evm.blockNumber()), uint208(value));
   }
-  external view function value_at(const key : uint) : uint is
-    uint(Checkpoints.upper_lookup(storage.history, uint48(key)))
+  external view function valueAt(const key : uint) : uint is
+    uint(Checkpoints.upperLookup(storage.history, uint48(key)))
   external function enqueue() is { Queue.push(storage.pending, Evm.sender()); }
   external view function queued() : uint is Queue.length(storage.pending)
   external function join() is {
@@ -97,31 +97,31 @@ contract Utils is {
     const _ : bool := SetEnumerable.add(storage.listed, Evm.sender());
   }
   external view function member(const who : address) : bool is Set.contains(storage.members, who)
-  external view function listed_count() : uint is SetEnumerable.length(storage.listed)
-  external view function verify(const proof : list(bytes32); const root_hash : bytes32; const leaf : bytes32) : bool is
-    Merkle.verify(proof, root_hash, leaf)
-  external pure function verify_multi(
+  external view function listedCount() : uint is SetEnumerable.length(storage.listed)
+  external view function verify(const proof : list(bytes32); const rootHash : bytes32; const leaf : bytes32) : bool is
+    Merkle.verify(proof, rootHash, leaf)
+  external pure function verifyMulti(
     const proof : list(bytes32);
     const flags : list(bool);
-    const root_hash : bytes32;
+    const rootHash : bytes32;
     const leaves : list(bytes32)
   ) : bool
     raises MerkleProofInvalidMultiproof
-  is Merkle.verify_multi(proof, flags, root_hash, leaves)
-  external pure function multi_root(
+  is Merkle.verifyMulti(proof, flags, rootHash, leaves)
+  external pure function multiRoot(
     const proof : list(bytes32);
     const flags : list(bool);
     const leaves : list(bytes32)
   ) : bytes32
     raises MerkleProofInvalidMultiproof
-  is Merkle.process_multi_proof(proof, flags, leaves)
-  external pure function create2_address(
+  is Merkle.processMultiProof(proof, flags, leaves)
+  external pure function create2Address(
     const salt : bytes32;
-    const code_hash : bytes32;
+    const codeHash : bytes32;
     const deployer : address
-  ) : address is Create2.compute_address(salt, code_hash, deployer)
-  external pure function eth_message(const hash : bytes32) : bytes32 is ECDSA.to_eth_signed_message_hash(hash)
-  external pure function recover_vrs(
+  ) : address is Create2.computeAddress(salt, codeHash, deployer)
+  external pure function ethMessage(const hash : bytes32) : bytes32 is ECDSA.toEthSignedMessageHash(hash)
+  external pure function recoverVrs(
     const hash : bytes32;
     const v : uint8;
     const r : bytes32;
@@ -129,68 +129,68 @@ contract Utils is {
   ) : address
     raises ECDSAInvalidSignature | ECDSAInvalidSignatureS
   is ECDSA.recover(hash, v, r, s)
-  external pure function try_recover(const hash : bytes32; const signature : bytes) : address is
-    case ECDSA.try_recover_signature(hash, signature) of { Some(signer) -> signer | None -> Address.zero }
-  external pure function try_recover_vrs(
+  external pure function tryRecover(const hash : bytes32; const signature : bytes) : address is
+    case ECDSA.tryRecoverSignature(hash, signature) of { Some(signer) -> signer | None -> Address.zero }
+  external pure function tryRecoverVrs(
     const hash : bytes32;
     const v : uint8;
     const r : bytes32;
     const s : bytes32
   ) : address is
-    case ECDSA.try_recover(hash, v, r, s) of { Some(signer) -> signer | None -> Address.zero }
-  external pure function try_recover_compact(const hash : bytes32; const r : bytes32; const vs : bytes32) : address is
-    case ECDSA.try_recover_compact(hash, r, vs) of { Some(signer) -> signer | None -> Address.zero }
-  external pure function recover_compact(const hash : bytes32; const r : bytes32; const vs : bytes32) : address
+    case ECDSA.tryRecover(hash, v, r, s) of { Some(signer) -> signer | None -> Address.zero }
+  external pure function tryRecoverCompact(const hash : bytes32; const r : bytes32; const vs : bytes32) : address is
+    case ECDSA.tryRecoverCompact(hash, r, vs) of { Some(signer) -> signer | None -> Address.zero }
+  external pure function recoverCompact(const hash : bytes32; const r : bytes32; const vs : bytes32) : address
     raises ECDSAInvalidSignature | ECDSAInvalidSignatureS
-  is ECDSA.recover_compact(hash, r, vs)
-  external view function is_valid_signature_now(
+  is ECDSA.recoverCompact(hash, r, vs)
+  external view function isValidSignatureNow(
     const signer : address;
     const hash : bytes32;
     const signature : bytes
   ) : bool is
-    SignatureChecker.is_valid_signature_now(signer, hash, signature)
-  external view function is_valid_erc1271_signature_now(
+    SignatureChecker.isValidSignatureNow(signer, hash, signature)
+  external view function isValidERC1271SignatureNow(
     const signer : address;
     const hash : bytes32;
     const signature : bytes
   ) : bool is
-    SignatureChecker.is_valid_erc1271_signature_now(signer, hash, signature)
-  external pure function to_int(const x : uint) : int
+    SignatureChecker.isValidERC1271SignatureNow(signer, hash, signature)
+  external pure function toInt(const x : uint) : int
     raises SafeCastOverflowedUintToInt
-  is SafeCast.to_int(x)
-  external pure function apply_bps(const amount : uint; const bps : uint) : uint is FixedPoint.apply_bps(amount, bps)
-  external pure function wad_div(const a : uint; const b : uint) : uint is uint(FixedPoint.wad_div(wad(a), wad(b)))
+  is SafeCast.toInt(x)
+  external pure function applyBps(const amount : uint; const bps : uint) : uint is FixedPoint.applyBps(amount, bps)
+  external pure function wadDiv(const a : uint; const b : uint) : uint is uint(FixedPoint.wadDiv(Wad(a), Wad(b)))
   external view function checkpoints() : uint is Checkpoints.length(storage.history)
   external view function latest() : uint is uint(Checkpoints.latest(storage.history))
   external function unclaim(const index : uint) is { Bitmap.unset(storage.claimed, index); }
   external function dequeue() : address
     raises QueueEmpty
   is Queue.pop(storage.pending)
-  external function flag(const start : uint; const amount : uint) is { Bitmap.set_batch(storage.flags, start, amount); }
+  external function flag(const start : uint; const amount : uint) is { Bitmap.setBatch(storage.flags, start, amount); }
   external function unflag(const start : uint; const amount : uint) is {
-    Bitmap.unset_batch(storage.flags, start, amount);
+    Bitmap.unsetBatch(storage.flags, start, amount);
   }
   external view function flagged(const start : uint; const amount : uint) : uint is
-    Bitmap.pop_count(storage.flags, start, amount)
-  external view function is_flagged(const index : uint) : bool is Bitmap.get(storage.flags, index)
-  external function map_set(const key : address; const value : uint) is {
+    Bitmap.popCount(storage.flags, start, amount)
+  external view function isFlagged(const index : uint) : bool is Bitmap.get(storage.flags, index)
+  external function mapSet(const key : address; const value : uint) is {
     const _ : bool := MapEnumerable.set(storage.balances, key, value);
   }
-  external function map_remove(const key : address) is {
+  external function mapRemove(const key : address) is {
     const _ : bool := MapEnumerable.remove(storage.balances, key);
   }
-  external view function map_get(const key : address) : uint
+  external view function mapGet(const key : address) : uint
     raises EnumerableMapNonexistentKey
   is MapEnumerable.get(storage.balances, key)
-  external view function map_try_get(const key : address) : (bool, uint) is
-    case MapEnumerable.try_get(storage.balances, key) of {
+  external view function mapTryGet(const key : address) : (bool, uint) is
+    case MapEnumerable.tryGet(storage.balances, key) of {
       | Some(value) -> (true, value)
       | None -> (false, 0)
     }
-  external view function map_contains(const key : address) : bool is MapEnumerable.contains(storage.balances, key)
-  external view function map_length() : uint is MapEnumerable.length(storage.balances)
-  external view function map_at(const index : uint) : (address, uint)
-    raises Out_of_bounds
+  external view function mapContains(const key : address) : bool is MapEnumerable.contains(storage.balances, key)
+  external view function mapLength() : uint is MapEnumerable.length(storage.balances)
+  external view function mapAt(const index : uint) : (address, uint)
+    raises OutOfBounds
   is MapEnumerable.at(storage.balances, index)
   external function tag(const key : bytes4; const value : address) is {
     const _ : bool := MapEnumerable.set(storage.tags, key, value);

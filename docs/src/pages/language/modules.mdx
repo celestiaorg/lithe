@@ -17,9 +17,9 @@ module Ownable is {
     owner : address;
   }
 
-  error Not_owner;
+  error NotOwner;
 
-  event Ownership_transferred of record {
+  event OwnershipTransferred of record {
     indexed previous : address;
     indexed next : address;
   }
@@ -27,17 +27,17 @@ module Ownable is {
   view function owner() : address is
     ownable.owner
 
-  view function only_owner()
-    raises Not_owner
+  view function onlyOwner()
+    raises NotOwner
   is {
-    assert(Evm.sender() = ownable.owner, Not_owner);
+    assert(Evm.sender() = ownable.owner, NotOwner);
   }
 
-  function transfer_ownership(const next : address)
-    raises Not_owner
+  function transferOwnership(const next : address)
+    raises NotOwner
   is {
-    only_owner();
-    emit Ownership_transferred { previous = ownable.owner; next = next; };
+    onlyOwner();
+    emit OwnershipTransferred { previous = ownable.owner; next = next; };
     ownable.owner := next;
   }
 }
@@ -166,7 +166,7 @@ module Counter is {
 
 module Clock is {
   view function now() : timestamp is
-    Evm.block_timestamp()
+    Evm.blockTimestamp()
 }
 
 contract App is {
@@ -265,24 +265,24 @@ import "std/evm";
 
 module Prices is {
   storage prices at "example.prices" is record {
-    of_token : map(uint, uint);
+    ofToken : map(uint, uint);
   }
 
-  error Zero_price;
+  error ZeroPrice;
 
   (* Who may price a token is the contract's to say. *)
-  guard pricer(const token_id : uint);
+  guard pricer(const tokenId : uint);
 
-  external function set_price(const token_id : uint; const price : uint)
-    guarded pricer(token_id)
-    raises Zero_price
+  external function setPrice(const tokenId : uint; const price : uint)
+    guarded pricer(tokenId)
+    raises ZeroPrice
   is {
-    assert(price > 0, Zero_price);
-    prices.of_token[token_id] := price;
+    assert(price > 0, ZeroPrice);
+    prices.ofToken[tokenId] := price;
   }
 
-  external view function price(const token_id : uint) : uint is
-    prices.of_token[token_id]
+  external view function price(const tokenId : uint) : uint is
+    prices.ofToken[tokenId]
 }
 
 contract Shop is {
@@ -290,28 +290,28 @@ contract Shop is {
     makers : map(uint, address);
   }
 
-  error Not_maker of uint;
+  error NotMaker of uint;
 
   use Prices exposing {
-    function set_price(token_id : uint; price : uint)
-      raises Zero_price | Not_maker;
-    view function price(token_id : uint) : uint;
+    function setPrice(tokenId : uint; price : uint)
+      raises ZeroPrice | NotMaker;
+    view function price(tokenId : uint) : uint;
   }
 
   (* A token's maker prices it. *)
-  guard Prices.pricer(const token_id : uint)
-    raises Not_maker
+  guard Prices.pricer(const tokenId : uint)
+    raises NotMaker
   is {
-    assert(Evm.sender() = storage.makers[token_id], Not_maker(token_id));
+    assert(Evm.sender() = storage.makers[tokenId], NotMaker(tokenId));
   }
 
-  external function make(const token_id : uint) is {
-    storage.makers[token_id] := Evm.sender();
+  external function make(const tokenId : uint) is {
+    storage.makers[tokenId] := Evm.sender();
   }
 }
 ```
 
-A call to `set_price` runs `Shop`'s check first, with the call's `token_id`, then the module's body. The module never sees the check, so its code is the same in every contract, and two contracts that expose `Prices` can guard it differently.
+A call to `setPrice` runs `Shop`'s check first, with the call's `tokenId`, then the module's body. The module never sees the check, so its code is the same in every contract, and two contracts that expose `Prices` can guard it differently.
 
 - A module declares `guard name(params);`: a name and typed parameters, with no body. A guard with no parameters is `guard name;`.
 - An external names one guard with `guarded name(args)`, after its result and before `raises`. The arguments are the external's own parameters, by name, one for each of the guard's, of the same types: the check sees exactly what the caller sent. An external that dispatches on its argument into several entrypoints can't pass that argument, since each case is an entrypoint of its own.
@@ -321,7 +321,7 @@ A call to `set_price` runs `Shop`'s check first, with the call's `token_id`, the
 ```lithe fragment
 use Ownable;
 
-guard Prices.pricer is Ownable.check_owner;
+guard Prices.pricer is Ownable.checkOwner;
 ```
 
 A guard only fails. Its body is checked as a `view`: it can read storage, the call's context, such as `Evm.sender()`, and other contracts with `query`, but it can't write, `emit`, or `defer`. It runs once, before the external's body, and can't see or change what the body does. There are no default guards and no overrides: a check that lets everyone through is written as one, with a body of `skip`.
@@ -330,7 +330,7 @@ Guards cover entrypoints. When the contract's own code calls a module's internal
 
 ### Errors
 
-A guarded external raises its module's errors and its guard's. The interface that exposes it lists both, as `set_price` lists `Zero_price | Not_maker` above; the ABI and `lithe errors` show the same. `lithe stubs` can't know the contract's guard, so it prints a guarded external with the module's errors and a reminder to write the check and add its errors.
+A guarded external raises its module's errors and its guard's. The interface that exposes it lists both, as `setPrice` lists `ZeroPrice | NotMaker` above; the ABI and `lithe errors` show the same. `lithe stubs` can't know the contract's guard, so it prints a guarded external with the module's errors and a reminder to write the check and add its errors.
 
 `lithe errors` lists each guard with the errors it raises, `lithe footprint` shows the guard of each entrypoint that has one, and `lithe abi-tree` lists it under the entrypoint's `guards`.
 
@@ -347,13 +347,13 @@ A contract that exposes a guarded external must write its guard:
 ```lithe rejects
 module Notes is {
   storage notes at "example.notes" is record {
-    of_id : map(uint, uint);
+    ofId : map(uint, uint);
   }
 
   guard writer(const id : uint);
 
   external function write(const id : uint; const note : uint) guarded writer(id) is {
-    notes.of_id[id] := note;
+    notes.ofId[id] := note;
   }
 }
 
@@ -375,13 +375,13 @@ Once, with the module's parameter types:
 ```lithe rejects
 module Notes is {
   storage notes at "example.notes" is record {
-    of_id : map(uint, uint);
+    ofId : map(uint, uint);
   }
 
   guard writer(const id : uint);
 
   external function write(const id : uint; const note : uint) guarded writer(id) is {
-    notes.of_id[id] := note;
+    notes.ofId[id] := note;
   }
 }
 
@@ -402,13 +402,13 @@ contract Board is {
 ```lithe rejects
 module Notes is {
   storage notes at "example.notes" is record {
-    of_id : map(uint, uint);
+    ofId : map(uint, uint);
   }
 
   guard writer(const id : uint);
 
   external function write(const id : uint; const note : uint) guarded writer(id) is {
-    notes.of_id[id] := note;
+    notes.ofId[id] := note;
   }
 }
 
@@ -433,17 +433,17 @@ And only for a guard that an external it exposes names:
 ```lithe rejects
 module Notes is {
   storage notes at "example.notes" is record {
-    of_id : map(uint, uint);
+    ofId : map(uint, uint);
   }
 
   guard writer(const id : uint);
 
   external function write(const id : uint; const note : uint) guarded writer(id) is {
-    notes.of_id[id] := note;
+    notes.ofId[id] := note;
   }
 
   external view function note(const id : uint) : uint is
-    notes.of_id[id]
+    notes.ofId[id]
 }
 
 contract Board is {
@@ -466,13 +466,13 @@ import "std/evm";
 
 module Notes is {
   storage notes at "example.notes" is record {
-    of_id : map(uint, uint);
+    ofId : map(uint, uint);
   }
 
   guard writer(const id : uint);
 
   external function write(const id : uint; const note : uint) guarded writer(id) is {
-    notes.of_id[id] := note;
+    notes.ofId[id] := note;
   }
 }
 
@@ -498,13 +498,13 @@ guard `Notes.writer` writes storage; a guard only reads, and reverts or lets the
 ```lithe rejects
 module Notes is {
   storage notes at "example.notes" is record {
-    of_id : map(uint, uint);
+    ofId : map(uint, uint);
   }
 
   guard writer(const id : uint);
 
   external function write(const id : uint; const note : uint) guarded writer(id) is {
-    notes.of_id[id] := note;
+    notes.ofId[id] := note;
   }
 }
 
@@ -532,13 +532,13 @@ import "std/evm";
 
 module Notes is {
   storage notes at "example.notes" is record {
-    of_id : map(uint, uint);
+    ofId : map(uint, uint);
   }
 
   guard writer(const id : uint);
 
   external function write(const id : uint; const note : uint) guarded writer(id) is {
-    notes.of_id[id] := note;
+    notes.ofId[id] := note;
   }
 }
 
@@ -564,14 +564,14 @@ import "std/evm";
 
 module Notes is {
   storage notes at "example.notes" is record {
-    of_id : map(uint, uint);
+    ofId : map(uint, uint);
     owner : address;
   }
 
   guard writer(const id : uint);
 
   external function write(const id : uint; const note : uint) guarded writer(owner) is {
-    notes.of_id[id] := note;
+    notes.ofId[id] := note;
   }
 }
 
@@ -597,35 +597,35 @@ import "std/evm";
 
 module Tokens is {
   storage tokens at "example.tokens" is record {
-    owner_of : map(uint, address);
+    ownerOf : map(uint, address);
   }
 
-  error Not_owner of uint;
+  error NotOwner of uint;
 
   (* What the contract does around every transfer. *)
-  hook before_transfer(const from : address; const to : address; const token_id : uint);
-  hook after_transfer(const from : address; const to : address; const token_id : uint);
+  hook beforeTransfer(const from : address; const to : address; const tokenId : uint);
+  hook afterTransfer(const from : address; const to : address; const tokenId : uint);
 
   (* A token's name, which only the contract knows. *)
-  view hook name_of(const token_id : uint) : string;
+  view hook nameOf(const tokenId : uint) : string;
 
-  function transfer(const to : address; const token_id : uint) raises Not_owner is {
-    const from : address := tokens.owner_of[token_id];
-    assert(from = Evm.sender(), Not_owner(token_id));
-    before_transfer(from, to, token_id);
-    tokens.owner_of[token_id] := to;
-    after_transfer(from, to, token_id);
+  function transfer(const to : address; const tokenId : uint) raises NotOwner is {
+    const from : address := tokens.ownerOf[tokenId];
+    assert(from = Evm.sender(), NotOwner(tokenId));
+    beforeTransfer(from, to, tokenId);
+    tokens.ownerOf[tokenId] := to;
+    afterTransfer(from, to, tokenId);
   }
 
-  external function mint(const token_id : uint) is {
-    tokens.owner_of[token_id] := Evm.sender();
+  external function mint(const tokenId : uint) is {
+    tokens.ownerOf[tokenId] := Evm.sender();
   }
 
-  external function send(const to : address; const token_id : uint) raises Not_owner is
-    transfer(to, token_id)
+  external function send(const to : address; const tokenId : uint) raises NotOwner is
+    transfer(to, tokenId)
 
-  external view function tokenName(const token_id : uint) : string is
-    name_of(token_id)
+  external view function tokenName(const tokenId : uint) : string is
+    nameOf(tokenId)
 }
 
 contract Gallery is {
@@ -637,38 +637,38 @@ contract Gallery is {
   error Frozen of uint;
 
   use Tokens exposing {
-    function mint(token_id : uint);
-    function send(to : address; token_id : uint) raises Not_owner | Frozen;
-    view function tokenName(token_id : uint) : string;
+    function mint(tokenId : uint);
+    function send(to : address; tokenId : uint) raises NotOwner | Frozen;
+    view function tokenName(tokenId : uint) : string;
   }
 
   (* A frozen token doesn't move, and the gallery counts the moves of the others. *)
-  hook Tokens.before_transfer(const from : address; const to : address; const id : uint)
+  hook Tokens.beforeTransfer(const from : address; const to : address; const id : uint)
     raises Frozen
   is {
     assert(not storage.frozen[id], Frozen(id));
     storage.moves := storage.moves + 1;
   }
 
-  hook Tokens.after_transfer is skip;
+  hook Tokens.afterTransfer is skip;
 
-  hook Tokens.name_of is label;
+  hook Tokens.nameOf is label;
 
-  view function label(const token_id : uint) : string is
-    if storage.frozen[token_id] then "a frozen piece" else "a gallery piece"
+  view function label(const tokenId : uint) : string is
+    if storage.frozen[tokenId] then "a frozen piece" else "a gallery piece"
 
-  external function freeze(const token_id : uint) is {
-    storage.frozen[token_id] := true;
+  external function freeze(const tokenId : uint) is {
+    storage.frozen[tokenId] := true;
   }
 }
 ```
 
-A call to `send` runs the module's `transfer`, which calls `Gallery`'s `before_transfer` before it moves the token. The module never sees the contract, so its code is the same in every contract, and two contracts that use `Tokens` can implement its hooks differently. The standard library's tokens work this way: `ERC20`, `ERC721`, `ERC1155`, and `ERC6909` call `before_transfer` and `after_transfer` around every balance change, and their extensions are functions a contract calls from those hooks. See [Transfer hooks](/stdlib/tokens#transfer-hooks).
+A call to `send` runs the module's `transfer`, which calls `Gallery`'s `beforeTransfer` before it moves the token. The module never sees the contract, so its code is the same in every contract, and two contracts that use `Tokens` can implement its hooks differently. The standard library's tokens work this way: `ERC20`, `ERC721`, `ERC1155`, and `ERC6909` call `beforeTransfer` and `afterTransfer` around every balance change, and their extensions are functions a contract calls from those hooks. See [Transfer hooks](/stdlib/tokens#transfer-hooks).
 
 - A module declares `[view | pure] hook name(params) [: T];`: a function's header, with no body. The effect is the most the contract's implementation may do. A `view hook` may read and `query`, a `pure hook` only computes from its parameters, and a plain `hook` may also write, `emit`, and `defer`.
 - The module's own code calls a hook by name, as it calls its own functions. Nothing else calls it: not the contract, and not another module. A function that calls a stateful hook is stateful, so a `view` function can call only `view` and `pure` hooks, and the module checks on its own.
 - A hook's parameters and result are ABI values, whatever the module does with them, so any module with hooks can be [delegated](#delegated-modules). A generic module can't declare hooks.
-- Only the contract implements hooks. There are no default implementations, no overrides, and no `super`, and an extension module can't attach to another module's hook: a contract that wants two things to happen in `before_transfer` calls both in its body, in the order it writes them.
+- Only the contract implements hooks. There are no default implementations, no overrides, and no `super`, and an extension module can't attach to another module's hook: a contract that wants two things to happen in `beforeTransfer` calls both in its body, in the order it writes them.
 
 The contract implements a hook in one of three ways:
 
@@ -693,19 +693,19 @@ import "std/abi";
 import "std/evm";
 
 interface Registry is {
-  function moved(token_id : uint) : uint;
+  function moved(tokenId : uint) : uint;
 }
 
 module Tokens is {
   storage tokens at "example.tokens" is record {
-    owner_of : map(uint, address);
+    ownerOf : map(uint, address);
   }
 
-  hook after_transfer(const to : address; const token_id : uint);
+  hook afterTransfer(const to : address; const tokenId : uint);
 
-  external function send(const to : address; const token_id : uint) is {
-    tokens.owner_of[token_id] := to;
-    after_transfer(to, token_id);
+  external function send(const to : address; const tokenId : uint) is {
+    tokens.ownerOf[tokenId] := to;
+    afterTransfer(to, tokenId);
   }
 }
 
@@ -716,10 +716,10 @@ contract Tracked is {
   }
 
   use Tokens exposing {
-    function send(to : address; token_id : uint);
+    function send(to : address; tokenId : uint);
   }
 
-  hook Tokens.after_transfer(const to : address; const id : uint) is {
+  hook Tokens.afterTransfer(const to : address; const id : uint) is {
     defer storage.registry.moved(id) then (receipt : uint) {
       storage.receipts[id] := receipt;
     }
@@ -733,7 +733,7 @@ A hook that reaches itself again, through the module's code, is recursion, which
 
 ### Errors
 
-A module declares no errors for its hooks. What the contract's implementation raises joins what every external that reaches the hook raises, whatever the module's functions on the way declare. The interface that exposes those externals lists them, as `send` lists `Not_owner | Frozen` above, and the ABI and `lithe errors` show the same.
+A module declares no errors for its hooks. What the contract's implementation raises joins what every external that reaches the hook raises, whatever the module's functions on the way declare. The interface that exposes those externals lists them, as `send` lists `NotOwner | Frozen` above, and the ABI and `lithe errors` show the same.
 
 `lithe errors` lists each hook the contract implements with the errors it raises, and each external's hooks. `lithe footprint` and `lithe abi-tree` show the hooks each entrypoint reaches and where each runs: in the contract, called back from a facet, or skipped.
 
@@ -1074,24 +1074,24 @@ module Tally is {
 }
 
 contract Counter is {
-  error Too_many;
+  error TooMany;
 
   use Tally exposing {
     function add();
   }
 
-  hook Tally.counted(const count : uint) raises Too_many is {
-    assert(count <= 10, Too_many);
+  hook Tally.counted(const count : uint) raises TooMany is {
+    assert(count <= 10, TooMany);
   }
 }
 ```
 
 ```text
-`add` raises `Too_many` in `Tally` with hook `Tally.counted`, and the inline interface lists no errors
+`add` raises `TooMany` in `Tally` with hook `Tally.counted`, and the inline interface lists no errors
 
   interface:  function add()
   module:     function add()
-  hook:       Tally.counted raises Too_many
+  hook:       Tally.counted raises TooMany
 ```
 
 Only the module's own code calls a hook:
@@ -1172,7 +1172,7 @@ use ERC721 exposing IERC721, IERC721Metadata;
 supports IERC721, IERC721Metadata;
 ```
 
-The compiler then generates `supportsInterface(bytes4)`, true for ERC-165 itself, `0x01ffc9a7`, and for each interface listed. An interface's id is the XOR of its methods' selectors, so the standard library's `IERC721`, for example, answers for `0x80ac58cd`, which is `Abi.interface_id(IERC721)`. The contract must have each interface it lists: dispatch every one of its methods, with the same result, whether they come from `use ... exposing` or from its own externals. A method it lacks is an error that names it:
+The compiler then generates `supportsInterface(bytes4)`, true for ERC-165 itself, `0x01ffc9a7`, and for each interface listed. An interface's id is the XOR of its methods' selectors, so the standard library's `IERC721`, for example, answers for `0x80ac58cd`, which is `Abi.interfaceId(IERC721)`. The contract must have each interface it lists: dispatch every one of its methods, with the same result, whether they come from `use ... exposing` or from its own externals. A method it lacks is an error that names it:
 
 ```lithe rejects
 import "std/interfaces/erc721";
@@ -1182,8 +1182,8 @@ contract Collection is {
   use ERC721 exposing IERC721, IERC721Name;
   supports IERC721, IERC721Metadata;
 
-  hook ERC721.before_transfer is skip;
-  hook ERC721.after_transfer is skip;
+  hook ERC721.beforeTransfer is skip;
+  hook ERC721.afterTransfer is skip;
 }
 ```
 
@@ -1196,14 +1196,14 @@ expose them from a module with `use M exposing`, or write them as externals
 
 Only the contract says what it announces. A contract without `supports` has no `supportsInterface`, so interfaces that only group externals cost nothing and announce no ids. Inline interfaces have no name, and no id, so `supports` can't list them, and it lists each interface once. `supports` goes in the contract, or at the top level of a file with one contract; an imported file can't declare it.
 
-A contract can write its own `supportsInterface`, to add an id no methods derive, such as ERC-4906's `0x49064906`. `Abi.supports_interface(id)` answers for ERC-165 and what `supports` lists, as the generated function would:
+A contract can write its own `supportsInterface`, to add an id no methods derive, such as ERC-4906's `0x49064906`. `Abi.supportsInterface(id)` answers for ERC-165 and what `supports` lists, as the generated function would:
 
 ```lithe fragment
 external pure function supportsInterface(const interfaceId : bytes4) : bool is
-  interfaceId = 0x49064906 or Abi.supports_interface(interfaceId)
+  interfaceId = 0x49064906 or Abi.supportsInterface(interfaceId)
 ```
 
-A contract with its own `supportsInterface` and `supports` must call `Abi.supports_interface`, or the list would announce nothing. Only the contract's own functions call it: a module's code is the same in every contract.
+A contract with its own `supportsInterface` and `supports` must call `Abi.supportsInterface`, or the list would announce nothing. Only the contract's own functions call it: a module's code is the same in every contract.
 
 ## Dependencies between modules
 
@@ -1219,7 +1219,7 @@ module Pausable is {
 
   error Paused;
 
-  view function when_not_paused()
+  view function whenNotPaused()
     raises Paused
   is {
     assert(not pausable.paused, Paused);
@@ -1242,7 +1242,7 @@ module Ledger is {
   external function transfer(const to : address; const amount : uint)
     raises Paused | Insufficient
   is {
-    Pausable.when_not_paused();
+    Pausable.whenNotPaused();
     const have : uint := ledger.balances[Evm.sender()];
     assert(have >= amount, Insufficient(have));
     ledger.balances[Evm.sender()] := have - amount;
@@ -1349,7 +1349,7 @@ module ERC20Votes is {
 }
 ```
 
-The contract that uses `ERC20` and `ERC20Votes` decides whether a transfer should also move votes, and says so in its `ERC20.after_transfer` [hook](#hooks): `hook ERC20.after_transfer is ERC20Votes.transfer_voting_units;`. An extension cannot silently change the base's behavior.
+The contract that uses `ERC20` and `ERC20Votes` decides whether a transfer should also move votes, and says so in its `ERC20.afterTransfer` [hook](#hooks): `hook ERC20.afterTransfer is ERC20Votes.transferVotingUnits;`. An extension cannot silently change the base's behavior.
 
 ## Modules in other files
 

@@ -13,37 +13,37 @@ contract FixedPointBench is {
     last : uint;
   }
 
-  external pure function wad_mul_up(const a : uint; const b : uint) : uint is
-    uint(FixedPoint.wad_mul_up(wad(a), wad(b)))
-  external pure function wad_div_up(const a : uint; const b : uint) : uint is
-    uint(FixedPoint.wad_div_up(wad(a), wad(b)))
-  external pure function div_wad(const a : uint; const b : uint) : uint is FixedPoint.div_wad(a, wad(b))
-  external pure function s_mul_wad(const a : int; const b : int) : int is int(FixedPoint.s_mul_wad(swad(a), swad(b)))
-  external pure function s_div_wad(const a : int; const b : int) : int is int(FixedPoint.s_div_wad(swad(a), swad(b)))
+  external pure function wadMulUp(const a : uint; const b : uint) : uint is
+    uint(FixedPoint.wadMulUp(Wad(a), Wad(b)))
+  external pure function wadDivUp(const a : uint; const b : uint) : uint is
+    uint(FixedPoint.wadDivUp(Wad(a), Wad(b)))
+  external pure function divWad(const a : uint; const b : uint) : uint is FixedPoint.divWad(a, Wad(b))
+  external pure function sMulWad(const a : int; const b : int) : int is int(FixedPoint.sMulWad(Swad(a), Swad(b)))
+  external pure function sDivWad(const a : int; const b : int) : int is int(FixedPoint.sDivWad(Swad(a), Swad(b)))
 
-  external pure function exp_wad(const x : int) : int
+  external pure function expWad(const x : int) : int
     raises ExpOverflow
-  is int(FixedPoint.exp_wad(swad(x)))
+  is int(FixedPoint.expWad(Swad(x)))
 
-  external pure function ln_wad(const x : int) : int
+  external pure function lnWad(const x : int) : int
     raises LnWadUndefined
-  is int(FixedPoint.ln_wad(swad(x)))
+  is int(FixedPoint.lnWad(Swad(x)))
 
-  external pure function pow_wad(const x : int; const y : int) : int
+  external pure function powWad(const x : int; const y : int) : int
     raises LnWadUndefined | ExpOverflow
-  is int(FixedPoint.pow_wad(swad(x), swad(y)))
+  is int(FixedPoint.powWad(Swad(x), Swad(y)))
 
-  external pure function sqrt_wad(const x : uint) : uint is uint(FixedPoint.sqrt_wad(wad(x)))
-  external pure function cbrt_wad(const x : uint) : uint is uint(FixedPoint.cbrt_wad(wad(x)))
+  external pure function sqrtWad(const x : uint) : uint is uint(FixedPoint.sqrtWad(Wad(x)))
+  external pure function cbrtWad(const x : uint) : uint is uint(FixedPoint.cbrtWad(Wad(x)))
   external pure function rpow(const x : uint; const n : uint; const base : uint) : uint is FixedPoint.rpow(x, n, base)
 
   external pure function cbrt(const x : uint) : uint is Math.cbrt(x)
   external pure function dist(const a : uint; const b : uint) : uint is Math.dist(a, b)
-  external pure function dist_int(const a : int; const b : int) : uint is Math.dist(a, b)
+  external pure function distInt(const a : int; const b : int) : uint is Math.dist(a, b)
   external pure function gcd(const a : uint; const b : uint) : uint is Math.gcd(a, b)
-  external pure function saturating_add(const a : uint; const b : uint) : uint is Math.saturating_add(a, b)
-  external pure function saturating_sub(const a : uint; const b : uint) : uint is Math.saturating_sub(a, b)
-  external pure function saturating_mul(const a : uint; const b : uint) : uint is Math.saturating_mul(a, b)
+  external pure function saturatingAdd(const a : uint; const b : uint) : uint is Math.saturatingAdd(a, b)
+  external pure function saturatingSub(const a : uint; const b : uint) : uint is Math.saturatingSub(a, b)
+  external pure function saturatingMul(const a : uint; const b : uint) : uint is Math.saturatingMul(a, b)
 
   external pure function lerp(
     const a : uint;
@@ -54,10 +54,10 @@ contract FixedPointBench is {
   ) : uint is
     Math.lerp(a, b, t, t0, t1)
 
-  external pure function lerp_int(const a : int; const b : int; const t : int; const t0 : int; const t1 : int) : int is
+  external pure function lerpInt(const a : int; const b : int; const t : int; const t0 : int; const t1 : int) : int is
     Math.lerp(a, b, t, t0, t1)
 
-  external function set_last(const x : int) raises ExpOverflow is {
-    storage.last := Uint.from_bits(int(FixedPoint.exp_wad(swad(x))));
+  external function setLast(const x : int) raises ExpOverflow is {
+    storage.last := Uint.fromBits(int(FixedPoint.expWad(Swad(x))));
   }
 }

@@ -61,18 +61,18 @@ interface ERC721Receiver is {
 
 supports IERC721, IERC721Metadata;
 
-type token is record {
+type Token is record {
   owner : address;
   approved : address;
 }
 
 storage is record {
-  tokens : map(uint, token);
+  tokens : map(uint, Token);
   balances : map(address, uint);
   operators : map(address, map(address, bool));
 }
 
-view function require_owner(const id : uint) : address
+view function requireOwner(const id : uint) : address
   raises TokenDoesNotExist
 is {
   const owner : address := storage.tokens[id].owner;
@@ -89,11 +89,11 @@ is {
   storage.balances[to] := balance + 1;
 }
 
-function transfer_from(const from : address; const to : address; const id : uint)
+function move(const from : address; const to : address; const id : uint)
   raises TokenDoesNotExist | TransferFromIncorrectOwner | NotOwnerNorApproved | TransferToZeroAddress
     | AccountBalanceOverflow
 is {
-  assert(require_owner(id) = from, TransferFromIncorrectOwner);
+  assert(requireOwner(id) = from, TransferFromIncorrectOwner);
   const approved : address := storage.tokens[id].approved;
   assert(
     Evm.sender() = from or Evm.sender() = approved or storage.operators[from][Evm.sender()],
@@ -103,12 +103,12 @@ is {
     storage.tokens[id].approved := Address.zero;
   }
   storage.tokens[id].owner := to;
-  storage.balances[from] := Uint.wrapping_sub(storage.balances[from], 1);
+  storage.balances[from] := Uint.wrappingSub(storage.balances[from], 1);
   credit(to);
   emit Transfer { from = from; to = to; id = id; };
 }
 
-function mint_to(const to : address; const id : uint)
+function mintTo(const to : address; const id : uint)
   raises TokenAlreadyExists | TransferToZeroAddress | AccountBalanceOverflow
 is {
   assert(storage.tokens[id].owner = Address.zero, TokenAlreadyExists);
@@ -119,10 +119,10 @@ is {
 
 (* A contract receiver must answer with the selector. One that reverts without a reason
    does not implement it; its own reason passes through unchanged. *)
-function check_received(const from : address; const to : address; const id : uint; const data : bytes)
+function checkReceived(const from : address; const to : address; const id : uint; const data : bytes)
   raises TransferToNonERC721ReceiverImplementer | forwarded
 is {
-  if Evm.code_size(to) > 0 then {
+  if Evm.codeSize(to) > 0 then {
     defer ERC721Receiver(to).onERC721Received(Evm.sender(), from, id, data) then {
       | Ok(answer : bytes4) -> {
           assert(answer = Abi.selector(ERC721Receiver.onERC721Received), TransferToNonERC721ReceiverImplementer);
@@ -146,13 +146,13 @@ external pure function symbol() : string is
 external view function tokenURI(const id : uint) : string
   raises TokenDoesNotExist
 is {
-  const _ : address := require_owner(id);
-} with String.concat("https://nft.example/", Uint.to_string(id))
+  const _ : address := requireOwner(id);
+} with String.concat("https://nft.example/", Uint.toString(id))
 
 external view function ownerOf(const id : uint) : address
   raises TokenDoesNotExist
 is
-  require_owner(id)
+  requireOwner(id)
 
 external view function balanceOf(const owner : address) : uint
   raises BalanceQueryForZeroAddress
@@ -163,7 +163,7 @@ is {
 external view function getApproved(const id : uint) : address
   raises TokenDoesNotExist
 is {
-  const _ : address := require_owner(id);
+  const _ : address := requireOwner(id);
 } with storage.tokens[id].approved
 
 external view function isApprovedForAll(const owner : address; const operator : address) : bool is
@@ -172,7 +172,7 @@ external view function isApprovedForAll(const owner : address; const operator : 
 external payable function approve(const account : address; const id : uint)
   raises TokenDoesNotExist | NotOwnerNorApproved
 is {
-  const owner : address := require_owner(id);
+  const owner : address := requireOwner(id);
   assert(Evm.sender() = owner or storage.operators[owner][Evm.sender()], NotOwnerNorApproved);
   storage.tokens[id].approved := account;
   emit Approval { owner = owner; account = account; id = id; };
@@ -187,14 +187,14 @@ external payable function transferFrom(const from : address; const to : address;
   raises TokenDoesNotExist | TransferFromIncorrectOwner | NotOwnerNorApproved | TransferToZeroAddress
     | AccountBalanceOverflow
 is
-  transfer_from(from, to, id)
+  move(from, to, id)
 
 external payable function safeTransferFrom(const from : address; const to : address; const id : uint)
   raises TokenDoesNotExist | TransferFromIncorrectOwner | NotOwnerNorApproved | TransferToZeroAddress
     | AccountBalanceOverflow | TransferToNonERC721ReceiverImplementer | forwarded
 is {
-  transfer_from(from, to, id);
-  check_received(from, to, id, "");
+  move(from, to, id);
+  checkReceived(from, to, id, "");
 }
 
 external payable function safeTransferFrom(
@@ -206,27 +206,27 @@ external payable function safeTransferFrom(
   raises TokenDoesNotExist | TransferFromIncorrectOwner | NotOwnerNorApproved | TransferToZeroAddress
     | AccountBalanceOverflow | TransferToNonERC721ReceiverImplementer | forwarded
 is {
-  transfer_from(from, to, id);
-  check_received(from, to, id, data);
+  move(from, to, id);
+  checkReceived(from, to, id, data);
 }
 
 external function mint(const to : address; const id : uint)
   raises TokenAlreadyExists | TransferToZeroAddress | AccountBalanceOverflow
 is
-  mint_to(to, id)
+  mintTo(to, id)
 
 external function safeMint(const to : address; const id : uint; const data : bytes)
   raises TokenAlreadyExists | TransferToZeroAddress | AccountBalanceOverflow | TransferToNonERC721ReceiverImplementer
     | forwarded
 is {
-  mint_to(to, id);
-  check_received(Address.zero, to, id, data);
+  mintTo(to, id);
+  checkReceived(Address.zero, to, id, data);
 }
 
 external function burn(const id : uint)
   raises TokenDoesNotExist | NotOwnerNorApproved
 is {
-  const owner : address := require_owner(id);
+  const owner : address := requireOwner(id);
   const approved : address := storage.tokens[id].approved;
   assert(
     Evm.sender() = owner or Evm.sender() = approved or storage.operators[owner][Evm.sender()],
@@ -236,6 +236,6 @@ is {
     storage.tokens[id].approved := Address.zero;
   }
   storage.tokens[id].owner := Address.zero;
-  storage.balances[owner] := Uint.wrapping_sub(storage.balances[owner], 1);
+  storage.balances[owner] := Uint.wrappingSub(storage.balances[owner], 1);
   emit Transfer { from = owner; to = Address.zero; id = id; };
 }

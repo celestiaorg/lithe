@@ -102,13 +102,13 @@ fn deploy_sets_immutables() {
 }
 
 const MODULE: &str = r#"import "std/evm"; 
-type span is record { start : timestamp; stop : timestamp; }
+type Span is record { start : timestamp; stop : timestamp; }
 
 module Fees is {
   immutable fees at "test.fees" is record {
     bps : uint16;
     to : address;
-    window : span;
+    window : Span;
   }
 
   function init(const bps : uint16; const to : address) is {
@@ -125,10 +125,10 @@ module Fees is {
     amount * uint(fees.bps) / 10_000
 
   view function length() : uint is {
-    const w : span := fees.window;
+    const w : Span := fees.window;
   } with uint(w.stop) - uint(w.start)
 
-  external view function fee_to() : address is
+  external view function feeTo() : address is
     fees.to
 }
 
@@ -137,7 +137,7 @@ interface Price is {
 }
 
 use Fees exposing {
-  view function fee_to() : address;
+  view function feeTo() : address;
 }
 
 storage is record {
@@ -170,7 +170,7 @@ fn modules_own_named_immutables() {
     let made = construct_with(&init, &[w(250)]);
     let runtime = made.returndata.clone();
     assert_eq!(
-        load_bytes(&view(&runtime, &made.storage, "fee_to()", &[]), 0),
+        load_bytes(&view(&runtime, &made.storage, "feeTo()", &[]), 0),
         w(7)
     );
     assert_eq!(
@@ -207,8 +207,8 @@ fn immutables_are_written_only_while_setting_up() {
     let head = "immutable is record { x : uint; }\nstorage is record { n : uint; }\n";
     let ok = format!(
         "{head}function set(const v : uint) is {{ immutable.x := v; }}\n\
-         function set_twice(const v : uint) is {{ set(v); set(v + 1); }}\n\
-         deploy(const v : uint) is {{ set_twice(v); storage.n := immutable.x; }}\n\
+         function setTwice(const v : uint) is {{ set(v); set(v + 1); }}\n\
+         deploy(const v : uint) is {{ setTwice(v); storage.n := immutable.x; }}\n\
          external view function x() : uint is immutable.x\n"
     );
     let init = compile(&ok).expect("compile");
@@ -295,7 +295,7 @@ fn immutables_are_written_only_while_setting_up() {
 const UPGRADEABLE_V1: &str = r#"import "std/evm"; 
 upgradeable
 
-error Not_owner;
+error NotOwner;
 
 immutable is record {
   owner : address;
@@ -311,7 +311,7 @@ storage is record {
 }
 
 upgrade guard is {
-  assert(Evm.sender() = immutable.owner, Not_owner);
+  assert(Evm.sender() = immutable.owner, NotOwner);
 }
 
 deploy(const owner : address; const cap : uint) is {
@@ -333,7 +333,7 @@ fn upgradeable_immutables_live_in_proxy_storage() {
         .replace("  cap : uint;\n}", "  cap : uint;\n  floor : uint;\n}")
         .replace(
             "external view function cap()",
-            "migrate set_floor(const floor : uint) is {\n  limits.floor := floor;\n}\n\nexternal view function floor() : uint is limits.floor\nexternal view function cap()",
+            "migrate setFloor(const floor : uint) is {\n  limits.floor := floor;\n}\n\nexternal view function floor() : uint is limits.floor\nexternal view function cap()",
         );
     let (a, b) = (w(0xa11), w(0xb22));
     deploy_at(&compile(UPGRADEABLE_V1).expect("v1"), a);
@@ -373,7 +373,7 @@ fn upgradeable_immutables_live_in_proxy_storage() {
         load_bytes(&run(&storage, word_data("fee()", &[])).returndata, 0),
         w(30)
     );
-    let migrate = word_data("set_floor(uint256)", &[w(7)]);
+    let migrate = word_data("setFloor(uint256)", &[w(7)]);
     let out = run(&storage, super::split::upgrade_to_and_call(b, &migrate));
     assert!(!out.reverted, "{}", pretty(&out.returndata));
     storage = out.storage;
@@ -411,7 +411,7 @@ module Pool is {
     flag : bool;
   }
 
-  storage pool_state at "split.pool.state" is record {
+  storage poolState at "split.pool.state" is record {
     total : uint;
   }
 
@@ -422,7 +422,7 @@ module Pool is {
   }
 
   external function add(const n : uint; const note : string) is {
-    pool_state.total := pool_state.total + n * pool.rates.buy + Base.unit() + note.length;
+    poolState.total := poolState.total + n * pool.rates.buy + Base.unit() + note.length;
   }
 
   external view function token() : address is
@@ -436,7 +436,7 @@ module Pool is {
   } with out
 
   external view function total() : uint is
-    pool_state.total
+    poolState.total
 
   external view function raw() : bytes is
     Evm.calldata()
@@ -518,7 +518,7 @@ fn facets_read_immutables_after_their_calldata() {
 #[test]
 fn upgradeable_routers_append_stored_immutables() {
     let src = format!(
-        "import \"std/address\"; {SPLIT}\nupgradeable\nerror Not_owner;\nupgrade guard is {{ assert(Evm.sender() = Address.zero, Not_owner); }}\n"
+        "import \"std/address\"; {SPLIT}\nupgradeable\nerror NotOwner;\nupgrade guard is {{ assert(Evm.sender() = Address.zero, NotOwner); }}\n"
     );
     let checked = super::split::checked_src(&src);
     let split = super::split::build_facets(&checked, "Pool").expect("split");
@@ -577,11 +577,11 @@ contract Factory is {
 }
 
 contract Vault is {
-  type side is | Buy | Sell
+  type Side is | Buy | Sell
   immutable is record {
     owner : address;
     fee : uint;
-    pair : (side, wei);
+    pair : (Side, wei);
   }
   storage is record { n : uint; }
   deploy(const owner : address; const fee : uint) is {
@@ -592,7 +592,7 @@ contract Vault is {
   external view function owner() : address is immutable.owner
   external view function fee() : uint is immutable.fee
   external view function selling() : bool is {
-    const (s, v) : (side, wei) := immutable.pair;
+    const (s, v) : (Side, wei) := immutable.pair;
   } with s = Sell and v = 1wei
 }
 

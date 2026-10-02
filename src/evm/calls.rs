@@ -333,7 +333,7 @@ external function amount(const e : Echo; const v : uint) is {
 external function peek(const e : Echo; const v : uint) is {
   storage.peeked := rank(query e.peek(v));
 }
-external function try_peek(const e : Echo; const v : uint) is {
+external function tryPeek(const e : Echo; const v : uint) is {
   storage.peeked := case query e.peek(v) of {
   | Ok(ok) -> rank(ok)
   | Error(_) -> 9
@@ -356,14 +356,14 @@ external function try_peek(const e : Echo; const v : uint) is {
         ("flag", 0x4242, 0, 0, None),
         ("amount", 0x4242, 0, 1, None),
         ("peek", 0x4242, 0, 2, None),
-        ("try_peek", 0x4242, 0, 2, None),
+        ("tryPeek", 0x4242, 0, 2, None),
         ("peek", 0xce, 0, 2, Some(1)),
         ("peek", 0xcd, 1, 2, Some(3)),
         ("peek", 0xcd, 2, 2, None),
         ("peek", 1, 0, 2, None),
-        ("try_peek", 0xce, 0, 2, Some(1)),
-        ("try_peek", 0xcd, 0, 2, Some(2)),
-        ("try_peek", 0xef, 0, 2, Some(9)),
+        ("tryPeek", 0xce, 0, 2, Some(1)),
+        ("tryPeek", 0xcd, 0, 2, Some(2)),
+        ("tryPeek", 0xef, 0, 2, Some(9)),
     ];
     for &(name, target, arg, at, want) in cases {
         let sig = format!("{name}(address,uint256)");
@@ -436,7 +436,7 @@ external function maybe(const h : Hook) is { defer h.maybe(); }
     }
 }
 
-/// A file that imports a file of contracts can create them. `Evm.creation_code` is the
+/// A file that imports a file of contracts can create them. `Evm.creationCode` is the
 /// code `create` runs, so a `CREATE2` address is known before the contract exists.
 #[test]
 fn imported_contracts_are_created() {
@@ -459,8 +459,8 @@ contract Maker is {
     defer create Child() with salt = salt then (child : address) {
       storage.last := child;
     };
-  } with Crypto.keccak256(Evm.creation_code(Child))
-  external pure function code() : bytes is Evm.creation_code(Child)
+  } with Crypto.keccak256(Evm.creationCode(Child))
+  external pure function code() : bytes is Evm.creationCode(Child)
 }
 ";
     std::fs::write(dir.join("child.lithe"), child).expect("child");
@@ -496,8 +496,8 @@ contract Maker is {
             "contract `Child` is already declared in `./child`",
         ),
         (
-            "Evm.creation_code(Child))",
-            "Evm.creation_code(Nope))",
+            "Evm.creationCode(Child))",
+            "Evm.creationCode(Nope))",
             "`Nope` is not another contract of this file or its imports",
         ),
     ] {
@@ -619,30 +619,30 @@ interface Me is {
   function plain();
   function relay(me : Me);
   function price() : uint;
-  function open_price() : uint;
+  function openPrice() : uint;
 }
 storage is record { n : uint; seen : uint; }
 external nonreentrant function guarded() is { storage.n := storage.n + 1; }
 external function plain() is { storage.n := storage.n + 10; }
 external function relay(const me : Me) is { defer me.plain(); }
 external nonreentrant view function price() : uint is storage.n
-external view function open_price() : uint is storage.n
-external function plain_then_guarded(const me : Me) is { defer me.guarded(); }
-external function plain_then_price(const me : Me) is {
+external view function openPrice() : uint is storage.n
+external function plainThenGuarded(const me : Me) is { defer me.guarded(); }
+external function plainThenPrice(const me : Me) is {
   defer me.price() then (p : uint) { storage.seen := p; };
 }
-external function plain_then_open(const me : Me) is {
+external function plainThenOpen(const me : Me) is {
   storage.n := 5;
-  defer me.open_price() then (p : uint) { storage.seen := p; };
+  defer me.openPrice() then (p : uint) { storage.seen := p; };
 }
-external function plain_then_plain(const me : Me) is { defer me.plain(); }
-external nonreentrant function locked_then_plain(const me : Me) is { defer me.plain(); }
-external nonreentrant function locked_then_guarded(const me : Me) is { defer me.guarded(); }
-external function after_nested(const me : Me) is {
+external function plainThenPlain(const me : Me) is { defer me.plain(); }
+external nonreentrant function lockedThenPlain(const me : Me) is { defer me.plain(); }
+external nonreentrant function lockedThenGuarded(const me : Me) is { defer me.guarded(); }
+external function afterNested(const me : Me) is {
   defer me.relay(me);
   defer me.guarded();
 }
-external function continuation_then_guarded(const me : Me) is {
+external function continuationThenGuarded(const me : Me) is {
   defer me.plain() then { defer me.guarded(); };
 }
 ";
@@ -654,15 +654,15 @@ external function continuation_then_guarded(const me : Me) is {
     let price = run("price()", &[]);
     assert!(!price.reverted, "{}", pretty(&price.returndata));
     for (sig, rejected) in [
-        ("plain_then_guarded(address)", true),
-        ("plain_then_price(address)", true),
-        ("plain_then_open(address)", false),
-        ("plain_then_plain(address)", false),
-        ("locked_then_plain(address)", false),
-        ("locked_then_guarded(address)", true),
+        ("plainThenGuarded(address)", true),
+        ("plainThenPrice(address)", true),
+        ("plainThenOpen(address)", false),
+        ("plainThenPlain(address)", false),
+        ("lockedThenPlain(address)", false),
+        ("lockedThenGuarded(address)", true),
         // The inner window ends with the lock still held for the outer one.
-        ("after_nested(address)", true),
-        ("continuation_then_guarded(address)", true),
+        ("afterNested(address)", true),
+        ("continuationThenGuarded(address)", true),
     ] {
         let out = run(sig, &[me]);
         assert_eq!(out.reverted, rejected, "{sig}: {}", pretty(&out.returndata));
@@ -676,7 +676,7 @@ external function continuation_then_guarded(const me : Me) is {
             "{sig}"
         );
     }
-    let open = run("plain_then_open(address)", &[me]);
+    let open = run("plainThenOpen(address)", &[me]);
     assert_eq!(slot(&open.storage, 1), Word::from_u64(5));
 
     let footprint = footprint(src).expect("footprint");
@@ -700,7 +700,7 @@ external function continuation_then_guarded(const me : Me) is {
         "{footprint}"
     );
     assert!(
-        line("open_price").ends_with("during defers: callable"),
+        line("openPrice").ends_with("during defers: callable"),
         "{footprint}"
     );
 
@@ -938,18 +938,18 @@ fn recoverable_calls_branch_on_the_outcome() {
     // An account without code answers nothing, which is too short, not an `Error`.
     let codeless = run("read(address,uint256)", &[missing, w(42)]);
     assert!(codeless.reverted && codeless.returndata.is_empty());
-    let small = run("read_small(address,uint256)", &[ok, w(200)]);
+    let small = run("readSmall(address,uint256)", &[ok, w(200)]);
     assert_eq!(layout.get(&small.storage, 5), w(200));
     // A dirty word is malformed, not an `Error`.
-    assert!(run("read_small(address,uint256)", &[ok, w(300)]).reverted);
-    for sig in ["read_plain(address,uint256)", "read_early(address,uint256)"] {
+    assert!(run("readSmall(address,uint256)", &[ok, w(300)]).reverted);
+    for sig in ["readPlain(address,uint256)", "readEarly(address,uint256)"] {
         let fits = run(sig, &[ok, w(200)]);
         assert!(!fits.reverted, "{sig}: {}", pretty(&fits.returndata));
         assert_eq!(layout.get(&fits.storage, 5), w(200), "{sig}");
         assert!(run(sig, &[ok, w(300)]).reverted, "{sig}: a dirty uint8");
         assert!(run(sig, &[refuse, w(1)]).reverted, "{sig}: a failed query");
     }
-    let noted = run("read_small(address,uint256)", &[refuse, w(9)]);
+    let noted = run("readSmall(address,uint256)", &[refuse, w(9)]);
     assert!(!noted.reverted);
     assert_eq!(reason(&noted), w(9).to_be_bytes());
 
@@ -1148,8 +1148,8 @@ external function put1(const a : bytes) is {
 }
 external view function at(const i : uint) : bytes is storage.bs[i]
 external view function len() : uint is storage.bs.length
-external function set_at(const i : uint; const v : bytes) is { storage.bs[i] := v; }
-external function put_s(const a : string; const c : string) is {
+external function setAt(const i : uint; const v : bytes) is { storage.bs[i] := v; }
+external function putS(const a : string; const c : string) is {
   var xs : list(string) := [a, c];
   storage.ss := xs;
 }
@@ -1270,7 +1270,7 @@ external function total() is {
     expect_bytes(&st, base.wrapping_add(w(1)), boundary);
     st = run(&st, "total()", &[]).storage;
     assert_eq!(laid.get(&st, 4), w(72));
-    st = run(&st, "set_at(uint256,bytes)", &[Arg::W(w(0)), bytes(short)]).storage;
+    st = run(&st, "setAt(uint256,bytes)", &[Arg::W(w(0)), bytes(short)]).storage;
     assert_eq!(text(&st, "at(uint256)", &[Arg::W(w(0))]), short);
     assert_eq!(st.get(&data_at(base)).copied().unwrap_or(w(0)), w(0));
     // A shorter list clears the dropped element's data.
@@ -1284,7 +1284,7 @@ external function total() is {
     );
     assert_eq!(st.get(&dropped).copied().unwrap_or(w(0)), w(0));
 
-    st = run(&st, "put_s(string,string)", &[bytes(long), bytes(short)]).storage;
+    st = run(&st, "putS(string,string)", &[bytes(long), bytes(short)]).storage;
     assert_eq!(word(&st, "slen()", &[]), w(2));
     assert_eq!(text(&st, "sat(uint256)", &[Arg::W(w(0))]), long);
     assert_eq!(text(&st, "sat(uint256)", &[Arg::W(w(1))]), short);
@@ -1436,7 +1436,7 @@ contract Factory is {
     };
   }
 
-  external function make_at(const salt : bytes32) is {
+  external function makeAt(const salt : bytes32) is {
     defer create Vault() with salt = salt then (vault : address) {
       storage.seeded := vault;
     };
@@ -1449,13 +1449,13 @@ contract Factory is {
     };
   }
 
-  external function fund_at(const amount : uint; const salt : bytes32) is {
+  external function fundAt(const amount : uint; const salt : bytes32) is {
     defer create Vault() with { value = amount; salt = salt; } then (vault : address) {
       storage.seeded := vault;
     };
   }
 
-  external function owner_of_last() : address is {
+  external function ownerOfLast() : address is {
     const owner : address := query Child(storage.last).owner();
   } with owner
 }
@@ -1508,25 +1508,25 @@ contract Vault is {
     );
     let asked = exec(
         &factory,
-        &word_data("owner_of_last()", &[]),
+        &word_data("ownerOfLast()", &[]),
         made.storage.clone(),
         caller,
         w(0),
         w(0),
     )
-    .expect("owner_of_last");
+    .expect("ownerOfLast");
     assert_eq!(load_bytes(&asked.returndata, 0), caller);
 
     let salt = w(0x5a17);
     let seeded = exec(
         &factory,
-        &word_data("make_at(bytes32)", &[salt]),
+        &word_data("makeAt(bytes32)", &[salt]),
         HashMap::new(),
         caller,
         w(0),
         w(0),
     )
-    .expect("make_at");
+    .expect("makeAt");
     assert!(!seeded.reverted, "{}", pretty(&seeded.returndata));
     let mut buf = vec![0xff];
     buf.extend_from_slice(&w(0x1000).to_be_bytes()[12..]);
@@ -1562,13 +1562,13 @@ contract Vault is {
     // Both options: CREATE2 at the salted address, sending the value along.
     let both = exec(
         &factory,
-        &word_data("fund_at(uint256,bytes32)", &[w(5), salt]),
+        &word_data("fundAt(uint256,bytes32)", &[w(5), salt]),
         HashMap::new(),
         caller,
         w(0),
         w(10),
     )
-    .expect("fund_at");
+    .expect("fundAt");
     assert!(!both.reverted, "{}", pretty(&both.returndata));
     let at = Word::from_be_bytes(expected);
     assert_eq!(slot(&both.storage, 2), at);
@@ -1607,7 +1607,7 @@ fn encoded_blobs_keep_their_tails() {
 import \"std/abi\"; storage is record { a : bytes; b : bytes; name : string; }
 external function both(const x : string; const y : string) is {
   const a : bytes := Abi.encode(1, x);
-  const b : bytes := Abi.encode_packed(y, 2);
+  const b : bytes := Abi.encodePacked(y, 2);
   const c : bytes := Abi.encode(y, storage.name);
   storage.a := a;
   storage.b := b;
@@ -1670,13 +1670,13 @@ fn deploy_args(owner: Word, fee: u64, name: &[u8]) -> Vec<u8> {
 #[test]
 fn deploy_runs_in_creation_code() {
     let src = "\
-import \"std/evm\"; error Too_high of uint;
+import \"std/evm\"; error TooHigh of uint;
 storage is record { owner : address; fee : uint; name : string; }
 event Deployed of record { indexed owner : address; fee : uint; }
 deploy(const owner : address; const fee : uint; const name : string)
-  raises Too_high
+  raises TooHigh
 is {
-  assert(fee <= 100, Too_high(fee));
+  assert(fee <= 100, TooHigh(fee));
   storage.owner := owner;
   storage.fee := fee;
   storage.name := name;
@@ -1756,9 +1756,9 @@ external view function paid() : wei is storage.paid
 fn upgradeable_deploy_runs_only_during_construction() {
     let src = "\
 import \"std/evm\"; upgradeable
-error Not_owner;
+error NotOwner;
 storage is record { owner : address; }
-upgrade guard is { assert(Evm.sender() = storage.owner, Not_owner); }
+upgrade guard is { assert(Evm.sender() = storage.owner, NotOwner); }
 deploy(const owner : address) is { storage.owner := owner; }
 external view function owner() : address is storage.owner
 ";
@@ -1790,7 +1790,7 @@ import \"std/evm\"; contract Factory is {
       storage.last := vault;
     };
   }
-  external function open_at(const salt : bytes32; const fee : uint) is {
+  external function openAt(const salt : bytes32; const fee : uint) is {
     defer create Vault(Evm.sender(), fee, \"salted\") with salt = salt then (vault : address) {
       storage.last := vault;
     };
@@ -1837,13 +1837,13 @@ contract Vault is {
     let salt = w(0x5a17);
     let at = exec(
         &factory,
-        &word_data("open_at(bytes32,uint256)", &[salt, w(7)]),
+        &word_data("openAt(bytes32,uint256)", &[salt, w(7)]),
         HashMap::new(),
         caller,
         w(0),
         w(0),
     )
-    .expect("open_at");
+    .expect("openAt");
     assert!(!at.reverted, "{}", pretty(&at.returndata));
     let init = [code("Vault"), deploy_args(caller, 7, b"salted")].concat();
     let mut buf = vec![0xff];
@@ -1872,7 +1872,7 @@ fn passed_through_bytes_encode_from_calldata() {
 import \"std/abi\"; 
 storage is record { n : uint; }
 external pure function fwd(const n : uint; const data : bytes; const s : string) : bytes is
-  Abi.encode_with_selector(0x12345678, n, data, s)
+  Abi.encodeWithSelector(0x12345678, n, data, s)
 ";
     let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
     let w = Word::from_u64;
@@ -1902,7 +1902,7 @@ fn bytes_passed_through_inlined_calls_encode_from_calldata() {
 import \"std/abi\"; import \"std/bytes\"; 
 storage is record { n : uint; }
 pure function wrap(const n : uint; const data : bytes) : bytes is
-  Abi.encode_with_selector(0x12345678, n, data)
+  Abi.encodeWithSelector(0x12345678, n, data)
 pure function twice(const data : bytes) : bytes is
   wrap(2, data)
 external pure function fwd(const n : uint; const data : bytes) : bytes is
@@ -1934,7 +1934,7 @@ fn calldata_lists_read_and_encode_in_place() {
 import \"std/abi\"; 
 event Got of record { indexed n : uint; xs : list(uint); tags : list(bytes4); }
 storage is record { n : uint; }
-pure function wrap(const xs : list(uint)) : bytes is Abi.encode_with_selector(0x12345678, xs)
+pure function wrap(const xs : list(uint)) : bytes is Abi.encodeWithSelector(0x12345678, xs)
 external function f(const xs : list(uint); const tags : list(bytes4); const i : uint) : (uint, bytes4, bytes, bytes) is {
   emit Got { n = xs.length; xs = xs; tags = tags; };
 } with (xs[i], tags[i], Abi.encode(xs, tags), wrap(xs))
@@ -1987,11 +1987,11 @@ external function f(const xs : list(uint); const tags : list(bytes4); const i : 
 fn calldata_strings_join_and_raise_in_place() {
     let src = "\
 import \"std/string\"; 
-error Too_long of record { name : string; limit : uint; }
+error TooLong of record { name : string; limit : uint; }
 storage is record { n : uint; }
 pure function greet(const s : string) : string is String.concat(\"<\", s, \">\")
-external pure function f(const s : string) : string raises Too_long is {
-  assert(s.length <= 40, Too_long { name = s; limit = 40; });
+external pure function f(const s : string) : string raises TooLong is {
+  assert(s.length <= 40, TooLong { name = s; limit = 40; });
 } with String.concat(s, \": \", greet(s))
 ";
     let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
@@ -2038,13 +2038,13 @@ external view function f(const s : string) : string is String.concat(s, \"|\", s
     }
 }
 
-/// `Bytes.concat` and `String.concat` join values in order; `Abi.encode_call` checks its
+/// `Bytes.concat` and `String.concat` join values in order; `Abi.encodeCall` checks its
 /// arguments against an interface method and encodes like Solidity's `abi.encodeCall`.
 #[test]
 fn concatenation_and_typed_call_encoding() {
     let src = "\
 import \"std/abi\"; import \"std/bytes\"; import \"std/crypto\"; import \"std/evm\"; import \"std/string\"; interface Token is { function transfer(to : address; amount : uint) : bool; }
-storage is record { joined : bytes; text : string; call_data : bytes; }
+storage is record { joined : bytes; text : string; callData : bytes; }
 external function join(const a : bytes; const b : bytes) is {
   storage.joined := Bytes.concat(a, 0xdeadbeef, b);
 }
@@ -2052,14 +2052,14 @@ external function greet(const name : string) is {
   storage.text := String.concat(\"hello, \", name, \"!\");
 }
 external function encode(const to : address; const amount : uint) is {
-  storage.call_data := Abi.encode_call(Token.transfer, to, amount);
+  storage.callData := Abi.encodeCall(Token.transfer, to, amount);
 }
 external pure function same(const to : address; const amount : uint) : bool is
-  Crypto.keccak256(Abi.encode_call(Token.transfer, to, amount))
-    = Crypto.keccak256(Abi.encode_with_signature(\"transfer(address,uint256)\", to, amount))
+  Crypto.keccak256(Abi.encodeCall(Token.transfer, to, amount))
+    = Crypto.keccak256(Abi.encodeWithSignature(\"transfer(address,uint256)\", to, amount))
 external view function joined() : bytes is storage.joined
 external view function text() : string is storage.text
-external view function call_data() : bytes is storage.call_data
+external view function callData() : bytes is storage.callData
 ";
     let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
     let w = Word::from_u64;
@@ -2108,7 +2108,7 @@ external view function call_data() : bytes is storage.call_data
     let mut want = selector("transfer(address,uint256)").to_vec();
     want.extend_from_slice(&w(0xbeef).to_be_bytes());
     want.extend_from_slice(&w(5).to_be_bytes());
-    assert_eq!(view("call_data()", &encoded.storage), want);
+    assert_eq!(view("callData()", &encoded.storage), want);
     let same = run(
         word_data("same(address,uint256)", &[w(1), w(2)]),
         HashMap::new(),
@@ -2117,15 +2117,15 @@ external view function call_data() : bytes is storage.call_data
 
     for (body, want) in [
         (
-            "Abi.encode_call(Token.transfer, Evm.sender())",
+            "Abi.encodeCall(Token.transfer, Evm.sender())",
             "`Token.transfer` expects 2 arguments",
         ),
         (
-            "Abi.encode_call(Token.mint, Evm.sender(), 1)",
+            "Abi.encodeCall(Token.mint, Evm.sender(), 1)",
             "unknown interface method `Token.mint`",
         ),
         (
-            "Abi.encode_call(\"transfer(address,uint256)\", Evm.sender(), 1)",
+            "Abi.encodeCall(\"transfer(address,uint256)\", Evm.sender(), 1)",
             "expects an interface method",
         ),
         (
@@ -2164,7 +2164,7 @@ external function both(const e : Echo) is {
   storage.n := a + b;
 }
 external function raw(const to : address) is {
-  const d : bytes := query Evm.static_call(to, Abi.encode(3)) with gas = 40000;
+  const d : bytes := query Evm.staticCall(to, Abi.encode(3)) with gas = 40000;
   storage.n := d.length;
 }
 external payable function send(const e : Echo; const to : address) is {
@@ -2306,7 +2306,7 @@ contract Factory is {
     };
   }
 
-  external function open_failing() is {
+  external function openFailing() is {
     defer create Vault(true) then {
       | Ok(vault : address) -> { storage.last := vault; }
       | Error(_) -> { storage.failed := storage.failed + 1; }
@@ -2363,7 +2363,7 @@ contract Vault is {
     assert!(!run(&mut storage, "open(bool)", &[w(0)]).reverted);
     assert_eq!(slot(&storage, 0), at(start));
 
-    let failed = run(&mut storage, "open_failing()", &[]);
+    let failed = run(&mut storage, "openFailing()", &[]);
     assert!(!failed.reverted, "{}", pretty(&failed.returndata));
     assert_eq!(slot(&storage, 1), w(1));
     assert_eq!(NONCE.get(), start + 2);
@@ -2378,9 +2378,9 @@ contract Vault is {
 #[test]
 fn shared_functions_take_arguments_on_the_stack() {
     let src = "
-type pt is record { x : uint; y : uint; }
+type Pt is record { x : uint; y : uint; }
 storage is record { m : map(uint, uint); }
-pure function mix(const a : uint; const p : pt; const b : uint) : (uint, uint) is
+pure function mix(const a : uint; const p : Pt; const b : uint) : (uint, uint) is
   ((a * 1000 + p.x * 100 + b) % 1000003, (p.y * 7 + a * 13 + b * 17) % 1000033)
 view function look(storage m : map(uint, uint); const k : uint; const d : uint) : uint is
   m[k] * 3 + d * 5 + k % 7 + (m[k + 1] ^ d) * 11

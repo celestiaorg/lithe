@@ -3,9 +3,9 @@
 import "std/address";
 import "std/evm";
 
-error Not_owner;
+error NotOwner;
 
-error Insufficient_balance of record {
+error InsufficientBalance of record {
   available : uint;
   required : uint;
 }
@@ -30,9 +30,9 @@ deploy() is {
 }
 
 external function mint(const to : address; const amount : uint)
-  raises Not_owner
+  raises NotOwner
 is {
-  assert(Evm.sender() = immutable.owner, Not_owner);
+  assert(Evm.sender() = immutable.owner, NotOwner);
   storage.balances[to] := storage.balances[to] + amount;
   storage.total := storage.total + amount;
   emit Transfer {
@@ -43,13 +43,13 @@ is {
 }
 
 external function transfer(const to : address; const amount : uint)
-  raises Insufficient_balance
+  raises InsufficientBalance
 is {
   const from : address := Evm.sender();
   const have : uint := storage.balances[from];
   assert(
     have >= amount,
-    Insufficient_balance {
+    InsufficientBalance {
       available = have;
       required = amount;
     }
@@ -63,8 +63,8 @@ is {
   };
 }
 
-external view function balance_of(const who : address) : uint is
+external view function balanceOf(const who : address) : uint is
   storage.balances[who]
 
-external view function total_supply() : uint is
+external view function totalSupply() : uint is
   storage.total

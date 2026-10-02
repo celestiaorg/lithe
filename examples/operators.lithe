@@ -9,9 +9,9 @@ storage is record {
   r : uint;
   sq : int;
   sr : int;
-  rem_nat : uint;
-  div_int : int;
-  rem_int : int;
+  remNat : uint;
+  divInt : int;
+  remInt : int;
   masked : uint;
   flags : uint;
   toggled : uint;
@@ -20,13 +20,13 @@ storage is record {
   back : uint;
   uq : uint32;
   ur : uint32;
-  narrow_shift : uint8;
-  narrow_not : uint8;
+  narrowShift : uint8;
+  narrowNot : uint8;
   sar : int;
   half : uint;
   rest : uint;
-  pair_amount : uint;
-  nested_flag : bool;
+  pairAmount : uint;
+  nestedFlag : bool;
   payment : (address, uint);
 }
 
@@ -34,15 +34,15 @@ view function split(const amount : uint) : (uint, uint) is
   (amount / 2, amount % 2)
 
 external function run(const amount : uint) is {
-  const (q, r) : (uint, uint) := Uint.div_rem(7, 3);
+  const (q, r) : (uint, uint) := Uint.divRem(7, 3);
   storage.q := q;
   storage.r := r;
-  const (sq, sr) : (int, int) := Int.div_rem(-7, 3);
+  const (sq, sr) : (int, int) := Int.divRem(-7, 3);
   storage.sq := sq;
   storage.sr := sr;
-  storage.rem_nat := 7 % 3;
-  storage.div_int := -7 / 3;
-  storage.rem_int := -7 % 3;
+  storage.remNat := 7 % 3;
+  storage.divInt := -7 / 3;
+  storage.remInt := -7 % 3;
   const masked : uint := 0xff & 0x0f;
   storage.masked := masked;
   const flags : uint := 1 | 2;
@@ -57,39 +57,39 @@ external function run(const amount : uint) is {
   storage.back := back;
   const a : uint32 := 10;
   const b : uint32 := 3;
-  const (uq, ur) : (uint32, uint32) := Uint.div_rem(a, b);
+  const (uq, ur) : (uint32, uint32) := Uint.divRem(a, b);
   storage.uq := uq;
   storage.ur := ur;
-  const narrow_shift : uint8 := 1 << 8;
-  storage.narrow_shift := narrow_shift;
-  const narrow_not : uint8 := ~0;
-  storage.narrow_not := narrow_not;
+  const narrowShift : uint8 := 1 << 8;
+  storage.narrowShift := narrowShift;
+  const narrowNot : uint8 := ~0;
+  storage.narrowNot := narrowNot;
   const neg : int := -8;
   storage.sar := neg >> 1;
   const (half, rest) : (uint, uint) := split(amount);
   storage.half := half;
   storage.rest := rest;
   const pair : (address, uint) := (Evm.sender(), amount);
-  const (who, pair_amount) : (address, uint) := pair;
-  storage.pair_amount := pair_amount;
+  const (who, pairAmount) : (address, uint) := pair;
+  storage.pairAmount := pairAmount;
   const nested : (uint, (address, bool)) := (1, (Evm.sender(), true));
   const (_, inner) : (uint, (address, bool)) := nested;
   const (_acct, flag) : (address, bool) := inner;
-  storage.nested_flag := flag;
+  storage.nestedFlag := flag;
   storage.payment := (who, amount);
 }
 
-external function mod_zero(const d : uint) is {
+external function modZero(const d : uint) is {
   const _ : uint := 1 % d;
   skip
 }
 
-external function min_div(const min : int) is {
+external function minDiv(const min : int) is {
   const _ : int := min / -1;
   skip
 }
 
-external function min_mod(const min : int) is {
+external function minMod(const min : int) is {
   const _ : int := min % -1;
   skip
 }
@@ -100,10 +100,10 @@ external view function quote() : (uint, uint) is
 external view function payee() : (uint, address) is
   (7, Evm.sender())
 
-external view function nested_quote() : (uint, (address, bool)) is
+external view function nestedQuote() : (uint, (address, bool)) is
   (1, (Evm.self(), true))
 
-external view function sum_some() : uint is {
+external view function sumSome() : uint is {
   const wrapped : option((uint, uint)) := Some((4, 5));
 } with case wrapped of
 {
@@ -111,7 +111,7 @@ external view function sum_some() : uint is {
 | None -> 0
 }
 
-external view function mask_some() : uint is {
+external view function maskSome() : uint is {
   const wrapped : option(uint) := Some(0xff);
 } with case wrapped of
 {

@@ -207,7 +207,7 @@ pub(crate) fn instrument(mut prog: Program, specs: &Specs) -> Result<Instrumente
                     .len()
                     .checked_sub(2)
                     .and_then(|i| route.path.get(i)),
-                route.path.last(),
+                route.case.as_ref(),
             ) else {
                 continue;
             };
@@ -1012,14 +1012,14 @@ fn arm_of<'a>(funcs: &'a mut [Func], dispatcher: &str, ctor: &str) -> Option<&'a
         .find(|arm| arm.ctors.iter().any(|c| c == ctor))
 }
 
-/// A route's arm, by its route's name, which is its case's.
-fn arm_of_route<'a>(funcs: &'a mut [Func], dispatcher: &str, route: &str) -> Option<&'a mut Arm> {
+/// A route's arm, by its route's case.
+fn arm_of_route<'a>(funcs: &'a mut [Func], dispatcher: &str, case: &str) -> Option<&'a mut Arm> {
     let f = funcs.iter_mut().find(|f| f.name == dispatcher)?;
     let Some(Expr::Case { arms, .. }) = &mut f.tail else {
         return None;
     };
     arms.iter_mut()
-        .find(|arm| arm.ctors.iter().any(|c| crate::route::abi_name(c) == route))
+        .find(|arm| arm.ctors.iter().any(|c| c == case))
 }
 
 /// Calls `f` on a continuation's arms: the one for success, and the one for failure.

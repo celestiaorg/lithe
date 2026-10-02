@@ -1,11 +1,11 @@
 import "std/evm";
 
-error Not_owner;
+error NotOwner;
 
 storage is record {
   owner : address;
 }
 
 external function go() is {
-  assert(Evm.sender() = storage.owner, Not_owner);
+  assert(Evm.sender() = storage.owner, NotOwner);
 }

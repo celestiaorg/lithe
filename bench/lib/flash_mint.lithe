@@ -21,37 +21,37 @@ error ERC3156InvalidReceiver of address;
 module ERC20FlashMint is {
   requires ERC20;
 
-  pure function return_value() : bytes32 is
+  pure function returnValue() : bytes32 is
     Crypto.keccak256("ERC3156FlashBorrower.onFlashLoan")
 
-  view function max_flash_loan(const token : address) : uint is {
+  view function maxLoan(const token : address) : uint is {
     var most : uint := 0;
     if token = Evm.self() then {
       most := Uint.max - ERC20.erc20.totalSupply;
     }
   } with most
 
-  view function flash_fee(const token : address; const value : uint) : uint
+  view function loanFee(const token : address; const value : uint) : uint
     raises ERC3156UnsupportedToken
   is {
     assert(token = Evm.self(), ERC3156UnsupportedToken(token));
   } with 0
 
   (* The fee for a loan the token can make. *)
-  view function check_loan(const token : address; const value : uint) : uint
+  view function checkLoan(const token : address; const value : uint) : uint
     raises ERC3156ExceededMaxLoan | ERC3156UnsupportedToken
   is {
-    const most : uint := max_flash_loan(token);
+    const most : uint := maxLoan(token);
     assert(value <= most, ERC3156ExceededMaxLoan(most));
-  } with flash_fee(token, value)
+  } with loanFee(token, value)
 
   external view function maxFlashLoan(const token : address) : uint is
-    max_flash_loan(token)
+    maxLoan(token)
 
   external view function flashFee(const token : address; const value : uint) : uint
     raises ERC3156UnsupportedToken
   is
-    flash_fee(token, value)
+    loanFee(token, value)
 }
 
 (* IERC3156FlashLender's views. `flashLoan` is the token's own, since it mints and burns

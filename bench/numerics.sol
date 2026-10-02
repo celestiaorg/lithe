@@ -21,7 +21,7 @@ contract Numerics {
         return 10 ** decimals;
     }
 
-    function pow_signed(int256 base, uint256 exponent) external pure returns (int256) {
+    function powSigned(int256 base, uint256 exponent) external pure returns (int256) {
         return base ** exponent;
     }
 
@@ -45,15 +45,15 @@ contract Numerics {
         return Math.log256(a);
     }
 
-    function log2_up(uint256 a) external pure returns (uint256) {
+    function log2Up(uint256 a) external pure returns (uint256) {
         return Math.log2(a, Math.Rounding.Ceil);
     }
 
-    function log10_up(uint256 a) external pure returns (uint256) {
+    function log10Up(uint256 a) external pure returns (uint256) {
         return Math.log10(a, Math.Rounding.Ceil);
     }
 
-    function log256_up(uint256 a) external pure returns (uint256) {
+    function log256Up(uint256 a) external pure returns (uint256) {
         return Math.log256(a, Math.Rounding.Ceil);
     }
 
@@ -82,15 +82,15 @@ contract Numerics {
         return SignedMath.min(SignedMath.max(x, low), high);
     }
 
-    function hex_nat(uint256 n) external pure returns (string memory) {
+    function hexNat(uint256 n) external pure returns (string memory) {
         return Strings.toHexString(n);
     }
 
-    function hex_fixed(uint256 n, uint256 length) external pure returns (string memory) {
+    function hexFixed(uint256 n, uint256 length) external pure returns (string memory) {
         return Strings.toHexString(n, length);
     }
 
-    function hex_address(address a) external pure returns (string memory) {
+    function hexAddress(address a) external pure returns (string memory) {
         return Strings.toHexString(a);
     }
 
@@ -98,7 +98,7 @@ contract Numerics {
         return Strings.toChecksumHexString(a);
     }
 
-    function set_scale(uint8 decimals) external {
+    function setScale(uint8 decimals) external {
         scale = 10 ** decimals;
     }
 }

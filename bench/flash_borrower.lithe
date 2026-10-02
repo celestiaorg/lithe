@@ -14,17 +14,17 @@ interface Token is {
 error Refused of uint;
 
 storage is record {
-  last_initiator : address;
-  last_token : address;
-  last_amount : uint;
-  last_fee : uint;
-  last_data : bytes;
+  lastInitiator : address;
+  lastToken : address;
+  lastAmount : uint;
+  lastFee : uint;
+  lastData : bytes;
   held : uint;
   loans : uint;
   mode : uint;
 }
 
-external function set_mode(const m : uint) is {
+external function setMode(const m : uint) is {
   storage.mode := m;
 }
 
@@ -38,11 +38,11 @@ external function onFlashLoan(
   raises Refused
 is {
   assert(storage.mode <> 3, Refused(amount));
-  storage.last_initiator := initiator;
-  storage.last_token := address(token);
-  storage.last_amount := amount;
-  storage.last_fee := fee;
-  storage.last_data := data;
+  storage.lastInitiator := initiator;
+  storage.lastToken := address(token);
+  storage.lastAmount := amount;
+  storage.lastFee := fee;
+  storage.lastData := data;
   storage.held := query token.balanceOf(Evm.self());
   storage.loans := storage.loans + 1;
   if storage.mode <> 2 then {

@@ -1,6 +1,6 @@
 import "std/evm";
 
-error Not_owner;
+error NotOwner;
 error Closed;
 
 storage is record {
@@ -9,8 +9,8 @@ storage is record {
 }
 
 external function go()
-  raises Not_owner
+  raises NotOwner
 is {
-  assert(Evm.sender() = storage.owner, Not_owner);
+  assert(Evm.sender() = storage.owner, NotOwner);
   assert(storage.open, Closed);
 }

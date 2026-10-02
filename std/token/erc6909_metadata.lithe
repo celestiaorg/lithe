@@ -10,14 +10,14 @@ import "std/token/erc6909";
 module ERC6909Metadata is {
   requires ERC6909;
 
-  type token_metadata is record {
+  type TokenMetadata is record {
     name : string;
     symbol : string;
     decimals : uint8;
   }
 
-  storage erc6909_metadata at "lithe.std.erc6909_metadata" is record {
-    tokens : map(uint, token_metadata);
+  storage erc6909Metadata at "lithe.std.erc6909_metadata" is record {
+    tokens : map(uint, TokenMetadata);
   }
 
   event ERC6909NameUpdated of record {
@@ -35,33 +35,24 @@ module ERC6909Metadata is {
     newDecimals : uint8;
   }
 
-  view function name(const id : uint) : string is
-    erc6909_metadata.tokens[id].name
-
-  view function symbol(const id : uint) : string is
-    erc6909_metadata.tokens[id].symbol
-
-  view function decimals(const id : uint) : uint8 is
-    erc6909_metadata.tokens[id].decimals
-
-  function set_name(const id : uint; const newName : string) is {
-    erc6909_metadata.tokens[id].name := newName;
+  function setName(const id : uint; const newName : string) is {
+    erc6909Metadata.tokens[id].name := newName;
     emit ERC6909NameUpdated {
       id = id;
       newName = newName;
     };
   }
 
-  function set_symbol(const id : uint; const newSymbol : string) is {
-    erc6909_metadata.tokens[id].symbol := newSymbol;
+  function setSymbol(const id : uint; const newSymbol : string) is {
+    erc6909Metadata.tokens[id].symbol := newSymbol;
     emit ERC6909SymbolUpdated {
       id = id;
       newSymbol = newSymbol;
     };
   }
 
-  function set_decimals(const id : uint; const newDecimals : uint8) is {
-    erc6909_metadata.tokens[id].decimals := newDecimals;
+  function setDecimals(const id : uint; const newDecimals : uint8) is {
+    erc6909Metadata.tokens[id].decimals := newDecimals;
     emit ERC6909DecimalsUpdated {
       id = id;
       newDecimals = newDecimals;
@@ -69,11 +60,11 @@ module ERC6909Metadata is {
   }
 
   external view function name(const id : uint) : string is
-    erc6909_metadata.tokens[id].name
+    erc6909Metadata.tokens[id].name
 
   external view function symbol(const id : uint) : string is
-    erc6909_metadata.tokens[id].symbol
+    erc6909Metadata.tokens[id].symbol
 
   external view function decimals(const id : uint) : uint8 is
-    erc6909_metadata.tokens[id].decimals
+    erc6909Metadata.tokens[id].decimals
 }

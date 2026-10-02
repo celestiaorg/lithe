@@ -2,37 +2,37 @@
    like a Solidity constructor. It can write storage and emit events, but cannot call
    other contracts: the contract has no code until it returns. *)
 
-error Fee_too_high of uint;
+error FeeTooHigh of uint;
 
 storage is record {
   owner : address;
-  fee_bps : uint;
+  feeBps : uint;
   name : string;
 }
 
 event Configured of record {
   indexed owner : address;
-  fee_bps : uint;
+  feeBps : uint;
 }
 
-deploy(const owner : address; const fee_bps : uint; const name : string)
-  raises Fee_too_high
+deploy(const owner : address; const feeBps : uint; const name : string)
+  raises FeeTooHigh
 is {
-  assert(fee_bps <= 1000, Fee_too_high(fee_bps));
+  assert(feeBps <= 1000, FeeTooHigh(feeBps));
   storage.owner := owner;
-  storage.fee_bps := fee_bps;
+  storage.feeBps := feeBps;
   storage.name := name;
   emit Configured {
     owner = owner;
-    fee_bps = fee_bps;
+    feeBps = feeBps;
   };
 }
 
 external view function owner() : address is
   storage.owner
 
-external view function fee_bps() : uint is
-  storage.fee_bps
+external view function feeBps() : uint is
+  storage.feeBps
 
 external view function name() : string is
   storage.name

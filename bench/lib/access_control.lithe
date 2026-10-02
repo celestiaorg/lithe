@@ -12,13 +12,13 @@ error AccessControlUnauthorizedAccount of record {
 error AccessControlBadConfirmation;
 
 module AccessControl is {
-  type roleData is record {
+  type RoleData is record {
     hasRole : map(address, bool);
     adminRole : bytes32;
   }
 
   storage access at "openzeppelin.storage.AccessControl" is record {
-    roles : map(bytes32, roleData);
+    roles : map(bytes32, RoleData);
   }
 
   event RoleAdminChanged of record {
@@ -39,7 +39,7 @@ module AccessControl is {
     indexed sender : address;
   }
 
-  pure function default_admin_role() : bytes32 is
+  pure function defaultAdminRole() : bytes32 is
     0x0000000000000000000000000000000000000000000000000000000000000000
 
   external view function hasRole(const role : bytes32; const account : address) : bool is
@@ -48,7 +48,7 @@ module AccessControl is {
   external view function getRoleAdmin(const role : bytes32) : bytes32 is
     access.roles[role].adminRole
 
-  view function check_role(const role : bytes32)
+  view function checkRole(const role : bytes32)
     raises AccessControlUnauthorizedAccount
   is {
     assert(
@@ -83,14 +83,14 @@ module AccessControl is {
   external function grantRole(const role : bytes32; const account : address)
     raises AccessControlUnauthorizedAccount
   is {
-    check_role(access.roles[role].adminRole);
+    checkRole(access.roles[role].adminRole);
     grant(role, account);
   }
 
   external function revokeRole(const role : bytes32; const account : address)
     raises AccessControlUnauthorizedAccount
   is {
-    check_role(access.roles[role].adminRole);
+    checkRole(access.roles[role].adminRole);
     revoke(role, account);
   }
 

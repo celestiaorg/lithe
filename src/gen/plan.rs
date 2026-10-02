@@ -1028,6 +1028,27 @@ impl<'a> Gen<'a> {
     /// failures, and about as cheap as the jump that would skip it: literals, locals,
     /// fixed context, stored fields read without a map key, and comparisons or bit
     /// operations of those.
+    /// Whether `and` and `or` may evaluate `e` without testing the side before it: `e` is
+    /// `eager_ok`, and reads no storage word that isn't kept already, since a load costs
+    /// more than the jump it saves.
+    pub(super) fn eager_side(&self, e: &Expr) -> bool {
+        fn unkept(g: &Gen, e: &Expr) -> bool {
+            match e {
+                Expr::Field {
+                    root: Some(sym), ..
+                } if g.checked.syms[*sym].storage => g
+                    .named(e)
+                    .and_then(|(name, _)| g.kept_value(&name))
+                    .is_none(),
+                Expr::Unary { expr, .. } => unkept(g, expr),
+                Expr::Binary { left, right, .. } => unkept(g, left) || unkept(g, right),
+                Expr::Call { args, .. } => args.iter().any(|a| unkept(g, a)),
+                _ => false,
+            }
+        }
+        self.eager_ok(e) && !unkept(self, e)
+    }
+
     pub(super) fn eager_ok(&self, e: &Expr) -> bool {
         fn plain(e: &Expr) -> bool {
             match e {

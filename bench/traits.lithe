@@ -1,11 +1,11 @@
 (* Benchmark: token traits whose errors carry strings and lists. Mirrors traits.sol. *)
 
-error Empty_trait of string;
-error Attribute_not_found of record {
+error EmptyTrait of string;
+error AttributeNotFound of record {
   tokenId : uint;
   traitType : string;
 }
-error Not_minted of list(uint);
+error NotMinted of list(uint);
 
 storage is record {
   minted : uint;
@@ -16,30 +16,30 @@ external function mint(const count : uint) is {
   storage.minted := storage.minted + count;
 }
 
-external function tag(const token_id : uint; const trait_type : string)
-  raises Empty_trait | Attribute_not_found
+external function tag(const tokenId : uint; const traitType : string)
+  raises EmptyTrait | AttributeNotFound
 is {
-  assert(trait_type.length > 0, Empty_trait("trait type is empty"));
+  assert(traitType.length > 0, EmptyTrait("trait type is empty"));
   assert(
-    token_id < storage.minted,
-    Attribute_not_found { tokenId = token_id; traitType = trait_type; }
+    tokenId < storage.minted,
+    AttributeNotFound { tokenId = tokenId; traitType = traitType; }
   );
-  storage.tagged := token_id;
+  storage.tagged := tokenId;
 }
 
-external view function background(const token_id : uint) : uint
-  raises Attribute_not_found
+external view function background(const tokenId : uint) : uint
+  raises AttributeNotFound
 is {
   assert(
-    token_id < storage.minted,
-    Attribute_not_found { tokenId = token_id; traitType = "Background"; }
+    tokenId < storage.minted,
+    AttributeNotFound { tokenId = tokenId; traitType = "Background"; }
   );
-} with token_id
+} with tokenId
 
 external view function check(const ids : list(uint)) : uint
-  raises Not_minted
+  raises NotMinted
 is {
   for id : uint in ids do {
-    assert(id < storage.minted, Not_minted(ids));
+    assert(id < storage.minted, NotMinted(ids));
   }
 } with ids.length

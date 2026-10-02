@@ -18,7 +18,7 @@ pure function add(const a : uint; const b : uint) : uint is
   a + b
 
 (* A block runs first, then the `with` expression is the result. *)
-pure function hypot_squared(const a : uint; const b : uint) : uint is {
+pure function hypotSquared(const a : uint; const b : uint) : uint is {
   const aa : uint := a * a;
   const bb : uint := b * b;
 } with add(aa, bb)
@@ -35,7 +35,7 @@ function bump(const by : uint) is {
 }
 
 external function run(const a : uint; const b : uint) is {
-  bump(clamp(hypot_squared(a, b), 1, 1_000));
+  bump(clamp(hypotSquared(a, b), 1, 1_000));
 }
 
 (* Several results are a tuple. *)

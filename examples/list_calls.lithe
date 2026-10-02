@@ -10,7 +10,7 @@ interface Echo is {
   function keep(xs : list(address)) : list(address);
 }
 
-type nums is list(uint);
+type Nums is list(uint);
 
 storage is record {
   got : list(uint);
@@ -24,7 +24,7 @@ external function ask(const e : Echo; const xs : list(uint)) is {
   storage.got := back;
 }
 
-external function ask_name(const e : Echo; const s : string) is {
+external function askName(const e : Echo; const s : string) is {
   storage.label := query e.named(s);
 }
 
@@ -34,7 +34,7 @@ external function send(const e : Echo; const xs : list(address)) is {
   };
 }
 
-external function ask_case(const e : Echo; const xs : list(uint)) is {
+external function askCase(const e : Echo; const xs : list(uint)) is {
   case query e.same(xs) of {
     | Ok(back) -> {
         storage.total := back.length;
@@ -45,8 +45,8 @@ external function ask_case(const e : Echo; const xs : list(uint)) is {
   }
 }
 
-external pure function decoded_length(const data : bytes) : uint is {
-  const xs : nums := Abi.decode(data, nums);
+external pure function decodedLength(const data : bytes) : uint is {
+  const xs : Nums := Abi.decode(data, Nums);
 } with xs.length
 
 external function counted(const n : uint) : list(uint) is {

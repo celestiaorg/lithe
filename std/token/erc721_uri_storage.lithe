@@ -1,19 +1,19 @@
-(* A URI per token, like OpenZeppelin's `ERC721URIStorage`. `token_uri` joins the base URI
+(* A URI per token, like OpenZeppelin's `ERC721URIStorage`. `tokenURI` joins the base URI
    the collection passes with the token's own URI, or with its id when it has none; with
    no base, it is the token's own URI alone. Setting a token's URI logs ERC-4906's
    `MetadataUpdate`.
 
    ERC-4906's ERC-165 id is fixed by the standard rather than derived from functions, so
    the collection answers for it in its own `supportsInterface`, and for what its
-   `supports` lists with `Abi.supports_interface`:
+   `supports` lists with `Abi.supportsInterface`:
 
      external view function tokenURI(const tokenId : uint) : string
        raises ERC721NonexistentToken
      is
-       ERC721URIStorage.token_uri(tokenId, "ipfs://collection/")
+       ERC721URIStorage.tokenURI(tokenId, "ipfs://collection/")
 
      external pure function supportsInterface(const interfaceId : bytes4) : bool is
-       ERC721URIStorage.supports_interface(interfaceId) or Abi.supports_interface(interfaceId) *)
+       ERC721URIStorage.supportsInterface(interfaceId) or Abi.supportsInterface(interfaceId) *)
 
 import "std/string";
 import "std/uint";
@@ -23,8 +23,8 @@ import "std/interfaces/erc721";
 module ERC721URIStorage is {
   requires ERC721;
 
-  storage erc721_uri_storage at "lithe.std.erc721.uri_storage" is record {
-    token_uris : map(uint, string);
+  storage erc721URIStorage at "lithe.std.erc721.uri_storage" is record {
+    tokenUris : map(uint, string);
   }
 
   event MetadataUpdate of record {
@@ -37,33 +37,33 @@ module ERC721URIStorage is {
   }
 
   (* ERC-4906's id, which the standard fixes rather than derives from functions. *)
-  pure function supports_interface(const interfaceId : bytes4) : bool is
+  pure function supportsInterface(const interfaceId : bytes4) : bool is
     interfaceId = 0x49064906
 
-  view function token_uri(const tokenId : uint; const base : string) : string
+  view function tokenURI(const tokenId : uint; const base : string) : string
     raises ERC721NonexistentToken
   is {
-    const owner : address := ERC721.require_owned(tokenId);
-    const own : string := erc721_uri_storage.token_uris[tokenId];
+    const owner : address := ERC721.requireOwned(tokenId);
+    const own : string := erc721URIStorage.tokenUris[tokenId];
     var uri : string := own;
     if base.length > 0 then {
       if own.length > 0 then {
         uri := String.concat(base, own);
       } else {
-        uri := String.concat(base, Uint.to_string(tokenId));
+        uri := String.concat(base, Uint.toString(tokenId));
       }
     }
   } with uri
 
-  function set_token_uri(const tokenId : uint; const uri : string) is {
-    erc721_uri_storage.token_uris[tokenId] := uri;
+  function setTokenURI(const tokenId : uint; const uri : string) is {
+    erc721URIStorage.tokenUris[tokenId] := uri;
     emit MetadataUpdate {
       tokenId = tokenId;
     };
   }
 
   (* For a change that reaches many tokens' URIs at once, such as a new base URI. *)
-  function announce_update(const fromTokenId : uint; const toTokenId : uint) is {
+  function announceUpdate(const fromTokenId : uint; const toTokenId : uint) is {
     emit BatchMetadataUpdate {
       fromTokenId = fromTokenId;
       toTokenId = toTokenId;

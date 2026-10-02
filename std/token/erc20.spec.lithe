@@ -7,30 +7,30 @@
 spec for module ERC20 is {
   spec is {
     (* The balances add up to the supply. *)
-    invariant supply is erc20.total_supply = sum(erc20.balances);
+    invariant supply is erc20.totalSupply = sum(erc20.balances);
     (* The zero address holds nothing: tokens sent there are burned. *)
-    invariant nothing_at_zero is erc20.balances[Address.zero] = 0;
+    invariant nothingAtZero is erc20.balances[Address.zero] = 0;
   }
 
-  spec for external transfer is {
+  spec for transfer is {
     const from : address := Evm.sender();
     raises ERC20InvalidSender when from = Address.zero;
     raises ERC20InvalidReceiver when to = Address.zero;
     raises ERC20InsufficientBalance when old.erc20.balances[from] < value;
-    ensures new.erc20.total_supply = old.erc20.total_supply;
+    ensures new.erc20.totalSupply = old.erc20.totalSupply;
     ensures from = to or new.erc20.balances[from] = old.erc20.balances[from] - value;
     ensures from = to or new.erc20.balances[to] = old.erc20.balances[to] + value;
     ensures from <> to or new.erc20.balances[from] = old.erc20.balances[from];
   }
 
-  spec for external approve is {
+  spec for approve is {
     raises ERC20InvalidApprover when Evm.sender() = Address.zero;
     raises ERC20InvalidSpender when spender = Address.zero;
     ensures new.erc20.allowances[Evm.sender()][spender] = value;
-    ensures new.erc20.total_supply = old.erc20.total_supply;
+    ensures new.erc20.totalSupply = old.erc20.totalSupply;
   }
 
-  spec for external transferFrom is {
+  spec for transferFrom is {
     const allowed : uint := old.erc20.allowances[from][Evm.sender()];
     (* An unlimited allowance, `Uint.max`, is never spent down, and never checked. *)
     const limited : bool := allowed < Uint.max;
@@ -40,7 +40,7 @@ spec for module ERC20 is {
     raises ERC20InvalidSender when from = Address.zero;
     raises ERC20InvalidReceiver when to = Address.zero;
     raises ERC20InsufficientBalance when old.erc20.balances[from] < value;
-    ensures new.erc20.total_supply = old.erc20.total_supply;
+    ensures new.erc20.totalSupply = old.erc20.totalSupply;
     ensures not limited or new.erc20.allowances[from][Evm.sender()] = allowed - value;
     ensures limited or new.erc20.allowances[from][Evm.sender()] = allowed;
     ensures from = to or new.erc20.balances[from] = old.erc20.balances[from] - value;

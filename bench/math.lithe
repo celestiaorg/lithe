@@ -4,7 +4,7 @@ storage is record {
   last : uint;
 }
 
-external view function mul_div(const a : uint; const b : uint; const c : uint) : uint is
+external view function mulDiv(const a : uint; const b : uint; const c : uint) : uint is
   a * b / c
 
 external view function average(const a : uint; const b : uint) : uint is

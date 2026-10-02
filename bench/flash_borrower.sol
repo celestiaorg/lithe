@@ -13,16 +13,16 @@ interface Token {
 contract FlashBorrower {
     error Refused(uint256 amount);
 
-    address last_initiator;
-    address last_token;
-    uint256 last_amount;
-    uint256 last_fee;
-    bytes last_data;
+    address lastInitiator;
+    address lastToken;
+    uint256 lastAmount;
+    uint256 lastFee;
+    bytes lastData;
     uint256 held;
     uint256 loans;
     uint256 mode;
 
-    function set_mode(uint256 m) external {
+    function setMode(uint256 m) external {
         mode = m;
     }
 
@@ -31,11 +31,11 @@ contract FlashBorrower {
         returns (bytes32)
     {
         if (mode == 3) revert Refused(amount);
-        last_initiator = initiator;
-        last_token = token;
-        last_amount = amount;
-        last_fee = fee;
-        last_data = data;
+        lastInitiator = initiator;
+        lastToken = token;
+        lastAmount = amount;
+        lastFee = fee;
+        lastData = data;
         held = Token(token).balanceOf(address(this));
         loans += 1;
         if (mode != 2) Token(token).approve(token, amount + fee);

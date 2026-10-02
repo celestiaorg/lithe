@@ -1,22 +1,22 @@
-(* Generic sets specialize at compile time. Set(order_id) is not Set(bytes32). *)
+(* Generic sets specialize at compile time. Set(OrderId) is not Set(bytes32). *)
 
 import "std/collections/set";
 import "std/collections/set_enumerable";
 
-type order_id is bytes32;
-type address_set is Set(address);
-type cursor is SetEnumerable(address).iterator;
+type OrderId is bytes32;
+type AddressSet is Set(address);
+type Cursor is SetEnumerable(address).Iterator;
 
 storage is record {
-  admins : address_set;
+  admins : AddressSet;
   validators : SetEnumerable(address);
-  orders : Set(order_id);
+  orders : Set(OrderId);
 }
 
 pure function identity(T)(const value : T) : T is
   value
 
-external view function is_admin(const account : address) : bool is
+external view function isAdmin(const account : address) : bool is
   Set.contains(storage.admins, account)
 
 external function grant(const account : address) is {
@@ -27,24 +27,24 @@ external function revoke(const account : address) is {
   Set.remove(storage.admins, account);
 }
 
-external view function validator_count() : uint is
+external view function validatorCount() : uint is
   SetEnumerable.length(storage.validators)
 
-external view function validator_at(const index : uint) : address
-  raises Out_of_bounds
+external view function validatorAt(const index : uint) : address
+  raises OutOfBounds
 is
   SetEnumerable.at(storage.validators, index)
 
-external function add_validator(const account : address) is {
+external function addValidator(const account : address) is {
   const _ : bool := SetEnumerable.add(storage.validators, account);
 }
 
-external function drop_validator(const account : address) is {
+external function dropValidator(const account : address) is {
   const _ : bool := SetEnumerable.remove(storage.validators, account);
 }
 
 external function track(const id : bytes32) is {
-  const order : order_id := order_id(id);
+  const order : OrderId := OrderId(id);
   Set.add(storage.orders, order);
 }
 
@@ -62,16 +62,16 @@ module Watchlist is {
     const _ : bool := SetEnumerable.remove(watchlist.watched, account);
   }
 
-  external view function is_watched(const account : address) : bool is
+  external view function isWatched(const account : address) : bool is
     SetEnumerable.contains(watchlist.watched, account)
 
-  external view function watched_count() : uint is
+  external view function watchedCount() : uint is
     SetEnumerable.length(watchlist.watched)
 }
 
 use Watchlist exposing {
   function watch(account : address);
   function unwatch(account : address);
-  view function is_watched(account : address) : bool;
-  view function watched_count() : uint;
+  view function isWatched(account : address) : bool;
+  view function watchedCount() : uint;
 }

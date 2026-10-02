@@ -4,23 +4,23 @@
 import "std/evm";
 import "std/string";
 
-error Name_taken of record {
+error NameTaken of record {
   name : string;
   owner : address;
 }
-error Too_long of record {
+error TooLong of record {
   name : string;
   limit : uint;
 }
-error Not_owner of record {
+error NotOwner of record {
   caller : address;
   name : string;
 }
 
 event Renamed of record {
   indexed who : address;
-  old_name : string;
-  new_name : string;
+  oldName : string;
+  newName : string;
 }
 
 immutable is record {
@@ -37,20 +37,20 @@ deploy() is {
 }
 
 external function rename(const name : string)
-  raises Not_owner | Name_taken | Too_long
+  raises NotOwner | NameTaken | TooLong
 is {
-  assert(Evm.sender() = immutable.owner, Not_owner { caller = Evm.sender(); name = storage.name; });
-  assert(name =/= storage.name, Name_taken { name = name; owner = immutable.owner; });
-  assert(name.length <= 100, Too_long { name = name; limit = 100; });
-  emit Renamed { who = Evm.sender(); old_name = storage.name; new_name = name; };
+  assert(Evm.sender() = immutable.owner, NotOwner { caller = Evm.sender(); name = storage.name; });
+  assert(name =/= storage.name, NameTaken { name = name; owner = immutable.owner; });
+  assert(name.length <= 100, TooLong { name = name; limit = 100; });
+  emit Renamed { who = Evm.sender(); oldName = storage.name; newName = name; };
   storage.name := name;
 }
 
 external function describe(const text : string)
-  raises Not_owner | Too_long
+  raises NotOwner | TooLong
 is {
-  assert(Evm.sender() = immutable.owner, Not_owner { caller = Evm.sender(); name = storage.name; });
-  assert(text.length <= 200, Too_long { name = text; limit = 200; });
+  assert(Evm.sender() = immutable.owner, NotOwner { caller = Evm.sender(); name = storage.name; });
+  assert(text.length <= 200, TooLong { name = text; limit = 200; });
   storage.description := String.concat(storage.name, ": ", text);
 }
 
@@ -63,8 +63,8 @@ external view function description() : string is
 external view function title(const prefix : string) : string is
   String.concat(prefix, " ", storage.name)
 
-external view function require_name(const name : string) : bool
-  raises Not_owner
+external view function requireName(const name : string) : bool
+  raises NotOwner
 is {
-  assert(name = storage.name, Not_owner { caller = Evm.sender(); name = storage.name; });
+  assert(name = storage.name, NotOwner { caller = Evm.sender(); name = storage.name; });
 } with true

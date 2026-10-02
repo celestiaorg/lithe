@@ -3,7 +3,7 @@
 
 import "std/evm";
 
-type shares is uint;
+type Shares is uint;
 
 storage is record {
   balances : map(address, uint);
@@ -28,8 +28,8 @@ function credit(const to : address; const amount : uint) is {
   storage.total := storage.total + amount;
 }
 
-(* `shares` is its own type, so a `shares` argument picks this overload. *)
-function credit(const to : address; const amount : shares) is {
+(* `Shares` is its own type, so a `Shares` argument picks this overload. *)
+function credit(const to : address; const amount : Shares) is {
   credit(storage.staked, to, uint(amount));
 }
 
@@ -44,13 +44,13 @@ external function deposit(const amount : uint; const bps : uint) is {
 }
 
 external function stake(const amount : uint) is {
-  credit(Evm.sender(), shares(amount));
+  credit(Evm.sender(), Shares(amount));
 }
 
-external view function balance_of(const who : address) : uint is
+external view function balanceOf(const who : address) : uint is
   storage.balances[who]
 
-external view function staked_of(const who : address) : uint is
+external view function stakedOf(const who : address) : uint is
   storage.staked[who]
 
 external view function total() : uint is

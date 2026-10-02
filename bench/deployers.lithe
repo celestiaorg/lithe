@@ -25,25 +25,25 @@ contract Deployers is {
     };
   }
 
-  external function clone_with_args(const implementation : address; const args : bytes)
+  external function cloneWithArgs(const implementation : address; const args : bytes)
     raises CloneArgumentsTooLong
   is {
-    defer create(Clones.code_with_args(implementation, args)) then (instance : address) {
+    defer create(Clones.codeWithArgs(implementation, args)) then (instance : address) {
       storage.last := instance;
     };
   }
 
-  external function clone_deterministic(const implementation : address; const salt : bytes32) : address
+  external function cloneDeterministic(const implementation : address; const salt : bytes32) : address
     raises FailedDeployment
   is {
-    storage.last := Clones.clone_deterministic(implementation, salt);
+    storage.last := Clones.cloneDeterministic(implementation, salt);
   } with storage.last
 
-  external view function predict_clone(const implementation : address; const salt : bytes32) : address is
-    Clones.predict_here(implementation, salt)
+  external view function predictClone(const implementation : address; const salt : bytes32) : address is
+    Clones.predictHere(implementation, salt)
 
-  external view function args_of(const instance : address) : bytes is
-    Clones.args_of(instance)
+  external view function argsOf(const instance : address) : bytes is
+    Clones.argsOf(instance)
 
   external function write(const data : bytes) is {
     defer create(SSTORE2.code(data)) then (pointer : address) {
@@ -51,10 +51,10 @@ contract Deployers is {
     };
   }
 
-  external function write_counterfactual(const data : bytes; const salt : bytes32) : address
+  external function writeCounterfactual(const data : bytes; const salt : bytes32) : address
     raises FailedDeployment
   is {
-    storage.pointer := SSTORE2.write_counterfactual(data, salt);
+    storage.pointer := SSTORE2.writeCounterfactual(data, salt);
   } with storage.pointer
 
   external view function read() : bytes is
@@ -63,11 +63,11 @@ contract Deployers is {
   external payable function deploy3(const code : bytes; const salt : bytes32) : address
     raises FailedDeployment
   is {
-    storage.last := Create3.deploy_deterministic(code, salt, uint(Evm.value()));
+    storage.last := Create3.deployDeterministic(code, salt, uint(Evm.value()));
   } with storage.last
 
   external view function predict3(const salt : bytes32) : address is
-    Create3.predict_here(salt)
+    Create3.predictHere(salt)
 
   external view function last() : address is
     storage.last

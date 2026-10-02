@@ -15,19 +15,19 @@ import "std/evm";
 
 error Unauthorized;
 
-(* One positional value: `Too_small(uint256)`, in the ABI as `TooSmall(uint256)` *)
-error Too_small of uint;
+(* One positional value: `TooSmall(uint256)`, in the ABI as `TooSmall(uint256)` *)
+error TooSmall of uint;
 
 (* Named fields: `InsufficientBalance(uint256 available, uint256 required)` *)
-error Insufficient_balance of record {
+error InsufficientBalance of record {
   available : uint;
   required : uint;
 }
 
 (* A named set of errors, for reuse in `raises`. *)
-errors withdraw_errors is
-  | Too_small
-  | Insufficient_balance
+errors withdrawErrors is
+  | TooSmall
+  | InsufficientBalance
 
 storage is record {
   owner : address;
@@ -35,18 +35,18 @@ storage is record {
 }
 
 (* An internal function's errors are inferred when `raises` is left off. *)
-view function require_owner() is {
+view function requireOwner() is {
   assert(Evm.sender() = storage.owner, Unauthorized);
 }
 
 (* An external function must declare every error it can raise. *)
 external function withdraw(const amount : uint)
-  raises withdraw_errors
+  raises withdrawErrors
 is {
-  assert(amount >= 100, Too_small(amount));
+  assert(amount >= 100, TooSmall(amount));
   const have : uint := storage.balances[Evm.sender()];
   if have < amount then {
-    fail Insufficient_balance { available = have; required = amount; };
+    fail InsufficientBalance { available = have; required = amount; };
   }
   storage.balances[Evm.sender()] := have - amount;
 }
@@ -54,15 +54,15 @@ is {
 external function reset(const who : address)
   raises Unauthorized
 is {
-  require_owner();
+  requireOwner();
   storage.balances[who] := 0;
 }
 ```
 
-Leave `Too_small` out of `withdraw_errors` and compilation fails:
+Leave `TooSmall` out of `withdrawErrors` and compilation fails:
 
 ```text
-external function `withdraw` may raise `Too_small`
+external function `withdraw` may raise `TooSmall`
 ```
 
 `lithe errors errors.lithe` prints every error's selector and which entrypoints raise it.

@@ -42,7 +42,7 @@ contract Reasons {
         balances[to] += amount;
     }
 
-    function set_limit(uint256 newLimit) external {
+    function setLimit(uint256 newLimit) external {
         if (msg.sender != owner) revert Denied(msg.sender, "not the owner");
         if (newLimit == 0) revert Failed("zero limit");
         if (newLimit > 1_000_000) revert Failed("limit too high");
@@ -55,7 +55,7 @@ contract Reasons {
         paused = on;
     }
 
-    function balance_of(address who) external view returns (uint256) {
+    function balanceOf(address who) external view returns (uint256) {
         if (who == address(0)) revert Failed("zero address");
         return balances[who];
     }

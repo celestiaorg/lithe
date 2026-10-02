@@ -5,7 +5,7 @@ pragma solidity ^0.8.24;
 contract Math {
     uint256 last;
 
-    function mul_div(uint256 a, uint256 b, uint256 c) external pure returns (uint256) {
+    function mulDiv(uint256 a, uint256 b, uint256 c) external pure returns (uint256) {
         return a * b / c;
     }
 

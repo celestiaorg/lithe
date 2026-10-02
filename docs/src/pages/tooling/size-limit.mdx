@@ -206,7 +206,7 @@ module RoleStore is {
 
   error Unauthorized;
 
-  view function only_minter() raises Unauthorized is {
+  view function onlyMinter() raises Unauthorized is {
     assert(roles.minters[Evm.sender()], Unauthorized);
   }
 
@@ -223,7 +223,7 @@ module Drop is {
   }
 
   external function mint(const to : address; const id : uint) raises Unauthorized is {
-    RoleStore.only_minter();
+    RoleStore.onlyMinter();
     drop.owners[id] := to;
   }
 }
@@ -243,13 +243,13 @@ contract Shop is {
   }
 
   external function pause() raises Unauthorized is {
-    RoleStore.only_minter();
+    RoleStore.onlyMinter();
     storage.paused := true;
   }
 }
 ```
 
-`deploy` and `pause` run `RoleStore` in the router, and `mint` runs the facet's copy of it, against the same storage. Marking `RoleStore` too would put its code in a facet of its own, and `pause` would then call `only_minter` across, paying a `delegatecall` each time. So the split follows where the code runs. Code that runs in a facet, and that contract code calls only through externals, goes in the delegated module. Code the contract calls itself goes in a module it uses unmarked.
+`deploy` and `pause` run `RoleStore` in the router, and `mint` runs the facet's copy of it, against the same storage. Marking `RoleStore` too would put its code in a facet of its own, and `pause` would then call `onlyMinter` across, paying a `delegatecall` each time. So the split follows where the code runs. Code that runs in a facet, and that contract code calls only through externals, goes in the delegated module. Code the contract calls itself goes in a module it uses unmarked.
 
 ## Over the limit
 
@@ -347,7 +347,7 @@ router  1,630 / 2,000
 
 facet ERC20  0x13F9822a430D5E4E70Af364A11350407Be3bBD81  2,217 / 2,000
   approve, name, symbol, decimals, totalSupply, balanceOf, allowance
-  called across: ERC20.init, ERC20.total_supply, ERC20.move, ERC20.mint, ERC20.burn, ERC20.spend_allowance
+  called across: ERC20.init, ERC20.totalSupply, ERC20.move, ERC20.mint, ERC20.burn, ERC20.spendAllowance
   (2 more externals this contract does not declare)
 
 facet ERC20Permit  0x04d7e8AfDE9737f054132c9eEAD1E05d275Fd0DA  739 / 2,000
@@ -358,7 +358,7 @@ That is the same token with `delegated` on its `ERC20` and `ERC20Permit` uses. U
 
 ## Deploying
 
-Each facet is deployed with `CREATE2` through the deterministic deployment proxy at `0x4e59b44847b379578588920cA78FbF26c0B4956C`, the same factory Foundry uses, with a zero salt. So a facet's address depends only on its code. The compiler knows every address in advance and builds them into the router. The router can only ever reach the exact code it was compiled against. Contract code reads a facet's address as a constant with `Evm.facet_address(M)`, for a view that reports it, or a registry that lists it.
+Each facet is deployed with `CREATE2` through the deterministic deployment proxy at `0x4e59b44847b379578588920cA78FbF26c0B4956C`, the same factory Foundry uses, with a zero salt. So a facet's address depends only on its code. The compiler knows every address in advance and builds them into the router. The router can only ever reach the exact code it was compiled against. Contract code reads a facet's address as a constant with `Evm.facetAddress(M)`, for a view that reports it, or a registry that lists it.
 
 For a contract with facets, `lithe compile` prints the deployment plan instead of bytecode, with a note on stderr:
 

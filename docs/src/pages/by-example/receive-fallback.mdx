@@ -23,7 +23,7 @@ event Unknown of record {
   data : bytes;
 }
 
-error Not_owner;
+error NotOwner;
 
 storage is record {
   owner : address;
@@ -45,9 +45,9 @@ fallback is {
 }
 
 external nonreentrant function withdraw(const amount : wei)
-  raises Not_owner
+  raises NotOwner
 is {
-  assert(Evm.sender() = storage.owner, Not_owner);
+  assert(Evm.sender() = storage.owner, NotOwner);
   defer Evm.transfer(storage.owner, amount);
 }
 
@@ -70,7 +70,7 @@ A `fallback` can pass a call on whole. `delegates to` runs the target's code on 
 
 import "std/evm";
 
-error Not_admin;
+error NotAdmin;
 
 storage proxy at "example.proxy" is record {
   implementation : address;
@@ -82,17 +82,17 @@ deploy(const implementation : address; const admin : address) is {
   proxy.admin := admin;
 }
 
-external function upgrade_proxy(const implementation : address)
-  raises Not_admin
+external function upgradeProxy(const implementation : address)
+  raises NotAdmin
 is {
-  assert(Evm.sender() = proxy.admin, Not_admin);
+  assert(Evm.sender() = proxy.admin, NotAdmin);
   proxy.implementation := implementation;
 }
 
 payable fallback delegates to proxy.implementation;
 ```
 
-- `upgrade_proxy` has a selector of its own, so the proxy runs it. Every other call goes to the implementation.
+- `upgradeProxy` has a selector of its own, so the proxy runs it. Every other call goes to the implementation.
 - The implementation's code writes the proxy's storage, so the proxy keeps its own fields in a named domain, where the implementation's default record never reaches.
 - `payable` lets the implementation's payable functions take ether through the proxy.
 - `fallback forwards to target;` calls the target instead, which runs on its own storage.

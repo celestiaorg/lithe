@@ -67,11 +67,11 @@ spec is {
 }
 ```
 
-An invariant describes one state, so it reads storage as code does: `storage.total`, `settings.fee_bps`, `Module.domain.x`.
+An invariant describes one state, so it reads storage as code does: `storage.total`, `settings.feeBps`, `Module.domain.x`.
 
 ## Function specs
 
-`spec for f is { ... }` describes one function: an entrypoint, a [dispatched route](/language/dispatch) such as `set_fee`, a guard, or an internal function. The block sees `f`'s parameters. A dispatched route's parameter is what its arm binds.
+`spec for f is { ... }` describes one function: an entrypoint, a [dispatched route](/language/dispatch) such as `setFee`, a guard, or an internal function. The block sees `f`'s parameters. A dispatched route's parameter is what its arm binds.
 
 A function spec talks about two states: before the call and after it. Every read of something the call can change says which one it means:
 
@@ -79,7 +79,7 @@ A function spec talks about two states: before the call and after it. Every read
 | --- | --- |
 | `old.storage.total` | storage before the call |
 | `new.storage.total` | storage once the call's first phase commits |
-| `old.Evm.balance(a)`, `new.Evm.balance(a)` | an account's balance, or its code with `Evm.code_size` and `Evm.code_hash` |
+| `old.Evm.balance(a)`, `new.Evm.balance(a)` | an account's balance, or its code with `Evm.codeSize` and `Evm.codeHash` |
 | `old.total_owed()`, `new.total_owed()` | a `view` function, run in that state |
 
 `old.` and `new.` apply to the whole path after them, keys included. Parameters, `Evm.sender()`, `Evm.value()`, block and transaction context, immutables, and `pure` functions are the same in both states, and are read bare. A bare read of state is an error:
@@ -128,14 +128,14 @@ A spec for a [dispatch guard](/language/dispatch#groups-and-guards) says when th
 ```lithe [owned.lithe]
 import "std/evm";
 
-error Not_owner;
+error NotOwner;
 
-type owner_action is
-  | Set_fee of uint
-  | Pause
+type OwnerAction is
+  | SetFee external setFee of uint
+  | Pause external pause
 
-type action is
-  | Owner of owner_action
+type Action is
+  | Owner of OwnerAction
 
 storage is record {
   owner : address;
@@ -143,35 +143,35 @@ storage is record {
   fee : uint;
 }
 
-function owner_main(const action : owner_action)
-  raises Not_owner
+function ownerMain(const action : OwnerAction)
+  raises NotOwner
 is {
-  assert(Evm.sender() = storage.owner, Not_owner);
+  assert(Evm.sender() = storage.owner, NotOwner);
 }
 with case action of {
-| Set_fee(fee) -> { storage.fee := fee; }
+| SetFee(fee) -> { storage.fee := fee; }
 | Pause -> { storage.paused := true; }
 }
 
-external function main(const action : action)
-  raises Not_owner
+external function main(const action : Action)
+  raises NotOwner
 is
   case action of {
-  | Owner(a) -> owner_main(a)
+  | Owner(a) -> ownerMain(a)
   }
 ```
 
 ```lithe [owned.spec.lithe]
-spec for owner_main is {
-  raises Not_owner when Evm.sender() <> old.storage.owner;
+spec for ownerMain is {
+  raises NotOwner when Evm.sender() <> old.storage.owner;
 }
 
-spec for set_fee is {
+spec for setFee is {
   ensures new.storage.fee = fee;
 }
 ```
 
-With the guard's clause, `spec for set_fee` says that `set_fee` reverts only when the sender is not the owner, and otherwise sets the fee. A case added to `owner_action` inherits the guard's spec as it inherits the guard.
+With the guard's clause, `spec for setFee` says that `setFee` reverts only when the sender is not the owner, and otherwise sets the fee. A case added to `OwnerAction` inherits the guard's spec as it inherits the guard.
 
 ## Modules
 
@@ -185,8 +185,8 @@ import "std/token/erc20";
 contract Token is {
   use ERC20 exposing IERC20;
 
-  hook ERC20.before_transfer is skip;
-  hook ERC20.after_transfer is skip;
+  hook ERC20.beforeTransfer is skip;
+  hook ERC20.afterTransfer is skip;
 
   deploy() is {
     ERC20.init("Token", "TKN");
@@ -196,14 +196,12 @@ contract Token is {
 
 ```lithe [token.spec.lithe]
 spec for module ERC20 is {
-  spec for function transfer is partial {
-    raises ERC20InsufficientBalance when old.erc20.balances[Evm.sender()] < value;
-    ensures new.erc20.total_supply = old.erc20.total_supply;
+  spec for move is partial {
+    raises ERC20InsufficientBalance when old.erc20.balances[from] < value;
+    ensures new.erc20.totalSupply = old.erc20.totalSupply;
   }
 }
 ```
-
-A module can have an internal function and an external with the same name, as `ERC20` has `transfer`. Name one of them with `spec for function f` or `spec for external f`.
 
 A file a contract imports can have a spec file too, beside it, with `spec for module M` blocks for its modules; the spec tools read it for each module the contract uses. The standard library's do: `ERC20`'s states that its balances add up to its supply and that the zero address holds nothing, and lists exactly when `transfer`, `approve`, and `transferFrom` revert; `ERC721`'s that each owned token counts once in its owner's balance and that only a token that exists has an approval. `lithe prove` proves them for each contract that uses the module, since the contract's own code can write the module's storage too. To prove a file of modules on its own, run `lithe prove` on it: `lithe prove std/token/erc20.lithe` proves the module as a contract that uses it and exposes all its external functions.
 
@@ -282,7 +280,7 @@ spec for withdraw
 
 ### What it models
 
-The prover models storage words, maps, records, checked arithmetic, and `forall` exactly, and runs internal calls, branches, and loops of up to 16 iterations. It does not model everything: strings, lists, and bit operations become values it knows only the type of, and a spec cannot use them. When a counterexample depends on one of those, the report says `not proved`, and names what it approximated. What it cannot check at all is `unknown`, with why: a deferred `Evm.delegate_call`, and a `fallback` that passes its call to other code.
+The prover models storage words, maps, records, checked arithmetic, and `forall` exactly, and runs internal calls, branches, and loops of up to 16 iterations. It does not model everything: strings, lists, and bit operations become values it knows only the type of, and a spec cannot use them. When a counterexample depends on one of those, the report says `not proved`, and names what it approximated. What it cannot check at all is `unknown`, with why: a deferred `Evm.delegateCall`, and a `fallback` that passes its call to other code.
 
 ### Loops
 
@@ -299,7 +297,7 @@ The prover proves that the invariant holds as the loop starts, with its counter 
 
 A `sum` or `count` is a running total the solver knows only in part: that it is at least any one value of its map, and any two at different keys. That is enough for a ledger, and when a proof fails, the prover checks that the counterexample's totals can be real sums before it reports `FAILED`. Beside a `forall` it cannot check that, so it reports `not proved`.
 
-The prover assumes no call comes from the zero address, which no one has the key to: `Evm.sender()` and `Evm.tx_origin()` are never zero.
+The prover assumes no call comes from the zero address, which no one has the key to: `Evm.sender()` and `Evm.txOrigin()` are never zero.
 
 The contract's ether counts every value its deferred calls send as gone when the phase commits, the least it can hold until the next phase. Write invariants about it as lower bounds, such as `Evm.balance(Evm.self()) >= storage.total`: ether can arrive without a call.
 
@@ -331,7 +329,7 @@ A checking build computes a spec's arithmetic as the code does, so a spec whose 
 
 `sum` and `count` range over every key, which only a spec can: a contract cannot enumerate a map. Inside a spec block, `old`, `new`, `sum`, `count`, and `forall` are these forms. Outside one, they are ordinary names.
 
-A spec cannot `query` another contract or read `Evm.gas_left`.
+A spec cannot `query` another contract or read `Evm.gasLeft`.
 
 ## `lithe specs`
 

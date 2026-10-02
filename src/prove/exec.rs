@@ -937,7 +937,7 @@ impl<'a> Exec<'a> {
                     return stop(
                         *line,
                         *col,
-                        "it defers `Evm.delegate_call`, which runs other code on this contract's storage",
+                        "it defers `Evm.delegateCall`, which runs other code on this contract's storage",
                     );
                 }
                 let sent = match expr {
@@ -2140,7 +2140,7 @@ impl<'a> Exec<'a> {
                 let bb = self.eval(st, &args[1], ctx)?;
                 let d = self.eval(st, &args[2], ctx)?;
                 let (Val::Int(a), Val::Int(bb), Val::Int(d)) = (a, bb, d) else {
-                    return self.approx_fresh(ty, "`Uint.mul_div` of values it does not model");
+                    return self.approx_fresh(ty, "`Uint.mulDiv` of values it does not model");
                 };
                 if ctx.mode == Mode::Code {
                     st.ok =

@@ -14,9 +14,9 @@ The price falls linearly from a start price to a floor. The first buyer to pay t
 import "std/address";
 import "std/evm";
 
-error Already_started;
+error AlreadyStarted;
 error Sold;
-error Too_low of record {
+error TooLow of record {
   paid : wei;
   price : wei;
 }
@@ -28,42 +28,42 @@ event Bought of record {
 
 storage is record {
   seller : address;
-  start_price : wei;
+  startPrice : wei;
   floor : wei;
-  started_at : timestamp;
+  startedAt : timestamp;
   duration : uint;
   sold : bool;
 }
 
-external function start(const start_price : wei; const floor : wei; const duration : uint)
-  raises Already_started
+external function start(const startPrice : wei; const floor : wei; const duration : uint)
+  raises AlreadyStarted
 is {
-  assert(storage.seller = Address.zero, Already_started);
+  assert(storage.seller = Address.zero, AlreadyStarted);
   storage.seller := Evm.sender();
-  storage.start_price := start_price;
+  storage.startPrice := startPrice;
   storage.floor := floor;
-  storage.started_at := Evm.block_timestamp();
+  storage.startedAt := Evm.blockTimestamp();
   storage.duration := duration;
 }
 
-view function current_price() : wei is {
-  const elapsed : uint := Evm.block_timestamp() - storage.started_at;
+view function currentPrice() : wei is {
+  const elapsed : uint := Evm.blockTimestamp() - storage.startedAt;
   var price : wei := storage.floor;
   if elapsed < storage.duration then {
-    const spread : uint := uint(storage.start_price - storage.floor);
-    price := storage.start_price - wei(spread * elapsed / storage.duration);
+    const spread : uint := uint(storage.startPrice - storage.floor);
+    price := storage.startPrice - wei(spread * elapsed / storage.duration);
   }
 } with price
 
 external view function price() : wei is
-  current_price()
+  currentPrice()
 
 external payable nonreentrant function buy()
-  raises Sold | Too_low
+  raises Sold | TooLow
 is {
   assert(not storage.sold, Sold);
-  const price : wei := current_price();
-  assert(Evm.value() >= price, Too_low { paid = Evm.value(); price = price; });
+  const price : wei := currentPrice();
+  assert(Evm.value() >= price, TooLow { paid = Evm.value(); price = price; });
   storage.sold := true;
   emit Bought { buyer = Evm.sender(); price = price; };
   defer Evm.transfer(storage.seller, price);

@@ -3,49 +3,49 @@
 
 import "std/evm";
 
-type swap_result is record {
-  amount_out : uint;
+type SwapResult is record {
+  amountOut : uint;
   fee : uint;
 }
 
 error Slippage of record {
-  amount_out : uint;
-  min_out : uint;
+  amountOut : uint;
+  minOut : uint;
 }
 
 event Swapped of record {
   indexed trader : address;
-  amount_in : uint;
-  amount_out : uint;
+  amountIn : uint;
+  amountOut : uint;
 }
 
 storage is record {
   volume : uint;
   fees : uint;
-  total_shares : uint;
+  totalShares : uint;
   shares : map(address, uint);
 }
 
-external function swap(const amount_in : uint; const min_out : uint) : swap_result
+external function swap(const amountIn : uint; const minOut : uint) : SwapResult
   raises Slippage
 is {
-  const fee : uint := amount_in * 3 / 1000;
-  const amount_out : uint := (amount_in - fee) * 2;
-  assert(amount_out >= min_out, Slippage { amount_out = amount_out; min_out = min_out; });
-  storage.volume := storage.volume + amount_in;
+  const fee : uint := amountIn * 3 / 1000;
+  const amountOut : uint := (amountIn - fee) * 2;
+  assert(amountOut >= minOut, Slippage { amountOut = amountOut; minOut = minOut; });
+  storage.volume := storage.volume + amountIn;
   storage.fees := storage.fees + fee;
-  emit Swapped { trader = Evm.sender(); amount_in = amount_in; amount_out = amount_out; };
-  const result : swap_result := { amount_out = amount_out; fee = fee; };
+  emit Swapped { trader = Evm.sender(); amountIn = amountIn; amountOut = amountOut; };
+  const result : SwapResult := { amountOut = amountOut; fee = fee; };
 } with result
 
 external function deposit(const amount : uint) : uint is {
   const minted : uint := amount * 10;
-  storage.total_shares := storage.total_shares + minted;
+  storage.totalShares := storage.totalShares + minted;
   storage.shares[Evm.sender()] := storage.shares[Evm.sender()] + minted;
 } with minted
 
 external function split(const shares : uint) : (uint, uint) is {
-  storage.total_shares := storage.total_shares - shares;
+  storage.totalShares := storage.totalShares - shares;
 } with (shares / 3, shares - shares / 3)
 
-external view function shares_of(const who : address) : uint is storage.shares[who]
+external view function sharesOf(const who : address) : uint is storage.shares[who]

@@ -22,14 +22,14 @@ error ERC2981InvalidTokenRoyaltyReceiver of record {
 }
 
 module ERC2981 is {
-  type royalty_info is record {
+  type RoyaltyInfo is record {
     receiver : address;
     royaltyFraction : uint96;
   }
 
   storage erc2981 at "openzeppelin.storage.ERC2981" is record {
-    defaultRoyaltyInfo : royalty_info;
-    tokenRoyaltyInfo : map(uint, royalty_info);
+    defaultRoyaltyInfo : RoyaltyInfo;
+    tokenRoyaltyInfo : map(uint, RoyaltyInfo);
   }
 
   external view function royaltyInfo(const tokenId : uint; const salePrice : uint) : (address, uint) is {
@@ -41,7 +41,7 @@ module ERC2981 is {
     }
   } with (receiver, salePrice * uint(fraction) / 10000)
 
-  function set_default_royalty(const receiver : address; const feeNumerator : uint96)
+  function setDefaultRoyalty(const receiver : address; const feeNumerator : uint96)
     raises ERC2981InvalidDefaultRoyalty | ERC2981InvalidDefaultRoyaltyReceiver
   is {
     assert(
@@ -52,11 +52,11 @@ module ERC2981 is {
     erc2981.defaultRoyaltyInfo := { receiver = receiver; royaltyFraction = feeNumerator; };
   }
 
-  function delete_default_royalty() is {
+  function deleteDefaultRoyalty() is {
     erc2981.defaultRoyaltyInfo := { receiver = Address.zero; royaltyFraction = 0; };
   }
 
-  function set_token_royalty(const tokenId : uint; const receiver : address; const feeNumerator : uint96)
+  function setTokenRoyalty(const tokenId : uint; const receiver : address; const feeNumerator : uint96)
     raises ERC2981InvalidTokenRoyalty | ERC2981InvalidTokenRoyaltyReceiver
   is {
     assert(
@@ -70,7 +70,7 @@ module ERC2981 is {
     erc2981.tokenRoyaltyInfo[tokenId] := { receiver = receiver; royaltyFraction = feeNumerator; };
   }
 
-  function reset_token_royalty(const tokenId : uint) is {
+  function resetTokenRoyalty(const tokenId : uint) is {
     erc2981.tokenRoyaltyInfo[tokenId] := { receiver = Address.zero; royaltyFraction = 0; };
   }
 }

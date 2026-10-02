@@ -23,7 +23,7 @@ module ERC20Capped is {
     capped.cap := cap;
   }
 
-  view function check_cap(const supply : uint)
+  view function checkCap(const supply : uint)
     raises ERC20ExceededCap
   is {
     const cap : uint := capped.cap;

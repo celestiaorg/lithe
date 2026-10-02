@@ -1,5 +1,5 @@
 (* Benchmark: loops over calldata, storage, and ranges, with effects inside them.
-   Mirrors loops.sol. `mark_all` carries a bound; the scenario stays under it. *)
+   Mirrors loops.sol. `markAll` carries a bound; the scenario stays under it. *)
 
 import "std/abi";
 import "std/crypto";
@@ -16,7 +16,7 @@ event Sent of record {
 storage is record {
   balances : map(address, uint);
   owners : list(address);
-  is_owner : map(address, bool);
+  isOwner : map(address, bool);
 }
 
 external pure function sum(const xs : list(uint)) : uint is {
@@ -37,9 +37,9 @@ external function join(const who : address) is {
   List.push(storage.owners, who);
 }
 
-external function mark_all() is {
+external function markAll() is {
   for who : address in storage.owners bound 8 do {
-    storage.is_owner[who] := true;
+    storage.isOwner[who] := true;
   }
 }
 
@@ -60,7 +60,7 @@ external pure function gcd(const a : uint; const b : uint) : uint is {
   }
 } with x
 
-external pure function hash_chain(const seed : bytes32; const n : uint) : bytes32 is {
+external pure function hashChain(const seed : bytes32; const n : uint) : bytes32 is {
   var h : bytes32 := seed;
   for _ : uint in 0 .. n do {
     h := Crypto.keccak256(Abi.encode(h));
@@ -77,8 +77,8 @@ is {
   }
 }
 
-external view function balance_of(const who : address) : uint is
+external view function balanceOf(const who : address) : uint is
   storage.balances[who]
 
-external view function is_owner(const who : address) : bool is
-  storage.is_owner[who]
+external view function isOwner(const who : address) : bool is
+  storage.isOwner[who]

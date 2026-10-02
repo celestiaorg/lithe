@@ -69,7 +69,7 @@ storage is record {
   operators : map(address, map(address, bool));
 }
 
-view function check_operator(const from : address)
+view function checkOperator(const from : address)
   raises NotOwnerNorApproved
 is {
   assert(Evm.sender() = from or storage.operators[from][Evm.sender()], NotOwnerNorApproved);
@@ -93,7 +93,7 @@ is {
 
 (* A contract receiver must answer with the hook's selector. One that reverts without a
    reason does not implement it; its own reason passes through unchanged. *)
-function check_received(
+function checkReceived(
   const from : address;
   const to : address;
   const id : uint;
@@ -102,7 +102,7 @@ function check_received(
 )
   raises TransferToNonERC1155ReceiverImplementer | forwarded
 is {
-  if Evm.code_size(to) > 0 then {
+  if Evm.codeSize(to) > 0 then {
     defer ERC1155Receiver(to).onERC1155Received(Evm.sender(), from, id, amount, data) then {
       | Ok(answer : bytes4) -> {
           assert(answer = Abi.selector(ERC1155Receiver.onERC1155Received), TransferToNonERC1155ReceiverImplementer);
@@ -117,7 +117,7 @@ is {
   }
 }
 
-function check_batch_received(
+function checkBatchReceived(
   const from : address;
   const to : address;
   const ids : list(uint);
@@ -126,7 +126,7 @@ function check_batch_received(
 )
   raises TransferToNonERC1155ReceiverImplementer | forwarded
 is {
-  if Evm.code_size(to) > 0 then {
+  if Evm.codeSize(to) > 0 then {
     defer ERC1155Receiver(to).onERC1155BatchReceived(Evm.sender(), from, ids, amounts, data) then {
       | Ok(answer : bytes4) -> {
           assert(
@@ -179,11 +179,11 @@ external function safeTransferFrom(
     | TransferToNonERC1155ReceiverImplementer | forwarded
 is {
   assert(to <> Address.zero, TransferToZeroAddress);
-  check_operator(from);
+  checkOperator(from);
   debit(from, id, amount);
   credit(to, id, amount);
   emit TransferSingle { operator = Evm.sender(); from = from; to = to; id = id; amount = amount; };
-  check_received(from, to, id, amount, data);
+  checkReceived(from, to, id, amount, data);
 }
 
 external function safeBatchTransferFrom(
@@ -198,13 +198,13 @@ external function safeBatchTransferFrom(
 is {
   assert(ids.length = amounts.length, ArrayLengthsMismatch);
   assert(to <> Address.zero, TransferToZeroAddress);
-  check_operator(from);
+  checkOperator(from);
   for (i, id) : (uint, uint) in ids do {
     debit(from, id, amounts[i]);
     credit(to, id, amounts[i]);
   }
   emit TransferBatch { operator = Evm.sender(); from = from; to = to; ids = ids; amounts = amounts; };
-  check_batch_received(from, to, ids, amounts, data);
+  checkBatchReceived(from, to, ids, amounts, data);
 }
 
 external function mint(const to : address; const id : uint; const amount : uint; const data : bytes)
@@ -213,7 +213,7 @@ is {
   assert(to <> Address.zero, TransferToZeroAddress);
   credit(to, id, amount);
   emit TransferSingle { operator = Evm.sender(); from = Address.zero; to = to; id = id; amount = amount; };
-  check_received(Address.zero, to, id, amount, data);
+  checkReceived(Address.zero, to, id, amount, data);
 }
 
 external function mintBatch(const to : address; const ids : list(uint); const amounts : list(uint); const data : bytes)
@@ -226,13 +226,13 @@ is {
     credit(to, id, amounts[i]);
   }
   emit TransferBatch { operator = Evm.sender(); from = Address.zero; to = to; ids = ids; amounts = amounts; };
-  check_batch_received(Address.zero, to, ids, amounts, data);
+  checkBatchReceived(Address.zero, to, ids, amounts, data);
 }
 
 external function burn(const from : address; const id : uint; const amount : uint)
   raises NotOwnerNorApproved | InsufficientBalance
 is {
-  check_operator(from);
+  checkOperator(from);
   debit(from, id, amount);
   emit TransferSingle { operator = Evm.sender(); from = from; to = Address.zero; id = id; amount = amount; };
 }
@@ -241,7 +241,7 @@ external function burnBatch(const from : address; const ids : list(uint); const 
   raises ArrayLengthsMismatch | NotOwnerNorApproved | InsufficientBalance
 is {
   assert(ids.length = amounts.length, ArrayLengthsMismatch);
-  check_operator(from);
+  checkOperator(from);
   for (i, id) : (uint, uint) in ids do {
     debit(from, id, amounts[i]);
   }

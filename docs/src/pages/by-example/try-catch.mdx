@@ -15,19 +15,19 @@ interface Oracle is {
 }
 
 interface Hook is {
-  function on_payout(amount : uint) : bool;
+  function onPayout(amount : uint) : bool;
 }
 
-event Payout_failed of record {
+event PayoutFailed of record {
   indexed to : address;
   amount : wei;
 }
 
 storage is record {
   oracle : Oracle;
-  last_good_price : uint;
+  lastGoodPrice : uint;
   hook : Hook;
-  hook_failures : uint;
+  hookFailures : uint;
   unpaid : map(address, wei);
 }
 
@@ -35,20 +35,20 @@ storage is record {
 external function refresh(const asset : address) is {
   const price : uint := case query storage.oracle.price(asset) of {
   | Ok(p) -> p
-  | Error(_) -> storage.last_good_price
+  | Error(_) -> storage.lastGoodPrice
   };
-  storage.last_good_price := price;
+  storage.lastGoodPrice := price;
 }
 
 (* A deferred call's outcome arrives in its continuation. `Error` binds the raw
    revert data. *)
 external nonreentrant function notify(const amount : uint) is {
-  defer storage.hook.on_payout(amount) then {
+  defer storage.hook.onPayout(amount) then {
     | Ok(accepted : bool) -> {
         skip
       }
     | Error(reason : bytes) -> {
-        storage.hook_failures := storage.hook_failures + 1;
+        storage.hookFailures := storage.hookFailures + 1;
       }
   };
 }
@@ -60,7 +60,7 @@ external payable nonreentrant function pay(const to : address) is {
     | Ok -> { skip }
     | Error(_) -> {
         storage.unpaid[to] := storage.unpaid[to] + Evm.value();
-        emit Payout_failed { to = to; amount = Evm.value(); };
+        emit PayoutFailed { to = to; amount = Evm.value(); };
       }
   };
 }

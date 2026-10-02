@@ -1,0 +1,5 @@
+error Denied;
+
+function b() raises Denied is {
+  fail Denied;
+}

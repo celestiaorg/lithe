@@ -24,7 +24,7 @@ contract Book {
         placed_ += os.length;
     }
 
-    function note_of(uint256 id) external view returns (string memory) {
+    function noteOf(uint256 id) external view returns (string memory) {
         return notes_[id];
     }
 

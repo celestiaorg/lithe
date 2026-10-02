@@ -1,4 +1,4 @@
-type basis_points is uint16;
+type BasisPoints is uint16;
 
-view function apply(const _ : basis_points; const amount : uint) : uint is
+view function apply(const _ : BasisPoints; const amount : uint) : uint is
   amount

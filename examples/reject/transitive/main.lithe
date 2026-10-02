@@ -5,6 +5,6 @@ import "./a";
 storage is record { n : uint; }
 
 external function go() is {
-  const x : amount := doubled();
+  const x : Amount := doubled();
   storage.n := uint(x);
 }

@@ -8,7 +8,7 @@ contract Names {
     error TooLong(string name, uint256 limit);
     error NotOwner(address caller, string name);
 
-    event Renamed(address indexed who, string old_name, string new_name);
+    event Renamed(address indexed who, string oldName, string newName);
 
     address immutable owner;
     string _name;
@@ -44,7 +44,7 @@ contract Names {
         return string.concat(prefix, " ", _name);
     }
 
-    function require_name(string calldata candidate) external view returns (bool) {
+    function requireName(string calldata candidate) external view returns (bool) {
         if (keccak256(bytes(candidate)) != keccak256(bytes(_name))) revert NotOwner(msg.sender, _name);
         return true;
     }

@@ -1070,7 +1070,7 @@ mod tests {
         );
         let variant = reply(8);
         assert!(
-            variant.contains("variant of `owner_action`") && variant.contains("`reset()`"),
+            variant.contains("variant of `OwnerAction`") && variant.contains("`reset()`"),
             "{variant}"
         );
     }
@@ -1102,7 +1102,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("lithe-lsp-delete-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("main.lithe");
-        let text = "type pos is record { x : uint; y : uint; }\nstorage is record { m : map(uint, pos); }\nexternal function f(const k : uint) is {\n  delete storage.m[k].x;\n}\n";
+        let text = "type Pos is record { x : uint; y : uint; }\nstorage is record { m : map(uint, Pos); }\nexternal function f(const k : uint) is {\n  delete storage.m[k].x;\n}\n";
         std::fs::write(&path, text).unwrap();
         let index = lithe::analyze(&path, text).index.expect("index");
         let named = |line: u32, col: u32| {
@@ -1212,7 +1212,7 @@ mod tests {
         let members = reply(4);
         assert!(
             members.contains(r#""label":"sender""#)
-                && members.contains(r#""label":"block_number""#),
+                && members.contains(r#""label":"blockNumber""#),
             "{members}"
         );
         let fix = reply(6);
@@ -1262,7 +1262,7 @@ mod tests {
         );
         assert!(reply(2).contains("**Exposed as**"), "{}", reply(2));
         assert!(
-            reply(3).contains("storage points : list(checkpoint)"),
+            reply(3).contains("storage points : list(Checkpoint)"),
             "{}",
             reply(3)
         );

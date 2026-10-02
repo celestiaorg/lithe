@@ -44,7 +44,7 @@ external function fill() is {
   storage.blob := 0x616263;
   storage.name := "Lithe";
   storage.price := 3gwei;
-  storage.deadline := Evm.block_timestamp() + 1days;
+  storage.deadline := Evm.blockTimestamp() + 1days;
 }
 
 (* Bounds come from the type the context expects. *)

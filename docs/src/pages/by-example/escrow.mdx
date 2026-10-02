@@ -13,10 +13,10 @@ The buyer funds the escrow. The arbiter either releases the funds to the seller 
 
 import "std/evm";
 
-error Not_buyer;
-error Not_arbiter;
-error Already_funded;
-error Not_funded;
+error NotBuyer;
+error NotArbiter;
+error AlreadyFunded;
+error NotFunded;
 
 event Released of record {
   amount : wei;
@@ -35,9 +35,9 @@ storage is record {
 }
 
 external payable function fund(const seller : address; const arbiter : address)
-  raises Already_funded
+  raises AlreadyFunded
 is {
-  assert(not storage.funded, Already_funded);
+  assert(not storage.funded, AlreadyFunded);
   storage.buyer := Evm.sender();
   storage.seller := seller;
   storage.arbiter := arbiter;
@@ -45,15 +45,15 @@ is {
   storage.funded := true;
 }
 
-view function settle_check() raises Not_arbiter | Not_funded is {
-  assert(Evm.sender() = storage.arbiter, Not_arbiter);
-  assert(storage.funded, Not_funded);
+view function settleCheck() raises NotArbiter | NotFunded is {
+  assert(Evm.sender() = storage.arbiter, NotArbiter);
+  assert(storage.funded, NotFunded);
 }
 
 external nonreentrant function release()
-  raises Not_arbiter | Not_funded
+  raises NotArbiter | NotFunded
 is {
-  settle_check();
+  settleCheck();
   const amount : wei := storage.amount;
   storage.funded := false;
   storage.amount := 0wei;
@@ -62,9 +62,9 @@ is {
 }
 
 external nonreentrant function refund()
-  raises Not_arbiter | Not_funded
+  raises NotArbiter | NotFunded
 is {
-  settle_check();
+  settleCheck();
   const amount : wei := storage.amount;
   storage.funded := false;
   storage.amount := 0wei;

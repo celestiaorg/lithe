@@ -24,7 +24,7 @@ import { Card, Cards, HomePage } from "vocs";
 ```lithe
 import "std/evm";
 
-error Insufficient_balance of record {
+error InsufficientBalance of record {
   available : wei;
   required : wei;
 }
@@ -43,12 +43,12 @@ external payable function deposit() is {
 }
 
 external function withdraw(const amount : wei)
-  raises Insufficient_balance
+  raises InsufficientBalance
 is {
   const balance : wei := storage.balances[Evm.sender()];
   assert(
     balance >= amount,
-    Insufficient_balance { available = balance; required = amount; }
+    InsufficientBalance { available = balance; required = amount; }
   );
   storage.balances[Evm.sender()] := balance - amount;
   emit Withdrawn { account = Evm.sender(); amount = amount; };

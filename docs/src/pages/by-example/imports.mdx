@@ -15,11 +15,11 @@ import "./lib/math";
 import "./lib/fees" as Fees;
 
 storage is record {
-  fee : Fees.basis_points;
+  fee : Fees.BasisPoints;
   cap : uint;
 }
 
-external function configure(const fee : Fees.basis_points; const cap : uint) is {
+external function configure(const fee : Fees.BasisPoints; const cap : uint) is {
   storage.fee := fee;
   storage.cap := cap;
 }
@@ -36,9 +36,9 @@ pure function min(const a : uint; const b : uint) : uint is {
 ```
 
 ```lithe [lib/fees.lithe]
-type basis_points is uint16;
+type BasisPoints is uint16;
 
-pure function apply(const fee : basis_points; const amount : uint) : uint is
+pure function apply(const fee : BasisPoints; const amount : uint) : uint is
   amount * uint(uint16(fee)) / 10_000
 
 (* `private` stays inside this file. *)

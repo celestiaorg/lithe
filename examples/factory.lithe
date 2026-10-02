@@ -18,14 +18,14 @@ contract Factory is {
 
   (* CREATE2: the address depends only on this factory, the salt, and Vault's creation
      code, which includes the arguments. *)
-  external function open_at(const salt : bytes32) is {
+  external function openAt(const salt : bytes32) is {
     defer create Vault(Evm.sender()) with salt = salt then (vault : address) {
       storage.vaults[Evm.sender()] := vault;
     };
   }
 
   (* Funds the new vault; a failed creation is counted instead of reverting. *)
-  external payable function open_funded() is {
+  external payable function openFunded() is {
     defer create Vault(Evm.sender()) with value = uint(Evm.value()) then {
       | Ok(vault : address) -> {
           storage.vaults[Evm.sender()] := vault;
@@ -37,14 +37,14 @@ contract Factory is {
   }
 
   (* Both options together: a funded vault at a salted address. *)
-  external payable function open_funded_at(const salt : bytes32) is {
+  external payable function openFundedAt(const salt : bytes32) is {
     defer create Vault(Evm.sender()) with { value = uint(Evm.value()); salt = salt; }
       then (vault : address) {
         storage.vaults[Evm.sender()] := vault;
       };
   }
 
-  external view function vault_of(const who : address) : address is
+  external view function vaultOf(const who : address) : address is
     storage.vaults[who]
 }
 

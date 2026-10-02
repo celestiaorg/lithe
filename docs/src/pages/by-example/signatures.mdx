@@ -5,11 +5,11 @@ description: "ecrecover with the EIP-191 prefix and replay protection."
 
 # Verifying signatures
 
-Recover the signer of an `eth_sign` signature and act on it once. The signed message includes the contract's address and a nonce, so a signature can't be replayed here or against another contract.
+Recover the signer of an `ethSign` signature and act on it once. The signed message includes the contract's address and a nonce, so a signature can't be replayed here or against another contract.
 
 ```lithe [signatures.lithe]
 (* Verify an off-chain signature, then act on it once. The signer signs
-   keccak256(abi.encode(contract, to, amount, nonce)) with `eth_sign`, which adds the
+   keccak256(abi.encode(contract, to, amount, nonce)) with `ethSign`, which adds the
    EIP-191 prefix "\x19Ethereum Signed Message:\n32". *)
 
 import "std/abi";
@@ -17,8 +17,8 @@ import "std/address";
 import "std/crypto";
 import "std/evm";
 
-error Invalid_signature;
-error Nonce_used of uint;
+error InvalidSignature;
+error NonceUsed of uint;
 
 storage is record {
   signer : address;
@@ -30,12 +30,12 @@ external function init(const signer : address) is {
   storage.signer := signer;
 }
 
-view function message_hash(const to : address; const amount : uint; const nonce : uint) : bytes32 is
+view function messageHash(const to : address; const amount : uint; const nonce : uint) : bytes32 is
   Crypto.keccak256(Abi.encode(Evm.self(), to, amount, nonce))
 
-pure function eth_signed(const hash : bytes32) : bytes32 is {
+pure function ethSigned(const hash : bytes32) : bytes32 is {
   const prefix : bytes := "\x19Ethereum Signed Message:\n32";
-} with Crypto.keccak256(Abi.encode_packed(prefix, hash))
+} with Crypto.keccak256(Abi.encodePacked(prefix, hash))
 
 external function claim(
   const to : address;
@@ -45,12 +45,12 @@ external function claim(
   const r : bytes32;
   const s : bytes32
 )
-  raises Invalid_signature | Nonce_used
+  raises InvalidSignature | NonceUsed
 is {
-  assert(not storage.used[nonce], Nonce_used(nonce));
-  const digest : bytes32 := eth_signed(message_hash(to, amount, nonce));
+  assert(not storage.used[nonce], NonceUsed(nonce));
+  const digest : bytes32 := ethSigned(messageHash(to, amount, nonce));
   const recovered : address := Crypto.ecrecover(digest, v, r, s);
-  assert(recovered <> Address.zero and recovered = storage.signer, Invalid_signature);
+  assert(recovered <> Address.zero and recovered = storage.signer, InvalidSignature);
   storage.used[nonce] := true;
   storage.credited[to] := storage.credited[to] + amount;
 }

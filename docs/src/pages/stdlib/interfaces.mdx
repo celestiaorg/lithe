@@ -11,17 +11,17 @@ description: "Interface declarations for common ERC standards: for typed queries
 import "std/evm";
 import "std/interfaces/erc20";
 
-error Too_little of uint;
+error TooLittle of uint;
 
 storage is record {
   token : IERC20;
 }
 
 external function pay(const to : address; const amount : uint)
-  raises Too_little
+  raises TooLittle
 is {
   const balance : uint := query storage.token.balanceOf(Evm.self());
-  assert(balance >= amount, Too_little(balance));
+  assert(balance >= amount, TooLittle(balance));
   defer storage.token.transfer(to, amount);
 }
 ```
@@ -37,7 +37,7 @@ is {
 | `std/interfaces/erc2981.lithe` | `IERC2981` |
 | `std/interfaces/erc3156.lithe` | `IERC3156FlashLender`, `IERC3156FlashBorrower` |
 | `std/interfaces/erc5805.lithe` | `IERC6372`, `IVotes` |
-| `std/interfaces/erc5267.lithe` | `IERC5267`, and its result type `eip712_domain` |
+| `std/interfaces/erc5267.lithe` | `IERC5267`, and its result type `EIP712Domain` |
 | `std/interfaces/erc4626.lithe` | `IERC4626` |
 | `std/interfaces/erc7821.lithe` | `IERC7821` |
 

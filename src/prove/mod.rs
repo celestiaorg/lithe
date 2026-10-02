@@ -581,7 +581,7 @@ pub(crate) fn bind_name(checked: &Checked, route: &crate::route::Route) -> Strin
             Some(Expr::Case { arms, .. }) => arms.iter().find(|arm| {
                 arm.ctors
                     .iter()
-                    .any(|c| crate::route::abi_name(c) == route.name)
+                    .any(|c| route.case.as_ref() == Some(c))
             }),
             _ => None,
         });

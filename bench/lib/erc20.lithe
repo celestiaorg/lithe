@@ -68,14 +68,14 @@ module ERC20 is {
     erc20.symbol := s;
   }
 
-  hook before_transfer(const from : address; const to : address; const value : uint);
-  hook after_transfer(const from : address; const to : address; const value : uint);
+  hook beforeTransfer(const from : address; const to : address; const value : uint);
+  hook afterTransfer(const from : address; const to : address; const value : uint);
 
   (* Moves, mints (`from` is zero), or burns (`to` is zero), between the contract's hooks. *)
   function update(const from : address; const to : address; const value : uint)
     raises ERC20InsufficientBalance
   is {
-    before_transfer(from, to, value);
+    beforeTransfer(from, to, value);
     if from = Address.zero then {
       erc20.totalSupply := erc20.totalSupply + value;
     } else {
@@ -100,10 +100,10 @@ module ERC20 is {
       to = to;
       value = value;
     };
-    after_transfer(from, to, value);
+    afterTransfer(from, to, value);
   }
 
-  view function check_transfer(const from : address; const to : address)
+  view function checkTransfer(const from : address; const to : address)
     raises ERC20InvalidSender | ERC20InvalidReceiver
   is {
     assert(
@@ -116,7 +116,7 @@ module ERC20 is {
     );
   }
 
-  function approve_as(
+  function approveAs(
     const owner : address;
     const spender : address;
     const value : uint;
@@ -143,7 +143,7 @@ module ERC20 is {
   }
 
   (* An unlimited allowance is never spent down. *)
-  function spend_allowance(const owner : address; const spender : address; const value : uint)
+  function spendAllowance(const owner : address; const spender : address; const value : uint)
     raises ERC20InsufficientAllowance | ERC20InvalidApprover | ERC20InvalidSpender
   is {
     const current : uint := erc20.allowances[owner][spender];
@@ -156,7 +156,7 @@ module ERC20 is {
           needed = value;
         }
       );
-      approve_as(owner, spender, current - value, false);
+      approveAs(owner, spender, current - value, false);
     }
   }
 }

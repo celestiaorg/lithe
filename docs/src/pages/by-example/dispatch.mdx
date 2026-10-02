@@ -9,38 +9,38 @@ Group actions by role, attach one guard per group, and let the compiler flatten 
 
 ```lithe [dispatch.lithe]
 (* A variant parameter with nested groups becomes a flat ABI. This contract exposes
-   `mint(address,uint256)`, `set_minter(address)`, `transfer(address,uint256)`, and
+   `mint(address,uint256)`, `setMinter(address)`, `transfer(address,uint256)`, and
    `burn(uint256)`. Each carries the guards on its path through the tree. *)
 
 import "std/evm";
 
-error Not_admin;
-error Not_minter;
+error NotAdmin;
+error NotMinter;
 
-type mint_params is record {
+type MintParams is record {
   to : address;
   amount : uint;
 }
 
-type transfer_params is record {
+type TransferParams is record {
   to : address;
   amount : uint;
 }
 
-type admin_action is
-  | Set_minter of address
+type AdminAction is
+  | SetMinter external setMinter of address
 
-type minter_action is
-  | Mint of mint_params
+type MinterAction is
+  | Mint external mint of MintParams
 
-type holder_action is
-  | Transfer of transfer_params
-  | Burn of uint
+type HolderAction is
+  | Transfer external transfer of TransferParams
+  | Burn external burn of uint
 
-type action is
-  | Admin of admin_action
-  | Minter of minter_action
-  | Holder of holder_action
+type Action is
+  | Admin of AdminAction
+  | Minter of MinterAction
+  | Holder of HolderAction
 
 storage is record {
   admin : address;
@@ -48,25 +48,25 @@ storage is record {
   balances : map(address, uint);
 }
 
-function admin_main(const action : admin_action)
-  raises Not_admin
+function adminMain(const action : AdminAction)
+  raises NotAdmin
 is {
-  assert(Evm.sender() = storage.admin, Not_admin);
+  assert(Evm.sender() = storage.admin, NotAdmin);
 }
 with case action of {
-| Set_minter(who) -> { storage.minter := who; }
+| SetMinter(who) -> { storage.minter := who; }
 }
 
-function minter_main(const action : minter_action)
-  raises Not_minter
+function minterMain(const action : MinterAction)
+  raises NotMinter
 is {
-  assert(Evm.sender() = storage.minter, Not_minter);
+  assert(Evm.sender() = storage.minter, NotMinter);
 }
 with case action of {
 | Mint(p) -> { storage.balances[p.to] := storage.balances[p.to] + p.amount; }
 }
 
-function holder_main(const action : holder_action) is
+function holderMain(const action : HolderAction) is
   case action of {
   | Transfer(p) -> {
       storage.balances[Evm.sender()] := storage.balances[Evm.sender()] - p.amount;
@@ -77,13 +77,13 @@ function holder_main(const action : holder_action) is
     }
   }
 
-external function main(const action : action)
-  raises Not_admin | Not_minter
+external function main(const action : Action)
+  raises NotAdmin | NotMinter
 is
   case action of {
-  | Admin(a) -> admin_main(a)
-  | Minter(a) -> minter_main(a)
-  | Holder(a) -> holder_main(a)
+  | Admin(a) -> adminMain(a)
+  | Minter(a) -> minterMain(a)
+  | Holder(a) -> holderMain(a)
   }
 
 external function init() is {
@@ -91,12 +91,14 @@ external function init() is {
 }
 ```
 
+Each leaf case names its ABI function with `external`: `| Mint external mint of MintParams` is `mint(address,uint256)`. A case without one is exposed as written, so `| Mint of MintParams` alone would be `Mint(address,uint256)`. The group cases, `Admin`, `Minter`, and `Holder`, are never entrypoints, so they take no name.
+
 `lithe abi-tree dispatch.lithe` shows each entrypoint's path and guards:
 
 ```text
 mint
   path:
-    main -> minter_main -> mint
+    main -> minterMain -> mint
 
   calls:
     none

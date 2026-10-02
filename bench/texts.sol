@@ -19,7 +19,7 @@ contract Texts {
         saved_.push(x);
     }
 
-    function set_at(uint256 i, bytes calldata x) external {
+    function setAt(uint256 i, bytes calldata x) external {
         saved_[i] = x;
     }
 
@@ -27,7 +27,7 @@ contract Texts {
         return saved_;
     }
 
-    function saved_at(uint256 i) external view returns (bytes memory) {
+    function savedAt(uint256 i) external view returns (bytes memory) {
         return saved_[i];
     }
 
@@ -37,7 +37,7 @@ contract Texts {
         }
     }
 
-    function set_names(string[] memory xs) external {
+    function setNames(string[] memory xs) external {
         names_ = xs;
         emit Named(msg.sender, xs);
     }
@@ -50,7 +50,7 @@ contract Texts {
         labels_[k] = v;
     }
 
-    function label_of(uint256 k) external view returns (string memory) {
+    function labelOf(uint256 k) external view returns (string memory) {
         return labels_[k];
     }
 
@@ -58,7 +58,7 @@ contract Texts {
         return xs[0];
     }
 
-    function concat_all(bytes[] calldata xs) external pure returns (bytes memory out) {
+    function concatAll(bytes[] calldata xs) external pure returns (bytes memory out) {
         for (uint256 i = 0; i < xs.length; i++) {
             out = bytes.concat(out, xs[i]);
         }
@@ -90,35 +90,35 @@ contract Texts {
         return abi.decode(data, (bytes[]));
     }
 
-    function small_of(bytes calldata data) external pure returns (uint8) {
+    function smallOf(bytes calldata data) external pure returns (uint8) {
         return abi.decode(data, (uint8));
     }
 
-    function text_of(bytes calldata data) external pure returns (string memory) {
+    function textOf(bytes calldata data) external pure returns (string memory) {
         return abi.decode(data, (string));
     }
 
-    function addr_mem(bytes memory data) external pure returns (address) {
+    function addrMem(bytes memory data) external pure returns (address) {
         return abi.decode(data, (address));
     }
 
-    function text_mem(bytes memory data) external pure returns (string memory) {
+    function textMem(bytes memory data) external pure returns (string memory) {
         return abi.decode(data, (string));
     }
 
-    function names_mem(bytes memory data) external pure returns (string[] memory) {
+    function namesMem(bytes memory data) external pure returns (string[] memory) {
         return abi.decode(data, (string[]));
     }
 
-    function same_text(string calldata a, bytes calldata data) external pure returns (bool) {
+    function sameText(string calldata a, bytes calldata data) external pure returns (bool) {
         return keccak256(bytes(abi.decode(data, (string)))) == keccak256(bytes(a));
     }
 
-    function empty_text(bytes calldata data) external pure returns (bool) {
+    function emptyText(bytes calldata data) external pure returns (bool) {
         return bytes(abi.decode(data, (string))).length == 0;
     }
 
-    function keep_text(uint256 k, bytes calldata data) external {
+    function keepText(uint256 k, bytes calldata data) external {
         labels_[k] = abi.decode(data, (string));
         note_ = abi.decode(data, (string));
     }
@@ -127,7 +127,7 @@ contract Texts {
         return note_;
     }
 
-    function selector_only() external pure returns (bytes memory) {
+    function selectorOnly() external pure returns (bytes memory) {
         return abi.encodeWithSelector(0x12345678);
     }
 }

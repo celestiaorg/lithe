@@ -1,22 +1,22 @@
 (* Benchmark: another contract reached only through raw calls. The calldata is built with
-   `Abi.encode_call`, the answer decoded from raw return data with `Abi.decode`, and a
+   `Abi.encodeCall`, the answer decoded from raw return data with `Abi.decode`, and a
    refusal's payload read from raw revert data. Mirrors dialer.sol; calls book. *)
 
 import "std/abi";
 import "std/bytes";
 import "std/evm";
 
-type order is record {
+type Order is record {
   id : uint;
   note : string;
   legs : list(uint);
 }
 
-type ids is list(uint);
+type Ids is list(uint);
 
 interface Book is {
-  function place(os : list(order)) : list(uint);
-  view function note_of(id : uint) : string;
+  function place(os : list(Order)) : list(uint);
+  view function noteOf(id : uint) : string;
 }
 
 storage is record {
@@ -26,10 +26,10 @@ storage is record {
 
 (* The answer's ids are kept; a `Rejected(id)` refusal keeps its id, which follows the
    four bytes of its selector. Any other failure passes on unchanged. *)
-external nonreentrant function place(const book : address; const os : list(order)) raises forwarded is {
-  defer Evm.call(book, Abi.encode_call(Book.place, os)) then {
+external nonreentrant function place(const book : address; const os : list(Order)) raises forwarded is {
+  defer Evm.call(book, Abi.encodeCall(Book.place, os)) then {
     | Ok(answer : bytes) -> {
-        storage.ids := Abi.decode(answer, ids);
+        storage.ids := Abi.decode(answer, Ids);
       }
     | Error(reason : bytes) -> {
         (* `Rejected(uint256)`'s selector is 0x94064f91. *)
@@ -43,7 +43,7 @@ external nonreentrant function place(const book : address; const os : list(order
 
 (* A read through `STATICCALL`, with the calldata built by hand and the string decoded. *)
 external view function note(const book : address; const id : uint) : string is
-  Abi.decode(query Evm.static_call(book, Abi.encode_with_signature("note_of(uint256)", id)), string)
+  Abi.decode(query Evm.staticCall(book, Abi.encodeWithSignature("noteOf(uint256)", id)), string)
 
 external view function ids() : list(uint) is
   storage.ids

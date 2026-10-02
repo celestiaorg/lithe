@@ -3,8 +3,8 @@
 
 import "std/evm";
 
-error Already_processing;
-error Not_settling;
+error AlreadyProcessing;
+error NotSettling;
 
 module Settlement is {
   transient storage execution is record {
@@ -43,9 +43,9 @@ storage is record {
 use Settlement;
 
 external function process(const me : Me; const amount : uint)
-  raises Already_processing
+  raises AlreadyProcessing
 is {
-  assert(not scratch.processing, Already_processing);
+  assert(not scratch.processing, AlreadyProcessing);
   scratch.processing := true;
   scratch.pending := amount;
   scratch.touched[Evm.sender()] := scratch.touched[Evm.sender()] + amount;
@@ -57,9 +57,9 @@ is {
 
 (* Called back during `process`'s deferred call, it sees that transaction's scratch. *)
 external function confirm()
-  raises Not_settling
+  raises NotSettling
 is {
-  assert(Settlement.execution.active, Not_settling);
+  assert(Settlement.execution.active, NotSettling);
   storage.confirmed := storage.confirmed + scratch.pending;
 }
 

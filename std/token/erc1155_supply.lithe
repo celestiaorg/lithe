@@ -1,13 +1,13 @@
 (* Supply tracking for ERC-1155, like OpenZeppelin's `ERC1155Supply`: each id's total, and
-   the total of every id. Mints and burns change them, through `ERC1155`'s `after_transfer`
+   the total of every id. Mints and burns change them, through `ERC1155`'s `afterTransfer`
    hook, which the contract points here, or calls this from its own body with what else
    it runs after a balance change:
 
      use ERC1155 exposing IERC1155, IERC1155MetadataURI;
      use ERC1155Supply exposing IERC1155Supply;
 
-     hook ERC1155.before_transfer is skip;
-     hook ERC1155.after_transfer is ERC1155Supply.after_transfer; *)
+     hook ERC1155.beforeTransfer is skip;
+     hook ERC1155.afterTransfer is ERC1155Supply.afterTransfer; *)
 
 import "std/address";
 import "std/token/erc1155";
@@ -16,22 +16,16 @@ import "std/interfaces/erc1155";
 module ERC1155Supply is {
   requires ERC1155;
 
-  storage erc1155_supply at "lithe.std.erc1155_supply" is record {
-    total_supply : map(uint, uint);
-    total_supply_all : uint;
+  storage erc1155Supply at "lithe.std.erc1155_supply" is record {
+    totalSupply : map(uint, uint);
+    totalSupplyAll : uint;
   }
 
-  view function total_supply(const id : uint) : uint is
-    erc1155_supply.total_supply[id]
-
-  view function total_supply_all() : uint is
-    erc1155_supply.total_supply_all
-
-  view function exists(const id : uint) : bool is
-    erc1155_supply.total_supply[id] > 0
+  view function totalSupplyAll() : uint is
+    erc1155Supply.totalSupplyAll
 
   (* After `ERC1155` changes balances: a mint adds to the supplies, a burn takes away. *)
-  function after_transfer(
+  function afterTransfer(
     const from : address;
     const to : address;
     const ids : list(uint);
@@ -40,29 +34,29 @@ module ERC1155Supply is {
     if from = Address.zero then {
       var minted : uint := 0;
       for (i, id) : (uint, uint) in ids do {
-        erc1155_supply.total_supply[id] := erc1155_supply.total_supply[id] + values[i];
+        erc1155Supply.totalSupply[id] := erc1155Supply.totalSupply[id] + values[i];
         minted := minted + values[i];
       }
-      erc1155_supply.total_supply_all := erc1155_supply.total_supply_all + minted;
+      erc1155Supply.totalSupplyAll := erc1155Supply.totalSupplyAll + minted;
     }
     if to = Address.zero then {
       var burned : uint := 0;
       for (i, id) : (uint, uint) in ids do {
-        erc1155_supply.total_supply[id] := erc1155_supply.total_supply[id] - values[i];
+        erc1155Supply.totalSupply[id] := erc1155Supply.totalSupply[id] - values[i];
         burned := burned + values[i];
       }
-      erc1155_supply.total_supply_all := erc1155_supply.total_supply_all - burned;
+      erc1155Supply.totalSupplyAll := erc1155Supply.totalSupplyAll - burned;
     }
   }
 
   external view function totalSupply(const id : uint) : uint is
-    erc1155_supply.total_supply[id]
+    erc1155Supply.totalSupply[id]
 
   external view function totalSupply() : uint is
-    erc1155_supply.total_supply_all
+    erc1155Supply.totalSupplyAll
 
   external view function exists(const id : uint) : bool is
-    exists(id)
+    erc1155Supply.totalSupply[id] > 0
 }
 
 interface IERC1155Supply is {

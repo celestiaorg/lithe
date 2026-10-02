@@ -69,9 +69,9 @@ external function mix(const x : uint32; const y : uint32; const k : uint) is {
 }
 external view function nquot(const x : uint; const y : uint) : uint is x / y + x % y
 external view function zquot(const x : int; const y : int) : int is x / y - x % y
-external view function get_a8() : uint8 is storage.a8
-external view function get_i8() : int8 is storage.i8
-external view function get_i16() : int16 is storage.i16
-external view function get_u32() : uint32 is storage.u32
-external view function get_flags() : (bool, bool) is (storage.b, storage.c)
-external view function get_n() : uint is storage.n
+external view function getA8() : uint8 is storage.a8
+external view function getI8() : int8 is storage.i8
+external view function getI16() : int16 is storage.i16
+external view function getU32() : uint32 is storage.u32
+external view function getFlags() : (bool, bool) is (storage.b, storage.c)
+external view function getN() : uint is storage.n

@@ -184,7 +184,7 @@ external function add(const a : uint) is {
 }
 ```
 
-A call picks the overload that takes as many arguments as it passes. If several do, the argument types choose, and literals keep their own types: `1` is a `uint`. Overloads of one name are all internal or all external, and no two take the same parameter types.
+A call picks the overload that takes as many arguments as it passes. If several do, the argument types choose, and literals keep their own types: `1` is a `uint`. In a contract or a module, overloads of one name are all internal or all external, and no two take the same parameter types.
 
 ## Calling functions
 
@@ -274,8 +274,8 @@ A module can declare external functions, and a contract exposes them by declarin
 ```lithe fragment
 use Token exposing {
   function transfer(to : address; amount : uint)
-    raises Insufficient_balance;
-  view function balance_of(account : address) : uint;
+    raises InsufficientBalance;
+  view function balanceOf(account : address) : uint;
 }
 ```
 
@@ -367,8 +367,8 @@ To refuse some calls, have a `view` function choose the target and raise, and li
 import "std/address";
 import "std/evm";
 
-error Unknown_selector of bytes4;
-error Not_owner;
+error UnknownSelector of bytes4;
+error NotOwner;
 
 storage is record {
   owner : address;
@@ -377,15 +377,15 @@ storage is record {
 
 view function route(const selector : bytes4) : address is {
   const to : address := storage.routes[selector];
-  assert(to <> Address.zero, Unknown_selector(selector));
+  assert(to <> Address.zero, UnknownSelector(selector));
 } with to
 
-payable fallback raises Unknown_selector delegates to route(Evm.selector());
+payable fallback raises UnknownSelector delegates to route(Evm.selector());
 
-external function add_route(const selector : bytes4; const to : address)
-  raises Not_owner
+external function addRoute(const selector : bytes4; const to : address)
+  raises NotOwner
 is {
-  assert(Evm.sender() = storage.owner, Not_owner);
+  assert(Evm.sender() = storage.owner, NotOwner);
   storage.routes[selector] := to;
 }
 ```

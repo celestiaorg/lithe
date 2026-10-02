@@ -1005,8 +1005,8 @@ mod tests {
                 "function f() raises A | B | C | D\nis { skip }\n",
             ),
             (
-                "type t is\n| A of uint\n| B\n",
-                "type t is\n  | A of uint\n  | B\n",
+                "type T is\n| A of uint\n| B\n",
+                "type T is\n  | A of uint\n  | B\n",
             ),
             (
                 "const s : string := \"a\\nb\\t\"\n",
@@ -1076,12 +1076,12 @@ mod tests {
         let pad = "x".repeat(60);
         let cases = [
             format!("function f() is {{\n  assert(account <> Address.zero, ERC20InvalidSender(Address.zero), {pad});\n}}\n"),
-            format!("const h : bytes32 := Crypto.keccak256(Abi.encode_packed(marker, deployer, salt, {pad}));\n"),
+            format!("const h : bytes32 := Crypto.keccak256(Abi.encodePacked(marker, deployer, salt, {pad}));\n"),
             format!("function f() is {{\n  emit E {{ operator = Evm.sender(); from = from; to = to; {pad} = 1; }};\n}}\n"),
             format!("function f(const a : uint; const b : uint; const {pad} : uint) : (uint, uint) is {{ skip }}\n"),
             format!("function f(const a : uint) : uint raises A | B | {pad}\n  | C\nis {{ skip }}\n"),
             format!("function f() raises A | B | C | {pad} | {pad} is {{ skip }}\n"),
-            format!("function f(const a : uint; const b : uint) : uint is Math.mul_div_up(a, b, {pad})\n"),
+            format!("function f(const a : uint; const b : uint) : uint is Math.mulDivUp(a, b, {pad})\n"),
             format!("const ok : bool := a = b and c <> d or {pad} < 1 and b + 1 > 2\n"),
             format!("const n : uint := case x of {{ Some(v) -> v + 1 | None -> {pad} }}\n"),
             format!("const s : string := \"{pad}{pad}\"\n(* {pad}{pad} *)\n"),
@@ -1089,12 +1089,12 @@ mod tests {
         ];
         let wants = [
             "function f() is {\n  assert(\n    account <> Address.zero,\n    ERC20InvalidSender(Address.zero),\n    X\n  );\n}\n",
-            "const h : bytes32 := Crypto.keccak256(Abi.encode_packed(\n  marker,\n  deployer,\n  salt,\n  X\n));\n",
+            "const h : bytes32 := Crypto.keccak256(Abi.encodePacked(\n  marker,\n  deployer,\n  salt,\n  X\n));\n",
             "function f() is {\n  emit E {\n    operator = Evm.sender();\n    from = from;\n    to = to;\n    X = 1;\n  };\n}\n",
             "function f(\n  const a : uint;\n  const b : uint;\n  const X : uint\n) : (uint, uint) is { skip }\n",
             "function f(const a : uint) : uint\n  raises A | B | X | C\nis { skip }\n",
             "function f()\n  raises A | B | C | X\n    | X\nis { skip }\n",
-            "function f(const a : uint; const b : uint) : uint is\n  Math.mul_div_up(a, b, X)\n",
+            "function f(const a : uint; const b : uint) : uint is\n  Math.mulDivUp(a, b, X)\n",
             "const ok : bool := a = b and c <> d\n  or X < 1 and b + 1 > 2\n",
             "const n : uint := case x of {\n  Some(v) -> v + 1\n  | None -> X\n}\n",
             "const s : string := \"XX\"\n(* XX *)\n",

@@ -6,8 +6,8 @@ contract Base64Bench is {
   external pure function encode(const data : bytes) : string is
     Base64.encode(data)
 
-  external pure function encode_with(const data : bytes; const file_safe : bool; const no_padding : bool) : string is
-    Base64.encode_with(data, file_safe, no_padding)
+  external pure function encodeWith(const data : bytes; const fileSafe : bool; const noPadding : bool) : string is
+    Base64.encodeWith(data, fileSafe, noPadding)
 
   external pure function decode(const data : string) : bytes is
     Base64.decode(data)

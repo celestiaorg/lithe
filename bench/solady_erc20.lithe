@@ -29,7 +29,7 @@ event Approval of record {
 }
 
 storage is record {
-  total_supply : uint;
+  totalSupply : uint;
   balances : map(address, uint);
   allowances : map(address, map(address, uint));
   nonces : map(address, uint);
@@ -39,13 +39,13 @@ storage is record {
 pure function permit2() : address is
   address(0x000000000022D473030F116dDEE9F6B43aC78BA3)
 
-pure function check_permit2(const spender : address; const amount : uint)
+pure function checkPermit2(const spender : address; const amount : uint)
   raises Permit2AllowanceIsFixedAtInfinity
 is {
   assert(spender <> permit2() or amount = Uint.max, Permit2AllowanceIsFixedAtInfinity);
 }
 
-function set_allowance(const owner : address; const spender : address; const amount : uint) is {
+function setAllowance(const owner : address; const spender : address; const amount : uint) is {
   storage.allowances[owner][spender] := amount;
   emit Approval { owner = owner; spender = spender; amount = amount; };
 }
@@ -57,16 +57,16 @@ is {
   const balance : uint := storage.balances[from];
   assert(amount <= balance, InsufficientBalance);
   storage.balances[from] := balance - amount;
-  storage.balances[to] := Uint.wrapping_add(storage.balances[to], amount);
+  storage.balances[to] := Uint.wrappingAdd(storage.balances[to], amount);
   emit Transfer { from = from; to = to; amount = amount; };
 }
 
-view function domain_separator() : bytes32 is
+view function domainSeparator() : bytes32 is
   Crypto.keccak256(Abi.encode(
     Crypto.keccak256("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)"),
     Crypto.keccak256("Solady Token"),
     Crypto.keccak256("1"),
-    Evm.chain_id(),
+    Evm.chainId(),
     Evm.self()
   ))
 
@@ -80,7 +80,7 @@ external pure function decimals() : uint8 is
   18
 
 external view function totalSupply() : uint is
-  storage.total_supply
+  storage.totalSupply
 
 external view function balanceOf(const owner : address) : uint is
   storage.balances[owner]
@@ -96,13 +96,13 @@ external view function nonces(const owner : address) : uint is
   storage.nonces[owner]
 
 external view function DOMAIN_SEPARATOR() : bytes32 is
-  domain_separator()
+  domainSeparator()
 
 external function approve(const spender : address; const amount : uint) : bool
   raises Permit2AllowanceIsFixedAtInfinity
 is {
-  check_permit2(spender, amount);
-  set_allowance(Evm.sender(), spender, amount);
+  checkPermit2(spender, amount);
+  setAllowance(Evm.sender(), spender, amount);
 } with true
 
 external function transfer(const to : address; const amount : uint) : bool
@@ -136,10 +136,10 @@ external function permit(
 )
   raises Permit2AllowanceIsFixedAtInfinity | PermitExpired | InvalidPermit
 is {
-  check_permit2(spender, value);
-  assert(uint(Evm.block_timestamp()) <= deadline, PermitExpired);
+  checkPermit2(spender, value);
+  assert(uint(Evm.blockTimestamp()) <= deadline, PermitExpired);
   const nonce : uint := storage.nonces[owner];
-  const struct_hash : bytes32 := Crypto.keccak256(Abi.encode(
+  const structHash : bytes32 := Crypto.keccak256(Abi.encode(
     Crypto.keccak256("Permit(address owner,address spender,uint256 value,uint256 nonce,uint256 deadline)"),
     owner,
     spender,
@@ -148,20 +148,20 @@ is {
     deadline
   ));
   const prefix : bytes2 := 0x1901;
-  const digest : bytes32 := Crypto.keccak256(Abi.encode_packed(prefix, domain_separator(), struct_hash));
+  const digest : bytes32 := Crypto.keccak256(Abi.encodePacked(prefix, domainSeparator(), structHash));
   (* The precompile recovers zero from a bad signature, which no owner matches. *)
   assert(owner <> Address.zero and Crypto.ecrecover(digest, uint(v), r, s) = owner, InvalidPermit);
   storage.nonces[owner] := nonce + 1;
-  set_allowance(owner, spender, value);
+  setAllowance(owner, spender, value);
 }
 
 external function mint(const to : address; const amount : uint)
   raises TotalSupplyOverflow
 is {
-  const supply : uint := storage.total_supply;
+  const supply : uint := storage.totalSupply;
   assert(amount <= Uint.max - supply, TotalSupplyOverflow);
-  storage.total_supply := supply + amount;
-  storage.balances[to] := Uint.wrapping_add(storage.balances[to], amount);
+  storage.totalSupply := supply + amount;
+  storage.balances[to] := Uint.wrappingAdd(storage.balances[to], amount);
   emit Transfer { from = Address.zero; to = to; amount = amount; };
 }
 
@@ -171,6 +171,6 @@ is {
   const balance : uint := storage.balances[Evm.sender()];
   assert(amount <= balance, InsufficientBalance);
   storage.balances[Evm.sender()] := balance - amount;
-  storage.total_supply := Uint.wrapping_sub(storage.total_supply, amount);
+  storage.totalSupply := Uint.wrappingSub(storage.totalSupply, amount);
   emit Transfer { from = Evm.sender(); to = Address.zero; amount = amount; };
 }

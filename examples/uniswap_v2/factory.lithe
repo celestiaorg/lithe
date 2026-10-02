@@ -15,15 +15,15 @@ contract UniswapV2Factory is {
   use Create2;
 
   storage is record {
-    fee_to : address;
-    fee_to_setter : address;
+    feeTo : address;
+    feeToSetter : address;
     pairs : map(address, map(address, address));
-    all_pairs : list(address);
+    allPairs : list(address);
   }
 
-  error Identical_addresses;
-  error Zero_address;
-  error Pair_exists;
+  error IdenticalAddresses;
+  error ZeroAddress;
+  error PairExists;
   error Forbidden;
 
   event PairCreated of record {
@@ -33,82 +33,82 @@ contract UniswapV2Factory is {
     length : uint;
   }
 
-  deploy(const fee_to_setter : address) is {
-    storage.fee_to_setter := fee_to_setter;
+  deploy(const feeToSetter : address) is {
+    storage.feeToSetter := feeToSetter;
   }
 
   pure function sorted(const tokenA : address; const tokenB : address) : (address, address)
-    raises Identical_addresses | Zero_address
+    raises IdenticalAddresses | ZeroAddress
   is {
-    assert(tokenA <> tokenB, Identical_addresses);
+    assert(tokenA <> tokenB, IdenticalAddresses);
     var token0 : address := tokenB;
     var token1 : address := tokenA;
     if tokenA < tokenB then {
       token0 := tokenA;
       token1 := tokenB;
     }
-    assert(token0 <> Address.zero, Zero_address);
+    assert(token0 <> Address.zero, ZeroAddress);
   } with (token0, token1)
 
   pure function salt(const token0 : address; const token1 : address) : bytes32 is
-    Crypto.keccak256(Abi.encode_packed(token0, token1))
+    Crypto.keccak256(Abi.encodePacked(token0, token1))
 
   (* Where the pair of two sorted tokens is, or will be. *)
-  view function pair_for(const token0 : address; const token1 : address) : address is
-    Create2.compute_address_here(salt(token0, token1), Crypto.keccak256(Evm.creation_code(UniswapV2Pair)))
+  view function sortedPairFor(const token0 : address; const token1 : address) : address is
+    Create2.computeAddressHere(salt(token0, token1), Crypto.keccak256(Evm.creationCode(UniswapV2Pair)))
 
   external view function feeTo() : address is
-    storage.fee_to
+    storage.feeTo
 
   external view function feeToSetter() : address is
-    storage.fee_to_setter
+    storage.feeToSetter
 
   external view function getPair(const tokenA : address; const tokenB : address) : address is
     storage.pairs[tokenA][tokenB]
 
   external view function allPairs(const index : uint) : address is
-    storage.all_pairs[index]
+    storage.allPairs[index]
 
   external view function allPairsLength() : uint is
-    storage.all_pairs.length
+    storage.allPairs.length
 
   (* UniswapV2Library's `pairFor`, without the storage read. *)
   external view function pairFor(const tokenA : address; const tokenB : address) : address
-    raises Identical_addresses | Zero_address
+    raises IdenticalAddresses | ZeroAddress
   is {
     const (token0, token1) : (address, address) := sorted(tokenA, tokenB);
-  } with pair_for(token0, token1)
+  } with sortedPairFor(token0, token1)
 
   external function createPair(const tokenA : address; const tokenB : address) : address
-    raises Identical_addresses | Zero_address | Pair_exists
+    raises IdenticalAddresses | ZeroAddress | PairExists
   is {
     const (token0, token1) : (address, address) := sorted(tokenA, tokenB);
-    assert(storage.pairs[token0][token1] = Address.zero, Pair_exists);
-    const pair : address := pair_for(token0, token1);
+    assert(storage.pairs[token0][token1] = Address.zero, PairExists);
+    const pair : address := sortedPairFor(token0, token1);
     defer create UniswapV2Pair() with salt = salt(token0, token1);
     defer IUniswapV2Pair(pair).initialize(Token(token0), Token(token1));
     storage.pairs[token0][token1] := pair;
     storage.pairs[token1][token0] := pair;
-    List.push(storage.all_pairs, pair);
+    List.push(storage.allPairs, pair);
     emit PairCreated {
       token0 = token0;
       token1 = token1;
       pair = pair;
-      length = storage.all_pairs.length;
+      length = storage.allPairs.length;
     };
   } with pair
 
-  external function setFeeTo(const fee_to : address)
+  external function setFeeTo(const feeTo : address)
     raises Forbidden
   is {
-    assert(Evm.sender() = storage.fee_to_setter, Forbidden);
-    storage.fee_to := fee_to;
+    assert(Evm.sender() = storage.feeToSetter, Forbidden);
+    storage.feeTo := feeTo;
   }
 
-  external function setFeeToSetter(const fee_to_setter : address)
+  external function setFeeToSetter(const feeToSetter : address)
     raises Forbidden
   is {
-    assert(Evm.sender() = storage.fee_to_setter, Forbidden);
-    storage.fee_to_setter := fee_to_setter;
+    assert(Evm.sender() = storage.feeToSetter, Forbidden);
+    storage.feeToSetter := feeToSetter;
   }
 }

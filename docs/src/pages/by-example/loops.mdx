@@ -28,7 +28,7 @@ storage is record {
   gcd : uint;
   found : uint;
   members : list(address);
-  is_member : map(address, bool);
+  isMember : map(address, bool);
   exchange : Exchange;
   results : map(uint, uint);
   paid : uint;
@@ -57,9 +57,9 @@ external function join(const who : address) is {
 }
 
 (* A storage list can grow, so its loop carries a bound. Past it, the call panics. *)
-external function mark_all() is {
+external function markAll() is {
   for who : address in storage.members bound 4 do {
-    storage.is_member[who] := true;
+    storage.isMember[who] := true;
   }
 }
 
@@ -92,12 +92,12 @@ external function pay(const tos : list(address, 2); const amounts : list(uint, 2
   }
 }
 
-external function set_exchange(const exchange : Exchange) is {
+external function setExchange(const exchange : Exchange) is {
   storage.exchange := exchange;
 }
 
 (* A continuation in a loop sees that iteration's bindings. *)
-external nonreentrant function swap_all(const amounts : list(uint, 2)) is {
+external nonreentrant function swapAll(const amounts : list(uint, 2)) is {
   for (i, amount) : (uint, uint) in amounts do {
     defer storage.exchange.swap(amount) then (out : uint) {
       storage.results[i] := out;
@@ -121,8 +121,8 @@ external view function total() : uint is
 
 - `triangle` counts a half-open range: `0 .. n` runs for `0` up to `n - 1`.
 - `weighted` walks a fixed list with its index. A fixed list's length is in its type, so the loop's cost is known when the contract is compiled.
-- `mark_all` walks a storage list, which can grow. Its `bound 4` makes the worst case visible, and a fifth member makes the call revert with `Panic(0x01)`. Leave the bound off and the compiler warns that the loop's gas depends on storage.
+- `markAll` walks a storage list, which can grow. Its `bound 4` makes the worst case visible, and a fifth member makes the call revert with `Panic(0x01)`. Leave the bound off and the compiler warns that the loop's gas depends on storage.
 - `find` stops as soon as `until` is true. The condition is checked before every iteration, including the first.
 - `euclid` takes `var` parameters and steps them together with a tuple assignment. With `b = 0` the loop runs zero times.
-- `pay` and `swap_all` show effects in a loop: one event and one deferred call per iteration, in order, and a continuation that sees its own iteration's `i`.
+- `pay` and `swapAll` show effects in a loop: one event and one deferred call per iteration, in order, and a continuation that sees its own iteration's `i`.
 - Maps cannot be iterated. Keep an [iterable set](/by-example/iterable-set) when members must be listed.

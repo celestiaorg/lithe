@@ -7,26 +7,26 @@ import "std/crypto";
 import "std/evm";
 
 module Create is {
-  pure function compute_address(const deployer : address; const nonce : uint) : address is {
+  pure function computeAddress(const deployer : address; const nonce : uint) : address is {
     (* RLP([deployer, nonce]). A nonce from 1 to 0x7f is its own byte, and 0 is 0x80;
        others are 0x80 plus their length `n`, then their `n` bytes. *)
     const d : uint := uint(uint160(deployer));
     const hash : bytes32 := if nonce <= 127
       then {
         const short : uint := (214 << 176) | (148 << 168) | (d << 8) | nonce | (uint(nonce = 0) << 7);
-      } with Crypto.keccak256(Abi.encode_packed(uint184(short)))
+      } with Crypto.keccak256(Abi.encodePacked(uint184(short)))
     else {
-      const n : uint := if Evm.osaka then Uint.wrapping_sub(263, Uint.clz(nonce)) >> 3 else {
+      const n : uint := if Evm.osaka then Uint.wrappingSub(263, Uint.clz(nonce)) >> 3 else {
         var b : uint := 8;
         for _ : uint in 0 .. 31 until nonce >> b = 0 do {
-          b := Uint.wrapping_add(b, 8);
+          b := Uint.wrappingAdd(b, 8);
         }
       } with b >> 3;
     } with Crypto.keccak256(
-      Abi.encode_packed(
-        (Uint.wrapping_add(214, n) << 176) | (148 << 168) | (d << 8) | 128 | n,
-        nonce << Uint.wrapping_sub(256, n << 3)
-      )[9:Uint.wrapping_add(32, n)]
+      Abi.encodePacked(
+        (Uint.wrappingAdd(214, n) << 176) | (148 << 168) | (d << 8) | 128 | n,
+        nonce << Uint.wrappingSub(256, n << 3)
+      )[9:Uint.wrappingAdd(32, n)]
     );
   } with address(uint160(uint(hash) & ((1 << 160) - 1)))
 }

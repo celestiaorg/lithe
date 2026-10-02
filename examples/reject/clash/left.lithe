@@ -1,2 +1,2 @@
-view function calculate_fee(const amount : uint) : uint is
+view function calculateFee(const amount : uint) : uint is
   amount

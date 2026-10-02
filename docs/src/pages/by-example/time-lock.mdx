@@ -15,10 +15,10 @@ import "std/abi";
 import "std/crypto";
 import "std/evm";
 
-error Not_admin;
-error Delay_too_short of uint;
-error Not_queued of bytes32;
-error Too_early of record {
+error NotAdmin;
+error DelayTooShort of uint;
+error NotQueued of bytes32;
+error TooEarly of record {
   now : timestamp;
   eta : timestamp;
 }
@@ -44,47 +44,47 @@ storage is record {
   queued : map(bytes32, bool);
 }
 
-pure function min_delay() : uint is 2days
-pure function grace_period() : uint is 14days
+pure function minDelay() : uint is 2days
+pure function gracePeriod() : uint is 14days
 
 external function init() is {
   storage.admin := Evm.sender();
 }
 
-view function only_admin() raises Not_admin is {
-  assert(Evm.sender() = storage.admin, Not_admin);
+view function onlyAdmin() raises NotAdmin is {
+  assert(Evm.sender() = storage.admin, NotAdmin);
 }
 
-external pure function payment_id(const to : address; const value : wei; const eta : timestamp) : bytes32 is
+external pure function paymentId(const to : address; const value : wei; const eta : timestamp) : bytes32 is
   Crypto.keccak256(Abi.encode(to, value, eta))
 
 external function queue(const to : address; const value : wei; const eta : timestamp) : bytes32
-  raises Not_admin | Delay_too_short
+  raises NotAdmin | DelayTooShort
 is {
-  only_admin();
-  assert(eta >= Evm.block_timestamp() + min_delay(), Delay_too_short(min_delay()));
+  onlyAdmin();
+  assert(eta >= Evm.blockTimestamp() + minDelay(), DelayTooShort(minDelay()));
   const id : bytes32 := Crypto.keccak256(Abi.encode(to, value, eta));
   storage.queued[id] := true;
   emit Queued { id = id; to = to; value = value; eta = eta; };
 } with id
 
 external function cancel(const id : bytes32)
-  raises Not_admin | Not_queued
+  raises NotAdmin | NotQueued
 is {
-  only_admin();
-  assert(storage.queued[id], Not_queued(id));
+  onlyAdmin();
+  assert(storage.queued[id], NotQueued(id));
   storage.queued[id] := false;
   emit Cancelled { id = id; };
 }
 
 external nonreentrant function execute(const to : address; const value : wei; const eta : timestamp)
-  raises Not_admin | Not_queued | Too_early | Stale
+  raises NotAdmin | NotQueued | TooEarly | Stale
 is {
-  only_admin();
+  onlyAdmin();
   const id : bytes32 := Crypto.keccak256(Abi.encode(to, value, eta));
-  assert(storage.queued[id], Not_queued(id));
-  assert(Evm.block_timestamp() >= eta, Too_early { now = Evm.block_timestamp(); eta = eta; });
-  assert(Evm.block_timestamp() <= eta + grace_period(), Stale(id));
+  assert(storage.queued[id], NotQueued(id));
+  assert(Evm.blockTimestamp() >= eta, TooEarly { now = Evm.blockTimestamp(); eta = eta; });
+  assert(Evm.blockTimestamp() <= eta + gracePeriod(), Stale(id));
   storage.queued[id] := false;
   emit Executed { id = id; };
   defer Evm.transfer(to, value);

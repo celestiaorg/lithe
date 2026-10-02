@@ -13,7 +13,7 @@ storage is record {
   log : list(string);
 }
 
-external function set_bio(const bio : string) is {
+external function setBio(const bio : string) is {
   storage.bios[Evm.sender()] := bio;
 }
 
@@ -27,7 +27,7 @@ external function store(const data : bytes) is {
 external view function file(const hash : bytes32) : bytes is
   storage.files[hash]
 
-external function set_title(const id : uint; const title : string) is {
+external function setTitle(const id : uint; const title : string) is {
   storage.titles[Evm.sender()][id] := title;
 }
 

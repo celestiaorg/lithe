@@ -97,6 +97,8 @@ pub(crate) struct RVariant {
     pub name: String,
     pub payload: Option<usize>,
     pub param: String,
+    /// The entrypoint's name when the case is dispatched: its `external` name, or its own.
+    pub external: String,
     /// In a variant with payloads: the word of the value that holds each payload word.
     pub at: Vec<u32>,
 }
@@ -243,7 +245,7 @@ pub(crate) struct Checked {
     /// The ERC-165 ids the contract answers for: ERC-165's, then each interface `supports`
     /// lists.
     pub interface_ids: Vec<u32>,
-    /// Some function calls `Abi.supports_interface`.
+    /// Some function calls `Abi.supportsInterface`.
     pub asks_interfaces: bool,
     /// Peers' creation code and prerequisites, built once per compile however many passes
     /// embed them.
@@ -384,7 +386,7 @@ struct Checker {
     module_name: Option<String>,
     /// Checking the value of `List.pop(xs)`'s assignment, the only place it may appear.
     popping: bool,
-    /// Some function calls `Abi.supports_interface`.
+    /// Some function calls `Abi.supportsInterface`.
     asks_interfaces: bool,
     requires: Vec<String>,
     known_modules: HashSet<String>,
@@ -399,7 +401,7 @@ struct Checker {
     /// Each overloaded internal function's name, and the names its overloads go by.
     overloads: HashMap<String, Vec<String>>,
     work: Vec<Func>,
-    /// Instantiated `Module(args).member` type ids. An empty member is `self`.
+    /// Instantiated `Module(args).member` type ids. An empty member is `Self`.
     inst: HashMap<(String, String, Vec<usize>), usize>,
     /// Specialized function indexes, keyed by types and storage paths.
     specs: HashMap<String, usize>,
@@ -487,6 +489,9 @@ fn check_program(
         drop_loop_invariants(&mut prog);
     }
     let source = prog.clone();
+    for module in &prog.modules {
+        reject_mixed_names(&module.funcs)?;
+    }
     compose(&mut prog)?;
     let mut overloads = HashMap::new();
     name_overloads(&mut prog.funcs, "", &mut overloads)?;

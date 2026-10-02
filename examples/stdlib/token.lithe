@@ -1,6 +1,6 @@
 (* An ERC-20 token from the standard library: burnable, with ERC-2612 permits, and an
    owner who may mint and pause. `ERC20` checks the pause before every balance change,
-   through its `before_transfer` hook, so a pause stops transfers, mints, and burns, as
+   through its `beforeTransfer` hook, so a pause stops transfers, mints, and burns, as
    OpenZeppelin's `ERC20Pausable` does. *)
 
 import "std/evm";
@@ -48,8 +48,8 @@ contract Token is {
     cap : uint;
   }
 
-  hook ERC20.before_transfer is Pausable.require_not_paused;
-  hook ERC20.after_transfer is skip;
+  hook ERC20.beforeTransfer is Pausable.requireNotPaused;
+  hook ERC20.afterTransfer is skip;
 
   deploy()
     raises OwnableInvalidOwner
@@ -64,8 +64,8 @@ contract Token is {
     raises OwnableUnauthorizedAccount | ERC20ExceededCap | ERC20InvalidReceiver | EnforcedPause
       | ERC20InsufficientBalance
   is {
-    Ownable.check_owner();
-    const supply : uint := ERC20.total_supply() + value;
+    Ownable.checkOwner();
+    const supply : uint := ERC20.erc20.totalSupply + value;
     assert(supply <= storage.cap, ERC20ExceededCap { increasedSupply = supply; cap = storage.cap; });
     ERC20.mint(to, value);
   }
@@ -73,14 +73,14 @@ contract Token is {
   external function pause()
     raises OwnableUnauthorizedAccount | EnforcedPause
   is {
-    Ownable.check_owner();
+    Ownable.checkOwner();
     Pausable.pause();
   }
 
   external function unpause()
     raises OwnableUnauthorizedAccount | ExpectedPause
   is {
-    Ownable.check_owner();
+    Ownable.checkOwner();
     Pausable.unpause();
   }
 }

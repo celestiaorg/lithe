@@ -1242,7 +1242,6 @@ const DISPATCH_ERRORS: &str = include_str!("../../examples/dispatch_errors.lithe
 const BARE_STORAGE: &str = include_str!("../../examples/reject/bare_storage.lithe");
 const UNDECLARED_ERROR: &str = include_str!("../../examples/reject/undeclared_error.lithe");
 const ERROR_MISMATCH: &str = include_str!("../../examples/reject/error_mismatch.lithe");
-const ERROR_COLLISION: &str = include_str!("../../examples/reject/error_collision.lithe");
 const STRING_ERROR: &str = include_str!("../../examples/reject/string_error.lithe");
 const UNTYPED_BINDING: &str = include_str!("../../examples/reject/untyped_binding.lithe");
 const VIEW_WRITES: &str = include_str!("../../examples/reject/view_writes_storage.lithe");

@@ -71,7 +71,7 @@ module ERC1155 is {
     approved : bool;
   }
 
-  function set_uri(const newuri : string) is {
+  function setURI(const newuri : string) is {
     erc1155.uri := newuri;
   }
 
@@ -98,7 +98,7 @@ module ERC1155 is {
   external view function isApprovedForAll(const account : address; const operator : address) : bool is
     erc1155.operatorApprovals[account][operator]
 
-  view function check_authorized(const operator : address; const owner : address)
+  view function checkAuthorized(const operator : address; const owner : address)
     raises ERC1155MissingApprovalForAll
   is {
     assert(
@@ -107,8 +107,8 @@ module ERC1155 is {
     );
   }
 
-  hook before_transfer(const from : address; const to : address; const ids : list(uint); const values : list(uint));
-  hook after_transfer(const from : address; const to : address; const ids : list(uint); const values : list(uint));
+  hook beforeTransfer(const from : address; const to : address; const ids : list(uint); const values : list(uint));
+  hook afterTransfer(const from : address; const to : address; const ids : list(uint); const values : list(uint));
 
   (* Moves, mints (`from` is zero), or burns (`to` is zero) each `values[i]` of `ids[i]`,
      between the contract's hooks. One id logs `TransferSingle`, any other count
@@ -116,7 +116,7 @@ module ERC1155 is {
   function update(const from : address; const to : address; const ids : list(uint); const values : list(uint))
     raises ERC1155InvalidArrayLength | ERC1155InsufficientBalance
   is {
-    before_transfer(from, to, ids, values);
+    beforeTransfer(from, to, ids, values);
     assert(
       ids.length = values.length,
       ERC1155InvalidArrayLength { idsLength = ids.length; valuesLength = values.length; }
@@ -152,14 +152,14 @@ module ERC1155 is {
         values = values;
       };
     }
-    after_transfer(from, to, ids, values);
+    afterTransfer(from, to, ids, values);
   }
 
   (* Like `ERC1155Utils.checkOnERC1155Received`: a contract receiver must answer with the
      hook's selector. The call runs after the update's effects, as in Solidity. A receiver
      that reverts without a reason is invalid; its own reason is passed on unchanged. A burn
      has no receiver to ask. *)
-  function check_received(
+  function checkReceived(
     const from : address;
     const to : address;
     const id : uint;
@@ -168,7 +168,7 @@ module ERC1155 is {
   )
     raises ERC1155InvalidReceiver | forwarded
   is {
-    if Evm.code_size(to) > 0 then {
+    if Evm.codeSize(to) > 0 then {
       const receiver : ERC1155Receiver := ERC1155Receiver(to);
       defer receiver.onERC1155Received(Evm.sender(), from, id, value, data) then {
         | Ok(answer : bytes4) -> {
@@ -185,7 +185,7 @@ module ERC1155 is {
   }
 
   (* `checkOnERC1155BatchReceived`, which every batch asks, even of one id. *)
-  function check_batch_received(
+  function checkBatchReceived(
     const from : address;
     const to : address;
     const ids : list(uint);
@@ -194,7 +194,7 @@ module ERC1155 is {
   )
     raises ERC1155InvalidReceiver | forwarded
   is {
-    if Evm.code_size(to) > 0 then {
+    if Evm.codeSize(to) > 0 then {
       const receiver : ERC1155Receiver := ERC1155Receiver(to);
       defer receiver.onERC1155BatchReceived(Evm.sender(), from, ids, values, data) then {
         | Ok(answer : bytes4) -> {
@@ -210,7 +210,7 @@ module ERC1155 is {
     }
   }
 
-  function set_approval_for_all(const owner : address; const operator : address; const approved : bool)
+  function setApprovalForAll(const owner : address; const operator : address; const approved : bool)
     raises ERC1155InvalidApprover | ERC1155InvalidOperator
   is {
     assert(owner <> Address.zero, ERC1155InvalidApprover(Address.zero));

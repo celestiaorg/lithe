@@ -21,57 +21,39 @@ module Ownable2Step is {
     indexed newOwner : address;
   }
 
-  view function pending_owner() : address is
-    ownable2step.pending
-
-  (* Proposes `new_owner`. Proposing the zero address cancels a pending transfer. *)
-  function transfer_ownership(const new_owner : address)
-    raises OwnableUnauthorizedAccount
-  is {
-    Ownable.check_owner();
-    ownable2step.pending := new_owner;
-    emit OwnershipTransferStarted {
-      previousOwner = Ownable.owner();
-      newOwner = new_owner;
-    };
-  }
-
-  function accept_ownership()
-    raises OwnableUnauthorizedAccount
-  is {
-    assert(ownable2step.pending = Evm.sender(), OwnableUnauthorizedAccount(Evm.sender()));
-    ownable2step.pending := Address.zero;
-    Ownable.set_owner(Evm.sender());
-  }
-
-  function renounce_ownership()
-    raises OwnableUnauthorizedAccount
-  is {
-    Ownable.check_owner();
-    ownable2step.pending := Address.zero;
-    Ownable.set_owner(Address.zero);
-  }
-
   external view function owner() : address is
-    Ownable.owner()
+    Ownable.ownable.owner
 
   external view function pendingOwner() : address is
     ownable2step.pending
 
+  (* Proposes `newOwner`. Proposing the zero address cancels a pending transfer. *)
   external function transferOwnership(const newOwner : address)
     raises OwnableUnauthorizedAccount
-  is
-    transfer_ownership(newOwner)
+  is {
+    Ownable.checkOwner();
+    ownable2step.pending := newOwner;
+    emit OwnershipTransferStarted {
+      previousOwner = Ownable.ownable.owner;
+      newOwner = newOwner;
+    };
+  }
 
   external function acceptOwnership()
     raises OwnableUnauthorizedAccount
-  is
-    accept_ownership()
+  is {
+    assert(ownable2step.pending = Evm.sender(), OwnableUnauthorizedAccount(Evm.sender()));
+    ownable2step.pending := Address.zero;
+    Ownable.setOwner(Evm.sender());
+  }
 
   external function renounceOwnership()
     raises OwnableUnauthorizedAccount
-  is
-    renounce_ownership()
+  is {
+    Ownable.checkOwner();
+    ownable2step.pending := Address.zero;
+    Ownable.setOwner(Address.zero);
+  }
 }
 
 interface IOwnable2Step is {

@@ -16,12 +16,12 @@ storage is record {
   a : address;
 }
 
-pure function pick(T)(const first : T; const second : T; const use_first : bool) : T is {
+pure function pick(T)(const first : T; const second : T; const useFirst : bool) : T is {
   var chosen : T := second;
-  if use_first then { chosen := first; }
+  if useFirst then { chosen := first; }
 } with chosen
 
-external view function owner_or(const other : address; const flag : bool) : address is
+external view function ownerOr(const other : address; const flag : bool) : address is
   pick(storage.a, other, flag)
 ```
 
@@ -40,39 +40,39 @@ A module can take type parameters. Its types and functions can use them, and a u
 ```lithe [main.lithe]
 import "./lib/set";
 
-type order_id is bytes32;
+type OrderId is bytes32;
 
 storage is record {
   admins : Set(address);
-  filled : Set(order_id);
+  filled : Set(OrderId);
 }
 
-external function add_admin(const who : address) is {
+external function addAdmin(const who : address) is {
   Set.add(storage.admins, who);
 }
 
-external view function is_admin(const who : address) : bool is
+external view function isAdmin(const who : address) : bool is
   Set.contains(storage.admins, who)
 
 external function fill(const id : bytes32) is {
-  Set.add(storage.filled, order_id(id));
+  Set.add(storage.filled, OrderId(id));
 }
 ```
 
 ```lithe [lib/set.lithe]
 (* Membership set. One mapping, no enumeration. *)
 
-module Set(T : map_key) is {
-  type self is map(T, bool);
+module Set(T : MapKey) is {
+  type Self is map(T, bool);
 
-  view function contains(storage set : self; const value : T) : bool is
+  view function contains(storage set : Self; const value : T) : bool is
     set[value]
 
-  function add(storage set : self; const value : T) is {
+  function add(storage set : Self; const value : T) is {
     set[value] := true;
   }
 
-  function remove(storage set : self; const value : T) is {
+  function remove(storage set : Self; const value : T) is {
     set[value] := false;
   }
 }
@@ -82,19 +82,19 @@ module Set(T : map_key) is {
 
 - `Set(address)` is a type. Here it is `map(address, bool)`, so it can be stored.
 - `Set.add(storage.admins, who)` calls the specialization picked by the argument's type.
-- `Set(order_id)` and `Set(bytes32)` are different types, because [nominal types](/language/types#nominal-types) stay distinct in generics too.
+- `Set(OrderId)` and `Set(bytes32)` are different types, because [nominal types](/language/types#nominal-types) stay distinct in generics too.
 - A module's other types are reached through a specialization: `SetEnumerable(address).iterator`.
 - A generic module's types can use other generic modules at its own parameters. The standard library's `MapEnumerable(K, V)` keeps its keys in a `SetEnumerable(K)`.
 
 ## Constraints
 
-A type parameter can carry a constraint that the compiler checks at each use. The only constraint today is `map_key`, which accepts types that can key a `map`: integers, `bool`, `address`, `bytesN`, `wei`, `timestamp`, and nominal types over them.
+A type parameter can carry a constraint that the compiler checks at each use. The only constraint today is `MapKey`, which accepts types that can key a `map`: integers, `bool`, `address`, `bytesN`, `wei`, `timestamp`, and nominal types over them.
 
 ```lithe rejects
-module Set(T : map_key) is {
-  type self is map(T, bool);
+module Set(T : MapKey) is {
+  type Self is map(T, bool);
 
-  function add(storage set : self; const value : T) is {
+  function add(storage set : Self; const value : T) is {
     set[value] := true;
   }
 }
@@ -107,12 +107,12 @@ external function go() is { skip }
 ```
 
 ```text
-type `string` does not satisfy `map_key`
+type `string` does not satisfy `MapKey`
 ```
 
 ## Storage parameters
 
-A module function that declares a `storage` parameter, such as `storage set : self`, receives a reference to that storage location, not a copy, and may write it. A `const` parameter is always a value. `Set.add(storage.admins, who)` writes to `storage.admins`. That is how collection modules work without owning a named domain of their own.
+A module function that declares a `storage` parameter, such as `storage set : Self`, receives a reference to that storage location, not a copy, and may write it. A `const` parameter is always a value. `Set.add(storage.admins, who)` writes to `storage.admins`. That is how collection modules work without owning a named domain of their own.
 
 A module passes its own storage the same way. Inside a module that declares `storage roles`, `Set.add(roles.admins, who)` writes to `roles.admins`.
 

@@ -3,9 +3,9 @@
 pragma solidity ^0.8.24;
 
 contract Counter {
-    error Not_owner();
+    error NotOwner();
 
-    event Count_changed(uint256 old_count, uint256 new_count);
+    event CountChanged(uint256 oldCount, uint256 newCount);
 
     uint256 count;
     address immutable owner;
@@ -18,18 +18,18 @@ contract Counter {
         if (n > 0) {
             uint256 old = count;
             count = old + n;
-            emit Count_changed(old, count);
+            emit CountChanged(old, count);
         }
     }
 
     function reset() external {
-        if (msg.sender != owner) revert Not_owner();
+        if (msg.sender != owner) revert NotOwner();
         uint256 old = count;
         count = 0;
-        emit Count_changed(old, 0);
+        emit CountChanged(old, 0);
     }
 
-    function get_count() external view returns (uint256) {
+    function getCount() external view returns (uint256) {
         return count;
     }
 }

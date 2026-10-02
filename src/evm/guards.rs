@@ -7,25 +7,25 @@ const PRICES: &str = r#"import "std/evm";
 
 module Prices is {
   storage prices at "guards.prices" is record {
-    by_id : map(uint, uint);
+    byId : map(uint, uint);
     bumps : uint;
   }
 
   error Zero;
 
-  guard editor(const token_id : uint);
+  guard editor(const tokenId : uint);
   guard reader;
 
-  external nonreentrant function setPrice(const token_id : uint; const price : uint)
-    guarded editor(token_id)
+  external nonreentrant function setPrice(const tokenId : uint; const price : uint)
+    guarded editor(tokenId)
     raises Zero
   is {
     assert(price > 0, Zero);
-    prices.by_id[token_id] := price;
+    prices.byId[tokenId] := price;
   }
 
-  external view function price(const token_id : uint) : uint is
-    prices.by_id[token_id]
+  external view function price(const tokenId : uint) : uint is
+    prices.byId[tokenId]
 
   external view function secret() : uint guarded reader is
     prices.bumps + 42
@@ -45,17 +45,17 @@ contract Owned is {{
     owner : address;
   }}
 
-  error Not_editor of uint;
+  error NotEditor of uint;
 
   use Prices exposing {{
-    function setPrice(token_id : uint; price : uint) raises Zero | Not_editor;
-    view function price(token_id : uint) : uint;
+    function setPrice(tokenId : uint; price : uint) raises Zero | NotEditor;
+    view function price(tokenId : uint) : uint;
     view function secret() : uint;
     function bump();
   }}
 
-  guard Prices.editor(const token_id : uint) raises Not_editor is {{
-    assert(Evm.sender() = storage.owner, Not_editor(token_id));
+  guard Prices.editor(const tokenId : uint) raises NotEditor is {{
+    assert(Evm.sender() = storage.owner, NotEditor(tokenId));
   }}
 
   guard Prices.reader is {{
@@ -79,25 +79,25 @@ contract Listed is {{
     listed : map(address, bool);
   }}
 
-  error Not_listed of address;
-  error Too_high;
+  error NotListed of address;
+  error TooHigh;
 
   use Prices exposing {{
-    function setPrice(token_id : uint; price : uint) raises Zero | Not_listed | Too_high;
-    view function price(token_id : uint) : uint;
-    view function secret() : uint raises Not_listed;
+    function setPrice(tokenId : uint; price : uint) raises Zero | NotListed | TooHigh;
+    view function price(tokenId : uint) : uint;
+    view function secret() : uint raises NotListed;
   }}
 
-  view function only_listed() raises Not_listed is {{
-    assert(storage.listed[Evm.sender()], Not_listed(Evm.sender()));
+  view function onlyListed() raises NotListed is {{
+    assert(storage.listed[Evm.sender()], NotListed(Evm.sender()));
   }}
 
-  guard Prices.editor(const id : uint) raises Not_listed | Too_high is {{
-    only_listed();
-    assert(id < 100, Too_high);
+  guard Prices.editor(const id : uint) raises NotListed | TooHigh is {{
+    onlyListed();
+    assert(id < 100, TooHigh);
   }}
 
-  guard Prices.reader is only_listed;
+  guard Prices.reader is onlyListed;
 
   external function add(const who : address) is {{
     storage.listed[who] := true;
@@ -281,18 +281,18 @@ import "std/access/ownable";
 
 module Notes is {
   storage notes at "guards.notes" is record {
-    by_id : map(uint, uint);
+    byId : map(uint, uint);
   }
 
   guard writer(const id : uint);
   guard admin(const id : uint);
 
   external function write(const id : uint; const note : uint) guarded writer(id) is {
-    notes.by_id[id] := note;
+    notes.byId[id] := note;
   }
 
   external function clear(const id : uint) guarded admin(id) is {
-    notes.by_id[id] := 0;
+    notes.byId[id] := 0;
   }
 }
 
@@ -314,7 +314,7 @@ contract Board is {
     assert(query Echo(address(0xcd)).echo(id) < 10, Unknown(id));
   }
 
-  guard Notes.admin is Ownable.check_owner;
+  guard Notes.admin is Ownable.checkOwner;
 
   external function own() raises OwnableInvalidOwner is {
     Ownable.init(Evm.sender());
@@ -364,13 +364,13 @@ module Admin is {
 
   guard operator;
 
-  type action is
-    | Set_fee of (fee : uint)
-    | Pause
+  type Action is
+    | SetFee external setFee of (fee : uint)
+    | Pause external pause
 
-  external function act(const action : action) guarded operator is
+  external function act(const action : Action) guarded operator is
     case action of {
-    | Set_fee(fee) -> { admin.fee := fee; }
+    | SetFee(fee) -> { admin.fee := fee; }
     | Pause -> { admin.paused := true; }
     }
 
@@ -379,15 +379,15 @@ module Admin is {
 }
 
 contract Desk is {
-  error Not_operator;
+  error NotOperator;
 
   use Admin exposing {
-    function act(action : action) raises Not_operator;
+    function act(action : Action) raises NotOperator;
     view function fee() : uint;
   }
 
-  guard Admin.operator raises Not_operator is {
-    assert(Evm.sender() = address(1), Not_operator);
+  guard Admin.operator raises NotOperator is {
+    assert(Evm.sender() = address(1), NotOperator);
   }
 }
 "#;
@@ -396,7 +396,7 @@ contract Desk is {
             runtime: &runtime,
             storage: HashMap::new(),
         };
-        for (sig, args) in [("set_fee(uint256)", words(&[3])), ("pause()", Vec::new())] {
+        for (sig, args) in [("setFee(uint256)", words(&[3])), ("pause()", Vec::new())] {
             let denied = s.send(2, sig, &args);
             assert_eq!(
                 denied.returndata,
@@ -413,11 +413,11 @@ contract Desk is {
     }
     DEPLOYED.with(|d| d.borrow_mut().clear());
     rejects(
-        &src.replace("guard operator;", "guard operator(const action : action);")
+        &src.replace("guard operator;", "guard operator(const action : Action);")
             .replace("guarded operator", "guarded operator(action)")
             .replace(
                 "guard Admin.operator raises",
-                "guard Admin.operator(const action : action) raises",
+                "guard Admin.operator(const action : Action) raises",
             ),
         "`action` is dispatched as one entrypoint per case, so its guard cannot take it",
     );
@@ -451,7 +451,7 @@ contract C is {{
   }}
 
   use Prices exposing {{
-    function setPrice(token_id : uint; price : uint) raises {raises};
+    function setPrice(tokenId : uint; price : uint) raises {raises};
   }}
 
   {guards}
@@ -462,11 +462,11 @@ contract C is {{
 
 #[test]
 fn guard_rules() {
-    let ok = "guard Prices.editor(const token_id : uint) raises Denied is { assert(Evm.sender() = storage.owner, Denied); }";
+    let ok = "guard Prices.editor(const tokenId : uint) raises Denied is { assert(Evm.sender() = storage.owner, Denied); }";
     compile(&exposing(ok, "Zero | Denied")).expect("the contract's check");
     rejects(
         &exposing("", "Zero"),
-        "the contract exposes `setPrice`, which `Prices` guards with `editor`, so it must write the check:\n\n  guard Prices.editor(const token_id : uint) raises ... is { ... }",
+        "the contract exposes `setPrice`, which `Prices` guards with `editor`, so it must write the check:\n\n  guard Prices.editor(const tokenId : uint) raises ... is { ... }",
     );
     rejects(
         &exposing(&format!("{ok}\n{ok}"), "Zero | Denied"),
@@ -474,10 +474,10 @@ fn guard_rules() {
     );
     rejects(
         &exposing(
-            "guard Prices.editor(const token_id : address) is { skip }",
+            "guard Prices.editor(const tokenId : address) is { skip }",
             "Zero",
         ),
-        "`guard Prices.editor` takes different parameters than `Prices` declares\n\n  module:    guard Prices.editor(const token_id : uint)\n  contract:  guard Prices.editor(const token_id : address)",
+        "`guard Prices.editor` takes different parameters than `Prices` declares\n\n  module:    guard Prices.editor(const tokenId : uint)\n  contract:  guard Prices.editor(const tokenId : address)",
     );
     rejects(
         &exposing("guard Prices.editor is { skip }", "Zero"),
@@ -504,16 +504,16 @@ fn guard_rules() {
     // A guard only reads, and reverts or lets the call through.
     let body = |stmts: &str| {
         exposing(
-            &format!("guard Prices.editor(const token_id : uint) is {{ {stmts} }}"),
+            &format!("guard Prices.editor(const tokenId : uint) is {{ {stmts} }}"),
             "Zero",
         )
     };
     rejects(
-        &body("storage.n := token_id;"),
+        &body("storage.n := tokenId;"),
         "guard `Prices.editor` writes storage; a guard only reads, and reverts or lets the call through",
     );
     rejects(
-        &body("emit Checked { id = token_id; };"),
+        &body("emit Checked { id = tokenId; };"),
         "guard `Prices.editor` cannot emit; a guard only reads",
     );
     rejects(
@@ -522,7 +522,7 @@ fn guard_rules() {
     );
     rejects(
         &exposing(
-            "function note(const id : uint) is { storage.n := id; }\n  guard Prices.editor(const token_id : uint) is { note(token_id); }",
+            "function note(const id : uint) is { storage.n := id; }\n  guard Prices.editor(const tokenId : uint) is { note(tokenId); }",
             "Zero",
         ),
         "guard `Prices.editor` calls `note`, which is stateful",
@@ -537,7 +537,7 @@ fn guard_rules() {
     );
     rejects(
         &exposing(
-            "view function yes() : bool is true\n  guard Prices.editor(const token_id : uint) is yes;",
+            "view function yes() : bool is true\n  guard Prices.editor(const tokenId : uint) is yes;",
             "Zero",
         ),
         "`yes` returns a value; a guard names a function that only checks",
@@ -629,8 +629,8 @@ contract C is {{
 /// A guard is written by the contract that exposes the externals, not by a file it imports.
 #[test]
 fn imported_files_write_no_guards() {
-    let lib = format!("{PRICES}\nguard Prices.editor(const token_id : uint) is {{ skip }}\n");
-    let main = "import \"./lib\";\ncontract C is {\n  use Prices exposing {\n    view function price(token_id : uint) : uint;\n  }\n}\n";
+    let lib = format!("{PRICES}\nguard Prices.editor(const tokenId : uint) is {{ skip }}\n");
+    let main = "import \"./lib\";\ncontract C is {\n  use Prices exposing {\n    view function price(tokenId : uint) : uint;\n  }\n}\n";
     let sources = Sources::memory([("contract.lithe", main), ("lib.lithe", lib.as_str())]);
     let err = crate::compile(&sources, Path::new(ENTRY), &Options::default())
         .and_then(crate::Output::single)
@@ -676,7 +676,7 @@ fn the_upgrade_guard_names_a_function() {
              external function own() raises OwnableInvalidOwner is {{ Ownable.init(Evm.sender()); }}\n"
         )
     };
-    let code = compile(&src("upgrade guard is Ownable.check_owner;")).expect("compile");
+    let code = compile(&src("upgrade guard is Ownable.checkOwner;")).expect("compile");
     let (a, b) = (Word::from_u64(0xa11), Word::from_u64(0xb22));
     deploy_at(&code, a);
     deploy_at(&code, b);
@@ -732,14 +732,14 @@ fn tooling_shows_guards() {
     assert!(row.contains("guard: Prices.editor"), "{fp}");
     let tree = abi_tree(&src).expect("abi-tree");
     assert!(
-        route_text(&tree, "setPrice").contains("guards:\n    - guard Prices.editor(token_id)\n"),
+        route_text(&tree, "setPrice").contains("guards:\n    - guard Prices.editor(tokenId)\n"),
         "{tree}"
     );
     let stubs = crate::stubs(&memory(&src), Path::new(ENTRY), "Prices", &[]).expect("stubs");
     assert!(
         stubs.contains(
             "(* Prices guards `setPrice`: write the check, and add its errors to its `raises`.\n\n\
-             guard Prices.editor(const token_id : uint) raises ... is { ... } *)"
+             guard Prices.editor(const tokenId : uint) raises ... is { ... } *)"
         ),
         "{stubs}"
     );
@@ -748,7 +748,7 @@ fn tooling_shows_guards() {
         .expect("split tree");
     assert!(
         route_text(&split, "setPrice")
-            .contains("runs in:\n    Prices\n    router, for guard Prices.editor(token_id)\n"),
+            .contains("runs in:\n    Prices\n    router, for guard Prices.editor(tokenId)\n"),
         "{split}"
     );
 }

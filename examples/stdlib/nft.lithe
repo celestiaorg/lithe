@@ -10,11 +10,11 @@ contract Collection is {
   use ERC721 exposing IERC721, IERC721Metadata;
   supports IERC721, IERC721Metadata;
 
-  hook ERC721.before_transfer is skip;
-  hook ERC721.after_transfer is skip;
+  hook ERC721.beforeTransfer is skip;
+  hook ERC721.afterTransfer is skip;
 
   storage is record {
-    next_id : uint;
+    nextId : uint;
   }
 
   deploy() is {
@@ -24,9 +24,9 @@ contract Collection is {
   external function mint() : uint
     raises ERC721InvalidReceiver | ERC721InvalidSender | ERC721NonexistentToken | ERC721InsufficientApproval | forwarded
   is {
-    const id : uint := storage.next_id;
-    storage.next_id := id + 1;
-    ERC721.safe_mint(Evm.sender(), id, "");
+    const id : uint := storage.nextId;
+    storage.nextId := id + 1;
+    ERC721.safeMint(Evm.sender(), id, "");
   } with id
 
   external function burn(const tokenId : uint)

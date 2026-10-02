@@ -34,7 +34,7 @@ external pure function build(const a : uint; const b : uint) : list(uint) is {
   out[0] := a + b;
 } with out
 
-external function log_batch(const ids : list(uint)) is {
+external function logBatch(const ids : list(uint)) is {
   emit Batch { who = Evm.sender(); ids = ids; };
 }
 
@@ -44,8 +44,8 @@ external pure function same(const a : list(uint); const b : list(uint)) : bool i
 external pure function enc(const xs : list(uint)) : bytes is
   Abi.encode(xs)
 
-pure function add_first_two(const xs : list(uint)) : uint is
+pure function addFirstTwo(const xs : list(uint)) : uint is
   xs[0] + xs[1]
 
 external pure function sum2(const xs : list(uint)) : uint is
-  add_first_two(xs)
+  addFirstTwo(xs)

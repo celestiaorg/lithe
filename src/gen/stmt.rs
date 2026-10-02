@@ -93,7 +93,7 @@ impl<'a> Gen<'a> {
                 left,
                 right,
                 ..
-            } if !self.eager_ok(right) => {
+            } if !self.eager_side(right) => {
                 // The left side alone decides `and` when false and `or` when true.
                 let decides = *op == BinOp::Or;
                 let skip = (decides != when).then(|| self.fresh());

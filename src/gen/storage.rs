@@ -2506,7 +2506,7 @@ impl<'a> Gen<'a> {
     }
 
     /// A name for the slot of a stored place that stays the same while it is kept: a leaf,
-    /// then map keys that `fixed_key` names, and fields.
+    /// then map keys that `fixedKey` names, and fields.
     pub(super) fn place_name(&self, e: &Expr, deps: &mut Vec<usize>) -> Option<String> {
         let root = match e {
             Expr::Ident { sym, .. } | Expr::Field { root: sym, .. } | Expr::Index { root: sym, .. } => {

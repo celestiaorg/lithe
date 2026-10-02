@@ -2,7 +2,7 @@
 
 import "std/evm";
 
-error Not_owner;
+error NotOwner;
 error Paused;
 
 error Insufficient of record {
@@ -64,12 +64,12 @@ is {
   defer Evm.transfer(Evm.sender(), amount);
 }
 
-external function set_paused(const flag : bool)
-  raises Not_owner
+external function setPaused(const flag : bool)
+  raises NotOwner
 is {
-  assert(Evm.sender() = immutable.owner, Not_owner);
+  assert(Evm.sender() = immutable.owner, NotOwner);
   storage.paused := flag;
 }
 
-external view function deposit_of(const who : address) : wei is
+external view function depositOf(const who : address) : wei is
   storage.deposits[who]

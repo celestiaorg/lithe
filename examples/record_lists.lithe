@@ -5,71 +5,71 @@
 import "std/abi";
 import "std/evm";
 
-type point is record {
+type Point is record {
   key : uint48;
   value : uint208;
 }
 
-type tagged is record {
+type Tagged is record {
   tag : bytes4;
   ok : bool;
   n : int16;
 }
 
-type points is list(point);
+type Points is list(Point);
 
-interface Points is {
-  view function all() : list(point);
-  function take(xs : list(point)) : uint;
+interface IPoints is {
+  view function all() : list(Point);
+  function take(xs : list(Point)) : uint;
 }
 
 event Pushed of record {
   indexed who : address;
-  points : list(point);
+  points : list(Point);
 }
 
-error Rejected of list(point);
+error Rejected of list(Point);
 
 storage is record {
-  points : list(point);
-  tagged : list(tagged);
+  points : list(Point);
+  tagged : list(Tagged);
   taken : uint;
 }
 
-external function set_all(const xs : list(point)) is {
+external function setAll(const xs : list(Point)) is {
   storage.points := xs;
   emit Pushed { who = Evm.sender(); points = xs; };
 }
 
-external view function all() : list(point) is
+external view function all() : list(Point) is
   storage.points
 
-external function set_tags(const xs : list(tagged)) is {
+external function setTags(const xs : list(Tagged)) is {
   storage.tagged := xs;
 }
 
-external view function tags() : list(tagged) is
+external view function tags() : list(Tagged) is
   storage.tagged
 
-external view function tag_at(const i : uint) : bytes4 is
+external view function tagAt(const i : uint) : bytes4 is
   storage.tagged[i].tag
 
 external view function encoded() : bytes is
   Abi.encode(storage.points)
 
 external pure function decoded(const data : bytes) : uint is {
-  const xs : points := Abi.decode(data, points);
+  const xs : Points := Abi.decode(data, Points);
 } with xs.length * 1000 + uint(xs[0].value)
 
-external view function asked(const other : Points) : uint is {
-  const xs : list(point) := query other.all();
+external view function asked(const other : IPoints) : uint is {
+  const xs : list(Point) := query other.all();
 } with xs.length
 
-external function take(const xs : list(point)) : uint is {
+external function take(const xs : list(Point)) : uint is {
   storage.taken := xs.length;
 } with xs.length
 
-external function hand_over(const other : Points) is {
+external function handOver(const other : IPoints) is {
   defer other.take(storage.points);
 }
 

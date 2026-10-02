@@ -570,7 +570,7 @@ impl<'a> Gen<'a> {
                     self.jumpdest(end);
                     return Ok(());
                 }
-                if matches!(op, BinOp::And | BinOp::Or) && !self.eager_ok(right) {
+                if matches!(op, BinOp::And | BinOp::Or) && !self.eager_side(right) {
                     let end = self.fresh();
                     self.compile_value(left)?;
                     self.op(DUP1);
@@ -847,7 +847,7 @@ impl<'a> Gen<'a> {
                 }
             }
             Builtin::UintDivRem | Builtin::IntDivRem => {
-                return Err(error(line, col, "div_rem returns a tuple"));
+                return Err(error(line, col, "`divRem` returns a tuple"));
             }
             Builtin::Ctor(_) => {
                 return Err(error(line, col, "a variant with payloads is not a word"));
@@ -1133,13 +1133,13 @@ impl<'a> Gen<'a> {
             }
             Builtin::FacetAddress => {
                 let Expr::Ident { name, .. } = &args[0] else {
-                    return Err(error(line, col, "`Evm.facet_address` takes the name of a module"));
+                    return Err(error(line, col, "`Evm.facetAddress` takes the name of a module"));
                 };
                 if self.shape.opts.check_specs {
                     return Err(error(
                         line,
                         col,
-                        "`Evm.facet_address` needs the contract's facets, and a spec-checking build runs every module in the contract",
+                        "`Evm.facetAddress` needs the contract's facets, and a spec-checking build runs every module in the contract",
                     ));
                 }
                 // Builds that only measure the contract, before its facets exist, use the
@@ -1459,7 +1459,7 @@ impl<'a> Gen<'a> {
             } if *o == op && self.const_word(e).is_none() => {
                 self.chain(left, op, out);
                 match out.last_mut() {
-                    Some(last) if self.eager_ok(right) => last.push(right),
+                    Some(last) if self.eager_side(right) => last.push(right),
                     _ => out.push(vec![right]),
                 }
             }
@@ -1831,7 +1831,7 @@ impl<'a> Gen<'a> {
         Ok(false)
     }
 
-    /// A value that `Abi.encode` writes as exactly one word, or that `Abi.encode_packed`
+    /// A value that `Abi.encode` writes as exactly one word, or that `Abi.encodePacked`
     /// writes as exactly 32 bytes.
     fn hash_word(&self, ty: usize, packed: bool) -> bool {
         let t = &self.checked.types[self.peel_nominal(ty)];

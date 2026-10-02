@@ -19,10 +19,10 @@
      external payable function execute(const mode : bytes32; const executionData : bytes)
        raises UnsupportedExecutionMode | forwarded | ...
      is {
-       assert(ERC7821.execution_mode_id(mode) = 2, UnsupportedExecutionMode);
-       const calls : erc7821_calls := Abi.decode(executionData, erc7821_calls);
-       check(calls, ERC7821.op_data_of(2, executionData));
-       ERC7821.execute_calls(calls);
+       assert(ERC7821.executionModeId(mode) = 2, UnsupportedExecutionMode);
+       const calls : ERC7821Calls := Abi.decode(executionData, ERC7821Calls);
+       check(calls, ERC7821.opDataOf(2, executionData));
+       ERC7821.executeCalls(calls);
      } *)
 
 import "std/interfaces/erc7821";
@@ -31,36 +31,36 @@ import "std/abi";
 import "std/address";
 import "std/evm";
 
-type erc7821_call is record {
+type ERC7821Call is record {
   to : address;
   value : uint;
   data : bytes;
 }
 
-type erc7821_calls is list(erc7821_call);
+type ERC7821Calls is list(ERC7821Call);
 
 module ERC7821 is {
   (* 0 for an unsupported mode, 1 for a batch, 2 for a batch with optional `opData`. *)
-  pure function execution_mode_id(const mode : bytes32) : uint is {
+  pure function executionModeId(const mode : bytes32) : uint is {
     const m : uint := uint(mode) >> 176 & 0xffff00000000ffffffff;
   } with uint(m = 0x01000000000078210001) << 1 | uint(m = 0x01000000000000000000)
 
   (* The `opData` of a batch in mode `id`, or empty: it is there when the first offset
      leaves room for a second head word. *)
-  pure function op_data_of(const id : uint; const execution_data : bytes) : bytes is {
-    var op_data : bytes := "";
-    if id = 2 and uint(Bytes.word(execution_data, 0)) >= 64 then {
-      const (_, found) : (bytes32, bytes) := Abi.decode(execution_data, (bytes32, bytes));
-      op_data := found;
+  pure function opDataOf(const id : uint; const executionData : bytes) : bytes is {
+    var opData : bytes := "";
+    if id = 2 and uint(Bytes.word(executionData, 0)) >= 64 then {
+      const (_, found) : (bytes32, bytes) := Abi.decode(executionData, (bytes32, bytes));
+      opData := found;
     } else {
       skip
     };
-  } with op_data
+  } with opData
 
-  function execute_calls(const calls : erc7821_calls)
+  function executeCalls(const calls : ERC7821Calls)
     raises forwarded
   is {
-    for call : erc7821_call in calls do {
+    for call : ERC7821Call in calls do {
       defer Evm.call(if call.to = Address.zero then Evm.self() else call.to, call.data)
         with value = call.value
         then {
@@ -73,13 +73,13 @@ module ERC7821 is {
   external payable function execute(const mode : bytes32; const executionData : bytes)
     raises UnsupportedExecutionMode | AccountUnauthorized | forwarded
   is {
-    assert(execution_mode_id(mode) <> 0, UnsupportedExecutionMode);
+    assert(executionModeId(mode) <> 0, UnsupportedExecutionMode);
     assert(Evm.sender() = Evm.self(), AccountUnauthorized(Evm.sender()));
-    execute_calls(Abi.decode(executionData, erc7821_calls));
+    executeCalls(Abi.decode(executionData, ERC7821Calls));
   }
 
   external view function supportsExecutionMode(const mode : bytes32) : bool is
-    execution_mode_id(mode) <> 0
+    executionModeId(mode) <> 0
 }
 
 (* Solady's third mode, `0x01000000000078210002...`, a batch of batches: `executionData`
@@ -91,77 +91,77 @@ module ERC7821 is {
 
    Each batch is decoded, and authorized, before any call runs, as a transition's checks
    come before its calls. A contract that authorizes each batch with its own `opData`
-   writes `execute` from `batch_count`, `batch`, and `op_data_in`. *)
+   writes `execute` from `batchCount`, `batch`, and `opDataIn`. *)
 module ERC7821Batches is {
   requires ERC7821;
 
   (* ERC7821's modes, and 3 for a batch of batches. *)
-  pure function execution_mode_id(const mode : bytes32) : uint is {
+  pure function executionModeId(const mode : bytes32) : uint is {
     const m : uint := uint(mode) >> 176 & 0xffff00000000ffffffff;
   } with uint(m = 0x01000000000078210002) * 3 | uint(m = 0x01000000000078210001) << 1
     | uint(m = 0x01000000000000000000)
 
   (* How many batches a batch of batches holds. *)
-  pure function batch_count(const execution_data : bytes) : uint
+  pure function batchCount(const executionData : bytes) : uint
     raises BatchOfBatchesDecodingError
   is {
-    const j : uint := uint(bytes32(execution_data));
-    assert(j >> 64 = 0 and j + 32 <= execution_data.length, BatchOfBatchesDecodingError);
-    const n : uint := uint(Bytes.word(execution_data, j));
+    const j : uint := uint(bytes32(executionData));
+    assert(j >> 64 = 0 and j + 32 <= executionData.length, BatchOfBatchesDecodingError);
+    const n : uint := uint(Bytes.word(executionData, j));
     assert(
-      n >> 64 = 0 and j + 32 + (n << 5) <= execution_data.length,
+      n >> 64 = 0 and j + 32 + (n << 5) <= executionData.length,
       BatchOfBatchesDecodingError
     );
   } with n
 
-  (* Where batch `i` of a batch of batches lies: `execution_data[start : finish]`. *)
-  pure function batch(const execution_data : bytes; const i : uint) : (uint, uint)
+  (* Where batch `i` of a batch of batches lies: `executionData[start : finish]`. *)
+  pure function batch(const executionData : bytes; const i : uint) : (uint, uint)
     raises BatchOfBatchesDecodingError
   is {
-    const w : uint := uint(bytes32(execution_data));
+    const w : uint := uint(bytes32(executionData));
     assert(w < 1 << 64 and i < 1 << 64, BatchOfBatchesDecodingError);
     const o : uint := w + 32;
     const h : uint := o + (i << 5);
-    assert(h + 32 <= execution_data.length, BatchOfBatchesDecodingError);
-    const j : uint := uint(Bytes.word(execution_data, h));
+    assert(h + 32 <= executionData.length, BatchOfBatchesDecodingError);
+    const j : uint := uint(Bytes.word(executionData, h));
     assert(j < 1 << 64, BatchOfBatchesDecodingError);
     const t : uint := o + j;
-    assert(t + 32 <= execution_data.length, BatchOfBatchesDecodingError);
+    assert(t + 32 <= executionData.length, BatchOfBatchesDecodingError);
     const start : uint := t + 32;
-    const finish : uint := start + uint(Bytes.word(execution_data, t));
-    assert(finish <= execution_data.length, BatchOfBatchesDecodingError);
+    const finish : uint := start + uint(Bytes.word(executionData, t));
+    assert(finish <= executionData.length, BatchOfBatchesDecodingError);
   } with (start, finish)
 
-  (* The `opData` of the batch `execution_data[start : finish]`, or empty. *)
-  pure function op_data_in(const execution_data : bytes; const start : uint; const finish : uint)
+  (* The `opData` of the batch `executionData[start : finish]`, or empty. *)
+  pure function opDataIn(const executionData : bytes; const start : uint; const finish : uint)
     : bytes
   is {
-    var op_data : bytes := "";
-    if uint(Bytes.word(execution_data, start)) >= 64 then {
+    var opData : bytes := "";
+    if uint(Bytes.word(executionData, start)) >= 64 then {
       const (_, found) : (bytes32, bytes) :=
-        Abi.decode(execution_data[start:finish], (bytes32, bytes));
-      op_data := found;
+        Abi.decode(executionData[start:finish], (bytes32, bytes));
+      opData := found;
     } else {
       skip
     };
-  } with op_data
+  } with opData
 
   external payable function execute(const mode : bytes32; const executionData : bytes)
     raises UnsupportedExecutionMode | AccountUnauthorized | BatchOfBatchesDecodingError | forwarded
   is {
-    const id : uint := execution_mode_id(mode);
+    const id : uint := executionModeId(mode);
     assert(id <> 0, UnsupportedExecutionMode);
     assert(Evm.sender() = Evm.self(), AccountUnauthorized(Evm.sender()));
     if id <> 3 then {
-      ERC7821.execute_calls(Abi.decode(executionData, erc7821_calls));
+      ERC7821.executeCalls(Abi.decode(executionData, ERC7821Calls));
     } else {
-      for i : uint in 0 .. batch_count(executionData) do {
+      for i : uint in 0 .. batchCount(executionData) do {
         const (start, finish) : (uint, uint) := batch(executionData, i);
-        ERC7821.execute_calls(Abi.decode(executionData[start:finish], erc7821_calls));
+        ERC7821.executeCalls(Abi.decode(executionData[start:finish], ERC7821Calls));
       }
     }
   }
 
   external view function supportsExecutionMode(const mode : bytes32) : bool is
-    execution_mode_id(mode) <> 0
+    executionModeId(mode) <> 0
 }

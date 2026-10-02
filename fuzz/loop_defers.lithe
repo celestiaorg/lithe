@@ -40,7 +40,7 @@ is {
   }
 }
 
-external payable function echo_all(const to : Echo; const xs : list(uint))
+external payable function echoAll(const to : Echo; const xs : list(uint))
   raises Odd
 is {
   storage.n := storage.n + 1;
@@ -56,7 +56,7 @@ is {
   }
 }
 
-external function echo_then_count(const to : Echo; const xs : list(uint))
+external function echoThenCount(const to : Echo; const xs : list(uint))
   raises Odd
 is {
   for x : uint in xs do {
@@ -68,7 +68,7 @@ is {
   storage.n := storage.n + 1;
 }
 
-external function echo_checked(const to : Echo; const xs : list(uint)) is {
+external function echoChecked(const to : Echo; const xs : list(uint)) is {
   for x : uint in xs do {
     defer to.echo(x + 1) then (r : uint) {
       storage.total := storage.total + r % 1000;

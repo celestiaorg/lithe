@@ -1,21 +1,5 @@
 use super::*;
 
-/// Snake case becomes Pascal case for the ABI.
-/// `Not_owner` is `NotOwner`. `Insufficient_balance` is `InsufficientBalance`.
-/// A name with no underscore keeps its spelling, with an uppercase first letter.
-pub(super) fn abi_error_name(name: &str) -> String {
-    let mut out = String::new();
-    for seg in name.split('_') {
-        let mut chars = seg.chars();
-        let Some(first) = chars.next() else {
-            continue;
-        };
-        out.extend(first.to_uppercase());
-        out.push_str(chars.as_str());
-    }
-    out
-}
-
 pub(crate) fn uint_abi(bits: u16) -> &'static str {
     width_abi(bits, true)
 }

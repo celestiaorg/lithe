@@ -3,13 +3,13 @@
    and checked before the continuation reads storage again. Continuations run
    depth-first, right after the call they follow. *)
 
-type swap_result is record {
-  amount_out : uint;
+type SwapResult is record {
+  amountOut : uint;
   fee : uint;
 }
 
 interface Exchange is {
-  function swap(amount_in : uint) : swap_result;
+  function swap(amountIn : uint) : SwapResult;
 }
 
 interface Vault is {
@@ -21,15 +21,15 @@ interface Token is {
   function transfer(to : address; amount : uint);
 }
 
-type order_status is
+type OrderStatus is
   | New
   | Pending
   | Complete
   | Redeemed
 
-type order is record {
-  status : order_status;
-  amount_out : uint;
+type Order is record {
+  status : OrderStatus;
+  amountOut : uint;
   shares : uint;
 }
 
@@ -37,17 +37,17 @@ error AlreadyPlaced of uint;
 
 event Executed of record {
   indexed id : uint;
-  amount_out : uint;
+  amountOut : uint;
   fee : uint;
 }
 
 storage is record {
   exchange : Exchange;
   vault : Vault;
-  orders : map(uint, order);
+  orders : map(uint, Order);
   principal : uint;
   earned : uint;
-  paid_out : bool;
+  paidOut : bool;
 }
 
 external function init(const exchange : Exchange; const vault : Vault) is {
@@ -58,17 +58,17 @@ external function init(const exchange : Exchange; const vault : Vault) is {
 (* The exchange sees the order as pending. The continuation binds the swap's result,
    marks the order complete, and deposits the proceeds, whose shares arrive in a
    nested continuation. *)
-external nonreentrant function execute(const id : uint; const amount_in : uint)
+external nonreentrant function execute(const id : uint; const amountIn : uint)
   raises AlreadyPlaced
 is {
   assert(storage.orders[id].status = New, AlreadyPlaced(id));
   storage.orders[id].status := Pending;
-  defer storage.exchange.swap(amount_in)
-    then (result : swap_result) {
+  defer storage.exchange.swap(amountIn)
+    then (result : SwapResult) {
       storage.orders[id].status := Complete;
-      storage.orders[id].amount_out := result.amount_out;
-      emit Executed { id = id; amount_out = result.amount_out; fee = result.fee; };
-      defer storage.vault.deposit(result.amount_out)
+      storage.orders[id].amountOut := result.amountOut;
+      emit Executed { id = id; amountOut = result.amountOut; fee = result.fee; };
+      defer storage.vault.deposit(result.amountOut)
         then (shares : uint) {
           storage.orders[id].shares := shares;
         };
@@ -87,11 +87,11 @@ external nonreentrant function redeem(const id : uint) is {
 
 (* A call that returns nothing can still be followed, to sequence effects after it. *)
 external nonreentrant function pay(const token : Token; const to : address; const amount : uint) is {
-  storage.paid_out := false;
+  storage.paidOut := false;
   defer token.transfer(to, amount)
     then {
-      storage.paid_out := true;
+      storage.paidOut := true;
     };
 }
 
-external view function order_of(const id : uint) : order is storage.orders[id]
+external view function orderOf(const id : uint) : Order is storage.orders[id]

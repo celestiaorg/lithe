@@ -33,25 +33,25 @@ module ERC20Permit is {
     raises ERC2612ExpiredSignature | ECDSAInvalidSignature | ECDSAInvalidSignatureS | ERC2612InvalidSigner
       | ERC20InvalidApprover | ERC20InvalidSpender
   is {
-    assert(uint(Evm.block_timestamp()) <= deadline, ERC2612ExpiredSignature(deadline));
-    const struct_hash : bytes32 := Crypto.keccak256(Abi.encode(
+    assert(uint(Evm.blockTimestamp()) <= deadline, ERC2612ExpiredSignature(deadline));
+    const structHash : bytes32 := Crypto.keccak256(Abi.encode(
       Crypto.keccak256("Permit(address owner,address spender,uint256 value,uint256 nonce,uint256 deadline)"),
       owner,
       spender,
       value,
-      Nonces.use_nonce(owner),
+      Nonces.useNonce(owner),
       deadline
     ));
-    const signer : address := ECDSA.recover(EIP712.hash_typed_data(struct_hash), v, r, s);
+    const signer : address := ECDSA.recover(EIP712.hashTypedData(structHash), v, r, s);
     assert(signer = owner, ERC2612InvalidSigner { signer = signer; owner = owner; });
-    ERC20.approve_as(owner, spender, value, true);
+    ERC20.approveAs(owner, spender, value, true);
   }
 
   external view function nonces(const owner : address) : uint is
-    Nonces.nonce_state.nonces[owner]
+    Nonces.nonceState.nonces[owner]
 
   external view function DOMAIN_SEPARATOR() : bytes32 is
-    EIP712.domain_separator()
+    EIP712.domainSeparator()
 }
 
 interface IERC20Permit is {

@@ -51,11 +51,11 @@ Every arithmetic operation is checked against its type's width:
 | division or remainder by zero | `Panic(0x12)` |
 | `Int.min / -1` | `Panic(0x11)` |
 
-Division truncates toward zero, so `-7 / 3` is `-2` and `-7 % 3` is `-1`. To get both results at once, use `Uint.div_rem(a, b)` or `Int.div_rem(a, b)`, which return a tuple.
+Division truncates toward zero, so `-7 / 3` is `-2` and `-7 % 3` is `-1`. To get both results at once, use `Uint.divRem(a, b)` or `Int.divRem(a, b)`, which return a tuple.
 
 A power is checked the same way, and a negative base works: `(-2) ** 3` is `-8`. A power of constants, such as `10 ** 18`, compiles to the number itself.
 
-When every operand is a constant, the check runs at compile time: an operation that must fail is a compile error, not a panic. The constants are number literals, `Uint.max`, `Int.min`, and `Int.max`, named constants, `const` bindings of constants, and casts and operators over those. So `Uint.max + 1`, `1 / 0`, `2 ** 256`, `uint8(300)`, `-Int.min`, and `Uint.mul_div(1, 1, 0)` are all rejected, even in a branch that never runs. Parameters are never constants, and neither is what a condition proves: `if x = 0 then 1 / x` still panics at run time, and so does `Math.ceil_div(1, 0)`, since its body divides by a parameter.
+When every operand is a constant, the check runs at compile time: an operation that must fail is a compile error, not a panic. The constants are number literals, `Uint.max`, `Int.min`, and `Int.max`, named constants, `const` bindings of constants, and casts and operators over those. So `Uint.max + 1`, `1 / 0`, `2 ** 256`, `uint8(300)`, `-Int.min`, and `Uint.mulDiv(1, 1, 0)` are all rejected, even in a branch that never runs. Parameters are never constants, and neither is what a condition proves: `if x = 0 then 1 / x` still panics at run time, and so does `Math.ceilDiv(1, 0)`, since its body divides by a parameter.
 
 ```lithe rejects
 storage is record {
@@ -84,7 +84,7 @@ storage is record {
 }
 
 external function run(const a : uint; const b : uint) is {
-  const (q, r) : (uint, uint) := Uint.div_rem(a, b);
+  const (q, r) : (uint, uint) := Uint.divRem(a, b);
   storage.q := q;
   storage.r := r;
   storage.masked := (a >> 8) & 0xff;
@@ -117,7 +117,7 @@ storage is record {
   limit : option(uint);
 }
 
-external view function limit_or(const fallback : uint) : uint is
+external view function limitOr(const fallback : uint) : uint is
   case storage.limit of {
   | Some(n) -> n
   | None -> fallback
@@ -131,12 +131,12 @@ The first arm's `|` is optional, so a short match fits on one line: `case p of {
 One arm can cover several cases, `| New | Pending -> 0`. It binds a payload when each case binds the same names and carries the same payload type, `| Queued(why) | Held(why) -> why`. An arm can also be `fail E`, which fits any other arm's type:
 
 ```lithe
-type phase is Open | Paused | Closed
+type Phase is Open | Paused | Closed
 
 error Shut;
 
 storage is record {
-  phase : phase;
+  phase : Phase;
   fee : uint;
 }
 
@@ -150,7 +150,7 @@ external view function fee() : uint raises Shut is
 In a stateful function, an arm can be a block of statements instead of a value. This is how [dispatchers](/language/dispatch) are written:
 
 ```lithe fragment
-external function main(const action : action) is
+external function main(const action : Action) is
   case action of {
   | Deposit(amount) -> {
       storage.total := storage.total + amount;

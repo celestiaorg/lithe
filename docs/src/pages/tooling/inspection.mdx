@@ -12,20 +12,20 @@ The examples on this page use this contract:
 ```lithe [bank.lithe]
 import "std/evm";
 
-error Not_owner;
+error NotOwner;
 error Paused;
 
-error Insufficient_balance of record {
+error InsufficientBalance of record {
   available : uint;
   required : uint;
 }
 
-error Invalid_amount of uint;
+error InvalidAmount of uint;
 
-errors withdrawal_errors is
+errors withdrawalErrors is
   | Paused
-  | Invalid_amount
-  | Insufficient_balance
+  | InvalidAmount
+  | InsufficientBalance
 
 storage is record {
   owner : address;
@@ -38,28 +38,28 @@ event Withdrawal of record {
   amount : uint;
 }
 
-view function require_owner()
-  raises Not_owner
+view function requireOwner()
+  raises NotOwner
 is {
-  assert(Evm.sender() = storage.owner, Not_owner);
+  assert(Evm.sender() = storage.owner, NotOwner);
 }
 
-view function require_amount(const amount : uint) : uint
-  raises Invalid_amount
+view function requireAmount(const amount : uint) : uint
+  raises InvalidAmount
 is {
-  assert(amount <> 0, Invalid_amount(amount));
+  assert(amount <> 0, InvalidAmount(amount));
 } with amount
 
 external function withdraw(const amount : uint)
-  raises withdrawal_errors
+  raises withdrawalErrors
 is {
   assert(not storage.paused, Paused);
 
-  const taken : uint := require_amount(amount);
+  const taken : uint := requireAmount(amount);
 
   assert(
     storage.balance >= taken,
-    Insufficient_balance {
+    InsufficientBalance {
       available = storage.balance;
       required = taken;
     }
@@ -73,10 +73,10 @@ is {
   };
 }
 
-external function set_pause(const value : bool)
-  raises Not_owner
+external function setPause(const value : bool)
+  raises NotOwner
 is {
-  require_owner();
+  requireOwner();
   storage.paused := value;
 }
 ```
@@ -91,7 +91,7 @@ lithe footprint bank.lithe
 
 ```text
 withdraw    writes: balance   emits: Withdrawal      raises: Paused, InvalidAmount, InsufficientBalance   during defers: callable
-set_pause   writes: paused                           raises: NotOwner                                     during defers: callable
+setPause   writes: paused                           raises: NotOwner                                     during defers: callable
 ```
 
 `during defers` says whether the entrypoint can run while another transition's deferred calls are running: `callable`, or `rejected` for a `nonreentrant` function. See [Reentrancy](/language/reentrancy).
@@ -111,7 +111,7 @@ lithe abi-tree counter.lithe
 ```text
 reset
   path:
-    main -> owner_main -> reset
+    main -> ownerMain -> reset
 
   calls:
     none
@@ -130,7 +130,7 @@ reset
     none
 
   events:
-    - Count_changed
+    - CountChanged
 
   operations:
     none
@@ -181,7 +181,7 @@ withdraw(uint256)
   InvalidAmount(uint256)
   InsufficientBalance(uint256,uint256)
 
-set_pause(bool)
+setPause(bool)
 
   NotOwner()
 

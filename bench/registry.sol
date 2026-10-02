@@ -22,11 +22,11 @@ contract Registry {
         emit Renamed(n);
     }
 
-    function set_blob(bytes calldata b) external {
+    function setBlob(bytes calldata b) external {
         _blob = b;
     }
 
-    function set_both(string calldata n, bytes calldata b) external {
+    function setBoth(string calldata n, bytes calldata b) external {
         _name = n;
         _blob = b;
     }
@@ -43,7 +43,7 @@ contract Registry {
         return keccak256(_blob);
     }
 
-    function set_tag(bytes4 t, uint8 level_) external {
+    function setTag(bytes4 t, uint8 level_) external {
         _tag = t;
         _level = level_;
         emit Tagged(msg.sender, t, level_);

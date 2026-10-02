@@ -14,15 +14,15 @@ A variant type lists every case a value can take, and each case may carry a payl
 
 import "std/evm";
 
-type send_params is record {
+type SendParams is record {
   to : address;
   amount : uint;
 }
 
-type action is
-  | Deposit of uint
-  | Send of send_params
-  | Reset
+type Action is
+  | Deposit external deposit of uint
+  | Send external send of SendParams
+  | Reset external reset
 
 error Insufficient of uint;
 
@@ -32,7 +32,7 @@ storage is record {
 
 (* `case` must handle every case; leaving one out is a compile error.
    Each arm binds the case's payload. *)
-external function main(const action : action)
+external function main(const action : Action)
   raises Insufficient
 is
   case action of {
@@ -50,7 +50,7 @@ is
     }
   }
 
-external view function balance_of(const who : address) : uint is
+external view function balanceOf(const who : address) : uint is
   storage.balances[who]
 ```
 
@@ -65,7 +65,7 @@ A variant value is written by naming its case. A variant with no payloads is one
 ```lithe [market.lithe]
 import "std/evm";
 
-type phase is
+type Phase is
   | Open
   | Paused
   | Settled of uint
@@ -74,7 +74,7 @@ error NotOpen;
 error NotSettled;
 
 storage is record {
-  phase : phase;
+  phase : Phase;
   bids : map(address, uint);
 }
 
@@ -107,14 +107,14 @@ external view function price() : uint raises NotSettled is
 Payloads may hold strings, bytes, and lists. One arm can bind the payload of several cases when they carry the same type:
 
 ```lithe [review.lithe]
-type review is
+type Review is
   | Draft
   | Rejected of string
   | Withdrawn of string
   | Approved of list(address)
 
 storage is record {
-  reviews : map(uint, review);
+  reviews : map(uint, Review);
 }
 
 external function reject(const id : uint; const why : string) is {

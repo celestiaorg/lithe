@@ -17,20 +17,20 @@ fn publish_generic(prog: &mut Program) -> Result<(), Error> {
         if module
             .types
             .iter()
-            .filter(|decl| decl.name == "self")
+            .filter(|decl| decl.name == "Self")
             .count()
             > 1
         {
             return Err(error(
                 module.line,
                 module.col,
-                format!("module `{}` declares `self` more than once", module.name),
+                format!("module `{}` declares `Self` more than once", module.name),
             )
             .in_file(&module.origin));
         }
         for param in &module.params {
             if let Some(constraint) = &param.constraint {
-                if constraint != "map_key" {
+                if constraint != "MapKey" {
                     return Err(error(
                         param.line,
                         param.col,
@@ -360,8 +360,34 @@ fn exported_name(module: &str, name: &str, k: usize) -> String {
     format!("{module}.{name}#{k}")
 }
 
+/// A module's internal and external functions never share a name, as a contract's don't.
+pub(super) fn reject_mixed_names(funcs: &[Func]) -> Result<(), Error> {
+    let internal = |func: &Func| {
+        matches!(
+            func.kind,
+            ItemKind::Function | ItemKind::Readonly | ItemKind::Pure
+        )
+    };
+    for (i, new) in funcs.iter().enumerate() {
+        if let Some(have) = funcs[..i]
+            .iter()
+            .find(|have| have.name == new.name && internal(have) != internal(new))
+        {
+            return Err(crate::modules::clash(
+                format!("duplicate function `{}`", crate::modules::shown(&new.name)),
+                &new.name,
+                &crate::modules::Site::of(&have.origin, have.line, have.col, ""),
+                &crate::modules::Site::of(&new.origin, new.line, new.col, ""),
+                None,
+                "an external and an internal function cannot share a name; rename one of them",
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// Internal functions that share a name become `f@1`, `f@2`, ..., which no source can name;
-/// a call picks one by its arguments. A name an external also has stays, to be a duplicate.
+/// a call picks one by its arguments. An internal and an external never share a name.
 pub(super) fn name_overloads(
     funcs: &mut [Func],
     prefix: &str,
@@ -672,7 +698,7 @@ pub(super) type Supported = (NameAt, Vec<(String, [u8; 4], Vec<String>)>);
 /// itself, and for each interface it lists. It must have each one: dispatch every one of its
 /// methods, with the same result. An interface's id is the XOR of its methods' selectors.
 /// The contract is checked again with the function added. One that writes its own keeps it,
-/// and answers for the list with `Abi.supports_interface`.
+/// and answers for the list with `Abi.supportsInterface`.
 pub(super) fn supports_interface(
     mut checked: Checked,
     known: &[Supported],
@@ -761,7 +787,7 @@ pub(super) fn supports_interface(
             return Err(error(
                 line,
                 col,
-                "the contract writes its own `supportsInterface`, which does not answer for the interfaces `supports` lists\n\nanswer for them there, with `Abi.supports_interface`, or remove it to have them answered",
+                "the contract writes its own `supportsInterface`, which does not answer for the interfaces `supports` lists\n\nanswer for them there, with `Abi.supportsInterface`, or remove it to have them answered",
             ));
         }
         return Ok(checked);

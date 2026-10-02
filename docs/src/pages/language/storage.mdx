@@ -58,7 +58,7 @@ A named domain has its own ERC-7201 root, derived from its id string:
 
 ```lithe
 storage settings at "vault.settings" is record {
-  fee_bps : uint;
+  feeBps : uint;
   treasury : address;
 }
 
@@ -70,8 +70,8 @@ storage is record {
   owner : address;
 }
 
-external function configure(const fee_bps : uint; const treasury : address) is {
-  settings.fee_bps := fee_bps;
+external function configure(const feeBps : uint; const treasury : address) is {
+  settings.feeBps := feeBps;
   settings.treasury := treasury;
 }
 
@@ -80,7 +80,7 @@ external function trade(const amount : uint) is {
 }
 ```
 
-A named domain is accessed by its name: `settings.fee_bps`. Its root is `keccak256(abi.encode(uint256(keccak256(id)) - 1)) & ~0xff`, the ERC-7201 formula, so it matches Solidity's `@custom:storage-location erc7201:vault.settings`. Within a domain, fields are laid out like the default record, starting at the root.
+A named domain is accessed by its name: `settings.feeBps`. Its root is `keccak256(abi.encode(uint256(keccak256(id)) - 1)) & ~0xff`, the ERC-7201 formula, so it matches Solidity's `@custom:storage-location erc7201:vault.settings`. Within a domain, fields are laid out like the default record, starting at the root.
 
 Named domains are how modules own state, and how storage stays stable across upgrades. Adding a domain or reordering domains never moves anything else. Two domains with the same id in one contract are a compile error.
 
@@ -128,27 +128,27 @@ An immutable is a value fixed while the contract is set up, such as a factory ad
 ```lithe
 import "std/evm";
 
-error Fee_too_high of uint;
+error FeeTooHigh of uint;
 
 immutable is record {
   factory : address;
-  fee_bps : uint16;
+  feeBps : uint16;
 }
 
 storage is record {
   total : uint;
 }
 
-deploy(const fee_bps : uint16)
-  raises Fee_too_high
+deploy(const feeBps : uint16)
+  raises FeeTooHigh
 is {
-  assert(fee_bps <= 1000, Fee_too_high(uint(fee_bps)));
+  assert(feeBps <= 1000, FeeTooHigh(uint(feeBps)));
   immutable.factory := Evm.sender();
-  immutable.fee_bps := fee_bps;
+  immutable.feeBps := feeBps;
 }
 
 external function trade(const amount : uint) is {
-  storage.total := storage.total + amount * uint(immutable.fee_bps) / 10_000;
+  storage.total := storage.total + amount * uint(immutable.feeBps) / 10_000;
 }
 
 external view function factory() : address is
@@ -257,13 +257,13 @@ Zeroing a slot refunds gas, up to a fifth of the transaction's, so deleting pays
 You can write one field of a stored record, or a whole record into a field or a map entry. A record that holds strings, bytes, or lists writes each of them as its own type does:
 
 ```lithe
-type order is record {
+type Order is record {
   status : uint8;
   amount : uint;
 }
 
 storage is record {
-  orders : map(uint, order);
+  orders : map(uint, Order);
 }
 
 external function place(const id : uint; const amount : uint) is {

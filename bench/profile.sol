@@ -13,7 +13,7 @@ contract Profile {
         _avatar = avatar_;
     }
 
-    function set_bio(string calldata bio_) external {
+    function setBio(string calldata bio_) external {
         _bio = bio_;
     }
 

@@ -63,21 +63,21 @@ contract Records {
         orders[dst].inner = Inner(!o.inner.flag, o.inner.delta);
     }
 
-    function pair_set(uint256 k, uint128 a, uint128 b) external {
+    function pairSet(uint256 k, uint128 a, uint128 b) external {
         pairs[msg.sender][k] = Pair(a, b);
         pairs[msg.sender][k + 1].b = b;
     }
 
-    function head_set(uint128 total) external {
+    function headSet(uint128 total) external {
         head = split(total);
         pairs[msg.sender][0] = split(total + 1);
     }
 
-    function head_swap() external {
+    function headSwap() external {
         head = Pair(head.b, head.a);
     }
 
-    function odd_of(uint128 total) external pure returns (uint128) {
+    function oddOf(uint128 total) external pure returns (uint128) {
         Pair memory p = split(total);
         return p.b - split(total).a;
     }
@@ -86,31 +86,31 @@ contract Records {
         top = orders[id];
     }
 
-    function reset_top(uint256 amount, int16 delta) external {
+    function resetTop(uint256 amount, int16 delta) external {
         top = fresh(msg.sender, amount, delta);
     }
 
-    function top_order() external view returns (Order memory) {
+    function topOrder() external view returns (Order memory) {
         return top;
     }
 
-    function head_pair() external view returns (Pair memory) {
+    function headPair() external view returns (Pair memory) {
         return head;
     }
 
-    function order_of(uint256 id) external view returns (Order memory) {
+    function orderOf(uint256 id) external view returns (Order memory) {
         return orders[id];
     }
 
-    function status_of(uint256 id) external view returns (uint8) {
+    function statusOf(uint256 id) external view returns (uint8) {
         return orders[id].status;
     }
 
-    function delta_of(uint256 id) external view returns (int16) {
+    function deltaOf(uint256 id) external view returns (int16) {
         return orders[id].inner.delta;
     }
 
-    function pair_of(address who, uint256 k) external view returns (Pair memory) {
+    function pairOf(address who, uint256 k) external view returns (Pair memory) {
         return pairs[who][k];
     }
 }

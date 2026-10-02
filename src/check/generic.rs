@@ -289,13 +289,13 @@ impl Checker {
                     format!("could not infer type parameter `{}`", param.name),
                 ));
             }
-            if param.constraint.as_deref() == Some("map_key") {
+            if param.constraint.as_deref() == Some("MapKey") {
                 let id = env[&param.name];
                 if !self.map_key_ok(id) {
                     return Err(error(
                         line,
                         col,
-                        format!("type `{}` does not satisfy `map_key`", self.ty_label(id)),
+                        format!("type `{}` does not satisfy `MapKey`", self.ty_label(id)),
                     ));
                 }
             }
@@ -830,6 +830,7 @@ fn subst_bound(ty: &TypeRef, env: &HashMap<String, usize>) -> TypeRef {
                         .as_ref()
                         .map(|payload| subst_bound(payload, env)),
                     param: variant.param.clone(),
+                    external: variant.external.clone(),
                 })
                 .collect(),
         },

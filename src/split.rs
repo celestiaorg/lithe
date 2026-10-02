@@ -88,7 +88,7 @@ pub(crate) struct Shape {
     pub forward: Vec<([u8; 4], usize)>,
     /// The addresses of the facets selectors are forwarded to.
     pub parts: Vec<Word>,
-    /// Every facet's address, by module, for `Evm.facet_address`.
+    /// Every facet's address, by module, for `Evm.facetAddress`.
     pub facet_at: HashMap<String, Word>,
     /// The ids of the immutables each facet reads after its calldata, in order.
     pub tails: Vec<Vec<String>>,

@@ -12,7 +12,7 @@ deploy(const name : string; const avatar : bytes) is {
   storage.avatar := avatar;
 }
 
-external function set_bio(const bio : string) is {
+external function setBio(const bio : string) is {
   storage.bio := bio;
 }
 

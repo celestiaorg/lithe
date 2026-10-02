@@ -6,13 +6,13 @@ module Base64 is {
      The standard alphabet, padded with `=`. *)
   intrinsic encode;
 
-  (* encode_url(data : bytes | string) : string
+  (* encodeUrl(data : bytes | string) : string
      `-` and `_` for `+` and `/`, and no padding. *)
-  intrinsic encode_url;
+  intrinsic encodeUrl;
 
-  (* encode_with(data : bytes | string; file_safe : bool; no_padding : bool) : string
-     `encode_with(data, file_safe, no_padding)`, with `bool` flags. *)
-  intrinsic encode_with;
+  (* encodeWith(data : bytes | string; fileSafe : bool; noPadding : bool) : string
+     `encodeWith(data, fileSafe, noPadding)`, with `bool` flags. *)
+  intrinsic encodeWith;
 
   (* decode(data : bytes | string) : bytes
      The bytes either alphabet encodes, padded or not. Other characters decode as

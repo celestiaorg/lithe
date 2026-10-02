@@ -88,7 +88,7 @@ fn counter_enforces_storage_and_sender() {
 
     let view = exec(
         &runtime,
-        &word_data("get_count()", &[]),
+        &word_data("getCount()", &[]),
         {
             let mut s = HashMap::new();
             s.insert(Word::from_u64(0), Word::from_u64(42));
@@ -137,7 +137,7 @@ fn rejected_programs_name_the_rule() {
             .contains("external function `go` must declare its errors"),
         "{err}"
     );
-    assert!(err.to_string().contains("Not_owner"), "{err}");
+    assert!(err.to_string().contains("NotOwner"), "{err}");
     let err = compile(ERROR_MISMATCH).expect_err("mismatch");
     assert!(
         err.to_string()
@@ -151,12 +151,6 @@ fn rejected_programs_name_the_rule() {
     let err = compile(UNTYPED_BINDING).expect_err("untyped");
     assert!(
         err.to_string().contains("local bindings require a type"),
-        "{err}"
-    );
-    let err = compile(ERROR_COLLISION).expect_err("collision");
-    assert!(
-        err.to_string()
-            .contains("error selector `NotOwner()` collides with `NotOwner()`"),
         "{err}"
     );
 }
@@ -237,7 +231,7 @@ fn touch_records_time_for_the_guard() {
     let next = Word::from_u64(0xcd);
     let moved = exec(
         &runtime,
-        &word_data("set_guard(address)", &[next]),
+        &word_data("setGuard(address)", &[next]),
         storage,
         guard,
         Word::from_u64(0),
@@ -288,7 +282,7 @@ fn gate_pays_out_only_when_open() {
 
     let denied = exec(
         &runtime,
-        &word_data("set_open(bool)", &[Word::from_u64(1)]),
+        &word_data("setOpen(bool)", &[Word::from_u64(1)]),
         storage.clone(),
         Word::from_u64(0xcd),
         Word::from_u64(0),
@@ -300,7 +294,7 @@ fn gate_pays_out_only_when_open() {
 
     let opened = exec(
         &runtime,
-        &word_data("set_open(bool)", &[Word::from_u64(1)]),
+        &word_data("setOpen(bool)", &[Word::from_u64(1)]),
         storage.clone(),
         owner,
         Word::from_u64(0),
@@ -398,7 +392,7 @@ fn typed_errors_revert_with_custom_error_data() {
 
     let stranger = exec(
         &runtime,
-        &word_data("set_pause(bool)", &[Word::from_u64(1)]),
+        &word_data("setPause(bool)", &[Word::from_u64(1)]),
         storage.clone(),
         Word::from_u64(0xcd),
         Word::from_u64(0),
@@ -411,7 +405,7 @@ fn typed_errors_revert_with_custom_error_data() {
 
     let closed = exec(
         &runtime,
-        &word_data("set_pause(bool)", &[Word::from_u64(1)]),
+        &word_data("setPause(bool)", &[Word::from_u64(1)]),
         storage,
         owner,
         Word::from_u64(0),
@@ -456,7 +450,7 @@ fn dispatch_errors_follow_the_path() {
         "\
 reset
   path:
-    main -> owner_main -> reset
+    main -> ownerMain -> reset
 
   calls:
     none
@@ -484,7 +478,7 @@ reset
 
 increment
   path:
-    main -> public_main -> increment
+    main -> publicMain -> increment
 
   calls:
     none
@@ -528,7 +522,7 @@ withdraw(uint256)
     assert!(
         report.contains(
             "\
-set_pause(bool)
+setPause(bool)
 
   NotOwner()
 "
@@ -554,7 +548,7 @@ raised by:
         "{report}"
     );
     assert!(
-        report.contains("raised by:\n  set_pause(bool)\n"),
+        report.contains("raised by:\n  setPause(bool)\n"),
         "{report}"
     );
 }
@@ -584,44 +578,44 @@ is {{
     let pairs = [
         (
             "r := uint(a) * uint(b) * 1000000;",
-            "r := Uint.wrapping_mul(Uint.wrapping_mul(uint(a), uint(b)), 1000000);",
+            "r := Uint.wrappingMul(Uint.wrappingMul(uint(a), uint(b)), 1000000);",
         ),
         (
             "r := shifted(a, b) * uint(c);",
-            "r := Uint.wrapping_mul(shifted(a, b), uint(c));",
+            "r := Uint.wrappingMul(shifted(a, b), uint(c));",
         ),
-        ("r := n / 2 + 1;", "r := Uint.wrapping_add(n / 2, 1);"),
+        ("r := n / 2 + 1;", "r := Uint.wrappingAdd(n / 2, 1);"),
         (
             "if n > m then { r := n - m; }",
-            "if n > m then { r := Uint.wrapping_sub(n, m); }",
+            "if n > m then { r := Uint.wrappingSub(n, m); }",
         ),
         (
             "if n <= m then { r := 1; } else { r := n - m; }",
-            "if n <= m then { r := 1; } else { r := Uint.wrapping_sub(n, m); }",
+            "if n <= m then { r := 1; } else { r := Uint.wrappingSub(n, m); }",
         ),
         (
             "if not (n < m) then { r := n - m; }",
-            "if not (n < m) then { r := Uint.wrapping_sub(n, m); }",
+            "if not (n < m) then { r := Uint.wrappingSub(n, m); }",
         ),
         (
             "if n > uint(a) - m then { r := n - (uint(a) - m); }",
-            "if n > uint(a) - m then { r := Uint.wrapping_sub(n, uint(a) - m); }",
+            "if n > uint(a) - m then { r := Uint.wrappingSub(n, uint(a) - m); }",
         ),
         (
             "assert(n >= m, Low); r := n - m;",
-            "assert(n >= m, Low); r := Uint.wrapping_sub(n, m);",
+            "assert(n >= m, Low); r := Uint.wrappingSub(n, m);",
         ),
         (
             "if m <> 0 and m - 1 < n then { r := 1; }",
-            "if m <> 0 and Uint.wrapping_sub(m, 1) < n then { r := 1; }",
+            "if m <> 0 and Uint.wrappingSub(m, 1) < n then { r := 1; }",
         ),
         (
             "assert(m <= Uint.max - n, Low); r := n + m;",
-            "assert(m <= Uint.max - n, Low); r := Uint.wrapping_add(n, m);",
+            "assert(m <= Uint.max - n, Low); r := Uint.wrappingAdd(n, m);",
         ),
         (
             "assert(m <= uint(a) - n, Low); r := m + n;",
-            "assert(m <= uint(a) - n, Low); r := Uint.wrapping_add(m, n);",
+            "assert(m <= uint(a) - n, Low); r := Uint.wrappingAdd(m, n);",
         ),
     ];
     for (checked, wrapping) in pairs {
@@ -656,7 +650,7 @@ external view function reassigned(const n : uint; const m : uint) : uint is {
     r := x - m;
   }
 } with r
-external view function other_path(const n : uint; const m : uint) : uint is {
+external view function otherPath(const n : uint; const m : uint) : uint is {
   var r : uint := 0;
   if n > m then {
     r := 1;
@@ -664,7 +658,7 @@ external view function other_path(const n : uint; const m : uint) : uint is {
     r := n - m;
   }
 } with r
-external view function after_scope(const n : uint; const m : uint) : uint is {
+external view function afterScope(const n : uint; const m : uint) : uint is {
   var r : uint := 0;
   if n > m then {
     r := n - m;
@@ -677,7 +671,7 @@ is {
 } with n - m
 external view function wide(const n : uint; const a : uint112) : uint is n * uint(a)
 external view function fits(const a : uint112; const b : uint112) : uint is uint(a) * uint(b) * 1000000
-external view function narrow_sub(const a : uint8; const b : uint8) : uint8 is a - b
+external view function narrowSub(const a : uint8; const b : uint8) : uint8 is a - b
 external view function cast(const n : uint) : uint32 is uint32(n % 4294967297)
 ";
     let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
@@ -698,10 +692,10 @@ external view function cast(const n : uint) : uint32 is uint32(n % 4294967297)
     };
     panics("reassigned(uint256,uint256)", &[w(5), w(3)]);
     returns("reassigned(uint256,uint256)", &[w(3), w(5)], w(0));
-    panics("other_path(uint256,uint256)", &[w(3), w(5)]);
-    returns("other_path(uint256,uint256)", &[w(5), w(3)], w(1));
-    panics("after_scope(uint256,uint256)", &[w(3), w(5)]);
-    returns("after_scope(uint256,uint256)", &[w(5), w(3)], w(4));
+    panics("otherPath(uint256,uint256)", &[w(3), w(5)]);
+    returns("otherPath(uint256,uint256)", &[w(5), w(3)], w(1));
+    panics("afterScope(uint256,uint256)", &[w(3), w(5)]);
+    returns("afterScope(uint256,uint256)", &[w(5), w(3)], w(4));
     returns("guarded(uint256,uint256)", &[w(5), w(3)], w(2));
     let low = call(&runtime, "guarded(uint256,uint256)", &[w(3), w(5)]);
     assert!(low.reverted && low.returndata.starts_with(&selector("Low()")));
@@ -712,8 +706,8 @@ external view function cast(const n : uint) : uint32 is uint32(n % 4294967297)
         &[most, most],
         most.wrapping_mul(most).wrapping_mul(w(1_000_000)),
     );
-    panics("narrow_sub(uint8,uint8)", &[w(3), w(5)]);
-    returns("narrow_sub(uint8,uint8)", &[w(5), w(3)], w(2));
+    panics("narrowSub(uint8,uint8)", &[w(3), w(5)]);
+    returns("narrowSub(uint8,uint8)", &[w(5), w(3)], w(2));
     panics("cast(uint256)", &[Word::from_u64(1).shl(32)]);
     returns("cast(uint256)", &[w(5)], w(5));
 }
@@ -743,19 +737,19 @@ is {{
     let pairs = [
         (
             "if x > m then { r := x - m; }",
-            "if x > m then { r := Uint.wrapping_sub(x, m); }",
+            "if x > m then { r := Uint.wrappingSub(x, m); }",
         ),
         (
             "assert(x >= m, Low); r := x - m;",
-            "assert(x >= m, Low); r := Uint.wrapping_sub(x, m);",
+            "assert(x >= m, Low); r := Uint.wrappingSub(x, m);",
         ),
         (
             "const k : uint := x + 1; if k > m then { r := k - m; }",
-            "const k : uint := x + 1; if k > m then { r := Uint.wrapping_sub(k, m); }",
+            "const k : uint := x + 1; if k > m then { r := Uint.wrappingSub(k, m); }",
         ),
         (
             "for _ : uint in 0 .. 9 until x < m do { r := r + (x - m); x := x / 2; }",
-            "for _ : uint in 0 .. 9 until x < m do { r := r + Uint.wrapping_sub(x, m); x := x / 2; }",
+            "for _ : uint in 0 .. 9 until x < m do { r := r + Uint.wrappingSub(x, m); x := x / 2; }",
         ),
     ];
     for (checked, wrapping) in pairs {
@@ -888,7 +882,7 @@ external view function tuple(const n : uint; const m : uint) : uint raises Low i
   assert(y <> 0, Low);
   (x, y) := (y, x - x);
 } with x / y
-external view function in_body(const n : uint; const m : uint) : uint is {
+external view function inBody(const n : uint; const m : uint) : uint is {
   var y : uint := m;
   var r : uint := 0;
   for _ : uint in 0 .. 3 until y = 0 do {
@@ -896,7 +890,7 @@ external view function in_body(const n : uint; const m : uint) : uint is {
     r := n % y;
   }
 } with r
-external view function next_iteration(const n : uint; const m : uint) : uint raises Low is {
+external view function nextIteration(const n : uint; const m : uint) : uint raises Low is {
   var y : uint := m;
   var r : uint := 0;
   assert(y <> 0, Low);
@@ -957,10 +951,10 @@ external view function popped(const ys : list(uint); const n : uint) : uint is {
     panics("branch(uint256,uint256)", &[w(7), w(1)], 0x12);
     returns("branch(uint256,uint256)", &[w(4), w(2)], w(2));
     panics("tuple(uint256,uint256)", &[w(7), w(1)], 0x12);
-    panics("in_body(uint256,uint256)", &[w(7), w(1)], 0x12);
-    returns("in_body(uint256,uint256)", &[w(7), w(5)], w(1));
-    panics("next_iteration(uint256,uint256)", &[w(7), w(1)], 0x12);
-    returns("next_iteration(uint256,uint256)", &[w(12), w(6)], w(2 + 2 + 3));
+    panics("inBody(uint256,uint256)", &[w(7), w(1)], 0x12);
+    returns("inBody(uint256,uint256)", &[w(7), w(5)], w(1));
+    panics("nextIteration(uint256,uint256)", &[w(7), w(1)], 0x12);
+    returns("nextIteration(uint256,uint256)", &[w(12), w(6)], w(2 + 2 + 3));
     panics("nested(uint256,uint256)", &[w(101), w(1)], 0x12);
     returns("nested(uint256,uint256)", &[w(4), w(2)], w(12));
     panics("sub(uint256,uint256)", &[w(8), w(3)], 0x11);
@@ -1104,12 +1098,12 @@ fn loops_keep_no_spans_of_what_their_callees_bind() {
     let src = "\
 import \"std/bytes\";
 storage is record { n : uint; }
-pure function byte_at(const d : bytes; const i : uint) : uint is uint(uint8(d[i]))
+pure function byteAt(const d : bytes; const i : uint) : uint is uint(uint8(d[i]))
 pure function cut(const d : bytes; const s : uint; const k : uint) : uint is uint(bytes32(d[s:s + k])) >> 240
 external pure function sums(const d : bytes) : uint is {
   var r : uint := 0;
   for i : uint in 0 .. 2 do {
-    r := r + byte_at(d, i + 1);
+    r := r + byteAt(d, i + 1);
   }
 } with r
 external pure function cuts(const d : bytes) : uint is {
@@ -1195,7 +1189,7 @@ external pure function asserted(const x : uint) : uint
 is {
   assert(x = 0 or 10 / x < 5, Bad);
 } with x
-external pure function until_either(const x : uint) : uint is {
+external pure function untilEither(const x : uint) : uint is {
   var i : uint := 0;
   for _ : uint in 0 .. 10 until i = x or 12 / (x - i) = 0 do {
     i := i + 1;
@@ -1227,9 +1221,9 @@ external pure function until_either(const x : uint) : uint is {
     returns("asserted(uint256)", w(3), w(3));
     let bad = call(&runtime, "asserted(uint256)", &[w(1)]);
     assert!(bad.reverted && bad.returndata.starts_with(&selector("Bad()")));
-    returns("until_either(uint256)", w(0), w(0));
-    returns("until_either(uint256)", w(3), w(3));
-    returns("until_either(uint256)", w(20), w(0));
+    returns("untilEither(uint256)", w(0), w(0));
+    returns("untilEither(uint256)", w(3), w(3));
+    returns("untilEither(uint256)", w(20), w(0));
 }
 
 /// A loop counter indexes another list unchecked only when the facts tie that list's length
@@ -1269,7 +1263,7 @@ external pure function ranged(const xs : list(uint); const n : uint) : uint is {
     acc := acc + xs[i];
   }
 } with acc
-external pure function to_length(const xs : list(uint)) : uint is {
+external pure function toLength(const xs : list(uint)) : uint is {
   var acc : uint := 0;
   for i : uint in 0 .. xs.length do {
     acc := acc + xs[i + 0] * 2;
@@ -1315,7 +1309,7 @@ external pure function to_length(const xs : list(uint)) : uint is {
     assert!(panics(&lists(&format!("unpaired{two}"), &[1, 2, 3], &[4, 5])));
     assert_eq!(value(&list_and("ranged(uint256[],uint256)", &[1, 2, 3], 3)), w(6));
     assert!(panics(&list_and("ranged(uint256[],uint256)", &[1, 2, 3], 4)));
-    let mut c = selector("to_length(uint256[])").to_vec();
+    let mut c = selector("toLength(uint256[])").to_vec();
     for word in [32, 2, 7, 8] {
         c.extend_from_slice(&w(word).to_be_bytes());
     }
@@ -1326,13 +1320,13 @@ external pure function to_length(const xs : list(uint)) : uint is {
 fn sign_changing_casts_are_checked() {
     let src = "import \"std/int\"; import \"std/uint\"; 
 storage is record { n : uint; }
-external pure function to_uint(const x : int) : uint is uint(x)
-external pure function to_int(const n : uint) : int is int(n)
-external pure function to_int16(const n : uint) : int16 is int16(n)
-external pure function to_uint8(const x : int8) : uint8 is uint8(x)
-external pure function to_wei(const x : int) : wei is wei(x)
-external pure function uint_bits(const x : int) : uint is Uint.from_bits(x)
-external pure function int_bits(const n : uint) : int is Int.from_bits(n)
+external pure function toUint(const x : int) : uint is uint(x)
+external pure function toInt(const n : uint) : int is int(n)
+external pure function toInt16(const n : uint) : int16 is int16(n)
+external pure function toUint8(const x : int8) : uint8 is uint8(x)
+external pure function toWei(const x : int) : wei is wei(x)
+external pure function uintBits(const x : int) : uint is Uint.fromBits(x)
+external pure function intBits(const n : uint) : int is Int.fromBits(n)
 ";
     let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
     let w = Word::from_u64;
@@ -1351,21 +1345,21 @@ external pure function int_bits(const n : uint) : int is Int.from_bits(n)
             Some(load_bytes(&out.returndata, 0))
         }
     };
-    assert_eq!(out("to_uint(int256)", w(7)), Some(w(7)));
-    assert_eq!(out("to_uint(int256)", neg), None);
-    assert_eq!(out("to_wei(int256)", neg), None);
+    assert_eq!(out("toUint(int256)", w(7)), Some(w(7)));
+    assert_eq!(out("toUint(int256)", neg), None);
+    assert_eq!(out("toWei(int256)", neg), None);
     assert_eq!(
-        out("to_int(uint256)", top.wrapping_sub(w(1))),
+        out("toInt(uint256)", top.wrapping_sub(w(1))),
         Some(top.wrapping_sub(w(1)))
     );
-    assert_eq!(out("to_int(uint256)", top), None);
-    assert_eq!(out("to_int16(uint256)", w(32767)), Some(w(32767)));
-    assert_eq!(out("to_int16(uint256)", w(32768)), None);
-    assert_eq!(out("to_int16(uint256)", neg), None);
-    assert_eq!(out("to_uint8(int8)", w(127)), Some(w(127)));
-    assert_eq!(out("to_uint8(int8)", neg), None);
-    assert_eq!(out("uint_bits(int256)", neg), Some(neg));
-    assert_eq!(out("int_bits(uint256)", neg), Some(neg));
+    assert_eq!(out("toInt(uint256)", top), None);
+    assert_eq!(out("toInt16(uint256)", w(32767)), Some(w(32767)));
+    assert_eq!(out("toInt16(uint256)", w(32768)), None);
+    assert_eq!(out("toInt16(uint256)", neg), None);
+    assert_eq!(out("toUint8(int8)", w(127)), Some(w(127)));
+    assert_eq!(out("toUint8(int8)", neg), None);
+    assert_eq!(out("uintBits(int256)", neg), Some(neg));
+    assert_eq!(out("intBits(uint256)", neg), Some(neg));
 }
 
 #[test]
@@ -1400,7 +1394,7 @@ external pure function four8(const b : uint) : uint8 is 4 ** b
 external pure function sq(const a : uint) : uint is a ** 2
 external pure function isq(const a : int) : int is a ** 2
 external pure function tower(const a : uint; const b : uint; const c : uint) : uint is a ** b ** c
-external pure function neg_sq(const x : int) : int is -x ** 2
+external pure function negSq(const x : int) : int is -x ** 2
 external pure function small(const a : uint8; const b : uint8) : uint is (uint(a) % 16) ** (uint(b) % 8)
 ";
     let single = "
@@ -1487,7 +1481,7 @@ external pure function ipow(const a : int; const b : uint) : int is a ** b
         out(r, "tower(uint256,uint256,uint256)", &[w(2), w(3), w(2)]),
         Some(w(512))
     );
-    assert_eq!(out(r, "neg_sq(int256)", &[w(3)]), Some(n(9)));
+    assert_eq!(out(r, "negSq(int256)", &[w(3)]), Some(n(9)));
     assert_eq!(
         out(r, "small(uint8,uint8)", &[w(15), w(7)]),
         Some(w(170_859_375))
@@ -1518,15 +1512,15 @@ external pure function ten(const e : uint) : uint is 10 ** e
 external pure function three(const e : uint) : uint is 3 ** e
 external pure function zero(const e : uint) : uint is 0 ** e
 external pure function one(const e : uint) : uint is 1 ** e
-external pure function minus_one(const e : uint) : int is (-1) ** e
-external pure function minus_ten(const e : uint) : int is (-10) ** e
-external pure function minus_two(const e : uint) : int is (-2) ** e
+external pure function minusOne(const e : uint) : int is (-1) ** e
+external pure function minusTen(const e : uint) : int is (-10) ** e
+external pure function minusTwo(const e : uint) : int is (-2) ** e
 external pure function ten8(const e : uint) : uint8 is 10 ** e
 external pure function three8(const e : uint8) : uint8 is 3 ** e
 external pure function two8(const e : uint) : uint8 is 2 ** e
-external pure function minus_three8(const e : uint) : int8 is (-3) ** e
-external pure function minus_two8(const e : uint) : int8 is (-2) ** e
-external pure function three_i8(const e : uint) : int8 is 3 ** e
+external pure function minusThree8(const e : uint) : int8 is (-3) ** e
+external pure function minusTwo8(const e : uint) : int8 is (-2) ** e
+external pure function threeI8(const e : uint) : int8 is 3 ** e
 external pure function units(const d : uint8) : uint is 10 ** d
 ";
     let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
@@ -1561,35 +1555,35 @@ external pure function units(const d : uint8) : uint is 10 ** d
     assert_eq!(out("zero(uint256)", w(0)), Some(w(1)));
     assert_eq!(out("zero(uint256)", max), Some(w(0)));
     assert_eq!(out("one(uint256)", max), Some(w(1)));
-    assert_eq!(out("minus_one(uint256)", max), Some(n(1)));
+    assert_eq!(out("minusOne(uint256)", max), Some(n(1)));
     assert_eq!(
-        out("minus_one(uint256)", max.wrapping_sub(w(1))),
+        out("minusOne(uint256)", max.wrapping_sub(w(1))),
         Some(w(1))
     );
     assert_eq!(
-        out("minus_ten(uint256)", w(75)),
+        out("minusTen(uint256)", w(75)),
         Some(w(0).wrapping_sub(w(10).overflowing_pow(w(75)).0))
     );
     assert_eq!(
-        out("minus_ten(uint256)", w(76)),
+        out("minusTen(uint256)", w(76)),
         Some(w(10).overflowing_pow(w(76)).0)
     );
-    assert_eq!(out("minus_ten(uint256)", w(77)), None);
-    assert_eq!(out("minus_two(uint256)", w(255)), Some(w(1).shl(255)));
-    assert_eq!(out("minus_two(uint256)", w(256)), None);
+    assert_eq!(out("minusTen(uint256)", w(77)), None);
+    assert_eq!(out("minusTwo(uint256)", w(255)), Some(w(1).shl(255)));
+    assert_eq!(out("minusTwo(uint256)", w(256)), None);
     assert_eq!(out("ten8(uint256)", w(2)), Some(w(100)));
     assert_eq!(out("ten8(uint256)", w(3)), None);
     assert_eq!(out("three8(uint8)", w(5)), Some(w(243)));
     assert_eq!(out("three8(uint8)", w(6)), None);
     assert_eq!(out("two8(uint256)", w(7)), Some(w(128)));
     assert_eq!(out("two8(uint256)", w(8)), None);
-    assert_eq!(out("minus_three8(uint256)", w(3)), Some(n(27)));
-    assert_eq!(out("minus_three8(uint256)", w(4)), Some(w(81)));
-    assert_eq!(out("minus_three8(uint256)", w(5)), None);
-    assert_eq!(out("minus_two8(uint256)", w(7)), Some(n(128)));
-    assert_eq!(out("minus_two8(uint256)", w(8)), None);
-    assert_eq!(out("three_i8(uint256)", w(4)), Some(w(81)));
-    assert_eq!(out("three_i8(uint256)", w(5)), None);
+    assert_eq!(out("minusThree8(uint256)", w(3)), Some(n(27)));
+    assert_eq!(out("minusThree8(uint256)", w(4)), Some(w(81)));
+    assert_eq!(out("minusThree8(uint256)", w(5)), None);
+    assert_eq!(out("minusTwo8(uint256)", w(7)), Some(n(128)));
+    assert_eq!(out("minusTwo8(uint256)", w(8)), None);
+    assert_eq!(out("threeI8(uint256)", w(4)), Some(w(81)));
+    assert_eq!(out("threeI8(uint256)", w(5)), None);
     assert_eq!(
         out("units(uint8)", w(77)),
         Some(w(10).overflowing_pow(w(77)).0)
@@ -1833,10 +1827,10 @@ fn constant_operands_keep_their_checks() {
     let src = "
 storage is record { n : uint; }
 external pure function by3(const x : int) : int is x * 3
-external pure function three_by(const x : int) : int is 3 * x
-external pure function by_minus3(const x : int) : int is x * -3
-external pure function narrow_by3(const x : int8) : int8 is x * 3
-external pure function over_minus3(const x : int) : int is x / -3
+external pure function threeBy(const x : int) : int is 3 * x
+external pure function byMinus3(const x : int) : int is x * -3
+external pure function narrowBy3(const x : int8) : int8 is x * 3
+external pure function overMinus3(const x : int) : int is x / -3
 external pure function rem7(const x : int) : int is x % 7
 external pure function shifted(const x : int) : int is x + -5
 ";
@@ -1856,23 +1850,23 @@ external pure function shifted(const x : int) : int is x + -5
     };
     let top = max.sdiv(w(3));
     let bottom = min.sdiv(w(3));
-    for sig in ["by3(int256)", "three_by(int256)"] {
+    for sig in ["by3(int256)", "threeBy(int256)"] {
         assert_eq!(out(sig, top), Some(top.wrapping_mul(w(3))), "{sig}");
         assert_eq!(out(sig, top.wrapping_add(w(1))), None, "{sig}");
         assert_eq!(out(sig, bottom), Some(bottom.wrapping_mul(w(3))), "{sig}");
         assert_eq!(out(sig, bottom.wrapping_sub(w(1))), None, "{sig}");
         assert_eq!(out(sig, neg(w(7))), Some(neg(w(21))), "{sig}");
     }
-    assert_eq!(out("by_minus3(int256)", bottom), Some(bottom.wrapping_mul(neg(w(3)))));
-    assert_eq!(out("by_minus3(int256)", bottom.wrapping_sub(w(1))), None);
-    assert_eq!(out("by_minus3(int256)", neg(top)), Some(top.wrapping_mul(w(3))));
-    assert_eq!(out("by_minus3(int256)", neg(top).wrapping_sub(w(1))), None);
-    assert_eq!(out("narrow_by3(int8)", w(42)), Some(w(126)));
-    assert_eq!(out("narrow_by3(int8)", w(43)), None);
-    assert_eq!(out("narrow_by3(int8)", neg(w(42))), Some(neg(w(126))));
-    assert_eq!(out("narrow_by3(int8)", neg(w(43))), None);
-    assert_eq!(out("over_minus3(int256)", min), Some(min.sdiv(neg(w(3)))));
-    assert_eq!(out("over_minus3(int256)", w(7)), Some(neg(w(2))));
+    assert_eq!(out("byMinus3(int256)", bottom), Some(bottom.wrapping_mul(neg(w(3)))));
+    assert_eq!(out("byMinus3(int256)", bottom.wrapping_sub(w(1))), None);
+    assert_eq!(out("byMinus3(int256)", neg(top)), Some(top.wrapping_mul(w(3))));
+    assert_eq!(out("byMinus3(int256)", neg(top).wrapping_sub(w(1))), None);
+    assert_eq!(out("narrowBy3(int8)", w(42)), Some(w(126)));
+    assert_eq!(out("narrowBy3(int8)", w(43)), None);
+    assert_eq!(out("narrowBy3(int8)", neg(w(42))), Some(neg(w(126))));
+    assert_eq!(out("narrowBy3(int8)", neg(w(43))), None);
+    assert_eq!(out("overMinus3(int256)", min), Some(min.sdiv(neg(w(3)))));
+    assert_eq!(out("overMinus3(int256)", w(7)), Some(neg(w(2))));
     assert_eq!(out("rem7(int256)", neg(w(9))), Some(neg(w(2))));
     assert_eq!(out("shifted(int256)", w(2)), Some(neg(w(3))));
     assert_eq!(out("shifted(int256)", min.wrapping_add(w(4))), None);
@@ -1957,7 +1951,7 @@ external pure function reassigned(const m : uint8) : uint is {
     q[a + i] := 1;
   }
 } with q.length
-external pure function in_loop(const m : uint8) : uint is {
+external pure function inLoop(const m : uint8) : uint is {
   const a : uint := uint(m);
   var q : list(uint) := List.resized([], a + 2);
   for i : uint in 0 .. 2 do {
@@ -1980,7 +1974,7 @@ external pure function pushed(const m : uint8) : uint is {
         let out = call(&runtime, "fill(uint8)", &[w(m)]);
         assert!(!out.reverted, "fill({m})");
         assert_eq!(load_bytes(&out.returndata, 0), w(21 + (m + 2) * 100), "fill({m})");
-        for f in ["popped(uint8)", "reassigned(uint8)", "in_loop(uint8)"] {
+        for f in ["popped(uint8)", "reassigned(uint8)", "inLoop(uint8)"] {
             let out = call(&runtime, f, &[w(m)]);
             assert!(out.reverted, "{f} {m}");
             assert_eq!(load_bytes(&out.returndata, 4), w(0x32), "{f} {m}");

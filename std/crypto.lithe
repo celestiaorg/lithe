@@ -19,17 +19,17 @@ module Crypto is {
   intrinsic pure function ecrecover(hash : bytes32; v : uint; r : bytes32; s : bytes32) : address;
 
   (* `0x05`, EIP-198: `base ** exponent % modulus` on byte strings, as long as `modulus`. *)
-  intrinsic pure function mod_exp(base : bytes; exponent : bytes; modulus : bytes) : bytes;
+  intrinsic pure function modExp(base : bytes; exponent : bytes; modulus : bytes) : bytes;
 
   (* `0x06`, EIP-196: the sum of two BN254 points. *)
-  intrinsic pure function bn254_add(a : (uint, uint); b : (uint, uint)) : (uint, uint);
+  intrinsic pure function bn254Add(a : (uint, uint); b : (uint, uint)) : (uint, uint);
 
   (* `0x07`, EIP-196: a BN254 point times a scalar. *)
-  intrinsic pure function bn254_mul(p : (uint, uint); s : uint) : (uint, uint);
+  intrinsic pure function bn254Mul(p : (uint, uint); s : uint) : (uint, uint);
 
-  (* `0x08`, EIP-197: whether the product of the pairings is one. Each pair is `(g1_x,
-     g1_y, g2_x_im, g2_x_re, g2_y_im, g2_y_re)`. *)
-  intrinsic pure function bn254_pairing(pairs : list((uint, uint, uint, uint, uint, uint))) : bool;
+  (* `0x08`, EIP-197: whether the product of the pairings is one. Each pair is `(g1X,
+     g1Y, g2XIm, g2XRe, g2YIm, g2YRe)`. *)
+  intrinsic pure function bn254Pairing(pairs : list((uint, uint, uint, uint, uint, uint))) : bool;
 
   (* `0x09`, EIP-152: the BLAKE2 compression function. `h`, `m`, and `t` hold their
      little-endian words as the EIP lays them out. *)
@@ -43,8 +43,8 @@ module Crypto is {
 
   (* `0x0a`, EIP-4844: whether the KZG proof verifies. `commitment` and `proof` are 48
      bytes. *)
-  intrinsic pure function kzg_point_evaluation(
-    versioned_hash : bytes32;
+  intrinsic pure function kzgPointEvaluation(
+    versionedHash : bytes32;
     z : uint;
     y : uint;
     commitment : bytes;
@@ -52,28 +52,28 @@ module Crypto is {
   ) : bool;
 
   (* `0x0b`, EIP-2537: the sum of two BLS12-381 G1 points. *)
-  intrinsic pure function bls12_g1_add(a : bytes; b : bytes) : bytes;
+  intrinsic pure function bls12G1Add(a : bytes; b : bytes) : bytes;
 
   (* `0x0c`: a G1 multi-scalar multiplication. Each pair is a point, then a 32-byte
      scalar. *)
-  intrinsic pure function bls12_g1_msm(pairs : bytes) : bytes;
+  intrinsic pure function bls12G1Msm(pairs : bytes) : bytes;
 
   (* `0x0d`: the sum of two G2 points. *)
-  intrinsic pure function bls12_g2_add(a : bytes; b : bytes) : bytes;
+  intrinsic pure function bls12G2Add(a : bytes; b : bytes) : bytes;
 
   (* `0x0e`: a G2 multi-scalar multiplication. *)
-  intrinsic pure function bls12_g2_msm(pairs : bytes) : bytes;
+  intrinsic pure function bls12G2Msm(pairs : bytes) : bytes;
 
   (* `0x0f`: whether the product of the pairings is one. *)
-  intrinsic pure function bls12_pairing(pairs : bytes) : bool;
+  intrinsic pure function bls12Pairing(pairs : bytes) : bool;
 
   (* `0x10`: a field element mapped to G1. *)
-  intrinsic pure function bls12_map_fp_to_g1(fp : bytes) : bytes;
+  intrinsic pure function bls12MapFpToG1(fp : bytes) : bytes;
 
   (* `0x11`: an Fp2 element mapped to G2. *)
-  intrinsic pure function bls12_map_fp2_to_g2(fp2 : bytes) : bytes;
+  intrinsic pure function bls12MapFp2ToG2(fp2 : bytes) : bytes;
 
   (* `0x100`, EIP-7951: whether the P-256 signature verifies. `false` on chains before
      EIP-7951. *)
-  intrinsic pure function p256_verify(hash : bytes32; r : bytes32; s : bytes32; x : bytes32; y : bytes32) : bool;
+  intrinsic pure function p256Verify(hash : bytes32; r : bytes32; s : bytes32; x : bytes32; y : bytes32) : bool;
 }

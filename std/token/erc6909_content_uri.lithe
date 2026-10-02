@@ -10,9 +10,9 @@ import "std/token/erc6909";
 module ERC6909ContentURI is {
   requires ERC6909;
 
-  storage erc6909_content_uri at "lithe.std.erc6909_content_uri" is record {
-    contract_uri : string;
-    token_uris : map(uint, string);
+  storage erc6909ContentURI at "lithe.std.erc6909_content_uri" is record {
+    contractURI : string;
+    tokenUris : map(uint, string);
   }
 
   event ContractURIUpdated of record {}
@@ -22,19 +22,13 @@ module ERC6909ContentURI is {
     indexed id : uint;
   }
 
-  view function contract_uri() : string is
-    erc6909_content_uri.contract_uri
-
-  view function token_uri(const id : uint) : string is
-    erc6909_content_uri.token_uris[id]
-
-  function set_contract_uri(const uri : string) is {
-    erc6909_content_uri.contract_uri := uri;
+  function setContractURI(const uri : string) is {
+    erc6909ContentURI.contractURI := uri;
     emit ContractURIUpdated {};
   }
 
-  function set_token_uri(const id : uint; const uri : string) is {
-    erc6909_content_uri.token_uris[id] := uri;
+  function setTokenURI(const id : uint; const uri : string) is {
+    erc6909ContentURI.tokenUris[id] := uri;
     emit URI {
       value = uri;
       id = id;
@@ -42,8 +36,8 @@ module ERC6909ContentURI is {
   }
 
   external view function contractURI() : string is
-    erc6909_content_uri.contract_uri
+    erc6909ContentURI.contractURI
 
   external view function tokenURI(const id : uint) : string is
-    erc6909_content_uri.token_uris[id]
+    erc6909ContentURI.tokenUris[id]
 }

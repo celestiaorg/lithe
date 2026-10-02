@@ -1,4 +1,4 @@
-type shares is uint;
+type Shares is uint;
 
 storage is record {
   n : uint;
@@ -7,7 +7,7 @@ storage is record {
 pure function scale(const x : uint) : uint is
   x * 2
 
-pure function scale(const x : shares) : uint is
+pure function scale(const x : Shares) : uint is
   uint(x) * 3
 
 external pure function f() : uint is

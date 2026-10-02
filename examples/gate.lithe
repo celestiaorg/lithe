@@ -2,7 +2,7 @@
 
 import "std/evm";
 
-error Not_owner;
+error NotOwner;
 error Closed;
 
 storage is record {
@@ -10,10 +10,10 @@ storage is record {
   owner : address;
 }
 
-external function set_open(const flag : bool)
-  raises Not_owner
+external function setOpen(const flag : bool)
+  raises NotOwner
 is {
-  assert(Evm.sender() = storage.owner, Not_owner);
+  assert(Evm.sender() = storage.owner, NotOwner);
   storage.open := flag;
 }
 

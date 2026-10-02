@@ -10,20 +10,20 @@ A record is a struct. Record literals use `{ field = value; }`, and stored recor
 ```lithe [records.lithe]
 (* Records are structs. Storage lays them out exactly as Solidity would. *)
 
-type todo is record {
+type Todo is record {
   priority : uint8;
   done : bool;
 }
 
-type point is record {
+type Point is record {
   x : uint128;
   y : uint128;
 }
 
 storage is record {
-  todos : map(uint, todo);
+  todos : map(uint, Todo);
   count : uint;
-  origin : point;
+  origin : Point;
 }
 
 external function add(const priority : uint8) is {
@@ -36,7 +36,7 @@ external function toggle(const id : uint) is {
   storage.todos[id].done := not storage.todos[id].done;
 }
 
-external view function get(const id : uint) : todo is
+external view function get(const id : uint) : Todo is
   storage.todos[id]
 
 external function move(const x : uint128; const y : uint128) is {
@@ -48,17 +48,17 @@ external view function x() : uint128 is
   storage.origin.x
 
 (* A function can return a record, like any other value. *)
-pure function swapped(const p : point) : point is { x = p.y; y = p.x; }
+pure function swapped(const p : Point) : Point is { x = p.y; y = p.x; }
 
 external function reflect() is {
   storage.origin := swapped(storage.origin);
 }
 
-external view function reflected_x() : uint128 is
+external view function reflectedX() : uint128 is
   swapped(storage.origin).x
 ```
 
 - A record literal takes its type from context: a storage slot, an annotation, or a parameter.
 - `get` returns a record, which the ABI flattens into named outputs `(uint8 priority, bool done)`, like a Solidity struct getter.
 - Records inside maps must be made of word-sized fields, with no `string` or `bytes`.
-- `swapped` returns a record. `reflect` stores the whole result at once, and `reflected_x` reads one field straight off the call. A whole-record store builds the new value before writing any of it, so `swapped` sees the old `origin`.
+- `swapped` returns a record. `reflect` stores the whole result at once, and `reflectedX` reads one field straight off the call. A whole-record store builds the new value before writing any of it, so `swapped` sees the old `origin`.

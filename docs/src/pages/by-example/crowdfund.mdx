@@ -14,14 +14,14 @@ Backers pledge ether before a deadline. If the goal is reached, the creator clai
 import "std/address";
 import "std/evm";
 
-error Already_started;
+error AlreadyStarted;
 error Ended;
-error Not_ended;
-error Goal_not_met;
-error Goal_met;
-error Not_creator;
-error Already_claimed;
-error Nothing_pledged;
+error NotEnded;
+error GoalNotMet;
+error GoalMet;
+error NotCreator;
+error AlreadyClaimed;
+error NothingPledged;
 
 event Pledged of record {
   indexed backer : address;
@@ -38,41 +38,41 @@ storage is record {
 }
 
 external function launch(const goal : wei; const duration : uint)
-  raises Already_started
+  raises AlreadyStarted
 is {
-  assert(storage.creator = Address.zero, Already_started);
+  assert(storage.creator = Address.zero, AlreadyStarted);
   storage.creator := Evm.sender();
   storage.goal := goal;
-  storage.deadline := Evm.block_timestamp() + duration;
+  storage.deadline := Evm.blockTimestamp() + duration;
 }
 
 external payable function pledge()
   raises Ended
 is {
-  assert(Evm.block_timestamp() < storage.deadline, Ended);
+  assert(Evm.blockTimestamp() < storage.deadline, Ended);
   storage.pledges[Evm.sender()] := storage.pledges[Evm.sender()] + Evm.value();
   storage.raised := storage.raised + Evm.value();
   emit Pledged { backer = Evm.sender(); amount = Evm.value(); };
 }
 
 external nonreentrant function claim()
-  raises Not_creator | Not_ended | Goal_not_met | Already_claimed
+  raises NotCreator | NotEnded | GoalNotMet | AlreadyClaimed
 is {
-  assert(Evm.sender() = storage.creator, Not_creator);
-  assert(Evm.block_timestamp() >= storage.deadline, Not_ended);
-  assert(storage.raised >= storage.goal, Goal_not_met);
-  assert(not storage.claimed, Already_claimed);
+  assert(Evm.sender() = storage.creator, NotCreator);
+  assert(Evm.blockTimestamp() >= storage.deadline, NotEnded);
+  assert(storage.raised >= storage.goal, GoalNotMet);
+  assert(not storage.claimed, AlreadyClaimed);
   storage.claimed := true;
   defer Evm.transfer(storage.creator, storage.raised);
 }
 
 external nonreentrant function refund()
-  raises Not_ended | Goal_met | Nothing_pledged
+  raises NotEnded | GoalMet | NothingPledged
 is {
-  assert(Evm.block_timestamp() >= storage.deadline, Not_ended);
-  assert(storage.raised < storage.goal, Goal_met);
+  assert(Evm.blockTimestamp() >= storage.deadline, NotEnded);
+  assert(storage.raised < storage.goal, GoalMet);
   const amount : wei := storage.pledges[Evm.sender()];
-  assert(amount > 0wei, Nothing_pledged);
+  assert(amount > 0wei, NothingPledged);
   storage.pledges[Evm.sender()] := 0wei;
   defer Evm.transfer(Evm.sender(), amount);
 }

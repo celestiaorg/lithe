@@ -50,13 +50,13 @@ interface Token is {
 storage is record {
   token : Token;
   balances : map(address, uint);
-  total_withdrawn : uint;
+  totalWithdrawn : uint;
 }
 
 external nonreentrant function withdraw(const amount : uint) is {
   storage.balances[Evm.sender()] := storage.balances[Evm.sender()] - amount;
   defer storage.token.transfer(Evm.sender(), amount);
-  storage.total_withdrawn := storage.total_withdrawn + amount;
+  storage.totalWithdrawn := storage.totalWithdrawn + amount;
 }
 ```
 
@@ -78,7 +78,7 @@ A deferred call's result does not exist during the transition that defers it. To
 
 ```lithe
 interface Exchange is {
-  function swap(amount_in : uint) : uint;
+  function swap(amountIn : uint) : uint;
 }
 
 storage is record {
@@ -86,10 +86,10 @@ storage is record {
   received : uint;
 }
 
-external nonreentrant function swap(const amount_in : uint) is {
-  defer storage.exchange.swap(amount_in)
-    then (amount_out : uint) {
-      storage.received := storage.received + amount_out;
+external nonreentrant function swap(const amountIn : uint) is {
+  defer storage.exchange.swap(amountIn)
+    then (amountOut : uint) {
+      storage.received := storage.received + amountOut;
     };
 }
 ```
