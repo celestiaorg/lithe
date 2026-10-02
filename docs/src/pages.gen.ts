@@ -46,6 +46,7 @@ type Page =
   | { path: '/by-example/raw-calls'; render: 'static' }
   | { path: '/by-example/receive-fallback'; render: 'static' }
   | { path: '/by-example/records'; render: 'static' }
+  | { path: '/by-example/recursion'; render: 'static' }
   | { path: '/by-example/reentrancy'; render: 'static' }
   | { path: '/by-example/sending-ether'; render: 'static' }
   | { path: '/by-example/signatures'; render: 'static' }
@@ -88,6 +89,7 @@ type Page =
   | { path: '/language/structure'; render: 'static' }
   | { path: '/language/types'; render: 'static' }
   | { path: '/language/upgrades'; render: 'static' }
+  | { path: '/language/verification'; render: 'static' }
   | { path: '/stdlib/access'; render: 'static' }
   | { path: '/stdlib/collections'; render: 'static' }
   | { path: '/stdlib/crypto'; render: 'static' }

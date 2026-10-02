@@ -7,6 +7,10 @@ description: "What Solidity leaves to convention, why linters and safe subsets a
 
 Solidity is the most successful smart-contract language, with a decade of production use, excellent tooling, and a huge ecosystem. Lithe compiles to the same EVM, speaks the same ABI, and lays out storage the same way, so none of that ecosystem is lost.
 
+Lithe exists because of Solidity, not in spite of it. We have deep respect for the Solidity team and for everyone who has built on it: the compiler engineers, the library authors at OpenZeppelin and Solady, the auditors, the tool builders behind Foundry, Hardhat, and Slither, and the thousands of developers whose contracts secure real value every day. The ABI, custom errors, storage layout, ERC-7201 namespaces, and the patterns this page lists all came out of that work, and the hard lessons behind them were paid for by that community. Lithe stands on what they built.
+
+This page explains where Lithe makes different choices and why. It is not an argument that Solidity is wrong. Solidity serves a far wider range of programs than Lithe tries to, and its trade-offs are deliberate ones.
+
 The difference is philosophy. Solidity exposes nearly the full power of the EVM and relies on developers to use it safely. Lithe removes the dangerous parts from ordinary code and makes the compiler enforce what Solidity leaves to convention.
 
 ## Security by convention
@@ -43,7 +47,7 @@ A linter can tell you an external call comes before a state update. In Lithe tha
 
 ## Why not a safer subset of Solidity?
 
-A restricted Solidity profile, such as no low-level calls, mandatory guards, or linted patterns, gets part of the way. But Solidity's syntax, type system, and standard patterns were designed around the unrestricted model. Rules bolted on from the outside become a list of things not to do, rather than a coherent model.
+A restricted Solidity profile, such as no low-level calls, mandatory guards, or linted patterns, gets part of the way. But Solidity's syntax, type system, and standard patterns were designed around the unrestricted model. Rules added from the outside tend to become a list of things not to do, rather than a coherent model.
 
 Lithe designs its effect vocabulary (`query`, `emit`, `defer`), its errors (`raises`), its storage (named domains), its composition (modules instead of inheritance), and its dispatch (variant groups) around the restrictions from the start. The safe path is the only path, and it's short to write.
 
