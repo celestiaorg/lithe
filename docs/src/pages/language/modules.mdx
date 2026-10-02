@@ -148,9 +148,7 @@ An interface never adds behavior, so its methods have no body. To change what an
 
 `delegated` after the module's name in a `use` runs the module from its **facet**: a contract of its own, compiled from the module alone and shared by every contract that marks it. None of the module's code is in the contract, which is how a contract stays under the [size limit](/tooling/size-limit). The contract forwards the externals it exposes to the facet, and calls the module's functions across into it:
 
-```lithe
-import "std/evm";
-
+```lithe [lib/counter.lithe]
 module Counter is {
   storage counter at "example.facet.counter" is record {
     count : uint;
@@ -163,11 +161,20 @@ module Counter is {
   external view function count() : uint is
     counter.count
 }
+```
+
+```lithe [lib/clock.lithe]
+import "std/evm";
 
 module Clock is {
   view function now() : timestamp is
     Evm.blockTimestamp()
 }
+```
+
+```lithe [app.lithe]
+import "./lib/counter";
+import "./lib/clock";
 
 contract App is {
   use Counter delegated exposing {

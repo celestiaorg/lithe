@@ -1345,10 +1345,17 @@ pub(crate) fn outline(
     }
     let mut exact = code.clone();
     let gas = byte_gas();
-    std::thread::scope(|s| {
-        s.spawn(|| with_byte_gas(gas, || run(&mut exact, false)));
+    // Without threads, as in WebAssembly, the two run one after the other.
+    let spawned = std::thread::scope(|s| {
+        let spawned = std::thread::Builder::new()
+            .spawn_scoped(s, || with_byte_gas(gas, || run(&mut exact, false)))
+            .is_ok();
         run(code, true);
+        spawned
     });
+    if !spawned {
+        run(&mut exact, false);
+    }
     if cost(&exact) <= cost(code) {
         *code = exact;
     }

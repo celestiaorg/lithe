@@ -1,0 +1,35 @@
+[package]
+name = "lithe-playground"
+version = "0.1.0"
+edition = "2021"
+description = "The Lithe compiler as a WebAssembly module, for the browser playground"
+license = "Apache-2.0"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+lithe = { path = ".." }
+# The chain calls run on: no C libraries, so it builds for WebAssembly.
+revm = { version = "43", default-features = false, features = ["std"] }
+alloy-dyn-abi = "1"
+alloy-json-abi = "1"
+alloy-primitives = "1"
+alloy-sol-types = "1"
+serde_json = "1"
+# k256 pulls it in for key generation, which a chain never does.
+getrandom = { version = "0.2", features = ["custom"] }
+
+[profile.release]
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = true
+
+# The chain's crates are small and fast enough optimized for size; the compiler is not.
+[profile.release.package."*"]
+opt-level = "s"
+
+[profile.release.package.lithe]
+opt-level = 3

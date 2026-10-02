@@ -232,7 +232,25 @@ pub struct Contract {
     pub plan: Option<Plan>,
     /// Deferred calls that can re-enter an unprotected entry, and other warnings.
     pub warnings: Vec<String>,
+    /// Every storage word a field of the contract's storage holds, as `lithe storage`
+    /// places them, in domain and field order.
+    pub storage: Vec<StorageWord>,
+    /// An upgradeable contract's migrations, each with its parameters' names and ABI types,
+    /// as `upgradeToAndCall` takes a call to one.
+    pub migrations: Vec<(String, Vec<(String, String)>)>,
     split: split::Split,
+}
+
+/// A word of storage a field holds, or part of one when fields share a slot. A field
+/// held in several words has one of these for each, in order.
+pub struct StorageWord {
+    /// The field as code names it: `storage.count`, `ERC20.erc20.balances`.
+    pub field: String,
+    pub ty: String,
+    pub slot: [u8; 32],
+    /// Where the field sits in the slot, in bytes from the low end.
+    pub offset: u8,
+    pub bytes: u8,
 }
 
 /// The transactions that deploy a contract, in order: each facet through the `CREATE2`
@@ -332,6 +350,8 @@ fn build(
             .chain(warnings_of(sources, entry, &checked))
             .chain(split.warnings.iter().cloned())
             .collect(),
+        storage: storage_words(&checked.layout),
+        migrations: migrations(&checked)?,
         split,
     })
 }
@@ -1459,20 +1479,14 @@ pub fn upgrade_calldata(
             format!("`{migrate}` expects {} arguments", func.params.len()),
         ));
     }
-    let mut parts = Vec::new();
-    let mut words = Vec::new();
-    for (param, arg) in func.params.iter().zip(args) {
-        let fields = check::abi_fields(&checked.types, param.ty_id, &param.name)?;
-        if fields.len() != 1 {
-            return Err(error(
-                param.line,
-                param.col,
-                "migration arguments must be a single word",
-            ));
-        }
-        parts.push(fields[0].ty.clone());
-        words.push(parse_word(arg)?);
-    }
+    let parts: Vec<String> = migration_params(&checked, func)?
+        .into_iter()
+        .map(|(_, ty)| ty)
+        .collect();
+    let words = args
+        .iter()
+        .map(|arg| parse_word(arg))
+        .collect::<Result<Vec<_>, _>>()?;
     let inner_sig = format!("{migrate}({})", parts.join(","));
     let mut inner = keccak::selector(&inner_sig).to_vec();
     for word in words {
@@ -1491,6 +1505,51 @@ pub fn upgrade_calldata(
     let pad = (32 - inner.len() % 32) % 32;
     data.extend(std::iter::repeat_n(0, pad));
     Ok(format!("0x{}", hex(&data)))
+}
+
+/// A migration's parameters, by name and ABI type: each must be a single word.
+fn migration_params(checked: &check::Checked, func: &ast::Func) -> Result<Vec<(String, String)>, Error> {
+    let mut out = Vec::new();
+    for param in &func.params {
+        let fields = check::abi_fields(&checked.types, param.ty_id, &param.name)?;
+        if fields.len() != 1 {
+            return Err(error(
+                param.line,
+                param.col,
+                "migration arguments must be a single word",
+            ));
+        }
+        out.push((param.name.clone(), fields[0].ty.clone()));
+    }
+    Ok(out)
+}
+
+fn migrations(checked: &check::Checked) -> Result<Vec<(String, Vec<(String, String)>)>, Error> {
+    checked
+        .prog
+        .funcs
+        .iter()
+        .filter(|func| func.kind == ast::ItemKind::Migrate)
+        .map(|func| Ok((func.name.clone(), migration_params(checked, func)?)))
+        .collect()
+}
+
+fn storage_words(layout: &[check::DomainLayout]) -> Vec<StorageWord> {
+    let mut out = Vec::new();
+    for domain in layout {
+        for ((name, ty), words) in domain.fields.iter().zip(&domain.words) {
+            for &(slot, offset, bytes) in words {
+                out.push(StorageWord {
+                    field: format!("{}.{name}", domain.name),
+                    ty: ty.clone(),
+                    slot: slot.to_be_bytes(),
+                    offset,
+                    bytes,
+                });
+            }
+        }
+    }
+    out
 }
 
 pub(crate) fn format_layout(layout: &[check::DomainLayout]) -> String {

@@ -1,0 +1,6 @@
+[build]
+target = "wasm32-unknown-unknown"
+
+# The compiler recurses deeply; native builds give it 64 MiB thread stacks.
+[target.wasm32-unknown-unknown]
+rustflags = ["-C", "link-arg=-zstack-size=67108864"]

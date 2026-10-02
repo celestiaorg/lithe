@@ -467,18 +467,22 @@ fn parallel<T: Sync, R: Send>(
     let f = &f;
     let byte_gas = crate::asm::byte_gas();
     std::thread::scope(|s| {
+        // Without threads, as in WebAssembly, each runs here as it comes.
         let handles: Vec<_> = items
             .iter()
             .map(|item| {
                 std::thread::Builder::new()
                     .stack_size(64 << 20)
                     .spawn_scoped(s, move || crate::asm::with_byte_gas(byte_gas, || f(item)))
-                    .expect("spawn a codegen thread")
+                    .map_err(|_| f(item))
             })
             .collect();
         handles
             .into_iter()
-            .map(|h| h.join().unwrap_or_else(|e| std::panic::resume_unwind(e)))
+            .map(|h| match h {
+                Ok(h) => h.join().unwrap_or_else(|e| std::panic::resume_unwind(e)),
+                Err(done) => done,
+            })
             .collect()
     })
 }

@@ -90,6 +90,7 @@ type Page =
   | { path: '/language/types'; render: 'static' }
   | { path: '/language/upgrades'; render: 'static' }
   | { path: '/language/verification'; render: 'static' }
+  | { path: '/playground'; render: 'static' }
   | { path: '/stdlib/access'; render: 'static' }
   | { path: '/stdlib/collections'; render: 'static' }
   | { path: '/stdlib/crypto'; render: 'static' }

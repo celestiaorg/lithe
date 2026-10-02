@@ -5,13 +5,9 @@ description: "Composition in place of inheritance."
 
 # Modules
 
-Modules own their storage, errors, events, and functions, and declare the externals they offer. A contract `use`s modules and exposes exactly what it chooses, by declaring a module's externals or by wrapping its functions.
+Modules own their storage, errors, events, and functions, and declare the externals they offer. A contract `use`s modules and exposes exactly what it chooses, by declaring a module's externals or by wrapping its functions. Each module here is a file of its own under `lib/`, and the contract's file imports them.
 
-```lithe [modules.lithe]
-(* Modules replace inheritance. A module owns its storage, errors, events, and
-   functions, and declares the externals it offers. A contract declares exactly
-   which of them it exposes. Nothing becomes public by accident. *)
-
+```lithe [lib/ownable.lithe]
 import "std/evm";
 
 module Ownable is {
@@ -34,7 +30,9 @@ module Ownable is {
     ownable.owner := Evm.sender();
   }
 }
+```
 
+```lithe [lib/pausable.lithe]
 module Pausable is {
   storage pausable at "example.pausable" is record {
     paused : bool;
@@ -55,6 +53,11 @@ module Pausable is {
     pausable.paused := paused;
   }
 }
+```
+
+```lithe [lib/admin.lithe]
+import "./ownable";
+import "./pausable";
 
 (* A module that builds on another says so with `requires`. *)
 module Admin is {
@@ -68,6 +71,16 @@ module Admin is {
     Pausable.setPaused(true);
   }
 }
+```
+
+```lithe [modules.lithe]
+(* Modules replace inheritance. A module owns its storage, errors, events, and
+   functions, and declares the externals it offers. A contract declares exactly
+   which of them it exposes. Nothing becomes public by accident. *)
+
+import "./lib/ownable";
+import "./lib/pausable";
+import "./lib/admin";
 
 contract Vault is {
   (* Declare a module's externals to expose them as they are. Each declaration

@@ -173,6 +173,7 @@ export default defineConfig({
     { text: "Guide", link: "/guide/introduction", match: (path) => /^\/(guide|language|tooling|stdlib)(\/|$)/.test(path ?? "") },
     { text: "Lithe by Example", link: "/by-example", match: "/by-example" },
     { text: "Built-ins", link: "/language/builtins" },
+    { text: "Playground", link: "/playground" },
   ],
   sidebar: {
     "/guide": guide,

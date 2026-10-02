@@ -5,7 +5,8 @@ The Lithe documentation site, built with [Vocs](https://vocs.dev). Pages are MDX
 ```bash
 npm install
 npm run dev     # local server
-npm run build   # checks every example, then writes a static site to dist/public
+npm run build   # checks every example, builds the playground, then writes a static site to dist/public
+npm run playground  # builds the compiler to WebAssembly for /playground (needs the wasm32-unknown-unknown target)
 npm run check   # compiles every ```lithe block against ../target/release/lithe
 ```
 

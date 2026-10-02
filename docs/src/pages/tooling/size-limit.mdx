@@ -13,9 +13,7 @@ A contract that marks nothing compiles as it always does, byte for byte. When it
 
 `delegated` goes right after the module's name in a `use`, before `exposing` and the interfaces it exposes:
 
-```lithe
-import "std/evm";
-
+```lithe [lib/ledger.lithe]
 module Ledger is {
   storage ledger at "example.ledger" is record {
     balances : map(address, uint);
@@ -53,6 +51,11 @@ module Ledger is {
   external view function total() : uint is
     ledger.total
 }
+```
+
+```lithe [bank.lithe]
+import "std/evm";
+import "./lib/ledger";
 
 contract Bank is {
   use Ledger delegated exposing {
@@ -196,7 +199,7 @@ Two facets never call each other. A module that requires another carries a copy 
 
 `delegated` holds for the whole module, always: none of a marked module's code is in the contract, and every call the contract's code makes to it goes across. To share code between the contract and a facet, put it in a module of its own that neither marks. The contract uses it unmarked, so it runs in the router. The delegated module requires it, so its facet carries a copy and calls that.
 
-```lithe
+```lithe [lib/role_store.lithe]
 import "std/evm";
 
 module RoleStore is {
@@ -214,6 +217,11 @@ module RoleStore is {
     roles.minters[account] := true;
   }
 }
+```
+
+```lithe [lib/drop.lithe]
+import "std/address";
+import "./role_store";
 
 module Drop is {
   requires RoleStore;
@@ -222,16 +230,24 @@ module Drop is {
     owners : map(uint, address);
   }
 
-  external function mint(const to : address; const id : uint) raises Unauthorized is {
+  error AlreadyMinted of uint;
+
+  external function mint(const to : address; const id : uint) raises Unauthorized | AlreadyMinted is {
     RoleStore.onlyMinter();
+    assert(drop.owners[id] = Address.zero, AlreadyMinted(id));
     drop.owners[id] := to;
   }
 }
+```
+
+```lithe [shop.lithe]
+import "./lib/role_store";
+import "./lib/drop";
 
 contract Shop is {
   use RoleStore;
   use Drop delegated exposing {
-    function mint(to : address; id : uint) raises Unauthorized;
+    function mint(to : address; id : uint) raises Unauthorized | AlreadyMinted;
   }
 
   storage is record {

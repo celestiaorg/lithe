@@ -1360,7 +1360,7 @@ enum Users {
 }
 
 /// Where the ids of functions compiled once start among a region's users.
-const FUNC_CTX: usize = 1 << 40;
+const FUNC_CTX: usize = 1 << if usize::BITS > 32 { 40 } else { 30 };
 
 struct Space {
     region: Region,

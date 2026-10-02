@@ -429,6 +429,7 @@ pub(super) fn domain_layout(
 ) -> Result<DomainLayout, Error> {
     let mut fields = Vec::new();
     let mut places = Vec::new();
+    let mut words = Vec::new();
     for field in &types[ty].fields {
         fields.push((field.name.clone(), storage_shape(types, field.ty)?));
         let first = field.slot as usize;
@@ -451,6 +452,11 @@ pub(super) fn domain_layout(
             format!("slots {}-{}", slot(first), slot(end - 1))
         };
         places.push(place);
+        words.push(
+            (first..first + field.n_leaf as usize)
+                .map(|i| (leaves.0[i], leaves.1[i].offset, leaves.1[i].width))
+                .collect(),
+        );
     }
     Ok(DomainLayout {
         name: name.to_string(),
@@ -458,6 +464,7 @@ pub(super) fn domain_layout(
         root,
         fields,
         places,
+        words,
     })
 }
 

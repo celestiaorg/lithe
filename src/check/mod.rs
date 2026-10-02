@@ -172,6 +172,8 @@ pub(crate) struct DomainLayout {
     pub fields: Vec<(String, String)>,
     /// Where each field sits, relative to `root`, as the storage tool prints it.
     pub places: Vec<String>,
+    /// Each field's words: the slot, and the byte offset and width of the field in it.
+    pub words: Vec<Vec<(Word, u8, u8)>>,
 }
 
 #[derive(Clone)]
