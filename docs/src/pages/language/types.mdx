@@ -299,7 +299,7 @@ external pure function pair(const a : uint; const b : uint) : list(uint) is {
 
 ## Maps
 
-`map(K, V)` is a Solidity mapping. It exists only in storage. A key that was never written reads as the zero value, and `delete m[k];` clears a key by writing the zero value back.
+`map(K, V)` maps keys of type `K` to values of type `V`. It exists only in storage. A key that was never written reads as the zero value, and `delete m[k];` clears a key by writing the zero value back.
 
 ```lithe fragment
 storage is record {
