@@ -1155,7 +1155,9 @@ fn emit_file(
     };
     let compiled = match compile(&Sources::disk(), path, &opts) {
         Ok(compiled) => compiled,
-        Err(errors) if is_library(path, &errors) => return (out, writes, facets),
+        Err(errors) if is_library(&Sources::disk(), path, &errors) => {
+            return (out, writes, facets)
+        }
         Err(errors) => {
             out.failed.extend(errors.into_iter().map(failed));
             return (out, writes, facets);
@@ -1189,13 +1191,15 @@ fn emit_file(
     (out, writes, facets)
 }
 
-/// A file that failed only for having no entrypoints, and declares no contract: modules,
-/// interfaces, internal functions, and shared declarations.
-fn is_library(path: &Path, errors: &[Error]) -> bool {
+/// Whether `errors`, from compiling `path`, only say it has no entrypoints, and it declares
+/// no contract: only modules, interfaces, internal functions, and shared declarations.
+pub fn is_library(sources: &Sources, path: &Path, errors: &[Error]) -> bool {
     if !errors.iter().all(|err| err.message == route::NO_ENTRIES) {
         return false;
     }
-    let Some(prog) = std::fs::read_to_string(path)
+    let Some(prog) = sources
+        .canonicalize(path)
+        .and_then(|path| sources.read(&path))
         .ok()
         .and_then(|text| parse::parse(&text).ok())
     else {

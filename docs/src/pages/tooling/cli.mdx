@@ -23,6 +23,7 @@ lithe storage file.lithe
 lithe storage old.lithe new.lithe
 lithe upgrade-check old.lithe new.lithe
 lithe upgrade 0xProxy file.lithe --migrate name [--impl 0xImpl] --args ...
+lithe --standard-json
 lithe lsp
 lithe fmt path...
 lithe fmt --check path...
@@ -97,6 +98,49 @@ Builds the contract to check its [specs](/language/verification) as it runs, for
 ### `lithe abi file.lithe` / `lithe abi directory`
 
 Prints the Solidity-compatible JSON ABI: functions, events, and errors. Given a directory, it writes ABIs to `./out`.
+
+### `lithe --standard-json`
+
+Reads solc's standard JSON on stdin and writes the output to stdout, for verifiers and other tools that build from source text rather than a project directory. Nothing is read from disk, and no `lithe.toml`: `settings` takes the [`[build]` options](/tooling/config#build), camelCased, and `compilationTarget` picks the contracts to build, one name for each path:
+
+```json
+{
+  "language": "Lithe",
+  "sources": {
+    "src/bank.lithe": { "content": "import \"./lib/ledger\";\n..." },
+    "src/lib/ledger.lithe": { "content": "module Ledger is { ... }" }
+  },
+  "settings": {
+    "evmVersion": "osaka",
+    "sizeLimit": 24576,
+    "create2Deployer": "0x4e59b44847b379578588920cA78FbF26c0B4956C",
+    "compilationTarget": { "src/bank.lithe": "Bank" }
+  }
+}
+```
+
+Imports resolve among `sources` by path, and `std/...` from the standard library. Without `compilationTarget`, every source that declares a contract is built, and library files are skipped. `outputSelection` is accepted and ignored, since every contract's whole output is written:
+
+```json
+{
+  "errors": [ { "severity": "info", "type": "Info", "component": "general", "message": "...", "formattedMessage": "..." } ],
+  "contracts": {
+    "src/bank.lithe": {
+      "Bank": {
+        "abi": [ ... ],
+        "evm": {
+          "bytecode": { "object": "6080..." },
+          "deployedBytecode": { "object": "...", "immutableReferences": { "lithe.immutable": [ { "start": 42, "length": 20 } ] } },
+          "methodIdentifiers": { "deposit()": "d0e30db0" }
+        }
+      },
+      "Ledger": { ... }
+    }
+  }
+}
+```
+
+Bytecode is hex without `0x`, as solc writes it. `immutableReferences` lists where the creation code writes each [immutable](/language/storage#immutables) block into the runtime code, by id; an upgradeable contract's own address is `__self`. A contract with `delegated` modules also lists each facet under the file's path, by module name. `errors` holds compile errors, warnings, and notes, each with `severity` `error`, `warning`, or `info`, and is left out when there are none. An unreadable input is a `JSONError`. The exit status is `0` whenever it writes output, as solc's is.
 
 ## Inspecting
 

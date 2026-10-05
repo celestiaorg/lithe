@@ -1,4 +1,5 @@
 mod lsp;
+mod standard_json;
 
 use std::path::Path;
 
@@ -17,6 +18,9 @@ fn main() {
     }
     if cmd == "lsp" && args.is_empty() {
         lsp::run();
+    }
+    if cmd == "--standard-json" && args.is_empty() {
+        standard_json::run();
     }
     if cmd == "fmt" {
         fmt_cmd(&args);
@@ -490,6 +494,7 @@ usage: lithe compile file.lithe
        lithe stubs file.lithe Module [Interface...]
        lithe upgrade-check old.lithe new.lithe
        lithe upgrade 0xProxy file.lithe --migrate name [--impl 0xImpl] --args ...
+       lithe --standard-json
        lithe lsp
        lithe fmt path...
        lithe fmt --check path...
@@ -506,6 +511,8 @@ compile, abi, facets, abi-tree, footprint, upgrade, and upgrade-check also take
 compile also takes
        --check-specs                 a test build that checks the contract's specs as it
                                      runs, and reverts with SpecViolation(string)
+
+--standard-json reads solc-style standard JSON on stdin and writes the output to stdout
 
 directory commands write to ./out
 builds are cached in ~/.cache/lithe; set LITHE_CACHE_DIR to move it, or empty to turn it off"

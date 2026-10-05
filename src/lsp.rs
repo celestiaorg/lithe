@@ -766,7 +766,7 @@ fn id(msg: &Json) -> String {
     }
 }
 
-fn quote(text: &str) -> String {
+pub(crate) fn quote(text: &str) -> String {
     let mut out = String::from("\"");
     for ch in text.chars() {
         match ch {
@@ -781,8 +781,9 @@ fn quote(text: &str) -> String {
     out
 }
 
-/// Just enough JSON for LSP messages. Numbers keep their text, so an `id` is echoed exactly.
-enum Json {
+/// Just enough JSON for LSP messages and `--standard-json` input. Numbers keep their text, so
+/// an `id` is echoed exactly.
+pub(crate) enum Json {
     /// `true` or `false`; `null` is `Lit(false)`.
     Lit(bool),
     Num(String),
@@ -792,28 +793,28 @@ enum Json {
 }
 
 impl Json {
-    fn get(&self, key: &str) -> Option<&Json> {
+    pub(crate) fn get(&self, key: &str) -> Option<&Json> {
         match self {
             Json::Obj(fields) => fields.iter().find(|(k, _)| k == key).map(|(_, v)| v),
             _ => None,
         }
     }
 
-    fn str(&self) -> Option<&str> {
+    pub(crate) fn str(&self) -> Option<&str> {
         match self {
             Json::Str(s) => Some(s),
             _ => None,
         }
     }
 
-    fn num(&self) -> Option<usize> {
+    pub(crate) fn num(&self) -> Option<usize> {
         match self {
             Json::Num(n) => n.parse().ok(),
             _ => None,
         }
     }
 
-    fn last(&self) -> Option<&Json> {
+    pub(crate) fn last(&self) -> Option<&Json> {
         match self {
             Json::Arr(items) => items.last(),
             _ => None,
@@ -823,7 +824,7 @@ impl Json {
 
 type Chars<'a> = std::iter::Peekable<std::str::Chars<'a>>;
 
-fn parse(text: &str) -> Option<Json> {
+pub(crate) fn parse(text: &str) -> Option<Json> {
     value(&mut text.chars().peekable())
 }
 
