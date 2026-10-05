@@ -11,6 +11,10 @@ fn main() {
         std::process::exit(2);
     }
     let cmd = args.remove(0);
+    if matches!(cmd.as_str(), "--version" | "-V") && args.is_empty() {
+        println!("lithe {}", env!("LITHE_VERSION"));
+        return;
+    }
     if cmd == "lsp" && args.is_empty() {
         lsp::run();
     }
@@ -490,6 +494,7 @@ usage: lithe compile file.lithe
        lithe fmt path...
        lithe fmt --check path...
        lithe fmt -
+       lithe --version
 
 compile, abi, facets, abi-tree, footprint, upgrade, and upgrade-check also take
        --size-limit <bytes>          largest runtime code, default 24576; code over it

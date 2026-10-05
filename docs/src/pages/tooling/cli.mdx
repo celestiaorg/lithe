@@ -27,6 +27,7 @@ lithe lsp
 lithe fmt path...
 lithe fmt --check path...
 lithe fmt -
+lithe --version
 ```
 
 Commands that read one file need a file with exactly one contract. Errors and warnings go to stderr as `path:line:column: message`, where `path` is the file the error is in, whether that is the file you named or one it imports, relative to the working directory. The standard library's files are `std/...`. An error that belongs to no one line, such as a contract too large to assemble, is `path: message`. The exit status is `0` on success, `1` on a compile error, and `2` on a usage error.
@@ -203,6 +204,12 @@ It also answers from the last version of the file that checked, so answers survi
 | Outline | the file's declarations, with fields, variants, and methods under them |
 | Completion | what follows `storage.`, a record, an interface value, a module, or an import alias; events after `emit`, errors after `raises`, types after `:`, every arm of a `case`, and the names the file's imports bring into scope; module paths inside an `import` string |
 | Signature help | the parameters of the function, method, or built-in being called |
+
+## Version
+
+### `lithe --version`
+
+Prints the compiler's version, such as `lithe 0.1.0+commit.207ff3c1`, and exits `0`. The part after `+` is the git commit the compiler was built from, with `.mod` after it when the compiler's sources had uncommitted changes. A compiler built outside a git checkout prints just `lithe 0.1.0`. `-V` is the same.
 
 ## Warnings
 

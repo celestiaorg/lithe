@@ -18,6 +18,38 @@ fn main() {
     let dest = Path::new(&std::env::var("OUT_DIR").unwrap()).join("std.rs");
     std::fs::write(dest, out).unwrap();
     build_id(files);
+    version();
+}
+
+/// The version `lithe --version` prints: solc's `0.1.0+commit.1a2b3c4d`, with `.mod` when the
+/// compiler's sources differ from the commit, or the bare package version outside a git checkout.
+fn version() {
+    let git = |args: &[&str]| {
+        std::process::Command::new("git")
+            .args(args)
+            .output()
+            .ok()
+            .filter(|out| out.status.success())
+            .map(|out| String::from_utf8_lossy(&out.stdout).trim().to_string())
+    };
+    let mut version = std::env::var("CARGO_PKG_VERSION").unwrap();
+    if let Some(commit) = git(&["rev-parse", "--short=8", "HEAD"]) {
+        version += &format!("+commit.{commit}");
+        let dirty = git(&["status", "--porcelain", "--", "src", "std", "build.rs", "Cargo.toml", "Cargo.lock"]);
+        if dirty.is_some_and(|out| !out.is_empty()) {
+            version += ".mod";
+        }
+        let mut watch = vec!["HEAD".to_string(), "packed-refs".to_string()];
+        watch.extend(git(&["symbolic-ref", "HEAD"]));
+        for path in watch {
+            if let Some(path) = git(&["rev-parse", "--git-path", &path]) {
+                if Path::new(&path).exists() {
+                    println!("cargo:rerun-if-changed={path}");
+                }
+            }
+        }
+    }
+    println!("cargo:rustc-env=LITHE_VERSION={version}");
 }
 
 /// A hash of everything the compiler's behavior comes from: its sources, the standard library,
