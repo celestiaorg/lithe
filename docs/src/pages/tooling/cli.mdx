@@ -84,6 +84,8 @@ Compiles every `.lithe` file under the directory and its subdirectories, but hid
 }
 ```
 
+A contract that builds immutables into its code has `deployedBytecode.immutableReferences`, as Solidity's: each immutable block's id, such as `lithe.immutable`, and the `start` and `length` of every place the creation code writes its values. An upgradeable implementation lists its own address as `__self`. Verifiers such as Sourcify need these to compare the deployed code with the build.
+
 It prints each path it writes. It keeps going after a failing file, reports every failure, and exits `1` if any file failed. Files that define several contracts are fine in this mode. Two contract files with one name in different subdirectories, even differing only in case, would share `./out/<file>`, so the second fails and writes nothing.
 
 The artifact of a contract with facets has the whole contract's ABI and a `facets` field listing each facet's module, address, and the selectors the router forwards to it. Each facet is written once, to `./out/facets/<Module>.json`, however many contracts use it. When contracts build one module into different facets, each is `./out/facets/<Module>-<address prefix>.json`, the first 4 bytes of its address in lowercase hex, and a `<Module>.json` from an earlier build is removed. Size warnings go to stderr.

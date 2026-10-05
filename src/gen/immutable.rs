@@ -30,6 +30,35 @@ pub(super) fn place_runtime(
     Ok((bytes, marks))
 }
 
+/// Each immutable's id and the `(start, length)` of every place in the runtime its value is
+/// written, as Solidity's `immutableReferences`. An upgradeable contract's own address is
+/// `__self`.
+pub(crate) type ImmutableRefs = Vec<(String, Vec<(usize, usize)>)>;
+
+pub(super) fn references(checked: &Checked, marks: &[Mark]) -> ImmutableRefs {
+    let mut marks = marks.to_vec();
+    marks.sort_unstable_by_key(|&(_, at, _)| at);
+    let mut out: ImmutableRefs = Vec::new();
+    for (k, at, width) in marks {
+        let id = if k == SELF_MARK {
+            "__self".to_string()
+        } else {
+            let leaf = checked.immutable_from as u32 + k;
+            checked
+                .immutables
+                .iter()
+                .find(|b| (b.start..b.start + b.words).contains(&leaf))
+                .map_or_else(|| k.to_string(), |b| b.id.clone())
+        };
+        let site = (at + 1, usize::from(width));
+        match out.iter_mut().find(|(seen, _)| *seen == id) {
+            Some((_, sites)) => sites.push(site),
+            None => out.push((id, vec![site])),
+        }
+    }
+    out
+}
+
 impl<'a> Gen<'a> {
     /// Pushes the value of an immutable leaf.
     pub(super) fn push_immutable(&mut self, leaf: u32) {

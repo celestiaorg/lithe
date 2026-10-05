@@ -18,6 +18,7 @@ use crate::check::{
 };
 use crate::error;
 use crate::keccak::selector;
+pub(crate) use immutable::ImmutableRefs;
 use crate::split::{Cross, Facet, Shape};
 use crate::word::Word;
 use crate::Error;
@@ -164,11 +165,13 @@ const TOPIC_WORDS: u32 = 8;
 /// A memory address before layout is `(region + 1) << REGION_SHIFT | offset`.
 const REGION_SHIFT: u32 = 16;
 
-/// Compiled code: the creation code, the runtime code it deploys, and the facets of
-/// contracts it creates, which must be deployed before it can create them.
+/// Compiled code: the creation code, the runtime code it deploys, where the creation code
+/// writes immutables into the runtime, and the facets of contracts it creates, which must be
+/// deployed before it can create them.
 pub(crate) struct Built {
     pub code: Vec<u8>,
     pub runtime: Vec<u8>,
+    pub immutables: ImmutableRefs,
     pub needs: Vec<Facet>,
 }
 
@@ -655,6 +658,7 @@ pub(crate) fn codegen(checked: &Checked, shape: &Shape) -> Result<Built, Error> 
     needs.extend(more);
     Ok(Built {
         code,
+        immutables: immutable::references(checked, &built.marks),
         runtime: built.runtime,
         needs,
     })

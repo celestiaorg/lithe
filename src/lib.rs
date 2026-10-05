@@ -225,6 +225,9 @@ pub struct Contract {
     /// The creation code. For a split contract, the router's.
     pub bytecode: Vec<u8>,
     pub deployed_bytecode: Vec<u8>,
+    /// Where the creation code writes each immutable into `deployed_bytecode`: its id and
+    /// the `(start, length)` of each place, as Solidity's `immutableReferences`.
+    pub immutable_references: Vec<(String, Vec<(usize, usize)>)>,
     pub abi: Abi,
     /// Each external's signature and selector.
     pub method_identifiers: Vec<(String, [u8; 4])>,
@@ -342,6 +345,7 @@ fn build(
         name: name.to_string(),
         bytecode: split.creation.clone(),
         deployed_bytecode: split.runtime.clone(),
+        immutable_references: split.immutables.clone(),
         abi,
         method_identifiers,
         plan,
@@ -1112,9 +1116,9 @@ fn facet_artifact(facet: &Facet) -> String {
     let mut out = String::from("{\n  \"abi\": ");
     out.push_str(&reindent(facet.abi.to_json().trim_end()));
     out.push_str(",\n  \"bytecode\": ");
-    write_bytecode(&mut out, &facet.bytecode);
+    write_bytecode(&mut out, &facet.bytecode, &[]);
     out.push_str(",\n  \"deployedBytecode\": ");
-    write_bytecode(&mut out, &facet.deployed_bytecode);
+    write_bytecode(&mut out, &facet.deployed_bytecode, &[]);
     out.push_str(",\n  \"methodIdentifiers\": ");
     write_methods(&mut out, &facet.method_identifiers);
     out.push_str(&format!(
@@ -1239,9 +1243,9 @@ fn foundry_artifact(contract: &Contract) -> String {
     let mut out = String::from("{\n  \"abi\": ");
     out.push_str(&reindent(contract.abi.to_json().trim_end()));
     out.push_str(",\n  \"bytecode\": ");
-    write_bytecode(&mut out, &contract.bytecode);
+    write_bytecode(&mut out, &contract.bytecode, &[]);
     out.push_str(",\n  \"deployedBytecode\": ");
-    write_bytecode(&mut out, &contract.deployed_bytecode);
+    write_bytecode(&mut out, &contract.deployed_bytecode, &contract.immutable_references);
     out.push_str(",\n  \"methodIdentifiers\": ");
     write_methods(&mut out, &contract.method_identifiers);
     if !contract.split.facets.is_empty() {
@@ -1282,10 +1286,23 @@ fn reindent(text: &str) -> String {
     out
 }
 
-fn write_bytecode(out: &mut String, code: &[u8]) {
+fn write_bytecode(out: &mut String, code: &[u8], immutables: &[(String, Vec<(usize, usize)>)]) {
     out.push_str("{\n    \"object\": \"0x");
     out.push_str(&hex(code));
-    out.push_str("\",\n    \"sourceMap\": \"\",\n    \"linkReferences\": {}\n  }");
+    out.push_str("\",\n    \"sourceMap\": \"\",\n    \"linkReferences\": {}");
+    if !immutables.is_empty() {
+        out.push_str(",\n    \"immutableReferences\": {");
+        for (i, (id, sites)) in immutables.iter().enumerate() {
+            let sites: Vec<String> = sites
+                .iter()
+                .map(|(start, length)| format!("{{ \"start\": {start}, \"length\": {length} }}"))
+                .collect();
+            out.push_str(if i == 0 { "\n      " } else { ",\n      " });
+            out.push_str(&format!("{}: [{}]", json_string(id), sites.join(", ")));
+        }
+        out.push_str("\n    }");
+    }
+    out.push_str("\n  }");
 }
 
 fn write_methods(out: &mut String, methods: &[(String, [u8; 4])]) {

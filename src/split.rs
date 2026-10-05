@@ -164,6 +164,7 @@ pub(crate) struct Crossing {
 pub(crate) struct Split {
     pub creation: Vec<u8>,
     pub runtime: Vec<u8>,
+    pub immutables: gen::ImmutableRefs,
     /// The entrypoints the router runs itself, when it has facets.
     pub entries: Vec<Entrypoint>,
     /// The entrypoints the router forwards to a facet, grouped under the facet's module.
@@ -293,6 +294,7 @@ fn build_uncached(checked: &Checked, name: &str, opts: &Options) -> Result<Split
     Ok(Split {
         creation: built.code,
         runtime: built.runtime,
+        immutables: built.immutables,
         entries,
         routed,
         facets,
@@ -1225,6 +1227,15 @@ fn encode(split: &Split) -> Vec<u8> {
     let mut out = Vec::new();
     put_bytes(&mut out, &split.creation);
     put_bytes(&mut out, &split.runtime);
+    put_len(&mut out, split.immutables.len());
+    for (id, sites) in &split.immutables {
+        put_bytes(&mut out, id.as_bytes());
+        put_len(&mut out, sites.len());
+        for &(start, length) in sites {
+            put_len(&mut out, start);
+            put_len(&mut out, length);
+        }
+    }
     put_entries(&mut out, &split.entries);
     put_entries(&mut out, &split.routed);
     put_facets(&mut out, &split.facets);
@@ -1375,6 +1386,15 @@ fn decode(bytes: &[u8]) -> Option<Split> {
     let split = Split {
         creation: r.bytes()?,
         runtime: r.bytes()?,
+        immutables: (0..r.len()?)
+            .map(|_| {
+                let id = r.string()?;
+                let sites = (0..r.len()?)
+                    .map(|_| Some((r.len()?, r.len()?)))
+                    .collect::<Option<_>>()?;
+                Some((id, sites))
+            })
+            .collect::<Option<_>>()?,
         entries: r.entries()?,
         routed: r.entries()?,
         facets: r.facets()?,

@@ -635,3 +635,72 @@ contract Bare is {
     assert_eq!(load_bytes(&view(&bare, &none, "x()", &[]), 0), w(0));
     DEPLOYED.with(|d| d.borrow_mut().clear());
 }
+
+/// The deployed code with every place `refs` names zeroed, which is how a verifier such as
+/// Sourcify compares it with the compiled runtime.
+fn masked(deployed: &[u8], refs: &[(String, Vec<(usize, usize)>)]) -> Vec<u8> {
+    let mut out = deployed.to_vec();
+    for (start, length) in refs.iter().flat_map(|(_, sites)| sites) {
+        out[*start..start + length].fill(0);
+    }
+    out
+}
+
+/// Every place the creation code writes an immutable is in `immutableReferences`: zeroing
+/// them in the deployed code gives back the compiled runtime, for values in the code, values
+/// a router appends for its facets, and an upgradeable implementation's own address.
+#[test]
+fn immutable_references_cover_every_write() {
+    let contract = crate::compile(&memory(PLAIN), Path::new(ENTRY), &Options::default())
+        .and_then(crate::Output::single)
+        .map_err(first)
+        .expect("compile");
+    let ids: Vec<&str> = contract
+        .immutable_references
+        .iter()
+        .map(|(id, _)| id.as_str())
+        .collect();
+    assert_eq!(ids, ["lithe.immutable"]);
+    let made = construct_with(&contract.bytecode, &[w(0xfac), w(30)]);
+    assert_ne!(made.returndata, contract.deployed_bytecode);
+    assert_eq!(
+        masked(&made.returndata, &contract.immutable_references),
+        contract.deployed_bytecode
+    );
+    let artifact = crate::foundry_artifact(&contract);
+    assert!(
+        artifact.contains("\"immutableReferences\": {\n      \"lithe.immutable\": [{ \"start\": "),
+        "{artifact}"
+    );
+
+    install_mocks();
+    let split =
+        super::split::build_facets(&super::split::checked_src(SPLIT), "Pool").expect("split");
+    assert!(!split.immutables.is_empty());
+    let router = super::split::deploy_split(&split);
+    assert_ne!(router, split.runtime);
+    assert_eq!(masked(&router, &split.immutables), split.runtime);
+    DEPLOYED.with(|d| d.borrow_mut().clear());
+
+    let contract = crate::compile(
+        &memory(UPGRADEABLE_V1),
+        Path::new(ENTRY),
+        &Options::default(),
+    )
+    .and_then(crate::Output::single)
+    .map_err(first)
+    .expect("compile");
+    let ids: Vec<&str> = contract
+        .immutable_references
+        .iter()
+        .map(|(id, _)| id.as_str())
+        .collect();
+    assert_eq!(ids, ["__self"]);
+    let implementation = deploy_at(&contract.bytecode, w(0x1234));
+    assert_ne!(implementation, contract.deployed_bytecode);
+    assert_eq!(
+        masked(&implementation, &contract.immutable_references),
+        contract.deployed_bytecode
+    );
+    DEPLOYED.with(|d| d.borrow_mut().clear());
+}
