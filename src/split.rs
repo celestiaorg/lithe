@@ -536,6 +536,20 @@ fn facet(
     if let Some(facet) = memo.lock().ok().and_then(|memo| memo.get(&key).cloned()) {
         return Ok(facet);
     }
+    // A facet is built from its module alone, so contracts that change around it read it back.
+    let path = cache_entry(&format!("facet\0{}\0{module}", crate::hex(&key.0)));
+    let cached = path.as_deref().and_then(|path| std::fs::read(path).ok()).and_then(|bytes| {
+        let mut r = Reader(&bytes);
+        let mut facets = r.facets()?;
+        let facet = facets.pop()?;
+        (r.0.is_empty() && facets.is_empty()).then_some(facet)
+    });
+    if let Some(facet) = cached {
+        if let Ok(mut memo) = memo.lock() {
+            memo.insert(key, facet.clone());
+        }
+        return Ok(facet);
+    }
     let whose = |err: Error| Error {
         message: format!(
             "module `{module}`'s facet is built from the module alone: {}",
@@ -658,6 +672,11 @@ fn facet(
         hidden,
         hooks: stubs.into_iter().map(|(hook, _)| hook).collect(),
     };
+    if let Some(path) = path {
+        let mut bytes = Vec::new();
+        put_facets(&mut bytes, std::slice::from_ref(&facet));
+        store(&path, &bytes);
+    }
     if let Ok(mut memo) = memo.lock() {
         memo.insert(key, facet.clone());
     }
@@ -1180,11 +1199,16 @@ pub(crate) fn address_word(address: [u8; 20]) -> Word {
     Word::from_be_bytes(word)
 }
 
-/// Where a build is cached: `$LITHE_CACHE_DIR`, else `$XDG_CACHE_HOME/lithe`, else
-/// `~/.cache/lithe`, keyed by the build of the compiler, the program, and the options. An empty
-/// `LITHE_CACHE_DIR` turns the cache off.
-/// simplify: entries are never evicted; delete the directory to reclaim the space.
+/// Where a contract's build is cached, keyed by its program and the options.
 fn cache_path(checked: &Checked, name: &str, opts: &Options) -> Option<PathBuf> {
+    cache_entry(&format!("{:?}\0{name}\0{opts:?}", checked.source))
+}
+
+/// Where the build `key` names is cached: `$LITHE_CACHE_DIR`, else `$XDG_CACHE_HOME/lithe`, else
+/// `~/.cache/lithe`, keyed by the build of the compiler too. An empty `LITHE_CACHE_DIR` turns
+/// the cache off.
+/// simplify: entries are never evicted; delete the directory to reclaim the space.
+fn cache_entry(key: &str) -> Option<PathBuf> {
     if cfg!(test) {
         return None;
     }
@@ -1197,9 +1221,8 @@ fn cache_path(checked: &Checked, name: &str, opts: &Options) -> Option<PathBuf> 
         },
     };
     let key = format!(
-        "{}\0{:?}\0{name}\0{opts:?}\0{}",
+        "{}\0{key}\0{}",
         env!("LITHE_BUILD_ID"),
-        checked.source,
         crate::asm::byte_gas()
     );
     Some(dir.join(crate::hex(&keccak256(key.as_bytes()))))

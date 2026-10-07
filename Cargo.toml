@@ -8,6 +8,11 @@ license = "Apache-2.0"
 [dependencies]
 logos = "0.15"
 
+# The compiler allocates many small, short-lived vectors on every thread; the system allocator
+# spends a fifth of a cold compile on them. Not for WebAssembly, which the playground builds.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+mimalloc = { version = "0.1", default-features = false }
+
 [[bin]]
 name = "lithe"
 path = "src/main.rs"

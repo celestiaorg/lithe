@@ -1121,7 +1121,7 @@ fn split_tooling_output() {
     // A second contract with another `Beta` facet: each `Beta` is named by its address, and
     // the `Beta.json` of the build before is gone.
     assert!(out.join("facets/Beta.json").exists());
-    let changed = pair_src("").replace("beta_state.m * 2", "beta_state.m * 3");
+    let changed = pair_src("").replace("betaState.m * 2", "betaState.m * 3");
     std::fs::write(dir.join("src/pair2.lithe"), changed).expect("write");
     let built = crate::compile_dir(&dir.join("src"), &out, &|_| Ok(opts.clone())).expect("dir");
     assert!(built.failed.is_empty());

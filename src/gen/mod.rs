@@ -272,8 +272,9 @@ pub(crate) fn codegen(checked: &Checked, shape: &Shape) -> Result<Built, Error> 
     // The outline sets of builds over the limit. Inlining more only grows code, so later
     // rounds skip the sets that inline at least as much, whose builds are also the slowest.
     let too_big = std::sync::Mutex::new(Vec::<Big>::new());
-    // Each plan's build, or the error building it hit.
-    let build_each = |plans: &[Plan]| -> Vec<Result<Candidate, Error>> {
+    // Each plan's build, or the error building it hit. Builds over the limit are noted by
+    // `note_big`, only once the search uses them.
+    let build_raw = |plans: &[Plan]| -> Vec<Result<Candidate, Error>> {
         let emitted: Vec<Result<(Arc<Emitted>, Vec<Facet>), Error>> = parallel_map(plans, emit)
             .into_iter()
             .map(|e| e.map(|(e, needs)| (Arc::new(e), needs)))
@@ -301,17 +302,6 @@ pub(crate) fn codegen(checked: &Checked, shape: &Shape) -> Result<Built, Error> 
                 }
             }
         }
-        let mut too_big = too_big.lock().unwrap_or_else(|e| e.into_inner());
-        too_big.extend(
-            plans
-                .iter()
-                .zip(&emitted)
-                .filter(|(_, e)| {
-                    e.as_ref()
-                        .is_ok_and(|(e, _)| done.get(e).is_some_and(|f| f.bytes > limit))
-                })
-                .map(|(p, _)| p.outline.clone()),
-        );
         plans
             .iter()
             .zip(emitted)
@@ -328,6 +318,47 @@ pub(crate) fn codegen(checked: &Checked, shape: &Shape) -> Result<Built, Error> 
                 })
             })
             .collect()
+    };
+    let note_big = |c: &Candidate| {
+        if c.built.bytes > limit {
+            let mut too_big = too_big.lock().unwrap_or_else(|e| e.into_inner());
+            too_big.push(c.plan.outline.clone());
+        }
+    };
+    let build_each = |plans: &[Plan]| -> Vec<Result<Candidate, Error>> {
+        let built = build_raw(plans);
+        built.iter().flatten().for_each(note_big);
+        built
+    };
+    // Each move in turn, kept when the build costs less. Most are kept, so every move left
+    // is built at once, each with all those before it kept; one not kept leaves the builds
+    // after it to be done again. A failed build is not kept where `fatal` is false.
+    let chain = |mut best: Candidate, moves: &[&Move], fatal: bool| -> Result<Candidate, Error> {
+        let mut i = 0;
+        while i < moves.len() {
+            let mut p = best.plan.clone();
+            let plans: Vec<Plan> = moves[i..]
+                .iter()
+                .map(|m| {
+                    m.apply(&mut p);
+                    p.clone()
+                })
+                .collect();
+            for c in build_raw(&plans) {
+                i += 1;
+                let c = match c {
+                    Ok(c) => c,
+                    Err(err) if fatal => return Err(err),
+                    Err(_) => break,
+                };
+                note_big(&c);
+                if c.cost() >= best.cost() {
+                    break;
+                }
+                best = c;
+            }
+        }
+        Ok(best)
     };
     let build_all = |plans: &[Plan]| -> Result<Vec<Candidate>, Error> {
         build_each(plans).into_iter().collect()
@@ -437,18 +468,13 @@ pub(crate) fn codegen(checked: &Checked, shape: &Shape) -> Result<Built, Error> 
                 best = Some(c);
             }
         }
-        let Some(mut best) = best else {
+        let Some(best) = best else {
             return Ok((from, deltas));
         };
         let mut better: Vec<(f64, &Move)> = chosen.into_iter().flatten().collect();
         better.sort_by(|a, b| a.0.total_cmp(&b.0));
-        for &(_, m) in &better[1..] {
-            let c = build_all(&[m.applied(&best.plan)])?.pop().expect("a build");
-            if c.cost() < best.cost() {
-                best = c;
-            }
-        }
-        Ok((best, deltas))
+        let rest: Vec<&Move> = better[1..].iter().map(|&(_, m)| m).collect();
+        Ok((chain(best, &rest, true)?, deltas))
     };
     #[cfg(test)]
     let forced = FORCE_STATIC_HEAP.get();
@@ -622,14 +648,8 @@ pub(crate) fn codegen(checked: &Checked, shape: &Shape) -> Result<Built, Error> 
             .map(|(m, c)| ((g0 - c.built.gas) / (c.built.bytes as f64 - b0).max(1.0), m))
             .collect();
         order.sort_by(|a, b| b.0.total_cmp(&a.0));
-        for (_, m) in order {
-            let Some(Ok(c)) = build_each(&[m.applied(&best.plan)]).pop() else {
-                continue;
-            };
-            if c.cost() < best.cost() {
-                best = c;
-            }
-        }
+        let moves: Vec<&Move> = order.into_iter().map(|(_, m)| m).collect();
+        best = chain(best, &moves, false)?;
     }
     // Constants and static allocations are tried on the chosen plan only: across every
     // move they would double the builds for a few more bytes.
