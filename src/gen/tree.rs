@@ -113,7 +113,12 @@ impl<'a> Gen<'a> {
     pub(super) fn tree_encode(&mut self, parts: &[(Addr, usize)]) -> Result<(), Error> {
         let parts: Vec<Part> = parts
             .iter()
-            .map(|&(at, ty)| Part { at, ty, cd: false, checked: false })
+            .map(|&(at, ty)| Part {
+                at,
+                ty,
+                cd: false,
+                checked: false,
+            })
             .collect();
         self.tree_encode_parts(&parts, 0)
     }
@@ -133,7 +138,13 @@ impl<'a> Gen<'a> {
         self.push_u64(u64::from(head));
         self.op(ADD);
         let mut off = 0;
-        for &Part { at, ty, cd, checked } in parts {
+        for &Part {
+            at,
+            ty,
+            cd,
+            checked,
+        } in parts
+        {
             if self.abi_dyn(ty) {
                 // [base, cur]: the head word is where the tail starts, from `base`.
                 self.op(DUP1 + 1);
@@ -217,42 +228,55 @@ impl<'a> Gen<'a> {
         // from. A parameter in calldata is copied from there, a slice from where it lies,
         // and a stored string from its slots, when no other piece can change it meanwhile.
         let pure = |g: &Self, a: &Expr| {
-            g.eager_ok(a) || g.short_bytes_lit(a).is_some() || g.cd_str(a).is_some() || g.stored_str(a).is_some()
+            g.eager_ok(a)
+                || g.short_bytes_lit(a).is_some()
+                || g.cd_str(a).is_some()
+                || g.stored_str(a).is_some()
         };
         let stored_ok = args.iter().all(|a| pure(self, a));
         let mut values = Vec::with_capacity(args.len());
         for arg in args {
-            values.push(match (self.short_bytes_lit(arg), self.cd_str(arg), self.stored_str(arg)) {
-                (Some((w, n)), ..) => Piece::Word(w, n),
-                (None, Some(at), _) => Piece::Calldata(at),
-                (None, None, Some((sym, leaf))) if stored_ok => Piece::Stored(sym, leaf),
-                _ => match arg {
-                    Expr::Call {
-                        builtin: Some(Builtin::BytesSlice),
-                        args: inner,
-                        ..
-                    } if !matches!(
-                        &inner[0],
+            values.push(
+                match (
+                    self.short_bytes_lit(arg),
+                    self.cd_str(arg),
+                    self.stored_str(arg),
+                ) {
+                    (Some((w, n)), ..) => Piece::Word(w, n),
+                    (None, Some(at), _) => Piece::Calldata(at),
+                    (None, None, Some((sym, leaf))) if stored_ok => Piece::Stored(sym, leaf),
+                    _ => match arg {
                         Expr::Call {
-                            builtin: Some(Builtin::Code),
+                            builtin: Some(Builtin::BytesSlice),
+                            args: inner,
                             ..
+                        } if !matches!(
+                            &inner[0],
+                            Expr::Call {
+                                builtin: Some(Builtin::Code),
+                                ..
+                            }
+                        ) && self.cd_str(&inner[0]).is_none() =>
+                        {
+                            let checked = !self.slice_proven(inner);
+                            let kept = self.kept_span(&inner[0]).copied();
+                            let mut staged = Vec::with_capacity(inner.len());
+                            for (j, e) in inner.iter().enumerate() {
+                                staged.push(if j == 0 && kept.is_some() {
+                                    0
+                                } else {
+                                    self.stage(e)?
+                                });
+                            }
+                            Piece::Slice(staged, checked, kept)
                         }
-                    ) && self.cd_str(&inner[0]).is_none() =>
-                    {
-                        let checked = !self.slice_proven(inner);
-                        let kept = self.kept_span(&inner[0]).copied();
-                        let mut staged = Vec::with_capacity(inner.len());
-                        for (j, e) in inner.iter().enumerate() {
-                            staged.push(if j == 0 && kept.is_some() { 0 } else { self.stage(e)? });
-                        }
-                        Piece::Slice(staged, checked, kept)
-                    }
-                    _ => match self.kept_span(arg) {
-                        Some(&(len, data)) => Piece::Kept(len, data),
-                        None => Piece::Staged(self.stage(arg)?, arg.ty()),
+                        _ => match self.kept_span(arg) {
+                            Some(&(len, data)) => Piece::Kept(len, data),
+                            None => Piece::Staged(self.stage(arg)?, arg.ty()),
+                        },
                     },
                 },
-            });
+            );
         }
         self.push_mem(self.blob_base);
         self.mload(self.blob_ptr);
@@ -1484,7 +1508,10 @@ impl<'a> Gen<'a> {
                 let checked: Vec<(u32, usize)> = types
                     .iter()
                     .enumerate()
-                    .filter_map(|(j, t)| t.filter(|&t| self.needs_check(t)).map(|t| (32 * j as u32, t)))
+                    .filter_map(|(j, t)| {
+                        t.filter(|&t| self.needs_check(t))
+                            .map(|t| (32 * j as u32, t))
+                    })
                     .collect();
                 if !dynamic && checked.is_empty() {
                     return Ok(());
@@ -1570,16 +1597,17 @@ impl<'a> Gen<'a> {
                 // Static words are checked where the decoder copies them: before the next
                 // dynamic field, or at the end.
                 let mut words: Vec<(u32, usize)> = Vec::new();
-                let flush = |g: &mut Self, words: &mut Vec<(u32, usize)>, pending: &mut Option<u64>| {
-                    for (off, wt) in std::mem::take(words) {
-                        g.op(DUP1 + 1);
-                        g.add_const(off);
-                        g.src_load(src);
-                        g.word_term(wt);
-                        g.check_term(None, pending)?;
-                    }
-                    Ok::<(), Error>(())
-                };
+                let flush =
+                    |g: &mut Self, words: &mut Vec<(u32, usize)>, pending: &mut Option<u64>| {
+                        for (off, wt) in std::mem::take(words) {
+                            g.op(DUP1 + 1);
+                            g.add_const(off);
+                            g.src_load(src);
+                            g.word_term(wt);
+                            g.check_term(None, pending)?;
+                        }
+                        Ok::<(), Error>(())
+                    };
                 for f in &t.fields {
                     if self.abi_dyn(f.ty) {
                         flush(self, &mut words, pending)?;
@@ -1867,11 +1895,12 @@ impl<'a> Gen<'a> {
                     } else {
                         vec![(arg.ty(), at)]
                     };
-                    parts.extend(
-                        fields
-                            .into_iter()
-                            .map(|(ty, at)| Part { at, ty, cd: false, checked: false }),
-                    );
+                    parts.extend(fields.into_iter().map(|(ty, at)| Part {
+                        at,
+                        ty,
+                        cd: false,
+                        checked: false,
+                    }));
                 }
             }
         }
@@ -2133,15 +2162,16 @@ impl<'a> Gen<'a> {
         }
         let (uses, fine) = (std::cell::Cell::new(0usize), std::cell::Cell::new(0usize));
         let bad = std::cell::Cell::new(false);
-        let own = |e: &Expr| matches!(e, Expr::Ident { sym: Some(s), builtin: None, .. } if *s == sym);
+        let own =
+            |e: &Expr| matches!(e, Expr::Ident { sym: Some(s), builtin: None, .. } if *s == sym);
         let count = |node: Node<'_>| {
             let add = |n: usize| fine.set(fine.get() + n);
             match node {
                 Node::Expr(e) if own(e) => uses.set(uses.get() + 1),
-                Node::Expr(Expr::Field { base, name, .. }) if own(base) => {
-                    if !list || name == "length" {
-                        add(1)
-                    }
+                Node::Expr(Expr::Field { base, name, .. })
+                    if own(base) && (!list || name == "length") =>
+                {
+                    add(1)
                 }
                 // A loop over the list names it in its element read, `xs[i]`.
                 Node::Stmt(Stmt::For {
@@ -2151,8 +2181,12 @@ impl<'a> Gen<'a> {
                     ..
                 }) if list && own(base) => {
                     match elem {
-                        Some(e) if !self.cd_static(self.checked.syms[*e].ty)
-                            && !self.cd_checkable(func, *e) => bad.set(true),
+                        Some(e)
+                            if !self.cd_static(self.checked.syms[*e].ty)
+                                && !self.cd_checkable(func, *e) =>
+                        {
+                            bad.set(true)
+                        }
                         _ => {}
                     }
                     add(1)
@@ -2167,7 +2201,8 @@ impl<'a> Gen<'a> {
                     let params = &self.checked.prog.funcs[*idx].params;
                     for (a, p) in args.iter().zip(params) {
                         if own(a)
-                            && p.sym.is_some_and(|s| !later.contains(&s) && self.cd_checkable(*idx, s))
+                            && p.sym
+                                .is_some_and(|s| !later.contains(&s) && self.cd_checkable(*idx, s))
                         {
                             add(1)
                         }
@@ -2199,9 +2234,11 @@ impl<'a> Gen<'a> {
     ) -> Result<bool, Error> {
         self.cd_checked.remove(&sym);
         let decoded = match init {
-            Expr::Ident { sym: Some(from), builtin: None, .. } if self.cd_checked.contains(from) => {
-                None
-            }
+            Expr::Ident {
+                sym: Some(from),
+                builtin: None,
+                ..
+            } if self.cd_checked.contains(from) => None,
             Expr::Call {
                 builtin: Some(Builtin::AbiDecode),
                 args,
@@ -2220,7 +2257,12 @@ impl<'a> Gen<'a> {
         }
         match decoded {
             None => {
-                let Expr::Ident { sym: Some(from), .. } = init else { unreachable!() };
+                let Expr::Ident {
+                    sym: Some(from), ..
+                } = init
+                else {
+                    unreachable!()
+                };
                 self.mload(self.local[*from]);
             }
             Some((data, ty)) => {
@@ -2269,14 +2311,25 @@ impl<'a> Gen<'a> {
         let n = self.checked.prog.funcs.len();
         (0..n).find(|&i| {
             let f = &self.checked.prog.funcs[i];
-            f.stmts.iter().any(|st| self.stmt_any(st, &declares, &mut (0..n).collect()))
+            f.stmts
+                .iter()
+                .any(|st| self.stmt_any(st, &declares, &mut (0..n).collect()))
         })
     }
 
     /// `x.f` of a record `cd_checked` keeps: `x`, the field's head offset, and its type.
     pub(super) fn cd_field(&self, e: &Expr) -> Option<(usize, u32, usize)> {
-        let Expr::Field { base, name, .. } = e else { return None };
-        let Expr::Ident { sym: Some(x), builtin: None, .. } = base.as_ref() else { return None };
+        let Expr::Field { base, name, .. } = e else {
+            return None;
+        };
+        let Expr::Ident {
+            sym: Some(x),
+            builtin: None,
+            ..
+        } = base.as_ref()
+        else {
+            return None;
+        };
         if !self.cd_checked.contains(x) {
             return None;
         }
@@ -2320,12 +2373,18 @@ impl<'a> Gen<'a> {
             }
             return Ok(true);
         }
-        let Expr::Field { base, name, .. } = e else { return Ok(false) };
+        let Expr::Field { base, name, .. } = e else {
+            return Ok(false);
+        };
         if name != "length" {
             return Ok(false);
         }
         match base.as_ref() {
-            Expr::Ident { sym: Some(s), builtin: None, .. } if self.cd_checked.contains(s) => {
+            Expr::Ident {
+                sym: Some(s),
+                builtin: None,
+                ..
+            } if self.cd_checked.contains(s) => {
                 self.mload(self.local[*s]);
             }
             b => match self.cd_field(b) {
@@ -2342,7 +2401,9 @@ impl<'a> Gen<'a> {
     /// `[len, data]` of a `string` or `bytes` field `cd_field` finds, copied from calldata
     /// into a new blob. Returns whether `e` was one.
     pub(super) fn cd_field_span(&mut self, e: &Expr) -> Result<bool, Error> {
-        let Some((x, off, ty)) = self.cd_field(e) else { return Ok(false) };
+        let Some((x, off, ty)) = self.cd_field(e) else {
+            return Ok(false);
+        };
         if !self.is_dynamic(self.peel_nominal(ty)) {
             return Ok(false);
         }
@@ -2614,7 +2675,14 @@ impl<'a> Gen<'a> {
                 builtin: Some(Builtin::BytesSlice),
                 args,
                 ..
-            } if !matches!(&args[0], Expr::Call { builtin: Some(Builtin::Code), .. }) => {
+            } if !matches!(
+                &args[0],
+                Expr::Call {
+                    builtin: Some(Builtin::Code),
+                    ..
+                }
+            ) =>
+            {
                 let cd = self.cd_str(&args[0]);
                 if let Some(at) = cd {
                     self.mload(at);
@@ -2636,7 +2704,11 @@ impl<'a> Gen<'a> {
                 self.op(ADD);
                 self.mstore_off(self.tree_end);
                 self.mstore_off(self.tree_at);
-                Ok(if cd.is_some() { SrcKind::Cd } else { SrcKind::Mem })
+                Ok(if cd.is_some() {
+                    SrcKind::Cd
+                } else {
+                    SrcKind::Mem
+                })
             }
             Expr::Ident { sym: Some(sym), .. } if self.cd_bytes.contains(sym) => {
                 // [len, p + 32]: the length word at `p`, the bytes after it.

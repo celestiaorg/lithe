@@ -437,7 +437,11 @@ impl Checker {
         // passes through the module's code, whatever it declares.
         let hook: Vec<bool> = funcs
             .iter()
-            .map(|f| f.hook_of.as_ref().is_some_and(|of| of.form != HookForm::Entry))
+            .map(|f| {
+                f.hook_of
+                    .as_ref()
+                    .is_some_and(|of| of.form != HookForm::Entry)
+            })
             .collect();
         let module_code: Vec<bool> = funcs
             .iter()

@@ -409,9 +409,7 @@ impl<'a> Gen<'a> {
             return Ok(None);
         }
         let immutables = &self.checked.immutable_syms;
-        let writes = |node: Node<'_>| {
-            matches!(node, Node::Stmt(Stmt::Assign { root: Some(sym), .. }) if immutables.contains(sym))
-        };
+        let writes = |node: Node<'_>| matches!(node, Node::Stmt(Stmt::Assign { root: Some(sym), .. }) if immutables.contains(sym));
         if self.func_any(idx, &writes, &mut Vec::new()) {
             return Ok(None);
         }
@@ -419,7 +417,10 @@ impl<'a> Gen<'a> {
             return Err("it is generic".to_string());
         }
         for p in &f.params {
-            if p.storage || p.sym.is_some_and(|s| self.checked.slot_syms.contains_key(&s)) {
+            if p.storage
+                || p.sym
+                    .is_some_and(|s| self.checked.slot_syms.contains_key(&s))
+            {
                 return Err(format!("its parameter `{}` is a storage reference", p.name));
             }
             if let Some(what) = self.not_abi(p.ty_id) {
@@ -439,7 +440,9 @@ impl<'a> Gen<'a> {
             )
         };
         if self.func_any(idx, &calldata, &mut Vec::new()) {
-            return Err("it reads the call's calldata, which its facet sees as its own".to_string());
+            return Err(
+                "it reads the call's calldata, which its facet sees as its own".to_string(),
+            );
         }
         Ok(Some(!pure))
     }
@@ -932,10 +935,20 @@ impl<'a> Gen<'a> {
                     declared,
                     ..
                 }) => {
-                    d.extend(counter.iter().chain(elem).chain(limit).chain(list).chain(declared));
+                    d.extend(
+                        counter
+                            .iter()
+                            .chain(elem)
+                            .chain(limit)
+                            .chain(list)
+                            .chain(declared),
+                    );
                 }
                 Node::Expr(Expr::Case { arms, .. }) => {
-                    d.extend(arms.iter().flat_map(|a| a.bind_sym.iter().chain(&a.tuple_syms)));
+                    d.extend(
+                        arms.iter()
+                            .flat_map(|a| a.bind_sym.iter().chain(&a.tuple_syms)),
+                    );
                 }
                 _ => {}
             }
@@ -1103,7 +1116,10 @@ impl<'a> Gen<'a> {
                 ..
             } if args.is_empty() => {
                 let f = &self.checked.prog.funcs[*idx];
-                f.stmts.is_empty() && f.tail.as_ref().is_some_and(|t| self.const_word(t).is_some())
+                f.stmts.is_empty()
+                    && f.tail
+                        .as_ref()
+                        .is_some_and(|t| self.const_word(t).is_some())
             }
             Expr::Ident {
                 sym: Some(sym),

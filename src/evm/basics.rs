@@ -760,7 +760,10 @@ is {{
             "if x > 0 then { r := m / x; }",
             "if m > 0 then { r := m / x; }",
         ),
-        ("assert(x <> 0, Low); r := m % x;", "assert(m <> 0, Low); r := m % x;"),
+        (
+            "assert(x <> 0, Low); r := m % x;",
+            "assert(m <> 0, Low); r := m % x;",
+        ),
         (
             "for _ : uint in 0 .. 9 until x = 0 do { (r, x) := (x, r % x); }",
             "for _ : uint in 0 .. 9 until r = 0 do { (r, x) := (x, r % x); }",
@@ -954,7 +957,11 @@ external view function popped(const ys : list(uint); const n : uint) : uint is {
     panics("inBody(uint256,uint256)", &[w(7), w(1)], 0x12);
     returns("inBody(uint256,uint256)", &[w(7), w(5)], w(1));
     panics("nextIteration(uint256,uint256)", &[w(7), w(1)], 0x12);
-    returns("nextIteration(uint256,uint256)", &[w(12), w(6)], w(2 + 2 + 3));
+    returns(
+        "nextIteration(uint256,uint256)",
+        &[w(12), w(6)],
+        w(2 + 2 + 3),
+    );
     panics("nested(uint256,uint256)", &[w(101), w(1)], 0x12);
     returns("nested(uint256,uint256)", &[w(4), w(2)], w(12));
     panics("sub(uint256,uint256)", &[w(8), w(3)], 0x11);
@@ -1071,7 +1078,10 @@ external pure function looped(const n : uint; const m : uint) : uint is {
     let panics = |sig: &str, args: &[Word]| {
         let out = call(&runtime, sig, args);
         assert!(out.reverted, "{sig} {args:?}");
-        assert!(out.returndata.starts_with(&selector("Panic(uint256)")), "{sig} {args:?}");
+        assert!(
+            out.returndata.starts_with(&selector("Panic(uint256)")),
+            "{sig} {args:?}"
+        );
         assert_eq!(load_bytes(&out.returndata, 4), w(0x12), "{sig} {args:?}");
     };
     let returns = |sig: &str, args: &[Word], want: u64| {
@@ -1116,10 +1126,21 @@ external pure function cuts(const d : bytes) : uint is {
     let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
     let data = [0x05, 0x01, 0x02, 0x61];
     for (sig, want) in [("sums(bytes)", 3), ("cuts(bytes)", 0x0501 + 0x0102)] {
-        let out = exec(&runtime, &abi_string(sig, &data), HashMap::new(), Word::from_u64(1), Word::from_u64(0), Word::from_u64(0))
-            .expect("exec");
+        let out = exec(
+            &runtime,
+            &abi_string(sig, &data),
+            HashMap::new(),
+            Word::from_u64(1),
+            Word::from_u64(0),
+            Word::from_u64(0),
+        )
+        .expect("exec");
         assert!(!out.reverted, "{sig}: {}", pretty(&out.returndata));
-        assert_eq!(load_bytes(&out.returndata, 0), Word::from_u64(want), "{sig}");
+        assert_eq!(
+            load_bytes(&out.returndata, 0),
+            Word::from_u64(want),
+            "{sig}"
+        );
     }
 }
 
@@ -1300,15 +1321,39 @@ external pure function toLength(const xs : list(uint)) : uint is {
     };
     let panics = |out: &Outcome| out.reverted && load_bytes(&out.returndata, 4) == w(0x32);
     let two = "(uint256[],uint256[])";
-    assert_eq!(value(&lists(&format!("paired{two}"), &[1, 2, 3], &[4, 5, 6])), w(32));
+    assert_eq!(
+        value(&lists(&format!("paired{two}"), &[1, 2, 3], &[4, 5, 6])),
+        w(32)
+    );
     let short = lists(&format!("paired{two}"), &[1, 2, 3], &[4, 5]);
     assert!(short.reverted && short.returndata.starts_with(&selector("Mismatch()")));
-    assert_eq!(value(&lists(&format!("shorter{two}"), &[1, 2], &[4, 5])), w(14));
-    assert!(panics(&lists(&format!("shorter{two}"), &[1, 2, 3], &[4, 5])));
-    assert_eq!(value(&lists(&format!("unpaired{two}"), &[1, 2], &[4, 5, 6])), w(14));
-    assert!(panics(&lists(&format!("unpaired{two}"), &[1, 2, 3], &[4, 5])));
-    assert_eq!(value(&list_and("ranged(uint256[],uint256)", &[1, 2, 3], 3)), w(6));
-    assert!(panics(&list_and("ranged(uint256[],uint256)", &[1, 2, 3], 4)));
+    assert_eq!(
+        value(&lists(&format!("shorter{two}"), &[1, 2], &[4, 5])),
+        w(14)
+    );
+    assert!(panics(&lists(
+        &format!("shorter{two}"),
+        &[1, 2, 3],
+        &[4, 5]
+    )));
+    assert_eq!(
+        value(&lists(&format!("unpaired{two}"), &[1, 2], &[4, 5, 6])),
+        w(14)
+    );
+    assert!(panics(&lists(
+        &format!("unpaired{two}"),
+        &[1, 2, 3],
+        &[4, 5]
+    )));
+    assert_eq!(
+        value(&list_and("ranged(uint256[],uint256)", &[1, 2, 3], 3)),
+        w(6)
+    );
+    assert!(panics(&list_and(
+        "ranged(uint256[],uint256)",
+        &[1, 2, 3],
+        4
+    )));
     let mut c = selector("toLength(uint256[])").to_vec();
     for word in [32, 2, 7, 8] {
         c.extend_from_slice(&w(word).to_be_bytes());
@@ -1556,10 +1601,7 @@ external pure function units(const d : uint8) : uint is 10 ** d
     assert_eq!(out("zero(uint256)", max), Some(w(0)));
     assert_eq!(out("one(uint256)", max), Some(w(1)));
     assert_eq!(out("minusOne(uint256)", max), Some(n(1)));
-    assert_eq!(
-        out("minusOne(uint256)", max.wrapping_sub(w(1))),
-        Some(w(1))
-    );
+    assert_eq!(out("minusOne(uint256)", max.wrapping_sub(w(1))), Some(w(1)));
     assert_eq!(
         out("minusTen(uint256)", w(75)),
         Some(w(0).wrapping_sub(w(10).overflowing_pow(w(75)).0))
@@ -1796,7 +1838,11 @@ external pure function pick(const a : uint; const b : uint) : uint is {
     while i < runtime.len() {
         let op = runtime[i];
         loads += usize::from(op == 0x51);
-        i += 1 + if (0x60..=0x7f).contains(&op) { usize::from(op - 0x5f) } else { 0 };
+        i += 1 + if (0x60..=0x7f).contains(&op) {
+            usize::from(op - 0x5f)
+        } else {
+            0
+        };
     }
     assert_eq!(loads, 1);
     let w = Word::from_u64;
@@ -1807,8 +1853,20 @@ external pure function pick(const a : uint; const b : uint) : uint is {
         }
         a
     };
-    for (a, b) in [(0, 0), (12, 18), (18, 12), (7, 0), (0, 7), (1071, 462), (832040, 514229)] {
-        assert_eq!(word("gcd(uint256,uint256)", &[w(a), w(b)]), w(gcd(a, b)), "gcd({a}, {b})");
+    for (a, b) in [
+        (0, 0),
+        (12, 18),
+        (18, 12),
+        (7, 0),
+        (0, 7),
+        (1071, 462),
+        (832040, 514229),
+    ] {
+        assert_eq!(
+            word("gcd(uint256,uint256)", &[w(a), w(b)]),
+            w(gcd(a, b)),
+            "gcd({a}, {b})"
+        );
     }
     for n in [0u64, 1, 2, 5, 9, 20] {
         let mut total = 0u64;
@@ -1857,9 +1915,15 @@ external pure function shifted(const x : int) : int is x + -5
         assert_eq!(out(sig, bottom.wrapping_sub(w(1))), None, "{sig}");
         assert_eq!(out(sig, neg(w(7))), Some(neg(w(21))), "{sig}");
     }
-    assert_eq!(out("byMinus3(int256)", bottom), Some(bottom.wrapping_mul(neg(w(3)))));
+    assert_eq!(
+        out("byMinus3(int256)", bottom),
+        Some(bottom.wrapping_mul(neg(w(3))))
+    );
     assert_eq!(out("byMinus3(int256)", bottom.wrapping_sub(w(1))), None);
-    assert_eq!(out("byMinus3(int256)", neg(top)), Some(top.wrapping_mul(w(3))));
+    assert_eq!(
+        out("byMinus3(int256)", neg(top)),
+        Some(top.wrapping_mul(w(3)))
+    );
     assert_eq!(out("byMinus3(int256)", neg(top).wrapping_sub(w(1))), None);
     assert_eq!(out("narrowBy3(int8)", w(42)), Some(w(126)));
     assert_eq!(out("narrowBy3(int8)", w(43)), None);
@@ -1894,14 +1958,20 @@ external pure function f(const n : uint) : bool is even(n)
 ",
     )
     .expect_err("mutual recursion");
-    assert!(err.to_string().contains("recursion is not supported"), "{err}");
+    assert!(
+        err.to_string().contains("recursion is not supported"),
+        "{err}"
+    );
 
     let src = std::fs::read_to_string(
         std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("docs/src/pages/by-example/recursion.mdx"),
     )
     .expect("recursion page");
-    let src = src.split("```lithe [recursion.lithe]\n").nth(1).expect("program");
+    let src = src
+        .split("```lithe [recursion.lithe]\n")
+        .nth(1)
+        .expect("program");
     let src = src.split("```").next().expect("program end");
     let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
     let w = Word::from_u64;
@@ -1911,8 +1981,12 @@ external pure function f(const n : uint) : bool is even(n)
     assert_eq!(slot(&out.storage, 0), w(252));
     let out = call(&runtime, "run(uint256,uint256)", &[w(0), w(12)]);
     assert!(!out.reverted, "run zero");
-    assert_eq!(slot(&out.storage, 0), w(1 + 0 + 12 + 0 + 1));
-    let mut args: Vec<Word> = [2u64, 3, 5, 7, 11, 13, 17, 19].iter().map(|&x| w(x)).collect();
+    // 1 + 0 + 12 + 0 + 1
+    assert_eq!(slot(&out.storage, 0), w(14));
+    let mut args: Vec<Word> = [2u64, 3, 5, 7, 11, 13, 17, 19]
+        .iter()
+        .map(|&x| w(x))
+        .collect();
     args.push(w(13));
     let out = call(&runtime, "find(uint256[8],uint256)", &args);
     assert_eq!(load_bytes(&out.returndata, 0), w(1));
@@ -1973,7 +2047,11 @@ external pure function pushed(const m : uint8) : uint is {
     for m in [0, 3, 255] {
         let out = call(&runtime, "fill(uint8)", &[w(m)]);
         assert!(!out.reverted, "fill({m})");
-        assert_eq!(load_bytes(&out.returndata, 0), w(21 + (m + 2) * 100), "fill({m})");
+        assert_eq!(
+            load_bytes(&out.returndata, 0),
+            w(21 + (m + 2) * 100),
+            "fill({m})"
+        );
         for f in ["popped(uint8)", "reassigned(uint8)", "inLoop(uint8)"] {
             let out = call(&runtime, f, &[w(m)]);
             assert!(out.reverted, "{f} {m}");

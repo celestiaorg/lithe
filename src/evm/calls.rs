@@ -286,8 +286,15 @@ external function each(const e : Echo; const tags : list(uint)) is {
         assert_eq!(seen(&out, tag), w(v), "twice: seen[{tag}]");
     }
     let tags = [w(0xcd), w(0x40), w(3), w(3), w(4), w(5)];
-    let out = exec(&runtime, &word_data("each(address,uint256[])", &tags), HashMap::new(), w(0xab), w(0), w(0))
-        .expect("each");
+    let out = exec(
+        &runtime,
+        &word_data("each(address,uint256[])", &tags),
+        HashMap::new(),
+        w(0xab),
+        w(0),
+        w(0),
+    )
+    .expect("each");
     assert!(!out.reverted, "{}", pretty(&out.returndata));
     for (tag, v) in [(3, 30), (4, 40), (5, 50), (103, 31), (104, 41), (105, 51)] {
         assert_eq!(seen(&out, tag), w(v), "each: seen[{tag}]");
@@ -1889,7 +1896,10 @@ external pure function fwd(const n : uint; const data : bytes; const s : string)
         want.extend_from_slice(&encode_args("", &args)[4..]);
         assert_eq!(abi_string_value(&out.returndata), want);
     }
-    let mut past = encode_args("fwd(uint256,bytes,string)", &[Arg::W(w(5)), Arg::B(vec![1]), Arg::B(vec![2])]);
+    let mut past = encode_args(
+        "fwd(uint256,bytes,string)",
+        &[Arg::W(w(5)), Arg::B(vec![1]), Arg::B(vec![2])],
+    );
     past[4 + 63] = 0xff;
     assert!(run(past).reverted);
 }
@@ -1917,7 +1927,10 @@ external pure function fwd(const n : uint; const data : bytes) : bytes is
         out
     };
     for data in [vec![], vec![1, 2, 3], vec![9; 70]] {
-        let out = run(encode_args("fwd(uint256,bytes)", &[Arg::W(w(5)), Arg::B(data.clone())]));
+        let out = run(encode_args(
+            "fwd(uint256,bytes)",
+            &[Arg::W(w(5)), Arg::B(data.clone())],
+        ));
         assert!(!out.reverted, "{data:?}");
         let mut want = wrapped(5, &data);
         want.extend(wrapped(2, &data));
@@ -1969,7 +1982,11 @@ external function f(const xs : list(uint); const tags : list(bytes4); const i : 
         };
         assert_eq!(hex(&dynamic(0)), hex(&encoded));
         assert_eq!(hex(&dynamic(1)), hex(&wrapped));
-        assert!(out.detail.iter().any(|d| d.ends_with(&hex(&encoded))), "{:?}", out.detail);
+        assert!(
+            out.detail.iter().any(|d| d.ends_with(&hex(&encoded))),
+            "{:?}",
+            out.detail
+        );
     }
     let out = call(3);
     assert!(out.reverted);
@@ -2026,15 +2043,42 @@ external view function f(const s : string) : string is String.concat(s, \"|\", s
     let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
     let w = Word::from_u64;
     let mut storage = HashMap::new();
-    for name in [&b""[..], b"ab", &[b'q'; 31][..], &[b'r'; 32][..], &[b's'; 70][..], &[b't'; 40][..], b"z"] {
-        let set = exec(&runtime, &encode_args("set(string)", &[Arg::B(name.to_vec())]), storage.clone(), w(7), w(0), w(0))
-            .expect("set");
+    for name in [
+        &b""[..],
+        b"ab",
+        &[b'q'; 31][..],
+        &[b'r'; 32][..],
+        &[b's'; 70][..],
+        &[b't'; 40][..],
+        b"z",
+    ] {
+        let set = exec(
+            &runtime,
+            &encode_args("set(string)", &[Arg::B(name.to_vec())]),
+            storage.clone(),
+            w(7),
+            w(0),
+            w(0),
+        )
+        .expect("set");
         assert!(!set.reverted);
         storage = set.storage.clone();
-        let out = exec(&runtime, &encode_args("f(string)", &[Arg::B(b"hi".to_vec())]), storage.clone(), w(7), w(0), w(0))
-            .expect("f");
+        let out = exec(
+            &runtime,
+            &encode_args("f(string)", &[Arg::B(b"hi".to_vec())]),
+            storage.clone(),
+            w(7),
+            w(0),
+            w(0),
+        )
+        .expect("f");
         assert!(!out.reverted);
-        assert_eq!(abi_string_value(&out.returndata), [&b"hi|"[..], name, b"|", name].concat(), "{}", name.len());
+        assert_eq!(
+            abi_string_value(&out.returndata),
+            [&b"hi|"[..], name, b"|", name].concat(),
+            "{}",
+            name.len()
+        );
     }
 }
 
@@ -2398,7 +2442,10 @@ external view function f(const a : uint; const b : uint) : uint is {
 } with acc + both(a, b) + both(b, a)
 ";
     let mix = |a: u64, p: (u64, u64), b: u64| {
-        ((a * 1000 + p.0 * 100 + b) % 1000003, (p.1 * 7 + a * 13 + b * 17) % 1000033)
+        (
+            (a * 1000 + p.0 * 100 + b) % 1000003,
+            (p.1 * 7 + a * 13 + b * 17) % 1000033,
+        )
     };
     let m = |k: u64| [0, 40, 50, 60, 0, 0, 0][k as usize % 7] * u64::from(k < 4);
     let look = |k: u64, d: u64| m(k) * 3 + d * 5 + k % 7 + (m(k + 1) ^ d) * 11;
@@ -2418,16 +2465,28 @@ external view function f(const a : uint; const b : uint) : uint is {
     let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
     let mut storage = HashMap::new();
     for (k, v) in [(1, 40), (2, 50), (3, 60)] {
-        let data = word_data("put(uint256,uint256)", &[Word::from_u64(k), Word::from_u64(v)]);
+        let data = word_data(
+            "put(uint256,uint256)",
+            &[Word::from_u64(k), Word::from_u64(v)],
+        );
         let n = Word::from_u64;
-        storage = exec(&runtime, &data, storage, n(1), n(0), n(0)).expect("put").storage;
+        storage = exec(&runtime, &data, storage, n(1), n(0), n(0))
+            .expect("put")
+            .storage;
     }
     for (a, b) in [(0, 0), (1, 2), (5, 3), (123, 456)] {
-        let data = word_data("f(uint256,uint256)", &[Word::from_u64(a), Word::from_u64(b)]);
+        let data = word_data(
+            "f(uint256,uint256)",
+            &[Word::from_u64(a), Word::from_u64(b)],
+        );
         let n = Word::from_u64;
         let out = exec(&runtime, &data, storage.clone(), n(1), n(0), n(0)).expect("f");
         assert!(!out.reverted, "{a} {b}");
-        assert_eq!(load_bytes(&out.returndata, 0), Word::from_u64(f(a, b)), "{a} {b}");
+        assert_eq!(
+            load_bytes(&out.returndata, 0),
+            Word::from_u64(f(a, b)),
+            "{a} {b}"
+        );
     }
 }
 
@@ -2443,7 +2502,12 @@ external payable function payout(const tos : list(address)) is {
 ";
     let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
     let run = |second: Word| {
-        let args = [Word::from_u64(0x20), Word::from_u64(2), Word::from_u64(0xcd), second];
+        let args = [
+            Word::from_u64(0x20),
+            Word::from_u64(2),
+            Word::from_u64(0xcd),
+            second,
+        ];
         exec(
             &runtime,
             &word_data("payout(address[])", &args),
@@ -2459,5 +2523,9 @@ external payable function payout(const tos : list(address)) is {
     assert_eq!(trace_kinds(&paid.trace), ["call", "call"]);
     let bad = run(Word::from_u64(1).shl(160));
     assert!(bad.reverted);
-    assert!(trace_kinds(&bad.trace).is_empty(), "{:?}", trace_kinds(&bad.trace));
+    assert!(
+        trace_kinds(&bad.trace).is_empty(),
+        "{:?}",
+        trace_kinds(&bad.trace)
+    );
 }

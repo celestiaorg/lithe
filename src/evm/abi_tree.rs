@@ -428,16 +428,9 @@ fn every_abi_type_everywhere() {
             let two = encode(&[t.clone(), T::Uint(256)], &[v.clone(), seven.clone()]);
             let out = run_call(
                 &runtime,
-                &with_sel(
-                    "decPair(bytes)",
-                    &encode(&[T::Bytes], &[V::B(two.clone())]),
-                ),
+                &with_sel("decPair(bytes)", &encode(&[T::Bytes], &[V::B(two.clone())])),
             );
-            assert!(
-                !out.reverted,
-                "decPair {what}: {}",
-                pretty(&out.returndata)
-            );
+            assert!(!out.reverted, "decPair {what}: {}", pretty(&out.returndata));
             let tuple = T::Tuple(vec![t.clone(), T::Uint(256)]);
             let want = encode(
                 std::slice::from_ref(&tuple),
@@ -1259,7 +1252,8 @@ external pure function argCopied(const ys : Recs) : bytes is {{
             body("xs"),
             body("xs")
         );
-        let runtime = deploy(&compile(&src).unwrap_or_else(|e| panic!("{e}\n{src}"))).expect("deploy");
+        let runtime =
+            deploy(&compile(&src).unwrap_or_else(|e| panic!("{e}\n{src}"))).expect("deploy");
         let mut cases = Vec::new();
         for _ in 0..3 {
             let v = value(&t, &mut rng);

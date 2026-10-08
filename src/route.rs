@@ -198,7 +198,11 @@ pub(crate) fn render(checked: &Checked, parts: Option<&HashMap<[u8; 4], String>>
         section(&mut out, "calls", &r.calls);
         section(&mut out, "guards", &r.guard_txt);
         if hooked {
-            section(&mut out, "hooks", &hook_items(checked, route_root(checked, r)));
+            section(
+                &mut out,
+                "hooks",
+                &hook_items(checked, route_root(checked, r)),
+            );
         }
         section(&mut out, "storage reads", &r.reads);
         section(&mut out, "storage writes", &r.writes);
@@ -2003,7 +2007,10 @@ pub(crate) fn abi(checked: &Checked) -> Result<Abi, Error> {
     }
     if checked.prog.upgradeable {
         for (name, input) in [
-            ("ERC1967InvalidImplementation", Some(("implementation", "address"))),
+            (
+                "ERC1967InvalidImplementation",
+                Some(("implementation", "address")),
+            ),
             ("UUPSUnauthorizedCallContext", None),
             ("UUPSUnsupportedProxiableUUID", Some(("slot", "bytes32"))),
         ] {
@@ -2013,7 +2020,10 @@ pub(crate) fn abi(checked: &Checked) -> Result<Abi, Error> {
             if !taken {
                 items.push(AbiItem::Error(AbiError {
                     name: name.to_string(),
-                    inputs: input.map(|(n, ty)| Param::named(n, ty)).into_iter().collect(),
+                    inputs: input
+                        .map(|(n, ty)| Param::named(n, ty))
+                        .into_iter()
+                        .collect(),
                 }));
             }
         }
@@ -2191,10 +2201,13 @@ pub(crate) fn method_ids(checked: &Checked) -> Result<Vec<(String, [u8; 4])>, Er
 
 /// The signature of the contract's entrypoint a facet calls the hook `func` back through.
 pub(crate) fn callback_sig(checked: &Checked, func: &Func) -> Result<String, Error> {
-    let of = func
-        .hook_of
-        .as_ref()
-        .ok_or_else(|| error(func.line, func.col, "internal: a hook call back names a hook"))?;
+    let of = func.hook_of.as_ref().ok_or_else(|| {
+        error(
+            func.line,
+            func.col,
+            "internal: a hook call back names a hook",
+        )
+    })?;
     let mut parts = Vec::new();
     for p in &func.params {
         for field in abi_fields(&checked.types, p.ty_id, &p.name)? {
@@ -2227,7 +2240,10 @@ pub(crate) fn render_errors(checked: &Checked) -> Result<String, Error> {
     let mut hooks: Vec<(String, Vec<String>)> = Vec::new();
     for route in shown_routes(checked) {
         blocks.push((route.sig.clone(), route.raises.clone()));
-        hooks.push((route.sig.clone(), hook_items(checked, route_root(checked, route))));
+        hooks.push((
+            route.sig.clone(),
+            hook_items(checked, route_root(checked, route)),
+        ));
     }
     for func in &checked.prog.funcs {
         if !matches!(func.kind, ItemKind::View | ItemKind::Deploy) {
@@ -2309,7 +2325,10 @@ pub(crate) fn render_errors(checked: &Checked) -> Result<String, Error> {
                 out.push('\n');
             }
         }
-        if let Some((_, items)) = hooks.iter().find(|(s, items)| s == sig && !items.is_empty()) {
+        if let Some((_, items)) = hooks
+            .iter()
+            .find(|(s, items)| s == sig && !items.is_empty())
+        {
             out.push_str(&format!("\n  hooks: {}\n", items.join(", ")));
         }
         out.push('\n');

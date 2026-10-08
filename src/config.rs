@@ -233,7 +233,10 @@ mod tests {
         let err = |text: &str| parse(text).err().unwrap();
         assert_eq!(
             err("[build]\n\nevm-version = \"cancun\""),
-            (3, "`evm-version` takes `prague` or `osaka`, not `cancun`".to_string())
+            (
+                3,
+                "`evm-version` takes `prague` or `osaka`, not `cancun`".to_string()
+            )
         );
         assert_eq!(
             err("[build]\nevm-version = osaka").1,
@@ -248,7 +251,10 @@ mod tests {
             "`create2-deployer` takes an address, not `0x12`"
         );
         assert_eq!(err("[build]\noptimize = true").1, "unknown key `optimize`");
-        assert_eq!(err("evm-version = \"osaka\"").1, "unknown key `evm-version`");
+        assert_eq!(
+            err("evm-version = \"osaka\"").1,
+            "unknown key `evm-version`"
+        );
     }
 
     #[test]
@@ -256,11 +262,18 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("lithe-config-build-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("src")).unwrap();
-        std::fs::write(dir.join("lithe.toml"), "[build]\nevm-version = \"prague\"\n").unwrap();
+        std::fs::write(
+            dir.join("lithe.toml"),
+            "[build]\nevm-version = \"prague\"\n",
+        )
+        .unwrap();
         let file = dir.join("src/a.lithe");
         std::fs::write(&file, "").unwrap();
         assert_eq!(build_options(&file).unwrap().evm, EvmVersion::Prague);
-        assert_eq!(build_options(&dir.join("src")).unwrap().evm, EvmVersion::Prague);
+        assert_eq!(
+            build_options(&dir.join("src")).unwrap().evm,
+            EvmVersion::Prague
+        );
         std::fs::write(dir.join("lithe.toml"), "[build]\nsize-limit = \"big\"\n").unwrap();
         let err = build_options(&file).err().unwrap().message;
         assert!(err.ends_with("lithe.toml:2: `size-limit` takes a number of bytes, not `\"big\"`"));

@@ -355,7 +355,9 @@ fn string_lit(lex: &mut Lexer<Raw>) -> Result<String, LexError> {
                             lex.bump(len + 2);
                             c
                         }
-                        None => return Err(bad("`\\u` takes a code point like `\\u{1F600}`".into())),
+                        None => {
+                            return Err(bad("`\\u` takes a code point like `\\u{1F600}`".into()))
+                        }
                     }
                 }
                 _ => return Err(bad(format!("unknown escape `\\{n}`"))),
@@ -634,7 +636,10 @@ pub(crate) fn pieces(src: &str) -> Result<Vec<Piece>, Error> {
             Raw::Comment => PieceKind::Comment,
             other => PieceKind::Token(kind_of(other)),
         };
-        let newlines_before = src[prev..span.start].bytes().filter(|b| *b == b'\n').count() as u32;
+        let newlines_before = src[prev..span.start]
+            .bytes()
+            .filter(|b| *b == b'\n')
+            .count() as u32;
         out.push(Piece {
             kind,
             start: span.start,
@@ -886,7 +891,14 @@ mod tests {
         );
         assert_eq!(lit(r#""a\tb\r\0\\\"\'""#).unwrap(), "a\tb\r\0\\\"'");
         assert_eq!(lit(r#""\u{1F600}\u{e9}""#).unwrap(), "\u{1F600}é");
-        for bad in [r#""\q""#, r#""\x8f""#, r#""\x+1""#, r#""\u{}""#, r#""\u{d800}""#, r#""\u{+1}""#] {
+        for bad in [
+            r#""\q""#,
+            r#""\x8f""#,
+            r#""\x+1""#,
+            r#""\u{}""#,
+            r#""\u{d800}""#,
+            r#""\u{+1}""#,
+        ] {
             assert!(lit(bad).is_err(), "{bad}");
         }
         assert_eq!(lit(r#""\z""#).unwrap_err(), "unknown escape `\\z`");

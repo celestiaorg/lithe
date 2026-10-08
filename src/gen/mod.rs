@@ -18,10 +18,10 @@ use crate::check::{
 };
 use crate::error;
 use crate::keccak::selector;
-pub(crate) use immutable::ImmutableRefs;
 use crate::split::{Cross, Facet, Shape};
 use crate::word::Word;
 use crate::Error;
+pub(crate) use immutable::ImmutableRefs;
 
 mod abi;
 mod blob;
@@ -389,7 +389,12 @@ pub(crate) fn codegen(checked: &Checked, shape: &Shape) -> Result<Built, Error> 
                 .cloned()
                 .map(Move::Outline)
                 .collect(),
-            slices.iter().filter(|s| **s != p.shared_slice).copied().map(Move::Slice).collect(),
+            slices
+                .iter()
+                .filter(|s| **s != p.shared_slice)
+                .copied()
+                .map(Move::Slice)
+                .collect(),
             vec![Move::CacheSlots(!p.cache_slots)],
             vec![Move::Tight(!p.tight)],
             vec![Move::Frames(!p.frames)],
@@ -571,55 +576,57 @@ pub(crate) fn codegen(checked: &Checked, shape: &Shape) -> Result<Built, Error> 
     // wins, or failing that the smallest, which the next round starts from.
     let fell_back = best.built.bytes > limit;
     for pass in 0..2 {
-    // The variants were chosen while every build was over the limit, so once outlining has
-    // shrunk it, a build still over tries them again, then outlines more.
-    if pass > 0 {
-        if best.built.bytes <= limit {
-            break;
+        // The variants were chosen while every build was over the limit, so once outlining has
+        // shrunk it, a build still over tries them again, then outlines more.
+        if pass > 0 {
+            if best.built.bytes <= limit {
+                break;
+            }
+            best = variant_rounds(best)?;
         }
-        best = variant_rounds(best)?;
-    }
-    while best.built.bytes > limit {
-        let mut rest: Vec<usize> = (&plan.outlinable - &best.plan.outline).into_iter().collect();
-        rest.sort_unstable();
-        let moves: Vec<Move> = rest.into_iter().map(Move::Toggle).collect();
-        let alone: Vec<Plan> = moves.iter().map(|m| m.applied(&best.plan)).collect();
-        let (b0, g0) = (best.built.bytes, best.built.gas);
-        let mut order: Vec<(f64, &Move)> = moves
-            .iter()
-            .zip(build_each(&alone))
-            .filter_map(|(m, c)| Some((m, c.ok()?)))
-            .filter(|(_, c)| c.built.bytes < b0)
-            .map(|(m, c)| ((b0 - c.built.bytes) as f64 / (c.built.gas - g0).max(1.0), m))
-            .collect();
-        order.sort_by(|a, b| b.0.total_cmp(&a.0));
-        let mut sets: Vec<Plan> = (1..=order.len())
-            .map(|k| {
+        while best.built.bytes > limit {
+            let mut rest: Vec<usize> = (&plan.outlinable - &best.plan.outline)
+                .into_iter()
+                .collect();
+            rest.sort_unstable();
+            let moves: Vec<Move> = rest.into_iter().map(Move::Toggle).collect();
+            let alone: Vec<Plan> = moves.iter().map(|m| m.applied(&best.plan)).collect();
+            let (b0, g0) = (best.built.bytes, best.built.gas);
+            let mut order: Vec<(f64, &Move)> = moves
+                .iter()
+                .zip(build_each(&alone))
+                .filter_map(|(m, c)| Some((m, c.ok()?)))
+                .filter(|(_, c)| c.built.bytes < b0)
+                .map(|(m, c)| ((b0 - c.built.bytes) as f64 / (c.built.gas - g0).max(1.0), m))
+                .collect();
+            order.sort_by(|a, b| b.0.total_cmp(&a.0));
+            let mut sets: Vec<Plan> = (1..=order.len())
+                .map(|k| {
+                    let mut p = best.plan.clone();
+                    order[..k].iter().for_each(|(_, m)| m.apply(&mut p));
+                    p
+                })
+                .collect();
+            // Moves that don't shrink the build alone can together: every one at once.
+            if order.len() < moves.len() {
                 let mut p = best.plan.clone();
-                order[..k].iter().for_each(|(_, m)| m.apply(&mut p));
-                p
-            })
-            .collect();
-        // Moves that don't shrink the build alone can together: every one at once.
-        if order.len() < moves.len() {
-            let mut p = best.plan.clone();
-            moves.iter().for_each(|m| m.apply(&mut p));
-            sets.push(p);
+                moves.iter().for_each(|m| m.apply(&mut p));
+                sets.push(p);
+            }
+            let rank = |c: &Candidate| match c.built.bytes {
+                b if b <= limit => c.cost(),
+                b => OVER_LIMIT + b as f64,
+            };
+            let Some(next) = build_each(&sets)
+                .into_iter()
+                .flatten()
+                .min_by(|a, b| rank(a).total_cmp(&rank(b)))
+                .filter(|c| c.built.bytes < b0)
+            else {
+                break;
+            };
+            best = next;
         }
-        let rank = |c: &Candidate| match c.built.bytes {
-            b if b <= limit => c.cost(),
-            b => OVER_LIMIT + b as f64,
-        };
-        let Some(next) = build_each(&sets)
-            .into_iter()
-            .flatten()
-            .min_by(|a, b| rank(a).total_cmp(&rank(b)))
-            .filter(|c| c.built.bytes < b0)
-        else {
-            break;
-        };
-        best = next;
-    }
     }
     // Once one fits, each function it outlines is built inlined again, skipping the sets
     // known to be over the limit. Those that cost less are brought back one at a time, the
@@ -816,7 +823,9 @@ fn parallel_map<T: Sync, R: Send>(items: &[T], f: impl Fn(&T) -> R + Sync) -> Ve
         let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let Some(item) = items.get(i) else { break };
         let out = f(item);
-        done.lock().unwrap_or_else(|e| e.into_inner()).push((i, out));
+        done.lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push((i, out));
     };
     std::thread::scope(|s| {
         for _ in 1..workers.min(items.len()) {
@@ -891,7 +900,9 @@ fn init_constants(checked: &Checked, shape: &Shape) -> Vec<Option<Word>> {
     if g.emit_init(func, Vec::new(), &[]).is_err() {
         return none;
     }
-    (0..n as u32).map(|k| g.imm_stores.get(&k).copied().flatten()).collect()
+    (0..n as u32)
+        .map(|k| g.imm_stores.get(&k).copied().flatten())
+        .collect()
 }
 
 /// Assembles the code with the creation code it embeds appended, each placeholder replaced
@@ -1095,7 +1106,10 @@ pub(crate) fn stray_calls(
     let Some(stray) = stray else {
         return Ok(crossed);
     };
-    let module = checked.prog.funcs[stray.callee].module.clone().unwrap_or_default();
+    let module = checked.prog.funcs[stray.callee]
+        .module
+        .clone()
+        .unwrap_or_default();
     Err(error(
         stray.line,
         stray.col,
@@ -1179,9 +1193,7 @@ pub(crate) fn callback_rules(checked: &Checked, facets: &[String]) -> Result<(),
         if !g.func_any(h, &calldata, &mut Vec::new()) {
             continue;
         }
-        let calls = |node: Node<'_>| {
-            matches!(node, Node::Expr(Expr::Call { callee: Some(j), .. }) if *j == h)
-        };
+        let calls = |node: Node<'_>| matches!(node, Node::Expr(Expr::Call { callee: Some(j), .. }) if *j == h);
         for module in facets {
             let reached = (0..funcs.len())
                 .filter(|&i| {
@@ -1235,12 +1247,7 @@ pub(crate) fn stray_call(
     let shape = Shape::default();
     let g = Gen::new(checked, Plan::default(), &shape)?;
     let funcs = &checked.prog.funcs;
-    let in_facet = |i: usize| {
-        funcs[i]
-            .module
-            .as_ref()
-            .is_some_and(|m| facets.contains(m))
-    };
+    let in_facet = |i: usize| funcs[i].module.as_ref().is_some_and(|m| facets.contains(m));
     let calls = |stmts: &[Stmt], tail: Option<&Expr>| -> Vec<(usize, u32, u32)> {
         let found = std::cell::RefCell::new(Vec::new());
         let note = |node: Node<'_>| {

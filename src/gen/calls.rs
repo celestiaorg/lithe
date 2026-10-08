@@ -1376,7 +1376,9 @@ impl<'a> Gen<'a> {
                 );
                 (widens || !numeric) && args.iter().all(|a| self.inert(a))
             }
-            Expr::Call { builtin, args, .. } => fixed(builtin) && args.iter().all(|a| self.inert(a)),
+            Expr::Call { builtin, args, .. } => {
+                fixed(builtin) && args.iter().all(|a| self.inert(a))
+            }
             Expr::Unary { op, expr, .. } => *op != UnOp::Neg && self.inert(expr),
             Expr::Binary {
                 op, left, right, ..
@@ -1397,9 +1399,9 @@ impl<'a> Gen<'a> {
             }
             Expr::Case { scrut, arms, .. } => {
                 self.inert(scrut)
-                    && arms.iter().all(|a| {
-                        a.stmts.is_empty() && self.inert(&a.expr)
-                    })
+                    && arms
+                        .iter()
+                        .all(|a| a.stmts.is_empty() && self.inert(&a.expr))
             }
             Expr::Tuple { elems, .. } | Expr::List { elems, .. } => {
                 elems.iter().all(|x| self.inert(x))
@@ -1540,12 +1542,16 @@ impl<'a> Gen<'a> {
                 args,
                 ty,
                 ..
-            } if args.len() == 1 && address(*ty) && address(args[0].ty()) => self.settled_word(&args[0]),
+            } if args.len() == 1 && address(*ty) && address(args[0].ty()) => {
+                self.settled_word(&args[0])
+            }
             Expr::Ident {
                 sym: Some(sym),
                 builtin: None,
                 ..
-            } if !self.checked.syms[*sym].mutable && self.cd_word(self.local[*sym]) => Some(self.local[*sym]),
+            } if !self.checked.syms[*sym].mutable && self.cd_word(self.local[*sym]) => {
+                Some(self.local[*sym])
+            }
             _ => None,
         }
     }
@@ -1774,7 +1780,11 @@ impl<'a> Gen<'a> {
                     _ => {}
                 }
                 let key = self.shape(&failed.stmts);
-                if op.then.as_ref().is_some_and(|then| self.ends_like(&then.stmts, &key)) {
+                if op
+                    .then
+                    .as_ref()
+                    .is_some_and(|then| self.ends_like(&then.stmts, &key))
+                {
                     let start = self.fresh();
                     self.jumpdest(start);
                     share = Some((key, start));
@@ -1828,13 +1838,23 @@ impl<'a> Gen<'a> {
                     declared,
                     ..
                 }) => {
-                    d.extend(counter.iter().chain(elem).chain(limit).chain(list).chain(declared));
+                    d.extend(
+                        counter
+                            .iter()
+                            .chain(elem)
+                            .chain(limit)
+                            .chain(list)
+                            .chain(declared),
+                    );
                 }
                 Node::Stmt(Stmt::Defer {
                     then: Some(then), ..
                 }) => d.extend(then.arms().flat_map(|arm| &arm.syms)),
                 Node::Expr(Expr::Case { arms, .. }) => {
-                    d.extend(arms.iter().flat_map(|a| a.bind_sym.iter().chain(&a.tuple_syms)));
+                    d.extend(
+                        arms.iter()
+                            .flat_map(|a| a.bind_sym.iter().chain(&a.tuple_syms)),
+                    );
                 }
                 _ => {}
             }
@@ -1868,9 +1888,16 @@ impl<'a> Gen<'a> {
                 }
                 let n: usize = raw[i..j].parse().unwrap_or(usize::MAX);
                 let named = in_list
-                    || ["sym: Some(", "root: Some(", "counter: Some(", "elem: Some(", "limit: Some(", "list: Some("]
-                        .iter()
-                        .any(|k| out.ends_with(k));
+                    || [
+                        "sym: Some(",
+                        "root: Some(",
+                        "counter: Some(",
+                        "elem: Some(",
+                        "limit: Some(",
+                        "list: Some(",
+                    ]
+                    .iter()
+                    .any(|k| out.ends_with(k));
                 if named && declared.contains(&n) {
                     let next = names.len();
                     out.push_str(&format!("#{}", names.entry(n).or_insert(next)));
@@ -1912,9 +1939,10 @@ impl<'a> Gen<'a> {
             return false;
         };
         let clean = self.compiling.len() == *depth
-            && self.body.as_ref().is_some_and(|b| {
-                b.ops.is_empty() && b.writes.is_empty() && !b.journal_stores
-            });
+            && self
+                .body
+                .as_ref()
+                .is_some_and(|b| b.ops.is_empty() && b.writes.is_empty() && !b.journal_stores);
         if !clean || stmts.iter().all(|s| matches!(s, Stmt::Skip)) || self.shape(stmts) != *key {
             return false;
         }
@@ -2122,7 +2150,11 @@ impl<'a> Gen<'a> {
         }
         let byte_gas = asm::GAS_PER_BYTE + asm::DEPOSIT_GAS / asm::CREATED_RUNS;
         let built = asm::with_byte_gas(byte_gas, || {
-            crate::split::build(&crate::check::check(unit, self.shape.opts.evm)?, name, &self.shape.opts)
+            crate::split::build(
+                &crate::check::check(unit, self.shape.opts.evm)?,
+                name,
+                &self.shape.opts,
+            )
         })?;
         Ok((built.creation.clone(), built.prerequisites()))
     }
@@ -2201,15 +2233,21 @@ impl<'a> Gen<'a> {
         match e {
             Expr::Lit { .. } => true,
             Expr::Ident { sym: s, .. } => *s != Some(sym),
-            Expr::Field { base, name, .. } => (name == "length" && own(base)) || self.first_word_only(base, sym),
-            Expr::Binary { left, right, .. } => self.first_word_only(left, sym) && self.first_word_only(right, sym),
+            Expr::Field { base, name, .. } => {
+                (name == "length" && own(base)) || self.first_word_only(base, sym)
+            }
+            Expr::Binary { left, right, .. } => {
+                self.first_word_only(left, sym) && self.first_word_only(right, sym)
+            }
             Expr::Unary { expr, .. } => self.first_word_only(expr, sym),
             Expr::Call {
                 builtin: Some(Builtin::Cast),
                 args,
                 ty,
                 ..
-            } if args.len() == 1 => (own(&args[0]) && self.fixed_bytes(*ty)) || self.first_word_only(&args[0], sym),
+            } if args.len() == 1 => {
+                (own(&args[0]) && self.fixed_bytes(*ty)) || self.first_word_only(&args[0], sym)
+            }
             _ => false,
         }
     }
@@ -2242,7 +2280,10 @@ impl<'a> Gen<'a> {
     /// The words of a result `decode_returned` copies whole from the start of the return
     /// data: a static value, or an option's payload.
     fn fixed_result(&self, op: &OpSite) -> Option<u32> {
-        let then = op.then.as_ref().filter(|t| op.raw.is_none() && op.create.is_none() && !t.names.is_empty())?;
+        let then = op
+            .then
+            .as_ref()
+            .filter(|t| op.raw.is_none() && op.create.is_none() && !t.names.is_empty())?;
         let ret = then.ret;
         if self.tree(ret) || self.list_value(ret) || self.is_dynamic(ret) {
             return None;

@@ -390,7 +390,11 @@ impl Checker {
             idx
         } else {
             if self.busy.iter().any(|have| have == &key) {
-                return Err(error(line, col, "recursion is not supported: iteration is bounded, write a `for` loop"));
+                return Err(error(
+                    line,
+                    col,
+                    "recursion is not supported: iteration is bounded, write a `for` loop",
+                ));
             }
             self.busy.push(key.clone());
             let saved = std::mem::replace(&mut self.slot_params, slots);

@@ -441,8 +441,9 @@ impl<'a> Gen<'a> {
                     Self::written_syms(st, &mut written);
                 }
                 self.forget_keys(&written);
-                let stores =
-                    body.iter().any(|st| self.stmt_any(st, &|n| self.stores(n), &mut Vec::new()));
+                let stores = body
+                    .iter()
+                    .any(|st| self.stmt_any(st, &|n| self.stores(n), &mut Vec::new()));
                 if stores {
                     self.forget_stored_values();
                 }
@@ -506,7 +507,9 @@ impl<'a> Gen<'a> {
                     ty: self.checked.syms[counter].ty,
                 };
                 match (iter, length) {
-                    (ForIter::Range { lo, hi }, _) => self.assume_counter(counter_expr, Some(lo), hi),
+                    (ForIter::Range { lo, hi }, _) => {
+                        self.assume_counter(counter_expr, Some(lo), hi)
+                    }
                     (ForIter::List(_), Some(len)) => self.assume_counter(counter_expr, None, len),
                     _ => {}
                 }
@@ -750,8 +753,13 @@ impl<'a> Gen<'a> {
                 if self.fresh_zero(sym, expr) {
                     return Ok(());
                 }
-                if matches!(expr, Expr::Call { builtin: Some(Builtin::AbiDecode), .. })
-                    && self.bind_cd_checked(self.home_func(sym), sym, expr)?
+                if matches!(
+                    expr,
+                    Expr::Call {
+                        builtin: Some(Builtin::AbiDecode),
+                        ..
+                    }
+                ) && self.bind_cd_checked(self.home_func(sym), sym, expr)?
                 {
                     self.mstore_off(self.local[sym]);
                     return Ok(());
@@ -1435,9 +1443,13 @@ impl<'a> Gen<'a> {
         written: &[usize],
     ) -> Result<(HashMap<usize, (i32, i32)>, HashMap<usize, i32>), Error> {
         let outer = (self.span_temps.clone(), self.mask_temps.clone());
-        let defers = body
-            .iter()
-            .any(|st| self.stmt_any(st, &|n| matches!(n, Node::Stmt(Stmt::Defer { .. })), &mut Vec::new()));
+        let defers = body.iter().any(|st| {
+            self.stmt_any(
+                st,
+                &|n| matches!(n, Node::Stmt(Stmt::Defer { .. })),
+                &mut Vec::new(),
+            )
+        });
         if defers {
             return Ok(outer);
         }
@@ -1498,8 +1510,15 @@ impl<'a> Gen<'a> {
             }) = n
             {
                 let t = &self.checked.types[self.peel_nominal(*ty)];
-                if let (TyKind::Bytes, true, Some(Expr::Call { builtin: Some(Builtin::BytesSlice), args: inner, .. })) =
-                    (t.kind, t.bits > 0, args.first())
+                if let (
+                    TyKind::Bytes,
+                    true,
+                    Some(Expr::Call {
+                        builtin: Some(Builtin::BytesSlice),
+                        args: inner,
+                        ..
+                    }),
+                ) = (t.kind, t.bits > 0, args.first())
                 {
                     if let Some(Expr::Binary {
                         op: BinOp::Add,
@@ -1733,7 +1752,9 @@ impl<'a> Gen<'a> {
                 }
                 return Ok(());
             }
-            let heap = self.heap_record_elem(expr, n).filter(|_| self.image_leaf(dst).is_none());
+            let heap = self
+                .heap_record_elem(expr, n)
+                .filter(|_| self.image_leaf(dst).is_none());
             if let Some((sym, leaf, index)) = heap {
                 self.heap_element(self.addr(sym, leaf), index, u64::from(n), false, None)?;
                 self.copy_element_to(dst, n, false);
@@ -1791,7 +1812,14 @@ impl<'a> Gen<'a> {
                 let tail = f.tail.clone().filter(|t| {
                     self.checked.types[f.ret_ty].words == 1
                         && self.inlines(idx)
-                        && (self.inert(t) || matches!(t, Expr::Call { callee: Some(_), .. }))
+                        && (self.inert(t)
+                            || matches!(
+                                t,
+                                Expr::Call {
+                                    callee: Some(_),
+                                    ..
+                                }
+                            ))
                 });
                 if let Some(tail) = tail {
                     return self.compile_call_with(idx, args, false, |g| {
@@ -1845,7 +1873,11 @@ impl<'a> Gen<'a> {
         // nothing: with inert arguments, not even bind them.
         let Some(bit) = self.site_tested(idx, args) else {
             if self.skippable_hook(idx).is_some() && !self.untested_hooks.contains(&idx) {
-                return Err(error(0, 0, "internal: a hook's call binds its arguments untested"));
+                return Err(error(
+                    0,
+                    0,
+                    "internal: a hook's call binds its arguments untested",
+                ));
             }
             return self.compile_call_untested(idx, args, always, body);
         };
@@ -1873,7 +1905,12 @@ impl<'a> Gen<'a> {
         let tail = std::mem::replace(&mut self.tail, false);
         if self.compiling.contains(&idx) {
             let f = &self.checked.prog.funcs[idx];
-            return Err(error(f.line, f.col, "recursion is not supported: iteration is bounded, write a `for` loop").in_file(&f.origin));
+            return Err(error(
+                f.line,
+                f.col,
+                "recursion is not supported: iteration is bounded, write a `for` loop",
+            )
+            .in_file(&f.origin));
         }
         let inline = always || !self.plan.outline.contains(&idx);
         let consts: Vec<(usize, Word)> = self.checked.prog.funcs[idx]
@@ -1905,7 +1942,9 @@ impl<'a> Gen<'a> {
             unbuilt = strs
                 .iter()
                 .map(|&(sym, _)| sym)
-                .filter(|&sym| !later.contains(&sym) && self.folds_reads(&f.stmts, f.tail.as_ref(), sym))
+                .filter(|&sym| {
+                    !later.contains(&sym) && self.folds_reads(&f.stmts, f.tail.as_ref(), sym)
+                })
                 .collect();
             (self.const_params, self.const_strs) = saved;
         }
@@ -1997,7 +2036,10 @@ impl<'a> Gen<'a> {
                 lit: Lit::Bool(b), ..
             } => Some(Word::from_u64(u64::from(*b))),
             Expr::Field {
-                root: Some(r), leaf, ty, ..
+                root: Some(r),
+                leaf,
+                ty,
+                ..
             } if self.checked.syms[*r].storage
                 && self.checked.types[*ty].words == 1
                 && !self.is_dynamic(*ty) =>
@@ -2016,7 +2058,8 @@ impl<'a> Gen<'a> {
                 let dst = &self.checked.types[self.peel_nominal(*ty)];
                 let src = &self.checked.types[self.peel_nominal(args[0].ty())];
                 let word32 = |t: &crate::check::RType| {
-                    (t.kind == TyKind::Bytes && t.bits == 32) || (t.kind == TyKind::Uint && (t.bits == 0 || t.bits == 256))
+                    (t.kind == TyKind::Bytes && t.bits == 32)
+                        || (t.kind == TyKind::Uint && (t.bits == 0 || t.bits == 256))
                 };
                 if word32(dst) && word32(src) {
                     return self.const_word(&args[0]);
@@ -2172,12 +2215,20 @@ impl<'a> Gen<'a> {
     /// constant: a hashed, assigned, or bound value known from literals, or one in a branch
     /// a literal condition skips.
     fn folds_reads(&self, stmts: &[Stmt], tail: Option<&Expr>, sym: usize) -> bool {
-        let read = |n: Node<'_>| matches!(n, Node::Expr(Expr::Ident { sym: Some(s), .. }) if *s == sym);
+        let read =
+            |n: Node<'_>| matches!(n, Node::Expr(Expr::Ident { sym: Some(s), .. }) if *s == sym);
         let reads = |e: &Expr| self.expr_any(e, &read, &mut Vec::new());
         let folds = |e: &Expr| {
             !reads(e)
-                || matches!(e, Expr::Binary { .. } | Expr::Field { .. } | Expr::Call { builtin: Some(Builtin::Cast), .. })
-                    && self.const_word(e).is_some()
+                || matches!(
+                    e,
+                    Expr::Binary { .. }
+                        | Expr::Field { .. }
+                        | Expr::Call {
+                            builtin: Some(Builtin::Cast),
+                            ..
+                        }
+                ) && self.const_word(e).is_some()
                 || matches!(e, Expr::Call { builtin: Some(Builtin::Keccak256), args, .. }
                     if args.len() == 1 && self.const_str(&args[0]).is_some())
         };
@@ -2188,7 +2239,9 @@ impl<'a> Gen<'a> {
                 else_body,
                 ..
             } => match self.const_word(cond) {
-                Some(w) => self.folds_reads(if w.is_zero() { else_body } else { then_body }, None, sym),
+                Some(w) => {
+                    self.folds_reads(if w.is_zero() { else_body } else { then_body }, None, sym)
+                }
                 None => {
                     !reads(cond)
                         && self.folds_reads(then_body, None, sym)
@@ -2203,7 +2256,11 @@ impl<'a> Gen<'a> {
                 ..
             } => {
                 folds(expr)
-                    && !index.iter().chain(keys).chain(target.as_deref()).any(|e| reads(e))
+                    && !index
+                        .iter()
+                        .chain(keys)
+                        .chain(target.as_deref())
+                        .any(&reads)
             }
             Stmt::Const { expr, .. } | Stmt::Var { expr, .. } => folds(expr),
             other => !self.stmt_any(other, &read, &mut Vec::new()),
@@ -2229,7 +2286,12 @@ impl<'a> Gen<'a> {
         // What a continuation reads gets words of its own for this call when the body
         // inlines the function again, since the call runs its continuation after later
         // calls have bound theirs. A loop's queue copies them into each call's node.
-        if let Some(id) = self.body.as_ref().map(|b| b.id).filter(|_| !later.is_empty()) {
+        if let Some(id) = self
+            .body
+            .as_ref()
+            .map(|b| b.id)
+            .filter(|_| !later.is_empty())
+        {
             *self.inst_sites.entry((id, idx)).or_default() += 1;
             let split = self.plan.split_insts.contains(&(id, idx));
             let declared = self.continuation_declared(idx);
@@ -2523,9 +2585,9 @@ impl<'a> Gen<'a> {
             }
             Expr::Tuple { elems, ty, .. } => {
                 elems.len() == self.checked.types[*ty].words as usize
-                    && elems.iter().all(|x| {
-                        self.checked.types[x.ty()].words == 1 && self.stack_value(x.ty())
-                    })
+                    && elems
+                        .iter()
+                        .all(|x| self.checked.types[x.ty()].words == 1 && self.stack_value(x.ty()))
             }
             // A compiled function's words are read from its result buffer.
             Expr::Call {
@@ -2535,14 +2597,16 @@ impl<'a> Gen<'a> {
                 t.kind == TyKind::Tuple
                     && self.fn_ret[*idx] >= 0
                     && t.fields.len() == t.words as usize
-                    && t.fields.iter().all(|f| {
-                        self.checked.types[f.ty].words == 1 && self.stack_value(f.ty)
-                    })
+                    && t.fields
+                        .iter()
+                        .all(|f| self.checked.types[f.ty].words == 1 && self.stack_value(f.ty))
             }
             Expr::Call {
                 callee: Some(idx), ..
-            } if matches!(self.checked.types[e.ty()].kind, TyKind::Record | TyKind::Tuple)
-                && self.inlines(*idx)
+            } if matches!(
+                self.checked.types[e.ty()].kind,
+                TyKind::Record | TyKind::Tuple
+            ) && self.inlines(*idx)
                 && !self.compiling.contains(idx)
                 && !seen.contains(idx) =>
             {
@@ -2750,7 +2814,11 @@ impl<'a> Gen<'a> {
             self.push_word(cross.address);
         }
         self.op(GAS);
-        self.op(if cross.delegate { DELEGATECALL } else { STATICCALL });
+        self.op(if cross.delegate {
+            DELEGATECALL
+        } else {
+            STATICCALL
+        });
         let ok = self.fresh();
         self.push_label(ok);
         self.op(JUMPI);

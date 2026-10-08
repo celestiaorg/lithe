@@ -27,7 +27,9 @@ use compose::*;
 use funcs::*;
 use guards::*;
 use hooks::*;
-pub(crate) use hooks::{callback_fn, hook_fn, hook_item, is_root, reached_hooks, stub as hook_stub};
+pub(crate) use hooks::{
+    callback_fn, hook_fn, hook_item, is_root, reached_hooks, stub as hook_stub,
+};
 use layout::*;
 use payable::*;
 use place::*;
@@ -437,13 +439,12 @@ enum Piece {
 }
 
 fn const_fns(prog: &Program) -> HashMap<String, Func> {
-    let candidate =
-        |f: &&Func| {
-            f.kind == ItemKind::Pure
-                && f.params.is_empty()
-                && f.type_params.is_empty()
-                && f.hook_of.is_none()
-        };
+    let candidate = |f: &&Func| {
+        f.kind == ItemKind::Pure
+            && f.params.is_empty()
+            && f.type_params.is_empty()
+            && f.hook_of.is_none()
+    };
     let mut fns: HashMap<String, Func> = prog
         .funcs
         .iter()
@@ -1251,7 +1252,9 @@ fn drop_loop_invariants(prog: &mut Program) {
                     stmts(then_body);
                     stmts(else_body);
                 }
-                Stmt::Defer { then: Some(then), .. } => {
+                Stmt::Defer {
+                    then: Some(then), ..
+                } => {
                     stmts(&mut then.stmts);
                     if let Some(error) = &mut then.error {
                         stmts(&mut error.stmts);

@@ -551,8 +551,7 @@ mod tests {
             let opts = build_options(&dir, flags).unwrap();
             assert_eq!(opts.size_limit, 30_000);
             let out = dir.join("out");
-            let built =
-                lithe::compile_dir(&dir, &out, &|file| build_options(file, flags)).unwrap();
+            let built = lithe::compile_dir(&dir, &out, &|file| build_options(file, flags)).unwrap();
             assert!(built.failed.is_empty());
             let json = std::fs::read_to_string(out.join(file).join("C.json")).unwrap();
             let (_, rest) = json.split_once("\"deployedBytecode\"").unwrap();

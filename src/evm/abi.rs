@@ -336,10 +336,16 @@ fn directory_compile_writes_bytecode_and_abi() {
     let nested = dir.join("nested");
     std::fs::create_dir_all(&nested).expect("nested");
     std::fs::write(nested.join("deep.lithe"), PAY).expect("deep");
-    std::fs::write(nested.join("lib.lithe"), "module M is {\n  function one() : uint is 1;\n}\n")
-        .expect("lib");
-    std::fs::write(nested.join("helpers.lithe"), "view function two() : uint is 2\n")
-        .expect("helpers");
+    std::fs::write(
+        nested.join("lib.lithe"),
+        "module M is {\n  function one() : uint is 1;\n}\n",
+    )
+    .expect("lib");
+    std::fs::write(
+        nested.join("helpers.lithe"),
+        "view function two() : uint is 2\n",
+    )
+    .expect("helpers");
     std::fs::write(
         nested.join("empty.lithe"),
         "contract Empty is {\n  storage is record { n : uint; }\n}\n",
@@ -354,8 +360,7 @@ fn directory_compile_writes_bytecode_and_abi() {
     std::fs::write(dir.join("bad.lithe"), "nope\n").expect("bad");
 
     let out_dir = dir.join("out");
-    let out =
-        crate::compile_dir(&dir, &out_dir, &|_| Ok(Options::default())).expect("compile dir");
+    let out = crate::compile_dir(&dir, &out_dir, &|_| Ok(Options::default())).expect("compile dir");
     let msgs: Vec<_> = out.failed.iter().map(ToString::to_string).collect();
     assert_eq!(msgs.len(), 3, "{msgs:?}");
     assert!(msgs[0].contains("bad.lithe"), "{msgs:?}");
@@ -406,8 +411,7 @@ fn directory_compile_writes_bytecode_and_abi() {
     std::fs::create_dir_all(&abi_only).expect("abi-only");
     std::fs::write(abi_only.join("pay.lithe"), PAY).expect("pay");
     let abi_out = dir.join("abi-out");
-    let out =
-        crate::abi_dir(&abi_only, &abi_out, &|_| Ok(Options::default())).expect("abi dir");
+    let out = crate::abi_dir(&abi_only, &abi_out, &|_| Ok(Options::default())).expect("abi dir");
     assert!(out.failed.is_empty());
     let abi = std::fs::read_to_string(abi_out.join("pay.lithe").join("Pay.abi.json")).expect("abi");
     assert_eq!(abi, super::abi(PAY).expect("pay abi"));
@@ -576,10 +580,7 @@ fn abi_decode_checks_what_it_reads() {
     ));
     let selector = Word::from_u64(0x1234_5678).shl(224);
     assert_eq!(c.word("asWord(bytes4)", &[Arg::W(selector)]), selector);
-    assert_eq!(
-        c.word("asSelector(bytes32)", &[Arg::W(selector)]),
-        selector
-    );
+    assert_eq!(c.word("asSelector(bytes32)", &[Arg::W(selector)]), selector);
     assert!(!c.send(
         0,
         "asSelector(bytes32)",
@@ -655,12 +656,21 @@ contract Slices is {
     let guarded = |i: u64| {
         call_raw(
             &runtime,
-            &encode_args("guarded(bytes,uint256)", &[Arg::B(data.clone()), Arg::W(w(i))]),
+            &encode_args(
+                "guarded(bytes,uint256)",
+                &[Arg::B(data.clone()), Arg::W(w(i))],
+            ),
         )
     };
     assert_eq!(guarded(5).returndata, word(32));
-    assert_eq!(guarded(data.len() as u64 - 32).returndata, data[data.len() - 32..].to_vec());
-    assert_eq!(guarded(data.len() as u64 - 31).returndata, selector("Short()").to_vec());
+    assert_eq!(
+        guarded(data.len() as u64 - 32).returndata,
+        data[data.len() - 32..].to_vec()
+    );
+    assert_eq!(
+        guarded(data.len() as u64 - 31).returndata,
+        selector("Short()").to_vec()
+    );
     // A slice of a calldata parameter is copied from calldata, bounds checked.
     let cut = |s: u64, e: u64| {
         call_raw(
@@ -671,12 +681,18 @@ contract Slices is {
             ),
         )
     };
-    assert_eq!(abi_string_value(&cut(3, 40).returndata), data[3..40].to_vec());
+    assert_eq!(
+        abi_string_value(&cut(3, 40).returndata),
+        data[3..40].to_vec()
+    );
     assert_eq!(abi_string_value(&cut(7, 7).returndata), Vec::<u8>::new());
     assert!(panic(&cut(8, 7)));
     assert!(panic(&cut(0, data.len() as u64 + 1)));
     let last = |d: Vec<u8>| call_raw(&runtime, &encode_args("last(bytes)", &[Arg::B(d)]));
-    assert_eq!(last(data.clone()).returndata, data[data.len() - 32..].to_vec());
+    assert_eq!(
+        last(data.clone()).returndata,
+        data[data.len() - 32..].to_vec()
+    );
     assert_eq!(last(vec![9; 32]).returndata, vec![9; 32]);
     assert!(panic(&last(vec![9; 31])));
 }
@@ -1013,15 +1029,36 @@ external function f(const name : string) raises Stored is {
         out
     };
     let mut storage = HashMap::new();
-    for saved in [&b""[..], b"ab", &[b'q'; 31][..], &[b'r'; 32][..], &[b's'; 70][..], b"z"] {
+    for saved in [
+        &b""[..],
+        b"ab",
+        &[b'q'; 31][..],
+        &[b'r'; 32][..],
+        &[b's'; 70][..],
+        b"z",
+    ] {
         let one = |sig: &str, s: &[u8]| [selector(sig).to_vec(), w(32), text(s)].concat();
-        let set = exec(&runtime, &one("set(string)", saved), storage, Word::from_u64(1), Word::from_u64(0), Word::from_u64(0))
-            .expect("set");
+        let set = exec(
+            &runtime,
+            &one("set(string)", saved),
+            storage,
+            Word::from_u64(1),
+            Word::from_u64(0),
+            Word::from_u64(0),
+        )
+        .expect("set");
         assert!(!set.reverted);
         storage = set.storage.clone();
         for name in [&b""[..], b"a name that is well past thirty one bytes"] {
-            let out = exec(&runtime, &one("f(string)", name), storage.clone(), Word::from_u64(1), Word::from_u64(0), Word::from_u64(0))
-                .expect("f");
+            let out = exec(
+                &runtime,
+                &one("f(string)", name),
+                storage.clone(),
+                Word::from_u64(1),
+                Word::from_u64(0),
+                Word::from_u64(0),
+            )
+            .expect("f");
             assert!(out.reverted);
             let want = [
                 selector("Stored(string,uint256,string)").to_vec(),
@@ -1032,7 +1069,13 @@ external function f(const name : string) raises Stored is {
                 text(saved),
             ]
             .concat();
-            assert_eq!(hex(&out.returndata), hex(&want), "{} {}", saved.len(), name.len());
+            assert_eq!(
+                hex(&out.returndata),
+                hex(&want),
+                "{} {}",
+                saved.len(),
+                name.len()
+            );
         }
     }
 }
@@ -1617,7 +1660,8 @@ external function main(const action : Action) is
         .replace("| Pause -> {", "| Pause(f) -> {");
     let err = compile(&twice).expect_err("one entrypoint for two cases");
     assert!(
-        err.to_string().contains("duplicate entrypoint `setFee(uint256)`"),
+        err.to_string()
+            .contains("duplicate entrypoint `setFee(uint256)`"),
         "{err}"
     );
 }

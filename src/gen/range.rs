@@ -67,7 +67,10 @@ impl Facts {
 
     /// The live facts with a side of key `key`, in order.
     fn keyed(&self, key: u64) -> impl Iterator<Item = &Fact> {
-        let some = self.buckets.get((key & 255) as usize).is_some_and(|&n| n > 0);
+        let some = self
+            .buckets
+            .get((key & 255) as usize)
+            .is_some_and(|&n| n > 0);
         some.then(|| self.by_key.get(&key))
             .flatten()
             .into_iter()
@@ -131,7 +134,9 @@ fn key_to(e: &Expr, depth: u32) -> u64 {
     let mut h = KeyHasher(0);
     let mix = |h: &mut KeyHasher, k: u64| h.write_u64(k);
     match e {
-        Expr::Binary { op, left, right, .. } => {
+        Expr::Binary {
+            op, left, right, ..
+        } => {
             1u8.hash(&mut h);
             std::mem::discriminant(op).hash(&mut h);
             mix(&mut h, value_key(left));
@@ -446,7 +451,7 @@ impl<'a> Gen<'a> {
         }
         let kind = self.checked.types[self.peel_nominal(left.ty())].kind;
         let ordered = matches!(kind, TyKind::Uint | TyKind::Wei | TyKind::Timestamp);
-        if !ordered && !(self.zero_ordered(left.ty()) && matches!(op, BinOp::Eq | BinOp::Neq)) {
+        if !(ordered || (self.zero_ordered(left.ty()) && matches!(op, BinOp::Eq | BinOp::Neq))) {
             return None;
         }
         let ((al, ah), (bl, bh)) = (self.range_of(left), self.range_of(right));
@@ -775,9 +780,9 @@ impl<'a> Gen<'a> {
         self.live_facts().any(|f| {
             same_value(&f.hi, &length)
                 && matches!(&f.lo, Expr::Binary { op: BinOp::Add, left, right, .. }
-                    if [(left, right), (right, left)].into_iter().any(|(i, k)| {
-                        same_value(i, index) && !self.range_of(k).0.lt(Word::from_u64(32))
-                    }))
+                if [(left, right), (right, left)].into_iter().any(|(i, k)| {
+                    same_value(i, index) && !self.range_of(k).0.lt(Word::from_u64(32))
+                }))
         })
     }
 
@@ -815,7 +820,8 @@ impl<'a> Gen<'a> {
             return;
         }
         if let Some(lo) = lo.filter(|lo| self.fixed(lo)) {
-            self.facts.push(Fact::new(lo.clone(), counter.clone(), false));
+            self.facts
+                .push(Fact::new(lo.clone(), counter.clone(), false));
         }
         if self.fixed(hi) {
             // `i < y + 1` is `i <= y`, the shape `sum_at_most` reads.
@@ -1078,8 +1084,12 @@ impl<'a> Gen<'a> {
         if scoped && depth > 0 {
             let key = value_key(e);
             if crate::asm::verify() {
-                assert!(self.live_facts().all(|f| (!same_value(&f.lo, e) || f.lo_key == key)
-                    && (!same_value(&f.hi, e) || f.hi_key == key)), "value keys");
+                assert!(
+                    self.live_facts()
+                        .all(|f| (!same_value(&f.lo, e) || f.lo_key == key)
+                            && (!same_value(&f.hi, e) || f.hi_key == key)),
+                    "value keys"
+                );
             }
             for f in self.facts.keyed(key) {
                 if f.lo_key == key && same_value(&f.lo, e) {
@@ -1140,10 +1150,10 @@ impl<'a> Gen<'a> {
             Expr::Field { base, name, .. }
                 if name == "length"
                     && matches!(base.as_ref(), Expr::Call { builtin: Some(Builtin::AbiEncodePacked), args, .. }
-                        if args.iter().all(|a| {
-                            let t = self.peel_nominal(a.ty());
-                            !self.is_dynamic(t) && self.checked.types[t].words == 1
-                        })) =>
+                    if args.iter().all(|a| {
+                        let t = self.peel_nominal(a.ty());
+                        !self.is_dynamic(t) && self.checked.types[t].words == 1
+                    })) =>
             {
                 let Expr::Call { args, .. } = base.as_ref() else {
                     return full;
@@ -1157,7 +1167,8 @@ impl<'a> Gen<'a> {
             Expr::Field { base, name, .. }
                 if name == "length"
                     && !self.stored_value(base)
-                    && (self.list_value(base.ty()) || self.is_dynamic(self.peel_nominal(base.ty()))) =>
+                    && (self.list_value(base.ty())
+                        || self.is_dynamic(self.peel_nominal(base.ty()))) =>
             {
                 (Word::from_u64(0), Word::from_u64(u64::MAX))
             }
@@ -1191,7 +1202,9 @@ impl<'a> Gen<'a> {
             } if args.len() == 2 && self.integer_info(args[0].ty()).1 == 256 => {
                 let (a, b) = (sub(&args[0]), sub(&args[1]));
                 match op {
-                    BinOp::Add if !a.1.overflowing_add(b.1).1 => (sat_add(a.0, b.0), sat_add(a.1, b.1)),
+                    BinOp::Add if !a.1.overflowing_add(b.1).1 => {
+                        (sat_add(a.0, b.0), sat_add(a.1, b.1))
+                    }
                     BinOp::Sub if !a.0.lt(b.1) => (sat_sub(a.0, b.1), sat_sub(a.1, b.0)),
                     _ => full,
                 }

@@ -50,10 +50,20 @@ pub extern "C" fn output_len() -> usize {
 /// The files to compile and the one to start from: the input is one file's source, which is
 /// `main.lithe`, or `{"files": {path: source}, "entry": path}`.
 fn project(src: &str) -> (Vec<(String, String)>, String) {
-    let parsed = src.trim_start().starts_with('{').then(|| serde_json::from_str::<serde_json::Value>(src).ok()).flatten();
-    match parsed.as_ref().and_then(|v| Some((v["files"].as_object()?, v["entry"].as_str()?))) {
+    let parsed = src
+        .trim_start()
+        .starts_with('{')
+        .then(|| serde_json::from_str::<serde_json::Value>(src).ok())
+        .flatten();
+    match parsed
+        .as_ref()
+        .and_then(|v| Some((v["files"].as_object()?, v["entry"].as_str()?)))
+    {
         Some((files, entry)) => (
-            files.iter().map(|(path, text)| (path.clone(), text.as_str().unwrap_or("").to_string())).collect(),
+            files
+                .iter()
+                .map(|(path, text)| (path.clone(), text.as_str().unwrap_or("").to_string()))
+                .collect(),
             entry.to_string(),
         ),
         None => (vec![(FILE.to_string(), src.to_string())], FILE.to_string()),
@@ -66,7 +76,8 @@ pub extern "C" fn compile() {
         let (files, entry) = project(src);
         let sources = lithe::Sources::memory(files);
         let mut out = String::from("{\"contracts\":[");
-        let built = build_options().and_then(|opts| lithe::compile(&sources, Path::new(&entry), &opts));
+        let built =
+            build_options().and_then(|opts| lithe::compile(&sources, Path::new(&entry), &opts));
         let errors = match built {
             Ok(output) => {
                 for (i, c) in output.contracts.iter().enumerate() {
@@ -141,7 +152,11 @@ pub extern "C" fn storage_diff() {
         let mut entries = Vec::new();
         for side in ["before", "after"] {
             let (side_files, entry) = project(&request[side].to_string());
-            files.extend(side_files.into_iter().map(|(path, text)| (format!("{side}/{path}"), text)));
+            files.extend(
+                side_files
+                    .into_iter()
+                    .map(|(path, text)| (format!("{side}/{path}"), text)),
+            );
             entries.push(format!("{side}/{entry}"));
         }
         let sources = lithe::Sources::memory(files);
@@ -175,15 +190,17 @@ getrandom::register_custom_getrandom!(no_random);
 /// `{"source": formatted}`, or `{"errors": [...]}`.
 #[no_mangle]
 pub extern "C" fn format() {
-    run(|src| match lithe::format_source(src, lithe::DEFAULT_WIDTH) {
-        Ok(text) => format!("{{\"source\":{}}}", quote(&text)),
-        Err(err) => {
-            let mut out = String::from("{\"errors\":[");
-            push_errors(&mut out, &[err]);
-            out.push_str("]}");
-            out
-        }
-    });
+    run(
+        |src| match lithe::format_source(src, lithe::DEFAULT_WIDTH) {
+            Ok(text) => format!("{{\"source\":{}}}", quote(&text)),
+            Err(err) => {
+                let mut out = String::from("{\"errors\":[");
+                push_errors(&mut out, &[err]);
+                out.push_str("]}");
+                out
+            }
+        },
+    );
 }
 
 fn build_options() -> Result<lithe::Options, Vec<lithe::Error>> {

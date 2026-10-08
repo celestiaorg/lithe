@@ -322,6 +322,10 @@ fn rpow_zero_base_panics() {
     let out = call(&ours, "rpow(uint256,uint256,uint256)", &[w(5), w(7), w(0)]);
     assert_eq!(out.returndata, panic_data(0x12));
     // The square's narrowing comes before its division, as in every later step.
-    let out = call(&ours, "rpow(uint256,uint256,uint256)", &[w(1).shl(128), w(2), w(0)]);
+    let out = call(
+        &ours,
+        "rpow(uint256,uint256,uint256)",
+        &[w(1).shl(128), w(2), w(0)],
+    );
     assert_eq!(out.returndata, panic_data(0x11));
 }

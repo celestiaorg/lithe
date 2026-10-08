@@ -347,7 +347,10 @@ impl<'a> Gen<'a> {
                 ..
             } if args.len() == 1
                 && self.checked.types[self.peel_nominal(*ty)].bits == 0
-                && matches!(self.checked.types[self.peel_nominal(*ty)].kind, TyKind::Bytes | TyKind::String) =>
+                && matches!(
+                    self.checked.types[self.peel_nominal(*ty)].kind,
+                    TyKind::Bytes | TyKind::String
+                ) =>
             {
                 self.blob_in(&args[0], unknown)
             }
@@ -359,7 +362,10 @@ impl<'a> Gen<'a> {
     /// compiled apart, maybe after another site rebinds `sym`, so a local it reads doesn't.
     pub(super) fn note_bound(&mut self, sym: usize, expr: &Expr) {
         let blob = self.known_blob(expr)
-            && self.compiling.last().is_none_or(|&f| !self.continuation_syms(f).contains(&sym));
+            && self
+                .compiling
+                .last()
+                .is_none_or(|&f| !self.continuation_syms(f).contains(&sym));
         self.note_blob(sym, blob);
     }
 
@@ -382,7 +388,10 @@ impl<'a> Gen<'a> {
                 ..
             } if args.len() == 1
                 && self.checked.types[self.peel_nominal(*ty)].bits == 0
-                && matches!(self.checked.types[self.peel_nominal(*ty)].kind, TyKind::Bytes | TyKind::String) =>
+                && matches!(
+                    self.checked.types[self.peel_nominal(*ty)].kind,
+                    TyKind::Bytes | TyKind::String
+                ) =>
             {
                 self.kept_span(&args[0])
             }
@@ -1476,7 +1485,10 @@ impl<'a> Gen<'a> {
         self.op(DUP1);
         self.op(MLOAD);
         let mut tests: Vec<(u8, u8)> = if html {
-            [0x22, 0x26, 0x27, 0x3c, 0x3e].iter().map(|&c| (XOR, c)).collect()
+            [0x22, 0x26, 0x27, 0x3c, 0x3e]
+                .iter()
+                .map(|&c| (XOR, c))
+                .collect()
         } else {
             vec![(AND, 0xe0), (XOR, 0x22), (XOR, 0x5c)]
         };
@@ -1674,7 +1686,11 @@ impl<'a> Gen<'a> {
         self.push_word(word(0x3b));
         self.push_mem(t + 0x3b);
         self.op(MSTORE);
-        if self.subs.iter().any(|(sub, ..)| matches!(sub, Sub::StringEscape(_))) {
+        if self
+            .subs
+            .iter()
+            .any(|(sub, ..)| matches!(sub, Sub::StringEscape(_)))
+        {
             self.op(PUSH0);
             self.push_mem(t);
             self.op(MSTORE);

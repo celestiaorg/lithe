@@ -1,0 +1,111 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  lint:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@1.95.0
+        with:
+          components: rustfmt, clippy
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            . -> target
+            playground -> target
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-machete,cargo-audit
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: docs/package-lock.json
+      - run: cargo fmt --check
+      - run: cargo fmt --check
+        working-directory: playground
+      - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo clippy --all-targets -- -D warnings
+        working-directory: playground
+      - run: cargo machete
+      - run: cargo machete
+        working-directory: playground
+      - run: cargo audit
+      - run: cargo audit
+        working-directory: playground
+      - run: npm ci
+        working-directory: docs
+      - run: npm run lint
+        working-directory: docs
+
+  test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@1.95.0
+      - uses: Swatinem/rust-cache@v2
+      - name: Install Z3
+        run: |
+          curl -sSfLO https://github.com/Z3Prover/z3/releases/download/z3-5.1.0/z3-5.1.0-x64-glibc-2.39.zip
+          unzip -q z3-5.1.0-x64-glibc-2.39.zip -d "$RUNNER_TEMP"
+          echo "LITHE_Z3=$RUNNER_TEMP/z3-5.1.0-x64-glibc-2.39/bin/z3" >> "$GITHUB_ENV"
+      - run: cargo test
+
+  docs:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@1.95.0
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            . -> target
+            playground -> target
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: docs/package-lock.json
+      - run: npm ci
+        working-directory: docs
+      - run: cargo build --release
+      - run: sh playground/build.sh
+      - run: node docs/check.mjs
+      - run: npx vocs build
+        working-directory: docs
+
+  playground:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@1.95.0
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            . -> target
+            playground -> target
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+      - run: cargo build --release
+      - run: sh playground/build.sh
+      - run: node playground/check.mjs examples/*.lithe

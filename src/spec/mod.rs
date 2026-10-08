@@ -295,7 +295,11 @@ impl SpecBuild {
                 self.pending.push(Pending {
                     name: fname,
                     module: module.clone(),
-                    kind: PendingKind::Invariant(name.clone(), clause.expr.clone(), clause.text.clone()),
+                    kind: PendingKind::Invariant(
+                        name.clone(),
+                        clause.expr.clone(),
+                        clause.text.clone(),
+                    ),
                     line: clause.line,
                     col: clause.col,
                 });

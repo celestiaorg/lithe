@@ -272,7 +272,9 @@ impl<'a> Gen<'a> {
         let params = &self.checked.prog.funcs[callee].params;
         args.iter()
             .zip(params)
-            .filter(|(a, _)| matches!(a, Expr::Ident { sym: Some(s), builtin: None, .. } if *s == sym))
+            .filter(
+                |(a, _)| matches!(a, Expr::Ident { sym: Some(s), builtin: None, .. } if *s == sym),
+            )
             .filter_map(|(_, p)| p.sym)
             .collect()
     }
@@ -286,7 +288,12 @@ impl<'a> Gen<'a> {
         // A call every evaluation of `e` makes: not behind `and`, `or`, or a branch.
         fn sure_calls<'e>(e: &'e Expr, out: &mut Vec<(usize, &'e [Expr])>) {
             match e {
-                Expr::Call { callee, builtin, args, .. } => {
+                Expr::Call {
+                    callee,
+                    builtin,
+                    args,
+                    ..
+                } => {
                     if let (Some(idx), None) = (callee, builtin) {
                         out.push((*idx, args));
                     }
@@ -294,7 +301,11 @@ impl<'a> Gen<'a> {
                         sure_calls(a, out);
                     }
                 }
-                Expr::Binary { op: BinOp::And | BinOp::Or, left, .. } => sure_calls(left, out),
+                Expr::Binary {
+                    op: BinOp::And | BinOp::Or,
+                    left,
+                    ..
+                } => sure_calls(left, out),
                 Expr::Binary { left, right, .. } => {
                     sure_calls(left, out);
                     sure_calls(right, out);
@@ -306,7 +317,11 @@ impl<'a> Gen<'a> {
         let mut calls = Vec::new();
         for st in &f.stmts {
             match st {
-                Stmt::For { until: None, elem_init, .. } if over(elem_init) => return true,
+                Stmt::For {
+                    until: None,
+                    elem_init,
+                    ..
+                } if over(elem_init) => return true,
                 Stmt::Const { expr, .. } | Stmt::Var { expr, .. } | Stmt::Call { expr, .. } => {
                     sure_calls(expr, &mut calls)
                 }
@@ -333,9 +348,22 @@ impl<'a> Gen<'a> {
         };
         let passed = std::cell::RefCell::new(Vec::new());
         let stops = |node: Node<'_>| match node {
-            Node::Stmt(Stmt::For { until: Some(_), elem_init, .. }) => over(elem_init),
-            Node::Expr(Expr::Call { callee: Some(idx), builtin: None, args, .. }) => {
-                passed.borrow_mut().extend(self.passed_as(*idx, args, sym).into_iter().map(|p| (*idx, p)));
+            Node::Stmt(Stmt::For {
+                until: Some(_),
+                elem_init,
+                ..
+            }) => over(elem_init),
+            Node::Expr(Expr::Call {
+                callee: Some(idx),
+                builtin: None,
+                args,
+                ..
+            }) => {
+                passed.borrow_mut().extend(
+                    self.passed_as(*idx, args, sym)
+                        .into_iter()
+                        .map(|p| (*idx, p)),
+                );
                 false
             }
             _ => false,
@@ -354,7 +382,9 @@ impl<'a> Gen<'a> {
         let passed = passed.into_inner();
         direct
             || !passed.is_empty() && depth == 0
-            || passed.into_iter().any(|(callee, p)| self.may_stop(callee, p, depth - 1))
+            || passed
+                .into_iter()
+                .any(|(callee, p)| self.may_stop(callee, p, depth - 1))
     }
 
     pub(super) fn stmt_uses(&self, st: &Stmt, sym: usize, whole: Option<usize>, other: &mut bool) {
@@ -468,7 +498,8 @@ impl<'a> Gen<'a> {
         // it raises is a literal or a string or bytes parameter read in place.
         let ty = self.checked.syms[sym].ty;
         let Some(func) = whole else {
-            args.iter().for_each(|x| self.expr_uses(x, sym, whole, other));
+            args.iter()
+                .for_each(|x| self.expr_uses(x, sym, whole, other));
             return;
         };
         let flat = !self.init
@@ -476,17 +507,26 @@ impl<'a> Gen<'a> {
             && self.list_k(ty) == 1
             && !self.is_dynamic(self.peel_nominal(self.list_elem(ty)))
             && !self.needs_check(self.list_elem(ty))
-            && args.iter().filter(|x| !matches!(x, Expr::Lit { .. })).count() <= FLAT_ARGS
+            && args
+                .iter()
+                .filter(|x| !matches!(x, Expr::Lit { .. }))
+                .count()
+                <= FLAT_ARGS
             && args.iter().all(|x| match x {
                 Expr::Lit { .. } => true,
                 Expr::Ident { sym: Some(s), .. } if *s == sym => true,
                 Expr::Ident { sym: Some(s), .. }
                     if self.is_dynamic(x.ty()) && !self.list_value(x.ty()) =>
                 {
-                    self.checked.prog.funcs[func].params.iter().any(|p| p.sym == Some(*s))
+                    self.checked.prog.funcs[func]
+                        .params
+                        .iter()
+                        .any(|p| p.sym == Some(*s))
                         && self.read_in_place(func, *s)
                 }
-                _ => !(self.is_dynamic(x.ty()) || self.list_value(x.ty()) || self.tree_part(x.ty())),
+                _ => {
+                    !(self.is_dynamic(x.ty()) || self.list_value(x.ty()) || self.tree_part(x.ty()))
+                }
             });
         for x in args {
             if !(flat && own(x)) {
@@ -499,7 +539,8 @@ impl<'a> Gen<'a> {
     /// check, and passing it on whole: to an event's data, to `Abi.encode` and its variants,
     /// to another contract, or to an inlined call's constant parameter used so.
     pub(super) fn expr_uses(&self, x: &Expr, sym: usize, whole: Option<usize>, other: &mut bool) {
-        let own = |y: &Expr| !self.init && matches!(y, Expr::Ident { sym: Some(s), .. } if *s == sym);
+        let own =
+            |y: &Expr| !self.init && matches!(y, Expr::Ident { sym: Some(s), .. } if *s == sym);
         let mut e = |y: &Expr| self.expr_uses(y, sym, whole, other);
         match x {
             Expr::Lit { .. } => {}
@@ -552,13 +593,17 @@ impl<'a> Gen<'a> {
                     let in_place = whole.is_some()
                         && own(arg)
                         && (encoded
-                            || j == 0 && *builtin == Some(Builtin::ListResized) && self.cd_copyable(sym)
+                            || j == 0
+                                && *builtin == Some(Builtin::ListResized)
+                                && self.cd_copyable(sym)
                             || params.as_ref().is_some_and(|(idx, later)| {
-                                self.checked.prog.funcs[*idx].params[j].sym.is_some_and(|p| {
-                                    !self.checked.syms[p].mutable
-                                        && !later.contains(&p)
-                                        && self.stays_in_calldata(*idx, p)
-                                })
+                                self.checked.prog.funcs[*idx].params[j]
+                                    .sym
+                                    .is_some_and(|p| {
+                                        !self.checked.syms[p].mutable
+                                            && !later.contains(&p)
+                                            && self.stays_in_calldata(*idx, p)
+                                    })
                             }));
                     if !in_place {
                         e(arg);

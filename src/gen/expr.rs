@@ -14,7 +14,11 @@ impl<'a> Gen<'a> {
 
     pub(super) fn cd_bytes_arg(&self, e: &Expr) -> Option<usize> {
         match e {
-            Expr::Ident { sym: Some(sym), builtin: None, .. } if self.cd_bytes.contains(sym) => Some(*sym),
+            Expr::Ident {
+                sym: Some(sym),
+                builtin: None,
+                ..
+            } if self.cd_bytes.contains(sym) => Some(*sym),
             _ => None,
         }
     }
@@ -24,15 +28,33 @@ impl<'a> Gen<'a> {
             return Ok(());
         }
         // A value known from literals, as an inlined call's string argument makes one.
-        if matches!(e, Expr::Binary { .. } | Expr::Field { .. } | Expr::Call { builtin: Some(Builtin::Cast), .. }) {
+        if matches!(
+            e,
+            Expr::Binary { .. }
+                | Expr::Field { .. }
+                | Expr::Call {
+                    builtin: Some(Builtin::Cast),
+                    ..
+                }
+        ) {
             if let Some(w) = self.const_word(e) {
                 self.push_word(w);
                 return Ok(());
             }
         }
         // A string or bytes value known from literals and constants is one.
-        if matches!(e, Expr::Call { builtin: Some(Builtin::Cast | Builtin::BytesSlice | Builtin::BytesConcat | Builtin::StringConcat), .. })
-            && self.is_dynamic(self.peel_nominal(e.ty()))
+        if matches!(
+            e,
+            Expr::Call {
+                builtin: Some(
+                    Builtin::Cast
+                        | Builtin::BytesSlice
+                        | Builtin::BytesConcat
+                        | Builtin::StringConcat
+                ),
+                ..
+            }
+        ) && self.is_dynamic(self.peel_nominal(e.ty()))
         {
             if let Some(bytes) = self.const_str(e) {
                 if bytes.len() > 31 {
@@ -42,7 +64,8 @@ impl<'a> Gen<'a> {
                 return Ok(());
             }
         }
-        let answer = |x: &Expr| matches!(x, Expr::Ident { sym: Some(s), .. } if self.rd_first.contains(s));
+        let answer =
+            |x: &Expr| matches!(x, Expr::Ident { sym: Some(s), .. } if self.rd_first.contains(s));
         match e {
             Expr::Field { base, name, .. } if name == "length" && answer(base) => {
                 self.op(RETURNDATASIZE);
@@ -166,7 +189,9 @@ impl<'a> Gen<'a> {
                     if !matches!(&args[0], Expr::Call { builtin: Some(Builtin::Code), .. }))
             };
             // A slice is compared where it lies, by its hash.
-            if self.is_dynamic(self.peel_nominal(left.ty())) && (mem_slice(left) || mem_slice(right)) {
+            if self.is_dynamic(self.peel_nominal(left.ty()))
+                && (mem_slice(left) || mem_slice(right))
+            {
                 for side in [left, right] {
                     self.compile_hash(std::slice::from_ref(side.as_ref()), None)?;
                 }
@@ -437,7 +462,10 @@ impl<'a> Gen<'a> {
                 op: UnOp::Neg,
                 expr,
                 ..
-            } if self.const_word(expr).is_some_and(|w| w != Word::from_u64(1).shl(255)) => {
+            } if self
+                .const_word(expr)
+                .is_some_and(|w| w != Word::from_u64(1).shl(255)) =>
+            {
                 let w = self.const_word(expr).expect("constant");
                 self.push_word(w.wrapping_neg());
                 Ok(())
@@ -690,11 +718,16 @@ impl<'a> Gen<'a> {
                         self.op(POP);
                     }
                 } else if let Some(on_top) = (*op == BinOp::Mul && signed)
-                    .then(|| self.plain_factor(right).then_some(true).or(self.plain_factor(left).then_some(false)))
+                    .then(|| {
+                        self.plain_factor(right)
+                            .then_some(true)
+                            .or(self.plain_factor(left).then_some(false))
+                    })
                     .flatten()
                 {
                     self.checked_mul_by_constant(on_top)?;
-                } else if matches!(*op, BinOp::Div | BinOp::Mod) && self.divisor_safe(right, signed) {
+                } else if matches!(*op, BinOp::Div | BinOp::Mod) && self.divisor_safe(right, signed)
+                {
                     self.op(SWAP1);
                     self.op(match (*op, signed) {
                         (BinOp::Div, false) => DIV,
@@ -1072,7 +1105,9 @@ impl<'a> Gen<'a> {
                 let opts = match b {
                     Builtin::Base64Encode => Some([false, false]),
                     Builtin::Base64EncodeUrl => Some([true, true]),
-                    Builtin::Base64EncodeWith => bool_lit(&args[1]).zip(bool_lit(&args[2])).map(|(a, b)| [a, b]),
+                    Builtin::Base64EncodeWith => bool_lit(&args[1])
+                        .zip(bool_lit(&args[2]))
+                        .map(|(a, b)| [a, b]),
                     _ => None,
                 };
                 if b != Builtin::Base64Decode {
@@ -1133,7 +1168,11 @@ impl<'a> Gen<'a> {
             }
             Builtin::FacetAddress => {
                 let Expr::Ident { name, .. } = &args[0] else {
-                    return Err(error(line, col, "`Evm.facetAddress` takes the name of a module"));
+                    return Err(error(
+                        line,
+                        col,
+                        "`Evm.facetAddress` takes the name of a module",
+                    ));
                 };
                 if self.shape.opts.check_specs {
                     return Err(error(
@@ -1452,10 +1491,7 @@ impl<'a> Gen<'a> {
     fn chain<'e>(&self, e: &'e Expr, op: BinOp, out: &mut Vec<Vec<&'e Expr>>) {
         match e {
             Expr::Binary {
-                op: o,
-                left,
-                right,
-                ..
+                op: o, left, right, ..
             } if *o == op && self.const_word(e).is_none() => {
                 self.chain(left, op, out);
                 match out.last_mut() {
@@ -1480,8 +1516,13 @@ impl<'a> Gen<'a> {
         };
         let dst = &self.checked.types[self.peel_nominal(ty)];
         let src = &self.checked.types[self.peel_nominal(arg.ty())];
-        if matches!(&inner[0], Expr::Call { builtin: Some(Builtin::Code), .. })
-            || src.kind != TyKind::Bytes
+        if matches!(
+            &inner[0],
+            Expr::Call {
+                builtin: Some(Builtin::Code),
+                ..
+            }
+        ) || src.kind != TyKind::Bytes
             || src.bits != 0
             || dst.kind != TyKind::Bytes
             || dst.bits == 0
@@ -1500,7 +1541,11 @@ impl<'a> Gen<'a> {
             _ => None,
         };
         match width {
-            Some((w, k)) if !checked && !w.lt(Word::from_u64(n)) && self.cannot_wrap(BinOp::Add, &inner[1], k) => {
+            Some((w, k))
+                if !checked
+                    && !w.lt(Word::from_u64(n))
+                    && self.cannot_wrap(BinOp::Add, &inner[1], k) =>
+            {
                 self.span_data(&inner[0])?;
                 self.compile_value(&inner[1])?;
                 self.op(ADD);
@@ -1558,7 +1603,9 @@ impl<'a> Gen<'a> {
                 left,
                 right,
                 ..
-            }) if range::same_value(left, &inner[1]) && self.cannot_wrap(BinOp::Add, left, right) => {
+            }) if range::same_value(left, &inner[1])
+                && self.cannot_wrap(BinOp::Add, left, right) =>
+            {
                 Some(right)
             }
             _ => None,
@@ -1573,7 +1620,9 @@ impl<'a> Gen<'a> {
         let int = self.checked.types[left.ty()].kind == TyKind::Int;
         let bits = self.checked.types[left.ty()].bits;
         let narrowed = bits > 0 && bits < 256;
-        let proven = !int && matches!(op, BinOp::Add | BinOp::Sub | BinOp::Mul) && self.cannot_wrap(op, left, right);
+        let proven = !int
+            && matches!(op, BinOp::Add | BinOp::Sub | BinOp::Mul)
+            && self.cannot_wrap(op, left, right);
         let divisor = matches!(op, BinOp::Div | BinOp::Mod)
             && self
                 .const_word(right)
@@ -1689,7 +1738,10 @@ impl<'a> Gen<'a> {
                 }
                 let checked = !self.slice_proven(inner);
                 let width = self.slice_width(inner).filter(|_| !checked);
-                match self.const_word(&inner[1]).filter(|_| !checked && inner.len() == 3) {
+                match self
+                    .const_word(&inner[1])
+                    .filter(|_| !checked && inner.len() == 3)
+                {
                     // `b[i:i + k]`: `[k, data + i]`.
                     _ if width.is_some() => {
                         self.op(SWAP1);
@@ -2302,7 +2354,8 @@ impl<'a> Gen<'a> {
     /// needs no guards.
     fn divisor_safe(&self, right: &Expr, signed: bool) -> bool {
         if signed {
-            self.const_word(right).is_some_and(|w| !w.is_zero() && w != Word::from_u64(0).not())
+            self.const_word(right)
+                .is_some_and(|w| !w.is_zero() && w != Word::from_u64(0).not())
         } else {
             !self.range_of(right).0.is_zero()
         }

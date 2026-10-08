@@ -89,7 +89,11 @@ impl<'a> Gen<'a> {
         let k = (leaf - self.checked.immutable_from as u32) as usize;
         let w = (*self.imm_consts.get(k)?)?;
         let width = self.checked.leaf_pack[leaf as usize].width;
-        Some(if width < 32 { w.bitand(byte_mask(width)) } else { w })
+        Some(if width < 32 {
+            w.bitand(byte_mask(width))
+        } else {
+            w
+        })
     }
 
     /// Pushes the address the implementation was created at.

@@ -909,9 +909,19 @@ fn records_keep_every_shape_of_word() {
         (word_data("seen()", &[]), false),
     ] {
         let (a, b) = (inline.send(1, &data), split.send(1, &data));
-        assert_eq!(a.reverted, reverts, "{}: {}", hex(&data), pretty(&a.returndata));
+        assert_eq!(
+            a.reverted,
+            reverts,
+            "{}: {}",
+            hex(&data),
+            pretty(&a.returndata)
+        );
         assert_eq!(seen(&a), seen(&b), "{}", hex(&data));
-        assert!(b.transient.values().all(|v| v.is_zero()), "{:?}", b.transient);
+        assert!(
+            b.transient.values().all(|v| v.is_zero()),
+            "{:?}",
+            b.transient
+        );
     }
     assert_eq!(inline.storage, split.storage);
     DEPLOYED.with(|d| d.borrow_mut().clear());
@@ -1299,14 +1309,11 @@ fn forwarded_and_callback_entrypoints_take_value_as_their_callers_do() {
         f.payable
     };
     let paid = |src: String| {
-        src.replace(
-            "external function send(",
-            "external payable function send(",
-        )
-        .replace(
-            "    function send(to : address; id : uint)",
-            "    payable function send(to : address; id : uint)",
-        )
+        src.replace("external function send(", "external payable function send(")
+            .replace(
+                "    function send(to : address; id : uint)",
+                "    payable function send(to : address; id : uint)",
+            )
     };
     assert!(!callback_payable(&frozen(" delegated")));
     assert!(callback_payable(&paid(frozen(" delegated"))));
@@ -1496,7 +1503,11 @@ contract C is {{
     );
     let split = crate::split::build(&checked_src(&src), "C", &crate::Options::default())
         .unwrap_or_else(|e| panic!("split: {e}"));
-    let names = split.facets.iter().find(|f| f.name == "Names").expect("facet");
+    let names = split
+        .facets
+        .iter()
+        .find(|f| f.name == "Names")
+        .expect("facet");
     assert!(names.hooks.is_empty(), "{:?}", names.hooks);
 }
 
@@ -1556,7 +1567,10 @@ module Stop is {
     }
     let last = split.send(2, &calls[3].1);
     assert!(last.reverted);
-    assert_eq!(hex(&last.returndata), hex(&crate::keccak::selector("Stopped()")));
+    assert_eq!(
+        hex(&last.returndata),
+        hex(&crate::keccak::selector("Stopped()"))
+    );
 }
 
 /// A facet knows nothing of what a hook it calls back returns, so arithmetic on the result
@@ -1594,6 +1608,10 @@ external function set(const v : uint) is M.set(v)
         let (a, b) = (inline.send(1, &data), split.send(1, &data));
         assert_eq!(seen(&a), seen(&b), "{}", hex(&data));
     }
-    assert!(inline.send(1, &word_data("run(uint256)", &[Word::from_u64(1).shl(254)])).reverted);
+    assert!(
+        inline
+            .send(1, &word_data("run(uint256)", &[Word::from_u64(1).shl(254)]))
+            .reverted
+    );
     DEPLOYED.with(|d| d.borrow_mut().clear());
 }

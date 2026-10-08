@@ -3,7 +3,7 @@
 //! until it is reset.
 
 use std::cell::RefCell;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{btree_map, BTreeMap, HashMap};
 
 use alloy_dyn_abi::{DynSolType, DynSolValue, EventExt, FunctionExt, JsonAbiExt, Specifier};
 use alloy_json_abi::{JsonAbi, Param};
@@ -111,13 +111,18 @@ pub fn handle(request: &str) -> String {
 
 /// A compiled contract as the page sends it: `name`, `bytecode`, `abi`, and `storage`.
 fn instance(contract: &Value) -> Result<Instance, String> {
-    let abi: JsonAbi = serde_json::from_value(contract["abi"].clone()).map_err(|e| e.to_string())?;
+    let abi: JsonAbi =
+        serde_json::from_value(contract["abi"].clone()).map_err(|e| e.to_string())?;
     let mut fields: HashMap<B256, Vec<Field>> = HashMap::new();
     let mut seen: HashMap<&str, usize> = HashMap::new();
     for word in contract["storage"].as_array().into_iter().flatten() {
         let field = str_of(&word["field"]);
         let nth = seen.entry(field).or_default();
-        let name = if *nth == 0 { field.to_string() } else { format!("{field} +{nth}") };
+        let name = if *nth == 0 {
+            field.to_string()
+        } else {
+            format!("{field} +{nth}")
+        };
         *nth += 1;
         fields
             .entry(B256::from_slice(&hex(str_of(&word["slot"]))?))
@@ -139,7 +144,8 @@ fn instance(contract: &Value) -> Result<Instance, String> {
 const PROXY: &str = "7fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffe03601600081602082378035828234f58015156039578182fd5b8082525050506014600cf3";
 
 /// ERC-1967's implementation slot, and `Upgraded(address)`'s topic.
-const IMPLEMENTATION_SLOT: &str = "360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc";
+const IMPLEMENTATION_SLOT: &str =
+    "360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc";
 const UPGRADED: &str = "bc7cd75a20ee27fd9adebab32041f755214dbc6bffa90cc0225b39da2e5c2d3b";
 
 /// The creation code of a standard ERC-1967 proxy for `implementation`, as OpenZeppelin's
@@ -150,7 +156,10 @@ fn proxy_creation(implementation: Address, data: &[u8]) -> Result<Vec<u8>, Strin
     let slot = hex(IMPLEMENTATION_SLOT)?;
     let mut runtime = vec![0x36, 0x5f, 0x5f, 0x37, 0x5f, 0x5f, 0x36, 0x5f, 0x7f];
     runtime.extend(&slot);
-    runtime.extend([0x54, 0x5a, 0xf4, 0x3d, 0x5f, 0x5f, 0x3e, 0x60, 0x36, 0x57, 0x3d, 0x5f, 0xfd, 0x5b, 0x3d, 0x5f, 0xf3]);
+    runtime.extend([
+        0x54, 0x5a, 0xf4, 0x3d, 0x5f, 0x5f, 0x3e, 0x60, 0x36, 0x57, 0x3d, 0x5f, 0xfd, 0x5b, 0x3d,
+        0x5f, 0xf3,
+    ]);
     debug_assert_eq!(runtime[0x36], 0x5b);
     // Offsets are patched once the init code's length is known.
     let mut init = vec![0x61, 0, 0, 0x38, 0x03, 0x80, 0x61, 0, 0, 0x5f, 0x39]; // len := codesize - tail; mem[0..len] = tail
@@ -163,7 +172,9 @@ fn proxy_creation(implementation: Address, data: &[u8]) -> Result<Vec<u8>, Strin
     let mut fail_jump = None;
     if !data.is_empty() {
         // delegatecall(gas, impl, 32, len - 32, 0, 0)
-        init.extend([0x5f, 0x5f, 0x60, 0x20, 0x84, 0x03, 0x60, 0x20, 0x84, 0x5a, 0xf4]);
+        init.extend([
+            0x5f, 0x5f, 0x60, 0x20, 0x84, 0x03, 0x60, 0x20, 0x84, 0x5a, 0xf4,
+        ]);
         init.extend([0x15, 0x61, 0, 0, 0x57]); // if it failed, jump to fail
         fail_jump = Some(init.len() - 3);
     }
@@ -171,7 +182,9 @@ fn proxy_creation(implementation: Address, data: &[u8]) -> Result<Vec<u8>, Strin
     let ret = init.len() - 13;
     let fail = init.len();
     init.extend([0x5b, 0x3d, 0x5f, 0x5f, 0x3e, 0x3d, 0x5f, 0xfd]); // revert with its revert data
-    let at = |code: &mut Vec<u8>, i: usize, v: usize| code[i..i + 2].copy_from_slice(&(v as u16).to_be_bytes());
+    let at = |code: &mut Vec<u8>, i: usize, v: usize| {
+        code[i..i + 2].copy_from_slice(&(v as u16).to_be_bytes())
+    };
     let start = init.len();
     let tail = start + runtime.len();
     at(&mut init, 1, tail);
@@ -191,7 +204,12 @@ fn proxy_creation(implementation: Address, data: &[u8]) -> Result<Vec<u8>, Strin
 }
 
 fn has_code(session: &Session, address: Address) -> bool {
-    session.db.cache.accounts.get(&address).is_some_and(|a| a.info.code_hash != revm::primitives::KECCAK_EMPTY)
+    session
+        .db
+        .cache
+        .accounts
+        .get(&address)
+        .is_some_and(|a| a.info.code_hash != revm::primitives::KECCAK_EMPTY)
 }
 
 /// Code put on the chain: the transaction that created it, its logs, where it is, and the facets
@@ -206,14 +224,25 @@ struct Placed {
 /// Puts a compiled contract's code on the chain, with `args` after its creation code: first the
 /// facets its plan lists that are not on the chain, each through the proxy, then the code, through
 /// the proxy too when the plan says so. An answer for the page instead when it can't.
-fn place(session: &mut Session, request: &Value, contract: &Value, name: &str, args: Vec<u8>, value: U256) -> Result<Result<Placed, Value>, String> {
+fn place(
+    session: &mut Session,
+    request: &Value,
+    contract: &Value,
+    name: &str,
+    args: Vec<u8>,
+    value: U256,
+) -> Result<Result<Placed, Value>, String> {
     let plan = &contract["plan"];
     let mut facets = Vec::new();
     for facet in plan["facets"].as_array().into_iter().flatten() {
         let facet_name = str_of(&facet["name"]);
-        let at: Address = str_of(&facet["address"]).parse().map_err(|_| "bad facet address")?;
+        let at: Address = str_of(&facet["address"])
+            .parse()
+            .map_err(|_| "bad facet address")?;
         if has_code(session, at) {
-            facets.push(json!({ "name": facet_name, "address": at.to_checksum(None), "there": true }));
+            facets.push(
+                json!({ "name": facet_name, "address": at.to_checksum(None), "there": true }),
+            );
             continue;
         }
         let to = proxy(session, &facet["to"])?;
@@ -230,7 +259,12 @@ fn place(session: &mut Session, request: &Value, contract: &Value, name: &str, a
         if !ok {
             let mut out = outcome(session, &result, &[], None);
             out["ok"] = json!(false);
-            out["error"] = json!(format!("facet {facet_name} did not deploy: {}", out["error"].as_str().unwrap_or("its code ran but left none")));
+            out["error"] = json!(format!(
+                "facet {facet_name} did not deploy: {}",
+                out["error"]
+                    .as_str()
+                    .unwrap_or("its code ran but left none")
+            ));
             out["facets"] = json!(facets);
             out["storage"] = storage(session);
             return Ok(Err(out));
@@ -238,7 +272,12 @@ fn place(session: &mut Session, request: &Value, contract: &Value, name: &str, a
     }
     let router = &plan["router"];
     let through = router["to"].as_str().is_some();
-    if through && router["address"].as_str().and_then(|a| a.parse().ok()).is_some_and(|a| has_code(session, a)) {
+    if through
+        && router["address"]
+            .as_str()
+            .and_then(|a| a.parse().ok())
+            .is_some_and(|a| has_code(session, a))
+    {
         let at = str_of(&router["address"]);
         return Ok(Err(json!({
             "ok": false,
@@ -246,10 +285,18 @@ fn place(session: &mut Session, request: &Value, contract: &Value, name: &str, a
             "storage": storage(session),
         })));
     }
-    let mut data = if through { hex(str_of(&router["data"]))? } else { hex(str_of(&contract["bytecode"]))? };
+    let mut data = if through {
+        hex(str_of(&router["data"]))?
+    } else {
+        hex(str_of(&contract["bytecode"]))?
+    };
     data.extend(args);
     let tx = Tx {
-        to: if through { Some(proxy(session, &router["to"])?) } else { None },
+        to: if through {
+            Some(proxy(session, &router["to"])?)
+        } else {
+            None
+        },
         data,
         caller: caller(request)?,
         value,
@@ -261,21 +308,36 @@ fn place(session: &mut Session, request: &Value, contract: &Value, name: &str, a
             output: Output::Create(_, Some(address)),
             ..
         } => Some(*address),
-        ExecutionResult::Success { .. } if through => router["address"].as_str().and_then(|a| a.parse().ok()).filter(|a| has_code(session, *a)),
+        ExecutionResult::Success { .. } if through => router["address"]
+            .as_str()
+            .and_then(|a| a.parse().ok())
+            .filter(|a| has_code(session, *a)),
         _ => None,
     };
-    Ok(Ok(Placed { result, logs, at, facets }))
+    Ok(Ok(Placed {
+        result,
+        logs,
+        at,
+        facets,
+    }))
 }
 
 /// An upgradeable contract's code is the implementation behind an ERC-1967 proxy, and its
 /// `deploy` the proxy's initializer.
 fn upgradeable(abi: &JsonAbi) -> bool {
-    ["proxiableUUID", "upgradeToAndCall"].iter().all(|n| abi.functions().any(|f| f.name == *n))
+    ["proxiableUUID", "upgradeToAndCall"]
+        .iter()
+        .all(|n| abi.functions().any(|f| f.name == *n))
 }
 
 /// The answer for a placement and what came of it: its outcome, where the contract is, and the
 /// facets and implementation that went first.
-fn placed(session: &Session, placed: &Placed, at: Option<Address>, implementation: Option<Value>) -> Value {
+fn placed(
+    session: &Session,
+    placed: &Placed,
+    at: Option<Address>,
+    implementation: Option<Value>,
+) -> Value {
     let mut out = outcome(session, &placed.result, &placed.logs, at);
     if let Some(address) = at {
         out["address"] = json!(address.to_checksum(None));
@@ -310,10 +372,19 @@ fn deploy(session: &mut Session, request: &Value) -> Result<Value, String> {
         let mut args = Vec::new();
         if let Some(constructor) = &made.abi.constructor {
             let values = arguments(&constructor.inputs, &request["args"])?;
-            args = constructor.abi_encode_input(&values).map_err(|e| e.to_string())?;
+            args = constructor
+                .abi_encode_input(&values)
+                .map_err(|e| e.to_string())?;
         }
         let name = made.name.clone();
-        let mut code = match place(session, request, contract, &name, args, value(&request["value"])?)? {
+        let mut code = match place(
+            session,
+            request,
+            contract,
+            &name,
+            args,
+            value(&request["value"])?,
+        )? {
             Ok(code) => code,
             Err(out) => return Ok(out),
         };
@@ -365,7 +436,9 @@ fn deploy(session: &mut Session, request: &Value) -> Result<Value, String> {
 /// then calls the proxy's `upgradeToAndCall` with it and, when one is named, a call to the
 /// version's migration. The proxy keeps its address and its storage.
 fn upgrade(session: &mut Session, request: &Value) -> Result<Value, String> {
-    let to: Address = str_of(&request["to"]).parse().map_err(|_| "no such contract")?;
+    let to: Address = str_of(&request["to"])
+        .parse()
+        .map_err(|_| "no such contract")?;
     if !session.instances.contains_key(&to) {
         return Err("no such contract".to_string());
     }
@@ -382,7 +455,8 @@ fn upgrade(session: &mut Session, request: &Value) -> Result<Value, String> {
             .flatten()
             .find(|m| m["name"] == name)
             .ok_or_else(|| format!("no migration `{name}`"))?;
-        let f: alloy_json_abi::Function = serde_json::from_value(item.clone()).map_err(|e| e.to_string())?;
+        let f: alloy_json_abi::Function =
+            serde_json::from_value(item.clone()).map_err(|e| e.to_string())?;
         let values = arguments(&f.inputs, &request["args"])?;
         migration = f.abi_encode_input(&values).map_err(|e| e.to_string())?;
     }
@@ -397,9 +471,13 @@ fn upgrade(session: &mut Session, request: &Value) -> Result<Value, String> {
     };
     session.instances.remove(&implementation);
     let gas = code.result.tx_gas_used();
-    let call = alloy_json_abi::Function::parse("upgradeToAndCall(address,bytes)").map_err(|e| e.to_string())?;
+    let call = alloy_json_abi::Function::parse("upgradeToAndCall(address,bytes)")
+        .map_err(|e| e.to_string())?;
     let data = call
-        .abi_encode_input(&[DynSolValue::Address(implementation), DynSolValue::Bytes(migration)])
+        .abi_encode_input(&[
+            DynSolValue::Address(implementation),
+            DynSolValue::Bytes(migration),
+        ])
         .map_err(|e| e.to_string())?;
     let tx = Tx {
         to: Some(to),
@@ -422,13 +500,17 @@ fn proxy(session: &mut Session, to: &Value) -> Result<Address, String> {
     let at: Address = str_of(to).parse().map_err(|_| "bad deployer address")?;
     if !has_code(session, at) {
         let code = revm::bytecode::Bytecode::new_raw(Bytes::from(hex(PROXY)?));
-        session.db.insert_account_info(at, AccountInfo::default().with_code(code));
+        session
+            .db
+            .insert_account_info(at, AccountInfo::default().with_code(code));
     }
     Ok(at)
 }
 
 fn call(session: &mut Session, request: &Value) -> Result<Value, String> {
-    let to: Address = str_of(&request["to"]).parse().map_err(|_| "no such contract")?;
+    let to: Address = str_of(&request["to"])
+        .parse()
+        .map_err(|_| "no such contract")?;
     let instance = session.instances.get(&to).ok_or("no such contract")?;
     let signature = str_of(&request["function"]);
     let function = instance
@@ -438,7 +520,9 @@ fn call(session: &mut Session, request: &Value) -> Result<Value, String> {
         .ok_or_else(|| format!("`{signature}` is not a function of {}", instance.name))?
         .clone();
     let args = arguments(&function.inputs, &request["args"])?;
-    let data = function.abi_encode_input(&args).map_err(|e| e.to_string())?;
+    let data = function
+        .abi_encode_input(&args)
+        .map_err(|e| e.to_string())?;
     let readonly = matches!(
         function.state_mutability,
         alloy_json_abi::StateMutability::View | alloy_json_abi::StateMutability::Pure
@@ -457,7 +541,9 @@ fn call(session: &mut Session, request: &Value) -> Result<Value, String> {
         ..
     } = &result
     {
-        let values = function.abi_decode_output(bytes).map_err(|e| e.to_string())?;
+        let values = function
+            .abi_decode_output(bytes)
+            .map_err(|e| e.to_string())?;
         out["returns"] = json!(function
             .outputs
             .iter()
@@ -492,7 +578,11 @@ fn execute(
     let block = session.block;
     // The page's clock, kept moving forward: each block is later than the one before.
     let now = request["now"].as_u64().unwrap_or(session.time + 12);
-    let time = if tx.commit { now.max(session.time + 1) } else { now.max(session.time) };
+    let time = if tx.commit {
+        now.max(session.time + 1)
+    } else {
+        now.max(session.time)
+    };
     let env = TxEnv::builder()
         .caller(tx.caller)
         .kind(tx.to.map_or(TxKind::Create, TxKind::Call))
@@ -536,8 +626,8 @@ fn execute(
                 .max_by_key(|(code, _)| code.len());
             let exists = session.db.cache.accounts.contains_key(&address);
             if let (Some((_, contract)), true) = (known, exists) {
-                if !session.instances.contains_key(&address) {
-                    session.instances.insert(address, instance(contract)?);
+                if let btree_map::Entry::Vacant(slot) = session.instances.entry(address) {
+                    slot.insert(instance(contract)?);
                 }
             }
         }
@@ -546,8 +636,14 @@ fn execute(
     Ok((result, logs))
 }
 
-fn outcome(session: &Session, result: &ExecutionResult, logs: &[Log], to: Option<Address>) -> Value {
-    let mut out = json!({ "gas": result.tx_gas_used(), "block": session.block - 1, "time": session.time });
+fn outcome(
+    session: &Session,
+    result: &ExecutionResult,
+    logs: &[Log],
+    to: Option<Address>,
+) -> Value {
+    let mut out =
+        json!({ "gas": result.tx_gas_used(), "block": session.block - 1, "time": session.time });
     match result {
         ExecutionResult::Success { .. } => out["ok"] = json!(true),
         ExecutionResult::Revert { output, .. } => {
@@ -559,7 +655,10 @@ fn outcome(session: &Session, result: &ExecutionResult, logs: &[Log], to: Option
             out["error"] = json!(format!("halted: {reason:?}"));
         }
     }
-    out["events"] = json!(logs.iter().map(|log| event(session, log)).collect::<Vec<_>>());
+    out["events"] = json!(logs
+        .iter()
+        .map(|log| event(session, log))
+        .collect::<Vec<_>>());
     out
 }
 
@@ -567,7 +666,9 @@ fn revert_reason(session: &Session, to: Option<Address>, data: &[u8]) -> String 
     if data.is_empty() {
         return "reverted with no data".to_string();
     }
-    if let (Some(instance), Some(selector)) = (to.and_then(|a| session.instances.get(&a)), data.get(..4)) {
+    if let (Some(instance), Some(selector)) =
+        (to.and_then(|a| session.instances.get(&a)), data.get(..4))
+    {
         for error in instance.abi.errors() {
             if error.selector().as_slice() == selector {
                 if let Ok(values) = error.abi_decode_input(&data[4..]) {
@@ -576,23 +677,32 @@ fn revert_reason(session: &Session, to: Option<Address>, data: &[u8]) -> String 
             }
         }
     }
-    alloy_sol_types::decode_revert_reason(data).unwrap_or_else(|| format!("reverted with 0x{}", hex_str(data)))
+    alloy_sol_types::decode_revert_reason(data)
+        .unwrap_or_else(|| format!("reverted with 0x{}", hex_str(data)))
 }
 
 fn event(session: &Session, log: &Log) -> Value {
     let emitter = log.address.to_checksum(None);
-    if let (Some(instance), Some(topic)) = (session.instances.get(&log.address), log.topics().first()) {
+    if let (Some(instance), Some(topic)) =
+        (session.instances.get(&log.address), log.topics().first())
+    {
         for event in instance.abi.events() {
             if event.anonymous || event.selector() != *topic {
                 continue;
             }
-            if let Ok(decoded) = event.decode_log_parts(log.topics().iter().copied(), &log.data.data) {
+            if let Ok(decoded) =
+                event.decode_log_parts(log.topics().iter().copied(), &log.data.data)
+            {
                 let (mut indexed, mut body) = (decoded.indexed.iter(), decoded.body.iter());
                 let args: Vec<String> = event
                     .inputs
                     .iter()
                     .filter_map(|input| {
-                        let v = if input.indexed { indexed.next() } else { body.next() }?;
+                        let v = if input.indexed {
+                            indexed.next()
+                        } else {
+                            body.next()
+                        }?;
                         Some(format!("{} = {}", input.name, show(v)))
                     })
                     .collect();
@@ -642,9 +752,11 @@ fn storage(session: &Session) -> Value {
                         push(Some(&f.name), "", show_word(part(value, f), &f.ty));
                     }
                 }
-                None if B256::from(slot).to_string() == format!("0x{IMPLEMENTATION_SLOT}") => {
-                    push(Some("ERC-1967.implementation"), "", show_word(value, "address"))
-                }
+                None if B256::from(slot).to_string() == format!("0x{IMPLEMENTATION_SLOT}") => push(
+                    Some("ERC-1967.implementation"),
+                    "",
+                    show_word(value, "address"),
+                ),
                 None => match label(session, instance, slot, 0) {
                     Some((root, suffix, ty)) => push(Some(&root), &suffix, show_word(value, &ty)),
                     None => push(None, "", show_word(value, "")),
@@ -655,7 +767,9 @@ fn storage(session: &Session) -> Value {
             continue;
         }
         // Named entries first, by storage and name, so a map's entries sit together.
-        entries.sort_by(|a, b| (a.0.is_none(), &a.0, &a.1, a.2).cmp(&(b.0.is_none(), &b.0, &b.1, b.2)));
+        entries.sort_by(|a, b| {
+            (a.0.is_none(), &a.0, &a.1, a.2).cmp(&(b.0.is_none(), &b.0, &b.1, b.2))
+        });
         accounts.push(json!({
             "address": address.to_checksum(None),
             "name": instance.map(|i| i.name.clone()),
@@ -668,11 +782,19 @@ fn storage(session: &Session) -> Value {
 
 /// What holds `slot`: the field it is, or holds an entry of, with the keys of the entry, and
 /// the type of the value there.
-fn label(session: &Session, instance: Option<&Instance>, slot: U256, depth: u32) -> Option<(String, String, String)> {
+fn label(
+    session: &Session,
+    instance: Option<&Instance>,
+    slot: U256,
+    depth: u32,
+) -> Option<(String, String, String)> {
     if depth > 8 {
         return None;
     }
-    if let Some(field) = instance.and_then(|i| i.fields.get(&B256::from(slot))).and_then(|f| f.first()) {
+    if let Some(field) = instance
+        .and_then(|i| i.fields.get(&B256::from(slot)))
+        .and_then(|f| f.first())
+    {
         return Some((field.name.clone(), String::new(), field.ty.clone()));
     }
     // The nearest hash below the slot, within a record's or list's reach of it.
@@ -682,15 +804,27 @@ fn label(session: &Session, instance: Option<&Instance>, slot: U256, depth: u32)
         .filter(|(hash, _)| **hash <= slot && slot - **hash < U256::from(1u64 << 32))
         .max_by_key(|(hash, _)| **hash)?;
     let offset = slot - *base;
-    let plus = if offset.is_zero() { String::new() } else { format!(" +{offset}") };
+    let plus = if offset.is_zero() {
+        String::new()
+    } else {
+        format!(" +{offset}")
+    };
     match data.len() {
         64 => {
-            let (key, parent) = (U256::from_be_slice(&data[..32]), U256::from_be_slice(&data[32..]));
+            let (key, parent) = (
+                U256::from_be_slice(&data[..32]),
+                U256::from_be_slice(&data[32..]),
+            );
             let (root, suffix, ty) = label(session, instance, parent, depth + 1)?;
-            Some((root, format!("{suffix}[{}]{plus}", show_key(key)), map_value(&ty)))
+            Some((
+                root,
+                format!("{suffix}[{}]{plus}", show_key(key)),
+                map_value(&ty),
+            ))
         }
         32 => {
-            let (root, suffix, ty) = label(session, instance, U256::from_be_slice(data), depth + 1)?;
+            let (root, suffix, ty) =
+                label(session, instance, U256::from_be_slice(data), depth + 1)?;
             Some((root, format!("{suffix} data{plus}"), list_item(&ty)))
         }
         _ => None,
@@ -773,7 +907,13 @@ fn named(params: &[Param], values: &[DynSolValue]) -> String {
     let parts: Vec<String> = params
         .iter()
         .zip(values)
-        .map(|(p, v)| if p.name.is_empty() { show(v) } else { format!("{} = {}", p.name, show(v)) })
+        .map(|(p, v)| {
+            if p.name.is_empty() {
+                show(v)
+            } else {
+                format!("{} = {}", p.name, show(v))
+            }
+        })
         .collect();
     format!("({})", parts.join(", "))
 }
@@ -789,9 +929,15 @@ fn show(value: &DynSolValue) -> String {
         DynSolValue::Bytes(b) => format!("0x{}", hex_str(b)),
         DynSolValue::String(s) => format!("{s:?}"),
         DynSolValue::Array(items) | DynSolValue::FixedArray(items) => {
-            format!("[{}]", items.iter().map(show).collect::<Vec<_>>().join(", "))
+            format!(
+                "[{}]",
+                items.iter().map(show).collect::<Vec<_>>().join(", ")
+            )
         }
-        DynSolValue::Tuple(items) => format!("({})", items.iter().map(show).collect::<Vec<_>>().join(", ")),
+        DynSolValue::Tuple(items) => format!(
+            "({})",
+            items.iter().map(show).collect::<Vec<_>>().join(", ")
+        ),
     }
 }
 
@@ -804,14 +950,21 @@ fn arguments(params: &[Param], args: &Value) -> Result<Vec<DynSolValue>, String>
         .map(|(i, param)| {
             let ty: DynSolType = param.resolve().map_err(|e| e.to_string())?;
             let text = args.get(i).and_then(Value::as_str).unwrap_or("").trim();
-            let name = if param.name.is_empty() { format!("argument {}", i + 1) } else { format!("`{}`", param.name) };
-            ty.coerce_str(text).map_err(|_| format!("{name} takes a `{}`, not `{text}`", param.ty))
+            let name = if param.name.is_empty() {
+                format!("argument {}", i + 1)
+            } else {
+                format!("`{}`", param.name)
+            };
+            ty.coerce_str(text)
+                .map_err(|_| format!("{name} takes a `{}`, not `{text}`", param.ty))
         })
         .collect()
 }
 
 fn caller(request: &Value) -> Result<Address, String> {
-    str_of(&request["caller"]).parse().map_err(|_| "no such caller".to_string())
+    str_of(&request["caller"])
+        .parse()
+        .map_err(|_| "no such caller".to_string())
 }
 
 /// Wei, or an amount in `ether` or `gwei`: `1.5 ether`.
@@ -820,7 +973,9 @@ fn value(v: &Value) -> Result<U256, String> {
     if text.is_empty() {
         return Ok(U256::ZERO);
     }
-    let (amount, unit) = text.split_once(' ').map_or((text, "wei"), |(a, u)| (a, u.trim()));
+    let (amount, unit) = text
+        .split_once(' ')
+        .map_or((text, "wei"), |(a, u)| (a, u.trim()));
     alloy_primitives::utils::parse_units(amount, unit)
         .map(Into::into)
         .map_err(|_| format!("`{text}` is not an amount of wei, gwei, or ether"))
@@ -834,7 +989,10 @@ fn hex(text: &str) -> Result<Vec<u8>, String> {
     let digits = text.strip_prefix("0x").unwrap_or(text);
     (0..digits.len())
         .step_by(2)
-        .map(|i| u8::from_str_radix(digits.get(i..i + 2).unwrap_or("x"), 16).map_err(|_| "bad hex".to_string()))
+        .map(|i| {
+            u8::from_str_radix(digits.get(i..i + 2).unwrap_or("x"), 16)
+                .map_err(|_| "bad hex".to_string())
+        })
         .collect()
 }
 
@@ -862,7 +1020,8 @@ impl<CTX> Inspector<CTX, EthInterpreter> for Recorder {
             return;
         }
         let stack = interp.stack.data();
-        let (Some(at), Some(len)) = (stack.last(), stack.len().checked_sub(2).map(|i| stack[i])) else {
+        let (Some(at), Some(len)) = (stack.last(), stack.len().checked_sub(2).map(|i| stack[i]))
+        else {
             return;
         };
         let (Ok(at), Ok(len)) = (usize::try_from(*at), usize::try_from(len)) else {

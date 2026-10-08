@@ -35,7 +35,16 @@ fn version() {
     let mut version = std::env::var("CARGO_PKG_VERSION").unwrap();
     if let Some(commit) = git(&["rev-parse", "--short=8", "HEAD"]) {
         version += &format!("+commit.{commit}");
-        let dirty = git(&["status", "--porcelain", "--", "src", "std", "build.rs", "Cargo.toml", "Cargo.lock"]);
+        let dirty = git(&[
+            "status",
+            "--porcelain",
+            "--",
+            "src",
+            "std",
+            "build.rs",
+            "Cargo.toml",
+            "Cargo.lock",
+        ]);
         if dirty.is_some_and(|out| !out.is_empty()) {
             version += ".mod";
         }

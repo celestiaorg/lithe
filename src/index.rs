@@ -1385,7 +1385,11 @@ impl<'a> Builder<'a> {
             return Some(self.def(None, hidden));
         };
         let file = self.file(&m.origin);
-        let at = self.span(file, self.locate(file, sig.line, sig.col, &sig.name), &sig.name);
+        let at = self.span(
+            file,
+            self.locate(file, sig.line, sig.col, &sig.name),
+            &sig.name,
+        );
         let effect = match sig.kind {
             ItemKind::Readonly => "view ",
             ItemKind::Pure => "pure ",

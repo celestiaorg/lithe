@@ -69,11 +69,7 @@ fn records_in_maps_lay_out_like_solidity_structs() {
     let price = run(&bumped.storage, "probe(address,uint256)", &[w(2), w(1)]);
     let price = load_bytes(&price.returndata, 0);
     let queried = run(&bumped.storage, "priced(address,uint256)", &[w(2), w(1)]);
-    let direct = run(
-        &bumped.storage,
-        "setPrice(uint256,uint256)",
-        &[w(1), price],
-    );
+    let direct = run(&bumped.storage, "setPrice(uint256,uint256)", &[w(1), price]);
     assert!(!queried.reverted && !direct.reverted);
     assert_eq!(queried.storage, direct.storage);
     assert_ne!(queried.storage, bumped.storage);
@@ -158,11 +154,7 @@ fn nested_storage_lays_out_like_solidity() {
     assert_eq!(read(&st, "newest(address)", &[n(3)]), n(1));
     assert_eq!(read(&st, "newest(address)", &[n(9)]), n(0));
     assert_eq!(read(&st, "historyCount(address)", &[n(9)]), n(0));
-    assert!(reverts(
-        &st,
-        "historyValue(address,uint256)",
-        &[n(9), n(0)]
-    ));
+    assert!(reverts(&st, "historyValue(address,uint256)", &[n(9), n(0)]));
 
     let popped = run(&st, "pop(address)", &[n(2)]);
     assert_eq!(at(&popped, history(2)), n(0));
@@ -368,14 +360,9 @@ fn named_storage_and_upgrade_migrate_once() {
     )
     .expect("claim");
     assert!(!claimed.reverted, "{}", pretty(&claimed.returndata));
-    let data = crate::upgrade_calldata(
-        &Sources::disk(),
-        &path,
-        "init",
-        "0xa11",
-        &["9".to_string()],
-    )
-    .expect("calldata");
+    let data =
+        crate::upgrade_calldata(&Sources::disk(), &path, "init", "0xa11", &["9".to_string()])
+            .expect("calldata");
     let raw = hex_decode(data.strip_prefix("0x").unwrap());
     let upgraded = exec(
         &proxy,
@@ -1405,7 +1392,13 @@ external function set(const k : uint; const v : uint) raises Nope is {
     let w = Word::from_u64;
     let storage = HashMap::from([(map_key(w(7), w(0)), w(5))]);
     let out = run_ok(&runtime, &storage, "set(uint256,uint256)", &[w(7), w(0)]);
-    assert_eq!(out.storage.get(&map_key(w(7), w(0))).copied().unwrap_or_default(), w(0));
+    assert_eq!(
+        out.storage
+            .get(&map_key(w(7), w(0)))
+            .copied()
+            .unwrap_or_default(),
+        w(0)
+    );
     assert!(out.storage.get(&w(0)).is_none_or(|v| v.is_zero()));
 }
 
@@ -1456,18 +1449,45 @@ external function branch(const k : uint; const c : bool) : uint is {
     let w = Word::from_u64;
     let empty = HashMap::new();
     let word = |out: &Outcome| load_bytes(&out.returndata, 0);
-    assert_eq!(word(&run_ok(&runtime, &empty, "alias(uint256,uint256)", &[w(1), w(1)])), w(500));
-    assert_eq!(word(&run_ok(&runtime, &empty, "alias(uint256,uint256)", &[w(1), w(2)])), w(0));
+    assert_eq!(
+        word(&run_ok(
+            &runtime,
+            &empty,
+            "alias(uint256,uint256)",
+            &[w(1), w(1)]
+        )),
+        w(500)
+    );
+    assert_eq!(
+        word(&run_ok(
+            &runtime,
+            &empty,
+            "alias(uint256,uint256)",
+            &[w(1), w(2)]
+        )),
+        w(0)
+    );
     assert_eq!(word(&run_ok(&runtime, &empty, "called()", &[])), w(200));
     let seeded: HashMap<Word, Word> = [(map_key(w(3), w(2)), w(1))].into_iter().collect();
     let data = Word::from_be_bytes(crate::keccak::keccak256(&map_key(w(3), w(2)).to_be_bytes()));
     let mut seeded = seeded;
     seeded.insert(data, w(4));
     // A list starting [4]: each pass sees the length the last push left.
-    assert_eq!(word(&run_ok(&runtime, &seeded, "pushes(uint256)", &[w(3)])), w(1 + 10 + 20 + 30 + 3 * 4000));
+    assert_eq!(
+        word(&run_ok(&runtime, &seeded, "pushes(uint256)", &[w(3)])),
+        w(1 + 10 + 20 + 30 + 3 * 4000)
+    );
     let once = run_ok(&runtime, &empty, "branch(uint256,bool)", &[w(3), w(1)]);
     assert_eq!(word(&once), w(1));
-    assert_eq!(word(&run_ok(&runtime, &once.storage, "branch(uint256,bool)", &[w(3), w(0)])), w(1));
+    assert_eq!(
+        word(&run_ok(
+            &runtime,
+            &once.storage,
+            "branch(uint256,bool)",
+            &[w(3), w(0)]
+        )),
+        w(1)
+    );
 }
 
 #[test]
@@ -1493,7 +1513,10 @@ external function f(const x : uint128; const flag : bool) : uint is {
     assert_eq!(word(&set), w(1005));
     let kept = run_ok(&runtime, &set.storage, "f(uint128,bool)", &[w(9), w(0)]);
     assert_eq!(word(&kept), w(2005));
-    assert_eq!(kept.storage.get(&w(0)).copied(), Some(w(5).shl(128).wrapping_add(w(2))));
+    assert_eq!(
+        kept.storage.get(&w(0)).copied(),
+        Some(w(5).shl(128).wrapping_add(w(2)))
+    );
 }
 
 /// A narrow value with a slot to itself is stored without reading the slot: the slot
@@ -1545,8 +1568,15 @@ external function run(const who : address; const ids : list(uint)) : (uint, uint
 "#;
     let rt = deploy(&compile(src).expect("compile")).expect("deploy");
     let n = Word::from_u64;
-    let out = run_ok(&rt, &HashMap::new(), "run(address,uint256[])", &[n(9), n(64), n(3), n(2), n(5), n(2)]);
-    let words: Vec<Word> = (0..4).map(|i| load_bytes(&out.returndata, i * 32)).collect();
+    let out = run_ok(
+        &rt,
+        &HashMap::new(),
+        "run(address,uint256[])",
+        &[n(9), n(64), n(3), n(2), n(5), n(2)],
+    );
+    let words: Vec<Word> = (0..4)
+        .map(|i| load_bytes(&out.returndata, i * 32))
+        .collect();
     assert_eq!(words, [n(4), n(2), n(9), n(2)]);
 }
 
@@ -1565,7 +1595,9 @@ external function run(const xs : list(uint); const ys : list(uint)) : (uint, uin
     let n = Word::from_u64;
     let args = [n(64), n(160), n(2), n(2), n(1), n(2), n(5), n(7)];
     let out = run_ok(&rt, &HashMap::new(), "run(uint256[],uint256[])", &args);
-    let words: Vec<Word> = (0..2).map(|i| load_bytes(&out.returndata, i * 32)).collect();
+    let words: Vec<Word> = (0..2)
+        .map(|i| load_bytes(&out.returndata, i * 32))
+        .collect();
     assert_eq!(words, [n(5 + 14), n(10)]);
 }
 

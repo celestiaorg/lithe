@@ -578,11 +578,9 @@ pub(crate) fn bind_name(checked: &Checked, route: &crate::route::Route) -> Strin
         .and_then(|i| route.path.get(i))
         .and_then(|d| checked.prog.funcs.iter().find(|f| &f.name == d))
         .and_then(|f| match &f.tail {
-            Some(Expr::Case { arms, .. }) => arms.iter().find(|arm| {
-                arm.ctors
-                    .iter()
-                    .any(|c| route.case.as_ref() == Some(c))
-            }),
+            Some(Expr::Case { arms, .. }) => arms
+                .iter()
+                .find(|arm| arm.ctors.iter().any(|c| route.case.as_ref() == Some(c))),
             _ => None,
         });
     arm.and_then(|arm| arm.bind.clone())

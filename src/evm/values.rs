@@ -1370,13 +1370,21 @@ external function long() is note(\"{LONG}\")
         let out = call(&runtime, sig, &[]);
         assert!(!out.reverted, "{}", pretty(&out.returndata));
         assert_eq!(slot(&out.storage, 0), keccak_word(text.as_bytes()), "{sig}");
-        assert_eq!(slot(&out.storage, 1), Word::from_u64(text.len() as u64), "{sig}");
+        assert_eq!(
+            slot(&out.storage, 1),
+            Word::from_u64(text.len() as u64),
+            "{sig}"
+        );
         let mut word = [0u8; 32];
         let n = text.len().min(32);
         word[..n].copy_from_slice(&text.as_bytes()[..n]);
         word[31] |= text.len() as u8;
         assert_eq!(slot(&out.storage, 2), Word::from_be_bytes(word), "{sig}");
-        let header = if text.len() > 31 { 2 * text.len() as u64 + 1 } else { 0 };
+        let header = if text.len() > 31 {
+            2 * text.len() as u64 + 1
+        } else {
+            0
+        };
         assert_eq!(slot(&out.storage, 3), Word::from_u64(header), "{sig}");
     }
 }
@@ -1571,17 +1579,11 @@ external pure function addMod(const a : uint; const b : uint; const d : uint) : 
             }
         }
         assert_eq!(
-            load_bytes(
-                &run("mulMod(uint256,uint256,uint256)", &args).returndata,
-                0
-            ),
+            load_bytes(&run("mulMod(uint256,uint256,uint256)", &args).returndata, 0),
             hexw(m)
         );
         assert_eq!(
-            load_bytes(
-                &run("addMod(uint256,uint256,uint256)", &args).returndata,
-                0
-            ),
+            load_bytes(&run("addMod(uint256,uint256,uint256)", &args).returndata, 0),
             hexw(s)
         );
     }
@@ -2362,24 +2364,46 @@ external pure function folded() : (uint, uint, uint, uint) is
         assert!(!out.reverted, "{sig}: {}", pretty(&out.returndata));
         load_bytes(&out.returndata, 0)
     };
-    let mut xs = vec![w(0), w(1), w(3), w(0).not(), w(0).not().shr(1), w(0x5555_5555)];
+    let mut xs = vec![
+        w(0),
+        w(1),
+        w(3),
+        w(0).not(),
+        w(0).not().shr(1),
+        w(0x5555_5555),
+    ];
     for k in 0..256 {
-        xs.extend([w(1).shl(k), w(1).shl(k).wrapping_sub(w(1)), w(0).not().shl(k)]);
+        xs.extend([
+            w(1).shl(k),
+            w(1).shl(k).wrapping_sub(w(1)),
+            w(0).not().shl(k),
+        ]);
     }
     let mut seed = w(0x9e37_79b9_7f4a_7c15);
     for _ in 0..64 {
-        seed = seed.wrapping_mul(w(0x5851_f42d_4c95_7f2d)).wrapping_add(w(0x1405_7b7e_f767_814f));
+        seed = seed
+            .wrapping_mul(w(0x5851_f42d_4c95_7f2d))
+            .wrapping_add(w(0x1405_7b7e_f767_814f));
         xs.extend([seed, seed.shr(seed.0[0] as u32 % 256)]);
     }
     for x in xs {
         let ones: u32 = x.0.iter().map(|l| l.count_ones()).sum();
-        let zeros = x.0.iter().rposition(|l| *l != 0).map_or(256, |i| 64 * (3 - i as u32) + x.0[i].leading_zeros());
-        assert_eq!(word("popCount(uint256)", x), w(u64::from(ones)), "popCount {x:?}");
+        let zeros =
+            x.0.iter()
+                .rposition(|l| *l != 0)
+                .map_or(256, |i| 64 * (3 - i as u32) + x.0[i].leading_zeros());
+        assert_eq!(
+            word("popCount(uint256)", x),
+            w(u64::from(ones)),
+            "popCount {x:?}"
+        );
         assert_eq!(word("clz(uint256)", x), w(u64::from(zeros)), "clz {x:?}");
     }
     let out = call(&runtime, "folded()", &[]);
     assert_eq!(
-        (0..4).map(|i| load_bytes(&out.returndata, 32 * i)).collect::<Vec<_>>(),
+        (0..4)
+            .map(|i| load_bytes(&out.returndata, 32 * i))
+            .collect::<Vec<_>>(),
         [w(256), w(256), w(255), w(8)]
     );
 }
@@ -3600,6 +3624,7 @@ external pure function d() : uint is { var xs : list(list(uint)) := [[1]]; List.
 /// Elements that own heap data are allocated past their list, so a push moves the list to a
 /// blob with room to grow into. The room is its list's alone.
 #[test]
+#[allow(clippy::inconsistent_digit_grouping)]
 fn pushes_into_room_grow_only_their_own_list() {
     let src = "\
 import \"std/list\";
@@ -4518,7 +4543,11 @@ external view function lengths(const ps : list(uint, 2)) : (uint, uint, uint, ui
 } with (xs.length, storage.xs.length, ps.length, p.ys.length)
 ";
     let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
-    let out = call(&runtime, "lengths(uint256[2])", &[Word::from_u64(0), Word::from_u64(0)]);
+    let out = call(
+        &runtime,
+        "lengths(uint256[2])",
+        &[Word::from_u64(0), Word::from_u64(0)],
+    );
     assert!(!out.reverted, "{}", pretty(&out.returndata));
     for (i, n) in [5, 4, 2, 3].into_iter().enumerate() {
         assert_eq!(load_bytes(&out.returndata, 32 * i), Word::from_u64(n));
@@ -4584,7 +4613,10 @@ external pure function records() : uint is {
     assert_eq!(word("cd(uint256[],uint256)", &with(2)), w(5_002));
     assert_eq!(word("cd(uint256[],uint256)", &with(5)), w(14_005));
     assert_eq!(word("cd(uint256[],uint256)", &with(0)), w(0));
-    assert_eq!(word("grown(uint256[],uint256)", &with(2)), w((14 + 4 * 7 + 5 * 8) * 1000 + 5));
+    assert_eq!(
+        word("grown(uint256[],uint256)", &with(2)),
+        w((14 + 4 * 7 + 5 * 8) * 1000 + 5)
+    );
     assert_eq!(word("mem(uint256)", &[w(2)]), w(50_029));
     assert_eq!(word("mem(uint256)", &[w(4)]), w(140_049));
     assert_eq!(word("zeros(uint256)", &[w(3)]), w(3));
@@ -4650,7 +4682,15 @@ external pure function j(const n : uint) : uint is {
     expect("g((string))", b"y", b"yaybycydy");
     expect("h(string)", b"z", b"zazbzczdz");
     expect("i(string)", b"w", b"ww");
-    assert_eq!(read_ok(&runtime, &HashMap::new(), "j(uint256)", &[Word::from_u64(7)]), Word::from_u64(7));
+    assert_eq!(
+        read_ok(
+            &runtime,
+            &HashMap::new(),
+            "j(uint256)",
+            &[Word::from_u64(7)]
+        ),
+        Word::from_u64(7)
+    );
 }
 
 /// `Some` and `None` are every option's cases, so a variant can't declare them: its case
@@ -4662,7 +4702,11 @@ fn variants_cannot_name_option_cases() {
             "type T is {case} | Other\nstorage is record {{ v : T; }}\nexternal function f() is {{ storage.v := Other; }}\n"
         ))
         .expect_err(case);
-        assert!(err.to_string().contains(&format!("`{case}` is a case of every option")), "{err}");
+        assert!(
+            err.to_string()
+                .contains(&format!("`{case}` is a case of every option")),
+            "{err}"
+        );
     }
 }
 
@@ -4678,13 +4722,24 @@ external function unused(const xs : list(T)) is { storage.n := 1; }
 external function read(const xs : list(T)) is { storage.n := if xs[0] = C then 1 else 2; }
 ";
     let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
-    for (sig, case, reverts) in [("unused(uint8[])", 2, false), ("unused(uint8[])", 3, true), ("read(uint8[])", 8, true)] {
+    for (sig, case, reverts) in [
+        ("unused(uint8[])", 2, false),
+        ("unused(uint8[])", 3, true),
+        ("read(uint8[])", 8, true),
+    ] {
         let mut data = selector(sig).to_vec();
         for w in [32, 1, case] {
             data.extend_from_slice(&Word::from_u64(w).to_be_bytes());
         }
-        let out = exec(&runtime, &data, HashMap::new(), Word::from_u64(1), Word::from_u64(0), Word::from_u64(0))
-            .expect(sig);
+        let out = exec(
+            &runtime,
+            &data,
+            HashMap::new(),
+            Word::from_u64(1),
+            Word::from_u64(0),
+            Word::from_u64(0),
+        )
+        .expect(sig);
         assert_eq!(out.reverted, reverts, "{sig} {case}");
     }
 }

@@ -121,7 +121,8 @@ impl<'a> Gen<'a> {
             self.revert_empty();
         }
         self.entry_labels = targets.iter().map(|(label, _)| *label).collect();
-        self.entry_labels.extend(receive.iter().chain(&fallback).map(|(label, _)| *label));
+        self.entry_labels
+            .extend(receive.iter().chain(&fallback).map(|(label, _)| *label));
         if let Some((label, index)) = receive {
             self.entry(label, index)?;
         }
@@ -565,7 +566,10 @@ impl<'a> Gen<'a> {
         let mut sorted: Vec<[u8; 4]> = cases.iter().map(|&(_, sel)| sel).collect();
         sorted.sort();
         let mut best = (linear, None);
-        for (test, bytes) in [(mask, MASK_BYTES), (Test::Below(sorted[n / 2]), SPLIT_BYTES)] {
+        for (test, bytes) in [
+            (mask, MASK_BYTES),
+            (Test::Below(sorted[n / 2]), SPLIT_BYTES),
+        ] {
             let (lo, hi): (Vec<_>, Vec<_>) = cases.iter().partition(|&&(_, sel)| !test.high(sel));
             if lo.is_empty() || hi.is_empty() {
                 continue;
@@ -1700,14 +1704,7 @@ impl<'a> Gen<'a> {
     /// from storage; any other has them in its code, in one piece the creation code fills.
     /// A call whose code reads none enters at `bare`, and the facet gets as many words of
     /// whatever memory holds, since it reads none of them.
-    fn tail_stub(
-        &mut self,
-        part: Word,
-        leaves: &[u32],
-        mask: Option<Word>,
-        bare: u32,
-        after: u32,
-    ) {
+    fn tail_stub(&mut self, part: Word, leaves: &[u32], mask: Option<Word>, bare: u32, after: u32) {
         let len = 32 * (leaves.len() + usize::from(mask.is_some())) as u64;
         // A plain router's hook word is a constant, kept after its immutables' values.
         let coded = !self.checked.prog.upgradeable && !leaves.is_empty();
@@ -1998,7 +1995,9 @@ impl<'a> Gen<'a> {
         self.push_word(slot);
         self.op(SSTORE);
         // ERC-1967's `Upgraded(address indexed implementation)`, before the migration runs.
-        self.push_word(Word::from_be_bytes(crate::keccak::keccak256(b"Upgraded(address)")));
+        self.push_word(Word::from_be_bytes(crate::keccak::keccak256(
+            b"Upgraded(address)",
+        )));
         self.push_u64(0);
         self.push_u64(0);
         self.op(LOG0 + 2);
