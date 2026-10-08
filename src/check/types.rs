@@ -950,7 +950,9 @@ impl Checker {
             _ if self.types[target].kind == TyKind::Interface => self.named["address"],
             // So a literal in `swad(x / 1000)` takes `x`'s type, `int`, as the operand of a
             // conversion from `int`.
-            _ if self.types[target].kind == TyKind::Nominal && self.types[target].variants.is_empty() => {
+            _ if self.types[target].kind == TyKind::Nominal
+                && self.types[target].variants.is_empty() =>
+            {
                 self.types[target].elem.unwrap_or(target)
             }
             _ => target,

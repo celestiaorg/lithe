@@ -506,8 +506,8 @@ fn facets_read_immutables_after_their_calldata() {
         "external view function unit() : uint is\n  Base.unit()",
         "external view function twice() : uint is\n  Base.unit() * 2",
     );
-    let other = super::split::build_facets(&super::split::checked_src(&other), "Other")
-    .expect("other");
+    let other =
+        super::split::build_facets(&super::split::checked_src(&other), "Other").expect("other");
     assert_eq!(other.facets[0].address, split.facets[0].address);
     OPAQUE_CODE.set(false);
     DEPLOYED.with(|d| d.borrow_mut().clear());
@@ -522,8 +522,8 @@ fn upgradeable_routers_append_stored_immutables() {
     );
     let checked = super::split::checked_src(&src);
     let split = super::split::build_facets(&checked, "Pool").expect("split");
-    let plain = super::split::build_facets(&super::split::checked_src(SPLIT), "Pool")
-    .expect("plain");
+    let plain =
+        super::split::build_facets(&super::split::checked_src(SPLIT), "Pool").expect("plain");
     assert_eq!(split.facets[0].address, plain.facets[0].address);
     let router = super::split::deploy_split(&split);
     let was = CONSTRUCTING.replace(true);

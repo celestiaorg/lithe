@@ -334,9 +334,9 @@ fn commit(path: &Path, original: &str, edited: &str) -> bool {
     }
     let checked = units(path)
         .and_then(|units| {
-            units
-                .into_iter()
-                .try_for_each(|unit| check::check_in(unit, false, crate::EvmVersion::default()).map(|_| ()))
+            units.into_iter().try_for_each(|unit| {
+                check::check_in(unit, false, crate::EvmVersion::default()).map(|_| ())
+            })
         })
         .is_ok();
     let same = match &before {

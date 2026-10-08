@@ -440,12 +440,7 @@ fn function_specs_prove_and_wrong_ones_fail() {
         return;
     };
     assert!(
-        outcome(
-            &proof,
-            "spec for withdraw",
-            "raises Insufficient only when"
-        )
-        .contains("FAILED"),
+        outcome(&proof, "spec for withdraw", "raises Insufficient only when").contains("FAILED"),
         "{}",
         proof.text
     );

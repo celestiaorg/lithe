@@ -211,7 +211,8 @@ external function set(const n : uint) is { storage.n := twice(n); }
     assert_eq!(load_bytes(&out.returndata, 0), Word::from_u64(42));
     let abi = super::abi(external_pure).expect("abi");
     assert!(abi.contains("\"stateMutability\": \"pure\""), "{abi}");
-    let reads = "storage is record { n : uint; }\nexternal pure function get() : uint is storage.n\n";
+    let reads =
+        "storage is record { n : uint; }\nexternal pure function get() : uint is storage.n\n";
     let err = compile(reads).expect_err("external pure reads");
     assert!(
         err.to_string().contains(
@@ -885,16 +886,8 @@ fn constant_operations_that_must_panic_are_rejected() {
             "`Uint.max + 1` overflows `uint`",
         ),
         ("uint", "storage.n := 0 - 1;", "`0 - 1` underflows `uint`"),
-        (
-            "uint",
-            "storage.n := 1 / 0;",
-            "division by zero in `1 / 0`",
-        ),
-        (
-            "uint",
-            "storage.n := 1 % 0;",
-            "division by zero in `1 % 0`",
-        ),
+        ("uint", "storage.n := 1 / 0;", "division by zero in `1 / 0`"),
+        ("uint", "storage.n := 1 % 0;", "division by zero in `1 % 0`"),
         (
             "uint",
             "storage.n := (2 ** 128) * (2 ** 128);",
@@ -1917,10 +1910,7 @@ contract Token is {
     assert!(blocked.returndata.starts_with(&selector("Paused()")));
     let safer = exec(
         &runtime,
-        &word_data(
-            "safeTransfer(address,uint256)",
-            &[other, Word::from_u64(1)],
-        ),
+        &word_data("safeTransfer(address,uint256)", &[other, Word::from_u64(1)]),
         storage,
         caller,
         Word::from_u64(0),
@@ -2214,15 +2204,28 @@ contract S is {
     };
     let data: Vec<u8> = (0..70u8).collect();
     for (i, j) in [(0, 0), (0, 21), (3, 10), (30, 70), (49, 70), (70, 70)] {
-        for s in [data[i..j].to_vec(), data[i..j.max(i + 1).min(70)].to_vec(), b"x".to_vec()] {
+        for s in [
+            data[i..j].to_vec(),
+            data[i..j.max(i + 1).min(70)].to_vec(),
+            b"x".to_vec(),
+        ] {
             let (reverted, out) = run(
                 "eq(bytes,uint256,uint256,bytes)",
-                &[Arg::B(data.clone()), w_arg(i as u64), w_arg(j as u64), Arg::B(s.clone())],
+                &[
+                    Arg::B(data.clone()),
+                    w_arg(i as u64),
+                    w_arg(j as u64),
+                    Arg::B(s.clone()),
+                ],
             );
             let same = Word::from_u64(u64::from(data[i..j] == s[..]));
             assert!(!reverted);
             assert_eq!(load_bytes(&out, 0), same, "{i} {j}");
-            assert_eq!(load_bytes(&out, 32), Word::from_u64(1).bitxor(same), "{i} {j}");
+            assert_eq!(
+                load_bytes(&out, 32),
+                Word::from_u64(1).bitxor(same),
+                "{i} {j}"
+            );
         }
         let (reverted, out) = run(
             "word(bytes,uint256,uint256)",
@@ -2254,20 +2257,36 @@ contract S is {
     for i in [0u64, 20, 49, 50, 69, 70, 1000] {
         let (reverted, out) = run("guarded(bytes,uint256)", &[Arg::B(data.clone()), w_arg(i)]);
         let i = i as usize;
-        let want = if i + 21 <= 70 { bytes21(&data[i..i + 21]) } else { Word::from_u64(0) };
+        let want = if i + 21 <= 70 {
+            bytes21(&data[i..i + 21])
+        } else {
+            Word::from_u64(0)
+        };
         assert!(!reverted);
         assert_eq!(load_bytes(&out, 0), want, "{i}");
     }
-    let (reverted, out) = run("guarded(bytes,uint256)", &[Arg::B(data.clone()), Arg::W(huge)]);
+    let (reverted, out) = run(
+        "guarded(bytes,uint256)",
+        &[Arg::B(data.clone()), Arg::W(huge)],
+    );
     assert!(!reverted && load_bytes(&out, 0).is_zero());
     let s = data[40..52].to_vec();
     for c in [0u64, 39, 40, 41, 58, 59, 70] {
-        let (reverted, out) =
-            run("found(bytes,uint256,bytes)", &[Arg::B(data.clone()), w_arg(c), Arg::B(s.clone())]);
+        let (reverted, out) = run(
+            "found(bytes,uint256,bytes)",
+            &[Arg::B(data.clone()), w_arg(c), Arg::B(s.clone())],
+        );
         assert!(!reverted);
-        assert_eq!(load_bytes(&out, 0), Word::from_u64(u64::from(c == 40)), "{c}");
+        assert_eq!(
+            load_bytes(&out, 0),
+            Word::from_u64(u64::from(c == 40)),
+            "{c}"
+        );
     }
-    let (reverted, out) = run("found(bytes,uint256,bytes)", &[Arg::B(data.clone()), Arg::W(huge), Arg::B(s)]);
+    let (reverted, out) = run(
+        "found(bytes,uint256,bytes)",
+        &[Arg::B(data.clone()), Arg::W(huge), Arg::B(s)],
+    );
     assert!(!reverted && load_bytes(&out, 0).is_zero());
 }
 
@@ -2289,8 +2308,14 @@ external pure function fork() : uint is if Evm.osaka then 1 else { const z : uin
 "#;
     let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
     let word = |sig: &str, args: &[Word]| load_bytes(&call(&runtime, sig, args).returndata, 0);
-    assert_eq!(word("f(uint256)", &[Word::from_u64(20)]), Word::from_u64(41));
+    assert_eq!(
+        word("f(uint256)", &[Word::from_u64(20)]),
+        Word::from_u64(41)
+    );
     assert_eq!(word("f(uint256)", &[Word::from_u64(3)]), Word::from_u64(3));
     let osaka = crate::EvmVersion::default() >= crate::EvmVersion::Osaka;
-    assert_eq!(word("fork()", &[]), Word::from_u64(if osaka { 1 } else { 7 }));
+    assert_eq!(
+        word("fork()", &[]),
+        Word::from_u64(if osaka { 1 } else { 7 })
+    );
 }

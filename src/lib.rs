@@ -380,7 +380,9 @@ fn checked(sources: &Sources, entry: &Path) -> Result<check::Checked, Error> {
 
 /// The fork the nearest `lithe.toml` builds for.
 fn evm_near(entry: &Path) -> EvmVersion {
-    build_options(entry).map(|opts| opts.evm).unwrap_or_default()
+    build_options(entry)
+        .map(|opts| opts.evm)
+        .unwrap_or_default()
 }
 
 /// The ABI needs the checked program, not its code: a contract over the size limit that
@@ -717,9 +719,10 @@ pub fn facets(sources: &Sources, entry: &Path, opts: &Options) -> Result<String,
             .hooks
             .iter()
             .filter(|hook| {
-                built.entries.iter().any(|entry| {
-                    entry.name.strip_suffix("#callback") == Some(hook.as_str())
-                })
+                built
+                    .entries
+                    .iter()
+                    .any(|entry| entry.name.strip_suffix("#callback") == Some(hook.as_str()))
             })
             .map(|hook| modules::shown(hook))
             .collect();
@@ -820,7 +823,9 @@ fn hook_stubs(
         "\n(* The hooks these externals reach: the contract implements each, or skips one without a result. *)\n",
     );
     for j in reached {
-        let Some(of) = &funcs[j].hook_of else { continue };
+        let Some(of) = &funcs[j].hook_of else {
+            continue;
+        };
         let Some(sig) = checked
             .prog
             .modules
@@ -831,7 +836,10 @@ fn hook_stubs(
             continue;
         };
         if sig.ret.is_some() {
-            out.push_str(&format!("(* {} *)\n", check::hook_stub(&of.module.name, sig)));
+            out.push_str(&format!(
+                "(* {} *)\n",
+                check::hook_stub(&of.module.name, sig)
+            ));
         } else {
             out.push_str(&format!(
                 "hook {}.{} is skip;\n",
@@ -933,7 +941,10 @@ fn exposing(decl: &ast::ModuleDecl) -> Option<String> {
 /// `  Group: a, b` for each group, in the order they first appear.
 fn group_lines(entries: &[gen::Entrypoint], contract: &str) -> String {
     let mut groups: Vec<(&gen::Group, Vec<&str>)> = Vec::new();
-    for entry in entries.iter().filter(|entry| !split::is_hidden(&entry.name)) {
+    for entry in entries
+        .iter()
+        .filter(|entry| !split::is_hidden(&entry.name))
+    {
         match groups.iter_mut().find(|(group, _)| *group == &entry.group) {
             Some((_, names)) => names.push(&entry.name),
             None => groups.push((&entry.group, vec![&entry.name])),
@@ -1088,7 +1099,11 @@ fn write_facets(out_dir: &Path, facets: Vec<(String, Facet)>, all: &mut DirOutpu
         }
     }
     for (source, facet) in &unique {
-        let shared = unique.iter().filter(|(_, other)| other.name == facet.name).count() > 1;
+        let shared = unique
+            .iter()
+            .filter(|(_, other)| other.name == facet.name)
+            .count()
+            > 1;
         let file = match shared {
             true => format!("{}-{}.json", facet.name, hex(&facet.address[..4])),
             false => format!("{}.json", facet.name),
@@ -1155,9 +1170,7 @@ fn emit_file(
     };
     let compiled = match compile(&Sources::disk(), path, &opts) {
         Ok(compiled) => compiled,
-        Err(errors) if is_library(&Sources::disk(), path, &errors) => {
-            return (out, writes, facets)
-        }
+        Err(errors) if is_library(&Sources::disk(), path, &errors) => return (out, writes, facets),
         Err(errors) => {
             out.failed.extend(errors.into_iter().map(failed));
             return (out, writes, facets);
@@ -1180,7 +1193,13 @@ fn emit_file(
         if !artifact {
             continue;
         }
-        out.notes.extend(contract.split.warnings.iter().map(|w| w.trim_end().to_string()));
+        out.notes.extend(
+            contract
+                .split
+                .warnings
+                .iter()
+                .map(|w| w.trim_end().to_string()),
+        );
         if let Some(note) = contract.note() {
             out.notes.push(format!("{source}: {note}"));
         }
@@ -1249,7 +1268,11 @@ fn foundry_artifact(contract: &Contract) -> String {
     out.push_str(",\n  \"bytecode\": ");
     write_bytecode(&mut out, &contract.bytecode, &[]);
     out.push_str(",\n  \"deployedBytecode\": ");
-    write_bytecode(&mut out, &contract.deployed_bytecode, &contract.immutable_references);
+    write_bytecode(
+        &mut out,
+        &contract.deployed_bytecode,
+        &contract.immutable_references,
+    );
     out.push_str(",\n  \"methodIdentifiers\": ");
     write_methods(&mut out, &contract.method_identifiers);
     if !contract.split.facets.is_empty() {
@@ -1529,7 +1552,10 @@ pub fn upgrade_calldata(
 }
 
 /// A migration's parameters, by name and ABI type: each must be a single word.
-fn migration_params(checked: &check::Checked, func: &ast::Func) -> Result<Vec<(String, String)>, Error> {
+fn migration_params(
+    checked: &check::Checked,
+    func: &ast::Func,
+) -> Result<Vec<(String, String)>, Error> {
     let mut out = Vec::new();
     for param in &func.params {
         let fields = check::abi_fields(&checked.types, param.ty_id, &param.name)?;

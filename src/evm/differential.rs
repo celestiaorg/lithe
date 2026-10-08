@@ -105,7 +105,11 @@ pub(super) fn compare_builds(
         // A delegated module's facet calls the contract's hooks back into its own code, which
         // the inline build runs in place; the facets themselves aren't recorded.
         let detail = |out: &Outcome| -> Vec<String> {
-            out.detail.iter().filter(|line| !line.starts_with("delegate ")).cloned().collect()
+            out.detail
+                .iter()
+                .filter(|line| !line.starts_with("delegate "))
+                .cloned()
+                .collect()
         };
         assert_eq!(detail(&want), detail(&got), "{ctx}: effects");
         // When storage is written is not observable; what it ends up holding is.
@@ -283,8 +287,11 @@ fn differential(path: &std::path::Path, rel: &str, reference: &[u8], steps: usiz
     install_mocks();
     let ours = deploy(&compile_file(path).unwrap_or_else(|e| panic!("{rel}: {e}")))
         .unwrap_or_else(|e| panic!("{rel}: deploy: {e}"));
-    let checked = crate::check::check(crate::modules::load(&Sources::disk(), path).expect("load"), Default::default())
-        .expect("check");
+    let checked = crate::check::check(
+        crate::modules::load(&Sources::disk(), path).expect("load"),
+        Default::default(),
+    )
+    .expect("check");
     let methods = crate::route::method_ids(&checked).expect("methods");
     compare_builds(rel, &methods, reference, &ours, steps, slots);
 }

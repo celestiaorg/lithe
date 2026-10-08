@@ -2299,7 +2299,9 @@ impl<'a> Parser<'a> {
             HookForm::Body
         } else if self.kind() == Kind::SkipKw {
             if raises.is_some() {
-                return Err(self.err("a skipped hook runs nothing, so it raises nothing; drop `raises`"));
+                return Err(
+                    self.err("a skipped hook runs nothing, so it raises nothing; drop `raises`")
+                );
             }
             self.bump();
             self.want(Kind::Semi)?;
@@ -3887,10 +3889,7 @@ impl<'a> Parser<'a> {
     fn found(&self) -> String {
         if self.kind() == Kind::Eof {
             "end of file".to_string()
-        } else if matches!(
-            self.kind(),
-            Kind::Ident | Kind::Int | Kind::String
-        ) {
+        } else if matches!(self.kind(), Kind::Ident | Kind::Int | Kind::String) {
             format!("`{}`", self.lexeme())
         } else {
             lex::kind_name(self.kind()).to_string()

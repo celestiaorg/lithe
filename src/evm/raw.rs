@@ -249,7 +249,10 @@ external view function head32(const to : address; const data : bytes) : (bytes32
         );
         assert!(!whole.reverted, "{}", pretty(&whole.returndata));
         assert_eq!(whole.returndata[..32], padded(body)[..]);
-        assert_eq!(whole.returndata[32..], Word::from_u64(body.len() as u64).to_be_bytes());
+        assert_eq!(
+            whole.returndata[32..],
+            Word::from_u64(body.len() as u64).to_be_bytes()
+        );
     }
     let refused = call_raw(
         &runtime,
@@ -558,7 +561,11 @@ external function copied(const data : bytes) is {
 ";
     let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
     let good = bytes_arg("dec(bytes)", &[], b"hello");
-    let mut cases = vec![good.clone(), good[..good.len() - 1].to_vec(), good[..36].to_vec()];
+    let mut cases = vec![
+        good.clone(),
+        good[..good.len() - 1].to_vec(),
+        good[..36].to_vec(),
+    ];
     for at in [4, 36] {
         for bad in [0x1000, u64::MAX, 3, 0x40, 0] {
             let mut data = good.clone();
@@ -570,10 +577,21 @@ external function copied(const data : bytes) is {
         let with = |sig: &str| {
             let mut d = selector(sig).to_vec();
             d.extend(&data[4..]);
-            exec(&runtime, &d, HashMap::new(), Word::from_u64(1), Word::from_u64(0), Word::from_u64(0))
-                .expect("run")
+            exec(
+                &runtime,
+                &d,
+                HashMap::new(),
+                Word::from_u64(1),
+                Word::from_u64(0),
+                Word::from_u64(0),
+            )
+            .expect("run")
         };
-        let (dec, lens, empty) = (with("dec(bytes)"), with("lens(bytes)"), with("empty(bytes)"));
+        let (dec, lens, empty) = (
+            with("dec(bytes)"),
+            with("lens(bytes)"),
+            with("empty(bytes)"),
+        );
         let (note, copied) = (with("note(bytes)"), with("copied(bytes)"));
         let via = with("via(bytes)");
         assert_eq!(note.reverted, copied.reverted, "{}", hex(&data));

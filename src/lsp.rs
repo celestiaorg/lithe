@@ -1212,8 +1212,7 @@ mod tests {
         assert!(reply(3).contains("std/evm.lithe"), "{}", reply(3));
         let members = reply(4);
         assert!(
-            members.contains(r#""label":"sender""#)
-                && members.contains(r#""label":"blockNumber""#),
+            members.contains(r#""label":"sender""#) && members.contains(r#""label":"blockNumber""#),
             "{members}"
         );
         let fix = reply(6);
@@ -1282,7 +1281,11 @@ mod tests {
         let text = "module Tally is {\n  storage tally at \"lsp.tally\" is record { n : uint; }\n  (* Tells the contract. *)\n  view hook limit() : uint;\n  external function add() is {\n    if tally.n < limit() then {\n      tally.n := tally.n + 1;\n    }\n  }\n}\ncontract C is {\n  use Tally exposing { function add(); }\n  hook Tally.limit : uint is { skip } with 3\n}\n";
         std::fs::write(&path, text).unwrap();
         let analysis = lithe::analyze(&path, text);
-        assert!(analysis.error.is_none(), "{:?}", analysis.error.map(|e| e.to_string()));
+        assert!(
+            analysis.error.is_none(),
+            "{:?}",
+            analysis.error.map(|e| e.to_string())
+        );
         let index = analysis.index.expect("index");
         let call = index.at(0, text, 6, 18).expect("the call to `limit`");
         let hover = index.hover(call);
@@ -1297,7 +1300,10 @@ mod tests {
             .into_iter()
             .map(|c| c.label)
             .collect();
-        assert!(labels.iter().any(|l| l == "limit") && labels.iter().any(|l| l == "hook"), "{labels:?}");
+        assert!(
+            labels.iter().any(|l| l == "limit") && labels.iter().any(|l| l == "hook"),
+            "{labels:?}"
+        );
         std::fs::remove_dir_all(&dir).ok();
     }
 

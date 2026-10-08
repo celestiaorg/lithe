@@ -626,7 +626,11 @@ impl<'a> Gen<'a> {
         if *at != bad {
             return None;
         }
-        let end = i + 5 + code[i + 5..].iter().position(|inst| *inst == Inst::Label(*ok))?;
+        let end = i
+            + 5
+            + code[i + 5..]
+                .iter()
+                .position(|inst| *inst == Inst::Label(*ok))?;
         let block = &code[i + 5..end];
         let inner: Vec<u32> = block
             .iter()
@@ -664,7 +668,11 @@ impl<'a> Gen<'a> {
             }
             _ => false,
         };
-        let once = code.iter().filter(|inst| **inst == Inst::PushLabel(*ok)).count() == 1;
+        let once = code
+            .iter()
+            .filter(|inst| **inst == Inst::PushLabel(*ok))
+            .count()
+            == 1;
         (exits && once).then_some(end + 1)
     }
 

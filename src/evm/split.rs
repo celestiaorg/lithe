@@ -65,7 +65,10 @@ pub(super) fn build_facets(
     checked: &crate::check::Checked,
     name: &str,
 ) -> Result<crate::split::Split, crate::Error> {
-    let marked = crate::check::check(mark_facets(checked.source.clone(), false), Default::default())?;
+    let marked = crate::check::check(
+        mark_facets(checked.source.clone(), false),
+        Default::default(),
+    )?;
     crate::split::build(&marked, name, &crate::Options::default())
 }
 
@@ -99,7 +102,8 @@ fn facets_preserve_behavior() {
             if marked.facets.is_empty() {
                 break None;
             }
-            let checked = crate::check::check(marked.clone(), Default::default()).expect("check marked");
+            let checked =
+                crate::check::check(marked.clone(), Default::default()).expect("check marked");
             match crate::split::build(&checked, "Test", &crate::Options::default()) {
                 Ok(split) => break Some(split),
                 Err(e) => {
@@ -293,9 +297,19 @@ fn upgrades_check_the_call_context_and_the_new_implementation() {
             .insert(e, (proxy.clone(), [(slot, b)].into_iter().collect()))
     });
     let owner = Word::from_u64(1);
-    let storage: HashMap<Word, Word> = [(slot, a), (Word::from_u64(0), owner)].into_iter().collect();
+    let storage: HashMap<Word, Word> = [(slot, a), (Word::from_u64(0), owner)]
+        .into_iter()
+        .collect();
     let run = |code: &[u8], data: &[u8], sender: Word| {
-        exec(code, data, storage.clone(), sender, Word::from_u64(0), Word::from_u64(0)).expect("run")
+        exec(
+            code,
+            data,
+            storage.clone(),
+            sender,
+            Word::from_u64(0),
+            Word::from_u64(0),
+        )
+        .expect("run")
     };
     let error = |sig: &str, arg: Option<Word>| {
         let mut out = selector(sig).to_vec();
@@ -320,16 +334,32 @@ fn upgrades_check_the_call_context_and_the_new_implementation() {
     pinned[at + 32] = 0x5b;
     let mut elsewhere_storage = storage.clone();
     elsewhere_storage.insert(slot, b);
-    let out = exec(&pinned, &upgrade, elsewhere_storage, owner, Word::from_u64(0), Word::from_u64(0))
-        .expect("pinned");
+    let out = exec(
+        &pinned,
+        &upgrade,
+        elsewhere_storage,
+        owner,
+        Word::from_u64(0),
+        Word::from_u64(0),
+    )
+    .expect("pinned");
     refused(&out, &context);
 
     let invalid = |at: Word| error("ERC1967InvalidImplementation(address)", Some(at));
-    refused(&run(&proxy, &upgrade_to_and_call(c, &[]), owner), &invalid(c));
-    refused(&run(&proxy, &upgrade_to_and_call(e, &[]), owner), &invalid(e));
+    refused(
+        &run(&proxy, &upgrade_to_and_call(c, &[]), owner),
+        &invalid(c),
+    );
+    refused(
+        &run(&proxy, &upgrade_to_and_call(e, &[]), owner),
+        &invalid(e),
+    );
     refused(
         &run(&proxy, &upgrade_to_and_call(d, &[]), owner),
-        &error("UUPSUnsupportedProxiableUUID(bytes32)", Some(Word::from_u64(7))),
+        &error(
+            "UUPSUnsupportedProxiableUUID(bytes32)",
+            Some(Word::from_u64(7)),
+        ),
     );
     // An answer shorter than a word doesn't decode, as from an account with no code.
     refused(&run(&proxy, &upgrade_to_and_call(f, &[]), owner), &[]);
@@ -346,11 +376,21 @@ fn upgrades_check_the_call_context_and_the_new_implementation() {
     short.truncate(short.len() - 25);
     refused(&run(&proxy, &short, owner), &[]);
     // The guard runs before the new implementation is asked.
-    refused(&run(&proxy, &upgrade_to_and_call(c, &[]), other), &selector("NotOwner()"));
+    refused(
+        &run(&proxy, &upgrade_to_and_call(c, &[]), other),
+        &selector("NotOwner()"),
+    );
 
     // Value without a migration to take it, as `ERC1967Utils` refuses it.
-    let paid = exec(&proxy, &upgrade_to_and_call(b, &[]), storage.clone(), owner, Word::from_u64(1), Word::from_u64(1))
-        .expect("paid");
+    let paid = exec(
+        &proxy,
+        &upgrade_to_and_call(b, &[]),
+        storage.clone(),
+        owner,
+        Word::from_u64(1),
+        Word::from_u64(1),
+    )
+    .expect("paid");
     refused(&paid, &error("ERC1967NonPayable()", None));
 
     let out = run(&proxy, &upgrade_to_and_call(b, &[]), owner);
@@ -440,49 +480,95 @@ fn upgrades_bubble_migration_failures_and_take_long_arguments() {
         let v2_code = if marks.is_empty() {
             whole_build(&checked).code
         } else {
-            let split = crate::split::build(&checked, "T", &crate::Options::default()).expect("split");
+            let split =
+                crate::split::build(&checked, "T", &crate::Options::default()).expect("split");
             assert_eq!(facet_names(&split), ["Checks"]);
             deploy_facets(&split);
             split.creation
         };
         deploy_at(&compile(v1).expect("v1"), a);
         let v2_runtime = deploy_at(&v2_code, b);
-        let storage: HashMap<Word, Word> =
-            [(slot, a), (Word::from_u64(0), owner)].into_iter().collect();
+        let storage: HashMap<Word, Word> = [(slot, a), (Word::from_u64(0), owner)]
+            .into_iter()
+            .collect();
         let run = |code: &[u8], data: &[u8], storage: &HashMap<Word, Word>, value: u64| {
-            exec(code, data, storage.clone(), owner, Word::from_u64(value), Word::from_u64(value))
-                .expect("run")
+            exec(
+                code,
+                data,
+                storage.clone(),
+                owner,
+                Word::from_u64(value),
+                Word::from_u64(value),
+            )
+            .expect("run")
         };
         let inline = |data: &[u8]| elsewhere(b, || run(&v2_runtime, data, &storage, 0));
         for (migration, now) in [
-            (word_data("tooLarge(uint256)", &[Word::from_u64(9)]), word_data("tooLargeNow(uint256)", &[Word::from_u64(9)])),
+            (
+                word_data("tooLarge(uint256)", &[Word::from_u64(9)]),
+                word_data("tooLargeNow(uint256)", &[Word::from_u64(9)]),
+            ),
             (why.clone(), why_now.clone()),
-            (word_data("divide(uint256)", &[Word::from_u64(0)]), word_data("divideNow(uint256)", &[Word::from_u64(0)])),
+            (
+                word_data("divide(uint256)", &[Word::from_u64(0)]),
+                word_data("divideNow(uint256)", &[Word::from_u64(0)]),
+            ),
         ] {
             let want = inline(&now);
-            assert!(want.reverted && !want.returndata.is_empty(), "{marks}: {}", pretty(&want.returndata));
+            assert!(
+                want.reverted && !want.returndata.is_empty(),
+                "{marks}: {}",
+                pretty(&want.returndata)
+            );
             let out = run(&proxy, &upgrade_to_and_call(b, &migration), &storage, 0);
             assert!(out.reverted, "{marks}");
-            assert_eq!(out.returndata, want.returndata, "{marks}: {}", pretty(&out.returndata));
+            assert_eq!(
+                out.returndata,
+                want.returndata,
+                "{marks}: {}",
+                pretty(&out.returndata)
+            );
         }
         // A migration that reverts empty, as one whose arguments don't decode does, and one
         // sent value it doesn't take.
-        for (data, value) in [(selector("tooLarge(uint256)").to_vec(), 0), (long.clone(), 1)] {
+        for (data, value) in [
+            (selector("tooLarge(uint256)").to_vec(), 0),
+            (long.clone(), 1),
+        ] {
             let out = run(&proxy, &upgrade_to_and_call(b, &data), &storage, value);
             assert!(out.reverted, "{marks}");
-            assert_eq!(out.returndata, failed_call, "{marks}: {}", pretty(&out.returndata));
+            assert_eq!(
+                out.returndata,
+                failed_call,
+                "{marks}: {}",
+                pretty(&out.returndata)
+            );
         }
 
         let out = run(&proxy, &upgrade_to_and_call(b, &long), &storage, 0);
         assert!(!out.reverted, "{marks}: {}", pretty(&out.returndata));
         assert_eq!(out.storage[&slot], b);
-        assert_eq!(run(&proxy, &selector("s()"), &out.storage, 0).returndata, string(reason));
+        assert_eq!(
+            run(&proxy, &selector("s()"), &out.storage, 0).returndata,
+            string(reason)
+        );
         let mut want = word(32);
         want.extend(&list);
-        assert_eq!(run(&proxy, &selector("xs()"), &out.storage, 0).returndata, want);
-        let out = run(&proxy, &upgrade_to_and_call(b, &word_data("tooLarge(uint256)", &[Word::from_u64(3)])), &storage, 0);
+        assert_eq!(
+            run(&proxy, &selector("xs()"), &out.storage, 0).returndata,
+            want
+        );
+        let out = run(
+            &proxy,
+            &upgrade_to_and_call(b, &word_data("tooLarge(uint256)", &[Word::from_u64(3)])),
+            &storage,
+            0,
+        );
         assert!(!out.reverted, "{marks}: {}", pretty(&out.returndata));
-        assert_eq!(run(&proxy, &selector("n()"), &out.storage, 0).returndata, word(3));
+        assert_eq!(
+            run(&proxy, &selector("n()"), &out.storage, 0).returndata,
+            word(3)
+        );
         DEPLOYED.with(|m| m.borrow_mut().clear());
         FACETS.with(|f| f.borrow_mut().clear());
     }
@@ -689,7 +775,8 @@ contract Other is {{
 fn over_the_limit_is_a_warning() {
     let checked = checked_src(&pair_with("", ""));
     let whole = whole_build(&checked);
-    let fits = crate::split::build(&checked, "Pair", &limit_opts(whole.runtime.len())).expect("fits");
+    let fits =
+        crate::split::build(&checked, "Pair", &limit_opts(whole.runtime.len())).expect("fits");
     assert!(fits.facets.is_empty() && fits.warnings.is_empty());
     assert_eq!(fits.creation, whole.code);
     let over = crate::split::build(&checked, "Pair", &limit_opts(whole.runtime.len() - 1))
@@ -705,14 +792,19 @@ fn over_the_limit_is_a_warning() {
         crate::split::thousands(whole.runtime.len() - 1)
     );
     assert!(warning.contains(&head), "{warning}");
-    for row in ["\n  Alpha ", "\n  Beta ", "\n  Pair ", "\n  (dispatch and shared code) "] {
+    for row in [
+        "\n  Alpha ",
+        "\n  Beta ",
+        "\n  Pair ",
+        "\n  (dispatch and shared code) ",
+    ] {
         assert!(warning.contains(row), "{row:?} in {warning}");
     }
     assert!(warning.contains("`use M delegated;`"), "{warning}");
     // Marked, the same contract fits the same limit.
     let marked = checked_src(&pair_src(""));
-    let split = crate::split::build(&marked, "Pair", &limit_opts(whole.runtime.len() - 1))
-        .expect("split");
+    let split =
+        crate::split::build(&marked, "Pair", &limit_opts(whole.runtime.len() - 1)).expect("split");
     assert!(split.warnings.is_empty(), "{:?}", split.warnings);
     assert_eq!(facet_names(&split), ["Alpha", "Beta"]);
 }
@@ -801,7 +893,10 @@ fn fitting_inlines_back_what_still_fits() {
         .expect("the smallest size");
     let fit = crate::split::build(&checked, "Fit", &limit(smallest + 60)).expect("fits");
     assert!(fit.runtime.len() <= smallest + 60);
-    assert!(fit.runtime.len() > smallest, "nothing inlined back: {smallest}");
+    assert!(
+        fit.runtime.len() > smallest,
+        "nothing inlined back: {smallest}"
+    );
     OPAQUE_CODE.set(true);
     let reference = deploy(&whole_build(&checked).code).expect("whole");
     let ours = deploy(&fit.creation).expect("fit");
@@ -910,8 +1005,11 @@ fn module_transient_storage_has_one_slot() {
          use Lock exposing {{ function enter(); }}\n\
          external function go() is {{ transient.busy := true; }}\n"
     ));
-    let facet = crate::check::check(crate::split::facet_program(&a.source, "Lock", &[]), Default::default())
-        .expect("facet");
+    let facet = crate::check::check(
+        crate::split::facet_program(&a.source, "Lock", &[]),
+        Default::default(),
+    )
+    .expect("facet");
     assert_eq!(slot_of(&a), slot_of(&b));
     assert_eq!(slot_of(&a), slot_of(&facet));
 }
@@ -992,7 +1090,8 @@ fn factories_create_split_contracts() {
         .find(|unit| unit.contract_name.as_deref() == Some("Factory"))
         .expect("factory");
     let checked = crate::check::check(factory, Default::default()).expect("check");
-    let split = crate::split::build(&checked, "Factory", &crate::Options::default()).expect("split");
+    let split =
+        crate::split::build(&checked, "Factory", &crate::Options::default()).expect("split");
     assert!(
         split.facets.is_empty(),
         "the factory itself exposes nothing"
@@ -1143,7 +1242,11 @@ fn split_tooling_output() {
     let vault = dir.join("vault.lithe");
     std::fs::write(&vault, SPLIT_VAULT).expect("write");
     let whole_vault = dir.join("whole_vault.lithe");
-    std::fs::write(&whole_vault, SPLIT_VAULT.replace("use Counter delegated exposing", "use Counter exposing")).expect("write");
+    std::fs::write(
+        &whole_vault,
+        SPLIT_VAULT.replace("use Counter delegated exposing", "use Counter exposing"),
+    )
+    .expect("write");
     let args = ["30".to_string()];
     let plan = crate::upgrade_plan(
         &Sources::disk(),
@@ -1266,7 +1369,6 @@ fn stubs_keep_tuple_records() {
         }
     }
 }
-
 
 /// A module whose pure, view, and stateful functions the contract calls from its own code,
 /// in entrypoints, views, `deploy`, a migration's absence notwithstanding, and continuations.
@@ -1437,7 +1539,14 @@ fn calls_cross_into_facets() {
     let split = crate::split::build(&checked, "Bank", &crate::Options::default()).expect("split");
     assert_eq!(facet_names(&split), ["Ledger"]);
     let across: Vec<&str> = split.across.iter().map(|(_, f)| f.as_str()).collect();
-    for f in ["Ledger.fee", "Ledger.halves", "Ledger.balance", "Ledger.check", "Ledger.mint", "Ledger.move"] {
+    for f in [
+        "Ledger.fee",
+        "Ledger.halves",
+        "Ledger.balance",
+        "Ledger.check",
+        "Ledger.mint",
+        "Ledger.move",
+    ] {
         assert!(across.contains(&f), "{f} in {across:?}");
     }
     let whole = whole_build(&checked);
@@ -1446,14 +1555,23 @@ fn calls_cross_into_facets() {
     let pure = |sel: [u8; 4]| facet.hidden.iter().any(|h| h.sel == sel && !h.delegate);
     assert_eq!(facet.hidden.iter().filter(|h| pure(h.sel)).count(), 3);
     let (deployer, other) = (7u64, 8u64);
-    let made_whole = construct(&whole.code, address_arg(deployer), Word::from_u64(0)).expect("whole");
-    let missing = construct(&split.creation, address_arg(deployer), Word::from_u64(0)).expect("router");
+    let made_whole =
+        construct(&whole.code, address_arg(deployer), Word::from_u64(0)).expect("whole");
+    let missing =
+        construct(&split.creation, address_arg(deployer), Word::from_u64(0)).expect("router");
     assert!(missing.reverted, "the router needs its facet");
     deploy_facets(&split);
-    let made = construct(&split.creation, address_arg(deployer), Word::from_u64(0)).expect("router");
+    let made =
+        construct(&split.creation, address_arg(deployer), Word::from_u64(0)).expect("router");
     assert!(!made.reverted, "deploy: {}", pretty(&made.returndata));
-    assert_eq!(made.storage, made_whole.storage, "deploy writes the same storage");
-    assert_eq!(format!("{:?}", made.trace), format!("{:?}", made_whole.trace));
+    assert_eq!(
+        made.storage, made_whole.storage,
+        "deploy writes the same storage"
+    );
+    assert_eq!(
+        format!("{:?}", made.trace),
+        format!("{:?}", made_whole.trace)
+    );
     let mut a = Run {
         runtime: &made_whole.returndata,
         storage: made_whole.storage.clone(),
@@ -1466,19 +1584,46 @@ fn calls_cross_into_facets() {
     let calls: Vec<(u64, Vec<u8>)> = vec![
         (deployer, word_data("cached()", &[])),
         (deployer, word_data("mine()", &[])),
-        (deployer, word_data("mint(address,uint256)", &[w(other), w(50)])),
-        (deployer, word_data("send(address,uint256)", &[w(other), w(400)])),
-        (other, word_data("send(address,uint256)", &[w(deployer), w(10_000)])),
-        (deployer, word_data("mint(address,uint256)", &[w(other), Word::from_u64(0).not()])),
+        (
+            deployer,
+            word_data("mint(address,uint256)", &[w(other), w(50)]),
+        ),
+        (
+            deployer,
+            word_data("send(address,uint256)", &[w(other), w(400)]),
+        ),
+        (
+            other,
+            word_data("send(address,uint256)", &[w(deployer), w(10_000)]),
+        ),
+        (
+            deployer,
+            word_data(
+                "mint(address,uint256)",
+                &[w(other), Word::from_u64(0).not()],
+            ),
+        ),
         (deployer, word_data("quote(uint256)", &[w(12_345)])),
-        (deployer, word_data("quote(uint256)", &[Word::from_u64(0).not()])),
-        (deployer, word_data("afford(address,uint256)", &[w(other), w(1)])),
-        (deployer, word_data("afford(address,uint256)", &[w(other), w(1_000_000)])),
+        (
+            deployer,
+            word_data("quote(uint256)", &[Word::from_u64(0).not()]),
+        ),
+        (
+            deployer,
+            word_data("afford(address,uint256)", &[w(other), w(1)]),
+        ),
+        (
+            deployer,
+            word_data("afford(address,uint256)", &[w(other), w(1_000_000)]),
+        ),
         (deployer, word_data("nameOf(uint256)", &[w(42)])),
         (other, word_data("mine()", &[])),
         (deployer, word_data("total()", &[])),
         (deployer, word_data("last()", &[])),
-        (deployer, word_data("relay(address,uint256)", &[w(0xcd), w(9)])),
+        (
+            deployer,
+            word_data("relay(address,uint256)", &[w(0xcd), w(9)]),
+        ),
         (deployer, word_data("cached()", &[])),
         (deployer, word_data("mine()", &[])),
     ];
@@ -1490,17 +1635,37 @@ fn calls_cross_into_facets() {
         }
         assert_eq!(want.reverted, got.reverted, "{ctx}");
         assert_eq!(hex(&want.returndata), hex(&got.returndata), "{ctx}");
-        assert_eq!(format!("{:?}", want.trace), format!("{:?}", got.trace), "{ctx}");
+        assert_eq!(
+            format!("{:?}", want.trace),
+            format!("{:?}", got.trace),
+            "{ctx}"
+        );
         assert_eq!(want.detail, got.detail, "{ctx}");
         assert_eq!(a.storage, b.storage, "{ctx}");
     }
-    let short = b.send(other, &word_data("send(address,uint256)", &[w(deployer), w(10_000)]));
+    let short = b.send(
+        other,
+        &word_data("send(address,uint256)", &[w(deployer), w(10_000)]),
+    );
     assert_eq!(short.returndata[..4], selector("Short(uint256)"));
-    let panicked = b.send(deployer, &word_data("mint(address,uint256)", &[w(other), Word::from_u64(0).not()]));
+    let panicked = b.send(
+        deployer,
+        &word_data(
+            "mint(address,uint256)",
+            &[w(other), Word::from_u64(0).not()],
+        ),
+    );
     assert_eq!(panicked.returndata[..4], [0x4e, 0x48, 0x7b, 0x71]);
     let methods = crate::route::method_ids(&checked).expect("methods");
     OPAQUE_CODE.set(true);
-    compare_builds("cross", &methods, &made_whole.returndata, &made.returndata, 300, true);
+    compare_builds(
+        "cross",
+        &methods,
+        &made_whole.returndata,
+        &made.returndata,
+        300,
+        true,
+    );
     DEPLOYED.with(|d| d.borrow_mut().clear());
 }
 
@@ -1511,7 +1676,11 @@ fn hidden_entrypoints_stay_behind_the_router() {
     let checked = checked_src(CROSS);
     let split = crate::split::build(&checked, "Bank", &crate::Options::default()).expect("split");
     let facet = split.facets[0].clone();
-    assert!(facet.methods.iter().all(|(sig, _)| !sig.contains('#')), "{:?}", facet.methods);
+    assert!(
+        facet.methods.iter().all(|(sig, _)| !sig.contains('#')),
+        "{:?}",
+        facet.methods
+    );
     assert!(facet.abi.to_json().contains("\"total\"") && !facet.abi.to_json().contains('#'));
     deploy_facets(&split);
     let made = construct(&split.creation, Word::from_u64(7), Word::from_u64(0)).expect("router");
@@ -1523,7 +1692,14 @@ fn hidden_entrypoints_stay_behind_the_router() {
     let mint = facet
         .hidden
         .iter()
-        .find(|h| h.at.1 == CROSS.lines().position(|l| l.contains("function mint(")).unwrap() as u32 + 1)
+        .find(|h| {
+            h.at.1
+                == CROSS
+                    .lines()
+                    .position(|l| l.contains("function mint("))
+                    .unwrap() as u32
+                    + 1
+        })
         .expect("mint's entrypoint");
     for hidden in &facet.hidden {
         let mut data = hidden.sel.to_vec();
@@ -1531,7 +1707,11 @@ fn hidden_entrypoints_stay_behind_the_router() {
         data.extend(Word::from_u64(5).to_be_bytes());
         data.extend(Word::from_u64(5).to_be_bytes());
         let out = r.send(9, &data);
-        assert!(out.reverted && out.returndata.is_empty(), "{}", hex(&hidden.sel));
+        assert!(
+            out.reverted && out.returndata.is_empty(),
+            "{}",
+            hex(&hidden.sel)
+        );
     }
     assert_eq!(r.storage, before);
     let runtime = deploy(&facet.init).expect("facet");
@@ -1541,7 +1721,10 @@ fn hidden_entrypoints_stay_behind_the_router() {
     let direct = call_raw(&runtime, &data);
     assert!(!direct.reverted, "{}", pretty(&direct.returndata));
     assert_eq!(direct.storage.len(), 2, "the facet's own balance and total");
-    assert_eq!(r.send(9, &word_data("total()", &[])).returndata, Word::from_u64(1_000).to_be_bytes());
+    assert_eq!(
+        r.send(9, &word_data("total()", &[])).returndata,
+        Word::from_u64(1_000).to_be_bytes()
+    );
     DEPLOYED.with(|d| d.borrow_mut().clear());
 }
 
@@ -1549,14 +1732,16 @@ fn hidden_entrypoints_stay_behind_the_router() {
 /// module's, whatever each contract calls.
 #[test]
 fn facets_with_crossings_are_shared() {
-    let one = crate::split::build(&checked_src(CROSS), "Bank", &crate::Options::default()).expect("one");
+    let one =
+        crate::split::build(&checked_src(CROSS), "Bank", &crate::Options::default()).expect("one");
     let other = CROSS
         .replace(
             "  external view function nameOf(const n : uint) : string is\n    Ledger.label(n)\n\n",
             "",
         )
         .replace("contract Bank is {", "contract Vault is {");
-    let two = crate::split::build(&checked_src(&other), "Vault", &crate::Options::default()).expect("two");
+    let two = crate::split::build(&checked_src(&other), "Vault", &crate::Options::default())
+        .expect("two");
     assert_eq!(one.facets[0].address, two.facets[0].address);
     assert!(one.across.len() > two.across.len());
 }
@@ -1707,14 +1892,29 @@ external function claim() raises NotOwner is {
         assert!(p.send(2, &word_data("bump()", &[])).reverted);
         assert!(!p.send(1, &word_data("claim()", &[])).reverted);
         let denied = p.send(2, &word_data("bump()", &[]));
-        assert_eq!(denied.returndata, word_data("NotAdmin(address)", &[Word::from_u64(2)]));
+        assert_eq!(
+            denied.returndata,
+            word_data("NotAdmin(address)", &[Word::from_u64(2)])
+        );
         assert!(!p.send(1, &word_data("bump()", &[])).reverted);
-        assert_eq!(p.send(3, &word_data("n()", &[])).returndata, Word::from_u64(1).to_be_bytes());
+        assert_eq!(
+            p.send(3, &word_data("n()", &[])).returndata,
+            Word::from_u64(1).to_be_bytes()
+        );
         let refused = p.send(2, &upgrade_to_and_call(implementation, &[]));
-        assert_eq!(refused.returndata, word_data("NotAdmin(address)", &[Word::from_u64(2)]));
-        let moved = p.send(1, &upgrade_to_and_call(if implementation == a { b } else { a }, &[]));
+        assert_eq!(
+            refused.returndata,
+            word_data("NotAdmin(address)", &[Word::from_u64(2)])
+        );
+        let moved = p.send(
+            1,
+            &upgrade_to_and_call(if implementation == a { b } else { a }, &[]),
+        );
         assert!(!moved.reverted, "{}", pretty(&moved.returndata));
-        assert_eq!(p.send(3, &word_data("n()", &[])).returndata, Word::from_u64(1).to_be_bytes());
+        assert_eq!(
+            p.send(3, &word_data("n()", &[])).returndata,
+            Word::from_u64(1).to_be_bytes()
+        );
     }
     DEPLOYED.with(|d| d.borrow_mut().clear());
 }
@@ -1798,7 +1998,10 @@ fn facet_address_is_the_facets_create2_address() {
     let router = deploy(&split.creation).expect("router");
     let out = call(&router, "counterFacet()", &[]);
     assert!(!out.reverted, "{}", pretty(&out.returndata));
-    assert_eq!(out.returndata, crate::split::address_word(facet.address).to_be_bytes());
+    assert_eq!(
+        out.returndata,
+        crate::split::address_word(facet.address).to_be_bytes()
+    );
     let out = call(&router, "create()", &[]);
     assert!(!out.reverted, "{}", pretty(&out.returndata));
     assert_eq!(out.returndata, Word::from_u64(1).to_be_bytes());
@@ -1807,14 +2010,27 @@ fn facet_address_is_the_facets_create2_address() {
 #[test]
 fn facet_address_needs_a_delegated_module_and_contract_code() {
     let unmarked = FACET_ADDRESS.replace("use Counter delegated exposing", "use Counter exposing");
-    let err = crate::check::check(loaded(&unmarked), Default::default()).err().expect("rejected");
-    assert!(err.message.contains("`Counter` has no facet: the contract doesn't use it `delegated`"), "{}", err.message);
+    let err = crate::check::check(loaded(&unmarked), Default::default())
+        .err()
+        .expect("rejected");
+    assert!(
+        err.message
+            .contains("`Counter` has no facet: the contract doesn't use it `delegated`"),
+        "{}",
+        err.message
+    );
     let in_module = FACET_ADDRESS.replace(
         "  external view function count() : uint is counter.n\n",
         "  external view function count() : uint is counter.n\n  pure function here() : address is Evm.facetAddress(Counter)\n",
     );
-    let err = crate::check::check(loaded(&in_module), Default::default()).err().expect("rejected");
-    assert!(err.message.contains("is for contract code"), "{}", err.message);
+    let err = crate::check::check(loaded(&in_module), Default::default())
+        .err()
+        .expect("rejected");
+    assert!(
+        err.message.contains("is for contract code"),
+        "{}",
+        err.message
+    );
 }
 
 const MALFORMED: &str = r#"import "std/abi";
@@ -1915,7 +2131,10 @@ fn malformed_arguments_revert_before_the_body() {
     let unguarded = call("post(bytes)", &[w(0x20), w(5), vec![0xab; 3]]);
     let mut dirty = w(0);
     dirty[0] = 1;
-    let mismatched = call("count(address[],uint256)", &[w(0x40), w(9), w(2), w(1), dirty]);
+    let mismatched = call(
+        "count(address[],uint256)",
+        &[w(0x40), w(9), w(2), w(1), dirty],
+    );
     let parts = call(
         "pack(address,uint256[][])",
         &[w(0), w(0x40), w(1), w(0x20), w(100), w(7)],
@@ -1924,17 +2143,47 @@ fn malformed_arguments_revert_before_the_body() {
     let big = Word::from_u64(1).shl(64).to_be_bytes().to_vec();
     let wide_offset = call("send(address,bytes)", &[w(1), big.clone(), w(0), w(0)]);
     let wide_length = call("send(address,bytes)", &[w(1), w(0x40), big]);
-    let short = call("send(address,bytes)", &[w(1), w(0x40), w(33), vec![0xab; 32]]);
-    let fine = call("send(address,bytes)", &[w(1), w(0x40), w(32), vec![0xab; 32]]);
+    let short = call(
+        "send(address,bytes)",
+        &[w(1), w(0x40), w(33), vec![0xab; 32]],
+    );
+    let fine = call(
+        "send(address,bytes)",
+        &[w(1), w(0x40), w(32), vec![0xab; 32]],
+    );
     let run = |code: &[u8], data: &[u8]| {
-        exec(code, data, HashMap::new(), Word::from_u64(1), Word::from_u64(0), Word::from_u64(0))
-            .expect("run")
+        exec(
+            code,
+            data,
+            HashMap::new(),
+            Word::from_u64(1),
+            Word::from_u64(0),
+            Word::from_u64(0),
+        )
+        .expect("run")
     };
-    for data in [&truncated, &far, &unguarded, &mismatched, &parts, &wide_offset, &wide_length, &short] {
+    for data in [
+        &truncated,
+        &far,
+        &unguarded,
+        &mismatched,
+        &parts,
+        &wide_offset,
+        &wide_length,
+        &short,
+    ] {
         let (want, got) = (run(&whole, data), run(&ours, data));
         let ctx = hex(data);
-        assert!(want.reverted && want.returndata.is_empty(), "{ctx}: {}", pretty(&want.returndata));
-        assert!(got.reverted && got.returndata.is_empty(), "{ctx}: {}", pretty(&got.returndata));
+        assert!(
+            want.reverted && want.returndata.is_empty(),
+            "{ctx}: {}",
+            pretty(&want.returndata)
+        );
+        assert!(
+            got.reverted && got.returndata.is_empty(),
+            "{ctx}: {}",
+            pretty(&got.returndata)
+        );
     }
     let (want, got) = (run(&whole, &fine), run(&ours, &fine));
     assert!(!want.reverted && !got.reverted);

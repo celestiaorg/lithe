@@ -34,8 +34,16 @@ impl<'a> Gen<'a> {
     }
 
     /// Encodes `args` into a blob at `scratch_a`, `prefix` bytes into its data.
-    pub(super) fn encode_values(&mut self, args: &[Expr], call: bool, prefix: u32) -> Result<(), Error> {
-        if args.iter().any(|a| self.tree_part(a.ty()) || self.cd_tree(a)) {
+    pub(super) fn encode_values(
+        &mut self,
+        args: &[Expr],
+        call: bool,
+        prefix: u32,
+    ) -> Result<(), Error> {
+        if args
+            .iter()
+            .any(|a| self.tree_part(a.ty()) || self.cd_tree(a))
+        {
             let refs: Vec<&Expr> = args.iter().collect();
             return self.tree_encode_exprs(&refs, call, prefix);
         }

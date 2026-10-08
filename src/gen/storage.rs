@@ -146,7 +146,8 @@ impl<'a> Gen<'a> {
     fn keep_leaf_slot(&mut self, name: String, leaf: u32) {
         self.keep_value(name.clone(), Vec::new());
         if let Some(at) = self.kept_value(&name) {
-            self.leaf_words.push((at, self.checked.leaf_keys[leaf as usize]));
+            self.leaf_words
+                .push((at, self.checked.leaf_keys[leaf as usize]));
         }
     }
 
@@ -628,7 +629,10 @@ impl<'a> Gen<'a> {
                 let data = names
                     .as_ref()
                     .map(|(n, deps)| ((usize::MAX, 0, vec![n.clone()]), deps.clone()));
-                let data_at = data.as_ref().and_then(|(k, _)| self.slot_cache.get(k)).map(|e| e.0);
+                let data_at = data
+                    .as_ref()
+                    .and_then(|(k, _)| self.slot_cache.get(k))
+                    .map(|e| e.0);
                 let len_at = names.as_ref().and_then(|(n, _)| self.kept_value(n));
                 let transient = self
                     .stored_root(base)
@@ -789,7 +793,11 @@ impl<'a> Gen<'a> {
     /// calls it inlines, by keys that stay fixed on every run: literals, fixed context, and
     /// the entrypoint's or an enclosing call's parameters. Accesses whose later keys vary
     /// start from the slot kept for the fixed ones.
-    pub(super) fn hoist_map_slots(&mut self, body: &[Stmt], written: &[usize]) -> Result<(), Error> {
+    pub(super) fn hoist_map_slots(
+        &mut self,
+        body: &[Stmt],
+        written: &[usize],
+    ) -> Result<(), Error> {
         if !self.plan.cache_slots || !self.may_keep() {
             return Ok(());
         }
@@ -885,12 +893,15 @@ impl<'a> Gen<'a> {
                     root: Some(sym),
                     leaf,
                     ..
-                } if !self.checked.slot_syms.contains_key(sym) && !self.slot_binds.contains_key(sym) => {
+                } if !self.checked.slot_syms.contains_key(sym)
+                    && !self.slot_binds.contains_key(sym) =>
+                {
                     let mut keys = Vec::new();
                     let mut at = &e;
                     let mut maps = true;
                     while let Expr::Index { base, index, .. } = at {
-                        maps &= self.checked.types[self.peel_nominal(base.ty())].kind == TyKind::Map;
+                        maps &=
+                            self.checked.types[self.peel_nominal(base.ty())].kind == TyKind::Map;
                         keys.push(index.as_ref());
                         at = base;
                     }
@@ -2071,7 +2082,10 @@ impl<'a> Gen<'a> {
         match e {
             Expr::Field { base, name, .. } => {
                 let rty = self.peel_nominal(base.ty());
-                let Some(field) = self.checked.types[rty].fields.iter().find(|f| f.name == *name)
+                let Some(field) = self.checked.types[rty]
+                    .fields
+                    .iter()
+                    .find(|f| f.name == *name)
                 else {
                     return false;
                 };
@@ -2341,10 +2355,12 @@ impl<'a> Gen<'a> {
         }
         // The slot of the fixed leading keys, which a loop may have hashed before it began.
         let fixed: Vec<String> = names.iter().map_while(|n| n.clone()).collect();
-        let kept = (1..fixed.len().min(keys.len() - 1) + 1).rev().find_map(|k| {
-            let at = self.slot_cache.get(&(sym, leaf, fixed[..k].to_vec()))?.0;
-            Some((k, at))
-        });
+        let kept = (1..fixed.len().min(keys.len() - 1) + 1)
+            .rev()
+            .find_map(|k| {
+                let at = self.slot_cache.get(&(sym, leaf, fixed[..k].to_vec()))?.0;
+                Some((k, at))
+            });
         let rest = if let Some((k, at)) = kept {
             self.mload(at);
             k
@@ -2423,7 +2439,11 @@ impl<'a> Gen<'a> {
             // Operators over fixed keys are fixed: `m[i >> 8]` read and then written hashes
             // its slot once.
             Expr::Binary {
-                op, left, right, ty, ..
+                op,
+                left,
+                right,
+                ty,
+                ..
             } => {
                 let (l, r) = (self.fixed_key(left, deps)?, self.fixed_key(right, deps)?);
                 Some(format!("({l} {op:?} {r}):{ty}"))
@@ -2459,7 +2479,8 @@ impl<'a> Gen<'a> {
     /// Drops the values kept from storage, which a store may have changed. Calldata cannot
     /// change, so what was kept from it stays.
     pub(super) fn forget_stored_values(&mut self) {
-        self.val_cache.retain(|name, _| name.starts_with(CALLDATA_VALUE));
+        self.val_cache
+            .retain(|name, _| name.starts_with(CALLDATA_VALUE));
     }
 
     /// Drops the slots and values kept for places whose keys read these locals.
@@ -2509,9 +2530,9 @@ impl<'a> Gen<'a> {
     /// then map keys that `fixedKey` names, and fields.
     pub(super) fn place_name(&self, e: &Expr, deps: &mut Vec<usize>) -> Option<String> {
         let root = match e {
-            Expr::Ident { sym, .. } | Expr::Field { root: sym, .. } | Expr::Index { root: sym, .. } => {
-                (*sym)?
-            }
+            Expr::Ident { sym, .. }
+            | Expr::Field { root: sym, .. }
+            | Expr::Index { root: sym, .. } => (*sym)?,
             _ => return None,
         };
         if self.checked.slot_syms.contains_key(&root) || self.slot_binds.contains_key(&root) {
@@ -2537,7 +2558,10 @@ impl<'a> Gen<'a> {
             Expr::Field { base, name, .. } => {
                 let (at, off) = self.slot_place(base, deps)?;
                 let rty = self.peel_nominal(base.ty());
-                let field = self.checked.types[rty].fields.iter().find(|f| f.name == *name)?;
+                let field = self.checked.types[rty]
+                    .fields
+                    .iter()
+                    .find(|f| f.name == *name)?;
                 let (skip, _) = self.slot_layout(rty, self.place_transient(e))[field.slot as usize];
                 Some((at, off + skip))
             }
@@ -2559,7 +2583,11 @@ impl<'a> Gen<'a> {
             return Pack::FULL;
         }
         let rty = self.peel_nominal(base.ty());
-        let Some(field) = self.checked.types[rty].fields.iter().find(|f| f.name == *name) else {
+        let Some(field) = self.checked.types[rty]
+            .fields
+            .iter()
+            .find(|f| f.name == *name)
+        else {
             return Pack::FULL;
         };
         if crate::check::narrow_width(&self.checked.types, field.ty).is_none() {
@@ -2640,7 +2668,8 @@ impl<'a> Gen<'a> {
             }
             for &i in sites.iter().rev() {
                 if self.code.get(i + 1) == Some(&Inst::Op(MLOAD)) {
-                    self.code.splice(i..i + 2, [Inst::Push(key), Inst::Op(SLOAD)]);
+                    self.code
+                        .splice(i..i + 2, [Inst::Push(key), Inst::Op(SLOAD)]);
                 }
             }
         }

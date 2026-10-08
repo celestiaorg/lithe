@@ -688,14 +688,28 @@ fn the_upgrade_guard_names_a_function() {
     };
     assert!(!s.send(1, "own()", &[]).reverted);
     let upgrade = super::split::upgrade_to_and_call(b, &[]);
-    let denied = exec(&proxy, &upgrade, s.storage.clone(), Word::from_u64(2), Word::from_u64(0), Word::from_u64(0))
-        .expect("stranger");
+    let denied = exec(
+        &proxy,
+        &upgrade,
+        s.storage.clone(),
+        Word::from_u64(2),
+        Word::from_u64(0),
+        Word::from_u64(0),
+    )
+    .expect("stranger");
     assert_eq!(
         denied.returndata,
         word_data("OwnableUnauthorizedAccount(address)", &words(&[2]))
     );
-    let done = exec(&proxy, &upgrade, s.storage.clone(), Word::from_u64(1), Word::from_u64(0), Word::from_u64(0))
-        .expect("owner");
+    let done = exec(
+        &proxy,
+        &upgrade,
+        s.storage.clone(),
+        Word::from_u64(1),
+        Word::from_u64(0),
+        Word::from_u64(0),
+    )
+    .expect("owner");
     assert!(!done.reverted, "{}", pretty(&done.returndata));
     assert_eq!(done.storage[&slot], b);
     DEPLOYED.with(|d| d.borrow_mut().clear());
@@ -744,8 +758,12 @@ fn tooling_shows_guards() {
         "{stubs}"
     );
     let marked = src.replace("use Prices exposing", "use Prices delegated exposing");
-    let split = crate::abi_tree(&memory(&marked), Path::new(ENTRY), &crate::Options::default())
-        .expect("split tree");
+    let split = crate::abi_tree(
+        &memory(&marked),
+        Path::new(ENTRY),
+        &crate::Options::default(),
+    )
+    .expect("split tree");
     assert!(
         route_text(&split, "setPrice")
             .contains("runs in:\n    Prices\n    router, for guard Prices.editor(tokenId)\n"),

@@ -293,8 +293,19 @@ impl Checker {
                     ));
                 }
             }
-            Builtin::UintMulDiv | Builtin::UintMulMod | Builtin::UintAddMod | Builtin::UintPopCount | Builtin::UintClz => {
-                need(args.len(), if matches!(kind, Builtin::UintPopCount | Builtin::UintClz) { 1 } else { 3 })?;
+            Builtin::UintMulDiv
+            | Builtin::UintMulMod
+            | Builtin::UintAddMod
+            | Builtin::UintPopCount
+            | Builtin::UintClz => {
+                need(
+                    args.len(),
+                    if matches!(kind, Builtin::UintPopCount | Builtin::UintClz) {
+                        1
+                    } else {
+                        3
+                    },
+                )?;
                 for arg in args.iter_mut() {
                     self.check_expr_as(arg, Some(TY_UINT))?;
                     if !self.same(arg.ty(), TY_UINT) {

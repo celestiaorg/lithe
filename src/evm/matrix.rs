@@ -1299,9 +1299,9 @@ fn run_cell(ty: &Ty, place: &Place, runtime: &[u8]) -> Result<(), String> {
 
 /// Runs a cell with every module in its facet.
 fn run_split(ty: &Ty, place: &Place, src: &str) -> Result<(), String> {
-    let checked = crate::check::check(loaded(src), Default::default()).map_err(|err| err.to_string())?;
-    let split = super::split::build_facets(&checked, "Cell")
-        .map_err(|err| err.to_string())?;
+    let checked =
+        crate::check::check(loaded(src), Default::default()).map_err(|err| err.to_string())?;
+    let split = super::split::build_facets(&checked, "Cell").map_err(|err| err.to_string())?;
     let runtime = super::split::deploy_split(&split);
     run_cell(ty, place, &runtime)
 }

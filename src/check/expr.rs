@@ -177,7 +177,10 @@ impl Checker {
             }
             Expr::Field { .. } | Expr::Index { .. } => {
                 let p = self.place(e)?;
-                if let Expr::Field { base, line, col, .. } = e {
+                if let Expr::Field {
+                    base, line, col, ..
+                } = e
+                {
                     if let Some(n) = self.fixed_length(base.ty()) {
                         *e = Expr::Lit {
                             line: *line,

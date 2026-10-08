@@ -859,11 +859,15 @@ pub(super) fn forward_via_hooks(funcs: &mut [Func]) {
         let passes = args.len() == f.params.len()
             && target.params.len() == f.params.len()
             && target.ret_ty == f.ret_ty
-            && args.iter().zip(&f.params).zip(&target.params).all(|((arg, p), q)| {
-                matches!(arg, Expr::Ident { sym: Some(s), .. } if Some(*s) == p.sym)
-                    && p.ty_id == q.ty_id
-                    && !q.storage
-            });
+            && args
+                .iter()
+                .zip(&f.params)
+                .zip(&target.params)
+                .all(|((arg, p), q)| {
+                    matches!(arg, Expr::Ident { sym: Some(s), .. } if Some(*s) == p.sym)
+                        && p.ty_id == q.ty_id
+                        && !q.storage
+                });
         if passes && target.hook_of.is_none() {
             to.insert(h, (*g, target.name.clone()));
         }
@@ -885,7 +889,10 @@ pub(super) fn forward_via_hooks(funcs: &mut [Func]) {
                     ..
                 } => {
                     expr(e, to);
-                    index.iter_mut().chain(keys.iter_mut()).for_each(|k| expr(k, to));
+                    index
+                        .iter_mut()
+                        .chain(keys.iter_mut())
+                        .for_each(|k| expr(k, to));
                 }
                 Stmt::If {
                     cond,
@@ -907,7 +914,10 @@ pub(super) fn forward_via_hooks(funcs: &mut [Func]) {
                     ..
                 } => {
                     expr(e, to);
-                    value.iter_mut().chain(gas.iter_mut()).for_each(|e| expr(e, to));
+                    value
+                        .iter_mut()
+                        .chain(gas.iter_mut())
+                        .for_each(|e| expr(e, to));
                     if let Some(then) = then {
                         stmts(&mut then.stmts, to);
                         if let Some(error) = &mut then.error {
@@ -956,7 +966,9 @@ pub(super) fn forward_via_hooks(funcs: &mut [Func]) {
                 expr(base, to);
                 expr(index, to);
             }
-            Expr::Query { expr: inner, gas, .. } => {
+            Expr::Query {
+                expr: inner, gas, ..
+            } => {
                 expr(inner, to);
                 if let Some(gas) = gas {
                     expr(gas, to);

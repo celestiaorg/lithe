@@ -494,7 +494,11 @@ fn exec_state(
                 let off = pop(&mut stack)?;
                 // Past the end of calldata reads zeros, however far.
                 let far = off.0[1] | off.0[2] | off.0[3] != 0;
-                stack.push(if far { Word::from_u64(0) } else { load_bytes(calldata, off.0[0] as usize) });
+                stack.push(if far {
+                    Word::from_u64(0)
+                } else {
+                    load_bytes(calldata, off.0[0] as usize)
+                });
             }
             0x36 => stack.push(Word::from_u64(calldata.len() as u64)),
             0x37 => {

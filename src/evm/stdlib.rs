@@ -269,7 +269,11 @@ fn stdlib_math_crypto_and_collections() {
             ("log10Up(uint256)", up(a, l10, ten_pow)),
             ("log256Up(uint256)", up(a, l256, one.shl(8 * l256 as u32))),
         ] {
-            assert_eq!(u.word(sig, &[Arg::W(a)]), Word::from_u64(want), "{sig} {a:?}");
+            assert_eq!(
+                u.word(sig, &[Arg::W(a)]),
+                Word::from_u64(want),
+                "{sig} {a:?}"
+            );
         }
     }
     let int = |n: i64| {
@@ -306,10 +310,7 @@ fn stdlib_math_crypto_and_collections() {
         int(2)
     );
     assert_eq!(
-        u.word(
-            "maxInt(int256,int256)",
-            &[Arg::W(int_min), Arg::W(int(-1))]
-        ),
+        u.word("maxInt(int256,int256)", &[Arg::W(int_min), Arg::W(int(-1))]),
         int(-1)
     );
     let ten = Word::from_u64(10);
@@ -856,7 +857,11 @@ fn stdlib_erc1155() {
     let moved = Arg::L(vec![Word::from_u64(1), Word::from_u64(1)]);
     assert!(t.send(3, batch, &[w(3), w(2), ids(), moved, Arg::B(vec![])]));
     let burned = Arg::L(vec![Word::from_u64(2), Word::from_u64(3)]);
-    assert!(t.send(3, "burnBatch(address,uint256[],uint256[])", &[w(3), ids(), burned]));
+    assert!(t.send(
+        3,
+        "burnBatch(address,uint256[],uint256[])",
+        &[w(3), ids(), burned]
+    ));
     assert_eq!(t.word("totalSupply(uint256)", &[w(2)]), Word::from_u64(5));
     assert_eq!(t.word("totalSupply(uint256)", &[w(5)]), Word::from_u64(8));
     assert_eq!(t.word("totalSupply()", &[]), Word::from_u64(103));
@@ -1518,7 +1523,13 @@ external pure function literal() : string is String.join(["a", "", "bc", String.
     // Every byte, ASCII and not, over lengths around a word.
     let all: Vec<u8> = (0..=255u8).collect();
     for len in [1, 31, 32, 33, 64, 100, 256] {
-        let s: Vec<u8> = all.iter().cycle().skip(len * 7).take(len).copied().collect();
+        let s: Vec<u8> = all
+            .iter()
+            .cycle()
+            .skip(len * 7)
+            .take(len)
+            .copied()
+            .collect();
         let mut json = Vec::new();
         let mut html = Vec::new();
         for &b in &s {
@@ -1578,7 +1589,13 @@ external pure function literal() : string is String.join(["a", "", "bc", String.
     let quote = |s: &[u8]| [&b"\""[..], &run("json", s), b"\""].concat();
     for len in [0usize, 5, 40, 70] {
         let s: Vec<u8> = (0..len).map(|i| b"ab\"\n<c"[i % 6]).collect();
-        for (from, to) in [(0, len), (1, len), (0, len / 2), (len / 3, len / 3 + 32), (len, len)] {
+        for (from, to) in [
+            (0, len),
+            (1, len),
+            (0, len / 2),
+            (len / 3, len / 3 + 32),
+            (len, len),
+        ] {
             if to > len || from > to {
                 continue;
             }
@@ -1589,13 +1606,27 @@ external pure function literal() : string is String.join(["a", "", "bc", String.
                     Arg::W(Word::from_u64(to as u64)),
                     Arg::W(Word::from_u64(u64::from(quoted))),
                 ];
-                let want = if quoted { quote(&s[from..to]) } else { run("json", &s[from..to]) };
-                assert_eq!(call("part(bytes,uint256,uint256,bool)", &args), want, "{len} {from} {to}");
+                let want = if quoted {
+                    quote(&s[from..to])
+                } else {
+                    run("json", &s[from..to])
+                };
+                assert_eq!(
+                    call("part(bytes,uint256,uint256,bool)", &args),
+                    want,
+                    "{len} {from} {to}"
+                );
             }
         }
         let from = len / 2;
         let want = [quote(&s[from..]), b"|".to_vec(), run("html", &s[from..])].concat();
-        assert_eq!(call("tail(string,uint256)", &[Arg::B(s.clone()), Arg::W(Word::from_u64(from as u64))]), want);
+        assert_eq!(
+            call(
+                "tail(string,uint256)",
+                &[Arg::B(s.clone()), Arg::W(Word::from_u64(from as u64))]
+            ),
+            want
+        );
     }
     // Out of range, a slice still panics as it does anywhere.
     for (from, to) in [(3u64, 2u64), (0, 6)] {
@@ -1603,7 +1634,12 @@ external pure function literal() : string is String.join(["a", "", "bc", String.
             &runtime,
             &encode_args(
                 "part(bytes,uint256,uint256,bool)",
-                &[Arg::B(b"abcde".to_vec()), Arg::W(Word::from_u64(from)), Arg::W(Word::from_u64(to)), Arg::W(Word::from_u64(1))],
+                &[
+                    Arg::B(b"abcde".to_vec()),
+                    Arg::W(Word::from_u64(from)),
+                    Arg::W(Word::from_u64(to)),
+                    Arg::W(Word::from_u64(1)),
+                ],
             ),
             HashMap::new(),
             Word::from_u64(1),
@@ -1631,7 +1667,10 @@ external pure function literal() : string is String.join(["a", "", "bc", String.
         assert!(d.send(1, "add(string)", &[Arg::B(name.to_vec())]));
     }
     d.send(1, "names()", &[]);
-    assert_eq!(abi_string_value(&d.returned()), [&b"ann"[..], &[b'z'; 40]].concat());
+    assert_eq!(
+        abi_string_value(&d.returned()),
+        [&b"ann"[..], &[b'z'; 40]].concat()
+    );
 
     fn next(seed: &mut u64) -> u64 {
         *seed ^= *seed << 13;
@@ -1642,7 +1681,9 @@ external pure function literal() : string is String.join(["a", "", "bc", String.
     let mut seed = 0x9e37_79b9_7f4a_7c15u64;
     for round in 0..300 {
         let len = (next(&mut seed) % 80) as usize;
-        let subject: Vec<u8> = (0..len).map(|_| b"ab"[(next(&mut seed) % 2) as usize]).collect();
+        let subject: Vec<u8> = (0..len)
+            .map(|_| b"ab"[(next(&mut seed) % 2) as usize])
+            .collect();
         let n = match round % 4 {
             0 => (next(&mut seed) % 4) as usize,
             1 => (next(&mut seed) % 40) as usize,
@@ -1652,9 +1693,13 @@ external pure function literal() : string is String.join(["a", "", "bc", String.
             let at = (next(&mut seed) % (len - n + 1) as u64) as usize;
             subject[at..at + n].to_vec()
         } else {
-            (0..n).map(|_| b"ab"[(next(&mut seed) % 2) as usize]).collect()
+            (0..n)
+                .map(|_| b"ab"[(next(&mut seed) % 2) as usize])
+                .collect()
         };
-        let replacement: Vec<u8> = (0..next(&mut seed) % 40).map(|k| b'x' + (k % 3) as u8).collect();
+        let replacement: Vec<u8> = (0..next(&mut seed) % 40)
+            .map(|k| b'x' + (k % 3) as u8)
+            .collect();
         let mut expect = Vec::new();
         if needle.is_empty() {
             for &c in &subject {
@@ -1678,7 +1723,12 @@ external pure function literal() : string is String.join(["a", "", "bc", String.
             "replace(string,string,string)",
             &[Arg::B(subject.clone()), Arg::B(needle), Arg::B(replacement)],
         );
-        assert_eq!(got, expect, "replace {:?}", String::from_utf8_lossy(&subject));
+        assert_eq!(
+            got,
+            expect,
+            "replace {:?}",
+            String::from_utf8_lossy(&subject)
+        );
     }
     assert_eq!(run("json", b""), b"");
 
@@ -1688,7 +1738,9 @@ external pure function literal() : string is String.join(["a", "", "bc", String.
         let mut heads = Vec::new();
         let mut tails = Vec::new();
         for x in xs {
-            heads.extend_from_slice(&Word::from_u64((32 * xs.len() + tails.len()) as u64).to_be_bytes());
+            heads.extend_from_slice(
+                &Word::from_u64((32 * xs.len() + tails.len()) as u64).to_be_bytes(),
+            );
             tails.extend_from_slice(&Word::from_u64(x.len() as u64).to_be_bytes());
             tails.extend_from_slice(x);
             tails.resize(tails.len().div_ceil(32) * 32, 0);
@@ -1700,9 +1752,21 @@ external pure function literal() : string is String.join(["a", "", "bc", String.
         c
     };
     let long = [b'z'; 70];
-    for xs in [&[][..], &[&b""[..]], &[b"a", b"", b"bcd"], &[&long[..], b"q", &long[..]]] {
-        let out = exec(&runtime, &strings(xs), HashMap::new(), Word::from_u64(1), Word::from_u64(0), Word::from_u64(0))
-            .expect("exec");
+    for xs in [
+        &[][..],
+        &[&b""[..]],
+        &[b"a", b"", b"bcd"],
+        &[&long[..], b"q", &long[..]],
+    ] {
+        let out = exec(
+            &runtime,
+            &strings(xs),
+            HashMap::new(),
+            Word::from_u64(1),
+            Word::from_u64(0),
+            Word::from_u64(0),
+        )
+        .expect("exec");
         assert!(!out.reverted);
         assert_eq!(abi_string_value(&out.returndata), xs.concat());
     }
@@ -1711,7 +1775,11 @@ external pure function literal() : string is String.join(["a", "", "bc", String.
         for step in [1usize, 5, 32, 40] {
             let got = call(
                 "rejoin(bytes,uint256,bytes)",
-                &[Arg::B(s.clone()), Arg::W(Word::from_u64(step as u64)), Arg::B(b",".to_vec())],
+                &[
+                    Arg::B(s.clone()),
+                    Arg::W(Word::from_u64(step as u64)),
+                    Arg::B(b",".to_vec()),
+                ],
             );
             let want: Vec<u8> = s.chunks(step).flat_map(|c| [c, b","].concat()).collect();
             assert_eq!(got, want, "{len} {step}");
@@ -2258,9 +2326,20 @@ contract Wallet is {
         ]
     );
     // The single modes still run, and nothing, or an empty batch, is no call.
-    assert_eq!(calls_made(&run(&nested, batch_mode, batch(calls, None), this, 7, 7)).len(), 3);
     assert_eq!(
-        calls_made(&run(&nested, op_data_mode, batch(calls, Some(b"s")), this, 7, 7)).len(),
+        calls_made(&run(&nested, batch_mode, batch(calls, None), this, 7, 7)).len(),
+        3
+    );
+    assert_eq!(
+        calls_made(&run(
+            &nested,
+            op_data_mode,
+            batch(calls, Some(b"s")),
+            this,
+            7,
+            7
+        ))
+        .len(),
         3
     );
     for data in [batches(&[]), batches(&[batch(&[], None)])] {
@@ -2279,10 +2358,20 @@ contract Wallet is {
     assert!(!supports_in(mode("01000000000078210003")));
     // Anyone else is refused.
     let out = run(&nested, batches_mode, both.clone(), 1, 0, 8);
-    assert_eq!(out.returndata[..4], selector("AccountUnauthorized(address)"));
+    assert_eq!(
+        out.returndata[..4],
+        selector("AccountUnauthorized(address)")
+    );
     // A failed call in a later batch reverts the whole with its revert data.
     let failing: &[(u64, u64, &[u8])] = &[(0xee, 0, b"\x01\x02\x03\x04no")];
-    let out = run(&nested, batches_mode, batches(&[batch(calls, None), batch(failing, None)]), this, 7, 7);
+    let out = run(
+        &nested,
+        batches_mode,
+        batches(&[batch(calls, None), batch(failing, None)]),
+        this,
+        7,
+        7,
+    );
     assert!(out.reverted);
     assert_eq!(out.returndata, b"no".to_vec());
     // Malformed batches revert before any call: the outer list with Solady's error.
@@ -2476,29 +2565,55 @@ contract Conv is {
     )
     .expect("deploy");
     let one = Word::from_u64(1);
-    for ordinals in [vec![], vec![0], vec![255], vec![0, 3, 3, 200, 255], vec![7, 1]] {
+    for ordinals in [
+        vec![],
+        vec![0],
+        vec![255],
+        vec![0, 3, 3, 200, 255],
+        vec![7, 1],
+    ] {
         let list: Vec<Word> = ordinals.iter().map(|&o| Word::from_u64(o)).collect();
-        let out = call_raw(&conv, &encode_args("rolesFromOrdinals(uint8[])", &[Arg::L(list)]));
-        let mask = ordinals.iter().fold(Word::from_u64(0), |m, &o| m.bitor(one.shl(o as u32)));
+        let out = call_raw(
+            &conv,
+            &encode_args("rolesFromOrdinals(uint8[])", &[Arg::L(list)]),
+        );
+        let mask = ordinals
+            .iter()
+            .fold(Word::from_u64(0), |m, &o| m.bitor(one.shl(o as u32)));
         assert_eq!(load_bytes(&out.returndata, 0), mask, "{ordinals:?}");
-        let out = call_raw(&conv, &encode_args("ordinalsFromRoles(uint256)", &[Arg::W(mask)]));
+        let out = call_raw(
+            &conv,
+            &encode_args("ordinalsFromRoles(uint256)", &[Arg::W(mask)]),
+        );
         let mut sorted = ordinals.clone();
         sorted.sort();
         sorted.dedup();
         let want: Vec<Word> = sorted.iter().map(|&o| Word::from_u64(o)).collect();
-        assert_eq!(load_bytes(&out.returndata, 32), Word::from_u64(want.len() as u64));
+        assert_eq!(
+            load_bytes(&out.returndata, 32),
+            Word::from_u64(want.len() as u64)
+        );
         for (i, o) in want.iter().enumerate() {
             assert_eq!(load_bytes(&out.returndata, 64 + 32 * i), *o);
         }
     }
     let all = Word::from_u64(0).not();
-    let out = call_raw(&conv, &encode_args("ordinalsFromRoles(uint256)", &[Arg::W(all)]));
+    let out = call_raw(
+        &conv,
+        &encode_args("ordinalsFromRoles(uint256)", &[Arg::W(all)]),
+    );
     assert_eq!(load_bytes(&out.returndata, 32), Word::from_u64(256));
-    assert_eq!(load_bytes(&out.returndata, 64 + 32 * 255), Word::from_u64(255));
+    assert_eq!(
+        load_bytes(&out.returndata, 64 + 32 * 255),
+        Word::from_u64(255)
+    );
     // An ordinal past 255 is not a `uint8`.
     let out = call_raw(
         &conv,
-        &encode_args("rolesFromOrdinals(uint8[])", &[Arg::L(vec![Word::from_u64(256)])]),
+        &encode_args(
+            "rolesFromOrdinals(uint8[])",
+            &[Arg::L(vec![Word::from_u64(256)])],
+        ),
     );
     assert!(out.reverted);
 }
@@ -2528,7 +2643,8 @@ contract Wallet is {
 ",
     )
     .expect("compile");
-    let factory_code = deploy(&built.iter().find(|(n, _)| n == "Factory").unwrap().1).expect("factory");
+    let factory_code =
+        deploy(&built.iter().find(|(n, _)| n == "Factory").unwrap().1).expect("factory");
     let checker = deploy(
         &compile(
             "\
@@ -2555,12 +2671,17 @@ contract Checker is {
     .expect("deploy checker");
     let w = Word::from_u64;
     let factory = w(0x6000);
-    DEPLOYED.with(|d| d.borrow_mut().insert(factory, (factory_code.clone(), HashMap::new())));
+    DEPLOYED.with(|d| {
+        d.borrow_mut()
+            .insert(factory, (factory_code.clone(), HashMap::new()))
+    });
     let hash = keccak_word(b"message");
     let word = |x: Word| x.to_be_bytes().to_vec();
     let predict = |salt: u64| {
         // As the factory's own account, whose address its CREATE2 derives from.
-        let out = super::elsewhere(factory, || call(&factory_code, "predict(bytes32)", &[w(salt)]));
+        let out = super::elsewhere(factory, || {
+            call(&factory_code, "predict(bytes32)", &[w(salt)])
+        });
         load_bytes(&out.returndata, 0)
     };
     let wrap = |to: Word, salt: u64, inner: Vec<u8>| {
@@ -2572,7 +2693,10 @@ contract Checker is {
     let run = |sig: &str, signer: Word, signature: &[u8]| {
         exec(
             &checker,
-            &encode_args(sig, &[Arg::W(signer), Arg::W(hash), Arg::B(signature.to_vec())]),
+            &encode_args(
+                sig,
+                &[Arg::W(signer), Arg::W(hash), Arg::B(signature.to_vec())],
+            ),
             HashMap::new(),
             w(1),
             w(0),
@@ -2581,12 +2705,18 @@ contract Checker is {
         .expect(sig)
     };
     let valid_now = |signer: Word, signature: &[u8]| {
-        load_bytes(&run("validNow(address,bytes32,bytes)", signer, signature).returndata, 0) == w(1)
+        load_bytes(
+            &run("validNow(address,bytes32,bytes)", signer, signature).returndata,
+            0,
+        ) == w(1)
     };
     let spend = "spend(address,bytes32,bytes)";
     let invalid = |out: &Outcome, signer: Word| {
         assert!(out.reverted);
-        assert_eq!(out.returndata[..4], selector("ERC6492InvalidSignature(address)"));
+        assert_eq!(
+            out.returndata[..4],
+            selector("ERC6492InvalidSignature(address)")
+        );
         assert_eq!(load_bytes(&out.returndata, 4), signer);
     };
 
@@ -2596,7 +2726,10 @@ contract Checker is {
     assert!(!valid_now(wallet, &signed));
     let out = run(spend, wallet, &signed);
     assert!(!out.reverted, "{}", pretty(&out.returndata));
-    assert!(out.trace.iter().any(|ev| matches!(ev, Ev::Call { to, .. } if *to == factory)));
+    assert!(out
+        .trace
+        .iter()
+        .any(|ev| matches!(ev, Ev::Call { to, .. } if *to == factory)));
     assert!(out.trace.iter().any(|ev| matches!(ev, Ev::SStore)));
     // Deployed now: the wrapped and the plain signature hold at once, with no factory call.
     assert!(valid_now(wallet, &signed));
@@ -2615,7 +2748,10 @@ contract Checker is {
     invalid(&run(spend, other, &word(hash)), other);
     invalid(&run(spend, w(0x4242), &[0; 65]), w(0x4242));
     // The wallet a factory call left undeployed is refused too.
-    invalid(&run(spend, predict(3), &wrap(factory, 4, word(hash))), predict(3));
+    invalid(
+        &run(spend, predict(3), &wrap(factory, 4, word(hash))),
+        predict(3),
+    );
 }
 
 /// `SetEnumerable.add`/`remove` and `MapEnumerable.set`/`remove` answer whether they
@@ -2648,8 +2784,15 @@ contract C is {
     let mut send = |sig: &str, args: &[u64]| {
         let args: Vec<Word> = args.iter().map(|&a| Word::from_u64(a)).collect();
         let data = encode_args(sig, &args.iter().map(|&a| Arg::W(a)).collect::<Vec<_>>());
-        let out = exec(&runtime, &data, storage.clone(), Word::from_u64(1), Word::from_u64(0), Word::from_u64(0))
-            .expect("exec");
+        let out = exec(
+            &runtime,
+            &data,
+            storage.clone(),
+            Word::from_u64(1),
+            Word::from_u64(0),
+            Word::from_u64(0),
+        )
+        .expect("exec");
         assert!(!out.reverted, "{sig}");
         storage = out.storage.clone();
         load_bytes(&out.returndata, 0)
@@ -2840,7 +2983,10 @@ contract Passkeys is {
 "#;
 
 fn passkeys(evm: crate::EvmVersion) -> Vec<u8> {
-    let opts = Options { evm, ..Options::default() };
+    let opts = Options {
+        evm,
+        ..Options::default()
+    };
     let out = crate::compile(&memory(PASSKEYS), Path::new(ENTRY), &opts)
         .and_then(crate::Output::single)
         .map_err(first)
@@ -3013,7 +3159,9 @@ fn webauthn_falls_back_to_solady_verifier() {
         Ok(Vec::new())
     }
     fn verifier(input: &[u8]) -> Result<Vec<u8>, Vec<u8>> {
-        Ok(Word::from_u64(u64::from(crate::hash::p256_verify(input))).to_be_bytes().to_vec())
+        Ok(Word::from_u64(u64::from(crate::hash::p256_verify(input)))
+            .to_be_bytes()
+            .to_vec())
     }
     fn short(input: &[u8]) -> Result<Vec<u8>, Vec<u8>> {
         Ok(vec![u8::from(crate::hash::p256_verify(input)); 31])
@@ -3038,13 +3186,19 @@ fn webauthn_falls_back_to_solady_verifier() {
             }
         });
     };
-    let (prague, osaka) = (passkeys(crate::EvmVersion::Prague), passkeys(crate::EvmVersion::Osaka));
+    let (prague, osaka) = (
+        passkeys(crate::EvmVersion::Prague),
+        passkeys(crate::EvmVersion::Osaka),
+    );
     let (x, y, challenge, assertions) = solady_passkeys();
     let precompile = Word::from_u64(0x100);
     for mut a in assertions {
         let s = a.s;
         let high = p256_order().wrapping_sub(s);
-        let mut check = |precompile_mock: Option<Mock>, verifier_mock: Option<Mock>, canary_mock: Option<Mock>, want: [bool; 2]| {
+        let mut check = |precompile_mock: Option<Mock>,
+                         verifier_mock: Option<Mock>,
+                         canary_mock: Option<Mock>,
+                         want: [bool; 2]| {
             set(precompile, precompile_mock);
             set(verifier_at, verifier_mock);
             set(canary_at, canary_mock);
@@ -3070,7 +3224,10 @@ fn webauthn_falls_back_to_solady_verifier() {
 
 /// An `Abi.encode`d auth by Solady's `tryDecodeAuth` rules: the fields, or `None`.
 fn solady_try_decode_auth(e: &[u8]) -> Option<(Vec<u8>, Vec<u8>, [Word; 4])> {
-    let word = |at: usize| e.get(at..at + 32).map(|b| Word::from_be_bytes(b.try_into().unwrap()));
+    let word = |at: usize| {
+        e.get(at..at + 32)
+            .map(|b| Word::from_be_bytes(b.try_into().unwrap()))
+    };
     let small = |w: Word| word_usize(w).ok().filter(|&v| v < 1 << 40);
     let n = e.len();
     if n < 0xc0 {
@@ -3148,7 +3305,8 @@ fn webauthn_decodes_auths_as_solady() {
             1 => broken.truncate(next() as usize % broken.len()),
             _ => broken.extend(short(40)),
         }
-        let want = solady_try_decode_auth(&broken).map_or(Vec::new(), |(a, j, w)| encode(&a, &j, w));
+        let want =
+            solady_try_decode_auth(&broken).map_or(Vec::new(), |(a, j, w)| encode(&a, &j, w));
         if want.is_empty() {
             refused += 1;
         } else {
@@ -3156,9 +3314,14 @@ fn webauthn_decodes_auths_as_solady() {
         }
         assert_eq!(bytes_out("decode(bytes)", &broken), want);
 
-        let fits = a.len() < 1 << 16 && j.len() < 1 << 16 && w[..2].iter().all(|&v| word_usize(v).is_ok_and(|v| v < 1 << 16));
+        let fits = a.len() < 1 << 16
+            && j.len() < 1 << 16
+            && w[..2]
+                .iter()
+                .all(|&v| word_usize(v).is_ok_and(|v| v < 1 << 16));
         let args = encode(&a, &j, w);
-        let mut call = selector("encodeCompact((bytes,string,uint256,uint256,bytes32,bytes32))").to_vec();
+        let mut call =
+            selector("encodeCompact((bytes,string,uint256,uint256,bytes32,bytes32))").to_vec();
         call.extend(&args);
         let out = call_raw(&runtime, &call);
         assert!(!out.reverted);
@@ -3184,9 +3347,14 @@ fn webauthn_decodes_auths_as_solady() {
         }
         // Solady's rules for any bytes: at least 0x46 of them, and the authenticator data
         // before the last 0x44.
-        let raw = if fits && next() % 2 == 0 { packed[..next() as usize % packed.len()].to_vec() } else { short(120) };
+        let raw = if fits && next() % 2 == 0 {
+            packed[..next() as usize % packed.len()].to_vec()
+        } else {
+            short(120)
+        };
         let n = raw.len();
-        let want = if n >= 0x46 && 2 + (usize::from(raw[0]) << 8 | usize::from(raw[1])) <= n - 0x44 {
+        let want = if n >= 0x46 && 2 + (usize::from(raw[0]) << 8 | usize::from(raw[1])) <= n - 0x44
+        {
             let c = 2 + (usize::from(raw[0]) << 8 | usize::from(raw[1]));
             let j = n - 0x44;
             let word = |at: usize| Word::from_be_bytes(raw[at..at + 32].try_into().unwrap());
@@ -3205,7 +3373,10 @@ fn webauthn_decodes_auths_as_solady() {
         };
         assert_eq!(bytes_out("decodeCompact(bytes)", &raw), want);
     }
-    assert!(accepted > 30 && refused > 30 && compact > 100, "{accepted} {refused} {compact}");
+    assert!(
+        accepted > 30 && refused > 30 && compact > 100,
+        "{accepted} {refused} {compact}"
+    );
 }
 
 /// With a precompile that accepts every signature, `verify` answers as Solady's reference
@@ -3595,20 +3766,40 @@ contract Vault is {{
     let vault_addr = Word::from_u64(0x1000);
     let place = |at: u64, src: &str| {
         let runtime = deploy(&compile(src).unwrap_or_else(|e| panic!("{e}"))).unwrap();
-        DEPLOYED.with(|d| d.borrow_mut().insert(Word::from_u64(at), (runtime, HashMap::new())));
+        DEPLOYED.with(|d| {
+            d.borrow_mut()
+                .insert(Word::from_u64(at), (runtime, HashMap::new()))
+        });
     };
     // A direct call to a placed asset, keeping its storage when it succeeds.
     let asset_send = |at: u64, caller: u64, sig: &str, args: &[Arg]| -> Word {
         let (code, storage) = DEPLOYED.with(|d| d.borrow()[&Word::from_u64(at)].clone());
-        let out = exec(&code, &encode_args(sig, args), storage, Word::from_u64(caller), Word::from_u64(0), Word::from_u64(0)).unwrap();
+        let out = exec(
+            &code,
+            &encode_args(sig, args),
+            storage,
+            Word::from_u64(caller),
+            Word::from_u64(0),
+            Word::from_u64(0),
+        )
+        .unwrap();
         assert!(!out.reverted, "{sig}: {}", pretty(&out.returndata));
         DEPLOYED.with(|d| d.borrow_mut().get_mut(&Word::from_u64(at)).unwrap().1 = out.storage);
         load_bytes(&out.returndata, 0)
     };
     let open = |src: &str| {
-        let made = construct(&compile(src).unwrap_or_else(|e| panic!("{e}")), Word::from_u64(1), Word::from_u64(0)).unwrap();
+        let made = construct(
+            &compile(src).unwrap_or_else(|e| panic!("{e}")),
+            Word::from_u64(1),
+            Word::from_u64(0),
+        )
+        .unwrap();
         assert!(!made.reverted, "{}", pretty(&made.returndata));
-        Session { runtime: made.returndata, storage: made.storage, last: None }
+        Session {
+            runtime: made.returndata,
+            storage: made.storage,
+            last: None,
+        }
     };
     let (a, b, attacker) = (2u64, 3u64, 4u64);
     let deposit = "deposit(uint256,address)";
@@ -3625,10 +3816,22 @@ contract Vault is {{
     assert_eq!(v.word("maxDeposit(address)", &[w(a)]), top);
     assert_eq!(v.word("maxMint(address)", &[w(a)]), top);
     let erc4626_id = [
-        "asset()", "totalAssets()", "convertToShares(uint256)", "convertToAssets(uint256)",
-        "maxDeposit(address)", "previewDeposit(uint256)", "maxMint(address)", "previewMint(uint256)",
-        "maxWithdraw(address)", "previewWithdraw(uint256)", "maxRedeem(address)", "previewRedeem(uint256)",
-        deposit, mint, withdraw, redeem,
+        "asset()",
+        "totalAssets()",
+        "convertToShares(uint256)",
+        "convertToAssets(uint256)",
+        "maxDeposit(address)",
+        "previewDeposit(uint256)",
+        "maxMint(address)",
+        "previewMint(uint256)",
+        "maxWithdraw(address)",
+        "previewWithdraw(uint256)",
+        "maxRedeem(address)",
+        "previewRedeem(uint256)",
+        deposit,
+        mint,
+        withdraw,
+        redeem,
     ]
     .iter()
     .fold([0u8; 4], |id, sig| {
@@ -3637,26 +3840,45 @@ contract Vault is {{
     });
     let mut id = Word::from_u64(0).to_be_bytes();
     id[..4].copy_from_slice(&erc4626_id);
-    assert_eq!(v.word("supportsInterface(bytes4)", &[Arg::W(Word::from_be_bytes(id))]), Word::from_u64(1));
+    assert_eq!(
+        v.word(
+            "supportsInterface(bytes4)",
+            &[Arg::W(Word::from_be_bytes(id))]
+        ),
+        Word::from_u64(1)
+    );
 
     // Deposit and mint: the asset moves before the shares are minted, so the vault writes
     // nothing until its `transferFrom` has run.
     asset_send(0xa55e7, 1, "mint(address,uint256)", &[w(a), w(10_000)]);
     asset_send(0xa55e7, 1, "mint(address,uint256)", &[w(b), w(10_000)]);
-    asset_send(0xa55e7, a, "approve(address,uint256)", &[Arg::W(vault_addr), Arg::W(top)]);
+    asset_send(
+        0xa55e7,
+        a,
+        "approve(address,uint256)",
+        &[Arg::W(vault_addr), Arg::W(top)],
+    );
     assert!(!v.send(a, deposit, &[w(1000), w(0)]));
     v.reverted_with("ERC20InvalidReceiver(address)");
     // The revert undoes the asset's `transferFrom` too.
-    assert_eq!(asset_send(0xa55e7, 0, "balanceOf(address)", &[Arg::W(vault_addr)]), Word::from_u64(0));
+    assert_eq!(
+        asset_send(0xa55e7, 0, "balanceOf(address)", &[Arg::W(vault_addr)]),
+        Word::from_u64(0)
+    );
     assert!(v.send(a, deposit, &[w(1000), w(a)]));
     assert_eq!(low(load_bytes(&v.returned(), 0)), 1000);
     let out = v.last.as_ref().unwrap();
     let kinds = trace_kinds(&out.trace);
     let call = kinds.iter().position(|k| *k == "call").unwrap();
-    assert!(kinds[..call].iter().all(|k| *k != "sstore" && *k != "log"), "{kinds:?}");
+    assert!(
+        kinds[..call].iter().all(|k| *k != "sstore" && *k != "log"),
+        "{kinds:?}"
+    );
     let deposit_topic = keccak_word(b"Deposit(address,address,uint256,uint256)");
-    assert!(out.trace.iter().any(|e| matches!(e, Ev::Log { topics } if topics[0] == deposit_topic
-        && topics[1] == Word::from_u64(a) && topics[2] == Word::from_u64(a))));
+    assert!(out.trace.iter().any(
+        |e| matches!(e, Ev::Log { topics } if topics[0] == deposit_topic
+        && topics[1] == Word::from_u64(a) && topics[2] == Word::from_u64(a))
+    ));
     assert_eq!(v.word("balanceOf(address)", &[w(a)]), Word::from_u64(1000));
     assert_eq!(v.word("totalAssets()", &[]), Word::from_u64(1000));
     // Without an allowance the asset's own error comes back.
@@ -3665,17 +3887,48 @@ contract Vault is {{
 
     // A donation makes the rate uneven: 1007 assets for 1000 shares, and one virtual
     // share and asset. Each preview rounds against the caller.
-    asset_send(0xa55e7, b, "transfer(address,uint256)", &[Arg::W(vault_addr), w(7)]);
+    asset_send(
+        0xa55e7,
+        b,
+        "transfer(address,uint256)",
+        &[Arg::W(vault_addr), w(7)],
+    );
     let (assets, supply) = (1007u128, 1000u128);
-    let to_shares = |x: u128, up: bool| (x * (supply + 1) + if up { assets } else { 0 }) / (assets + 1);
-    let to_assets = |x: u128, up: bool| (x * (assets + 1) + if up { supply } else { 0 }) / (supply + 1);
+    let to_shares =
+        |x: u128, up: bool| (x * (supply + 1) + if up { assets } else { 0 }) / (assets + 1);
+    let to_assets =
+        |x: u128, up: bool| (x * (assets + 1) + if up { supply } else { 0 }) / (supply + 1);
     for x in [0u128, 1, 10, 999, 12_345] {
-        assert_eq!(low(v.word("convertToShares(uint256)", &[n(x)])), to_shares(x, false), "{x}");
-        assert_eq!(low(v.word("previewDeposit(uint256)", &[n(x)])), to_shares(x, false), "{x}");
-        assert_eq!(low(v.word("previewWithdraw(uint256)", &[n(x)])), to_shares(x, true), "{x}");
-        assert_eq!(low(v.word("convertToAssets(uint256)", &[n(x)])), to_assets(x, false), "{x}");
-        assert_eq!(low(v.word("previewRedeem(uint256)", &[n(x)])), to_assets(x, false), "{x}");
-        assert_eq!(low(v.word("previewMint(uint256)", &[n(x)])), to_assets(x, true), "{x}");
+        assert_eq!(
+            low(v.word("convertToShares(uint256)", &[n(x)])),
+            to_shares(x, false),
+            "{x}"
+        );
+        assert_eq!(
+            low(v.word("previewDeposit(uint256)", &[n(x)])),
+            to_shares(x, false),
+            "{x}"
+        );
+        assert_eq!(
+            low(v.word("previewWithdraw(uint256)", &[n(x)])),
+            to_shares(x, true),
+            "{x}"
+        );
+        assert_eq!(
+            low(v.word("convertToAssets(uint256)", &[n(x)])),
+            to_assets(x, false),
+            "{x}"
+        );
+        assert_eq!(
+            low(v.word("previewRedeem(uint256)", &[n(x)])),
+            to_assets(x, false),
+            "{x}"
+        );
+        assert_eq!(
+            low(v.word("previewMint(uint256)", &[n(x)])),
+            to_assets(x, true),
+            "{x}"
+        );
     }
     assert_eq!(low(v.word("previewWithdraw(uint256)", &[w(10)])), 10);
     assert_eq!(low(v.word("previewMint(uint256)", &[w(10)])), 11);
@@ -3692,10 +3945,16 @@ contract Vault is {{
     assert_eq!(low(v.word("maxRedeem(address)", &[w(a)])), 1000);
     assert!(!v.send(a, withdraw, &[n(most + 1), w(a), w(a)]));
     v.reverted_with("ERC4626ExceededMaxWithdraw(address,uint256,uint256)");
-    assert_eq!(&v.returned()[4..], &encode_args("", &[w(a), n(most + 1), n(most)])[4..]);
+    assert_eq!(
+        &v.returned()[4..],
+        &encode_args("", &[w(a), n(most + 1), n(most)])[4..]
+    );
     assert!(!v.send(a, redeem, &[w(1001), w(a), w(a)]));
     v.reverted_with("ERC4626ExceededMaxRedeem(address,uint256,uint256)");
-    assert_eq!(&v.returned()[4..], &encode_args("", &[w(a), w(1001), w(1000)])[4..]);
+    assert_eq!(
+        &v.returned()[4..],
+        &encode_args("", &[w(a), w(1001), w(1000)])[4..]
+    );
     let shares = (100 * (supply + 1) + assets) / (assets + 1);
     assert!(v.send(a, withdraw, &[w(100), w(5), w(a)]));
     assert_eq!(low(load_bytes(&v.returned(), 0)), shares);
@@ -3703,14 +3962,20 @@ contract Vault is {{
     let out = v.last.as_ref().unwrap();
     assert!(out.trace.iter().any(|e| matches!(e, Ev::Log { topics } if topics[0] == withdraw_topic
         && topics[1] == Word::from_u64(a) && topics[2] == Word::from_u64(5) && topics[3] == Word::from_u64(a))));
-    assert_eq!(asset_send(0xa55e7, 0, "balanceOf(address)", &[w(5)]), Word::from_u64(100));
+    assert_eq!(
+        asset_send(0xa55e7, 0, "balanceOf(address)", &[w(5)]),
+        Word::from_u64(100)
+    );
     assert_eq!(low(v.word("balanceOf(address)", &[w(a)])), 1000 - shares);
     // Someone else's shares need their allowance, which a redemption spends.
     assert!(!v.send(b, redeem, &[w(5), w(b), w(a)]));
     v.reverted_with("ERC20InsufficientAllowance(address,uint256,uint256)");
     assert!(v.send(a, "approve(address,uint256)", &[w(b), w(8)]));
     assert!(v.send(b, redeem, &[w(5), w(b), w(a)]));
-    assert_eq!(v.word("allowance(address,address)", &[w(a), w(b)]), Word::from_u64(3));
+    assert_eq!(
+        v.word("allowance(address,address)", &[w(a), w(b)]),
+        Word::from_u64(3)
+    );
     assert!(!v.send(b, redeem, &[w(5), w(b), w(a)]));
     v.reverted_with("ERC20InsufficientAllowance(address,uint256,uint256)");
     assert!(!v.send(a, withdraw, &[w(1), w(0), w(a)]));
@@ -3724,13 +3989,33 @@ contract Vault is {{
         let vs = 10u128.pow(u32::from(offset));
         assert_eq!(low(v.word("decimals()", &[])), 18 + u128::from(offset));
         let (fortune, stake) = (10u128.pow(18), 10u128.pow(18));
-        asset_send(at, 1, "mint(address,uint256)", &[w(attacker), n(fortune + 1)]);
+        asset_send(
+            at,
+            1,
+            "mint(address,uint256)",
+            &[w(attacker), n(fortune + 1)],
+        );
         asset_send(at, 1, "mint(address,uint256)", &[w(b), n(stake)]);
-        asset_send(at, attacker, "approve(address,uint256)", &[Arg::W(vault_addr), Arg::W(top)]);
-        asset_send(at, b, "approve(address,uint256)", &[Arg::W(vault_addr), Arg::W(top)]);
+        asset_send(
+            at,
+            attacker,
+            "approve(address,uint256)",
+            &[Arg::W(vault_addr), Arg::W(top)],
+        );
+        asset_send(
+            at,
+            b,
+            "approve(address,uint256)",
+            &[Arg::W(vault_addr), Arg::W(top)],
+        );
         assert!(v.send(attacker, deposit, &[w(1), w(attacker)]));
         assert_eq!(low(load_bytes(&v.returned(), 0)), vs);
-        asset_send(at, attacker, "transfer(address,uint256)", &[Arg::W(vault_addr), n(fortune)]);
+        asset_send(
+            at,
+            attacker,
+            "transfer(address,uint256)",
+            &[Arg::W(vault_addr), n(fortune)],
+        );
         assert!(v.send(b, deposit, &[n(stake), w(b)]));
         let victim = low(load_bytes(&v.returned(), 0));
         assert_eq!(victim, stake * (vs + vs) / (fortune + 1 + 1));
@@ -3775,12 +4060,20 @@ contract Vault is {{
         .replace("use ERC4626 exposing IERC4626, {", "use ERC4626 exposing {\n    view function asset() : address;\n    view function totalAssets() : uint;\n    view function convertToShares(assets : uint) : uint;\n    view function convertToAssets(shares : uint) : uint;\n    view function previewDeposit(assets : uint) : uint;\n    view function maxMint(receiver : address) : uint;\n    view function previewMint(shares : uint) : uint;\n    view function maxWithdraw(owner : address) : uint;\n    view function previewWithdraw(assets : uint) : uint;\n    view function maxRedeem(owner : address) : uint;\n    view function previewRedeem(shares : uint) : uint;\n    function mint(shares : uint; receiver : address) : uint\n      raises ERC4626ExceededMaxMint | SafeERC20FailedOperation | ERC20InvalidReceiver | ERC20InsufficientBalance | forwarded;\n    function withdraw(assets : uint; receiver : address; owner : address) : uint\n      raises ERC4626ExceededMaxWithdraw | ERC20InsufficientAllowance | ERC20InvalidApprover | ERC20InvalidSpender | ERC20InvalidSender | ERC20InsufficientBalance | SafeERC20FailedOperation | forwarded;\n    function redeem(shares : uint; receiver : address; owner : address) : uint\n      raises ERC4626ExceededMaxRedeem | ERC20InsufficientAllowance | ERC20InvalidApprover | ERC20InvalidSpender | ERC20InvalidSender | ERC20InsufficientBalance | SafeERC20FailedOperation | forwarded;");
     let mut v = open(&src);
     asset_send(0xa3, 1, "mint(address,uint256)", &[w(a), w(1000)]);
-    asset_send(0xa3, a, "approve(address,uint256)", &[Arg::W(vault_addr), Arg::W(top)]);
+    asset_send(
+        0xa3,
+        a,
+        "approve(address,uint256)",
+        &[Arg::W(vault_addr), Arg::W(top)],
+    );
     assert!(v.send(a, deposit, &[w(300), w(a)]));
     assert_eq!(v.word("maxDeposit(address)", &[w(a)]), Word::from_u64(200));
     assert!(!v.send(a, deposit, &[w(201), w(a)]));
     v.reverted_with("ERC4626ExceededMaxDeposit(address,uint256,uint256)");
-    assert_eq!(&v.returned()[4..], &encode_args("", &[w(a), w(201), w(200)])[4..]);
+    assert_eq!(
+        &v.returned()[4..],
+        &encode_args("", &[w(a), w(201), w(200)])[4..]
+    );
     assert!(v.send(a, deposit, &[w(200), w(a)]));
     assert_eq!(v.word("maxDeposit(address)", &[w(a)]), Word::from_u64(0));
 
@@ -3789,11 +4082,19 @@ contract Vault is {{
     let mut v = open(&vault_src(0xa4, 0, ""));
     assert_eq!(v.word("decimals()", &[]), Word::from_u64(6));
     asset_send(0xa4, 1, "mint(address,uint256)", &[w(a), w(50)]);
-    asset_send(0xa4, a, "approve(address,uint256)", &[Arg::W(vault_addr), w(50)]);
+    asset_send(
+        0xa4,
+        a,
+        "approve(address,uint256)",
+        &[Arg::W(vault_addr), w(50)],
+    );
     assert!(v.send(a, deposit, &[w(50), w(a)]));
     assert_eq!(v.word("totalAssets()", &[]), Word::from_u64(50));
     assert!(v.send(a, redeem, &[w(20), w(b), w(a)]));
-    assert_eq!(asset_send(0xa4, 0, "balanceOf(address)", &[w(b)]), Word::from_u64(20));
+    assert_eq!(
+        asset_send(0xa4, 0, "balanceOf(address)", &[w(b)]),
+        Word::from_u64(20)
+    );
 
     // An asset whose transfers answer `false` fails either way, and one without
     // `decimals` counts 18.
@@ -3849,7 +4150,10 @@ contract T is {
     Create.computeAddress(deployer, nonce)
 }
 "#;
-    let opts = Options { evm, ..Options::default() };
+    let opts = Options {
+        evm,
+        ..Options::default()
+    };
     let out = crate::compile(&memory(src), Path::new(ENTRY), &opts)
         .and_then(crate::Output::single)
         .map_err(first)
@@ -4107,7 +4411,9 @@ contract T is {
     let mut seed = 0x9e37_79b9_7f4a_7c15u64;
     for round in 0..400 {
         let len = (next(&mut seed) % 80) as usize;
-        let subject: Vec<u8> = (0..len).map(|_| b"ab"[(next(&mut seed) % 2) as usize]).collect();
+        let subject: Vec<u8> = (0..len)
+            .map(|_| b"ab"[(next(&mut seed) % 2) as usize])
+            .collect();
         let n = match round % 4 {
             0 => (next(&mut seed) % 4) as usize,
             1 => (next(&mut seed) % 40) as usize,
@@ -4117,7 +4423,9 @@ contract T is {
             let at = (next(&mut seed) % (len - n + 1) as u64) as usize;
             subject[at..at + n].to_vec()
         } else {
-            (0..n).map(|_| b"ab"[(next(&mut seed) % 2) as usize]).collect()
+            (0..n)
+                .map(|_| b"ab"[(next(&mut seed) % 2) as usize])
+                .collect()
         };
         let from = next(&mut seed) % (len as u64 + 3);
         let want = if needle.is_empty() {
@@ -4131,7 +4439,11 @@ contract T is {
             &ok_call(
                 &runtime,
                 "indexOf(bytes,bytes,uint256)",
-                &[Arg::B(subject.clone()), Arg::B(needle.clone()), Arg::W(Word::from_u64(from))],
+                &[
+                    Arg::B(subject.clone()),
+                    Arg::B(needle.clone()),
+                    Arg::W(Word::from_u64(from)),
+                ],
             ),
             0,
         );
@@ -4145,7 +4457,10 @@ contract T is {
         // The same subject as a slice, between bytes the search must not see.
         let pad = round % 3 * 17;
         let framed = [&b"z".repeat(pad)[..], &subject, &b"zz"[..]].concat();
-        let (a, b) = (Word::from_u64(pad as u64), Word::from_u64((pad + len) as u64));
+        let (a, b) = (
+            Word::from_u64(pad as u64),
+            Word::from_u64((pad + len) as u64),
+        );
         let got = load_bytes(
             &ok_call(
                 &runtime,
@@ -4160,8 +4475,14 @@ contract T is {
             ),
             0,
         );
-        assert_eq!(got, want.map_or(Word::from_u64(0).not(), Word::from_u64), "sliced {from}");
-        let replacement: Vec<u8> = (0..next(&mut seed) % 40).map(|k| b'x' + (k % 3) as u8).collect();
+        assert_eq!(
+            got,
+            want.map_or(Word::from_u64(0).not(), Word::from_u64),
+            "sliced {from}"
+        );
+        let replacement: Vec<u8> = (0..next(&mut seed) % 40)
+            .map(|k| b'x' + (k % 3) as u8)
+            .collect();
         let mut expect = Vec::new();
         if needle.is_empty() {
             for &c in &subject {
@@ -4184,13 +4505,28 @@ contract T is {
         let out = ok_call(
             &runtime,
             "replace(string,string,string)",
-            &[Arg::B(subject.clone()), Arg::B(needle.clone()), Arg::B(replacement.clone())],
+            &[
+                Arg::B(subject.clone()),
+                Arg::B(needle.clone()),
+                Arg::B(replacement.clone()),
+            ],
         );
-        assert_eq!(abi_string_value(&out), expect, "replace {:?}", String::from_utf8_lossy(&subject));
+        assert_eq!(
+            abi_string_value(&out),
+            expect,
+            "replace {:?}",
+            String::from_utf8_lossy(&subject)
+        );
         let out = ok_call(
             &runtime,
             "replaceIn(bytes,uint256,uint256,string,string)",
-            &[Arg::B(framed), Arg::W(a), Arg::W(b), Arg::B(needle.clone()), Arg::B(replacement)],
+            &[
+                Arg::B(framed),
+                Arg::W(a),
+                Arg::W(b),
+                Arg::B(needle.clone()),
+                Arg::B(replacement),
+            ],
         );
         assert_eq!(abi_string_value(&out), expect, "sliced replace");
     }
@@ -4225,7 +4561,15 @@ contract T is {
 "#;
     let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
     let text = b"abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ".to_vec();
-    for (n, every) in [(0u64, 0u64), (1, 0), (5, 0), (40, 0), (40, 3), (40, 1), (70, 7)] {
+    for (n, every) in [
+        (0u64, 0u64),
+        (1, 0),
+        (5, 0),
+        (40, 0),
+        (40, 3),
+        (40, 1),
+        (70, 7),
+    ] {
         let mut want = Vec::new();
         for i in 0..n as usize {
             let k = i % text.len();
@@ -4240,7 +4584,11 @@ contract T is {
         let out = ok_call(
             &runtime,
             "build(bytes,uint256,uint256)",
-            &[Arg::B(text.clone()), Arg::W(Word::from_u64(n)), Arg::W(Word::from_u64(every))],
+            &[
+                Arg::B(text.clone()),
+                Arg::W(Word::from_u64(n)),
+                Arg::W(Word::from_u64(every)),
+            ],
         );
         assert_eq!(abi_string_value(&out), want, "{n} {every}");
     }
@@ -4397,7 +4745,9 @@ contract T is {
     };
     for _ in 0..40 {
         let text = |len: u64, next: &mut dyn FnMut(u64) -> u64| -> String {
-            (0..len).map(|_| if next(8) == 0 { 'b' } else { 'a' }).collect()
+            (0..len)
+                .map(|_| if next(8) == 0 { 'b' } else { 'a' })
+                .collect()
         };
         let s = text(next(80), &mut next);
         let needle = text(next(40), &mut next);
@@ -4410,12 +4760,19 @@ contract T is {
                 .map(|i| i as u64)
         };
         assert_eq!(
-            word("indexOf(string,string,uint256)", &[b(&s), b(&needle), w(from)]),
+            word(
+                "indexOf(string,string,uint256)",
+                &[b(&s), b(&needle), w(from)]
+            ),
             want.map_or(not_found, Word::from_u64),
             "{s} {needle} {from}"
         );
         if !needle.is_empty() {
-            assert_eq!(replace(&s, &needle, "_"), s.replace(&needle, "_"), "{s} {needle}");
+            assert_eq!(
+                replace(&s, &needle, "_"),
+                s.replace(&needle, "_"),
+                "{s} {needle}"
+            );
         }
     }
 }
@@ -4485,11 +4842,7 @@ contract T is {
             [day],
             "{y}-{m}-{d}"
         );
-        assert_eq!(
-            words("epochDayToDate(uint256)", &[day]),
-            [y, m, d],
-            "{day}"
-        );
+        assert_eq!(words("epochDayToDate(uint256)", &[day]), [y, m, d], "{day}");
         assert_eq!(
             words("dateToTimestamp(uint256,uint256,uint256)", &[y, m, d]),
             [day * 86400]
@@ -4703,17 +5056,37 @@ fn stdlib_signatures_and_multiproofs() {
 
     // `tryRecover` answers where `recover` would raise, with zero for `None` here.
     let try_bytes = "tryRecover(bytes32,bytes)";
-    assert_eq!(u.word(try_bytes, &[Arg::W(hash), Arg::B(sig.clone())]), signer);
-    assert_eq!(u.word(try_bytes, &[Arg::W(hash), Arg::B(malleable.clone())]), zero);
-    assert_eq!(u.word(try_bytes, &[Arg::W(hash), Arg::B(sig[..64].to_vec())]), zero);
-    assert_eq!(u.word(try_bytes, &[Arg::W(hash), Arg::B(vec![])]), zero);
-    let try_vrs = "tryRecoverVrs(bytes32,uint8,bytes32,bytes32)";
     assert_eq!(
-        u.word(try_vrs, &[Arg::W(hash), w(u64::from(v)), Arg::W(r), Arg::W(s)]),
+        u.word(try_bytes, &[Arg::W(hash), Arg::B(sig.clone())]),
         signer
     );
     assert_eq!(
-        u.word(try_vrs, &[Arg::W(hash), w(u64::from(twin.0)), Arg::W(r), Arg::W(twin.1)]),
+        u.word(try_bytes, &[Arg::W(hash), Arg::B(malleable.clone())]),
+        zero
+    );
+    assert_eq!(
+        u.word(try_bytes, &[Arg::W(hash), Arg::B(sig[..64].to_vec())]),
+        zero
+    );
+    assert_eq!(u.word(try_bytes, &[Arg::W(hash), Arg::B(vec![])]), zero);
+    let try_vrs = "tryRecoverVrs(bytes32,uint8,bytes32,bytes32)";
+    assert_eq!(
+        u.word(
+            try_vrs,
+            &[Arg::W(hash), w(u64::from(v)), Arg::W(r), Arg::W(s)]
+        ),
+        signer
+    );
+    assert_eq!(
+        u.word(
+            try_vrs,
+            &[
+                Arg::W(hash),
+                w(u64::from(twin.0)),
+                Arg::W(r),
+                Arg::W(twin.1)
+            ]
+        ),
         zero
     );
     // A `v` the precompile rejects recovers no one.
@@ -4721,22 +5094,39 @@ fn stdlib_signatures_and_multiproofs() {
         u.word(try_vrs, &[Arg::W(hash), w(29), Arg::W(r), Arg::W(s)]),
         zero
     );
-    assert!(!u.send(0, "recoverVrs(bytes32,uint8,bytes32,bytes32)", &[Arg::W(hash), w(29), Arg::W(r), Arg::W(s)]));
+    assert!(!u.send(
+        0,
+        "recoverVrs(bytes32,uint8,bytes32,bytes32)",
+        &[Arg::W(hash), w(29), Arg::W(r), Arg::W(s)]
+    ));
     u.reverted_with("ECDSAInvalidSignature()");
     // EIP-2098: `v - 27` in the top bit of `s`.
-    let vs = if v == 28 { s.bitor(Word::from_u64(1).shl(255)) } else { s };
+    let vs = if v == 28 {
+        s.bitor(Word::from_u64(1).shl(255))
+    } else {
+        s
+    };
     assert_eq!(
-        u.word("tryRecoverCompact(bytes32,bytes32,bytes32)", &[Arg::W(hash), Arg::W(r), Arg::W(vs)]),
+        u.word(
+            "tryRecoverCompact(bytes32,bytes32,bytes32)",
+            &[Arg::W(hash), Arg::W(r), Arg::W(vs)]
+        ),
         signer
     );
     assert_eq!(
-        u.word("recoverCompact(bytes32,bytes32,bytes32)", &[Arg::W(hash), Arg::W(r), Arg::W(vs)]),
+        u.word(
+            "recoverCompact(bytes32,bytes32,bytes32)",
+            &[Arg::W(hash), Arg::W(r), Arg::W(vs)]
+        ),
         signer
     );
     // The other `v` recovers someone else.
     let flipped = vs.bitxor(Word::from_u64(1).shl(255));
     assert_ne!(
-        u.word("tryRecoverCompact(bytes32,bytes32,bytes32)", &[Arg::W(hash), Arg::W(r), Arg::W(flipped)]),
+        u.word(
+            "tryRecoverCompact(bytes32,bytes32,bytes32)",
+            &[Arg::W(hash), Arg::W(r), Arg::W(flipped)]
+        ),
         signer
     );
 
@@ -4765,7 +5155,10 @@ fn stdlib_signatures_and_multiproofs() {
     assert!(!check(&mut u, now, wallet, b"dirty"));
     // Reverting, silent, and echoing contracts all answer false without reverting.
     for callee in [0xee, 0xef, 0xce, 0xcd, 2] {
-        assert!(!check(&mut u, now, Word::from_u64(callee), &hash_bytes), "{callee:#x}");
+        assert!(
+            !check(&mut u, now, Word::from_u64(callee), &hash_bytes),
+            "{callee:#x}"
+        );
     }
 
     // Multiproofs from `@openzeppelin/merkle-tree`'s `SimpleMerkleTree.of` over
@@ -4837,7 +5230,10 @@ fn stdlib_signatures_and_multiproofs() {
     for (leaves, proof, fl) in vectors {
         let args = [words(proof), flags(fl), Arg::W(root), words(leaves)];
         assert_eq!(u.word(verify, &args), Word::from_u64(1), "{leaves:?}");
-        assert_eq!(u.word(multi_root, &[words(proof), flags(fl), words(leaves)]), root);
+        assert_eq!(
+            u.word(multi_root, &[words(proof), flags(fl), words(leaves)]),
+            root
+        );
         // A leaf that isn't in the tree fails.
         let mut wrong: Vec<&str> = leaves.to_vec();
         wrong[0] = "0000000000000000000000000000000000000000000000000000000000000001";
@@ -4846,26 +5242,58 @@ fn stdlib_signatures_and_multiproofs() {
     }
     let (leaves, proof, fl) = vectors[0];
     // Too few flags for the nodes given.
-    assert!(!u.send(0, verify, &[words(proof), flags(&fl[1..]), Arg::W(root), words(leaves)]));
+    assert!(!u.send(
+        0,
+        verify,
+        &[words(proof), flags(&fl[1..]), Arg::W(root), words(leaves)]
+    ));
     u.reverted_with("MerkleProofInvalidMultiproof()");
     // The flags leave a proof node unused, taking a node from the queue instead: the
     // multiproof OpenZeppelin 4.9.2 stopped accepting.
     let leaf = [leaves[0]];
     let two = [proof[0], proof[1]];
-    assert!(!u.send(0, verify, &[words(&two), flags(&[true, false]), Arg::W(root), words(&leaf)]));
+    assert!(!u.send(
+        0,
+        verify,
+        &[
+            words(&two),
+            flags(&[true, false]),
+            Arg::W(root),
+            words(&leaf)
+        ]
+    ));
     u.reverted_with("MerkleProofInvalidMultiproof()");
     // No leaves: a one-node proof proves that node, and anything more is invalid.
     let only = ["710426d6c25ffa16bd4a78dc6ea868f4b17858c4bc0741ca38181e98b14ddd86"];
-    assert_eq!(u.word(verify, &[words(&only), flags(&[]), Arg::W(root), words(&[])]), Word::from_u64(1));
-    assert!(!u.send(0, verify, &[words(&two), flags(&[false]), Arg::W(root), words(&[])]));
+    assert_eq!(
+        u.word(
+            verify,
+            &[words(&only), flags(&[]), Arg::W(root), words(&[])]
+        ),
+        Word::from_u64(1)
+    );
+    assert!(!u.send(
+        0,
+        verify,
+        &[words(&two), flags(&[false]), Arg::W(root), words(&[])]
+    ));
     u.reverted_with("MerkleProofInvalidMultiproof()");
     // One leaf is its own root.
-    assert_eq!(u.word(verify, &[words(&[]), flags(&[]), Arg::W(root), words(&only)]), Word::from_u64(1));
+    assert_eq!(
+        u.word(
+            verify,
+            &[words(&[]), flags(&[]), Arg::W(root), words(&only)]
+        ),
+        Word::from_u64(1)
+    );
 
     // ERC-5267: the fields bitmap, name, version, chain id, and this contract.
     assert!(u.send(0, "eip712Domain()", &[]));
     let ret = u.returned();
-    assert_eq!(load_bytes(&ret, 0), hexw("0f00000000000000000000000000000000000000000000000000000000000000"));
+    assert_eq!(
+        load_bytes(&ret, 0),
+        hexw("0f00000000000000000000000000000000000000000000000000000000000000")
+    );
     assert_eq!(dynamic_at(&ret, 1), b"Utils");
     assert_eq!(dynamic_at(&ret, 2), b"1");
     assert_eq!(load_bytes(&ret, 96), Word::from_u64(1));
@@ -4983,7 +5411,12 @@ fn multiproofs_match_openzeppelin() {
         let want = oz(&proof, &flags, &leaves);
         let args = [
             Arg::L(proof.clone()),
-            Arg::L(flags.iter().map(|&f| Word::from_u64(u64::from(f))).collect()),
+            Arg::L(
+                flags
+                    .iter()
+                    .map(|&f| Word::from_u64(u64::from(f)))
+                    .collect(),
+            ),
             Arg::L(leaves.clone()),
         ];
         let ok = u.send(0, "multiRoot(bytes32[],bool[],bytes32[])", &args);
@@ -5001,7 +5434,10 @@ fn multiproofs_match_openzeppelin() {
         }
         assert_eq!(got, want, "{proof:?} {flags:?} {leaves:?}");
     }
-    assert!(roots > 50 && invalid > 50 && panics > 50, "{roots} roots, {invalid} invalid, {panics} panics");
+    assert!(
+        roots > 50 && invalid > 50 && panics > 50,
+        "{roots} roots, {invalid} invalid, {panics} panics"
+    );
 }
 
 /// `Math`'s bit-length functions built for Prague (halving ladders) and for Osaka (`CLZ`)
@@ -5022,7 +5458,10 @@ contract M is {
 }
 "#;
     let build = |evm| {
-        let opts = Options { evm, ..Options::default() };
+        let opts = Options {
+            evm,
+            ..Options::default()
+        };
         let out = crate::compile(&memory(src), Path::new(ENTRY), &opts)
             .and_then(crate::Output::single)
             .map_err(first)
@@ -5035,13 +5474,25 @@ contract M is {
             if code[i] == 0x1e {
                 return true;
             }
-            i += 1 + if (0x60..=0x7f).contains(&code[i]) { usize::from(code[i] - 0x5f) } else { 0 };
+            i += 1 + if (0x60..=0x7f).contains(&code[i]) {
+                usize::from(code[i] - 0x5f)
+            } else {
+                0
+            };
         }
         false
     };
-    let (prague, osaka) = (build(crate::EvmVersion::Prague), build(crate::EvmVersion::Osaka));
+    let (prague, osaka) = (
+        build(crate::EvmVersion::Prague),
+        build(crate::EvmVersion::Osaka),
+    );
     assert!(!has_clz(&prague) && has_clz(&osaka));
-    assert!(osaka.len() < prague.len(), "{} vs {}", osaka.len(), prague.len());
+    assert!(
+        osaka.len() < prague.len(),
+        "{} vs {}",
+        osaka.len(),
+        prague.len()
+    );
     let one = Word::from_u64(1);
     let root = |a: Word, n: u32, top: u32| {
         let mut r = Word::from_u64(0);
@@ -5069,7 +5520,10 @@ contract M is {
             ("sqrt(uint256)", root(a, 2, 128)),
             ("cbrt(uint256)", root(a, 3, 86)),
             ("log2(uint256)", Word::from_u64(bits.saturating_sub(1))),
-            ("log256(uint256)", Word::from_u64(bits.saturating_sub(1) / 8)),
+            (
+                "log256(uint256)",
+                Word::from_u64(bits.saturating_sub(1) / 8),
+            ),
             ("clz(uint256)", Word::from_u64(256 - bits)),
         ];
         for runtime in [&prague, &osaka] {

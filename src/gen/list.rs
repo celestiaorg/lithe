@@ -1310,9 +1310,9 @@ impl<'a> Gen<'a> {
                 builtin: None,
                 ..
             } => Some((*sym, String::new())),
-            Expr::Field { base, name, .. } => {
-                self.place_path(base).map(|(sym, path)| (sym, path + "." + name))
-            }
+            Expr::Field { base, name, .. } => self
+                .place_path(base)
+                .map(|(sym, path)| (sym, path + "." + name)),
             Expr::Index { base, .. } => self.place_path(base).map(|(sym, path)| (sym, path + "[]")),
             _ => None,
         }
@@ -1331,15 +1331,24 @@ impl<'a> Gen<'a> {
             {
                 let mut lists = Vec::new();
                 self.path_lists(target, &mut lists);
-                if matches!(expr, Expr::Call { builtin: Some(Builtin::ListPop), .. })
-                    && self.copied_list(target)
+                if matches!(
+                    expr,
+                    Expr::Call {
+                        builtin: Some(Builtin::ListPop),
+                        ..
+                    }
+                ) && self.copied_list(target)
                 {
                     lists.push(target.as_ref());
                 }
-                for list in lists.into_iter().filter(|_| !self.checked.syms[*root].storage) {
+                for list in lists
+                    .into_iter()
+                    .filter(|_| !self.checked.syms[*root].storage)
+                {
                     if let Some((sym, path)) = self.place_path(list) {
                         let paths = found.borrow_mut();
-                        let mut paths = std::cell::RefMut::map(paths, |f| f.entry(sym).or_default());
+                        let mut paths =
+                            std::cell::RefMut::map(paths, |f| f.entry(sym).or_default());
                         if !paths.contains(&path) {
                             paths.push(path);
                         }
@@ -1669,7 +1678,11 @@ impl<'a> Gen<'a> {
 
     /// `xs[i]` of a list in memory whose elements are `n`-word records: the list and the
     /// index, for copying the element whole.
-    pub(super) fn heap_record_elem<'e>(&self, e: &'e Expr, n: u32) -> Option<(usize, u32, &'e Expr)> {
+    pub(super) fn heap_record_elem<'e>(
+        &self,
+        e: &'e Expr,
+        n: u32,
+    ) -> Option<(usize, u32, &'e Expr)> {
         let Expr::Index {
             base,
             root: Some(sym),
@@ -1686,7 +1699,7 @@ impl<'a> Gen<'a> {
             && self.mem_path(base)
             && self.list_value(lty)
             && self.list_stride(lty) == n)
-        .then_some((*sym, *leaf, index.as_ref()))
+            .then_some((*sym, *leaf, index.as_ref()))
     }
 
     /// `[src]` becomes `[]`, or with `keep` stays: the `n` words at `src` copied to the
@@ -1746,7 +1759,10 @@ impl<'a> Gen<'a> {
         grow: bool,
         own: Option<i32>,
     ) -> Result<bool, Error> {
-        if let Some(c) = self.const_word(index).filter(|c| !grow && c.lt(Word::from_u64(1 << 32))) {
+        if let Some(c) = self
+            .const_word(index)
+            .filter(|c| !grow && c.lt(Word::from_u64(1 << 32)))
+        {
             let c = c.to_be_bytes();
             let c = u64::from(u32::from_be_bytes([c[28], c[29], c[30], c[31]]));
             self.mload(at);
@@ -1900,7 +1916,10 @@ impl<'a> Gen<'a> {
     /// The words that record the room past the list a local at `at` holds: the list, then
     /// where the room ends. Lists held elsewhere get none.
     fn room(&mut self, at: i32) -> Option<i32> {
-        if !matches!(self.spaces[(at >> REGION_SHIFT) as usize - 1].region, Region::Local(_)) {
+        if !matches!(
+            self.spaces[(at >> REGION_SHIFT) as usize - 1].region,
+            Region::Local(_)
+        ) {
             return None;
         }
         if let Some(&room) = self.rooms.get(&at) {

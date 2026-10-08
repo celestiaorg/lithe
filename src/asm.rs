@@ -363,7 +363,11 @@ fn push_cost(code: &[u8]) -> f64 {
             MUL | DIV => 5,
             _ => 3,
         };
-        i += 1 + if (0x60..=0x7f).contains(&op) { usize::from(op - 0x5f) } else { 0 };
+        i += 1 + if (0x60..=0x7f).contains(&op) {
+            usize::from(op - 0x5f)
+        } else {
+            0
+        };
     }
     byte_gas() * code.len() as f64 + f64::from(gas)
 }
@@ -827,9 +831,10 @@ fn rewrite(w: &[Inst]) -> Option<(usize, Vec<Inst>)> {
         }
         [Push(x), Op(ISZERO), ..] => Some((2, vec![Push(if x.is_zero() { one } else { zero })])),
         // A constant divisor's zero check.
-        [Push(x), Op(DUP1), Op(ISZERO), ..] => {
-            Some((3, vec![Push(*x), Push(if x.is_zero() { one } else { zero })]))
-        }
+        [Push(x), Op(DUP1), Op(ISZERO), ..] => Some((
+            3,
+            vec![Push(*x), Push(if x.is_zero() { one } else { zero })],
+        )),
         [Push(x), Op(NOT), ..] => Some((2, vec![Push(x.not())])),
         [Push(x), Op(CLZ), ..] => Some((2, vec![Push(Word::from_u64(u64::from(256 - x.bits())))])),
         [Push(z), Op(ADD | OR | XOR | SHL | SHR | SAR), ..] if z.is_zero() => Some((2, vec![])),
@@ -855,7 +860,10 @@ fn rewrite(w: &[Inst]) -> Option<(usize, Vec<Inst>)> {
         [Push(o), Op(MUL), ..] if *o == one => Some((2, vec![])),
         // A shift costs 3 gas to a multiply's 5, and `k` never takes more bytes than `2^k`.
         [Push(c), Op(MUL), ..] if trailing_zeros(*c) < 256 && *c == one.shl(trailing_zeros(*c)) => {
-            Some((2, vec![Push(Word::from_u64(u64::from(trailing_zeros(*c)))), Op(SHL)]))
+            Some((
+                2,
+                vec![Push(Word::from_u64(u64::from(trailing_zeros(*c)))), Op(SHL)],
+            ))
         }
         [Push(z), Op(SWAP1), Op(SUB), ..] if z.is_zero() => Some((3, vec![])),
         [Push(o), Op(SWAP1), Op(DIV), ..] if *o == one => Some((3, vec![])),
@@ -1279,7 +1287,10 @@ fn merge_tails(code: &mut Vec<Inst>) -> bool {
             next += 1;
             next - 1
         };
-        edits.push((give.end + 1 - n..give.end + 1, vec![PushLabel(label), Op(JUMP)]));
+        edits.push((
+            give.end + 1 - n..give.end + 1,
+            vec![PushLabel(label), Op(JUMP)],
+        ));
         if !whole {
             let at = keep.end + 1 - n;
             edits.push((at..at, vec![Label(label)]));
@@ -1554,7 +1565,11 @@ impl Exits {
         for w in before[..a].iter_mut().chain(after) {
             let stale = w.read.iter().any(|&(s, e)| s < sp.old_hi && e > sp.lo)
                 || w.looked.iter().any(|l| moved.contains(l));
-            let at = if w.at >= sp.old_hi { sp.moved(w.at) } else { w.at };
+            let at = if w.at >= sp.old_hi {
+                sp.moved(w.at)
+            } else {
+                w.at
+            };
             if stale {
                 let new = exit_walk(code, at, usable, find);
                 changed |= new.ok != w.ok;
@@ -1576,7 +1591,12 @@ impl Exits {
         changed |= self.walks[a..b].iter().any(|w| w.ok) || fresh.iter().any(|w| w.ok);
         self.walks.splice(a..b, fresh);
         if changed {
-            let set: FxHashSet<u32> = self.walks.iter().filter(|w| w.ok).map(|w| w.label).collect();
+            let set: FxHashSet<u32> = self
+                .walks
+                .iter()
+                .filter(|w| w.ok)
+                .map(|w| w.label)
+                .collect();
             changed = set != self.set;
             self.set = set;
         }
@@ -1822,16 +1842,18 @@ fn outline_once(code: &mut Vec<Inst>, t: &mut Tokens, entries: &[u32], params: b
                 None => per_entry.push((owner[s], heat[s])),
             }
         }
-        let shared = per_entry.iter().find(|e| e.0 == SHARED).map_or(0.0, |e| e.1);
+        let shared = per_entry
+            .iter()
+            .find(|e| e.0 == SHARED)
+            .map_or(0.0, |e| e.1);
         let calls = shared
             + per_entry
                 .iter()
                 .filter(|e| e.0 != SHARED)
                 .fold(0.0, |m, e| f64::max(m, e.1));
         let slower = calls * (CALL_GAS + 3.0 * swaps as f64) / byte_gas();
-        let saved = inline as i64
-            - (picked.len() * CALL_BYTES + helper) as i64
-            - slower.ceil() as i64;
+        let saved =
+            inline as i64 - (picked.len() * CALL_BYTES + helper) as i64 - slower.ceil() as i64;
         Some(Outline {
             saved,
             first,
@@ -2139,7 +2161,8 @@ impl Runs {
             new.start
                 .extend(self.start[kk..].iter().map(|&s| s - sp.old_hi + sp.new_hi));
             new.ends_in_exit.extend_from_slice(&self.ends_in_exit[kk..]);
-            new.run.extend(self.run[from..].iter().map(|&r| r - kk + first));
+            new.run
+                .extend(self.run[from..].iter().map(|&r| r - kk + first));
             new.depth.extend_from_slice(&self.depth[from..]);
         }
         (new, r0..stop)
@@ -2159,8 +2182,16 @@ impl Splice {
     /// The change `apply_edits` makes with `edits` to code of `len` instructions.
     fn of(edits: &[(usize, usize, Vec<Inst>)], len: usize) -> Self {
         let lo = edits.iter().map(|e| e.0).min().unwrap_or(0);
-        let old_hi = edits.iter().map(|e| e.0 + e.1).max().unwrap_or(0).clamp(lo, len);
-        let grown: isize = edits.iter().map(|e| e.2.len() as isize - e.1 as isize).sum();
+        let old_hi = edits
+            .iter()
+            .map(|e| e.0 + e.1)
+            .max()
+            .unwrap_or(0)
+            .clamp(lo, len);
+        let grown: isize = edits
+            .iter()
+            .map(|e| e.2.len() as isize - e.1 as isize)
+            .sum();
         Splice {
             lo,
             old_hi,
@@ -2227,7 +2258,8 @@ impl Uses {
             fix(stores, &s);
         }
         self.words.extend(found.words);
-        self.words.retain(|_, (loads, stores)| !loads.is_empty() || !stores.is_empty());
+        self.words
+            .retain(|_, (loads, stores)| !loads.is_empty() || !stores.is_empty());
         let a = self.all.partition_point(|u| u.0 < from);
         let b = self.all.partition_point(|u| u.0 < sp.old_hi);
         for u in &mut self.all[b..] {
@@ -2254,14 +2286,22 @@ impl Loops {
     /// Label `l`'s loop, if it begins one.
     fn head(labels: &LabelIndex, uses: &Uses, l: u32) -> Option<(usize, usize, u32, Vec<u32>)> {
         let s = *labels.at.get(&l)?;
-        let back = labels.pushes.get(&l).and_then(|v| v.last()).copied().filter(|&q| q > s)?;
+        let back = labels
+            .pushes
+            .get(&l)
+            .and_then(|v| v.last())
+            .copied()
+            .filter(|&q| q > s)?;
         Some((s, back, l, Self::words(uses, s, back)))
     }
 
     fn words(uses: &Uses, s: usize, back: usize) -> Vec<u32> {
         let from = uses.all.partition_point(|u| u.0 < s);
-        let mut words: Vec<u32> =
-            uses.all[from..].iter().take_while(|u| u.0 < back).map(|u| u.1).collect();
+        let mut words: Vec<u32> = uses.all[from..]
+            .iter()
+            .take_while(|u| u.0 < back)
+            .map(|u| u.1)
+            .collect();
         words.sort_unstable();
         words.dedup();
         words
@@ -2270,7 +2310,14 @@ impl Loops {
     /// The loops of `code`, which `sp` made of the code these are the loops of, where `gone`
     /// was, from its labels and uses: loops whose labels the change holds or refers to are
     /// found again, and the words of those whose code it touched.
-    fn update(&mut self, code: &[Inst], labels: &LabelIndex, uses: &Uses, sp: Splice, gone: &[Inst]) {
+    fn update(
+        &mut self,
+        code: &[Inst],
+        labels: &LabelIndex,
+        uses: &Uses,
+        sp: Splice,
+        gone: &[Inst],
+    ) {
         let mut touched: FxHashSet<u32> = FxHashSet::default();
         for inst in gone.iter().chain(&code[sp.lo..sp.new_hi]) {
             match inst {
@@ -2290,7 +2337,11 @@ impl Loops {
                 *words = Self::words(uses, *s, *back);
             }
         }
-        self.0.extend(touched.into_iter().filter_map(|l| Self::head(labels, uses, l)));
+        self.0.extend(
+            touched
+                .into_iter()
+                .filter_map(|l| Self::head(labels, uses, l)),
+        );
         self.0.sort_unstable_by_key(|h| h.0);
     }
 }
@@ -2547,7 +2598,11 @@ impl Live {
                 let next = words.len() as u32;
                 let w = *word.entry(a).or_insert_with(|| {
                     words.push(a);
-                    if tracked(a) { next } else { u32::MAX }
+                    if tracked(a) {
+                        next
+                    } else {
+                        u32::MAX
+                    }
                 });
                 if w != u32::MAX {
                     events.push((b as u32, w, op == MLOAD));
@@ -2579,7 +2634,18 @@ impl Live {
         }
         let label_block = |l: u32| at.get(l);
         let block_of = |i: usize| block[i];
-        successors(code, calls, &starts, &ends, &block_of, &label_block, &mut succ, &mut via, &mut first, &mut open);
+        successors(
+            code,
+            calls,
+            &starts,
+            &ends,
+            &block_of,
+            &label_block,
+            &mut succ,
+            &mut via,
+            &mut first,
+            &mut open,
+        );
         predecessors(nb, &succ, &first, &mut pred_first, &mut pred);
         queued.clear();
         queued.resize(nb, true);
@@ -2654,7 +2720,11 @@ impl Live {
     ) -> bool {
         let n = code.len();
         let old_n = self.ends.last().copied().unwrap_or(0);
-        let Some(bits) = changed.iter().map(|a| self.bit.get(a).copied()).collect::<Option<Vec<usize>>>() else {
+        let Some(bits) = changed
+            .iter()
+            .map(|a| self.bit.get(a).copied())
+            .collect::<Option<Vec<usize>>>()
+        else {
             return false;
         };
         if old_n == 0 || n == 0 {
@@ -2667,14 +2737,21 @@ impl Live {
                 _ => None,
             })
             .collect();
-        if gone.iter().any(|inst| matches!(inst, Label(l) if !kept.contains(l))) {
+        if gone
+            .iter()
+            .any(|inst| matches!(inst, Label(l) if !kept.contains(l)))
+        {
             return false;
         }
         let width = self.width;
         let nb_old = self.ends.len();
         // The old blocks around the change, and the code they span, before and after it.
         let bl = if sp.lo == 0 { 0 } else { self.block(sp.lo - 1) };
-        let bh = if sp.old_hi >= old_n { nb_old - 1 } else { self.block(sp.old_hi) };
+        let bh = if sp.old_hi >= old_n {
+            nb_old - 1
+        } else {
+            self.block(sp.old_hi)
+        };
         let s0 = self.starts[bl];
         let e1 = self.ends[bh] - sp.old_hi + sp.new_hi;
         let mut found = vec![s0];
@@ -2719,7 +2796,10 @@ impl Live {
         }
         let nb = self.ends.len();
         let rows = |v: &mut Vec<u64>| {
-            v.splice(bl * width..(bh + 1) * width, std::iter::repeat_n(0, k * width));
+            v.splice(
+                bl * width..(bh + 1) * width,
+                std::iter::repeat_n(0, k * width),
+            );
         };
         let starts = &self.starts;
         let LiveSpare {
@@ -2755,7 +2835,16 @@ impl Live {
         let mut new_open = Vec::with_capacity(k);
         for b in bl..bl + k {
             new_first.push(new_succ.len());
-            new_open.push(block_successors(code, calls, starts[b], self.ends[b], &block, &at, &mut new_succ, &mut new_via));
+            new_open.push(block_successors(
+                code,
+                calls,
+                starts[b],
+                self.ends[b],
+                &block,
+                &at,
+                &mut new_succ,
+                &mut new_via,
+            ));
         }
         let (x0, x1) = (first[bl], first[bh + 1]);
         let more = new_succ.len() as isize - (x1 - x0) as isize;
@@ -2865,7 +2954,9 @@ impl Live {
             .map(|&w| {
                 let x = self.bit.get(&w);
                 let bits = (0..self.ends.len())
-                    .map(|b| x.is_some_and(|&x| self.out[b * self.width + x / 64] & (1 << (x % 64)) != 0))
+                    .map(|b| {
+                        x.is_some_and(|&x| self.out[b * self.width + x / 64] & (1 << (x % 64)) != 0)
+                    })
                     .collect();
                 (w, bits)
             })
@@ -3308,7 +3399,10 @@ pub(crate) fn static_heap(
     // The allocator's body, which a call runs besides its own four instructions.
     let helper = cfg.at.get(&alloc).map_or(&code[..0], |&hb| {
         let s = cfg.starts[hb];
-        let e = code[s..].iter().position(|x| *x == Op(JUMP)).map_or(code.len(), |k| s + k + 1);
+        let e = code[s..]
+            .iter()
+            .position(|x| *x == Op(JUMP))
+            .map_or(code.len(), |k| s + k + 1);
         &code[s..e]
     });
     let heat = heat(code);
@@ -3469,7 +3563,9 @@ pub(crate) fn static_heap(
     };
     // The top where helper `h` returns, from the ends of its returns so far.
     let left = |h: u32, out: &[Top]| -> Top {
-        exits[&h].iter().fold(Top::Unreached, |t, &r| t.join(out[r]))
+        exits[&h]
+            .iter()
+            .fold(Top::Unreached, |t, &r| t.join(out[r]))
     };
     // A helper's entry starts as the constant its first callers agree on. Once a caller
     // disagrees, it is measured from itself instead, which what was found from the
@@ -3541,7 +3637,9 @@ pub(crate) fn static_heap(
     // Where every call is inlined, the allocator's own bytes go too.
     let reached = code.iter().enumerate().all(|(i, inst)| {
         *inst != PushLabel(alloc)
-            || i > 0 && call_at(code, i - 1, calls).is_some() && entry[cfg.block[i]] != Top::Unreached
+            || i > 0
+                && call_at(code, i - 1, calls).is_some()
+                && entry[cfg.block[i]] != Top::Unreached
     });
     let all = every
         || (reached && maybe.iter().map(|m| m.0).sum::<f64>() + byte_gas * bytes(helper) > 0.0);
@@ -3616,7 +3714,8 @@ pub(crate) fn promote(
         };
         match region {
             Some((sp, words, gone)) if same_exits => {
-                let (new, scanned) = runs.update(code, calls, exits, sp, std::mem::take(&mut spare));
+                let (new, scanned) =
+                    runs.update(code, calls, exits, sp, std::mem::take(&mut spare));
                 spare = std::mem::replace(&mut runs, new);
                 uses.update(code, tracked, sp);
                 loops.update(code, &labels, &uses, sp, &gone);
@@ -3637,7 +3736,11 @@ pub(crate) fn promote(
             }
         }
         if verify() {
-            assert_eq!(runs, self::runs(code, calls, exits, Runs::default()), "runs");
+            assert_eq!(
+                runs,
+                self::runs(code, calls, exits, Runs::default()),
+                "runs"
+            );
             assert_eq!(uses, Uses::new(code, tracked), "uses");
             assert_eq!(loops, Loops::new(code, &labels, &uses), "loops");
             let heads: Vec<(usize, usize, u32, Vec<u32>)> = code
@@ -3645,7 +3748,12 @@ pub(crate) fn promote(
                 .enumerate()
                 .filter_map(|(s, inst)| {
                     let Label(l) = inst else { return None };
-                    let back = labels.pushes.get(l).and_then(|v| v.last()).copied().filter(|&q| q > s)?;
+                    let back = labels
+                        .pushes
+                        .get(l)
+                        .and_then(|v| v.last())
+                        .copied()
+                        .filter(|&q| q > s)?;
                     let mut words: Vec<u32> = code[s..back]
                         .iter()
                         .filter_map(|inst| match inst {
@@ -3665,9 +3773,16 @@ pub(crate) fn promote(
         }
         if verify() && updated {
             let full = Live::new(code, tracked, calls, Live::default());
-            assert_eq!((&live.starts, &live.ends, &live.open), (&full.starts, &full.ends, &full.open), "live blocks");
+            assert_eq!(
+                (&live.starts, &live.ends, &live.open),
+                (&full.starts, &full.ends, &full.open),
+                "live blocks"
+            );
             let words: FxHashSet<u32> = live.bit.keys().chain(full.bit.keys()).copied().collect();
-            assert!(live.live_words(&words) == full.live_words(&words), "live words");
+            assert!(
+                live.live_words(&words) == full.live_words(&words),
+                "live words"
+            );
         }
         let straight = |at: &mut dyn Iterator<Item = usize>| {
             let mut edits: Vec<(usize, usize, Vec<Inst>)> = Vec::new();
@@ -3695,7 +3810,11 @@ pub(crate) fn promote(
             None => straight(&mut (0..code.len().saturating_sub(1))),
         };
         if verify() && stores.is_some() {
-            assert_eq!(edits, straight(&mut (0..code.len().saturating_sub(1))).0, "straight");
+            assert_eq!(
+                edits,
+                straight(&mut (0..code.len().saturating_sub(1))).0,
+                "straight"
+            );
         }
         if edits.is_empty() {
             match promote_region(
@@ -3934,7 +4053,8 @@ fn promote_region(
     // its word becomes a `DUP`, a byte shorter, and each store a `SWAP` and `POP`.
     let rest = |a: u32, start: usize| {
         let after = |at: &[usize]| (at.len() - at.partition_point(|&k| k < start)) as i64;
-        uses.get(&a).map_or(0, |(loads, stores)| 2 * after(loads) + after(stores))
+        uses.get(&a)
+            .map_or(0, |(loads, stores)| 2 * after(loads) + after(stores))
     };
     // The saving that beats every candidate so far, as the candidates go in order.
     let beats = |best: &Option<(Entry, u32, i64)>| best.map_or(0, |b| b.2);
@@ -3989,7 +4109,10 @@ fn promote_region(
                 }
             }
         };
-        assert!(!verify() || saved.is_none_or(|s| s > 0 && s <= bound), "bound");
+        assert!(
+            !verify() || saved.is_none_or(|s| s > 0 && s <= bound),
+            "bound"
+        );
         if verify() {
             let fresh = plan_region(
                 code,
@@ -4005,14 +4128,18 @@ fn promote_region(
             );
             assert_eq!(saved, fresh.map(|r| r.saved), "cached region plan");
         }
-        assert!(!verify() || bound == {
-            let (entry_saved, from) = match entry {
-                Entry::Store(i, under) => (3 - i64::from(under), i + 2),
-                Entry::StoreUnder(i) => (3, i + 2),
-                Entry::Load(s) => (-3, s),
-            };
-            entry_saved + rest(a, from)
-        }, "bound value");
+        assert!(
+            !verify()
+                || bound == {
+                    let (entry_saved, from) = match entry {
+                        Entry::Store(i, under) => (3 - i64::from(under), i + 2),
+                        Entry::StoreUnder(i) => (3, i + 2),
+                        Entry::Load(s) => (-3, s),
+                    };
+                    entry_saved + rest(a, from)
+                },
+            "bound value"
+        );
         if let Some(saved) = saved.filter(|&s| best.is_none_or(|b| s > b.2)) {
             *best = Some((entry, a, saved));
         }
@@ -4029,7 +4156,11 @@ fn promote_region(
                 Label(l) => calls.get(&l).map_or(0, |&(takes, _)| takes as i64),
                 _ => 0,
             };
-            let most = if args > 0 { runs.depth[i] - 1 + args } else { sink };
+            let most = if args > 0 {
+                runs.depth[i] - 1 + args
+            } else {
+                sink
+            };
             let rest = rest(a, i + 2);
             for under in 0..=(runs.depth[i] - 1 + args).clamp(0, most.min(15)) as u8 {
                 // Each item more the value sinks under costs a `SWAP`.
@@ -4043,7 +4174,7 @@ fn promote_region(
                 consider(&mut best, Entry::StoreUnder(i), a, 3 + rest);
             }
         }
-    };
+    }
     // A loop head the word is not stored before, as a local left at its initial zero: the
     // region loads it on the way in.
     for (s, _, _, words) in &loops.0 {
@@ -4067,7 +4198,9 @@ fn promote_region(
             if !verify() && rest(a, low) - 3 <= beats(&best) {
                 continue;
             }
-            let (loads, stores) = uses.get(&a).map_or((&[][..], &[][..]), |u| (&u.0[..], &u.1[..]));
+            let (loads, stores) = uses
+                .get(&a)
+                .map_or((&[][..], &[][..]), |u| (&u.0[..], &u.1[..]));
             let (mut l, mut st) = (
                 loads.partition_point(|&k| k < s),
                 stores.partition_point(|&k| k < s),
@@ -4083,7 +4216,7 @@ fn promote_region(
                 consider(&mut best, Entry::Load(p), a, bound);
             }
         }
-    };
+    }
     let Some((entry, a, _)) = best else {
         return Promoted::Nothing;
     };
@@ -4320,7 +4453,9 @@ fn walk_alias(
             continue;
         }
         if let Some((takes, leaves)) = call_at(code, k, calls) {
-            let Some(d) = depth.filter(|&d| d >= takes as i64) else { break };
+            let Some(d) = depth.filter(|&d| d >= takes as i64) else {
+                break;
+            };
             depth = Some(d - takes as i64 + leaves as i64);
             k += 4;
             continue;
@@ -4394,7 +4529,9 @@ fn walk_alias(
                 }
             }
             Op(op) => {
-                let Some((pops, pushes)) = stack_io(op) else { break };
+                let Some((pops, pushes)) = stack_io(op) else {
+                    break;
+                };
                 if (pops as i64) > d || op == JUMP || op == JUMPI {
                     break;
                 }
@@ -4486,7 +4623,10 @@ impl LabelIndex {
             }
             v.splice(a..b, with.unwrap_or_default());
         };
-        for (map, mut new) in [(&mut self.refs, found.refs), (&mut self.pushes, found.pushes)] {
+        for (map, mut new) in [
+            (&mut self.refs, found.refs),
+            (&mut self.pushes, found.pushes),
+        ] {
             for (l, v) in map.iter_mut() {
                 fix(v, new.remove(l));
             }
@@ -5281,9 +5421,9 @@ pub(crate) fn rotate_loops(code: &mut Vec<Inst>) {
             continue;
         };
         let done = *done;
-        let back = (jumpi + 1..code.len().saturating_sub(1))
-            .rev()
-            .find(|&e| matches!(code[e], PushLabel(l) if tops.contains(&l)) && code[e + 1] == Op(JUMP));
+        let back = (jumpi + 1..code.len().saturating_sub(1)).rev().find(|&e| {
+            matches!(code[e], PushLabel(l) if tops.contains(&l)) && code[e + 1] == Op(JUMP)
+        });
         let Some(e) = back else {
             i = heads;
             continue;
@@ -5420,7 +5560,18 @@ fn plan_load(
     if loads.is_empty() {
         return None;
     }
-    let mut edits = hold(code, i, runs.depth[i], &loads, run_end, run_end, true, true, runs, calls)?;
+    let mut edits = hold(
+        code,
+        i,
+        runs.depth[i],
+        &loads,
+        run_end,
+        run_end,
+        true,
+        true,
+        runs,
+        calls,
+    )?;
     edits.push((i + 2, 0, vec![Op(DUP1)]));
     Some(edits)
 }
@@ -5674,7 +5825,11 @@ impl Sim {
             PushLabel(l) => self.stack.push(Val::Label(l)),
             Op(op @ 0x80..=0x8f) => {
                 let d = usize::from(op - 0x7f);
-                let v = self.stack.len().checked_sub(d).map_or(Val::Any, |k| self.stack[k]);
+                let v = self
+                    .stack
+                    .len()
+                    .checked_sub(d)
+                    .map_or(Val::Any, |k| self.stack[k]);
                 self.stack.push(v);
             }
             Op(op @ 0x90..=0x9f) => {
@@ -5797,7 +5952,9 @@ impl Walker<'_> {
                 h.fill(false);
             }
             for (i, &b) in walk.iter().enumerate() {
-                let Some(mut st) = states[i].take() else { continue };
+                let Some(mut st) = states[i].take() else {
+                    continue;
+                };
                 if let Some(h) = hit.as_deref_mut() {
                     h[b] = true;
                 }
@@ -5809,14 +5966,21 @@ impl Walker<'_> {
                         _ => st = Sim::default(),
                     }
                 }
-                let (s, e) = (self.starts[b], self.starts.get(b + 1).copied().unwrap_or(self.code.len()));
+                let (s, e) = (
+                    self.starts[b],
+                    self.starts.get(b + 1).copied().unwrap_or(self.code.len()),
+                );
                 let Some(left) = budget.checked_sub(e - s) else {
                     *budget = 0;
                     return None;
                 };
                 *budget = left;
                 let last = self.code[e - 1];
-                let body = if matches!(last, Op(JUMP | JUMPI)) { e - 1 } else { e };
+                let body = if matches!(last, Op(JUMP | JUMPI)) {
+                    e - 1
+                } else {
+                    e
+                };
                 for inst in &self.code[s..body] {
                     st.run(*inst);
                 }
@@ -5829,7 +5993,8 @@ impl Walker<'_> {
                 let mut carry: Vec<(usize, Sim)> = Vec::new();
                 let mut blocked = None;
                 let mut through_callee = false;
-                let mut out = |l: u32, r: Sim, carry: &mut Vec<(usize, Sim)>| match self.at.get(&l) {
+                let mut out = |l: u32, r: Sim, carry: &mut Vec<(usize, Sim)>| match self.at.get(&l)
+                {
                     Some(&x) if pos.contains_key(&x) => carry.push((x, r)),
                     Some(_) => exits.push((l, r)),
                     None => followed = false,
@@ -5881,7 +6046,10 @@ impl Walker<'_> {
                     };
                     let given = carry.iter().position(|c| c.0 == x);
                     if self.back[b].contains(&x) {
-                        meet(&mut back_in[j], given.map_or_else(Sim::default, |k| carry[k].1.clone()));
+                        meet(
+                            &mut back_in[j],
+                            given.map_or_else(Sim::default, |k| carry[k].1.clone()),
+                        );
                         continue;
                     }
                     match given {
@@ -6015,7 +6183,9 @@ fn site_reach(
             while chain.len() < SITE_CHAIN {
                 let b = *chain.last().expect("the site");
                 let mut ps = preds[b].iter().copied().filter(|&p| fwd(p, b));
-                let (Some(p), None) = (ps.next(), ps.next()) else { break };
+                let (Some(p), None) = (ps.next(), ps.next()) else {
+                    break;
+                };
                 if !call_preds[b].is_empty()
                     || !walker.back_preds[b].is_empty()
                     || succ[p].iter().any(|x| x.1)
@@ -6028,7 +6198,11 @@ fn site_reach(
             let mut init = Sim::default();
             for &b in chain.iter().rev() {
                 let last = code[end(b) - 1];
-                let body = if matches!(last, Op(JUMP | JUMPI)) { end(b) - 1 } else { end(b) };
+                let body = if matches!(last, Op(JUMP | JUMPI)) {
+                    end(b) - 1
+                } else {
+                    end(b)
+                };
                 for inst in &code[starts[b]..body] {
                     init.run(*inst);
                 }
@@ -6072,7 +6246,9 @@ fn flow(
     code: &[Inst],
     starts_at: &[u32],
     sum: bool,
-) -> (Vec<f64>, Vec<u32>, Vec<(usize, Vec<f64>)>) { flow_(code, starts_at, sum) }
+) -> (Vec<f64>, Vec<u32>, Vec<(usize, Vec<f64>)>) {
+    flow_(code, starts_at, sum)
+}
 fn flow_(
     code: &[Inst],
     starts_at: &[u32],
@@ -6246,7 +6422,10 @@ fn flow_(
             owner[b] = Some(k as u32);
         }
     }
-    let roots: FxHashSet<usize> = starts_at.iter().filter_map(|l| at.get(l).copied()).collect();
+    let roots: FxHashSet<usize> = starts_at
+        .iter()
+        .filter_map(|l| at.get(l).copied())
+        .collect();
     let mut ready: Vec<usize> = (0..blocks).filter(|&b| indeg[b] == 0).collect();
     let mut order = Vec::with_capacity(blocks);
     while let Some(b) = ready.pop() {
@@ -6344,7 +6523,11 @@ fn flow_(
                                 .filter(|(_, hit)| hit.as_ref().is_none_or(|h| h[o]))
                                 .map(|&(c, _)| runs(c, k))
                                 .sum();
-                            if all > 0.0 { reached / all } else { 1.0 }
+                            if all > 0.0 {
+                                reached / all
+                            } else {
+                                1.0
+                            }
                         })
                         .collect();
                     share[o] = Some(part);
@@ -6388,7 +6571,10 @@ fn flow_(
     }
     (
         block_of.iter().map(|&b| weight[b]).collect(),
-        block_of.iter().map(|&b| owner[b].unwrap_or(SHARED)).collect(),
+        block_of
+            .iter()
+            .map(|&b| owner[b].unwrap_or(SHARED))
+            .collect(),
         cols,
     )
 }
@@ -6646,7 +6832,11 @@ fn simulate(win: &[Inst]) -> Option<Window> {
                     ids - 1
                 });
                 stack.extend(out);
-                nodes.push(Node { inst: *inst, ins, out });
+                nodes.push(Node {
+                    inst: *inst,
+                    ins,
+                    out,
+                });
             }
         }
         tallest = tallest.max(stack.len());
@@ -6672,7 +6862,14 @@ fn search(w: &Window, bound: u64, states: usize) -> Option<(Vec<Inst>, u64)> {
         nodes: w
             .nodes
             .iter()
-            .map(|node| (node.ins.clone(), node.out, node.inst == Op(JUMPI), forms(node).len() > 1))
+            .map(|node| {
+                (
+                    node.ins.clone(),
+                    node.out,
+                    node.inst == Op(JUMPI),
+                    forms(node).len() > 1,
+                )
+            })
             .collect(),
         end: w.end.clone(),
         ids: w.ids,
@@ -6682,7 +6879,8 @@ fn search(w: &Window, bound: u64, states: usize) -> Option<(Vec<Inst>, u64)> {
         byte_gas: byte_gas().to_bits(),
     };
     type Memo = FxHashMap<SearchShape, Option<(Vec<Step>, u64)>>;
-    static SHARED: std::sync::LazyLock<std::sync::RwLock<Memo>> = std::sync::LazyLock::new(Default::default);
+    static SHARED: std::sync::LazyLock<std::sync::RwLock<Memo>> =
+        std::sync::LazyLock::new(Default::default);
     thread_local!(static DONE: std::cell::RefCell<Memo> = Default::default());
     let found = match DONE.with(|d| d.borrow().get(&shape).cloned()) {
         Some(found) => found,
@@ -6694,7 +6892,10 @@ fn search(w: &Window, bound: u64, states: usize) -> Option<(Vec<Inst>, u64)> {
                 } else {
                     glue_search::<Vec<u32>>(w, bound, states)
                 };
-                SHARED.write().expect("searches").insert(shape.clone(), found.clone());
+                SHARED
+                    .write()
+                    .expect("searches")
+                    .insert(shape.clone(), found.clone());
                 found
             });
             DONE.with(|d| d.borrow_mut().insert(shape, found.clone()));
@@ -6860,7 +7061,11 @@ fn glue_search<S: GlueStack>(w: &Window, bound: u64, states: usize) -> Option<(V
     }
     let forms: Vec<Vec<(Inst, Vec<u32>)>> = w.nodes.iter().map(forms).collect();
     let on_top = |s: &S, ins: &[u32]| {
-        ins.len() <= s.len() && ins.iter().enumerate().all(|(i, v)| s.at(s.len() - 1 - i) == *v)
+        ins.len() <= s.len()
+            && ins
+                .iter()
+                .enumerate()
+                .all(|(i, v)| s.at(s.len() - 1 - i) == *v)
     };
     let scratch = std::cell::RefCell::new(vec![0u32; n]);
     // What a value's copies cost against those wanted, when it has one.
@@ -6914,7 +7119,9 @@ fn glue_search<S: GlueStack>(w: &Window, bound: u64, states: usize) -> Option<(V
         .iter()
         .map(|f| {
             let mut is = vec![false; n];
-            f.iter().flat_map(|(_, ins)| ins).for_each(|&v| is[v as usize] = true);
+            f.iter()
+                .flat_map(|(_, ins)| ins)
+                .for_each(|&v| is[v as usize] = true);
             is
         })
         .collect();
@@ -7019,7 +7226,13 @@ fn glue_search<S: GlueStack>(w: &Window, bound: u64, states: usize) -> Option<(V
                     t.push(v);
                     let sum = with(v, have[v as usize] + 1);
                     let h = finish(j, &t, future[j] + sum);
-                    next.push((j, t, g + dup, Step::Glue(DUP1 + k as u8 - 1), Some((h, sum))));
+                    next.push((
+                        j,
+                        t,
+                        g + dup,
+                        Step::Glue(DUP1 + k as u8 - 1),
+                        Some((h, sum)),
+                    ));
                 }
             }
             // Only swaps that bring up an operand of the next op or a copy to drop, or put
@@ -7102,7 +7315,9 @@ fn merge_checks(w: &Window) -> Vec<(Window, u64)> {
         return Vec::new();
     };
     if w.nodes[p - 1].inst != w.nodes[q - 1].inst
-        || !w.nodes[p + 1..q - 1].iter().all(|node| harmless(node, &consts))
+        || !w.nodes[p + 1..q - 1]
+            .iter()
+            .all(|node| harmless(node, &consts))
     {
         return Vec::new();
     }
@@ -7116,7 +7331,9 @@ fn merge_checks(w: &Window) -> Vec<(Window, u64)> {
     let mut moved = vec![false; p - 1];
     for t in (0..p - 1).rev() {
         let node = &w.nodes[t];
-        if node.out.is_some_and(|o| wanted.contains(&o) && uses[o as usize] == 1)
+        if node
+            .out
+            .is_some_and(|o| wanted.contains(&o) && uses[o as usize] == 1)
             && harmless(node, &consts)
         {
             moved[t] = true;
@@ -7132,7 +7349,10 @@ fn merge_checks(w: &Window) -> Vec<(Window, u64)> {
             continue;
         }
         let keep = |t: usize| !(later && moved[t]);
-        let mut nodes: Vec<Node> = (0..p - 1).filter(|&t| keep(t)).map(|t| w.nodes[t].clone()).collect();
+        let mut nodes: Vec<Node> = (0..p - 1)
+            .filter(|&t| keep(t))
+            .map(|t| w.nodes[t].clone())
+            .collect();
         nodes.extend_from_slice(&w.nodes[p + 1..q - 1]);
         nodes.extend((0..p - 1).filter(|&t| !keep(t)).map(|t| w.nodes[t].clone()));
         let either = w.ids;
@@ -7161,11 +7381,7 @@ fn merge_checks(w: &Window) -> Vec<(Window, u64)> {
 
 /// `f`'s result for `key` among results of kind `kind`, remembered per thread and across the
 /// threads builds and outliner variants run on, which rewrite the same code.
-fn remembered(
-    kind: u8,
-    key: &[Inst],
-    f: impl FnOnce() -> Option<Vec<Inst>>,
-) -> Option<Vec<Inst>> {
+fn remembered(kind: u8, key: &[Inst], f: impl FnOnce() -> Option<Vec<Inst>>) -> Option<Vec<Inst>> {
     type Memo = FxHashMap<(u8, u64), FxHashMap<Vec<Inst>, Option<Vec<Inst>>>>;
     static SHARED: std::sync::LazyLock<std::sync::RwLock<Memo>> =
         std::sync::LazyLock::new(Default::default);
@@ -7179,10 +7395,17 @@ fn remembered(
     let found = shared.unwrap_or_else(|| {
         let found = f();
         let mut all = SHARED.write().expect("schedules");
-        all.entry(tag).or_default().insert(key.to_vec(), found.clone());
+        all.entry(tag)
+            .or_default()
+            .insert(key.to_vec(), found.clone());
         found
     });
-    DONE.with(|d| d.borrow_mut().entry(tag).or_default().insert(key.to_vec(), found.clone()));
+    DONE.with(|d| {
+        d.borrow_mut()
+            .entry(tag)
+            .or_default()
+            .insert(key.to_vec(), found.clone())
+    });
     found
 }
 
@@ -7254,7 +7477,9 @@ fn schedule_windows(run: &[Inst]) -> Option<Vec<Inst>> {
     // condition, since its last branch, to the glue after the next branch.
     let mut skip = 0;
     let mut nodes = node_positions(&run);
-    let mut jumps: Vec<usize> = (0..nodes.len()).filter(|&j| run[nodes[j]] == Op(JUMPI)).collect();
+    let mut jumps: Vec<usize> = (0..nodes.len())
+        .filter(|&j| run[nodes[j]] == Op(JUMPI))
+        .collect();
     while skip + 1 < jumps.len() {
         let k = skip;
         let (p, q) = (jumps[k], jumps[k + 1]);
@@ -7267,7 +7492,9 @@ fn schedule_windows(run: &[Inst]) -> Option<Vec<Inst>> {
                 run.splice(from..to, new);
                 changed = true;
                 nodes = node_positions(&run);
-                jumps = (0..nodes.len()).filter(|&j| run[nodes[j]] == Op(JUMPI)).collect();
+                jumps = (0..nodes.len())
+                    .filter(|&j| run[nodes[j]] == Op(JUMPI))
+                    .collect();
             }
             None => skip = k + 1,
         }
@@ -7559,8 +7786,12 @@ mod tests {
                 Op(POP) => {
                     stack.pop().unwrap();
                 }
-                Op(op) if (0x80..=0x8f).contains(&op) => stack.push(stack[len - usize::from(op - 0x7f)]),
-                Op(op) if (0x90..=0x9f).contains(&op) => stack.swap(len - 1, len - 2 - usize::from(op - 0x90)),
+                Op(op) if (0x80..=0x8f).contains(&op) => {
+                    stack.push(stack[len - usize::from(op - 0x7f)])
+                }
+                Op(op) if (0x90..=0x9f).contains(&op) => {
+                    stack.swap(len - 1, len - 2 - usize::from(op - 0x90))
+                }
                 Op(ISZERO) => {
                     let a = stack.pop().unwrap();
                     stack.push(Word::from_u64(u64::from(a.is_zero())));

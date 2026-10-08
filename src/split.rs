@@ -12,8 +12,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Mutex, OnceLock};
 
 use crate::ast::{
-    Exposing, Expr, Func, HookForm, ItemKind, Lit, NameAt, Program, Raises, Stmt, TypeDecl,
-    TypeRef,
+    Exposing, Expr, Func, HookForm, ItemKind, Lit, NameAt, Program, Raises, Stmt, TypeDecl, TypeRef,
 };
 use crate::check::Checked;
 use crate::gen::{self, Built, Entrypoint, Group};
@@ -365,7 +364,10 @@ fn router_shape(
         .iter()
         .map(|&i| address_word(facets[i].address))
         .collect();
-    shape.tails = parts.iter().map(|&i| facets[i].immutables.clone()).collect();
+    shape.tails = parts
+        .iter()
+        .map(|&i| facets[i].immutables.clone())
+        .collect();
     let masks: Vec<Option<Word>> = facets.iter().map(|f| hook_mask(checked, f)).collect();
     shape.masks = parts.iter().map(|&i| masks[i]).collect();
     for (idx, func) in checked.prog.funcs.iter().enumerate() {
@@ -538,12 +540,15 @@ fn facet(
     }
     // A facet is built from its module alone, so contracts that change around it read it back.
     let path = cache_entry(&format!("facet\0{}\0{module}", crate::hex(&key.0)));
-    let cached = path.as_deref().and_then(|path| std::fs::read(path).ok()).and_then(|bytes| {
-        let mut r = Reader(&bytes);
-        let mut facets = r.facets()?;
-        let facet = facets.pop()?;
-        (r.0.is_empty() && facets.is_empty()).then_some(facet)
-    });
+    let cached = path
+        .as_deref()
+        .and_then(|path| std::fs::read(path).ok())
+        .and_then(|bytes| {
+            let mut r = Reader(&bytes);
+            let mut facets = r.facets()?;
+            let facet = facets.pop()?;
+            (r.0.is_empty() && facets.is_empty()).then_some(facet)
+        });
     if let Some(facet) = cached {
         if let Ok(mut memo) = memo.lock() {
             memo.insert(key, facet.clone());
@@ -632,14 +637,22 @@ fn facet(
             .iter()
             .find(|f| Some(&f.name) == entry.as_ref())
             .and_then(|f| match f.kind {
-                ItemKind::View => crate::route::view_sig(&checked, f).ok().map(|s| selector(&s)),
+                ItemKind::View => crate::route::view_sig(&checked, f)
+                    .ok()
+                    .map(|s| selector(&s)),
                 _ => checked
                     .routes
                     .iter()
                     .find(|r| r.name == f.name && r.by_selector())
                     .map(|r| r.sel),
             })
-            .ok_or_else(|| error(0, 0, format!("internal: `{module}`'s facet lost an entrypoint")))?;
+            .ok_or_else(|| {
+                error(
+                    0,
+                    0,
+                    format!("internal: `{module}`'s facet lost an entrypoint"),
+                )
+            })?;
         hidden.push(Hidden {
             at: at.clone(),
             sel,
@@ -1100,12 +1113,7 @@ fn marking_saves(
     }
     let crossing = [(module.to_string(), gen::crossable(checked, module))];
     marked.cross.extend(stand_ins(checked, &crossing));
-    let mut facets: Vec<String> = checked
-        .prog
-        .facets
-        .iter()
-        .map(|m| m.name.clone())
-        .collect();
+    let mut facets: Vec<String> = checked.prog.facets.iter().map(|m| m.name.clone()).collect();
     facets.push(module.to_string());
     if let Ok((Some(stray), _)) = gen::stray_call(checked, &facets, &marked.cross) {
         let callee = display_name(&checked.prog.funcs[stray.callee].name);
