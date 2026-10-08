@@ -1911,7 +1911,8 @@ external pure function f(const n : uint) : bool is even(n)
     assert_eq!(slot(&out.storage, 0), w(252));
     let out = call(&runtime, "run(uint256,uint256)", &[w(0), w(12)]);
     assert!(!out.reverted, "run zero");
-    assert_eq!(slot(&out.storage, 0), w(1 + 0 + 12 + 0 + 1));
+    // 1 + 0 + 12 + 0 + 1
+    assert_eq!(slot(&out.storage, 0), w(14));
     let mut args: Vec<Word> = [2u64, 3, 5, 7, 11, 13, 17, 19].iter().map(|&x| w(x)).collect();
     args.push(w(13));
     let out = call(&runtime, "find(uint256[8],uint256)", &args);

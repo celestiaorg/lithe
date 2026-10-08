@@ -3,7 +3,7 @@
 //! until it is reset.
 
 use std::cell::RefCell;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{btree_map, BTreeMap, HashMap};
 
 use alloy_dyn_abi::{DynSolType, DynSolValue, EventExt, FunctionExt, JsonAbiExt, Specifier};
 use alloy_json_abi::{JsonAbi, Param};
@@ -536,8 +536,8 @@ fn execute(
                 .max_by_key(|(code, _)| code.len());
             let exists = session.db.cache.accounts.contains_key(&address);
             if let (Some((_, contract)), true) = (known, exists) {
-                if !session.instances.contains_key(&address) {
-                    session.instances.insert(address, instance(contract)?);
+                if let btree_map::Entry::Vacant(slot) = session.instances.entry(address) {
+                    slot.insert(instance(contract)?);
                 }
             }
         }

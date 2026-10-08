@@ -1699,7 +1699,7 @@ external pure function literal() : string is String.join(["a", "", "bc", String.
         c.extend(tails);
         c
     };
-    let long = vec![b'z'; 70];
+    let long = [b'z'; 70];
     for xs in [&[][..], &[&b""[..]], &[b"a", b"", b"bcd"], &[&long[..], b"q", &long[..]]] {
         let out = exec(&runtime, &strings(xs), HashMap::new(), Word::from_u64(1), Word::from_u64(0), Word::from_u64(0))
             .expect("exec");
@@ -2597,7 +2597,7 @@ contract Checker is {
     let out = run(spend, wallet, &signed);
     assert!(!out.reverted, "{}", pretty(&out.returndata));
     assert!(out.trace.iter().any(|ev| matches!(ev, Ev::Call { to, .. } if *to == factory)));
-    assert!(out.trace.iter().any(|ev| matches!(ev, Ev::SStore { .. })));
+    assert!(out.trace.iter().any(|ev| matches!(ev, Ev::SStore)));
     // Deployed now: the wrapped and the plain signature hold at once, with no factory call.
     assert!(valid_now(wallet, &signed));
     assert!(valid_now(wallet, &word(hash)));

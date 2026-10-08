@@ -2138,10 +2138,10 @@ impl<'a> Gen<'a> {
             let add = |n: usize| fine.set(fine.get() + n);
             match node {
                 Node::Expr(e) if own(e) => uses.set(uses.get() + 1),
-                Node::Expr(Expr::Field { base, name, .. }) if own(base) => {
-                    if !list || name == "length" {
-                        add(1)
-                    }
+                Node::Expr(Expr::Field { base, name, .. })
+                    if own(base) && (!list || name == "length") =>
+                {
+                    add(1)
                 }
                 // A loop over the list names it in its element read, `xs[i]`.
                 Node::Stmt(Stmt::For {

@@ -2203,7 +2203,7 @@ impl<'a> Gen<'a> {
                 ..
             } => {
                 folds(expr)
-                    && !index.iter().chain(keys).chain(target.as_deref()).any(|e| reads(e))
+                    && !index.iter().chain(keys).chain(target.as_deref()).any(&reads)
             }
             Stmt::Const { expr, .. } | Stmt::Var { expr, .. } => folds(expr),
             other => !self.stmt_any(other, &read, &mut Vec::new()),

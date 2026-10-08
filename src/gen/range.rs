@@ -446,7 +446,7 @@ impl<'a> Gen<'a> {
         }
         let kind = self.checked.types[self.peel_nominal(left.ty())].kind;
         let ordered = matches!(kind, TyKind::Uint | TyKind::Wei | TyKind::Timestamp);
-        if !ordered && !(self.zero_ordered(left.ty()) && matches!(op, BinOp::Eq | BinOp::Neq)) {
+        if !(ordered || (self.zero_ordered(left.ty()) && matches!(op, BinOp::Eq | BinOp::Neq))) {
             return None;
         }
         let ((al, ah), (bl, bh)) = (self.range_of(left), self.range_of(right));

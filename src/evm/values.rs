@@ -3600,6 +3600,7 @@ external pure function d() : uint is { var xs : list(list(uint)) := [[1]]; List.
 /// Elements that own heap data are allocated past their list, so a push moves the list to a
 /// blob with room to grow into. The room is its list's alone.
 #[test]
+#[allow(clippy::inconsistent_digit_grouping)]
 fn pushes_into_room_grow_only_their_own_list() {
     let src = "\
 import \"std/list\";

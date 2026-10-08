@@ -2232,11 +2232,12 @@ contract S is {
         assert_eq!(load_bytes(&out, 0), bytes21(&data[i..j]), "{i} {j}");
     }
     for (i, j) in [(4, 3), (0, 71)] {
-        for sig in ["word(bytes,uint256,uint256)"] {
-            let (reverted, out) = run(sig, &[Arg::B(data.clone()), w_arg(i), w_arg(j)]);
-            assert!(reverted);
-            assert_eq!(load_bytes(&out, 4), Word::from_u64(0x32));
-        }
+        let (reverted, out) = run(
+            "word(bytes,uint256,uint256)",
+            &[Arg::B(data.clone()), w_arg(i), w_arg(j)],
+        );
+        assert!(reverted);
+        assert_eq!(load_bytes(&out, 4), Word::from_u64(0x32));
         let (reverted, out) = run(
             "eq(bytes,uint256,uint256,bytes)",
             &[Arg::B(data.clone()), w_arg(i), w_arg(j), Arg::B(vec![])],

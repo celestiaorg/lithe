@@ -1289,7 +1289,7 @@ fn merge_tails(code: &mut Vec<Inst>) -> bool {
         return false;
     }
     // Later edits first, so the earlier indices stay valid.
-    edits.sort_unstable_by(|x, y| y.0.start.cmp(&x.0.start));
+    edits.sort_unstable_by_key(|e| std::cmp::Reverse(e.0.start));
     for (range, with) in edits {
         code.splice(range, with);
     }
@@ -7255,10 +7255,8 @@ fn schedule_windows(run: &[Inst]) -> Option<Vec<Inst>> {
     let mut skip = 0;
     let mut nodes = node_positions(&run);
     let mut jumps: Vec<usize> = (0..nodes.len()).filter(|&j| run[nodes[j]] == Op(JUMPI)).collect();
-    loop {
-        let Some(k) = (skip..jumps.len().saturating_sub(1)).next() else {
-            break;
-        };
+    while skip + 1 < jumps.len() {
+        let k = skip;
         let (p, q) = (jumps[k], jumps[k + 1]);
         let since = if k > 0 { jumps[k - 1] + 1 } else { 0 };
         let lead = (p - 1).saturating_sub(MERGE_LEAD).max(since);
