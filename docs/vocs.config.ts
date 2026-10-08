@@ -164,7 +164,7 @@ const base = process.env.BASE_PATH ?? "/";
 
 export default defineConfig({
   title: "Lithe",
-  description: "A secure-by-construction smart-contract language for the EVM.",
+  description: "A smart-contract language for the EVM.",
   basePath: base,
   renderStrategy: "full-static",
   logoUrl: { light: `${base}logo-light.png`, dark: `${base}logo-dark.png` },

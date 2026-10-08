@@ -2,7 +2,7 @@
 name = "lithe"
 version = "0.1.0"
 edition = "2021"
-description = "Lithe, a functional state-transition language for the EVM"
+description = "Lithe, a smart-contract language for the EVM"
 license = "Apache-2.0"
 
 [dependencies]
