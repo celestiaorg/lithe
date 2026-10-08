@@ -2228,7 +2228,7 @@ fn wrap_init_self(runtime: &[u8], parts: &[Word], sites: &[usize]) -> Result<Vec
         }
         if !parts.is_empty() {
             // `bad` is the last four bytes, before the runtime.
-            push2(&mut code, start - 4);
+            push2(&mut code, start.saturating_sub(4));
             code.push(JUMPI);
         }
         push2(&mut code, runtime.len());
