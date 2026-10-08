@@ -49,3 +49,24 @@ cmd = "cargo build --release && node docs/check.mjs"
 [[run]]
 name = "playground:check"
 cmd = "cargo build --release && sh playground/build.sh && node playground/check.mjs examples/*.lithe"
+
+[[run]]
+name = "lint"
+cmd = """
+set -e
+cargo fmt --check
+(cd playground && cargo fmt --check)
+cargo clippy --all-targets -- -D warnings
+(cd playground && cargo clippy --all-targets -- -D warnings)
+cargo machete
+(cd playground && cargo machete)
+cargo audit
+(cd playground && cargo audit)
+cd docs
+[ -d node_modules ] || npm ci
+npm run -s lint
+"""
+
+[[run]]
+name = "fmt"
+cmd = "cargo fmt && (cd playground && cargo fmt) && cd docs && { [ -d node_modules ] || npm ci; } && npm run -s fmt"
