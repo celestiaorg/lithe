@@ -203,7 +203,7 @@ export function Playground() {
   };
 
   useEffect(() => {
-    const w = new Worker("/play/worker.js");
+    const w = new Worker(`${import.meta.env.BASE_URL}play/worker.js`);
     const waiting = new Map<number, (result: never) => void>();
     let next = 0;
     w.onmessage = ({ data }) => {

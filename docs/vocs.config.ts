@@ -159,12 +159,16 @@ const byExample = [
   },
 ];
 
+// GitHub Pages serves a project site under /<repo>/.
+const base = process.env.BASE_PATH ?? "/";
+
 export default defineConfig({
   title: "Lithe",
   description: "A secure-by-construction smart-contract language for the EVM.",
+  basePath: base,
   renderStrategy: "full-static",
-  logoUrl: { light: "/logo-light.png", dark: "/logo-dark.png" },
-  iconUrl: "/icon.png",
+  logoUrl: { light: `${base}logo-light.png`, dark: `${base}logo-dark.png` },
+  iconUrl: `${base}icon.png`,
   accentColor: "light-dark(#065F46, #0DF9B3)",
   codeHighlight: {
     langs: ["bash", "json", "solidity", "text", "plaintext", lithe as never],
