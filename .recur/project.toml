@@ -1,8 +1,51 @@
 # Recur project settings: setup, teardown, named runs, app URL, env, and files to copy.
 # Safe to commit and share. Keep secrets in gitignored dotenv for the app to load;
 # Recur copies them via copy_files and does not export them.
-setup_cmd = 'git submodule update --init --recursive'
-teardown_cmd = ''
-app_url = ''
-env = ''
-copy_files = ''
+
+# Submodules borrow objects from the main checkout's clones where it has them, so only
+# the missing ones (solady) come over the network.
+setup_cmd = """
+set -e
+common=$(git rev-parse --path-format=absolute --git-common-dir)
+for m in $(git config -f .gitmodules --get-regexp '^submodule\\..*\\.path$' | cut -d' ' -f2); do
+  if [ -d "$common/modules/$m/objects" ]; then
+    git submodule update --init --reference "$common/modules/$m" --dissociate -- "$m"
+  else
+    git submodule update --init -- "$m"
+  fi
+done
+"""
+
+teardown_cmd = ""
+app_url = "http://localhost:$RECUR_PORT"
+
+env = """
+CARGO_TERM_COLOR=always
+"""
+
+# Untracked working notes and port fixtures; edits to these in a workspace stay there.
+copy_files = ""
+
+[[run]]
+name = "docs:dev"
+cmd = "cd docs && { [ -d node_modules ] || npm ci; } && { [ -f public/play/lithe.wasm ] || sh ../playground/build.sh; } && npx vocs dev --port $RECUR_PORT"
+
+[[run]]
+name = "build"
+cmd = "cargo build --release"
+
+[[run]]
+name = "test"
+cmd = "cargo test"
+
+[[run]]
+name = "bench"
+cmd = "cargo build --release && PATH=$HOME/.foundry/bin:$PATH python3 bench/run.py"
+
+[[run]]
+name = "docs:check"
+cmd = "cargo build --release && node docs/check.mjs"
+
+[[run]]
+name = "playground:check"
+cmd = "cargo build --release && sh playground/build.sh && node playground/check.mjs examples/*.lithe"
