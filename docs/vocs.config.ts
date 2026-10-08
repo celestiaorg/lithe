@@ -167,10 +167,14 @@ export default defineConfig({
   iconUrl: "/icon.png",
   accentColor: "light-dark(#065F46, #0DF9B3)",
   codeHighlight: {
-    langs: ["bash", "json", "solidity", "text", "plaintext", lithe as never],
+    langs: ["bash", "json", "solidity", "text" as never, "plaintext" as never, lithe as never],
   },
   topNav: [
-    { text: "Guide", link: "/guide/introduction", match: (path) => /^\/(guide|language|tooling|stdlib)(\/|$)/.test(path ?? "") },
+    {
+      text: "Guide",
+      link: "/guide/introduction",
+      match: (path) => /^\/(guide|language|tooling|stdlib)(\/|$)/.test(path ?? ""),
+    },
     { text: "Lithe by Example", link: "/by-example", match: "/by-example" },
     { text: "Built-ins", link: "/language/builtins" },
     { text: "Playground", link: "/playground" },

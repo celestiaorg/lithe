@@ -73,9 +73,12 @@ const typeOf = (p: Param): string =>
 const signature = (f: Item) => `${f.name}(${(f.inputs ?? []).map(typeOf).join(",")})`;
 const reads = (f: Item) => f.stateMutability === "view" || f.stateMutability === "pure";
 /** An upgradeable contract's code is an implementation behind a proxy, and its `deploy` the proxy's initializer. */
-const upgradeable = (c: Contract) => ["proxiableUUID", "upgradeToAndCall"].every((n) => c.abi.some((i) => i.type === "function" && i.name === n));
+const upgradeable = (c: Contract) =>
+  ["proxiableUUID", "upgradeToAndCall"].every((n) => c.abi.some((i) => i.type === "function" && i.name === n));
 const initializer = (c: Contract) =>
-  upgradeable(c) ? c.abi.find((i) => i.type === "function" && i.name === "deploy") : c.abi.find((i) => i.type === "constructor");
+  upgradeable(c)
+    ? c.abi.find((i) => i.type === "function" && i.name === "deploy")
+    : c.abi.find((i) => i.type === "constructor");
 const hint = (p: Param) => {
   const ty = typeOf(p);
   if (ty === "bool") return "true or false";
@@ -106,7 +109,10 @@ export function Run({
   evm: string;
   session: (request: object) => Promise<Outcome>;
   /** What upgrading from one version of the files to another does to storage. */
-  diff: (before: Project, after: Project) => Promise<{ text?: string; compatible?: boolean; errors?: { text: string }[] }>;
+  diff: (
+    before: Project,
+    after: Project,
+  ) => Promise<{ text?: string; compatible?: boolean; errors?: { text: string }[] }>;
 }) {
   const [caller, setCaller] = useState(CALLERS[0].address);
   const [accounts, setAccounts] = useState<Account[]>([]);
@@ -140,7 +146,10 @@ export function Run({
         const key = `${account.address}:${signature(f)}`;
         const args = asked[key]?.args ?? (f.inputs?.length ? undefined : []);
         if (!args) continue;
-        next[key] = { args, out: await ask({ op: "call", to: account.address, function: signature(f), args, value: "" }) };
+        next[key] = {
+          args,
+          out: await ask({ op: "call", to: account.address, function: signature(f), args, value: "" }),
+        };
       }
     }
     setViews(next);
@@ -153,7 +162,9 @@ export function Run({
     state: { accounts: Account[]; from: Record<string, Contract>; history: Tx[] },
   ) => {
     const out = await ask(
-      request.op === "call" ? request : { ...request, contract: state.from[request.contract], family: Object.values(state.from) },
+      request.op === "call"
+        ? request
+        : { ...request, contract: state.from[request.contract], family: Object.values(state.from) },
       request.caller,
     );
     // A request the chain could not run, as for an argument that does not parse, is no transaction.
@@ -165,14 +176,24 @@ export function Run({
       const was = new Map(state.accounts.flatMap((a) => a.entries.map((e) => [entryKey(a.address, e), e] as const)));
       const is = new Set(now.flatMap((a) => a.entries.map((e) => entryKey(a.address, e))));
       const moved = new Map<string, Entry | null>();
-      for (const a of now) for (const e of a.entries) if (was.get(entryKey(a.address, e))?.value !== e.value) moved.set(entryKey(a.address, e), was.get(entryKey(a.address, e)) ?? null);
+      for (const a of now)
+        for (const e of a.entries)
+          if (was.get(entryKey(a.address, e))?.value !== e.value)
+            moved.set(entryKey(a.address, e), was.get(entryKey(a.address, e)) ?? null);
       for (const [key, e] of was) if (!is.has(key)) moved.set(key, e);
       setBefore(moved);
       const label = (e: Entry) => (e.domain ? `${e.domain}.${e.name}` : short(e.slot));
       for (const a of now)
         for (const e of a.entries)
-          if (moved.has(entryKey(a.address, e))) tx.changes.push({ account: a.address, label: label(e), from: moved.get(entryKey(a.address, e))?.shown, to: e.shown });
-      for (const [key, e] of moved) if (e && !is.has(key)) tx.changes.push({ account: key.split("|")[0], label: label(e), from: e.shown });
+          if (moved.has(entryKey(a.address, e)))
+            tx.changes.push({
+              account: a.address,
+              label: label(e),
+              from: moved.get(entryKey(a.address, e))?.shown,
+              to: e.shown,
+            });
+      for (const [key, e] of moved)
+        if (e && !is.has(key)) tx.changes.push({ account: key.split("|")[0], label: label(e), from: e.shown });
     }
     setAccounts(now);
     return { tx, accounts: now, history: ran ? [...state.history, tx] : state.history };
@@ -181,12 +202,18 @@ export function Run({
   const run = async (key: string, request: Request, title: string) => {
     setBusy(true);
     // A deploy or an upgrade puts the code as it is now on the chain.
-    const now = request.op === "call" ? [] : request.op === "deploy" ? contracts : contracts.filter((c) => c.name === request.contract);
+    const now =
+      request.op === "call"
+        ? []
+        : request.op === "deploy"
+          ? contracts
+          : contracts.filter((c) => c.name === request.contract);
     const from = { ...deployedFrom, ...Object.fromEntries(now.map((c) => [c.name, c])) };
     const done = await transact(request, title, { accounts, from, history });
     // An upgrade that reverts leaves the proxy on the code it had.
     const kept = request.op === "upgrade" && !done.tx.ok ? deployedFrom : from;
-    if (request.op !== "call" && done.tx.ok) setSources((all) => ({ ...all, ...Object.fromEntries(now.map((c) => [c.name, project])) }));
+    if (request.op !== "call" && done.tx.ok)
+      setSources((all) => ({ ...all, ...Object.fromEntries(now.map((c) => [c.name, project])) }));
     setDeployedFrom(kept);
     setHistory(done.history);
     setResults((all) => ({ ...all, [key]: done.tx }));
@@ -232,13 +259,21 @@ export function Run({
     setBusy(false);
   };
 
-
   const contract = contracts[Math.min(pick, contracts.length - 1)];
   const constructor = contract && initializer(contract);
   const instances = accounts.filter((a) => a.name && deployedFrom[a.name]);
   const others = accounts.filter((a) => !instances.includes(a));
-  const stale = Object.values(deployedFrom).filter((d) => contracts.find((c) => c.name === d.name && c.bytecode !== d.bytecode));
-  const callRequest = (to: string, f: Item, args: string[], value: string): Request => ({ op: "call", to, function: signature(f), args, value, caller });
+  const stale = Object.values(deployedFrom).filter((d) =>
+    contracts.find((c) => c.name === d.name && c.bytecode !== d.bytecode),
+  );
+  const callRequest = (to: string, f: Item, args: string[], value: string): Request => ({
+    op: "call",
+    to,
+    function: signature(f),
+    args,
+    value,
+    caller,
+  });
 
   return (
     <div className="lp-run" aria-busy={busy}>
@@ -254,7 +289,14 @@ export function Run({
         <div className="lp-segmented" role="radiogroup" aria-label="Call as">
           <span className="lp-muted">Call as</span>
           {CALLERS.map((c) => (
-            <button type="button" role="radio" key={c.address} aria-checked={same(caller, c.address)} title={c.address} onClick={() => setCaller(c.address)}>
+            <button
+              type="button"
+              role="radio"
+              key={c.address}
+              aria-checked={same(caller, c.address)}
+              title={c.address}
+              onClick={() => setCaller(c.address)}
+            >
               <Avatar address={c.address} />
               {c.name}
             </button>
@@ -274,7 +316,8 @@ export function Run({
         <div className="lp-banner">
           <span>
             {stale.map((c) => c.name).join(", ")} changed since you deployed {stale.length > 1 ? "them" : "it"}.
-            {stale.some(upgradeable) && " An upgradeable contract can also be upgraded in place, below, keeping its address and storage."}
+            {stale.some(upgradeable) &&
+              " An upgradeable contract can also be upgraded in place, below, keeping its address and storage."}
           </span>
           <button type="button" className="lp-primary" onClick={replay} disabled={busy || contracts.length === 0}>
             Replay {history.length} transaction{history.length > 1 ? "s" : ""} on the new code
@@ -305,7 +348,13 @@ export function Run({
             action={`Deploy ${contract.name}`}
             primary
             busy={busy}
-            run={(args, value) => run("deploy", { op: "deploy", contract: contract.name, args, value, caller }, `deploy ${contract.name}(${args.join(", ")})`)}
+            run={(args, value) =>
+              run(
+                "deploy",
+                { op: "deploy", contract: contract.name, args, value, caller },
+                `deploy ${contract.name}(${args.join(", ")})`,
+              )
+            }
           >
             {results.deploy && <Outcome tx={results.deploy} accounts={accounts} />}
           </Form>
@@ -315,15 +364,26 @@ export function Run({
       {instances.map((account) => {
         const functions = deployedFrom[account.name!].abi.filter((i) => i.type === "function");
         const made = history.find((tx) => tx.address && same(tx.address, account.address));
-        const txs = history.filter((tx) => (tx.address && same(tx.address, account.address)) || (tx.request.op === "call" && same(tx.request.to, account.address)));
+        const txs = history.filter(
+          (tx) =>
+            (tx.address && same(tx.address, account.address)) ||
+            (tx.request.op === "call" && same(tx.request.to, account.address)),
+        );
         const moved = [...before.keys()].filter((key) => key.startsWith(`${account.address}|`)).length;
         const tab = tabs[account.address] ?? "write";
         const values = functions.filter((f) => reads(f) && !f.inputs?.length);
         const queries = functions.filter((f) => reads(f) && f.inputs?.length);
         // The initializer runs once, as the proxy is created; through the proxy it only reverts.
-        const writes = functions.filter((f) => !reads(f) && !(upgradeable(deployedFrom[account.name!]) && f.name === "deploy"));
+        const writes = functions.filter(
+          (f) => !reads(f) && !(upgradeable(deployedFrom[account.name!]) && f.name === "deploy"),
+        );
         const panel = (id: string, label: ReactNode) => (
-          <button type="button" role="tab" aria-selected={tab === id} onClick={() => setTabs((all) => ({ ...all, [account.address]: id }))}>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={tab === id}
+            onClick={() => setTabs((all) => ({ ...all, [account.address]: id }))}
+          >
             {label}
           </button>
         );
@@ -359,8 +419,18 @@ export function Run({
             )}
             <div className="lp-subtabs" role="tablist" aria-label={`${account.name} views`}>
               {panel("state", <>State{moved > 0 && <span className="lp-badge">{moved}</span>}</>)}
-              {panel("read", <>Read<span className="lp-count">{values.length + queries.length}</span></>)}
-              {panel("write", <>Write<span className="lp-count">{writes.length}</span></>)}
+              {panel(
+                "read",
+                <>
+                  Read<span className="lp-count">{values.length + queries.length}</span>
+                </>,
+              )}
+              {panel(
+                "write",
+                <>
+                  Write<span className="lp-count">{writes.length}</span>
+                </>,
+              )}
               {panel("history", <>History{txs.length > 0 && <span className="lp-count">{txs.length}</span>}</>)}
             </div>
 
@@ -378,7 +448,9 @@ export function Run({
                       return (
                         <div key={signature(f)}>
                           <dt>{f.name}</dt>
-                          <dd>{view ? <Answer out={view.out} accounts={accounts} /> : <span className="lp-muted">…</span>}</dd>
+                          <dd>
+                            {view ? <Answer out={view.out} accounts={accounts} /> : <span className="lp-muted">…</span>}
+                          </dd>
                           <dd className="lp-gas">{view && <Gas out={view.out} />}</dd>
                         </div>
                       );
@@ -390,7 +462,13 @@ export function Run({
                   const view = views[key];
                   return (
                     <Fn key={key} f={f} summary={view && <Asked f={f} view={view} accounts={accounts} />}>
-                      <Form params={f.inputs ?? []} payable={false} action="Query" busy={busy} run={(args) => query(key, account.address, f, args)} />
+                      <Form
+                        params={f.inputs ?? []}
+                        payable={false}
+                        action="Query"
+                        busy={busy}
+                        run={(args) => query(key, account.address, f, args)}
+                      />
                     </Fn>
                   );
                 })}
@@ -402,7 +480,12 @@ export function Run({
               <>
                 {writes.map((f) => {
                   const key = `${account.address}:${signature(f)}`;
-                  const send = (args: string[], value: string) => run(key, callRequest(account.address, f, args, value), `${account.name}.${f.name}(${args.join(", ")})`);
+                  const send = (args: string[], value: string) =>
+                    run(
+                      key,
+                      callRequest(account.address, f, args, value),
+                      `${account.name}.${f.name}(${args.join(", ")})`,
+                    );
                   const bare = !f.inputs?.length && f.stateMutability !== "payable";
                   return (
                     <Fn
@@ -411,14 +494,28 @@ export function Run({
                       bare={bare}
                       summary={
                         bare && (
-                          <button type="button" className="lp-primary lp-small" disabled={busy} onClick={() => send([], "")}>
+                          <button
+                            type="button"
+                            className="lp-primary lp-small"
+                            disabled={busy}
+                            onClick={() => send([], "")}
+                          >
                             Send
                           </button>
                         )
                       }
                       footer={results[key] && <Outcome tx={results[key]} accounts={accounts} />}
                     >
-                      {!bare && <Form params={f.inputs ?? []} payable={f.stateMutability === "payable"} action="Send" primary busy={busy} run={send} />}
+                      {!bare && (
+                        <Form
+                          params={f.inputs ?? []}
+                          payable={f.stateMutability === "payable"}
+                          action="Send"
+                          primary
+                          busy={busy}
+                          run={send}
+                        />
+                      )}
                     </Fn>
                   );
                 })}
@@ -469,7 +566,11 @@ export function Run({
 }
 
 const resultKey = (request: Request) =>
-  request.op === "deploy" ? "deploy" : request.op === "upgrade" ? `${request.to}:upgrade` : `${request.to}:${request.function}`;
+  request.op === "deploy"
+    ? "deploy"
+    : request.op === "upgrade"
+      ? `${request.to}:upgrade`
+      : `${request.to}:${request.function}`;
 
 /** 32 bits of `text`, FNV-1a. */
 function hash(text: string) {
@@ -512,7 +613,10 @@ function Upgrade({
   next: Contract;
   before?: Project;
   after: Project;
-  diff: (before: Project, after: Project) => Promise<{ text?: string; compatible?: boolean; errors?: { text: string }[] }>;
+  diff: (
+    before: Project,
+    after: Project,
+  ) => Promise<{ text?: string; compatible?: boolean; errors?: { text: string }[] }>;
   busy: boolean;
   result?: Tx;
   accounts: Account[];
@@ -531,7 +635,8 @@ function Upgrade({
   return (
     <div className="lp-upgrade">
       <p className="lp-upgrade-head">
-        <strong>New code for {next.name}.</strong> Upgrading keeps the proxy's address and storage, and runs the upgrade guard as the caller.
+        <strong>New code for {next.name}.</strong> Upgrading keeps the proxy's address and storage, and runs the upgrade
+        guard as the caller.
       </p>
       {layout && (
         <details className="lp-layout">
@@ -596,13 +701,28 @@ function Address({ address }: { address: string }) {
 }
 
 /** An account's storage, by the storage domain each entry is in, a map's entries under the map. */
-function State({ account, accounts, before }: { account: Account; accounts: Account[]; before: Map<string, Entry | null> }) {
+function State({
+  account,
+  accounts,
+  before,
+}: {
+  account: Account;
+  accounts: Account[];
+  before: Map<string, Entry | null>;
+}) {
   const cleared = [...before]
-    .filter(([key, e]) => e && key.startsWith(`${account.address}|`) && !account.entries.some((x) => entryKey(account.address, x) === key))
+    .filter(
+      ([key, e]) =>
+        e &&
+        key.startsWith(`${account.address}|`) &&
+        !account.entries.some((x) => entryKey(account.address, x) === key),
+    )
     .map(([, e]) => ({ ...e!, cleared: true }));
   const entries = [...account.entries, ...cleared];
   if (entries.length === 0) return <p className="lp-muted">Every slot is zero.</p>;
-  const domains = Object.entries(Object.groupBy(entries, (e) => e.domain ?? "")).sort(([a], [b]) => (!a ? 1 : !b ? -1 : a.localeCompare(b)));
+  const domains = Object.entries(Object.groupBy(entries, (e) => e.domain ?? "")).sort(([a], [b]) =>
+    !a ? 1 : !b ? -1 : a.localeCompare(b),
+  );
   return (
     <div className="lp-state">
       {domains.map(([domain, list]) => {
@@ -626,7 +746,8 @@ function State({ account, accounts, before }: { account: Account; accounts: Acco
                         </>
                       ) : (
                         <>
-                          {moved && (was ? <s>{named(was.shown, accounts)}</s> : <span className="lp-new">new</span>)} {named(e.shown, accounts)}
+                          {moved && (was ? <s>{named(was.shown, accounts)}</s> : <span className="lp-new">new</span>)}{" "}
+                          {named(e.shown, accounts)}
                         </>
                       )}
                     </span>
@@ -643,7 +764,9 @@ function State({ account, accounts, before }: { account: Account; accounts: Acco
                       {items!.length} {items!.length > 1 ? "entries" : "entry"}
                     </span>
                   </div>
-                  <div className="lp-nested">{items!.map((e) => row(e, named(e.name.slice(field.length), accounts)))}</div>
+                  <div className="lp-nested">
+                    {items!.map((e) => row(e, named(e.name.slice(field.length), accounts)))}
+                  </div>
                 </div>
               );
             })}
@@ -655,7 +778,19 @@ function State({ account, accounts, before }: { account: Account; accounts: Acco
 }
 
 /** A function, folded to its signature until opened. One that takes nothing shows its action on the fold. */
-function Fn({ f, bare, summary, footer, children }: { f: Item; bare?: boolean; summary?: ReactNode; footer?: ReactNode; children?: ReactNode }) {
+function Fn({
+  f,
+  bare,
+  summary,
+  footer,
+  children,
+}: {
+  f: Item;
+  bare?: boolean;
+  summary?: ReactNode;
+  footer?: ReactNode;
+  children?: ReactNode;
+}) {
   const head = (
     <>
       <code className="lp-fn-name">{f.name}</code>
@@ -745,7 +880,13 @@ function Form({
         field(
           "value",
           "wei",
-          <input placeholder="0, or 1.5 ether" value={value} spellCheck={false} autoComplete="off" onChange={(ev) => setValue(ev.target.value)} />,
+          <input
+            placeholder="0, or 1.5 ether"
+            value={value}
+            spellCheck={false}
+            autoComplete="off"
+            onChange={(ev) => setValue(ev.target.value)}
+          />,
           "value",
         )}
       <div className="lp-form-actions">
@@ -762,8 +903,8 @@ function Form({
 function Asked({ f, view, accounts }: { f: Item; view: Read; accounts: Account[] }) {
   return (
     <span className="lp-asked">
-      <span className="lp-muted">({view.args.map((a) => named(a, accounts)).join(", ")}) →</span> <Answer out={view.out} accounts={accounts} />{" "}
-      <Gas out={view.out} />
+      <span className="lp-muted">({view.args.map((a) => named(a, accounts)).join(", ")}) →</span>{" "}
+      <Answer out={view.out} accounts={accounts} /> <Gas out={view.out} />
     </span>
   );
 }
@@ -816,19 +957,27 @@ function Outcome({ tx, accounts, bare }: { tx: Tx; accounts: Account[]; bare?: b
       ))}
       {tx.implementation && (
         <p>
-          <span className="lp-muted">implementation at {short(tx.implementation.address)} · {tx.implementation.gas.toLocaleString()} gas, behind an ERC-1967 proxy</span>
+          <span className="lp-muted">
+            implementation at {short(tx.implementation.address)} · {tx.implementation.gas.toLocaleString()} gas, behind
+            an ERC-1967 proxy
+          </span>
         </p>
       )}
       {tx.facets?.map((f) => (
         <p key={f.address}>
           <span className="lp-muted">facet</span> {f.name} <span className="lp-muted">at {short(f.address)}</span>{" "}
-          {f.there ? <span className="lp-muted">already on the chain</span> : <span className="lp-muted">· {f.gas?.toLocaleString()} gas</span>}
+          {f.there ? (
+            <span className="lp-muted">already on the chain</span>
+          ) : (
+            <span className="lp-muted">· {f.gas?.toLocaleString()} gas</span>
+          )}
         </p>
       ))}
       {tx.changes.map((c, i) => (
         <p key={i}>
           <span className="lp-muted">set</span> {named(c.label, accounts)}{" "}
-          {c.from !== undefined && <s className="lp-muted">{named(c.from, accounts)}</s>} {c.to !== undefined ? named(c.to, accounts) : <span className="lp-muted">cleared</span>}
+          {c.from !== undefined && <s className="lp-muted">{named(c.from, accounts)}</s>}{" "}
+          {c.to !== undefined ? named(c.to, accounts) : <span className="lp-muted">cleared</span>}
         </p>
       ))}
     </div>

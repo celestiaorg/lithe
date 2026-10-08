@@ -9,7 +9,7 @@ exports.activate = () => {
     "lithe",
     "Lithe",
     { command, args: ["lsp"] },
-    { documentSelector: [{ language: "lithe" }] }
+    { documentSelector: [{ language: "lithe" }] },
   );
   return client.start();
 };

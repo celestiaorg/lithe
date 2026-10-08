@@ -66,10 +66,18 @@ export const PICKS: [string, Pick[]][] = [
   ],
 ];
 
-const PAGES = import.meta.glob(["../pages/by-example/*.mdx", "../pages/stdlib/*.mdx", "../pages/tooling/size-limit.mdx", "../pages/language/modules.mdx"], {
-  query: "?raw",
-  import: "default",
-}) as Record<string, () => Promise<string>>;
+const PAGES = import.meta.glob(
+  [
+    "../pages/by-example/*.mdx",
+    "../pages/stdlib/*.mdx",
+    "../pages/tooling/size-limit.mdx",
+    "../pages/language/modules.mdx",
+  ],
+  {
+    query: "?raw",
+    import: "default",
+  },
+) as Record<string, () => Promise<string>>;
 
 export const key = (pick: Pick) => `${pick.page}#${pick.file ?? pick.find ?? ""}`;
 
@@ -105,7 +113,8 @@ export async function project(pick: Pick): Promise<Project> {
   }
   const named = new Map(blocks.flatMap((b) => (b.name ? [[b.name, b.body] as const] : [])));
   const slug = pick.page.split("/").at(-1);
-  const entry = pick.file ?? (named.has(`${slug}.lithe`) ? `${slug}.lithe` : [...named.keys()].find((n) => !n.includes("/")));
+  const entry =
+    pick.file ?? (named.has(`${slug}.lithe`) ? `${slug}.lithe` : [...named.keys()].find((n) => !n.includes("/")));
   if (entry && !named.has(entry)) throw new Error(`no ${entry} on ${pick.page}`);
   if (!entry) throw new Error(`no program on ${pick.page}`);
   const files: [string, string][] = [];

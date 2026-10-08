@@ -40,7 +40,6 @@ const lines = (options: Options) =>
     .map(([key, value]) => `${key}=${value}`)
     .join("\n");
 
-
 type Diagnostic = { line: number; column: number; file: string | null; message: string; text: string };
 type Result = { contracts: Contract[]; errors: Diagnostic[]; panic?: string };
 type Project = examples.Project;
@@ -58,13 +57,15 @@ function savedProject(): Project {
 }
 
 /** What a new file starts as: how to import it. */
-const stub = (name: string, entry: string) => `(* Import this file from ${entry} with: import "./${name.replace(/\.lithe$/, "")}"; *)\n`;
+const stub = (name: string, entry: string) =>
+  `(* Import this file from ${entry} with: import "./${name.replace(/\.lithe$/, "")}"; *)\n`;
 
 /** A file path a user typed, made a `.lithe` path inside the project, or why it can't be one. */
 function filePath(typed: string, taken: string[]) {
   let path = typed.trim().replace(/^\.\//, "");
   if (!path.endsWith(".lithe")) path += ".lithe";
-  if (!/^[A-Za-z0-9_-]+(\/[A-Za-z0-9_-]+)*\.lithe$/.test(path)) return { error: "use letters, digits, - and _, with / between folders" };
+  if (!/^[A-Za-z0-9_-]+(\/[A-Za-z0-9_-]+)*\.lithe$/.test(path))
+    return { error: "use letters, digits, - and _, with / between folders" };
   if (taken.includes(path)) return { error: `${path} already exists` };
   return { path };
 }
@@ -101,7 +102,10 @@ function useDark() {
 async function pack(text: string) {
   const stream = new Blob([text]).stream().pipeThrough(new CompressionStream("deflate-raw"));
   const bytes = new Uint8Array(await new Response(stream).arrayBuffer());
-  return btoa(String.fromCharCode(...bytes)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+  return btoa(String.fromCharCode(...bytes))
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
+    .replace(/=+$/, "");
 }
 
 async function unpack(code: string) {
@@ -125,7 +129,10 @@ export function Playground() {
   // Each state's file, by the name it has now: a rename changes the name, not the state.
   const named = useRef(new Map<string, { name: string }>());
   const [options, setOptions] = useState<Options>({});
-  const worker = useRef<(cmd: "compile" | "format" | "session" | "storage_diff", source: string, options: string) => Promise<never>>(undefined);
+  const worker =
+    useRef<(cmd: "compile" | "format" | "session" | "storage_diff", source: string, options: string) => Promise<never>>(
+      undefined,
+    );
   const latest = useRef(project);
   const activeNow = useRef(active);
   activeNow.current = active;
@@ -145,7 +152,8 @@ export function Playground() {
     if (persist.current) localStorage.setItem(SAVED_PROJECT, JSON.stringify(next));
   };
 
-  const errorsIn = (file: string) => (resultNow.current?.errors ?? []).filter((e) => (e.file ?? latest.current.entry) === file);
+  const errorsIn = (file: string) =>
+    (resultNow.current?.errors ?? []).filter((e) => (e.file ?? latest.current.entry) === file);
 
   const stateFor = (name: string, text: string) => {
     const file = { name };
@@ -207,7 +215,7 @@ export function Playground() {
     const waiting = new Map<number, (result: never) => void>();
     let next = 0;
     w.onmessage = ({ data }) => {
-      waiting.get(data.id)?.(data.result);
+      waiting.get(data.id)?.(data.result as never);
       waiting.delete(data.id);
     };
     worker.current = (cmd, source, options) =>
@@ -256,13 +264,23 @@ export function Playground() {
       again.current = false;
       const start = performance.now();
       const { files, entry } = latest.current;
-      result = await worker.current!("compile", JSON.stringify({ files: Object.fromEntries(files), entry }), lines(latestOptions.current));
+      result = await worker.current!(
+        "compile",
+        JSON.stringify({ files: Object.fromEntries(files), entry }),
+        lines(latestOptions.current),
+      );
       ms = Math.round(performance.now() - start);
     } while (again.current);
     busy.current = false;
     setResult(result);
     const errors = result.errors?.length ?? 0;
-    setStatus(result.panic ? "The compiler crashed" : errors ? `${errors} error${errors > 1 ? "s" : ""}` : `Compiled in ${ms} ms`);
+    setStatus(
+      result.panic
+        ? "The compiler crashed"
+        : errors
+          ? `${errors} error${errors > 1 ? "s" : ""}`
+          : `Compiled in ${ms} ms`,
+    );
   }, []);
 
   useEffect(() => {
@@ -538,7 +556,11 @@ function Files({
               type="button"
               role="tab"
               aria-selected={name === active}
-              title={name === entry ? `${name}: the file that is compiled. Double-click to rename.` : "Double-click to rename"}
+              title={
+                name === entry
+                  ? `${name}: the file that is compiled. Double-click to rename.`
+                  : "Double-click to rename"
+              }
               onClick={() => open(name)}
               onDoubleClick={() => setRenaming(name)}
             >
@@ -547,13 +569,25 @@ function Files({
             </button>
           )}
           {name !== entry && renaming !== name && (
-            <button type="button" className="lp-file-close" aria-label={`Delete ${name}`} title={`Delete ${name}`} onClick={() => remove(name)}>
+            <button
+              type="button"
+              className="lp-file-close"
+              aria-label={`Delete ${name}`}
+              title={`Delete ${name}`}
+              onClick={() => remove(name)}
+            >
               ×
             </button>
           )}
         </div>
       ))}
-      <button type="button" className="lp-file-add" aria-label="Add a file" title="Add a file" onClick={() => setRenaming(add())}>
+      <button
+        type="button"
+        className="lp-file-add"
+        aria-label="Add a file"
+        title="Add a file"
+        onClick={() => setRenaming(add())}
+      >
         +
       </button>
       {problem && <span className="lp-file-problem">{problem}</span>}
@@ -561,7 +595,15 @@ function Files({
   );
 }
 
-function BuildOptions({ options, set, reset }: { options: Options; set: (key: string, value: string) => void; reset: () => void }) {
+function BuildOptions({
+  options,
+  set,
+  reset,
+}: {
+  options: Options;
+  set: (key: string, value: string) => void;
+  reset: () => void;
+}) {
   const menu = useRef<HTMLDetailsElement>(null);
   useEffect(() => {
     const close = (ev: PointerEvent) => {
@@ -617,7 +659,8 @@ function Output({
   entry: string;
   jump: (file: string, line: number, column: number) => void;
 }) {
-  if (result.panic) return <p className="lp-panic">{`The compiler crashed. This is a bug in Lithe.\n\n${result.panic}`}</p>;
+  if (result.panic)
+    return <p className="lp-panic">{`The compiler crashed. This is a bug in Lithe.\n\n${result.panic}`}</p>;
   const bytes = (hex: string) => (hex.length / 2).toLocaleString();
   return (
     <>
@@ -656,7 +699,19 @@ function Output({
   );
 }
 
-function Section({ title, text, open, hex, children }: { title: string; text: string; open?: boolean; hex?: boolean; children?: ReactNode }) {
+function Section({
+  title,
+  text,
+  open,
+  hex,
+  children,
+}: {
+  title: string;
+  text: string;
+  open?: boolean;
+  hex?: boolean;
+  children?: ReactNode;
+}) {
   const [copied, setCopied] = useState(false);
   const copy = async (ev: MouseEvent) => {
     ev.preventDefault();
