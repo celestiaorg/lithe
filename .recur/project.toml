@@ -27,7 +27,7 @@ CARGO_TERM_COLOR=always
 copy_files = ""
 
 [[run]]
-name = "docs:dev"
+name = 'docs:dev'
 cmd = "cd docs && { [ -d node_modules ] || npm ci; } && { [ -f public/play/lithe.wasm ] || sh ../playground/build.sh; } && npx vocs dev --port $RECUR_PORT"
 
 [[run]]
@@ -43,9 +43,9 @@ name = "bench"
 cmd = "cargo build --release && PATH=$HOME/.foundry/bin:$PATH python3 bench/run.py"
 
 [[run]]
-name = "docs:check"
+name = 'docs:check'
 cmd = "cargo build --release && node docs/check.mjs"
 
 [[run]]
-name = "playground:check"
+name = 'playground:check'
 cmd = "cargo build --release && sh playground/build.sh && node playground/check.mjs examples/*.lithe"
