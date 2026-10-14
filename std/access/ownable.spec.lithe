@@ -1,0 +1,14 @@
+(* What `Ownable` guarantees: only the owner moves ownership, and exactly as asked. *)
+
+spec for module Ownable is {
+  spec for transferOwnership is {
+    raises OwnableUnauthorizedAccount when Evm.sender() <> old.ownable.owner;
+    raises OwnableInvalidOwner when newOwner = Address.zero;
+    ensures new.ownable.owner = newOwner;
+  }
+
+  spec for renounceOwnership is {
+    raises OwnableUnauthorizedAccount when Evm.sender() <> old.ownable.owner;
+    ensures new.ownable.owner = Address.zero;
+  }
+}

@@ -545,7 +545,7 @@ fn resolve(
     };
     let func_target = |i: usize| {
         let f = &funcs[i];
-        let external = f.exported.is_some() || f.kind == ItemKind::View;
+        let external = f.exported.is_some() || f.kind == ItemKind::View || f.promoted.is_some();
         Resolved {
             target: if is_guard(base, f) {
                 Target::Guard(f.name.clone())
@@ -572,6 +572,11 @@ fn resolve(
                 } else if f.module.as_deref() == Some(module)
                     && f.exported.as_ref().is_some_and(|e| &e.name == name)
                 {
+                    found.push((true, Candidate::Func(i)));
+                }
+            }
+            if found.is_empty() {
+                if let Some(i) = funcs.iter().position(|f| copied_external(f, module, name)) {
                     found.push((true, Candidate::Func(i)));
                 }
             }
@@ -612,6 +617,26 @@ fn resolve(
                 None => prog.funcs.iter().find(|f| &f.name == name),
             }
             .filter(|_| copied);
+            // A module's external that the contract neither exposes nor calls has no copy:
+            // no code runs it.
+            if let (Some(module), Some(f)) = (module, declared) {
+                if f.type_params.is_empty() && matches!(f.kind, ItemKind::Entry | ItemKind::View) {
+                    return Ok(Resolved {
+                        target: Target::Func(format!("{module}.{name}")),
+                        body: Body::Func {
+                            module: Some(module.to_string()),
+                            name: name.clone(),
+                            external: true,
+                        },
+                        params: spec_params(&f.params),
+                        errors: f
+                            .raises
+                            .iter()
+                            .flat_map(|r| r.parts.iter().map(|n| n.name.clone()))
+                            .collect(),
+                    });
+                }
+            }
             let what = "entrypoint or function";
             Err(unknown_target(declared, &err, || match module {
                 Some(module) => format!("module `{module}` has no {what} `{name}`"),
@@ -653,6 +678,16 @@ fn resolve(
             "`{name}` names several overloads; a spec block describes one function"
         ))),
     }
+}
+
+/// Whether `f` is the entrypoint a contract exposes module external `name` as, holding its
+/// body: an external that takes a list it may be given in storage is copied for each
+/// caller, so the contract's entrypoint is the only copy that runs it.
+fn copied_external(f: &Func, module: &str, name: &str) -> bool {
+    f.name == name
+        && f.module.as_deref() == Some(module)
+        && f.promoted.as_deref() == Some(module)
+        && matches!(f.kind, ItemKind::Entry | ItemKind::View)
 }
 
 enum Candidate {
@@ -720,13 +755,7 @@ fn leaf_params(
     target: &NameAt,
 ) -> Result<(Vec<Param>, Body), Error> {
     let err = |msg: &str| error(target.line, target.col, msg.to_string());
-    let Some(dispatcher) = route
-        .path
-        .len()
-        .checked_sub(2)
-        .and_then(|i| route.path.get(i))
-        .and_then(|name| base.prog.funcs.iter().find(|f| &f.name == name))
-    else {
+    let Some(dispatcher) = route.funcs.last().map(|&f| &base.prog.funcs[f]) else {
         return Err(err("internal: a route with no dispatcher"));
     };
     let Some(Expr::Case { arms, .. }) = &dispatcher.tail else {

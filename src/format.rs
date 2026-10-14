@@ -73,6 +73,7 @@ fn print(src: &str, pieces: &[Piece]) -> (String, Vec<usize>) {
         col: 0,
         starts: Vec::new(),
         ifs: Vec::new(),
+        for_indent: None,
     };
     for piece in pieces {
         p.emit(piece);
@@ -426,6 +427,9 @@ struct Printer<'a> {
     /// Output offset of each piece.
     starts: Vec<usize>,
     ifs: Vec<OpenIf>,
+    /// The indent of a `for` whose `do` is still to come. Its `invariant` lines are two past
+    /// it, and a `do` that starts a line lines up with it.
+    for_indent: Option<usize>,
 }
 
 impl Printer<'_> {
@@ -501,6 +505,14 @@ impl Printer<'_> {
         }
         if kind == Kind::Is {
             return self.decl_indent;
+        }
+        if let Some(indent) = self.for_indent {
+            if kind == Kind::Do {
+                return indent;
+            }
+            if kind == Kind::Ident && word == "invariant" {
+                return indent + 2;
+            }
         }
         if kind == Kind::Else {
             if let Some(open) = self.open_if() {
@@ -587,6 +599,8 @@ impl Printer<'_> {
                 indent: self.line_indent,
                 depth: self.groups.len(),
             }),
+            Kind::For if bol => self.for_indent = Some(self.line_indent),
+            Kind::Do => self.for_indent = None,
             Kind::Else => {
                 if let Some(open) = self.open_if() {
                     self.ifs.remove(open);
@@ -1063,6 +1077,10 @@ mod tests {
             (
                 "function f(const a : bool) is {\n  if a then {\n    skip;\n  }\n      else if a then {\n    skip;\n  }\n  else {\n    skip;\n  }\n}\n",
                 "function f(const a : bool) is {\n  if a then {\n    skip;\n  }\n  else if a then {\n    skip;\n  }\n  else {\n    skip;\n  }\n}\n",
+            ),
+            (
+                "function f(const n : uint) is {\n  for i : uint in 0 .. n bound 9\ninvariant i <= n\n      invariant i < 10\n        do {\nskip;\n  }\n}\n",
+                "function f(const n : uint) is {\n  for i : uint in 0 .. n bound 9\n    invariant i <= n\n    invariant i < 10\n  do {\n    skip;\n  }\n}\n",
             ),
         ];
         for (src, want) in cases {

@@ -161,7 +161,7 @@ external view function feeBps() : uint is
   settings.feeBps
 ```
 
-- A migration can be called only from `upgradeToAndCall`. Called directly, it reverts, because the upgrade sets a transient flag that the migration checks.
+- A migration can be called only from `upgradeToAndCall`. Called directly, even later in the upgrade's own transaction, it reverts: the upgrade sets a transient flag that the migration checks, and clears it once the migration returns.
 - It is not in the ABI as a normal function. Nobody can call it after the upgrade.
 - It cannot `query` or `defer`. An upgrade should only change your own state.
 - Every field starts at zero, so a migration is needed only to set non-zero values.

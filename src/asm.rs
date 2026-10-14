@@ -14,6 +14,9 @@ use crate::error;
 use crate::word::Word;
 use crate::Error;
 
+pub(crate) mod marks;
+pub(crate) mod track;
+
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub(crate) enum Inst {
     Op(u8),
@@ -146,17 +149,17 @@ const TAIL_GAS: f64 = 12.0;
 pub(crate) fn optimize(code: &mut Vec<Inst>) {
     for _ in 0..MAX_ROUNDS {
         let mut changed = false;
-        changed |= prune_labels(code);
-        changed |= remove_dead(code);
-        changed |= thread_jumps(code);
-        changed |= peephole(code);
-        changed |= dedup_blocks(code);
-        changed |= dup_constants(code);
+        changed |= track::pass(code, prune_labels);
+        changed |= track::pass(code, remove_dead);
+        changed |= track::pass(code, thread_jumps);
+        changed |= track::pass(code, peephole);
+        changed |= track::pass(code, |c| dedup_blocks(c));
+        changed |= track::pass(code, |c| dup_constants(c));
         if !changed {
-            changed |= merge_tails(code);
+            changed |= track::pass(code, merge_tails);
         }
         if !changed {
-            changed |= schedule(code);
+            changed |= track::pass(code, schedule);
         }
         if !changed {
             return;
@@ -225,6 +228,36 @@ pub(crate) fn assemble_marked(code: &[Inst]) -> Result<(Vec<u8>, Vec<Mark>), Err
         {
             return Err(error(0, 0, "internal: missing jump target"));
         }
+        track::note(|t| {
+            t.pos = pos.iter().map(|(l, p)| (*l, *p)).collect();
+            if !t.marks.is_empty() {
+                // Where each instruction starts, for the marks before them.
+                let mut at = Vec::with_capacity(code.len() + 1);
+                let mut pc = 0;
+                for (i, inst) in code.iter().enumerate() {
+                    at.push(pc);
+                    pc += match inst {
+                        Op(_) => 1,
+                        Push(w) => encodings[w].len(),
+                        Label(l) => usize::from(refs.contains(l)),
+                        PushLabel(_) => {
+                            if wide[i] {
+                                3
+                            } else {
+                                2
+                            }
+                        }
+                        _ => inst_len(inst),
+                    };
+                }
+                at.push(pc);
+                t.mark_pcs = t
+                    .marks
+                    .iter()
+                    .map(|(m, k)| (*m, at[(*k).min(code.len())]))
+                    .collect();
+            }
+        });
         let mut out = Vec::with_capacity(pc);
         let mut marks = Vec::new();
         for (i, inst) in code.iter().enumerate() {
@@ -537,6 +570,7 @@ fn referenced(code: &[Inst]) -> FxHashSet<u32> {
 }
 
 fn rename(code: &mut [Inst], map: &FxHashMap<u32, u32>) {
+    track::note(|t| t.renamed.extend(map.iter().map(|(a, b)| (*a, *b))));
     let follow = |l: &mut u32| {
         let mut to = *l;
         let mut hops = 0;
@@ -1342,7 +1376,7 @@ pub(crate) fn outline(
         let mut t = Tokens::default();
         t.splice(0..0, code);
         let mut any = false;
-        while outline_once(code, &mut t, entries, params) {
+        while track::pass(code, |code| outline_once(code, &mut t, entries, params)) {
             any = true;
         }
         if any {
@@ -1355,6 +1389,21 @@ pub(crate) fn outline(
         return;
     }
     let mut exact = code.clone();
+    // A tracked build runs both here, each with its own notes.
+    if let Some(before) = track::take() {
+        track::put(before.clone());
+        run(&mut exact, false);
+        let shared = track::take();
+        track::put(before);
+        run(code, true);
+        if cost(&exact) <= cost(code) {
+            *code = exact;
+            if let Some(t) = shared {
+                track::put(t);
+            }
+        }
+        return;
+    }
     let gas = byte_gas();
     // Without threads, as in WebAssembly, the two run one after the other.
     let spawned = std::thread::scope(|s| {
@@ -3672,7 +3721,7 @@ pub(crate) fn promote(
     // Holding a `DUP1` copy is tried once nothing else is left to promote, so it never
     // takes a run another promotion needs.
     let mut dups = false;
-    sink_exits(code, tracked);
+    track::pass(code, |c| sink_exits(c, tracked));
     // An exit may use words promotion never holds, which stay in memory.
     let untracked = |a: u32| !tracked(a);
     let (mut runs, mut live) = (Runs::default(), Live::default());
@@ -3817,20 +3866,23 @@ pub(crate) fn promote(
             );
         }
         if edits.is_empty() {
-            match promote_region(
-                code,
-                tracked,
-                calls,
-                exits,
-                &live,
-                &runs,
-                &uses,
-                &loops,
-                &labels,
-                region_sink,
-                abandon,
-                &mut plans,
-            ) {
+            let promoted = track::pass(code, |code| {
+                promote_region(
+                    code,
+                    tracked,
+                    calls,
+                    exits,
+                    &live,
+                    &runs,
+                    &uses,
+                    &loops,
+                    &labels,
+                    region_sink,
+                    abandon,
+                    &mut plans,
+                )
+            });
+            match promoted {
                 Promoted::Region(sp, a, gone) => {
                     any = true;
                     last = Some((sp, vec![a], gone));
@@ -3848,7 +3900,7 @@ pub(crate) fn promote(
         plans.clear();
         let sp = Splice::of(&edits, code.len());
         let gone = code[sp.lo..sp.old_hi].to_vec();
-        apply_edits(code, edits);
+        track::pass(code, |c| apply_edits(c, edits));
         last = Some((sp, words, gone));
     }
     any
@@ -4225,6 +4277,11 @@ fn promote_region(
         code, entry, a, calls, exits, live, labels, abandon, &mut trace, true,
     );
     let region = region.expect("planned");
+    track::note(|t| {
+        for &(l, d) in &region.held {
+            t.hold(l, a, d as usize, false);
+        }
+    });
     let sp = Splice::of(&region.edits, code.len());
     let gone = code[sp.lo..sp.old_hi].to_vec();
     plans.applied(&region.edits, a);
@@ -4393,7 +4450,12 @@ fn alias_copies(
         if !tracked(a) {
             continue;
         }
-        if let Some(edits) = plan_alias(code, i + 2, a, calls, exits, labels) {
+        if let Some((edits, seen)) = plan_alias(code, i + 2, a, calls, exits, labels) {
+            track::note(|t| {
+                for (l, d) in seen {
+                    t.hold(l, a, d as usize, true);
+                }
+            });
             let sp = Splice::of(&edits, code.len());
             let gone = code[sp.lo..sp.old_hi].to_vec();
             apply_edits(code, edits);
@@ -4411,11 +4473,12 @@ fn plan_alias(
     calls: &Calls,
     exits: &FxHashSet<u32>,
     labels: &LabelIndex,
-) -> Option<Vec<(usize, usize, Vec<Inst>)>> {
+) -> Option<(Vec<(usize, usize, Vec<Inst>)>, Vec<(u32, i64)>)> {
     let n = code.len();
     let mut limit = n;
     loop {
-        let (loads, passed, stop) = walk_alias(code, start, limit, a, calls, exits, &labels.at);
+        let (loads, passed, stop, seen) =
+            walk_alias(code, start, limit, a, calls, exits, &labels.at);
         // A label that code outside the walk reaches may find the item elsewhere.
         let entered = passed.iter().copied().filter(|&p| {
             let Label(l) = code[p] else { return false };
@@ -4424,7 +4487,20 @@ fn plan_alias(
         match entered.min() {
             Some(p) => limit = p,
             None if loads.is_empty() => return None,
-            None => return Some(loads),
+            None => {
+                let held = if track::on() {
+                    passed
+                        .iter()
+                        .filter_map(|&p| match code[p] {
+                            Label(l) => seen.get(&l).map(|&d| (l, d)),
+                            _ => None,
+                        })
+                        .collect()
+                } else {
+                    Vec::new()
+                };
+                return Some((loads, held));
+            }
         }
     }
 }
@@ -4439,7 +4515,12 @@ fn walk_alias(
     calls: &Calls,
     exits: &FxHashSet<u32>,
     at: &FxHashMap<u32, usize>,
-) -> (Vec<(usize, usize, Vec<Inst>)>, Vec<usize>, usize) {
+) -> (
+    Vec<(usize, usize, Vec<Inst>)>,
+    Vec<usize>,
+    usize,
+    FxHashMap<u32, i64>,
+) {
     let mut loads = Vec::new();
     let mut passed = Vec::new();
     let mut seen: FxHashMap<u32, i64> = FxHashMap::default();
@@ -4544,12 +4625,14 @@ fn walk_alias(
         }
         k += 1;
     }
-    (loads, passed, k)
+    (loads, passed, k, seen)
 }
 
 struct Region {
     edits: Vec<(usize, usize, Vec<Inst>)>,
     saved: i64,
+    /// Each label inside the region, and how many items are above the word there.
+    held: Vec<(u32, i64)>,
 }
 
 /// Where each label is, and where the code refers to it, for the promotion passes.
@@ -5065,6 +5148,7 @@ fn plan_region(
         return Some(Region {
             edits: Vec::new(),
             saved,
+            held: Vec::new(),
         });
     }
     let mut edits: Vec<(usize, usize, Vec<Inst>)> = edits.list[..end.edits].to_vec();
@@ -5091,7 +5175,18 @@ fn plan_region(
         Entry::StoreUnder(i) => (i, 2, Vec::new()),
         Entry::Load(s) => (s, 0, vec![Mem(a), Op(MLOAD)]),
     });
-    Some(Region { edits, saved })
+    let held = if track::on() {
+        code[start..end.at]
+            .iter()
+            .filter_map(|inst| match inst {
+                Label(l) => passed.get(l).map(|&d| (*l, d)),
+                _ => None,
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
+    Some(Region { edits, saved, held })
 }
 
 /// The edits a region's walk makes, or with `keep` false only how many.
@@ -5474,6 +5569,8 @@ pub(crate) fn rotate_loops(code: &mut Vec<Inst>) {
                 *inst = PushLabel(test);
             }
         }
+        // An iteration starts at the body now, with the stack the test left.
+        track::note(|t| t.renamed.extend(tops.iter().map(|&l| (l, body))));
         i += 2;
     }
 }

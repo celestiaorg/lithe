@@ -203,7 +203,7 @@ spec for module ERC20 is {
 }
 ```
 
-A file a contract imports can have a spec file too, beside it, with `spec for module M` blocks for its modules; the spec tools read it for each module the contract uses. The standard library's do: `ERC20`'s states that its balances add up to its supply and that the zero address holds nothing, and lists exactly when `transfer`, `approve`, and `transferFrom` revert; `ERC721`'s that each owned token counts once in its owner's balance and that only a token that exists has an approval. `lithe prove` proves them for each contract that uses the module, since the contract's own code can write the module's storage too. To prove a file of modules on its own, run `lithe prove` on it: `lithe prove std/token/erc20.lithe` proves the module as a contract that uses it and exposes all its external functions.
+A file a contract imports can have a spec file too, beside it, with `spec for module M` blocks for its modules; the spec tools read it for each module the contract uses. The standard library's do: `ERC20`'s states that its balances add up to its supply and that the zero address holds nothing, and lists exactly when `transfer`, `approve`, and `transferFrom` revert; `ERC721`'s that each owned token counts once in its owner's balance and that only a token that exists has an approval; `Ownable`'s, `Ownable2Step`'s, and `AccessControl`'s that only the owner, or a role's admins, change who holds it, and exactly as asked; `ERC1155`'s that an operator approval is set as asked, that a transfer moves the amount only for the owner or an operator it approved, when a batch transfer rejects its sender or receiver, and when a batch balance read rejects its lists. `lithe prove` proves them for each contract that uses the module, since the contract's own code can write the module's storage too. To prove a file of modules on its own, run `lithe prove` on it: `lithe prove std/token/erc20.lithe` proves the module as a contract that uses it, exposes all its external functions, and skips each hook it reaches.
 
 ## Specs in the source file
 
@@ -211,22 +211,28 @@ A spec block can also sit in the source file, where a declaration can, or inside
 
 ## Proving specs
 
-`lithe prove vault.lithe` proves the specs of `vault.lithe` and its spec file with the [Z3](https://github.com/Z3Prover/z3) solver: each invariant in each phase, and each claim of each function spec. Install Z3 first: `brew install z3` on macOS, `sudo apt install z3` on Debian and Ubuntu, or a [release](https://github.com/Z3Prover/z3/releases) on your `PATH`. Without it, `lithe prove` says so and exits `2`.
+`lithe prove vault.lithe` proves the specs of `vault.lithe` and its spec file against the EVM bytecode `lithe build` emits for it, the creation code and the runtime, with the [Z3](https://github.com/Z3Prover/z3) solver: each invariant in each phase, and each claim of each function spec. A proof holds for the bytes that are deployed, with no trust in the compiler: where the optimizer is wrong, a claim fails. It takes `lithe build`'s flags, such as `--evm-version`, and builds what `lithe build` would. Install Z3 first: `brew install z3` on macOS, `sudo apt install z3` on Debian and Ubuntu, or a [release](https://github.com/Z3Prover/z3/releases) on your `PATH`. Without it, `lithe prove` says so and exits `2`.
 
 ```bash
 lithe prove vault.lithe
 ```
 
 ```text
+runtime code: 231 bytes, keccak256 0x0a069ffbf78b52094ac68047ed56d9512e77a96ded629d435aecf95bc5c1bc5f
+
+storage types: each word the layout places holds its fields' types
+  proved      the initial state
+  proved      deposit
+  proved      withdraw
+  proved      balanceOf (unchanged)
+  proved      calldata that names no function (unchanged)
+
 invariant ledger: storage.total = sum(storage.balances)
   proved      the initial state
   proved      deposit
   proved      withdraw
-
-invariant solvent: Evm.balance(Evm.self()) >= storage.total
-  proved      the initial state
-  proved      deposit
-  proved      withdraw
+  proved      balanceOf (unchanged)
+  proved      calldata that names no function (unchanged)
 
 spec for withdraw
   proved      ensures new.storage.balances[Evm.sender()] = have - amount
@@ -235,12 +241,18 @@ spec for withdraw
   proved      raises Insufficient only when have < amount
   proved      reverts in no other case
 
-11 proved, 0 failed, 0 unknown
+24 proved, 0 failed, 0 unknown
 ```
+
+The report names the runtime by its size and hash, so a proof can be matched to the code on a chain. [What a proof covers](#what-a-proof-covers) says how the prover runs the bytecode.
+
+`lithe prove` also proves the specs of the source with the [source prover](#the-source-prover), which takes a fraction of the time. The bytecode's verdict is the result; under a claim the bytecode does not prove, the report shows the source's verdict too: a counterexample in the source's terms, or a claim the source proves, which the bytecode breaks. `lithe prove --source` runs the source prover alone, as a quick first pass while writing specs.
+
+`lithe prove` finds Z3 in `LITHE_Z3`, then on `PATH`, or where `--solver` says, and gives each question `--timeout` seconds of the solver's CPU time, 30 by default, so a busy machine takes longer but proves the same. It exits `0` when everything is proved, `1` when a claim fails, `2` when it finds no Z3, and `3` when something is unknown or not proved.
 
 ### Invariants
 
-A phase is `deploy`, or the empty storage of a new contract when there is no `deploy`, each entrypoint's body, each continuation, and each migration. The prover assumes every invariant holds before a phase and proves each still holds after it. The first phase starts from nothing, so together they cover every order of calls. A continuation starts from any state the invariants allow, because other calls may run between its call and it. The contracts a phase calls need no modeling, because their calls run after it commits. A phase that changes nothing an invariant reads is proved and marked `(unchanged)`.
+A phase is `deploy`, or the empty storage of a new contract when there is no `deploy`, each entrypoint's body, each continuation, and each migration. The prover assumes every invariant holds before a phase and proves each still holds after it. The first phase starts from nothing, so together they cover every order of calls. A continuation starts from any state the invariants allow, because other calls may run between its call and it. The contracts a phase calls need no modeling, because their calls run after it commits. A phase that changes nothing an invariant reads is proved and marked `(unchanged)`. The way a [facet](/tooling/size-limit) calls a hook back into the contract is no phase of its own: the hook runs inside the transition whose module code calls it, as it does when the module is not delegated.
 
 A migration's state is its previous version's, so the prover assumes nothing before one.
 
@@ -258,33 +270,33 @@ A function spec's claims are about one call, from the state before it to the sta
 
 ### Counterexamples
 
-When a claim can fail, the prover shows how: the arguments, the caller, what the claim reads, and, for a claim about reverts, what the call reverts with.
+When a claim can fail, the prover shows how: the calldata, the caller, what the claim reads, and, for a claim about reverts, what the call reverts with. Under it is the source's verdict, with its counterexample in the source's terms: the arguments by name.
 
 ```text
 invariant ledger: storage.total = sum(storage.balances)
+  proved      the initial state
   FAILED      deposit
-              Evm.sender() = 4
+              calldata = 0xd0e30db0
+              Evm.sender() = 8192
               Evm.value() = 1
-              storage.total before = 0
-              sum(storage.balances) before = 0
-              storage.total after = 0
-              sum(storage.balances) after = 1
-
-spec for withdraw
-  FAILED      reverts in no other case
-              amount = 1
-              Evm.sender() = 1
-              old.storage.balances[_] = 1
-              reverts with = a panic
+              storage.total before = 21840
+              sum(storage.balances) before = 21840
+              storage.total after = 21840
+              sum(storage.balances) after = 21841
+              in the source: FAILED
+                Evm.sender() = 5
+                Evm.value() = 1
+                storage.total before = 0
+                sum(storage.balances) before = 0
+                storage.total after = 0
+                sum(storage.balances) after = 1
 ```
 
-### What it models
+A claim that fails of the bytecode but is proved of the source reads `in the source: proved, so the bytecode does not do what the source says`: the compiler emitted code that breaks it. A claim the bytecode proves shows the source's verdict only when the source fails it, which the source prover's [model](#the-source-prover) explains: it assumes less, such as a balance that could pass 2<sup>256</sup>.
 
-The prover models storage words, maps, records, checked arithmetic, and `forall` exactly, and runs internal calls, branches, and loops of up to 16 iterations. It does not model everything: strings, lists, and bit operations become values it knows only the type of, and a spec cannot use them. When a counterexample depends on one of those, the report says `not proved`, and names what it approximated. What it cannot check at all is `unknown`, with why: a deferred `Evm.delegateCall`, and a `fallback` that passes its call to other code.
+### Loop invariants
 
-### Loops
-
-A loop that may run more than 16 times, or over a list, is too long to follow one iteration at a time. Without more to go on, the prover knows only that what its body writes has changed, and a claim that depends on it is `not proved`. A loop invariant says more. It is a `bool` that holds each time an iteration starts, and when the loop ends, written after the loop's `bound`:
+A loop the prover cannot follow one iteration at a time leaves it knowing only that what the body writes has changed, and a claim that depends on it is not proved. A loop invariant says more. It is a `bool` that holds each time an iteration starts, and when the loop ends, written after the loop's `bound`:
 
 ```lithe fragment
 const start : uint := storage.steps;
@@ -293,7 +305,7 @@ for i : uint in 0 .. n bound 100 invariant storage.steps = start + i do {
 }
 ```
 
-The prover proves that the invariant holds as the loop starts, with its counter at the start of the range, and that each iteration keeps it. Then, after the loop, it knows the invariant holds with the counter at the end of the range: here, that the steps went up by `n`. The report lists each loop invariant's claims under `loop invariants`, and a proof that relies on one that is not proved is `unknown`. A loop may have several invariants, and they may use `sum`, `count`, and `forall`; a build drops them, so they never change the code. A [checking build](#checking-specs-as-the-contract-runs) checks each as every iteration starts.
+The prover proves that the invariant holds as the loop starts, with its counter at the start of the range, and that each iteration keeps it. Then, after the loop, it knows the invariant holds with the counter at the end of the range: here, that the steps went up by `n`. The report lists each loop invariant's claims under `loop invariants`, and a proof that relies on one that is not proved is `unknown`. A loop may have several invariants, and they may use `sum`, `count`, and `forall`; a build drops them, so they never change the code. A [checking build](#checking-specs-as-the-contract-runs) checks each as every iteration starts. [Loops in the bytecode](#loops-in-the-bytecode) says how the prover finds each loop in the code.
 
 A `sum` or `count` is a running total the solver knows only in part: that it is at least any one value of its map, and any two at different keys. That is enough for a ledger, and when a proof fails, the prover checks that the counterexample's totals can be real sums before it reports `FAILED`. Beside a `forall` it cannot check that, so it reports `not proved`.
 
@@ -301,7 +313,87 @@ The prover assumes no call comes from the zero address, which no one has the key
 
 The contract's ether counts every value its deferred calls send as gone when the phase commits, the least it can hold until the next phase. Write invariants about it as lower bounds, such as `Evm.balance(Evm.self()) >= storage.total`: ether can arrive without a call.
 
-`lithe prove` finds Z3 in `LITHE_Z3`, then on `PATH`, or where `--solver` says, and gives each question `--timeout` seconds, 30 by default. It exits `0` when everything is proved, `1` when a claim fails, `2` when it finds no Z3, and `3` when something is unknown or not proved.
+## What a proof covers
+
+The prover runs the bytecode, phase by phase:
+
+| Phase | Runs |
+| --- | --- |
+| `deploy`, or the initial state | the creation code, from empty storage, with constructor arguments of any bytes; an upgradeable contract's `deploy`, the runtime, as its proxy's constructor runs it |
+| each external function, and each view | the runtime from its first byte, with calldata of any bytes and any length that starts with the function's selector, and storage any state the invariants allow |
+| each migration | the runtime, with calldata that starts with the migration's selector, and storage in any state |
+| calldata that names no function | the runtime with calldata that is shorter than a selector or names none: `receive` and `fallback`, or the revert without them |
+
+So malformed calldata is covered too: a word that encodes no value of its type, calldata cut short, or junk past the end. The prover runs the code path by path, over 256-bit words. A branch it cannot decide splits the path in two, and a loop is proved by induction at its head, as [loops in the bytecode](#loops-in-the-bytecode) says. A path that jumps to a target it does not fix is cut, and the claims it reaches are `unknown`.
+
+The specs read the bytecode's state through the layout map the compiler emits: the slot of each storage path, a field's bytes in a shared slot, and how a map derives the slot of a key, as `lithe storage` lists them. The prover checks the map before it uses it: no two places share a bit of storage. A `sum` or `count` is a running total the prover updates at each store to a slot of the map; a store it cannot place off every map a spec adds up makes its claims `unknown`.
+
+A call to other code, or a creation, is where a phase commits in the bytecode: the invariants must hold there, as at the end. Past it, the prover forgets what other code can change, storage, balances, and return data, and assumes only what every phase keeps, the invariants; a continuation is that code, from that state. A `staticcall`, or a call to a precompile that sends no ether, changes nothing, and answers anything. A function spec's `new.` state is the state at the call's first commit, or at its end.
+
+A revert claim is about calldata that encodes the function's arguments, with no ether sent to a function that is not `payable`, and the [reentrancy lock](/language/reentrancy) free, as the reverts the [completeness rule](#when-a-function-reverts) never lists. `raises E when c` proves the call reverts when `c` holds; `raises E only when c` proves that revert data starting with `E`'s selector comes only when `c` holds; `panics when c` proves it reverts with `Panic(uint256)`. A record parameter's fields are arguments of their own, as the [ABI](/language/types#records-in-the-abi) lays them out. A `bytes`, `string`, list, or tuple argument of dynamic size is encoded when the decoder takes it, as Solidity's does: its offset and its length fit in 64 bits, its length word and every byte or element are inside calldata, wherever its offset puts them, and each word of a narrow type, such as an address, is a value of its type. A value nested in another, such as the strings of a `list(string)` or the `bytes` field of a record in a list, is encoded the same way, at the offset its list's or record's head gives, counted from where that list's elements or that record's heads start. A spec reads a list argument's `.length`, and the elements of a list of words. Well-formed calldata runs twice for a function with a `bytes`, `string`, or list argument: with the first such argument right after the heads, where the ABI puts it, and with it anywhere else. In the second, the argument's offset is a number the solver does not know, so each bound the decoder checks is a sum it must show does not wrap, which makes some questions far harder: a claim can be proved in the first run and `unknown` in the second, as `reverts in no other case` of a function that takes a `list(list(uint16))` is, and what a one-element batch transfer does to ERC-1155 balances.
+
+Storage in the bytecode is words, which can hold what no Lithe type can, such as an address with its high bytes set. The first section of the report proves that no phase writes such a word: each word the layout places holds its fields' types, and the bytes no field takes are zero. Every other proof stands on it, so when it is not proved, they are `unknown`.
+
+### Loops in the bytecode
+
+A loop is proved by induction at its head, where each iteration starts. When `lithe prove` builds the code, the compiler also emits a certificate for each copy of each loop in it: where its head and its exit are, and where its counter and each local of its function are at the head, on the stack, in a word of memory, or in calldata. Of the bytecode, the prover then proves:
+
+| Claim | Proved |
+| --- | --- |
+| `loop invariant at 12:3 holds as the loop starts` | where a path first reaches the head, with the counter at the start of its range |
+| `loop invariant at 12:3 is kept by each iteration` | from a state at the head that stands for every state an iteration can reach it in: what the iterations change is unknown, kept to the invariants, and the rest is as the loop found it. Each path back to the head must keep what that state says |
+
+The paths that leave the loop go on from that state, so past the loop the prover knows its invariants, and all it left as it was. Which parts of the state the iterations change, the prover finds by running them: words on the stack, memory, and storage, by the map, record, or string a slot belongs to. It finds two kinds of facts itself, and proves them like the invariants: a word each iteration moves by the same amount is that many steps from its start, and a counter that starts at or below its limit stays there. A proof through a loop whose invariants are not proved is `unknown`.
+
+Nothing in a certificate is trusted. The induction holds for any head and any places a certificate names: a wrong one gives invariants that do not hold where it says, so their claims fail, or a loop the prover cannot summarize, whose paths are cut. The build that makes the certificates is the one `lithe build` emits: the compiler builds the code it chose again, with each pass noting where it moves the loops' labels and words, and keeps the certificates only if the bytes are the same.
+
+A loop the compiler emits on its own, such as one that copies a list, stores a string, or checks each element of an argument, has no certificate and no invariants. When a path goes around one twice without knowing how many turns it takes, the prover summarizes it in the same way, with only the facts it finds. A routine the compiler calls that such a loop runs in, as the decoder of each inner list of a `list(list(uint16))`, runs once for each shape of the state it is called in, from a state whose words and memory are values it knows nothing of, and each call takes what that run found with its own values in their place; a routine that reads or writes storage, calls out, or hashes runs at each call instead. A loop with a known count runs turn by turn. So does a loop of the source without invariants, such as one over a list literal, until a path has forked at its exit test twice, so a run of no iterations and one of a single iteration are exact; from its head after that, it is summarized with only the facts the prover finds.
+
+### What a proof trusts
+
+| Trusted | Why |
+| --- | --- |
+| the EVM's semantics, as the prover runs them | a test checks it against the compiler's EVM on random calls |
+| Z3 | it answers each question |
+| keccak-256 | the hash of a number of bytes is one-to-one; hashes of different lengths differ; two hashes, or a hash and a slot the layout fixes, are at least 2<sup>64</sup> apart, so no map's record reaches from one to another |
+| gas | every path, and every call it makes, has the gas it needs; calldata is shorter than 2<sup>32</sup> bytes, no memory it touches is as far, and no loop turns 2<sup>32</sup> times, which no block's gas pays for |
+| the caller | `Evm.sender()` and `Evm.txOrigin()` are never zero, and no balance passes 2<sup>256</sup> |
+| facets | each is deployed through the `CREATE2` factory before the contract, whose creation code checks it, and keeps its code |
+| the proxy | an upgradeable contract runs behind an ERC-1967 proxy that passes every call on, and whose constructor runs at most `deploy` |
+| the previous version | a migration starts from the words an earlier version left, each holding the type this version's layout gives it, as [`lithe upgrade-check`](/language/upgrades#storage-compatibility) compares them |
+| where internal code is | an internal function's code in the bytecode, a body compiled once or an inlined copy, is where the compiler's certificate says, with its parameters where it says; a guard's statements end where it says. A claim about a function that only runs inside other code is about that code. Nothing else in a certificate is trusted |
+
+A counterexample that rests on what the prover only approximates, such as a precompile's answer, an `EXP` of an unknown power, a store at a constant slot the layout does not name, which a hash could land on, or a state at a loop's head that no iteration may reach, is `not proved`.
+
+An internal function's spec is proved of each body the build compiles once, which its calls jump to. The compiler certifies where the body starts and where its parameters are there; the prover runs it from there, in any state, as an internal function's call starts, to the jump back to its caller. A function the build inlines into a call is proved of each copy, the same way: the compiler marks where each copy starts and ends, and where its parameters are as it starts, and the prover runs it from there, in any state and with the stack its caller left unknown, to its end. The optimizer moves code across a copy's boundary, so the compiler keeps a mark only where every instruction that writes, logs, calls, branches, halts, or reads storage stays on its side; when a pass merges a copy with the code around it, such as a read of storage another copy just wrote, the spec is `unknown`, and the entrypoints that call it answer for it. Over the examples and the standard library, 452 of 539 inlined copies keep their marks. The rest are merged for good: a copy's overflow check joined with its caller's into one branch, its code moved into a helper other call sites share, or its end merged into a tail other code jumps to. A boundary there would put the caller's code inside the copy, or the copy's end past a return it cannot follow, so those specs stay `unknown`. A guard runs at the start of each route through it, inlined, and the compiler marks where the guard's statements end in each route's code: its own `reverts in no other case` is proved of the reverts before that mark, wherever the route adds reverts of its own past it.
+
+The prover reports as `unknown` a `delegatecall` to code the build did not produce, such as a `fallback` that passes its call on.
+
+A `selfdestruct` ends its frame and sends the contract's ether to the account it names, which runs no code; since Cancun the contract stays, and one created in the same transaction goes as if it had never been, so only its `deploy` brings it back. A function a spec calls is read in the state the spec reads, with a spec's exact arithmetic: its constants, its `if`s, and its value.
+
+### Facets, hooks, and upgrades
+
+A contract that marks a module [`delegated`](/tooling/size-limit) is proved as one system: its router and its facets, on the contract's storage. A `delegatecall` into code the build produced runs that code there, in the caller's context: a facet, at the address the `CREATE2` factory gives its creation code, which the prover runs to check that it returns the facet; or the contract's own code, when a facet calls a hook back. A `staticcall` into a facet runs it in the facet's own account, where nothing can change.
+
+A facet calls a hook back through an entrypoint of the contract that runs only while a flag in transient storage is set, as the facet sets it for the call. A section of the report proves that the flag is clear whenever other code can run, at every call out and every end, so that no one else can reach a hook; every other proof stands on it.
+
+An upgradeable contract is proved as the implementation behind its proxy. Its `deploy` runs on the proxy's empty storage, as the proxy's constructor runs it, and a migration from any state. `upgradeToAndCall` hands the contract on with its `delegatecall` into the implementation it installs: there the phase commits, and the invariants must hold. Whatever that code does belongs to the version it is: a later version's migration and phases answer for it, and when it is this version, the call is one of its own phases. Past the handover a path may only clear the flag a migration checks, and end.
+
+### Deployed code
+
+`--code` proves code from a chain, rather than the build's, against the source's specs and layout. It takes the runtime as hex, or a file of it, such as `cast code` prints:
+
+```bash
+lithe prove --code "$(cast code 0x5FbDB2315678afecb367f032d93F642f64180aa3)" vault.lithe
+```
+
+The report gives the code's hash, marked `as given`, and every phase runs the given code. The initial state is proved only when the source's creation code returns exactly that code. Otherwise its rows are `unknown`: the other rows prove that each phase of the given code keeps the invariants, which says nothing of a contract until they hold once.
+
+## The source prover
+
+`lithe prove --source` proves the specs of the source as written: the program the compiler checked, before it emits code. It trusts the compiler to translate it, so its proof says nothing of the bytecode, but it is fast, and its counterexamples name the arguments. `lithe prove` runs it too, and shows its verdicts beside the bytecode's where they explain one. With `--source` the report has no runtime code and no storage types section, and the counts are the source's.
+
+The source prover models storage words, maps, records, checked arithmetic, and `forall` exactly, and runs internal calls, branches, and loops of up to 16 iterations. It does not model everything: strings, bit operations, and lists of records or strings become values it knows only the type of, and a spec cannot use them. A list whose length the code fixes, such as a literal `[a, b]`, is the exception: the prover knows each element. So is a list of words a function takes, or one a loop pushes to: the prover knows its length and its elements, and a loop over it runs turn by turn as far as it may be short, the first 16 elements. When a counterexample depends on one of those, the report says `not proved`, and names what it approximated. What it cannot check at all is `unknown`, with why: a deferred `Evm.delegateCall`, and a `fallback` that passes its call to other code. A loop that may run more than 16 times, or over a list whose length it does not know, needs [loop invariants](#loop-invariants). It proves each continuation as a phase of its own, and each internal function's spec of the function's source, wherever the build would inline it.
 
 ## Checking specs as the contract runs
 
@@ -317,7 +409,7 @@ A test run cannot check the rest of what a spec claims: that a reverting call re
 
 `sum` and `count` of a storage map are kept as the contract runs: the build updates a running total, in storage of its own, at each write to the map. A clause with `forall`, or with a `sum` or `count` of anything but a storage map, cannot be computed; the build skips it with a warning. The build also skips a contract's spec for an external that a module provides, which runs the module's code: write it in the module's spec.
 
-A checking build computes a spec's arithmetic as the code does, so a spec whose own arithmetic overflows stops the call with a panic. It reads the spec file, runs every module in the contract, even a [`delegated`](/tooling/size-limit) one, and is bigger and slower than the plain build. Don't deploy it.
+A checking build computes a spec's arithmetic over the integers, as the prover does: a comparison of sums, differences, products, or quotients is exact, however large or negative the values in it, up to 512 bits. A product past that stops the call with `SpecViolation`, since the build cannot compute it. A spec value used as something other than a number, such as a map key, is computed as its type, so arithmetic there that overflows still panics. It reads the spec file, runs every module in the contract, even a [`delegated`](/tooling/size-limit) one, and is bigger and slower than the plain build. Don't deploy it.
 
 ## Spec-only forms
 

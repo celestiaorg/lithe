@@ -24,6 +24,7 @@ impl<'a> Gen<'a> {
             tree_end: 0,
             code: Vec::new(),
             next_label: 0,
+            next_mark: 0,
             spaces: Vec::new(),
             image: 0,
             dirty: 0,
@@ -1203,7 +1204,9 @@ impl<'a> Gen<'a> {
             })
             .collect();
         let tracked = |addr: u32| spaces[(addr >> REGION_SHIFT) as usize - 1];
+        let was = asm::track::before(&self.code);
         self.read_calldata(&tracked);
+        asm::track::carry(was, &self.code);
         let mut calls: asm::Calls = self
             .subs
             .iter()
@@ -1259,27 +1262,34 @@ impl<'a> Gen<'a> {
         }
         let alloc = self.subs.iter().find(|(sub, _, _)| *sub == Sub::AllocBlob);
         let placed = match alloc {
-            Some(&(_, alloc, _)) if self.plan.static_heap => asm::static_heap(
-                &mut self.code,
-                self.blob_ptr as u32,
-                self.blob_base as u32,
-                alloc,
-                &calls,
-                self.plan.every_bump,
-            ),
+            Some(&(_, alloc, _)) if self.plan.static_heap => {
+                let (ptr, base, every) = (
+                    self.blob_ptr as u32,
+                    self.blob_base as u32,
+                    self.plan.every_bump,
+                );
+                asm::track::pass(&mut self.code, |code| {
+                    asm::static_heap(code, ptr, base, alloc, &calls, every)
+                })
+            }
             _ => false,
         };
-        let forwarded =
-            self.plan.forward_consts && asm::forward_constants(&mut self.code, &tracked, &calls);
-        asm::promote(
-            &mut self.code,
-            &tracked,
-            &calls,
-            self.plan.tight,
-            self.plan.hold_dups,
-            self.plan.sink,
-            self.plan.abandon,
-        );
+        let forwarded = self.plan.forward_consts
+            && asm::track::pass(&mut self.code, |code| {
+                asm::forward_constants(code, &tracked, &calls)
+            });
+        let plan = &self.plan;
+        asm::track::pass(&mut self.code, |code| {
+            asm::promote(
+                code,
+                &tracked,
+                &calls,
+                plan.tight,
+                plan.hold_dups,
+                plan.sink,
+                plan.abandon,
+            )
+        });
         // String helpers reach storage through a slot they are given, and others write
         // slots they are given, which may be a fixed list's.
         let opaque: std::collections::HashSet<u32> = self
@@ -1293,7 +1303,9 @@ impl<'a> Gen<'a> {
                     .map(|&(_, label, _)| label),
             )
             .collect();
-        asm::forward_storage(&mut self.code, &calls, &opaque);
+        asm::track::pass(&mut self.code, |code| {
+            asm::forward_storage(code, &calls, &opaque)
+        });
         if self.plan.static_heap {
             placed
         } else {
@@ -1372,6 +1384,7 @@ impl<'a> Gen<'a> {
         if from.is_empty() {
             return;
         }
+        super::certify::from_calldata(&from);
         let mut out: Vec<Inst> = Vec::with_capacity(self.code.len());
         let mut i = 0;
         while i < self.code.len() {
@@ -1398,6 +1411,8 @@ impl<'a> Gen<'a> {
 
     /// Places every used region, hottest first. Regions no body shares can overlap.
     pub(super) fn resolve(&mut self) -> Result<Vec<Inst>, Error> {
+        asm::track::strip(&mut self.code);
+        super::certify::settle(&self.code);
         let mask = (1u32 << REGION_SHIFT) - 1;
         let mut offsets: Vec<Vec<u64>> = vec![Vec::new(); self.spaces.len()];
         for inst in &self.code {
@@ -1609,6 +1624,7 @@ impl<'a> Gen<'a> {
             ptr: base[ptr - 1] + u64::from(self.blob_ptr as u32 & mask),
             base: top,
         });
+        super::certify::place(&base);
         let mut out = Vec::with_capacity(self.code.len());
         for inst in std::mem::take(&mut self.code) {
             out.push(match inst {

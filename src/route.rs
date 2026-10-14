@@ -17,6 +17,8 @@ pub(crate) struct Route {
     pub tail: Option<Expr>,
     pub direct: Option<usize>,
     pub path: Vec<String>,
+    /// The dispatchers `path` runs through, by index. A direct entry has none.
+    pub funcs: Vec<usize>,
     /// The variant case a dispatched route is for. A direct entry has none.
     pub case: Option<String>,
     pub guard_txt: Vec<String>,
@@ -40,6 +42,11 @@ pub(crate) struct Route {
 }
 
 impl Route {
+    /// The function the route's code starts in: its own, or the dispatching external's.
+    pub(crate) fn root(&self) -> Option<usize> {
+        self.direct.or_else(|| self.funcs.first().copied())
+    }
+
     /// Whether the dispatcher reaches this route by its selector.
     pub(crate) fn by_selector(&self) -> bool {
         self.special.is_none()
@@ -96,6 +103,7 @@ pub(crate) fn discover(checked: &Checked, require_entries: bool) -> Result<Vec<R
                 case,
                 &f.stmts,
                 path,
+                vec![i],
                 f.payable,
                 f.nonreentrant,
                 &mut routes,
@@ -142,18 +150,6 @@ fn shown_routes(checked: &Checked) -> impl Iterator<Item = &Route> {
         .filter(|route| !crate::split::is_hidden(&route.name))
 }
 
-/// The function a route's code starts in: its own, or the dispatching external's.
-fn route_root(checked: &Checked, route: &Route) -> Option<usize> {
-    route.direct.or_else(|| {
-        let top = route.path.first()?;
-        checked
-            .prog
-            .funcs
-            .iter()
-            .position(|f| f.kind == ItemKind::Entry && &f.name == top)
-    })
-}
-
 /// The hooks code from `root` reaches, as reports list them: `M.h (in the contract)`.
 fn hook_items(checked: &Checked, root: Option<usize>) -> Vec<String> {
     root.map(|root| {
@@ -198,11 +194,7 @@ pub(crate) fn render(checked: &Checked, parts: Option<&HashMap<[u8; 4], String>>
         section(&mut out, "calls", &r.calls);
         section(&mut out, "guards", &r.guard_txt);
         if hooked {
-            section(
-                &mut out,
-                "hooks",
-                &hook_items(checked, route_root(checked, r)),
-            );
+            section(&mut out, "hooks", &hook_items(checked, r.root()));
         }
         section(&mut out, "storage reads", &r.reads);
         section(&mut out, "storage writes", &r.writes);
@@ -311,6 +303,7 @@ fn walk(
     case: &Expr,
     guards: &[Stmt],
     path: Vec<String>,
+    funcs: Vec<usize>,
     payable: bool,
     nonreentrant: bool,
     routes: &mut Vec<Route>,
@@ -329,11 +322,14 @@ fn walk(
             next_guards.extend(callee.stmts.iter().cloned());
             let mut next_path = path.clone();
             next_path.push(callee.name.clone());
+            let mut next_funcs = funcs.clone();
+            next_funcs.push(idx);
             walk(
                 checked,
                 inner,
                 &next_guards,
                 next_path,
+                next_funcs,
                 payable,
                 nonreentrant,
                 routes,
@@ -402,6 +398,7 @@ fn walk(
                 tail,
                 direct: None,
                 path: leaf_path,
+                funcs: funcs.clone(),
                 case: Some(ctor.clone()),
                 calls,
                 reads,
@@ -485,6 +482,7 @@ fn direct(checked: &Checked, idx: usize, f: &Func, seen: &mut Vec<String>) -> Re
         tail: None,
         direct: Some(idx),
         path: vec![f.name.clone()],
+        funcs: Vec::new(),
         case: None,
         calls,
         reads,
@@ -571,12 +569,9 @@ pub(crate) fn reentry_notes(checked: &Checked) -> Vec<Note> {
 }
 
 fn warning_site(checked: &Checked, route: &Route) -> (u32, u32, String) {
-    let owner = route.path.first().unwrap_or(&route.name);
-    checked
-        .prog
-        .funcs
-        .iter()
-        .find(|func| func.name == *owner)
+    route
+        .root()
+        .map(|f| &checked.prog.funcs[f])
         .map(|func| (func.line, func.col, func.origin.clone()))
         .unwrap_or((1, 1, String::new()))
 }
@@ -1552,12 +1547,7 @@ pub(crate) fn render_footprints(
                 ("during defers", vec![window(r.nonreentrant)]),
             ],
         };
-        let top = r.direct.or_else(|| {
-            let top = r.path.first()?;
-            funcs
-                .iter()
-                .position(|f| f.kind == ItemKind::Entry && &f.name == top)
-        });
+        let top = r.root();
         fields.extend(guard(top));
         fields.extend(hooks(top));
         if r.by_selector() {
@@ -2240,10 +2230,7 @@ pub(crate) fn render_errors(checked: &Checked) -> Result<String, Error> {
     let mut hooks: Vec<(String, Vec<String>)> = Vec::new();
     for route in shown_routes(checked) {
         blocks.push((route.sig.clone(), route.raises.clone()));
-        hooks.push((
-            route.sig.clone(),
-            hook_items(checked, route_root(checked, route)),
-        ));
+        hooks.push((route.sig.clone(), hook_items(checked, route.root())));
     }
     for func in &checked.prog.funcs {
         if !matches!(func.kind, ItemKind::View | ItemKind::Deploy) {

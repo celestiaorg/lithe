@@ -21,7 +21,7 @@ external function inc() is {
 - **External calls are deferred.** A state-changing call to another contract runs after the entrypoint has finished its own work, so a callee never sees half-updated state.
 - **Typed, declared failures.** Every external function lists the errors it can raise, and the compiler checks the list is complete.
 - **Checked effects.** `pure` and `view` are verified against their bodies.
-- **Formal verification.** Specs beside the contract are proved with `lithe prove`.
+- **Formal verification.** Specs beside the contract are proved with `lithe prove`, against the bytecode the compiler emits.
 - **Deterministic storage.** The default layout matches Solidity's; named domains sit at ERC-7201 roots.
 - **Modules, not inheritance**, and built-in UUPS upgrades.
 - **Smaller bytecode.** About 32% less runtime code than optimized `solc` across real contracts.

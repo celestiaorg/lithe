@@ -717,13 +717,7 @@ pub(super) fn supports_interface(
     };
     let mut have: Vec<([u8; 4], Option<Vec<String>>)> = Vec::new();
     for route in checked.routes.iter().filter(|route| route.by_selector()) {
-        let func = route.direct.or_else(|| {
-            let top = route.path.first()?;
-            funcs
-                .iter()
-                .position(|f| f.kind == ItemKind::Entry && &f.name == top)
-        });
-        have.push((route.sel, func.map(ret_of)));
+        have.push((route.sel, route.root().map(ret_of)));
     }
     for (i, func) in funcs.iter().enumerate() {
         if func.kind == ItemKind::View {

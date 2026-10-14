@@ -150,17 +150,8 @@ impl<'a> Gen<'a> {
 
     /// Whether an entrypoint's code, or anything it calls, reads an immutable.
     fn target_reads_immutables(&self, target: &Target) -> bool {
-        let funcs = &self.checked.prog.funcs;
         let func = match target {
-            Target::Entry { index, .. } => {
-                let route = &self.checked.routes[*index];
-                route.direct.or_else(|| {
-                    let top = route.path.first()?;
-                    funcs
-                        .iter()
-                        .position(|f| f.kind == ItemKind::Entry && &f.name == top)
-                })
-            }
+            Target::Entry { index, .. } => self.checked.routes[*index].root(),
             Target::View { func, .. } => Some(*func),
             _ => None,
         };
@@ -906,7 +897,22 @@ impl<'a> Gen<'a> {
             if let Some(sym) = bind {
                 self.decode_sym(sym)?;
             }
-            self.compile_top(&guards, &mut picks)?;
+            if crate::asm::track::on() {
+                // Each dispatcher's statements, then where they end, in path order.
+                let path = self.checked.routes[index].funcs.clone();
+                let mut at = 0;
+                for f in path {
+                    let f = &self.checked.prog.funcs[f];
+                    let n = f.stmts.len().min(guards.len() - at);
+                    self.compile_top(&guards[at..at + n], &mut picks)?;
+                    at += n;
+                    let name = f.name.clone();
+                    self.certify_guard_end(&name, index);
+                }
+                self.compile_top(&guards[at..], &mut picks)?;
+            } else {
+                self.compile_top(&guards, &mut picks)?;
+            }
             self.compile_top(&stmts, &mut picks)?;
             if let Some(tail) = tail {
                 self.compile_effect(&tail)?;
@@ -1986,9 +1992,6 @@ impl<'a> Gen<'a> {
         self.op(XOR);
         self.push_label(unsupported);
         self.op(JUMPI);
-        self.push_u64(1);
-        self.push_u64(UPGRADE_SLOT);
-        self.op(TSTORE);
         self.push_u64(4);
         self.op(CALLDATALOAD);
         self.op(DUP1);
@@ -2013,6 +2016,11 @@ impl<'a> Gen<'a> {
         self.op(ISZERO);
         self.push_label(skip);
         self.op(JUMPI);
+        // The flag a migration checks is set only for the migration's call, so no one can
+        // call one later in the transaction.
+        self.push_u64(1);
+        self.push_u64(UPGRADE_SLOT);
+        self.op(TSTORE);
         self.mload(self.blob_ptr);
         self.push_mem(self.blob_base);
         self.op(ADD);
@@ -2050,6 +2058,9 @@ impl<'a> Gen<'a> {
         self.jumpdest(failed);
         self.revert_selector(selector("FailedCall()"), false);
         self.jumpdest(done);
+        self.op(PUSH0);
+        self.push_u64(UPGRADE_SLOT);
+        self.op(TSTORE);
         self.op(STOP);
         // With no migration to take it, value is refused, as `ERC1967Utils` refuses it.
         self.jumpdest(skip);

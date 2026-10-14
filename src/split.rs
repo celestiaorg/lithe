@@ -215,6 +215,10 @@ impl Split {
 /// Compiles a contract, with each module it marks `delegated` in its facet. A build this compiler
 /// already did for the same program and options is read back from the cache instead.
 pub(crate) fn build(checked: &Checked, name: &str, opts: &Options) -> Result<Split, Error> {
+    // A cached build has no loop certificates.
+    if gen::certify::wanted() {
+        return build_uncached(checked, name, opts);
+    }
     let path = cache_path(checked, name, opts);
     if let Some(split) = path
         .as_deref()

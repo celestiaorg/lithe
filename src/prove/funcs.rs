@@ -111,8 +111,10 @@ fn subjects(specs: &Specs) -> Vec<Subject<'_>> {
                 };
                 // An external a module offers runs as a call's first phase; any other
                 // function runs inside one.
-                let external = f.exported.is_some() || f.kind == ItemKind::View;
-                let payable = f.exported.as_ref().is_some_and(|e| e.payable);
+                let external =
+                    f.exported.is_some() || f.kind == ItemKind::View || f.promoted.is_some();
+                let payable = f.exported.as_ref().is_some_and(|e| e.payable)
+                    || f.promoted.is_some() && f.payable;
                 out.push(Subject {
                     header: format!("spec for {}", spec.label),
                     params: named(f),
@@ -257,7 +259,7 @@ fn prove_subject(
     let mut st = exec.start();
     let mut params = Vec::new();
     for (name, sym) in &subject.params {
-        exec.bind(&mut st, *sym, "arg");
+        exec.bind_arg(&mut st, *sym);
         if let Some(t) = Exec::word_term(&st, *sym) {
             params.push((name.clone(), t));
         }
@@ -310,7 +312,7 @@ fn prove_subject(
                 Some(v) => {
                     exec::put_local(&mut names, sym, v);
                 }
-                None => exec.bind(&mut names, sym, "arg"),
+                None => exec.bind_arg(&mut names, sym),
             }
         }
         let from = if b == 0 && subject.own {

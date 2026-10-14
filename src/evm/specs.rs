@@ -931,13 +931,16 @@ fn checking_builds_of_the_examples_behave_as_their_plain_builds() {
             .unwrap_or_else(|e| panic!("{rel} with --check-specs: {e}"));
         OPAQUE_CODE.set(true);
         install_mocks();
-        let reference = deploy(&plain.bytecode).unwrap_or_else(|e| panic!("{rel}: {e}"));
-        let ours = deploy(&checked.bytecode).unwrap_or_else(|e| panic!("{rel}: {e}"));
-        super::differential::compare_builds(
+        deploy_plan(&plain);
+        // The specs hold of the states `deploy` leaves, not of empty storage.
+        let (reference, theirs) =
+            deploy_state(&plain.bytecode).unwrap_or_else(|e| panic!("{rel}: {e}"));
+        let (ours, mine) = deploy_state(&checked.bytecode).unwrap_or_else(|e| panic!("{rel}: {e}"));
+        super::differential::compare_builds_from(
             &rel,
             &plain.method_identifiers,
-            &reference,
-            &ours,
+            (&reference, &theirs),
+            (&ours, &mine),
             steps,
             false,
         );
@@ -1002,4 +1005,122 @@ external function leak() is { delete storage.balances[Evm.sender()]; }
         c.call(1, 0, "leak()", &[]).is_err(),
         "a delete that breaks the ledger"
     );
+}
+
+/// Spec arithmetic is over the integers: a checking build compares sums, differences,
+/// products, and quotients exactly, whatever their size or sign, where the code's own
+/// arithmetic would overflow.
+#[test]
+fn a_checking_build_computes_spec_arithmetic_exactly() {
+    let src = r#"
+storage is record { a : uint; b : uint; n : int; }
+
+external function set(const x : uint; const y : uint; const z : int) is {
+  storage.a := x;
+  storage.b := y;
+  storage.n := z;
+}
+
+external function probe(const k : uint) is { }
+"#;
+    let spec = r#"
+spec for probe is {
+  const sum : uint := old.storage.a + old.storage.b;
+  ensures sum - old.storage.b = old.storage.a;
+  ensures old.storage.a + old.storage.b - old.storage.b = old.storage.a;
+  ensures old.storage.a * (old.storage.b + 1) / (old.storage.b + 1) = old.storage.a;
+  ensures (old.storage.a * (old.storage.b + 1) + k) % (old.storage.b + 1) = k % (old.storage.b + 1);
+  ensures old.storage.n - 1 < old.storage.n + 1;
+  ensures -old.storage.n + old.storage.n = 0;
+  ensures old.storage.a - old.storage.b - 1 < old.storage.a - old.storage.b;
+  ensures old.storage.a * old.storage.a >= old.storage.a;
+  ensures old.storage.n / 2 * old.storage.n >= 0;
+  ensures old.storage.n % 2 * old.storage.n >= 0;
+  ensures old.storage.n / -3 * -3 + old.storage.n % -3 = old.storage.n;
+  ensures old.storage.n / -3 * old.storage.n <= 0;
+}
+"#;
+    let max = Word::from_u64(0).not();
+    let top = Word::from_u64(1).shl(255);
+    let edges = [
+        Word::from_u64(0),
+        Word::from_u64(1),
+        Word::from_u64(2),
+        top,
+        max.wrapping_sub(Word::from_u64(1)),
+        max,
+    ];
+    let ints = [Word::from_u64(0), Word::from_u64(1), max, top, top.not()];
+    let mut c = Checked::new(src, spec);
+    for &a in &edges {
+        for &b in &edges {
+            for &n in &ints {
+                c.call(1, 0, "set(uint256,uint256,int256)", &[a, b, n])
+                    .expect("set");
+                for k in [Word::from_u64(0), Word::from_u64(5), max] {
+                    let got = c.call(1, 0, "probe(uint256)", &[k]);
+                    assert!(
+                        got.is_ok(),
+                        "a = {a:?}, b = {b:?}, n = {n:?}, k = {k:?}: {}",
+                        pretty(&got.unwrap_err())
+                    );
+                }
+            }
+        }
+    }
+    // A wrong claim still fails, as a violation, not a panic.
+    let wrong = spec.replace(
+        "ensures old.storage.a * old.storage.a >= old.storage.a;",
+        "ensures old.storage.a + old.storage.b > old.storage.a;",
+    );
+    let mut c = Checked::new(src, &wrong);
+    c.call(
+        1,
+        0,
+        "set(uint256,uint256,int256)",
+        &[max, Word::from_u64(0), max],
+    )
+    .expect("set");
+    assert_eq!(
+        c.call(1, 0, "probe(uint256)", &[Word::from_u64(0)]),
+        Err(violation("probe: `ensures` at 11:3 does not hold"))
+    );
+    c.call(1, 0, "set(uint256,uint256,int256)", &[max, max, max])
+        .expect("set");
+    c.call(1, 0, "probe(uint256)", &[Word::from_u64(0)])
+        .expect("the sum passes 2^256");
+}
+
+/// A `raises` clause whose sum passes `2^256` holds, and the call reverts as the plain
+/// build does, with the error the code raises first.
+#[test]
+fn a_checking_build_raises_as_the_plain_build_past_a_word() {
+    let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples/verification");
+    let src = std::fs::read_to_string(root.join("capped_token.lithe")).expect("source");
+    let spec = std::fs::read_to_string(root.join("capped_token.spec.lithe")).expect("spec");
+    assert!(spec.contains("old.ERC20.erc20.totalSupply + value > old.storage.cap"));
+    let mut c = Checked::new(&src, &spec);
+    let max = Word::from_u64(0).not();
+    c.call(
+        1,
+        0,
+        "mint(address,uint256)",
+        &[Word::from_u64(7), Word::from_u64(5)],
+    )
+    .expect("mint");
+    let err = c
+        .call(9, 0, "mint(address,uint256)", &[Word::from_u64(7), max])
+        .expect_err("not the owner");
+    assert_eq!(err[..4], selector("NotOwner()"), "{}", pretty(&err));
+    let err = c
+        .call(1, 0, "mint(address,uint256)", &[Word::from_u64(7), max])
+        .expect_err("over the cap");
+    assert_eq!(err[..4], selector("OverCap(uint256)"), "{}", pretty(&err));
+    c.call(
+        1,
+        0,
+        "mint(address,uint256)",
+        &[Word::from_u64(7), Word::from_u64(5)],
+    )
+    .expect("mint");
 }

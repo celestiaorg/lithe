@@ -1,0 +1,17 @@
+spec is {
+  (* The deployer owns the counter, and nothing hands it on. *)
+  invariant owned is storage.owner <> Address.zero;
+}
+
+spec for module Counter is {
+  spec for bump is partial {
+    ensures new.counter.count = old.counter.count + by;
+    ensures new.counter.bumps = old.counter.bumps + 1;
+  }
+}
+
+spec for add is {
+  raises NotOwner when Evm.sender() <> old.storage.owner;
+  panics when Evm.sender() = old.storage.owner and old.storage.total + by > Uint.max;
+  ensures new.storage.total = old.storage.total + by;
+}

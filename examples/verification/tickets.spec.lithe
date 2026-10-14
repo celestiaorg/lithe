@@ -1,0 +1,12 @@
+(* What tickets.lithe guarantees. *)
+
+spec is {
+  (* The holdings add up to the tickets issued. *)
+  invariant ledger is storage.issued = sum(storage.held);
+}
+
+spec for issue is partial {
+  panics when n > 1000;
+  ensures new.storage.issued = old.storage.issued + n;
+  ensures new.storage.held[Evm.sender()] = old.storage.held[Evm.sender()] + n;
+}

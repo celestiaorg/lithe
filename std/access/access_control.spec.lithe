@@ -1,0 +1,21 @@
+(* What `AccessControl` guarantees: only a role's admins grant and revoke it, and an account
+   renounces only its own roles. *)
+
+spec for module AccessControl is {
+  spec for grantRole is {
+    raises AccessControlUnauthorizedAccount when not old.access.members[access.admins[role]][Evm.sender()];
+    ensures new.access.members[role][account];
+    ensures new.access.admins[role] = old.access.admins[role];
+  }
+
+  spec for revokeRole is {
+    raises AccessControlUnauthorizedAccount when not old.access.members[access.admins[role]][Evm.sender()];
+    ensures not new.access.members[role][account];
+    ensures new.access.admins[role] = old.access.admins[role];
+  }
+
+  spec for renounceRole is {
+    raises AccessControlBadConfirmation when callerConfirmation <> Evm.sender();
+    ensures not new.access.members[role][callerConfirmation];
+  }
+}

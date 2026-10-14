@@ -154,15 +154,23 @@ fn main() {
     }
 }
 
-/// `lithe prove file.lithe [--solver path] [--timeout seconds]`. Exits 0 when every
+/// `lithe prove file.lithe [--solver path] [--timeout seconds] [--source | --code code]`,
+/// with the build flags for the bytecode it proves. Exits 0 when every
 /// obligation is proved, 1 when one fails or the file does not compile, 2 without Z3, and 3
 /// when one is unknown.
-fn prove(args: Vec<String>) -> ! {
+fn prove(mut args: Vec<String>) -> ! {
     let mut opts = lithe::ProveOptions::default();
+    let flags = build_flags(&mut args);
     let mut files = Vec::new();
     let mut it = args.into_iter();
     while let Some(arg) = it.next() {
         match arg.as_str() {
+            "--source" => opts.source = true,
+            "--code" => match it.next().map(|code| read_code(&code)) {
+                Some(Ok(code)) => opts.code = Some(code),
+                Some(Err(why)) => usage_exit(&why),
+                None => usage_exit("--code needs the runtime code, as hex or a file of it"),
+            },
             "--solver" => match it.next() {
                 Some(path) => opts.solver = Some(path.into()),
                 None => usage_exit("--solver needs the path to z3"),
@@ -178,8 +186,17 @@ fn prove(args: Vec<String>) -> ! {
         usage();
         std::process::exit(2);
     };
+    if opts.source && opts.code.is_some() {
+        usage_exit("--source proves no code; leave out --code or --source");
+    }
     if let Err(why) = lithe::solver(&opts) {
         usage_exit(&why);
+    }
+    if !flags.is_empty() {
+        match build_options(Path::new(file), &flags) {
+            Ok(build) => opts.build = Some(build),
+            Err(msg) => usage_exit(&msg),
+        }
     }
     match lithe::prove(&Sources::disk(), Path::new(file), &opts) {
         Ok(proof) => {
@@ -194,6 +211,29 @@ fn prove(args: Vec<String>) -> ! {
         }
         Err(err) => fail(&[err], Some(Path::new(file))),
     }
+}
+
+/// Runtime code from `--code`: hex, with or without `0x`, or a file of hex or of bytes.
+fn read_code(arg: &str) -> Result<Vec<u8>, String> {
+    let hex_of = |text: &str| -> Option<Vec<u8>> {
+        let text = text.trim();
+        let text = text.strip_prefix("0x").unwrap_or(text);
+        if text.is_empty() || text.len() % 2 == 1 || !text.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return None;
+        }
+        (0..text.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&text[i..i + 2], 16).ok())
+            .collect()
+    };
+    if let Some(code) = hex_of(arg) {
+        return Ok(code);
+    }
+    let bytes = std::fs::read(arg).map_err(|err| format!("--code {arg}: {err}"))?;
+    Ok(std::str::from_utf8(&bytes)
+        .ok()
+        .and_then(hex_of)
+        .unwrap_or(bytes))
 }
 
 fn usage_exit(msg: &str) -> ! {
@@ -490,6 +530,7 @@ usage: lithe compile file.lithe
        lithe errors file.lithe
        lithe specs file.lithe
        lithe prove file.lithe [--solver path/to/z3] [--timeout seconds]
+                              [--source | --code <hex|file>]
        lithe lint [--fix] path...
        lithe storage file.lithe
        lithe storage old.lithe new.lithe
@@ -504,12 +545,17 @@ usage: lithe compile file.lithe
        lithe fmt -
        lithe --version
 
-compile, abi, facets, abi-tree, footprint, upgrade, and upgrade-check also take
+compile, abi, facets, abi-tree, footprint, prove, upgrade, and upgrade-check also take
        --size-limit <bytes>          largest runtime code, default 24576; code over it
                                      still builds, with a warning of what fills it
        --create2-deployer <address>  the CREATE2 factory for facets
        --evm-version <prague|osaka>  the fork the code runs on, default osaka; prague
                                      leaves out Osaka's CLZ
+
+prove proves the specs of the bytecode the build emits, and shows the source's verdict
+where it explains one; it also takes
+       --source                      prove the source alone, a quick first pass
+       --code <hex|file>             prove this runtime code, as deployed, instead
 
 compile also takes
        --check-specs                 a test build that checks the contract's specs as it

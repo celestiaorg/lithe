@@ -7,8 +7,13 @@
 //! migration; its deferred calls run once it has committed, and what they do to this contract
 //! is other phases, so nothing about the contracts it calls needs modeling.
 
+mod bspec;
+mod bv;
+mod bytecode;
 mod exec;
 mod funcs;
+mod lia;
+mod sevm;
 mod smt;
 
 use std::path::PathBuf;
@@ -27,6 +32,13 @@ pub struct ProveOptions {
     pub solver: Option<PathBuf>,
     /// Seconds each obligation may take; 30 when zero.
     pub timeout: u32,
+    /// Prove the specs of the source alone: a quick first pass, which says nothing of the
+    /// bytecode a build emits.
+    pub source: bool,
+    /// The deployed runtime to prove, instead of the one this build emits.
+    pub code: Option<Vec<u8>>,
+    /// How the contract is built, when not as its `lithe.toml` says.
+    pub build: Option<crate::Options>,
 }
 
 /// What `lithe prove` found.
@@ -37,6 +49,7 @@ pub struct Proof {
     pub unknown: usize,
 }
 
+#[derive(Clone)]
 enum Outcome {
     Proved,
     /// The phase changes nothing the invariant reads.
@@ -69,7 +82,36 @@ struct Inv<'a> {
     text: &'a str,
 }
 
-pub(crate) fn prove(specs: &Specs, opts: &ProveOptions) -> Result<Proof, Error> {
+pub(crate) use bytecode::{Built, BuiltFacet};
+#[cfg(test)]
+pub(crate) use sevm::run_known;
+
+/// Each section's header, and each claim's label and outcome under it.
+type Sections = Vec<(String, Vec<(String, Outcome)>)>;
+
+/// One level's verdicts, before they are rendered: what was proved, and the sections.
+struct Report {
+    head: String,
+    sections: Sections,
+}
+
+/// The specs, proved of the bytecode a build emits, which is the verdict; the source's
+/// verdicts show where they differ from it, or explain a claim it does not prove.
+pub(crate) fn prove_bytecode(
+    specs: &Specs,
+    built: &Built,
+    opts: &ProveOptions,
+) -> Result<Proof, Error> {
+    let source = source(specs, opts)?;
+    Ok(render(bytecode::prove(specs, built, opts)?, Some(&source)))
+}
+
+/// The specs, proved of the source alone.
+pub(crate) fn prove_source(specs: &Specs, opts: &ProveOptions) -> Result<Proof, Error> {
+    Ok(render(source(specs, opts)?, None))
+}
+
+fn source(specs: &Specs, opts: &ProveOptions) -> Result<Report, Error> {
     let timeout = if opts.timeout == 0 { 30 } else { opts.timeout };
     let solver =
         Solver::find(opts.solver.clone(), timeout).map_err(|why| crate::error(0, 0, why))?;
@@ -98,15 +140,10 @@ pub(crate) fn prove(specs: &Specs, opts: &ProveOptions) -> Result<Proof, Error> 
             text: &inv.text,
         });
     }
-    let mut out = String::new();
-    let (mut proved, mut failed, mut unknown) = (0, 0, 0);
     if invs.is_empty() && specs.funcs.is_empty() {
-        out.push_str("no specs to prove\n");
-        return Ok(Proof {
-            text: out,
-            proved,
-            failed,
-            unknown,
+        return Ok(Report {
+            head: String::new(),
+            sections: Vec::new(),
         });
     }
     let tracked = tracked_totals(checked, &invs);
@@ -167,89 +204,126 @@ pub(crate) fn prove(specs: &Specs, opts: &ProveOptions) -> Result<Proof, Error> 
             relying(&mut claim.outcome, &claim.relies);
         }
     }
-    let mut sections: Vec<(String, Vec<(String, &Outcome)>)> = Vec::new();
+    let mut sections: Sections = Vec::new();
     for (i, inv) in invs.iter().enumerate() {
         sections.push((
             format!("invariant {}: {}", inv.label, inv.text),
             results
                 .iter()
-                .map(|(label, o, _)| (label.clone(), &o[i]))
+                .map(|(label, o, _)| (label.clone(), o[i].clone()))
                 .collect(),
         ));
     }
-    for (header, claims) in &function_specs {
+    for (header, claims) in function_specs {
         sections.push((
-            header.clone(),
-            claims
-                .iter()
-                .map(|c| (c.label.clone(), &c.outcome))
-                .collect(),
+            header,
+            claims.into_iter().map(|c| (c.label, c.outcome)).collect(),
         ));
     }
     if !worst.is_empty() {
-        sections.push((
-            "loop invariants".to_string(),
-            worst.iter().map(|(l, o)| (l.clone(), o)).collect(),
-        ));
+        sections.push(("loop invariants".to_string(), worst));
     }
-    // The verdict first, then the claim, which may be long; what explains the verdict goes
-    // under the claim.
+    Ok(Report {
+        head: String::new(),
+        sections,
+    })
+}
+
+/// The report: each section's header, then each claim's verdict and the claim, and what
+/// explains the verdict under it; then the counts. With the `source` level's report, a claim
+/// shows the source's verdict too where it is not proved, or where the source fails it.
+fn render(report: Report, source: Option<&Report>) -> Proof {
+    let mut out = report.head;
+    let (mut proved, mut failed, mut unknown) = (0, 0, 0);
+    if report.sections.is_empty() {
+        out.push_str("no specs to prove\n");
+        return Proof {
+            text: out,
+            proved,
+            failed,
+            unknown,
+        };
+    }
     let under = " ".repeat(14);
-    for (i, (header, rows)) in sections.into_iter().enumerate() {
+    for (i, (header, rows)) in report.sections.into_iter().enumerate() {
         if i > 0 {
             out.push('\n');
         }
         out.push_str(&format!("{header}\n"));
+        let source_rows = source
+            .and_then(|s| s.sections.iter().find(|(h, _)| *h == header))
+            .map_or(&[][..], |(_, rows)| rows.as_slice());
         for (label, outcome) in rows {
-            let (status, label) = match outcome {
-                Outcome::Proved => {
-                    proved += 1;
-                    ("proved", label)
-                }
-                Outcome::Unchanged => {
-                    proved += 1;
-                    ("proved", format!("{label} (unchanged)"))
-                }
-                Outcome::Failed(_) => {
-                    failed += 1;
-                    ("FAILED", label)
-                }
-                Outcome::Unsure(..) => {
-                    unknown += 1;
-                    ("not proved", label)
-                }
-                Outcome::Unknown(_) => {
-                    unknown += 1;
-                    ("unknown", label)
-                }
+            match outcome {
+                Outcome::Proved | Outcome::Unchanged => proved += 1,
+                Outcome::Failed(_) => failed += 1,
+                Outcome::Unsure(..) | Outcome::Unknown(_) => unknown += 1,
+            }
+            let shown = match outcome {
+                Outcome::Unchanged => format!("{label} (unchanged)"),
+                _ => label.clone(),
             };
-            out.push_str(&format!("  {status:<10}  {label}\n"));
-            if let Outcome::Unknown(why) = outcome {
-                out.push_str(&format!("{under}{why}\n"));
+            out.push_str(&format!("  {:<10}  {shown}\n", status(&outcome)));
+            details(&mut out, &outcome, &under);
+            // The source's run of a phase includes the continuations it starts.
+            let continued = format!("{label}, ");
+            let worst = source_rows
+                .iter()
+                .filter(|(l, _)| *l == label || l.starts_with(&continued))
+                .map(|(_, o)| o)
+                .reduce(|a, b| if rank(b) > rank(a) { b } else { a });
+            let Some(was) = worst else { continue };
+            let bytecode_proves = rank(&outcome) == 0;
+            if bytecode_proves && !matches!(was, Outcome::Failed(_)) {
+                continue;
             }
-            if let Outcome::Failed(values) | Outcome::Unsure(values, _) = outcome {
-                for (name, value) in values {
-                    out.push_str(&format!("{under}{name} = {value}\n"));
+            let why = match (&outcome, was) {
+                (Outcome::Failed(_), Outcome::Proved | Outcome::Unchanged) => {
+                    ", so the bytecode does not do what the source says"
                 }
-            }
-            if let Outcome::Unsure(_, notes) = outcome {
-                out.push_str(&format!(
-                    "{under}this may not happen: the prover approximates {}\n",
-                    notes.join(", ")
-                ));
-            }
+                _ => "",
+            };
+            out.push_str(&format!("{under}in the source: {}{why}\n", status(was)));
+            details(&mut out, was, &format!("{under}  "));
         }
     }
     out.push_str(&format!(
         "\n{proved} proved, {failed} failed, {unknown} unknown\n"
     ));
-
-    Ok(Proof {
+    Proof {
         text: out,
         proved,
         failed,
         unknown,
-    })
+    }
+}
+
+fn status(outcome: &Outcome) -> &'static str {
+    match outcome {
+        Outcome::Proved | Outcome::Unchanged => "proved",
+        Outcome::Failed(_) => "FAILED",
+        Outcome::Unsure(..) => "not proved",
+        Outcome::Unknown(_) => "unknown",
+    }
+}
+
+/// What explains an outcome: why it is unknown, or its counterexample.
+fn details(out: &mut String, outcome: &Outcome, indent: &str) {
+    match outcome {
+        Outcome::Unknown(why) => out.push_str(&format!("{indent}{why}\n")),
+        Outcome::Failed(values) | Outcome::Unsure(values, _) => {
+            for (name, value) in values {
+                out.push_str(&format!("{indent}{name} = {value}\n"));
+            }
+        }
+        Outcome::Proved | Outcome::Unchanged => {}
+    }
+    if let Outcome::Unsure(_, notes) = outcome {
+        out.push_str(&format!(
+            "{indent}this may not happen: the prover approximates {}\n",
+            notes.join(", ")
+        ));
+    }
 }
 
 fn pop_front<T>(v: &mut Vec<T>) -> Option<T> {
@@ -317,6 +391,11 @@ fn phases(checked: &Checked) -> Vec<Phase<'_>> {
         }),
     }
     for route in &checked.routes {
+        // A hook's way back in runs only inside the transition whose module code calls the
+        // hook, which runs the hook's body where it calls it.
+        if hook_entry(checked, route) {
+            continue;
+        }
         let overloaded = checked
             .routes
             .iter()
@@ -438,7 +517,7 @@ fn run_phase<'a>(
     let mut st = exec.start();
     let mut params = Vec::new();
     for (name, sym) in &phase.params {
-        exec.bind(&mut st, *sym, "arg");
+        exec.bind_arg(&mut st, *sym);
         if let Some(t) = Exec::word_term(&st, *sym) {
             params.push((name.clone(), t));
         }
@@ -569,15 +648,22 @@ fn run_phase<'a>(
     (outcomes, more)
 }
 
+/// Whether a route is the entrypoint a facet calls a hook back through.
+pub(crate) fn hook_entry(checked: &Checked, route: &crate::route::Route) -> bool {
+    route.direct.is_some_and(|f| {
+        checked.prog.funcs[f]
+            .hook_of
+            .as_ref()
+            .is_some_and(|of| of.form == HookForm::Entry)
+    })
+}
+
 /// The name a dispatched route's arm binds its argument to.
 pub(crate) fn bind_name(checked: &Checked, route: &crate::route::Route) -> String {
     let arm = route
-        .path
-        .len()
-        .checked_sub(2)
-        .and_then(|i| route.path.get(i))
-        .and_then(|d| checked.prog.funcs.iter().find(|f| &f.name == d))
-        .and_then(|f| match &f.tail {
+        .funcs
+        .last()
+        .and_then(|&f| match &checked.prog.funcs[f].tail {
             Some(Expr::Case { arms, .. }) => arms
                 .iter()
                 .find(|arm| arm.ctors.iter().any(|c| route.case.as_ref() == Some(c))),

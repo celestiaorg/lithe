@@ -42,12 +42,32 @@ pub(super) fn compare_builds(
     steps: usize,
     slots: bool,
 ) {
+    let empty = HashMap::new();
+    compare_builds_from(
+        rel,
+        methods,
+        (reference, &empty),
+        (ours, &empty),
+        steps,
+        slots,
+    );
+}
+
+/// Like `compare_builds`, from each build's storage as its creation code left it.
+pub(super) fn compare_builds_from(
+    rel: &str,
+    methods: &[(String, [u8; 4])],
+    (reference, theirs): (&[u8], &HashMap<Word, Word>),
+    (ours, mine): (&[u8], &HashMap<Word, Word>),
+    steps: usize,
+    slots: bool,
+) {
     let mut rng = Rng(rel.bytes().fold(0x9e37_79b9_7f4a_7c15u64, |h, b| {
         (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3)
     }));
     // Each build keeps its own storage: their layouts may differ.
-    let mut theirs: HashMap<Word, Word> = HashMap::new();
-    let mut mine: HashMap<Word, Word> = HashMap::new();
+    let mut theirs = theirs.clone();
+    let mut mine = mine.clone();
     // The ether the contract holds, as a chain keeps it from call to call.
     let mut held = Word::from_u64(10_000_000_000_000_000_000);
     let mut succeeded = 0;

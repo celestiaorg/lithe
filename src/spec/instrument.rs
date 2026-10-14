@@ -32,9 +32,11 @@ const GHOST: &str = "#ghost";
 pub(crate) fn instrument(mut prog: Program, specs: &Specs) -> Result<Instrumented, Error> {
     let mut build = Build {
         prog: &prog,
+        checked: &specs.checked,
         ghosts: Vec::new(),
         warnings: Vec::new(),
         fresh: 0,
+        exact: Vec::new(),
     };
     // Invariants become functions, as for the check, reading their totals from storage.
     let mut contract_fns = Vec::new();
@@ -53,7 +55,22 @@ pub(crate) fn instrument(mut prog: Program, specs: &Specs) -> Result<Instrumente
                 continue;
             }
         };
-        let expr = strip_states(&expr);
+        let typed = match &inv.module {
+            Some(m) => format!("{m}.{TAG}invariant {}", inv.name),
+            None => format!("{TAG}invariant {}", inv.name),
+        };
+        let expr = build.exact(&strip_states(&expr), &scope, |out| {
+            if let Some(tail) = specs
+                .checked
+                .prog
+                .funcs
+                .iter()
+                .find(|f| f.name == typed)
+                .and_then(|f| f.tail.as_ref())
+            {
+                signs(&specs.checked, tail, out);
+            }
+        });
         let name = format!("{TAG}check {}", inv.name);
         let func = view_fn(&name, inv.expr.line(), inv.expr.col(), Some(expr));
         let call = match &inv.module {
@@ -90,6 +107,22 @@ pub(crate) fn instrument(mut prog: Program, specs: &Specs) -> Result<Instrumente
                 .flat_map(|m| m.funcs.iter().map(move |f| (Some(m.name.clone()), f))),
         )
         .collect();
+    // The signs of each loop invariant's numbers, from the typed program.
+    let mut typed_loops: HashMap<(u32, u32), Vec<Signs>> = HashMap::new();
+    for f in &specs.checked.prog.funcs {
+        let mut loops = Vec::new();
+        each_loop(&f.stmts, &mut loops);
+        if let Some(tail) = &f.tail {
+            each_loop_in(tail, &mut loops);
+        }
+        for (line, col, invariants) in loops {
+            let found = typed_loops.entry((line, col)).or_default();
+            found.resize_with(found.len().max(invariants.len()), Signs::new);
+            for (inv, out) in invariants.iter().zip(found.iter_mut()) {
+                signs(&specs.checked, inv, out);
+            }
+        }
+    }
     for (scope, f) in scoped {
         let mut loops = Vec::new();
         each_loop(&f.stmts, &mut loops);
@@ -98,10 +131,16 @@ pub(crate) fn instrument(mut prog: Program, specs: &Specs) -> Result<Instrumente
         }
         for (line, col, invariants) in loops {
             let mut checks = Vec::new();
-            for inv in invariants {
+            for (j, inv) in invariants.iter().enumerate() {
                 match build.totals(inv, &scope) {
                     Ok(e) => checks.push(assert_stmt(
-                        strip_states(&e),
+                        build.exact(&strip_states(&e), &scope, |out| {
+                            if let Some(found) =
+                                typed_loops.get(&(line, col)).and_then(|t| t.get(j))
+                            {
+                                out.clone_from(found);
+                            }
+                        }),
                         &format!("loop invariant at {line}:{col}"),
                         inv.line(),
                         inv.col(),
@@ -114,6 +153,7 @@ pub(crate) fn instrument(mut prog: Program, specs: &Specs) -> Result<Instrumente
     }
     let ghosts = std::mem::take(&mut build.ghosts);
     let warnings = std::mem::take(&mut build.warnings);
+    let exact_scopes = std::mem::take(&mut build.exact);
     drop(build);
 
     let routes = &specs.checked.routes;
@@ -368,6 +408,17 @@ pub(crate) fn instrument(mut prog: Program, specs: &Specs) -> Result<Instrumente
         }
     }
     prog.funcs.extend(contract_fns);
+    for scope in exact_scopes {
+        match scope {
+            None => prog.funcs.extend(exact_helpers(None)),
+            Some(name) => {
+                if let Some(m) = prog.modules.iter_mut().find(|m| m.name == name) {
+                    let requires: Vec<String> = m.requires.iter().map(|r| r.name.clone()).collect();
+                    m.funcs.extend(exact_helpers(Some((&name, &requires))));
+                }
+            }
+        }
+    }
     prog.errors.push(ErrorDecl {
         line: 0,
         col: 0,
@@ -385,10 +436,13 @@ pub(crate) fn instrument(mut prog: Program, specs: &Specs) -> Result<Instrumente
 
 struct Build<'a> {
     prog: &'a Program,
+    checked: &'a crate::check::Checked,
     ghosts: Vec<Ghost>,
     warnings: Vec<String>,
     /// Numbers the names the build makes, so no two collide.
     fresh: usize,
+    /// The scopes, the contract's or a module's, whose checks compare exactly.
+    exact: Vec<Option<String>>,
 }
 
 /// A running `sum` or `count` of a storage map, kept in the build's own storage.
@@ -416,6 +470,28 @@ impl Build<'_> {
             at.line(),
             at.col()
         ));
+    }
+
+    /// `e` with its comparisons of arithmetic made exact, by the signs `fill` finds in its
+    /// typed copy.
+    fn exact(&mut self, e: &Expr, scope: &Option<String>, fill: impl FnOnce(&mut Signs)) -> Expr {
+        self.exact_with(e, scope, fill, &HashMap::new())
+    }
+
+    fn exact_with(
+        &mut self,
+        e: &Expr,
+        scope: &Option<String>,
+        fill: impl FnOnce(&mut Signs),
+        wide: &HashMap<String, String>,
+    ) -> Expr {
+        let mut found = Signs::new();
+        fill(&mut found);
+        let out = exact(e, &found, wide);
+        if calls_exact(&out) && !self.exact.contains(scope) {
+            self.exact.push(scope.clone());
+        }
+        out
     }
 
     fn fresh(&mut self, what: &str) -> String {
@@ -636,7 +712,17 @@ impl Build<'_> {
         // Constants for spec `const`s, which the clauses after them name.
         let mut consts: HashMap<String, String> = HashMap::new();
         let mut skipped: Vec<String> = Vec::new();
-        for (clause, late) in spec.clauses.iter().zip(&spec.late) {
+        // Constants whose arithmetic the clauses compare exactly, by the names of their
+        // exact values.
+        let mut wide: HashMap<String, String> = HashMap::new();
+        let checked = self.checked;
+        let typed = &checked.prog.funcs[spec.func].stmts;
+        for (i, (clause, late)) in spec.clauses.iter().zip(&spec.late).enumerate() {
+            let fill = |out: &mut Signs| {
+                if let Some(Stmt::Const { expr, .. }) = typed.get(i) {
+                    signs(checked, expr, out);
+                }
+            };
             if mentions(&clause.expr, &skipped) {
                 if let ClauseKind::Const { name, .. } = &clause.kind {
                     skipped.push(name.clone());
@@ -661,17 +747,32 @@ impl Build<'_> {
             match &clause.kind {
                 ClauseKind::Const { name, ty } => {
                     let own = format!("{TAG}const {name}");
-                    if *late {
-                        let value = self.after(&expr, &mut pre, &rename);
-                        post.push(const_stmt(&own, ty.clone(), value));
+                    let value = if *late {
+                        self.after(&expr, &mut pre, &rename)
                     } else {
-                        pre.push(const_stmt(&own, ty.clone(), strip_states(&expr)));
+                        strip_states(&expr)
+                    };
+                    let mut found = Signs::new();
+                    fill(&mut found);
+                    let exact = is_arith(&value, &wide)
+                        .then(|| exact_value(&value, &found, &wide))
+                        .flatten();
+                    let list = if *late { &mut post } else { &mut pre };
+                    if let Some(exact) = exact {
+                        let name = format!("{TAG}wide {name}");
+                        list.push(const_stmt(&name, inferred_ty(), exact));
+                        if !self.exact.contains(&scope) {
+                            self.exact.push(scope.clone());
+                        }
+                        wide.insert(own.clone(), name);
                     }
+                    list.push(const_stmt(&own, ty.clone(), value));
                     consts.insert(name.clone(), own);
                 }
                 ClauseKind::Raises(error) => {
                     let held = self.fresh("held");
-                    pre.push(const_stmt(&held, bool_ty(), strip_states(&expr)));
+                    let cond = self.exact_with(&strip_states(&expr), &scope, fill, &wide);
+                    pre.push(const_stmt(&held, bool_ty(), cond));
                     post.push(assert_stmt(
                         not(ident(&held, 0, 0)),
                         &format!(
@@ -684,7 +785,8 @@ impl Build<'_> {
                 }
                 ClauseKind::Panics => {
                     let held = self.fresh("held");
-                    pre.push(const_stmt(&held, bool_ty(), strip_states(&expr)));
+                    let cond = self.exact_with(&strip_states(&expr), &scope, fill, &wide);
+                    pre.push(const_stmt(&held, bool_ty(), cond));
                     post.push(assert_stmt(
                         not(ident(&held, 0, 0)),
                         &format!(
@@ -697,6 +799,7 @@ impl Build<'_> {
                 }
                 ClauseKind::Ensures => {
                     let value = self.after(&expr, &mut pre, &rename);
+                    let value = self.exact_with(&value, &scope, fill, &wide);
                     post.push(assert_stmt(
                         value,
                         &format!("{}: `ensures` at {at} does not hold", spec.label),
@@ -715,6 +818,21 @@ impl Build<'_> {
                 "its arm serves more than one case",
             );
             return None;
+        }
+        // A constant only its exact value stands for is never computed, so its arithmetic
+        // cannot overflow.
+        for own in wide.keys() {
+            let names = [own.clone()];
+            let defines = |s: &Stmt| matches!(s, Stmt::Const { name, .. } if name == own);
+            let reads = |s: &Stmt| match s {
+                Stmt::Const { expr, .. } => mentions(expr, &names),
+                Stmt::Assert { cond, .. } => mentions(cond, &names),
+                _ => true,
+            };
+            if !pre.iter().chain(&post).any(|s| !defines(s) && reads(s)) {
+                pre.retain(|s| !defines(s));
+                post.retain(|s| !defines(s));
+            }
         }
         Some(Wrap { pre, post })
     }
@@ -1346,4 +1464,343 @@ fn each_loop_in<'a>(e: &'a Expr, out: &mut Vec<(u32, u32, &'a [Expr])>) {
             each_loop_in(&arm.expr, out);
         }
     }
+}
+
+/// Spec arithmetic is over the integers. A checking build computes a comparison that does
+/// arithmetic on exact values: a sign, and a magnitude of two words, so no step of it
+/// overflows. A product past 512 bits stops the call with `SpecViolation`, as a check the
+/// build cannot compute.
+const EXACT: &str = r#"
+pure function exactAdd(const a : (bool, uint, uint); const b : (bool, uint, uint)) : (bool, uint, uint) is {
+  const (an, ah, al) : (bool, uint, uint) := a;
+  const (bn, bh, bl) : (bool, uint, uint) := b;
+  var out : (bool, uint, uint) := (false, 0, 0);
+  if an = bn then {
+    const (h, l) : (uint, uint) := exactAddWords(ah, al, bh, bl);
+    out := (an, h, l);
+  } else {
+    if ah > bh or ah = bh and al >= bl then {
+      out := exactLess(an, ah, al, bh, bl);
+    } else {
+      out := exactLess(bn, bh, bl, ah, al);
+    }
+  }
+} with out
+
+pure function exactAddWords(const ah : uint; const al : uint; const bh : uint; const bl : uint) : (uint, uint) is {
+  var lo : uint := 0;
+  var carry : uint := 0;
+  if bl > ~0 - al then {
+    lo := bl - (~0 - al) - 1;
+    carry := 1;
+  } else {
+    lo := al + bl;
+  }
+  assert(bh <= ~0 - ah and ah + bh <= ~0 - carry, SpecViolation("spec arithmetic past 512 bits"));
+} with (ah + bh + carry, lo)
+
+pure function exactLess(const n : bool; const xh : uint; const xl : uint; const yh : uint; const yl : uint) : (bool, uint, uint) is {
+  var hi : uint := xh - yh;
+  var lo : uint := 0;
+  if xl >= yl then {
+    lo := xl - yl;
+  } else {
+    lo := ~0 - (yl - xl) + 1;
+    hi := hi - 1;
+  }
+} with (n and (hi <> 0 or lo <> 0), hi, lo)
+
+pure function exactSub(const a : (bool, uint, uint); const b : (bool, uint, uint)) : (bool, uint, uint) is {
+  const (bn, bh, bl) : (bool, uint, uint) := b;
+} with exactAdd(a, (not bn and (bh <> 0 or bl <> 0), bh, bl))
+
+pure function exactMulWords(const x : uint; const y : uint) : (uint, uint) is {
+  const m : uint := (1 << 128) - 1;
+  const mid1 : uint := (x >> 128) * (y & m);
+  const mid2 : uint := (x & m) * (y >> 128);
+  const (h1, l1) : (uint, uint) := exactAddWords(0, (x & m) * (y & m), mid1 >> 128, mid1 << 128);
+  const (h2, l2) : (uint, uint) := exactAddWords(h1, l1, mid2 >> 128, mid2 << 128);
+} with ((x >> 128) * (y >> 128) + h2, l2)
+
+pure function exactMul(const a : (bool, uint, uint); const b : (bool, uint, uint)) : (bool, uint, uint) is {
+  const (an, ah, al) : (bool, uint, uint) := a;
+  const (bn, bh, bl) : (bool, uint, uint) := b;
+  const (h0, l0) : (uint, uint) := exactMulWords(al, bl);
+  const (c1, x1) : (uint, uint) := exactMulWords(ah, bl);
+  const (c2, x2) : (uint, uint) := exactMulWords(al, bh);
+  assert((ah = 0 or bh = 0) and c1 = 0 and c2 = 0, SpecViolation("spec arithmetic past 512 bits"));
+  const (c3, hi) : (uint, uint) := exactAddWords(0, h0, 0, x1 + x2);
+  assert(c3 = 0, SpecViolation("spec arithmetic past 512 bits"));
+} with (an <> bn and (hi <> 0 or l0 <> 0), hi, l0)
+
+pure function exactDivRem(const a : (bool, uint, uint); const b : (bool, uint, uint)) : ((bool, uint, uint), (bool, uint, uint)) is {
+  const (an, ah, al) : (bool, uint, uint) := a;
+  const (bn, bh, bl) : (bool, uint, uint) := b;
+  var q : (bool, uint, uint) := (false, 0, 0);
+  var r : (bool, uint, uint) := (false, 0, 0);
+  if ah = 0 and bh = 0 then {
+    q := (false, 0, al / bl);
+    r := (false, 0, al % bl);
+  } else {
+    const nonzero : uint := 1 / uint(bh <> 0 or bl <> 0);
+    var (qh, ql, rh, rl) : (uint, uint, uint, uint) := (0, 0, 0, 0);
+    for i : uint in 0 .. 512 do {
+      const bit : uint := if i < 256 then (ah >> (255 - i)) & 1 else (al >> (511 - i)) & 1;
+      (* The remainder doubles, past 512 bits only when it is past the divisor. *)
+      const top : bool := rh >> 255 = 1;
+      rh := (rh << 1) | (rl >> 255);
+      rl := (rl << 1) | bit;
+      if top or rh > bh or rh = bh and rl >= bl then {
+        const (n, h, l) : (bool, uint, uint) := exactLess(false, rh, rl, bh, bl);
+        rh := h;
+        rl := l;
+        if i < 256 then {
+          qh := qh | (1 << (255 - i));
+        } else {
+          ql := ql | (1 << (511 - i));
+        }
+      }
+    }
+    q := (false, qh, ql);
+    r := (false, rh, rl);
+  }
+  (* Division truncates toward zero, as the code's. *)
+  const (qs, qhi, qlo) : (bool, uint, uint) := q;
+  const (rs, rhi, rlo) : (bool, uint, uint) := r;
+} with ((an <> bn and (qhi <> 0 or qlo <> 0), qhi, qlo), (an and (rhi <> 0 or rlo <> 0), rhi, rlo))
+
+pure function exactDiv(const a : (bool, uint, uint); const b : (bool, uint, uint)) : (bool, uint, uint) is {
+  const (q, r) : ((bool, uint, uint), (bool, uint, uint)) := exactDivRem(a, b);
+} with q
+
+pure function exactRem(const a : (bool, uint, uint); const b : (bool, uint, uint)) : (bool, uint, uint) is {
+  const (q, r) : ((bool, uint, uint), (bool, uint, uint)) := exactDivRem(a, b);
+} with r
+
+pure function exactInt(const x : int) : (bool, uint, uint) is
+  if x < 0 then (true, 0, uint(-(x + 1)) + 1) else (false, 0, uint(x))
+
+pure function exactLt(const a : (bool, uint, uint); const b : (bool, uint, uint)) : bool is {
+  const (n, h, l) : (bool, uint, uint) := exactSub(a, b);
+} with n
+
+pure function exactEq(const a : (bool, uint, uint); const b : (bool, uint, uint)) : bool is {
+  const (an, ah, al) : (bool, uint, uint) := a;
+  const (bn, bh, bl) : (bool, uint, uint) := b;
+} with an = bn and ah = bh and al = bl
+"#;
+
+/// The name a checking build gives an exact-arithmetic helper.
+fn exact_name(name: &str) -> String {
+    match name.strip_prefix("exact") {
+        Some(rest) => format!("{TAG}exact {rest}"),
+        None => name.to_string(),
+    }
+}
+
+/// The exact-arithmetic helpers, for the contract, or for module `module`.
+fn exact_helpers(module: Option<(&str, &[String])>) -> Vec<Func> {
+    let prog = crate::parse::parse(EXACT).expect("exact helpers parse");
+    let mut funcs = prog.funcs;
+    for f in &mut funcs {
+        f.name = exact_name(&f.name);
+        f.origin = String::new();
+        if let Some((m, requires)) = module {
+            f.module = Some(m.to_string());
+            f.requires = requires.to_vec();
+        }
+        f.stmts.iter_mut().for_each(exact_stmt);
+        if let Some(tail) = &mut f.tail {
+            exact_names(tail);
+        }
+    }
+    funcs
+}
+
+/// Names a helper statement's calls and violation as the build does.
+fn exact_stmt(s: &mut Stmt) {
+    match s {
+        Stmt::Const { expr, .. }
+        | Stmt::Var { expr, .. }
+        | Stmt::Call { expr, .. }
+        | Stmt::Assign { expr, .. }
+        | Stmt::AssignTuple { expr, .. } => exact_names(expr),
+        Stmt::Assert { cond, reason, .. } => {
+            exact_names(cond);
+            if reason.name == "SpecViolation" {
+                reason.name = VIOLATION.to_string();
+            }
+        }
+        Stmt::If {
+            cond,
+            then_body,
+            else_body,
+            ..
+        } => {
+            exact_names(cond);
+            then_body.iter_mut().chain(else_body).for_each(exact_stmt);
+        }
+        Stmt::For { body, .. } => body.iter_mut().for_each(exact_stmt),
+        _ => {}
+    }
+}
+
+fn exact_names(e: &mut Expr) {
+    if let Expr::Call { name, .. } = e {
+        *name = exact_name(name);
+    }
+    each_child(e, &mut |child| exact_names(child));
+}
+
+/// Whether each number a typed expression has at a place in the source is signed; `None`
+/// where two disagree.
+type Signs = HashMap<(u32, u32), Option<bool>>;
+
+fn signs(checked: &crate::check::Checked, e: &Expr, out: &mut Signs) {
+    let mut ty = e.ty();
+    loop {
+        let t = &checked.types[ty];
+        match (t.kind, t.elem) {
+            (crate::check::TyKind::Nominal, Some(under)) if t.variants.is_empty() => ty = under,
+            _ => break,
+        }
+    }
+    let signed = match checked.types[ty].kind {
+        crate::check::TyKind::Int => Some(true),
+        crate::check::TyKind::Uint => Some(false),
+        _ => None,
+    };
+    if let Some(signed) = signed {
+        let at = out.entry((e.line(), e.col())).or_insert(Some(signed));
+        if *at != Some(signed) {
+            *at = None;
+        }
+    }
+    let mut copy = e.clone();
+    each_child(&mut copy, &mut |child| signs(checked, child, out));
+}
+
+fn is_arith(e: &Expr, wide: &HashMap<String, String>) -> bool {
+    match e {
+        Expr::Binary { op, .. } => matches!(
+            op,
+            BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod
+        ),
+        Expr::Unary { op: UnOp::Neg, .. } => true,
+        Expr::Ident { name, .. } => wide.contains_key(name),
+        _ => false,
+    }
+}
+
+/// `e`'s exact value, as the helpers take it, or `None` when a part's type is unknown.
+fn exact_value(e: &Expr, signs: &Signs, wide: &HashMap<String, String>) -> Option<Expr> {
+    let (line, col) = (e.line(), e.col());
+    let helper = |name: &str, args: Vec<Expr>| call_expr(&exact_name(name), None, args, line, col);
+    match e {
+        Expr::Binary {
+            op, left, right, ..
+        } if is_arith(e, wide) => {
+            let name = match op {
+                BinOp::Add => "exactAdd",
+                BinOp::Sub => "exactSub",
+                BinOp::Mul => "exactMul",
+                BinOp::Div => "exactDiv",
+                _ => "exactRem",
+            };
+            let (l, r) = (
+                exact_value(left, signs, wide)?,
+                exact_value(right, signs, wide)?,
+            );
+            Some(helper(name, vec![l, r]))
+        }
+        Expr::Unary {
+            op: UnOp::Neg,
+            expr,
+            ..
+        } => {
+            let zero = exact_tuple(false, int_lit(0, line, col), line, col);
+            Some(helper(
+                "exactSub",
+                vec![zero, exact_value(expr, signs, wide)?],
+            ))
+        }
+        Expr::Ident { name, .. } if wide.contains_key(name) => Some(ident(&wide[name], line, col)),
+        _ => match signs.get(&(line, col)).copied().flatten()? {
+            true => Some(helper(
+                "exactInt",
+                vec![call_expr("int", None, vec![e.clone()], line, col)],
+            )),
+            false => Some(exact_tuple(
+                false,
+                call_expr("uint", None, vec![e.clone()], line, col),
+                line,
+                col,
+            )),
+        },
+    }
+}
+
+fn calls_exact(e: &Expr) -> bool {
+    if let Expr::Call { name, .. } = e {
+        if name.starts_with(&format!("{TAG}exact ")) {
+            return true;
+        }
+    }
+    let mut found = false;
+    let mut e = e.clone();
+    each_child(&mut e, &mut |child| found |= calls_exact(child));
+    found
+}
+
+fn exact_tuple(neg: bool, low: Expr, line: u32, col: u32) -> Expr {
+    Expr::Tuple {
+        line,
+        col,
+        elems: vec![
+            Expr::Lit {
+                line,
+                col,
+                lit: Lit::Bool(neg),
+                ty: 0,
+            },
+            int_lit(0, line, col),
+            low,
+        ],
+        ty: 0,
+    }
+}
+
+/// `e` with each comparison of arithmetic compared exactly.
+fn exact(e: &Expr, signs: &Signs, wide: &HashMap<String, String>) -> Expr {
+    if let Expr::Binary {
+        op: op @ (BinOp::Eq | BinOp::Neq | BinOp::Lt | BinOp::Gt | BinOp::Le | BinOp::Ge),
+        left,
+        right,
+        line,
+        col,
+        ..
+    } = e
+    {
+        if is_arith(left, wide) || is_arith(right, wide) {
+            if let (Some(l), Some(r)) = (
+                exact_value(left, signs, wide),
+                exact_value(right, signs, wide),
+            ) {
+                let call = |name: &str, a: Expr, b: Expr| {
+                    call_expr(&exact_name(name), None, vec![a, b], *line, *col)
+                };
+                return match op {
+                    BinOp::Eq => call("exactEq", l, r),
+                    BinOp::Neq => not(call("exactEq", l, r)),
+                    BinOp::Lt => call("exactLt", l, r),
+                    BinOp::Gt => call("exactLt", r, l),
+                    BinOp::Le => not(call("exactLt", r, l)),
+                    _ => not(call("exactLt", l, r)),
+                };
+            }
+        }
+    }
+    let mut out = e.clone();
+    each_child(&mut out, &mut |child| *child = exact(child, signs, wide));
+    out
 }

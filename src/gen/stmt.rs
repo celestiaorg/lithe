@@ -462,6 +462,7 @@ impl<'a> Gen<'a> {
                         if !self.range_of(hi).0.lt(Word::from_u64(256)))
                     && until.as_ref().is_some_and(|c| self.shifts_out(c, counter));
                 self.jumpdest(top);
+                self.certify_loop(s, top, done, !down && walk.is_none());
                 if !shifted_out {
                     if down {
                         self.op(DUP1);
@@ -1982,6 +1983,7 @@ impl<'a> Gen<'a> {
         // An inlined body that ends the caller's ends it too, unless a value follows it.
         self.tail = tail && self.checked.prog.funcs[idx].tail.is_none();
         let mut proved = Vec::new();
+        let entry = self.mark();
         let result = self.inline_body(idx, !always, |g| {
             let mark = g.facts.len();
             g.assume_params(idx, args);
@@ -1990,6 +1992,9 @@ impl<'a> Gen<'a> {
             proved = g.proved(idx, args, mark);
             done
         });
+        if let (Some(entry), Some(exit)) = (entry, self.mark()) {
+            self.certify_inline(idx, entry, exit);
+        }
         self.note_ret_blob(idx);
         self.tail = false;
         for (sym, _) in consts {
@@ -3080,6 +3085,7 @@ impl<'a> Gen<'a> {
                     .filter(|(sym, _)| !fixed.iter().any(|f| f.0 == *sym))
                     .collect::<Vec<_>>()
             });
+            self.certify_func(idx, label, params.as_deref());
             if let Some(params) = &params {
                 // The return address goes under the arguments.
                 let takes: u32 = params.iter().map(|&(_, n)| n).sum();

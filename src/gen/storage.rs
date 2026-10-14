@@ -215,27 +215,13 @@ impl<'a> Gen<'a> {
     /// Where each word of a map's record value lives: a slot after the value's own, and
     /// its bytes there. The same layout Solidity gives a struct.
     pub(super) fn value_layout(&self, ty: usize) -> Vec<(u64, Pack)> {
-        let (mut keys, mut packs) = (Vec::new(), Vec::new());
-        let id = self.peel_nominal(ty);
-        crate::check::pack_leaves(
-            &self.checked.types,
-            id,
-            Word::from_u64(0),
-            &mut keys,
-            &mut packs,
-        );
-        keys.iter().map(|k| k.0[0]).zip(packs).collect()
+        crate::check::value_words(&self.checked.types, ty, false)
     }
 
     /// Where each word of a stored value lives, packed as `value_layout` has it, or a slot
     /// to each word in transient storage.
     pub(super) fn slot_layout(&self, ty: usize, transient: bool) -> Vec<(u64, Pack)> {
-        if transient {
-            return (0..u64::from(self.checked.types[self.peel_nominal(ty)].words))
-                .map(|i| (i, Pack::FULL))
-                .collect();
-        }
-        self.value_layout(ty)
+        crate::check::value_words(&self.checked.types, ty, transient)
     }
 
     /// `[value, slot]` of a map value writes its word `i`, keeping the rest of a shared slot.
@@ -2644,6 +2630,13 @@ impl<'a> Gen<'a> {
     /// A small constant slot's word used only within straight-line code goes back to loads
     /// of the slot, which `forward_storage` keeps on the stack there instead.
     pub(super) fn drop_unread_caches(&mut self) {
+        asm::track::strip(&mut self.code);
+        let was = asm::track::before(&self.code);
+        self.drop_unread_caches_now();
+        asm::track::carry(was, &self.code);
+    }
+
+    fn drop_unread_caches_now(&mut self) {
         let exits = asm::exit_labels(&self.code);
         let fail = |l: u32| exits.contains(&l);
         for &(at, key) in &self.leaf_words {

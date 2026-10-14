@@ -515,15 +515,95 @@ pub fn prove(sources: &Sources, entry: &Path, opts: &ProveOptions) -> Result<Pro
         let sources = sources.with(path.clone(), src);
         return prove(&sources, &path, opts);
     }
+    let build_prog = prog.clone();
     modules::load_specs(sources, entry, &mut prog)?;
     if !prog.siblings.is_empty() {
         return Err(check::several_contracts(&prog));
     }
-    prove::prove(&spec::check(prog, evm_near(entry))?, opts)
+    if opts.source {
+        return prove::prove_source(&spec::check(prog, evm_near(entry))?, opts);
+    }
+    let (specs, built) = bytecode_of(sources, entry, prog, build_prog, opts)?;
+    prove::prove_bytecode(&specs, &built, opts)
+}
+
+/// What `lithe prove` proves of a contract: its specs, and its build.
+#[cfg(test)]
+pub(crate) fn bytecode_inputs(
+    sources: &Sources,
+    entry: &Path,
+    opts: &ProveOptions,
+) -> Result<(spec::Specs, prove::Built), Error> {
+    let mut prog = modules::load(sources, entry)?;
+    let build_prog = prog.clone();
+    modules::load_specs(sources, entry, &mut prog)?;
+    bytecode_of(sources, entry, prog, build_prog, opts)
+}
+
+/// The specs, and the code a bytecode proof runs: what `lithe build` emits for the same
+/// options, with no spec file read.
+pub(crate) fn bytecode_of(
+    sources: &Sources,
+    entry: &Path,
+    prog: ast::Program,
+    build_prog: ast::Program,
+    opts: &ProveOptions,
+) -> Result<(spec::Specs, prove::Built), Error> {
+    let build_opts = match &opts.build {
+        Some(o) => o.clone(),
+        None => build_options(entry)?,
+    };
+    let specs = spec::check(prog, build_opts.evm)?;
+    let name = artifact_contract_name(&build_prog, entry);
+    gen::certify::certifying(opts.code.is_none());
+    let contract = build(sources, entry, build_prog.clone(), &name, &build_opts);
+    let certs = gen::certify::take_certs();
+    if std::env::var_os("LITHE_PROVE_DEBUG").is_some() {
+        for c in &certs.inlines {
+            eprintln!("inline {c:?}");
+        }
+        for c in &certs.guards {
+            eprintln!("guard end {c:?}");
+        }
+    }
+    gen::certify::certifying(false);
+    let contract = contract?;
+    let layout = check::spec_layout(&check::check(build_prog, build_opts.evm)?);
+    let given = opts.code.is_some();
+    let built = prove::Built {
+        creation: contract.bytecode,
+        runtime: opts.code.clone().unwrap_or(contract.deployed_bytecode),
+        immutables: if given {
+            Vec::new()
+        } else {
+            contract.immutable_references
+        },
+        given,
+        layout,
+        loops: certs.loops,
+        funcs: certs.funcs,
+        inlines: certs.inlines,
+        guards: certs.guards,
+        lost: certs.lost,
+        facets: contract
+            .plan
+            .iter()
+            .flat_map(|plan| &plan.facets)
+            .map(|f| prove::BuiltFacet {
+                name: f.name.clone(),
+                address: f.address,
+                init: f.bytecode.clone(),
+                runtime: f.deployed_bytecode.clone(),
+            })
+            .collect(),
+        deployer: build_opts.deployer,
+    };
+    Ok((specs, built))
 }
 
 /// For a file of modules, with no contract: a contract beside it that uses each of its
-/// modules, after the modules they require, and exposes all their external functions.
+/// modules, after the modules they require, and exposes all their external functions, with
+/// each hook they reach skipped.
 fn module_contract(
     sources: &Sources,
     entry: &Path,
@@ -584,6 +664,7 @@ fn module_contract(
         }
     }
     src.push_str("\ncontract Modules is {\n");
+    let mut hooks = Vec::new();
     for decl in order {
         if let Some(param) = decl.params.first() {
             return Err(error(
@@ -595,13 +676,49 @@ fn module_contract(
                 ),
             ));
         }
-        match exposing(decl) {
+        // A module another file declares is there for those that require it.
+        match exposing(decl).filter(|_| decl.origin == origin) {
             Some(text) => src.push_str(&text),
             None => src.push_str(&format!("use {};\n", decl.name)),
         }
+        // Each hook the contract reaches does nothing.
+        for hook in &decl.hooks {
+            if hook.ret.is_some() {
+                return Err(error(
+                    hook.line,
+                    hook.col,
+                    format!(
+                        "module `{}`'s hook `{}` returns a value; prove a contract that implements it",
+                        decl.name, hook.name
+                    ),
+                ));
+            }
+            hooks.push(format!("{}.{}", decl.name, hook.name));
+        }
     }
-    src.push_str("}\n");
-    Ok(Some((canon.with_file_name("#modules.lithe"), src)))
+    let path = canon.with_file_name("#modules.lithe");
+    loop {
+        let mut text = src.clone();
+        for hook in &hooks {
+            text.push_str(&format!("hook {hook} is skip;\n"));
+        }
+        text.push_str("}\n");
+        let unused = modules::load(&sources.with(path.clone(), text.clone()), &path)
+            .and_then(|prog| check::check(prog, evm_near(entry)))
+            .err()
+            .and_then(|err| {
+                hooks.iter().position(|hook| {
+                    err.message
+                        == format!("no code the contract runs calls `{hook}`; remove this hook")
+                })
+            });
+        match unused {
+            Some(i) => {
+                hooks.remove(i);
+            }
+            None => return Ok(Some((path, text))),
+        }
+    }
 }
 
 /// The contract's spec blocks, from the entry file and its `.spec.lithe`, checked: each

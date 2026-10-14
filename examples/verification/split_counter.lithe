@@ -1,0 +1,43 @@
+(* A counter whose module runs from its facet: the contract's code is a router that passes
+   `bump` and `count` to the facet with `delegatecall`, on the contract's own storage. Its
+   specs, in split_counter.spec.lithe, are proved of the router and the facet together. *)
+
+import "std/address";
+import "std/evm";
+import "std/uint";
+
+error NotOwner;
+
+module Counter is {
+  storage counter at "example.counter" is record {
+    count : uint;
+    bumps : uint;
+  }
+
+  external function bump(const by : uint) is {
+    counter.count := counter.count + by;
+    counter.bumps := counter.bumps + 1;
+  }
+
+  external view function count() : uint is
+    counter.count
+}
+
+storage is record {
+  owner : address;
+  total : uint;
+}
+
+deploy() is {
+  storage.owner := Evm.sender();
+}
+
+use Counter delegated exposing {
+  function bump(by : uint);
+  view function count() : uint;
+}
+
+external function add(const by : uint) raises NotOwner is {
+  assert(Evm.sender() = storage.owner, NotOwner);
+  storage.total := storage.total + by;
+}

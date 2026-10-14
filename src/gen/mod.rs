@@ -27,6 +27,7 @@ mod abi;
 mod blob;
 mod body;
 mod calls;
+pub(crate) mod certify;
 mod decode;
 mod dispatch;
 mod errors;
@@ -114,8 +115,8 @@ const TSTORE: u8 = 0x5d;
 /// runs its deferred calls, and for the whole of a `nonreentrant` one. It is the slot most
 /// contracts touch, so its key is `PUSH0`.
 const NONREENTRANT_SLOT: u64 = 0;
-/// Transient slot an upgrade sets for its `migrate` call.
-const UPGRADE_SLOT: u64 = 1;
+/// Transient slot an upgrade sets while its `migrate` call runs.
+pub(crate) const UPGRADE_SLOT: u64 = 1;
 /// Calls a frame called into mid-transition defers wait for the frame that owns the
 /// transition in transient storage. Each such frame that queued any saves the nonzero words of
 /// its memory as record `r`, in slots `~(r << 32 | j)`: small words three to a slot from
@@ -237,10 +238,10 @@ pub(crate) fn codegen(checked: &Checked, shape: &Shape) -> Result<Built, Error> 
         asm::optimize(&mut code);
         let leaves: HashMap<u32, usize> = e.leaves.iter().copied().collect();
         asm::outline(&mut code, &e.entries, both, |code| {
-            asm::tail_calls(code, &leaves);
-            asm::rotate_loops(code);
-            asm::hoist(code);
-            asm::rotate_exits(code);
+            asm::track::pass(code, |c| asm::tail_calls(c, &leaves));
+            asm::track::pass(code, asm::rotate_loops);
+            asm::track::pass(code, asm::hoist);
+            asm::track::pass(code, asm::rotate_exits);
         });
         let gas = asm::gas(&code, &e.entries, e.heap);
         let (runtime, marks) = match immutable::place_runtime(&code, &e.data, &e.tail_blobs) {
@@ -681,6 +682,66 @@ pub(crate) fn codegen(checked: &Checked, shape: &Shape) -> Result<Built, Error> 
         true,
         shape,
     )?;
+    if certify::wanted() {
+        // The chosen plan again, with the passes noting where its loops go. The same plan
+        // builds the same bytes, which the certificates must describe.
+        let mut certs = certify::Certs::default();
+        asm::track::start();
+        let again = emit(&best.plan).and_then(|(e, _)| finish(&e, true));
+        if let (Some(t), Ok(again)) = (asm::track::take(), again) {
+            if std::env::var_os("LITHE_PROVE_DEBUG").is_some() {
+                let inlined = t
+                    .sites
+                    .iter()
+                    .filter(|s| s.kind == asm::track::Kind::Inline)
+                    .count();
+                let placed = t
+                    .sites
+                    .iter()
+                    .filter(|s| {
+                        s.kind == asm::track::Kind::Inline
+                            && t.mark_pcs.contains_key(&s.top)
+                            && t.mark_pcs.contains_key(&s.done)
+                    })
+                    .count();
+                eprintln!(
+                    "certify: {} sites, same runtime {}, inlined copies {inlined}, placed {placed}, renamed {}, pos {}",
+                    t.sites.len(),
+                    again.runtime == built.runtime,
+                    t.renamed.len(),
+                    t.pos.len()
+                );
+            }
+            if again.runtime == built.runtime {
+                let made = certify::certs(&t, false);
+                certs.loops.extend(made.loops);
+                certs.funcs.extend(made.funcs);
+                certs.inlines.extend(made.inlines);
+                certs.guards.extend(made.guards);
+                certs.lost.extend(made.lost);
+            }
+        }
+        asm::track::start();
+        let again = creation(
+            checked,
+            &best.plan,
+            built.runtime.clone(),
+            &built.marks,
+            true,
+            shape,
+        );
+        if let (Some(t), Ok((again, _))) = (asm::track::take(), again) {
+            if again == code {
+                let made = certify::certs(&t, true);
+                certs.loops.extend(made.loops);
+                certs.funcs.extend(made.funcs);
+                certs.inlines.extend(made.inlines);
+                certs.guards.extend(made.guards);
+                certs.lost.extend(made.lost);
+            }
+        }
+        certify::keep(certs);
+    }
     let mut needs = best.needs;
     needs.extend(more);
     Ok(Built {
@@ -874,10 +935,10 @@ fn creation(
         asm::optimize(&mut code);
         let leaves = g.func_leaves_by_label();
         asm::outline(&mut code, &g.entry_labels, true, |code| {
-            asm::tail_calls(code, &leaves);
-            asm::rotate_loops(code);
-            asm::hoist(code);
-            asm::rotate_exits(code);
+            asm::track::pass(code, |c| asm::tail_calls(c, &leaves));
+            asm::track::pass(code, asm::rotate_loops);
+            asm::track::pass(code, asm::hoist);
+            asm::track::pass(code, asm::rotate_exits);
         });
     }
     Ok((place_data(&code, &g.data)?, g.needs))
@@ -995,13 +1056,10 @@ pub(crate) fn entrypoints(checked: &Checked) -> Result<Vec<Entrypoint>, Error> {
         let (name, group) = match &target {
             Target::Entry { index, .. } => {
                 let route = &checked.routes[*index];
-                let func = route.direct.or_else(|| {
-                    let top = route.path.first()?;
-                    funcs
-                        .iter()
-                        .position(|f| f.kind == ItemKind::Entry && &f.name == top)
-                });
-                (route.name.clone(), func.map_or(Group::Contract, &group))
+                (
+                    route.name.clone(),
+                    route.root().map_or(Group::Contract, &group),
+                )
             }
             Target::View { func, .. } => (funcs[*func].name.clone(), group(*func)),
             Target::Migrate { func, .. } => {
@@ -1824,6 +1882,8 @@ struct Gen<'a> {
     tree_end: i32,
     code: Vec<Inst>,
     next_label: u32,
+    /// The last mark a tracked build emitted.
+    next_mark: u32,
     spaces: Vec<Space>,
     image: i32,
     dirty: i32,

@@ -1,0 +1,60 @@
+(* An upgradeable counter whose module runs from its facet. Behind an ERC-1967 proxy, the
+   router is the implementation: it keeps the upgrade guard, `upgradeToAndCall`, and the
+   migration. Its specs, in upgradeable_counter.spec.lithe, are proved of the router and the
+   facet together, and the migration's from any state. *)
+
+import "std/evm";
+
+upgradeable
+
+error NotOwner;
+
+module Counter is {
+  storage counter at "example.upgradeable.counter" is record {
+    count : uint;
+  }
+
+  external function bump(const by : uint) is {
+    counter.count := counter.count + by;
+  }
+
+  external view function count() : uint is
+    counter.count
+}
+
+storage is record {
+  owner : address;
+}
+
+storage settings at "example.upgradeable.settings" is record {
+  fee : uint;
+  paused : bool;
+}
+
+upgrade guard is {
+  assert(Evm.sender() = storage.owner, NotOwner);
+}
+
+deploy(const owner : address) is {
+  storage.owner := owner;
+}
+
+migrate init(const fee : uint) is {
+  settings.fee := if fee < 10000 then fee else 9999;
+}
+
+use Counter delegated exposing {
+  function bump(by : uint);
+  view function count() : uint;
+}
+
+view function currentFee() : uint is
+  if settings.paused then 0 else settings.fee
+
+external function pause() raises NotOwner is {
+  assert(Evm.sender() = storage.owner, NotOwner);
+  settings.paused := true;
+}
+
+external view function fee() : uint is
+  currentFee()

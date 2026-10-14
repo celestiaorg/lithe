@@ -28,7 +28,18 @@ fn compile_file(path: &Path) -> Result<Vec<u8>, crate::Error> {
     let out = crate::compile(&Sources::disk(), path, &Options::default())
         .and_then(crate::Output::single)
         .map_err(first)?;
+    deploy_plan(&out);
     Ok(out.bytecode)
+}
+
+/// Deploys each facet a build's creation code needs at its `CREATE2` address.
+fn deploy_plan(contract: &crate::Contract) {
+    for facet in contract.plan.iter().flat_map(|plan| &plan.facets) {
+        let runtime = deploy(&facet.bytecode).unwrap_or_else(|e| panic!("{}: {e}", facet.name));
+        let address = crate::split::address_word(facet.address);
+        DEPLOYED.with(|d| d.borrow_mut().insert(address, (runtime, HashMap::new())));
+        FACETS.with(|f| f.borrow_mut().insert(address));
+    }
 }
 
 /// Every contract a source defines, by name, each compiled with the others it may create.
@@ -238,6 +249,11 @@ struct Outcome {
 /// Deploys as account 1, one of the callers the differential tests use, so a contract
 /// that makes its deployer the owner can be exercised as that owner.
 fn deploy(init: &[u8]) -> Result<Vec<u8>, String> {
+    deploy_state(init).map(|(runtime, _)| runtime)
+}
+
+/// Like `deploy`, with the storage the creation code leaves.
+fn deploy_state(init: &[u8]) -> Result<(Vec<u8>, HashMap<Word, Word>), String> {
     let out = construct(init, Word::from_u64(1), Word::from_u64(0))?;
     if out.reverted {
         return Err(format!("init reverted: {}", pretty(&out.returndata)));
@@ -245,7 +261,7 @@ fn deploy(init: &[u8]) -> Result<Vec<u8>, String> {
     if out.returndata.is_empty() {
         return Err("init returned no code".into());
     }
-    Ok(out.returndata)
+    Ok((out.returndata, out.storage))
 }
 
 /// Runs creation code at `at` as account 1, and keeps what it deploys there.

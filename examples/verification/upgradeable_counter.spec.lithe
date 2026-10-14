@@ -1,0 +1,16 @@
+spec is {
+  (* The fee is below 100%, in basis points. *)
+  invariant capped is currentFee() < 10000;
+}
+
+spec for module Counter is {
+  spec for bump is partial {
+    ensures new.counter.count = old.counter.count + by;
+  }
+}
+
+spec for pause is {
+  raises NotOwner when Evm.sender() <> old.storage.owner;
+  ensures new.settings.paused;
+  ensures new.currentFee() = 0;
+}

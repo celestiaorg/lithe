@@ -117,6 +117,109 @@ pub(crate) fn pack_leaves(
     debug_assert_eq!(keys.len() - start, types[ty].words as usize);
 }
 
+/// Where each word of a map's value lives, from the value's first slot: the slot after it,
+/// and the word's bytes there, as Solidity lays out a struct. A transient map's value takes
+/// a slot for each word.
+pub(crate) fn value_words(types: &[RType], ty: usize, transient: bool) -> Vec<(u64, Pack)> {
+    let id = peel_id(types, ty);
+    if transient {
+        return (0..u64::from(types[id].words))
+            .map(|i| (i, Pack::FULL))
+            .collect();
+    }
+    let (mut keys, mut packs) = (Vec::new(), Vec::new());
+    pack_leaves(types, id, Word::from_u64(0), &mut keys, &mut packs);
+    keys.iter().map(|k| k.0[0]).zip(packs).collect()
+}
+
+/// Where a leaf of storage lives.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum Space {
+    Storage,
+    Transient,
+    /// An immutable built into the code.
+    Code,
+}
+
+/// What a spec path means in the bytecode, as code generation places it. Each leaf of
+/// storage has a slot and its bytes there; a map's leaf holds no value, only the slot its
+/// keys' slots derive from: `keccak(key . slot)`, with the key as a word, or `keccak(bytes .
+/// slot)` for a `string` or `bytes` key, and the words of a value at `value_words` from
+/// there. A map in a map's value derives its keys' slots from that value's word.
+pub(crate) struct SpecLayout {
+    pub leaves: Vec<(Word, Pack, Space)>,
+}
+
+pub(crate) fn spec_layout(c: &Checked) -> SpecLayout {
+    let leaves = c
+        .leaf_keys
+        .iter()
+        .zip(&c.leaf_pack)
+        .enumerate()
+        .map(|(i, (slot, pack))| {
+            let space = if i >= c.transient_from {
+                Space::Transient
+            } else if i >= c.immutable_from {
+                Space::Code
+            } else {
+                Space::Storage
+            };
+            (*slot, *pack, space)
+        })
+        .collect();
+    SpecLayout { leaves }
+}
+
+impl SpecLayout {
+    /// Checks that no two leaves share a bit: the layout's places are distinct, so a spec's
+    /// distinct paths name distinct storage.
+    pub(crate) fn verify(&self) -> Result<(), String> {
+        let mut taken: Vec<(Space, Word, u8, u8, usize)> = Vec::new();
+        for (i, (slot, pack, space)) in self.leaves.iter().enumerate() {
+            if *space == Space::Code {
+                continue;
+            }
+            if u32::from(pack.offset) + u32::from(pack.width) > 32 || pack.width == 0 {
+                return Err(format!("storage leaf {i} does not fit its slot"));
+            }
+            if *space == Space::Transient && (slot.is_zero() || *slot == Word::from_u64(1)) {
+                return Err(format!(
+                    "transient leaf {i} takes a slot the compiler keeps for itself"
+                ));
+            }
+            for (s2, w2, o2, n2, j) in &taken {
+                if s2 == space
+                    && w2 == slot
+                    && pack.offset < o2 + n2
+                    && *o2 < pack.offset + pack.width
+                {
+                    return Err(format!("storage leaves {j} and {i} share a slot's bytes"));
+                }
+            }
+            taken.push((*space, *slot, pack.offset, pack.width, i));
+        }
+        Ok(())
+    }
+}
+
+/// Checks that no two words of a map's value share a bit.
+pub(crate) fn verify_value_words(words: &[(u64, Pack)]) -> Result<(), String> {
+    for (i, (slot, pack)) in words.iter().enumerate() {
+        if u32::from(pack.offset) + u32::from(pack.width) > 32 || pack.width == 0 {
+            return Err(format!("word {i} of a map value does not fit its slot"));
+        }
+        for (s2, p2) in &words[..i] {
+            if s2 == slot
+                && pack.offset < p2.offset + p2.width
+                && p2.offset < pack.offset + pack.width
+            {
+                return Err("two words of a map value share a slot's bytes".to_string());
+            }
+        }
+    }
+    Ok(())
+}
+
 /// The next free storage position: a slot, and how many of its low bytes are taken.
 struct Cursor {
     slot: u64,

@@ -152,7 +152,7 @@ These commands summarize what each entrypoint does. See [Inspecting contracts](/
 | `lithe abi-tree file.lithe` | each entrypoint's dispatch path, guards, calls, and effects |
 | `lithe analysis file.lithe` | the same facts as JSON, for tools |
 | `lithe errors file.lithe` | each entrypoint's errors, and each error's selector, fields, and raisers |
-| `lithe prove file.lithe` | [proves](/language/verification#proving-specs) the specs with Z3: each invariant phase by phase, and each claim of each function spec; a file of modules is proved as a contract that exposes them all; needs [Z3](/guide/getting-started#build-the-compiler); `--solver path` and `--timeout seconds` |
+| `lithe prove file.lithe` | [proves](/language/verification#proving-specs) the specs with Z3 against the bytecode the build emits, which takes the build's flags: each invariant phase by phase, and each claim of each function spec, with the source's verdict where it explains one; a file of modules is proved as a contract that exposes them all; needs [Z3](/guide/getting-started#build-the-compiler); `--solver path`, `--timeout seconds`, `--code` for [deployed code](/language/verification#deployed-code), and `--source` for the [source prover](/language/verification#the-source-prover) alone |
 | `lithe specs file.lithe` | the [formal verification](/language/verification) specs of the file and its `.spec.lithe`, checked, and what each claims |
 | `lithe storage file.lithe` | the storage and transient layout, slot by slot |
 | `lithe facets file.lithe` | the router and each facet: size against the limit, the entrypoints each runs, and the functions the router calls across |

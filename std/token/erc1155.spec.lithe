@@ -1,0 +1,38 @@
+(* What `ERC1155` guarantees: an operator approval is set as asked, and only for a real
+   operator; a transfer moves the amount between the two balances, and only for the owner
+   or an operator it approved; a batch transfer checks its sender, receiver, and approval
+   the same way, and its lists' lengths; a batch balance read reverts only for lists of
+   different lengths. The receiver's answer comes in a later phase, which may revert with
+   the receiver's own reason, so the transfers' specs are partial. *)
+
+spec for module ERC1155 is {
+  spec for setApprovalForAll is {
+    raises ERC1155InvalidOperator when operator = Address.zero;
+    ensures new.erc1155.operatorApprovals[Evm.sender()][operator] = approved;
+  }
+
+  spec for safeTransferFrom is partial {
+    raises ERC1155MissingApprovalForAll
+      when from <> Evm.sender() and not old.erc1155.operatorApprovals[from][Evm.sender()];
+    raises ERC1155InvalidReceiver when to = Address.zero;
+    raises ERC1155InvalidSender when from = Address.zero;
+    raises ERC1155InsufficientBalance when old.erc1155.balances[id][from] < value;
+    ensures from = to or new.erc1155.balances[id][from] = old.erc1155.balances[id][from] - value;
+    ensures from = to or new.erc1155.balances[id][to] = old.erc1155.balances[id][to] + value;
+  }
+
+  (* A one-element batch moves its value as a single transfer does: the prover settles
+     that for lists at the offsets the ABI gives, and runs out of time where the first
+     list's offset is another, so it is not claimed here. *)
+  spec for safeBatchTransferFrom is partial {
+    raises ERC1155MissingApprovalForAll
+      when from <> Evm.sender() and not old.erc1155.operatorApprovals[from][Evm.sender()];
+    raises ERC1155InvalidReceiver when to = Address.zero;
+    raises ERC1155InvalidSender when from = Address.zero;
+    raises ERC1155InvalidArrayLength when ids.length <> values.length;
+  }
+
+  spec for balanceOfBatch is {
+    raises ERC1155InvalidArrayLength when accounts.length <> ids.length;
+  }
+}

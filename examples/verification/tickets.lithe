@@ -1,0 +1,28 @@
+(* Tickets, issued in batches of up to 1,000: a larger batch panics. A batch numbers its
+   tickets one by one, in a loop too long for a prover to follow turn by turn, so the loop
+   says what each turn keeps in its invariants. The specs, in tickets.spec.lithe, state
+   that the holdings add up to the tickets issued, and what a batch gives its caller. *)
+
+import "std/evm";
+
+storage is record {
+  issued : uint;
+  owners : map(uint, address);
+  held : map(address, uint);
+}
+
+external function issue(const n : uint) is {
+  const first : uint := storage.issued;
+  const had : uint := storage.held[Evm.sender()];
+  for i : uint in 0 .. n bound 1000
+    invariant storage.issued = first + i
+    invariant storage.held[Evm.sender()] = had + i
+    invariant storage.issued = sum(storage.held)
+  do {
+    storage.owners[first + i] := Evm.sender();
+    storage.held[Evm.sender()] := storage.held[Evm.sender()] + 1;
+    storage.issued := storage.issued + 1;
+  }
+}
+
+external view function owner(const ticket : uint) : address is storage.owners[ticket]

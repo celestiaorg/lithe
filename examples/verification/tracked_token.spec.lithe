@@ -1,0 +1,8 @@
+spec for transfer is partial {
+  ensures new.storage.last = to;
+}
+
+spec for mint is partial {
+  raises NotOwner when Evm.sender() <> old.storage.owner;
+  ensures new.storage.last = to;
+}

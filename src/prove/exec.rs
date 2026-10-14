@@ -24,9 +24,22 @@ pub(crate) enum Val {
     Bool(String),
     /// A record's or tuple's fields, in order.
     Tuple(Vec<Val>),
+    /// A list whose length is known, such as a literal's: its elements, in order.
+    List(Vec<Val>),
+    /// A list of words of any length: its length, the array of its elements, and their type.
+    Seq(String, String, usize),
     /// A value the prover does not model.
     Opaque,
     Unit,
+}
+
+/// What the checker gives a loop over a list: its length, its element at the counter,
+/// and the local that holds the list when it is not a name.
+#[derive(Clone, Copy)]
+pub(crate) struct Listed<'a> {
+    pub length: Option<&'a Expr>,
+    pub elem_init: Option<&'a Expr>,
+    pub list: Option<usize>,
 }
 
 /// Why a phase cannot be checked.
@@ -262,6 +275,20 @@ impl<'a> Exec<'a> {
         }
     }
 
+    /// Element `i` of a list of any length, which must be one of its elements.
+    fn seq_element(&mut self, st: &mut St, len: &str, arr: &str, elem: usize, i: &str) -> Val {
+        self.check(st, &format!("(and (<= 0 {i}) (< {i} {len}))"), PANIC);
+        let item = format!("(select {arr} {i})");
+        match word_of(self.checked, elem) {
+            Some(Word1::Int(lo, hi)) => {
+                let v = self.smt.define("element", "Int", &item);
+                self.smt.assume(&in_range(&v, &lo, &hi));
+                Val::Int(v)
+            }
+            _ => Val::Bool(self.smt.define("element", "Bool", &item)),
+        }
+    }
+
     /// A local's terms, when it is a word.
     pub(crate) fn word_term(st: &St, sym: usize) -> Option<String> {
         match st.locals.get(&sym) {
@@ -276,6 +303,30 @@ impl<'a> Exec<'a> {
             Some(Val::Int(t) | Val::Bool(t)) => Some(t.clone()),
             _ => None,
         }
+    }
+
+    /// A parameter: a value of its type, and a list of words of any length as one.
+    pub(crate) fn bind_arg(&mut self, st: &mut St, sym: usize) {
+        let ty = self.checked.syms[sym].ty;
+        let v = self.any_list(ty).unwrap_or_else(|| self.fresh(ty, "arg"));
+        st.locals.insert(sym, v);
+    }
+
+    /// Any list of words, of any length, for a list type of them.
+    fn any_list(&mut self, ty: usize) -> Option<Val> {
+        let t = &self.checked.types[peel(self.checked, ty)];
+        if t.kind != TyKind::List || t.bits != 0 {
+            return None;
+        }
+        let elem = t.elem?;
+        let sort = match word_of(self.checked, elem)? {
+            Word1::Bool => "Bool",
+            Word1::Int(..) => "Int",
+        };
+        let len = self.smt.fresh("length", "Int");
+        self.smt.assume(&in_range(&len, "0", &max_bits(64)));
+        let arr = self.smt.fresh("arg", &format!("(Array Int {sort})"));
+        Some(Val::Seq(len, arr, elem))
     }
 
     pub(crate) fn bind(&mut self, st: &mut St, sym: usize, what: &str) {
@@ -832,6 +883,34 @@ impl<'a> Exec<'a> {
                 };
                 let sym = &self.checked.syms[*root];
                 if !sym.storage {
+                    if *push && fields.is_empty() {
+                        // `List.push(xs, v)`: one more element, `v`.
+                        match self.local(st, *root) {
+                            Val::List(mut items) => {
+                                items.push(v);
+                                st.locals.insert(*root, Val::List(items));
+                                return Ok(());
+                            }
+                            Val::Seq(len, arr, elem) if matches!(v, Val::Int(_) | Val::Bool(_)) => {
+                                let (Val::Int(x) | Val::Bool(x)) = &v else {
+                                    unreachable!()
+                                };
+                                let sort = match word_of(self.checked, elem) {
+                                    Some(Word1::Bool) => "Bool",
+                                    _ => "Int",
+                                };
+                                let arr = self.smt.define(
+                                    "list",
+                                    &format!("(Array Int {sort})"),
+                                    &format!("(store {arr} {len} {x})"),
+                                );
+                                let len = self.smt.define("length", "Int", &format!("(+ {len} 1)"));
+                                st.locals.insert(*root, Val::Seq(len, arr, elem));
+                                return Ok(());
+                            }
+                            _ => {}
+                        }
+                    }
                     if index.is_some() || !fields.is_empty() || target.is_some() || *push {
                         // An element of a local list or map: the local is no longer known.
                         self.bind(st, *root, "local");
@@ -991,10 +1070,18 @@ impl<'a> Exec<'a> {
                 elem,
                 cap,
                 invariants,
+                length,
+                elem_init,
+                list,
                 ..
             } => {
                 let at = (*line, *col);
                 if invariants.is_empty() {
+                    let listed = Listed {
+                        length: length.as_ref(),
+                        elem_init: elem_init.as_ref(),
+                        list: *list,
+                    };
                     self.for_loop(
                         st,
                         at,
@@ -1004,6 +1091,7 @@ impl<'a> Exec<'a> {
                         *counter,
                         *elem,
                         *cap,
+                        listed,
                         ctx,
                     )?
                 } else {
@@ -1058,21 +1146,54 @@ impl<'a> Exec<'a> {
         counter: Option<usize>,
         elem: Option<usize>,
         cap: Option<u64>,
+        listed: Listed<'a>,
         ctx: &Ctx,
     ) -> Res<()> {
-        let ForIter::Range { lo, hi } = iter else {
-            return self.forget_loop(st, (line, col), iter, body, counter, elem, ctx);
-        };
-        let lo_v = self.eval(st, lo, ctx)?;
-        let hi_v = self.eval(st, hi, ctx)?;
-        let (Val::Int(lo_t), Val::Int(hi_t)) = (lo_v, hi_v) else {
-            return self.forget_loop(st, (line, col), iter, body, counter, elem, ctx);
+        let (lo_t, hi_t) = match iter {
+            ForIter::Range { lo, hi } => {
+                let lo_v = self.eval(st, lo, ctx)?;
+                let hi_v = self.eval(st, hi, ctx)?;
+                let (Val::Int(lo_t), Val::Int(hi_t)) = (lo_v, hi_v) else {
+                    return self.forget_loop(st, (line, col), None, body, counter, elem, ctx);
+                };
+                (lo_t, hi_t)
+            }
+            ForIter::List(list) => {
+                // A list of known length runs turn by turn, each element in its turn.
+                if let Some(sym) = listed.list {
+                    let v = self.eval(st, list, ctx)?;
+                    st.locals.insert(sym, v);
+                }
+                let length = match listed.length {
+                    Some(length) => self.eval(st, length, ctx)?,
+                    None => Val::Opaque,
+                };
+                let Val::Int(n) = length else {
+                    return self.forget_loop(st, (line, col), None, body, counter, elem, ctx);
+                };
+                if let Some(n) = n.parse::<u64>().ok().filter(|n| *n <= UNROLL) {
+                    return self.list_loop(
+                        st,
+                        n,
+                        listed.elem_init,
+                        until,
+                        body,
+                        counter,
+                        elem,
+                        ctx,
+                    );
+                }
+                ("0".to_string(), n)
+            }
         };
         // A bound the loop may not pass, or a count known now.
         let known = match (lo_t.parse::<u64>(), hi_t.parse::<u64>()) {
             (Ok(a), Ok(b)) => Some(b.saturating_sub(a)),
             _ => None,
         };
+        // A count that may pass what the prover runs turn by turn: the turns it may take, and
+        // past them a loop too long to follow.
+        let mut longer = false;
         let n = match (cap, known) {
             (_, Some(k)) if k <= UNROLL => k,
             (Some(c), _) if c <= UNROLL => {
@@ -1080,14 +1201,17 @@ impl<'a> Exec<'a> {
                 self.check(st, &format!("(<= (- {hi_t} {lo_t}) {c})"), PANIC);
                 c
             }
-            (cap, _) => {
+            (_, Some(_)) => {
+                return self.forget_loop(st, (line, col), None, body, counter, elem, ctx);
+            }
+            (cap, None) => {
                 if let Some(c) = cap {
                     self.check(st, &format!("(<= (- {hi_t} {lo_t}) {c})"), PANIC);
                 }
-                return self.forget_loop(st, (line, col), iter, body, counter, elem, ctx);
+                longer = true;
+                UNROLL
             }
         };
-        let _ = elem;
         let mut running = "true".to_string();
         for i in 0..n {
             let at = format!("(+ {lo_t} {i})");
@@ -1098,6 +1222,65 @@ impl<'a> Exec<'a> {
             if let Some(c) = counter {
                 let at = self.smt.define("i", "Int", &at);
                 inside.locals.insert(c, Val::Int(at));
+            }
+            if let (Some(e), Some(init)) = (elem, listed.elem_init) {
+                let item = self.eval(&mut inside, init, ctx)?;
+                inside.locals.insert(e, item);
+            }
+            self.stmts(&mut inside, body, ctx)?;
+            if let Some(until) = until {
+                let stop_now = self.eval(&mut inside, until, ctx)?;
+                let stop_now = self.boolean(stop_now)?;
+                running = self
+                    .smt
+                    .define("go", "Bool", &and(&go, &format!("(not {stop_now})")));
+            } else {
+                running = go.clone();
+            }
+            let skipped = st.clone();
+            *st = self.merge(&go, inside, skipped);
+        }
+        if longer {
+            let past = and(&running, &format!("(< (+ {lo_t} {n}) {hi_t})"));
+            let mut rest = st.clone();
+            self.forget_loop(
+                &mut rest,
+                (line, col),
+                Some((&lo_t, &hi_t, listed.elem_init)),
+                body,
+                counter,
+                elem,
+                ctx,
+            )?;
+            let kept = st.clone();
+            *st = self.merge(&past, rest, kept);
+        }
+        Ok(())
+    }
+
+    /// A loop over a list of known length, each element in its turn.
+    #[allow(clippy::too_many_arguments)]
+    fn list_loop(
+        &mut self,
+        st: &mut St,
+        n: u64,
+        elem_init: Option<&'a Expr>,
+        until: Option<&'a Expr>,
+        body: &'a [Stmt],
+        counter: Option<usize>,
+        elem: Option<usize>,
+        ctx: &Ctx,
+    ) -> Res<()> {
+        let mut running = "true".to_string();
+        for k in 0..n {
+            let go = self.smt.define("go", "Bool", &running);
+            let mut inside = st.clone();
+            if let Some(c) = counter {
+                inside.locals.insert(c, Val::Int(k.to_string()));
+            }
+            if let (Some(e), Some(init)) = (elem, elem_init) {
+                let item = self.eval(&mut inside, init, ctx)?;
+                inside.locals.insert(e, item);
             }
             self.stmts(&mut inside, body, ctx)?;
             if let Some(until) = until {
@@ -1116,12 +1299,15 @@ impl<'a> Exec<'a> {
     }
 
     /// A loop too long to run iteration by iteration: what its body can change becomes
-    /// unknown, and it may revert, so a claim that relies on what it does is only approximate.
+    /// unknown, so a claim that relies on what it does is only approximate. It may revert as
+    /// one iteration from that state may, at a count in `range` with its element there when
+    /// the loop's range is known, and otherwise in any way.
+    #[allow(clippy::too_many_arguments)]
     fn forget_loop(
         &mut self,
         st: &mut St,
         (line, col): (u32, u32),
-        _iter: &'a ForIter,
+        range: Option<(&str, &str, Option<&'a Expr>)>,
         body: &'a [Stmt],
         counter: Option<usize>,
         elem: Option<usize>,
@@ -1129,7 +1315,38 @@ impl<'a> Exec<'a> {
     ) -> Res<()> {
         let (keys, locals) = self.loop_writes(st, body, counter, elem, ctx)?;
         self.havoc(st, &keys, &locals);
-        self.may_revert(st);
+        match (range, counter) {
+            (Some((lo, hi, elem_init)), Some(c)) => {
+                let mut any = st.clone();
+                any.ok = "true".to_string();
+                let i = self.smt.fresh("i", "Int");
+                any.locals.insert(c, Val::Int(i.clone()));
+                if let Some(e) = elem {
+                    match elem_init {
+                        Some(init) => {
+                            let item = self.eval(&mut any, init, ctx)?;
+                            any.locals.insert(e, item);
+                        }
+                        None => self.bind(&mut any, e, "element"),
+                    }
+                }
+                let continuations = self.continuations.len();
+                self.stmts(&mut any, body, ctx)?;
+                self.continuations.truncate(continuations);
+                let at = format!("(and (<= {lo} {i}) (< {i} {hi}))");
+                let failed = and(&at, &format!("(not {})", any.ok));
+                let first = and(&st.ok, &failed);
+                st.why = self.smt.define(
+                    "why",
+                    "Int",
+                    &format!("(ite {first} {} {})", any.why, st.why),
+                );
+                st.ok = self
+                    .smt
+                    .define("ok", "Bool", &and(&st.ok, &format!("(not {failed})")));
+            }
+            _ => self.may_revert(st),
+        }
         self.at = (line, col);
         self.approx(&format!(
             "a loop that may run more than {UNROLL} times; give it a smaller `bound` or an `invariant`"
@@ -1152,18 +1369,24 @@ impl<'a> Exec<'a> {
         invariants: &'a [Expr],
         ctx: &Ctx,
     ) -> Res<()> {
+        let mut seq = None;
         let (lo, hi) = match iter {
             ForIter::Range { lo, hi } => {
                 let lo = self.eval(st, lo, ctx)?;
                 let hi = self.eval(st, hi, ctx)?;
                 (self.int(lo, 0)?, self.int(hi, 0)?)
             }
-            ForIter::List(list) => {
-                self.eval(st, list, ctx)?;
-                let length = self.smt.fresh("length", "Int");
-                self.smt.assume(&format!("(<= 0 {length})"));
-                ("0".to_string(), length)
-            }
+            ForIter::List(list) => match self.eval(st, list, ctx)? {
+                Val::Seq(len, arr, e) => {
+                    seq = Some((len.clone(), arr, e));
+                    ("0".to_string(), len)
+                }
+                _ => {
+                    let length = self.smt.fresh("length", "Int");
+                    self.smt.assume(&format!("(<= 0 {length})"));
+                    ("0".to_string(), length)
+                }
+            },
         };
         if let Some(c) = cap {
             self.check(st, &format!("(<= (- {hi} {lo}) {c})"), PANIC);
@@ -1177,7 +1400,22 @@ impl<'a> Exec<'a> {
                 s.locals.insert(c, Val::Int(at.to_string()));
             }
             if let Some(e) = elem {
-                exec.bind(s, e, "element");
+                match &seq {
+                    // The element at the counter, a value of its type whatever the counter.
+                    Some((_, arr, ty)) => {
+                        let item = format!("(select {arr} {at})");
+                        let v = match word_of(exec.checked, *ty) {
+                            Some(Word1::Int(lo, hi)) => {
+                                let v = exec.smt.define("element", "Int", &item);
+                                exec.smt.assume(&in_range(&v, &lo, &hi));
+                                Val::Int(v)
+                            }
+                            _ => Val::Bool(exec.smt.define("element", "Bool", &item)),
+                        };
+                        s.locals.insert(e, v);
+                    }
+                    None => exec.bind(s, e, "element"),
+                }
             }
         };
         // As the loop starts.
@@ -1361,7 +1599,13 @@ impl<'a> Exec<'a> {
             }
         }
         for sym in locals {
-            self.bind(st, *sym, "local");
+            let ty = self.checked.syms[*sym].ty;
+            match self.any_list(ty) {
+                Some(v) => {
+                    st.locals.insert(*sym, v);
+                }
+                None => self.bind(st, *sym, "local"),
+            }
         }
         st.written.extend(keys.iter().cloned());
     }
@@ -1462,6 +1706,27 @@ impl<'a> Exec<'a> {
                     .map(|(x, y)| self.ite(c, x, y))
                     .collect(),
             ),
+            (Val::List(xs), Val::List(ys)) if xs.len() == ys.len() => Val::List(
+                xs.into_iter()
+                    .zip(ys)
+                    .map(|(x, y)| self.ite(c, x, y))
+                    .collect(),
+            ),
+            (Val::Seq(l1, a1, e1), Val::Seq(l2, a2, e2)) if e1 == e2 => {
+                let sort = match word_of(self.checked, e1) {
+                    Some(Word1::Bool) => "Bool",
+                    _ => "Int",
+                };
+                let len = self
+                    .smt
+                    .define("length", "Int", &format!("(ite {c} {l1} {l2})"));
+                let arr = self.smt.define(
+                    "list",
+                    &format!("(Array Int {sort})"),
+                    &format!("(ite {c} {a1} {a2})"),
+                );
+                Val::Seq(len, arr, e1)
+            }
             (Val::Unit, Val::Unit) => Val::Unit,
             _ => Val::Opaque,
         }
@@ -1550,6 +1815,12 @@ impl<'a> Exec<'a> {
                     return Ok(self.read_place(st, &place, *ty));
                 }
                 let b = self.eval(st, base, ctx)?;
+                if let (Val::List(items), "length") = (&b, name.as_str()) {
+                    return Ok(Val::Int(items.len().to_string()));
+                }
+                if let (Val::Seq(len, ..), "length") = (&b, name.as_str()) {
+                    return Ok(Val::Int(len.clone()));
+                }
                 let bty = peel(self.checked, base.ty());
                 let t = &self.checked.types[bty];
                 if let (Val::Tuple(parts), Some(pos)) =
@@ -1565,8 +1836,19 @@ impl<'a> Exec<'a> {
                 if let Some(place) = self.place(st, e, ctx)? {
                     return Ok(self.read_place(st, &place, *ty));
                 }
-                self.eval(st, base, ctx)?;
-                self.eval(st, index, ctx)?;
+                let b = self.eval(st, base, ctx)?;
+                let i = self.eval(st, index, ctx)?;
+                match (b, i) {
+                    (Val::List(items), Val::Int(i)) => {
+                        if let Some(v) = self.element(st, items, &i) {
+                            return Ok(v);
+                        }
+                    }
+                    (Val::Seq(len, arr, elem), Val::Int(i)) => {
+                        return Ok(self.seq_element(st, &len, &arr, elem, &i));
+                    }
+                    _ => {}
+                }
                 self.approx_fresh(*ty, "an element of a list or string")
             }
             Expr::Query { expr, gas, ty, .. } => {
@@ -1644,12 +1926,35 @@ impl<'a> Exec<'a> {
                 ))
             }
             Expr::List { elems, .. } => {
+                let mut items = Vec::new();
                 for x in elems {
-                    self.eval(st, x, ctx)?;
+                    items.push(self.eval(st, x, ctx)?);
                 }
-                Ok(Val::Opaque)
+                Ok(Val::List(items))
             }
         }
+    }
+
+    /// Element `i` of a list of known length: past its end, the code panics.
+    fn element(&mut self, st: &mut St, items: Vec<Val>, i: &str) -> Option<Val> {
+        if items.is_empty()
+            || !items
+                .iter()
+                .all(|v| matches!(v, Val::Int(_) | Val::Bool(_)))
+        {
+            return None;
+        }
+        self.check(
+            st,
+            &format!("(and (<= 0 {i}) (< {i} {}))", items.len()),
+            PANIC,
+        );
+        let mut items = items.into_iter().enumerate().rev();
+        let (_, mut out) = items.next()?;
+        for (k, v) in items {
+            out = self.ite(&format!("(= {i} {k})"), v, out);
+        }
+        Some(out)
     }
 
     /// In code, a value outside its type reverts.
@@ -1804,7 +2109,8 @@ impl<'a> Exec<'a> {
         let s = self.eval(st, scrut, ctx)?;
         let sty = peel(self.checked, scrut.ty());
         let enum_like = is_enum(&self.checked.types, sty);
-        if !(enum_like && matches!(s, Val::Int(_))) {
+        let boolean = matches!(s, Val::Bool(_));
+        if !(enum_like && matches!(s, Val::Int(_)) || boolean) {
             self.approx("a `case` on a value it does not model")?;
         }
         let variants: Vec<String> = self.checked.types[sty]
@@ -1832,6 +2138,10 @@ impl<'a> Exec<'a> {
                     } else {
                         format!("(or {})", any.join(" "))
                     }
+                }
+                (Val::Bool(b), _) if arm.ctors.iter().any(|c| c == "true") => b.clone(),
+                (Val::Bool(b), _) if arm.ctors.iter().any(|c| c == "false") => {
+                    format!("(not {b})")
                 }
                 _ if last => "true".to_string(),
                 _ => self.smt.fresh("arm", "Bool"),
@@ -2439,7 +2749,7 @@ fn dec(w: Word) -> String {
     }
 }
 
-fn stmt_at(s: &Stmt) -> Option<(u32, u32)> {
+pub(crate) fn stmt_at(s: &Stmt) -> Option<(u32, u32)> {
     match s {
         Stmt::Const { line, col, .. }
         | Stmt::Var { line, col, .. }

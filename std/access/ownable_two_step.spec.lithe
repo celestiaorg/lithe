@@ -1,0 +1,22 @@
+(* What `Ownable2Step` guarantees: the owner proposes, only the proposed account accepts, and
+   ownership moves only when it does. *)
+
+spec for module Ownable2Step is {
+  spec for transferOwnership is {
+    raises OwnableUnauthorizedAccount when Evm.sender() <> old.Ownable.ownable.owner;
+    ensures new.ownable2step.pending = newOwner;
+    ensures new.Ownable.ownable.owner = old.Ownable.ownable.owner;
+  }
+
+  spec for acceptOwnership is {
+    raises OwnableUnauthorizedAccount when Evm.sender() <> old.ownable2step.pending;
+    ensures new.Ownable.ownable.owner = Evm.sender();
+    ensures new.ownable2step.pending = Address.zero;
+  }
+
+  spec for renounceOwnership is {
+    raises OwnableUnauthorizedAccount when Evm.sender() <> old.Ownable.ownable.owner;
+    ensures new.Ownable.ownable.owner = Address.zero;
+    ensures new.ownable2step.pending = Address.zero;
+  }
+}

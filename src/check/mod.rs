@@ -42,7 +42,10 @@ pub(crate) use abi::{
 };
 pub(crate) use builtins::intrinsic_tag;
 pub(crate) use compose::{module_transient_slot, several_contracts, Header};
-pub(crate) use layout::{narrow_width, option_flip, pack_leaves, Flip};
+pub(crate) use layout::{
+    narrow_width, option_flip, pack_leaves, spec_layout, value_words, verify_value_words, Flip,
+    Space, SpecLayout,
+};
 pub(crate) use types::shape_ty;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -972,11 +975,13 @@ fn check_program(
     c.check_hook_decls(&prog)?;
     let mut templates = Vec::new();
     for func in std::mem::take(&mut prog.funcs) {
-        // A hook takes values, whatever its caller holds them in, so it is never copied.
+        // A hook takes values, whatever its caller holds them in, so it is never copied, and
+        // so does a spec's function, which takes its external's parameters.
         let internal = matches!(
             func.kind,
             ItemKind::Function | ItemKind::Readonly | ItemKind::Pure
-        ) && func.hook_of.is_none();
+        ) && func.hook_of.is_none()
+            && !crate::spec::is_spec_fn(&func.name);
         let mut storage_param = false;
         if internal {
             for p in &func.params {

@@ -39,6 +39,20 @@ name = "test"
 cmd = "cargo test"
 
 [[run]]
+name = "prove"
+cmd = """
+cargo build --release || exit 1
+status=0
+for spec in $(find std examples -name '*.spec.lithe' | sort); do
+  file=${spec%.spec.lithe}.lithe
+  echo "== $file"
+  out=$(target/release/lithe prove "$file") || status=1
+  echo "$out" | tail -1
+done
+exit $status
+"""
+
+[[run]]
 name = "bench"
 cmd = "cargo build --release && PATH=$HOME/.foundry/bin:$PATH python3 bench/run.py"
 

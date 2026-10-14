@@ -66,6 +66,37 @@ jobs:
           echo "LITHE_Z3=$RUNNER_TEMP/z3-5.1.0-x64-glibc-2.39/bin/z3" >> "$GITHUB_ENV"
       - run: cargo test
 
+  # `lithe prove` over every spec file: each claim proved of the bytecode, none failed or
+  # unknown.
+  prove:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@1.95.0
+      - uses: Swatinem/rust-cache@v2
+      - name: Install Z3
+        run: |
+          curl -sSfLO https://github.com/Z3Prover/z3/releases/download/z3-5.1.0/z3-5.1.0-x64-glibc-2.39.zip
+          unzip -q z3-5.1.0-x64-glibc-2.39.zip -d "$RUNNER_TEMP"
+          echo "LITHE_Z3=$RUNNER_TEMP/z3-5.1.0-x64-glibc-2.39/bin/z3" >> "$GITHUB_ENV"
+      - run: cargo build --release
+      - name: Prove every spec file
+        run: |
+          status=0
+          for spec in $(find std examples -name '*.spec.lithe' | sort); do
+            file=${spec%.spec.lithe}.lithe
+            echo "::group::$file"
+            code=0
+            target/release/lithe prove "$file" || code=$?
+            echo "::endgroup::"
+            if [ "$code" -ne 0 ]; then
+              echo "::error file=$file::lithe prove exited $code: 1 is a FAILED claim, 3 an unknown one"
+              status=1
+            fi
+          done
+          exit $status
+
   docs:
     runs-on: ubuntu-24.04
     steps:

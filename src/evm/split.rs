@@ -574,6 +574,58 @@ fn upgrades_bubble_migration_failures_and_take_long_arguments() {
     }
 }
 
+/// A migration runs only inside the upgrade that calls it: later in the same transaction,
+/// with the upgrade's transient storage, a direct call to it reverts, as it does after an
+/// upgrade that runs no migration.
+#[test]
+fn migrations_run_only_inside_their_upgrade() {
+    let v1 = "import \"std/evm\"; upgradeable\nerror NotOwner;\n\
+        storage is record { owner : address; n : uint; }\n\
+        upgrade guard is { assert(Evm.sender() = storage.owner, NotOwner); }\n\
+        external view function n() : uint is storage.n\n";
+    let v2 = v1.replace(
+        "external view",
+        "migrate init(const x : uint) is { storage.n := x; }\nexternal view",
+    );
+    let [a, b] = [0xa11, 0xb22].map(Word::from_u64);
+    let slot = crate::keccak::erc1967_implementation();
+    let proxy = proxy_runtime();
+    let owner = Word::from_u64(1);
+    deploy_at(&compile(v1).expect("v1"), a);
+    deploy_at(&compile(&v2).expect("v2"), b);
+    let storage: HashMap<Word, Word> = [(slot, a), (Word::from_u64(0), owner)]
+        .into_iter()
+        .collect();
+    let run = |data: &[u8], storage: &HashMap<Word, Word>, transient: &HashMap<Word, Word>| {
+        exec_state(
+            &proxy,
+            data,
+            storage.clone(),
+            owner,
+            Word::from_u64(0),
+            Word::from_u64(0),
+            transient.clone(),
+        )
+        .expect("run")
+    };
+    let init = |x: u64| word_data("init(uint256)", &[Word::from_u64(x)]);
+    for migration in [init(3), Vec::new()] {
+        let upgraded = run(
+            &upgrade_to_and_call(b, &migration),
+            &storage,
+            &HashMap::new(),
+        );
+        assert!(!upgraded.reverted, "{}", pretty(&upgraded.returndata));
+        assert_eq!(upgraded.storage[&slot], b);
+        let again = run(&init(7), &upgraded.storage, &upgraded.transient);
+        assert!(
+            again.reverted,
+            "a migration ran again in its upgrade's transaction"
+        );
+    }
+    DEPLOYED.with(|m| m.borrow_mut().clear());
+}
+
 /// A facet runs its module's externals and nothing else: no `deploy`, no migration, and no
 /// upgrade machinery. Called directly, it only touches its own empty storage.
 #[test]

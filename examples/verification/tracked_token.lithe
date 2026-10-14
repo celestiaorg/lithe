@@ -1,0 +1,42 @@
+(* An ERC-20 token whose module runs from its facet, and whose transfer hooks run in the
+   contract: the facet calls them back with `delegatecall`. Its specs, in
+   tracked_token.spec.lithe, with ERC20's own, are proved of the router, the facet, and the
+   calls between them. *)
+
+import "std/evm";
+import "std/uint";
+import "std/token/erc20";
+import "std/interfaces/erc20";
+
+contract TrackedToken is {
+  use ERC20 delegated exposing IERC20;
+
+  error NotOwner;
+
+  storage is record {
+    owner : address;
+    last : address;
+    moved : uint;
+  }
+
+  hook ERC20.beforeTransfer is skip;
+
+  hook ERC20.afterTransfer(const from : address; const to : address; const value : uint) is {
+    storage.last := to;
+    storage.moved := Uint.wrappingAdd(storage.moved, value);
+  }
+
+  deploy() is {
+    storage.owner := Evm.sender();
+    ERC20.init("Tracked", "TRK");
+  }
+
+  external function mint(const to : address; const value : uint)
+    raises NotOwner | ERC20InvalidReceiver | ERC20InsufficientBalance
+  is {
+    assert(Evm.sender() = storage.owner, NotOwner);
+    ERC20.mint(to, value);
+  }
+
+  external view function last() : address is storage.last
+}
