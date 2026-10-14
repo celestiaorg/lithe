@@ -67,7 +67,8 @@ jobs:
       - run: cargo test
 
   # `lithe prove` over every spec file: each claim proved of the bytecode, none failed or
-  # unknown.
+  # unknown. The runner's cores are slower than a laptop's, so a question gets 120 s of
+  # solver time, not the default 30.
   prove:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
@@ -88,7 +89,7 @@ jobs:
             file=${spec%.spec.lithe}.lithe
             echo "::group::$file"
             code=0
-            target/release/lithe prove "$file" || code=$?
+            target/release/lithe prove "$file" --timeout 120 || code=$?
             echo "::endgroup::"
             if [ "$code" -ne 0 ]; then
               echo "::error file=$file::lithe prove exited $code: 1 is a FAILED claim, 3 an unknown one"
