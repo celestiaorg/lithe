@@ -70,6 +70,10 @@ Run the tests with `cargo test`.
 
 Start with [Installation and first contract](docs/src/pages/guide/getting-started.mdx), then [The transition model](docs/src/pages/guide/transition-model.mdx) and [Lithe by Example](docs/src/pages/by-example/index.mdx).
 
+## Contributing
+
+Pull requests from outside the team aren't accepted. To report a bug or ask for a feature, [open an issue](https://github.com/celestiaorg/lithe/issues). To report a vulnerability, follow [SECURITY.md](SECURITY.md).
+
 ## License
 
 Licensed under the [Apache License, Version 2.0](LICENSE).
