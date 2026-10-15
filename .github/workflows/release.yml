@@ -102,8 +102,10 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         run: |
+          # A release made in the GitHub UI pushes the tag that triggers this run; fill it in.
+          # Without --clobber, upload refuses to replace an asset that is already there.
           if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
-            echo "::error::release $GITHUB_REF_NAME exists; releases are never replaced"
-            exit 1
+            gh release upload "$GITHUB_REF_NAME" lithe-* SHA256SUMS
+            exit 0
           fi
           gh release create "$GITHUB_REF_NAME" --verify-tag --title "$GITHUB_REF_NAME" --generate-notes lithe-* SHA256SUMS
