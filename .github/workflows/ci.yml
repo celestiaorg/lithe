@@ -210,3 +210,13 @@ jobs:
       - run: '"$RUNNER_TEMP/latest/bin/lithe" --version'
       - run: LITHE_HOME="$RUNNER_TEMP/pinned" sh install.sh 0.1.0
       - run: '"$RUNNER_TEMP/pinned/bin/lithe" --version | grep -q "^lithe 0.1.0+"'
+
+  # The one check branch protection requires. List every job here except `install`, which
+  # tests the published release rather than the change.
+  success:
+    if: always()
+    needs: [lint, test, prove, docs, hardhat, playground]
+    runs-on: ubuntu-24.04
+    steps:
+      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        run: exit 1
