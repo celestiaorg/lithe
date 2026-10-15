@@ -1,3 +1,4 @@
 node_modules
 dist
 public/play/lithe.wasm
+public/install.sh

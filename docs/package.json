@@ -4,7 +4,7 @@
   "type": "module",
   "scripts": {
     "dev": "vocs dev",
-    "build": "node check.mjs && sh ../playground/build.sh && vocs build",
+    "build": "node check.mjs && sh ../playground/build.sh && cp ../install.sh public/ && vocs build",
     "playground": "sh ../playground/build.sh",
     "preview": "vocs preview",
     "check": "node check.mjs",

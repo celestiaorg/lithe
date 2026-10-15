@@ -28,7 +28,13 @@ external function inc() is {
 
 ## Getting started
 
-Build the compiler with a recent stable Rust toolchain:
+Install the latest release (Linux or macOS):
+
+```bash
+curl -fsSL https://lithe-lang.org/install.sh | sh
+```
+
+Or build the compiler with a recent stable Rust toolchain:
 
 ```bash
 cargo build --release
