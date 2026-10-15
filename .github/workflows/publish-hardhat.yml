@@ -1,0 +1,43 @@
+name: Publish @lithe-lang/hardhat
+
+# Pushing a tag `hardhat-v<version>` publishes that version of extensions/hardhat, which
+# must be the version in its package.json. npm trusts this workflow by its file name, so
+# renaming the file means updating the package's trusted publisher on npmjs.com.
+on:
+  push:
+    tags: ["hardhat-v*"]
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    environment: npm
+    defaults:
+      run:
+        working-directory: extensions/hardhat
+    steps:
+      - uses: actions/checkout@v7
+      - name: Check the tag matches package.json
+        run: |
+          version=$(node -p 'require("./package.json").version')
+          if [ "$GITHUB_REF_NAME" != "hardhat-v$version" ]; then
+            echo "::error::tag $GITHUB_REF_NAME doesn't match package.json version $version"
+            exit 1
+          fi
+      - uses: dtolnay/rust-toolchain@1.95.0
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --release
+        working-directory: .
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: extensions/hardhat/package-lock.json
+      # Trusted publishing needs npm 11.5.1 or later.
+      - run: npm install -g npm@latest
+      - run: npm ci
+      - run: PATH="$GITHUB_WORKSPACE/target/release:$PATH" npm test
+      - run: npm publish

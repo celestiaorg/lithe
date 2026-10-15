@@ -8,7 +8,7 @@
     "playground": "sh ../playground/build.sh",
     "preview": "vocs preview",
     "check": "node check.mjs",
-    "prettier": "prettier check.mjs vocs.config.ts package.json tsconfig.json public/play/worker.js src/components ../playground/check.mjs ../extensions/vscode/extension.js",
+    "prettier": "prettier check.mjs vocs.config.ts package.json tsconfig.json public/play/worker.js src/components ../playground/check.mjs ../extensions/vscode/extension.js ../extensions/hardhat/*.js ../extensions/hardhat/index.d.ts ../extensions/hardhat/test/fixture/hardhat.config.ts ../extensions/hardhat/test/fixture/test/*.ts",
     "fmt": "npm run prettier -- --write",
     "lint": "npm run prettier -- --check && tsc"
   },

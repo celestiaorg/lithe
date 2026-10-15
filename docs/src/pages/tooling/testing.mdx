@@ -1,0 +1,266 @@
+---
+title: "Testing"
+description: "Testing Lithe contracts with Foundry, from the artifacts `lithe compile` writes, or with Hardhat, through the `@lithe-lang/hardhat` plugin, and fuzzing a build that checks the contract's specs."
+---
+
+# Testing
+
+`lithe compile directory` writes one artifact per contract, with its ABI and creation code, in the shape Foundry writes for Solidity. Forge deploys a Lithe contract from that artifact, and a Hardhat plugin builds Lithe contracts into Hardhat's own artifacts. Either way, tests call the contract through its ABI, as they would a contract compiled from Solidity. This page tests one contract, first with Foundry and then with Hardhat:
+
+```lithe [src/vault.lithe]
+import "std/evm";
+
+error Insufficient;
+
+storage is record {
+  total : wei;
+  balances : map(address, wei);
+}
+
+external payable function deposit() is {
+  storage.balances[Evm.sender()] := storage.balances[Evm.sender()] + Evm.value();
+  storage.total := storage.total + Evm.value();
+}
+
+external nonreentrant function withdraw(const amount : wei)
+  raises Insufficient
+is {
+  const have : wei := storage.balances[Evm.sender()];
+  assert(have >= amount, Insufficient);
+  storage.balances[Evm.sender()] := have - amount;
+  storage.total := storage.total - amount;
+  defer Evm.transfer(Evm.sender(), amount);
+}
+```
+
+## Foundry
+
+Put the contract in `src/` and the tests in `test/`, and set two keys in `foundry.toml`:
+
+```toml
+[profile.default]
+evm_version = "osaka"
+fs_permissions = [{ access = "read", path = "out" }]
+```
+
+- `evm_version` matches Lithe's default [target fork](/tooling/cli#target-fork). Forge's own default is older, and a contract that uses an Osaka opcode fails there with nothing more than `EvmError: Revert`.
+- `fs_permissions` lets tests read the artifacts under `out/`.
+
+Generate a Solidity interface for the contract from its artifact:
+
+```bash
+lithe compile src
+cast interface -n IVault out/vault.lithe/Vault.json > test/IVault.sol
+```
+
+`deployCode` takes the artifact's path:
+
+```solidity
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.24;
+
+import {Test} from "forge-std/Test.sol";
+import {IVault} from "./IVault.sol";
+
+contract VaultTest is Test {
+    IVault vault;
+
+    function setUp() public {
+        vault = IVault(deployCode("out/vault.lithe/Vault.json"));
+    }
+
+    function test_withdraw() public {
+        vault.deposit{value: 1 ether}();
+        uint256 before = address(this).balance;
+        vault.withdraw(0.4 ether);
+        assertEq(address(this).balance, before + 0.4 ether);
+        assertEq(address(vault).balance, 0.6 ether);
+    }
+
+    function test_overdraw() public {
+        vault.deposit{value: 1 ether}();
+        vm.expectRevert(IVault.Insufficient.selector);
+        vault.withdraw(2 ether);
+    }
+
+    receive() external payable {}
+}
+```
+
+Forge doesn't compile Lithe, so build before each run. A test against an old build passes or fails for the wrong reason:
+
+```bash
+lithe compile src && forge test
+```
+
+- A contract with a [`deploy`](/language/deploy) takes its arguments ABI-encoded, as a Solidity constructor does: `deployCode("out/fees.lithe/Fees.json", abi.encode(owner, 250))`.
+- An [error](/language/errors) is a Solidity custom error of the same name, so `FeeTooHigh` is `IFees.FeeTooHigh.selector` in a test.
+- Fuzzing, cheatcodes, gas reports, and `--fork-url` all work as they do for Solidity.
+
+### Checking specs while fuzzing
+
+A contract with a [spec file](/language/verification) can be built to check its specs on every call:
+
+```lithe [src/vault.spec.lithe]
+spec is {
+  invariant ledger is storage.total = sum(storage.balances);
+  invariant solvent is Evm.balance(Evm.self()) >= storage.total;
+}
+
+spec for withdraw is {
+  const have : wei := old.storage.balances[Evm.sender()];
+  raises Insufficient when have < amount;
+  ensures new.storage.balances[Evm.sender()] = have - amount;
+  ensures new.storage.total = old.storage.total - amount;
+}
+```
+
+```bash
+lithe compile --check-specs src && forge test
+```
+
+A call that breaks a spec reverts with `SpecViolation(string)`, so every test above, fuzzed or not, now checks the specs too. Forge's invariant tests find the call sequences that break them. Set `fail_on_revert` so that a revert fails the run:
+
+```toml
+[invariant]
+fail_on_revert = true
+```
+
+Then a handler has to keep its calls valid, because any revert counts as a failure:
+
+```solidity
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.24;
+
+import {Test} from "forge-std/Test.sol";
+import {IVault} from "./IVault.sol";
+
+contract Handler is Test {
+    IVault vault;
+    uint256 deposited;
+
+    constructor(IVault vault_) {
+        vault = vault_;
+    }
+
+    function deposit(uint96 amount) external {
+        vm.deal(address(this), amount);
+        vault.deposit{value: amount}();
+        deposited += amount;
+    }
+
+    function withdraw(uint256 amount) external {
+        amount = bound(amount, 0, deposited);
+        deposited -= amount;
+        vault.withdraw(amount);
+    }
+
+    receive() external payable {}
+}
+
+contract VaultInvariants is Test {
+    function setUp() public {
+        IVault vault = IVault(deployCode("out/vault.lithe/Vault.json"));
+        targetContract(address(new Handler(vault)));
+    }
+
+    function invariant_specs() public {}
+}
+```
+
+If `withdraw` forgot to lower `storage.total`, the run would fail with the spec's message, ``withdraw: `ensures` at 10:3 does not hold``, and the call sequence that broke it. The checked build is bigger and costs more gas than the plain one, so measure gas and deploy from a plain `lithe compile`.
+
+## Hardhat
+
+The `@lithe-lang/hardhat` plugin compiles Lithe contracts as part of Hardhat 3's build. It runs the `lithe` compiler, so that has to be [installed](/guide/getting-started) too. Install the plugin:
+
+```bash
+npm install --save-dev @lithe-lang/hardhat
+```
+
+Add it to `hardhat.config.ts`:
+
+```ts
+import { defineConfig } from "hardhat/config";
+import hardhatToolboxViem from "@nomicfoundation/hardhat-toolbox-viem";
+import hardhatLithe from "@lithe-lang/hardhat";
+
+export default defineConfig({
+  plugins: [hardhatToolboxViem, hardhatLithe],
+  solidity: "0.8.30",
+});
+```
+
+Put `.lithe` files in `contracts/`, or anywhere under Hardhat's source paths. Each `hardhat build`, and the build that `hardhat test` starts with, runs `lithe compile` on them once the Solidity contracts are built. It writes the artifacts where Hardhat writes its own, so Hardhat finds a Lithe contract by its name, `Vault`, or by its full name, `contracts/vault.lithe:Vault`. A compile error fails the build. Hardhat 3's simulated chain already runs Osaka.
+
+| Option | Is |
+| --- | --- |
+| `lithe.path` | the compiler to run, `lithe` on the `PATH` unless set |
+| `lithe.checkSpecs` | `true` to build with [`--check-specs`](#checking-specs-while-fuzzing), `false` unless set. A build with the `production` profile, which is what deployments build, ignores it |
+
+### TypeScript tests
+
+`viem.deployContract` deploys a Lithe contract by name, and returns a contract typed from its ABI:
+
+```ts
+import assert from "node:assert/strict";
+import { describe, it } from "node:test";
+import { network } from "hardhat";
+import { parseEther } from "viem";
+
+describe("Vault", async () => {
+  const { viem } = await network.create();
+  const publicClient = await viem.getPublicClient();
+
+  it("withdraws", async () => {
+    const vault = await viem.deployContract("Vault");
+    await vault.write.deposit({ value: parseEther("1") });
+    await vault.write.withdraw([parseEther("0.4")]);
+    assert.equal(await publicClient.getBalance({ address: vault.address }), parseEther("0.6"));
+  });
+
+  it("refuses an overdraw", async () => {
+    const vault = await viem.deployContract("Vault");
+    await vault.write.deposit({ value: parseEther("1") });
+    await viem.assertions.revertWithCustomError(vault.write.withdraw([parseEther("2")]), vault, "Insufficient");
+  });
+});
+```
+
+A `deploy`'s arguments follow the name, as a constructor's do: `viem.deployContract("Fees", [owner, 250n])`.
+
+### Solidity tests
+
+Hardhat's Solidity tests use forge-std, and `deployCode` takes a Lithe contract's name:
+
+```solidity
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.24;
+
+import {Test} from "forge-std/Test.sol";
+
+interface IVault {
+    error Insufficient();
+
+    function deposit() external payable;
+    function withdraw(uint256 amount) external;
+}
+
+contract VaultTest is Test {
+    IVault vault;
+
+    function setUp() public {
+        vault = IVault(deployCode("Vault"));
+    }
+
+    function test_overdraw() public {
+        vault.deposit{value: 1 ether}();
+        vm.expectRevert(IVault.Insufficient.selector);
+        vault.withdraw(2 ether);
+    }
+}
+```
+
+A `deploy`'s arguments are ABI-encoded after the name: `deployCode("Fees", abi.encode(owner, 250))`.
+
+With `checkSpecs` set, a call that breaks a spec fails the test that made it, as ``SpecViolation("withdraw: `ensures` at 10:3 does not hold")``.

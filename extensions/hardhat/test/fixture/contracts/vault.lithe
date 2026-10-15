@@ -1,0 +1,23 @@
+import "std/evm";
+
+error Insufficient;
+
+storage is record {
+  total : wei;
+  balances : map(address, wei);
+}
+
+external payable function deposit() is {
+  storage.balances[Evm.sender()] := storage.balances[Evm.sender()] + Evm.value();
+  storage.total := storage.total + Evm.value();
+}
+
+external nonreentrant function withdraw(const amount : wei)
+  raises Insufficient
+is {
+  const have : wei := storage.balances[Evm.sender()];
+  assert(have >= amount, Insufficient);
+  storage.balances[Evm.sender()] := have - amount;
+  storage.total := storage.total - amount;
+  defer Evm.transfer(Evm.sender(), amount);
+}

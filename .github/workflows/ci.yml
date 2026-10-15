@@ -123,6 +123,23 @@ jobs:
       - run: npx vocs build
         working-directory: docs
 
+  hardhat:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@1.95.0
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: extensions/hardhat/package-lock.json
+      - run: cargo build --release
+      - run: npm ci
+        working-directory: extensions/hardhat
+      - run: PATH="$GITHUB_WORKSPACE/target/release:$PATH" npm test
+        working-directory: extensions/hardhat
+
   playground:
     runs-on: ubuntu-24.04
     steps:

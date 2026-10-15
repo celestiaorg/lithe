@@ -104,6 +104,7 @@ type Page =
   | { path: '/tooling/inspection'; render: 'static' }
   | { path: '/tooling/library'; render: 'static' }
   | { path: '/tooling/size-limit'; render: 'static' }
+  | { path: '/tooling/testing'; render: 'static' }
 
 // prettier-ignore
 declare module 'waku/router' {

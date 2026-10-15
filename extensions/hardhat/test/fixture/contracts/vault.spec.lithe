@@ -1,0 +1,11 @@
+spec is {
+  invariant ledger is storage.total = sum(storage.balances);
+  invariant solvent is Evm.balance(Evm.self()) >= storage.total;
+}
+
+spec for withdraw is {
+  const have : wei := old.storage.balances[Evm.sender()];
+  raises Insufficient when have < amount;
+  ensures new.storage.balances[Evm.sender()] = have - amount;
+  ensures new.storage.total = old.storage.total - amount;
+}

@@ -1,0 +1,34 @@
+{
+  "name": "@lithe-lang/hardhat",
+  "description": "Builds Lithe contracts as part of Hardhat 3's build, into artifacts Hardhat looks up by name",
+  "version": "0.1.0",
+  "license": "Apache-2.0",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./index.d.ts",
+      "default": "./index.js"
+    }
+  },
+  "files": [
+    "index.js",
+    "index.d.ts",
+    "config.js",
+    "build.js"
+  ],
+  "peerDependencies": {
+    "hardhat": "^3.18.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "test": "cd test/fixture && hardhat test"
+  },
+  "devDependencies": {
+    "@nomicfoundation/hardhat-toolbox-viem": "^5.0.7",
+    "forge-std": "github:foundry-rs/forge-std#v1.11.0",
+    "hardhat": "^3.18.1",
+    "viem": "^2.57.2"
+  }
+}
