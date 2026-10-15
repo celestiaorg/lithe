@@ -97,7 +97,7 @@ jobs:
           exit $status
       - run: sha256sum lithe-* | tee SHA256SUMS
       - name: Publish
-        if: github.event_name == 'push'
+        if: github.event_name == 'push' && github.ref_type == 'tag'
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
