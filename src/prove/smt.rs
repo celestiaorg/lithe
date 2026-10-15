@@ -888,16 +888,31 @@ fn pretty(value: &str) -> String {
 mod tests {
     use super::*;
 
+    /// Starts `script`, written to `path`, as the solver. A test thread that forks while the
+    /// script is open for writing hands its child the write handle until that child execs, and
+    /// Linux won't run a file open for writing ("Text file busy"), so the start is retried.
+    fn fake_solver(path: std::path::PathBuf, script: &str) -> Session {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::write(&path, script).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let solver = Solver { path, timeout: 1 };
+        for _ in 0..100 {
+            match Session::start(&solver) {
+                Err(err) if err.contains("Text file busy") => {
+                    std::thread::sleep(Duration::from_millis(10))
+                }
+                started => return started.unwrap(),
+            }
+        }
+        Session::start(&solver).unwrap()
+    }
+
     /// A solver that never answers is ended past the question's deadline.
     #[test]
     fn a_silent_solver_runs_out_of_time() {
         let dir = std::env::temp_dir().join(format!("lithe-silent-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("z3");
-        std::fs::write(&path, "#!/bin/sh\nexec sleep 60\n").unwrap();
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
-        let mut session = Session::start(&Solver { path, timeout: 1 }).unwrap();
+        let mut session = fake_solver(dir.join("z3"), "#!/bin/sh\nexec sleep 60\n");
         let mut a = Arena::new();
         let x = a.var("x", super::super::bv::Sort::Bool);
         let began = Instant::now();
@@ -914,15 +929,11 @@ mod tests {
     fn brief_questions_need_sound_scopes() {
         let dir = std::env::temp_dir().join(format!("lithe-scopes-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        use std::os::unix::fs::PermissionsExt;
         let solver = |name: &str, push: &str| {
-            let path = dir.join(name);
             let script = format!(
                 "#!/bin/sh\nwhile read -r line; do case \"$line\" in\n*echo*) echo read ;;\n'(push 1)') {push} ;;\n'(check-sat)') echo unsat ;;\nesac; done\n"
             );
-            std::fs::write(&path, script).unwrap();
-            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
-            Session::start(&Solver { path, timeout: 1 }).unwrap()
+            fake_solver(dir.join(name), &script)
         };
         let mut fine = solver("fine", ":");
         assert_eq!(fine.ask_script("", &["true".to_string()]), "unsat");
