@@ -4,7 +4,13 @@ on:
   push:
     branches: [main]
   pull_request:
+  # Weekly, so advisories against unchanged dependencies fail `cargo audit` without a push.
+  schedule:
+    - cron: "0 6 * * 1"
   workflow_dispatch:
+
+permissions:
+  contents: read
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -17,20 +23,23 @@ jobs:
   lint:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@1.95.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master
+        with:
+          toolchain: 1.95.0
           components: rustfmt, clippy
           targets: wasm32-unknown-unknown
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: |
             . -> target
             playground -> target
-      - uses: taiki-e/install-action@v2
+      - uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8 # v2.87.28
         with:
-          tool: cargo-machete,cargo-audit
-      - uses: actions/setup-node@v7
+          tool: cargo-machete,cargo-audit,shellcheck,zizmor
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
           cache: npm
@@ -51,20 +60,31 @@ jobs:
         working-directory: docs
       - run: npm run lint
         working-directory: docs
+      - name: Grammar copies match extensions/lithe.tmLanguage.json
+        run: sh extensions/sync-grammar.sh && git diff --exit-code
+      - run: git ls-files -z '*.sh' | xargs -0 shellcheck
+      - run: docker run --rm -v "$PWD:/repo" -w /repo rhysd/actionlint@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 -color
+      - run: zizmor --format github .github
+        env:
+          GH_TOKEN: ${{ github.token }}
 
   test:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@1.95.0
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master
+        with:
+          toolchain: 1.95.0
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - name: Install Z3
         run: |
           curl -sSfLO https://github.com/Z3Prover/z3/releases/download/z3-5.1.0/z3-5.1.0-x64-glibc-2.39.zip
           unzip -q z3-5.1.0-x64-glibc-2.39.zip -d "$RUNNER_TEMP"
           echo "LITHE_Z3=$RUNNER_TEMP/z3-5.1.0-x64-glibc-2.39/bin/z3" >> "$GITHUB_ENV"
-      - run: cargo test
+      - run: cargo test --locked
 
   # `lithe prove` over every spec file: each claim proved of the bytecode, none failed or
   # unknown. The runner's cores are slower than a laptop's, so a question gets 120 s of
@@ -73,15 +93,19 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@1.95.0
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master
+        with:
+          toolchain: 1.95.0
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - name: Install Z3
         run: |
           curl -sSfLO https://github.com/Z3Prover/z3/releases/download/z3-5.1.0/z3-5.1.0-x64-glibc-2.39.zip
           unzip -q z3-5.1.0-x64-glibc-2.39.zip -d "$RUNNER_TEMP"
           echo "LITHE_Z3=$RUNNER_TEMP/z3-5.1.0-x64-glibc-2.39/bin/z3" >> "$GITHUB_ENV"
-      - run: cargo build --release
+      - run: cargo build --release --locked
       - name: Prove every spec file
         run: |
           status=0
@@ -101,23 +125,26 @@ jobs:
   docs:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@1.95.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master
+        with:
+          toolchain: 1.95.0
           targets: wasm32-unknown-unknown
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: |
             . -> target
             playground -> target
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
           cache: npm
           cache-dependency-path: docs/package-lock.json
       - run: npm ci
         working-directory: docs
-      - run: cargo build --release
+      - run: cargo build --release --locked
       - run: sh playground/build.sh
       - run: node docs/check.mjs
       - run: npx vocs build
@@ -126,15 +153,19 @@ jobs:
   hardhat:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@1.95.0
-      - uses: Swatinem/rust-cache@v2
-      - uses: actions/setup-node@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master
+        with:
+          toolchain: 1.95.0
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
           cache: npm
           cache-dependency-path: extensions/hardhat/package-lock.json
-      - run: cargo build --release
+      - run: cargo build --release --locked
       - run: npm ci
         working-directory: extensions/hardhat
       - run: PATH="$GITHUB_WORKSPACE/target/release:$PATH" npm test
@@ -143,18 +174,39 @@ jobs:
   playground:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@1.95.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master
+        with:
+          toolchain: 1.95.0
           targets: wasm32-unknown-unknown
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: |
             . -> target
             playground -> target
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
-      - run: cargo build --release
+      - run: cargo build --release --locked
       - run: sh playground/build.sh
       - run: node playground/check.mjs examples/*.lithe
+
+  # install.sh, run as users run it, against the latest release and a pinned one.
+  install:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-15]
+    runs-on: ${{ matrix.os }}
+    env:
+      LITHE_NO_MODIFY_PATH: 1
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: LITHE_HOME="$RUNNER_TEMP/latest" sh install.sh
+      - run: '"$RUNNER_TEMP/latest/bin/lithe" --version'
+      - run: LITHE_HOME="$RUNNER_TEMP/pinned" sh install.sh 0.1.0
+      - run: '"$RUNNER_TEMP/pinned/bin/lithe" --version | grep -q "^lithe 0.1.0+"'
