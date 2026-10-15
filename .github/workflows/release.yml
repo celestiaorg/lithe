@@ -1,0 +1,109 @@
+name: Release
+
+# A `v*` tag builds every target, checks that each compiles the same bytecode, and publishes
+# the binaries. A manual run does all of it but the release.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  version:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - name: Tag matches Cargo.toml
+        if: github.ref_type == 'tag'
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -1)
+          if [ "$GITHUB_REF_NAME" != "v$version" ]; then
+            echo "::error::tag $GITHUB_REF_NAME does not match Cargo.toml version $version"
+            exit 1
+          fi
+
+  build:
+    needs: version
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-24.04
+          - target: aarch64-unknown-linux-musl
+            os: ubuntu-24.04-arm
+          - target: aarch64-apple-darwin
+            os: macos-15
+          - target: x86_64-apple-darwin
+            os: macos-15-intel
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@1.95.0
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+      - if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+      - run: cargo build --release --locked --target ${{ matrix.target }}
+      - run: cp target/${{ matrix.target }}/release/lithe lithe-${{ matrix.target }}
+      - name: Statically linked
+        if: runner.os == 'Linux'
+        run: |
+          file lithe-${{ matrix.target }}
+          file lithe-${{ matrix.target }} | grep -Eq 'static(-pie)? linked'
+      - name: Version
+        run: |
+          version=$(./lithe-${{ matrix.target }} --version)
+          echo "$version"
+          case "$version" in *.mod) echo "::error::built from modified sources"; exit 1 ;; esac
+      - run: python3 .github/release-check/hashes.py ./lithe-${{ matrix.target }} | tee hashes-${{ matrix.target }}.txt
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.target }}
+          path: |
+            lithe-${{ matrix.target }}
+            hashes-${{ matrix.target }}.txt
+          if-no-files-found: error
+
+  release:
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          merge-multiple: true
+      - name: Every target compiles the same bytecode
+        run: |
+          status=0
+          for file in hashes-*.txt; do
+            echo "::group::$file"; cat "$file"; echo "::endgroup::"
+            if ! cmp -s "$file" hashes-x86_64-unknown-linux-musl.txt; then
+              echo "::error::$file differs from hashes-x86_64-unknown-linux-musl.txt"
+              diff hashes-x86_64-unknown-linux-musl.txt "$file" || true
+              status=1
+            fi
+          done
+          exit $status
+      - run: sha256sum lithe-* | tee SHA256SUMS
+      - name: Publish
+        if: github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            echo "::error::release $GITHUB_REF_NAME exists; releases are never replaced"
+            exit 1
+          fi
+          gh release create "$GITHUB_REF_NAME" --verify-tag --title "$GITHUB_REF_NAME" --generate-notes lithe-* SHA256SUMS
