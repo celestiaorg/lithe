@@ -1,0 +1,12 @@
+# `cargo deny check licenses`: the licenses dependencies may use, all compatible with
+# shipping Lithe under Apache-2.0.
+[licenses]
+allow = [
+  "Apache-2.0",
+  "BSD-2-Clause",
+  "BSD-3-Clause",
+  "CC0-1.0",
+  "MIT",
+  "Unicode-3.0",
+  "Zlib",
+]

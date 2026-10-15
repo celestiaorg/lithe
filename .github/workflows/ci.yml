@@ -38,7 +38,7 @@ jobs:
             playground -> target
       - uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8 # v2.87.28
         with:
-          tool: cargo-machete,cargo-audit,shellcheck,zizmor
+          tool: cargo-machete,cargo-audit,cargo-deny,shellcheck,zizmor
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
@@ -55,6 +55,9 @@ jobs:
         working-directory: playground
       - run: cargo audit
       - run: cargo audit
+        working-directory: playground
+      - run: cargo deny check licenses
+      - run: cargo deny check licenses
         working-directory: playground
       - run: npm ci
         working-directory: docs
