@@ -1,8 +1,9 @@
 name: Publish @lithe-lang/hardhat
 
-# Pushing a tag `hardhat-v<version>` publishes that version of extensions/hardhat, which
-# must be the version in its package.json. npm trusts this workflow by its file name, so
-# renaming the file means updating the package's trusted publisher on npmjs.com.
+# Pushing a tag `hardhat-v<version>` stages that version of extensions/hardhat, which must
+# be the version in its package.json, and a maintainer approves it on npmjs.com, or with
+# `npm stage approve`, to publish it. npm trusts this workflow by its file name, so renaming
+# the file means updating the package's trusted publisher on npmjs.com.
 on:
   push:
     tags: ["hardhat-v*"]
@@ -36,8 +37,8 @@ jobs:
           node-version: 24
           cache: npm
           cache-dependency-path: extensions/hardhat/package-lock.json
-      # Trusted publishing needs npm 11.5.1 or later.
+      # Staged publishing needs npm 11.15.0 or later.
       - run: npm install -g npm@latest
       - run: npm ci
       - run: PATH="$GITHUB_WORKSPACE/target/release:$PATH" npm test
-      - run: npm publish
+      - run: npm stage publish
