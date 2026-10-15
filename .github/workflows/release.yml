@@ -59,7 +59,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           file lithe-${{ matrix.target }}
-          file lithe-${{ matrix.target }} | grep -Eq 'static(-pie)? linked'
+          file lithe-${{ matrix.target }} | grep -Eq 'statically linked|static-pie linked'
       - name: Version
         run: |
           version=$(./lithe-${{ matrix.target }} --version)

@@ -1,6 +1,6 @@
 ---
 title: "Installation and first contract"
-description: "Build the Lithe compiler, write a contract, compile it, and deploy it to a local chain."
+description: "Install the Lithe compiler, write a contract, compile it, and deploy it to a local chain."
 ---
 
 # Installation and first contract
@@ -9,20 +9,34 @@ description: "Build the Lithe compiler, write a contract, compile it, and deploy
 Lithe is in early development and experimental. The language, standard library, and compiler output can change without notice, and neither the compiler nor the standard library has been audited.
 :::
 
-## Build the compiler
+## Install the compiler
 
-Lithe is written in Rust. Build it from the repository root with a recent stable toolchain:
+Install the latest release with the install script:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/celestiaorg/lithe/main/install.sh | sh
+```
+
+It downloads the compiler for your platform, Linux or macOS on x86-64 or ARM64, checks it against the release's checksums, and installs it to `~/.lithe/bin/lithe`, or `$LITHE_HOME/bin/lithe` when `LITHE_HOME` is set. If that directory isn't on your `PATH`, it prints the line to add. To install a given version, pass it after `-s --`:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/celestiaorg/lithe/main/install.sh | sh -s -- 0.1.0
+```
+
+Or build a release with Cargo, which installs it to `~/.cargo/bin`:
+
+```bash
+cargo install --git https://github.com/celestiaorg/lithe --tag v0.1.0 --locked
+```
+
+To build from source, run this from the repository root with a recent stable Rust toolchain:
 
 ```bash
 cargo build --release
-```
-
-The compiler is now at `target/release/lithe`. Put it on your `PATH`, or call it by path:
-
-```bash
 export PATH="$PWD/target/release:$PATH"
-lithe
 ```
+
+Check the install with `lithe --version`. Contracts you deploy should be built with a [released compiler](/tooling/cli#releases), so that they can be verified.
 
 Run with no arguments, `lithe` prints its commands. See [Command line](/tooling/cli) for the full list.
 
