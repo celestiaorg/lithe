@@ -1054,7 +1054,15 @@ impl Resolver<'_> {
             })
             .map(|decl| decl.origin.clone());
         let path = match here {
-            Some(origin) => module_path_between(self.origin, &origin)?,
+            Some(origin) => match module_path_between(self.origin, &origin) {
+                Some(path) => path,
+                None => {
+                    return Some(format!(
+                        "`{spelled}` is declared in `{}`, which no import from this file reaches",
+                        crate::shown_path(&origin)
+                    ))
+                }
+            },
             None => std_index()
                 .iter()
                 .find(|(name, cat, _)| name == spelled && cats.contains(cat))

@@ -671,7 +671,10 @@ pub fn add(near: &Path, add: &Add) -> Result<Vec<String>, Error> {
             .to_ascii_lowercase()
             .replace(['-', '.'], "_"),
     };
-    if !crate::parse::module_path(&format!("{name}/x")) || name == "std" {
+    if name.contains(['/', '.'])
+        || !crate::parse::module_path(&format!("{name}/x"))
+        || name == "std"
+    {
         return Err(fail(format!(
             "`{name}` can't name a package: pass `--as name`, in lowercase letters, digits, and `_`"
         )));
@@ -976,13 +979,34 @@ mod tests {
         starts(install(&app, true).unwrap(), &[]);
         assert_eq!(math("^1.0"), math("~1.0"));
         assert_eq!(math("^1.0").1.as_deref(), Some("v1.0.0"));
+        let shared = dir.join("shared").display().to_string();
+        write(
+            "app/leak.lithe",
+            "import \"fees/fee\";\nstorage is record { n : uint; }\nexternal function go(const x : uint) is { storage.n := scale(x); }\n",
+        );
+        let leak = crate::compile(
+            &crate::Sources::disk(),
+            &app.join("leak.lithe"),
+            &Options::default(),
+        );
+        let err = leak.err().unwrap()[0].to_string();
+        assert!(
+            err.contains("`scale` is declared in `")
+                && err.contains("which no import from this file reaches"),
+            "{err}"
+        );
+        let nested = Add {
+            name: Some("foo/bar".to_string()),
+            ..Add::default()
+        };
+        let err = adding(shared.clone(), nested).unwrap_err().message;
+        assert!(err.contains("can't name a package"), "{err}");
 
         let range = Add {
             version: Some("^1.0".to_string()),
             ..Add::default()
         };
         starts(adding(url("math"), range).unwrap(), &[]);
-        let shared = dir.join("shared").display().to_string();
         starts(adding(shared, Add::default()).unwrap(), &[]);
         assert!(toml().contains("shared = { path = \"../shared\" }"));
         build().unwrap();

@@ -234,7 +234,10 @@ pub(crate) fn parse(text: &str) -> Result<Config, (usize, String)> {
                 config.src = Some(subdirectory(value).map_err(|msg| (n, format!("`src` {msg}")))?);
             }
             ("dependencies", name) => {
-                if !crate::parse::module_path(&format!("{name}/x")) || name == "std" {
+                if name.contains(['/', '.'])
+                    || !crate::parse::module_path(&format!("{name}/x"))
+                    || name == "std"
+                {
                     return Err((
                         n,
                         format!("invalid package name `{name}`: a package is named like a module path segment, lowercase letters, digits, and `_`, and `std` is the standard library's"),
@@ -463,6 +466,13 @@ mod tests {
         let err = |text: &str| parse(&format!("[dependencies]\n{text}")).err().unwrap().1;
         assert!(err("std = { path = \"x\" }").starts_with("invalid package name `std`"));
         assert!(err("my-lib = { path = \"x\" }").starts_with("invalid package name `my-lib`"));
+        for name in ["foo/bar", ".", "./foo", "../a"] {
+            let line = format!("{name} = {{ path = \"x\" }}");
+            assert!(
+                err(&line).starts_with(&format!("invalid package name `{name}`")),
+                "{name}"
+            );
+        }
         assert!(err("t = { git = \"u\" }").starts_with("`t` needs a `version`"));
         assert_eq!(
             err("t = { git = \"u\", rev = \"a\", version = \"1\" }"),
