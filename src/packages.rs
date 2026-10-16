@@ -291,8 +291,18 @@ pub(crate) fn package_root(entry: &Path, from: &Path, name: &str) -> Result<Path
                     )
                 })?;
                 let lock = read_lock(&project).map_err(|err| err.message)?;
-                lock.get(&(url.clone(), pin.spec().to_string()))
-                    .map(|(commit, _)| commit.clone())
+                let commit = lock
+                    .get(&(url.clone(), pin.spec().to_string()))
+                    .map(|(commit, _)| commit.clone());
+                if commit.is_none() && !root.starts_with(&project) && checkout_of(from).is_none() {
+                    return Err(format!(
+                        "package `{name}` is not installed: `lithe install` reads `{}` only if `{}` is in a package of `{}`: `lithe add {0}`, or run `lithe install` if it is",
+                        root.join("lithe.toml").display(),
+                        root.display(),
+                        project.display()
+                    ));
+                }
+                commit
             };
             let commit = commit
                 .ok_or_else(|| format!("package `{name}` is not installed: run `lithe install`"))?;
@@ -371,7 +381,8 @@ pub(crate) fn packages_holding(from: &Path, to: &Path) -> Vec<(String, PathBuf)>
 
 /// The configs of the `lithe.toml` files below `dir`, outside hidden directories, unless
 /// `walked` holds `dir` or one above it. Builds read a file's packages from the `lithe.toml`
-/// nearest it, so install reaches each one a relative import can.
+/// nearest it, so install reads those below the project and below each package's import
+/// directory; a build reaching one elsewhere says how to make install read it.
 // simplify: reads the whole tree; a project holding large unrelated trees pays for that.
 fn nested(dir: &Path, walked: &mut Vec<PathBuf>) -> Result<Vec<Config>, Error> {
     let dir = dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf());
@@ -487,18 +498,14 @@ impl Walk {
         let mut lock = Lock::new();
         let mut reached = Vec::new();
         let mut deferred = false;
-        let mut seen = vec![config.root.clone().unwrap_or_default()];
-        let mut todo = vec![config.clone()];
         let mut walked = Vec::new();
+        let project = config.root.clone().unwrap_or_default();
+        let mut todo = nested(&project, &mut walked)?;
+        let mut seen: Vec<_> = todo.iter().filter_map(|own| own.root.clone()).collect();
+        seen.push(project);
+        todo.push(config.clone());
         while let Some(config) = todo.pop() {
             let root = config.root.clone().unwrap_or_default();
-            for own in nested(&root, &mut walked)? {
-                let at = own.root.clone().unwrap_or_default();
-                if !seen.contains(&at) {
-                    seen.push(at);
-                    todo.push(own);
-                }
-            }
             for (name, dep) in &config.deps {
                 let fail = |msg: String| error(0, 0, format!("package `{name}`: {msg}"));
                 let (dir, src) = match dep {
@@ -531,8 +538,8 @@ impl Walk {
                         dir.display()
                     )));
                 }
-                let (_, own) = layout(&dir, src)?;
-                for own in own.into_iter().chain(nested(&dir, &mut walked)?) {
+                let (start, own) = layout(&dir, src)?;
+                for own in own.into_iter().chain(nested(&start, &mut walked)?) {
                     let at = own.root.clone().unwrap_or_default();
                     if !seen.contains(&at) {
                         seen.push(at);
@@ -1248,6 +1255,37 @@ mod tests {
         );
         let err = hidden.err().unwrap()[0].to_string();
         assert!(err.contains("`scale` is declared in `math/scale`"), "{err}");
+
+        // A `lithe.toml` a relative import reaches outside the project installs once the
+        // project depends on its directory.
+        write(
+            "outer/lithe.toml",
+            &format!(
+                "[dependencies]\nmath = {{ git = \"{}\", rev = \"v1.0.1\" }}\n",
+                url("math")
+            ),
+        );
+        write("outer/lib/a.lithe", "import \"math/scale\";\n");
+        write("app/up.lithe", "import \"../outer/lib/a\";\n");
+        let up = || crate::modules::load(&sources, &app.join("up.lithe"));
+        install(&app, false).unwrap();
+        let err = up().err().unwrap().to_string();
+        assert!(err.contains("is in a package of"), "{err}");
+        let outer = dir.join("outer/lib").display().to_string();
+        adding(outer, Add::default()).unwrap();
+        up().unwrap();
+
+        // Only a package's import directory installs with it, not its examples.
+        write(
+            "fees/examples/demo/lithe.toml",
+            "[dependencies]\nhelpers = { path = \"../../../nowhere\" }\n",
+        );
+        release("fees", "v1.0.1");
+        install(&app, true).unwrap();
+        assert_eq!(
+            lock()[&(url("fees"), "^1.0.0".to_string())].1.as_deref(),
+            Some("v1.0.1")
+        );
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }
