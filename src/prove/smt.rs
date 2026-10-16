@@ -660,15 +660,15 @@ impl Session {
     }
 
     /// Sends `top`, definitions and facts that stay, then asks whether `asserts` can hold
-    /// with them, by a brief try: the solver's answer.
+    /// with them, given `ms` of the solver's time: the solver's answer.
     /// A session that is not `sound` answers nothing: what `top` defined is gone with its
     /// solver, or an interrupt it took late may have cancelled a scope's `push` or `pop`, so
     /// a question's assertions may not be where they should.
-    pub(crate) fn ask_script(&mut self, top: &str, asserts: &[String]) -> String {
+    pub(crate) fn ask_script(&mut self, top: &str, asserts: &[String], ms: u64) -> String {
         if !self.sound() {
             return String::new();
         }
-        let brief = self.timeout_ms.min(300);
+        let brief = self.timeout_ms.min(ms);
         // The solver's own clock stops it from inside its search, where an interrupt can be
         // taken late, past an answer, and cost the session.
         let mut out = format!("{top}(set-option :timeout {brief})\n(push 1)\n");
@@ -936,11 +936,11 @@ mod tests {
             fake_solver(dir.join(name), &script)
         };
         let mut fine = solver("fine", ":");
-        assert_eq!(fine.ask_script("", &["true".to_string()]), "unsat");
+        assert_eq!(fine.ask_script("", &["true".to_string()], 300), "unsat");
         fine.tainted = true;
-        assert_eq!(fine.ask_script("", &["true".to_string()]), "");
+        assert_eq!(fine.ask_script("", &["true".to_string()], 300), "");
         let mut cancelled = solver("cancelled", "echo '(error \"push canceled\")'");
-        assert_eq!(cancelled.ask_script("", &["true".to_string()]), "");
+        assert_eq!(cancelled.ask_script("", &["true".to_string()], 300), "");
         assert!(!cancelled.sound());
         let _ = std::fs::remove_dir_all(&dir);
     }

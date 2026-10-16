@@ -1,0 +1,27 @@
+---
+title: "Editors"
+description: "Lithe in VS Code, Cursor, and Recur: syntax highlighting, and the compiler's language server for errors, lint findings, quick fixes, formatting, hover, navigation, and completion."
+---
+
+# Editors
+
+The repository's `extensions/` directory holds a VS Code extension, which Cursor runs too, and a bundle for Recur. Both highlight `.lithe` files and run [`lithe lsp`](/tooling/cli#lithe-lsp), the compiler's language server. It reports errors and lint findings as you type, offers quick fixes, formats the file, and answers hover, go to definition, references, outline, completion, and signature help.
+
+## Installing
+
+[Install the compiler](/guide/getting-started) first. The editors run the `lithe` on your `PATH`. Then, from a clone of the repository:
+
+```sh
+git clone https://github.com/celestiaorg/lithe
+lithe/extensions/install.sh
+```
+
+The script installs the Recur bundle into `~/.recur/bundles/Lithe`. For VS Code and Cursor, it installs the extension into `~/.vscode/extensions` and `~/.cursor/extensions`, for each editor that has that directory, and the first time it uses `npm` to fetch the extension's language client. Restart the editor afterwards. To update, pull the repository and run the script again.
+
+## Settings
+
+In VS Code and Cursor, the `lithe.path` setting names the compiler to run, `lithe` by default. Set it to an absolute path when the editor can't find `lithe` on its `PATH`, or to try a compiler built from source, such as `target/release/lithe`. Recur runs `lithe lsp` from the `PATH`.
+
+## Other editors
+
+An editor that speaks the Language Server Protocol can run `lithe lsp` itself: the server reads stdin and writes stdout. An editor that reads TextMate grammars can highlight Lithe with `extensions/lithe.tmLanguage.json`.
