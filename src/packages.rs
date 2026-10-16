@@ -519,16 +519,26 @@ impl Walk {
             .into_iter()
             .map(|own| Ok((own?, false)))
             .collect::<Result<Vec<_>, Error>>()?;
-        let mut seen: Vec<_> = todo
+        let mut seen: HashMap<_, _> = todo
             .iter()
-            .filter_map(|(own, _)| own.root.clone())
+            .filter_map(|(own, soft)| Some((own.root.clone()?, *soft)))
             .collect();
-        seen.push(project);
+        seen.insert(project, false);
         todo.push((config.clone(), false));
         // A `lithe.toml` inside a git package that only the walk found, like an example's, is
         // soft: its packages install if they resolve, and else a build reaching it says why.
-        while let Some((config, soft)) = todo.pop() {
+        // Soft configs only reach soft ones, so visiting every strict one first leaves soft
+        // just those no build reaches.
+        while let Some(at) = todo
+            .iter()
+            .rposition(|(_, soft)| !soft)
+            .or(todo.len().checked_sub(1))
+        {
+            let (config, soft) = todo.remove(at);
             let root = config.root.clone().unwrap_or_default();
+            if soft && seen.get(&root) == Some(&false) {
+                continue;
+            }
             'deps: for (name, dep) in &config.deps {
                 let fail = |msg: String| error(0, 0, format!("package `{name}`: {msg}"));
                 let found = 'dep: {
@@ -591,8 +601,8 @@ impl Walk {
                         Err(err) => return Err(err),
                     };
                     let at = own.root.clone().unwrap_or_default();
-                    if !seen.contains(&at) {
-                        seen.push(at);
+                    if seen.get(&at).is_none_or(|&was| was && !soft) {
+                        seen.insert(at, soft);
                         todo.push((own, soft));
                     }
                 }
@@ -1370,6 +1380,33 @@ mod tests {
         assert!(lock().contains_key(&(url("math"), "~1.1".to_string())));
         write("app/deep.lithe", "import \"fees/up\";\n");
         crate::modules::load(&sources, &app.join("deep.lithe")).unwrap();
+
+        // A package an example shares with the build keeps its ranges' turn: `base`'s `~1.0`
+        // still picks first, so the project's `^1.0` shares its version.
+        let needs = |name: &str, range: &str| {
+            format!(
+                "[dependencies]\n{name} = {{ git = \"{}\", version = \"{range}\" }}\n",
+                url(name)
+            )
+        };
+        write("base/lithe.toml", &needs("math", "~1.0"));
+        release("base", "v1.0.0");
+        write("tok/lithe.toml", &needs("base", "^1.0"));
+        write("tok/examples/demo/lithe.toml", &needs("base", "^1.0"));
+        release("tok", "v1.0.0");
+        write(
+            "ex/lithe.toml",
+            &format!(
+                "{}{}",
+                needs("math", "^1.0"),
+                needs("tok", "^1.0").replacen("[dependencies]\n", "", 1)
+            ),
+        );
+        let ex = dir.join("ex");
+        install(&ex, false).unwrap();
+        let ex_math =
+            |spec: &str| read_lock(&ex).unwrap()[&(url("math"), spec.to_string())].clone();
+        assert_eq!(ex_math("^1.0"), ex_math("~1.0"));
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }
