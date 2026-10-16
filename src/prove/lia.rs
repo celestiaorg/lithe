@@ -452,7 +452,7 @@ mod tests {
                 return;
             };
             assert_eq!(
-                ints.ask_script(&lia.script, &asserts),
+                ints.ask_script(&lia.script, &asserts, 300),
                 "unsat",
                 "{}\n{asserts:?}",
                 lia.script

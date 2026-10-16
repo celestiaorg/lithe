@@ -1007,8 +1007,9 @@ impl Machine {
             return Reply::Unsat;
         }
         // A claim's question is often sums and comparisons, which the solver settles as
-        // integers in a moment and as bitvectors in seconds.
-        if !quick && self.session.is_some() && self.as_integers(conds) == Some(false) {
+        // integers in a moment and as bitvectors in seconds, or not at all: a claim gets
+        // seconds as integers, so a slow machine's solver does not miss it there.
+        if !quick && self.session.is_some() && self.as_integers(conds, 3000) == Some(false) {
             return Reply::Unsat;
         }
         if !quick && self.sliced(conds) {
@@ -1400,7 +1401,7 @@ impl Machine {
             return Some(answer);
         }
         let t = std::time::Instant::now();
-        let ints = self.as_integers(&conds);
+        let ints = self.as_integers(&conds, 300);
         self.spent[1] += t.elapsed().as_secs_f64();
         if let Some(answer) = ints {
             self.asked[1] += 1;
@@ -1422,7 +1423,7 @@ impl Machine {
     /// `Some(false)` when they cannot, and `Some(true)` when they can and every condition
     /// and fact translated, so the answer is the bitvectors' too. A condition or fact that
     /// does not translate only weakens the question.
-    fn as_integers(&mut self, conds: &[T]) -> Option<bool> {
+    fn as_integers(&mut self, conds: &[T], ms: u64) -> Option<bool> {
         // A session that can answer no more starts over, with every definition sent again.
         if self.ints.as_ref().is_some_and(|i| !i.session.sound()) {
             if std::env::var_os("LITHE_PROVE_DEBUG").is_some() {
@@ -1470,7 +1471,7 @@ impl Machine {
         }
         top.push_str(&ints.lia.script[ints.sent..]);
         ints.sent = ints.lia.script.len();
-        match ints.session.ask_script(&top, &asserts).as_str() {
+        match ints.session.ask_script(&top, &asserts, ms).as_str() {
             "unsat" => Some(false),
             "sat" if exact => Some(true),
             _ => None,
