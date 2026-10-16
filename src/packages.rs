@@ -4,7 +4,7 @@
 //! `import "name/..."` reads from there, so every package that depends on one commit of a
 //! library reads the same files, and builds them once.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Component, Path, PathBuf};
 
 use crate::config::{self, Config, Dep, Pin};
@@ -446,8 +446,8 @@ pub fn install(near: &Path, update: bool) -> Result<Vec<String>, Error> {
     // A range's pick can change what the package it picks depends on, so walk again until the
     // picks hold.
     while changed < 8 {
-        let (lock, reached, deferred) = walk.run(&config, &picks)?;
-        let shared = share(&old, &lock, &walk.tags);
+        let (lock, reached, deferred, soft) = walk.run(&config, &picks)?;
+        let shared = share(&old, &lock, &soft, &walk.tags);
         if deferred || shared != lock {
             changed += usize::from(!deferred);
             picks.extend(shared);
@@ -492,15 +492,25 @@ struct Walk {
 impl Walk {
     /// Visits every package `config` reaches, taking each git package's pick from `picks`, or
     /// for one it has none for, the commit its `rev` names or the newest tag its range admits.
-    /// Answers what each resolved to, each package reached by name, and whether it left a
-    /// range unvisited: one `picks` has none for, whose pick may yet change to share a version,
-    /// isn't fetched until it does.
+    /// Answers what each resolved to, each package reached by name, whether it left a range
+    /// unvisited: one `picks` has none for, whose pick may yet change to share a version, isn't
+    /// fetched until it does, and the packages only soft `lithe.toml` files reach.
+    #[allow(clippy::type_complexity)]
     fn run(
         &mut self,
         config: &Config,
         picks: &Lock,
-    ) -> Result<(Lock, Vec<(String, (String, String))>, bool), Error> {
+    ) -> Result<
+        (
+            Lock,
+            Vec<(String, (String, String))>,
+            bool,
+            HashSet<(String, String)>,
+        ),
+        Error,
+    > {
         let mut lock = Lock::new();
+        let mut strict = HashSet::new();
         let mut reached = Vec::new();
         let mut deferred = false;
         let mut walked = Vec::new();
@@ -526,6 +536,9 @@ impl Walk {
                         Dep::Path(path) => (root.join(path), None),
                         Dep::Git { url, pin, src } => {
                             let key = (url.clone(), pin.spec().to_string());
+                            if !soft {
+                                strict.insert(key.clone());
+                            }
                             let pick = match lock.get(&key).or(picks.get(&key)) {
                                 Some(pick) => pick.clone(),
                                 None => match self.resolve(url, pin) {
@@ -585,7 +598,12 @@ impl Walk {
                 }
             }
         }
-        Ok((lock, reached, deferred))
+        let soft = lock
+            .keys()
+            .filter(|key| !strict.contains(*key))
+            .cloned()
+            .collect();
+        Ok((lock, reached, deferred, soft))
     }
 
     /// The commit a pin names now: a `rev`'s, or the newest tag a range admits.
@@ -629,8 +647,14 @@ impl Walk {
 /// `lock` with the version ranges `old` doesn't record sharing versions: each takes the newest
 /// version already picked for its repository that it admits, by a recorded pick, a `rev` that
 /// is a version tag, or a range before it, and else the newest tag it admits. Tighter ranges
-/// pick first, so `~1.2` and `^1.2` share the newest 1.2 release.
-fn share(old: &Lock, lock: &Lock, tags: &HashMap<String, Vec<(Version, String, String)>>) -> Lock {
+/// pick first, so `~1.2` and `^1.2` share the newest 1.2 release. Ranges only `soft` configs
+/// hold pick last, and never seed another's pick, so an example can't move the project's.
+fn share(
+    old: &Lock,
+    lock: &Lock,
+    soft: &HashSet<(String, String)>,
+    tags: &HashMap<String, Vec<(Version, String, String)>>,
+) -> Lock {
     let mut out = Lock::new();
     let mut free = Vec::new();
     for (key, pick) in lock {
@@ -641,9 +665,10 @@ fn share(old: &Lock, lock: &Lock, tags: &HashMap<String, Vec<(Version, String, S
             }
         }
     }
-    free.sort_by_key(|((url, _), (lo, hi))| {
+    free.sort_by_key(|(key, (lo, hi))| {
         (
-            url.clone(),
+            soft.contains(*key),
+            key.0.clone(),
             hi.unwrap_or((u64::MAX, 0, 0)),
             std::cmp::Reverse(*lo),
         )
@@ -651,7 +676,7 @@ fn share(old: &Lock, lock: &Lock, tags: &HashMap<String, Vec<(Version, String, S
     for (key, range) in free {
         let picked = out
             .iter()
-            .filter(|((url, _), _)| *url == key.0)
+            .filter(|(at, _)| at.0 == key.0 && (soft.contains(key) || !soft.contains(*at)))
             .filter_map(|((_, spec), (commit, tag))| {
                 let tag = tag.as_deref().unwrap_or(spec);
                 Some((version(tag)?, tag.to_string(), commit.clone()))
@@ -956,8 +981,8 @@ mod tests {
         assert_eq!(version("1.2.3-rc.1"), None);
     }
 
-    /// Ranges on one repository share a version where they can: tighter ones pick first, and
-    /// a range the lock records keeps its pick.
+    /// Ranges on one repository share a version where they can: tighter ones pick first, a
+    /// range the lock records keeps its pick, and an example's range never moves another's.
     #[test]
     fn ranges_share_versions() {
         let tags = HashMap::from([(
@@ -974,19 +999,24 @@ mod tests {
             (key("^1.2"), pick("c13", "v1.3.0")),
             (key("~1.2"), pick("c125", "v1.2.5")),
         ]);
-        let shared = share(&Lock::new(), &walked, &tags);
+        let none = HashSet::new();
+        let shared = share(&Lock::new(), &walked, &none, &tags);
         assert_eq!(shared[&key("^1.2")], pick("c125", "v1.2.5"));
         assert_eq!(shared[&key("~1.2")], pick("c125", "v1.2.5"));
         let old = Lock::from([(key("^1.2"), pick("c13", "v1.3.0"))]);
-        assert_eq!(share(&old, &walked, &tags), walked);
+        assert_eq!(share(&old, &walked, &none, &tags), walked);
         let pinned = Lock::from([
             (key("v1.2.0"), ("c120".to_string(), None)),
             (key("^1.2"), pick("c13", "v1.3.0")),
         ]);
         assert_eq!(
-            share(&Lock::new(), &pinned, &tags)[&key("^1.2")],
+            share(&Lock::new(), &pinned, &none, &tags)[&key("^1.2")],
             pick("c120", "v1.2.0")
         );
+        let example = HashSet::from([key("~1.2")]);
+        let shared = share(&Lock::new(), &walked, &example, &tags);
+        assert_eq!(shared[&key("^1.2")], pick("c13", "v1.3.0"));
+        assert_eq!(shared[&key("~1.2")], pick("c125", "v1.2.5"));
     }
 
     /// Git packages install into the shared store, with theirs, once per commit, and imports
