@@ -28,6 +28,9 @@ fn main() {
     if cmd == "fmt" {
         fmt_cmd(&args);
     }
+    if cmd == "install" || cmd == "add" {
+        packages(&cmd, args);
+    }
     // Build flags apply wherever code is built and placed, over the source's `lithe.toml`.
     let builds = matches!(
         cmd.as_str(),
@@ -517,6 +520,61 @@ fn lint(args: &[String]) -> ! {
     std::process::exit(result.status);
 }
 
+fn packages(cmd: &str, mut args: Vec<String>) -> ! {
+    let mut flag = |name: &str| -> Option<String> {
+        let i = args.iter().position(|arg| arg == name)?;
+        args.remove(i);
+        if i < args.len() {
+            Some(args.remove(i))
+        } else {
+            usage();
+            std::process::exit(2);
+        }
+    };
+    let result = if cmd == "add" {
+        let add = lithe::Add {
+            version: flag("--version"),
+            rev: flag("--rev"),
+            name: flag("--as"),
+            src: flag("--src"),
+            ..lithe::Add::default()
+        };
+        let [source] = &args[..] else {
+            usage();
+            std::process::exit(2);
+        };
+        lithe::add(
+            Path::new("."),
+            &lithe::Add {
+                source: source.clone(),
+                ..add
+            },
+        )
+    } else {
+        let update = args.first().is_some_and(|arg| arg == "--update");
+        if update {
+            args.remove(0);
+        }
+        if args.len() > 1 {
+            usage();
+            std::process::exit(2);
+        }
+        lithe::install(Path::new(args.first().map_or(".", String::as_str)), update)
+    };
+    match result {
+        Ok(fetched) => {
+            for line in fetched {
+                println!("fetched {line}");
+            }
+            std::process::exit(0);
+        }
+        Err(err) => {
+            eprintln!("{}", err.message);
+            std::process::exit(1);
+        }
+    }
+}
+
 fn usage() {
     eprintln!(
         "\
@@ -543,6 +601,9 @@ usage: lithe compile file.lithe
        lithe fmt path...
        lithe fmt --check path...
        lithe fmt -
+       lithe add <git-url|directory> [--version <range> | --rev <rev>] [--as <name>]
+                 [--src <dir>]
+       lithe install [--update] [directory]
        lithe --version
 
 compile, abi, facets, abi-tree, footprint, prove, upgrade, and upgrade-check also take
@@ -560,6 +621,11 @@ where it explains one; it also takes
 compile also takes
        --check-specs                 a test build that checks the contract's specs as it
                                      runs, and reverts with SpecViolation(string)
+
+add puts a package in lithe.toml's [dependencies] and installs it, by default at ^ its
+newest version tag; install checks out the git packages lithe.lock pins, or with --update
+the newest tags their version ranges admit and the commits their revs name now, into
+~/.lithe/packages (LITHE_HOME moves it)
 
 --standard-json reads solc-style standard JSON on stdin and writes the output to stdout
 

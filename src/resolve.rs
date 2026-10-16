@@ -1054,7 +1054,15 @@ impl Resolver<'_> {
             })
             .map(|decl| decl.origin.clone());
         let path = match here {
-            Some(origin) => module_path_between(self.origin, &origin),
+            Some(origin) => match module_path_between(self.origin, &origin) {
+                Some(path) => path,
+                None => {
+                    return Some(format!(
+                        "`{spelled}` is declared in `{}`, which no import from this file reaches",
+                        crate::shown_path(&origin)
+                    ))
+                }
+            },
             None => std_index()
                 .iter()
                 .find(|(name, cat, _)| name == spelled && cats.contains(cat))
@@ -1832,12 +1840,19 @@ fn bind_expr(expr: &Expr, out: &mut HashSet<String>) {
     }
 }
 
-/// How a file imports another: `std/...` for the standard library, or a path relative to
-/// the importing file.
-pub(crate) fn module_path_between(from: &str, to: &str) -> String {
+/// How a file imports another: `std/...` for the standard library, `name/...` for a file of
+/// one of its packages, or a path relative to the importing file. None when no import path
+/// reaches it, as for a file of a package it doesn't declare.
+pub(crate) fn module_path_between(from: &str, to: &str) -> Option<String> {
     let to = Path::new(to);
     if let Ok(rel) = to.strip_prefix(STD_ROOT) {
-        return rel.with_extension("").display().to_string();
+        return Some(rel.with_extension("").display().to_string());
+    }
+    for (name, dir) in crate::packages::packages_holding(Path::new(from), to) {
+        let dir = dir.canonicalize().unwrap_or(dir);
+        if let Ok(rel) = to.strip_prefix(&dir) {
+            return Some(format!("{name}/{}", rel.with_extension("").display()));
+        }
     }
     let from_dir = Path::new(from).parent().unwrap_or(Path::new(""));
     let a: Vec<Component> = from_dir.components().collect();
@@ -1852,11 +1867,12 @@ pub(crate) fn module_path_between(from: &str, to: &str) -> String {
         out.push(part);
     }
     let text = out.display().to_string();
-    if text.starts_with("..") {
+    let text = if text.starts_with("..") {
         text
     } else {
         format!("./{text}")
-    }
+    };
+    crate::parse::module_path(&text).then_some(text)
 }
 
 /// Each public name the standard library declares at the top of a file, with its category
@@ -1908,15 +1924,22 @@ mod tests {
     fn module_paths_between_files() {
         assert_eq!(
             module_path_between("/a/main.lithe", "/a/lib/fees.lithe"),
-            "./lib/fees"
+            Some("./lib/fees".to_string())
         );
         assert_eq!(
             module_path_between("/a/b/main.lithe", "/a/shared/errors.lithe"),
-            "../shared/errors"
+            Some("../shared/errors".to_string())
         );
         assert_eq!(
             module_path_between("/a/main.lithe", &format!("{STD_ROOT}/std/evm.lithe")),
-            "std/evm"
+            Some("std/evm".to_string())
+        );
+        assert_eq!(
+            module_path_between(
+                "/a/main.lithe",
+                "/h/.lithe/packages/math-1a2b/c0/scale.lithe"
+            ),
+            None
         );
     }
 }
