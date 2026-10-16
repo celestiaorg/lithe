@@ -107,15 +107,24 @@ fn normalize(path: &Path) -> PathBuf {
     out
 }
 
-/// The file an import names: its module path with `.lithe`, from the standard library or
-/// beside the importing file.
-pub fn import_path(from: &Path, import: &str) -> PathBuf {
+/// The file an import names: its module path with `.lithe`, from the standard library,
+/// beside the importing file, or in a package of the importing file's `lithe.toml`.
+pub fn import_path(from: &Path, import: &str) -> Result<PathBuf, String> {
+    import_path_in(from, from, import)
+}
+
+/// The file an import in `from` names, in a build of `entry`, whose `lithe.lock` says which
+/// commit of each git package it reads.
+fn import_path_in(entry: &Path, from: &Path, import: &str) -> Result<PathBuf, String> {
     let file = format!("{import}.lithe");
     if import.starts_with("std/") {
-        Path::new(STD_ROOT).join(file)
-    } else {
-        from.parent().unwrap_or(Path::new(".")).join(file)
+        return Ok(Path::new(STD_ROOT).join(file));
     }
+    if import.starts_with('.') {
+        return Ok(from.parent().unwrap_or(Path::new(".")).join(file));
+    }
+    let (name, rest) = file.split_once('/').unwrap_or((&file, ""));
+    Ok(crate::packages::package_root(entry, from, name)?.join(rest))
 }
 
 /// `x.spec.lithe`, beside the entry file `x.lithe`: spec blocks for its contracts and
@@ -473,7 +482,8 @@ fn gather_file(
     let mut imports = Vec::new();
     let mut peers: Vec<Program> = Vec::new();
     for decl in &uses {
-        let child_path = import_path(&canon, &decl.path);
+        let child_path = import_path_in(&stack[0].canon, &canon, &decl.path)
+            .map_err(|msg| error(decl.line, decl.col, msg))?;
         if let Some(start) = sources
             .canonicalize(&child_path)
             .ok()

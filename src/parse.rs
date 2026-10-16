@@ -1799,7 +1799,7 @@ impl<'a> Parser<'a> {
         let path = self.tok().string.clone().unwrap_or_default();
         if !module_path(&path) {
             return Err(self.err(format!(
-                "invalid import path `{path}`\n\nan import names a module: `std/`, `./`, or `../` and `/`-separated names of lowercase letters, digits, and `_`, as in `std/token/erc20` or `./lib/fees`"
+                "invalid import path `{path}`\n\nan import names a module: `std/`, `./`, `../`, or a package name and `/`, then `/`-separated names of lowercase letters, digits, and `_`, as in `std/token/erc20`, `./lib/fees`, or `tokens/erc20`"
             )));
         }
         self.bump();
@@ -3902,19 +3902,14 @@ impl<'a> Parser<'a> {
     }
 }
 
-/// The keyword that declares a `receive` or `fallback`.
-/// `std/a/b`, `./a/b`, or `../../a/b`: each name a lowercase identifier.
+/// `std/a/b`, `./a/b`, `../../a/b`, or a package's `name/a/b`, never a bare `name`: each name
+/// a lowercase identifier.
 pub(crate) fn module_path(path: &str) -> bool {
-    let mut rest = path
-        .strip_prefix("std/")
-        .or_else(|| path.strip_prefix("./"));
-    if rest.is_none() && path.starts_with("../") {
-        let mut tail = path;
-        while let Some(next) = tail.strip_prefix("../") {
-            tail = next;
-        }
-        rest = Some(tail);
+    let mut rest = path.trim_start_matches("../");
+    if rest == path {
+        rest = path.strip_prefix("./").unwrap_or(path);
     }
+    let rest = (rest != path || path.contains('/')).then_some(rest);
     rest.is_some_and(|rest| {
         rest.split('/').all(|seg| {
             let mut chars = seg.chars();

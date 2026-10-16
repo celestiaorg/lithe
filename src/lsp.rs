@@ -150,7 +150,7 @@ fn in_document(path: &std::path::Path, text: &str, err: lithe::Error) -> lithe::
         );
         first.get_or_insert(at);
         let import = rest.split('"').next().unwrap_or("");
-        if canon(&lithe::import_path(path, import)) == file {
+        if lithe::import_path(path, import).is_ok_and(|p| canon(&p) == file) {
             direct = Some(at);
             break;
         }
@@ -403,29 +403,32 @@ fn import_string(text: &str, line: u32, col: u32) -> Option<(usize, String)> {
     Some((src[..open + 1].encode_utf16().count(), typed))
 }
 
-/// Every module a file can import: the standard library's, and the files of its project
-/// beside and below it.
+/// Every module a file can import: the standard library's, the files of its project
+/// beside and below it, and those of its packages.
 fn module_paths(file: &Path) -> Vec<String> {
     let mut out: Vec<String> = lithe::std_modules().into_iter().map(String::from).collect();
     let Some(dir) = file.parent() else {
         return out;
     };
-    let mut found = Vec::new();
-    lithe::lithe_files(dir, &mut found).ok();
-    for path in found {
-        if path == file || path.to_string_lossy().ends_with(".spec.lithe") {
-            continue;
-        }
-        let Ok(rel) = path
-            .with_extension("")
-            .strip_prefix(dir)
-            .map(Path::to_path_buf)
-        else {
-            continue;
-        };
-        let module = format!("./{}", rel.to_string_lossy().replace('\\', "/"));
-        if lithe::is_module_path(&module) {
-            out.push(module);
+    let roots = std::iter::once((".".to_string(), dir.to_path_buf())).chain(lithe::packages(file));
+    for (prefix, dir) in roots {
+        let mut found = Vec::new();
+        lithe::lithe_files(&dir, &mut found).ok();
+        for path in found {
+            if path == file || path.to_string_lossy().ends_with(".spec.lithe") {
+                continue;
+            }
+            let Ok(rel) = path
+                .with_extension("")
+                .strip_prefix(&dir)
+                .map(Path::to_path_buf)
+            else {
+                continue;
+            };
+            let module = format!("{prefix}/{}", rel.to_string_lossy().replace('\\', "/"));
+            if lithe::is_module_path(&module) {
+                out.push(module);
+            }
         }
     }
     out.sort();
@@ -447,6 +450,7 @@ fn import_target(uri: &str, text: &str, line: u32, col: u32) -> Option<String> {
     let path = match lithe::std_text(rel) {
         Some(std) => std_copy(&format!("{rel}.lithe"), std)?,
         None => lithe::import_path(&file_path(uri), rel)
+            .ok()?
             .canonicalize()
             .ok()?,
     };

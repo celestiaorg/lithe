@@ -5,7 +5,7 @@ description: "Module paths, what each file sees, aliases, and private declaratio
 
 # Imports
 
-`import` names another file, a module, and brings its public declarations into this file. Imports come first in a file, before any other declaration. A path that starts with `std/` names a module of the [standard library](/stdlib), built into the compiler. Any other path is relative to the importing file.
+`import` names another file, a module, and brings its public declarations into this file. Imports come first in a file, before any other declaration. A path that starts with `std/` names a module of the [standard library](/stdlib), built into the compiler. A path that starts with `./` or `../` is relative to the importing file. Any other path starts with the name of a [package](#packages).
 
 :::code-group
 
@@ -50,7 +50,7 @@ private pure function unused() : uint is
 
 An import path names a module, not a file: `import "std/evm";`, `import "./lib/fees";`, `import "../shared/errors" as E;`. The compiler adds `.lithe`, so `"./lib/fees"` is `lib/fees.lithe` next to the importing file.
 
-A path is `std/`, `./`, or one or more `../`, then names separated by `/`. Each name is a lowercase identifier: letters `a` to `z`, digits, and `_`, not starting with a digit. Anything else is an invalid import path, such as `"./fees.lithe"`, `"fees"`, or `"./my-lib"`:
+A path is `std/`, `./`, one or more `../`, or a package name and `/`, then names separated by `/`. Each name is a lowercase identifier: letters `a` to `z`, digits, and `_`, not starting with a digit. Anything else is an invalid import path, such as `"./fees.lithe"`, `"fees"`, or `"./my-lib"`:
 
 ```lithe rejects
 import "./fees.lithe";
@@ -65,6 +65,25 @@ invalid import path `./fees.lithe`
 ```
 
 A path names one file, never a directory, so `std/crypto` and `std/crypto/ecdsa` are two modules that one program can import side by side.
+
+## Packages
+
+Code from another project comes in as a package. [`lithe add`](/tooling/cli#lithe-add) names it in the project's [`lithe.toml`](/tooling/config#dependencies), at the releases compatible with its newest version tag, and fetches it:
+
+```bash
+lithe add https://github.com/acme/lithe-tokens --as tokens
+```
+
+```toml
+[dependencies]
+tokens = { git = "https://github.com/acme/lithe-tokens", version = "^1.2.0" }
+```
+
+Then `import "tokens/erc20/permit";` reads `erc20/permit.lithe` from the package, or from the directory its `[package] src` names, such as `src/erc20/permit.lithe`. A file reads packages from the `lithe.toml` nearest it, so a package's own files import its packages, by the names its `lithe.toml` gives them. A name no `lithe.toml` declares is an error:
+
+```text
+unknown package `tokens`
+```
 
 ## What a file sees
 
@@ -175,7 +194,7 @@ module Ledger is {
 ## Rules
 
 - Imports must come before every other declaration.
-- An import path names a module: `std/`, `./`, or `../`, and lowercase names, without `.lithe`.
+- An import path names a module: `std/`, `./`, `../`, or a package, and lowercase names, without `.lithe`.
 - A file sees its own declarations and those of the files it imports, and nothing else.
 - Import cycles are rejected: `cyclic module dependency detected`.
 - Every file is loaded once, however many files import it.
