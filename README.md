@@ -61,7 +61,7 @@ Run `lithe` with no arguments for every command. [`lithe prove`](docs/src/pages/
 | `playground/` | the compiler built to WebAssembly for the docs site's browser playground |
 | `examples/` | example contracts |
 | `bench/` | Lithe and Solidity versions of the same contracts, for size and gas comparison (`bench/run.py`) |
-| `extensions/` | editor support: a TextMate grammar and a VS Code extension |
+| `extensions/` | editor support (a TextMate grammar, a VS Code extension, and a Recur bundle; see [Editors](docs/src/pages/tooling/editors.mdx)) and the Hardhat plugin |
 | `fuzz/` | extra programs for the differential tests |
 
 Run the tests with `cargo test`.

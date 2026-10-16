@@ -10,6 +10,7 @@ echo "installed ~/.recur/bundles/Lithe"
 
 for dir in ~/.vscode/extensions ~/.cursor/extensions; do
   [ -d "$dir" ] || continue
+  [ -d vscode/node_modules ] || (cd vscode && npm ci --omit=dev)
   rm -rf "$dir/lithe.lithe"
   cp -R vscode "$dir/lithe.lithe"
   echo "installed $dir/lithe.lithe"
