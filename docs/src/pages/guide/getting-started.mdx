@@ -20,13 +20,13 @@ curl -fsSL https://lithe-lang.org/install.sh | sh
 It downloads the compiler for your platform, Linux or macOS on x86-64 or ARM64, checks it against the release's checksums, and installs it to `~/.lithe/bin/lithe`, or `$LITHE_HOME/bin/lithe` when `LITHE_HOME` is set. If that directory isn't on your `PATH`, it adds it in your shell's profile (`~/.zshrc`, `~/.bashrc`, `~/.bash_profile` on macOS, fish's `config.fish`, or `~/.profile`); set `LITHE_NO_MODIFY_PATH=1` to have it print the line instead. Run it again to update. To install a given version, pass it after `-s --`:
 
 ```bash
-curl -fsSL https://lithe-lang.org/install.sh | sh -s -- 0.1.0
+curl -fsSL https://lithe-lang.org/install.sh | sh -s -- 0.2.1
 ```
 
 Or build a release with Cargo, which installs it to `~/.cargo/bin`:
 
 ```bash
-cargo install --git https://github.com/celestiaorg/lithe --tag v0.1.0 --locked
+cargo install --git https://github.com/celestiaorg/lithe --tag v0.2.1 --locked
 ```
 
 To build from source, run this from the repository root with a recent stable Rust toolchain:
