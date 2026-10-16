@@ -296,7 +296,7 @@ pub(crate) fn package_root(entry: &Path, from: &Path, name: &str) -> Result<Path
                     .map(|(commit, _)| commit.clone());
                 if commit.is_none() && !root.starts_with(&project) && checkout_of(from).is_none() {
                     return Err(format!(
-                        "package `{name}` is not installed: `lithe install` reads `{}` only if `{}` is in a package of `{}`: `lithe add {0}`, or run `lithe install` if it is",
+                        "package `{name}` is not installed: `lithe install` reads `{}` only if `{}` is in a package of `{}`: `lithe add {1}`, or run `lithe install` if it is",
                         root.join("lithe.toml").display(),
                         root.display(),
                         project.display()
@@ -304,8 +304,13 @@ pub(crate) fn package_root(entry: &Path, from: &Path, name: &str) -> Result<Path
                 }
                 commit
             };
-            let commit = commit
-                .ok_or_else(|| format!("package `{name}` is not installed: run `lithe install`"))?;
+            let commit = commit.ok_or_else(|| match checkout_of(from) {
+                Some(_) => format!(
+                    "package `{name}` is not installed: run `lithe install`, which skips it if it can't fetch it as `{}` declares it",
+                    root.join("lithe.toml").display()
+                ),
+                None => format!("package `{name}` is not installed: run `lithe install`"),
+            })?;
             (checkout(&store, url, &commit), src.as_deref())
         }
     };
@@ -381,13 +386,13 @@ pub(crate) fn packages_holding(from: &Path, to: &Path) -> Vec<(String, PathBuf)>
 
 /// The configs of the `lithe.toml` files below `dir`, outside hidden directories, unless
 /// `walked` holds `dir` or one above it. Builds read a file's packages from the `lithe.toml`
-/// nearest it, so install reads those below the project and below each package's import
-/// directory; a build reaching one elsewhere says how to make install read it.
+/// nearest it, so install reads those below the project and below each package; a build
+/// reaching one elsewhere says how to make install read it.
 // simplify: reads the whole tree; a project holding large unrelated trees pays for that.
-fn nested(dir: &Path, walked: &mut Vec<PathBuf>) -> Result<Vec<Config>, Error> {
+fn nested(dir: &Path, walked: &mut Vec<PathBuf>) -> Vec<Result<Config, Error>> {
     let dir = dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf());
     if walked.iter().any(|done| dir.starts_with(done)) {
-        return Ok(Vec::new());
+        return Vec::new();
     }
     walked.push(dir.clone());
     let mut out = Vec::new();
@@ -404,12 +409,12 @@ fn nested(dir: &Path, walked: &mut Vec<PathBuf>) -> Result<Vec<Config>, Error> {
             }
             let toml = item.path().join("lithe.toml");
             if toml.is_file() {
-                out.push(config::read(&toml)?);
+                out.push(config::read(&toml));
             }
             todo.push(item.path());
         }
     }
-    Ok(out)
+    out
 }
 
 /// Checks out every git package the project of `near` reaches, and the packages they reach,
@@ -500,50 +505,82 @@ impl Walk {
         let mut deferred = false;
         let mut walked = Vec::new();
         let project = config.root.clone().unwrap_or_default();
-        let mut todo = nested(&project, &mut walked)?;
-        let mut seen: Vec<_> = todo.iter().filter_map(|own| own.root.clone()).collect();
+        let mut todo = nested(&project, &mut walked)
+            .into_iter()
+            .map(|own| Ok((own?, false)))
+            .collect::<Result<Vec<_>, Error>>()?;
+        let mut seen: Vec<_> = todo
+            .iter()
+            .filter_map(|(own, _)| own.root.clone())
+            .collect();
         seen.push(project);
-        todo.push(config.clone());
-        while let Some(config) = todo.pop() {
+        todo.push((config.clone(), false));
+        // A `lithe.toml` inside a git package that only the walk found, like an example's, is
+        // soft: its packages install if they resolve, and else a build reaching it says why.
+        while let Some((config, soft)) = todo.pop() {
             let root = config.root.clone().unwrap_or_default();
-            for (name, dep) in &config.deps {
+            'deps: for (name, dep) in &config.deps {
                 let fail = |msg: String| error(0, 0, format!("package `{name}`: {msg}"));
-                let (dir, src) = match dep {
-                    Dep::Path(path) => (root.join(path), None),
-                    Dep::Git { url, pin, src } => {
-                        let key = (url.clone(), pin.spec().to_string());
-                        let pick = match lock.get(&key).or(picks.get(&key)) {
-                            Some(pick) => pick.clone(),
-                            None => self.resolve(url, pin).map_err(fail)?,
-                        };
-                        reached.push((name.clone(), key.clone()));
-                        if matches!(pin, Pin::Version(_)) && !picks.contains_key(&key) {
-                            deferred = true;
+                let found = 'dep: {
+                    let (dir, src) = match dep {
+                        Dep::Path(path) => (root.join(path), None),
+                        Dep::Git { url, pin, src } => {
+                            let key = (url.clone(), pin.spec().to_string());
+                            let pick = match lock.get(&key).or(picks.get(&key)) {
+                                Some(pick) => pick.clone(),
+                                None => match self.resolve(url, pin) {
+                                    Ok(pick) => pick,
+                                    Err(msg) => break 'dep Err(fail(msg)),
+                                },
+                            };
+                            if matches!(pin, Pin::Version(_)) && !picks.contains_key(&key) {
+                                reached.push((name.clone(), key.clone()));
+                                deferred = true;
+                                lock.insert(key, pick);
+                                continue 'deps;
+                            }
+                            let rev = pick.1.as_deref().unwrap_or(pin.spec());
+                            let (commit, new) = match fetch(&self.store, url, rev, Some(&pick.0)) {
+                                Ok(fetched) => fetched,
+                                Err(msg) => break 'dep Err(fail(msg)),
+                            };
+                            if new {
+                                self.fresh.push(commit.clone());
+                            }
+                            reached.push((name.clone(), key.clone()));
                             lock.insert(key, pick);
-                            continue;
+                            (checkout(&self.store, url, &commit), src.as_deref())
                         }
-                        let rev = pick.1.as_deref().unwrap_or(pin.spec());
-                        let (commit, new) =
-                            fetch(&self.store, url, rev, Some(&pick.0)).map_err(fail)?;
-                        if new {
-                            self.fresh.push(commit.clone());
-                        }
-                        lock.insert(key, pick);
-                        (checkout(&self.store, url, &commit), src.as_deref())
+                    };
+                    if !dir.is_dir() {
+                        break 'dep Err(fail(format!(
+                            "the directory `{}` doesn't exist",
+                            dir.display()
+                        )));
                     }
+                    layout(&dir, src).map(|(_, own)| (dir, own))
                 };
-                if !dir.is_dir() {
-                    return Err(fail(format!(
-                        "the directory `{}` doesn't exist",
-                        dir.display()
-                    )));
-                }
-                let (start, own) = layout(&dir, src)?;
-                for own in own.into_iter().chain(nested(&start, &mut walked)?) {
+                let (dir, own) = match found {
+                    Ok(found) => found,
+                    Err(_) if soft => continue,
+                    Err(err) => return Err(err),
+                };
+                let below = soft || matches!(dep, Dep::Git { .. });
+                let own = own.map(|own| Ok((own, soft)));
+                for own in own.into_iter().chain(
+                    nested(&dir, &mut walked)
+                        .into_iter()
+                        .map(|own| Ok((own?, below))),
+                ) {
+                    let (own, soft) = match own {
+                        Ok(own) => own,
+                        Err(_) if below => continue,
+                        Err(err) => return Err(err),
+                    };
                     let at = own.root.clone().unwrap_or_default();
                     if !seen.contains(&at) {
                         seen.push(at);
-                        todo.push(own);
+                        todo.push((own, soft));
                     }
                 }
             }
@@ -1270,22 +1307,39 @@ mod tests {
         let up = || crate::modules::load(&sources, &app.join("up.lithe"));
         install(&app, false).unwrap();
         let err = up().err().unwrap().to_string();
-        assert!(err.contains("is in a package of"), "{err}");
-        let outer = dir.join("outer/lib").display().to_string();
+        let outer = dir.join("outer").display().to_string();
+        assert!(
+            err.contains(&format!("`lithe add {outer}`, or run")),
+            "{err}"
+        );
         adding(outer, Add::default()).unwrap();
         up().unwrap();
 
-        // Only a package's import directory installs with it, not its examples.
+        // A package's `lithe.toml` files install with it where their packages resolve: one a
+        // `../` import inside it reaches does, an example's broken one is skipped.
         write(
-            "fees/examples/demo/lithe.toml",
+            "fees/lib/lithe.toml",
+            &format!(
+                "[dependencies]\nmath = {{ git = \"{}\", version = \"~1.1\" }}\n",
+                url("math")
+            ),
+        );
+        write("fees/lib/b.lithe", "import \"math/scale\";\n");
+        write("fees/src/up.lithe", "import \"../lib/b\";\n");
+        release("fees", "v1.0.1");
+        write(
+            "caps/examples/demo/lithe.toml",
             "[dependencies]\nhelpers = { path = \"../../../nowhere\" }\n",
         );
-        release("fees", "v1.0.1");
+        release("caps", "v1.0.1");
         install(&app, true).unwrap();
         assert_eq!(
             lock()[&(url("fees"), "^1.0.0".to_string())].1.as_deref(),
             Some("v1.0.1")
         );
+        assert!(lock().contains_key(&(url("math"), "~1.1".to_string())));
+        write("app/deep.lithe", "import \"fees/up\";\n");
+        crate::modules::load(&sources, &app.join("deep.lithe")).unwrap();
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }
