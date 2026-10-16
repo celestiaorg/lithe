@@ -1,6 +1,6 @@
 [package]
 name = "lithe"
-version = "0.2.1"
+version = "0.2.2"
 edition = "2021"
 description = "Lithe, a smart-contract language for the EVM"
 license = "Apache-2.0"
