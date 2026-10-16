@@ -52,6 +52,7 @@ mod keccak;
 mod lex;
 mod lint;
 mod modules;
+mod packages;
 mod parse;
 mod prove;
 mod resolve;
@@ -68,6 +69,7 @@ pub use format::format_source;
 pub use index::{Completion, Def, File, Index, Kind, Ref, Signature, Span};
 pub use lint::{lint_paths, lithe_files, Lint};
 pub use modules::{import_path, Sources};
+pub use packages::{add, install, packages, Add};
 pub use prove::{solver, Proof, ProveOptions};
 pub use route::{
     Abi, AbiError, AbiItem, Constructor, Event, EventParam, Fallback, Function, Param, Receive,
@@ -75,7 +77,7 @@ pub use route::{
 };
 pub use split::{EvmVersion, Options, DEPLOYER, SIZE_LIMIT};
 
-/// Whether `path` is an import path: `std/`, `./`, or `../` and lowercase names.
+/// Whether `path` is an import path: `std/`, `./`, `../`, or a package, and lowercase names.
 pub fn is_module_path(path: &str) -> bool {
     parse::module_path(path)
 }

@@ -1,6 +1,6 @@
 ---
 title: "Project configuration"
-description: "lithe.toml: the fork and size limits a project builds for, the line width for lithe fmt, and the lint rules a project allows."
+description: "lithe.toml: the fork and size limits a project builds for, the packages it imports, the line width for lithe fmt, and the lint rules a project allows."
 ---
 
 # Project configuration
@@ -17,6 +17,10 @@ width = 100
 
 [lint]
 allow = ["reentry", "stale-capture"]
+
+[dependencies]
+tokens = { git = "https://github.com/acme/lithe-tokens", version = "^1.2" }
+shared = { path = "../shared" }
 ```
 
 ## `[build]`
@@ -45,6 +49,52 @@ Only width is configurable; everything else about the style is fixed. See [Forma
 
 To silence a rule at a single place instead, write a `lithe-ignore` comment there. See [Silencing a rule](/tooling/cli#silencing-a-rule) and the [list of rules](/tooling/cli#linting).
 
+## `[dependencies]`
+
+The packages the project imports. Each key is a package's name, and `import "name/..."` reads from it: with `tokens` above, `import "tokens/erc20/permit";` is the file `erc20/permit.lithe` of the package. A name is spelled like a module path segment, lowercase letters, digits, and `_`, and can't be `std`. [`lithe add`](/tooling/cli#lithe-add) writes these lines for you.
+
+| Value | Meaning |
+| --- | --- |
+| `{ path = "../shared" }` | a directory, relative to the `lithe.toml` |
+| `{ git = "https://...", version = "^1.2" }` | a git repository at the newest version tag the range admits, which [`lithe install`](/tooling/cli#lithe-install) fetches |
+| `{ git = "https://...", rev = "v1.2.0" }` | a git repository at a tag, branch, or commit |
+| `{ git = "...", version = "^1.2", src = "contracts" }` | either git form, with imports starting from the repository's `contracts` directory, over the package's own `[package] src` |
+
+A package can have a `lithe.toml` of its own, and its files import its packages by the names it gives them.
+
+### Version ranges
+
+A repository's versions are its tags spelled `v1.2.3` or `1.2.3`. A pre-release such as `v1.3.0-rc.1` is no version, so no range picks it; pin it with `rev`. `version` reads as Cargo's does:
+
+| Range | Admits |
+| --- | --- |
+| `"^1.2.3"`, `"1.2.3"` | compatible releases, `>=1.2.3, <2.0.0` |
+| `"^1.2"`, `"1.2"` | `>=1.2.0, <2.0.0` |
+| `"^0.2.3"` | `>=0.2.3, <0.3.0`: below 1.0, the first nonzero part breaks compatibility |
+| `"~1.2.3"`, `"~1.2"` | patches, `>=1.2.3, <1.3.0` |
+| `"=1.2"` | `>=1.2.0, <1.3.0`; `"=1.2.3"` is exactly 1.2.3 |
+| `">=1.2"`, `">1.2"`, `"<1.5"`, `"<=1.5"` | comparisons, a missing part as a wildcard: `">1.2"` is `>=1.3.0` |
+| `">=1.2, <1.5"` | every comparator, together |
+| `"*"` | every version |
+
+`lithe install` picks the newest tag a range admits and records it in `lithe.lock`, where it stays until `lithe install --update`.
+
+Ranges on one repository share a version where they can, wherever in the project's packages they are: a range takes the newest version that's already picked for that repository and that it admits, and tighter ranges pick first. So if one package asks for `"^1.2"` and another for `"~1.2"`, both get the newest 1.2 release, one copy. A range the lock already records keeps its pick, so a range added later shares it if it admits it, and otherwise gets its own; `--update` picks them all again together.
+
+### The package store and `lithe.lock`
+
+`lithe install` checks out each git package into a store that every project on the machine shares, `~/.lithe/packages`, or `$LITHE_HOME/packages`. There is one checkout for each repository and commit, holding that commit's files and no history. It records what each package resolved to in `lithe.lock`, beside the `lithe.toml`: a `url rev commit` line for a `rev`, and a `url range commit tag` line for a version range. Commit `lithe.lock`: builds read the commits it records, and `lithe install` on another machine fetches exactly those.
+
+Every package that depends on one commit of a library reads the same checkout, so a build loads it once: its types, errors, and modules are the same wherever they're imported from. A build of a project reads its own `lithe.lock` for every package it reaches, including packages of packages, so one `url` and `rev` or range is one commit throughout. Two different commits of one library are two packages, and their types and modules are different.
+
+## `[package]`
+
+Settings for a project that others import as a package.
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `src` | `"."` | the directory imports of this package start from, such as `"src"` or `"contracts"`, so `import "tokens/erc20";` reads `src/erc20.lithe` of the package |
+
 ## Errors
 
 The file is read strictly. An unknown table, key, or rule name, or a value of the wrong kind, is an error that names the file and line:
@@ -53,4 +103,4 @@ The file is read strictly. An unknown table, key, or rule name, or a value of th
 lithe.toml:6: unknown rule `reentrancy`
 ```
 
-Each table holds one-line `key = value` settings, and `#` starts a comment.
+Each table holds one-line `key = value` settings, and `#` starts a comment. A package is one line too, with its `{ ... }` on that line.
