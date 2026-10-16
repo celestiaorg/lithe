@@ -1848,7 +1848,7 @@ pub(crate) fn module_path_between(from: &str, to: &str) -> Option<String> {
     if let Ok(rel) = to.strip_prefix(STD_ROOT) {
         return Some(rel.with_extension("").display().to_string());
     }
-    for (name, dir) in crate::packages::packages(Path::new(from)) {
+    for (name, dir) in crate::packages::packages_holding(Path::new(from), to) {
         let dir = dir.canonicalize().unwrap_or(dir);
         if let Ok(rel) = to.strip_prefix(&dir) {
             return Some(format!("{name}/{}", rel.with_extension("").display()));

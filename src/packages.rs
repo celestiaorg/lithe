@@ -341,6 +341,66 @@ pub fn packages(from: &Path) -> Vec<(String, PathBuf)> {
         .collect()
 }
 
+/// Each package the nearest `lithe.toml` to `from` declares that could hold `to`, with the
+/// directory its imports start from: a git package at the commit whose checkout `to` is in,
+/// whichever lock picked it.
+pub(crate) fn packages_holding(from: &Path, to: &Path) -> Vec<(String, PathBuf)> {
+    let Ok(Config {
+        root: Some(root),
+        deps,
+        ..
+    }) = config::find(from)
+    else {
+        return Vec::new();
+    };
+    let top = checkout_of(to);
+    let store = store().map(|store| store.canonicalize().unwrap_or(store));
+    deps.into_iter()
+        .filter_map(|(name, dep)| {
+            let (dir, src) = match dep {
+                Dep::Path(path) => (root.join(path), None),
+                Dep::Git { url, src, .. } => {
+                    let repo = checkout(store.as_ref().ok()?, &url, "");
+                    (top.clone().filter(|top| top.starts_with(&repo))?, src)
+                }
+            };
+            Some((name, layout(&dir, src.as_deref()).ok()?.0))
+        })
+        .collect()
+}
+
+/// The configs of the `lithe.toml` files below `dir`, outside hidden directories, unless
+/// `walked` holds `dir` or one above it. Builds read a file's packages from the `lithe.toml`
+/// nearest it, so install reaches each one a relative import can.
+// simplify: reads the whole tree; a project holding large unrelated trees pays for that.
+fn nested(dir: &Path, walked: &mut Vec<PathBuf>) -> Result<Vec<Config>, Error> {
+    let dir = dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf());
+    if walked.iter().any(|done| dir.starts_with(done)) {
+        return Ok(Vec::new());
+    }
+    walked.push(dir.clone());
+    let mut out = Vec::new();
+    let mut todo = vec![dir];
+    while let Some(dir) = todo.pop() {
+        let Ok(items) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for item in items.flatten() {
+            if item.file_name().to_string_lossy().starts_with('.')
+                || !item.file_type().is_ok_and(|kind| kind.is_dir())
+            {
+                continue;
+            }
+            let toml = item.path().join("lithe.toml");
+            if toml.is_file() {
+                out.push(config::read(&toml)?);
+            }
+            todo.push(item.path());
+        }
+    }
+    Ok(out)
+}
+
 /// Checks out every git package the project of `near` reaches, and the packages they reach,
 /// into the store, and rewrites `lithe.lock`. A package keeps what the lock records, unless
 /// `update`; else a `rev` resolves to the commit it names now, and a `version` range to the
@@ -429,8 +489,16 @@ impl Walk {
         let mut deferred = false;
         let mut seen = vec![config.root.clone().unwrap_or_default()];
         let mut todo = vec![config.clone()];
+        let mut walked = Vec::new();
         while let Some(config) = todo.pop() {
             let root = config.root.clone().unwrap_or_default();
+            for own in nested(&root, &mut walked)? {
+                let at = own.root.clone().unwrap_or_default();
+                if !seen.contains(&at) {
+                    seen.push(at);
+                    todo.push(own);
+                }
+            }
             for (name, dep) in &config.deps {
                 let fail = |msg: String| error(0, 0, format!("package `{name}`: {msg}"));
                 let (dir, src) = match dep {
@@ -463,7 +531,8 @@ impl Walk {
                         dir.display()
                     )));
                 }
-                if let (_, Some(own)) = layout(&dir, src)? {
+                let (_, own) = layout(&dir, src)?;
+                for own in own.into_iter().chain(nested(&dir, &mut walked)?) {
                     let at = own.root.clone().unwrap_or_default();
                     if !seen.contains(&at) {
                         seen.push(at);
@@ -1138,6 +1207,47 @@ mod tests {
             err.contains("`Denied` is declared in `shared/errors`"),
             "{err}"
         );
+
+        // A `lithe.toml` below the project installs with it, for the files relative imports
+        // reach there.
+        let exact = |dir: &str| {
+            write(
+                &format!("{dir}/lithe.toml"),
+                &format!(
+                    "[dependencies]\nmath = {{ git = \"{}\", version = \"=1.0.0\" }}\n",
+                    url("math")
+                ),
+            );
+        };
+        exact("app/sub");
+        write("app/sub/x.lithe", "import \"math/scale\";\n");
+        write("app/nest.lithe", "import \"./sub/x\";\n");
+        let err = crate::modules::load(&sources, &app.join("nest.lithe"))
+            .err()
+            .unwrap()
+            .to_string();
+        assert!(err.contains("is not installed"), "{err}");
+        install(&app, false).unwrap();
+        crate::modules::load(&sources, &app.join("nest.lithe")).unwrap();
+
+        // A path package's own git packages are named in hints by the checkout they point at.
+        exact("shared");
+        write("shared/y.lithe", "import \"math/scale\";\n");
+        write(
+            "shared/z.lithe",
+            "pure function z(const x : uint) : uint is scale(x)\n",
+        );
+        write(
+            "app/hidden.lithe",
+            "import \"shared/y\";\nimport \"shared/z\";\nstorage is record { n : uint; }\nexternal function go() is { storage.n := z(1); }\n",
+        );
+        let hidden = crate::compile(
+            &crate::Sources::disk(),
+            &app.join("hidden.lithe"),
+            &Options::default(),
+        );
+        let err = hidden.err().unwrap()[0].to_string();
+        assert!(err.contains("`scale` is declared in `math/scale`"), "{err}");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }
