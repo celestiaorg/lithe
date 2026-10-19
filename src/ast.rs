@@ -1068,6 +1068,15 @@ pub(crate) enum Expr {
         expr: Box<Expr>,
         ty: usize,
     },
+    /// `list(uint)(xs)`: a conversion to a type that has no name of its own. The checker
+    /// makes it a `Cast`.
+    Convert {
+        line: u32,
+        col: u32,
+        target: Box<TypeRef>,
+        expr: Box<Expr>,
+        ty: usize,
+    },
     Binary {
         line: u32,
         col: u32,
@@ -1107,6 +1116,7 @@ impl Expr {
             | Self::Query { line, .. }
             | Self::Case { line, .. }
             | Self::Unary { line, .. }
+            | Self::Convert { line, .. }
             | Self::Binary { line, .. }
             | Self::Tuple { line, .. }
             | Self::List { line, .. }
@@ -1124,6 +1134,7 @@ impl Expr {
             | Self::Query { col, .. }
             | Self::Case { col, .. }
             | Self::Unary { col, .. }
+            | Self::Convert { col, .. }
             | Self::Binary { col, .. }
             | Self::Tuple { col, .. }
             | Self::List { col, .. }
@@ -1141,6 +1152,7 @@ impl Expr {
             | Self::Query { ty, .. }
             | Self::Case { ty, .. }
             | Self::Unary { ty, .. }
+            | Self::Convert { ty, .. }
             | Self::Binary { ty, .. }
             | Self::Tuple { ty, .. }
             | Self::List { ty, .. }

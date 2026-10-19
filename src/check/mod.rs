@@ -244,6 +244,8 @@ pub(crate) struct Checked {
     pub named: HashMap<String, usize>,
     /// Each storage domain's record type, by qualified name: `Module.name` inside a module.
     pub domain_tys: HashMap<String, usize>,
+    /// Each `list(T)(xs)` target and its file, which the built program no longer shows.
+    pub conversions: Vec<(String, TypeRef)>,
     /// The program as it came in, before its modules were composed. A module's facet is
     /// built from it. It is everything a build depends on besides the compiler and its options.
     pub source: Program,
@@ -388,6 +390,7 @@ struct Checker {
     /// Snapshot warnings already given: (continuation floor, symbol).
     warned: HashSet<(usize, usize)>,
     warnings: Vec<Note>,
+    conversions: Vec<(String, TypeRef)>,
     /// File of the function being checked. Empty while checking the root file's guard.
     origin: String,
     module_name: Option<String>,
@@ -567,6 +570,7 @@ fn check_program(
         state_syms: HashSet::new(),
         warned: HashSet::new(),
         warnings: Vec::new(),
+        conversions: Vec::new(),
         origin: String::new(),
         fn_name: String::new(),
         module_name: None,
@@ -1087,6 +1091,7 @@ fn check_program(
         }
         known.push((named.clone(), sigs));
     }
+    strip_list_casts(&mut prog, &c.types);
     let checked = Checked {
         prog,
         types: c.types,
@@ -1108,6 +1113,7 @@ fn check_program(
         warnings: std::mem::take(&mut c.warnings),
         named: c.named,
         domain_tys: c.domain_tys,
+        conversions: c.conversions,
         source,
         slot_syms: c.slot_syms,
         interface_ids: Vec::new(),
@@ -1236,6 +1242,172 @@ fn peel_id(types: &[RType], ty: usize) -> usize {
     }
 }
 
+/// `list(T)(xs)` relabels a list whose words stay as they are, so code generation reads
+/// `xs` itself, in whatever place it lives.
+fn strip_list_casts(prog: &mut Program, types: &[RType]) {
+    fn stmts(list: &mut [Stmt], types: &[RType]) {
+        for s in list {
+            match s {
+                Stmt::Const { expr: e, .. }
+                | Stmt::Var { expr: e, .. }
+                | Stmt::Call { expr: e, .. }
+                | Stmt::AssignTuple { expr: e, .. } => expr(e, types),
+                Stmt::Assign {
+                    expr: e,
+                    index,
+                    keys,
+                    target,
+                    ..
+                } => {
+                    expr(e, types);
+                    index
+                        .iter_mut()
+                        .chain(keys.iter_mut())
+                        .chain(target.iter_mut().map(|t| &mut **t))
+                        .for_each(|k| expr(k, types));
+                }
+                Stmt::If {
+                    cond,
+                    then_body,
+                    else_body,
+                    ..
+                } => {
+                    expr(cond, types);
+                    stmts(then_body, types);
+                    stmts(else_body, types);
+                }
+                Stmt::Assert { cond, reason, .. } => {
+                    expr(cond, types);
+                    raised(reason, types);
+                }
+                Stmt::Fail { reason } => raised(reason, types),
+                Stmt::Emit { fields, .. } => fields.iter_mut().for_each(|(_, e)| expr(e, types)),
+                Stmt::Defer {
+                    expr: e,
+                    value,
+                    gas,
+                    then,
+                    ..
+                } => {
+                    expr(e, types);
+                    value
+                        .iter_mut()
+                        .chain(gas.iter_mut())
+                        .for_each(|e| expr(e, types));
+                    let mut then = then.as_deref_mut();
+                    while let Some(t) = then {
+                        stmts(&mut t.stmts, types);
+                        then = t.error.as_deref_mut();
+                    }
+                }
+                Stmt::For {
+                    iter,
+                    until,
+                    bound,
+                    body,
+                    elem_init,
+                    length,
+                    invariants,
+                    ..
+                } => {
+                    match iter {
+                        ForIter::Range { lo, hi } => {
+                            expr(lo, types);
+                            expr(hi, types);
+                        }
+                        ForIter::List(e) => expr(e, types),
+                    }
+                    until
+                        .iter_mut()
+                        .chain(bound.iter_mut())
+                        .chain(elem_init.iter_mut())
+                        .chain(length.iter_mut())
+                        .chain(invariants.iter_mut())
+                        .for_each(|e| expr(e, types));
+                    stmts(body, types);
+                }
+                Stmt::Skip => {}
+            }
+        }
+    }
+    fn raised(r: &mut Raised, types: &[RType]) {
+        match &mut r.form {
+            RaisedForm::Unit => {}
+            RaisedForm::Positional(e) => expr(e, types),
+            RaisedForm::Fields(fields) => fields.iter_mut().for_each(|(_, e)| expr(e, types)),
+        }
+    }
+    fn expr(e: &mut Expr, types: &[RType]) {
+        while let Expr::Call {
+            builtin: Some(Builtin::Cast),
+            args,
+            ty,
+            ..
+        } = e
+        {
+            if types[*ty].kind != TyKind::List || args.len() != 1 {
+                break;
+            }
+            let inner = args.pop().expect("one argument");
+            *e = inner;
+        }
+        match e {
+            Expr::Lit { .. } | Expr::Ident { .. } => {}
+            Expr::Field { base, .. }
+            | Expr::Unary { expr: base, .. }
+            | Expr::Convert { expr: base, .. } => expr(base, types),
+            Expr::Index { base, index, .. } => {
+                expr(base, types);
+                expr(index, types);
+            }
+            Expr::Call { args, base, .. } => {
+                args.iter_mut().for_each(|a| expr(a, types));
+                if let Some(base) = base {
+                    expr(base, types);
+                }
+            }
+            Expr::Query {
+                expr: inner, gas, ..
+            } => {
+                expr(inner, types);
+                if let Some(gas) = gas {
+                    expr(gas, types);
+                }
+            }
+            Expr::Case { scrut, arms, .. } => {
+                expr(scrut, types);
+                for arm in arms {
+                    stmts(&mut arm.stmts, types);
+                    expr(&mut arm.expr, types);
+                }
+            }
+            Expr::Binary { left, right, .. } => {
+                expr(left, types);
+                expr(right, types);
+            }
+            Expr::Tuple { elems, .. } | Expr::List { elems, .. } => {
+                elems.iter_mut().for_each(|e| expr(e, types));
+            }
+            Expr::Record { fields, .. } => fields.iter_mut().for_each(|(_, e)| expr(e, types)),
+        }
+    }
+    let modules = prog.modules.iter_mut().flat_map(|m| m.funcs.iter_mut());
+    for f in prog
+        .funcs
+        .iter_mut()
+        .chain(prog.guards.iter_mut())
+        .chain(modules)
+    {
+        stmts(&mut f.stmts, types);
+        if let Some(tail) = &mut f.tail {
+            expr(tail, types);
+        }
+    }
+    if let Some(guard) = &mut prog.guard {
+        stmts(&mut guard.stmts, types);
+    }
+}
+
 /// A build has no use for loop invariants, which only the spec tools read.
 fn drop_loop_invariants(prog: &mut Program) {
     fn stmts(list: &mut [Stmt]) {
@@ -1288,7 +1460,7 @@ fn drop_loop_invariants(prog: &mut Program) {
                 expr(left);
                 expr(right);
             }
-            Expr::Unary { expr: inner, .. } => expr(inner),
+            Expr::Unary { expr: inner, .. } | Expr::Convert { expr: inner, .. } => expr(inner),
             Expr::Call { args, .. } => args.iter_mut().for_each(expr),
             _ => {}
         }

@@ -34,6 +34,7 @@ impl Checker {
 
     pub(super) fn check_expr(&mut self, e: &mut Expr) -> Result<(), Error> {
         self.check_expr_in(e)?;
+        self.lower_nominal_op(e)?;
         while let Some(arm) = taken_branch(e).filter(|arm| arm.stmts.is_empty()) {
             *e = arm.expr;
         }
@@ -270,7 +271,7 @@ impl Checker {
                             }
                         }
                         self.check_expr(expr)?;
-                        if self.types[expr.ty()].kind != TyKind::Int {
+                        if self.types[self.peel(expr.ty())].kind != TyKind::Int {
                             return Err(error(*line, *col, "unary `-` expects int"));
                         }
                         *ty = expr.ty();
@@ -320,7 +321,7 @@ impl Checker {
                         (&mut **left, &mut **right)
                     };
                     self.check_expr(first)?;
-                    let other = match self.types[first.ty()].kind {
+                    let other = match self.types[self.peel(first.ty())].kind {
                         TyKind::Timestamp if matches!(op, BinOp::Add | BinOp::Sub) => TY_UINT,
                         _ => first.ty(),
                     };
@@ -404,6 +405,49 @@ impl Checker {
                 line,
                 col,
             } => self.check_list(*line, *col, elems, ty),
+            Expr::Convert {
+                line,
+                col,
+                target,
+                expr,
+                ..
+            } => {
+                let (line, col) = (*line, *col);
+                let to = self.build(target)?;
+                self.conversions
+                    .push((self.origin.clone(), (**target).clone()));
+                let mut args = vec![std::mem::replace(
+                    &mut **expr,
+                    Expr::Lit {
+                        line,
+                        col,
+                        lit: Lit::Unit,
+                        ty: TY_UNIT,
+                    },
+                )];
+                self.list_cast(line, col, &mut args, to)?;
+                *e = Expr::Call {
+                    line,
+                    col,
+                    name: self.ty_label(to),
+                    args,
+                    base: None,
+                    callee: None,
+                    builtin: Some(Builtin::Cast),
+                    iface: None,
+                    method: None,
+                    ty: to,
+                };
+                Ok(())
+            }
+            Expr::Call {
+                builtin: Some(Builtin::Cast),
+                args,
+                ty,
+                line,
+                col,
+                ..
+            } if self.types[*ty].kind == TyKind::List => self.list_cast(*line, *col, args, *ty),
             Expr::Record {
                 fields,
                 ty,
@@ -1388,6 +1432,146 @@ impl Checker {
         }
     }
 
+    /// Arithmetic and ordering on a nominal type work on its representation:
+    /// `a + b` for `a, b : Amount` is `Amount(uint(a) + uint(b))`, and `a <= b` is
+    /// `uint(a) <= uint(b)`.
+    fn lower_nominal_op(&mut self, e: &mut Expr) -> Result<(), Error> {
+        let Expr::Binary {
+            op,
+            left,
+            right,
+            ty,
+            line,
+            col,
+        } = e
+        else {
+            return Ok(());
+        };
+        let numeric = matches!(
+            op,
+            BinOp::Add
+                | BinOp::Sub
+                | BinOp::Mul
+                | BinOp::Div
+                | BinOp::Mod
+                | BinOp::Pow
+                | BinOp::Lt
+                | BinOp::Gt
+                | BinOp::Le
+                | BinOp::Ge
+        );
+        if !numeric || self.peel(left.ty()) == left.ty() {
+            return Ok(());
+        }
+        let (line, col, outer) = (*line, *col, *ty);
+        for side in [&mut **left, &mut **right] {
+            let under = self.peel(side.ty());
+            if under != side.ty() {
+                self.retype(side, under);
+            }
+        }
+        *ty = self.check_bin(line, col, *op, left.ty(), right.ty())?;
+        if *ty != outer {
+            self.retype(e, outer);
+        }
+        Ok(())
+    }
+
+    /// `list(T)(xs)` converts a list whose elements convert to `T` without changing their
+    /// words: a nominal type and its representation, `wei` or `timestamp` and `uint`, an
+    /// interface and `address`.
+    pub(super) fn list_cast(
+        &mut self,
+        line: u32,
+        col: u32,
+        args: &mut [Expr],
+        to: usize,
+    ) -> Result<(), Error> {
+        // A literal takes the target's type when it can, as `list(TokenId)([1, 2])`, and
+        // its first element's otherwise, as `list(uint)([a, b])` for `a, b : TokenId`.
+        let retry = match &args[0] {
+            Expr::List { elems, .. } if !elems.is_empty() => {
+                Some((args[0].clone(), elems[0].clone()))
+            }
+            _ => None,
+        };
+        if let Err(err) = self.check_expr_as(&mut args[0], Some(to)) {
+            let Some((literal, mut first)) = retry else {
+                return Err(err);
+            };
+            self.check_expr_as(&mut first, None)
+                .map_err(|_| err.clone())?;
+            let own = self.list_of(first.ty(), self.types[to].bits);
+            args[0] = literal;
+            self.check_expr_as(&mut args[0], Some(own))
+                .map_err(|_| err)?;
+        }
+        if self.same_words(args[0].ty(), to) {
+            Ok(())
+        } else {
+            Err(error(
+                line,
+                col,
+                format!(
+                    "cannot convert `{}` to `{}`",
+                    self.ty_label(args[0].ty()),
+                    self.ty_label(to)
+                ),
+            ))
+        }
+    }
+
+    fn same_words(&self, a: usize, b: usize) -> bool {
+        let class = |id: usize| {
+            let t = &self.types[self.peel(id)];
+            match t.kind {
+                TyKind::Wei | TyKind::Timestamp => (TyKind::Uint, 256),
+                TyKind::Uint | TyKind::Int if t.bits == 0 => (t.kind, 256),
+                TyKind::Interface => (TyKind::Address, 0),
+                kind => (kind, t.bits),
+            }
+        };
+        let (x, y) = (&self.types[a], &self.types[b]);
+        if x.kind == TyKind::List || y.kind == TyKind::List {
+            return x.kind == y.kind
+                && x.bits == y.bits
+                && match (x.elem, y.elem) {
+                    (Some(p), Some(q)) => self.same(p, q) || self.same_words(p, q),
+                    _ => false,
+                };
+        }
+        self.cast_ok(a, b) && class(a) == class(b)
+    }
+
+    /// Wraps `e` in a conversion to `to`, which shares its representation. The conversion
+    /// has no name, so diagnostics and the editor index see `e` as written.
+    fn retype(&self, e: &mut Expr, to: usize) {
+        if let Expr::Lit { ty, .. } = e {
+            *ty = to;
+            return;
+        }
+        let (line, col) = (e.line(), e.col());
+        let unit = Expr::Lit {
+            line,
+            col,
+            lit: Lit::Unit,
+            ty: TY_UNIT,
+        };
+        let inner = std::mem::replace(e, unit);
+        *e = Expr::Call {
+            line,
+            col,
+            name: String::new(),
+            args: vec![inner],
+            base: None,
+            callee: None,
+            builtin: Some(Builtin::Cast),
+            iface: None,
+            method: None,
+            ty: to,
+        };
+    }
+
     fn check_bin(
         &self,
         line: u32,
@@ -1398,6 +1582,7 @@ impl Checker {
     ) -> Result<usize, Error> {
         let lk = self.types[l].kind;
         let rk = self.types[r].kind;
+        let num = self.types[self.peel(l)].kind;
         match op {
             BinOp::Cons => {
                 if lk != TyKind::Operation || !self.is_op_list_ty(r) {
@@ -1416,16 +1601,16 @@ impl Checker {
                 Ok(TY_BOOL)
             }
             BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod => {
-                if lk == TyKind::Timestamp
+                if num == TyKind::Timestamp
                     && rk == TyKind::Uint
                     && matches!(op, BinOp::Add | BinOp::Sub)
                 {
                     return Ok(l);
                 }
-                if lk == TyKind::Timestamp && rk == TyKind::Timestamp && op == BinOp::Sub {
+                if num == TyKind::Timestamp && self.same(l, r) && op == BinOp::Sub {
                     return Ok(TY_UINT);
                 }
-                if !self.same(l, r) || !matches!(lk, TyKind::Uint | TyKind::Int | TyKind::Wei) {
+                if !self.same(l, r) || !matches!(num, TyKind::Uint | TyKind::Int | TyKind::Wei) {
                     return Err(error(
                         line,
                         col,
@@ -1435,7 +1620,7 @@ impl Checker {
                 Ok(l)
             }
             BinOp::Pow => {
-                if !matches!(lk, TyKind::Uint | TyKind::Int) {
+                if !matches!(num, TyKind::Uint | TyKind::Int) {
                     return Err(error(line, col, "`**` expects an integer base"));
                 }
                 if self.types[self.peel(r)].kind != TyKind::Uint {
@@ -1542,11 +1727,11 @@ impl Checker {
                     ));
                 }
                 // Addresses and `bytesN` order as unsigned numbers, as in Solidity.
-                let fixed_bytes = lk == TyKind::Bytes && self.types[l].bits > 0;
+                let fixed_bytes = num == TyKind::Bytes && self.types[self.peel(l)].bits > 0;
                 if matches!(op, BinOp::Lt | BinOp::Gt | BinOp::Le | BinOp::Ge)
                     && !fixed_bytes
                     && !matches!(
-                        lk,
+                        num,
                         TyKind::Uint
                             | TyKind::Int
                             | TyKind::Wei

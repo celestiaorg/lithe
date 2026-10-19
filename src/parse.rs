@@ -3459,6 +3459,19 @@ impl<'a> Parser<'a> {
                     Ok(first)
                 }
             }
+            Kind::List => {
+                let target = self.list_ty(line, col)?;
+                self.want(Kind::LParen)?;
+                let expr = self.expr()?;
+                self.want(Kind::RParen)?;
+                self.postfix(Expr::Convert {
+                    line,
+                    col,
+                    target: Box::new(target),
+                    expr: Box::new(expr),
+                    ty: 0,
+                })
+            }
             Kind::Ident => {
                 if self.in_spec {
                     if let Some(form) = self.spec_form()? {

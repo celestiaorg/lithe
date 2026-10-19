@@ -407,6 +407,7 @@ impl Fold<'_> {
                 ..
             } => Ok(self.num(ty).map(|_| *w)),
             Expr::Lit { .. } => Ok(None),
+            Expr::Convert { expr, .. } => self.expr(expr),
             Expr::Ident { sym, .. } => Ok(sym.and_then(|s| self.locals.get(&s).copied())),
             Expr::Unary { op, expr, .. } => {
                 let Some(w) = self.expr(expr)? else {
@@ -647,9 +648,17 @@ impl Fold<'_> {
 
     /// `e` as written, near enough to find it.
     fn show(&self, e: &Expr) -> String {
-        let inner = |x: &Expr| match x {
-            Expr::Binary { .. } => format!("({})", self.show(x)),
-            _ => self.show(x),
+        let inner = |mut x: &Expr| {
+            while let Expr::Call { name, args, .. } = x {
+                if !name.is_empty() {
+                    break;
+                }
+                x = &args[0];
+            }
+            match x {
+                Expr::Binary { .. } => format!("({})", self.show(x)),
+                _ => self.show(x),
+            }
         };
         let operand = |x: &Expr| match inner(x) {
             s if s.starts_with('-') => format!("({s})"),
@@ -687,6 +696,7 @@ impl Fold<'_> {
             Expr::Binary {
                 op, left, right, ..
             } => format!("{} {} {}", inner(left), op_text(*op), inner(right)),
+            Expr::Call { name, args, .. } if name.is_empty() => self.show(&args[0]),
             Expr::Call {
                 name, args, base, ..
             } => {

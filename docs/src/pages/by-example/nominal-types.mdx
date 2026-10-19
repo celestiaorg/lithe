@@ -34,8 +34,13 @@ external function claim(const id : TokenId) is {
 external view function feeOn(const amount : uint) : uint is
   amount * uint(uint16(storage.fee)) / 10_000
 
+(* Arithmetic and ordering carry over, between values of the same type. *)
 external pure function next(const id : TokenId) : TokenId is
-  TokenId(uint(id) + 1)
+  id + 1
+
+(* A whole list converts with the list type's name. *)
+external pure function raw(const ids : list(TokenId)) : list(uint) is
+  list(uint)(ids)
 ```
 
 Binding a raw `uint` to a `tokenId` is a compile error:
