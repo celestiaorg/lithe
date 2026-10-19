@@ -1493,8 +1493,10 @@ fn nominal_bytes_and_strings_have_their_representations_operations() {
 }
 
 const NOMINAL_NUMBERS: &str = r#"
+import "std/collections/set";
 $D
 storage is record {
+  ids : Set($A);
   bal : map(uint, $A);
   small : $S;
   delta : $I;
@@ -1522,6 +1524,13 @@ external view function left(const now : $T) : uint is
 external pure function sq(const a : $A) : $A is a ** 2 * 3 / 2
 external pure function low(const a : $S; const b : $S) : bool is a < b or a >= b + 1
 external pure function first(const a : $K; const b : $K) : bool is a < b
+pure function same(T)(const x : T) : T is x
+external function keep(const a : $A; const b : $A) is {
+  Set.add(storage.ids, a + 1);
+  storage.small := same(storage.small + 1);
+  storage.bal[0] := same(a + b);
+  if same(a < b) then { storage.bal[1] := a; } else { skip }
+}
 "#;
 
 #[test]
@@ -1548,6 +1557,14 @@ fn nominal_numbers_have_their_representations_operations() {
     ))
     .expect("nominal");
     assert!(plain == nominal, "a nominal type costs code");
+    compile(
+        "type Amount is uint;\nstorage is record { n : uint; }\n\
+         pure function more(const x : Amount) : uint is uint(x)\n\
+         pure function more(const x : uint) : uint is x\n\
+         external pure function f(const a : Amount; const b : Amount) : uint is \
+         more(a + b) + more(uint(a + b))\n",
+    )
+    .expect("overloaded");
 
     for mixed in [
         "external pure function f(const x : Amount; const y : uint) : Amount is x + y",

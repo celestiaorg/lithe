@@ -1399,7 +1399,12 @@ fn storage_label(expr: &Expr) -> String {
 pub(crate) fn fmt_expr(e: &Expr) -> String {
     match e {
         Expr::Ident { name, .. } => name.clone(),
-        Expr::Call { name, args, .. } if name.is_empty() => fmt_expr(&args[0]),
+        Expr::Call {
+            builtin: Some(Builtin::Cast),
+            name,
+            args,
+            ..
+        } if name.is_empty() => fmt_expr(&args[0]),
         Expr::Field { base, name, .. } => format!("{}.{}", fmt_expr(base), name),
         Expr::Index { base, index, .. } => format!("{}[{}]", fmt_expr(base), fmt_expr(index)),
         Expr::Binary {

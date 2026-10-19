@@ -1132,7 +1132,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("lithe-lsp-convert-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("main.lithe");
-        let text = "type TokenId is uint;\nstorage is record { n : uint; }\nexternal pure function f(const xs : list(uint)) : list(TokenId) is list(TokenId)(xs)\nexternal pure function g(const a : TokenId; const b : TokenId) : TokenId is a + b\n";
+        let text = "type TokenId is uint;\nstorage is record { n : uint; }\nexternal pure function f(const xs : list(uint)) : list(TokenId) is list(TokenId)(xs)\nexternal pure function g(const a : TokenId; const b : TokenId) : TokenId is a + b\nexternal pure function h(const d : bytes; const k : uint) : bytes is d[k:k + 1]\nexternal pure function i(const d : bytes; const k : uint) : bytes1 is d[k]\n";
         std::fs::write(&path, text).unwrap();
         let index = lithe::analyze(&path, text).index.expect("index");
         let named = |line: u32, col: u32| {
@@ -1145,6 +1145,9 @@ mod tests {
         assert_eq!(named(3, 73), ("TokenId".to_string(), Some(1)));
         assert_eq!(named(3, 82), ("xs".to_string(), Some(3)));
         assert_eq!(named(4, 77), ("a".to_string(), Some(4)));
+        assert_eq!(named(5, 72), ("k".to_string(), Some(5)));
+        assert_eq!(named(5, 74), ("k".to_string(), Some(5)));
+        assert_eq!(named(6, 73), ("k".to_string(), Some(6)));
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

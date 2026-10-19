@@ -649,7 +649,13 @@ impl Fold<'_> {
     /// `e` as written, near enough to find it.
     fn show(&self, e: &Expr) -> String {
         let inner = |mut x: &Expr| {
-            while let Expr::Call { name, args, .. } = x {
+            while let Expr::Call {
+                builtin: Some(Builtin::Cast),
+                name,
+                args,
+                ..
+            } = x
+            {
                 if !name.is_empty() {
                     break;
                 }
@@ -696,7 +702,12 @@ impl Fold<'_> {
             Expr::Binary {
                 op, left, right, ..
             } => format!("{} {} {}", inner(left), op_text(*op), inner(right)),
-            Expr::Call { name, args, .. } if name.is_empty() => self.show(&args[0]),
+            Expr::Call {
+                builtin: Some(Builtin::Cast),
+                name,
+                args,
+                ..
+            } if name.is_empty() => self.show(&args[0]),
             Expr::Call {
                 name, args, base, ..
             } => {

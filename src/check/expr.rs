@@ -466,6 +466,13 @@ impl Checker {
                 builtin: Some(Builtin::BytesAt),
                 ..
             } => Ok(()),
+            // A nominal operation's lowering cast, checked again as a specialized call's
+            // argument is.
+            Expr::Call {
+                builtin: Some(Builtin::Cast),
+                name,
+                ..
+            } if name.is_empty() => Ok(()),
             // A bare constructor, checked again as a specialized call's argument is.
             Expr::Call {
                 builtin: Some(Builtin::Ctor(_)),

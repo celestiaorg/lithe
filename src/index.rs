@@ -2539,7 +2539,12 @@ impl<'a> Builder<'a> {
                 self.expr(base);
                 self.expr(index);
             }
-            Expr::Call { name, args, .. } if name.is_empty() => self.expr(&args[0]),
+            Expr::Call {
+                builtin: Some(Builtin::Cast),
+                name,
+                args,
+                ..
+            } if name.is_empty() => self.expr(&args[0]),
             Expr::Call {
                 line,
                 col,
