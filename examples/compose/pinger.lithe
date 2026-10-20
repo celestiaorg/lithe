@@ -9,7 +9,7 @@ contract Pinger is {
   }
 
   external function relay(const ledger : ILedger; const n : uint) is {
-    storage.relayed := storage.relayed + 1;
+    storage.relayed += 1;
     defer ledger.ping(n);
   }
 

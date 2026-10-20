@@ -5,5 +5,5 @@ storage is record {
 }
 
 external function pay(const to : address) is {
-  paid := paid + Evm.value();
+  paid += Evm.value();
 }

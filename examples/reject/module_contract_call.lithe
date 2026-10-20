@@ -4,7 +4,7 @@ module Ledger is {
   }
 
   external function bump() is {
-    ledger.n := ledger.n + hook();
+    ledger.n += hook();
   }
 }
 

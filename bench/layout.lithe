@@ -41,8 +41,8 @@ external function setPair(const a : uint32; const who : address) is {
 
 external function bump(const t : uint64) is {
   storage.tail := t;
-  storage.small := storage.small + 1;
-  storage.total := storage.total + 1;
+  storage.small += 1;
+  storage.total += 1;
 }
 
 external view function level(const i : uint) : uint8 is

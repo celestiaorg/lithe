@@ -13,7 +13,7 @@
 
 use std::collections::HashMap;
 
-use super::{Body, FuncSpec, Specs, Target, INFERRED, TAG, VIOLATION};
+use super::{inferred_ty, Body, FuncSpec, Specs, Target, TAG, VIOLATION};
 use crate::ast::*;
 use crate::Error;
 
@@ -965,6 +965,7 @@ fn keep_totals(
                 keys,
                 fields,
                 expr,
+                op,
                 line,
                 col,
                 push: false,
@@ -973,7 +974,7 @@ fn keep_totals(
             {
                 if keys.is_empty() && fields.is_empty() {
                     for g in ghosts.iter().filter(|g| written_as(g, scope) == *path) {
-                        out.push(total_update(g, scope, path, key, expr, *line, *col));
+                        out.push(total_update(g, scope, path, key, expr, *op, *line, *col));
                     }
                 }
             }
@@ -988,12 +989,15 @@ fn keep_totals(
 }
 
 /// `total := total - m[k] + v`, or for a count, `total := total - uint(m[k] <> 0) + uint(v <> 0)`.
+/// For `m[k] op= v`, the new value is `m[k] op v`.
+#[allow(clippy::too_many_arguments)]
 fn total_update(
     g: &Ghost,
     scope: &Option<String>,
     path: &[String],
     key: &Expr,
     value: &Expr,
+    op: Option<BinOp>,
     line: u32,
     col: u32,
 ) -> Stmt {
@@ -1011,8 +1015,10 @@ fn total_update(
         ty: 0,
     };
     let zero = int_lit(0, line, col);
-    let value = match value {
-        Expr::Lit { lit: Lit::Zero, .. } => &zero,
+    let compound = op.map(|op| binary(op, current.clone(), value.clone(), line, col));
+    let value = match (value, &compound) {
+        (_, Some(compound)) => compound,
+        (Expr::Lit { lit: Lit::Zero, .. }, _) => &zero,
         _ => value,
     };
     let (old, new) = if g.count {
@@ -1051,6 +1057,7 @@ fn total_update(
         keys: Vec::new(),
         fields: Vec::new(),
         expr: updated,
+        op: None,
         root: None,
         leaf: 0,
         target: None,
@@ -1197,52 +1204,6 @@ fn for_expr_blocks(e: &mut Expr, f: &mut dyn FnMut(&mut Vec<Stmt>)) {
     each_child(e, &mut |child| for_expr_blocks(child, f));
 }
 
-/// Calls `f` on each expression directly inside `e`.
-fn each_child(e: &mut Expr, f: &mut dyn FnMut(&mut Expr)) {
-    match e {
-        Expr::Lit { .. } | Expr::Ident { .. } => {}
-        Expr::Field { base, .. } | Expr::Unary { expr: base, .. } => f(base),
-        Expr::Index { base, index, .. } => {
-            f(base);
-            f(index);
-        }
-        Expr::Query { expr, gas, .. } => {
-            f(expr);
-            if let Some(gas) = gas {
-                f(gas);
-            }
-        }
-        Expr::Call { args, base, .. } => {
-            for arg in args {
-                f(arg);
-            }
-            if let Some(base) = base {
-                f(base);
-            }
-        }
-        Expr::Case { scrut, arms, .. } => {
-            f(scrut);
-            for arm in arms {
-                f(&mut arm.expr);
-            }
-        }
-        Expr::Binary { left, right, .. } => {
-            f(left);
-            f(right);
-        }
-        Expr::Tuple { elems, .. } | Expr::List { elems, .. } => {
-            for elem in elems {
-                f(elem);
-            }
-        }
-        Expr::Record { fields, .. } => {
-            for (_, value) in fields {
-                f(value);
-            }
-        }
-    }
-}
-
 /// `e` read in the state it runs in: `old.x` and `new.x` as `x`.
 fn strip_states(e: &Expr) -> Expr {
     match e {
@@ -1371,14 +1332,6 @@ fn bool_ty() -> TypeRef {
         line: 0,
         col: 0,
         name: "bool".to_string(),
-    }
-}
-
-fn inferred_ty() -> TypeRef {
-    TypeRef::Name {
-        line: 0,
-        col: 0,
-        name: INFERRED.to_string(),
     }
 }
 

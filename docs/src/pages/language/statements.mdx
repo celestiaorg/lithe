@@ -13,6 +13,7 @@ A block is a sequence of statements in braces, each ending with `;`:
 | Tuple binding | `const (a, b) : (t, u) := expr;`, `var (a, b) : (t, u) := expr;` |
 | Mutable binding | `var name : type := expr;` |
 | Assignment | `name := expr;`, `storage.path := expr;` |
+| Compound assignment | `name += expr;`, `storage.path -= expr;`, and the other operators |
 | Call | `f(args);`, `Module.f(args);` for a function that returns nothing; `const _ : T := f(args);` drops a result |
 | Conditional | `if cond then { ... } else if cond then { ... } else { ... }` |
 | Loop | `for x : T in xs [until cond] [bound n] do { ... }`, or over `lo .. hi` |
@@ -77,12 +78,70 @@ storage is record {
 }
 
 external function pay(const to : address) is {
-  paid := paid + 1;
+  paid += 1;
 }
 ```
 
 ```text
 storage field `paid` must be qualified as `storage.paid`
+```
+
+## Compound assignment
+
+`place op= expr;` is `place := place op expr;`, and goes wherever `:=` does. Each operator follows the same [rules](/language/expressions#operators) as the binary operator it is named for, including its checks:
+
+| Operator | Same as | For | Fails |
+| --- | --- | --- | --- |
+| `+=` | `x := x + y` | adding to a balance, a total, or a counter | `Panic(0x11)` on overflow |
+| `-=` | `x := x - y` | taking from a balance, an allowance, or a supply | `Panic(0x11)` on underflow or overflow |
+| `*=` | `x := x * y` | scaling by a factor | `Panic(0x11)` on overflow |
+| `/=` | `x := x / y` | dividing, truncating toward zero, to split an amount or change its scale | `Panic(0x12)` dividing by zero, `Panic(0x11)` for `Int.min / -1` |
+| `%=` | `x := x % y` | keeping the remainder, to wrap an index or a counter into a range | `Panic(0x12)` dividing by zero |
+| `**=` | `x := x ** y` | raising to a power | `Panic(0x11)` on overflow |
+| `&=` | `x := x & y` | clearing bits: keeping only those in a mask | never |
+| `\|=` | `x := x \| y` | setting bits, such as flags | never |
+| `^=` | `x := x ^ y` | flipping bits | never |
+| `<<=` | `x := x << y` | shifting left: multiplying by a power of two, dropping bits past the type's width | never |
+| `>>=` | `x := x >> y` | shifting right: dividing by a power of two, arithmetic for signed types | never |
+
+The arithmetic operators keep a ledger:
+
+```lithe
+storage is record {
+  balances : map(address, uint);
+  total : uint;
+}
+
+external function credit(const who : address; const amount : uint) is {
+  storage.balances[who] += amount;
+  storage.total += amount;
+}
+```
+
+The bitwise operators keep a set of flags in one word:
+
+```lithe
+storage is record {
+  flags : uint8;
+}
+
+external function pause() is {
+  storage.flags |= 1;
+}
+
+external function unpause() is {
+  storage.flags &= ~1;
+}
+
+external function toggleFees() is {
+  storage.flags ^= 2;
+}
+```
+
+The place is found once, before `expr` runs. This reads and writes one entry, and calls `next` once:
+
+```lithe fragment
+storage.slots[next()] += 1;
 ```
 
 ## `delete`
@@ -172,7 +231,7 @@ external function mark() is {
 external function triangle(const n : uint) is {
   var acc : uint := 0;
   for i : uint in 0 .. n do {
-    acc := acc + i;
+    acc += i;
   }
   storage.total := acc;
 }

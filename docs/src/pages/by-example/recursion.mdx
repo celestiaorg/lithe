@@ -21,7 +21,7 @@ storage is record {
 pure function fact(const n : uint) : uint is {
   var acc : uint := 1;
   for i : uint in 0 .. n do {
-    acc := acc * (i + 1);
+    acc *= (i + 1);
   }
 } with acc
 
@@ -49,9 +49,9 @@ pure function gcd(var a : uint; var b : uint) : uint is {
 pure function pow(var b : uint; var e : uint) : uint is {
   var acc : uint := 1;
   for _ : uint in 0 .. 256 until e = 0 do {
-    if e % 2 = 1 then { acc := acc * b; }
-    e := e / 2;
-    if e <> 0 then { b := b * b; }
+    if e % 2 = 1 then { acc *= b; }
+    e /= 2;
+    if e <> 0 then { b *= b; }
   }
 } with acc
 
@@ -80,8 +80,8 @@ pure function digits(const n : uint) : uint is {
   var count : uint := 1;
   var rest : uint := n;
   for _ : uint in 0 .. 78 until rest < 10 do {
-    rest := rest / 10;
-    count := count + 1;
+    rest /= 10;
+    count += 1;
   }
 } with count
 

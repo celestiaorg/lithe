@@ -22,13 +22,13 @@ storage is record {
 external pure function sum(const xs : list(uint)) : uint is {
   var acc : uint := 0;
   for x : uint in xs do {
-    acc := acc + x;
+    acc += x;
   }
 } with acc
 
 external function airdrop(const tos : list(address); const amount : uint) is {
   for to : address in tos do {
-    storage.balances[to] := storage.balances[to] + amount;
+    storage.balances[to] += amount;
     emit Sent { to = to; amount = amount; };
   }
 }

@@ -17,11 +17,11 @@ external view function get() : uint is
   storage.count
 
 external function inc() is {
-  storage.count := storage.count + 1;
+  storage.count += 1;
 }
 
 external function dec() is {
-  storage.count := storage.count - 1;
+  storage.count -= 1;
 }
 `;
 const SAVED = "lithe-playground";

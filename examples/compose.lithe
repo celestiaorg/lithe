@@ -23,7 +23,7 @@ module Ledger is {
     ledger.balances[account]
 
   external function mint(const account : address; const amount : uint) is {
-    ledger.balances[account] := ledger.balances[account] + amount;
+    ledger.balances[account] += amount;
   }
 
   (* Moves the caller's tokens, for the contract's own entrypoints. *)
@@ -40,7 +40,7 @@ module Ledger is {
       }
     );
     ledger.balances[sender] := balance - amount;
-    ledger.balances[to] := ledger.balances[to] + amount;
+    ledger.balances[to] += amount;
     emit Transfer {
       from = sender;
       to = to;

@@ -28,7 +28,7 @@ contract Minter is {
     raises Unauthorized
   is {
     OwnableRoles.checkRoles(minter());
-    storage.minted[to] := storage.minted[to] + amount;
+    storage.minted[to] += amount;
   }
 
   external view function minted(const who : address) : uint is

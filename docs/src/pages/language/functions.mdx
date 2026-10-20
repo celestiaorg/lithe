@@ -96,12 +96,12 @@ storage is record {
 }
 
 function credit(storage ledger : map(address, uint); const to : address; const amount : uint) is {
-  ledger[to] := ledger[to] + amount;
+  ledger[to] += amount;
 }
 
 external function mint(const to : address; const amount : uint) is {
   credit(storage.balances, to, amount);
-  storage.total := storage.total + amount;
+  storage.total += amount;
 }
 ```
 
@@ -124,7 +124,7 @@ pure function double(const n : uint) : uint is
   n * 2
 
 external function bump() : uint is {
-  storage.count := storage.count + 1;
+  storage.count += 1;
 } with double(storage.count)
 ```
 
@@ -158,7 +158,7 @@ storage is record {
 }
 
 external function add(const a : uint) is {
-  storage.total := storage.total + a;
+  storage.total += a;
 }
 
 external function add(const a : uint; const b : uint) is {
@@ -238,7 +238,7 @@ storage is record {
 pure function fact(const n : uint) : uint is {
   var acc : uint := 1;
   for i : uint in 0 .. n do {
-    acc := acc * (i + 1);
+    acc *= (i + 1);
   }
 } with acc
 
@@ -306,12 +306,12 @@ storage is record {
 }
 
 payable receive is {
-  storage.received := storage.received + Evm.value();
+  storage.received += Evm.value();
   emit Received { from = Evm.sender(); amount = Evm.value(); };
 }
 
 fallback is {
-  storage.unknown := storage.unknown + 1;
+  storage.unknown += 1;
 }
 
 external view function received() : wei is

@@ -25,19 +25,19 @@ module ERC1155Supply is {
       var minted : uint := 0;
       for (i, id) : (uint, uint) in ids do {
         const value : uint := values[i];
-        erc1155Supply.totalSupply[id] := erc1155Supply.totalSupply[id] + value;
-        minted := minted + value;
+        erc1155Supply.totalSupply[id] += value;
+        minted += value;
       }
-      erc1155Supply.totalSupplyAll := erc1155Supply.totalSupplyAll + minted;
+      erc1155Supply.totalSupplyAll += minted;
     }
     if to = Address.zero then {
       var burned : uint := 0;
       for (i, id) : (uint, uint) in ids do {
         const value : uint := values[i];
-        erc1155Supply.totalSupply[id] := erc1155Supply.totalSupply[id] - value;
-        burned := burned + value;
+        erc1155Supply.totalSupply[id] -= value;
+        burned += value;
       }
-      erc1155Supply.totalSupplyAll := erc1155Supply.totalSupplyAll - burned;
+      erc1155Supply.totalSupplyAll -= burned;
     }
   }
 }

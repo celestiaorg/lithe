@@ -1007,6 +1007,33 @@ external function leak() is { delete storage.balances[Evm.sender()]; }
     );
 }
 
+/// `m[k] op= v` updates a total that counts `m` by the entry's new value, `m[k] op v`.
+#[test]
+fn compound_assignment_keeps_checked_totals() {
+    let src = r#"import "std/evm";
+storage is record { balances : map(address, uint); total : uint; }
+external function deposit(const amount : uint) is {
+  storage.balances[Evm.sender()] += amount;
+  storage.total += amount;
+}
+external function withdraw(const amount : uint) is {
+  storage.balances[Evm.sender()] -= amount;
+  storage.total -= amount;
+}
+external function leak() is { storage.balances[Evm.sender()] *= 2; }
+"#;
+    let spec = "spec is { invariant ledger is storage.total = sum(storage.balances); }";
+    let mut c = Checked::new(src, spec);
+    c.call(1, 0, "deposit(uint256)", &[Word::from_u64(5)])
+        .expect("deposit");
+    c.call(1, 0, "withdraw(uint256)", &[Word::from_u64(2)])
+        .expect("withdraw");
+    assert!(
+        c.call(1, 0, "leak()", &[]).is_err(),
+        "a doubling that breaks the ledger"
+    );
+}
+
 /// Spec arithmetic is over the integers: a checking build compares sums, differences,
 /// products, and quotients exactly, whatever their size or sign, where the code's own
 /// arithmetic would overflow.

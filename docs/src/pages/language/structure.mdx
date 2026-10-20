@@ -30,7 +30,7 @@ contract Registry is {
   }
 
   external function register() is {
-    storage.count := storage.count + 1;
+    storage.count += 1;
   }
 }
 ```

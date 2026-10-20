@@ -27,7 +27,7 @@ external function setHook(const hook : Hook) is {
 }
 
 external nonreentrant function add(const amount : uint) is {
-  storage.total := storage.total + amount;
+  storage.total += amount;
   defer storage.hook.notify(amount);
 }
 

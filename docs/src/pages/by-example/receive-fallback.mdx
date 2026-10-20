@@ -35,7 +35,7 @@ deploy(const owner : address) is {
 }
 
 payable receive is {
-  storage.received := storage.received + Evm.value();
+  storage.received += Evm.value();
   emit Received { from = Evm.sender(); amount = Evm.value(); };
 }
 

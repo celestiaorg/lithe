@@ -76,7 +76,7 @@ external function configure(const feeBps : uint; const treasury : address) is {
 }
 
 external function trade(const amount : uint) is {
-  stats.volume := stats.volume + amount;
+  stats.volume += amount;
 }
 ```
 
@@ -110,8 +110,8 @@ external function run(const amount : uint)
 is {
   assert(not transient.entered, Busy);
   transient.entered := true;
-  scratch.touched[Evm.sender()] := scratch.touched[Evm.sender()] + amount;
-  storage.total := storage.total + amount;
+  scratch.touched[Evm.sender()] += amount;
+  storage.total += amount;
 }
 ```
 
@@ -148,7 +148,7 @@ is {
 }
 
 external function trade(const amount : uint) is {
-  storage.total := storage.total + amount * uint(immutable.feeBps) / 10_000;
+  storage.total += amount * uint(immutable.feeBps) / 10_000;
 }
 
 external view function factory() : address is
@@ -184,7 +184,7 @@ deploy(const treasury : address) is {
 }
 
 external function trade(const amount : uint) is {
-  storage.total := storage.total + Fees.cut(amount);
+  storage.total += Fees.cut(amount);
 }
 ```
 

@@ -28,7 +28,7 @@ function add(const n : uint) is {
   if n > 0 then {
     const oldCount : uint := storage.count;
 
-    storage.count := storage.count + n;
+    storage.count += n;
 
     emit CountChanged {
       oldCount = oldCount;

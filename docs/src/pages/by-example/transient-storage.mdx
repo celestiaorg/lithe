@@ -29,7 +29,7 @@ storage is record {
 external function lend(const to : Callback; const amount : uint) is {
   flash.active := true;
   flash.lent := amount;
-  storage.totalLent := storage.totalLent + amount;
+  storage.totalLent += amount;
   defer to.onFlash(amount);
 }
 

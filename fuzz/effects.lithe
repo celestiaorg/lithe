@@ -36,8 +36,8 @@ external payable function forward(const s : Sink; const amount : uint)
   raises Low
 is {
   assert(amount < 100, Low(amount));
-  storage.sent := storage.sent + Evm.value();
-  storage.calls := storage.calls + 1;
+  storage.sent += Evm.value();
+  storage.calls += 1;
   defer s.deposit(amount);
   if amount > 3 then {
     defer s.ping();

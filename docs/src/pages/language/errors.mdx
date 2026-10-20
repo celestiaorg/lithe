@@ -211,7 +211,7 @@ is {
   assert(not storage.paused, Paused);
   assert(amount >= 10, TooSmall(amount));
   assert(storage.balance >= amount, Insufficient(storage.balance));
-  storage.balance := storage.balance - amount;
+  storage.balance -= amount;
 }
 ```
 

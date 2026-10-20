@@ -87,7 +87,7 @@ storage is record {
 
 upgrade guard is {
   assert(Evm.sender() = storage.owner, NotOwner);
-  storage.upgrades := storage.upgrades + 1;
+  storage.upgrades += 1;
 }
 
 external function claim() is {

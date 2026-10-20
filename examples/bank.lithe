@@ -53,7 +53,7 @@ is {
     }
   );
 
-  storage.balance := storage.balance - taken;
+  storage.balance -= taken;
 
   emit Withdrawal {
     account = Evm.sender();

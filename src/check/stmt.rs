@@ -2,6 +2,12 @@ use super::*;
 
 impl Checker {
     pub(super) fn check_stmt(&mut self, s: &mut Stmt) -> Result<(), Error> {
+        if let Some(block) = self.compound_assign(s) {
+            *s = block;
+            self.check_stmt(s)?;
+            self.inline_keys(s);
+            return Ok(());
+        }
         if let Some(split) = self.split_assign(s) {
             *s = split;
         }
@@ -17,7 +23,8 @@ impl Checker {
                 part_syms,
             } => {
                 let id = if crate::spec::inferred(ty) {
-                    // A value `--check-specs` keeps from before the call, as it is.
+                    // A value `--check-specs` keeps from before the call, or a list index
+                    // `op=` binds, as it is.
                     let expect = self.expect.take();
                     let checked = self.check_expr(expr);
                     self.expect = expect;
@@ -243,6 +250,7 @@ impl Checker {
                     },
                 );
                 *s = Stmt::Assign {
+                    op: None,
                     line,
                     col,
                     path,
@@ -851,6 +859,7 @@ impl Checker {
             ty: 0,
         });
         *s = Stmt::Assign {
+            op: None,
             line,
             col,
             path,
@@ -935,6 +944,7 @@ impl Checker {
         };
         args[0] = target.clone();
         *s = Stmt::Assign {
+            op: None,
             line,
             col,
             path,
@@ -977,31 +987,8 @@ impl Checker {
         leaf: &mut u32,
         target: &mut Option<Box<Expr>>,
     ) -> Result<(), Error> {
-        let mut all: Vec<Expr> = index.take().into_iter().chain(keys.drain(..)).collect();
-        let mut place_expr = path_expr(line, col, path);
-        let mut named = fields.iter().peekable();
-        for (i, key) in all.drain(..).enumerate() {
-            place_expr = Expr::Index {
-                line,
-                col,
-                base: Box::new(place_expr),
-                index: Box::new(key),
-                root: None,
-                leaf: 0,
-                ty: 0,
-            };
-            while let Some((_, name)) = named.next_if(|(at, _)| *at == i + 1) {
-                place_expr = Expr::Field {
-                    line,
-                    col,
-                    base: Box::new(place_expr),
-                    name: name.clone(),
-                    root: None,
-                    leaf: 0,
-                    ty: 0,
-                };
-            }
-        }
+        let all = index.take().into_iter().chain(keys.drain(..));
+        let mut place_expr = place_of(line, col, path, all, fields);
         let place = self.place(&mut place_expr)?;
         if matches!(&place_expr, Expr::Index { base, .. } if self.types[base.ty()].kind == TyKind::Bytes)
         {
@@ -1038,6 +1025,157 @@ impl Checker {
         *leaf = place.leaf;
         *target = Some(Box::new(place_expr));
         Ok(())
+    }
+
+    /// `p op= v` becomes `p := p op v`. A key that is more than names, literals, and
+    /// operators is bound first, in a block of its own, so the place is found once, before
+    /// `v` runs. `inline_keys` puts back those that need not be.
+    fn compound_assign(&self, s: &mut Stmt) -> Option<Stmt> {
+        let Stmt::Assign {
+            line,
+            col,
+            path,
+            index,
+            keys,
+            fields,
+            expr,
+            op,
+            ..
+        } = s
+        else {
+            return None;
+        };
+        let op = op.take()?;
+        let (line, col) = (*line, *col);
+        let mut ty = self.lookup_path(line, col, path).ok().map(|p| p.ty);
+        let mut named = fields.iter().peekable();
+        let mut stmts = Vec::new();
+        for (i, key) in index.iter_mut().chain(keys.iter_mut()).enumerate() {
+            let t = ty.map(|t| &self.types[peel_id(&self.types, t)]);
+            let key_ty = t.and_then(|t| match t.kind {
+                TyKind::Map => t.left.map(|id| TypeRef::Hole { id }),
+                TyKind::List => Some(crate::spec::inferred_ty()),
+                _ => None,
+            });
+            ty = t.and_then(|t| t.right.or(t.elem));
+            while let Some((_, name)) = named.next_if(|(at, _)| *at == i + 1) {
+                ty = ty.and_then(|t| {
+                    let fields = &self.types[peel_id(&self.types, t)].fields;
+                    fields.iter().find(|f| f.name == *name).map(|f| f.ty)
+                });
+            }
+            let Some(key_ty) = key_ty else {
+                continue;
+            };
+            if same_each_time(key) {
+                continue;
+            }
+            let temp = format!("#key{i}");
+            let read = path_expr(line, col, std::slice::from_ref(&temp));
+            stmts.push(Stmt::Const {
+                line,
+                col,
+                name: temp,
+                parts: Vec::new(),
+                ty: key_ty,
+                expr: std::mem::replace(key, read),
+                sym: None,
+                part_syms: Vec::new(),
+            });
+        }
+        let all = index.iter().chain(keys.iter()).cloned();
+        let read = place_of(line, col, path, all, fields);
+        let unit = Expr::Lit {
+            line,
+            col,
+            lit: Lit::Unit,
+            ty: 0,
+        };
+        let value = std::mem::replace(expr, unit);
+        *expr = Expr::Binary {
+            line,
+            col,
+            op,
+            left: Box::new(read),
+            right: Box::new(value),
+            ty: 0,
+        };
+        if stmts.is_empty() {
+            return None;
+        }
+        stmts.push(std::mem::replace(s, Stmt::Skip));
+        Some(Stmt::If {
+            line,
+            col,
+            cond: Expr::Lit {
+                line,
+                col,
+                lit: Lit::Bool(true),
+                ty: 0,
+            },
+            then_body: stmts,
+            else_body: Vec::new(),
+        })
+    }
+
+    /// Puts each key `compound_assign` bound back in its place, once checked, where running
+    /// it again at the write finds the same place: it varies with nothing it runs, and
+    /// reads no state when the value it adds, or a key that stays bound, could write some.
+    /// A local key would keep a loop from finding the place's slot once, before the loop.
+    fn inline_keys(&self, s: &mut Stmt) {
+        let Stmt::If { then_body, .. } = s else {
+            return;
+        };
+        let Some((
+            Stmt::Assign {
+                expr: Expr::Binary { right: value, .. },
+                ..
+            },
+            bound,
+        )) = then_body.split_last()
+        else {
+            return;
+        };
+        let keys_vary = bound.iter().any(|st| match st {
+            Stmt::Const { expr, .. } => self.varies(expr),
+            _ => false,
+        });
+        let writes = keys_vary || self.varies(value);
+        let known: HashMap<usize, Expr> = bound
+            .iter()
+            .filter_map(|st| match st {
+                Stmt::Const {
+                    sym: Some(sym),
+                    expr,
+                    ..
+                } if !(self.varies(expr) || writes && self.reads_state(expr)) => {
+                    Some((*sym, expr.clone()))
+                }
+                _ => None,
+            })
+            .collect();
+        if known.is_empty() {
+            return;
+        }
+        then_body.retain(
+            |st| !matches!(st, Stmt::Const { sym: Some(sym), .. } if known.contains_key(sym)),
+        );
+        if let Some(Stmt::Assign {
+            index,
+            keys,
+            expr,
+            target,
+            ..
+        }) = then_body.last_mut()
+        {
+            let all = index.iter_mut().chain(keys.iter_mut()).chain([expr]);
+            for e in all.chain(target.iter_mut().map(|t| t.as_mut())) {
+                put_back(e, &known);
+            }
+        }
+        if then_body.len() == 1 {
+            *s = then_body.pop().expect("the assignment");
+        }
     }
 
     /// A storage field holding a record or fixed list with strings, bytes, or lists is
@@ -1118,6 +1256,7 @@ impl Checker {
         };
         for (path, index, expr) in parts {
             stmts.push(Stmt::Assign {
+                op: None,
                 line,
                 col,
                 path,
@@ -1168,6 +1307,64 @@ impl Checker {
             ty = field.ty;
         }
         Ok((ty, leaf))
+    }
+}
+
+/// The place an assignment writes, as an expression: the path, then each key, each
+/// followed by the fields named after it.
+fn place_of(
+    line: u32,
+    col: u32,
+    path: &[String],
+    keys: impl Iterator<Item = Expr>,
+    fields: &[(usize, String)],
+) -> Expr {
+    let mut place = path_expr(line, col, path);
+    let mut named = fields.iter().peekable();
+    for (i, key) in keys.enumerate() {
+        place = Expr::Index {
+            line,
+            col,
+            base: Box::new(place),
+            index: Box::new(key),
+            root: None,
+            leaf: 0,
+            ty: 0,
+        };
+        while let Some((_, name)) = named.next_if(|(at, _)| *at == i + 1) {
+            place = Expr::Field {
+                line,
+                col,
+                base: Box::new(place),
+                name: name.clone(),
+                root: None,
+                leaf: 0,
+                ty: 0,
+            };
+        }
+    }
+    place
+}
+
+/// `e` with each local in `known` replaced by the expression it was bound to.
+fn put_back(e: &mut Expr, known: &HashMap<usize, Expr>) {
+    if let Expr::Ident { sym: Some(sym), .. } = e {
+        if let Some(value) = known.get(sym) {
+            *e = value.clone();
+            return;
+        }
+    }
+    each_child(e, &mut |child| put_back(child, known));
+}
+
+/// Whether `e` has the same value however often it runs between a statement's start and
+/// its write: it reads only literals and names, which no expression can change.
+fn same_each_time(e: &Expr) -> bool {
+    match e {
+        Expr::Lit { .. } | Expr::Ident { .. } => true,
+        Expr::Unary { expr, .. } => same_each_time(expr),
+        Expr::Binary { left, right, .. } => same_each_time(left) && same_each_time(right),
+        _ => false,
     }
 }
 

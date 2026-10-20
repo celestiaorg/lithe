@@ -240,7 +240,10 @@ fn options(
         for o in groups {
             opts.push(group_breaks(pieces, partner, o));
         }
-        if let Some(&i) = inner.iter().find(|&&i| is(i, Kind::Assign) && i < b) {
+        if let Some(&i) = inner
+            .iter()
+            .find(|&&i| (is(i, Kind::Assign) || is(i, Kind::OpAssign)) && i < b)
+        {
             let line = out[from..].lines().next().unwrap_or("");
             let indent = line.len() - line.trim_start().len();
             let rest = &out[starts[i + 1]..from + line.len()];

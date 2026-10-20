@@ -36,9 +36,9 @@ module Ledger is {
     defer Evm.call(to, Abi.encode(seed)) then (answer : bytes) {
       const r : uint := Abi.decode(answer, uint);
       assert(r < 1000, Big(r));
-      ledger.sum := ledger.sum + r;
+      ledger.sum += r;
     };
-    ledger.last := ledger.last + priced(seed);
+    ledger.last += priced(seed);
   } with seed % 7
 
   function batch(const to : address; const n : uint) is {
@@ -56,10 +56,10 @@ storage is record { moves : uint; tags : uint; }
 use Ledger exposing { view function totals() : (uint, uint, uint); }
 
 hook Ledger.moved(const id : uint) is {
-  storage.moves := storage.moves + 1;
+  storage.moves += 1;
   if id % 3 = 0 then {
     defer Evm.call(address(0xcd), Abi.encode(id + 1000)) then (answer : bytes) {
-      storage.tags := storage.tags + answer.length;
+      storage.tags += answer.length;
     };
   }
 }
@@ -80,7 +80,7 @@ external function batch(const to : address; const n : uint) is Ledger.batch(to, 
 external function mixed(const to : address; const seed : uint) : uint raises Big is {
   defer Evm.call(address(0xcd), Abi.encode(seed));
   Ledger.note(to, seed);
-  storage.tags := storage.tags + 1;
+  storage.tags += 1;
 } with Ledger.price(address(0xcd), seed % 900)
 
 external view function seen() : (uint, uint) is (storage.moves, storage.tags)

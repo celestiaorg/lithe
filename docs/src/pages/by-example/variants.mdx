@@ -37,13 +37,13 @@ external function main(const action : Action)
 is
   case action of {
   | Deposit(amount) -> {
-      storage.balances[Evm.sender()] := storage.balances[Evm.sender()] + amount;
+      storage.balances[Evm.sender()] += amount;
     }
   | Send(p) -> {
       const have : uint := storage.balances[Evm.sender()];
       assert(have >= p.amount, Insufficient(have));
       storage.balances[Evm.sender()] := have - p.amount;
-      storage.balances[p.to] := storage.balances[p.to] + p.amount;
+      storage.balances[p.to] += p.amount;
     }
   | Reset -> {
       storage.balances[Evm.sender()] := 0;
@@ -80,7 +80,7 @@ storage is record {
 
 external function bid(const amount : uint) raises NotOpen is {
   assert(storage.phase = Open, NotOpen);
-  storage.bids[Evm.sender()] := storage.bids[Evm.sender()] + amount;
+  storage.bids[Evm.sender()] += amount;
 }
 
 external function pause() is {

@@ -75,11 +75,11 @@ storage is record {
 external nonreentrant function redeem(const shares : uint) is {
   defer storage.vault.withdraw(shares)
     then ((principal, earned) : (uint, uint)) {
-      storage.principal := storage.principal + principal;
-      storage.earned := storage.earned + earned;
+      storage.principal += principal;
+      storage.earned += earned;
       defer storage.vault.deposit(earned)
         then (newShares : uint) {
-          storage.shares := storage.shares + newShares;
+          storage.shares += newShares;
         };
     };
 }
@@ -139,7 +139,7 @@ external nonreentrant function publish(const id : uint) is {
         storage.notified[id] := accepted;
       }
     | Error(reason : bytes) -> {
-        storage.failures := storage.failures + 1;
+        storage.failures += 1;
         storage.lastError := reason;
       }
   };

@@ -2014,7 +2014,8 @@ impl<'a> Builder<'a> {
         kind: Kind,
     ) -> (u32, u32) {
         let pos = self.locate(self.file, line, col, name);
-        if name == "_" || name.is_empty() {
+        // `#`: a local the checker made, which the source never names.
+        if name == "_" || name.is_empty() || name.starts_with('#') {
             return pos;
         }
         let ty = sym.map(|s| self.c().syms[s].ty);

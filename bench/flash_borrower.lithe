@@ -44,7 +44,7 @@ is {
   storage.lastFee := fee;
   storage.lastData := data;
   storage.held := query token.balanceOf(Evm.self());
-  storage.loans := storage.loans + 1;
+  storage.loans += 1;
   if storage.mode <> 2 then {
     defer token.approve(address(token), amount + fee);
   }

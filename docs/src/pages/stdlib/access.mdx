@@ -81,7 +81,7 @@ contract Minter is {
     raises Unauthorized
   is {
     OwnableRoles.checkRoles(minter());
-    storage.minted[to] := storage.minted[to] + amount;
+    storage.minted[to] += amount;
   }
 
   external function pause()
@@ -144,7 +144,7 @@ contract Minter is {
     raises AccessControlUnauthorizedAccount
   is {
     AccessControl.checkRole(minter());
-    storage.minted[to] := storage.minted[to] + amount;
+    storage.minted[to] += amount;
   }
 }
 ```
