@@ -78,10 +78,10 @@ module Math is {
   pure function log10(const a : uint) : uint is {
     var x : uint := a;
     var r : uint := 0;
-    if x >= 10 ** 38 then { x := x / 10 ** 38; r := 38; }
-    if x >= 10 ** 20 then { x := x / 10 ** 20; r := Uint.wrappingAdd(r, 20); }
-    if x >= 10 ** 10 then { x := x / 10 ** 10; r := Uint.wrappingAdd(r, 10); }
-    if x >= 100000 then { x := x / 100000; r := Uint.wrappingAdd(r, 5); }
+    if x >= 10 ** 38 then { x /= 10 ** 38; r := 38; }
+    if x >= 10 ** 20 then { x /= 10 ** 20; r := Uint.wrappingAdd(r, 20); }
+    if x >= 10 ** 10 then { x /= 10 ** 10; r := Uint.wrappingAdd(r, 10); }
+    if x >= 100000 then { x /= 100000; r := Uint.wrappingAdd(r, 5); }
   } with Uint.wrappingAdd(
     Uint.wrappingAdd(uint(x > 9), uint(x > 99)),
     Uint.wrappingAdd(Uint.wrappingAdd(uint(x > 999), uint(x > 9999)), r))

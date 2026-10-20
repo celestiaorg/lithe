@@ -1023,8 +1023,8 @@ mod tests {
         let good = std::fs::read_to_string(&path).unwrap();
         // A half-typed line: the file no longer checks, but the index from before still answers.
         let edited = good.replacen(
-            "    storage.count := storage.count + n;",
-            "    storage.count := storage.count + n;\n    storage.\n    add(",
+            "    storage.count += n;",
+            "    storage.count += n;\n    storage.\n    add(",
             1,
         );
         let change = frame(&format!(
@@ -1057,7 +1057,7 @@ mod tests {
         assert!(reply(2).contains(
             r#""range":{"start":{"line":26,"character":9},"end":{"line":26,"character":12}}"#
         ));
-        assert_eq!(reply(3).matches(r#""uri""#).count(), 8, "{}", reply(3));
+        assert_eq!(reply(3).matches(r#""uri""#).count(), 7, "{}", reply(3));
         assert!(reply(4).contains(r#""name":"storage""#) && reply(4).contains(r#""name":"count""#));
         let completion = reply(5);
         assert!(

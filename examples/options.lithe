@@ -59,12 +59,12 @@ external view function eqs(const k : uint) : uint is {
   const a : option(uint) := Some(k);
   const b : option(uint) := None;
   var score : uint := 0;
-  if a = Some(5) then { score := score + 1; } else { skip }
-  if b = None then { score := score + 10; } else { skip }
-  if a <> None then { score := score + 100; } else { skip }
-  if bump(a) = bump(Some(k)) then { score := score + 1000; } else { skip }
-  if bump(Some(1)) = bump(Some(2)) then { score := score + 10000; } else { skip }
-  if Some(uint8(3)) = Some(uint8(3)) then { score := score + 100000; } else { skip }
+  if a = Some(5) then { score += 1; } else { skip }
+  if b = None then { score += 10; } else { skip }
+  if a <> None then { score += 100; } else { skip }
+  if bump(a) = bump(Some(k)) then { score += 1000; } else { skip }
+  if bump(Some(1)) = bump(Some(2)) then { score += 10000; } else { skip }
+  if Some(uint8(3)) = Some(uint8(3)) then { score += 100000; } else { skip }
 } with score
 
 external view function inferred(const k : uint) : uint is

@@ -27,7 +27,7 @@ deploy(const n : string) is {
 
 external function rename(const n : string) is {
   storage.name := n;
-  storage.updates := storage.updates + 1;
+  storage.updates += 1;
   emit Renamed {
     label = n;
   };

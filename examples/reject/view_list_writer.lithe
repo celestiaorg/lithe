@@ -3,7 +3,7 @@ storage is record {
 }
 
 function bump(const keys : list(uint)) is {
-  storage.n := storage.n + keys.length;
+  storage.n += keys.length;
 }
 
 external view function get(const keys : list(uint)) : uint is {

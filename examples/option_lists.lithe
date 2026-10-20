@@ -25,7 +25,7 @@ external view function wideLen() : uint is storage.wide.length
 external function putFixed(const i : uint; const v : uint) is {
   storage.fixed[i] := Some(v);
   storage.fixed8[i] := Some(v > 5);
-  storage.after := storage.after + 1;
+  storage.after += 1;
 }
 external function clearFixed(const i : uint) is { storage.fixed[i] := None; }
 external view function fixedAt(const i : uint) : uint is

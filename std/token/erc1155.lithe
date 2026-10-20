@@ -100,7 +100,7 @@ module ERC1155 is {
         erc1155.balances[id][from] := balance - value;
       }
       if to <> Address.zero then {
-        erc1155.balances[id][to] := erc1155.balances[id][to] + value;
+        erc1155.balances[id][to] += value;
       }
     }
     if ids.length = 1 then {

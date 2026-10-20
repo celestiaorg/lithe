@@ -114,7 +114,7 @@ external function open(const id : uint; const amount : uint) is {
 }
 
 external function grow(const id : uint; const extra : uint) is {
-  storage.positions[id].amount := storage.positions[id].amount + extra;
+  storage.positions[id].amount += extra;
 }
 ```
 
@@ -263,7 +263,7 @@ external function note(const value : uint208) is {
 }
 
 external function bump(const i : uint) is {
-  storage.history[i].value := storage.history[i].value + 1;
+  storage.history[i].value += 1;
 }
 
 external view function all() : list(Checkpoint) is

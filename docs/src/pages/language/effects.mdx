@@ -175,7 +175,7 @@ storage is record {
 }
 
 external nonreentrant function pay(const to : address; const amount : uint) is {
-  storage.paid[to] := storage.paid[to] + amount;
+  storage.paid[to] += amount;
   defer storage.token.transfer(to, amount);
 }
 ```
@@ -431,7 +431,7 @@ contract Factory is {
 
   external function open(const salt : bytes32) : address is {
     defer create Vault() with salt = salt;
-    storage.count := storage.count + 1;
+    storage.count += 1;
   } with Create2.computeAddressHere(salt, Crypto.keccak256(Evm.creationCode(Vault)))
 }
 
@@ -499,7 +499,7 @@ contract Factory is {
           storage.last := vault;
         }
       | Error(_) -> {
-          storage.failed := storage.failed + 1;
+          storage.failed += 1;
         }
     };
   }
@@ -574,7 +574,7 @@ external nonreentrant function execute(const target : address; const value : uin
   raises NotOwner
 is {
   assert(Evm.sender() = storage.owner, NotOwner);
-  storage.nonce := storage.nonce + 1;
+  storage.nonce += 1;
   defer Evm.call(target, data) with value = value;
 }
 ```
@@ -592,7 +592,7 @@ external nonreentrant function tryCall(const target : address; const data : byte
   defer Evm.call(target, data) then {
     | Ok(result : bytes) -> { skip }
     | Error(reason : bytes) -> {
-        storage.failures := storage.failures + 1;
+        storage.failures += 1;
       }
   };
 }

@@ -60,7 +60,7 @@ external function mix(const x : uint32; const y : uint32; const k : uint) is {
   const s : uint32 := x + y;
   const d : uint32 := s / 3;
   storage.u32 := d * 2;
-  storage.n := storage.n + k;
+  storage.n += k;
   if k > 10 then {
     storage.b := true;
   } else {

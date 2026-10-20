@@ -80,8 +80,8 @@ external nonreentrant function redeem(const id : uint) is {
   defer storage.vault.withdraw(storage.orders[id].shares)
     then ((principal, earned) : (uint, uint)) {
       storage.orders[id].status := Redeemed;
-      storage.principal := storage.principal + principal;
-      storage.earned := storage.earned + earned;
+      storage.principal += principal;
+      storage.earned += earned;
     };
 }
 

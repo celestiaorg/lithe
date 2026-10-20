@@ -40,7 +40,7 @@ external function sweep(const to : address)
 is {
   const held : uint := query storage.token.balanceOf(Evm.self());
   assert(held > 0, Empty);
-  storage.swept := storage.swept + held;
+  storage.swept += held;
   defer storage.token.transfer(to, held);
 }
 

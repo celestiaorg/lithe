@@ -50,7 +50,7 @@ is {
         if answer.length > 0 then {
           assert(Abi.decode(answer, bool), TransferRefused);
         }
-        storage.sent := storage.sent + amount;
+        storage.sent += amount;
       }
     | Error(reason : bytes) -> {
         (* The first four bytes of a custom error are its selector. `Bytes.word` reads a
@@ -59,7 +59,7 @@ is {
         if reason.length >= 4 then {
           storage.lastError := bytes4(uint32(uint(Bytes.word(Bytes.concat(reason, pad), 0)) >> 224));
         }
-        storage.refusals := storage.refusals + 1;
+        storage.refusals += 1;
       }
   };
 }

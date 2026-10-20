@@ -40,11 +40,11 @@ event Named of record {
 }
 
 function bump(const k : uint) : uint is {
-  storage.count := storage.count + k;
+  storage.count += k;
 } with storage.count
 
 function credit(const who : address; const amount : uint) is {
-  storage.balances[who] := storage.balances[who] + amount;
+  storage.balances[who] += amount;
   emit Moved {
     who = who;
     amount = amount;
@@ -69,7 +69,7 @@ is {
 external function move(const src : address; const dst : address; const amount : uint) is {
   const have : uint := storage.balances[src];
   storage.balances[src] := have - amount;
-  storage.balances[dst] := storage.balances[dst] + amount;
+  storage.balances[dst] += amount;
   const _ : uint := bump(1);
 }
 

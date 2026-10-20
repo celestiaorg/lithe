@@ -1674,3 +1674,309 @@ fn delete_is_rejected_where_assignment_is() {
     let ok = "external function f() is { const delete : uint := 2; storage.x := delete; delete storage.a.n; delete storage.m[1]; }";
     compile(&format!("{base}{ok}")).expect("delete as a name");
 }
+
+/// Each compound operator acts and fails as its binary operator does, as the table in
+/// the statements docs says, and the docs' flags example sets, clears, and flips bits.
+#[test]
+fn compound_assignment_operators_act_as_their_binary_operators() {
+    let ops = [
+        ("add", "uint8", "+", "uint8"),
+        ("sub", "uint8", "-", "uint8"),
+        ("isub", "int8", "-", "int8"),
+        ("mul", "uint8", "*", "uint8"),
+        ("div", "uint8", "/", "uint8"),
+        ("idiv", "int8", "/", "int8"),
+        ("rem", "uint8", "%", "uint8"),
+        ("irem", "int8", "%", "int8"),
+        ("pow", "uint8", "**", "uint"),
+        ("bitAnd", "uint8", "&", "uint8"),
+        ("bitOr", "uint8", "|", "uint8"),
+        ("bitXor", "uint8", "^", "uint8"),
+        ("shl", "uint8", "<<", "uint"),
+        ("shr", "uint8", ">>", "uint"),
+        ("ishr", "int8", ">>", "uint"),
+    ];
+    let mut src = String::from(
+        "storage is record { flags : uint8; }\n\
+         external function pause() is { storage.flags |= 1; }\n\
+         external function unpause() is { storage.flags &= ~1; }\n\
+         external function toggleFees() is { storage.flags ^= 2; }\n",
+    );
+    for (name, ty, op, by) in ops {
+        src += &format!(
+            "external pure function {name}(const x : {ty}; const y : {by}) : {ty} is {{\n  var a : {ty} := x;\n  a {op}= y;\n}} with a\n"
+        );
+    }
+    let rt = deploy(&compile(&src).expect("compile")).expect("deploy");
+    let w = |v: i64| {
+        let n = Word::from_u64(v.unsigned_abs());
+        if v < 0 {
+            n.wrapping_neg()
+        } else {
+            n
+        }
+    };
+    for (name, x, y, want) in [
+        ("add", 200, 55, Ok(255)),
+        ("add", 200, 56, Err(0x11)),
+        ("sub", 5, 3, Ok(2)),
+        ("sub", 3, 5, Err(0x11)),
+        ("isub", -100, 28, Ok(-128)),
+        ("isub", -100, 29, Err(0x11)),
+        ("isub", 100, -27, Ok(127)),
+        ("isub", 100, -28, Err(0x11)),
+        ("mul", 15, 17, Ok(255)),
+        ("mul", 16, 16, Err(0x11)),
+        ("div", 7, 2, Ok(3)),
+        ("div", 1, 0, Err(0x12)),
+        ("idiv", -7, 2, Ok(-3)),
+        ("idiv", -128, -1, Err(0x11)),
+        ("rem", 7, 3, Ok(1)),
+        ("rem", 1, 0, Err(0x12)),
+        ("irem", -7, 3, Ok(-1)),
+        ("irem", 1, 0, Err(0x12)),
+        ("pow", 3, 5, Ok(243)),
+        ("pow", 2, 8, Err(0x11)),
+        ("bitAnd", 0b1100, 0b1010, Ok(0b1000)),
+        ("bitOr", 0b1100, 0b1010, Ok(0b1110)),
+        ("bitXor", 0b1100, 0b1010, Ok(0b0110)),
+        ("shl", 1, 7, Ok(128)),
+        ("shl", 1, 8, Ok(0)),
+        ("shl", 0xff, 4, Ok(0xf0)),
+        ("shr", 128, 7, Ok(1)),
+        ("shr", 0xff, 9, Ok(0)),
+        ("ishr", -128, 1, Ok(-64)),
+        ("ishr", -1, 7, Ok(-1)),
+    ] {
+        let (ty, by) = ops
+            .iter()
+            .find(|o| o.0 == name)
+            .map(|o| (o.1, o.3))
+            .unwrap();
+        let abi = |t: &'static str| if t == "uint" { "uint256" } else { t };
+        let sig = format!("{name}({},{})", abi(ty), abi(by));
+        let out = call(&rt, &sig, &[w(x), w(y)]);
+        match want {
+            Ok(v) => {
+                assert!(!out.reverted, "{sig} {x} {y}: {}", pretty(&out.returndata));
+                assert_eq!(load_bytes(&out.returndata, 0), w(v), "{sig} {x} {y}");
+            }
+            Err(code) => {
+                assert!(out.reverted, "{sig} {x} {y}");
+                assert!(
+                    out.returndata.starts_with(&selector("Panic(uint256)")),
+                    "{sig}"
+                );
+                assert_eq!(load_bytes(&out.returndata, 4), w(code), "{sig} {x} {y}");
+            }
+        }
+    }
+    let flags = |st: &HashMap<Word, Word>| slot(st, 0);
+    let paused = run_ok(&rt, &HashMap::new(), "pause()", &[]).storage;
+    assert_eq!(flags(&paused), w(1));
+    let fees = run_ok(&rt, &paused, "toggleFees()", &[]).storage;
+    assert_eq!(flags(&fees), w(3));
+    let unpaused = run_ok(&rt, &fees, "unpause()", &[]).storage;
+    assert_eq!(flags(&unpaused), w(2));
+    let toggled = run_ok(&rt, &unpaused, "toggleFees()", &[]).storage;
+    assert_eq!(flags(&toggled), w(0));
+}
+
+/// A key that a second run finds the same, such as `Evm.sender()`, stays in place rather
+/// than in a local, so `p op= v` compiles as `p := p op v` does: in a loop, the place's slot
+/// is still found once, before it. Any other call, a hash, or a query runs once, as if bound
+/// first.
+#[test]
+fn compound_assignment_compiles_as_assignment() {
+    let program = |body: &str| {
+        format!(
+            "import \"std/evm\";\nimport \"std/abi\";\nstorage is record {{ held : map(address, uint); n : uint; m : map(uint, uint); b : map(bytes, uint); }}\n\
+             view function cursor() : uint is storage.n\n\
+             pure function idx(const a : uint; const b : uint) : uint is a * 1000 + b % 7\n\
+             external function go(const k : uint) is {{\n  for _ : uint in 0 .. k do {{\n    {body}\n  }}\n}}\n"
+        )
+    };
+    for (compound, spelled) in [
+        (
+            "storage.held[Evm.sender()] += 1;",
+            "storage.held[Evm.sender()] := storage.held[Evm.sender()] + 1;",
+        ),
+        (
+            "storage.m[cursor()] *= 2;",
+            "const c : uint := cursor();\n    storage.m[c] := storage.m[c] * 2;",
+        ),
+        (
+            "storage.m[Abi.decode(query Evm.staticCall(Evm.sender(), \"\"), uint)] += 1;",
+            "const c : uint := Abi.decode(query Evm.staticCall(Evm.sender(), \"\"), uint);\n    \
+             storage.m[c] := storage.m[c] + 1;",
+        ),
+        (
+            "storage.m[idx(k, k)] *= 2;",
+            "const c : uint := idx(k, k);\n    storage.m[c] := storage.m[c] * 2;",
+        ),
+        (
+            "storage.m[storage.n] -= 1;",
+            "storage.m[storage.n] := storage.m[storage.n] - 1;",
+        ),
+        (
+            "storage.b[Evm.calldata()] += 1;",
+            "const c : bytes := Evm.calldata();\n    storage.b[c] := storage.b[c] + 1;",
+        ),
+    ] {
+        assert_eq!(
+            compile(&program(compound)).expect(compound),
+            compile(&program(spelled)).expect(spelled),
+            "{compound}"
+        );
+    }
+}
+
+/// `p op= v` is `p := p op v`, checked like it, with the place found once: a key that
+/// calls a function runs once, and a key reading state reads it before `v` runs.
+#[test]
+fn compound_assignment_finds_its_place_once() {
+    let src = r#"import "std/list";
+type Pair is record { a : uint; b : uint; }
+storage is record {
+  n : uint;
+  xs : map(uint, uint);
+  ys : map(uint, map(uint, uint8));
+  zs : list(uint);
+  rs : map(uint, Pair);
+  total : uint;
+  small : uint8;
+}
+function next() : uint is {
+  storage.n += 1;
+} with storage.n
+external function go(const k : uint) is {
+  storage.xs[next()] += 7;
+  storage.xs[storage.n] += next();
+  storage.ys[k][k + 1] += 3;
+  storage.ys[k][k + 1] *= 2;
+  List.push(storage.zs, 5);
+  storage.zs[storage.n - 2] -= 1;
+  storage.rs[next()].b += 4;
+  var a : uint := 3;
+  a **= 2;
+  a <<= 1;
+  a -= 1;
+  a /= 2;
+  a %= 5;
+  a &= 7;
+  a ^= 1;
+  a |= 8;
+  a >>= 1;
+  storage.total := a;
+}
+external view function z() : uint is storage.zs[0]
+external function low() is {
+  storage.small -= 1;
+}
+transient storage is record { t : uint; }
+storage tally at "test.tally" is record { count : uint; }
+function credit(storage ledger : map(uint, uint); const k : uint; var by : uint) is {
+  by *= 10;
+  ledger[k] += by;
+}
+external function places(const k : uint) : uint is {
+  transient.t += k;
+  transient.t *= 3;
+  tally.count += transient.t;
+  credit(storage.xs, k, 2);
+  var p : Pair := { a = 1; b = 2; };
+  p.b += 5;
+  var xs : list(uint) := [1, 2, 3];
+  xs[k - 3] *= 7;
+} with tally.count * 1000 + storage.xs[k] * 100 + p.b * 10 + xs[1]
+"#;
+    let rt = deploy(&compile(src).expect("compile")).expect("deploy");
+    let w = Word::from_u64;
+    let st = run_ok(&rt, &HashMap::new(), "go(uint256)", &[w(4)]).storage;
+    assert_eq!(slot(&st, 0), w(3));
+    assert_eq!(st.get(&map_key(w(1), w(1))), Some(&w(9)));
+    assert_eq!(st.get(&map_key(w(2), w(1))), None);
+    let inner = map_key(w(4), w(2));
+    assert_eq!(st.get(&map_key(w(5), inner)), Some(&w(6)));
+    assert_eq!(read_ok(&rt, &st, "z()", &[]), w(4));
+    assert_eq!(st.get(&map_key(w(3), w(4)).wrapping_add(w(1))), Some(&w(4)));
+    assert_eq!(slot(&st, 5), w(5));
+    let out = call(&rt, "low()", &[]);
+    assert!(out.reverted);
+    assert!(out.returndata.starts_with(&selector("Panic(uint256)")));
+    assert_eq!(load_bytes(&out.returndata, 4), w(0x11));
+    assert_eq!(
+        read_ok(&rt, &HashMap::new(), "places(uint256)", &[w(4)]),
+        w(12_000 + 2_000 + 70 + 14)
+    );
+
+    let src = r#"storage is record {
+  n : uint;
+  m : map(uint, map(uint, uint));
+  xs : list(uint, 4);
+  round : uint8;
+}
+function next() : uint is {
+  storage.n += 1;
+} with storage.n
+external function go() is {
+  storage.m[storage.n][next()] += 7;
+  storage.round := 2;
+  storage.xs[storage.round] += 5;
+}
+"#;
+    let rt = deploy(&compile(src).expect("compile")).expect("deploy");
+    let st = run_ok(&rt, &HashMap::new(), "go()", &[]).storage;
+    assert_eq!(st.get(&map_key(w(1), map_key(w(0), w(1)))), Some(&w(7)));
+    assert_eq!(st.get(&map_key(w(1), map_key(w(1), w(1)))), None);
+    assert_eq!(slot(&st, 4), w(5));
+
+    let src = r#"type Pos is record { i : uint; }
+storage is record { xs : list(uint, 3); m : map(uint, map(uint, uint)); }
+external function go(const c : bool) : uint is {
+  var i : uint := 0;
+  storage.xs[i] += if c then { i := 2; } with 7 else 0;
+  var xs : list(uint, 3) := [10, 20, 30];
+  i := 0;
+  xs[i] += if c then { i := 2; } with 7 else 0;
+  var p : Pos := { i = 0; };
+  var ys : list(uint, 3) := [10, 20, 30];
+  ys[p.i] += if c then { p.i := 2; } with 7 else 0;
+  i := 0;
+  storage.m[i][if c then { i := 2; } with 1 else 0] += 3;
+} with xs[0] * 1000 + xs[2] * 100 + ys[0] * 10 + ys[2]
+"#;
+    let rt = deploy(&compile(src).expect("compile")).expect("deploy");
+    let out = run_ok(&rt, &HashMap::new(), "go(bool)", &[w(1)]);
+    assert_eq!(load_bytes(&out.returndata, 0), w(17_000 + 3_000 + 170 + 30));
+    assert_eq!(slot(&out.storage, 0), w(7));
+    assert_eq!(slot(&out.storage, 2), w(0));
+    assert_eq!(
+        out.storage.get(&map_key(w(1), map_key(w(0), w(3)))),
+        Some(&w(3))
+    );
+
+    let base =
+        "storage is record { m : map(uint, uint); a : map(address, uint); x : uint; f : bool; }\n";
+    for (body, want) in [
+        (
+            "external function f() is { const c : uint := 1; c += 1; }",
+            "const",
+        ),
+        (
+            "external view function f() : uint is { storage.x += 1; } with 1",
+            "storage",
+        ),
+        ("external function f() is { storage.f += true; }", "numeric"),
+        ("external function f() is { storage.m += 1; }", ""),
+        (
+            "external function f() is { storage.a[storage.x] += 1; }",
+            "2:46: map key has the wrong type",
+        ),
+        ("external function f() is { storage.x + = 1; }", ""),
+        ("external function f() is { delete storage.x += 1; }", ""),
+    ] {
+        let err = compile(&format!("{base}{body}")).expect_err(body);
+        assert!(err.to_string().contains(want), "{body}: {err}");
+    }
+}

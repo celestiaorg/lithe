@@ -13,7 +13,7 @@ storage is record {
 }
 
 external function mint(const count : uint) is {
-  storage.minted := storage.minted + count;
+  storage.minted += count;
 }
 
 external function tag(const tokenId : uint; const traitType : string)

@@ -10,5 +10,5 @@ view function mid() : uint is {
 } with storage.count
 
 function bump() is {
-  storage.count := storage.count + 1;
+  storage.count += 1;
 }

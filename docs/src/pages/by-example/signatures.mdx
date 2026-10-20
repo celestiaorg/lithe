@@ -52,7 +52,7 @@ is {
   const recovered : address := Crypto.ecrecover(digest, v, r, s);
   assert(recovered <> Address.zero and recovered = storage.signer, InvalidSignature);
   storage.used[nonce] := true;
-  storage.credited[to] := storage.credited[to] + amount;
+  storage.credited[to] += amount;
 }
 ```
 

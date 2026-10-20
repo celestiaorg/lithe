@@ -30,7 +30,7 @@ external function main(const action : Action)
 is
   case action of {
   | Deposit(amount) -> {
-      storage.balances[Evm.sender()] := storage.balances[Evm.sender()] + amount;
+      storage.balances[Evm.sender()] += amount;
     }
   | Withdraw(amount) -> {
       const have : uint := storage.balances[Evm.sender()];
@@ -102,7 +102,7 @@ is {
 }
 with case action of {
 | Deposit(amount) -> {
-    storage.deposits[Evm.sender()] := storage.deposits[Evm.sender()] + amount;
+    storage.deposits[Evm.sender()] += amount;
   }
 }
 

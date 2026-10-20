@@ -14,7 +14,7 @@ module Settlement is {
 
   function begin() is {
     execution.active := true;
-    execution.depth := execution.depth + uint8(1);
+    execution.depth += uint8(1);
   }
 
   view function active() : bool is
@@ -48,10 +48,10 @@ is {
   assert(not scratch.processing, AlreadyProcessing);
   scratch.processing := true;
   scratch.pending := amount;
-  scratch.touched[Evm.sender()] := scratch.touched[Evm.sender()] + amount;
+  scratch.touched[Evm.sender()] += amount;
   transient.locked := true;
   Settlement.begin();
-  storage.processed := storage.processed + amount;
+  storage.processed += amount;
   defer me.confirm();
 }
 
@@ -60,7 +60,7 @@ external function confirm()
   raises NotSettling
 is {
   assert(Settlement.execution.active, NotSettling);
-  storage.confirmed := storage.confirmed + scratch.pending;
+  storage.confirmed += scratch.pending;
 }
 
 external view function processing() : bool is scratch.processing

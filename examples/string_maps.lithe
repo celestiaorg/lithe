@@ -48,6 +48,6 @@ external view function entry(const i : uint) : string is
 external view function logged() : uint is {
   var total : uint := 0;
   for e : string in storage.log bound 16 do {
-    total := total + e.length;
+    total += e.length;
   }
 } with total

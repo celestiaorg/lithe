@@ -872,6 +872,7 @@ impl<'a> Exec<'a> {
                 keys,
                 fields,
                 expr,
+                op: _,
                 root,
                 leaf,
                 target,

@@ -35,7 +35,7 @@ external function track(const amount : uint) is {
   (* Contract state is always qualified: `storage.` or `transient.` *)
   storage.total := storage.total + amount + bonus;
   storage.lastCaller := caller;
-  transient.callsThisTx := transient.callsThisTx + 1;
+  transient.callsThisTx += 1;
 }
 
 (* Execution context comes from `Evm`, not magic globals. *)

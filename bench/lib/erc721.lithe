@@ -133,10 +133,10 @@ module ERC721 is {
     }
     if from <> Address.zero then {
       erc721.tokenApprovals[tokenId] := Address.zero;
-      erc721.balances[from] := erc721.balances[from] - 1;
+      erc721.balances[from] -= 1;
     }
     if to <> Address.zero then {
-      erc721.balances[to] := erc721.balances[to] + 1;
+      erc721.balances[to] += 1;
     }
     erc721.owners[tokenId] := to;
     emit Transfer {

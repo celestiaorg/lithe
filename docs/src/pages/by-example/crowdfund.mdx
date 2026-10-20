@@ -50,8 +50,8 @@ external payable function pledge()
   raises Ended
 is {
   assert(Evm.blockTimestamp() < storage.deadline, Ended);
-  storage.pledges[Evm.sender()] := storage.pledges[Evm.sender()] + Evm.value();
-  storage.raised := storage.raised + Evm.value();
+  storage.pledges[Evm.sender()] += Evm.value();
+  storage.raised += Evm.value();
   emit Pledged { backer = Evm.sender(); amount = Evm.value(); };
 }
 

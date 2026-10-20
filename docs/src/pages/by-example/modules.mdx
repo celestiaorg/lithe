@@ -109,7 +109,7 @@ contract Vault is {
     raises Paused
   is {
     Pausable.whenNotPaused();
-    storage.total := storage.total + amount;
+    storage.total += amount;
   }
 
   external view function isPaused() : bool is

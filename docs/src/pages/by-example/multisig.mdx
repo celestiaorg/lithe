@@ -99,7 +99,7 @@ is {
   pending(id);
   assert(not storage.confirmed[id][Evm.sender()], AlreadyConfirmed(id));
   storage.confirmed[id][Evm.sender()] := true;
-  storage.payments[id].confirmations := storage.payments[id].confirmations + 1;
+  storage.payments[id].confirmations += 1;
   emit Confirmed { id = id; owner = Evm.sender(); };
 }
 
@@ -110,7 +110,7 @@ is {
   pending(id);
   assert(storage.confirmed[id][Evm.sender()], NotConfirmed(id));
   storage.confirmed[id][Evm.sender()] := false;
-  storage.payments[id].confirmations := storage.payments[id].confirmations - 1;
+  storage.payments[id].confirmations -= 1;
   emit Revoked { id = id; owner = Evm.sender(); };
 }
 

@@ -153,7 +153,7 @@ In a stateful function, an arm can be a block of statements instead of a value. 
 external function main(const action : Action) is
   case action of {
   | Deposit(amount) -> {
-      storage.total := storage.total + amount;
+      storage.total += amount;
     }
   | Reset -> { storage.total := 0; }
   }

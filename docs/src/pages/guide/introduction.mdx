@@ -62,7 +62,7 @@ external function sell(const asset : address; const amount : uint)
 is {
   const price : uint := query storage.oracle.price(asset);
   assert(price >= 100, TooCheap(price));
-  storage.sold := storage.sold + amount;
+  storage.sold += amount;
   defer storage.token.transfer(Evm.sender(), amount * price);
 }
 ```

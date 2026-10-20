@@ -37,7 +37,7 @@ external payable function deposit()
   raises Paused
 is {
   assert(not storage.paused, Paused);
-  storage.deposits[Evm.sender()] := storage.deposits[Evm.sender()] + Evm.value();
+  storage.deposits[Evm.sender()] += Evm.value();
   emit Deposited {
     who = Evm.sender();
     amount = Evm.value();

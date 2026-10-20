@@ -53,7 +53,7 @@ is {
 }
 with case action of {
 | Deposit(amount) -> {
-    storage.deposits[Evm.sender()] := storage.deposits[Evm.sender()] + amount;
+    storage.deposits[Evm.sender()] += amount;
   }
 }
 

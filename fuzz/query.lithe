@@ -37,9 +37,9 @@ is {
 }
 
 function bump(const k : uint) is {
-  storage.a := storage.a + k % 1000;
-  storage.b := storage.b + storage.a;
-  storage.seen[Evm.sender()] := storage.seen[Evm.sender()] + 1;
+  storage.a += k % 1000;
+  storage.b += storage.a;
+  storage.seen[Evm.sender()] += 1;
 }
 
 external function claim() is {
@@ -60,7 +60,7 @@ is {
     bump(p % 7);
   }
   assert(storage.b < 1000000000, TooBig { have = storage.b; limit = storage.total; });
-  storage.total := storage.total + 1;
+  storage.total += 1;
   emit Moved {
     who = Evm.sender();
     amount = storage.c;

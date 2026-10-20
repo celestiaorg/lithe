@@ -32,6 +32,15 @@ pub(crate) fn inferred(ty: &TypeRef) -> bool {
     matches!(ty, TypeRef::Name { name, .. } if name == INFERRED)
 }
 
+/// The annotation `inferred` recognizes: the value keeps its own type.
+pub(crate) fn inferred_ty() -> TypeRef {
+    TypeRef::Name {
+        line: 0,
+        col: 0,
+        name: INFERRED.to_string(),
+    }
+}
+
 /// Whether a function is one a spec block became.
 pub(crate) fn is_spec_fn(name: &str) -> bool {
     name.contains(TAG)
