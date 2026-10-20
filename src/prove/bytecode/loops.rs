@@ -114,7 +114,9 @@ fn quiet(checked: &Checked, e: &Expr, vars: bool) -> bool {
             vars || sym.storage || !sym.mutable
         }
         Expr::Ident { .. } => false,
-        Expr::Field { base, .. } | Expr::Unary { expr: base, .. } => each(base),
+        Expr::Field { base, .. }
+        | Expr::Unary { expr: base, .. }
+        | Expr::Convert { expr: base, .. } => each(base),
         Expr::Index { base, index, .. } => each(base) && each(index),
         Expr::Binary { left, right, .. } => each(left) && each(right),
         Expr::Tuple { elems, .. } | Expr::List { elems, .. } => elems.iter().all(each),

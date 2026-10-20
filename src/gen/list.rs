@@ -1497,7 +1497,9 @@ impl<'a> Gen<'a> {
                 self.path_shares(e, out);
             }
             Expr::Lit { .. } | Expr::Ident { .. } => {}
-            Expr::Field { base, .. } | Expr::Unary { expr: base, .. } => self.shares(base, out),
+            Expr::Field { base, .. }
+            | Expr::Unary { expr: base, .. }
+            | Expr::Convert { expr: base, .. } => self.shares(base, out),
             Expr::Index { base, index, .. } => {
                 self.shares(base, out);
                 self.shares(index, out);

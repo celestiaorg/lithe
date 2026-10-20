@@ -1031,7 +1031,7 @@ fn scan_expr(expr: &Expr, here: bool, acc: &mut Acc) {
                 scan_expr(&arm.expr, here, acc);
             }
         }
-        Expr::Unary { expr, .. } => scan_expr(expr, here, acc),
+        Expr::Unary { expr, .. } | Expr::Convert { expr, .. } => scan_expr(expr, here, acc),
         Expr::Binary { left, right, .. } => {
             scan_expr(left, here, acc);
             scan_expr(right, here, acc);

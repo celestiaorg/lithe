@@ -932,6 +932,20 @@ impl Checker {
         ty: &mut usize,
     ) -> Result<(), Error> {
         let target = self.named[name];
+        if self.types[target].kind == TyKind::List {
+            self.list_cast(line, col, args, target)?;
+            self.conversions.push((
+                self.origin.clone(),
+                TypeRef::Name {
+                    line,
+                    col,
+                    name: name.to_string(),
+                },
+            ));
+            *builtin = Some(Builtin::Cast);
+            *ty = target;
+            return Ok(());
+        }
         // A number literal converts as the unsigned integer of the target's width: `bytes32(0x11)` is 17.
         let width = match self.types[target].kind {
             TyKind::Bytes if self.types[target].bits > 0 => {
@@ -968,7 +982,7 @@ impl Checker {
         }
     }
 
-    fn cast_ok(&self, src: usize, target: usize) -> bool {
+    pub(super) fn cast_ok(&self, src: usize, target: usize) -> bool {
         if self.same(src, target) {
             return true;
         }
@@ -1231,6 +1245,14 @@ impl Checker {
     }
 
     pub(super) fn ty_label(&self, id: usize) -> String {
+        let t = &self.types[id];
+        if let (TyKind::List, Some(elem)) = (t.kind, t.elem) {
+            let elem = self.ty_label(elem);
+            return match t.bits {
+                0 => format!("list({elem})"),
+                n => format!("list({elem}, {n})"),
+            };
+        }
         let mut names: Vec<String> = self
             .named
             .iter()

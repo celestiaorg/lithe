@@ -1595,6 +1595,10 @@ impl Resolver<'_> {
                 Ok(())
             }
             Expr::Unary { expr, .. } => self.expr(expr),
+            Expr::Convert { target, expr, .. } => {
+                self.ty(target)?;
+                self.expr(expr)
+            }
             Expr::Index { base, index, .. } => {
                 self.expr(base)?;
                 self.expr(index)
@@ -1815,9 +1819,10 @@ fn bind_expr(expr: &Expr, out: &mut HashSet<String>) {
                 bind_expr(base, out);
             }
         }
-        Expr::Query { expr, .. } | Expr::Field { base: expr, .. } | Expr::Unary { expr, .. } => {
-            bind_expr(expr, out)
-        }
+        Expr::Query { expr, .. }
+        | Expr::Field { base: expr, .. }
+        | Expr::Unary { expr, .. }
+        | Expr::Convert { expr, .. } => bind_expr(expr, out),
         Expr::Index { base, index, .. } => {
             bind_expr(base, out);
             bind_expr(index, out);

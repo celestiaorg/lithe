@@ -1201,7 +1201,9 @@ fn for_expr_blocks(e: &mut Expr, f: &mut dyn FnMut(&mut Vec<Stmt>)) {
 fn each_child(e: &mut Expr, f: &mut dyn FnMut(&mut Expr)) {
     match e {
         Expr::Lit { .. } | Expr::Ident { .. } => {}
-        Expr::Field { base, .. } | Expr::Unary { expr: base, .. } => f(base),
+        Expr::Field { base, .. }
+        | Expr::Unary { expr: base, .. }
+        | Expr::Convert { expr: base, .. } => f(base),
         Expr::Index { base, index, .. } => {
             f(base);
             f(index);
