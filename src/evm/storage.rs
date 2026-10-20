@@ -1921,7 +1921,8 @@ external function go() is {
     assert_eq!(st.get(&map_key(w(1), map_key(w(1), w(1)))), None);
     assert_eq!(slot(&st, 4), w(5));
 
-    let base = "storage is record { m : map(uint, uint); x : uint; f : bool; }\n";
+    let base =
+        "storage is record { m : map(uint, uint); a : map(address, uint); x : uint; f : bool; }\n";
     for (body, want) in [
         (
             "external function f() is { const c : uint := 1; c += 1; }",
@@ -1933,6 +1934,10 @@ external function go() is {
         ),
         ("external function f() is { storage.f += true; }", "numeric"),
         ("external function f() is { storage.m += 1; }", ""),
+        (
+            "external function f() is { storage.a[storage.x] += 1; }",
+            "2:46: map key has the wrong type",
+        ),
         ("external function f() is { storage.x + = 1; }", ""),
         ("external function f() is { delete storage.x += 1; }", ""),
     ] {

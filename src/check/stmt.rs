@@ -33,7 +33,12 @@ impl Checker {
                 } else {
                     let want = self.build(ty)?;
                     self.check_expr_as(expr, Some(want))?;
-                    self.annotated(*line, *col, ty, expr.ty())?
+                    if name.starts_with("#key") {
+                        // A map key `op=` binds: indexing with it reports a wrong type.
+                        expr.ty()
+                    } else {
+                        self.annotated(*line, *col, ty, expr.ty())?
+                    }
                 };
                 if !parts.is_empty() {
                     let derived = self.reads_state(expr);
@@ -1071,7 +1076,7 @@ impl Checker {
                 continue;
             }
             let temp = format!("#key{i}");
-            let read = path_expr(line, col, std::slice::from_ref(&temp));
+            let read = path_expr(key.line(), key.col(), std::slice::from_ref(&temp));
             stmts.push(Stmt::Const {
                 line,
                 col,
