@@ -941,7 +941,7 @@ fn walk(e: &Expr, f: &mut dyn FnMut(&Expr)) {
                 walk(&arm.expr, f);
             }
         }
-        Expr::Unary { expr, .. } => walk(expr, f),
+        Expr::Unary { expr, .. } | Expr::Convert { expr, .. } => walk(expr, f),
         Expr::Binary { left, right, .. } => {
             walk(left, f);
             walk(right, f);

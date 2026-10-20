@@ -1,7 +1,7 @@
 #!/bin/sh
 # Installs the Lithe compiler: the latest release, or the version given as the first argument.
 #   curl -fsSL https://lithe-lang.org/install.sh | sh
-#   curl -fsSL https://lithe-lang.org/install.sh | sh -s -- 0.2.0
+#   curl -fsSL https://lithe-lang.org/install.sh | sh -s -- 0.2.2
 # LITHE_HOME moves the install from ~/.lithe; LITHE_NO_MODIFY_PATH=1 leaves shell profiles alone.
 set -eu
 

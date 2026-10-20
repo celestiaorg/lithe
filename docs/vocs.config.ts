@@ -56,6 +56,7 @@ const guide = [
     text: "Tooling",
     items: [
       { text: "Command line", link: "/tooling/cli" },
+      { text: "Editors", link: "/tooling/editors" },
       { text: "Inspecting contracts", link: "/tooling/inspection" },
       { text: "Testing", link: "/tooling/testing" },
       { text: "Contract size limit", link: "/tooling/size-limit" },

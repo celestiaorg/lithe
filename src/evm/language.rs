@@ -877,7 +877,7 @@ fn types_reject_implicit_conversions() {
 #[test]
 fn constant_operations_that_must_panic_are_rejected() {
     let program = |ty: &str, body: &str| {
-        format!("import \"std/int\"; import \"std/uint\"; storage is record {{ n : {ty}; }}\nerror Bad;\npure function big() : uint is Uint.max\npure function wide() : uint is {{ const a : uint := 2 ** 200; }} with a\nexternal function go(const x : uint) raises Bad is {{ {body} }}\n")
+        format!("import \"std/int\"; import \"std/uint\"; type Small is uint8; storage is record {{ n : {ty}; }}\nerror Bad;\npure function big() : uint is Uint.max\npure function wide() : uint is {{ const a : uint := 2 ** 200; }} with a\nexternal function go(const x : uint) raises Bad is {{ {body} }}\n")
     };
     for (ty, body, rule) in [
         (
@@ -902,6 +902,11 @@ fn constant_operations_that_must_panic_are_rejected() {
             "uint8",
             "storage.n := 200 + 100;",
             "`200 + 100` overflows `uint8`",
+        ),
+        (
+            "Small",
+            "const t : Small := 200; storage.n := t + 100;",
+            "`t + 100` overflows `uint8`",
         ),
         (
             "uint8",
