@@ -1126,7 +1126,8 @@ impl Checker {
     /// Puts each key `compound_assign` bound back in its place, once checked, where running
     /// it again at the write finds the same place: it varies with nothing it runs, and
     /// reads no state when the value it adds, or a key that stays bound, could write some,
-    /// and runs no call but an environment read such as `Evm.sender()`. A local key would keep a loop from finding the place's slot once, before the loop.
+    /// and runs no call but an environment read such as `Evm.sender()`. A local key would
+    /// keep a loop from finding the place's slot once, before the loop.
     fn inline_keys(&self, s: &mut Stmt) {
         let Stmt::If { then_body, .. } = s else {
             return;
