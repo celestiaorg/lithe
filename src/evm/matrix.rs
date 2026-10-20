@@ -1648,6 +1648,27 @@ fn lists_convert_between_nominal_and_representation_elements() {
         held("list(uint)(storage.held[k])") == held("storage.held[k]"),
         "a converted length copies the list"
     );
+    let iterate = |head: &str, elem: &str| {
+        compile(&format!(
+            "type TokenID is uint;\ntype Ids is list(uint);\n\
+             storage is record {{ ids : list(TokenID); held : map(uint, list(TokenID)); }}\n\
+             external view function f(const ids : list(TokenID); const k : uint) : uint is {{\n\
+               var s : uint := 0;\n\
+               var m : list(TokenID) := ids;\n\
+               for x : {head} do {{ s := s + {elem}; }}\n\
+             }} with s\n"
+        ))
+        .expect("iterate")
+    };
+    for place in ["storage.ids", "ids", "m", "storage.held[k]"] {
+        let direct = iterate(&format!("TokenID in {place}"), "uint(x)");
+        for cast in ["list(uint)", "Ids"] {
+            assert!(
+                iterate(&format!("uint in {cast}({place})"), "x") == direct,
+                "iterating {cast}({place}) copies the list"
+            );
+        }
+    }
 
     for mixed in [
         "external pure function f(const x : list(TokenID)) : list(uint) is x",
