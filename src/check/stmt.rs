@@ -1125,8 +1125,8 @@ impl Checker {
 
     /// Puts each key `compound_assign` bound back in its place, once checked, where running
     /// it again at the write finds the same place: it varies with nothing it runs, and
-    /// reads no state when the value it adds, or a key that stays bound, could write some.
-    /// A local key would keep a loop from finding the place's slot once, before the loop.
+    /// reads no state when the value it adds, or a key that stays bound, could write some,
+    /// and runs no call but an environment read such as `Evm.sender()`. A local key would keep a loop from finding the place's slot once, before the loop.
     fn inline_keys(&self, s: &mut Stmt) {
         let Stmt::If { then_body, .. } = s else {
             return;
@@ -1153,7 +1153,9 @@ impl Checker {
                     sym: Some(sym),
                     expr,
                     ..
-                } if !(self.varies(expr) || writes && self.reads_state(expr)) => {
+                } if cheap_again(expr)
+                    && !(self.varies(expr) || writes && self.reads_state(expr)) =>
+                {
                     Some((*sym, expr.clone()))
                 }
                 _ => None,
@@ -1369,6 +1371,19 @@ fn same_each_time(e: &Expr) -> bool {
         Expr::Lit { .. } | Expr::Ident { .. } => true,
         Expr::Unary { expr, .. } => same_each_time(expr),
         Expr::Binary { left, right, .. } => same_each_time(left) && same_each_time(right),
+        _ => false,
+    }
+}
+
+/// Whether running `e` again costs about what reading a local does: it calls nothing but
+/// environment reads, so hashes, casts, and pure functions stay bound.
+fn cheap_again(e: &Expr) -> bool {
+    match e {
+        Expr::Lit { .. } | Expr::Ident { .. } => true,
+        Expr::Field { base, .. } | Expr::Unary { expr: base, .. } => cheap_again(base),
+        Expr::Index { base, index, .. } => cheap_again(base) && cheap_again(index),
+        Expr::Binary { left, right, .. } => cheap_again(left) && cheap_again(right),
+        Expr::Call { builtin, args, .. } => builtin.is_some() && args.is_empty(),
         _ => false,
     }
 }

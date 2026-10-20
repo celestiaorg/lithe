@@ -1784,13 +1784,15 @@ fn compound_assignment_operators_act_as_their_binary_operators() {
 
 /// A key that a second run finds the same, such as `Evm.sender()`, stays in place rather
 /// than in a local, so `p op= v` compiles as `p := p op v` does: in a loop, the place's slot
-/// is still found once, before it. A `view` call or a query runs once, as if bound first.
+/// is still found once, before it. Any other call, a hash, or a query runs once, as if bound
+/// first.
 #[test]
 fn compound_assignment_compiles_as_assignment() {
     let program = |body: &str| {
         format!(
             "import \"std/evm\";\nimport \"std/abi\";\nstorage is record {{ held : map(address, uint); n : uint; m : map(uint, uint); }}\n\
              view function cursor() : uint is storage.n\n\
+             pure function idx(const a : uint; const b : uint) : uint is a * 1000 + b % 7\n\
              external function go(const k : uint) is {{\n  for _ : uint in 0 .. k do {{\n    {body}\n  }}\n}}\n"
         )
     };
@@ -1807,6 +1809,10 @@ fn compound_assignment_compiles_as_assignment() {
             "storage.m[Abi.decode(query Evm.staticCall(Evm.sender(), \"\"), uint)] += 1;",
             "const c : uint := Abi.decode(query Evm.staticCall(Evm.sender(), \"\"), uint);\n    \
              storage.m[c] := storage.m[c] + 1;",
+        ),
+        (
+            "storage.m[idx(k, k)] *= 2;",
+            "const c : uint := idx(k, k);\n    storage.m[c] := storage.m[c] * 2;",
         ),
         (
             "storage.m[storage.n] -= 1;",
