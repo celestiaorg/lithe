@@ -1004,7 +1004,7 @@ impl<'a> Rules<'a> {
                 }
                 read
             }
-            Expr::Unary { expr, .. } => self.expr(expr, state)?,
+            Expr::Unary { expr, .. } | Expr::Convert { expr, .. } => self.expr(expr, state)?,
             Expr::Binary { left, right, .. } => {
                 self.expr(left, state)?.with(self.expr(right, state)?)
             }

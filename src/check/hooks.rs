@@ -961,7 +961,9 @@ pub(super) fn forward_via_hooks(funcs: &mut [Func]) {
                 }
             }
             Expr::Lit { .. } | Expr::Ident { .. } => {}
-            Expr::Field { base, .. } | Expr::Unary { expr: base, .. } => expr(base, to),
+            Expr::Field { base, .. }
+            | Expr::Unary { expr: base, .. }
+            | Expr::Convert { expr: base, .. } => expr(base, to),
             Expr::Index { base, index, .. } => {
                 expr(base, to);
                 expr(index, to);

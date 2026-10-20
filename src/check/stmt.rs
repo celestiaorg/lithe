@@ -441,11 +441,28 @@ impl Checker {
                             } else {
                                 declared_ty
                             };
-                            // The list is a place, or a value kept in a hidden local.
-                            let mut base = if matches!(
+                            // The list is a place, or a value kept in a hidden local. A converted place
+                            // keeps its words, so it is read where it lives.
+                            let is_place = matches!(
                                 xs,
                                 Expr::Ident { .. } | Expr::Field { .. } | Expr::Index { .. }
-                            ) {
+                            );
+                            if !is_place {
+                                self.check_expr(xs)?;
+                                if self.types[xs.ty()].kind != TyKind::List {
+                                    return Err(error(
+                                        line,
+                                        col,
+                                        "`for` iterates a list or a range",
+                                    ));
+                                }
+                            }
+                            let converted = if is_place {
+                                None
+                            } else {
+                                list_cast_root(xs, &self.types)
+                            };
+                            let mut base = if is_place || converted.is_some() {
                                 std::mem::replace(
                                     xs,
                                     Expr::Lit {
@@ -456,15 +473,7 @@ impl Checker {
                                     },
                                 )
                             } else {
-                                self.check_expr(xs)?;
                                 let lt = xs.ty();
-                                if self.types[lt].kind != TyKind::List {
-                                    return Err(error(
-                                        line,
-                                        col,
-                                        "`for` iterates a list or a range",
-                                    ));
-                                }
                                 let span = self.list_span(line, col, lt, xs)?;
                                 let lsid = self.add_sym(Sym {
                                     ty: lt,
@@ -487,7 +496,15 @@ impl Checker {
                                     ty: 0,
                                 }
                             };
-                            let p = self.place(&mut base)?;
+                            let p = match converted {
+                                Some((sym, leaf)) => Place {
+                                    sym,
+                                    leaf,
+                                    ty: base.ty(),
+                                    in_map: false,
+                                },
+                                None => self.place(&mut base)?,
+                            };
                             match self.types[p.ty].kind {
                                 TyKind::List => {}
                                 TyKind::Map => {
@@ -1496,5 +1513,36 @@ impl Checker {
             }
         }
         Ok(())
+    }
+}
+
+/// The place under `list(T)(...)` conversions of a checked expression, as its root symbol
+/// and leaf.
+fn list_cast_root(mut e: &Expr, types: &[RType]) -> Option<(usize, u32)> {
+    while let Expr::Call {
+        builtin: Some(Builtin::Cast),
+        args,
+        ty,
+        ..
+    } = e
+    {
+        if types[*ty].kind != TyKind::List || args.len() != 1 {
+            return None;
+        }
+        e = &args[0];
+    }
+    match e {
+        Expr::Ident { sym: Some(s), .. } => Some((*s, 0)),
+        Expr::Field {
+            root: Some(r),
+            leaf,
+            ..
+        }
+        | Expr::Index {
+            root: Some(r),
+            leaf,
+            ..
+        } => Some((*r, *leaf)),
+        _ => None,
     }
 }

@@ -1399,10 +1399,12 @@ impl<'a> Gen<'a> {
                 }
                 // Only a number can be out of range. `bytesN` and `address` come from values
                 // of their own width.
-                if !matches!(
-                    dst.kind,
-                    TyKind::Uint | TyKind::Int | TyKind::Wei | TyKind::Timestamp
-                ) {
+                if (src.kind, src.bits) == (dst.kind, dst.bits)
+                    || !matches!(
+                        dst.kind,
+                        TyKind::Uint | TyKind::Int | TyKind::Wei | TyKind::Timestamp
+                    )
+                {
                     return Ok(());
                 }
                 let signed = dst.kind == TyKind::Int;

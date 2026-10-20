@@ -1867,6 +1867,7 @@ impl<'a> Exec<'a> {
                 Ok(self.fresh(*ty, "answer"))
             }
             Expr::Call { .. } => self.call(st, e, ctx),
+            Expr::Convert { expr, .. } => self.eval(st, expr, ctx),
             Expr::Case {
                 scrut, arms, ty, ..
             } => self.case(st, scrut, arms, *ty, ctx),

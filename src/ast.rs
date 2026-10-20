@@ -446,7 +446,9 @@ pub(crate) fn op_text(op: BinOp) -> &'static str {
 pub(crate) fn each_child(e: &mut Expr, f: &mut dyn FnMut(&mut Expr)) {
     match e {
         Expr::Lit { .. } | Expr::Ident { .. } => {}
-        Expr::Field { base, .. } | Expr::Unary { expr: base, .. } => f(base),
+        Expr::Field { base, .. }
+        | Expr::Unary { expr: base, .. }
+        | Expr::Convert { expr: base, .. } => f(base),
         Expr::Index { base, index, .. } => {
             f(base);
             f(index);
@@ -1117,6 +1119,15 @@ pub(crate) enum Expr {
         expr: Box<Expr>,
         ty: usize,
     },
+    /// `list(uint)(xs)`: a conversion to a type that has no name of its own. The checker
+    /// makes it a `Cast`.
+    Convert {
+        line: u32,
+        col: u32,
+        target: Box<TypeRef>,
+        expr: Box<Expr>,
+        ty: usize,
+    },
     Binary {
         line: u32,
         col: u32,
@@ -1156,6 +1167,7 @@ impl Expr {
             | Self::Query { line, .. }
             | Self::Case { line, .. }
             | Self::Unary { line, .. }
+            | Self::Convert { line, .. }
             | Self::Binary { line, .. }
             | Self::Tuple { line, .. }
             | Self::List { line, .. }
@@ -1173,6 +1185,7 @@ impl Expr {
             | Self::Query { col, .. }
             | Self::Case { col, .. }
             | Self::Unary { col, .. }
+            | Self::Convert { col, .. }
             | Self::Binary { col, .. }
             | Self::Tuple { col, .. }
             | Self::List { col, .. }
@@ -1190,6 +1203,7 @@ impl Expr {
             | Self::Query { ty, .. }
             | Self::Case { ty, .. }
             | Self::Unary { ty, .. }
+            | Self::Convert { ty, .. }
             | Self::Binary { ty, .. }
             | Self::Tuple { ty, .. }
             | Self::List { ty, .. }

@@ -461,10 +461,14 @@ pub fn analyze(path: &Path, src: &str) -> Analysis {
     let mut checked = Vec::new();
     for unit in units.clone() {
         let name = artifact_contract_name(&unit, path);
-        match check::check(unit.clone(), opts.evm) {
+        match check::check_in(unit.clone(), false, opts.evm) {
             Ok(unit_checked) => {
                 if failed.is_none() {
-                    failed = build(&sources, path, unit, &name, &opts).err();
+                    failed = build(&sources, path, unit, &name, &opts)
+                        .err()
+                        .filter(|err| {
+                            err.message != route::NO_ENTRIES || !declares_no_contract(src)
+                        });
                 }
                 checked.push(unit_checked);
             }
@@ -1335,12 +1339,14 @@ pub fn is_library(sources: &Sources, path: &Path, errors: &[Error]) -> bool {
     if !errors.iter().all(|err| err.message == route::NO_ENTRIES) {
         return false;
     }
-    let Some(prog) = sources
+    sources
         .canonicalize(path)
         .and_then(|path| sources.read(&path))
-        .ok()
-        .and_then(|text| parse::parse(&text).ok())
-    else {
+        .is_ok_and(|text| declares_no_contract(&text))
+}
+
+fn declares_no_contract(text: &str) -> bool {
+    let Ok(prog) = parse::parse(text) else {
         return false;
     };
     prog.contract_name.is_none()

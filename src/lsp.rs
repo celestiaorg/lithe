@@ -1103,6 +1103,30 @@ mod tests {
     }
 
     #[test]
+    fn module_only_files_have_no_error() {
+        let dir = std::env::temp_dir().join(format!("lithe-lsp-module-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("grid.lithe");
+        let text = "module Grid is {\n  pure function cells() : uint is 4\n}\n";
+        std::fs::write(&path, text).unwrap();
+        let analysis = lithe::analyze(&path, text);
+        assert!(
+            analysis.error.is_none(),
+            "{:?}",
+            analysis.error.map(|e| e.message)
+        );
+        assert!(analysis.index.is_some());
+        let text = "storage is record { count : uint; }\n";
+        std::fs::write(&path, text).unwrap();
+        let analysis = lithe::analyze(&path, text);
+        assert_eq!(
+            analysis.error.map(|e| e.message).as_deref(),
+            Some("contract has no entrypoints")
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
     fn deleted_places_name_what_they_delete() {
         let dir = std::env::temp_dir().join(format!("lithe-lsp-delete-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
@@ -1124,6 +1148,31 @@ mod tests {
             .completions(text, 4, 3)
             .iter()
             .any(|c| c.label == "delete"));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn conversions_and_nominal_operands_name_what_is_written() {
+        let dir = std::env::temp_dir().join(format!("lithe-lsp-convert-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("main.lithe");
+        let text = "type TokenId is uint;\nstorage is record { n : uint; }\nexternal pure function f(const xs : list(uint)) : list(TokenId) is list(TokenId)(xs)\nexternal pure function g(const a : TokenId; const b : TokenId) : TokenId is a + b\nexternal pure function h(const d : bytes; const k : uint) : bytes is d[k:k + 1]\nexternal pure function i(const d : bytes; const k : uint) : bytes1 is d[k]\ntype Ids is list(uint);\nexternal pure function j(const xs : list(TokenId)) : Ids is Ids(xs)\n";
+        std::fs::write(&path, text).unwrap();
+        let index = lithe::analyze(&path, text).index.expect("index");
+        let named = |line: u32, col: u32| {
+            let r = index
+                .at(0, text, line, col)
+                .unwrap_or_else(|| panic!("no ref at {line}:{col}"));
+            let def = &index.defs[r.def];
+            (def.name.clone(), def.at.map(|at| at.line))
+        };
+        assert_eq!(named(3, 73), ("TokenId".to_string(), Some(1)));
+        assert_eq!(named(3, 82), ("xs".to_string(), Some(3)));
+        assert_eq!(named(4, 77), ("a".to_string(), Some(4)));
+        assert_eq!(named(5, 72), ("k".to_string(), Some(5)));
+        assert_eq!(named(5, 74), ("k".to_string(), Some(5)));
+        assert_eq!(named(6, 73), ("k".to_string(), Some(6)));
+        assert_eq!(named(8, 61), ("Ids".to_string(), Some(7)));
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

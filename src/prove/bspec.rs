@@ -201,6 +201,7 @@ impl<'a> Reader<'a> {
                 },
             },
             Expr::Call { .. } => self.call(m, e),
+            Expr::Convert { expr, .. } => self.eval(m, expr),
             Expr::Unary { op, expr, .. } => {
                 let v = self.eval(m, expr)?;
                 match (op, v) {

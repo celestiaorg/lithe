@@ -986,7 +986,7 @@ impl Checker {
             Expr::Case { scrut, arms, .. } => {
                 self.reads_state(scrut) || arms.iter().any(|arm| self.reads_state(&arm.expr))
             }
-            Expr::Unary { expr, .. } => self.reads_state(expr),
+            Expr::Unary { expr, .. } | Expr::Convert { expr, .. } => self.reads_state(expr),
             Expr::Binary { left, right, .. } => self.reads_state(left) || self.reads_state(right),
             Expr::Tuple { elems, .. } | Expr::List { elems, .. } => {
                 elems.iter().any(|x| self.reads_state(x))
@@ -1002,7 +1002,9 @@ impl Checker {
         match e {
             Expr::Lit { .. } => false,
             Expr::Ident { builtin, .. } => matches!(builtin, Some(Builtin::GasLeft)),
-            Expr::Field { base, .. } | Expr::Unary { expr: base, .. } => self.varies(base),
+            Expr::Field { base, .. }
+            | Expr::Unary { expr: base, .. }
+            | Expr::Convert { expr: base, .. } => self.varies(base),
             Expr::Index { base, index, .. } => self.varies(base) || self.varies(index),
             Expr::Query { .. } => true,
             Expr::Call {

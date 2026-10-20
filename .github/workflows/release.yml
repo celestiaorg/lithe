@@ -1,10 +1,13 @@
 name: Release
 
-# A `v*` tag builds every target, checks that each compiles the same bytecode, and publishes
-# the binaries. A manual or weekly run does all of it but the release, so a target that
-# drifts shows up before the next tag.
+# A `v*` tag, or a push to main that sets Cargo.toml to a version with no tag yet (what
+# scripts/release.sh's PR does), builds every target, checks that each compiles the same
+# bytecode, and publishes the binaries, tagging the commit if needed. A manual or weekly run
+# does all of it but the release, so a target that drifts shows up before the next one.
 on:
   push:
+    branches: [main]
+    paths: [Cargo.toml]
     tags: ["v*"]
   schedule:
     - cron: "0 6 * * 1"
@@ -19,21 +22,37 @@ env:
 jobs:
   version:
     runs-on: ubuntu-24.04
+    outputs:
+      build: ${{ steps.version.outputs.build }}
+      tag: ${{ steps.version.outputs.tag }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Tag matches Cargo.toml
-        if: github.ref_type == 'tag'
+      - id: version
         run: |
           version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -1)
-          if [ "$GITHUB_REF_NAME" != "v$version" ]; then
-            echo "::error::tag $GITHUB_REF_NAME does not match Cargo.toml version $version"
-            exit 1
-          fi
+          case "$GITHUB_EVENT_NAME/$GITHUB_REF_TYPE" in
+            push/tag)
+              if [ "$GITHUB_REF_NAME" != "v$version" ]; then
+                echo "::error::tag $GITHUB_REF_NAME does not match Cargo.toml version $version"
+                exit 1
+              fi
+              echo "tag=v$version" >> "$GITHUB_OUTPUT"
+              ;;
+            push/branch)
+              if git ls-remote --exit-code --tags origin "refs/tags/v$version" >/dev/null; then
+                echo "v$version is already released"
+                exit 0
+              fi
+              echo "tag=v$version" >> "$GITHUB_OUTPUT"
+              ;;
+          esac
+          echo "build=true" >> "$GITHUB_OUTPUT"
 
   build:
     needs: version
+    if: needs.version.outputs.build == 'true'
     strategy:
       fail-fast: false
       matrix:
@@ -80,7 +99,7 @@ jobs:
           if-no-files-found: error
 
   release:
-    needs: build
+    needs: [version, build]
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -102,15 +121,18 @@ jobs:
           exit $status
       - run: sha256sum lithe-* | tee SHA256SUMS
       - name: Publish
-        if: github.event_name == 'push' && github.ref_type == 'tag'
+        if: needs.version.outputs.tag != ''
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
+          TAG: ${{ needs.version.outputs.tag }}
         run: |
           # A release made in the GitHub UI pushes the tag that triggers this run; fill it in.
           # Without --clobber, upload refuses to replace an asset that is already there.
-          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
-            gh release upload "$GITHUB_REF_NAME" lithe-* SHA256SUMS
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" lithe-* SHA256SUMS
             exit 0
           fi
-          gh release create "$GITHUB_REF_NAME" --verify-tag --title "$GITHUB_REF_NAME" --generate-notes lithe-* SHA256SUMS
+          # On a push to main this creates the tag; a tag made with the workflow's token
+          # doesn't start another run.
+          gh release create "$TAG" --target "$GITHUB_SHA" --title "$TAG" --generate-notes lithe-* SHA256SUMS

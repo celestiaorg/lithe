@@ -1760,6 +1760,10 @@ impl<'a> Builder<'a> {
                 }
             }
         }
+        for (origin, target) in &c.conversions {
+            self.file = self.file(origin);
+            self.type_refs(target);
+        }
         self.file = self.file("");
         for set in &prog.error_sets {
             for m in &set.members {
@@ -2537,6 +2541,12 @@ impl<'a> Builder<'a> {
                 self.expr(index);
             }
             Expr::Call {
+                builtin: Some(Builtin::Cast),
+                name,
+                args,
+                ..
+            } if name.is_empty() => self.expr(&args[0]),
+            Expr::Call {
                 line,
                 col,
                 name,
@@ -2654,6 +2664,10 @@ impl<'a> Builder<'a> {
                 }
             }
             Expr::Unary { expr, .. } => self.expr(expr),
+            Expr::Convert { target, expr, .. } => {
+                self.type_refs(target);
+                self.expr(expr);
+            }
             Expr::Binary { left, right, .. } => {
                 self.expr(left);
                 self.expr(right);
