@@ -58,7 +58,9 @@ rm Cargo.toml.bak install.sh.bak "$docs.bak"
 quiet cargo update --workspace
 (cd playground && quiet cargo update --package lithe)
 ok "Set $version in:"
-git diff --stat | sed '$d'
+git diff --numstat | awk -v g="$green" -v r="$red" -v x="$reset" '
+  { add[NR] = $1; del[NR] = $2; file[NR] = $3; if (length($3) > w) w = length($3) }
+  END { for (i = 1; i <= NR; i++) printf "    %-" w "s  %s+%s%s %s-%s%s\n", file[i], g, add[i], x, r, del[i], x }'
 
 quiet git commit --message "Release v$version" Cargo.toml Cargo.lock playground/Cargo.lock install.sh "$docs"
 ok "Committed $(git rev-parse --short HEAD) Release v$version"
