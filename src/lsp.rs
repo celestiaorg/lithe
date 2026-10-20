@@ -1103,6 +1103,30 @@ mod tests {
     }
 
     #[test]
+    fn module_only_files_have_no_error() {
+        let dir = std::env::temp_dir().join(format!("lithe-lsp-module-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("grid.lithe");
+        let text = "module Grid is {\n  pure function cells() : uint is 4\n}\n";
+        std::fs::write(&path, text).unwrap();
+        let analysis = lithe::analyze(&path, text);
+        assert!(
+            analysis.error.is_none(),
+            "{:?}",
+            analysis.error.map(|e| e.message)
+        );
+        assert!(analysis.index.is_some());
+        let text = "storage is record { count : uint; }\n";
+        std::fs::write(&path, text).unwrap();
+        let analysis = lithe::analyze(&path, text);
+        assert_eq!(
+            analysis.error.map(|e| e.message).as_deref(),
+            Some("contract has no entrypoints")
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
     fn deleted_places_name_what_they_delete() {
         let dir = std::env::temp_dir().join(format!("lithe-lsp-delete-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
