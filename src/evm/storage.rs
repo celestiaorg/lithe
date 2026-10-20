@@ -1927,6 +1927,31 @@ external function go() is {
     assert_eq!(st.get(&map_key(w(1), map_key(w(1), w(1)))), None);
     assert_eq!(slot(&st, 4), w(5));
 
+    let src = r#"type Pos is record { i : uint; }
+storage is record { xs : list(uint, 3); m : map(uint, map(uint, uint)); }
+external function go(const c : bool) : uint is {
+  var i : uint := 0;
+  storage.xs[i] += if c then { i := 2; } with 7 else 0;
+  var xs : list(uint, 3) := [10, 20, 30];
+  i := 0;
+  xs[i] += if c then { i := 2; } with 7 else 0;
+  var p : Pos := { i = 0; };
+  var ys : list(uint, 3) := [10, 20, 30];
+  ys[p.i] += if c then { p.i := 2; } with 7 else 0;
+  i := 0;
+  storage.m[i][if c then { i := 2; } with 1 else 0] += 3;
+} with xs[0] * 1000 + xs[2] * 100 + ys[0] * 10 + ys[2]
+"#;
+    let rt = deploy(&compile(src).expect("compile")).expect("deploy");
+    let out = run_ok(&rt, &HashMap::new(), "go(bool)", &[w(1)]);
+    assert_eq!(load_bytes(&out.returndata, 0), w(17_000 + 3_000 + 170 + 30));
+    assert_eq!(slot(&out.storage, 0), w(7));
+    assert_eq!(slot(&out.storage, 2), w(0));
+    assert_eq!(
+        out.storage.get(&map_key(w(1), map_key(w(0), w(3)))),
+        Some(&w(3))
+    );
+
     let base =
         "storage is record { m : map(uint, uint); a : map(address, uint); x : uint; f : bool; }\n";
     for (body, want) in [

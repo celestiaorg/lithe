@@ -1,6 +1,14 @@
 use super::*;
 
 impl Checker {
+    /// Whether a checked expression reads a `var` local.
+    fn reads_var(&self, e: &mut Expr) -> bool {
+        let mut found = matches!(e, Expr::Ident { sym: Some(s), .. }
+            if self.syms[*s].mutable && !self.syms[*s].storage);
+        each_child(e, &mut |child| found |= self.reads_var(child));
+        found
+    }
+
     pub(super) fn check_stmt(&mut self, s: &mut Stmt) -> Result<(), Error> {
         if let Some(block) = self.compound_assign(s) {
             *s = block;
@@ -1034,7 +1042,8 @@ impl Checker {
 
     /// `p op= v` becomes `p := p op v`. A key that is more than names, literals, and
     /// operators is bound first, in a block of its own, so the place is found once, before
-    /// `v` runs. `inline_keys` puts back those that need not be.
+    /// `v` runs; so is one that names a local, when `v` or a key runs an arm's block, which
+    /// may assign it. `inline_keys` puts back those that need not be.
     fn compound_assign(&self, s: &mut Stmt) -> Option<Stmt> {
         let Stmt::Assign {
             line,
@@ -1052,6 +1061,7 @@ impl Checker {
         };
         let op = op.take()?;
         let (line, col) = (*line, *col);
+        let blocks = runs_blocks(expr) || index.iter_mut().chain(keys.iter_mut()).any(runs_blocks);
         let mut ty = self.lookup_path(line, col, path).ok().map(|p| p.ty);
         let mut named = fields.iter().peekable();
         let mut stmts = Vec::new();
@@ -1072,7 +1082,7 @@ impl Checker {
             let Some(key_ty) = key_ty else {
                 continue;
             };
-            if same_each_time(key) {
+            if same_each_time(key, blocks) {
                 continue;
             }
             let temp = format!("#key{i}");
@@ -1126,8 +1136,9 @@ impl Checker {
     /// Puts each key `compound_assign` bound back in its place, once checked, where running
     /// it again at the write finds the same place: it varies with nothing it runs, and
     /// reads no state when the value it adds, or a key that stays bound, could write some,
-    /// and runs no call but an environment read such as `Evm.sender()`. A local key would
-    /// keep a loop from finding the place's slot once, before the loop.
+    /// reads no `var` when either runs an arm's block, and runs no call but an environment
+    /// read such as `Evm.sender()`. A local key would keep a loop from finding the place's
+    /// slot once, before the loop.
     fn inline_keys(&self, s: &mut Stmt) {
         let Stmt::If { then_body, .. } = s else {
             return;
@@ -1138,26 +1149,33 @@ impl Checker {
                 ..
             },
             bound,
-        )) = then_body.split_last()
+        )) = then_body.split_last_mut()
         else {
             return;
         };
+        let blocks = runs_blocks(value)
+            || bound.iter_mut().any(|st| match st {
+                Stmt::Const { expr, .. } => runs_blocks(expr),
+                _ => false,
+            });
         let keys_vary = bound.iter().any(|st| match st {
             Stmt::Const { expr, .. } => self.varies(expr),
             _ => false,
         });
         let writes = keys_vary || self.varies(value);
         let known: HashMap<usize, Expr> = bound
-            .iter()
+            .iter_mut()
             .filter_map(|st| match st {
                 Stmt::Const {
                     sym: Some(sym),
                     expr,
                     ..
-                } if cheap_again(expr)
-                    && !(self.varies(expr) || writes && self.reads_state(expr)) =>
-                {
-                    Some((*sym, expr.clone()))
+                } => {
+                    let again = cheap_again(expr)
+                        && !(self.varies(expr)
+                            || writes && self.reads_state(expr)
+                            || blocks && self.reads_var(expr));
+                    again.then(|| (*sym, expr.clone()))
                 }
                 _ => None,
             })
@@ -1366,14 +1384,25 @@ fn put_back(e: &mut Expr, known: &HashMap<usize, Expr>) {
 }
 
 /// Whether `e` has the same value however often it runs between a statement's start and
-/// its write: it reads only literals and names, which no expression can change.
-fn same_each_time(e: &Expr) -> bool {
+/// its write: it reads only literals and names, which only an arm's block can change.
+fn same_each_time(e: &Expr, blocks: bool) -> bool {
     match e {
-        Expr::Lit { .. } | Expr::Ident { .. } => true,
-        Expr::Unary { expr, .. } => same_each_time(expr),
-        Expr::Binary { left, right, .. } => same_each_time(left) && same_each_time(right),
+        Expr::Lit { .. } => true,
+        Expr::Ident { .. } => !blocks,
+        Expr::Unary { expr, .. } => same_each_time(expr, blocks),
+        Expr::Binary { left, right, .. } => {
+            same_each_time(left, blocks) && same_each_time(right, blocks)
+        }
         _ => false,
     }
+}
+
+/// Whether `e` holds a `case` or `if` arm with statements, which may assign a local.
+fn runs_blocks(e: &mut Expr) -> bool {
+    let mut found =
+        matches!(e, Expr::Case { arms, .. } if arms.iter().any(|a| !a.stmts.is_empty()));
+    each_child(e, &mut |child| found |= runs_blocks(child));
+    found
 }
 
 /// Whether running `e` again costs about what reading a local does: it calls nothing but
