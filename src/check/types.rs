@@ -934,6 +934,14 @@ impl Checker {
         let target = self.named[name];
         if self.types[target].kind == TyKind::List {
             self.list_cast(line, col, args, target)?;
+            self.conversions.push((
+                self.origin.clone(),
+                TypeRef::Name {
+                    line,
+                    col,
+                    name: name.to_string(),
+                },
+            ));
             *builtin = Some(Builtin::Cast);
             *ty = target;
             return Ok(());

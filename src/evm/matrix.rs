@@ -1595,6 +1595,7 @@ storage is record {
   ids : list($I);
   pair : list($I, 2);
   paid : list(wei);
+  held : map(uint, list($I));
 }
 external pure function out(const xs : list($I)) : list(uint) is list(uint)(xs)
 external pure function into(const xs : list(uint)) : list($I) is list($I)(xs)
@@ -1615,6 +1616,9 @@ external pure function local(const n : uint) : list(uint) is {
 external pure function nested(const xs : list(list($I))) : list(list(uint)) is
   list(list(uint))(xs)
 external pure function count(const xs : list($I)) : uint is list(uint)(xs).length
+external view function storedCount() : uint is list(uint)(storage.ids).length
+external view function namedCount() : uint is Ids(storage.ids).length
+external view function heldCount(const k : uint) : uint is list(uint)(storage.held[k]).length
 external pure function named(const xs : list($I)) : Ids is Ids(xs)
 external pure function literal(const a : $I; const b : $I) : list(uint) is list(uint)([a, b])
 external function send(const to : address; const ids : list($I); const vs : list($I))
@@ -1633,6 +1637,17 @@ fn lists_convert_between_nominal_and_representation_elements() {
     let plain = compile(&spell("uint", "")).expect("plain");
     let nominal = compile(&spell("TokenID", "type TokenID is uint;")).expect("nominal");
     assert!(plain == nominal, "a list conversion costs code");
+    let held = |read: &str| {
+        compile(&format!(
+            "type TokenID is uint;\nstorage is record {{ held : map(uint, list(TokenID)); }}\n\
+             external view function f(const k : uint) : uint is {read}.length\n"
+        ))
+        .expect("held")
+    };
+    assert!(
+        held("list(uint)(storage.held[k])") == held("storage.held[k]"),
+        "a converted length copies the list"
+    );
 
     for mixed in [
         "external pure function f(const x : list(TokenID)) : list(uint) is x",

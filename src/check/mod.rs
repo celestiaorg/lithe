@@ -1353,9 +1353,29 @@ fn strip_list_casts(prog: &mut Program, types: &[RType]) {
         }
         match e {
             Expr::Lit { .. } | Expr::Ident { .. } => {}
-            Expr::Field { base, .. }
-            | Expr::Unary { expr: base, .. }
-            | Expr::Convert { expr: base, .. } => expr(base, types),
+            Expr::Field {
+                base,
+                name,
+                root,
+                leaf,
+                ..
+            } => {
+                expr(base, types);
+                // `list(T)(storage.xs).length` reads the length where `xs` lives.
+                if root.is_none() && name == "length" {
+                    match &**base {
+                        Expr::Ident { sym, .. } => (*root, *leaf) = (*sym, 0),
+                        Expr::Field {
+                            root: r, leaf: l, ..
+                        }
+                        | Expr::Index {
+                            root: r, leaf: l, ..
+                        } => (*root, *leaf) = (*r, *l),
+                        _ => {}
+                    }
+                }
+            }
+            Expr::Unary { expr: base, .. } | Expr::Convert { expr: base, .. } => expr(base, types),
             Expr::Index { base, index, .. } => {
                 expr(base, types);
                 expr(index, types);
