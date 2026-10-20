@@ -1406,14 +1406,19 @@ fn runs_blocks(e: &mut Expr) -> bool {
 }
 
 /// Whether running `e` again costs about what reading a local does: it calls nothing but
-/// environment reads, so hashes, casts, and pure functions stay bound.
+/// one-word environment reads, so hashes, casts, pure functions, and `Evm.calldata()`
+/// stay bound.
 fn cheap_again(e: &Expr) -> bool {
     match e {
         Expr::Lit { .. } | Expr::Ident { .. } => true,
         Expr::Field { base, .. } | Expr::Unary { expr: base, .. } => cheap_again(base),
         Expr::Index { base, index, .. } => cheap_again(base) && cheap_again(index),
         Expr::Binary { left, right, .. } => cheap_again(left) && cheap_again(right),
-        Expr::Call { builtin, args, .. } => builtin.is_some() && args.is_empty(),
+        Expr::Call {
+            builtin: Some(b),
+            args,
+            ..
+        } => args.is_empty() && *b != Builtin::Calldata,
         _ => false,
     }
 }

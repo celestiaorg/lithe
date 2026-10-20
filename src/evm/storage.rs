@@ -1790,7 +1790,7 @@ fn compound_assignment_operators_act_as_their_binary_operators() {
 fn compound_assignment_compiles_as_assignment() {
     let program = |body: &str| {
         format!(
-            "import \"std/evm\";\nimport \"std/abi\";\nstorage is record {{ held : map(address, uint); n : uint; m : map(uint, uint); }}\n\
+            "import \"std/evm\";\nimport \"std/abi\";\nstorage is record {{ held : map(address, uint); n : uint; m : map(uint, uint); b : map(bytes, uint); }}\n\
              view function cursor() : uint is storage.n\n\
              pure function idx(const a : uint; const b : uint) : uint is a * 1000 + b % 7\n\
              external function go(const k : uint) is {{\n  for _ : uint in 0 .. k do {{\n    {body}\n  }}\n}}\n"
@@ -1817,6 +1817,10 @@ fn compound_assignment_compiles_as_assignment() {
         (
             "storage.m[storage.n] -= 1;",
             "storage.m[storage.n] := storage.m[storage.n] - 1;",
+        ),
+        (
+            "storage.b[Evm.calldata()] += 1;",
+            "const c : bytes := Evm.calldata();\n    storage.b[c] := storage.b[c] + 1;",
         ),
     ] {
         assert_eq!(
