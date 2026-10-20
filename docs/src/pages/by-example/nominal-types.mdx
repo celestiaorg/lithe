@@ -38,9 +38,17 @@ external view function feeOn(const amount : uint) : uint is
 external pure function next(const id : TokenId) : TokenId is
   id + 1
 
-(* A whole list converts with the list type's name. *)
-external pure function raw(const ids : list(TokenId)) : list(uint) is
-  list(uint)(ids)
+(* Code written for the representation takes a whole list converted with the list
+   type's name, without a copy. *)
+pure function largest(const xs : list(uint)) : uint is {
+  var top : uint := 0;
+  for x : uint in xs do {
+    if x > top then { top := x; }
+  }
+} with top
+
+external pure function newest(const ids : list(TokenId)) : TokenId is
+  TokenId(largest(list(uint)(ids)))
 ```
 
 Binding a raw `uint` to a `tokenId` is a compile error:
