@@ -1,0 +1,7 @@
+[advisories]
+ignore = [
+  # crypto-bigint 0.5 timing side channels. The fix is 0.7.6+, but k256 0.13 (via the latest revm
+  # and alloy) pins 0.5. The playground only recovers signers from public data and holds no secret
+  # keys, so timing leaks nothing. Drop this once revm and alloy both move to k256 0.14.
+  "RUSTSEC-2026-0387",
+]
