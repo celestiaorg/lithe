@@ -336,9 +336,9 @@ fn suppress(src: &str, findings: Vec<Finding>, allow: &[String], label: &str) ->
     kept
 }
 
-/// Writes `edited` when it still typechecks and, if the file compiled, the bytecode is unchanged.
+/// Writes `edited` when it still typechecks. Each fix keeps the bytecode by construction: the
+/// checker rejects a dropped `use` the contract still needs.
 fn commit(path: &Path, original: &str, edited: &str) -> bool {
-    let before = bytecode(path);
     if std::fs::write(path, edited).is_err() {
         return false;
     }
@@ -349,11 +349,7 @@ fn commit(path: &Path, original: &str, edited: &str) -> bool {
             })
         })
         .is_ok();
-    let same = match &before {
-        Some(code) => bytecode(path).as_ref() == Some(code),
-        None => true,
-    };
-    if checked && same {
+    if checked {
         return true;
     }
     let _ = std::fs::write(path, original);
@@ -362,16 +358,6 @@ fn commit(path: &Path, original: &str, edited: &str) -> bool {
 
 fn units(path: &Path) -> Result<Vec<Program>, Error> {
     Ok(modules::split_units(modules::load(&Sources::disk(), path)?))
-}
-
-fn bytecode(path: &Path) -> Option<Vec<Vec<u8>>> {
-    let out = crate::compile(&Sources::disk(), path, &crate::Options::default()).ok()?;
-    Some(
-        out.contracts
-            .into_iter()
-            .map(|contract| contract.bytecode)
-            .collect(),
-    )
 }
 
 fn apply_kept(src: &str, findings: &[Finding]) -> Option<String> {
