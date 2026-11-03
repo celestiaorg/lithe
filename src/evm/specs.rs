@@ -766,7 +766,7 @@ import "std/token/erc20";
 import "std/interfaces/erc20";
 
 contract Token is {
-  use ERC20 exposing IERC20; hook ERC20.beforeTransfer is skip; hook ERC20.afterTransfer is skip;
+  use ERC20 exposing IERC20 with { hook beforeTransfer is skip; hook afterTransfer is skip; }
 
   deploy() is {
     ERC20.init("Token", "TKN");

@@ -2754,7 +2754,7 @@ external function place(const id : uint) raises AlreadyPlaced is {
 }
 
 external function fillOrder(const id : uint; const out : uint) is {
-  storage.orders[id].status := Filled({ amountOut = out; at = uint64(7) });
+  storage.orders[id].status := Filled { amountOut = out; at = uint64(7) };
   List.push(storage.history, storage.orders[id].status);
 }
 
@@ -3001,12 +3001,12 @@ fn variant_values_are_checked() {
         "`Idle` has no payload",
     );
     rejects(
-        &with("external function f(const s : St) is { storage.s := s; }"),
-        "a variant with a payload cannot be an ABI value",
+        "type Ov is | A of option(uint) | B\nstorage is record { n : uint; }\nexternal function f(const s : Ov) is { skip }",
+        "an option cannot be an ABI value",
     );
     rejects(
-        &with("external view function f() : St is storage.s"),
-        "variants with payloads cannot be ABI values",
+        "type Ov is | A of option(uint) | B\nstorage is record { n : uint; }\nexternal view function f() : Ov is B",
+        "an option cannot be an ABI value",
     );
     rejects(
         "type Act is | Put of map(uint, uint) | Stop\nstorage is record { n : uint; }\nexternal function f() is { const a : Act := Stop; }",
@@ -3018,6 +3018,33 @@ fn variant_values_are_checked() {
         ),
         "annotate which type is meant",
     );
+}
+
+/// A record of one word is an element of its own, pushed or assigned from a literal or a
+/// call's result: one holding a number, and one holding a list, whose word points to it.
+#[test]
+fn one_word_records_push_onto_lists() {
+    let src = "import \"std/list\";\ntype One is record { a : uint; }\ntype Ids is record { ids : list(uint); }\nstorage is record { kept : list(One); }\npure function one(const a : uint) : One is { a = a; }\npure function ids(const n : uint) : Ids is { ids = List.resized([], n); }\nexternal function go() : uint is {\n  var ones : list(One) := [];\n  List.push(ones, { a = 5; });\n  List.push(ones, one(7));\n  var all : list(Ids) := [];\n  List.push(all, ids(3));\n  List.push(all, { ids = [1, 2]; });\n  all[0] := ids(4);\n  List.push(storage.kept, one(11));\n  List.push(storage.kept, { a = 13; });\n} with ones[0].a + ones[1].a * 10 + all[0].ids.length * 100 + all[1].ids[1] * 1000 + storage.kept[0].a * 10000 + storage.kept[1].a * 1000000\n";
+    let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
+    let out = call(&runtime, "go()", &[]);
+    assert!(!out.reverted, "{}", pretty(&out.returndata));
+    assert_eq!(
+        out.returndata,
+        Word::from_u64(13_112_475).to_be_bytes().to_vec()
+    );
+}
+
+/// A function that takes a dynamic list is copied per call, and each argument still takes
+/// its parameter's type, so a case name shared by two variants resolves as it does when
+/// the function takes plain values.
+#[test]
+fn case_names_resolve_against_a_list_taking_parameter() {
+    let src = "import \"std/list\";\ntype Kind is | Burn | Hold\ntype Step is | Burn of uint | Hold of uint\nstorage is record { n : uint; }\npure function weigh(const k : Kind; const xs : list(uint)) : uint is if k = Hold then xs.length * 10 else xs.length\npure function tagged(var ks : list(Kind); const k : Kind) : list(Kind) is {\n  List.push(ks, k);\n} with ks\nexternal function go(const xs : list(uint)) : uint is {\n  var ks : list(Kind) := [];\n  ks := tagged(ks, Hold);\n  ks := tagged(ks, Burn);\n  storage.n := weigh(Hold, xs) + weigh(ks[1], xs);\n} with storage.n\n";
+    let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
+    let w = Word::from_u64;
+    let out = call(&runtime, "go(uint256[])", &[w(0x20), w(2), w(7), w(8)]);
+    assert!(!out.reverted, "{}", pretty(&out.returndata));
+    assert_eq!(out.returndata, w(22).to_be_bytes().to_vec());
 }
 
 /// A variant with no payloads crosses the ABI as a `uint8` whose value names a case, and
@@ -3108,7 +3135,7 @@ storage is record {
   s : Status;
   t : Small;
 }
-external function fill(const out : uint) is { storage.s := Filled({ amountOut = out; at = uint64(9) }); }
+external function fill(const out : uint) is { storage.s := Filled { amountOut = out; at = uint64(9) }; }
 external function delta(const d : int16) is { storage.t := Delta(d); }
 external function who() is { storage.t := Who(Evm.sender()); }
 external view function at() : uint is case storage.s of { | Filled(f) -> uint(f.at) + f.amountOut | New -> 0 }
@@ -3155,7 +3182,7 @@ storage is record {
 external function queue(const id : uint; const why : string) is { storage.jobs[id] := Queued(why); }
 external function hold(const id : uint; const why : string) is { storage.jobs[id] := Held(why); }
 external function tag(const id : uint; const text : string) is {
-  storage.jobs[id] := Tagged({ who = Evm.sender(); text = text; });
+  storage.jobs[id] := Tagged { who = Evm.sender(); text = text; };
   storage.cur := storage.jobs[id];
 }
 external function batch(const id : uint; const xs : list(uint)) is { storage.jobs[id] := Batch(xs); }
@@ -3510,8 +3537,8 @@ type Doc is record { n : uint8; s : string; xs : list(uint); }
 storage is record { o : option(list(uint)); m : map(uint, option(Doc)); ds : list(option(Doc)); }
 external function set() is {
   storage.o := Some([1, 2, 3]);
-  storage.m[1] := Some({ n = 1; s = "a string that is longer than thirty-two bytes, to spill"; xs = [4]; });
-  List.push(storage.ds, Some({ n = 2; s = "short"; xs = [5, 6]; }));
+  storage.m[1] := Some { n = 1; s = "a string that is longer than thirty-two bytes, to spill"; xs = [4]; };
+  List.push(storage.ds, Some { n = 2; s = "short"; xs = [5, 6]; });
 }
 external function clear() is { storage.o := None; storage.m[1] := None; storage.ds[0] := None; List.pop(storage.ds); }
 external view function sum() : uint is
@@ -3628,8 +3655,8 @@ external pure function d() : uint is { var xs : list(list(uint)) := [[1]]; List.
 fn pushes_into_room_grow_only_their_own_list() {
     let src = "\
 import \"std/list\";
-type V is tuple record { k : uint; data : bytes; }
-type F is tuple record { tag : uint; items : list(V); }
+type V is record { k : uint; data : bytes; }
+type F is record { tag : uint; items : list(V); }
 storage is record { n : uint; }
 pure function sum(const xs : list(V)) : uint is { var s : uint := 0; for x : V in xs do { s := s + x.k * x.data.length; } } with s
 pure function build(const n : uint) : list(V) is { var xs : list(V) := []; for i : uint in 0 .. n do { List.push(xs, { k = i; data = 0x0102; }); } } with xs
@@ -3699,9 +3726,9 @@ external pure function field() : uint is {
 fn nested_pushes_skip_copies_only_while_nothing_shares() {
     let src = "\
 import \"std/list\";
-type V is tuple record { k : uint; data : bytes; }
-type F is tuple record { tag : uint; items : list(V); }
-type G is tuple record { id : uint; inner : F; }
+type V is record { k : uint; data : bytes; }
+type F is record { tag : uint; items : list(V); }
+type G is record { id : uint; inner : F; }
 storage is record { n : uint; }
 pure function sum(const xs : list(V)) : uint is { var s : uint := 0; for x : V in xs do { s := s + x.k * x.data.length + 1; } } with s
 pure function total(const st : list(F)) : uint is { var s : uint := 0; for x : F in st do { s := s + sum(x.items) * 7 + x.items.length; } } with s
@@ -3857,7 +3884,7 @@ pure function tag(const d : Dyn) : uint is case d of { Name(_) -> 1 | Blank -> 2
 external pure function arms(const n : uint8) : bool is case opt(n) of { None -> 255 | Some(x) -> x } = uint8(255)
 external pure function neg(const n : int8) : bool is -1 = case iopt(n) of { None -> -1 | Some(x) -> x }
 external pure function opts(const n : uint8) : bool is None = case opt(n) of { None -> None | Some(x) -> Some(x) }
-external pure function recs(const p : Pt) : bool is case Some(p.b) of { None -> { a = 2; b = false; } | Some(v) -> { a = 1; b = v; } } = p
+external pure function recs(const p : flat Pt) : bool is case Some(p.b) of { None -> { a = 2; b = false; } | Some(v) -> { a = 1; b = v; } } = p
 external pure function lists(const xs : list(uint)) : bool is [] = xs
 external pure function max(const x : uint8) : bool is Uint.max = x
 external pure function long(const b : bytes) : bool is 0x0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f2021 = b
@@ -4213,6 +4240,7 @@ fn module_member(kind: Builtin) -> bool {
         | Builtin::Some
         | Builtin::None
         | Builtin::Ctor(_)
+        | Builtin::Braced
         | Builtin::SpecState(_)
         | Builtin::SpecSum
         | Builtin::SpecCount
@@ -4493,7 +4521,7 @@ external pure function last(const xs : list(uint, slots())) : uint is xs[2]
         let err = compile(&src).expect_err(decls).to_string();
         assert!(err.contains(want), "{decls}: {err}");
     };
-    let named = "is not a named constant: a pure function of no parameters";
+    let named = "is not a named constant: a `const` or a pure function of no parameters";
     rejects(
         "pure function f(const x : uint) : uint is x\ntype T is list(uint, f(1));",
         named,
@@ -4530,6 +4558,229 @@ external pure function last(const xs : list(uint, slots())) : uint is xs[2]
         "pure function n() : uint is 0\ntype T is list(uint, 4 / n());",
         "division by zero",
     );
+}
+
+/// `const` declarations name values known when the contract compiles: bare, as `M.n` from a
+/// module, in list lengths and loop bounds, and in other constants. Each compiles exactly as
+/// the pure function of no parameters it could have been.
+#[test]
+fn declared_constants() {
+    let main = "\
+import \"std/crypto\";
+import \"./limits\";
+
+const slots : uint := 3;
+const wide : uint := slots * 2 + 1;
+const role : bytes32 := Crypto.keccak256(\"PAUSER_ROLE\");
+
+module Grid is {
+  requires Limits;
+
+  const side : uint8 := 2;
+  const cells : uint := uint(side) * uint(side) + Limits.spare;
+  type Board is list(uint, cells);
+  pure function empty() : Board is [0, 0, 0, 0, 0]
+}
+
+use Limits;
+use Grid;
+
+storage is record {
+  ring : list(uint, slots);
+  owners : list(address, Limits.maxOwners);
+  total : uint;
+}
+
+external function put(const xs : list(uint)) is {
+  for x : uint in xs bound wide do {
+    storage.total += x;
+  }
+}
+
+external pure function info() : (uint, bytes32, uint) is (wide, role, Grid.cells)
+
+external pure function board() : list(uint, Grid.cells) is Grid.empty()
+";
+    let limits = "const one : uint := 1;\n\nmodule Limits is {\n  const maxOwners : uint := 1 << 2;\n  const spare : uint := one;\n}\n";
+    let build = |main: &str, limits: &str| {
+        let sources = Sources::memory([(ENTRY, main), ("limits.lithe", limits)]);
+        crate::compile(&sources, Path::new(ENTRY), &Options::default())
+            .and_then(crate::Output::single)
+            .map_err(first)
+            .expect("compile")
+            .bytecode
+    };
+    let code = build(main, limits);
+    let as_functions = |src: &str| {
+        let mut src = src.to_string();
+        for (name, ty, value) in [
+            ("slots", "uint", "3"),
+            ("wide", "uint", "slots * 2 + 1"),
+            ("role", "bytes32", "Crypto.keccak256(\"PAUSER_ROLE\")"),
+            ("side", "uint8", "2"),
+            ("cells", "uint", "uint(side) * uint(side) + Limits.spare"),
+            ("one", "uint", "1"),
+            ("maxOwners", "uint", "1 << 2"),
+            ("spare", "uint", "one"),
+            ("spare", "uint", "1"),
+        ] {
+            src = src.replace(
+                &format!("const {name} : {ty} := {value};"),
+                &format!("pure function {name}() : {ty} is {value}"),
+            );
+        }
+        for name in [
+            "slots",
+            "wide",
+            "role",
+            "side",
+            "cells",
+            "maxOwners",
+            "spare",
+            "one",
+        ] {
+            src = called(&src, name);
+        }
+        src
+    };
+    // A module's function can't call its file's, but its code can name its file's constants.
+    let limits_alone = limits.replace(":= one;", ":= 1;");
+    assert_eq!(
+        code,
+        build(&as_functions(main), &as_functions(&limits_alone))
+    );
+
+    let runtime = deploy(&code).expect("deploy");
+    let words = |n: u64| (1..=n).map(Word::from_u64).collect::<Vec<_>>();
+    let put = |xs: &[Word]| {
+        let mut data = selector("put(uint256[])").to_vec();
+        data.extend_from_slice(&Word::from_u64(32).to_be_bytes());
+        data.extend_from_slice(&Word::from_u64(xs.len() as u64).to_be_bytes());
+        for x in xs {
+            data.extend_from_slice(&x.to_be_bytes());
+        }
+        call_raw(&runtime, &data)
+    };
+    let fits = put(&words(7));
+    assert!(!fits.reverted, "{}", pretty(&fits.returndata));
+    // 3 slots of `ring` and 4 of `owners` come first.
+    assert_eq!(slot(&fits.storage, 7), Word::from_u64(28));
+    assert!(put(&words(8)).reverted);
+    let info = call(&runtime, "info()", &[]);
+    assert_eq!(load_bytes(&info.returndata, 0), Word::from_u64(7));
+    assert_eq!(
+        load_bytes(&info.returndata, 32),
+        Word::from_be_bytes(crate::keccak::keccak256(b"PAUSER_ROLE"))
+    );
+    assert_eq!(load_bytes(&info.returndata, 64), Word::from_u64(5));
+    assert_eq!(call(&runtime, "board()", &[]).returndata.len(), 5 * 32);
+
+    let rejects = |decls: &str, body: &str, want: &str| {
+        let src =
+            format!("import \"std/uint\";\n{decls}\nstorage is record {{ n : uint; }}\n{body}\n");
+        let err = compile(&src).expect_err(decls).to_string();
+        assert!(err.contains(want), "{decls} {body}: {err}");
+    };
+    let go = "external function go() is { storage.n := 1; }";
+    let unknown = "is not known when the contract compiles";
+    rejects(
+        "const a : uint := storage.n;",
+        go,
+        "constant `a` reads contract storage",
+    );
+    rejects(
+        "pure function f(const x : uint) : uint is x\nconst a : uint := f(1);",
+        go,
+        unknown,
+    );
+    rejects("import \"std/abi\";\nimport \"std/crypto\";\nconst a : bytes32 := Crypto.keccak256(Abi.encode(1));", go, unknown);
+    rejects(
+        "const a : uint := Uint.max + 1;",
+        go,
+        "`Uint.max + 1` overflows `uint`",
+    );
+    rejects(
+        "const a : uint := 300;\nconst b : uint8 := uint8(a);",
+        go,
+        "`uint8(a)` overflows `uint8`",
+    );
+    rejects("const a : uint := b;", go, "unknown name `b`");
+    rejects("const a := 1;", go, "a constant needs a type");
+    rejects(
+        "const a : uint := 1;\nconst a : uint := 2;",
+        go,
+        "duplicate constant `a`",
+    );
+    rejects(
+        "const a : uint := 1;\npure function a(const x : uint) : uint is x",
+        go,
+        "duplicate name `a`",
+    );
+    rejects(
+        "module M is { const k : uint := 1; pure function k(const x : uint) : uint is x }",
+        go,
+        "declares `k` more than once",
+    );
+    let hidden = "names a constant; rename one of them";
+    rejects(
+        "const links : uint := 1;\nstorage links at \"t.links\" is record { total : uint; }",
+        go,
+        hidden,
+    );
+    rejects(
+        "const a : uint := 1;",
+        "external function go(const a : uint) is { storage.n := a; }",
+        hidden,
+    );
+    rejects(
+        "const a : uint := 1;",
+        "external function go() is { const a : uint := 2; storage.n := a; }",
+        hidden,
+    );
+    rejects(
+        "const a : uint := 1;",
+        "external function go(const xs : list(uint)) is { for a : uint in xs do { storage.n := a; } }",
+        hidden,
+    );
+    rejects(
+        "const a : uint := 1;",
+        "external function go() is { storage.n := a(); }",
+        "`a` is a constant, not a function",
+    );
+    rejects(
+        "module M is { const k : uint := 1; }\nuse M;",
+        "external function go() is { storage.n := M.k(); }",
+        "`k` is a constant, not a function",
+    );
+    rejects(
+        "",
+        "external function go(const xs : list(uint); const n : uint) is { for x : uint in xs bound n do { storage.n := x; } }",
+        "a loop bound is a constant",
+    );
+}
+
+/// `src` with each bare use of the constant `name` called as a function: `name()`.
+fn called(src: &str, name: &str) -> String {
+    let mut out = String::new();
+    let mut rest = src;
+    while let Some(i) = rest.find(name) {
+        let (before, after) = rest.split_at(i);
+        out.push_str(before);
+        let prev = out.chars().last();
+        let next = after[name.len()..].chars().next();
+        let word = |c: Option<char>| c.is_some_and(|c| c.is_alphanumeric() || c == '_');
+        out.push_str(name);
+        if !word(prev)
+            && !word(next)
+            && next != Some('(')
+            && !out.ends_with(&format!("function {name}"))
+        {
+            out.push_str("()");
+        }
+        rest = &after[name.len()..];
+    }
+    out.push_str(rest);
+    out
 }
 
 #[test]
@@ -4643,7 +4894,7 @@ external pure function records() : uint is {
 fn one_word_record_arguments() {
     let src = "\
 import \"std/string\";
-type Req is tuple record { name : string; }
+type Req is record { name : string; }
 storage is record { s : string; t : string; u : string; }
 function put(const r : Req) is {
   storage.s := String.concat(r.name, \"a\", r.name, \"b\", r.name, \"c\", r.name, \"d\", r.name);
@@ -4742,4 +4993,255 @@ external function read(const xs : list(T)) is { storage.n := if xs[0] = C then 1
         .expect(sig);
         assert_eq!(out.reverted, reverts, "{sig} {case}");
     }
+}
+
+/// A brace pattern binds a record payload's fields by name, renames them with `=`, and
+/// ignores them with `_`, alone or as the last entry for every field it leaves out.
+#[test]
+fn brace_patterns_bind_record_fields() {
+    let src = r#"import "std/evm";
+type Fill is record { amountOut : uint; at : uint64; }
+type Memo is record { who : address; text : string; }
+type Status is
+  | Pending
+  | Filled of Fill
+  | Refilled of Fill
+  | Tagged of Memo
+  | Cancelled
+type Pt is record { x : uint; y : int16; }
+storage is record { s : Status; p : option(Pt); }
+
+external function fill(const out : uint) is { storage.s := Filled { amountOut = out; at = uint64(9); }; }
+external function refill(const out : uint) is { storage.s := Refilled { amountOut = out; at = uint64(4); }; }
+external function tag(const text : string) is { storage.s := Tagged { who = Evm.sender(); text = text; }; }
+external function put(const x : uint; const y : int16) is { storage.p := Some { x = x; y = y; }; }
+
+external view function total() : uint is
+  case storage.s of {
+  | Filled { amountOut; at } -> amountOut + uint(at)
+  | Refilled { at = when; amountOut = out } -> out * 100 + uint(when)
+  | Tagged { text; _ } -> text.length
+  | Pending | Cancelled -> 0
+  }
+external view function amount() : uint is
+  case storage.s of {
+  | Filled { amountOut; at = _ } | Refilled { amountOut; at = _ } -> amountOut
+  | Tagged | Pending | Cancelled -> 0
+  }
+external view function text() : string is
+  case storage.s of { | Tagged { who = _; text = t } -> t | Filled | Refilled | Pending | Cancelled -> "" }
+external view function whole() : uint is
+  case storage.s of { | Filled(f) -> f.amountOut | Refilled { _ } -> 1 | Tagged | Pending | Cancelled -> 0 }
+external view function sum() : int is
+  case storage.p of { | Some { x; y } -> int(x) + int(y) | None -> -1 }
+external pure function local(const a : uint) : uint is {
+  const v : option(Pt) := Some { x = a; y = int16(-3); };
+} with case v of { | Some { y; _ } -> uint(int(y) + 10) | None -> 0 }
+"#;
+    let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
+    let w = Word::from_u64;
+    let st = HashMap::new();
+    assert_eq!(read_ok(&runtime, &st, "total()", &[]), w(0));
+    let st = run_ok(&runtime, &st, "fill(uint256)", &[w(40)]).storage;
+    assert_eq!(read_ok(&runtime, &st, "total()", &[]), w(49));
+    assert_eq!(read_ok(&runtime, &st, "amount()", &[]), w(40));
+    assert_eq!(read_ok(&runtime, &st, "whole()", &[]), w(40));
+    let st = run_ok(&runtime, &st, "refill(uint256)", &[w(3)]).storage;
+    assert_eq!(read_ok(&runtime, &st, "total()", &[]), w(304));
+    assert_eq!(read_ok(&runtime, &st, "amount()", &[]), w(3));
+    assert_eq!(read_ok(&runtime, &st, "whole()", &[]), w(1));
+    let long = b"a note longer than thirty-one bytes, stored past its slot".to_vec();
+    let out = exec(
+        &runtime,
+        &encode_args("tag(string)", &[Arg::B(long.clone())]),
+        st,
+        w(1),
+        w(0),
+        w(0),
+    )
+    .expect("tag");
+    assert!(!out.reverted, "{}", pretty(&out.returndata));
+    let st = out.storage;
+    assert_eq!(read_ok(&runtime, &st, "total()", &[]), w(long.len() as u64));
+    let text = run_ok(&runtime, &st, "text()", &[]).returndata;
+    assert_eq!(abi_string_value(&text), long);
+    assert_eq!(read_ok(&runtime, &st, "sum()", &[]), w(0).not());
+    let minus_two = w(2).not().wrapping_add(w(1));
+    let st = run_ok(&runtime, &st, "put(uint256,int16)", &[w(7), minus_two]).storage;
+    assert_eq!(read_ok(&runtime, &st, "sum()", &[]), w(5));
+    assert_eq!(read_ok(&runtime, &st, "local(uint256)", &[w(1)]), w(7));
+}
+
+/// Binding a record's fields costs no more code than binding the record and reading them.
+#[test]
+fn brace_patterns_cost_no_more_than_a_record_binding() {
+    let head = "type Fill is record { amountOut : uint; at : uint64; note : string; }\ntype Status is | Pending | Filled of Fill\ntype Pt is record { x : uint; y : uint; z : uint; }\nstorage is record { s : Status; p : option(Pt); m : map(uint, Status); }\nexternal function fill(const out : uint) is { storage.s := Filled { amountOut = out; at = uint64(9); note = \"n\"; }; storage.p := Some { x = out; y = 1; z = 2; }; }\n";
+    let pairs = [
+        (
+            "external view function f() : uint is case storage.s of { | Filled(f) -> f.amountOut + uint(f.at) | Pending -> 0 }",
+            "external view function f() : uint is case storage.s of { | Filled { amountOut; at; note = _ } -> amountOut + uint(at) | Pending -> 0 }",
+        ),
+        (
+            "external view function f() : uint is case storage.s of { | Filled(f) -> f.amountOut | Pending -> 0 }",
+            "external view function f() : uint is case storage.s of { | Filled { amountOut; _ } -> amountOut | Pending -> 0 }",
+        ),
+        (
+            "external view function f() : string is case storage.s of { | Filled(f) -> f.note | Pending -> \"\" }",
+            "external view function f() : string is case storage.s of { | Filled { note; _ } -> note | Pending -> \"\" }",
+        ),
+        (
+            "external view function f() : uint is case storage.p of { | Some(p) -> p.x * p.y | None -> 0 }",
+            "external view function f() : uint is case storage.p of { | Some { x; y; _ } -> x * y | None -> 0 }",
+        ),
+        (
+            "external view function f() : uint is case storage.p of { | Some(p) -> p.x * p.y * p.z | None -> 0 }",
+            "external view function f() : uint is case storage.p of { | Some { z; y; x } -> x * y * z | None -> 0 }",
+        ),
+        (
+            "external view function f(const k : uint) : uint is case storage.m[k] of { | Filled(f) -> f.amountOut | Pending -> 0 }",
+            "external view function f(const k : uint) : uint is case storage.m[k] of { | Filled { amountOut; _ } -> amountOut | Pending -> 0 }",
+        ),
+        (
+            "external pure function f(const a : uint) : uint is { const v : Status := if a > 1 then Filled { amountOut = a; at = uint64(a); note = \"x\"; } else Pending; } with case v of { | Filled(f) -> f.amountOut + uint(f.at) | Pending -> 0 }",
+            "external pure function f(const a : uint) : uint is { const v : Status := if a > 1 then Filled { amountOut = a; at = uint64(a); note = \"x\"; } else Pending; } with case v of { | Filled { amountOut; at; note = _ } -> amountOut + uint(at) | Pending -> 0 }",
+        ),
+    ];
+    for (whole, fields) in pairs {
+        let size = |body: &str| {
+            let src = format!("{head}{body}\n");
+            deploy(&compile(&src).expect("compile"))
+                .expect("deploy")
+                .len()
+        };
+        let (a, b) = (size(whole), size(fields));
+        assert!(
+            b <= a,
+            "{b} bytes with fields, {a} with the record:\n{fields}"
+        );
+    }
+}
+
+#[test]
+fn brace_patterns_are_checked() {
+    let rejects = |body: &str, want: &str| {
+        let src = format!("type Fill is record {{ amountOut : uint; at : uint64; }}\ntype Other is record {{ amountOut : uint; }}\ntype Status is | Pending | Filled of Fill | Refilled of Fill | Moved of Other | Queued of string\nstorage is record {{ s : Status; p : option(uint); }}\n{body}\n");
+        let err = compile(&src).expect_err(want);
+        assert!(err.to_string().contains(want), "want `{want}`, got: {err}");
+    };
+    let arms = "| Refilled | Moved | Queued | Pending -> 0 }";
+    rejects(
+        &format!("external view function f() : uint is case storage.s of {{ | Filled {{ amount; _ }} -> amount {arms}"),
+        "`Filled`'s payload has no field `amount`",
+    );
+    rejects(
+        &format!("external view function f() : uint is case storage.s of {{ | Filled {{ amountOut }} -> amountOut {arms}"),
+        "the pattern is missing `at`: bind it, ignore it with `at = _`, or end the pattern with `_`",
+    );
+    rejects(
+        &format!("external view function f() : uint is case storage.s of {{ | Filled {{ at; at = b; }} -> 0 {arms}"),
+        "duplicate field `at`",
+    );
+    rejects(
+        &format!("external view function f() : uint is case storage.s of {{ | Filled {{ _; at }} -> 0 {arms}"),
+        "`_` ends a brace pattern",
+    );
+    rejects(
+        "external view function f() : uint is case storage.s of { | Queued { x } -> 0 | Filled | Refilled | Moved | Pending -> 0 }",
+        "`Queued` carries `string`, not a record; bind it in parentheses: `Queued(x)`",
+    );
+    rejects(
+        "external view function f() : uint is case storage.p of { | Some { x } -> x | None -> 0 }",
+        "`Some` carries `uint`, not a record",
+    );
+    rejects(
+        "external view function f() : uint is case storage.s of { | Pending { x } -> 0 | Filled | Refilled | Moved | Queued -> 0 }",
+        "this constructor has no payload",
+    );
+    rejects(
+        "external view function f() : uint is case storage.s of { | Filled { amountOut; _ } | Refilled { amountOut = a; _ } -> 0 | Moved | Queued | Pending -> 0 }",
+        "every case of an arm must bind the same names",
+    );
+    rejects(
+        "external view function f() : uint is case storage.s of { | Filled { amountOut; _ } | Moved { amountOut; _ } -> amountOut | Refilled | Queued | Pending -> 0 }",
+        "`Filled` and `Moved` carry different payloads",
+    );
+    rejects(
+        "external view function f() : uint is case storage.s of { | Filled {} -> 0 | Refilled | Moved | Queued | Pending -> 0 }",
+        "a brace pattern names at least one field",
+    );
+}
+
+/// A record literal goes in braces after a case, an error, or an event; a record value
+/// goes in parentheses.
+#[test]
+fn record_literals_in_parens_say_both_forms() {
+    let rejects = |src: &str, want: &str| {
+        let err = compile(src).expect_err(want);
+        assert!(err.to_string().contains(want), "want `{want}`, got: {err}");
+    };
+    let head = "type Pt is record { x : uint; y : uint; }\nerror Bad of Pt\nevent Moved of record { x : uint; }\nstorage is record { p : option(Pt); }\n";
+    rejects(
+        &format!("{head}external function f() is {{ storage.p := Some({{ x = 1; y = 2; }}); }}"),
+        "a record literal given to `Some` goes in braces: `Some { x = ...; }`; pass a record value in parens, `Some(p)`",
+    );
+    rejects(
+        &format!("{head}external function f() raises Bad is {{ fail Bad({{ y = 1; x = 2; }}); }}"),
+        "a record literal given to `Bad` goes in braces: `Bad { y = ...; }`; pass a record value in parens, `Bad(p)`",
+    );
+    rejects(
+        &format!("{head}external function f() is {{ emit Moved({{ x = 1; }}); }}"),
+        "an event takes its fields in braces: `emit Moved { field = ...; }`",
+    );
+}
+
+/// A dispatched case's pattern binds the fields of the payload its entrypoint decodes, and
+/// costs what binding the payload whole does.
+#[test]
+fn dispatched_cases_bind_pattern_fields() {
+    let w = Word::from_u64;
+    let program = |arms: &str| {
+        format!("type SendParams is record {{ to : address; amount : uint; }}\ntype Action is\n  | Send external send of SendParams\n  | Pair external pair of (uint, uint)\nstorage is record {{ n : uint; who : address; }}\nexternal function main(const action : Action) is\n  case action of {{ {arms} }}\n")
+    };
+    let fields = "| Send { to; amount } -> { storage.n := amount; storage.who := to; } | Pair((a, b)) -> { storage.n := a * 10 + b; }";
+    let runtime = deploy(&compile(&program(fields)).expect("compile")).expect("deploy");
+    let st = run_ok(
+        &runtime,
+        &HashMap::new(),
+        "send((address,uint256))",
+        &[w(0xab), w(7)],
+    )
+    .storage;
+    assert_eq!(st.get(&w(0)).copied(), Some(w(7)));
+    assert_eq!(st.get(&w(1)).copied(), Some(w(0xab)));
+    let st = run_ok(
+        &runtime,
+        &HashMap::new(),
+        "pair((uint256,uint256))",
+        &[w(3), w(4)],
+    )
+    .storage;
+    assert_eq!(st.get(&w(0)).copied(), Some(w(34)));
+    // A `flat` payload is one parameter per field, and binds the same way.
+    let flat = program(fields).replace("send of SendParams", "send of flat SendParams");
+    let runtime = deploy(&compile(&flat).expect("compile")).expect("deploy");
+    let st = run_ok(
+        &runtime,
+        &HashMap::new(),
+        "send(address,uint256)",
+        &[w(0xab), w(7)],
+    )
+    .storage;
+    assert_eq!(st.get(&w(0)).copied(), Some(w(7)));
+    assert_eq!(st.get(&w(1)).copied(), Some(w(0xab)));
+    let sends = |arm: &str| {
+        let src = program(&format!("{arm} | Pair(_) -> {{ skip; }}"));
+        deploy(&compile(&src).expect("compile"))
+            .expect("deploy")
+            .len()
+    };
+    let (a, b) = (
+        sends("| Send(p) -> { storage.n := p.amount; storage.who := p.to; }"),
+        sends("| Send { to; amount } -> { storage.n := amount; storage.who := to; }"),
+    );
+    assert!(b <= a, "{b} bytes with fields, {a} whole");
 }

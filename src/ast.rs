@@ -24,10 +24,11 @@ pub(crate) struct Program {
     /// Empty roots it at slot 0.
     pub storage_id: String,
     pub guard: Option<GuardDecl>,
-    /// `guard M.editor(...) is { ... }`: the contract's checks for its modules' guards.
+    /// `use M ... with { guard editor(...) is { ... } }`: the contract's checks for its modules'
+    /// guards.
     pub guards: Vec<Func>,
-    /// `hook M.h(...) is { ... }`, `hook M.h is f;`, and `hook M.h is skip;`: the contract's
-    /// implementations of its modules' hooks.
+    /// `hook h(...) is { ... }`, `hook h is f;`, and `hook h is skip;` in `use M ... with`: the
+    /// contract's implementations of its modules' hooks.
     pub hooks: Vec<Func>,
     /// A facet's program: its modules' hooks call back into the contract that runs it.
     pub calls_back: bool,
@@ -319,8 +320,6 @@ pub(crate) enum TypeRef {
         line: u32,
         col: u32,
         fields: Vec<FieldRef>,
-        /// `tuple record`: one ABI tuple even as a whole parameter or result.
-        tuple: bool,
     },
     Variant {
         line: u32,
@@ -513,6 +512,8 @@ pub(crate) struct VariantRef {
     pub param: String,
     /// `| Case external name`: the name of the entrypoint a dispatched case becomes.
     pub external: Option<String>,
+    /// `of flat R`: a dispatched case takes the record's fields as its ABI parameters.
+    pub flat: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -526,6 +527,8 @@ pub(crate) struct Func {
     pub type_params: Vec<TypeParam>,
     pub params: Vec<Param>,
     pub ret: Option<TypeRef>,
+    /// `: flat R`: the record's fields are the ABI's outputs.
+    pub ret_flat: bool,
     pub ret_ty: usize,
     pub payable: bool,
     pub nonreentrant: bool,
@@ -560,6 +563,9 @@ pub(crate) struct Func {
     /// On the function a module's code calls for one of its hooks, and on a contract's
     /// entrypoint a facet calls it back through: which hook it is.
     pub hook_of: Option<HookOf>,
+    /// `const name : T := e;` outside a function: a pure function of no parameters that
+    /// code names without `()`, and whose value is known when the contract compiles.
+    pub constant: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -571,7 +577,8 @@ pub(crate) struct Guarded {
     pub args: Vec<NameAt>,
 }
 
-/// `guard M.editor(...) is { ... }`, or `guard M.editor is f;`, which checks by calling `f`.
+/// `guard editor(...) is { ... }` in `use M ... with`, or `guard editor is f;`, which checks
+/// by calling `f`. `module` is where the binding names the guard.
 #[derive(Debug, Clone)]
 pub(crate) struct GuardOf {
     pub module: NameAt,
@@ -579,7 +586,8 @@ pub(crate) struct GuardOf {
     pub via: Option<NameAt>,
 }
 
-/// `hook M.h ... is ...`: which of `M`'s hooks a function is, and what it is.
+/// `hook h ... is ...` in `use M ... with`: which of `M`'s hooks a function is, and what it
+/// is. `module` is where the binding names the hook.
 #[derive(Debug, Clone)]
 pub(crate) struct HookOf {
     pub module: NameAt,
@@ -617,6 +625,8 @@ pub(crate) struct Param {
     /// function may write.
     pub storage: bool,
     pub name: String,
+    /// `name : flat R`: the record's fields are separate ABI parameters.
+    pub flat: bool,
     pub ty: TypeRef,
     pub ty_id: usize,
     pub sym: Option<usize>,
@@ -971,6 +981,9 @@ pub(crate) enum Builtin {
     None,
     /// A variant constructor, by its index in the variant's cases.
     Ctor(usize),
+    /// `Name { field = ...; }` as parsed: a constructor given a record payload, until the
+    /// checker resolves the constructor.
+    Braced,
     /// `old.e` or `new.e` in a spec: `e` read in the state before or after the call.
     SpecState(State),
     /// `sum(m)` in a spec: the sum of a map's values.
@@ -1160,6 +1173,17 @@ pub(crate) enum Expr {
 }
 
 impl Expr {
+    /// Whether a `case` on `scrut` with `arms` is `case query ... of`, which branches on the
+    /// call's outcome. `if c then a else b` parses as a `case` with arms `true` and `false`,
+    /// so an `if` on a query branches on the answer instead.
+    pub(crate) fn is_outcome_case(scrut: &Expr, arms: &[Arm]) -> bool {
+        matches!(scrut, Expr::Query { .. })
+            && arms
+                .first()
+                .and_then(|arm| arm.ctors.first())
+                .is_none_or(|ctor| ctor != "true")
+    }
+
     pub(crate) fn line(&self) -> u32 {
         match self {
             Self::Lit { line, .. }
@@ -1196,6 +1220,24 @@ impl Expr {
         }
     }
 
+    pub(crate) fn set_ty(&mut self, to: usize) {
+        match self {
+            Self::Lit { ty, .. }
+            | Self::Ident { ty, .. }
+            | Self::Field { ty, .. }
+            | Self::Index { ty, .. }
+            | Self::Call { ty, .. }
+            | Self::Query { ty, .. }
+            | Self::Case { ty, .. }
+            | Self::Unary { ty, .. }
+            | Self::Convert { ty, .. }
+            | Self::Binary { ty, .. }
+            | Self::Tuple { ty, .. }
+            | Self::List { ty, .. }
+            | Self::Record { ty, .. } => *ty = to,
+        }
+    }
+
     pub(crate) fn ty(&self) -> usize {
         match self {
             Self::Lit { ty, .. }
@@ -1223,9 +1265,17 @@ pub(crate) struct Arm {
     pub ctors: Vec<String>,
     pub bind: Option<String>,
     pub bind_sym: Option<usize>,
-    /// Names from `Some((q, r))`.
+    /// Names from `Some((q, r))`, or from `Some { x; y = b }` in the order written.
     pub tuple_names: Vec<String>,
+    /// The field each of `tuple_names` binds in a brace pattern; empty for a tuple pattern.
+    pub fields: Vec<String>,
+    /// A brace pattern ends in `_`, which ignores the fields it does not name.
+    pub rest: bool,
+    /// One per name that is not `_`, set by the checker. Each is a field of `bind_sym`,
+    /// which holds the payload whole.
     pub tuple_syms: Vec<usize>,
+    /// Each of `tuple_syms`' index in the payload's fields.
+    pub tuple_at: Vec<usize>,
     pub stmts: Vec<Stmt>,
     pub expr: Expr,
 }

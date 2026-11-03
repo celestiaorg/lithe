@@ -9,7 +9,13 @@ import "std/token/erc20";
 import "std/interfaces/erc20";
 
 contract TrackedToken is {
-  use ERC20 delegated exposing IERC20;
+  use ERC20 delegated exposing IERC20 with {
+    hook beforeTransfer is skip;
+    hook afterTransfer(const from : address; const to : address; const value : uint) is {
+      storage.last := to;
+      storage.moved := Uint.wrappingAdd(storage.moved, value);
+    }
+  }
 
   error NotOwner;
 
@@ -17,13 +23,6 @@ contract TrackedToken is {
     owner : address;
     last : address;
     moved : uint;
-  }
-
-  hook ERC20.beforeTransfer is skip;
-
-  hook ERC20.afterTransfer(const from : address; const to : address; const value : uint) is {
-    storage.last := to;
-    storage.moved := Uint.wrappingAdd(storage.moved, value);
   }
 
   deploy() is {

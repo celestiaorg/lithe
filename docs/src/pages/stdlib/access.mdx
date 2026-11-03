@@ -133,17 +133,16 @@ contract Minter is {
     minted : map(address, uint);
   }
 
-  pure function minter() : Role is
-    Role(Crypto.keccak256("MINTER_ROLE"))
+  const minter : Role := Role(Crypto.keccak256("MINTER_ROLE"));
 
   deploy() is {
-    AccessControl.grant(AccessControl.defaultAdminRole(), Evm.sender());
+    AccessControl.grant(AccessControl.defaultAdminRole, Evm.sender());
   }
 
   external function mint(const to : address; const amount : uint)
     raises AccessControlUnauthorizedAccount
   is {
-    AccessControl.checkRole(minter());
+    AccessControl.checkRole(minter);
     storage.minted[to] += amount;
   }
 }
@@ -157,7 +156,7 @@ contract Minter is {
 
 ## `Pausable`
 
-`std/security/pausable.lithe`. An emergency stop. Pausing is policy, so the contract decides who may pause, and which entrypoints check `requireNotPaused`. A token pauses every transfer, mint, and burn, as OpenZeppelin's `ERC20Pausable` and its siblings do, from its module's [`beforeTransfer` hook](/stdlib/tokens#transfer-hooks): `hook ERC20.beforeTransfer is Pausable.requireNotPaused;`.
+`std/security/pausable.lithe`. An emergency stop. Pausing is policy, so the contract decides who may pause, and which entrypoints check `requireNotPaused`. A token pauses every transfer, mint, and burn, as OpenZeppelin's `ERC20Pausable` and its siblings do, from its module's [`beforeTransfer` hook](/stdlib/tokens#transfer-hooks): `use ERC20 ... with { hook beforeTransfer is Pausable.requireNotPaused; }`.
 
 | Function | |
 | --- | --- |

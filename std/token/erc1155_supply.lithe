@@ -3,11 +3,11 @@
    hook, which the contract points here, or calls this from its own body with what else
    it runs after a balance change:
 
-     use ERC1155 exposing IERC1155, IERC1155MetadataURI;
-     use ERC1155Supply exposing IERC1155Supply;
-
-     hook ERC1155.beforeTransfer is skip;
-     hook ERC1155.afterTransfer is ERC1155Supply.afterTransfer; *)
+     use ERC1155 exposing IERC1155, IERC1155MetadataURI with {
+       hook beforeTransfer is skip;
+       hook afterTransfer is ERC1155Supply.afterTransfer;
+     }
+     use ERC1155Supply exposing IERC1155Supply; *)
 
 import "std/address";
 import "std/token/erc1155";

@@ -11,7 +11,16 @@ impl Checker {
                 col,
                 ..
             } => {
-                let id = self.resolve(*line, *col, name)?;
+                // A module's domain, named as the qualified name this rewrites it to below,
+                // when the place is checked again: a storage argument of a specialized call.
+                let id = match name.split_once('.') {
+                    Some((module, domain))
+                        if self.lookup(name).is_none() && self.known_modules.contains(module) =>
+                    {
+                        self.open_module_domain(*line, *col, module, domain)?
+                    }
+                    _ => self.resolve(*line, *col, name)?,
+                };
                 if let Some(qualified) = self
                     .domain_syms
                     .iter()
@@ -208,7 +217,7 @@ impl Checker {
             words: 0,
             bits: 0,
             laid: true,
-            tuple: false,
+            flat: None,
         });
         id
     }

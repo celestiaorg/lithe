@@ -28,6 +28,7 @@ fn render(src: &str, max: usize) -> Result<String, Error> {
         }
     }
     let partner = partners(&pieces);
+    break_use_with(src, &mut pieces, &partner);
     let mut stuck = Vec::new();
     loop {
         let (out, starts) = print(src, &pieces);
@@ -147,6 +148,46 @@ fn partners(pieces: &[Piece]) -> Vec<Option<usize>> {
         }
     }
     out
+}
+
+/// A `use M ... with { ... }` block holds one binding per line, and closes on its own.
+fn break_use_with(src: &str, pieces: &mut [Piece], partner: &[Option<usize>]) {
+    for i in 0..pieces.len() {
+        if token_kind(&pieces[i]) != Some(Kind::Use) {
+            continue;
+        }
+        let mut j = i + 1;
+        let block = loop {
+            match pieces.get(j).map(|p| (token_kind(p), partner[j])) {
+                Some((None | Some(Kind::Ident | Kind::Dot | Kind::Comma), _)) => j += 1,
+                Some((Some(Kind::LBrace), Some(close))) => j = close + 1,
+                Some((Some(Kind::With), _))
+                    if pieces.get(j + 1).and_then(token_kind) == Some(Kind::LBrace) =>
+                {
+                    break partner[j + 1].map(|close| (j + 1, close));
+                }
+                _ => break None,
+            }
+        };
+        let Some((open, close)) = block else {
+            continue;
+        };
+        let mut k = open + 1;
+        while k < close {
+            let piece = &pieces[k];
+            let word = &src[piece.start..piece.end];
+            if token_kind(piece) == Some(Kind::Ident) && matches!(word, "guard" | "hook") {
+                pieces[k].newlines_before = pieces[k].newlines_before.max(1);
+            }
+            k = match (token_kind(&pieces[k]), partner[k]) {
+                (Some(Kind::LParen | Kind::LBrack | Kind::LBrace), Some(end)) => end + 1,
+                _ => k + 1,
+            };
+        }
+        if close > open + 1 {
+            pieces[close].newlines_before = pieces[close].newlines_before.max(1);
+        }
+    }
 }
 
 /// Ways to break line `a..=b`, each a set of pieces to start a new line at, best first.
@@ -1022,6 +1063,10 @@ mod tests {
                 "function f() raises A | B | C | D\nis { skip }\n",
             ),
             (
+                "function f(const s : S) : uint is\n  case s of {\n  |A{x;y=_}->x\n  | B {  x = why ;_ } -> why\n  | C|D{ x }->1\n  }\n",
+                "function f(const s : S) : uint is\n  case s of {\n    | A { x; y = _ } -> x\n    | B { x = why; _ } -> why\n    | C | D { x } -> 1\n  }\n",
+            ),
+            (
                 "type T is\n| A of uint\n| B\n",
                 "type T is\n  | A of uint\n  | B\n",
             ),
@@ -1046,16 +1091,16 @@ mod tests {
                 "function f() is {\n  (* kept\n     here *)\n  skip\n}\n",
             ),
             (
-                "external function f(const id : uint)\nguarded g(id)\nraises E\nis { skip }\nguard M.g(const id : uint)\nraises E\nis { skip }\n",
-                "external function f(const id : uint)\n  guarded g(id)\n  raises E\nis { skip }\nguard M.g(const id : uint)\n  raises E\nis { skip }\n",
+                "external function f(const id : uint)\nguarded g(id)\nraises E\nis { skip }\nuse M with {\nguard g(const id : uint)\nraises E\nis { skip }\n}\n",
+                "external function f(const id : uint)\n  guarded g(id)\n  raises E\nis { skip }\nuse M with {\n  guard g(const id : uint)\n    raises E\n  is { skip }\n}\n",
             ),
             (
-                "hook M.h(const id : uint)\nraises E\nis {\nskip\n}\nhook M.g is skip;\n",
-                "hook M.h(const id : uint)\n  raises E\nis {\n  skip\n}\nhook M.g is skip;\n",
+                "use M exposing I with { hook h(const id : uint)\nraises E\nis {\nskip\n} hook g is skip; }\n",
+                "use M exposing I with {\n  hook h(const id : uint)\n    raises E\n  is {\n    skip\n  }\n  hook g is skip;\n}\n",
             ),
             (
-                "view function f() : uint is\n  1\n\n(* after a function's value *)\nhook M.g is skip;\nguard M.e is f;\n",
-                "view function f() : uint is\n  1\n\n(* after a function's value *)\nhook M.g is skip;\nguard M.e is f;\n",
+                "view function f() : uint is\n  1\n\n(* after a function's value *)\nuse M with {\n  hook g is skip;\n  guard e is f;\n}\n",
+                "view function f() : uint is\n  1\n\n(* after a function's value *)\nuse M with {\n  hook g is skip;\n  guard e is f;\n}\n",
             ),
             (
                 "pure function f(const n : uint) : string raises Bad is\n  if n = 1 then\n    \"a\"\n      else if n = 2 then\n        \"b\"\n          else\nfail Bad\n",

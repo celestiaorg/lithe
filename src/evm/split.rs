@@ -680,6 +680,60 @@ fn routers_need_their_facets() {
     }
 }
 
+/// A delegated module's constants fold into its facet and into the contract alike.
+#[test]
+fn delegated_modules_keep_their_constants() {
+    let src = "import \"std/crypto\";\n\
+        module Links is {\n\
+          const maxLinks : uint := 3;\n\
+          const seed : bytes32 := Crypto.keccak256(\"links\");\n\
+          storage links at \"t.links\" is record { items : list(uint, maxLinks); total : uint; }\n\
+          external function add(const xs : list(uint)) is {\n\
+            for x : uint in xs bound maxLinks do { links.total += x; }\n\
+          }\n\
+          external view function total() : (uint, bytes32) is (links.total + maxLinks, seed)\n\
+        }\n\
+        storage is record { n : uint; }\n\
+        use Links delegated exposing {\n\
+          function add(xs : list(uint));\n\
+          view function total() : (uint, bytes32);\n\
+        }\n\
+        external pure function cap() : uint is Links.maxLinks * 2\n";
+    let split =
+        crate::split::build(&checked_src(src), "T", &crate::Options::default()).expect("split");
+    assert_eq!(facet_names(&split), ["Links"]);
+    let runtime = deploy_split(&split);
+    let list = |n: u64| {
+        let mut data = selector("add(uint256[])").to_vec();
+        for w in [32, n].into_iter().chain(1..=n) {
+            data.extend_from_slice(&Word::from_u64(w).to_be_bytes());
+        }
+        data
+    };
+    let added = call_raw(&runtime, &list(3));
+    assert!(!added.reverted, "{}", pretty(&added.returndata));
+    assert!(call_raw(&runtime, &list(4)).reverted);
+    let total = exec(
+        &runtime,
+        &selector("total()"),
+        added.storage.clone(),
+        Word::from_u64(1),
+        Word::from_u64(0),
+        Word::from_u64(0),
+    )
+    .expect("total");
+    assert_eq!(load_bytes(&total.returndata, 0), Word::from_u64(9));
+    assert_eq!(
+        load_bytes(&total.returndata, 32),
+        Word::from_be_bytes(crate::keccak::keccak256(b"links"))
+    );
+    assert_eq!(
+        read_ok(&runtime, &HashMap::new(), "cap()", &[]),
+        Word::from_u64(6)
+    );
+    DEPLOYED.with(|d| d.borrow_mut().clear());
+}
+
 const SPLIT_MODULES: &str = r#"
 module Alpha is {
   storage alphaState at "split.alpha" is record {
@@ -1338,23 +1392,23 @@ fn split_tooling_output() {
 
 const ORDERS: &str = "\
 import \"std/abi\"; import \"std/crypto\"; module Orders is {
-  type Order is tuple record { who : address; memo : string; }
+  type Order is record { who : address; memo : string; }
   type Job is record { a : uint; label : string; }
   storage orders at \"t.orders\" is record { h : bytes32; }
 
   external function place(const o : Order) is { orders.h := Crypto.keccak256(Abi.encode(o)); }
-  external function run(const j : Job) is { orders.h := Crypto.keccak256(Abi.encode(j)); }
-  external function mark(const m : tuple record { at : uint; note : string; }) is {
+  external function run(const j : flat Job) is { orders.h := Crypto.keccak256(Abi.encode(j)); }
+  external function mark(const m : record { at : uint; note : string; }) is {
     orders.h := Crypto.keccak256(Abi.encode(m.at, m.note));
   }
   external view function last() : bytes32 is orders.h
 }
 ";
 
-/// `lithe stubs` writes a `tuple record` as one, so the block it prints exposes the module
-/// as declared, and each record parameter keeps its ABI form in a facet.
+/// `lithe stubs` writes `flat` where the module does, so the block it prints exposes the
+/// module as declared, and each record parameter keeps its ABI form in a facet.
 #[test]
-fn stubs_keep_tuple_records() {
+fn stubs_keep_record_forms() {
     let dir = std::env::temp_dir().join(format!("lithe-orders-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).expect("dir");
@@ -1364,7 +1418,7 @@ fn stubs_keep_tuple_records() {
     let _ = std::fs::remove_dir_all(&dir);
     assert_eq!(
         stubs,
-        "use Orders exposing {\n  function place(o : Order);\n  function run(j : Job);\n  function mark(m : tuple record { at : uint; note : string });\n  view function last() : bytes32;\n}\n"
+        "use Orders exposing {\n  function place(o : Order);\n  function run(j : flat Job);\n  function mark(m : record { at : uint; note : string });\n  view function last() : bytes32;\n}\n"
     );
     let marked = stubs.replacen(" exposing {", " delegated exposing {", 1);
     let shop = format!("{ORDERS}\ncontract Shop is {{\n  storage is record {{}}\n{marked}}}\n");
@@ -1721,6 +1775,109 @@ fn calls_cross_into_facets() {
     DEPLOYED.with(|d| d.borrow_mut().clear());
 }
 
+/// A facet module's functions take and return variants with payloads, which cross as ABI
+/// values: what each call answers, and the storage it leaves, are the inline build's.
+#[test]
+fn variants_cross_into_facets() {
+    let src = r#"module Shapes is {
+  type Shape is
+    | Dot
+    | Line of uint
+    | Named of string
+    | Box of (uint8, list(uint))
+
+  storage shapes at "cross.shapes" is record {
+    last : Shape;
+    count : uint;
+  }
+
+  pure function grow(const s : Shape) : Shape is
+    case s of {
+    | Dot -> Line(1)
+    | Line(n) -> Line(n + 1)
+    | Named(x) -> Box((uint8(1), [x.length]))
+    | Box(b) -> Box(b)
+    }
+
+  function keep(const s : Shape) : Shape is {
+    shapes.last := s;
+    shapes.count := shapes.count + 1;
+  } with grow(s)
+
+  view function last() : Shape is shapes.last
+}
+
+contract C is {
+  use Shapes delegated;
+  storage is record { n : uint; }
+  external pure function grown(const s : Shape) : Shape is Shapes.grow(s)
+  external function kept(const s : Shape) : Shape is Shapes.keep(s)
+  external view function seen() : Shape is Shapes.last()
+}
+"#;
+    let checked = checked_src(src);
+    let split = crate::split::build(&checked, "C", &crate::Options::default()).expect("split");
+    let across: Vec<&str> = split.across.iter().map(|(_, f)| f.as_str()).collect();
+    for f in ["Shapes.grow", "Shapes.keep", "Shapes.last"] {
+        assert!(across.contains(&f), "{f} in {across:?}");
+    }
+    let whole = whole_build(&checked);
+    let made_whole = construct(&whole.code, address_arg(7), Word::from_u64(0)).expect("whole");
+    deploy_facets(&split);
+    let made = construct(&split.creation, address_arg(7), Word::from_u64(0)).expect("router");
+    assert!(!made.reverted, "deploy: {}", pretty(&made.returndata));
+    let mut a = Run {
+        runtime: &made_whole.returndata,
+        storage: made_whole.storage.clone(),
+    };
+    let mut b = Run {
+        runtime: &made.returndata,
+        storage: made.storage.clone(),
+    };
+    let w = |x: u64| Word::from_u64(x).to_be_bytes().to_vec();
+    let call_data = |sig: &str, args: &[u8]| [selector(sig).to_vec(), args.to_vec()].concat();
+    let shape = |tag: u64, payload: &[u8]| {
+        let mut out = [w(0x20), w(tag), w(0x40), w(payload.len() as u64)].concat();
+        out.extend(payload);
+        out.resize(out.len().div_ceil(32) * 32, 0);
+        out
+    };
+    let named = [w(0x20), w(5), b"hello".to_vec()].concat();
+    let boxed = [w(0x20), w(9), w(0x40), w(2), w(3), w(4)].concat();
+    let values = [
+        shape(0, &[]),
+        shape(1, &w(41)),
+        shape(2, &named),
+        shape(3, &boxed),
+        shape(1, &[]),
+    ];
+    for v in &values {
+        for f in ["grown", "kept"] {
+            let data = call_data(&format!("{f}((uint8,bytes))"), v);
+            let (want, got) = (a.send(7, &data), b.send(7, &data));
+            assert_eq!(want.reverted, got.reverted, "{f} {}", hex(v));
+            assert_eq!(
+                hex(&want.returndata),
+                hex(&got.returndata),
+                "{f} {}",
+                hex(v)
+            );
+            assert_eq!(a.storage, b.storage, "{f} {}", hex(v));
+        }
+        let seen = call_data("seen()", &[]);
+        assert_eq!(
+            hex(&a.send(7, &seen).returndata),
+            hex(&b.send(7, &seen).returndata)
+        );
+    }
+    let grown = b.send(7, &call_data("grown((uint8,bytes))", &values[2]));
+    assert_eq!(
+        hex(&grown.returndata),
+        hex(&shape(3, &[w(0x20), w(1), w(0x40), w(1), w(5)].concat()))
+    );
+    DEPLOYED.with(|d| d.borrow_mut().clear());
+}
+
 /// The router never dispatches the selectors of its facets' entrypoints for the module's
 /// functions, and a facet called directly runs them on its own storage alone.
 #[test]
@@ -1796,6 +1953,107 @@ fn facets_with_crossings_are_shared() {
         .expect("two");
     assert_eq!(one.facets[0].address, two.facets[0].address);
     assert!(one.across.len() > two.across.len());
+}
+
+/// A function that takes a list is built for each caller. A contract that exposes the external
+/// calling one, a contract that doesn't, and a contract that calls one the module never does
+/// share the facet, and the errors a contract imports from elsewhere stay out of its ABI.
+#[test]
+fn facets_do_not_depend_on_what_the_contract_reaches_or_imports() {
+    let names = "module Names is {
+  storage names at \"share.names\" is record {
+    count : uint;
+  }
+
+  error Empty;
+
+  pure function total(const xs : list(string)) : uint is xs.length
+
+  pure function longest(const xs : list(string)) : uint is {
+    assert(xs.length > 0, Empty);
+  } with xs.length
+
+  function add(const n : uint) is {
+    names.count += n;
+  }
+
+  external function addAll(const xs : list(string)) raises Empty is {
+    assert(xs.length > 0, Empty);
+    add(total(xs));
+  }
+
+  external view function count() : uint is names.count
+}
+";
+    let a = "import \"./names\";
+contract A is {
+  use Names delegated exposing {
+    function addAll(xs : list(string)) raises Empty;
+    view function count() : uint;
+  }
+}
+";
+    let b = "import \"./extra\";
+import \"./names\";
+contract B is {
+  use Names delegated exposing {
+    view function count() : uint;
+  }
+
+  storage is record {
+    n : uint;
+  }
+
+  external function bump(const n : uint) raises Extra is {
+    assert(n < 10, Extra(n));
+    Names.add(n);
+  }
+}
+";
+    let c = "import \"./names\";
+contract C is {
+  use Names delegated;
+
+  storage is record {
+    n : uint;
+  }
+
+  external function f() raises Empty is {
+    storage.n := Names.longest([\"x\"]);
+  }
+}
+";
+    let files = [
+        ("names.lithe", names),
+        ("extra.lithe", "error Extra of uint;\n"),
+        ("a.lithe", a),
+        ("b.lithe", b),
+        ("c.lithe", c),
+    ];
+    let sources = Sources::memory(files);
+    let checked = |entry: &str| {
+        let prog = crate::modules::load(&sources, Path::new(entry)).expect("load");
+        crate::check::check(prog, Default::default()).expect("check")
+    };
+    let split = |entry: &str, name: &str| {
+        crate::split::build(&checked(entry), name, &crate::Options::default())
+    };
+    let one = split("a.lithe", "A").expect("A");
+    let two = split("b.lithe", "B").expect("B");
+    assert_eq!(one.facets[0].address, two.facets[0].address);
+    assert_eq!(one.facets[0].runtime, two.facets[0].runtime);
+    assert_eq!(one.facets[0].abi, two.facets[0].abi);
+    assert!(!one.facets[0].abi.to_json().contains("Extra"));
+    let across = |pairs: &[(&str, &str)]| {
+        pairs
+            .iter()
+            .map(|(m, f)| (m.to_string(), f.to_string()))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(two.across, across(&[("Names", "Names.add")]));
+    let three = split("c.lithe", "C").expect("C");
+    assert_eq!(three.facets[0].address, one.facets[0].address);
+    assert_eq!(three.across, across(&[("Names", "Names.longest")]));
 }
 
 /// A call to a function that can't cross, and a crossing a body can't make, are errors that
@@ -1914,10 +2172,10 @@ upgrade guard is {
 use Roles delegated exposing {
   function bump() raises NotAdmin;
   view function n() : uint;
-}
-
-guard Roles.admin raises NotAdmin is {
-  Roles.onlyAdmin(Evm.sender());
+} with {
+  guard admin raises NotAdmin is {
+    Roles.onlyAdmin(Evm.sender());
+  }
 }
 
 external function claim() raises NotOwner is {
@@ -2135,10 +2393,10 @@ contract Hub is {
 
   use Relay delegated exposing {
     function post(data : bytes) raises Denied;
-  }
-
-  guard Relay.poster raises Denied is {
-    assert(Evm.sender() = Address.zero, Denied);
+  } with {
+    guard poster raises Denied is {
+      assert(Evm.sender() = Address.zero, Denied);
+    }
   }
 
   external function send(const to : address; const data : bytes)

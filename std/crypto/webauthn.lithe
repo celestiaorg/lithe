@@ -22,7 +22,7 @@ import "std/abi";
 
 (* Solady's `WebAuthnAuth`, with the same ABI. The indexes are where `"challenge":"` and
    `"type":"` start in `clientDataJson`. *)
-type WebauthnAuth is tuple record {
+type WebauthnAuth is record {
   authenticatorData : bytes;
   clientDataJson : string;
   challengeIndex : uint;
@@ -32,14 +32,13 @@ type WebauthnAuth is tuple record {
 }
 
 module WebAuthn is {
-  pure function halfOrder() : uint is
-    uint(0x7fffffff800000007fffffffffffffffde737d56d38bcf4279dce5617e3192a8)
+  const halfOrder : uint := uint(0x7fffffff800000007fffffffffffffffde737d56d38bcf4279dce5617e3192a8);
 
   (* Solady's P256 verifier, which answers 1 or 0 and never reverts. *)
-  pure function verifier() : address is 0x000000000000D01eA45F9eFD5c54f037Fa57Ea1a
+  const verifier : address := 0x000000000000D01eA45F9eFD5c54f037Fa57Ea1a;
 
   (* Code at Solady's canary means the chain has the precompile. *)
-  pure function canary() : address is 0x0000000000001Ab2e8006Fd8B71907bf06a5BDEE
+  const canary : address := 0x0000000000001Ab2e8006Fd8B71907bf06a5BDEE;
 
   (* Whether `(r, s)` signs `hash` for the P-256 key `(x, y)`, with `s` in the lower half
      of the curve order, as Solady's `P256.verifySignature` answers. Never reverts. *)
@@ -50,11 +49,11 @@ module WebAuthn is {
     const x : bytes32;
     const y : bytes32
   ) : bool is
-    uint(s) <= halfOrder()
+    uint(s) <= halfOrder
       and if Evm.osaka then Crypto.p256Verify(hash, r, s, x, y)
       else Crypto.p256Verify(hash, r, s, x, y)
-        or Evm.codeSize(canary()) = 0
-          and case query Evm.staticCall(verifier(), Abi.encode(hash, r, s, x, y)) of {
+        or Evm.codeSize(canary) = 0
+          and case query Evm.staticCall(verifier, Abi.encode(hash, r, s, x, y)) of {
             | Ok(answer) -> uint(bytes32(answer)) = 1 and answer.length >= 32
             | Error(_) -> false
           }
@@ -85,7 +84,7 @@ module WebAuthn is {
       and Crypto.keccak256(json[c:c + q]) = Crypto.keccak256(Bytes.concat(0x226368616c6c656e6765223a22, encoded, 0x22))
   (* The flags byte, 32, ends the word at 1. *)
       and data.length > 32 and uint(Bytes.word(data, 1)) & flags = flags
-      and uint(auth.s) <= halfOrder()
+      and uint(auth.s) <= halfOrder
   (* Written out for Osaka, where there is no fallback: a call copies its arguments. *)
       and if Evm.osaka then Crypto.p256Verify(
         Crypto.sha256(Bytes.concat(data, Crypto.sha256(json))),
@@ -110,14 +109,14 @@ module WebAuthn is {
           const la : uint := uint(Bytes.word(encoded, p + a));
           const lj : uint := uint(Bytes.word(encoded, p + j));
           if la <= n - p - a - 32 and lj <= n - p - j - 32 then {
-            decoded := Some({
+            decoded := Some {
               authenticatorData = encoded[p + a + 32:p + a + 32 + la];
               clientDataJson = string(encoded[p + j + 32:p + j + 32 + lj]);
               challengeIndex = uint(Bytes.word(encoded, p + 64));
               typeIndex = uint(Bytes.word(encoded, p + 96));
               r = Bytes.word(encoded, p + 128);
               s = Bytes.word(encoded, p + 160);
-            });
+            };
           }
         }
       }
@@ -146,14 +145,14 @@ module WebAuthn is {
       const j : uint := n - 0x44;
       if c <= j then {
         const indexes : uint := uint(Bytes.word(encoded, j)) >> 224;
-        decoded := Some({
+        decoded := Some {
           authenticatorData = encoded[2:c];
           clientDataJson = string(encoded[c:j]);
           challengeIndex = indexes >> 16;
           typeIndex = indexes & 0xffff;
           r = Bytes.word(encoded, j + 4);
           s = Bytes.word(encoded, j + 36);
-        });
+        };
       }
     }
   } with decoded

@@ -35,7 +35,7 @@ external view function lowPlus(const price : uint) : uint is
 
 external view function spanHigh(const mid : uint) : uint is span(mid).high
 
-external view function quoteOf(const price : uint) : Quote is quoteAt(price)
+external view function quoteOf(const price : uint) : flat Quote is quoteAt(price)
 
 external function save(const price : uint) is {
   storage.last := quoteAt(price);

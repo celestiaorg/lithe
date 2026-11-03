@@ -341,6 +341,15 @@ impl<'a> Exec<'a> {
         if let Some(v) = st.locals.get(&sym) {
             return v.clone();
         }
+        // A pattern's name is a field of the payload it took apart, read afresh as the
+        // payload is bound again.
+        if let Some(&(whole, i)) = self.checked.field_of.get(&sym) {
+            if let Val::Tuple(parts) = self.local(st, whole) {
+                if let Some(v) = parts.get(i) {
+                    return v.clone();
+                }
+            }
+        }
         let ty = self.checked.syms[sym].ty;
         let v = self.fresh(ty, "kept");
         st.locals.insert(sym, v.clone());
@@ -2161,9 +2170,6 @@ impl<'a> Exec<'a> {
             let mut inside = st.clone();
             if let Some(b) = arm.bind_sym {
                 self.bind(&mut inside, b, "payload");
-            }
-            for sym in &arm.tuple_syms {
-                self.bind(&mut inside, *sym, "payload");
             }
             self.stmts(&mut inside, &arm.stmts, ctx)?;
             let v = self.eval(&mut inside, &arm.expr, ctx)?;

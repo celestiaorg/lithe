@@ -58,8 +58,38 @@ impl Checker {
         };
         self.bind_storage(f.line, f.col)?;
         let slot_params = std::mem::take(&mut self.slot_params);
+        let abi = matches!(
+            f.kind,
+            ItemKind::Entry | ItemKind::View | ItemKind::Deploy | ItemKind::Migrate
+        ) || f.exported.is_some()
+            || self.in_spec;
+        let not_abi = |line, col| error(line, col, crate::parse::FLAT_ONLY);
+        // A record that crosses between the contract and a facet, as a module function's or a
+        // hook's argument or result, is its fields: both sides build the call from the same
+        // declaration, and spread fields take the shorter paths.
+        let crosses = f.hook_of.is_some()
+            || crate::split::is_hidden(&f.name)
+            || (f
+                .module
+                .as_ref()
+                .is_some_and(|m| self.delegated.contains(m))
+                && f.exported.is_none()
+                && f.guard_of.is_none()
+                && !f.private
+                && matches!(
+                    f.kind,
+                    ItemKind::Function | ItemKind::Readonly | ItemKind::Pure
+                ));
         for p in &mut f.params {
-            let id = self.build(&p.ty)?;
+            let mut id = self.build(&p.ty)?;
+            if p.flat {
+                if !abi {
+                    return Err(not_abi(p.ty.line(), p.ty.col()));
+                }
+                id = self.flat_ty(p.ty.line(), p.ty.col(), id)?;
+            } else if crosses && self.spreads(id) {
+                id = self.flat_ty(p.ty.line(), p.ty.col(), id)?;
+            }
             p.ty_id = id;
             if id == self.storage {
                 return Err(error(
@@ -89,7 +119,21 @@ impl Checker {
             self.define(p.line, p.col, &p.name, sym)?;
         }
         let ret = match &f.ret {
-            Some(ty) => self.build(ty)?,
+            Some(ty) if f.ret_flat => {
+                if !abi {
+                    return Err(not_abi(ty.line(), ty.col()));
+                }
+                let id = self.build(ty)?;
+                self.flat_ty(ty.line(), ty.col(), id)?
+            }
+            Some(ty) => {
+                let id = self.build(ty)?;
+                if crosses && self.spreads(id) {
+                    self.flat_ty(ty.line(), ty.col(), id)?
+                } else {
+                    id
+                }
+            }
             None => TY_UNIT,
         };
         f.ret_ty = ret;
@@ -99,11 +143,7 @@ impl Checker {
                 .as_ref()
                 .map(|t| (t.line(), t.col()))
                 .unwrap_or((f.line, f.col));
-            return Err(error(
-                line,
-                col,
-                "options and variants with payloads cannot be ABI values",
-            ));
+            return Err(error(line, col, "an option cannot be an ABI value"));
         }
         if f.kind == ItemKind::View && !abi_value(&self.types, ret) {
             let (line, col) = f
@@ -364,8 +404,7 @@ impl Checker {
         };
         let payload = self.errors[idx].payload;
         let field_tys = self.errors[idx].field_tys.clone();
-        let record = payload
-            .is_some_and(|ty| self.types[ty].kind == TyKind::Record && !self.types[ty].tuple);
+        let record = payload.is_some_and(|ty| self.types[ty].kind == TyKind::Record);
         match &mut raised.form {
             RaisedForm::Unit if payload.is_none() => {}
             RaisedForm::Positional(_) | RaisedForm::Fields(_) if payload.is_none() => {
@@ -373,6 +412,13 @@ impl Checker {
                     raised.line,
                     raised.col,
                     format!("error `{}` does not take a payload", raised.name),
+                ));
+            }
+            RaisedForm::Positional(literal @ Expr::Record { .. }) => {
+                return Err(error(
+                    raised.line,
+                    raised.col,
+                    super::expr::record_in_parens(&raised.name, literal),
                 ));
             }
             RaisedForm::Positional(expr) => {
@@ -384,6 +430,7 @@ impl Checker {
                         "error payload has the wrong type",
                     ));
                 }
+                self.take_form(expr, payload.unwrap_or(TY_UNIT));
             }
             RaisedForm::Fields(fields) if record => {
                 if fields.len() != field_tys.len() {
@@ -594,6 +641,7 @@ impl Checker {
             let same_params = decl.params.len() == impl_.params.len()
                 && decl.params.iter().zip(&impl_.params).all(|(a, b)| {
                     a.name == b.name
+                        && a.flat == b.flat
                         && self.declared_alike(a.ty_id, b.ty_id, Some(&a.ty), Some(&b.ty))
                 });
             let mut want: Vec<usize> = impl_.errors.clone();
@@ -613,6 +661,7 @@ impl Checker {
                 && exported.external_pure == decl.external_pure
                 && same_params
                 && decl.ret.is_some() == impl_.ret.is_some()
+                && decl.ret_flat == impl_.ret_flat
                 && self.declared_alike(
                     decl.ret_ty,
                     impl_.ret_ty,
@@ -764,8 +813,8 @@ impl Checker {
             let label = iface_label(decl);
             let module = format!("`{}`", impl_.module.as_deref().unwrap_or(""));
             // Types as the source spells them.
-            let shown = |ty: Option<&TypeRef>| match ty {
-                Some(ty) => format!("`{}`", shape_ty(ty)),
+            let shown = |flat, ty: Option<&TypeRef>| match ty {
+                Some(ty) => format!("`{}`", flat_shape(flat, ty)),
                 None => "nothing".to_string(),
             };
             let mut reason = None;
@@ -795,24 +844,27 @@ impl Checker {
                         p.name,
                         q.name
                     ));
-                } else if !self.declared_alike(x.0, y.0, Some(&p.ty), Some(&q.ty)) {
+                } else if p.flat != q.flat
+                    || !self.declared_alike(x.0, y.0, Some(&p.ty), Some(&q.ty))
+                {
                     reason = Some(format!(
                         "parameter `{}` of `{}` is {} in {label} and {} in {module}",
                         p.name,
                         decl.name,
-                        shown(Some(&p.ty)),
-                        shown(Some(&q.ty))
+                        shown(p.flat, Some(&p.ty)),
+                        shown(q.flat, Some(&q.ty))
                     ));
                 }
             }
             if reason.is_none()
-                && !self.declared_alike(a.ret, b.ret, decl.ret.as_ref(), impl_.ret.as_ref())
+                && (decl.ret_flat != impl_.ret_flat
+                    || !self.declared_alike(a.ret, b.ret, decl.ret.as_ref(), impl_.ret.as_ref()))
             {
                 reason = Some(format!(
                     "`{}` returns {} in {label} and {} in {module}",
                     decl.name,
-                    shown(decl.ret.as_ref()),
-                    shown(impl_.ret.as_ref())
+                    shown(decl.ret_flat, decl.ret.as_ref()),
+                    shown(impl_.ret_flat, impl_.ret.as_ref())
                 ));
             }
             if let Some(reason) = reason {
@@ -1138,6 +1190,16 @@ impl Checker {
                 line,
                 col,
                 format!("declared effect is weaker than the body's: {label} {did}"),
+            );
+        }
+        if self.work.get(self.cur_fn).is_some_and(|f| f.constant) {
+            return error(
+                line,
+                col,
+                format!(
+                    "constant `{}` {did}: its value must be known when the contract compiles",
+                    self.fn_name
+                ),
             );
         }
         let declared = if self.external_pure {

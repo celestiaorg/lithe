@@ -10,13 +10,13 @@ import "std/interfaces/erc4626";
 
 contract BenchVault is {
   use SafeERC20;
-  use ERC20 exposing IERC20, IERC20Name;
+  use ERC20 exposing IERC20, IERC20Name with {
+    hook beforeTransfer is skip;
+    hook afterTransfer is skip;
+  }
   use ERC4626 exposing IERC4626, {
     view function decimals() : uint8;
   }
-
-  hook ERC20.beforeTransfer is skip;
-  hook ERC20.afterTransfer is skip;
 
   deploy(const asset : address) is {
     ERC20.init("Bench Vault", "vBENCH");

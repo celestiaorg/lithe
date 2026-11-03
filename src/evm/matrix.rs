@@ -8,7 +8,8 @@ use super::*;
 /// A type under test. `tags` say where it may go:
 /// `abi` (an ABI value), `key` (a map key), `eq` (`=` compares it), `nest` (a tuple
 /// element, record field, variant payload, or map value), `elem` (a list element),
-/// `opt` (an option's payload), `fixed` (transient storage), `decode` (`Abi.decode` names it).
+/// `opt` (an option's payload), `fixed` (transient storage), `decode` (`Abi.decode` names it),
+/// `flat` (a record a `flat` parameter or result spreads), `const` (a declared constant).
 struct Ty {
     name: &'static str,
     decl: &'static str,
@@ -20,10 +21,12 @@ struct Ty {
     out: Option<(&'static str, &'static str)>,
 }
 
-const SCALAR: &str = "abi decode key eq nest elem opt fixed";
-const DYN: &str = "abi decode key eq nest elem opt";
+const SCALAR: &str = "abi decode key eq nest elem opt fixed const";
+const DYN: &str = "abi decode key eq nest elem opt const";
 const STATIC: &str = "abi decode eq nest elem opt fixed";
 const DYNAMIC: &str = "abi decode eq nest elem opt";
+const FLAT_STATIC: &str = "abi decode eq nest elem opt fixed flat";
+const FLAT_DYNAMIC: &str = "abi decode eq nest elem opt flat";
 const OPTION: &str = "eq nest elem opt fixed";
 
 const TYPES: &[Ty] = &[
@@ -130,16 +133,16 @@ const TYPES: &[Ty] = &[
             "{ a = 255; b = 0xffffffffffffffffffffffffffffffffffffffff; c = -32768; d = Uint.max; }",
             "{ a = 0; b = 0; c = 0; d = 0; }",
         ],
-        tags: STATIC,
-        sig: "uint8,address,int16,uint256",
+        tags: FLAT_STATIC,
+        sig: "(uint8,address,int16,uint256)",
         out: None,
     },
     Ty {
         name: "Outer",
         decl: "type Inner is record { a : uint8; b : bool; }\ntype Outer is record { p : Inner; k : int8; }",
         samples: &["{ p = { a = 1; b = true; }; k = -1; }", "{ p = { a = 255; b = false; }; k = 127; }"],
-        tags: STATIC,
-        sig: "(uint8,bool),int8",
+        tags: FLAT_STATIC,
+        sig: "((uint8,bool),int8)",
         out: None,
     },
     Ty {
@@ -150,15 +153,15 @@ const TYPES: &[Ty] = &[
             "{ n = 2; s = \"\"; xs = []; }",
             "{ n = 255; s = \"x\"; xs = [Uint.max]; }",
         ],
-        tags: DYNAMIC,
-        sig: "uint8,string,uint256[]",
+        tags: FLAT_DYNAMIC,
+        sig: "(uint8,string,uint256[])",
         out: None,
     },
     Ty {
         name: "Tr",
-        decl: "type Tr is tuple record { a : uint; s : string; }",
+        decl: "type Tr is record { a : uint; s : string; }",
         samples: &["{ a = 1; s = \"one\"; }", "{ a = 0; s = \"\"; }"],
-        tags: DYNAMIC,
+        tags: FLAT_DYNAMIC,
         sig: "(uint256,string)",
         out: None,
     },
@@ -280,7 +283,7 @@ const TYPES: &[Ty] = &[
     Ty {
         name: "option(Pt)",
         decl: "type Pt is record { a : uint8; b : address; c : int16; d : uint; }",
-        samples: &["Some({ a = 1; b = 0x00000000000000000000000000000000000000ab; c = -2; d = 3; })", "None", "Some({ a = 0; b = 0; c = 0; d = 0; })"],
+        samples: &["Some { a = 1; b = 0x00000000000000000000000000000000000000ab; c = -2; d = 3; }", "None", "Some { a = 0; b = 0; c = 0; d = 0; }"],
         tags: OPTION,
         sig: "",
         out: Some((
@@ -338,9 +341,9 @@ const TYPES: &[Ty] = &[
         name: "option(Doc)",
         decl: "type Doc is record { n : uint8; s : string; xs : list(uint); }",
         samples: &[
-            "Some({ n = 1; s = \"a string that is longer than thirty-two bytes, to spill\"; xs = [1, 2, 3]; })",
+            "Some { n = 1; s = \"a string that is longer than thirty-two bytes, to spill\"; xs = [1, 2, 3]; }",
             "None",
-            "Some({ n = 0; s = \"\"; xs = []; })",
+            "Some { n = 0; s = \"\"; xs = []; }",
         ],
         tags: "eq nest elem opt",
         sig: "",
@@ -364,51 +367,39 @@ const TYPES: &[Ty] = &[
         name: "Stamp",
         decl: "type Stamp is | Nil | Stamp of uint64 | Who of address",
         samples: &["Stamp(18446744073709551615)", "Nil", "Who(0x00000000000000000000000000000000000000ab)", "Stamp(0)"],
-        tags: OPTION,
-        sig: "",
-        out: Some((
-            "(uint8, uint64, address)",
-            "case v of { Nil -> (uint8(0), uint64(7), 0x0000000000000000000000000000000000000007) | Stamp(t) -> (uint8(1), t, 0x0000000000000000000000000000000000000007) | Who(w) -> (uint8(2), uint64(7), w) }",
-        )),
+        tags: "abi decode eq nest elem opt fixed",
+        sig: "(uint8,bytes)",
+        out: None,
     },
     Ty {
         name: "Big",
         decl: "type Big is | A of uint | B of (uint8, int) | C",
         samples: &["A(Uint.max)", "C", "B((uint8(255), Int.min))", "A(0)"],
-        tags: OPTION,
-        sig: "",
-        out: Some((
-            "(uint8, uint, uint8, int)",
-            "case v of { A(n) -> (uint8(0), n, uint8(7), 7) | B((s, i)) -> (uint8(1), 7, s, i) | C -> (uint8(2), 7, uint8(7), 7) }",
-        )),
+        tags: "abi decode eq nest elem opt fixed",
+        sig: "(uint8,bytes)",
+        out: None,
     },
     Ty {
         name: "Dyn",
         decl: "type Dyn is | Name of string | Nums of list(uint) | Blank",
         samples: &["Name(\"a string that is longer than thirty-two bytes, to spill\")", "Blank", "Nums([1, 2])", "Name(\"\")"],
-        tags: "eq nest elem opt",
-        sig: "",
-        out: Some((
-            "(uint8, string, list(uint))",
-            "case v of { Name(s) -> (uint8(0), s, [7]) | Nums(xs) -> (uint8(1), \"none\", xs) | Blank -> (uint8(2), \"none\", [7]) }",
-        )),
+        tags: "abi decode eq nest elem opt",
+        sig: "(uint8,bytes)",
+        out: None,
     },
     Ty {
         name: "Note",
         decl: "type Memo is record { n : uint8; s : string; }\ntype Note is | Gone | Plain of Memo | Pair of (uint, list(string))",
         samples: &[
-            "Plain({ n = 255; s = \"a string that is longer than thirty-two bytes, to spill\"; })",
+            "Plain { n = 255; s = \"a string that is longer than thirty-two bytes, to spill\"; }",
             "Pair((Uint.max, [\"\", \"b\"]))",
             "Gone",
-            "Plain({ n = 0; s = \"\"; })",
+            "Plain { n = 0; s = \"\"; }",
             "Pair((0, []))",
         ],
-        tags: "eq nest elem opt",
-        sig: "",
-        out: Some((
-            "(uint8, uint8, string, uint, list(string))",
-            "case v of { Gone -> (uint8(0), uint8(7), \"none\", 7, [\"none\"]) | Plain(m) -> (uint8(1), m.n, m.s, 7, [\"none\"]) | Pair((a, xs)) -> (uint8(2), uint8(7), \"none\", a, xs) }",
-        )),
+        tags: "abi decode eq nest elem opt",
+        sig: "(uint8,bytes)",
+        out: None,
     },
     Ty {
         name: "Mix",
@@ -442,6 +433,10 @@ enum Kind {
     Revert,
     /// `echo` returns its parameter.
     Calldata,
+    /// `get{k}` reads sample `k` from a constant declared outside any function.
+    Constant,
+    /// `echo` returns its `flat` parameter as a `flat` result: the record's fields each.
+    Flat,
     /// The place's `load` deletes what `write` wrote. `get{k}` writes sample `k`, deletes
     /// it, and reads it back in one call, and must read what unwritten storage reads. A
     /// place with storage also runs `put{k}` and `del` in separate transactions, which must
@@ -907,8 +902,20 @@ const PLACES: &[Place] = &[
     Place { name: "event", kind: Kind::Log, needs: "abi", decl: "event Seen of record { x : $T; }", storage: "", write: "emit Seen { x = $V; };", load: "", read: "" },
     Place { name: "error", kind: Kind::Revert, needs: "abi", decl: "error Bad of $T;", storage: "", write: "fail Bad($V);", load: "", read: "" },
     Place { name: "calldata", kind: Kind::Calldata, needs: "abi", decl: "", storage: "", write: "", load: "", read: "" },
+    Place { name: "flat", kind: Kind::Flat, needs: "flat", decl: "", storage: "", write: "", load: "", read: "" },
     Place { name: "guard", kind: Kind::Guard, needs: "abi", decl: "", storage: "", write: "", load: "", read: "" },
     Place { name: "hook", kind: Kind::Hook, needs: "abi", decl: "", storage: "", write: "", load: "", read: "" },
+    Place { name: "constant", kind: Kind::Constant, needs: "const", decl: "", storage: "", write: "const c$K : $T := $V;", load: "", read: "c$K" },
+    Place {
+        name: "module constant",
+        kind: Kind::Constant,
+        needs: "const",
+        decl: "",
+        storage: "",
+        write: "module Consts$K is { const c : $T := $V; }\nuse Consts$K;",
+        load: "",
+        read: "Consts$K.c",
+    },
 ];
 
 /// A facet is built from its module alone, so a guard cell declares its type in the module.
@@ -919,10 +926,48 @@ fn in_module(ty: &Ty) -> bool {
 
 fn fill(text: &str, ty: &Ty, v: &str, w: &str) -> String {
     let named = ty.name.chars().all(|c| c.is_alphanumeric() || c == '_');
-    text.replace("$T", ty.name)
-        .replace("$N", if named { ty.name } else { "Tn" })
-        .replace("$V", v)
-        .replace("$W", w)
+    braced(
+        &text
+            .replace("$T", ty.name)
+            .replace("$N", if named { ty.name } else { "Tn" })
+            .replace("$V", v)
+            .replace("$W", w),
+    )
+}
+
+/// A constructor, named in PascalCase, takes a record sample in braces: a place's `Full($V)`
+/// becomes `Full { ... }`.
+fn braced(text: &str) -> String {
+    let mut out = String::new();
+    let mut rest = text;
+    while let Some(at) = rest.find("({") {
+        let word = |c: char| c.is_alphanumeric() || c == '_';
+        let name = &rest[rest[..at].rfind(|c: char| !word(c)).map_or(0, |i| i + 1)..at];
+        let named = name.starts_with(|c: char| c.is_ascii_uppercase());
+        let mut depth = 0;
+        let close = rest[at + 1..].char_indices().find_map(|(i, c)| {
+            depth += match c {
+                '{' => 1,
+                '}' => -1,
+                _ => 0,
+            };
+            (depth == 0).then_some(at + 1 + i)
+        });
+        match close.filter(|&c| named && rest[c + 1..].starts_with(')')) {
+            Some(c) => {
+                out.push_str(&rest[..at]);
+                out.push(' ');
+                out.push_str(&rest[at + 1..=c]);
+                rest = &rest[c + 2..];
+            }
+            None => {
+                out.push_str(&rest[..at + 2]);
+                rest = &rest[at + 2..];
+            }
+        }
+    }
+    out.push_str(rest);
+    out
 }
 
 fn program(ty: &Ty, place: &Place) -> String {
@@ -946,8 +991,8 @@ fn program(ty: &Ty, place: &Place) -> String {
                 "module Guarded is {{\n{inner}\nguard seen(const x : $T);\n\
                  external function echo(const x : $T) : $T guarded seen(x) is x\n}}\n\
                  error Seen of $T;\n\
-                 use Guarded exposing {{ function echo(x : $T) : $T raises Seen; }}\n\
-                 guard Guarded.seen(const x : $T) raises Seen is {{ if Evm.sender() = address(2) then {{ fail Seen(x); }} }}\n"
+                 use Guarded exposing {{ function echo(x : $T) : $T raises Seen; }} with {{\n\
+                 guard seen(const x : $T) raises Seen is {{ if Evm.sender() = address(2) then {{ fail Seen(x); }} }}\n}}\n"
             ),
             ty,
             "",
@@ -960,8 +1005,8 @@ fn program(ty: &Ty, place: &Place) -> String {
                 "module Hooked is {{\n{inner}\nhook seen(const x : $T) : $T;\n\
                  external function echo(const x : $T) : $T is seen(x)\n}}\n\
                  error Seen of $T;\n\
-                 use Hooked exposing {{ function echo(x : $T) : $T raises Seen; }}\n\
-                 hook Hooked.seen(const x : $T) : $T raises Seen is {{ if Evm.sender() = address(2) then {{ fail Seen(x); }} }} with x\n"
+                 use Hooked exposing {{ function echo(x : $T) : $T raises Seen; }} with {{\n\
+                 hook seen(const x : $T) : $T raises Seen is {{ if Evm.sender() = address(2) then {{ fail Seen(x); }} }} with x\n}}\n"
             ),
             ty,
             "",
@@ -1024,7 +1069,20 @@ fn program(ty: &Ty, place: &Place) -> String {
                     src += &format!("external function put{k}() is {{ {write} }}\n");
                 }
             }
-            Kind::Calldata | Kind::Guard | Kind::Hook => {}
+            Kind::Constant => {
+                let (write, read) = (
+                    write.replace("$K", &k.to_string()),
+                    read.replace("$K", &k.to_string()),
+                );
+                src +=
+                    &format!("{write}\nexternal pure function get{k}() : {shown} is out({read})\n");
+                if eq {
+                    src += &format!(
+                        "external pure function eq{k}() : (bool, bool) is ({read} = {v}, {read} = {w})\n"
+                    );
+                }
+            }
+            Kind::Calldata | Kind::Flat | Kind::Guard | Kind::Hook => {}
         }
     }
     if place.kind == Kind::Deleted {
@@ -1057,6 +1115,12 @@ fn program(ty: &Ty, place: &Place) -> String {
     if place.kind == Kind::Calldata {
         src += &format!(
             "external function echo(const x : {0}) : {0} is x\n",
+            ty.name
+        );
+    }
+    if place.kind == Kind::Flat {
+        src += &format!(
+            "external function echo(const x : flat {0}) : flat {0} is x\n",
             ty.name
         );
     }
@@ -1134,8 +1198,15 @@ fn run_cell(ty: &Ty, place: &Place, runtime: &[u8]) -> Result<(), String> {
                 false,
             )?))
         };
+        // An error's payload is the value, or a record's fields, which a dynamic record's
+        // tuple holds after its offset.
+        let raised = |payload: &[u8]| -> Result<bool, String> {
+            let enc = enc()?;
+            let fields = ty.tags.contains("flat") && !ty.tags.contains("fixed");
+            Ok(payload == enc || payload == want || fields && payload == &enc[32..])
+        };
         match place.kind {
-            Kind::Local => {
+            Kind::Local | Kind::Constant => {
                 let got = ok(runtime, storage, &format!("get{k}()"), false)?;
                 if got != want {
                     return Err(format!("{v}: want {}, got {}", hex(&want), hex(&got)));
@@ -1210,7 +1281,7 @@ fn run_cell(ty: &Ty, place: &Place, runtime: &[u8]) -> Result<(), String> {
                     false,
                 )?;
                 let payload = out.returndata.get(4..).unwrap_or_default().to_vec();
-                if !out.reverted || (payload != enc()? && payload != want) {
+                if !out.reverted || !raised(&payload)? {
                     return Err(format!(
                         "fail {v}: want payload {}, got {}",
                         hex(&enc()?),
@@ -1271,7 +1342,7 @@ fn run_cell(ty: &Ty, place: &Place, runtime: &[u8]) -> Result<(), String> {
                     Word::from_u64(0),
                 )?;
                 let payload = out.returndata.get(4..).unwrap_or_default().to_vec();
-                if !out.reverted || (payload != enc()? && payload != want) {
+                if !out.reverted || !raised(&payload)? {
                     return Err(format!(
                         "guard on {v}: want payload {}, got {}",
                         hex(&enc()?),
@@ -1279,10 +1350,18 @@ fn run_cell(ty: &Ty, place: &Place, runtime: &[u8]) -> Result<(), String> {
                     ));
                 }
             }
-            Kind::Calldata => {
-                let sig = format!("echo({})", ty.sig);
+            Kind::Calldata | Kind::Flat => {
+                // A dynamic record's fields, spread, are its tuple's body, after its offset.
+                let spread = place.kind == Kind::Flat;
+                let (sig, args) = match ty.sig.strip_prefix('(').and_then(|s| s.strip_suffix(')')) {
+                    Some(fields) if spread && !ty.tags.contains("fixed") => (fields, &want[32..]),
+                    Some(fields) if spread => (fields, &want[..]),
+                    _ => (ty.sig, &want[..]),
+                };
+                let sig = format!("echo({sig})");
                 let mut data = selector(&sig).to_vec();
-                data.extend(&want);
+                data.extend(args);
+                let want = args.to_vec();
                 let out = send(runtime, storage, &data, false)?;
                 if out.reverted || out.returndata != want {
                     return Err(format!(

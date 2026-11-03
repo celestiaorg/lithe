@@ -41,6 +41,14 @@ contract GovernanceToken is {
       raises ERC20InsufficientAllowance | ERC20InvalidApprover | ERC20InvalidSpender | ERC20InvalidSender
         | ERC20InvalidReceiver | EnforcedPause | ERC20InsufficientBalance | ERC20ExceededCap | ERC20ExceededSafeSupply
         | CheckpointUnorderedInsertion;
+  } with {
+    hook beforeTransfer is Pausable.requireNotPaused;
+    hook afterTransfer(const from : address; const to : address; const value : uint)
+      raises ERC20ExceededCap | ERC20ExceededSafeSupply | CheckpointUnorderedInsertion
+    is {
+      ERC20Capped.afterTransfer(from, to, value);
+      ERC20Votes.transferVotingUnits(from, to, value);
+    }
   }
   use ERC20Burnable exposing {
     function burn(value : uint)
@@ -80,18 +88,9 @@ contract GovernanceToken is {
     ERC20.init("Lithe Governance", "LGOV");
     EIP712.init("Lithe Governance", "1");
     ERC20Capped.init(10_000_000 * 10 ** 18);
-    AccessControl.grant(AccessControl.defaultAdminRole(), Evm.sender());
+    AccessControl.grant(AccessControl.defaultAdminRole, Evm.sender());
     AccessControl.grant(minter(), Evm.sender());
     AccessControl.grant(pauser(), Evm.sender());
-  }
-
-  hook ERC20.beforeTransfer is Pausable.requireNotPaused;
-
-  hook ERC20.afterTransfer(const from : address; const to : address; const value : uint)
-    raises ERC20ExceededCap | ERC20ExceededSafeSupply | CheckpointUnorderedInsertion
-  is {
-    ERC20Capped.afterTransfer(from, to, value);
-    ERC20Votes.transferVotingUnits(from, to, value);
   }
 
   external function mint(const to : address; const value : uint)

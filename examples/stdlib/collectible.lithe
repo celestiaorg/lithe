@@ -33,6 +33,9 @@ contract Collectible is {
     function safeTransferFrom(from : address; to : address; tokenId : uint; data : bytes)
       raises ERC721InvalidReceiver | ERC721IncorrectOwner | EnforcedPause | ERC721NonexistentToken
         | ERC721InsufficientApproval | forwarded;
+  } with {
+    hook beforeTransfer is Pausable.requireNotPaused;
+    hook afterTransfer is ERC721Enumerable.afterTransfer;
   }
   use ERC721Enumerable exposing IERC721Enumerable;
   use ERC2981 exposing IERC2981;
@@ -44,9 +47,6 @@ contract Collectible is {
   storage is record {
     nextId : uint;
   }
-
-  hook ERC721.beforeTransfer is Pausable.requireNotPaused;
-  hook ERC721.afterTransfer is ERC721Enumerable.afterTransfer;
 
   (* The creator owns the series and takes a 5% royalty until they set another. *)
   deploy()

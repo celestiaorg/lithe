@@ -52,14 +52,13 @@ contract Owned is {{
     view function price(tokenId : uint) : uint;
     view function secret() : uint;
     function bump();
-  }}
-
-  guard Prices.editor(const tokenId : uint) raises NotEditor is {{
-    assert(Evm.sender() = storage.owner, NotEditor(tokenId));
-  }}
-
-  guard Prices.reader is {{
-    skip
+  }} with {{
+    guard editor(const tokenId : uint) raises NotEditor is {{
+      assert(Evm.sender() = storage.owner, NotEditor(tokenId));
+    }}
+    guard reader is {{
+      skip
+    }}
   }}
 
   external function claim() is {{
@@ -86,18 +85,17 @@ contract Listed is {{
     function setPrice(tokenId : uint; price : uint) raises Zero | NotListed | TooHigh;
     view function price(tokenId : uint) : uint;
     view function secret() : uint raises NotListed;
+  }} with {{
+    guard editor(const id : uint) raises NotListed | TooHigh is {{
+      onlyListed();
+      assert(id < 100, TooHigh);
+    }}
+    guard reader is onlyListed;
   }}
 
   view function onlyListed() raises NotListed is {{
     assert(storage.listed[Evm.sender()], NotListed(Evm.sender()));
   }}
-
-  guard Prices.editor(const id : uint) raises NotListed | TooHigh is {{
-    onlyListed();
-    assert(id < 100, TooHigh);
-  }}
-
-  guard Prices.reader is onlyListed;
 
   external function add(const who : address) is {{
     storage.listed[who] := true;
@@ -308,13 +306,12 @@ contract Board is {
   use Notes exposing {
     function write(id : uint; note : uint) raises Unknown;
     function clear(id : uint) raises OwnableUnauthorizedAccount;
+  } with {
+    guard writer(const id : uint) raises Unknown is {
+      assert(query Echo(address(0xcd)).echo(id) < 10, Unknown(id));
+    }
+    guard admin is Ownable.checkOwner;
   }
-
-  guard Notes.writer(const id : uint) raises Unknown is {
-    assert(query Echo(address(0xcd)).echo(id) < 10, Unknown(id));
-  }
-
-  guard Notes.admin is Ownable.checkOwner;
 
   external function own() raises OwnableInvalidOwner is {
     Ownable.init(Evm.sender());
@@ -384,10 +381,10 @@ contract Desk is {
   use Admin exposing {
     function act(action : Action) raises NotOperator;
     view function fee() : uint;
-  }
-
-  guard Admin.operator raises NotOperator is {
-    assert(Evm.sender() = address(1), NotOperator);
+  } with {
+    guard operator raises NotOperator is {
+      assert(Evm.sender() = address(1), NotOperator);
+    }
   }
 }
 "#;
@@ -416,8 +413,8 @@ contract Desk is {
         &src.replace("guard operator;", "guard operator(const action : Action);")
             .replace("guarded operator", "guarded operator(action)")
             .replace(
-                "guard Admin.operator raises",
-                "guard Admin.operator(const action : Action) raises",
+                "guard operator raises",
+                "guard operator(const action : Action) raises",
             ),
         "`action` is dispatched as one entrypoint per case, so its guard cannot take it",
     );
@@ -434,8 +431,9 @@ fn rejects(src: &str, want: &str) {
     }
 }
 
-/// A contract with the guarded `setPrice` exposed, and `guards` written in it.
-fn exposing(guards: &str, raises: &str) -> String {
+/// A contract with the guarded `setPrice` exposed, `guards` bound in its `use`, and `funcs`
+/// written in it.
+fn exposing_with(funcs: &str, guards: &str, raises: &str) -> String {
     format!(
         "{PRICES}
 contract C is {{
@@ -452,49 +450,52 @@ contract C is {{
 
   use Prices exposing {{
     function setPrice(tokenId : uint; price : uint) raises {raises};
+  }} with {{
+    {guards}
   }}
 
-  {guards}
+  {funcs}
 }}
 "
     )
 }
 
+fn exposing(guards: &str, raises: &str) -> String {
+    exposing_with("", guards, raises)
+}
+
 #[test]
 fn guard_rules() {
-    let ok = "guard Prices.editor(const tokenId : uint) raises Denied is { assert(Evm.sender() = storage.owner, Denied); }";
+    let ok = "guard editor(const tokenId : uint) raises Denied is { assert(Evm.sender() = storage.owner, Denied); }";
     compile(&exposing(ok, "Zero | Denied")).expect("the contract's check");
     rejects(
         &exposing("", "Zero"),
-        "the contract exposes `setPrice`, which `Prices` guards with `editor`, so it must write the check:\n\n  guard Prices.editor(const tokenId : uint) raises ... is { ... }",
+        "the contract exposes `setPrice`, which `Prices` guards with `editor`, so it must write the check:\n\n  use Prices ... with {\n    guard editor(const tokenId : uint) raises ... is { ... }\n  }",
     );
     rejects(
         &exposing(&format!("{ok}\n{ok}"), "Zero | Denied"),
-        "`guard Prices.editor` is written twice",
+        "guard `Prices.editor` is written twice",
     );
     rejects(
         &exposing(
-            "guard Prices.editor(const tokenId : address) is { skip }",
+            "guard editor(const tokenId : address) is { skip }",
             "Zero",
         ),
-        "`guard Prices.editor` takes different parameters than `Prices` declares\n\n  module:    guard Prices.editor(const tokenId : uint)\n  contract:  guard Prices.editor(const tokenId : address)",
+        "guard `Prices.editor` takes different parameters than `Prices` declares\n\n  module:    guard editor(const tokenId : uint)\n  contract:  guard editor(const tokenId : address)",
     );
     rejects(
-        &exposing("guard Prices.editor is { skip }", "Zero"),
-        "`guard Prices.editor` takes different parameters",
+        &exposing("guard editor is { skip }", "Zero"),
+        "guard `Prices.editor` takes different parameters",
     );
     rejects(
         &exposing(
-            &format!("{ok}\nguard Prices.reader is {{ skip }}"),
+            &format!("{ok}\nguard reader is {{ skip }}"),
             "Zero | Denied",
         ),
         "no external the contract exposes is guarded by `Prices.reader`; remove this guard",
     );
     rejects(
-        &exposing(
-            &format!("{ok}\nguard Prices.owner is {{ skip }}"),
-            "Zero | Denied",
-        ),
+        &exposing(&format!("{ok}\nguard owner is {{ skip }}"), "Zero | Denied"),
         "module `Prices` has no guard `owner`",
     );
     rejects(
@@ -504,7 +505,7 @@ fn guard_rules() {
     // A guard only reads, and reverts or lets the call through.
     let body = |stmts: &str| {
         exposing(
-            &format!("guard Prices.editor(const tokenId : uint) is {{ {stmts} }}"),
+            &format!("guard editor(const tokenId : uint) is {{ {stmts} }}"),
             "Zero",
         )
     };
@@ -521,23 +522,26 @@ fn guard_rules() {
         "guard `Prices.editor` cannot defer an operation; a guard only reads",
     );
     rejects(
-        &exposing(
-            "function note(const id : uint) is { storage.n := id; }\n  guard Prices.editor(const tokenId : uint) is { note(tokenId); }",
+        &exposing_with(
+            "function note(const id : uint) is { storage.n := id; }",
+            "guard editor(const tokenId : uint) is { note(tokenId); }",
             "Zero",
         ),
         "guard `Prices.editor` calls `note`, which is stateful",
     );
     // `is f` names a check: it takes none of the guard's parameters, or all of them.
     rejects(
-        &exposing(
-            "view function two(const a : uint; const b : uint) is { skip }\n  guard Prices.editor is two;",
+        &exposing_with(
+            "view function two(const a : uint; const b : uint) is { skip }",
+            "guard editor is two;",
             "Zero",
         ),
         "`two` takes 2 parameters; a guard that names a function passes it none of its parameters, or all 1",
     );
     rejects(
-        &exposing(
-            "view function yes() : bool is true\n  guard Prices.editor(const tokenId : uint) is yes;",
+        &exposing_with(
+            "view function yes() : bool is true",
+            "guard editor(const tokenId : uint) is yes;",
             "Zero",
         ),
         "`yes` returns a value; a guard names a function that only checks",
@@ -565,10 +569,10 @@ module M is {{
 contract C is {{
   use M exposing {{
     function set(id : uint; other : address);
-  }}
-
-  guard M.editor(const id : uint) is {{
-    skip
+  }} with {{
+    guard editor(const id : uint) is {{
+      skip
+    }}
   }}
 }}
 "
@@ -629,7 +633,9 @@ contract C is {{
 /// A guard is written by the contract that exposes the externals, not by a file it imports.
 #[test]
 fn imported_files_write_no_guards() {
-    let lib = format!("{PRICES}\nguard Prices.editor(const tokenId : uint) is {{ skip }}\n");
+    let lib = format!(
+        "{PRICES}\nuse Prices with {{\n  guard editor(const tokenId : uint) is {{ skip }}\n}}\n"
+    );
     let main = "import \"./lib\";\ncontract C is {\n  use Prices exposing {\n    view function price(tokenId : uint) : uint;\n  }\n}\n";
     let sources = Sources::memory([("contract.lithe", main), ("lib.lithe", lib.as_str())]);
     let err = crate::compile(&sources, Path::new(ENTRY), &Options::default())
@@ -639,7 +645,7 @@ fn imported_files_write_no_guards() {
         .expect("rejected");
     assert!(
         err.message
-            .contains("an imported file cannot write `guard Prices.editor`"),
+            .contains("an imported file cannot bind guard `Prices.editor`"),
         "{}",
         err.message
     );
@@ -665,7 +671,7 @@ fn the_upgrade_guard_only_reads() {
     );
 }
 
-/// `upgrade guard is f;` calls `f`, with the rules of `guard M.g is f;`: `f` returns
+/// `upgrade guard is f;` calls `f`, with the rules of a module's `guard g is f;`: `f` returns
 /// nothing and takes no parameters, since the upgrade guard has none.
 #[test]
 fn the_upgrade_guard_names_a_function() {
@@ -752,8 +758,8 @@ fn tooling_shows_guards() {
     let stubs = crate::stubs(&memory(&src), Path::new(ENTRY), "Prices", &[]).expect("stubs");
     assert!(
         stubs.contains(
-            "(* Prices guards `setPrice`: write the check, and add its errors to its `raises`.\n\n\
-             guard Prices.editor(const tokenId : uint) raises ... is { ... } *)"
+            "} with {\n  (* Prices guards `setPrice`: write the check, and add its errors to its `raises`.\n\n     \
+             guard editor(const tokenId : uint) raises ... is { ... } *)\n"
         ),
         "{stubs}"
     );

@@ -672,8 +672,7 @@ fn expr_case(types: &[RType], e: &Expr) -> bool {
         // An outcome case branches on a query, and an option or variant value case on a
         // value: none on the ABI. A variant with a dynamic payload has no values.
         Expr::Case { scrut, arms, .. }
-            if matches!(scrut.as_ref(), Expr::Query { .. })
-                || types[scrut.ty()].kind != TyKind::Variant =>
+            if Expr::is_outcome_case(scrut, arms) || types[scrut.ty()].kind != TyKind::Variant =>
         {
             expr(scrut)
                 || arms
@@ -1793,8 +1792,8 @@ pub struct Receive {
     pub state_mutability: StateMutability,
 }
 
-/// `ty` is `tuple`, with its dimensions, for a tuple; `internal_type` is its full type,
-/// `(uint256,address)[]`.
+/// `ty` is `tuple`, with its dimensions, for a tuple; `internal_type` names its type the way
+/// Solidity does, `struct C.Call[]`, or is its full type, `(uint256,address)[]`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Param {
     pub ty: String,
@@ -1840,7 +1839,7 @@ impl StateMutability {
 }
 
 impl Param {
-    fn of(field: &AbiField) -> Self {
+    fn of(field: &AbiField, names: &InternalNames) -> Self {
         let ty = if field.components.is_empty() {
             field.ty.clone()
         } else {
@@ -1851,8 +1850,8 @@ impl Param {
         Param {
             ty,
             name: field.name.clone(),
-            components: params(&field.components),
-            internal_type: field.ty.clone(),
+            components: params(&field.components, names),
+            internal_type: names.internal_type(field),
         }
     }
 
@@ -1866,13 +1865,86 @@ impl Param {
     }
 }
 
-fn params(fields: &[AbiField]) -> Vec<Param> {
-    fields.iter().map(Param::of).collect()
+fn params(fields: &[AbiField], names: &InternalNames) -> Vec<Param> {
+    fields.iter().map(|field| Param::of(field, names)).collect()
+}
+
+/// The names Solidity gives types in `internalType`: `struct Module.Call` for a module's
+/// record, `struct Contract.Call` for any other, `enum ...` the same way for a variant with
+/// no payloads, and `contract IERC20` for an interface. Solidity leaves a file-level struct
+/// unscoped; scoping every record lets `cast interface`, which writes each scope as a
+/// library, resolve one record naming another. Other types keep their ABI type.
+struct InternalNames<'a> {
+    types: &'a [RType],
+    names: HashMap<usize, String>,
+}
+
+impl<'a> InternalNames<'a> {
+    fn new(checked: &'a Checked) -> Self {
+        let prog = &checked.prog;
+        let contract = crate::artifact_contract_name(prog, std::path::Path::new(&prog.origin));
+        let mut named: Vec<(&String, &usize)> = checked.named.iter().collect();
+        named.sort();
+        let mut names = HashMap::new();
+        for (name, &id) in named {
+            let t = &checked.types[id];
+            let shown = crate::modules::shown(name);
+            let kind = match t.kind {
+                TyKind::Record => "struct",
+                TyKind::Nominal if !t.variants.is_empty() => "enum",
+                TyKind::Interface => {
+                    names.insert(id, format!("contract {shown}"));
+                    continue;
+                }
+                _ => continue,
+            };
+            let module = prog.types.iter().find(|d| d.name == *name).and_then(|d| {
+                prog.modules.iter().find(|m| {
+                    m.types
+                        .iter()
+                        .any(|t| t.name == d.name && t.origin == d.origin)
+                })
+            });
+            let scope = match module {
+                Some(module) => crate::modules::shown(&module.name).to_string(),
+                None => contract.clone(),
+            };
+            names
+                .entry(id)
+                .or_insert_with(|| format!("{kind} {scope}.{shown}"));
+        }
+        InternalNames {
+            types: &checked.types,
+            names,
+        }
+    }
+
+    /// A list keeps its dimensions after the name: `struct C.Call[][2]`.
+    fn internal_type(&self, field: &AbiField) -> String {
+        let mut id = field.id;
+        loop {
+            let t = &self.types[id];
+            match (t.kind, t.elem) {
+                (TyKind::List, Some(elem)) => id = elem,
+                (TyKind::Nominal, Some(elem)) if t.variants.is_empty() => id = elem,
+                _ => break,
+            }
+        }
+        let Some(name) = self.names.get(&id) else {
+            return field.ty.clone();
+        };
+        let base = field.ty.rfind(')').map_or(0, |at| at + 1);
+        let dims = field.ty[base..]
+            .find('[')
+            .map_or("", |at| &field.ty[base + at..]);
+        format!("{name}{dims}")
+    }
 }
 
 /// An external function is payable only when it is declared `payable`. Views are `view`
 /// because they revert when value is attached.
 pub(crate) fn abi(checked: &Checked) -> Result<Abi, Error> {
+    let names = InternalNames::new(checked);
     let mut items = Vec::new();
     for route in shown_routes(checked) {
         let state_mutability = StateMutability::paying(route.payable);
@@ -1881,8 +1953,8 @@ pub(crate) fn abi(checked: &Checked) -> Result<Abi, Error> {
             Some(_) => AbiItem::Fallback(Fallback { state_mutability }),
             None => AbiItem::Function(Function {
                 name: route.name.clone(),
-                inputs: params(&route.inputs),
-                outputs: params(&route.outputs),
+                inputs: params(&route.inputs, &names),
+                outputs: params(&route.outputs, &names),
                 state_mutability,
             }),
         });
@@ -1896,16 +1968,15 @@ pub(crate) fn abi(checked: &Checked) -> Result<Abi, Error> {
             if param.ty_id == checked.storage || checked.types[param.ty_id].kind == TyKind::Unit {
                 continue;
             }
-            inputs.extend(params(&abi_fields(
-                &checked.types,
-                param.ty_id,
-                &param.name,
-            )?));
+            inputs.extend(params(
+                &abi_fields(&checked.types, param.ty_id, &param.name)?,
+                &names,
+            ));
         }
         items.push(AbiItem::Function(Function {
             name: func.name.clone(),
             inputs,
-            outputs: params(&abi_fields(&checked.types, func.ret_ty, "")?),
+            outputs: params(&abi_fields(&checked.types, func.ret_ty, "")?, &names),
             state_mutability: if func.external_pure {
                 StateMutability::Pure
             } else {
@@ -1921,11 +1992,10 @@ pub(crate) fn abi(checked: &Checked) -> Result<Abi, Error> {
     {
         let mut inputs = Vec::new();
         for param in &func.params {
-            inputs.extend(params(&abi_fields(
-                &checked.types,
-                param.ty_id,
-                &param.name,
-            )?));
+            inputs.extend(params(
+                &abi_fields(&checked.types, param.ty_id, &param.name)?,
+                &names,
+            ));
         }
         let state_mutability = StateMutability::paying(func.payable);
         // Behind a proxy, `deploy` is what the proxy's constructor calls.
@@ -1946,11 +2016,10 @@ pub(crate) fn abi(checked: &Checked) -> Result<Abi, Error> {
     for event in &checked.events {
         let mut inputs = Vec::new();
         for field in &event.fields {
-            let param = Param::of(&crate::check::abi_nested(
-                &checked.types,
-                field.ty,
-                &field.name,
-            )?);
+            let param = Param::of(
+                &crate::check::abi_nested(&checked.types, field.ty, &field.name)?,
+                &names,
+            );
             inputs.push(EventParam {
                 ty: param.ty,
                 name: param.name,
@@ -1998,7 +2067,7 @@ pub(crate) fn abi(checked: &Checked) -> Result<Abi, Error> {
         };
         items.push(AbiItem::Error(AbiError {
             name: name.to_string(),
-            inputs: params(&inputs),
+            inputs: params(&inputs, &names),
         }));
     }
     if checked.prog.upgradeable {

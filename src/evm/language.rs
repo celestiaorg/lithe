@@ -466,6 +466,68 @@ external function go() is { skip }
 }
 
 #[test]
+fn modules_pass_their_own_storage_to_other_modules() {
+    let src = "\
+module Bits is {
+  view function get(storage bits : map(uint, uint); const i : uint) : bool is bits[i] = 1
+
+  function set(storage bits : map(uint, uint); const i : uint) is {
+    bits[i] := 1;
+  }
+}
+
+module Claims is {
+  requires Bits;
+
+  storage claims at \"test.claims\" is record {
+    spent : map(uint, uint);
+  }
+
+  view function spent(const i : uint) : bool is Bits.get(claims.spent, i)
+
+  external view function isSpent(const i : uint) : bool is Bits.get(claims.spent, i)
+
+  external function spend(const i : uint) is {
+    Bits.set(claims.spent, i);
+  }
+
+  external view function viaInternal(const i : uint) : bool is spent(i)
+}
+
+contract C is {
+  use Bits;
+  use Claims exposing {
+    view function isSpent(i : uint) : bool;
+    function spend(i : uint);
+    view function viaInternal(i : uint) : bool;
+  }
+}
+";
+    let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
+    let w = Word::from_u64;
+    let spent = call(&runtime, "spend(uint256)", &[w(5)]);
+    assert!(!spent.reverted, "{}", pretty(&spent.returndata));
+    for (sig, i, want) in [
+        ("isSpent(uint256)", 5, 1),
+        ("isSpent(uint256)", 4, 0),
+        ("viaInternal(uint256)", 5, 1),
+        ("viaInternal(uint256)", 6, 0),
+    ] {
+        let out = exec(
+            &runtime,
+            &word_data(sig, &[w(i)]),
+            spent.storage.clone(),
+            w(1),
+            w(0),
+            w(0),
+        )
+        .expect(sig);
+        assert!(!out.reverted, "{}", pretty(&out.returndata));
+        assert_eq!(load_bytes(&out.returndata, 0), w(want), "{sig} {i}");
+    }
+}
+
+#[test]
 fn queries_see_storage_as_the_transition_found_it() {
     let src = "\
 error Bad;
@@ -654,6 +716,67 @@ use VaultOps exposing {{
         ),
         "{err}"
     );
+}
+
+#[test]
+fn maps_past_a_key_pass_their_own_slot() {
+    let src = "\
+module Bits is {
+  view function get(storage bits : map(uint, uint); const i : uint) : bool is bits[i] = 1
+
+  function set(storage bits : map(uint, uint); const i : uint) is {
+    bits[i] := 1;
+  }
+}
+
+contract C is {
+  use Bits;
+
+  type Claim is record {
+    n : uint;
+    bits : map(uint, uint);
+  }
+
+  storage is record {
+    claims : map(address, Claim);
+    nested : map(uint, map(address, Claim));
+  }
+
+  external function set(const who : address; const i : uint) is {
+    Bits.set(storage.claims[who].bits, i);
+    Bits.set(storage.nested[7][who].bits, i);
+  }
+
+  external view function get(const who : address; const i : uint) : bool is Bits.get(storage.claims[who].bits, i)
+
+  external view function getNested(const k : uint; const who : address; const i : uint) : bool is
+    Bits.get(storage.nested[k][who].bits, i)
+}
+";
+    let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
+    let w = Word::from_u64;
+    let set = call(&runtime, "set(address,uint256)", &[w(0xa), w(3)]);
+    assert!(!set.reverted, "{}", pretty(&set.returndata));
+    for (data, want) in [
+        (word_data("get(address,uint256)", &[w(0xa), w(3)]), 1),
+        (word_data("get(address,uint256)", &[w(0xb), w(3)]), 0),
+        (
+            word_data("getNested(uint256,address,uint256)", &[w(7), w(0xa), w(3)]),
+            1,
+        ),
+        (
+            word_data("getNested(uint256,address,uint256)", &[w(8), w(0xa), w(3)]),
+            0,
+        ),
+        (
+            word_data("getNested(uint256,address,uint256)", &[w(7), w(0xb), w(3)]),
+            0,
+        ),
+    ] {
+        let out = exec(&runtime, &data, set.storage.clone(), w(1), w(0), w(0)).expect("get");
+        assert!(!out.reverted, "{}", pretty(&out.returndata));
+        assert_eq!(load_bytes(&out.returndata, 0), w(want));
+    }
 }
 
 #[test]
@@ -2293,6 +2416,32 @@ contract S is {
         &[Arg::B(data.clone()), Arg::W(huge), Arg::B(s)],
     );
     assert!(!reverted && load_bytes(&out, 0).is_zero());
+}
+
+/// A case statement's arm can be a call that returns nothing, and leaves the stack as it
+/// found it, inside a loop too.
+#[test]
+fn unit_call_arms_leave_the_stack_alone() {
+    let src = r#"
+type Kind is A | B | C
+storage is record { n : uint; }
+function bump() is {
+  storage.n += 1;
+}
+external function count(const kinds : list(Kind)) : uint is {
+  for k : Kind in kinds do {
+    case k of {
+    | B -> bump()
+    | A | C -> { skip }
+    }
+  }
+} with storage.n
+"#;
+    let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
+    let kinds = [1, 0, 1, 2, 1].map(Word::from_u64).to_vec();
+    let out = call_raw(&runtime, &encode_args("count(uint8[])", &[Arg::L(kinds)]));
+    assert!(!out.reverted, "{}", pretty(&out.returndata));
+    assert_eq!(load_bytes(&out.returndata, 0), Word::from_u64(3));
 }
 
 fn w_arg(n: u64) -> Arg {

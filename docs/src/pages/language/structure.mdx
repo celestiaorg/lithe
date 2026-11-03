@@ -51,10 +51,11 @@ A contract is made of these declarations, in any order. Names are resolved acros
 | Error set | `errors admin_errors is \| NotOwner \| Paused` | [Errors](/language/errors#error-sets) |
 | Event | `event Paid of record { ... }` | [Events](/language/events) |
 | Interface | `interface Token is { ... }` | [Queries and deferred calls](/language/effects) |
+| Constant | `const maxAdmins : uint := 3;` | [Constants](/by-example/constants) |
 | Function | `external function f() is { ... }` | [Functions](/language/functions) |
 | Module | `module Ledger is { ... }` | [Modules](/language/modules) |
 | Use | `use Ledger;` | [Modules](/language/modules) |
-| Guard | `guard M.editor(const id : uint) is { ... }`, for a module's `guard editor(const id : uint);` | [Guards](/language/modules#guards) |
+| Guard | `use M ... with { guard editor(const id : uint) is { ... } }`, for a module's `guard editor(const id : uint);` | [Guards](/language/modules#guards) |
 | Import | `import "./lib";` | [Imports](/language/imports) |
 | Upgrades | `upgradeable`, `upgrade guard is { ... }`, `migrate f() is { ... }` | [Upgrades](/language/upgrades) |
 | Receive and fallback | `payable receive is { ... }`, `fallback is { ... }`, `fallback delegates to target;` | [Functions](/language/functions#receive-and-fallback) |

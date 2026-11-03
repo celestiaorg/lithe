@@ -1098,8 +1098,6 @@ pub(crate) fn crossable(checked: &Checked, module: &str) -> Vec<crate::split::Cr
         .filter(|f| !f.type_params.is_empty())
         .map(site)
         .collect();
-    let mut closure = Vec::new();
-    crate::split::closure(&checked.source.modules, module, &mut closure);
     let mut out: Vec<crate::split::Crossing> = Vec::new();
     for (idx, f) in checked.prog.funcs.iter().enumerate() {
         let callable = f.module.as_deref() == Some(module)
@@ -1116,22 +1114,6 @@ pub(crate) fn crossable(checked: &Checked, module: &str) -> Vec<crate::split::Cr
             continue;
         }
         if let Ok(Some(delegate)) = g.crossing(idx) {
-            // What the contract's hooks raise passes through, but the facet is built from the
-            // module and what it requires, so its entrypoint lists only what those declare.
-            let own = &checked.source.origin;
-            let known = |name: &String| {
-                checked
-                    .source
-                    .modules
-                    .iter()
-                    .filter(|m| closure.contains(&m.name))
-                    .any(|m| m.errors.iter().any(|e| &e.name == name))
-                    || checked
-                        .source
-                        .errors
-                        .iter()
-                        .any(|e| &e.name == name && &e.origin != own)
-            };
             let raises = f
                 .errors
                 .iter()
@@ -1139,7 +1121,6 @@ pub(crate) fn crossable(checked: &Checked, module: &str) -> Vec<crate::split::Cr
                     crate::check::FORWARDED => "forwarded".to_string(),
                     e => checked.errors[e].name.clone(),
                 })
-                .filter(|name| name == "forwarded" || known(name))
                 .collect();
             out.push(crate::split::Crossing {
                 at,
@@ -1333,6 +1314,9 @@ pub(crate) fn stray_call(
         let why = match g.crossing(j) {
             Ok(None) => return None,
             Err(why) => why,
+            Ok(Some(_)) if funcs[j].type_params.is_empty() => {
+                "its facet has no entrypoint for it".to_string()
+            }
             Ok(Some(_)) => "it is generic".to_string(),
         };
         Some(Stray {
@@ -1502,9 +1486,10 @@ struct Plan {
     shared_exp: [bool; 2],
     /// Whether queued deferred calls share one helper to allocate and link their nodes.
     queue_helper: bool,
-    /// Queues with one `defer` site, by their words' address: their nodes carry no site
-    /// number, and their walk needs no dispatch.
-    single_queues: std::collections::HashSet<i32>,
+    /// Queues with one `defer` site, by the order bodies begin them: their nodes carry no
+    /// site number, and their walk needs no dispatch. Not by their words' address, which
+    /// moves when the plan adds or drops a region before them.
+    single_queues: std::collections::HashSet<u32>,
     /// The bodies, by id, and functions inlined in them more than once whose continuations
     /// read their parameters or constants: each call binds those to words of its own.
     split_insts: std::collections::HashSet<(usize, usize)>,
@@ -1682,6 +1667,9 @@ enum Sub {
     /// `[pos, cur, ret]` becomes `[end]`: the value of this type at calldata position
     /// `pos`, an argument checked on entry, ABI-encoded at `cur`.
     TreeCdEnc(usize),
+    /// `[a, cur, ret]` becomes `[end]`: the payload of the variant of this type whose words
+    /// are at `a`, ABI-encoded as a lone value at `cur`; nothing for a case with none.
+    TreePayload(usize),
     /// `[base, ret]` becomes the layout of the record of this frame's memory it saves from
     /// slot `~(base | 2)`.
     SaveRecord,
@@ -1737,6 +1725,7 @@ impl Sub {
             | Sub::TreeDec(..)
             | Sub::TreeCheck(..)
             | Sub::TreeCdEnc(_)
+            | Sub::TreePayload(_)
             | Sub::SaveRecord => false,
         }
     }
@@ -1825,6 +1814,8 @@ struct Body {
     queue: i32,
     /// The instructions that start the list, dropped when nothing joins it.
     queue_init: (usize, usize),
+    /// Which queue this is, in the order bodies begin them, as the plan counts them.
+    queue_id: u32,
     /// The word holding the first record a call across left for this body, counted from the
     /// records of the frames nested in it, or zero before any.
     first_record: i32,
@@ -1937,8 +1928,10 @@ struct Gen<'a> {
     exp_sites: [usize; 2],
     /// `defer` sites inside loops, whose calls are queued.
     queued_sites: usize,
-    /// How many sites each queue, by its words' address, gathered.
-    queue_sites: HashMap<i32, usize>,
+    /// How many sites each queue, by the order bodies begin them, gathered.
+    queue_sites: HashMap<u32, usize>,
+    /// How many queues bodies have begun so far.
+    queues_begun: u32,
     /// The index being compiled is a loop counter below the list's length.
     trusted_index: bool,
     /// A map slot already hashed for `m[k] := ... m[k] ...`: its root, leaf, key, and where

@@ -2365,14 +2365,14 @@ struct Params {
     lists: Vec<(usize, u64)>,
 }
 
-/// The arguments the ABI makes of a parameter of type `ty`: a record's fields, each one of
-/// its own, as a Solidity getter's; any other value, one.
+/// The arguments the ABI makes of a parameter of type `ty`: a `flat` record's fields, each
+/// one of its own; any other value, one.
 fn abi_args(checked: &Checked, ty: usize) -> Vec<usize> {
     let id = peel(checked, ty);
     let t = &checked.types[id];
     if bspec::kind(checked, ty).is_none()
         && t.kind == TyKind::Record
-        && !t.tuple
+        && t.flat.is_some()
         && !crate::check::is_sum(&checked.types, id)
     {
         return t.fields.iter().map(|f| f.ty).collect();

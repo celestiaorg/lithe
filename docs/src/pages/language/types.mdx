@@ -122,18 +122,12 @@ A record literal is `{ field = value; ... }`. It takes its type from where it is
 
 ### Records in the ABI
 
-One rule covers every place a record meets the ABI:
-
-- A record that is a whole parameter, a whole result, or a variant case's payload is flattened into its fields, like a Solidity getter for a struct: each field is one parameter or result. This holds for a contract's own external functions and for [interface](/language/effects#interfaces) methods alike, so a call through an interface uses the signature the other contract dispatches on.
-- A `tuple record` in those places stays one Solidity tuple, with its fields as named components.
-- A record nested in anything else, such as a list element, a tuple element, another record's field, an event or error field, or a value given to `Abi.encode`, is always a Solidity tuple.
-
-A `tuple record` is a record in every other way: fields, literals, storage, and equality. A Solidity struct parameter maps to a `tuple record`. Uniswap's `exactInputSingle((address,address,uint24,address,uint256,uint256,uint160))` takes one:
+A record is a Solidity struct: wherever it meets the ABI, it is one tuple, with its fields as named components. That holds for a whole parameter, a whole result, a variant case's payload, a list element, another record's field, and a value given to `Abi.encode`. A Solidity struct parameter maps to a record. Uniswap's `exactInputSingle((address,address,uint24,address,uint256,uint256,uint160))` takes one:
 
 ```lithe
 import "std/evm";
 
-type ExactInputSingle is tuple record {
+type ExactInputSingle is record {
   tokenIn : address;
   tokenOut : address;
   fee : uint24;
@@ -166,9 +160,7 @@ external function buy(const amount : uint; const least : uint) is {
 }
 ```
 
-`tuple record { ... }` is written wherever `record { ... }` is. Each record type is its own type, so a `record` and a `tuple record` with the same fields are different types.
-
-A record's fields can be strings, bytes, and dynamic lists too. An external function that returns such a record returns its fields in order, each dynamic one after an offset, as a Solidity function with several results does:
+`flat` before the type of a parameter, a result, or a dispatched case's payload spreads the record into its fields, as Solidity's several parameters or several results are: each field is one named ABI parameter or output. It holds for a contract's own external functions and for [interface](/language/effects#interfaces) methods alike, so a call through an interface uses the signature the other contract dispatches on. A Solidity function with several results, `returns (bytes1 fields, string name, uint256 chainId, uint256[] extensions)`, returns a `flat` record. Dynamic fields follow their offsets, as they would among several results:
 
 ```lithe
 import "std/evm";
@@ -184,7 +176,7 @@ storage is record {
   name : string;
 }
 
-external view function eip712Domain() : Domain is {
+external view function eip712Domain() : flat Domain is {
   const extensions : list(uint) := [];
 } with {
   fields = 0x0f;
@@ -193,6 +185,11 @@ external view function eip712Domain() : Domain is {
   extensions = extensions;
 }
 ```
+
+- `flat` changes only the ABI of that one signature position. `flat Domain` is the type `Domain`: the body returns a `Domain`, and a `flat` parameter is a `Domain` value.
+- `flat` goes on an external function's parameters and result, an interface method's, and a case payload, `| Create external create of flat CreateOptions`. Anywhere else, such as a local, an internal function's parameter, a list element, a field, or an event or error field, it is an error, as it is before a type that isn't a record.
+- A record nested in a list, a tuple, or another record is always a tuple, `flat` or not where it sits.
+- The JSON ABI names a record's tuple as Solidity names a struct, in `internalType`: `struct Module.Name` for a module's record, `struct Contract.Name` for any other. A variant with no payloads is `enum Contract.Name`, one with payloads `struct Contract.Name`, and an interface value `contract Name`, so `cast interface`, typechain, and wagmi generate named types.
 
 ## Tuples
 
@@ -207,11 +204,11 @@ const (half, rest) : (uint, uint) := split(amount);
 
 Tuples nest, can be stored, and pack in storage like a struct. A tuple's elements can be any value: words, strings, bytes, lists, records, and other tuples.
 
-In the ABI, a tuple is always one Solidity tuple, as a struct is: a tuple parameter is `f((uint256,string))`, and a tuple result is one output. For a struct with named components, use a [`tuple record`](#records-in-the-abi). For a function with several results, `returns (uint256 a, string b)`, return a record, whose fields are the results.
+In the ABI, a tuple is always one Solidity tuple, as a struct is: a tuple parameter is `f((uint256,string))`, and a tuple result is one output. For a struct with named components, use a [record](#records-in-the-abi). For a function with several results, `returns (uint256 a, string b)`, return a `flat` record, whose fields are the results.
 
 ## Lists
 
-`list(T)` is a dynamic list and `list(T, n)` is a fixed list of length `n`, from 1 to 1024. `n` is a number or a constant expression: a [named constant](/by-example/constants), `M.n()` from a module, a cast, or arithmetic over those, such as `list(uint, maxOwners() * 2)`.
+`list(T)` is a dynamic list and `list(T, n)` is a fixed list of length `n`, from 1 to 1024. `n` is a number or a constant expression: a [constant](/by-example/constants), `M.n` from a module, a cast, or arithmetic over those, such as `list(uint, maxOwners * 2)`.
 
 ```lithe
 import "std/evm";
@@ -364,7 +361,7 @@ external view function adminOrZero() : address is
   }
 ```
 
-`T` can be any value: a word, `string`, `bytes`, a list, a record, a tuple, a variant, or another option. A tuple payload destructures in its arm: `| Some((a, b)) -> a + b`.
+`T` can be any value: a word, `string`, `bytes`, a list, a record, a tuple, a variant, or another option. A tuple payload destructures in its arm, `| Some((a, b)) -> a + b`, and a record payload by field, `| Some { x; y } -> x + y`, as a [variant's](#taking-a-record-payload-apart) does.
 
 ### Where options work
 
@@ -405,7 +402,7 @@ external view function expiryOrZero(const who : address) : uint is
 
 ### Where options don't work
 
-- **The ABI.** External parameters and results, event fields, error payloads, interface methods, and `Abi.encode` can't carry an option, even inside a tuple, record, or list. Expose a view that returns a plain value, or a `bool` for "is set".
+- **The ABI.** External parameters and results, event fields, error payloads, interface methods, and `Abi.encode` can't carry an option, even inside a tuple, record, list, or variant. Expose a view that returns a plain value, a `bool` for "is set", or a variant of your own, `type Expiry is NoExpiry | Expires of uint64`, which [crosses the ABI](#variants-in-the-abi).
 
   ```lithe rejects
   storage is record {
@@ -457,7 +454,7 @@ The first `|` is optional, so a short variant fits on one line: `type phase is O
 
 A payload can be named, `| Deposit of (amount : uint)`. The name is the ABI parameter's when the case becomes an [entrypoint](/language/dispatch), and nothing else.
 
-A case is written by name, with its payload in parentheses: `Close`, `Deposit(5)`. A variant is the natural type for stored state, and `case` has to handle every one of its cases:
+A case is written by name, with its payload in parentheses, or a record literal's braces, as an error's or an event's: `Close`, `Deposit(5)`, `Filled { amountOut = out; at = t; }`. A variant is the natural type for stored state, and `case` has to handle every one of its cases:
 
 ```lithe
 import "std/evm";
@@ -492,18 +489,18 @@ external function place(const id : uint) raises AlreadyPlaced is {
 }
 
 external function settle(const id : uint; const out : uint) is {
-  storage.orders[id].status := Filled({ amountOut = out; at = uint64(Evm.blockTimestamp()); });
+  storage.orders[id].status := Filled { amountOut = out; at = uint64(Evm.blockTimestamp()); };
 }
 
 external view function amountOut(const id : uint) : uint raises NotComplete is
   case storage.orders[id].status of {
-  | Filled(f) -> f.amountOut
+  | Filled { amountOut; _ } -> amountOut
   | New | Pending | Unwound -> fail NotComplete(id)
   }
 ```
 
 - `| New | Pending | Unwound ->` is one arm for several cases. Listing the cases instead of using a wildcard keeps the match exhaustive: adding a case to `OrderStatus` makes every `case` that doesn't handle it a compile error.
-- An arm for several cases binds a payload when each case binds the same names and carries the same payload type: `| Queued(reason) | Held(reason) -> reason`. Written without names, `| Filled | Unwound ->`, it ignores the payloads.
+- An arm for several cases binds a payload when each case binds the same names and carries the same payload type: `| Queued(reason) | Held(reason) -> reason`, or `| Filled { amountOut; _ } | Refilled { amountOut; _ } -> amountOut`. Written without names, `| Filled | Unwound ->`, it ignores the payloads.
 - An arm that fails has no value, so it fits a `case` of any type.
 - A case name is resolved from the type the context expects. With no expected type, it must belong to only one variant in scope.
 - `Some` and `None` are the cases of every [option](#options), so no variant can name a case either:
@@ -523,6 +520,59 @@ external view function amountOut(const id : uint) : uint raises NotComplete is
 - `=` and `<>` compare two variants of the same type, payloads included. Comparing with a case that has no payload, like `status = New`, reads only the tag.
 - A variant value can be a local, a parameter or result of an internal function, a storage field, a map value, a record field, a list element, or an option's payload. It isn't a number: there is no arithmetic, no ordering, no integer literal, and no `OrderStatus(n)`. `uint8(m)` gives a variant's case index when it has no payloads.
 
+### Taking a record payload apart
+
+An arm binds a record payload whole in parentheses, `| Filled(f) -> f.amountOut`, or field by field in braces, as the payload was built:
+
+```lithe
+type Fill is record {
+  amountOut : uint;
+  at : uint64;
+}
+
+type Status is
+  | Pending
+  | Filled of Fill
+  | Refilled of Fill
+  | Queued of record { reason : string; code : uint; }
+
+storage is record {
+  status : Status;
+}
+
+external view function total() : uint is
+  case storage.status of {
+  | Filled { amountOut; at } -> amountOut + uint(at)
+  | Refilled { amountOut = out; at = _ } -> out
+  | Queued { code; _ } -> code
+  | Pending -> 0
+  }
+```
+
+- `amountOut` binds the field under its own name, and `amountOut = out` under another.
+- `at = _` ignores one field, and a last `_` ignores every field the pattern leaves out.
+- Without a last `_`, a pattern names every field, as a record literal does. So adding a field to `Fill` flags each pattern that lists its fields, the way adding a case flags each `case`.
+- The fields bound cost no more than binding the whole record and reading them.
+- Braces take apart a record payload only. Any other payload binds in parentheses:
+
+  ```lithe rejects
+  type Job is | Idle | Queued of string
+
+  storage is record {
+    job : Job;
+  }
+
+  external view function busy() : bool is
+    case storage.job of {
+    | Queued { reason } -> true
+    | Idle -> false
+    }
+  ```
+
+  ```text
+  `Queued` carries `string`, not a record; bind it in parentheses: `Queued(x)`
+  ```
+
 ### Representation
 
 A variant with **no payloads** is its case's index, from 0, like a Solidity `enum`. It takes one byte in storage and packs with the fields around it, and it's a `uint8` in the ABI. A decoded value past the last case reverts, as Solidity's decoder does. A variant has at most 256 cases.
@@ -531,13 +581,57 @@ A variant **with payloads** starts a slot, as a record does. The case's index ta
 
 A payload may hold a string, bytes, or a list. Each such word keeps a slot of its own, shared only with the same type at the same position in another case, and stored as that type is. Writing another case clears it. As a record holding a string can't, such a variant can't be in transient storage.
 
-A variant with payloads has no ABI form, as an option doesn't, so it can't be an external parameter or result, an event field, or an error payload.
-
 A new map entry or an unwritten field reads as the first case, so put the initial state first.
+
+### Variants in the ABI
+
+A variant with payloads is one ABI tuple, `(uint8 tag, bytes payload)`, Solidity's usual form for a sum type. `tag` is the case's index, and `payload` is the case's payload ABI-encoded alone, as `Abi.encode` encodes it, or empty for a case with no payload. A record payload is one tuple and a `flat` one its fields, so `payload` holds exactly the arguments the case's entrypoint takes when the variant [dispatches](/language/dispatch). It goes wherever an ABI value goes: external parameters and results, interface methods, events, errors, `Abi.encode` and `Abi.decode`, calls into a [facet](/tooling/size-limit), and inside records, tuples, lists, and other variants' payloads.
+
+```lithe
+type Fill is record {
+  amountOut : uint;
+  at : uint64;
+}
+
+type OrderStatus is
+  | New
+  | Pending
+  | Filled of Fill
+  | Unwound
+
+event StatusChanged of record {
+  indexed id : uint;
+  status : OrderStatus;
+}
+
+storage is record {
+  statuses : map(uint, OrderStatus);
+}
+
+external function setStatus(const id : uint; const status : OrderStatus) is {
+  storage.statuses[id] := status;
+  emit StatusChanged { id = id; status = status; };
+}
+
+external view function status(const id : uint) : OrderStatus is storage.statuses[id]
+```
+
+`setStatus` is `setStatus(uint256,(uint8,bytes))`. A Solidity caller builds the value as it would any struct:
+
+```solidity
+struct OrderStatus { uint8 tag; bytes payload; }
+
+market.setStatus(7, OrderStatus(2, abi.encode(Fill(500, uint64(block.timestamp)))));
+```
+
+- The JSON ABI's `internalType` is `struct Contract.OrderStatus`, with components `tag` and `payload`, so `cast interface` and other generators write that struct.
+- Decoding checks the tuple as Solidity's decoder does, and then the payload as `abi.decode` would: a tag past the last case reverts, and so does a payload that doesn't decode as its case's within its own length, or any payload for a case with none. Bytes after the payload's encoding are ignored, as `abi.decode` ignores them.
+- An indexed variant's topic hashes its in-place encoding, the tag's word and then the payload's bytes, as Solidity hashes an indexed struct.
+- A variant whose payload holds an option isn't an ABI value.
 
 ### Variants in entrypoint dispatch
 
-An external function whose body is a `case` on its variant parameter exposes one ABI function per case instead of taking the variant, named by the case's `external` name, `| SetFee external setFee of uint`, or by the case itself. A variant whose payload holds a map only shapes entrypoints and has no values. See [Entrypoint dispatch](/language/dispatch).
+An external function whose body is a `case` on its first parameter, a variant, exposes one ABI function per case instead of taking the variant, named by the case's `external` name, `| SetFee external setFee of uint`, or by the case itself. A variant whose payload holds a map only shapes entrypoints and has no values. See [Entrypoint dispatch](/language/dispatch).
 
 ## Nominal types
 

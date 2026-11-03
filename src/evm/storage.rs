@@ -1223,9 +1223,9 @@ external function fill() is {
   List.push(storage.fs, [long, long]);
   List.push(storage.vs, Name(long));
   List.push(storage.vs, Nums([1, 2]));
-  List.push(storage.os, Some({ s = long; xs = [3]; }));
+  List.push(storage.os, Some { s = long; xs = [3]; });
   List.push(storage.ol, Some([4, 5]));
-  List.push(storage.ns, Plain({ s = long; xs = [6]; }));
+  List.push(storage.ns, Plain { s = long; xs = [6]; });
   List.push(storage.ns, Pair((7, [long])));
 }
 external function popAll() is { pops(); }

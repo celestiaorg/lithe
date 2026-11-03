@@ -18,12 +18,12 @@ contract Token is {
     view function balanceOf(account : address) : uint;
     function transfer(to : address; value : uint) : bool
       raises ERC20InvalidSender | ERC20InvalidReceiver | ERC20InsufficientBalance;
+  } with {
+    hook beforeTransfer is skip;
+    hook afterTransfer is skip;
   }
 
   use Ownable;
-
-  hook ERC20.beforeTransfer is skip;
-  hook ERC20.afterTransfer is skip;
 
   storage is record {
     minted : uint;
@@ -98,6 +98,7 @@ Every module follows the ordinary rules for [modules](/language/modules):
 | `std/utils/clones.lithe` | `Clones` | |
 | `std/utils/sstore2.lithe` | `SSTORE2` | |
 | `std/utils/create3.lithe` | `Create3` | |
+| `std/utils/erc1967_proxy.lithe` | `ERC1967Proxy` | |
 | `std/utils/nonce.lithe` | `Nonces` | |
 | `std/utils/checkpoint.lithe` | `Checkpoints` | |
 | `std/utils/block_hash.lithe` | `BlockHash` | |

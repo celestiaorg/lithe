@@ -162,8 +162,7 @@ contract Mailbox is {
     EIP712.init("Mailbox", "1");
   }
 
-  pure function mailTypehash() : bytes32 is
-    Crypto.keccak256("Mail(address to,bytes32 contents)")
+  const mailTypehash : bytes32 := Crypto.keccak256("Mail(address to,bytes32 contents)");
 
   external function deliver(
     const from : address;
@@ -175,7 +174,7 @@ contract Mailbox is {
     raises NotSignedBy | ECDSAInvalidSignature | ECDSAInvalidSignatureS
   is {
     const digest : bytes32 := EIP712.hashTypedData(
-      Crypto.keccak256(Abi.encode(mailTypehash(), Evm.sender(), contents))
+      Crypto.keccak256(Abi.encode(mailTypehash, Evm.sender(), contents))
     );
     assert(ECDSA.recover(digest, v, r, s) = from, NotSignedBy(from));
     storage.delivered[digest] := true;
@@ -243,7 +242,7 @@ Like Solady's, it does not check the origin, `topOrigin`, the RP ID hash, the ba
 
 The signature is checked by `WebAuthn.verifySignature(hash, r, s, x, y) : bool`, Solady's `P256.verifySignature`: `s` in the lower half of the curve order, then the EIP-7951 precompile at `0x100`, through [`Crypto.p256Verify`](/language/builtins#precompiles). Osaka has the precompile, so a build for it (the default) asks nothing else. A build for Prague, where the precompile may be missing, asks Solady's P256 verifier contract (`0x000000000000D01eA45F9eFD5c54f037Fa57Ea1a`, with `query Evm.staticCall`) about a signature the precompile does not accept, unless Solady's canary (`0x0000000000001Ab2e8006Fd8B71907bf06a5BDEE`) has code, which marks a chain with the precompile. Only a whole word 1 from the verifier accepts; a failing call, or one without the verifier, answers `false`.
 
-`auth` is a `WebauthnAuth`, a `tuple record` of `authenticatorData : bytes`, `clientDataJson : string`, `challengeIndex : uint`, `typeIndex : uint`, `r : bytes32`, and `s : bytes32`. As a parameter it is one Solidity tuple, the ABI of Solady's `WebAuthnAuth`, so `Abi.encode(auth)` is Solady's `encodeAuth` and `Abi.decode(data, WebauthnAuth)` decodes it. None of these revert:
+`auth` is a `WebauthnAuth`, a record of `authenticatorData : bytes`, `clientDataJson : string`, `challengeIndex : uint`, `typeIndex : uint`, `r : bytes32`, and `s : bytes32`. As a parameter it is one Solidity tuple, the ABI of Solady's `WebAuthnAuth`, so `Abi.encode(auth)` is Solady's `encodeAuth` and `Abi.decode(data, WebauthnAuth)` decodes it. None of these revert:
 
 | Function | |
 | --- | --- |

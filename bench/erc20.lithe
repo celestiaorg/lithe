@@ -11,7 +11,11 @@ import "./lib/erc20";
 contract BenchToken is {
   use Initializable;
 
-  use ERC20 exposing IERC20Views, IERC20Metadata;
+  use ERC20 exposing IERC20Views, IERC20Metadata with {
+    (* `ERC20Pausable` checks the pause inside every balance update. *)
+    hook beforeTransfer is Pausable.requireNotPaused;
+    hook afterTransfer is skip;
+  }
   use Ownable exposing IOwnable;
   use Pausable exposing IPausable;
 
@@ -25,10 +29,6 @@ contract BenchToken is {
     Ownable.init(initialOwner);
     Initializable.finish();
   }
-
-  (* `ERC20Pausable` checks the pause inside every balance update. *)
-  hook ERC20.beforeTransfer is Pausable.requireNotPaused;
-  hook ERC20.afterTransfer is skip;
 
   external function transfer(const to : address; const value : uint) : bool
     raises ERC20InvalidSender | ERC20InvalidReceiver | EnforcedPause | ERC20InsufficientBalance

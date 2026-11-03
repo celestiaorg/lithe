@@ -1,6 +1,6 @@
 ---
 title: "Utilities"
-description: "CREATE and CREATE2 addresses, clones, SSTORE2, CREATE3, nonces, checkpointed history, old block hashes, string search, calendar dates, and ERC-7821 batch execution."
+description: "CREATE and CREATE2 addresses, clones, SSTORE2, CREATE3, ERC-1967 proxies, nonces, checkpointed history, old block hashes, string search, calendar dates, and ERC-7821 batch execution."
 ---
 
 # Utilities
@@ -131,7 +131,44 @@ contract Deployer is {
 | `deployDeterministic(code, salt, value) : address` | the same, sending `value` wei to the new contract |
 | `predict(salt, deployer) : address` | where `deployer` would create a contract with `salt` |
 | `predictHere(salt) : address` | where this contract would |
-| `proxyCodeHash() : bytes32` | the hash of the proxy's creation code |
+| `proxyCodeHash : bytes32` | a constant: the hash of the proxy's creation code |
+
+## `ERC1967Proxy`
+
+`std/utils/erc1967_proxy.lithe`. The creation code of OpenZeppelin 5.0.2's `ERC1967Proxy`, for a factory that puts each instance of an [upgradeable](/language/upgrades) contract behind a proxy of its own. The proxy's constructor stores the implementation and calls it with `data`, and an upgradeable contract's [`deploy`](/language/deploy#upgradeable-contracts) runs only there, so `data` is the call to `deploy`. The data is part of the creation code, so where a `CREATE2` lands depends on it; [`Create3`](#create3) gives an address that depends only on the salt:
+
+```lithe
+import "std/abi";
+import "std/utils/create2";
+import "std/utils/create3";
+import "std/utils/erc1967_proxy";
+
+contract Factory is {
+  use Create2;
+  use Create3;
+  use ERC1967Proxy;
+
+  storage is record {
+    implementation : address;
+  }
+
+  external function open(const owner : address; const salt : bytes32) : address
+    raises FailedDeployment
+  is
+    Create3.deployDeterministic(
+      ERC1967Proxy.code(storage.implementation, Abi.encodeWithSignature("deploy(address)", owner)),
+      salt
+    )
+
+  external view function predict(const salt : bytes32) : address is
+    Create3.predictHere(salt)
+}
+```
+
+| Function | |
+| --- | --- |
+| `code(implementation, data) : bytes` | a proxy's creation code, with its constructor's arguments |
+| `creationCode() : bytes` | the proxy's creation code, before its arguments |
 
 ## `Nonces`
 
@@ -351,7 +388,7 @@ Gas is execution gas, calls to an account with no code. The extra over Solady is
 
 ## `BlockHash`
 
-`std/utils/block_hash.lithe`. `block_hash(n)` is the hash of block `n` as Solady's `BlockHashLib.blockHash` finds it: `Evm.block_hash(n)` for the last 256 blocks, and before them a query of the [EIP-2935](https://eips.ethereum.org/EIPS/eip-2935) history contract at `0x0000F90827F1C53a10cb7A02335B175320002935`, which keeps the last 8191. It is zero for this block and later ones, for blocks older than the history, and on a chain without the contract. `history()` is the contract's address.
+`std/utils/block_hash.lithe`. `block_hash(n)` is the hash of block `n` as Solady's `BlockHashLib.blockHash` finds it: `Evm.block_hash(n)` for the last 256 blocks, and before them a query of the [EIP-2935](https://eips.ethereum.org/EIPS/eip-2935) history contract at `0x0000F90827F1C53a10cb7A02335B175320002935`, which keeps the last 8191. It is zero for this block and later ones, for blocks older than the history, and on a chain without the contract. The constant `history` is the contract's address.
 
 ```lithe
 import "std/utils/block_hash";

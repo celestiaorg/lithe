@@ -97,7 +97,7 @@ A delegated module and a [`fallback` that `delegates to`](/language/functions#pa
 
 In the example, `deposit` calls `Ledger.fee` with `staticcall` and `Ledger.mint` with `delegatecall`, and `balance` calls `Ledger.balance` with `delegatecall` too. Each call ABI-encodes its arguments, the facet runs the function, and the result is decoded where the function's result would have been. When the function fails, the contract reverts with the facet's revert data, so its errors and panics reach the caller unchanged. What a function does is the same as it would be inline: the same results, errors, events in the same order, and storage.
 
-The module's constants, pure functions with no parameters, are values, and fold into the contract as they always do. A function that writes the module's [immutables](/language/storage#immutables) runs in the contract too: only `deploy` and migrations can call it, and they are where the contract's immutables are written.
+The module's constants are values, and fold into the contract as they always do, as do the constants of the files it imports. A function that writes the module's [immutables](/language/storage#immutables) runs in the contract too: only `deploy` and migrations can call it, and they are where the contract's immutables are written.
 
 A module's externals are still not functions: nothing inside the contract calls them, delegated or not.
 
@@ -106,7 +106,7 @@ A module's externals are still not functions: nothing inside the contract calls 
 A function can be called across when its parameters and result are ABI values, the values an external can take and return. These can't:
 
 - a generic function
-- a function with a `storage` parameter, or a parameter or result that is an `option`, a map, or a variant with payloads
+- a function with a `storage` parameter, or a parameter or result that is or holds an `option` or a map
 - a `view` or stateful function that reads the call's calldata with `Evm.calldata()` or `Evm.selector()`, since its facet sees its own
 
 A function that `defer`s, or reaches a hook that does, can be called across: its calls wait for the contract's transition, as [deferred calls across frames](#deferred-calls-across-frames) describes. A call to one that can't is an error that names the function and the reason:
@@ -191,7 +191,7 @@ A facet has an entrypoint for each function of its module that contract code can
 
 ## Sharing
 
-A facet is built from its module alone: the module's externals, an entrypoint for each function contract code can call across, and copies of the modules it `requires`. None of the contract is in it, so it doesn't matter which contract marks the module, which of its externals the contract exposes, or which of its functions the contract calls. **Every contract that marks the same module gets the same facet at the same address**, so ten collections built on the same modules deploy each facet once. A facet changes, and moves to a new address, only when its module or a module it requires changes.
+A facet is built from its module alone: the module's externals, an entrypoint for each function contract code can call across, and copies of the modules it `requires`. None of the contract is in it, so it doesn't matter which contract marks the module, which of its externals the contract exposes, which of its functions the contract calls, or what else the contract imports. A function that takes a list, which is built for each caller, gets an entrypoint for the copy that takes values whether or not anything calls it. **Every contract that marks the same module gets the same facet at the same address**, so ten collections built on the same modules deploy each facet once. A facet changes, and moves to a new address, only when its module or a module it requires changes.
 
 Two facets never call each other. A module that requires another carries a copy of it in its facet, whether or not the contract marks that one too, and calls it there. Storage is shared all the same: each module's storage sits at its own ERC-7201 root, the same in the router and in every facet, and a module's transient storage sits at a slot derived from its name.
 
@@ -332,10 +332,10 @@ contract Counter is {
 
   use Tally delegated exposing {
     function add();
-  }
-
-  hook Tally.counted(const count : uint) is {
-    storage.last := Evm.calldata().length;
+  } with {
+    hook counted(const count : uint) is {
+      storage.last := Evm.calldata().length;
+    }
   }
 }
 ```

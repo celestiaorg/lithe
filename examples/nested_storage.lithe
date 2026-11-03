@@ -65,7 +65,7 @@ external function note(const who : address; const key : uint48; const value : ui
 external view function totalCount() : uint is
   storage.total.length
 
-external view function totalAt(const i : uint) : Checkpoint is
+external view function totalAt(const i : uint) : flat Checkpoint is
   storage.total[i]
 
 external view function historyCount(const who : address) : uint is
@@ -160,7 +160,7 @@ external function setFixedPriced(const o : Oracle; const i : uint; const key : u
   storage.fixed[i].value := uint208(p - p + 5) + storage.fixed[i].value;
 }
 
-external view function fixedAt(const i : uint) : Checkpoint is
+external view function fixedAt(const i : uint) : flat Checkpoint is
   storage.fixed[i]
 
 external view function fixedKey(const i : uint) : uint is
@@ -177,5 +177,5 @@ external function setCard(const id : uint; const name : string; const bio : stri
   storage.cards[id] := { name = name; age = 3; inner = { bio = bio; score = 9; }; };
 }
 
-external view function cardOf(const id : uint) : Card is
+external view function cardOf(const id : uint) : flat Card is
   storage.cards[id]

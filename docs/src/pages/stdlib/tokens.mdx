@@ -16,14 +16,16 @@ description: "ERC-20 with burning, permits, a cap, votes, flash loans, safe call
 | `ERC1155` | `(from, to, ids, values)`, a batch at once | `(from, to, ids, values)` |
 | `ERC6909` | `(from, to, id, amount)` | `(from, to, id, amount)` |
 
-A token without extensions skips both. That compiles to nothing: the token is the same code as a module without hooks.
+A token without extensions skips both, in the `with` block of its `use`. That compiles to nothing: the token is the same code as a module without hooks.
 
 ```lithe fragment
-hook ERC20.beforeTransfer is skip;
-hook ERC20.afterTransfer is skip;
+use ERC20 exposing IERC20, IERC20Metadata with {
+  hook beforeTransfer is skip;
+  hook afterTransfer is skip;
+}
 ```
 
-An extension is a function the contract calls from a hook. `hook M.h is f;` names it when it is the only one, and a hook body calls several in the order it writes them. Nothing changes a token unless the contract says so.
+An extension is a function the contract calls from a hook. `hook h is f;` names it when it is the only one, and a hook body calls several in the order it writes them. Nothing changes a token unless the contract says so.
 
 | Extension | Hook | Function |
 | --- | --- | --- |
@@ -52,12 +54,12 @@ contract Token is {
     function transferFrom(from : address; to : address; value : uint) : bool
       raises ERC20InsufficientAllowance | ERC20InvalidApprover | ERC20InvalidSpender | ERC20InvalidSender
         | ERC20InvalidReceiver | EnforcedPause | ERC20InsufficientBalance;
+  } with {
+    (* A pause stops transfers, mints, and burns, as OpenZeppelin's `ERC20Pausable` does. *)
+    hook beforeTransfer is Pausable.requireNotPaused;
+    hook afterTransfer is skip;
   }
   supports IERC20, IERC20Metadata;
-
-  (* A pause stops transfers, mints, and burns, as OpenZeppelin's `ERC20Pausable` does. *)
-  hook ERC20.beforeTransfer is Pausable.requireNotPaused;
-  hook ERC20.afterTransfer is skip;
 
   deploy()
     raises OwnableInvalidOwner
@@ -87,11 +89,11 @@ import "std/evm";
 import "std/token/erc20";
 
 contract Token is {
-  use ERC20 exposing IERC20, IERC20Metadata;
+  use ERC20 exposing IERC20, IERC20Metadata with {
+    hook beforeTransfer is skip;
+    hook afterTransfer is skip;
+  }
   supports IERC20, IERC20Metadata;
-
-  hook ERC20.beforeTransfer is skip;
-  hook ERC20.afterTransfer is skip;
 
   storage is record {
     minter : address;
@@ -162,12 +164,12 @@ contract Token is {
     function transferFrom(from : address; to : address; value : uint) : bool
       raises ERC20InsufficientAllowance | ERC20InvalidApprover | ERC20InvalidSpender
         | ERC20InvalidSender | ERC20InvalidReceiver | ERC20InsufficientBalance;
+  } with {
+    hook beforeTransfer is skip;
+    hook afterTransfer is skip;
   }
 
   use ERC20Permit exposing IERC20Permit;
-
-  hook ERC20.beforeTransfer is skip;
-  hook ERC20.afterTransfer is skip;
 
   storage is record {
     supplyCap : uint;
@@ -196,12 +198,12 @@ contract Token is {
     function transferFrom(from : address; to : address; value : uint) : bool
       raises ERC20InsufficientAllowance | ERC20InvalidApprover | ERC20InvalidSpender | ERC20InvalidSender
         | ERC20InvalidReceiver | ERC20InsufficientBalance | ERC20ExceededCap;
+  } with {
+    hook beforeTransfer is skip;
+    hook afterTransfer is ERC20Capped.afterTransfer;
   }
 
   use ERC20Capped exposing IERC20Capped;
-
-  hook ERC20.beforeTransfer is skip;
-  hook ERC20.afterTransfer is ERC20Capped.afterTransfer;
 
   deploy()
     raises ERC20InvalidCap
@@ -251,12 +253,12 @@ contract Token is {
     function transfer(to : address; value : uint) : bool
       raises ERC20InvalidSender | ERC20InvalidReceiver | EnforcedPause | ERC20InsufficientBalance
         | ERC20ExceededSafeSupply | CheckpointUnorderedInsertion;
+  } with {
+    hook beforeTransfer is Pausable.requireNotPaused;
+    hook afterTransfer is ERC20Votes.transferVotingUnits;
   }
 
   use ERC20Votes exposing IERC6372, IVotes;
-
-  hook ERC20.beforeTransfer is Pausable.requireNotPaused;
-  hook ERC20.afterTransfer is ERC20Votes.transferVotingUnits;
 
   deploy() is {
     ERC20.init("Token", "TKN");
@@ -284,12 +286,12 @@ import "std/token/erc20";
 import "std/token/erc20_flash_mint";
 
 contract Token is {
-  use ERC20 exposing IERC20, IERC20Metadata;
+  use ERC20 exposing IERC20, IERC20Metadata with {
+    hook beforeTransfer is skip;
+    hook afterTransfer is skip;
+  }
 
   use ERC20FlashMint exposing IERC3156FlashLender;
-
-  hook ERC20.beforeTransfer is skip;
-  hook ERC20.afterTransfer is skip;
 
   deploy() is {
     ERC20.init("Token", "TKN");
@@ -362,14 +364,14 @@ import "std/interfaces/erc4626";
 
 contract Vault is {
   use SafeERC20;
-  use ERC20 exposing IERC20, IERC20Name;
+  use ERC20 exposing IERC20, IERC20Name with {
+    hook beforeTransfer is skip;
+    hook afterTransfer is skip;
+  }
   use ERC4626 exposing IERC4626, {
     view function decimals() : uint8;
   }
   supports IERC20, IERC20Metadata, IERC4626;
-
-  hook ERC20.beforeTransfer is skip;
-  hook ERC20.afterTransfer is skip;
 
   deploy(const asset : address) is {
     ERC20.init("Vault", "vTKN");
@@ -406,7 +408,10 @@ import "std/evm";
 
 contract CappedVault is {
   use SafeERC20;
-  use ERC20 exposing IERC20, IERC20Name;
+  use ERC20 exposing IERC20, IERC20Name with {
+    hook beforeTransfer is skip;
+    hook afterTransfer is skip;
+  }
   use ERC4626 exposing {
     view function decimals() : uint8;
     view function asset() : address;
@@ -428,9 +433,6 @@ contract CappedVault is {
         | SafeERC20FailedOperation | forwarded;
   }
   supports IERC20, IERC20Metadata, IERC4626;
-
-  hook ERC20.beforeTransfer is skip;
-  hook ERC20.afterTransfer is skip;
 
   deploy(const asset : address) is {
     ERC20.init("Capped Vault", "cvTKN");
@@ -489,11 +491,11 @@ import "std/evm";
 import "std/token/erc721";
 
 contract Collection is {
-  use ERC721 exposing IERC721, IERC721Metadata;
+  use ERC721 exposing IERC721, IERC721Metadata with {
+    hook beforeTransfer is skip;
+    hook afterTransfer is skip;
+  }
   supports IERC721, IERC721Metadata;
-
-  hook ERC721.beforeTransfer is skip;
-  hook ERC721.afterTransfer is skip;
 
   storage is record {
     nextId : uint;
@@ -531,11 +533,11 @@ import "std/evm";
 import "std/token/erc721_enumerable";
 
 contract Collection is {
-  use ERC721 exposing IERC721, IERC721Metadata;
+  use ERC721 exposing IERC721, IERC721Metadata with {
+    hook beforeTransfer is skip;
+    hook afterTransfer is ERC721Enumerable.afterTransfer;
+  }
   use ERC721Enumerable exposing IERC721Enumerable;
-
-  hook ERC721.beforeTransfer is skip;
-  hook ERC721.afterTransfer is ERC721Enumerable.afterTransfer;
 
   storage is record {
     nextId : uint;
@@ -578,11 +580,11 @@ external pure function supportsInterface(const interfaceId : bytes4) : bool is
 
 ## `ERC2981`
 
-`std/token/erc2981.lithe`. NFT royalties, ERC-2981, like OpenZeppelin's `ERC2981`: a default royalty, and a royalty for a token that takes its place. A fee is a fraction of 10000, and the royalty on a sale is `salePrice * fee / 10000`, rounded down. Its external is `IERC2981`'s `royaltyInfo`, from `std/interfaces/erc2981.lithe`, which also declares the errors for a fee over 10000 or a zero receiver.
+`std/token/erc2981.lithe`. NFT royalties, ERC-2981, like OpenZeppelin's `ERC2981`: a default royalty, and a royalty for a token that takes its place. A fee is a fraction of 10000, and the royalty on a sale is `salePrice * fee / 10000`, rounded down. Its external is `IERC2981`'s `royaltyInfo`, from `std/interfaces/erc2981.lithe`, which also declares the errors for a fee over 10000 or a zero receiver. It returns a `flat RoyaltyInfo` record, `receiver` and `royaltyAmount`, the standard's two outputs.
 
 | Function | |
 | --- | --- |
-| `royaltyInfo(tokenId, salePrice)` | the external: the receiver and the amount |
+| `royaltyInfo(tokenId, salePrice)` | the external: a `RoyaltyInfo` of the receiver and the amount |
 | `setDefaultRoyalty(receiver, fee)`, `deleteDefaultRoyalty()` | |
 | `setTokenRoyalty(tokenId, receiver, fee)`, `resetTokenRoyalty(tokenId)` | a token's own royalty, and back to the default |
 
@@ -600,11 +602,11 @@ import "std/access/ownable";
 
 contract Items is {
   use Ownable;
-  use ERC1155 exposing IERC1155, IERC1155MetadataURI;
+  use ERC1155 exposing IERC1155, IERC1155MetadataURI with {
+    hook beforeTransfer is skip;
+    hook afterTransfer is skip;
+  }
   supports IERC1155, IERC1155MetadataURI;
-
-  hook ERC1155.beforeTransfer is skip;
-  hook ERC1155.afterTransfer is skip;
 
   deploy()
     raises OwnableInvalidOwner
@@ -654,11 +656,12 @@ is {
 `std/token/erc1155_supply.lithe`. Each id's total supply and the total of every id, like OpenZeppelin's `ERC1155Supply`. Mints and burns change the supplies through `ERC1155`'s `afterTransfer` [hook](#transfer-hooks), which the contract points at `afterTransfer(from, to, ids, values)`; a transfer leaves them as they are. Its externals are `IERC1155Supply`: `totalSupply(id)`, `totalSupply()`, and `exists(id)`; inside the contract, `totalSupplyAll()` is the total of every id. `examples/stdlib/multi_token.lithe` is a collection built on both:
 
 ```lithe fragment
-use ERC1155 exposing IERC1155, IERC1155MetadataURI;
+use ERC1155 exposing IERC1155, IERC1155MetadataURI with {
+  hook beforeTransfer is skip;
+  hook afterTransfer is ERC1155Supply.afterTransfer;
+}
 use ERC1155Supply exposing IERC1155Supply;
 
-hook ERC1155.beforeTransfer is skip;
-hook ERC1155.afterTransfer is ERC1155Supply.afterTransfer;
 ```
 
 ## `ERC6909`
@@ -673,11 +676,11 @@ import "std/interfaces/erc6909";
 
 contract Claims is {
   use Ownable;
-  use ERC6909 exposing IERC6909;
+  use ERC6909 exposing IERC6909 with {
+    hook beforeTransfer is skip;
+    hook afterTransfer is skip;
+  }
   supports IERC6909;
-
-  hook ERC6909.beforeTransfer is skip;
-  hook ERC6909.afterTransfer is skip;
 
   deploy()
     raises OwnableInvalidOwner
@@ -737,12 +740,12 @@ import "std/evm";
 import "std/token/erc6909";
 
 contract Shares is {
-  use ERC6909 exposing IERC6909;
+  use ERC6909 exposing IERC6909 with {
+    hook beforeTransfer is skip;
+    hook afterTransfer is ERC6909TokenSupply.afterTransfer;
+  }
   use ERC6909TokenSupply exposing IERC6909TokenSupply;
   supports IERC6909, IERC6909TokenSupply;
-
-  hook ERC6909.beforeTransfer is skip;
-  hook ERC6909.afterTransfer is ERC6909TokenSupply.afterTransfer;
 
   external payable function deposit(const id : uint)
     raises ERC6909InvalidReceiver | ERC6909InsufficientBalance

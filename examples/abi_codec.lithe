@@ -28,7 +28,7 @@ storage is record {
 external pure function packTransfer(const to : address; const amount : uint; const memo : string) : bytes is
   Abi.encode(to, amount, memo)
 
-external pure function unpackTransfer(const data : bytes) : Transfer is {
+external pure function unpackTransfer(const data : bytes) : flat Transfer is {
   const (to, amount, memo) : (address, uint, string) := Abi.decode(data, (address, uint, string));
 } with { to = to; amount = amount; memo = memo; }
 

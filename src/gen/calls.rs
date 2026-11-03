@@ -1163,10 +1163,11 @@ impl<'a> Gen<'a> {
             site.record = (start, ((end - start) / 32) as u32);
             let id = body.ops.len() as u64;
             let queue = body.queue;
+            let queue_id = body.queue_id;
             let words: u32 = site.record.1 + site.captures.iter().map(|c| c.1).sum::<u32>();
             self.queued_sites += 1;
-            *self.queue_sites.entry(queue).or_insert(0) += 1;
-            let single = self.plan.single_queues.contains(&queue);
+            *self.queue_sites.entry(queue_id).or_insert(0) += 1;
+            let single = self.plan.single_queues.contains(&queue_id);
             let header = if single { 1 } else { 2 };
             if self.plan.queue_helper && !single {
                 self.push_mem(queue);
@@ -1418,6 +1419,8 @@ impl<'a> Gen<'a> {
             return;
         }
         let queue = self.arena_alloc(3);
+        let queue_id = self.queues_begun;
+        self.queues_begun += 1;
         // The head, zero because its arena is fresh in this call, then the address of the
         // word the next node is linked into: the head word itself at first, then the
         // newest node's `next`.
@@ -1430,6 +1433,7 @@ impl<'a> Gen<'a> {
         let body = self.body_mut().expect("body");
         body.queued = true;
         body.queue = queue;
+        body.queue_id = queue_id;
         body.queue_init = (at, len);
     }
 
@@ -1441,6 +1445,7 @@ impl<'a> Gen<'a> {
         let ops = std::mem::take(&mut body.ops);
         if body.queued && !ops.is_empty() {
             let queue = body.queue;
+            let queue_id = body.queue_id;
             let cursor = queue + 64;
             let top = self.fresh();
             let done = self.fresh();
@@ -1451,7 +1456,18 @@ impl<'a> Gen<'a> {
             self.op(ISZERO);
             self.push_label(done);
             self.op(JUMPI);
-            let single = self.plan.single_queues.contains(&queue) && ops.len() == 1;
+            // The nodes were written as the plan said, so they are read the same way.
+            let single = self.plan.single_queues.contains(&queue_id);
+            if single && ops.len() != 1 {
+                return Err(error(
+                    0,
+                    0,
+                    format!(
+                        "internal: queue {queue_id} was planned with one `defer` site but has {}",
+                        ops.len()
+                    ),
+                ));
+            }
             let labels: Vec<u32> = ops.iter().map(|_| self.fresh()).collect();
             if !single {
                 self.mload(cursor);

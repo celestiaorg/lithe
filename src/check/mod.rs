@@ -118,8 +118,9 @@ pub(crate) struct RType {
     pub words: u32,
     /// Bit width for integers, byte length for `bytesN`. Zero means a full word.
     pub bits: u16,
-    /// A `tuple record`: one ABI tuple as a whole parameter, result, or case payload.
-    pub tuple: bool,
+    /// `flat R` in a signature: a copy of the record `R`, the same type, whose fields are
+    /// separate ABI values as a whole parameter, result, or case payload.
+    pub flat: Option<usize>,
     laid: bool,
 }
 
@@ -251,6 +252,9 @@ pub(crate) struct Checked {
     pub source: Program,
     /// Map parameters that hold their map's slot, and whether that map is transient.
     pub slot_syms: HashMap<usize, bool>,
+    /// A name a pattern binds to a field of a payload: the payload's hidden binding, and
+    /// the field's index.
+    pub field_of: HashMap<usize, (usize, usize)>,
     /// The ERC-165 ids the contract answers for: ERC-165's, then each interface `supports`
     /// lists.
     pub interface_ids: Vec<u32>,
@@ -365,7 +369,7 @@ struct Checker {
     fn_names: Vec<String>,
     /// The file's other contracts, which `defer create` may name.
     /// The file's other contracts, each with the parameter types its creation takes.
-    peers: Vec<(String, Vec<TypeRef>)>,
+    peers: Vec<(String, Vec<(TypeRef, bool)>)>,
     expect: Option<usize>,
     domain_binds: Vec<BoundDomain>,
     domain_syms: Vec<VisibleDomain>,
@@ -424,6 +428,7 @@ struct Checker {
     domain_tys: HashMap<String, usize>,
     /// Map parameters that hold their map's slot, and whether that map is transient.
     slot_syms: HashMap<usize, bool>,
+    field_of: HashMap<usize, (usize, usize)>,
     /// The map parameters of the copy about to be checked, and whether each map is transient.
     slot_params: Vec<(String, bool)>,
     transient_from: usize,
@@ -551,7 +556,7 @@ fn check_program(
                     .funcs
                     .iter()
                     .find(|f| f.kind == ItemKind::Deploy && !peer.upgradeable)
-                    .map(|f| f.params.iter().map(|p| p.ty.clone()).collect())
+                    .map(|f| f.params.iter().map(|p| (p.ty.clone(), p.flat)).collect())
                     .unwrap_or_default();
                 Some((peer.contract_name.clone()?, params))
             })
@@ -592,6 +597,7 @@ fn check_program(
         spec_places: Vec::new(),
         domain_tys: HashMap::new(),
         slot_syms: HashMap::new(),
+        field_of: HashMap::new(),
         slot_params: Vec::new(),
         transient_from: 0,
         imm_syms: HashSet::new(),
@@ -653,6 +659,7 @@ fn check_program(
     c.types.push(prim(TyKind::Bytes, 1));
     c.types[bytes_id].bits = 0;
     c.named.insert("bytes".into(), bytes_id);
+    debug_assert!(c.named["uint8"] == TY_UINT8 && bytes_id == TY_BYTES);
 
     let mut seen = HashSet::new();
     for d in &prog.types {
@@ -728,7 +735,7 @@ fn check_program(
             words: 0,
             bits: 0,
             laid: true,
-            tuple: false,
+            flat: None,
         });
         c.named.insert("storage".to_string(), id);
         id
@@ -1125,6 +1132,7 @@ fn check_program(
         conversions: c.conversions,
         source,
         slot_syms: c.slot_syms,
+        field_of: c.field_of,
         interface_ids: Vec::new(),
         asks_interfaces: c.asks_interfaces,
         peer_builds: Default::default(),
@@ -1165,6 +1173,11 @@ const TY_OPERATION: usize = 6;
 const TY_WEI: usize = 7;
 
 const TY_TIMESTAMP: usize = 8;
+
+/// `uint8` and `bytes`, at the ids the built-in types take.
+pub(crate) const TY_UINT8: usize = 9;
+
+pub(crate) const TY_BYTES: usize = 103;
 
 enum Overload {
     Sig(Vec<usize>),

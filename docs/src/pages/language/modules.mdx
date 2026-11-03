@@ -9,7 +9,7 @@ Lithe has no inheritance. Reusable behavior lives in **modules**, and a **contra
 
 ## Modules
 
-A module groups storage, types, errors, events, and functions under one name:
+A module groups storage, types, errors, events, constants, and functions under one name:
 
 ```lithe fragment
 module Ownable is {
@@ -46,6 +46,7 @@ module Ownable is {
 - A module's storage must be **named**. Inside the module it is `ownable.owner`. Everywhere else it is qualified with the module's name: `Ownable.ownable.owner`.
 - A module's functions are internal. A module may also declare `external` functions: the interface it offers. A contract exposes them only by declaring them. See [Exposing a module's externals](#exposing-a-modules-externals).
 - A module's errors and events keep their names, so contracts that use the module raise and log them under the standard signatures.
+- A module's [constants](/by-example/constants), `const maxLinks : uint := 8;`, are bare names inside it and `Links.maxLinks` everywhere else. Its code may also name the constants declared at the top of its file and the files it imports.
 
 ## Contracts
 
@@ -265,7 +266,7 @@ See [Contract size limit](/tooling/size-limit) for what runs where, what a call 
 
 ## Guards
 
-Some of a module's externals need a check that only the contract can write: who may price a token, pause trading, or mint depends on the contract's own roles and state. Solidity leaves an abstract `_canSetX()` for the contract to override. In Lithe, the module declares a **guard**, its externals name it with `guarded`, and every contract that exposes them writes the check:
+Some of a module's externals need a check that only the contract can write: who may price a token, pause trading, or mint depends on the contract's own roles and state. Solidity leaves an abstract `_canSetX()` for the contract to override. In Lithe, the module declares a **guard**, its externals name it with `guarded`, and every contract that exposes them writes the check in a `with` block after its `use`:
 
 ```lithe
 import "std/evm";
@@ -303,13 +304,13 @@ contract Shop is {
     function setPrice(tokenId : uint; price : uint)
       raises ZeroPrice | NotMaker;
     view function price(tokenId : uint) : uint;
-  }
-
-  (* A token's maker prices it. *)
-  guard Prices.pricer(const tokenId : uint)
-    raises NotMaker
-  is {
-    assert(Evm.sender() = storage.makers[tokenId], NotMaker(tokenId));
+  } with {
+    (* A token's maker prices it. *)
+    guard pricer(const tokenId : uint)
+      raises NotMaker
+    is {
+      assert(Evm.sender() = storage.makers[tokenId], NotMaker(tokenId));
+    }
   }
 
   external function make(const tokenId : uint) is {
@@ -322,14 +323,19 @@ A call to `setPrice` runs `Shop`'s check first, with the call's `tokenId`, then 
 
 - A module declares `guard name(params);`: a name and typed parameters, with no body. A guard with no parameters is `guard name;`.
 - An external names one guard with `guarded name(args)`, after its result and before `raises`. The arguments are the external's own parameters, by name, one for each of the guard's, of the same types: the check sees exactly what the caller sent. An external that dispatches on its argument into several entrypoints can't pass that argument, since each case is an entrypoint of its own.
-- A contract that exposes an external guarded by `M.name` writes exactly one `guard M.name(params) raises E is { ... }`, whose parameters have the types `M` declares; the names are the contract's. Leaving it out, writing it twice, writing one with other parameters, or writing one that no exposed external needs, is an error.
-- `guard M.name is f;` checks by calling `f`, a function of the contract's or of a module it uses, that returns nothing. It passes `f` none of the guard's parameters, or all of them. It raises what `f` does:
+- A contract that exposes an external guarded by `M.name` writes exactly one `guard name(params) raises E is { ... }` in its `use M ... with { ... }`, whose parameters have the types `M` declares; the names are the contract's. Leaving it out, writing it twice, writing one with other parameters, or writing one that no exposed external needs, is an error.
+- `guard name is f;` checks by calling `f`, a function of the contract's or of a module it uses, that returns nothing. It passes `f` none of the guard's parameters, or all of them. It raises what `f` does:
 
 ```lithe fragment
 use Ownable;
-
-guard Prices.pricer is Ownable.checkOwner;
+use Prices exposing {
+  ...
+} with {
+  guard pricer is Ownable.checkOwner;
+}
 ```
+
+The `with` block comes last in a `use`, after `delegated` and `exposing`, and ends it: no `;` follows its `}`. It holds the contract's guards and [hooks](#hooks) for that module, one per line, named as the module names them: `pricer` in `use Prices ... with` is `Prices`'s guard `pricer`. What a binding names and what its body does are contract code, as anywhere else in the contract, so `Ownable.checkOwner`, the contract's own functions, and its storage mean what they mean outside the block.
 
 A guard only fails. Its body is checked as a `view`: it can read storage, the call's context, such as `Evm.sender()`, and other contracts with `query`, but it can't write, `emit`, or `defer`. It runs once, before the external's body, and can't see or change what the body does. There are no default guards and no overrides: a check that lets everyone through is written as one, with a body of `skip`.
 
@@ -374,7 +380,9 @@ contract Board is {
 ```text
 the contract exposes `write`, which `Notes` guards with `writer`, so it must write the check:
 
-  guard Notes.writer(const id : uint) raises ... is { ... }
+  use Notes ... with {
+    guard writer(const id : uint) raises ... is { ... }
+  }
 ```
 
 Once, with the module's parameter types:
@@ -395,15 +403,15 @@ module Notes is {
 contract Board is {
   use Notes exposing {
     function write(id : uint; note : uint);
+  } with {
+    guard writer(const id : uint) is { skip }
+    guard writer(const id : uint) is { skip }
   }
-
-  guard Notes.writer(const id : uint) is { skip }
-  guard Notes.writer(const id : uint) is { skip }
 }
 ```
 
 ```text
-`guard Notes.writer` is written twice
+guard `Notes.writer` is written twice
 ```
 
 ```lithe rejects
@@ -422,17 +430,17 @@ module Notes is {
 contract Board is {
   use Notes exposing {
     function write(id : uint; note : uint);
+  } with {
+    guard writer(const id : address) is { skip }
   }
-
-  guard Notes.writer(const id : address) is { skip }
 }
 ```
 
 ```text
-`guard Notes.writer` takes different parameters than `Notes` declares
+guard `Notes.writer` takes different parameters than `Notes` declares
 
-  module:    guard Notes.writer(const id : uint)
-  contract:  guard Notes.writer(const id : address)
+  module:    guard writer(const id : uint)
+  contract:  guard writer(const id : address)
 ```
 
 And only for a guard that an external it exposes names:
@@ -456,6 +464,62 @@ module Notes is {
 contract Board is {
   use Notes exposing {
     view function note(id : uint) : uint;
+  } with {
+    guard writer(const id : uint) is { skip }
+  }
+}
+```
+
+```text
+no external the contract exposes is guarded by `Notes.writer`; remove this guard
+```
+
+A binding names one of the module's guards or hooks:
+
+```lithe rejects
+module Notes is {
+  storage notes at "example.notes" is record {
+    ofId : map(uint, uint);
+  }
+
+  guard writer(const id : uint);
+
+  external function write(const id : uint; const note : uint) guarded writer(id) is {
+    notes.ofId[id] := note;
+  }
+}
+
+contract Board is {
+  use Notes exposing {
+    function write(id : uint; note : uint);
+  } with {
+    guard editor(const id : uint) is { skip }
+  }
+}
+```
+
+```text
+module `Notes` has no guard `editor`
+```
+
+And it goes in the module's `use`, not on its own:
+
+```lithe rejects
+module Notes is {
+  storage notes at "example.notes" is record {
+    ofId : map(uint, uint);
+  }
+
+  guard writer(const id : uint);
+
+  external function write(const id : uint; const note : uint) guarded writer(id) is {
+    notes.ofId[id] := note;
+  }
+}
+
+contract Board is {
+  use Notes exposing {
+    function write(id : uint; note : uint);
   }
 
   guard Notes.writer(const id : uint) is { skip }
@@ -463,7 +527,7 @@ contract Board is {
 ```
 
 ```text
-no external the contract exposes is guarded by `Notes.writer`; remove this guard
+a guard is bound where the contract uses its module: move it into `use Notes ... with { guard writer ... }`
 ```
 
 A guard reads, and nothing else:
@@ -490,10 +554,10 @@ contract Board is {
 
   use Notes exposing {
     function write(id : uint; note : uint);
-  }
-
-  guard Notes.writer(const id : uint) is {
-    storage.checks += 1;
+  } with {
+    guard writer(const id : uint) is {
+      storage.checks += 1;
+    }
   }
 }
 ```
@@ -522,10 +586,10 @@ contract Board is {
 
   use Notes exposing {
     function write(id : uint; note : uint);
-  }
-
-  guard Notes.writer(const id : uint) is {
-    emit Checked { id = id; };
+  } with {
+    guard writer(const id : uint) is {
+      emit Checked { id = id; };
+    }
   }
 }
 ```
@@ -552,10 +616,10 @@ module Notes is {
 contract Board is {
   use Notes exposing {
     function write(id : uint; note : uint);
-  }
-
-  guard Notes.writer(const id : uint) is {
-    defer Evm.transfer(Evm.sender(), 1wei);
+  } with {
+    guard writer(const id : uint) is {
+      defer Evm.transfer(Evm.sender(), 1wei);
+    }
   }
 }
 ```
@@ -585,9 +649,9 @@ module Notes is {
 contract Board is {
   use Notes exposing {
     function write(id : uint; note : uint);
+  } with {
+    guard writer(const id : uint) is { skip }
   }
-
-  guard Notes.writer(const id : uint) is { skip }
 }
 ```
 
@@ -647,19 +711,17 @@ contract Gallery is {
     function mint(tokenId : uint);
     function send(to : address; tokenId : uint) raises NotOwner | Frozen;
     view function tokenName(tokenId : uint) : string;
+  } with {
+    (* A frozen token doesn't move, and the gallery counts the moves of the others. *)
+    hook beforeTransfer(const from : address; const to : address; const id : uint)
+      raises Frozen
+    is {
+      assert(not storage.frozen[id], Frozen(id));
+      storage.moves += 1;
+    }
+    hook afterTransfer is skip;
+    hook nameOf is label;
   }
-
-  (* A frozen token doesn't move, and the gallery counts the moves of the others. *)
-  hook Tokens.beforeTransfer(const from : address; const to : address; const id : uint)
-    raises Frozen
-  is {
-    assert(not storage.frozen[id], Frozen(id));
-    storage.moves += 1;
-  }
-
-  hook Tokens.afterTransfer is skip;
-
-  hook Tokens.nameOf is label;
 
   view function label(const tokenId : uint) : string is
     if storage.frozen[tokenId] then "a frozen piece" else "a gallery piece"
@@ -677,19 +739,19 @@ A call to `send` runs the module's `transfer`, which calls `Gallery`'s `beforeTr
 - A hook's parameters and result are ABI values, whatever the module does with them, so any module with hooks can be [delegated](#delegated-modules). A generic module can't declare hooks.
 - Only the contract implements hooks. There are no default implementations, no overrides, and no `super`, and an extension module can't attach to another module's hook: a contract that wants two things to happen in `beforeTransfer` calls both in its body, in the order it writes them.
 
-The contract implements a hook in one of three ways:
+The contract implements a hook in the `with` block of its `use M`, as it writes [guards](#guards), in one of three ways:
 
 | Form | Meaning |
 | --- | --- |
-| `hook M.h(params) [: T] [raises E] is { ... } [with e]` | a body, like a function's. The parameter names are the contract's; their types, and the result, are the module's |
-| `hook M.h is f;` | calls `f`, a function of the contract or of a module it uses, with none of the hook's parameters or all of them, and returns what `f` returns. It raises what `f` does |
-| `hook M.h is skip;` | explicitly unimplemented: calling it does nothing. Only for a hook without a result |
+| `hook h(params) [: T] [raises E] is { ... } [with e]` | a body, like a function's. The parameter names are the contract's; their types, and the result, are the module's |
+| `hook h is f;` | calls `f`, a function of the contract or of a module it uses, with none of the hook's parameters or all of them, and returns what `f` returns. It raises what `f` does |
+| `hook h is skip;` | explicitly unimplemented: calling it does nothing. Only for a hook without a result |
 
 ### Which hooks a contract implements
 
 A contract implements a hook exactly when code it runs can reach it, and then exactly once. That code starts at the contract's entrypoints, the module externals it exposes, `deploy`, migrations, guards, and hook bodies, and runs through the functions they call, in any module; an external that dispatches on its argument reaches what each of its cases does. A hook that only an external the contract doesn't expose reaches isn't required, and implementing it anyway is an error, as for a guard no exposed external names. Exposing that external makes the hook required.
 
-`lithe stubs file.lithe M` prints the hooks `M`'s externals reach after its `use M exposing` block, as `is skip;` for a hook without a result and as a stub for one with a result. Given interfaces, `lithe stubs file.lithe M I J` prints the hooks the externals of `I` and `J` reach.
+`lithe stubs file.lithe M` prints the hooks `M`'s externals reach in a `with` block after its `use M exposing` block, as `is skip;` for a hook without a result and as a stub for one with a result. Given interfaces, `lithe stubs file.lithe M I J` prints the hooks the externals of `I` and `J` reach.
 
 ### What a hook may do
 
@@ -724,11 +786,11 @@ contract Tracked is {
 
   use Tokens exposing {
     function send(to : address; tokenId : uint);
-  }
-
-  hook Tokens.afterTransfer(const to : address; const id : uint) is {
-    defer storage.registry.moved(id) then (receipt : uint) {
-      storage.receipts[id] := receipt;
+  } with {
+    hook afterTransfer(const to : address; const id : uint) is {
+      defer storage.registry.moved(id) then (receipt : uint) {
+        storage.receipts[id] := receipt;
+      }
     }
   }
 }
@@ -778,9 +840,11 @@ contract Counter is {
 ```text
 Tally.counted is reached through `add` (exposed) → Tally.bump; implement it:
 
-  hook Tally.counted(const count : uint) is { ... }
+  use Tally ... with {
+    hook counted(const count : uint) is { ... }
+  }
 
-or declare it unimplemented: hook Tally.counted is skip;
+or declare it unimplemented: hook counted is skip;
 ```
 
 And only those:
@@ -804,9 +868,9 @@ module Tally is {
 contract Counter is {
   use Tally exposing {
     view function count() : uint;
+  } with {
+    hook counted is skip;
   }
-
-  hook Tally.counted is skip;
 }
 ```
 
@@ -833,15 +897,15 @@ module Tally is {
 contract Counter is {
   use Tally exposing {
     function add();
+  } with {
+    hook counted is skip;
+    hook counted is skip;
   }
-
-  hook Tally.counted is skip;
-  hook Tally.counted is skip;
 }
 ```
 
 ```text
-`hook Tally.counted` is written twice
+hook `Tally.counted` is written twice
 ```
 
 ```lithe rejects
@@ -861,17 +925,17 @@ module Tally is {
 contract Counter is {
   use Tally exposing {
     function add();
+  } with {
+    hook counted(const count : address) is { skip }
   }
-
-  hook Tally.counted(const count : address) is { skip }
 }
 ```
 
 ```text
-`hook Tally.counted` doesn't match `Tally`'s declaration: its `count` is `address`, and `Tally`'s `count` is `uint`
+hook `Tally.counted` doesn't match `Tally`'s declaration: its `count` is `address`, and `Tally`'s `count` is `uint`
 
-  module:    hook Tally.counted(const count : uint)
-  contract:  hook Tally.counted(const count : address)
+  module:    hook counted(const count : uint)
+  contract:  hook counted(const count : address)
 ```
 
 A hook with a result can't be skipped:
@@ -892,16 +956,16 @@ module Tally is {
 contract Counter is {
   use Tally exposing {
     function add();
+  } with {
+    hook step is skip;
   }
-
-  hook Tally.step is skip;
 }
 ```
 
 ```text
 `Tally.step` returns a value, so it can't be skipped; implement it:
 
-  hook Tally.step : uint is { ... } with ...
+  hook step : uint is { ... } with ...
 ```
 
 An implementation does no more than the module's declaration allows:
@@ -928,11 +992,11 @@ contract Counter is {
 
   use Tally exposing {
     function add();
+  } with {
+    hook limit() : uint is {
+      storage.asked += 1;
+    } with 10
   }
-
-  hook Tally.limit() : uint is {
-    storage.asked += 1;
-  } with 10
 }
 ```
 
@@ -960,11 +1024,11 @@ module Tally is {
 contract Counter is {
   use Tally exposing {
     function add();
+  } with {
+    hook limit() : uint is {
+      defer Evm.transfer(Evm.sender(), 1wei);
+    } with 10
   }
-
-  hook Tally.limit() : uint is {
-    defer Evm.transfer(Evm.sender(), 1wei);
-  } with 10
 }
 ```
 
@@ -995,13 +1059,13 @@ contract Counter is {
 
   use Tally exposing {
     function add();
+  } with {
+    hook counted is note;
   }
 
   function note(const count : uint; const by : uint) is {
     storage.last := count + by;
   }
-
-  hook Tally.counted is note;
 }
 ```
 
@@ -1050,11 +1114,11 @@ module Tally is {
 contract Counter is {
   use Tally exposing {
     function add();
-  }
-
-  hook Tally.counted(const count : uint) is {
-    if count < 10 then {
-      Tally.bump();
+  } with {
+    hook counted(const count : uint) is {
+      if count < 10 then {
+        Tally.bump();
+      }
     }
   }
 }
@@ -1085,10 +1149,10 @@ contract Counter is {
 
   use Tally exposing {
     function add();
-  }
-
-  hook Tally.counted(const count : uint) raises TooMany is {
-    assert(count <= 10, TooMany);
+  } with {
+    hook counted(const count : uint) raises TooMany is {
+      assert(count <= 10, TooMany);
+    }
   }
 }
 ```
@@ -1121,16 +1185,16 @@ module Tally is {
 contract Counter is {
   use Tally exposing {
     function add();
+  } with {
+    hook limit() : uint is { skip } with 10
   }
-
-  hook Tally.limit() : uint is { skip } with 10
 
   external view function limit() : uint is Tally.limit()
 }
 ```
 
 ```text
-`Tally.limit` is a hook of `Tally`: only `Tally`'s own code calls it, and the contract implements it with `hook Tally.limit`
+`Tally.limit` is a hook of `Tally`: only `Tally`'s own code calls it, and the contract implements it in `use Tally ... with { hook limit ... }`
 ```
 
 A delegated module's facet calls a hook back in a frame of its own. A hook that defers works there as it does inline: its calls join the queue of the transition that reached it, and its continuations run then, with the hook's bindings. But the frame's calldata is the facet's call to the hook, not the transaction's, so a hook the facet reaches can't read it; see [hooks in delegated modules](/tooling/size-limit#hooks):
@@ -1154,14 +1218,14 @@ module Tally is {
 contract Counter is {
   use Tally delegated exposing {
     function add();
+  } with {
+    hook counted(const count : uint) is {
+      storage.size := Evm.calldata().length;
+    }
   }
 
   storage is record {
     size : uint;
-  }
-
-  hook Tally.counted(const count : uint) is {
-    storage.size := Evm.calldata().length;
   }
 }
 ```
@@ -1186,11 +1250,11 @@ import "std/interfaces/erc721";
 import "std/token/erc721";
 
 contract Collection is {
-  use ERC721 exposing IERC721, IERC721Name;
+  use ERC721 exposing IERC721, IERC721Name with {
+    hook beforeTransfer is skip;
+    hook afterTransfer is skip;
+  }
   supports IERC721, IERC721Metadata;
-
-  hook ERC721.beforeTransfer is skip;
-  hook ERC721.afterTransfer is skip;
 }
 ```
 
@@ -1356,7 +1420,7 @@ module ERC20Votes is {
 }
 ```
 
-The contract that uses `ERC20` and `ERC20Votes` decides whether a transfer should also move votes, and says so in its `ERC20.afterTransfer` [hook](#hooks): `hook ERC20.afterTransfer is ERC20Votes.transferVotingUnits;`. An extension cannot silently change the base's behavior.
+The contract that uses `ERC20` and `ERC20Votes` decides whether a transfer should also move votes, and says so in its `ERC20.afterTransfer` [hook](#hooks): `hook afterTransfer is ERC20Votes.transferVotingUnits;` in its `use ERC20 ... with`. An extension cannot silently change the base's behavior.
 
 ## Modules in other files
 

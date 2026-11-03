@@ -14,7 +14,7 @@ module Uris is {
 }
 
 contract T is {
-  use ERC20 exposing IERC20, IERC20Metadata; hook ERC20.beforeTransfer is skip; hook ERC20.afterTransfer is skip;
+  use ERC20 exposing IERC20, IERC20Metadata with { hook beforeTransfer is skip; hook afterTransfer is skip; }
   use Uris exposing IERC1155MetadataURI;
   supports IERC20, IERC20Metadata, IERC1155MetadataURI;
 }
@@ -101,8 +101,8 @@ fn erc165_answers_for_supported_interfaces() {
 fn supports_rejects_what_the_contract_cannot_announce() {
     let err = |src: String| compile(&src).expect_err("rejected").to_string();
     let missing = err(ERC165_SRC.replace(
-        "use ERC20 exposing IERC20, IERC20Metadata;",
-        "use ERC20 exposing IERC20;",
+        "use ERC20 exposing IERC20, IERC20Metadata with",
+        "use ERC20 exposing IERC20 with",
     ));
     assert!(
         missing.contains("the contract supports `IERC20Metadata` but does not dispatch:\n  name()\n  symbol()\n  decimals()\n"),

@@ -7,11 +7,11 @@ import "std/token/erc721";
 import "std/interfaces/erc721";
 
 contract Collection is {
-  use ERC721 exposing IERC721, IERC721Metadata;
+  use ERC721 exposing IERC721, IERC721Metadata with {
+    hook beforeTransfer is skip;
+    hook afterTransfer is skip;
+  }
   supports IERC721, IERC721Metadata;
-
-  hook ERC721.beforeTransfer is skip;
-  hook ERC721.afterTransfer is skip;
 
   storage is record {
     nextId : uint;

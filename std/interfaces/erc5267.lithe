@@ -12,5 +12,5 @@ type EIP712Domain is record {
 }
 
 interface IERC5267 is {
-  view function eip712Domain() : EIP712Domain;
+  view function eip712Domain() : flat EIP712Domain;
 }

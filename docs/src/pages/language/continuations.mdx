@@ -174,6 +174,8 @@ external view function priceOrFallback(const asset : address) : uint is
   }
 ```
 
+Its `Ok` arm binds an answer as any `case` arm binds a payload: a tuple answer destructures, `| Ok((a, b)) ->`, and a record answer by field, `| Ok { price; _ } ->`. A continuation's `Ok(x : T)` states its type instead, and binds a record whole.
+
 ## Continuations and reentrancy
 
 While the call runs, your contract can be re-entered. Declare functions with continuations `nonreentrant` unless you have a reason not to, so that no other `nonreentrant` function can run between the phases. See [Reentrancy](/language/reentrancy).

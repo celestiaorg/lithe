@@ -1002,6 +1002,102 @@ fn recoverable_calls_branch_on_the_outcome() {
     );
 }
 
+/// `if query ... then` branches on the answer, as an `if` on any `bool` does: it is not the
+/// recoverable `case query ... of`, so a failed query reverts.
+#[test]
+fn if_on_a_query_branches_on_its_answer() {
+    install_mocks();
+    let src = "interface Ext is { view function flag(n : uint) : bool; }\nstorage is record { n : uint; }\nexternal view function pick(const ex : Ext; const n : uint) : uint is\n  if query ex.flag(n) then 7 else 9\n";
+    let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
+    let w = Word::from_u64;
+    let (ok, refuse) = (w(0xcd), w(0xee));
+    let yes = call(&runtime, "pick(address,uint256)", &[ok, w(1)]);
+    assert!(!yes.reverted, "{}", pretty(&yes.returndata));
+    assert_eq!(yes.returndata, w(7).to_be_bytes().to_vec());
+    let no = call(&runtime, "pick(address,uint256)", &[ok, w(0)]);
+    assert_eq!(no.returndata, w(9).to_be_bytes().to_vec());
+    assert!(call(&runtime, "pick(address,uint256)", &[refuse, w(1)]).reverted);
+}
+
+/// A recoverable query's `Ok((a, b))` binds each element of a tuple answer, as a whole
+/// binding does.
+#[test]
+fn query_outcomes_destructure_tuple_answers() {
+    install_mocks();
+    let src = "interface Ext is { view function pair(a : address; n : uint) : (address, uint); }\nstorage is record { n : uint; }\nexternal view function amount(const ex : Ext; const n : uint) : uint is\n  case query ex.pair(0x00000000000000000000000000000000000000aa, n) of {\n  | Ok((who, amount)) -> amount\n  | Error(_) -> 0\n  }\nexternal view function who(const ex : Ext; const n : uint) : address is\n  case query ex.pair(0x00000000000000000000000000000000000000aa, n) of {\n  | Ok((who, amount)) -> who\n  | Error(_) -> 0x0000000000000000000000000000000000000000\n  }\n";
+    let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
+    let w = Word::from_u64;
+    let (ok, refuse) = (w(0xcd), w(0xee));
+    let amount = call(&runtime, "amount(address,uint256)", &[ok, w(5)]);
+    assert!(!amount.reverted, "{}", pretty(&amount.returndata));
+    assert_eq!(amount.returndata, w(5).to_be_bytes().to_vec());
+    let who = call(&runtime, "who(address,uint256)", &[ok, w(5)]);
+    assert_eq!(who.returndata, w(0xaa).to_be_bytes().to_vec());
+    let failed = call(&runtime, "amount(address,uint256)", &[refuse, w(5)]);
+    assert_eq!(failed.returndata, w(0).to_be_bytes().to_vec());
+}
+
+/// A recoverable query's `Ok { ... }` binds the fields of a record answer by name.
+#[test]
+fn query_outcomes_destructure_record_answers() {
+    install_mocks();
+    let src = "type Pair is record { who : address; amount : uint; }\ninterface Ext is { view function pair(a : address; n : uint) : Pair; }\nstorage is record { n : uint; }\nexternal view function amount(const ex : Ext; const n : uint) : uint is\n  case query ex.pair(0x00000000000000000000000000000000000000aa, n) of {\n  | Ok { amount = a; _ } -> a\n  | Error(_) -> 0\n  }\nexternal view function who(const ex : Ext; const n : uint) : address is\n  case query ex.pair(0x00000000000000000000000000000000000000aa, n) of {\n  | Ok { who; amount = _ } -> who\n  | Error(_) -> 0x0000000000000000000000000000000000000000\n  }\n";
+    let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
+    let w = Word::from_u64;
+    let (ok, refuse) = (w(0xcd), w(0xee));
+    let amount = call(&runtime, "amount(address,uint256)", &[ok, w(5)]);
+    assert!(!amount.reverted, "{}", pretty(&amount.returndata));
+    assert_eq!(amount.returndata, w(5).to_be_bytes().to_vec());
+    let who = call(&runtime, "who(address,uint256)", &[ok, w(5)]);
+    assert_eq!(who.returndata, w(0xaa).to_be_bytes().to_vec());
+    let failed = call(&runtime, "amount(address,uint256)", &[refuse, w(5)]);
+    assert_eq!(failed.returndata, w(0).to_be_bytes().to_vec());
+    let err = compile(&src.replace("Error(_) -> 0\n", "Error { x } -> 0\n"))
+        .expect_err("braces on bytes");
+    assert!(
+        err.to_string()
+            .contains("`Error` carries `bytes`, not a record"),
+        "{err}"
+    );
+}
+
+/// Leaves loaded into the image before their first use share nothing kept from storage:
+/// `fee`'s load lands before `who`'s, in the slot they share, though it is built after it.
+#[test]
+fn image_loads_of_one_slot_read_storage_each() {
+    install_mocks();
+    let src = include_str!("../../fuzz/image_packed_loads.lithe");
+    let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
+    let w = Word::from_u64;
+    let setup = call(&runtime, "setUp(address,address)", &[w(0xbeef), w(0xee)]);
+    assert!(!setup.reverted, "{}", pretty(&setup.returndata));
+    let took = exec(
+        &runtime,
+        &word_data("a(uint256)", &[w(1)]),
+        setup.storage,
+        w(1),
+        w(0),
+        w(1_000_000),
+    )
+    .expect("a");
+    assert!(!took.reverted, "{}", pretty(&took.returndata));
+    let fee = hex(&w(25_000).to_be_bytes());
+    assert!(
+        took.detail
+            .iter()
+            .any(|d| d.starts_with("log ") && d.ends_with(&fee)),
+        "{:?}",
+        took.detail
+    );
+    assert!(
+        took.detail
+            .iter()
+            .any(|d| d.starts_with("call ") && d.contains(&format!("{:?}", w(25_000)))),
+        "{:?}",
+        took.detail
+    );
+}
+
 /// A deferred call may send `bytes` and `string`: its calldata is sized when it is deferred.
 #[test]
 fn deferred_calls_send_dynamic_values() {
@@ -2528,4 +2624,78 @@ external payable function payout(const tos : list(address)) is {
         "{:?}",
         trace_kinds(&bad.trace)
     );
+}
+
+/// A queue of one `defer` site writes its nodes without a site number, so the plan has to
+/// name the same queue in every pass. Outlining `pairA`, `pairB` and `pairC` adds and drops
+/// regions before the entrypoints' queues, which moved them: keyed by address, `e1`'s two
+/// sites took the shape of `e4`'s one, and its walk read a target as a site number.
+#[test]
+fn queues_keep_their_shape_when_the_plan_moves_memory() {
+    let src = r#"import "std/evm";
+
+interface Cfg is {
+  view function get(x : uint) : uint;
+  view function pair(x : uint) : P;
+  view function recipient() : address;
+}
+
+type P is record {
+  a : uint;
+  b : uint;
+}
+
+storage is record {
+  hooks : list(address);
+  total : uint;
+  ps : map(uint, P);
+}
+
+view function pairA(const cfg : Cfg; const x : uint) : P is {
+  const p : P := query cfg.pair(x + 2);
+  var y : uint := p.a * 3 + p.b;
+  y := y * y % 1000003 + (y ^ 77) % 13 + (y | 5) % 17 + y / 3 + y / 7 + (y & 255) * 11;
+} with { a = y; b = p.b; }
+
+view function pairB(const cfg : Cfg; const x : uint) : P is {
+  const p : P := query cfg.pair(x + 9);
+  var y : uint := p.a * 3 + p.b;
+  y := y * y % 1000003 + (y ^ 77) % 13 + (y | 5) % 17 + y / 3 + y / 7 + (y & 255) * 11;
+} with { a = y; b = p.b; }
+
+view function pairC(const cfg : Cfg; const x : uint) : P is {
+  const p : P := query cfg.pair(x + 6);
+  var y : uint := p.a * 3 + p.b;
+  y := y * y % 1000003 + (y ^ 77) % 13 + (y | 5) % 17 + y / 3 + y / 7 + (y & 255) * 11;
+} with { a = y; b = p.b; }
+
+external payable function e0(const cfg : Cfg) is {
+  storage.ps[0] := pairB(cfg, 0);
+  for h : address in storage.hooks do {
+    defer Evm.delegateCall(h, "");
+  }
+  storage.ps[5] := pairC(cfg, 0);
+  storage.ps[6] := pairB(cfg, 1);
+}
+
+external payable function e1(const cfg : Cfg) is {
+  storage.ps[1] := pairA(cfg, 1);
+  for h : address in storage.hooks do {
+    defer Evm.delegateCall(h, "");
+  }
+  defer Evm.transfer(query cfg.recipient(), Evm.value());
+}
+
+external payable function e2(const cfg : Cfg) is {
+}
+
+external payable function e4(const cfg : Cfg) is {
+  for h : address in storage.hooks do {
+    defer Evm.delegateCall(h, "");
+  }
+}
+"#;
+    let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
+    let out = call(&runtime, "e4(address)", &[Word::from_u64(0)]);
+    assert!(!out.reverted, "{}", pretty(&out.returndata));
 }

@@ -66,6 +66,17 @@ impl<'a> Gen<'a> {
         crate::check::abi_dynamic(&self.checked.types, ty)
     }
 
+    /// Whether a variant with payloads is in a value. Such a value is always decoded, never
+    /// checked and read where it lies.
+    pub(super) fn holds_sum(&self, ty: usize) -> bool {
+        let id = self.peel_nominal(ty);
+        let t = &self.checked.types[id];
+        is_sum(&self.checked.types, id)
+            || t.elem.is_some_and(|e| self.holds_sum(e))
+            || (matches!(t.kind, TyKind::Record | TyKind::Tuple)
+                && t.fields.iter().any(|f| self.holds_sum(f.ty)))
+    }
+
     /// Bytes a value takes in the head of the tuple that holds it.
     fn abi_head(&self, ty: usize) -> u32 {
         if self.abi_dyn(ty) {
@@ -560,6 +571,33 @@ impl<'a> Gen<'a> {
         // [ret, cur, x]
         self.op(SWAP1 + 1);
         match t.kind {
+            TyKind::Record if is_sum(&self.checked.types, ty) => {
+                // `(uint8 tag, bytes payload)`: the tag, the payload's offset, then its
+                // length and the payload's encoding.
+                self.op(DUP1);
+                self.op(MLOAD);
+                self.op(DUP1 + 2);
+                self.op(MSTORE);
+                self.push_u64(64);
+                self.op(DUP1 + 2);
+                self.add_const(32);
+                self.op(MSTORE);
+                // [ret, cur, a, end]
+                self.op(DUP1);
+                self.op(DUP1 + 2);
+                self.add_const(96);
+                self.call_sub(Sub::TreePayload(ty));
+                self.op(DUP1 + 2);
+                self.add_const(96);
+                self.op(DUP1 + 1);
+                self.op(SUB);
+                self.op(DUP1 + 3);
+                self.add_const(64);
+                self.op(MSTORE);
+                self.op(SWAP1 + 1);
+                self.op(POP);
+                self.op(POP);
+            }
             TyKind::String | TyKind::Bytes => {
                 // The length word, then the bytes, padded to a word.
                 self.bytes_span();
@@ -645,6 +683,133 @@ impl<'a> Gen<'a> {
         }
         self.op(SWAP1);
         self.op(JUMP);
+        Ok(())
+    }
+
+    /// `[a, cur, ret]` becomes `[end]`: the payload of the variant whose words are at `a`,
+    /// encoded at `cur` as `Abi.encode` encodes it alone: its words when it is static, a
+    /// `flat` record as its fields, and any other dynamic value after an offset.
+    pub(super) fn sub_tree_payload(&mut self, ty: usize) -> Result<(), Error> {
+        let variants: Vec<(Option<usize>, Vec<u32>)> = self.checked.types[ty]
+            .variants
+            .iter()
+            .map(|v| (v.payload, v.at.clone()))
+            .collect();
+        // [ret, cur, a, tag]
+        self.op(SWAP1 + 1);
+        self.op(DUP1);
+        self.op(MLOAD);
+        let done = self.fresh();
+        let cases: Vec<usize> = (0..variants.len())
+            .filter(|&k| variants[k].0.is_some())
+            .collect();
+        // A case with no payload encodes nothing: `end` is `cur`.
+        let labels: Vec<u32> = cases.iter().map(|_| self.fresh()).collect();
+        for (&k, &label) in cases.iter().zip(&labels) {
+            self.op(DUP1);
+            self.push_u64(k as u64);
+            self.op(EQ);
+            self.push_label(label);
+            self.op(JUMPI);
+        }
+        self.op(POP);
+        self.op(POP);
+        self.push_label(done);
+        self.op(JUMP);
+        for (&k, &label) in cases.iter().zip(&labels) {
+            self.jumpdest(label);
+            self.op(POP);
+            let (Some(p), at) = variants[k].clone() else {
+                continue;
+            };
+            self.enc_payload(p, &at)?;
+            self.push_label(done);
+            self.op(JUMP);
+        }
+        // [ret, end]
+        self.jumpdest(done);
+        self.op(SWAP1);
+        self.op(JUMP);
+        Ok(())
+    }
+
+    /// `[ret, cur, a]` becomes `[ret, end]`: a payload of type `p`, its words at `a + at[j]`.
+    fn enc_payload(&mut self, p: usize, at: &[u32]) -> Result<(), Error> {
+        let mut types = Vec::new();
+        self.word_types(p, &mut types);
+        let flat = self.checked.types[self.peel_nominal(p)].flat.is_some();
+        if !self.abi_dyn(p) {
+            for (j, wt) in types.iter().enumerate() {
+                self.op(DUP1);
+                self.add_const(at[j] * 32);
+                self.op(MLOAD);
+                if let Some(wt) = wt {
+                    self.fit_static_word(*wt);
+                }
+                self.op(DUP1 + 2);
+                self.add_const(32 * j as u32);
+                self.op(MSTORE);
+            }
+            self.op(POP);
+            self.add_const(32 * types.len() as u32);
+            return Ok(());
+        }
+        let n = at.len() as u32;
+        let together = at.iter().enumerate().all(|(j, &w)| w == at[0] + j as u32);
+        // Words spread over the variant's are gathered at `cur` first, and the encoding,
+        // written past them, then moves back over them.
+        let staged = !together && n > 1;
+        if staged {
+            for (j, &w) in at.iter().enumerate() {
+                self.op(DUP1);
+                self.add_const(w * 32);
+                self.op(MLOAD);
+                self.op(DUP1 + 2);
+                self.add_const(32 * j as u32);
+                self.op(MSTORE);
+            }
+            // [ret, cur, x, out]
+            self.op(POP);
+            self.op(DUP1);
+            self.op(DUP1);
+            self.add_const(32 * n);
+        } else {
+            // [ret, cur, x, out]
+            self.add_const(at[0] * 32);
+            if self.pointer_value(p) {
+                self.op(MLOAD);
+            }
+            self.op(DUP1 + 1);
+        }
+        if !flat {
+            self.push_u64(32);
+            self.op(DUP1 + 1);
+            self.op(MSTORE);
+            self.add_const(32);
+        }
+        self.call_sub(Sub::TreeEnc(self.peel_nominal(p)));
+        // [ret, cur, end]
+        if staged {
+            // [ret, cur, len]: the encoding moves back by the staged words, and they are
+            // cleared after it, as memory past the heap must stay.
+            self.op(DUP1 + 1);
+            self.add_const(32 * n);
+            self.op(SWAP1);
+            self.op(SUB);
+            self.op(DUP1);
+            self.op(DUP1 + 2);
+            self.add_const(32 * n);
+            self.op(DUP1 + 3);
+            self.op(MCOPY);
+            self.op(ADD);
+            self.push_u64(u64::from(32 * n));
+            self.op(CALLDATASIZE);
+            self.op(DUP1 + 2);
+            self.op(CALLDATACOPY);
+        } else {
+            self.op(SWAP1);
+            self.op(POP);
+        }
         Ok(())
     }
 
@@ -812,6 +977,13 @@ impl<'a> Gen<'a> {
     /// calldata position `pos`, an argument checked on entry, its canonical encoding
     /// written at `cur`.
     pub(super) fn sub_tree_cd_enc(&mut self, ty: usize) -> Result<(), Error> {
+        if is_sum(&self.checked.types, ty) {
+            return Err(error(
+                0,
+                0,
+                "internal: a variant is decoded, not kept in calldata",
+            ));
+        }
         let t = self.shape_of(ty);
         // [ret, cur, pos]
         self.op(SWAP1 + 1);
@@ -1099,6 +1271,7 @@ impl<'a> Gen<'a> {
         // [ret, dst, at]
         self.op(SWAP1 + 1);
         match t.kind {
+            TyKind::Record if is_sum(&self.checked.types, ty) => self.dec_sum(ty, kind)?,
             TyKind::String | TyKind::Bytes => {
                 // The length word and every byte inside the data.
                 self.op(DUP1);
@@ -1216,6 +1389,185 @@ impl<'a> Gen<'a> {
             _ => return Err(error(0, 0, "internal: not a dynamic ABI value")),
         }
         self.op(JUMP);
+        Ok(())
+    }
+
+    /// `[ret, dst, at]` becomes `[ret]`: a variant with payloads, `(uint8 tag, bytes payload)`,
+    /// decoded into its words at `dst`. A tag past the last case reverts, and so does a
+    /// payload that doesn't decode as its case's, read alone and bounded by its own length.
+    fn dec_sum(&mut self, ty: usize, kind: SrcKind) -> Result<(), Error> {
+        let src = self.tree_src(kind);
+        let t = &self.checked.types[ty];
+        let tag = t.fields[0].ty;
+        let fields: Vec<(u32, usize)> = t.fields[1..].iter().map(|f| (f.slot, f.ty)).collect();
+        let variants: Vec<(Option<usize>, Vec<u32>)> = t
+            .variants
+            .iter()
+            .map(|v| (v.payload, v.at.clone()))
+            .collect();
+        self.op(DUP1);
+        self.add_const(64);
+        self.within(src)?;
+        // [ret, dst, at, tag]
+        self.op(DUP1);
+        self.src_load(src);
+        self.check_decoded(tag)?;
+        self.op(DUP1);
+        self.op(DUP1 + 3);
+        self.op(MSTORE);
+        // [ret, dst, at, tag, pos]: the payload's length word, from its offset.
+        self.op(DUP1 + 1);
+        self.add_const(32);
+        self.src_load(src);
+        self.fits_64()?;
+        self.op(DUP1 + 2);
+        self.op(ADD);
+        self.op(DUP1);
+        self.add_const(32);
+        self.within(src)?;
+        // [ret, dst, at, tag, start, len]: its bytes inside the data.
+        self.op(DUP1);
+        self.src_load(src);
+        self.length_fits()?;
+        self.op(SWAP1);
+        self.add_const(32);
+        self.op(SWAP1);
+        self.op(DUP1);
+        self.op(DUP1 + 2);
+        self.op(ADD);
+        self.within(src)?;
+        let done = self.fresh();
+        for (k, (payload, at)) in variants.iter().enumerate() {
+            let next = self.fresh();
+            let last = k + 1 == variants.len();
+            if !last {
+                self.op(DUP1 + 2);
+                self.push_u64(k as u64);
+                self.op(EQ);
+                self.op(ISZERO);
+                self.push_label(next);
+                self.op(JUMPI);
+            }
+            // The words this case leaves, empty as a constructor leaves them.
+            for &(slot, fty) in fields.iter().filter(|(slot, _)| !at.contains(slot)) {
+                if self.list_value(fty) {
+                    self.op(PUSH0);
+                    self.alloc_list(self.list_k(fty))?;
+                } else {
+                    self.op(PUSH0);
+                }
+                self.op(DUP1 + 5);
+                self.add_const(slot * 32);
+                self.op(MSTORE);
+            }
+            match payload {
+                None => {
+                    self.op(DUP1);
+                    self.revert_if_true()?;
+                }
+                Some(p) => self.dec_payload(*p, at, kind)?,
+            }
+            if !last {
+                self.push_label(done);
+                self.op(JUMP);
+                self.jumpdest(next);
+            }
+        }
+        self.jumpdest(done);
+        for _ in 0..5 {
+            self.op(POP);
+        }
+        Ok(())
+    }
+
+    /// `[ret, dst, at, tag, start, len]` stays: the payload of type `p` in the `len` bytes
+    /// at `start`, decoded alone into the variant's words `dst + at[j]`. The data is bounded
+    /// by the payload while it decodes: read where it lies, or from return data, from a copy.
+    fn dec_payload(&mut self, p: usize, at: &[u32], kind: SrcKind) -> Result<(), Error> {
+        let kind = if kind == SrcKind::Ret {
+            self.op(DUP1 + 1);
+            self.op(DUP1 + 1);
+            self.bytes_value_from(Src::Ret)?;
+            self.push_u64(1);
+            self.op(SHR);
+            self.add_const(32);
+            self.op(SWAP1 + 1);
+            self.op(POP);
+            SrcKind::Mem
+        } else {
+            kind
+        };
+        let src = self.tree_src(kind);
+        let was = std::mem::replace(&mut self.decoding_args, false);
+        // [.., start, len, at0, end0]: the data's bounds as they were, then the payload's.
+        self.mload(self.tree_at);
+        self.mload(self.tree_end);
+        self.op(DUP1 + 3);
+        self.op(DUP1);
+        self.mstore_off(self.tree_at);
+        self.op(DUP1 + 3);
+        self.op(ADD);
+        self.mstore_off(self.tree_end);
+        let n = at.len() as u32;
+        let together = at.iter().enumerate().all(|(j, &w)| w == at[0] + j as u32);
+        // [.., start, len, at0, end0, d]: where the payload's words go.
+        if together {
+            self.op(DUP1 + 6);
+            self.add_const(at[0] * 32);
+        } else {
+            self.push_u64(u64::from(32 * n));
+            self.alloc_blob()?;
+            self.add_const(32);
+        }
+        let mut types = Vec::new();
+        self.word_types(p, &mut types);
+        if !self.abi_dyn(p) {
+            self.op(DUP1 + 4);
+            self.add_const(32 * types.len() as u32);
+            self.within(src)?;
+            for (j, wt) in types.iter().enumerate() {
+                self.op(DUP1 + 4);
+                self.add_const(32 * j as u32);
+                self.src_load(src);
+                if let Some(wt) = wt {
+                    self.check_decoded(*wt)?;
+                }
+                self.op(DUP1 + 1);
+                self.add_const(32 * j as u32);
+                self.op(MSTORE);
+            }
+        } else {
+            // A `flat` record is its fields, as a tuple from `start`; any other dynamic value
+            // is after an offset.
+            if self.checked.types[self.peel_nominal(p)].flat.is_some() {
+                self.op(DUP1 + 4);
+            } else {
+                self.op(DUP1 + 4);
+                self.add_const(32);
+                self.within(src)?;
+                self.op(DUP1 + 4);
+                self.src_load(src);
+                self.fits_64()?;
+                self.op(DUP1 + 5);
+                self.op(ADD);
+            }
+            self.op(DUP1 + 1);
+            self.call_sub(Sub::TreeDec(self.peel_nominal(p), kind, false));
+        }
+        if !together {
+            for (j, &w) in at.iter().enumerate() {
+                self.op(DUP1);
+                self.add_const(32 * j as u32);
+                self.op(MLOAD);
+                self.op(DUP1 + 8);
+                self.add_const(w * 32);
+                self.op(MSTORE);
+            }
+        }
+        self.op(POP);
+        self.mstore_off(self.tree_end);
+        self.mstore_off(self.tree_at);
+        self.decoding_args = was;
         Ok(())
     }
 
@@ -1436,6 +1788,13 @@ impl<'a> Gen<'a> {
         pending: &mut Option<u64>,
         classify: u32,
     ) -> Result<(), Error> {
+        if is_sum(&self.checked.types, ty) {
+            return Err(error(
+                0,
+                0,
+                "internal: a variant is decoded, not checked in place",
+            ));
+        }
         let t = self.shape_of(ty);
         let length = if self.decoding_args { None } else { Some(0x41) };
         // `[acc, len]` becomes `[acc]`: a length past 64 bits panics, unless a check before
@@ -1689,6 +2048,17 @@ impl<'a> Gen<'a> {
         let id = self.peel_nominal(ty);
         let t = self.shape_of(id);
         match t.kind {
+            TyKind::Record if is_sum(&self.checked.types, id) => {
+                // The tag's word, then the payload's encoding, already whole words.
+                self.load_at(src);
+                self.mload(cur);
+                self.op(MSTORE);
+                self.push_addr(src);
+                self.mload(cur);
+                self.add_const(32);
+                self.call_sub(Sub::TreePayload(id));
+                self.mstore_off(cur);
+            }
             TyKind::String | TyKind::Bytes if t.kind == TyKind::String || t.bits == 0 => {
                 self.load_at(src);
                 self.bytes_span();
@@ -1782,12 +2152,12 @@ impl<'a> Gen<'a> {
         self.mstore_off(self.blob_ptr);
     }
 
-    /// Where a function's argument or result goes in the ABI: a record's fields, each a
-    /// value of its own, or the value itself as one.
+    /// Where a function's argument or result goes in the ABI: a `flat` record's fields, each
+    /// a value of its own, or the value itself as one.
     pub(super) fn ret_fields(&self, ty: usize, at: Addr) -> Vec<(usize, Addr)> {
         let id = self.peel_nominal(ty);
         let t = &self.checked.types[id];
-        if t.kind == TyKind::Record && !t.tuple {
+        if t.kind == TyKind::Record && t.flat.is_some() {
             t.fields
                 .iter()
                 .map(|f| (f.ty, at.plus(f.slot * 32)))
@@ -1821,7 +2191,7 @@ impl<'a> Gen<'a> {
     pub(super) fn tree_ret(&self, ty: usize) -> bool {
         let id = self.peel_nominal(ty);
         let t = &self.checked.types[id];
-        if t.kind == TyKind::Record && !t.tuple {
+        if t.kind == TyKind::Record && t.flat.is_some() {
             return self.abi_dyn(id) && !crate::check::flat_record(&self.checked.types, id);
         }
         self.tree(id) || (t.kind == TyKind::List && t.bits > 0)
@@ -1959,7 +2329,13 @@ impl<'a> Gen<'a> {
                     iface: Some(_),
                     args,
                     ..
-                }) => whole.set(whole.get() + args.iter().filter(|a| own(a)).count()),
+                }) => whole.set(
+                    whole.get()
+                        + args
+                            .iter()
+                            .filter(|a| own(a) && self.checked.types[a.ty()].flat.is_none())
+                            .count(),
+                ),
                 // An event's data field, which is encoded as `Abi.encode` would.
                 Node::Stmt(Stmt::Emit { name, fields, .. }) => {
                     if let Some(ev) = self.checked.events.iter().find(|e| e.name == *name) {
@@ -2445,7 +2821,15 @@ impl<'a> Gen<'a> {
         dst: i32,
         ty: usize,
     ) -> Result<bool, Error> {
-        let multi = |g: &Self, t: usize| g.checked.types[t].words > 1 || g.tree(t);
+        // A record or tuple of one word is still written field by field, not as a word.
+        let multi = |g: &Self, t: usize| {
+            g.checked.types[t].words > 1
+                || g.tree(t)
+                || matches!(
+                    g.checked.types[g.peel_nominal(t)].kind,
+                    TyKind::Record | TyKind::Tuple
+                )
+        };
         match expr {
             Expr::Call {
                 builtin: Some(Builtin::AbiDecode),

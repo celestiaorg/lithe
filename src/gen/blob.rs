@@ -375,6 +375,12 @@ impl<'a> Gen<'a> {
         } else {
             self.blobs.remove(&sym);
         }
+        // A pattern's names are fields of the payload, so they are where it is.
+        for (&field, &(whole, _)) in &self.checked.field_of {
+            if whole == sym {
+                self.note_blob(field, blob);
+            }
+        }
     }
 
     /// The words a loop keeps a local's span in, for the local or its `bytes`/`string` cast.

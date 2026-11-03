@@ -91,7 +91,7 @@ module ERC20Votes is {
   external view function numCheckpoints(const account : address) : uint32 is
     uint32(Checkpoints.length(votes.delegateCheckpoints[account]))
 
-  external view function checkpoints(const account : address; const pos : uint32) : Checkpoint is
+  external view function checkpoints(const account : address; const pos : uint32) : flat Checkpoint is
     Checkpoints.at(votes.delegateCheckpoints[account], uint(pos))
 
   external function delegate(const delegatee : address)
@@ -215,5 +215,5 @@ interface IVotes is {
 
 interface IVotesCheckpoints is {
   view function numCheckpoints(account : address) : uint32;
-  view function checkpoints(account : address; pos : uint32) : Checkpoint;
+  view function checkpoints(account : address; pos : uint32) : flat Checkpoint;
 }

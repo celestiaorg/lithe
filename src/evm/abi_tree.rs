@@ -17,6 +17,8 @@ enum T {
     Str,
     Array(Box<T>, Option<usize>),
     Tuple(Vec<T>),
+    /// A variant with payloads: in the ABI, `(uint8 tag, bytes payload)`.
+    Variant(Vec<Option<T>>),
 }
 
 /// A value of a `T`: a word, the bytes of `bytes` or `string`, or the members of an array or
@@ -34,8 +36,28 @@ fn dynamic(t: &T) -> bool {
         T::Array(_, None) => true,
         T::Array(e, Some(_)) => dynamic(e),
         T::Tuple(ts) => ts.iter().any(dynamic),
+        T::Variant(_) => true,
         _ => false,
     }
+}
+
+/// A variant's value as the ABI carries it: its tag, and its payload encoded alone.
+fn as_tuple(cases: &[Option<T>], v: &V) -> (T, V) {
+    let V::L(parts) = v else {
+        panic!("a variant's value is its tag and payload")
+    };
+    let V::W(tag) = &parts[0] else {
+        panic!("a tag is a word")
+    };
+    let k = word_usize(*tag).expect("tag");
+    let payload = match &cases[k] {
+        Some(p) => encode(std::slice::from_ref(p), &parts[1..]),
+        None => Vec::new(),
+    };
+    (
+        T::Tuple(vec![T::Uint(8), T::Bytes]),
+        V::L(vec![V::W(*tag), V::B(payload)]),
+    )
 }
 
 fn head_size(t: &T) -> usize {
@@ -93,6 +115,10 @@ fn encode_one(t: &T, v: &V) -> Vec<u8> {
             encode(&ts, xs)
         }
         (T::Tuple(ts), V::L(xs)) => encode(ts, xs),
+        (T::Variant(cases), v) => {
+            let (t, v) = as_tuple(cases, v);
+            encode_one(&t, &v)
+        }
         _ => panic!("value does not match its type: {t:?} {v:?}"),
     }
 }
@@ -113,6 +139,10 @@ fn in_place(t: &T, v: &V, top: bool) -> Vec<u8> {
             .zip(xs)
             .flat_map(|(t, x)| in_place(t, x, false))
             .collect(),
+        (T::Variant(cases), v) => {
+            let (t, v) = as_tuple(cases, v);
+            in_place(&t, &v, false)
+        }
         _ => encode_one(t, v),
     }
 }
@@ -130,7 +160,46 @@ fn canon(t: &T) -> String {
         T::Array(e, None) => format!("{}[]", canon(e)),
         T::Array(e, Some(n)) => format!("{}[{n}]", canon(e)),
         T::Tuple(ts) => format!("({})", ts.iter().map(canon).collect::<Vec<_>>().join(",")),
+        T::Variant(_) => "(uint8,bytes)".into(),
     }
+}
+
+/// A variant's name in Lithe, from its shape, so the same shape declares once.
+fn variant_name(cases: &[Option<T>]) -> String {
+    let text = format!("{cases:?}");
+    let h = crate::keccak::keccak256(text.as_bytes());
+    format!("V{}", hex_bytes(&h[..4]))
+}
+
+/// The declarations of the variants in a type, innermost first.
+fn variant_decls(t: &T, out: &mut Vec<String>) {
+    match t {
+        T::Array(e, _) => variant_decls(e, out),
+        T::Tuple(ts) => ts.iter().for_each(|t| variant_decls(t, out)),
+        T::Variant(cases) => {
+            cases.iter().flatten().for_each(|t| variant_decls(t, out));
+            let name = variant_name(cases);
+            let arms: Vec<String> = cases
+                .iter()
+                .enumerate()
+                .map(|(k, p)| match p {
+                    Some(p) => format!("| {name}c{k} of {}", lithe(p)),
+                    None => format!("| {name}c{k}"),
+                })
+                .collect();
+            let decl = format!("type {name} is {}\n", arms.join(" "));
+            if !out.contains(&decl) {
+                out.push(decl);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn decls_of(t: &T) -> String {
+    let mut out = Vec::new();
+    variant_decls(t, &mut out);
+    out.concat()
 }
 
 /// The same type in Lithe.
@@ -148,6 +217,7 @@ fn lithe(t: &T) -> String {
         T::Array(e, None) => format!("list({})", lithe(e)),
         T::Array(e, Some(n)) => format!("list({}, {n})", lithe(e)),
         T::Tuple(ts) => format!("({})", ts.iter().map(lithe).collect::<Vec<_>>().join(", ")),
+        T::Variant(cases) => variant_name(cases),
     }
 }
 
@@ -217,6 +287,14 @@ fn value(t: &T, rng: &mut Rng) -> V {
         }
         T::Array(e, Some(n)) => V::L((0..*n).map(|_| value(e, rng)).collect()),
         T::Tuple(ts) => V::L(ts.iter().map(|t| value(t, rng)).collect()),
+        T::Variant(cases) => {
+            let k = rng.below(cases.len() as u64);
+            let mut parts = vec![V::W(Word::from_u64(k))];
+            if let Some(p) = &cases[k as usize] {
+                parts.push(value(p, rng));
+            }
+            V::L(parts)
+        }
     }
 }
 
@@ -265,7 +343,46 @@ fn shapes() -> Vec<T> {
         fixed(Tuple(vec![Uint(256), Int(256)]), 2),
         arr(arr(Tuple(vec![Str, Bool]))),
         Tuple(vec![arr(Tuple(vec![Str, arr(Str)])), Uint(256)]),
+        variant(),
+        arr(variant()),
+        fixed(variant(), 2),
+        Tuple(vec![variant(), Bool]),
+        Variant(vec![
+            Some(Uint(8)),
+            Some(Int(16)),
+            Some(Fixed(4)),
+            Some(Bool),
+            None,
+        ]),
+        Variant(vec![
+            Some(Tuple(vec![Uint(256), Uint(64)])),
+            None,
+            Some(Address),
+        ]),
+        Variant(vec![
+            None,
+            Some(Tuple(vec![Uint(256), Str, Uint(8)])),
+            Some(Tuple(vec![Int(8), arr(Bytes), Fixed(2)])),
+        ]),
+        Variant(vec![
+            Some(arr(variant())),
+            None,
+            Some(Tuple(vec![variant(), Str])),
+        ]),
+        arr(Tuple(vec![Str, variant()])),
     ]
+}
+
+/// A variant with a case of each kind: none, a word, a string, a static tuple, a list.
+fn variant() -> T {
+    use T::*;
+    Variant(vec![
+        None,
+        Some(Uint(256)),
+        Some(Str),
+        Some(Tuple(vec![Uint(64), Address])),
+        Some(arr(Uint(8))),
+    ])
 }
 
 fn run_call(runtime: &[u8], data: &[u8]) -> Outcome {
@@ -297,7 +414,7 @@ fn with_sel(sig: &str, args: &[u8]) -> Vec<u8> {
 }
 
 /// Each type under test, declared as `Tt` and written as its uses spell it: every shape as
-/// itself, and each tuple again as a `tuple record`, which the ABI must carry the same way.
+/// itself, and each tuple again as a record, which the ABI must carry the same way.
 fn forms() -> Vec<(T, String, String)> {
     let mut out = Vec::new();
     for t in shapes() {
@@ -310,7 +427,7 @@ fn forms() -> Vec<(T, String, String)> {
                 .collect();
             out.push((
                 t.clone(),
-                format!("tuple record {{ {} }}", fields.join(" ")),
+                format!("record {{ {} }}", fields.join(" ")),
                 "Tt".into(),
             ));
         }
@@ -321,7 +438,7 @@ fn forms() -> Vec<(T, String, String)> {
 /// A contract that takes, returns, encodes, decodes, logs, raises, queries, and compares
 /// values of one type.
 fn program(t: &T) -> String {
-    program_as(&lithe(t), &lithe(t))
+    program_as(&lithe(t), &lithe(t)) + &decls_of(t)
 }
 
 fn program_as(decl: &str, ty: &str) -> String {
@@ -334,7 +451,7 @@ interface Echo is {{
 }}
 event Logged of record {{ x : {ty}; }}
 event Topic of record {{ indexed x : {ty}; }}
-error Bad of {ty};
+error Bad of record {{ x : {ty}; }}
 storage is record {{ n : uint; }}
 external pure function echo(const x : {ty}) : {ty} is x
 external function kept(const x : {ty}) : {ty} is {{ storage.n := 1; }} with x
@@ -346,7 +463,7 @@ external pure function dec(const b : bytes) : Tt is Abi.decode(b, Tt)
 external pure function decPair(const b : bytes) : (Tt, uint) is Abi.decode(b, (Tt, uint))
 external function log(const x : {ty}) is {{ emit Logged {{ x = x; }}; }}
 external function topic(const x : {ty}) is {{ emit Topic {{ x = x; }}; }}
-external function bad(const x : {ty}) raises Bad is {{ fail Bad(x); }}
+external function bad(const x : {ty}) raises Bad is {{ fail Bad {{ x = x; }}; }}
 external view function ask(const e : Echo; const x : {ty}) : {ty} is query e.echo(x)
 external view function askOr(const e : Echo; const x : {ty}; const y : {ty}) : {ty} is
   case query e.echo(x) of {{ | Ok(r) -> r | Error(_) -> y }}
@@ -368,7 +485,7 @@ fn every_abi_type_everywhere() {
     let mut rng = Rng(0x5eed_1234_abcd_ef01);
     for (t, decl, ty) in forms() {
         let name = canon(&t);
-        let src = program_as(&decl, &ty);
+        let src = program_as(&decl, &ty) + &decls_of(&t);
         let runtime = deploy(&compile(&src).unwrap_or_else(|e| panic!("{decl}: {e}\n{src}")))
             .unwrap_or_else(|e| panic!("{decl}: {e}"));
         for round in 0..6 {
@@ -525,7 +642,8 @@ fn deploy_takes_every_abi_type() {
     for (t, decl, ty) in forms() {
         let name = decl.clone();
         let src = format!(
-            "type Tt is {decl};\nevent Made of record {{ x : {ty}; }}\nstorage is record {{ n : uint; }}\ndeploy(const x : {ty}) is {{ emit Made {{ x = x; }}; }}\nexternal function f() is {{ skip }}\n"
+            "type Tt is {decl};\nevent Made of record {{ x : {ty}; }}\nstorage is record {{ n : uint; }}\ndeploy(const x : {ty}) is {{ emit Made {{ x = x; }}; }}\nexternal function f() is {{ skip }}\n{}",
+            decls_of(&t)
         );
         let init = compile(&src).unwrap_or_else(|e| panic!("{name}: {e}"));
         for _ in 0..3 {
@@ -862,48 +980,48 @@ external pure function k(const s : Status; const t : Target; const x : int8; con
 const RECORD_TARGET: &str = "\
 import \"std/abi\"; import \"std/crypto\"; type Job is record { a : uint; label : string; ids : list(uint); b : address; }
 type Params is record { x : uint; y : uint; z : uint; }
-type Order is tuple record { who : address; memo : string; amount : uint; }
+type Order is record { who : address; memo : string; amount : uint; }
 storage is record { h : bytes32; n : uint; }
-external function run(const j : Job) is { storage.h := Crypto.keccak256(Abi.encode(j)); }
-external function execute(const p : Params) is { storage.h := Crypto.keccak256(Abi.encode(p)); }
+external function run(const j : flat Job) is { storage.h := Crypto.keccak256(Abi.encode(j)); }
+external function execute(const p : flat Params) is { storage.h := Crypto.keccak256(Abi.encode(p)); }
 external function place(const o : Order) is { storage.h := Crypto.keccak256(Abi.encode(o)); }
-external function after(const j : Job; const n : uint) is { storage.n := n; }
-external view function weigh(const j : Job) : bytes32 is Crypto.keccak256(Abi.encode(j))
+external function after(const j : flat Job; const n : uint) is { storage.n := n; }
+external view function weigh(const j : flat Job) : bytes32 is Crypto.keccak256(Abi.encode(j))
 external view function quote(const o : Order) : Order is { who = o.who; memo = o.memo; amount = o.amount + 1; }
 ";
 
 const RECORD_CALLER: &str = "\
 import \"std/abi\"; import \"std/evm\"; type Job is record { a : uint; label : string; ids : list(uint); b : address; }
 type Params is record { x : uint; y : uint; z : uint; }
-type Order is tuple record { who : address; memo : string; amount : uint; }
+type Order is record { who : address; memo : string; amount : uint; }
 interface Target is {
-  function run(j : Job);
-  function execute(p : Params);
+  function run(j : flat Job);
+  function execute(p : flat Params);
   function place(o : Order);
-  function after(j : Job; n : uint);
-  view function weigh(j : Job) : bytes32;
+  function after(j : flat Job; n : uint);
+  view function weigh(j : flat Job) : bytes32;
   view function quote(o : Order) : Order;
 }
 storage is record { target : Target; h : bytes32; amount : uint; }
 external function run(const a : uint; const label : string) is {
   defer storage.target.run({ a = a; label = label; ids = [a, a + 1]; b = Evm.sender(); });
 }
-external function relay(const j : Job) is { defer storage.target.run(j); }
+external function relay(const j : flat Job) is { defer storage.target.run(j); }
 external function execute(const x : uint; const y : uint; const z : uint) is {
   defer storage.target.execute({ x = x; y = y; z = z; });
 }
 external function place(const o : Order) is { defer storage.target.place(o); }
-external function after(const j : Job; const n : uint) is { defer storage.target.after(j, n); }
-external function weigh(const j : Job) is { storage.h := query storage.target.weigh(j); }
+external function after(const j : flat Job; const n : uint) is { defer storage.target.after(j, n); }
+external function weigh(const j : flat Job) is { storage.h := query storage.target.weigh(j); }
 external function quote(const o : Order) is {
   const r : Order := query storage.target.quote(o);
   storage.amount := r.amount;
 }
-external pure function callData(const j : Job) : bytes is Abi.encodeCall(Target.run, j)
+external pure function callData(const j : flat Job) : bytes is Abi.encodeCall(Target.run, j)
 ";
 
-/// A record argument is its fields, in an interface as at an entrypoint, so one Lithe contract
-/// reaches another's; a `tuple record` is one tuple in both.
+/// A `flat` record argument is its fields, in an interface as at an entrypoint, so one Lithe
+/// contract reaches another's; any other record is one tuple in both.
 #[test]
 fn record_arguments_cross_interfaces() {
     assert_eq!(
@@ -1019,7 +1137,7 @@ fn record_arguments_cross_interfaces() {
         hex(&encode(&[T::Bytes], &[V::B(want)]))
     );
 
-    // A `tuple record`: one tuple, as an argument and as a result.
+    // A record: one tuple, as an argument and as a result.
     let o = V::L(vec![n(0x55), V::B(b"memo".to_vec()), n(10)]);
     let enc = encode(std::slice::from_ref(&order), std::slice::from_ref(&o));
     send(with_sel("place((address,string,uint256))", &enc));
@@ -1046,18 +1164,18 @@ fn record_arguments_cross_interfaces() {
     assert!(outputs.contains("\"name\": \"memo\""), "{outputs}");
 }
 
-/// A case payload takes the ABI form a parameter does: a record its fields, a `tuple record`
-/// one tuple, and dynamic values after their offsets.
+/// A case payload takes the ABI form a parameter does: a `flat` record its fields, any other
+/// record one tuple, and dynamic values after their offsets.
 #[test]
 fn case_payloads_decode_like_parameters() {
     let src = "\
-import \"std/abi\"; import \"std/crypto\"; type Key is tuple record { token : address; fee : uint24; }
-type Ticket is tuple record { holder : address; note : string; }
+import \"std/abi\"; import \"std/crypto\"; type Key is record { token : address; fee : uint24; }
+type Ticket is record { holder : address; note : string; }
 type Named is record { s : string; n : uint; }
 type Action is
   | Swap external swap of Key
   | Hold external hold of Ticket
-  | Name external name of Named
+  | Name external name of flat Named
   | Tag external tag of string
 storage is record { h : bytes32; }
 external function act(const a : Action) is case a of {
@@ -1103,6 +1221,233 @@ external function act(const a : Action) is case a of {
         let want = keccak_word(&encode(std::slice::from_ref(&t), std::slice::from_ref(&v)));
         assert_eq!(slot(&out.storage, 0), want, "{sig}");
     }
+}
+
+/// A record whose fields `flat` spreads, as a parameter, a result, and an interface's method.
+const FLAT_DESK: &str = "\
+import \"std/abi\"; import \"std/crypto\"; type Quote is record { who : address; memo : string; amount : uint; }
+interface Desk is { view function quote(id : uint) : flat Quote; }
+storage is record { last : Quote; h : bytes32; }
+pure function bump(const q : Quote) : Quote is { who = q.who; memo = q.memo; amount = q.amount + 1; }
+external function file(const q : flat Quote) is {
+  storage.last := bump(q);
+  storage.h := Crypto.keccak256(Abi.encode(q));
+}
+external view function quote(const id : uint) : flat Quote is
+  { who = storage.last.who; memo = storage.last.memo; amount = storage.last.amount + id; }
+external view function whole() : Quote is storage.last
+external view function ask(const d : Desk; const id : uint) : uint is {
+  const q : Quote := query d.quote(id);
+} with q.amount
+";
+
+/// `flat` spreads a record into separate ABI parameters and results, and is still the record:
+/// a `flat` parameter goes to a function that takes a `Quote`, and a `Quote` is a `flat`
+/// result.
+#[test]
+fn flat_records_spread_their_fields() {
+    let runtime = deploy(&compile(FLAT_DESK).expect("compile")).expect("deploy");
+    let n = |x: u64| V::W(Word::from_u64(x));
+    let fields = [T::Address, T::Str, T::Uint(256)];
+    let quote = T::Tuple(fields.to_vec());
+    let memo = b"a memo past thirty-two bytes long".to_vec();
+    let q = [n(0x55), V::B(memo.clone()), n(10)];
+    let filed = call_raw(
+        &runtime,
+        &with_sel("file(address,string,uint256)", &encode(&fields, &q)),
+    );
+    assert!(!filed.reverted, "{}", pretty(&filed.returndata));
+    assert_eq!(
+        slot(&filed.storage, 3),
+        keccak_word(&encode(std::slice::from_ref(&quote), &[V::L(q.to_vec())]))
+    );
+    let run = |sig: &str, args: &[u8]| {
+        let out = exec(
+            &runtime,
+            &with_sel(sig, args),
+            filed.storage.clone(),
+            Word::from_u64(1),
+            Word::from_u64(0),
+            Word::from_u64(0),
+        )
+        .expect("run");
+        assert!(!out.reverted, "{sig}: {}", pretty(&out.returndata));
+        out.returndata
+    };
+    let bumped = [n(0x55), V::B(memo), n(11)];
+    let spread = encode(&fields, &bumped);
+    assert_eq!(
+        hex(&run("quote(uint256)", &encode(&[T::Uint(256)], &[n(0)]))),
+        hex(&spread)
+    );
+    let one = encode(std::slice::from_ref(&quote), &[V::L(bumped.to_vec())]);
+    assert_eq!(hex(&run("whole()", &[])), hex(&one));
+
+    let at = Word::from_u64(0x5202);
+    DEPLOYED.with(|d| {
+        d.borrow_mut()
+            .insert(at, (runtime.clone(), filed.storage.clone()))
+    });
+    let asked = run(
+        "ask(address,uint256)",
+        &encode(&[T::Address, T::Uint(256)], &[V::W(at), n(5)]),
+    );
+    assert_eq!(load_bytes(&asked, 0), Word::from_u64(16));
+
+    let abi = abi(FLAT_DESK).expect("abi");
+    let outputs = |name: &str| {
+        let at = &abi[abi.find(&format!("\"name\": \"{name}\"")).expect(name)..];
+        at[..at.find("\"stateMutability\"").expect("end")].to_string()
+    };
+    let spread = outputs("quote");
+    assert!(!spread.contains("\"tuple\""), "{spread}");
+    assert!(spread.contains("\"name\": \"memo\""), "{spread}");
+    let whole = outputs("whole");
+    assert_eq!(whole.matches("\"type\": \"tuple\"").count(), 1, "{whole}");
+}
+
+/// How a record goes to a call is its parameter's form, whatever form the value came in.
+#[test]
+fn flat_follows_the_parameter_not_the_value() {
+    let src = "\
+import \"std/abi\"; type Quote is record { who : address; memo : string; amount : uint; }
+interface Desk is { function file(q : flat Quote); function keep(q : Quote); }
+error Bad of Quote;
+external pure function spreadWhole(const q : Quote) : bytes is Abi.encodeCall(Desk.file, q)
+external pure function keepFlat(const q : flat Quote) : bytes is Abi.encodeCall(Desk.keep, q)
+external pure function spreadLocal(const who : address; const memo : string) : bytes is {
+  const q : Quote := { who = who; memo = memo; amount = 3; };
+} with Abi.encodeCall(Desk.file, q)
+external function bad(const q : Quote) raises Bad is { fail Bad(q); }
+external pure function spreadBack(const q : Quote) : flat Quote is q
+external pure function wholeBack(const q : flat Quote) : Quote is q
+";
+    let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
+    let n = |x: u64| V::W(Word::from_u64(x));
+    let fields = [T::Address, T::Str, T::Uint(256)];
+    let quote = T::Tuple(fields.to_vec());
+    let memo = b"a memo past thirty-two bytes long".to_vec();
+    let q = [n(0x55), V::B(memo.clone()), n(3)];
+    let spread = encode(&fields, &q);
+    let whole = encode(std::slice::from_ref(&quote), &[V::L(q.to_vec())]);
+    let bytes = |sig: &str, args: &[u8]| {
+        let out = call_raw(&runtime, &with_sel(sig, args));
+        assert!(!out.reverted, "{sig}: {}", pretty(&out.returndata));
+        out.returndata
+    };
+    let encoded = |data: Vec<u8>| encode(&[T::Bytes], &[V::B(data)]);
+    let file = with_sel("file(address,string,uint256)", &spread);
+    let keep = with_sel("keep((address,string,uint256))", &whole);
+    assert_eq!(
+        hex(&bytes("spreadWhole((address,string,uint256))", &whole)),
+        hex(&encoded(file.clone()))
+    );
+    assert_eq!(
+        hex(&bytes("keepFlat(address,string,uint256)", &spread)),
+        hex(&encoded(keep))
+    );
+    assert_eq!(
+        hex(&bytes(
+            "spreadLocal(address,string)",
+            &encode(&[T::Address, T::Str], &[n(0x55), V::B(memo)])
+        )),
+        hex(&encoded(file))
+    );
+    let out = call_raw(&runtime, &with_sel("bad((address,string,uint256))", &whole));
+    assert!(out.reverted);
+    assert_eq!(
+        hex(&out.returndata),
+        hex(&with_sel("Bad(address,string,uint256)", &spread))
+    );
+    assert_eq!(
+        hex(&bytes("spreadBack((address,string,uint256))", &whole)),
+        hex(&spread)
+    );
+    assert_eq!(
+        hex(&bytes("wholeBack(address,string,uint256)", &spread)),
+        hex(&whole)
+    );
+}
+
+/// `flat` goes only where a record meets the ABI as a whole parameter, result, or case
+/// payload, and only before a record.
+#[test]
+fn flat_is_rejected_elsewhere() {
+    let quote = "type Quote is record { who : address; amount : uint; }\n\
+                 storage is record { n : uint; }\n\
+                 external function touch() is { storage.n := 1; }\n";
+    let cases = [
+        (
+            "external pure function f() : uint is { const q : flat Quote := { who = 0; amount = 1; }; } with q.amount",
+            "`flat` goes only on",
+        ),
+        (
+            "external pure function f(const qs : list(flat Quote)) : uint is qs.length",
+            "`flat` goes only on",
+        ),
+        (
+            "external pure function f(const q : (flat Quote, uint)) : uint is 1",
+            "`flat` goes only on",
+        ),
+        ("type Box is record { q : flat Quote; }", "`flat` goes only on"),
+        ("event Seen of record { q : flat Quote; }", "`flat` goes only on"),
+        ("error Bad of record { q : flat Quote; }", "`flat` goes only on"),
+        (
+            "pure function g(const q : flat Quote) : uint is q.amount\n\
+             external pure function f() : uint is g({ who = 0; amount = 1; })",
+            "`flat` goes only on",
+        ),
+        (
+            "pure function g() : flat Quote is { who = 0; amount = 1; }\n\
+             external pure function f() : uint is g().amount",
+            "`flat` goes only on",
+        ),
+        (
+            "external pure function f(const n : flat uint) : uint is n",
+            "`uint` is not a record",
+        ),
+        (
+            "external pure function f() : flat (uint, uint) is (1, 2)",
+            "is not a record",
+        ),
+        (
+            "type Act is | Go of uint | Stop\n\
+             external pure function f(const a : flat Act) : uint is 1",
+            "`Act` is not a record",
+        ),
+        (
+            "type Act is | Go external go of (q : flat Quote) | Stop external stop\n\
+             external function f(const a : Act) is case a of { | Go(q) -> { storage.n := q.amount; } | Stop -> { storage.n := 0; } }",
+            "write `of flat T`",
+        ),
+        (
+            "interface Desk is { view function quote(n : flat uint) : uint; }",
+            "`uint` is not a record",
+        ),
+    ];
+    for (body, want) in cases {
+        let src = format!("{quote}{body}\n");
+        let err = compile(&src).expect_err(body).to_string();
+        assert!(err.contains(want), "{body}: {err}");
+    }
+    let module = "module Desk is {\n  type Quote is record { who : address; amount : uint; }\n  storage desk at \"t.desk\" is record { n : uint; }\n  external function file(const q : flat Quote) is { desk.n := q.amount; }\n}\n";
+    let err = compile(&format!(
+        "{module}contract Shop is {{\n  storage is record {{}}\n  use Desk exposing {{ function file(q : Quote); }}\n}}\n"
+    ))
+    .expect_err("an interface without `flat`")
+    .to_string();
+    assert!(
+        err.contains("is `Quote` in") && err.contains("`flat Quote` in `Desk`"),
+        "{err}"
+    );
+    compile(&format!(
+        "{module}contract Shop is {{\n  storage is record {{}}\n  use Desk exposing {{ function file(q : flat Quote); }}\n}}\n"
+    ))
+    .expect("an interface with `flat`");
+    let hooked = "module Desk is {\n  type Quote is record { who : address; amount : uint; }\n  hook seen(const q : flat Quote) : uint;\n  external function file(const q : Quote) : uint is seen(q)\n}\n\
+                  contract Shop is {\n  storage is record {}\n  use Desk exposing { function file(q : Quote) : uint; } with {\n    hook seen(const q : Quote) : uint is {} with q.amount\n  }\n}\n";
+    let err = compile(hooked).expect_err("a `flat` hook").to_string();
+    assert!(err.contains("`flat` goes only on"), "{err}");
 }
 
 /// Hashing packed static values or short hex literals writes them straight to a buffer;
@@ -1310,5 +1655,186 @@ external pure function argCopied(const ys : Recs) : bytes is {{
             succeeded += usize::from(!a.reverted);
         }
         assert!(succeeded >= 3, "{}", canon(&t));
+    }
+}
+
+/// A variant decodes with the checks Solidity's decoder makes of `(uint8, bytes)` and of its
+/// payload decoded alone, bounded by the payload's own length: in arguments, in
+/// `Abi.decode`, and in a query's result. A tag past the last case, a payload that is short,
+/// runs past its length, holds a word its type can't, or is there for a case with none, all
+/// revert. Bytes past the payload's encoding are ignored, as `abi.decode` ignores them.
+#[test]
+fn malformed_variants_revert() {
+    install_mocks();
+    let src = "\
+import \"std/abi\";
+type V is | A | B of uint8 | C of string | D of (uint, list(uint16))
+interface Raw is { view function echo(w : list(uint, 16)) : V; }
+storage is record { n : uint; }
+external pure function echo(const v : V) : V is v
+external pure function dec(const b : bytes) : V is Abi.decode(b, V)
+external view function raw(const e : Raw; const w : list(uint, 16)) : V is query e.echo(w)
+";
+    let runtime = deploy(&compile(src).unwrap_or_else(|e| panic!("{e}"))).expect("deploy");
+    let words = |ws: &[u64]| -> Vec<u8> {
+        ws.iter()
+            .flat_map(|&w| Word::from_u64(w).to_be_bytes())
+            .collect()
+    };
+    // What each path answers for arguments that encode one `V`: `None` when it reverts.
+    let answers = |args: &[u8]| -> Vec<Option<Vec<u8>>> {
+        let run = |data: Vec<u8>| {
+            let out = run_call(&runtime, &data);
+            (!out.reverted).then_some(out.returndata)
+        };
+        let mut raw = Word::from_u64(0xcd).to_be_bytes().to_vec();
+        raw.extend(args);
+        raw.resize(32 * 17, 0);
+        vec![
+            run(with_sel("echo((uint8,bytes))", args)),
+            run(with_sel(
+                "dec(bytes)",
+                &encode(&[T::Bytes], &[V::B(args.to_vec())]),
+            )),
+            run(with_sel("raw(address,uint256[16])", &raw)),
+        ]
+    };
+    let shape = T::Variant(vec![
+        None,
+        Some(T::Uint(8)),
+        Some(T::Str),
+        Some(T::Tuple(vec![T::Uint(256), arr(T::Uint(16))])),
+    ]);
+    let n = |x: u64| V::W(Word::from_u64(x));
+    for v in [
+        V::L(vec![n(0)]),
+        V::L(vec![n(1), n(7)]),
+        V::L(vec![n(2), V::B(b"hi".to_vec())]),
+        V::L(vec![n(3), V::L(vec![n(5), V::L(vec![n(1), n(2)])])]),
+    ] {
+        let enc = encode(std::slice::from_ref(&shape), std::slice::from_ref(&v));
+        for (path, answer) in answers(&enc).into_iter().enumerate() {
+            assert_eq!(answer, Some(enc.clone()), "path {path}: {v:?}");
+        }
+    }
+    let b7 = words(&[0x20, 1, 0x40, 32, 7]);
+    let trailing = words(&[0x20, 1, 0x40, 64, 7, 99]);
+    for (path, answer) in answers(&trailing).into_iter().enumerate() {
+        assert_eq!(
+            answer,
+            Some(b7.clone()),
+            "path {path}: trailing payload bytes"
+        );
+    }
+    let bad: Vec<(&str, Vec<u8>)> = vec![
+        ("tag past the last case", words(&[0x20, 4, 0x40, 0])),
+        ("tag past uint8", words(&[0x20, 257, 0x40, 32, 7])),
+        (
+            "payload for a case with none",
+            words(&[0x20, 0, 0x40, 32, 7]),
+        ),
+        ("empty payload", words(&[0x20, 1, 0x40, 0])),
+        ("short payload", words(&[0x20, 1, 0x40, 31, 7])),
+        ("uint8 of 300", words(&[0x20, 1, 0x40, 32, 300])),
+        (
+            "payload offset past the data",
+            words(&[0x20, 1, 0x1000, 32, 7]),
+        ),
+        (
+            "payload length past the data",
+            words(&[0x20, 1, 0x40, 0x1000, 7]),
+        ),
+        (
+            "string past the payload",
+            words(&[0x20, 2, 0x40, 64, 0x20, 100, 0, 0, 0, 0, 0, 0]),
+        ),
+        (
+            "string offset past the payload",
+            words(&[0x20, 2, 0x40, 64, 0x60, 0, 0, 0, 0, 0]),
+        ),
+        (
+            "list cut by the payload's length",
+            words(&[0x20, 3, 0x40, 128, 0x20, 5, 0x40, 2, 1, 2]),
+        ),
+        (
+            "uint16 of 70000",
+            words(&[0x20, 3, 0x40, 192, 0x20, 5, 0x40, 2, 1, 70_000]),
+        ),
+    ];
+    for (what, args) in bad {
+        for (path, answer) in answers(&args).into_iter().enumerate() {
+            assert!(answer.is_none(), "path {path}: {what}: {answer:?}");
+        }
+    }
+    let mut huge = words(&[0x20, 1, 0, 32, 7]);
+    huge[64 + 23] = 1;
+    for (path, answer) in answers(&huge).into_iter().enumerate() {
+        assert!(answer.is_none(), "path {path}: payload offset past 64 bits");
+    }
+}
+
+/// A case's payload is encoded as `Abi.encode` encodes it alone, which is what the case's
+/// entrypoint takes when the variant dispatches: a `flat` record as its fields, any other
+/// record as one tuple.
+#[test]
+fn variant_payloads_are_their_cases_arguments() {
+    let src = "\
+import \"std/abi\";
+type R is record { a : uint; s : string; }
+type Fx is record { a : uint; b : uint8; }
+type V is
+  | P external p of flat R
+  | Q external q of R
+  | S external s of flat Fx
+  | N external n
+storage is record { last : bytes; }
+external pure function echo(const v : V) : V is v
+external pure function mk(const k : uint) : V is
+  if k = 0 then P { a = 1; s = \"x\"; }
+  else if k = 1 then Q { a = 2; s = \"yz\"; }
+  else if k = 2 then S { a = 3; b = 4; }
+  else N
+external function go(const v : V) is
+  case v of {
+  | P(r) -> { storage.last := Abi.encode(r.a, r.s); }
+  | Q(r) -> { storage.last := Abi.encode(r); }
+  | S(f) -> { storage.last := Abi.encode(f.a, f.b); }
+  | N -> { storage.last := \"\"; }
+  }
+";
+    let runtime = deploy(&compile(src).unwrap_or_else(|e| panic!("{e}"))).expect("deploy");
+    let n = |x: u64| V::W(Word::from_u64(x));
+    let s = |t: &str| V::B(t.as_bytes().to_vec());
+    let rt = T::Tuple(vec![T::Uint(256), T::Str]);
+    let payloads = [
+        (
+            "p(uint256,string)",
+            encode(&[T::Uint(256), T::Str], &[n(1), s("x")]),
+        ),
+        (
+            "q((uint256,string))",
+            encode(std::slice::from_ref(&rt), &[V::L(vec![n(2), s("yz")])]),
+        ),
+        (
+            "s(uint256,uint8)",
+            encode(&[T::Uint(256), T::Uint(8)], &[n(3), n(4)]),
+        ),
+        ("n()", Vec::new()),
+    ];
+    for (k, (sig, payload)) in payloads.iter().enumerate() {
+        let want = encode(
+            &[T::Tuple(vec![T::Uint(8), T::Bytes])],
+            &[V::L(vec![n(k as u64), V::B(payload.clone())])],
+        );
+        let made = run_call(
+            &runtime,
+            &with_sel("mk(uint256)", &Word::from_u64(k as u64).to_be_bytes()),
+        );
+        assert_eq!(hex(&made.returndata), hex(&want), "mk {k}");
+        let echoed = run_call(&runtime, &with_sel("echo((uint8,bytes))", &want));
+        assert_eq!(hex(&echoed.returndata), hex(&want), "echo {k}");
+        // The dispatched case takes the payload as its arguments.
+        let out = run_call(&runtime, &with_sel(sig, payload));
+        assert!(!out.reverted, "{sig}: {}", pretty(&out.returndata));
     }
 }

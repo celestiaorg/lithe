@@ -21,6 +21,11 @@ error ERC2981InvalidTokenRoyaltyReceiver of record {
   receiver : address;
 }
 
+type RoyaltyQuote is record {
+  receiver : address;
+  royaltyAmount : uint;
+}
+
 module ERC2981 is {
   type RoyaltyInfo is record {
     receiver : address;
@@ -32,14 +37,14 @@ module ERC2981 is {
     tokenRoyaltyInfo : map(uint, RoyaltyInfo);
   }
 
-  external view function royaltyInfo(const tokenId : uint; const salePrice : uint) : (address, uint) is {
+  external view function royaltyInfo(const tokenId : uint; const salePrice : uint) : flat RoyaltyQuote is {
     var receiver : address := erc2981.tokenRoyaltyInfo[tokenId].receiver;
     var fraction : uint96 := erc2981.tokenRoyaltyInfo[tokenId].royaltyFraction;
     if receiver = Address.zero then {
       receiver := erc2981.defaultRoyaltyInfo.receiver;
       fraction := erc2981.defaultRoyaltyInfo.royaltyFraction;
     }
-  } with (receiver, salePrice * uint(fraction) / 10000)
+  } with { receiver = receiver; royaltyAmount = salePrice * uint(fraction) / 10000; }
 
   function setDefaultRoyalty(const receiver : address; const feeNumerator : uint96)
     raises ERC2981InvalidDefaultRoyalty | ERC2981InvalidDefaultRoyaltyReceiver
@@ -76,5 +81,5 @@ module ERC2981 is {
 }
 
 interface IERC2981 is {
-  view function royaltyInfo(tokenId : uint; salePrice : uint) : (address, uint);
+  view function royaltyInfo(tokenId : uint; salePrice : uint) : flat RoyaltyQuote;
 }

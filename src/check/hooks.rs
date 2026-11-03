@@ -1,6 +1,6 @@
 //! Module hooks. A module declares `hook beforeTransfer(const id : uint);` and its code
 //! calls it by name. The contract implements each hook its code can reach, exactly once:
-//! `hook M.h(...) is { ... }`, `hook M.h is f;`, or `hook M.h is skip;`. The implementation
+//! `use M ... with { hook h(...) is { ... } }`, `hook h is f;`, or `hook h is skip;`. The implementation
 //! becomes the contract's internal function `M.h#hook`, which the module's calls reach. A
 //! delegated module's facet is built from the module alone, so there the function calls back
 //! into the contract, through the hidden entrypoint `M.h#callback`.
@@ -24,8 +24,8 @@ fn label(module: &str, name: &str) -> String {
     format!("{}.{name}", shown(module))
 }
 
-/// `hook M.h(const a : T) : R`, as a contract writes it.
-pub(crate) fn header(module: &str, sig: &Func) -> String {
+/// `hook h(const a : T) : R`, as a contract writes it in `use M ... with`.
+pub(crate) fn header(sig: &Func) -> String {
     let params = if sig.params.is_empty() {
         String::new()
     } else {
@@ -44,14 +44,14 @@ pub(crate) fn header(module: &str, sig: &Func) -> String {
         .as_ref()
         .map(|ret| format!(" : {}", shape_ty(ret)))
         .unwrap_or_default();
-    format!("hook {}{params}{ret}", label(module, &sig.name))
+    format!("hook {}{params}{ret}", sig.name)
 }
 
-/// What the contract writes to implement `sig`, and to skip it when it has no result.
-pub(crate) fn stub(module: &str, sig: &Func) -> String {
+/// What the contract writes in `use M ... with` to implement `sig`.
+pub(crate) fn stub(sig: &Func) -> String {
     match sig.ret {
-        Some(_) => format!("{} is {{ ... }} with ...", header(module, sig)),
-        None => format!("{} is {{ ... }}", header(module, sig)),
+        Some(_) => format!("{} is {{ ... }} with ...", header(sig)),
+        None => format!("{} is {{ ... }}", header(sig)),
     }
 }
 
@@ -131,7 +131,7 @@ pub(super) fn place_hooks(prog: &mut Program) -> Result<(), Error> {
                 line,
                 col,
                 format!(
-                    "`hook {}` is written twice; the first is at {l}:{c}",
+                    "hook `{}` is written twice; the first is at {l}:{c}",
                     label(&module, &of.name)
                 ),
             ));
@@ -144,7 +144,7 @@ pub(super) fn place_hooks(prog: &mut Program) -> Result<(), Error> {
                     format!(
                         "`{}` returns a value, so it can't be skipped; implement it:\n\n  {}",
                         label(&module, &of.name),
-                        stub(&module, sig)
+                        stub(sig)
                     ),
                 ));
             }
@@ -191,6 +191,7 @@ pub(super) fn place_hooks(prog: &mut Program) -> Result<(), Error> {
                     ty: 0,
                 }),
                 origin: decl.origin.clone(),
+                constant: false,
                 hook_of: Some(HookOf {
                     module: NameAt {
                         line: decl.line,
@@ -281,6 +282,7 @@ fn callback_entry(imp: &Func, module: &str, name: &str) -> Func {
         stmts,
         tail,
         module: None,
+        constant: false,
         hook_of: Some(HookOf {
             module: NameAt {
                 line,
@@ -294,7 +296,7 @@ fn callback_entry(imp: &Func, module: &str, name: &str) -> Func {
     }
 }
 
-/// `hook M.h is f;` calls `f` with none of the hook's parameters or all of them, and hands
+/// `hook h is f;` calls `f` with none of the hook's parameters or all of them, and hands
 /// back its result when the hook has one.
 fn pass_params(
     funcs: &[Func],
@@ -417,6 +419,10 @@ impl Checker {
                 let at = |err: Error| err.in_file(&module.origin);
                 let why = "a hook's parameters and result are ABI values, so any module with hooks can be `delegated`";
                 for p in &sig.params {
+                    if p.flat {
+                        let (line, col) = (p.ty.line(), p.ty.col());
+                        return Err(at(error(line, col, crate::parse::FLAT_ONLY)));
+                    }
                     let id = self.build(&p.ty).map_err(at)?;
                     if p.storage || !abi_value(&self.types, id) {
                         return Err(at(error(
@@ -514,10 +520,10 @@ impl Checker {
                     of.module.line,
                     of.module.col,
                     format!(
-                        "`hook {}` doesn't match {theirs} declaration: {reason}\n\n  module:    {}\n  contract:  {}",
+                        "hook `{}` doesn't match {theirs} declaration: {reason}\n\n  module:    {}\n  contract:  {}",
                         label(&of.module.name, &of.name),
-                        header(&of.module.name, sig),
-                        header(&of.module.name, &Func { name: of.name.clone(), ..func.clone() })
+                        header(sig),
+                        header(&Func { name: of.name.clone(), ..func.clone() })
                     ),
                 )
                 .in_file(&func.origin));
@@ -601,16 +607,15 @@ impl Checker {
                         .find(|m| m.name == of.module.name)
                         .and_then(|m| m.hooks.iter().find(|s| s.name == of.name));
                     let mut msg = format!(
-                        "{name} is reached through {}; implement it:\n\n  {}",
+                        "{name} is reached through {}; implement it:\n\n  use {} ... with {{\n    {}\n  }}",
                         steps.join(" → "),
-                        sig.map_or_else(
-                            || format!("hook {name} is {{ ... }}"),
-                            |sig| stub(&of.module.name, sig)
-                        )
+                        shown(&of.module.name),
+                        sig.map_or_else(|| format!("hook {} is {{ ... }}", of.name), stub)
                     );
                     if sig.is_some_and(|sig| sig.ret.is_none()) {
                         msg.push_str(&format!(
-                            "\n\nor declare it unimplemented: hook {name} is skip;"
+                            "\n\nor declare it unimplemented: hook {} is skip;",
+                            of.name
                         ));
                     }
                     let (line, col, origin) = if root == h || by_guard.contains(&root) {

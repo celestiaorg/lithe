@@ -21,7 +21,7 @@ type SendParams is record {
 
 type Action is
   | Deposit external deposit of uint
-  | Send external send of SendParams
+  | Send external send of flat SendParams
   | Reset external reset
 
 error Insufficient of uint;
@@ -39,11 +39,11 @@ is
   | Deposit(amount) -> {
       storage.balances[Evm.sender()] += amount;
     }
-  | Send(p) -> {
+  | Send { to; amount } -> {
       const have : uint := storage.balances[Evm.sender()];
-      assert(have >= p.amount, Insufficient(have));
-      storage.balances[Evm.sender()] := have - p.amount;
-      storage.balances[p.to] += p.amount;
+      assert(have >= amount, Insufficient(have));
+      storage.balances[Evm.sender()] := have - amount;
+      storage.balances[to] += amount;
     }
   | Reset -> {
       storage.balances[Evm.sender()] := 0;
@@ -55,7 +55,8 @@ external view function balanceOf(const who : address) : uint is
 ```
 
 - `case` must cover every case. Delete the `Reset` arm and the compiler reports ``missing case arm `Reset` ``.
-- A record payload becomes named ABI parameters, so `Send` is `send(address to, uint256 amount)`.
+- `flat` spreads a record payload into named ABI parameters, so `Send` is `send(address to, uint256 amount)`. Without it, the record is one tuple parameter: `send((address,uint256))`.
+- `Send { to; amount }` binds the payload's fields by name; `Send(p)` would bind the record whole, read as `p.to`.
 - See [Dispatch](/by-example/dispatch) for nesting and guards.
 
 ## Stored state
@@ -91,6 +92,8 @@ external function settle(const price : uint) is {
   storage.phase := Settled(price);
 }
 
+external view function phase() : Phase is storage.phase
+
 (* `| Open | Paused ->` is one arm for both, and still exhaustive: a new case
    is a compile error here until it is handled. *)
 external view function price() : uint raises NotSettled is
@@ -102,6 +105,7 @@ external view function price() : uint raises NotSettled is
 
 - `Settled` carries a price, so `phase` is a tag slot and a payload slot. Without it, `phase` would take one byte.
 - A new contract reads `phase` as `Open`, the first case.
+- `Phase` crosses the ABI as `(uint8 tag, bytes payload)`: once settled, `phase()` returns `(2, abi.encode(price))`. See [Variants in the ABI](/language/types#variants-in-the-abi).
 - The [Order executor](/by-example/order-executor) keeps each order's status as a variant.
 
 Payloads may hold strings, bytes, and lists. One arm can bind the payload of several cases when they carry the same type:

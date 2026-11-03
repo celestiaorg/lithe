@@ -502,6 +502,7 @@ fn spec_func(
         type_params: Vec::new(),
         params,
         ret: tail.is_some().then_some(bool_ty),
+        ret_flat: false,
         ret_ty: 0,
         payable: false,
         nonreentrant: false,
@@ -519,6 +520,7 @@ fn spec_func(
         forward: None,
         guarded: None,
         guard_of: None,
+        constant: false,
         hook_of: None,
     }
 }
@@ -788,7 +790,7 @@ fn leaf_params(
     let Some(scrut_ty) = dispatcher.params.first().map(|p| &p.ty) else {
         return Err(err("internal: a dispatcher with no parameter"));
     };
-    let Some(payload) = payload_of(prog, scrut_ty, ctor) else {
+    let Some((payload, flat)) = payload_of(prog, scrut_ty, ctor) else {
         return Err(err("internal: a case with no payload type"));
     };
     Ok((
@@ -798,6 +800,7 @@ fn leaf_params(
             mutable: false,
             storage: false,
             name: bind.clone(),
+            flat,
             ty: payload,
             ty_id: 0,
             sym: None,
@@ -806,8 +809,9 @@ fn leaf_params(
     ))
 }
 
-/// The payload type a case of a declared variant carries, as written.
-fn payload_of(prog: &Program, ty: &TypeRef, ctor: &str) -> Option<TypeRef> {
+/// The payload type a case of a declared variant carries, as written, and whether it is
+/// `flat`.
+fn payload_of(prog: &Program, ty: &TypeRef, ctor: &str) -> Option<(TypeRef, bool)> {
     let variants = match ty {
         TypeRef::Variant { variants, .. } => variants,
         TypeRef::Name { name, .. } => {
@@ -823,7 +827,7 @@ fn payload_of(prog: &Program, ty: &TypeRef, ctor: &str) -> Option<TypeRef> {
     variants
         .iter()
         .find(|v| v.name == ctor)
-        .and_then(|v| v.payload.clone())
+        .and_then(|v| Some((v.payload.clone()?, v.flat)))
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]

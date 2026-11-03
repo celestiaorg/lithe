@@ -81,7 +81,7 @@ external view function records(const k : uint) : uint is {
 } with (case s.held of { Some(v) -> v | None -> 0 }) + (case s.small of { Some(_) -> 1000 | None -> 0 }) + s.n
 
 external function setPos(const x : uint; const y : uint) is {
-  storage.pos := Some({ x = x; y = y; });
+  storage.pos := Some { x = x; y = y; };
 }
 external view function posSum() : uint is
   case storage.pos of { Some(p) -> p.x + p.y | None -> 0 }

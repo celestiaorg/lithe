@@ -615,6 +615,12 @@ pub(crate) fn header_text(func: &Func, name: &str) -> String {
     out
 }
 
+/// A parameter's or result's type as written, `flat` before it if it is.
+pub(crate) fn flat_shape(flat: bool, ty: &TypeRef) -> String {
+    let flat = if flat { "flat " } else { "" };
+    format!("{flat}{}", shape_ty(ty))
+}
+
 /// A function's header as an interface writes it, in pieces: `view function f`, its
 /// parameters, ` : T`, and its errors.
 pub(crate) struct Header {
@@ -645,12 +651,12 @@ impl Header {
         let params = func
             .params
             .iter()
-            .map(|p| format!("{} : {}", p.name, shape_ty(&p.ty)))
+            .map(|p| format!("{} : {}", p.name, flat_shape(p.flat, &p.ty)))
             .collect();
         let ret = func
             .ret
             .as_ref()
-            .map(|ret| format!(" : {}", shape_ty(ret)))
+            .map(|ret| format!(" : {}", flat_shape(func.ret_flat, ret)))
             .unwrap_or_default();
         let raises = func
             .raises
@@ -858,11 +864,13 @@ fn erc165_func(line: u32, col: u32, origin: &str, ids: &[u32]) -> Func {
             mutable: false,
             storage: false,
             name: "interfaceId".to_string(),
+            flat: false,
             ty: name("bytes4"),
             ty_id: 0,
             sym: None,
         }],
         ret: Some(name("bool")),
+        ret_flat: false,
         ret_ty: 0,
         payable: false,
         nonreentrant: false,
@@ -880,6 +888,7 @@ fn erc165_func(line: u32, col: u32, origin: &str, ids: &[u32]) -> Func {
         forward: None,
         guarded: None,
         guard_of: None,
+        constant: false,
         hook_of: None,
     }
 }

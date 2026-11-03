@@ -329,6 +329,45 @@ fn counter_abi_flattens_dispatch_and_views() {
 }
 
 #[test]
+fn abi_internal_types_name_records_variants_and_interfaces() {
+    let src = "import \"std/evm\";\n\
+        interface IToken is { view function balanceOf(who : address) : uint; }\n\
+        module Shapes is { type Box is record { lo : uint; hi : uint; } }\n\
+        contract Forwarder is {\n\
+          use Shapes;\n\
+          type Call is record { target : address; box : Box; }\n\
+          type Phase is | Open | Closed\n\
+          event Did of record { calls : list(Call, 2); }\n\
+          error Bad of record { call : Call; }\n\
+          external function f(const calls : list(Call); const phase : Phase; const t : IToken) : list(Box) is {\n\
+            emit Did { calls = [calls[0], calls[0]]; };\n\
+          } with [calls[0].box]\n\
+        }\n";
+    let abi = abi(src).expect("abi");
+    let mut internal: Vec<&str> = abi
+        .lines()
+        .filter_map(|line| line.trim().strip_prefix("\"internalType\": "))
+        .collect();
+    internal.sort();
+    internal.dedup();
+    assert_eq!(
+        internal,
+        [
+            "\"address\",",
+            "\"contract IToken\",",
+            "\"enum Forwarder.Phase\",",
+            "\"struct Forwarder.Call\",",
+            "\"struct Forwarder.Call[2]\",",
+            "\"struct Forwarder.Call[]\",",
+            "\"struct Shapes.Box\",",
+            "\"struct Shapes.Box[]\",",
+            "\"uint256\",",
+        ],
+        "{abi}"
+    );
+}
+
+#[test]
 fn directory_compile_writes_bytecode_and_abi() {
     let dir = std::env::temp_dir().join(format!("lithe-compile-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
@@ -586,6 +625,38 @@ fn abi_decode_checks_what_it_reads() {
         "asSelector(bytes32)",
         &[Arg::W(selector.bitor(Word::from_u64(1)))]
     ));
+}
+
+/// A record of one word decodes as its one field, read and range-checked
+/// as that field is, whether bound or read in place.
+#[test]
+fn abi_decode_one_word_records() {
+    let runtime = deploy(
+        &compile(
+            "\
+import \"std/abi\";
+contract One is {
+  type Id is record { id : uint; }
+  type Small is record { n : uint8; }
+  storage is record {}
+  external pure function id(const data : bytes) : uint is Abi.decode(data, Id).id
+  external pure function small(const data : bytes) : uint is {
+    const s : Small := Abi.decode(data, Small);
+  } with uint(s.n)
+}
+",
+        )
+        .expect("compile"),
+    )
+    .expect("deploy");
+    let word = |n: u64| Word::from_u64(n).to_be_bytes().to_vec();
+    let call = |sig: &str, data: Vec<u8>| call_raw(&runtime, &encode_args(sig, &[Arg::B(data)]));
+    let out = call("id(bytes)", word(42));
+    assert!(!out.reverted);
+    assert_eq!(out.returndata, word(42));
+    assert_eq!(call("small(bytes)", word(200)).returndata, word(200));
+    assert!(call("small(bytes)", word(256)).reverted);
+    assert!(call("id(bytes)", word(1)[..31].to_vec()).reverted);
 }
 
 /// `Abi.decode` of a slice reads the slice where it lies, in calldata or memory, with
@@ -1618,7 +1689,7 @@ external pure function echo(const a : bytes; const n : uint) : bytes is a
 #[test]
 fn case_parameter_names_come_from_the_declaration() {
     let src = "\
-type Pair is tuple record { a : uint; b : uint; }
+type Pair is record { a : uint; b : uint; }
 type Action is
   | SetFee external setFee of (fee : uint)
   | SetCap external setCap of uint

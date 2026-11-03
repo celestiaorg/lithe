@@ -370,7 +370,6 @@ pub(crate) fn instrument(mut prog: Program, specs: &Specs) -> Result<Instrumente
                 line: 0,
                 col: 0,
                 fields,
-                tuple: false,
             },
             owner: owner.clone(),
             transient: false,

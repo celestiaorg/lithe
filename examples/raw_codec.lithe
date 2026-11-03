@@ -35,7 +35,7 @@ external view function balance(const token : address; const owner : address) : u
   Abi.decode(query Evm.staticCall(token, Abi.encodeCall(Token.balanceOf, owner)), uint)
 
 (* Several results decoded at once, from calldata built from a signature. *)
-external view function reservesOf(const pair : address) : Reserves is {
+external view function reservesOf(const pair : address) : flat Reserves is {
   const answer : bytes := query Evm.staticCall(pair, Abi.encodeWithSignature("getReserves()"));
   const (r0, r1, last) : (uint112, uint112, uint32) := Abi.decode(answer, (uint112, uint112, uint32));
 } with { reserve0 = r0; reserve1 = r1; last = last; }

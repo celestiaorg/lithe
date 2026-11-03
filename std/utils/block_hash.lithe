@@ -7,13 +7,13 @@ import "std/abi";
 
 module BlockHash is {
   (* The EIP-2935 system contract. *)
-  pure function history() : address is 0x0000F90827F1C53a10cb7A02335B175320002935
+  const history : address := 0x0000F90827F1C53a10cb7A02335B175320002935;
 
   (* The hash of block `n`: zero for this block and later ones, before the history
      contract's window, and on a chain without it. *)
   view function blockHash(const n : uint) : bytes32 is
     if Evm.blockNumber() <= Uint.wrappingAdd(n, 256) then Evm.blockHash(n)
-    else case query Evm.staticCall(history(), Abi.encode(n)) of {
+    else case query Evm.staticCall(history, Abi.encode(n)) of {
       | Ok(hash) -> bytes32(hash)
       | Error(_) -> 0x0000000000000000000000000000000000000000000000000000000000000000
     }

@@ -1066,6 +1066,7 @@ impl<'a> Gen<'a> {
             TyKind::Bytes => t.bits == 0,
             TyKind::List if t.bits == 0 => t.elem.is_some_and(word),
             TyKind::List => t.bits <= 8 && t.elem.is_some_and(unshifted),
+            TyKind::Record if is_sum(types, id) => false,
             TyKind::Record | TyKind::Tuple => {
                 t.words <= 8 && t.fields.iter().all(|f| unshifted(f.ty))
             }

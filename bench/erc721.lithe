@@ -11,7 +11,11 @@ import "./lib/erc721";
 contract BenchNFT is {
   use Initializable;
 
-  use ERC721 exposing IERC721Views, IERC721Metadata;
+  use ERC721 exposing IERC721Views, IERC721Metadata with {
+    (* `ERC721Pausable` checks the pause inside every ownership update. *)
+    hook beforeTransfer is Pausable.requireNotPaused;
+    hook afterTransfer is skip;
+  }
   use Ownable exposing IOwnable;
   use Pausable exposing IPausable;
 
@@ -27,10 +31,6 @@ contract BenchNFT is {
     Ownable.init(initialOwner);
     Initializable.finish();
   }
-
-  (* `ERC721Pausable` checks the pause inside every ownership update. *)
-  hook ERC721.beforeTransfer is Pausable.requireNotPaused;
-  hook ERC721.afterTransfer is skip;
 
   function move(const from : address; const to : address; const tokenId : uint)
     raises ERC721InvalidReceiver | ERC721IncorrectOwner | EnforcedPause | ERC721NonexistentToken

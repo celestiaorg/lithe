@@ -72,6 +72,9 @@ impl Checker {
                 }
                 *ty = match lit {
                     Lit::Uint(_) => TY_UINT,
+                    // A case name lowered to its index keeps its variant when checked again,
+                    // as a specialized call's arguments are.
+                    Lit::Int(..) if is_enum(&self.types, *ty) => *ty,
                     Lit::Int(w, digits) => {
                         if let Some(expect) = self.expect {
                             self.adopt_literal(*line, *col, *w, *digits, expect)?
@@ -505,6 +508,28 @@ impl Checker {
                 line,
                 col,
             } => {
+                // A constructor takes its record payload in braces, `Case { x = 1; }`, and
+                // only a constructor does.
+                let braced = *builtin == Some(Builtin::Braced);
+                if braced {
+                    *builtin = None;
+                }
+                let record = base.is_none() && matches!(args.as_slice(), [Expr::Record { .. }]);
+                if braced || record && builtin.is_none() {
+                    let ctor = name == "Some"
+                        || !self.fn_names.iter().any(|n| n == name)
+                            && self.ctor(*line, *col, name)?.is_some();
+                    if braced && !ctor {
+                        return Err(error(
+                            *line,
+                            *col,
+                            format!("`{name}` is not a variant case; braces after a name give a case its record payload"),
+                        ));
+                    }
+                    if !braced && ctor {
+                        return Err(error(*line, *col, record_in_parens(name, &args[0])));
+                    }
+                }
                 self.pick_overload(*line, *col, base, name, args)?;
                 if let Some(target) = self.generic_call(base, name) {
                     return self.specialize(*line, *col, target, args, callee, ty);
@@ -519,11 +544,11 @@ impl Checker {
                                     *line,
                                     *col,
                                     format!(
-                                        "`{}` is a hook of `{}`: only `{}`'s own code calls it, and the contract implements it with `hook {}`",
+                                        "`{}` is a hook of `{}`: only `{}`'s own code calls it, and the contract implements it in `use {} ... with {{ hook {name} ... }}`",
                                         crate::modules::shown(&qualified),
                                         crate::modules::shown(alias),
                                         crate::modules::shown(alias),
-                                        crate::modules::shown(&qualified)
+                                        crate::modules::shown(alias)
                                     ),
                                 ));
                             }
@@ -646,6 +671,9 @@ impl Checker {
                             found
                         }
                     };
+                    for (arg, &pty) in args.iter_mut().zip(&methods[mi].params) {
+                        self.take_form(arg, pty);
+                    }
                     let m = &methods[mi];
                     let query = m.query;
                     let ret = m.ret;
@@ -717,8 +745,11 @@ impl Checker {
                         };
                         return Err(error(*line, *col, msg));
                     }
-                    for (arg, param) in args.iter_mut().zip(&params) {
-                        let want = self.build(param)?;
+                    for (arg, (param, flat)) in args.iter_mut().zip(&params) {
+                        let mut want = self.build(param)?;
+                        if *flat {
+                            want = self.flat_ty(param.line(), param.col(), want)?;
+                        }
                         self.check_expr_as(arg, Some(want))?;
                         if !self.same(arg.ty(), want) {
                             return Err(error(
@@ -727,6 +758,7 @@ impl Checker {
                                 "argument has the wrong type",
                             ));
                         }
+                        self.take_form(arg, want);
                     }
                     self.forbid_effect(*line, *col, "create an operation")?;
                     *ty = TY_OPERATION;
@@ -844,8 +876,8 @@ impl Checker {
                 let spec_check = crate::spec::is_spec_fn(name);
                 if let Some(mine) = self.module_name.clone().filter(|_| !spec_check) {
                     // A module is closed over what it requires: the code it runs never
-                    // depends on the contract that uses it.
-                    if !name.contains('.') {
+                    // depends on the contract that uses it. A constant is only a value.
+                    if !name.contains('.') && !self.work.get(idx).is_some_and(|f| f.constant) {
                         return Err(error(
                             *line,
                             *col,
@@ -914,7 +946,7 @@ impl Checker {
                 self.check_expr(scrut)?;
                 let sty = scrut.ty();
                 // `case query ... of` recovers: `Ok` holds the answer, `Error` the revert data.
-                let outcome = matches!(scrut.as_ref(), Expr::Query { .. });
+                let outcome = Expr::is_outcome_case(scrut, arms);
                 // `if c then a else b` parses as a `case` on `c`, with arms `true` and `false`.
                 let is_if = arms[0].ctors[0] == "true";
                 let variants: Vec<(String, Option<usize>)> = if outcome {
@@ -985,7 +1017,7 @@ impl Checker {
                     let shared = arm.ctors.len() > 1;
                     let parent = self.scope;
                     self.scope = self.push_scope(parent);
-                    if !arm.tuple_names.is_empty() {
+                    if !arm.tuple_names.is_empty() || arm.rest {
                         let Some(pty) = payload else {
                             return Err(error(
                                 arm.line,
@@ -993,36 +1025,70 @@ impl Checker {
                                 "this constructor has no payload",
                             ));
                         };
-                        if self.types[*pty].kind != TyKind::Tuple {
+                        let brace = !arm.fields.is_empty() || arm.rest;
+                        let kind = self.types[*pty].kind;
+                        if brace && kind != TyKind::Record {
+                            let ctor = &arm.ctors[0];
+                            return Err(error(
+                                arm.line,
+                                arm.col,
+                                format!(
+                                    "`{ctor}` carries `{}`, not a record; bind it in parentheses: `{ctor}(x)`",
+                                    self.type_name(*pty)
+                                ),
+                            ));
+                        }
+                        if !brace && kind != TyKind::Tuple {
                             return Err(error(arm.line, arm.col, "this payload is not a tuple"));
                         }
-                        let elem_tys: Vec<usize> = self.types[*pty]
+                        let layout: Vec<(String, usize)> = self.types[*pty]
                             .fields
                             .iter()
-                            .map(|field| field.ty)
+                            .map(|field| (field.name.clone(), field.ty))
                             .collect();
-                        if elem_tys.len() != arm.tuple_names.len() {
+                        let at: Vec<usize> = if brace {
+                            self.brace_fields(arm, &layout)?
+                        } else if layout.len() != arm.tuple_names.len() {
                             return Err(error(
                                 arm.line,
                                 arm.col,
                                 format!(
                                     "tuple pattern has {} names and the payload has {} elements",
                                     arm.tuple_names.len(),
-                                    elem_tys.len()
+                                    layout.len()
                                 ),
                             ));
-                        }
-                        let names = arm.tuple_names.clone();
-                        for (name, elem) in names.iter().zip(elem_tys) {
-                            let sym = self.add_sym(Sym {
-                                ty: elem,
+                        } else {
+                            (0..layout.len()).collect()
+                        };
+                        // The payload is bound whole, out of sight, and each name is one of
+                        // its fields, so a pattern costs what `Case(p)` and `p.x` cost.
+                        if arm.tuple_names.iter().any(|n| n != "_") {
+                            let whole = self.add_sym(Sym {
+                                ty: *pty,
                                 mutable: false,
                                 storage: false,
                                 slot: 0,
                                 span: 0,
                             });
-                            arm.tuple_syms.push(sym);
-                            self.define(arm.line, arm.col, name, sym)?;
+                            arm.bind_sym = Some(whole);
+                            let names = arm.tuple_names.clone();
+                            for (name, i) in names.iter().zip(at) {
+                                if name == "_" {
+                                    continue;
+                                }
+                                let sym = self.add_sym(Sym {
+                                    ty: layout[i].1,
+                                    mutable: false,
+                                    storage: false,
+                                    slot: 0,
+                                    span: 0,
+                                });
+                                self.field_of.insert(sym, (whole, i));
+                                arm.tuple_syms.push(sym);
+                                arm.tuple_at.push(i);
+                                self.define(arm.line, arm.col, name, sym)?;
+                            }
                         }
                     } else {
                         if outcome && arm.bind.as_deref() == Some("_") {
@@ -1084,6 +1150,40 @@ impl Checker {
                 Ok(())
             }
         }
+    }
+
+    /// Where each field of a brace pattern sits in its record payload. Like a record
+    /// literal, the pattern names every field, unless it ends in `_`.
+    fn brace_fields(&self, arm: &Arm, layout: &[(String, usize)]) -> Result<Vec<usize>, Error> {
+        let ctor = &arm.ctors[0];
+        let mut at = Vec::new();
+        for field in &arm.fields {
+            let Some(i) = layout.iter().position(|(name, _)| name == field) else {
+                return Err(error(
+                    arm.line,
+                    arm.col,
+                    format!("`{ctor}`'s payload has no field `{field}`"),
+                ));
+            };
+            if at.contains(&i) {
+                return Err(error(
+                    arm.line,
+                    arm.col,
+                    format!("duplicate field `{field}`"),
+                ));
+            }
+            at.push(i);
+        }
+        if !arm.rest {
+            if let Some((name, _)) = layout.iter().find(|(name, _)| !arm.fields.contains(name)) {
+                return Err(error(
+                    arm.line,
+                    arm.col,
+                    format!("the pattern is missing `{name}`: bind it, ignore it with `{name} = _`, or end the pattern with `_` to ignore every field it leaves out"),
+                ));
+            }
+        }
+        Ok(at)
     }
 
     fn check_arm(
@@ -2073,4 +2173,15 @@ pub(super) fn taken_branch(e: &Expr) -> Option<Arm> {
     arms.iter()
         .find(|arm| arm.ctors[0] == if *b { "true" } else { "false" })
         .cloned()
+}
+
+/// A record literal given in parentheses to what takes it in braces: `Some({ x = 1; })`.
+pub(super) fn record_in_parens(name: &str, literal: &Expr) -> String {
+    let field = match literal {
+        Expr::Record { fields, .. } => fields.first().map_or("x", |(f, _)| f.as_str()),
+        _ => "x",
+    };
+    format!(
+        "a record literal given to `{name}` goes in braces: `{name} {{ {field} = ...; }}`; pass a record value in parens, `{name}(p)`"
+    )
 }

@@ -45,8 +45,9 @@ module EIP712 is {
     long : Names;
   }
 
-  pure function domainTypehash() : bytes32 is
-    Crypto.keccak256("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)")
+  const domainTypehash : bytes32 := Crypto.keccak256(
+    "EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)"
+  );
 
   function init(const name : string; const version : string) is {
     eip712.hashedName := Crypto.keccak256(name);
@@ -64,7 +65,7 @@ module EIP712 is {
 
   view function domainSeparator() : bytes32 is
     Crypto.keccak256(Abi.encode(
-      domainTypehash(),
+      domainTypehash,
       eip712.hashedName,
       eip712.hashedVersion,
       Evm.chainId(),
@@ -82,7 +83,7 @@ module EIP712 is {
   external view function DOMAIN_SEPARATOR() : bytes32 is
     domainSeparator()
 
-  external view function eip712Domain() : EIP712Domain is {
+  external view function eip712Domain() : flat EIP712Domain is {
     const extensions : list(uint) := [];
     const both : Names := if eip712.name = bytes32(255) then eip712Strings.long else {
       name = fromShortString(eip712.name);

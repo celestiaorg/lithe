@@ -88,7 +88,7 @@ const REJECT_RULES: &[(&str, &str)] = &[
         "reject/loop_map.lithe",
         "a map cannot be iterated; keep an enumerable set",
     ),
-    ("reject/loop_bound.lithe", "`bound` must be a number"),
+    ("reject/loop_bound.lithe", "a loop bound is a constant"),
     (
         "reject/type_storage.lithe",
         "declare contract storage as `storage is record`",

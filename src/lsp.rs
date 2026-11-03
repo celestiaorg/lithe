@@ -1103,6 +1103,30 @@ mod tests {
     }
 
     #[test]
+    fn constants_name_their_declarations() {
+        let dir = std::env::temp_dir().join(format!("lithe-lsp-consts-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("main.lithe");
+        let text = "const slots : uint := 3;\n\nmodule Grid is {\n  const cells : uint := slots + 1;\n  pure function zero() : list(uint, cells) is [0, 0, 0, 0]\n}\n\nuse Grid;\n\nstorage is record { ring : list(uint, slots * 2); }\n\nexternal pure function board() : list(uint, Grid.cells) is Grid.zero()\n\nexternal pure function twice() : uint is Grid.cells * slots\n";
+        std::fs::write(&path, text).unwrap();
+        let index = lithe::analyze(&path, text).index.expect("index");
+        let named = |line: u32, col: u32| {
+            let r = index
+                .at(0, text, line, col)
+                .unwrap_or_else(|| panic!("no ref at {line}:{col}"));
+            let def = &index.defs[r.def];
+            (def.name.clone(), def.at.map(|at| at.line))
+        };
+        assert_eq!(named(10, 39), ("slots".to_string(), Some(1)));
+        assert_eq!(named(12, 50), ("cells".to_string(), Some(4)));
+        assert_eq!(named(5, 37), ("cells".to_string(), Some(4)));
+        assert_eq!(named(4, 25), ("slots".to_string(), Some(1)));
+        assert_eq!(named(14, 47), ("cells".to_string(), Some(4)));
+        assert_eq!(named(14, 55), ("slots".to_string(), Some(1)));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
     fn module_only_files_have_no_error() {
         let dir = std::env::temp_dir().join(format!("lithe-lsp-module-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
@@ -1331,7 +1355,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("lithe-lsp-hooks-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("hooks.lithe");
-        let text = "module Tally is {\n  storage tally at \"lsp.tally\" is record { n : uint; }\n  (* Tells the contract. *)\n  view hook limit() : uint;\n  external function add() is {\n    if tally.n < limit() then {\n      tally.n := tally.n + 1;\n    }\n  }\n}\ncontract C is {\n  use Tally exposing { function add(); }\n  hook Tally.limit : uint is { skip } with 3\n}\n";
+        let text = "module Tally is {\n  storage tally at \"lsp.tally\" is record { n : uint; }\n  (* Tells the contract. *)\n  view hook limit() : uint;\n  external function add() is {\n    if tally.n < limit() then {\n      tally.n := tally.n + 1;\n    }\n  }\n}\ncontract C is {\n  use Tally exposing { function add(); } with {\n    hook limit : uint is { skip } with 3\n  }\n}\n";
         std::fs::write(&path, text).unwrap();
         let analysis = lithe::analyze(&path, text);
         assert!(
@@ -1345,7 +1369,9 @@ mod tests {
         assert!(
             hover.contains("view hook limit() : uint")
                 && hover.contains("Tells the contract.")
-                && hover.contains("the contract implements it: `hook Tally.limit ...`"),
+                && hover.contains(
+                    "the contract implements it: `use Tally ... with { hook limit ... }`"
+                ),
             "{hover}"
         );
         let labels: Vec<String> = index
@@ -1357,6 +1383,39 @@ mod tests {
             labels.iter().any(|l| l == "limit") && labels.iter().any(|l| l == "hook"),
             "{labels:?}"
         );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn answers_for_brace_pattern_fields() {
+        let dir = std::env::temp_dir().join(format!("lithe-lsp-fields-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("fields.lithe");
+        let text = "type Fill is record { amountOut : uint; at : uint64; }\ntype Status is | Pending | Filled of Fill\n\nstorage is record { s : Status; }\nexternal view function f() : uint is\n  case storage.s of {\n  | Filled { amountOut; at = when } -> amountOut + uint(when)\n  | Pending -> 0\n  }\n";
+        std::fs::write(&path, text).unwrap();
+        let analysis = lithe::analyze(&path, text);
+        assert!(
+            analysis.error.is_none(),
+            "{:?}",
+            analysis.error.map(|e| e.to_string())
+        );
+        let index = analysis.index.expect("index");
+        let use_of = |col: u32| index.at(0, text, 7, col).expect("a use");
+        let def_at = |def: usize| {
+            let at = index.defs[def].at.as_ref().expect("declared");
+            (at.line, at.col)
+        };
+        // `amountOut` and `when` are used after `->`, and declared in the pattern.
+        let amount = use_of(40);
+        assert!(index.hover(amount).contains("const amountOut : uint"));
+        assert_eq!(def_at(amount.def), (7, 14));
+        let when = use_of(57);
+        assert!(index.hover(when).contains("const when : uint64"));
+        assert_eq!(def_at(when.def), (7, 30));
+        // The field `when` binds goes to the record's `at`.
+        let field = use_of(25);
+        assert_eq!(index.defs[field.def].name, "at");
+        assert_eq!(def_at(field.def), (1, 41));
         std::fs::remove_dir_all(&dir).ok();
     }
 
