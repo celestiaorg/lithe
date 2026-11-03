@@ -31,7 +31,7 @@ contract Factory is {
           storage.vaults[Evm.sender()] := vault;
         }
       | Error(_) -> {
-          storage.failed := storage.failed + 1;
+          storage.failed += 1;
         }
     };
   }

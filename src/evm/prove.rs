@@ -109,7 +109,7 @@ fn the_examples_prove() {
 #[test]
 fn a_broken_phase_fails_with_a_counterexample() {
     let (src, specs) = vault();
-    let broken = src.replace("  storage.total := storage.total + Evm.value();\n", "");
+    let broken = src.replace("  storage.total += Evm.value();\n", "");
     let Some(proof) = prove(&broken, &specs) else {
         return;
     };
@@ -390,7 +390,7 @@ fn maps_given_to_functions_are_the_maps_they_name() {
         "{}",
         proof.text
     );
-    let broken = src.replace("  storage.total := storage.total + amount;\n", "");
+    let broken = src.replace("  storage.total += amount;\n", "");
     let Some(proof) = prove(&broken, specs) else {
         return;
     };
@@ -840,6 +840,44 @@ spec for reset is { ensures new.storage.cfg.cap = 0 and not new.storage.cfg.open
         return;
     };
     assert_eq!((proof.failed, proof.unknown), (0, 0), "{}", proof.text);
+}
+
+/// `p op= v` proves as `p := p op v`, in the source and in the bytecode, with a key that
+/// calls a function called once: `bump` moves `n` by one, not two.
+#[test]
+fn compound_assignment_proves_as_assignment() {
+    let src = r#"import "std/evm";
+storage is record { balances : map(address, uint); total : uint; n : uint; slots : map(uint, uint); }
+function next() : uint is {
+  storage.n += 1;
+} with storage.n
+external function deposit(const amount : uint) is {
+  storage.balances[Evm.sender()] += amount;
+  storage.total += amount;
+}
+external function withdraw(const amount : uint) is {
+  storage.balances[Evm.sender()] -= amount;
+  storage.total -= amount;
+}
+external function bump() is { storage.slots[next()] *= 2; }
+"#;
+    let spec = "spec is { invariant ledger is storage.total = sum(storage.balances); }
+spec for bump is partial { ensures new.storage.n = old.storage.n + 1; }";
+    for source in [true, false] {
+        let run = |spec: &str| {
+            if source {
+                prove(src, spec)
+            } else {
+                prove_code(src, spec, None)
+            }
+        };
+        let Some(proof) = run(spec) else {
+            return;
+        };
+        assert_eq!((proof.failed, proof.unknown), (0, 0), "{}", proof.text);
+        let proof = run(&spec.replace("+ 1;", "+ 2;")).unwrap();
+        assert_eq!(proof.failed, 1, "{}", proof.text);
+    }
 }
 
 /// The bytecode prover's symbolic EVM, run on known inputs, agrees with the interpreter on

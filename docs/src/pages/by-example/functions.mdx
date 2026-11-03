@@ -31,7 +31,7 @@ pure function clamp(var x : uint; const lo : uint; const hi : uint) : uint is {
 
 (* A function with no result returns `unit`, so it has no `: type`. *)
 function bump(const by : uint) is {
-  storage.total := storage.total + by;
+  storage.total += by;
 }
 
 external function run(const a : uint; const b : uint) is {

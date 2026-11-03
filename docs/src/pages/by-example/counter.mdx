@@ -16,12 +16,12 @@ external view function get() : uint is
   storage.count
 
 external function inc() is {
-  storage.count := storage.count + 1;
+  storage.count += 1;
 }
 
 (* `uint` never goes negative. Decrementing zero reverts with Panic(0x11). *)
 external function dec() is {
-  storage.count := storage.count - 1;
+  storage.count -= 1;
 }
 ```
 

@@ -131,14 +131,14 @@ contract UniswapV2Pair is {
     (uint(y) << 112) / uint(x)
 
   function mintTo(const to : address; const value : uint) is {
-    storage.totalSupply := storage.totalSupply + value;
-    storage.balanceOf[to] := storage.balanceOf[to] + value;
+    storage.totalSupply += value;
+    storage.balanceOf[to] += value;
     emit Transfer { from = Address.zero; to = to; value = value; };
   }
 
   function burnFrom(const from : address; const value : uint) is {
-    storage.balanceOf[from] := storage.balanceOf[from] - value;
-    storage.totalSupply := storage.totalSupply - value;
+    storage.balanceOf[from] -= value;
+    storage.totalSupply -= value;
     emit Transfer { from = from; to = Address.zero; value = value; };
   }
 
@@ -148,8 +148,8 @@ contract UniswapV2Pair is {
   }
 
   function move(const from : address; const to : address; const value : uint) is {
-    storage.balanceOf[from] := storage.balanceOf[from] - value;
-    storage.balanceOf[to] := storage.balanceOf[to] + value;
+    storage.balanceOf[from] -= value;
+    storage.balanceOf[to] += value;
     emit Transfer { from = from; to = to; value = value; };
   }
 

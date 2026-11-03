@@ -15,7 +15,7 @@ function stamp(const n : uint) : uint is {
 } with storage.count
 
 function bump(const n : uint) is {
-  storage.count := storage.count + doubled(n);
+  storage.count += doubled(n);
 }
 
 external view function count() : uint is
@@ -31,5 +31,5 @@ external function add(const n : uint) is {
 }
 
 external payable function deposit() is {
-  storage.paid := storage.paid + Evm.value();
+  storage.paid += Evm.value();
 }

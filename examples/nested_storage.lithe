@@ -78,7 +78,7 @@ external view function newest(const who : address) : uint is
   uint(latest(storage.history[who]))
 
 external function bump(const who : address; const i : uint) is {
-  storage.history[who][i].value := storage.history[who][i].value + 1;
+  storage.history[who][i].value += 1;
 }
 
 (* The whole history, read and written as a list. *)
@@ -150,7 +150,7 @@ external function notePriced(const o : Oracle; const who : address; const key : 
 
 external function setFixed(const i : uint; const key : uint48; const value : uint208) is {
   storage.fixed[i] := { key = key; value = value; };
-  storage.fixed[i].value := storage.fixed[i].value + 1;
+  storage.fixed[i].value += 1;
 }
 
 (* In the image, a fixed list's elements are leaves: written, read back, and flushed. *)

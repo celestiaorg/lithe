@@ -20,12 +20,12 @@ pure function fee(const amount : uint; const bps : uint) : uint is
 
 (* An overload can take storage: it writes the map it is given. *)
 function credit(storage ledger : map(address, uint); const to : address; const amount : uint) is {
-  ledger[to] := ledger[to] + amount;
+  ledger[to] += amount;
 }
 
 function credit(const to : address; const amount : uint) is {
   credit(storage.balances, to, amount);
-  storage.total := storage.total + amount;
+  storage.total += amount;
 }
 
 (* `Shares` is its own type, so a `Shares` argument picks this overload. *)

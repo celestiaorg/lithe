@@ -57,7 +57,7 @@ is {
       fail EmptyLeg { order = o.id; legs = [o.legs]; };
     }
   }
-  storage.placed := storage.placed + orders.length;
+  storage.placed += orders.length;
   emit Placed { batch = orders; orders = orders; };
   defer book.place(orders);
 }

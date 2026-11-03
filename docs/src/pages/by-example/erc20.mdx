@@ -80,7 +80,7 @@ is {
     ERC20InsufficientBalance { sender = from; balance = balance; needed = value; }
   );
   storage.balances[from] := balance - value;
-  storage.balances[to] := storage.balances[to] + value;
+  storage.balances[to] += value;
   emit Transfer { from = from; to = to; value = value; };
 }
 
@@ -115,8 +115,8 @@ external function mint(const to : address; const value : uint)
 is {
   assert(Evm.sender() = storage.owner, OwnableUnauthorizedAccount(Evm.sender()));
   assert(to <> Address.zero, ERC20InvalidReceiver(to));
-  storage.totalSupply := storage.totalSupply + value;
-  storage.balances[to] := storage.balances[to] + value;
+  storage.totalSupply += value;
+  storage.balances[to] += value;
   emit Transfer { from = Address.zero; to = to; value = value; };
 }
 ```

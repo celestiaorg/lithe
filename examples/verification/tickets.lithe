@@ -20,8 +20,8 @@ external function issue(const n : uint) is {
     invariant storage.issued = sum(storage.held)
   do {
     storage.owners[first + i] := Evm.sender();
-    storage.held[Evm.sender()] := storage.held[Evm.sender()] + 1;
-    storage.issued := storage.issued + 1;
+    storage.held[Evm.sender()] += 1;
+    storage.issued += 1;
   }
 }
 

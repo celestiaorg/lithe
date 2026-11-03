@@ -115,8 +115,8 @@ is {
     ERC721InsufficientApproval { operator = caller; tokenId = tokenId; }
   );
   storage.approvals[tokenId] := Address.zero;
-  storage.balances[from] := storage.balances[from] - 1;
-  storage.balances[to] := storage.balances[to] + 1;
+  storage.balances[from] -= 1;
+  storage.balances[to] += 1;
   storage.owners[tokenId] := to;
   emit Transfer { from = from; to = to; tokenId = tokenId; };
 }
@@ -175,7 +175,7 @@ is {
   assert(to <> Address.zero, ERC721InvalidReceiver(to));
   assert(storage.owners[tokenId] = Address.zero, AlreadyMinted(tokenId));
   storage.owners[tokenId] := to;
-  storage.balances[to] := storage.balances[to] + 1;
+  storage.balances[to] += 1;
   emit Transfer { from = Address.zero; to = to; tokenId = tokenId; };
 }
 
@@ -185,7 +185,7 @@ is {
   const owner : address := requireOwner(tokenId);
   assert(Evm.sender() = owner, ERC721InsufficientApproval { operator = Evm.sender(); tokenId = tokenId; });
   storage.approvals[tokenId] := Address.zero;
-  storage.balances[owner] := storage.balances[owner] - 1;
+  storage.balances[owner] -= 1;
   storage.owners[tokenId] := Address.zero;
   emit Transfer { from = owner; to = Address.zero; tokenId = tokenId; };
 }

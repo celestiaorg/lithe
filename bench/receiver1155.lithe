@@ -40,7 +40,7 @@ is {
   storage.lastIds := ids;
   storage.lastValues := values;
   storage.lastData := data;
-  storage.calls := storage.calls + 1;
+  storage.calls += 1;
 }
 
 external function onERC1155Received(

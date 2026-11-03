@@ -56,7 +56,7 @@ module OwnableRoles is {
     for _ : uint in 0 .. 256 until t = 0 do {
       const low : uint := t & Uint.wrappingSub(0, t);
       List.push(ordinals, uint8(255 ^ Uint.clz(low)));
-      t := t ^ low;
+      t ^= low;
     }
   } with ordinals
 

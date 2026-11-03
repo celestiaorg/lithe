@@ -95,7 +95,7 @@ module ERC6909 is {
       erc6909.balances[from][id] := balance - amount;
     }
     if to <> Address.zero then {
-      erc6909.balances[to][id] := erc6909.balances[to][id] + amount;
+      erc6909.balances[to][id] += amount;
     }
     emit Transfer {
       caller = Evm.sender();

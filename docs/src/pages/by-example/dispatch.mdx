@@ -63,17 +63,17 @@ is {
   assert(Evm.sender() = storage.minter, NotMinter);
 }
 with case action of {
-| Mint(p) -> { storage.balances[p.to] := storage.balances[p.to] + p.amount; }
+| Mint(p) -> { storage.balances[p.to] += p.amount; }
 }
 
 function holderMain(const action : HolderAction) is
   case action of {
   | Transfer(p) -> {
-      storage.balances[Evm.sender()] := storage.balances[Evm.sender()] - p.amount;
-      storage.balances[p.to] := storage.balances[p.to] + p.amount;
+      storage.balances[Evm.sender()] -= p.amount;
+      storage.balances[p.to] += p.amount;
     }
   | Burn(amount) -> {
-      storage.balances[Evm.sender()] := storage.balances[Evm.sender()] - amount;
+      storage.balances[Evm.sender()] -= amount;
     }
   }
 

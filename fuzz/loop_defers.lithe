@@ -23,7 +23,7 @@ event Seen of record {
 }
 
 external payable function pay(const tos : list(address)) is {
-  storage.n := storage.n + 1;
+  storage.n += 1;
   for to : address in tos do {
     defer Evm.transfer(to, wei(1));
   }
@@ -43,13 +43,13 @@ is {
 external payable function echoAll(const to : Echo; const xs : list(uint))
   raises Odd
 is {
-  storage.n := storage.n + 1;
+  storage.n += 1;
   emit Seen { value = xs.length; };
   for (i, x) : (uint, uint) in xs do {
     const odd : uint := x & 1;
     defer to.echo(x) with value = odd then (r : uint) {
       assert(r <> 7, Odd(i));
-      storage.total := storage.total ^ r;
+      storage.total ^= r;
       storage.last := i;
       emit Seen { value = r; };
     };
@@ -65,13 +65,13 @@ is {
       storage.last := r;
     };
   }
-  storage.n := storage.n + 1;
+  storage.n += 1;
 }
 
 external function echoChecked(const to : Echo; const xs : list(uint)) is {
   for x : uint in xs do {
     defer to.echo(x + 1) then (r : uint) {
-      storage.total := storage.total + r % 1000;
+      storage.total += r % 1000;
     };
   }
 }

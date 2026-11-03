@@ -34,11 +34,11 @@ contract Votes is {
   (* Counts a ballot for each signature that recovers, and skips the rest. *)
   external function tally(const hash : bytes32; const first : bytes; const second : bytes) is {
     case ECDSA.tryRecoverSignature(hash, first) of {
-    | Some(voter) -> { storage.ballots[voter] := storage.ballots[voter] + 1; }
+    | Some(voter) -> { storage.ballots[voter] += 1; }
     | None -> { skip }
     };
     case ECDSA.tryRecoverSignature(hash, second) of {
-    | Some(voter) -> { storage.ballots[voter] := storage.ballots[voter] + 1; }
+    | Some(voter) -> { storage.ballots[voter] += 1; }
     | None -> { skip }
     };
   }
@@ -275,7 +275,7 @@ contract PasskeyCounter is {
   external function bump(const auth : WebauthnAuth) : uint raises NotSigned is {
     const challenge : bytes := Abi.encode(Evm.self(), storage.count);
     assert(WebAuthn.verify(challenge, true, auth, storage.x, storage.y), NotSigned);
-    storage.count := storage.count + 1;
+    storage.count += 1;
   } with storage.count
 
   (* The same, with the auth in Solady's compact encoding. *)
@@ -288,7 +288,7 @@ contract PasskeyCounter is {
       },
       NotSigned
     );
-    storage.count := storage.count + 1;
+    storage.count += 1;
   } with storage.count
 }
 ```

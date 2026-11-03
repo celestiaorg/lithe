@@ -41,7 +41,7 @@ contract Token is {
   is {
     Ownable.checkOwner();
     ERC20.mint(to, value);
-    storage.minted := storage.minted + value;
+    storage.minted += value;
   }
 }
 ```

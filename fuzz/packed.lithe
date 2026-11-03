@@ -42,7 +42,7 @@ external function place(const x : uint16; const y : uint16) is {
   storage.spot.x := x;
   storage.spot.y := y;
   storage.spot.live := x > y;
-  storage.small := storage.small + 1;
+  storage.small += 1;
 }
 
 external function setPair(const a : uint32; const who : address) is {
@@ -54,7 +54,7 @@ external function setPair(const a : uint32; const who : address) is {
 external function rename(const n : string; const t : uint64) is {
   storage.name := n;
   storage.tail := t;
-  storage.total := storage.total + 1;
+  storage.total += 1;
 }
 
 external view function level(const i : uint) : uint8 is

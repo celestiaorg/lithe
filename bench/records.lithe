@@ -62,7 +62,7 @@ external function place(const id : uint; const amount : uint; const small : uint
     inner = { flag = true; delta = delta; };
     last = uint64(7);
   };
-  storage.count := storage.count + 1;
+  storage.count += 1;
   emit Placed { id = id; amount = storage.orders[id].amount; status = storage.orders[id].status; };
 }
 
@@ -70,10 +70,10 @@ external function bump(const id : uint; const by : uint)
   raises Missing
 is {
   assert(storage.orders[id].status > uint8(0), Missing(id));
-  storage.orders[id].status := storage.orders[id].status + uint8(1);
-  storage.orders[id].amount := storage.orders[id].amount + by;
-  storage.orders[id].inner.delta := storage.orders[id].inner.delta - int16(1);
-  storage.orders[id].last := storage.orders[id].last + uint64(1);
+  storage.orders[id].status += uint8(1);
+  storage.orders[id].amount += by;
+  storage.orders[id].inner.delta -= int16(1);
+  storage.orders[id].last += uint64(1);
   storage.tail := storage.orders[id].status;
 }
 

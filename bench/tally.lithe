@@ -16,8 +16,8 @@ module Tally(K : MapKey) is {
     tally.total
 
   function add(storage tally : Self; const key : K; const n : uint) is {
-    tally.counts[key] := tally.counts[key] + n;
-    tally.total := tally.total + n;
+    tally.counts[key] += n;
+    tally.total += n;
   }
 }
 

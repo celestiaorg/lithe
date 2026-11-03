@@ -15,8 +15,8 @@ module Counter is {
   }
 
   external function bump(const by : uint) is {
-    counter.count := counter.count + by;
-    counter.bumps := counter.bumps + 1;
+    counter.count += by;
+    counter.bumps += 1;
   }
 
   external view function count() : uint is
@@ -39,5 +39,5 @@ use Counter delegated exposing {
 
 external function add(const by : uint) raises NotOwner is {
   assert(Evm.sender() = storage.owner, NotOwner);
-  storage.total := storage.total + by;
+  storage.total += by;
 }

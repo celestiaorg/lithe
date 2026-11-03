@@ -24,7 +24,7 @@ module ERC6909TokenSupply is {
      is bounded by a balance, which the supply covers. *)
   function afterTransfer(const from : address; const to : address; const id : uint; const amount : uint) is {
     if from = Address.zero then {
-      erc6909TokenSupply.totalSupplies[id] := erc6909TokenSupply.totalSupplies[id] + amount;
+      erc6909TokenSupply.totalSupplies[id] += amount;
     }
     if to = Address.zero then {
       erc6909TokenSupply.totalSupplies[id] := Uint.wrappingSub(erc6909TokenSupply.totalSupplies[id], amount);

@@ -318,14 +318,14 @@ storage is record {
 external nonreentrant function deposit(const value : uint)
   raises SafeERC20FailedOperation | forwarded
 is {
-  storage.deposits[Evm.sender()] := storage.deposits[Evm.sender()] + value;
+  storage.deposits[Evm.sender()] += value;
   SafeERC20.safeTransferFrom(storage.token, Evm.sender(), Evm.self(), value);
 }
 
 external nonreentrant function withdraw(const value : uint)
   raises SafeERC20FailedOperation | forwarded
 is {
-  storage.deposits[Evm.sender()] := storage.deposits[Evm.sender()] - value;
+  storage.deposits[Evm.sender()] -= value;
   SafeERC20.safeTransfer(storage.token, Evm.sender(), value);
 }
 ```

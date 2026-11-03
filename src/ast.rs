@@ -445,6 +445,54 @@ pub(crate) fn op_text(op: BinOp) -> &'static str {
     }
 }
 
+/// Calls `f` on each expression directly inside `e`.
+pub(crate) fn each_child(e: &mut Expr, f: &mut dyn FnMut(&mut Expr)) {
+    match e {
+        Expr::Lit { .. } | Expr::Ident { .. } => {}
+        Expr::Field { base, .. }
+        | Expr::Unary { expr: base, .. }
+        | Expr::Convert { expr: base, .. } => f(base),
+        Expr::Index { base, index, .. } => {
+            f(base);
+            f(index);
+        }
+        Expr::Query { expr, gas, .. } => {
+            f(expr);
+            if let Some(gas) = gas {
+                f(gas);
+            }
+        }
+        Expr::Call { args, base, .. } => {
+            for arg in args {
+                f(arg);
+            }
+            if let Some(base) = base {
+                f(base);
+            }
+        }
+        Expr::Case { scrut, arms, .. } => {
+            f(scrut);
+            for arm in arms {
+                f(&mut arm.expr);
+            }
+        }
+        Expr::Binary { left, right, .. } => {
+            f(left);
+            f(right);
+        }
+        Expr::Tuple { elems, .. } | Expr::List { elems, .. } => {
+            for elem in elems {
+                f(elem);
+            }
+        }
+        Expr::Record { fields, .. } => {
+            for (_, value) in fields {
+                f(value);
+            }
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct FieldRef {
     pub line: u32,
@@ -609,6 +657,9 @@ pub(crate) enum Stmt {
         /// `m[k].a[j].b := v` has `(1, a)` and `(2, b)`.
         fields: Vec<(usize, String)>,
         expr: Expr,
+        /// `place op= expr`: the checker rewrites it to `place := place op expr`,
+        /// evaluating the place's keys once.
+        op: Option<BinOp>,
         root: Option<usize>,
         leaf: u32,
         /// The place as an expression, when it lies past a list or a map's list or
@@ -1071,6 +1122,15 @@ pub(crate) enum Expr {
         expr: Box<Expr>,
         ty: usize,
     },
+    /// `list(uint)(xs)`: a conversion to a type that has no name of its own. The checker
+    /// makes it a `Cast`.
+    Convert {
+        line: u32,
+        col: u32,
+        target: Box<TypeRef>,
+        expr: Box<Expr>,
+        ty: usize,
+    },
     Binary {
         line: u32,
         col: u32,
@@ -1110,6 +1170,7 @@ impl Expr {
             | Self::Query { line, .. }
             | Self::Case { line, .. }
             | Self::Unary { line, .. }
+            | Self::Convert { line, .. }
             | Self::Binary { line, .. }
             | Self::Tuple { line, .. }
             | Self::List { line, .. }
@@ -1127,6 +1188,7 @@ impl Expr {
             | Self::Query { col, .. }
             | Self::Case { col, .. }
             | Self::Unary { col, .. }
+            | Self::Convert { col, .. }
             | Self::Binary { col, .. }
             | Self::Tuple { col, .. }
             | Self::List { col, .. }
@@ -1144,6 +1206,7 @@ impl Expr {
             | Self::Query { ty, .. }
             | Self::Case { ty, .. }
             | Self::Unary { ty, .. }
+            | Self::Convert { ty, .. }
             | Self::Binary { ty, .. }
             | Self::Tuple { ty, .. }
             | Self::List { ty, .. }

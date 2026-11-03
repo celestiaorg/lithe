@@ -29,7 +29,7 @@ external view function contains(const who : address) : bool is
 external function join() is {
   if storage.positions[Evm.sender()] = 0 then {
     storage.members[storage.count] := Evm.sender();
-    storage.count := storage.count + 1;
+    storage.count += 1;
     storage.positions[Evm.sender()] := storage.count;
   }
 }
@@ -41,7 +41,7 @@ external function leave() is {
     storage.members[position - 1] := last;
     storage.positions[last] := position;
     storage.positions[Evm.sender()] := 0;
-    storage.count := storage.count - 1;
+    storage.count -= 1;
   }
 }
 

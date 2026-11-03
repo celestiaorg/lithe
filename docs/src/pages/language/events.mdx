@@ -21,8 +21,8 @@ storage is record {
 }
 
 external function send(const to : address; const amount : uint) is {
-  storage.balances[Evm.sender()] := storage.balances[Evm.sender()] - amount;
-  storage.balances[to] := storage.balances[to] + amount;
+  storage.balances[Evm.sender()] -= amount;
+  storage.balances[to] += amount;
   emit Transfer { from = Evm.sender(); to = to; amount = amount; };
 }
 ```

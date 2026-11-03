@@ -55,7 +55,7 @@ external view function releasable() : wei is
 
 external nonreentrant function release() is {
   const amount : wei := vestedAt(Evm.blockTimestamp()) - storage.released;
-  storage.released := storage.released + amount;
+  storage.released += amount;
   emit Released { amount = amount; };
   defer Evm.transfer(storage.beneficiary, amount);
 }

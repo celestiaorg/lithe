@@ -1066,7 +1066,7 @@ fn rewrite_expr(expr: &mut Expr, name: &str, path: &[Seg]) {
                 rewrite_expr(gas, name, path);
             }
         }
-        Expr::Unary { expr, .. } => rewrite_expr(expr, name, path),
+        Expr::Unary { expr, .. } | Expr::Convert { expr, .. } => rewrite_expr(expr, name, path),
         Expr::Case { scrut, arms, .. } => {
             rewrite_expr(scrut, name, path);
             for arm in arms {

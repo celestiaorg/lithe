@@ -58,8 +58,8 @@ is {
 external nonreentrant function split(const amount : uint) is {
   defer storage.exchange.split(amount)
     then ((a, b) : (uint, uint)) {
-      storage.left := storage.left + a;
-      storage.right := storage.right + b;
+      storage.left += a;
+      storage.right += b;
     };
 }
 ```

@@ -7,6 +7,6 @@ storage is record {
 }
 
 external payable function pay(const to : address) is {
-  storage.paid := storage.paid + Evm.value();
+  storage.paid += Evm.value();
   defer Evm.transfer(to, Evm.value());
 }

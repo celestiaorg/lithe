@@ -20,7 +20,7 @@ external function init(const vault : Vault) is {
 }
 
 external payable function forward() is {
-  storage.forwarded := storage.forwarded + Evm.value();
+  storage.forwarded += Evm.value();
   defer storage.vault.deposit(Evm.sender()) with value = uint(Evm.value());
 }
 

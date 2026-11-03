@@ -31,7 +31,7 @@ external function move(const to : address; const id : uint) is {
 }
 
 external function note(const id : uint; const text : string) is {
-  storage.notes := storage.notes + 1;
+  storage.notes += 1;
   emit Noted { id = id; note = text; };
 }
 

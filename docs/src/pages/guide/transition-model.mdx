@@ -54,9 +54,9 @@ storage is record {
 }
 
 external nonreentrant function withdraw(const amount : uint) is {
-  storage.balances[Evm.sender()] := storage.balances[Evm.sender()] - amount;
+  storage.balances[Evm.sender()] -= amount;
   defer storage.token.transfer(Evm.sender(), amount);
-  storage.totalWithdrawn := storage.totalWithdrawn + amount;
+  storage.totalWithdrawn += amount;
 }
 ```
 
@@ -89,7 +89,7 @@ storage is record {
 external nonreentrant function swap(const amountIn : uint) is {
   defer storage.exchange.swap(amountIn)
     then (amountOut : uint) {
-      storage.received := storage.received + amountOut;
+      storage.received += amountOut;
     };
 }
 ```

@@ -14,11 +14,11 @@ module Bitmap is {
     (bits[index >> 8] >> (index & 255)) & 1 = 1
 
   function set(storage bits : Bitmap; const index : uint) is {
-    bits[index >> 8] := bits[index >> 8] | (1 << (index & 255));
+    bits[index >> 8] |= 1 << (index & 255);
   }
 
   function unset(storage bits : Bitmap; const index : uint) is {
-    bits[index >> 8] := bits[index >> 8] & ~(1 << (index & 255));
+    bits[index >> 8] &= ~(1 << (index & 255));
   }
 
   function setTo(storage bits : Bitmap; const index : uint; const value : bool) is {
@@ -38,7 +38,7 @@ module Bitmap is {
     var n : uint := amount;
     const total : uint := Uint.wrappingAdd(shift, amount);
     if total > 256 then {
-      bits[bucket] := bits[bucket] | (Uint.max << shift);
+      bits[bucket] |= Uint.max << shift;
       const last : uint := Uint.wrappingAdd(bucket, total >> 8);
       for b : uint in Uint.wrappingAdd(bucket, 1) .. last do {
         bits[b] := Uint.max;
@@ -47,7 +47,7 @@ module Bitmap is {
       n := total & 255;
       shift := 0;
     }
-    bits[bucket] := bits[bucket] | (Uint.max >> Uint.wrappingSub(256, n)) << shift;
+    bits[bucket] |= (Uint.max >> Uint.wrappingSub(256, n)) << shift;
   }
 
   function unsetBatch(storage bits : Bitmap; const start : uint; const amount : uint) is {
@@ -57,7 +57,7 @@ module Bitmap is {
     var n : uint := amount;
     const total : uint := Uint.wrappingAdd(shift, amount);
     if total > 256 then {
-      bits[bucket] := bits[bucket] & ~(Uint.max << shift);
+      bits[bucket] &= ~(Uint.max << shift);
       const last : uint := Uint.wrappingAdd(bucket, total >> 8);
       for b : uint in Uint.wrappingAdd(bucket, 1) .. last do {
         bits[b] := 0;
@@ -66,7 +66,7 @@ module Bitmap is {
       n := total & 255;
       shift := 0;
     }
-    bits[bucket] := bits[bucket] & ~((Uint.max >> Uint.wrappingSub(256, n)) << shift);
+    bits[bucket] &= ~((Uint.max >> Uint.wrappingSub(256, n)) << shift);
   }
 
   (* How many of the `amount` flags from `start` are set. *)

@@ -24,7 +24,7 @@ storage is record {
 }
 
 external payable function deposit() is {
-  storage.deposits[Evm.sender()] := storage.deposits[Evm.sender()] + Evm.value();
+  storage.deposits[Evm.sender()] += Evm.value();
   emit Deposit { from = Evm.sender(); amount = Evm.value(); };
 }
 

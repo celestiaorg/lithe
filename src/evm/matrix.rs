@@ -1491,3 +1491,201 @@ fn nominal_bytes_and_strings_have_their_representations_operations() {
         assert!(compile(&src).is_err(), "accepted: {mixed}");
     }
 }
+
+const NOMINAL_NUMBERS: &str = r#"
+import "std/collections/set";
+$D
+storage is record {
+  ids : Set($A);
+  bal : map(uint, $A);
+  small : $S;
+  delta : $I;
+  expiry : $T;
+}
+external function give(const id : uint; const a : $A) is {
+  storage.bal[id] := storage.bal[id] + a;
+}
+external function take(const id : uint; const a : $A) is {
+  storage.bal[id] := storage.bal[id] - a;
+}
+external view function enough(const id : uint; const a : $A) : bool is
+  a <= storage.bal[id] and storage.bal[id] > a / 2
+external function bump(const x : $S) is {
+  storage.small := storage.small + x * 2 + 1;
+}
+external function shift(const x : $I) is {
+  storage.delta := -(storage.delta - x) % 3;
+}
+external function extend(const by : uint) is {
+  storage.expiry := storage.expiry + by;
+}
+external view function left(const now : $T) : uint is
+  storage.expiry - now
+external pure function sq(const a : $A) : $A is a ** 2 * 3 / 2
+external pure function low(const a : $S; const b : $S) : bool is a < b or a >= b + 1
+external pure function first(const a : $K; const b : $K) : bool is a < b
+pure function same(T)(const x : T) : T is x
+external function keep(const a : $A; const b : $A) is {
+  Set.add(storage.ids, a + 1);
+  storage.small := same(storage.small + 1);
+  storage.bal[0] := same(a + b);
+  if same(a < b) then { storage.bal[1] := a; } else { skip }
+}
+"#;
+
+#[test]
+fn nominal_numbers_have_their_representations_operations() {
+    let spell = |a: &str, s: &str, i: &str, t: &str, k: &str, decl: &str| {
+        NOMINAL_NUMBERS
+            .replace("$D", decl)
+            .replace("$K", k)
+            .replace("$A", a)
+            .replace("$S", s)
+            .replace("$I", i)
+            .replace("$T", t)
+    };
+    let plain =
+        compile(&spell("uint", "uint8", "int16", "timestamp", "bytes32", "")).expect("plain");
+    let nominal = compile(&spell(
+        "Amount",
+        "Small",
+        "Delta",
+        "Deadline",
+        "Key",
+        "type Amount is uint;\ntype Small is uint8;\ntype Delta is int16;\ntype Deadline is timestamp;\n\
+         type Key is bytes32;",
+    ))
+    .expect("nominal");
+    assert!(plain == nominal, "a nominal type costs code");
+    compile(
+        "type Amount is uint;\nstorage is record { n : uint; }\n\
+         pure function more(const x : Amount) : uint is uint(x)\n\
+         pure function more(const x : uint) : uint is x\n\
+         external pure function f(const a : Amount; const b : Amount) : uint is \
+         more(a + b) + more(uint(a + b))\n",
+    )
+    .expect("overloaded");
+
+    for mixed in [
+        "external pure function f(const x : Amount; const y : uint) : Amount is x + y",
+        "external pure function f(const x : Amount; const y : Other) : bool is x < y",
+        "external pure function f(const x : Amount; const y : Amount) : uint is x * y",
+        "external pure function f(const x : Deadline; const y : Amount) : Deadline is x + y",
+        "external pure function f(const x : Deadline; const y : timestamp) : uint is x - y",
+        "external pure function f(const x : Flag; const y : Flag) : bool is x < y",
+    ] {
+        let src = format!(
+            "type Amount is uint;\ntype Other is uint;\ntype Deadline is timestamp;\ntype Flag is bool;\n\
+             storage is record {{ n : uint; }}\n{mixed}\n"
+        );
+        assert!(compile(&src).is_err(), "accepted: {mixed}");
+    }
+}
+
+const NOMINAL_LISTS: &str = r#"
+import "std/list";
+$D
+type Ids is list(uint);
+interface Receiver is {
+  function onBatch(ids : list(uint); values : list(uint)) : bytes4;
+}
+error Bad;
+event Moved of record { ids : list(uint); }
+storage is record {
+  ids : list($I);
+  pair : list($I, 2);
+  paid : list(wei);
+  held : map(uint, list($I));
+}
+external pure function out(const xs : list($I)) : list(uint) is list(uint)(xs)
+external pure function into(const xs : list(uint)) : list($I) is list($I)(xs)
+external view function stored() : list(uint) is list(uint)(storage.ids)
+external view function pair() : list(uint, 2) is list(uint, 2)(storage.pair)
+external view function paid() : list(uint) is list(uint)(storage.paid)
+external function save(const xs : list(uint); const two : list(uint, 2)) is {
+  storage.ids := list($I)(xs);
+  storage.pair := list($I, 2)(two);
+  emit Moved { ids = list(uint)(storage.ids); };
+}
+external pure function local(const n : uint) : list(uint) is {
+  var xs : list($I) := List.resized([], n);
+  for i : uint in 0 .. n do {
+    xs[i] := $I(i * 2);
+  }
+} with list(uint)(xs)
+external pure function nested(const xs : list(list($I))) : list(list(uint)) is
+  list(list(uint))(xs)
+external pure function count(const xs : list($I)) : uint is list(uint)(xs).length
+external view function storedCount() : uint is list(uint)(storage.ids).length
+external view function namedCount() : uint is Ids(storage.ids).length
+external view function heldCount(const k : uint) : uint is list(uint)(storage.held[k]).length
+external pure function named(const xs : list($I)) : Ids is Ids(xs)
+external pure function literal(const a : $I; const b : $I) : list(uint) is list(uint)([a, b])
+external function send(const to : address; const ids : list($I); const vs : list($I))
+  raises Bad | forwarded
+is {
+  defer Receiver(to).onBatch(list(uint)(ids), list(uint)(vs)) then {
+    | Ok(answer : bytes4) -> { assert(answer = 0x12345678, Bad); }
+    | Error(reason : bytes) -> { forward reason; }
+  };
+}
+"#;
+
+#[test]
+fn lists_convert_between_nominal_and_representation_elements() {
+    let spell = |i: &str, decl: &str| NOMINAL_LISTS.replace("$D", decl).replace("$I", i);
+    let plain = compile(&spell("uint", "")).expect("plain");
+    let nominal = compile(&spell("TokenID", "type TokenID is uint;")).expect("nominal");
+    assert!(plain == nominal, "a list conversion costs code");
+    let held = |read: &str| {
+        compile(&format!(
+            "type TokenID is uint;\nstorage is record {{ held : map(uint, list(TokenID)); }}\n\
+             external view function f(const k : uint) : uint is {read}.length\n"
+        ))
+        .expect("held")
+    };
+    assert!(
+        held("list(uint)(storage.held[k])") == held("storage.held[k]"),
+        "a converted length copies the list"
+    );
+    let iterate = |head: &str, elem: &str| {
+        compile(&format!(
+            "type TokenID is uint;\ntype Ids is list(uint);\n\
+             storage is record {{ ids : list(TokenID); held : map(uint, list(TokenID)); }}\n\
+             external view function f(const ids : list(TokenID); const k : uint) : uint is {{\n\
+               var s : uint := 0;\n\
+               var m : list(TokenID) := ids;\n\
+               for x : {head} do {{ s := s + {elem}; }}\n\
+             }} with s\n"
+        ))
+        .expect("iterate")
+    };
+    for place in ["storage.ids", "ids", "m", "storage.held[k]"] {
+        let direct = iterate(&format!("TokenID in {place}"), "uint(x)");
+        for cast in ["list(uint)", "Ids"] {
+            assert!(
+                iterate(&format!("uint in {cast}({place})"), "x") == direct,
+                "iterating {cast}({place}) copies the list"
+            );
+        }
+    }
+
+    for mixed in [
+        "external pure function f(const x : list(TokenID)) : list(uint) is x",
+        "external pure function f(const x : list(TokenID)) : list(Amount) is list(Amount)(x)",
+        "external pure function f(const x : list(uint8)) : list(uint) is list(uint)(x)",
+        "external pure function f(const x : list(uint)) : list(bool) is list(bool)(x)",
+        "external pure function f(const x : list(address)) : list(bytes20) is list(bytes20)(x)",
+        "external pure function f(const x : list(TokenID, 2)) : list(uint) is list(uint)(x)",
+        "external pure function f(const x : list(list(uint))) : list(list(bool)) is list(list(bool))(x)",
+        "external pure function f(const x : TokenID) : uint is list(uint)(x)",
+        "external pure function f(const x : list(uint8)) : Ids is Ids(x)",
+        "external pure function f(const a : uint8) : list(uint) is list(uint)([a, a])",
+    ] {
+        let src = format!(
+            "type TokenID is uint;\ntype Amount is uint;\ntype Ids is list(uint);\n\
+             storage is record {{ n : uint; }}\n{mixed}\n"
+        );
+        assert!(compile(&src).is_err(), "accepted: {mixed}");
+    }
+}

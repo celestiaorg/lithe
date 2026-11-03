@@ -164,7 +164,7 @@ contract Supply is {
   external function grow(const amount : uint)
     raises CheckpointUnorderedInsertion
   is {
-    storage.total := storage.total + amount;
+    storage.total += amount;
     Checkpoints.push(storage.history, uint48(Evm.blockNumber()), uint208(storage.total));
   }
 

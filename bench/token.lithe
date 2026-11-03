@@ -33,8 +33,8 @@ external function mint(const to : address; const amount : uint)
   raises NotOwner
 is {
   assert(Evm.sender() = immutable.owner, NotOwner);
-  storage.balances[to] := storage.balances[to] + amount;
-  storage.total := storage.total + amount;
+  storage.balances[to] += amount;
+  storage.total += amount;
   emit Transfer {
     from = Address.zero;
     to = to;
@@ -55,7 +55,7 @@ is {
     }
   );
   storage.balances[from] := have - amount;
-  storage.balances[to] := storage.balances[to] + amount;
+  storage.balances[to] += amount;
   emit Transfer {
     from = from;
     to = to;

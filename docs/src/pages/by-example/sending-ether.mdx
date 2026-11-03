@@ -23,7 +23,7 @@ storage is record {
 }
 
 external payable function deposit() is {
-  storage.balances[Evm.sender()] := storage.balances[Evm.sender()] + Evm.value();
+  storage.balances[Evm.sender()] += Evm.value();
 }
 
 external nonreentrant function withdraw(const amount : wei)

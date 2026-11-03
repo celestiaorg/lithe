@@ -41,7 +41,7 @@ contract Registry is {
   is {
     AccessControl.checkRole(minter());
     Pausable.requireNotPaused();
-    storage.entries[account] := storage.entries[account] + amount;
+    storage.entries[account] += amount;
   }
 
   external view function entry(const account : address) : uint is

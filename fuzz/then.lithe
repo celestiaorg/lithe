@@ -42,12 +42,12 @@ is {
   defer ex.swap(amount % 1000)
     then (result : uint) {
       assert(result >= before % 7, TooSmall(result));
-      storage.status := storage.status + 1;
+      storage.status += 1;
       storage.out := result;
-      storage.seen[Evm.sender()] := storage.seen[Evm.sender()] + result;
+      storage.seen[Evm.sender()] += result;
       emit Executed { who = Evm.sender(); amountOut = result; };
     };
-  storage.steps := storage.steps + 1;
+  storage.steps += 1;
 }
 
 external function narrow(const ex : Exchange; const amount : uint) is {
@@ -77,7 +77,7 @@ external function chain(const ex : Exchange; const amount : uint) is {
         };
       defer ex.poke()
         then {
-          storage.steps := storage.steps + 10;
+          storage.steps += 10;
         };
     };
   defer ex.poke()
@@ -97,7 +97,7 @@ external function hashed(const ex : Exchange; const amount : uint) is {
   defer ex.digest(amount)
     then (name : string) {
       storage.name := name;
-      storage.steps := storage.steps + 1;
+      storage.steps += 1;
     };
 }
 
@@ -105,7 +105,7 @@ external function fund(const ex : Exchange; const amount : uint) is {
   defer ex.swap(amount % 5)
     with value = amount % 5
     then (got : uint) {
-      storage.paid := storage.paid + got;
+      storage.paid += got;
     };
 }
 

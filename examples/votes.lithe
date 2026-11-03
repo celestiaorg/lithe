@@ -7,8 +7,8 @@ module ERC20 is {
   }
 
   external function mint(const account : address; const amount : uint) is {
-    erc20.balances[account] := erc20.balances[account] + amount;
-    erc20.totalSupply := erc20.totalSupply + amount;
+    erc20.balances[account] += amount;
+    erc20.totalSupply += amount;
   }
 
   external view function balanceOf(const account : address) : uint is

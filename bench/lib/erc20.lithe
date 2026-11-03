@@ -77,7 +77,7 @@ module ERC20 is {
   is {
     beforeTransfer(from, to, value);
     if from = Address.zero then {
-      erc20.totalSupply := erc20.totalSupply + value;
+      erc20.totalSupply += value;
     } else {
       const fromBalance : uint := erc20.balances[from];
       assert(
@@ -91,9 +91,9 @@ module ERC20 is {
       erc20.balances[from] := fromBalance - value;
     }
     if to = Address.zero then {
-      erc20.totalSupply := erc20.totalSupply - value;
+      erc20.totalSupply -= value;
     } else {
-      erc20.balances[to] := erc20.balances[to] + value;
+      erc20.balances[to] += value;
     }
     emit Transfer {
       from = from;

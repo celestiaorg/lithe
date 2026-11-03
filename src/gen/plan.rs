@@ -817,7 +817,7 @@ impl<'a> Gen<'a> {
                     self.expr_syms(gas, out);
                 }
             }
-            Expr::Unary { expr, .. } => self.expr_syms(expr, out),
+            Expr::Unary { expr, .. } | Expr::Convert { expr, .. } => self.expr_syms(expr, out),
             Expr::Field { base, root, .. } => {
                 out.extend(root);
                 self.expr_syms(base, out);
@@ -1007,7 +1007,7 @@ impl<'a> Gen<'a> {
                 self.expr_any(expr, bad, seen)
                     || gas.as_ref().is_some_and(|g| self.expr_any(g, bad, seen))
             }
-            Expr::Unary { expr, .. } => self.expr_any(expr, bad, seen),
+            Expr::Unary { expr, .. } | Expr::Convert { expr, .. } => self.expr_any(expr, bad, seen),
             Expr::Field { base, .. } => self.expr_any(base, bad, seen),
             Expr::Index { base, index, .. } => {
                 self.expr_any(base, bad, seen) || self.expr_any(index, bad, seen)

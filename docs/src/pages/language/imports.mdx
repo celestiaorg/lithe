@@ -184,7 +184,7 @@ module Ledger is {
     ledger.balances[who]
 
   external function mint(const to : address; const amount : uint) is {
-    ledger.balances[to] := ledger.balances[to] + amount;
+    ledger.balances[to] += amount;
   }
 }
 ```

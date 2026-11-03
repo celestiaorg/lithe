@@ -58,7 +58,7 @@ module Counter is {
   }
 
   function bump(const by : uint) is {
-    counter.count := counter.count + by;
+    counter.count += by;
   }
 
   (* The interface the module offers. *)
@@ -82,7 +82,7 @@ contract App is {
 
   (* Wrapping adds behavior around a module's functions. *)
   external function bump(const by : uint) is {
-    storage.calls := storage.calls + 1;
+    storage.calls += 1;
     Counter.bump(by);
   }
 
@@ -155,7 +155,7 @@ module Counter is {
   }
 
   function bump(const by : uint) : uint is {
-    counter.count := counter.count + by;
+    counter.count += by;
   } with counter.count
 
   external view function count() : uint is
@@ -236,7 +236,7 @@ module Tally is {
   }
 
   private function step(const by : uint) is {
-    tally.n := tally.n + by;
+    tally.n += by;
   }
 
   function bump() is {
@@ -493,7 +493,7 @@ contract Board is {
   }
 
   guard Notes.writer(const id : uint) is {
-    storage.checks := storage.checks + 1;
+    storage.checks += 1;
   }
 }
 ```
@@ -654,7 +654,7 @@ contract Gallery is {
     raises Frozen
   is {
     assert(not storage.frozen[id], Frozen(id));
-    storage.moves := storage.moves + 1;
+    storage.moves += 1;
   }
 
   hook Tokens.afterTransfer is skip;
@@ -761,7 +761,7 @@ module Tally is {
   hook counted(const count : uint);
 
   function bump() is {
-    tally.count := tally.count + 1;
+    tally.count += 1;
     counted(tally.count);
   }
 
@@ -794,7 +794,7 @@ module Tally is {
   hook counted(const count : uint);
 
   external function add() is {
-    tally.count := tally.count + 1;
+    tally.count += 1;
     counted(tally.count);
   }
 
@@ -825,7 +825,7 @@ module Tally is {
   hook counted(const count : uint);
 
   external function add() is {
-    tally.count := tally.count + 1;
+    tally.count += 1;
     counted(tally.count);
   }
 }
@@ -853,7 +853,7 @@ module Tally is {
   hook counted(const count : uint);
 
   external function add() is {
-    tally.count := tally.count + 1;
+    tally.count += 1;
     counted(tally.count);
   }
 }
@@ -885,7 +885,7 @@ module Tally is {
   pure hook step() : uint;
 
   external function add() is {
-    tally.count := tally.count + step();
+    tally.count += step();
   }
 }
 
@@ -916,7 +916,7 @@ module Tally is {
 
   external function add() is {
     if tally.count < limit() then {
-      tally.count := tally.count + 1;
+      tally.count += 1;
     }
   }
 }
@@ -931,7 +931,7 @@ contract Counter is {
   }
 
   hook Tally.limit() : uint is {
-    storage.asked := storage.asked + 1;
+    storage.asked += 1;
   } with 10
 }
 ```
@@ -952,7 +952,7 @@ module Tally is {
 
   external function add() is {
     if tally.count < limit() then {
-      tally.count := tally.count + 1;
+      tally.count += 1;
     }
   }
 }
@@ -983,7 +983,7 @@ module Tally is {
   hook counted(const count : uint);
 
   external function add() is {
-    tally.count := tally.count + 1;
+    tally.count += 1;
     counted(tally.count);
   }
 }
@@ -1040,7 +1040,7 @@ module Tally is {
   hook counted(const count : uint);
 
   function bump() is {
-    tally.count := tally.count + 1;
+    tally.count += 1;
     counted(tally.count);
   }
 
@@ -1075,7 +1075,7 @@ module Tally is {
   hook counted(const count : uint);
 
   external function add() is {
-    tally.count := tally.count + 1;
+    tally.count += 1;
     counted(tally.count);
   }
 }
@@ -1113,7 +1113,7 @@ module Tally is {
 
   external function add() is {
     if tally.count < limit() then {
-      tally.count := tally.count + 1;
+      tally.count += 1;
     }
   }
 }
@@ -1146,7 +1146,7 @@ module Tally is {
   hook counted(const count : uint);
 
   external function add() is {
-    tally.count := tally.count + 1;
+    tally.count += 1;
     counted(tally.count);
   }
 }
@@ -1253,7 +1253,7 @@ module Ledger is {
     const have : uint := ledger.balances[Evm.sender()];
     assert(have >= amount, Insufficient(have));
     ledger.balances[Evm.sender()] := have - amount;
-    ledger.balances[to] := ledger.balances[to] + amount;
+    ledger.balances[to] += amount;
   }
 
   (* Reading a required module's storage is allowed. *)

@@ -206,6 +206,18 @@ enum Raw {
     RBrace,
     #[token(":=")]
     Assign,
+    #[token("+=")]
+    #[token("-=")]
+    #[token("*=")]
+    #[token("/=")]
+    #[token("%=")]
+    #[token("**=")]
+    #[token("&=")]
+    #[token("|=")]
+    #[token("^=")]
+    #[token("<<=")]
+    #[token(">>=")]
+    OpAssign,
     #[token(":")]
     Colon,
     #[token(";")]
@@ -526,6 +538,7 @@ pub(crate) enum Kind {
     LBrace,
     RBrace,
     Assign,
+    OpAssign,
     Colon,
     Semi,
     Comma,
@@ -741,6 +754,7 @@ fn kind_of(raw: Raw) -> Kind {
         Raw::LBrace => Kind::LBrace,
         Raw::RBrace => Kind::RBrace,
         Raw::Assign => Kind::Assign,
+        Raw::OpAssign => Kind::OpAssign,
         Raw::Colon => Kind::Colon,
         Raw::Semi => Kind::Semi,
         Raw::Comma => Kind::Comma,
@@ -844,6 +858,7 @@ pub(crate) fn kind_name(k: Kind) -> &'static str {
         Kind::LBrace => "`{`",
         Kind::RBrace => "`}`",
         Kind::Assign => "`:=`",
+        Kind::OpAssign => "an operator assignment",
         Kind::Colon => "`:`",
         Kind::Semi => "`;`",
         Kind::Comma => "`,`",

@@ -986,12 +986,49 @@ impl Checker {
             Expr::Case { scrut, arms, .. } => {
                 self.reads_state(scrut) || arms.iter().any(|arm| self.reads_state(&arm.expr))
             }
-            Expr::Unary { expr, .. } => self.reads_state(expr),
+            Expr::Unary { expr, .. } | Expr::Convert { expr, .. } => self.reads_state(expr),
             Expr::Binary { left, right, .. } => self.reads_state(left) || self.reads_state(right),
             Expr::Tuple { elems, .. } | Expr::List { elems, .. } => {
                 elems.iter().any(|x| self.reads_state(x))
             }
             Expr::Record { fields, .. } => fields.iter().any(|(_, x)| self.reads_state(x)),
+        }
+    }
+
+    /// Whether running `e` twice can give two values, change what the second run reads, or
+    /// call out twice: it calls a function that is not `pure`, reads the gas left, queries,
+    /// or runs a `case`.
+    pub(super) fn varies(&self, e: &Expr) -> bool {
+        match e {
+            Expr::Lit { .. } => false,
+            Expr::Ident { builtin, .. } => matches!(builtin, Some(Builtin::GasLeft)),
+            Expr::Field { base, .. }
+            | Expr::Unary { expr: base, .. }
+            | Expr::Convert { expr: base, .. } => self.varies(base),
+            Expr::Index { base, index, .. } => self.varies(base) || self.varies(index),
+            Expr::Query { .. } => true,
+            Expr::Call {
+                args,
+                base,
+                builtin,
+                callee,
+                ..
+            } => {
+                let stateful = match (callee, builtin) {
+                    (Some(idx), _) => self.sigs[*idx].kind != ItemKind::Pure,
+                    (None, Some(b)) => matches!(b, Builtin::GasLeft),
+                    (None, None) => true,
+                };
+                stateful
+                    || args.iter().any(|a| self.varies(a))
+                    || base.as_ref().is_some_and(|b| self.varies(b))
+            }
+            Expr::Case { .. } => true,
+            Expr::Binary { left, right, .. } => self.varies(left) || self.varies(right),
+            Expr::Tuple { elems, .. } | Expr::List { elems, .. } => {
+                elems.iter().any(|x| self.varies(x))
+            }
+            Expr::Record { fields, .. } => fields.iter().any(|(_, x)| self.varies(x)),
         }
     }
 

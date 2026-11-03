@@ -28,7 +28,7 @@ storage is record {
 external function triangle(const n : uint) is {
   var acc : uint := 0;
   for i : uint in 0 .. n do {
-    acc := acc + i;
+    acc += i;
   }
   storage.total := acc;
 }
@@ -37,7 +37,7 @@ external function triangle(const n : uint) is {
 external function weighted(const xs : list(uint, 3)) is {
   var acc : uint := 0;
   for (i, x) : (uint, uint) in xs do {
-    acc := acc + x * (i + 1);
+    acc += x * (i + 1);
   }
   storage.total := acc;
 }
@@ -78,7 +78,7 @@ external function euclid(const a : uint; const b : uint) is {
 external function pay(const tos : list(address, 2); const amounts : list(uint, 2)) is {
   for (i, to) : (uint, address) in tos do {
     const amount : wei := wei(amounts[i]);
-    storage.paid := storage.paid + amounts[i];
+    storage.paid += amounts[i];
     emit Paid { to = to; amount = amount; };
     defer Evm.transfer(to, amount);
   }
@@ -101,7 +101,7 @@ external function grid(const n : uint) is {
   var acc : uint := 0;
   for i : uint in 0 .. n do {
     for j : uint in 0 .. n do {
-      acc := acc + i * j;
+      acc += i * j;
     }
   }
   storage.total := acc;

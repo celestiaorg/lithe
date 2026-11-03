@@ -34,18 +34,18 @@ module ERC1155Supply is {
     if from = Address.zero then {
       var minted : uint := 0;
       for (i, id) : (uint, uint) in ids do {
-        erc1155Supply.totalSupply[id] := erc1155Supply.totalSupply[id] + values[i];
-        minted := minted + values[i];
+        erc1155Supply.totalSupply[id] += values[i];
+        minted += values[i];
       }
-      erc1155Supply.totalSupplyAll := erc1155Supply.totalSupplyAll + minted;
+      erc1155Supply.totalSupplyAll += minted;
     }
     if to = Address.zero then {
       var burned : uint := 0;
       for (i, id) : (uint, uint) in ids do {
-        erc1155Supply.totalSupply[id] := erc1155Supply.totalSupply[id] - values[i];
-        burned := burned + values[i];
+        erc1155Supply.totalSupply[id] -= values[i];
+        burned += values[i];
       }
-      erc1155Supply.totalSupplyAll := erc1155Supply.totalSupplyAll - burned;
+      erc1155Supply.totalSupplyAll -= burned;
     }
   }
 

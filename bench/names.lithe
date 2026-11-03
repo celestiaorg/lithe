@@ -53,6 +53,6 @@ external view function noteCopy(const i : uint) : string is {
 external view function notesLength() : uint is {
   var total : uint := 0;
   for n : string in storage.notes bound 8 do {
-    total := total + n.length;
+    total += n.length;
   }
 } with total

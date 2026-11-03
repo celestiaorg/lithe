@@ -22,7 +22,7 @@ external pure function escaped(const data : string) : bytes is {
 external function keep(const data : string; const salt : bytes32) is {
   const hash : bytes32 := Crypto.keccak256(Abi.encode(salt, storage.count));
   storage.last := Base64.decode(Bytes.concat(bytes(data), bytes(Base64.encode(Bytes.concat(hash)))));
-  storage.count := storage.count + 1;
+  storage.count += 1;
 }
 
 external view function last() : bytes is

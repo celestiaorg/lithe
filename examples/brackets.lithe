@@ -62,7 +62,7 @@ is
   case action of {
     | Pay(n) -> {
         assert(n > 0, TooSmall { amount = n });
-        storage.paid := storage.paid + n;
+        storage.paid += n;
         emit Paid { amount = n };
       }
     | Stop -> { skip }

@@ -33,7 +33,7 @@ function publicMain(const action : PublicAction) is
   case action of
   {
   | Increment(n) -> {
-      storage.count := storage.count + n
+      storage.count += n
     }
   }
 

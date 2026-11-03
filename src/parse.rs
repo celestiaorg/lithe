@@ -3181,6 +3181,7 @@ impl<'a> Parser<'a> {
         } else {
             Some(keys.remove(0))
         };
+        let op = if delete { None } else { self.compound_op() };
         let expr = if delete {
             Expr::Lit {
                 line,
@@ -3189,7 +3190,9 @@ impl<'a> Parser<'a> {
                 ty: 0,
             }
         } else {
-            self.want(Kind::Assign)?;
+            if op.is_none() {
+                self.want(Kind::Assign)?;
+            }
             self.expr()?
         };
         Ok(Stmt::Assign {
@@ -3200,11 +3203,37 @@ impl<'a> Parser<'a> {
             keys,
             fields,
             expr,
+            op,
             root: None,
             leaf: 0,
             target: None,
             push: false,
         })
+    }
+
+    /// The operator of `place op= expr`, which then wants no `:=`.
+    fn compound_op(&mut self) -> Option<BinOp> {
+        if self.kind() != Kind::OpAssign {
+            return None;
+        }
+        let op = self.slice().strip_suffix('=')?;
+        let op = [
+            BinOp::Add,
+            BinOp::Sub,
+            BinOp::Mul,
+            BinOp::Div,
+            BinOp::Mod,
+            BinOp::Pow,
+            BinOp::BitAnd,
+            BinOp::BitOr,
+            BinOp::BitXor,
+            BinOp::Shl,
+            BinOp::Shr,
+        ]
+        .into_iter()
+        .find(|o| op_text(*o) == op)?;
+        self.bump();
+        Some(op)
     }
 
     fn reason(&mut self) -> Result<Raised, Error> {
@@ -3473,6 +3502,19 @@ impl<'a> Parser<'a> {
                     self.want(Kind::RParen)?;
                     Ok(first)
                 }
+            }
+            Kind::List => {
+                let target = self.list_ty(line, col)?;
+                self.want(Kind::LParen)?;
+                let expr = self.expr()?;
+                self.want(Kind::RParen)?;
+                self.postfix(Expr::Convert {
+                    line,
+                    col,
+                    target: Box::new(target),
+                    expr: Box::new(expr),
+                    ty: 0,
+                })
             }
             Kind::Ident => {
                 if self.in_spec {

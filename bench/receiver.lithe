@@ -32,7 +32,7 @@ is {
   storage.lastFrom := from;
   storage.lastToken := tokenId;
   storage.lastData := data;
-  storage.calls := storage.calls + 1;
+  storage.calls += 1;
   var answer : bytes4 := Abi.selector(IERC721Receiver.onERC721Received);
   if storage.mode = 1 then {
     answer := 0xdeadbeef;

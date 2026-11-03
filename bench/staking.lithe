@@ -107,8 +107,8 @@ contract StakingRewards is {
   is {
     updateReward(Evm.sender());
     assert(amount <> 0, CannotWithdrawZero);
-    storage.totalSupply := storage.totalSupply - amount;
-    storage.balances[Evm.sender()] := storage.balances[Evm.sender()] - amount;
+    storage.totalSupply -= amount;
+    storage.balances[Evm.sender()] -= amount;
     emit Withdrawn {
       user = Evm.sender();
       amount = amount;
@@ -134,8 +134,8 @@ contract StakingRewards is {
   is {
     updateReward(Evm.sender());
     assert(amount <> 0, CannotStakeZero);
-    storage.totalSupply := storage.totalSupply + amount;
-    storage.balances[Evm.sender()] := storage.balances[Evm.sender()] + amount;
+    storage.totalSupply += amount;
+    storage.balances[Evm.sender()] += amount;
     emit Staked {
       user = Evm.sender();
       amount = amount;

@@ -31,7 +31,7 @@ external nonreentrant function execute(const target : address; const value : uin
   raises NotOwner
 is {
   assert(Evm.sender() = storage.owner, NotOwner);
-  storage.nonce := storage.nonce + 1;
+  storage.nonce += 1;
   defer Evm.call(target, data) with value = value then (result : bytes) {
     emit Executed { target = target; value = value; result = result; };
   };

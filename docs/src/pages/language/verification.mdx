@@ -26,8 +26,8 @@ storage is record {
 }
 
 external payable function deposit() is {
-  storage.balances[Evm.sender()] := storage.balances[Evm.sender()] + Evm.value();
-  storage.total := storage.total + Evm.value();
+  storage.balances[Evm.sender()] += Evm.value();
+  storage.total += Evm.value();
 }
 
 external nonreentrant function withdraw(const amount : wei)
@@ -36,7 +36,7 @@ is {
   const have : wei := storage.balances[Evm.sender()];
   assert(have >= amount, Insufficient);
   storage.balances[Evm.sender()] := have - amount;
-  storage.total := storage.total - amount;
+  storage.total -= amount;
   defer Evm.transfer(Evm.sender(), amount);
 }
 ```
@@ -301,7 +301,7 @@ A loop the prover cannot follow one iteration at a time leaves it knowing only t
 ```lithe fragment
 const start : uint := storage.steps;
 for i : uint in 0 .. n bound 100 invariant storage.steps = start + i do {
-  storage.steps := storage.steps + 1;
+  storage.steps += 1;
 }
 ```
 

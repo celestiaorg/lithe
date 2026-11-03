@@ -34,8 +34,8 @@ module Ledger is {
     ledger.balances[who]
 
   function mint(const to : address; const amount : uint) is {
-    ledger.balances[to] := ledger.balances[to] + amount;
-    ledger.total := ledger.total + amount;
+    ledger.balances[to] += amount;
+    ledger.total += amount;
     emit Minted { to = to; amount = amount; };
   }
 
@@ -45,7 +45,7 @@ module Ledger is {
     const have : uint := ledger.balances[from];
     assert(have >= amount, Short(have));
     ledger.balances[from] := have - amount;
-    ledger.total := ledger.total - amount;
+    ledger.total -= amount;
   }
 
   external view function total() : uint is
@@ -69,7 +69,7 @@ contract Bank is {
   external payable function deposit() is {
     const amount : uint := uint(Evm.value());
     Ledger.mint(Evm.sender(), amount - Ledger.fee(amount));
-    storage.deposits := storage.deposits + 1;
+    storage.deposits += 1;
   }
 
   external function burn(const amount : uint)
@@ -166,7 +166,7 @@ contract Shelf is {
   }
 
   external function note(const oracle : Oracle) is {
-    storage.n := storage.n + 1;
+    storage.n += 1;
     Book.note(storage.n, query oracle.price());
   }
 }
@@ -320,7 +320,7 @@ module Tally is {
   hook counted(const count : uint);
 
   external function add() is {
-    tally.count := tally.count + 1;
+    tally.count += 1;
     counted(tally.count);
   }
 }

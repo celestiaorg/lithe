@@ -156,7 +156,9 @@ fn expr_reads_value(expr: &Expr, calls: &mut Vec<usize>) -> bool {
             expr_reads_value(base, calls)
                 || gas.as_ref().is_some_and(|g| expr_reads_value(g, calls))
         }
-        Expr::Field { base, .. } | Expr::Unary { expr: base, .. } => expr_reads_value(base, calls),
+        Expr::Field { base, .. }
+        | Expr::Unary { expr: base, .. }
+        | Expr::Convert { expr: base, .. } => expr_reads_value(base, calls),
         Expr::Index { base, index, .. } => {
             expr_reads_value(base, calls) || expr_reads_value(index, calls)
         }

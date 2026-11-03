@@ -682,7 +682,7 @@ fn expr_case(types: &[RType], e: &Expr) -> bool {
         }
         Expr::Case { .. } => true,
         Expr::Query { expr: e, gas, .. } => expr(e) || gas.as_ref().is_some_and(|g| expr(g)),
-        Expr::Unary { expr: e, .. } => expr(e),
+        Expr::Unary { expr: e, .. } | Expr::Convert { expr: e, .. } => expr(e),
         Expr::Binary { left, right, .. } => expr(left) || expr(right),
         Expr::Tuple { elems, .. } | Expr::List { elems, .. } => elems.iter().any(expr),
         Expr::Record { fields, .. } => fields.iter().any(|(_, e)| expr(e)),
@@ -1083,7 +1083,7 @@ fn walk_expr(checked: &Checked, e: &Expr, fx: &mut Effects<'_>) {
                 walk_expr(checked, &arm.expr, fx);
             }
         }
-        Expr::Unary { expr, .. } => walk_expr(checked, expr, fx),
+        Expr::Unary { expr, .. } | Expr::Convert { expr, .. } => walk_expr(checked, expr, fx),
         Expr::Field { .. } | Expr::Index { .. } => {
             note_storage(checked, e, fx);
             walk_keys(checked, e, fx);
@@ -1256,7 +1256,7 @@ fn raise_expr(checked: &Checked, expr: &Expr, ids: &mut Vec<usize>) {
                 raise_expr(checked, gas, ids);
             }
         }
-        Expr::Unary { expr, .. } | Expr::Field { base: expr, .. } => {
+        Expr::Unary { expr, .. } | Expr::Convert { expr, .. } | Expr::Field { base: expr, .. } => {
             raise_expr(checked, expr, ids);
         }
         Expr::Index { base, index, .. } => {
@@ -1399,6 +1399,12 @@ fn storage_label(expr: &Expr) -> String {
 pub(crate) fn fmt_expr(e: &Expr) -> String {
     match e {
         Expr::Ident { name, .. } => name.clone(),
+        Expr::Call {
+            builtin: Some(Builtin::Cast),
+            name,
+            args,
+            ..
+        } if name.is_empty() => fmt_expr(&args[0]),
         Expr::Field { base, name, .. } => format!("{}.{}", fmt_expr(base), name),
         Expr::Index { base, index, .. } => format!("{}[{}]", fmt_expr(base), fmt_expr(index)),
         Expr::Binary {

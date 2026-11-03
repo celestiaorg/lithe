@@ -25,7 +25,7 @@ external function act(const r : bytes32; const s : bytes32)
 is {
   const digest : bytes32 := Crypto.keccak256(Abi.encode(Evm.self(), storage.nonce));
   assert(Crypto.p256Verify(digest, r, s, storage.ownerX, storage.ownerY), BadSignature);
-  storage.nonce := storage.nonce + 1;
+  storage.nonce += 1;
 }
 
 (* Whether the product of the pairings is one, as a Groth16 verifier's final check asks. *)

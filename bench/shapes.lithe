@@ -45,7 +45,7 @@ external function add(const count : uint)
 is {
   assert(Evm.sender() = immutable.owner, Unauthorized { caller = Evm.sender(); role = "owner"; });
   assert(count > 0 and count <= 10, OutOfRange { value = count; min = 1; max = 10; });
-  storage.items := storage.items + count;
+  storage.items += count;
 }
 
 external function buy(const id : uint; const name : string)
@@ -54,7 +54,7 @@ is {
   assert(id < storage.items, UnknownItem { id = id; name = name; });
   assert(name.length <= 40, OutOfRange { value = name.length; min = 0; max = 40; });
   assert(name.length > 0, Mismatch { expected = "a name"; actual = name; });
-  storage.sold := storage.sold + 1;
+  storage.sold += 1;
 }
 
 external function buyAll(const ids : list(uint); const note : string)
@@ -66,7 +66,7 @@ is {
     assert(id < storage.items, BadItems(ids));
   }
   assert(ids[0] > 0, UnknownItem { id = 0; name = note; });
-  storage.sold := storage.sold + ids.length;
+  storage.sold += ids.length;
 }
 
 external function load(const data : bytes)
@@ -75,7 +75,7 @@ is {
   assert(Evm.sender() = immutable.owner, Unauthorized { caller = Evm.sender(); role = "loader"; });
   assert(data.length > 0, BadData(data));
   assert(data.length <= 64, BadItems([data.length, 64]));
-  storage.sold := storage.sold + data.length;
+  storage.sold += data.length;
 }
 
 external view function compare(const expected : string; const actual : string) : uint

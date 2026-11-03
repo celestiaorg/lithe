@@ -34,8 +34,21 @@ external function claim(const id : TokenId) is {
 external view function feeOn(const amount : uint) : uint is
   amount * uint(uint16(storage.fee)) / 10_000
 
+(* Arithmetic and ordering carry over, between values of the same type. *)
 external pure function next(const id : TokenId) : TokenId is
-  TokenId(uint(id) + 1)
+  id + 1
+
+(* Code written for the representation takes a whole list converted with the list
+   type's name, without a copy. *)
+pure function largest(const xs : list(uint)) : uint is {
+  var top : uint := 0;
+  for x : uint in xs do {
+    if x > top then { top := x; }
+  }
+} with top
+
+external pure function newest(const ids : list(TokenId)) : TokenId is
+  TokenId(largest(list(uint)(ids)))
 ```
 
 Binding a raw `uint` to a `tokenId` is a compile error:

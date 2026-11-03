@@ -553,7 +553,7 @@ impl<'a> Gen<'a> {
                 e(expr);
                 gas.iter().for_each(|g| e(g));
             }
-            Expr::Unary { expr, .. } => e(expr),
+            Expr::Unary { expr, .. } | Expr::Convert { expr, .. } => e(expr),
             Expr::Index { base, index, .. }
                 if whole.is_some()
                     && own(base)

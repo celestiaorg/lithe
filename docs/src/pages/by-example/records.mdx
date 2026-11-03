@@ -28,7 +28,7 @@ storage is record {
 
 external function add(const priority : uint8) is {
   storage.todos[storage.count] := { priority = priority; done = false; };
-  storage.count := storage.count + 1;
+  storage.count += 1;
 }
 
 (* Write one field of a record stored in a map. *)

@@ -33,7 +33,7 @@ is {
     or selector = Abi.selector(Token.transfer),
     Unrouted(selector)
   );
-  storage.handled[selector] := storage.handled[selector] + 1;
+  storage.handled[selector] += 1;
 }
 
 external view function handled(const selector : bytes4) : uint is

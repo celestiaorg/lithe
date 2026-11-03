@@ -25,7 +25,7 @@ is {
     storage.notes[o.id] := o.note;
     List.push(ids, o.id);
   }
-  storage.placed := storage.placed + os.length;
+  storage.placed += os.length;
 } with ids
 
 external view function noteOf(const id : uint) : string is

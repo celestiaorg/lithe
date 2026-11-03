@@ -48,7 +48,7 @@ external nonreentrant function notify(const amount : uint) is {
         skip
       }
     | Error(reason : bytes) -> {
-        storage.hookFailures := storage.hookFailures + 1;
+        storage.hookFailures += 1;
       }
   };
 }
@@ -59,7 +59,7 @@ external payable nonreentrant function pay(const to : address) is {
   defer Evm.transfer(to, Evm.value()) then {
     | Ok -> { skip }
     | Error(_) -> {
-        storage.unpaid[to] := storage.unpaid[to] + Evm.value();
+        storage.unpaid[to] += Evm.value();
         emit PayoutFailed { to = to; amount = Evm.value(); };
       }
   };

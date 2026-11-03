@@ -8,7 +8,7 @@
      external nonreentrant function withdraw(const value : uint)
        raises SafeERC20FailedOperation | forwarded
      is {
-       storage.balances[Evm.sender()] := storage.balances[Evm.sender()] - value;
+       storage.balances[Evm.sender()] -= value;
        SafeERC20.safeTransfer(storage.token, Evm.sender(), value);
      } *)
 

@@ -83,8 +83,8 @@ is {
       );
       storage.orders[id].status := Complete;
       storage.orders[id].amountOut := result.amountOut;
-      storage.executed := storage.executed + 1;
-      storage.totalOut := storage.totalOut + result.amountOut;
+      storage.executed += 1;
+      storage.totalOut += result.amountOut;
       emit Executed { id = id; amountOut = result.amountOut; fee = result.fee; };
     };
 }
@@ -114,8 +114,8 @@ is {
   defer storage.exchange.split(storage.orders[id].shares)
     then ((a, b) : (uint, uint)) {
       storage.orders[id].status := Unwound;
-      storage.left := storage.left + a;
-      storage.right := storage.right + b;
+      storage.left += a;
+      storage.right += b;
     };
 }
 

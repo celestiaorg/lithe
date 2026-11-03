@@ -46,7 +46,7 @@ module Queue(T) is {
 
   function push(storage q : Self; const value : T) is {
     q.items[q.tail] := value;
-    q.tail := q.tail + 1;
+    q.tail += 1;
   }
 
   (* Removes and returns the front element. *)

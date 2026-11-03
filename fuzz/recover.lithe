@@ -32,7 +32,7 @@ external function execute(const ex : Ext; const amount : uint) is {
     | Error(reason : bytes) -> {
         storage.status := 3;
         storage.reason := reason;
-        storage.failures := storage.failures + 1;
+        storage.failures += 1;
       }
   };
 }

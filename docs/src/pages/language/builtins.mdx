@@ -147,7 +147,7 @@ external pure function bitLength(const x : uint) : uint is
   if Evm.osaka then 256 - Uint.clz(x) else {
     var n : uint := 0;
     for _ : uint in 0 .. 256 until x >> n = 0 do {
-      n := n + 1;
+      n += 1;
     }
   } with n
 ```

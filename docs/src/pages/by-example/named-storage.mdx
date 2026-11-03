@@ -35,8 +35,8 @@ external function configure(const fee : uint; const treasury : address) is {
 }
 
 external function trade(const amount : uint) is {
-  storage.count := storage.count + 1;
-  stats.volume := stats.volume + amount;
+  storage.count += 1;
+  stats.volume += amount;
   stats.users[Evm.sender()] := true;
 }
 

@@ -32,20 +32,20 @@ is {
   const fee : uint := amountIn * 3 / 1000;
   const amountOut : uint := (amountIn - fee) * 2;
   assert(amountOut >= minOut, Slippage { amountOut = amountOut; minOut = minOut; });
-  storage.volume := storage.volume + amountIn;
-  storage.fees := storage.fees + fee;
+  storage.volume += amountIn;
+  storage.fees += fee;
   emit Swapped { trader = Evm.sender(); amountIn = amountIn; amountOut = amountOut; };
   const result : SwapResult := { amountOut = amountOut; fee = fee; };
 } with result
 
 external function deposit(const amount : uint) : uint is {
   const minted : uint := amount * 10;
-  storage.totalShares := storage.totalShares + minted;
-  storage.shares[Evm.sender()] := storage.shares[Evm.sender()] + minted;
+  storage.totalShares += minted;
+  storage.shares[Evm.sender()] += minted;
 } with minted
 
 external function split(const shares : uint) : (uint, uint) is {
-  storage.totalShares := storage.totalShares - shares;
+  storage.totalShares -= shares;
 } with (shares / 3, shares - shares / 3)
 
 external view function sharesOf(const who : address) : uint is storage.shares[who]
