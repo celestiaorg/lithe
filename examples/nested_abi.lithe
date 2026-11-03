@@ -17,7 +17,7 @@ type Reserves is record {
 }
 
 interface Pair is {
-  view function getReserves() : Reserves;
+  view function getReserves() : flat Reserves;
 }
 
 interface Book is {
@@ -63,7 +63,7 @@ is {
 }
 
 (* Several results in one record: Uniswap's `getReserves`. *)
-external view function reservesOf(const pair : Pair) : Reserves is
+external view function reservesOf(const pair : Pair) : flat Reserves is
   query pair.getReserves()
 
 (* Several values from `bytes`, as `abi.decode(data, (address, uint256))`. *)

@@ -39,8 +39,7 @@ module AccessControl is {
     indexed sender : address;
   }
 
-  pure function defaultAdminRole() : bytes32 is
-    0x0000000000000000000000000000000000000000000000000000000000000000
+  const defaultAdminRole : bytes32 := 0x0000000000000000000000000000000000000000000000000000000000000000;
 
   external view function hasRole(const role : bytes32; const account : address) : bool is
     access.roles[role].hasRole[account]

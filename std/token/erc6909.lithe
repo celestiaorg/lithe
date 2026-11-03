@@ -1,7 +1,10 @@
 (* The ERC-6909 minimal multi-token standard. Errors and events match OpenZeppelin's
    `ERC6909`, and so does the order of its checks.
 
-     use ERC6909 exposing IERC6909;
+     use ERC6909 exposing IERC6909 with {
+       hook beforeTransfer is skip;
+       hook afterTransfer is skip;
+     }
      supports IERC6909;
 
    An operator moves any amount of any of an owner's ids; an allowance is per spender and
@@ -11,10 +14,8 @@
    Every balance change goes through `update`, like OpenZeppelin's `_update`, which calls
    the contract's two hooks: at its start, `beforeTransfer`, and after the `Transfer` log,
    `afterTransfer`, where extensions such as `ERC6909TokenSupply` follow the change.
-   `from` is zero for a mint, `to` for a burn. A token without extensions skips both:
-
-     hook ERC6909.beforeTransfer is skip;
-     hook ERC6909.afterTransfer is skip; *)
+   `from` is zero for a mint, `to` for a burn. A token without extensions skips both, as
+   above. *)
 
 import "std/interfaces/erc165";
 import "std/interfaces/erc6909";

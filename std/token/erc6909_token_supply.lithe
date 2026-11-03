@@ -2,11 +2,12 @@
    burns change it, through `ERC6909`'s `afterTransfer` hook, which the contract points
    here, or calls this from its own body with what else it runs after a balance change:
 
+     use ERC6909 exposing IERC6909 with {
+       hook beforeTransfer is skip;
+       hook afterTransfer is ERC6909TokenSupply.afterTransfer;
+     }
      use ERC6909TokenSupply exposing IERC6909TokenSupply;
-     supports IERC6909TokenSupply;
-
-     hook ERC6909.beforeTransfer is skip;
-     hook ERC6909.afterTransfer is ERC6909TokenSupply.afterTransfer; *)
+     supports IERC6909TokenSupply; *)
 
 import "std/token/erc6909";
 import "std/interfaces/erc6909";

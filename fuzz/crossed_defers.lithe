@@ -53,22 +53,21 @@ module Ledger is {
 
 storage is record { moves : uint; tags : uint; }
 
-use Ledger exposing { view function totals() : (uint, uint, uint); }
-
-hook Ledger.moved(const id : uint) is {
-  storage.moves += 1;
-  if id % 3 = 0 then {
-    defer Evm.call(address(0xcd), Abi.encode(id + 1000)) then (answer : bytes) {
-      storage.tags += answer.length;
-    };
+use Ledger exposing { view function totals() : (uint, uint, uint); } with {
+  hook moved(const id : uint) is {
+    storage.moves += 1;
+    if id % 3 = 0 then {
+      defer Evm.call(address(0xcd), Abi.encode(id + 1000)) then (answer : bytes) {
+        storage.tags += answer.length;
+      };
+    }
   }
+  hook priced(const id : uint) : uint is {
+    defer Evm.call(address(0xcd), Abi.encode(id, uint(Crypto.keccak256(Abi.encode(id))))) then (answer : bytes) {
+      storage.tags := storage.tags + answer.length + id;
+    };
+  } with id * 2
 }
-
-hook Ledger.priced(const id : uint) : uint is {
-  defer Evm.call(address(0xcd), Abi.encode(id, uint(Crypto.keccak256(Abi.encode(id))))) then (answer : bytes) {
-    storage.tags := storage.tags + answer.length + id;
-  };
-} with id * 2
 
 external function note(const to : address; const seed : uint) is Ledger.note(to, seed)
 

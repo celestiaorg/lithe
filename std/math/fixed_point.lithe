@@ -17,47 +17,44 @@ module FixedPoint is {
   error ExpOverflow;
   error LnWadUndefined;
 
-  pure function scale() : uint is
-    10 ** 18
+  const scale : uint := 10 ** 18;
 
-  pure function bpsScale() : uint is
-    10_000
+  const bpsScale : uint := 10_000;
 
-  pure function one() : Wad is
-    Wad(scale())
+  const one : Wad := Wad(scale);
 
   pure function toWad(const n : uint) : Wad is
-    Wad(n * scale())
+    Wad(n * scale)
 
   (* The whole part, rounded down. *)
   pure function fromWad(const x : Wad) : uint is
-    uint(x) / scale()
+    uint(x) / scale
 
   pure function wadMul(const a : Wad; const b : Wad) : Wad is
-    Wad(Uint.mulDiv(uint(a), uint(b), scale()))
+    Wad(Uint.mulDiv(uint(a), uint(b), scale))
 
   pure function wadDiv(const a : Wad; const b : Wad) : Wad is
-    Wad(Uint.mulDiv(uint(a), scale(), uint(b)))
+    Wad(Uint.mulDiv(uint(a), scale, uint(b)))
 
   pure function wadMulUp(const a : Wad; const b : Wad) : Wad is
-    Wad(Math.mulDivUp(uint(a), uint(b), scale()))
+    Wad(Math.mulDivUp(uint(a), uint(b), scale))
 
   pure function wadDivUp(const a : Wad; const b : Wad) : Wad is
-    Wad(Math.mulDivUp(uint(a), scale(), uint(b)))
+    Wad(Math.mulDivUp(uint(a), scale, uint(b)))
 
   (* `amount` scaled by a `Wad` factor: a fee rate of `0.003e18` takes 0.3%. *)
   pure function mulWad(const amount : uint; const factor : Wad) : uint is
-    Uint.mulDiv(amount, uint(factor), scale())
+    Uint.mulDiv(amount, uint(factor), scale)
 
   pure function mulWadUp(const amount : uint; const factor : Wad) : uint is
-    Math.mulDivUp(amount, uint(factor), scale())
+    Math.mulDivUp(amount, uint(factor), scale)
 
   (* `amount` divided by a `Wad` factor: a factor of `2e18` halves it. *)
   pure function divWad(const amount : uint; const factor : Wad) : uint is
-    Uint.mulDiv(amount, scale(), uint(factor))
+    Uint.mulDiv(amount, scale, uint(factor))
 
   pure function divWadUp(const amount : uint; const factor : Wad) : uint is
-    Math.mulDivUp(amount, scale(), uint(factor))
+    Math.mulDivUp(amount, scale, uint(factor))
 
   (* Signed products and quotients round toward zero, and the product `a * b` must fit
      in an `int`, as in Solady's `sMulWad` and `sDivWad`. *)
@@ -149,12 +146,12 @@ module FixedPoint is {
      `(x / z) * 1e18 + (x % z) * 1e18 / z` without overflow. *)
   pure function sqrtWad(const x : Wad) : Wad is {
     const a : uint := uint(x);
-    const small : bool := a <= Uint.max / scale();
-    var z : uint := Math.sqrt(if small then Uint.wrappingMul(a, scale()) else a);
+    const small : bool := a <= Uint.max / scale;
+    var z : uint := Math.sqrt(if small then Uint.wrappingMul(a, scale) else a);
     if not small then {
       z := Uint.wrappingMul(Uint.wrappingAdd(z, 1), 1_000_000_000);
       const (q, rest) : (uint, uint) := Uint.divRem(a, z);
-      z := Uint.wrappingAdd(Uint.wrappingAdd(Uint.wrappingMul(q, scale()), Uint.wrappingMul(rest, scale()) / z), z)
+      z := Uint.wrappingAdd(Uint.wrappingAdd(Uint.wrappingMul(q, scale), Uint.wrappingMul(rest, scale) / z), z)
         >> 1;
       z := Uint.wrappingSub(z, uint(999_999_999_999_999_999 > Uint.wrappingSub(Uint.mulMod(z, z, a), 1)));
     }
@@ -213,5 +210,5 @@ module FixedPoint is {
 
   (* `bps` basis points of `amount`: 25 is 0.25%. *)
   pure function applyBps(const amount : uint; const bps : uint) : uint is
-    Uint.mulDiv(amount, bps, bpsScale())
+    Uint.mulDiv(amount, bps, bpsScale)
 }

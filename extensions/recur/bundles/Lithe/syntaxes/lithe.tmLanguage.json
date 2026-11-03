@@ -58,7 +58,7 @@
         },
         {
           "name": "storage.modifier.lithe",
-          "match": "\\b(external|view|pure|payable|nonreentrant|private|indexed|anonymous|raises|intrinsic)\\b"
+          "match": "\\b(external|view|pure|payable|nonreentrant|private|indexed|anonymous|raises|intrinsic)\\b|\\bflat(?=\\s+[A-Za-z(|])"
         },
         {
           "name": "keyword.other.spec.lithe",

@@ -142,7 +142,7 @@ external view function check(const n : uint) is {
 gate.lithe:3:46: an `external view` function must return a value: return a `bool` the caller can check, and let the caller fail
 ```
 
-A result can be any ABI value. A record result is flattened into named ABI outputs, one per field, as a Solidity function with several results has. A tuple or `tuple record` result is one output, a Solidity tuple, as a function returning a struct has. For words alone the two lay out the same bytes.
+A result can be any ABI value. A record or tuple result is one output, a Solidity tuple, as a function returning a struct has. A `flat` record result, `: flat Quote`, is named ABI outputs, one per field, as a Solidity function with several results has. A parameter can be `flat` the same way, `const order : flat Order`, to take a record's fields as separate parameters. For words alone the two lay out the same bytes. See [Records in the ABI](/language/types#records-in-the-abi).
 
 ## Errors
 

@@ -1939,13 +1939,10 @@ impl<'a> Gen<'a> {
             self.const_params.extend(consts.iter().copied());
             self.const_strs.extend(strs.iter().cloned());
             let later = self.continuation_syms(idx);
-            let f = &self.checked.prog.funcs[idx];
             unbuilt = strs
                 .iter()
                 .map(|&(sym, _)| sym)
-                .filter(|&sym| {
-                    !later.contains(&sym) && self.folds_reads(&f.stmts, f.tail.as_ref(), sym)
-                })
+                .filter(|&sym| !later.contains(&sym) && self.body_folds_reads(idx, sym))
                 .collect();
             (self.const_params, self.const_strs) = saved;
         }
@@ -2216,6 +2213,13 @@ impl<'a> Gen<'a> {
     /// constant static local passed as a constant parameter from the local's own word; an
     /// entrypoint's parameter's word later reads from calldata. Returns the parameters it
     /// aliased, with their own words.
+    /// `folds_reads` over function `idx`'s body. A function its module's facet runs, or a
+    /// hook it calls back, has no body here: its call encodes every parameter from memory.
+    fn body_folds_reads(&self, idx: usize, sym: usize) -> bool {
+        let f = &self.checked.prog.funcs[idx];
+        !self.shape.cross.contains_key(&idx) && self.folds_reads(&f.stmts, f.tail.as_ref(), sym)
+    }
+
     /// Whether every read of `sym`, a parameter bound to a literal string, compiles to a
     /// constant: a hashed, assigned, or bound value known from literals, or one in a branch
     /// a literal condition skips.
@@ -3095,14 +3099,12 @@ impl<'a> Gen<'a> {
                 self.store_params(params);
             }
             let later = self.continuation_syms(idx);
-            let f = &self.checked.prog.funcs[idx];
             let read: Vec<(usize, Word)> = fixed
                 .iter()
                 .copied()
                 .filter(|&(sym, _)| {
                     self.local[sym] >= 0
-                        && (later.contains(&sym)
-                            || !self.folds_reads(&f.stmts, f.tail.as_ref(), sym))
+                        && (later.contains(&sym) || !self.body_folds_reads(idx, sym))
                 })
                 .collect();
             for (sym, w) in read {

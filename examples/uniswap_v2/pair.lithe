@@ -25,12 +25,12 @@ contract UniswapV2Pair is {
   use Nonces;
   use Math;
 
-  use ERC20 exposing IERC20, IERC20Metadata;
+  use ERC20 exposing IERC20, IERC20Metadata with {
+    hook beforeTransfer is skip;
+    hook afterTransfer is skip;
+  }
   use ERC20Permit exposing IERC20Permit;
   supports IERC20, IERC20Metadata, IERC20Permit;
-
-  hook ERC20.beforeTransfer is skip;
-  hook ERC20.afterTransfer is skip;
 
   (* One slot, written at once. *)
   type Reserves is record {

@@ -33,7 +33,7 @@ storage is record {
 external pure function encFlat(const who : address; const amount : uint; const memo : string) : bytes is
   Abi.encode(who, amount, memo)
 
-external pure function decFlat(const data : bytes) : Flat is {
+external pure function decFlat(const data : bytes) : flat Flat is {
   const (who, amount, memo) : (address, uint, string) := Abi.decode(data, (address, uint, string));
 } with { who = who; amount = amount; memo = memo; }
 

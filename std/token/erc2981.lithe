@@ -18,15 +18,14 @@ module ERC2981 is {
     tokenRoyalties : map(uint, Royalty);
   }
 
-  pure function feeDenominator() : uint96 is
-    10000
+  const feeDenominator : uint96 := 10000;
 
   function setDefaultRoyalty(const receiver : address; const fee : uint96)
     raises ERC2981InvalidDefaultRoyalty | ERC2981InvalidDefaultRoyaltyReceiver
   is {
     assert(
-      fee <= feeDenominator(),
-      ERC2981InvalidDefaultRoyalty { numerator = uint(fee); denominator = uint(feeDenominator()); }
+      fee <= feeDenominator,
+      ERC2981InvalidDefaultRoyalty { numerator = uint(fee); denominator = uint(feeDenominator); }
     );
     assert(receiver <> Address.zero, ERC2981InvalidDefaultRoyaltyReceiver(Address.zero));
     erc2981.defaultRoyalty := { receiver = receiver; fraction = fee; };
@@ -40,8 +39,8 @@ module ERC2981 is {
     raises ERC2981InvalidTokenRoyalty | ERC2981InvalidTokenRoyaltyReceiver
   is {
     assert(
-      fee <= feeDenominator(),
-      ERC2981InvalidTokenRoyalty { tokenId = tokenId; numerator = uint(fee); denominator = uint(feeDenominator()); }
+      fee <= feeDenominator,
+      ERC2981InvalidTokenRoyalty { tokenId = tokenId; numerator = uint(fee); denominator = uint(feeDenominator); }
     );
     assert(
       receiver <> Address.zero,
@@ -55,12 +54,15 @@ module ERC2981 is {
     delete erc2981.tokenRoyalties[tokenId];
   }
 
-  external view function royaltyInfo(const tokenId : uint; const salePrice : uint) : (address, uint) is {
+  external view function royaltyInfo(const tokenId : uint; const salePrice : uint) : flat RoyaltyInfo is {
     var receiver : address := erc2981.tokenRoyalties[tokenId].receiver;
     var fraction : uint96 := erc2981.tokenRoyalties[tokenId].fraction;
     if receiver = Address.zero then {
       receiver := erc2981.defaultRoyalty.receiver;
       fraction := erc2981.defaultRoyalty.fraction;
     }
-  } with (receiver, salePrice * uint(fraction) / uint(feeDenominator()))
+  } with {
+    receiver = receiver;
+    royaltyAmount = salePrice * uint(fraction) / uint(feeDenominator);
+  }
 }

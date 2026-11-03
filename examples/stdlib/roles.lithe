@@ -32,7 +32,7 @@ contract Registry is {
     raises OwnableInvalidOwner
   is {
     Ownable.init(Evm.sender());
-    AccessControl.grant(AccessControl.defaultAdminRole(), Evm.sender());
+    AccessControl.grant(AccessControl.defaultAdminRole, Evm.sender());
     AccessControl.grant(minter(), Evm.sender());
   }
 

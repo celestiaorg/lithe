@@ -43,15 +43,15 @@ is
 
 This contract's ABI is `deposit(uint256 amount)`, `withdraw(uint256 amount)`, and `reset()`. There is no `main`, and callers never encode a variant.
 
-A function dispatches when its first parameter is a variant and its body is a `case` on it, after any `const`s and `assert`s. Any other external function takes a variant with no payloads as a `uint8`, and a variant with payloads not at all.
+A function dispatches when its first parameter is a variant and its body is a `case` on it, after any `const`s and `assert`s. Any other external function takes a variant with no payloads as a `uint8`, and a variant with payloads as one `(uint8 tag, bytes payload)` tuple, whose payload is what the case's entrypoint would take: see [Variants in the ABI](/language/types#variants-in-the-abi).
 
 | Case | ABI function |
 | --- | --- |
 | name | the name after `external`: `SetFee external setFee` is `setFee`. A case without one is named as written, so `SetFee` alone is `SetFee` |
 | no payload | no parameters |
 | a single value | one parameter, named by the declaration: `SetFee of (fee : uint)` is `setFee(uint256 fee)`, and `SetFee of uint` leaves it unnamed |
-| a record | one parameter per field, with the field names |
-| a `tuple record` | one tuple parameter, named like a single value, with the fields as its components |
+| a record | one tuple parameter, named like a single value, with the fields as its components |
+| a `flat` record, `Create external create of flat CreateOptions` | one parameter per field, with the field names |
 
 The ABI is read off the type declaration, never the function body, so a case's `external` name and its payload together are the entrypoint's signature: renaming the binding in `| SetFee(f) ->` changes nothing callers see.
 

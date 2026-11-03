@@ -21,8 +21,7 @@ error ERC3156InvalidReceiver of address;
 module ERC20FlashMint is {
   requires ERC20;
 
-  pure function returnValue() : bytes32 is
-    Crypto.keccak256("ERC3156FlashBorrower.onFlashLoan")
+  const returnValue : bytes32 := Crypto.keccak256("ERC3156FlashBorrower.onFlashLoan");
 
   view function maxLoan(const token : address) : uint is {
     var most : uint := 0;

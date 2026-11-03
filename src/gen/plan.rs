@@ -61,6 +61,7 @@ impl<'a> Gen<'a> {
             exp_sites: [0; 2],
             queued_sites: 0,
             queue_sites: HashMap::new(),
+            queues_begun: 0,
             trusted_index: false,
             cd_lists: std::collections::HashSet::new(),
             cd_bytes: std::collections::HashSet::new(),
@@ -168,10 +169,15 @@ impl<'a> Gen<'a> {
             } else {
                 g.checked.types[sym.ty].words
             };
-            if w == 0 {
+            if w == 0 || g.checked.field_of.contains_key(&i) {
                 continue;
             }
             *slot = g.region(Region::Local(i), w * 32);
+        }
+        // A pattern's name is its field's words in the payload bound whole.
+        for (&sym, &(whole, i)) in &g.checked.field_of {
+            let field = &g.checked.types[g.checked.syms[whole].ty].fields[i];
+            local[sym] = local[whole] + field.slot as i32 * 32;
         }
         g.local = local;
         g.lists_in_order = g.stored_lists_in_order();
@@ -530,7 +536,7 @@ impl<'a> Gen<'a> {
             TyKind::Option => return Some("an option"),
             TyKind::Map => return Some("a map"),
             TyKind::Operation => return Some("an operation"),
-            _ if !self.abi_value(ty) => return Some("a variant with payloads, or holds one"),
+            _ if !self.abi_value(ty) => return Some("a value that holds an option or a map"),
             _ => {}
         }
         None
@@ -538,11 +544,16 @@ impl<'a> Gen<'a> {
 
     fn abi_value(&self, ty: usize) -> bool {
         let t = &self.checked.types[ty];
+        if is_sum(&self.checked.types, ty) {
+            return t
+                .variants
+                .iter()
+                .all(|v| v.payload.is_none_or(|p| self.abi_value(p)));
+        }
         !matches!(
             t.kind,
             TyKind::Option | TyKind::Map | TyKind::Variant | TyKind::Operation
-        ) && !is_sum(&self.checked.types, ty)
-            && t.elem.is_none_or(|e| self.abi_value(e))
+        ) && t.elem.is_none_or(|e| self.abi_value(e))
             && t.fields.iter().all(|f| self.abi_value(f.ty))
     }
 
@@ -1252,6 +1263,7 @@ impl<'a> Gen<'a> {
                     Sub::TreeDec(..) => (2, 0),
                     Sub::TreeCheck(..) => (2, 0),
                     Sub::TreeCdEnc(_) => (2, 1),
+                    Sub::TreePayload(_) => (2, 1),
                     Sub::SaveRecord => (1, 1),
                 };
                 (label, effect)

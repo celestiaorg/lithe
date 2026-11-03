@@ -8,7 +8,7 @@ type SwapResult is record {
 }
 
 interface Exchange is {
-  function swap(amountIn : uint; minOut : uint) : SwapResult;
+  function swap(amountIn : uint; minOut : uint) : flat SwapResult;
   function deposit(amount : uint) : uint;
   function split(shares : uint) : (uint, uint);
 }
@@ -112,4 +112,4 @@ is {
     };
 }
 
-external view function orderOf(const id : uint) : Order is storage.orders[id]
+external view function orderOf(const id : uint) : flat Order is storage.orders[id]

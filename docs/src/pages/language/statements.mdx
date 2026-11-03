@@ -26,7 +26,7 @@ A block is a sequence of statements in braces, each ending with `;`:
 
 ## Bindings
 
-`const` binds a value that never changes. `var` binds a value that `:=` can reassign, whole or in part: a record's field (`p.x := v`) or a list's element (`xs[i] := v`). Either can hold any value, records, tuples, fixed lists, and variants included, and either can name a tuple's elements: `const (a, b) : (t, u) := e;` or `var (a, b) : (t, u) := e;`. Every binding states its type, and names cannot shadow other names in scope.
+`const` binds a value that never changes. `var` binds a value that `:=` can reassign, whole or in part: a record's field (`p.x := v`) or a list's element (`xs[i] := v`). Either can hold any value, records, tuples, fixed lists, and variants included, and either can name a tuple's elements: `const (a, b) : (t, u) := e;` or `var (a, b) : (t, u) := e;`. Every binding states its type, and names cannot shadow other names in scope, [constants](/by-example/constants) included.
 
 ```lithe
 storage is record {
@@ -262,7 +262,7 @@ for (i, who) : (uint, address) in storage.members until hit <> 0 do {
 
 ### `bound`
 
-`bound n` caps the number of iterations at a number fixed when the contract is compiled. A longer list, or a wider range, reverts with `Panic(0x01)` before the loop starts:
+`bound n` caps the number of iterations at a number fixed when the contract is compiled: a number, a [constant](/by-example/constants), or arithmetic over those, as a fixed list's length is. A longer list, or a wider range, reverts with `Panic(0x01)` before the loop starts:
 
 ```lithe fragment
 for who : address in storage.members bound 50 do {

@@ -251,7 +251,9 @@ impl Checker {
             None => template.type_params.clone(),
         };
         // A literal takes its type from its parameter, once the other arguments have
-        // settled the type parameters that parameter names.
+        // settled the type parameters that parameter names. Any other argument is checked
+        // against its parameter's type where the arguments before it settle that type, so a
+        // case name shared by several variants resolves as it does in a plain call.
         let literal = |arg: &Expr| {
             matches!(
                 arg,
@@ -264,11 +266,7 @@ impl Checker {
                 if literal(arg) != pass {
                     continue;
                 }
-                let expect = if pass {
-                    self.build_subst(&param.ty, target.module, &env).ok()
-                } else {
-                    None
-                };
+                let expect = self.build_subst(&param.ty, target.module, &env).ok();
                 self.check_expr_as(arg, expect)?;
                 self.unify(
                     &param.ty,
@@ -321,7 +319,8 @@ impl Checker {
                 ));
             }
             if param.storage {
-                let Some(path) = storage_path(arg, &param.name, &mut hidden) else {
+                let mut keys = Vec::new();
+                let Some(path) = storage_path(arg, &param.name, &mut keys) else {
                     return Err(error(
                         arg.line(),
                         arg.col(),
@@ -337,12 +336,13 @@ impl Checker {
                     ));
                 }
                 // A map is reached through its slot alone, so one copy serves every map of
-                // the type: the call passes the slot.
+                // the type: the call passes the slot, keys and all.
                 if let Some(transient) = self.map_slot_transient(concrete, arg) {
                     slots.push((param.name.clone(), transient));
                     keep.push(param.clone());
                     continue;
                 }
+                hidden.extend(keys);
                 // The same place, however its name was written, shares one copy.
                 let named = match path.first() {
                     Some(Seg::Field(first)) if self.known_modules.contains(first) => 2,
@@ -378,6 +378,7 @@ impl Checker {
                 mutable: false,
                 storage: false,
                 name: name.clone(),
+                flat: false,
                 ty: TypeRef::Hole { id: arg.ty() },
                 ty_id: 0,
                 sym: None,
@@ -796,15 +797,9 @@ fn subst_bound(ty: &TypeRef, env: &HashMap<String, usize>) -> TypeRef {
             col: *col,
             elems: elems.iter().map(|elem| subst_bound(elem, env)).collect(),
         },
-        TypeRef::Record {
-            line,
-            col,
-            fields,
-            tuple,
-        } => TypeRef::Record {
+        TypeRef::Record { line, col, fields } => TypeRef::Record {
             line: *line,
             col: *col,
-            tuple: *tuple,
             fields: fields
                 .iter()
                 .map(|field| FieldRef {
@@ -835,6 +830,7 @@ fn subst_bound(ty: &TypeRef, env: &HashMap<String, usize>) -> TypeRef {
                         .map(|payload| subst_bound(payload, env)),
                     param: variant.param.clone(),
                     external: variant.external.clone(),
+                    flat: variant.flat,
                 })
                 .collect(),
         },

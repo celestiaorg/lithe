@@ -395,6 +395,7 @@ impl Checker {
                     if !self.same(arg.ty(), pty) {
                         return Err(error(arg.line(), arg.col(), "argument has the wrong type"));
                     }
+                    self.take_form(arg, pty);
                 }
                 let sel = crate::keccak::selector(&sig);
                 args[0] = Expr::Lit {
@@ -750,6 +751,7 @@ impl Checker {
             | Builtin::Some
             | Builtin::None
             | Builtin::Ctor(_)
+            | Builtin::Braced
             | Builtin::BytesAt
             | Builtin::BytesSlice
             | Builtin::SpecState(_)
@@ -1099,7 +1101,8 @@ impl Checker {
             | Builtin::Cast
             | Builtin::Some
             | Builtin::None
-            | Builtin::Ctor(_) => TY_UNIT,
+            | Builtin::Ctor(_)
+            | Builtin::Braced => TY_UNIT,
             Builtin::SpecCount => TY_UINT,
             Builtin::SpecState(_) | Builtin::SpecSum => TY_UNIT,
             Builtin::SpecForall => TY_BOOL,

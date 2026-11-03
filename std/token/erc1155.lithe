@@ -3,17 +3,17 @@
    `setURI`, from `deploy` and whenever it changes: one URI serves every id, and clients
    substitute the id for `{id}` in it.
 
-     use ERC1155 exposing IERC1155, IERC1155MetadataURI;
+     use ERC1155 exposing IERC1155, IERC1155MetadataURI with {
+       hook beforeTransfer is skip;
+       hook afterTransfer is skip;
+     }
      supports IERC1155, IERC1155MetadataURI;
 
    Every balance change goes through `update`, like OpenZeppelin's `_update`, which
    calls the contract's two hooks with every id and value of the change: at its start,
    `beforeTransfer`, where OpenZeppelin's overrides check a pause, and after the transfer
    log, `afterTransfer`, where extensions such as `ERC1155Supply` follow the change.
-   `from` is zero for a mint, `to` for a burn. A collection without extensions skips both:
-
-     hook ERC1155.beforeTransfer is skip;
-     hook ERC1155.afterTransfer is skip;
+   `from` is zero for a mint, `to` for a burn. A collection without extensions skips both, as above.
 
    The safe transfers and mints call the receiver in a deferred call, after the update's
    own effects, and pass a receiver's revert reason through unchanged. A burn asks no

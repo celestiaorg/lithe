@@ -17,7 +17,12 @@ contract BenchNFTFull is {
   use Initializable;
   use ERC721URIStorage;
 
-  use ERC721 exposing IERC721Views, IERC721Name;
+  use ERC721 exposing IERC721Views, IERC721Name with {
+    (* `ERC721Pausable` checks the pause inside every ownership update, then
+       `ERC721Enumerable` keeps its lists. *)
+    hook beforeTransfer is Pausable.requireNotPaused;
+    hook afterTransfer is ERC721Enumerable.afterTransfer;
+  }
   use ERC721Enumerable exposing IERC721Enumerable;
   use ERC2981 exposing IERC2981;
   use Ownable exposing IOwnable;
@@ -50,11 +55,6 @@ contract BenchNFTFull is {
     raises ERC721NonexistentToken
   is
     ERC721URIStorage.tokenURI(tokenId, "ipfs://bench/")
-
-  (* `ERC721Pausable` checks the pause inside every ownership update, then
-     `ERC721Enumerable` keeps its lists. *)
-  hook ERC721.beforeTransfer is Pausable.requireNotPaused;
-  hook ERC721.afterTransfer is ERC721Enumerable.afterTransfer;
 
   function move(const from : address; const to : address; const tokenId : uint)
     raises ERC721InvalidReceiver | ERC721IncorrectOwner | EnforcedPause | ERC721NonexistentToken

@@ -12,16 +12,16 @@ import "std/evm";
 import "std/token/erc6909";
 
 contract BenchClaims is {
-  use ERC6909 exposing IERC6909;
+  use ERC6909 exposing IERC6909 with {
+    hook beforeTransfer is skip;
+    hook afterTransfer is ERC6909TokenSupply.afterTransfer;
+  }
   use ERC6909TokenSupply exposing IERC6909TokenSupply;
   use ERC6909Metadata exposing IERC6909Metadata;
   use ERC6909ContentURI exposing IERC6909ContentURI;
   use Ownable exposing IOwnable;
 
   supports IERC6909, IERC6909TokenSupply, IERC6909Metadata, IERC6909ContentURI;
-
-  hook ERC6909.beforeTransfer is skip;
-  hook ERC6909.afterTransfer is ERC6909TokenSupply.afterTransfer;
 
   deploy(const initialOwner : address)
     raises OwnableInvalidOwner

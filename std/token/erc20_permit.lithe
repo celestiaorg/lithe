@@ -24,8 +24,9 @@ module ERC20Permit is {
   requires ECDSA;
   requires Nonces;
 
-  pure function permitTypehash() : bytes32 is
-    Crypto.keccak256("Permit(address owner,address spender,uint256 value,uint256 nonce,uint256 deadline)")
+  const permitTypehash : bytes32 := Crypto.keccak256(
+    "Permit(address owner,address spender,uint256 value,uint256 nonce,uint256 deadline)"
+  );
 
   external function permit(
     const owner : address;
@@ -41,7 +42,7 @@ module ERC20Permit is {
   is {
     assert(uint(Evm.blockTimestamp()) <= deadline, ERC2612ExpiredSignature(deadline));
     const structHash : bytes32 := Crypto.keccak256(Abi.encode(
-      permitTypehash(),
+      permitTypehash,
       owner,
       spender,
       value,

@@ -9,7 +9,7 @@ type SwapResult is record {
 }
 
 interface Exchange is {
-  function swap(amountIn : uint) : SwapResult;
+  function swap(amountIn : uint) : flat SwapResult;
 }
 
 interface Vault is {
@@ -94,4 +94,4 @@ external nonreentrant function pay(const token : Token; const to : address; cons
     };
 }
 
-external view function orderOf(const id : uint) : Order is storage.orders[id]
+external view function orderOf(const id : uint) : flat Order is storage.orders[id]

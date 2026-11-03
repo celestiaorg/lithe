@@ -676,10 +676,15 @@ impl<'a> Gen<'a> {
         (exits && once).then_some(end + 1)
     }
 
-    /// Instructions `emit` produces, without adding them to the code.
+    /// Instructions `emit` produces, without adding them to the code. The caller splices
+    /// them where it chooses, which need not follow what was emitted last, so they neither
+    /// use nor keep words read from storage: a slot word kept by one leaf's load would
+    /// serve another leaf of the slot whose load lands earlier in the code.
     fn side_code(&mut self, emit: impl FnOnce(&mut Self)) -> Vec<Inst> {
         let saved = std::mem::take(&mut self.code);
+        let vals = std::mem::take(&mut self.val_cache);
         emit(self);
+        self.val_cache = vals;
         std::mem::replace(&mut self.code, saved)
     }
 

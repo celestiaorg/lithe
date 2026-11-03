@@ -31,10 +31,10 @@ type AdminAction is
   | SetMinter external setMinter of address
 
 type MinterAction is
-  | Mint external mint of MintParams
+  | Mint external mint of flat MintParams
 
 type HolderAction is
-  | Transfer external transfer of TransferParams
+  | Transfer external transfer of flat TransferParams
   | Burn external burn of uint
 
 type Action is
@@ -63,14 +63,14 @@ is {
   assert(Evm.sender() = storage.minter, NotMinter);
 }
 with case action of {
-| Mint(p) -> { storage.balances[p.to] += p.amount; }
+| Mint { to; amount } -> { storage.balances[to] += amount; }
 }
 
 function holderMain(const action : HolderAction) is
   case action of {
-  | Transfer(p) -> {
-      storage.balances[Evm.sender()] -= p.amount;
-      storage.balances[p.to] += p.amount;
+  | Transfer { to; amount } -> {
+      storage.balances[Evm.sender()] -= amount;
+      storage.balances[to] += amount;
     }
   | Burn(amount) -> {
       storage.balances[Evm.sender()] -= amount;
@@ -91,7 +91,7 @@ external function init() is {
 }
 ```
 
-Each leaf case names its ABI function with `external`: `| Mint external mint of MintParams` is `mint(address,uint256)`. A case without one is exposed as written, so `| Mint of MintParams` alone would be `Mint(address,uint256)`. The group cases, `Admin`, `Minter`, and `Holder`, are never entrypoints, so they take no name.
+Each leaf case names its ABI function with `external`: `| Mint external mint of flat MintParams` is `mint(address,uint256)`, and `flat` spreads the record into one parameter per field; without it, the record is one tuple, `mint((address,uint256))`. A case without `external` is exposed as written, so `| Mint of flat MintParams` alone would be `Mint(address,uint256)`. The group cases, `Admin`, `Minter`, and `Holder`, are never entrypoints, so they take no name.
 
 `lithe abi-tree dispatch.lithe` shows each entrypoint's path and guards:
 

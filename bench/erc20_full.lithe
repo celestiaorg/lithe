@@ -26,7 +26,18 @@ contract BenchGovernanceToken is {
   use Checkpoints;
   use Nonces;
 
-  use ERC20 exposing IERC20Views, IERC20Metadata;
+  use ERC20 exposing IERC20Views, IERC20Metadata with {
+    (* Every balance change: the pause, the move, the cap on a mint, then the votes. *)
+    hook beforeTransfer is Pausable.requireNotPaused;
+    hook afterTransfer(const from : address; const to : address; const value : uint)
+      raises ERC20ExceededCap | ERC20ExceededSafeSupply | CheckpointUnorderedInsertion
+    is {
+      if from = Address.zero then {
+        ERC20Capped.checkCap(ERC20.erc20.totalSupply);
+      }
+      ERC20Votes.update(from, to, value);
+    }
+  }
   use AccessControl exposing IAccessControl;
   use Pausable exposing IPausable;
   use ERC20Capped exposing IERC20Capped;
@@ -44,7 +55,7 @@ contract BenchGovernanceToken is {
     Crypto.keccak256("MINTER_ROLE")
 
   external pure function DEFAULT_ADMIN_ROLE() : bytes32 is
-    AccessControl.defaultAdminRole()
+    AccessControl.defaultAdminRole
 
   external pure function PAUSER_ROLE() : bytes32 is
     pauserRole()
@@ -61,22 +72,10 @@ contract BenchGovernanceToken is {
     ERC20.init("Bench Governance Token", "BGOV");
     ERC20Capped.init(1_000_000 * 10 ** 18);
     EIP712.init("Bench Governance Token", "1");
-    AccessControl.grant(AccessControl.defaultAdminRole(), defaultAdmin);
+    AccessControl.grant(AccessControl.defaultAdminRole, defaultAdmin);
     AccessControl.grant(pauserRole(), pauser);
     AccessControl.grant(minterRole(), minter);
     Initializable.finish();
-  }
-
-  (* Every balance change: the pause, the move, the cap on a mint, then the votes. *)
-  hook ERC20.beforeTransfer is Pausable.requireNotPaused;
-
-  hook ERC20.afterTransfer(const from : address; const to : address; const value : uint)
-    raises ERC20ExceededCap | ERC20ExceededSafeSupply | CheckpointUnorderedInsertion
-  is {
-    if from = Address.zero then {
-      ERC20Capped.checkCap(ERC20.erc20.totalSupply);
-    }
-    ERC20Votes.update(from, to, value);
   }
 
   function mintTo(const to : address; const value : uint)
@@ -172,7 +171,7 @@ contract BenchGovernanceToken is {
     mintTo(address(receiver), value);
     defer receiver.onFlashLoan(Evm.sender(), token, value, fee, data) then {
       | Ok(answer : bytes32) -> {
-          assert(answer = ERC20FlashMint.returnValue(), ERC3156InvalidReceiver(address(receiver)));
+          assert(answer = ERC20FlashMint.returnValue, ERC3156InvalidReceiver(address(receiver)));
           ERC20.spendAllowance(address(receiver), Evm.self(), value + fee);
           burnTokens(address(receiver), value + fee);
         }

@@ -11,8 +11,7 @@ module Create3 is {
   requires Create2;
 
   (* The hash of the proxy's creation code. *)
-  pure function proxyCodeHash() : bytes32 is
-    Crypto.keccak256(0x67363d3d37363d34f03d5260086018f3)
+  const proxyCodeHash : bytes32 := Crypto.keccak256(0x67363d3d37363d34f03d5260086018f3);
 
   (* Creates `code`, and answers its address. Raises `FailedDeployment` if the salt was
      used before or the creation fails. *)
@@ -37,7 +36,7 @@ module Create3 is {
 
   (* The proxy's address, then the address of the proxy's first creation. *)
   pure function predict(const salt : bytes32; const deployer : address) : address is {
-    const proxy : address := Create2.computeAddress(salt, proxyCodeHash(), deployer);
+    const proxy : address := Create2.computeAddress(salt, proxyCodeHash, deployer);
     const prefix : bytes2 := 0xd694;
     const nonce : bytes1 := 0x01;
     const hash : bytes32 := Crypto.keccak256(Abi.encodePacked(prefix, proxy, nonce));

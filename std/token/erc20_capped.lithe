@@ -2,9 +2,11 @@
    through `ERC20`'s `afterTransfer` hook, which the token points here, or calls this
    from its own body with what else it runs after a balance change:
 
-     use ERC20Capped exposing IERC20Capped;
-
-     hook ERC20.afterTransfer is ERC20Capped.afterTransfer; *)
+     use ERC20 exposing IERC20, IERC20Metadata with {
+       hook beforeTransfer is skip;
+       hook afterTransfer is ERC20Capped.afterTransfer;
+     }
+     use ERC20Capped exposing IERC20Capped; *)
 
 import "std/address";
 import "std/token/erc20";

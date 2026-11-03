@@ -358,15 +358,8 @@ impl Checker {
                 let (line, col) = (*line, *col);
                 // The bound is a number fixed when the contract is compiled.
                 if let Some(b) = bound {
-                    let n = match b {
-                        Expr::Lit {
-                            lit: Lit::Uint(w) | Lit::Int(w, _),
-                            ..
-                        } if w.0[1..] == [0; 3] => w.0[0],
-                        _ => return Err(error(b.line(), b.col(), "`bound` must be a number")),
-                    };
+                    *cap = Some(self.loop_bound(b)?);
                     self.check_expr_as(b, Some(TY_UINT))?;
-                    *cap = Some(n);
                 }
                 let declared_ty = self.build(ty)?;
                 // A range counts under the loop's one name; a list counts under the index

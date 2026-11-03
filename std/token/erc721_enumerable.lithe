@@ -6,11 +6,11 @@
    the contract points here, or calls this from its own body with what else it runs after a
    transfer:
 
-     use ERC721 exposing IERC721, IERC721Metadata;
-     use ERC721Enumerable exposing IERC721Enumerable;
-
-     hook ERC721.beforeTransfer is skip;
-     hook ERC721.afterTransfer is ERC721Enumerable.afterTransfer; *)
+     use ERC721 exposing IERC721, IERC721Metadata with {
+       hook beforeTransfer is skip;
+       hook afterTransfer is ERC721Enumerable.afterTransfer;
+     }
+     use ERC721Enumerable exposing IERC721Enumerable; *)
 
 import "std/address";
 import "std/list";

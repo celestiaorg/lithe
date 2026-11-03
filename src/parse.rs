@@ -7,6 +7,8 @@ use crate::Error;
 
 /// The word after a module's name in `use M delegated ...` that runs the module from its facet.
 pub(crate) const DELEGATED: &str = "delegated";
+/// Where `flat` may go: the positions whose ABI a record's fields can spread into.
+pub(crate) const FLAT_ONLY: &str = "`flat` goes only on an external function's or interface method's parameter or result, or a dispatched case's payload";
 
 pub(crate) fn parse(src: &str) -> Result<Program, Error> {
     let toks = lex::tokenize(src)?;
@@ -417,7 +419,7 @@ impl<'a> Parser<'a> {
             Kind::Interface => body.interfaces.push(self.interface_decl()?),
             Kind::View | Kind::Pure if self.hook_ahead() => {
                 return Err(self.err(
-                    "a contract implements a hook without restating its effect: write `hook M.h ...`; the module's declaration says what it may do",
+                    "a contract implements a hook without restating its effect: write `hook h ...` in `use M ... with { ... }`; the module's declaration says what it may do",
                 ));
             }
             Kind::External
@@ -446,6 +448,7 @@ impl<'a> Parser<'a> {
                 }
                 body.funcs.push(func);
             }
+            Kind::Const => body.funcs.push(self.const_decl(private)?),
             Kind::Ident if self.spec_ahead() => {
                 if private {
                     return Err(self.err("a spec block cannot be private"));
@@ -518,7 +521,9 @@ impl<'a> Parser<'a> {
                     }
                     body.exposes.push(exposed);
                 }
-                if self.kind() == Kind::Semi {
+                if self.kind() == Kind::With {
+                    self.use_with(&module, body)?;
+                } else if self.kind() == Kind::Semi {
                     self.bump();
                 }
                 body.compose.push(NameAt {
@@ -530,19 +535,22 @@ impl<'a> Parser<'a> {
             Kind::Contract => {
                 return Err(self.err("a contract cannot contain another contract"));
             }
-            Kind::Ident if self.slice() == "hook" && self.peek_kind(1) == Kind::Ident => {
-                if private {
-                    return Err(self.err("a hook cannot be private"));
-                }
-                let func = self.hook_impl()?;
-                body.hooks.push(func);
-            }
-            Kind::Ident if self.slice() == "guard" && self.peek_kind(1) == Kind::Ident => {
-                if private {
-                    return Err(self.err("a guard cannot be private"));
-                }
-                let func = self.guard_impl()?;
-                body.guards.push(func);
+            Kind::Ident
+                if matches!(self.slice(), "guard" | "hook") && self.peek_kind(1) == Kind::Ident =>
+            {
+                let (line, col) = self.at();
+                let word = self.slice().to_string();
+                self.bump();
+                let path = self.dotted()?;
+                let (module, name) = path.rsplit_once('.').unwrap_or(("M", &path));
+                return Err(error(
+                    line,
+                    col,
+                    format!(
+                        "a {word} is bound where the contract uses its module: move it into `use {} ... with {{ {word} {name} ... }}`",
+                        crate::modules::shown(module)
+                    ),
+                ));
             }
             Kind::Ident if !private && self.slice() == "supports" => {
                 let names = self.supports_list()?;
@@ -680,9 +688,16 @@ impl<'a> Parser<'a> {
                 self.bump();
                 if !matches!(
                     self.kind(),
-                    Kind::View | Kind::Pure | Kind::Function | Kind::External | Kind::Payable
+                    Kind::View
+                        | Kind::Pure
+                        | Kind::Function
+                        | Kind::External
+                        | Kind::Payable
+                        | Kind::Const
                 ) {
-                    return Err(self.err("only a module's internal functions can be private"));
+                    return Err(
+                        self.err("only a module's internal functions and constants can be private")
+                    );
                 }
             }
             match self.kind() {
@@ -803,6 +818,7 @@ impl<'a> Parser<'a> {
                     }
                     guards.push(decl);
                 }
+                Kind::Const => funcs.push(self.const_decl(private)?),
                 Kind::Type => types.push(self.type_decl()?),
                 Kind::ErrorKw => errors.push(self.error_decl()?),
                 Kind::ErrorsKw => error_sets.push(self.error_set_decl()?),
@@ -854,6 +870,18 @@ impl<'a> Parser<'a> {
         for func in funcs.iter_mut().chain(&mut guards).chain(&mut hooks) {
             func.module = Some(name.clone());
             func.requires = require_names.clone();
+        }
+        if let Some(c) = funcs.iter().find(|c| {
+            c.constant
+                && funcs
+                    .iter()
+                    .any(|f| f.name == c.name && !std::ptr::eq(f, *c))
+        }) {
+            return Err(error(
+                c.line,
+                c.col,
+                format!("module `{name}` declares `{}` more than once", c.name),
+            ));
         }
         if let Some(hook) = hooks
             .iter()
@@ -927,6 +955,7 @@ impl<'a> Parser<'a> {
                 mutable: false,
                 storage: false,
                 name: pname,
+                flat: false,
                 ty,
                 ty_id: 0,
                 sym: None,
@@ -958,6 +987,7 @@ impl<'a> Parser<'a> {
                 type_params: Vec::new(),
                 params,
                 ret,
+                ret_flat: false,
                 ret_ty: 0,
                 payable: false,
                 nonreentrant: false,
@@ -975,6 +1005,7 @@ impl<'a> Parser<'a> {
                 forward: None,
                 guarded: None,
                 guard_of: None,
+                constant: false,
                 hook_of: None,
             }),
             tag: None,
@@ -1567,14 +1598,7 @@ impl<'a> Parser<'a> {
             Kind::List => self.list_ty(line, col),
             Kind::LParen => self.tuple_ty(line, col),
             Kind::Record => self.record_ty(false),
-            Kind::Ident if self.lexeme() == "tuple" && self.peek_kind(1) == Kind::Record => {
-                self.bump();
-                let mut ty = self.record_ty(false)?;
-                if let TypeRef::Record { tuple, .. } = &mut ty {
-                    *tuple = true;
-                }
-                Ok(ty)
-            }
+            Kind::Ident if self.at_flat() => Err(self.err(FLAT_ONLY)),
             Kind::Pipe => self.variant_ty(),
             Kind::Ident => {
                 let mut name = self.ident()?;
@@ -1594,6 +1618,24 @@ impl<'a> Parser<'a> {
             Kind::Unit => Err(self.err("expected type `unit`, found value `Unit`")),
             _ => Err(self.err(format!("expected a type, found {}", self.found()))),
         }
+    }
+
+    /// `flat` before a type: a contextual word, as no type is named `flat`.
+    fn at_flat(&self) -> bool {
+        self.kind() == Kind::Ident
+            && self.lexeme() == "flat"
+            && matches!(
+                self.peek_kind(1),
+                Kind::Ident | Kind::Record | Kind::List | Kind::LParen | Kind::Pipe
+            )
+    }
+
+    fn flat(&mut self) -> bool {
+        let flat = self.at_flat();
+        if flat {
+            self.bump();
+        }
+        flat
     }
 
     fn generic(&mut self, name: &str, line: u32, col: u32) -> Result<TypeRef, Error> {
@@ -1728,12 +1770,7 @@ impl<'a> Parser<'a> {
             }
         }
         self.want(Kind::RBrace)?;
-        Ok(TypeRef::Record {
-            line,
-            col,
-            fields,
-            tuple: false,
-        })
+        Ok(TypeRef::Record { line, col, fields })
     }
 
     fn variant_ty(&mut self) -> Result<TypeRef, Error> {
@@ -1752,6 +1789,7 @@ impl<'a> Parser<'a> {
                 None
             };
             let mut param = String::new();
+            let mut flat = false;
             let payload = if self.kind() == Kind::Of {
                 self.bump();
                 if self.kind() == Kind::LParen
@@ -1761,10 +1799,16 @@ impl<'a> Parser<'a> {
                     self.bump();
                     param = self.ident()?;
                     self.want(Kind::Colon)?;
+                    if self.at_flat() {
+                        return Err(self.err(
+                            "a `flat` payload's fields name its ABI parameters; write `of flat T`",
+                        ));
+                    }
                     let ty = self.ty()?;
                     self.want(Kind::RParen)?;
                     Some(ty)
                 } else {
+                    flat = self.flat();
                     Some(self.ty()?)
                 }
             } else {
@@ -1777,6 +1821,7 @@ impl<'a> Parser<'a> {
                 payload,
                 param,
                 external,
+                flat,
             });
             if self.kind() != Kind::Pipe {
                 break;
@@ -1990,6 +2035,7 @@ impl<'a> Parser<'a> {
                 ));
             }
         }
+        let mut ret_flat = false;
         let ret = match kind {
             ItemKind::View => {
                 if self.kind() != Kind::Colon {
@@ -2004,18 +2050,21 @@ impl<'a> Parser<'a> {
                     )));
                 }
                 self.bump();
+                ret_flat = self.flat();
                 Some(self.ty()?)
             }
             ItemKind::Function | ItemKind::Readonly | ItemKind::Pure
                 if self.kind() == Kind::Colon =>
             {
                 self.bump();
+                ret_flat = self.flat();
                 Some(self.ty()?)
             }
             ItemKind::Function | ItemKind::Readonly | ItemKind::Pure => None,
             // An entry may return a value to its caller, after its effects have run.
             ItemKind::Entry if self.kind() == Kind::Colon => {
                 self.bump();
+                ret_flat = self.flat();
                 Some(self.ty()?)
             }
             ItemKind::Entry => None,
@@ -2073,6 +2122,7 @@ impl<'a> Parser<'a> {
             type_params,
             params,
             ret,
+            ret_flat,
             ret_ty: 0,
             payable,
             nonreentrant,
@@ -2090,8 +2140,29 @@ impl<'a> Parser<'a> {
             forward: None,
             guarded,
             guard_of: None,
+            constant: false,
             hook_of: None,
         })
+    }
+
+    /// `const name : T := e;` outside a function: a named value known when the contract
+    /// compiles.
+    fn const_decl(&mut self, private: bool) -> Result<Func, Error> {
+        let (line, col) = self.at();
+        self.want(Kind::Const)?;
+        let name = self.ident()?;
+        if self.kind() != Kind::Colon {
+            return Err(self.err("a constant needs a type: `const name : T := value`"));
+        }
+        let ty = self.binding_ty()?;
+        self.want(Kind::Assign)?;
+        let mut func = guard_func(line, col, name, Vec::new());
+        func.kind = ItemKind::Pure;
+        func.private = private;
+        func.ret = Some(ty);
+        func.tail = Some(self.expr()?);
+        func.constant = true;
+        Ok(func)
     }
 
     /// `guarded editor(id)` on a module's external: its guard, and the parameters it takes.
@@ -2156,19 +2227,57 @@ impl<'a> Parser<'a> {
         Ok(guard_func(line, col, name, params))
     }
 
-    /// `guard M.editor(const id : uint) raises E is { ... }`, or `guard M.editor is f;`: the
-    /// contract's check for a module's guard.
-    fn guard_impl(&mut self) -> Result<Func, Error> {
+    /// `with { ... }` after `use M ...`: the contract's checks for `M`'s guards and its
+    /// implementations of `M`'s hooks, by their names in `M`.
+    fn use_with(&mut self, module: &str, body: &mut Body) -> Result<(), Error> {
         self.bump();
+        self.want(Kind::LBrace)?;
+        while self.kind() != Kind::RBrace && self.kind() != Kind::Eof {
+            if self.kind() == Kind::Semi {
+                self.bump();
+                continue;
+            }
+            if matches!(self.kind(), Kind::View | Kind::Pure) && self.hook_ahead() {
+                return Err(self.err(
+                    "a contract implements a hook without restating its effect: write `hook h ...`; the module's declaration says what it may do",
+                ));
+            }
+            if self.kind() != Kind::Ident || !matches!(self.slice(), "guard" | "hook") {
+                return Err(self.err(format!(
+                    "`use ... with` binds the module's guards and hooks: expected `guard` or `hook`, found {}",
+                    self.found()
+                )));
+            }
+            let word = self.slice().to_string();
+            self.bump();
+            if self.kind() == Kind::Ident && self.peek_kind(1) == Kind::Dot {
+                let (line, col) = self.at();
+                let path = self.dotted()?;
+                let name = path.rsplit('.').next().unwrap_or(&path);
+                return Err(error(
+                    line,
+                    col,
+                    format!(
+                        "inside `use {} ... with`, a {word} is named bare: write `{word} {name}`",
+                        crate::modules::shown(module)
+                    ),
+                ));
+            }
+            if word == "guard" {
+                body.guards.push(self.guard_impl(module)?);
+            } else {
+                body.hooks.push(self.hook_impl(module)?);
+            }
+        }
+        self.want(Kind::RBrace)?;
+        Ok(())
+    }
+
+    /// `guard editor(const id : uint) raises E is { ... }`, or `guard editor is f;`, in
+    /// `use M ... with { ... }`: the contract's check for `M`'s guard.
+    fn guard_impl(&mut self, module: &str) -> Result<Func, Error> {
         let (line, col) = self.at();
-        let path = self.dotted()?;
-        let Some((module, name)) = path.rsplit_once('.') else {
-            return Err(error(
-                line,
-                col,
-                format!("a guard is a module's: write `guard M.{path}`"),
-            ));
-        };
+        let name = &self.ident()?;
         let params = if self.kind() == Kind::LParen {
             self.params()?
         } else {
@@ -2260,19 +2369,12 @@ impl<'a> Parser<'a> {
         Ok(func)
     }
 
-    /// `hook M.h(params) [: T] [raises E] is { ... } [with e]`, `hook M.h is f;`, or
-    /// `hook M.h is skip;`: the contract's implementation of a module's hook.
-    fn hook_impl(&mut self) -> Result<Func, Error> {
-        self.bump();
+    /// `hook h(params) [: T] [raises E] is { ... } [with e]`, `hook h is f;`, or
+    /// `hook h is skip;`, in `use M ... with { ... }`: the contract's implementation of `M`'s
+    /// hook.
+    fn hook_impl(&mut self, module: &str) -> Result<Func, Error> {
         let (line, col) = self.at();
-        let path = self.dotted()?;
-        let Some((module, name)) = path.rsplit_once('.') else {
-            return Err(error(
-                line,
-                col,
-                format!("a hook is a module's: write `hook M.{path}`"),
-            ));
-        };
+        let name = &self.ident()?;
         let params = if self.kind() == Kind::LParen {
             self.params()?
         } else {
@@ -2418,6 +2520,7 @@ impl<'a> Parser<'a> {
                 };
                 let pname = self.ident()?;
                 self.want(Kind::Colon)?;
+                let flat = self.flat();
                 let ty = self.ty()?;
                 params.push(Param {
                     line: pline,
@@ -2425,6 +2528,7 @@ impl<'a> Parser<'a> {
                     mutable,
                     storage,
                     name: pname,
+                    flat,
                     ty,
                     ty_id: 0,
                     sym: None,
@@ -2527,6 +2631,7 @@ impl<'a> Parser<'a> {
             type_params: Vec::new(),
             params: Vec::new(),
             ret,
+            ret_flat: false,
             ret_ty: 0,
             payable,
             nonreentrant,
@@ -2544,6 +2649,7 @@ impl<'a> Parser<'a> {
             forward,
             guarded: None,
             guard_of: None,
+            constant: false,
             hook_of: None,
         })
     }
@@ -2771,7 +2877,7 @@ impl<'a> Parser<'a> {
                 let (line, col) = self.at();
                 self.assign_or_call(line, col, true)
             }
-            Kind::Ident => self.assign_or_call(line, col, false),
+            Kind::Ident | Kind::AtKw => self.assign_or_call(line, col, false),
             _ => Err(self.err(format!("expected a statement, found {}", self.found()))),
         }
     }
@@ -2896,6 +3002,11 @@ impl<'a> Parser<'a> {
     fn emit_stmt(&mut self, line: u32, col: u32) -> Result<Stmt, Error> {
         self.want(Kind::Emit)?;
         let name = self.dotted()?;
+        if self.kind() == Kind::LParen {
+            return Err(self.err(format!(
+                "an event takes its fields in braces: `emit {name} {{ field = ...; }}`"
+            )));
+        }
         self.want(Kind::LBrace)?;
         let fields = self.named_fields()?;
         Ok(Stmt::Emit {
@@ -3501,7 +3612,7 @@ impl<'a> Parser<'a> {
                     ty: 0,
                 })
             }
-            Kind::Ident => {
+            Kind::Ident | Kind::AtKw => {
                 if self.in_spec {
                     if let Some(form) = self.spec_form()? {
                         return Ok(form);
@@ -3581,6 +3692,23 @@ impl<'a> Parser<'a> {
                 self.bump();
                 let args = self.args()?;
                 e = self.call(line, col, name, args, None);
+                continue;
+            }
+            // `Case { field = ...; }`: a constructor given a record payload.
+            if self.brace_is_record() {
+                let Expr::Ident {
+                    name, line, col, ..
+                } = &e
+                else {
+                    break;
+                };
+                let (name, line, col) = (name.clone(), *line, *col);
+                let (rline, rcol) = self.at();
+                let payload = self.record_expr(rline, rcol)?;
+                e = self.call(line, col, name, vec![payload], None);
+                if let Expr::Call { builtin, .. } = &mut e {
+                    *builtin = Some(Builtin::Braced);
+                }
                 continue;
             }
             if self.kind() != Kind::Dot {
@@ -3736,7 +3864,12 @@ impl<'a> Parser<'a> {
                     "every case of an arm must bind the same names",
                 ));
             }
-            let (bind, tuple_names) = patterns.swap_remove(0);
+            let Pattern {
+                bind,
+                names: tuple_names,
+                fields,
+                rest,
+            } = patterns.swap_remove(0);
             self.want(Kind::Arrow)?;
             let (stmts, expr) = self.arm_body()?;
             arms.push(Arm {
@@ -3746,7 +3879,10 @@ impl<'a> Parser<'a> {
                 bind,
                 bind_sym: None,
                 tuple_names,
+                fields,
+                rest,
                 tuple_syms: Vec::new(),
+                tuple_at: Vec::new(),
                 stmts,
                 expr,
             });
@@ -3781,7 +3917,10 @@ impl<'a> Parser<'a> {
                 bind: None,
                 bind_sym: None,
                 tuple_names: Vec::new(),
+                fields: Vec::new(),
+                rest: false,
                 tuple_syms: Vec::new(),
+                tuple_at: Vec::new(),
                 stmts,
                 expr,
             });
@@ -3795,10 +3934,13 @@ impl<'a> Parser<'a> {
         })
     }
 
-    /// What a case arm binds: `(x)`, `((a, b))`, or nothing.
-    fn arm_pattern(&mut self) -> Result<(Option<String>, Vec<String>), Error> {
+    /// What a case arm binds: `(x)`, `((a, b))`, `{ x; y = b; _ }`, or nothing.
+    fn arm_pattern(&mut self) -> Result<Pattern, Error> {
+        if self.kind() == Kind::LBrace {
+            return self.brace_pattern();
+        }
         if self.kind() != Kind::LParen {
-            return Ok((None, Vec::new()));
+            return Ok(Pattern::default());
         }
         self.bump();
         if self.kind() == Kind::LParen {
@@ -3813,11 +3955,48 @@ impl<'a> Parser<'a> {
             }
             self.want(Kind::RParen)?;
             self.want(Kind::RParen)?;
-            return Ok((None, names));
+            return Ok(Pattern {
+                names,
+                ..Pattern::default()
+            });
         }
         let name = self.ident()?;
         self.want(Kind::RParen)?;
-        Ok((Some(name), Vec::new()))
+        Ok(Pattern {
+            bind: Some(name),
+            ..Pattern::default()
+        })
+    }
+
+    /// `{ x; y = b; _ }`: fields bound under their own names or others, `_` last for the rest.
+    fn brace_pattern(&mut self) -> Result<Pattern, Error> {
+        self.want(Kind::LBrace)?;
+        let mut pattern = Pattern::default();
+        while self.kind() != Kind::RBrace && self.kind() != Kind::Eof {
+            if pattern.rest {
+                return Err(self.err("`_` ends a brace pattern: it stands for every other field"));
+            }
+            let field = self.ident()?;
+            if field == "_" {
+                pattern.rest = true;
+            } else if self.kind() == Kind::Eq {
+                self.bump();
+                pattern.names.push(self.ident()?);
+                pattern.fields.push(field);
+            } else {
+                pattern.names.push(field.clone());
+                pattern.fields.push(field);
+            }
+            if self.kind() != Kind::Semi {
+                break;
+            }
+            self.bump();
+        }
+        self.want(Kind::RBrace)?;
+        if pattern.fields.is_empty() && !pattern.rest {
+            return Err(self.err("a brace pattern names at least one field"));
+        }
+        Ok(pattern)
     }
 
     /// A function's name, or a member's after `.`: an identifier, or `create`, which
@@ -3863,7 +4042,8 @@ impl<'a> Parser<'a> {
             .map_or(Kind::Eof, |tok| tok.kind)
     }
 
-    /// `| Name ->` and `| Name(...) ->` close a case arm. Other pipes are bitwise or.
+    /// `| Name ->`, `| Name(...) ->`, and `| Name { ... } ->` close a case arm. Other pipes
+    /// are bitwise or.
     fn pipe_starts_arm(&self) -> bool {
         let mut i = self.i + 1;
         if self.toks.get(i).map(|tok| tok.kind) != Some(Kind::Ident) {
@@ -3872,12 +4052,12 @@ impl<'a> Parser<'a> {
         i += 1;
         let kind = |i: usize| self.toks.get(i).map(|tok| tok.kind);
         loop {
-            if kind(i) == Some(Kind::LParen) {
+            if matches!(kind(i), Some(Kind::LParen | Kind::LBrace)) {
                 let mut depth = 0i32;
                 loop {
                     match kind(i) {
-                        Some(Kind::LParen) => depth += 1,
-                        Some(Kind::RParen) => depth -= 1,
+                        Some(Kind::LParen | Kind::LBrace) => depth += 1,
+                        Some(Kind::RParen | Kind::RBrace) => depth -= 1,
                         None | Some(Kind::Eof) => return false,
                         _ => {}
                     }
@@ -4014,6 +4194,7 @@ fn guard_func(line: u32, col: u32, name: String, params: Vec<Param>) -> Func {
         type_params: Vec::new(),
         params,
         ret: None,
+        ret_flat: false,
         ret_ty: 0,
         payable: false,
         nonreentrant: false,
@@ -4031,8 +4212,18 @@ fn guard_func(line: u32, col: u32, name: String, params: Vec<Param>) -> Func {
         forward: None,
         guarded: None,
         guard_of: None,
+        constant: false,
         hook_of: None,
     }
+}
+
+/// What a case arm binds, as written.
+#[derive(Default, PartialEq)]
+struct Pattern {
+    bind: Option<String>,
+    names: Vec<String>,
+    fields: Vec<String>,
+    rest: bool,
 }
 
 #[cfg(test)]

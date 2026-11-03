@@ -629,7 +629,7 @@ import "std/token/erc20";
 import "std/interfaces/erc20";
 
 contract Token is {
-  use ERC20 exposing IERC20; hook ERC20.beforeTransfer is skip; hook ERC20.afterTransfer is skip;
+  use ERC20 exposing IERC20 with { hook beforeTransfer is skip; hook afterTransfer is skip; }
 
   deploy() raises ERC20InvalidReceiver | ERC20InsufficientBalance is {
     ERC20.init("Token", "TKN");
@@ -661,7 +661,7 @@ import "std/token/erc721";
 import "std/interfaces/erc721";
 
 contract Nft is {
-  use ERC721 exposing IERC721; hook ERC721.beforeTransfer is skip; hook ERC721.afterTransfer is skip;
+  use ERC721 exposing IERC721 with { hook beforeTransfer is skip; hook afterTransfer is skip; }
 
   storage is record {
     next : uint;
@@ -892,7 +892,7 @@ import "std/token/erc20";
 import "std/interfaces/erc20";
 
 contract Token is {
-  use ERC20 exposing IERC20; hook ERC20.beforeTransfer is skip; hook ERC20.afterTransfer is skip;
+  use ERC20 exposing IERC20 with { hook beforeTransfer is skip; hook afterTransfer is skip; }
 
   deploy() raises ERC20InvalidReceiver | ERC20InsufficientBalance is {
     ERC20.init("Token", "TKN");
@@ -905,7 +905,7 @@ import "std/token/erc721";
 import "std/interfaces/erc721";
 
 contract Nft is {
-  use ERC721 exposing IERC721; hook ERC721.beforeTransfer is skip; hook ERC721.afterTransfer is skip;
+  use ERC721 exposing IERC721 with { hook beforeTransfer is skip; hook afterTransfer is skip; }
 
   storage is record {
     next : uint;
@@ -1213,7 +1213,7 @@ import "std/token/erc20";
 import "std/interfaces/erc20";
 
 contract Token is {
-  use ERC20 exposing IERC20; hook ERC20.beforeTransfer is skip; hook ERC20.afterTransfer is skip;
+  use ERC20 exposing IERC20 with { hook beforeTransfer is skip; hook afterTransfer is skip; }
 
   deploy() raises ERC20InvalidReceiver | ERC20InsufficientBalance is {
     ERC20.init("Token", "TKN");
@@ -1255,7 +1255,7 @@ import "std/token/erc721";
 import "std/interfaces/erc721";
 
 contract Nft is {
-  use ERC721 exposing IERC721; hook ERC721.beforeTransfer is skip; hook ERC721.afterTransfer is skip;
+  use ERC721 exposing IERC721 with { hook beforeTransfer is skip; hook afterTransfer is skip; }
 
   storage is record {
     next : uint;

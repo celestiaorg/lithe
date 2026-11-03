@@ -70,26 +70,22 @@ contract Frozen is {{
     view function quote(amount : uint) : uint;
     view function share(amount : uint) : uint;
     view function ownerOf(id : uint) : address;
+  }} with {{
+    hook beforeTransfer(const from : address; const to : address; const id : uint)
+      raises IsFrozen
+    is {{
+      assert(not storage.frozen[id], IsFrozen(id));
+      storage.moves := storage.moves + 1;
+      storage.last := Evm.sender();
+      emit Checked {{ id = id; by = Evm.sender(); }};
+    }}
+    hook afterTransfer is skip;
+    hook tokenName(const id : uint) : string is {{
+      skip
+    }} with if storage.frozen[id] then \"frozen\" else \"token\"
+    hook fee is tenPercent;
+    hook parts : uint is {{ skip }} with 4
   }}
-
-  hook Tok.beforeTransfer(const from : address; const to : address; const id : uint)
-    raises IsFrozen
-  is {{
-    assert(not storage.frozen[id], IsFrozen(id));
-    storage.moves := storage.moves + 1;
-    storage.last := Evm.sender();
-    emit Checked {{ id = id; by = Evm.sender(); }};
-  }}
-
-  hook Tok.afterTransfer is skip;
-
-  hook Tok.tokenName(const id : uint) : string is {{
-    skip
-  }} with if storage.frozen[id] then \"frozen\" else \"token\"
-
-  hook Tok.fee is tenPercent;
-
-  hook Tok.parts : uint is {{ skip }} with 4
 
   pure function tenPercent(const amount : uint) : uint is amount / 10
 
@@ -220,8 +216,8 @@ fn hook_errors_name_the_rule() {
     compile(&ok).expect("the base program compiles");
     let cases: Vec<(String, &str)> = vec![
         (
-            ok.replace("  hook Tok.afterTransfer is skip;\n", ""),
-            "Tok.afterTransfer is reached through `send` (exposed) → Tok.transfer; implement it:\n\n  hook Tok.afterTransfer(const from : address; const to : address; const id : uint) is { ... }\n\nor declare it unimplemented: hook Tok.afterTransfer is skip;",
+            ok.replace("    hook afterTransfer is skip;\n", ""),
+            "Tok.afterTransfer is reached through `send` (exposed) → Tok.transfer; implement it:\n\n  use Tok ... with {\n    hook afterTransfer(const from : address; const to : address; const id : uint) is { ... }\n  }\n\nor declare it unimplemented: hook afterTransfer is skip;",
         ),
         (
             ok.replace("    function send(to : address; id : uint) raises NotOwner | IsFrozen;\n", ""),
@@ -229,41 +225,41 @@ fn hook_errors_name_the_rule() {
         ),
         (
             ok.replace(
-                "  hook Tok.afterTransfer is skip;\n",
-                "  hook Tok.afterTransfer is skip;\n  hook Tok.afterTransfer is skip;\n",
+                "    hook afterTransfer is skip;\n",
+                "    hook afterTransfer is skip;\n    hook afterTransfer is skip;\n",
             ),
-            "`hook Tok.afterTransfer` is written twice; the first is at",
+            "hook `Tok.afterTransfer` is written twice; the first is at",
         ),
         (
             ok.replace(
-                "hook Tok.beforeTransfer(const from : address; const to : address; const id : uint)",
-                "hook Tok.beforeTransfer(const from : address; const to : address)",
+                "hook beforeTransfer(const from : address; const to : address; const id : uint)\n      raises",
+                "hook beforeTransfer(const from : address; const to : address)\n      raises",
             ),
-            "`hook Tok.beforeTransfer` doesn't match `Tok`'s declaration: it takes 2 parameters, and `Tok`'s takes 3",
+            "hook `Tok.beforeTransfer` doesn't match `Tok`'s declaration: it takes 2 parameters, and `Tok`'s takes 3",
         ),
         (
             ok.replace(
-                "hook Tok.beforeTransfer(const from : address; const to : address; const id : uint)",
-                "hook Tok.beforeTransfer(const from : address; const to : address; const id : bool)",
+                "hook beforeTransfer(const from : address; const to : address; const id : uint)\n      raises",
+                "hook beforeTransfer(const from : address; const to : address; const id : bool)\n      raises",
             ),
             "its `id` is `bool`, and `Tok`'s `id` is `uint`",
         ),
         (
-            ok.replace("hook Tok.tokenName(const id : uint) : string is", "hook Tok.tokenName(const id : uint) : bytes is"),
+            ok.replace("hook tokenName(const id : uint) : string is", "hook tokenName(const id : uint) : bytes is"),
             "it returns `bytes`, and `Tok`'s returns `string`",
         ),
         (
-            ok.replace("  hook Tok.fee is tenPercent;\n", "  hook Tok.fee is skip;\n"),
-            "`Tok.fee` returns a value, so it can't be skipped; implement it:\n\n  hook Tok.fee(const amount : uint) : uint is { ... } with ...",
+            ok.replace("    hook fee is tenPercent;\n", "    hook fee is skip;\n"),
+            "`Tok.fee` returns a value, so it can't be skipped; implement it:\n\n  hook fee(const amount : uint) : uint is { ... } with ...",
         ),
         (
-            ok.replace("    skip\n  } with if storage.frozen", "    storage.moves := 0;\n  } with if storage.frozen"),
+            ok.replace("      skip\n    } with if storage.frozen", "      storage.moves := 0;\n    } with if storage.frozen"),
             "declared effect is weaker than the body's: view hook `Tok.tokenName` writes storage",
         ),
         (
             ok.replace(
-                "    skip\n  } with if storage.frozen",
-                "    defer Evm.call(address(0xcd), 0x01);\n  } with if storage.frozen",
+                "      skip\n    } with if storage.frozen",
+                "      defer Evm.call(address(0xcd), 0x01);\n    } with if storage.frozen",
             ),
             "declared effect is weaker than the body's: view hook `Tok.tokenName` cannot defer",
         ),
@@ -279,7 +275,7 @@ fn hook_errors_name_the_rule() {
             "`tenPercent` takes 2 parameters; a hook that names a function passes it none of its parameters, or all 1",
         ),
         (
-            ok.replace("  hook Tok.afterTransfer is skip;\n", "  hook Tok.afterTransfer is tenPercent;\n"),
+            ok.replace("    hook afterTransfer is skip;\n", "    hook afterTransfer is tenPercent;\n"),
             "`tenPercent` returns a value, and `Tok.afterTransfer` has no result; name a function that returns nothing",
         ),
         (
@@ -301,10 +297,10 @@ fn hook_errors_name_the_rule() {
                 "  pure function tenPercent(const amount : uint) : uint is amount / 10\n",
                 "  pure function tenPercent(const amount : uint) : uint is amount / 10\n\n  external view function named() : string is Tok.tokenName(1)\n",
             ),
-            "`Tok.tokenName` is a hook of `Tok`: only `Tok`'s own code calls it, and the contract implements it with `hook Tok.tokenName`",
+            "`Tok.tokenName` is a hook of `Tok`: only `Tok`'s own code calls it, and the contract implements it in `use Tok ... with { hook tokenName ... }`",
         ),
         (
-            ok.replace("  hook Tok.afterTransfer is skip;\n", "  hook Tok.after is skip;\n"),
+            ok.replace("    hook afterTransfer is skip;\n", "    hook after is skip;\n"),
             "module `Tok` has no hook `after`\n\n`Tok`'s hooks: `beforeTransfer`, `afterTransfer`, `tokenName`, `fee`, `parts`",
         ),
         (
@@ -315,7 +311,7 @@ fn hook_errors_name_the_rule() {
             "a module's hook has no body: each contract that uses the module implements it",
         ),
         (
-            ok.replace("  hook Tok.afterTransfer is skip;\n", "  hook Tok.afterTransfer is skip;\n  view hook Tok.x is skip;\n"),
+            ok.replace("    hook afterTransfer is skip;\n", "    hook afterTransfer is skip;\n    view hook x is skip;\n"),
             "a contract implements a hook without restating its effect",
         ),
     ];
@@ -339,9 +335,10 @@ module Walk is {
   external function start(const n : uint) is go(n)
 }
 contract Walker is {
-  use Walk exposing { function start(n : uint); }
-  hook Walk.step(const n : uint) is {
-    Walk.go(n + 1);
+  use Walk exposing { function start(n : uint); } with {
+    hook step(const n : uint) is {
+      Walk.go(n + 1);
+    }
   }
 }
 "#;
@@ -377,10 +374,10 @@ module Wrap is {
 "#;
     let contract = |exposes: &str, hooks: &str| {
         format!(
-            "{modules}contract C is {{\n  use Base exposing {{ function reset(); {exposes} }}\n  use Wrap exposing {{ function twice(n : uint); }}\n{hooks}}}\n"
+            "{modules}contract C is {{\n  use Base exposing {{ function reset(); {exposes} }}{hooks}\n  use Wrap exposing {{ function twice(n : uint); }}\n}}\n"
         )
     };
-    let hook = "  hook Base.changed is skip;\n";
+    let hook = " with {\n    hook changed is skip;\n  }";
     compile(&contract("", hook)).expect("reached through `Wrap`'s external");
     let got = rejected(&contract("", ""));
     assert!(
@@ -389,7 +386,7 @@ module Wrap is {
     );
     compile(&contract("function put(n : uint);", hook)).expect("exposed");
     let only_base = |exposes: &str, hooks: &str| {
-        format!("{modules}contract C is {{\n  use Base exposing {{ function reset(); {exposes} }}\n  use Wrap;\n{hooks}}}\n")
+        format!("{modules}contract C is {{\n  use Base exposing {{ function reset(); {exposes} }}{hooks}\n  use Wrap;\n}}\n")
     };
     compile(&only_base("", "")).expect("nothing exposed reaches the hook");
     let got = rejected(&only_base("", hook));
@@ -405,7 +402,7 @@ module Wrap is {
     );
     // The contract's own code reaches it too.
     let own = format!(
-        "{modules}contract C is {{\n  use Base exposing {{ function reset(); }}\n  use Wrap;\n{hook}  external function mine() is Base.set(3)\n}}\n"
+        "{modules}contract C is {{\n  use Base exposing {{ function reset(); }}{hook}\n  use Wrap;\n  external function mine() is Base.set(3)\n}}\n"
     );
     compile(&own).expect("the contract's external reaches it");
 }
@@ -483,9 +480,9 @@ contract Counter is {{
   use Tally{marks} exposing {{
     function run(id : uint);
     view function count() : uint;
-  }}
+  }} with {{
+{hooks}  }}
 
-{hooks}
   external view function seen() : uint is storage.seen
 }}
 "
@@ -496,11 +493,11 @@ contract Counter is {{
 /// test the bit before binding plain arguments or after one that overflows.
 #[test]
 fn skipped_hooks_test_their_bit_where_they_are_called() {
-    let plain = "  hook Tally.plain(const id : uint) is { storage.seen := storage.seen + id; }\n";
+    let plain = "  hook plain(const id : uint) is { storage.seen := storage.seen + id; }\n";
     let doubled =
-        "  hook Tally.doubled(const id : uint) is { storage.seen := storage.seen + id * 10; }\n";
-    let skip_plain = "  hook Tally.plain is skip;\n";
-    let skip_doubled = "  hook Tally.doubled is skip;\n";
+        "  hook doubled(const id : uint) is { storage.seen := storage.seen + id * 10; }\n";
+    let skip_plain = "  hook plain is skip;\n";
+    let skip_doubled = "  hook doubled is skip;\n";
     for hooks in [
         format!("{skip_plain}{skip_doubled}"),
         format!("{plain}{skip_doubled}"),
@@ -541,9 +538,9 @@ contract Shop is {{
     after : uint;
   }}
 
-  use Pay{marks} exposing {{ function one(id : uint); }}
+  use Pay{marks} exposing {{ function one(id : uint); }} with {{
+{hook}  }}
 
-{hook}
   external function two(const a : uint; const b : uint) is {{
     defer Evm.call(address(0xcd), Abi.encode(uint(1)));
     Pay.settle(a);
@@ -556,7 +553,7 @@ contract Shop is {{
     )
 }
 
-const DEFERS: &str = "  hook Pay.paid(const id : uint) is {
+const DEFERS: &str = "  hook paid(const id : uint) is {
     const tag : uint := id * 10;
     defer Evm.call(address(0xcd), Abi.encode(tag)) then (answer : bytes) {
       storage.seen := storage.seen + tag + answer.length;
@@ -612,7 +609,7 @@ fn reentry_warnings_count_what_hooks_defer() {
     };
     assert!(warned(&paying("", DEFERS)));
     assert!(warned(&paying(" delegated", DEFERS)));
-    assert!(!warned(&paying("", "  hook Pay.paid is skip;\n")));
+    assert!(!warned(&paying("", "  hook paid is skip;\n")));
 }
 
 /// A delegated module's facet reaches a hook that defers: the hook's calls wait in transient
@@ -710,14 +707,14 @@ contract Bank is {{
     function settle(ex : address; id : uint) raises TooMuch;
     function many(ex : address; n : uint) raises TooMuch;
     view function got() : (uint, uint, bytes);
-  }}
-
-  hook Vault.moved(const id : uint) is {{
-    const tag : uint := id + 1000;
-    storage.moves := storage.moves + 1;
-    defer Evm.call(address(0xcd), Abi.encode(tag)) then (answer : bytes) {{
-      storage.tags := storage.tags + tag + answer.length;
-    }};
+  }} with {{
+    hook moved(const id : uint) is {{
+      const tag : uint := id + 1000;
+      storage.moves := storage.moves + 1;
+      defer Evm.call(address(0xcd), Abi.encode(tag)) then (answer : bytes) {{
+        storage.tags := storage.tags + tag + answer.length;
+      }};
+    }}
   }}
 
   external function run(const ex : address; const to : address; const id : uint)
@@ -868,14 +865,14 @@ fn shaped(marks: &str) -> String {
 contract Shaped is {{
   storage is record {{ got : uint; }}
 
-  use Rec{marks};
-
-  hook Rec.kept(const x : uint) : uint is {{
-    const h : uint := uint(Crypto.keccak256(Abi.encode(x, x)));
-    defer Evm.call(address(0xcd), Abi.encode(x, h)) then (answer : bytes) {{
-      storage.got := storage.got + answer.length + (h >> 250);
-    }};
-  }} with x * 2
+  use Rec{marks} with {{
+    hook kept(const x : uint) : uint is {{
+      const h : uint := uint(Crypto.keccak256(Abi.encode(x, x)));
+      defer Evm.call(address(0xcd), Abi.encode(x, h)) then (answer : bytes) {{
+        storage.got := storage.got + answer.length + (h >> 250);
+      }};
+    }} with x * 2
+  }}
 
   external function run(const to : address; const seed : uint) : uint is Rec.shapes(to, seed)
 
@@ -986,7 +983,7 @@ fn upgradeable_contracts_drain_through_their_implementation() {
 #[test]
 fn delegated_modules_cannot_reach_hooks_that_read_calldata() {
     let reads =
-        "  hook Pay.paid(const id : uint) is {\n    storage.seen := Evm.calldata().length;\n  }\n";
+        "  hook paid(const id : uint) is {\n    storage.seen := Evm.calldata().length;\n  }\n";
     let got = rejected(
         &paying(" delegated", reads).replace("    Pay.settle(a);\n    Pay.settle(b);\n", ""),
     );
@@ -995,8 +992,7 @@ fn delegated_modules_cannot_reach_hooks_that_read_calldata() {
         "{got}"
     );
     compile(&paying("", reads)).expect("inline, a hook reads the transaction's calldata");
-    let quiet =
-        "  hook Pay.paid(const id : uint) is {\n    storage.seen := storage.seen + id;\n  }\n";
+    let quiet = "  hook paid(const id : uint) is {\n    storage.seen := storage.seen + id;\n  }\n";
     compile(&paying(" delegated", quiet)).expect("a hook that doesn't defer is called back");
     // A contract that isn't upgradeable has no code while `deploy` runs, so nothing can call
     // back into it.
@@ -1015,7 +1011,7 @@ fn delegated_modules_cannot_reach_hooks_that_read_calldata() {
 /// A skipped hook compiles to nothing: the same code as a module that never calls it.
 #[test]
 fn skipped_hooks_cost_nothing_inline() {
-    let skipped = compile(&paying("", "  hook Pay.paid is skip;\n")).expect("skipped");
+    let skipped = compile(&paying("", "  hook paid is skip;\n")).expect("skipped");
     let without = PAY
         .replace("  hook paid(const id : uint);\n", "")
         .replace("    paid(id);\n", "");
@@ -1054,16 +1050,15 @@ contract Nest is {{
   use Chain{marks} exposing {{
     function run(n : uint) : uint;
     view function log() : uint;
-  }}
-
-  hook Chain.first(const n : uint) : uint is {{
-    Chain.note(n + 1);
-    storage.seen := storage.seen + 1;
-  }} with storage.seen * 100 + n
-
-  hook Chain.second(const n : uint) is {{
-    storage.seen := storage.seen + n;
-    storage.by := Evm.sender();
+  }} with {{
+    hook first(const n : uint) : uint is {{
+      Chain.note(n + 1);
+      storage.seen := storage.seen + 1;
+    }} with storage.seen * 100 + n
+    hook second(const n : uint) is {{
+      storage.seen := storage.seen + n;
+      storage.by := Evm.sender();
+    }}
   }}
 
   external view function seen() : (uint, address) is (storage.seen, storage.by)
@@ -1183,15 +1178,14 @@ contract Keeper is {{
   error NotAdmin of address;
   error TooBig;
 
-  use Gated{marks} exposing {{ function set(n : uint) raises NotAdmin | TooBig; }}
-
-  guard Gated.admin raises NotAdmin is {{
-    assert(Evm.sender() = address(1), NotAdmin(Evm.sender()));
-  }}
-
-  hook Gated.changed(const old : uint; const new : uint) raises TooBig is {{
-    assert(new < 100, TooBig);
-    storage.history := storage.history * 100 + old;
+  use Gated{marks} exposing {{ function set(n : uint) raises NotAdmin | TooBig; }} with {{
+    guard admin raises NotAdmin is {{
+      assert(Evm.sender() = address(1), NotAdmin(Evm.sender()));
+    }}
+    hook changed(const old : uint; const new : uint) raises TooBig is {{
+      assert(new < 100, TooBig);
+      storage.history := storage.history * 100 + old;
+    }}
   }}
 
   external view function history() : uint is storage.history
@@ -1347,8 +1341,8 @@ fn forwarded_and_callback_entrypoints_take_value_as_their_callers_do() {
 fn contracts_with_different_hooks_share_a_facet() {
     let other = frozen(" delegated")
         .replace("contract Frozen is {", "contract Other is {")
-        .replace("  hook Tok.afterTransfer is skip;\n", "  hook Tok.afterTransfer(const from : address; const to : address; const id : uint) is {\n    storage.moves := 0;\n  }\n")
-        .replace("hook Tok.fee is tenPercent;", "hook Tok.fee(const amount : uint) : uint is { skip } with 0");
+        .replace("    hook afterTransfer is skip;\n", "    hook afterTransfer(const from : address; const to : address; const id : uint) is {\n      storage.moves := 0;\n    }\n")
+        .replace("hook fee is tenPercent;", "hook fee(const amount : uint) : uint is { skip } with 0");
     let one = crate::split::build(
         &checked_src(&frozen(" delegated")),
         "Frozen",
@@ -1367,7 +1361,7 @@ fn contracts_with_different_hooks_share_a_facet() {
 fn tools_show_hooks() {
     let stubs = crate::stubs(&memory(&frozen("")), Path::new(ENTRY), "Tok", &[]).expect("stubs");
     assert!(
-        stubs.ends_with("hook Tok.beforeTransfer is skip;\nhook Tok.afterTransfer is skip;\n(* hook Tok.tokenName(const id : uint) : string is { ... } with ... *)\n(* hook Tok.fee(const amount : uint) : uint is { ... } with ... *)\n(* hook Tok.parts : uint is { ... } with ... *)\n"),
+        stubs.ends_with("} with {\n  (* The hooks these externals reach: the contract implements each, or skips one without a result. *)\n  hook beforeTransfer is skip;\n  hook afterTransfer is skip;\n  (* hook tokenName(const id : uint) : string is { ... } with ... *)\n  (* hook fee(const amount : uint) : uint is { ... } with ... *)\n  (* hook parts : uint is { ... } with ... *)\n}\n"),
         "{stubs}"
     );
     let delegated = frozen(" delegated");
@@ -1403,8 +1397,9 @@ module Bag is {{
   }} with counted(bag.xs)
 }}
 contract Counter is {{
-  use Bag{marks} exposing {{ function add(n : uint) : uint; }}
-  hook Bag.counted(const xs : list(uint)) : uint is {{ skip }} with xs.length * 100 + xs[xs.length - 1]
+  use Bag{marks} exposing {{ function add(n : uint) : uint; }} with {{
+    hook counted(const xs : list(uint)) : uint is {{ skip }} with xs.length * 100 + xs[xs.length - 1]
+  }}
 }}
 "
         )
@@ -1457,7 +1452,7 @@ module Bump is {
 }
 "#;
 
-/// `hook M.h is f;` passing every parameter is `f` itself: the module's code calls `f`, as
+/// `hook h is f;` passing every parameter is `f` itself: the module's code calls `f`, as
 /// if it named it, with no layer of parameter copies between.
 #[test]
 fn hooks_that_name_a_function_add_no_layer() {
@@ -1465,9 +1460,9 @@ fn hooks_that_name_a_function_add_no_layer() {
         "{BUMP}
 contract C is {{
   use Log exposing {{ view function total() : uint; }}
-  use Bump exposing {{ function bump(n : uint); function twice(n : uint); }}
-
-  hook Bump.bumped is Log.add;
+  use Bump exposing {{ function bump(n : uint); function twice(n : uint); }} with {{
+    hook bumped is Log.add;
+  }}
 }}
 "
     );
@@ -1533,18 +1528,23 @@ module Stop is {
 ";
     let stopped = |marks: &str| {
         frozen(marks)
-            .replace("contract Frozen is {", &format!("{stop}\ncontract Frozen is {{\n  use Stop exposing {{ function halt(); }}\n"))
+            .replace(
+                "contract Frozen is {",
+                &format!(
+                    "{stop}\ncontract Frozen is {{\n  use Stop exposing {{ function halt(); }}\n"
+                ),
+            )
             .replace("raises NotOwner | IsFrozen;", "raises NotOwner | Stopped;")
             .replace(
-                "  hook Tok.beforeTransfer(const from : address; const to : address; const id : uint)
-    raises IsFrozen
-  is {
-    assert(not storage.frozen[id], IsFrozen(id));
-    storage.moves := storage.moves + 1;
-    storage.last := Evm.sender();
-    emit Checked { id = id; by = Evm.sender(); };
-  }",
-                "  hook Tok.beforeTransfer is Stop.check;",
+                "    hook beforeTransfer(const from : address; const to : address; const id : uint)
+      raises IsFrozen
+    is {
+      assert(not storage.frozen[id], IsFrozen(id));
+      storage.moves := storage.moves + 1;
+      storage.last := Evm.sender();
+      emit Checked { id = id; by = Evm.sender(); };
+    }",
+                "    hook beforeTransfer is Stop.check;",
             )
     };
     let (mut inline, mut split, built) = both(&stopped(""), &stopped(" delegated"), "Frozen");
@@ -1591,10 +1591,11 @@ module M is {{
 }}
 
 storage is record {{ got : uint; }}
-use M{marks};
-hook M.h(const x : uint) : uint is {{
-  storage.got := storage.got + 1;
-}} with x * 2
+use M{marks} with {{
+  hook h(const x : uint) : uint is {{
+    storage.got := storage.got + 1;
+  }} with x * 2
+}}
 
 external function run(const x : uint) : uint is M.f(x)
 external function set(const v : uint) is M.set(v)
@@ -1613,5 +1614,95 @@ external function set(const v : uint) is M.set(v)
             .send(1, &word_data("run(uint256)", &[Word::from_u64(1).shl(254)]))
             .reverted
     );
+    DEPLOYED.with(|d| d.borrow_mut().clear());
+}
+
+/// A ledger whose mints pass `update` a constant `from`, and a hook that keeps the `from`
+/// it was called with.
+fn kept_from(marks: &str) -> String {
+    format!(
+        "module Ledger is {{
+  storage ledger at \"hooks.kept.ledger\" is record {{
+    balances : map(uint, map(address, uint));
+  }}
+
+  hook before(const from : address; const to : address; const ids : list(uint));
+
+  function update(const from : address; const to : address; const ids : list(uint); const amount : uint) is {{
+    before(from, to, ids);
+    for id : uint in ids do {{
+      ledger.balances[id][to] += amount;
+    }}
+  }}
+
+  function mint(const to : address; const id : uint; const amount : uint) is
+    update(0x0000000000000000000000000000000000000000, to, [id], amount)
+}}
+
+module Maker is {{
+  requires Ledger;
+
+  error Malformed;
+
+  pure function wellFormed(const b : bytes) : bool is {{
+    var n : uint := 0;
+    if b.length > 0 then {{
+      n := uint(uint8(b[1]));
+    }}
+  }} with n + 2 = b.length
+
+  private function produce(const doc : bytes; const to : address; const amount : uint) is {{
+    assert(wellFormed(doc), Malformed);
+    Ledger.mint(to, 1, amount);
+  }}
+
+  external function make(const doc : bytes; const to : address; const amount : uint) raises Malformed is
+    produce(doc, to, amount)
+
+  external function makeOne(const doc : bytes; const to : address) raises Malformed is produce(doc, to, 1)
+}}
+
+contract Kept is {{
+  use Ledger with {{
+    hook before(const from : address; const to : address; const ids : list(uint)) is {{
+      storage.lastFrom := from;
+    }}
+  }}
+  use Maker{marks} exposing {{
+    function make(doc : bytes; to : address; amount : uint) raises Malformed;
+    function makeOne(doc : bytes; to : address) raises Malformed;
+  }}
+
+  storage is record {{
+    lastFrom : address;
+  }}
+
+  external view function lastFrom() : address is storage.lastFrom
+}}
+"
+    )
+}
+
+/// A facet's call of a hook back passes the constant its caller gave, not what an earlier
+/// call left in the memory the arguments go through.
+#[test]
+fn hook_called_back_gets_a_constant_argument() {
+    let (mut inline, mut split, _) = both(&kept_from(""), &kept_from(" delegated"), "Kept");
+    let make = encode_args(
+        "make(bytes,address,uint256)",
+        &[
+            Arg::B(vec![3, 1, 0x41]),
+            Arg::W(Word::from_u64(9)),
+            Arg::W(Word::from_u64(10)),
+        ],
+    );
+    let last = word_data("lastFrom()", &[]);
+    for build in [&mut inline, &mut split] {
+        assert!(!build.send(1, &make).reverted);
+        assert_eq!(
+            build.send(1, &last).returndata,
+            Word::from_u64(0).to_be_bytes()
+        );
+    }
     DEPLOYED.with(|d| d.borrow_mut().clear());
 }

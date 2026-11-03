@@ -121,15 +121,13 @@ pub(crate) struct AbiField {
     pub name: String,
     pub ty: String,
     pub components: Vec<AbiField>,
+    /// The type it came from, which names it in the ABI's `internalType`.
+    pub id: usize,
 }
 
 pub(crate) fn abi_fields(types: &[RType], ty: usize, name: &str) -> Result<Vec<AbiField>, Error> {
     if is_sum(types, ty) {
-        return Err(error(
-            1,
-            1,
-            "a variant with a payload cannot be an ABI value",
-        ));
+        return Ok(vec![abi_nested(types, ty, name)?]);
     }
     match types[ty].kind {
         TyKind::Unit => Ok(Vec::new()),
@@ -137,48 +135,60 @@ pub(crate) fn abi_fields(types: &[RType], ty: usize, name: &str) -> Result<Vec<A
             let Some(under) = types[ty].elem else {
                 return Err(error(1, 1, "this type cannot be an ABI value"));
             };
-            abi_fields(types, under, name)
+            let mut fields = abi_fields(types, under, name)?;
+            // A variant with no payloads is a `uint8` named by its type, like an `enum`.
+            if !types[ty].variants.is_empty() {
+                fields[0].id = ty;
+            }
+            Ok(fields)
         }
         TyKind::Uint => Ok(vec![AbiField {
             name: name.to_string(),
             ty: uint_abi(types[ty].bits).to_string(),
             components: Vec::new(),
+            id: ty,
         }]),
         TyKind::Int => Ok(vec![AbiField {
             name: name.to_string(),
             ty: int_abi(types[ty].bits).to_string(),
             components: Vec::new(),
+            id: ty,
         }]),
         TyKind::Wei | TyKind::Timestamp => Ok(vec![AbiField {
             name: name.to_string(),
             ty: "uint256".to_string(),
             components: Vec::new(),
+            id: ty,
         }]),
         TyKind::String => Ok(vec![AbiField {
             name: name.to_string(),
             ty: "string".to_string(),
             components: Vec::new(),
+            id: ty,
         }]),
         TyKind::Bytes => Ok(vec![AbiField {
             name: name.to_string(),
             ty: bytes_abi(types[ty].bits).to_string(),
             components: Vec::new(),
+            id: ty,
         }]),
         TyKind::Address | TyKind::Interface => Ok(vec![AbiField {
             name: name.to_string(),
             ty: "address".to_string(),
             components: Vec::new(),
+            id: ty,
         }]),
         TyKind::Bool => Ok(vec![AbiField {
             name: name.to_string(),
             ty: "bool".to_string(),
             components: Vec::new(),
+            id: ty,
         }]),
         TyKind::Map => Err(error(1, 1, "a map cannot be an ABI value")),
         TyKind::Option => Err(error(1, 1, "an option cannot be an ABI value")),
-        // A record parameter or result is flattened into its fields, like a Solidity
-        // getter. A `tuple record` stays one tuple, and inside another value, any record is.
-        TyKind::Record if !types[ty].tuple => types[ty]
+        // A `flat` record parameter, result, or case payload is its fields, as Solidity's
+        // several parameters or results are. Any other record is one tuple.
+        TyKind::Record if types[ty].flat.is_some() => types[ty]
             .fields
             .iter()
             .map(|f| abi_nested(types, f.ty, &f.name))
@@ -198,11 +208,30 @@ pub(super) fn event_sig_type(types: &[RType], ty: usize) -> Result<String, Error
 pub(crate) fn abi_nested(types: &[RType], ty: usize, name: &str) -> Result<AbiField, Error> {
     let id = peel_id(types, ty);
     if is_sum(types, id) {
-        return Err(error(
-            1,
-            1,
-            "a variant with a payload cannot be an ABI value",
-        ));
+        // A variant with payloads is its case's index and that case's payload, ABI-encoded
+        // as a lone value: `(uint8 tag, bytes payload)`, the Solidity idiom for a sum.
+        for v in &types[id].variants {
+            if let Some(p) = v.payload {
+                if has_option(types, p) || !is_value(types, p) {
+                    return Err(error(1, 1, "an option cannot be an ABI value"));
+                }
+            }
+        }
+        let part = |name: &str, ty: &str, id: usize| AbiField {
+            name: name.to_string(),
+            ty: ty.to_string(),
+            components: Vec::new(),
+            id,
+        };
+        return Ok(AbiField {
+            name: name.to_string(),
+            ty: "(uint8,bytes)".to_string(),
+            components: vec![
+                part("tag", "uint8", TY_UINT8),
+                part("payload", "bytes", TY_BYTES),
+            ],
+            id,
+        });
     }
     let t = &types[id];
     match t.kind {
@@ -216,6 +245,7 @@ pub(crate) fn abi_nested(types: &[RType], ty: usize, name: &str) -> Result<AbiFi
                 name: name.to_string(),
                 ty: format!("({})", canon.join(",")),
                 components,
+                id,
             })
         }
         TyKind::List => {
@@ -232,10 +262,11 @@ pub(crate) fn abi_nested(types: &[RType], ty: usize, name: &str) -> Result<AbiFi
                 name: name.to_string(),
                 ty: format!("{}[{len}]", inner.ty),
                 components: inner.components,
+                id,
             })
         }
         _ => {
-            let mut parts = abi_fields(types, id, name)?;
+            let mut parts = abi_fields(types, ty, name)?;
             if parts.len() != 1 {
                 return Err(error(1, 1, "this type cannot be an ABI value"));
             }
@@ -269,17 +300,19 @@ pub(crate) fn bytes_option(types: &[RType], ty: usize) -> bool {
         })
 }
 
-/// A value the ABI can carry: any value with no option in it.
+/// A value the ABI can carry: any value with no option in it, nor a map in a variant's payload.
 pub(crate) fn abi_value(types: &[RType], ty: usize) -> bool {
     is_value(types, ty) && !has_option(types, ty)
 }
 
-/// Whether the ABI puts a value after an offset: a string, bytes, a dynamic list, or a
-/// record, tuple, or fixed list that holds one. An option, which only `=` encodes, is its
-/// tag and payload.
+/// Whether the ABI puts a value after an offset: a string, bytes, a dynamic list, a variant
+/// with payloads, or a record, tuple, or fixed list that holds one. An option, which only
+/// `=` encodes, is its tag and payload.
 pub(crate) fn abi_dynamic(types: &[RType], ty: usize) -> bool {
-    let t = &types[peel_id(types, ty)];
+    let id = peel_id(types, ty);
+    let t = &types[id];
     match t.kind {
+        TyKind::Record if is_sum(types, id) => true,
         TyKind::String => true,
         TyKind::Bytes => t.bits == 0,
         TyKind::List => t.bits == 0 || t.elem.is_some_and(|e| abi_dynamic(types, e)),
@@ -350,7 +383,7 @@ pub(crate) fn is_stored_aggregate(types: &[RType], ty: usize) -> bool {
 pub(crate) fn abi_record(types: &[RType], ty: usize) -> bool {
     let id = peel_id(types, ty);
     types[id].kind == TyKind::Record
-        && !types[id].tuple
+        && types[id].flat.is_some()
         && !is_static_value(types, id)
         && !has_option(types, id)
         && abi_fields(types, id, "").is_ok()
@@ -381,14 +414,17 @@ pub(crate) fn flat_record(types: &[RType], ty: usize) -> bool {
         })
 }
 
-/// Whether an option or a variant with a payload appears anywhere in a value, which keeps
-/// it out of the ABI.
+/// Whether an option appears anywhere in a value, a variant's payloads included, which
+/// keeps it out of the ABI.
 pub(crate) fn has_option(types: &[RType], ty: usize) -> bool {
     let id = peel_id(types, ty);
     let t = &types[id];
     match t.kind {
         TyKind::Option => true,
-        TyKind::Record if is_sum(types, id) => true,
+        TyKind::Record if is_sum(types, id) => t.variants.iter().any(|v| {
+            v.payload
+                .is_some_and(|p| has_option(types, p) || !is_value(types, p))
+        }),
         TyKind::Record | TyKind::Tuple => t.fields.iter().any(|f| has_option(types, f.ty)),
         TyKind::List => t.elem.is_some_and(|e| has_option(types, e)),
         _ => false,

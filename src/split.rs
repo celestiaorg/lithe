@@ -240,9 +240,19 @@ fn build_uncached(checked: &Checked, name: &str, opts: &Options) -> Result<Split
     gen::callback_rules(checked, &marked)?;
     let crossing: Vec<(String, Vec<Crossing>)> = marked
         .iter()
-        .map(|m| (m.clone(), gen::crossable(checked, m)))
+        .map(|m| Ok((m.clone(), module_crossings(checked, m, opts)?)))
+        .collect::<Result<_, Error>>()?;
+    // The contract calls across only what it can pass across and the facet has an entrypoint
+    // for.
+    let routed: Vec<(String, Vec<Crossing>)> = crossing
+        .iter()
+        .map(|(m, facet)| {
+            let mut own = gen::crossable(checked, m);
+            own.retain(|c| facet.iter().any(|f| f.at == c.at));
+            (m.clone(), own)
+        })
         .collect();
-    let crossed = gen::stray_calls(checked, &marked, &stand_ins(checked, &crossing))?;
+    let crossed = gen::stray_calls(checked, &marked, &stand_ins(checked, &routed))?;
     let facets = parallel(&crossing, |(module, crossing)| {
         facet(checked, module, crossing, opts)
     })?;
@@ -739,16 +749,38 @@ pub(crate) fn display_name(name: &str) -> &str {
 pub(crate) fn facet_program(source: &Program, module: &str, crossing: &[Crossing]) -> Program {
     let mut prog = source.clone();
     let own = source.origin.as_str();
-    prog.funcs.clear();
+    let mut order = Vec::new();
+    closure(&prog.modules, module, &mut order);
+    // Only the files the modules are written in, and what those import, in an order of
+    // their own: the contract's other imports, and the order it imports them, change nothing.
+    let mut files = Vec::new();
+    let mut seen = HashSet::new();
+    for decl in prog.modules.iter().filter(|m| order.contains(&m.name)) {
+        imports_first(&source.scopes, &decl.origin, &mut seen, &mut files);
+    }
+    let rank = |origin: &str| files.iter().position(|file| file == origin);
+    let keep = |origin: &str| origin != own && rank(origin).is_some();
+    prog.funcs.retain(|f| f.constant && keep(&f.origin));
+    prog.funcs.sort_by_key(|f| rank(&f.origin));
     prog.domains.clear();
     prog.exposes.clear();
     prog.facets.clear();
+    prog.uses.clear();
+    prog.peers.clear();
+    prog.specs.clear();
     prog.types
-        .retain(|decl| decl.name != "storage" && decl.origin != own);
-    prog.errors.retain(|decl| decl.origin != own);
-    prog.error_sets.retain(|decl| decl.origin != own);
-    prog.events.retain(|decl| decl.origin != own);
-    prog.interfaces.retain(|decl| decl.origin != own);
+        .retain(|decl| decl.name != "storage" && keep(&decl.origin));
+    prog.errors.retain(|decl| keep(&decl.origin));
+    prog.error_sets.retain(|decl| keep(&decl.origin));
+    prog.events.retain(|decl| keep(&decl.origin));
+    prog.interfaces.retain(|decl| keep(&decl.origin));
+    prog.modules.retain(|decl| rank(&decl.origin).is_some());
+    prog.types.sort_by_key(|decl| rank(&decl.origin));
+    prog.errors.sort_by_key(|decl| rank(&decl.origin));
+    prog.error_sets.sort_by_key(|decl| rank(&decl.origin));
+    prog.events.sort_by_key(|decl| rank(&decl.origin));
+    prog.interfaces.sort_by_key(|decl| rank(&decl.origin));
+    prog.modules.sort_by_key(|decl| rank(&decl.origin));
     prog.types.push(TypeDecl {
         line: 0,
         col: 0,
@@ -759,11 +791,8 @@ pub(crate) fn facet_program(source: &Program, module: &str, crossing: &[Crossing
             line: 0,
             col: 0,
             fields: Vec::new(),
-            tuple: false,
         },
     });
-    let mut order = Vec::new();
-    closure(&prog.modules, module, &mut order);
     prog.compose = order
         .into_iter()
         .filter(|name| name != module)
@@ -774,6 +803,9 @@ pub(crate) fn facet_program(source: &Program, module: &str, crossing: &[Crossing
         })
         .collect();
     if let Some(decl) = prog.modules.iter().find(|decl| decl.name == module) {
+        prog.origin = decl.origin.clone();
+        prog.contract_line = decl.line;
+        prog.contract_col = decl.col;
         prog.compose.push(NameAt {
             line: decl.line,
             col: decl.col,
@@ -930,6 +962,24 @@ fn across(module: &str, decl: &crate::ast::ModuleDecl, func: &Func, crossing: &C
     entry
 }
 
+/// `file` after the files it imports, each once, in the order each file imports them.
+fn imports_first(
+    scopes: &crate::resolve::Scopes,
+    file: &str,
+    seen: &mut HashSet<String>,
+    out: &mut Vec<String>,
+) {
+    if !seen.insert(file.to_string()) {
+        return;
+    }
+    for import in scopes.of_file(file).map_or(&[][..], |scope| &scope.imports) {
+        if let Some(target) = &import.target {
+            imports_first(scopes, target, seen, out);
+        }
+    }
+    out.push(file.to_string());
+}
+
 /// `module` after everything it requires, each once, required modules in name order.
 pub(crate) fn closure(modules: &[crate::ast::ModuleDecl], module: &str, out: &mut Vec<String>) {
     if out.iter().any(|name| name == module) {
@@ -946,6 +996,74 @@ pub(crate) fn closure(modules: &[crate::ast::ModuleDecl], module: &str, out: &mu
     if !out.iter().any(|name| name == module) {
         out.push(module.to_string());
     }
+}
+
+/// The functions of `module` contract code can call across, as the module and the modules it
+/// requires declare them, whatever the contract that marks it calls or implements.
+fn module_crossings(
+    checked: &Checked,
+    module: &str,
+    opts: &Options,
+) -> Result<Vec<Crossing>, Error> {
+    let source = &checked.source;
+    let mut alone = facet_program(source, module, &[]);
+    alone.scopes = Default::default();
+    let key = keccak256(format!("{alone:?}\0{:?}", opts.evm).as_bytes());
+    static FOUND: OnceLock<Mutex<HashMap<[u8; 32], Vec<Crossing>>>> = OnceLock::new();
+    let memo = FOUND.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Some(found) = memo.lock().ok().and_then(|memo| memo.get(&key).cloned()) {
+        return Ok(found);
+    }
+    let check = |crossing: &[Crossing]| {
+        crate::check::check_in(facet_program(source, module, crossing), false, opts.evm)
+    };
+    let alone = check(&[])?;
+    let mut found = gen::crossable(&alone, module);
+    // A function that takes a list is built for each caller. One the module's own code never
+    // calls gets its copy from an entrypoint of its own, unless that doesn't check. The
+    // entrypoint may raise any error; the copy's own check says which it does.
+    let raises: Vec<String> = alone.errors.iter().map(|e| e.name.clone()).collect();
+    let site = |f: &Func| (f.origin.clone(), f.line, f.col);
+    let built: HashSet<Site> = alone.prog.funcs.iter().map(site).collect();
+    let rest: Vec<Crossing> = source
+        .modules
+        .iter()
+        .filter(|m| m.name == module)
+        .flat_map(|m| &m.funcs)
+        .filter(|f| {
+            matches!(
+                f.kind,
+                ItemKind::Function | ItemKind::Readonly | ItemKind::Pure
+            ) && f.type_params.is_empty()
+                && !f.private
+                && f.params.iter().all(|p| !p.storage)
+                && !built.contains(&site(f))
+        })
+        .map(|f| Crossing {
+            at: site(f),
+            delegate: f.kind != ItemKind::Pure,
+            raises: raises.clone(),
+        })
+        .collect();
+    if !rest.is_empty() {
+        let mut tried: Vec<Crossing> = found.iter().chain(&rest).cloned().collect();
+        let mut done = check(&tried);
+        if done.is_err() {
+            tried = found;
+            for crossing in rest {
+                tried.push(crossing);
+                if check(&tried).is_err() {
+                    tried.pop();
+                }
+            }
+            done = check(&tried);
+        }
+        found = gen::crossable(&done?, module);
+    }
+    if let Ok(mut memo) = memo.lock() {
+        memo.insert(key, found.clone());
+    }
+    Ok(found)
 }
 
 /// The groups in the order they are listed: upgrade machinery, the contract's own functions,

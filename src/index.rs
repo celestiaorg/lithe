@@ -170,7 +170,7 @@ const KEYWORDS: [&str; 65] = [
     "fallback",
     "delegates",
     "forwards",
-    "tuple",
+    "flat",
 ];
 
 const TYPE_NAMES: [&str; 17] = [
@@ -370,6 +370,16 @@ impl<'a> Builder<'a> {
             from = at + name.len().max(1);
         }
         (line, col)
+    }
+
+    /// The payload type `ctor` carries in a `case` on a value of type `scrut`.
+    fn payload(&self, scrut: usize, ctor: &str) -> Option<usize> {
+        let t = &self.c().types[scrut];
+        match ctor {
+            "Some" if t.kind == TyKind::Option => t.elem,
+            "Ok" if t.variants.is_empty() => Some(scrut),
+            _ => t.variants.iter().find(|v| v.name == ctor)?.payload,
+        }
     }
 
     /// Where `name` is written as the label of `name = e`.
@@ -943,7 +953,7 @@ impl<'a> Builder<'a> {
                         params: m
                             .params
                             .iter()
-                            .map(|p| format!("{} : {}", p.name, ty_ref(&p.ty)))
+                            .map(|p| format!("{} : {}", p.name, flat_ref(p.flat, &p.ty)))
                             .collect(),
                     },
                 );
@@ -1299,7 +1309,7 @@ impl<'a> Builder<'a> {
                 let params = f
                     .params
                     .iter()
-                    .map(|p| format!("{} : {}", p.name, ty_ref(&p.ty)))
+                    .map(|p| format!("{} : {}", p.name, flat_ref(p.flat, &p.ty)))
                     .collect();
                 (method_text(f), params)
             } else {
@@ -1402,12 +1412,18 @@ impl<'a> Builder<'a> {
             .map(|t| format!(" : {}", ty_ref(t)))
             .unwrap_or_default();
         let text = format!("{effect}hook {}({}){ret}", sig.name, params.join("; "));
-        let hook = format!("{}.{}", crate::modules::shown(&m.name), sig.name);
+        let used = format!("use {} ... with", crate::modules::shown(&m.name));
         let status = match of.form {
             HookForm::Body | HookForm::Via(_) => {
-                format!("the contract implements it: `hook {hook} ...`")
+                format!(
+                    "the contract implements it: `{used} {{ hook {} ... }}`",
+                    sig.name
+                )
             }
-            HookForm::Skip => format!("the contract skips it: `hook {hook} is skip;`"),
+            HookForm::Skip => format!(
+                "the contract skips it: `{used} {{ hook {} is skip; }}`",
+                sig.name
+            ),
             _ => "the contract that uses the module implements it".to_string(),
         };
         let hover = join(vec![code(&text), self.doc(file, sig.line), status]);
@@ -2658,7 +2674,29 @@ impl<'a> Builder<'a> {
                         let p = self.local(at.0, at.1, bind, arm.bind_sym, "const", Kind::Local);
                         at = (p.0, p.1 + bind.len() as u32);
                     }
-                    self.locals(at.0, at.1, &arm.tuple_names, &arm.tuple_syms, "const");
+                    if arm.fields.is_empty() {
+                        let names: Vec<String> = arm
+                            .tuple_names
+                            .iter()
+                            .filter(|n| *n != "_")
+                            .cloned()
+                            .collect();
+                        self.locals(at.0, at.1, &names, &arm.tuple_syms, "const");
+                    }
+                    let record = self.payload(scrut.ty(), &arm.ctors[0]);
+                    let mut syms = arm.tuple_syms.iter().copied();
+                    for (field, name) in arm.fields.iter().zip(&arm.tuple_names) {
+                        let pos = self.locate(self.file, at.0, at.1, field);
+                        at = (pos.0, pos.1 + field.len() as u32);
+                        if field != name {
+                            let d = record.and_then(|r| self.member(self.key(r), field));
+                            self.refer(pos, field, d);
+                        }
+                        let sym = if name == "_" { None } else { syms.next() };
+                        let from = if field == name { pos } else { at };
+                        let p = self.local(from.0, from.1, name, sym, "const", Kind::Local);
+                        at = (p.0, p.1 + name.len() as u32);
+                    }
                     self.stmts(&arm.stmts);
                     self.expr(&arm.expr);
                 }
@@ -2814,6 +2852,9 @@ fn bare(item: &str) -> &str {
 /// A function's header as it is declared. A module's external shows as it was written,
 /// though it is checked as an internal function.
 fn func_text(f: &Func) -> String {
+    if f.constant {
+        return format!("const {}{}", short(&f.name), ret_raises(f));
+    }
     let (kind, payable, nonreentrant, external_pure, name) = match &f.exported {
         Some(e) => (
             e.kind,
@@ -2869,7 +2910,7 @@ fn method_text(m: &Func) -> String {
     let params: Vec<String> = m
         .params
         .iter()
-        .map(|p| format!("{} : {}", p.name, ty_ref(&p.ty)))
+        .map(|p| format!("{} : {}", p.name, flat_ref(p.flat, &p.ty)))
         .collect();
     format!("{head} {}({}){}", m.name, params.join("; "), ret_raises(m))
 }
@@ -2877,7 +2918,7 @@ fn method_text(m: &Func) -> String {
 fn ret_raises(f: &Func) -> String {
     let mut out = String::new();
     if let Some(ret) = &f.ret {
-        out.push_str(&format!(" : {}", ty_ref(ret)));
+        out.push_str(&format!(" : {}", flat_ref(f.ret_flat, ret)));
     }
     if let Some(r) = &f.raises {
         let names: Vec<&str> = r.parts.iter().map(|p| p.name.as_str()).collect();
@@ -2897,7 +2938,12 @@ fn param_word(p: &Param) -> &'static str {
 }
 
 fn param_text(p: &Param) -> String {
-    format!("{} {} : {}", param_word(p), p.name, ty_ref(&p.ty))
+    format!("{} {} : {}", param_word(p), p.name, flat_ref(p.flat, &p.ty))
+}
+
+fn flat_ref(flat: bool, t: &TypeRef) -> String {
+    let flat = if flat { "flat " } else { "" };
+    format!("{flat}{}", ty_ref(t))
 }
 
 fn ty_ref(t: &TypeRef) -> String {

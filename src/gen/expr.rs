@@ -888,6 +888,7 @@ impl<'a> Gen<'a> {
             Builtin::SpecState(_) | Builtin::SpecSum | Builtin::SpecCount | Builtin::SpecForall => {
                 unreachable!("the checker drops spec blocks before codegen")
             }
+            Builtin::Braced => unreachable!("the checker resolves a braced constructor"),
             Builtin::UintToString | Builtin::IntToString => {
                 self.compile_value(&args[0])?;
                 self.call_sub(Sub::DecimalString(b == Builtin::IntToString));
@@ -2588,6 +2589,8 @@ impl<'a> Gen<'a> {
             Sink::Mem(dst, ty) => self.write_value(e, dst, ty),
             Sink::Discard => match e {
                 Expr::Lit { lit: Lit::Unit, .. } => Ok(()),
+                // A call that returns nothing leaves nothing to pop.
+                _ if self.checked.types[e.ty()].words == 0 => self.compile_effect(e),
                 _ => {
                     self.compile_value(e)?;
                     self.op(POP);
@@ -2609,10 +2612,12 @@ impl<'a> Gen<'a> {
             expr: call, gas, ..
         } = scrut
         {
-            self.query_gas = gas.as_deref().cloned();
-            let result = self.compile_query_case(call, scrut.ty(), arms, line, col, sink);
-            self.query_gas = None;
-            return result;
+            if Expr::is_outcome_case(scrut, arms) {
+                self.query_gas = gas.as_deref().cloned();
+                let result = self.compile_query_case(call, scrut.ty(), arms, line, col, sink);
+                self.query_gas = None;
+                return result;
+            }
         }
         // What an arm binds is part of the value it matched.
         let blob = self.known_blob(scrut);
@@ -2754,27 +2759,13 @@ impl<'a> Gen<'a> {
                     .ctors
                     .first()
                     .and_then(|c| self.checked.types[vty].variants[index(c)].payload);
-                if let Some(payload) = payload {
+                if let (Some(payload), Some(bind)) = (payload, arm.bind_sym) {
                     let first = arm.ctors.first().map_or(0, |c| index(c));
                     let at = self.checked.types[vty].variants[first].at.clone();
-                    let copy = |g: &mut Self, first: u32, n: u32, dst: i32| {
-                        for j in 0..n {
-                            g.mload(src + at[(first + j) as usize] as i32 * 32);
-                            g.mstore_off(dst + j as i32 * 32);
-                        }
-                    };
-                    if !arm.tuple_syms.is_empty() {
-                        let fields: Vec<(u32, u32)> = self.checked.types[payload]
-                            .fields
-                            .iter()
-                            .map(|field| (field.slot, field.n_leaf.max(1)))
-                            .collect();
-                        for (bind, (slot, n)) in arm.tuple_syms.iter().zip(fields) {
-                            copy(self, slot, n, self.local[*bind]);
-                        }
-                    } else if let Some(bind) = arm.bind_sym {
-                        let n = self.checked.types[payload].words.max(1);
-                        copy(self, 0, n, self.local[bind]);
+                    let dst = self.local[bind];
+                    for j in 0..self.checked.types[payload].words.max(1) as usize {
+                        self.mload(src + at[j] as i32 * 32);
+                        self.mstore_off(dst + j as i32 * 32);
                     }
                 }
             }
@@ -2912,18 +2903,7 @@ impl<'a> Gen<'a> {
         self.push_label(none_l);
         self.op(JUMPI);
         self.branch += 1;
-        let tuple_syms = some.tuple_syms.clone();
-        if !tuple_syms.is_empty() {
-            let payload = self.checked.types[scrut.ty()].elem.unwrap_or(0);
-            let fields: Vec<(u32, u32)> = self.checked.types[payload]
-                .fields
-                .iter()
-                .map(|field| (field.slot, field.n_leaf.max(1)))
-                .collect();
-            for (bind, (slot, n)) in tuple_syms.iter().zip(fields) {
-                self.copy_words(src + 32 + slot as i32 * 32, self.local[*bind], n);
-            }
-        } else if let Some(bind) = some.bind_sym {
+        if let Some(bind) = some.bind_sym {
             let n = self.checked.types[self.checked.syms[bind].ty].words.max(1);
             self.copy_words(src + 32, self.local[bind], n);
         }

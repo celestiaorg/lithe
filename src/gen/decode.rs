@@ -50,6 +50,7 @@ impl<'a> Gen<'a> {
                 && !self.init
                 && !self.crossed
                 && !crate::check::abi_record(&self.checked.types, p.ty_id)
+                && !self.holds_sum(p.ty_id)
             {
                 if let Some(used) = self.passed_through(func, sym).filter(|&u| u || tree) {
                     if used {
@@ -76,6 +77,7 @@ impl<'a> Gen<'a> {
                 && !self.init
                 && !self.crossed
                 && self.list_value(p.ty_id)
+                && !self.holds_sum(p.ty_id)
                 && self.cd_checkable(func, sym)
             {
                 if !args {
@@ -590,8 +592,11 @@ impl<'a> Gen<'a> {
                 for (j, arg) in args.iter().enumerate() {
                     // Encoded whole, read in place by an inlined call's constant parameter, or
                     // copied out of calldata by `List.resized`.
+                    // A record a `flat` parameter spreads has no one offset to copy from.
+                    let spread = self.checked.types[arg.ty()].flat.is_some();
                     let in_place = whole.is_some()
                         && own(arg)
+                        && !spread
                         && (encoded
                             || j == 0
                                 && *builtin == Some(Builtin::ListResized)

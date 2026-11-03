@@ -19,6 +19,12 @@ error ERC2981InvalidTokenRoyaltyReceiver of record {
   receiver : address;
 }
 
+(* A record result flattens to the standard's two named outputs. *)
+type RoyaltyInfo is record {
+  receiver : address;
+  royaltyAmount : uint;
+}
+
 interface IERC2981 is {
-  view function royaltyInfo(tokenId : uint; salePrice : uint) : (address, uint);
+  view function royaltyInfo(tokenId : uint; salePrice : uint) : flat RoyaltyInfo;
 }

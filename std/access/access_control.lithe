@@ -1,18 +1,18 @@
 (* Role-based access control, like OpenZeppelin's `AccessControl`. A role is a `Role`, a
    distinct type over `bytes32`, so a role can't be passed where some other hash is meant.
    Each role has an admin role whose members grant and revoke it; the default admin role
-   is `role(0x00...)` and administers itself.
+   is `Role(0x00...)` and administers itself.
 
-     pure function minter() : role is role(Crypto.keccak256("MINTER_ROLE"))
+     const minter : Role := Role(Crypto.keccak256("MINTER_ROLE"));
 
      deploy(const admin : address) is {
-       AccessControl.grant(AccessControl.defaultAdminRole(), admin);
+       AccessControl.grant(AccessControl.defaultAdminRole, admin);
      }
 
      external function mint(const to : address; const amount : uint)
        raises AccessControlUnauthorizedAccount
      is {
-       AccessControl.checkRole(minter());
+       AccessControl.checkRole(minter);
        ...
      }
 
@@ -54,8 +54,7 @@ module AccessControl is {
     indexed sender : address;
   }
 
-  pure function defaultAdminRole() : Role is
-    Role(0x0000000000000000000000000000000000000000000000000000000000000000)
+  const defaultAdminRole : Role := Role(0x0000000000000000000000000000000000000000000000000000000000000000);
 
   view function checkRole(const r : Role)
     raises AccessControlUnauthorizedAccount

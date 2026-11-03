@@ -13,7 +13,11 @@ import "./lib/erc1155_supply";
 contract BenchMultiToken is {
   use Initializable;
 
-  use ERC1155 exposing IERC1155Views, IERC1155MetadataURI;
+  use ERC1155 exposing IERC1155Views, IERC1155MetadataURI with {
+    (* `ERC1155Pausable` checks the pause, and `ERC1155Supply` counts after the balances. *)
+    hook beforeTransfer is Pausable.requireNotPaused;
+    hook afterTransfer is ERC1155Supply.update;
+  }
   use ERC1155Supply exposing IERC1155Supply;
   use Ownable exposing IOwnable;
   use Pausable exposing IPausable;
@@ -30,10 +34,6 @@ contract BenchMultiToken is {
     Ownable.init(initialOwner);
     Initializable.finish();
   }
-
-  (* `ERC1155Pausable` checks the pause, and `ERC1155Supply` counts after the balances. *)
-  hook ERC1155.beforeTransfer is Pausable.requireNotPaused;
-  hook ERC1155.afterTransfer is ERC1155Supply.update;
 
   function transfer(const from : address; const to : address; const ids : list(uint); const values : list(uint))
     raises ERC1155MissingApprovalForAll | ERC1155InvalidReceiver | ERC1155InvalidSender | EnforcedPause

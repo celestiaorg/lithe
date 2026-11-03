@@ -19,6 +19,7 @@ pub(crate) enum Cat {
     Event,
     Interface,
     Func,
+    Const,
     Module,
 }
 
@@ -31,6 +32,7 @@ impl Cat {
             Cat::Event => "event",
             Cat::Interface => "interface",
             Cat::Func => "function",
+            Cat::Const => "constant",
             Cat::Module => "module",
         }
     }
@@ -94,6 +96,8 @@ pub(crate) struct Scopes {
     ctors: BTreeSet<String>,
     /// The intrinsics of each module the compiler implements, by its canonical name.
     pub intrinsics: BTreeMap<String, BTreeMap<String, Tag>>,
+    /// Each module's constants, `M.n` by the module's canonical name.
+    consts: BTreeSet<String>,
 }
 
 /// One file, or one contract of a file of contracts, with its imports.
@@ -181,8 +185,9 @@ pub(crate) fn link(units: &mut [Unit]) -> Result<Scopes, Error> {
             );
         }
         for f in &prog.funcs {
-            let mut decl = item(Cat::Func, &f.name, f.private, f.line, f.col);
-            decl.kind = Some(f.kind);
+            let cat = if f.constant { Cat::Const } else { Cat::Func };
+            let mut decl = item(cat, &f.name, f.private, f.line, f.col);
+            decl.kind = (!f.constant).then_some(f.kind);
             decl.shape = f
                 .params
                 .iter()
@@ -372,14 +377,17 @@ pub(crate) fn link(units: &mut [Unit]) -> Result<Scopes, Error> {
     }
     for unit in units.iter() {
         for module in &unit.prog.modules {
-            if module.intrinsics.is_empty() {
-                continue;
-            }
             let canonical = file_modules[&unit.key.0]
                 .iter()
                 .map(|&id| &scopes.decls[id])
                 .find(|decl| decl.name == module.name)
                 .map_or_else(|| module.name.clone(), |decl| decl.canonical.clone());
+            for f in module.funcs.iter().filter(|f| f.constant) {
+                scopes.consts.insert(format!("{canonical}.{}", f.name));
+            }
+            if module.intrinsics.is_empty() {
+                continue;
+            }
             let tags = module
                 .intrinsics
                 .iter()
@@ -391,6 +399,7 @@ pub(crate) fn link(units: &mut [Unit]) -> Result<Scopes, Error> {
     let members = scopes.members.clone();
     let ctors = scopes.ctors.clone();
     let intrinsics = scopes.intrinsics.clone();
+    let consts = scopes.consts.clone();
     for unit in units.iter_mut() {
         let mut scope = scopes.scopes.remove(&unit.key).expect("a scope");
         let module_names: HashMap<String, String> = file_modules[&unit.key.0]
@@ -406,6 +415,7 @@ pub(crate) fn link(units: &mut [Unit]) -> Result<Scopes, Error> {
             members: &members,
             ctors: &ctors,
             intrinsics: &intrinsics,
+            consts: &consts,
             origin: &unit.key.0,
             module: None,
             type_params: HashSet::new(),
@@ -434,6 +444,7 @@ pub(crate) fn resolve_specs(
         members: &scopes.members,
         ctors: &scopes.ctors,
         intrinsics: &scopes.intrinsics,
+        consts: &scopes.consts,
         origin: &key.0,
         module: None,
         type_params: HashSet::new(),
@@ -555,6 +566,7 @@ fn insert(
         // Overloads share a name, all external or all internal, and differ in their
         // parameter types; the checker compares the types themselves.
         let overload = (external(new.kind) || !funcs.is_empty())
+            && have.iter().all(|entry| decls[entry.decl].cat != Cat::Const)
             && funcs
                 .iter()
                 .all(|f| external(f.kind) == external(new.kind) && f.shape != new.shape);
@@ -715,6 +727,7 @@ fn universe_type(name: &str) -> bool {
 struct InModule {
     name: String,
     funcs: HashSet<String>,
+    consts: HashSet<String>,
     members: HashSet<String>,
 }
 
@@ -724,6 +737,7 @@ struct Resolver<'a> {
     members: &'a BTreeSet<String>,
     ctors: &'a BTreeSet<String>,
     intrinsics: &'a BTreeMap<String, BTreeMap<String, Tag>>,
+    consts: &'a BTreeSet<String>,
     origin: &'a str,
     module: Option<InModule>,
     type_params: HashSet<String>,
@@ -766,6 +780,7 @@ impl Resolver<'_> {
             }
         }
         for d in &mut prog.domains {
+            self.unshadowed([&d.name], d.line, d.col)?;
             self.ty(&mut d.ty)?;
         }
         for func in &mut prog.funcs {
@@ -849,7 +864,14 @@ impl Resolver<'_> {
             funcs: module
                 .funcs
                 .iter()
+                .filter(|f| !f.constant)
                 .chain(&module.hooks)
+                .map(|f| f.name.clone())
+                .collect(),
+            consts: module
+                .funcs
+                .iter()
+                .filter(|f| f.constant)
                 .map(|f| f.name.clone())
                 .collect(),
             members,
@@ -881,6 +903,7 @@ impl Resolver<'_> {
                 }
             }
             for d in &mut module.domains {
+                self.unshadowed([&d.name], d.line, d.col)?;
                 self.ty(&mut d.ty)?;
                 d.owner = Some(module.name.clone());
             }
@@ -922,6 +945,9 @@ impl Resolver<'_> {
             bind_expr(tail, &mut self.locals);
         }
         let result = (|| {
+            for p in &func.params {
+                self.unshadowed([&p.name], p.line, p.col)?;
+            }
             self.header(func)?;
             self.stmts(&mut func.stmts)?;
             if let Some(tail) = &mut func.tail {
@@ -972,7 +998,10 @@ impl Resolver<'_> {
             }
             for clause in &mut block.clauses {
                 match &mut clause.kind {
-                    ClauseKind::Const { ty, .. } => self.ty(ty)?,
+                    ClauseKind::Const { ty, name } => {
+                        self.unshadowed([&*name], clause.line, clause.col)?;
+                        self.ty(ty)?;
+                    }
                     ClauseKind::Raises(named) => {
                         self.named(
                             &mut named.name,
@@ -1200,6 +1229,30 @@ impl Resolver<'_> {
     /// A list length names constants from wherever the type is used, so a module's own
     /// constant is qualified: `list(T, n())` in `M` is `M.n()`.
     fn size(&mut self, size: &mut Expr) -> Result<(), Error> {
+        if let Some(mut call) = self.constant(size) {
+            if let (
+                Expr::Call {
+                    base: base @ None, ..
+                },
+                Some(module),
+            ) = (&mut call, &self.module)
+            {
+                if let Expr::Ident { name, .. } = &*size {
+                    if module.consts.contains(name) {
+                        *base = Some(Box::new(Expr::Ident {
+                            line: size.line(),
+                            col: size.col(),
+                            name: module.name.clone(),
+                            sym: None,
+                            builtin: None,
+                            ty: 0,
+                        }));
+                    }
+                }
+            }
+            *size = call;
+            return Ok(());
+        }
         if let (
             Expr::Call {
                 name,
@@ -1255,7 +1308,25 @@ impl Resolver<'_> {
 
     fn stmt(&mut self, stmt: &mut Stmt) -> Result<(), Error> {
         match stmt {
-            Stmt::Const { ty, expr, .. } | Stmt::Var { ty, expr, .. } => {
+            Stmt::Const {
+                ty,
+                expr,
+                name,
+                parts,
+                line,
+                col,
+                ..
+            }
+            | Stmt::Var {
+                ty,
+                expr,
+                name,
+                parts,
+                line,
+                col,
+                ..
+            } => {
+                self.unshadowed(std::iter::once(&*name).chain(&*parts), *line, *col)?;
                 self.ty(ty)?;
                 self.expr(expr)
             }
@@ -1317,11 +1388,13 @@ impl Resolver<'_> {
                     self.expr(value)?;
                 }
                 if let Some(then) = then {
+                    self.unshadowed(&then.names, then.line, then.col)?;
                     if let Some(ty) = &mut then.ty {
                         self.ty(ty)?;
                     }
                     self.stmts(&mut then.stmts)?;
                     if let Some(failed) = &mut then.error {
+                        self.unshadowed(&failed.names, failed.line, failed.col)?;
                         if let Some(ty) = &mut failed.ty {
                             self.ty(ty)?;
                         }
@@ -1337,8 +1410,13 @@ impl Resolver<'_> {
                 bound,
                 body,
                 invariants,
+                index,
+                name,
+                line,
+                col,
                 ..
             } => {
+                self.unshadowed(index.iter().chain([&*name]), *line, *col)?;
                 for inv in invariants.iter_mut() {
                     self.expr(inv)?;
                 }
@@ -1350,8 +1428,11 @@ impl Resolver<'_> {
                     }
                     ForIter::List(xs) => self.expr(xs)?,
                 }
-                for e in until.iter_mut().chain(bound.iter_mut()) {
+                if let Some(e) = until {
                     self.expr(e)?;
+                }
+                if let Some(e) = bound {
+                    self.size(e)?;
                 }
                 self.stmts(body)
             }
@@ -1407,6 +1488,94 @@ impl Resolver<'_> {
                 Ok(())
             }
         }
+    }
+
+    /// The call a constant's name stands for: `n`, `A.n` through an import's alias, a
+    /// module's own `n`, or `M.n`.
+    fn constant(&mut self, expr: &Expr) -> Option<Expr> {
+        let (name, base) = match expr {
+            Expr::Ident { name, .. } if self.locals.contains(name) => return None,
+            Expr::Ident { name, .. }
+                if self
+                    .module
+                    .as_ref()
+                    .is_some_and(|m| m.consts.contains(name)) =>
+            {
+                (name.clone(), None)
+            }
+            Expr::Ident { name, .. } => (self.lookup(name, &[Cat::Const])?, None),
+            Expr::Field { base, name, .. } => {
+                let aliased = match base.as_ref() {
+                    Expr::Ident { name: alias, .. }
+                        if !self.locals.contains(alias)
+                            && self.scope.aliases.contains_key(alias) =>
+                    {
+                        self.lookup(&format!("{alias}.{name}"), &[Cat::Const])
+                    }
+                    _ => None,
+                };
+                match aliased {
+                    Some(canonical) => (canonical, None),
+                    None => {
+                        let module = self.module_expr(base)?;
+                        if !self.consts.contains(&format!("{module}.{name}")) {
+                            return None;
+                        }
+                        let (line, col) = (base.line(), base.col());
+                        let base = Expr::Ident {
+                            line,
+                            col,
+                            name: module,
+                            sym: None,
+                            builtin: None,
+                            ty: 0,
+                        };
+                        (name.clone(), Some(Box::new(base)))
+                    }
+                }
+            }
+            _ => return None,
+        };
+        Some(Expr::Call {
+            line: expr.line(),
+            col: expr.col(),
+            name,
+            args: Vec::new(),
+            base,
+            callee: None,
+            builtin: None,
+            iface: None,
+            method: None,
+            ty: 0,
+        })
+    }
+
+    /// A local or a storage domain may not take the name of a constant it would hide.
+    fn unshadowed<'n>(
+        &self,
+        names: impl IntoIterator<Item = &'n String>,
+        line: u32,
+        col: u32,
+    ) -> Result<(), Error> {
+        for name in names {
+            let module = self
+                .module
+                .as_ref()
+                .is_some_and(|m| m.consts.contains(name));
+            let file = self.scope.names.get(name).is_some_and(|entries| {
+                entries
+                    .iter()
+                    .any(|entry| self.decls[entry.decl].cat == Cat::Const)
+            });
+            if module || file {
+                return Err(error(
+                    line,
+                    col,
+                    format!("`{name}` names a constant; rename one of them"),
+                ));
+            }
+        }
+        Ok(())
     }
 
     /// The module an expression names, as `M` or `A.M`, when it is not a value.
@@ -1548,6 +1717,10 @@ impl Resolver<'_> {
     }
 
     fn expr(&mut self, expr: &mut Expr) -> Result<(), Error> {
+        if let Some(call) = self.constant(expr) {
+            *expr = call;
+            return Ok(());
+        }
         match expr {
             Expr::Lit { .. } => Ok(()),
             Expr::Ident { name, .. } => {
@@ -1606,6 +1779,7 @@ impl Resolver<'_> {
             Expr::Case { scrut, arms, .. } => {
                 self.expr(scrut)?;
                 for arm in arms {
+                    self.unshadowed(arm.bind.iter().chain(&arm.tuple_names), arm.line, arm.col)?;
                     self.stmts(&mut arm.stmts)?;
                     self.expr(&mut arm.expr)?;
                 }
@@ -1637,10 +1811,37 @@ impl Resolver<'_> {
                 ..
             } => {
                 let (line, col) = (*line, *col);
+                let named = match base.as_deref() {
+                    None => Some(Expr::Ident {
+                        line,
+                        col,
+                        name: name.clone(),
+                        sym: None,
+                        builtin: None,
+                        ty: 0,
+                    }),
+                    Some(inner @ Expr::Ident { .. }) => Some(Expr::Field {
+                        line,
+                        col,
+                        base: Box::new(inner.clone()),
+                        name: name.clone(),
+                        root: None,
+                        leaf: 0,
+                        ty: 0,
+                    }),
+                    Some(_) => None,
+                };
+                if builtin.is_none() && named.is_some_and(|e| self.constant(&e).is_some()) {
+                    return Err(error(
+                        line,
+                        col,
+                        format!("`{name}` is a constant, not a function: name it without `()`"),
+                    ));
+                }
                 for arg in args.iter_mut() {
                     self.expr(arg)?;
                 }
-                if let Some(kind) = builtin {
+                if let Some(kind) = builtin.as_ref().filter(|k| **k != Builtin::Braced) {
                     if *kind == Builtin::Create {
                         self.contract_ref(&name.clone());
                         self.visible_contract(name, line, col)?;

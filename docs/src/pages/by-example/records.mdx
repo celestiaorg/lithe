@@ -36,7 +36,7 @@ external function toggle(const id : uint) is {
   storage.todos[id].done := not storage.todos[id].done;
 }
 
-external view function get(const id : uint) : Todo is
+external view function get(const id : uint) : flat Todo is
   storage.todos[id]
 
 external function move(const x : uint128; const y : uint128) is {
@@ -59,6 +59,6 @@ external view function reflectedX() : uint128 is
 ```
 
 - A record literal takes its type from context: a storage slot, an annotation, or a parameter.
-- `get` returns a record, which the ABI flattens into named outputs `(uint8 priority, bool done)`, like a Solidity struct getter.
+- `get` returns a `flat` record, whose fields are named outputs `(uint8 priority, bool done)`, like a Solidity struct getter. Without `flat`, it returns one tuple, as a Solidity function returning a struct does.
 - Records inside maps must be made of word-sized fields, with no `string` or `bytes`.
 - `swapped` returns a record. `reflect` stores the whole result at once, and `reflectedX` reads one field straight off the call. A whole-record store builds the new value before writing any of it, so `swapped` sees the old `origin`.

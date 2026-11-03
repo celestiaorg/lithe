@@ -43,7 +43,7 @@ impl Checker {
                     words: 0,
                     bits: 0,
                     laid: false,
-                    tuple: false,
+                    flat: None,
                 });
                 self.named.insert(name.to_string(), id);
                 self.fill_nominal(id, &ty)?;
@@ -76,7 +76,7 @@ impl Checker {
                     words,
                     bits,
                     laid: true,
-                    tuple: false,
+                    flat: None,
                 });
                 self.named.insert(name.to_string(), id);
                 id
@@ -108,7 +108,7 @@ impl Checker {
                 words: 1,
                 bits: 0,
                 laid: true,
-                tuple: false,
+                flat: None,
             });
             self.named.insert(iface.name.clone(), id);
             ids.push(id);
@@ -121,7 +121,12 @@ impl Checker {
                 let mut abi = Vec::new();
                 for p in &m.params {
                     let ty = &p.ty;
-                    let pid = self.build(ty).map_err(|err| err.in_file(&iface.origin))?;
+                    let mut pid = self.build(ty).map_err(|err| err.in_file(&iface.origin))?;
+                    if p.flat {
+                        pid = self
+                            .flat_ty(ty.line(), ty.col(), pid)
+                            .map_err(|err| err.in_file(&iface.origin))?;
+                    }
                     let parts = abi_value(&self.types, pid)
                         .then(|| abi_parts(&self.types, pid).ok())
                         .flatten();
@@ -142,6 +147,11 @@ impl Checker {
                         .in_file(&iface.origin));
                 }
                 let ret = match &m.ret {
+                    Some(ty) if m.ret_flat => {
+                        let id = self.build(ty).map_err(|err| err.in_file(&iface.origin))?;
+                        self.flat_ty(ty.line(), ty.col(), id)
+                            .map_err(|err| err.in_file(&iface.origin))?
+                    }
                     Some(ty) => self.build(ty).map_err(|err| err.in_file(&iface.origin))?,
                     None => TY_UNIT,
                 };
@@ -368,7 +378,7 @@ impl Checker {
     }
 
     fn error_payload(
-        &self,
+        &mut self,
         line: u32,
         col: u32,
         id: usize,
@@ -382,11 +392,11 @@ impl Checker {
     > {
         if self.is_dyn_ty(id)
             || self.abi_list(id)
-            || ((matches!(
+            || (matches!(
                 self.types[peel_id(&self.types, id)].kind,
                 TyKind::List | TyKind::Tuple
-            ) || self.types[peel_id(&self.types, id)].tuple)
-                && abi_value(&self.types, id))
+            ) && abi_value(&self.types, id))
+            || (is_sum(&self.types, id) && abi_value(&self.types, id))
         {
             let abi = abi_nested(&self.types, id, "")?.ty;
             return Ok((Some(id), Vec::new(), vec![(None, abi)]));
@@ -419,7 +429,8 @@ impl Checker {
                     field_tys.push((f.name.clone(), f.ty));
                     fields.push((Some(f.name.clone()), abi.to_string()));
                 }
-                Ok((Some(id), field_tys, fields))
+                // A record payload is the error's parameters, as a `flat` one is.
+                Ok((Some(self.flat_ty(line, col, id)?), field_tys, fields))
             }
             _ => Err(error(line, col, "an error's payload must be an ABI value")),
         }
@@ -448,8 +459,7 @@ impl Checker {
 
     fn fill_nominal(&mut self, id: usize, ty: &TypeRef) -> Result<(), Error> {
         match ty {
-            TypeRef::Record { fields, tuple, .. } => {
-                self.types[id].tuple = *tuple;
+            TypeRef::Record { fields, .. } => {
                 let mut built = Vec::with_capacity(fields.len());
                 let mut names = HashSet::new();
                 for f in fields {
@@ -497,7 +507,10 @@ impl Checker {
                     let payload = match &v.payload {
                         None => None,
                         Some(p) => {
-                            let id = self.build(p)?;
+                            let mut id = self.build(p)?;
+                            if v.flat {
+                                id = self.flat_ty(p.line(), p.col(), id)?;
+                            }
                             if self.types[id].kind == TyKind::Unit {
                                 None
                             } else {
@@ -736,7 +749,7 @@ impl Checker {
             words: 0,
             bits,
             laid: false,
-            tuple: false,
+            flat: None,
         });
         id
     }
@@ -852,7 +865,7 @@ impl Checker {
                     words: 0,
                     bits: 0,
                     laid: false,
-                    tuple: false,
+                    flat: None,
                 });
                 layout(&mut self.types, id);
                 Ok(id)
@@ -874,7 +887,7 @@ impl Checker {
                     words: 0,
                     bits: 0,
                     laid: false,
-                    tuple: false,
+                    flat: None,
                 });
                 self.fill_nominal(id, ty)?;
                 Ok(id)
@@ -912,7 +925,7 @@ impl Checker {
             words: 0,
             bits: 0,
             laid: false,
-            tuple: false,
+            flat: None,
         });
         layout(&mut self.types, id);
         id
@@ -1052,7 +1065,55 @@ impl Checker {
         }
     }
 
+    /// `flat R` in a signature: the one copy of the record `R` whose fields the ABI spreads.
+    /// It is `R` everywhere else.
+    pub(super) fn flat_ty(&mut self, line: u32, col: u32, id: usize) -> Result<usize, Error> {
+        if !self.spreads(id) {
+            return Err(error(
+                line,
+                col,
+                format!(
+                    "`flat` spreads a record's fields, and `{}` is not a record",
+                    self.type_name(id)
+                ),
+            ));
+        }
+        if let Some(twin) = self.types.iter().position(|t| t.flat == Some(id)) {
+            return Ok(twin);
+        }
+        let t = &self.types[id];
+        let twin = RType {
+            kind: t.kind,
+            fields: t
+                .fields
+                .iter()
+                .map(|f| RField {
+                    name: f.name.clone(),
+                    ty: f.ty,
+                    slot: f.slot,
+                    n_leaf: f.n_leaf,
+                })
+                .collect(),
+            variants: Vec::new(),
+            elem: t.elem,
+            left: t.left,
+            right: t.right,
+            words: t.words,
+            bits: t.bits,
+            laid: t.laid,
+            flat: Some(id),
+        };
+        self.types.push(twin);
+        Ok(self.types.len() - 1)
+    }
+
+    /// A record `flat` can spread.
+    pub(super) fn spreads(&self, id: usize) -> bool {
+        self.types[id].kind == TyKind::Record && !is_sum(&self.types, id)
+    }
+
     pub(super) fn type_name(&self, id: usize) -> String {
+        let id = self.types[id].flat.unwrap_or(id);
         match id {
             TY_UINT => return "uint".into(),
             TY_INT => return "int".into(),
@@ -1079,7 +1140,23 @@ impl Checker {
         }
     }
 
+    /// An argument whose parameter is `flat` where the argument isn't, or the other way, takes
+    /// the parameter's form, which decides how the ABI carries it.
+    pub(super) fn take_form(&self, arg: &mut Expr, want: usize) {
+        let have = arg.ty();
+        if have != want
+            && (self.types[have].flat.is_some() || self.types[want].flat.is_some())
+            && self.same(have, want)
+        {
+            arg.set_ty(want);
+        }
+    }
+
     pub(super) fn same(&self, a: usize, b: usize) -> bool {
+        let (a, b) = (
+            self.types[a].flat.unwrap_or(a),
+            self.types[b].flat.unwrap_or(b),
+        );
         if a == b {
             return true;
         }
@@ -1356,14 +1433,13 @@ pub(super) fn display_ty(types: &[RType], ty: usize) -> String {
 pub(crate) fn shape_ty(ty: &TypeRef) -> String {
     match ty {
         TypeRef::Name { name, .. } => name.clone(),
-        TypeRef::Record { fields, tuple, .. } => {
+        TypeRef::Record { fields, .. } => {
             let inner = fields
                 .iter()
                 .map(|field| format!("{} : {}", field.name, shape_ty(&field.ty)))
                 .collect::<Vec<_>>()
                 .join("; ");
-            let tuple = if *tuple { "tuple " } else { "" };
-            format!("{tuple}record {{ {inner} }}")
+            format!("record {{ {inner} }}")
         }
         TypeRef::Variant { variants, .. } => {
             let inner = variants

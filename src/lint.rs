@@ -44,11 +44,15 @@ struct Acc {
     written: HashSet<usize>,
     callees: HashSet<usize>,
     types: HashSet<String>,
+    /// The constants list lengths name, as `n` or `M.n`.
+    sizes: HashSet<String>,
     emits: HashSet<String>,
     errors: HashSet<String>,
     binds: Vec<Bind>,
     /// Functions, by `func`, that already bind `_`.
     underscored: HashSet<usize>,
+    /// Bindings of a brace pattern's fields, which `field = _` ignores.
+    field_binds: HashSet<usize>,
     /// Counts the functions scanned, so each binding knows its function.
     func: usize,
 }
@@ -290,7 +294,12 @@ pub(crate) fn unsilenced(sources: &Sources, entry: &Path, notes: Vec<Note>) -> V
 }
 
 /// Drops the findings `silenced` covers. An ignore that covers nothing is itself a finding.
+///
+/// A file of modules, with no contract, is checked only through the contracts that use it,
+/// so here its code meets no rule but `unused-import`, and an ignore of another rule can't
+/// be judged: compiling a contract that uses the module is what it silences.
 fn suppress(src: &str, findings: Vec<Finding>, allow: &[String], label: &str) -> Vec<Finding> {
+    let library = crate::declares_no_contract(src);
     let mut ignores = ignores(src);
     let mut kept: Vec<Finding> = findings
         .into_iter()
@@ -315,7 +324,7 @@ fn suppress(src: &str, findings: Vec<Finding>, allow: &[String], label: &str) ->
         for (rule, used) in &ignore.rules {
             if !RULES.contains(&rule.as_str()) {
                 kept.push(unused(format!("`{rule}` is not a lint rule")));
-            } else if !used {
+            } else if !used && (!library || rule == "unused-import") {
                 kept.push(unused(format!(
                     "`lithe-ignore {rule}` suppresses nothing here"
                 )));
@@ -528,14 +537,27 @@ fn finish(checked: &Checked, src: &str, own: &str, label: &str, acc: &Acc) -> Ve
                 col: bind.col,
                 rule: "unused-binding",
                 message: format!("`{}` is unused", bind.name),
-                hint: "rename it to `_`",
+                hint: if acc.field_binds.contains(&bind.sym) {
+                    "ignore the field with `field = _`, or end the pattern with `_`"
+                } else {
+                    "rename it to `_`"
+                },
                 edit,
             });
         }
     }
     for (i, func) in checked.prog.funcs.iter().enumerate() {
-        if func.private && mine(&func.origin, own) && !acc.callees.contains(&i) {
-            out.push(item(label, func.line, func.col, "function", &func.name));
+        if func.private
+            && mine(&func.origin, own)
+            && !acc.callees.contains(&i)
+            && !acc.sizes.contains(&func.name)
+        {
+            let kind = if func.constant {
+                "constant"
+            } else {
+                "function"
+            };
+            out.push(item(label, func.line, func.col, kind, &func.name));
         }
     }
     for decl in &checked.prog.types {
@@ -674,7 +696,7 @@ fn scan_func(func: &Func, here: bool, acc: &mut Acc) {
             func.kind,
             ItemKind::Entry | ItemKind::View | ItemKind::Migrate | ItemKind::Deploy
         );
-    // `guard M.g is f;` and `hook M.h is f;` or `is skip;` take the module's parameters,
+    // `guard g is f;` and `hook h is f;` or `is skip;` take the module's parameters,
     // which the contract never wrote.
     let declared = func.guard_of.as_ref().is_some_and(|g| g.via.is_some())
         || func
@@ -870,6 +892,8 @@ fn scan_stmt(stmt: &Stmt, here: bool, acc: &mut Acc) {
             bound,
             body,
             elem,
+            elem_init,
+            length,
             ..
         } => {
             scan_ty(ty, acc);
@@ -879,6 +903,10 @@ fn scan_stmt(stmt: &Stmt, here: bool, acc: &mut Acc) {
                     scan_expr(hi, here, acc);
                 }
                 ForIter::List(expr) => scan_expr(expr, here, acc),
+            }
+            // The checker moves a list that is a place out of `iter` into these.
+            for expr in elem_init.iter().chain(length) {
+                scan_expr(expr, here, acc);
             }
             if let Some(until) = until {
                 scan_expr(until, here, acc);
@@ -1010,10 +1038,14 @@ fn scan_expr(expr: &Expr, here: bool, acc: &mut Acc) {
                             });
                         }
                     }
-                    for (name, sym) in arm.tuple_names.iter().zip(&arm.tuple_syms) {
-                        if name == "_" {
-                            acc.underscored.insert(acc.func);
-                        }
+                    if arm.tuple_names.iter().any(|n| n == "_") {
+                        acc.underscored.insert(acc.func);
+                    }
+                    if !arm.fields.is_empty() {
+                        acc.field_binds.extend(&arm.tuple_syms);
+                    }
+                    let names = arm.tuple_names.iter().filter(|n| *n != "_");
+                    for (name, sym) in names.zip(&arm.tuple_syms) {
                         acc.binds.push(Bind {
                             func: acc.func,
                             line: arm.line,
@@ -1066,7 +1098,13 @@ fn scan_ty(ty: &TypeRef, acc: &mut Acc) {
                 }
             }
         }
-        TypeRef::List { elem, .. } | TypeRef::Option { elem, .. } => scan_ty(elem, acc),
+        TypeRef::List { elem, size, .. } => {
+            if let Some(size) = size {
+                scan_size(size, acc);
+            }
+            scan_ty(elem, acc);
+        }
+        TypeRef::Option { elem, .. } => scan_ty(elem, acc),
         TypeRef::Map { key, val, .. } => {
             scan_ty(key, acc);
             scan_ty(val, acc);
@@ -1083,6 +1121,27 @@ fn scan_ty(ty: &TypeRef, acc: &mut Acc) {
             }
         }
         TypeRef::Hole { .. } => {}
+    }
+}
+
+fn scan_size(e: &Expr, acc: &mut Acc) {
+    match e {
+        Expr::Binary { left, right, .. } => {
+            scan_size(left, acc);
+            scan_size(right, acc);
+        }
+        Expr::Call {
+            name, args, base, ..
+        } => {
+            acc.sizes.insert(match base.as_deref() {
+                Some(Expr::Ident { name: m, .. }) => format!("{m}.{name}"),
+                _ => name.clone(),
+            });
+            for arg in args {
+                scan_size(arg, acc);
+            }
+        }
+        _ => {}
     }
 }
 
@@ -1146,8 +1205,10 @@ mod tests {
         assert!(!rules(&used).contains(&"unused-binding"));
         let entry = format!("{STORE}external function go(const k : uint) is {{ skip; }}\n");
         assert!(!rules(&entry).contains(&"unused-binding"));
-        let named = "import \"std/evm\";\nmodule M is {\n  storage m at \"lint.m\" is record { n : uint; }\n  guard g(const id : uint);\n  hook h(const id : uint);\n  external function set(const id : uint) guarded g(id) is {\n    m.n := id;\n    h(id);\n  }\n}\ncontract C is {\n  use M exposing {\n    function set(id : uint);\n  }\n  view function check() is { skip; }\n  guard M.g is check;\n  hook M.h is skip;\n}\n";
+        let named = "import \"std/evm\";\nmodule M is {\n  storage m at \"lint.m\" is record { n : uint; }\n  guard g(const id : uint);\n  hook h(const id : uint);\n  external function set(const id : uint) guarded g(id) is {\n    m.n := id;\n    h(id);\n  }\n}\ncontract C is {\n  use M exposing {\n    function set(id : uint);\n  } with {\n    guard g is check;\n    hook h is skip;\n  }\n  view function check() is { skip; }\n}\n";
         assert!(!rules(named).contains(&"unused-binding"));
+        let iterated = format!("{STORE}function sum(const xs : list(uint, 4)) is {{\n  for (i, x) : (uint, uint) in xs do {{\n    storage.n += i + x;\n  }}\n}}\nfunction each(const xs : list(uint, 4)) is {{\n  for x : uint in xs do {{\n    storage.n += x;\n  }}\n}}\nexternal function go(const xs : list(uint, 4)) is {{\n  sum(xs);\n  each(xs);\n}}\n");
+        assert!(!rules(&iterated).contains(&"unused-binding"));
 
         let hidden = format!("{STORE}private function hidden() is {{ skip; }}\nexternal function go() is {{ skip; }}\n");
         assert!(rules(&hidden).contains(&"unused-private"));
@@ -1231,6 +1292,35 @@ external function go() is {
     }
 
     #[test]
+    fn unused_field_bindings_are_reported() {
+        let src = "\
+type Fill is record { amountOut : uint; at : uint64; }
+type Status is | Pending | Filled of Fill
+storage is record { s : Status; n : uint; }
+external function go() is {
+  storage.n := case storage.s of { | Filled { amountOut; at = when } -> amountOut | Pending -> 0 };
+}
+";
+        let found = findings_in(src).expect("lint");
+        let unused: Vec<(&str, &str)> = found
+            .iter()
+            .filter(|f| f.rule == "unused-binding")
+            .map(|f| (f.message.as_str(), f.hint))
+            .collect();
+        assert_eq!(
+            unused,
+            [(
+                "`when` is unused",
+                "ignore the field with `field = _`, or end the pattern with `_`"
+            )]
+        );
+        let ignored = src.replace("at = when", "at = _");
+        assert!(!rules(&ignored).contains(&"unused-binding"));
+        let rest = src.replace("at = when", "_");
+        assert!(!rules(&rest).contains(&"unused-binding"));
+    }
+
+    #[test]
     fn imported_file_keeps_its_own_findings() {
         let dir = std::env::temp_dir().join(format!("lithe-lint-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -1265,6 +1355,42 @@ external function go() is {
         let idle = lint_paths(std::slice::from_ref(&main), false);
         assert!(idle.stderr.contains("unused-import"), "{}", idle.stderr);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn library_files_keep_ignores_of_rules_their_contracts_check() {
+        let module = "module M is {\n  storage m at \"t.m\" is record {\n    xs : list(uint);\n    n : uint;\n  }\n\n  function sum() is {\n    (* lithe-ignore unbounded-loop: short *)\n    for x : uint in m.xs do {\n      m.n += x;\n    }\n  }\n}\n";
+        let lint = |src: &str| {
+            let path = Path::new("m.lithe");
+            let units =
+                modules::split_units(modules::load(&Sources::memory([(path, src)]), path).unwrap());
+            suppress(
+                src,
+                findings_at(src, "m.lithe", "m.lithe", units).unwrap(),
+                &[],
+                "m.lithe",
+            )
+        };
+        assert!(lint(module).is_empty());
+
+        let stale = format!("{module}(* lithe-ignore unused-import *)\n");
+        let found = lint(&stale);
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].rule, "unused-ignore");
+
+        let used =
+            "contract C is {\n  use M;\n\n  external function go() is M.sum()\n}\n".to_string();
+        let path = Path::new("m.lithe");
+        let user = Path::new("c.lithe");
+        let out = crate::compile(
+            &Sources::memory([
+                (path, module),
+                (user, &format!("import \"./m\";\n\n{used}")),
+            ]),
+            user,
+            &crate::Options::default(),
+        );
+        assert!(out.unwrap().single().unwrap().warnings.is_empty());
     }
 
     #[test]

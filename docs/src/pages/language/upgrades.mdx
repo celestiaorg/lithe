@@ -101,7 +101,7 @@ the upgrade guard writes storage; a guard only reads, and reverts or lets the ca
 
 Count upgrades in a migration instead, which runs inside the upgrade and may write.
 
-When a function already makes the check, name it: `upgrade guard is f;` is a guard whose body calls `f`, as [`guard M.g is f;`](/language/modules#guards) is. `f` returns nothing and takes no parameters, and the guard raises what `f` does:
+When a function already makes the check, name it: `upgrade guard is f;` is a guard whose body calls `f`, as a module's [`guard g is f;`](/language/modules#guards) is. `f` returns nothing and takes no parameters, and the guard raises what `f` does:
 
 ```lithe
 import "std/evm";

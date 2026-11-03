@@ -2186,7 +2186,10 @@ impl<'a> Gen<'a> {
         push: bool,
     ) -> Result<(), Error> {
         let ty = self.type_at(self.checked.syms[sym].ty, leaf);
-        if self.checked.types[ty].kind == TyKind::List && self.list_stride(ty) > 1 {
+        // A record of one word is still written as a record, not compiled to a word.
+        if self.checked.types[ty].kind == TyKind::List
+            && (self.list_stride(ty) > 1 || !self.stack_value(self.list_elem(ty)))
+        {
             return self.store_list_element(sym, leaf, index, value, push);
         }
         match self.checked.types[ty].kind {
@@ -2747,16 +2750,14 @@ impl<'a> Gen<'a> {
         self.op(KECCAK);
     }
 
-    /// The stored map an argument names, if it is known here: a map of storage, or a map
-    /// parameter bound to one.
+    /// The stored map an argument names, if it is known here: a map of storage with a leaf
+    /// of its own, or a map parameter bound to one. A map past a key has no leaf.
     pub(super) fn stored_map(&self, arg: &Expr) -> Option<(usize, u32)> {
         match arg {
             Expr::Ident { sym: Some(sym), .. } => self.slot_binds.get(sym).copied(),
             Expr::Field {
-                root: Some(sym),
-                leaf,
-                ..
-            } if !self.checked.slot_syms.contains_key(sym) => Some((*sym, *leaf)),
+                root: Some(sym), ..
+            } if !self.checked.slot_syms.contains_key(sym) => self.static_place(arg),
             _ => None,
         }
     }
@@ -2770,6 +2771,15 @@ impl<'a> Gen<'a> {
         match arg {
             Expr::Ident { sym: Some(sym), .. } if self.checked.slot_syms.contains_key(sym) => {
                 self.mload(self.local[*sym]);
+                Ok(())
+            }
+            Expr::Field {
+                root: Some(sym), ..
+            }
+            | Expr::Index {
+                root: Some(sym), ..
+            } if self.checked.syms[*sym].storage && !self.checked.slot_syms.contains_key(sym) => {
+                self.deep_slot(arg, false)?;
                 Ok(())
             }
             other => Err(error(other.line(), other.col(), "expected a stored map")),

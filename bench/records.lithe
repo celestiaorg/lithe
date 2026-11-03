@@ -112,14 +112,14 @@ external function resetTop(const amount : uint; const delta : int16) is {
   storage.top := fresh(Evm.sender(), amount, delta);
 }
 
-external view function topOrder() : Order is storage.top
+external view function topOrder() : flat Order is storage.top
 
-external view function headPair() : Pair is storage.head
+external view function headPair() : flat Pair is storage.head
 
-external view function orderOf(const id : uint) : Order is storage.orders[id]
+external view function orderOf(const id : uint) : flat Order is storage.orders[id]
 
 external view function statusOf(const id : uint) : uint8 is storage.orders[id].status
 
 external view function deltaOf(const id : uint) : int16 is storage.orders[id].inner.delta
 
-external view function pairOf(const who : address; const k : uint) : Pair is storage.pairs[who][k]
+external view function pairOf(const who : address; const k : uint) : flat Pair is storage.pairs[who][k]

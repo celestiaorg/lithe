@@ -640,7 +640,7 @@ fn check_import(src: &Program, via: &UseDecl) -> Result<(), Error> {
             line,
             col,
             format!(
-                "an imported file cannot write `guard {}.{}`; the contract that exposes the module's externals writes its guards",
+                "an imported file cannot bind guard `{}.{}`; the contract that exposes the module's externals writes its guards in `use ... with`",
                 shown(module),
                 guard.name
             ),
@@ -651,7 +651,7 @@ fn check_import(src: &Program, via: &UseDecl) -> Result<(), Error> {
             line,
             col,
             format!(
-                "an imported file cannot write `hook {}.{}`; the contract that uses the module implements its hooks",
+                "an imported file cannot bind hook `{}.{}`; the contract that uses the module implements its hooks in `use ... with`",
                 shown(&of.module.name),
                 of.name
             ),

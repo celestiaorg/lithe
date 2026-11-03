@@ -1,6 +1,6 @@
 //! Module guards. A module declares `guard editor(const id : uint);` and marks externals
-//! `guarded editor(id)`. A contract that exposes one writes the check, `guard M.editor(...)
-//! is { ... }`: a `view` that only fails. It becomes the internal function `M.editor#guard`,
+//! `guarded editor(id)`. A contract that exposes one writes the check in its `use M ... with`,
+//! `guard editor(...) is { ... }`: a `view` that only fails. It becomes the internal function `M.editor#guard`,
 //! and every entrypoint that exposes a guarded external calls it first. The module's code
 //! never names it, so a facet built from the module alone is the same for every contract; a
 //! split contract's router runs the call before it forwards.
@@ -30,14 +30,14 @@ fn params_text(params: &[Param]) -> String {
         .join("; ")
 }
 
-/// `guard M.editor(const id : uint)`, as a contract writes it.
-fn header(module: &str, name: &str, params: &[Param]) -> String {
+/// `guard editor(const id : uint)`, as a contract writes it in `use M ... with`.
+fn header(name: &str, params: &[Param]) -> String {
     let params = if params.is_empty() {
         String::new()
     } else {
         format!("({})", params_text(params))
     };
-    format!("guard {}{params}", label(module, name))
+    format!("guard {name}{params}")
 }
 
 /// A module's own rules: each `guarded` names one of its guards, and passes it one of the
@@ -207,7 +207,7 @@ pub(super) fn place_guards(prog: &mut Program, needs: &[Need]) -> Result<(), Err
                 line,
                 col,
                 format!(
-                    "`guard {}` is written twice; the first is at {l}:{c}",
+                    "guard `{}` is written twice; the first is at {l}:{c}",
                     label(&module, &of.name)
                 ),
             ));
@@ -259,24 +259,25 @@ pub(super) fn place_guards(prog: &mut Program, needs: &[Need]) -> Result<(), Err
             .find(|m| m.name == need.module)
             .and_then(|m| m.guards.iter().find(|g| g.name == need.guard));
         let shape = sig.map_or_else(
-            || format!("guard {}", label(&need.module, &need.guard)),
-            |sig| header(&need.module, &sig.name, &sig.params),
+            || format!("guard {}", need.guard),
+            |sig| header(&sig.name, &sig.params),
         );
         return Err(error(
             need.line,
             need.col,
             format!(
-                "the contract exposes `{}`, which `{}` guards with `{}`, so it must write the check:\n\n  {shape} raises ... is {{ ... }}",
+                "the contract exposes `{}`, which `{}` guards with `{}`, so it must write the check:\n\n  use {} ... with {{\n    {shape} raises ... is {{ ... }}\n  }}",
                 need.entry,
                 shown(&need.module),
-                need.guard
+                need.guard,
+                shown(&need.module)
             ),
         ));
     }
     Ok(())
 }
 
-/// `guard M.editor is f;` calls `f`, a check of the contract's or a module's, with none of
+/// `guard editor is f;` calls `f`, a check of the contract's or a module's, with none of
 /// the guard's parameters or all of them. `upgrade guard is f;` has none.
 fn pass_params(
     funcs: &[Func],
@@ -378,11 +379,11 @@ impl Checker {
                         of.module.line,
                         of.module.col,
                         format!(
-                            "`guard {}` takes different parameters than `{}` declares\n\n  module:    {}\n  contract:  {}",
+                            "guard `{}` takes different parameters than `{}` declares\n\n  module:    {}\n  contract:  {}",
                             label(&of.module.name, &of.name),
                             shown(&of.module.name),
-                            header(&of.module.name, &of.name, &sig.params),
-                            header(&of.module.name, &of.name, &func.params)
+                            header(&of.name, &sig.params),
+                            header(&of.name, &func.params)
                         ),
                     ).in_file(&func.origin));
                 }

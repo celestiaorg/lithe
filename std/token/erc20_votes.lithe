@@ -14,11 +14,11 @@
          raises ERC20InvalidSender | ERC20InvalidReceiver | ERC20InsufficientBalance
            | ERC20ExceededSafeSupply | CheckpointUnorderedInsertion;
        ...
+     } with {
+       hook beforeTransfer is skip;
+       hook afterTransfer is ERC20Votes.transferVotingUnits;
      }
-     use ERC20Votes exposing IERC6372, IVotes, IVotesCheckpoints;
-
-     hook ERC20.beforeTransfer is skip;
-     hook ERC20.afterTransfer is ERC20Votes.transferVotingUnits; *)
+     use ERC20Votes exposing IERC6372, IVotes, IVotesCheckpoints; *)
 
 import "std/abi";
 import "std/address";
@@ -91,8 +91,7 @@ module ERC20Votes is {
     moveDelegateVotes(previous, delegatee, ERC20.erc20.balances[account]);
   }
 
-  pure function delegationTypehash() : bytes32 is
-    Crypto.keccak256("Delegation(address delegatee,uint256 nonce,uint256 expiry)")
+  const delegationTypehash : bytes32 := Crypto.keccak256("Delegation(address delegatee,uint256 nonce,uint256 expiry)");
 
   (* After a balance change: a mint checks the supply still fits a checkpoint, then the
      total and the delegates' votes move with the tokens. *)
@@ -166,7 +165,7 @@ module ERC20Votes is {
   external view function numCheckpoints(const account : address) : uint32 is
     uint32(Checkpoints.length(erc20Votes.delegateCheckpoints[account]))
 
-  external view function checkpoints(const account : address; const pos : uint32) : Checkpoint is
+  external view function checkpoints(const account : address; const pos : uint32) : flat Checkpoint is
     checkpointAt(account, pos)
 
   external function delegate(const delegatee : address)
@@ -188,7 +187,7 @@ module ERC20Votes is {
   is {
     assert(uint(Evm.blockTimestamp()) <= expiry, VotesExpiredSignature(expiry));
     const structHash : bytes32 := Crypto.keccak256(Abi.encode(
-      delegationTypehash(),
+      delegationTypehash,
       delegatee,
       nonce,
       expiry
@@ -202,5 +201,5 @@ module ERC20Votes is {
 (* OpenZeppelin's checkpoint views, which ERC-5805 leaves out. *)
 interface IVotesCheckpoints is {
   view function numCheckpoints(account : address) : uint32;
-  view function checkpoints(account : address; pos : uint32) : Checkpoint;
+  view function checkpoints(account : address; pos : uint32) : flat Checkpoint;
 }

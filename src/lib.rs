@@ -670,6 +670,7 @@ fn module_contract(
         }
     }
     src.push_str("\ncontract Modules is {\n");
+    let mut uses = Vec::new();
     let mut hooks = Vec::new();
     for decl in order {
         if let Some(param) = decl.params.first() {
@@ -683,10 +684,11 @@ fn module_contract(
             ));
         }
         // A module another file declares is there for those that require it.
-        match exposing(decl).filter(|_| decl.origin == origin) {
-            Some(text) => src.push_str(&text),
-            None => src.push_str(&format!("use {};\n", decl.name)),
-        }
+        let used = match exposing(decl).filter(|_| decl.origin == origin) {
+            Some((text, _)) => text,
+            None => format!("use {}", decl.name),
+        };
+        uses.push((decl.name.clone(), used));
         // Each hook the contract reaches does nothing.
         for hook in &decl.hooks {
             if hook.ret.is_some() {
@@ -699,23 +701,39 @@ fn module_contract(
                     ),
                 ));
             }
-            hooks.push(format!("{}.{}", decl.name, hook.name));
+            hooks.push((decl.name.clone(), hook.name.clone()));
         }
     }
     let path = canon.with_file_name("#modules.lithe");
     loop {
         let mut text = src.clone();
-        for hook in &hooks {
-            text.push_str(&format!("hook {hook} is skip;\n"));
+        for (module, used) in &uses {
+            text.push_str(used);
+            let skipped: Vec<&String> = hooks
+                .iter()
+                .filter(|(m, _)| m == module)
+                .map(|(_, h)| h)
+                .collect();
+            if skipped.is_empty() {
+                text.push_str(if used.ends_with('}') { "\n" } else { ";\n" });
+                continue;
+            }
+            text.push_str(" with {\n");
+            for hook in skipped {
+                text.push_str(&format!("  hook {hook} is skip;\n"));
+            }
+            text.push_str("}\n");
         }
         text.push_str("}\n");
         let unused = modules::load(&sources.with(path.clone(), text.clone()), &path)
             .and_then(|prog| check::check(prog, evm_near(entry)))
             .err()
             .and_then(|err| {
-                hooks.iter().position(|hook| {
+                hooks.iter().position(|(module, hook)| {
                     err.message
-                        == format!("no code the contract runs calls `{hook}`; remove this hook")
+                        == format!(
+                            "no code the contract runs calls `{module}.{hook}`; remove this hook"
+                        )
                 })
             });
         match unused {
@@ -876,7 +894,7 @@ pub fn stubs(
     let Some(decl) = prog.modules.iter().find(|decl| decl.name == module) else {
         return Err(error(0, 0, format!("unknown module `{module}`")));
     };
-    let mut out = if interfaces.is_empty() {
+    let (out, notes) = if interfaces.is_empty() {
         exposing(decl).ok_or_else(|| {
             error(
                 decl.line,
@@ -890,7 +908,10 @@ pub fn stubs(
                 return Err(error(0, 0, format!("unknown interface `{name}`")));
             }
         }
-        format!("use {module} exposing {};\n", interfaces.join(", "))
+        (
+            format!("use {module} exposing {}", interfaces.join(", ")),
+            String::new(),
+        )
     };
     let members: Vec<&str> = prog
         .interfaces
@@ -898,27 +919,47 @@ pub fn stubs(
         .filter(|iface| interfaces.contains(&iface.name))
         .flat_map(|iface| iface.methods.iter().map(|m| m.name.as_str()))
         .collect();
-    out.push_str(&hook_stubs(&prog, decl, |name| {
+    let mut hooks = hook_stubs(&prog, decl, |name| {
         interfaces.is_empty() || members.contains(&name)
-    })?);
+    })?;
+    let own = hooks.iter().position(|(m, _)| *m == decl.name);
+    let mut block = notes;
+    if let Some((_, lines)) = own.map(|i| hooks.remove(i)) {
+        block.push_str(&format!("{STUBS_NOTE}{lines}"));
+    }
+    let mut out = if block.is_empty() && out.ends_with('}') {
+        format!("{out}\n")
+    } else if block.is_empty() {
+        format!("{out};\n")
+    } else {
+        format!("{out} with {{\n{block}}}\n")
+    };
+    for (module, lines) in hooks {
+        out.push_str(&format!(
+            "\nuse {} with {{\n{STUBS_NOTE}{lines}}}\n",
+            modules::shown(&module)
+        ));
+    }
     Ok(out)
 }
 
+const STUBS_NOTE: &str = "  (* The hooks these externals reach: the contract implements each, or skips one without a result. *)\n";
+
 /// The hooks `decl`'s externals that `wanted` names reach, through any module, as the
-/// contract writes them: `is skip;` for those without a result, a commented stub for those
-/// with one.
+/// contract writes them in each module's `use ... with`: `is skip;` for those without a
+/// result, a commented stub for those with one.
 fn hook_stubs(
     prog: &ast::Program,
     decl: &ast::ModuleDecl,
     wanted: impl Fn(&str) -> bool,
-) -> Result<String, Error> {
+) -> Result<Vec<(String, String)>, Error> {
     let facet = split::facet_program(prog, &decl.name, &[]);
     if !facet
         .modules
         .iter()
         .any(|m| facet.compose.iter().any(|u| u.name == m.name) && !m.hooks.is_empty())
     {
-        return Ok(String::new());
+        return Ok(Vec::new());
     }
     let checked = check::check_in(facet, false, evm_near(Path::new(&prog.origin)))?;
     let funcs = &checked.prog.funcs;
@@ -938,13 +979,8 @@ fn hook_stubs(
             todo.push(j);
         }
     }
-    if reached.is_empty() {
-        return Ok(String::new());
-    }
     reached.sort_by_key(|&j| (&funcs[j].origin, funcs[j].line, funcs[j].col));
-    let mut out = String::from(
-        "\n(* The hooks these externals reach: the contract implements each, or skips one without a result. *)\n",
-    );
+    let mut out: Vec<(String, String)> = Vec::new();
     for j in reached {
         let Some(of) = &funcs[j].hook_of else {
             continue;
@@ -958,25 +994,22 @@ fn hook_stubs(
         else {
             continue;
         };
-        if sig.ret.is_some() {
-            out.push_str(&format!(
-                "(* {} *)\n",
-                check::hook_stub(&of.module.name, sig)
-            ));
+        let line = if sig.ret.is_some() {
+            format!("  (* {} *)\n", check::hook_stub(sig))
         } else {
-            out.push_str(&format!(
-                "hook {}.{} is skip;\n",
-                modules::shown(&of.module.name),
-                of.name
-            ));
+            format!("  hook {} is skip;\n", of.name)
+        };
+        match out.iter_mut().find(|(m, _)| *m == of.module.name) {
+            Some((_, lines)) => lines.push_str(&line),
+            None => out.push((of.module.name.clone(), line)),
         }
     }
     Ok(out)
 }
 
-/// `use M exposing { ... }` with each of the module's external functions, or `None` when it
-/// has none.
-fn exposing(decl: &ast::ModuleDecl) -> Option<String> {
+/// `use M exposing { ... }` with each of the module's external functions, and the reminders
+/// for its `with` block of the guards they name, or `None` when it has none.
+fn exposing(decl: &ast::ModuleDecl) -> Option<(String, String)> {
     let externals: Vec<&ast::Func> = decl
         .funcs
         .iter()
@@ -1027,7 +1060,8 @@ fn exposing(decl: &ast::ModuleDecl) -> Option<String> {
         }
         out.push_str(";\n");
     }
-    out.push_str("}\n");
+    out.push('}');
+    let mut notes = String::new();
     // Each guard the externals name is the contract's to write, and its errors join theirs.
     for guard in &decl.guards {
         let guarded: Vec<&str> = decl
@@ -1049,16 +1083,15 @@ fn exposing(decl: &ast::ModuleDecl) -> Option<String> {
         } else {
             format!("({})", params.join("; "))
         };
-        out.push_str(&format!(
-            "\n(* {} guards {}: write the check, and add its errors to {} `raises`.\n\nguard {}.{}{params} raises ... is {{ ... }} *)\n",
+        notes.push_str(&format!(
+            "  (* {} guards {}: write the check, and add its errors to {} `raises`.\n\n     guard {}{params} raises ... is {{ ... }} *)\n",
             decl.name,
             guarded.iter().map(|name| format!("`{name}`")).collect::<Vec<_>>().join(", "),
             if guarded.len() == 1 { "its" } else { "their" },
-            decl.name,
             guard.name
         ));
     }
-    Some(out)
+    Some((out, notes))
 }
 
 /// `  Group: a, b` for each group, in the order they first appear.
@@ -1345,7 +1378,7 @@ pub fn is_library(sources: &Sources, path: &Path, errors: &[Error]) -> bool {
         .is_ok_and(|text| declares_no_contract(&text))
 }
 
-fn declares_no_contract(text: &str) -> bool {
+pub(crate) fn declares_no_contract(text: &str) -> bool {
     let Ok(prog) = parse::parse(text) else {
         return false;
     };
@@ -1372,7 +1405,7 @@ fn contract_dir(out_dir: &Path, source: &Path) -> PathBuf {
     out_dir.join(source.file_name().unwrap_or_default())
 }
 
-fn artifact_contract_name(prog: &ast::Program, source: &Path) -> String {
+pub(crate) fn artifact_contract_name(prog: &ast::Program, source: &Path) -> String {
     if let Some(name) = &prog.contract_name {
         return name.clone();
     }

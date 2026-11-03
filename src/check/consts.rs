@@ -21,6 +21,20 @@ impl Checker {
             fold.func(idx)
                 .map_err(|err| err.in_file(&funcs[idx].origin))?;
         }
+        for f in funcs.iter().filter(|f| f.constant) {
+            let Some(tail) = f.tail.as_ref().filter(|t| !fold.folds(t, &mut Vec::new())) else {
+                continue;
+            };
+            return Err(error(
+                tail.line(),
+                tail.col(),
+                format!(
+                    "constant `{}` is not known when the contract compiles: its value is literals, other constants, and operators, casts, and hashes of literals over those",
+                    f.name
+                ),
+            )
+            .in_file(&f.origin));
+        }
         if let Some(guard) = guard {
             fold.stmts(&guard.stmts)?;
         }
@@ -32,12 +46,33 @@ impl Checker {
     /// The length of `list(T, size)`: a number, a named constant, a cast, or arithmetic
     /// over those, evaluated before any body is checked.
     pub(super) fn list_size(&mut self, size: &Expr) -> Result<u32, Error> {
-        let w = self.size_value(size, None, &HashMap::new(), &mut Vec::new())?;
+        let w = self.size_value(
+            "a list length",
+            size,
+            None,
+            &HashMap::new(),
+            &mut Vec::new(),
+        )?;
         crate::parse::list_len(w, size.line(), size.col())
+    }
+
+    /// A loop's `bound`, a constant as a list length is.
+    pub(super) fn loop_bound(&mut self, bound: &Expr) -> Result<u64, Error> {
+        let what = "a loop bound";
+        let w = self.size_value(what, bound, None, &HashMap::new(), &mut Vec::new())?;
+        if w.0[1..] != [0; 3] {
+            return Err(error(
+                bound.line(),
+                bound.col(),
+                format!("{what} overflows `uint64`"),
+            ));
+        }
+        Ok(w.0[0])
     }
 
     fn size_value(
         &mut self,
+        what: &str,
         e: &Expr,
         module: Option<&str>,
         locals: &HashMap<String, Word>,
@@ -48,14 +83,14 @@ impl Checker {
             error(
                 line,
                 col,
-                "a list length is a constant: a number, a named constant, a cast, or arithmetic over those",
+                format!("{what} is a constant: a number, a named constant, a cast, or arithmetic over those"),
             )
         };
         let not_named = |name: &str| {
             error(
                 line,
                 col,
-                format!("`{name}` is not a named constant: a pure function of no parameters"),
+                format!("`{name}` is not a named constant: a `const` or a pure function of no parameters"),
             )
         };
         match e {
@@ -67,15 +102,15 @@ impl Checker {
             Expr::Binary {
                 op, left, right, ..
             } => {
-                let l = self.size_value(left, module, locals, busy)?;
-                let r = self.size_value(right, module, locals, busy)?;
+                let l = self.size_value(what, left, module, locals, busy)?;
+                let r = self.size_value(what, right, module, locals, busy)?;
                 let (v, over) = match op {
                     BinOp::Add => l.overflowing_add(r),
                     BinOp::Sub => (l.wrapping_sub(r), l.lt(r)),
                     BinOp::Mul => l.overflowing_mul(r),
                     BinOp::Pow => l.overflowing_pow(r),
                     BinOp::Div | BinOp::Mod if r.is_zero() => {
-                        return Err(error(line, col, "division by zero in a list length"))
+                        return Err(error(line, col, format!("division by zero in {what}")))
                     }
                     BinOp::Div => (l.div(r), false),
                     BinOp::Mod => (l.rem(r), false),
@@ -90,7 +125,7 @@ impl Checker {
                     _ => return Err(not_const()),
                 };
                 if over {
-                    return Err(error(line, col, "a list length overflows `uint`"));
+                    return Err(error(line, col, format!("{what} overflows `uint`")));
                 }
                 Ok(v)
             }
@@ -108,13 +143,9 @@ impl Checker {
                     return Err(not_const());
                 }
                 let bits = if t.bits == 0 { 256 } else { u32::from(t.bits) };
-                let w = self.size_value(&args[0], module, locals, busy)?;
+                let w = self.size_value(what, &args[0], module, locals, busy)?;
                 if bits < 256 && !w.shr(bits).is_zero() {
-                    return Err(error(
-                        line,
-                        col,
-                        format!("a list length does not fit `{name}`"),
-                    ));
+                    return Err(error(line, col, format!("{what} does not fit `{name}`")));
                 }
                 Ok(w)
             }
@@ -145,7 +176,7 @@ impl Checker {
                         return Err(error(
                             line,
                             col,
-                            format!("a list length is a `uint`, and `{name}` is not one"),
+                            format!("{what} is a `uint`, and `{name}` is not one"),
                         ));
                     }
                 }
@@ -157,14 +188,14 @@ impl Checker {
                         Stmt::Const {
                             name, parts, expr, ..
                         } if parts.is_empty() => {
-                            let v = self.size_value(expr, module, &own, busy)?;
+                            let v = self.size_value(what, expr, module, &own, busy)?;
                             own.insert(name.clone(), v);
                         }
                         _ => return Err(not_const()),
                     }
                 }
                 let v = match &f.tail {
-                    Some(tail) => self.size_value(tail, module, &own, busy)?,
+                    Some(tail) => self.size_value(what, tail, module, &own, busy)?,
                     None => return Err(not_const()),
                 };
                 busy.pop();
@@ -285,6 +316,53 @@ impl Fold<'_> {
         });
         self.named.insert(idx, v);
         Ok(v)
+    }
+
+    /// Whether `e` is known when the contract compiles, as code generation folds it.
+    fn folds(&self, e: &Expr, seen: &mut Vec<usize>) -> bool {
+        match e {
+            Expr::Lit { lit, .. } => !matches!(lit, Lit::Unit | Lit::Nil | Lit::Zero),
+            Expr::Convert { expr, .. } | Expr::Unary { expr, .. } => self.folds(expr, seen),
+            Expr::Binary { left, right, .. } => self.folds(left, seen) && self.folds(right, seen),
+            Expr::Call {
+                callee: Some(idx),
+                args,
+                ..
+            } => {
+                let f = &self.funcs[*idx];
+                if f.constant || seen.contains(idx) {
+                    return f.constant;
+                }
+                seen.push(*idx);
+                args.is_empty()
+                    && f.kind == ItemKind::Pure
+                    && f.stmts.is_empty()
+                    && f.tail.as_ref().is_some_and(|t| self.folds(t, seen))
+            }
+            Expr::Call {
+                builtin: Some(Builtin::Keccak256),
+                args,
+                ..
+            } => matches!(
+                args.as_slice(),
+                [Expr::Lit {
+                    lit: Lit::Str(_) | Lit::Bytes(_) | Lit::Int(..),
+                    ..
+                }]
+            ),
+            Expr::Call {
+                builtin:
+                    Some(
+                        Builtin::Cast
+                        | Builtin::FromBits(_)
+                        | Builtin::UintPopCount
+                        | Builtin::UintClz,
+                    ),
+                args,
+                ..
+            } => args.iter().all(|a| self.folds(a, seen)),
+            _ => false,
+        }
     }
 
     fn stmts(&mut self, stmts: &[Stmt]) -> Result<(), Error> {
@@ -708,6 +786,15 @@ impl Fold<'_> {
                 args,
                 ..
             } if name.is_empty() => self.show(&args[0]),
+            Expr::Call {
+                name,
+                base,
+                callee: Some(idx),
+                ..
+            } if self.funcs[*idx].constant => match base.as_deref() {
+                Some(b) => format!("{}.{name}", self.show(b)),
+                None => name.clone(),
+            },
             Expr::Call {
                 name, args, base, ..
             } => {

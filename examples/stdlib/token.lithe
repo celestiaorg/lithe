@@ -25,6 +25,9 @@ contract Token is {
     function transferFrom(from : address; to : address; value : uint) : bool
       raises ERC20InsufficientAllowance | ERC20InvalidApprover | ERC20InvalidSpender | ERC20InvalidSender
         | ERC20InvalidReceiver | EnforcedPause | ERC20InsufficientBalance;
+  } with {
+    hook beforeTransfer is Pausable.requireNotPaused;
+    hook afterTransfer is skip;
   }
   use ERC20Burnable exposing {
     function burn(value : uint)
@@ -47,9 +50,6 @@ contract Token is {
     increasedSupply : uint;
     cap : uint;
   }
-
-  hook ERC20.beforeTransfer is Pausable.requireNotPaused;
-  hook ERC20.afterTransfer is skip;
 
   deploy()
     raises OwnableInvalidOwner

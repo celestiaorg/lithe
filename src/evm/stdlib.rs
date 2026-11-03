@@ -1128,7 +1128,24 @@ fn stdlib_collectible() {
     assert_eq!(all, [0, 3, 2]);
     assert!(!n.send(0, "tokenByIndex(uint256)", &[w(3)]));
     n.reverted_with("ERC721OutOfBoundsIndex(address,uint256)");
-    // Royalties: the creator's default, then a token's own.
+    // Royalties: the creator's default, then a token's own. `royaltyInfo` has EIP-2981's
+    // two named outputs, not one tuple.
+    let path =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/stdlib/collectible.lithe");
+    let abi = crate::abi(&Sources::disk(), &path).expect("abi");
+    let outputs = abi.items.iter().find_map(|item| match item {
+        crate::AbiItem::Function(f) if f.name == "royaltyInfo" => Some(&f.outputs),
+        _ => None,
+    });
+    let outputs: Vec<(&str, &str)> = outputs
+        .expect("royaltyInfo")
+        .iter()
+        .map(|o| (o.name.as_str(), o.ty.as_str()))
+        .collect();
+    assert_eq!(
+        outputs,
+        [("receiver", "address"), ("royaltyAmount", "uint256")]
+    );
     let royalty = |n: &mut Session, id: u64| {
         assert!(n.send(0, "royaltyInfo(uint256,uint256)", &[w(id), w(10_000)]));
         (
@@ -1922,6 +1939,82 @@ external function bump() is { storage.n := storage.n + 1; }
             .iter()
             .any(|c| c.contains("6001600c60003960016000f3fe")),
         "{calls:?}"
+    );
+}
+
+/// `std/utils/erc1967_proxy`: OpenZeppelin 5.0.2's `ERC1967Proxy` creation code, whose
+/// constructor runs an upgradeable contract's `deploy` on the proxy.
+#[test]
+fn stdlib_erc1967_proxy() {
+    let factory = compile(
+        "\
+import \"std/abi\"; import \"std/utils/erc1967_proxy\";
+
+contract Factory is {
+  use ERC1967Proxy;
+
+  external pure function creationCode() : bytes is ERC1967Proxy.creationCode()
+
+  external pure function code(const implementation : address; const cap : uint) : bytes is
+    ERC1967Proxy.code(implementation, Abi.encodeWithSignature(\"deploy(uint256)\", cap))
+}
+",
+    )
+    .expect("compile");
+    let factory = deploy(&factory).expect("deploy");
+    let call = |sig: &str, args: &[Arg]| {
+        let out = exec(
+            &factory,
+            &encode_args(sig, args),
+            HashMap::new(),
+            Word::from_u64(1),
+            Word::from_u64(0),
+            Word::from_u64(0),
+        )
+        .expect(sig);
+        assert!(!out.reverted, "{sig}: {}", pretty(&out.returndata));
+        abi_string_value(&out.returndata)
+    };
+    let creation = call("creationCode()", &[]);
+    assert_eq!(creation.len(), 1034);
+    assert_eq!(
+        Word::from_be_bytes(crate::keccak::keccak256(&creation)),
+        Word::from_hex("95bc9f805fb8481b479b5492017488049822a8fcfebf8fe2d8c10adef20fcf36").unwrap()
+    );
+
+    let vault = compile(
+        "\
+upgradeable
+storage is record { cap : uint; }
+upgrade guard is { skip }
+deploy(const cap : uint) is { storage.cap := cap; }
+external view function cap() : uint is storage.cap
+",
+    )
+    .expect("compile");
+    let implementation = Word::from_u64(0x1967);
+    deploy_at(&vault, implementation);
+    let code = call(
+        "code(address,uint256)",
+        &[Arg::W(implementation), Arg::W(Word::from_u64(42))],
+    );
+    let mut deploy_call = selector("deploy(uint256)").to_vec();
+    deploy_call.extend(Word::from_u64(42).to_be_bytes());
+    let mut args = implementation.to_be_bytes().to_vec();
+    args.extend(Word::from_u64(64).to_be_bytes());
+    args.extend(Word::from_u64(deploy_call.len() as u64).to_be_bytes());
+    args.extend(&deploy_call);
+    args.resize(args.len().div_ceil(32) * 32, 0);
+    assert_eq!(code, [creation, args].concat());
+
+    // The proxy's constructor stores the implementation and runs `deploy` on its storage.
+    let (_, storage) = deploy_state(&code).expect("proxy");
+    let implementation_slot =
+        Word::from_hex("360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc").unwrap();
+    assert_eq!(storage.get(&implementation_slot), Some(&implementation));
+    assert!(
+        storage.values().any(|v| *v == Word::from_u64(42)),
+        "{storage:?}"
     );
 }
 
@@ -3675,7 +3768,7 @@ fn stdlib_erc4626() {
 import "std/token/erc20"; import "std/interfaces/erc20";
 
 contract Asset is {
-  use ERC20 exposing IERC20, IERC20Metadata; hook ERC20.beforeTransfer is skip; hook ERC20.afterTransfer is skip;
+  use ERC20 exposing IERC20, IERC20Metadata with { hook beforeTransfer is skip; hook afterTransfer is skip; }
 
   external function mint(const to : address; const value : uint)
     raises ERC20InvalidReceiver | ERC20InsufficientBalance
@@ -3744,7 +3837,7 @@ import "std/interfaces/erc4626";
 
 contract Vault is {{
   use SafeERC20;
-  use ERC20 exposing IERC20, IERC20Name; hook ERC20.beforeTransfer is skip; hook ERC20.afterTransfer is skip;
+  use ERC20 exposing IERC20, IERC20Name with {{ hook beforeTransfer is skip; hook afterTransfer is skip; }}
   use ERC4626 exposing IERC4626, {{
     view function decimals() : uint8;
   }}
