@@ -91,6 +91,10 @@ storage at "vault.main" is record {
   owner : address;
   total : uint;
 }
+
+external function deposit(const amount : uint) is {
+  storage.total += amount;
+}
 ```
 
 It starts at the root of `vault.main` instead of slot 0, so a contract whose state is one record can still keep it away from every other domain's slots. Giving the default record an id, or changing it, moves every field: `lithe upgrade-check` reports it as incompatible.
