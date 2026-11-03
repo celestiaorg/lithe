@@ -736,25 +736,34 @@ fn check_program(
     let mut leaf_pack = Vec::new();
     let mut layout_info = Vec::new();
     let declared_storage = c.decl_at.contains_key("storage");
+    let mut seen_ids: HashMap<String, (String, String, String)> = HashMap::new();
     if declared_storage {
-        pack_leaves(
-            &c.types,
-            storage,
-            Word::from_u64(0),
-            &mut leaf_keys,
-            &mut leaf_pack,
-        );
+        let root = if prog.storage_id.is_empty() {
+            Word::from_u64(0)
+        } else {
+            let shape = prog
+                .types
+                .iter()
+                .find(|decl| decl.name == "storage")
+                .map(|decl| shape_ty(&decl.ty))
+                .unwrap_or_default();
+            seen_ids.insert(
+                prog.storage_id.clone(),
+                ("the contract".to_string(), "storage".to_string(), shape),
+            );
+            crate::keccak::erc7201(&prog.storage_id)
+        };
+        pack_leaves(&c.types, storage, root, &mut leaf_keys, &mut leaf_pack);
         layout_info.push(domain_layout(
             "storage",
-            "",
-            Word::from_u64(0),
+            &prog.storage_id,
+            root,
             &c.types,
             storage,
             (&leaf_keys, &leaf_pack),
         )?);
     }
     let mut seen_names = HashSet::new();
-    let mut seen_ids: HashMap<String, (String, String, String)> = HashMap::new();
     let domains = prog.domains.clone();
     let mut immutables = Vec::new();
     let mut code_immutables = Vec::new();

@@ -754,6 +754,7 @@ fn append(dst: &mut Program, src: Program, own: bool) -> Result<(), Error> {
     dst.supports.extend(src.supports);
     if own {
         dst.upgradeable = src.upgradeable;
+        dst.storage_id = src.storage_id;
         dst.guard = src.guard;
         dst.guards = src.guards;
         dst.hooks = src.hooks;
@@ -798,6 +799,7 @@ fn empty() -> Program {
         exposes: Vec::new(),
         supports: Vec::new(),
         upgradeable: false,
+        storage_id: String::new(),
         guard: None,
         guards: Vec::new(),
         hooks: Vec::new(),
