@@ -20,6 +20,9 @@ pub(crate) struct Program {
     /// `supports I, J`: the interfaces the contract announces through ERC-165.
     pub supports: Vec<NameAt>,
     pub upgradeable: bool,
+    /// `storage at "id" is ...`: the ERC-7201 id the default storage record is rooted at.
+    /// Empty roots it at slot 0.
+    pub storage_id: String,
     pub guard: Option<GuardDecl>,
     /// `use M ... with { guard editor(...) is { ... } }`: the contract's checks for its modules'
     /// guards.

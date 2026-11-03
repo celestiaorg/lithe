@@ -11,7 +11,7 @@ Lithe has three kinds of state, and each has a different lifetime:
 | --- | --- | --- | --- |
 | Locals | `const` / `var` | `name` | the current call |
 | Transient storage | `transient storage [name] is record { ... }` | `transient.x` / `name.x` | the current transaction |
-| Storage | `storage [name at "id"] is record { ... }` | `storage.x` / `name.x` | forever |
+| Storage | `storage [[name] at "id"] is record { ... }` | `storage.x` / `name.x` | forever |
 | Immutables | `immutable [name at "id"] is record { ... }` | `immutable.x` / `name.x` | forever, set only while the contract is set up |
 
 State is always accessed through a qualified path. A reviewer can always tell a storage read from a local.
@@ -83,6 +83,21 @@ external function trade(const amount : uint) is {
 A named domain is accessed by its name: `settings.feeBps`. Its root is `keccak256(abi.encode(uint256(keccak256(id)) - 1)) & ~0xff`, the ERC-7201 formula, so it matches Solidity's `@custom:storage-location erc7201:vault.settings`. Within a domain, fields are laid out like the default record, starting at the root.
 
 Named domains are how modules own state, and how storage stays stable across upgrades. Adding a domain or reordering domains never moves anything else. Two domains with the same id in one contract are a compile error.
+
+The default record can take an id too, and keeps its `storage.x` paths:
+
+```lithe
+storage at "vault.main" is record {
+  owner : address;
+  total : uint;
+}
+
+external function deposit(const amount : uint) is {
+  storage.total += amount;
+}
+```
+
+It starts at the root of `vault.main` instead of slot 0, so a contract whose state is one record can still keep it away from every other domain's slots. Giving the default record an id, or changing it, moves every field: `lithe upgrade-check` reports it as incompatible.
 
 ## Transient storage
 

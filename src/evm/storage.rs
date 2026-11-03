@@ -327,6 +327,34 @@ fn nested_storage_lays_out_like_solidity() {
 }
 
 #[test]
+fn default_storage_at_an_id_starts_at_its_root() {
+    let src = "storage at \"my.id\" is record { x : uint8; m : map(uint, uint); }\n\
+               external function set(const k : uint; const v : uint) is { storage.x := 7; storage.m[k] := v; }\n\
+               external view function get(const k : uint) : uint is storage.m[k] + uint(storage.x)\n";
+    let rt = deploy(&compile(src).expect("compile")).expect("deploy");
+    let n = Word::from_u64;
+    let root = crate::keccak::erc7201("my.id");
+    let st = run_ok(&rt, &HashMap::new(), "set(uint256,uint256)", &[n(3), n(5)]).storage;
+    let mut key = n(3).to_be_bytes().to_vec();
+    key.extend(root.wrapping_add(n(1)).to_be_bytes());
+    let entry = Word::from_be_bytes(keccak256(&key));
+    assert_eq!(st.get(&root), Some(&n(7)));
+    assert_eq!(st.get(&entry), Some(&n(5)));
+    assert_eq!(st.len(), 2);
+    assert_eq!(read_ok(&rt, &st, "get(uint256)", &[n(3)]), n(12));
+
+    let clash = "storage at \"my.id\" is record { x : uint; }\n\
+                 storage other at \"my.id\" is record { x : uint; }\n\
+                 external function f() is { storage.x := 1; }\n";
+    let err = compile(clash).expect_err("shared id");
+    assert!(
+        err.message.contains("storage id `my.id` conflicts"),
+        "{}",
+        err.message
+    );
+}
+
+#[test]
 fn named_storage_and_upgrade_migrate_once() {
     let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples/upgrade.lithe");
     let dir = std::env::temp_dir().join(format!("lithe-upgrade-{}", std::process::id()));

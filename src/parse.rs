@@ -73,7 +73,7 @@ pub(crate) fn parse_specs(src: &str) -> Result<SpecFile, Error> {
 }
 
 enum StorageItem {
-    Default(TypeDecl),
+    Default(TypeDecl, String),
     Named(DomainDecl),
 }
 
@@ -159,6 +159,7 @@ struct Body {
     exposes: Vec<Exposing>,
     supports: Vec<NameAt>,
     upgradeable: bool,
+    storage_id: String,
     guard: Option<GuardDecl>,
     guards: Vec<Func>,
     hooks: Vec<Func>,
@@ -183,6 +184,7 @@ impl Body {
             exposes: Vec::new(),
             supports: Vec::new(),
             upgradeable: false,
+            storage_id: String::new(),
             guard: None,
             guards: Vec::new(),
             hooks: Vec::new(),
@@ -207,6 +209,7 @@ impl Body {
             exposes: self.exposes,
             supports: self.supports,
             upgradeable: self.upgradeable,
+            storage_id: self.storage_id,
             guard: self.guard,
             guards: self.guards,
             hooks: self.hooks,
@@ -557,7 +560,10 @@ impl<'a> Parser<'a> {
                 body.supports.extend(names);
             }
             Kind::Ident if !private && self.slice() == "storage" => match self.storage_decl()? {
-                StorageItem::Default(decl) => body.types.push(decl),
+                StorageItem::Default(decl, id) => {
+                    body.types.push(decl);
+                    body.storage_id = id;
+                }
                 StorageItem::Named(decl) => body.domains.push(decl),
             },
             Kind::Ident if !private && self.slice() == "transient" => {
@@ -1314,17 +1320,26 @@ impl<'a> Parser<'a> {
     fn storage_decl(&mut self) -> Result<StorageItem, Error> {
         let (line, col) = self.at();
         self.bump();
-        if self.kind() == Kind::Is {
-            self.bump();
+        let unnamed = self.kind() == Kind::Is
+            || (self.kind() == Kind::AtKw && self.peek_kind(1) == Kind::String);
+        if unnamed {
+            let mut id = String::new();
+            if self.kind() == Kind::AtKw {
+                self.bump();
+                id = self.tok().string.clone().unwrap_or_default();
+                self.bump();
+            }
+            self.want(Kind::Is)?;
             let ty = self.ty()?;
-            return Ok(StorageItem::Default(TypeDecl {
+            let decl = TypeDecl {
                 line,
                 col,
                 private: false,
                 origin: String::new(),
                 name: "storage".to_string(),
                 ty,
-            }));
+            };
+            return Ok(StorageItem::Default(decl, id));
         }
         let name = self.ident()?;
         self.want(Kind::AtKw)?;
