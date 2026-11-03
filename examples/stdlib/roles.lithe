@@ -10,13 +10,15 @@ import "std/security/pausable";
 import "std/access/ownable";
 
 contract Registry is {
+  supports IAccessControl;
+
   use Ownable;
 
   use Ownable2Step exposing IOwnable2Step;
-  use AccessControl exposing IAccessControl;
-  use Pausable exposing IPausable;
 
-  supports IAccessControl;
+  use AccessControl exposing IAccessControl;
+
+  use Pausable exposing IPausable;
 
   storage is record {
     entries : map(address, uint);

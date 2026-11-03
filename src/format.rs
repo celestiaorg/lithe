@@ -7,13 +7,427 @@ use crate::Error;
 
 /// `src` in the canonical style, with lines wrapped at `width` columns where they can be.
 pub fn format_source(src: &str, width: usize) -> Result<String, Error> {
-    let out = render(src, width)?;
-    verify(src, &out)?;
-    let again = render(&out, width)?;
+    let arranged = header(src)?;
+    same_tokens(src, &arranged)?;
+    let out = render(&arranged, width)?;
+    verify(&arranged, &out)?;
+    let again = render(&header(&out)?, width)?;
     if again != out {
         return Err(error(0, 0, "formatter is not idempotent"));
     }
     Ok(out)
+}
+
+/// The canonical start of each contract and module body, and of a file of top-level
+/// declarations: `supports`, then one grouped `use` of the plain uses, then each `use` with
+/// `delegated`, `exposing`, or `with`, with blank lines between them. A module's `requires`
+/// are grouped the same way. Everything else keeps its order after them.
+fn header(src: &str) -> Result<String, Error> {
+    let pieces = lex::pieces(src)?;
+    let partner = partners(&pieces);
+    let mut out = src.to_string();
+    let bodies = bodies(&pieces, &partner);
+    for scope in bodies.iter().rev() {
+        if let Some(text) = arrange(src, &pieces, &partner, scope) {
+            out.replace_range(scope.start..scope.end, &text);
+        }
+    }
+    if bodies.iter().any(|scope| !scope.module) {
+        return Ok(out);
+    }
+    let src = out;
+    let pieces = lex::pieces(&src)?;
+    let partner = partners(&pieces);
+    let scope = top(&src, &pieces);
+    Ok(match arrange(&src, &pieces, &partner, &scope) {
+        Some(text) => format!("{}{text}", &src[..scope.start]),
+        None => src,
+    })
+}
+
+/// Where a quick fix adds `name` to the plain uses of the contract around byte `at`, or of
+/// the file's first contract, or of its top-level declarations: after the last name of its
+/// grouped `use`, or in a `use` of its own where `lithe fmt` puts one. The insertion's byte
+/// and text.
+pub fn add_use(src: &str, at: usize, name: &str) -> Option<(usize, String)> {
+    let pieces = lex::pieces(src).ok()?;
+    let partner = partners(&pieces);
+    let contracts: Vec<Scope> = bodies(&pieces, &partner)
+        .into_iter()
+        .filter(|scope| !scope.module)
+        .collect();
+    let scope = match contracts
+        .iter()
+        .position(|scope| (scope.start..=scope.end).contains(&at))
+    {
+        Some(k) => contracts.into_iter().nth(k)?,
+        None => match contracts.into_iter().next() {
+            Some(first) => first,
+            None => top(src, &pieces),
+        },
+    };
+    let heads = heads(src, &pieces, &partner, &scope);
+    if let Some(head) = heads.iter().find(|head| head.names.is_some()) {
+        return Some((head.names_end, format!(", {name}")));
+    }
+    let indent = (scope.from..scope.to)
+        .find(|&i| token_kind(&pieces[i]).is_some())
+        .map_or(if scope.lead == "\n" { 2 } else { 0 }, |i| {
+            column(src, pieces[i].start)
+        });
+    let line = format!("{}use {name};", " ".repeat(indent));
+    if let Some(supports) = heads.iter().rfind(|head| head.rank == 0) {
+        return Some((supports.cut.1, format!("\n\n{line}")));
+    }
+    let text = match scope.lead {
+        "" => format!("{line}\n\n"),
+        "\n" if !src[scope.start..scope.end].trim().is_empty() => format!("\n{line}\n"),
+        lead => format!("{lead}{line}"),
+    };
+    Some((scope.start, text))
+}
+
+/// The bodies of the file's contracts and modules.
+fn bodies(pieces: &[Piece], partner: &[Option<usize>]) -> Vec<Scope> {
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < pieces.len() {
+        let kind = token_kind(&pieces[i]);
+        if matches!(kind, Some(Kind::Contract | Kind::Module)) {
+            if let Some((open, close)) = body_of(pieces, partner, i) {
+                out.push(Scope {
+                    from: open + 1,
+                    to: close,
+                    start: pieces[open].end,
+                    end: pieces[close].start,
+                    lead: "\n",
+                    module: kind == Some(Kind::Module),
+                });
+                i = close + 1;
+                continue;
+            }
+        }
+        i = match (kind, partner[i]) {
+            (Some(Kind::LParen | Kind::LBrack | Kind::LBrace), Some(close)) => close + 1,
+            _ => i + 1,
+        };
+    }
+    out
+}
+
+/// A file of top-level declarations, whose header follows the imports.
+fn top(src: &str, pieces: &[Piece]) -> Scope {
+    let tok = |j: usize| pieces.get(j).and_then(token_kind);
+    let first = (0..pieces.len())
+        .find(|&j| tok(j).is_some())
+        .unwrap_or(pieces.len());
+    let mut last = None;
+    let mut j = first;
+    while tok(j) == Some(Kind::Import) {
+        let mut k = next_token(pieces, j);
+        if tok(k) == Some(Kind::String) {
+            k = next_token(pieces, k);
+        }
+        if tok(k) == Some(Kind::Ident) && &src[pieces[k].start..pieces[k].end] == "as" {
+            k = next_token(pieces, next_token(pieces, k));
+        }
+        if tok(k) == Some(Kind::Semi) {
+            k = next_token(pieces, k);
+        }
+        last = Some(prev_token(pieces, k.min(pieces.len())));
+        j = k;
+    }
+    let (from, start, lead) = match last {
+        Some(l) => (l + 1, pieces[l].end, "\n\n"),
+        None if first > 0 && first < pieces.len() && pieces[first].newlines_before > 1 => {
+            (first, pieces[first - 1].end, "\n\n")
+        }
+        None => (0, 0, ""),
+    };
+    Scope {
+        from,
+        to: pieces.len(),
+        start,
+        end: src.len(),
+        lead,
+        module: false,
+    }
+}
+
+/// The braces of the body of the contract or module whose keyword is at `at`.
+fn body_of(pieces: &[Piece], partner: &[Option<usize>], at: usize) -> Option<(usize, usize)> {
+    let mut j = next_token(pieces, at);
+    loop {
+        match pieces.get(j).and_then(token_kind)? {
+            Kind::LBrace => return Some((j, partner[j]?)),
+            Kind::LParen => j = next_token(pieces, partner[j]?),
+            Kind::Ident | Kind::Dot | Kind::Is | Kind::Upgradeable => j = next_token(pieces, j),
+            _ => return None,
+        }
+    }
+}
+
+/// The pieces `from..to` of a body, which spans the bytes `start..end`.
+struct Scope {
+    from: usize,
+    to: usize,
+    start: usize,
+    end: usize,
+    /// What goes before the header: a line break after a brace, a blank line after imports.
+    lead: &'static str,
+    module: bool,
+}
+
+/// A `supports`, `use`, or `requires` declaration, with the comments on the lines just above
+/// it and after it on its own line.
+struct Head {
+    /// `supports` first, then plain uses and `requires`, then the uses that say more.
+    rank: u8,
+    /// The names of a plain declaration that has no comment, which join the grouped one.
+    names: Option<Vec<String>>,
+    /// The end of its last name.
+    names_end: usize,
+    text: String,
+    /// The bytes it leaves behind: from the end of what precedes it to its own end.
+    cut: (usize, usize),
+}
+
+/// The header declarations of `scope`, in the order written.
+fn heads(src: &str, pieces: &[Piece], partner: &[Option<usize>], scope: &Scope) -> Vec<Head> {
+    let mut heads = Vec::new();
+    let mut prev: Option<usize> = None;
+    let mut i = scope.from;
+    while i < scope.to {
+        let Some(kind) = token_kind(&pieces[i]) else {
+            i += 1;
+            continue;
+        };
+        let fresh = pieces[i].newlines_before > 0
+            || prev.is_none_or(|p| {
+                matches!(
+                    token_kind(&pieces[p]),
+                    Some(Kind::Semi | Kind::LBrace | Kind::RBrace)
+                )
+            });
+        if fresh {
+            if let Some((head, last)) = head_at(src, pieces, partner, scope, i) {
+                heads.push(head);
+                prev = Some(last);
+                i = last + 1;
+                continue;
+            }
+        }
+        let close = match kind {
+            Kind::LParen | Kind::LBrack | Kind::LBrace => partner[i].unwrap_or(i),
+            _ => i,
+        };
+        prev = Some(close);
+        i = close + 1;
+    }
+    heads
+}
+
+/// `scope`'s text with its header in canonical form, or `None` when it has no header.
+fn arrange(
+    src: &str,
+    pieces: &[Piece],
+    partner: &[Option<usize>],
+    scope: &Scope,
+) -> Option<String> {
+    let heads = heads(src, pieces, partner, scope);
+    if heads.is_empty() {
+        return None;
+    }
+    let mut rest = String::new();
+    let mut at = scope.start;
+    for head in &heads {
+        rest.push_str(&src[at..head.cut.0]);
+        at = head.cut.1;
+    }
+    rest.push_str(&src[at..scope.end]);
+    let rest = match rest.find(|c: char| !c.is_whitespace()) {
+        Some(k) => &rest[rest[..k].rfind('\n').map_or(0, |n| n + 1)..],
+        None => "",
+    };
+    let ranked = |rank: u8| heads.iter().filter(move |head| head.rank == rank);
+    let mut blocks = Vec::new();
+    let supports: Vec<&str> = ranked(0).map(|head| head.text.as_str()).collect();
+    if !supports.is_empty() {
+        blocks.push(supports.join("\n"));
+    }
+    let names: Vec<&str> = ranked(1)
+        .filter_map(|head| head.names.as_ref())
+        .flatten()
+        .map(String::as_str)
+        .collect();
+    let mut plain = Vec::new();
+    if !names.is_empty() {
+        let word = if scope.module { "requires" } else { "use" };
+        plain.push(format!("{word} {};", names.join(", ")));
+    }
+    plain.extend(
+        ranked(1)
+            .filter(|head| head.names.is_none())
+            .map(|head| head.text.clone()),
+    );
+    if !plain.is_empty() {
+        blocks.push(plain.join("\n"));
+    }
+    blocks.extend(ranked(2).map(|head| head.text.clone()));
+    let mut out = format!("{}{}", scope.lead, blocks.join("\n\n"));
+    if rest.is_empty() {
+        out.push('\n');
+    } else {
+        out.push_str("\n\n");
+        out.push_str(rest);
+    }
+    Some(out)
+}
+
+/// The header declaration whose keyword is at `i`, and its last piece.
+fn head_at(
+    src: &str,
+    pieces: &[Piece],
+    partner: &[Option<usize>],
+    scope: &Scope,
+    i: usize,
+) -> Option<(Head, usize)> {
+    let tok = |j: usize| (j < scope.to).then(|| token_kind(&pieces[j])).flatten();
+    let text = |j: usize| &src[pieces[j].start..pieces[j].end];
+    let next = |j: usize| next_token(pieces, j);
+    let word = text(i);
+    let supports = !scope.module && tok(i) == Some(Kind::Ident) && word == "supports";
+    let wanted = if scope.module {
+        tok(i) == Some(Kind::Requires)
+    } else {
+        tok(i) == Some(Kind::Use) || (supports && tok(next(i)) == Some(Kind::Ident))
+    };
+    if !wanted {
+        return None;
+    }
+    // `A.B` from the identifier at `j`: its text, and its last piece.
+    let dotted = |j: usize| -> Option<(String, usize)> {
+        tok(j).filter(|&k| k == Kind::Ident)?;
+        let mut name = text(j).to_string();
+        let mut end = j;
+        while tok(next(end)) == Some(Kind::Dot) && tok(next(next(end))) == Some(Kind::Ident) {
+            end = next(next(end));
+            name.push('.');
+            name.push_str(text(end));
+        }
+        Some((name, end))
+    };
+    let mut names = Vec::new();
+    let mut last;
+    let mut j = next(i);
+    loop {
+        let (name, end) = dotted(j)?;
+        names.push(name);
+        last = end;
+        j = next(end);
+        if tok(j) != Some(Kind::Comma) {
+            break;
+        }
+        j = next(j);
+    }
+    let names_end = pieces[last].end;
+    let mut plain = true;
+    let is_word = |j: usize, w: &str| tok(j) == Some(Kind::Ident) && text(j) == w;
+    if !supports && !scope.module {
+        if is_word(j, crate::parse::DELEGATED) {
+            plain = false;
+            last = j;
+            j = next(j);
+        }
+        if is_word(j, "exposing") {
+            plain = false;
+            j = next(j);
+            loop {
+                last = match tok(j) {
+                    Some(Kind::LBrace) => partner[j]?,
+                    _ => dotted(j)?.1,
+                };
+                j = next(last);
+                if tok(j) != Some(Kind::Comma) {
+                    break;
+                }
+                j = next(j);
+            }
+        }
+        if tok(j) == Some(Kind::With) && tok(next(j)) == Some(Kind::LBrace) {
+            plain = false;
+            last = partner[next(j)]?;
+            j = next(last);
+        }
+    }
+    if tok(j) == Some(Kind::Semi) {
+        last = j;
+    }
+    let own_line = |k: usize| {
+        let from = line_start(src, pieces[k].start);
+        src[from..pieces[k].start].trim().is_empty()
+    };
+    let mut first = i;
+    while first > scope.from
+        && pieces[first - 1].kind == PieceKind::Comment
+        && pieces[first].newlines_before == 1
+        && own_line(first - 1)
+    {
+        first -= 1;
+    }
+    while last + 1 < scope.to
+        && pieces[last + 1].kind == PieceKind::Comment
+        && pieces[last + 1].newlines_before == 0
+    {
+        last += 1;
+    }
+    let commented = pieces[first..=last]
+        .iter()
+        .any(|piece| piece.kind == PieceKind::Comment);
+    let cut_from = if first > scope.from {
+        pieces[first - 1].end
+    } else {
+        scope.start
+    };
+    let head = Head {
+        rank: match (supports, plain) {
+            (true, _) => 0,
+            (false, true) => 1,
+            (false, false) => 2,
+        },
+        names: (plain && !supports && !commented).then_some(names),
+        names_end,
+        text: format!(
+            "{}{}",
+            " ".repeat(column(src, pieces[first].start)),
+            &src[pieces[first].start..pieces[last].end]
+        ),
+        cut: (cut_from, pieces[last].end),
+    };
+    Some((head, last))
+}
+
+/// The header pass only moves declarations, and merges `use A; use B;` into `use A, B;`, so
+/// every other token and comment is still there.
+fn same_tokens(src: &str, out: &str) -> Result<(), Error> {
+    let kept = |text: &str| -> Result<Vec<String>, Error> {
+        let mut out: Vec<String> = lex::pieces(text)?
+            .iter()
+            .filter(|piece| {
+                !matches!(
+                    token_kind(piece),
+                    Some(Kind::Use | Kind::Requires | Kind::Semi | Kind::Comma)
+                )
+            })
+            .map(|piece| text[piece.start..piece.end].trim().to_string())
+            .collect();
+        out.sort();
+        Ok(out)
+    };
+    if kept(src)? != kept(out)? {
+        return Err(error(0, 0, "formatter changed the declarations"));
+    }
+    Ok(())
 }
 
 fn render(src: &str, max: usize) -> Result<String, Error> {
@@ -74,6 +488,7 @@ fn print(src: &str, pieces: &[Piece]) -> (String, Vec<usize>) {
         col: 0,
         starts: Vec::new(),
         ifs: Vec::new(),
+        list_indent: None,
         for_indent: None,
     };
     for piece in pieces {
@@ -255,6 +670,18 @@ fn options(
                 .find(|&&i| width(out[from..starts[i]].trim_end()) <= max);
             opts.push(vec![*fit.unwrap_or(&first)]);
         }
+        let commas: Vec<usize> = inner
+            .iter()
+            .copied()
+            .filter(|&i| is(i, Kind::Comma) && in_names(src, pieces, i))
+            .collect();
+        if let Some(&first) = commas.first() {
+            let fit = commas
+                .iter()
+                .rev()
+                .find(|&&i| width(out[from..starts[i]].trim_end()) < max);
+            opts.push(vec![next_token(pieces, *fit.unwrap_or(&first))]);
+        }
         let ops: Vec<(usize, u8)> = inner
             .iter()
             .filter_map(|&i| binary(pieces, i).map(|p| (i, p)))
@@ -419,6 +846,19 @@ fn in_raises(src: &str, pieces: &[Piece], i: usize) -> bool {
     false
 }
 
+/// Whether the `,` at `i` separates the names of a `use`, `requires`, or `supports`.
+fn in_names(src: &str, pieces: &[Piece], i: usize) -> bool {
+    for j in (0..i).rev() {
+        match token_kind(&pieces[j]) {
+            Some(Kind::Use | Kind::Requires) => return true,
+            Some(Kind::Ident) if &src[pieces[j].start..pieces[j].end] == "supports" => return true,
+            Some(Kind::Ident | Kind::Dot | Kind::Comma) | None => {}
+            Some(_) => return false,
+        }
+    }
+    false
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Open {
     /// Parens, brackets, and `case` braces: every inner line shares one indent.
@@ -471,6 +911,8 @@ struct Printer<'a> {
     /// Output offset of each piece.
     starts: Vec<usize>,
     ifs: Vec<OpenIf>,
+    /// The indent of a `use`, `requires`, or `supports` line whose names go on.
+    list_indent: Option<usize>,
     /// The indent of a `for` whose `do` is still to come. Its `invariant` lines are two past
     /// it, and a `do` that starts a line lines up with it.
     for_indent: Option<usize>,
@@ -550,6 +992,9 @@ impl Printer<'_> {
         if kind == Kind::Is {
             return self.decl_indent;
         }
+        if let (Some(indent), Some(Kind::Comma)) = (self.list_indent, self.prev_kind) {
+            return indent + 2;
+        }
         if let Some(indent) = self.for_indent {
             if kind == Kind::Do {
                 return indent;
@@ -617,6 +1062,14 @@ impl Printer<'_> {
     }
 
     fn on_token(&mut self, kind: Kind, bol: bool) {
+        if bol
+            && (matches!(kind, Kind::Use | Kind::Requires)
+                || (kind == Kind::Ident && self.line_head == "supports"))
+        {
+            self.list_indent = Some(self.line_indent);
+        } else if !matches!(kind, Kind::Ident | Kind::Dot | Kind::Comma) {
+            self.list_indent = None;
+        }
         if matches!(
             kind,
             Kind::Function
@@ -1092,7 +1545,7 @@ mod tests {
             ),
             (
                 "external function f(const id : uint)\nguarded g(id)\nraises E\nis { skip }\nuse M with {\nguard g(const id : uint)\nraises E\nis { skip }\n}\n",
-                "external function f(const id : uint)\n  guarded g(id)\n  raises E\nis { skip }\nuse M with {\n  guard g(const id : uint)\n    raises E\n  is { skip }\n}\n",
+                "use M with {\n  guard g(const id : uint)\n    raises E\n  is { skip }\n}\n\nexternal function f(const id : uint)\n  guarded g(id)\n  raises E\nis { skip }\n",
             ),
             (
                 "use M exposing I with { hook h(const id : uint)\nraises E\nis {\nskip\n} hook g is skip; }\n",
@@ -1100,7 +1553,7 @@ mod tests {
             ),
             (
                 "view function f() : uint is\n  1\n\n(* after a function's value *)\nuse M with {\n  hook g is skip;\n  guard e is f;\n}\n",
-                "view function f() : uint is\n  1\n\n(* after a function's value *)\nuse M with {\n  hook g is skip;\n  guard e is f;\n}\n",
+                "(* after a function's value *)\nuse M with {\n  hook g is skip;\n  guard e is f;\n}\n\nview function f() : uint is\n  1\n",
             ),
             (
                 "pure function f(const n : uint) : string raises Bad is\n  if n = 1 then\n    \"a\"\n      else if n = 2 then\n        \"b\"\n          else\nfail Bad\n",
@@ -1134,6 +1587,67 @@ mod tests {
         for (src, want) in cases {
             let out = format_source(src, 100).unwrap_or_else(|err| panic!("{err}\n{src}"));
             assert_eq!(out, want, "from {src:?}");
+        }
+    }
+
+    #[test]
+    fn headers_take_the_canonical_layout() {
+        let cases = [
+            (
+                "contract C is {\n  storage is record { n : uint; }\n  use A;\n  (* lithe-ignore reentry: on purpose *)\n  use B exposing IB;\n  use C, D;\n  supports IA;\n  (* kept *)\n  use E;\n  use F delegated with {\n    hook h is skip;\n  }\n  use G; (* after *)\n  use H; use I;\n  external function f() is { skip }\n}\n",
+                "contract C is {\n  supports IA;\n\n  use A, C, D, H, I;\n  (* kept *)\n  use E;\n  use G; (* after *)\n\n  (* lithe-ignore reentry: on purpose *)\n  use B exposing IB;\n\n  use F delegated with {\n    hook h is skip;\n  }\n\n  storage is record { n : uint; }\n  external function f() is { skip }\n}\n",
+            ),
+            (
+                "module M is {\n  storage s at \"m\" is record { n : uint; }\n  requires X;\n  requires Y, Z;\n}\n",
+                "module M is {\n  requires X, Y, Z;\n\n  storage s at \"m\" is record { n : uint; }\n}\n",
+            ),
+            (
+                "(* A file of top-level declarations. *)\n\nimport \"std/evm\";\n\nmodule M is {\n  requires A;\n}\n\nexternal function f() is { skip }\n\nuse M exposing { function g(); }\nuse A;\n",
+                "(* A file of top-level declarations. *)\n\nimport \"std/evm\";\n\nuse A;\n\nuse M exposing { function g(); }\n\nmodule M is {\n  requires A;\n}\n\nexternal function f() is { skip }\n",
+            ),
+            (
+                "contract C is {\n  use A;\n}\n",
+                "contract C is {\n  use A;\n}\n",
+            ),
+            (
+                "contract C is {\n  use Alpha;\n  use Beta;\n  use Gamma;\n  use Delta;\n  use Epsilon;\n  use Zeta;\n  use Eta;\n  use Theta;\n}\n",
+                "contract C is {\n  use Alpha, Beta, Gamma, Delta,\n    Epsilon, Zeta, Eta, Theta;\n}\n",
+            ),
+        ];
+        for (src, want) in cases {
+            let width = if src.contains("Theta") { 34 } else { 100 };
+            let out = format_source(src, width).unwrap_or_else(|err| panic!("{err}\n{src}"));
+            assert_eq!(out, want, "from {src:?}");
+            assert_eq!(format_source(&out, width).expect("again"), out);
+        }
+    }
+
+    #[test]
+    fn a_use_goes_where_fmt_puts_it() {
+        let cases = [
+            (
+                "contract C is {\n  use A;\n\n  use B exposing I;\n}\n",
+                "contract C is {\n  use A, M;\n\n  use B exposing I;\n}\n",
+            ),
+            (
+                "contract C is {\n  supports I;\n\n  use B exposing I;\n}\n",
+                "contract C is {\n  supports I;\n\n  use M;\n\n  use B exposing I;\n}\n",
+            ),
+            (
+                "contract C is {\n  storage is record { n : uint; }\n}\n",
+                "contract C is {\n  use M;\n\n  storage is record { n : uint; }\n}\n",
+            ),
+            ("contract C is {\n}\n", "contract C is {\n  use M;\n}\n"),
+            (
+                "import \"std/evm\";\n\nexternal function f() is { skip }\n",
+                "import \"std/evm\";\n\nuse M;\n\nexternal function f() is { skip }\n",
+            ),
+        ];
+        for (src, want) in cases {
+            let (at, text) = super::add_use(src, src.len() / 2, "M").expect("a place");
+            let out = format!("{}{text}{}", &src[..at], &src[at..]);
+            assert_eq!(out, want, "from {src:?}");
+            assert_eq!(format_source(&out, 100).expect("fmt"), out);
         }
     }
 

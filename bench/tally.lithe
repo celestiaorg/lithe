@@ -3,6 +3,8 @@
 
 import "std/evm";
 
+use Votes exposing ITally;
+
 module Tally(K : MapKey) is {
   type Self is record {
     counts : map(K, uint);
@@ -54,5 +56,3 @@ interface ITally is {
   view function votesFor(topic : bytes32) : uint;
   view function totalVotes() : uint;
 }
-
-use Votes exposing ITally;

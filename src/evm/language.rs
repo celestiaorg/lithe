@@ -2473,3 +2473,140 @@ external pure function fork() : uint is if Evm.osaka then 1 else { const z : uin
         Word::from_u64(if osaka { 1 } else { 7 })
     );
 }
+
+/// `use A, B;` is `use A; use B;`, and `requires A, B;` is `requires A; requires B;`: the
+/// same program, the same checks, each error at its own name. A required module comes along
+/// without a `use`, and neither the order of plain uses nor where they are written changes
+/// the program, so `lithe fmt` moving them changes nothing.
+#[test]
+fn grouped_uses() {
+    let modules = r#"import "std/evm";
+module Count is {
+  storage count at "t.count" is record { n : uint; }
+  function bump() is { count.n += 1; }
+}
+module Mark is {
+  storage mark at "t.mark" is record { who : address; }
+  event Marked of record { who : address; }
+  function set() is { mark.who := Evm.sender(); emit Marked { who = Evm.sender(); }; }
+}
+module Both is {
+  requires Count, Mark;
+  event Bothered of record { n : uint; }
+  external function both() is { Count.bump(); Mark.set(); emit Bothered { n = 1; }; }
+  external view function count() : uint is Count.count.n
+}
+"#;
+    let contract = |uses: &str| {
+        format!("{modules}contract C is {{\n{uses}\n  external function go() is {{ Count.bump(); }}\n}}\n")
+    };
+    let built = |uses: &str| {
+        let src = contract(uses);
+        (compile(&src).expect(uses), abi(&src).expect(uses))
+    };
+    let exposed = "  use Both exposing { function both(); view function count() : uint; }";
+    let want = built(&format!("  use Count;\n  use Mark;\n{exposed}"));
+    assert!(want == built(&format!("  use Count, Mark;\n{exposed}")));
+    assert!(want == built(&format!("{exposed}\n  use Count, Mark;")));
+    assert!(want == built(&format!("  use Count;\n{exposed}\n  use Mark;")));
+    // `Both` requires `Mark`, so the contract runs it whether or not it says so, and in the
+    // same place: plain uses and requirements go in an order of their own.
+    assert!(want == built(&format!("  use Mark, Count;\n{exposed}")));
+    assert!(want == built(&format!("  use Count;\n{exposed}")));
+    let err = compile(&contract(&format!("  use Mark;\n{exposed}"))).expect_err("call");
+    assert!(
+        err.to_string().contains("module `Count` is not used"),
+        "{err}"
+    );
+    for (uses, want) in [
+        (
+            "  use Count, Mark delegated;",
+            "18:19: `delegated` applies to one module: write `use Mark delegated;` on its own line",
+        ),
+        (
+            "  use Count, Both exposing { function both(); }",
+            "18:19: `exposing` applies to one module: write `use Both exposing ...;` on its own line",
+        ),
+        (
+            "  use Count, Both with { hook h is skip; }",
+            "18:19: `with` applies to one module: write `use Both with { ... }` on its own line",
+        ),
+        ("  use Count, Mark, Count;", "18:20: module `Count` is already used"),
+        ("  use Mark;\n  use Count, Mark;", "19:14: module `Mark` is already used"),
+        ("  use Count, Mark;\n  use Mark;", "19:3: module `Mark` is already used"),
+        (
+            &format!("{exposed}\n  use Count, Both, Mark;"),
+            "19:14: module `Both` is already used",
+        ),
+        ("  use Count, Missing;", "18:14: unknown module `Missing`"),
+    ] {
+        let err = compile(&contract(uses)).expect_err(want);
+        assert!(err.to_string().contains(want), "{want}\n{err}");
+    }
+    // `use` and `requires` are for state: reading a module's storage, or calling a function
+    // of a module that holds state and isn't pure. Stateless modules, pure functions, and a
+    // module's types and errors come with the import.
+    let state = r#"module Y is {
+  storage y at "t.y" is record { n : uint; }
+  error Full;
+  pure function double(const n : uint) : uint is n * 2
+  function bump() raises Full is { assert(y.n < 10, Full); y.n += 1; }
+}
+module Tools is {
+  function triple(const n : uint) : uint is n * 3
+}
+module X is {
+  external function go(const n : uint) : uint raises Full is Tools.triple(Y.double(n))
+}
+contract A is {
+  use X exposing { function go(n : uint) : uint raises Full; }
+
+  BODY
+}
+"#;
+    let with = |body: &str| state.replace("BODY", body);
+    for ok in [
+        "external function f(const n : uint) : uint is Tools.triple(Y.double(n))",
+        "external function f() raises Full is { fail Full; }",
+    ] {
+        compile(&with(ok)).expect(ok);
+    }
+    for (bad, want) in [
+        (
+            "external function f() raises Full is { Y.bump(); }",
+            "16:44: module `Y` is not used\n\n`Y.bump` isn't pure and `Y` holds state: `use Y;`",
+        ),
+        (
+            "external view function f() : uint is Y.y.n",
+            "16:40: module `Y` is not used",
+        ),
+    ] {
+        let err = compile(&with(bad)).expect_err(bad);
+        assert!(err.to_string().contains(want), "{want}\n{err}");
+    }
+    compile(
+        &with("external function f() raises Full is { Y.bump(); }")
+            .replace("  use X exposing", "  use Y;\n\n  use X exposing"),
+    )
+    .expect("uses Y");
+    let calls = state.replace(
+        "external function go(const n : uint) : uint raises Full is Tools.triple(Y.double(n))",
+        "external function go(const n : uint) : uint raises Full is {\n    Y.bump();\n  } with n",
+    );
+    let err = compile(&calls.replace("BODY", "")).expect_err("requires");
+    assert!(
+        err.to_string()
+            .contains("module `X` calls `Y` but does not require it"),
+        "{err}"
+    );
+    let twice = modules.replace("requires Count, Mark;", "requires Count, Mark, Count;");
+    let err = compile(&format!(
+        "{twice}contract C is {{\n  use Count, Mark, Both;\n}}\n"
+    ))
+    .expect_err("twice");
+    assert!(
+        err.to_string()
+            .contains("12:25: module `Both` requires `Count` more than once"),
+        "{err}"
+    );
+}

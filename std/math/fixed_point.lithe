@@ -9,8 +9,6 @@ import "std/uint";
 import "std/math/math";
 
 module FixedPoint is {
-  requires Math;
-
   type Wad is uint;
   type Swad is int;
 

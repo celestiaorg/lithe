@@ -5,6 +5,11 @@
 
 import "std/evm";
 
+use Counter delegated exposing {
+  function bump(by : uint);
+  view function count() : uint;
+}
+
 upgradeable
 
 error NotOwner;
@@ -41,11 +46,6 @@ deploy(const owner : address) is {
 
 migrate init(const fee : uint) is {
   settings.fee := if fee < 10000 then fee else 9999;
-}
-
-use Counter delegated exposing {
-  function bump(by : uint);
-  view function count() : uint;
 }
 
 view function currentFee() : uint is

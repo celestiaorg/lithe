@@ -20,4 +20,7 @@ contract Token is {
   use Guarded exposing {
     function set(n : uint);
   }
+
+  external view function n() : uint is
+    Ledger.ledger.n
 }

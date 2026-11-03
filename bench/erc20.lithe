@@ -16,7 +16,9 @@ contract BenchToken is {
     hook beforeTransfer is Pausable.requireNotPaused;
     hook afterTransfer is skip;
   }
+
   use Ownable exposing IOwnable;
+
   use Pausable exposing IPausable;
 
   (* Initializable's bookkeeping matches the `initializer` modifier on Solidity's

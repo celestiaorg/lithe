@@ -93,6 +93,9 @@ pub(crate) struct Scopes {
     pub scopes: BTreeMap<Key, Scope>,
     /// Names declared inside modules, which `use` publishes: they keep their names.
     members: BTreeSet<String>,
+    /// The modules that declare each of those names, and the cases of their variant types,
+    /// by the modules' canonical names.
+    member_of: BTreeMap<String, BTreeSet<String>>,
     ctors: BTreeSet<String>,
     /// The intrinsics of each module the compiler implements, by its canonical name.
     pub intrinsics: BTreeMap<String, BTreeMap<String, Tag>>,
@@ -375,6 +378,12 @@ pub(crate) fn link(units: &mut [Unit]) -> Result<Scopes, Error> {
             f.name = next();
         }
     }
+    let mut free_ctors = BTreeSet::new();
+    for unit in units.iter() {
+        for d in &unit.prog.types {
+            collect_ctors(&d.ty, &mut free_ctors);
+        }
+    }
     for unit in units.iter() {
         for module in &unit.prog.modules {
             let canonical = file_modules[&unit.key.0]
@@ -382,6 +391,26 @@ pub(crate) fn link(units: &mut [Unit]) -> Result<Scopes, Error> {
                 .map(|&id| &scopes.decls[id])
                 .find(|decl| decl.name == module.name)
                 .map_or_else(|| module.name.clone(), |decl| decl.canonical.clone());
+            let mut ctors = BTreeSet::new();
+            for d in &module.types {
+                collect_ctors(&d.ty, &mut ctors);
+            }
+            let names = module
+                .types
+                .iter()
+                .map(|d| &d.name)
+                .chain(module.errors.iter().map(|d| &d.name))
+                .chain(module.error_sets.iter().map(|d| &d.name))
+                .chain(module.events.iter().map(|d| &d.name))
+                .chain(ctors.iter().filter(|c| !free_ctors.contains(*c)));
+            // A generic module comes with the instance's type, not by name.
+            for name in names.filter(|_| module.params.is_empty()) {
+                scopes
+                    .member_of
+                    .entry(name.clone())
+                    .or_default()
+                    .insert(canonical.clone());
+            }
             for f in module.funcs.iter().filter(|f| f.constant) {
                 scopes.consts.insert(format!("{canonical}.{}", f.name));
             }
@@ -397,6 +426,7 @@ pub(crate) fn link(units: &mut [Unit]) -> Result<Scopes, Error> {
         }
     }
     let members = scopes.members.clone();
+    let member_of = scopes.member_of.clone();
     let ctors = scopes.ctors.clone();
     let intrinsics = scopes.intrinsics.clone();
     let consts = scopes.consts.clone();
@@ -413,6 +443,8 @@ pub(crate) fn link(units: &mut [Unit]) -> Result<Scopes, Error> {
             scope: &mut scope,
             decls: &scopes.decls,
             members: &members,
+            member_of: &member_of,
+            refs: BTreeSet::new(),
             ctors: &ctors,
             intrinsics: &intrinsics,
             consts: &consts,
@@ -423,6 +455,7 @@ pub(crate) fn link(units: &mut [Unit]) -> Result<Scopes, Error> {
         };
         r.program(unit.prog, &module_names)
             .map_err(|err| err.in_file(&unit.key.0))?;
+        unit.prog.refs = std::mem::take(&mut r.refs).into_iter().collect();
         scopes.scopes.insert(unit.key.clone(), scope);
     }
     Ok(scopes)
@@ -442,6 +475,8 @@ pub(crate) fn resolve_specs(
         scope: &mut scope,
         decls: &scopes.decls,
         members: &scopes.members,
+        member_of: &scopes.member_of,
+        refs: BTreeSet::new(),
         ctors: &scopes.ctors,
         intrinsics: &scopes.intrinsics,
         consts: &scopes.consts,
@@ -735,6 +770,9 @@ struct Resolver<'a> {
     scope: &'a mut Scope,
     decls: &'a [Decl],
     members: &'a BTreeSet<String>,
+    member_of: &'a BTreeMap<String, BTreeSet<String>>,
+    /// The modules the code being rewritten names, which come with it into a contract.
+    refs: BTreeSet<String>,
     ctors: &'a BTreeSet<String>,
     intrinsics: &'a BTreeMap<String, BTreeMap<String, Tag>>,
     consts: &'a BTreeSet<String>,
@@ -846,6 +884,14 @@ impl Resolver<'_> {
         if let Some(name) = module_names.get(&module.name) {
             module.name = name.clone();
         }
+        let outer = std::mem::take(&mut self.refs);
+        let result = self.module_body(module);
+        let mine = std::mem::replace(&mut self.refs, outer);
+        module.refs = mine.into_iter().filter(|m| *m != module.name).collect();
+        result
+    }
+
+    fn module_body(&mut self, module: &mut ModuleDecl) -> Result<(), Error> {
         for req in &mut module.requires {
             self.module_ref(&mut req.name, req.line, req.col)?;
         }
@@ -1041,7 +1087,17 @@ impl Resolver<'_> {
         if let Some(k) = entry.import {
             self.scope.used.insert(k);
         }
-        Some(self.decls[entry.decl].canonical.clone())
+        let canonical = self.decls[entry.decl].canonical.clone();
+        self.refs.insert(canonical.clone());
+        Some(canonical)
+    }
+
+    /// Whether `name` is a member of a module, named bare. Naming it brings the module in.
+    fn member(&mut self, name: &str) -> bool {
+        if let Some(owners) = self.member_of.get(name) {
+            self.refs.extend(owners.iter().cloned());
+        }
+        self.members.contains(name)
     }
 
     fn module_ref(&mut self, name: &mut String, line: u32, col: u32) -> Result<(), Error> {
@@ -1142,7 +1198,7 @@ impl Resolver<'_> {
             *name = canonical;
             return Ok(());
         }
-        if self.members.contains(name.as_str()) {
+        if self.member(name) {
             return Ok(());
         }
         self.missing(name, cats, what, line, col)
@@ -1161,7 +1217,7 @@ impl Resolver<'_> {
                     *name = canonical;
                     return Ok(());
                 }
-                if self.members.contains(name.as_str()) {
+                if self.member(name) {
                     return Ok(());
                 }
                 let (line, col) = (*line, *col);
@@ -1688,7 +1744,7 @@ impl Resolver<'_> {
             };
             return Ok(());
         }
-        if self.members.contains(&spelled) {
+        if self.member(&spelled) {
             return Ok(());
         }
         self.missing(&spelled, cats, what, line, col)
@@ -1881,10 +1937,10 @@ impl Resolver<'_> {
                             *name = canonical;
                             return Ok(());
                         }
-                        if universe_type(name)
+                        if self.member(name)
+                            || universe_type(name)
                             || self.type_params.contains(name.as_str())
                             || self.ctors.contains(name.as_str())
-                            || self.members.contains(name.as_str())
                             || matches!(name.as_str(), "Some" | "None")
                         {
                             return Ok(());

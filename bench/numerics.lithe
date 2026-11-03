@@ -6,8 +6,6 @@ import "std/uint";
 import "std/math/math";
 
 contract Numerics is {
-  use Math;
-
   storage is record {
     scale : uint;
   }

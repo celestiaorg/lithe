@@ -93,8 +93,6 @@ module ERC7821 is {
    come before its calls. A contract that authorizes each batch with its own `opData`
    writes `execute` from `batchCount`, `batch`, and `opDataIn`. *)
 module ERC7821Batches is {
-  requires ERC7821;
-
   (* ERC7821's modes, and 3 for a batch of batches. *)
   pure function executionModeId(const mode : bytes32) : uint is {
     const m : uint := uint(mode) >> 176 & 0xffff00000000ffffffff;

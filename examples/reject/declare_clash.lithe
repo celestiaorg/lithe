@@ -11,15 +11,15 @@ module Other is {
 }
 
 contract Token is {
-  storage is record {
-    n : uint;
-  }
-
   use Ledger exposing {
     function transfer(amount : uint);
   }
 
   use Other exposing {
     function transfer(amount : uint);
+  }
+
+  storage is record {
+    n : uint;
   }
 }

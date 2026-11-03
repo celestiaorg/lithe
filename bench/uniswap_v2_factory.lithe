@@ -11,8 +11,6 @@ import "./uniswap_v2_pair";
 import "std/utils/create2";
 
 contract UniswapV2Factory is {
-  use Create2;
-
   interface IUniswapV2Pair is {
     function initialize(token0 : address; token1 : address);
   }

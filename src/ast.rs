@@ -12,6 +12,11 @@ pub(crate) struct Program {
     pub domains: Vec<DomainDecl>,
     pub modules: Vec<ModuleDecl>,
     pub compose: Vec<NameAt>,
+    /// The modules in `compose` only because a module the contract uses requires them,
+    /// directly or through others. The contract's own code can't call into them.
+    pub implied: Vec<String>,
+    /// The modules the contract's own code names, by canonical name.
+    pub refs: Vec<String>,
     /// `use M delegated;` or `use M delegated exposing ...;`: the modules whose code runs from their
     /// facets, never in the contract.
     pub facets: Vec<NameAt>,
@@ -149,6 +154,9 @@ pub(crate) struct ModuleDecl {
     pub hooks: Vec<Func>,
     /// The members the compiler implements, in a module of the standard library.
     pub intrinsics: Vec<Intrinsic>,
+    /// The other modules its code names, by canonical name: those it calls, reads, or names
+    /// a type, error, or event of.
+    pub refs: Vec<String>,
 }
 
 /// `intrinsic view function sender() : address;` or `intrinsic call;`: a member of a

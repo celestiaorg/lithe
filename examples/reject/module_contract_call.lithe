@@ -1,3 +1,7 @@
+use Ledger exposing {
+  function bump();
+}
+
 module Ledger is {
   storage ledger at "lithe.ledger" is record {
     n : uint;
@@ -10,7 +14,3 @@ module Ledger is {
 
 pure function hook() : uint is
   1
-
-use Ledger exposing {
-  function bump();
-}

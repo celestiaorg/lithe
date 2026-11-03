@@ -988,8 +988,19 @@ pub(crate) fn closure(modules: &[crate::ast::ModuleDecl], module: &str, out: &mu
     let Some(decl) = modules.iter().find(|decl| decl.name == module) else {
         return;
     };
-    let mut requires: Vec<&str> = decl.requires.iter().map(|r| r.name.as_str()).collect();
+    let mut requires: Vec<&str> = decl
+        .requires
+        .iter()
+        .map(|r| r.name.as_str())
+        .chain(decl.refs.iter().map(String::as_str))
+        .filter(|name| {
+            modules
+                .iter()
+                .any(|m| m.name == *name && m.params.is_empty() && m.intrinsics.is_empty())
+        })
+        .collect();
     requires.sort_unstable();
+    requires.dedup();
     for required in requires {
         closure(modules, required, out);
     }

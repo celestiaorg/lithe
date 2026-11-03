@@ -25,9 +25,6 @@ import "std/utils/create2";
 import "std/utils/clones";
 
 contract Factory is {
-  use Create2;
-  use Clones;
-
   storage is record {
     implementation : address;
     instances : list(address);
@@ -66,13 +63,9 @@ A clone with arguments carries them after its code, where the implementation rea
 `std/utils/sstore2.lithe`. Data kept as the code of a contract, as Solady's `SSTORE2` keeps it: writing costs a creation, about 200 gas a byte, and reading is one `EXTCODECOPY`, far cheaper than storage for data of more than a few words that never changes. The code starts with `STOP`, so a call to it does nothing. The data is at most 24575 bytes.
 
 ```lithe
-import "std/utils/create2";
 import "std/utils/sstore2";
 
 contract Art is {
-  use Create2;
-  use SSTORE2;
-
   storage is record {
     pointer : address;
   }
@@ -107,9 +100,6 @@ import "std/utils/create2";
 import "std/utils/create3";
 
 contract Deployer is {
-  use Create2;
-  use Create3;
-
   storage is record {
     last : address;
   }
@@ -144,10 +134,6 @@ import "std/utils/create3";
 import "std/utils/erc1967_proxy";
 
 contract Factory is {
-  use Create2;
-  use Create3;
-  use ERC1967Proxy;
-
   storage is record {
     implementation : address;
   }
@@ -185,14 +171,10 @@ contract Factory is {
 `std/utils/checkpoint.lithe`. A history of values, each from a key onward, such as a block number or a timestamp: voting power, balances at a snapshot, or any value you need to read as of the past. A `Trace` holds a list of `Checkpoint`s, each a `uint48` key and a `uint208` value in one storage slot, laid out as OpenZeppelin's `Checkpoints.Trace208`. A trace can be a storage field or a map's value, and each function takes either: `Checkpoints.latest(storage.votes[account])`.
 
 ```lithe
-import "std/math/math";
 import "std/evm";
 import "std/utils/checkpoint";
 
 contract Supply is {
-  use Math;
-  use Checkpoints;
-
   storage is record {
     history : Trace;
     total : uint;
@@ -263,7 +245,7 @@ contract Account is {
   use ERC7821 exposing {
     view function supportsExecutionMode(mode : bytes32) : bool;
   }
-  use ECDSA;
+
   use Nonces exposing {
     view function nonces(owner : address) : uint;
   }
@@ -311,7 +293,6 @@ import "std/accounts/erc7821";
 import "std/interfaces/erc7821";
 
 contract Delegate is {
-  use ERC7821;
   use ERC7821Batches exposing IERC7821Batches;
 
   storage is record {}
@@ -335,12 +316,11 @@ import "std/abi";
 import "std/crypto";
 
 contract Signed is {
-  error BadOpData;
-
-  use ERC7821;
   use ERC7821Batches exposing {
     view function supportsExecutionMode(mode : bytes32) : bool;
   }
+
+  error BadOpData;
 
   storage is record {
     key : bytes32;
@@ -395,8 +375,6 @@ import "std/utils/block_hash";
 import "std/evm";
 
 contract Beacon is {
-  use BlockHash;
-
   storage is record {
     committed : uint;
   }
@@ -428,8 +406,6 @@ import "std/string";
 import "std/crypto";
 
 contract Names is {
-  use Strings;
-
   error NameHasSpace;
 
   storage is record {
@@ -457,8 +433,6 @@ import "std/utils/date_time";
 import "std/evm";
 
 contract Subscription is {
-  use DateTime;
-
   storage is record {
     paidUntil : map(address, timestamp);
   }

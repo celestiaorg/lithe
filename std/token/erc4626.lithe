@@ -33,7 +33,6 @@ import "std/uint";
 
 module ERC4626 is {
   requires ERC20;
-  requires SafeERC20;
 
   immutable erc4626 at "lithe.std.erc4626" is record {
     asset : IERC20;

@@ -14,6 +14,8 @@ import "std/token/erc20";
 import "std/access/ownable";
 
 contract Token is {
+  use Ownable;
+
   use ERC20 exposing {
     view function balanceOf(account : address) : uint;
     function transfer(to : address; value : uint) : bool
@@ -22,8 +24,6 @@ contract Token is {
     hook beforeTransfer is skip;
     hook afterTransfer is skip;
   }
-
-  use Ownable;
 
   storage is record {
     minted : uint;

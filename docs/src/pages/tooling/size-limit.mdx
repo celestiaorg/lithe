@@ -246,6 +246,7 @@ import "./lib/drop";
 
 contract Shop is {
   use RoleStore;
+
   use Drop delegated exposing {
     function mint(to : address; id : uint) raises Unauthorized | AlreadyMinted;
   }
@@ -326,16 +327,16 @@ module Tally is {
 }
 
 contract Counter is {
-  storage is record {
-    last : uint;
-  }
-
   use Tally delegated exposing {
     function add();
   } with {
     hook counted(const count : uint) is {
       storage.last := Evm.calldata().length;
     }
+  }
+
+  storage is record {
+    last : uint;
   }
 }
 ```

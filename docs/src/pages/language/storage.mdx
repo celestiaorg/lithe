@@ -173,6 +173,8 @@ external view function factory() : address is
 The contract's own block is read as `immutable.x`. A named block has an id, as named storage does, and a module declares its immutables that way:
 
 ```lithe
+use Fees;
+
 module Fees is {
   immutable fees at "vault.fees" is record {
     bps : uint16;
@@ -187,8 +189,6 @@ module Fees is {
   view function cut(const amount : uint) : uint is
     amount * uint(fees.bps) / 10_000
 }
-
-use Fees;
 
 storage is record {
   total : uint;

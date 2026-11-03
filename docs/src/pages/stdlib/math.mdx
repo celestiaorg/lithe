@@ -36,16 +36,12 @@ Everything here is checked, like the rest of Lithe's arithmetic: a result that d
 
 ## `FixedPoint`
 
-`std/math/fixed_point.lithe`. A `Wad` is a number with 18 decimals, its own type so that a plain `uint` can't be mixed in by mistake, and a `Swad` is a signed one. `FixedPoint` requires `Math`, so a contract that uses it uses both.
+`std/math/fixed_point.lithe`. A `Wad` is a number with 18 decimals, its own type so that a plain `uint` can't be mixed in by mistake, and a `Swad` is a signed one. `FixedPoint` and `Math` hold no state, so a contract imports them and calls them without a `use`.
 
 ```lithe
 import "std/math/fixed_point";
-import "std/math/math";
 
 contract Fees is {
-  use Math;
-  use FixedPoint;
-
   storage is record {
     rate : Wad;
     feeBps : uint;
@@ -85,12 +81,8 @@ The unsigned products and quotients keep a 512-bit intermediate, so they succeed
 
 ```lithe
 import "std/math/fixed_point";
-import "std/math/math";
 
 contract Curve is {
-  use Math;
-  use FixedPoint;
-
   storage is record {
     rate : Swad;
   }

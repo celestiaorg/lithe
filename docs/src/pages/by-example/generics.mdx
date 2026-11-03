@@ -17,6 +17,11 @@ import "std/evm";
 import "./lib/set";
 import "./lib/set_enumerable";
 
+use Watchlist exposing {
+  function watch(who : address);
+  view function watchedCount() : uint;
+}
+
 type OrderId is bytes32;
 
 storage is record {
@@ -65,11 +70,6 @@ module Watchlist is {
 
   external view function watchedCount() : uint is
     SetEnumerable.length(watchlist.watched)
-}
-
-use Watchlist exposing {
-  function watch(who : address);
-  view function watchedCount() : uint;
 }
 ```
 

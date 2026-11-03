@@ -76,8 +76,7 @@ module Pausable is {
 }
 
 module Guarded is {
-  requires Ledger;
-  requires Pausable;
+  requires Ledger, Pausable;
 
   function transfer(const to : address; const amount : uint)
     raises Paused | InsufficientBalance
@@ -88,8 +87,6 @@ module Guarded is {
 }
 
 contract Token is {
-  use Guarded;
-
   use Ledger exposing {
     view function balanceOf(account : address) : uint;
     function mint(account : address; amount : uint);

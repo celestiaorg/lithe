@@ -9,6 +9,8 @@ import "./lib/pausable";
 import "./lib/erc721";
 
 contract BenchNFT is {
+  supports IERC721, IERC721Metadata;
+
   use Initializable;
 
   use ERC721 exposing IERC721Views, IERC721Metadata with {
@@ -16,10 +18,10 @@ contract BenchNFT is {
     hook beforeTransfer is Pausable.requireNotPaused;
     hook afterTransfer is skip;
   }
-  use Ownable exposing IOwnable;
-  use Pausable exposing IPausable;
 
-  supports IERC721, IERC721Metadata;
+  use Ownable exposing IOwnable;
+
+  use Pausable exposing IPausable;
 
   (* Initializable's bookkeeping matches the `initializer` modifier on Solidity's
      constructor, so storage and events stay the same. *)

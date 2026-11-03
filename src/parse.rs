@@ -205,6 +205,8 @@ impl Body {
             domains: self.domains,
             modules,
             compose: self.compose,
+            implied: Vec::new(),
+            refs: Vec::new(),
             facets: self.facets,
             exposes: self.exposes,
             supports: self.supports,
@@ -501,7 +503,31 @@ impl<'a> Parser<'a> {
             Kind::Use => {
                 let (line, col) = self.at();
                 self.bump();
-                let module = self.dotted()?;
+                let names = self.name_list()?;
+                if names.len() > 1 {
+                    let last = &names[names.len() - 1].name;
+                    let shape = match (self.kind(), self.slice()) {
+                        (Kind::Ident, DELEGATED) => {
+                            Some((DELEGATED, format!("use {last} delegated;")))
+                        }
+                        (Kind::Ident, "exposing") => {
+                            Some(("exposing", format!("use {last} exposing ...;")))
+                        }
+                        (Kind::With, _) => Some(("with", format!("use {last} with {{ ... }}"))),
+                        _ => None,
+                    };
+                    if let Some((word, shape)) = shape {
+                        return Err(self.err(format!(
+                            "`{word}` applies to one module: write `{shape}` on its own line"
+                        )));
+                    }
+                    if self.kind() == Kind::Semi {
+                        self.bump();
+                    }
+                    body.compose.extend(names);
+                    return Ok(());
+                }
+                let module = names.into_iter().next().expect("a name").name;
                 if self.kind() == Kind::Ident && self.slice() == DELEGATED {
                     self.bump();
                     body.facets.push(NameAt {
@@ -579,6 +605,23 @@ impl<'a> Parser<'a> {
             }
         }
         Ok(())
+    }
+
+    /// `A, B.C`: the modules a `use` or `requires` names, each where its name is written.
+    fn name_list(&mut self) -> Result<Vec<NameAt>, Error> {
+        let mut names = Vec::new();
+        loop {
+            let (line, col) = self.at();
+            names.push(NameAt {
+                line,
+                col,
+                name: self.dotted()?,
+            });
+            if self.kind() != Kind::Comma {
+                return Ok(names);
+            }
+            self.bump();
+        }
     }
 
     /// `exposing I, J, { ... }` after `use M`: the interfaces whose members the contract
@@ -709,23 +752,22 @@ impl<'a> Parser<'a> {
             match self.kind() {
                 Kind::Requires => {
                     self.bump();
-                    let (rline, rcol) = self.at();
-                    let required = self.dotted()?;
-                    if requires.iter().any(|have| have.name == required) {
-                        return Err(error(
-                            rline,
-                            rcol,
-                            format!("module `{name}` requires `{required}` more than once"),
-                        ));
+                    for required in self.name_list()? {
+                        if requires.iter().any(|have| have.name == required.name) {
+                            return Err(error(
+                                required.line,
+                                required.col,
+                                format!(
+                                    "module `{name}` requires `{}` more than once",
+                                    required.name
+                                ),
+                            ));
+                        }
+                        requires.push(required);
                     }
                     if self.kind() == Kind::Semi {
                         self.bump();
                     }
-                    requires.push(NameAt {
-                        line: rline,
-                        col: rcol,
-                        name: required,
-                    });
                 }
                 Kind::Import => {
                     return Err(self
@@ -919,6 +961,7 @@ impl<'a> Parser<'a> {
             guards,
             hooks,
             intrinsics,
+            refs: Vec::new(),
         })
     }
 

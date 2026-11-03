@@ -9,6 +9,8 @@ import "std/evm";
 import "std/list";
 import "std/uint";
 
+supports IERC1155, IERC1155MetadataURI;
+
 error ArrayLengthsMismatch;
 error TransferToZeroAddress;
 error AccountBalanceOverflow;
@@ -61,8 +63,6 @@ interface ERC1155Receiver is {
     data : bytes
   ) : bytes4;
 }
-
-supports IERC1155, IERC1155MetadataURI;
 
 storage is record {
   balances : map(address, map(uint, uint));

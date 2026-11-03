@@ -5,12 +5,11 @@ module Ledger is {
 }
 
 contract Token is {
+  use Ledger, Ledger;
+
   storage is record {
     n : uint;
   }
-
-  use Ledger;
-  use Ledger;
 
   external function go() is {
     Ledger.go();

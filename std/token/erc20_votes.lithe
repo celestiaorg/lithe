@@ -34,11 +34,7 @@ import "std/utils/nonce";
 import "std/interfaces/erc20";
 
 module ERC20Votes is {
-  requires ERC20;
-  requires EIP712;
-  requires ECDSA;
-  requires Nonces;
-  requires Checkpoints;
+  requires ERC20, EIP712, Nonces;
 
   storage erc20Votes at "lithe.std.erc20.votes" is record {
     delegatee : map(address, address);

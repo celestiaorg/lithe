@@ -22,8 +22,6 @@ type Checkpoint is record {
 }
 
 module Checkpoints is {
-  requires Math;
-
   type Trace is record {
     checkpoints : list(Checkpoint);
   }

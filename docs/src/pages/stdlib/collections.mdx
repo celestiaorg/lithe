@@ -16,8 +16,6 @@ import "std/collections/bitmap";
 import "std/collections/queue";
 
 contract Airdrop is {
-  use Bitmap;
-
   storage is record {
     admins : Set(address);
     holders : SetEnumerable(address);

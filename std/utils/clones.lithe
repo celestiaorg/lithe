@@ -15,8 +15,6 @@ import "std/utils/create2";
 error CloneArgumentsTooLong;
 
 module Clones is {
-  requires Create2;
-
   pure function code(const implementation : address) : bytes is
     Bytes.concat(0x3d602d80600a3d3981f3363d3d373d3d3d363d73, bytes20(implementation), 0x5af43d82803e903d91602b57fd5bf3)
 

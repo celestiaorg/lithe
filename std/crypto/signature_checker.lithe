@@ -24,8 +24,6 @@ import "std/uint";
 error ERC6492InvalidSignature of address;
 
 module SignatureChecker is {
-  requires ECDSA;
-
   (* The ERC-1271 check is written out again, not called: a call of it is outlined, and
      costs a contract that checks only this way 19 bytes. *)
   view function isValidSignatureNow(const signer : address; const hash : bytes32; const signature : bytes) : bool is

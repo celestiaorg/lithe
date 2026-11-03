@@ -1,9 +1,9 @@
 contract Token is {
+  use Missing;
+
   storage is record {
     n : uint;
   }
-
-  use Missing;
 
   external function go() is {
     skip

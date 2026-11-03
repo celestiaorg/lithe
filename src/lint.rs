@@ -207,6 +207,7 @@ pub(crate) const RULES: &[&str] = &[
     "unused-binding",
     "unused-private",
     "unused-import",
+    "unused-module",
     "unused-ignore",
 ];
 
@@ -416,6 +417,7 @@ fn findings_at(
         if let Some(scope) = unit.scopes.scope(&key) {
             used.extend(scope.used.iter().copied());
         }
+        findings.extend(unused_modules(src, label, &unit)?);
         let checked = check::check_in(unit, false, crate::EvmVersion::default())?;
         let mut acc = Acc::default();
         collect(&checked, own, &mut acc);
@@ -438,6 +440,194 @@ fn findings_at(
     findings.sort_by(|a, b| (a.line, a.col, a.rule).cmp(&(b.line, b.col, b.rule)));
     findings.dedup_by(|a, b| a.line == b.line && a.col == b.col && a.rule == b.rule);
     Ok(findings)
+}
+
+/// A plain `use` in `src`: `use A, B;`, its names, and the bytes that remove it whole.
+struct PlainUse {
+    /// Where the compiler places each name: a lone name at `use`, a grouped one at itself.
+    at: Vec<(u32, u32)>,
+    names: Vec<(usize, usize)>,
+    whole: (usize, usize),
+}
+
+fn plain_uses(src: &str) -> Result<Vec<PlainUse>, Error> {
+    let pieces: Vec<lex::Piece> = lex::pieces(src)?
+        .into_iter()
+        .filter(|piece| piece.kind != lex::PieceKind::Comment)
+        .collect();
+    let kind = |i: usize| match pieces.get(i).map(|piece| piece.kind) {
+        Some(lex::PieceKind::Token(kind)) => Some(kind),
+        _ => None,
+    };
+    let text = |i: usize| &src[pieces[i].start..pieces[i].end];
+    let place = |at: usize| {
+        let from = src[..at].rfind('\n').map_or(0, |n| n + 1);
+        (
+            src[..at].matches('\n').count() as u32 + 1,
+            src[from..at].chars().count() as u32 + 1,
+        )
+    };
+    let mut out = Vec::new();
+    for i in 0..pieces.len() {
+        if kind(i) != Some(Kind::Use) {
+            continue;
+        }
+        let mut names = Vec::new();
+        let mut j = i + 1;
+        while kind(j) == Some(Kind::Ident) {
+            let start = pieces[j].start;
+            while kind(j + 1) == Some(Kind::Dot) && kind(j + 2) == Some(Kind::Ident) {
+                j += 2;
+            }
+            names.push((start, pieces[j].end));
+            j += 1;
+            if kind(j) != Some(Kind::Comma) {
+                break;
+            }
+            j += 1;
+        }
+        let modified = kind(j) == Some(Kind::With)
+            || (kind(j) == Some(Kind::Ident)
+                && matches!(text(j), crate::parse::DELEGATED | "exposing"));
+        if names.is_empty() || modified {
+            continue;
+        }
+        let end = if kind(j) == Some(Kind::Semi) {
+            pieces[j].end
+        } else {
+            names[names.len() - 1].1
+        };
+        let start = pieces[i].start;
+        let at = if names.len() == 1 {
+            vec![place(start)]
+        } else {
+            names.iter().map(|&(from, _)| place(from)).collect()
+        };
+        // A `use` alone on its line takes the line with it.
+        let line_start = src[..start].rfind('\n').map_or(0, |n| n + 1);
+        let line_end = src[end..].find('\n').map_or(src.len(), |n| end + n + 1);
+        let whole = if src[line_start..start].trim().is_empty()
+            && src[end..line_end].trim().is_empty()
+        {
+            // And the blank line after it, when the line before is blank or opens the body.
+            let before = src[..line_start].trim_end_matches([' ', '\t']);
+            let opens = before.is_empty() || before.ends_with("{\n") || before.ends_with("\n\n");
+            let blank = src[line_end..]
+                .find('\n')
+                .filter(|&n| src[line_end..line_end + n].trim().is_empty());
+            match blank {
+                Some(n) if opens => (line_start, line_end + n + 1),
+                _ => (line_start, line_end),
+            }
+        } else {
+            (start, end)
+        };
+        out.push(PlainUse { at, names, whole });
+    }
+    Ok(out)
+}
+
+/// A plain `use` the contract doesn't need: the module holds no state, or the file never
+/// reads its storage or calls a function of it that isn't pure. The fix drops the name, and
+/// the `use` with its last one.
+fn unused_modules(src: &str, label: &str, unit: &Program) -> Result<Vec<Finding>, Error> {
+    let uses = plain_uses(src)?;
+    let pieces = lex::pieces(src)?;
+    let token = |i: usize| pieces.get(i).map(|piece| piece.kind);
+    // A module this file declares names itself and its members: only what uses it counts.
+    let mut skipped: Vec<(usize, usize)> = uses.iter().map(|u| u.whole).collect();
+    for i in 0..pieces.len() {
+        let after_for = (0..i)
+            .rev()
+            .find(|&j| pieces[j].kind != lex::PieceKind::Comment)
+            .is_some_and(|j| token(j) == Some(lex::PieceKind::Token(Kind::For)));
+        if token(i) != Some(lex::PieceKind::Token(Kind::Module)) || after_for {
+            continue;
+        }
+        let mut depth = 0;
+        for j in i + 1..pieces.len() {
+            match token(j) {
+                Some(lex::PieceKind::Token(Kind::LBrace)) => depth += 1,
+                Some(lex::PieceKind::Token(Kind::RBrace)) => {
+                    depth -= 1;
+                    if depth == 0 {
+                        skipped.push((pieces[i].start, pieces[j].end));
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    // Each `M.x` outside those: a module's storage read, or a call.
+    let words: Vec<&lex::Piece> = pieces
+        .iter()
+        .filter(|piece| {
+            piece.kind != lex::PieceKind::Comment
+                && !skipped
+                    .iter()
+                    .any(|&(from, to)| (from..to).contains(&piece.start))
+        })
+        .collect();
+    let text = |piece: &lex::Piece| &src[piece.start..piece.end];
+    let ident = |piece: &lex::Piece| piece.kind == lex::PieceKind::Token(Kind::Ident);
+    let reached: HashSet<(&str, &str)> = words
+        .windows(3)
+        .filter(|w| ident(w[0]) && w[1].kind == lex::PieceKind::Token(Kind::Dot) && ident(w[2]))
+        .map(|w| (text(w[0]), text(w[2])))
+        .collect();
+    let module = |name: &str| unit.modules.iter().find(|m| m.name == name);
+    // A plain `use` is for state: the contract reads a module's storage, or calls a function
+    // of it that isn't pure.
+    let unused = |name: &str| {
+        let Some(m) = module(name) else {
+            return false;
+        };
+        let shown = modules::shown(&m.name);
+        let stateful = m.domains.iter().map(|d| d.name.as_str()).chain(
+            m.funcs
+                .iter()
+                .filter(|f| f.kind != ItemKind::Pure)
+                .map(|f| f.name.split(['@', '#']).next().unwrap_or(&f.name)),
+        );
+        m.domains.is_empty() || !stateful.into_iter().any(|x| reached.contains(&(shown, x)))
+    };
+    let mut out = Vec::new();
+    for u in &uses {
+        let dead: Vec<bool> =
+            u.at.iter()
+                .map(|&at| {
+                    unit.compose
+                        .iter()
+                        .find(|use_| (use_.line, use_.col) == at)
+                        .is_some_and(|use_| unused(&use_.name))
+                })
+                .collect();
+        for (k, &(start, end)) in u.names.iter().enumerate() {
+            if !dead[k] {
+                continue;
+            }
+            // Each name goes with one comma: the one after it, or, when every name after it
+            // goes too, the one before it, so the edits of one `use` never overlap.
+            let edit = if dead.iter().all(|&d| d) {
+                u.whole
+            } else if dead[k..].iter().all(|&d| d) {
+                (u.names[k - 1].1, end)
+            } else {
+                (start, u.names[k + 1].0)
+            };
+            out.push(Finding {
+                path: label.to_string(),
+                line: u.at[k].0,
+                col: u.at[k].1,
+                rule: "unused-module",
+                message: format!("module `{}` is unused", &src[start..end]),
+                hint: "remove it from the `use`",
+                edit: Some((edit.0, edit.1, "")),
+            });
+        }
+    }
+    Ok(out)
 }
 
 fn render(f: &Finding) -> String {
@@ -1149,10 +1339,12 @@ fn scan_size(e: &Expr, acc: &mut Acc) {
 fn findings_in(src: &str) -> Result<Vec<Finding>, Error> {
     let path = Path::new("test.lithe");
     let prog = modules::load(&Sources::memory([(path, src)]), path)?;
+    let unused = unused_modules(src, "test.lithe", &prog)?;
     let checked = check::check(prog, crate::EvmVersion::default())?;
     let mut acc = Acc::default();
     collect(&checked, "test.lithe", &mut acc);
     let mut findings = finish(&checked, src, "test.lithe", "test.lithe", &acc);
+    findings.extend(unused);
     findings.sort_by(|a, b| (a.line, a.col, a.rule).cmp(&(b.line, b.col, b.rule)));
     Ok(findings)
 }
@@ -1273,6 +1465,61 @@ external function go(const k : uint) is {
         let after = compile(&fixed).expect("after");
         assert_eq!(before, after);
         assert!(!rules(&fixed).contains(&"prefer-const"));
+    }
+
+    #[test]
+    fn unused_modules_leave_the_use() {
+        let modules = "\
+module A is {
+  storage a at \"t.a\" is record { n : uint; }
+}
+module B is {
+  storage b at \"t.b\" is record { n : uint; }
+  function bump() is { b.n += 1; }
+}
+module C is {
+  function c() is { skip }
+}
+module D is {
+  storage d at \"t.d\" is record { n : uint; }
+}
+module E is {
+  storage e at \"t.e\" is record { n : uint; }
+  pure function one() : uint is 1
+}
+";
+        let fixed = |uses: &str| {
+            let src = format!("{modules}contract K is {{\n{uses}\n  external function go() : uint is {{\n    B.bump();\n    C.c();\n  }} with D.d.n + E.one()\n}}\n");
+            let found = findings_in(&src).expect("lint");
+            let unused: Vec<(u32, u32, String)> = found
+                .iter()
+                .filter(|f| f.rule == "unused-module")
+                .map(|f| (f.line, f.col, f.message.clone()))
+                .collect();
+            let out = apply(&src, found.iter().filter_map(|f| f.edit));
+            assert!(compile(&out).is_ok(), "{out}");
+            (unused, out[modules.len()..].to_string())
+        };
+        // `B`'s state is reached through a call and `D`'s read. `A`'s is never touched, `C`
+        // holds none, and `E` is only called for a pure function.
+        let line = modules.lines().count() as u32 + 2;
+        let unused_named = |col: u32, name: &str| (line, col, format!("module `{name}` is unused"));
+        let (unused, out) = fixed("  use A, B, C, D;");
+        assert_eq!(unused, [unused_named(7, "A"), unused_named(13, "C")]);
+        assert!(out.contains("  use B, D;\n"), "{out}");
+        let (unused, out) = fixed("  use B, C, D, A, E;");
+        assert_eq!(
+            unused,
+            [
+                unused_named(10, "C"),
+                unused_named(16, "A"),
+                unused_named(19, "E")
+            ]
+        );
+        assert!(out.contains("  use B, D;\n"), "{out}");
+        let (unused, out) = fixed("  use A;\n  use B, D;");
+        assert_eq!(unused, [unused_named(3, "A")]);
+        assert!(out.starts_with("contract K is {\n  use B, D;\n"), "{out}");
     }
 
     #[test]

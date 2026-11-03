@@ -10,6 +10,8 @@ import "std/evm";
 import "std/string";
 import "std/uint";
 
+supports IERC721, IERC721Metadata;
+
 error NotOwnerNorApproved;
 error TokenDoesNotExist;
 error TokenAlreadyExists;
@@ -58,8 +60,6 @@ interface IERC721Metadata is {
 interface ERC721Receiver is {
   function onERC721Received(operator : address; from : address; id : uint; data : bytes) : bytes4;
 }
-
-supports IERC721, IERC721Metadata;
 
 type Token is record {
   owner : address;

@@ -3,6 +3,13 @@
 import "std/collections/set";
 import "std/collections/set_enumerable";
 
+use Watchlist exposing {
+  function watch(account : address);
+  function unwatch(account : address);
+  view function isWatched(account : address) : bool;
+  view function watchedCount() : uint;
+}
+
 type OrderId is bytes32;
 type AddressSet is Set(address);
 type Cursor is SetEnumerable(address).Iterator;
@@ -67,11 +74,4 @@ module Watchlist is {
 
   external view function watchedCount() : uint is
     SetEnumerable.length(watchlist.watched)
-}
-
-use Watchlist exposing {
-  function watch(account : address);
-  function unwatch(account : address);
-  view function isWatched(account : address) : bool;
-  view function watchedCount() : uint;
 }

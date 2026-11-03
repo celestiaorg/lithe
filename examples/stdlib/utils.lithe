@@ -21,17 +21,9 @@ import "std/address";
 import "std/interfaces/erc5267";
 
 contract Utils is {
-  use Math;
-  use SafeCast;
-  use FixedPoint;
-  use ECDSA;
-  use EIP712 exposing IERC5267;
-  use Merkle;
-  use SignatureChecker;
-  use Create2;
   use Nonces;
-  use Checkpoints;
-  use Bitmap;
+
+  use EIP712 exposing IERC5267;
 
   storage is record {
     claimed : Bitmap;

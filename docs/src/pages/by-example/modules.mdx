@@ -61,8 +61,7 @@ import "./pausable";
 
 (* A module that builds on another says so with `requires`. *)
 module Admin is {
-  requires Ownable;
-  requires Pausable;
+  requires Ownable, Pausable;
 
   external function pause()
     raises NotOwner
@@ -117,7 +116,7 @@ contract Vault is {
 }
 ```
 
-- `requires` declares a module's dependencies. A contract that uses `Admin` must also use `Ownable` and `Pausable`.
+- `requires` declares a module's dependencies. A contract that uses `Admin` runs `Ownable` and `Pausable` with it; it writes `use` for them here because it exposes them and calls `Pausable` itself.
 - A declaration in `use M exposing` must match the module's external exactly: its effect, parameters, result, and errors. It has no body.
 - A module's externals it doesn't declare are not part of the contract.
 - Each module's storage sits at its own ERC-7201 root, so modules never collide.

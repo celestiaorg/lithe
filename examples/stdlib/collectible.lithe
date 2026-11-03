@@ -21,6 +21,8 @@ import "std/token/erc721";
 import "std/interfaces/erc721";
 
 contract Collectible is {
+  supports IERC721, IERC721Metadata, IERC721Enumerable, IERC2981;
+
   use ERC721URIStorage;
 
   use ERC721 exposing IERC721Name, IERC721Views, IERC721Approvals, {
@@ -37,12 +39,14 @@ contract Collectible is {
     hook beforeTransfer is Pausable.requireNotPaused;
     hook afterTransfer is ERC721Enumerable.afterTransfer;
   }
-  use ERC721Enumerable exposing IERC721Enumerable;
-  use ERC2981 exposing IERC2981;
-  use Ownable exposing IOwnable;
-  use Pausable exposing IPausable;
 
-  supports IERC721, IERC721Metadata, IERC721Enumerable, IERC2981;
+  use ERC721Enumerable exposing IERC721Enumerable;
+
+  use ERC2981 exposing IERC2981;
+
+  use Ownable exposing IOwnable;
+
+  use Pausable exposing IPausable;
 
   storage is record {
     nextId : uint;

@@ -380,6 +380,16 @@ impl Checker {
             .unwrap_or_else(|| error(line, col, format!("unknown {what} `{name}`")))
     }
 
+    /// Whether calling the function at `idx` of `module` takes `use` of it, or `requires` in
+    /// a module: the module holds state and the function isn't pure, so it may reach it.
+    pub(super) fn needs_use(&self, module: &str, idx: usize) -> bool {
+        self.sigs[idx].kind != ItemKind::Pure
+            && self
+                .modules
+                .iter()
+                .any(|m| m.name == module && !m.domains.is_empty())
+    }
+
     fn open_module_domain(
         &self,
         line: u32,
@@ -387,7 +397,10 @@ impl Checker {
         module: &str,
         domain: &str,
     ) -> Result<usize, Error> {
-        if self.known_modules.contains(module) && !self.used_modules.contains(module) {
+        if self.module_name.is_none()
+            && self.known_modules.contains(module)
+            && !self.used_modules.contains(module)
+        {
             return Err(error(line, col, format!("module `{module}` is not used")));
         }
         if let Some(mine) = &self.module_name {

@@ -205,12 +205,12 @@ const REJECT_RULES: &[(&str, &str)] = &[
         "entrypoint selector `gasprice_bit_ether(int128)` collides with `transferFrom(address,address,uint256)`",
     ),
     (
-        "reject/missing_requires.lithe",
-        "module `Guarded` requires `Ledger`",
+        "reject/required_not_used.lithe",
+        "module `Ledger` is not used",
     ),
     (
         "reject/storage_id.lithe",
-        "storage id `lithe.std.foo` conflicts between `Alpha` and `Beta`",
+        "storage id `lithe.std.foo` conflicts between `Beta` and `Alpha`",
     ),
     (
         "reject/module_storage.lithe",

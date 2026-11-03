@@ -8,8 +8,6 @@ import "std/evm";
 import "std/utils/create2";
 
 module Create3 is {
-  requires Create2;
-
   (* The hash of the proxy's creation code. *)
   const proxyCodeHash : bytes32 := Crypto.keccak256(0x67363d3d37363d34f03d5260086018f3);
 

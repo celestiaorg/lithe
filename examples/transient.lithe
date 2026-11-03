@@ -3,6 +3,8 @@
 
 import "std/evm";
 
+use Settlement;
+
 error AlreadyProcessing;
 error NotSettling;
 
@@ -39,8 +41,6 @@ storage is record {
   processed : uint;
   confirmed : uint;
 }
-
-use Settlement;
 
 external function process(const me : Me; const amount : uint)
   raises AlreadyProcessing

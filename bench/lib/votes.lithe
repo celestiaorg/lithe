@@ -29,11 +29,7 @@ error ERC5805FutureLookup of record {
 error VotesExpiredSignature of uint;
 
 module ERC20Votes is {
-  requires ERC20;
-  requires EIP712;
-  requires ECDSA;
-  requires Nonces;
-  requires Checkpoints;
+  requires ERC20, EIP712, Nonces;
 
   storage votes at "openzeppelin.storage.Votes" is record {
     delegatee : map(address, address);

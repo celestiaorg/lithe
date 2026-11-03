@@ -5,8 +5,6 @@
 import "std/crypto";
 import "std/address";
 import "std/evm";
-import "std/crypto/ecdsa";
-import "std/math/math";
 import "std/utils/checkpoint";
 import "./lib/initializable";
 import "./lib/access_control";
@@ -14,17 +12,14 @@ import "./lib/pausable";
 import "./lib/erc20";
 import "./lib/capped";
 import "./lib/eip712";
-import "./lib/nonces";
 import "./lib/permit";
 import "./lib/votes";
 import "./lib/flash_mint";
 
 contract BenchGovernanceToken is {
+  supports IAccessControl;
+
   use Initializable;
-  use ECDSA;
-  use Math;
-  use Checkpoints;
-  use Nonces;
 
   use ERC20 exposing IERC20Views, IERC20Metadata with {
     (* Every balance change: the pause, the move, the cap on a mint, then the votes. *)
@@ -38,15 +33,20 @@ contract BenchGovernanceToken is {
       ERC20Votes.update(from, to, value);
     }
   }
-  use AccessControl exposing IAccessControl;
-  use Pausable exposing IPausable;
-  use ERC20Capped exposing IERC20Capped;
-  use EIP712 exposing IERC5267;
-  use ERC20Permit exposing IERC20Permit;
-  use ERC20Votes exposing IERC6372, IVotes, IVotesCheckpoints;
-  use ERC20FlashMint exposing IERC3156FlashLenderViews;
 
-  supports IAccessControl;
+  use AccessControl exposing IAccessControl;
+
+  use Pausable exposing IPausable;
+
+  use ERC20Capped exposing IERC20Capped;
+
+  use EIP712 exposing IERC5267;
+
+  use ERC20Permit exposing IERC20Permit;
+
+  use ERC20Votes exposing IERC6372, IVotes, IVotesCheckpoints;
+
+  use ERC20FlashMint exposing IERC3156FlashLenderViews;
 
   pure function pauserRole() : bytes32 is
     Crypto.keccak256("PAUSER_ROLE")

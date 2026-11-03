@@ -187,13 +187,12 @@ pub(super) fn compose(prog: &mut Program) -> Result<(), Error> {
                 format!("unknown module `{}`", use_.name),
             ));
         }
-        if used
-            .insert(use_.name.clone(), (use_.line, use_.col))
-            .is_some()
-        {
+        if let Some(first) = used.insert(use_.name.clone(), (use_.line, use_.col)) {
+            // `compose` puts plain uses in an order of its own: name the one written second.
+            let (line, col) = first.max((use_.line, use_.col));
             return Err(error(
-                use_.line,
-                use_.col,
+                line,
+                col,
                 format!("module `{}` is already used", use_.name),
             ));
         }
@@ -206,14 +205,6 @@ pub(super) fn compose(prog: &mut Program) -> Result<(), Error> {
                     error(req.line, req.col, format!("unknown module `{}`", req.name))
                         .in_file(&module.origin),
                 );
-            }
-            if !used.contains_key(&req.name) {
-                return Err(error(
-                    req.line,
-                    req.col,
-                    format!("module `{}` requires `{}`", module.name, req.name),
-                )
-                .in_file(&module.origin));
             }
         }
     }

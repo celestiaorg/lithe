@@ -9,11 +9,6 @@ import "std/utils/sstore2";
 import "std/utils/create3";
 
 contract Deployers is {
-  use Create2;
-  use Clones;
-  use SSTORE2;
-  use Create3;
-
   storage is record {
     last : address;
     pointer : address;

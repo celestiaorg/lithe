@@ -1,6 +1,12 @@
 module Pausable is {
-  function requireUnpaused() is {
-    skip
+  storage pausable at "lithe.pausable" is record {
+    paused : bool;
+  }
+
+  error Paused;
+
+  view function requireUnpaused() raises Paused is {
+    assert(not pausable.paused, Paused);
   }
 }
 
@@ -11,13 +17,13 @@ module Guarded is {
 }
 
 contract Token is {
-  storage is record {
-    n : uint;
-  }
-
   use Pausable;
 
   use Guarded exposing {
     function go();
+  }
+
+  storage is record {
+    n : uint;
   }
 }

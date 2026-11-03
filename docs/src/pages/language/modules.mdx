@@ -94,6 +94,171 @@ contract App is {
 
 `App` exposes `count`, `bump`, and `current`. It doesn't declare `reset`, so `reset` is not part of its interface. Nothing is exposed implicitly: every entrypoint a contract has is written in the contract, and if a module adds an external, no contract gains an entrypoint until it declares it.
 
+## When to write `use`
+
+An `import` makes a file's modules visible. A contract writes `use M` when it takes on something of `M`'s:
+
+- `M`'s state: it reads `M`'s storage, transient storage, or immutables, or calls a function of `M` that isn't `pure` while `M` declares any of them
+- `M`'s interface or behavior: `use M exposing`, `use M delegated`, or `use M with` to bind `M`'s guards and hooks
+
+Everything else needs only the import: calling a module that holds no state, such as `Math`, `ECDSA`, or `Bitmap`, calling a `pure` function of any module, naming a module's types, errors, and events, and the generic modules, such as `Queue(T)`, and the built-in ones, such as `Evm`. A module states its own dependencies the same way with `requires`. A contract runs every module its code and its modules' code calls, and the modules those require, and [`lithe storage`](/tooling/cli#lithe-storage) lists the state of every one; only the state the contract reaches itself takes a `use`. The `use` lines at the top of a contract list the state and interfaces it takes on.
+
+A `use` without `delegated`, `exposing`, or `with` may name several modules. `use A, B;` is `use A; use B;`, and `requires A, B;` in a module is `requires A; requires B;`:
+
+```lithe
+import "std/evm";
+
+module Counter is {
+  storage counter at "example.counter" is record {
+    count : uint;
+  }
+
+  function bump() is {
+    counter.count += 1;
+  }
+}
+
+module Visits is {
+  storage visits at "example.visits" is record {
+    last : address;
+  }
+
+  function note() is {
+    visits.last := Evm.sender();
+  }
+}
+
+module Guestbook is {
+  requires Counter, Visits;
+
+  external function sign() is {
+    Counter.bump();
+    Visits.note();
+  }
+}
+
+contract Site is {
+  use Counter, Visits;
+
+  use Guestbook exposing {
+    function sign();
+  }
+
+  external view function signatures() : uint is
+    Counter.counter.count
+
+  external view function lastSigner() : address is
+    Visits.visits.last
+}
+```
+
+`Site` reads `Counter`'s and `Visits`' storage itself, so it uses them. Had it only exposed `sign`, `use Guestbook exposing` would be enough: `Guestbook` requires them, and the contract runs them for it.
+
+`delegated`, `exposing`, and `with` say how the contract uses one module, so each goes in a `use` of its own:
+
+```lithe rejects
+module Counter is {
+  storage counter at "example.counter" is record {
+    count : uint;
+  }
+
+  external view function count() : uint is
+    counter.count
+}
+
+module Visits is {
+  storage visits at "example.visits" is record {
+    count : uint;
+  }
+}
+
+contract Site is {
+  use Visits, Counter delegated;
+}
+```
+
+```text
+`delegated` applies to one module: write `use Counter delegated;` on its own line
+```
+
+```lithe rejects
+module Counter is {
+  storage counter at "example.counter" is record {
+    count : uint;
+  }
+
+  external view function count() : uint is
+    counter.count
+}
+
+module Visits is {
+  storage visits at "example.visits" is record {
+    count : uint;
+  }
+}
+
+contract Site is {
+  use Visits, Counter exposing {
+    view function count() : uint;
+  }
+}
+```
+
+```text
+`exposing` applies to one module: write `use Counter exposing ...;` on its own line
+```
+
+```lithe rejects
+module Counter is {
+  storage counter at "example.counter" is record {
+    count : uint;
+  }
+
+  hook counted(const count : uint);
+
+  external function bump() is {
+    counter.count += 1;
+    counted(counter.count);
+  }
+}
+
+module Visits is {
+  storage visits at "example.visits" is record {
+    count : uint;
+  }
+}
+
+contract Site is {
+  use Visits, Counter with {
+    hook counted is skip;
+  }
+}
+```
+
+```text
+`with` applies to one module: write `use Counter with { ... }` on its own line
+```
+
+A module is used once, whether the two names are in one `use` or in two. The error is on the second:
+
+```lithe rejects
+module Counter is {
+  storage counter at "example.counter" is record {
+    count : uint;
+  }
+}
+
+contract Site is {
+  use Counter, Counter;
+}
+```
+
+```text
+site.lithe:8:16: module `Counter` is already used
+```
+
+[`lithe fmt`](/tooling/cli#formatting) merges a contract's plain uses into one `use` at the top of its body, after `supports` and before the uses that say more. [`lithe lint`](/tooling/cli#linting) reports a name in a plain `use` that the contract's own code doesn't need, and `--fix` removes it.
+
 ## Exposing a module's externals
 
 `use M exposing ...` uses `M`, as `use M` does, and names the [interfaces](/language/effects#interfaces) whose methods the contract exposes from `M`: named ones, an inline one in braces, or both. Each method must be one of `M`'s externals:
@@ -294,12 +459,6 @@ module Prices is {
 }
 
 contract Shop is {
-  storage is record {
-    makers : map(uint, address);
-  }
-
-  error NotMaker of uint;
-
   use Prices exposing {
     function setPrice(tokenId : uint; price : uint)
       raises ZeroPrice | NotMaker;
@@ -312,6 +471,12 @@ contract Shop is {
       assert(Evm.sender() = storage.makers[tokenId], NotMaker(tokenId));
     }
   }
+
+  storage is record {
+    makers : map(uint, address);
+  }
+
+  error NotMaker of uint;
 
   external function make(const tokenId : uint) is {
     storage.makers[tokenId] := Evm.sender();
@@ -328,6 +493,7 @@ A call to `setPrice` runs `Shop`'s check first, with the call's `tokenId`, then 
 
 ```lithe fragment
 use Ownable;
+
 use Prices exposing {
   ...
 } with {
@@ -548,16 +714,16 @@ module Notes is {
 }
 
 contract Board is {
-  storage is record {
-    checks : uint;
-  }
-
   use Notes exposing {
     function write(id : uint; note : uint);
   } with {
     guard writer(const id : uint) is {
       storage.checks += 1;
     }
+  }
+
+  storage is record {
+    checks : uint;
   }
 }
 ```
@@ -580,16 +746,16 @@ module Notes is {
 }
 
 contract Board is {
-  event Checked of record {
-    id : uint;
-  }
-
   use Notes exposing {
     function write(id : uint; note : uint);
   } with {
     guard writer(const id : uint) is {
       emit Checked { id = id; };
     }
+  }
+
+  event Checked of record {
+    id : uint;
   }
 }
 ```
@@ -700,13 +866,6 @@ module Tokens is {
 }
 
 contract Gallery is {
-  storage is record {
-    frozen : map(uint, bool);
-    moves : uint;
-  }
-
-  error Frozen of uint;
-
   use Tokens exposing {
     function mint(tokenId : uint);
     function send(to : address; tokenId : uint) raises NotOwner | Frozen;
@@ -722,6 +881,13 @@ contract Gallery is {
     hook afterTransfer is skip;
     hook nameOf is label;
   }
+
+  storage is record {
+    frozen : map(uint, bool);
+    moves : uint;
+  }
+
+  error Frozen of uint;
 
   view function label(const tokenId : uint) : string is
     if storage.frozen[tokenId] then "a frozen piece" else "a gallery piece"
@@ -779,11 +945,6 @@ module Tokens is {
 }
 
 contract Tracked is {
-  storage is record {
-    registry : Registry;
-    receipts : map(uint, uint);
-  }
-
   use Tokens exposing {
     function send(to : address; tokenId : uint);
   } with {
@@ -792,6 +953,11 @@ contract Tracked is {
         storage.receipts[id] := receipt;
       }
     }
+  }
+
+  storage is record {
+    registry : Registry;
+    receipts : map(uint, uint);
   }
 }
 ```
@@ -986,16 +1152,16 @@ module Tally is {
 }
 
 contract Counter is {
-  storage is record {
-    asked : uint;
-  }
-
   use Tally exposing {
     function add();
   } with {
     hook limit() : uint is {
       storage.asked += 1;
     } with 10
+  }
+
+  storage is record {
+    asked : uint;
   }
 }
 ```
@@ -1053,14 +1219,14 @@ module Tally is {
 }
 
 contract Counter is {
-  storage is record {
-    last : uint;
-  }
-
   use Tally exposing {
     function add();
   } with {
     hook counted is note;
+  }
+
+  storage is record {
+    last : uint;
   }
 
   function note(const count : uint; const by : uint) is {
@@ -1145,8 +1311,6 @@ module Tally is {
 }
 
 contract Counter is {
-  error TooMany;
-
   use Tally exposing {
     function add();
   } with {
@@ -1154,6 +1318,8 @@ contract Counter is {
       assert(count <= 10, TooMany);
     }
   }
+
+  error TooMany;
 }
 ```
 
@@ -1239,8 +1405,9 @@ hook `Tally.counted` is called back from `Tally`'s facet, and it can't be: it re
 A contract announces interfaces through ERC-165 with `supports`, which lists named interfaces:
 
 ```lithe fragment
-use ERC721 exposing IERC721, IERC721Metadata;
 supports IERC721, IERC721Metadata;
+
+use ERC721 exposing IERC721, IERC721Metadata;
 ```
 
 The compiler then generates `supportsInterface(bytes4)`, true for ERC-165 itself, `0x01ffc9a7`, and for each interface listed. An interface's id is the XOR of its methods' selectors, so the standard library's `IERC721`, for example, answers for `0x80ac58cd`, which is `Abi.interfaceId(IERC721)`. The contract must have each interface it lists: dispatch every one of its methods, with the same result, whether they come from `use ... exposing` or from its own externals. A method it lacks is an error that names it:
@@ -1250,11 +1417,12 @@ import "std/interfaces/erc721";
 import "std/token/erc721";
 
 contract Collection is {
+  supports IERC721, IERC721Metadata;
+
   use ERC721 exposing IERC721, IERC721Name with {
     hook beforeTransfer is skip;
     hook afterTransfer is skip;
   }
-  supports IERC721, IERC721Metadata;
 }
 ```
 
@@ -1278,7 +1446,7 @@ A contract with its own `supportsInterface` and `supports` must call `Abi.suppor
 
 ## Dependencies between modules
 
-A module that calls another module, or reads its storage, declares it with `requires`. A contract that uses the dependent module must also use every module it requires. A module can call only its own functions and those of the modules it requires, never a function of the contract that uses it, so its code is the same in every contract:
+A module that reads another module's state, or calls a function of it that isn't `pure` while it holds state, declares it with `requires`, which names one module or several: `requires Ownable, Pausable;`. Calling a stateless module, or a `pure` function, needs only the import, as in a contract. A contract that uses the dependent module runs every module it requires, and every module those require, without a `use` for them; it writes one only for state it reaches itself. A module can call only its own functions and those of the modules it requires, never a function of the contract that uses it, so its code is the same in every contract:
 
 ```lithe
 import "std/evm";
@@ -1342,6 +1510,8 @@ contract Token is {
 }
 ```
 
+`Token` below runs `Ledger` because `Guarded` requires it, but reading `Ledger`'s storage is the contract's own code reaching into it, which takes `use Ledger`:
+
 ```lithe rejects
 module Ledger is {
   storage ledger at "lithe.ledger" is record {
@@ -1365,11 +1535,14 @@ contract Token is {
   use Guarded exposing {
     function set(n : uint);
   }
+
+  external view function n() : uint is
+    Ledger.ledger.n
 }
 ```
 
 ```text
-module `Guarded` requires `Ledger`
+module `Ledger` is not used
 ```
 
 ## Qualified storage

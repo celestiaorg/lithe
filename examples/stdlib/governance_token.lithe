@@ -21,15 +21,10 @@ import "std/interfaces/erc20";
 import "std/utils/checkpoint";
 import "std/interfaces/erc3156";
 import "std/interfaces/erc5805";
-import "std/crypto/ecdsa";
-import "std/utils/nonce";
-import "std/math/math";
 
 contract GovernanceToken is {
-  use ECDSA;
-  use Nonces;
-  use Math;
-  use Checkpoints;
+  supports IERC20, IERC20Metadata, IERC20Permit, IERC6372, IVotes, IERC3156FlashLender,
+    IAccessControl;
 
   use EIP712;
 
@@ -50,6 +45,7 @@ contract GovernanceToken is {
       ERC20Votes.transferVotingUnits(from, to, value);
     }
   }
+
   use ERC20Burnable exposing {
     function burn(value : uint)
       raises ERC20InvalidSender | EnforcedPause | ERC20InsufficientBalance | ERC20ExceededCap | ERC20ExceededSafeSupply
@@ -59,9 +55,13 @@ contract GovernanceToken is {
         | EnforcedPause | ERC20InsufficientBalance | ERC20ExceededCap | ERC20ExceededSafeSupply
         | CheckpointUnorderedInsertion;
   }
+
   use ERC20Permit exposing IERC20Permit;
+
   use ERC20Votes exposing IERC6372, IVotes, IVotesCheckpoints;
+
   use ERC20Capped exposing IERC20Capped;
+
   use ERC20FlashMint exposing IERC3156FlashLenderViews, {
     function flashLoan(receiver : IERC3156FlashBorrower; token : address; amount : uint; data : bytes) : bool
       raises ERC3156ExceededMaxLoan | ERC3156UnsupportedToken | ERC3156InvalidReceiver | ERC20InsufficientAllowance
@@ -69,11 +69,10 @@ contract GovernanceToken is {
         | ERC20InsufficientBalance | ERC20ExceededCap | ERC20ExceededSafeSupply | CheckpointUnorderedInsertion
         | forwarded;
   }
-  use AccessControl exposing IAccessControl;
-  use Pausable exposing IPausable;
 
-  supports IERC20, IERC20Metadata, IERC20Permit, IERC6372, IVotes, IERC3156FlashLender,
-    IAccessControl;
+  use AccessControl exposing IAccessControl;
+
+  use Pausable exposing IPausable;
 
   pure function minter() : Role is
     Role(Crypto.keccak256("MINTER_ROLE"))

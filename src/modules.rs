@@ -368,6 +368,7 @@ fn load_inner(
         let name = own.contract_name.clone();
         let (line, col) = (own.contract_line, own.contract_col);
         append(&mut dst, own, true)?;
+        imply(&mut dst);
         dst.contract_name = name;
         dst.contract_line = line;
         dst.contract_col = col;
@@ -753,6 +754,7 @@ fn append(dst: &mut Program, src: Program, own: bool) -> Result<(), Error> {
     dst.exposes.extend(src.exposes);
     dst.supports.extend(src.supports);
     if own {
+        dst.refs = src.refs;
         dst.upgradeable = src.upgradeable;
         dst.storage_id = src.storage_id;
         dst.guard = src.guard;
@@ -783,6 +785,83 @@ fn add_peer(peers: &mut Vec<Program>, peer: Program, line: u32, col: u32) -> Res
     Ok(())
 }
 
+/// Adds to `prog.compose` the modules the contract's code names, and those its modules
+/// require or name, that the contract doesn't `use`. The plain uses and these come first,
+/// each after the modules it requires or names and otherwise by name, so neither the order
+/// of the plain uses nor whether a module is also written changes what the contract
+/// compiles to. The uses with `delegated`, `exposing`, or `with` follow, in the order written.
+fn imply(prog: &mut Program) {
+    let bound = |name: &str| {
+        prog.facets.iter().any(|m| m.name == name)
+            || prog.exposes.iter().any(|e| e.module == name)
+            || prog
+                .guards
+                .iter()
+                .any(|g| g.guard_of.as_ref().is_some_and(|of| of.module.name == name))
+            || prog
+                .hooks
+                .iter()
+                .any(|h| h.hook_of.as_ref().is_some_and(|of| of.module.name == name))
+    };
+    let module = |name: &str| prog.modules.iter().find(|m| m.name == name);
+    // Generic modules come with their instances' types, and the compiler implements the
+    // standard library's built-in ones.
+    let composable =
+        |name: &str| module(name).is_some_and(|m| m.params.is_empty() && m.intrinsics.is_empty());
+    let mut implied: Vec<NameAt> = Vec::new();
+    let mut todo: Vec<String> = prog.compose.iter().map(|u| u.name.clone()).collect();
+    let mut wanted: Vec<String> = prog.refs.clone();
+    loop {
+        for name in wanted.drain(..) {
+            let have = |u: &NameAt| u.name == name;
+            if composable(&name) && !prog.compose.iter().any(have) && !implied.iter().any(have) {
+                implied.push(NameAt {
+                    line: 0,
+                    col: 0,
+                    name: name.clone(),
+                });
+                todo.push(name);
+            }
+        }
+        let Some(name) = todo.pop() else {
+            break;
+        };
+        if let Some(m) = module(&name) {
+            wanted.extend(m.requires.iter().map(|req| req.name.clone()));
+            wanted.extend(m.refs.iter().cloned());
+        }
+    }
+    let (mut plain, rest): (Vec<NameAt>, Vec<NameAt>) = std::mem::take(&mut prog.compose)
+        .into_iter()
+        .partition(|u| !bound(&u.name));
+    prog.implied = implied.iter().map(|u| u.name.clone()).collect();
+    plain.extend(implied);
+    // Requirements first; among modules free to go, the first by name.
+    let mut ordered = Vec::new();
+    while !plain.is_empty() {
+        let ready = |u: &NameAt| {
+            module(&u.name).is_none_or(|m| {
+                m.requires
+                    .iter()
+                    .map(|req| &req.name)
+                    .chain(&m.refs)
+                    .all(|dep| *dep == u.name || !plain.iter().any(|p| &p.name == dep))
+            })
+        };
+        let pick = (0..plain.len())
+            .filter(|&i| ready(&plain[i]))
+            .min_by(|&a, &b| plain[a].name.cmp(&plain[b].name))
+            .unwrap_or_else(|| {
+                (0..plain.len())
+                    .min_by(|&a, &b| plain[a].name.cmp(&plain[b].name))
+                    .expect("a module")
+            });
+        ordered.push(plain.remove(pick));
+    }
+    ordered.extend(rest);
+    prog.compose = ordered;
+}
+
 fn empty() -> Program {
     Program {
         uses: Vec::new(),
@@ -795,6 +874,8 @@ fn empty() -> Program {
         domains: Vec::new(),
         modules: Vec::new(),
         compose: Vec::new(),
+        implied: Vec::new(),
+        refs: Vec::new(),
         facets: Vec::new(),
         exposes: Vec::new(),
         supports: Vec::new(),

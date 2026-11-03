@@ -14,8 +14,6 @@ import "std/evm";
 import "std/utils/create2";
 
 module SSTORE2 is {
-  requires Create2;
-
   (* Creation code that returns `data` after a `STOP`, so a call to it does nothing. *)
   pure function code(const data : bytes) : bytes is
     Bytes.concat(0x61, bytes2(uint16(data.length + 1)), 0x80600a3d393df300, data)

@@ -5,8 +5,6 @@
 import "std/utils/date_time";
 
 contract Billing is {
-  use DateTime;
-
   storage is record {
     started : uint;
     renews : uint;

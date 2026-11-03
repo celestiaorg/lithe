@@ -406,6 +406,7 @@ struct Checker {
     known_modules: HashSet<String>,
     /// The modules the contract uses `delegated`.
     delegated: Vec<String>,
+    /// The modules the contract's own code may name: those it `use`s.
     used_modules: HashSet<String>,
     modules: Vec<ModuleDecl>,
     /// The functions a list length may name: pure, with no parameters, by name and by
@@ -582,9 +583,14 @@ fn check_program(
         popping: false,
         asks_interfaces: false,
         requires: Vec::new(),
-        known_modules: HashSet::new(),
+        known_modules: prog.modules.iter().map(|m| m.name.clone()).collect(),
         delegated: prog.facets.iter().map(|m| m.name.clone()).collect(),
-        used_modules: HashSet::new(),
+        used_modules: prog
+            .compose
+            .iter()
+            .filter(|u| !prog.implied.contains(&u.name))
+            .map(|u| u.name.clone())
+            .collect(),
         modules: prog.modules.clone(),
         const_fns: const_fns(&prog),
         generic_fns,
@@ -1035,12 +1041,6 @@ fn check_program(
     c.match_declared_types(&prog.funcs)?;
     c.match_guards(&prog)?;
     c.match_hooks(&prog)?;
-    for module in &prog.modules {
-        c.known_modules.insert(module.name.clone());
-    }
-    for use_ in &prog.compose {
-        c.used_modules.insert(use_.name.clone());
-    }
     c.work = prog.funcs;
     let original = c.work.len();
     let mut index = 0;

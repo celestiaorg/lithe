@@ -14,8 +14,9 @@ import "./lib/erc721_uri_storage";
 import "./lib/erc2981";
 
 contract BenchNFTFull is {
-  use Initializable;
-  use ERC721URIStorage;
+  supports IERC721, IERC721Metadata, IERC721Enumerable, IERC2981;
+
+  use Initializable, ERC721URIStorage;
 
   use ERC721 exposing IERC721Views, IERC721Name with {
     (* `ERC721Pausable` checks the pause inside every ownership update, then
@@ -23,12 +24,14 @@ contract BenchNFTFull is {
     hook beforeTransfer is Pausable.requireNotPaused;
     hook afterTransfer is ERC721Enumerable.afterTransfer;
   }
-  use ERC721Enumerable exposing IERC721Enumerable;
-  use ERC2981 exposing IERC2981;
-  use Ownable exposing IOwnable;
-  use Pausable exposing IPausable;
 
-  supports IERC721, IERC721Metadata, IERC721Enumerable, IERC2981;
+  use ERC721Enumerable exposing IERC721Enumerable;
+
+  use ERC2981 exposing IERC2981;
+
+  use Ownable exposing IOwnable;
+
+  use Pausable exposing IPausable;
 
   storage benchNft at "bench.storage.BenchNFTFull" is record {
     nextTokenId : uint;

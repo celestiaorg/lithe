@@ -25,8 +25,6 @@ The errors are OpenZeppelin's: `ECDSAInvalidSignature`, `ECDSAInvalidSignatureLe
 import "std/crypto/ecdsa";
 
 contract Votes is {
-  use ECDSA;
-
   storage is record {
     ballots : map(address, uint);
   }
@@ -80,12 +78,8 @@ When the check succeeds, the transition succeeds and the wallet stays deployed, 
 
 ```lithe
 import "std/crypto/signature_checker";
-import "std/crypto/ecdsa";
 
 contract Permits is {
-  use ECDSA;
-  use SignatureChecker;
-
   storage is record {
     used : map(bytes32, bool);
   }
@@ -110,12 +104,8 @@ Solady's check calls a verifier contract that must be deployed at `0x0000bc370E4
 
 ```lithe
 import "std/crypto/signature_checker";
-import "std/crypto/ecdsa";
 
 contract Registry is {
-  use ECDSA;
-  use SignatureChecker;
-
   error BadSignature of address;
 
   storage is record {
@@ -149,8 +139,6 @@ contract Mailbox is {
   use EIP712 exposing IERC5267, {
     view function DOMAIN_SEPARATOR() : bytes32;
   }
-
-  use ECDSA;
 
   error NotSignedBy of address;
 
@@ -203,8 +191,6 @@ import "std/evm";
 import "std/crypto/merkle";
 
 contract Allowlist is {
-  use Merkle;
-
   storage is record {
     root : bytes32;
     joined : map(address, bool);
@@ -256,8 +242,6 @@ import "std/evm";
 import "std/abi";
 
 contract PasskeyCounter is {
-  use WebAuthn;
-
   error NotSigned;
 
   storage is record {

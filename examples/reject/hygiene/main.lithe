@@ -2,9 +2,9 @@
 import "./lib";
 
 contract C is {
-  error Denied;
-
   use Keeper;
+
+  error Denied;
 
   storage is record { n : uint; }
 

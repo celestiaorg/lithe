@@ -19,10 +19,7 @@ import "std/utils/nonce";
 import "std/interfaces/erc20";
 
 module ERC20Permit is {
-  requires ERC20;
-  requires EIP712;
-  requires ECDSA;
-  requires Nonces;
+  requires ERC20, EIP712, Nonces;
 
   const permitTypehash : bytes32 := Crypto.keccak256(
     "Permit(address owner,address spender,uint256 value,uint256 nonce,uint256 deadline)"

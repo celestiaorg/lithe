@@ -16,10 +16,7 @@ error ERC2612InvalidSigner of record {
 }
 
 module ERC20Permit is {
-  requires ERC20;
-  requires EIP712;
-  requires ECDSA;
-  requires Nonces;
+  requires ERC20, EIP712, Nonces;
 
   external function permit(
     const owner : address;

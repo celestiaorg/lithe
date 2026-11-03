@@ -46,8 +46,12 @@ import "std/access/ownable";
 import "std/evm";
 
 contract Token is {
+  supports IERC20, IERC20Metadata;
+
   use Ownable;
+
   use Pausable exposing IPausable;
+
   use ERC20 exposing IERC20Metadata, IERC20Views, IERC20Approvals, {
     function transfer(to : address; value : uint) : bool
       raises ERC20InvalidSender | ERC20InvalidReceiver | EnforcedPause | ERC20InsufficientBalance;
@@ -59,7 +63,6 @@ contract Token is {
     hook beforeTransfer is Pausable.requireNotPaused;
     hook afterTransfer is skip;
   }
-  supports IERC20, IERC20Metadata;
 
   deploy()
     raises OwnableInvalidOwner
@@ -89,11 +92,12 @@ import "std/evm";
 import "std/token/erc20";
 
 contract Token is {
+  supports IERC20, IERC20Metadata;
+
   use ERC20 exposing IERC20, IERC20Metadata with {
     hook beforeTransfer is skip;
     hook afterTransfer is skip;
   }
-  supports IERC20, IERC20Metadata;
 
   storage is record {
     minter : address;
@@ -147,16 +151,12 @@ spec for ERC20.transferFrom
 
 ```lithe
 import "std/interfaces/erc20";
-import "std/utils/nonce";
-import "std/crypto/ecdsa";
 import "std/crypto/eip712";
 import "std/token/erc20";
 import "std/token/erc20_permit";
 
 contract Token is {
   use EIP712;
-  use ECDSA;
-  use Nonces;
 
   use ERC20 exposing {
     view function balanceOf(account : address) : uint;
@@ -228,9 +228,6 @@ The votes follow every balance change through `ERC20`'s `afterTransfer` [hook](#
 
 ```lithe
 import "std/interfaces/erc5805";
-import "std/math/math";
-import "std/utils/nonce";
-import "std/crypto/ecdsa";
 import "std/utils/checkpoint";
 import "std/interfaces/erc20";
 import "std/crypto/eip712";
@@ -241,12 +238,7 @@ import "std/token/erc20_votes";
 import "std/security/pausable";
 
 contract Token is {
-  use EIP712;
-  use ECDSA;
-  use Nonces;
-  use Checkpoints;
-  use Math;
-  use Pausable;
+  use EIP712, Pausable;
 
   use ERC20 exposing IERC20Metadata, {
     view function balanceOf(account : address) : uint;
@@ -310,8 +302,6 @@ import "std/token/safe_erc20";
 import "std/interfaces/erc20";
 import "std/evm";
 
-use SafeERC20;
-
 storage is record {
   token : IERC20;
   deposits : map(address, uint);
@@ -358,20 +348,20 @@ OpenZeppelin's `trySafeTransfer` has no counterpart, since a deferred call's out
 ```lithe
 import "std/token/erc4626";
 import "std/token/erc20";
-import "std/token/safe_erc20";
 import "std/interfaces/erc20";
 import "std/interfaces/erc4626";
 
 contract Vault is {
-  use SafeERC20;
+  supports IERC20, IERC20Metadata, IERC4626;
+
   use ERC20 exposing IERC20, IERC20Name with {
     hook beforeTransfer is skip;
     hook afterTransfer is skip;
   }
+
   use ERC4626 exposing IERC4626, {
     view function decimals() : uint8;
   }
-  supports IERC20, IERC20Metadata, IERC4626;
 
   deploy(const asset : address) is {
     ERC20.init("Vault", "vTKN");
@@ -407,11 +397,13 @@ import "std/interfaces/erc20";
 import "std/evm";
 
 contract CappedVault is {
-  use SafeERC20;
+  supports IERC20, IERC20Metadata, IERC4626;
+
   use ERC20 exposing IERC20, IERC20Name with {
     hook beforeTransfer is skip;
     hook afterTransfer is skip;
   }
+
   use ERC4626 exposing {
     view function decimals() : uint8;
     view function asset() : address;
@@ -432,7 +424,6 @@ contract CappedVault is {
         | ERC20InvalidSpender | ERC20InvalidSender | ERC20InsufficientBalance
         | SafeERC20FailedOperation | forwarded;
   }
-  supports IERC20, IERC20Metadata, IERC4626;
 
   deploy(const asset : address) is {
     ERC20.init("Capped Vault", "cvTKN");
@@ -491,11 +482,12 @@ import "std/evm";
 import "std/token/erc721";
 
 contract Collection is {
+  supports IERC721, IERC721Metadata;
+
   use ERC721 exposing IERC721, IERC721Metadata with {
     hook beforeTransfer is skip;
     hook afterTransfer is skip;
   }
-  supports IERC721, IERC721Metadata;
 
   storage is record {
     nextId : uint;
@@ -537,6 +529,7 @@ contract Collection is {
     hook beforeTransfer is skip;
     hook afterTransfer is ERC721Enumerable.afterTransfer;
   }
+
   use ERC721Enumerable exposing IERC721Enumerable;
 
   storage is record {
@@ -601,12 +594,14 @@ import "std/token/erc1155";
 import "std/access/ownable";
 
 contract Items is {
+  supports IERC1155, IERC1155MetadataURI;
+
   use Ownable;
+
   use ERC1155 exposing IERC1155, IERC1155MetadataURI with {
     hook beforeTransfer is skip;
     hook afterTransfer is skip;
   }
-  supports IERC1155, IERC1155MetadataURI;
 
   deploy()
     raises OwnableInvalidOwner
@@ -660,8 +655,8 @@ use ERC1155 exposing IERC1155, IERC1155MetadataURI with {
   hook beforeTransfer is skip;
   hook afterTransfer is ERC1155Supply.afterTransfer;
 }
-use ERC1155Supply exposing IERC1155Supply;
 
+use ERC1155Supply exposing IERC1155Supply;
 ```
 
 ## `ERC6909`
@@ -675,12 +670,14 @@ import "std/evm";
 import "std/interfaces/erc6909";
 
 contract Claims is {
+  supports IERC6909;
+
   use Ownable;
+
   use ERC6909 exposing IERC6909 with {
     hook beforeTransfer is skip;
     hook afterTransfer is skip;
   }
-  supports IERC6909;
 
   deploy()
     raises OwnableInvalidOwner
@@ -740,12 +737,14 @@ import "std/evm";
 import "std/token/erc6909";
 
 contract Shares is {
+  supports IERC6909, IERC6909TokenSupply;
+
   use ERC6909 exposing IERC6909 with {
     hook beforeTransfer is skip;
     hook afterTransfer is ERC6909TokenSupply.afterTransfer;
   }
+
   use ERC6909TokenSupply exposing IERC6909TokenSupply;
-  supports IERC6909, IERC6909TokenSupply;
 
   external payable function deposit(const id : uint)
     raises ERC6909InvalidReceiver | ERC6909InsufficientBalance

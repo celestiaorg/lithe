@@ -6,9 +6,6 @@ import "std/math/fixed_point";
 import "std/uint";
 
 contract FixedPointBench is {
-  use Math;
-  use FixedPoint;
-
   storage is record {
     last : uint;
   }

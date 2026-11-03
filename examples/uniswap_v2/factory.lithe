@@ -12,8 +12,6 @@ import "./interfaces";
 import "std/utils/create2";
 
 contract UniswapV2Factory is {
-  use Create2;
-
   storage is record {
     feeTo : address;
     feeToSetter : address;

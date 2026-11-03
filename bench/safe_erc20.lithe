@@ -7,8 +7,6 @@ import "std/interfaces/erc20";
 import "std/evm";
 
 contract Payer is {
-  use SafeERC20;
-
   storage is record {}
 
   external function pay(const token : IERC20; const to : address; const amount : uint)

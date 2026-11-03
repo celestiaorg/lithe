@@ -19,9 +19,9 @@ module Beta is {
 }
 
 contract Token is {
+  use Beta;
+
   use Alpha exposing {
     function go();
   }
-
-  use Beta;
 }

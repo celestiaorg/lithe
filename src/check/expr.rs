@@ -844,17 +844,6 @@ impl Checker {
                     return Ok(());
                 }
                 let Some(idx) = self.fn_names.iter().position(|n| n == name) else {
-                    if let Some((module, _)) = name.split_once('.') {
-                        if self.known_modules.contains(module)
-                            && !self.used_modules.contains(module)
-                        {
-                            return Err(error(
-                                *line,
-                                *col,
-                                format!("module `{module}` is not used"),
-                            ));
-                        }
-                    }
                     let qualified = match &self.module_name {
                         Some(module) if !name.contains('.') => format!("{module}.{name}"),
                         _ => name.clone(),
@@ -889,7 +878,7 @@ impl Checker {
                     }
                     if let Some((other, _)) = name.split_once('.') {
                         if other != mine
-                            && self.known_modules.contains(other)
+                            && self.needs_use(other, idx)
                             && !self.requires.iter().any(|req| req == other)
                         {
                             return Err(error(
@@ -898,6 +887,20 @@ impl Checker {
                                 format!("module `{mine}` calls `{other}` but does not require it"),
                             ));
                         }
+                    }
+                } else if let Some((other, _)) = name.split_once('.') {
+                    if self.module_name.is_none()
+                        && self.needs_use(other, idx)
+                        && !self.used_modules.contains(other)
+                    {
+                        return Err(error(
+                            *line,
+                            *col,
+                            format!(
+                                "module `{other}` is not used\n\n`{}` isn't pure and `{other}` holds state: `use {other};`",
+                                source_name(name)
+                            ),
+                        ));
                     }
                 }
                 let sig_kind = self.sigs[idx].kind;

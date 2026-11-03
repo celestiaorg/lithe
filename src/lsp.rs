@@ -208,6 +208,12 @@ fn fixes(uri: &str, doc: &Doc, params: &Json) -> Option<String> {
             .filter(|err| (first..=last).contains(&err.line))
             .and_then(|err| import_fix(uri, &doc.text, err)),
     );
+    actions.extend(
+        doc.error
+            .as_ref()
+            .filter(|err| (first..=last).contains(&err.line))
+            .and_then(|err| use_fix(uri, &doc.text, err)),
+    );
     Some(format!("[{}]", actions.join(",")))
 }
 
@@ -239,6 +245,36 @@ fn import_fix(uri: &str, text: &str, err: &lithe::Error) -> Option<String> {
         quote(&new),
         at = byte_pos(text, at),
     ))
+}
+
+/// For a module the contract's code reaches without using it, as "module `M` is not used"
+/// says: adding it to the contract's plain `use`.
+fn use_fix(uri: &str, text: &str, err: &lithe::Error) -> Option<String> {
+    let headline = err.message.lines().next()?;
+    let quoted: Vec<&str> = headline[headline.find("module `")?..].split('`').collect();
+    let ["module ", name, " is not used"] = quoted.as_slice() else {
+        return None;
+    };
+    let near = line_offset(text, err.line, err.column);
+    let (at, new) = lithe::add_use(text, near, name)?;
+    Some(format!(
+        r#"{{"title":{},"kind":"quickfix","isPreferred":true,"diagnostics":[{}],"edit":{{"changes":{{{}:[{{"range":{{"start":{at},"end":{at}}},"newText":{}}}]}}}}}}"#,
+        quote(&format!("Use `{name}`")),
+        error_diagnostic(text, err),
+        quote(uri),
+        quote(&new),
+        at = byte_pos(text, at),
+    ))
+}
+
+/// The byte at a 1-based line and column.
+fn line_offset(text: &str, line: u32, column: u32) -> usize {
+    let start: usize = text
+        .split_inclusive('\n')
+        .take(line.saturating_sub(1) as usize)
+        .map(str::len)
+        .sum();
+    (start + column.saturating_sub(1) as usize).min(text.len())
 }
 
 /// Where a new import goes: after the file's last import, or before its first declaration.
@@ -1304,6 +1340,37 @@ mod tests {
             "{paths}"
         );
         assert!(reply(7).contains(r#""label":"./lib/fees""#), "{}", reply(7));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn offers_the_use_a_module_needs() {
+        let dir = std::env::temp_dir().join(format!("lithe-lsp-uses-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("main.lithe");
+        let uri = format!("file://{}", path.display()).replace(' ', "%20");
+        let text = "import \"std/security/pausable\";\n\ncontract C is {\n  external view function f() : bool is Pausable.pausable.paused\n}\n";
+        std::fs::write(&path, text).unwrap();
+        let action = frame(&format!(
+            r#"{{"jsonrpc":"2.0","id":1,"method":"textDocument/codeAction","params":{{"textDocument":{{"uri":{}}},"range":{{"start":{{"line":3,"character":0}},"end":{{"line":3,"character":0}}}},"context":{{"diagnostics":[]}}}}}}"#,
+            quote(&uri)
+        ));
+        let (_, bodies) = session(&[
+            frame(r#"{"jsonrpc":"2.0","id":0,"method":"initialize","params":{}}"#),
+            open(&uri, text),
+            action,
+        ]);
+        let fix = bodies
+            .iter()
+            .find(|b| b.starts_with(r#"{"jsonrpc":"2.0","id":1,"#))
+            .expect("code actions");
+        assert!(
+            fix.contains("Use `Pausable`")
+                && fix.contains(r#""start":{"line":2,"character":15}"#)
+                && fix.contains(r#""newText":"\n  use Pausable;\n""#),
+            "{fix}"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

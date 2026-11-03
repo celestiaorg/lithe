@@ -65,7 +65,7 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 
 pub use config::{build_options, format_width, set_build_option, BUILD_KEYS, DEFAULT_WIDTH};
-pub use format::format_source;
+pub use format::{add_use, format_source};
 pub use index::{Completion, Def, File, Index, Kind, Ref, Signature, Span};
 pub use lint::{lint_paths, lithe_files, Lint};
 pub use modules::{import_path, Sources};

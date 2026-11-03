@@ -6,6 +6,11 @@ import "std/address";
 import "std/evm";
 import "std/uint";
 
+use Counter delegated exposing {
+  function bump(by : uint);
+  view function count() : uint;
+}
+
 error NotOwner;
 
 module Counter is {
@@ -30,11 +35,6 @@ storage is record {
 
 deploy() is {
   storage.owner := Evm.sender();
-}
-
-use Counter delegated exposing {
-  function bump(by : uint);
-  view function count() : uint;
 }
 
 external function add(const by : uint) raises NotOwner is {

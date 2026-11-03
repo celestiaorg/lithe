@@ -11,6 +11,8 @@ import "./lib/erc1155";
 import "./lib/erc1155_supply";
 
 contract BenchMultiToken is {
+  supports IERC1155, IERC1155MetadataURI;
+
   use Initializable;
 
   use ERC1155 exposing IERC1155Views, IERC1155MetadataURI with {
@@ -18,11 +20,12 @@ contract BenchMultiToken is {
     hook beforeTransfer is Pausable.requireNotPaused;
     hook afterTransfer is ERC1155Supply.update;
   }
-  use ERC1155Supply exposing IERC1155Supply;
-  use Ownable exposing IOwnable;
-  use Pausable exposing IPausable;
 
-  supports IERC1155, IERC1155MetadataURI;
+  use ERC1155Supply exposing IERC1155Supply;
+
+  use Ownable exposing IOwnable;
+
+  use Pausable exposing IPausable;
 
   (* Initializable's bookkeeping matches the `initializer` modifier on Solidity's
      constructor, so storage and events stay the same. *)
