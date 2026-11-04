@@ -66,18 +66,29 @@ jobs:
           - target: x86_64-apple-darwin
             os: macos-15-intel
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 30
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+      - if: runner.os != 'Linux'
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
         with:
           toolchain: 1.95.0
           targets: ${{ matrix.target }}
-      - if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y musl-tools
-      - run: cargo build --release --locked --target ${{ matrix.target }}
+      # The Z3 the binary links is C++, which Ubuntu has no musl toolchain for: Linux builds run
+      # in Alpine, whose g++ targets musl, with the same Rust.
+      - name: Build
+        if: runner.os == 'Linux'
+        run: |
+          docker run --rm -v "$PWD:/src" -w /src \
+            rust:1.95-alpine@sha256:606fd313a0f49743ee2a7bd49a0914bab7deedb12791f3a846a34a4711db7ed2 \
+            sh -c 'apk add --no-cache cmake make g++ python3 git >/dev/null &&
+              git config --global --add safe.directory /src &&
+              cargo build --release --locked --target "$0"' ${{ matrix.target }}
+      - name: Build
+        if: runner.os != 'Linux'
+        run: cargo build --release --locked --target ${{ matrix.target }}
       - run: cp target/${{ matrix.target }}/release/lithe lithe-${{ matrix.target }}
       - name: Statically linked
         if: runner.os == 'Linux'

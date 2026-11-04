@@ -49,7 +49,7 @@ lithe abi counter.lithe
 lithe compile src             # Foundry-style artifacts in ./out
 ```
 
-Run `lithe` with no arguments for every command. [`lithe prove`](docs/src/pages/language/verification.mdx) also needs [Z3](https://github.com/Z3Prover/z3) on your `PATH`.
+Run `lithe` with no arguments for every command. [`lithe prove`](docs/src/pages/language/verification.mdx) runs the [Z3](https://github.com/Z3Prover/z3) solver, which the build compiles in; that needs CMake, Python 3, and a C++ compiler.
 
 ## Repository
 

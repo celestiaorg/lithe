@@ -1,8 +1,8 @@
-//! SMT-LIB2 scripts, and the solver that answers them: Z3, run as its own process.
+//! SMT-LIB2 scripts, and the solver that answers them: Z3, linked in, run as a process of
+//! its own.
 
-use std::io::{BufRead, BufReader, Write};
-use std::path::PathBuf;
-use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
+use std::io::{BufRead, BufReader, Read, Write};
+use std::process::{Child, ChildStdin, ChildStdout};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -108,64 +108,27 @@ pub(crate) enum Answer {
     Unknown(String),
 }
 
-/// What `lithe prove` says when there is no Z3 to run.
-pub(crate) const MISSING: &str =
-    "lithe prove needs the Z3 solver, which is not on PATH: install it \
-     (`brew install z3`, `apt install z3`, or a release from github.com/Z3Prover/z3/releases), \
-     or set LITHE_Z3 to its path";
-
+#[derive(Clone, Copy)]
 pub(crate) struct Solver {
-    pub path: PathBuf,
     /// Seconds each question may take.
     pub timeout: u32,
 }
 
 impl Solver {
-    /// Z3: where `explicit` says, or `LITHE_Z3`, or else on `PATH`. `Err` says why there is
-    /// none.
-    pub(crate) fn find(explicit: Option<PathBuf>, timeout: u32) -> Result<Solver, String> {
-        let named = |path: PathBuf, how: &str| {
-            if path.is_file() {
-                Ok(Solver { path, timeout })
-            } else {
-                Err(format!("{how} is `{}`, which is no file", path.display()))
-            }
-        };
-        if let Some(path) = explicit {
-            return named(path, "--solver");
-        }
-        if let Some(path) = std::env::var_os("LITHE_Z3") {
-            return named(PathBuf::from(path), "LITHE_Z3");
-        }
-        std::env::var_os("PATH")
-            .and_then(|path| {
-                std::env::split_paths(&path)
-                    .map(|dir| dir.join("z3"))
-                    .find(|candidate| candidate.is_file())
-            })
-            .map(|path| Solver { path, timeout })
-            .ok_or_else(|| MISSING.to_string())
-    }
-
+    /// The script's answer, from a solver of its own, which ends past the time.
     pub(crate) fn ask(&self, script: &str, watched: usize) -> Answer {
-        let child = Command::new(&self.path)
-            .arg("-in")
-            .arg(format!("-T:{}", self.timeout))
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn();
-        let mut child = match child {
-            Ok(child) => child,
-            Err(err) => return Answer::Unknown(format!("cannot run the solver: {err}")),
+        let (mut child, mut input, mut output) = match super::z3::spawn(Some(self.timeout)) {
+            Ok(started) => started,
+            Err(why) => return Answer::Unknown(why),
         };
-        if let Some(mut stdin) = child.stdin.take() {
-            let _ = stdin.write_all(script.as_bytes());
+        let _ = input.write_all(script.as_bytes());
+        drop(input);
+        let mut out = String::new();
+        let read = output.read_to_string(&mut out);
+        let _ = child.wait();
+        if let Err(err) = read {
+            return Answer::Unknown(format!("the solver failed: {err}"));
         }
-        let out = match child.wait_with_output() {
-            Ok(out) => String::from_utf8_lossy(&out.stdout).into_owned(),
-            Err(err) => return Answer::Unknown(format!("the solver failed: {err}")),
-        };
         let mut lines = out.lines();
         match lines.next().map(str::trim) {
             Some("unsat") => Answer::Proved,
@@ -200,8 +163,6 @@ pub(crate) struct Session {
     timeout_ms: u64,
     /// With `LITHE_PROVE_LOG` set to a directory, every script, a file per session.
     log: Option<std::fs::File>,
-    /// The solver it runs, for a session beside it.
-    path: PathBuf,
     /// A session that asks without the arena's facts, about terms none of them mention.
     pub bare: bool,
     /// Milliseconds a brief question may take.
@@ -278,7 +239,7 @@ impl Watch {
 
 /// The CPU time process `pid` has used.
 #[cfg(target_os = "linux")]
-fn cpu_time(pid: u32) -> Option<Duration> {
+pub(super) fn cpu_time(pid: u32) -> Option<Duration> {
     let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
     // After the parenthesized name: the state, then fields 4 to 13, then user and system
     // time in hundredths of a second.
@@ -290,7 +251,7 @@ fn cpu_time(pid: u32) -> Option<Duration> {
 
 /// The CPU time process `pid` has used.
 #[cfg(target_os = "macos")]
-fn cpu_time(pid: u32) -> Option<Duration> {
+pub(super) fn cpu_time(pid: u32) -> Option<Duration> {
     #[repr(C)]
     struct RusageInfo {
         uuid: [u8; 16],
@@ -329,7 +290,7 @@ fn cpu_time(pid: u32) -> Option<Duration> {
 
 /// Elsewhere the clock stands in for it.
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-fn cpu_time(_pid: u32) -> Option<Duration> {
+pub(super) fn cpu_time(_pid: u32) -> Option<Duration> {
     None
 }
 
@@ -358,15 +319,17 @@ pub(crate) enum Reply {
 
 impl Session {
     pub(crate) fn start(solver: &Solver) -> Result<Session, String> {
-        let mut child = Command::new(&solver.path)
-            .arg("-in")
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()
-            .map_err(|err| format!("cannot run the solver: {err}"))?;
-        let input = child.stdin.take().ok_or("the solver has no input")?;
-        let output = BufReader::new(child.stdout.take().ok_or("the solver has no output")?);
+        let (child, input, output) = super::z3::spawn(None)?;
+        Session::over(child, input, output, solver)
+    }
+
+    /// A session with the solver `child`, whose input and output these are.
+    fn over(
+        child: Child,
+        input: ChildStdin,
+        output: BufReader<ChildStdout>,
+        solver: &Solver,
+    ) -> Result<Session, String> {
         let pid = child.id();
         let child = Arc::new(Mutex::new(child));
         let watch = Arc::new(Watch::default());
@@ -386,7 +349,6 @@ impl Session {
             facts_sent: 0,
             asked: 0,
             timeout_ms: u64::from(solver.timeout) * 1000,
-            path: solver.path.clone(),
             bare: false,
             brief: 500,
             broken: false,
@@ -417,7 +379,6 @@ impl Session {
 
     fn solver(&self) -> Solver {
         Solver {
-            path: self.path.clone(),
             timeout: (self.timeout_ms / 1000) as u32,
         }
     }
@@ -893,18 +854,30 @@ mod tests {
     /// Linux won't run a file open for writing ("Text file busy"), so the start is retried.
     fn fake_solver(path: std::path::PathBuf, script: &str) -> Session {
         use std::os::unix::fs::PermissionsExt;
+        use std::process::{Command, Stdio};
         std::fs::write(&path, script).unwrap();
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
-        let solver = Solver { path, timeout: 1 };
+        let start = || {
+            Command::new(&path)
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::null())
+                .spawn()
+        };
+        let mut started = start();
         for _ in 0..100 {
-            match Session::start(&solver) {
-                Err(err) if err.contains("Text file busy") => {
-                    std::thread::sleep(Duration::from_millis(10))
+            match &started {
+                Err(err) if err.to_string().contains("Text file busy") => {
+                    std::thread::sleep(Duration::from_millis(10));
+                    started = start();
                 }
-                started => return started.unwrap(),
+                _ => break,
             }
         }
-        Session::start(&solver).unwrap()
+        let mut child = started.unwrap();
+        let input = child.stdin.take().unwrap();
+        let output = BufReader::new(child.stdout.take().unwrap());
+        Session::over(child, input, output, &Solver { timeout: 1 }).unwrap()
     }
 
     /// A solver that never answers is ended past the question's deadline.

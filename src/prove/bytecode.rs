@@ -191,8 +191,7 @@ pub(super) fn prove(
     opts: &ProveOptions,
 ) -> Result<super::Report, Error> {
     let timeout = if opts.timeout == 0 { 30 } else { opts.timeout };
-    let solver =
-        Solver::find(opts.solver.clone(), timeout).map_err(|why| crate::error(0, 0, why))?;
+    let solver = Solver { timeout };
     let checked = &specs.checked;
     let layout = &built.layout;
     layout
@@ -339,7 +338,7 @@ pub(super) fn prove(
             _ => tasks.push((p, Calldata::Any)),
         }
     }
-    let results = parallel(&tasks, |&(p, how)| {
+    let results = parallel(&tasks, opts.jobs, |&(p, how)| {
         one(&setup, &phases[p], p, how, &subjects)
     });
     let mut flagged: Vec<Option<Outcome>> = phases.iter().map(|_| None).collect();
@@ -406,7 +405,7 @@ pub(super) fn prove(
         .enumerate()
         .flat_map(|(s, subject)| subject.bodies.iter().map(move |&c| (s, c)))
         .collect();
-    let proved = parallel(&bodies, |&(s, c)| {
+    let proved = parallel(&bodies, opts.jobs, |&(s, c)| {
         let code = match c {
             Body::Once(c) => internal::FuncCode::body(&built.funcs[c]),
             Body::Copy(c) => internal::FuncCode::copy(&built.inlines[c]),
@@ -705,10 +704,13 @@ fn stores(setup: &Setup, run: &mut Run, phase: &Phase) -> Outcome {
     worst
 }
 
-/// `f` of each task, on as many threads as the machine has, in the tasks' order. Proofs
-/// running at once in one process, as tests do, share the machine's threads.
-fn parallel<I: Sync, O: Send>(tasks: &[I], f: impl Fn(&I) -> O + Sync) -> Vec<O> {
-    let cores = std::thread::available_parallelism().map_or(1, |n| n.get());
+/// `f` of each task, on `jobs` threads, or as many as the machine has when zero, in the
+/// tasks' order. Proofs running at once in one process, as tests do, share the threads.
+fn parallel<I: Sync, O: Send>(tasks: &[I], jobs: usize, f: impl Fn(&I) -> O + Sync) -> Vec<O> {
+    let cores = match jobs {
+        0 => std::thread::available_parallelism().map_or(1, |n| n.get()),
+        n => n,
+    };
     let threads = cores.min(tasks.len().max(1));
     let next = std::sync::atomic::AtomicUsize::new(0);
     let out: Vec<std::sync::Mutex<Option<O>>> =

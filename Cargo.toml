@@ -12,6 +12,8 @@ logos = "0.15"
 # spends a fifth of a cold compile on them. Not for WebAssembly, which the playground builds.
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 mimalloc = { version = "0.1", default-features = false }
+# Z3, the solver `lithe prove` asks, built from source into the binary.
+z3-sys = { version = "0.14", features = ["vendored"] }
 
 [[bin]]
 name = "lithe"
@@ -26,6 +28,12 @@ strip = true
 # The optimizer passes are too slow to run unoptimized: debug builds take minutes per contract.
 [profile.dev]
 opt-level = 2
+
+# Z3 as CMake's Release build: its debug info would make it several times larger and slower to
+# build, and the prover's tests wait on it.
+[profile.dev.package.z3-sys]
+opt-level = 3
+debug = false
 
 [lints.clippy]
 too_many_arguments = "allow"
