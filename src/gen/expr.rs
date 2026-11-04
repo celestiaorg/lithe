@@ -1175,13 +1175,6 @@ impl<'a> Gen<'a> {
                         "`Evm.facetAddress` takes the name of a module",
                     ));
                 };
-                if self.shape.opts.check_specs {
-                    return Err(error(
-                        line,
-                        col,
-                        "`Evm.facetAddress` needs the contract's facets, and a spec-checking build runs every module in the contract",
-                    ));
-                }
                 // Builds that only measure the contract, before its facets exist, use the
                 // stand-in address calls across do.
                 let address = self

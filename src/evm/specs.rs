@@ -759,6 +759,94 @@ spec for bump is {
     );
 }
 
+/// A checked result is kept as the function's result type, so a literal that needs one,
+/// as a record's does, still builds.
+#[test]
+fn a_checking_build_keeps_a_record_result() {
+    let src = r#"type Range is record { lo : uint; hi : uint; }
+
+storage is record { n : uint; }
+
+external function span(const k : uint) : flat Range is {
+  storage.n := k;
+} with { lo = k; hi = k + 1; }
+"#;
+    let specs = "spec is {\n  invariant bounded is storage.n < 100;\n}\n";
+    let mut checked = Checked::new(src, specs);
+    let out = exec(
+        &checked.runtime,
+        &word_data("span(uint256)", &[Word::from_u64(7)]),
+        checked.storage.clone(),
+        Word::from_u64(1),
+        Word::from_u64(0),
+        Word::from_u64(0),
+    )
+    .expect("span");
+    assert!(!out.reverted, "{}", pretty(&out.returndata));
+    let mut want = Word::from_u64(7).to_be_bytes().to_vec();
+    want.extend(Word::from_u64(8).to_be_bytes());
+    assert_eq!(out.returndata, want);
+    assert_eq!(
+        checked.call(1, 0, "span(uint256)", &[Word::from_u64(100)]),
+        Err(violation("invariant bounded"))
+    );
+}
+
+/// A checking build runs a `delegated` module itself, but `Evm.facetAddress` is still the
+/// plain build's facet, which it deploys as the plain build does.
+#[test]
+fn a_checking_build_names_the_plain_build_s_facets() {
+    let src = r#"import "std/evm";
+module Counter is {
+  storage counter at "example.facet.address" is record { n : uint; }
+  function bump() is { counter.n := counter.n + 1; }
+  external view function count() : uint is counter.n
+}
+contract App is {
+  use Counter delegated exposing { view function count() : uint; }
+  external pure function counterFacet() : address is Evm.facetAddress(Counter)
+  external function bump() is Counter.bump()
+}
+"#;
+    let specs = "spec for module Counter is {\n  spec is {\n    invariant bounded is counter.n < 2;\n  }\n}\n";
+    let plain = crate::compile(&memory(src), Path::new(ENTRY), &Options::default())
+        .and_then(crate::Output::single)
+        .map_err(first)
+        .expect("plain build");
+    let checked = checking(src, specs).expect("checking build");
+    let facets = |c: &crate::Contract| -> Vec<([u8; 20], Vec<u8>)> {
+        c.plan
+            .iter()
+            .flat_map(|plan| &plan.facets)
+            .map(|f| (f.address, f.deployed_bytecode.clone()))
+            .collect()
+    };
+    let deployed = facets(&plain);
+    assert_eq!(deployed.len(), 1);
+    assert_eq!(facets(&checked), deployed);
+    deploy_plan(&checked);
+    let made =
+        construct(&checked.bytecode, Word::from_u64(1), Word::from_u64(0)).expect("construct");
+    assert!(!made.reverted, "deploy: {}", pretty(&made.returndata));
+    let mut app = Checked {
+        runtime: made.returndata,
+        storage: made.storage,
+        balance: Word::from_u64(0),
+    };
+    let out = call(&app.runtime, "counterFacet()", &[]);
+    assert!(!out.reverted, "{}", pretty(&out.returndata));
+    assert_eq!(
+        out.returndata,
+        crate::split::address_word(deployed[0].0).to_be_bytes()
+    );
+    app.call(1, 0, "bump()", &[]).expect("bump");
+    assert_eq!(
+        app.call(1, 0, "bump()", &[]),
+        Err(violation("invariant Counter.bounded"))
+    );
+    DEPLOYED.with(|d| d.borrow_mut().clear());
+}
+
 #[test]
 fn a_checking_build_keeps_module_totals() {
     let token = r#"

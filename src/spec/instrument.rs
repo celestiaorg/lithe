@@ -214,11 +214,11 @@ pub(crate) fn instrument(mut prog: Program, specs: &Specs) -> Result<Instrumente
             col: 0,
             expr: call_expr(PHASE_END, None, Vec::new(), 0, 0),
         };
-        let end = |stmts: &mut Vec<Stmt>, tail: &mut Option<Expr>, returns: bool| {
+        let end = |stmts: &mut Vec<Stmt>, tail: &mut Option<Expr>, ret: Option<TypeRef>| {
             wrap_stmts(
                 stmts,
                 tail,
-                returns,
+                ret,
                 Wrap {
                     pre: Vec::new(),
                     post: vec![phase_end()],
@@ -236,7 +236,7 @@ pub(crate) fn instrument(mut prog: Program, specs: &Specs) -> Result<Instrumente
                     | ItemKind::Fallback
             );
             if stateful && f.forward.is_none() && !dispatchers.contains(&f.name) {
-                end(&mut f.stmts, &mut f.tail, f.ret.is_some());
+                end(&mut f.stmts, &mut f.tail, f.ret.clone());
             }
         }
         let mut ended: Vec<(String, String)> = Vec::new();
@@ -265,7 +265,7 @@ pub(crate) fn instrument(mut prog: Program, specs: &Specs) -> Result<Instrumente
             ended.push(first);
             if !arm_ended(arm) {
                 let mut tail = Some(std::mem::replace(&mut arm.expr, unit()));
-                end(&mut arm.stmts, &mut tail, false);
+                end(&mut arm.stmts, &mut tail, None);
                 if let Some(tail) = tail {
                     arm.expr = tail;
                 }
@@ -276,7 +276,7 @@ pub(crate) fn instrument(mut prog: Program, specs: &Specs) -> Result<Instrumente
         for module in &mut prog.modules {
             for f in &mut module.funcs {
                 if f.kind == ItemKind::Entry {
-                    end(&mut f.stmts, &mut f.tail, f.ret.is_some());
+                    end(&mut f.stmts, &mut f.tail, f.ret.clone());
                 }
             }
         }
@@ -1066,8 +1066,7 @@ fn total_update(
 
 /// Adds a spec's statements to a function: before its body, and where it ends.
 fn wrap_func(f: &mut Func, wrap: Wrap) {
-    let returns = f.ret.is_some();
-    wrap_stmts(&mut f.stmts, &mut f.tail, returns, wrap);
+    wrap_stmts(&mut f.stmts, &mut f.tail, f.ret.clone(), wrap);
 }
 
 /// A guard's conditions hold before it runs; past its checks, they must not have.
@@ -1086,34 +1085,34 @@ fn wrap_arm(arm: &mut Arm, wrap: Wrap) {
         return;
     }
     let mut tail = Some(std::mem::replace(&mut arm.expr, unit()));
-    wrap_stmts(&mut arm.stmts, &mut tail, false, wrap);
+    wrap_stmts(&mut arm.stmts, &mut tail, None, wrap);
     if let Some(tail) = tail {
         arm.expr = tail;
     }
 }
 
-/// Runs `pre` first and `post` last. A value the body returns is kept while `post` runs; a
-/// body that always fails has no end to check.
-fn wrap_stmts(stmts: &mut Vec<Stmt>, tail: &mut Option<Expr>, returns: bool, wrap: Wrap) {
+/// Runs `pre` first and `post` last. A value the body returns is kept, as the function's
+/// result type, while `post` runs; a body that always fails has no end to check.
+fn wrap_stmts(stmts: &mut Vec<Stmt>, tail: &mut Option<Expr>, ret: Option<TypeRef>, wrap: Wrap) {
     let mut out = wrap.pre;
     out.append(stmts);
     if ends_in_fail(&out) {
         *stmts = out;
         return;
     }
-    match tail.take() {
-        Some(Expr::Lit { lit: Lit::Unit, .. }) | None => {}
-        Some(value) if returns => {
+    match (tail.take(), ret) {
+        (Some(Expr::Lit { lit: Lit::Unit, .. }) | None, _) => {}
+        (Some(value), Some(ty)) => {
             let kept = format!("{TAG}result {}", out.len());
-            out.push(const_stmt(&kept, inferred_ty(), value));
+            out.push(const_stmt(&kept, ty, value));
             *tail = Some(ident(&kept, 0, 0));
         }
-        Some(call @ Expr::Call { .. }) => out.push(Stmt::Call {
+        (Some(call @ Expr::Call { .. }), None) => out.push(Stmt::Call {
             line: call.line(),
             col: call.col(),
             expr: call,
         }),
-        Some(other) => *tail = Some(other),
+        (Some(other), None) => *tail = Some(other),
     }
     out.extend(wrap.post);
     *stmts = out;

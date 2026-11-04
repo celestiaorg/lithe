@@ -309,8 +309,12 @@ fn build(
     opts: &Options,
 ) -> Result<Contract, Error> {
     let mut notes = Vec::new();
+    let mut plain = None;
     let checked = if opts.check_specs {
         let specs = spec::check(prog.clone(), opts.evm)?;
+        if !prog.facets.is_empty() {
+            plain = Some(check::check(prog.clone(), opts.evm)?);
+        }
         let instrumented = spec::instrument(prog, &specs)?;
         notes = instrumented.warnings;
         check::check(instrumented.prog, opts.evm)?
@@ -323,7 +327,7 @@ fn build(
     };
     let abi = route::abi(&checked)?;
     let method_identifiers = route::method_ids(&checked)?;
-    let split = split::build(&checked, name, opts)?;
+    let split = split::build_from(&checked, plain.as_ref().unwrap_or(&checked), name, opts)?;
     let prerequisites = split.prerequisites();
     let plan = (!prerequisites.is_empty()).then(|| Plan {
         deployer: opts.deployer,
