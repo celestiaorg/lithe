@@ -32,8 +32,9 @@ const MAX_LAYERS: usize = 16;
 const TURNS: u32 = 2;
 const MAX_STEPS: u64 = 2_000_000;
 const MAX_PATHS: usize = 20_000;
-/// Copies of known length up to this are made byte by byte.
-const MAX_COPY: u64 = 1 << 14;
+/// Copies of known length up to this are made byte by byte: the most code a contract may
+/// have (EIP-170), so a facet's creation code returns its runtime whole.
+const MAX_COPY: u64 = 0x6000;
 /// Memory offsets past this are taken as unknown.
 const MAX_MEM: u64 = 1 << 32;
 /// The width of a running total: wide enough for any sum of a map's words.

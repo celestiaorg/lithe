@@ -14,7 +14,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use super::smt::Script;
 use crate::ast::*;
-use crate::check::{is_enum, is_sum, Checked, TyKind};
+use crate::check::{is_enum, is_sum, Checked, TyKind, TY_UINT};
 use crate::word::Word;
 
 /// A value, as terms.
@@ -75,6 +75,27 @@ pub(crate) enum Key {
     Word(u32),
     Cell(Cell),
     Balance,
+    /// Every word at a leaf, written in a way the prover does not follow, such as a list
+    /// past a key: what any of them holds after it is unknown.
+    Lost(u32),
+}
+
+impl Key {
+    fn leaf(&self) -> Option<u32> {
+        match self {
+            Key::Word(leaf) | Key::Lost(leaf) => Some(*leaf),
+            Key::Cell(cell) => Some(cell.leaf),
+            Key::Balance => None,
+        }
+    }
+
+    /// Whether a phase that wrote `written` may have changed what `self` reads.
+    pub(crate) fn changed_by(&self, written: &BTreeSet<Key>) -> bool {
+        written.contains(self)
+            || self
+                .leaf()
+                .is_some_and(|leaf| written.contains(&Key::Lost(leaf)))
+    }
 }
 
 /// The state of a phase in progress.
@@ -92,6 +113,8 @@ pub(crate) struct St {
     /// Wei the phase's deferred calls send, which leave once it commits.
     pub out: String,
     pub written: BTreeSet<Key>,
+    /// The leaves the phase has written in ways the prover does not follow.
+    lost: BTreeSet<u32>,
 }
 
 /// How arithmetic is read: as the code runs it, where overflow reverts, or as a spec
@@ -248,6 +271,7 @@ impl<'a> Exec<'a> {
             why: "0".to_string(),
             out: "0".to_string(),
             written: BTreeSet::new(),
+            lost: BTreeSet::new(),
         }
     }
 
@@ -379,6 +403,11 @@ impl<'a> Exec<'a> {
     fn array(&mut self, st: &St, cell: &Cell, sort: &str) -> String {
         if let Some(a) = st.arrays.get(cell) {
             return a.clone();
+        }
+        if st.lost.contains(&cell.leaf) {
+            let array_sort = array_sort(cell.arity, sort);
+            self.array_sorts.insert(cell.clone(), array_sort.clone());
+            return self.smt.fresh(&format!("m{}", cell.leaf), &array_sort);
         }
         if let Some(a) = self.init_arrays.get(cell) {
             return a.clone();
@@ -572,6 +601,7 @@ impl<'a> Exec<'a> {
         }
         match st.words.get(&leaf) {
             Some(v) => v.clone(),
+            None if st.lost.contains(&leaf) => self.fresh(ty, &format!("s{leaf}")),
             None => self.init_word(leaf, ty),
         }
     }
@@ -623,7 +653,9 @@ impl<'a> Exec<'a> {
                 };
                 self.write_stored(st, leaf + slot, fty, &part);
             }
+            return;
         }
+        self.lose(st, leaf);
     }
 
     /// A record in a map: each word of it is a map of its own.
@@ -685,7 +717,9 @@ impl<'a> Exec<'a> {
                 };
                 self.write_cells(st, &sub, keys, fty, &part);
             }
+            return;
         }
+        self.lose(st, cell.leaf);
     }
 
     /// Where a storage expression reads, or `None` when it is no storage.
@@ -739,13 +773,29 @@ impl<'a> Exec<'a> {
                         shape.push_str(name);
                     }
                 }
-                Expr::Index { index, leaf: l, .. } => {
+                Expr::Index {
+                    base: list,
+                    index,
+                    leaf: l,
+                    ..
+                } => {
                     if keys.is_empty() {
                         leaf.get_or_insert(base + *l);
                     }
-                    shape.push_str("[]");
                     let k = self.eval(st, index, ctx)?;
                     let k = self.key(k)?;
+                    if ctx.mode == Mode::Code && peel_kind(self.checked, list.ty()) == TyKind::List
+                    {
+                        if let Some(at) = leaf {
+                            let length = Cell {
+                                leaf: at,
+                                shape: format!("{shape}.length"),
+                                arity: keys.len(),
+                            };
+                            self.check_index(st, &k, at, &length, &keys);
+                        }
+                    }
+                    shape.push_str("[]");
                     label.push_str("[_]");
                     keys.push(k);
                 }
@@ -789,6 +839,80 @@ impl<'a> Exec<'a> {
                 self.smt.fresh("key", "Int")
             }
         })
+    }
+
+    /// An index past a stored list's end panics: `length` is where the list's length is
+    /// when it is past a key, and its leaf `at` when not.
+    fn check_index(&mut self, st: &mut St, k: &str, at: u32, length: &Cell, keys: &[String]) {
+        let n = if keys.is_empty() {
+            self.read_word(st, at, TY_UINT)
+        } else {
+            self.read_cells(st, length, keys, TY_UINT)
+        };
+        match n {
+            Val::Int(n) => self.check(st, &format!("(< {k} {n})"), PANIC),
+            _ => {
+                let inside = self.smt.fresh("inside", "Bool");
+                self.check(st, &inside, PANIC);
+            }
+        }
+    }
+
+    /// `List.pop(xs)`: an empty list panics, and the list loses its last element.
+    fn pop(&mut self, st: &mut St, list: &'a Expr, ctx: &Ctx) -> Res<()> {
+        match self.place(st, list, ctx)? {
+            Some(Place::Word { leaf, .. }) => match self.read_word(st, leaf, TY_UINT) {
+                Val::Int(n) => {
+                    self.check(st, &format!("(< 0 {n})"), PANIC);
+                    let shrunk = self.smt.define("length", "Int", &format!("(- {n} 1)"));
+                    if let Some(elem) = self.checked.types[peel(self.checked, list.ty())].elem {
+                        let cell = Cell {
+                            leaf,
+                            shape: "[]".to_string(),
+                            arity: 1,
+                        };
+                        let cleared = self.fresh(elem, "cleared");
+                        self.write_cells(st, &cell, std::slice::from_ref(&shrunk), elem, &cleared);
+                    }
+                    self.write_word(st, leaf, TY_UINT, Val::Int(shrunk));
+                }
+                _ => self.lose(st, leaf),
+            },
+            Some(Place::Cell { cell, .. } | Place::Map { cell, .. }) => self.lose(st, cell.leaf),
+            None => {
+                if let Expr::Ident { sym: Some(sym), .. } = list {
+                    match self.local(st, *sym) {
+                        Val::List(mut items) => {
+                            if items.pop().is_none() {
+                                self.check(st, "false", PANIC);
+                            }
+                            st.locals.insert(*sym, Val::List(items));
+                        }
+                        Val::Seq(len, arr, elem) => {
+                            self.check(st, &format!("(< 0 {len})"), PANIC);
+                            let len = self.smt.define("length", "Int", &format!("(- {len} 1)"));
+                            st.locals.insert(*sym, Val::Seq(len, arr, elem));
+                        }
+                        _ => self.bind(st, *sym, "local"),
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Whether the assignment's path, from the root `sym`, names a list.
+    fn names_list(&self, sym: usize, path: &[String]) -> bool {
+        let mut ty = self.checked.syms[sym].ty;
+        for name in path {
+            let t = &self.checked.types[peel(self.checked, ty)];
+            if t.kind == TyKind::Record {
+                if let Some(f) = t.fields.iter().find(|f| &f.name == name) {
+                    ty = f.ty;
+                }
+            }
+        }
+        peel_kind(self.checked, ty) == TyKind::List
     }
 
     fn read_place(&mut self, st: &St, place: &Place, ty: usize) -> Val {
@@ -942,11 +1066,40 @@ impl<'a> Exec<'a> {
                 } else {
                     sym.slot
                 };
-                if target.is_some() || *push {
-                    // A list in storage: no word an invariant can read.
+                let abs = base + *leaf;
+                if matches!(
+                    expr,
+                    Expr::Call {
+                        builtin: Some(Builtin::ListPop),
+                        ..
+                    }
+                ) {
+                    // `List.pop` wrote the list as it was evaluated.
                     return Ok(());
                 }
-                let abs = base + *leaf;
+                if *push && target.is_none() && keys.is_empty() && fields.is_empty() {
+                    // `List.push(xs, v)`: `v` at the length, which grows by one.
+                    if let Val::Int(n) = self.read_word(st, abs, TY_UINT) {
+                        let cell = Cell {
+                            leaf: abs,
+                            shape: "[]".to_string(),
+                            arity: 1,
+                        };
+                        self.write_cells(st, &cell, std::slice::from_ref(&n), expr.ty(), &v);
+                        let grown = self.smt.define("length", "Int", &format!("(+ {n} 1)"));
+                        self.write_word(st, abs, TY_UINT, Val::Int(grown));
+                        return Ok(());
+                    }
+                }
+                if target.is_some() || *push {
+                    // A list past a key or an index, or a record holding one. Finding the
+                    // place checks each index on the way.
+                    if let (Some(place), false) = (target, *push) {
+                        self.place(st, place, ctx)?;
+                    }
+                    self.lose(st, abs);
+                    return Ok(());
+                }
                 let ty = expr.ty();
                 match index {
                     None => self.write_stored(st, abs, ty, &v),
@@ -957,6 +1110,14 @@ impl<'a> Exec<'a> {
                         for k in key_vals {
                             let kv = self.eval(st, k, ctx)?;
                             ks.push(self.key(kv)?);
+                        }
+                        if ks.len() == 1 && fields.is_empty() && self.names_list(*root, path) {
+                            let length = Cell {
+                                leaf: abs,
+                                shape: ".length".to_string(),
+                                arity: 0,
+                            };
+                            self.check_index(st, &ks[0], abs, &length, &[]);
                         }
                         let mut shape = String::new();
                         for depth in 1..=ks.len() {
@@ -1606,6 +1767,7 @@ impl<'a> Exec<'a> {
                     self.smt.assume(&format!("(<= {} {out})", st.out));
                     st.out = out;
                 }
+                Key::Lost(leaf) => self.lose(st, *leaf),
             }
         }
         for sym in locals {
@@ -1618,6 +1780,28 @@ impl<'a> Exec<'a> {
             }
         }
         st.written.extend(keys.iter().cloned());
+    }
+
+    /// Every word at `leaf` becomes unknown: a write the prover does not follow, such as a
+    /// push to a list past a key, or a list written whole.
+    fn lose(&mut self, st: &mut St, leaf: u32) {
+        st.lost.insert(leaf);
+        st.words.remove(&leaf);
+        st.arrays.retain(|cell, _| cell.leaf != leaf);
+        let totals: Vec<(Cell, bool)> = st
+            .totals
+            .keys()
+            .filter(|(c, _)| c.leaf == leaf)
+            .cloned()
+            .collect();
+        for tracked in totals {
+            let t = self.smt.fresh("total", "Int");
+            if tracked.1 || self.unsigned.contains(&tracked.0) {
+                self.smt.assume(&format!("(<= 0 {t})"));
+            }
+            st.totals.insert(tracked, t);
+        }
+        st.written.insert(Key::Lost(leaf));
     }
 
     /// The call may have reverted somewhere the prover did not follow, for any reason.
@@ -1697,6 +1881,9 @@ impl<'a> Exec<'a> {
             out.locals.insert(sym, v);
         }
         out.written = yes.written.union(&no.written).cloned().collect();
+        for leaf in yes.lost.union(&no.lost) {
+            self.lose(&mut out, *leaf);
+        }
         out
     }
 
@@ -2495,7 +2682,13 @@ impl<'a> Exec<'a> {
                     &format!("(mod {term} {modulus})"),
                 )))
             }
-            Builtin::ListPop | Builtin::ListPush => Ok(Val::Unit),
+            Builtin::ListPop => {
+                if let (Mode::Code, Some(list)) = (ctx.mode, args.first()) {
+                    self.pop(st, list, ctx)?;
+                }
+                Ok(Val::Unit)
+            }
+            Builtin::ListPush => Ok(Val::Unit),
             Builtin::Transfer
             | Builtin::Create
             | Builtin::RawCreate

@@ -169,7 +169,8 @@ pub(crate) struct Split {
     /// The entrypoints the router forwards to a facet, grouped under the facet's module.
     pub routed: Vec<Entrypoint>,
     pub facets: Vec<Facet>,
-    /// Facets of contracts the router creates.
+    /// Facets of contracts the router creates, and in a spec-checking build, the plain build's
+    /// facets.
     pub needs: Vec<Facet>,
     /// The functions the router's code calls across into a facet, by module.
     pub across: Vec<(String, String)>,
@@ -215,9 +216,21 @@ impl Split {
 /// Compiles a contract, with each module it marks `delegated` in its facet. A build this compiler
 /// already did for the same program and options is read back from the cache instead.
 pub(crate) fn build(checked: &Checked, name: &str, opts: &Options) -> Result<Split, Error> {
+    build_from(checked, checked, name, opts)
+}
+
+/// `build`, where `plain` is the program before a spec-checking build instrumented it: the
+/// facets of its `delegated` modules are the plain build's, so that they and
+/// `Evm.facetAddress` are the same as there.
+pub(crate) fn build_from(
+    checked: &Checked,
+    plain: &Checked,
+    name: &str,
+    opts: &Options,
+) -> Result<Split, Error> {
     // A cached build has no loop certificates.
     if gen::certify::wanted() {
-        return build_uncached(checked, name, opts);
+        return build_uncached(checked, plain, name, opts);
     }
     let path = cache_path(checked, name, opts);
     if let Some(split) = path
@@ -227,14 +240,19 @@ pub(crate) fn build(checked: &Checked, name: &str, opts: &Options) -> Result<Spl
     {
         return Ok(split);
     }
-    let split = build_uncached(checked, name, opts)?;
+    let split = build_uncached(checked, plain, name, opts)?;
     if let Some(path) = path {
         store(&path, &encode(&split));
     }
     Ok(split)
 }
 
-fn build_uncached(checked: &Checked, name: &str, opts: &Options) -> Result<Split, Error> {
+fn build_uncached(
+    checked: &Checked,
+    plain: &Checked,
+    name: &str,
+    opts: &Options,
+) -> Result<Split, Error> {
     let entries = gen::entrypoints(checked)?;
     let marked = marked(checked, opts);
     gen::callback_rules(checked, &marked)?;
@@ -258,6 +276,16 @@ fn build_uncached(checked: &Checked, name: &str, opts: &Options) -> Result<Split
     })?;
     let mut shape = router_shape(checked, &entries, &facets, opts)?;
     shape.cross.retain(|idx, _| crossed.contains(idx));
+    let plain_facets = if opts.check_specs {
+        plain_facets(plain, opts)?
+    } else {
+        Vec::new()
+    };
+    shape.facet_at.extend(
+        plain_facets
+            .iter()
+            .map(|f| (f.name.clone(), address_word(f.address))),
+    );
     let built = gen::codegen(checked, &shape).map_err(|err| {
         if too_large(&err) {
             error(
@@ -311,9 +339,29 @@ fn build_uncached(checked: &Checked, name: &str, opts: &Options) -> Result<Split
         entries,
         routed,
         facets,
-        needs: built.needs,
+        needs: built.needs.into_iter().chain(plain_facets).collect(),
         across,
         warnings,
+    })
+}
+
+/// The facets a build without spec checks runs the contract's `delegated` modules from. A
+/// spec-checking build runs those modules itself, but deploys these facets too, so the chain
+/// holds the same code at the same addresses as it does for the plain build.
+/// simplify: code that calls into one of them runs its module unchecked; build checking
+/// facets beside the inlined modules if specs must cover those calls too.
+fn plain_facets(plain: &Checked, opts: &Options) -> Result<Vec<Facet>, Error> {
+    let opts = Options {
+        check_specs: false,
+        ..opts.clone()
+    };
+    parallel(&marked(plain, &opts), |module| {
+        facet(
+            plain,
+            module,
+            &module_crossings(plain, module, &opts)?,
+            &opts,
+        )
     })
 }
 

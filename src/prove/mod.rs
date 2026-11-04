@@ -85,7 +85,7 @@ struct Inv<'a> {
 
 pub(crate) use bytecode::{Built, BuiltFacet};
 #[cfg(test)]
-pub(crate) use sevm::run_known;
+pub(crate) use sevm::{creates, run_known};
 
 /// Each section's header, and each claim's label and outcome under it.
 type Sections = Vec<(String, Vec<(String, Outcome)>)>;
@@ -570,7 +570,7 @@ fn run_phase<'a>(
             outcomes.push(Outcome::Unknown(why.clone()));
             continue;
         }
-        let changes = footprints[i].iter().any(|k| st.written.contains(k));
+        let changes = footprints[i].iter().any(|k| k.changed_by(&st.written));
         if phase.assume && !changes {
             outcomes.push(Outcome::Unchanged);
             continue;

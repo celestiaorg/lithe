@@ -1,7 +1,7 @@
 {
   "name": "@lithe-lang/hardhat",
   "description": "Builds Lithe contracts as part of Hardhat 3's build, into artifacts Hardhat looks up by name",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "license": "Apache-2.0",
   "type": "module",
   "exports": {
@@ -14,7 +14,8 @@
     "index.js",
     "index.d.ts",
     "config.js",
-    "build.js"
+    "build.js",
+    "network.js"
   ],
   "peerDependencies": {
     "hardhat": "^3.18.0"

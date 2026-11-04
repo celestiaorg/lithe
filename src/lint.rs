@@ -68,6 +68,8 @@ pub fn lint_paths(paths: &[PathBuf], fix: bool) -> LintResult {
             status = 1;
         }
     }
+    // A spec file is linted with the file it describes.
+    files.retain(|path| !path.to_string_lossy().ends_with(".spec.lithe"));
     files.sort();
     files.dedup();
     for path in files {
@@ -357,7 +359,16 @@ fn commit(path: &Path, original: &str, edited: &str) -> bool {
 }
 
 fn units(path: &Path) -> Result<Vec<Program>, Error> {
-    Ok(modules::split_units(modules::load(&Sources::disk(), path)?))
+    let sources = Sources::disk();
+    let prog = modules::load(&sources, path)?;
+    // A spec file can't import, so the file's imports serve its specs too. A spec that
+    // doesn't check is `lithe specs`'s to report, not lint's.
+    let mut with_specs = prog.clone();
+    let prog = match modules::load_specs(&sources, path, &mut with_specs) {
+        Ok(()) => with_specs,
+        Err(_) => prog,
+    };
+    Ok(modules::split_units(prog))
 }
 
 fn apply_kept(src: &str, findings: &[Finding]) -> Option<String> {
@@ -1711,6 +1722,22 @@ external function go() is {
             "{}",
             report.stderr
         );
+        // A spec file can't import, so an import only its specs name is used.
+        write("spec_only.lithe", "import \"std/evm\";\nstorage is record { n : uint; }\nexternal function go() is { storage.n := 1; }\n");
+        write(
+            "spec_only.spec.lithe",
+            "spec for go is {\n  ensures new.storage.n = 1 or Evm.sender() = Evm.sender();\n}\n",
+        );
+        let report = lint_paths(&[dir.join("spec_only.lithe")], false);
+        assert_eq!(report.status, 0, "{}", report.stderr);
+        // A directory's spec files are its contracts' specs, not sources of their own.
+        let specs = dir.join("specs");
+        std::fs::create_dir_all(&specs).unwrap();
+        for name in ["spec_only.lithe", "spec_only.spec.lithe"] {
+            std::fs::copy(dir.join(name), specs.join(name)).unwrap();
+        }
+        let report = lint_paths(&[specs], false);
+        assert_eq!(report.status, 0, "{}", report.stderr);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

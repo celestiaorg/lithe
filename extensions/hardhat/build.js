@@ -11,6 +11,8 @@ const run = promisify(execFile);
 // Solidity tests read a compiler version out of every artifact's build info id.
 const BUILD_INFO_ID = "solc-0_0_0-lithe-0";
 
+export const FACETS_FILE = "lithe-facets.json";
+
 export default async function build(args, hre, runSuper) {
   const result = await runSuper(args);
   // Runs after the Solidity build, whose full builds delete every artifact it didn't write.
@@ -24,6 +26,7 @@ export default async function build(args, hre, runSuper) {
 
 async function buildLithe(hre, checkSpecs) {
   const artifactsDir = await hre.solidity.getArtifactsDirectory("contracts");
+  const facets = {};
   let built = false;
   for (const root of hre.config.paths.sources.solidity) {
     const sources = await findSources(root);
@@ -31,13 +34,16 @@ async function buildLithe(hre, checkSpecs) {
     const tmp = await mkdtemp(path.join(tmpdir(), "hardhat-lithe-"));
     try {
       await compile(hre.config.lithe.path, checkSpecs, root, tmp);
-      await convert(hre.config.paths.root, root, sources, path.join(tmp, "out"), artifactsDir);
+      await convert(hre.config.paths.root, root, sources, path.join(tmp, "out"), artifactsDir, facets);
     } finally {
       await rm(tmp, { recursive: true, force: true });
     }
     built = true;
   }
-  if (built) await hre.artifacts.clearCache();
+  if (built) {
+    await writeFile(path.join(artifactsDir, FACETS_FILE), JSON.stringify(facets, null, 2));
+    await hre.artifacts.clearCache();
+  }
 }
 
 // Each `.lithe` file under `root` by its file name, which is the name of its folder in
@@ -82,8 +88,9 @@ async function compile(compiler, checkSpecs, root, cwd) {
 }
 
 // `out/<file>.lithe/<Contract>.json` becomes `artifacts/<path of file>.lithe/<Contract>.json`,
-// and `out/facets/` becomes `artifacts/<root>/facets/`.
-async function convert(projectRoot, root, sources, outDir, artifactsDir) {
+// and `out/facets/` becomes `artifacts/<root>/facets/`. The runtime code of every facet a
+// contract delegates to goes into `facets`, by the address the contract routes to.
+async function convert(projectRoot, root, sources, outDir, artifactsDir, facets) {
   // A root of library files only writes nothing.
   const folders = await readdir(outDir).catch((error) => (error.code === "ENOENT" ? [] : Promise.reject(error)));
   for (const folder of folders) {
@@ -95,6 +102,9 @@ async function convert(projectRoot, root, sources, outDir, artifactsDir) {
     const artifacts = [];
     for (const file of (await readdir(path.join(outDir, folder))).sort()) {
       const lithe = JSON.parse(await readFile(path.join(outDir, folder, file), "utf8"));
+      for (const facet of lithe.facets ?? []) {
+        facets[facet.address] ??= await facetCode(outDir, facet);
+      }
       const artifact = {
         _format: "hh3-artifact-1",
         contractName: lithe.contractName,
@@ -113,6 +123,21 @@ async function convert(projectRoot, root, sources, outDir, artifactsDir) {
     }
     await writeFile(path.join(dest, "artifacts.d.ts"), declarations(artifacts));
   }
+}
+
+// `out/facets/<Module>.json`, or `<Module>-<address prefix>.json` when contracts build the
+// module into different facets.
+async function facetCode(outDir, facet) {
+  const dir = path.join(outDir, "facets");
+  const prefix = facet.address.slice(2, 10).toLowerCase();
+  for (const file of [`${facet.name}.json`, `${facet.name}-${prefix}.json`]) {
+    try {
+      return JSON.parse(await readFile(path.join(dir, file), "utf8")).deployedBytecode.object;
+    } catch (error) {
+      if (error.code !== "ENOENT") throw error;
+    }
+  }
+  throw new HardhatPluginError("hardhat-lithe", `No artifact for the facet ${facet.name} at ${facet.address}`);
 }
 
 // The declarations Hardhat writes next to a Solidity file's artifacts, which type

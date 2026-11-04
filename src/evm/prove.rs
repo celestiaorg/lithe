@@ -1508,6 +1508,17 @@ fn facets_hooks_and_upgrades_prove_at_the_bytecode_level() {
     }
 }
 
+/// Creation code that copies out a runtime of the most bytes a contract may have returns it
+/// whole, as a facet's does when the prover binds it.
+#[test]
+fn creation_code_returns_a_runtime_of_the_largest_size() {
+    let runtime: Vec<u8> = (0..0x6000u32).map(|i| (i % 251) as u8).collect();
+    // `PUSH2 len DUP1 PUSH1 10 PUSH0 CODECOPY PUSH0 RETURN`, then the runtime.
+    let mut init = vec![0x61, 0x60, 0x00, 0x80, 0x60, 0x0a, 0x5f, 0x39, 0x5f, 0xf3];
+    init.extend(&runtime);
+    assert_eq!(crate::prove::creates(&init), Some(runtime));
+}
+
 /// After the upgrade hands the contract on, its code may clear the migration flag and
 /// nothing else: setting it there instead keeps the upgrade from proving.
 #[test]
@@ -1914,4 +1925,65 @@ external function note(const k : uint; const xs : list(list(uint16))) raises Emp
             proof.text
         );
     }
+}
+
+/// A stored list proves as it runs: an index past its end panics, read or written, and so
+/// does a pop of an empty one; a push lands at the length, which grows by one, and a pop
+/// shrinks it. A push the source does not follow, to a list past a key, leaves the list
+/// unknown rather than as it was.
+#[test]
+fn stored_lists_prove_as_they_run() {
+    let src = r#"import "std/evm";
+import "std/list";
+type Bag is record { xs : list(uint); }
+storage is record { fee : uint; xs : list(address); bags : map(uint, Bag); }
+external function push(const a : address) is { List.push(storage.xs, a); }
+external function pop() is { List.pop(storage.xs); }
+external function set(const i : uint; const a : address) is { storage.xs[i] := a; }
+external view function get(const i : uint) : address is storage.xs[i]
+external function pushBag(const k : uint; const v : uint) is { List.push(storage.bags[k].xs, v); }
+external view function bagAt(const k : uint; const i : uint) : uint is storage.bags[k].xs[i]
+"#;
+    let spec = "spec for push is {
+  ensures new.storage.xs.length = old.storage.xs.length + 1;
+  ensures new.storage.xs[old.storage.xs.length] = a;
+  ensures new.storage.fee = old.storage.fee;
+}
+spec for pop is {
+  panics when old.storage.xs.length = 0;
+  ensures new.storage.xs.length = old.storage.xs.length - 1;
+}
+spec for set is {
+  panics when i >= old.storage.xs.length;
+  ensures new.storage.xs[i] = a;
+}
+spec for get is { panics when i >= old.storage.xs.length; }
+spec for bagAt is { panics when i >= old.storage.bags[k].xs.length; }
+spec for pushBag is partial { ensures new.storage.bags[k].xs.length = old.storage.bags[k].xs.length; }";
+    let Some(proof) = prove(src, spec) else {
+        return;
+    };
+    for f in ["push", "pop", "set", "get", "bagAt"] {
+        let section = format!("spec for {f}");
+        let report: Vec<&str> = proof
+            .text
+            .lines()
+            .skip_while(|l| *l != section)
+            .skip(1)
+            .take_while(|l| l.starts_with(' '))
+            .filter(|l| l.starts_with("  ") && !l.starts_with("   "))
+            .collect();
+        assert!(!report.is_empty(), "no {section} in\n{}", proof.text);
+        assert!(
+            report.iter().all(|l| l.trim_start().starts_with("proved")),
+            "{section}:\n{}",
+            proof.text
+        );
+    }
+    let kept = outcome(
+        &proof,
+        "spec for pushBag",
+        "ensures new.storage.bags[k].xs.length = old.storage.bags[k].xs.length",
+    );
+    assert!(!kept.starts_with("proved"), "{}", proof.text);
 }
