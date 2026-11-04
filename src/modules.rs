@@ -188,8 +188,12 @@ pub(crate) fn load_specs(sources: &Sources, entry: &Path, prog: &mut Program) ->
             for block in &mut blocks {
                 block.origin = origin.clone();
             }
-            crate::resolve::resolve_specs(&prog.scopes, &(file.clone(), None), &mut blocks)
-                .map_err(at)?;
+            crate::resolve::resolve_specs(
+                std::sync::Arc::make_mut(&mut prog.scopes),
+                &(file.clone(), None),
+                &mut blocks,
+            )
+            .map_err(at)?;
             for sibling in &mut prog.siblings {
                 sibling.specs.extend(blocks.iter().cloned());
             }
@@ -232,11 +236,11 @@ fn load_entry_specs(sources: &Sources, entry: &Path, prog: &mut Program) -> Resu
     let origin = canon.display().to_string();
     // The spec file names what the entry file declares as the entry file does.
     let own = (prog.origin.clone(), prog.contract_name.clone());
-    let stamp_all = |blocks: &mut Vec<SpecBlock>, key: &crate::resolve::Key| {
+    let mut stamp_all = |blocks: &mut Vec<SpecBlock>, key: &crate::resolve::Key| {
         for block in blocks.iter_mut() {
             block.origin = origin.clone();
         }
-        crate::resolve::resolve_specs(&prog.scopes, key, blocks)
+        crate::resolve::resolve_specs(std::sync::Arc::make_mut(&mut prog.scopes), key, blocks)
     };
     stamp_all(&mut file.bare, &own)?;
     for (name, blocks) in &mut file.contracts {

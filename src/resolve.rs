@@ -463,7 +463,7 @@ pub(crate) fn link(units: &mut [Unit]) -> Result<Scopes, Error> {
 
 /// Rewrites spec blocks from a `.spec.lithe` file as the file they describe sees names.
 pub(crate) fn resolve_specs(
-    scopes: &Scopes,
+    scopes: &mut Scopes,
     key: &Key,
     blocks: &mut [SpecBlock],
 ) -> Result<(), Error> {
@@ -471,8 +471,29 @@ pub(crate) fn resolve_specs(
         return Ok(());
     };
     let mut scope = scope.clone();
+    let used = resolve_spec_blocks(scopes, key, &mut scope, blocks)?;
+    // A spec file can't import: what its specs name is the imports' use too.
+    if let Some(own) = scopes.scopes.get_mut(key) {
+        own.used.extend(used);
+    } else if let Some(own) = scopes
+        .scopes
+        .iter_mut()
+        .find(|(k, _)| k.0 == key.0)
+        .map(|(_, scope)| scope)
+    {
+        own.used.extend(used);
+    }
+    Ok(())
+}
+
+fn resolve_spec_blocks(
+    scopes: &Scopes,
+    key: &Key,
+    scope: &mut Scope,
+    blocks: &mut [SpecBlock],
+) -> Result<BTreeSet<usize>, Error> {
     let mut r = Resolver {
-        scope: &mut scope,
+        scope,
         decls: &scopes.decls,
         members: &scopes.members,
         member_of: &scopes.member_of,
@@ -485,7 +506,8 @@ pub(crate) fn resolve_specs(
         type_params: HashSet::new(),
         locals: HashSet::new(),
     };
-    r.specs(blocks)
+    r.specs(blocks)?;
+    Ok(scope.used.clone())
 }
 
 fn collect_ctors(ty: &TypeRef, out: &mut BTreeSet<String>) {
